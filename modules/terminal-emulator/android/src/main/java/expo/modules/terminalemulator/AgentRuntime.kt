@@ -5,6 +5,7 @@ import android.util.Log
 import expo.modules.terminalemulator.scouter.AgentEscalationBridge
 import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
 import expo.modules.terminalemulator.scouter.AgentActionApprovalRequest
+import expo.modules.terminalemulator.scouter.AgentCapabilityApprovalBridge
 import expo.modules.terminalemulator.scouter.NotificationDispatcher
 import org.json.JSONObject
 import java.io.File
@@ -66,7 +67,17 @@ object AgentRuntime {
     // key (separate alias from the escalation bridge's). Bumped so a stale
     // pre-v17 on-disk script (unsigned-reply trust) is regenerated rather
     // than kept.
-    private const val CURRENT_SCRIPT_VERSION = 17
+    // v18 (2026-07-17, docs/superpowers/DEFERRED.md "Capability broker Phase 0"
+    // mid-run host approval follow-up): http_post_json's SHELLY_CAP_BROKER=1
+    // branch now passes --approval-dir/--approval-reply-dir/--agent-id/
+    // --agent-name/--run-id/--approval-timeout-seconds to the broker so a
+    // non-allowlisted-host verdict can be resolved by a human mid-run
+    // (AgentCapabilityApprovalBridge.kt + this file's action-approval notifier
+    // thread, extended below to also scan cap-broker-host requests) instead of
+    // failing closed immediately. Flag-gated OFF by SHELLY_CAP_BROKER=0
+    // default, but bumped so a stale pre-v18 on-disk script (old call site
+    // with no approval args) is regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 18
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
 
@@ -462,6 +473,7 @@ object AgentRuntime {
         return Thread {
             val dispatcher = NotificationDispatcher(appContext)
             val seen = mutableSetOf<String>()
+            val seenCapability = mutableSetOf<String>()
             while (!stop.get()) {
                 try {
                     val dir = AgentActionApprovalBridge.requestDir(appContext)
@@ -492,6 +504,25 @@ object AgentRuntime {
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "agent action approval notifier iteration failed", e)
+                }
+                try {
+                    // 2026-07-17 (Capability broker Phase 0 mid-run host approval,
+                    // docs/superpowers/DEFERRED.md): scans the SAME directory for
+                    // "cap-*.json" requests (AgentCapabilityApprovalBridge already
+                    // ignores anything not tagged "type":"cap-broker-host", and this
+                    // filter never matches "action-*.json", so the two loops above/
+                    // below can never double-fire on each other's files). No
+                    // native-side "auto-fire trusted" equivalent here — a NEW host
+                    // always needs an explicit human tap, unlike the app-act Tier-B
+                    // case above.
+                    AgentCapabilityApprovalBridge.listPendingRequests(appContext).forEach { request ->
+                        val expiresAt = request.expiresAt
+                        if (expiresAt != null && System.currentTimeMillis() > expiresAt) return@forEach
+                        if (!seenCapability.add(request.key)) return@forEach
+                        dispatcher.notifyAgentCapabilityApprovalNeeded(request)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "agent capability approval notifier iteration failed", e)
                 }
                 try {
                     Thread.sleep(500)

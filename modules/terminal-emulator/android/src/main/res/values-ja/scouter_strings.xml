@@ -71,4 +71,9 @@
   <string name="scouter_notification_agent_escalation_reason">理由: %1$s</string>
   <string name="scouter_notification_agent_escalation_signals">シグナル: %1$s</string>
   <string name="scouter_notification_agent_escalation_cwd">cwd: %1$s</string>
+  <string name="scouter_notification_agent_capability_title">「%1$s」が新しいホストへ接続しようとしています</string>
+  <string name="scouter_notification_agent_capability_host">ホスト: %1$s</string>
+  <string name="scouter_notification_agent_capability_body">このホストは組み込みの許可リストにありません。許可すると今回のリクエスト1件のみ承認されます。</string>
+  <string name="scouter_widget_agent_capability_approved">ホストへのアクセスを許可しました（今回のみ）</string>
+  <string name="scouter_widget_agent_capability_denied">ホストへのアクセスを拒否しました</string>
 </resources>

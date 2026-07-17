@@ -61,6 +61,7 @@ class NotificationDispatcher(private val context: Context) {
         ID_REPLY -> CH_COMPLETED
         ID_LONG_RUNNING -> CH_RUNNING
         in ID_AGENT_ACTION_MIN..ID_AGENT_ACTION_MAX -> CH_APPROVAL
+        in ID_AGENT_CAPABILITY_MIN..ID_AGENT_CAPABILITY_MAX -> CH_APPROVAL
         in 9350 until 9400 -> CH_APPROVAL
         in 9400 until 9900 -> CH_APPROVAL
         in 9900 until 9950 -> CH_COMPLETED
@@ -259,6 +260,49 @@ class NotificationDispatcher(private val context: Context) {
                 autoCancel = false
             )
         }.onFailure { Log.w(TAG, "agent action approval notify failed", it) }
+    }
+
+    /**
+     * 2026-07-17 (docs/superpowers/DEFERRED.md "Capability broker Phase 0" mid-
+     * run host approval follow-up). Distinct from [notifyAgentActionApprovalNeeded]
+     * — this is "approve a NEW HOST", not "approve an action" — deliberately
+     * routed through [AgentCapabilityApprovalBridge], its own request/reply
+     * validation, and its own notification-id/request-code ranges so the two
+     * approval kinds can never be confused by a native reader.
+     */
+    fun notifyAgentCapabilityApprovalNeeded(request: AgentCapabilityApprovalRequest) {
+        runCatching {
+            val needsFreshTap = !AgentCapabilityApprovalBridge.hasCapabilityNonce(request.runId, request.nonce)
+            val shouldNotify = shouldFire(KEY_LAST_AGENT_CAPABILITY, request.key)
+            if (!needsFreshTap && !shouldNotify) return
+            val requestSha256 = request.requestSha256
+                ?.takeIf { HEX_SHA256_RE.matches(it) }
+                ?: return
+            val name = request.agentName?.takeIf { it.isNotBlank() } ?: shorten(request.agentId, 32)
+            val body = listOfNotNull(
+                context.getString(R.string.scouter_notification_agent_capability_host, request.host),
+                context.getString(R.string.scouter_notification_agent_capability_body),
+            ).joinToString("\n")
+            val tapNonce = AgentCapabilityApprovalBridge.registerCapabilityNonce(request.runId, request.nonce)
+            val actions = listOf(
+                action(
+                    context.getString(R.string.scouter_notification_action_allow),
+                    agentCapabilityApprovalPendingIntent(true, request, tapNonce, requestSha256)
+                ),
+                action(
+                    context.getString(R.string.scouter_notification_action_deny),
+                    agentCapabilityApprovalPendingIntent(false, request, tapNonce, requestSha256)
+                ),
+            )
+            notify(
+                id = AgentCapabilityApprovalBridge.notificationId(request.runId, request.nonce),
+                title = context.getString(R.string.scouter_notification_agent_capability_title, name),
+                text = truncate(body, REPLY_MAX_CHARS),
+                bigText = truncate(body, APPROVAL_MAX_CHARS),
+                actions = actions,
+                autoCancel = false
+            )
+        }.onFailure { Log.w(TAG, "agent capability approval notify failed", it) }
     }
 
     // --- Live-poll entry points (additive) -----------------------------------
@@ -670,6 +714,45 @@ class NotificationDispatcher(private val context: Context) {
         )
     }
 
+    private fun agentCapabilityApprovalPendingIntent(
+        allow: Boolean,
+        request: AgentCapabilityApprovalRequest,
+        tapNonce: String,
+        requestSha256: String
+    ): PendingIntent {
+        val decision = if (allow) "allow" else "deny"
+        val intent = Intent(context, ScouterWidgetPromptActivity::class.java)
+            .setAction(
+                if (allow) {
+                    ScouterWidgetPromptActivity.ACTION_AGENT_CAPABILITY_ALLOW
+                } else {
+                    ScouterWidgetPromptActivity.ACTION_AGENT_CAPABILITY_DENY
+                }
+            )
+            .setData(
+                Uri.parse(
+                    "shelly://agent-capability-approval/${Uri.encode(request.runId)}/${Uri.encode(request.nonce)}/$decision/$requestSha256"
+                )
+            )
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_CAPABILITY_RUN_ID, request.runId)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_CAPABILITY_NONCE, request.nonce)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_CAPABILITY_TAP_NONCE, tapNonce)
+            .putExtra(ScouterWidgetPromptActivity.EXTRA_AGENT_CAPABILITY_REQUEST_SHA256, requestSha256)
+            .addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                    Intent.FLAG_ACTIVITY_NO_HISTORY or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+        val requestCode = agentCapabilityRequestCode("${request.runId}:${request.nonce}:$decision:$requestSha256")
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private fun agentActionReviewPendingIntent(
         request: AgentActionApprovalRequest,
         requestSha256: String
@@ -783,6 +866,9 @@ class NotificationDispatcher(private val context: Context) {
     private fun agentActionRequestCode(key: String): Int =
         REQ_AGENT_ACTION_PREFIX or (stableHash("agent-action-pending-intent:$key") and REQ_AGENT_ACTION_MASK)
 
+    private fun agentCapabilityRequestCode(key: String): Int =
+        REQ_AGENT_CAPABILITY_PREFIX or (stableHash("agent-capability-pending-intent:$key") and REQ_AGENT_CAPABILITY_MASK)
+
     private fun stableHash(value: String): Int {
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
         return ((digest[0].toInt() and 0xff) shl 24) or
@@ -813,6 +899,11 @@ class NotificationDispatcher(private val context: Context) {
         private const val ID_REPLY = 9304
         private const val ID_AGENT_ACTION_MIN = 0x31000000
         private const val ID_AGENT_ACTION_MAX = 0x31ffffff
+        // 2026-07-17 (Capability broker Phase 0 mid-run host approval): distinct
+        // range from ID_AGENT_ACTION_* so a "new host" notification never
+        // replaces/collides with an "action" one for the same runId.
+        private const val ID_AGENT_CAPABILITY_MIN = 0x35000000
+        private const val ID_AGENT_CAPABILITY_MAX = 0x35ffffff
 
         // Action PendingIntent request codes, distinct from the widget's
         // 9100-9110 so notification actions never clobber the widget's intents.
@@ -821,6 +912,8 @@ class NotificationDispatcher(private val context: Context) {
         private const val REQ_CHOICE_BASE = 9320
         private const val REQ_AGENT_ACTION_PREFIX = 0x32000000
         private const val REQ_AGENT_ACTION_MASK = 0x00ffffff
+        private const val REQ_AGENT_CAPABILITY_PREFIX = 0x36000000
+        private const val REQ_AGENT_CAPABILITY_MASK = 0x00ffffff
         private const val REQ_AGENT_ESCALATION_BASE = 9400
         private const val REQ_AGENT_ESCALATION_SPAN = 500
         private const val ID_AGENT_RESULT_BASE = 9900
@@ -829,6 +922,7 @@ class NotificationDispatcher(private val context: Context) {
         // Dedup pref keys.
         private const val KEY_LAST_APPROVAL = "last_approval_at"
         private const val KEY_LAST_AGENT_ACTION = "last_agent_action"
+        private const val KEY_LAST_AGENT_CAPABILITY = "last_agent_capability"
         private const val KEY_LAST_AGENT_ESCALATION = "last_agent_escalation"
         private const val KEY_LAST_CHOICE = "last_choice_at"
         private const val KEY_LAST_RATE = "last_rate_onset"

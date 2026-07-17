@@ -128,7 +128,16 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // mismatch already was. Bumped because the generated script's runtime
 // BEHAVIOR changed (new helper function, new bash variables, new rejection
 // path), not just cosmetic text.
-const AGENT_SCRIPT_VERSION = 17;
+// v18 (2026-07-17, docs/superpowers/DEFERRED.md "Capability broker Phase 0"
+// mid-run host approval follow-up): http_post_json's SHELLY_CAP_BROKER=1
+// invocation now passes --approval-dir/--approval-reply-dir/--agent-id/
+// --agent-name/--run-id/--approval-timeout-seconds so a non-allowlisted-host
+// 'approve' verdict can be resolved by a human mid-run instead of failing
+// closed immediately (scripts/shelly-capability-broker.js's
+// requestHostApproval). Flag-gated OFF by default (SHELLY_CAP_BROKER=0), but
+// bumped because the generated script's http_post_json BEHAVIOR changed
+// (new args at the call site) for the SHELLY_CAP_BROKER=1 case.
+const AGENT_SCRIPT_VERSION = 18;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -2010,6 +2019,15 @@ http_post_json() {
   # \$ENV_FILE ITSELF (so no raw "Bearer \$KEY" is built in this shell), caps the
   # run's egress budget, and appends a redacted audit line. Flag defaults off, so
   # the live path below is unchanged unless a device operator opts in.
+  # 2026-07-17 follow-up: also passes the ACTION_APPROVAL_* dir/timeout +
+  # AGENT_ID/AGENT_NAME/ACTION_RUN_ID the broker needs to offer a mid-run
+  # human approval (Allow/Deny) for a non-allowlisted host instead of failing
+  # closed immediately — see requestHostApproval in
+  # scripts/shelly-capability-broker.js. Reuses the SAME
+  # ACTION_APPROVAL_DIR/ACTION_APPROVAL_REPLY_DIR the action-approval flow
+  # already writes into (distinguished by filename prefix "cap-" vs "action-"
+  # and by a "type":"cap-broker-host" field in the JSON body), not a new
+  # directory, so there is only one place a native watcher needs to poll.
   if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ] && node_usable && [ -f "$HOME/.shelly-capability-broker.js" ]; then
     shelly_node "$HOME/.shelly-capability-broker.js" \\
       --method POST --url "$url" --body-file "$body_file" \\
@@ -2018,6 +2036,9 @@ http_post_json() {
       --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
       --budget-file "$TMP_DIR/cap-budget-$AGENT_ID.json" \\
       --timeout-seconds "\${HTTP_TIMEOUT_SECONDS:-30}" \\
+      --approval-dir "$ACTION_APPROVAL_DIR" --approval-reply-dir "$ACTION_APPROVAL_REPLY_DIR" \\
+      --agent-id "$AGENT_ID" --agent-name "$AGENT_NAME" --run-id "$ACTION_RUN_ID" \\
+      --approval-timeout-seconds "$ACTION_APPROVAL_TIMEOUT_SECONDS" \\
       --out "$out_file" --err "$err_file"
     return $?
   fi

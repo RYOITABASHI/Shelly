@@ -34,6 +34,14 @@ function runBroker(
     env?: Record<string, string>;
     budget?: { calls: number; startedAtMs: number };
     nodeOptions?: string;
+    approval?: {
+      dir: string;
+      replyDir: string;
+      agentId?: string;
+      agentName?: string;
+      runId?: string;
+      timeoutSeconds?: number;
+    };
   },
 ): Promise<RunResult> {
   const outFile = path.join(dir, 'out.txt');
@@ -77,6 +85,22 @@ function runBroker(
     const bodyFile = path.join(dir, 'body.json');
     fs.writeFileSync(bodyFile, opts.body ?? '{}');
     argv.push('--body-file', bodyFile);
+  }
+  if (opts.approval) {
+    argv.push(
+      '--approval-dir',
+      opts.approval.dir,
+      '--approval-reply-dir',
+      opts.approval.replyDir,
+      '--agent-id',
+      opts.approval.agentId || 'agent1',
+      '--agent-name',
+      opts.approval.agentName || '',
+      '--run-id',
+      opts.approval.runId || 'run1',
+      '--approval-timeout-seconds',
+      String(opts.approval.timeoutSeconds ?? 10),
+    );
   }
 
   return new Promise((resolve) => {
@@ -183,6 +207,153 @@ describe('shelly-capability-broker: policy gates (no network)', () => {
     });
     expect(r.code).toBe(42);
     expect(r.err).toMatch(/budget/);
+  });
+});
+
+// 2026-07-17 follow-up (docs/superpowers/DEFERRED.md "Capability broker
+// Phase 0" mid-run host approval). These prove the new opt-in behaviour
+// (only engaged when --approval-dir/--approval-reply-dir/--agent-id/--run-id
+// are ALL supplied) without touching the pre-existing "immediate 41" test
+// above, which intentionally omits those args and must keep failing closed
+// with zero waiting — the regression guard for every caller that hasn't been
+// wired to the new args yet.
+describe('shelly-capability-broker: mid-run host approval (nonce/host/run binding)', () => {
+  let dir: string;
+  let approvalDir: string;
+  let approvalReplyDir: string;
+  beforeEach(() => {
+    dir = makeDir();
+    approvalDir = path.join(dir, 'approvals');
+    approvalReplyDir = path.join(dir, 'approval-replies');
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function firstRequestFile(): string {
+    const files = fs.readdirSync(approvalDir).filter((f) => f.endsWith('.json'));
+    expect(files.length).toBe(1);
+    return path.join(approvalDir, files[0]);
+  }
+
+  function writeReply(requestFile: string, overrides: Partial<{ runId: string; host: string; nonce: string; decision: string }> = {}) {
+    const req = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
+    const replyName = path.basename(requestFile).replace(/\.json$/, '.reply.json');
+    const reply = {
+      runId: req.runId,
+      host: req.host,
+      nonce: req.nonce,
+      decision: 'accept',
+      ...overrides,
+    };
+    fs.writeFileSync(path.join(approvalReplyDir, replyName), JSON.stringify(reply));
+  }
+
+  it('(a) writes a nonce-bound approval-request file for a non-allowlist host instead of failing immediately', async () => {
+    const runPromise = runBroker(dir, {
+      url: 'https://hooks.example.com/incoming',
+      approval: { dir: approvalDir, replyDir: approvalReplyDir, runId: 'run-a', timeoutSeconds: 5 },
+    });
+    // Give the broker a moment to write the request before it's resolved.
+    await new Promise((r) => setTimeout(r, 300));
+    const reqFile = firstRequestFile();
+    const req = JSON.parse(fs.readFileSync(reqFile, 'utf8'));
+    expect(req.type).toBe('cap-broker-host');
+    expect(req.runId).toBe('run-a');
+    expect(req.host).toBe('hooks.example.com');
+    expect(typeof req.nonce).toBe('string');
+    expect(req.nonce.length).toBeGreaterThanOrEqual(16);
+    // Let it time out (no reply written) so the test doesn't hang past this point.
+    const r = await runPromise;
+    expect(r.code).toBe(41);
+    expect(r.audit.some((e: any) => e.kind === 'http.request.approval' && e.stage === 'requested')).toBe(true);
+  }, 15000);
+
+  it('(b) a valid accept reply (matching nonce/host/run) lets the request through', async () => {
+    const runPromise = runBroker(dir, {
+      url: 'https://hooks.example.com/incoming',
+      approval: { dir: approvalDir, replyDir: approvalReplyDir, runId: 'run-b', timeoutSeconds: 10 },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const reqFile = firstRequestFile();
+    writeReply(reqFile);
+    const r = await runPromise;
+    // The request itself then goes out over the network and fails DNS
+    // resolution (hooks.example.com is not a real reachable host in the test
+    // sandbox) — exit 23, NOT 41. The important assertion is that it is no
+    // longer 41 (approval-required): the mid-run approval was consumed and
+    // the broker proceeded to actually attempt the send.
+    expect(r.code).not.toBe(41);
+    expect(r.audit.some((e: any) => e.kind === 'http.request.approval' && e.stage === 'accepted' && e.approved === true)).toBe(true);
+  }, 15000);
+
+  it('(c) a reply with a mismatched nonce is rejected and fails closed', async () => {
+    const runPromise = runBroker(dir, {
+      url: 'https://hooks.example.com/incoming',
+      approval: { dir: approvalDir, replyDir: approvalReplyDir, runId: 'run-c', timeoutSeconds: 10 },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const reqFile = firstRequestFile();
+    writeReply(reqFile, { nonce: 'not-the-real-nonce' });
+    const r = await runPromise;
+    expect(r.code).toBe(41);
+    expect(r.audit.some((e: any) => e.kind === 'http.request.approval' && e.stage === 'mismatch' && e.approved === false)).toBe(true);
+  }, 15000);
+
+  it('(c) a reply with a mismatched host is rejected and fails closed', async () => {
+    const runPromise = runBroker(dir, {
+      url: 'https://hooks.example.com/incoming',
+      approval: { dir: approvalDir, replyDir: approvalReplyDir, runId: 'run-c2', timeoutSeconds: 10 },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const reqFile = firstRequestFile();
+    writeReply(reqFile, { host: 'evil.example.com' });
+    const r = await runPromise;
+    expect(r.code).toBe(41);
+    expect(r.audit.some((e: any) => e.kind === 'http.request.approval' && e.stage === 'mismatch')).toBe(true);
+  }, 15000);
+
+  it('(d) timeout with no reply fails closed exactly as the immediate-fail-closed path does (41)', async () => {
+    const r = await runBroker(dir, {
+      url: 'https://hooks.example.com/incoming',
+      approval: { dir: approvalDir, replyDir: approvalReplyDir, runId: 'run-d', timeoutSeconds: 1 },
+    });
+    expect(r.code).toBe(41);
+    expect(r.audit.some((e: any) => e.kind === 'http.request.approval' && e.stage === 'timeout' && e.approved === false)).toBe(true);
+    // The request file is cleaned up on timeout, same as wait_action_approval's
+    // precedent in lib/agent-executor.ts.
+    expect(fs.readdirSync(approvalDir).filter((f) => f.endsWith('.json'))).toHaveLength(0);
+  }, 15000);
+
+  it('(e) an allowlisted host is COMPLETELY UNCHANGED even when approval args are supplied (no request file, no waiting)', async () => {
+    const started = Date.now();
+    const r = await runBroker(dir, {
+      url: 'https://api.groq.com/openai/v1/chat/completions',
+      authRef: 'groq',
+      env: { GROQ_API_KEY: 'gsk_SECRETSECRETSECRETSECRET' },
+      approval: { dir: approvalDir, replyDir: approvalReplyDir, runId: 'run-e', timeoutSeconds: 10 },
+    });
+    const elapsedMs = Date.now() - started;
+    // Never waits the approval timeout — proceeds straight to the (failing,
+    // no real network target) send. Comfortably under the 10s approval
+    // timeout configured above.
+    expect(elapsedMs).toBeLessThan(5000);
+    expect(fs.existsSync(approvalDir) ? fs.readdirSync(approvalDir) : []).toHaveLength(0);
+    expect(r.audit.every((e: any) => e.kind !== 'http.request.approval')).toBe(true);
+    expect(r.audit[0].decision).toBe('allow');
+  }, 15000);
+
+  it('a tainted-secret-spend "approve" verdict on an allowlisted host is NEVER offered mid-run approval (stays immediate 41)', async () => {
+    const r = await runBroker(dir, {
+      url: 'https://api.perplexity.ai/chat/completions',
+      authRef: 'perplexity',
+      tainted: true,
+      env: { PERPLEXITY_API_KEY: 'pplx-SECRETSECRETSECRETSECRET' },
+      approval: { dir: approvalDir, replyDir: approvalReplyDir, runId: 'run-f', timeoutSeconds: 10 },
+    });
+    expect(r.code).toBe(41);
+    expect(fs.existsSync(approvalDir) ? fs.readdirSync(approvalDir) : []).toHaveLength(0);
+    expect(r.audit.every((e: any) => e.kind !== 'http.request.approval')).toBe(true);
   });
 });
 

@@ -63,7 +63,18 @@ describe('capability broker wiring — http_post_json seam (CAP/HTTP/SECRET-001)
   });
 
   it('bumps the script version in lockstep with the native gate', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=17');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=18');
+  });
+
+  // 2026-07-17 follow-up (docs/superpowers/DEFERRED.md "Capability broker
+  // Phase 0" mid-run host approval): the broker needs these to offer a human
+  // an Allow/Deny for a non-allowlisted host instead of failing closed
+  // immediately. Reuses the SAME ACTION_APPROVAL_DIR/REPLY_DIR/TIMEOUT the
+  // action-approval flow already declares (no new bash variables).
+  it('passes mid-run host-approval context to the broker (nonce/host/run binding)', () => {
+    expect(s).toContain('--approval-dir "$ACTION_APPROVAL_DIR" --approval-reply-dir "$ACTION_APPROVAL_REPLY_DIR"');
+    expect(s).toContain('--agent-id "$AGENT_ID" --agent-name "$AGENT_NAME" --run-id "$ACTION_RUN_ID"');
+    expect(s).toContain('--approval-timeout-seconds "$ACTION_APPROVAL_TIMEOUT_SECONDS"');
   });
 });
 

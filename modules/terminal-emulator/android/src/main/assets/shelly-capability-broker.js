@@ -9,7 +9,17 @@
  * when SHELLY_CAP_BROKER=1 that function delegates the actual send to this broker
  * instead of building `Authorization: Bearer $KEY` inline. The broker:
  *   - HTTP-001: enforces the egress allowlist; a non-allowlist host is fail-closed
- *     (blocked) unless --approved 1 was passed by an already-approved call site.
+ *     (blocked) unless --approved 1 was passed by an already-approved call site,
+ *     OR (2026-07-17 follow-up, docs/superpowers/DEFERRED.md "Capability broker
+ *     Phase 0") the caller supplied --approval-dir/--approval-reply-dir/
+ *     --agent-id/--run-id, in which case a BARE non-allowlist-host verdict (no
+ *     auth_ref attached — see requestHostApproval's doc comment for why the
+ *     tainted-secret-spend 'approve' case is deliberately excluded) triggers a
+ *     mid-run human approval: a nonce-bound request file is written, a native
+ *     surface shows an Allow/Deny notification, and this process polls a bounded
+ *     timeout for a matching reply before either proceeding (single request only
+ *     — never "this host for the rest of the run") or failing closed exactly as
+ *     before.
  *   - SECRET-001: resolves an opaque --auth-ref to a real header by reading the
  *     .env file ITSELF; the raw value never returns to the shell or rides in argv.
  *     A ref is bound to one host, so a mis-routed URL cannot exfiltrate the key.
@@ -40,6 +50,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
+const crypto = require('crypto');
 
 // ---------------------------------------------------------------------------
 // Mirror of lib/capability-envelope.ts — keep in sync (parity-tested).
@@ -165,6 +176,194 @@ function classifyEgress(url, authRef, tainted) {
     return { decision: 'approve', reason: 'tainted input plus a live secret "' + authRef + '" to ' + host + ' requires human approval', signals: signals };
   }
   return { decision: 'allow', reason: 'host ' + host + ' is allowlisted', signals: signals };
+}
+
+// ---------------------------------------------------------------------------
+// HTTP-001 follow-up: mid-run host approval (docs/superpowers/DEFERRED.md
+// "Capability broker Phase 0"). Mirrors the wait_action_approval() file-based
+// request/reply/poll pattern in lib/agent-executor.ts (ACTION_APPROVAL_*): a
+// request file is written, a native surface (intended: a new
+// AgentCapabilityApprovalBridge.kt, mirroring AgentActionApprovalBridge.kt)
+// shows the user an Allow/Deny notification, the decision is written to a
+// reply file, and THIS process polls for it with a bounded timeout.
+//
+// Deliberately UNSIGNED (unlike AgentEscalationBridge's RSA-signed replies):
+// the threat model here is a human explicitly consenting to ONE specific
+// (host, agent, run) tuple, not auto-approving a pre-configured action, so
+// requiring the reply's runId + host + nonce to match ALL three (never
+// consuming a reply that doesn't) is the right strength for this gate.
+//
+// Scope (deliberate, conservative): only offered for a BARE non-allowlist-host
+// verdict with no auth_ref attached (no live secret is in play on this
+// request). The other 'approve' case — tainted input plus a live secret on an
+// ALREADY allowlisted, correctly-bound host ('tainted-secret-spend') — always
+// keeps the pre-existing immediate fail-closed behaviour: a human tapping
+// "allow api.example.com" must never, by that same tap, also authorize
+// spending a live API key on attacker-directed content. That is a materially
+// different decision and is intentionally NOT wired through this mechanism.
+//
+// Grant scope: SINGLE REQUEST, not "this host for the rest of the run". Each
+// call into this function mints its own nonce; approving one call never
+// approves a later call to the same host in the same run — including an
+// http_post_json_retry() retry of the very same logical send, which is
+// intentional (a retry is a real outbound request, matching the existing
+// per-call budget-accounting comment in main() below).
+// ---------------------------------------------------------------------------
+
+function sleepMs(ms) {
+  try {
+    const sab = new SharedArrayBuffer(4);
+    const view = new Int32Array(sab);
+    Atomics.wait(view, 0, 0, ms);
+  } catch (_) {
+    // Defensive fallback only (Atomics.wait is available on every Node
+    // version this broker ships on); never turns a poll timeout into an
+    // unhandled throw.
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      /* spin */
+    }
+  }
+}
+
+const UNSAFE_FILE_PART = /[^A-Za-z0-9_.=-]/g;
+function safeFilePart(value, fallback) {
+  const cleaned = String(value == null ? '' : value)
+    .slice(0, 160)
+    .replace(UNSAFE_FILE_PART, '_');
+  return cleaned || fallback;
+}
+
+function generateApprovalNonce() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function writeJsonAtomic(filePath, obj) {
+  const tmp = filePath + '.' + process.pid + '.' + Date.now() + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj));
+  fs.renameSync(tmp, filePath);
+}
+
+function readJsonIfPresent(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+function cleanupApprovalFiles(requestFile, replyFile) {
+  try {
+    fs.unlinkSync(requestFile);
+  } catch (_) {}
+  try {
+    fs.unlinkSync(replyFile);
+  } catch (_) {}
+}
+
+/**
+ * Writes a "cap-broker-host" approval request (type-tagged so a native/human
+ * surface can never confuse it with an ACTION_APPROVAL_* action-dispatch
+ * request even though both live under the same $HOME/.shelly/agents
+ * directories), then polls for a matching reply bounded by
+ * ctx.timeoutSeconds. Returns { approved, stage, reason }; every audit line
+ * this appends carries kind: 'http.request.approval' so it is distinguishable
+ * from the terminal 'http.request' line main() appends regardless of outcome.
+ */
+function requestHostApproval(ctx) {
+  const nonce = generateApprovalNonce();
+  const runPart = safeFilePart(ctx.runId, 'run');
+  const noncePart = safeFilePart(nonce, 'nonce');
+  const requestFile = path.join(ctx.approvalDir, 'cap-' + runPart + '-' + noncePart + '.json');
+  const replyFile = path.join(ctx.approvalReplyDir, 'cap-' + runPart + '-' + noncePart + '.reply.json');
+
+  try {
+    fs.mkdirSync(ctx.approvalDir, { recursive: true });
+    fs.mkdirSync(ctx.approvalReplyDir, { recursive: true });
+  } catch (_) {
+    /* best-effort; a real failure surfaces from the write below */
+  }
+
+  const nowMs = Date.now();
+  const timeoutMs = ctx.timeoutSeconds * 1000;
+  const requestBody = {
+    type: 'cap-broker-host',
+    runId: ctx.runId,
+    agentId: ctx.agentId,
+    agentName: ctx.agentName || '',
+    host: ctx.host,
+    path: ctx.path,
+    method: ctx.method,
+    nonce: nonce,
+    ts: ctx.nowIso,
+    expiresAt: nowMs + timeoutMs,
+  };
+
+  try {
+    writeJsonAtomic(requestFile, requestBody);
+  } catch (e) {
+    return {
+      approved: false,
+      stage: 'write-failed',
+      reason: 'failed to write host approval request: ' + (e && e.message ? e.message : String(e)),
+    };
+  }
+
+  appendAudit(ctx.auditFile, {
+    ts: ctx.nowIso,
+    kind: 'http.request.approval',
+    stage: 'requested',
+    host: ctx.host,
+    path: ctx.path,
+    agentId: ctx.agentId,
+    runId: ctx.runId,
+    nonce: nonce,
+  });
+
+  let result = null;
+  const deadline = nowMs + timeoutMs;
+  while (Date.now() < deadline) {
+    const reply = readJsonIfPresent(replyFile);
+    if (reply) {
+      const matches = reply.runId === ctx.runId && reply.host === ctx.host && reply.nonce === nonce;
+      cleanupApprovalFiles(requestFile, replyFile);
+      if (!matches) {
+        result = { approved: false, stage: 'mismatch', reason: 'host approval reply did not match the pending request' };
+      } else if (reply.decision === 'accept') {
+        result = { approved: true, stage: 'accepted' };
+      } else {
+        result = { approved: false, stage: 'declined', reason: 'host approval was declined' };
+      }
+      break;
+    }
+    sleepMs(300);
+  }
+  if (!result) {
+    cleanupApprovalFiles(requestFile, replyFile);
+    result = { approved: false, stage: 'timeout', reason: 'host approval timed out' };
+  }
+
+  appendAudit(ctx.auditFile, {
+    ts: new Date().toISOString(),
+    kind: 'http.request.approval',
+    stage: result.stage,
+    host: ctx.host,
+    path: ctx.path,
+    agentId: ctx.agentId,
+    runId: ctx.runId,
+    nonce: nonce,
+    approved: result.approved,
+    reason: result.reason ? redact(result.reason) : undefined,
+  });
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,9 +1339,28 @@ function main() {
   const errFile = args.err || '';
   const bodyFile = args['body-file'] || '';
   const timeoutSeconds = args['timeout-seconds'] || '30';
+  // Mid-run host approval (optional): all four must be present for the
+  // 'approve' branch below to offer an interactive wait instead of failing
+  // closed immediately — see requestHostApproval's doc comment.
+  const approvalDir = args['approval-dir'] || '';
+  const approvalReplyDir = args['approval-reply-dir'] || '';
+  const approvalAgentId = args['agent-id'] || '';
+  const approvalAgentName = args['agent-name'] || '';
+  const approvalRunId = args['run-id'] || '';
+  const approvalTimeoutSecondsRaw = Number(args['approval-timeout-seconds']);
+  const approvalTimeoutSeconds =
+    Number.isFinite(approvalTimeoutSecondsRaw) && approvalTimeoutSecondsRaw > 0 ? approvalTimeoutSecondsRaw : 120;
+  // Set true when the budget was already charged for a mid-run approval
+  // ATTEMPT (see below) — prevents double-charging a call that goes on to
+  // succeed (attempt charge + send charge would over-count a single egress).
+  let approvalAttemptCharged = false;
 
   if (!url || !outFile || !errFile) {
-    process.stderr.write('usage: --url <u> --out <f> --err <f> [--method] [--body-file] [--auth-ref] [--tainted 0|1] [--approved 0|1] [--secret-env-file] [--audit-log] [--budget-file] [--timeout-seconds]\n');
+    process.stderr.write(
+      'usage: --url <u> --out <f> --err <f> [--method] [--body-file] [--auth-ref] [--tainted 0|1] [--approved 0|1] ' +
+        '[--secret-env-file] [--audit-log] [--budget-file] [--timeout-seconds] ' +
+        '[--approval-dir] [--approval-reply-dir] [--agent-id] [--agent-name] [--run-id] [--approval-timeout-seconds]\n',
+    );
     process.exit(EXIT.USAGE);
   }
 
@@ -1173,20 +1391,75 @@ function main() {
     fs.writeSync(errFd, 'capability broker: ' + redact(verdict.reason) + '\n');
     return finish(EXIT.DENY, verdict);
   }
-  if (verdict.decision === 'approve' && !approved) {
-    // Fail-closed: a non-allowlist host is blocked unless the call site already
-    // obtained a human approval (the webhook action path does, and passes
-    // --approved 1). Interactive mid-run egress approval is a Phase-0 follow-up.
-    fs.writeSync(errFd, 'capability broker: ' + redact(verdict.reason) + ' (egress blocked — not approved)\n');
-    return finish(EXIT.APPROVAL_REQUIRED, verdict);
-  }
 
-  // 2. Budget (fail-closed).
+  // 2. Budget (fail-closed). Checked BEFORE any mid-run approval prompt too —
+  // see the charge below the approval branch. A run that has exhausted its
+  // budget must not be able to keep generating human-facing approval
+  // notifications; it should hit BUDGET immediately instead.
   const budgetState = loadBudgetState(budgetFile, nowMs);
   const budgetVerdict = checkBudget(budgetState, DEFAULT_BUDGET, nowMs);
   if (!budgetVerdict.ok) {
     fs.writeSync(errFd, 'capability broker: ' + budgetVerdict.reason + '\n');
     return finish(EXIT.BUDGET, verdict, { reason: budgetVerdict.reason });
+  }
+
+  if (verdict.decision === 'approve' && !approved) {
+    // 2026-07-17 follow-up: a BARE non-allowlist-host verdict (no auth_ref —
+    // see requestHostApproval's doc comment for why tainted-secret-spend never
+    // reaches this path) can be resolved mid-run by a human, IF the caller
+    // supplied every arg the wait needs. Older/other callers (or an operator
+    // who hasn't wired the new args through yet) keep the exact prior
+    // immediate fail-closed behaviour.
+    const canOfferMidRunApproval =
+      verdict.signals.indexOf('non-allowlist-host') !== -1 &&
+      !authRef &&
+      approvalDir &&
+      approvalReplyDir &&
+      approvalAgentId &&
+      approvalRunId;
+    if (canOfferMidRunApproval) {
+      // Charge the budget for the ATTEMPT, before we know the outcome — a
+      // denied/timed-out approval must still count against the run's budget,
+      // or an agent stuck in a retry loop against a non-allowlisted host
+      // could generate unbounded Allow/Deny notifications for the human with
+      // zero cost to itself (independent security review, 2026-07-17).
+      budgetState.calls += 1;
+      approvalAttemptCharged = true;
+      saveBudgetState(budgetFile, budgetState);
+      let approvalPath = '';
+      try {
+        approvalPath = new URL(url).pathname;
+      } catch (_) {
+        /* keep '' */
+      }
+      const waitResult = requestHostApproval({
+        approvalDir: approvalDir,
+        approvalReplyDir: approvalReplyDir,
+        runId: approvalRunId,
+        agentId: approvalAgentId,
+        agentName: approvalAgentName,
+        host: hostFromUrl(url),
+        path: approvalPath,
+        method: method,
+        timeoutSeconds: approvalTimeoutSeconds,
+        auditFile: auditFile,
+        nowIso: nowIso,
+      });
+      if (!waitResult.approved) {
+        fs.writeSync(errFd, 'capability broker: ' + redact(waitResult.reason || verdict.reason) + ' (egress blocked — not approved)\n');
+        return finish(EXIT.APPROVAL_REQUIRED, verdict);
+      }
+      // Approved for THIS request only: fall through exactly as if
+      // --approved 1 had been passed for this one call. The attempt was
+      // already charged above, so the send-time charge further below is
+      // skipped for this call (see approvalAttemptCharged).
+    } else {
+      // Fail-closed: a non-allowlist host is blocked unless the call site
+      // already obtained a human approval (--approved 1), or (above) this
+      // process itself just obtained one via the mid-run flow.
+      fs.writeSync(errFd, 'capability broker: ' + redact(verdict.reason) + ' (egress blocked — not approved)\n');
+      return finish(EXIT.APPROVAL_REQUIRED, verdict);
+    }
   }
 
   // 3. Secret-by-reference resolution (inside the broker only).
@@ -1218,9 +1491,12 @@ function main() {
   // still consumed the slot). NOTE: http_post_json_retry re-invokes the broker once
   // per transient retry, so each retry counts as a separate egress here — intended,
   // since a retry IS a real outbound request; the budget caps actual egress, not
-  // logical calls.
-  budgetState.calls += 1;
-  saveBudgetState(budgetFile, budgetState);
+  // logical calls. Skipped if this call already paid the attempt-charge above
+  // (a just-approved mid-run host) to avoid double-counting one egress as two.
+  if (!approvalAttemptCharged) {
+    budgetState.calls += 1;
+    saveBudgetState(budgetFile, budgetState);
+  }
 
   try {
     sendRequest(

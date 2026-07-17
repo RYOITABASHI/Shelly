@@ -40,6 +40,9 @@ class ScouterWidgetPromptActivity : Activity() {
         if (handleAgentActionApprovalAction(intent)) {
             return
         }
+        if (handleAgentCapabilityApprovalAction(intent)) {
+            return
+        }
         if (handleApprovalAction(intent)) {
             return
         }
@@ -82,6 +85,9 @@ class ScouterWidgetPromptActivity : Activity() {
             return
         }
         if (handleAgentActionApprovalAction(intent)) {
+            return
+        }
+        if (handleAgentCapabilityApprovalAction(intent)) {
             return
         }
         if (handleApprovalAction(intent)) {
@@ -438,6 +444,53 @@ class ScouterWidgetPromptActivity : Activity() {
         return true
     }
 
+    /**
+     * 2026-07-17 (Capability broker Phase 0 mid-run host approval). Mirrors
+     * [handleAgentActionApprovalAction] exactly, routed to
+     * [AgentCapabilityApprovalBridge] instead — see that class's doc comment
+     * for why it is a separate bridge rather than an extension of
+     * [AgentActionApprovalBridge].
+     */
+    private fun handleAgentCapabilityApprovalAction(intent: Intent?): Boolean {
+        val action = intent?.action
+        val decision = when (action) {
+            ACTION_AGENT_CAPABILITY_ALLOW -> "accept"
+            ACTION_AGENT_CAPABILITY_DENY -> "decline"
+            else -> return false
+        }
+        val runId = intent.getStringExtra(EXTRA_AGENT_CAPABILITY_RUN_ID)?.trim().orEmpty()
+        val nonce = intent.getStringExtra(EXTRA_AGENT_CAPABILITY_NONCE)?.trim().orEmpty()
+        val tapNonce = intent.getStringExtra(EXTRA_AGENT_CAPABILITY_TAP_NONCE)
+        val expectedRequestSha256 = intent.getStringExtra(EXTRA_AGENT_CAPABILITY_REQUEST_SHA256)
+        if (runId.isBlank() || nonce.isBlank() || tapNonce.isNullOrBlank() || expectedRequestSha256.isNullOrBlank()) {
+            Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
+            finishQuietly()
+            return true
+        }
+
+        runCatching {
+            AgentCapabilityApprovalBridge.writeHumanReply(this, runId, nonce, decision, expectedRequestSha256, tapNonce)
+            AgentCapabilityApprovalBridge.clearRequest(this, runId, nonce)
+        }.fold(onSuccess = {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(AgentCapabilityApprovalBridge.notificationId(runId, nonce))
+            Toast.makeText(
+                this,
+                if (decision == "accept") {
+                    R.string.scouter_widget_agent_capability_approved
+                } else {
+                    R.string.scouter_widget_agent_capability_denied
+                },
+                Toast.LENGTH_SHORT
+            ).show()
+        }, onFailure = { error ->
+            Log.w(TAG, "Failed to write agent capability approval reply", error)
+            Toast.makeText(this, R.string.scouter_widget_approval_not_ready, Toast.LENGTH_SHORT).show()
+        })
+        finishQuietly()
+        return true
+    }
+
     private fun handleApprovalAction(intent: Intent?): Boolean {
         val action = intent?.action
         val decision = when (action) {
@@ -717,6 +770,12 @@ class ScouterWidgetPromptActivity : Activity() {
         const val ACTION_AGENT_ESCALATION_DENY = "expo.modules.terminalemulator.scouter.AGENT_ESCALATION_DENY"
         const val ACTION_AGENT_ACTION_ALLOW = "expo.modules.terminalemulator.scouter.AGENT_ACTION_ALLOW"
         const val ACTION_AGENT_ACTION_DENY = "expo.modules.terminalemulator.scouter.AGENT_ACTION_DENY"
+        // 2026-07-17 (Capability broker Phase 0 mid-run host approval): distinct
+        // action strings/extras from AGENT_ACTION_* — "approve a NEW HOST", not
+        // "approve an action" — so the two can never be dispatched to the wrong
+        // handler even if extras were somehow mixed up.
+        const val ACTION_AGENT_CAPABILITY_ALLOW = "expo.modules.terminalemulator.scouter.AGENT_CAPABILITY_ALLOW"
+        const val ACTION_AGENT_CAPABILITY_DENY = "expo.modules.terminalemulator.scouter.AGENT_CAPABILITY_DENY"
         const val ACTION_CHOICE_SELECT = "expo.modules.terminalemulator.scouter.CHOICE_SELECT"
         const val ACTION_PET_CYCLE = "expo.modules.terminalemulator.scouter.PET_CYCLE"
         const val EXTRA_CODEX_SESSION_ID = "expo.modules.terminalemulator.scouter.CODEX_SESSION_ID"
@@ -731,6 +790,10 @@ class ScouterWidgetPromptActivity : Activity() {
         const val EXTRA_AGENT_ACTION_RUN_ID = "expo.modules.terminalemulator.scouter.AGENT_ACTION_RUN_ID"
         const val EXTRA_AGENT_ACTION_NONCE = "expo.modules.terminalemulator.scouter.AGENT_ACTION_NONCE"
         const val EXTRA_AGENT_ACTION_REQUEST_SHA256 = "expo.modules.terminalemulator.scouter.AGENT_ACTION_REQUEST_SHA256"
+        const val EXTRA_AGENT_CAPABILITY_RUN_ID = "expo.modules.terminalemulator.scouter.AGENT_CAPABILITY_RUN_ID"
+        const val EXTRA_AGENT_CAPABILITY_NONCE = "expo.modules.terminalemulator.scouter.AGENT_CAPABILITY_NONCE"
+        const val EXTRA_AGENT_CAPABILITY_TAP_NONCE = "expo.modules.terminalemulator.scouter.AGENT_CAPABILITY_TAP_NONCE"
+        const val EXTRA_AGENT_CAPABILITY_REQUEST_SHA256 = "expo.modules.terminalemulator.scouter.AGENT_CAPABILITY_REQUEST_SHA256"
         const val EXTRA_CHOICE_INDEX = "expo.modules.terminalemulator.scouter.CHOICE_INDEX"
         const val EXTRA_CHOICE_LABEL = "expo.modules.terminalemulator.scouter.CHOICE_LABEL"
         private val CODEX_STATUS_RE = Regex("""\b(?:gpt|o\d|codex)[A-Za-z0-9_.-]*\b.*[·•]\s*/""", RegexOption.IGNORE_CASE)
