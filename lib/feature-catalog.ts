@@ -2,7 +2,7 @@ export type Feature = {
   id: string;
   name: string;
   description: string;
-  category: 'terminal' | 'ai' | 'browser' | 'layout' | 'voice' | 'config' | 'workflow';
+  category: 'terminal' | 'ai' | 'browser' | 'layout' | 'voice' | 'config' | 'workflow' | 'agent';
   triggerContext?: string; // when to suggest this feature
 };
 
@@ -45,6 +45,22 @@ export const FEATURE_CATALOG: Feature[] = [
   // Config
   { id: 'sound-profiles', name: 'Sound Profiles', description: 'Modern, Retro (8-bit), or Silent sounds', category: 'config' },
   { id: 'fonts', name: 'Font Selection', description: 'Multiple monospace fonts including pixel fonts', category: 'config' },
+
+  // Agent (autonomous background agents — see lib/agent-capability-catalog.ts
+  // for a curated example-utterance library built on top of this data)
+  { id: 'agent-nl-scheduling', name: 'Natural-Language Scheduling', description: 'Register a background agent by typing `@agent <what> <when>` — no cron syntax. Understands daily, weekly (single or multiple days), hourly/every-N-minutes intervals, and "run once now", in Japanese or English.', category: 'agent', triggerContext: '@agent' },
+  { id: 'agent-action-draft', name: 'Agent Action: Draft', description: 'Default agent delivery: writes the run result to a file (e.g. your Obsidian vault) instead of sending it anywhere — the safest default, one-tap approval.', category: 'agent' },
+  { id: 'agent-action-notify', name: 'Agent Action: Notify', description: 'Delivers the agent run result as a device notification instead of a file. One-tap approval.', category: 'agent' },
+  { id: 'agent-action-webhook', name: 'Agent Action: Webhook', description: 'POSTs the agent run result to an https URL you specify. One-tap approval with the host and payload shown.', category: 'agent' },
+  { id: 'agent-action-cli', name: 'Agent Action: CLI', description: 'Runs a shell command template with the agent result. Highest-privilege action — always requires an in-app Review tap before it fires, never one-tap.', category: 'agent' },
+  { id: 'agent-action-intent', name: 'Agent Action: Intent', description: 'Opens another app or link (launch) or hands text to the Android share sheet (share) with the run result. Always requires an in-app Review tap.', category: 'agent' },
+  { id: 'agent-action-dm-reply', name: 'Agent Action: DM Reply', description: 'Replies to a paired live-notification thread (e.g. a chat message) with the agent result. Always requires an in-app Review tap.', category: 'agent' },
+  { id: 'agent-action-app-act', name: 'Agent Action: App-Act', description: "Drives a specific pre-approved recipe in another app (currently: posting to X) with the run result. The recipe and target are reviewed once at registration, so autonomous agents can fire it unattended without a per-run tap.", category: 'agent' },
+  { id: 'agent-action-api-call', name: 'Agent Action: API Call', description: 'A structured HTTP call to an allowlisted host (Perplexity/Gemini/Cerebras/Groq) authored as one step of a multi-step agent in the confirm card.', category: 'agent' },
+  { id: 'agent-orchestration', name: 'Multi-Step Orchestration', description: 'A single agent can chain several instructions in order — "collect X, then summarize, then post" — each step runs through the exact same safety gate as a single run, so chaining adds no privilege.', category: 'agent' },
+  { id: 'agent-escalation-ladder', name: 'Tool Escalation Ladder', description: "If the local model can't produce a real answer (not installed, out of context, transient error), the agent automatically climbs to the next allowed tool — free cloud API, then Codex — instead of dead-ending.", category: 'agent' },
+  { id: 'agent-run-visibility', name: 'Run Notifications & Missed-Run Detection', description: "Every scheduled agent tells you when it ran (notification plus next/last-run in the Sidebar), and warns you if an expected run never fired (e.g. blocked by battery optimization).", category: 'agent' },
+  { id: 'agent-autonomous-mode', name: 'Autonomous Mode', description: 'Toggle an agent to run unattended with no per-step approval tap, restricted to on-device or Codex-OAuth tools for safety.', category: 'agent' },
 ];
 
 /** Compressed catalog for AI system prompt injection */

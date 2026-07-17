@@ -35,6 +35,7 @@ import {
   type SkillRecipe,
 } from '@/lib/agent-skills';
 import { useSkillSaveOffer } from '@/hooks/use-skill-save-offer';
+import { AgentCapabilitiesModal } from '@/components/layout/AgentCapabilitiesModal';
 import {
   listQuarantinedSkills,
   listImportedSkills,
@@ -153,6 +154,7 @@ export function Sidebar() {
   const [repoInput, setRepoInput] = useState('');
   const [notifTriggerAgent, setNotifTriggerAgent] = useState<Agent | null>(null);
   const [notifTriggerDraft, setNotifTriggerDraft] = useState('');
+  const [agentCapabilitiesVisible, setAgentCapabilitiesVisible] = useState(false);
 
   /**
    * bug #73: validate a repo path before adding it. Previously the UI
@@ -817,10 +819,19 @@ export function Sidebar() {
           badge={runningAgents.length}
           iconsOnly={iconsOnly}
         >
-          {agents.length > 0 && (
-            <>
-              <View style={styles.agentsSubheaderRow}>
-                <Text style={styles.tasksSubheader}>{t('sidebar.agents')}</Text>
+          <View style={styles.agentsSubheaderRow}>
+            <Text style={styles.tasksSubheader}>{t('sidebar.agents')}</Text>
+            <View style={styles.agentsSubheaderActions}>
+              <Pressable
+                onPress={() => setAgentCapabilitiesVisible(true)}
+                hitSlop={8}
+                style={styles.agentHelpBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('sidebar.agent_capabilities_a11y')}
+              >
+                <MaterialIcons name="help-outline" size={12} color={C.text2} />
+              </Pressable>
+              {agents.length > 0 && (
                 <Pressable
                   onPress={() => void handleToggleHalt()}
                   hitSlop={8}
@@ -838,7 +849,11 @@ export function Sidebar() {
                     {t(agentsHalted ? 'sidebar.resume_all' : 'sidebar.stop_all')}
                   </Text>
                 </Pressable>
-              </View>
+              )}
+            </View>
+          </View>
+          {agents.length > 0 && (
+            <>
               {agents.map((agent) => (
                 <View
                   key={`agent-${agent.id}`}
@@ -1307,6 +1322,12 @@ export function Sidebar() {
         </Pressable>
       </Modal>
 
+      {/* "What can agents do?" discovery surface */}
+      <AgentCapabilitiesModal
+        visible={agentCapabilitiesVisible}
+        onClose={() => setAgentCapabilitiesVisible(false)}
+      />
+
       {/* Collapse toggle */}
       <Pressable
         style={[styles.toggleBtn, { borderTopColor: C.border }]}
@@ -1464,6 +1485,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  agentsSubheaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  agentHelpBtn: {
+    paddingHorizontal: 2,
+    paddingVertical: 2,
   },
   agentHaltPillBase: {
     flexDirection: 'row',
