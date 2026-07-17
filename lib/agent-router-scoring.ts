@@ -78,7 +78,7 @@ const REASONING_KW = ['analyze', 'compare', 'evaluate', 'plan', 'design', 'reaso
 // "Gather CURRENT info" verbs. Paired with a freshness signal (below) they make a
 // task web-mandatory — only a live web fetch can satisfy it. Kept distinct from
 // TRANSFORM_KW's 'まとめ' (summarize), which is NOT a collection verb.
-const COLLECTION_KW = ['集め', '収集', 'gather', 'collect', 'scrape', 'aggregate', '取得', 'ピックアップ', '探して', '探索'];
+const COLLECTION_KW = ['集め', '収集', 'gather', 'collect', 'scrape', 'aggregate', '取得', 'ピックアップ', '探して', '探索', '検索', 'search'];
 // A freshness/current-info signal. On its own it is weak (a trivial "今日の天気"
 // must stay cheap); only freshness + a collection verb makes a task web-mandatory.
 function hasFreshnessSignal(prompt: string, lower: string): boolean {

@@ -60,6 +60,20 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('資料を集めて整理して').needsWeb).toBe(false);
   });
 
+  it('"検索"/"search" count as a collection verb, so search + freshness is web-mandatory (regression)', () => {
+    // Bug: "検索"/"search" were missing from COLLECTION_KW, so a prompt that
+    // explicitly asks to SEARCH (not "集めて"/"収集") + a freshness cue evaluated
+    // needsWeb=false and fell through to the general (non-web-restricted) ladder,
+    // letting a non-search-capable backend (Groq/local) silently "succeed" on a
+    // task that required a live web search.
+    expect(detectRouteSignals('Perplexityで最新情報を検索して1つにまとめて').needsWeb).toBe(true);
+    expect(detectRouteSignals('search for the latest news').needsWeb).toBe(true);
+    // Search without a freshness cue is still not web-mandatory (the two-part
+    // fresh && collects gate is unchanged by this fix).
+    expect(detectRouteSignals('このファイルを検索して').needsWeb).toBe(false);
+    expect(detectRouteSignals('search this file for TODOs').needsWeb).toBe(false);
+  });
+
   it('classifies katakana code synonyms (プルリク/レビュー/コミット/マージ/イシュー) as code', () => {
     // DEFERRED.md P3: katakana dev vocabulary used to fall through to 'general'
     // (safe-side Gemini API) instead of the code route.

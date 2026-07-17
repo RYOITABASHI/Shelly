@@ -149,6 +149,21 @@ describe('resolveEscalationLadder — web-mandatory tasks exclude non-web backen
     expect(l.noEscalation).toBe(true);
     expect(types(l)).toEqual(['local']);
   });
+
+  it('regression: "検索して" (search) + freshness is web-mandatory → Gemini/Perplexity → Codex, no local/cerebras/groq', () => {
+    // Before the COLLECTION_KW fix, this prompt (explicitly asking to search via
+    // Perplexity, with a freshness cue) evaluated needsWeb=false and fell through
+    // to the general ladder, which could hand it to Groq — a backend with no web
+    // access — letting it silently "succeed" without ever searching.
+    const l = resolveEscalationLadder(mk({ prompt: 'Perplexityで最新情報を検索して1つにまとめて' }), KEYED);
+    expect(types(l)).not.toContain('local');
+    expect(types(l)).not.toContain('cerebras');
+    expect(types(l)).not.toContain('groq');
+    expect(types(l).at(-1)).toBe('cli:codex');
+
+    const l2 = resolveEscalationLadder(mk({ prompt: 'search for the latest news' }), KEYED);
+    expect(types(l2)).toEqual(['gemini-api', 'cli:codex']);
+  });
 });
 
 describe('resolveEscalationLadder — key preflight (G4 P1: keyless cloud degrades upfront)', () => {
