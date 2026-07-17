@@ -502,3 +502,63 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
 
   return steps;
 }
+
+/**
+ * Phase 6b (2026-07-17, on-device bug: "まずPerplexityのAPIを呼んで…、次に…"
+ * resolved the WHOLE agent to Gemini API, ignoring the per-clause Perplexity
+ * mention on step 1). Tag EXPLICIT-marker-split steps (parseStepsFromText's
+ * output — まず/次に/…, numbered lists, EN first/then/…) with the SAME
+ * per-clause tool-mention detection detectToolPinnedSteps already applies to
+ * plain conjunctive/comma clause chains. Before this, only the narrower
+ * detectToolPinnedSteps path ever produced a `.tool`-pinned NormalizedStep —
+ * an explicit-marker utterance's per-clause tool mentions (e.g. "Perplexityの
+ * …", "ローカルLLMで…") were completely inert display text, because
+ * lib/agent-nl-parser.ts's parseAgentNL only calls detectToolPinnedSteps when
+ * parseStepsFromText found FEWER than 2 explicit-marker steps (see that
+ * file's detectedSteps ternary) — the two detectors were mutually exclusive
+ * by construction, so an explicit-marker utterance never got tool-tagged at
+ * all. This symmetrizes the two step-splitting paths: whichever one actually
+ * fires, a clause that names a tool gets `.tool` set the same way.
+ *
+ * A step whose clause ALSO matches the api-call detector (see
+ * detectApiCallSteps below, e.g. "PerplexityのAPIを呼んで…") gets its `.tool`
+ * pin here, but detectApiCallSteps — which lib/agent-nl-parser.ts always
+ * applies AFTER this function, uniformly regardless of which detector split
+ * the steps — REPLACES the whole step object with an apiCall step (dropping
+ * `.tool` entirely) whenever a clause explicitly says to call/use that
+ * provider's API. That preserves AgentOrchestrationStep's tool/apiCall
+ * mutual-exclusivity contract: apiCall (the more specific, already
+ * end-to-end-executed mechanism, see the KNOWN GAP note below) always wins.
+ *
+ * Returns the SAME plain strings unchanged when no clause names a tool
+ * (today's exact behavior for the common case — regression-tested: a marker
+ * chain with no tool mention must stay entirely untagged).
+ *
+ * KNOWN GAP (documented, not fixed by this function — see
+ * docs/superpowers/DEFERRED.md): a step's `.tool` pin is honored ONLY on the
+ * ATTENDED path (lib/agent-manager.ts's runAgentOrchestrated — foreground
+ * "Run Now" / @agent run, `tool: step.tool ?? agent.tool`). The UNATTENDED/
+ * scheduled path (scripts/shelly-plan-executor.js's runOrchestrationChain,
+ * used by every gemini-api/local/perplexity/cerebras/groq-resolved
+ * orchestrated agent on a native alarm fire — see agent-executor.ts's
+ * canRunOrchestrationChain doc comment) explicitly ignores `step.tool`
+ * ("v1 scope … step.tool (Phase 5 per-step pin) is intentionally ignored
+ * here, not a bug"). A per-step tool pin authored via this function therefore
+ * only takes effect when the user runs the agent manually from the app, NOT
+ * on its own scheduled fire — extending the PlanSpec executor to re-resolve
+ * and re-dispatch a per-step tool pin across every backend is a real, but
+ * separate and larger, follow-up (out of scope here to keep this change
+ * narrow and safe). By contrast `.apiCall` (the structured HTTP request
+ * mechanism `detectApiCallSteps` below produces) IS already honored
+ * end-to-end on BOTH the attended and unattended/PlanSpec paths today — which
+ * is exactly why an "…のAPIを呼んで…" phrasing (like the bug's actual
+ * utterance) already worked correctly before this function existed; this
+ * function only closes the gap for a plain tool-name mention with no
+ * explicit "call the API" phrasing (e.g. "まずPerplexityで調べて、次に…").
+ */
+export function tagStepsWithToolMentions(steps: string[]): Array<string | NormalizedStep> {
+  return steps.map((instruction) => {
+    const tool = matchToolMention(instruction);
+    return tool ? { instruction, tool } : instruction;
+  });
+}

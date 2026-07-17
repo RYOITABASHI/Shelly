@@ -18,7 +18,7 @@
  */
 import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
-import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps } from './agent-orchestration';
+import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, tagStepsWithToolMentions } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 
 export interface ParsedAgentDraft {
@@ -830,9 +830,21 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   // e.g. "パープレで集めて、ローカルLLMで要約して、Xに投稿して"). Checked only when
   // explicitSteps didn't already find a confident split, so a marker-based
   // utterance is never double-processed by both detectors.
+  //
+  // Phase 6b (2026-07-17): an explicit-marker split (まず/次に/…, numbered,
+  // EN first/then/…) used to hand its plain-string steps straight through
+  // with NO per-clause tool-mention tagging at all — detectToolPinnedSteps
+  // (which DOES tag) only ever ran on the OTHER branch. tagStepsWithToolMentions
+  // applies the identical TOOL_MENTIONS matching to the explicit-marker steps
+  // too, so both step-splitting paths honor a per-clause tool name the same
+  // way. See tagStepsWithToolMentions's doc comment in agent-orchestration.ts
+  // for the residual KNOWN GAP this does NOT close (a `.tool` pin from either
+  // path only takes effect on the attended/"Run Now" path today, not on an
+  // unattended/scheduled fire — unlike `.apiCall`, which already works on
+  // both).
   const detectedSteps: Array<string | AgentOrchestrationStep> | undefined =
     explicitSteps.length >= 2
-      ? explicitSteps
+      ? tagStepsWithToolMentions(explicitSteps)
       : detectToolPinnedSteps(prompt || rawText) ?? undefined;
   // v1.1 api-call authoring: upgrade only explicit provider+API-call clauses,
   // after the established splitters have decided that this is genuinely a
