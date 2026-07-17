@@ -137,7 +137,19 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // requestHostApproval). Flag-gated OFF by default (SHELLY_CAP_BROKER=0), but
 // bumped because the generated script's http_post_json BEHAVIOR changed
 // (new args at the call site) for the SHELLY_CAP_BROKER=1 case.
-const AGENT_SCRIPT_VERSION = 18;
+// v19 (2026-07-17, on-device bug repro: a Groq-routed agent told to "record
+// the current time" wrote a hallucinated 2024 date — no backend's
+// model-facing prompt ever carried the real wall-clock date/time; `date` was
+// only ever used for internal bookkeeping, e.g. run IDs/log timestamps).
+// Every PROMPT_FILE-assembly call site (local/perplexity/cerebras/groq/
+// gemini/codex single-shot, the codex orchestration chain, the ab-article-eval
+// hybrid path) now leads the assembled prompt with a runtime-computed
+// CURRENT_DATETIME_CONTEXT line (device-local date/weekday/time via `date`),
+// BEFORE the agent's own prompt text and BEFORE SOURCE_CONTEXT, so it survives
+// every backend's `head -c` truncation. Bumped because the generated script's
+// prompt-assembly BEHAVIOR changed (new leading line in every model-facing
+// prompt), not just cosmetic text.
+const AGENT_SCRIPT_VERSION = 19;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3222,6 +3234,33 @@ SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-regis
 mkdir -p "$(dirname "$SOURCE_REGISTRY_FILE")"
 touch "$SOURCE_REGISTRY_FILE"
 SOURCE_CONTEXT=""
+# 2026-07-17 bug fix: a background agent asked to record "the current time"
+# hallucinated a plausible-but-wrong 2024 date because no backend's
+# model-facing prompt ever carried the real wall-clock date/time — only
+# internal bookkeeping (run IDs, log timestamps) used \`date\`. Every backend
+# below leads $PROMPT_FILE with this line, BEFORE the agent's own prompt
+# (escapedPrompt) and BEFORE $SOURCE_CONTEXT, so a "今日"/"現在時刻"/"now" question
+# is grounded in the actual run-time device-local date instead of being
+# confabulated. Computed via the shell's own \`date\` (already used elsewhere in
+# this script for run IDs/log timestamps) — no hardcoded timezone, whatever
+# the device's \`date\` returns is what "today" means here. Every call site
+# references it defensively (\${CURRENT_DATETIME_CONTEXT:-}) so a bash fragment
+# extracted and run in isolation (see
+# __tests__/agent-executor-chain-execution.test.ts's extractChainSnippet,
+# which slices the script starting AFTER this preamble) degrades to an empty
+# leading line instead of aborting under \`set -u\`.
+CURRENT_DATETIME_CONTEXT_WDAY_NUM=$(date +%u 2>/dev/null || echo 0)
+case "$CURRENT_DATETIME_CONTEXT_WDAY_NUM" in
+  1) CURRENT_DATETIME_CONTEXT_WDAY='月' ;;
+  2) CURRENT_DATETIME_CONTEXT_WDAY='火' ;;
+  3) CURRENT_DATETIME_CONTEXT_WDAY='水' ;;
+  4) CURRENT_DATETIME_CONTEXT_WDAY='木' ;;
+  5) CURRENT_DATETIME_CONTEXT_WDAY='金' ;;
+  6) CURRENT_DATETIME_CONTEXT_WDAY='土' ;;
+  7) CURRENT_DATETIME_CONTEXT_WDAY='日' ;;
+  *) CURRENT_DATETIME_CONTEXT_WDAY='?' ;;
+esac
+CURRENT_DATETIME_CONTEXT="[Current date/time: $(date '+%Y年%m月%d日')(\${CURRENT_DATETIME_CONTEXT_WDAY}) $(date '+%H:%M %Z')]"
 LOCAL_CONTEXT_FILE="$TMP_DIR/local-context-$AGENT_ID.txt"
 # Studio context (source-registry dedup + recent drafts + content-studio/Obsidian
 # git state) is only built for content-pipeline agents. For ad-hoc @agent tasks
@@ -3481,7 +3520,7 @@ function generateToolCommand(
 	# closes the pipe early (large context > pipe buffer) → exit 141 → under
 	# 'set -euo pipefail' the whole run aborts BEFORE the fallback. Reading a
 	# regular file with head has no producer to signal, so it is abort-safe.
-	{ printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
+	{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
 	head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"
 	rm -f "$PROMPT_FILE.full"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
@@ -3513,7 +3552,7 @@ function generateToolCommand(
       const perplexityModel = tool.model || 'sonar';
 		      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 		REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-		printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+		printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 		MODEL='${perplexityModel.replace(/'/g, "'\\''")}'
@@ -3596,7 +3635,7 @@ fi`;
  */
 function codexDriverCommand(escapedPrompt: string, resultVar: string, policyJson: string): string {
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 # workspaceRoot (DEFERRED.md #2 残り): when the agent has a configured
 # workspace, run the driver there instead of the content-studio default —
 # the B2 driver re-anchors AutonomyPolicy.workspaceRoot to whatever --cwd it
@@ -3722,9 +3761,15 @@ codex_orch_collapse_and_truncate() {
 # whole thing capped to CODEX_ORCH_MAX_PROMPT_CHARS. Writes the composed
 # prompt to $PROMPT_FILE — the SAME file codexDriverCommand's single-shot
 # path writes — so every downstream driver invocation is byte-for-byte the
-# same shape as the non-chain path, just re-run per step.
+# same shape as the non-chain path, just re-run per step. One deliberate
+# addition vs. buildStepPrompt: a leading CURRENT_DATETIME_CONTEXT line (see
+# the preamble comment near SOURCE_CONTEXT's own assignment) so every step of
+# a multi-step chain — not just the single-shot codexDriverCommand path — is
+# grounded in the real run-time date. Re-emitted on EVERY step (not baked
+# once) since a long chain may cross a day/midnight boundary between steps.
 codex_orch_build_prompt() {
   {
+    printf '%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}"
     if [ -n "$CODEX_ORCH_BASE_PROMPT" ]; then
       printf '%s\\n\\n' "$CODEX_ORCH_BASE_PROMPT"
     fi
@@ -3902,7 +3947,13 @@ ${promptMarker}
   done
 } > "$RUN_DIR/context.md"
 
-cat > "$RUN_DIR/prompt.md" <<'PROMPTEOF'
+# 2026-07-17 bug fix: leading run-time date/time line (see the preamble
+# comment near SOURCE_CONTEXT's own assignment) — written first, then the
+# fixed rubric heredoc below APPENDS (>>) rather than overwrites, so this
+# stays the very first line of prompt.md exactly like every other backend's
+# PROMPT_FILE.
+printf '%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}" > "$RUN_DIR/prompt.md"
+cat >> "$RUN_DIR/prompt.md" <<'PROMPTEOF'
 あなたは日本語のSubstack記事の編集者です。
 
 目的:
@@ -4062,7 +4113,7 @@ function openAiCompatApiCommand(
   const label = opts.label.replace(/"/g, '\\"');
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-	printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	MODEL="\${${opts.envModelVar}:-${model}}"
@@ -4099,7 +4150,7 @@ function geminiApiCommand(escapedPrompt: string, resultVar: string, systemPrompt
   const toolsFragment = grounded ? '\\"tools\\":[{\\"google_search\\":{}}],' : '';
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-printf '%s\\n%s\\n' '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 MODEL="\${GEMINI_MODEL:-${defaultModel.replace(/"/g, '\\"')}}"

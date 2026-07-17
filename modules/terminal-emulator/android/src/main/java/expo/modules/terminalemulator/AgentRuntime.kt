@@ -77,7 +77,14 @@ object AgentRuntime {
     // failing closed immediately. Flag-gated OFF by SHELLY_CAP_BROKER=0
     // default, but bumped so a stale pre-v18 on-disk script (old call site
     // with no approval args) is regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 18
+    // v19 (2026-07-17, on-device bug repro: a Groq-routed agent told to
+    // "record the current time" wrote a hallucinated 2024 date — no backend's
+    // model-facing prompt ever carried the real wall-clock date/time). Every
+    // PROMPT_FILE-assembly call site now leads the assembled prompt with a
+    // runtime-computed CURRENT_DATETIME_CONTEXT line (device-local
+    // date/weekday/time via `date`). Bumped so a stale pre-v19 on-disk script
+    // (no date grounding) is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 19
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
 
