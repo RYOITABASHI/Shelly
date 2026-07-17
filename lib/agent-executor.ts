@@ -9,6 +9,8 @@ import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-poli
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
+import { compareRouteDecision } from './model-router';
+import { logInfo, logWarn } from './debug-logger';
 import {
   MAX_PROMPT_CHARS,
   MAX_RESULT_CARRY_CHARS,
@@ -18,6 +20,65 @@ import {
   resolveBudget,
 } from './agent-orchestration';
 import { clampCharLimit } from './agent-pipeline-presets';
+
+// MODEL-001 Phase A shadow instrumentation (read-only, observational only —
+// see lib/model-router/shadow.ts and lib/model-router/wiring.ts). This wires
+// the dormant shadow comparator into the ONE real production call site of
+// resolveAgentRoute (generateRunScript below) so it starts accumulating real
+// live/shadow parity evidence ahead of any future cutover decision
+// (wiring.ts §MIGRATION). It changes NOTHING about which tool a run actually
+// uses — MODEL_ROUTER_ENABLED stays false and `routeResolution` below is
+// untouched by this call. A running in-memory count (reset on process
+// restart — this is diagnostic signal, not a persisted metric) is logged
+// alongside each comparison so per-run log lines can be read as a trend.
+const modelRouterShadowStats = { total: 0, unexpectedDivergences: 0 };
+
+/**
+ * Run the dormant MODEL-001 shadow comparator against the same Agent the live
+ * resolveAgentRoute() call just resolved, and log the STRUCTURE of the result
+ * (tool-type enums, guard/route labels, rejection reasons, boolean
+ * requirements) — never the agent's prompt/description/action text, which
+ * lib/debug-logger.ts's logInfo/logWarn additionally redact via
+ * redactSecrets() as defense in depth. Errors inside the shadow path (a bug
+ * in dormant/experimental code) are caught here and MUST NOT propagate — a
+ * failure in this function can never break the real agent run that called it.
+ */
+function runModelRouterShadowComparison(agent: Agent): void {
+  try {
+    const result = compareRouteDecision(agent);
+    modelRouterShadowStats.total += 1;
+    const summary = {
+      liveTool: result.live.tool.type,
+      liveGuard: result.live.decision.guard,
+      liveRoute: result.live.decision.route,
+      shadowTool: result.shadow.chosen?.toolType ?? null,
+      shadowRejectedReasons: result.shadow.rejected.map((r) => r.reason),
+      requirements: result.requirements,
+      secretInvariantHolds: result.secretInvariantHolds,
+      knownDivergence: result.knownDivergence,
+      totalComparisons: modelRouterShadowStats.total,
+    };
+    if (result.unexpectedDivergence) {
+      // THE interesting signal per shadow.ts's own classification — live chose
+      // a tool the dormant MODEL-001 selector considers structurally
+      // ineligible, or vice versa. Expected/intentional divergences (manual
+      // pin, autonomous policy, configured-tool passthrough, affinity
+      // ranking, secret-fail-closed-deny) are logged at info level only.
+      modelRouterShadowStats.unexpectedDivergences += 1;
+      logWarn('ModelRouterShadow', 'unexpected live/shadow routing divergence', {
+        ...summary,
+        unexpectedDivergence: result.unexpectedDivergence,
+        totalUnexpectedDivergences: modelRouterShadowStats.unexpectedDivergences,
+      });
+    } else {
+      logInfo('ModelRouterShadow', 'shadow comparison complete', summary);
+    }
+  } catch (error) {
+    // Dormant/experimental code must never be able to take down a live agent
+    // run — swallow and log, don't rethrow.
+    logWarn('ModelRouterShadow', 'shadow comparator threw — ignored, live route unaffected', error);
+  }
+}
 
 const MAX_CONCURRENT = 2;
 
@@ -232,6 +293,11 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const logDir = `${logsDir}/${agentId}`;
 
   const routeResolution = resolveAgentRoute(agent);
+
+  // MODEL-001 Phase A: observe-only. Never affects `routeResolution` / `tool`
+  // below, and any error inside is caught internally — see
+  // runModelRouterShadowComparison's own doc comment above.
+  runModelRouterShadowComparison(agent);
 
   // Autonomous runs are OAuth/local only (Spec A §4): resolve `auto`→codex and
   // refuse api-key backends — there is no key in the autonomous agent path
