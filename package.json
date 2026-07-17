@@ -60,7 +60,7 @@
     "expo-build-properties": "^1.0.10",
     "expo-clipboard": "^8.0.8",
     "expo-constants": "~18.0.12",
-    "expo-crypto": "^57.0.1",
+    "expo-crypto": "~15.0.9",
     "expo-dev-client": "^6.0.20",
     "expo-document-picker": "^14.0.8",
     "expo-file-system": "~19.0.10",
