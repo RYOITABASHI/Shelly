@@ -6,6 +6,7 @@ jest.mock('expo-file-system/legacy', () => ({}));
 import {
   MAX_DESCRIPTION_CHARS,
   MAX_NAME_CHARS,
+  importSkillContentToQuarantine,
   parseSkillMdFrontmatter,
   SKILL_NAME_RE,
   validateSkillMdContent,
@@ -318,5 +319,63 @@ describe('importSkillFromPickedFile', () => {
 
     expect(result.ok).toBe(true);
     expect(result.warnings.some((w) => w.includes('skill body is large'))).toBe(true);
+  });
+});
+
+// SKILL-002: content-based import (skill-catalog.ts hands already-fetched,
+// sha256-verified SKILL.md text here instead of a local path). This must
+// reuse validateSkillMdContent exactly like the path-based import above —
+// these tests exist to prove that reuse, not to re-test validation itself.
+describe('importSkillContentToQuarantine', () => {
+  function okRunCommand(): jest.Mock {
+    return jest.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+  }
+
+  it('writes a valid skill straight to quarantine and reports success', async () => {
+    const runCommand = okRunCommand();
+    const result = await importSkillContentToQuarantine(
+      validSkillMd({ name: 'git-commit-craft' }),
+      'git-commit-craft',
+      'catalog:git-commit-craft',
+      runCommand as unknown as RunCommand,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe('git-commit-craft');
+    expect(result.errors).toEqual([]);
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    const script = runCommand.mock.calls[0][0] as string;
+    // Quarantine dir path + a quoted (expansion-disabled) heredoc write —
+    // never a `cp -r` (that's the path-based importSkillToQuarantine only).
+    expect(script).toContain('skills-quarantine/git-commit-craft');
+    expect(script).toMatch(/<<'SHELLY_SKILLMD_/);
+    expect(script).not.toContain('cp -r');
+  });
+
+  it('rejects (without touching the shell) when the content fails validateSkillMdContent', async () => {
+    const runCommand = okRunCommand();
+    // frontmatter name "other-name" won't match the catalog's declared
+    // expectedName "git-commit-craft" — same "name must match" rule the
+    // path-based folder-name check enforces.
+    const result = await importSkillContentToQuarantine(
+      validSkillMd({ name: 'other-name' }),
+      'git-commit-craft',
+      'catalog:git-commit-craft',
+      runCommand as unknown as RunCommand,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('must exactly match'))).toBe(true);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('reports a write failure without throwing', async () => {
+    const runCommand = jest.fn().mockResolvedValue({ stdout: '', stderr: 'disk full', exitCode: 1 });
+    const result = await importSkillContentToQuarantine(
+      validSkillMd({ name: 'git-commit-craft' }),
+      'git-commit-craft',
+      'catalog:git-commit-craft',
+      runCommand as unknown as RunCommand,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toContain('disk full');
   });
 });

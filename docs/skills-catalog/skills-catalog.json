@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "channel": "skills-catalog-latest",
+  "generatedAt": "2026-07-17T00:00:00Z",
+  "skills": [
+    {
+      "name": "git-commit-craft",
+      "description": "Write small, scoped, well-explained git commits instead of one giant dump of unrelated changes.",
+      "version": "1.0.0",
+      "tags": ["git", "workflow", "dev"],
+      "contentAssetName": "git-commit-craft.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/git-commit-craft.SKILL.md",
+      "sha256": "e24700cdc00fa602f41630b895543e36dbe6e14fc59bf87f17a4d39acd1c91c8"
+    },
+    {
+      "name": "shell-safety-review",
+      "description": "Sanity-check a shell command for destructive or irreversible side effects before running it, especially in an autonomous/unattended run.",
+      "version": "1.0.0",
+      "tags": ["shell", "safety", "agent"],
+      "contentAssetName": "shell-safety-review.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/shell-safety-review.SKILL.md",
+      "sha256": "18992b88cec773619ee2f19ab85359537a11e825337a11ffe6c879e8dd1b5d88"
+    },
+    {
+      "name": "android-logcat-triage",
+      "description": "Systematically narrow down an Android app bug using adb logcat instead of guessing from the crash screenshot alone.",
+      "version": "1.0.0",
+      "tags": ["android", "debugging", "logcat"],
+      "contentAssetName": "android-logcat-triage.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/android-logcat-triage.SKILL.md",
+      "sha256": "81ea3ab79401e53f30d9ca52ebf62a277783da6d6834657e7daaaa42f6b83a2e"
+    },
+    {
+      "name": "agent-skill-authoring",
+      "description": "Write a well-formed SKILL.md (agentskills.io format) so it imports cleanly and actually gets used.",
+      "version": "1.0.0",
+      "tags": ["meta", "skills", "authoring"],
+      "contentAssetName": "agent-skill-authoring.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/agent-skill-authoring.SKILL.md",
+      "sha256": "4a797013c6a2ca961585db6666470af4f132f81e3a13ce57f51b0107a0fe3313"
+    }
+  ]
+}

@@ -407,6 +407,86 @@ export async function importSkillFromPickedFile(
   return { ok: true, name, errors: [], warnings: validation.warnings };
 }
 
+/**
+ * SKILL-002: import a SKILL.md whose content was already fetched (and
+ * sha256-verified — see lib/skill-catalog.ts's fetchCatalogSkillContent) from
+ * Shelly's own curated skill catalog, rather than read from a local path.
+ *
+ * Deliberately routes through the EXACT same `validateSkillMdContent` used by
+ * importSkillToQuarantine above — a catalog-sourced skill gets no free pass
+ * past the shape/name/description checks a manually-dropped one has to clear
+ * — and lands in the SAME quarantineDir(), so it goes through the SAME human
+ * approve/reject review in Sidebar.tsx before it can ever be used. The only
+ * difference from the path-based import is *how the bytes were obtained*
+ * (network + hash-verify vs. a shell `cat` of a local folder); trust-wise
+ * both are "unreviewed until a human approves it."
+ *
+ * Unlike importSkillToQuarantine's `cp -r` (which mirrors an entire external
+ * folder, including any side files it contains), this only ever writes the
+ * single SKILL.md file the catalog manifest's sha256 vouched for — a catalog
+ * entry has no mechanism to smuggle in extra bundled files.
+ *
+ * `expectedName` is the catalog manifest's OWN declared name for this entry
+ * (SkillCatalogEntry.name) and is checked against the content's frontmatter
+ * `name` field via the same "name must match X" rule validateSkillMdContent
+ * already applies to a local folder's basename — catching a manifest/content
+ * mismatch (stale cache, tampered mirror, curator typo) before quarantine.
+ */
+export async function importSkillContentToQuarantine(
+  raw: string,
+  expectedName: string,
+  sourceLabel: string,
+  runCommand: RunCommand
+): Promise<{ ok: boolean; name?: string; errors: string[]; warnings: string[] }> {
+  const validation = validateSkillMdContent(raw, expectedName);
+  if (!validation.valid) {
+    return { ok: false, errors: validation.errors, warnings: validation.warnings };
+  }
+  const fm = parseSkillMdFrontmatter(raw);
+  const name = fm!.fields.name;
+  const description = fm!.fields.description;
+
+  const home = getHomePath();
+  const destDir = `${quarantineDir(home)}/${name}`;
+  const skillFile = `${destDir}/SKILL.md`;
+  const metaFile = `${destDir}/.shelly-import-meta.json`;
+  const meta = {
+    name,
+    description,
+    sourcePath: sourceLabel,
+    importedAt: new Date().toISOString(),
+    approvedAt: null as string | null,
+    warnings: validation.warnings,
+  };
+  const contentMarker = `SHELLY_SKILLMD_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  const metaMarker = `SHELLY_SKILLMETA_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  const script = [
+    'set -e',
+    `mkdir -p ${shellQuote(destDir)}`,
+    // Quoted heredoc terminators (<<'MARKER') disable shell expansion inside
+    // the body, so externally-sourced content can never trigger command
+    // substitution or variable expansion here — same discipline the meta-json
+    // write below (and installCodexRuntime's manifest write) already uses.
+    `cat > ${shellQuote(skillFile)} <<'${contentMarker}'`,
+    raw,
+    contentMarker,
+    `cat > ${shellQuote(metaFile)} <<'${metaMarker}'`,
+    JSON.stringify(meta, null, 2),
+    metaMarker,
+    `[ -f ${shellQuote(skillFile)} ] || { echo "skill import failed: ${name}" >&2; exit 1; }`,
+  ].join('\n');
+
+  const writeResult = await safeRun(runCommand, script);
+  if (writeResult.exitCode !== 0) {
+    return {
+      ok: false,
+      errors: [`import failed: ${writeResult.stderr || `exit ${writeResult.exitCode}`}`],
+      warnings: [],
+    };
+  }
+  return { ok: true, name, errors: [], warnings: validation.warnings };
+}
+
 interface ImportMeta {
   name: string;
   description: string;

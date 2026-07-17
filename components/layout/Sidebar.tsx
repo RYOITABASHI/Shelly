@@ -42,6 +42,7 @@ import {
   importSkillToQuarantine,
   importSkillFromPickedFile,
   pickedSkillFileAsset,
+  importSkillContentToQuarantine,
   promoteSkillFromQuarantine,
   rejectQuarantinedSkill,
   deleteImportedSkill,
@@ -53,6 +54,12 @@ import {
 } from '@/lib/skill-import';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import {
+  fetchSkillCatalogManifest,
+  fetchCatalogSkillContent,
+  type SkillCatalogEntry,
+  type SkillCatalogManifest,
+} from '@/lib/skill-catalog';
 import { getHomePath } from '@/lib/home-path';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
@@ -102,6 +109,13 @@ function isUiAutonomousTool(tool: ToolChoice): boolean {
 // SKILL-001 row preview length — matches the ~60-80 char range other sidebar
 // meta lines use (e.g. showAgentDetail's step/instruction slices).
 const IMPORTED_SKILL_DESC_TRUNCATE = 72;
+
+// SKILL-002: prefix stamped onto a catalog-sourced quarantine entry's
+// sourcePath metadata, so showImportedSkillDetail's "Source" line reads
+// "catalog:<name>" instead of a local filesystem path — makes the
+// provenance visible during the mandatory human review step.
+const SKILL_CATALOG_SOURCE_PREFIX = 'catalog:';
+
 function truncateSkillDescription(description: string): string {
   const trimmed = (description || '').trim();
   return trimmed.length > IMPORTED_SKILL_DESC_TRUNCATE
@@ -433,6 +447,82 @@ export function Sidebar() {
       }
     } catch (error) {
       Alert.alert(t('sidebar.skill_action_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runSkillImportCommand, loadImportedSkills, t]);
+
+  // "Browse catalog" (curated first-party skill catalog, sibling to the
+  // path-based import above). Fetched lazily on open, mirroring
+  // BuildsModal.tsx's on-visible refresh pattern rather than eagerly polling
+  // GitHub on every Sidebar mount. Adding an entry routes through the exact
+  // same importSkillContentToQuarantine → quarantine → approve/reject review
+  // as a manually-dropped SKILL.md — see lib/skill-catalog.ts's module doc.
+  const [catalogModalVisible, setCatalogModalVisible] = React.useState(false);
+  const [catalogLoading, setCatalogLoading] = React.useState(false);
+  const [catalogError, setCatalogError] = React.useState<string | null>(null);
+  const [catalogManifest, setCatalogManifest] = React.useState<SkillCatalogManifest | null>(null);
+  const [catalogAddingName, setCatalogAddingName] = React.useState<string | null>(null);
+
+  const loadCatalog = React.useCallback(async () => {
+    setCatalogLoading(true);
+    setCatalogError(null);
+    try {
+      const manifest = await fetchSkillCatalogManifest();
+      if (!manifest) {
+        setCatalogManifest(null);
+        setCatalogError(t('sidebar.skill_catalog_unavailable'));
+      } else {
+        setCatalogManifest(manifest);
+      }
+    } catch (error) {
+      setCatalogManifest(null);
+      setCatalogError(String((error as Error)?.message || error));
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [t]);
+
+  const openCatalogModal = React.useCallback(() => {
+    setCatalogModalVisible(true);
+    if (!catalogManifest && !catalogLoading) void loadCatalog();
+  }, [catalogManifest, catalogLoading, loadCatalog]);
+
+  const handleAddCatalogSkill = React.useCallback(async (entry: SkillCatalogEntry) => {
+    setCatalogAddingName(entry.name);
+    try {
+      const downloaded = await fetchCatalogSkillContent(entry);
+      if (!downloaded.ok || !downloaded.content) {
+        Alert.alert(
+          t('sidebar.skill_action_failed_title'),
+          downloaded.error || t('sidebar.skill_action_failed_generic'),
+        );
+        return;
+      }
+      // sourceLabel identifies this as catalog-sourced (not a local path) in
+      // the quarantine review dialog's "Source" line — same
+      // showImportedSkillDetail rendering the path-based flow uses.
+      const result = await importSkillContentToQuarantine(
+        downloaded.content,
+        entry.name,
+        `${SKILL_CATALOG_SOURCE_PREFIX}${entry.name}`,
+        runSkillImportCommand,
+      );
+      if (result.ok) {
+        ToastAndroid.show(
+          t('sidebar.skill_import_success', { name: result.name ?? entry.name }),
+          ToastAndroid.SHORT,
+        );
+        await loadImportedSkills();
+      } else {
+        const lines = [...result.errors, ...result.warnings.map((w) => `⚠ ${w}`)];
+        Alert.alert(
+          t('sidebar.skill_action_failed_title'),
+          lines.join('\n') || t('sidebar.skill_action_failed_generic'),
+        );
+      }
+    } catch (error) {
+      Alert.alert(t('sidebar.skill_action_failed_title'), String((error as Error)?.message || error));
+    } finally {
+      setCatalogAddingName(null);
     }
   }, [runSkillImportCommand, loadImportedSkills, t]);
 
@@ -1152,6 +1242,19 @@ export function Sidebar() {
               </View>
             </View>
           )}
+          {/* SKILL-002: curated catalog browse trigger — sibling to the
+              path-based import row above, same section, different source.
+              Opens a modal that fetches lib/skill-catalog.ts's manifest;
+              tapping an entry there still lands in quarantine, same as
+              path-based import. */}
+          <Pressable
+            style={styles.addRow}
+            onPress={openCatalogModal}
+            accessibilityRole="button"
+            accessibilityLabel={t('sidebar.skill_catalog_browse_button')}
+          >
+            <Text style={[styles.addRowText, { color: C.accent }]}>{t('sidebar.skill_catalog_browse_button')}</Text>
+          </Pressable>
         </SidebarSection>
 
         {/* QUICK LAUNCH — one-tap CLI shortcuts
@@ -1390,6 +1493,77 @@ export function Sidebar() {
         visible={agentCapabilitiesVisible}
         onClose={() => setAgentCapabilitiesVisible(false)}
       />
+
+      {/* SKILL-002: curated skill catalog browse modal. Lists
+          lib/skill-catalog.ts's fetched (sha256-verified) manifest entries;
+          "Add" downloads + verifies the single entry, then hands it to
+          importSkillContentToQuarantine — same quarantine pool, same
+          approve/reject review, as a manually-imported skill. */}
+      <Modal
+        visible={catalogModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCatalogModalVisible(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setCatalogModalVisible(false)}>
+          <Pressable style={styles.catalogModalContent} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>{t('sidebar.skill_catalog_title')}</Text>
+            {catalogLoading ? (
+              <Text style={styles.catalogStatusText}>{t('sidebar.skill_catalog_loading')}</Text>
+            ) : catalogError ? (
+              <>
+                <Text style={styles.catalogStatusText}>{catalogError}</Text>
+                <Pressable style={styles.catalogRetryBtn} onPress={() => void loadCatalog()}>
+                  <Text style={styles.modalCancelText}>{t('sidebar.skill_catalog_retry')}</Text>
+                </Pressable>
+              </>
+            ) : catalogManifest && catalogManifest.skills.length > 0 ? (
+              <ScrollView style={styles.catalogList}>
+                {catalogManifest.skills.map((entry) => {
+                  const alreadyKnown =
+                    quarantinedSkills.some((s) => s.name === entry.name) ||
+                    importedSkills.some((s) => s.name === entry.name);
+                  const adding = catalogAddingName === entry.name;
+                  return (
+                    <View key={`catalog-skill-${entry.name}`} style={styles.catalogRow}>
+                      <View style={styles.catalogInfo}>
+                        <Text style={styles.taskName} numberOfLines={1}>{entry.name.toUpperCase()}</Text>
+                        <Text style={styles.taskMeta} numberOfLines={2}>{entry.description}</Text>
+                      </View>
+                      <Pressable
+                        style={[
+                          styles.catalogAddBtn,
+                          { backgroundColor: alreadyKnown ? C.btnSecondaryBg : C.accent },
+                          (adding || catalogAddingName != null) && styles.agentRowDisabled,
+                        ]}
+                        onPress={() => void handleAddCatalogSkill(entry)}
+                        disabled={adding || catalogAddingName != null}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('sidebar.skill_catalog_add_a11y', { name: entry.name })}
+                      >
+                        <Text style={[styles.catalogAddText, alreadyKnown && { color: C.btnSecondaryText }]}>
+                          {adding
+                            ? '…'
+                            : alreadyKnown
+                              ? t('sidebar.skill_catalog_added')
+                              : t('sidebar.skill_catalog_add')}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            ) : (
+              <Text style={styles.catalogStatusText}>{t('sidebar.skill_catalog_empty')}</Text>
+            )}
+            <View style={styles.modalBtns}>
+              <Pressable style={styles.modalCancelBtn} onPress={() => setCatalogModalVisible(false)}>
+                <Text style={styles.modalCancelText}>{t('common.close')}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Collapse toggle */}
       <Pressable
@@ -1760,6 +1934,57 @@ const styles = StyleSheet.create({
     backgroundColor: C.text1,
   },
   modalAddText: {
+    color: C.bgDeep,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    fontWeight: '700',
+  },
+  // SKILL-002 catalog browse modal — wider than the generic modalContent
+  // (280) since each row needs room for a name + two-line description.
+  catalogModalContent: {
+    width: 320,
+    maxHeight: '80%',
+    backgroundColor: C.bgSurface,
+    borderRadius: 10,
+    padding: 16,
+    borderWidth: S.borderWidth,
+    borderColor: C.border,
+  },
+  catalogStatusText: {
+    color: C.text2,
+    fontSize: F.sidebarItem.size,
+    fontFamily: F.family,
+    marginBottom: 12,
+  },
+  catalogRetryBtn: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: P.sidebarItem.px,
+    paddingVertical: 6,
+    borderRadius: R.agentTab,
+    backgroundColor: C.btnSecondaryBg,
+    marginBottom: 12,
+  },
+  catalogList: {
+    maxHeight: 320,
+    marginBottom: 12,
+  },
+  catalogRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: S.borderWidth,
+    borderBottomColor: C.border,
+    gap: 8,
+  },
+  catalogInfo: {
+    flex: 1,
+  },
+  catalogAddBtn: {
+    paddingHorizontal: P.sidebarItem.px,
+    paddingVertical: 6,
+    borderRadius: R.agentTab,
+  },
+  catalogAddText: {
     color: C.bgDeep,
     fontSize: F.sidebarItem.size,
     fontFamily: F.family,

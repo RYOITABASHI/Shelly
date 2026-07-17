@@ -14,6 +14,20 @@
 
 ---
 
+### SKILL-002 — 一次配布スキルカタログの CI publish 側配線 — 未着手 (P1、機能はapp側で完結済みだが空のカタログを指すだけ)
+
+**優先度**: P1（app側の fetch/list/import は完全実装・実機コード上は動く状態だが、`skills-catalog-latest` リリースタグが GitHub 上に存在しない限り「カタログは空」で終わる — マージしても即座にユーザー価値が出ない機能）
+**発見**: 2026-07-17、Hermes Agent 比較調査で SKILL-001（ローカルドロップのみの取り込み）に対し「一次配布カタログ」を追加実装した際の設計判断。`agentskills.io` に検索可能なレジストリAPIが無い（2026-07-08 の SKILL-001 エントリで既に確認済み）ため、"live search" ではなく Shelly 自身の app/Codex runtime 更新と同じ GitHub Releases マニフェストパターン（`android-latest`/`latest.json`, `codex-runtime-latest`/`codex-runtime.json` の第三の兄弟チャンネル）として `skills-catalog-latest`/`skills-catalog.json` を新設した。
+**実装済み（app側、本エントリ登録と同一コミット）**:
+- `lib/skill-catalog.ts` — マニフェット型定義（`SkillCatalogManifest`/`SkillCatalogEntry`）、pure な `parseSkillCatalogManifest()`（不正エントリは個別スキップ、トップレベル形状不正のみ拒否）、`fetchSkillCatalogManifest()`（`BuildsModal.tsx`の`fetchLatestAndroidUpdate`/`fetchLatestCodexRuntime`と同型、release tag 404 は null 扱い）、`fetchCatalogSkillContent()`（ダウンロード＋sha256照合、mismatch は例外ではなく `{ok:false, error}` で返す）。
+- `lib/skill-import.ts` の `importSkillContentToQuarantine()` — カタログ由来コンテンツを、パスベース取り込みと**全く同じ** `validateSkillMdContent` 検証 + `quarantineDir()` 隔離プールに流し込む新関数（`cp -r` ではなく単一 SKILL.md のみを heredoc で書き込むため、カタログエントリが余分な同梱ファイルを持ち込む余地が構造的に無い）。
+- `components/layout/Sidebar.tsx` の IMPORTED SKILLS セクションに「⌄ BROWSE CATALOG」行 + モーダル追加。「Add」タップは検証済みコンテンツを上記関数経由で隔離プールへ送るのみ — 既存の承認/却下レビュー UI（`showImportedSkillDetail`）をそのまま再利用、カタログ由来だからといってレビューをバイパスしない。
+- シード用の一次配布カタログ本体を `docs/skills-catalog/`（4スキル: `git-commit-craft`, `shell-safety-review`, `android-logcat-triage`, `agent-skill-authoring` の `SKILL.md` + それらを指す `skills-catalog.json` マニフェスト雛形、sha256は実ファイルから計算済み）として repo にコミット。
+**次にやること**: `.github/workflows/build-android.yml` の既存 "Publish Android update release" ステップ（`latest.json`/`codex-runtime.json` を作って `gh release create/upload` する約150行のシェル）と同じパターンで、`docs/skills-catalog/` の内容を `skills-catalog-latest` リリースへ publish するジョブ/ステップを追加する。既存パターンのコピー実装で難易度は低いが、それ自体が独立した CI 変更のため本タスクではスコープ外とした（意図的 descope、実装ではなく判断)。配線が終わるまでは `fetchSkillCatalogManifest()` は 404 → `null` を返し続け、Sidebar のカタログモーダルは「利用できません」を表示する（クラッシュや誤動作はしない、安全側のデグレード）。
+→ sync: なし。
+
+---
+
 ### API キーの `.env` バックフィル再同期がない — 未着手 (P3、ロバスト性向上)
 
 **優先度**: P3（実害は再現条件が限定的 — 現行UIの保存経路は全て正しくflushする。既存キーの一回きりの取りこぼしのみ）
