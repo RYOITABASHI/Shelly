@@ -44,7 +44,17 @@ object AgentRuntime {
     // routes through the B2 driver instead of a bare `codex exec` (which ran
     // danger-full-access, bypassing command-safety/workspace-boundary
     // classification). Bumped so a stale pre-v15 on-disk script regenerates.
-    private const val CURRENT_SCRIPT_VERSION = 15
+    // v16 (2026-07-17, bug #155(b) follow-up, docs/superpowers/DEFERRED.md):
+    // a real (>=2 step) orchestrated agent whose resolved tool is the codex
+    // driver, with every attempted step carrying neither a per-step tool pin
+    // nor an apiCall step, now runs its FULL chain in-script (a bash loop
+    // calling the same B2-driver-gated invocation once per step) instead of
+    // silently collapsing to agent.prompt as a single step. No routing change
+    // here (this legacy .sh path is still only reached when
+    // shouldRunPlanExecutor is false, unchanged) — bumped only because the
+    // generated script's runtime BEHAVIOR changed for this case, so a stale
+    // pre-v16 on-disk script (old single-step collapse) is regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 16
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
 

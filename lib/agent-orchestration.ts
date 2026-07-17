@@ -25,7 +25,15 @@ export const HARD_MAX_STEPS = 10;
 export const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000; // 30 min
 export const HARD_TOTAL_TIMEOUT_MS = 60 * 60_000; // 1 h ceiling
 const MAX_STEP_INSTRUCTION_CHARS = 500;
-const MAX_PROMPT_CHARS = 6000;
+// Exported (not just module-local) for the same reason as MAX_RESULT_CARRY_CHARS
+// below: bug #155(b) follow-up (docs/superpowers/DEFERRED.md, 2026-07-16) —
+// lib/agent-executor.ts's generated shell script now ports buildStepPrompt's
+// exact template shape into bash (codexOrchestrationChainCommand) so an
+// orchestrated agent resolved to the codex driver actually runs its full chain
+// on an unattended/scheduled fire. That bash-side prompt assembly must cap the
+// composed prompt to the SAME budget buildStepPrompt uses, not a
+// separately-hardcoded number that could silently drift from this one.
+export const MAX_PROMPT_CHARS = 6000;
 // Exported (not just module-local) so lib/agent-executor.ts's generated shell
 // script can truncate clean_result_preview()/clean_answer_preview() to the SAME
 // budget instead of a separately-hardcoded number. Found 2026-07-15 P1 audit:

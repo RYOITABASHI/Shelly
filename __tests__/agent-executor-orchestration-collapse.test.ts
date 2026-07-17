@@ -34,29 +34,74 @@ const baseAgent = (tool: ToolChoice, orchestration?: AgentOrchestrationConfig, a
   orchestration,
 });
 
-// bug #155(b) (docs/superpowers/DEFERRED.md): generateRunScript had no concept
-// of agent.orchestration.steps at all — a real multi-step orchestrated agent
-// whose tool is unsupported by the PlanSpec chain executor (e.g. autonomous
-// `auto` -> codex CLI) falls back to this legacy script on every scheduled/
-// native fire and silently ran only agent.prompt, with steps 2..N never
-// running and no signal anywhere that they were skipped. Fix: keep today's
-// single-step execution UNCHANGED (no capability regression — a full bash-side
-// chain executor was considered and deferred, see the DEFERRED.md writeup),
-// but stop the SILENT part by surfacing a clear note wherever a human sees
-// this run's outcome, without ever touching content that can reach a live
-// external post.
-describe('generateRunScript — orchestration-collapse note (bug #155(b))', () => {
-  const orchestratedCodex = baseAgent(
+// bug #155(b) (docs/superpowers/DEFERRED.md): generateRunScript originally had
+// no concept of agent.orchestration.steps at all — a real multi-step
+// orchestrated agent whose tool is unsupported by the PlanSpec chain executor
+// (e.g. autonomous `auto` -> codex CLI) fell back to this legacy script on
+// every scheduled/native fire and silently ran only agent.prompt, with steps
+// 2..N never running and no signal anywhere that they were skipped. A
+// 2026-07-16 pass added ORCHESTRATION_COLLAPSED_NOTE as a visibility-only fix
+// (silent collapse -> a note in the run log). A same-day follow-up
+// (__tests__/agent-executor-chain-execution.test.ts) then added a REAL
+// bash-side chain executor for the exact case this note used to warn about
+// (an orchestrated agent resolved to the codex driver, every step plain) — so
+// for THAT case the note no longer fires at all (the chain actually runs).
+// This file now covers the RESIDUAL cases codexOrchestrationChainCommand
+// deliberately does not attempt: a step carrying its own tool pin, a step
+// carrying a structured apiCall, and a non-cli/non-PlanSpec-supported tool
+// pin (e.g. an orchestrated agent explicitly pinned to 'local') — those still
+// collapse to a single step, with the note.
+describe('generateRunScript — orchestration-collapse note (bug #155(b), residual cases)', () => {
+  const orchestratedCodexPlain = baseAgent(
     { type: 'auto' },
     { steps: ['collect the latest news with sources', 'summarize the findings', 'post a digest to X'] },
     true,
   );
 
-  it('bakes a non-empty ORCHESTRATION_COLLAPSED_NOTE for a real (>=2 step) orchestrated agent', () => {
-    const s = generateRunScript(orchestratedCodex);
+  const orchestratedCodexWithToolPin = baseAgent(
+    { type: 'auto' },
+    {
+      steps: [
+        'collect the latest news with sources',
+        { instruction: 'summarize using the local model', tool: { type: 'local' } },
+        'post a digest to X',
+      ],
+    },
+    true,
+  );
+
+  const orchestratedCodexWithApiCall = baseAgent(
+    { type: 'auto' },
+    {
+      steps: [
+        {
+          instruction: 'call the Perplexity API',
+          apiCall: { host: 'api.perplexity.ai', method: 'POST', path: '/chat/completions', authRef: 'perplexity' },
+        },
+        'post a digest to X',
+      ],
+    },
+    true,
+  );
+
+  it('a plain (no tool-pin/apiCall) codex-resolved chain now runs for REAL — no collapse note', () => {
+    // This is the exact scenario the note used to fire for; the real chain
+    // executor (agent-executor-chain-execution.test.ts) now handles it.
+    const s = generateRunScript(orchestratedCodexPlain);
+    expect(s).toContain("ORCHESTRATION_COLLAPSED_NOTE=''");
+    expect(s).not.toContain('[Shelly] Note: this agent is configured as a');
+  });
+
+  it('bakes a non-empty ORCHESTRATION_COLLAPSED_NOTE when a step carries its own tool pin (residual, unsupported by the chain loop)', () => {
+    const s = generateRunScript(orchestratedCodexWithToolPin);
     expect(s).toMatch(/ORCHESTRATION_COLLAPSED_NOTE='\[Shelly\] Note: this agent is configured as a 3-step chain/);
     expect(s).toContain('cannot run the full chain unattended');
-    expect(s).toContain('Run this agent manually from the app for the complete chain');
+    bashParses(s);
+  });
+
+  it('bakes a non-empty ORCHESTRATION_COLLAPSED_NOTE when a step carries a structured apiCall (residual, unsupported by the chain loop)', () => {
+    const s = generateRunScript(orchestratedCodexWithApiCall);
+    expect(s).toMatch(/ORCHESTRATION_COLLAPSED_NOTE='\[Shelly\] Note: this agent is configured as a 2-step chain/);
     bashParses(s);
   });
 
@@ -80,22 +125,13 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b))', () =
     expect(s).toContain("ORCHESTRATION_COLLAPSED_NOTE=''");
   });
 
-  it('does not change the actual executed prompt (agent.prompt only, unchanged) — no capability regression vs. before the fix', () => {
-    const s = generateRunScript(orchestratedCodex);
-    // The escaped/executed prompt is still the base agent.prompt (possibly with
-    // the pre-existing needsWeb collection-contract prefix — unrelated to this
-    // fix) — this fix only changes VISIBILITY, not what runs. The chain's
-    // individual step instructions ("summarize the findings", "post a digest to
-    // X") must NOT appear baked into the executed prompt (that would mean a real
-    // chain executor was built, which this fix deliberately does not attempt —
-    // see DEFERRED.md bug #155).
-    expect(s).toContain("collect news, summarize it, and post to X");
-    expect(s).not.toContain("summarize the findings");
-    expect(s).not.toContain("post a digest to X");
+  it('a non-cli resolved tool (e.g. an explicit local pin) still shows the note for an orchestrated agent — the chain loop only supports the resolved-to-codex case', () => {
+    const s = generateRunScript(baseAgent({ type: 'local' }, { steps: ['step one', 'step two'] }, false));
+    expect(s).toMatch(/ORCHESTRATION_COLLAPSED_NOTE='\[Shelly\] Note: this agent is configured as a 2-step chain/);
   });
 
   it('injects the note into PREVIEW/ERROR_MESSAGE strictly AFTER dispatch_agent_action and write_native_notification_request already ran', () => {
-    const s = generateRunScript(orchestratedCodex);
+    const s = generateRunScript(orchestratedCodexWithToolPin);
     const dispatchIdx = s.indexOf('if ! dispatch_agent_action "$RESULT_CONTENT_FILE" "$PREVIEW"');
     const failureNotifyIdx = s.indexOf('write_native_notification_request "$STATUS" "$PREVIEW" || true');
     const noteInjectIdx = s.indexOf('if [ -n "$ORCHESTRATION_COLLAPSED_NOTE" ]; then');
@@ -120,7 +156,10 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b))', () =
     // injected only after dispatch_agent_action returns (previous test), the
     // function-call SITE that passes "$preview" into resolve_app_act_params must
     // textually precede the note injection — i.e. it always sees the clean value.
-    const s = generateRunScript({ ...orchestratedCodex, action: { type: 'app-act', appActRecipeId: 'x-post', appActParams: { text: '{{result}}' } } } as Agent);
+    const s = generateRunScript({
+      ...orchestratedCodexWithToolPin,
+      action: { type: 'app-act', appActRecipeId: 'x-post', appActParams: { text: '{{result}}' } },
+    } as Agent);
     const resolveCallIdx = s.indexOf('resolve_app_act_params "$ACTION_APP_ACT_PARAMS_JSON" "$preview"');
     const noteInjectIdx = s.indexOf('if [ -n "$ORCHESTRATION_COLLAPSED_NOTE" ]; then');
     expect(resolveCallIdx).toBeGreaterThan(-1);
@@ -129,13 +168,13 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b))', () =
     bashParses(s);
   });
 
-  it('bumps the script version in lockstep with the native gate (v13)', () => {
-    const s = generateRunScript(orchestratedCodex);
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=15');
+  it('bumps the script version in lockstep with the native gate (v16)', () => {
+    const s = generateRunScript(orchestratedCodexWithToolPin);
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=16');
   });
 
-  it('reflects the resolved tool label in the note (autonomous auto -> codex)', () => {
-    const s = generateRunScript(orchestratedCodex);
+  it('reflects the resolved tool label in the note (autonomous auto -> codex, tool-pinned step residual case)', () => {
+    const s = generateRunScript(orchestratedCodexWithToolPin);
     expect(s).toMatch(/ORCHESTRATION_COLLAPSED_NOTE='\[Shelly\] Note:.*tool "[^"]*[Cc]odex[^"]*" cannot run the full chain/);
   });
 });

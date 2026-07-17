@@ -9,7 +9,14 @@ import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-poli
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
-import { MAX_RESULT_CARRY_CHARS, isOrchestrated, normalizeSteps } from './agent-orchestration';
+import {
+  MAX_PROMPT_CHARS,
+  MAX_RESULT_CARRY_CHARS,
+  NormalizedStep,
+  isOrchestrated,
+  normalizeSteps,
+  resolveBudget,
+} from './agent-orchestration';
 import { clampCharLimit } from './agent-pipeline-presets';
 
 const MAX_CONCURRENT = 2;
@@ -34,10 +41,38 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // classification for every tool-call codex makes internally) — it now
 // routes through the same B2 driver every other codex-resolved autonomous
 // tool uses.
-const AGENT_SCRIPT_VERSION = 15;
+// v16 (2026-07-17, bug #155(b) follow-up, DEFERRED.md): a real (>=2 step)
+// orchestrated agent whose resolved tool is the codex driver, with every
+// attempted step carrying neither a per-step tool pin nor an apiCall step,
+// now runs its FULL chain on an unattended/scheduled fire instead of
+// silently collapsing to agent.prompt as a single step — see
+// codexOrchestrationChainCommand() and canRunOrchestrationChain below.
+// ORCHESTRATION_COLLAPSED_NOTE now fires only for the residual unsupported
+// cases (a step with its own tool pin or apiCall, or a non-cli/non-PlanSpec
+// tool such as ab-article-eval). Bumped because the generated script's
+// runtime BEHAVIOR changed for this case (new loop, new helper functions,
+// new bash variables), not just cosmetic text.
+const AGENT_SCRIPT_VERSION = 16;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
+
+/** bug #155(b) follow-up: the resolved (TS-side) inputs codexOrchestrationChainCommand
+ *  needs to bake a real bash-side chain loop. Every NUMBER here is already the
+ *  fully-resolved value from lib/agent-orchestration.ts's resolveBudget — the
+ *  bash side never reimplements that math, only the (inherently runtime-
+ *  dependent) prompt-carry TEXT ASSEMBLY. `steps` is the ALREADY-budget-sliced
+ *  attemptable list (see generateRunScript's attemptableOrchestrationSteps);
+ *  `totalStepCount` is the FULL (un-sliced) normalized step count, needed to
+ *  detect whether a run that budget-capped before its true final step should
+ *  suppress the action dispatch (mirrors runAgentOrchestrated's `isFinalStep`). */
+export interface OrchestrationChainOptions {
+  basePrompt: string;
+  steps: NormalizedStep[];
+  totalStepCount: number;
+  maxSteps: number;
+  totalTimeoutMs: number;
+}
 
 type ToolCommandOptions = {
   autonomous: boolean;
@@ -45,6 +80,10 @@ type ToolCommandOptions = {
   /** B2: the AutonomyPolicy JSON passed to the driver via --policy-json (inline
    *  arg, never a file the agent can read — preserves the §6 invariant). */
   policyJson?: string;
+  /** Present only for the exact case generateRunScript's canRunOrchestrationChain
+   *  validates (see its own doc comment) — swaps the 'cli' case's single
+   *  codexDriverCommand() call for codexOrchestrationChainCommand()'s loop. */
+  orchestrationChain?: OrchestrationChainOptions;
 };
 
 const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
@@ -246,42 +285,62 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     ? ''
     : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY\n';
 
-  // bug #155(b) (docs/superpowers/DEFERRED.md): this function has no concept of
-  // agent.orchestration.steps — a genuinely orchestrated (>=2 step) agent whose
-  // resolved tool is unsupported by the PlanSpec chain executor
-  // (scripts/shelly-plan-executor.js — an HTTP-request dispatcher with no
-  // subprocess-exec capability, so it architecturally cannot run e.g. a
-  // `cli:codex` step) falls back to THIS legacy script on every scheduled/
+  // bug #155(b) (docs/superpowers/DEFERRED.md): this function used to have no
+  // concept of agent.orchestration.steps at all — a genuinely orchestrated
+  // (>=2 step) agent whose resolved tool is unsupported by the PlanSpec chain
+  // executor (scripts/shelly-plan-executor.js — an HTTP-request dispatcher
+  // with no subprocess-exec capability, so it architecturally cannot run e.g.
+  // a `cli:codex` step) falls back to THIS legacy script on every scheduled/
   // native fire (AgentRuntime.kt's shouldRunPlanExecutor correctly excludes
-  // it), and this function silently ran only agent.prompt — the FULL chain's
-  // steps 2..N never ran, with no signal anywhere that they were skipped.
+  // it). A 2026-07-16 pass added ORCHESTRATION_COLLAPSED_NOTE as a
+  // visibility-only fix (silent collapse -> a note in the run log, execution
+  // itself unchanged). This pass (same day, follow-up) adds the REAL chain
+  // executor for the one case that visibility fix explicitly deferred: an
+  // orchestrated agent whose resolved tool is the codex driver, with every
+  // step that will actually run carrying neither a per-step tool pin nor an
+  // apiCall step (see codexOrchestrationChainCommand() below for the bash-side
+  // loop and its own extensive doc comment).
   //
-  // Considered building a real bash-side sequential chain executor here
-  // (mirroring lib/agent-manager.ts's runAgentOrchestrated) but rejected it for
-  // THIS pass: (1) P0(c) (183104efb, same night) hit this exact
-  // orchestrated+unsupported-tool combination and deliberately chose to keep
-  // this single-step fallback UNCHANGED rather than build chain support here —
-  // "so it is not completely unrunnable" was the bar, not full parity; (2) a
-  // bash-side chain (per-step tool re-resolution, prompt carry-forward,
-  // step/time budget, apiCall-step exclusion, error-chain-stop) is a large,
-  // novel addition to the most safety-sensitive file in the codebase with NO
-  // on-device verification available in this pass (no NDK/Gradle here, and this
-  // is exactly the kind of runtime-route change docs/superpowers/DEFERRED.md
-  // flags as needing a bare on-device fire before landing); (3) bug #155's own
-  // investigation independently classified this as a functional gap, not a
-  // security bypass ("if anything the impact SHRINKS, not grows").
-  //
-  // So: keep today's single-step EXECUTION unchanged (no capability
-  // regression), but stop the SILENT part — surface a clear note wherever a
-  // human can see this run's outcome. Deliberately kept OUT of the actual
-  // dispatched/posted content (RESULT_CONTENT_FILE / the `preview` argument
-  // dispatch_agent_action passes to resolve_app_act_params's {{result}}
-  // substitution) so it can never leak into a live external post (webhook/cli/
-  // dm-reply/app-act) — see where PREVIEW is amended, near the run-log write,
-  // for why that ordering matters. Full bash-side chain execution remains a
-  // documented follow-up (DEFERRED.md bug #155).
-  const orchestrationStepCount = normalizeSteps(agent.orchestration).length;
-  const orchestrationCollapsedNote = isOrchestrated(agent.orchestration)
+  // canRunOrchestrationChain's three conditions:
+  //  1. isOrchestrated (>=2 normalized steps) — a single-step "chain" already
+  //     runs correctly via the plain (non-chain) path below, nothing to fix.
+  //  2. tool.type === 'cli' — the resolved AGENT-level tool (post autonomous-
+  //     resolution above). This is deliberately narrower than "any tool the
+  //     PlanSpec executor can't run": local/gemini-api/perplexity/cerebras/
+  //     groq ARE PlanSpec-supported (their orchestrated agents route through
+  //     scripts/shelly-plan-executor.js's own chain loop at the native layer
+  //     and essentially never execute this .sh file's orchestration branch in
+  //     practice), and ab-article-eval has no chain concept at all (out of
+  //     scope, unchanged — see the residual note below).
+  //  3. every step this run will actually attempt (bounded by the resolved
+  //     step budget, see chainStepCount) carries neither `apiCall` (a
+  //     structured HTTP call — a materially different, PlanSpec-executor-only
+  //     execution model; sending its synthesized display label to codex as a
+  //     literal prompt would be silently wrong, not merely unsupported) nor a
+  //     per-step `tool` pin (Phase 5 — honoring a step's own tool choice would
+  //     require re-resolving and re-dispatching through every backend
+  //     generateToolCommand supports, per step; deliberately out of scope for
+  //     this pass to keep the new bash surface small and auditable). Both
+  //     residual cases keep the OLD single-step collapse + the note.
+  const fullOrchestrationSteps: NormalizedStep[] = normalizeSteps(agent.orchestration);
+  const orchestrationBudget = resolveBudget(agent.orchestration);
+  const chainStepCount = Math.min(fullOrchestrationSteps.length, orchestrationBudget.maxSteps);
+  const attemptableOrchestrationSteps = fullOrchestrationSteps.slice(0, chainStepCount);
+  const canRunOrchestrationChain =
+    isOrchestrated(agent.orchestration) &&
+    tool.type === 'cli' &&
+    chainStepCount > 0 &&
+    attemptableOrchestrationSteps.every((s) => !s.apiCall && !s.tool);
+
+  // Deliberately kept OUT of the actual dispatched/posted content
+  // (RESULT_CONTENT_FILE / the `preview` argument dispatch_agent_action passes
+  // to resolve_app_act_params's {{result}} substitution) so it can never leak
+  // into a live external post (webhook/cli/dm-reply/app-act) — see where
+  // PREVIEW is amended, near the run-log write, for why that ordering matters.
+  // Only fires for the RESIDUAL collapse cases now (see canRunOrchestrationChain
+  // above) — a chain this function can actually run gets no note at all.
+  const orchestrationStepCount = fullOrchestrationSteps.length;
+  const orchestrationCollapsedNote = isOrchestrated(agent.orchestration) && !canRunOrchestrationChain
     ? `[Shelly] Note: this agent is configured as a ${orchestrationStepCount}-step chain, but this run executed only the base task as a single step — tool "${toolLabel}" cannot run the full chain unattended. Run this agent manually from the app for the complete chain, or switch its tool to Local LLM / Gemini / Perplexity / Cerebras / Groq to enable scheduled multi-step chains.`
     : '';
 
@@ -416,6 +475,22 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     autonomous: agent.autonomous === true,
     actionType: agent.action?.type ?? 'draft',
     policyJson: agentPolicyJson,
+    // bug #155(b) follow-up: only set for the exact case validated above
+    // (canRunOrchestrationChain) — generateToolCommand's 'cli' case uses this
+    // to swap the single codexDriverCommand() call for the real bash-side
+    // chain loop. Absent (undefined) for every other agent, including every
+    // non-orchestrated one, so their generated script is byte-for-byte
+    // unchanged by this feature (see the "no capability regression for a
+    // single-step agent" regression test).
+    orchestrationChain: canRunOrchestrationChain
+      ? {
+          basePrompt: agent.prompt,
+          steps: attemptableOrchestrationSteps,
+          totalStepCount: fullOrchestrationSteps.length,
+          maxSteps: orchestrationBudget.maxSteps,
+          totalTimeoutMs: orchestrationBudget.totalTimeoutMs,
+        }
+      : undefined,
   });
   if (promptSignals.needsWeb) {
     // North Star guard: a collection agent that "succeeded" but produced no source
@@ -3191,7 +3266,9 @@ function generateToolCommand(
   const systemPromptJson = actionSystemPromptJson(options.actionType);
   switch (tool.type) {
     case 'cli':
-      return codexDriverCommand(escapedPrompt, resultVar, options.policyJson ?? '');
+      return options.orchestrationChain
+        ? codexOrchestrationChainCommand(options.orchestrationChain, resultVar, options.policyJson ?? '')
+        : codexDriverCommand(escapedPrompt, resultVar, options.policyJson ?? '');
     case 'gemini-api': {
       // Web-mandatory general tasks (collect current news) need Google Search
       // grounding — otherwise plain Gemini hallucinates like a non-web LLM.
@@ -3384,6 +3461,192 @@ else
   DRIVER_EXIT=1
 fi
 rm -f "$PROMPT_FILE"`;
+}
+
+/**
+ * bug #155(b) follow-up (docs/superpowers/DEFERRED.md, 2026-07-16): real
+ * bash-side multi-step chain execution for an orchestrated agent whose
+ * resolved tool is the codex driver (autonomous `auto` -> `{type:'cli',
+ * cli:'codex'}` is the DEFAULT autonomous route for any agent that hasn't
+ * explicitly pinned a cloud API tool — see ORCHESTRATION_COLLAPSED_NOTE's
+ * history in generateRunScript above). Runs EVERY step through the SAME
+ * B2-driver-gated invocation codexDriverCommand() uses (identical
+ * --policy-json / --approval-policy untrusted gate, identical
+ * command-safety/boundary classification per driver tool-call inside codex —
+ * chaining adds NO privilege over a single manual run, same invariant
+ * lib/agent-orchestration.ts's file comment states for the JS-side loop this
+ * mirrors). Semantics are ported from lib/agent-manager.ts's
+ * runAgentOrchestrated: budget/gate from resolveBudget/nextStepGate (both
+ * already evaluated in TS by the caller — every NUMBER below is a baked
+ * literal, never bash-side math), prompt carry-forward shaped exactly like
+ * buildStepPrompt (same MAX_RESULT_CARRY_CHARS/MAX_PROMPT_CHARS budgets),
+ * stop-immediately-on-first-failure (no retry, no continuing), and only the
+ * TRUE FINAL step's result reaching the existing dispatch_agent_action call
+ * that runs after this block returns (generateRunScript's "Check result"
+ * section, unmodified).
+ *
+ * This is ported to bash (not simply calling into the JS loop) because the
+ * unattended/scheduled fire path (AgentRuntime.kt) executes this .sh file
+ * directly via a native subprocess — there is no foreground TS loop running
+ * for that fire, so runAgentOrchestrated itself is unreachable from here.
+ *
+ * The one deliberate behavior gap vs. the single-shot path (documented, not a
+ * security concern): this loop does NOT re-apply generateRunScript's North-
+ * Star web-collection-contract / output-language directive
+ * (collectionContract/languageDirective, derived from detectRouteSignals
+ * against the full composed prompt in the reference JS path) to each step's
+ * prompt. Porting detectRouteSignals' keyword classification into bash was
+ * judged out of scope for this pass — a chain step that needs live web
+ * collection may return a descriptive "workflow" answer instead of executing
+ * it, same as this whole feature's behavior before the North Star fix. Left
+ * as a documented follow-up (DEFERRED.md bug #155) rather than guessed at.
+ */
+function codexOrchestrationChainCommand(
+  chain: OrchestrationChainOptions,
+  resultVar: string,
+  policyJson: string,
+): string {
+  const instructionsArray = chain.steps.map((s) => `  ${shellQuote(s.instruction)}`).join('\n');
+  const totalTimeoutSec = Math.max(1, Math.floor(chain.totalTimeoutMs / 1000));
+  return `CODEX_ORCH_BASE_PROMPT=${shellQuote(chain.basePrompt.trim())}
+CODEX_ORCH_INSTRUCTIONS=(
+${instructionsArray}
+)
+CODEX_ORCH_STEP_TOTAL=${chain.totalStepCount}
+CODEX_ORCH_MAX_STEPS=${chain.maxSteps}
+CODEX_ORCH_TOTAL_TIMEOUT_SEC=${totalTimeoutSec}
+CODEX_ORCH_MAX_RESULT_CARRY_CHARS=${MAX_RESULT_CARRY_CHARS}
+CODEX_ORCH_MAX_PROMPT_CHARS=${MAX_PROMPT_CHARS}
+CODEX_ORCH_CARRY_FILE="$TMP_DIR/agent-orch-carry-$AGENT_ID.txt"
+: > "$CODEX_ORCH_CARRY_FILE"
+CODEX_ORCH_FAILED=0
+CODEX_ORCH_STEP_INDEX=0
+
+# Mirrors buildStepPrompt's \`r.replace(/\\s+/g, ' ').trim().slice(0, N)\` —
+# collapse every whitespace run to a single space, trim, then truncate to N
+# BYTES (head -c; same acknowledged bytes-vs-JS-UTF16-chars gap
+# MAX_RESULT_CARRY_CHARS's own doc comment in lib/agent-orchestration.ts
+# flags — a non-ASCII prior result carries fewer effective characters than the
+# JS budget implies, never more, so this can only under-carry, not overflow).
+# Redacts through redact_secrets_text FIRST (same as clean_answer_preview /
+# result_preview elsewhere in this file): a non-final step's raw driver
+# answer can echo a secret a tool call surfaced (env var dump, file read,
+# etc.), and that text becomes the NEXT step's prompt — sent off-device to
+# the codex backend. Every other place a driver answer is carried forward in
+# this file goes through this same redaction; the chain loop must too.
+codex_orch_collapse_and_truncate() {
+  orch_redacted="$1.orch-redacted"
+  redact_secrets_text "$1" > "$orch_redacted" 2>/dev/null || cp "$1" "$orch_redacted" 2>/dev/null || : > "$orch_redacted"
+  tr -s '[:space:]' ' ' < "$orch_redacted" | sed -e 's/^ *//' -e 's/ *$//' | head -c "$2"
+  rm -f "$orch_redacted"
+}
+
+# Mirrors buildStepPrompt(basePrompt, instruction, priorResults) exactly: base
+# prompt (if any) + a "# Results from previous steps" block (if any prior
+# step already succeeded) + "# This step" + this step's instruction, the
+# whole thing capped to CODEX_ORCH_MAX_PROMPT_CHARS. Writes the composed
+# prompt to $PROMPT_FILE — the SAME file codexDriverCommand's single-shot
+# path writes — so every downstream driver invocation is byte-for-byte the
+# same shape as the non-chain path, just re-run per step.
+codex_orch_build_prompt() {
+  {
+    if [ -n "$CODEX_ORCH_BASE_PROMPT" ]; then
+      printf '%s\\n\\n' "$CODEX_ORCH_BASE_PROMPT"
+    fi
+    if [ -s "$CODEX_ORCH_CARRY_FILE" ]; then
+      printf '# Results from previous steps\\n'
+      cat "$CODEX_ORCH_CARRY_FILE"
+      printf '\\n\\n---\\n\\n'
+    fi
+    printf '# This step\\n%s' "$1"
+  } > "$PROMPT_FILE.orch-full"
+  head -c "$CODEX_ORCH_MAX_PROMPT_CHARS" "$PROMPT_FILE.orch-full" > "$PROMPT_FILE"
+  rm -f "$PROMPT_FILE.orch-full"
+}
+
+PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+# workspaceRoot (DEFERRED.md #2 残り): same DRIVER_CWD resolution
+# codexDriverCommand uses, computed ONCE here and reused for every step —
+# every step in one chain runs in the same workspace boundary.
+DRIVER_CWD="\${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"
+[ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"
+
+while [ "$CODEX_ORCH_STEP_INDEX" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; do
+  # nextStepGate mirror (lib/agent-orchestration.ts): REFUSE further steps —
+  # never retry, never hang — on a prior failure, the resolved step-count
+  # cap, or the resolved total time budget. Checked BEFORE launching a step,
+  # exactly like the JS gate (an already-in-flight step is never preempted).
+  [ "$CODEX_ORCH_FAILED" = "1" ] && break
+  [ "$CODEX_ORCH_STEP_INDEX" -ge "$CODEX_ORCH_MAX_STEPS" ] && break
+  CODEX_ORCH_NOW=$(date +%s)
+  if [ $((CODEX_ORCH_NOW - START_TIME)) -gt "$CODEX_ORCH_TOTAL_TIMEOUT_SEC" ]; then
+    break
+  fi
+
+  codex_orch_build_prompt "\${CODEX_ORCH_INSTRUCTIONS[$CODEX_ORCH_STEP_INDEX]}"
+  rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE" "$RESULT_FILE.answer"
+  if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+    set +e
+    shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+      --cwd "$DRIVER_CWD" \\
+      --approval-policy untrusted \\
+      --policy-json ${shellQuote(policyJson)} \\
+      --agent-id "$AGENT_ID" \\
+      --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+      --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+      --answer-file "$RESULT_FILE.answer" \\
+      --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1
+    DRIVER_EXIT=$?
+    set -e
+    mirror_driver_audit_to_app_private || true
+    mirror_driver_audit_to_sdcard || true
+    CODEX_RESULT_ACTIVE=1
+    if [ -s "$RESULT_FILE.answer" ]; then
+      RESULT_CONTENT_FILE="$RESULT_FILE.answer"
+      RESULT_CONTENT_IS_DRIVER_ANSWER=1
+    else
+      RESULT_CONTENT_FILE="$RESULT_FILE"
+      RESULT_CONTENT_IS_DRIVER_ANSWER=0
+      touch "$BACKEND_ERROR_FILE"
+    fi
+  else
+    echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
+    RESULT_CONTENT_FILE="$RESULT_FILE"
+    RESULT_CONTENT_IS_DRIVER_ANSWER=0
+    DRIVER_EXIT=1
+    touch "$BACKEND_ERROR_FILE"
+  fi
+
+  CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
+  if [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
+    # Only carry a result forward when a LATER attempted step will actually
+    # consume it — the final attempted step's carry entry would never be read.
+    if [ "$CODEX_ORCH_STEP_NUM" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; then
+      CODEX_ORCH_CARRY_ENTRY=$(codex_orch_collapse_and_truncate "$RESULT_CONTENT_FILE" "$CODEX_ORCH_MAX_RESULT_CARRY_CHARS")
+      [ -s "$CODEX_ORCH_CARRY_FILE" ] && printf '\\n\\n' >> "$CODEX_ORCH_CARRY_FILE"
+      printf '## Step %s\\n%s' "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_CARRY_ENTRY" >> "$CODEX_ORCH_CARRY_FILE"
+    fi
+  else
+    CODEX_ORCH_FAILED=1
+  fi
+  CODEX_ORCH_STEP_INDEX=$CODEX_ORCH_STEP_NUM
+done
+rm -f "$PROMPT_FILE" "$CODEX_ORCH_CARRY_FILE"
+
+# Only the TRUE FINAL step's completion may reach the configured action
+# (draft/notify/webhook/cli/dm-reply/app-act) — mirrors runAgentOrchestrated's
+# "only the last step's completion becomes the actual action content". If the
+# resolved step-count cap or time budget stopped this chain before its true
+# final step (index CODEX_ORCH_STEP_TOTAL-1) ever ran, and it did not fail
+# outright (a failure is already handled by the existing BACKEND_ERROR_FILE
+# check below — dispatch never fires for it either way), suppress the action
+# for whatever the last-ATTEMPTED step produced. dispatch_agent_action's own
+# __suppressed__ branch still saves the draft result to disk and returns
+# success — it just never requests approval or fires a notification/webhook/
+# app-act for a run that never reached its configured final step.
+if [ "$CODEX_ORCH_STEP_INDEX" -lt "$CODEX_ORCH_STEP_TOTAL" ] && [ "$CODEX_ORCH_FAILED" != "1" ]; then
+  ACTION_TYPE="__suppressed__"
+fi`;
 }
 
 /**
