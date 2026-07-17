@@ -40,6 +40,8 @@ import {
   listQuarantinedSkills,
   listImportedSkills,
   importSkillToQuarantine,
+  importSkillFromPickedFile,
+  pickedSkillFileAsset,
   promoteSkillFromQuarantine,
   rejectQuarantinedSkill,
   deleteImportedSkill,
@@ -49,6 +51,8 @@ import {
   type ImportedSkill,
   type RunCommand,
 } from '@/lib/skill-import';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { getHomePath } from '@/lib/home-path';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
@@ -386,6 +390,51 @@ export function Sidebar() {
       setSkillImporting(false);
     }
   }, [skillImportPath, runSkillImportCommand, loadImportedSkills, t]);
+
+  // SAF alternative to the path-paste flow above: a user who has NOT granted
+  // MANAGE_EXTERNAL_STORAGE (first-launch-setup.ts's broad, all-files
+  // permission — see bug #92) can still import a single SKILL.md this way,
+  // because expo-document-picker's system picker grants a scoped, per-file
+  // content:// URI read permission that needs no special permission at all.
+  // Mirrors SettingsDropdown.tsx's importPets (Scouter pet-ZIP import), the
+  // other SAF-based import flow in this app. Both paths land in the exact
+  // same quarantine → approve/reject lifecycle; only the source-read side
+  // differs (shell `cat` on a pasted path vs. a picker-granted URI read
+  // here).
+  const handlePickSkillFile = React.useCallback(async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['text/markdown', 'text/plain', 'application/octet-stream', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      const asset = pickedSkillFileAsset(result);
+      if (!asset) return;
+      setSkillImporting(true);
+      try {
+        const raw = await FileSystem.readAsStringAsync(asset.uri);
+        const importResult = await importSkillFromPickedFile(raw, runSkillImportCommand);
+        if (importResult.ok) {
+          setSkillImportPath('');
+          setSkillImportOpen(false);
+          ToastAndroid.show(
+            t('sidebar.skill_import_success', { name: importResult.name ?? asset.name }),
+            ToastAndroid.SHORT,
+          );
+          await loadImportedSkills();
+        } else {
+          const lines = [...importResult.errors, ...importResult.warnings.map((w) => `⚠ ${w}`)];
+          Alert.alert(
+            t('sidebar.skill_action_failed_title'),
+            lines.join('\n') || t('sidebar.skill_action_failed_generic'),
+          );
+        }
+      } finally {
+        setSkillImporting(false);
+      }
+    } catch (error) {
+      Alert.alert(t('sidebar.skill_action_failed_title'), String((error as Error)?.message || error));
+    }
+  }, [runSkillImportCommand, loadImportedSkills, t]);
 
   const handleApproveImportedSkill = React.useCallback(async (name: string) => {
     try {
@@ -1065,6 +1114,20 @@ export function Sidebar() {
                 editable={!skillImporting}
                 onSubmitEditing={() => void handleImportSkill()}
               />
+              {/* SAF alternative — no MANAGE_EXTERNAL_STORAGE needed, see
+                  handlePickSkillFile above. Only handles a lone SKILL.md
+                  (no companion asset files); the path input above still
+                  covers folder-shaped skill bundles. */}
+              <Pressable
+                style={styles.skillImportPickRow}
+                onPress={() => void handlePickSkillFile()}
+                disabled={skillImporting}
+                accessibilityRole="button"
+                accessibilityLabel={t('sidebar.skill_import_pick_file_a11y')}
+              >
+                <MaterialIcons name="folder-open" size={13} color={C.accent} />
+                <Text style={styles.skillImportPickText}>{t('sidebar.skill_import_pick_file')}</Text>
+              </Pressable>
               <View style={styles.skillImportBtns}>
                 <Pressable
                   style={styles.modalCancelBtn}
@@ -1427,6 +1490,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 6,
+  },
+  skillImportPickRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
+  },
+  skillImportPickText: {
+    fontFamily: F.family,
+    fontSize: F.badge.size,
+    color: C.accent,
   },
   taskInfo: {
     flex: 1,

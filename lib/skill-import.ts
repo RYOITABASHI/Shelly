@@ -103,6 +103,27 @@ export function quarantineDir(home: string): string {
   return `${home}/.shelly/agents/skills-quarantine`;
 }
 
+/** Minimal shape of expo-document-picker's DocumentPickerResult — declared
+ *  locally instead of imported so this module (and its tests) stay IO-free;
+ *  the real type is a structural superset of this. */
+export interface PickedDocumentResult {
+  canceled: boolean;
+  assets?: Array<{ uri: string; name: string }> | null;
+}
+
+/**
+ * Resolve a DocumentPicker result down to the single asset to import, or
+ * null if the user backed out of the picker (canceled) or the picker
+ * returned no asset. Pure and IO-free so the "cancel is a clean no-op"
+ * behavior is unit-testable without mounting the picker's host component.
+ */
+export function pickedSkillFileAsset(
+  result: PickedDocumentResult
+): { uri: string; name: string } | null {
+  if (result.canceled || !result.assets?.[0]) return null;
+  return result.assets[0];
+}
+
 export function importedDir(home: string): string {
   return `${home}/.shelly/agents/skills-imported`;
 }
@@ -291,6 +312,88 @@ export async function importSkillToQuarantine(
     JSON.stringify(meta, null, 2),
     marker,
     `[ -f ${shellQuote(`${destDir}/SKILL.md`)} ] || { echo "skill import failed: ${name}" >&2; exit 1; }`,
+  ].join('\n');
+
+  const writeResult = await safeRun(runCommand, script);
+  if (writeResult.exitCode !== 0) {
+    return {
+      ok: false,
+      errors: [`import failed: ${writeResult.stderr || `exit ${writeResult.exitCode}`}`],
+      warnings: [],
+    };
+  }
+  return { ok: true, name, errors: [], warnings: validation.warnings };
+}
+
+/**
+ * Import a skill from a raw SKILL.md content string obtained via a
+ * Storage Access Framework picker (expo-document-picker's getDocumentAsync),
+ * rather than a shell-resolved source path. This is the narrow-scope sibling
+ * of importSkillToQuarantine: the caller (Sidebar.tsx) reads the picked
+ * file's content in JS via the picker's scoped content:// URI grant, which
+ * needs zero storage permission (not even MANAGE_EXTERNAL_STORAGE) because
+ * the grant is per-file and issued by the system picker itself. Compare to
+ * importSkillToQuarantine, whose `~`/absolute source path is `cat`'d by the
+ * shell — that only works for paths the app can already read, which in
+ * practice means /sdcard locations gated behind MANAGE_EXTERNAL_STORAGE.
+ *
+ * The write side is identical either way and was NEVER the part requiring
+ * broad access: the quarantine directory lives under the app's own home
+ * (getHomePath()), which the app can always read/write regardless of the
+ * MANAGE_EXTERNAL_STORAGE state.
+ *
+ * Only a lone SKILL.md is supported this way (no companion asset files,
+ * unlike a folder-shaped skill pulled in via importSkillToQuarantine) — SAF's
+ * getDocumentAsync picks one file at a time. The skill's own `name`
+ * frontmatter field is used as both the folder name and the identity check
+ * validateSkillMdContent normally runs against an independently-derived
+ * folder name; here there is no folder to derive one from, so the two are
+ * trivially equal by construction.
+ */
+export async function importSkillFromPickedFile(
+  raw: string,
+  runCommand: RunCommand
+): Promise<{ ok: boolean; name?: string; errors: string[]; warnings: string[] }> {
+  const fm = parseSkillMdFrontmatter(raw);
+  if (!fm || !fm.fields.name) {
+    return {
+      ok: false,
+      errors: ['SKILL.md has no valid frontmatter block, or is missing a name field'],
+      warnings: [],
+    };
+  }
+  const folderName = fm.fields.name;
+  const validation = validateSkillMdContent(raw, folderName);
+  if (!validation.valid) {
+    return { ok: false, errors: validation.errors, warnings: validation.warnings };
+  }
+  const name = fm.fields.name;
+  const description = fm.fields.description;
+
+  const home = getHomePath();
+  const destDir = `${quarantineDir(home)}/${name}`;
+  const skillFile = `${destDir}/SKILL.md`;
+  const metaFile = `${destDir}/.shelly-import-meta.json`;
+  const meta = {
+    name,
+    description,
+    sourcePath: 'picked-file (SAF)',
+    importedAt: new Date().toISOString(),
+    approvedAt: null as string | null,
+    warnings: validation.warnings,
+  };
+  const skillMarker = `SHELLY_SKILLMD_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  const metaMarker = `SHELLY_SKILLMETA_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  const script = [
+    'set -e',
+    `mkdir -p ${shellQuote(destDir)}`,
+    `cat > ${shellQuote(skillFile)} <<'${skillMarker}'`,
+    raw,
+    skillMarker,
+    `cat > ${shellQuote(metaFile)} <<'${metaMarker}'`,
+    JSON.stringify(meta, null, 2),
+    metaMarker,
+    `[ -f ${shellQuote(skillFile)} ] || { echo "skill import failed: ${name}" >&2; exit 1; }`,
   ].join('\n');
 
   const writeResult = await safeRun(runCommand, script);

@@ -9,6 +9,10 @@ import {
   parseSkillMdFrontmatter,
   SKILL_NAME_RE,
   validateSkillMdContent,
+  importSkillFromPickedFile,
+  pickedSkillFileAsset,
+  quarantineDir,
+  type RunCommand,
 } from '@/lib/skill-import';
 
 function validSkillMd(overrides: { name?: string; description?: string; body?: string } = {}): string {
@@ -200,5 +204,119 @@ describe('validateSkillMdContent', () => {
     expect(result.errors.some((e) => e.includes('lowercase letters, numbers, and hyphens'))).toBe(true);
     expect(result.errors).toContain('description is required');
     expect(result.errors.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+// SAF (Storage Access Framework) picker import path — see lib/skill-import.ts's
+// importSkillFromPickedFile doc comment. Unlike importSkillToQuarantine (whose
+// source-side `cat` needs a shell-readable path, in practice MANAGE_EXTERNAL_
+// STORAGE), this path's content already lives in JS memory by the time it's
+// called — the picker's scoped content:// URI grant needs no broad storage
+// permission at all. The write side (into the app's own quarantine dir) is
+// unchanged either way, so these tests focus on: (1) does picked content
+// correctly flow into the same validation used by the path-based import, and
+// (2) does a cancelled/asset-less picker result resolve to a clean no-op.
+
+describe('pickedSkillFileAsset', () => {
+  it('returns null when the picker was cancelled', () => {
+    expect(pickedSkillFileAsset({ canceled: true })).toBeNull();
+  });
+
+  it('returns null when not cancelled but no assets were returned', () => {
+    expect(pickedSkillFileAsset({ canceled: false, assets: [] })).toBeNull();
+    expect(pickedSkillFileAsset({ canceled: false, assets: null })).toBeNull();
+    expect(pickedSkillFileAsset({ canceled: false })).toBeNull();
+  });
+
+  it('returns the first asset when the picker succeeded', () => {
+    const asset = { uri: 'content://com.android.providers/document/SKILL.md', name: 'SKILL.md' };
+    expect(pickedSkillFileAsset({ canceled: false, assets: [asset] })).toEqual(asset);
+  });
+});
+
+describe('importSkillFromPickedFile', () => {
+  function makeRunCommand(opts: { exitCode?: number; stdout?: string; stderr?: string } = {}) {
+    const calls: string[] = [];
+    const fn: RunCommand = jest.fn(async (cmd: string) => {
+      calls.push(cmd);
+      return { stdout: opts.stdout ?? '', stderr: opts.stderr ?? '', exitCode: opts.exitCode ?? 0 };
+    });
+    return { fn, calls };
+  }
+
+  it('writes the quarantine SKILL.md + metadata for valid picked content, keyed off the frontmatter name', async () => {
+    const raw = validSkillMd({ name: 'picked-skill', description: 'A picked skill.' });
+    const { fn, calls } = makeRunCommand();
+
+    const result = await importSkillFromPickedFile(raw, fn);
+
+    expect(result.ok).toBe(true);
+    expect(result.name).toBe('picked-skill');
+    expect(result.errors).toEqual([]);
+    expect(calls).toHaveLength(1);
+    const script = calls[0];
+    const destDir = `${quarantineDir('/home/shelly-test')}/picked-skill`;
+    expect(script).toContain(`mkdir -p '${destDir}'`);
+    expect(script).toContain(`cat > '${destDir}/SKILL.md' <<`);
+    expect(script).toContain(raw);
+    expect(script).toContain(`cat > '${destDir}/.shelly-import-meta.json' <<`);
+    expect(script).toContain('"sourcePath": "picked-file (SAF)"');
+    expect(script).toContain('"approvedAt": null');
+  });
+
+  it('rejects invalid picked content without ever touching the filesystem', async () => {
+    const raw = '---\nname: my-skill\n---\nbody'; // missing description
+    const { fn, calls } = makeRunCommand();
+
+    const result = await importSkillFromPickedFile(raw, fn);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContain('description is required');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects content with no frontmatter block at all, without touching the filesystem', async () => {
+    const { fn, calls } = makeRunCommand();
+
+    const result = await importSkillFromPickedFile('just plain text, no --- delimiters', fn);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([
+      'SKILL.md has no valid frontmatter block, or is missing a name field',
+    ]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('rejects frontmatter that is missing the name field, without touching the filesystem', async () => {
+    const { fn, calls } = makeRunCommand();
+
+    const result = await importSkillFromPickedFile('---\ndescription: hi\n---\nbody', fn);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual([
+      'SKILL.md has no valid frontmatter block, or is missing a name field',
+    ]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('surfaces the shell error when the quarantine write fails', async () => {
+    const raw = validSkillMd({ name: 'picked-skill' });
+    const { fn } = makeRunCommand({ exitCode: 1, stderr: 'disk full' });
+
+    const result = await importSkillFromPickedFile(raw, fn);
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(['import failed: disk full']);
+  });
+
+  it('propagates warnings (e.g. large body) through to the result even when valid', async () => {
+    const bigBody = 'x'.repeat(20001);
+    const raw = validSkillMd({ name: 'picked-skill', body: bigBody });
+    const { fn } = makeRunCommand();
+
+    const result = await importSkillFromPickedFile(raw, fn);
+
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.includes('skill body is large'))).toBe(true);
   });
 });

@@ -1375,6 +1375,8 @@ const ja: Record<string, string> = {
   'sidebar.skill_import_placeholder': '~/my-skill または /sdcard/Download/my-skill',
   'sidebar.skill_import_confirm': '取込',
   'sidebar.skill_import_success': '「{{name}}」を取り込みました — レビュー待ち',
+  'sidebar.skill_import_pick_file': 'または SKILL.md ファイルを選択（権限不要）',
+  'sidebar.skill_import_pick_file_a11y': '取り込む SKILL.md ファイルを選択',
   'sidebar.agent_run_now': '今すぐ実行',
   'sidebar.agent_set_notification_trigger': '通知トリガーを設定',
   'sidebar.agent_edit_notification_trigger': '通知トリガーを編集',

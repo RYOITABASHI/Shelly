@@ -1381,6 +1381,8 @@ const en: Record<string, string> = {
   'sidebar.skill_import_placeholder': '~/my-skill or /sdcard/Download/my-skill',
   'sidebar.skill_import_confirm': 'Import',
   'sidebar.skill_import_success': "Imported '{{name}}' — pending review",
+  'sidebar.skill_import_pick_file': 'Or pick a SKILL.md file (no permission needed)',
+  'sidebar.skill_import_pick_file_a11y': 'Pick a SKILL.md file to import',
   'sidebar.agent_run_now': 'Run now',
   'sidebar.agent_set_notification_trigger': 'Set Notification Trigger',
   'sidebar.agent_edit_notification_trigger': 'Edit Notification Trigger',
