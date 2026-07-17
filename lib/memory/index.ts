@@ -20,3 +20,10 @@ export {
   g2NoteToRecord,
   recordsToRecallContext,
 } from './wiring';
+// Track C (MEMORY-001, see DEFERRED.md): pure PII/taint classifier, same
+// shape as lib/secret-guard.ts. Kept separate from that module on purpose.
+export { scanForPii } from './pii-guard';
+export type { PiiGuardKind, PiiGuardResult } from './pii-guard';
+// Track B (MEMORY-001, see DEFERRED.md): dev-machine plaintext cleanup.
+export { cleanupStalePlaintextMemoryFiles, isPreEncryptionRecordFile } from './dev-data-cleanup';
+export type { CleanupResult } from './dev-data-cleanup';

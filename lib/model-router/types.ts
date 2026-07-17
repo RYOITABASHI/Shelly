@@ -33,6 +33,17 @@ export interface RunRequirements {
   needsWeb: boolean;
   // Load-bearing: true => only on-device (isLocal) candidates are eligible.
   touchesSecrets: boolean;
+  // Signal-only for now (MEMORY-001 Track C, see DEFERRED.md): true when
+  // lib/memory/pii-guard.ts flagged the effective run text (which may include
+  // recalled memory content injected into agent.prompt). Unlike
+  // touchesSecrets, no eligibility predicate consumes this yet — that's an
+  // explicit future MODEL-001 routing decision, out of Track C's scope.
+  // Optional (not load-bearing like touchesSecrets) so every pre-existing
+  // RunRequirements literal in lib/model-router/**/*.test.ts stays valid
+  // without a mechanical edit; absent is equivalent to false. The field
+  // exists so the signal reaches RunRequirements now, ahead of the policy
+  // that will eventually act on it.
+  touchesPii?: boolean;
   // Scheduled/event fire => deterministic and no api-key backend.
   unattended: boolean;
   // Hard ceilings only (eligibility, not ranking).

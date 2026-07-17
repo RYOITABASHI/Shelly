@@ -20,8 +20,10 @@
 
 import type { Agent, ToolChoice } from '@/store/types';
 import type { SecretGuardResult } from '@/lib/secret-guard';
+import type { PiiGuardResult } from '@/lib/memory/pii-guard';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { scanForSecrets } from '@/lib/secret-guard';
+import { scanForPii } from '@/lib/memory/pii-guard';
 import { CostTier, LatencyTier, ModelCandidate, RunRequirements, TaskKind } from './types';
 
 // Master dormancy switch. Never flipped by this work.
@@ -35,6 +37,10 @@ export function toRunRequirements(input: {
   taskKind: TaskKind;
   needsWeb: boolean;
   secret: SecretGuardResult;
+  // MEMORY-001 Track C (see DEFERRED.md): optional so existing call sites
+  // that never pass it (host tests constructing RunRequirements directly)
+  // are unaffected; omitted => touchesPii stays undefined/falsy.
+  pii?: PiiGuardResult;
   unattended: boolean;
   budget?: { maxCostTier?: CostTier; maxLatencyTier?: LatencyTier };
 }): RunRequirements {
@@ -42,6 +48,7 @@ export function toRunRequirements(input: {
     taskKind: input.taskKind,
     needsWeb: input.needsWeb,
     touchesSecrets: input.secret.hasSecret,
+    touchesPii: input.pii?.hasPii ?? false,
     unattended: input.unattended,
     budget: input.budget,
   };
@@ -83,11 +90,21 @@ function textForSecretScan(agent: Agent): string {
 // present). Pure: no fs, no Date.now, no network — a function of the Agent alone.
 export function toRunRequirementsFromAgent(agent: Agent): RunRequirements {
   const secret = scanForSecrets(textForSecretScan(agent));
+  // MEMORY-001 Track C (see DEFERRED.md): recall-boundary PII/taint signal.
+  // Scans the SAME field set — including agent.prompt, which by the time
+  // this runs already has any recalled memory context prepended by
+  // agent-manager's applyMemoryAndSkills — that scanForSecrets above already
+  // re-scans to force local-only routing. This is that "same chokepoint" for
+  // PII: the classifier runs here too, but (per Track C's scope) the result
+  // only flows into RunRequirements.touchesPii as a signal — no eligibility
+  // predicate acts on it yet.
+  const pii = scanForPii(textForSecretScan(agent));
   const signals = detectRouteSignals(agent.prompt);
   return toRunRequirements({
     taskKind: signals.category,
     needsWeb: signals.needsWeb,
     secret,
+    pii,
     unattended: agent.autonomous === true,
   });
 }

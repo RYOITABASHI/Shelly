@@ -242,4 +242,27 @@ describe('activateMemoryWrite (MEMORY-001 Step 4)', () => {
       warnSpy.mockRestore();
     }
   });
+
+  // MEMORY-001 Track C (see DEFERRED.md): write-boundary PII/taint scan.
+  it('attaches PII-taint metadata (kinds only) when the written text matches pii-guard', async () => {
+    const deps = makeDeps();
+    await activateMemoryWrite(
+      { agentId: 'agent-9', type: 'fact', text: 'I was diagnosed with anxiety disorder last spring' },
+      deps
+    );
+    const stored = await deps.adapter.list('agent-9');
+    expect(stored).toHaveLength(1);
+    expect(stored[0].metadata?.piiTaint).toBe('true');
+    expect(stored[0].metadata?.piiKinds).toContain('health-condition');
+  });
+
+  it('does not attach PII-taint metadata for ordinary text', async () => {
+    const deps = makeDeps();
+    await activateMemoryWrite(
+      { agentId: 'agent-9', type: 'fact', text: 'deploy target is the fold6 device' },
+      deps
+    );
+    const stored = await deps.adapter.list('agent-9');
+    expect(stored[0].metadata).toBeUndefined();
+  });
 });

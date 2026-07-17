@@ -28,6 +28,8 @@ import {
 import { MemoryStore } from './memory-store';
 import { JsonFileMemoryStorage } from './storage-json';
 import { createExpoFsPort, systemClock } from './fs-expo';
+import { cleanupStalePlaintextMemoryFiles } from './dev-data-cleanup';
+import { scanForPii } from './pii-guard';
 import type { EncryptionPort } from './types';
 import {
   DEFAULT_RECALL_LIMIT,
@@ -78,14 +80,38 @@ function getShadowDeps(): ShadowDeps {
   if (!sharedDeps) {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { createExpoEncryptionPort } = require('./crypto-expo') as { createExpoEncryptionPort: () => EncryptionPort };
-    const adapter = new JsonFileMemoryStorage(createExpoFsPort(), createExpoEncryptionPort(), {
-      root: shadowRootDir(),
-    });
+    const fsPort = createExpoFsPort();
+    const root = shadowRootDir();
+    const adapter = new JsonFileMemoryStorage(fsPort, createExpoEncryptionPort(), { root });
     sharedDeps = {
       adapter,
       store: new MemoryStore({ adapter, clock: systemClock }),
       importedAgents: new Set<string>(),
     };
+    // Track B (MEMORY-001, see DEFERRED.md): one-time, non-blocking sweep for
+    // stale pre-encryption plaintext files a developer machine may still have
+    // on disk from before Track A's envelope encryption landed. This is the
+    // first point ANY code touches the memory-v2 store on a given app launch
+    // (this whole function is unreachable while MEMORY_ENABLED is false), so
+    // it doubles as the "startup" detection hook the design calls for.
+    // Fire-and-forget: a cleanup failure must never block or break the live
+    // memory read/write path that's about to use `adapter`.
+    cleanupStalePlaintextMemoryFiles(fsPort, root)
+      .then((result) => {
+        if (result.removed.length > 0) {
+          logInfo(
+            LOG_MODULE,
+            `dev-data cleanup removed ${result.removed.length} stale plaintext memory file(s)`
+          );
+        }
+      })
+      .catch((error) => {
+        logWarn(
+          LOG_MODULE,
+          'dev-data cleanup failed (live memory path unaffected)',
+          error instanceof Error ? error.message : String(error)
+        );
+      });
   }
   return sharedDeps;
 }
@@ -285,12 +311,23 @@ export async function activateMemoryWrite(
       tags: params.tags,
     });
     const record: MemoryRecord = g2NoteToRecord(note);
+    // Track C (MEMORY-001, see DEFERRED.md): write-boundary PII/taint scan.
+    // Pure rule-based (lib/memory/pii-guard.ts), same shape as secret-guard.ts.
+    // The result is stored as opaque metadata (kinds only, never the matched
+    // text — pii-guard.ts's own contract) so a future recall/routing
+    // consumer can see "this record was flagged" without this write path
+    // itself deciding what to do about it (fail-closed policy enforcement is
+    // explicitly out of scope for Track C — see the recall-boundary wiring in
+    // lib/model-router/wiring.ts's touchesPii for where the signal is
+    // actually surfaced for a future routing decision).
+    const pii = scanForPii(record.text);
     await deps.store.put({
       namespace: record.namespace,
       key: record.key,
       kind: record.kind,
       text: record.text,
       tags: record.tags,
+      metadata: pii.hasPii ? { piiTaint: 'true', piiKinds: pii.kinds.join(',') } : undefined,
     });
     return true;
   } catch (error) {
