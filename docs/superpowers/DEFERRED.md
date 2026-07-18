@@ -49,9 +49,9 @@
 
 ---
 
-### ホーム画面ウィジェット再設計 — Codex/local-LLM セッションモニターを撤去し「エージェント発射台」化、通知ベース後継は未着手 (P2)
+### ✅ ホーム画面ウィジェット再設計 — Codex/local-LLM セッションモニターを撤去し「エージェント発射台」化。通知ベース後継は「未着手」ではなく既存実装で既に充足済みと2026-07-18の再調査で判明
 
-**優先度**: P2（撤去自体はUXレビューで承認済み・本パスで実装完了。失う機能——ウィジェットからのライブ Codex 承認応答——の代替が無い状態が続くのは、ウィジェットを Codex 用に使っていたユーザーには実質的なリグレッションになりうるため、通知ベース後継の実装は次善で早めに着手すべき）
+**優先度**: 完了（下記「2026-07-18 訂正」を参照。実装が必要な残ギャップは無い）
 **発見**: 2026-07-18、独立プロダクト/UXレビューで、既存の `ScouterWidgetProvider.kt`/`scouter_widget_medium.xml` が「密な Codex セッション監視 HUD」（title/status/DOING/reply preview/model metrics/token usage/rate-limit Chronometer + 承認 ALLOW/DENY pill + 選択肢 pill + LOCAL LLM ヘルス行）になっており、本来ウィジェットに期待される「複数の予定済みエージェントを一覧してワンタップ実行する」役割を果たせていないと指摘。この 1x1 ウィジェットが実装している唯一のサイズ/バリアントであるため、新サイズを追加せず既存レイアウトを差し替える形で対応した。
 
 **本パスで実装したもの**:
@@ -61,7 +61,23 @@
 - 撤去した view id を Kotlin/XML/コメント全体から grep で確認し、残存参照ゼロを確認（`__tests__/widget-agent-run-parity.test.ts` に回帰テストとして追加）。
 - **サンプリング/監視インフラは無変更で継続稼働**: `ScouterSystemSampler`/`JsonlWatcher`/`LocalLlmSampler`（`ScouterLifecycleService` 経由）は grep で確認した結果、`app/scouter.tsx` や `lib/scouter-telemetry.ts`/`hooks/use-ai-pane-dispatch.ts` など JS 側の複数消費者を持つ汎用オブザーバビリティ基盤であり、ウィジェット専用ではないと判断——一切変更せず。ウィジェット側で唯一ウィジェット専用だった `ScouterSystemSampler(context).sample()` の直接呼び出し（削除したフッターの `loadLine` 用）のみ `ScouterWidgetProvider.kt` から削除。`ScouterModelPricing.kt`（旧 codexMetrics 専用のコスト表）は呼び出し元を失い事実上未使用になったが、ファイル自体の削除は本パスのスコープ外として見送り（削除は別途低優先度クリーンアップ候補）。
 
-**次にやること（本パスでは意図的に未実装）**: ウィジェットから撤去した「ライブ Codex セッション状態 + 承認プロンプト（ALLOW/DENY/選択肢pill）」相当の機能を、`NotificationDispatcher.kt`（既存、通知権限・別サブシステム）経由の persistent/heads-up notification として再実装する。承認が必要な瞬間だけ actionable な通知を出す設計の方が、常時表示ウィジェットでスペースを食う密な HUD より本質的に適しているとも考えられるため、単純な「元に戻す」ではなく設計し直す価値がある。
+**次にやること（本パスでは意図的に未実装、として登録されていたが下記の通り誤りと判明）**: ~~ウィジェットから撤去した「ライブ Codex セッション状態 + 承認プロンプト（ALLOW/DENY/選択肢pill）」相当の機能を、`NotificationDispatcher.kt`（既存、通知権限・別サブシステム）経由の persistent/heads-up notification として再実装する。~~
+
+**2026-07-18 訂正（別セッションによる独立調査）**: 本エントリ登録時点（コミット `238a95258`, 2026-07-18 11:52）で「通知ベース後継が無い」と記載されたのは誤り。`NotificationDispatcher.kt` には、ウィジェットが撤去したのと**全く同一の**ライブ Codex CLI 承認応答メカニズムが、ウィジェット再設計より約1日前のコミット `20d56eb71`（"feat(scouter): Codex notifications (approval/choice/rate/reply) + POST_NOTIFICATIONS request"）と `109247fcb`（"feat(scouter): surface live Codex blocking states in widget + notifications"）で既に実装され、稼働し続けている。
+
+調査で確認した具体的な配線（file:line は現行 `NotificationDispatcher.kt`、`ScouterWidgetPromptActivity.kt`）:
+- `ScouterLifecycleService.handleEvent()`（`ScouterLifecycleService.kt:159-191`）が Scouter イベント（JSONL watcher / live poll 両方）ごとに `notificationDispatcher.maybeNotify(...)`（181行目）を無条件で呼ぶ。
+- `NotificationDispatcher.maybeNotify()`（`NotificationDispatcher.kt:75-101`）は `snapshot.currentStatus == ScouterStatus.WAITING_PERMISSION` のとき private `notifyApprovalNeeded()`（88行目→372-425行目）を、また毎イベント private `notifyChoiceWaiting()`（95行目→487-529行目）を呼ぶ。どちらも旧ウィジェットの ALLOW/DENY pill・選択肢 pill と全く同じ `ScouterStatus.WAITING_PERMISSION` / `ScouterStateStore.choicePendingStatus()` 判定（`JsonlSessionParser.kt`/`EventNormalizer.kt` 由来、ウィジェット再設計で無変更）を条件に使っている。
+- `notifyApprovalNeeded()` は ALLOW/DENY 通知アクションを `approvalActionPendingIntent()`（611-642行目）経由で構築し、`Intent(context, ScouterWidgetPromptActivity::class.java)` に `ACTION_APPROVAL_ALLOW`/`ACTION_APPROVAL_DENY` をセットして発火する。受け側の `ScouterWidgetPromptActivity.handleApprovalAction()`（`ScouterWidgetPromptActivity.kt:494-553`）は旧ウィジェットの pill が呼んでいたのと**同一の関数**で、`target.session.write("y\r")` / `write("n\r")`（536行目）として、承認待ちの Codex CLI プロセスが動いている PTY セッションへ直接キー入力を書き込む——ウィジェット撤去前・後で全く変化していないメカニズム。
+- `notifyChoiceWaiting()` は数字選択メニューについても同型で、`choiceSelectActionPendingIntent()`（775-800行目）経由で `ACTION_CHOICE_SELECT` を発火し、`ScouterWidgetPromptActivity.handleChoiceAction()`（555-598行目）が `target.session.write("$choiceIndex\r")`（584行目）を書き込む。
+- 選択肢が3つを超える場合の degrade は既に実装済み（Android 通知のアクションボタン実用上限どおり）: `notifyChoiceWaiting()`（507行目）が最初の3件のみをボタン化し（`conversation.choiceOptions.take(3)`）、展開表示（BigText, 519-520行目）に全選択肢を列挙する。通知本文タップ（ボタン以外）は `notify()`（811-849行目）の `pendingLaunch`（821-829行目）でアプリを開く——ボタンに乗らない選択肢は「アプリを開いて選ぶ」への自然な fallback になっている（旧ウィジェットの行タップも同様に汎用パネルを開くだけだったので、退行ではなくパリティ）。
+- 解決済み通知のキャンセルも実装済み: `cancelResolvedInteractiveNotifications()`（570-592行目）が承認/選択肢いずれも解決後に `notificationManager.cancel(ID_APPROVAL / ID_CHOICE)` する。
+- テキストは既存の `redactForScouter()`（413行目, 501行目）でリダクトされ、他の通知種別と同じ規約に従う。
+- この Codex 承認/選択肢通知は「エージェントアクション承認」(`notifyAgentActionApprovalNeeded`, ID_AGENT_ACTION_*)・「エージェントエスカレーション」(`notifyAgentEscalationNeeded`)・「エージェント capability（新規ホスト）承認」(`notifyAgentCapabilityApprovalNeeded`, ID_AGENT_CAPABILITY_*) とは完全に別物（名前が似ているが概念が異なる、というのは事実——これらは自律エージェントのオーケストレーション実行に関する別サブシステムで、ライブ Codex CLI セッション自体のプロンプトとは無関係）と確認済み。
+- ウィジェット再設計コミット `238a95258` の diff（`git show --stat 238a95258`）を確認したところ、変更されたのは `ScouterWidgetProvider.kt` / `WidgetAgentRepository.kt` / `scouter_widget_medium.xml` / `values(-ja)/scouter_strings.xml` / テストのみ。`NotificationDispatcher.kt`・`ScouterWidgetPromptActivity.kt`・`ScouterStateStore.kt`・`ScouterLifecycleService.kt`・`EventNormalizer.kt`・`JsonlSessionParser.kt`・`JsonlWatcher.kt` は `git diff 238a95258^ 238a95258 -- <path>` で全て差分ゼロと確認済み——通知経路はウィジェット再設計の影響を一切受けていない。
+- バインディング対象（どの Codex セッションを通知対象にするか）も `store/agent-chat-store.ts` の `persistLatestWidgetCodexBinding()`（542-564行目）が「信頼できるバインディングを持つ最新アクティブな Codex ターミナルセッション」を自動選択して `TerminalEmulator.setScouterCodexBinding()` に反映する仕組みで、ウィジェットの表示状態やホーム画面配置に一切依存しない（アプリ内で Codex セッションを開くだけで機能する）。
+
+**結論**: コード変更は不要。本エントリは「ホーム画面ウィジェット再設計」自体は完了済み・「通知ベース後継」も別コミットで既に完了済みという扱いに変更する。P2 の残作業は無し。
 → sync: なし（README Status 表に本ウィジェットの機能一覧記載なし、同期不要）。
 
 ---
