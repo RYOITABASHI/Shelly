@@ -10,7 +10,7 @@
       "tags": ["git", "workflow", "dev"],
       "contentAssetName": "git-commit-craft.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/git-commit-craft.SKILL.md",
-      "sha256": "20a40a746ec045c19fb43a4b33761cc293a3095cca1b73a04b0504534fc2dbe2"
+      "sha256": "e24700cdc00fa602f41630b895543e36dbe6e14fc59bf87f17a4d39acd1c91c8"
     },
     {
       "name": "shell-safety-review",
@@ -19,7 +19,7 @@
       "tags": ["shell", "safety", "agent"],
       "contentAssetName": "shell-safety-review.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/shell-safety-review.SKILL.md",
-      "sha256": "3ff35fecce1b38eba39a4809e60d9ef164ff58dd35fe573b157cdbfbb1ccd2ac"
+      "sha256": "18992b88cec773619ee2f19ab85359537a11e825337a11ffe6c879e8dd1b5d88"
     },
     {
       "name": "android-logcat-triage",
@@ -28,7 +28,7 @@
       "tags": ["android", "debugging", "logcat"],
       "contentAssetName": "android-logcat-triage.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/android-logcat-triage.SKILL.md",
-      "sha256": "7e2d5989b38eb98506f5e11996a2f9e6608a76c1b31d7917d89349633a168402"
+      "sha256": "81ea3ab79401e53f30d9ca52ebf62a277783da6d6834657e7daaaa42f6b83a2e"
     },
     {
       "name": "agent-skill-authoring",
@@ -37,7 +37,7 @@
       "tags": ["meta", "skills", "authoring"],
       "contentAssetName": "agent-skill-authoring.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/agent-skill-authoring.SKILL.md",
-      "sha256": "5034bdd05bdb365cfdf63082a77542392b4a3052a5fc2458bacbdd665027e212"
+      "sha256": "4a797013c6a2ca961585db6666470af4f132f81e3a13ce57f51b0107a0fe3313"
     }
   ]
 }

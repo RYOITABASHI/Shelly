@@ -1,0 +1,9 @@
+# docs/skills-catalog/**/SKILL.md is published as a GitHub Release asset and
+# its sha256 (in docs/skills-catalog/skills-catalog.json) is verified both at
+# CI-publish time and at app fetch time (lib/skill-catalog.ts). Windows
+# checkouts with core.autocrlf=true silently convert LF -> CRLF in the working
+# tree, which changes the file's bytes (and therefore its hash) relative to
+# the LF blob Linux CI actually checks out -- force LF here so the hash is the
+# same on every OS.
+docs/skills-catalog/**/SKILL.md text eol=lf
+docs/skills-catalog/skills-catalog.json text eol=lf
