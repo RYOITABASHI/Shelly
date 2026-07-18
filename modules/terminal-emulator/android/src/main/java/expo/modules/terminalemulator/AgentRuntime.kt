@@ -87,6 +87,13 @@ object AgentRuntime {
     private const val CURRENT_SCRIPT_VERSION = 19
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
+    // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
+    // local LLM autostart が無い": matches both lib/agent-executor.ts's
+    // LOCAL_MODEL_LIGHT and scripts/shelly-plan-executor.js's modelRequest()
+    // 'local' case default (`plan.tool.model || 'Qwen3.5-0.8B-Q4_K_M'`), so the
+    // preflight ensures the SAME model the executor will actually request when
+    // the PlanSpec carries no explicit tool.model.
+    private const val DEFAULT_LOCAL_LLM_MODEL = "Qwen3.5-0.8B-Q4_K_M"
 
     private data class TrustedPlanLaunch(
         val actionType: String,
@@ -349,6 +356,27 @@ object AgentRuntime {
         }
         val trustedLaunch = trustedPlanLaunch(homeDir, agentId)
 
+        // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
+        // local LLM autostart が無い" (2026-07-18): shelly-plan-executor.js's 'local'
+        // tool case fires a plain HTTP request with no autostart (it is deliberately
+        // spawn-incapable, see the DEFERRED.md entry), so an unattended-scheduled
+        // orchestrated agent resolving to tool.type=="local" fails ECONNREFUSED when
+        // llama-server isn't already running. Read tool.type from the SAME on-disk
+        // PlanSpec this function already validated above (readPlanSpecVersion/
+        // readPlanSpecAgentId/readPlanSpecActionType each do their own
+        // JSONObject(plan.readText()) parse — this follows that exact established
+        // pattern rather than threading a single parsed object through). If local,
+        // run a small bash preflight that sources the extracted
+        // ensure_local_llm_server() helper library and calls it once, mirroring
+        // lib/agent-executor.ts's own call site
+        // (`ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"`). Best-effort only:
+        // on failure or timeout this falls through to the unchanged node launch
+        // below, which reproduces today's existing "unavailable" ECONNREFUSED
+        // failure path — no new failure mode is introduced.
+        if (readPlanSpecToolType(plan) == "local") {
+            ensureLocalLlmServerBeforePlanExecutor(homeDir, libPath, bashPath, agentId, readPlanSpecToolModel(plan))
+        }
+
         val command = buildString {
             append("export PATH=")
             append(shellQuote("$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin"))
@@ -452,6 +480,117 @@ object AgentRuntime {
             )
         }
         return AgentRunResult(agentId, exitCode, stdout, stderr)
+    }
+
+    /**
+     * docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
+     * local LLM autostart が無い" (2026-07-18): best-effort native preflight that
+     * sources the bundled `scripts/shelly-local-llm-ensure.sh` helper library
+     * (extracted to `$HOME/.shelly-local-llm-ensure.sh` by
+     * [HomeInitializer.initialize], unconditionally, on every call — including
+     * the one at the top of [runAgent] that ran just before this) and calls its
+     * `ensure_local_llm_server` function once, mirroring
+     * lib/agent-executor.ts's own call site
+     * (`ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"`, around its
+     * `LOCAL_URL="${LOCAL_LLM_URL:-http://127.0.0.1:8080}"` assignment).
+     *
+     * Launched via the exact same `ShellyJNI.execSubprocess("/system/bin/linker64",
+     * bashPath, ...)` primitive [runPlanAgent] uses for the node launch below it,
+     * as a SEPARATE bounded call — its own readiness polling (up to 90s by
+     * default, `LOCAL_LLM_START_TIMEOUT_SECONDS`) lives entirely inside
+     * `ensure_local_llm_server` and is authoritative; [DEFAULT_TIMEOUT_MS] here is
+     * only an outer safety bound (reusing the same constant every other
+     * execSubprocess call in this file already uses, not a new one) and should
+     * never actually be the limiting factor. The llama-server launch inside
+     * `ensure_local_llm_server` already does its own `unset LD_PRELOAD` right
+     * before its `/system/bin/linker64` invocation (copied verbatim from
+     * lib/agent-executor.ts, which itself mirrors the in-app Start button) — this
+     * preflight's own outer bash process needs no additional LD_PRELOAD handling
+     * beyond that, the same way the legacy `.sh` script's own `shelly_node` calls
+     * (used pervasively for the HTTP helper functions this library also carries)
+     * never unset it either and have run in production for months.
+     *
+     * Sourced (`. "$path"`), never executed directly — this is a pure function
+     * library with no side effects until `ensure_local_llm_server` is explicitly
+     * called, so it needs no exec bit.
+     *
+     * Any failure or timeout here is swallowed and logged only: the caller
+     * proceeds unconditionally to the unchanged node/plan-executor.js launch,
+     * which reproduces today's existing ECONNREFUSED → "unavailable" failure
+     * path when the server truly could not be started. No new failure mode.
+     */
+    private fun ensureLocalLlmServerBeforePlanExecutor(
+        homeDir: File,
+        libPath: String,
+        bashPath: String,
+        agentId: String,
+        planToolModel: String?
+    ) {
+        val sharedScript = File(homeDir, ".shelly-local-llm-ensure.sh")
+        if (!sharedScript.isFile) {
+            Log.w(TAG, "Agent $agentId: local-llm-ensure script missing at ${sharedScript.absolutePath}, skipping preflight")
+            return
+        }
+        val modelName = planToolModel?.takeIf { it.isNotBlank() } ?: DEFAULT_LOCAL_LLM_MODEL
+        val envFile = File(homeDir, ".shelly/agents/.env")
+        val tmpDir = File(homeDir, ".shelly/tmp")
+        val locksDir = File(homeDir, ".shelly/agents/locks")
+
+        val command = buildString {
+            append("export PATH=")
+            append(shellQuote("$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin"))
+            append(" && export LD_LIBRARY_PATH=")
+            append(shellQuote(libPath))
+            append(" && export HOME=")
+            append(shellQuote(homeDir.absolutePath))
+            append(" && AGENT_ID=")
+            append(shellQuote(agentId))
+            append(" && TMP_DIR=")
+            append(shellQuote(tmpDir.absolutePath))
+            append(" && LOCKS_DIR=")
+            append(shellQuote(locksDir.absolutePath))
+            append(" && mkdir -p \"\$TMP_DIR\" \"\$LOCKS_DIR\" \"\$HOME/models\"")
+            // Same .env this agent's PlanSpec executor launch below reads
+            // (scripts/shelly-plan-executor.js's parseConfigEnv(paths.envFile),
+            // paths.envFile = $HOME/.shelly/agents/.env) — sourcing it here means
+            // a user-configured LOCAL_LLM_URL/LOCAL_LLM_MODEL is honored by the
+            // preflight exactly as it will be by the executor's own request,
+            // matching the legacy .sh script's own `source "$ENV_FILE"` call site.
+            // Braced with `|| true` (not chained bare with `&&`) so a fresh
+            // install with no .env yet does not short-circuit the rest of this
+            // command.
+            append(" && { [ -f ")
+            append(shellQuote(envFile.absolutePath))
+            append(" ] && . ")
+            append(shellQuote(envFile.absolutePath))
+            append(" || true; }")
+            append(" && . ")
+            append(shellQuote(sharedScript.absolutePath))
+            append(" && LOCAL_URL=\"\${LOCAL_LLM_URL:-http://127.0.0.1:8080}\"")
+            append(" && ensure_local_llm_server \"\$LOCAL_URL\" ")
+            append(shellQuote(modelName))
+        }
+
+        Log.i(TAG, "Agent $agentId: running local-llm-ensure preflight before PlanSpec executor (model=$modelName)")
+        try {
+            val result = ShellyJNI.execSubprocess(
+                "/system/bin/linker64",
+                bashPath,
+                libPath,
+                homeDir.absolutePath,
+                command,
+                DEFAULT_TIMEOUT_MS
+            )
+            val exitCode = result.getOrNull(0)?.toIntOrNull() ?: -1
+            if (exitCode == 0) {
+                Log.i(TAG, "Agent $agentId: local-llm-ensure preflight succeeded")
+            } else {
+                val stderr = result.getOrNull(2).orEmpty()
+                Log.w(TAG, "Agent $agentId: local-llm-ensure preflight exit=$exitCode stderr=${stderr.take(300)} (continuing to PlanSpec executor; a still-unavailable server surfaces as today's existing ECONNREFUSED failure)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Agent $agentId: local-llm-ensure preflight threw, continuing to PlanSpec executor", e)
+        }
     }
 
     private fun postAgentResultNotificationIfRequested(context: Context, homeDir: File, agentId: String): Boolean {
@@ -658,6 +797,29 @@ object AgentRuntime {
             JSONObject(plan.readText()).optJSONObject("action")?.optString("type").orEmpty()
         } catch (_: Exception) {
             ""
+        }
+    }
+
+    /** Same read*(plan: File) pattern as readPlanSpecActionType above, for the
+     *  local-LLM autostart preflight (docs/superpowers/DEFERRED.md "PlanSpec
+     *  executor 経由の無人スケジュール実行に local LLM autostart が無い"). */
+    private fun readPlanSpecToolType(plan: File): String {
+        return try {
+            JSONObject(plan.readText()).optJSONObject("tool")?.optString("type").orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    /** Companion to [readPlanSpecToolType]; null when absent/blank so the
+     *  caller can fall back to the same default model
+     *  scripts/shelly-plan-executor.js's modelRequest() uses
+     *  (`'Qwen3.5-0.8B-Q4_K_M'`). */
+    private fun readPlanSpecToolModel(plan: File): String? {
+        return try {
+            JSONObject(plan.readText()).optJSONObject("tool")?.optString("model")?.trim()?.ifBlank { null }
+        } catch (_: Exception) {
+            null
         }
     }
 

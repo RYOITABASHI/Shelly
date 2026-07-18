@@ -1250,6 +1250,27 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-plan-executor.js extract failed: ${e.message}")
         }
 
+        // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
+        // local LLM autostart が無い" (2026-07-18): bundled bash function library
+        // extracted from lib/agent-executor.ts's ensure_local_llm_server() and its
+        // helper closure (see scripts/shelly-local-llm-ensure.sh's header comment).
+        // AgentRuntime.kt's runPlanAgent() sources this before launching
+        // shelly-plan-executor.js for a tool.type=="local" PlanSpec, since the
+        // executor above is intentionally spawn-incapable and cannot run the
+        // autostart logic itself. Only needs to be readable (sourced, not exec'd),
+        // matching the plan-executor/broker helpers above; re-extracted
+        // unconditionally on every initialize() call so a stale pre-update copy on
+        // an already-provisioned device is never used (no separate version-gate
+        // constant needed, same reasoning as the .js helpers above).
+        val localLlmEnsureScript = File(home, ".shelly-local-llm-ensure.sh")
+        try {
+            context.assets.open("shelly-local-llm-ensure.sh").use { input ->
+                localLlmEnsureScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-local-llm-ensure.sh extract failed: ${e.message}")
+        }
+
         val agentEscalationDir = File(home, ".shelly/agents/escalations")
         agentEscalationDir.mkdirs()
         val agentEscalationReplyDir = File(context.noBackupFilesDir, "shelly-agent-escalation-replies")
