@@ -84,7 +84,15 @@ object AgentRuntime {
     // runtime-computed CURRENT_DATETIME_CONTEXT line (device-local
     // date/weekday/time via `date`). Bumped so a stale pre-v19 on-disk script
     // (no date grounding) is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 19
+    // v20 (2026-07-18, docs/superpowers/DEFERRED.md "エージェント二重実行
+    // レース" chain-lock follow-up): the generated script's per-agent
+    // LOCK_FILE check is now mkdir-atomic (was a non-atomic
+    // check-then-act) and gained a new CHAIN_LOCK_DIR/CHAIN_LOCK_NONCE check
+    // ahead of it, so an attended multi-step/multi-attempt run (Sidebar RUN
+    // NOW / @agent chat) can no longer be raced by this SAME agent's own
+    // AlarmManager fire landing mid-chain. Bumped so a stale pre-v20 on-disk
+    // script (old lock semantics) is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 20
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

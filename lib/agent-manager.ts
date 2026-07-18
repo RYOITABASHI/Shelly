@@ -9,7 +9,7 @@ import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logWarn } from './debug-logger';
-import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath } from './agent-executor';
+import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed } from './agent-scheduler';
 import { t } from '@/lib/i18n';
@@ -302,6 +302,16 @@ type MaterializeRunOpts = {
   // generateRunScript bakes unattended:true into the STORED script the
   // AlarmManager fire / native one-tap reads (see generateRunScript's comment).
   attended?: boolean;
+  // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): the live
+  // per-attempt token this agent's chain-locked run (acquireChainLock below)
+  // is currently holding, baked into the generated
+  // script as CHAIN_LOCK_NONCE so it passes the script's chain-lock check.
+  // Only runLadderAttempts's per-attempt materialize (inside a chain-lock
+  // scope) sets this; every other materializeAgent call — including the
+  // post-chain/post-ladder restore that writes the STORED script — leaves it
+  // unset, so the stored script's baked nonce is always empty and can never
+  // accidentally match a live chain lock (see generateRunScript's comment).
+  chainLockNonce?: string;
 };
 
 /**
@@ -414,6 +424,16 @@ async function materializeAgentBody(
     writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
     writeFileCommand(planSpecPath, JSON.stringify(planSpec, null, 2)),
     ...generateInstallCommands(agent),
+    // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): "arm" the
+    // chain lock's live token in the SAME batch that bakes it into the
+    // script above, so the two writes can never observably land out of
+    // order. Best-effort (`|| true`) — CHAIN_LOCK_DIR only exists while a
+    // caller up the stack (runLadderAttempts, inside an acquired chain lock)
+    // is actively passing chainLockNonce; every other caller leaves it unset
+    // and this line is skipped entirely.
+    ...(effectiveRunOpts.chainLockNonce
+      ? [`printf '%s' ${shellQuote(effectiveRunOpts.chainLockNonce)} > ${shellQuote(`${getChainLockDir(agent.id)}/token`)} 2>/dev/null || true`]
+      : []),
   ];
 
   await runCommand(`set -e\n${commands.join('\n')}`);
@@ -729,6 +749,154 @@ async function ladderEnvFromDisk(runCommand: (cmd: string) => Promise<string>): 
 }
 
 /**
+ * DEFERRED.md エージェント二重実行レース (chain-lock follow-up, 2026-07-18):
+ * inFlightAgentRuns above closes the SAME-PROCESS double-run window, but a
+ * native AlarmManager fire runs an agent's on-disk .sh directly — never
+ * through runAgentNow — so it cannot be caught there. runAgentOrchestrated's
+ * per-step loop and runLadderAttempts's per-candidate loop each RELEASE the
+ * generated script's own per-invocation LOCK_FILE between iterations while
+ * transiently rewriting the on-disk script to that one step/candidate's
+ * single-shot form (materializeAgent), so a same-agent alarm firing in that
+ * gap can run whatever transient content happens to be on disk, racing the
+ * chain's own next materialize/run — see the DEFERRED.md entry for the full
+ * trace of how that corrupts the chain's aggregate result.
+ *
+ * This chain-scoped lock closes that gap from the outside: acquired BEFORE a
+ * chain's first step/candidate and held (see runEscalatingAttempts /
+ * runAgentOrchestrated below) until the chain's FINAL restore-to-original-
+ * config materialize completes. It mirrors agent-executor.ts's REGISTRY_LOCK
+ * mkdir-based atomic directory lock exactly (mkdir succeeds for exactly one
+ * caller), but — unlike REGISTRY_LOCK, which lives entirely inside ONE bash
+ * process — this lock spans MULTIPLE separate native script invocations, so
+ * it is acquired/released from here (JS/native orchestration layer, via
+ * runCommand) rather than from inside the generated bash.
+ *
+ * Token design: a single nonce constant for the whole chain, baked into every
+ * step's script, would ALSO match a native alarm that happens to fire while a
+ * JUST-FINISHED step's stale content still sits on disk (LOCK_FILE released,
+ * the next materialize not yet written) — the alarm's invocation reads
+ * byte-identical script content to the chain's own next intended launch, so a
+ * static per-chain value cannot tell them apart. Instead the LIVE token is
+ * rotated per attempt: materializeAgentBody's own write batch "arms" the live
+ * token to the SAME value it just baked into that attempt's script (see
+ * MaterializeRunOpts.chainLockNonce above — folded into that batch so the two
+ * writes can never land out of order), and disarmChainLockToken invalidates it the
+ * instant that attempt's run is observed complete, before any other work — so
+ * a stale script sitting in the inter-step gap always reads a now-mismatched
+ * live token and is skipped by the generated script's chain-lock check
+ * exactly like a genuinely foreign holder. `seed` is a separate, never-rotated
+ * value written once at acquisition, used only to verify lock OWNERSHIP at
+ * release/disarm time (so a chain that outlives its own staleness window can
+ * never tear down or mutate a DIFFERENT, later chain's lock).
+ */
+const CHAIN_LOCK_STALE_MS = 2 * 60 * 60_000; // 2h — comfortably above agent-orchestration.ts's HARD_TOTAL_TIMEOUT_MS (1h ceiling), so a live chain's own long tail is never mistaken for an orphan, but a chain whose process was killed before its `finally` ran (app killed mid-run) self-heals instead of permanently blocking that agent's future scheduled fires.
+
+function chainLockToken(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Acquire the chain-scoped lock for `agentId`. Throws when a DIFFERENT,
+ * still-live chain attempt already holds it — callers (runEscalatingAttempts /
+ * runAgentOrchestrated) should let that propagate as a run failure; under
+ * normal operation inFlightAgentRuns already prevents a same-process second
+ * attempt, so reaching a genuine busy signal here means either a cross-process
+ * race or an app-restart-while-mid-chain edge case, both rare enough that
+ * surfacing an explicit error is preferable to silently starting a second
+ * chain. Only an EXPLICIT "CHAIN_LOCK_BUSY" signal from the device is treated
+ * as busy — any other output (including an unrecognized/empty response, e.g.
+ * from a test's mocked runCommand that doesn't model this lock at all) is
+ * treated as acquired, so this new lock can never itself brick a run whose
+ * test harness predates it.
+ */
+export async function acquireChainLock(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<string> {
+  const dir = getChainLockDir(agentId);
+  const seed = chainLockToken();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const staleSec = Math.floor(CHAIN_LOCK_STALE_MS / 1000);
+  const out = await runCommand(
+    `# CHAIN_LOCK_ACQUIRE\n` +
+      `mkdir -p ${shellQuote(`${agentsDir()}/locks`)}\n` +
+      `LOCK_DIR=${shellQuote(dir)}\n` +
+      `shelly_try_acquire_chain_lock() {\n` +
+      `  if mkdir "$LOCK_DIR" 2>/dev/null; then\n` +
+      `    printf '%s' ${shellQuote(seed)} > "$LOCK_DIR/seed"\n` +
+      `    printf '' > "$LOCK_DIR/token"\n` +
+      `    printf '%s' "$1" > "$LOCK_DIR/acquired-at"\n` +
+      `    echo CHAIN_LOCK_OK\n` +
+      `    return 0\n` +
+      `  fi\n` +
+      `  return 1\n` +
+      `}\n` +
+      `if ! shelly_try_acquire_chain_lock ${nowSec}; then\n` +
+      `  ACQUIRED_AT=$(cat "$LOCK_DIR/acquired-at" 2>/dev/null || echo 0)\n` +
+      `  case "$ACQUIRED_AT" in ''|*[!0-9]*) ACQUIRED_AT=0 ;; esac\n` +
+      `  AGE=$(( ${nowSec} - ACQUIRED_AT ))\n` +
+      `  if [ "$AGE" -ge ${staleSec} ]; then\n` +
+      `    rm -rf "$LOCK_DIR"\n` +
+      `    shelly_try_acquire_chain_lock ${nowSec} || echo CHAIN_LOCK_BUSY\n` +
+      `  else\n` +
+      `    echo CHAIN_LOCK_BUSY\n` +
+      `  fi\n` +
+      `fi`
+  );
+  if (out.includes('CHAIN_LOCK_BUSY')) {
+    throw new Error(`agent ${agentId}: another run of this agent is already holding the chain lock`);
+  }
+  return seed;
+}
+
+/** Release the chain-scoped lock, but only if it is still the SAME lock this
+ * call originally acquired (seed match) — see the module doc comment above.
+ * Best-effort: never throws, since a failed release must not abort the rest
+ * of the chain's own bookkeeping (aggregate log persist, memory capture,
+ * etc.) that happens after it in a `finally`. */
+export async function releaseChainLock(
+  agentId: string,
+  seed: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const dir = getChainLockDir(agentId);
+  try {
+    await runCommand(
+      `# CHAIN_LOCK_RELEASE\n` +
+        `HELD=$(cat ${shellQuote(`${dir}/seed`)} 2>/dev/null || true); ` +
+        `if [ "$HELD" = ${shellQuote(seed)} ]; then rm -rf ${shellQuote(dir)}; fi`
+    );
+  } catch (error) {
+    logWarn('AgentChainLock', `failed to release chain lock for ${agentId}`, error);
+  }
+}
+
+/** Invalidate the chain lock's live token immediately after a step/candidate's
+ * run is observed complete (before any other JS work in that loop iteration)
+ * so a stale on-disk script sitting in the inter-step gap — LOCK_FILE
+ * released, the next materialize not yet written — no longer matches the
+ * (now-cleared) live token if a native alarm happens to fire in that exact
+ * window. Re-armed for the NEXT attempt by materializeAgent's own write (see
+ * MaterializeRunOpts.chainLockNonce). Best-effort, same reasoning as
+ * releaseChainLock. */
+async function disarmChainLockToken(
+  agentId: string,
+  seed: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const dir = getChainLockDir(agentId);
+  try {
+    await runCommand(
+      `# CHAIN_LOCK_DISARM\n` +
+        `HELD=$(cat ${shellQuote(`${dir}/seed`)} 2>/dev/null || true); ` +
+        `if [ "$HELD" = ${shellQuote(seed)} ]; then printf '' > ${shellQuote(`${dir}/token`)}; fi`
+    );
+  } catch (error) {
+    logWarn('AgentChainLock', `failed to disarm chain lock token for ${agentId}`, error);
+  }
+}
+
+/**
  * ③b-2: run an agent through its escalation ladder. Try the primary backend; if
  * the attempt failed (error status OR a local-context fallback digest), climb to
  * the next allowed tool and re-run, until one succeeds or the ladder is exhausted.
@@ -744,23 +912,40 @@ async function runEscalatingAttempts(
   options: { waitTimeoutMs?: number; pollMs?: number },
   runStartedAtMs: number,
 ): Promise<void> {
-  const { ladder } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs);
+  // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): this
+  // single-run ladder has the exact same "materialize+run per candidate,
+  // release LOCK_FILE between candidates" shape runAgentOrchestrated's
+  // multi-step loop has — see the module doc comment above acquireChainLock.
+  // Held across the WHOLE attempt sequence, released only after the final
+  // restore-to-original-config materialize below (in `finally`, so an early
+  // throw from runLadderAttempts still releases it).
+  const chainLockSeed = await acquireChainLock(agent.id, runCommand);
+  try {
+    const { ladder } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs, {
+      chainLockSeed,
+    });
 
-  // Restore the agent's own (un-overridden) script so a later scheduled fire uses
-  // the configured tool / fresh route, not the last escalation override. Any
-  // non-noEscalation ladder pins the attempt tool into the on-disk script — even
-  // a SINGLE-element one (e.g. keyless web-mandatory → [Codex]) — so restore
-  // whenever an override could have been written, not only on multi-tool ladders
-  // (otherwise adding the missing key later wouldn't reach the alarm path until
-  // an unrelated re-materialize).
-  if (!ladder.noEscalation) {
-    try {
-      await materializeAgent(agent, runCommand, false);
-    } catch (error) {
-      // Best-effort: a later foreground run or startup-repair re-materializes. Log
-      // so a stale on-disk override (attended ladders only) is diagnosable.
-      logWarn('AgentEscalation', `failed to restore configured script for ${agent.id}`, error);
+    // Restore the agent's own (un-overridden) script so a later scheduled fire uses
+    // the configured tool / fresh route, not the last escalation override. Any
+    // non-noEscalation ladder pins the attempt tool into the on-disk script — even
+    // a SINGLE-element one (e.g. keyless web-mandatory → [Codex]) — so restore
+    // whenever an override could have been written, not only on multi-tool ladders
+    // (otherwise adding the missing key later wouldn't reach the alarm path until
+    // an unrelated re-materialize).
+    if (!ladder.noEscalation) {
+      try {
+        // Deliberately no chainLockNonce here — this is the STORED script a
+        // later native alarm fire reads directly, so it must bake an empty
+        // nonce (see MaterializeRunOpts.chainLockNonce's doc comment).
+        await materializeAgent(agent, runCommand, false);
+      } catch (error) {
+        // Best-effort: a later foreground run or startup-repair re-materializes. Log
+        // so a stale on-disk override (attended ladders only) is diagnosable.
+        logWarn('AgentEscalation', `failed to restore configured script for ${agent.id}`, error);
+      }
     }
+  } finally {
+    await releaseChainLock(agent.id, chainLockSeed, runCommand);
   }
 }
 
@@ -779,7 +964,17 @@ async function runLadderAttempts(
   runCommand: (cmd: string) => Promise<string>,
   options: { waitTimeoutMs?: number; pollMs?: number },
   runStartedAtMs: number,
-  materializeOpts: { suppressAction?: boolean } = {},
+  materializeOpts: {
+    suppressAction?: boolean;
+    // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): the seed
+    // returned by the caller's acquireChainLock, threaded down so each
+    // candidate's materialize call can bake + arm a fresh live token (see
+    // MaterializeRunOpts.chainLockNonce's doc comment).
+    // Absent for a caller that isn't chain-lock-scoped (none today — both
+    // runEscalatingAttempts and runAgentOrchestrated always pass it — but
+    // kept optional defensively rather than assumed non-null).
+    chainLockSeed?: string;
+  } = {},
 ): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
   const ladder = resolveEscalationLadder(runAgent, env);
@@ -826,6 +1021,13 @@ async function runLadderAttempts(
       // now-unauthorized keyed tool and the ladder escalates — the safe
       // outcome, not a stale ON write surviving to disk.
       suppressWebCodexBake: true,
+      // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): fresh
+      // per-attempt token, not a chain-lifetime constant — see the module doc
+      // comment above acquireChainLock for why a constant nonce wouldn't
+      // actually close the inter-step gap. Absent (undefined) when this
+      // caller isn't chain-lock-scoped, which bakes an empty nonce — a script
+      // with an empty baked nonce can never match a live chain lock either.
+      chainLockNonce: materializeOpts.chainLockSeed ? chainLockToken() : undefined,
       // DEFERRED #2 境界: a human drove this run (Run now / @agent) and is
       // in-app to answer escalations — bake unattended:false so the driver
       // keeps the escalation wait for a gray verdict. The post-ladder /
@@ -842,6 +1044,14 @@ async function runLadderAttempts(
       timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
       pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
     });
+    // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): disarm
+    // BEFORE any other work in this iteration — this attempt's run is done,
+    // so its now-stale on-disk script must stop matching the live chain lock
+    // the instant it's safe to (see the module doc comment above
+    // acquireChainLock). Re-armed by the NEXT attempt's own materialize call.
+    if (materializeOpts.chainLockSeed) {
+      await disarmChainLockToken(agentId, materializeOpts.chainLockSeed, runCommand);
+    }
 
     const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
     finalLog = after.at(-1);
@@ -885,6 +1095,26 @@ async function runAgentOrchestrated(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
   options: { waitTimeoutMs?: number; pollMs?: number } = {}
+): Promise<void> {
+  const agentId = agent.id;
+  // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): held across
+  // the ENTIRE chain — every step's runLadderAttempts call below AND the
+  // final restore-to-original-config materialize — released only in
+  // `finally` so an early `break`/thrown error still releases it. See the
+  // module doc comment above acquireChainLock for the full design.
+  const chainLockSeed = await acquireChainLock(agentId, runCommand);
+  try {
+    await runAgentOrchestratedBody(agent, runCommand, options, chainLockSeed);
+  } finally {
+    await releaseChainLock(agentId, chainLockSeed, runCommand);
+  }
+}
+
+async function runAgentOrchestratedBody(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number },
+  chainLockSeed: string
 ): Promise<void> {
   const agentId = agent.id;
   const steps = normalizeSteps(agent.orchestration);
@@ -944,7 +1174,7 @@ async function runAgentOrchestrated(
         runCommand,
         { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
         stepStart - 5_000,
-        { suppressAction: !isFinalStep },
+        { suppressAction: !isFinalStep, chainLockSeed },
       ));
     } catch (error) {
       records.push({
@@ -977,6 +1207,9 @@ async function runAgentOrchestrated(
   }
 
   // Restore the original (orchestration) script after the last step-prompt run.
+  // Deliberately no chainLockNonce here — this is the STORED script a later
+  // native alarm fire reads directly, so it must bake an empty nonce (see
+  // MaterializeRunOpts.chainLockNonce's doc comment).
   try {
     await materializeAgent(agent, runCommand, false);
   } catch {
@@ -1202,6 +1435,7 @@ export async function deleteAgent(agentId: string): Promise<void> {
     `  cp "$d/logs/${agentId}/agent-driver-audit.jsonl" "$d/audits/${agentId}-agent-driver-audit.jsonl"\n` +
     `fi\n` +
     `rm -f "$d/${agentId}.json" "$d/run-agent-${agentId}.sh" "$d/plans/plan-agent-${agentId}.json" "$d/locks/${agentId}.pid"\n` +
+    `rm -rf "$d/locks/${agentId}.pid.lockdir" "$d/locks/${agentId}.chain.lock"\n` +
     `rm -rf "$d/logs/${agentId}"\n` +
     // Phase 1 memory lives under memory/<id>; drop it with the agent so a deleted
     // agent leaves no orphaned memory behind (the Vault mirror is left in place

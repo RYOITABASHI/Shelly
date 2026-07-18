@@ -149,7 +149,27 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // every backend's `head -c` truncation. Bumped because the generated script's
 // prompt-assembly BEHAVIOR changed (new leading line in every model-facing
 // prompt), not just cosmetic text.
-const AGENT_SCRIPT_VERSION = 19;
+// v20 (2026-07-18, docs/superpowers/DEFERRED.md "エージェント二重実行レース"
+// chain-lock follow-up): closes the remaining native-alarm-vs-attended-chain
+// window the JS-side inFlightAgentRuns dedupe (agent-manager.ts) couldn't
+// reach — a native AlarmManager fire runs this .sh directly, never through
+// runAgentNow. Two changes: (1) a new CHAIN_LOCK_DIR/CHAIN_LOCK_NONCE check,
+// ahead of the per-agent lock, skips ("previous run still active") unless the
+// live chain-lock's token matches this invocation's baked nonce — see
+// lib/agent-manager.ts's acquireChainLock/disarmChainLockToken (the "arm"
+// write is folded into materializeAgentBody's own write batch, not a
+// separate function — see MaterializeRunOpts.chainLockNonce's doc comment)
+// for the JS side that owns this lock across an
+// orchestrated chain's/escalation ladder's separate per-step per-invocation
+// runs. (2) the pre-existing per-agent LOCK_FILE check's
+// `[ -f "$LOCK_FILE" ] ... echo $$ > "$LOCK_FILE"` was a non-atomic
+// check-then-act (TOCTOU) — hardened to an mkdir-based atomic gate
+// (LOCK_DIR="$LOCK_FILE.lockdir"), mirroring REGISTRY_LOCK's existing
+// mkdir pattern, while LOCK_FILE itself keeps its exact prior name/format so
+// ACTIVE_COUNT's `find -name '*.pid'` glob and generateStopCommand() are
+// unaffected. Bumped because the generated script's runtime BEHAVIOR changed
+// (new skip path, new lock primitive), not just cosmetic text.
+const AGENT_SCRIPT_VERSION = 20;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -321,12 +341,19 @@ export function sanitizeOutputTemplate(template: string | null | undefined): str
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean; attended?: boolean } = {}): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean; attended?: boolean; chainLockNonce?: string } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile, dmPairingsFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
   const lockFile = `${locksDir}/${agentId}.pid`;
   const logDir = `${logsDir}/${agentId}`;
+  // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): mkdir-based
+  // atomicity gate for LOCK_FILE's write (see the v20 script-version comment
+  // above) — a companion directory next to the existing .pid file, not a
+  // rename, so ACTIVE_COUNT's `*.pid` glob and generateStopCommand() below
+  // stay unaffected.
+  const lockDir = `${lockFile}.lockdir`;
+  const chainLockDir = getChainLockDir(agentId);
 
   const routeResolution = resolveAgentRoute(agent);
 
@@ -656,6 +683,9 @@ AGENT_NAME=${shellQuote(agent.name)}
 AGENT_WORKSPACE_ROOT=${shellQuote(agent.workspaceRoot ?? '')}
 RESULT_FILE=${shellQuote(resultFile)}
 LOCK_FILE=${shellQuote(lockFile)}
+LOCK_DIR=${shellQuote(lockDir)}
+CHAIN_LOCK_DIR=${shellQuote(chainLockDir)}
+CHAIN_LOCK_NONCE=${shellQuote(opts.chainLockNonce ?? '')}
 LOG_DIR=${shellQuote(logDir)}
 TIMEOUT=${DEFAULT_TIMEOUT_SEC}
 OUTPUT_DIR=${shellQuote(outputDir)}
@@ -736,6 +766,7 @@ cleanup() {
     rmdir "$REGISTRY_LOCK" 2>/dev/null || true
   fi
   rm -f "$LOCK_FILE"
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
 }
 shelly_app_binary_path() {
   name="$1"
@@ -3319,10 +3350,26 @@ LOGEOF
   exit 0
 fi
 
-# Per-agent concurrency lock
-if [ -f "$LOCK_FILE" ]; then
-  OLD_PID=$(cat "$LOCK_FILE")
-  if kill -0 "$OLD_PID" 2>/dev/null; then
+# Chain-level lock check (docs/superpowers/DEFERRED.md "エージェント二重実行
+# レース"): an attended multi-step/multi-attempt run
+# (lib/agent-manager.ts's runAgentOrchestrated/runEscalatingAttempts) holds
+# CHAIN_LOCK_DIR — an mkdir-based directory lock acquired/released from JS,
+# spanning ALL of that chain's separate per-step/per-candidate script
+# invocations — for as long as it is active. A native AlarmManager fire runs
+# this .sh directly and never sets CHAIN_LOCK_NONCE, so it always mismatches
+# a live chain and is skipped here exactly like the per-agent LOCK_FILE busy
+# case below — closing the window where the on-disk script used to sit
+# lock-free between two chain steps. The chain's OWN step/candidate launches
+# carry a live-matching CHAIN_LOCK_NONCE: the JS side rotates + immediately
+# invalidates this token per attempt (materializeAgentBody bakes + arms the
+# next one, disarmChainLockToken in lib/agent-manager.ts invalidates the
+# just-finished one) rather than baking one constant value for the whole
+# chain, because a chain-lifetime-constant nonce
+# would ALSO match a native alarm that happens to read the same still-on-disk
+# transient script during the inter-step gap.
+if [ -d "$CHAIN_LOCK_DIR" ]; then
+  CHAIN_LOCK_LIVE_TOKEN=$(cat "$CHAIN_LOCK_DIR/token" 2>/dev/null || true)
+  if [ -z "$CHAIN_LOCK_NONCE" ] || [ -z "$CHAIN_LOCK_LIVE_TOKEN" ] || [ "$CHAIN_LOCK_LIVE_TOKEN" != "$CHAIN_LOCK_NONCE" ]; then
     TS=$(date +%s)
     TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
     cat > "$LOG_DIR/$TS.json" << LOGEOF
@@ -3330,11 +3377,49 @@ if [ -f "$LOCK_FILE" ]; then
 LOGEOF
     exit 0
   fi
-  rm -f "$LOCK_FILE"
 fi
 
-# Acquire lock
-echo $$ > "$LOCK_FILE"
+# Per-agent concurrency lock. Hardened (docs/superpowers/DEFERRED.md
+# "エージェント二重実行レース"): a bare '[ -f "$LOCK_FILE" ] ... echo $$ >
+# "$LOCK_FILE"' is a non-atomic check-then-act — two invocations starting
+# within the same instant can both pass the '[ -f ]' check before either
+# writes. LOCK_DIR is an mkdir-based atomic gate for that same write, mirroring
+# REGISTRY_LOCK's mkdir pattern (register_source_urls() below) — mkdir
+# succeeds for exactly one invocation, so only the winner ever reaches
+# 'echo $$ > "$LOCK_FILE"'. $LOCK_FILE keeps its exact prior name/content
+# format (a bare PID) so ACTIVE_COUNT above and generateStopCommand()
+# (lib/agent-executor.ts) are unaffected — only the acquisition GATE is new.
+shelly_try_acquire_lock_file() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo $$ > "$LOCK_FILE"
+    return 0
+  fi
+  return 1
+}
+if ! shelly_try_acquire_lock_file; then
+  OLD_PID=$(cat "$LOCK_FILE" 2>/dev/null || true)
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    TS=$(date +%s)
+    TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
+    cat > "$LOG_DIR/$TS.json" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"previous run still active","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON","routeDecision":$ROUTE_DECISION_JSON}
+LOGEOF
+    exit 0
+  fi
+  # Stale (holder's PID is gone, or LOCK_FILE unreadable) — reclaim atomically.
+  rm -rf "$LOCK_DIR"
+  rm -f "$LOCK_FILE"
+  if ! shelly_try_acquire_lock_file; then
+    # Lost the race to a third invocation that reclaimed it first — treat the
+    # same as busy rather than looping.
+    TS=$(date +%s)
+    TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
+    cat > "$LOG_DIR/$TS.json" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"skipped","outputPreview":"previous run still active","durationMs":0,"toolUsed":"$TOOL_LABEL_JSON","routeDecision":$ROUTE_DECISION_JSON}
+LOGEOF
+    exit 0
+  fi
+fi
 
 # Execute tool
 rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
@@ -4186,6 +4271,19 @@ export function getScriptPath(agentId: string): string {
   return `${paths().agentsDir}/run-agent-${agentId}.sh`;
 }
 
+/**
+ * DEFERRED.md エージェント二重実行レース (chain-lock follow-up): single source
+ * of truth for the chain-scoped mkdir lock's directory path, shared by
+ * generateRunScript (bakes it as CHAIN_LOCK_DIR for the runtime check) and
+ * lib/agent-manager.ts's acquireChainLock/releaseChainLock/
+ * disarmChainLockToken/materializeAgentBody (which touch it via runCommand
+ * from the JS/native orchestration layer — this lock is held across MULTIPLE
+ * separate script invocations, so it cannot live inside the generated bash).
+ */
+export function getChainLockDir(agentId: string): string {
+  return `${paths().locksDir}/${agentId}.chain.lock`;
+}
+
 export function generateInstallCommands(agent: Agent): string[] {
   const { agentsDir, tmpDir, locksDir, logsDir } = paths();
   const scriptPath = getScriptPath(agent.id);
@@ -4197,5 +4295,6 @@ export function generateInstallCommands(agent: Agent): string[] {
 
 export function generateStopCommand(agentId: string): string {
   const pidFile = `${paths().locksDir}/${agentId}.pid`;
-  return `pid_file=${shellQuote(pidFile)}; if [ -f "$pid_file" ]; then pid="$(cat "$pid_file")"; kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 1; kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f "$pid_file"; fi`;
+  const lockDir = `${pidFile}.lockdir`;
+  return `pid_file=${shellQuote(pidFile)}; if [ -f "$pid_file" ]; then pid="$(cat "$pid_file")"; kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 1; kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f "$pid_file"; fi; rm -rf ${shellQuote(lockDir)} 2>/dev/null || true`;
 }
