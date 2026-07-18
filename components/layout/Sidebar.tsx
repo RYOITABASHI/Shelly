@@ -651,6 +651,18 @@ export function Sidebar() {
   }, [pendingSkillApprovalName, quarantinedSkills, showImportedSkillDetail]);
 
   const handleRunScheduledAgent = React.useCallback(async (agentId: string, agentName: string) => {
+    // Concurrency-race investigation (2026-07-17/18, agent-mrorpolq): this is
+    // the single choke point BOTH RUN NOW triggers (the agent row's play-arrow
+    // Pressable and the detail-popup Alert's "Run Now" button) call — neither
+    // had a guard, so a double-tap/ghost-tap could fire two overlapping runs
+    // for the same agent before the first one's own materialize/run-log
+    // writes landed. `pendingAgentIds`/`runningAgentIds` were already tracked
+    // for the "running agents" list display but never read here to block a
+    // re-entrant press. lib/agent-manager.ts's runAgentNow now also dedupes
+    // concurrent calls for the same agentId at the JS level (a second call
+    // joins the in-flight one instead of starting its own), so this is
+    // defense in depth — it also avoids a silently-wasted duplicate press.
+    if (pendingAgentIds.has(agentId) || runningAgentIds.has(agentId)) return;
     setPendingAgentIds((prev) => new Set(prev).add(agentId));
     try {
       await runAgentNow(agentId, runCommandForAgentSync);
@@ -675,7 +687,7 @@ export function Sidebar() {
       });
       Alert.alert(t('sidebar.agent_failed_title'), t('sidebar.agent_failed_body', { name: agentName }));
     }
-  }, [refreshRunningAgents, runCommandForAgentSync, offerSkillSave, t]);
+  }, [refreshRunningAgents, runCommandForAgentSync, offerSkillSave, t, pendingAgentIds, runningAgentIds]);
 
   const handleTogglePause = React.useCallback(async (agent: Agent) => {
     try {
@@ -1018,12 +1030,17 @@ export function Sidebar() {
                   </Pressable>
                   <Pressable
                     onPress={() => void handleRunScheduledAgent(agent.id, agent.name)}
+                    disabled={pendingAgentIds.has(agent.id) || runningAgentIds.has(agent.id)}
                     hitSlop={8}
                     style={styles.tasksAction}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.run_agent_now_a11y', { name: agent.name })}
                   >
-                    <MaterialIcons name="play-arrow" size={12} color={C.accent} />
+                    <MaterialIcons
+                      name="play-arrow"
+                      size={12}
+                      color={pendingAgentIds.has(agent.id) || runningAgentIds.has(agent.id) ? C.text3 : C.accent}
+                    />
                   </Pressable>
                   <Pressable
                     onPress={() => handleToggleAutonomous(agent)}

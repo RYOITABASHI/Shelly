@@ -572,7 +572,65 @@ async function persistRememberFact(
   }
 }
 
+/**
+ * Concurrency-race investigation (2026-07-17/18, agent-mrorpolq): a JS-driven
+ * attended run (Sidebar "RUN NOW" / @agent chat / TerminalPane) has NO guard
+ * against a second concurrent invocation for the SAME agent. Sidebar.tsx's
+ * `pendingAgentIds` state was tracked but never read to disable the RUN NOW
+ * controls (components/layout/Sidebar.tsx's play-arrow Pressable and the
+ * detail-popup's Alert.alert "Run Now" button both fire unconditionally on
+ * every press), so a double-tap/ghost-tap — or any other caller invoking
+ * runAgentNow for the same agentId while a prior call is still in flight —
+ * could start two overlapping runs. For an orchestrated (>=2 step) agent this
+ * is especially damaging: runAgentOrchestrated's per-step loop RELEASES the
+ * native per-script lock (agent-executor.ts's LOCK_FILE) between steps while
+ * it transiently rewrites the on-disk script to each step's single-step form
+ * (materializeAgent inside runLadderAttempts), so a second overlapping
+ * runAgentOrchestrated for the same agent can interleave its own materialize/
+ * run-log writes with the first's, corrupting the aggregate result the first
+ * call was building (see docs/superpowers/DEFERRED.md's 2026-07-18 entry for
+ * the full trace).
+ *
+ * Fix: dedupe concurrent runAgentNow calls for the SAME agentId at the single
+ * JS choke point every caller already goes through, regardless of which UI
+ * surface triggered them. A second call while one is in flight JOINS the
+ * existing in-flight promise instead of starting its own — the run genuinely
+ * happens once, and both callers observe the same outcome. This does not (and
+ * cannot, from JS alone) close the separate native-alarm-vs-mid-chain-window
+ * race also identified during this investigation — that one needs the
+ * unattended AlarmManager fire itself to observe an attended chain's
+ * in-progress state, which lives outside this process; see DEFERRED.md.
+ */
+const inFlightAgentRuns = new Map<string, Promise<void>>();
+
 export async function runAgentNow(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+  options: {
+    waitTimeoutMs?: number;
+    pollMs?: number;
+    runStartedAtMs?: number;
+  } = {}
+): Promise<void> {
+  const existing = inFlightAgentRuns.get(agentId);
+  if (existing) {
+    logWarn('AgentRunConcurrency', `runAgentNow(${agentId}) called while a run is already in flight — joining it instead of starting a second one`);
+    return existing;
+  }
+  const turn = runAgentNowInner(agentId, runCommand, options);
+  inFlightAgentRuns.set(agentId, turn);
+  try {
+    await turn;
+  } finally {
+    // Only clear the map entry if it still points at THIS turn — defensive,
+    // though under the guard above no other writer can have replaced it.
+    if (inFlightAgentRuns.get(agentId) === turn) {
+      inFlightAgentRuns.delete(agentId);
+    }
+  }
+}
+
+async function runAgentNowInner(
   agentId: string,
   runCommand: (cmd: string) => Promise<string>,
   options: {
@@ -607,7 +665,17 @@ export async function runAgentNow(
       throw new Error(t('agents.api_call_attended_unsupported'));
     }
   }
-  if (orchestrationAgent && isOrchestrated(orchestrationAgent.orchestration)) {
+  const orchestrated = isOrchestrated(orchestrationAgent?.orchestration);
+  // 2026-07-18 concurrency-bug diagnostic (see DEFERRED.md): logs whether this
+  // run took the orchestrated chain path or the single-run fallback, so an
+  // on-device repro can confirm/rule out isOrchestrated() itself flipping for
+  // this agent, versus the divergence happening downstream (or via a second
+  // concurrent invocation racing this one — see inFlightAgentRuns above).
+  logWarn(
+    'AgentRunDecision',
+    `agent ${agentId}: stepCount=${normalizeSteps(orchestrationAgent?.orchestration).length} isOrchestrated=${orchestrated}`
+  );
+  if (orchestrationAgent && orchestrated) {
     await runAgentOrchestrated(orchestrationAgent, runCommand, options);
     return;
   }
