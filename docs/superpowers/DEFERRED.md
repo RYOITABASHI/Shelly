@@ -14,9 +14,15 @@
 
 ---
 
-### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い — 未着手・設計のみ (P1)
+### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い — ✅ 実装済み（`92d66acc1`）・実機未検証 (P1)
 
-**優先度**: P1（次リリース推奨——`tool.type: 'local'`に解決される多段オーケストレーション済みエージェントの無人スケジュール発火という「レアなエッジケースではなく通常経路」で、サーバーが未起動なら確実に失敗する。ただし on-device 往復無しに生成bash側/Kotlin側どちらの実装も安全に検証しきれないため、実装は次回セッションに送る）
+**優先度**: P1（次リリース推奨——`tool.type: 'local'`に解決される多段オーケストレーション済みエージェントの無人スケジュール発火という「レアなエッジケースではなく通常経路」で、サーバーが未起動なら確実に失敗する）
+
+**→ 2026-07-18 `92d66acc1` で実装済み**: 下記「提案設計」の(1)(2)(3)をそのまま実装。`scripts/shelly-local-llm-ensure.sh`（新規875行、APKアセットmirror同梱）へ`ensure_local_llm_server()`＋依存29関数を`lib/agent-executor.ts`から**逐語抽出**（JSテンプレートリテラルのエスケープ`\$`/`\n`/`\;`を平文の`$`/`\n`/`\;`へ戻すだけ、ロジック差分ゼロを29関数全てについてdiffで個別確認済み）。`lib/agent-executor.ts`自体は無変更（意図的、既存の稼働中`.sh`生成器は触らない）。`AgentRuntime.kt::runPlanAgent()`は既存の全validation guardの後・node起動の前に、on-disk PlanSpecの`tool.type`を読み（`readPlanSpecToolType`、既存の`readPlanSpecActionType`と同一パターン）、`"local"`なら共有スクリプトをsourceして`ensure_local_llm_server`を1回呼ぶpreflightを既存と同一の`ShellyJNI.execSubprocess`機構で実行。失敗/タイムアウトは全てログのみでswallowし、無変更のnode起動へ必ずフォールスルー（新しい失敗モード無し）。`HomeInitializer.kt`は`.shelly-plan-executor.js`と全く同じパターンで新スクリプトを`$HOME`へ無条件展開。
+
+検証（Kotlinはこの環境でコンパイル確認不可のため通常より慎重に）: 新呼び出しサイトの全シンボル（`bashPath`/`libPath`/`homeDir`/`plan`）がスコープ内であることを直接ファイル読みで確認、`ShellyJNI.execSubprocess`呼び出しの引数順序/個数を同一ファイル内の既存2箇所と1対1比較して一致確認、抽出した29関数**全て**を`lib/agent-executor.ts`の原本と個別diff（前述の通りエスケープ差のみ）、`lib/agent-executor.ts`/`scripts/shelly-plan-executor.js`（+asset mirror）が無変更であることを`git diff --stat`で確認、`bash -n`/`npx tsc --noEmit`ともにクリーン。jestはworktreeが`.claude/worktrees`配下だとテストを検出できない既知の問題があったため、都度cleanコピー（`robocopy`で`.git`/`node_modules`/`.claude`を除外）して実行——新規`local-llm-ensure-parity.test.ts`含め1536/1565件通過、残り29件の失敗は全てこのブランチの変更と無関係なpre-existing Windows環境baseline（ENAMETOOLONG argv上限、および一時パス二重化`C:\C:\...`バグ）であることを、**このブランチの分岐元コミット`fb3fd711e`をそのままclean-copyしてテストし同一の29件失敗を再現**することで確認済み（このdiffが触るファイルはどちらの失敗グループにも含まれない）。
+
+**未了**（実機検証、on-device往復が必要）: ①`tool.type=local`に解決されたorchestrated agentを、llama-server停止状態から無人スケジュール発火→自動起動→run成功。②レガシー`.sh`経路（非orchestrated、またはattended runNow）のautostartに退行が無いこと。③無人plan-executor起動とUIの手動「Start」が同時に走ってもlock/idle-watcherが二重動作しないこと。CI green確認後、次のon-device検証セッションで実施。
 
 **発見**: 2026-07-18、実機 logcat + on-disk run-log で `agent-mrode1ec`（スケジュール `*/5 * * * *`、`tool: {type:'auto'}`）が Layer-2 scorer 経由で `toolType: "local"`（confidence 58%）に解決され、471ms で `"status":"unavailable"`, `"errorMessage":"...connect ECONNREFUSED 127.0.0.1:8080"` 失敗。on-device の llama-server が単に起動していなかった。
 
