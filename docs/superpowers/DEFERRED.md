@@ -14,6 +14,41 @@
 
 ---
 
+### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い — 未着手・設計のみ (P1)
+
+**優先度**: P1（次リリース推奨——`tool.type: 'local'`に解決される多段オーケストレーション済みエージェントの無人スケジュール発火という「レアなエッジケースではなく通常経路」で、サーバーが未起動なら確実に失敗する。ただし on-device 往復無しに生成bash側/Kotlin側どちらの実装も安全に検証しきれないため、実装は次回セッションに送る）
+
+**発見**: 2026-07-18、実機 logcat + on-disk run-log で `agent-mrode1ec`（スケジュール `*/5 * * * *`、`tool: {type:'auto'}`）が Layer-2 scorer 経由で `toolType: "local"`（confidence 58%）に解決され、471ms で `"status":"unavailable"`, `"errorMessage":"...connect ECONNREFUSED 127.0.0.1:8080"` 失敗。on-device の llama-server が単に起動していなかった。
+
+**根本原因（両ファイルを直接読んで確認済み、記憶からの推測ではない）**:
+- `lib/agent-executor.ts`（レガシー単発 `.sh` 生成器）の `ensure_local_llm_server()`（~行2834-3005、依存する `find_llama_server_bin`/`local_llm_ready`/`local_llm_is_loopback_url`/`find_local_llm_model`/`local_llm_port`/`local_llm_stop_server`/`local_llm_runtime_profile`/`local_llm_touch_activity`/`local_llm_start_idle_watcher`/`local_llm_clear_stale_start_lock` ヘルパー群込み）は、既存サーバーの健全性チェック→再利用（tier不一致でも殺さない、過去バグの意図的な修正）→`mkdir`ベースの start-lock 取得→バイナリ自動検出/自動インストール→GGUFモデル自動検出→linker64ラップ起動→最大90秒のreadiness待機、を完全に実装している。
+- `scripts/shelly-plan-executor.js`（+ APK asset mirror `modules/terminal-emulator/android/src/main/assets/shelly-plan-executor.js`）の `modelRequest()` の `'local'` ケース（~行563-579）は、上記のいずれも持たず、`http://127.0.0.1:8080/v1/chat/completions`（or `LOCAL_LLM_URL`）へ直接 fire するだけ。
+- `AgentRuntime.kt`（`modules/terminal-emulator/android/.../AgentRuntime.kt`）の `shouldRunPlanExecutor()`/`planSpecHasOrchestrationSteps()`（~行681-710）が、on-disk PlanSpec の `steps.list` が非空なら（North Star P0(c)、`183104efb`）chain-aware な plan-executor 経路へルーティングする。これは「レアなエッジケース」ではなく、**多段オーケストレーション済みエージェントの無人発火の通常経路**（`shouldRunPlanExecutor` 自身のdocコメントが明言）。
+
+**確認済み: `scripts/shelly-plan-executor.js` へ subprocess-spawn 機能を足すのは却下**——この executor は意図的に「HTTPリクエストのみ・spawn不可」という狭い信頼境界として設計されている（capability-broker/boundary-policy の信頼モデルに関わる判断、DEFERRED.md 内の既存議論を参照）。本パスではこの境界を widen しない。
+
+**調査で確定した Option A（ネイティブ preflight）の実現可能性**:
+- `AgentRuntime.kt` の `runPlanAgent()`（~行282-455）は既に完全なネイティブ subprocess-spawn 能力を持つ——`ShellyJNI.execSubprocess("/system/bin/linker64", bashPath, ...)` で bash コマンド文字列を実行し、node 経由で plan-executor.js を起動している。同関数は既に on-disk PlanSpec の JSON を読んでいる（`planSpecHasOrchestrationSteps` が `tool.type` を読む前例あり）ので、`tool.type == "local"` かどうかを node 起動前に判定するのは自然に拡張できる。
+- **既存のネイティブ「start local LLM server」専用メソッドは存在しない**——grep で確認済み。Settings/ConfigTUI の「Start」ボタン（`components/settings/LlamaCppSection.tsx`の`handleStartServer`）も、AI Pane オープン時の autostart（`lib/local-llm-autostart.ts`の`kickLocalLlmAutoStart`、`hooks/use-ai-pane-dispatch.ts`が呼ぶ`ensureLocalLlmServerRunning`）も、どちらも**Kotlin側の専用メソッドではなく**、TypeScript側で生成したbashスクリプト文字列（`lib/llamacpp-setup.ts`の`buildDaemonStartScript()`）をRN JSの`execCommand()`（JNI経由の汎用exec、`hooks/use-native-exec.ts`）で流すだけの汎用機構。しかもこれはRN/Hermes JSエンジンが生きていることに依存する（Zustand store `useSettingsStore`を読む）ため、AlarmManager発火の無人パス（`AgentAlarmReceiver`→`TerminalSessionService`→`AgentRuntime.kt`、RN JS非依存で動くことがこの経路の存在理由そのもの）からは原理的に呼べない。
+- 結果、「start llama-server」ロジックは既に**独立した2つの実装**が存在する（`lib/llamacpp-setup.ts::buildDaemonStartScript`＝UI/JS-autostart用、`lib/agent-executor.ts::ensure_local_llm_server`＝レガシー`.sh`生成用）。Kotlinへ3つ目を素朴に再実装すると、on-device調査で発見された繊細な既存修正（linker64起動前の`unset LD_PRELOAD`——AgentRuntime.kt自身が~行371-384のコメントで「llama-serverランチャーと同じパターン」と明言・依存している、start-lockのstale clear、tier不一致時のreuse-don't-kill、PIDファイルベースのidle watcher）を、検証手段なしに劣化コピーしてしまうリスクが高い。
+
+**提案設計（次回セッションで実装・実機検証すること）**:
+1. `lib/agent-executor.ts` から `ensure_local_llm_server()` とその依存ヘルパー群を、レガシー`.sh`生成テンプレートから**独立したbundled bashスクリプトアセット**（例: `scripts/shelly-local-llm-ensure.sh`、`.shelly-plan-executor.js`/`.shelly-capability-broker.js`と同じ配布パターン——`modules/terminal-emulator/android/src/main/assets/`にmirrorし`LibExtractor`/`HomeInitializer`で`$HOME`直下に展開）へ切り出す。レガシー`.sh`生成器は同じ関数群をこの共有ファイルから`source`する形に変更し、**重複を削除**する（今回は未実施——既存の稼働中コードなので不用意に触らない）。
+2. `AgentRuntime.kt::runPlanAgent()` は、node起動コマンドを組み立てる前に PlanSpec JSON から `tool.type`（+ `tool.model`）を読み、`"local"` の場合のみ、既存と**同一の** `ShellyJNI.execSubprocess("/system/bin/linker64", bashPath, ...)` 機構で「共有スクリプトをsourceして`ensure_local_llm_server`を1回呼ぶだけ」の小さな bash 前段コマンドを、境界タイムアウト（既存の90秒 readiness ループをそのまま踏襲）付きで実行する。plan-executor.js自体には一切変更を加えない（subprocess-spawn能力を持たせない、という既存の境界判断を維持）。
+3. タイムアウト/失敗時の挙動: node起動へそのまま進めて今日と同じ`"unavailable"`失敗に委ねる（新しい失敗モードを増やさない、単純さ優先）。
+
+**本パスで実装しなかった理由**:
+- (a) `lib/agent-executor.ts`は4000行超・19バージョンにわたりon-deviceでしか発見できなかった修正（LD_PRELOAD、linker64ラップ、lockレース、idle watcher等、コード内コメントに個別の実機バグ番号が刻まれている）が積み重なった、極めて壊れやすい生成器。関数群を安全に切り出す（メイン実行部を誤って二重実行しない形で）リファクタ自体が、CLAUDE.mdの既存方針（ランタイム経路変更はmerge前にbare実機PASS必須）に照らして on-device 検証なしに merge すべきでない。
+- (b) Kotlin側の変更もこの環境ではNDK/Gradle無しでコンパイル確認不可能。
+- (c) どちらの経路の実装ミスも、孤児化したllama-serverプロセスや、既に動いているレガシーパスのautostartを壊す方向に倒れうる——on-device往復無しに「安全」と言い切れない。今夜の別調査（エージェント二重実行レースのchain-level lock設計）が同じ理由で実装を見送った判断と同型。
+
+**次にやること**: 上記設計に沿って (1)(2)(3) を実装し、実機で以下を検証: ① tool.type=local に解決された orchestrated agent を、llama-server停止状態から無人スケジュール発火 → 自動起動 → run成功。② レガシー`.sh`経路（非orchestrated、または attended runNow）のautostartに退行が無いこと（`ensure_local_llm_server`が引き続き自分のスクリプトから呼ばれる）。③ 無人plan-executor起動とUIの手動「Start」が同時に走ってもlock/idle-watcherが二重動作しないこと。
+
+**付随調査（依頼された範囲、今回はコード変更なし）**: attended path（`lib/agent-manager.ts`の`runAgentOrchestrated`/`runLadderAttempts`）は**このギャップを共有しない**ことを確認済み。`runAgentOrchestrated`（~行917-934）は各ステップの`stepAgent.orchestration`を明示的に`undefined`（または空`steps`配列）へクリアしてから`runLadderAttempts`→`materializeAgent`→`buildAgentPlanSpec`を呼ぶため、attended実行が書き込むPlanSpec JSONは`steps.list`を一切持たない（`buildAgentPlanSpec`はagentが実際にorchestrationを持つ時だけ`steps`フィールドを書く）。したがって`AgentRuntime.kt`の`shouldRunPlanExecutor()`はattended runの各ステップ/候補呼び出しに対して常にfalseを返し、常にレガシー`.sh`経路（`ensure_local_llm_server`あり）へルーティングされる——PlanSpec executorは無人スケジュール発火の多段orchestrationでしか到達しない（North Star P0(c)がplan-executorを新設した目的そのもの）。
+→ sync: なし。
+
+---
+
 ### ホーム画面ウィジェット再設計 — Codex/local-LLM セッションモニターを撤去し「エージェント発射台」化、通知ベース後継は未着手 (P2)
 
 **優先度**: P2（撤去自体はUXレビューで承認済み・本パスで実装完了。失う機能——ウィジェットからのライブ Codex 承認応答——の代替が無い状態が続くのは、ウィジェットを Codex 用に使っていたユーザーには実質的なリグレッションになりうるため、通知ベース後継の実装は次善で早めに着手すべき）
@@ -2558,6 +2593,7 @@ claude() {
 
 ## History
 
+- **2026-07-18（PlanSpec executor 経由の local LLM autostart 欠如を調査、設計提案のみ記録）**: 実機で`agent-mrode1ec`（スケジュール発火、`tool.type`が`local`に解決）が`ECONNREFUSED 127.0.0.1:8080`で失敗している事象を調査。`scripts/shelly-plan-executor.js`の`modelRequest()`の`'local'`ケースには、レガシー`.sh`生成器（`lib/agent-executor.ts::ensure_local_llm_server`、直下2026-07-16のbug #154エントリで無人発火時のギャップ無しと確認済みだったのは**この経路**）が持つサーバー健全性チェック・自動起動ロジックが一切無いことを確認。`AgentRuntime.kt`は既に完全なネイティブsubprocess-spawn能力（`ShellyJNI.execSubprocess`）を持つが、「start llama-server」を呼べる既存ネイティブ専用メソッドは存在しない（UI/JS-autostart側の実装はRN/Hermes JSエンジン依存でAlarmManager無人パスから到達不能）ことを grep で確定。plan-executor.js自体へのsubprocess-spawn機能追加は既存の意図的な狭い信頼境界のため却下。安全な実装（レガシー`.sh`生成器から`ensure_local_llm_server`を独立bundled bashアセットへ切り出し、`AgentRuntime.kt::runPlanAgent()`がnode起動前に同一のexecSubprocess機構で前段呼び出しする設計）は具体化したが、4000行超・19バージョンの実機ハードニングを経た生成器への変更を on-device 検証なしに merge するリスクを避け、本パスでは実装せず`### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い`entryへ設計のみ記録。付随調査でattended path（`runAgentOrchestrated`/`runLadderAttempts`）はステップ単位でorchestrationをクリアしてから`materializeAgent`するため、このギャップを共有しないことも確認。→ sync: なし。
 - **2026-07-18（ホーム画面ウィジェット再設計、Codex/local-LLMモニター撤去）**: 独立プロダクト/UXレビューを受け、`ScouterWidgetProvider.kt`（1683行）/`scouter_widget_medium.xml` を「密なCodexセッション監視HUD」から「最大3件の予定済みエージェントの発射台+健康状態一覧」へ全面再設計。`WidgetAgentRepository.nextScheduledAgents(context, limit=3)`（run-logディレクトリから最終結果グリフをbest-effortで読む`readLastRunStatus()`新設込み）、3固定行スロットのレイアウト、行ごとの`AgentAlarmScheduler.manualRunPendingIntent`再利用RUN pill、ペットアイコンは維持しつつタップ切替インタラクションのみ撤去。サンプリング基盤（`ScouterSystemSampler`/`JsonlWatcher`/`LocalLlmSampler`）はJS側の他消費者がいると確認し無変更で継続稼働。詳細と通知ベース後継の deferred follow-up は上記「ホーム画面ウィジェット再設計」entryを参照。`__tests__/widget-agent-run-parity.test.ts`拡張、tsc clean、jest既知Windowsベースラインのみ（新規失敗ゼロ、widget testは8/8 PASS）。→ sync: なし。
 - **2026-07-18（agent-mrorpolq 二重実行レース調査 + JS側 dedupe 実装）**: 実機で3回中2回observed された orchestrated agent の異常終了（`Completed N step(s).`prefixが一切無い、257秒→3秒/9秒という所要時間の桁違い）を調査。`isOrchestrated()`の正しさとstoreの書き込み経路は既に別パスで否定済みだったため、Sidebar RUN NOWの再入ガード欠如 + `runAgentNow`のin-flight dedupe欠如という具体的なギャップを確認・修正（`lib/agent-manager.ts`の`inFlightAgentRuns`マップ、`Sidebar.tsx`の`pendingAgentIds`/`runningAgentIds`ガード配線）。生成bashスクリプトのper-agent`LOCK_FILE`がチェーンの各ステップ/候補ごとに解放される非チェーンスコープなロックであることも確認したが、native alarmとattended chainの中間窓を完全に閉じるにはnonceベースのchain-level lockという生成bash側の追加実装が必要と判断し、設計スケッチのみ`### エージェント二重実行レース`entryに記録して本パスでは見送り。診断用ログ（`AgentRunDecision`/`AgentRunConcurrency`）を追加、新規回帰テスト`__tests__/agent-manager-inflight-dedupe.test.ts`追加。`tsc --noEmit` clean、jest既知ベースラインのみ（新規失敗ゼロ）。→ sync: なし。
 - **2026-07-16（api-call narrow NL authoring v1.1、`207f78e96`）**: v1 で意図的に deferred した自然言語 authoring を、provider/hostname + explicit API-call marker の二重条件を同一 step に要求する conservative detector として実装。`AUTH_REFS` 4 provider の既存 method/path/body 契約だけを curated mapping し、曖昧な provider-only 表現、marker-only、GitHub/CDN/loopback、final step は従来 path のままにした。broker enforcement/native/UI は無変更。`tsc --noEmit` clean、focused 193/193 PASS、関連13 suites 402 PASS + 既知 Windows-only 25 FAIL（new failure 0）。→ sync: なし。
