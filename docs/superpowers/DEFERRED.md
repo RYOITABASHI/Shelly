@@ -37,7 +37,7 @@
 
 ---
 
-### SKILL-002 — 一次配布スキルカタログの CI publish 側配線 — 未着手 (P1、機能はapp側で完結済みだが空のカタログを指すだけ)
+### ✅ SKILL-002 — 一次配布スキルカタログの CI publish 側配線 — 実装済み（`940e138d3`）
 
 **優先度**: P1（app側の fetch/list/import は完全実装・実機コード上は動く状態だが、`skills-catalog-latest` リリースタグが GitHub 上に存在しない限り「カタログは空」で終わる — マージしても即座にユーザー価値が出ない機能）
 **発見**: 2026-07-17、Hermes Agent 比較調査で SKILL-001（ローカルドロップのみの取り込み）に対し「一次配布カタログ」を追加実装した際の設計判断。`agentskills.io` に検索可能なレジストリAPIが無い（2026-07-08 の SKILL-001 エントリで既に確認済み）ため、"live search" ではなく Shelly 自身の app/Codex runtime 更新と同じ GitHub Releases マニフェストパターン（`android-latest`/`latest.json`, `codex-runtime-latest`/`codex-runtime.json` の第三の兄弟チャンネル）として `skills-catalog-latest`/`skills-catalog.json` を新設した。
