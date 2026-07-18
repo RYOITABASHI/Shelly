@@ -88,9 +88,17 @@
 
 ---
 
-### エージェント二重実行レース — ✅ JS側 in-flight dedupe + native alarm 対 attended-chain 中間窓の chain-level lock ともに実装済み（`606ad78fb`）・実機未検証
+### エージェント二重実行レース — ✅ JS側 in-flight dedupe + chain-level lock（レガシー`.sh`経路 + PlanSpec executor経路の両方）実装済み（`606ad78fb`/`70d39389d`）・実機で部分検証済み
 
-**優先度**: P2（RUN NOW の再入/ゴーストタップという最も可能性の高い引き金は本パスで解消済み。残るのは「スケジュール持ちの orchestrated agent の attended chain 実行中に、たまたま同じ agent の native alarm が中間ステップの隙間窓で発火する」という、発生条件がより狭いケース）
+**優先度**: P2（RUN NOW の再入/ゴーストタップという最も可能性の高い引き金は本パスで解消済み。レガシー`.sh`経路とPlanSpec executor経路の両方でchain-lockを検証済み）
+
+**→ 2026-07-18 `70d39389d` で追加修正**: `606ad78fb`の実機テスト中に、chain-lockの保護範囲に穴があることを発見。`606ad78fb`が追加したCHAIN_LOCK_DIR/CHAIN_LOCK_NONCEチェックは`generateRunScript()`が生成する**レガシー`.sh`のbashテンプレート内にのみ**存在する。しかし North Star P0(c) 以降、PlanSpec executorに対応したtoolに解決されるorchestrated agent（＝現代的なagentの主流パターン）の無人発火は`shouldRunPlanExecutor()`により`AgentRuntime.kt::runPlanAgent()`（PlanSpec executor経路）へ直接ルーティングされ、レガシー`.sh`を一切経由しない——つまりchain-lockチェック自体に到達しない。実機で`agent-mrode1ec`（3ステップorchestrated、tool解決=local、PlanSpec executor経由）のRUN NOW（attended、15:28:47開始）と、同エージェントの通常5分おきスケジュール発火（unattended native alarm、15:30:00、PlanSpec executor経由）がほぼ同時刻に発生するのを確認し、この穴を実証的に発見した。
+
+修正: `AgentRuntime.kt::runPlanAgent()`に、既存の全plan validation guardの後・local-LLM autostart preflightの前で、`${locksDir}/${agentId}.chain.lock`（`lib/agent-executor.ts::getChainLockDir`と同一パス）の存在チェックを追加。レガシー`.sh`のnonce一致チェック（「自チェーンの次ステップ」と「他者保持」を区別する必要がある）と異なり、このnative経路は**自分自身がロックの所有者になることは原理的に無い**（`acquireChainLock`を呼ぶのはJS/attended側のみ）ため、存在チェックだけで十分——ディレクトリが存在すれば無条件に「他のrunが既に所有している」と判定できる。衝突時は同関数内の既存halt-switchガードと同じ形（`writeReceiverLog`の`"skipped"`ステータス、`AgentRunResult(agentId, 130, ...)`）でスキップする。`AGENT_SCRIPT_VERSION`のバンプは不要（生成bashテンプレートは無変更、nativeルーティングロジックのみの変更）。
+
+検証: `npx tsc --noEmit`クリーン（純Kotlin + 新規テストファイルのみ、TS側ロジック変更なし）。新規`__tests__/agent-runtime-planexec-chainlock.test.ts`（`local-llm-ensure-parity.test.ts`と同じKotlinコンテンツ文字列アサーション方式、この環境はNDK/Gradle無しのため）4件追加、全通過。フルjestスイート再実行、1557件通過、既知の4スイートbaseline失敗のみ（本セッション中に main `fb3fd711e` で同一失敗を再現確認済み）で新規リグレッションなし。
+
+**未了・別スコープ**: 逆方向（attended RUN NOWが、同エージェントの native alarm がPlanSpec executor経由で既に実行中のタイミングで開始される場合）はJS側で未チェックのまま——`inFlightAgentRuns`は同一プロセス内の再入のみガードし、native側が所有する状態をJS側から参照する手段が今は無い。優先度は低い: native alarmのPlanSpec executor実行は通常高速（ステップごとにHTTPリクエスト1本のみ、JS側のper-step materialize/run往復のオーバーヘッドが無い）ため、window自体がこのコミットで塞いだものよりずっと狭い。
 
 **→ 2026-07-18 `606ad78fb` で実装済み**: 下記「未解決のまま残した部分」の(1)(2)(3)をそのまま実装。`lib/agent-executor.ts`に`CHAIN_LOCK_DIR`/`CHAIN_LOCK_NONCE`チェックを新設（per-agent`LOCK_FILE`チェックより手前）、既存`LOCK_FILE`のcheck-then-act非アトミック性も`REGISTRY_LOCK`と同じmkdir方式へ硬化。`lib/agent-manager.ts`に`acquireChainLock`/`releaseChainLock`（export、`runAgentOrchestrated`/`runEscalatingAttempts`全体をtry/finallyで包む）を新設。**当初の設計スケッチ（チェーン全体で単一固定nonce）ではこのレースを実際には閉じられないと判明**——ステップ間の隙間（`LOCK_FILE`解放済み・次のmaterialize未着手）でnative alarmが読む on-disk scriptは、チェーン自身の次の起動と**バイト単位で同一内容**になり得るため、チェーン生存期間で不変のnonceでは両者を区別できない。代わりに「生きているtoken」を試行ごとに回転させる設計にした: `materializeAgentBody`の書き込みバッチが、その試行のスクリプトへ焼き込むのと**同じ値**を生きているtokenへ同時に書き込み（2つの書き込みが順序入れ替わらないよう同一バッチに畳み込み）、`disarmChainLockToken`がその試行の実行完了を確認した直後・他の処理の前に無効化する。ownership確認用の`seed`（試行ごとに回転しない）は取得時に一度だけ書き込み、release/disarm時の照合にのみ使う（自分より後の別チェーンのロックを誤って破壊しないため）。ステイルネス回収は2時間（`agent-orchestration.ts`の`HARD_TOTAL_TIMEOUT_MS`＝1時間上限より十分大きく、生きているチェーンの長い裾を誤検知しない一方、appキルでfinallyが走らなかった孤児ロックは自己修復する）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を19→20に連動更新（定数バンプのみ、ネイティブ側ルーティング判定は無変更）。
 
