@@ -1066,6 +1066,133 @@ jobs:
             "${UPDATE_MANIFEST_NAME}" \
             --clobber
 
+      - name: Publish skills catalog release
+        # Third sibling release channel alongside android-latest and
+        # codex-runtime-latest (see docs/superpowers/DEFERRED.md's SKILL-002
+        # entry and lib/skill-catalog.ts's SKILLS_CATALOG_TAG/
+        # SKILLS_CATALOG_MANIFEST_ASSET). Unlike the Android APK, the catalog
+        # content in docs/skills-catalog/** only changes when someone edits
+        # it — but there's no existing "only if these paths changed"
+        # precedent anywhere else in this workflow (the whole workflow's
+        # own paths-ignore only skips docs-only PUSHES entirely, it isn't a
+        # per-step filter), so the simplest safe default is used here too:
+        # republish on every qualifying run. The content is static, so a
+        # no-op republish is harmless (gh release edit/upload are
+        # idempotent for identical bytes) — it just costs a few API calls.
+        # NOTE: because this step's inputs live entirely under docs/**, a
+        # commit that ONLY touches docs/skills-catalog/** won't reach this
+        # step via the push trigger (the workflow's own paths-ignore skips
+        # docs-only pushes) — catalog-only edits need a workflow_dispatch
+        # run (or to ride along with a non-docs commit, as this change does
+        # by also touching this workflow file) to actually publish.
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SKILLS_CATALOG_TAG: skills-catalog-latest
+          SKILLS_CATALOG_MANIFEST_NAME: skills-catalog.json
+        run: |
+          set -euo pipefail
+
+          # Mirrors the codex-runtime-latest gate above: a single always-on
+          # "latest" channel (no dev/stable split like android-latest has),
+          # so only publish from an actual main build. workflow_dispatch
+          # runs off a feature branch still execute this step (matching the
+          # step-level `if:` trigger scope above) but exit early here rather
+          # than clobbering the main catalog release with branch content.
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "Skipping skills catalog publish: not building refs/heads/main (ref=${GITHUB_REF})."
+            exit 0
+          fi
+
+          catalog_dir="docs/skills-catalog"
+          manifest_src="${catalog_dir}/${SKILLS_CATALOG_MANIFEST_NAME}"
+          test -f "${manifest_src}" || { echo "FATAL: ${manifest_src} not found" >&2; exit 1; }
+
+          # jq -e validates the manifest is well-formed JSON before anything
+          # downstream trusts it.
+          jq -e '.schemaVersion and (.skills | type == "array")' "${manifest_src}" >/dev/null \
+            || { echo "FATAL: ${manifest_src} is not a valid skills catalog manifest" >&2; exit 1; }
+
+          staging_dir="${RUNNER_TEMP}/skills-catalog-assets"
+          mkdir -p "${staging_dir}"
+
+          # Recompute each skill's SKILL.md sha256 from the actual file on
+          # disk and refuse to publish if it doesn't match what the manifest
+          # declares — a stale hash here would make fetchCatalogSkillContent()
+          # in lib/skill-catalog.ts fail its integrity check for every user
+          # until the next publish fixes it.
+          mismatch=0
+          while IFS=$'\t' read -r skill_name asset_name expected_sha256; do
+            skill_md="${catalog_dir}/${skill_name}/SKILL.md"
+            if [ ! -f "${skill_md}" ]; then
+              echo "FATAL: ${skill_md} referenced by manifest entry '${skill_name}' does not exist" >&2
+              mismatch=1
+              continue
+            fi
+            actual_sha256="$(sha256sum "${skill_md}" | awk '{print $1}')"
+            if [ "${actual_sha256}" != "${expected_sha256}" ]; then
+              echo "FATAL: sha256 mismatch for '${skill_name}': manifest declares ${expected_sha256}, actual file is ${actual_sha256}. Regenerate ${manifest_src} before publishing." >&2
+              mismatch=1
+              continue
+            fi
+            cp "${skill_md}" "${staging_dir}/${asset_name}"
+          done < <(jq -r '.skills[] | "\(.name)\t\(.contentAssetName)\t\(.sha256)"' "${manifest_src}")
+
+          if [ "${mismatch}" = "1" ]; then
+            exit 1
+          fi
+
+          asset_count="$(find "${staging_dir}" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          test "${asset_count}" -gt 0 || { echo "FATAL: skills catalog manifest has zero skills" >&2; exit 1; }
+
+          cat > /tmp/shelly-skills-catalog-release.md <<EOF
+          Rolling skills catalog update.
+
+          - commit: ${GITHUB_SHA}
+          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - skills: ${asset_count}
+          EOF
+
+          if gh release view "${SKILLS_CATALOG_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${SKILLS_CATALOG_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly skills catalog latest" \
+              --notes-file /tmp/shelly-skills-catalog-release.md
+          else
+            gh release create "${SKILLS_CATALOG_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly skills catalog latest" \
+              --notes-file /tmp/shelly-skills-catalog-release.md \
+              --latest=false
+          fi
+
+          gh release upload "${SKILLS_CATALOG_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${staging_dir}"/*.SKILL.md \
+            --clobber
+
+          # Verify every uploaded per-skill asset's server-side digest before
+          # trusting the release — same never-trust-an-upload discipline the
+          # APK/codex-runtime blocks above apply.
+          uploaded_assets_json="$(gh release view "${SKILLS_CATALOG_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets)"
+          while IFS=$'\t' read -r asset_name expected_sha256; do
+            uploaded_digest="$(printf '%s' "${uploaded_assets_json}" | jq -r --arg name "${asset_name}" '.assets[] | select(.name == $name) | .digest // ""')"
+            test -n "${uploaded_digest}" || { echo "FATAL: uploaded skills catalog asset '${asset_name}' not visible in release" >&2; exit 1; }
+            if [ "${uploaded_digest}" != "sha256:${expected_sha256}" ]; then
+              echo "FATAL: skills catalog asset '${asset_name}' digest mismatch: ${uploaded_digest}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.skills[] | "\(.contentAssetName)\t\(.sha256)"' "${manifest_src}")
+
+          gh release upload "${SKILLS_CATALOG_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${manifest_src}" \
+            --clobber
+
       - name: Publish EAS Update (OTA)
         # Expo Updates are disabled in app.config.ts for the v5.1.x release
         # train. JS changes ship through APK releases only, so scheduled APK
