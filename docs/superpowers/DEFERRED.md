@@ -88,9 +88,17 @@
 
 ---
 
-### エージェント二重実行レース — JS側 in-flight dedupe は実装済み、native alarm 対 attended-chain 中間窓の残存ギャップは未着手 (P2、JS側の主要ギャップは解消済み)
+### エージェント二重実行レース — ✅ JS側 in-flight dedupe + native alarm 対 attended-chain 中間窓の chain-level lock ともに実装済み（`606ad78fb`）・実機未検証
 
 **優先度**: P2（RUN NOW の再入/ゴーストタップという最も可能性の高い引き金は本パスで解消済み。残るのは「スケジュール持ちの orchestrated agent の attended chain 実行中に、たまたま同じ agent の native alarm が中間ステップの隙間窓で発火する」という、発生条件がより狭いケース）
+
+**→ 2026-07-18 `606ad78fb` で実装済み**: 下記「未解決のまま残した部分」の(1)(2)(3)をそのまま実装。`lib/agent-executor.ts`に`CHAIN_LOCK_DIR`/`CHAIN_LOCK_NONCE`チェックを新設（per-agent`LOCK_FILE`チェックより手前）、既存`LOCK_FILE`のcheck-then-act非アトミック性も`REGISTRY_LOCK`と同じmkdir方式へ硬化。`lib/agent-manager.ts`に`acquireChainLock`/`releaseChainLock`（export、`runAgentOrchestrated`/`runEscalatingAttempts`全体をtry/finallyで包む）を新設。**当初の設計スケッチ（チェーン全体で単一固定nonce）ではこのレースを実際には閉じられないと判明**——ステップ間の隙間（`LOCK_FILE`解放済み・次のmaterialize未着手）でnative alarmが読む on-disk scriptは、チェーン自身の次の起動と**バイト単位で同一内容**になり得るため、チェーン生存期間で不変のnonceでは両者を区別できない。代わりに「生きているtoken」を試行ごとに回転させる設計にした: `materializeAgentBody`の書き込みバッチが、その試行のスクリプトへ焼き込むのと**同じ値**を生きているtokenへ同時に書き込み（2つの書き込みが順序入れ替わらないよう同一バッチに畳み込み）、`disarmChainLockToken`がその試行の実行完了を確認した直後・他の処理の前に無効化する。ownership確認用の`seed`（試行ごとに回転しない）は取得時に一度だけ書き込み、release/disarm時の照合にのみ使う（自分より後の別チェーンのロックを誤って破壊しないため）。ステイルネス回収は2時間（`agent-orchestration.ts`の`HARD_TOTAL_TIMEOUT_MS`＝1時間上限より十分大きく、生きているチェーンの長い裾を誤検知しない一方、appキルでfinallyが走らなかった孤児ロックは自己修復する）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を19→20に連動更新（定数バンプのみ、ネイティブ側ルーティング判定は無変更）。
+
+レビュー中に見つけた副次バグ（実装エージェント自身の報告漏れ）: `deleteAgent`は既存の`locks/<id>.pid`はクリーンアップするが、本パスが新設した`locks/<id>.pid.lockdir`/`locks/<id>.chain.lock`はクリーンアップ対象に含めておらず、削除後にオーファンとして残る。実害は小さい（agentのscheduleはuninstall済みなので誰もこのロックを再取得しに来ない、2時間ステイルネス回収でも自己修復する）が、`deleteAgent`自身の既存の「他の per-agent artifact は一切オーファンを残さない」という一貫した設計から外れるため、レビュー時にその場で修正。
+
+検証: 生成bashのchain-lockチェック・アトミックLOCK_FILE再取得パス（「第三の起動に競争で負けた」分岐含む）を実際のスクリプト内容に対して手動でトレースし、無限ループ経路が無いことを確認。`REGISTRY_LOCK`が実際にmkdirベースであること（設計コメントの比較対象として引用されている）を確認。`deleteAgent`の修正前に他のクリーンアップ経路が新設の2アーティファクトを既にカバーしていないことを確認済み。`npx tsc --noEmit`クリーン。jestはworktree node_modulesが空だったため`pnpm install`後、都度cleanコピーで実行——新規`agent-manager-chain-lock.test.ts`（16件、実際に2つの別OSプロセスを立ち上げて同一on-diskロック状態を競合させるテスト・ステイルネス回収テスト含む）は全通過、フルスイート1546/1576件通過、残り29件の失敗は前段の local-LLM autostart レビューで確認済みの main `fb3fd711e`由来のpre-existing baselineと完全一致（このdiff由来の新規リグレッションゼロ）。local-LLM autostart（`92d66acc1`）との rebase もコンフリクト無しでクリーン（両方とも`AgentRuntime.kt`に触れるが挿入箇所が独立）。
+
+**未了**（実機検証、on-device往復が必要）: schedule持ちのorchestrated agentで、attended chain実行中に同じagentIdのnative alarmが中間ステップの隙間窓で意図的に重なるケースを実機で再現し、chain-lockが実際にskipさせることを確認。CI green確認後、次のon-device検証セッションで実施。
 **発見**: 2026-07-17/18、`agent-mrorpolq`（2ステップ orchestration: STEAM 話題出し→Perplexity sonar-deep-research 要約）の実機テストで3回中2回、`combineFinalPreview()`（`lib/agent-orchestration.ts`、`runAgentOrchestrated`からのみ呼ばれ、成功時に必ず`Completed N step(s).`prefixを付与）の痕跡が一切ない、step1の生コンテンツだけがpreviewに残る異常終了（所要時間3秒/9秒、正常時の257秒より桁違いに短い）を観測。3回目は正常完了（`Completed 2 step(s).`、Perplexity実コンテンツ、Steps(2)詳細ポップアップ）。
 
 **調査で確定済み（再導出不要）**:
