@@ -1,6 +1,5 @@
 package expo.modules.terminalemulator.scouter
 
-import android.app.AlarmManager
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
@@ -9,36 +8,36 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
-import android.os.Build
-import android.os.SystemClock
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
 import expo.modules.terminalemulator.R
 import expo.modules.terminalemulator.AgentAlarmScheduler
-import expo.modules.terminalemulator.TerminalSessionService
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Agent-launcher widget (redesigned 2026-07-18 per design review).
+ *
+ * Primary job: an agent launch pad + health-status list for up to
+ * [MAX_WIDGET_AGENT_ROWS] nearest-upcoming scheduled agents — NOT a
+ * Codex/local-LLM session monitor. The prior version of this file bound a
+ * live Codex session HUD (title/status/DOING/reply preview/model metrics/
+ * token usage/rate-limit timer), approval + interactive-choice pills, and a
+ * LOCAL LLM health row. All of that was removed from the WIDGET LAYOUT in
+ * this pass; the underlying sampling/watcher infrastructure
+ * (ScouterSystemSampler / JsonlWatcher / LocalLlmSampler, driven by
+ * ScouterLifecycleService) is untouched and keeps running — it also backs
+ * app/scouter.tsx and other JS-side consumers, not just this widget. See
+ * docs/superpowers/DEFERRED.md for the full rationale and the deferred
+ * notification-based follow-up.
+ */
 class ScouterWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            ACTION_CYCLE_PET -> {
-                val pending = goAsync()
-                ScouterCodexPet.cycleVisiblePet(context)
-                enqueueUpdate(context, null, pending::finish, force = true)
-            }
-            ACTION_WAIT_EXPIRY_REFRESH -> {
-                val pending = goAsync()
-                enqueueUpdate(context, null, pending::finish, force = true)
-            }
             AppWidgetManager.ACTION_APPWIDGET_UPDATE -> {
                 val ids = intent.getIntArrayExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS)
                 val pending = goAsync()
@@ -126,553 +125,194 @@ class ScouterWidgetProvider : AppWidgetProvider() {
         private fun updateWidgets(context: Context, manager: AppWidgetManager, ids: IntArray) {
             val store = ScouterStateStore(context)
             val enabled = store.isEnabled()
-            val snapshots = if (enabled) store.all() else emptyList()
-            val binding = if (enabled) store.widgetCodexBinding() else null
-            val conversation = if (enabled) store.widgetConversation(binding?.codexSessionId) else null
-            val usageLimited = if (enabled) store.widgetUsageLimited() else null
-            val lastCodexUsage = store.lastCodexUsageSnapshot()
-            val widgetAgent = if (enabled) WidgetAgentRepository.nextScheduled(context) else null
-            val load = runCatching { ScouterSystemSampler(context).sample() }
-                .getOrElse {
-                    Log.w(TAG, "Scouter widget system sample failed; using lightweight load", it)
-                    lightweightLoad()
-                }
-            scheduleWaitExpiryRefresh(context, conversation)
+            // Only the in-flight manual/scheduled agent-run marker
+            // (widgetAgentRunId/Status/StatusAt) is still needed from
+            // ScouterStateStore, to show a "running" glyph on the matching
+            // row. The Codex/local-LLM session snapshots, terminal binding,
+            // and usage-limit overrides that used to drive the removed
+            // monitor UI are intentionally no longer read here.
+            val conversation = if (enabled) store.widgetConversation() else null
+            val agents = if (enabled) {
+                WidgetAgentRepository.nextScheduledAgents(context, MAX_WIDGET_AGENT_ROWS)
+            } else {
+                emptyList()
+            }
             ids.forEach { id ->
                 runCatching {
-                    manager.updateAppWidget(
-                        id,
-                        render(context, snapshots, binding, conversation, widgetAgent, load, usageLimited, lastCodexUsage)
-                    )
+                    manager.updateAppWidget(id, render(context, agents, conversation))
                 }
                     .onFailure { Log.w(TAG, "Scouter widget update failed for id=$id", it) }
             }
         }
 
-        private fun scheduleWaitExpiryRefresh(context: Context, conversation: ScouterWidgetConversation?) {
-            val status = conversation?.widgetStatus
-            val statusAt = conversation?.widgetStatusAt
-            if (statusAt == null) {
-                cancelWaitExpiryRefresh(context)
-                return
-            }
-            val displayMs = when {
-                status in WAITING_WIDGET_STATUSES -> WIDGET_WAIT_DISPLAY_TIMEOUT_MS
-                status == ScouterStateStore.choicePendingStatus() -> WIDGET_CHOICE_DISPLAY_TIMEOUT_MS
-                status == "approval_allow" || status == "approval_deny" -> WIDGET_APPROVAL_SENT_DISPLAY_MS
-                else -> null
-            }
-            if (displayMs == null) {
-                cancelWaitExpiryRefresh(context)
-                return
-            }
-            val elapsed = System.currentTimeMillis() - statusAt
-            if (elapsed < 0L || elapsed > displayMs) {
-                cancelWaitExpiryRefresh(context)
-                return
-            }
-            val delayMs = displayMs - elapsed + WAIT_EXPIRY_REFRESH_SLOP_MS
-            val dueAt = System.currentTimeMillis() + delayMs
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            val pendingIntent = waitExpiryRefreshPendingIntent(context)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, dueAt, pendingIntent)
-            } else {
-                alarmManager.set(AlarmManager.RTC_WAKEUP, dueAt, pendingIntent)
-            }
-        }
-
-        private fun cancelWaitExpiryRefresh(context: Context) {
-            val pendingIntent = existingWaitExpiryRefreshPendingIntent(context) ?: return
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-        }
-
-        private fun waitExpiryRefreshPendingIntent(context: Context): PendingIntent {
-            return PendingIntent.getBroadcast(
-                context,
-                9104,
-                waitExpiryRefreshIntent(context),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-        }
-
-        private fun existingWaitExpiryRefreshPendingIntent(context: Context): PendingIntent? {
-            return PendingIntent.getBroadcast(
-                context,
-                9104,
-                waitExpiryRefreshIntent(context),
-                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-            )
-        }
-
-        private fun waitExpiryRefreshIntent(context: Context): Intent =
-            Intent(context, ScouterWidgetProvider::class.java)
-                .setAction(ACTION_WAIT_EXPIRY_REFRESH)
-
-        private fun lightweightLoad(): ScouterSystemLoad {
-            val runtime = Runtime.getRuntime()
-            return ScouterSystemLoad(
-                sampledAt = System.currentTimeMillis(),
-                cpuPercent = null,
-                appCpuPercent = null,
-                appPssMb = null,
-                appHeapUsedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L),
-                appHeapMaxMb = runtime.maxMemory() / (1024L * 1024L),
-                ramAvailableMb = null,
-                ramTotalMb = null
-            )
-        }
-
         private fun render(
             context: Context,
-            snapshots: List<SessionSnapshot>,
-            binding: ScouterWidgetCodexBinding?,
-            conversation: ScouterWidgetConversation?,
-            widgetAgent: ScouterWidgetAgentTarget?,
-            load: ScouterSystemLoad,
-            usageLimited: ScouterWidgetUsageLimited? = null,
-            lastCodexUsage: SessionSnapshot? = null
+            agents: List<ScouterWidgetAgentTarget>,
+            conversation: ScouterWidgetConversation?
         ): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.scouter_widget_medium)
             launchPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_widget_root, it) }
             promptPendingIntent(context)?.let { views.setOnClickPendingIntent(R.id.scouter_codex_ask, it) }
-            bindWidgetAgentRun(views, context, widgetAgent, conversation)
-
-            val privacySuppressed = conversation?.privacySuppressed == true
-            val latestCodex = latestFor(snapshots, ScouterSource.CODEX)
-            val boundCodex = if (privacySuppressed) null else latestCodexForBinding(snapshots, binding)
-            val codex = if (privacySuppressed) null else boundCodex ?: latestCodex
-            val codexForUsage = codex ?: latestCodex ?: lastCodexUsage
-            val local = latestFor(snapshots, ScouterSource.LOCAL_LLM)
-            val boundScreen = inspectBoundCodexScreen(binding)
-            bindCodexApprovalActions(views, context, binding, boundCodex, conversation, boundScreen)
-            bindRow(
-                views = views,
-                snapshot = codex,
-                dotId = R.id.scouter_codex_dot,
-                titleId = R.id.scouter_codex_title,
-                badgeId = R.id.scouter_codex_badge,
-                detailId = R.id.scouter_codex_detail,
-                metricsId = R.id.scouter_codex_metrics,
-                emptyTitle = "AGENT: CODEX",
-                emptyBadge = "CX",
-                emptyDetail = "STATE  WAIT [..] no Codex session",
-                emptyMetrics = listOf(
-                    "MODEL --",
-                    "FLOW -- · CACHE -- · RATE --"
-                ).joinToString("\n")
-            )
-            codex?.let {
-                views.setTextViewText(R.id.scouter_codex_metrics, codexMetrics(it, conversation))
-            }
-            // Right-aligned status signal in the title row (reuses the
-            // scouter_codex_badge slot). bindRow set it to the source badge ("CX");
-            // override with the animated/stale status signal for the codex row.
-            // Also state-color the title + signal: amber when a live rate-limit
-            // override is up, otherwise by status (error red / waiting amber /
-            // working bright / idle green). The CHOICE/APPROVAL pill states below
-            // set their own title text+color and still win (they run later).
-            run {
-                val codexSignal = codex?.let { statusSignal(it.currentStatus, isStale(it)) } ?: "[--]"
-                views.setTextViewText(R.id.scouter_codex_badge, codexSignal)
-                val codexColor = when {
-                    usageLimited != null -> HUD_AMBER
-                    codex != null -> colorForStatus(codex.currentStatus, isStale(codex))
-                    else -> HUD_GREEN
-                }
-                views.setTextColor(R.id.scouter_codex_title, codexColor)
-                views.setTextColor(R.id.scouter_codex_badge, codexColor)
-            }
-            // DOING line: current tool/file when running, else idle + last reply.
-            views.setTextViewText(R.id.scouter_codex_doing, codex?.let { codexDoing(it) } ?: "")
-            val approvalIsActionable = hasActionableApproval(binding, boundCodex, conversation, boundScreen)
-            // Usage/limit line: show a compact fallback for every bound Codex
-            // session, even when the JSONL snapshot has no rate/context fields yet.
-            views.setTextViewText(R.id.scouter_codex_usage, codexUsageLine(codexForUsage, conversation, usageLimited))
-            views.setViewVisibility(R.id.scouter_codex_usage, View.VISIBLE)
-            // Path A: bound terminal is live and currently showing the
-            // interactive numbered prompt. When options parse cleanly, render
-            // tappable choice pills that write the chosen digit directly to the
-            // PTY (mirrors the approval ALLOW/DENY pills).
-            val livePathAChoices = if (boundScreen.state == BoundCodexScreenState.INTERACTIVE) {
-                usableChoiceOptions(boundScreen.choiceOptions)
-            } else {
-                null
-            }
-            val choiceScreen = when {
-                boundScreen.state == BoundCodexScreenState.INTERACTIVE -> boundScreen
-                !approvalIsActionable && boundScreen.state == BoundCodexScreenState.READY -> storedChoicePendingScreen(conversation)
-                else -> null
-            }
-            if (livePathAChoices != null) {
-                bindCodexChoicePending(views, choiceScreen ?: boundScreen)
-                bindCodexChoicePills(views, context, binding, boundCodex, livePathAChoices)
-            } else if (choiceScreen != null) {
-                bindCodexChoicePending(views, choiceScreen)
-                usableChoiceOptions(choiceScreen.choiceOptions)?.let {
-                    bindCodexChoicePills(views, context, binding, boundCodex, it)
-                }
-            } else {
-                hideCodexChoicePills(views)
-                views.setTextViewText(R.id.scouter_codex_ask, context.getString(R.string.scouter_ask_agent_chat_short))
-                bindCodexConversation(views, boundCodex, conversation, showStoredChoicePending = false)
-            }
-            // Live timer: reset countdown while rate-limited, else session elapsed
-            // while working. Suppressed during approval/choice so it doesn't clutter
-            // the actionable bottom row.
-            val timerSuppressed = approvalIsActionable || livePathAChoices != null || choiceScreen != null
-            bindCodexTimer(views, codex, usageLimited, timerSuppressed)
-            bindCodexPet(views, context, codex, boundScreen, timerSuppressed)
-            bindRow(
-                views = views,
-                snapshot = local,
-                dotId = R.id.scouter_local_dot,
-                titleId = R.id.scouter_local_title,
-                badgeId = R.id.scouter_local_badge,
-                detailId = R.id.scouter_local_detail,
-                metricsId = R.id.scouter_local_metrics,
-                emptyTitle = "LOCAL  LLM",
-                emptyBadge = "LL",
-                emptyDetail = "HEALTH LINK [--] no local endpoint",
-                emptyMetrics = listOf(
-                    "WAVE ........ · TPS --",
-                    "PING --ms · PROBE 8080/11434"
-                ).joinToString("\n")
-            )
-            // "updated" = actual render wall-clock, not max(lastEventAt). The poll
-            // heartbeat re-renders ~every 60s, so this stays live even when idle;
-            // showing the data timestamp made a fresh render look stale.
-            views.setTextViewText(
-                R.id.scouter_footer,
-                "${loadLine(load)} · updated ${formatTime(System.currentTimeMillis())}"
-            )
+            bindHeader(views, context, agents)
+            bindPet(views, context)
+            bindAgentRows(views, context, agents, conversation)
             return views
         }
 
-        private fun bindWidgetAgentRun(
-            views: RemoteViews,
-            context: Context,
-            target: ScouterWidgetAgentTarget?,
-            conversation: ScouterWidgetConversation?
-        ) {
-            if (target == null) {
+        // Header: overall status dot (green, or red + failure count when any
+        // of the SHOWN agents' last run errored) + static "AGENTS" title.
+        private fun bindHeader(views: RemoteViews, context: Context, agents: List<ScouterWidgetAgentTarget>) {
+            views.setTextViewText(R.id.scouter_header_title, context.getString(R.string.scouter_widget_header_title))
+            val failedCount = agents.count { it.lastRunStatus == "error" }
+            if (failedCount > 0) {
+                views.setInt(R.id.scouter_header_dot, "setColorFilter", HUD_RED)
                 views.setTextViewText(
-                    R.id.scouter_agent_status,
-                    context.getString(R.string.scouter_widget_agent_none)
+                    R.id.scouter_header_badge,
+                    context.getString(R.string.scouter_widget_header_failed, failedCount)
                 )
-                views.setViewVisibility(R.id.scouter_agent_run, View.GONE)
-                return
+                views.setViewVisibility(R.id.scouter_header_badge, View.VISIBLE)
+            } else {
+                views.setInt(R.id.scouter_header_dot, "setColorFilter", HUD_GREEN)
+                views.setViewVisibility(R.id.scouter_header_badge, View.GONE)
             }
-
-            val next = formatAgentRunTime(target.nextRunAt)
-            val last = widgetAgentLastRunLabel(context, conversation)
-            views.setTextViewText(
-                R.id.scouter_agent_status,
-                context.getString(
-                    R.string.scouter_widget_agent_next_last,
-                    shorten(target.name.redactForScouter(), 18),
-                    next,
-                    last
-                )
-            )
-            views.setTextViewText(
-                R.id.scouter_agent_run,
-                context.getString(
-                    R.string.scouter_widget_agent_run_named,
-                    shorten(target.name.redactForScouter(), 14)
-                )
-            )
-            views.setViewVisibility(R.id.scouter_agent_run, View.VISIBLE)
-            views.setOnClickPendingIntent(
-                R.id.scouter_agent_run,
-                AgentAlarmScheduler.manualRunPendingIntent(context, target.agentId)
-            )
         }
 
-        private fun widgetAgentLastRunLabel(
-            context: Context,
-            conversation: ScouterWidgetConversation?
-        ): String {
-            val status = conversation?.widgetAgentRunStatus
-                ?: return context.getString(R.string.scouter_widget_agent_last_never)
-            val statusLabel = when (status) {
-                ScouterStateStore.WIDGET_AGENT_STATUS_RUNNING ->
-                    context.getString(R.string.scouter_widget_agent_last_running)
-                ScouterStateStore.WIDGET_AGENT_STATUS_SUCCESS ->
-                    context.getString(R.string.scouter_widget_agent_last_success)
-                ScouterStateStore.WIDGET_AGENT_STATUS_ERROR ->
-                    context.getString(R.string.scouter_widget_agent_last_error)
-                else -> context.getString(R.string.scouter_widget_agent_last_never)
+        // Pet mascot: decorative only, per the product owner's explicit
+        // charm-value override — the image stays, but the old tap-to-cycle
+        // skin interaction (a separate "show pet" pill plus a transparent
+        // touch-catcher overlay, both dropped from the layout, plus the
+        // click binding this ImageView itself used to carry) is fully
+        // removed as a low-value misclick source. Visibility still
+        // respects the existing ScouterCodexPet on/off preference: a user
+        // who had a pet showing before this redesign keeps seeing it, there
+        // is just no more in-widget control to change that preference.
+        // Animation state is always IDLE now since the widget no longer
+        // tracks a live Codex session to react to.
+        private fun bindPet(views: RemoteViews, context: Context) {
+            if (!ScouterCodexPet.hasPet(context) || !ScouterCodexPet.isVisible(context)) {
+                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
+                return
             }
-            val at = conversation.widgetAgentRunStatusAt?.let(::formatTime)
-            val name = conversation.widgetAgentRunName?.takeIf { it.isNotBlank() }
-            return listOfNotNull(
-                name?.let { shorten(it.redactForScouter(), 12) },
-                statusLabel,
-                at
-            ).joinToString(" ")
+            val frame = ScouterCodexPet.frameBitmap(context, ScouterCodexPet.State.IDLE, System.currentTimeMillis())
+            if (frame == null) {
+                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
+                return
+            }
+            views.setImageViewBitmap(R.id.scouter_codex_pet, frame)
+            views.setViewVisibility(R.id.scouter_codex_pet, View.VISIBLE)
+        }
+
+        private data class AgentRowIds(
+            val rowId: Int,
+            val glyphId: Int,
+            val nameId: Int,
+            val nextId: Int,
+            val runId: Int
+        )
+
+        private val ROW_IDS = listOf(
+            AgentRowIds(
+                R.id.scouter_agent_row_1,
+                R.id.scouter_agent_row_1_glyph,
+                R.id.scouter_agent_row_1_name,
+                R.id.scouter_agent_row_1_next,
+                R.id.scouter_agent_row_1_run
+            ),
+            AgentRowIds(
+                R.id.scouter_agent_row_2,
+                R.id.scouter_agent_row_2_glyph,
+                R.id.scouter_agent_row_2_name,
+                R.id.scouter_agent_row_2_next,
+                R.id.scouter_agent_row_2_run
+            ),
+            AgentRowIds(
+                R.id.scouter_agent_row_3,
+                R.id.scouter_agent_row_3_glyph,
+                R.id.scouter_agent_row_3_name,
+                R.id.scouter_agent_row_3_next,
+                R.id.scouter_agent_row_3_run
+            )
+        )
+
+        // Binds up to MAX_WIDGET_AGENT_ROWS fixed row slots (RemoteViews has
+        // no dynamic list adapter without a RemoteViewsService, and no other
+        // widget-like surface in this app uses one — grepped, none found —
+        // so 3 fixed slots shown/hidden per-render is the simplest correct
+        // approach, matching the visibility="gone" pattern this layout
+        // already used for the old single-agent row). Each row: name,
+        // last-result glyph (or a running indicator for the one agent
+        // matching ScouterStateStore's single global in-flight run marker),
+        // next-fire time, and a RUN pill wired directly to
+        // AgentAlarmScheduler.manualRunPendingIntent — the exact existing
+        // mechanism, now bound per-row instead of once. The row itself
+        // (outside the RUN pill) opens the app via agentDetailPendingIntent.
+        private fun bindAgentRows(
+            views: RemoteViews,
+            context: Context,
+            agents: List<ScouterWidgetAgentTarget>,
+            conversation: ScouterWidgetConversation?
+        ) {
+            ROW_IDS.forEachIndexed { index, ids ->
+                val agent = agents.getOrNull(index)
+                if (agent == null) {
+                    views.setViewVisibility(ids.rowId, View.GONE)
+                    return@forEachIndexed
+                }
+                views.setViewVisibility(ids.rowId, View.VISIBLE)
+                views.setTextViewText(ids.nameId, shorten(agent.name.redactForScouter(), 22))
+
+                val isRunning = conversation?.widgetAgentRunId == agent.agentId &&
+                    conversation.widgetAgentRunStatus == ScouterStateStore.WIDGET_AGENT_STATUS_RUNNING
+                if (isRunning) {
+                    val elapsedLabel = conversation?.widgetAgentRunStatusAt
+                        ?.let { "${((System.currentTimeMillis() - it) / 1000L).coerceAtLeast(0L)}s" }
+                        ?: "…"
+                    views.setTextViewText(ids.glyphId, GLYPH_RUNNING)
+                    views.setTextColor(ids.glyphId, HUD_BRIGHT)
+                    views.setTextViewText(
+                        ids.nextId,
+                        context.getString(R.string.scouter_widget_agent_row_next_running, elapsedLabel)
+                    )
+                    views.setTextColor(ids.nextId, HUD_BRIGHT)
+                } else {
+                    val (glyph, glyphColor) = glyphForLastRun(agent.lastRunStatus)
+                    views.setTextViewText(ids.glyphId, glyph)
+                    views.setTextColor(ids.glyphId, glyphColor)
+                    views.setTextViewText(
+                        ids.nextId,
+                        context.getString(R.string.scouter_widget_agent_row_next, formatAgentRunTime(agent.nextRunAt))
+                    )
+                    views.setTextColor(ids.nextId, HUD_GREEN_STALE)
+                }
+
+                views.setOnClickPendingIntent(
+                    ids.runId,
+                    AgentAlarmScheduler.manualRunPendingIntent(context, agent.agentId)
+                )
+                views.setOnClickPendingIntent(ids.rowId, agentDetailPendingIntent(context, agent.agentId))
+            }
+            views.setViewVisibility(R.id.scouter_agent_empty, if (agents.isEmpty()) View.VISIBLE else View.GONE)
+        }
+
+        // ✓ success, ✗ error, • skipped/unavailable (declined or transient —
+        // not a hard verdict), – never run / unknown. Mirrors the glyph
+        // semantics lib/agent-manager.ts already uses for its own ✅/❌/⏸️
+        // badges (a run's truthful status lives in the run-log, not the
+        // static agent.json's lastResult field — see
+        // WidgetAgentRepository.readLastRunStatus).
+        private fun glyphForLastRun(status: String?): Pair<String, Int> = when (status) {
+            "success" -> GLYPH_SUCCESS to HUD_GREEN
+            "error" -> GLYPH_ERROR to HUD_RED
+            "skipped", "unavailable" -> GLYPH_SKIPPED to HUD_DIM
+            else -> GLYPH_NEVER to HUD_DIM
         }
 
         private fun formatAgentRunTime(timestamp: Long): String =
             SimpleDateFormat("EEE HH:mm", Locale.getDefault()).format(Date(timestamp))
 
-        private fun bindCodexPet(
-            views: RemoteViews,
-            context: Context,
-            codex: SessionSnapshot?,
-            boundScreen: BoundCodexScreen,
-            actionRowHasPriority: Boolean
-        ) {
-            val cyclePending = petCyclePendingIntent(context)
-            views.setOnClickPendingIntent(R.id.scouter_codex_pet, cyclePending)
-            views.setOnClickPendingIntent(R.id.scouter_codex_pet_touch, cyclePending)
-            views.setOnClickPendingIntent(R.id.scouter_codex_pet_toggle, cyclePending)
-
-            if (actionRowHasPriority || !ScouterCodexPet.hasPet(context)) {
-                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
-                views.setViewVisibility(R.id.scouter_codex_pet_touch, View.GONE)
-                views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
-                return
-            }
-
-            if (!ScouterCodexPet.isVisible(context)) {
-                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
-                views.setViewVisibility(R.id.scouter_codex_pet_touch, View.GONE)
-                views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.VISIBLE)
-                return
-            }
-
-            val frame = ScouterCodexPet.frameBitmap(
-                context,
-                codexPetState(codex, boundScreen),
-                System.currentTimeMillis()
-            )
-            if (frame == null) {
-                views.setViewVisibility(R.id.scouter_codex_pet, View.GONE)
-                views.setViewVisibility(R.id.scouter_codex_pet_touch, View.GONE)
-                views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
-                return
-            }
-
-            views.setImageViewBitmap(R.id.scouter_codex_pet, frame)
-            views.setViewVisibility(R.id.scouter_codex_pet, View.VISIBLE)
-            views.setViewVisibility(R.id.scouter_codex_pet_touch, View.VISIBLE)
-            views.setViewVisibility(R.id.scouter_codex_pet_toggle, View.GONE)
-        }
-
-        private fun codexPetState(
-            codex: SessionSnapshot?,
-            boundScreen: BoundCodexScreen
-        ): ScouterCodexPet.State {
-            return when {
-                boundScreen.state == BoundCodexScreenState.APPROVAL ||
-                    codex?.currentStatus == ScouterStatus.WAITING_PERMISSION -> ScouterCodexPet.State.WAITING
-                boundScreen.state == BoundCodexScreenState.INTERACTIVE -> ScouterCodexPet.State.WAVING
-                codex?.currentStatus == ScouterStatus.ERROR -> ScouterCodexPet.State.FAILED
-                codex?.currentStatus == ScouterStatus.THINKING ||
-                    codex?.currentStatus == ScouterStatus.TOOL_RUNNING -> ScouterCodexPet.State.RUNNING
-                codex?.currentStatus == ScouterStatus.COMPLETED -> ScouterCodexPet.State.REVIEW
-                else -> ScouterCodexPet.State.IDLE
-            }
-        }
-
-        private fun inspectBoundCodexScreen(binding: ScouterWidgetCodexBinding?): BoundCodexScreen {
-            val ptySessionId = binding?.ptySessionId?.takeIf { it.isNotBlank() }
-                ?: return BoundCodexScreen(BoundCodexScreenState.MISSING)
-            val session = TerminalSessionService.sessionRegistry[ptySessionId]
-                ?: return BoundCodexScreen(BoundCodexScreenState.MISSING)
-            if (!session.isAlive()) return BoundCodexScreen(BoundCodexScreenState.STALE)
-            val screenText = runCatching { session.getScreenText() }.getOrDefault("")
-            // Codex exited (shell prompt at the bottom): treat as stale even if a
-            // menu is still visible in the scrollback above it.
-            val lastLine = screenText.lines().map { it.trim() }.lastOrNull { it.isNotBlank() }
-            if (lastLine != null && SHELL_PROMPT_RE.matches(lastLine)) {
-                return BoundCodexScreen(BoundCodexScreenState.STALE)
-            }
-            // Detect blocking prompts BEFORE the active-codex gate: the keyword
-            // regexes are codex-specific and the bound terminal is already known to
-            // be codex, so a rate-limit / model-switch menu whose "OpenAI Codex"
-            // banner has scrolled off the top must still surface as INTERACTIVE
-            // (otherwise isActiveCodexScreen returns STALE and the widget never
-            // shows the choice pills/banner). Mirrors the ungated JS detection.
-            if (isApprovalPromptScreen(screenText)) return BoundCodexScreen(BoundCodexScreenState.APPROVAL)
-            if (isInteractivePromptScreen(screenText)) {
-                return BoundCodexScreen(
-                    BoundCodexScreenState.INTERACTIVE,
-                    interactivePromptSummary(screenText),
-                    parseInteractiveChoices(screenText)
-                )
-            }
-            if (!isActiveCodexScreen(screenText)) return BoundCodexScreen(BoundCodexScreenState.STALE)
-            return BoundCodexScreen(BoundCodexScreenState.READY)
-        }
-
-        private fun bindCodexChoicePending(views: RemoteViews, screen: BoundCodexScreen) {
-            val message = screen.message?.takeIf { it.isNotBlank() }
-                ?: "Codex is waiting for terminal selection"
-            hideCodexChoicePills(views)
-            views.setViewVisibility(R.id.scouter_codex_allow, View.GONE)
-            views.setViewVisibility(R.id.scouter_codex_deny, View.GONE)
-            views.setViewVisibility(R.id.scouter_codex_ask, View.VISIBLE)
-            views.setInt(R.id.scouter_codex_dot, "setColorFilter", HUD_GREEN)
-            views.setTextColor(R.id.scouter_codex_title, HUD_GREEN)
-            views.setTextColor(R.id.scouter_codex_detail, HUD_GREEN)
-            views.setTextColor(R.id.scouter_codex_metrics, HUD_GREEN)
-            views.setTextColor(R.id.scouter_codex_ask, HUD_GREEN)
-            views.setTextViewText(R.id.scouter_codex_title, "AGENT  CHOICE REQUIRED")
-            views.setTextViewText(R.id.scouter_codex_ask, "CHOICE WAITING")
-            views.setTextViewText(R.id.scouter_codex_detail, "STATE [!!] TERMINAL CHOICE WAITING")
-            views.setTextViewText(R.id.scouter_codex_metrics, "SELECT OPTION IN TERMINAL · prompt queue blocked")
-            views.setViewVisibility(R.id.scouter_codex_conversation, View.VISIBLE)
-            views.setTextColor(R.id.scouter_codex_conversation, HUD_GREEN)
-            views.setTextViewText(
-                R.id.scouter_codex_conversation,
-                "CHOICE REQUIRED  ${shorten(message.redactForScouter(), 104)}"
-            )
-        }
-
-        // Renders numbered choices onto the approval pill rows, reusing
-        // scouter_codex_allow / deny for the first two slots. Each pill shows
-        // the option's label, is retinted HUD green (so the reused DENY pill
-        // isn't read as a rejection), and writes the option's own digit. ASK is
-        // hidden so the urgent choice comes forward.
-        private fun bindCodexChoicePills(
-            views: RemoteViews,
-            context: Context,
-            binding: ScouterWidgetCodexBinding?,
-            codex: SessionSnapshot?,
-            options: List<ChoiceOption>
-        ) {
-            val pillIds = intArrayOf(
-                R.id.scouter_codex_allow,
-                R.id.scouter_codex_deny,
-                R.id.scouter_codex_choice3,
-                R.id.scouter_codex_choice4,
-                R.id.scouter_codex_choice5,
-                R.id.scouter_codex_choice6
-            )
-            views.setViewVisibility(R.id.scouter_codex_ask, View.GONE)
-            views.setViewVisibility(
-                R.id.scouter_codex_choice_row_extra,
-                if (options.size > 3) View.VISIBLE else View.GONE
-            )
-            pillIds.forEachIndexed { slot, pillId ->
-                val option = options.getOrNull(slot)
-                if (option == null) {
-                    views.setViewVisibility(pillId, View.GONE)
-                    return@forEachIndexed
-                }
-                val pillLabel = shorten("${option.index}. ${option.label}", 24)
-                views.setTextViewText(pillId, pillLabel)
-                views.setTextColor(pillId, HUD_GREEN)
-                views.setViewVisibility(pillId, View.VISIBLE)
-                views.setOnClickPendingIntent(
-                    pillId,
-                    choiceSelectPendingIntent(context, binding, codex, option)
-                )
-            }
-        }
-
-        private fun hideCodexChoicePills(views: RemoteViews) {
-            views.setViewVisibility(R.id.scouter_codex_choice3, View.GONE)
-            views.setViewVisibility(R.id.scouter_codex_choice4, View.GONE)
-            views.setViewVisibility(R.id.scouter_codex_choice5, View.GONE)
-            views.setViewVisibility(R.id.scouter_codex_choice6, View.GONE)
-            views.setViewVisibility(R.id.scouter_codex_choice_row_extra, View.GONE)
-        }
-
-        private fun usableChoiceOptions(options: List<ChoiceOption>): List<ChoiceOption>? =
-            options.takeIf { it.size in 2..MAX_WIDGET_CHOICE_OPTIONS }
-
-        private fun choiceSelectPendingIntent(
-            context: Context,
-            binding: ScouterWidgetCodexBinding?,
-            codex: SessionSnapshot?,
-            option: ChoiceOption
-        ): PendingIntent {
-            val launchIntent = Intent(context, ScouterWidgetPromptActivity::class.java)
-                .setAction(ScouterWidgetPromptActivity.ACTION_CHOICE_SELECT)
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_CODEX_SESSION_ID, codex?.sessionId ?: binding?.codexSessionId)
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_PTY_SESSION_ID, binding?.ptySessionId)
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_CHOICE_INDEX, option.index)
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_CHOICE_LABEL, option.label)
-                .addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TASK or
-                        Intent.FLAG_ACTIVITY_NO_HISTORY or
-                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                )
-            // Distinct request code per option index so the three pills get
-            // distinct PendingIntents (extras would otherwise be coalesced).
-            return PendingIntent.getActivity(
-                context,
-                CHOICE_SELECT_REQUEST_BASE + option.index,
-                launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-        }
-
-        private fun storedChoicePendingScreen(conversation: ScouterWidgetConversation?): BoundCodexScreen? {
-            if (conversation?.widgetStatus != ScouterStateStore.choicePendingStatus()) return null
-            val statusAt = conversation.widgetStatusAt ?: 0L
-            if (statusAt <= 0L || System.currentTimeMillis() - statusAt > WIDGET_CHOICE_DISPLAY_TIMEOUT_MS) {
-                return null
-            }
-            val message = conversation.widgetError?.takeIf { it.isNotBlank() }
-                ?: "Codex is waiting for terminal selection"
-            return BoundCodexScreen(BoundCodexScreenState.INTERACTIVE, message, conversation.choiceOptions)
-        }
-
-        private fun bindRow(
-            views: RemoteViews,
-            snapshot: SessionSnapshot?,
-            dotId: Int,
-            titleId: Int,
-            badgeId: Int,
-            detailId: Int,
-            metricsId: Int,
-            emptyTitle: String,
-            emptyBadge: String,
-            emptyDetail: String,
-            emptyMetrics: String
-        ) {
-            if (snapshot == null) {
-                views.setTextViewText(titleId, emptyTitle)
-                views.setTextViewText(badgeId, emptyBadge)
-                views.setTextViewText(detailId, emptyDetail)
-                views.setTextViewText(metricsId, emptyMetrics)
-                views.setInt(dotId, "setColorFilter", Color.rgb(18, 181, 62))
-                return
-            }
-
-            val stale = isStale(snapshot)
-            val project = displayProjectName(snapshot.projectName).uppercase(Locale.US)
-            val title = when (snapshot.source) {
-                ScouterSource.CODEX -> "AGENT  CODEX@$project"
-                ScouterSource.LOCAL_LLM -> "LOCAL  ${shorten(snapshot.modelName ?: snapshot.localBackend ?: project, 22)}"
-                else -> "$project · ${displaySourceName(snapshot.source)}"
-            }
-            views.setTextViewText(titleId, title.redactForScouter())
-            views.setTextViewText(badgeId, snapshot.source.badge())
-            views.setTextViewText(detailId, statusLine(snapshot, project, stale).redactForScouter())
-            views.setTextViewText(metricsId, metricsLine(snapshot))
-            views.setInt(dotId, "setColorFilter", colorForStatus(snapshot.currentStatus, stale))
-        }
-
-        private fun latestFor(snapshots: List<SessionSnapshot>, source: ScouterSource): SessionSnapshot? {
-            return snapshots.filter { it.source == source }.maxByOrNull { it.lastEventAt }
-        }
-
-        private fun latestCodexForBinding(
-            snapshots: List<SessionSnapshot>,
-            binding: ScouterWidgetCodexBinding?
-        ): SessionSnapshot? {
-            val target = normalizeCodexSessionId(binding?.codexSessionId) ?: return null
-            return snapshots
-                .filter { it.source == ScouterSource.CODEX && normalizeCodexSessionId(it.sessionId) == target }
-                .maxByOrNull { it.lastEventAt }
+        private fun shorten(value: String, max: Int): String {
+            val cleaned = value.replace(Regex("\\s+"), " ").trim()
+            return if (cleaned.length > max) cleaned.take(max - 1) + "…" else cleaned
         }
 
         private fun launchPendingIntent(context: Context): PendingIntent? {
@@ -703,979 +343,48 @@ class ScouterWidgetProvider : AppWidgetProvider() {
             )
         }
 
-        private fun petCyclePendingIntent(context: Context): PendingIntent {
-            val intent = Intent(context, ScouterWidgetPromptActivity::class.java)
-                .setAction(ScouterWidgetPromptActivity.ACTION_PET_CYCLE)
-                .addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_NO_HISTORY or
-                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                )
+        // Row tap ("open app to that agent's detail"): grepped app/_layout.tsx
+        // and found no existing per-agent deep-link handler — only generic
+        // targets are wired today (shelly://scouter, shelly://browser,
+        // shelly:///agent-chat). This reuses the exact same mechanism as
+        // launchPendingIntent (Intent.ACTION_VIEW on a shelly:// URI, same
+        // package/flags) and forward-compatibly attaches ?agentId=<id> so a
+        // future small JS change can scope the Scouter/Sidebar surface to
+        // this one agent. Today it opens the same generic Scouter detail
+        // panel as tapping the widget background (normalizeDeepLinkTarget in
+        // app/_layout.tsx reads only hostname/path, so the extra query
+        // param is harmlessly ignored) — this is a known, documented
+        // limitation, not a silent gap. Distinct request code per agent id
+        // so all 3 rows get distinct PendingIntents.
+        private fun agentDetailPendingIntent(context: Context, agentId: String): PendingIntent {
+            val uri = Uri.parse("shelly://scouter").buildUpon()
+                .appendQueryParameter("agentId", agentId)
+                .build()
+            val launchIntent = Intent(Intent.ACTION_VIEW, uri)
+                .setPackage(context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val requestCode = AGENT_DETAIL_REQUEST_BASE + ((agentId.hashCode() and 0x7FFFFFFF) % 10_000)
             return PendingIntent.getActivity(
                 context,
-                9106,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-        }
-
-        private fun approvalPendingIntent(
-            context: Context,
-            allow: Boolean,
-            binding: ScouterWidgetCodexBinding?,
-            codex: SessionSnapshot?,
-            approvalAt: Long?,
-            approvalText: String?
-        ): PendingIntent {
-            val launchIntent = Intent(context, ScouterWidgetPromptActivity::class.java)
-                .setAction(
-                    if (allow) {
-                        ScouterWidgetPromptActivity.ACTION_APPROVAL_ALLOW
-                    } else {
-                        ScouterWidgetPromptActivity.ACTION_APPROVAL_DENY
-                    }
-                )
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_CODEX_SESSION_ID, codex?.sessionId ?: binding?.codexSessionId)
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_PTY_SESSION_ID, binding?.ptySessionId)
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_APPROVAL_AT, approvalAt ?: 0L)
-                .putExtra(ScouterWidgetPromptActivity.EXTRA_APPROVAL_TEXT, approvalText)
-                .addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TASK or
-                        Intent.FLAG_ACTIVITY_NO_HISTORY or
-                        Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                )
-            return PendingIntent.getActivity(
-                context,
-                if (allow) 9102 else 9103,
+                requestCode,
                 launchIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
 
-        private fun bindCodexApprovalActions(
-            views: RemoteViews,
-            context: Context,
-            binding: ScouterWidgetCodexBinding?,
-            codex: SessionSnapshot?,
-            conversation: ScouterWidgetConversation?,
-            boundScreen: BoundCodexScreen
-        ) {
-            val hasApproval = hasActionableApproval(binding, codex, conversation, boundScreen)
-            views.setViewVisibility(R.id.scouter_codex_allow, if (hasApproval) View.VISIBLE else View.GONE)
-            views.setViewVisibility(R.id.scouter_codex_deny, if (hasApproval) View.VISIBLE else View.GONE)
-            if (hasApproval) {
-                hideCodexChoicePills(views)
-            }
-            // While an approval is pending the ALLOW/DENY pills take over the
-            // bottom row; hide the ASK pill so they don't stack (G2: urgent
-            // action comes forward).
-            views.setViewVisibility(R.id.scouter_codex_ask, if (hasApproval) View.GONE else View.VISIBLE)
-            if (hasApproval) {
-                views.setOnClickPendingIntent(
-                    R.id.scouter_codex_allow,
-                    approvalPendingIntent(
-                        context,
-                        allow = true,
-                        binding = binding,
-                        codex = codex,
-                        approvalAt = conversation?.lastApprovalAt,
-                        approvalText = conversation?.lastApproval
-                    )
-                )
-                views.setOnClickPendingIntent(
-                    R.id.scouter_codex_deny,
-                    approvalPendingIntent(
-                        context,
-                        allow = false,
-                        binding = binding,
-                        codex = codex,
-                        approvalAt = conversation?.lastApprovalAt,
-                        approvalText = conversation?.lastApproval
-                    )
-                )
-            }
-        }
-
-        private fun hasActionableApproval(
-            binding: ScouterWidgetCodexBinding?,
-            codex: SessionSnapshot?,
-            conversation: ScouterWidgetConversation?,
-            boundScreen: BoundCodexScreen
-        ): Boolean {
-            // Skip-approval: when the bound Codex runs with approvals auto-handled
-            // (approval_policy == "never"), Codex never emits an approval prompt, so
-            // the ALLOW/DENY pills must never show. Suppress deterministically rather
-            // than relying on WAITING_PERMISSION simply never firing.
-            if (isAutoApprovePolicy(codex?.approvalPolicy)) return false
-            val lastApprovalAt = conversation?.lastApprovalAt ?: 0L
-            val widgetStatusAt = conversation?.widgetStatusAt ?: 0L
-            val decisionAfterApproval = ScouterStateStore.approvalDecisionFromStatus(conversation?.widgetStatus) != null &&
-                (lastApprovalAt <= 0L || widgetStatusAt >= lastApprovalAt)
-            return !binding?.codexSessionId.isNullOrBlank() &&
-                !binding?.ptySessionId.isNullOrBlank() &&
-                boundScreen.state != BoundCodexScreenState.INTERACTIVE &&
-                codex?.currentStatus == ScouterStatus.WAITING_PERMISSION &&
-                !isStale(codex) &&
-                lastApprovalAt > 0L &&
-                !conversation?.lastApproval.isNullOrBlank() &&
-                !decisionAfterApproval
-        }
-
-        // True when the Codex session is running with approvals auto-handled.
-        // "never" is codex-rs's no-prompt policy (also reached via --full-auto /
-        // --dangerously-bypass-approvals-and-sandbox, normalized upstream). null /
-        // any other value => approvals may still be requested (current behavior).
-        private fun isAutoApprovePolicy(policy: String?): Boolean {
-            return policy?.trim()?.lowercase(Locale.US) == "never"
-        }
-
-        private fun displaySourceName(source: ScouterSource): String = when (source) {
-            ScouterSource.CODEX -> "Codex"
-            ScouterSource.LOCAL_LLM -> "Local"
-            ScouterSource.SHELLY -> "Shelly"
-        }
-
-        private fun statusLine(snapshot: SessionSnapshot, project: String, stale: Boolean): String {
-            val status = if (snapshot.source == ScouterSource.LOCAL_LLM) {
-                localStatus(snapshot)
-            } else {
-                agentStatus(snapshot, project)
-            }
-            val label = if (snapshot.source == ScouterSource.LOCAL_LLM) "HEALTH" else "STATE"
-            // The status signal ([OK]/[!!]/[..]) is shown once, in the top-right
-            // badge slot — don't repeat it here (it appeared twice: "STALE [--] …"
-            // plus the badge). Keep this line to the textual status only.
-            return if (stale) {
-                // Stale = no live updates; the status is last-known, not current.
-                // Frame it as "last:" so e.g. "Thinking in HOME" doesn't imply the
-                // dead session is actively working right now (bug: stale contradiction).
-                "STALE last: $status"
-            } else {
-                "$label $status"
-            }
-        }
-
-        private fun agentStatus(snapshot: SessionSnapshot, project: String): String {
-            val tool = snapshot.currentTool?.takeIf { it.isNotBlank() }
-            val file = snapshot.currentFile?.takeIf { it.isNotBlank() }?.let { displayPathLeaf(it) }
-            val base = when (snapshot.currentStatus) {
-                ScouterStatus.IDLE -> "Waiting in $project"
-                ScouterStatus.THINKING -> "Thinking in $project"
-                ScouterStatus.TOOL_RUNNING -> {
-                    val action = tool?.let { "Running $it" } ?: "Running tool"
-                    file?.let { "$action on $it" } ?: "$action in $project"
-                }
-                ScouterStatus.WAITING_PERMISSION -> "Permission needed"
-                ScouterStatus.COMPLETED -> "Completed in $project"
-                ScouterStatus.ERROR -> "Error in $project"
-            }
-            // Explicit auto-approve indicator so the user knows approvals are
-            // handled automatically (no ALLOW/DENY pills will appear). Subtle,
-            // single token, reuses the existing scouter_codex_detail slot.
-            return if (isAutoApprovePolicy(snapshot.approvalPolicy)) "$base · AUTO" else base
-        }
-
-        private fun localStatus(snapshot: SessionSnapshot): String {
-            val backend = snapshot.localBackend?.takeIf { it != "offline" } ?: snapshot.modelName
-            return when {
-                // "Offline" only — the probe targets are shown on the metrics line
-                // as "PROBE <ports>", so don't also claim "no endpoint" here (the
-                // two contradicted each other when localEndpoint held probe ports).
-                snapshot.localBackend == "offline" -> "Offline"
-                snapshot.currentStatus == ScouterStatus.ERROR -> "Error · ${backend ?: "local"}"
-                snapshot.currentStatus == ScouterStatus.TOOL_RUNNING -> "Busy · ${backend ?: "local"}"
-                else -> "Ready · ${backend ?: "local"}"
-            }
-        }
-
-        private fun metricsLine(snapshot: SessionSnapshot): String {
-            return if (snapshot.source == ScouterSource.LOCAL_LLM) {
-                localMetrics(snapshot)
-            } else {
-                codexMetrics(snapshot)
-            }
-        }
-
-        // Clean single line bound to scouter_codex_metrics: model and cost only.
-        // Consumed token/context gauges live on scouter_codex_usage so the compact
-        // widget does not show two competing usage rows.
-        private fun codexMetrics(snapshot: SessionSnapshot, conversation: ScouterWidgetConversation? = null): String {
-            val parts = mutableListOf<String>()
-            snapshot.modelName?.takeIf { it.isNotBlank() }?.let { parts += "MODEL ${shortModelName(it)}" }
-            // Prefer a real cost if the source emitted one (e.g. Claude); otherwise
-            // derive it from the static LiteLLM price table, since Codex never
-            // emits totalCostUsd and leaves it structurally 0.
-            val cost = snapshot.totalCostUsd.takeIf { it > 0.0 }
-                ?: ScouterModelPricing.costUsd(snapshot.modelName, snapshot.inputTokens, snapshot.outputTokens)
-            cost?.let {
-                parts += "$" + String.format(Locale.US, "%.2f", it)
-            }
-            return parts.filter { it.isNotBlank() }.joinToString(" · ")
-        }
-
-        // DOING line bound to scouter_codex_doing. Shows the active tool/file when
-        // Codex is running, otherwise "idle · last <reply time>". One short line.
-        private fun codexDoing(snapshot: SessionSnapshot): String {
-            val tool = snapshot.currentTool?.takeIf { it.isNotBlank() }
-            val line = if (tool != null) {
-                val running = if (snapshot.currentStatus == ScouterStatus.TOOL_RUNNING) "running " else ""
-                val file = snapshot.currentFile?.takeIf { it.isNotBlank() }?.let { " on ${displayPathLeaf(it)}" } ?: ""
-                "DOING $running$tool$file"
-            } else {
-                "DOING idle · ${formatRelativeTime(snapshot.lastEventAt)}"
-            }
-            return shorten(line, 40)
-        }
-
-        // Live timer bound to scouter_codex_timer. A Chronometer self-ticks every
-        // second WITHOUT a widget re-render (so it stays alive between heartbeats),
-        // using the SystemClock.elapsedRealtime() timebase. Priority: rate-limit
-        // reset countdown > active-session elapsed > hidden. `suppress` hides it in
-        // approval/choice states. All RemoteViews calls are safe on API 24+.
-        private fun bindCodexTimer(
-            views: RemoteViews,
-            codex: SessionSnapshot?,
-            usageLimited: ScouterWidgetUsageLimited?,
-            suppress: Boolean
-        ) {
-            val now = System.currentTimeMillis()
-            val elapsedNow = SystemClock.elapsedRealtime()
-            // Reset countdown: earliest known future reset across the live override
-            // and the structured snapshot fields.
-            val resetAt = if (suppress) null else listOfNotNull(
-                usageLimited?.resetAt,
-                codex?.rateLimitPrimaryResetAt,
-                codex?.rateLimitResetAt
-            ).filter { it > now }.minOrNull()
-            if (resetAt != null) {
-                views.setChronometerCountDown(R.id.scouter_codex_timer, true)
-                views.setChronometer(R.id.scouter_codex_timer, elapsedNow + (resetAt - now), "RESET %s", true)
-                views.setViewVisibility(R.id.scouter_codex_timer, View.VISIBLE)
-                return
-            }
-            // Session elapsed while actively working (not idle / stale / suppressed).
-            val sessionStart = codex?.takeIf {
-                !suppress && !isStale(it) && it.sessionStartAt > 0L &&
-                    (it.currentStatus == ScouterStatus.THINKING || it.currentStatus == ScouterStatus.TOOL_RUNNING)
-            }?.sessionStartAt
-            if (sessionStart != null) {
-                views.setChronometerCountDown(R.id.scouter_codex_timer, false)
-                views.setChronometer(R.id.scouter_codex_timer, elapsedNow - (now - sessionStart), "RUN %s", true)
-                views.setViewVisibility(R.id.scouter_codex_timer, View.VISIBLE)
-                return
-            }
-            // Nothing to time: stop ticking and hide.
-            views.setChronometer(R.id.scouter_codex_timer, elapsedNow, null, false)
-            views.setViewVisibility(R.id.scouter_codex_timer, View.GONE)
-        }
-
-        // Usage/limit line bound to scouter_codex_usage. Always returns a compact
-        // token/context baseline for a live Codex snapshot, then appends the best
-        // available rate/status-window summary.
-        private fun codexUsageLine(
-            snapshot: SessionSnapshot?,
-            conversation: ScouterWidgetConversation? = null,
-            usageLimited: ScouterWidgetUsageLimited? = null
-        ): CharSequence {
-            val baseLine = codexUsageBaseLine(snapshot)
-            // Live PTS poll saw a usage-limit banner: this is the most authoritative
-            // signal (Codex emits no JSONL event for it), so it overrides the stale
-            // structured/JSONL percentages that would otherwise read e.g. "WK 4% left".
-            usageLimited?.let {
-                val detail = it.summary.takeIf { s -> s.isNotBlank() && !s.equals("RATE LIMITED", ignoreCase = true) }
-                val limitedLine = if (detail != null) "RATE LIMITED · ${shorten(detail, 48)}" else "RATE LIMITED"
-                return appendUsageLine(
-                    baseLine,
-                    appendLimitDetail(fallbackRateLimitCells(ScouterRateLimitStatus.LIMITED), limitedLine)
-                )
-            }
-            if (snapshot == null) return appendUsageLine(baseLine, fallbackRateLimitCells())
-            // Rate-limit / status-window summary (ordering unchanged from before).
-            // Cost now lives on the USAGE (metrics) line, so this returns the
-            // rate-limit summary only, or null when there is nothing to show.
-            val rate: CharSequence? = run {
-                // Prefer the continuous structured rate_limits snapshot when present.
-                structuredRateLimitLine(snapshot)?.let { return@run it }
-                val windowLimitLine = statusWindowLimitLine(
-                    snapshot,
-                    conversation?.lastAnswer,
-                    snapshot.lastMessage,
-                    snapshot.lastError
-                )
-                if (windowLimitLine != null) return@run windowLimitLine
-                if (needsDedicatedRateLimitLine(snapshot)) {
-                    val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
-                    return@run appendLimitDetail(fallbackRateLimitCells(status), rateLimitLine(snapshot))
-                }
-                null
-            }
-            return appendUsageLine(
-                baseLine,
-                rate ?: fallbackRateLimitCells(snapshot.rateLimitStatus)
-            )
-        }
-
-        private fun codexUsageBaseLine(snapshot: SessionSnapshot?): String {
-            val observedTokens = snapshot?.tokensUsed?.takeIf { it > 0L }
-                ?: snapshot?.let { (it.inputTokens + it.outputTokens).takeIf { tokens -> tokens > 0L } }
-            val tokens = observedTokens?.let { formatTokens(it) } ?: "--"
-            val contextUsed = snapshot?.contextPercentRemaining
-                ?.let { (100.0 - it).coerceIn(0.0, 100.0) }
-            val contextText = contextUsed?.let { String.format(Locale.US, "%.0f%%", it) } ?: "--%"
-            val contextCells = contextGaugeCells(contextUsed, CONTEXT_GAUGE_CELLS)
-            return "CTX [$contextCells] $contextText · TOK $tokens"
-        }
-
-        private fun appendUsageLine(baseLine: String, suffix: CharSequence): CharSequence =
-            SpannableStringBuilder(baseLine).append(" · ").append(suffix)
-
-        private fun appendLimitDetail(prefix: CharSequence, detail: String): CharSequence {
-            val cleaned = detail
-                .removePrefix("RATE ")
-                .removePrefix("LIMIT ")
-                .takeIf { it.isNotBlank() }
-                ?: return prefix
-            return SpannableStringBuilder(prefix).append(" · ").append(shorten(cleaned, 40))
-        }
-
-        private fun contextGaugeCells(usedPercent: Double?, cells: Int): String {
-            if (usedPercent == null) return ".".repeat(cells)
-            val filled = Math.round(usedPercent.coerceIn(0.0, 100.0) / 100.0 * cells)
-                .toInt()
-                .coerceIn(0, cells)
-            return "#".repeat(filled) + ".".repeat(cells - filled)
-        }
-
-        // Continuous remaining display from the parsed Codex rate_limits snapshot.
-        // Semantics: 5H/WK show REMAINING percent (100 - used_percent), e.g. "5H 80%"
-        // means 80% of the window is still available. RESET is the wall-clock time the
-        // primary (5H) window refills. Returns null when no structured field is present
-        // so callers fall back to the text-scrape path unchanged.
-        private fun structuredRateLimitLine(snapshot: SessionSnapshot): CharSequence? {
-            val primaryRemaining = snapshot.rateLimitPrimaryUsedPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
-            val secondaryRemaining = snapshot.rateLimitSecondaryUsedPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
-            if (primaryRemaining == null && secondaryRemaining == null) return null
-            // "LIMIT · 5H ■■□□□ 45% · WK □□□□□ 4% · RESET 14:05" — each window gets a
-            // 5-cell REMAINING-quota bar (filled ■ + empty □) + percent, green while
-            // healthy and red once the bar drops to its last cell (~≤25%); LIMIT
-            // prefix and the dimmed RESET are kept. The bar is the "remaining"
-            // indicator (so the "left" word is dropped).
-            val sb = SpannableStringBuilder("LIMIT")
-            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
-            primaryRemaining?.let { appendQuota(sb, "5H", it) } ?: appendUnknownQuota(sb, "5H", status)
-            secondaryRemaining?.let { appendQuota(sb, "WK", it) } ?: appendUnknownQuota(sb, "WK", status)
-            snapshot.rateLimitPrimaryResetAt?.let {
-                val start = sb.length
-                sb.append(" · RESET ").append(formatDeviceTime(it))
-                // RESET is secondary info — dim it below the colored quota figures.
-                sb.setSpan(ForegroundColorSpan(HUD_DIM), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            return sb
-        }
-
-        private fun fallbackRateLimitCells(status: ScouterRateLimitStatus? = null): CharSequence {
-            val sb = SpannableStringBuilder("LIMIT")
-            appendUnknownQuota(sb, "5H", status)
-            appendUnknownQuota(sb, "WK", status)
-            return sb
-        }
-
-        private fun appendUnknownQuota(
-            sb: SpannableStringBuilder,
-            label: String,
-            status: ScouterRateLimitStatus?
-        ) {
-            val statusText = when (status) {
-                ScouterRateLimitStatus.OK -> "OK"
-                ScouterRateLimitStatus.HOT -> "HOT"
-                ScouterRateLimitStatus.LIMITED -> "LIM"
-                ScouterRateLimitStatus.UNKNOWN,
-                null -> "--"
-            }
-            val color = when (status) {
-                ScouterRateLimitStatus.HOT -> HUD_AMBER
-                ScouterRateLimitStatus.LIMITED -> HUD_RED
-                else -> HUD_DIM
-            }
-            sb.append(" · ").append(label).append(" ")
-            val railStart = sb.length
-            sb.append("□".repeat(GAUGE_CELLS))
-            sb.setSpan(ForegroundColorSpan(color), railStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            sb.append(" ")
-            val statusStart = sb.length
-            sb.append(statusText)
-            sb.setSpan(ForegroundColorSpan(color), statusStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        }
-
-        // Appends " · <label> ■■□□□ <pct>%" — a 5-cell remaining-quota bar (filled
-        // ■ + empty □) plus the percent. Green while healthy; once only the last cell
-        // is filled (~≤25%) the fill, the empty cells, and the percent all go red so
-        // the whole bar reads as critical at a glance.
-        private fun appendQuota(sb: SpannableStringBuilder, label: String, remainingPercent: Double) {
-            val pct = remainingPercent.coerceIn(0.0, 100.0)
-            val filled = Math.round(pct / 100.0 * GAUGE_CELLS).toInt().coerceIn(0, GAUGE_CELLS)
-            // Green while healthy; red once the bar is down to its last cell
-            // (~≤25% remaining). At that point the EMPTY cells go red too (not dim),
-            // so a nearly-exhausted window glows red across the whole bar instead of
-            // only tinting the percent.
-            val critical = filled <= 1
-            val color = if (critical) HUD_RED else HUD_GREEN
-            val railColor = if (critical) HUD_RED else HUD_DIM
-            sb.append(" · ").append(label).append(" ")
-            val fillStart = sb.length
-            sb.append("■".repeat(filled))
-            sb.setSpan(ForegroundColorSpan(color), fillStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            val railStart = sb.length
-            sb.append("□".repeat(GAUGE_CELLS - filled))
-            sb.setSpan(ForegroundColorSpan(railColor), railStart, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            sb.append(" ")
-            val pctStart = sb.length
-            sb.append(formatPercent(pct))
-            sb.setSpan(
-                ForegroundColorSpan(color),
-                pctStart,
-                sb.length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-        }
-
-        private fun bindCodexConversation(
-            views: RemoteViews,
-            codex: SessionSnapshot?,
-            conversation: ScouterWidgetConversation?,
-            showStoredChoicePending: Boolean = true
-        ) {
-            val preview = widgetConversationPreview(codex, conversation, showStoredChoicePending)
-            if (preview == null) {
-                views.setViewVisibility(R.id.scouter_codex_conversation, View.INVISIBLE)
-                views.setTextViewText(R.id.scouter_codex_conversation, "\n")
-                return
-            }
-            views.setViewVisibility(R.id.scouter_codex_conversation, View.VISIBLE)
-            views.setTextColor(R.id.scouter_codex_conversation, preview.color)
-            views.setTextViewText(R.id.scouter_codex_conversation, preview.text)
-        }
-
-        private fun widgetConversationPreview(
-            codex: SessionSnapshot?,
-            conversation: ScouterWidgetConversation?,
-            showStoredChoicePending: Boolean = true
-        ): WidgetConversationPreview? {
-            if (conversation == null) {
-                if (codex?.currentStatus == ScouterStatus.WAITING_PERMISSION && !isStale(codex)) {
-                    return WidgetConversationPreview(
-                        "APPROVAL  Codex permission requested",
-                        HUD_GREEN
-                    )
-                }
-                return null
-            }
-            if (conversation.privacySuppressed) return null
-            val isApprovalFailure = conversation.widgetStatus == ScouterStateStore.approvalFailedStatus()
-            val isChoicePending = conversation.widgetStatus == ScouterStateStore.choicePendingStatus()
-            val widgetPromptAt = conversation.widgetPromptAt ?: 0L
-            val lastAnswerAt = conversation.lastAnswerAt ?: 0L
-            val lastApprovalAt = conversation.lastApprovalAt ?: 0L
-            val widgetStatusAt = conversation.widgetStatusAt ?: 0L
-            val answer = conversation.lastAnswer?.takeIf { it.isNotBlank() }
-            val approval = conversation.lastApproval?.takeIf { it.isNotBlank() }
-            val approvalDecision = ScouterStateStore.approvalDecisionFromStatus(conversation.widgetStatus)
-            val isApprovalPending = conversation.widgetStatus?.startsWith("approval_pending_") == true
-            val isApprovalSending = conversation.widgetStatus?.startsWith("approval_sending_") == true
-            if (isChoicePending && showStoredChoicePending) {
-                val message = conversation.widgetError?.takeIf { it.isNotBlank() }
-                    ?: "Codex is waiting for a terminal choice"
-                return WidgetConversationPreview(
-                    "CHOICE  ${shorten(message.redactForScouter(), 96)}",
-                    HUD_GREEN
-                )
-            }
-            if (
-                approvalDecision != null &&
-                isApprovalPending
-            ) {
-                return WidgetConversationPreview(
-                    "APPROVAL ${approvalDecisionLabel(approvalDecision)} queued",
-                    HUD_GREEN
-                )
-            }
-            if (
-                approvalDecision != null &&
-                isApprovalSending
-            ) {
-                return WidgetConversationPreview(
-                    "APPROVAL ${approvalDecisionLabel(approvalDecision)} sending",
-                    HUD_GREEN
-                )
-            }
-            val approvalDecisionAfterEvent = approvalDecision != null &&
-                !isApprovalPending &&
-                !isApprovalSending &&
-                (lastApprovalAt <= 0L || widgetStatusAt >= lastApprovalAt)
-            if (approvalDecisionAfterEvent) {
-                val ageMs = System.currentTimeMillis() - widgetStatusAt
-                if (ageMs <= WIDGET_APPROVAL_SENT_DISPLAY_MS) {
-                    return WidgetConversationPreview(
-                        "APPROVAL ${approvalDecisionLabel(approvalDecision)} sent",
-                        HUD_GREEN
-                    )
-                }
-            }
-            val liveApproval = codex?.currentStatus == ScouterStatus.WAITING_PERMISSION && !isStale(codex)
-            if (liveApproval && !approvalDecisionAfterEvent) {
-                val text = approval ?: "Codex permission requested"
-                return WidgetConversationPreview(
-                    "APPROVAL  ${shorten(text.redactForScouter(), 120)}",
-                    HUD_GREEN
-                )
-            }
-            conversation.widgetError?.takeIf { it.isNotBlank() && !isChoicePending }?.let {
-                val label = if (isApprovalFailure) "APPROVAL ERROR" else "ASK ERROR"
-                return WidgetConversationPreview(
-                    "$label  ${shorten(it.redactForScouter(), 96)}",
-                    HUD_GREEN
-                )
-            }
-            // Only the currently active widget prompt is allowed to occupy this
-            // privacy-sensitive preview. Historical JSONL prompts/answers are
-            // intentionally ignored so closing all Agent Chat tabs leaves a blank
-            // two-line reservation instead of resurrecting old text.
-            val hasAnswer = answer != null && widgetPromptAt > 0L && lastAnswerAt >= widgetPromptAt
-            val prompt = conversation.widgetPrompt
-                ?.takeIf {
-                    it.isNotBlank() &&
-                        widgetPromptAt > 0L &&
-                        (isActiveWidgetWait(conversation, widgetPromptAt, lastAnswerAt) || hasAnswer)
-                }
-            if (prompt != null || hasAnswer) {
-                val youLabel = if (isActiveWidgetWait(conversation, widgetPromptAt, lastAnswerAt)) "WAIT " else "YOU  "
-                val lines = mutableListOf<String>()
-                prompt?.let { lines += "$youLabel${shorten(it.redactForScouter(), 64)}" }
-                when {
-                    hasAnswer -> lines += "CODEX ${shorten(answer!!.redactForScouter(), 64)}"
-                    // Turn ended without a captured reply — say so rather than
-                    // leaving only the user's prompt on screen.
-                    prompt != null -> lines += "CODEX —"
-                }
-                return WidgetConversationPreview(lines.joinToString("\n"), HUD_GREEN)
-            }
-            return null
-        }
-
-        private fun approvalDecisionLabel(decision: String): String = if (decision == "deny") "NO" else "OK"
-
-        private fun isActiveWidgetWait(
-            conversation: ScouterWidgetConversation,
-            widgetPromptAt: Long,
-            lastAnswerAt: Long
-        ): Boolean {
-            if (conversation.widgetStatus !in WAITING_WIDGET_STATUSES) return false
-            if (widgetPromptAt <= lastAnswerAt) return false
-            val statusAt = conversation.widgetStatusAt ?: widgetPromptAt
-            if (statusAt <= 0L) return false
-            return System.currentTimeMillis() - statusAt <= WIDGET_WAIT_DISPLAY_TIMEOUT_MS
-        }
-
-        private data class WidgetConversationPreview(
-            val text: String,
-            val color: Int
-        )
-
-        private fun needsDedicatedRateLimitLine(snapshot: SessionSnapshot): Boolean {
-            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
-            return status == ScouterRateLimitStatus.LIMITED ||
-                status == ScouterRateLimitStatus.HOT ||
-                snapshot.rateLimitRemainingRequests != null ||
-                snapshot.rateLimitRemainingTokens != null ||
-                (cooldownSeconds(snapshot) ?: 0L) > 0L
-        }
-
-        private fun rateLimitLine(snapshot: SessionSnapshot): String {
-            val status = snapshot.rateLimitStatus ?: inferScouterRateLimitFromText(snapshot.lastError).status
-            val statusText = when (status) {
-                ScouterRateLimitStatus.LIMITED -> "LIMITED"
-                ScouterRateLimitStatus.HOT -> "HOT"
-                ScouterRateLimitStatus.OK -> "OK"
-                ScouterRateLimitStatus.UNKNOWN -> "--"
-                null -> "--"
-            }
-            val parts = mutableListOf("RATE $statusText")
-            snapshot.rateLimitRemainingRequests?.let { parts += "REQ $it" }
-            snapshot.rateLimitRemainingTokens?.let { parts += "TOKREM ${formatTokens(it)}" }
-            val reset = rateResetLabel(snapshot)
-            when {
-                reset != null -> parts += reset
-                status == ScouterRateLimitStatus.OK -> parts += "LIMIT no throttle"
-                status == null || status == ScouterRateLimitStatus.UNKNOWN -> parts += "LIMIT unknown"
-            }
-            return parts.joinToString(" · ")
-        }
-
-        private fun localMetrics(snapshot: SessionSnapshot): String {
-            // Offline: localEndpoint carries the probe targets (e.g. ":11434"), not
-            // a live connection. Render them as "PROBE <ports>" so this line agrees
-            // with the "Offline" health line instead of showing a misleading "END".
-            if (snapshot.localBackend == "offline") {
-                val probe = snapshot.localEndpoint?.takeIf { it.isNotBlank() } ?: "8080/11434"
-                return "LOCAL PROBE $probe"
-            }
-            val parts = mutableListOf<String>()
-            snapshot.localEndpoint?.let { parts += "END ${shortEndpoint(it)}" } ?: run { parts += "END none" }
-            snapshot.tokensPerSecond?.takeIf { it > 0.0 }?.let {
-                parts += String.format(Locale.US, "TPS %.1f", it)
-            }
-            snapshot.queueSize?.let { parts += "Q $it" }
-            snapshot.latencyMs?.let { parts += "PING ${it}ms" }
-            return "LOCAL " + parts.joinToString(" · ")
-        }
-
-        private fun loadLine(load: ScouterSystemLoad): String {
-            val cpu = load.appCpuPercent?.let { String.format(Locale.US, "%.0f%%", it) } ?: "--%"
-            val memory = load.ramAvailableMb?.let { "RAM ${formatMegabytes(it)} free" }
-            return listOfNotNull("LOAD CPU $cpu", memory).joinToString(" · ")
-        }
-
-        private fun contextGaugeOnly(snapshot: SessionSnapshot): String? {
-            val remaining = snapshot.contextPercentRemaining ?: return null
-            val used = (100.0 - remaining).coerceIn(0.0, 100.0)
-            return "CTX ${bar(used)} ${used.toInt()}%"
-        }
-
-        private fun statusSignal(status: ScouterStatus, stale: Boolean): String {
-            if (stale) return "[--]"
-            val frame = ((System.currentTimeMillis() / 1000L) % 4L).toInt()
-            return when (status) {
-                ScouterStatus.TOOL_RUNNING -> listOf("[>..]", "[>>.]", "[>>>]", "[.>>]")[frame]
-                ScouterStatus.THINKING -> listOf("[o..]", "[.o.]", "[..o]", "[.o.]")[frame]
-                ScouterStatus.WAITING_PERMISSION -> "[??]"
-                ScouterStatus.ERROR -> "[!!]"
-                ScouterStatus.COMPLETED -> "[OK]"
-                ScouterStatus.IDLE -> "[..]"
-            }
-        }
-
-        private fun bar(percent: Double): String {
-            val filled = ((percent.coerceIn(0.0, 100.0) / 10.0).toInt()).coerceIn(0, 10)
-            return "[" + "#".repeat(filled) + ".".repeat(10 - filled) + "]"
-        }
-
-        private fun sparkline(value: Double, max: Double): String {
-            val levels = listOf("▁", "▂", "▃", "▄", "▅", "▆", "▇", "█")
-            val level = ((value.coerceIn(0.0, max) / max) * (levels.size - 1)).toInt()
-            val wave = listOf(-3, -1, 1, 3, 2, 0, -2, 0)
-            return wave.joinToString("") { offset -> levels[(level + offset).coerceIn(0, levels.lastIndex)] }
-        }
-
-        private fun shortEndpoint(endpoint: String): String {
-            return endpoint.substringAfterLast(':', endpoint).let { port ->
-                if (port.isNotBlank() && port.all { it.isDigit() }) ":$port" else shorten(endpoint, 16)
-            }
-        }
-
-        private fun statusWindowLimitLine(snapshot: SessionSnapshot, vararg texts: String?): CharSequence? {
-            val text = texts.firstOrNull { value ->
-                val lower = value?.lowercase(Locale.US).orEmpty()
-                lower.contains("5h") ||
-                    lower.contains("5-hour") ||
-                    lower.contains("five-hour") ||
-                    lower.contains("weekly") ||
-                    lower.contains("week limit") ||
-                    lower.contains("usage limit")
-            } ?: return null
-            val fiveHour = percentForLimitWindow(text, FIVE_HOUR_LIMIT_RE)
-            val weekly = percentForLimitWindow(text, WEEKLY_LIMIT_RE)
-            if (fiveHour == null && weekly == null) return null
-            val sb = SpannableStringBuilder("LIMIT")
-            fiveHour?.let { appendQuota(sb, "5H", it) } ?: appendUnknownQuota(sb, "5H", snapshot.rateLimitStatus)
-            weekly?.let { appendQuota(sb, "WK", it) } ?: appendUnknownQuota(sb, "WK", snapshot.rateLimitStatus)
-            rateResetLabel(snapshot)?.let {
-                val start = sb.length
-                sb.append(" · ").append(it)
-                sb.setSpan(ForegroundColorSpan(HUD_DIM), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            return sb
-        }
-
-        private fun rateResetLabel(snapshot: SessionSnapshot): String? {
-            val cooldown = cooldownSeconds(snapshot)
-            return when {
-                snapshot.rateLimitResetAt != null && cooldown != null && cooldown > 0L -> "RESET ${formatDeviceTime(snapshot.rateLimitResetAt)}"
-                cooldown != null && cooldown > 0L -> "RESET ${formatDuration(cooldown)}"
-                else -> null
-            }
-        }
-
-        private fun percentForLimitWindow(text: String, label: Regex): Double? {
-            val lines = text.lines().map { it.trim() }.filter { it.isNotBlank() }
-            for (line in lines) {
-                if (!label.containsMatchIn(line)) continue
-                LIMIT_PERCENT_RE.findAll(line).forEach { match ->
-                    match.groupValues.getOrNull(1)?.toDoubleOrNull()?.let {
-                        return it.coerceIn(0.0, 100.0)
-                    }
-                }
-            }
-            return null
-        }
-
-        private fun formatPercent(value: Double): String {
-            return if (value % 1.0 == 0.0) {
-                "${value.toInt()}%"
-            } else {
-                String.format(Locale.US, "%.1f%%", value)
-            }
-        }
-
-        private fun formatDeviceTime(epochMs: Long): String {
-            val zone = TimeZone.getDefault()
-            return SimpleDateFormat("HH:mm z", Locale.US).apply {
-                timeZone = zone
-            }.format(Date(epochMs))
-        }
-
-        private fun isActiveCodexScreen(screenText: String): Boolean {
-            if (screenText.isBlank()) return false
-            val lines = screenText.lines().map { it.trimEnd() }
-            var lastCodexPrompt = -1
-            var lastShellPrompt = -1
-            lines.forEachIndexed { index, line ->
-                when {
-                    line.contains("OpenAI Codex", ignoreCase = true) ||
-                        CODEX_STATUS_RE.containsMatchIn(line) -> lastCodexPrompt = index
-                    SHELL_PROMPT_RE.matches(line.trim()) -> lastShellPrompt = index
-                }
-            }
-            return lastCodexPrompt >= 0 && lastCodexPrompt > lastShellPrompt
-        }
-
-        private fun isApprovalPromptScreen(screenText: String): Boolean {
-            val recentLines = screenText
-                .lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .takeLast(8)
-            if (recentLines.isEmpty()) return false
-            val tail = recentLines.joinToString("\n")
-            val hasApprovalKeyword = APPROVAL_KEYWORD_RE.containsMatchIn(tail)
-            val hasChoice = recentLines.any { APPROVAL_CHOICE_RE.containsMatchIn(it) }
-            return hasApprovalKeyword && hasChoice
-        }
-
-        private fun isInteractivePromptScreen(screenText: String): Boolean {
-            val recentLines = screenText
-                .lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .takeLast(INTERACTIVE_PROMPT_TAIL_LINES)
-            if (recentLines.isEmpty()) return false
-            val tail = recentLines.joinToString("\n")
-            val hasInteractiveKeyword = INTERACTIVE_PROMPT_KEYWORD_RE.containsMatchIn(tail)
-            val numberedChoices = recentLines.count { INTERACTIVE_NUMBERED_CHOICE_RE.containsMatchIn(it) }
-            val hasFocusedChoice = recentLines.any { INTERACTIVE_FOCUSED_CHOICE_RE.containsMatchIn(it) }
-            return hasInteractiveKeyword && (numberedChoices >= 2 || hasFocusedChoice)
-        }
-
-        // Parses numbered choices (e.g. "1. Switch to gpt-5.4-mini") from the
-        // tail of the interactive prompt screen into tappable options. Strips an
-        // optional focus caret (">") and the "<digit>." / "<digit>)" prefix,
-        // keeping the digit as the option index. Caps widget options at 6 and
-        // returns empty (→ banner fallback) when no choices are parsed, too many
-        // are parsed, or duplicate indices appear (ambiguous/unsafe to map).
-        private fun parseInteractiveChoices(screenText: String): List<ChoiceOption> {
-            val recentLines = screenText
-                .lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .takeLast(INTERACTIVE_PROMPT_TAIL_LINES)
-            val out = mutableListOf<ChoiceOption>()
-            val seen = mutableSetOf<Int>()
-            for (line in recentLines) {
-                val match = INTERACTIVE_CHOICE_CAPTURE_RE.find(line) ?: continue
-                val index = match.groupValues.getOrNull(1)?.toIntOrNull() ?: continue
-                val label = match.groupValues.getOrNull(2).orEmpty().trim()
-                if (label.isBlank()) continue
-                if (!seen.add(index)) return emptyList()
-                out += ChoiceOption(index, shorten(label.redactForScouter(), 36))
-                if (out.size > MAX_WIDGET_CHOICE_OPTIONS) return emptyList()
-            }
-            if (out.isEmpty() || out.size > MAX_WIDGET_CHOICE_OPTIONS) return emptyList()
-            return out
-        }
-
-        private fun interactivePromptSummary(screenText: String): String {
-            val recentLines = screenText
-                .lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .takeLast(INTERACTIVE_PROMPT_TAIL_LINES)
-            return recentLines.firstOrNull { INTERACTIVE_PROMPT_KEYWORD_RE.containsMatchIn(it) }
-                ?: recentLines.firstOrNull { INTERACTIVE_FOCUSED_CHOICE_RE.containsMatchIn(it) }
-                ?: "Codex is waiting for terminal selection"
-        }
-
-        private fun displayProjectName(raw: String): String {
-            val value = raw.redactForScouter().trim().trim('"', '\'')
-            if (value.isBlank()) return "Shelly"
-            val lower = value.lowercase(Locale.US)
-            if ("dev-shelly-terminal-files-home" in lower || "dev.shelly.terminal/files/home" in lower) {
-                return "home"
-            }
-            if ("/" in value || "\\" in value) {
-                return displayPathLeaf(value).ifBlank { "Shelly" }
-            }
-            return value
-        }
-
-        private fun displayPathLeaf(raw: String): String {
-            return raw.replace('\\', '/')
-                .trimEnd('/')
-                .substringAfterLast('/')
-                .ifBlank { raw }
-        }
-
-        private fun isStale(snapshot: SessionSnapshot): Boolean {
-            return System.currentTimeMillis() - snapshot.lastEventAt > STALE_AFTER_MS
-        }
-
-        private fun colorForStatus(status: ScouterStatus, stale: Boolean = false): Int = when {
-            stale -> HUD_GREEN_STALE
-            status == ScouterStatus.ERROR -> HUD_RED
-            status == ScouterStatus.WAITING_PERMISSION -> HUD_AMBER
-            status == ScouterStatus.THINKING || status == ScouterStatus.TOOL_RUNNING -> HUD_BRIGHT
-            else -> HUD_GREEN // IDLE, COMPLETED
-        }
-
-        private fun formatTokens(tokens: Long): String {
-            return when {
-                tokens >= 1_000_000L -> String.format(Locale.US, "%.1fM", tokens / 1_000_000.0)
-                tokens >= 1000L -> String.format(Locale.US, "%.1fK", tokens / 1000.0)
-                else -> tokens.toString()
-            }
-        }
-
-        private fun formatMegabytes(value: Long): String {
-            return if (value >= 1024L) String.format(Locale.US, "%.1fG", value / 1024.0) else "${value}M"
-        }
-
-        private fun cooldownSeconds(snapshot: SessionSnapshot): Long? {
-            snapshot.rateLimitResetAt?.let { resetAt ->
-                val remaining = ((resetAt - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
-                if (remaining > 0L) return remaining
-            }
-            return snapshot.retryAfterSeconds?.takeIf { it > 0L && snapshot.rateLimitResetAt == null }
-        }
-
-        private fun formatDuration(seconds: Long): String {
-            return if (seconds >= 60L) "${seconds / 60L}m" else "${seconds}s"
-        }
-
-        // Coarse "time since" for the idle line — more glanceable than an absolute
-        // clock. The 60s poll heartbeat re-renders the widget, so this stays current.
-        private fun formatRelativeTime(time: Long): String {
-            val sec = ((System.currentTimeMillis() - time) / 1000L)
-            return when {
-                sec < 10L -> "just now"
-                sec < 60L -> "${sec}s ago"
-                sec < 3600L -> "${sec / 60L}m ago"
-                sec < 86_400L -> "${sec / 3600L}h ago"
-                else -> "${sec / 86_400L}d ago"
-            }
-        }
-
-        private fun shortSessionId(sessionId: String): String {
-            return if (sessionId.length > 10) sessionId.take(8) else sessionId
-        }
-
-        private fun normalizeCodexSessionId(sessionId: String?): String? {
-            val trimmed = sessionId?.trim().orEmpty()
-            if (trimmed.isBlank()) return null
-            return CODEX_SESSION_UUID_SUFFIX_RE.find(trimmed)?.groupValues?.getOrNull(1) ?: trimmed
-        }
-
-        private fun shorten(value: String, max: Int): String {
-            val cleaned = value.replace(Regex("\\s+"), " ").trim()
-            return if (cleaned.length > max) cleaned.take(max - 1) + "…" else cleaned
-        }
-
-        private fun shortModelName(model: String): String {
-            return model
-                .removePrefix("gpt-")
-                .replace("-2025", "")
-                .replace("-2026", "")
-                .take(18)
-        }
-
-        private fun formatTime(time: Long): String {
-            val pattern = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) "HH:mm:ss" else "HH:mm"
-            return SimpleDateFormat(pattern, Locale.US).format(Date(time))
-        }
-
-        private enum class BoundCodexScreenState {
-            READY,
-            APPROVAL,
-            INTERACTIVE,
-            MISSING,
-            STALE
-        }
-
-        private data class BoundCodexScreen(
-            val state: BoundCodexScreenState,
-            val message: String? = null,
-            val choiceOptions: List<ChoiceOption> = emptyList()
-        )
-
         private const val TAG = "ScouterWidget"
-        private const val ACTION_CYCLE_PET =
-            "expo.modules.terminalemulator.scouter.WIDGET_CYCLE_CODEX_PET"
-        private const val ACTION_WAIT_EXPIRY_REFRESH =
-            "expo.modules.terminalemulator.scouter.WIDGET_WAIT_EXPIRY_REFRESH"
-        private const val STALE_AFTER_MS = 10 * 60 * 1000L
-        private const val WIDGET_WAIT_DISPLAY_TIMEOUT_MS = 2 * 60 * 1000L
-        private const val WIDGET_CHOICE_DISPLAY_TIMEOUT_MS = 30 * 60 * 1000L
-        private const val WIDGET_APPROVAL_SENT_DISPLAY_MS = 12 * 1000L
-        private const val WAIT_EXPIRY_REFRESH_SLOP_MS = 350L
-        // Base request code for choice-select PendingIntents; the option index is
-        // added so each pill gets a distinct PendingIntent. Kept clear of
-        // 9100-9104 used by launch/prompt/approval/wait-refresh intents.
-        private const val CHOICE_SELECT_REQUEST_BASE = 9110
-        private const val MAX_WIDGET_CHOICE_OPTIONS = 6
-        private const val INTERACTIVE_PROMPT_TAIL_LINES = 24
-        private val CODEX_SESSION_UUID_SUFFIX_RE =
-            Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$""")
-        // Number of cells in the inline remaining-quota bar ("[#####]"). The filled
-        // count = round(remaining% / 100 * GAUGE_CELLS), so the bar itself is the
-        // "remaining" indicator and no "left"/"used" word is needed.
-        private const val GAUGE_CELLS = 5
-        private const val CONTEXT_GAUGE_CELLS = 10
-        private val FIVE_HOUR_LIMIT_RE = Regex("""(?i)\b(?:5\s*h|5-hour|five[- ]hour)\b""")
-        private val WEEKLY_LIMIT_RE = Regex("""(?i)\b(?:weekly|week)\b""")
-        private val LIMIT_PERCENT_RE = Regex("""(?i)(?:<\s*)?(\d{1,3}(?:\.\d+)?)\s*%""")
-        private val CODEX_STATUS_RE = Regex("""\b(?:gpt|o\d|codex)[A-Za-z0-9_.-]*\b.*[·•]\s*/""", RegexOption.IGNORE_CASE)
-        private val SHELL_PROMPT_RE = Regex("""^(?:[~\w./:@+-]+\s*)?[$#]\s*$""")
-        private val APPROVAL_KEYWORD_RE = Regex("""\b(?:approval|approve|permission|allow|deny)\b""", RegexOption.IGNORE_CASE)
-        private val APPROVAL_CHOICE_RE = Regex("""\b(?:y/n|yes/no|allow|deny|approve|reject)\b|^\s*(?:[^A-Za-z0-9\s]\s*)?(?:\d+[\).]\s*)?(?:yes|no|y|n)\b(?:\s*[,):.-]|\s*$)|[\[(]\s*[yY]\s*/\s*[nN]\s*[\])]""", RegexOption.IGNORE_CASE)
-        private val INTERACTIVE_PROMPT_KEYWORD_RE = Regex("""(?:Approaching rate limits|Switch to\b.*\bmodel\b|Keep current model|Would you like to make the following edits|Yes,\s*proceed|don't ask again|Press enter to confirm|esc to go back|rate limit reminders|select an option|choose an option)""", RegexOption.IGNORE_CASE)
-        private val INTERACTIVE_NUMBERED_CHOICE_RE = Regex("""^\s*(?:[>]\s*)?\d+[\).]\s+\S""")
-        private val INTERACTIVE_FOCUSED_CHOICE_RE = Regex("""^\s*(?:[>]\s*)\d+[\).]\s+\S""")
-        // Capturing variant of INTERACTIVE_NUMBERED_CHOICE_RE: group 1 = digit,
-        // group 2 = label text after the "<digit>." / "<digit>)" marker.
-        private val INTERACTIVE_CHOICE_CAPTURE_RE = Regex("""^\s*(?:[>]\s*)?(\d+)[\).]\s+(\S.*)$""")
-        private val WAITING_WIDGET_STATUSES = setOf(
-            "pending_terminal",
-            "sending",
-            ScouterStateStore.approvalPendingStatus("allow"),
-            ScouterStateStore.approvalPendingStatus("deny"),
-            ScouterStateStore.approvalSendingStatus("allow"),
-            ScouterStateStore.approvalSendingStatus("deny")
-        )
+        private const val MAX_WIDGET_AGENT_ROWS = 3
+        // Base request code for per-agent row-tap PendingIntents; kept clear
+        // of 9100/9101 used by the root-launch/ASK-prompt intents above.
+        private const val AGENT_DETAIL_REQUEST_BASE = 9200
+        private const val GLYPH_SUCCESS = "✓"
+        private const val GLYPH_ERROR = "✗"
+        private const val GLYPH_SKIPPED = "•"
+        private const val GLYPH_NEVER = "–"
+        private const val GLYPH_RUNNING = "⏳"
         private val HUD_GREEN = Color.rgb(0, 255, 65)
         private val HUD_GREEN_STALE = Color.rgb(52, 232, 94)
-        // Stage 2 state palette: bright green = active work, amber = needs
-        // attention / quota low, red = error / quota critical. Kept within the
-        // green-mono HUD aesthetic (amber/red used sparingly).
         private val HUD_BRIGHT = Color.rgb(120, 255, 140)
-        private val HUD_AMBER = Color.rgb(255, 176, 0)
         private val HUD_RED = Color.rgb(255, 76, 76)
         private val HUD_DIM = Color.rgb(95, 191, 125)
     }

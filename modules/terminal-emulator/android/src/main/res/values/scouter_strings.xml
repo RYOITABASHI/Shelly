@@ -11,6 +11,17 @@
   <string name="scouter_widget_agent_last_running">RUNNING</string>
   <string name="scouter_widget_agent_last_success">OK</string>
   <string name="scouter_widget_agent_last_error">ERROR</string>
+  <!-- Agent-launcher redesign (2026-07-18): per-row + header strings for the
+       up-to-3-agent widget layout. The strings above this block are kept for
+       now even though the widget no longer binds them (harmless, low
+       priority cleanup candidate — see DEFERRED.md). -->
+  <string name="scouter_widget_header_title">AGENTS</string>
+  <string name="scouter_widget_header_failed">%1$d FAILED</string>
+  <string name="scouter_widget_agent_row_run">RUN</string>
+  <string name="scouter_widget_agent_row_next">NEXT %1$s</string>
+  <string name="scouter_widget_agent_row_next_running">RUNNING %1$s</string>
+  <string name="scouter_widget_agent_row_next_never">never run</string>
+  <string name="scouter_widget_agent_empty_state">No agents scheduled yet</string>
   <string name="scouter_widget_prompt_title">Ask Codex</string>
   <string name="scouter_widget_prompt_hint">Type a prompt for the bound Codex terminal</string>
   <string name="scouter_widget_prompt_send">Send</string>

@@ -7,15 +7,21 @@ import expo.modules.terminalemulator.HomeInitializer
 import java.io.File
 import org.json.JSONObject
 
+// lastRunStatus mirrors AgentRunLog['status'] from lib/agent-manager.ts
+// ("success" | "error" | "skipped" | "unavailable"), read from the newest
+// file under ~/.shelly/agents/logs/<id>/*.json. Null means no run-log file
+// was found yet (agent has never run, or the log dir is empty/unreadable).
 data class ScouterWidgetAgentTarget(
     val agentId: String,
     val name: String,
     val cron: String,
-    val nextRunAt: Long
+    val nextRunAt: Long,
+    val lastRunStatus: String? = null,
+    val lastRunAt: Long? = null
 )
 
 /**
- * Disk-backed source of truth for the widget's single RUN target.
+ * Disk-backed source of truth for the widget's RUN targets (up to 3 rows).
  *
  * The RN agent store is intentionally not persisted, so native widget rendering
  * must never retain an in-memory Agent reference. Every render and every tap
@@ -27,11 +33,19 @@ data class ScouterWidgetAgentTarget(
 object WidgetAgentRepository {
     private const val TAG = "WidgetAgentRepository"
     private val SAFE_AGENT_ID = Regex("^[A-Za-z0-9_-]+$")
+    private const val DEFAULT_WIDGET_AGENT_LIMIT = 3
 
-    fun nextScheduled(context: Context): ScouterWidgetAgentTarget? {
+    /** Up to [limit] enabled, scheduled agents ordered by soonest next-fire. */
+    fun nextScheduledAgents(context: Context, limit: Int = DEFAULT_WIDGET_AGENT_LIMIT): List<ScouterWidgetAgentTarget> {
         val candidates = readScheduledAgents(context)
-        return candidates.minWithOrNull(compareBy<ScouterWidgetAgentTarget> { it.nextRunAt }.thenBy { it.agentId })
+        return candidates
+            .sortedWith(compareBy<ScouterWidgetAgentTarget> { it.nextRunAt }.thenBy { it.agentId })
+            .take(limit)
     }
+
+    /** Back-compat single-target accessor; kept for callers that only need one. */
+    fun nextScheduled(context: Context): ScouterWidgetAgentTarget? =
+        nextScheduledAgents(context, 1).firstOrNull()
 
     fun scheduledById(context: Context, agentId: String): ScouterWidgetAgentTarget? {
         if (!SAFE_AGENT_ID.matches(agentId)) return null
@@ -73,15 +87,44 @@ object WidgetAgentRepository {
             val hasRunArtifact = File(agentsDir, "run-agent-$id.sh").isFile ||
                 File(agentsDir, "plans/plan-agent-$id.json").isFile
             if (!hasRunArtifact) return null
+            val (lastRunStatus, lastRunAt) = readLastRunStatus(agentsDir, id)
             ScouterWidgetAgentTarget(
                 agentId = id,
                 name = json.optString("name").trim().ifBlank { id },
                 cron = cron,
-                nextRunAt = nextRunAt
+                nextRunAt = nextRunAt,
+                lastRunStatus = lastRunStatus,
+                lastRunAt = lastRunAt
             )
         } catch (error: Exception) {
             Log.w(TAG, "Ignoring invalid agent metadata ${file.name}", error)
             null
+        }
+    }
+
+    // Best-effort read of the most recent run-log written by
+    // lib/agent-manager.ts (runAgentInBackground/runAgentOrchestrated) at
+    // ~/.shelly/agents/logs/<id>/<epochMs>.json. Filenames are the run's
+    // epoch-ms timestamp, so the lexicographically-last *.json file is also
+    // the most recent run (stable while epoch-ms keeps a constant digit
+    // count, true for the foreseeable future). Never throws; any I/O or
+    // parse failure just yields "no last-run data" rather than failing the
+    // whole agent row.
+    private fun readLastRunStatus(agentsDir: File, agentId: String): Pair<String?, Long?> {
+        return try {
+            val logDir = File(agentsDir, "logs/$agentId")
+            val files = logDir.listFiles { f -> f.isFile && f.extension == "json" }
+            if (files.isNullOrEmpty()) return null to null
+            val latest = files.maxByOrNull { it.nameWithoutExtension.toLongOrNull() ?: 0L } ?: return null to null
+            val json = JSONObject(latest.readText())
+            val status = json.optString("status").takeIf {
+                it == "success" || it == "error" || it == "skipped" || it == "unavailable"
+            }
+            val timestamp = json.optLong("timestamp", 0L).takeIf { it > 0L }
+            status to timestamp
+        } catch (error: Exception) {
+            Log.w(TAG, "Ignoring unreadable run-log for $agentId", error)
+            null to null
         }
     }
 

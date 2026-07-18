@@ -8,6 +8,13 @@
   <string name="scouter_widget_agent_last_running">実行中</string>
   <string name="scouter_widget_agent_last_success">成功</string>
   <string name="scouter_widget_agent_last_error">失敗</string>
+  <string name="scouter_widget_header_title">エージェント</string>
+  <string name="scouter_widget_header_failed">%1$d件失敗</string>
+  <string name="scouter_widget_agent_row_run">実行</string>
+  <string name="scouter_widget_agent_row_next">次回 %1$s</string>
+  <string name="scouter_widget_agent_row_next_running">実行中 %1$s</string>
+  <string name="scouter_widget_agent_row_next_never">未実行</string>
+  <string name="scouter_widget_agent_empty_state">予定されたエージェントはありません</string>
   <string name="scouter_widget_prompt_title">Codex に依頼</string>
   <string name="scouter_widget_prompt_hint">紐づいた Codex ターミナルへ送るプロンプト</string>
   <string name="scouter_widget_prompt_send">送信</string>
