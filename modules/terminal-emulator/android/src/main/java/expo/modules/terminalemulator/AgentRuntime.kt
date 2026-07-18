@@ -364,6 +364,40 @@ object AgentRuntime {
         }
         val trustedLaunch = trustedPlanLaunch(homeDir, agentId)
 
+        // docs/superpowers/DEFERRED.md "エージェント二重実行レース" (2026-07-18
+        // follow-up, found via on-device testing of the chain-lock fix itself):
+        // the chain-scoped lock lib/agent-manager.ts's acquireChainLock/
+        // releaseChainLock own (${locksDir}/${agentId}.chain.lock, mkdir-based —
+        // lib/agent-executor.ts::getChainLockDir is the single source of truth
+        // this mirrors) is checked by the LEGACY .sh script's own generated bash
+        // (the CHAIN_LOCK_DIR/CHAIN_LOCK_NONCE check baked in at
+        // AGENT_SCRIPT_VERSION 20). But an orchestrated agent whose tool IS
+        // supported by this PlanSpec executor — the common case since North
+        // Star P0(c) — never reaches that legacy .sh at all on its native/
+        // unattended fire (shouldRunPlanExecutor routes it here instead), so it
+        // was never protected against colliding with an ATTENDED chain (Sidebar
+        // RUN NOW / @agent chat) still in flight for the SAME agent. Confirmed
+        // on-device: agent-mrode1ec's attended RUN NOW (JS, legacy .sh per step)
+        // and its own native */5 alarm (routed here) fired within seconds of
+        // each other with zero mutual awareness.
+        //
+        // This native path can never legitimately be the lock's OWNER itself —
+        // only the JS/attended side ever calls acquireChainLock — so unlike the
+        // legacy .sh's nonce-matching check (which must distinguish "this
+        // chain's own next step" from "a foreign holder"), existence alone is
+        // sufficient here: any live chain-lock directory means some OTHER run
+        // already owns this agent. Best-effort/fail-open on purpose: an
+        // unreadable/missing lock dir is treated as "not held" (isDirectory
+        // returns false), so this check can never itself block a legitimate run
+        // that the lock system isn't currently protecting.
+        val chainLockDir = File(homeDir, ".shelly/agents/locks/$agentId.chain.lock")
+        if (chainLockDir.isDirectory) {
+            val message = "previous run still active"
+            Log.i(TAG, "Agent $agentId skipped via PlanSpec executor: $message (chain lock held by an attended run)")
+            writeReceiverLog(homeDir, agentId, "skipped", message)
+            return AgentRunResult(agentId, 130, "", message)
+        }
+
         // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
         // local LLM autostart が無い" (2026-07-18): shelly-plan-executor.js's 'local'
         // tool case fires a plain HTTP request with no autostart (it is deliberately
