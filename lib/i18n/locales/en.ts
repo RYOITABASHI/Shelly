@@ -1401,6 +1401,8 @@ const en: Record<string, string> = {
   'sidebar.agent_notification_trigger_modal_title': 'Notification Trigger — {{name}}',
   'sidebar.agent_pause': 'Pause',
   'sidebar.agent_resume': 'Resume',
+  'sidebar.agent_pause_a11y': 'Pause agent {{name}} (stops its schedule)',
+  'sidebar.agent_resume_a11y': 'Resume agent {{name}}',
   'sidebar.agent_detail_a11y': 'Open {{name}} details',
   // RUNNING sub-section + save-path detail (Fable5 UX consultation, 2026-07-21)
   'sidebar.agent_running_step': 'Running · STEP {{step}}/{{total}} · {{tool}} · {{elapsed}}',

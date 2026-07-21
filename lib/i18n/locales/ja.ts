@@ -1395,6 +1395,8 @@ const ja: Record<string, string> = {
   'sidebar.agent_notification_trigger_modal_title': '通知トリガー — {{name}}',
   'sidebar.agent_pause': '一時停止',
   'sidebar.agent_resume': '再開',
+  'sidebar.agent_pause_a11y': 'エージェント {{name}} を一時停止（スケジュール発火を止める）',
+  'sidebar.agent_resume_a11y': 'エージェント {{name}} を再開',
   'sidebar.agent_detail_a11y': '{{name}} の詳細を開く',
   // RUNNING セクション + 保存先表示（2026-07-21 Fable5 UXコンサル）
   'sidebar.agent_running_step': '実行中 · STEP {{step}}/{{total}} · {{tool}} · {{elapsed}}',

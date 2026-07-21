@@ -1258,6 +1258,23 @@ export function Sidebar() {
                     />
                   </Pressable>
                   <Pressable
+                    onPress={() => void handleTogglePause(agent)}
+                    hitSlop={8}
+                    style={styles.tasksAction}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      agent.enabled
+                        ? t('sidebar.agent_pause_a11y', { name: agent.name })
+                        : t('sidebar.agent_resume_a11y', { name: agent.name })
+                    }
+                  >
+                    <MaterialIcons
+                      name={agent.enabled ? 'pause-circle-outline' : 'play-circle-outline'}
+                      size={12}
+                      color={agent.enabled ? C.text2 : C.warning}
+                    />
+                  </Pressable>
+                  <Pressable
                     onPress={() => handleToggleAutonomous(agent)}
                     hitSlop={8}
                     style={[
