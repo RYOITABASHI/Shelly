@@ -1813,6 +1813,7 @@ const en: Record<string, string> = {
   'agentbar.add_or_layout_a11y': 'Add pane or change layout',
   'agentbar.switch_pane_a11y': 'Switch to {{name}} pane',
   'agentbar.show_recent_logs_a11y': 'Show recent logs',
+  'agentbar.running_count': '{{count}} RUNNING',
   'sidebar.add_repository': '+ ADD REPOSITORY',
   'sidebar.add_repo_title': 'ADD REPOSITORY',
   'sidebar.add_repo_placeholder': '~/projects/my-repo',

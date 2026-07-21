@@ -14,12 +14,28 @@ interface AgentState {
   /** Global kill-switch (Phase 0 §2.5). When true, all schedules are uninstalled
    *  and manual runs are blocked. Persisted to a sentinel file via agent-manager. */
   halted: boolean;
+  /** Agent IDs currently holding a live lock (~/.shelly/agents/locks/*.pid,
+   *  verified via `kill -0`). Live/transient only — this store has no
+   *  persist() middleware at all, so nothing here (including this field)
+   *  survives an app restart, which is intentional: a stale "running" flag
+   *  after relaunch would be worse than none. Populated by a poller — today
+   *  Sidebar.tsx's refreshRunningAgents(), which should call
+   *  setRunningAgentIds() with its computed id list so other surfaces
+   *  (AgentBar, widgets, notifications) can observe run state without each
+   *  duplicating the lock-file poll. */
+  runningAgentIds: string[];
 
   setAgents: (agents: Agent[]) => void;
   setHalted: (halted: boolean) => void;
   addAgent: (agent: Agent) => void;
   updateAgent: (id: string, partial: Partial<Agent>) => void;
   removeAgent: (id: string) => void;
+
+  /** Replace the full running-agent id list wholesale — the natural shape
+   *  for a polling caller that recomputes the whole set each tick. */
+  setRunningAgentIds: (ids: string[]) => void;
+  addRunningAgentId: (id: string) => void;
+  removeRunningAgentId: (id: string) => void;
 
   addRunLog: (log: AgentRunLog) => void;
   setRunHistory: (history: Record<string, AgentRunLog[]>) => void;
@@ -37,6 +53,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   isLoaded: false,
   pendingEnvSync: null,
   halted: false,
+  runningAgentIds: [],
 
   setAgents: (agents) => set({ agents, isLoaded: true }),
   setHalted: (halted) => set({ halted }),
@@ -54,6 +71,20 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   removeAgent: (id) =>
     set((state) => ({
       agents: state.agents.filter((a) => a.id !== id),
+    })),
+
+  setRunningAgentIds: (ids) => set({ runningAgentIds: ids }),
+
+  addRunningAgentId: (id) =>
+    set((state) =>
+      state.runningAgentIds.includes(id)
+        ? state
+        : { runningAgentIds: [...state.runningAgentIds, id] }
+    ),
+
+  removeRunningAgentId: (id) =>
+    set((state) => ({
+      runningAgentIds: state.runningAgentIds.filter((a) => a !== id),
     })),
 
   addRunLog: (log) =>

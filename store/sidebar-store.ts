@@ -28,6 +28,14 @@ interface SidebarState {
   activeRepoPath: string | null;
   /** Known repository paths */
   repoPaths: string[];
+  /** Monotonic counter bumped by requestFocusRunningAgents(). Live/transient
+   *  UI signal only — deliberately excluded from partialize() below, so it
+   *  never persists. Intended consumer: a Sidebar-side effect (not yet
+   *  implemented as of this store change) that watches this value and, on
+   *  change, scrolls the TASKS section into view and briefly highlights the
+   *  currently-running agent rows. Emitted today by the AgentBar
+   *  running-count chip (components/layout/AgentBar.tsx) on tap. */
+  focusRunningAgentsRequestId: number;
 
   setMode: (mode: SidebarMode) => void;
   toggleSection: (section: SidebarSection) => void;
@@ -35,6 +43,9 @@ interface SidebarState {
   addRepo: (path: string) => void;
   removeRepo: (path: string) => void;
   loadRepos: () => Promise<void>;
+  /** Force-opens the TASKS section and bumps focusRunningAgentsRequestId so
+   *  a future Sidebar effect can scroll to / flash the running-agent list. */
+  requestFocusRunningAgents: () => void;
 }
 
 // bug #50: persist sidebar mode / open sections / repo list across lmkd kills
@@ -45,12 +56,19 @@ export const useSidebarStore = create<SidebarState>()(
       openSections: defaultOpenSections(),
       activeRepoPath: null,
       repoPaths: [],
+      focusRunningAgentsRequestId: 0,
 
       setMode: (mode) => set({ mode }),
 
       toggleSection: (section) =>
         set((s) => ({
           openSections: { ...s.openSections, [section]: !s.openSections[section] },
+        })),
+
+      requestFocusRunningAgents: () =>
+        set((s) => ({
+          openSections: { ...s.openSections, tasks: true },
+          focusRunningAgentsRequestId: s.focusRunningAgentsRequestId + 1,
         })),
 
       // bug #43: normalize `~/` before storing — Plan B bash doesn't expand

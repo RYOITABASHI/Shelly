@@ -7,6 +7,7 @@
 // (Superset-style), so this bar no longer carries CLI tabs at all.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Pressable, StyleSheet, Text, ScrollView } from 'react-native';
+import Animated, { useSharedValue, useAnimatedStyle } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
 import { SettingsDropdown } from './SettingsDropdown';
@@ -16,7 +17,10 @@ import { RecentLogsModal } from './RecentLogsModal';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useAgentStore } from '@/store/agent-store';
+import { useSidebarStore } from '@/store/sidebar-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
+import { useMotion } from '@/hooks/use-motion';
 import { PRESET_CAPACITY, useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
 import { PANE_REGISTRY, resolvePaneTitle } from '@/components/multi-pane/pane-registry';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
@@ -158,6 +162,55 @@ function OpenPaneTabs() {
   );
 }
 
+// Small pill showing how many background agents currently hold a live lock
+// (store/agent-store.ts runningAgentIds, populated by Sidebar's
+// refreshRunningAgents() poller — see that store for details). Renders
+// nothing when the count is 0, so it never causes layout shift. Tapping it
+// bumps sidebar-store's focusRunningAgentsRequestId, a signal a future
+// Sidebar-side effect can consume to scroll to / highlight the running rows.
+function RunningAgentsChip() {
+  const { t } = useTranslation();
+  const runningCount = useAgentStore((s) => s.runningAgentIds.length);
+  const { reduceMotion, pulse } = useMotion();
+  const dotOpacity = useSharedValue(1);
+
+  useEffect(() => {
+    // useMotion().pulse() already no-ops into a static assignment when
+    // reduceMotion is on, but it snaps to the animation's `from` value
+    // (0.35 = dim) rather than a fully-opaque static dot. Explicitly force
+    // full opacity in that case so "reduced motion" reads as "static dot",
+    // not "permanently dim dot".
+    if (runningCount > 0 && !reduceMotion) {
+      pulse(dotOpacity, 0.35, 1, 900);
+    } else {
+      dotOpacity.value = 1;
+    }
+  }, [runningCount, reduceMotion, pulse, dotOpacity]);
+
+  const dotStyle = useAnimatedStyle(() => ({ opacity: dotOpacity.value }));
+
+  if (runningCount === 0) return null;
+
+  const label = t('agentbar.running_count', { count: runningCount });
+
+  return (
+    <Pressable
+      style={[styles.runningChip, { backgroundColor: C.badgeRunningBg }]}
+      hitSlop={6}
+      onPress={() => useSidebarStore.getState().requestFocusRunningAgents()}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      <Animated.View
+        style={[styles.runningChipDot, { backgroundColor: C.badgeRunningText }, dotStyle]}
+      />
+      <Text style={[styles.runningChipText, { color: C.badgeRunningText }]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 export function AgentBar() {
   const { t } = useTranslation();
   const [sheetVisible, setSheetVisible] = useState(false);
@@ -240,6 +293,8 @@ export function AgentBar() {
       </Pressable>
 
       <OpenPaneTabs />
+
+      <RunningAgentsChip />
 
       {/* Right-side: search + settings.
           The git-dirty badge was removed 2026-04-21 — it was counting
@@ -356,6 +411,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingRight: 8,
     gap: 6,
+  },
+  runningChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 20,
+    marginRight: 4,
+    paddingHorizontal: 7,
+    borderRadius: R.agentTab,
+    gap: 4,
+  },
+  runningChipDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+  },
+  runningChipText: {
+    fontFamily: F.family,
+    fontSize: 8,
+    lineHeight: 10,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+    includeFontPadding: false,
   },
   topSpacer: {
     flex: 1,
