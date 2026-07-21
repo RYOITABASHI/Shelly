@@ -97,7 +97,25 @@
 **→ 2026-07-21 実機テストで確認できたこと・できなかったこと**:
 - ✅ **chain-lockが正当な再実行をブロックしない**ことを確認: `agent-mrode1ec`のRUN NOW（attended）を2回連続で実行し、1回目が長時間（アプリbackground中に体感10分超、原因は別途下記）応答しなかった状態で2回目を実行しても、「previous run still active」エラーは一切発生せず正常に処理が進んだ。1回目のロックが実際にstaleだったのか、そもそも取得されていなかったのかは未確定。
 - ✅ **PlanSpec executor経路でのchain-lockチェックが実運用の無人発火で正常動作**: 09:45:00の自然な5分おきスケジュール発火で、`AgentRuntime`のchain-lockチェックを含む全経路（preflight→PlanSpec executor→完了）が2.5秒でクリーンに完了。
-- ⚠️ **未解決の新規発見（別ロジック、chain-lockとは無関係の可能性が高い）**: RUN NOWをアプリbackground中に挟んで複数回実行した結果、この agent の Sidebar 詳細ポップアップの表示が `Steps (3)` → `Steps (1)` へ縮退した（元々3ステップのオーケストレーションが1ステップしか表示されなくなった）。`runAgentOrchestrated`内の`stepAgent`（各ステップ用の一時オブジェクト、`orchestration`をクリアして`generateRunScript`の再帰を防ぐ設計）は永続化される`<agentId>.json`とは別物のはずで、コード上は直接の説明がつかなかった。再現条件（backgroundを挟んだ複数回のRUN NOW連打）を明確にした上で、次回コードを実際に読んで原因を特定する必要がある。ウィジェットも一時的に「予定されたエージェントはありません」という空表示になっていたが、これはRESUME操作後に自然に解消した（表示キャッシュの問題だった可能性）。
+- ✅ **「Steps (1)」表示の謎は解決——データ消失ではなく仕様通りの表示だった**: Fable5による調査で判明。Sidebar詳細ポップアップの「Steps (N)」は**永続設定ではなく直近runログの`steps.length`**（実際に実行されたステップ数）を表示する仕様（`components/layout/Sidebar.tsx:767-776`）。ステップ1が品質ゲートでエラー判定されチェーンが停止したため、記録は1件のみ——「Steps (1)」「Step 1/1 failed」は正しい表示だった。実機で`cat ~/.shelly/agents/agent-mrode1ec.json | jq '.orchestration.steps | length'`を実行し`3`が返ることを確認、設定データは無事だった。ウィジェットの一時的な空表示も無関係の表示キャッシュ問題だったと考えられる。
+- ⚠️ **副産物として見つかった実在するデータ消失リスク（今回は発生せず、未修正）**: `runLadderAttempts`の各試行materialize（`lib/agent-manager.ts:1000`）が**永続設定ファイル`<id>.json`自体**を一時的な単ステップ形（orchestrationクリア済み）で上書きする設計になっている。もしこのタイミングでアプリが完全にkillされた場合（今回はbackground中にフリーズしただけでkillはされなかった）、真のデータ消失になり得る。修正案: per-attempt materializeでは`<id>.json`のメタデータ書き込みをスキップする（script/planのみ書く）か、常に元のagentオブジェクトからメタデータを書く。
+→ sync: なし。
+
+---
+
+### PlanSpec executor 経由の無人発火は、品質ゲートでlocalが弾かれてもエスカレーションラダーへ進まない（仕様上の欠落、bug ではない）— 未着手・原因特定済み (P2)
+
+**優先度**: P2（無人発火の`tool.type=local`解決agentが弱いモデルで低品質出力を出した場合、ユーザーに気づかれないまま失敗し続ける。ただし今夜確認した限りエラーとして正しく記録はされる——サイレント成功の誤検知ではない）
+
+**発見**: 2026-07-21、`agent-mrode1ec`の09:45自然発火（PlanSpec executor経由）が「Local LLM(Qwen3.5-0.8B)が指示文をテンプレートのままエコーバック」という低品質出力を出し、品質ゲート（`isLowQualityCompletion`、`lib/agent-escalation-ladder.ts:229,267-272`）が正しくエラー判定した。しかしその後gemini-api等の次候補へは一切進まず、そのまま`error`で終了した。Fable5による調査で根本原因が判明：
+
+- `scripts/shelly-plan-executor.js`は**意図的にper-stepのエスカレーション/ラダー機能を持たない**v1スコープ設計（コード内コメント、`shelly-plan-executor.js:306-318`）——各ステップは`buildAgentPlanSpec`が焼き込んだ単一の`plan.tool`のみを使う（`lib/agent-plan-spec.ts:165-265`）。ラダー機構自体はattended JS経路の`runLadderAttempts`（`lib/agent-manager.ts:961-1083`、`attemptFailed`で正しく次候補へ climb する）にしか存在しない。
+- 副次的なコスメティックバグ: executorのエラーメッセージが「— escalating.」と表示するが（`shelly-plan-executor.js:1651-1652,1704,1819,1856,1886`）、実際にはエスカレーションしていない。表現を修正すべき。
+- 参考: たとえattended経路でもgemini-apiが次候補になることはない——`resolveEscalationLadder`（`lib/agent-escalation-ladder.ts:171-205`）はLayer-2スコアラーの候補ランキングを無視し、autonomous agentのラダーは`[local, codex]`固定、attended非webラダーは`primary → local → cerebras/groq(鍵設定時) → codex`固定。ポップアップの「Scores: gemini-api 0.35」はrouteDecisionの表示専用テレメトリで、実際の次候補ではない。
+
+**提案設計（未実装）**: `buildAgentPlanSpec`が解決済みラダー（`toolLadder: PlanTool[]`、autonomous policy下の`resolveEscalationLadder`から）をPlanSpecへ焼き込み、executorがerror/unavailable/低品質判定時に次のHTTP対応ツールへリトライする。codexはexecutorから到達不能（HTTP-onlyの信頼境界、spawn拒否——DEFERRED.md既存議論参照）なので、そこはfail-closeして「attended runまたはCodexが必要」という明示的な通知に倒す。あわせて「— escalating.」の文言修正も。
+
+**本パスで実装しなかった理由**: Fable5への調査委任は読み取り専用スコープで依頼し、実装前に設計の妥当性を確認する必要があるため。次回セッションで実装・実機検証すること。
 → sync: なし。
 
 **→ 2026-07-18 `70d39389d` で追加修正**: `606ad78fb`の実機テスト中に、chain-lockの保護範囲に穴があることを発見。`606ad78fb`が追加したCHAIN_LOCK_DIR/CHAIN_LOCK_NONCEチェックは`generateRunScript()`が生成する**レガシー`.sh`のbashテンプレート内にのみ**存在する。しかし North Star P0(c) 以降、PlanSpec executorに対応したtoolに解決されるorchestrated agent（＝現代的なagentの主流パターン）の無人発火は`shouldRunPlanExecutor()`により`AgentRuntime.kt::runPlanAgent()`（PlanSpec executor経路）へ直接ルーティングされ、レガシー`.sh`を一切経由しない——つまりchain-lockチェック自体に到達しない。実機で`agent-mrode1ec`（3ステップorchestrated、tool解決=local、PlanSpec executor経由）のRUN NOW（attended、15:28:47開始）と、同エージェントの通常5分おきスケジュール発火（unattended native alarm、15:30:00、PlanSpec executor経由）がほぼ同時刻に発生するのを確認し、この穴を実証的に発見した。
