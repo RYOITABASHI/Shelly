@@ -779,6 +779,8 @@ export interface AgentRunLog {
   // retry; the ladder still climbs on it, but it does NOT trip the circuit breaker.
   status: 'success' | 'error' | 'skipped' | 'unavailable';
   outputPreview: string;       // first 500 chars
+  savedPath?: string;
+  savedPathMirror?: string;
   durationMs: number;
   toolUsed: string;
   errorMessage?: string;

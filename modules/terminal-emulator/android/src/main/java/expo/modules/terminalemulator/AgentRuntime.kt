@@ -92,7 +92,10 @@ object AgentRuntime {
     // NOW / @agent chat) can no longer be raced by this SAME agent's own
     // AlarmManager fire landing mid-chain. Bumped so a stale pre-v20 on-disk
     // script (old lock semantics) is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 20
+    // v21 (2026-07-21, Fable5 UX consultation): generated draft runs expose
+    // their saved destinations, and same-script Codex chains publish a live
+    // per-step current.json marker that the EXIT cleanup removes.
+    private const val CURRENT_SCRIPT_VERSION = 21
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

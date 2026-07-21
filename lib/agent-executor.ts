@@ -169,7 +169,12 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // ACTIVE_COUNT's `find -name '*.pid'` glob and generateStopCommand() are
 // unaffected. Bumped because the generated script's runtime BEHAVIOR changed
 // (new skip path, new lock primitive), not just cosmetic text.
-const AGENT_SCRIPT_VERSION = 20;
+// v21 (2026-07-21, Fable5 UX consultation): successful draft saves now carry
+// their resolved primary/mirror destinations into the run log and completion
+// notification. The genuine same-script Codex orchestration loop also writes
+// LOG_DIR/current.json immediately before each step dispatch, while cleanup's
+// EXIT path removes the marker on success, failure, or crash.
+const AGENT_SCRIPT_VERSION = 21;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -766,6 +771,7 @@ cleanup() {
     rmdir "$REGISTRY_LOCK" 2>/dev/null || true
   fi
   rm -f "$LOCK_FILE"
+  rm -f "$LOG_DIR/current.json"
   rm -rf "$LOCK_DIR" 2>/dev/null || true
 }
 shelly_app_binary_path() {
@@ -1680,8 +1686,21 @@ register_source_urls() {
   fi
 }
 
+resolve_saved_path() {
+  saved_candidate="$1"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$saved_candidate" 2>/dev/null && return 0
+  fi
+  case "$saved_candidate" in
+    /*) printf '%s\n' "$saved_candidate" ;;
+    *) printf '%s/%s\n' "$HOME" "$saved_candidate" ;;
+  esac
+}
+
 save_draft_result() {
   result_file="$1"
+  SAVED_PATH=""
+  SAVED_PATH_MIRROR=""
   DATE=$(date +%Y-%m-%d)
   TIME=$(date +%H%M%S)
 
@@ -1706,6 +1725,7 @@ save_draft_result() {
     esac
     SAVED_FILE="$OUT_BASE/$DATE/\${DATE}_$SLUG.md"
     cap_fs_write_file "$SAVED_FILE" "$result_file"
+    SAVED_PATH=$(resolve_saved_path "$SAVED_FILE")
     register_source_urls "$result_file"
     return 0
   fi
@@ -1722,6 +1742,7 @@ save_draft_result() {
   esac
   SAVED_FILE="$OUTPUT_DIR/$REL_NAME"
   cap_fs_write_file "$SAVED_FILE" "$result_file"
+  SAVED_PATH=$(resolve_saved_path "$SAVED_FILE")
 
   if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
     OBSIDIAN_TARGET="90_Log/Agent_Output"
@@ -1735,6 +1756,7 @@ save_draft_result() {
     esac
     OBSIDIAN_DEST="$OBSIDIAN_VAULT_PATH/$OBSIDIAN_TARGET/$REL_NAME"
     cap_fs_write_file "$OBSIDIAN_DEST" "$SAVED_FILE"
+    SAVED_PATH_MIRROR=$(resolve_saved_path "$OBSIDIAN_DEST")
   fi
 
   register_source_urls "$result_file"
@@ -1773,7 +1795,22 @@ dispatch_agent_action() {
       # already telemetry-stripped. Orchestration non-final steps never reach here
       # (they use the __suppressed__ branch above), so a chain still ends with a
       # single completion, not one per step.
-      write_native_notification_request "success" "$preview" || true
+      if [ -n "$SAVED_PATH" ]; then
+        SAVED_DISPLAY_PATH="$SAVED_PATH"
+        if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ]; then
+          case "$SAVED_PATH" in
+            "$OBSIDIAN_VAULT_PATH"/*) SAVED_DISPLAY_PATH="\${SAVED_PATH#"$OBSIDIAN_VAULT_PATH"/}" ;;
+          esac
+        fi
+        if [ "$SAVED_DISPLAY_PATH" = "$SAVED_PATH" ]; then
+          case "$SAVED_PATH" in
+            "$HOME"/*) SAVED_DISPLAY_PATH="\${SAVED_PATH#"$HOME"/}" ;;
+          esac
+        fi
+        write_native_notification_request "success" "保存: $SAVED_DISPLAY_PATH $preview" || true
+      else
+        write_native_notification_request "success" "$preview" || true
+      fi
       return 0
       ;;
     notify)
@@ -3511,8 +3548,19 @@ TS=$(date +%s)
 PREVIEW_JSON=$(json_escape_text "$PREVIEW")
 TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
 ERROR_MESSAGE_JSON=$(json_escape_text "$ERROR_MESSAGE")
+${actionType === 'draft' ? `
+  SAVED_PATH_JSON=$(json_escape_text "\${SAVED_PATH:-}")
+  if [ -n "\${SAVED_PATH_MIRROR:-}" ]; then
+    SAVED_PATH_MIRROR_JSON=$(json_escape_text "$SAVED_PATH_MIRROR")
+    SAVED_PATH_FIELDS=",\"savedPath\":\"$SAVED_PATH_JSON\",\"savedPathMirror\":\"$SAVED_PATH_MIRROR_JSON\""
+  elif [ -n "\${SAVED_PATH:-}" ]; then
+    SAVED_PATH_FIELDS=",\"savedPath\":\"$SAVED_PATH_JSON\""
+  else
+    SAVED_PATH_FIELDS=""
+  fi
+` : 'SAVED_PATH_FIELDS=""'}
 cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS}
 LOGEOF
 
 # Prune old logs (keep last 30)
@@ -3816,6 +3864,7 @@ CODEX_ORCH_MAX_STEPS=${chain.maxSteps}
 CODEX_ORCH_TOTAL_TIMEOUT_SEC=${totalTimeoutSec}
 CODEX_ORCH_MAX_RESULT_CARRY_CHARS=${MAX_RESULT_CARRY_CHARS}
 CODEX_ORCH_MAX_PROMPT_CHARS=${MAX_PROMPT_CHARS}
+CODEX_ORCH_TOOL_JSON=${shellQuote(JSON.stringify(toolChoiceToLabel({ type: 'cli', cli: 'codex' })))}
 CODEX_ORCH_CARRY_FILE="$TMP_DIR/agent-orch-carry-$AGENT_ID.txt"
 : > "$CODEX_ORCH_CARRY_FILE"
 CODEX_ORCH_FAILED=0
@@ -3891,6 +3940,11 @@ while [ "$CODEX_ORCH_STEP_INDEX" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; do
   codex_orch_build_prompt "\${CODEX_ORCH_INSTRUCTIONS[$CODEX_ORCH_STEP_INDEX]}"
   rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE" "$RESULT_FILE.answer"
   if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+    CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
+    CURRENT_STEP_TMP="$LOG_DIR/current.json.tmp"
+    printf '{"step":%s,"total":%s,"tool":"%s","startedAt":%s,"phase":"dispatch"}\n' \
+      "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_STEP_TOTAL" "$CODEX_ORCH_TOOL_JSON" "$(date +%s)" > "$CURRENT_STEP_TMP"
+    mv "$CURRENT_STEP_TMP" "$LOG_DIR/current.json"
     set +e
     shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
       --cwd "$DRIVER_CWD" \\
