@@ -14,7 +14,7 @@ import {
   AppState,
   ToastAndroid,
 } from 'react-native';
-import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming, withSequence, Easing } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useSettingsStore } from '@/store/settings-store';
@@ -24,10 +24,13 @@ import { logInfo } from '@/lib/debug-logger';
 import { nextTriggerMs, isScheduleMissed } from '@/lib/agent-scheduler';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
-import { deleteAgent, installAgent, runAgentNow, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
+import { deleteAgent, installAgent, runAgentNow, stopAgent, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { normalizeSteps } from '@/lib/agent-orchestration';
 import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
+import { openFile } from '@/lib/open-file';
+import { formatElapsedMs } from '@/lib/agent-running-format';
+import { useMotion } from '@/hooks/use-motion';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import {
   deleteSkillRecipe,
@@ -106,6 +109,31 @@ function isUiAutonomousTool(tool: ToolChoice): boolean {
   return tool.type === 'cli' || tool.type === 'local';
 }
 
+// RUNNING sub-section (Fable5 UX consultation, 2026-07-21): live detail for
+// each agent currently holding a lock file, gathered in the same batched poll
+// as refreshRunningAgents' `kill -0` check — see that callback below for the
+// shell command that populates this per agent.
+interface RunningAgentDetail {
+  /** Lock file mtime, ms since epoch — when the run was picked up. Null if
+   *  `stat` failed (should not normally happen once the lock file exists). */
+  lockMtimeMs: number | null;
+  /** Parsed $LOG_DIR/current.json, only for the same-script Codex
+   *  orchestration chain (lib/agent-executor.ts). Absent for the far more
+   *  common JS-driven per-step orchestration path (agent-manager.ts's
+   *  runAgentOrchestrated) — that is NOT an error, just no live step detail. */
+  currentStep: { step: number; total: number; tool: string; startedAtMs: number } | null;
+}
+
+// Stall thresholds (proposed by the 2026-07-21 Fable5 UX consultation): a row
+// with a live current.json step marker uses the marker's OWN startedAt (a
+// single step rarely runs this long even though the overall lock may be
+// older across several steps); a row with no marker falls back to the lock's
+// own age, which is the only signal available for the JS-driven orchestrated
+// path or a single-step run.
+const RUNNING_STALL_THRESHOLD_NO_MARKER_MS = 8 * 60_000;
+const RUNNING_STALL_THRESHOLD_WITH_MARKER_MS = 10 * 60_000;
+
+
 // SKILL-001 row preview length — matches the ~60-80 char range other sidebar
 // meta lines use (e.g. showAgentDetail's step/instruction slices).
 const IMPORTED_SKILL_DESC_TRUNCATE = 72;
@@ -165,9 +193,16 @@ export function Sidebar() {
     return out;
   }, [agentVaultPath]);
   const [runningAgentIds, setRunningAgentIds] = useState<Set<string>>(new Set());
+  const [runningAgentDetails, setRunningAgentDetails] = useState<Record<string, RunningAgentDetail>>({});
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(new Set());
   const mountedAtRef = React.useRef(Date.now());
   const wasAgentsSectionOpenRef = React.useRef(mode === 'expanded' && openSections.tasks);
+  // Task D: TASKS is always the first ScrollView child, so "scroll it into
+  // view" is a plain scroll-to-top — no per-section y-offset tracking needed.
+  const scrollRef = React.useRef<ScrollView>(null);
+  const { reduceMotion: runningHighlightReduceMotion } = useMotion();
+  const runningHighlightOpacity = useSharedValue(0);
+  const runningHighlightStyle = useAnimatedStyle(() => ({ opacity: runningHighlightOpacity.value }));
   const [addRepoVisible, setAddRepoVisible] = useState(false);
   const [repoInput, setRepoInput] = useState('');
   const [notifTriggerAgent, setNotifTriggerAgent] = useState<Agent | null>(null);
@@ -249,19 +284,66 @@ export function Sidebar() {
   // REPOSITORIES) and use git's own per-file metadata rather than a
   // porcelain line count.
 
-  // Derive latest completed task per agent from run history
+  // Derive latest completed task per agent from run history. Also batches in
+  // (Task B) the lock file's mtime (`stat -c %Y`, same pattern already used
+  // by lib/agent-executor.ts for its own staleness checks) and — best-effort —
+  // the per-agent $LOG_DIR/current.json live step marker, so the RUNNING
+  // sub-section never needs a second round-trip per agent. One tab-separated
+  // line per running agent: `<id>\t<lockMtimeEpochSec>\t<current.json line>`.
   const refreshRunningAgents = React.useCallback(async () => {
     const result = await TerminalEmulator.execCommand(
       `for f in "$HOME"/.shelly/agents/locks/*.pid; do ` +
         `[ -f "$f" ] || continue; ` +
         `pid="$(cat "$f" 2>/dev/null || true)"; ` +
         `[ -n "$pid" ] || continue; ` +
-        `if kill -0 "$pid" 2>/dev/null; then basename "$f" .pid; fi; ` +
+        `if kill -0 "$pid" 2>/dev/null; then ` +
+          `id="$(basename "$f" .pid)"; ` +
+          `mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"; ` +
+          `cur="$HOME/.shelly/agents/logs/$id/current.json"; ` +
+          `curline=""; ` +
+          `[ -f "$cur" ] && curline="$(tr -d '\\n' < "$cur" 2>/dev/null)"; ` +
+          `printf '%s\\t%s\\t%s\\n' "$id" "$mtime" "$curline"; ` +
+        `fi; ` +
       `done`,
       10_000,
     ).catch(() => null);
     const stdout = result?.exitCode === 0 ? result.stdout : '';
-    setRunningAgentIds(new Set(stdout.split(/\s+/).filter(Boolean)));
+    const ids: string[] = [];
+    const details: Record<string, RunningAgentDetail> = {};
+    for (const rawLine of stdout.split('\n')) {
+      const line = rawLine.replace(/\r$/, '');
+      if (!line) continue;
+      const tab1 = line.indexOf('\t');
+      const tab2 = tab1 >= 0 ? line.indexOf('\t', tab1 + 1) : -1;
+      const id = tab1 >= 0 ? line.slice(0, tab1) : line;
+      if (!id) continue;
+      const mtimeStr = tab1 >= 0 ? line.slice(tab1 + 1, tab2 >= 0 ? tab2 : undefined) : '';
+      const curJson = tab2 >= 0 ? line.slice(tab2 + 1) : '';
+      ids.push(id);
+      const mtimeSec = Number(mtimeStr);
+      const lockMtimeMs = Number.isFinite(mtimeSec) && mtimeSec > 0 ? mtimeSec * 1000 : null;
+      let currentStep: RunningAgentDetail['currentStep'] = null;
+      if (curJson) {
+        try {
+          const parsed = JSON.parse(curJson);
+          if (
+            parsed && typeof parsed.step === 'number' && typeof parsed.total === 'number' &&
+            typeof parsed.tool === 'string' && typeof parsed.startedAt === 'number'
+          ) {
+            currentStep = { step: parsed.step, total: parsed.total, tool: parsed.tool, startedAtMs: parsed.startedAt * 1000 };
+          }
+        } catch {
+          // Malformed/partial current.json (e.g. read mid-write, or an older
+          // script version) — best-effort only, never blocks the row.
+        }
+      }
+      details[id] = { lockMtimeMs, currentStep };
+    }
+    setRunningAgentIds(new Set(ids));
+    setRunningAgentDetails(details);
+    // Task A: mirror into agent-store so AgentBar's RunningAgentsChip (and any
+    // other future consumer) observes run state without its own poll.
+    useAgentStore.getState().setRunningAgentIds(ids);
   }, []);
 
   const runCommandForAgentSync = React.useCallback(async (cmd: string) => {
@@ -689,6 +771,22 @@ export function Sidebar() {
     }
   }, [refreshRunningAgents, runCommandForAgentSync, offerSkillSave, t, pendingAgentIds, runningAgentIds]);
 
+  // Task B STOP button: reuses lib/agent-executor.ts's generateStopCommand
+  // (via agent-manager's stopAgent wrapper) — the same kill+lock-cleanup
+  // logic lib/agent-manager.ts's stopAgent() already exposes for a different
+  // call site, rather than hand-rolling a new kill command here. Re-polls
+  // immediately afterward so the row disappears without waiting out the next
+  // scheduled 15s/60s poll tick.
+  const handleStopRunningAgent = React.useCallback(async (agentId: string, agentName: string) => {
+    try {
+      await stopAgent(agentId, runCommandForAgentSync);
+    } catch {
+      Alert.alert(t('sidebar.agent_stop_failed_title'), t('sidebar.agent_stop_failed_body', { name: agentName }));
+    } finally {
+      void refreshRunningAgents();
+    }
+  }, [runCommandForAgentSync, refreshRunningAgents, t]);
+
   const handleTogglePause = React.useCallback(async (agent: Agent) => {
     try {
       await setAgentEnabled(agent.id, !agent.enabled, runCommandForAgentSync);
@@ -779,6 +877,10 @@ export function Sidebar() {
     // due but never recorded a run — the trust signal that surfaces OEM/Doze kills
     // ("it silently didn't fire") instead of letting them pass unnoticed.
     const relLines: string[] = [];
+    // Task C: hoisted out of the `if (lastLog)` block below so the buttons
+    // array (which closes over it, outside that block's narrowing) gets a
+    // plain `string | undefined` instead of re-deriving it unsafely.
+    const savedPath: string | undefined = lastLog?.savedPath;
     if (agent.schedule && agent.enabled) {
       relLines.push(`${t('sidebar.agent_next_run')}: ${formatWhen(nextTriggerMs(agent.schedule))}`);
     }
@@ -789,6 +891,13 @@ export function Sidebar() {
         relLines.push(`${t('sidebar.agent_last_error')}: ${lastLog.errorMessage.slice(0, 160)}`);
       } else if (lastLog.outputPreview) {
         relLines.push(`— ${lastLog.outputPreview.slice(0, 120)}`);
+      }
+      // Task C (Fable5 UX consultation, 2026-07-21): agent-executor.ts now
+      // records the resolved primary destination for a successful draft
+      // save into the run log — surface it here so "where did it go" is
+      // answerable from the detail popup, not just the completion toast.
+      if (lastLog.savedPath) {
+        relLines.push(t('sidebar.agent_saved_path', { path: lastLog.savedPath }));
       }
     } else {
       relLines.push(t('sidebar.agent_never_run'));
@@ -831,6 +940,14 @@ export function Sidebar() {
       { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
       ...(memoryNotes.length
         ? [{ text: t('sidebar.agent_memory_view'), onPress: () => showMemoryList(agent, memoryNotes) }]
+        : []),
+      // Task C: a single extra button (not two) to keep this Alert.alert's
+      // button count in check — "Open" was picked over "Copy path" because
+      // it reuses lib/open-file.ts's existing MarkdownPane/Preview routing,
+      // the same one-tap-to-result path the DEVICE section's AGENT/OBSIDIAN
+      // shortcuts already promise.
+      ...(savedPath
+        ? [{ text: t('sidebar.agent_saved_path_open'), onPress: () => void openFile(savedPath) }]
         : []),
       { text: t('common.close'), style: 'cancel' as const },
     ];
@@ -929,7 +1046,49 @@ export function Sidebar() {
     };
   }, [agents.length, agentsSectionOpen, pendingAgentCount, refreshRunningAgents, shouldPollRunningAgents]);
 
+  // Task D: react to AgentBar's RunningAgentsChip tap (sidebar-store's
+  // requestFocusRunningAgents() already force-opens TASKS and bumps this
+  // counter — the store action's own doc comment names this exact effect as
+  // its intended, previously-missing consumer). Skip the value present at
+  // mount so opening the app never triggers a spurious scroll/flash.
+  const focusRunningAgentsRequestId = useSidebarStore((s) => s.focusRunningAgentsRequestId);
+  const focusRunningAgentsMountedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!focusRunningAgentsMountedRef.current) {
+      focusRunningAgentsMountedRef.current = true;
+      return;
+    }
+    scrollRef.current?.scrollTo({ y: 0, animated: !runningHighlightReduceMotion });
+    if (runningHighlightReduceMotion) return; // static — no flash, matches AgentBar's chip dot
+    runningHighlightOpacity.value = withSequence(
+      withTiming(0.35, { duration: 180, easing: Easing.out(Easing.cubic) }),
+      withTiming(0, { duration: 700, easing: Easing.in(Easing.cubic) }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRunningAgentsRequestId]);
+
   const runningAgents = agents.filter((a) => runningAgentIds.has(a.id) || pendingAgentIds.has(a.id));
+
+  // Task B: RUNNING sub-section rows — only agents confirmed live via the
+  // `kill -0` lock check (not merely pending/optimistic), each paired with
+  // its batched detail from refreshRunningAgents. Recomputed every render
+  // (cheap: at most a handful of agents), so it stays in sync with both the
+  // poll tick and the 15s/60s interval without extra memoization machinery.
+  const runningSectionRows = Array.from(runningAgentIds).map((id) => {
+    const agent = agents.find((a) => a.id === id);
+    const detail = runningAgentDetails[id];
+    const now = Date.now();
+    const lockElapsedMs = detail?.lockMtimeMs != null ? Math.max(0, now - detail.lockMtimeMs) : null;
+    const currentStep = detail?.currentStep ?? null;
+    const stepElapsedMs = currentStep ? Math.max(0, now - currentStep.startedAtMs) : null;
+    const stallReferenceMs = stepElapsedMs ?? lockElapsedMs ?? 0;
+    const stallThresholdMs = currentStep
+      ? RUNNING_STALL_THRESHOLD_WITH_MARKER_MS
+      : RUNNING_STALL_THRESHOLD_NO_MARKER_MS;
+    const stalled = stallReferenceMs > stallThresholdMs;
+    const displayElapsedMs = lockElapsedMs ?? stepElapsedMs ?? 0;
+    return { id, agent, currentStep, displayElapsedMs, stalled };
+  });
 
   const targetWidth =
     mode === 'expanded' ? S.sidebarWidth : mode === 'icons' ? WIDTH_ICONS : WIDTH_HIDDEN;
@@ -957,6 +1116,7 @@ export function Sidebar() {
   return (
     <Animated.View style={[styles.container, animatedStyle, { backgroundColor: sidebarBg, borderRightColor: C.border }]}>
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -1003,6 +1163,61 @@ export function Sidebar() {
               )}
             </View>
           </View>
+
+          {/* RUNNING — Task B (Fable5 UX consultation, 2026-07-21). Distinct
+              sub-section above the full agent list, only when at least one
+              agent currently holds a live lock. Wrapped in an Animated
+              highlight overlay that Task D's focusRunningAgentsRequestId
+              effect flashes when the AgentBar chip is tapped. */}
+          {runningSectionRows.length > 0 && (
+            <View style={styles.runningSectionWrap}>
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.runningSectionHighlightOverlay, runningHighlightStyle, { backgroundColor: C.accent }]}
+              />
+              <Text style={styles.tasksSubheader}>{t('sidebar.running')}</Text>
+              {runningSectionRows.map(({ id, agent, currentStep, displayElapsedMs, stalled }) => {
+                const name = (agent?.name || id).toUpperCase();
+                const elapsed = formatElapsedMs(displayElapsedMs);
+                const metaText = stalled
+                  ? t('sidebar.agent_running_stalled', { elapsed })
+                  : currentStep
+                  ? t('sidebar.agent_running_step', { step: currentStep.step, total: currentStep.total, tool: currentStep.tool, elapsed })
+                  : t('sidebar.agent_running_plain', { elapsed });
+                return (
+                  <View
+                    key={`running-${id}`}
+                    style={[styles.taskRow, styles.agentRow, styles.runningRow, stalled && styles.runningRowStalled]}
+                  >
+                    <View style={[styles.taskDot, { backgroundColor: stalled ? C.warning : C.accent }]} />
+                    <View style={styles.taskInfo}>
+                      <Text style={styles.taskName} numberOfLines={1}>{name}</Text>
+                      <Text
+                        style={[styles.taskMeta, stalled && styles.runningMetaStalled]}
+                        numberOfLines={1}
+                      >
+                        {metaText}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => void handleStopRunningAgent(id, agent?.name || id)}
+                      hitSlop={8}
+                      style={[styles.runningStopBtn, stalled && styles.runningStopBtnStalled]}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('sidebar.agent_stop_a11y', { name: agent?.name || id })}
+                    >
+                      <MaterialIcons name="stop" size={11} color={stalled ? C.bgDeep : C.errorText} />
+                      <Text style={[styles.runningStopBtnText, stalled && styles.runningStopBtnTextStalled]}>
+                        {t('sidebar.agent_stop')}
+                      </Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+              <View style={styles.tasksSeparator} />
+            </View>
+          )}
+
           {agents.length > 0 && (
             <>
               {agents.map((agent) => (
@@ -1657,6 +1872,55 @@ const styles = StyleSheet.create({
     width: S.agentDotSize,
     height: S.agentDotSize,
     borderRadius: S.agentDotSize / 2,
+  },
+  // RUNNING sub-section (Task B) — a self-contained wrapper so the highlight
+  // overlay (Task D) can sit absolutely behind just these rows, not the
+  // whole TASKS section.
+  runningSectionWrap: {
+    position: 'relative',
+  },
+  runningSectionHighlightOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  runningRow: {
+    borderLeftWidth: 2,
+    borderLeftColor: C.accent,
+  },
+  runningRowStalled: {
+    borderLeftColor: C.warning,
+    backgroundColor: withAlpha(C.warning, 0.1),
+  },
+  runningMetaStalled: {
+    color: C.warning,
+  },
+  runningStopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: R.badge,
+    borderWidth: S.borderWidth,
+    borderColor: C.errorText,
+    backgroundColor: C.errorBg,
+  },
+  runningStopBtnStalled: {
+    borderColor: C.warning,
+    backgroundColor: C.warning,
+  },
+  runningStopBtnText: {
+    fontSize: F.badge.size,
+    fontFamily: F.family,
+    fontWeight: '700',
+    color: C.errorText,
+    letterSpacing: 0.3,
+  },
+  runningStopBtnTextStalled: {
+    color: C.bgDeep,
   },
   // Imported-skills inline import form (SKILL-001) — a slimmer sibling of the
   // add-repo modal's input, sized for the narrow sidebar column.

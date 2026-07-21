@@ -170,7 +170,7 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b), residu
 
   it('bumps the script version in lockstep with the native gate (v21)', () => {
     const s = generateRunScript(orchestratedCodexWithToolPin);
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=21');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=22');
   });
 
   it('reflects the resolved tool label in the note (autonomous auto -> codex, tool-pinned step residual case)', () => {

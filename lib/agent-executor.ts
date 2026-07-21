@@ -174,7 +174,13 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // notification. The genuine same-script Codex orchestration loop also writes
 // LOG_DIR/current.json immediately before each step dispatch, while cleanup's
 // EXIT path removes the marker on success, failure, or crash.
-const AGENT_SCRIPT_VERSION = 21;
+// v22 (2026-07-21, Sidebar RUNNING-row plumbing): fixes a v21 bug where
+// LOG_DIR/current.json's "tool" field was double-quoted (CODEX_ORCH_TOOL_JSON
+// is already a JSON string literal including its own quotes; the printf
+// format wrapped it in a second pair, e.g. `""Codex CLI""`), making the file
+// invalid JSON and silently defeating the "STEP n/m · tool" detail line in
+// Sidebar's new RUNNING section. No other behavior change.
+const AGENT_SCRIPT_VERSION = 22;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3995,7 +4001,11 @@ while [ "$CODEX_ORCH_STEP_INDEX" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; do
   if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
     CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
     CURRENT_STEP_TMP="$LOG_DIR/current.json.tmp"
-    printf '{"step":%s,"total":%s,"tool":"%s","startedAt":%s,"phase":"dispatch"}\n' \
+    # CODEX_ORCH_TOOL_JSON is already a JSON string literal (JSON.stringify'd
+    # at generation time, including its own quotes) - %s here must NOT add a
+    # second pair of quotes around it, or "tool" comes out double-quoted
+    # (invalid JSON, found during Sidebar RUNNING-row current.json plumbing).
+    printf '{"step":%s,"total":%s,"tool":%s,"startedAt":%s,"phase":"dispatch"}\n' \
       "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_STEP_TOTAL" "$CODEX_ORCH_TOOL_JSON" "$(date +%s)" > "$CURRENT_STEP_TMP"
     mv "$CURRENT_STEP_TMP" "$LOG_DIR/current.json"
     set +e

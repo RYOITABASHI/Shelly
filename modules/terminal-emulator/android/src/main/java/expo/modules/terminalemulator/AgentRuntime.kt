@@ -95,7 +95,12 @@ object AgentRuntime {
     // v21 (2026-07-21, Fable5 UX consultation): generated draft runs expose
     // their saved destinations, and same-script Codex chains publish a live
     // per-step current.json marker that the EXIT cleanup removes.
-    private const val CURRENT_SCRIPT_VERSION = 21
+    // v22 (2026-07-21, Sidebar RUNNING-row plumbing): fixes a v21 bug where
+    // LOG_DIR/current.json's "tool" field was double-quoted (see
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment) — no
+    // wire-format or behavior change beyond that, but bumped so a stale
+    // pre-fix on-disk script is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 22
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
