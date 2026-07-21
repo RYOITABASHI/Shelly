@@ -324,6 +324,59 @@ export function computeAgentSlug(name: string, fallback: string): string {
   return s || fallback;
 }
 
+/** Subset of AppSettings this preview needs — kept structural (not imported
+ *  from store/types.ts) so callers can pass either the live store slice or an
+ *  ad-hoc literal without a cast. */
+export interface AgentOutputBaseSettings {
+  agentOutputTarget?: 'local' | 'obsidian' | 'custom';
+  agentVaultPath?: string;
+  agentTopicFolder?: string;
+  agentCustomPath?: string;
+}
+
+/**
+ * UI-preview mirror of save_draft_result()'s USE_GLOBAL_OUTPUT branch (the
+ * OUT_BASE case statement a few hundred lines below, in the generated shell
+ * script — "obsidian" / "custom" / default). Reproduces it EXACTLY, including
+ * the quirk that the topic folder is appended for the obsidian/custom targets
+ * ONLY — the bare 'local' default case never gets a topic suffix, even though
+ * the doc comment on AppSettings.agentTopicFolder (store/types.ts) describes a
+ * universal "<base>/<topic?>/..." layout. If that's ever unified, update both
+ * this function and the shell case statement together.
+ *
+ * $HOME comes from lib/home-path.ts's getHomePath(), a JS-side best-effort
+ * cache resolved asynchronously from the native side at startup — on a cold
+ * start before it resolves, this returns the documented fallback constant
+ * rather than the real on-device path, so treat the result as a preview, not
+ * a guarantee.
+ */
+export function resolveAgentOutputBase(settings: AgentOutputBaseSettings): string {
+  const topic = (settings.agentTopicFolder ?? '').trim();
+  const topicSuffix = topic ? `/${topic}` : '';
+  switch (settings.agentOutputTarget ?? 'local') {
+    case 'obsidian':
+      return `${(settings.agentVaultPath ?? '').trim() || '/sdcard/Documents/ObsidianVault'}${topicSuffix}`;
+    case 'custom':
+      return `${(settings.agentCustomPath ?? '').trim() || `${getHomePath()}/agent-output`}${topicSuffix}`;
+    default:
+      return `${getHomePath()}/agent-output`;
+  }
+}
+
+/**
+ * Full resolved-path PREVIEW for that same branch:
+ * `<base>/<date>/<date>_<slug>.md` — mirrors the SAVED_FILE line right after
+ * the OUT_BASE case statement. `<date>` is always a literal placeholder here:
+ * the actual save date is a runtime unknown (a scheduled agent may not fire
+ * today), so guessing it would misrepresent a preview as a promise. Pass a
+ * concrete slug (computeAgentSlug()) for a specific agent's preview, or a
+ * generic placeholder such as '<title>' for a settings-screen preview where
+ * no agent is in context yet.
+ */
+export function resolveAgentOutputPathPreview(settings: AgentOutputBaseSettings, slug: string): string {
+  return `${resolveAgentOutputBase(settings)}/<date>/<date>_${slug}.md`;
+}
+
 /**
  * Sanitize an agent output-filename template. Supports {date} {slug} {time}
  * placeholders and `/` for date-folder layouts (e.g. "{date}/{slug}.md"). Strips

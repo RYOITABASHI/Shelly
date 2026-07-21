@@ -39,6 +39,7 @@ import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/age
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
 import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
+import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 
 type Props = {
   visible: boolean;
@@ -1152,6 +1153,25 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
           spellCheck={false}
         />
       )}
+      {/* Read-only preview of the CURRENTLY RESOLVED save path, mirroring the
+          exact OUT_BASE/SAVED_FILE resolution save_draft_result() runs on-device
+          (lib/agent-executor.ts's resolveAgentOutputPathPreview). `<date>` and
+          `<title>` are literal placeholders — both are only known at the moment
+          an agent actually saves, never guessed here. */}
+      <Text style={[styles.apiKeyHint, { marginTop: 6, color: C.text2 }]}>
+        {t('agents.output_resolved_path', {
+          path: resolveAgentOutputPathPreview(
+            {
+              agentOutputTarget: outputTarget,
+              agentVaultPath: vaultPath,
+              agentTopicFolder: topicFolder,
+              agentCustomPath: customPath,
+            },
+            '<title>',
+          ),
+        })}
+      </Text>
+      <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{t('agents.output_resolved_path_hint')}</Text>
     </Section>
   );
 });

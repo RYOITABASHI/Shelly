@@ -24,6 +24,7 @@ import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { AgentAction, AgentActionType, AgentApiCallConfig, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
+import { computeAgentSlug, resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, scheduleHuman, WEEKDAY_LABELS, type Frequency } from '@/lib/agent-card-cron';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
@@ -243,6 +244,26 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // would refuse it (api-key backend not allowed when needsWeb is false).
   const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
   const needsWeb = useMemo(() => detectRouteSignals(draft.prompt).needsWeb, [draft.prompt]);
+  // Agent-output settings (Settings → AI Agents → Output to). Read live so the
+  // preview line below always matches whatever is currently configured there.
+  const agentOutputTarget = useSettingsStore((s) => s.settings.agentOutputTarget ?? 'local');
+  const agentVaultPath = useSettingsStore((s) => s.settings.agentVaultPath ?? '');
+  const agentTopicFolder = useSettingsStore((s) => s.settings.agentTopicFolder ?? '');
+  const agentCustomPath = useSettingsStore((s) => s.settings.agentCustomPath ?? '');
+  // Same resolution SettingsDropdown.tsx's read-only preview uses (both call
+  // resolveAgentOutputPathPreview in lib/agent-executor.ts, which mirrors
+  // save_draft_result()'s OUT_BASE/SAVED_FILE logic exactly) — but here the
+  // slug is REAL (computeAgentSlug on the name being typed), not a generic
+  // placeholder, since this preview is for one specific agent. `<date>` stays
+  // a literal placeholder: the actual save date is only known at run time.
+  const draftSaveLocation = useMemo(
+    () =>
+      resolveAgentOutputPathPreview(
+        { agentOutputTarget, agentVaultPath, agentTopicFolder, agentCustomPath },
+        computeAgentSlug(name, 'agent'),
+      ),
+    [agentOutputTarget, agentVaultPath, agentTopicFolder, agentCustomPath, name],
+  );
   // The tool this agent will actually be STORED with — same resolver the submit
   // handler and runtime use — so the preview never lies about the engine (web
   // with consent, on-device local, or the gated Codex driver).
@@ -629,6 +650,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         onChange={(k) => setActionType(k as AgentActionType)}
         colors={colors}
       />
+      {actionType === 'draft' && (
+        <Text style={[styles.warn, { color: colors.muted }]} numberOfLines={2}>
+          {t('agentcard.draft_save_location', { path: draftSaveLocation })}
+        </Text>
+      )}
       {actionType === 'webhook' && (
         <TextInput
           value={webhookUrl}
