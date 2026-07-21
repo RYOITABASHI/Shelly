@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,12 +93,82 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
         goto release_strings;
     }
 
+    /* 2026-07-21 "exit 127" root cause (docs/superpowers/DEFERRED.md):
+     * previously the full command string was passed as a single execve()
+     * argv element (`bash -c "<command>"`). The kernel caps EACH argv/envp
+     * string at MAX_ARG_STRLEN (32 * PAGE_SIZE = 128 KiB on 4 KiB-page
+     * kernels); exceeding it makes execve() fail with E2BIG, and the old
+     * child branch fell through to a silent _exit(127) with zero
+     * stdout/stderr. lib/agent-manager.ts's materialize batch (metadata
+     * JSON + full generated run script + PlanSpec JSON in ONE runCommand
+     * string) crosses that cap for orchestrated agents whose later-step
+     * prompts embed prior-step results — observed on-device as two
+     * consecutive exit=127 / 0-byte calls sandwiched between normal ones.
+     *
+     * Fix: stage the command in a private temp file and exec
+     * `bash <file>` (small fixed-size argv) instead of `bash -c "<huge
+     * string>"`. The file is written HERE in the parent, before fork(),
+     * so the child branch stays exec-only (no new file I/O between fork
+     * and execve). Staged under $HOME/tmp — the same TMPDIR the .bashrc
+     * exports and shelly-agent-driver.js uses — with a $HOME-root
+     * fallback for a first run before that dir exists. mkstemp gives a
+     * unique 0600 file per call (cmdFilePath is a per-call stack buffer),
+     * so concurrent execCommand() calls can't collide. bash only READS
+     * the file (no exec bit / binfmt_script involved, so the Knox
+     * app_data_file shebang deny documented in CLAUDE.md does not apply).
+     * Unlinked by the parent after waitpid() on every path below. */
+    char cmdFilePath[PATH_MAX];
+    int cmdFileFd = -1;
+    {
+        char tmpDir[PATH_MAX];
+        snprintf(tmpDir, sizeof(tmpDir), "%s/tmp", homePath);
+        if (mkdir(tmpDir, 0700) == 0 || errno == EEXIST) {
+            snprintf(cmdFilePath, sizeof(cmdFilePath),
+                     "%s/.shelly-exec-cmd-XXXXXX", tmpDir);
+            cmdFileFd = mkstemp(cmdFilePath);
+        }
+        if (cmdFileFd < 0) {
+            snprintf(cmdFilePath, sizeof(cmdFilePath),
+                     "%s/.shelly-exec-cmd-XXXXXX", homePath);
+            cmdFileFd = mkstemp(cmdFilePath);
+        }
+    }
+    if (cmdFileFd < 0) {
+        LOGE("mkstemp for command file failed: %s", strerror(errno));
+        close(stdout_pipe[0]); close(stdout_pipe[1]);
+        close(stderr_pipe[0]); close(stderr_pipe[1]);
+        jclass ex = (*env)->FindClass(env, "java/lang/RuntimeException");
+        (*env)->ThrowNew(env, ex, "failed to stage command file");
+        goto release_strings;
+    }
+    {
+        size_t cmdLen = strlen(command);
+        size_t written = 0;
+        while (written < cmdLen) {
+            ssize_t n = write(cmdFileFd, command + written, cmdLen - written);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                LOGE("write command file failed: %s", strerror(errno));
+                close(cmdFileFd);
+                unlink(cmdFilePath);
+                close(stdout_pipe[0]); close(stdout_pipe[1]);
+                close(stderr_pipe[0]); close(stderr_pipe[1]);
+                jclass ex = (*env)->FindClass(env, "java/lang/RuntimeException");
+                (*env)->ThrowNew(env, ex, "failed to write command file");
+                goto release_strings;
+            }
+            written += (size_t)n;
+        }
+        close(cmdFileFd);
+    }
+
     pid_t pid = fork();
 
     if (pid < 0) {
         LOGE("fork: %s", strerror(errno));
         close(stdout_pipe[0]); close(stdout_pipe[1]);
         close(stderr_pipe[0]); close(stderr_pipe[1]);
+        unlink(cmdFilePath);
         jclass ex = (*env)->FindClass(env, "java/lang/RuntimeException");
         (*env)->ThrowNew(env, ex, "fork() failed");
         goto release_strings;
@@ -179,17 +250,29 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
 
         if (chdir(homePath) != 0) { /* non-fatal */ }
 
-        /* execve: linker64 → bash -c "command" */
+        /* execve: linker64 → bash <cmdFilePath>. See the MAX_ARG_STRLEN
+         * comment above fork() for why the command is staged in a file
+         * instead of being passed inline via `bash -c`. No generated
+         * script relies on -c semantics: nothing in lib/agent-executor.ts
+         * or lib/agent-manager.ts reads $0/BASH_SOURCE at top level, no
+         * positional parameters are passed, and process discovery uses
+         * pidfiles (generateStopCommand), not /proc/cmdline matching. */
         char *argv[] = {
             (char *)linkerPath,
             (char *)bashPath,
-            "-c",
-            (char *)command,
+            cmdFilePath,
             NULL
         };
         execve(linkerPath, argv, envp);
 
-        /* If execve failed */
+        /* execve failed — log errno before dying so the failure mode is
+         * diagnosable from logcat (the 2026-07-21 exit-127 bug was opaque
+         * precisely because this path used to say nothing). Note:
+         * __android_log_print is not formally async-signal-safe, but it is
+         * a last-gasp line on a path that ends in _exit(127) either way,
+         * and the pre-existing child branch already calls snprintf. */
+        LOGE("execve failed: errno=%d (%s) linker=%s bash=%s cmdFile=%s",
+             errno, strerror(errno), linkerPath, bashPath, cmdFilePath);
         _exit(127);
     }
 
@@ -317,6 +400,12 @@ Java_expo_modules_terminalemulator_ShellyJNI_execSubprocess(
     /* Wait for child */
     int status;
     waitpid(pid, &status, 0);
+    /* Child (and its bash) is gone — the staged command file is one-shot.
+     * This is the single cleanup point for every parent path: normal exit,
+     * timeout/SIGKILL (breaks the read loop above and still reaches here),
+     * and read errors. Only a hard app-process death mid-exec can leak one,
+     * and those land in $HOME/tmp where stale files are harmless. */
+    unlink(cmdFilePath);
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
 
     LOGI("execSubprocess: pid=%d exited with code %d, stdout=%zu bytes (eagain=%d), stderr=%zu bytes (eagain=%d)",
