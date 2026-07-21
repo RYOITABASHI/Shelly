@@ -14,9 +14,11 @@
 
 ---
 
-### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い — ✅ 実装済み（`92d66acc1`）・実機未検証 (P1)
+### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い — ✅ 実装済み（`92d66acc1`）・✅ 実機検証済み（2026-07-21）(P1)
 
 **優先度**: P1（次リリース推奨——`tool.type: 'local'`に解決される多段オーケストレーション済みエージェントの無人スケジュール発火という「レアなエッジケースではなく通常経路」で、サーバーが未起動なら確実に失敗する）
+
+**→ 2026-07-21 実機検証PASS**: `agent-mrode1ec`（3ステップorchestrated、tool解決=local）の通常5分おきスケジュール発火（09:45:00、native AlarmManager経由）で確認: `AgentRuntime: running local-llm-ensure preflight` → `local-llm-ensure preflight succeeded`（326ms、llama-serverが既に起動済みだったため`local_llm_ready()`のヘルスチェック即成功）→ `starting via PlanSpec executor` → `completed via PlanSpec executor`（2.5秒）→ WakeLock release。preflightのwiring・ヘルスチェック再利用パスともに実機で正常動作を確認。**未検証のまま残る**: サーバー停止状態からの自動起動（今回はテスト中に手動でStartしたため、真の自動起動＝バイナリ/モデル発見→起動→90秒待機のフルパスは未確認）。
 
 **→ 2026-07-18 `92d66acc1` で実装済み**: 下記「提案設計」の(1)(2)(3)をそのまま実装。`scripts/shelly-local-llm-ensure.sh`（新規875行、APKアセットmirror同梱）へ`ensure_local_llm_server()`＋依存29関数を`lib/agent-executor.ts`から**逐語抽出**（JSテンプレートリテラルのエスケープ`\$`/`\n`/`\;`を平文の`$`/`\n`/`\;`へ戻すだけ、ロジック差分ゼロを29関数全てについてdiffで個別確認済み）。`lib/agent-executor.ts`自体は無変更（意図的、既存の稼働中`.sh`生成器は触らない）。`AgentRuntime.kt::runPlanAgent()`は既存の全validation guardの後・node起動の前に、on-disk PlanSpecの`tool.type`を読み（`readPlanSpecToolType`、既存の`readPlanSpecActionType`と同一パターン）、`"local"`なら共有スクリプトをsourceして`ensure_local_llm_server`を1回呼ぶpreflightを既存と同一の`ShellyJNI.execSubprocess`機構で実行。失敗/タイムアウトは全てログのみでswallowし、無変更のnode起動へ必ずフォールスルー（新しい失敗モード無し）。`HomeInitializer.kt`は`.shelly-plan-executor.js`と全く同じパターンで新スクリプトを`$HOME`へ無条件展開。
 
@@ -91,6 +93,12 @@
 ### エージェント二重実行レース — ✅ JS側 in-flight dedupe + chain-level lock（レガシー`.sh`経路 + PlanSpec executor経路の両方）実装済み（`606ad78fb`/`70d39389d`）・実機で部分検証済み
 
 **優先度**: P2（RUN NOW の再入/ゴーストタップという最も可能性の高い引き金は本パスで解消済み。レガシー`.sh`経路とPlanSpec executor経路の両方でchain-lockを検証済み）
+
+**→ 2026-07-21 実機テストで確認できたこと・できなかったこと**:
+- ✅ **chain-lockが正当な再実行をブロックしない**ことを確認: `agent-mrode1ec`のRUN NOW（attended）を2回連続で実行し、1回目が長時間（アプリbackground中に体感10分超、原因は別途下記）応答しなかった状態で2回目を実行しても、「previous run still active」エラーは一切発生せず正常に処理が進んだ。1回目のロックが実際にstaleだったのか、そもそも取得されていなかったのかは未確定。
+- ✅ **PlanSpec executor経路でのchain-lockチェックが実運用の無人発火で正常動作**: 09:45:00の自然な5分おきスケジュール発火で、`AgentRuntime`のchain-lockチェックを含む全経路（preflight→PlanSpec executor→完了）が2.5秒でクリーンに完了。
+- ⚠️ **未解決の新規発見（別ロジック、chain-lockとは無関係の可能性が高い）**: RUN NOWをアプリbackground中に挟んで複数回実行した結果、この agent の Sidebar 詳細ポップアップの表示が `Steps (3)` → `Steps (1)` へ縮退した（元々3ステップのオーケストレーションが1ステップしか表示されなくなった）。`runAgentOrchestrated`内の`stepAgent`（各ステップ用の一時オブジェクト、`orchestration`をクリアして`generateRunScript`の再帰を防ぐ設計）は永続化される`<agentId>.json`とは別物のはずで、コード上は直接の説明がつかなかった。再現条件（backgroundを挟んだ複数回のRUN NOW連打）を明確にした上で、次回コードを実際に読んで原因を特定する必要がある。ウィジェットも一時的に「予定されたエージェントはありません」という空表示になっていたが、これはRESUME操作後に自然に解消した（表示キャッシュの問題だった可能性）。
+→ sync: なし。
 
 **→ 2026-07-18 `70d39389d` で追加修正**: `606ad78fb`の実機テスト中に、chain-lockの保護範囲に穴があることを発見。`606ad78fb`が追加したCHAIN_LOCK_DIR/CHAIN_LOCK_NONCEチェックは`generateRunScript()`が生成する**レガシー`.sh`のbashテンプレート内にのみ**存在する。しかし North Star P0(c) 以降、PlanSpec executorに対応したtoolに解決されるorchestrated agent（＝現代的なagentの主流パターン）の無人発火は`shouldRunPlanExecutor()`により`AgentRuntime.kt::runPlanAgent()`（PlanSpec executor経路）へ直接ルーティングされ、レガシー`.sh`を一切経由しない——つまりchain-lockチェック自体に到達しない。実機で`agent-mrode1ec`（3ステップorchestrated、tool解決=local、PlanSpec executor経由）のRUN NOW（attended、15:28:47開始）と、同エージェントの通常5分おきスケジュール発火（unattended native alarm、15:30:00、PlanSpec executor経由）がほぼ同時刻に発生するのを確認し、この穴を実証的に発見した。
 
