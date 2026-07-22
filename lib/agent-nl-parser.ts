@@ -741,8 +741,13 @@ function detectSocialPost(text: string, connectors: SocialConnectorMeta[]): Soci
 const SOCIAL_POST_NO_CONNECTOR_CAVEAT =
   'SNS投稿には登録済みのコネクタが必要です。まず Settings → Social Connectors でコネクタを登録してください。今回は下書き（ファイル保存）として登録します。';
 
-/** Detect the delivery action. Default = draft. Never returns 'publish'. */
-function detectAction(text: string): AgentAction {
+/** Detect the delivery action. Default = draft. Never returns 'publish'.
+ *  Exported (Phase C, 2026-07-22) so lib/agent-draft-patch.ts can apply the
+ *  SAME action-type detector to a follow-up patch utterance during
+ *  await-confirm — see that module's tryPatchAction for the "was this an
+ *  explicit signal, not just the silent draft default" gating it layers on
+ *  top of this function's own default-to-draft fallback. */
+export function detectAction(text: string): AgentAction {
   // webhook — an explicit URL is the strongest signal.
   const url = text.match(URL_RE);
   if (url || /webhook|フック/i.test(text)) {
@@ -987,7 +992,14 @@ const NEGATED_AUTONOMOUS_INTENT_EN_RE =
 const NEGATED_AUTONOMOUS_INTENT_JP_RE =
   /(?:送信|実行|投稿|自動)[^。！？]{0,15}(?:しないで|しては(?:い)?けない)/;
 
-function detectAutonomousIntent(text: string): boolean {
+/** Exported (Phase C, 2026-07-22) so lib/agent-draft-patch.ts can detect an
+ *  explicit "run without approval" phrase in a follow-up patch utterance
+ *  during await-confirm, the same way the initial parse does. See that
+ *  module's tryPatchAutonomous for why only a `true` result is ever trusted
+ *  as a patch signal (this function's `false` is ambiguous — "no signal" and
+ *  "explicitly negated" both collapse to it, and neither should silently
+ *  flip an already-true autonomous flag back off). */
+export function detectAutonomousIntent(text: string): boolean {
   if (NEGATED_AUTONOMOUS_INTENT_EN_RE.test(text) || NEGATED_AUTONOMOUS_INTENT_JP_RE.test(text)) return false;
   return AUTONOMOUS_INTENT_RE.test(text);
 }

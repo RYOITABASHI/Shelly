@@ -235,6 +235,23 @@ function actionText(action: AgentAction, draft?: ParsedAgentDraft): string {
 }
 
 /**
+ * Prefix a rendered summary line with a change marker: '★ ' when `field` is
+ * in `changedFields` (Phase C, 2026-07-22 — a follow-up patch reply touched
+ * this field, see lib/agent-draft-patch.ts), '・ ' when `changedFields` is
+ * non-empty but this particular field was NOT touched (so the ★ lines stand
+ * out against a visibly-marked "unchanged" baseline rather than plain
+ * unmarked text — the reader would otherwise have to guess whether an
+ * unprefixed line was reviewed at all), or no prefix at all when
+ * `changedFields` is empty (the default/original rendering — every existing
+ * caller that never passes changedFields sees byte-identical output to
+ * before this function gained the parameter).
+ */
+function markLine(line: string, field: string, changedFields: ReadonlySet<string>): string {
+  if (changedFields.size === 0) return line;
+  return (changedFields.has(field) ? '★ ' : '・ ') + line;
+}
+
+/**
  * Deterministic NL rendering of a ParsedAgentDraft — the chat-native equivalent
  * of AgentConfirmCard's form fields. Covers every field a draft can carry:
  * name, schedule, action (with app-act recipe/target + content preview),
@@ -243,12 +260,23 @@ function actionText(action: AgentAction, draft?: ParsedAgentDraft): string {
  * the parser attached. Ends with the schedule-restatement hint when the schedule
  * is not yet fireable (see hasFireableSchedule) so the chat bubble itself explains
  * why no Confirm affordance is offered.
+ *
+ * @param changedFields Phase C (2026-07-22): the field names a follow-up
+ *   patch reply just touched (lib/agent-draft-patch.ts's DraftPatchResult.
+ *   changedFields, e.g. `new Set(['schedule'])`) — the corresponding line(s)
+ *   below are prefixed with '★' (see markLine) so the re-posted summary makes
+ *   obvious exactly what changed, instead of forcing the reader to diff two
+ *   full summaries by eye. Optional; the default (empty set) reproduces the
+ *   exact pre-Phase-C output for every existing call site.
  */
-export function summarizeAgentDraftAsText(draft: ParsedAgentDraft): string {
+export function summarizeAgentDraftAsText(
+  draft: ParsedAgentDraft,
+  changedFields: ReadonlySet<string> = new Set(),
+): string {
   const lines: string[] = [];
-  lines.push(t('agentplan.summary_name', { name: draft.name }));
-  lines.push(t('agentplan.summary_schedule', { schedule: scheduleText(draft) }));
-  lines.push(t('agentplan.summary_action', { action: actionText(draft.action, draft) }));
+  lines.push(markLine(t('agentplan.summary_name', { name: draft.name }), 'name', changedFields));
+  lines.push(markLine(t('agentplan.summary_schedule', { schedule: scheduleText(draft) }), 'schedule', changedFields));
+  lines.push(markLine(t('agentplan.summary_action', { action: actionText(draft.action, draft) }), 'action', changedFields));
 
   // Phase B (2026-07-22): a schedule resolved from a bare time-of-day word
   // ("朝"→08:00, see lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS) is never
@@ -283,7 +311,7 @@ export function summarizeAgentDraftAsText(draft: ParsedAgentDraft): string {
     });
   }
 
-  if (draft.autonomous) lines.push(t('agentplan.autonomous_note'));
+  if (draft.autonomous) lines.push(markLine(t('agentplan.autonomous_note'), 'autonomous', changedFields));
   if (draft.memory?.remember) {
     lines.push(t('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
   }

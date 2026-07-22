@@ -48,6 +48,7 @@ import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
+import { applyPatchToPendingSession } from '@/lib/agent-draft-patch';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
@@ -367,12 +368,57 @@ export function useAIPaneDispatch(paneId: string) {
             await confirmAgentDraft(pendingAgentSession.messageId, draftToConfirmedAgentDraft(pendingAgentSession.draft));
             return;
           }
+          // ③.5 (Phase C, 2026-07-22): neither a confirm nor a cancel phrase,
+          // but the reply might be a partial correction to the pending draft
+          // itself ("9時にして" / "名前は◯◯にして" / "通知でいいや" / "承認な
+          // しで") — see lib/agent-draft-patch.ts for the field-level
+          // detectors and the module's safety design (a patch is never
+          // silently applied and never auto-registers the draft). Checked
+          // BEFORE the generic "neither confirm nor cancel" guidance fallback
+          // below, so a legitimate field-only correction gets a targeted
+          // "here's what changed" reply instead of a bare, unmodified re-post
+          // of the summary.
+          const patchResult = applyPatchToPendingSession(pendingAgentSession, userText);
+          if (patchResult) {
+            store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+            const patchedDraft = patchResult.session.draft;
+            // Keep the ORIGINAL draft bubble's own agentDraft/content in sync
+            // too — AgentChatConfirm reads message.agentDraft directly off
+            // that bubble, so leaving it stale would let a later TAP on that
+            // same bubble's Confirm button register the PRE-patch draft
+            // instead of the one just agreed on here.
+            store.updateMessage(paneId, pendingAgentSession.messageId, {
+              agentDraft: patchedDraft,
+              content: summarizeAgentDraftAsText(patchedDraft),
+            });
+            const patchStrings = detectMessageLocale(patchedDraft.rawText) === 'ja' ? ja : en;
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: `${patchStrings['agentplan.patch_updated_header']}\n${summarizeAgentDraftAsText(
+                patchedDraft,
+                new Set(patchResult.changedFields),
+              )}`,
+              timestamp: Date.now(),
+              agent: pendingAgentSession.agentLabel,
+            });
+            // HARD invariant (lib/agent-draft-patch.ts's module doc comment,
+            // point 2): applyPatchToPendingSession always returns
+            // phase: 'await-confirm' — a patch reply alone can never
+            // register the draft, regardless of any "no approval needed"
+            // default. A SEPARATE, subsequent confirm-phrase reply is still
+            // required.
+            store.setPendingAgentSession(paneId, patchResult.session);
+            return;
+          }
+
           // Neither a clear confirm nor a cancel (or a confirm-phrase reply
-          // to a draft whose schedule still needs restating) — never
-          // silently drop the pending draft. Re-show the plain-language
-          // guidance + the full summary again (so the schedule_restate_hint,
-          // if any, stays visible) instead of forwarding this text to the
-          // LLM, which has no idea a registration is pending.
+          // to a draft whose schedule still needs restating), and nothing a
+          // patch could apply either — never silently drop the pending
+          // draft. Re-show the plain-language guidance + the full summary
+          // again (so the schedule_restate_hint, if any, stays visible)
+          // instead of forwarding this text to the LLM, which has no idea a
+          // registration is pending.
           store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
           const unclearStrings = detectMessageLocale(pendingAgentSession.draft.rawText) === 'ja' ? ja : en;
           store.addMessage(paneId, {
