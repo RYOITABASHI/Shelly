@@ -1535,6 +1535,13 @@ function SocialConnectorAddForm({
         { id, platform, label, host, fields: meta.fields },
         secrets,
       );
+      // addSocialConnector only QUEUES the .env write (HOST/META/secrets) —
+      // same convention as every other secret-bearing settings field (API
+      // keys, webhook allowlist, DM pairing). Without this flush the
+      // generated run script's `social_connector_env HOST` reads nothing and
+      // every run fails closed with "connector host is missing or invalid",
+      // even though the connector looks fully registered in this UI.
+      await flushPendingAgentEnvSync(label);
       ToastAndroid.show(t('social_connectors.added_toast', { label }), ToastAndroid.SHORT);
       onDone();
     } catch (e: any) {
@@ -1670,7 +1677,19 @@ const SocialConnectorsSection = React.memo(function SocialConnectorsSection() {
       {connectors.map((connector: SocialConnectorMeta, i: number) => (
         <React.Fragment key={connector.id}>
           {i > 0 && <View style={styles.credentialGap} />}
-          <SocialConnectorRow connector={connector} onRemove={() => void removeSocialConnector(connector.id)} t={t} />
+          <SocialConnectorRow
+            connector={connector}
+            onRemove={() => {
+              void (async () => {
+                await removeSocialConnector(connector.id);
+                // Same queue/flush split as add — without this, the removed
+                // connector's HOST/META/secret lines stay live in .env even
+                // though the UI (and SecureStore) already show it gone.
+                await flushPendingAgentEnvSync(connector.label);
+              })();
+            }}
+            t={t}
+          />
         </React.Fragment>
       ))}
       {connectors.length > 0 && <View style={styles.credentialGap} />}
