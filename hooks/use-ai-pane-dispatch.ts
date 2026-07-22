@@ -45,7 +45,7 @@ import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
-import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions } from '@/lib/agent-plan-summary';
+import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { applyPatchToPendingSession } from '@/lib/agent-draft-patch';
@@ -329,7 +329,15 @@ export function useAIPaneDispatch(paneId: string) {
         // what tapping Confirm on the card would have produced.
         const requireRegistrationConfirm =
           useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
-        if (!useChatConfirm && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
+        // See isAutoRegisterEligibleOnChatConfirm's doc comment (lib/agent-
+        // plan-summary.ts): auto-register eligibility is scored by
+        // action-type risk tier, not by which UI surface renders the pending
+        // confirmation. draft/notify may still auto-register on the
+        // chat-confirm surface; every other chat-confirm type (app-act/
+        // social-post/tool-pinned) keeps requiring `!useChatConfirm` exactly
+        // as before this fix.
+        const autoRegisterEligible = !useChatConfirm || isAutoRegisterEligibleOnChatConfirm(draft.action.type);
+        if (autoRegisterEligible && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
           await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
         }
       };

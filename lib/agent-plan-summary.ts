@@ -83,20 +83,46 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
  * schedule) is NEVER auto-registered either, regardless of
  * requireRegistrationConfirm — same "content classifier, not an
  * approval-frequency knob" reasoning as the fireable-schedule check right
- * above it. This is the ONLY gate that protects an assumption-bearing draft
- * on the (non-chat-confirm) AgentConfirmCard-eligible path, where nothing
- * else would force a human to see it before it's registered — the
- * chat-native path's own never-auto-register behavior (see
- * hooks/use-ai-pane-dispatch.ts's presentDraftForConfirmation, which only
- * calls this function when !shouldUseChatConfirm) already satisfies the
- * gate for app-act/social-post/tool-pinned/draft/notify drafts by never
- * calling this function for them in the first place, but a plain webhook/
- * cli/intent/dm-reply/api-call draft with an assumed schedule still goes
- * through THIS function and must be caught here.
+ * above it. This function is called for TWO groups of draft: (a) every
+ * non-chat-confirm (AgentConfirmCard-eligible) draft — webhook/cli/intent/
+ * dm-reply/api-call — where this is the only gate protecting an assumption-
+ * bearing draft, and (b) as of the 2026-07-23 fix below, draft/notify too,
+ * even though they use the chat-confirm UI surface — see
+ * isAutoRegisterEligibleOnChatConfirm's doc comment for why app-act/social-
+ * post/tool-pinned orchestration do NOT reach this function despite also
+ * being chat-confirm.
  */
 export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistrationConfirm: boolean): boolean {
   if (hasDraftAssumptions(draft)) return false;
   return !requireRegistrationConfirm && hasFireableSchedule(draft);
+}
+
+/**
+ * Action types eligible for the no-approval-default auto-register fast path
+ * even when shouldUseChatConfirm(draft) is true — see that function's own
+ * doc comment for the full chat-confirm type list.
+ *
+ * Found via on-device testing (2026-07-23): Phase B extended
+ * shouldUseChatConfirm() to draft/notify, but hooks/use-ai-pane-dispatch.ts's
+ * presentDraftForConfirmation still gated its shouldAutoRegisterDraft() call
+ * on `!useChatConfirm`, a condition written back when ONLY app-act/social-
+ * post/tool-pinned orchestration (external-posting/multi-step, deliberately
+ * NEVER auto-registered) used chat confirm. That blanket gate silently made
+ * every explicit, no-assumption draft/notify utterance ("毎日21時にバッテ
+ * リー残量を通知して") require a confirm round-trip it never needed before
+ * Phase B moved their UI surface — losing the "no-approval default" fast
+ * path for exactly the two types Fable5's UX design named as the majority
+ * case that should register in one message.
+ *
+ * draft/notify are purely local (T0 risk) — same tier they had before Phase
+ * B, so they stay eligible here. app-act/social-post/tool-pinned
+ * orchestration are deliberately NOT included: shouldAutoRegisterDraft alone
+ * has no action-type awareness, so callers must keep gating those on
+ * `!useChatConfirm` (i.e. never call shouldAutoRegisterDraft for them at
+ * all) exactly as before this fix.
+ */
+export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['type']): boolean {
+  return actionType === 'draft' || actionType === 'notify';
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   hasDraftAssumptions,
   shouldUseChatConfirm,
   shouldAutoRegisterDraft,
+  isAutoRegisterEligibleOnChatConfirm,
   summarizeAgentDraftAsText,
   draftToConfirmedAgentDraft,
 } from '@/lib/agent-plan-summary';
@@ -112,6 +113,86 @@ describe('shouldAutoRegisterDraft', () => {
     const explicit = parseAgentNL('毎日8時にニュースまとめて');
     expect(explicit.scheduleAssumed).toBeUndefined();
     expect(shouldAutoRegisterDraft(explicit, false)).toBe(true);
+  });
+});
+
+// 2026-07-23 regression, found via on-device testing: Phase B
+// (`433bdae93`) moved draft/notify onto the chat-confirm UI surface
+// (shouldUseChatConfirm), but hooks/use-ai-pane-dispatch.ts's
+// presentDraftForConfirmation still gated its shouldAutoRegisterDraft() call
+// on the OLD `!useChatConfirm` condition — silently making every explicit,
+// no-assumption draft/notify utterance require a confirm round-trip it never
+// needed pre-Phase-B ("毎日21時にバッテリー残量を通知して" showed a
+// Cancel/Confirm prompt instead of registering in one message). These tests
+// lock in the fix: isAutoRegisterEligibleOnChatConfirm(action.type), and the
+// exact `!useChatConfirm || isAutoRegisterEligibleOnChatConfirm(...)` gate
+// shape hooks/use-ai-pane-dispatch.ts's presentDraftForConfirmation now uses.
+describe('isAutoRegisterEligibleOnChatConfirm', () => {
+  it('true for draft and notify — T0/local-only risk, unaffected by which UI surface renders confirmation', () => {
+    expect(isAutoRegisterEligibleOnChatConfirm('draft')).toBe(true);
+    expect(isAutoRegisterEligibleOnChatConfirm('notify')).toBe(true);
+  });
+
+  it('false for every external-posting/multi-step type that must always require an explicit confirm', () => {
+    expect(isAutoRegisterEligibleOnChatConfirm('app-act')).toBe(false);
+    expect(isAutoRegisterEligibleOnChatConfirm('social-post')).toBe(false);
+    expect(isAutoRegisterEligibleOnChatConfirm('webhook')).toBe(false);
+    expect(isAutoRegisterEligibleOnChatConfirm('cli')).toBe(false);
+    expect(isAutoRegisterEligibleOnChatConfirm('intent')).toBe(false);
+    expect(isAutoRegisterEligibleOnChatConfirm('dm-reply')).toBe(false);
+    expect(isAutoRegisterEligibleOnChatConfirm('api-call')).toBe(false);
+  });
+});
+
+describe('presentDraftForConfirmation auto-register gate (hooks/use-ai-pane-dispatch.ts shape)', () => {
+  // Reproduces the exact `autoRegisterEligible` expression from
+  // presentDraftForConfirmation so this suite fails if that gate's shape
+  // ever regresses back to the pre-fix `!useChatConfirm`-only form.
+  function autoRegisterEligible(draft: ParsedAgentDraft): boolean {
+    const useChatConfirm = shouldUseChatConfirm(draft);
+    return !useChatConfirm || isAutoRegisterEligibleOnChatConfirm(draft.action.type);
+  }
+
+  it('the exact reported bug: an explicit notify utterance auto-registers instead of requiring a confirm tap', () => {
+    const explicit = parseAgentNL('毎日21時にバッテリー残量を通知して');
+    expect(explicit.action.type).toBe('notify');
+    expect(shouldUseChatConfirm(explicit)).toBe(true); // Phase B: notify IS chat-confirm
+    expect(autoRegisterEligible(explicit)).toBe(true); // …but still auto-register-eligible
+    expect(shouldAutoRegisterDraft(explicit, false)).toBe(true);
+  });
+
+  it('an explicit draft utterance auto-registers the same way', () => {
+    const explicit = parseAgentNL('毎日9時にニュースをまとめてファイルに保存して');
+    expect(explicit.action.type).toBe('draft');
+    expect(shouldUseChatConfirm(explicit)).toBe(true);
+    expect(autoRegisterEligible(explicit)).toBe(true);
+    expect(shouldAutoRegisterDraft(explicit, false)).toBe(true);
+  });
+
+  it('an assumed-schedule draft/notify still requires confirm (the Phase B safety gate is untouched by this fix)', () => {
+    const vague = baseDraft({ action: { type: 'notify' }, scheduleAssumed: true });
+    expect(shouldUseChatConfirm(vague)).toBe(true);
+    expect(autoRegisterEligible(vague)).toBe(true); // type-eligible…
+    expect(shouldAutoRegisterDraft(vague, false)).toBe(false); // …but the assumption gate still blocks it
+  });
+
+  it('app-act/social-post remain confirm-only regardless of the no-approval-default setting (unchanged by this fix)', () => {
+    const appAct = baseDraft({ action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: 'hi' } } });
+    expect(shouldUseChatConfirm(appAct)).toBe(true);
+    expect(autoRegisterEligible(appAct)).toBe(false);
+
+    const socialPost = baseDraft({
+      action: { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'x', text: 'hi' } },
+    });
+    expect(shouldUseChatConfirm(socialPost)).toBe(true);
+    expect(autoRegisterEligible(socialPost)).toBe(false);
+  });
+
+  it('card-eligible types (e.g. webhook) are unaffected — still gated purely by !useChatConfirm, as before this fix', () => {
+    const webhook = baseDraft({ action: { type: 'webhook', webhookUrl: 'https://example.com/hook' } });
+    expect(shouldUseChatConfirm(webhook)).toBe(false);
+    expect(autoRegisterEligible(webhook)).toBe(true);
+    expect(shouldAutoRegisterDraft(webhook, false)).toBe(true);
   });
 });
 
