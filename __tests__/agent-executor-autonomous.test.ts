@@ -10,6 +10,25 @@ import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext, 
 import { MAX_RESULT_CARRY_CHARS } from '@/lib/agent-orchestration';
 import { Agent, ToolChoice } from '@/store/types';
 
+// Full-script `bash -n` via `-c <script>` passes the entire generated script
+// as a single argv string, which collides with the kernel's real argv-length
+// ceiling (Linux E2BIG / Windows ENAMETOOLONG) once a generated script grows
+// past it — as of the 2026-07-22 social-post additions, several of the
+// larger autonomous-ladder scripts now do. Writing to a temp file and
+// running `bash -n <file>` sidesteps the limit entirely (this is also what
+// the real native exec path does post the exit-127 ARG_MAX fix, `58dc23145`)
+// while checking the exact same syntax.
+function assertParsesAsShell(script: string): void {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-parse-check-'));
+  try {
+    const scriptFile = path.join(tmpDir, 'script.sh');
+    fs.writeFileSync(scriptFile, script);
+    expect(() => execFileSync('bash', ['-n', scriptFile])).not.toThrow();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 const agent = (tool: ToolChoice, autonomous?: boolean): Agent => ({
   id: 't',
   name: 'T',
@@ -63,7 +82,7 @@ describe('generateRunScript — free-cloud tier backends (Cerebras / Groq, ③b)
   it('emits parseable shell for the new backends', () => {
     for (const t of ['cerebras', 'groq'] as const) {
       const s = generateRunScript(agent({ type: t }, false));
-      expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+      assertParsesAsShell(s);
     }
   });
 });
@@ -175,7 +194,7 @@ describe('generateRunScript — studio context only for content-pipeline agents'
 
   it('emits parseable shell with the global-output branch', () => {
     const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'ニュースを集めて' });
-    expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+    assertParsesAsShell(s);
   });
 
   it('a general task emits STUDIO_CONTEXT=0 and gates the ~20KB context build', () => {
@@ -548,7 +567,7 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
       generateRunScript(agent({ type: 'local' }, true)),
       generateRunScript(agent({ type: 'perplexity' }, true)),
     ]) {
-      expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+      assertParsesAsShell(s);
     }
   });
 
@@ -855,7 +874,7 @@ describe('generateRunScript — transient-failure resilience (P0/P1)', () => {
 
   it('emits parseable shell with the baked ladder', () => {
     const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
-    expect(() => execFileSync('bash', ['-n', '-c', s])).not.toThrow();
+    assertParsesAsShell(s);
   });
 });
 
