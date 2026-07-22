@@ -381,6 +381,12 @@ const en: Record<string, string> = {
   'agentplan.confirm_unclear_hint': 'There is a pending draft. Reply "register" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',
   'agentplan.schedule_assumed_note': 'Interpreted "{{word}}" as {{time}}.',
   'agentplan.next_fire_note': 'Next run: {{datetime}}',
+  // 2026-07-23: shown when one or more fields above were filled in by the
+  // hybrid LLM-extraction fallback (lib/agent-llm-fallback.ts) instead of
+  // the deterministic parser — see lib/agent-plan-summary.ts's
+  // hasDraftAssumptions doc comment for why this always forces one confirm
+  // round-trip, same as an assumed schedule.
+  'agentplan.llm_extracted_note': '🤖 Some fields above were inferred by AI from your message — please double-check them before confirming.',
   // Phase C (2026-07-22): header line prepended (by hooks/use-ai-pane-dispatch.ts)
   // above the re-posted summary when a follow-up reply patched the pending
   // draft — see lib/agent-draft-patch.ts / summarizeAgentDraftAsText's

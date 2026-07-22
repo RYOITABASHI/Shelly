@@ -51,6 +51,8 @@ import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraf
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent } from '@/lib/agent-draft-patch';
+import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
+import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
@@ -358,6 +360,72 @@ export function useAIPaneDispatch(paneId: string) {
         const autoRegisterEligible = !useChatConfirm || isAutoRegisterEligibleOnChatConfirm(draft.action.type);
         if (autoRegisterEligible && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
           await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
+        }
+      };
+
+      // Capability-question interception (2026-07-23): answers "こんなこと
+      // できる？"-style questions typed into `@agent <NL>` using the SAME
+      // grounded feature-catalog prompt + [AVAILABLE]/[PLANNED]/
+      // [NOT_AVAILABLE] status-tag convention components/panes/AskPane.tsx
+      // uses (see lib/agent-capability-answer.ts's answerCapabilityQuestion,
+      // which tries every provider the user has configured — not just
+      // AskPane's hardcoded Groq). Deliberately does NOT touch the
+      // agent-creation flow at all: no draft is built, no pending session is
+      // set, nothing is registered — see
+      // lib/agent-llm-fallback.ts's isCapabilityQuestionForAgentFlow for the
+      // detection heuristic and why a loose, question-shaped match is the
+      // right tradeoff here.
+      const answerCapabilityQuestionInline = async (
+        agentLabel: ChatMessage['agent'] | undefined,
+        question: string,
+      ): Promise<void> => {
+        const msgId = generateId();
+        store.addMessage(paneId, {
+          id: msgId,
+          role: 'assistant',
+          content: '',
+          timestamp: Date.now(),
+          agent: agentLabel,
+          isStreaming: true,
+          streamingText: '',
+        });
+        const capabilityConfig = {
+          groqApiKey: settings.groqApiKey,
+          groqModel: settings.groqModel,
+          geminiApiKey: settings.geminiApiKey,
+          geminiModel: settings.geminiModel,
+          cerebrasApiKey: settings.cerebrasApiKey,
+          cerebrasModel: settings.cerebrasModel,
+          localLlmEnabled: settings.localLlmEnabled,
+          localLlmUrl: settings.localLlmUrl,
+          localLlmModel: settings.localLlmModel,
+        };
+        try {
+          const result = await answerCapabilityQuestion(question, capabilityConfig, (delta) => {
+            const conv = store.getOrCreate(paneId);
+            const prev = conv.messages.find((m) => m.id === msgId);
+            const accumulated = (prev?.streamingText ?? '') + delta;
+            throttledUpdate(paneId, msgId, { streamingText: accumulated, content: accumulated });
+          });
+          if (result.success) {
+            store.updateMessage(paneId, msgId, {
+              isStreaming: false,
+              streamingText: undefined,
+              content: result.text,
+            });
+          } else {
+            store.updateMessage(paneId, msgId, {
+              isStreaming: false,
+              streamingText: undefined,
+              content: result.error ?? 'No AI provider is configured.',
+            });
+          }
+        } catch (err) {
+          store.updateMessage(paneId, msgId, {
+            isStreaming: false,
+            streamingText: undefined,
+            content: `[@agent] error: ${err instanceof Error ? err.message : String(err)}`,
+          });
         }
       };
 
@@ -735,12 +803,24 @@ export function useAIPaneDispatch(paneId: string) {
             // `@agent autonomous …` alias just pre-sets the card's Autonomous toggle.
             // Nothing is created/run until the human taps Confirm (see confirmAgentDraft).
             const promptText = agentResult.message;
+
+            // Capability-question interception (2026-07-23): "@agent こんな
+            // ことできる？" must never start an agent-creation draft. Checked
+            // BEFORE parseAgentNL so a capability question never even
+            // reaches the deterministic parser — see
+            // answerCapabilityQuestionInline above and
+            // lib/agent-llm-fallback.ts's isCapabilityQuestionForAgentFlow.
+            if (isCapabilityQuestionForAgentFlow(promptText)) {
+              await answerCapabilityQuestionInline(agent as ChatMessage['agent'], promptText);
+              return;
+            }
+
             // social-post (2026-07-22): parseAgentNL stays pure/offline, so the
             // registered connectors (needed to resolve "post this to X" against a
             // real connectorId) are read here and passed in explicitly — same
             // pattern as slotFillCtx below reading agentVaultPath/agentTopicFolder
             // from the store for lib/agent-slot-fill.ts's SlotFillContext.
-            const draft = parseAgentNL(promptText, useSettingsStore.getState().socialConnectors ?? []);
+            let draft = parseAgentNL(promptText, useSettingsStore.getState().socialConnectors ?? []);
             draft.autonomous = agentResult.data?.autonomous === true;
             if (draft.autonomous && agentResult.data?.suggestion?.tool) {
               draft.tool = agentResult.data.suggestion.tool;
@@ -759,6 +839,28 @@ export function useAIPaneDispatch(paneId: string) {
               }
             } catch {
               // skill match is best-effort
+            }
+            // Hybrid LLM-extraction fallback (2026-07-23): only when the
+            // deterministic parser found NEITHER a confident schedule NOR
+            // an explicit action signal at all — see
+            // lib/agent-llm-fallback.ts's isLowConfidenceAgentDraft for the
+            // exact (deliberately narrow) criterion. Best-effort and
+            // fail-closed: extractAgentFieldsWithLlm returns `draft`
+            // completely untouched on ANY problem (local LLM disabled/
+            // unreachable, timeout, malformed JSON, nothing usable
+            // extracted), so the ordinary slot-fill/confirm flow below
+            // proceeds exactly as if this block did not run. Any field it
+            // DOES merge in marks the draft `llmExtracted: true`, which
+            // forces a human confirm round-trip even for an otherwise
+            // "complete" draft — see lib/agent-plan-summary.ts's
+            // hasDraftAssumptions.
+            if (isLowConfidenceAgentDraft(draft)) {
+              const llmFallbackSettings = useSettingsStore.getState().settings;
+              draft = await extractAgentFieldsWithLlm(promptText, draft, {
+                baseUrl: llmFallbackSettings.localLlmUrl,
+                model: llmFallbackSettings.localLlmModel,
+                enabled: llmFallbackSettings.localLlmEnabled,
+              });
             }
             // Conversational slot-filling (Phase 0 §2.1): a draft missing a
             // required field (schedule/notificationTrigger/outputPath) is not

@@ -378,6 +378,11 @@ const ja: Record<string, string> = {
   'agentplan.confirm_unclear_hint': '登録待ちの下書きがあります。「登録して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
   'agentplan.schedule_assumed_note': '「{{word}}」→{{time}}と解釈しました。',
   'agentplan.next_fire_note': '次回実行: {{datetime}}',
+  // 2026-07-23: 上記の一部の項目がハイブリッドLLM抽出フォールバック
+  // （lib/agent-llm-fallback.ts）によるものである場合に表示する注記
+  // — lib/agent-plan-summary.ts の hasDraftAssumptions のコメント参照。
+  // 推定スケジュールと同様、必ず1往復の確認を挟む理由をここでも示す。
+  'agentplan.llm_extracted_note': '🤖 一部の項目はAIが発話から推測しました。確定前に内容をご確認ください。',
   // Phase C（2026-07-22）: 言い直しで下書きをその場修正した際、再掲する要約の
   // 先頭に付けるヘッダー行（hooks/use-ai-pane-dispatch.ts が付与）。ヒットした
   // フィールドの行には summarizeAgentDraftAsText の changedFields 引数で★が付く

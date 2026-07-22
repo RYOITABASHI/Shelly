@@ -51,18 +51,26 @@ export function hasFireableSchedule(draft: ParsedAgentDraft): boolean {
 
 /**
  * true when ANY field on this draft was filled in by an assumption rather
- * than something the user stated explicitly — today that's exactly
- * `draft.scheduleAssumed` (a bare time-of-day word like "朝" defaulted to
- * 08:00 by lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS instead of being
- * asked about), kept as its own named predicate (rather than inlining the
- * field check at each call site) so a future assumption source has one
- * place to plug into. Consulted by shouldAutoRegisterDraft's hard safety
- * gate below (Phase B item 7): an assumption must always get a human's
- * eyes on it via one await-confirm round-trip before registering, even
- * under the "no approval needed" default — never silently opaque.
+ * than something the user stated explicitly — `draft.scheduleAssumed` (a
+ * bare time-of-day word like "朝" defaulted to 08:00 by
+ * lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS instead of being asked
+ * about), OR (2026-07-23) `draft.llmExtracted` (one or more fields came from
+ * the hybrid LLM-extraction fallback instead of the deterministic parser —
+ * see lib/agent-llm-fallback.ts's extractAgentFieldsWithLlm). Kept as its
+ * own named predicate (rather than inlining the field checks at each call
+ * site) so a future assumption source has one place to plug into. Consulted
+ * by shouldAutoRegisterDraft's hard safety gate below (Phase B item 7): an
+ * assumption must always get a human's eyes on it via one await-confirm
+ * round-trip before registering, even under the "no approval needed"
+ * default — never silently opaque. This is exactly why llmExtracted belongs
+ * here too: an LLM-derived field can look just as complete/explicit as a
+ * deterministic match (e.g. a fully-formed cron time), but it is inherently
+ * less trustworthy than an actual keyword/digit match, so it must never
+ * skip the same human-review gate a defaulted time-of-day word doesn't get
+ * to skip either.
  */
 export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
-  return draft.scheduleAssumed === true;
+  return draft.scheduleAssumed === true || draft.llmExtracted === true;
 }
 
 /**
@@ -336,6 +344,12 @@ export function summarizeAgentDraftAsText(
       );
     });
   }
+
+  // 2026-07-23: one or more fields above came from the hybrid LLM-extraction
+  // fallback (see hasDraftAssumptions's doc comment) rather than the
+  // deterministic parser — never leave that opaque, same reasoning as the
+  // scheduleAssumed note right above this block.
+  if (draft.llmExtracted) lines.push(t('agentplan.llm_extracted_note'));
 
   if (draft.autonomous) lines.push(markLine(t('agentplan.autonomous_note'), 'autonomous', changedFields));
   if (draft.memory?.remember) {

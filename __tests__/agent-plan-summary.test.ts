@@ -105,6 +105,18 @@ describe('shouldAutoRegisterDraft', () => {
     expect(shouldAutoRegisterDraft(assumed, true)).toBe(false);
   });
 
+  // 2026-07-23 hybrid LLM-extraction fallback gate: an LLM-derived field can
+  // look just as complete/explicit as a deterministic match (e.g. a
+  // fully-formed cron time with an explicit digit), but it must still never
+  // skip the human confirm round-trip — same "content classifier, not an
+  // approval-frequency knob" reasoning as the scheduleAssumed gate above.
+  it('NEVER auto-registers a draft with llmExtracted set, even with an explicit fireable schedule, regardless of requireRegistrationConfirm', () => {
+    const llmDerived = baseDraft({ llmExtracted: true });
+    expect(hasFireableSchedule(llmDerived)).toBe(true); // sanity: not blocked by the OTHER gate
+    expect(shouldAutoRegisterDraft(llmDerived, false)).toBe(false);
+    expect(shouldAutoRegisterDraft(llmDerived, true)).toBe(false);
+  });
+
   it('end-to-end: parseAgentNL("毎朝ニュースまとめて") never auto-registers under the no-approval default, but an explicit "毎日8時に" utterance still does', () => {
     const vague = parseAgentNL('毎朝ニュースまとめて');
     expect(vague.scheduleAssumed).toBe(true);
@@ -203,6 +215,10 @@ describe('hasDraftAssumptions', () => {
 
   it('true when scheduleAssumed is set', () => {
     expect(hasDraftAssumptions(baseDraft({ scheduleAssumed: true }))).toBe(true);
+  });
+
+  it('true when llmExtracted is set, even with an otherwise fully explicit draft (2026-07-23)', () => {
+    expect(hasDraftAssumptions(baseDraft({ llmExtracted: true }))).toBe(true);
   });
 });
 
