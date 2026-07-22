@@ -28,10 +28,10 @@
  * field-editing, so instead of silently defaulting it must refuse and ask the user
  * to restate the schedule with an explicit time.
  */
-import { ParsedAgentDraft } from './agent-nl-parser';
+import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime } from './agent-nl-parser';
 import { AgentAction } from '@/store/types';
 import { toolChoiceToLabel } from './agent-tool-router';
-import { decodeCron, scheduleHuman } from './agent-card-cron';
+import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
 import { t } from './i18n';
 // Type-only: erased at compile time, so importing from the .tsx component this
 // pure module otherwise has nothing to do with never pulls React/RN into its
@@ -50,6 +50,22 @@ export function hasFireableSchedule(draft: ParsedAgentDraft): boolean {
 }
 
 /**
+ * true when ANY field on this draft was filled in by an assumption rather
+ * than something the user stated explicitly — today that's exactly
+ * `draft.scheduleAssumed` (a bare time-of-day word like "朝" defaulted to
+ * 08:00 by lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS instead of being
+ * asked about), kept as its own named predicate (rather than inlining the
+ * field check at each call site) so a future assumption source has one
+ * place to plug into. Consulted by shouldAutoRegisterDraft's hard safety
+ * gate below (Phase B item 7): an assumption must always get a human's
+ * eyes on it via one await-confirm round-trip before registering, even
+ * under the "no approval needed" default — never silently opaque.
+ */
+export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
+  return draft.scheduleAssumed === true;
+}
+
+/**
  * Project owner directive 2026-07-14 ("デフォは承認なしな。任意で確認" —
  * default is no-approval, confirmation optional): true when a draft that
  * still uses AgentConfirmCard (never called for the chat-native app-act/
@@ -61,8 +77,25 @@ export function hasFireableSchedule(draft: ParsedAgentDraft): boolean {
  * needs to be restated is NEVER auto-registered, regardless of
  * requireRegistrationConfirm — "never register an agent that will never
  * fire" is a content classifier, not an approval-frequency knob.
+ *
+ * Phase B (2026-07-22) hard safety gate: a draft carrying an ASSUMED value
+ * (hasDraftAssumptions — currently just a defaulted "朝"→08:00-style
+ * schedule) is NEVER auto-registered either, regardless of
+ * requireRegistrationConfirm — same "content classifier, not an
+ * approval-frequency knob" reasoning as the fireable-schedule check right
+ * above it. This is the ONLY gate that protects an assumption-bearing draft
+ * on the (non-chat-confirm) AgentConfirmCard-eligible path, where nothing
+ * else would force a human to see it before it's registered — the
+ * chat-native path's own never-auto-register behavior (see
+ * hooks/use-ai-pane-dispatch.ts's presentDraftForConfirmation, which only
+ * calls this function when !shouldUseChatConfirm) already satisfies the
+ * gate for app-act/social-post/tool-pinned/draft/notify drafts by never
+ * calling this function for them in the first place, but a plain webhook/
+ * cli/intent/dm-reply/api-call draft with an assumed schedule still goes
+ * through THIS function and must be caught here.
  */
 export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistrationConfirm: boolean): boolean {
+  if (hasDraftAssumptions(draft)) return false;
   return !requireRegistrationConfirm && hasFireableSchedule(draft);
 }
 
@@ -81,10 +114,20 @@ export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistra
  * point, not 'social-post' — it correctly falls through to card-eligible here.
  * lib/agent-slot-fill.ts's socialConnector slot-fill question runs first and
  * only calls this once the connector is resolved (or has been given up on).
+ *
+ * Phase B (2026-07-22): `draft` and `notify` join app-act/social-post/
+ * tool-pinned-orchestration as chat-native — these two cover the large
+ * majority of everyday single-step agents ("毎日ニュースをまとめて" /
+ * "毎朝リマインドして"), so this is the change that makes chat-native confirm
+ * the DEFAULT experience rather than the exception. webhook/cli/intent/
+ * dm-reply/api-call and a plain (no pinned tool) multi-step chain are
+ * unchanged and still use AgentConfirmCard — out of scope for this phase.
  */
 export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
   if (draft.action.type === 'app-act') return true;
   if (draft.action.type === 'social-post') return true;
+  if (draft.action.type === 'draft') return true;
+  if (draft.action.type === 'notify') return true;
   return (draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool);
 }
 
@@ -112,6 +155,15 @@ function scheduleText(draft: ParsedAgentDraft): string {
   return t('agentcard.sched_once');
 }
 
+/** Plain, locale-agnostic "YYYY-MM-DD HH:MM" rendering of a next-fire Date
+ *  (nextFireDate, lib/agent-card-cron.ts) for the schedule_assumed next-fire
+ *  summary line — deliberately not routed through a full date-formatting
+ *  library for a single numeric line used in both JA/EN chat bubbles. */
+function formatDateTimeForSummary(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /** First app-act param value that isn't the raw `{{result}}` placeholder — a
  *  literal, already-resolved preview of what will be posted, when one exists. */
 function appActContentPreview(params: Record<string, string> | undefined): string | undefined {
@@ -123,7 +175,19 @@ function appActContentPreview(params: Record<string, string> | undefined): strin
   return undefined;
 }
 
-function actionText(action: AgentAction): string {
+/**
+ * @param draft Optional — only consulted for the 'draft' action type today,
+ *   to surface `draft.outputPath` (a free-text destination hint set either
+ *   directly in the utterance or via lib/agent-slot-fill.ts's outputPath
+ *   slot-fill question) as the action's main param, same as AgentConfirmCard
+ *   shows an editable output-path field for a draft action. Absent/unset =
+ *   the caller falls back to Shelly's default output template — this stays
+ *   a PURE render with no settings-store lookup, so an unset outputPath
+ *   renders as just the plain action label (no fabricated default path).
+ *   `notify` carries no additional param on AgentAction today, so it needs
+ *   no equivalent branch.
+ */
+function actionText(action: AgentAction, draft?: ParsedAgentDraft): string {
   if (action.type === 'app-act') {
     const target = action.appActRecipeId === 'x.post'
       ? t('agentplan.appact_x_target')
@@ -151,6 +215,10 @@ function actionText(action: AgentAction): string {
   }
   const label = t(`agentcard.action_${action.type}`);
   switch (action.type) {
+    case 'draft': {
+      const outputHint = draft?.outputPath?.trim();
+      return outputHint ? t('agentplan.draft_line_with_path', { path: outputHint }) : label;
+    }
     case 'webhook':
       return action.webhookUrl ? `${label} → ${action.webhookUrl}` : label;
     case 'cli':
@@ -180,7 +248,27 @@ export function summarizeAgentDraftAsText(draft: ParsedAgentDraft): string {
   const lines: string[] = [];
   lines.push(t('agentplan.summary_name', { name: draft.name }));
   lines.push(t('agentplan.summary_schedule', { schedule: scheduleText(draft) }));
-  lines.push(t('agentplan.summary_action', { action: actionText(draft.action) }));
+  lines.push(t('agentplan.summary_action', { action: actionText(draft.action, draft) }));
+
+  // Phase B (2026-07-22): a schedule resolved from a bare time-of-day word
+  // ("朝"→08:00, see lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS) is never
+  // left as a silent, opaque assumption — declare the interpretation AND
+  // show the concrete next-fire datetime, right where the schedule line
+  // itself was just rendered above, so a "that's not what I meant" is easy
+  // to catch before confirming.
+  if (draft.scheduleAssumed && draft.schedule) {
+    const decoded = decodeCron(draft.schedule);
+    const assumedHour = draft.suggestedTime?.hour ?? decoded.hour;
+    const assumedMinute = draft.suggestedTime?.minute ?? decoded.minute;
+    const word = TIME_OF_DAY_ASSUMPTION_LABEL[assumedHour];
+    if (word !== undefined) {
+      lines.push(t('agentplan.schedule_assumed_note', { word, time: fmtTime({ hour: assumedHour, minute: assumedMinute }) }));
+    }
+    const next = nextFireDate(decoded);
+    if (next) {
+      lines.push(t('agentplan.next_fire_note', { datetime: formatDateTimeForSummary(next) }));
+    }
+  }
 
   if (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2) {
     lines.push(t('agentcard.orchestration', { count: draft.orchestrationSteps.length }));

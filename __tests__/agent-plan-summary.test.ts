@@ -14,11 +14,13 @@ jest.mock('@/lib/i18n', () => ({
 
 import {
   hasFireableSchedule,
+  hasDraftAssumptions,
   shouldUseChatConfirm,
   shouldAutoRegisterDraft,
   summarizeAgentDraftAsText,
   draftToConfirmedAgentDraft,
 } from '@/lib/agent-plan-summary';
+import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { AgentOrchestrationStep } from '@/store/types';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
@@ -90,6 +92,37 @@ describe('shouldAutoRegisterDraft', () => {
     expect(shouldAutoRegisterDraft(needsRestatement, false)).toBe(false);
     expect(shouldAutoRegisterDraft(needsRestatement, true)).toBe(false);
   });
+
+  // Phase B (2026-07-22) hard safety gate: a schedule DEFAULTED from a bare
+  // time-of-day word ("朝"→08:00) is fireable (unlike the schedule_restate
+  // case above) but must still never skip the human confirm step — same
+  // "content classifier, not an approval-frequency knob" reasoning.
+  it('NEVER auto-registers a draft with an ASSUMED schedule, regardless of requireRegistrationConfirm, even though the schedule IS fireable', () => {
+    const assumed = baseDraft({ scheduleAssumed: true });
+    expect(hasFireableSchedule(assumed)).toBe(true); // sanity: not blocked by the OTHER gate
+    expect(shouldAutoRegisterDraft(assumed, false)).toBe(false);
+    expect(shouldAutoRegisterDraft(assumed, true)).toBe(false);
+  });
+
+  it('end-to-end: parseAgentNL("毎朝ニュースまとめて") never auto-registers under the no-approval default, but an explicit "毎日8時に" utterance still does', () => {
+    const vague = parseAgentNL('毎朝ニュースまとめて');
+    expect(vague.scheduleAssumed).toBe(true);
+    expect(shouldAutoRegisterDraft(vague, false)).toBe(false);
+
+    const explicit = parseAgentNL('毎日8時にニュースまとめて');
+    expect(explicit.scheduleAssumed).toBeUndefined();
+    expect(shouldAutoRegisterDraft(explicit, false)).toBe(true);
+  });
+});
+
+describe('hasDraftAssumptions', () => {
+  it('false for an ordinary draft with an explicit schedule', () => {
+    expect(hasDraftAssumptions(baseDraft())).toBe(false);
+  });
+
+  it('true when scheduleAssumed is set', () => {
+    expect(hasDraftAssumptions(baseDraft({ scheduleAssumed: true }))).toBe(true);
+  });
 });
 
 describe('shouldUseChatConfirm', () => {
@@ -109,13 +142,33 @@ describe('shouldUseChatConfirm', () => {
     expect(shouldUseChatConfirm(baseDraft({ orchestrationSteps: steps }))).toBe(true);
   });
 
-  it('false for a plain draft action with no orchestration', () => {
-    expect(shouldUseChatConfirm(baseDraft())).toBe(false);
+  // Phase B (2026-07-22): draft/notify joined app-act/social-post/tool-pinned
+  // as chat-native — this is the change that makes chat-native confirm the
+  // DEFAULT for the everyday single-step agent, not the exception. baseDraft()
+  // defaults to action:{type:'draft'}, so plenty of the OTHER describe blocks
+  // in this file (which use baseDraft() as-is) now exercise the chat-native
+  // path too; see summarizeAgentDraftAsText's own tests below.
+  it('true for a plain draft action with no orchestration (Phase B)', () => {
+    expect(shouldUseChatConfirm(baseDraft())).toBe(true);
   });
 
-  it('false for a plain auto-routed multi-step chain with NO pinned tools (still card-routed)', () => {
+  it('true for a plain notify action with no orchestration (Phase B)', () => {
+    expect(shouldUseChatConfirm(baseDraft({ action: { type: 'notify' } }))).toBe(true);
+  });
+
+  it('false for a plain auto-routed multi-step chain with NO pinned tools, on a non-draft/notify action (still card-routed)', () => {
+    // Must use an action type OTHER than draft/notify to isolate the
+    // "no pinned tool" invariant from Phase B's separate draft/notify rule —
+    // webhook/cli/intent/dm-reply/api-call are unaffected by this phase.
     const steps: Array<string | AgentOrchestrationStep> = ['first step', 'second step'];
-    expect(shouldUseChatConfirm(baseDraft({ orchestrationSteps: steps }))).toBe(false);
+    expect(shouldUseChatConfirm(baseDraft({ action: { type: 'cli' }, orchestrationSteps: steps }))).toBe(false);
+  });
+
+  it('false for a plain webhook/cli/intent/dm-reply action with no orchestration (unaffected by Phase B)', () => {
+    expect(shouldUseChatConfirm(baseDraft({ action: { type: 'webhook' } }))).toBe(false);
+    expect(shouldUseChatConfirm(baseDraft({ action: { type: 'cli' } }))).toBe(false);
+    expect(shouldUseChatConfirm(baseDraft({ action: { type: 'intent', intentMode: 'launch' } }))).toBe(false);
+    expect(shouldUseChatConfirm(baseDraft({ action: { type: 'dm-reply' } }))).toBe(false);
   });
 
   // social-post (2026-07-22): same chat-native reasoning as app-act — an
@@ -131,11 +184,14 @@ describe('shouldUseChatConfirm', () => {
     ).toBe(true);
   });
 
-  it('false while the connector is still ambiguous (action is still draft, not yet social-post)', () => {
-    // lib/agent-slot-fill.ts asks the socialConnector slot-fill question BEFORE
-    // this function is ever consulted for such a draft — action.type stays
-    // 'draft' until the ambiguity is resolved, so this must fall through to
-    // the (unaffected) card-eligible path, not chat-confirm prematurely.
+  it('true while the connector is still ambiguous too, now that draft itself is chat-native (Phase B)', () => {
+    // Before Phase B, action.type stayed 'draft' while ambiguous (see
+    // lib/agent-slot-fill.ts's socialConnector slot-fill question, which
+    // runs BEFORE this function is ever consulted for such a draft) and that
+    // used to fall through to the card-eligible path. Phase B makes 'draft'
+    // itself chat-native, so this input now also resolves to chat-native —
+    // harmless either way since the caller only ever consults this AFTER
+    // slot-filling has resolved (or given up on) the ambiguity.
     const draft = baseDraft({
       action: { type: 'draft' },
       socialPostCandidates: [
@@ -143,7 +199,7 @@ describe('shouldUseChatConfirm', () => {
         { id: 'b', platform: 'mastodon', label: 'B', host: 'mastodon.social', fields: ['accessToken'], createdAt: 0 },
       ],
     });
-    expect(shouldUseChatConfirm(draft)).toBe(false);
+    expect(shouldUseChatConfirm(draft)).toBe(true);
   });
 });
 
@@ -234,6 +290,59 @@ describe('summarizeAgentDraftAsText', () => {
     expect(text).toContain('the user prefers concise summaries');
     expect(text).toContain('news-digest');
     expect(text).toContain('LINEへの投稿にはまだ対応していない');
+  });
+
+  // Phase B (2026-07-22): draft outputPath surfaced as the action's main param.
+  it('draft action with an outputPath: surfaces the destination as the main param', () => {
+    const draft = baseDraft({ action: { type: 'draft' }, outputPath: 'notes/news' });
+    const text = summarizeAgentDraftAsText(draft);
+    expect(text).toContain('agentplan.draft_line_with_path|');
+    expect(text).toContain('notes/news');
+  });
+
+  it('draft action with NO outputPath: falls back to the plain label, no fabricated default path', () => {
+    const draft = baseDraft({ action: { type: 'draft' }, outputPath: undefined });
+    const text = summarizeAgentDraftAsText(draft);
+    expect(text).not.toContain('agentplan.draft_line_with_path');
+    expect(text).toContain('agentcard.action_draft');
+  });
+
+  // Phase B (2026-07-22): a schedule DEFAULTED from a bare time-of-day word
+  // declares its interpretation and the concrete next-fire datetime.
+  describe('scheduleAssumed annotation', () => {
+    it('daily-assumed ("朝"→08:00): declares the interpretation and a next-fire line', () => {
+      const draft = baseDraft({ schedule: '0 8 * * *', scheduleAssumed: true, suggestedTime: { hour: 8, minute: 0 } });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.schedule_assumed_note|');
+      expect(text).toContain('"word":"朝"');
+      expect(text).toContain('"time":"08:00"');
+      expect(text).toContain('agentplan.next_fire_note|');
+    });
+
+    it('a different default hour (夜→21:00) reverse-maps to the right word', () => {
+      const draft = baseDraft({ schedule: '0 21 * * *', scheduleAssumed: true, suggestedTime: { hour: 21, minute: 0 } });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('"word":"夜"');
+      expect(text).toContain('"time":"21:00"');
+    });
+
+    it('an ordinary explicit schedule (scheduleAssumed unset) omits both lines', () => {
+      const text = summarizeAgentDraftAsText(baseDraft());
+      expect(text).not.toContain('agentplan.schedule_assumed_note');
+      expect(text).not.toContain('agentplan.next_fire_note');
+    });
+
+    it('a weekly-assumed schedule also gets the annotation', () => {
+      const draft = baseDraft({
+        schedule: '0 8 * * 1,5',
+        scheduleAssumed: true,
+        suggestedTime: { hour: 8, minute: 0 },
+      });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.schedule_assumed_note|');
+      expect(text).toContain('"word":"朝"');
+      expect(text).toContain('agentplan.next_fire_note|');
+    });
   });
 });
 

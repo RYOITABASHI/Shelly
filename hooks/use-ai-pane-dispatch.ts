@@ -45,8 +45,9 @@ import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
-import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
+import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
+import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
@@ -74,6 +75,15 @@ import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
+/** Shared staleness window for both the message-attached pendingSlotFill
+ *  conversation and the session-scoped pendingAgentSession (see
+ *  store/ai-pane-store.ts's PendingAgentSession) — an unanswered question or
+ *  unconfirmed draft older than this is never routed into, so it can't
+ *  hijack an unrelated later message indefinitely. Hoisted to module scope
+ *  (was previously a local const inside dispatch()) so both routing blocks
+ *  share exactly one definition. */
+const SLOT_FILL_STALE_MS = 15 * 60 * 1000;
 
 /**
  * Very lightweight token estimator (mirrors the one in use-ai-dispatch.ts).
@@ -282,6 +292,25 @@ export function useAIPaneDispatch(paneId: string) {
           agentCardState: 'pending',
           agentChatConfirm: useChatConfirm,
         });
+        // Phase A (2026-07-22): a chat-native draft is now awaiting either a
+        // typed confirm/cancel reply OR a tap on AgentChatConfirm's buttons —
+        // register the session-scoped pending state so dispatch()'s new
+        // routing block (below) recognizes the NEXT message as answering
+        // THIS draft, even if an unrelated message lands in between. Card-
+        // eligible (non-chat-confirm) drafts don't get this: their only
+        // confirm affordance remains AgentConfirmCard's tap buttons, wired
+        // directly to confirmAgentDraft/cancelAgentDraft below, unchanged.
+        if (useChatConfirm) {
+          useAIPaneStore.getState().setPendingAgentSession(paneId, {
+            draft,
+            phase: 'await-confirm',
+            attemptCounts: {},
+            hasAssumptions: hasDraftAssumptions(draft),
+            createdAt: Date.now(),
+            messageId: draftMessageId,
+            agentLabel,
+          });
+        }
         // Project owner directive 2026-07-14: "デフォは承認なしな。任意で確認"
         // (default is no-approval, confirmation optional) — the EXISTING
         // AgentConfirmCard's mandatory Confirm tap becomes skippable by
@@ -304,6 +333,71 @@ export function useAIPaneDispatch(paneId: string) {
         }
       };
 
+      // ── Chat-typed confirm/cancel for a pending chat-native draft (Phase A,
+      // 2026-07-22): when presentDraftForConfirmation posted a chat-native
+      // draft summary and is awaiting a confirm/cancel reply (session-scoped
+      // — see store/ai-pane-store.ts's PendingAgentSession), route the next
+      // message here FIRST, before the message-attached slot-fill check
+      // below (they're mutually exclusive in practice: a draft only reaches
+      // await-confirm once slot-filling has nothing left to ask, so the two
+      // pending mechanisms never target the same turn). Priority exactly as
+      // designed: (1) cancel phrase discards, (2) an "@…" fresh command is
+      // routed normally WITHOUT touching the pending session (so it survives
+      // an interleaved unrelated command), (3) a confirm phrase (only when
+      // the draft actually has a fireable schedule — mirrors
+      // AgentChatConfirm's own canConfirm gate) registers it, (4) anything
+      // else re-shows the summary + a short usage hint instead of silently
+      // dropping the draft or misrouting the text to the LLM.
+      const pendingAgentSession = store.getOrCreate(paneId).pendingAgentSession;
+      if (
+        pendingAgentSession &&
+        pendingAgentSession.phase === 'await-confirm' &&
+        Date.now() - pendingAgentSession.createdAt <= SLOT_FILL_STALE_MS
+      ) {
+        if (isCancelPhrase(userText)) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          store.setPendingAgentSession(paneId, null);
+          cancelAgentDraft(pendingAgentSession.messageId);
+          return;
+        }
+        if (!userText.trim().startsWith('@')) {
+          if (isConfirmPhrase(userText) && hasFireableSchedule(pendingAgentSession.draft)) {
+            store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+            store.setPendingAgentSession(paneId, null);
+            await confirmAgentDraft(pendingAgentSession.messageId, draftToConfirmedAgentDraft(pendingAgentSession.draft));
+            return;
+          }
+          // Neither a clear confirm nor a cancel (or a confirm-phrase reply
+          // to a draft whose schedule still needs restating) — never
+          // silently drop the pending draft. Re-show the plain-language
+          // guidance + the full summary again (so the schedule_restate_hint,
+          // if any, stays visible) instead of forwarding this text to the
+          // LLM, which has no idea a registration is pending.
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          const unclearStrings = detectMessageLocale(pendingAgentSession.draft.rawText) === 'ja' ? ja : en;
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: `${unclearStrings['agentplan.confirm_unclear_hint']}\n\n${summarizeAgentDraftAsText(pendingAgentSession.draft)}`,
+            timestamp: Date.now(),
+            agent: pendingAgentSession.agentLabel,
+          });
+          store.setPendingAgentSession(paneId, {
+            ...pendingAgentSession,
+            attemptCounts: {
+              ...pendingAgentSession.attemptCounts,
+              confirm: (pendingAgentSession.attemptCounts.confirm ?? 0) + 1,
+            },
+            createdAt: Date.now(),
+          });
+          return;
+        }
+        // "@…" fresh command — fall through to normal command routing below,
+        // WITHOUT clearing pendingAgentSession, so a later confirm/cancel
+        // reply can still land on this same draft (existing pendingSlotFill
+        // precedent for the identical "@ bypasses, doesn't clear" behavior).
+      }
+
       // ── Conversational slot-filling (Phase 0 §2.1 conversational creation):
       // if the most recent assistant message is waiting on an answer to a
       // specific agent-creation field, route this message there instead of
@@ -319,7 +413,6 @@ export function useAIPaneDispatch(paneId: string) {
       // specifically, applySlotAnswer accepts any non-empty text with zero
       // validation, so that swallowed text would get written straight into the
       // GLOBAL agentTopicFolder setting (shared by every draft-action agent).
-      const SLOT_FILL_STALE_MS = 15 * 60 * 1000;
       const looksLikeFreshCommand = userText.trim().startsWith('@');
       const pendingIsStale =
         !!lastSlotFillMsg?.pendingSlotFill &&
@@ -1219,6 +1312,16 @@ export function useAIPaneDispatch(paneId: string) {
   const confirmAgentDraft = useCallback(
     async (messageId: string, confirmed: ConfirmedAgentDraft) => {
       const store = useAIPaneStore.getState();
+      // Phase A (2026-07-22): also clear the session-scoped pending state
+      // when this confirm came from AgentChatConfirm's TAP button rather
+      // than a typed reply (dispatch()'s own typed-confirm branch already
+      // clears it before calling this — this is a no-op then). Guarded by
+      // messageId so confirming an OLDER draft (e.g. via a stale re-render)
+      // can never clear a NEWER pending session for the same pane.
+      const currentPending = store.getOrCreate(paneId).pendingAgentSession;
+      if (currentPending?.messageId === messageId) {
+        store.setPendingAgentSession(paneId, null);
+      }
       const safeName = confirmed.name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
         || `agent-${Date.now().toString(36)}`;
       // Autonomous tool resolution goes through the SINGLE source of truth
@@ -1371,7 +1474,15 @@ export function useAIPaneDispatch(paneId: string) {
 
   const cancelAgentDraft = useCallback(
     (messageId: string) => {
-      useAIPaneStore.getState().updateMessage(paneId, messageId, {
+      const store = useAIPaneStore.getState();
+      // Phase A (2026-07-22): mirrors confirmAgentDraft's own clear — covers
+      // AgentChatConfirm's TAP-to-cancel path (dispatch()'s typed-cancel
+      // branch already clears it before calling this).
+      const currentPending = store.getOrCreate(paneId).pendingAgentSession;
+      if (currentPending?.messageId === messageId) {
+        store.setPendingAgentSession(paneId, null);
+      }
+      store.updateMessage(paneId, messageId, {
         agentCardState: 'cancelled',
         content: 'Registration cancelled.',
       });

@@ -367,7 +367,14 @@ const ja: Record<string, string> = {
   'agentplan.appact_line_with_preview': '{{target}}：「{{preview}}」',
   'agentplan.socialpost_line': '{{platform}}（{{connector}}）へ投稿（実行結果をそのまま投稿）',
   'agentplan.socialpost_line_with_preview': '{{platform}}（{{connector}}）へ投稿：「{{preview}}」',
+  'agentplan.draft_line_with_path': '下書き（保存先: {{path}}）',
   'agentplan.confirm_prompt': 'この内容で登録しますか？ 変更したい場合はキャンセルしてから言い直してください。',
+  // Phase A/B (2026-07-22) — チャット返信そのものでの確定と、あいまいな時刻帯
+  // 表現をデフォルト解釈した際の注記（hooks/use-ai-pane-dispatch.ts /
+  // lib/agent-plan-summary.ts）。
+  'agentplan.confirm_unclear_hint': '登録待ちの下書きがあります。「登録して」/「OK」で確定、「やめて」で破棄してください。',
+  'agentplan.schedule_assumed_note': '「{{word}}」→{{time}}と解釈しました。',
+  'agentplan.next_fire_note': '次回実行: {{datetime}}',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',
