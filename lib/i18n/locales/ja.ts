@@ -383,6 +383,13 @@ const ja: Record<string, string> = {
   // フィールドの行には summarizeAgentDraftAsText の changedFields 引数で★が付く
   // — lib/agent-draft-patch.ts 参照。
   'agentplan.patch_updated_header': '更新しました:',
+  // 2026-07-23: 自動登録／チャット内確定の成功メッセージに付ける一言。この直後
+  // なら短い時間だけ言い直しで訂正できる（hooks/use-ai-pane-dispatch.ts の
+  // JUST_REGISTERED_STALE_MS）ことをユーザーに知らせる。
+  'agentplan.correction_hint': 'すぐに直したい場合はそのまま言ってください（例:「やっぱり20時で」）。',
+  // applyDraftPatch はヒットしたが、対象のエージェントが（別経路での削除等で）
+  // 既に存在しなかった場合の案内。
+  'agentplan.correction_agent_missing': 'そのエージェントは既に存在しないため、変更されませんでした。',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',

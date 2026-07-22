@@ -278,6 +278,72 @@ export function createAgent(params: {
   return agent;
 }
 
+/**
+ * Update fields on an already-registered agent and rematerialize it (disk
+ * JSON + generated run script + AlarmManager schedule) so the change takes
+ * effect immediately. Added for the chat-native "correct the agent I just
+ * registered" flow (hooks/use-ai-pane-dispatch.ts's dispatch(), 2026-07-23)
+ * — no `updateAgent`-shaped entry point existed here before; the closest
+ * precedent was components/layout/Sidebar.tsx's LOCAL `persistAgentUpdate`
+ * callback (same store-update-then-reinstall shape), which a plain hook
+ * cannot reach since it lives inside a component. This is that shape
+ * promoted to a reusable, non-component-scoped function so both call sites
+ * can share it — Sidebar.tsx is left untouched (out of scope for this
+ * change) rather than refactored to also call this, to keep the diff
+ * minimal on a file with no other reason to change here.
+ *
+ * Deliberately ALWAYS re-materializes, even for a change that doesn't touch
+ * the schedule (e.g. a rename) — a narrower "only reinstall when the
+ * schedule actually changed" check was considered and rejected: the
+ * generated run script embeds far more than the cron expression (prompt,
+ * action, tool, autonomous flag, …), so guessing which fields require a
+ * reinstall risks silently leaving a stale script/alarm behind for some
+ * future field this function doesn't yet special-case. installAgent is
+ * idempotent and cheap enough that reinstalling unconditionally is the
+ * safer default (per the task's own "avoid over-optimizing this" note).
+ *
+ * Returns the updated Agent, or null when `agentId` no longer exists (e.g.
+ * the target was an ephemeral one-shot already discarded after running, or
+ * was deleted through another surface — Sidebar, `@agent stop`+delete, … —
+ * in the gap between registration and this call). Callers must treat null
+ * as "nothing to correct", never throw.
+ */
+export async function updateAgent(
+  agentId: string,
+  partial: Partial<Agent>,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<Agent | null> {
+  const store = useAgentStore.getState();
+  const current = store.agents.find((a) => a.id === agentId);
+  if (!current) return null;
+
+  // Same sanitize-at-the-write-boundary rule createAgent enforces (see its
+  // own comment above) — a rename must go through the identical shell-safe
+  // filter, not just the CREATE path.
+  const safePartial: Partial<Agent> = { ...partial };
+  if (typeof safePartial.name === 'string') {
+    safePartial.name = sanitizeAgentName(safePartial.name, current.name);
+  }
+
+  const updated: Agent = { ...current, ...safePartial };
+  // createAgent's own invariant ("autonomous:true always carries an
+  // autonomyLevel") must keep holding after a partial update too — a caller
+  // that only sets `autonomous: true` without touching autonomyLevel (the
+  // chat-native autonomous-toggle patch does exactly this) must not end up
+  // with an agent that's autonomous but has no level.
+  if (updated.autonomous && !updated.autonomyLevel) {
+    updated.autonomyLevel = 'L2';
+  }
+  const finalPartial: Partial<Agent> =
+    updated.autonomyLevel !== current.autonomyLevel
+      ? { ...safePartial, autonomyLevel: updated.autonomyLevel }
+      : safePartial;
+
+  store.updateAgent(agentId, finalPartial);
+  await installAgent(updated, runCommand);
+  return updated;
+}
+
 function isAutonomousCreateCommand(word: string): boolean {
   return ['autonomous', 'auto', '自律', '自律モード'].includes(word.toLowerCase());
 }

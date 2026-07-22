@@ -386,6 +386,13 @@ const en: Record<string, string> = {
   // draft — see lib/agent-draft-patch.ts / summarizeAgentDraftAsText's
   // changedFields param, which marks the touched line(s) with ★.
   'agentplan.patch_updated_header': 'Updated:',
+  // 2026-07-23: appended to the auto-register / chat-native-confirm success
+  // message, telling the user the short correction window (see
+  // hooks/use-ai-pane-dispatch.ts's JUST_REGISTERED_STALE_MS) exists at all.
+  'agentplan.correction_hint': 'Need a quick fix? Just say it (e.g. "actually make it 8pm").',
+  // Edge case: applyDraftPatch found a correction to apply, but the agent it
+  // targets no longer exists (deleted via another surface in the gap).
+  'agentplan.correction_agent_missing': 'That agent no longer exists, so nothing was changed.',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',

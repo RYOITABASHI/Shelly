@@ -11,6 +11,7 @@
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
 import { useAIPaneStore } from '@/store/ai-pane-store';
+import type { JustRegisteredAgentRef } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import {
@@ -38,9 +39,10 @@ import {
   runAgentNow,
   stopAgent,
   deleteAgent,
+  updateAgent,
 } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
-import type { ToolChoice } from '@/store/types';
+import type { ToolChoice, Agent } from '@/store/types';
 import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
@@ -48,7 +50,7 @@ import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
-import { applyPatchToPendingSession } from '@/lib/agent-draft-patch';
+import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent } from '@/lib/agent-draft-patch';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
@@ -85,6 +87,23 @@ function generateId(): string {
  *  (was previously a local const inside dispatch()) so both routing blocks
  *  share exactly one definition. */
 const SLOT_FILL_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Correction window for store/ai-pane-store.ts's JustRegisteredAgentRef —
+ * deliberately much shorter than SLOT_FILL_STALE_MS above. That 15-minute
+ * window exists for an UNREGISTERED draft still awaiting a human decision
+ * (nothing has happened yet, so there is no urgency pressure to shrink it).
+ * This one covers an ALREADY-REGISTERED, live agent — the use case (product
+ * owner, 2026-07-23) is catching a slip of the tongue in the same breath
+ * ("ごめん！やっぱり20時で！"), not editing an old agent via chat days later
+ * (that's out of scope — see JustRegisteredAgentRef's doc comment). 4 minutes
+ * was picked as a plain, easy-to-reason-about middle of the 3–5 minute range
+ * the task suggested: long enough to cover "wait, I meant to say X" a few
+ * messages later in the same breath, short enough that an unrelated later
+ * message naming an unrelated time/name has little chance of misfiring
+ * against a now-stale registration.
+ */
+const JUST_REGISTERED_STALE_MS = 4 * 60 * 1000;
 
 /**
  * Very lightweight token estimator (mirrors the one in use-ai-dispatch.ts).
@@ -450,6 +469,102 @@ export function useAIPaneDispatch(paneId: string) {
         // WITHOUT clearing pendingAgentSession, so a later confirm/cancel
         // reply can still land on this same draft (existing pendingSlotFill
         // precedent for the identical "@ bypasses, doesn't clear" behavior).
+      }
+
+      // ── Correction window for an agent just registered via a chat-native
+      // path (2026-07-23, product-owner request): only reached when the
+      // pendingAgentSession block above did NOT already return — i.e. there
+      // is no LIVE unregistered draft still awaiting confirm/cancel (that
+      // always takes priority; see store/ai-pane-store.ts's
+      // JustRegisteredAgentRef doc comment, priority note). Every actual
+      // routing decision (window still live? "@…" bypass? did anything
+      // patch?) lives in the pure applyCorrectionToJustRegisteredAgent — see
+      // its own doc comment — so this block is just wiring: read the ref,
+      // call the pure function, and either apply the result or do nothing.
+      //
+      // Unlike EVERY other routing block in this function, a `null` result
+      // here is silent by design: it does not mean "the user made an error",
+      // it overwhelmingly means "this message was never about the
+      // just-registered agent at all" (an ordinary next chat message).
+      // Emitting guidance on every miss — the way the pendingAgentSession
+      // block's own confirm_unclear_hint fallback does — would spam an
+      // assistant reply into the MAJORITY of ordinary follow-up messages
+      // sent shortly after any registration. See the task spec: "ヒットし
+      // ない限り一切介入しない".
+      const justRegistered = store.getOrCreate(paneId).justRegisteredAgent;
+      if (justRegistered) {
+        const correction = applyCorrectionToJustRegisteredAgent(
+          justRegistered.draftSnapshot,
+          userText,
+          justRegistered.createdAt,
+          JUST_REGISTERED_STALE_MS,
+        );
+        if (correction) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          const patchedDraft = correction.patchedDraft;
+
+          // agentPartial already covers schedule/name/action (see the pure
+          // function's own doc comment for why it stops there). autonomous
+          // is the one field that also implies a tool/runOn recompute —
+          // mirrors confirmAgentDraft's own autonomous-tool resolution below
+          // exactly, so a correction can never disagree with what confirming
+          // a FRESH draft with the same autonomous flag would have produced.
+          // Needs live settings (cloud consent), which is exactly why the
+          // pure function above left this one field for the caller.
+          const partial: Partial<Agent> = { ...correction.agentPartial };
+          if (correction.autonomousTurnedOn) {
+            const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
+            const needsWeb = detectRouteSignals(patchedDraft.prompt).needsWeb;
+            const tool = resolveAutonomousFinalTool(true, patchedDraft.tool, cloudConsent, needsWeb);
+            partial.autonomous = true;
+            partial.tool = tool;
+            partial.runOn = tool.type === 'local' ? 'on-device' : 'auto';
+          }
+
+          const updatedAgent = await updateAgent(justRegistered.agentId, partial, runAgentShellCommand);
+          const correctionStrings = detectMessageLocale(patchedDraft.rawText) === 'ja' ? ja : en;
+          if (updatedAgent) {
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: `${correctionStrings['agentplan.patch_updated_header']}\n${summarizeAgentDraftAsText(
+                patchedDraft,
+                new Set(correction.changedFields),
+              )}`,
+              timestamp: Date.now(),
+              agent: justRegistered.agentLabel,
+            });
+            // Refresh, not clear: extends the window (a run of quick
+            // follow-up corrections in the same breath should all land) and
+            // keeps draftSnapshot in sync so the NEXT correction patches
+            // from the already-corrected state, not the original typo.
+            store.setJustRegisteredAgent(paneId, {
+              ...justRegistered,
+              agentName: updatedAgent.name,
+              draftSnapshot: patchedDraft,
+              createdAt: Date.now(),
+            });
+          } else {
+            // The agent this reference points at is gone (deleted through
+            // another surface in the gap) — nothing to correct. Say so
+            // rather than silently discarding the user's correction attempt
+            // with no feedback at all, and drop the now-dangling reference.
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: correctionStrings['agentplan.correction_agent_missing'],
+              timestamp: Date.now(),
+              agent: justRegistered.agentLabel,
+            });
+            store.setJustRegisteredAgent(paneId, null);
+          }
+          return;
+        }
+        // null result — fall through to normal routing below WITHOUT
+        // touching justRegisteredAgent (neither cleared nor its clock
+        // reset): covers an expired window, an "@…" fresh command, AND an
+        // ordinary unrelated message alike — none of those should kill the
+        // window early, and none but an actual correction should extend it.
       }
 
       // ── Conversational slot-filling (Phase 0 §2.1 conversational creation):
@@ -1376,6 +1491,18 @@ export function useAIPaneDispatch(paneId: string) {
       if (currentPending?.messageId === messageId) {
         store.setPendingAgentSession(paneId, null);
       }
+      // 2026-07-23 (justRegisteredAgent correction window): snapshot the
+      // ORIGINATING draft bubble's own agentDraft/agentChatConfirm BEFORE any
+      // mutation below — this is the ParsedAgentDraft applyDraftPatch expects
+      // (not the ConfirmedAgentDraft `confirmed` param this function
+      // receives), and agentChatConfirm is the flag that distinguishes "this
+      // came from the chat-native no-card flow" (eligible for the correction
+      // window) from a classic AgentConfirmCard confirm (NOT eligible — see
+      // store/ai-pane-store.ts's JustRegisteredAgentRef doc comment and the
+      // task's own scope exclusion for the card path).
+      const originatingMessage = store.getOrCreate(paneId).messages.find((m) => m.id === messageId);
+      const isChatNativeDraft = originatingMessage?.agentChatConfirm === true;
+      const originalDraftSnapshot = originatingMessage?.agentDraft;
       const safeName = confirmed.name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
         || `agent-${Date.now().toString(36)}`;
       // Autonomous tool resolution goes through the SINGLE source of truth
@@ -1476,10 +1603,32 @@ export function useAIPaneDispatch(paneId: string) {
             ?? (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
               : 'no schedule');
+          // 2026-07-23: only a chat-native draft (not AgentConfirmCard) gets
+          // the correction-window hint + reference — see the doc comment on
+          // isChatNativeDraft/originalDraftSnapshot above and
+          // JustRegisteredAgentRef's own doc comment for the full scope
+          // reasoning. originalDraftSnapshot is also guarded defensively
+          // (should always be present alongside agentChatConfirm — both are
+          // set together in presentDraftForConfirmation — but a missing
+          // snapshot must never crash a successful registration).
+          const correctionEligible = isChatNativeDraft && !!originalDraftSnapshot;
+          const correctionHint = correctionEligible
+            ? `\n\n${(detectMessageLocale(originalDraftSnapshot!.rawText) === 'ja' ? ja : en)['agentplan.correction_hint']}`
+            : '';
           store.updateMessage(paneId, messageId, {
             agentCardState: 'confirmed',
-            content: `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list`,
+            content: `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list${correctionHint}`,
           });
+          if (correctionEligible) {
+            store.setJustRegisteredAgent(paneId, {
+              agentId: created.id,
+              agentName: created.name,
+              draftSnapshot: originalDraftSnapshot!,
+              messageId,
+              agentLabel: originatingMessage?.agent,
+              createdAt: Date.now(),
+            });
+          }
           // P1 scheduling-reliability audit (2026-07-15): a device's FIRST
           // real cron schedule (not a pure notification-trigger-only agent,
           // which never touches AlarmManager) gets a one-time, dismissible

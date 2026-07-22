@@ -352,3 +352,89 @@ export function applyPatchToPendingSession(
     changedFields: result.changedFields,
   };
 }
+
+/** Partial<Agent>-shaped subset applyCorrectionToJustRegisteredAgent can fill
+ *  in without any external input. Deliberately excludes `autonomous` (an
+ *  autonomous-toggle correction also needs a tool/runOn recompute — see
+ *  resolveAutonomousFinalTool in lib/agent-tool-router.ts — which needs live
+ *  settings, specifically cloud consent, that this pure module has no
+ *  business reading; see the doc comment below). Typed loosely (not
+ *  `Partial<Agent>` from '@/store/types') to avoid pulling a heavier,
+ *  RN-adjacent type graph into this "no RN" module for 3 fields. */
+export interface RegisteredAgentPatch {
+  schedule?: string | null;
+  name?: string;
+  action?: ParsedAgentDraft['action'];
+}
+
+export interface RegisteredAgentCorrectionResult {
+  patchedDraft: ParsedAgentDraft;
+  changedFields: string[];
+  agentPartial: RegisteredAgentPatch;
+  /** true when the utterance also carried an explicit autonomous-ON signal
+   *  (i.e. 'autonomous' is in changedFields) — the caller (hooks/
+   *  use-ai-pane-dispatch.ts) is responsible for that one field's separate
+   *  tool/runOn resolution; this function only flags that it's needed. */
+  autonomousTurnedOn: boolean;
+}
+
+/**
+ * hooks/use-ai-pane-dispatch.ts's pure decision core for the "correct the
+ * agent I just registered" routing block (2026-07-23,
+ * store/ai-pane-store.ts's JustRegisteredAgentRef) — mirrors
+ * applyPatchToPendingSession's role for the OTHER (pendingAgentSession,
+ * Phase C) routing block just above: the hook itself only wires this
+ * function's result to store reads/writes, lib/agent-manager.ts's
+ * updateAgent, and message posting; every actual ROUTING DECISION (is the
+ * correction window still live? does an "@…" fresh command bypass it? did
+ * the utterance patch anything at all?) lives here instead, so it is
+ * unit-testable without any RN/store/native-module setup — the same
+ * "extract the pure decision core" reasoning that already applies to
+ * applyPatchToPendingSession above.
+ *
+ * Returns null in every case the caller must stay COMPLETELY silent for (no
+ * message, no store write) per the task's own "ヒットしない限り一切介入し
+ * ない" requirement:
+ *  - the correction window (`now - createdAt`) has expired (`staleMs`);
+ *  - the utterance is a fresh "@…" command (same bypass precedent as
+ *    pendingAgentSession's own "@" branch — passed through untouched,
+ *    intentionally NOT treated as "no patch found" so a caller can tell the
+ *    two apart if it ever needs to, even though today's caller treats them
+ *    identically: do nothing, don't touch the reference);
+ *  - applyDraftPatch itself found nothing to change.
+ */
+export function applyCorrectionToJustRegisteredAgent(
+  draftSnapshot: ParsedAgentDraft,
+  utterance: string,
+  createdAt: number,
+  staleMs: number,
+  now: number = Date.now(),
+): RegisteredAgentCorrectionResult | null {
+  if (now - createdAt > staleMs) return null;
+  if (utterance.trim().startsWith('@')) return null;
+
+  const result = applyDraftPatch(draftSnapshot, utterance);
+  if (!result) return null;
+
+  const agentPartial: RegisteredAgentPatch = {};
+  if (result.changedFields.includes('schedule')) {
+    // 'once' is parseSchedule's "run now, don't schedule" sentinel — same
+    // normalization draftToConfirmedAgentDraft applies (lib/agent-plan-
+    // summary.ts, see its own comment) so a corrected agent is never
+    // persisted with a literal 'once' schedule cronToIntervalMs can't parse.
+    agentPartial.schedule = result.patchedDraft.schedule === 'once' ? null : result.patchedDraft.schedule;
+  }
+  if (result.changedFields.includes('name')) {
+    agentPartial.name = result.patchedDraft.name;
+  }
+  if (result.changedFields.includes('action')) {
+    agentPartial.action = result.patchedDraft.action;
+  }
+
+  return {
+    patchedDraft: result.patchedDraft,
+    changedFields: result.changedFields,
+    agentPartial,
+    autonomousTurnedOn: result.changedFields.includes('autonomous'),
+  };
+}
