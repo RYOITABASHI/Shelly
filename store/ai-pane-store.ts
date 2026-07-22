@@ -69,6 +69,60 @@ export interface PendingAgentSession {
   agentLabel?: ChatAgent;
 }
 
+/**
+ * Session-scoped (per-pane) short-lived reference to the agent this pane's
+ * conversation MOST RECENTLY registered via a chat-native path — either the
+ * no-approval-default auto-register fast path (presentDraftForConfirmation
+ * in hooks/use-ai-pane-dispatch.ts, when shouldAutoRegisterDraft is true) or
+ * a chat-native typed/tapped confirm (AgentChatConfirm / the typed
+ * "register"/"OK" reply). Set right after confirmAgentDraft's registration
+ * actually succeeds; NEVER set for the classic AgentConfirmCard (card-UI)
+ * path — see confirmAgentDraft's own `agentChatConfirm` message-flag check.
+ *
+ * Purpose (2026-07-23 product-owner request): the auto-register fast path
+ * has no confirmation step at all, so a slip of the tongue ("9時のはずが20時
+ * と言ってしまった") previously had no quick fix short of `@agent list` +
+ * manually editing the agent. While this reference is alive, dispatch()'s
+ * new routing block reuses lib/agent-draft-patch.ts's applyDraftPatch
+ * against `draftSnapshot` on the VERY NEXT message and, on a hit, updates
+ * the ALREADY-REGISTERED agent in place (lib/agent-manager.ts's
+ * updateAgent) instead of just re-editing an unregistered draft the way
+ * PendingAgentSession's own patch branch (Phase C, await-confirm) does.
+ *
+ * Deliberately short-lived — see JUST_REGISTERED_STALE_MS in
+ * hooks/use-ai-pane-dispatch.ts, a narrower window than
+ * PendingAgentSession's 15-minute SLOT_FILL_STALE_MS: this is a "catch a
+ * typo I just made" affordance, not a general "edit an old agent via chat"
+ * feature (that's explicitly out of scope — see the task's own exclusion
+ * list). A stale/expired reference is never routed into, exactly like
+ * PendingAgentSession's own staleness guard.
+ */
+export interface JustRegisteredAgentRef {
+  agentId: string;
+  agentName: string;
+  /** The pre-confirm draft shape lib/agent-draft-patch.ts's applyDraftPatch
+   *  expects — i.e. the SAME ParsedAgentDraft the original chat-native draft
+   *  bubble carried (message.agentDraft), not the ConfirmedAgentDraft shape
+   *  confirmAgentDraft itself receives. Refreshed (see below) after each
+   *  successful correction, so a second correction in the same window
+   *  patches from the ALREADY-corrected state, not the original typo. */
+  draftSnapshot: ParsedAgentDraft;
+  /** The "✅ … registered" chat bubble — kept for parity with
+   *  PendingAgentSession's own messageId field, though (unlike that type)
+   *  nothing currently re-targets this specific message on a correction; a
+   *  correction posts a NEW assistant bubble instead of editing this one. */
+  messageId: string;
+  /** Carried through so a correction-applied reply keeps the same pane
+   *  icon/color as the original registration message — same convention as
+   *  PendingAgentSession.agentLabel. */
+  agentLabel?: ChatAgent;
+  /** Set/refreshed on each successful correction — mirrors
+   *  PendingAgentSession's createdAt-based staleness guard, and extends the
+   *  window so a second, immediate follow-up correction ("あ、名前も直し
+   *  て") is not left with almost no time to land. */
+  createdAt: number;
+}
+
 export type AIPaneConversation = {
   paneId: string;
   messages: ChatMessage[];
@@ -76,6 +130,7 @@ export type AIPaneConversation = {
   isStreaming: boolean;
   terminalContext: string | null;
   pendingAgentSession?: PendingAgentSession | null;
+  justRegisteredAgent?: JustRegisteredAgentRef | null;
 };
 
 type AIPaneState = {
@@ -96,6 +151,9 @@ type AIPaneState = {
   /** Set or clear (pass null) the pane's session-scoped pending agent-draft
    *  session — see PendingAgentSession's doc comment above. */
   setPendingAgentSession: (paneId: string, session: PendingAgentSession | null) => void;
+  /** Set or clear (pass null) the pane's short-lived "agent I just
+   *  registered" reference — see JustRegisteredAgentRef's doc comment above. */
+  setJustRegisteredAgent: (paneId: string, ref: JustRegisteredAgentRef | null) => void;
 };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -303,6 +361,24 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       // it just means the typed-confirm affordance is lost for that one
       // draft (the tap-to-confirm buttons on the draft message itself, which
       // ARE part of the debounced-persisted message list, still work).
+    },
+
+    setJustRegisteredAgent: (paneId, ref) => {
+      get().getOrCreate(paneId);
+      set((state) => {
+        const conv = state.conversations[paneId] ?? makeEmptyConversation(paneId);
+        return {
+          conversations: {
+            ...state.conversations,
+            [paneId]: { ...conv, justRegisteredAgent: ref },
+          },
+        };
+      });
+      // Same "not debounce-persisted" reasoning as setPendingAgentSession
+      // above — this is a few-minutes-wide correction window, not something
+      // worth surviving an app kill for. Losing it just means a correction
+      // typed right after a restart falls through to normal chat instead of
+      // patching the agent, same as if the window had simply expired.
     },
 
     clearConversation: (paneId) => {
