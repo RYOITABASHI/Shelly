@@ -473,7 +473,12 @@ export function useAIPaneDispatch(paneId: string) {
             // `@agent autonomous …` alias just pre-sets the card's Autonomous toggle.
             // Nothing is created/run until the human taps Confirm (see confirmAgentDraft).
             const promptText = agentResult.message;
-            const draft = parseAgentNL(promptText);
+            // social-post (2026-07-22): parseAgentNL stays pure/offline, so the
+            // registered connectors (needed to resolve "post this to X" against a
+            // real connectorId) are read here and passed in explicitly — same
+            // pattern as slotFillCtx below reading agentVaultPath/agentTopicFolder
+            // from the store for lib/agent-slot-fill.ts's SlotFillContext.
+            const draft = parseAgentNL(promptText, useSettingsStore.getState().socialConnectors ?? []);
             draft.autonomous = agentResult.data?.autonomous === true;
             if (draft.autonomous && agentResult.data?.suggestion?.tool) {
               draft.tool = agentResult.data.suggestion.tool;

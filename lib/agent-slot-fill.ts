@@ -14,7 +14,7 @@ import { parseNotificationTriggerPackages } from './notification-trigger';
 import en from './i18n/locales/en';
 import ja from './i18n/locales/ja';
 
-export type SlotField = 'schedule' | 'notificationTrigger' | 'outputPath';
+export type SlotField = 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector';
 
 /**
  * Per-message language detection for slot-fill questions — deliberately NOT
@@ -82,6 +82,22 @@ export function nextMissingSlot(
     return {
       field: 'schedule',
       question: strings['slot_fill.question_schedule'],
+    };
+  }
+  // social-post (2026-07-22): lib/agent-nl-parser.ts's detectSocialPost sets
+  // socialPostCandidates when 2+ registered connectors matched the named
+  // platform/label — genuinely ambiguous which one to post to. Ask before
+  // anything else action-related (notificationTrigger/outputPath don't apply
+  // to a social-post agent anyway once resolved). List each candidate so a
+  // plain number reply ("1") or its label ("my-mastodon") both work — see
+  // applySlotAnswer's socialConnector branch.
+  if ((draft.socialPostCandidates?.length ?? 0) > 1) {
+    const options = draft.socialPostCandidates!
+      .map((c, i) => `${i + 1}. ${c.label} (${strings[`social_connectors.platform_${c.platform}`] ?? c.platform})`)
+      .join('\n');
+    return {
+      field: 'socialConnector',
+      question: `${strings['slot_fill.question_social_connector']}\n${options}`,
     };
   }
   if (needsNotificationTrigger(draft)) {
@@ -187,6 +203,51 @@ export function applySlotAnswer(
       },
       resolved: false,
     };
+  }
+  if (field === 'socialConnector') {
+    const candidates = draft.socialPostCandidates ?? [];
+    const trimmed = answerText.trim();
+    const lower = trimmed.toLowerCase();
+    const idx = parseInt(trimmed, 10);
+    let matched = !Number.isNaN(idx) && idx >= 1 && idx <= candidates.length ? candidates[idx - 1] : undefined;
+    // Guard lower.length > 0 below: an empty/whitespace-only answer must
+    // never match via the substring fallback (an empty string is trivially
+    // "included in" every label, which would silently pick the first
+    // candidate for a blank reply).
+    if (!matched && lower.length > 0) {
+      matched =
+        candidates.find((c) => c.label.trim().toLowerCase() === lower) ??
+        candidates.find((c) => lower.includes(c.label.trim().toLowerCase()) || c.label.trim().toLowerCase().includes(lower));
+    }
+    if (matched) {
+      return {
+        draft: {
+          ...draft,
+          action: {
+            type: 'social-post',
+            socialPost: { platform: matched.platform, connectorId: matched.id, text: draft.action.socialPost?.text ?? '{{result}}' },
+          },
+          socialPostCandidates: undefined,
+        },
+        resolved: true,
+      };
+    }
+    if (attemptCount >= 1) {
+      // Give up — never guess which external account to post to. Fall back
+      // to a safe local draft (same "can't resolve, don't silently do
+      // something risky" posture as parseAgentNL's needsSetup caveat).
+      const strings = detectMessageLocale(draft.rawText) === 'ja' ? ja : en;
+      return {
+        draft: {
+          ...draft,
+          action: { type: 'draft' },
+          socialPostCandidates: undefined,
+          actionCaveat: strings['slot_fill.social_connector_giveup_caveat'],
+        },
+        resolved: true,
+      };
+    }
+    return { draft, resolved: false };
   }
   if (field === 'notificationTrigger') {
     const { valid } = parseNotificationTriggerPackages(answerText);

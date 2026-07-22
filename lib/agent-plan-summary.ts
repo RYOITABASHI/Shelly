@@ -69,12 +69,22 @@ export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistra
 /**
  * true when this draft should use the chat-native confirm affordance instead of
  * AgentConfirmCard: an app-act action (the explicit example the project owner
- * named), or a multi-step orchestration where at least one step pins a concrete
- * tool (Phase 6's `detectToolPinnedSteps`, as opposed to Phase 4's plain
- * auto-routed step chain, which keeps using the card unchanged this phase).
+ * named), a social-post action (2026-07-22 — same "external post, chat-native
+ * confirm" reasoning as app-act; AgentConfirmCard's picker UI is kept for the
+ * card-eligible path this doesn't touch), or a multi-step orchestration where
+ * at least one step pins a concrete tool (Phase 6's `detectToolPinnedSteps`, as
+ * opposed to Phase 4's plain auto-routed step chain, which keeps using the card
+ * unchanged this phase).
+ *
+ * Note: a draft whose social-post connector is still AMBIGUOUS (see
+ * ParsedAgentDraft.socialPostCandidates) has `action.type === 'draft'` at this
+ * point, not 'social-post' — it correctly falls through to card-eligible here.
+ * lib/agent-slot-fill.ts's socialConnector slot-fill question runs first and
+ * only calls this once the connector is resolved (or has been given up on).
  */
 export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
   if (draft.action.type === 'app-act') return true;
+  if (draft.action.type === 'social-post') return true;
   return (draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool);
 }
 
@@ -122,6 +132,22 @@ function actionText(action: AgentAction): string {
     return preview
       ? t('agentplan.appact_line_with_preview', { target, preview })
       : t('agentplan.appact_line', { target });
+  }
+  if (action.type === 'social-post' && action.socialPost) {
+    // No connector display-label is carried on AgentAction (only the
+    // registration-time `connectorId` slug — see AgentSocialPostConfig's doc
+    // comment in store/types.ts) — this function stays a PURE render with no
+    // store lookup, so the user-chosen id slug (usually descriptive, e.g.
+    // "my-mastodon") stands in for a display label here.
+    const platformLabel = t(`social_connectors.platform_${action.socialPost.platform}`);
+    const preview = appActContentPreview({ text: action.socialPost.text ?? '{{result}}' });
+    return preview
+      ? t('agentplan.socialpost_line_with_preview', {
+          platform: platformLabel,
+          connector: action.socialPost.connectorId,
+          preview,
+        })
+      : t('agentplan.socialpost_line', { platform: platformLabel, connector: action.socialPost.connectorId });
   }
   const label = t(`agentcard.action_${action.type}`);
   switch (action.type) {

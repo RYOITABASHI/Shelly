@@ -6,6 +6,7 @@ import {
   detectMessageLocale,
 } from '@/lib/agent-slot-fill';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import type { SocialConnectorMeta } from '@/store/types';
 
 // Minimal, fully-specified draft factory — tests override only the fields
 // relevant to the scenario under test, keeping each case terse and honest
@@ -102,6 +103,23 @@ describe('nextMissingSlot', () => {
   it('skips the outputPath question when action=draft but agentTopicFolder is already configured', () => {
     const d = makeDraft({ scheduleConfident: true, action: { type: 'draft' } });
     expect(nextMissingSlot(d, { agentTopicFolder: 'STEAM_AI' })).toBeNull();
+  });
+
+  it('asks for socialConnector when 2+ social-post candidates are ambiguous, taking priority over notificationTrigger/outputPath', () => {
+    const candidates: SocialConnectorMeta[] = [
+      { id: 'personal-masto', platform: 'mastodon', label: 'Personal Mastodon', host: 'mastodon.social', fields: ['accessToken'], createdAt: 0 },
+      { id: 'work-masto', platform: 'mastodon', label: 'Work Mastodon', host: 'mastodon.social', fields: ['accessToken'], createdAt: 0 },
+    ];
+    const d = makeDraft({ scheduleConfident: true, action: { type: 'draft' }, socialPostCandidates: candidates });
+    const slot = nextMissingSlot(d, {});
+    expect(slot?.field).toBe('socialConnector');
+    expect(slot?.question).toContain('Personal Mastodon');
+    expect(slot?.question).toContain('Work Mastodon');
+  });
+
+  it('does not ask for socialConnector when socialPostCandidates is absent (the common, non-social-post case)', () => {
+    const d = makeDraft({ scheduleConfident: true, action: { type: 'notify' }, socialPostCandidates: undefined });
+    expect(nextMissingSlot(d, {})).toBeNull();
   });
 });
 
@@ -219,6 +237,54 @@ describe('applySlotAnswer — outputPath', () => {
     const { draft, resolved } = applySlotAnswer('outputPath', d, '   ', 0);
     expect(resolved).toBe(true);
     expect(draft.outputPath).toBeUndefined();
+  });
+});
+
+describe('applySlotAnswer — socialConnector', () => {
+  const candidates: SocialConnectorMeta[] = [
+    { id: 'personal-masto', platform: 'mastodon', label: 'Personal Mastodon', host: 'mastodon.social', fields: ['accessToken'], createdAt: 0 },
+    { id: 'work-masto', platform: 'mastodon', label: 'Work Mastodon', host: 'mastodon.social', fields: ['accessToken'], createdAt: 0 },
+  ];
+
+  it('a 1-based index answer resolves to the matching candidate and rewrites action to social-post', () => {
+    const d = makeDraft({ action: { type: 'draft' }, socialPostCandidates: candidates });
+    const { draft, resolved } = applySlotAnswer('socialConnector', d, '2', 0);
+    expect(resolved).toBe(true);
+    expect(draft.action).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'mastodon', connectorId: 'work-masto', text: '{{result}}' },
+    });
+    expect(draft.socialPostCandidates).toBeUndefined();
+  });
+
+  it('an exact label answer resolves the same way', () => {
+    const d = makeDraft({ action: { type: 'draft' }, socialPostCandidates: candidates });
+    const { draft, resolved } = applySlotAnswer('socialConnector', d, 'Personal Mastodon', 0);
+    expect(resolved).toBe(true);
+    if (draft.action.type === 'social-post') expect(draft.action.socialPost?.connectorId).toBe('personal-masto');
+  });
+
+  it('a partial/case-insensitive label answer also resolves', () => {
+    const d = makeDraft({ action: { type: 'draft' }, socialPostCandidates: candidates });
+    const { draft, resolved } = applySlotAnswer('socialConnector', d, 'work', 0);
+    expect(resolved).toBe(true);
+    if (draft.action.type === 'social-post') expect(draft.action.socialPost?.connectorId).toBe('work-masto');
+  });
+
+  it('an unrecognized answer with attemptCount=0 does NOT resolve (asks again)', () => {
+    const d = makeDraft({ action: { type: 'draft' }, socialPostCandidates: candidates });
+    const { resolved } = applySlotAnswer('socialConnector', d, 'huh?', 0);
+    expect(resolved).toBe(false);
+  });
+
+  it('attemptCount>=1 force-resolves to a SAFE draft fallback, never guessing which external account to post to', () => {
+    const d = makeDraft({ action: { type: 'draft' }, socialPostCandidates: candidates });
+    const { draft, resolved } = applySlotAnswer('socialConnector', d, 'huh?', 1);
+    expect(resolved).toBe(true);
+    expect(draft.action).toEqual({ type: 'draft' });
+    expect(draft.socialPostCandidates).toBeUndefined();
+    expect(typeof draft.actionCaveat).toBe('string');
+    expect(draft.actionCaveat!.length).toBeGreaterThan(0);
   });
 });
 

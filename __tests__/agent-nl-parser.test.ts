@@ -1,4 +1,5 @@
 import { parseAgentNL } from '@/lib/agent-nl-parser';
+import type { SocialConnectorMeta } from '@/store/types';
 
 // The scheduler accepts ONLY these three cron shapes (lib/agent-scheduler.ts).
 // Any non-null schedule the parser emits MUST match one of them, or the agent
@@ -516,6 +517,125 @@ describe('parseAgentNL — LINE-posting caveat (still not supported, unlike X)',
     const d = parseAgentNL('毎日8時にLINEで知らせて');
     expect(d.action.type).toBe('notify');
     expect(d.actionCaveat).toBeUndefined();
+  });
+});
+
+describe('parseAgentNL — social-post intent detection (2026-07-22)', () => {
+  // The UI gap this closes: previously "Blueskyに投稿する" always fell to
+  // `draft` (local save only, never actually posts) because the parser had
+  // no notion of the `social-post` action type at all. See detectSocialPost
+  // in lib/agent-nl-parser.ts and shouldUseChatConfirm/summarizeAgentDraftAsText
+  // in lib/agent-plan-summary.ts for the chat-native confirm side.
+  function connector(overrides: Partial<SocialConnectorMeta> = {}): SocialConnectorMeta {
+    return {
+      id: 'my-mastodon',
+      platform: 'mastodon',
+      label: 'My Mastodon',
+      host: 'mastodon.social',
+      fields: ['accessToken'],
+      createdAt: 0,
+      ...overrides,
+    };
+  }
+
+  it('resolves to a real social-post action when exactly one registered connector matches the named platform', () => {
+    const d = parseAgentNL('毎日8時にニュースをまとめてMastodonに投稿して', [connector()]);
+    expect(d.action.type).toBe('social-post');
+    if (d.action.type === 'social-post') {
+      expect(d.action.socialPost).toEqual({ platform: 'mastodon', connectorId: 'my-mastodon', text: '{{result}}' });
+    }
+    expect(d.actionCaveat).toBeUndefined();
+    expect(d.socialPostCandidates).toBeUndefined();
+  });
+
+  it('EN "post this to Bluesky" phrasing also resolves', () => {
+    const conn = connector({ id: 'me-bsky', platform: 'bluesky', label: 'My Bluesky', host: 'bsky.social', fields: ['handle', 'appPassword'] });
+    const d = parseAgentNL('every day at 8, post this to Bluesky', [conn]);
+    expect(d.action.type).toBe('social-post');
+    if (d.action.type === 'social-post') {
+      expect(d.action.socialPost?.platform).toBe('bluesky');
+      expect(d.action.socialPost?.connectorId).toBe('me-bsky');
+    }
+  });
+
+  it('a katakana platform name (ディスコード) is recognized', () => {
+    const conn = connector({ id: 'my-discord', platform: 'discord', label: 'My Discord', host: 'discord.com', fields: ['webhookUrl'] });
+    const d = parseAgentNL('毎朝ニュースをディスコードにシェアして', [conn]);
+    expect(d.action.type).toBe('social-post');
+    if (d.action.type === 'social-post') expect(d.action.socialPost?.connectorId).toBe('my-discord');
+  });
+
+  it('resolves via a registered connector\'s own LABEL when no platform name is mentioned', () => {
+    const conn = connector({ id: 'company-bot', platform: 'slack', label: '会社Bot', host: 'hooks.slack.com', fields: ['webhookUrl'] });
+    const d = parseAgentNL('毎日8時に日報を会社Botに投稿して', [conn]);
+    expect(d.action.type).toBe('social-post');
+    if (d.action.type === 'social-post') {
+      expect(d.action.socialPost?.connectorId).toBe('company-bot');
+      expect(d.action.socialPost?.platform).toBe('slack');
+    }
+  });
+
+  it('a たら-conditional scopes detection to the delivery clause, not the condition (mirrors detectAction\'s own scoping)', () => {
+    const d = parseAgentNL('記事が完成したらMastodonに投稿して', [connector()]);
+    expect(d.action.type).toBe('social-post');
+  });
+
+  it('stays draft with no caveat when no social-post phrasing is present at all', () => {
+    const d = parseAgentNL('毎日8時にブログ記事を書いて', [connector()]);
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toBeUndefined();
+    expect(d.socialPostCandidates).toBeUndefined();
+  });
+
+  it('a bare platform mention with no posting verb does not falsely trigger (discussing Discord, not posting to it)', () => {
+    const conn = connector({ id: 'my-discord', platform: 'discord', label: 'My Discord', host: 'discord.com', fields: ['webhookUrl'] });
+    const d = parseAgentNL('毎日8時にDiscordのメンバー一覧を作って', [conn]);
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toBeUndefined();
+    expect(d.socialPostCandidates).toBeUndefined();
+  });
+
+  describe('ambiguity resolution (multiple matching connectors)', () => {
+    it('two connectors on the SAME platform: sets socialPostCandidates instead of guessing which one', () => {
+      const a = connector({ id: 'personal-masto', label: 'Personal Mastodon' });
+      const b = connector({ id: 'work-masto', label: 'Work Mastodon' });
+      const d = parseAgentNL('毎日8時にMastodonに投稿して', [a, b]);
+      expect(d.action.type).not.toBe('social-post'); // not auto-resolved
+      expect(d.socialPostCandidates).toHaveLength(2);
+      expect(d.socialPostCandidates?.map((c) => c.id)).toEqual(['personal-masto', 'work-masto']);
+    });
+
+    it('two connectors matched purely by their own LABEL (no platform-name phrasing at all) both become candidates', () => {
+      const a = connector({ id: 'personal-bot', platform: 'discord', label: 'PersonalBot' });
+      const b = connector({ id: 'work-bot', platform: 'slack', label: 'WorkBot' });
+      const d = parseAgentNL('毎日8時にPersonalBotかWorkBotに投稿して', [a, b]);
+      expect(d.action.type).not.toBe('social-post');
+      expect(d.socialPostCandidates?.map((c) => c.id).sort()).toEqual(['personal-bot', 'work-bot']);
+    });
+  });
+
+  describe('no usable connector — never silently drops the intent', () => {
+    it('zero connectors registered at all: falls back to draft with guidance to register one first', () => {
+      const d = parseAgentNL('毎日8時にBlueskyに投稿して', []);
+      expect(d.action.type).toBe('draft');
+      expect(typeof d.actionCaveat).toBe('string');
+      expect(d.actionCaveat).toContain('Social Connectors');
+      expect(d.socialPostCandidates).toBeUndefined();
+    });
+
+    it('omitting the connectors argument entirely behaves the same as an empty list (backward compatible default)', () => {
+      const d = parseAgentNL('毎日8時にBlueskyに投稿して');
+      expect(d.action.type).toBe('draft');
+      expect(d.actionCaveat).toBeTruthy();
+    });
+
+    it('a platform is named but the only registered connector is for a DIFFERENT platform: same guidance fallback', () => {
+      const conn = connector({ id: 'my-discord', platform: 'discord', label: 'My Discord', host: 'discord.com', fields: ['webhookUrl'] });
+      const d = parseAgentNL('毎日8時にBlueskyに投稿して', [conn]);
+      expect(d.action.type).toBe('draft');
+      expect(d.actionCaveat).toBeTruthy();
+      expect(d.socialPostCandidates).toBeUndefined();
+    });
   });
 });
 

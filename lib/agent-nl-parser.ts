@@ -16,7 +16,7 @@
  *
  * The result is a PREVIEW draft, not a live agent. The caller shows it in the confirm card.
  */
-import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
+import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, tagStepsWithToolMentions } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
@@ -85,6 +85,18 @@ export interface ParsedAgentDraft {
    *  and no global vault/output-path preference is configured. Absent =
    *  the caller falls back to its default output path template. */
   outputPath?: string;
+  /** Set when the utterance named a social platform (or a registered
+   *  connector's own label) with a posting verb ("Blueskyに投稿して"), and
+   *  MORE THAN ONE registered connector matched (either several connectors
+   *  on the same platform, or a platform match plus a separate label match)
+   *  — genuinely ambiguous which one to use. `action` stays whatever
+   *  detectAction() resolved (normally 'draft') until conversational
+   *  slot-filling (lib/agent-slot-fill.ts, field 'socialConnector') asks
+   *  the user to pick one and rewrites `action` to a real `social-post`.
+   *  Absent = no ambiguity to resolve (either a single connector matched
+   *  and `action` is already `social-post`, or no social-post intent was
+   *  detected at all). See parseAgentNL's `connectors` parameter. */
+  socialPostCandidates?: SocialConnectorMeta[];
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -508,6 +520,134 @@ function detectActionCaveat(text: string): string | undefined {
   return undefined;
 }
 
+// ── social-post detection (2026-07-22 — the free-API connector alternative to
+// app-act's AccessibilityService path; see AgentSocialPostConfig/SocialConnectorMeta
+// in store/types.ts) ──────────────────────────────────────────────────────────
+//
+// The 7 supported platforms, matched by their common EN name plus a JP/katakana
+// transliteration. Deliberately name-based (not connector-label-based) so a
+// platform mention resolves even before any connector has ever been registered
+// — that's exactly the "no connectors yet" guidance case below.
+const SOCIAL_PLATFORM_ALIASES: Record<SocialPlatform, string[]> = {
+  discord: ['discord', 'ディスコード'],
+  slack: ['slack', 'スラック'],
+  telegram: ['telegram', 'テレグラム'],
+  mastodon: ['mastodon', 'マストドン'],
+  misskey: ['misskey', 'ミスキー'],
+  wordpress: ['wordpress', 'ワードプレス'],
+  bluesky: ['bluesky', 'ブルースカイ'],
+};
+const SOCIAL_PLATFORMS = Object.keys(SOCIAL_PLATFORM_ALIASES) as SocialPlatform[];
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Shared posting-verb vocabulary (JP + EN), mirroring the "投稿する/post/tweet/
+// 呟く/シェアする" set called out in the spec. Used both bound to a platform name
+// (SOCIAL_PLATFORM_RE, below — precise, mirrors X_POST_RE/LINE_POST_RE's
+// "Xに投稿" shape) and bare (GENERIC_SOCIAL_POST_VERB_RE — looser, only used
+// together with a matched connector LABEL, which is already a strong signal).
+const SOCIAL_POST_VERB_JP = '(?:自動)?(?:投稿|ポスト|シェア|アップ|共有)|つぶや(?:く|いて)|呟(?:く|いて)';
+const SOCIAL_POST_VERB_EN = 'post(?:ing)?|share|tweet';
+
+/** "<platform>に/で(自動)?投稿/ポスト/シェア/…" or "post/share/tweet (this/it)?
+ *  to/on <platform>" — same precise, verb-bound shape as X_POST_RE/LINE_POST_RE
+ *  above, just parameterized per platform's alias list. */
+function buildSocialPlatformRe(aliases: string[]): RegExp {
+  const alt = aliases.map(escapeRegExp).join('|');
+  return new RegExp(
+    `(?:${alt})(?:に|で)(?:${SOCIAL_POST_VERB_JP})` +
+      `|(?:${SOCIAL_POST_VERB_EN})\\s+(?:this|it)?\\s*(?:to|on)\\s+(?:${alt})`,
+    'i',
+  );
+}
+
+const SOCIAL_PLATFORM_RE: Record<SocialPlatform, RegExp> = SOCIAL_PLATFORMS.reduce(
+  (acc, platform) => {
+    acc[platform] = buildSocialPlatformRe(SOCIAL_PLATFORM_ALIASES[platform]);
+    return acc;
+  },
+  {} as Record<SocialPlatform, RegExp>,
+);
+
+// Bare posting verb (no platform bound) — only trusted when paired with an
+// actual connector LABEL match (see detectSocialPost), so a stray "シェアして"
+// alone never fires this.
+const GENERIC_SOCIAL_POST_VERB_RE = new RegExp(
+  `${SOCIAL_POST_VERB_JP}|\\b(?:${SOCIAL_POST_VERB_EN})\\b`,
+  'i',
+);
+
+export interface SocialPostDetection {
+  /** Best-guess platform, when exactly one alias-matched platform (or a
+   *  single label-matched connector) was found. Undefined when multiple
+   *  distinct platforms were named (rare; candidates/needsSetup still apply). */
+  platform?: SocialPlatform;
+  /** Set only when EXACTLY ONE registered connector matched — safe to
+   *  auto-resolve into a real `social-post` action with no further question. */
+  connectorId?: string;
+  /** 2+ registered connectors matched (same platform, or platform+label) —
+   *  genuinely ambiguous, must ask (see ParsedAgentDraft.socialPostCandidates). */
+  candidates?: SocialConnectorMeta[];
+  /** A social-post request was detected but there is no usable connector to
+   *  target — either none are registered at all, or none match the platform/
+   *  label that was named. The caller must NOT register a social-post action
+   *  in this case (there is nothing to dispatch to); fall back to draft with
+   *  user-facing guidance instead of silently pretending it worked. */
+  needsSetup?: boolean;
+}
+
+/**
+ * Detect a "post this to <platform>" (or "post this to <my connector's own
+ * label>") request and resolve it against the caller-supplied list of
+ * registered connectors (lib/agent-slot-fill.ts's SlotFillContext pattern —
+ * this parser stays pure/offline; the caller reads useSettingsStore's
+ * `socialConnectors` and passes them in, see parseAgentNL's `connectors` arg).
+ * Returns null when no social-post intent is present in the text at all.
+ */
+function detectSocialPost(text: string, connectors: SocialConnectorMeta[]): SocialPostDetection | null {
+  const scope = actionDetectionScope(text);
+  const platforms = SOCIAL_PLATFORMS.filter((p) => SOCIAL_PLATFORM_RE[p].test(scope));
+
+  // Ambiguity resolution also tries matching a registered connector's own
+  // LABEL against the text (e.g. "会社Botに投稿して" naming the connector
+  // directly rather than its platform) — only trusted alongside a generic
+  // posting verb, since a bare label match with no verb at all is too weak a
+  // signal (a label could coincidentally be an ordinary word).
+  const lowerScope = scope.toLowerCase();
+  const hasGenericVerb = GENERIC_SOCIAL_POST_VERB_RE.test(scope);
+  const labelMatches = hasGenericVerb
+    ? connectors.filter((c) => c.label.trim().length > 0 && lowerScope.includes(c.label.trim().toLowerCase()))
+    : [];
+
+  if (platforms.length === 0 && labelMatches.length === 0) return null;
+
+  let candidates: SocialConnectorMeta[];
+  if (platforms.length > 0) {
+    candidates = connectors.filter((c) => platforms.includes(c.platform));
+    for (const lm of labelMatches) {
+      if (!candidates.some((c) => c.id === lm.id)) candidates.push(lm);
+    }
+  } else {
+    candidates = labelMatches;
+  }
+
+  if (candidates.length === 0) {
+    return { platform: platforms[0], needsSetup: true };
+  }
+  if (candidates.length === 1) {
+    return { platform: candidates[0].platform, connectorId: candidates[0].id };
+  }
+  return { platform: platforms.length === 1 ? platforms[0] : undefined, candidates };
+}
+
+// Same "no i18n in this pure parser" convention LINE_POST_RE's caveat above
+// already follows (detectActionCaveat's string is a fixed JP literal too) —
+// this is a caveat surfaced verbatim in the chat/card, not a static UI label.
+const SOCIAL_POST_NO_CONNECTOR_CAVEAT =
+  'SNS投稿には登録済みのコネクタが必要です。まず Settings → Social Connectors でコネクタを登録してください。今回は下書き（ファイル保存）として登録します。';
+
 /** Detect the delivery action. Default = draft. Never returns 'publish'. */
 function detectAction(text: string): AgentAction {
   // webhook — an explicit URL is the strongest signal.
@@ -763,8 +903,15 @@ function detectAutonomousIntent(text: string): boolean {
  * Parse an utterance into a structured agent draft. Pure & deterministic — safe to call
  * offline and in unit tests. Always returns a draft (never throws / never hard-blocks);
  * an unparseable schedule yields `schedule: null` + `scheduleConfident: false`.
+ *
+ * @param connectors Registered social connectors (useSettingsStore's `socialConnectors`,
+ *   read by the caller — this function stays pure/offline, same pattern as
+ *   lib/agent-slot-fill.ts's SlotFillContext). Used only to resolve a detected
+ *   "post this to <platform>" intent into a real `social-post` action; omit/empty
+ *   when the caller has no connectors to offer (the utterance then falls back to
+ *   `draft` + a "register a connector first" caveat — see detectSocialPost).
  */
-export function parseAgentNL(utterance: string): ParsedAgentDraft {
+export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[] = []): ParsedAgentDraft {
   const rawText = utterance.trim();
 
   // G6: a "パイプライン" request becomes the multi-step collection preset. The
@@ -817,8 +964,36 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
   }
 
   const sched = parseSchedule(rawText);
-  const action = detectAction(rawText);
-  const actionCaveat = action.type === 'draft' ? detectActionCaveat(rawText) : undefined;
+
+  // social-post (2026-07-22): checked before the generic detectAction() scan
+  // so a confidently-resolved single-connector match always wins. Three
+  // outcomes: (a) exactly one connector matched -> a real `social-post`
+  // action, no caveat; (b) 2+ matched -> stays whatever detectAction()
+  // resolves (normally draft) but socialPostCandidates is set so
+  // lib/agent-slot-fill.ts's conversational slot-fill can ask which one;
+  // (c) a platform/label was named but nothing usable is registered ->
+  // forced to draft + a "register a connector first" caveat, never silently
+  // dropped.
+  const socialPostDetection = detectSocialPost(rawText, connectors);
+  let action: AgentAction;
+  let actionCaveat: string | undefined;
+  let socialPostCandidates: SocialConnectorMeta[] | undefined;
+  if (socialPostDetection?.connectorId && socialPostDetection.platform) {
+    action = {
+      type: 'social-post',
+      socialPost: { platform: socialPostDetection.platform, connectorId: socialPostDetection.connectorId, text: '{{result}}' },
+    };
+  } else {
+    action = detectAction(rawText);
+    actionCaveat = action.type === 'draft' ? detectActionCaveat(rawText) : undefined;
+    if (socialPostDetection?.needsSetup) {
+      action = { type: 'draft' };
+      actionCaveat = SOCIAL_POST_NO_CONNECTOR_CAVEAT;
+    } else if (socialPostDetection?.candidates && socialPostDetection.candidates.length >= 2) {
+      socialPostCandidates = socialPostDetection.candidates;
+    }
+  }
+
   const prompt = derivePrompt(rawText, sched);
   const suggestion = suggestTool(prompt || rawText);
   const memory = detectMemory(rawText);
@@ -872,6 +1047,7 @@ export function parseAgentNL(utterance: string): ParsedAgentDraft {
     autonomous: detectAutonomousIntent(rawText),
     memory,
     actionCaveat,
+    socialPostCandidates,
     rawText,
   };
 }
