@@ -117,6 +117,34 @@ describe('shouldUseChatConfirm', () => {
     const steps: Array<string | AgentOrchestrationStep> = ['first step', 'second step'];
     expect(shouldUseChatConfirm(baseDraft({ orchestrationSteps: steps }))).toBe(false);
   });
+
+  // social-post (2026-07-22): same chat-native reasoning as app-act — an
+  // external post is not a local file save, so it gets the same "no card,
+  // plain chat confirm" treatment.
+  it('true for a social-post action', () => {
+    expect(
+      shouldUseChatConfirm(
+        baseDraft({
+          action: { type: 'social-post', socialPost: { platform: 'mastodon', connectorId: 'my-mastodon', text: '{{result}}' } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('false while the connector is still ambiguous (action is still draft, not yet social-post)', () => {
+    // lib/agent-slot-fill.ts asks the socialConnector slot-fill question BEFORE
+    // this function is ever consulted for such a draft — action.type stays
+    // 'draft' until the ambiguity is resolved, so this must fall through to
+    // the (unaffected) card-eligible path, not chat-confirm prematurely.
+    const draft = baseDraft({
+      action: { type: 'draft' },
+      socialPostCandidates: [
+        { id: 'a', platform: 'mastodon', label: 'A', host: 'mastodon.social', fields: ['accessToken'], createdAt: 0 },
+        { id: 'b', platform: 'mastodon', label: 'B', host: 'mastodon.social', fields: ['accessToken'], createdAt: 0 },
+      ],
+    });
+    expect(shouldUseChatConfirm(draft)).toBe(false);
+  });
 });
 
 describe('summarizeAgentDraftAsText', () => {
@@ -171,6 +199,27 @@ describe('summarizeAgentDraftAsText', () => {
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toContain('agentplan.schedule_restate_hint');
     expect(text).not.toContain('agentplan.confirm_prompt');
+  });
+
+  it('social-post: no literal preview -> the no-preview variant with platform + connector', () => {
+    const draft = baseDraft({
+      action: { type: 'social-post', socialPost: { platform: 'mastodon', connectorId: 'my-mastodon', text: '{{result}}' } },
+    });
+    const text = summarizeAgentDraftAsText(draft);
+    expect(text).toContain('agentplan.socialpost_line|');
+    expect(text).toContain('social_connectors.platform_mastodon');
+    expect(text).toContain('my-mastodon');
+    expect(text).not.toContain('agentplan.socialpost_line_with_preview');
+    expect(text).toContain('agentplan.confirm_prompt');
+  });
+
+  it('social-post: surfaces a literal content preview when the post text is not the {{result}} placeholder', () => {
+    const draft = baseDraft({
+      action: { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'me-bsky', text: 'Good morning from Shelly' } },
+    });
+    const text = summarizeAgentDraftAsText(draft);
+    expect(text).toContain('agentplan.socialpost_line_with_preview|');
+    expect(text).toContain('Good morning from Shelly');
   });
 
   it('includes autonomous, memory, matched-skill, and actionCaveat lines when present', () => {
@@ -244,6 +293,17 @@ describe('draftToConfirmedAgentDraft', () => {
     const draft = baseDraft({ schedule: 'once' });
     const confirmed = draftToConfirmedAgentDraft(draft);
     expect(isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)).toBe(true);
+  });
+
+  it('carries a resolved social-post action through verbatim (platform/connectorId/text)', () => {
+    const draft = baseDraft({
+      action: { type: 'social-post', socialPost: { platform: 'mastodon', connectorId: 'my-mastodon', text: '{{result}}' } },
+    });
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(confirmed.action).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'mastodon', connectorId: 'my-mastodon', text: '{{result}}' },
+    });
   });
 
   it('does not treat an unrelated cron schedule as ephemeral (sanity check for the isEphemeralOneShot regression test above)', () => {

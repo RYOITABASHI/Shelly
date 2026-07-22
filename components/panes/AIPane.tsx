@@ -423,7 +423,7 @@ export default function AIPane() {
     if (pendingInboundCount === 0) return;
     const item = useInboundStore.getState().consume();
     if (!item) return;
-    const draft = parseAgentNL(item.text);
+    const draft = parseAgentNL(item.text, useSettingsStore.getState().socialConnectors ?? []);
     useAIPaneStore.getState().addMessage(paneId, {
       id: `inb-card-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       role: 'assistant',
