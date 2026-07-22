@@ -2800,6 +2800,24 @@ claude() {
 
 ---
 
+### エージェント1件から複数プラットフォームへ同時配信できない（例: Bluesky+X同時投稿） — 未着手・仕様上の制約と確認済み (P2)
+
+**優先度**: P2（回避策あり——プラットフォームごとに別エージェントを作れば実質同じ結果になる。ただしユーザー体感としては「1回の依頼で完結してほしい」）
+
+**発見**: 2026-07-23、AI CHATペインのハイブリッド設計（決定的パーサー→能力質問ならAskペイン相当のグラウンディング回答、エージェント作成意図ならLLMフィールド抽出）を検討する過程で、ユーザーから具体例として「毎朝8時に〇〇についてCodexで調べて、150文字で要約したものをリンク付きでブルースカイとXに同時投稿出来る？」という質問を受け、実コードで検証。
+
+**確認済みの内訳**:
+- ✅ 毎朝8時（スケジュール）— 対応可能
+- ✅ Codexで調べて（`AgentOrchestrationStep.tool`でオーケストレーションのステップにツールをpin可能）— 対応可能
+- ✅ 150文字で要約（`agent.orchestration.charLimit`、`lib/agent-pipeline-presets.ts`の`clampCharLimit`/`enforceCharLimit`）— 対応可能
+- △ リンク付き — 特別な構造化フィールドは無いが、プロンプト指示として自然に扱われるはず（未検証）
+- ❌ **BlueskyとXへの"同時"投稿 — 非対応**。`store/types.ts`の`Agent.action?: AgentAction`はエージェント1件につき単一フィールドで、オーケストレーションの各ステップは生成ツールを選べても、最終的な配信先（dispatchされるaction）は常に1つだけ（`AgentOrchestrationStep`のdocコメントにも「the final step's real action is always Agent.action」と明記）。現状の回避策はプラットフォームごとに別々のエージェントを作ること。
+
+**対応方針（未着手）**: `Agent.action`を単一から配列（複数ターゲット）に拡張するか、最終ステップで複数のdispatchを許容する設計が必要——影響範囲が`generateRunScript`/`shelly-plan-executor.js`/`AgentConfirmCard.tsx`/`agent-plan-summary.ts`など広範囲に及ぶため、着手前に別途設計を詰めること。
+→ sync: なし。
+
+---
+
 - **このセッション固有の重大な環境問題**: 上記作業の途中でBashツールが完全に破損（`echo hello`のような最小コマンドですら`/usr/bin/bash: line 84: e: command not found`、コマンド内容に一切関係なく発生）。新規チャット・Claude Codeアプリ完全再起動・PC完全再起動・Claude Code再インストール・v2.1.216への手動ダウングレード、**すべて試したが症状不変**。Git Bash本体はPowerShellから直接`& "C:\Program Files\Git\bin\bash.exe" -c "echo test"`で正常動作確認済み（問題はGit Bash本体ではなくClaude CodeのBashツールラッパー側）。GitHub Issue調査で類似の既知バグ（#9883「MSYS/Git BashでcygpathがなくBashツール全滅」→"closed as not planned"、#21915「Windows上でBashツールが出力を返さない」→"closed as not planned"、#28333「Windows上でBashツール実行自体が失敗」→オープン、メンテナーアサイン済み）を確認したが、いずれも今回の`line 84: e`という具体的なメッセージとは完全一致せず、"not planned"クローズ多数で確実な解決策なし。**決定的な切り分け**: 同じPC上で**新規にClaude Codeウィンドウを起動したところBashツールは正常動作**（`Bash tool OK`、MINGW64_NT-10.0-26200上のGit Bash、date確認済み、2026-07-22 10:50頃）——つまりClaude Code全体やPC環境の恒久的な破損ではなく、**この会話（セッション）固有の内部状態破損**だったと判明。**教訓**: 同種の症状（コマンド内容に無関係な一律失敗、`line N: <断片>: command not found`）に遭遇したら、まずPC再起動などの重い対処より先に**別ウィンドウで新規セッションを開いて同じ症状が出るか確認する**のが最短の切り分け。次回Shelly作業は新セッション（このDEFERRED.mdを読めば上記未了タスクが分かる状態にしてある）で継続すること。→ sync: なし。
 
 ---
