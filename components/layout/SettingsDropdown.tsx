@@ -40,6 +40,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
 import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
+import type { SocialConnectorMeta, SocialPlatform } from '@/store/types';
 
 type Props = {
   visible: boolean;
@@ -132,6 +133,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <AgentsSection visible={visible} />
             <ApiKeysSection />
             <WebhookHostAllowlistSection />
+            <SocialConnectorsSection />
             <DmPairingSection />
             <UpdatesSection onOpenBuilds={handleOpenBuilds} />
             <ScouterSection visible={visible} onCloseSettings={onClose} />
@@ -1386,6 +1388,303 @@ const WebhookHostAllowlistSection = React.memo(function WebhookHostAllowlistSect
           <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>{t('webhook_allowlist.add')}</Text>
         </Pressable>
       </View>
+    </Section>
+  );
+});
+
+// ─── Social Connectors ───────────────────────────────────────────────────────
+// Credential-registration UI for the free-API social/publishing dispatch path
+// (agent action type 'social-post' in AgentConfirmCard.tsx — see
+// store/types.ts's AgentSocialPostConfig / SocialConnectorMeta). This is
+// metadata-only: SocialConnectorMeta never carries a secret value, so nothing
+// rendered here needs masking — the actual credential goes straight into
+// SecureStore via addSocialConnector's second (secrets) argument and this
+// component never reads it back.
+
+const SOCIAL_PLATFORMS: SocialPlatform[] = ['discord', 'slack', 'telegram', 'mastodon', 'misskey', 'wordpress', 'bluesky'];
+
+const SOCIAL_PLATFORM_ICON: Record<SocialPlatform, React.ComponentProps<typeof MaterialIcons>['name']> = {
+  discord: 'forum',
+  slack: 'groups',
+  telegram: 'send',
+  mastodon: 'public',
+  misskey: 'chat-bubble',
+  wordpress: 'article',
+  bluesky: 'cloud',
+};
+
+// Field NAMES here must match Track A's dispatch code exactly — it reads the
+// SecureStore secret for each connector by these keys, so this list is the
+// single source of truth for what the add-connector form collects per
+// platform (feature spec's per-platform field table).
+const SOCIAL_PLATFORM_META: Record<SocialPlatform, {
+  fields: string[];
+  /** Host is fixed and baked in silently — never shown as an input. */
+  fixedHost?: string;
+  /** Host is user-instance-specific but has a sane prefilled default. */
+  defaultHost?: string;
+}> = {
+  discord:   { fields: ['webhookUrl'], fixedHost: 'discord.com' },
+  slack:     { fields: ['webhookUrl'], fixedHost: 'hooks.slack.com' },
+  telegram:  { fields: ['botToken', 'chatId'], fixedHost: 'api.telegram.org' },
+  mastodon:  { fields: ['accessToken'] },
+  misskey:   { fields: ['apiToken'] },
+  wordpress: { fields: ['username', 'appPassword'] },
+  bluesky:   { fields: ['handle', 'appPassword'], defaultHost: 'bsky.social' },
+};
+
+const SOCIAL_ID_RE = /^[a-z0-9-]+$/;
+
+type TFunc = (key: string, params?: Record<string, string | number>) => string;
+
+function SocialConnectorRow({
+  connector,
+  onRemove,
+  t,
+}: {
+  connector: SocialConnectorMeta;
+  onRemove: () => void;
+  t: TFunc;
+}) {
+  return (
+    <View style={[styles.integrationRow, borderedChromeStyle()]}>
+      <MaterialIcons name={SOCIAL_PLATFORM_ICON[connector.platform]} size={13} color={C.text2} />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]} numberOfLines={1}>
+          {connector.label}
+        </Text>
+        <Text style={[styles.apiKeyHint, { color: C.text3 }]} numberOfLines={1}>
+          {t(`social_connectors.platform_${connector.platform}`)} · {connector.host}
+        </Text>
+      </View>
+      <Pressable
+        onPress={onRemove}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={t('social_connectors.remove_a11y')}
+      >
+        <MaterialIcons name="delete-outline" size={15} color={C.errorText} />
+      </Pressable>
+    </View>
+  );
+}
+
+// Inline "add connector" form: platform picker (dropdown, mirrors
+// AgentsSection's default-agent picker) → label/id/host + exactly that
+// platform's secret fields (masked, mirrors ApiKeyRow's editing state).
+function SocialConnectorAddForm({
+  existingIds,
+  onDone,
+  t,
+}: {
+  existingIds: string[];
+  onDone: () => void;
+  t: TFunc;
+}) {
+  const [platform, setPlatform] = useState<SocialPlatform | null>(null);
+  const [platformPickerOpen, setPlatformPickerOpen] = useState(false);
+  const [idDraft, setIdDraft] = useState('');
+  const [labelDraft, setLabelDraft] = useState('');
+  const [hostDraft, setHostDraft] = useState('');
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [reveal, setReveal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const selectPlatform = (p: SocialPlatform) => {
+    setPlatform(p);
+    setPlatformPickerOpen(false);
+    setHostDraft(SOCIAL_PLATFORM_META[p].defaultHost ?? '');
+    setFieldValues({});
+    setError(null);
+  };
+
+  const handleSave = async () => {
+    if (!platform) return;
+    const meta = SOCIAL_PLATFORM_META[platform];
+    const id = idDraft.trim().toLowerCase();
+    const label = labelDraft.trim();
+    const host = meta.fixedHost ?? hostDraft.trim();
+    if (!SOCIAL_ID_RE.test(id)) {
+      setError(t('social_connectors.id_invalid'));
+      return;
+    }
+    if (existingIds.includes(id)) {
+      setError(t('social_connectors.id_duplicate'));
+      return;
+    }
+    if (!label) {
+      setError(t('social_connectors.label_required'));
+      return;
+    }
+    if (!meta.fixedHost && !host) {
+      setError(t('social_connectors.host_required'));
+      return;
+    }
+    const missingField = meta.fields.find((f) => !(fieldValues[f] ?? '').trim());
+    if (missingField) {
+      setError(t('social_connectors.field_required', { field: t(`social_connectors.field_${missingField}`) }));
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const secrets: Record<string, string> = {};
+      for (const f of meta.fields) secrets[f] = (fieldValues[f] ?? '').trim();
+      await useSettingsStore.getState().addSocialConnector(
+        { id, platform, label, host, fields: meta.fields },
+        secrets,
+      );
+      ToastAndroid.show(t('social_connectors.added_toast', { label }), ToastAndroid.SHORT);
+      onDone();
+    } catch (e: any) {
+      // Keep the form open (all drafts intact) so the user can fix and retry
+      // — same convention as Sidebar's skill-import failure handling.
+      setError(String(e?.message || e));
+      logError('SettingsDropdown', 'addSocialConnector failed', e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View style={{ marginTop: 4 }}>
+      <Pressable
+        style={[styles.defaultAgentBtn, { borderColor: withAlpha(C.accent, 0.38), backgroundColor: withAlpha(C.accent, 0.08) }]}
+        onPress={() => setPlatformPickerOpen((v) => !v)}
+        hitSlop={4}
+      >
+        <Text style={[styles.defaultAgentLabel, { color: C.text1 }]}>
+          {platform ? t(`social_connectors.platform_${platform}`) : t('social_connectors.select_platform')}
+        </Text>
+        <MaterialIcons name={platformPickerOpen ? 'arrow-drop-up' : 'arrow-drop-down'} size={14} color={C.text2} />
+      </Pressable>
+      {platformPickerOpen && (
+        <View style={[styles.defaultAgentPicker, { borderColor: C.border, backgroundColor: C.bgDeep }]}>
+          {SOCIAL_PLATFORMS.map((p) => {
+            const active = p === platform;
+            return (
+              <Pressable
+                key={p}
+                style={[styles.pickerRow, active && { backgroundColor: withAlpha(C.accent, 0.10) }]}
+                onPress={() => selectPlatform(p)}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <MaterialIcons name={SOCIAL_PLATFORM_ICON[p]} size={12} color={active ? C.accent : C.text2} />
+                  <Text style={[styles.pickerLabel, { color: active ? C.accent : C.text2 }, active && { fontWeight: '700' }]}>
+                    {t(`social_connectors.platform_${p}`)}
+                  </Text>
+                </View>
+                {active && <MaterialIcons name="check" size={11} color={C.accent} />}
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+      {platform && (
+        <>
+          <Text style={[styles.credentialHint, { color: C.text2 }]}>{t(`social_connectors.hint_${platform}`)}</Text>
+          <TextInput
+            value={labelDraft}
+            onChangeText={setLabelDraft}
+            style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+            placeholder={t('social_connectors.label_placeholder')}
+            placeholderTextColor={C.text3}
+            autoCorrect={false}
+            spellCheck={false}
+          />
+          <TextInput
+            value={idDraft}
+            onChangeText={setIdDraft}
+            style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+            placeholder={t('social_connectors.id_placeholder')}
+            placeholderTextColor={C.text3}
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+          />
+          {!SOCIAL_PLATFORM_META[platform].fixedHost && (
+            <TextInput
+              value={hostDraft}
+              onChangeText={setHostDraft}
+              style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+              placeholder={t('social_connectors.host_placeholder')}
+              placeholderTextColor={C.text3}
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+            />
+          )}
+          {SOCIAL_PLATFORM_META[platform].fields.map((f) => (
+            <TextInput
+              key={f}
+              value={fieldValues[f] ?? ''}
+              onChangeText={(v) => setFieldValues((prev) => ({ ...prev, [f]: v }))}
+              style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+              placeholder={t(`social_connectors.field_${f}`)}
+              placeholderTextColor={C.text3}
+              autoCapitalize="none"
+              autoCorrect={false}
+              spellCheck={false}
+              secureTextEntry={!reveal}
+            />
+          ))}
+          {error && <Text style={[styles.apiKeyHint, { color: C.errorText, marginTop: 4 }]}>{error}</Text>}
+          <View style={styles.apiKeyActions}>
+            <Pressable onPress={() => setReveal((v) => !v)} hitSlop={6} style={styles.eyeBtn}>
+              <MaterialIcons name={reveal ? 'visibility-off' : 'visibility'} size={12} color={C.text2} />
+            </Pressable>
+            <View style={{ flex: 1 }} />
+            <Pressable onPress={onDone} style={[styles.apiKeyBtn, { borderColor: C.border }]} hitSlop={6}>
+              <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('common.cancel')}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => void handleSave()}
+              disabled={saving}
+              style={[styles.apiKeyBtn, { backgroundColor: C.accent, borderColor: C.accent }, saving && { opacity: 0.6 }]}
+              hitSlop={6}
+            >
+              <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>
+                {saving ? t('social_connectors.saving') : t('common.save')}
+              </Text>
+            </Pressable>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+const SocialConnectorsSection = React.memo(function SocialConnectorsSection() {
+  const { t } = useTranslation();
+  const connectors = useSettingsStore((s) => s.socialConnectors ?? []);
+  const removeSocialConnector = useSettingsStore((s) => s.removeSocialConnector);
+  const [addOpen, setAddOpen] = useState(false);
+
+  return (
+    <Section title={t('social_connectors.title')}>
+      <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{t('social_connectors.description')}</Text>
+      {connectors.length === 0 && !addOpen && (
+        <Text style={[styles.credentialHint, { color: C.text2 }]}>{t('social_connectors.empty')}</Text>
+      )}
+      {connectors.map((connector: SocialConnectorMeta, i: number) => (
+        <React.Fragment key={connector.id}>
+          {i > 0 && <View style={styles.credentialGap} />}
+          <SocialConnectorRow connector={connector} onRemove={() => void removeSocialConnector(connector.id)} t={t} />
+        </React.Fragment>
+      ))}
+      {connectors.length > 0 && <View style={styles.credentialGap} />}
+      {addOpen ? (
+        <SocialConnectorAddForm
+          existingIds={connectors.map((c: SocialConnectorMeta) => c.id)}
+          onDone={() => setAddOpen(false)}
+          t={t}
+        />
+      ) : (
+        <Pressable style={styles.manageBtn} onPress={() => setAddOpen(true)} hitSlop={4}>
+          <Text style={[styles.manageBtnText, { color: C.accent }]}>{t('social_connectors.add_button')}</Text>
+        </Pressable>
+      )}
     </Section>
   );
 });

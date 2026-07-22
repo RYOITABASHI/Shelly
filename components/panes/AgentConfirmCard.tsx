@@ -21,7 +21,7 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-nativ
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
-import { AgentAction, AgentActionType, AgentApiCallConfig, AgentMemoryConfig, AgentOrchestrationStep, ToolChoice } from '@/store/types';
+import { AgentAction, AgentActionType, AgentApiCallConfig, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, ToolChoice } from '@/store/types';
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { computeAgentSlug, resolveAgentOutputPathPreview } from '@/lib/agent-executor';
@@ -63,7 +63,7 @@ export interface ConfirmedAgentDraft {
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
-const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'app-act'];
+const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'app-act', 'social-post'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
 
 function clampInt(raw: string, min: number, max: number): number {
@@ -208,6 +208,14 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     updateStepApiCall(index, patch);
   };
   const [dmReplyText, setDmReplyText] = useState(draft.action.dmReplyText ?? '');
+  // social-post: platform posting via a pre-registered connector (Settings →
+  // Social Connectors). Platform is DERIVED from the selected connector, not
+  // picked directly here — a connector already pins one platform (Track A
+  // owns credential storage + HTTP dispatch; this card only authors the
+  // {connectorId, text} reference). Text defaults to the same "just the run
+  // result" starting point a fresh action should have.
+  const [socialConnectorId, setSocialConnectorId] = useState(draft.action.socialPost?.connectorId ?? '');
+  const [socialPostText, setSocialPostText] = useState(draft.action.socialPost?.text ?? '{{result}}');
   // Select the raw array (stable reference from the store) and filter in a
   // separate useMemo, not inside the selector: .filter() always returns a
   // new array reference, which never satisfies Zustand's Object.is equality
@@ -250,6 +258,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const agentVaultPath = useSettingsStore((s) => s.settings.agentVaultPath ?? '');
   const agentTopicFolder = useSettingsStore((s) => s.settings.agentTopicFolder ?? '');
   const agentCustomPath = useSettingsStore((s) => s.settings.agentCustomPath ?? '');
+  // social-post: connectors registered in Settings → Social Connectors
+  // (metadata only — Track A's SecureStore holds the actual credential).
+  const socialConnectors = useSettingsStore((s) => s.socialConnectors ?? []);
+  const selectedSocialConnector = useMemo(
+    () => socialConnectors.find((c: SocialConnectorMeta) => c.id === socialConnectorId),
+    [socialConnectors, socialConnectorId],
+  );
   // Same resolution SettingsDropdown.tsx's read-only preview uses (both call
   // resolveAgentOutputPathPreview in lib/agent-executor.ts, which mirrors
   // save_draft_result()'s OUT_BASE/SAVED_FILE logic exactly) — but here the
@@ -367,6 +382,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const intentValid = actionType !== 'intent'
     || (intentMode === 'launch' ? intentTarget.trim().length > 0 : intentShareText.trim().length > 0);
   const dmReplyValid = actionType !== 'dm-reply' || dmPairingId.length > 0;
+  const socialPostValid = actionType !== 'social-post' || !!selectedSocialConnector;
   const apiCallValid =
     actionType !== 'api-call' ||
     (canUseApiCall && EGRESS_ALLOWLIST.includes(apiCallHost) && apiCallPath.trim().startsWith('/'));
@@ -377,7 +393,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     frequency === 'daily' || frequency === 'weekly' || frequency === 'custom' || frequency === 'daily-multi';
   const timeReady = !freqUsesClockTime || !timeIsPlaceholder || timeTouched;
   const canConfirm =
-    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && intentValid && dmReplyValid && apiCallValid;
+    (isOnce || !!cron) && timeReady && name.trim().length > 0 && webhookValid && commandValid && intentValid && dmReplyValid && socialPostValid && apiCallValid;
 
   const handleConfirm = () => {
     if (!canConfirm) return;
@@ -398,6 +414,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     if (actionType === 'dm-reply') {
       action.dmPairingId = dmPairingId;
       action.dmReplyText = dmReplyText.trim();
+    }
+    if (actionType === 'social-post' && selectedSocialConnector) {
+      action.socialPost = {
+        platform: selectedSocialConnector.platform,
+        connectorId: selectedSocialConnector.id,
+        text: socialPostText.trim(),
+      };
     }
     // app-act has no dedicated editor UI yet (Phase 6 is NL-parser-only) — when
     // the user leaves the card's action picker on 'app-act' unchanged, carry the
@@ -761,6 +784,48 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             ? t('agentcard.appact_x_warning')
             : t('agentcard.appact_generic_warning')}
         </Text>
+      )}
+      {actionType === 'social-post' && (
+        <>
+          <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.socialpost_connector_label')}</Text>
+          {socialConnectors.length === 0 ? (
+            <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.socialpost_no_connectors')}</Text>
+          ) : (
+            <View style={styles.dmPairingList}>
+              {socialConnectors.map((connector: SocialConnectorMeta) => {
+                const selected = connector.id === socialConnectorId;
+                return (
+                  <TouchableOpacity
+                    key={connector.id}
+                    onPress={() => setSocialConnectorId(connector.id)}
+                    style={[styles.dmPairingRow, {
+                      borderColor: selected ? colors.accent : colors.border,
+                      backgroundColor: selected ? `${colors.accent}15` : 'transparent',
+                    }]}
+                  >
+                    <Text style={{ color: selected ? colors.accent : colors.foreground, fontSize: 12, flex: 1 }} numberOfLines={1}>
+                      {connector.label}
+                    </Text>
+                    <Text style={[styles.dmWeakBadge, { color: colors.muted, borderColor: colors.border }]}>
+                      {t(`social_connectors.platform_${connector.platform}`)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+          <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.socialpost_text_label')}</Text>
+          <TextInput
+            value={socialPostText}
+            onChangeText={setSocialPostText}
+            multiline
+            placeholder={t('agentcard.socialpost_text_label')}
+            placeholderTextColor={colors.inactive}
+            style={[styles.input, fieldBg]}
+          />
+          <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.socialpost_text_hint')}</Text>
+          <Text style={[styles.warn, { color: colors.warning }]}>{t('agentcard.socialpost_warning')}</Text>
+        </>
       )}
       {actionType === 'api-call' && (
         <ApiCallEditor

@@ -57,6 +57,11 @@ describe('AgentConfirmCard', () => {
     useSettingsStore.setState((state) => ({
       settings: { ...state.settings, autonomousCloudConsent: false },
     }));
+    // Social connectors (Track A's store additions) — reset per test so
+    // selections from one test don't leak into the next. Cast through `any`:
+    // this test file's own worktree may not yet see Track A's socialConnectors
+    // / addSocialConnector / removeSocialConnector additions to settings-store.ts.
+    useSettingsStore.setState({ socialConnectors: [] } as any);
   });
 
   it('renders a valid agent draft without entering an infinite update loop', () => {
@@ -152,6 +157,64 @@ describe('AgentConfirmCard', () => {
         expect(first.apiCall!.host).toBe(EGRESS_ALLOWLIST[0]);
         expect(first.tool).toBeUndefined();
       }
+    });
+  });
+
+  // social-post — Track B authoring UI. Dispatch/storage owned by Track A;
+  // this only covers the card's own selection + confirm-payload wiring.
+  describe('social-post', () => {
+    const connector = {
+      id: 'my-discord',
+      platform: 'discord',
+      label: 'My Discord',
+      host: 'discord.com',
+      fields: ['webhookUrl'],
+      createdAt: 0,
+    };
+
+    it('shows the empty-connectors hint when no connector is registered', () => {
+      const { getByText, queryByText } = render(
+        <AgentConfirmCard draft={draft} onConfirm={jest.fn()} onCancel={jest.fn()} />,
+      );
+      fireEvent.press(getByText('agentcard.action_social-post'));
+      expect(getByText('agentcard.socialpost_no_connectors')).toBeTruthy();
+      expect(queryByText('My Discord')).toBeNull();
+    });
+
+    it('lists registered connectors and confirming produces a socialPost action', () => {
+      useSettingsStore.setState({ socialConnectors: [connector] } as any);
+      const onConfirm = jest.fn<void, [ConfirmedAgentDraft]>();
+      const { getByText } = render(
+        <AgentConfirmCard draft={draft} onConfirm={onConfirm} onCancel={jest.fn()} />,
+      );
+      fireEvent.press(getByText('agentcard.action_social-post'));
+      expect(getByText('My Discord')).toBeTruthy();
+      fireEvent.press(getByText('My Discord'));
+
+      fireEvent.press(getByText('agentcard.confirm'));
+
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+      const submitted = onConfirm.mock.calls[0][0];
+      expect(submitted.action.type).toBe('social-post');
+      expect(submitted.action.socialPost).toEqual({
+        platform: 'discord',
+        connectorId: 'my-discord',
+        text: '{{result}}',
+      });
+    });
+
+    it('Confirm is disabled for social-post until a connector is selected', () => {
+      useSettingsStore.setState({ socialConnectors: [connector] } as any);
+      const onConfirm = jest.fn();
+      const { getByText } = render(
+        <AgentConfirmCard draft={draft} onConfirm={onConfirm} onCancel={jest.fn()} />,
+      );
+      fireEvent.press(getByText('agentcard.action_social-post'));
+      // No connector picked yet — canConfirm is false, so pressing Confirm
+      // (the seeded draft is a confident daily 08:00 cron, so the button still
+      // reads "Confirm", not "Run now") must not invoke onConfirm.
+      fireEvent.press(getByText('agentcard.confirm'));
+      expect(onConfirm).not.toHaveBeenCalled();
     });
   });
 });
