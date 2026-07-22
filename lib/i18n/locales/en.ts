@@ -228,6 +228,15 @@ const en: Record<string, string> = {
   'agentcard.action_app-act': 'App action',
   'agentcard.appact_x_warning': 'This will auto-post the run result to X (Twitter) every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
   'agentcard.appact_generic_warning': 'This will drive another app automatically every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
+  // Social platform posting (Track B) — dispatch itself lives elsewhere;
+  // this card only authors {connectorId, text} against a pre-registered
+  // connector. See social_connectors.* for the Settings registration UI.
+  'agentcard.action_social-post': 'social post',
+  'agentcard.socialpost_connector_label': 'Connector',
+  'agentcard.socialpost_no_connectors': 'No social connectors yet. Add one in Settings → Social Connectors first.',
+  'agentcard.socialpost_text_label': 'Post text',
+  'agentcard.socialpost_text_hint': 'Use {{result}} to include the run result.',
+  'agentcard.socialpost_warning': 'This posts to the connected platform every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
   // api-call (v1) — only offered for multi-step (>=2 step) agents.
   'agentcard.action_api-call': 'API call',
   'agentcard.apicall_authref': 'Credential (optional)',
@@ -366,6 +375,51 @@ const en: Record<string, string> = {
   'webhook_allowlist.placeholder': 'hooks.example.com',
   'webhook_allowlist.add': 'ADD',
   'webhook_allowlist.invalid': 'Enter a hostname only, without a scheme, port, path, or wildcard.',
+
+  // ── Social Connectors (Settings) — credential registration for the
+  // free-API social/publishing dispatch path (agent action 'social-post').
+  // Metadata only; secret values live in SecureStore and are never rendered
+  // back here. Field-name keys (social_connectors.field_*) are shared across
+  // platforms that reuse a field name (e.g. webhookUrl, appPassword).
+  'social_connectors.title': 'Social Connectors',
+  'social_connectors.description': 'Credentials for the "social post" agent action. Only labels and hosts are shown here — secret values are stored encrypted and never displayed again.',
+  'social_connectors.empty': 'No connectors registered yet.',
+  'social_connectors.add_button': '+ Add connector',
+  'social_connectors.select_platform': 'Select platform',
+  'social_connectors.label_placeholder': 'Label (e.g. My Discord)',
+  'social_connectors.id_placeholder': 'id (lowercase letters, numbers, hyphens)',
+  'social_connectors.host_placeholder': 'Instance host (e.g. mastodon.social)',
+  'social_connectors.id_invalid': 'ID must be lowercase letters, numbers, and hyphens only.',
+  'social_connectors.id_duplicate': 'A connector with this ID already exists.',
+  'social_connectors.label_required': 'Enter a label.',
+  'social_connectors.host_required': 'Enter the instance host.',
+  'social_connectors.field_required': 'Enter {{field}}.',
+  'social_connectors.added_toast': '{{label}} connected.',
+  'social_connectors.remove_a11y': 'Remove connector',
+  'social_connectors.saving': 'Saving…',
+  'social_connectors.platform_discord': 'Discord',
+  'social_connectors.platform_slack': 'Slack',
+  'social_connectors.platform_telegram': 'Telegram',
+  'social_connectors.platform_mastodon': 'Mastodon',
+  'social_connectors.platform_misskey': 'Misskey',
+  'social_connectors.platform_wordpress': 'WordPress',
+  'social_connectors.platform_bluesky': 'Bluesky',
+  'social_connectors.hint_discord': 'Server Settings → Integrations → Webhooks → copy webhook URL',
+  'social_connectors.hint_slack': 'Create an Incoming Webhook at api.slack.com/apps',
+  'social_connectors.hint_telegram': 'Message @BotFather to create a bot and get a token; get your chat_id by messaging @userinfobot',
+  'social_connectors.hint_mastodon': 'Your instance → Settings → Development → New Application, needs write:statuses scope',
+  'social_connectors.hint_misskey': 'Settings → API → generate an access token',
+  'social_connectors.hint_wordpress': 'Users → Profile → Application Passwords (requires WP 5.6+)',
+  'social_connectors.hint_bluesky': 'Settings → App Passwords → create one (do NOT use your main account password)',
+  'social_connectors.field_webhookUrl': 'Webhook URL',
+  'social_connectors.field_botToken': 'Bot Token',
+  'social_connectors.field_chatId': 'Chat ID',
+  'social_connectors.field_accessToken': 'Access Token',
+  'social_connectors.field_apiToken': 'API Token',
+  'social_connectors.field_username': 'Username',
+  'social_connectors.field_appPassword': 'App Password',
+  'social_connectors.field_handle': 'Handle',
+
   'slot_fill.question_schedule': 'When should this run? (e.g. "every day at 8am", "every 3 hours", "Mon/Fri at 9am")',
   'slot_fill.question_notification_trigger': 'Which app\'s notifications should trigger this? (e.g. com.whatsapp or an app name like Slack)',
   'slot_fill.question_output_path': 'Where should the result be saved? (Leave blank or say "skip" to use Shelly\'s default folder.)',
