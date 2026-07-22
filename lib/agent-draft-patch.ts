@@ -50,6 +50,8 @@ import {
   JP_DOW_LABEL,
 } from './agent-nl-parser';
 import { decodeCron } from './agent-card-cron';
+import { toolChoiceToLabel } from './agent-tool-router';
+import type { Agent } from '@/store/types';
 // Type-only: erased at compile time — same "no RN in this pure module"
 // convention lib/agent-plan-summary.ts already follows for ConfirmedAgentDraft.
 import type { PendingAgentSession } from '@/store/ai-pane-store';
@@ -60,6 +62,44 @@ export interface DraftPatchResult {
    *  'autonomous'. Feed straight into summarizeAgentDraftAsText's
    *  changedFields param so the re-posted summary marks exactly these lines. */
   changedFields: string[];
+}
+
+/** Convert persisted metadata into the same draft shape used by chat editing. */
+export function agentToParsedAgentDraft(agent: Agent): ParsedAgentDraft {
+  return {
+    name: agent.name,
+    prompt: agent.prompt,
+    schedule: agent.schedule,
+    scheduleConfident: true,
+    scheduleLabel: agent.schedule ?? 'Manual only',
+    action: agent.action ?? { type: 'draft' },
+    tool: agent.tool,
+    toolLabel: toolChoiceToLabel(agent.tool),
+    autonomous: agent.autonomous,
+    memory: agent.memory,
+    orchestrationSteps: agent.orchestration?.steps,
+    charLimit: agent.orchestration?.charLimit,
+    notificationTrigger: agent.notificationTrigger ?? undefined,
+    rawText: agent.prompt,
+  };
+}
+
+/** Single decision point for confirm: edit in place, or preserve creation. */
+export async function persistAgentDraft<T, C, U>(args: {
+  editingAgentId?: string;
+  createParams: C;
+  updatePartial: U;
+  runCommand: (cmd: string) => Promise<string>;
+  create: (params: C) => T;
+  update: (agentId: string, partial: U, runCommand: (cmd: string) => Promise<string>) => Promise<T | null>;
+}): Promise<{ agent: T | null; edited: boolean }> {
+  if (args.editingAgentId) {
+    return {
+      agent: await args.update(args.editingAgentId, args.updatePartial, args.runCommand),
+      edited: true,
+    };
+  }
+  return { agent: args.create(args.createParams), edited: false };
 }
 
 // ── Schedule patch ──────────────────────────────────────────────────────────

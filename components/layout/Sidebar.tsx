@@ -74,6 +74,11 @@ import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
+import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
+import { usePaneStore } from '@/store/pane-store';
+import { useAIPaneStore } from '@/store/ai-pane-store';
+import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
+import { summarizeAgentDraftAsText, hasDraftAssumptions } from '@/lib/agent-plan-summary';
 
 const WIDTH_ICONS = 48;
 const WIDTH_HIDDEN = 0;
@@ -938,6 +943,41 @@ export function Sidebar() {
     const buttons = [
       { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
       { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
+      { text: t('common.edit'), onPress: () => {
+        const multiPane = useMultiPaneStore.getState();
+        let aiSlot = multiPane.slots.find((slot) => slot?.tab === 'ai') ?? null;
+        if (aiSlot) {
+          const slotIndex = multiPane.slots.findIndex((slot) => slot?.id === aiSlot!.id);
+          if (slotIndex >= 0) multiPane.focusSlot(slotIndex as SlotIndex);
+          usePaneStore.getState().setFocusedPane(aiSlot.id);
+        } else {
+          if (multiPane.addPane('ai') !== null) return;
+          const next = useMultiPaneStore.getState();
+          aiSlot = next.slots[next.focusedSlot];
+        }
+        if (!aiSlot) return;
+        const draft = agentToParsedAgentDraft(agent);
+        const now = Date.now();
+        const messageId = `agent-edit-${now.toString(36)}`;
+        const chatStore = useAIPaneStore.getState();
+        chatStore.addMessage(aiSlot.id, {
+          id: messageId,
+          role: 'assistant',
+          content: summarizeAgentDraftAsText(draft),
+          timestamp: now,
+          agentDraft: draft,
+          agentChatConfirm: true,
+        });
+        chatStore.setPendingAgentSession(aiSlot.id, {
+          draft,
+          editingAgentId: agent.id,
+          phase: 'await-confirm',
+          attemptCounts: {},
+          hasAssumptions: hasDraftAssumptions(draft),
+          createdAt: now,
+          messageId,
+        });
+      } },
       ...(memoryNotes.length
         ? [{ text: t('sidebar.agent_memory_view'), onPress: () => showMemoryList(agent, memoryNotes) }]
         : []),
