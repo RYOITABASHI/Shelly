@@ -55,8 +55,31 @@ const SAFE_AGENT_ID_RE = /^[A-Za-z0-9_-]+$/;
 const AGENT_RUN_WAIT_TIMEOUT_MS = 20 * 60_000;
 const AGENT_RUN_WAIT_POLL_MS = 1_500;
 
-export function isSafeAgentId(agentId: string): boolean {
-  return SAFE_AGENT_ID_RE.test(agentId);
+export function isSafeAgentId(agentId: unknown): agentId is string {
+  // typeof guard first: RegExp.test coerces its argument, so a missing id
+  // (undefined) would stringify to "undefined" — which MATCHES the id regex —
+  // and let arbitrary non-agent JSON pass as an "agent". See isAgentMetadata.
+  return typeof agentId === 'string' && SAFE_AGENT_ID_RE.test(agentId);
+}
+
+/**
+ * Shape guard for metadata loaded from ~/.shelly/agents/*.json. The agents dir
+ * also holds NON-agent top-level json files (dm-pairings.json — a JSON array —
+ * and the policy.json deny-path), plus whatever future sidecar files land
+ * there. Before this guard, any JSON.parse-able chunk slipped through
+ * isSafeAgentId(parsed.id) via the "undefined" string coercion above and
+ * rendered as a blank ghost row in the Sidebar AGENT list. Require the
+ * minimal Agent contract: a plain object with safe string id and string
+ * name/prompt (every writer persists the full Agent shape).
+ */
+export function isAgentMetadata(value: unknown): value is Agent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Partial<Agent>;
+  return (
+    isSafeAgentId(record.id) &&
+    typeof record.name === 'string' &&
+    typeof record.prompt === 'string'
+  );
 }
 
 function assertSafeAgentId(agentId: string): void {
@@ -1789,8 +1812,8 @@ async function readAgentMetadataViaFileSystem(): Promise<Agent[] | null> {
     for (const name of names.filter((entry) => entry.endsWith('.json'))) {
       try {
         const content = await FileSystem.readAsStringAsync(`${dirUri}/${name}`);
-        const parsed = JSON.parse(content) as Agent;
-        if (isSafeAgentId(parsed.id)) {
+        const parsed: unknown = JSON.parse(content);
+        if (isAgentMetadata(parsed)) {
           agents.push(parsed);
         }
       } catch {
@@ -1836,8 +1859,8 @@ async function readAgentMetadataViaShell(
   const chunks = output.split('---SEPARATOR---').filter((c) => c.trim());
   for (const chunk of chunks) {
     try {
-      const parsed = JSON.parse(chunk.trim()) as Agent;
-      if (isSafeAgentId(parsed.id)) {
+      const parsed: unknown = JSON.parse(chunk.trim());
+      if (isAgentMetadata(parsed)) {
         agents.push(parsed);
       }
     } catch {
