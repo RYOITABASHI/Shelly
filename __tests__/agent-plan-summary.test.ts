@@ -344,6 +344,60 @@ describe('summarizeAgentDraftAsText', () => {
       expect(text).toContain('agentplan.next_fire_note|');
     });
   });
+
+  // Phase C (2026-07-22): lib/agent-draft-patch.ts's applyDraftPatch reports
+  // which fields a follow-up reply touched; the re-posted summary marks
+  // exactly those lines with '★' (and, once ANY field is marked, the other
+  // rendered lines get a neutral '・' so a reader isn't left guessing whether
+  // an unprefixed line was reviewed or simply not part of the mark scheme).
+  describe('changedFields marking', () => {
+    it('with no changedFields argument (the default), output is byte-identical to the un-marked call (backward compatible)', () => {
+      const draft = baseDraft();
+      expect(summarizeAgentDraftAsText(draft)).toBe(summarizeAgentDraftAsText(draft, new Set()));
+    });
+
+    it('marks the schedule line with ★ and leaves name/action with the neutral ・ marker', () => {
+      const draft = baseDraft();
+      const text = summarizeAgentDraftAsText(draft, new Set(['schedule']));
+      const lines = text.split('\n');
+      const scheduleLine = lines.find((l) => l.includes('agentplan.summary_schedule'));
+      const nameLine = lines.find((l) => l.includes('agentplan.summary_name'));
+      const actionLine = lines.find((l) => l.includes('agentplan.summary_action'));
+      expect(scheduleLine?.startsWith('★ ')).toBe(true);
+      expect(nameLine?.startsWith('・ ')).toBe(true);
+      expect(actionLine?.startsWith('・ ')).toBe(true);
+    });
+
+    it('marks MULTIPLE changed lines independently', () => {
+      const draft = baseDraft();
+      const text = summarizeAgentDraftAsText(draft, new Set(['schedule', 'name']));
+      const lines = text.split('\n');
+      const scheduleLine = lines.find((l) => l.includes('agentplan.summary_schedule'));
+      const nameLine = lines.find((l) => l.includes('agentplan.summary_name'));
+      const actionLine = lines.find((l) => l.includes('agentplan.summary_action'));
+      expect(scheduleLine?.startsWith('★ ')).toBe(true);
+      expect(nameLine?.startsWith('★ ')).toBe(true);
+      expect(actionLine?.startsWith('・ ')).toBe(true);
+    });
+
+    it('marks the autonomous_note line with ★ only when "autonomous" is in changedFields', () => {
+      const draft = baseDraft({ autonomous: true });
+      const marked = summarizeAgentDraftAsText(draft, new Set(['autonomous']));
+      const unmarkedButOtherFieldChanged = summarizeAgentDraftAsText(draft, new Set(['schedule']));
+      const markedLine = marked.split('\n').find((l) => l.includes('agentplan.autonomous_note'));
+      const otherLine = unmarkedButOtherFieldChanged.split('\n').find((l) => l.includes('agentplan.autonomous_note'));
+      expect(markedLine?.startsWith('★ ')).toBe(true);
+      expect(otherLine?.startsWith('・ ')).toBe(true);
+    });
+
+    it('an empty changedFields set (explicit) produces the same un-marked output as omitting the argument', () => {
+      const draft = baseDraft();
+      const text = summarizeAgentDraftAsText(draft, new Set());
+      const scheduleLine = text.split('\n').find((l) => l.includes('agentplan.summary_schedule'));
+      expect(scheduleLine?.startsWith('★')).toBe(false);
+      expect(scheduleLine?.startsWith('・')).toBe(false);
+    });
+  });
 });
 
 describe('draftToConfirmedAgentDraft', () => {

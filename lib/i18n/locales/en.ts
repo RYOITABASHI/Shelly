@@ -370,13 +370,22 @@ const en: Record<string, string> = {
   'agentplan.socialpost_line': 'Post to {{platform}} ({{connector}}) (posts the run result as-is)',
   'agentplan.socialpost_line_with_preview': 'Post to {{platform}} ({{connector}}): "{{preview}}"',
   'agentplan.draft_line_with_path': 'draft (saved to {{path}})',
-  'agentplan.confirm_prompt': 'Register this agent as described above? Cancel and re-describe it if you want changes.',
+  // Phase C (2026-07-22): a plain field-only correction ("make it 9am") now
+  // patches the draft in place instead of requiring cancel+redo — see
+  // lib/agent-draft-patch.ts. Reworded from the older "cancel and re-describe"
+  // copy to reflect that.
+  'agentplan.confirm_prompt': 'Register this agent as described above? To change something, just say the change (e.g. "make it 9am"); "cancel" discards it.',
   // Phase A/B (2026-07-22) — type-to-confirm and the assumed-schedule
   // annotation for the chat-native flow (hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts).
-  'agentplan.confirm_unclear_hint': 'There is a pending draft. Reply "register" / "OK" to confirm, or "cancel" to discard it.',
+  'agentplan.confirm_unclear_hint': 'There is a pending draft. Reply "register" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',
   'agentplan.schedule_assumed_note': 'Interpreted "{{word}}" as {{time}}.',
   'agentplan.next_fire_note': 'Next run: {{datetime}}',
+  // Phase C (2026-07-22): header line prepended (by hooks/use-ai-pane-dispatch.ts)
+  // above the re-posted summary when a follow-up reply patched the pending
+  // draft — see lib/agent-draft-patch.ts / summarizeAgentDraftAsText's
+  // changedFields param, which marks the touched line(s) with ★.
+  'agentplan.patch_updated_header': 'Updated:',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',
