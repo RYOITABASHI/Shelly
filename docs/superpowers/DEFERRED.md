@@ -2787,7 +2787,11 @@ claude() {
 
 **スコープ外として明示的に対象外にしたもの（Phase C-F、今回未着手）**: `AgentConfirmCard.tsx`自体の削除、webhook/cli/intent/dm-reply/api-callのカードレス化、部分修正パッチ機構（「時間だけ9時に変えて」等）、オーケストレーションのステップ番号編集。
 
-**未了**: (1) Phase A/Bの実機検証ゼロ（まだ実施していない）。(2) Phase C以降（パッチ機構、webhook/cli/api-call等の高リスク系カードレス化、カード完全削除）は未着手——Fable5の設計レポート全文はこのセッションの会話ログに保存済み、次回セッションで着手時に参照すること。(3) `AgentChatConfirm.tsx`のタップボタン自体は今回残置（タイプ確定と並存）——将来的にボタンごと削除するかは「不便なら足す」方向で判断保留中、とFable5が提言。
+**未了**: (1) Phase A/Bの実機検証ゼロ（まだ実施していない）。(2) ~~Phase C以降は未着手~~ → **同日中にPhase Cも実装・レビュー・マージ完了**（下記参照）。(3) `AgentChatConfirm.tsx`のタップボタン自体は今回残置（タイプ確定と並存）——将来的にボタンごと削除するかは「不便なら足す」方向で判断保留中、とFable5が提言。
+
+**→ 同日中にPhase C（部分修正パッチ機構）も実装・レビュー・マージ完了（コミット`fd870a361`）**: await-confirm中の下書きに対し、確認/取消のどちらでもない返信を`lib/agent-draft-patch.ts`新設`applyDraftPatch()`で解釈し、schedule/name/action/autonomousの4フィールドを部分修正できるようにした。**新規パーサーは書かず、初回パースで使う`parseSchedule`/`detectAction`/`detectAutonomousIntent`をそのまま発話に再適用する**設計（パッチが初回パースと矛盾することがあり得ない）。安全設計（Fable5提言どおり）: (a) パッチは黙って適用せず、変更行に★マークを付けて全文再掲（`summarizeAgentDraftAsText`に`changedFields`引数を追加、デフォルト空集合で既存呼び出し元は出力バイト単位で不変）。(b) パッチ済みdraftは**絶対に自動登録しない**——`applyPatchToPendingSession`が`phase: 'await-confirm'`を無条件で維持するようハードコードし、別途の確認フレーズ返信を必ず要求。(c) 「9時のニュースをまとめて」のようなプロンプト内容としての時刻表現を、スケジュール変更と誤読しないよう、時刻のみパッチは「発話全体が時刻＋短い変更フィラーのみ」という狭い形状ゲート（`isBareTimeChangeUtterance`）を要求——「の」等の余分な語が続くと形状に一致せず誤爆しない設計（テストで直接検証済み）。(d) `detectAction`は既定で`draft`を返す（サイレントフォールバック）ため、無関係な返信のたびに他アクションが黙って`draft`へ格下げされないよう、`draft`結果は明示的な「ドラフト/下書き/draft」キーワード実在時のみ信頼するガードを追加（`detectAction`内部の同一正規表現と一致することをコード比較で確認済み）。(e) `autonomous`トグルは`detectAutonomousIntent`の`false`が「シグナルなし」と「明示的否定」を区別できないため、ON方向のみ信頼（既にtrueなフラグを誤ってfalseへ戻す経路は無い）。CC独立レビュー（全変更ファイル読解＋自前でtsc/jest再実行、直接関連9スイート316テストPASS、狙った誤爆防止テスト含む。フルスイートも既知のWindows-onlyベースラインのみで新規リグレッションなし）の上でマージ・push。CI確認中。
+
+**Phase C完了後もなお残るスコープ外**: 登録済みエージェントの事後編集（今回は未登録のawait-confirm下書きのみが対象）、オーケストレーションのステップ番号編集、webhook/cli/intent/dm-reply/api-callのカードレス化（Phase D/E）、`AgentConfirmCard.tsx`自体の削除（Phase F）。次回セッションでPhase D以降に着手する場合は、Fable5の設計レポート（このセッションの会話ログに全文保存済み）を参照すること。実機検証は依然Phase A〜Cすべてで未実施——次回最優先。
 → sync: なし（内部UX実装、README反映不要）。
 
 ---
