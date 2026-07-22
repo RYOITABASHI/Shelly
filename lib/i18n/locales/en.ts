@@ -369,7 +369,14 @@ const en: Record<string, string> = {
   'agentplan.appact_line_with_preview': '{{target}}: "{{preview}}"',
   'agentplan.socialpost_line': 'Post to {{platform}} ({{connector}}) (posts the run result as-is)',
   'agentplan.socialpost_line_with_preview': 'Post to {{platform}} ({{connector}}): "{{preview}}"',
+  'agentplan.draft_line_with_path': 'draft (saved to {{path}})',
   'agentplan.confirm_prompt': 'Register this agent as described above? Cancel and re-describe it if you want changes.',
+  // Phase A/B (2026-07-22) — type-to-confirm and the assumed-schedule
+  // annotation for the chat-native flow (hooks/use-ai-pane-dispatch.ts /
+  // lib/agent-plan-summary.ts).
+  'agentplan.confirm_unclear_hint': 'There is a pending draft. Reply "register" / "OK" to confirm, or "cancel" to discard it.',
+  'agentplan.schedule_assumed_note': 'Interpreted "{{word}}" as {{time}}.',
+  'agentplan.next_fire_note': 'Next run: {{datetime}}',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',

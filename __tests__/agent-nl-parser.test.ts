@@ -208,6 +208,74 @@ describe('parseAgentNL — daily (EN)', () => {
   });
 });
 
+// Phase B (2026-07-22) — Propose-and-Echo default resolution for a bare
+// time-of-day WORD (no digit) inside an already-established recurrence.
+describe('parseAgentNL — scheduleAssumed (bare time-of-day word defaults)', () => {
+  it('毎朝ニュースまとめて (no digit) → daily 08:00, scheduleConfident + scheduleAssumed both true', () => {
+    const d = parseAgentNL('毎朝ニュースまとめて');
+    expect(d.schedule).toBe('0 8 * * *');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.scheduleAssumed).toBe(true);
+    expect(d.suggestedTime).toEqual({ hour: 8, minute: 0 });
+  });
+
+  it('毎日深夜にログを集計して → 深夜 defaults to 00:00 (tested before the broader 夜 entry)', () => {
+    const d = parseAgentNL('毎日深夜にログを集計して');
+    expect(d.schedule).toBe('0 0 * * *');
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('毎日夕方にニュースをまとめて → 夕方 defaults to 18:00', () => {
+    const d = parseAgentNL('毎日夕方にニュースをまとめて');
+    expect(d.schedule).toBe('0 18 * * *');
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('毎日正午に集計して → 正午/昼 default to 12:00', () => {
+    const d = parseAgentNL('毎日正午に集計して');
+    expect(d.schedule).toBe('0 12 * * *');
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('毎日夜にニュースをまとめて → 夜 defaults to 21:00', () => {
+    const d = parseAgentNL('毎日夜にニュースをまとめて');
+    expect(d.schedule).toBe('0 21 * * *');
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('weekly variant: 月曜の夜にニュースをまとめて → weekly Mon 21:00, scheduleAssumed true', () => {
+    const d = parseAgentNL('月曜の夜にニュースをまとめて');
+    expect(d.schedule).toBe('0 21 * * 1');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('explicit digit interpretation ("朝7時") is UNAFFECTED — never marked as assumed', () => {
+    const d = parseAgentNL('毎朝7時にニュースをまとめて');
+    expect(d.schedule).toBe('0 7 * * *');
+    expect(d.scheduleAssumed).toBeUndefined();
+  });
+
+  it('explicit digit interpretation ("夜9時") is UNAFFECTED — never marked as assumed', () => {
+    const d = parseAgentNL('毎日夜9時に集計して');
+    expect(d.schedule).toBe('0 21 * * *');
+    expect(d.scheduleAssumed).toBeUndefined();
+  });
+
+  it('a daily marker with NO time-of-day word and no digit stays the existing ambiguous "needs restatement" case', () => {
+    const d = parseAgentNL('毎日ニュースをまとめて');
+    expect(d.schedule).toBeNull();
+    expect(d.scheduleConfident).toBe(false);
+    expect(d.suggestedFrequency).toBe('daily');
+    expect(d.scheduleAssumed).toBeUndefined();
+  });
+
+  it('a genuinely one-shot utterance (no recurrence marker at all) is unaffected', () => {
+    const d = parseAgentNL('朝ニュースをまとめて'); // no 毎, no recurrence established
+    expect(d.scheduleAssumed).toBeUndefined();
+  });
+});
+
 describe('parseAgentNL — "daily-multi" (multiple specific times per day)', () => {
   it('毎日朝8:00と夜21:00に (colon form) → shared-minute multi-hour cron, confident', () => {
     const d = parseAgentNL('毎日朝8:00と夜21:00にニュースをまとめて');

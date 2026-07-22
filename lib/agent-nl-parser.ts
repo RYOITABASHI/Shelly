@@ -97,6 +97,21 @@ export interface ParsedAgentDraft {
    *  and `action` is already `social-post`, or no social-post intent was
    *  detected at all). See parseAgentNL's `connectors` parameter. */
   socialPostCandidates?: SocialConnectorMeta[];
+  /** True when a recurring schedule (daily or weekly) was stated using a bare
+   *  time-of-day WORD with no digit ("毎朝ニュースまとめて") and parseSchedule
+   *  resolved it to a DEFAULT time (see TIME_OF_DAY_DEFAULTS) instead of
+   *  asking the user to restate it with an explicit time. `schedule` IS
+   *  confident/fireable in this case, but the assumption must be surfaced
+   *  (never silently opaque) and — per the chat-native confirm flow's hard
+   *  safety gate — a draft carrying this flag must never skip the
+   *  await-confirm round-trip even under a "no approval needed" default
+   *  setting. See lib/agent-plan-summary.ts's hasDraftAssumptions /
+   *  shouldAutoRegisterDraft and summarizeAgentDraftAsText's assumed-time
+   *  annotation + next-fire line. Absent/false = every schedule field on
+   *  this draft was either explicit or genuinely unset (existing behavior,
+   *  unaffected — see parseSchedule's TIME_OF_DAY_DEFAULTS doc comment for
+   *  the "explicit digit interpretation is never touched" guarantee). */
+  scheduleAssumed?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -266,6 +281,50 @@ export function fmtTime(t: ParsedTime): string {
 
 export const JP_DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
 
+/**
+ * JP/EN time-of-day WORDS (no explicit digit) → a Propose-and-Echo default
+ * HH:MM, consulted ONLY from within a branch of parseSchedule that has
+ * ALREADY established a recurrence (a dailyMarker or a non-empty weekday
+ * list) and where extractTime() found no explicit digit-based time —
+ * "毎朝ニュースまとめて" resolves via the 朝 entry to 08:00, but "朝7時" never
+ * reaches this table at all (extractTime's own JP regex already resolves the
+ * digit confidently upstream). Order matters: checked top-to-bottom, first
+ * match wins, so a more specific word is listed BEFORE a broader one it is a
+ * substring of — 深夜 ("late night") contains 夜 ("night") as a substring and
+ * must be tested first, or every 深夜 utterance would incorrectly resolve to
+ * 夜's 21:00 instead of 深夜's own 00:00.
+ */
+const TIME_OF_DAY_DEFAULTS: Array<[RegExp, ParsedTime]> = [
+  [/深夜/, { hour: 0, minute: 0 }],
+  [/朝イチ|起きたら|朝/, { hour: 8, minute: 0 }],
+  [/正午|昼/, { hour: 12, minute: 0 }],
+  [/夕方/, { hour: 18, minute: 0 }],
+  [/夜|\bnight\b|\bevening\b/i, { hour: 21, minute: 0 }],
+];
+
+/** hour → the JP time-of-day word from TIME_OF_DAY_DEFAULTS that produces
+ *  it — a reverse lookup so callers (lib/agent-plan-summary.ts's assumed-
+ *  schedule annotation) can render "（「朝」→08:00と解釈）" without threading
+ *  the originally-matched word through ParsedAgentDraft. Safe as a 1:1 map:
+ *  every default hour in the table above is unique. */
+export const TIME_OF_DAY_ASSUMPTION_LABEL: Record<number, string> = {
+  0: '深夜',
+  8: '朝',
+  12: '昼',
+  18: '夕方',
+  21: '夜',
+};
+
+/** Resolve a bare time-of-day word to its default HH:MM, or null when none of
+ *  TIME_OF_DAY_DEFAULTS matches. See that table's doc comment for the exact
+ *  scope/ordering contract. */
+function resolveTimeOfDayDefault(text: string): ParsedTime | null {
+  for (const [re, t] of TIME_OF_DAY_DEFAULTS) {
+    if (re.test(text)) return t;
+  }
+  return null;
+}
+
 export interface ScheduleResult {
   schedule: string | null;
   confident: boolean;
@@ -277,6 +336,12 @@ export interface ScheduleResult {
   suggestedFrequency?: 'daily' | 'weekly';
   /** For a weekly suggestion: the dow csv ("1" or "1,5") to pre-select the chips. */
   suggestedDowList?: string;
+  /** True when `schedule`/`confident` above were produced by resolving a bare
+   *  time-of-day WORD (see TIME_OF_DAY_DEFAULTS) rather than an explicit
+   *  digit time — propagated to ParsedAgentDraft.scheduleAssumed by the
+   *  caller. Absent/false = every part of this result came from an explicit
+   *  parse (existing behavior). */
+  assumedTimeOfDay?: boolean;
 }
 
 /** Parse the schedule, constrained to the whitelisted cron shapes. */
@@ -401,6 +466,19 @@ export function parseSchedule(text: string): ScheduleResult {
         label: `毎週${dayLabel} ${fmtTime(time)}`,
       };
     }
+    // No explicit digit time, but a recurrence (weekday list) IS established —
+    // check the time-of-day-word default before giving up and asking. See
+    // TIME_OF_DAY_DEFAULTS's doc comment for scope/ordering.
+    const assumedWeekly = resolveTimeOfDayDefault(text);
+    if (assumedWeekly) {
+      return {
+        schedule: `${assumedWeekly.minute} ${assumedWeekly.hour} * * ${dowField}`,
+        confident: true,
+        label: `毎週${dayLabel} ${fmtTime(assumedWeekly)}`,
+        suggestedTime: assumedWeekly,
+        assumedTimeOfDay: true,
+      };
+    }
     return {
       schedule: null,
       confident: false,
@@ -445,6 +523,21 @@ export function parseSchedule(text: string): ScheduleResult {
         schedule: `${time.minute} ${time.hour} * * *`,
         confident: true,
         label: `毎日 ${fmtTime(time)}`,
+      };
+    }
+    // No explicit digit time, but a daily recurrence marker (毎日/毎朝/…) IS
+    // established — check the time-of-day-word default before giving up and
+    // asking. E.g. "毎朝ニュースまとめて" → 08:00. See TIME_OF_DAY_DEFAULTS's
+    // doc comment for scope/ordering; "毎朝7時に" never reaches here because
+    // `time` above is already non-null for that case.
+    const assumedDaily = resolveTimeOfDayDefault(text);
+    if (assumedDaily) {
+      return {
+        schedule: `${assumedDaily.minute} ${assumedDaily.hour} * * *`,
+        confident: true,
+        label: `毎日 ${fmtTime(assumedDaily)}`,
+        suggestedTime: assumedDaily,
+        assumedTimeOfDay: true,
       };
     }
     return {
@@ -959,6 +1052,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       autonomous: true,
       memory: detectMemory(rawText),
       actionCaveat: presetActionCaveat,
+      scheduleAssumed: presetSched.assumedTimeOfDay || undefined,
       rawText,
     };
   }
@@ -1041,6 +1135,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       : undefined,
     suggestedFrequency: sched.suggestedFrequency,
     suggestedDowList: sched.suggestedDowList,
+    scheduleAssumed: sched.assumedTimeOfDay || undefined,
     action,
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),

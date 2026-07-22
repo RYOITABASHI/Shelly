@@ -8,9 +8,66 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ChatMessage, ChatAgent } from './chat-store';
+import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import type { SlotField } from '@/lib/agent-slot-fill';
 import { logInfo, logError } from '@/lib/debug-logger';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+/**
+ * Session-scoped (per-pane) pending state for a chat-native agent draft
+ * registration (Phase A, 2026-07-22). Unlike the pre-existing
+ * `ChatMessage.pendingSlotFill` (store/chat-store.ts), which lives on the
+ * MOST RECENT message and breaks if a single unrelated message lands in
+ * between question and answer, this lives on the CONVERSATION itself — a
+ * reply to a chat-native draft's await-confirm step is routed correctly
+ * regardless of what else appeared in the pane meanwhile.
+ *
+ * Scope note: this is currently wired up ONLY for `phase: 'await-confirm'`
+ * (see hooks/use-ai-pane-dispatch.ts's presentDraftForConfirmation, which
+ * sets it right after posting a chat-native draft message, and dispatch()'s
+ * new routing block, which reads it before falling through to the existing
+ * message-attached slot-fill routing). The pre-existing schedule/
+ * notificationTrigger/outputPath/socialConnector slot-fill conversation
+ * (lib/agent-slot-fill.ts) deliberately keeps using the message-attached
+ * `pendingSlotFill` mechanism unchanged — migrating that flow to this
+ * session-scoped shape too is future work, not required for this phase, and
+ * risked regressing the extensively-tested existing slot-fill behavior for
+ * no in-scope benefit. `phase: 'slot-fill'` / `awaitingField` are part of
+ * this type's shape for that future migration but are not currently set by
+ * any caller.
+ */
+export interface PendingAgentSession {
+  draft: ParsedAgentDraft;
+  phase: 'slot-fill' | 'await-confirm';
+  /** Reserved for a future slot-fill migration onto this session-scoped
+   *  state (see doc comment above) — not populated today. */
+  awaitingField?: SlotField;
+  /** Per-field retry counter, mirroring pendingSlotFill's attemptCount.
+   *  Keyed loosely (e.g. 'confirm' for the await-confirm phase's own
+   *  neither-confirm-nor-cancel re-ask loop) rather than by SlotField only,
+   *  since this type also covers the non-slot-fill await-confirm phase. */
+  attemptCounts: Record<string, number>;
+  /** True when `draft` carries an assumed (not explicitly stated) value —
+   *  see lib/agent-plan-summary.ts's hasDraftAssumptions. Snapshotted here
+   *  at session-creation time for reference/telemetry; the actual
+   *  never-auto-register enforcement lives in shouldAutoRegisterDraft
+   *  itself, not this flag. */
+  hasAssumptions: boolean;
+  /** Session creation/last-refresh time — stale sessions (mirrors
+   *  hooks/use-ai-pane-dispatch.ts's existing SLOT_FILL_STALE_MS, 15 min)
+   *  are never routed into, so an abandoned draft can't hijack an unrelated
+   *  later message indefinitely. */
+  createdAt: number;
+  /** The chat message id this session is tied to (the draft/summary
+   *  bubble) — confirming/cancelling via a typed chat reply updates THIS
+   *  message, exactly like tapping AgentChatConfirm's buttons already does. */
+  messageId: string;
+  /** Chat bubble agent label, carried through so a typed confirm/cancel
+   *  reply (or a re-ask) keeps the same pane icon/color as the original
+   *  draft message — mirrors pendingSlotFill's own agentLabel carry-through. */
+  agentLabel?: ChatAgent;
+}
 
 export type AIPaneConversation = {
   paneId: string;
@@ -18,6 +75,7 @@ export type AIPaneConversation = {
   activeAgent: ChatAgent | null;
   isStreaming: boolean;
   terminalContext: string | null;
+  pendingAgentSession?: PendingAgentSession | null;
 };
 
 type AIPaneState = {
@@ -35,6 +93,9 @@ type AIPaneState = {
   setTerminalContext: (paneId: string, context: string | null) => void;
   setActiveAgent: (paneId: string, agent: ChatAgent | null) => void;
   clearConversation: (paneId: string) => void;
+  /** Set or clear (pass null) the pane's session-scoped pending agent-draft
+   *  session — see PendingAgentSession's doc comment above. */
+  setPendingAgentSession: (paneId: string, session: PendingAgentSession | null) => void;
 };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -223,6 +284,25 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         };
       });
       debouncedSave(persist);
+    },
+
+    setPendingAgentSession: (paneId, session) => {
+      get().getOrCreate(paneId);
+      set((state) => {
+        const conv = state.conversations[paneId] ?? makeEmptyConversation(paneId);
+        return {
+          conversations: {
+            ...state.conversations,
+            [paneId]: { ...conv, pendingAgentSession: session },
+          },
+        };
+      });
+      // Not debounced through the shared persist() timer: a pending session
+      // is short-lived interaction state (created moments before the user's
+      // next reply is expected) — an app kill in that narrow window losing
+      // it just means the typed-confirm affordance is lost for that one
+      // draft (the tap-to-confirm buttons on the draft message itself, which
+      // ARE part of the debounced-persisted message list, still work).
     },
 
     clearConversation: (paneId) => {

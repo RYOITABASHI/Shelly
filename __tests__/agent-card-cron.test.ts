@@ -1,4 +1,4 @@
-import { decodeCron, buildCron, resolveInitialFrequency } from '@/lib/agent-card-cron';
+import { decodeCron, buildCron, resolveInitialFrequency, nextFireDate } from '@/lib/agent-card-cron';
 
 describe('resolveInitialFrequency — confirm-card initial selection', () => {
   it('a confident parse keeps its decoded shape', () => {
@@ -125,5 +125,64 @@ describe('agent confirm-card cron codec — "daily-multi" (multiple times per da
     // hourList) — the `hour` param is unused for 'daily-multi' (only `minute` and
     // `hourList` are checked), so the invalid value must be in the minute slot.
     expect(buildCron('daily-multi', 0, 65, 1, 15, '', '8,21')).toBeNull();
+  });
+});
+
+describe('nextFireDate — next-run computation for the schedule_assumed summary line', () => {
+  it('daily, before today\'s fire time: fires later today', () => {
+    const now = new Date(2026, 6, 22, 6, 0, 0); // Wed 2026-07-22 06:00, target 08:00
+    const decoded = decodeCron('0 8 * * *');
+    const next = nextFireDate(decoded, now);
+    expect(next).not.toBeNull();
+    expect(next!.getFullYear()).toBe(2026);
+    expect(next!.getMonth()).toBe(6);
+    expect(next!.getDate()).toBe(22);
+    expect(next!.getHours()).toBe(8);
+    expect(next!.getMinutes()).toBe(0);
+  });
+
+  it('daily, after today\'s fire time: rolls over to tomorrow', () => {
+    const now = new Date(2026, 6, 22, 9, 0, 0); // Wed 06:00 already passed the 08:00 slot
+    const decoded = decodeCron('0 8 * * *');
+    const next = nextFireDate(decoded, now);
+    expect(next!.getDate()).toBe(23);
+    expect(next!.getHours()).toBe(8);
+  });
+
+  it('weekly single-day: finds the next matching weekday, not just the next day', () => {
+    const now = new Date(2026, 6, 22, 6, 0, 0); // Wed 2026-07-22
+    const decoded = decodeCron('0 8 * * 5'); // next Friday
+    const next = nextFireDate(decoded, now);
+    expect(next!.getDay()).toBe(5);
+    expect(next!.getDate()).toBe(24); // Fri 2026-07-24
+    expect(next!.getHours()).toBe(8);
+  });
+
+  it('custom multi-day: finds the EARLIEST of the listed weekdays', () => {
+    const now = new Date(2026, 6, 22, 6, 0, 0); // Wed 2026-07-22
+    const decoded = decodeCron('0 8 * * 1,5'); // Mon/Fri -> next is this Friday
+    const next = nextFireDate(decoded, now);
+    expect(next!.getDay()).toBe(5);
+    expect(next!.getDate()).toBe(24);
+  });
+
+  it('daily-multi: picks the earliest still-upcoming hour today, else the first hour tomorrow', () => {
+    const now = new Date(2026, 6, 22, 10, 0, 0); // between the two daily-multi hours
+    const decoded = decodeCron('0 8,21 * * *');
+    const nextToday = nextFireDate(decoded, now);
+    expect(nextToday!.getDate()).toBe(22);
+    expect(nextToday!.getHours()).toBe(21);
+
+    const nowAfterBoth = new Date(2026, 6, 22, 22, 0, 0);
+    const nextTomorrow = nextFireDate(decoded, nowAfterBoth);
+    expect(nextTomorrow!.getDate()).toBe(23);
+    expect(nextTomorrow!.getHours()).toBe(8);
+  });
+
+  it('once/interval/hourly are not implemented here — return null rather than guessing', () => {
+    const now = new Date(2026, 6, 22, 6, 0, 0);
+    expect(nextFireDate(decodeCron('once'), now)).toBeNull();
+    expect(nextFireDate(decodeCron('*/15 * * * *'), now)).toBeNull();
+    expect(nextFireDate(decodeCron('0 */3 * * *'), now)).toBeNull();
   });
 });

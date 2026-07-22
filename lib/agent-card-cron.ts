@@ -179,3 +179,52 @@ export function scheduleHuman(
   if (f === 'weekly') return t('agentcard.sched_weekly', { day: WEEKDAY_LABELS[weekday], time: hhmm });
   return t('agentcard.sched_daily', { time: hhmm });
 }
+
+/**
+ * Compute the next fire Date for a decoded cron — used by
+ * lib/agent-plan-summary.ts's summarizeAgentDraftAsText to show a concrete
+ * "next run: …" line when a schedule was Propose-and-Echo DEFAULTED from a
+ * bare time-of-day word (ParsedAgentDraft.scheduleAssumed — see
+ * lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS), so the assumption is never
+ * left abstract. `now` is injectable for deterministic unit tests.
+ *
+ * Handles every shape decodeCron produces: 'daily' / 'weekly' / 'custom'
+ * (multi-day) / 'daily-multi' (multiple times/day, one shared minute).
+ * 'once' has no next fire (returns null). 'interval'/'hourly' are not
+ * surfaced by scheduleAssumed (TIME_OF_DAY_DEFAULTS only ever produces a
+ * daily/weekly cron) and are intentionally left unimplemented here (returns
+ * null) rather than guessed at.
+ */
+export function nextFireDate(decoded: DecodedCron, now: Date = new Date()): Date | null {
+  if (decoded.frequency === 'once' || decoded.frequency === 'interval' || decoded.frequency === 'hourly') {
+    return null;
+  }
+
+  const candidateHours =
+    decoded.frequency === 'daily-multi' && decoded.hourList
+      ? decoded.hourList
+          .split(',')
+          .map((h) => parseInt(h, 10))
+          .filter((n) => !Number.isNaN(n))
+          .sort((a, b) => a - b)
+      : [decoded.hour];
+
+  const dows =
+    decoded.frequency === 'weekly' || decoded.frequency === 'custom'
+      ? (decoded.dowList ? decoded.dowList.split(',').map((d) => parseInt(d, 10)) : [decoded.weekday])
+      : null; // null = every day (daily / daily-multi)
+
+  // Scan forward up to 7 days (guarantees hitting every possible weekday at
+  // least once) and, within each day, every candidate hour in order.
+  for (let dayOffset = 0; dayOffset <= 7; dayOffset++) {
+    const day = new Date(now);
+    day.setDate(day.getDate() + dayOffset);
+    if (dows && !dows.includes(day.getDay())) continue;
+    for (const h of candidateHours) {
+      const candidate = new Date(day);
+      candidate.setHours(h, decoded.minute, 0, 0);
+      if (candidate.getTime() > now.getTime()) return candidate;
+    }
+  }
+  return null; // unreachable for a valid decoded cron within a 7-day scan
+}
