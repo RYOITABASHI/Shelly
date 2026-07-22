@@ -31,7 +31,11 @@ export const SIGNED_APPROVAL_SCHEMA_VERSION = 2;
 // app/_layout.tsx's handleAgentActionConfirm (fececf5a2). Nothing here is
 // wired into a production path yet (see module doc comment above), so this
 // is a type-only correction with no runtime behavior change today.
-export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
+// social-post joined the gated set on 2026-07-22 (store/types.ts) and is
+// widened here immediately to avoid repeating the app-act drift described
+// above. (api-call is still absent — it predates this edit and its approval
+// surface is PlanSpec-executor-only; widening it is out of scope here.)
+export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'social-post';
 
 export type ApprovalDecision = 'accept' | 'decline';
 

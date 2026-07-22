@@ -206,8 +206,14 @@ object AgentActionApprovalBridge {
 
     private fun fromJson(raw: JSONObject, requestSha256: String?): AgentActionApprovalRequest? {
         val runId = raw.optString("runId").trim().takeIf { it.isNotBlank() } ?: return null
+        // social-post (2026-07-22): must be accepted here or the native watcher
+        // silently DROPS its approval request and the executor's mandatory
+        // non-allowlisted-host wait can only ever time out — the human never
+        // sees an Allow/Deny notification. (NOTE: "api-call" is still absent
+        // from this list — a pre-existing gap; NotificationDispatcher already
+        // carries an api-call branch that is unreachable through this parse.)
         val actionType = raw.optString("actionType").trim().takeIf {
-            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act"
+            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act" || it == "social-post"
         } ?: return null
         return AgentActionApprovalRequest(
             runId = runId,

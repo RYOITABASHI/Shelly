@@ -22,6 +22,7 @@
  *  - CAP-001: budget / loop-limit / redacted audit / taint-aware structural rule.
  */
 import { redactSecrets } from '@/lib/redact-secrets';
+import type { SocialConnectorMeta } from '@/store/types';
 
 /**
  * SECRET-001. An opaque handle a skill/backend passes to the broker. The broker
@@ -77,6 +78,31 @@ export const EGRESS_ALLOWLIST: readonly string[] = Object.freeze([
 
 /** Loopback hosts are the only ones allowed over plain http. */
 export const LOOPBACK_HOSTS: readonly string[] = Object.freeze(['127.0.0.1', 'localhost']);
+
+/**
+ * Social-connector host binding (2026-07-22) — the THIRD egress model, next to
+ * the fixed EGRESS_ALLOWLIST (autonomous no-approval spend) and the fixed
+ * 4-entry AUTH_REFS (each known service bound to exactly one host, both
+ * deliberately UNCHANGED by this feature): dynamic, user-registered
+ * connectors, each bound to whatever single host the user's connector
+ * declares (fixed for discord/slack/telegram/bluesky, user-chosen for
+ * mastodon/misskey/wordpress).
+ *
+ * A connector's own declared host is definitionally its ONLY allowed target —
+ * this is the security boundary: a connector registered for mastodon.social's
+ * token can never be spent against any other host, mirroring AUTH_REFS'
+ * ref→host binding for the fixed services. Pure and case-insensitive; empty
+ * hosts never match (fail-closed).
+ */
+export function isSocialConnectorHostAllowed(
+  connector: Pick<SocialConnectorMeta, 'host'>,
+  host: string,
+): boolean {
+  const declared = (connector.host || '').trim().toLowerCase();
+  const candidate = (host || '').trim().toLowerCase();
+  if (!declared || !candidate) return false;
+  return declared === candidate;
+}
 
 /** Extract a lowercased hostname from a URL, or null if unparseable. */
 export function hostFromUrl(url: string): string | null {

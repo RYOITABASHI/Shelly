@@ -397,6 +397,12 @@ export type AppSettings = {
   /** Webhook destination hosts the user has previously vetted. Informational
    *  only: membership never bypasses the per-request human approval gate. */
   webhookHostAllowlist?: string[];
+  /** Social-connector hosts the user has explicitly consented to for SILENT
+   *  unattended social-post dispatch (synced to SHELLY_SOCIAL_HOST_ALLOWLIST
+   *  in ~/.shelly/agents/.env). Unlike webhookHostAllowlist this is
+   *  load-bearing: a social-post to a host NOT on this list always requires a
+   *  human approval tap, regardless of the approval-mode default. */
+  socialHostAllowlist?: string[];
   // ─── Agent output destination (where saved drafts land) ─────────────────────
   /** Where an agent's saved draft is written. 'local' (default) → a clean,
    *  findable local folder ($HOME/agent-output); 'obsidian' → the configured
@@ -584,7 +590,74 @@ export type AgentActionType =
   | 'intent'
   | 'dm-reply'
   | 'app-act'
-  | 'api-call';
+  | 'api-call'
+  | 'social-post';
+
+// ─── Social connectors (free-API auto-posting, 2026-07-22) ──────────────────
+
+export type SocialPlatform = 'discord' | 'slack' | 'telegram' | 'mastodon' | 'misskey' | 'wordpress' | 'bluesky';
+
+/**
+ * social-post: publish the run result to a user-registered social/publishing
+ * connector (Discord/Slack webhook, Telegram bot, Mastodon/Misskey instance,
+ * WordPress site, Bluesky PDS). The API alternative to the AccessibilityService
+ * `app-act` path. Approval tier: a human approval tap EVERY time, UNLESS the
+ * connector's host is opted into SHELLY_SOCIAL_HOST_ALLOWLIST (the same
+ * env-var opt-in pattern SHELLY_WEBHOOK_HOST_ALLOWLIST uses for `webhook`) —
+ * a non-allowlisted destination requires the tap even when the global
+ * approval-mode default is 'auto', because these connectors carry
+ * account-level credentials (same risk tier as an external post via app-act,
+ * not a local draft).
+ */
+export interface AgentSocialPostConfig {
+  platform: SocialPlatform;
+  /** id of a SocialConnectorMeta registered in settings-store; the connector carries
+   *  host + which secret fields it needs — this config only carries WHAT to post. */
+  connectorId: string;
+  /** Post text/body. May contain the literal placeholder "{{result}}", string-replaced
+   *  (no template engine) with the agent's run preview text — same convention as
+   *  intentShareText/dmReplyText/appActParams/api-call's bodyTemplate. Absent/empty
+   *  means "{{result}}" (post the run result itself). */
+  text?: string;
+}
+
+/**
+ * Metadata for one user-registered social connector. Persisted normally
+ * (AsyncStorage) — SECRET VALUES ARE NEVER STORED HERE. Secrets live in
+ * SecureStore only, one entry per field (lib/secure-store.ts's
+ * saveConnectorSecret), and are synced to ~/.shelly/agents/.env as
+ * SOCIAL_CONNECTOR_<ID>_<FIELD> vars for headless/background dispatch —
+ * the same .env pattern PERPLEXITY_API_KEY etc. already use.
+ */
+export interface SocialConnectorMeta {
+  /** user-chosen slug, e.g. "my-mastodon" (validated: alphanumeric+hyphen only —
+   *  used in SecureStore keys and .env variable names). */
+  id: string;
+  platform: SocialPlatform;
+  /** display name shown in pickers */
+  label: string;
+  /** Effective API host for allowlist/audit purposes. Fixed per platform for
+   *  discord/slack/telegram/bluesky (discord.com, hooks.slack.com,
+   *  api.telegram.org, bsky.social by default — bluesky's is user-editable for
+   *  a custom PDS). User-provided for mastodon/misskey/wordpress (their own
+   *  instance/site, federated/self-hosted). A connector's own declared host is
+   *  definitionally its ONLY allowed target — see
+   *  lib/capability-envelope.ts's isSocialConnectorHostAllowed. */
+  host: string;
+  /** Names of the secret fields this connector's platform needs. Values are
+   *  NEVER stored in this metadata. Per-platform field sets (see
+   *  lib/social-connectors.ts's SOCIAL_PLATFORM_FIELDS):
+   *  - discord: ['webhookUrl'] (the full https://discord.com/api/webhooks/... URL IS the secret)
+   *  - slack: ['webhookUrl'] (same pattern, https://hooks.slack.com/services/...)
+   *  - telegram: ['botToken', 'chatId']
+   *  - mastodon: ['accessToken']
+   *  - misskey: ['apiToken']
+   *  - wordpress: ['username', 'appPassword']
+   *  - bluesky: ['handle', 'appPassword']
+   */
+  fields: string[];
+  createdAt: number;
+}
 
 /**
  * api-call (v1 UI authoring; v1.1 also permits narrowly-detected explicit NL
@@ -663,6 +736,9 @@ export interface AgentAction {
    *  produces this; only AgentConfirmCard's editor writes it, gated to
    *  orchestrated (>=2 step) agents. See AgentApiCallConfig. */
   apiCall?: AgentApiCallConfig;
+  /** social-post: publish the run result via a registered social connector.
+   *  See AgentSocialPostConfig's doc comment for the approval tier. */
+  socialPost?: AgentSocialPostConfig;
 }
 
 /** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */

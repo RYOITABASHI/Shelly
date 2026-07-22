@@ -62,7 +62,21 @@ const CONFIG_ENV_KEYS = new Set([
   // user who enabled "always require manual approval" globally would still
   // have had their unattended orchestrated agents auto-approved here.
   'SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL',
+  // social-post (2026-07-22): the user's silent-unattended-dispatch opt-in
+  // list, the social twin of SHELLY_WEBHOOK_HOST_ALLOWLIST above.
+  'SHELLY_SOCIAL_HOST_ALLOWLIST',
 ]);
+
+// social-post (2026-07-22): dynamic per-connector config keys — ONLY the
+// non-secret HOST/META entries are ever admitted into `config` (parseConfigEnv
+// below). Secret fields (tokens/app passwords) are deliberately excluded and
+// are read only by loadConnectorSecrets() inside the social-post dispatch
+// itself, scoped to the one connector the plan names. No secret field name
+// ends in HOST or META (lib/social-connectors.ts's SOCIAL_PLATFORM_FIELDS),
+// so this pattern can never admit a secret.
+function isSocialConnectorConfigKey(key) {
+  return /^SOCIAL_CONNECTOR_[A-Z0-9_]+_(HOST|META)$/.test(key);
+}
 
 const REDACT_PATTERNS = [
   /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g,
@@ -195,7 +209,7 @@ function parseConfigEnv(file) {
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
     let key = line.slice(0, eq).trim().replace(/^export\s+/, '');
-    if (!CONFIG_ENV_KEYS.has(key)) continue;
+    if (!CONFIG_ENV_KEYS.has(key) && !isSocialConnectorConfigKey(key)) continue;
     let val = line.slice(eq + 1).trim();
     if (val.length >= 2 && val[0] === "'" && val[val.length - 1] === "'") {
       val = val.slice(1, -1).replace(/'\\''/g, "'");
@@ -645,6 +659,10 @@ function brokerHttpBodyFile(paths, opts, plan, request) {
     '--err', errFile,
   ];
   if (request.bodyFile) args.push('--body-file', request.bodyFile);
+  // social-post (2026-07-22): connector Bearer/Basic headers travel via a
+  // 0600 JSON header file the broker merges before its own AUTH_REFS
+  // resolution — see the broker's --header-file handling for the guarantees.
+  if (request.headerFile) args.push('--header-file', request.headerFile);
   if (request.authRef) args.push('--auth-ref', request.authRef);
   if (request.approved) args.push('--approved', '1');
   if (opts.tainted) args.push('--tainted', '1');
@@ -719,6 +737,111 @@ function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
   } finally {
     if (bodyFile) { try { fs.unlinkSync(bodyFile); } catch (_) {} }
   }
+}
+
+// social-post (2026-07-22): compose the per-platform request. Returns
+// { url, body, headers } — headers null/{} when the platform authenticates
+// via the URL (discord/slack webhooks, telegram bot token) or the body
+// (misskey's "i"). Throws PlanFailure (handled) on a missing secret or a
+// connector-host mismatch. Bluesky performs its createSession exchange HERE
+// (through the same broker primitive) so the caller's single dispatch is the
+// final createRecord call. Field-name keys are the uppercased env suffixes
+// produced by lib/social-connectors.ts's socialConnectorEnvVar.
+function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets) {
+  const missing = (what) => new PlanFailure(`${what} — re-register the connector in Settings.`, { handled: true });
+  const hostMismatch = () =>
+    new PlanFailure("Social-post destination host does not match the connector's registered host.", { handled: true });
+  if (platform === 'discord') {
+    const url = String(secrets.WEBHOOKURL || '');
+    if (!url) throw missing('Discord connector is missing its webhook URL secret');
+    if (!socialUrlMatchesHost(url, host)) throw hostMismatch();
+    // Discord's payload field is literally "content".
+    return { url, body: { content: text }, headers: null };
+  }
+  if (platform === 'slack') {
+    const url = String(secrets.WEBHOOKURL || '');
+    if (!url) throw missing('Slack connector is missing its webhook URL secret');
+    if (!socialUrlMatchesHost(url, host)) throw hostMismatch();
+    return { url, body: { text }, headers: null };
+  }
+  if (platform === 'telegram') {
+    const token = String(secrets.BOTTOKEN || '');
+    const chatId = String(secrets.CHATID || '');
+    if (!token || !chatId) throw missing('Telegram connector is missing its bot token or chat id');
+    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    // Catches a telegram connector registered against any host other than
+    // api.telegram.org (the URL is fixed; the connector host must agree).
+    if (!socialUrlMatchesHost(url, host)) throw hostMismatch();
+    return { url, body: { chat_id: chatId, text }, headers: null };
+  }
+  if (platform === 'mastodon') {
+    const token = String(secrets.ACCESSTOKEN || '');
+    if (!token) throw missing('Mastodon connector is missing its access token');
+    return {
+      url: `https://${host}/api/v1/statuses`,
+      body: { status: text },
+      headers: { Authorization: `Bearer ${token}` },
+    };
+  }
+  if (platform === 'misskey') {
+    const token = String(secrets.APITOKEN || '');
+    if (!token) throw missing('Misskey connector is missing its API token');
+    // Misskey convention: the auth token travels IN the body ("i"), not a header.
+    return { url: `https://${host}/api/notes/create`, body: { i: token, text }, headers: null };
+  }
+  if (platform === 'wordpress') {
+    const username = String(secrets.USERNAME || '');
+    const appPassword = String(secrets.APPPASSWORD || '');
+    if (!username || !appPassword) throw missing('WordPress connector is missing its username or application password');
+    const basic = Buffer.from(`${username}:${appPassword}`).toString('base64');
+    const title = (text.split('\n')[0] || '').slice(0, 80).trim() || 'Shelly agent post';
+    // "status":"publish" matches this action type's auto-POST intent — see
+    // the .sh executor's matching comment in dispatch_social_post.
+    return {
+      url: `https://${host}/wp-json/wp/v2/posts`,
+      body: { title, content: text, status: 'publish' },
+      headers: { Authorization: `Basic ${basic}` },
+    };
+  }
+  if (platform === 'bluesky') {
+    const handle = String(secrets.HANDLE || '');
+    const appPassword = String(secrets.APPPASSWORD || '');
+    if (!handle || !appPassword) throw missing('Bluesky connector is missing its handle or app password');
+    // Step 1: createSession — exchanges handle+app-password for accessJwt+did.
+    const sessionBodyFile = path.join(paths.tmpDir, `plan-social-session-${plan.agent.id}-${process.pid}.json`);
+    fs.writeFileSync(sessionBodyFile, JSON.stringify({ identifier: handle, password: appPassword }), { mode: 0o600 });
+    let sessionRaw = '';
+    try {
+      sessionRaw = brokerHttpBodyFile(paths, opts, plan, {
+        url: `https://${host}/xrpc/com.atproto.server.createSession`,
+        bodyFile: sessionBodyFile,
+        approved: true,
+        timeoutSeconds: 30,
+      });
+    } catch (e) {
+      const detail = e instanceof PlanFailure ? e.message : String(e);
+      throw new PlanFailure(`Bluesky session exchange failed: ${redact(detail)}`, { handled: true });
+    } finally {
+      try { fs.unlinkSync(sessionBodyFile); } catch (_) {}
+    }
+    let session = null;
+    try { session = JSON.parse(sessionRaw); } catch (_) { session = null; }
+    const accessJwt = session && typeof session.accessJwt === 'string' ? session.accessJwt : '';
+    const did = session && typeof session.did === 'string' ? session.did : '';
+    // Fail closed when either field is absent — never post with a partial session.
+    if (!accessJwt || !did) throw new PlanFailure('Bluesky session exchange failed: response was missing accessJwt/did.', { handled: true });
+    // Step 2: createRecord with the session Bearer.
+    return {
+      url: `https://${host}/xrpc/com.atproto.repo.createRecord`,
+      body: {
+        repo: did,
+        collection: 'app.bsky.feed.post',
+        record: { text, createdAt: new Date().toISOString() },
+      },
+      headers: { Authorization: `Bearer ${accessJwt}` },
+    };
+  }
+  throw new PlanFailure(`Unsupported social platform: ${platform}`, { handled: true });
 }
 
 function extractModelContent(toolType, raw) {
@@ -1393,6 +1516,82 @@ function webhookHostIsAllowlisted(host, config) {
     .includes(candidate);
 }
 
+// ─── social-post (2026-07-22) ───────────────────────────────────────────────
+// Mirrors lib/agent-executor.ts's dispatch_social_post (.sh executor) — the
+// per-platform request shapes, the connector-host binding, and the
+// "non-allowlisted host always requires a human tap" approval tier must stay
+// in sync between the two executors.
+
+// Mirrors lib/social-connectors.ts's socialConnectorEnvPrefix (this file is
+// plain CommonJS and cannot import the TS module).
+function socialConnectorEnvPrefix(connectorId) {
+  return 'SOCIAL_CONNECTOR_' + String(connectorId || '').replace(/-/g, '_').toUpperCase();
+}
+
+function socialHostIsAllowlisted(host, config) {
+  const candidate = String(host || '').trim().toLowerCase();
+  if (!candidate) return false;
+  return String(config.SHELLY_SOCIAL_HOST_ALLOWLIST || '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(candidate);
+}
+
+// Reads ONLY this connector's secret fields from the .env file — never the
+// whole file into config (see isSocialConnectorConfigKey's doc comment). The
+// non-secret _HOST/_META suffixes are skipped (they live in config instead).
+function loadConnectorSecrets(envFile, envPrefix) {
+  const out = {};
+  let text = '';
+  try {
+    text = fs.readFileSync(envFile, 'utf8');
+  } catch (_) {
+    return out;
+  }
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line[0] === '#') continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim().replace(/^export\s+/, '');
+    if (!key.startsWith(envPrefix + '_')) continue;
+    if (key.endsWith('_HOST') || key.endsWith('_META')) continue;
+    // Exact-connector match only: a field suffix never contains '_' (fields
+    // are uppercased alnum camelCase names), so a suffix WITH '_' belongs to a
+    // hyphen-suffixed SIBLING connector id (e.g. prefix …_MASTODON matching
+    // …_MASTODON_2_ACCESSTOKEN → suffix "2_ACCESSTOKEN") — skip it.
+    if (key.slice(envPrefix.length + 1).includes('_')) continue;
+    let val = line.slice(eq + 1).trim();
+    if (val.length >= 2 && val[0] === "'" && val[val.length - 1] === "'") {
+      val = val.slice(1, -1).replace(/'\\''/g, "'");
+    } else if (val.length >= 2 && val[0] === '"' && val[val.length - 1] === '"') {
+      val = val.slice(1, -1).replace(/\\(["\\])/g, '$1');
+    }
+    out[key.slice(envPrefix.length + 1)] = val;
+  }
+  return out;
+}
+
+// Connector secret values are user-shaped (webhook URLs, app passwords) and
+// rarely match the fixed REDACT_PATTERNS — strip the exact live values too
+// before any error/response text can reach a notification or the run log.
+function redactSecretValues(text, values) {
+  let out = String(text == null ? '' : text);
+  for (const value of values) {
+    if (typeof value === 'string' && value.length >= 4) out = out.split(value).join('<redacted>');
+  }
+  return out;
+}
+
+// The connector's declared host is definitionally its ONLY allowed target
+// (lib/capability-envelope.ts's isSocialConnectorHostAllowed): the URL about
+// to be POSTed must resolve (https-only) to exactly that host.
+function socialUrlMatchesHost(urlText, host) {
+  const actual = webhookDestinationHost(urlText);
+  return !!actual && actual === String(host || '').trim().toLowerCase();
+}
+
 function writeWebhookPayload(file, plan, status, preview, resultText) {
   writeAtomic(file, JSON.stringify({
     agentId: plan.agent.id,
@@ -1591,6 +1790,23 @@ function unattendedPreflightFailure(args, plan, config = {}) {
       ? ''
       : `${actionType} action is not trusted for unattended PlanSpec execution`;
   }
+  if (actionType === 'social-post') {
+    // social-post's unattended gate is the host opt-in, not agent.autonomous:
+    // only a connector host the user explicitly consented to via
+    // SHELLY_SOCIAL_HOST_ALLOWLIST may dispatch silently unattended (mirrors
+    // the .sh executor, where a non-allowlisted host's mandatory approval
+    // wait would just time out fail-closed on an unattended fire).
+    const social = plan.action.socialPost || {};
+    const envPrefix = socialConnectorEnvPrefix(social.connectorId);
+    const host = String(config[envPrefix + '_HOST'] || '').trim().toLowerCase();
+    if (!socialHostIsAllowlisted(host, config)) {
+      return 'social-post destination host is not opted into SHELLY_SOCIAL_HOST_ALLOWLIST and cannot run unattended';
+    }
+    if (requireActionApprovalTap(plan, config)) {
+      return 'social-post action requires manual approval and cannot run unattended';
+    }
+    return '';
+  }
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'api-call') {
     return `unsupported unattended PlanSpec action: ${actionType}`;
   }
@@ -1637,7 +1853,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && actionType !== 'api-call') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && actionType !== 'api-call' && actionType !== 'social-post') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   // draft/notify have no per-type validation branch below (unlike
@@ -1661,7 +1877,10 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   // resolved params to actually fire the recipe. Trusting the shortcut here
   // the same way draft/notify do would silently report "success" without the
   // recipe ever having been dispatched.
-  if (actionType !== 'app-act' && trustedNativeLowRiskAction(args, plan, actionType)) {
+  // social-post joins app-act in this exclusion for the same reason: its case
+  // below performs the ACTUAL dispatch — trusting the shortcut would report
+  // "success" without anything ever having been posted.
+  if (actionType !== 'app-act' && actionType !== 'social-post' && trustedNativeLowRiskAction(args, plan, actionType)) {
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -1927,6 +2146,93 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       writeDraftOutputs(paths, opts, plan, config, roots, false);
       writeNotification(paths, plan, 'success', responsePreview);
       return { status: 'success', preview: responsePreview };
+    }
+    if (actionType === 'social-post') {
+      // Mirrors the .sh executor's social-post) case (lib/agent-executor.ts):
+      // a NON-allowlisted destination host requires a human approval tap
+      // EVERY time, regardless of the approval-mode default (these
+      // connectors carry account-level credentials); only a host opted into
+      // SHELLY_SOCIAL_HOST_ALLOWLIST takes the ordinary
+      // maybeRequestActionApproval path, where 'auto' may dispatch silently.
+      const social = plan.action.socialPost || {};
+      const platform = String(social.platform || '').trim();
+      const connectorId = String(social.connectorId || '').trim();
+      if (!platform || !/^[A-Za-z0-9-]+$/.test(connectorId)) {
+        const message = 'Social-post action is missing its platform or connector.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const envPrefix = socialConnectorEnvPrefix(connectorId);
+      const host = String(config[envPrefix + '_HOST'] || '').trim().toLowerCase();
+      if (!host || !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(host)) {
+        const message = 'Social-post connector host is missing or invalid. Re-register the connector in Settings.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (isLowQualityCompletion(preview)) {
+        const message = 'Social-post content looks like a prompt echo or AI refusal, not real content — escalating.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const socialTemplate = typeof social.text === 'string' && social.text.trim() ? social.text : '{{result}}';
+      const socialText = socialTemplate.split('{{result}}').join(preview);
+      if (!socialText.trim()) {
+        const message = 'Social-post action resolved to empty text.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (socialHostIsAllowlisted(host, config)) {
+        maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+          destinationHost: host,
+          destinationHostAllowlisted: true,
+        });
+      } else {
+        // Mandatory tap: bypasses the maybe- skip entirely. Unattended runs
+        // never reach here (unattendedPreflightFailure refuses first).
+        requestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+          destinationHost: host,
+          destinationHostAllowlisted: false,
+        });
+      }
+      // Secrets are loaded ONLY now (post-approval), scoped to this one
+      // connector, and their live values join the redaction set for any
+      // error text that could reach a notification or the run log.
+      const socialSecrets = loadConnectorSecrets(paths.envFile, envPrefix);
+      const socialSecretValues = Object.values(socialSecrets);
+      const redactSocial = (t) => redactSecretValues(redact(t), socialSecretValues);
+      let socialRequest;
+      try {
+        socialRequest = buildSocialPostRequest(paths, opts, plan, platform, host, socialText, socialSecrets);
+      } catch (e) {
+        const message = redactSocial(e instanceof PlanFailure ? e.message : String(e));
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const socialBodyFile = path.join(paths.tmpDir, `plan-social-body-${plan.agent.id}-${process.pid}.json`);
+      fs.writeFileSync(socialBodyFile, JSON.stringify(socialRequest.body), { mode: 0o600 });
+      let socialHeaderFile = '';
+      if (socialRequest.headers && Object.keys(socialRequest.headers).length > 0) {
+        socialHeaderFile = path.join(paths.tmpDir, `plan-social-headers-${plan.agent.id}-${process.pid}.json`);
+        fs.writeFileSync(socialHeaderFile, JSON.stringify(socialRequest.headers), { mode: 0o600 });
+      }
+      try {
+        brokerHttpBodyFile(paths, opts, plan, {
+          url: socialRequest.url,
+          bodyFile: socialBodyFile,
+          headerFile: socialHeaderFile,
+          approved: true,
+          timeoutSeconds: Number(config.WEBHOOK_TIMEOUT_SECONDS || 30),
+        });
+      } catch (e) {
+        const message = redactSocial(e instanceof PlanFailure ? e.message : String(e));
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      } finally {
+        try { fs.unlinkSync(socialBodyFile); } catch (_) {}
+        if (socialHeaderFile) { try { fs.unlinkSync(socialHeaderFile); } catch (_) {} }
+      }
+      writeNotification(paths, plan, 'success', `Posted to ${platform} (${host}): ${preview}`);
+      return { status: 'success', preview };
     }
     maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
   }
@@ -2354,4 +2660,11 @@ module.exports = {
   resolveApiCallTemplate,
   dispatchApiCallRequest,
   dispatchActionTrusted,
+  // social-post (2026-07-22) — exported for host unit tests only, same
+  // convention as the exports above. Not part of the executor's CLI surface.
+  socialConnectorEnvPrefix,
+  socialHostIsAllowlisted,
+  loadConnectorSecrets,
+  redactSecretValues,
+  buildSocialPostRequest,
 };

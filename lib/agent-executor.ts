@@ -20,6 +20,7 @@ import {
   resolveBudget,
 } from './agent-orchestration';
 import { clampCharLimit } from './agent-pipeline-presets';
+import { isSafeConnectorId, socialConnectorEnvPrefix } from './social-connectors';
 
 // MODEL-001 Phase A shadow instrumentation (read-only, observational only —
 // see lib/model-router/shadow.ts and lib/model-router/wiring.ts). This wires
@@ -180,7 +181,24 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // format wrapped it in a second pair, e.g. `""Codex CLI""`), making the file
 // invalid JSON and silently defeating the "STEP n/m · tool" detail line in
 // Sidebar's new RUNNING section. No other behavior change.
-const AGENT_SCRIPT_VERSION = 22;
+// v23 (2026-07-22, social auto-post connectors): new 'social-post' action —
+// dispatch_agent_action gains a social-post) case + dispatch_social_post()/
+// social_connector_env()/social_host_is_allowlisted()/social_require_url_host()
+// helpers covering discord/slack/telegram/mastodon/misskey/wordpress/bluesky
+// (bluesky is a two-step createSession→createRecord exchange). Connector
+// secrets are resolved at RUNTIME from $ENV_FILE (SOCIAL_CONNECTOR_<ID>_<FIELD>
+// vars synced by settings-store's addSocialConnector — the PERPLEXITY_API_KEY
+// pattern) via bash indirection on the baked ACTION_SOCIAL_ENV_PREFIX, never
+// literal-inlined. Approval: a non-allowlisted connector host requires a human
+// tap EVERY time regardless of ACTION_APPROVAL_MODE; only hosts opted into
+// SHELLY_SOCIAL_HOST_ALLOWLIST (the social twin of
+// SHELLY_WEBHOOK_HOST_ALLOWLIST) take the ordinary request_and_wait_approval
+// path. http_post_json's SHELLY_CAP_BROKER=1 invocation also gains a
+// --header-file pass-through (SHELLY_CAP_HEADER_FILE) so connector
+// Bearer/Basic headers survive broker mode. Bumped because the generated
+// script's runtime BEHAVIOR changed (new action case, new helper functions,
+// new broker arg), not just cosmetic text.
+const AGENT_SCRIPT_VERSION = 23;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -232,6 +250,10 @@ const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
   // lib/agent-manager.ts's runAgentNow refuses to run any agent carrying an
   // api-call action/step through this attended .sh path at all.
   'api-call': 'Produce exactly the content needed for the requested API call.',
+  // social-post (2026-07-22): the post text ships as-is (after {{result}}
+  // substitution) to the connector's platform — see dispatch_agent_action's
+  // social-post) case below.
+  'social-post': 'Write the social media post text itself, ready to publish as-is. Unless explicit user instructions request otherwise, keep it short and platform-appropriate.',
 };
 const ACTION_OUTPUT_RULES = 'Follow explicit user instructions for content, format, length, and tone. When they are not specified, be direct and concise. Output only the requested deliverable. Never add meta-commentary about your reasoning or interpretation of the request.';
 
@@ -559,6 +581,20 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // surface, so it gets an extra redaction pass beyond relying solely on the
   // preview already being clean.
   const actionAppActParamsJson = actionType === 'app-act' ? JSON.stringify(agent.action?.appActParams ?? {}) : '{}';
+  // social-post (2026-07-22): only platform/connectorId/text are baked — the
+  // connector's host/meta AND its secret fields are resolved at RUNTIME from
+  // the sourced $ENV_FILE (SOCIAL_CONNECTOR_<ID>_HOST/_META/_<FIELD>, written
+  // by settings-store's addSocialConnector), so (a) no secret ever appears in
+  // this script's literal source, and (b) this module stays free of any
+  // settings-store import (see the ACTION_APPROVAL_MODE comment above for why
+  // that constraint exists). An unsafe connector id bakes as '' → the
+  // dispatch case fails closed with a clear message.
+  const actionSocialPost = actionType === 'social-post' ? agent.action?.socialPost : undefined;
+  const actionSocialPlatform = actionSocialPost?.platform ?? '';
+  const actionSocialConnectorId =
+    actionSocialPost && isSafeConnectorId(actionSocialPost.connectorId ?? '') ? actionSocialPost.connectorId : '';
+  const actionSocialEnvPrefix = actionSocialConnectorId ? socialConnectorEnvPrefix(actionSocialConnectorId) : '';
+  const actionSocialText = actionSocialPost ? (actionSocialPost.text?.trim() ? actionSocialPost.text : '{{result}}') : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
   // G6 char-limit guarantee (agent.orchestration.charLimit — see
@@ -776,6 +812,10 @@ ACTION_DM_REPLY_TEXT=${shellQuote(actionDmReplyText)}
 ACTION_DM_PAIRING_LABEL=""
 ACTION_APP_ACT_RECIPE_ID=${shellQuote(actionAppActRecipeId)}
 ACTION_APP_ACT_PARAMS_JSON=${shellQuote(actionAppActParamsJson)}
+ACTION_SOCIAL_PLATFORM=${shellQuote(actionSocialPlatform)}
+ACTION_SOCIAL_CONNECTOR_ID=${shellQuote(actionSocialConnectorId)}
+ACTION_SOCIAL_ENV_PREFIX=${shellQuote(actionSocialEnvPrefix)}
+ACTION_SOCIAL_TEXT=${shellQuote(actionSocialText)}
 ACTION_COMMAND_SAFETY_LEVEL=${shellQuote(actionCommandSafety.level)}
 ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
 ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
@@ -1474,6 +1514,219 @@ webhook_host_is_allowlisted() {
   esac
 }
 
+# ─── social-post helpers (2026-07-22) ───────────────────────────────────────
+# Connector secrets/meta are resolved at RUNTIME from the sourced $ENV_FILE
+# (SOCIAL_CONNECTOR_<ID>_<FIELD> vars written by settings-store's
+# addSocialConnector — the exact .env pattern PERPLEXITY_API_KEY already uses)
+# via bash indirect expansion on the baked ACTION_SOCIAL_ENV_PREFIX, so a
+# secret value never appears in this script's literal source.
+social_connector_env() {
+  _sce_name="\${ACTION_SOCIAL_ENV_PREFIX}_$1"
+  printf '%s' "\${!_sce_name:-}"
+}
+
+# Mirrors webhook_host_is_allowlisted above against the social opt-in list.
+# SHELLY_SOCIAL_HOST_ALLOWLIST is the user's explicit consent for SILENT
+# unattended dispatch to that connector host; a non-allowlisted host always
+# requires a human approval tap (see the social-post) dispatch case).
+social_host_is_allowlisted() {
+  candidate=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  configured=$(printf '%s' "\${SHELLY_SOCIAL_HOST_ALLOWLIST:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+  case ",$configured," in
+    *",$candidate,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The connector's declared host is definitionally its ONLY allowed target
+# (lib/capability-envelope.ts's isSocialConnectorHostAllowed) — verify the URL
+# we are about to POST actually resolves to it (https is enforced by
+# webhook_destination_host). Catches a discord/slack webhookUrl secret whose
+# real host diverges from the registered connector host, and a telegram
+# connector registered against any host other than api.telegram.org.
+social_require_url_host() {
+  _srh_url="$1"
+  _srh_expected=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+  _srh_actual="$(webhook_destination_host "$_srh_url" 2>/dev/null || true)"
+  [ -n "$_srh_actual" ] && [ "$_srh_actual" = "$_srh_expected" ]
+}
+
+social_post_error() {
+  ACTION_DISPATCH_STATUS="error"
+  ACTION_DISPATCH_MESSAGE="$1"
+  write_native_notification_request "error" "$1" || true
+}
+
+# Composes and sends the per-platform HTTP request for the social-post action.
+# $1 = connector host, $2 = resolved post text. Secrets come only from env
+# vars (social_connector_env); response/error text is redacted
+# (redact_secrets_text) before any of it can reach a message/notification.
+# Returns non-zero with ACTION_DISPATCH_STATUS/MESSAGE set on failure.
+dispatch_social_post() {
+  sp_host="$1"
+  sp_text="$2"
+  sp_body="$TMP_DIR/social-post-body-$AGENT_ID-$$.json"
+  sp_response="$TMP_DIR/social-post-response-$AGENT_ID-$$.txt"
+  sp_error="$TMP_DIR/social-post-error-$AGENT_ID-$$.txt"
+  sp_url=""
+  sp_auth_header=""
+  sp_text_json=$(json_escape_text "$sp_text")
+  case "$ACTION_SOCIAL_PLATFORM" in
+    discord)
+      # The full webhook URL IS the secret; Discord's payload field is literally "content".
+      sp_url="$(social_connector_env WEBHOOKURL)"
+      if [ -z "$sp_url" ]; then
+        social_post_error "Discord connector is missing its webhook URL secret."
+        return 1
+      fi
+      printf '{"content":"%s"}' "$sp_text_json" > "$sp_body"
+      ;;
+    slack)
+      sp_url="$(social_connector_env WEBHOOKURL)"
+      if [ -z "$sp_url" ]; then
+        social_post_error "Slack connector is missing its webhook URL secret."
+        return 1
+      fi
+      printf '{"text":"%s"}' "$sp_text_json" > "$sp_body"
+      ;;
+    telegram)
+      sp_token="$(social_connector_env BOTTOKEN)"
+      sp_chat="$(social_connector_env CHATID)"
+      if [ -z "$sp_token" ] || [ -z "$sp_chat" ]; then
+        social_post_error "Telegram connector is missing its bot token or chat id."
+        return 1
+      fi
+      sp_url="https://api.telegram.org/bot$sp_token/sendMessage"
+      sp_chat_json=$(json_escape_text "$sp_chat")
+      printf '{"chat_id":"%s","text":"%s"}' "$sp_chat_json" "$sp_text_json" > "$sp_body"
+      ;;
+    mastodon)
+      sp_token="$(social_connector_env ACCESSTOKEN)"
+      if [ -z "$sp_token" ]; then
+        social_post_error "Mastodon connector is missing its access token."
+        return 1
+      fi
+      sp_url="https://$sp_host/api/v1/statuses"
+      sp_auth_header="Bearer $sp_token"
+      printf '{"status":"%s"}' "$sp_text_json" > "$sp_body"
+      ;;
+    misskey)
+      sp_token="$(social_connector_env APITOKEN)"
+      if [ -z "$sp_token" ]; then
+        social_post_error "Misskey connector is missing its API token."
+        return 1
+      fi
+      sp_url="https://$sp_host/api/notes/create"
+      sp_token_json=$(json_escape_text "$sp_token")
+      # Misskey convention: the auth token travels IN the body ("i"), not a header.
+      printf '{"i":"%s","text":"%s"}' "$sp_token_json" "$sp_text_json" > "$sp_body"
+      ;;
+    wordpress)
+      sp_user="$(social_connector_env USERNAME)"
+      sp_pass="$(social_connector_env APPPASSWORD)"
+      if [ -z "$sp_user" ] || [ -z "$sp_pass" ]; then
+        social_post_error "WordPress connector is missing its username or application password."
+        return 1
+      fi
+      if ! node_usable; then
+        social_post_error "WordPress posting needs node for Basic-auth encoding."
+        return 1
+      fi
+      sp_basic=$(SOCIAL_BASIC_USER="$sp_user" SOCIAL_BASIC_PASS="$sp_pass" shelly_node -e 'process.stdout.write(Buffer.from((process.env.SOCIAL_BASIC_USER || "") + ":" + (process.env.SOCIAL_BASIC_PASS || "")).toString("base64"));' 2>/dev/null || true)
+      if [ -z "$sp_basic" ]; then
+        social_post_error "WordPress Basic-auth encoding failed."
+        return 1
+      fi
+      sp_url="https://$sp_host/wp-json/wp/v2/posts"
+      sp_auth_header="Basic $sp_basic"
+      sp_title=$(printf '%s' "$sp_text" | head -n 1 | head -c 80)
+      [ -n "$sp_title" ] || sp_title="Shelly agent post"
+      sp_title_json=$(json_escape_text "$sp_title")
+      # "status":"publish" matches this action type's auto-POST intent (the
+      # whole point is unattended publishing once approved/allowlisted); a
+      # review-first workflow should use the draft action, not social-post.
+      printf '{"title":"%s","content":"%s","status":"publish"}' "$sp_title_json" "$sp_text_json" > "$sp_body"
+      ;;
+    bluesky)
+      # Two sequential calls: (1) createSession exchanges handle+app-password
+      # for accessJwt+did; (2) createRecord posts with the session Bearer.
+      sp_handle="$(social_connector_env HANDLE)"
+      sp_pass="$(social_connector_env APPPASSWORD)"
+      if [ -z "$sp_handle" ] || [ -z "$sp_pass" ]; then
+        social_post_error "Bluesky connector is missing its handle or app password."
+        return 1
+      fi
+      sp_handle_json=$(json_escape_text "$sp_handle")
+      sp_pass_json=$(json_escape_text "$sp_pass")
+      sp_session_body="$TMP_DIR/social-post-session-$AGENT_ID-$$.json"
+      sp_session_out="$TMP_DIR/social-post-session-out-$AGENT_ID-$$.json"
+      printf '{"identifier":"%s","password":"%s"}' "$sp_handle_json" "$sp_pass_json" > "$sp_session_body"
+      set +e
+      SHELLY_CAP_APPROVED=1 HTTP_TIMEOUT_SECONDS="\${SOCIAL_POST_TIMEOUT_SECONDS:-30}" http_post_json "https://$sp_host/xrpc/com.atproto.server.createSession" "$sp_session_body" "$sp_session_out" "$sp_error"
+      sp_session_rc=$?
+      set -e
+      rm -f "$sp_session_body"
+      sp_jwt=""
+      sp_did=""
+      if [ "$sp_session_rc" -eq 0 ] && [ -s "$sp_session_out" ]; then
+        sp_jwt="$(json_field_file "$sp_session_out" "accessJwt")"
+        sp_did="$(json_field_file "$sp_session_out" "did")"
+      fi
+      rm -f "$sp_session_out"
+      if [ -z "$sp_jwt" ] || [ -z "$sp_did" ]; then
+        sp_sess_err=$(redact_secrets_text "$sp_error" 2>/dev/null | head -c 240 | tr '\\n' ' ')
+        rm -f "$sp_error"
+        social_post_error "Bluesky session exchange failed (exit $sp_session_rc): $sp_sess_err"
+        return 1
+      fi
+      sp_auth_header="Bearer $sp_jwt"
+      sp_url="https://$sp_host/xrpc/com.atproto.repo.createRecord"
+      sp_did_json=$(json_escape_text "$sp_did")
+      sp_created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      printf '{"repo":"%s","collection":"app.bsky.feed.post","record":{"text":"%s","createdAt":"%s"}}' "$sp_did_json" "$sp_text_json" "$sp_created_at" > "$sp_body"
+      ;;
+    *)
+      social_post_error "Unsupported social platform: $ACTION_SOCIAL_PLATFORM"
+      return 1
+      ;;
+  esac
+  if ! social_require_url_host "$sp_url" "$sp_host"; then
+    rm -f "$sp_body"
+    social_post_error "Social-post destination host does not match the connector's registered host ($sp_host)."
+    return 1
+  fi
+  # Broker mode (SHELLY_CAP_BROKER=1): the broker only builds headers from its
+  # fixed AUTH_REFS, so a connector's Bearer/Basic header travels via a 0600
+  # header file instead (http_post_json forwards it through --header-file).
+  sp_header_file=""
+  if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ] && [ -n "$sp_auth_header" ]; then
+    sp_header_file="$TMP_DIR/social-post-headers-$AGENT_ID-$$.json"
+    sp_auth_header_json=$(json_escape_text "$sp_auth_header")
+    printf '{"Authorization":"%s"}' "$sp_auth_header_json" > "$sp_header_file"
+    chmod 600 "$sp_header_file" 2>/dev/null || true
+  fi
+  set +e
+  if [ -n "$sp_auth_header" ]; then
+    SHELLY_CAP_APPROVED=1 SHELLY_CAP_HEADER_FILE="$sp_header_file" HTTP_AUTH_HEADER="$sp_auth_header" HTTP_TIMEOUT_SECONDS="\${SOCIAL_POST_TIMEOUT_SECONDS:-30}" http_post_json "$sp_url" "$sp_body" "$sp_response" "$sp_error"
+  else
+    SHELLY_CAP_APPROVED=1 HTTP_TIMEOUT_SECONDS="\${SOCIAL_POST_TIMEOUT_SECONDS:-30}" http_post_json "$sp_url" "$sp_body" "$sp_response" "$sp_error"
+  fi
+  sp_rc=$?
+  set -e
+  rm -f "$sp_body"
+  if [ -n "$sp_header_file" ]; then
+    rm -f "$sp_header_file"
+  fi
+  if [ "$sp_rc" -ne 0 ]; then
+    sp_err_txt=$(redact_secrets_text "$sp_error" 2>/dev/null | head -c 240 | tr '\\n' ' ')
+    rm -f "$sp_response" "$sp_error"
+    social_post_error "Social post to $ACTION_SOCIAL_PLATFORM ($sp_host) failed with exit $sp_rc: $sp_err_txt"
+    return 1
+  fi
+  rm -f "$sp_response" "$sp_error"
+  return 0
+}
+
 sha256_file() {
   file="$1"
   if node_usable; then
@@ -2138,6 +2391,60 @@ dispatch_agent_action() {
       ACTION_DISPATCH_MESSAGE="App action fired: $ACTION_APP_ACT_RECIPE_ID"
       return 0
       ;;
+    social-post)
+      # social-post (2026-07-22): API auto-post via a registered connector —
+      # the free-API alternative to app-act's AccessibilityService route.
+      # Approval tier: a NON-allowlisted destination host requires a human
+      # approval tap EVERY time, regardless of ACTION_APPROVAL_MODE (these
+      # connectors carry account-level credentials — WordPress app passwords,
+      # Mastodon/Misskey access tokens — so a wrong external post is not
+      # equivalent in risk to a local draft). Only a host the user explicitly
+      # opted into SHELLY_SOCIAL_HOST_ALLOWLIST (the social twin of
+      # SHELLY_WEBHOOK_HOST_ALLOWLIST, synced via ~/.shelly/agents/.env) takes
+      # the ordinary request_and_wait_approval path, where 'auto' mode may
+      # dispatch silently unattended. On an unattended run with nobody to tap,
+      # the non-allowlisted write+wait times out → fail-closed skip.
+      if [ -z "$ACTION_SOCIAL_PLATFORM" ] || [ -z "$ACTION_SOCIAL_CONNECTOR_ID" ] || [ -z "$ACTION_SOCIAL_ENV_PREFIX" ]; then
+        social_post_error "Social-post action is missing its platform or connector."
+        return 1
+      fi
+      social_host="$(social_connector_env HOST | tr '[:upper:]' '[:lower:]')"
+      case "$social_host" in
+        ''|*[!a-z0-9.-]*)
+          social_post_error "Social-post connector host is missing or invalid. Re-register the connector in Settings."
+          return 1
+          ;;
+      esac
+      if is_low_quality_completion "$preview"; then
+        social_post_error "Social-post content looks like a prompt echo or AI refusal, not real content — escalating."
+        return 1
+      fi
+      social_text_resolved="\${ACTION_SOCIAL_TEXT//\\{\\{result\\}\\}/$preview}"
+      if [ -z "$social_text_resolved" ]; then
+        social_post_error "Social-post action resolved to empty text."
+        return 1
+      fi
+      # Approval payload: platform/host/text only — NEVER a secret. Bodies
+      # that must carry a credential (misskey's "i", telegram's URL token) are
+      # composed post-approval inside dispatch_social_post.
+      social_payload="$LOG_DIR/social-post-payload-$(date +%s).json"
+      social_text_resolved_json=$(json_escape_text "$social_text_resolved")
+      social_platform_json=$(json_escape_text "$ACTION_SOCIAL_PLATFORM")
+      social_host_json=$(json_escape_text "$social_host")
+      printf '{"platform":"%s","host":"%s","text":"%s"}' "$social_platform_json" "$social_host_json" "$social_text_resolved_json" > "$social_payload"
+      social_host_allowlisted=false
+      if social_host_is_allowlisted "$social_host"; then social_host_allowlisted=true; fi
+      if [ "$social_host_allowlisted" = "true" ]; then
+        request_and_wait_approval "social-post" "$preview" "$result_file" "$social_host" "$social_payload" "$social_host_allowlisted" || return 1
+      else
+        write_action_approval_request "social-post" "$preview" "$result_file" "$social_host" "$social_payload" "$social_host_allowlisted"
+        wait_action_approval "social-post" || return 1
+      fi
+      dispatch_social_post "$social_host" "$social_text_resolved" || return 1
+      ACTION_DISPATCH_MESSAGE="Posted to $ACTION_SOCIAL_PLATFORM ($social_host)"
+      write_native_notification_request "success" "$ACTION_DISPATCH_MESSAGE: $preview" || true
+      return 0
+      ;;
     *)
       ACTION_DISPATCH_STATUS="error"
       ACTION_DISPATCH_MESSAGE="Unknown agent action: $ACTION_TYPE"
@@ -2178,6 +2485,7 @@ http_post_json() {
       --approval-dir "$ACTION_APPROVAL_DIR" --approval-reply-dir "$ACTION_APPROVAL_REPLY_DIR" \\
       --agent-id "$AGENT_ID" --agent-name "$AGENT_NAME" --run-id "$ACTION_RUN_ID" \\
       --approval-timeout-seconds "$ACTION_APPROVAL_TIMEOUT_SECONDS" \\
+      --header-file "\${SHELLY_CAP_HEADER_FILE:-}" \\
       --out "$out_file" --err "$err_file"
     return $?
   fi

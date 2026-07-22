@@ -6,6 +6,7 @@
  */
 
 import * as SecureStore from 'expo-secure-store';
+import { isSafeConnectorField, isSafeConnectorId, SOCIAL_ALL_FIELDS } from '@/lib/social-connectors';
 
 const KEY_PREFIX = 'shelly_';
 
@@ -57,6 +58,68 @@ export async function deleteApiKey(name: ApiKeyName): Promise<void> {
     await SecureStore.deleteItemAsync(`${KEY_PREFIX}${name}`);
   } catch (e) {
     console.warn('[SecureStore] Failed to delete key:', name, e);
+  }
+}
+
+// ─── Social-connector secrets (2026-07-22) ──────────────────────────────────
+// Generic per-(connectorId, field) secret storage for social auto-post
+// connectors — mirrors the saveApiKey/getApiKey/deleteApiKey pattern above but
+// keyed dynamically instead of by the fixed ApiKeyName enum. Key format:
+// `shelly_social-connector.<id>.<field>` (expo-secure-store keys only allow
+// [A-Za-z0-9._-], so the design doc's illustrative colons become dots).
+// connectorId/field are validated (alphanumeric+hyphen / alphanumeric) so a
+// crafted id can never break out of this key namespace.
+
+function connectorSecretKey(connectorId: string, field: string): string {
+  if (!isSafeConnectorId(connectorId)) {
+    throw new Error(`refusing connector-secret access with unsafe connector id: ${connectorId}`);
+  }
+  if (!isSafeConnectorField(field)) {
+    throw new Error(`refusing connector-secret access with unsafe field name: ${field}`);
+  }
+  return `${KEY_PREFIX}social-connector.${connectorId}.${field}`;
+}
+
+export async function saveConnectorSecret(connectorId: string, field: string, value: string): Promise<void> {
+  const key = connectorSecretKey(connectorId, field);
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch (e) {
+    console.warn('[SecureStore] Failed to save connector secret:', connectorId, field, e);
+  }
+}
+
+export async function getConnectorSecret(connectorId: string, field: string): Promise<string | null> {
+  const key = connectorSecretKey(connectorId, field);
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch (e) {
+    console.warn('[SecureStore] Failed to read connector secret:', connectorId, field, e);
+    return null;
+  }
+}
+
+export async function deleteConnectorSecret(connectorId: string, field: string): Promise<void> {
+  const key = connectorSecretKey(connectorId, field);
+  try {
+    await SecureStore.deleteItemAsync(key);
+  } catch (e) {
+    console.warn('[SecureStore] Failed to delete connector secret:', connectorId, field, e);
+  }
+}
+
+/**
+ * Delete every secret field of a connector (called on connector removal).
+ * SecureStore has no key enumeration, so this deletes the connector's own
+ * declared fields plus, as belt-and-braces, every known platform field name
+ * (SOCIAL_ALL_FIELDS) — field sets are fixed per platform, so that union
+ * covers anything ever written for this id.
+ */
+export async function deleteAllConnectorSecrets(connectorId: string, fields: string[] = []): Promise<void> {
+  const all = new Set<string>([...fields, ...SOCIAL_ALL_FIELDS]);
+  for (const field of all) {
+    if (!isSafeConnectorField(field)) continue;
+    await deleteConnectorSecret(connectorId, field);
   }
 }
 
