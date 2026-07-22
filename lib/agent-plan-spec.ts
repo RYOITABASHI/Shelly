@@ -1,4 +1,4 @@
-import type { Agent, AgentApiCallConfig, AgentRouteDecision, ToolChoice } from '@/store/types';
+import type { Agent, AgentApiCallConfig, AgentRouteDecision, AgentSocialPostConfig, ToolChoice } from '@/store/types';
 import { getHomePath } from '@/lib/home-path';
 import { detectRouteSignals } from './agent-router-scoring';
 import { resolveForAutonomous } from './agent-credential-policy';
@@ -42,7 +42,7 @@ export type PlanToolType =
   | 'groq'
   | 'unsupported';
 
-export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'api-call' | '__suppressed__' | 'unsupported';
+export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'api-call' | 'social-post' | '__suppressed__' | 'unsupported';
 
 export interface AgentPlanSpecV1 {
   kind: typeof PLAN_SPEC_KIND;
@@ -80,6 +80,10 @@ export interface AgentPlanSpecV1 {
     appActRecipeId?: string;
     appActParams?: Record<string, string>;
     apiCall?: AgentApiCallConfig;
+    /** social-post (2026-07-22): platform/connectorId/text only — the
+     *  connector's host/meta + secrets are resolved by the executor at run
+     *  time from .env (SOCIAL_CONNECTOR_<ID>_*), never carried in the plan. */
+    socialPost?: AgentSocialPostConfig;
     safety?: ReturnType<typeof evaluateAgentActionCommand>;
     unsupportedReason?: string;
   };
@@ -302,6 +306,8 @@ function toPlanAction(
       };
     case 'api-call':
       return { type: 'api-call', apiCall: action?.apiCall };
+    case 'social-post':
+      return { type: 'social-post', socialPost: action?.socialPost };
     default:
       return {
         type: 'unsupported',

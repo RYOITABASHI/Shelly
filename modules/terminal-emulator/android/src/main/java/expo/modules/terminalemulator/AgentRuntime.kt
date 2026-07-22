@@ -100,9 +100,15 @@ object AgentRuntime {
     // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment) — no
     // wire-format or behavior change beyond that, but bumped so a stale
     // pre-fix on-disk script is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 22
+    // v23 (2026-07-22, social auto-post connectors): new 'social-post' action
+    // (dispatch_agent_action case + dispatch_social_post helpers, connector
+    // secrets resolved from .env at runtime, non-allowlisted host requires a
+    // human approval tap) — see lib/agent-executor.ts's matching
+    // AGENT_SCRIPT_VERSION comment. Bumped so a stale pre-social-post on-disk
+    // script is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 23
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")
+    private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
     // LOCAL_MODEL_LIGHT and scripts/shelly-plan-executor.js's modelRequest()

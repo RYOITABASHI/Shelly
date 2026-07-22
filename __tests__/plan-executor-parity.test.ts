@@ -183,7 +183,7 @@ describe('shelly-plan-executor.js parity', () => {
     // Native gate: AgentRuntime.kt must allow 'app-act' through
     // PLAN_EXECUTOR_ACTIONS or every PlanSpec-routed app-act run is refused
     // before the executor ever launches.
-    expect(agentRuntime).toContain('PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "__suppressed__")');
+    expect(agentRuntime).toContain('PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")');
     // Executor: dispatchActionTrusted must accept 'app-act' and resolve+redact
     // its params (mirrors the legacy .sh's resolve_app_act_params) before they
     // reach the approval-request preview shown to the human.

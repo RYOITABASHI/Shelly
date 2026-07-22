@@ -1506,6 +1506,15 @@ function main() {
   const outFile = args.out || '';
   const errFile = args.err || '';
   const bodyFile = args['body-file'] || '';
+  // Optional caller-supplied extra headers (social-post connectors, 2026-07-22):
+  // a JSON object file, e.g. {"Authorization":"Bearer …"}. This adds no new
+  // egress capability — the caller (same uid) could already place any value in
+  // the request BODY; it only lets header-authenticated APIs (Mastodon Bearer,
+  // WordPress Basic, Bluesky session JWT) work through the broker choke point
+  // so they keep its allowlist/approval/budget/audit guarantees. Broker-resolved
+  // AUTH_REFS secrets are untouched: an auth-ref header is applied AFTER these
+  // and therefore cannot be overridden into a different header name/host.
+  const headerFile = args['header-file'] || '';
   const timeoutSeconds = args['timeout-seconds'] || '30';
   // Mid-run host approval (optional): all four must be present for the
   // 'approve' branch below to offer an interactive wait instead of failing
@@ -1525,7 +1534,7 @@ function main() {
 
   if (!url || !outFile || !errFile) {
     process.stderr.write(
-      'usage: --url <u> --out <f> --err <f> [--method] [--body-file] [--auth-ref] [--tainted 0|1] [--approved 0|1] ' +
+      'usage: --url <u> --out <f> --err <f> [--method] [--body-file] [--header-file] [--auth-ref] [--tainted 0|1] [--approved 0|1] ' +
         '[--secret-env-file] [--audit-log] [--budget-file] [--timeout-seconds] ' +
         '[--approval-dir] [--approval-reply-dir] [--agent-id] [--agent-name] [--run-id] [--approval-timeout-seconds]\n',
     );
@@ -1668,6 +1677,19 @@ function main() {
   //   (c) scrubEnvValue drops the resolved value's only live reference from
   //       `env` immediately after it is copied into the outbound header.
   const headers = {};
+  if (headerFile) {
+    let extraHeaders = null;
+    try {
+      extraHeaders = JSON.parse(fs.readFileSync(headerFile, 'utf8'));
+    } catch (_) {
+      extraHeaders = null;
+    }
+    if (extraHeaders && typeof extraHeaders === 'object' && !Array.isArray(extraHeaders)) {
+      for (const name of Object.keys(extraHeaders)) {
+        if (typeof extraHeaders[name] === 'string') headers[name] = extraHeaders[name];
+      }
+    }
+  }
   if (authRef) {
     const spec = AUTH_REFS[authRef]; // classifyEgress already validated existence + host binding
     let env = {};
