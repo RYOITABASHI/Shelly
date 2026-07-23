@@ -459,7 +459,18 @@ export function useAIPaneDispatch(paneId: string) {
         if (!userText.trim().startsWith('@')) {
           if (isConfirmPhrase(userText) && hasFireableSchedule(pendingAgentSession.draft)) {
             store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
-            store.setPendingAgentSession(paneId, null);
+            // 2026-07-23 bug fix: do NOT clear pendingAgentSession here —
+            // confirmAgentDraft's own internal clear (guarded by messageId)
+            // is where editingAgentId gets read back off this SAME session
+            // to route a Sidebar-edit confirm to updateAgent instead of
+            // createAgent. Clearing it here first (the pre-existing
+            // behavior before editingAgentId existed) left confirmAgentDraft
+            // reading an already-null session, silently losing
+            // editingAgentId and creating a DUPLICATE agent instead of
+            // updating the one being edited — confirmed on-device. The
+            // AgentChatConfirm button path never had this bug (it calls
+            // confirmAgentDraft directly, with nothing clearing the session
+            // first), which is why only the typed "登録して"/"OK" path broke.
             await confirmAgentDraft(pendingAgentSession.messageId, draftToConfirmedAgentDraft(pendingAgentSession.draft));
             return;
           }
