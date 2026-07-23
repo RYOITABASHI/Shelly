@@ -2152,6 +2152,21 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ## P2 — 2 リリース先 (v0.2.0 milestone)
 
+### バッテリー残量など端末システム情報の取得にネイティブAPIブリッジが無い — 未着手 (P2)
+
+**優先度**: P2（回避策あり——テキスト系の通知/下書きタスクは正常動作。バッテリー%等の端末システム情報を求めるタスクだけが影響を受ける、ニッチだが実際にユーザーが最初に試したユースケース）
+
+**発見**: 2026-07-23夜、実機テストで「毎日21時にバッテリー残量を通知して」エージェントをRUN NOWしたところ、`find /sys/class/power_supply -maxdepth 2 -type f -name capacity -exec ...`というシェルコマンドがcapability broker（境界越え、`leaves-root`シグナル）の承認プロンプトを要求（Sidebarの「no-approval」表示と実際の挙動が食い違って見えるのはこれが原因——「no-approval」はnotify配信自体の承認、境界越えのファイルアクセス承認とは別レイヤー）、許可後に実行されたCodex CLIエンジンが「この実行環境では端末のバッテリー情報へアクセスできず、残量を取得できませんでした」と正直に失敗を報告。**しかしrun logのstatusは`success`扱いになり、「Save as skill?」（再利用可能なスキルとして保存しますか）が提示された** — 実際には要求された情報（バッテリー%）を一切届けられていないのに「成功」「スキル化を推奨」という二重の誤判定。
+
+**根本原因（2点）**:
+1. **経路の誤り**: バッテリー%はAndroidの標準API（`BatteryManager.getIntProperty(BATTERY_PROPERTY_CAPACITY)`または`Intent.ACTION_BATTERY_CHANGED`、どちらも一般アプリの通常権限で取得可能・root不要）で取得できるが、エージェント実行パイプラインは常にシェルコマンド経由（`/sys/class/power_supply/.../capacity`の直接読み取り）を試みる。Android SELinuxポリシーにより一般アプリのシェルプロセスからのsysfs直接読み取りはroot無しでは拒否される——情報自体はアプリ権限で取得可能なのに、経路（シェル vs ネイティブAPI）が間違っている。
+2. **品質ゲートの穴**: `lib/agent-executor.ts`の`is_low_quality_completion`（プロンプトエコー・AI拒否の検出）は、「正直に失敗を認めた説明文」（今回のケース）を検出対象外にしている——プロンプトエコーでも拒否でもなく、一見自然な文章として完結しているため。しかし実際には要求されたデータを一切届けていない失敗であり、これを`success`として扱い「Save as skill」まで提示するのはユーザー体験として有害（壊れたスキルの保存を誘導してしまう）。
+
+**対応方針（未着手）**: (1) `TerminalEmulatorModule.kt`等にBatteryManager経由のネイティブメソッドを追加し、シェル経由ではなくそのAPIを呼べる専用capability/app-actレシピとして配線する。(2) `is_low_quality_completion`に「データを取得できなかった」系の定型失敗フレーズ（日本語「取得できませんでした」「アクセスできず」等）も検出対象に加えるか、より一般的には「要求された具体的データ（数値・固有名詞等）を一切含まない完了報告」を疑わしいと判定するヒューリスティックの追加を検討。(3) Sidebarの「no-approval」ラベルが、実際にはcapability broker境界越え承認とは独立であることをUI上でも明示する（例: ラベルを「no-approval (dispatch only)」に変更、または境界越え承認が必要な旨を別途表示）。
+→ sync: なし。
+
+---
+
 ### 📐 ロードマップ方針: API優先・app.actはAndroid固有の正式機能として維持 (2026-07-15)
 
 **背景**: 2026-07-15 の実機テストでapp.act（X投稿UI自動化）が実際に壊れていた（コンポーズ画面遷移ステップ欠落、`x.post.json`修正済み・コミット `14d412c88`）こと、およびロック中は原理的に実行不可能（OSのkeyguard境界、`LockPromptActivity.kt`のコメント参照）と判明したことを受け、Hermes Agent（Nous Research、Android版として比較対象にしているOSSエージェント）との比較調査＋戦略検討を実施。
@@ -2657,6 +2672,7 @@ claude() {
 
 ## History
 
+- **2026-07-23夜〜24未明（実機テストで実バグ6件発見・修正、Sidebar編集フル往復）**: 前日夜landした3並列トラック（LLMフォールバック/能力質問/Sidebar編集/Agent.actions）の実機検証セッション。発見・即修正: (1) feature-catalog未登録によるBluesky誤答、(2) `[NOT_AVAILABLE]`ステータスタグの表示漏れ、(3) Sidebar編集確認文言が「登録」のまま、(4)(5) 詳細ダイアログのCLOSEボタン消失→`cancelable`未設定で2段階修正、(6) テキスト確定（「登録して」/「OK」）がpendingAgentSessionの事前クリアによりeditingAgentIdを失い複製エージェントを作成、(7) パッチ後の確定/取消がmessageId不更新によりスクロールで見えなくなった古いバブルを上書き。加えて「バッテリー残量通知」の実行で発見した機能ギャップ（シェル経由sysfs読み取りがSELinuxで拒否、BatteryManagerネイティブAPI未配線、失敗を`success`+スキル化提案してしまう品質ゲートの穴）を新規P2entryとして記録。全修正コミット: `ccd5b3410`〜`d008dc2bd`。→ sync: なし。
 - **2026-07-23（ハイブリッドLLMフォールバック + 能力質問ルーティング + Sidebar編集導線 + Agent.actions配列化、`5caa2be9f`/`1ce2c5216`/`e2b65e16a`）**: 前夜「並列でCodexも使いながらフル回転で」の指示で走らせた3並列トラック全て完了・main merge・CI起動済み。詳細はそれぞれ「エージェント作成の確認カード完全撤廃」entryの2026-07-23追記、および「エージェント1件から複数プラットフォームへ同時配信できない」entryの2026-07-23追記を参照。3件とも独立レビュー（diff読み込み、tsc、jest自己実行）を経てマージ。→ sync: なし。
 - **2026-07-18（PlanSpec executor 経由の local LLM autostart 欠如を調査、設計提案のみ記録）**: 実機で`agent-mrode1ec`（スケジュール発火、`tool.type`が`local`に解決）が`ECONNREFUSED 127.0.0.1:8080`で失敗している事象を調査。`scripts/shelly-plan-executor.js`の`modelRequest()`の`'local'`ケースには、レガシー`.sh`生成器（`lib/agent-executor.ts::ensure_local_llm_server`、直下2026-07-16のbug #154エントリで無人発火時のギャップ無しと確認済みだったのは**この経路**）が持つサーバー健全性チェック・自動起動ロジックが一切無いことを確認。`AgentRuntime.kt`は既に完全なネイティブsubprocess-spawn能力（`ShellyJNI.execSubprocess`）を持つが、「start llama-server」を呼べる既存ネイティブ専用メソッドは存在しない（UI/JS-autostart側の実装はRN/Hermes JSエンジン依存でAlarmManager無人パスから到達不能）ことを grep で確定。plan-executor.js自体へのsubprocess-spawn機能追加は既存の意図的な狭い信頼境界のため却下。安全な実装（レガシー`.sh`生成器から`ensure_local_llm_server`を独立bundled bashアセットへ切り出し、`AgentRuntime.kt::runPlanAgent()`がnode起動前に同一のexecSubprocess機構で前段呼び出しする設計）は具体化したが、4000行超・19バージョンの実機ハードニングを経た生成器への変更を on-device 検証なしに merge するリスクを避け、本パスでは実装せず`### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い`entryへ設計のみ記録。付随調査でattended path（`runAgentOrchestrated`/`runLadderAttempts`）はステップ単位でorchestrationをクリアしてから`materializeAgent`するため、このギャップを共有しないことも確認。→ sync: なし。
 - **2026-07-18（ホーム画面ウィジェット再設計、Codex/local-LLMモニター撤去）**: 独立プロダクト/UXレビューを受け、`ScouterWidgetProvider.kt`（1683行）/`scouter_widget_medium.xml` を「密なCodexセッション監視HUD」から「最大3件の予定済みエージェントの発射台+健康状態一覧」へ全面再設計。`WidgetAgentRepository.nextScheduledAgents(context, limit=3)`（run-logディレクトリから最終結果グリフをbest-effortで読む`readLastRunStatus()`新設込み）、3固定行スロットのレイアウト、行ごとの`AgentAlarmScheduler.manualRunPendingIntent`再利用RUN pill、ペットアイコンは維持しつつタップ切替インタラクションのみ撤去。サンプリング基盤（`ScouterSystemSampler`/`JsonlWatcher`/`LocalLlmSampler`）はJS側の他消費者がいると確認し無変更で継続稼働。詳細と通知ベース後継の deferred follow-up は上記「ホーム画面ウィジェット再設計」entryを参照。`__tests__/widget-agent-run-parity.test.ts`拡張、tsc clean、jest既知Windowsベースラインのみ（新規失敗ゼロ、widget testは8/8 PASS）。→ sync: なし。
