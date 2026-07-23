@@ -812,6 +812,26 @@ export interface Agent {
   /** What to do with the run result (Phase 0 §2.3). Absent = 'draft' (write to
    *  outputPath) — today's behaviour made explicit, so legacy agents keep working. */
   action?: AgentAction;
+  /** Multi-destination fan-out (2026-07-23): a fixed, pre-approved list of
+   *  actions dispatched INDEPENDENTLY through the SAME per-type gates
+   *  `action` already goes through (approval, quality gate, secret
+   *  redaction, command safety) — one call to the existing dispatcher per
+   *  entry, never a widened execution surface. This is additive alongside
+   *  `action`, not a replacement: the overwhelming majority of agents carry
+   *  a single action and `action` stays the primary/documented field for
+   *  that case. Only present/consulted when it has >= 2 entries — absent, or
+   *  fewer than 2, falls back to `action` with byte-identical behavior to
+   *  before this field existed (see lib/agent-executor.ts's generateRunScript
+   *  and scripts/shelly-plan-executor.js's dispatchActionsTrusted, both of
+   *  which gate on `actions.length >= 2` for exactly this reason). One
+   *  action's approval decline/failure does not stop the others from
+   *  dispatching — see AgentRunLog.actionResults for the per-action outcome
+   *  record and AgentRunLog.status's own doc comment for how the run's
+   *  overall status is reduced from N independent outcomes. No authoring
+   *  surface exists yet (AgentConfirmCard/lib/agent-nl-parser.ts do not
+   *  produce this) — this is backend-only plumbing, verified today via a
+   *  hand-written ~/.shelly/agents/<id>.json. */
+  actions?: AgentAction[];
   /** Manual routing pin set in the confirm card (Phase 0 §2.4). 'auto' = default
    *  local-first routing (hard-guards + keyword). 'on-device' / 'cloud' override it.
    *  Absent = 'auto'. The escape hatch for bad local quality — widen control, not default. */
@@ -853,6 +873,20 @@ export interface AgentRunLog {
   timestamp: number;
   // 'unavailable' = all web backends failed transiently (429/5xx/network) after
   // retry; the ladder still climbs on it, but it does NOT trip the circuit breaker.
+  //
+  // Multi-action fan-out (Agent.actions, >= 2 entries — see its own doc
+  // comment): reduced from N independently-dispatched outcomes WITHOUT a new
+  // enum value, mirroring this exact field's existing type. Precedence: (1)
+  // at least one action succeeded -> 'success' — a partially-delivered run
+  // (e.g. posted to Bluesky, X failed) is still a useful outcome and must
+  // NOT trip the circuit breaker (lib/agent-circuit-breaker.ts only counts
+  // 'error'); the per-action detail lives in `actionResults` below, not in
+  // this top-level value. (2) zero successes, at least one hard failure ->
+  // 'error'. (3) zero successes, zero hard failures, at least one gated
+  // 'skipped' (e.g. every action needed an attended Review on an unattended
+  // fire) -> 'skipped'. A single-action run (Agent.action, or `actions` with
+  // < 2 entries) is completely unaffected — this reduction only ever runs
+  // when `actionResults` would be populated.
   status: 'success' | 'error' | 'skipped' | 'unavailable';
   outputPreview: string;       // first 500 chars
   savedPath?: string;
@@ -863,6 +897,25 @@ export interface AgentRunLog {
   routeDecision?: AgentRouteDecision;
   /** Phase 4: present when this was a multi-step orchestrated run. */
   steps?: AgentRunStep[];
+  /** Multi-action fan-out: present only when this run dispatched Agent.actions
+   *  (>= 2 entries) — one entry per action, in Agent.actions' order, each
+   *  independently gated/dispatched (see Agent.actions' own doc comment).
+   *  Absent for every ordinary single-action run — existing single-action
+   *  run logs are completely unaffected by this field's addition. */
+  actionResults?: AgentActionResult[];
+}
+
+/** Multi-action fan-out (Agent.actions): one entry's outcome, mirroring
+ *  AgentRunStep's shape/purpose but for independently-dispatched actions
+ *  rather than sequential orchestration steps — there is no 'unavailable'
+ *  here because dispatch_agent_action / dispatchActionTrusted never produce
+ *  that status for an action dispatch (it is reserved for model/backend
+ *  transport failures, not action delivery). */
+export interface AgentActionResult {
+  index: number;
+  actionType: AgentActionType;
+  status: 'success' | 'error' | 'skipped';
+  message: string;
 }
 
 /** Phase 4 orchestration: one step within a multi-step run, for the run log. */
@@ -893,10 +946,12 @@ export interface AgentOrchestrationStep {
    *  and a top-level `Agent.runOn` on-device/cloud pin still outranks it. */
   tool?: ToolChoice;
   /** api-call (v1): a structured HTTP call, consulted ONLY on NON-FINAL
-   *  steps — the final step's real action is always Agent.action, so an
-   *  apiCall set on the last step index is a no-op by construction in the
-   *  executor (scripts/shelly-plan-executor.js's runOrchestrationChain only
-   *  branches on step.apiCall before the isFinal dispatch). Mutually
+   *  steps — the final step's real action is always Agent.action (or, when
+   *  present with >= 2 entries, every entry of Agent.actions — see its own
+   *  doc comment), so an apiCall set on the last step index is a no-op by
+   *  construction in the executor (scripts/shelly-plan-executor.js's
+   *  runOrchestrationChain only branches on step.apiCall before the isFinal
+   *  dispatch). Mutually
    *  exclusive with `tool`: no model call happens when apiCall is set, so
    *  the confirm card must hide/clear one when the other is set. When
    *  apiCall is set, `instruction` is display-only (a human-readable label,
