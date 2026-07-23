@@ -390,11 +390,19 @@ const ja: Record<string, string> = {
   // — lib/agent-plan-summary.ts の hasDraftAssumptions のコメント参照。
   // 推定スケジュールと同様、必ず1往復の確認を挟む理由をここでも示す。
   'agentplan.llm_extracted_note': '🤖 一部の項目はAIが発話から推測しました。確定前に内容をご確認ください。',
-  // Phase C（2026-07-22）: 言い直しで下書きをその場修正した際、再掲する要約の
-  // 先頭に付けるヘッダー行（hooks/use-ai-pane-dispatch.ts が付与）。ヒットした
-  // フィールドの行には summarizeAgentDraftAsText の changedFields 引数で★が付く
-  // — lib/agent-draft-patch.ts 参照。
+  // Phase C（2026-07-22）: 言い直しで「既に確定済みの変更」をその場修正した際
+  // （justRegisteredAgentのクイック訂正窓——この文言が表示される時点で既に
+  // updateAgentが実行済みのため「更新しました」で正確）に付けるヘッダー行
+  // （hooks/use-ai-pane-dispatch.ts が付与）。ヒットしたフィールドの行には
+  // summarizeAgentDraftAsText の changedFields 引数で★が付く — lib/agent-draft-patch.ts 参照。
   'agentplan.patch_updated_header': '更新しました:',
+  // 2026-07-23: 実機テストで、この「更新しました:」が**まだ確定していない
+  // 下書き/編集セッションへのパッチ**（別途「登録して」/「更新して」の返信が
+  // 必要——applyPatchToPendingSessionのhard invariant参照）にも使い回されて
+  // いることが判明。直後の「Update this agent...?」確認質問と並ぶと、既に
+  // 完了したかのように読めて紛らわしいという実機フィードバックを受け、下書き
+  // 止まりであることを明示する専用文言を用意。
+  'agentplan.patch_pending_header': '下書きに反映しました（まだ確定していません）:',
   // 2026-07-23: 自動登録／チャット内確定の成功メッセージに付ける一言。この直後
   // なら短い時間だけ言い直しで訂正できる（hooks/use-ai-pane-dispatch.ts の
   // JUST_REGISTERED_STALE_MS）ことをユーザーに知らせる。

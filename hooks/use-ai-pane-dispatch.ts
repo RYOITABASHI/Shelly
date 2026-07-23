@@ -503,10 +503,16 @@ export function useAIPaneDispatch(paneId: string) {
               content: summarizeAgentDraftAsText(patchedDraft, undefined, isEditingSession),
             });
             const patchStrings = detectMessageLocale(patchedDraft.rawText) === 'ja' ? ja : en;
+            // 2026-07-23: this patch is NOT yet committed (a separate
+            // confirm reply is still required — see the hard invariant
+            // right below) — use patch_pending_header, not
+            // patch_updated_header, so "applied to the draft" doesn't read
+            // as "already done" right next to the still-pending confirm
+            // question summarizeAgentDraftAsText appends.
             store.addMessage(paneId, {
               id: generateId(),
               role: 'assistant',
-              content: `${patchStrings['agentplan.patch_updated_header']}\n${summarizeAgentDraftAsText(
+              content: `${patchStrings['agentplan.patch_pending_header']}\n${summarizeAgentDraftAsText(
                 patchedDraft,
                 new Set(patchResult.changedFields),
                 isEditingSession,

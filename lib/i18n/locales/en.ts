@@ -398,10 +398,20 @@ const en: Record<string, string> = {
   // round-trip, same as an assumed schedule.
   'agentplan.llm_extracted_note': '🤖 Some fields above were inferred by AI from your message — please double-check them before confirming.',
   // Phase C (2026-07-22): header line prepended (by hooks/use-ai-pane-dispatch.ts)
-  // above the re-posted summary when a follow-up reply patched the pending
-  // draft — see lib/agent-draft-patch.ts / summarizeAgentDraftAsText's
+  // above the re-posted summary when a follow-up reply patched an
+  // ALREADY-APPLIED change (the justRegisteredAgent quick-correct window —
+  // updateAgent has already run by the time this text is shown, so "Updated"
+  // is accurate here). See lib/agent-draft-patch.ts / summarizeAgentDraftAsText's
   // changedFields param, which marks the touched line(s) with ★.
   'agentplan.patch_updated_header': 'Updated:',
+  // 2026-07-23: on-device test found the SAME "Updated:" header being reused
+  // for a patch to a still-PENDING draft/edit (nothing committed yet — a
+  // separate confirm reply is still required, see the hard invariant on
+  // applyPatchToPendingSession) — read together with the trailing "Register/
+  // Update this agent...?" question right below it, "Updated:" reads as
+  // "already done", making the confirm question feel redundant/confusing.
+  // This wording makes clear the change only landed in the DRAFT so far.
+  'agentplan.patch_pending_header': 'Applied to the draft (not saved yet):',
   // 2026-07-23: appended to the auto-register / chat-native-confirm success
   // message, telling the user the short correction window (see
   // hooks/use-ai-pane-dispatch.ts's JUST_REGISTERED_STALE_MS) exists at all.
