@@ -989,9 +989,23 @@ export function Sidebar() {
       ...(savedPath
         ? [{ text: t('sidebar.agent_saved_path_open'), onPress: () => void openFile(savedPath) }]
         : []),
-      { text: t('common.close'), style: 'cancel' as const },
     ];
-    Alert.alert(agent.name, body, buttons);
+    // 2026-07-23: on-device test found the CLOSE button missing from this
+    // dialog on Android after the Edit button (above) was added — Android's
+    // native AlertDialog only has 3 real button slots (RN's Alert.alert
+    // silently drops anything past the 3rd on Android, with no warning
+    // visible at runtime), so Run Now / Pause / Edit already filled every
+    // slot even in the common case (no memory notes, no saved path), pushing
+    // Close off the dialog entirely. No explicit Close button is added back
+    // — Alert.alert on Android is cancelable by default (tap the scrim or
+    // press Back), which was already the ONLY way to dismiss this dialog
+    // whenever a 4th/5th conditional button (memory view / open saved path)
+    // was present, even before tonight. slice(0, 3) makes the truncation
+    // deterministic and priority-ordered (Run Now > Pause > Edit > Memory >
+    // Open path) instead of relying on RN's undocumented Android drop order.
+    // A real fix — replacing this Alert.alert with a custom bottom sheet
+    // that supports more than 3 actions — is tracked in DEFERRED.md.
+    Alert.alert(agent.name, body, buttons.slice(0, 3));
   }, [t, handleRunScheduledAgent, handleTogglePause, showMemoryList, agentApprovalLabel]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
