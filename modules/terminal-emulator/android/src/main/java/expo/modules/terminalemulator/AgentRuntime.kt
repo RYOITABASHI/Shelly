@@ -106,7 +106,16 @@ object AgentRuntime {
     // human approval tap) — see lib/agent-executor.ts's matching
     // AGENT_SCRIPT_VERSION comment. Bumped so a stale pre-social-post on-disk
     // script is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 23
+    // v24 (2026-07-23, multi-destination action fan-out): a >= 2-entry
+    // Agent.actions is now dispatched as a bash loop over
+    // dispatch_agent_action(), one independent call per action — see
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment. No
+    // native routing change (this legacy .sh path is still only reached when
+    // shouldRunPlanExecutor is false, unchanged); bumped only because the
+    // generated script's runtime BEHAVIOR changes for a multi-action agent,
+    // so a stale pre-v24 on-disk script (old single-action-only dispatch) is
+    // regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 24
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
@@ -963,6 +972,16 @@ object AgentRuntime {
             val json = JSONObject(agentFile.readText())
             if (json.optString("id") != agentId) return null
             if (!json.optBoolean("autonomous", false)) return null
+            // Multi-action fan-out (2026-07-23, Agent.actions — see its own doc
+            // comment in store/types.ts): this whole trust decision is built
+            // from the SINGLE legacy `action` field below, so it cannot
+            // correctly represent a >= 2-entry `actions` agent (which action's
+            // type/appActRecipeId would it even check?). Bail out to the
+            // ordinary (non-trusted-fast-path) PlanSpec launch, which still
+            // dispatches every entry of `actions` correctly via
+            // dispatchActionsTrusted — this only forgoes the narrower "skip the
+            // trusted-launch fast path" optimization for a multi-action agent.
+            if ((json.optJSONArray("actions")?.length() ?: 0) >= 2) return null
             val actionJson = json.optJSONObject("action")
             val actionType = actionJson
                 ?.optString("type")

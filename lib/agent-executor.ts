@@ -2,7 +2,7 @@
  * lib/agent-executor.ts — Runs agent tasks in isolated tmux sessions.
  * Generates per-agent shell scripts and manages execution lifecycle.
  */
-import { Agent, AgentActionType, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { Agent, AgentAction, AgentActionType, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
 import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
@@ -198,7 +198,27 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // Bearer/Basic headers survive broker mode. Bumped because the generated
 // script's runtime BEHAVIOR changed (new action case, new helper functions,
 // new broker arg), not just cosmetic text.
-const AGENT_SCRIPT_VERSION = 23;
+// v24 (2026-07-23, multi-destination action fan-out): a new Agent.actions
+// (>= 2 entries — see its own doc comment in store/types.ts) is dispatched as
+// a bash loop over dispatch_agent_action(), one call per action, each
+// independently re-running the SAME per-type approval/quality-gate/command-
+// safety checks a single Agent.action already goes through — no privilege
+// widening, only the COUNT of actions a run may dispatch. A fresh
+// ACTION_RUN_ID (indexed by loop position) is generated per action so two
+// actions in the same run never collide on the same approval request/reply
+// file, and so AgentRuntime.kt's approval-notifier `seen` de-dupe cannot drop
+// the second action's prompt because it looks like an already-shown request.
+// One action's failure/decline does not stop the others (ACTION_DISPATCH_RC
+// is captured via `|| ACTION_DISPATCH_RC=$?`, never left to trip `set -e`);
+// the run's overall STATUS is reduced per AgentRunLog.status's own doc
+// comment (any success -> success, else any hard error -> error, else
+// skipped), and every action's individual outcome is recorded in the new
+// run-log `actionResults` array. Absent/< 2 `actions` takes the EXACT
+// pre-v24 single-action code path — see the "byte-identical for a single-
+// action agent" regression test. Bumped because the generated script's
+// runtime BEHAVIOR changes for a multi-action agent (new loop, new helper
+// variables), not just cosmetic text.
+const AGENT_SCRIPT_VERSION = 24;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -423,6 +443,79 @@ export function sanitizeOutputTemplate(template: string | null | undefined): str
   return cleaned || '{date}-{slug}';
 }
 
+type ActionBakedFields = {
+  type: AgentActionType;
+  webhookUrl: string;
+  command: string;
+  intentMode: string;
+  intentTarget: string;
+  intentShareText: string;
+  dmPairingId: string;
+  dmReplyText: string;
+  appActRecipeId: string;
+  appActParamsJson: string;
+  socialPlatform: string;
+  socialConnectorId: string;
+  socialEnvPrefix: string;
+  socialText: string;
+  commandSafety: ReturnType<typeof evaluateAgentActionCommand>;
+};
+
+/**
+ * Multi-action fan-out (v24, Agent.actions): bakes ONE AgentAction into the
+ * same field shape generateRunScript's single-action path computes inline
+ * (see its own `actionType`/`actionWebhookUrl`/… locals just below) — used
+ * ONLY to build the per-index bash arrays for a >= 2-entry `actions` run.
+ * Deliberately NOT shared with the single-action inline computation (a small
+ * duplication, not a refactor of it) so that code path — the one every
+ * existing agent/test exercises — stays byte-for-byte untouched by this
+ * feature; see the "byte-identical for a single-action agent" regression
+ * test this invariant protects.
+ */
+function bakeActionFields(action: AgentAction | undefined): ActionBakedFields {
+  const type = action?.type ?? 'draft';
+  const webhookUrl = type === 'webhook' ? action?.webhookUrl ?? '' : '';
+  const command = type === 'cli' ? action?.command ?? '' : '';
+  const intentMode = type === 'intent' ? (action?.intentMode ?? '') : '';
+  const intentTarget = type === 'intent' ? (action?.intentTarget ?? '') : '';
+  const intentShareText = type === 'intent' ? (action?.intentShareText ?? '') : '';
+  const dmPairingId = type === 'dm-reply' ? action?.dmPairingId ?? '' : '';
+  const dmReplyText = type === 'dm-reply' ? action?.dmReplyText ?? '' : '';
+  const appActRecipeId = type === 'app-act' ? (action?.appActRecipeId ?? '') : '';
+  const appActParamsJson = type === 'app-act' ? JSON.stringify(action?.appActParams ?? {}) : '{}';
+  const socialPost = type === 'social-post' ? action?.socialPost : undefined;
+  const socialPlatform = socialPost?.platform ?? '';
+  const socialConnectorId =
+    socialPost && isSafeConnectorId(socialPost.connectorId ?? '') ? socialPost.connectorId : '';
+  const socialEnvPrefix = socialConnectorId ? socialConnectorEnvPrefix(socialConnectorId) : '';
+  const socialText = socialPost ? (socialPost.text?.trim() ? socialPost.text : '{{result}}') : '';
+  const commandSafety = evaluateAgentActionCommand(command);
+  return {
+    type,
+    webhookUrl,
+    command,
+    intentMode,
+    intentTarget,
+    intentShareText,
+    dmPairingId,
+    dmReplyText,
+    appActRecipeId,
+    appActParamsJson,
+    socialPlatform,
+    socialConnectorId,
+    socialEnvPrefix,
+    socialText,
+    commandSafety,
+  };
+}
+
+/** Bakes a bash indexed-array literal from a shell-quoted-per-element list, e.g.
+ *  `('a' 'b' 'c')`. Every element goes through shellQuote, matching every other
+ *  scalar ACTION_* bake in this file. */
+function bashArrayLiteral(values: string[]): string {
+  return `(${values.map((v) => shellQuote(v)).join(' ')})`;
+}
+
 /**
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
@@ -596,6 +689,23 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionSocialEnvPrefix = actionSocialConnectorId ? socialConnectorEnvPrefix(actionSocialConnectorId) : '';
   const actionSocialText = actionSocialPost ? (actionSocialPost.text?.trim() ? actionSocialPost.text : '{{result}}') : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
+
+  // Multi-action fan-out (v24, Agent.actions — see its own doc comment in
+  // store/types.ts). Deliberately narrow gate, mirroring
+  // lib/agent-plan-spec.ts's buildAgentPlanSpec `multiActions` exactly:
+  //  - opts.suppressAction (an orchestration NON-FINAL step) never dispatches
+  //    any action, single or multi — the existing `__suppressed__` actionType
+  //    above already handles that path untouched, so multi-actions must not
+  //    engage here either.
+  //  - fewer than 2 entries in agent.actions is not a "multi" run at all;
+  //    falls through to the single actionType/actionWebhookUrl/… locals above
+  //    exactly as before this field existed.
+  // When false, NONE of the ACTION_MULTI_* bash variables below are ever
+  // emitted into the generated script — this is what makes a single-action
+  // agent's output byte-identical to before v24 (see the regression test).
+  const useMultiActions = !opts.suppressAction && !!agent.actions && agent.actions.length >= 2;
+  const multiActionFields: ActionBakedFields[] = useMultiActions ? agent.actions!.map(bakeActionFields) : [];
+  const hasDraftAction = useMultiActions ? multiActionFields.some((f) => f.type === 'draft') : actionType === 'draft';
 
   // G6 char-limit guarantee (agent.orchestration.charLimit — see
   // lib/agent-pipeline-presets.ts's clampCharLimit/enforceCharLimit): found in
@@ -822,7 +932,35 @@ ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
 ACTION_APPROVAL_MODE_OVERRIDE=${shellQuote(actionApprovalModeOverride)}
 ACTION_APPROVAL_MODE="auto"
 ACTION_APP_ACT_AUTO_FIRE_TRUSTED=${actionAppActAutoFireTrusted ? '1' : '0'}
-ACTION_NOTIFY_FILE="$LOG_DIR/native-result-notification.json"
+${useMultiActions ? `# Multi-action fan-out (v24, Agent.actions): one bash array per baked field,
+# indexed identically to agent.actions. Only ever emitted when useMultiActions
+# is true (>= 2 real actions, not a suppressed orchestration step) — a
+# single-action agent's script has NONE of these lines, byte-identical to
+# before this feature existed.
+ACTION_MULTI_COUNT=${multiActionFields.length}
+ACTION_MULTI_TYPES=${bashArrayLiteral(multiActionFields.map((f) => f.type))}
+ACTION_MULTI_WEBHOOK_URLS=${bashArrayLiteral(multiActionFields.map((f) => f.webhookUrl))}
+ACTION_MULTI_COMMANDS=${bashArrayLiteral(multiActionFields.map((f) => f.command))}
+ACTION_MULTI_INTENT_MODES=${bashArrayLiteral(multiActionFields.map((f) => f.intentMode))}
+ACTION_MULTI_INTENT_TARGETS=${bashArrayLiteral(multiActionFields.map((f) => f.intentTarget))}
+ACTION_MULTI_INTENT_SHARE_TEXTS=${bashArrayLiteral(multiActionFields.map((f) => f.intentShareText))}
+ACTION_MULTI_DM_PAIRING_IDS=${bashArrayLiteral(multiActionFields.map((f) => f.dmPairingId))}
+ACTION_MULTI_DM_REPLY_TEXTS=${bashArrayLiteral(multiActionFields.map((f) => f.dmReplyText))}
+ACTION_MULTI_APP_ACT_RECIPE_IDS=${bashArrayLiteral(multiActionFields.map((f) => f.appActRecipeId))}
+ACTION_MULTI_APP_ACT_PARAMS_JSONS=${bashArrayLiteral(multiActionFields.map((f) => f.appActParamsJson))}
+ACTION_MULTI_SOCIAL_PLATFORMS=${bashArrayLiteral(multiActionFields.map((f) => f.socialPlatform))}
+ACTION_MULTI_SOCIAL_CONNECTOR_IDS=${bashArrayLiteral(multiActionFields.map((f) => f.socialConnectorId))}
+ACTION_MULTI_SOCIAL_ENV_PREFIXES=${bashArrayLiteral(multiActionFields.map((f) => f.socialEnvPrefix))}
+ACTION_MULTI_SOCIAL_TEXTS=${bashArrayLiteral(multiActionFields.map((f) => f.socialText))}
+ACTION_MULTI_COMMAND_SAFETY_LEVELS=${bashArrayLiteral(multiActionFields.map((f) => f.commandSafety.level))}
+ACTION_MULTI_COMMAND_SAFETY_REASONS=${bashArrayLiteral(multiActionFields.map((f) => f.commandSafety.reason))}
+ACTION_MULTI_COMMAND_AUTO_APPROVABLES=${bashArrayLiteral(multiActionFields.map((f) => (f.commandSafety.autoApprovable ? '1' : '0')))}
+# Set (as [] JSON) unconditionally here, not just inside the dispatch loop
+# below, so a run that never reaches dispatch at all (the backend/tool itself
+# failed — the "Check result" else-branch further down) still leaves this
+# defined under \`set -u\`.
+ACTION_RESULTS_JSON="[]"
+` : ''}ACTION_NOTIFY_FILE="$LOG_DIR/native-result-notification.json"
 ACTION_APPROVAL_DIR="$HOME/.shelly/agents/action-approvals"
 ACTION_APPROVAL_REPLY_DIR="$HOME/.shelly/agents/action-approval-replies"
 ACTION_RUN_ID="$AGENT_ID-$(date +%s)-$$"
@@ -3858,12 +3996,119 @@ if [ -f "$RESULT_CONTENT_FILE" ] && [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BA
   STATUS="success"
   ERROR_MESSAGE=""
 
-  if ! dispatch_agent_action "$RESULT_CONTENT_FILE" "$PREVIEW"; then
+${useMultiActions ? `  # Multi-action fan-out (v24, Agent.actions): dispatch EVERY action
+  # independently through the SAME dispatch_agent_action() every single-
+  # action agent already uses — one call per action, each re-running its own
+  # approval/quality-gate/command-safety checks from scratch. A failure in
+  # one action must not stop the loop (dispatch_agent_action's return code is
+  # captured via "|| ACTION_MULTI_RC=$?", never left bare under set -e).
+  ACTION_MULTI_SUCCESS_COUNT=0
+  ACTION_MULTI_ERROR_COUNT=0
+  ACTION_MULTI_SKIPPED_COUNT=0
+  ACTION_RESULTS_PARTS=""
+  ACTION_MULTI_IDX=0
+  while [ "$ACTION_MULTI_IDX" -lt "$ACTION_MULTI_COUNT" ]; do
+    ACTION_TYPE="\${ACTION_MULTI_TYPES[$ACTION_MULTI_IDX]}"
+    ACTION_WEBHOOK_URL="\${ACTION_MULTI_WEBHOOK_URLS[$ACTION_MULTI_IDX]}"
+    ACTION_COMMAND="\${ACTION_MULTI_COMMANDS[$ACTION_MULTI_IDX]}"
+    ACTION_INTENT_MODE="\${ACTION_MULTI_INTENT_MODES[$ACTION_MULTI_IDX]}"
+    ACTION_INTENT_TARGET="\${ACTION_MULTI_INTENT_TARGETS[$ACTION_MULTI_IDX]}"
+    ACTION_INTENT_SHARE_TEXT="\${ACTION_MULTI_INTENT_SHARE_TEXTS[$ACTION_MULTI_IDX]}"
+    ACTION_DM_PAIRING_ID="\${ACTION_MULTI_DM_PAIRING_IDS[$ACTION_MULTI_IDX]}"
+    ACTION_DM_REPLY_TEXT="\${ACTION_MULTI_DM_REPLY_TEXTS[$ACTION_MULTI_IDX]}"
+    ACTION_DM_PAIRING_LABEL=""
+    ACTION_APP_ACT_RECIPE_ID="\${ACTION_MULTI_APP_ACT_RECIPE_IDS[$ACTION_MULTI_IDX]}"
+    ACTION_APP_ACT_PARAMS_JSON="\${ACTION_MULTI_APP_ACT_PARAMS_JSONS[$ACTION_MULTI_IDX]}"
+    ACTION_SOCIAL_PLATFORM="\${ACTION_MULTI_SOCIAL_PLATFORMS[$ACTION_MULTI_IDX]}"
+    ACTION_SOCIAL_CONNECTOR_ID="\${ACTION_MULTI_SOCIAL_CONNECTOR_IDS[$ACTION_MULTI_IDX]}"
+    ACTION_SOCIAL_ENV_PREFIX="\${ACTION_MULTI_SOCIAL_ENV_PREFIXES[$ACTION_MULTI_IDX]}"
+    ACTION_SOCIAL_TEXT="\${ACTION_MULTI_SOCIAL_TEXTS[$ACTION_MULTI_IDX]}"
+    ACTION_COMMAND_SAFETY_LEVEL="\${ACTION_MULTI_COMMAND_SAFETY_LEVELS[$ACTION_MULTI_IDX]}"
+    ACTION_COMMAND_SAFETY_REASON="\${ACTION_MULTI_COMMAND_SAFETY_REASONS[$ACTION_MULTI_IDX]}"
+    ACTION_COMMAND_AUTO_APPROVABLE="\${ACTION_MULTI_COMMAND_AUTO_APPROVABLES[$ACTION_MULTI_IDX]}"
+    # Fresh per-action approval identity: a constant ACTION_RUN_ID across
+    # >= 2 dispatches in the same run would (a) let two actions collide on
+    # the SAME approval request/reply file path, and (b) make
+    # AgentRuntime.kt's approval-notifier "seen" de-dupe treat the second
+    # action's approval prompt as already shown for the first, silently
+    # dropping it. Appending the loop index guarantees uniqueness even when
+    # two actions dispatch within the same wall-clock second under the same pid.
+    ACTION_RUN_ID="$AGENT_ID-$(date +%s)-$$-$ACTION_MULTI_IDX"
+    ACTION_APPROVAL_REQUEST_FILE="$ACTION_APPROVAL_DIR/action-$ACTION_RUN_ID.json"
+    ACTION_APPROVAL_REPLY_FILE="$ACTION_APPROVAL_REPLY_DIR/action-$ACTION_RUN_ID.reply.json"
+    ACTION_APPROVAL_REQUEST_SHA256=""
+
+    ACTION_MULTI_RC=0
+    dispatch_agent_action "$RESULT_CONTENT_FILE" "$PREVIEW" || ACTION_MULTI_RC=$?
+
+    if [ "$ACTION_MULTI_RC" -eq 0 ]; then
+      ACTION_RESULT_STATUS="success"
+      ACTION_MULTI_SUCCESS_COUNT=$((ACTION_MULTI_SUCCESS_COUNT + 1))
+    else
+      ACTION_RESULT_STATUS="\${ACTION_DISPATCH_STATUS:-error}"
+      case "$ACTION_RESULT_STATUS" in
+        skipped) ACTION_MULTI_SKIPPED_COUNT=$((ACTION_MULTI_SKIPPED_COUNT + 1)) ;;
+        *) ACTION_RESULT_STATUS="error"; ACTION_MULTI_ERROR_COUNT=$((ACTION_MULTI_ERROR_COUNT + 1)) ;;
+      esac
+    fi
+    ACTION_RESULT_MESSAGE="\${ACTION_DISPATCH_MESSAGE:-}"
+    if [ -z "$ACTION_RESULT_MESSAGE" ] && [ "$ACTION_RESULT_STATUS" = "success" ]; then
+      ACTION_RESULT_MESSAGE="$PREVIEW"
+    fi
+    ACTION_TYPE_RESULT_JSON=$(json_escape_text "$ACTION_TYPE")
+    ACTION_RESULT_STATUS_JSON=$(json_escape_text "$ACTION_RESULT_STATUS")
+    ACTION_RESULT_MESSAGE_JSON=$(json_escape_text "$ACTION_RESULT_MESSAGE")
+    ACTION_RESULT_PART="{\\"index\\":$ACTION_MULTI_IDX,\\"actionType\\":\\"$ACTION_TYPE_RESULT_JSON\\",\\"status\\":\\"$ACTION_RESULT_STATUS_JSON\\",\\"message\\":\\"$ACTION_RESULT_MESSAGE_JSON\\"}"
+    if [ -z "$ACTION_RESULTS_PARTS" ]; then
+      ACTION_RESULTS_PARTS="$ACTION_RESULT_PART"
+    else
+      ACTION_RESULTS_PARTS="$ACTION_RESULTS_PARTS,$ACTION_RESULT_PART"
+    fi
+    ACTION_MULTI_IDX=$((ACTION_MULTI_IDX + 1))
+  done
+  ACTION_RESULTS_JSON="[$ACTION_RESULTS_PARTS]"
+
+  # Partial-success reduction (mirrors AgentRunLog.status's own doc comment,
+  # store/types.ts — no new status value, just a precedence order over N
+  # independent outcomes): at least one delivered action -> success (a
+  # partially-delivered run, e.g. posted to Bluesky but X failed, is still a
+  # useful outcome and must not trip the circuit breaker, which only counts
+  # 'error'; the granular per-action detail lives in $ACTION_RESULTS_JSON,
+  # recorded in the run log below). Zero successes with at least one hard
+  # failure -> error. Zero successes and zero failures (every action was
+  # gated as "skipped", e.g. intent/dm-reply/app-act on an unattended fire)
+  # -> skipped, never silently reported as success.
+  if [ "$ACTION_MULTI_SUCCESS_COUNT" -gt 0 ]; then
+    STATUS="success"
+  elif [ "$ACTION_MULTI_ERROR_COUNT" -gt 0 ]; then
+    STATUS="error"
+  elif [ "$ACTION_MULTI_SKIPPED_COUNT" -gt 0 ]; then
+    STATUS="skipped"
+  else
+    STATUS="success"
+  fi
+  ACTION_MULTI_SUMMARY="$ACTION_MULTI_SUCCESS_COUNT/$ACTION_MULTI_COUNT actions delivered"
+  if [ "$STATUS" = "success" ]; then
+    PREVIEW="$ACTION_MULTI_SUMMARY. $PREVIEW"
+    ERROR_MESSAGE=""
+  else
+    ERROR_MESSAGE="$ACTION_MULTI_SUMMARY."
+    PREVIEW="$ERROR_MESSAGE"
+  fi
+  # Native reads $ACTION_NOTIFY_FILE ONCE, after this whole script process
+  # exits (AgentRuntime.kt's postAgentResultNotificationIfRequested) — every
+  # per-action write inside dispatch_agent_action above already happened and
+  # would otherwise leave only the LAST action's notification visible. This
+  # final write deliberately overwrites that with the ONE consolidated
+  # outcome for the whole run, exactly mirroring the "last write wins"
+  # mechanism the single-action path already relies on.
+  write_native_notification_request "$STATUS" "$PREVIEW" || true
+` : `  if ! dispatch_agent_action "$RESULT_CONTENT_FILE" "$PREVIEW"; then
     STATUS="\${ACTION_DISPATCH_STATUS:-error}"
     ERROR_MESSAGE="\${ACTION_DISPATCH_MESSAGE:-agent action dispatch failed}"
     PREVIEW="$ERROR_MESSAGE"
   fi
-else
+`}else
   if [ "$CODEX_RESULT_ACTIVE" = "1" ]; then
     PREVIEW=$(result_preview "$RESULT_FILE")
   elif [ -f "$RESULT_FILE" ] && [ -s "$RESULT_FILE" ]; then
@@ -3915,7 +4160,7 @@ TS=$(date +%s)
 PREVIEW_JSON=$(json_escape_text "$PREVIEW")
 TOOL_LABEL_JSON=$(json_escape_text "$TOOL_LABEL")
 ERROR_MESSAGE_JSON=$(json_escape_text "$ERROR_MESSAGE")
-${actionType === 'draft' ? `
+${hasDraftAction ? `
   SAVED_PATH_JSON=$(json_escape_text "\${SAVED_PATH:-}")
   if [ -n "\${SAVED_PATH_MIRROR:-}" ]; then
     SAVED_PATH_MIRROR_JSON=$(json_escape_text "$SAVED_PATH_MIRROR")
@@ -3926,8 +4171,8 @@ ${actionType === 'draft' ? `
     SAVED_PATH_FIELDS=""
   fi
 ` : 'SAVED_PATH_FIELDS=""'}
-cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS}
+${useMultiActions ? 'ACTION_RESULTS_FIELDS=",\\"actionResults\\":$ACTION_RESULTS_JSON"\n' : ''}cat > "$LOG_DIR/$TS.json" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS${useMultiActions ? '$ACTION_RESULTS_FIELDS' : ''}}
 LOGEOF
 
 # Prune old logs (keep last 30)

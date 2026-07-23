@@ -2817,7 +2817,14 @@ claude() {
 - ❌ **BlueskyとXへの"同時"投稿 — 非対応**。`store/types.ts`の`Agent.action?: AgentAction`はエージェント1件につき単一フィールドで、オーケストレーションの各ステップは生成ツールを選べても、最終的な配信先（dispatchされるaction）は常に1つだけ（`AgentOrchestrationStep`のdocコメントにも「the final step's real action is always Agent.action」と明記）。現状の回避策はプラットフォームごとに別々のエージェントを作ること。
 
 **対応方針（未着手）**: `Agent.action`を単一から配列（複数ターゲット）に拡張するか、最終ステップで複数のdispatchを許容する設計が必要——影響範囲が`generateRunScript`/`shelly-plan-executor.js`/`AgentConfirmCard.tsx`/`agent-plan-summary.ts`など広範囲に及ぶため、着手前に別途設計を詰めること。
-→ sync: なし。
+
+**→ 2026-07-23 バックエンド実装完了（UI導線は引き続き未着手）**: `store/types.ts`に`Agent.actions?: AgentAction[]`（既存の単一`action`はそのまま維持、後方互換）を追加し、`actions`が2件以上ある場合のみ優先してそれぞれ独立ディスパッチする設計で着地。実装範囲:
+- `lib/agent-executor.ts`（`generateRunScript`、`AGENT_SCRIPT_VERSION`を24へバンプ）: `ACTION_MULTI_*`のbash配列を新規に焼き込み、`dispatch_agent_action()`をループ呼び出し。各アクションごとに承認/品質ゲート/コマンド安全性チェックを独立に再実行、1件の失敗/却下が他の実行を止めない設計（`dispatch_agent_action ... || ACTION_MULTI_RC=$?`でset -e下でも継続）。`ACTION_RUN_ID`はループindex込みで毎回再生成（同一runId衝突によるAgentRuntime.kt側approval-notifierの「seen」重複排除で2件目が握りつぶされる実バグを回避）。
+- `scripts/shelly-plan-executor.js`+APKアセットミラー: `dispatchActionsTrusted()`を新設し`plan.actions`(>=2件)をループでdispatchActionTrusted()に委譲。1アクションのdecline(`ActionSkipped`)/失敗も他アクションの実行を止めない。unattended時のトップレベル`unattendedPreflightFailure`ゲートは`plan.action`単体しか見ないため多アクション時はバイパスし、各アクションを個別にゲート。`requestActionApproval`のrunId生成に乱数サフィックスを追加(同一プロセス内での同秒コリジョン修正、単一アクション時も無害)。`PLAN_SPEC_SCHEMA_VERSION`は`steps`と同じ理由(追加のみ)でバンプ不要。
+- `AgentRuntime.kt`: `CURRENT_SCRIPT_VERSION`を24へ同期。`trustedPlanLaunch`は`actions`が2件以上のエージェントでは早期`null`を返し、単一action前提のtrusted-launch高速パスを迂回(通常のPlanSpec起動には引き続き乗る)。
+- run-log: `AgentRunLog.actionResults?: AgentActionResult[]`を新設(1件でも成功があれば全体`success`、成功0件でエラー1件以上なら`error`、成功もエラーも0件でskip1件以上なら`skip`——新しいstatus値は追加せず既存4値のまま)。
+- UI(`AgentConfirmCard.tsx`)・NLパーサー(`lib/agent-nl-parser.ts`)は今回スコープ外のまま(手動で`~/.shelly/agents/<id>.json`を書く形での検証を想定)。UI導線は依然P2として残置。
+→ sync: なし（バックエンドのみ、README/機能カタログへの反映はUI導線着地後）。
 
 ---
 

@@ -44,6 +44,26 @@ export type PlanToolType =
 
 export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'api-call' | 'social-post' | '__suppressed__' | 'unsupported';
 
+export interface PlanAction {
+  type: PlanActionType;
+  webhookUrl?: string;
+  command?: string;
+  intentMode?: 'launch' | 'share';
+  intentTarget?: string;
+  intentShareText?: string;
+  dmPairingId?: string;
+  dmReplyText?: string;
+  appActRecipeId?: string;
+  appActParams?: Record<string, string>;
+  apiCall?: AgentApiCallConfig;
+  /** social-post (2026-07-22): platform/connectorId/text only — the
+   *  connector's host/meta + secrets are resolved by the executor at run
+   *  time from .env (SOCIAL_CONNECTOR_<ID>_*), never carried in the plan. */
+  socialPost?: AgentSocialPostConfig;
+  safety?: ReturnType<typeof evaluateAgentActionCommand>;
+  unsupportedReason?: string;
+}
+
 export interface AgentPlanSpecV1 {
   kind: typeof PLAN_SPEC_KIND;
   schemaVersion: typeof PLAN_SPEC_SCHEMA_VERSION;
@@ -68,25 +88,19 @@ export interface AgentPlanSpecV1 {
     authRef?: 'gemini' | 'perplexity' | 'cerebras' | 'groq';
     unsupportedReason?: string;
   };
-  action: {
-    type: PlanActionType;
-    webhookUrl?: string;
-    command?: string;
-    intentMode?: 'launch' | 'share';
-    intentTarget?: string;
-    intentShareText?: string;
-    dmPairingId?: string;
-    dmReplyText?: string;
-    appActRecipeId?: string;
-    appActParams?: Record<string, string>;
-    apiCall?: AgentApiCallConfig;
-    /** social-post (2026-07-22): platform/connectorId/text only — the
-     *  connector's host/meta + secrets are resolved by the executor at run
-     *  time from .env (SOCIAL_CONNECTOR_<ID>_*), never carried in the plan. */
-    socialPost?: AgentSocialPostConfig;
-    safety?: ReturnType<typeof evaluateAgentActionCommand>;
-    unsupportedReason?: string;
-  };
+  action: PlanAction;
+  /** Multi-action fan-out (2026-07-23, mirrors Agent.actions — see its own
+   *  doc comment in store/types.ts): present ONLY when agent.actions has
+   *  >= 2 entries; absent for every ordinary single-action agent, so writing
+   *  this key is a no-op for their plan/behavior (purely additive, same
+   *  precedent as `steps` above — no PLAN_SPEC_SCHEMA_VERSION bump needed).
+   *  `action` above is still always populated (built from agent.action, the
+   *  legacy single field — 'draft' when unset) purely so every existing
+   *  reader that only knows about `action` keeps seeing a valid value; it is
+   *  NOT dispatched when `actions` is present — see
+   *  scripts/shelly-plan-executor.js's dispatchActionsTrusted, which checks
+   *  `actions.length >= 2` before ever consulting `action` for dispatch. */
+  actions?: PlanAction[];
   paths: {
     home: string;
     envFile: string;
@@ -206,7 +220,16 @@ export function buildAgentPlanSpec(
 
   const actionType: NonNullable<Agent['action']>['type'] | '__suppressed__' =
     opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
-  const action: AgentPlanSpecV1['action'] = toPlanAction(actionType, agent.action);
+  const action: PlanAction = toPlanAction(actionType, agent.action);
+  // Multi-action fan-out (mirrors lib/agent-executor.ts's generateRunScript
+  // `useMultiActions` gate exactly): only when NOT a suppressed orchestration
+  // step (a non-final step never dispatches any action, single or multi) AND
+  // agent.actions has >= 2 entries. `action` above is left untouched either
+  // way — see PlanAction's own doc comment for why it stays populated.
+  const multiActions: PlanAction[] | undefined =
+    !opts.suppressAction && agent.actions && agent.actions.length >= 2
+      ? agent.actions.map((a) => toPlanAction(a.type, a))
+      : undefined;
 
   const slug = computeAgentSlug(agent.name, agent.id);
   const outputNameTemplate = sanitizeOutputTemplate(agent.outputTemplate);
@@ -234,6 +257,7 @@ export function buildAgentPlanSpec(
     prompt: buildExecutorPrompt(agent.prompt),
     tool: toolSpec,
     action,
+    ...(multiActions ? { actions: multiActions } : {}),
     paths: {
       home: paths.home,
       envFile: paths.envFile,
@@ -271,7 +295,7 @@ export function buildAgentPlanSpec(
 function toPlanAction(
   actionType: NonNullable<Agent['action']>['type'] | '__suppressed__',
   action?: Agent['action'],
-): AgentPlanSpecV1['action'] {
+): PlanAction {
   switch (actionType) {
     case 'draft':
     case 'notify':

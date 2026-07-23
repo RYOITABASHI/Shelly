@@ -949,7 +949,13 @@ function writeNotification(paths, plan, status, preview) {
 // aggregate run log already does. Omitted (undefined) for every non-chain
 // call site, so JSON.stringify drops the key entirely and single-shot run-log
 // output stays byte-identical to before this increment.
-function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, steps) {
+// `actionResults` (optional, 2026-07-23): per-action detail for a multi-
+// action fan-out run (>= 2-entry plan.actions) — mirrors AgentRunLog.actionResults
+// / AgentActionResult (store/types.ts) field-for-field, same as `steps` above.
+// Omitted (undefined) for every ordinary single-action call site, so
+// JSON.stringify drops the key entirely and that run-log output stays
+// byte-identical to before this field existed.
+function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, steps, actionResults) {
   const ts = Date.now();
   const log = {
     agentId: plan.agent.id,
@@ -962,6 +968,7 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, ste
     routeDecision: plan.routeDecision,
     executor: 'planspec',
     ...(steps ? { steps } : {}),
+    ...(actionResults ? { actionResults } : {}),
   };
   writeAtomic(path.join(paths.logDir, `${Math.floor(ts / 1000)}.json`), JSON.stringify(log) + '\n');
 }
@@ -1180,7 +1187,19 @@ function verifySignedApprovalReply(request, reply, deps) {
 function requestActionApproval(paths, plan, actionType, preview, resultFile, config, details) {
   ensureDir(paths.actionApprovalDir);
   ensureDir(paths.actionApprovalReplyDir);
-  const runId = `${plan.agent.id}-${Math.floor(Date.now() / 1000)}-${process.pid}`;
+  // Multi-action fan-out (2026-07-23, dispatchActionsTrusted below): two
+  // actions dispatched from the SAME process within the same wall-clock
+  // second used to collide on an identical runId (same agent id + timestamp
+  // + pid) — a real bug this feature makes reachable for the first time (a
+  // single-action plan only ever calls this once per process). A collision
+  // would make the two actions share one approval request/reply file path
+  // AND make AgentRuntime.kt's approval-notifier "seen" de-dupe silently
+  // drop the second action's prompt as an already-shown duplicate. The extra
+  // random suffix guarantees uniqueness regardless of call count/timing;
+  // nothing parses runId's shape (every consumer treats it as an opaque
+  // token captured off the just-written request), so this is safe for the
+  // single-action case too.
+  const runId = `${plan.agent.id}-${Math.floor(Date.now() / 1000)}-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
   const requestFile = path.join(paths.actionApprovalDir, `action-${safeFilePart(runId)}.json`);
   const replyFile = path.join(paths.actionApprovalReplyDir, `action-${safeFilePart(runId)}.reply.json`);
   const timeoutSeconds = Number(config.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || process.env.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || 120);
@@ -2247,6 +2266,99 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   return { status: 'success', preview };
 }
 
+// Multi-action fan-out (2026-07-23, mirrors lib/agent-executor.ts's
+// generateRunScript `useMultiActions` bash loop): plan.actions (>= 2 entries
+// — see AgentPlanSpecV1's own doc comment) is dispatched as N INDEPENDENT
+// calls to dispatchActionTrusted above, one per entry, each re-running its
+// own approval/quality-gate/command-safety checks from scratch — no
+// privilege widening, only the COUNT of actions a run may dispatch. Absent
+// plan.actions (or < 2 entries) falls straight through to a single
+// dispatchActionTrusted(plan) call, UNCHANGED from before this function
+// existed — every existing single-shot/chain call site keeps its exact
+// pre-2026-07-23 behavior for a single-action plan.
+function dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args) {
+  if (!Array.isArray(plan.actions) || plan.actions.length < 2) {
+    return dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
+  }
+  const results = [];
+  let successCount = 0;
+  let errorCount = 0;
+  let skippedCount = 0;
+  for (let i = 0; i < plan.actions.length; i += 1) {
+    const subAction = plan.actions[i];
+    // Object.assign (not JSON.parse(JSON.stringify(...))) — every OTHER field
+    // (agent/tool/paths/policy/routeDecision/…) must be the SAME reference
+    // every action dispatches against; only `action` differs per entry.
+    const subPlan = Object.assign({}, plan, { action: subAction });
+    let outcome;
+    // unattendedPreflightFailure's top-level call in run() is skipped
+    // entirely for a multi-action plan (see that call site's own comment) —
+    // gate EACH action individually here instead, so one action ineligible
+    // for unattended dispatch (e.g. intent/dm-reply, or a social-post host
+    // not opted into SHELLY_SOCIAL_HOST_ALLOWLIST) is recorded as its own
+    // 'skipped' outcome without blocking the others.
+    const gateFailure = unattendedPreflightFailure(args, subPlan, config);
+    if (gateFailure) {
+      outcome = { status: 'skipped', preview: redact(gateFailure), errorMessage: redact(gateFailure) };
+    } else {
+      try {
+        outcome = dispatchActionTrusted(paths, opts, subPlan, config, roots, resultText, args);
+      } catch (e) {
+        // A single action's decline/timeout (ActionSkipped) or a classified
+        // PlanFailure must not abort the loop — the whole point of `actions`
+        // is that one destination's failure/decline does not stop the
+        // others from dispatching. An unexpected (non-classified) throw is
+        // ALSO caught and recorded as this action's own failure rather than
+        // escaping the loop, for the same reason — it must never silently
+        // swallow the run (the caught error is redact()ed into this
+        // action's own error message, not lost), but it also must not take
+        // down every other action's independent delivery.
+        if (e instanceof ActionSkipped) {
+          outcome = { status: 'skipped', preview: redact(e.message), errorMessage: redact(e.message) };
+        } else if (e instanceof PlanFailure) {
+          // AgentActionResult (store/types.ts) has no 'unavailable' status —
+          // that value is reserved for model/backend transport failures, not
+          // action delivery — so a transient PlanFailure here still folds to
+          // this action's own 'error', matching the results[] contract.
+          const message = redact(e.message);
+          outcome = { status: 'error', preview: message, errorMessage: message };
+        } else {
+          const message = redact(e && e.message ? e.message : String(e));
+          outcome = { status: 'error', preview: message, errorMessage: message };
+        }
+      }
+    }
+    const status = outcome.status === 'success' ? 'success' : outcome.status === 'skipped' ? 'skipped' : 'error';
+    if (status === 'success') successCount += 1;
+    else if (status === 'skipped') skippedCount += 1;
+    else errorCount += 1;
+    results.push({
+      index: i,
+      actionType: subAction.type,
+      status,
+      message: String(outcome.preview || outcome.errorMessage || ''),
+    });
+  }
+  // Partial-success reduction — mirrors AgentRunLog.status's own doc comment
+  // (store/types.ts) and lib/agent-executor.ts's identical ACTION_MULTI_*
+  // bash reduction EXACTLY: any success -> success (partial delivery is
+  // still a useful outcome and must not trip the circuit breaker, which
+  // only counts 'error' — lib/agent-circuit-breaker.ts); else any hard
+  // failure -> error; else (every action gated as skipped) -> skipped.
+  const status = successCount > 0 ? 'success' : errorCount > 0 ? 'error' : (skippedCount > 0 ? 'skipped' : 'success');
+  const summary = `${successCount}/${plan.actions.length} actions delivered`;
+  const preview = status === 'success' ? summary : `${summary}.`;
+  // writeNotification overwrites paths.notifyFile — every per-action
+  // dispatchActionTrusted call above may already have written its OWN
+  // notification; native reads this file ONCE, after the whole process
+  // exits, so this final write deliberately replaces whatever the last
+  // action wrote with the ONE consolidated outcome for the whole run
+  // (mirrors the .sh executor's identical "last write wins" design for the
+  // same reason).
+  writeNotification(paths, plan, status, preview);
+  return { status, preview, errorMessage: status === 'success' ? '' : preview, actionResults: results };
+}
+
 function mirrorBrokerAudit(paths, plan) {
   if (!fs.existsSync(paths.brokerAuditFile)) return;
   try {
@@ -2289,6 +2401,13 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
   // gate rejection) — in that case nothing else in this run has notified yet,
   // so the fallback fires exactly once with the aggregate outcome.
   let dispatchedFinal = false;
+  // Multi-action fan-out (2026-07-23): set only when the final step's
+  // dispatch was itself a >= 2-entry Agent.actions fan-out (dispatchActionsTrusted
+  // returns `actionResults` in that case, undefined otherwise) — threaded into
+  // this chain's own return value below so writeRunLog's `actionResults` param
+  // is populated for an orchestrated agent's fan-out final step exactly like
+  // the non-chain single-shot path already does.
+  let finalActionResults;
 
   for (let i = 0; i < plan.steps.list.length; i += 1) {
     const gate = nextStepGate({ stepIndex: i, budget, startedAtMs: startedAt, now: Date.now(), priorFailed });
@@ -2402,10 +2521,19 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     // rejected chain still left an earlier step's draft sitting at the
     // terminal output location, looking like a completed draft despite the
     // run's status being 'error'.
+    // dispatchActionsTrusted (not dispatchActionTrusted directly): stepPlan
+    // carries plan.actions forward unchanged (Object.assign above copies
+    // every own property of `plan`, `action`/`prompt` are the only fields
+    // overridden per-step), so a >= 2-entry Agent.actions fan-out dispatches
+    // on the chain's FINAL step exactly like the non-chain single-shot path
+    // below — see that function's own doc comment.
     const action = isFinal
-      ? dispatchActionTrusted(paths, opts, stepPlan, config, roots, resultText, args)
+      ? dispatchActionsTrusted(paths, opts, stepPlan, config, roots, resultText, args)
       : { status: 'success', preview };
-    if (isFinal) dispatchedFinal = true;
+    if (isFinal) {
+      dispatchedFinal = true;
+      if (action.actionResults) finalActionResults = action.actionResults;
+    }
     records.push({ index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview });
     if (action.status === 'success') priorResults.push(action.preview);
     else priorFailed = true;
@@ -2421,7 +2549,13 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     // single-shot run of that action type would — do not double-notify.
     writeNotification(paths, plan, status, preview);
   }
-  return { status, preview, errorMessage: status === 'success' ? '' : preview, steps: records };
+  return {
+    status,
+    preview,
+    errorMessage: status === 'success' ? '' : preview,
+    steps: records,
+    ...(finalActionResults ? { actionResults: finalActionResults } : {}),
+  };
 }
 
 // Shared epilogue for the pre-run refuse paths (kill-switch, unattended-not-trusted):
@@ -2496,7 +2630,17 @@ function run(args) {
     return finishSkipped(paths, plan, startedAt, 'All agents are stopped (global kill-switch is on).');
   }
 
-  const unattendedFailure = unattendedPreflightFailure(args, plan, config);
+  // Multi-action fan-out (2026-07-23): this top-level gate only ever inspects
+  // plan.action.type (the single legacy field) — for a >= 2-entry
+  // plan.actions run, plan.action is a compat placeholder never actually
+  // dispatched (see AgentPlanSpecV1.action's own doc comment), so gating the
+  // WHOLE run on it here would refuse a perfectly runnable multi-action plan
+  // (or worse, silently gate it on the wrong single action). Each entry of
+  // plan.actions gets its OWN unattendedPreflightFailure check instead,
+  // inside dispatchActionsTrusted, so one ineligible action is recorded as
+  // its own 'skipped' outcome without blocking the others.
+  const isMultiActionPlan = Array.isArray(plan.actions) && plan.actions.length >= 2;
+  const unattendedFailure = isMultiActionPlan ? '' : unattendedPreflightFailure(args, plan, config);
   if (unattendedFailure) {
     return finishSkipped(paths, plan, startedAt, redact(unattendedFailure));
   }
@@ -2544,10 +2688,10 @@ function run(args) {
       // as a soft instruction baked into the model prompt.
       resultText = enforcePlanCharLimit(plan, resultText);
       writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
-      action = dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
+      action = dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args);
     }
     const durationMs = Date.now() - startedAt;
-    writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps);
+    writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps, action.actionResults);
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
