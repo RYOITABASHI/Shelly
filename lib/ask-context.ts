@@ -102,20 +102,41 @@ ${CURATED_DOCS}
 
 export type AskStatus = 'AVAILABLE' | 'PLANNED' | 'NOT_AVAILABLE' | null;
 
+// Matches the trailing status tag plus any decoration a model tends to wrap
+// it in. Before the tag: only whitespace/newlines and markdown emphasis
+// chars (*/_/`) — deliberately NOT sentence punctuation (./。/！), which
+// would belong to the actual answer's last sentence, not the tag, and must
+// stay. After the tag: markdown emphasis AND trailing punctuation, since a
+// model closing "**[AVAILABLE]**" or adding a stray "。" after the tag is
+// pure decoration with nothing meaningful following it. On-device testing
+// (2026-07-23, local Qwen model) found the original bare `\[?TAG\]?\s*$`
+// anchor left the tag visibly leaking into the displayed answer whenever the
+// model added so much as a trailing "。" or wrapped the tag in **bold**.
+const TRAILING_STATUS_RE = /[\s*_`]*\[?(AVAILABLE|PLANNED|NOT_AVAILABLE)\]?[\s*_`.。!！]*$/;
+
 /**
  * Extract the trailing status tag from a streaming response.
- * Robust to minor LLM deviations (optional brackets, trailing whitespace).
+ * Robust to minor LLM deviations (optional brackets, surrounding markdown
+ * emphasis/punctuation, trailing whitespace).
  */
 export function extractStatus(text: string): AskStatus {
-  const m = text.match(/\[?(AVAILABLE|PLANNED|NOT_AVAILABLE)\]?\s*$/);
+  const m = text.match(TRAILING_STATUS_RE);
   return (m ? (m[1] as AskStatus) : null);
 }
 
 /**
- * Strip the trailing status tag from a response for cleaner display.
+ * Strip the trailing status tag from a response for cleaner display. Loops
+ * a few times so a model that echoes the tag twice at the very end (rare,
+ * but observed from a local model) doesn't leave the earlier copy visible.
  */
 export function stripStatusTag(text: string): string {
-  return text.replace(/\s*\[?(AVAILABLE|PLANNED|NOT_AVAILABLE)\]?\s*$/, '').trimEnd();
+  let result = text;
+  for (let i = 0; i < 3; i += 1) {
+    const next = result.replace(TRAILING_STATUS_RE, '').trimEnd();
+    if (next === result) break;
+    result = next;
+  }
+  return result;
 }
 
 // ─── Capability-question detection (main AI Chat grounding) ──────────────────
