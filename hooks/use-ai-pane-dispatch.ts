@@ -50,7 +50,7 @@ import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
-import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent } from '@/lib/agent-draft-patch';
+import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
 import en from '@/lib/i18n/locales/en';
@@ -1590,6 +1590,9 @@ export function useAIPaneDispatch(paneId: string) {
       // messageId so confirming an OLDER draft (e.g. via a stale re-render)
       // can never clear a NEWER pending session for the same pane.
       const currentPending = store.getOrCreate(paneId).pendingAgentSession;
+      const editingAgentId = currentPending?.messageId === messageId
+        ? currentPending.editingAgentId
+        : undefined;
       if (currentPending?.messageId === messageId) {
         store.setPendingAgentSession(paneId, null);
       }
@@ -1629,14 +1632,24 @@ export function useAIPaneDispatch(paneId: string) {
         ? tool.type === 'local' ? 'on-device' : 'auto'
         : confirmed.runOn;
       try {
-        const created = createAgent({
+        // Editing a draft does not expose runOn/tool as patchable fields. Keep
+        // the registered route byte-for-byte unless the autonomous toggle was
+        // actually changed (that transition must use the resolver above).
+        const editingAgent = editingAgentId
+          ? useAgentStore.getState().agents.find((agent) => agent.id === editingAgentId)
+          : undefined;
+        const autonomousChanged = !!editingAgent
+          && (editingAgent.autonomous ?? false) !== confirmed.autonomous;
+        const persistedTool = editingAgent && !autonomousChanged ? editingAgent.tool : tool;
+        const persistedRunOn = editingAgent && !autonomousChanged ? editingAgent.runOn : runOn;
+        const agentFields = {
           name: confirmed.name,
           description: confirmed.prompt.slice(0, 120),
           prompt: confirmed.prompt,
           schedule: confirmed.schedule,
-          tool,
+          tool: persistedTool,
           action: confirmed.action,
-          runOn,
+          runOn: persistedRunOn,
           autonomous: confirmed.autonomous || undefined,
           memory: confirmed.memory,
           skillId: confirmed.skillId,
@@ -1649,9 +1662,33 @@ export function useAIPaneDispatch(paneId: string) {
                 }
               : undefined,
           notificationTrigger: confirmed.notificationTrigger,
-          outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
+        };
+        const persisted = await persistAgentDraft({
+          editingAgentId,
+          createParams: {
+            ...agentFields,
+            outputPath: `$HOME/.shelly/agents/${safeName}/output.md`,
+          },
+          updatePartial: agentFields,
+          runCommand: runAgentShellCommand,
+          create: createAgent,
+          update: updateAgent,
         });
-        await installAgent(created, runAgentShellCommand);
+        const created = persisted.agent;
+        if (!created) throw new Error(`Agent not found: ${editingAgentId}`);
+        if (!persisted.edited) {
+          await installAgent(created, runAgentShellCommand);
+        } else {
+          const scheduleDescription = confirmed.schedule
+            ?? (confirmed.notificationTrigger
+              ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
+              : 'no schedule');
+          store.updateMessage(paneId, messageId, {
+            agentCardState: 'confirmed',
+            content: `✅ Agent "${created.name}" updated — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}.`,
+          });
+          return;
+        }
 
         if (isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
           // One-shot (§A5): run immediately, surface the result, then discard the

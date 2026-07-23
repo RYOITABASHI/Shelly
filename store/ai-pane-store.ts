@@ -39,6 +39,8 @@ import { logInfo, logError } from '@/lib/debug-logger';
  */
 export interface PendingAgentSession {
   draft: ParsedAgentDraft;
+  /** Present when this chat confirmation edits an already-registered agent. */
+  editingAgentId?: string;
   phase: 'slot-fill' | 'await-confirm';
   /** Reserved for a future slot-fill migration onto this session-scoped
    *  state (see doc comment above) — not populated today. */
