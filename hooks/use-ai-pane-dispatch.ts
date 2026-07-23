@@ -509,8 +509,9 @@ export function useAIPaneDispatch(paneId: string) {
             // patch_updated_header, so "applied to the draft" doesn't read
             // as "already done" right next to the still-pending confirm
             // question summarizeAgentDraftAsText appends.
+            const patchReplyMessageId = generateId();
             store.addMessage(paneId, {
-              id: generateId(),
+              id: patchReplyMessageId,
               role: 'assistant',
               content: `${patchStrings['agentplan.patch_pending_header']}\n${summarizeAgentDraftAsText(
                 patchedDraft,
@@ -526,7 +527,20 @@ export function useAIPaneDispatch(paneId: string) {
             // register the draft, regardless of any "no approval needed"
             // default. A SEPARATE, subsequent confirm-phrase reply is still
             // required.
-            store.setPendingAgentSession(paneId, patchResult.session);
+            //
+            // 2026-07-23 bug fix: re-point the session's messageId at THIS
+            // new bubble (not the original pre-patch one). confirmAgentDraft
+            // writes its "✅ Agent ... updated/registered" completion line by
+            // updating IN PLACE whatever message pendingAgentSession.messageId
+            // still points at — leaving it on the original bubble meant a
+            // typed "OK" after one or more patches silently rewrote a bubble
+            // the user had already scrolled past, while the LATEST bubble
+            // (still reading "...Update this agent as described above?")
+            // stayed on screen forever with no visible confirmation anything
+            // happened. Found on-device: after "21時にして" → "OK", the
+            // Sidebar detail popup confirmed the schedule really did change
+            // to 21:00, but the chat showed no completion message at all.
+            store.setPendingAgentSession(paneId, { ...patchResult.session, messageId: patchReplyMessageId });
             return;
           }
 
