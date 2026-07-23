@@ -112,6 +112,21 @@ export interface ParsedAgentDraft {
    *  unaffected — see parseSchedule's TIME_OF_DAY_DEFAULTS doc comment for
    *  the "explicit digit interpretation is never touched" guarantee). */
   scheduleAssumed?: boolean;
+  /** True when one or more fields on this draft were filled in (or
+   *  overridden) by the hybrid LLM-extraction fallback (2026-07-23 —
+   *  hooks/use-ai-pane-dispatch.ts's @agent create flow, see
+   *  lib/agent-llm-fallback.ts's extractAgentFieldsWithLlm) rather than by
+   *  this deterministic parser alone. The fallback only runs when the
+   *  deterministic parse was itself low-confidence (see
+   *  isLowConfidenceAgentDraft) — an LLM extraction is inherently less
+   *  trustworthy than an explicit deterministic match, so this flag is
+   *  consulted by lib/agent-plan-summary.ts's hasDraftAssumptions (same
+   *  "never silently auto-register an assumption" gate scheduleAssumed
+   *  already feeds) to force one human confirm round-trip even when every
+   *  extracted field looks complete and explicit. Absent/false = this draft
+   *  came entirely from the deterministic parser (existing behavior,
+   *  unaffected). */
+  llmExtracted?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
