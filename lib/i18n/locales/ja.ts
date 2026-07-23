@@ -372,10 +372,17 @@ const ja: Record<string, string> = {
   // 修正できるようになったため、旧「キャンセルしてから言い直して」の文言を更新
   // — lib/agent-draft-patch.ts 参照。
   'agentplan.confirm_prompt': 'この内容で登録しますか？変更したい項目だけ言い直せば直せます（例:「9時にして」）。取消は「やめて」。',
+  // 2026-07-23: Sidebarの「Edit」導線（components/layout/Sidebar.tsx）は既存の
+  // 登録済みエージェントを同じチャット確認フローに乗せる——「登録」という文言
+  // だと新規（重複）作成のように誤解されるため編集専用の文言を用意。
+  // summarizeAgentDraftAsTextのisEditing引数参照。
+  'agentplan.confirm_prompt_edit': 'この内容で更新しますか？変更したい項目だけ言い直せば直せます（例:「9時にして」）。取消は「やめて」。',
   // Phase A/B (2026-07-22) — チャット返信そのものでの確定と、あいまいな時刻帯
   // 表現をデフォルト解釈した際の注記（hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts）。
   'agentplan.confirm_unclear_hint': '登録待ちの下書きがあります。「登録して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
+  // 2026-07-23: confirm_prompt_editの編集版カウンターパート。
+  'agentplan.confirm_unclear_hint_edit': '編集待ちの下書きがあります。「更新して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
   'agentplan.schedule_assumed_note': '「{{word}}」→{{time}}と解釈しました。',
   'agentplan.next_fire_note': '次回実行: {{datetime}}',
   // 2026-07-23: 上記の一部の項目がハイブリッドLLM抽出フォールバック

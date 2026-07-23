@@ -477,6 +477,11 @@ export function useAIPaneDispatch(paneId: string) {
           if (patchResult) {
             store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
             const patchedDraft = patchResult.session.draft;
+            // 2026-07-23: a Sidebar "Edit" session carries editingAgentId
+            // through unchanged by applyPatchToPendingSession (it only ever
+            // touches `draft`/`phase` — see that function's own doc
+            // comment), so this is stable across the whole patch round-trip.
+            const isEditingSession = !!pendingAgentSession.editingAgentId;
             // Keep the ORIGINAL draft bubble's own agentDraft/content in sync
             // too — AgentChatConfirm reads message.agentDraft directly off
             // that bubble, so leaving it stale would let a later TAP on that
@@ -484,7 +489,7 @@ export function useAIPaneDispatch(paneId: string) {
             // instead of the one just agreed on here.
             store.updateMessage(paneId, pendingAgentSession.messageId, {
               agentDraft: patchedDraft,
-              content: summarizeAgentDraftAsText(patchedDraft),
+              content: summarizeAgentDraftAsText(patchedDraft, undefined, isEditingSession),
             });
             const patchStrings = detectMessageLocale(patchedDraft.rawText) === 'ja' ? ja : en;
             store.addMessage(paneId, {
@@ -493,6 +498,7 @@ export function useAIPaneDispatch(paneId: string) {
               content: `${patchStrings['agentplan.patch_updated_header']}\n${summarizeAgentDraftAsText(
                 patchedDraft,
                 new Set(patchResult.changedFields),
+                isEditingSession,
               )}`,
               timestamp: Date.now(),
               agent: pendingAgentSession.agentLabel,
@@ -516,10 +522,11 @@ export function useAIPaneDispatch(paneId: string) {
           // registration is pending.
           store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
           const unclearStrings = detectMessageLocale(pendingAgentSession.draft.rawText) === 'ja' ? ja : en;
+          const unclearIsEditing = !!pendingAgentSession.editingAgentId;
           store.addMessage(paneId, {
             id: generateId(),
             role: 'assistant',
-            content: `${unclearStrings['agentplan.confirm_unclear_hint']}\n\n${summarizeAgentDraftAsText(pendingAgentSession.draft)}`,
+            content: `${unclearStrings[unclearIsEditing ? 'agentplan.confirm_unclear_hint_edit' : 'agentplan.confirm_unclear_hint']}\n\n${summarizeAgentDraftAsText(pendingAgentSession.draft, undefined, unclearIsEditing)}`,
             timestamp: Date.now(),
             agent: pendingAgentSession.agentLabel,
           });

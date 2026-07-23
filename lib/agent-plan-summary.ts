@@ -306,6 +306,7 @@ function markLine(line: string, field: string, changedFields: ReadonlySet<string
 export function summarizeAgentDraftAsText(
   draft: ParsedAgentDraft,
   changedFields: ReadonlySet<string> = new Set(),
+  isEditing: boolean = false,
 ): string {
   const lines: string[] = [];
   lines.push(markLine(t('agentplan.summary_name', { name: draft.name }), 'name', changedFields));
@@ -368,7 +369,13 @@ export function summarizeAgentDraftAsText(
   if (!hasFireableSchedule(draft)) {
     lines.push(t('agentplan.schedule_restate_hint'));
   } else {
-    lines.push(t('agentplan.confirm_prompt'));
+    // 2026-07-23: on-device test of the Sidebar "Edit" entry point found
+    // this line reading "Register this agent..." while editing an
+    // already-registered agent — misleading (implies a new/duplicate agent
+    // is about to be created). isEditing swaps in the "Update"-worded
+    // counterpart; every other call site defaults to false, so ordinary
+    // creation output is byte-identical to before this param existed.
+    lines.push(t(isEditing ? 'agentplan.confirm_prompt_edit' : 'agentplan.confirm_prompt'));
   }
 
   return lines.join('\n');

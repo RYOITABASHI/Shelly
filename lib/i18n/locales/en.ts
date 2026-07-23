@@ -375,10 +375,20 @@ const en: Record<string, string> = {
   // lib/agent-draft-patch.ts. Reworded from the older "cancel and re-describe"
   // copy to reflect that.
   'agentplan.confirm_prompt': 'Register this agent as described above? To change something, just say the change (e.g. "make it 9am"); "cancel" discards it.',
+  // 2026-07-23: Sidebar "Edit" entry point (components/layout/Sidebar.tsx)
+  // routes an already-registered agent through this SAME chat-confirm flow —
+  // the draft is fully formed already, so "register" here would misleadingly
+  // suggest a brand-new/duplicate agent is about to be created instead of the
+  // existing one being updated. See summarizeAgentDraftAsText's isEditing
+  // param.
+  'agentplan.confirm_prompt_edit': 'Update this agent as described above? To change something, just say the change (e.g. "make it 9am"); "cancel" discards the edit.',
   // Phase A/B (2026-07-22) — type-to-confirm and the assumed-schedule
   // annotation for the chat-native flow (hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts).
   'agentplan.confirm_unclear_hint': 'There is a pending draft. Reply "register" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',
+  // 2026-07-23: edit-context counterpart of confirm_unclear_hint (see
+  // confirm_prompt_edit's own comment).
+  'agentplan.confirm_unclear_hint_edit': 'There is a pending edit. Reply "update" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',
   'agentplan.schedule_assumed_note': 'Interpreted "{{word}}" as {{time}}.',
   'agentplan.next_fire_note': 'Next run: {{datetime}}',
   // 2026-07-23: shown when one or more fields above were filled in by the

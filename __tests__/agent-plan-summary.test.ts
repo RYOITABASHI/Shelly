@@ -442,6 +442,33 @@ describe('summarizeAgentDraftAsText', () => {
     });
   });
 
+  // 2026-07-23: Sidebar "Edit" entry point on-device test found the confirm
+  // footer reading "Register this agent..." while editing an ALREADY-
+  // registered agent — misleading (implies a new/duplicate agent). isEditing
+  // swaps in the "Update"-worded counterpart.
+  describe('isEditing param', () => {
+    it('defaults to the register-worded footer (backward compatible, byte-identical to before this param existed)', () => {
+      const draft = baseDraft();
+      const text = summarizeAgentDraftAsText(draft);
+      const lastLine = text.split('\n').at(-1);
+      expect(lastLine).toBe('agentplan.confirm_prompt');
+    });
+
+    it('isEditing=true swaps the footer to the update-worded variant', () => {
+      const draft = baseDraft();
+      const text = summarizeAgentDraftAsText(draft, undefined, true);
+      const lastLine = text.split('\n').at(-1);
+      expect(lastLine).toBe('agentplan.confirm_prompt_edit');
+    });
+
+    it('isEditing=true still omits the confirm footer entirely when the schedule needs restating', () => {
+      const draft = baseDraft({ schedule: null, scheduleConfident: false, suggestedFrequency: 'daily' });
+      const text = summarizeAgentDraftAsText(draft, undefined, true);
+      expect(text).toContain('agentplan.schedule_restate_hint');
+      expect(text).not.toContain('agentplan.confirm_prompt');
+    });
+  });
+
   // Phase C (2026-07-22): lib/agent-draft-patch.ts's applyDraftPatch reports
   // which fields a follow-up reply touched; the re-posted summary marks
   // exactly those lines with '★' (and, once ANY field is marked, the other

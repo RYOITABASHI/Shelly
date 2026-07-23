@@ -963,7 +963,7 @@ export function Sidebar() {
         chatStore.addMessage(aiSlot.id, {
           id: messageId,
           role: 'assistant',
-          content: summarizeAgentDraftAsText(draft),
+          content: summarizeAgentDraftAsText(draft, undefined, true),
           timestamp: now,
           agentDraft: draft,
           agentChatConfirm: true,
