@@ -996,16 +996,23 @@ export function Sidebar() {
     // silently drops anything past the 3rd on Android, with no warning
     // visible at runtime), so Run Now / Pause / Edit already filled every
     // slot even in the common case (no memory notes, no saved path), pushing
-    // Close off the dialog entirely. No explicit Close button is added back
-    // — Alert.alert on Android is cancelable by default (tap the scrim or
-    // press Back), which was already the ONLY way to dismiss this dialog
-    // whenever a 4th/5th conditional button (memory view / open saved path)
-    // was present, even before tonight. slice(0, 3) makes the truncation
+    // Close off the dialog entirely. slice(0, 3) makes the truncation
     // deterministic and priority-ordered (Run Now > Pause > Edit > Memory >
     // Open path) instead of relying on RN's undocumented Android drop order.
+    //
+    // No explicit Close button is added back — instead the dialog is made
+    // dismissible via tap-outside/Back. CORRECTION (also found on-device,
+    // same session): react-native's Alert.js hardcodes
+    // `cancelable: false` on Android UNLESS an `options` object with
+    // `cancelable: true` is explicitly passed (see node_modules/react-native/
+    // Libraries/Alert/Alert.js) — omitting `options` entirely, as this call
+    // did right after the first fix, does NOT default to cancelable; it
+    // defaults to NOT dismissible at all. `{ cancelable: true }` below is
+    // therefore required, not optional decoration.
+    //
     // A real fix — replacing this Alert.alert with a custom bottom sheet
     // that supports more than 3 actions — is tracked in DEFERRED.md.
-    Alert.alert(agent.name, body, buttons.slice(0, 3));
+    Alert.alert(agent.name, body, buttons.slice(0, 3), { cancelable: true });
   }, [t, handleRunScheduledAgent, handleTogglePause, showMemoryList, agentApprovalLabel]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
