@@ -2158,7 +2158,7 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ## P2 — 2 リリース先 (v0.2.0 milestone)
 
-### バッテリー残量など端末システム情報の取得にネイティブAPIブリッジが無い — 未着手 (P2)
+### バッテリー残量など端末システム情報の取得にネイティブAPIブリッジが無い — バッテリー/ストレージ/メモリ/ネットワークで解消・実機再検証中 (P2)
 
 **優先度**: P2（回避策あり——テキスト系の通知/下書きタスクは正常動作。バッテリー%等の端末システム情報を求めるタスクだけが影響を受ける、ニッチだが実際にユーザーが最初に試したユースケース）
 
@@ -2169,6 +2169,8 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 2. **品質ゲートの穴**: `lib/agent-executor.ts`の`is_low_quality_completion`（プロンプトエコー・AI拒否の検出）は、「正直に失敗を認めた説明文」（今回のケース）を検出対象外にしている——プロンプトエコーでも拒否でもなく、一見自然な文章として完結しているため。しかし実際には要求されたデータを一切届けていない失敗であり、これを`success`として扱い「Save as skill」まで提示するのはユーザー体験として有害（壊れたスキルの保存を誘導してしまう）。
 
 **対応方針（未着手）**: (1) `TerminalEmulatorModule.kt`等にBatteryManager経由のネイティブメソッドを追加し、シェル経由ではなくそのAPIを呼べる専用capability/app-actレシピとして配線する。(2) `is_low_quality_completion`に「データを取得できなかった」系の定型失敗フレーズ（日本語「取得できませんでした」「アクセスできず」等）も検出対象に加えるか、より一般的には「要求された具体的データ（数値・固有名詞等）を一切含まない完了報告」を疑わしいと判定するヒューリスティックの追加を検討。(3) Sidebarの「no-approval」ラベルが、実際にはcapability broker境界越え承認とは独立であることをUI上でも明示する（例: ラベルを「no-approval (dispatch only)」に変更、または境界越え承認が必要な旨を別途表示）。
+
+**→ 2026-07-24 (1)着地・main merge・CI起動済み（`e8244db82`/`0f03a6d90`/`7fbe81825`/`c11ee713b`）**: 「守備範囲は広い方が良いが、境界越えが必要な操作自体を減らす方向で」という方針合意を受け、新規`DeviceStatusBridge.kt`（`AgentRuntime.kt::runAgent()`の単一chokepointで無人/対話両実行パスを一括カバー）が`$HOME/.shelly/device-status/*.json`へバッテリー・ストレージ・メモリ・ネットワーク接続状態（種別のみ、SSID等の識別情報は含めない）をrun毎にネイティブAPI（BatteryManager/StatFs/ActivityManager/ConnectivityManager、いずれも権限不要または`ACCESS_NETWORK_STATE`のみ）で書き出す設計で着地。**capability broker/boundary-policyクラシファイアには一切触れていない**——検討した2案（モデルにシェル経由で読ませる→`leaves-root`で必ず承認要求になる／FS-001ブローカーの新規読み取りcapability→新しい実行時サーフェス）はどちらも却下し、代わりに`lib/agent-executor.ts`の生成bashスクリプト自身（モデルが提案するコマンドではない、Shelly自身の決定論的前処理）がモデル起動前にこのJSONを`cat`し、既存の`CURRENT_DATETIME_CONTEXT`（v19）と全く同じパターンで`DEVICE_STATUS_CONTEXT`としてプロンプトに埋め込む方式を採用——境界越え判定自体が発生しないため承認プロンプトも一切出ない。バッテリー実装を自分で行った後、ストレージ・メモリ・ネットワークの3capabilityを並列background agent（各自isolated worktree）で実装、3件とも独立レビュー・自分でtsc+jest実行の上でマージ（3エージェントとも`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を同じ次の番号に独立して採番してきたため、マージ時にv27（ストレージ+メモリ統合）→v28（ネットワーク）で手動採番調整）。**実機再検証中**: 修正前は「バッテリー残量通知」RUN NOWが`leaves-root`承認プロンプト→Codexが「取得できませんでした」と正直に失敗報告→run logは`success`扱いという二重の不具合だったが、device-statusブリッジ入りビルドで再度RUN NOWした結果は未確認（ユーザーがRUN NOW実行、結果待ち）。(2)(3)は引き続き未着手。
 → sync: なし。
 
 ---
