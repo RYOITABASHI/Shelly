@@ -94,6 +94,13 @@ const config: ExpoConfig & { android?: any } = {
       "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
       "MANAGE_EXTERNAL_STORAGE",
       "REQUEST_INSTALL_PACKAGES",
+      // DeviceStatusBridge's network-connectivity capability (network.json):
+      // "normal" protection level, no runtime prompt. Declared here (not by
+      // hand-editing android/app/src/main/AndroidManifest.xml) because a
+      // clean `expo prebuild` regenerates that file from config plugins only
+      // and silently drops anything added directly — see this repo's own
+      // "expo prebuild wipes manual manifest edits" lesson.
+      "ACCESS_NETWORK_STATE",
     ],
     intentFilters: [
       {

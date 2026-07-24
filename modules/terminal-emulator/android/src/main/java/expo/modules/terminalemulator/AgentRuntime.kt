@@ -159,7 +159,22 @@ object AgentRuntime {
     // capabilities in parallel worktrees and each independently bumped to
     // 27; merged together here rather than stacking two near-identical
     // version bumps.)
-    private const val CURRENT_SCRIPT_VERSION = 27
+    // v28 (2026-07-24, device-status: network connectivity capability):
+    // DeviceStatusBridge.refreshAll now also writes network.json
+    // (ConnectivityManager-derived connected/type, no SSID or other
+    // identifying detail) alongside battery.json/storage.json/memory.json —
+    // same chokepoint, same DEVICE_STATUS_CONTEXT merge on the JS side
+    // (lib/agent-executor.ts's reader is already generic and needed no
+    // change). Implemented in a third parallel worktree that independently
+    // landed on v27 too (three agents, three capabilities, all racing for
+    // the same next version number) — renumbered to v28 here since v27 was
+    // already claimed by the storage+memory merge above. No wire-format or
+    // control-flow change to this native file beyond the constant bump
+    // itself; bumped only so a stale pre-v28 on-disk script's own version
+    // marker line reflects that the device-status snapshot it reads may now
+    // also contain a "network" key, keeping the staleness signal meaningful
+    // for anyone diffing script versions against this history block.
+    private const val CURRENT_SCRIPT_VERSION = 28
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

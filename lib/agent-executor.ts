@@ -269,7 +269,23 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // capabilities in parallel worktrees and each independently bumped to 27;
 // merged together here rather than stacking two near-identical version
 // bumps.)
-const AGENT_SCRIPT_VERSION = 27;
+// v28 (2026-07-24, device-status: network connectivity capability):
+// DeviceStatusBridge.refreshAll (native, AgentRuntime.kt) now also writes
+// network.json ({"network":{"connected":bool,"type":"wifi"|"cellular"|
+// "none"|"other","asOf":…}}, ConnectivityManager-derived, no SSID/identifying
+// detail) alongside battery.json/storage.json/memory.json before this script
+// starts. The DEVICE_STATUS_CONTEXT bash block above is unchanged — it
+// already reads every *.json file under $HOME/.shelly/device-status/
+// generically and merges each file's top-level key, so a "network" key now
+// simply appears in the merged object whenever that snapshot is present, no
+// per-capability wiring needed here. Implemented in a third parallel
+// worktree that independently landed on v27 too (three agents, three
+// capabilities, same next-version race) — renumbered to v28 since v27 was
+// already claimed by the storage+memory merge above. Bumped only so the
+// version marker embedded in every generated script stays a meaningful
+// staleness signal (no behavior change to this TS file's own generated bash
+// beyond that marker).
+const AGENT_SCRIPT_VERSION = 28;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
