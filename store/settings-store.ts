@@ -138,9 +138,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalWallpaperTransparency: true,
   uiFont: 'blue',
   showVimKeyBar: false,
-  // Project owner directive 2026-07-14: default is no-approval, confirmation
-  // optional ("デフォは承認なしな。任意で確認"). Both default to false/off.
-  agentRegistrationRequireConfirm: false,
+  // 2026-07-24 reversal of the 2026-07-14 directive, specifically for
+  // REGISTRATION confirm (not the separate defaultRequireActionApproval
+  // below, which is about per-run dispatch approval and is unchanged):
+  // the no-confirm auto-register fast path for draft/notify shipped its own
+  // "quick correction" safety net (justRegisteredAgent, a 4-minute
+  // post-registration undo window) specifically because registering without
+  // review meant mistakes were caught AFTER the fact — that safety net was
+  // itself the source of 3 separate on-device bugs in one night (message
+  // overwrite on a scrolled-away bubble, editingAgentId loss creating a
+  // duplicate agent, confusing "Register"-worded footer during a Sidebar
+  // edit). Direct project-owner call: plain natural-language chat confirm
+  // ("これでいいですか？") before registering is simpler and equally
+  // low-friction, so default this back on — still a toggleable setting, not
+  // a hard-coded requirement, preserving the "任意で確認" (confirmation is a
+  // choice) framing from the original directive. justRegisteredAgent's
+  // quick-correct mechanism is NOT removed — it still activates correctly
+  // for anyone who flips this back off.
+  agentRegistrationRequireConfirm: true,
   defaultRequireActionApproval: false,
   scheduleReadinessNudgeShown: false,
 };
