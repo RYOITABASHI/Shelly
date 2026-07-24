@@ -238,7 +238,23 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // process has exited by the time a human responds) — this only fixes
 // runs AFTER the one whose notification was missed. Bumped because the
 // generated script's driver invocation arguments change.
-const AGENT_SCRIPT_VERSION = 25;
+// v26 (2026-07-24, device-status context injection): every model-facing
+// PROMPT_FILE assembly now leads with a DEVICE_STATUS_CONTEXT line (right
+// after CURRENT_DATETIME_CONTEXT), built by reading every *.json file under
+// $HOME/.shelly/device-status/ — a snapshot AgentRuntime.kt's
+// DeviceStatusBridge refreshes natively (currently battery only) before
+// this script even starts. On-device finding: a "notify battery level"
+// agent asked the model to fetch it, and the model's only option — a shell
+// read of /sys/class/power_supply — is denied by SELinux to an unprivileged
+// app process (root would be needed), even though the SAME data is
+// trivially available to the app itself via the public BatteryManager API.
+// This is read here with plain shell BEFORE the model ever runs (never a
+// model-proposed command), so neither the boundary-policy classifier nor
+// the capability broker is ever involved — see DeviceStatusBridge's own doc
+// comment for the full reasoning (mirrors the CURRENT_DATETIME_CONTEXT v19
+// precedent exactly). Bumped because the generated script's prompt-assembly
+// BEHAVIOR changed (new leading line in every model-facing prompt).
+const AGENT_SCRIPT_VERSION = 26;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3854,6 +3870,39 @@ case "$CURRENT_DATETIME_CONTEXT_WDAY_NUM" in
   *) CURRENT_DATETIME_CONTEXT_WDAY='?' ;;
 esac
 CURRENT_DATETIME_CONTEXT="[Current date/time: $(date '+%Y年%m月%d日')(\${CURRENT_DATETIME_CONTEXT_WDAY}) $(date '+%H:%M %Z')]"
+# v26 (2026-07-24, device-status context injection): AgentRuntime.kt's
+# DeviceStatusBridge refreshes $HOME/.shelly/device-status/*.json (currently
+# battery.json only) natively, once per run, BEFORE this script starts —
+# see that class's own doc comment for why this is read here with plain
+# shell (never a model-proposed command) rather than left for the model to
+# fetch itself. Each file is a single-line compact JSON object with its own
+# top-level key (e.g. {"battery":{...}}); merged here by stripping each
+# file's outer braces and joining with commas — deliberately NOT jq (kept
+# dependency-free, mirrors this script's general preference for plain shell
+# over an external tool where the format is simple/self-controlled). A
+# malformed/unexpected file merges in verbatim rather than aborting — this
+# context is advisory, never parsed back out, so a bad file just makes one
+# ugly line in the prompt instead of breaking the run.
+DEVICE_STATUS_CONTEXT=""
+DEVICE_STATUS_DIR="$HOME/.shelly/device-status"
+if [ -d "$DEVICE_STATUS_DIR" ]; then
+  DEVICE_STATUS_JSON=""
+  for f in "$DEVICE_STATUS_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    DEVICE_STATUS_PART=$(tr -d '\\n' < "$f" 2>/dev/null || true)
+    [ -n "$DEVICE_STATUS_PART" ] || continue
+    DEVICE_STATUS_INNER="\${DEVICE_STATUS_PART#\\{}"
+    DEVICE_STATUS_INNER="\${DEVICE_STATUS_INNER%\\}}"
+    if [ -z "$DEVICE_STATUS_JSON" ]; then
+      DEVICE_STATUS_JSON="$DEVICE_STATUS_INNER"
+    else
+      DEVICE_STATUS_JSON="$DEVICE_STATUS_JSON,$DEVICE_STATUS_INNER"
+    fi
+  done
+  if [ -n "$DEVICE_STATUS_JSON" ]; then
+    DEVICE_STATUS_CONTEXT="[Device status (read-only, refreshed by Shelly just now — treat as authoritative, do not attempt to re-derive via shell commands): {$DEVICE_STATUS_JSON}]"
+  fi
+fi
 LOCAL_CONTEXT_FILE="$TMP_DIR/local-context-$AGENT_ID.txt"
 # Studio context (source-registry dedup + recent drafts + content-studio/Obsidian
 # git state) is only built for content-pipeline agents. For ad-hoc @agent tasks
@@ -4285,7 +4334,7 @@ function generateToolCommand(
 	# closes the pipe early (large context > pipe buffer) → exit 141 → under
 	# 'set -euo pipefail' the whole run aborts BEFORE the fallback. Reading a
 	# regular file with head has no producer to signal, so it is abort-safe.
-	{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
+	{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
 	head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"
 	rm -f "$PROMPT_FILE.full"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
@@ -4317,7 +4366,7 @@ function generateToolCommand(
       const perplexityModel = tool.model || 'sonar';
 		      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 		REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-		printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+		printf '%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 		MODEL='${perplexityModel.replace(/'/g, "'\\''")}'
@@ -4400,7 +4449,7 @@ fi`;
  */
 function codexDriverCommand(escapedPrompt: string, resultVar: string, policyJson: string): string {
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+printf '%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 # workspaceRoot (DEFERRED.md #2 残り): when the agent has a configured
 # workspace, run the driver there instead of the content-studio default —
 # the B2 driver re-anchors AutonomyPolicy.workspaceRoot to whatever --cwd it
@@ -4536,7 +4585,7 @@ codex_orch_collapse_and_truncate() {
 # once) since a long chain may cross a day/midnight boundary between steps.
 codex_orch_build_prompt() {
   {
-    printf '%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}"
+    printf '%s\\n%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}"
     if [ -n "$CODEX_ORCH_BASE_PROMPT" ]; then
       printf '%s\\n\\n' "$CODEX_ORCH_BASE_PROMPT"
     fi
@@ -4729,7 +4778,7 @@ ${promptMarker}
 # fixed rubric heredoc below APPENDS (>>) rather than overwrites, so this
 # stays the very first line of prompt.md exactly like every other backend's
 # PROMPT_FILE.
-printf '%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}" > "$RUN_DIR/prompt.md"
+printf '%s\\n%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" > "$RUN_DIR/prompt.md"
 cat >> "$RUN_DIR/prompt.md" <<'PROMPTEOF'
 あなたは日本語のSubstack記事の編集者です。
 
@@ -4891,7 +4940,7 @@ function openAiCompatApiCommand(
   const label = opts.label.replace(/"/g, '\\"');
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-	printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+	printf '%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	MODEL="\${${opts.envModelVar}:-${model}}"
@@ -4928,7 +4977,7 @@ function geminiApiCommand(escapedPrompt: string, resultVar: string, systemPrompt
   const toolsFragment = grounded ? '\\"tools\\":[{\\"google_search\\":{}}],' : '';
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-printf '%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+printf '%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 MODEL="\${GEMINI_MODEL:-${defaultModel.replace(/"/g, '\\"')}}"

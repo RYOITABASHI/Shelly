@@ -115,7 +115,31 @@ object AgentRuntime {
     // generated script's runtime BEHAVIOR changes for a multi-action agent,
     // so a stale pre-v24 on-disk script (old single-action-only dispatch) is
     // regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 24
+    // v25 (2026-07-24, escalation timeout no longer discards a missed
+    // approval): shelly-agent-driver.js invocations now pass
+    // --escalation-timeout-action queue — see lib/agent-executor.ts's
+    // matching AGENT_SCRIPT_VERSION comment. CATCH-UP NOTE: this constant
+    // was NOT bumped alongside that TS-side change when it landed (an
+    // oversight caught during v26's implementation) — an already-registered
+    // agent's on-disk script stayed at v24/v25 forever with no staleness
+    // signal, silently missing the queue-mode reliability fix until touched
+    // by some other trigger (e.g. a Sidebar edit). Bumping straight to 26
+    // below closes that gap retroactively in the same native change.
+    // v26 (2026-07-24, device-status context injection): AgentRuntime.kt now
+    // refreshes a device-status JSON snapshot (DeviceStatusBridge, currently
+    // battery only) under $HOME/.shelly/device-status/ before EVERY agent
+    // run (both this legacy .sh path and the PlanSpec executor share the
+    // single runAgent() call site that does this, so both benefit). The
+    // generated script reads that snapshot directly via plain shell (NOT a
+    // model-proposed command — never passes through the boundary-policy
+    // shell-command classifier or triggers a capability-broker/escalation
+    // approval prompt) and prepends it to every model-facing prompt as
+    // DEVICE_STATUS_CONTEXT, mirroring the existing CURRENT_DATETIME_CONTEXT
+    // pattern exactly (same v19 fix class: ground the model in real runtime
+    // facts instead of letting it guess/hallucinate or attempt a doomed
+    // sysfs shell read). Bumped so a stale pre-v26 on-disk script (no
+    // DEVICE_STATUS_CONTEXT line) is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 26
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
@@ -148,6 +172,19 @@ object AgentRuntime {
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
+
+        // v26: refresh the device-status snapshot (DeviceStatusBridge) before
+        // EVERY run, ahead of the enabled-check/PlanSpec-vs-legacy branch
+        // below so both executors read the same fresh data — see
+        // DeviceStatusBridge's own doc comment for why this lives here
+        // (native, Shelly-authored) rather than being something the model
+        // fetches itself at runtime. Best-effort: a failure here must never
+        // block the agent run.
+        try {
+            DeviceStatusBridge.refreshAll(appContext, homeDir)
+        } catch (e: Exception) {
+            Log.w(TAG, "device-status refresh failed", e)
+        }
 
         // Per-agent enabled re-check (innermost chokepoint), gated to UNATTENDED
         // runs only. Every RUN_AGENT dispatch (AlarmManager fire, notification-
