@@ -1078,6 +1078,21 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
       // LEADING-clause case; a mid-sentence "すぐ" mention is left alone.
       .replace(/^\s*(?:今すぐ|すぐに|すぐ|直ちに|即時|即座に)[、,]?\s*/, '')
       .replace(/^\s*(?:right\s+now|right\s+away|immediately|asap)[,]?\s*/i, '')
+      // Pure interval schedule ("15分ごとに…" / "2時間ごとに…", NO 毎日/毎朝/…
+      // recurrence marker) — 2026-07-24 fuzz-sweep gap 2. The marker-anchored
+      // strip below only fires when one of the daily/weekly recurrence markers
+      // is present; a bare interval phrase carries none at all, so it was
+      // never removed. Anchored to the STRING START and requiring the exact
+      // digit-prefixed interval token (mirrors parseSchedule's own
+      // intervalJp/hourIntervalJp regexes above), so this can only match a
+      // genuine LEADING interval clause — never arbitrary content. A
+      // marker-led utterance never starts with a bare digit, so it's already
+      // fully handled by the marker strip below and this new regex is a
+      // guaranteed no-op for it (narrowing only, no regression risk).
+      .replace(/^\s*\d+\s*分に\s*1\s*回\s*(?:に|の)?\s*/, '')
+      .replace(/^\s*\d+\s*分\s*(?:ごと|おき|毎|間隔)\s*(?:に|の)?\s*/, '')
+      .replace(/^\s*\d+\s*時間\s*(?:ごと|おき|毎)\s*(?:に|の)?\s*/, '')
+      .replace(/^every\s+\d+\s*(?:min|mins|minute|minutes|hours?)\b\s*/i, '')
       // Strip the schedule clause IN PLACE (no leading `.*?`) so a topic BEFORE it
       // survives: "GitHub Trendingを毎日8時にまとめて" → "GitHub Trendingをまとめて",
       // not "まとめて". Bounded by 、。 so it never crosses a clause boundary.
@@ -1135,6 +1150,41 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
       .replace(/^\s*((on\s+)?(mon|tue|wed|thu|fri|sat|sun)\w*(\s*(,|and|&)\s*(mon|tue|wed|thu|fri|sat|sun)\w*)*)\b[^.,]*?\b(at\s+\d|\d\s*(am|pm|:))[^,.]*[\s,]*/i, '')
       .replace(/^\s*(every\s*day|everyday|daily|each\s+day|every\s+\d+\s*\w+)\b[\s,]*/i, '')
       .trim();
+
+    // Bare time-of-day-WORD schedule ("毎朝十分に休憩を取るようにして" / "毎週
+    // 土曜の夜に読書の時間を作って") — 2026-07-24 fuzz-sweep gap 1. None of the
+    // digit-anchored strips above match here (by construction: schedule was
+    // only resolved via TIME_OF_DAY_DEFAULTS because extractTime() found NO
+    // digit anywhere in the text), so the marker clause was never removed.
+    // Gated strictly behind schedule.assumedTimeOfDay so this can only ever
+    // fire in exactly that resolved-via-bare-word case; the specific JP word
+    // to match is read back off schedule.suggestedTime via
+    // TIME_OF_DAY_ASSUMPTION_LABEL (the same table parseSchedule itself used
+    // to resolve the default) instead of a loose union, so this can't
+    // accidentally consume an unrelated occurrence of a different
+    // time-of-day word elsewhere in the sentence. Anchored to the STRING
+    // START — the recurrence marker (毎日/毎朝/毎晩/毎夕/毎週/每週/日次) must
+    // lead the utterance for this to fire, mirroring the leading-clause
+    // strips above; a marker that appears mid-sentence is left untouched
+    // (narrower scope, no regression risk). The day-word group is OPTIONAL
+    // so both shapes resolve correctly: a marker that already embeds the
+    // word itself (毎朝 embeds 朝) is stripped alone, while a word-less
+    // marker (毎日/毎週/每週/日次) additionally consumes the separate
+    // trailing word ("毎週土曜の夜に" → marker+weekday+の+word+に, all one
+    // match).
+    if (schedule.assumedTimeOfDay && schedule.suggestedTime) {
+      const word = TIME_OF_DAY_ASSUMPTION_LABEL[schedule.suggestedTime.hour];
+      if (word) {
+        s = s
+          .replace(
+            new RegExp(
+              `^(?:毎日|毎朝|毎晩|毎夕|毎週|每週|日次)\\s*(?:[日月火水木金土]曜日?)?\\s*の?\\s*(?:${escapeRegExp(word)})?\\s*(?:に|の)?`,
+            ),
+            '',
+          )
+          .trim();
+      }
+    }
   }
   return s || text.trim();
 }
@@ -1278,7 +1328,19 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       memory: detectMemory(rawText),
       actionCaveat: presetActionCaveat,
       scheduleAssumed: presetSched.assumedTimeOfDay || undefined,
-      startNotBefore: startNotBefore || undefined,
+      // 2026-07-24 fuzz-sweep gap 3: 'once' (run-now sentinel, see
+      // parseSchedule's branch 0/0b doc comment) has no future "don't fire
+      // before" concept at all — an immediate run fires immediately,
+      // unconditionally. Carrying a populated startNotBefore alongside it is
+      // not just inert: lib/agent-plan-summary.ts's next-fire-line branch
+      // calls decodeCron(draft.schedule) whenever startNotBefore is set and
+      // still in the future, and decodeCron('once') does not decode to a
+      // real hour/minute the way every other schedule shape does — so
+      // leaving startNotBefore populated here risks a nonsensical "次回実行"
+      // line on a schedule that has no next-fire date to compute. Clearing
+      // it is a narrowing-only change: every other schedule shape is
+      // completely unaffected.
+      startNotBefore: schedule === 'once' ? undefined : startNotBefore || undefined,
       rawText,
     };
   }
@@ -1369,7 +1431,12 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     memory,
     actionCaveat,
     socialPostCandidates,
-    startNotBefore: startNotBefore || undefined,
+    // 2026-07-24 fuzz-sweep gap 3: see the identical guard + rationale on the
+    // preset-branch return above — 'once' has no future "don't fire before"
+    // concept, and leaving startNotBefore populated risks a nonsensical
+    // next-fire-line in lib/agent-plan-summary.ts (decodeCron('once') isn't a
+    // real cron shape). Narrowing-only: every other schedule shape unaffected.
+    startNotBefore: sched.schedule === 'once' ? undefined : startNotBefore || undefined,
     rawText,
   };
 }

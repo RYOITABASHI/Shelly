@@ -1275,7 +1275,11 @@ describe('parseAgentNL — fuzz sweep findings (2026-07-24)', () => {
       const d = parseAgentNL('毎週土曜の夜に読書の時間を作って');
       expect(d.schedule).toBe('0 21 * * 6');
       expect(d.scheduleAssumed).toBe(true);
-      expect(d.prompt).toBe('毎週土曜の夜に読書の時間を作って'); // unstripped (see the documented gap below), but NOT truncated
+      // Was 'unstripped but NOT truncated' before the bare-time-of-day-word
+      // marker strip below (2026-07-24 gap 1) landed — now fully stripped,
+      // same as the digit-time case, since both fixes together close every
+      // known way this exact clause used to leak/truncate.
+      expect(d.prompt).toBe('読書の時間を作って');
       expect(d.prompt).toContain('読書の時間を作って');
     });
 
@@ -1338,82 +1342,132 @@ describe('parseAgentNL — fuzz sweep findings (2026-07-24)', () => {
     });
   });
 
-  describe('DOCUMENTED, NOT FIXED: bare time-of-day-word schedules never strip their marker clause from the prompt at all', () => {
+  describe('FIXED: bare time-of-day-word schedules never stripped their marker clause from the prompt at all', () => {
     // Distinct from (and milder than) the 時-eating bug above: when the
     // schedule resolves via a bare time-of-day WORD default (毎朝/毎週+朝
     // etc.) AND the remaining text has no digit-time/interval token at all to
-    // anchor a strip on, NONE of derivePrompt's marker-strip regexes match
-    // (they all require a trailing 時/分-interval token paired with the
-    // marker), so the schedule phrase is never removed — the prompt handed to
-    // the agent stays verbose but is NOT corrupted (no content lost, unlike
-    // the bug above). Closing this gap needs a genuinely new regex family
-    // (strip a bare marker+time-of-day-word clause with no digit to anchor
-    // on) — a real design call, not a narrow tightening, so left undone here
-    // per the task's fix-scope boundary.
-    it('毎朝十分に休憩を取るようにして: schedule resolves (assumed 08:00) but "毎朝" stays in the prompt verbatim', () => {
+    // anchor a strip on, NONE of derivePrompt's digit-anchored marker-strip
+    // regexes matched (they all require a trailing 時/分-interval token
+    // paired with the marker), so the schedule phrase was never removed —
+    // verbose but not corrupting. Fixed with a new strip gated STRICTLY
+    // behind schedule.assumedTimeOfDay, so it can only ever fire in exactly
+    // the resolved-via-bare-word case; the specific JP word it looks for is
+    // read back off schedule.suggestedTime via TIME_OF_DAY_ASSUMPTION_LABEL
+    // (the same table parseSchedule itself used to resolve the default),
+    // not a loose union — so it can't accidentally consume an unrelated
+    // occurrence of a different time-of-day word elsewhere in the sentence.
+    // Anchored to the STRING START, mirroring every other leading-clause
+    // strip in this function.
+    it('毎朝十分に休憩を取るようにして: schedule resolves (assumed 08:00) and "毎朝" is now stripped from the prompt', () => {
       const d = parseAgentNL('毎朝十分に休憩を取るようにして');
       expect(d.scheduleConfident).toBe(true);
       expect(d.scheduleAssumed).toBe(true);
-      expect(d.prompt).toBe('毎朝十分に休憩を取るようにして'); // NOT '十分に休憩を取るようにして'
+      expect(d.prompt).toBe('十分に休憩を取るようにして'); // was '毎朝十分に休憩を取るようにして' pre-fix
     });
 
-    it('毎週土曜の夜に読書の時間を作って: same gap (schedule clause survives in the prompt)', () => {
+    it('毎週土曜の夜に読書の時間を作って: the marker+weekday+bare-word clause is now fully stripped', () => {
       const d = parseAgentNL('毎週土曜の夜に読書の時間を作って');
-      expect(d.prompt).toContain('毎週土曜の夜に'); // left un-stripped
+      expect(d.prompt).not.toContain('毎週土曜の夜に'); // was left un-stripped pre-fix
+      expect(d.prompt).toBe('読書の時間を作って');
+    });
+
+    it.each([
+      ['毎日夜に食事の時間を教えて', '食事の時間を教えて'],
+      ['毎日昼に時計の修理を依頼して', '時計の修理を依頼して'],
+      ['毎日深夜にログを集計して', 'ログを集計して'],
+      ['毎日夕方にニュースをまとめて', 'ニュースをまとめて'],
+    ])('%s: strips down to exactly %s', (u, expected) => {
+      const d = parseAgentNL(u);
+      expect(d.scheduleAssumed).toBe(true);
+      expect(d.prompt).toBe(expected);
+    });
+
+    it('control: a daily marker with NO time-of-day word at all (unconfident schedule) is unaffected — the new strip never fires', () => {
+      const d = parseAgentNL('毎日ニュースをまとめて');
+      expect(d.scheduleConfident).toBe(false);
+      expect(d.scheduleAssumed).toBeUndefined();
+      expect(d.prompt).toBe('毎日ニュースをまとめて'); // untouched, same as before this fix
+    });
+
+    it('control: explicit digit time ("毎朝7時") is completely unaffected — the new strip is gated behind assumedTimeOfDay only', () => {
+      const d = parseAgentNL('毎朝7時にニュースをまとめて');
+      expect(d.scheduleAssumed).toBeUndefined();
+      expect(d.prompt).toBe('ニュースをまとめて');
     });
   });
 
-  describe('DOCUMENTED, NOT FIXED: a pure interval schedule ("N分ごとに…") never strips its own clause from the prompt', () => {
+  describe('FIXED: a pure interval schedule ("N分ごとに…") never stripped its own clause from the prompt', () => {
     // Distinct root cause from the two gaps above: derivePrompt's base
     // marker-strip regex only fires when one of the daily/weekly RECURRENCE
     // markers (毎日|毎朝|毎晩|毎夕|毎週|每週|日次) is present — a bare interval
     // phrase like "15分ごとに" or "2時間ごとに" carries NO such marker at all,
-    // so the regex never even attempts to match it, and the interval clause
-    // is never removed from the prompt. Undetected by the existing suite
-    // because no prior test asserted .prompt for an interval-only schedule
-    // (only .schedule was checked). A real fix needs a new, differently-
-    // anchored regex (no leading marker to anchor on) — a design call, left
-    // undone here.
-    it('15分ごとに… (pure interval, no 毎日/毎朝 marker) leaves the interval clause in the prompt', () => {
+    // so the regex never even attempted to match it, and the interval clause
+    // was never removed from the prompt. Fixed with new regexes anchored to
+    // the STRING START, requiring the exact digit-prefixed interval token
+    // (mirroring parseSchedule's own intervalJp/hourIntervalJp regexes) — a
+    // marker-led utterance never starts with a bare digit, so these are a
+    // guaranteed no-op for every already-passing marker case (narrowing
+    // only).
+    it('15分ごとに… (pure interval, no 毎日/毎朝 marker) now strips the interval clause from the prompt', () => {
       const d = parseAgentNL('15分ごとにコマンド実行して結果を保存');
       expect(d.schedule).toBe('*/15 * * * *');
       expect(d.scheduleConfident).toBe(true);
-      expect(d.prompt).toBe('15分ごとにコマンド実行して結果を保存'); // NOT stripped, unlike the 毎日+marker case
+      expect(d.prompt).toBe('コマンド実行して結果を保存'); // was '15分ごとにコマンド実行して結果を保存' pre-fix
     });
 
-    it('this is the SAME already-passing schedule test as "parseAgentNL — interval" above, just newly checking .prompt', () => {
+    it('this is the SAME already-passing schedule test as "parseAgentNL — interval" above, now also checking .prompt', () => {
       const d = parseAgentNL('15分ごとにポートをチェックして');
       expect(d.schedule).toBe('*/15 * * * *'); // pre-existing assertion, still true
-      expect(d.prompt).toContain('15分ごとに'); // newly documents the un-stripped leftover
+      expect(d.prompt).toBe('ポートをチェックして'); // was left un-stripped pre-fix
+    });
+
+    it('2時間ごとに… (hour interval) is also stripped', () => {
+      const d = parseAgentNL('2時間ごとにバックアップして');
+      expect(d.schedule).toBe('0 */2 * * *');
+      expect(d.prompt).toBe('バックアップして');
+    });
+
+    it('control: an out-of-range interval (unconfident schedule) is unaffected — derivePrompt never enters the confident branch', () => {
+      const d = parseAgentNL('90分ごとに実行して');
+      expect(d.scheduleConfident).toBe(false);
+      expect(d.prompt).toBe('90分ごとに実行して'); // untouched, same as before this fix
     });
   });
 
-  describe('DOCUMENTED, NOT FIXED: schedule:"once" (once-now) can still carry a startNotBefore anchor from the same utterance', () => {
+  describe('FIXED: schedule:"once" (once-now) could still carry a startNotBefore anchor from the same utterance', () => {
     // A user typing a self-contradictory combination ("今すぐ来月から…" —
     // literally "right now, starting next month...") is unlikely but
     // plausible (e.g. dictating a correction mid-sentence). parseStartNotBefore
     // and parseSchedule's once-now branch are independent detectors that both
-    // scan the same raw text, so both can fire on the same utterance. The
+    // scan the same raw text, so both could fire on the same utterance. The
     // schedule correctly resolves to the immediate 'once' sentinel and the
     // prompt is correctly cleaned of both leading clauses (no crash, no
-    // garbage prompt — the "resolves sanely" bar from the brief IS met), but
-    // draft.startNotBefore is populated on a draft whose schedule is 'once' —
-    // a value that is meaningless for an immediate one-shot run. Whether a
-    // caller ever actually reads startNotBefore for a 'once' schedule (and
-    // therefore whether this is latent-harmless or needs an explicit guard)
-    // is a call for whoever owns the scheduler/dispatch side, not something
-    // this pure parser can safely decide alone — documented, not fixed.
-    it('今すぐ来月から毎朝ニュースをチェックして: schedule=once AND startNotBefore both populated', () => {
+    // garbage prompt), but draft.startNotBefore used to stay populated on a
+    // draft whose schedule is 'once' — a value that is meaningless for an
+    // immediate one-shot run. Worse than latent-harmless: it risked a real
+    // downstream bug — lib/agent-plan-summary.ts's next-fire-line branch
+    // calls decodeCron(draft.schedule) whenever startNotBefore is set and
+    // still in the future, and decodeCron('once') is not a real cron shape.
+    // Fixed by clearing startNotBefore whenever the resolved schedule is
+    // 'once' (narrowing only — every other schedule shape is unaffected).
+    it('今すぐ来月から毎朝ニュースをチェックして: schedule=once, startNotBefore now cleared', () => {
       const d = parseAgentNL('今すぐ来月から毎朝ニュースをチェックして');
       expect(d.schedule).toBe('once');
       expect(d.scheduleConfident).toBe(true);
-      expect(d.startNotBefore).toBeDefined(); // present despite 'once' having no use for it
-      expect(d.prompt).toBe('毎朝ニュースをチェックして'); // at least the prompt itself is clean
+      expect(d.startNotBefore).toBeUndefined(); // was toBeDefined() pre-fix
+      expect(d.prompt).toBe('毎朝ニュースをチェックして'); // prompt itself unaffected by this fix
     });
 
     it('今すぐ来週あたりからバックアップして: same combination, EN-schedule-agnostic repro', () => {
       const d = parseAgentNL('今すぐ来週あたりからバックアップして');
       expect(d.schedule).toBe('once');
+      expect(d.startNotBefore).toBeUndefined();
+    });
+
+    it('control: a genuine (non-once) deferred-start schedule still carries startNotBefore — the fix is scoped to \'once\' only', () => {
+      const d = parseAgentNL('来週あたりから毎朝ニュースをチェックして');
+      expect(d.schedule).toBe('0 8 * * *');
+      expect(d.schedule).not.toBe('once');
       expect(d.startNotBefore).toBeDefined();
     });
   });
