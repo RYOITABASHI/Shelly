@@ -624,7 +624,22 @@ export function useAIPaneDispatch(paneId: string) {
       // assistant reply into the MAJORITY of ordinary follow-up messages
       // sent shortly after any registration. See the task spec: "ヒットし
       // ない限り一切介入しない".
-      const justRegistered = store.getOrCreate(paneId).justRegisteredAgent;
+      //
+      // 2026-07-24 on-device-adjacent finding (surfaced by the dispatch()
+      // integration-test harness, same bug SHAPE as the pendingAgentSession
+      // fix above, different mechanism): agent 1 registers via chat-native
+      // confirm (starts its 4-minute correction window) → agent 2's own
+      // fresh "@agent <command>" asks its OWN new pendingSlotFill question
+      // (e.g. "いつ実行しますか？") → agent 2's reply (e.g. "毎日7時") could
+      // ALSO parse as a valid schedule correction, so without this guard it
+      // gets silently applied as a correction to agent 1 instead of
+      // resolving agent 2's own question — agent 1 gets an unwanted schedule
+      // change, agent 2's question is left dangling forever. Same fix as
+      // above: skip this block when the truly-latest message has a fresher,
+      // still-live pendingSlotFill of its own — `hasFresherOwnSlotFillQuestion`
+      // was already computed once, near the top of this function, before any
+      // message was added this turn, so it's still valid here unchanged.
+      const justRegistered = hasFresherOwnSlotFillQuestion ? null : store.getOrCreate(paneId).justRegisteredAgent;
       if (justRegistered) {
         const correction = applyCorrectionToJustRegisteredAgent(
           justRegistered.draftSnapshot,
