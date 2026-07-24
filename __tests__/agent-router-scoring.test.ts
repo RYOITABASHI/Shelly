@@ -60,6 +60,29 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('資料を集めて整理して').needsWeb).toBe(false);
   });
 
+  it('a freshness TOPIC noun (news/速報/トレンド/…) is web-mandatory on its own, no collection verb needed (2026-07-25 fix)', () => {
+    // On-device finding: "ニュースを通知して" (notify me about the news) never
+    // triggered needsWeb because "通知して" isn't in COLLECTION_KW — the task
+    // silently fell to a local model with zero real news access, which then
+    // either grabbed unrelated injected context or produced meta-commentary
+    // ("ニュース通知を送信します") instead of admitting it had no data.
+    // "notify"/"tell me about" a live-feed TOPIC noun implicitly requires
+    // fetching it first, even though the verb itself isn't a collection verb.
+    expect(detectRouteSignals('ニュースを通知して').needsWeb).toBe(true);
+    expect(detectRouteSignals('notify me about the news').needsWeb).toBe(true);
+    expect(detectRouteSignals('速報が入ったら教えて').needsWeb).toBe(true);
+    expect(detectRouteSignals('SNSのトレンドを教えて').needsWeb).toBe(true);
+    expect(detectRouteSignals('let me know the trending topics').needsWeb).toBe(true);
+    // Still gated by the TRANSFORM exemption immediately above: summarizing
+    // news the caller already has does not need a fresh fetch, so a
+    // transform verb keeps this false even with the same topic noun present
+    // — same "ニュースを要約して" case as the pre-existing test right above,
+    // re-asserted here for a couple more transform verbs to guard the new
+    // branch specifically (not just the old fresh&&collects formula).
+    expect(detectRouteSignals('ニュースをまとめて').needsWeb).toBe(false);
+    expect(detectRouteSignals('summarize the news').needsWeb).toBe(false);
+  });
+
   it('"検索"/"search" count as a collection verb, so search + freshness is web-mandatory (regression)', () => {
     // Bug: "検索"/"search" were missing from COLLECTION_KW, so a prompt that
     // explicitly asks to SEARCH (not "集めて"/"収集") + a freshness cue evaluated

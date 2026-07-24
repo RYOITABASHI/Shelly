@@ -79,10 +79,49 @@ const REASONING_KW = ['analyze', 'compare', 'evaluate', 'plan', 'design', 'reaso
 // task web-mandatory — only a live web fetch can satisfy it. Kept distinct from
 // TRANSFORM_KW's 'まとめ' (summarize), which is NOT a collection verb.
 const COLLECTION_KW = ['集め', '収集', 'gather', 'collect', 'scrape', 'aggregate', '取得', 'ピックアップ', '探して', '探索', '検索', 'search'];
-// A freshness/current-info signal. On its own it is weak (a trivial "今日の天気"
-// must stay cheap); only freshness + a collection verb makes a task web-mandatory.
-function hasFreshnessSignal(prompt: string, lower: string): boolean {
-  return /\b(latest|today|current|news|recent|trending)\b/.test(lower) || /最新|今日|現在|速報|ニュース|時事|トレンド/.test(prompt);
+// 2026-07-25 on-device finding: "ニュースを通知して" (notify me about the
+// news) never triggered needsWeb, because "通知して" (notify) is a DELIVERY
+// verb, not a COLLECTION verb — COLLECTION_KW has no entry for it, so
+// `fresh && collects` was always false for any "tell me/notify me about
+// <freshness topic>" phrasing, and the task silently fell to a local model
+// with zero real news access. Direct llama-server testing confirmed the
+// resulting failure mode: not a crash or an honest refusal, but the model
+// producing SOMETHING that merely resembles an answer (grabbing unrelated
+// injected context, or meta-commentary like "ニュース通知を送信します" —
+// describing the action instead of performing it) — exactly the class of
+// plausible-but-empty output a non-web LLM invents when asked to report
+// live information it cannot access.
+//
+// Root cause: hasFreshnessSignal lumped two different kinds of words into
+// one signal. A TOPIC noun (ニュース/速報/時事/トレンド) names something
+// that IS inherently a live, externally-sourced feed — no verb needed, the
+// mere mention of the topic means fulfilling the task requires current
+// external data. A TIME modifier (今日/現在/最新) is much weaker on its own
+// — "今日の予定" (today's schedule) or "現在の設定" (current settings) need
+// no web access at all, so this tier still requires pairing with an
+// explicit collection verb (COLLECTION_KW) to trigger needsWeb, exactly as
+// before. Splitting the check this way closes the "notify me about the
+// news" gap without loosening the existing collection-verb requirement for
+// the ambiguous time-modifier case.
+const FRESHNESS_TOPIC_RE = /\b(news|trending)\b/;
+const FRESHNESS_TOPIC_JP_RE = /速報|ニュース|時事|トレンド/;
+const FRESHNESS_MODIFIER_RE = /\b(latest|today|current|recent)\b/;
+const FRESHNESS_MODIFIER_JP_RE = /最新|今日|現在/;
+
+/** A TOPIC noun naming something that is itself a live, externally-sourced
+ *  feed (news/速報/トレンド/…) — sufficient on its own to require web access,
+ *  regardless of verb. See the module doc comment above for why this is
+ *  split from the weaker time-modifier signal. */
+function hasFreshnessTopicSignal(prompt: string, lower: string): boolean {
+  return FRESHNESS_TOPIC_RE.test(lower) || FRESHNESS_TOPIC_JP_RE.test(prompt);
+}
+
+/** A weaker time-relative MODIFIER (今日/現在/最新/…) — ambiguous on its own
+ *  (could refer to the user's own schedule/settings, not external data), so
+ *  this only contributes to needsWeb when paired with an explicit
+ *  collection verb (COLLECTION_KW). */
+function hasFreshnessModifierSignal(prompt: string, lower: string): boolean {
+  return FRESHNESS_MODIFIER_RE.test(lower) || FRESHNESS_MODIFIER_JP_RE.test(prompt);
 }
 
 // Per-tool capability profile (static, hand-tuned). Scores are 0–1.
@@ -178,13 +217,23 @@ export function detectRouteSignals(prompt: string): RouteSignals {
   const markerCount = REASONING_KW.filter((kw) => lower.includes(kw)).length;
   const lengthWeight = Math.min(prompt.length / 1500, 0.5);
   const reasoningWeight = Math.min(1, lengthWeight + markerCount * 0.3);
-  const fresh = hasFreshnessSignal(prompt, lower);
+  const freshTopic = hasFreshnessTopicSignal(prompt, lower);
+  const freshModifier = hasFreshnessModifierSignal(prompt, lower);
+  const fresh = freshTopic || freshModifier;
   const needsSearch = category === 'research' || fresh;
 
-  // Web-mandatory = "gather CURRENT info" (collection verb + freshness). Only a
-  // live web fetch can do it; a non-web LLM just hallucinates a template.
+  // Web-mandatory = a freshness TOPIC noun on its own (news/速報/トレンド/…,
+  // no verb needed — see hasFreshnessTopicSignal) UNLESS the task is a
+  // TRANSFORM (要約/まとめ/翻訳/…) — "ニュースを要約して" operates on news
+  // content the caller already has/provides, it does not require the agent
+  // itself to go fetch anything fresh, so transformKw exempts it exactly
+  // like the pre-existing "no collection verb → not web-mandatory" case did.
+  // OR: a weaker time MODIFIER (今日/現在/最新/…) paired with an explicit
+  // collection verb, unchanged from the original "gather CURRENT info"
+  // formula for that ambiguous case. Only a live web fetch can satisfy
+  // either branch; a non-web LLM just hallucinates a template.
   const collects = hasAny(lower, COLLECTION_KW) !== undefined;
-  const needsWeb = fresh && collects;
+  const needsWeb = (freshTopic && !transformKw) || (freshModifier && collects);
   // Domain picks the web primary. Use the NARROW scholarly set, NOT researchKw —
   // "collect news with sources (出典付き)" is general → Gemini grounded, not the
   // paid Perplexity deep-research tier. (Bug: 出典 ∈ RESEARCH_KW routed news to
