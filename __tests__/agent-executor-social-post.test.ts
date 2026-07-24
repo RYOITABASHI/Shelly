@@ -48,7 +48,7 @@ describe('generateRunScript — social-post action', () => {
   const s = generateRunScript(socialAgent('mastodon'));
 
   it('bumped the script version (originally to 23 for the new action case + helpers; now >= 23)', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=28');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=29');
   });
 
   it('bakes ACTION_TYPE and the social-post variables, with the env-prefix derived from the connector id', () => {
@@ -288,6 +288,6 @@ describe('PlanSpec executor + AgentRuntime.kt routing for social-post', () => {
       'utf8',
     );
     expect(kt).toContain('"social-post"');
-    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 28');
+    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 29');
   });
 });

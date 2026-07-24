@@ -63,12 +63,18 @@ function extractDeviceStatusBlock(script: string): string {
   return script.slice(start, end);
 }
 
+// v29 (2026-07-24): the extracted block is now gated on
+// `${DEVICE_STATUS_RELEVANT:-0}` (see lib/agent-executor.ts's
+// agentNeedsDeviceStatusContext) — these tests are about the MERGE logic
+// specifically (multiple *.json files → one flat object), not the gate
+// itself (covered separately below), so the wrapper force-sets the flag on.
 function runBlock(block: string, home: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-device-status-'));
   const scriptPath = path.join(dir, 'run.sh');
   const wrapper = `#!/bin/bash
 set -euo pipefail
 HOME=${JSON.stringify(home)}
+DEVICE_STATUS_RELEVANT=1
 ${block}
 printf '%s' "$DEVICE_STATUS_CONTEXT"
 `;

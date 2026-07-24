@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext, computeAgentSlug, sanitizeOutputTemplate } from '@/lib/agent-executor';
+import { generateRunScript, selectAutonomousLocalModel, agentUsesStudioContext, agentNeedsDeviceStatusContext, computeAgentSlug, sanitizeOutputTemplate } from '@/lib/agent-executor';
 import { MAX_RESULT_CARRY_CHARS } from '@/lib/agent-orchestration';
 import { Agent, ToolChoice } from '@/store/types';
 
@@ -225,6 +225,56 @@ describe('generateRunScript — studio context only for content-pipeline agents'
       'echo "scanned=$SCANNED ctxlen=${#SOURCE_CONTEXT}"',
     ].join('\n');
     expect(execFileSync('bash', ['-c', gatedBlock]).toString().trim()).toBe('scanned=0 ctxlen=0');
+  });
+});
+
+describe('generateRunScript — DEVICE_STATUS_CONTEXT gated by task relevance (v29, 2026-07-24)', () => {
+  it('agentNeedsDeviceStatusContext gates on battery/storage/memory-relevant tasks, not general ones', () => {
+    // On-device finding: injecting DEVICE_STATUS_CONTEXT unconditionally hijacked
+    // an unrelated task ("ニュースを通知して") into reporting battery status
+    // instead — confirmed via direct llama-server HTTP testing (3/3 repro with
+    // the block present, 0/3 with it removed). Mirrors agentUsesStudioContext's
+    // own gating precedent immediately above.
+    expect(agentNeedsDeviceStatusContext(agent({ type: 'local' }))).toBe(false);
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: 'ニュースを通知して' })).toBe(false);
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: '毎朝天気を教えて' })).toBe(false);
+    // Battery/storage/memory-relevant JP phrasings.
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: 'バッテリー残量を通知して' })).toBe(true);
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: '充電状況を教えて' })).toBe(true);
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: 'デバイスのストレージとメモリの空き容量を教えて' })).toBe(true);
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: '空きメモリが少ない時に通知して' })).toBe(true);
+    // EN equivalents.
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: 'notify me of battery level' })).toBe(true);
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: 'check free storage space' })).toBe(true);
+    expect(agentNeedsDeviceStatusContext({ ...agent({ type: 'local' }), prompt: 'summarize today news' })).toBe(false);
+  });
+
+  it('a general task emits DEVICE_STATUS_RELEVANT=0 and gates the device-status read', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'ニュースを通知して' });
+    expect(s).toContain('DEVICE_STATUS_RELEVANT=0');
+    expect(s).toContain('if [ "${DEVICE_STATUS_RELEVANT:-0}" = "1" ]; then');
+  });
+
+  it('a battery/storage/memory-relevant task emits DEVICE_STATUS_RELEVANT=1', () => {
+    const s = generateRunScript({ ...agent({ type: 'local' }), prompt: 'デバイスのストレージとメモリの空き容量を教えて' });
+    expect(s).toContain('DEVICE_STATUS_RELEVANT=1');
+  });
+
+  it('the gated block is a no-op when DEVICE_STATUS_RELEVANT=0 (DEVICE_STATUS_CONTEXT stays empty)', () => {
+    // Prove the bash gate skips the device-status read entirely, mirroring the
+    // STUDIO_CONTEXT no-op test above.
+    const gatedBlock = [
+      'set -euo pipefail',
+      'DEVICE_STATUS_RELEVANT=0',
+      'DEVICE_STATUS_CONTEXT=""',
+      'READ=0',
+      'if [ "${DEVICE_STATUS_RELEVANT:-0}" = "1" ]; then',
+      '  READ=1',
+      '  DEVICE_STATUS_CONTEXT="[Device status: ...]"',
+      'fi',
+      'echo "read=$READ ctxlen=${#DEVICE_STATUS_CONTEXT}"',
+    ].join('\n');
+    expect(execFileSync('bash', ['-c', gatedBlock]).toString().trim()).toBe('read=0 ctxlen=0');
   });
 });
 
@@ -499,7 +549,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=28');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=29');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');

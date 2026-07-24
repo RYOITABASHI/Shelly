@@ -285,7 +285,17 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // version marker embedded in every generated script stays a meaningful
 // staleness signal (no behavior change to this TS file's own generated bash
 // beyond that marker).
-const AGENT_SCRIPT_VERSION = 28;
+// v29 (2026-07-24, device-status context gated by task relevance): the
+// DEVICE_STATUS_CONTEXT bash block is now wrapped in
+// `if [ "${DEVICE_STATUS_RELEVANT:-0}" = "1" ]; then … fi` — see
+// agentNeedsDeviceStatusContext's own doc comment for the on-device finding
+// (direct llama-server HTTP testing) that motivated this: unconditional
+// injection reliably hijacked an unrelated task into reporting battery
+// status instead. REAL BEHAVIOR CHANGE (not doc-only) — every existing
+// on-disk agent script predates this gate and would keep injecting
+// unconditionally forever with no error signal until regenerated, so this
+// bump matters for staleness detection, unlike v27/v28 above.
+const AGENT_SCRIPT_VERSION = 29;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -421,6 +431,24 @@ export function agentUsesStudioContext(agent: Agent): boolean {
   // So gate on the drafting intent, NOT merely on autonomous/scheduled.
   const prompt = (agent.prompt || '').toLowerCase();
   return /記事|下書き|執筆|寄稿|コラム|論説|\bdraft\b|\bessay\b|\bblog\b|\barticle\b|\bcolumn\b/.test(prompt);
+}
+
+/**
+ * Gate for DEVICE_STATUS_CONTEXT injection (battery/storage/memory/network
+ * JSON, see the bash block this feeds in generateRunScript). 2026-07-24
+ * on-device finding, confirmed via direct llama-server HTTP testing against
+ * the real model: injecting this block UNCONDITIONALLY into every agent's
+ * prompt reliably hijacked an unrelated task ("ニュースを通知して") into
+ * reporting battery status instead — reproduced 3/3 with the block present,
+ * 0/3 with it removed, and reordering the block within the prompt did NOT
+ * help (the model latches onto whatever salient JSON is present regardless
+ * of position). Mirrors agentUsesStudioContext's same "only inject content
+ * a small local model can get confused by when the task doesn't actually
+ * need it" gating pattern, one function up.
+ */
+export function agentNeedsDeviceStatusContext(agent: Agent): boolean {
+  const text = `${agent.prompt || ''} ${agent.name || ''}`.toLowerCase();
+  return /バッテリー|充電|電池|残量|ストレージ|空き容量|空きメモリ|メモリ(?:の|使用|容量)|ディスク|端末の状態|デバイスの状態|端末状況|battery|charging|storage\s*(?:space|capacity)?|disk\s*space|free\s*space|\bmemory\b|\bram\b|device\s*status/.test(text);
 }
 
 // Keep a-z 0-9 and CJK (Hiragana / Katakana / CJK ideographs / half-width kana);
@@ -864,6 +892,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     : '';
   const escapedPrompt = (collectionContract + agent.prompt).replace(/'/g, "'\\''");
   const injectStudioContext = agentUsesStudioContext(agent);
+  const injectDeviceStatusContext = agentNeedsDeviceStatusContext(agent);
 
   // B2 §6: the driver gates on the agent's configured autonomy level. Build the
   // policy here (level from agent.autonomyLevel; default L2) and hand it to the
@@ -1058,6 +1087,7 @@ LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
 SUPPRESS_ERROR_NOTIFICATION=${opts.suppressErrorNotification ? '1' : '0'}
 STUDIO_CONTEXT=${injectStudioContext ? '1' : '0'}
+DEVICE_STATUS_RELEVANT=${injectDeviceStatusContext ? '1' : '0'}
 # General collection agents (non content-studio) honour the global output-target
 # setting and a clean <base>/<topic?>/<date>/<date>_<title>.md layout. Studio
 # agents keep their explicit paths + keyword Obsidian routing.
@@ -3914,24 +3944,33 @@ CURRENT_DATETIME_CONTEXT="[Current date/time: $(date '+%Y年%m月%d日')(\${CURR
 # malformed/unexpected file merges in verbatim rather than aborting — this
 # context is advisory, never parsed back out, so a bad file just makes one
 # ugly line in the prompt instead of breaking the run.
+# v29 (2026-07-24, gated by task relevance): confirmed via direct llama-server
+# HTTP testing that injecting this UNCONDITIONALLY into every agent's prompt
+# reliably hijacks an unrelated small-model task ("ニュースを通知して") into
+# reporting battery status instead (3/3 repro with the block present, 0/3
+# with it removed — see agentNeedsDeviceStatusContext's own doc comment).
+# Mirrors STUDIO_CONTEXT's existing "only inject what a small local model can
+# be confused by when the task doesn't actually need it" gate below.
 DEVICE_STATUS_CONTEXT=""
-DEVICE_STATUS_DIR="$HOME/.shelly/device-status"
-if [ -d "$DEVICE_STATUS_DIR" ]; then
-  DEVICE_STATUS_JSON=""
-  for f in "$DEVICE_STATUS_DIR"/*.json; do
-    [ -f "$f" ] || continue
-    DEVICE_STATUS_PART=$(tr -d '\\n' < "$f" 2>/dev/null || true)
-    [ -n "$DEVICE_STATUS_PART" ] || continue
-    DEVICE_STATUS_INNER="\${DEVICE_STATUS_PART#\\{}"
-    DEVICE_STATUS_INNER="\${DEVICE_STATUS_INNER%\\}}"
-    if [ -z "$DEVICE_STATUS_JSON" ]; then
-      DEVICE_STATUS_JSON="$DEVICE_STATUS_INNER"
-    else
-      DEVICE_STATUS_JSON="$DEVICE_STATUS_JSON,$DEVICE_STATUS_INNER"
+if [ "\${DEVICE_STATUS_RELEVANT:-0}" = "1" ]; then
+  DEVICE_STATUS_DIR="$HOME/.shelly/device-status"
+  if [ -d "$DEVICE_STATUS_DIR" ]; then
+    DEVICE_STATUS_JSON=""
+    for f in "$DEVICE_STATUS_DIR"/*.json; do
+      [ -f "$f" ] || continue
+      DEVICE_STATUS_PART=$(tr -d '\\n' < "$f" 2>/dev/null || true)
+      [ -n "$DEVICE_STATUS_PART" ] || continue
+      DEVICE_STATUS_INNER="\${DEVICE_STATUS_PART#\\{}"
+      DEVICE_STATUS_INNER="\${DEVICE_STATUS_INNER%\\}}"
+      if [ -z "$DEVICE_STATUS_JSON" ]; then
+        DEVICE_STATUS_JSON="$DEVICE_STATUS_INNER"
+      else
+        DEVICE_STATUS_JSON="$DEVICE_STATUS_JSON,$DEVICE_STATUS_INNER"
+      fi
+    done
+    if [ -n "$DEVICE_STATUS_JSON" ]; then
+      DEVICE_STATUS_CONTEXT="[Device status (read-only, refreshed by Shelly just now — treat as authoritative, do not attempt to re-derive via shell commands): {$DEVICE_STATUS_JSON}]"
     fi
-  done
-  if [ -n "$DEVICE_STATUS_JSON" ]; then
-    DEVICE_STATUS_CONTEXT="[Device status (read-only, refreshed by Shelly just now — treat as authoritative, do not attempt to re-derive via shell commands): {$DEVICE_STATUS_JSON}]"
   fi
 fi
 LOCAL_CONTEXT_FILE="$TMP_DIR/local-context-$AGENT_ID.txt"

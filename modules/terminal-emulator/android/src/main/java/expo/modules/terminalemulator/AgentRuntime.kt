@@ -174,7 +174,17 @@ object AgentRuntime {
     // marker line reflects that the device-status snapshot it reads may now
     // also contain a "network" key, keeping the staleness signal meaningful
     // for anyone diffing script versions against this history block.
-    private const val CURRENT_SCRIPT_VERSION = 28
+    // v29 (2026-07-24, device-status context gated by task relevance):
+    // lib/agent-executor.ts's generated bash now wraps the DEVICE_STATUS_CONTEXT
+    // assembly in `if [ "${DEVICE_STATUS_RELEVANT:-0}" = "1" ]; then … fi` —
+    // a real behavior change (not doc-only), motivated by direct llama-server
+    // HTTP testing showing unconditional injection reliably hijacked an
+    // unrelated task ("ニュースを通知して") into reporting battery status
+    // instead. No native-side change here (DeviceStatusBridge.refreshAll still
+    // runs unconditionally — the snapshot files are cheap to write regardless
+    // of whether a given run's script actually reads them); bumped purely so a
+    // stale pre-v29 on-disk script (unconditional injection) is regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 29
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
