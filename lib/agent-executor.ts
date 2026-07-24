@@ -218,7 +218,27 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // action agent" regression test. Bumped because the generated script's
 // runtime BEHAVIOR changes for a multi-action agent (new loop, new helper
 // variables), not just cosmetic text.
-const AGENT_SCRIPT_VERSION = 24;
+// v25 (2026-07-24, escalation timeout no longer permanently discards a
+// missed approval): all three shelly-agent-driver.js invocations now pass
+// --escalation-timeout-action queue instead of relying on the driver's own
+// 'decline' default. On-device finding: an unattended/scheduled run whose
+// boundary-crossing escalation notification wasn't tapped within the
+// timeout (2 min default) was declining AND deleting the on-disk request
+// file (cleanupEscalationFiles) — so even a human who noticed the
+// still-visible Android notification later and tapped "許可" got nothing:
+// AgentEscalationBridge.kt's writeHumanReply requires the request file to
+// still exist. 'queue' mode keeps that file on disk (marked state:"queued")
+// instead of deleting it, so a LATE tap still succeeds and writes a 24h
+// single-use pre-approval grant (AgentEscalationBridge's
+// DEFAULT_QUEUED_GRANT_TTL_MS) that the agent's NEXT identical-command run
+// (e.g. tomorrow's daily fire) can auto-consume without a fresh prompt —
+// this grant-issuing code path already existed and needed no changes, it
+// was simply unreachable because the request file never survived to be
+// read. Today's already-in-flight run still fails/declines either way (the
+// process has exited by the time a human responds) — this only fixes
+// runs AFTER the one whose notification was missed. Bumped because the
+// generated script's driver invocation arguments change.
+const AGENT_SCRIPT_VERSION = 25;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -4399,6 +4419,7 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
     --policy-json ${shellQuote(policyJson)} \\
     --agent-id "$AGENT_ID" \\
     --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+    --escalation-timeout-action queue \\
     --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
     --answer-file "$RESULT_FILE.answer" \\
     --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1
@@ -4568,6 +4589,7 @@ while [ "$CODEX_ORCH_STEP_INDEX" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; do
       --policy-json ${shellQuote(policyJson)} \\
       --agent-id "$AGENT_ID" \\
       --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+      --escalation-timeout-action queue \\
       --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
       --answer-file "$RESULT_FILE.answer" \\
       --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1
@@ -4778,6 +4800,7 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
     --codex-bin "$CODEX_CMD" \\
     --agent-id "$AGENT_ID" \\
     --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+    --escalation-timeout-action queue \\
     --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
     --answer-file "$RUN_DIR/codex.md" \\
     --prompt-file "$RUN_DIR/prompt.md" > "$RUN_DIR/codex.stderr.log" 2>&1

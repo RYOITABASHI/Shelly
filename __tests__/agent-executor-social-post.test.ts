@@ -48,7 +48,7 @@ describe('generateRunScript — social-post action', () => {
   const s = generateRunScript(socialAgent('mastodon'));
 
   it('bumped the script version (originally to 23 for the new action case + helpers; now >= 23)', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=24');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=25');
   });
 
   it('bakes ACTION_TYPE and the social-post variables, with the env-prefix derived from the connector id', () => {

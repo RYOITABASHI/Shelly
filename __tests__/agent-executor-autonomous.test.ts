@@ -499,7 +499,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=24');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=25');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -508,6 +508,17 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(s).toContain('shelly_node()');
     expect(s).toContain('shelly_curl()');
     expect(s).toContain('shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js"');
+    // 2026-07-24 on-device finding: an unattended run's boundary-crossing
+    // escalation notification going unanswered within the driver's timeout
+    // used to PERMANENTLY discard the request (the driver's own 'decline'
+    // default deletes the on-disk request file) — even a human who noticed
+    // the still-visible Android notification later and tapped Allow got
+    // nothing, since AgentEscalationBridge.kt's writeHumanReply requires
+    // that file to still exist. --escalation-timeout-action queue keeps the
+    // file on disk instead, so a late tap still succeeds and pre-approves
+    // the agent's NEXT identical-command run (see AGENT_SCRIPT_VERSION's
+    // own v25 doc comment in lib/agent-executor.ts).
+    expect(s).toContain('--escalation-timeout-action queue');
     expect(s).toContain('--answer-file "$RESULT_FILE.answer"');
     expect(s).toContain('RESULT_CONTENT_FILE="$RESULT_FILE.answer"');
     expect(s).toContain('RESULT_CONTENT_IS_DRIVER_ANSWER=1');
