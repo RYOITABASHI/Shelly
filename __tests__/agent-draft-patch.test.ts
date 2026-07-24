@@ -128,6 +128,65 @@ describe('applyDraftPatch — schedule field', () => {
     );
     expect(r).toBeNull();
   });
+
+  // ── 2026-07-24 fuzz-sweep additions ──────────────────────────────────────
+
+  it('a bare "20時で" (no して/でお願いします, just で) now merges (was previously a false NEGATIVE)', () => {
+    const r = applyDraftPatch(baseDraft({ schedule: '0 8 * * *' }), '20時で');
+    expect(r).not.toBeNull();
+    expect(r!.patchedDraft.schedule).toBe('0 20 * * *');
+  });
+
+  it('a leading "やっぱり9時" ("on second thought, 9") now merges (was previously a false NEGATIVE)', () => {
+    const r = applyDraftPatch(baseDraft({ schedule: '0 8 * * *' }), 'やっぱり9時');
+    expect(r).not.toBeNull();
+    expect(r!.patchedDraft.schedule).toBe('0 9 * * *');
+  });
+
+  it('"やっぱり9時で" (both new fillers combined) also merges', () => {
+    const r = applyDraftPatch(baseDraft({ schedule: '0 8 * * *' }), 'やっぱり9時で');
+    expect(r).not.toBeNull();
+    expect(r!.patchedDraft.schedule).toBe('0 9 * * *');
+  });
+
+  it('the widened bare-time regex still does NOT misread a longer sentence containing "やっぱり" + a time', () => {
+    const r = applyDraftPatch(
+      baseDraft({ schedule: '0 8 * * *' }),
+      'やっぱり9時のニュースをまとめて',
+    );
+    expect(r).toBeNull();
+  });
+
+  // ── DOCUMENTED, NOT FIXED — design judgment call, see task report ──
+  //
+  // parseSchedule() treats a bare "今"/"今すぐ"/EN "now"/"immediately"/"asap"
+  // as a CONFIDENT full schedule restatement (schedule: 'once' — "run once,
+  // right now"), and tryPatchSchedule's path (a) trusts any confident
+  // parseSchedule() result outright, exactly like a full recurring
+  // restatement ("毎日9時にして") would be trusted. That means a one-word
+  // "今" reply during await-confirm silently rewrites a periodic draft's
+  // schedule to "once" — a MUCH more disruptive change than a bare time
+  // merge, applied via the SAME narrow whole-string anchor discipline the
+  // rest of this module uses to contain false positives, but with no
+  // "does the CURRENT draft's schedule make this plausible" gate the way the
+  // bare-time MERGE path (b) has (`draft.schedule && draft.schedule !==
+  // 'once'`). Whether a bare "今" is intended as "actually, just run this
+  // once right now" (plausible reading — it IS the shortest possible
+  // one-shot phrasing) or is too easily confused with an unrelated
+  // conversational "now" is a product decision, not a regex bug — captured
+  // here as current behavior, NOT fixed (widening the reject set here is a
+  // scope change, not a narrowing one).
+  it('[DOCUMENTED, NOT FIXED] a bare "今" is trusted as a confident schedule="once" patch — see comment above', () => {
+    const r = applyDraftPatch(baseDraft({ schedule: '0 8 * * *' }), '今');
+    expect(r).not.toBeNull();
+    expect(r!.changedFields).toEqual(['schedule']);
+    expect(r!.patchedDraft.schedule).toBe('once');
+  });
+
+  it('[DOCUMENTED, NOT FIXED] a bare "今すぐ" / EN "now" behave identically to bare "今"', () => {
+    expect(applyDraftPatch(baseDraft({ schedule: '0 8 * * *' }), '今すぐ')!.patchedDraft.schedule).toBe('once');
+    expect(applyDraftPatch(baseDraft({ schedule: '0 8 * * *' }), 'now')!.patchedDraft.schedule).toBe('once');
+  });
 });
 
 describe('applyDraftPatch — name field', () => {
@@ -152,6 +211,66 @@ describe('applyDraftPatch — name field', () => {
 
   it('renaming to the SAME name is not reported as a change', () => {
     const r = applyDraftPatch(baseDraft({ name: '株価まとめ' }), 'タイトルを株価まとめに');
+    expect(r).toBeNull();
+  });
+
+  // ── 2026-07-24 fuzz-sweep: real false positives found and fixed ──────────
+
+  it('FIXED false positive: "名前はそのままで、9時にしてください" no longer renames the draft to garbage', () => {
+    // Before the fix, the unrestricted lazy capture crossed the 、 and
+    // captured "そのままで、9時" as if it were the new name — exactly the
+    // "silently mutates a pending draft without user intent" danger the task
+    // spec calls out. Falling through to null (no patch at all — the "9時"
+    // portion doesn't independently match the narrow bare-time-change shape
+    // either, since the whole utterance is longer than just a time) is the
+    // SAFE outcome per this module's own "a missed patch beats a wrong one"
+    // design; the user can still just say "9時にして" on its own next.
+    const r = applyDraftPatch(baseDraft(), '名前はそのままで、9時にしてください');
+    expect(r).toBeNull();
+  });
+
+  it('FIXED false positive: "名前は変えずに9時にして" no longer renames the draft to "変えずに9時"', () => {
+    const r = applyDraftPatch(baseDraft(), '名前は変えずに9時にして');
+    expect(r).toBeNull();
+  });
+
+  it('FIXED false positive: "名前はそのままでお願いします" alone no longer renames the draft to the literal word "そのまま"', () => {
+    const r = applyDraftPatch(baseDraft(), '名前はそのままでお願いします');
+    expect(r).toBeNull();
+  });
+
+  it('the comma-exclusion fix does not break a genuine two-field utterance where the name clause itself has no comma inside it', () => {
+    const r = applyDraftPatch(baseDraft(), '名前は株価まとめにして、毎日9時に実行して');
+    expect(r).not.toBeNull();
+    expect(r!.patchedDraft.name).toBe('株価まとめ');
+  });
+
+  it('the no-change-placeholder guard does not reject a real name that happens to start with the same EN letters ("Sameday Digest")', () => {
+    const r = applyDraftPatch(baseDraft(), 'rename it to Sameday Digest');
+    expect(r).not.toBeNull();
+    expect(r!.patchedDraft.name).toBe('Sameday Digest');
+  });
+});
+
+describe('applyDraftPatch — "@…" fresh-command bypass (defense in depth)', () => {
+  // 2026-07-24 fuzz-sweep finding: applyDraftPatch itself had NO "@" guard —
+  // unlike applyCorrectionToJustRegisteredAgent below (which has always
+  // enforced this itself), applyPatchToPendingSession relied ENTIRELY on its
+  // caller (hooks/use-ai-pane-dispatch.ts) to filter "@…" out before ever
+  // calling in. Confirmed by direct call (pre-fix): a fresh
+  // "@agent 名前は株価まとめにして" command was silently treated as a rename
+  // patch. Today's one production call site already filters "@" first, so
+  // this was not reachable in practice — but nothing in this module itself
+  // prevented a future call site from making the same mistake. Fixed by
+  // hoisting the same "@" bypass this module's sibling function already had
+  // into applyDraftPatch itself, so both public entry points get it for free.
+  it('a fresh "@agent <name-shaped command>" is bypassed, not misread as a rename', () => {
+    const r = applyDraftPatch(baseDraft(), '@agent 名前は株価まとめにして');
+    expect(r).toBeNull();
+  });
+
+  it('a fresh "@agent <time-shaped command>" is bypassed, not misread as a schedule patch', () => {
+    const r = applyDraftPatch(baseDraft({ schedule: '0 8 * * *' }), '@agent 9時にして');
     expect(r).toBeNull();
   });
 });

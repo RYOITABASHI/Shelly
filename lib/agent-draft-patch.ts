@@ -119,8 +119,21 @@ export async function persistAgentDraft<T, C, U>(args: {
 // by parseSchedule()'s own `confident: true` branch first (parseSchedule
 // scans the whole string for its keywords, unanchored), so this narrow
 // bare-time gate is only ever consulted for a genuinely time-only reply.
+//
+// 2026-07-24 fuzz-sweep finding: the trailing filler alternation required
+// either a verb ("して"/"変更して"/…) or the full "でお願いします" phrase, so
+// two extremely common terse corrections — a bare "20時で" and a leading
+// "やっぱり9時" ("on second thought, 9") — fell through to "no patch" even
+// though they are unambiguous time-change replies. Added a bare trailing "で"
+// alternative and an optional leading "やっぱり|やっぱ" filler. Both additions
+// stay INSIDE the existing whole-string anchor (^…$), so they can only ever
+// match when the ENTIRE trimmed utterance is just [やっぱり] + a time + this
+// short filler and nothing else — the exact same "must be the whole string"
+// containment the "9時のニュースをまとめて" guard above already relies on, so
+// this cannot newly false-positive on any longer sentence that happens to
+// contain a time.
 const JP_BARE_TIME_CHANGE_RE =
-  /^(?:午前|午後|朝|夜|夕方|晩|深夜|昼)?\s*\d{1,2}\s*時\s*(?:半|\d{1,2}\s*分)?\s*(?:に|へ)?\s*(?:して(?:ください)?|変更して(?:ください)?|変えて(?:ください)?|直して(?:ください)?|でお願いします?|お願いします?)?$/;
+  /^(?:やっぱり|やっぱ)?\s*(?:午前|午後|朝|夜|夕方|晩|深夜|昼)?\s*\d{1,2}\s*時\s*(?:半|\d{1,2}\s*分)?\s*(?:に|へ)?\s*(?:して(?:ください)?|変更して(?:ください)?|変えて(?:ください)?|直して(?:ください)?|でお願いします?|お願いします?|で)?$/;
 const EN_BARE_TIME_CHANGE_RE =
   /^(?:change\s+(?:it\s+)?to\s+|make\s+it\s+|set\s+(?:it\s+)?to\s+)?(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s+instead)?[.!]?$/i;
 
@@ -225,25 +238,59 @@ function tryPatchSchedule(draft: ParsedAgentDraft, utterance: string): ScheduleP
 // boundary (、。, or end of string) so a rename clause embedded earlier in a
 // longer multi-field utterance ("名前は◯◯にして、9時にして") is still
 // recognized (the lookahead, not a hard `$` anchor, is what makes that work).
+//
+// 2026-07-24 fuzz-sweep finding: the capture group used to be an unrestricted
+// lazy `(.+?)`, which is free to cross a 、/, that appears BEFORE the actual
+// rename verb — e.g. "名前はそのままで、9時にしてください" (intent: "leave
+// the name alone, just change the time") lazily matched all the way out to
+// the "9時に" ending and captured "そのままで、9時" as if THAT were the new
+// name, silently renaming the agent to garbage while also (in the un-narrowed
+// version) never even reaching the time correction the user actually asked
+// for. Restricting the capture to `[^、,]+?` (no comma character permitted
+// INSIDE the captured span) makes a rename clause stop at the first clause
+// boundary the way every other field detector in this module already
+// does — a real name essentially never needs a bare 、/, before the change
+// verb, so this can only narrow which utterances match, never widen it.
 const NAME_PATCH_JP_RE =
-  /(?:名前|タイトル|エージェント名|名称)\s*(?:は|を)?\s*[「『]?(.+?)[」』]?\s*(?:に(?:して(?:ください)?|変更して(?:ください)?|変えて(?:ください)?)?|でお願いします?)(?=[、。,]|$)/;
+  /(?:名前|タイトル|エージェント名|名称)\s*(?:は|を)?\s*[「『]?([^、,]+?)[」』]?\s*(?:に(?:して(?:ください)?|変更して(?:ください)?|変えて(?:ください)?)?|でお願いします?)(?=[、。,]|$)/;
 const NAME_PATCH_EN_RE =
   /\b(?:rename(?:\s+it)?\s+to|name\s+it|call\s+it|set\s+(?:the\s+)?name\s+to|title\s+it)\s+["']?(.+?)["']?(?=[,.!]|$)/i;
 
+// 2026-07-24 fuzz-sweep finding (companion to the comma-narrowing above): even
+// WITHOUT a comma in play, "名前はそのままでお願いします" ("please leave the
+// name as it is") still hits the marker+ending shape and captures the literal
+// placeholder word "そのまま" ("as-is"/"unchanged") as if it were the actual
+// new name — the opposite of the user's stated intent. Same for "名前は変え
+// ずに9時にして" ("without changing the name, make it 9") — the capture
+// includes the trailing time fragment too ("変えずに9時"), so a plain equals
+// check isn't enough; the guard below matches these as a PREFIX instead (^,
+// no trailing $) so any capture that STARTS with one of these "leave it
+// alone" markers is rejected regardless of what (if anything) follows. This
+// stays narrowing/low-risk because every listed phrase is a negation/state-
+// preservation word, never a plausible leading word of an actual new agent
+// name (real names in this app are topics — "株価チェック", "ニュースまとめ"
+// — never literally "そのまま…"/"変えずに…"/"same…"), and the EN alternatives
+// are \b-bounded so they can't reject an unrelated name that merely starts
+// with the same letters (e.g. "Sameday Digest" still passes — verified).
+const NAME_PATCH_NO_CHANGE_PLACEHOLDER_RE =
+  /^(?:その\s*まま|元\s*の\s*まま|変えな(?:い|くて)|変えずに?|\bsame\b|\bas[- ]?is\b|\bunchanged\b|\bno\s+change\b)/i;
+
 /** Extract a new display name from a "rename it to X" style utterance.
- *  Returns null when no such marker is present, or the captured name is
+ *  Returns null when no such marker is present, the captured name is
  *  empty/implausibly long (guards against a runaway lazy match swallowing an
- *  entire unrelated sentence when no clause boundary follows). */
+ *  entire unrelated sentence when no clause boundary follows), or the
+ *  capture is one of the "leave it as-is" placeholder phrases above (a
+ *  negative statement about the name, not a new name). */
 function tryPatchName(text: string): string | null {
   const jp = text.match(NAME_PATCH_JP_RE);
   if (jp?.[1]) {
     const name = jp[1].trim();
-    if (name.length > 0 && name.length <= 40) return name;
+    if (name.length > 0 && name.length <= 40 && !NAME_PATCH_NO_CHANGE_PLACEHOLDER_RE.test(name)) return name;
   }
   const en = text.match(NAME_PATCH_EN_RE);
   if (en?.[1]) {
     const name = en[1].trim();
-    if (name.length > 0 && name.length <= 40) return name;
+    if (name.length > 0 && name.length <= 40 && !NAME_PATCH_NO_CHANGE_PLACEHOLDER_RE.test(name)) return name;
   }
   return null;
 }
@@ -322,6 +369,21 @@ function tryPatchAutonomous(draft: ParsedAgentDraft, text: string): boolean | nu
 export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): DraftPatchResult | null {
   const text = utterance.trim();
   if (!text) return null;
+  // "@…" is this project's established "fresh command, not a reply to
+  // whatever is pending" marker (same precedent as pendingAgentSession's own
+  // "@" branch in hooks/use-ai-pane-dispatch.ts and this module's OWN
+  // applyCorrectionToJustRegisteredAgent below, which already guards this
+  // exact case). applyCorrectionToJustRegisteredAgent enforces it itself;
+  // applyPatchToPendingSession previously relied ENTIRELY on its caller to
+  // filter "@…" out first — today that caller does, but nothing in this
+  // module stopped a fresh "@agent 名前は◯◯にして"-shaped command from being
+  // misread as a literal rename patch if ever called directly or from a
+  // future call site that forgot the same guard (confirmed via direct call:
+  // applyDraftPatch(draft, '@agent 名前は株価まとめにして') renamed the draft
+  // before this fix). Hoisting the check here, additive/narrowing only (it
+  // can only turn an existing match into `null`, never the reverse), closes
+  // that gap for both of this module's public entry points at once.
+  if (text.startsWith('@')) return null;
 
   const changedFields: string[] = [];
   const patched: ParsedAgentDraft = { ...draft };

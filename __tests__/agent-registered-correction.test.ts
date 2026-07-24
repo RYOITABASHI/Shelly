@@ -168,6 +168,40 @@ describe('applyCorrectionToJustRegisteredAgent', () => {
     expect(result).toBeNull();
   });
 
+  // ── DOCUMENTED, NOT FIXED — 2026-07-24 fuzz-sweep, design judgment call ──
+  //
+  // The task's explicit concern (mirroring tonight's real routing bug, just
+  // at a different layer): "does a bare 今/今すぐ ever get misdetected as some
+  // OTHER field's patch attempt". Verified: lib/agent-draft-patch.ts does NOT
+  // have a dedicated schedule='once' patch detector of its own, but it DOES
+  // inherit one indirectly — tryPatchSchedule's path (a) trusts ANY confident
+  // parseSchedule() result outright, and parseSchedule('今') is confident
+  // (schedule: 'once', "run once, right now" — see agent-nl-parser.ts's
+  // branch 0). For an ALREADY-REGISTERED periodic agent within this
+  // correction window, that means a bare "今" reply — sent for any reason —
+  // silently clears the agent's schedule to null (agentPartial normalizes
+  // 'once' -> null, since 'once' isn't a real persisted cron) rather than
+  // actually running it immediately; the agent just stops firing on its
+  // periodic schedule until edited again. Whether trusting bare "今" here is
+  // the intended UX (arguably a legitimate "just run it now instead" request)
+  // or too easily confused with an unrelated conversational "今" is a product
+  // decision this task's own hard constraint (narrowing/additive fixes only)
+  // says NOT to resolve unilaterally — captured as current behavior only.
+  it('[DOCUMENTED, NOT FIXED] a bare "今" within the correction window clears the registered agent\'s schedule to null (not an actual "run now")', () => {
+    const createdAt = Date.now();
+    const result = applyCorrectionToJustRegisteredAgent(
+      baseDraft(),
+      '今',
+      createdAt,
+      STALE_MS,
+      createdAt + 5_000,
+    );
+    expect(result).not.toBeNull();
+    expect(result!.changedFields).toEqual(['schedule']);
+    expect(result!.patchedDraft.schedule).toBe('once');
+    expect(result!.agentPartial.schedule).toBeNull();
+  });
+
   it('flags autonomousTurnedOn (without touching tool/runOn itself — that is the caller\'s job)', () => {
     const createdAt = Date.now();
     const result = applyCorrectionToJustRegisteredAgent(
