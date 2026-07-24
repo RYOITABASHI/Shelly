@@ -160,6 +160,49 @@ describe('generateRunScript — DEVICE_STATUS_CONTEXT (v26)', () => {
     }
   });
 
+  // v27 (2026-07-24, network connectivity capability): DeviceStatusBridge.kt
+  // now also writes network.json — this test exercises the real shape that
+  // writer produces, through the SAME generic reader as every other
+  // capability file (no reader-side change was needed or made).
+  it('merges a network.json snapshot into the context line (v27 capability)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-home-'));
+    try {
+      const dir = path.join(home, '.shelly/device-status');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'network.json'),
+        '{"network":{"connected":true,"type":"wifi","asOf":"2026-07-24T00:00:00Z"}}',
+      );
+      const result = runBlock(block, home);
+      expect(result).toContain('[Device status');
+      expect(result).toContain(
+        '"network":{"connected":true,"type":"wifi","asOf":"2026-07-24T00:00:00Z"}',
+      );
+      expect(result).toContain('do not attempt to re-derive via shell commands');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('merges battery.json AND network.json together without colliding', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-home-'));
+    try {
+      const dir = path.join(home, '.shelly/device-status');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'battery.json'), '{"battery":{"level":75,"charging":true}}');
+      fs.writeFileSync(
+        path.join(dir, 'network.json'),
+        '{"network":{"connected":false,"type":"none"}}',
+      );
+      const result = runBlock(block, home);
+      expect(result).toMatch(
+        /\{"battery":\{"level":75,"charging":true\},"network":\{"connected":false,"type":"none"\}\}/,
+      );
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('a malformed/empty file is silently skipped rather than corrupting the merge', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-home-'));
     try {

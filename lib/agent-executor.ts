@@ -254,7 +254,20 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // comment for the full reasoning (mirrors the CURRENT_DATETIME_CONTEXT v19
 // precedent exactly). Bumped because the generated script's prompt-assembly
 // BEHAVIOR changed (new leading line in every model-facing prompt).
-const AGENT_SCRIPT_VERSION = 26;
+// v27 (2026-07-24, device-status: network connectivity capability):
+// DeviceStatusBridge.refreshAll (native, AgentRuntime.kt) now also writes
+// network.json ({"network":{"connected":bool,"type":"wifi"|"cellular"|
+// "none"|"other","asOf":…}}, ConnectivityManager-derived, no SSID/identifying
+// detail) alongside battery.json before this script starts. The
+// DEVICE_STATUS_CONTEXT bash block above is unchanged — it already reads
+// every *.json file under $HOME/.shelly/device-status/ generically and
+// merges each file's top-level key, so a "network" key now simply appears
+// in the merged object whenever that snapshot is present, no per-capability
+// wiring needed here. Bumped only so the version marker embedded in every
+// generated script stays a meaningful staleness signal for anyone
+// cross-referencing it against this history block (no behavior change to
+// this TS file's own generated bash beyond that marker).
+const AGENT_SCRIPT_VERSION = 27;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';

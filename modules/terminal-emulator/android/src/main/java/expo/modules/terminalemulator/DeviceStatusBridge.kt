@@ -3,6 +3,8 @@ package expo.modules.terminalemulator
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.util.Log
 import org.json.JSONObject
@@ -72,6 +74,7 @@ object DeviceStatusBridge {
             return
         }
         writeBatterySnapshot(context, dir)
+        writeNetworkSnapshot(context, dir)
     }
 
     /**
@@ -119,6 +122,85 @@ object DeviceStatusBridge {
         } catch (e: Exception) {
             Log.w(TAG, "battery snapshot failed", e)
             file.delete()
+        }
+    }
+
+    /**
+     * Network connectivity TYPE only (wifi / cellular / other / none) via the
+     * modern, non-deprecated ConnectivityManager#getNetworkCapabilities API
+     * (minSdk 24 here, so activeNetwork + getNetworkCapabilities is safe —
+     * the older NetworkInfo API is deprecated and avoided on purpose).
+     * Deliberately does NOT read SSID or any network-identifying detail —
+     * that requires location permission and is out of scope for this
+     * capability; connectivity type only, nothing identifying. Requires
+     * android.permission.ACCESS_NETWORK_STATE (normal protection level, no
+     * runtime prompt — declared in app.config.ts, not hand-edited into
+     * AndroidManifest.xml, per this project's "expo prebuild wipes manual
+     * manifest edits" lesson). Writes a single compact JSON line:
+     * {"network":{"connected":true,"type":"wifi","asOf":"…"}} — same
+     * top-level-key convention as writeBatterySnapshot so
+     * lib/agent-executor.ts's generic multi-file reader merges this in
+     * without collision.
+     */
+    private fun writeNetworkSnapshot(context: Context, dir: File) {
+        val file = File(dir, "network.json")
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val activeNetwork = cm?.activeNetwork
+            if (cm == null || activeNetwork == null) {
+                // No active network is a legitimate "not connected" reading —
+                // but "cm == null" (service unavailable) is not, and both
+                // collapse to the same branch here for simplicity; the
+                // capabilities-null branch below is what actually fails
+                // closed on "cannot determine" vs. guessing "none".
+                if (cm != null) {
+                    val json = JSONObject()
+                        .put("network", JSONObject()
+                            .put("connected", false)
+                            .put("type", "none")
+                            .put("asOf", Instant.now().toString()))
+                    writeAtomically(dir, file, "network", json)
+                } else {
+                    file.delete()
+                }
+                return
+            }
+            val caps = cm.getNetworkCapabilities(activeNetwork)
+            if (caps == null) {
+                // Fails closed: an active network handle exists but its
+                // capabilities could not be looked up (races between the two
+                // calls are possible) — treat as "cannot determine" and
+                // delete any stale snapshot rather than guess.
+                file.delete()
+                return
+            }
+            val connected = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val type = when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                else -> "other"
+            }
+            val json = JSONObject()
+                .put("network", JSONObject()
+                    .put("connected", connected)
+                    .put("type", if (connected) type else "none")
+                    .put("asOf", Instant.now().toString()))
+            writeAtomically(dir, file, "network", json)
+        } catch (e: Exception) {
+            Log.w(TAG, "network snapshot failed", e)
+            file.delete()
+        }
+    }
+
+    /** Shared atomic tmp-file-then-rename write, mirroring
+     *  writeBatterySnapshot's inline pattern so both capability writers stay
+     *  byte-for-byte consistent in how they avoid a torn/partial read. */
+    private fun writeAtomically(dir: File, file: File, key: String, json: JSONObject) {
+        val tmp = File(dir, ".${key}.json.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")
+        tmp.writeText(json.toString())
+        if (!tmp.renameTo(file)) {
+            tmp.delete()
         }
     }
 }
