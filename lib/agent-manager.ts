@@ -403,6 +403,35 @@ type MaterializeRunOpts = {
   // unset, so the stored script's baked nonce is always empty and can never
   // accidentally match a live chain lock (see generateRunScript's comment).
   chainLockNonce?: string;
+  // DEFERRED.md エージェント二重実行レース ("副産物として見つかった実在する
+  // データ消失リスク" follow-up): runLadderAttempts's per-attempt materialize
+  // is called with an already-shaped `Agent` — for an orchestration STEP the
+  // caller (runAgentOrchestratedBody) has already cleared `.orchestration` to
+  // undefined and pinned `.tool` to this one candidate before this function
+  // ever sees it. Writing THAT shape to the persistent `<id>.json` metadata
+  // file (below) would overwrite the agent's real, saved orchestration config
+  // on disk for the duration of the attempt — if the process were killed at
+  // exactly that moment, the real multi-step recipe would be permanently lost
+  // (confirmed possible, not confirmed to have happened, in the 2026-07-21
+  // on-device investigation). The persistent metadata is safe to leave
+  // untouched here because every per-attempt materialize is bracketed by an
+  // OUTER, non-attempt-scoped materialize call that already wrote the real,
+  // full agent object to `<id>.json` before the attempt loop started
+  // (installAgent at create/edit time) and rewrites it again immediately
+  // after the loop ends (runEscalatingAttempts's / runAgentOrchestratedBody's
+  // post-chain "restore" materialize) — so skipping the write here just means
+  // "leave the already-correct on-disk file alone", not "write nothing, ever".
+  // Nothing reads `<id>.json` mid-attempt that needs the attempt's pinned
+  // shape: JS only reloads it from disk at app boot (loadAgentsFromDisk), and
+  // the native runtime's own re-read of it (AgentRuntime.kt's isAgentEnabled/
+  // trustedPlanLaunch) is gated on `unattended`/the PlanSpec executor route,
+  // neither of which a JS-driven attended per-attempt run takes — routing for
+  // THIS attempt is driven entirely by the separately-written run script +
+  // PlanSpec file, which per-attempt materialize still writes as normal.
+  // Only runLadderAttempts's per-attempt materialize sets this; every other
+  // materializeAgent call leaves it unset (default false), so `<id>.json` is
+  // written exactly as before for every other caller.
+  skipMetadataWrite?: boolean;
 };
 
 /**
@@ -511,7 +540,12 @@ async function materializeAgentBody(
     `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
     // Metadata stores the ORIGINAL agent (no baked recall) so memory never
     // compounds across materializations; the script gets the effective prompt.
-    writeFileCommand(metadataPath, JSON.stringify(metadataAgent, null, 2)),
+    // skipMetadataWrite (see MaterializeRunOpts's doc comment): a per-attempt
+    // ladder materialize omits this write entirely rather than overwrite the
+    // persistent `<id>.json` with a transient, single-attempt-shaped `agent`.
+    ...(effectiveRunOpts.skipMetadataWrite
+      ? []
+      : [writeFileCommand(metadataPath, JSON.stringify(metadataAgent, null, 2))]),
     writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
     writeFileCommand(planSpecPath, JSON.stringify(planSpec, null, 2)),
     ...generateInstallCommands(agent),
@@ -1126,6 +1160,13 @@ async function runLadderAttempts(
       // stored script WITHOUT this flag (unattended:true) for the alarm/
       // native fires.
       attended: true,
+      // DEFERRED.md エージェント二重実行レース ("副産物として見つかった実在する
+      // データ消失リスク" fix): `attemptAgent` may have `.orchestration`
+      // already cleared and `.tool` pinned by the caller (an orchestration
+      // step) — never let this attempt's materialize overwrite the persistent
+      // `<id>.json` with that transient shape. See MaterializeRunOpts's doc
+      // comment for why leaving the on-disk metadata untouched here is safe.
+      skipMetadataWrite: true,
     });
     await TerminalEmulator.runAgent(agentId);
     await waitForAgentRunCompletion(runCommand, agentId, {
