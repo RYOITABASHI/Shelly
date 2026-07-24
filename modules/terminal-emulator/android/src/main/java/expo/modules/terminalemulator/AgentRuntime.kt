@@ -139,19 +139,26 @@ object AgentRuntime {
     // facts instead of letting it guess/hallucinate or attempt a doomed
     // sysfs shell read). Bumped so a stale pre-v26 on-disk script (no
     // DEVICE_STATUS_CONTEXT line) is regenerated rather than kept.
-    // v27 (2026-07-24, storage capability added to device-status): DeviceStatusBridge
-    // now also writes storage.json ({"storage":{"freeBytes":…,"totalBytes":…,
-    // "asOf":"…"}}, via android.os.StatFs on context.filesDir) alongside the
-    // existing battery.json, refreshed by the SAME refreshAll() chokepoint —
-    // no new wiring on the AgentRuntime.kt or lib/agent-executor.ts side, the
-    // generic DEVICE_STATUS_CONTEXT multi-file reader already picks up any
-    // *.json file present. Bumped anyway (not just a native-only change)
-    // because a still-running agent's on-disk script was generated before
-    // this capability existed and its DEVICE_STATUS_CONTEXT reader logic is
-    // unchanged either way — but per the v25 CATCH-UP NOTE above, every
-    // agent-facing capability addition gets its own version bump so staleness
-    // is always independently visible, not inferred from an unrelated prior
-    // bump.
+    // v27 (2026-07-24, device-status: storage + memory capabilities):
+    // DeviceStatusBridge now also writes storage.json ({"storage":{
+    // "freeBytes":…,"totalBytes":…,"asOf":"…"}}, via android.os.StatFs on
+    // context.filesDir) and memory.json ({"memory":{"availBytes":…,
+    // "totalBytes":…,"lowMemory":…,"asOf":"…"}}, via the public
+    // ActivityManager.getMemoryInfo API — no permission required for either),
+    // both alongside the existing battery.json, all on the SAME refreshAll()
+    // chokepoint introduced at v26 — no new wiring on the AgentRuntime.kt or
+    // lib/agent-executor.ts side, the generic DEVICE_STATUS_CONTEXT
+    // multi-file reader already picks up any *.json file present. Bumped
+    // anyway (not just a native-only change) because a still-running agent's
+    // on-disk script was generated before these capabilities existed and its
+    // DEVICE_STATUS_CONTEXT reader logic is unchanged either way — but per
+    // the v25 CATCH-UP NOTE above, every agent-facing capability addition
+    // gets its own version bump so staleness is always independently
+    // visible, not inferred from an unrelated prior bump. (Landed as one
+    // combined v27 bump — two background agents implemented these two
+    // capabilities in parallel worktrees and each independently bumped to
+    // 27; merged together here rather than stacking two near-identical
+    // version bumps.)
     private const val CURRENT_SCRIPT_VERSION = 27
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")

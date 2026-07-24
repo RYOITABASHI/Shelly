@@ -254,17 +254,21 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // comment for the full reasoning (mirrors the CURRENT_DATETIME_CONTEXT v19
 // precedent exactly). Bumped because the generated script's prompt-assembly
 // BEHAVIOR changed (new leading line in every model-facing prompt).
-// v27 (2026-07-24, storage capability added to device-status): DeviceStatusBridge.kt
-// now also writes a storage.json snapshot ({"storage":{"freeBytes":…,
-// "totalBytes":…,"asOf":"…"}}) alongside battery.json — see AgentRuntime.kt's
-// matching CURRENT_SCRIPT_VERSION comment. The DEVICE_STATUS_CONTEXT reader
-// in this file is unchanged (it already merges every *.json file under
-// $HOME/.shelly/device-status/ generically), so this bump does not reflect a
-// bash-template text change here. It follows the established convention
-// (v23/v24/v25/v26 above) of bumping AGENT_SCRIPT_VERSION whenever a new
-// agent-facing capability lands, so downstream tooling/tests that assert on
-// this constant stay in lockstep with AgentRuntime.kt's own version rather
-// than silently drifting.
+// v27 (2026-07-24, device-status: storage + memory capabilities):
+// DeviceStatusBridge.kt now also writes storage.json ({"storage":{
+// "freeBytes":…,"totalBytes":…,"asOf":"…"}}) and memory.json ({"memory":{
+// "availBytes":…,"totalBytes":…,"lowMemory":…,"asOf":"…"}}) alongside
+// battery.json, all on the same v26 refreshAll() call site — see
+// AgentRuntime.kt's matching CURRENT_SCRIPT_VERSION comment. No change to
+// this file's DEVICE_STATUS_CONTEXT reader (it already merges every *.json
+// file under $HOME/.shelly/device-status/ generically), so this is a
+// documentation-and-lockstep-only bump: kept in sync with the native-side
+// version constant so a stale on-disk script's staleness check continues to
+// track the real capability set DeviceStatusBridge writes. (Landed as one
+// combined v27 bump — two background agents implemented these two
+// capabilities in parallel worktrees and each independently bumped to 27;
+// merged together here rather than stacking two near-identical version
+// bumps.)
 const AGENT_SCRIPT_VERSION = 27;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';

@@ -1,5 +1,6 @@
 package expo.modules.terminalemulator
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -11,9 +12,10 @@ import java.io.File
 import java.time.Instant
 
 /**
- * DeviceStatusBridge — read-only device system status (battery, and future
- * additions in the same shape), refreshed natively right before every agent
- * run and handed to the model as plain prompt context instead of a tool call.
+ * DeviceStatusBridge — read-only device system status (battery, memory, and
+ * future additions in the same shape), refreshed natively right before every
+ * agent run and handed to the model as plain prompt context instead of a
+ * tool call.
  *
  * Why prompt injection, not a model-callable tool: a scheduled/unattended
  * agent's task (e.g. "notify current battery level") was on-device-observed
@@ -74,6 +76,7 @@ object DeviceStatusBridge {
         }
         writeBatterySnapshot(context, dir)
         writeStorageSnapshot(context, dir)
+        writeMemorySnapshot(context, dir)
     }
 
     /**
@@ -163,6 +166,53 @@ object DeviceStatusBridge {
             }
         } catch (e: Exception) {
             Log.w(TAG, "storage snapshot failed", e)
+            file.delete()
+        }
+    }
+
+    /**
+     * Available/total RAM + low-memory state via the public ActivityManager
+     * API (no permission required — this is the app's own process-level view
+     * of system memory, unlike a privileged /proc/meminfo read). Writes a
+     * single compact JSON line: {"memory":{"availBytes":123,"totalBytes":456,
+     * "lowMemory":false,"asOf":"…"}} — the top-level "memory" key is what
+     * lets lib/agent-executor.ts's generic multi-file reader merge this with
+     * other capability files (battery.json, storage.json, …) into one object
+     * without collision.
+     */
+    private fun writeMemorySnapshot(context: Context, dir: File) {
+        val file = File(dir, "memory.json")
+        try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            if (am == null) {
+                file.delete()
+                return
+            }
+            val memoryInfo = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(memoryInfo)
+            val availBytes = memoryInfo.availMem
+            val totalBytes = memoryInfo.totalMem
+            if (totalBytes <= 0 || availBytes <= 0 || availBytes > totalBytes) {
+                // Fails closed: no plausible reading — delete any stale
+                // snapshot from a previous run rather than leave wrong data
+                // for the model to read as current (mirrors
+                // writeBatterySnapshot's own fail-closed-by-deletion path).
+                file.delete()
+                return
+            }
+            val json = JSONObject()
+                .put("memory", JSONObject()
+                    .put("availBytes", availBytes)
+                    .put("totalBytes", totalBytes)
+                    .put("lowMemory", memoryInfo.lowMemory)
+                    .put("asOf", Instant.now().toString()))
+            val tmp = File(dir, ".memory.json.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")
+            tmp.writeText(json.toString())
+            if (!tmp.renameTo(file)) {
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "memory snapshot failed", e)
             file.delete()
         }
     }
