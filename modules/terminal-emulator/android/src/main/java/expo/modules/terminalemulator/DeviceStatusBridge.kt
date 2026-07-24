@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.StatFs
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
@@ -72,6 +73,7 @@ object DeviceStatusBridge {
             return
         }
         writeBatterySnapshot(context, dir)
+        writeStorageSnapshot(context, dir)
     }
 
     /**
@@ -118,6 +120,49 @@ object DeviceStatusBridge {
             }
         } catch (e: Exception) {
             Log.w(TAG, "battery snapshot failed", e)
+            file.delete()
+        }
+    }
+
+    /**
+     * Free/total storage via android.os.StatFs on the app's own internal
+     * files directory (context.filesDir) — a no-permission-needed,
+     * always-accessible mount point, unlike Environment.getDataDirectory()
+     * (the shared /data mount, which is not guaranteed readable from an
+     * unprivileged app on every OEM build) or /sdcard (needs
+     * MANAGE_EXTERNAL_STORAGE and is a different, larger volume than what
+     * actually constrains the app). Writes a single compact JSON line:
+     * {"storage":{"freeBytes":123,"totalBytes":456,"asOf":"…"}} — same
+     * top-level-key convention as writeBatterySnapshot so lib/agent-
+     * executor.ts's generic multi-file reader merges this in without
+     * collision.
+     */
+    private fun writeStorageSnapshot(context: Context, dir: File) {
+        val file = File(dir, "storage.json")
+        try {
+            val stat = StatFs(context.filesDir.path)
+            val freeBytes = stat.blockSizeLong * stat.availableBlocksLong
+            val totalBytes = stat.blockSizeLong * stat.blockCountLong
+            if (freeBytes < 0 || totalBytes <= 0 || freeBytes > totalBytes) {
+                // Fails closed: no plausible reading — delete any stale
+                // snapshot from a previous run rather than leave wrong data
+                // for the model to read as current (mirrors
+                // writeBatterySnapshot's implausible-value handling).
+                file.delete()
+                return
+            }
+            val json = JSONObject()
+                .put("storage", JSONObject()
+                    .put("freeBytes", freeBytes)
+                    .put("totalBytes", totalBytes)
+                    .put("asOf", Instant.now().toString()))
+            val tmp = File(dir, ".storage.json.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")
+            tmp.writeText(json.toString())
+            if (!tmp.renameTo(file)) {
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "storage snapshot failed", e)
             file.delete()
         }
     }

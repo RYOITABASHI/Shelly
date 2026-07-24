@@ -254,7 +254,18 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // comment for the full reasoning (mirrors the CURRENT_DATETIME_CONTEXT v19
 // precedent exactly). Bumped because the generated script's prompt-assembly
 // BEHAVIOR changed (new leading line in every model-facing prompt).
-const AGENT_SCRIPT_VERSION = 26;
+// v27 (2026-07-24, storage capability added to device-status): DeviceStatusBridge.kt
+// now also writes a storage.json snapshot ({"storage":{"freeBytes":…,
+// "totalBytes":…,"asOf":"…"}}) alongside battery.json — see AgentRuntime.kt's
+// matching CURRENT_SCRIPT_VERSION comment. The DEVICE_STATUS_CONTEXT reader
+// in this file is unchanged (it already merges every *.json file under
+// $HOME/.shelly/device-status/ generically), so this bump does not reflect a
+// bash-template text change here. It follows the established convention
+// (v23/v24/v25/v26 above) of bumping AGENT_SCRIPT_VERSION whenever a new
+// agent-facing capability lands, so downstream tooling/tests that assert on
+// this constant stay in lockstep with AgentRuntime.kt's own version rather
+// than silently drifting.
+const AGENT_SCRIPT_VERSION = 27;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
