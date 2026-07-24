@@ -368,8 +368,13 @@ export function parseSchedule(text: string): ScheduleResult {
   // through every branch to the generic "未設定" fallback below), so a plain
   // "すぐに"/"今すぐ" answer looped the slot-fill question forever instead of
   // resolving to the Once frequency. `schedule: 'once'` is a sentinel (see
-  // decodeCron) — not a real cron string. ──
-  if (/^\s*(?:今\s*すぐ|すぐ(?:に)?|直ちに|即時|即座に)\s*$/.test(text) ||
+  // decodeCron) — not a real cron string. A bare "今" (2026-07-24 on-device
+  // finding) is the SAME intent stated even more tersely — the ONLY content
+  // of a reply to "いつ実行しますか？" is unambiguous, unlike "今" appearing
+  // inside a longer sentence, which is why this stays anchored to the WHOLE
+  // trimmed string exactly like its "今すぐ" sibling, not a bare substring
+  // match. ──
+  if (/^\s*(?:今\s*すぐ|今|すぐ(?:に)?|直ちに|即時|即座に)\s*$/.test(text) ||
       /^\s*(?:right\s+(?:now|away)|immediately|now|asap)\s*[.!]?\s*$/i.test(text)) {
     return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
   }

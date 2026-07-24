@@ -728,7 +728,37 @@ export function useAIPaneDispatch(paneId: string) {
           });
           return;
         }
-        const { draft: updatedDraft, resolved } = applySlotAnswer(field, partialDraft, userText, attemptCount);
+        let { draft: updatedDraft, resolved } = applySlotAnswer(field, partialDraft, userText, attemptCount);
+        // 2026-07-24 on-device feedback: a slot-fill answer the deterministic
+        // parser can't parse at all ("今" alone — not matching the "今すぐ"-
+        // family regex parseSchedule() special-cases, unlike "今すぐ"/
+        // "immediately") was just re-asking the SAME question verbatim
+        // instead of trying harder, forcing the user to guess the exact
+        // magic phrasing. Give the local LLM ONE best-effort shot at this
+        // specific answer before falling back to re-asking — reuses the
+        // EXACT same safety-checked pipeline as the fresh-draft hybrid
+        // fallback above (extractAgentFieldsWithLlm): any schedule text the
+        // LLM proposes is re-validated through parseSchedule() before being
+        // trusted, and llmExtracted:true still forces the human confirm
+        // round-trip regardless of how "complete" the result looks. Scoped
+        // to the schedule field only — the one this was observed on, and
+        // the only field extractAgentFieldsWithLlm resolves via a
+        // re-validated deterministic parser rather than trusting the LLM's
+        // raw output outright (outputPath/notificationTrigger have no such
+        // re-validation path, so a wrong LLM guess there couldn't be caught
+        // the same way).
+        if (!resolved && field === 'schedule') {
+          const llmFallbackSettings = useSettingsStore.getState().settings;
+          const llmAttempt = await extractAgentFieldsWithLlm(userText, updatedDraft, {
+            baseUrl: llmFallbackSettings.localLlmUrl,
+            model: llmFallbackSettings.localLlmModel,
+            enabled: llmFallbackSettings.localLlmEnabled,
+          });
+          if (llmAttempt.scheduleConfident) {
+            updatedDraft = llmAttempt;
+            resolved = true;
+          }
+        }
         if (!resolved) {
           // Same field, still unresolved — re-ask, bump the attempt counter.
           // applySlotAnswer force-resolves after 1-2 attempts, so this can't loop forever.

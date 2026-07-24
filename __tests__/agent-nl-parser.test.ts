@@ -44,7 +44,7 @@ describe('parseAgentNL — run immediately (Once)', () => {
   // through every branch to confident:false, looping the follow-up question
   // forever instead of landing on the Once frequency.
   it.each([
-    'すぐに', '今すぐ', '直ちに', '即時', '即座に',
+    'すぐに', '今すぐ', '今', '直ちに', '即時', '即座に',
     'right now', 'immediately', 'now', 'asap', 'right away',
   ])('%s → schedule "once", confident', (phrase) => {
     const d = parseAgentNL(phrase);
