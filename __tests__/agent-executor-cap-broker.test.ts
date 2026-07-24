@@ -63,7 +63,7 @@ describe('capability broker wiring — http_post_json seam (CAP/HTTP/SECRET-001)
   });
 
   it('bumps the script version in lockstep with the native gate', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=26');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=27');
   });
 
   // 2026-07-17 follow-up (docs/superpowers/DEFERRED.md "Capability broker

@@ -145,6 +145,26 @@ describe('generateRunScript — DEVICE_STATUS_CONTEXT (v26)', () => {
     }
   });
 
+  it('merges a single memory.json snapshot into the context line', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-home-'));
+    try {
+      const dir = path.join(home, '.shelly/device-status');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'memory.json'),
+        '{"memory":{"availBytes":536870912,"totalBytes":4294967296,"lowMemory":false,"asOf":"2026-07-24T00:00:00Z"}}',
+      );
+      const result = runBlock(block, home);
+      expect(result).toContain('[Device status');
+      expect(result).toContain(
+        '"memory":{"availBytes":536870912,"totalBytes":4294967296,"lowMemory":false,"asOf":"2026-07-24T00:00:00Z"}',
+      );
+      expect(result).toContain('do not attempt to re-derive via shell commands');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('merges MULTIPLE capability files into one flat object without colliding', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-home-'));
     try {

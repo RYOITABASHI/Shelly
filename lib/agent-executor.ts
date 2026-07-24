@@ -254,7 +254,16 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // comment for the full reasoning (mirrors the CURRENT_DATETIME_CONTEXT v19
 // precedent exactly). Bumped because the generated script's prompt-assembly
 // BEHAVIOR changed (new leading line in every model-facing prompt).
-const AGENT_SCRIPT_VERSION = 26;
+// v27 (2026-07-24, device-status: memory capability): AgentRuntime.kt's
+// DeviceStatusBridge now also writes memory.json (availBytes/totalBytes/
+// lowMemory) alongside battery.json on the same v26 refreshAll() call site —
+// see AgentRuntime.kt's matching CURRENT_SCRIPT_VERSION comment. No change
+// to this file's DEVICE_STATUS_CONTEXT reader (it already merges every
+// *.json file under $HOME/.shelly/device-status/ generically), so this is a
+// documentation-and-lockstep-only bump: kept in sync with the native-side
+// version constant so a stale on-disk script's staleness check continues to
+// track the real capability set DeviceStatusBridge writes.
+const AGENT_SCRIPT_VERSION = 27;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';

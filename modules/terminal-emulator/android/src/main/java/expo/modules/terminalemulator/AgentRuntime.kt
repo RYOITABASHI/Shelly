@@ -139,7 +139,22 @@ object AgentRuntime {
     // facts instead of letting it guess/hallucinate or attempt a doomed
     // sysfs shell read). Bumped so a stale pre-v26 on-disk script (no
     // DEVICE_STATUS_CONTEXT line) is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 26
+    // v27 (2026-07-24, device-status: memory capability): DeviceStatusBridge
+    // now also writes memory.json (availBytes/totalBytes/lowMemory via the
+    // public ActivityManager.getMemoryInfo API, no permission required) on
+    // the SAME refreshAll() call site introduced at v26 — the generated
+    // script's DEVICE_STATUS_CONTEXT reader is already generic (merges every
+    // *.json file under $HOME/.shelly/device-status/, no per-capability
+    // wiring needed on the JS side), so this constant only needs bumping
+    // because the SET of files DeviceStatusBridge writes changed, matching
+    // the v26 rationale that a stale pre-bump on-disk script should be
+    // regenerated so it too benefits (belt-and-suspenders — the script text
+    // itself is unchanged from v26, but keeping native capability additions
+    // in lockstep with a version bump avoids a class of "did the on-disk
+    // script actually pick this up" debugging ambiguity later, and mirrors
+    // this same file's own CATCH-UP NOTE at v25/v26 about what happens when
+    // a native-side addition ISN'T bumped promptly).
+    private const val CURRENT_SCRIPT_VERSION = 27
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
