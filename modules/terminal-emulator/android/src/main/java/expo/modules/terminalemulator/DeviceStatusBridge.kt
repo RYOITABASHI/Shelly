@@ -160,7 +160,9 @@ object DeviceStatusBridge {
             val json = JSONObject()
                 .put("storage", JSONObject()
                     .put("freeBytes", freeBytes)
+                    .put("freeHuman", humanBytes(freeBytes))
                     .put("totalBytes", totalBytes)
+                    .put("totalHuman", humanBytes(totalBytes))
                     .put("asOf", Instant.now().toString()))
             val tmp = File(dir, ".storage.json.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")
             tmp.writeText(json.toString())
@@ -206,7 +208,9 @@ object DeviceStatusBridge {
             val json = JSONObject()
                 .put("memory", JSONObject()
                     .put("availBytes", availBytes)
+                    .put("availHuman", humanBytes(availBytes))
                     .put("totalBytes", totalBytes)
+                    .put("totalHuman", humanBytes(totalBytes))
                     .put("lowMemory", memoryInfo.lowMemory)
                     .put("asOf", Instant.now().toString()))
             val tmp = File(dir, ".memory.json.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")
@@ -297,5 +301,27 @@ object DeviceStatusBridge {
         if (!tmp.renameTo(file)) {
             tmp.delete()
         }
+    }
+
+    /**
+     * 2026-07-24 on-device finding: the raw byte counts alone ("99629735936")
+     * led the local model to invent an incorrect/nonsensical unit label
+     * ("99629735936 倍" — "times", not a unit of storage at all) when
+     * composing its natural-language answer, rather than converting to
+     * GB/MB itself. Alongside each *Bytes field, storage/memory snapshots
+     * now also carry a pre-formatted *Human string (e.g. "92.8 GB") the
+     * model can quote directly — the raw byte count stays too, for any
+     * caller that wants exact arithmetic rather than a display string.
+     */
+    private fun humanBytes(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val units = arrayOf("KB", "MB", "GB", "TB", "PB")
+        var value = bytes.toDouble()
+        var unitIndex = -1
+        while (value >= 1024 && unitIndex < units.size - 1) {
+            value /= 1024
+            unitIndex += 1
+        }
+        return String.format("%.1f %s", value, units[unitIndex])
     }
 }
