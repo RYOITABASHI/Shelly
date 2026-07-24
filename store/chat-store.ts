@@ -94,7 +94,7 @@ export type ChatMessage = {
    *  reply, or the eventual agentDraft/agentCardState:'pending' card
    *  message) becomes the new most-recent message. */
   pendingSlotFill?: {
-    field: 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector';
+    field: 'taskDetail' | 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector';
     question: string;
     /** The draft accumulated so far; gets updated per-answer and re-checked
      *  for the next missing slot (or promoted to a full agentDraft once

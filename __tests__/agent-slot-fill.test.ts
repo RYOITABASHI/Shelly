@@ -121,6 +121,52 @@ describe('nextMissingSlot', () => {
     const d = makeDraft({ scheduleConfident: true, action: { type: 'notify' }, socialPostCandidates: undefined });
     expect(nextMissingSlot(d, {})).toBeNull();
   });
+
+  it('asks taskDetail FIRST when needsTaskClarification is set, even though schedule is also unresolved', () => {
+    const d = makeDraft({
+      scheduleConfident: false,
+      needsTaskClarification: '明日は何の準備をしますか？',
+    });
+    const slot = nextMissingSlot(d, {});
+    expect(slot?.field).toBe('taskDetail');
+    expect(slot?.question).toBe('明日は何の準備をしますか？');
+  });
+
+  it('falls through to schedule once needsTaskClarification is cleared', () => {
+    const d = makeDraft({ scheduleConfident: false, needsTaskClarification: undefined });
+    const slot = nextMissingSlot(d, {});
+    expect(slot?.field).toBe('schedule');
+  });
+});
+
+describe('applySlotAnswer — taskDetail', () => {
+  it('appends the clarifying reply into draft.prompt and clears needsTaskClarification', () => {
+    const d = makeDraft({
+      prompt: '明日の準備をよろしく',
+      needsTaskClarification: '明日は何の準備をしますか？',
+    });
+    const { draft, resolved } = applySlotAnswer('taskDetail', d, '出張の荷物リストを作って', 0);
+    expect(resolved).toBe(true);
+    expect(draft.prompt).toBe('明日の準備をよろしく 出張の荷物リストを作って');
+    expect(draft.needsTaskClarification).toBeUndefined();
+  });
+
+  it('re-derives tool/toolLabel from the merged prompt via suggestTool, same as the LLM-extraction prompt path', () => {
+    const d = makeDraft({
+      prompt: 'やっておいて',
+      needsTaskClarification: '何をしますか？',
+      tool: { type: 'auto' },
+      toolLabel: 'Auto',
+    });
+    const { draft } = applySlotAnswer('taskDetail', d, 'github pull requestをレビューして', 0);
+    expect(draft.tool).toEqual({ type: 'cli', cli: 'codex' });
+  });
+
+  it('an empty/whitespace-only answer does not resolve (asks again)', () => {
+    const d = makeDraft({ needsTaskClarification: '何をしますか？' });
+    const { resolved } = applySlotAnswer('taskDetail', d, '   ', 0);
+    expect(resolved).toBe(false);
+  });
 });
 
 describe('applySlotAnswer — schedule', () => {

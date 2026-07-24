@@ -11,10 +11,11 @@
 import type { ParsedAgentDraft } from './agent-nl-parser';
 import { parseSchedule, fmtTime, JP_DOW_LABEL } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
+import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import en from './i18n/locales/en';
 import ja from './i18n/locales/ja';
 
-export type SlotField = 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector';
+export type SlotField = 'taskDetail' | 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector';
 
 /**
  * Per-message language detection for slot-fill questions — deliberately NOT
@@ -78,6 +79,16 @@ export function nextMissingSlot(
   // if a later reply happens to be a bare number/package name with no
   // language-identifying characters of its own.
   const strings = detectMessageLocale(draft.rawText) === 'ja' ? ja : en;
+  // 2026-07-24: task-content clarity is checked BEFORE schedule — see
+  // ParsedAgentDraft.needsTaskClarification's own doc comment. Asking "いつ
+  // 実行しますか？" first, for a request whose actual TASK content is still
+  // unclear, reads as a non-sequitur; clarify WHAT before WHEN.
+  if (draft.needsTaskClarification) {
+    return {
+      field: 'taskDetail',
+      question: draft.needsTaskClarification,
+    };
+  }
   if (!draft.scheduleConfident) {
     return {
       field: 'schedule',
@@ -128,6 +139,35 @@ export function applySlotAnswer(
   answerText: string,
   attemptCount: number,
 ): { draft: ParsedAgentDraft; resolved: boolean } {
+  if (field === 'taskDetail') {
+    // 2026-07-24: the LLM is only ever trusted to ASK the clarifying
+    // question (needsTaskClarification, set by extractAgentFieldsWithLlm) —
+    // never to invent what the task should be. This branch just folds the
+    // user's own follow-up reply into the prompt and re-derives tool/
+    // toolLabel via suggestTool(), exactly the way extractAgentFieldsWithLlm
+    // itself re-derives them when the `prompt` field changes (see
+    // lib/agent-llm-fallback.ts's mergeLlmExtractionIntoDraft) — so a
+    // clarified prompt routes to the same tool a fresh, equally-detailed
+    // utterance would have from the start. An empty/whitespace-only reply
+    // never counts as an answer (there is nothing safe to append), so it
+    // re-asks rather than silently accepting a blank clarification.
+    const clarification = answerText.trim();
+    if (!clarification) {
+      return { draft, resolved: false };
+    }
+    const mergedPrompt = `${draft.prompt} ${clarification}`.trim();
+    const suggestion = suggestTool(mergedPrompt);
+    return {
+      draft: {
+        ...draft,
+        prompt: mergedPrompt,
+        tool: suggestion.tool,
+        toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
+        needsTaskClarification: undefined,
+      },
+      resolved: true,
+    };
+  }
   if (field === 'schedule') {
     const result = parseSchedule(answerText);
     if (result.confident) {

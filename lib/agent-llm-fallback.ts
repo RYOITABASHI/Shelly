@@ -179,17 +179,28 @@ export interface AgentLlmExtraction {
    *  fed to suggestTool() the same way the deterministic parser's own
    *  derivePrompt() output is, so tool routing stays consistent. */
   prompt?: string;
+  /** Whether the request describes a concrete, actionable task — i.e.
+   *  whether "prompt" above is actually something an agent could DO, not
+   *  just a vague topic. false when the request names an outcome without
+   *  saying how to get there (e.g. "明日の準備をよろしく" — prepare WHAT?). */
+  taskClear?: boolean;
+  /** A single clarifying question, in the request's own language, asking
+   *  what the task should concretely be. Only meaningful when taskClear is
+   *  false. The LLM is only ever trusted to ASK this question — never to
+   *  invent an answer to it itself; see mergeLlmExtractionIntoDraft. */
+  clarifyingQuestion?: string;
 }
 
-const MAX_FIELD_LEN: Record<keyof Omit<AgentLlmExtraction, 'actionType'>, number> = {
+const MAX_FIELD_LEN: Record<keyof Omit<AgentLlmExtraction, 'actionType' | 'taskClear'>, number> = {
   name: 60,
   scheduleText: 100,
   outputPath: 200,
   prompt: 2000,
+  clarifyingQuestion: 200,
 };
 
 const EXTRACTION_SYSTEM_PROMPT = `You extract structured fields from a single natural-language request to create a scheduled automation agent (JP or EN). Respond with STRICT JSON ONLY — no prose, no markdown fences, no explanation — matching exactly this shape:
-{"name": string, "scheduleText": string, "actionType": "draft" | "notify", "outputPath": string, "prompt": string}
+{"name": string, "scheduleText": string, "actionType": "draft" | "notify", "outputPath": string, "prompt": string, "taskClear": boolean, "clarifyingQuestion": string}
 
 Rules:
 - "name": a short (<= 20 char) human label for the agent, derived from the topic.
@@ -197,7 +208,9 @@ Rules:
 - "actionType": "notify" if the request asks to be notified/alerted/reminded; otherwise "draft" (save the result). Never invent any other action type.
 - "outputPath": a destination hint (folder/file name) ONLY if one was explicitly stated. Empty string otherwise.
 - "prompt": the core task instruction, with the schedule/delivery phrasing removed — what the agent should actually DO each run.
-- Every field must be a plain string (use "" for unknown/absent — never null, never omit a key).
+- "taskClear": true only if "prompt" describes a concrete, executable action (what to look up, write, check, or send). false if the request only names a goal/outcome without saying HOW to accomplish it (e.g. "明日の準備をよろしく", "get ready for the trip", "handle the report" — prepare/handle WHAT, exactly?). When in doubt between true and false, prefer false — do NOT guess at what a vague request means.
+- "clarifyingQuestion": REQUIRED (non-empty) when taskClear is false — one short, concrete question, written in the SAME language as the request, asking what the task should actually involve. Empty string when taskClear is true.
+- Every string field must be a plain string (use "" for unknown/absent — never null, never omit a key). "taskClear" must be a plain boolean.
 - Output ONLY the JSON object. Nothing before it, nothing after it.`;
 
 /** Builds the system+user message pair for the extraction call. Exported for
@@ -223,7 +236,7 @@ function extractJsonObjectSpan(raw: string): string | null {
 
 function readValidatedString(
   rec: Record<string, unknown>,
-  key: keyof Omit<AgentLlmExtraction, 'actionType'>,
+  key: keyof Omit<AgentLlmExtraction, 'actionType' | 'taskClear'>,
 ): string | undefined {
   const v = rec[key];
   if (typeof v !== 'string') return undefined;
@@ -243,7 +256,9 @@ function readValidatedString(
  * string (a hallucinated type name, a real-but-dangerous type like
  * 'webhook'/'cli'/'app-act', garbage) is silently dropped rather than
  * merged, so a rogue/misbehaving model can never author a privileged action
- * type through this path.
+ * type through this path. "taskClear" is validated as a strict boolean (any
+ * other type — string "true", number, missing — leaves it unset, which
+ * mergeLlmExtractionIntoDraft treats as "no clarity signal", not as false).
  */
 export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction | null {
   if (!raw || !raw.trim()) return null;
@@ -264,6 +279,7 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
     scheduleText: readValidatedString(rec, 'scheduleText'),
     outputPath: readValidatedString(rec, 'outputPath'),
     prompt: readValidatedString(rec, 'prompt'),
+    clarifyingQuestion: readValidatedString(rec, 'clarifyingQuestion'),
   };
 
   const actionTypeRaw = rec['actionType'];
@@ -274,6 +290,11 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
   // garbage) is intentionally left unset — see this function's own doc
   // comment. mergeLlmExtractionIntoDraft never changes draft.action when
   // out.actionType is undefined.
+
+  const taskClearRaw = rec['taskClear'];
+  if (typeof taskClearRaw === 'boolean') {
+    out.taskClear = taskClearRaw;
+  }
 
   return out;
 }
@@ -298,6 +319,15 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
  *     now more accurate) task description, exactly the way the
  *     deterministic parser's own derivePrompt()→suggestTool() pipeline
  *     works.
+ *   - `taskClear`/`clarifyingQuestion` only ever set `draft.needsTaskClarification`
+ *     to the LLM's OWN question text — the LLM is trusted to ask, never to
+ *     invent what the task should be (see ParsedAgentDraft's doc comment).
+ *     Requires BOTH `taskClear === false` AND a non-empty
+ *     `clarifyingQuestion` (a false taskClear with no question, or a
+ *     malformed/missing taskClear, sets nothing). Conversely, an explicit
+ *     `taskClear === true` clears any stale `needsTaskClarification` left
+ *     over from an earlier round, so a since-clarified draft doesn't keep
+ *     re-asking.
  *
  * Returns the ORIGINAL `draft`, completely unchanged, when nothing in
  * `extraction` was both present and valid enough to apply — this function
@@ -354,6 +384,16 @@ export function mergeLlmExtractionIntoDraft(
     m.prompt = extraction.prompt;
     m.tool = suggestion.tool;
     m.toolLabel = suggestion.label ?? toolChoiceToLabel(suggestion.tool);
+    touched = true;
+  }
+
+  if (extraction.taskClear === false && extraction.clarifyingQuestion) {
+    const m = next();
+    m.needsTaskClarification = extraction.clarifyingQuestion;
+    touched = true;
+  } else if (extraction.taskClear === true && draft.needsTaskClarification) {
+    const m = next();
+    m.needsTaskClarification = undefined;
     touched = true;
   }
 

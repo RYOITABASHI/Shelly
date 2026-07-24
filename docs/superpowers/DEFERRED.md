@@ -14,6 +14,27 @@
 
 ---
 
+### エージェント作成の「タスク不明瞭」検知 — LLMがタスク内容自体を聞き返す — ✅ 実装済み（未コミット→次コミットで着地）・🔴 実機未検証 (P2)
+
+**優先度**: P2（次リリース推奨——on-deviceテスト中に発見された実UXバグ。「明日の準備をよろしく」のような曖昧な依頼で「いつ実行しますか？」と聞いてしまう＝タスク内容そのものが不明なまま先にスケジュールを聞く、という順序の誤り）
+
+**発見（2026-07-24、on-device実機テスト中のユーザー指摘）**: 「明日の準備を宜しくで、いつ実行しますか？っておかしくない？」「そもそも何をどう準備するか聞くべきじゃない？これはLLM案件だと思う」。既存の`lib/agent-llm-fallback.ts`（`isLowConfidenceAgentDraft`でスケジュール/アクション両方とも不明瞭な曖昧発話を検知しローカルLLMへフォールバックする仕組み、2026-07-23実装済み）はフィールド抽出専用で、「そもそもタスク内容自体が実行可能か」をLLMに判定させてはいなかった。
+
+**実装**:
+- `lib/agent-nl-parser.ts`: `ParsedAgentDraft`に`needsTaskClarification?: string`追加。LLMは「質問する」ことのみ信頼され、タスク内容を勝手に発明することは決して許されない、という設計不変条件をdocコメントに明記。
+- `lib/agent-llm-fallback.ts`: `AgentLlmExtraction`に`taskClear?: boolean` / `clarifyingQuestion?: string`追加。抽出プロンプトにタスクの具体性判定を追加指示（`taskClear:false`の場合は依頼と同じ言語で`clarifyingQuestion`を必須で返させる）。`parseAgentLlmExtractionResponse`は`taskClear`を厳密booleanのみ受理（型不一致/欠落はunset、falseと誤認しない）。`mergeLlmExtractionIntoDraft`は`taskClear===false && clarifyingQuestion`が両方揃った時だけ`draft.needsTaskClarification`をLLM自身の質問文で設定。逆に`taskClear===true`は古い`needsTaskClarification`を明示的にクリア（既読み解消済みラウンドの再質問防止）。
+- `lib/agent-slot-fill.ts`: `SlotField`に`'taskDetail'`を追加（先頭）。`nextMissingSlot`は`draft.needsTaskClarification`を**schedule等より先に**チェック。`applySlotAnswer`の`'taskDetail'`分岐は、ユーザーの自由記述回答を`draft.prompt`へ追記し`suggestTool()`で`tool`/`toolLabel`を再導出（LLM抽出の`prompt`マージパスと同じパターン）、`needsTaskClarification`をクリアして解決。
+- `store/chat-store.ts`: `ChatMessage.pendingSlotFill.field`ユニオンに`'taskDetail'`追加（tscエラー2件を修正）。
+
+**配線の確認**: `hooks/use-ai-pane-dispatch.ts`の初回パース時点で既に`isLowConfidenceAgentDraft(draft)`→`extractAgentFieldsWithLlm`→`nextMissingSlot`という順で呼ばれている（2026-07-23実装済みの既存配線）ため、**フック側の追加変更は不要**——`agent-llm-fallback.ts`/`agent-slot-fill.ts`側の変更だけで「明日の準備をよろしく」→LLMがタスク不明瞭と判定→クラリファイ質問→ユーザー回答をpromptへマージ、というループが自動的につながる。
+
+**検証**: `npx tsc --noEmit`クリーン。`agent-slot-fill.test.ts`/`agent-nl-parser.test.ts`/`agent-llm-fallback.test.ts`に新規回帰テスト追加（`taskDetail`優先順位、`applySlotAnswer`のマージ/tool再導出/空回答時re-ask、`taskClear`/`clarifyingQuestion`のパース＆マージの正常系・型不一致系・stale clear系）、3スイート計245件PASS。フルスイート実行で`plan-executor*.test.ts`/`capability-broker.test.ts`の27件が既存のWindows環境依存の事前失敗（`C:\C:\...`パス二重化、`git stash`で無変更ベースラインでも同一失敗を再現確認済み）であることを確認、本変更とは無関係。
+
+**未了（実機検証、on-device往復が必要）**: 「明日の準備をよろしく」のような曖昧発話で実際にクラリファイ質問が出るか、回答がpromptへ正しくマージされ以降のconfirmフローに正常に進むか、が未検証。次回on-deviceテストで確認すること。
+→ sync: なし。
+
+---
+
 ### PlanSpec executor 経由の無人スケジュール実行に local LLM autostart が無い — ✅ 実装済み（`92d66acc1`）・✅ 実機検証済み（2026-07-21）(P1)
 
 **優先度**: P1（次リリース推奨——`tool.type: 'local'`に解決される多段オーケストレーション済みエージェントの無人スケジュール発火という「レアなエッジケースではなく通常経路」で、サーバーが未起動なら確実に失敗する）

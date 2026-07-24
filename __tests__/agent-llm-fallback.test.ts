@@ -210,6 +210,35 @@ describe('parseAgentLlmExtractionResponse', () => {
     const result = parseAgentLlmExtractionResponse(raw);
     expect(result).toEqual({ name: undefined, scheduleText: undefined, outputPath: undefined, prompt: undefined });
   });
+
+  it('parses taskClear:false with a clarifyingQuestion', () => {
+    const raw = JSON.stringify({
+      taskClear: false,
+      clarifyingQuestion: '明日は何の準備をしますか？',
+    });
+    const result = parseAgentLlmExtractionResponse(raw);
+    expect(result?.taskClear).toBe(false);
+    expect(result?.clarifyingQuestion).toBe('明日は何の準備をしますか？');
+  });
+
+  it('parses taskClear:true with an empty clarifyingQuestion', () => {
+    const raw = JSON.stringify({ taskClear: true, clarifyingQuestion: '' });
+    const result = parseAgentLlmExtractionResponse(raw);
+    expect(result?.taskClear).toBe(true);
+    expect(result?.clarifyingQuestion).toBeUndefined();
+  });
+
+  it('leaves taskClear unset (not false) when the field is missing or the wrong type', () => {
+    expect(parseAgentLlmExtractionResponse('{}')?.taskClear).toBeUndefined();
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ taskClear: 'true' }))?.taskClear).toBeUndefined();
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ taskClear: 1 }))?.taskClear).toBeUndefined();
+  });
+
+  it('truncates an implausibly long clarifyingQuestion instead of rejecting the whole response', () => {
+    const raw = JSON.stringify({ taskClear: false, clarifyingQuestion: 'x'.repeat(500) });
+    const result = parseAgentLlmExtractionResponse(raw);
+    expect(result?.clarifyingQuestion?.length).toBeLessThanOrEqual(200);
+  });
 });
 
 // ─── mergeLlmExtractionIntoDraft ────────────────────────────────────────────
@@ -300,6 +329,43 @@ describe('mergeLlmExtractionIntoDraft', () => {
     expect(result.scheduleConfident).toBe(true);
     expect(result.action).toEqual({ type: 'notify' });
     expect(result.llmExtracted).toBe(true);
+  });
+
+  it('sets needsTaskClarification from the LLM\'s own question when taskClear is false', () => {
+    const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, {
+      taskClear: false,
+      clarifyingQuestion: '明日は何の準備をしますか？',
+    });
+    expect(result.needsTaskClarification).toBe('明日は何の準備をしますか？');
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('does NOT set needsTaskClarification when taskClear is false but clarifyingQuestion is empty', () => {
+    const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, { taskClear: false });
+    expect(result).toBe(draft);
+    expect(result.needsTaskClarification).toBeUndefined();
+  });
+
+  it('clears a stale needsTaskClarification when a later extraction reports taskClear:true', () => {
+    const draft = baseDraft({ needsTaskClarification: 'stale question from an earlier round' });
+    const result = mergeLlmExtractionIntoDraft(draft, { taskClear: true });
+    expect(result.needsTaskClarification).toBeUndefined();
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('taskClear:true is a no-op when there was no stale needsTaskClarification to clear', () => {
+    const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, { taskClear: true });
+    expect(result).toBe(draft);
+  });
+
+  it('never lets a bare clarifyingQuestion (without taskClear:false) set needsTaskClarification — the LLM must explicitly flag the task as unclear', () => {
+    const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, { clarifyingQuestion: 'some question' });
+    expect(result).toBe(draft);
+    expect(result.needsTaskClarification).toBeUndefined();
   });
 });
 

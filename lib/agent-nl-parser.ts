@@ -127,6 +127,24 @@ export interface ParsedAgentDraft {
    *  came entirely from the deterministic parser (existing behavior,
    *  unaffected). */
   llmExtracted?: boolean;
+  /** 2026-07-24 on-device finding: "明日の準備をよろしく" (no concrete task
+   *  content, just a vague request) fell straight through to the SCHEDULE
+   *  slot-fill question ("いつ実行しますか？"), which reads as a non-sequitur
+   *  when the thing that's actually unclear is WHAT to do, not WHEN. Whether
+   *  a task description is concrete enough to act on is judged by the SAME
+   *  local-LLM extraction call isLowConfidenceAgentDraft already triggers
+   *  (lib/agent-llm-fallback.ts's extractAgentFieldsWithLlm) — deliberately
+   *  not a hardcoded pattern list, since "is this task clear" is exactly the
+   *  kind of judgment a fixed regex can't make reliably across arbitrary
+   *  phrasing. When set, this is the LLM's own clarifying question text
+   *  ("具体的に何を準備すればいいですか？" etc.) — lib/agent-slot-fill.ts's
+   *  nextMissingSlot surfaces it as a NEW 'taskDetail' slot, asked BEFORE
+   *  schedule/notificationTrigger/outputPath, so the conversation clarifies
+   *  the task itself first. The LLM is only ever trusted to ask a QUESTION
+   *  here, never to invent what the task should be — applySlotAnswer's
+   *  'taskDetail' branch appends the user's own follow-up reply into
+   *  draft.prompt, exactly like every other slot answer. */
+  needsTaskClarification?: string;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
