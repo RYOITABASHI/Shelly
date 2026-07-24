@@ -712,7 +712,17 @@ export function parseStartNotBefore(text: string, now: Date = new Date()): numbe
   return null;
 }
 
-const URL_RE = /https?:\/\/[^\s、。)）]+/i;
+// 2026-07-24 fuzz-sweep finding: the negated character class only excluded
+// whitespace and a few JP punctuation marks, so a URL typed with NO space
+// before a following JP particle/verb ("https://example.com/hookにPOSTして",
+// a very plausible mobile/voice-dictation phrasing) had the trailing
+// Japanese text swallowed straight into the "URL" match — corrupting the
+// ACTUAL webhookUrl the agent would POST to, not just a display string.
+// Exclude the common JP script ranges (CJK/JP punctuation, hiragana,
+// katakana, CJK ideographs, fullwidth forms) so the match stops at the
+// first JP character even with no separating whitespace. Real URLs in this
+// app's supported use cases are ASCII, so this can only narrow matches.
+const URL_RE = /https?:\/\/[^\s、。)）　-〿぀-ヿ一-鿿＀-￯]+/i;
 
 /** Slice `text` down to the clause that actually names the delivery action —
  *  the part after the LAST "たら" marker when a conditional ("Xたら、Y") is
@@ -1071,7 +1081,20 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
       // Strip the schedule clause IN PLACE (no leading `.*?`) so a topic BEFORE it
       // survives: "GitHub Trendingを毎日8時にまとめて" → "GitHub Trendingをまとめて",
       // not "まとめて". Bounded by 、。 so it never crosses a clause boundary.
-      .replace(/(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
+      // 2026-07-24 fuzz-sweep finding: the 時 alternative used to match a BARE
+      // "時" with no digit requirement, so a topic word containing 時 as an
+      // ordinary character (時間/時々/時給/時計/一時/当時 — all common nouns,
+      // not schedule times) anywhere after the marker got treated as the
+      // schedule's own time and truncated the prompt at that point, e.g.
+      // "毎週土曜の夜に読書の時間を作って" → prompt "間を作って" (real content
+      // loss, not just a cosmetic label issue). Require a digit immediately
+      // before 時, mirroring the digit-anchored convention NAME_STRIP_RE and
+      // every other 時-matching regex in this file already follow (e.g.
+      // extractTime's `(\d{1,2})\s*時`, the bare-run regex a few lines below).
+      // Every existing schedule time in this codebase is always digit-prefixed
+      // ("8時", "20時30分", "3時半"), so this can only narrow matches, never
+      // widen them — no regression risk for any confident digit-time case.
+      .replace(/(毎日|毎朝|毎晩|毎夕|毎週|每週|日次)[^、。]*?(\d{1,2}\s*時(?:半|\d+分)?|分\s*(?:ごと|おき|毎|間隔))\s*(に|の)?/, '')
       // Colon-form JP time list following a daily marker ("毎日朝8:00と夜21:00に…").
       // The 時-based strip above requires a literal 時 char and never matches this
       // colon form, so it survived untouched — this is the daily-multi companion.
@@ -1094,8 +1117,12 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
       // No-毎週 multi-day path. Two narrow strips, each requiring a trailing 時 so a
       // non-schedule opener is untouched:
       //  (A) a leading 曜-qualified weekday clause ("月曜と金曜の朝8時に…").
+      // Same 2026-07-24 fuzz-sweep digit-anchor fix as the base marker strip
+      // above ("月曜の朝に読書の時間を作って" → prompt "間を作って" without
+      // it) — a bare 時 inside an unrelated topic word (時間/時々/…) must not
+      // be mistaken for the schedule's own time.
       .replace(
-        /^[日月火水木金土]曜日?(?:\s*(?:と|・|、|,|，|および|＆|&)\s*[日月火水木金土]曜?日?)*\s*[^、。]*?時(?:半|\d+分)?\s*(?:に|の)?/,
+        /^[日月火水木金土]曜日?(?:\s*(?:と|・|、|,|，|および|＆|&)\s*[日月火水木金土]曜?日?)*\s*[^、。]*?\d{1,2}\s*時(?:半|\d+分)?\s*(?:に|の)?/,
         '',
       )
       //  (B) a leading bare run of 2+ weekday chars that leads DIRECTLY into the time

@@ -1245,3 +1245,223 @@ describe('parseAgentNL — startNotBefore wiring + prompt/name stripping (2026-0
     expect(d.orchestrationSteps?.length).toBe(4);
   });
 });
+
+// ── 2026-07-24 proactive fuzz sweep ─────────────────────────────────────────
+// Systematic combination of schedule families x action families x topic
+// placement x start-date anchors x memory/multi-step markers, looking for the
+// SAME class of bug the two live on-device findings above were: a narrow
+// hand-picked regex that silently mishandles one more realistic phrasing.
+// Two more real bugs were found and FIXED (both narrow, digit/char-class-
+// anchoring fixes mirroring an already-established convention elsewhere in
+// this same file — see the fix comments at their source sites). Several more
+// gaps were found and are documented-but-NOT-fixed here because closing them
+// would need a real design call (a new regex family, not a narrow tightening)
+// — see each block's comment for why.
+describe('parseAgentNL — fuzz sweep findings (2026-07-24)', () => {
+  describe('FIXED: bare 時 inside an unrelated topic word was eaten as if it were the schedule time', () => {
+    // Root cause: derivePrompt's schedule-clause-strip regexes matched a BARE
+    // "時" with no digit requirement (unlike NAME_STRIP_RE's equivalent token,
+    // which already required '\d+\s*時...'). Once the schedule resolved via a
+    // bare time-of-day WORD default (毎朝/毎週+朝/夜/昼/... , see
+    // TIME_OF_DAY_DEFAULTS) with no digit anywhere in the text, the lazy
+    // scan's FIRST "時" match was often inside an ordinary topic noun
+    // (時間/時々/時給/時計/一時/当時 — all common words), truncating the
+    // prompt right there and destroying real task content. Fixed by requiring
+    // \d{1,2}\s* immediately before 時 in both affected regexes (the base
+    // marker strip and the leading-single-weekday-clause strip) — narrows
+    // matches only, since every legitimate schedule time in this codebase is
+    // always digit-prefixed ("8時", "20時30分").
+    it('毎週+time-of-day-word schedule: topic containing 時間 (time/hours) survives intact', () => {
+      const d = parseAgentNL('毎週土曜の夜に読書の時間を作って');
+      expect(d.schedule).toBe('0 21 * * 6');
+      expect(d.scheduleAssumed).toBe(true);
+      expect(d.prompt).toBe('毎週土曜の夜に読書の時間を作って'); // unstripped (see the documented gap below), but NOT truncated
+      expect(d.prompt).toContain('読書の時間を作って');
+    });
+
+    it('bare leading weekday (no 毎週 marker) + topic containing 時間: same protection', () => {
+      const d = parseAgentNL('月曜の朝に読書の時間を作って');
+      expect(d.prompt).toContain('読書の時間を作って');
+      expect(d.prompt).not.toBe('間を作って'); // the actual pre-fix output
+    });
+
+    it.each([
+      ['毎日夜に食事の時間を教えて', '食事の時間を教えて'], // 時間 = "time"
+      ['毎朝時々ニュースをチェックして', '時々ニュースをチェックして'], // 時々 = "sometimes"
+      ['毎朝当時の記録を集めて', '当時の記録を集めて'], // 当時 = "at that time"
+      ['毎日夜に時給の計算をして', '時給の計算をして'], // 時給 = "hourly wage"
+      ['毎日昼に時計の修理を依頼して', '時計の修理を依頼して'], // 時計 = "clock"
+      ['毎週月曜の朝に作業時間を記録して', '作業時間を記録して'], // 作業時間 = "work hours"
+    ])('%s: a 時-containing topic word is never truncated', (u, mustContain) => {
+      const d = parseAgentNL(u);
+      expect(d.scheduleConfident).toBe(true);
+      expect(d.prompt).toContain(mustContain);
+    });
+
+    it('control: an explicit digit time is completely unaffected and still strips cleanly', () => {
+      const d = parseAgentNL('毎日8時に読書の時間を作って');
+      expect(d.schedule).toBe('0 8 * * *');
+      expect(d.prompt).toBe('読書の時間を作って');
+    });
+  });
+
+  describe('FIXED: a URL directly adjacent to JP text (no space) leaked into the extracted webhookUrl', () => {
+    // Root cause: URL_RE's negated character class excluded whitespace and a
+    // few JP punctuation marks, but not JP script itself — so
+    // "https://example.com/hookにPOSTして" (a very plausible no-space mobile/
+    // voice-dictation phrasing) matched "https://example.com/hookにPOSTして"
+    // as the "URL" in its entirety. This corrupted the ACTUAL outbound
+    // webhook target the agent would POST to (not just a display string) —
+    // more severe than the two on-device findings, since it silently breaks
+    // real network dispatch. Fixed by excluding the common JP script ranges
+    // from the URL char class, narrowing matches only (every URL this app
+    // needs to support is ASCII).
+    it('a URL with no separating space before a trailing JP verb no longer swallows the JP text', () => {
+      const d = parseAgentNL('毎日8時にhttps://example.com/hookにPOSTして');
+      expect(d.action.type).toBe('webhook');
+      if (d.action.type === 'webhook') {
+        expect(d.action.webhookUrl).toBe('https://example.com/hook');
+        expect(d.action.webhookUrl).not.toContain('にPOSTして');
+      }
+    });
+
+    it('also fixed inside the daily-multi (colon-time) phrasing', () => {
+      const d = parseAgentNL('毎日朝8:00と夜21:00にhttps://example.com/hookにPOSTして');
+      expect(d.action.type).toBe('webhook');
+      if (d.action.type === 'webhook') expect(d.action.webhookUrl).toBe('https://example.com/hook');
+    });
+
+    it('control: the pre-existing spaced phrasing (already passing) is unaffected', () => {
+      const d = parseAgentNL('毎日8時に https://example.com/hook にPOSTして');
+      expect(d.action.type).toBe('webhook');
+      if (d.action.type === 'webhook') expect(d.action.webhookUrl).toBe('https://example.com/hook');
+    });
+  });
+
+  describe('DOCUMENTED, NOT FIXED: bare time-of-day-word schedules never strip their marker clause from the prompt at all', () => {
+    // Distinct from (and milder than) the 時-eating bug above: when the
+    // schedule resolves via a bare time-of-day WORD default (毎朝/毎週+朝
+    // etc.) AND the remaining text has no digit-time/interval token at all to
+    // anchor a strip on, NONE of derivePrompt's marker-strip regexes match
+    // (they all require a trailing 時/分-interval token paired with the
+    // marker), so the schedule phrase is never removed — the prompt handed to
+    // the agent stays verbose but is NOT corrupted (no content lost, unlike
+    // the bug above). Closing this gap needs a genuinely new regex family
+    // (strip a bare marker+time-of-day-word clause with no digit to anchor
+    // on) — a real design call, not a narrow tightening, so left undone here
+    // per the task's fix-scope boundary.
+    it('毎朝十分に休憩を取るようにして: schedule resolves (assumed 08:00) but "毎朝" stays in the prompt verbatim', () => {
+      const d = parseAgentNL('毎朝十分に休憩を取るようにして');
+      expect(d.scheduleConfident).toBe(true);
+      expect(d.scheduleAssumed).toBe(true);
+      expect(d.prompt).toBe('毎朝十分に休憩を取るようにして'); // NOT '十分に休憩を取るようにして'
+    });
+
+    it('毎週土曜の夜に読書の時間を作って: same gap (schedule clause survives in the prompt)', () => {
+      const d = parseAgentNL('毎週土曜の夜に読書の時間を作って');
+      expect(d.prompt).toContain('毎週土曜の夜に'); // left un-stripped
+    });
+  });
+
+  describe('DOCUMENTED, NOT FIXED: a pure interval schedule ("N分ごとに…") never strips its own clause from the prompt', () => {
+    // Distinct root cause from the two gaps above: derivePrompt's base
+    // marker-strip regex only fires when one of the daily/weekly RECURRENCE
+    // markers (毎日|毎朝|毎晩|毎夕|毎週|每週|日次) is present — a bare interval
+    // phrase like "15分ごとに" or "2時間ごとに" carries NO such marker at all,
+    // so the regex never even attempts to match it, and the interval clause
+    // is never removed from the prompt. Undetected by the existing suite
+    // because no prior test asserted .prompt for an interval-only schedule
+    // (only .schedule was checked). A real fix needs a new, differently-
+    // anchored regex (no leading marker to anchor on) — a design call, left
+    // undone here.
+    it('15分ごとに… (pure interval, no 毎日/毎朝 marker) leaves the interval clause in the prompt', () => {
+      const d = parseAgentNL('15分ごとにコマンド実行して結果を保存');
+      expect(d.schedule).toBe('*/15 * * * *');
+      expect(d.scheduleConfident).toBe(true);
+      expect(d.prompt).toBe('15分ごとにコマンド実行して結果を保存'); // NOT stripped, unlike the 毎日+marker case
+    });
+
+    it('this is the SAME already-passing schedule test as "parseAgentNL — interval" above, just newly checking .prompt', () => {
+      const d = parseAgentNL('15分ごとにポートをチェックして');
+      expect(d.schedule).toBe('*/15 * * * *'); // pre-existing assertion, still true
+      expect(d.prompt).toContain('15分ごとに'); // newly documents the un-stripped leftover
+    });
+  });
+
+  describe('DOCUMENTED, NOT FIXED: schedule:"once" (once-now) can still carry a startNotBefore anchor from the same utterance', () => {
+    // A user typing a self-contradictory combination ("今すぐ来月から…" —
+    // literally "right now, starting next month...") is unlikely but
+    // plausible (e.g. dictating a correction mid-sentence). parseStartNotBefore
+    // and parseSchedule's once-now branch are independent detectors that both
+    // scan the same raw text, so both can fire on the same utterance. The
+    // schedule correctly resolves to the immediate 'once' sentinel and the
+    // prompt is correctly cleaned of both leading clauses (no crash, no
+    // garbage prompt — the "resolves sanely" bar from the brief IS met), but
+    // draft.startNotBefore is populated on a draft whose schedule is 'once' —
+    // a value that is meaningless for an immediate one-shot run. Whether a
+    // caller ever actually reads startNotBefore for a 'once' schedule (and
+    // therefore whether this is latent-harmless or needs an explicit guard)
+    // is a call for whoever owns the scheduler/dispatch side, not something
+    // this pure parser can safely decide alone — documented, not fixed.
+    it('今すぐ来月から毎朝ニュースをチェックして: schedule=once AND startNotBefore both populated', () => {
+      const d = parseAgentNL('今すぐ来月から毎朝ニュースをチェックして');
+      expect(d.schedule).toBe('once');
+      expect(d.scheduleConfident).toBe(true);
+      expect(d.startNotBefore).toBeDefined(); // present despite 'once' having no use for it
+      expect(d.prompt).toBe('毎朝ニュースをチェックして'); // at least the prompt itself is clean
+    });
+
+    it('今すぐ来週あたりからバックアップして: same combination, EN-schedule-agnostic repro', () => {
+      const d = parseAgentNL('今すぐ来週あたりからバックアップして');
+      expect(d.schedule).toBe('once');
+      expect(d.startNotBefore).toBeDefined();
+    });
+  });
+
+  describe('OBSERVATIONAL (safe direction, no test needed to fail): a bare weekday-run + time-of-day WORD (no digit) never resolves', () => {
+    // "火・金の朝に読書の時間を作って" — the bare-separator-run weekday
+    // detector (parseSchedule's `runs` regex) requires the weekday run to
+    // lead DIRECTLY into a DIGIT time (`\d{1,2}\s*[:時]`), by design (see its
+    // own doc comment — this is what disambiguates a real schedule from an
+    // element-list like 火・水). A single 曜-qualified weekday (jpQualified)
+    // has no such adjacency requirement and DOES get the TIME_OF_DAY_DEFAULTS
+    // fallback. This asymmetry means a bare multi-day run combined with a
+    // bare time-of-day WORD (no digit) never resolves to a confident
+    // schedule — but it fails in the SAFE direction (forces manual selection,
+    // never silently wrong), so this is recorded as a known gap, not a bug.
+    it('火・金の朝に読書の時間を作って stays unconfident rather than silently guessing Tue/Fri', () => {
+      const d = parseAgentNL('火・金の朝に読書の時間を作って');
+      expect(d.scheduleConfident).toBe(false);
+      expect(d.schedule).toBeNull();
+    });
+  });
+
+  describe('OBSERVATIONAL (pre-existing, unrelated to the の-fix): deriveName can mangle a word whose kanji/kana happens to contain a collapsed particle', () => {
+    // NOT caused by tonight's の-fix (の is not involved here) — the collapse
+    // class `/[にをのはがでへと、。,.\s]+/g` already included に before tonight,
+    // and a word like について ("about") contains に as its first character,
+    // so a bare single-char collapse strips it mid-word: "…について…" →
+    // "…ついて…" (not a real word). Confirmed harmless for the specific
+    // cases the task asked to double check (今日の主要ニュース / 日本の金融
+    // ニュース / GitHubのIssue / TypeScriptの最新情報 all still read fine —
+    // see below), but につ-initial words like について/について調べて do lose
+    // their meaning in the display name. This is a pre-existing, deeper
+    // architectural limitation of deriveName's blunt per-character particle
+    // collapse (not this fix's narrow scope) — documented, not fixed.
+    it('のfix does not regress the topic-preserving cases the task asked to double-check', () => {
+      expect(parseAgentNL('今日の主要ニュースを出典付きで3つ集めて').name).toContain('今日');
+      expect(parseAgentNL('日本の金融ニュースをまとめて').name).toContain('日本');
+      expect(parseAgentNL('GitHubのIssueをまとめて').name).toContain('GitHub');
+      expect(parseAgentNL('GitHubのIssueをまとめて').name).toContain('Issue');
+      expect(parseAgentNL('TypeScriptの最新情報を教えて').name).toContain('TypeScript');
+      expect(parseAgentNL('TypeScriptの最新情報を教えて').name).toContain('最新情報');
+    });
+
+    it('but "について" (about) loses its に to the (pre-existing) particle collapse — display-name-only, prompt is unaffected', () => {
+      const d = parseAgentNL('AIの活用について毎日8時にまとめて');
+      expect(d.name).not.toContain('について'); // the actual (imperfect) current behavior
+      expect(d.name).toContain('活用'); // the core topic word itself still survives
+      expect(d.prompt).toContain('について'); // prompt (full-fidelity task text) is NOT affected, only the display name
+    });
+  });
+});
