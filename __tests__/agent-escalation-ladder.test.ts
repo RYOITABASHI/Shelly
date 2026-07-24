@@ -310,6 +310,47 @@ describe('failure detection', () => {
   it('attemptFailed does not flag a normal successful completion', () => {
     expect(attemptFailed('success', 'STEAM教育×AI の最新動向まとめ、Obsidianに保存しました。')).toBe(false);
   });
+
+  it('isLowQualityCompletion catches the real on-device "honest failure to retrieve data" repro (2026-07-23 battery-notify finding)', () => {
+    // Verbatim (trimmed) shape of what Codex CLI reported for the "notify me
+    // of battery level" agent — this is NOT a prompt echo and NOT refusal
+    // boilerplate (no "as an AI" / "生成できません"), so it read as a
+    // complete, natural sentence and previously matched neither pattern set.
+    const honestFailure = 'この実行環境では端末のバッテリー情報へアクセスできず、残量を取得できませんでした。';
+    expect(isLowQualityCompletion(honestFailure)).toBe(true);
+    expect(attemptFailed('success', honestFailure)).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches short EN "could not retrieve/access" completions', () => {
+    expect(isLowQualityCompletion('I could not retrieve the battery level in this execution environment.')).toBe(true);
+    expect(isLowQualityCompletion('Sorry, I was unable to access the battery information.')).toBe(true);
+    expect(isLowQualityCompletion("I couldn't retrieve the requested value.")).toBe(true);
+    expect(isLowQualityCompletion('There is no access to battery status from this shell.')).toBe(true);
+  });
+
+  it('isLowQualityCompletion does NOT flag a long, otherwise-substantive response that merely mentions a similar phrase in passing (explicit negative)', () => {
+    // The exact false-positive risk called out for this heuristic: a genuine,
+    // otherwise-successful research summary that happens to note ONE
+    // unrelated sub-detail was unavailable must not be treated the same as a
+    // completion that delivered nothing at all.
+    const longGenuineSummary =
+      'STEAM教育×AIの最新動向まとめ: 論文3件、ニュース2件を要約しました。' +
+      '1件目は初等教育でのAI活用事例、2件目は高校でのプログラミング教育カリキュラム改訂、' +
+      '3件目は大学の産学連携プロジェクトについてです。ニュースでは政府の教育予算方針と、' +
+      '地方自治体のICT導入状況を取り上げました。なお、この件については詳細情報が取得できません' +
+      'でしたので、続報が出次第追跡します。全体として教育現場でのAI活用は着実に進んでいます。';
+    expect(isLowQualityCompletion(longGenuineSummary)).toBe(false);
+    expect(attemptFailed('success', longGenuineSummary)).toBe(false);
+
+    const longEnglishSummary =
+      'Q3 revenue grew 12% year over year, driven by strong enterprise adoption. ' +
+      'The APAC region led growth at 18%, while EMEA grew 9%. Customer churn ' +
+      'improved to 4.2% from 5.1% last quarter. One regional breakdown for ' +
+      'Southeast Asia specifically was unable to access at this time, but the ' +
+      'overall trend across all other regions remains strongly positive, with ' +
+      'gross margin holding steady at 71% for the third consecutive quarter.';
+    expect(isLowQualityCompletion(longEnglishSummary)).toBe(false);
+  });
 });
 
 describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double approval)', () => {

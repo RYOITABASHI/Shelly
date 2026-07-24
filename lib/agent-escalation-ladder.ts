@@ -242,8 +242,48 @@ const REFUSAL_PATTERNS = [
 ];
 
 /**
- * True when a completion is prompt-echo or refusal boilerplate rather than a
- * real answer — see PROMPT_ECHO_MARKERS / REFUSAL_PATTERNS above. NOTE: this
+ * "Honest failure to retrieve the requested data" phrases (2026-07-23
+ * on-device finding, DEFERRED.md "バッテリー残量など端末システム情報の取得に
+ * ネイティブAPIブリッジが無い" §根本原因(2)): a battery-notify agent's Codex
+ * backend correctly explained it had no way to read the device's battery
+ * level, rather than echoing the prompt or refusing outright — so neither
+ * PROMPT_ECHO_MARKERS nor REFUSAL_PATTERNS caught it, and the run was logged
+ * `success` (with a "Save as skill?" offer on top). This is a real failure to
+ * deliver the requested information and must escalate the same way.
+ *
+ * Deliberately narrower than REFUSAL_PATTERNS: "could not retrieve/access …"
+ * is common enough phrasing that it CAN legitimately appear once inside an
+ * otherwise-substantive answer (e.g. a research summary noting one unrelated
+ * sub-detail was unavailable). Gated by DATA_UNAVAILABLE_MAX_LEN below on the
+ * whole completion being short — i.e. the phrase plausibly IS the answer,
+ * not a passing remark inside a much longer one.
+ */
+const DATA_UNAVAILABLE_PATTERNS = [
+  /取得できません/,
+  /アクセスできず/,
+  /アクセスできません/,
+  /\bcould not (?:retrieve|access|obtain|fetch)\b/i,
+  /\bcouldn't (?:retrieve|access|obtain|fetch)\b/i,
+  /\bunable to (?:retrieve|access|obtain|fetch)\b/i,
+  /\bno access to\b/i,
+  /\bcannot access\b/i,
+  /\bdoes not have access to\b/i,
+];
+
+/**
+ * Completions at or under this length are eligible for the
+ * DATA_UNAVAILABLE_PATTERNS check — chosen to comfortably cover a single
+ * honest-failure sentence (the real on-device repro was ~40 JA chars / a
+ * one-sentence EN equivalent) while excluding a multi-paragraph, otherwise
+ * substantive answer that merely mentions one of these phrases in passing.
+ */
+const DATA_UNAVAILABLE_MAX_LEN = 200;
+
+/**
+ * True when a completion is prompt-echo or refusal boilerplate, or a short
+ * "honest failure to retrieve the requested data" response — see
+ * PROMPT_ECHO_MARKERS / REFUSAL_PATTERNS / DATA_UNAVAILABLE_PATTERNS above.
+ * NOTE: this
  * JS copy is the unit-tested source of truth, but it is a SECONDARY signal —
  * it only runs after a step's run log is read back, which for a step that
  * DISPATCHES an action (app-act/webhook/dm-reply) is already after the user
@@ -266,9 +306,14 @@ const REFUSAL_PATTERNS = [
  */
 export function isLowQualityCompletion(text: string | null | undefined): boolean {
   if (typeof text !== 'string') return false;
-  if (text.trim().length === 0) return true;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return true;
   if (PROMPT_ECHO_MARKERS.some((pattern) => pattern.test(text))) return true;
-  return REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
+  if (REFUSAL_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (trimmed.length <= DATA_UNAVAILABLE_MAX_LEN && DATA_UNAVAILABLE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  return false;
 }
 
 /**

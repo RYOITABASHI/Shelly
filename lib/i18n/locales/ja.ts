@@ -1436,7 +1436,11 @@ const ja: Record<string, string> = {
   'sidebar.agent_paused': '一時停止中',
   // 2026-07-14: 実行時承認はデフォルトOFF — このエージェントの実効モード
   // （個別指定 or グローバル既定）は可視のまま保つ。
-  'sidebar.agent_approval_auto': '承認なし',
+  // 2026-07-24 (DEFERRED.md §対応方針(3)): 「承認なし」だけだと承認が一切
+  // 発生しないように読めるが、これは通知配信の承認レイヤーのみを指す —
+  // capability broker の境界越え承認（例: /sys/class/power_supply 読み取り）
+  // は別レイヤーで、これがOFFでも別途プロンプトが出ることがある。
+  'sidebar.agent_approval_auto': '承認なし（配信のみ）',
   'sidebar.agent_approval_manual': '承認必須',
   'sidebar.agent_last': '直近',
   'sidebar.agent_next_run': '次回実行',

@@ -172,6 +172,40 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
     // a real false positive an earlier draft of this fix actually shipped.
     expect(runEmbeddedCheck(embeddedJs, 'IBM unable to deliver chips after the outage.')).toBe(1);
   });
+
+  it('detects the real on-device "honest failure to retrieve data" repro (2026-07-23 battery-notify finding)', () => {
+    // Verbatim (trimmed) shape of what Codex CLI reported for the "notify me
+    // of battery level" agent — neither a prompt echo nor refusal boilerplate,
+    // so it previously matched neither pattern set and reached the confirm
+    // card / run log as a "success".
+    const honestFailure = 'この実行環境では端末のバッテリー情報へアクセスできず、残量を取得できませんでした。';
+    expect(runEmbeddedCheck(embeddedJs, honestFailure)).toBe(0);
+  });
+
+  it('detects short EN "could not retrieve/access" completions', () => {
+    expect(runEmbeddedCheck(embeddedJs, 'I could not retrieve the battery level in this execution environment.')).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, 'Sorry, I was unable to access the battery information.')).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, "I couldn't retrieve the requested value.")).toBe(0);
+  });
+
+  it('does NOT flag a long, otherwise-substantive response that merely mentions a similar phrase in passing (explicit negative)', () => {
+    const longGenuineSummary =
+      'STEAM教育×AIの最新動向まとめ: 論文3件、ニュース2件を要約しました。' +
+      '1件目は初等教育でのAI活用事例、2件目は高校でのプログラミング教育カリキュラム改訂、' +
+      '3件目は大学の産学連携プロジェクトについてです。ニュースでは政府の教育予算方針と、' +
+      '地方自治体のICT導入状況を取り上げました。なお、この件については詳細情報が取得できません' +
+      'でしたので、続報が出次第追跡します。全体として教育現場でのAI活用は着実に進んでいます。';
+    expect(runEmbeddedCheck(embeddedJs, longGenuineSummary)).toBe(1);
+
+    const longEnglishSummary =
+      'Q3 revenue grew 12% year over year, driven by strong enterprise adoption. ' +
+      'The APAC region led growth at 18%, while EMEA grew 9%. Customer churn ' +
+      'improved to 4.2% from 5.1% last quarter. One regional breakdown for ' +
+      'Southeast Asia specifically was unable to access at this time, but the ' +
+      'overall trend across all other regions remains strongly positive, with ' +
+      'gross margin holding steady at 71% for the third consecutive quarter.';
+    expect(runEmbeddedCheck(embeddedJs, longEnglishSummary)).toBe(1);
+  });
 });
 
 describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {
@@ -196,6 +230,10 @@ describe('is_low_quality_completion — empty/whitespace-only completion (real b
 
   it('still flags echo/refusal content through the full function (not just the embedded JS)', () => {
     expect(runFullFunctionCheck(fnText, 'As an AI, I cannot generate a literal social media post.')).toBe(0);
+  });
+
+  it('flags the honest "could not retrieve data" completion through the full function', () => {
+    expect(runFullFunctionCheck(fnText, 'この実行環境では端末のバッテリー情報へアクセスできず、残量を取得できませんでした。')).toBe(0);
   });
 
   it('does not flag real content with surrounding whitespace', () => {

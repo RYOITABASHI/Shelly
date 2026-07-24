@@ -1380,6 +1380,14 @@ NODEEOF
 # $preview. The driver now writes item/completed agentMessage text to a separate
 # .answer file; this empty check remains defense-in-depth for protocol/runtime
 # failures that produce no usable answer file.
+# A THIRD case, added 2026-07-24 (DEFERRED.md "バッテリー残量など端末システム
+# 情報の取得にネイティブAPIブリッジが無い" §根本原因(2)): a short completion
+# that HONESTLY explains it could not retrieve/access the requested data
+# (neither an echo nor refusal boilerplate — it reads as a complete, natural
+# sentence) is still a failure to deliver what was asked and must not be
+# logged success / offered as a skill. Gated on the completion being short
+# so a long, otherwise-substantive answer that merely mentions a similar
+# phrase in passing is not wrongly flagged — see dataUnavailablePatterns below.
 # Checked BEFORE any action that publishes outside the run's own log
 # (app-act/webhook/dm-reply/draft/notify) so a bad completion never reaches a
 # human-facing surface in the first place — this is a stronger, EARLIER gate
@@ -1407,7 +1415,20 @@ const refusalPatterns = [
   /私は\\s*ai\\s*(なので|として)/i,
   /(生成|投稿)できません/,
 ];
-const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text));
+const dataUnavailablePatterns = [
+  /取得できません/,
+  /アクセスできず/,
+  /アクセスできません/,
+  /\\bcould not (?:retrieve|access|obtain|fetch)\\b/i,
+  /\\bcouldn\\x27t (?:retrieve|access|obtain|fetch)\\b/i,
+  /\\bunable to (?:retrieve|access|obtain|fetch)\\b/i,
+  /\\bno access to\\b/i,
+  /\\bcannot access\\b/i,
+  /\\bdoes not have access to\\b/i,
+];
+const trimmedText = text.trim();
+const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
+  (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text)));
 process.exit(bad ? 0 : 1);
 ' 2>/dev/null; then
       return 0
@@ -1416,7 +1437,11 @@ process.exit(bad ? 0 : 1);
   fi
   # No node: coarse ASCII-only fallback — still catches the exact prompt-echo
   # markers (the failure mode actually observed on-device), misses the JA
-  # refusal phrasing.
+  # refusal phrasing AND the "honest failure to retrieve data" category below
+  # (deliberately not ported here: without node there is no cheap way to
+  # length-gate it in plain grep, and an ungated substring match would risk
+  # flagging a long, otherwise-good response that just happens to mention one
+  # of these phrases in passing).
   printf '%s' "$text" | grep -Eqi '# ?Results from previous steps|# ?This step|as an ai|i cannot generate'
 }
 
@@ -1449,7 +1474,20 @@ const refusalPatterns = [
   /私は\\s*ai\\s*(なので|として)/i,
   /(生成|投稿)できません/,
 ];
-const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text));
+const dataUnavailablePatterns = [
+  /取得できません/,
+  /アクセスできず/,
+  /アクセスできません/,
+  /\\bcould not (?:retrieve|access|obtain|fetch)\\b/i,
+  /\\bcouldn\\x27t (?:retrieve|access|obtain|fetch)\\b/i,
+  /\\bunable to (?:retrieve|access|obtain|fetch)\\b/i,
+  /\\bno access to\\b/i,
+  /\\bcannot access\\b/i,
+  /\\bdoes not have access to\\b/i,
+];
+const trimmedText = text.trim();
+const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
+  (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text)));
 process.exit(bad ? 0 : 1);
 NODEEOF
     then

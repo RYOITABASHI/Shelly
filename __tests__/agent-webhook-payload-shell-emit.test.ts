@@ -292,3 +292,53 @@ fi`
     }
   });
 });
+
+describe('is_low_quality_completion_file — "honest failure to retrieve data" (2026-07-23 battery-notify finding)', () => {
+  const script = generateRunScript(agent({ type: 'local' }));
+
+  it('flags a short honest-failure completion (the real webhook-body shape for this finding)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-webhook-dataunavail-'));
+    const rawFile = path.join(dir, 'result.md');
+    try {
+      fs.writeFileSync(rawFile, 'この実行環境では端末のバッテリー情報へアクセスできず、残量を取得できませんでした。', 'utf8');
+      const wrapper = buildWrapperScript(
+        script,
+        `clean_result_full ${JSON.stringify(rawFile)} ${JSON.stringify(rawFile)}.clean
+if is_low_quality_completion_file ${JSON.stringify(rawFile)}.clean; then
+  echo BAD
+else
+  echo OK
+fi`
+      );
+      const { stdout, status } = runWrapper(wrapper);
+      expect(status).toBe(0);
+      expect(stdout.trim()).toBe('BAD');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT flag a long body that merely mentions "取得できません" once in passing (explicit negative, unlike refusal which stays flagged at any length)', () => {
+    const padding = 'STEAM教育×AIの最新動向まとめ。'.repeat(200); // ~3000+ chars
+    const passingMention = padding + 'なお、この件については詳細情報が取得できませんでした。';
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-webhook-dataunavail-negative-'));
+    const rawFile = path.join(dir, 'result.md');
+    try {
+      fs.writeFileSync(rawFile, passingMention, 'utf8');
+      const wrapper = buildWrapperScript(
+        script,
+        `clean_result_full ${JSON.stringify(rawFile)} ${JSON.stringify(rawFile)}.clean
+if is_low_quality_completion_file ${JSON.stringify(rawFile)}.clean; then
+  echo BAD
+else
+  echo OK
+fi`
+      );
+      const { stdout, status } = runWrapper(wrapper);
+      expect(status).toBe(0);
+      expect(stdout.trim()).toBe('OK');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

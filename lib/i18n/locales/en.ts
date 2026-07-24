@@ -1452,7 +1452,12 @@ const en: Record<string, string> = {
   // this agent's EFFECTIVE approval mode (per-agent override, else the
   // global default) must stay visible even though the mandatory-tap gate
   // itself was removed.
-  'sidebar.agent_approval_auto': 'no-approval',
+  // 2026-07-24 (DEFERRED.md §対応方針(3)): "no-approval" alone reads as "no
+  // approval needed at all", but this setting only covers the notify-dispatch
+  // approval layer — a SEPARATE capability-broker boundary-crossing approval
+  // (e.g. reading /sys/class/power_supply) can still prompt even when this is
+  // off. Clarified in-label rather than adding new UI.
+  'sidebar.agent_approval_auto': 'no-approval (dispatch only)',
   'sidebar.agent_approval_manual': 'approval required',
   'sidebar.agent_last': 'Last',
   'sidebar.agent_next_run': 'Next run',
