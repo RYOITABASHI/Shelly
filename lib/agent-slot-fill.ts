@@ -314,3 +314,37 @@ export function isCancelPhrase(text: string): boolean {
   const trimmed = text.trim().toLowerCase();
   return ['cancel', 'never mind', 'nevermind', 'やめて', 'キャンセル', '中止'].includes(trimmed);
 }
+
+/**
+ * true when the truly-latest message in the conversation is itself an
+ * unexpired, unanswered message-attached slot-fill question (pendingSlotFill
+ * — schedule/notificationTrigger/outputPath/socialConnector/taskDetail).
+ *
+ * hooks/use-ai-pane-dispatch.ts's pendingAgentSession (session-scoped
+ * await-confirm) reply-routing block originally assumed the two pending
+ * mechanisms — pendingAgentSession and message-attached pendingSlotFill —
+ * "never target the same turn". 2026-07-24 on-device finding: that's false.
+ * A fresh "@agent <new command>" deliberately does NOT clear an existing
+ * pendingAgentSession (so it survives an interleaved unrelated command) —
+ * but that fresh command can itself create a BRAND NEW pendingSlotFill on
+ * the latest message. Without this check, a reply meant for that NEWER
+ * question (e.g. "今" answering a fresh agent's "いつ実行しますか？") was
+ * being swallowed as a patch attempt against the OLDER, unrelated pending
+ * draft instead — silently corrupting it while the new agent's own question
+ * sat unanswered. The caller gates its pendingAgentSession block on
+ * `!hasFresherPendingSlotFillQuestion(...)` so a reply always resolves the
+ * most recently asked question first; pendingAgentSession itself is left
+ * completely untouched either way, so it's still there once its own turn
+ * comes back around.
+ */
+export function hasFresherPendingSlotFillQuestion(
+  latestMessage: { role?: string; pendingSlotFill?: unknown; timestamp?: number } | undefined,
+  now: number,
+  staleMs: number,
+): boolean {
+  return (
+    latestMessage?.role === 'assistant' &&
+    !!latestMessage.pendingSlotFill &&
+    now - (latestMessage.timestamp ?? 0) <= staleMs
+  );
+}

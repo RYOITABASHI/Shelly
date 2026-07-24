@@ -48,7 +48,7 @@ import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm } from '@/lib/agent-plan-summary';
-import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale } from '@/lib/agent-slot-fill';
+import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
@@ -434,21 +434,48 @@ export function useAIPaneDispatch(paneId: string) {
       // draft summary and is awaiting a confirm/cancel reply (session-scoped
       // — see store/ai-pane-store.ts's PendingAgentSession), route the next
       // message here FIRST, before the message-attached slot-fill check
-      // below (they're mutually exclusive in practice: a draft only reaches
-      // await-confirm once slot-filling has nothing left to ask, so the two
-      // pending mechanisms never target the same turn). Priority exactly as
-      // designed: (1) cancel phrase discards, (2) an "@…" fresh command is
-      // routed normally WITHOUT touching the pending session (so it survives
-      // an interleaved unrelated command), (3) a confirm phrase (only when
-      // the draft actually has a fireable schedule — mirrors
-      // AgentChatConfirm's own canConfirm gate) registers it, (4) anything
-      // else re-shows the summary + a short usage hint instead of silently
-      // dropping the draft or misrouting the text to the LLM.
+      // below. Priority exactly as designed: (1) cancel phrase discards, (2)
+      // an "@…" fresh command is routed normally WITHOUT touching the
+      // pending session (so it survives an interleaved unrelated command),
+      // (3) a confirm phrase (only when the draft actually has a fireable
+      // schedule — mirrors AgentChatConfirm's own canConfirm gate) registers
+      // it, (4) anything else re-shows the summary + a short usage hint
+      // instead of silently dropping the draft or misrouting the text to
+      // the LLM.
+      //
+      // 2026-07-24 on-device finding: the "mutually exclusive, two pending
+      // mechanisms never target the same turn" assumption this block
+      // originally shipped with is FALSE — design point (2) above means a
+      // fresh "@agent <new command>" deliberately does NOT clear an existing
+      // pendingAgentSession, and that fresh command can itself create a
+      // BRAND NEW message-attached pendingSlotFill (e.g. its own "いつ実行
+      // しますか？"). Repro: "毎週月曜の朝にゴミ出しをリマインドして"
+      // (reaches await-confirm) → "@agent ニュースを通知して" (fresh
+      // command, ゴミ出し's pendingAgentSession survives untouched, asks its
+      // OWN schedule question) → "今" (meant to answer the NEWS question) —
+      // without this guard, this block ran unconditionally and swallowed
+      // "今" as a patch attempt against the STALE ゴミ出し draft instead,
+      // silently corrupting an unrelated pending agent while the news
+      // agent's own question sat unanswered forever. The fix: skip this
+      // block (fall through to the message-attached check below) whenever
+      // the truly-latest message carries a fresher, still-live
+      // pendingSlotFill of its own — a reply should always resolve the most
+      // recently asked question first. pendingAgentSession itself is left
+      // completely untouched here, so it's still there to confirm/cancel
+      // once its own turn comes back around — this only reorders WHICH
+      // pending mechanism a reply resolves against, per-turn.
+      const freshestMsgForPendingCheck = store.getOrCreate(paneId).messages.slice(-1)[0];
+      const hasFresherOwnSlotFillQuestion = hasFresherPendingSlotFillQuestion(
+        freshestMsgForPendingCheck,
+        Date.now(),
+        SLOT_FILL_STALE_MS,
+      );
       const pendingAgentSession = store.getOrCreate(paneId).pendingAgentSession;
       if (
         pendingAgentSession &&
         pendingAgentSession.phase === 'await-confirm' &&
-        Date.now() - pendingAgentSession.createdAt <= SLOT_FILL_STALE_MS
+        Date.now() - pendingAgentSession.createdAt <= SLOT_FILL_STALE_MS &&
+        !hasFresherOwnSlotFillQuestion
       ) {
         if (isCancelPhrase(userText)) {
           store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });

@@ -4,6 +4,7 @@ import {
   applySlotAnswer,
   isCancelPhrase,
   detectMessageLocale,
+  hasFresherPendingSlotFillQuestion,
 } from '@/lib/agent-slot-fill';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { SocialConnectorMeta } from '@/store/types';
@@ -347,6 +348,49 @@ describe('isCancelPhrase', () => {
 
   it('does NOT match a longer message that merely contains "cancel" as a substring', () => {
     expect(isCancelPhrase('please cancel my subscription reminder agent')).toBe(false);
+  });
+});
+
+describe('hasFresherPendingSlotFillQuestion — reply-priority guard (2026-07-24 on-device finding)', () => {
+  const STALE_MS = 15 * 60 * 1000;
+
+  it('true when the latest message is an unexpired assistant slot-fill question', () => {
+    const latest = { role: 'assistant', pendingSlotFill: { field: 'schedule', question: '?', partialDraft: {}, attemptCount: 0 }, timestamp: Date.now() - 1_000 };
+    expect(hasFresherPendingSlotFillQuestion(latest, Date.now(), STALE_MS)).toBe(true);
+  });
+
+  it('false when there is no latest message at all', () => {
+    expect(hasFresherPendingSlotFillQuestion(undefined, Date.now(), STALE_MS)).toBe(false);
+  });
+
+  it('false when the latest message has no pendingSlotFill (e.g. an await-confirm summary bubble)', () => {
+    const latest = { role: 'assistant', timestamp: Date.now() };
+    expect(hasFresherPendingSlotFillQuestion(latest, Date.now(), STALE_MS)).toBe(false);
+  });
+
+  it('false when the latest message is from the user, not the assistant', () => {
+    const latest = { role: 'user', pendingSlotFill: { field: 'schedule', question: '?', partialDraft: {}, attemptCount: 0 }, timestamp: Date.now() };
+    expect(hasFresherPendingSlotFillQuestion(latest, Date.now(), STALE_MS)).toBe(false);
+  });
+
+  it('false once the question has gone stale (past staleMs)', () => {
+    const latest = { role: 'assistant', pendingSlotFill: { field: 'schedule', question: '?', partialDraft: {}, attemptCount: 0 }, timestamp: Date.now() - STALE_MS - 1_000 };
+    expect(hasFresherPendingSlotFillQuestion(latest, Date.now(), STALE_MS)).toBe(false);
+  });
+
+  it('regression repro: a fresh @agent command\'s own schedule question outranks an older, unrelated pendingAgentSession', () => {
+    // Mirrors the exact on-device sequence: ゴミ出し reaches await-confirm
+    // (a session-scoped PendingAgentSession, NOT reflected in this message's
+    // own pendingSlotFill), then "@agent ニュースを通知して" is sent fresh
+    // and asks its OWN "いつ実行しますか？" — THAT becomes the latest
+    // message, with its own pendingSlotFill. A reply of "今" must resolve
+    // against this newer question, not the older pendingAgentSession.
+    const newsScheduleQuestion = {
+      role: 'assistant',
+      pendingSlotFill: { field: 'schedule', question: 'いつ実行しますか？', partialDraft: {}, attemptCount: 0 },
+      timestamp: Date.now(),
+    };
+    expect(hasFresherPendingSlotFillQuestion(newsScheduleQuestion, Date.now(), STALE_MS)).toBe(true);
   });
 });
 
