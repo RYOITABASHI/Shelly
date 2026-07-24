@@ -838,6 +838,17 @@ describe('parseAgentNL — name derivation does not eat 日/月/金 from non-wee
     // 月曜日 / 月曜 are schedule words and should NOT survive in the display name.
     expect(parseAgentNL('毎週月曜日に週報を作って').name).not.toContain('月曜');
   });
+
+  // 2026-07-24 on-device finding: "毎週月曜の朝にゴミ出しをリマインドして"
+  // derived the name "の ゴミ出し リマインド" — once NAME_STRIP_RE removes
+  // "月曜" and "朝" (the tokens straddling it), the connecting "の" was left
+  // dangling because it wasn't in the particle-collapse character class.
+  it('does not leave a dangling "の" once its neighboring weekday/time-of-day tokens are stripped', () => {
+    const name = parseAgentNL('毎週月曜の朝にゴミ出しをリマインドして').name;
+    expect(name).not.toMatch(/^の\b/);
+    expect(name).not.toContain('の ');
+    expect(name).toContain('ゴミ出し');
+  });
 });
 
 describe('parseAgentNL — autonomous intent (explicit unattended-execution phrasing)', () => {

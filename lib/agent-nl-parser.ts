@@ -1027,7 +1027,14 @@ const NAME_STRIP_RE = new RegExp(
 
 /** Derive a short, human-friendly name (editable in the card). */
 function deriveName(text: string): string {
-  let s = text.replace(NAME_STRIP_RE, ' ').replace(/[にをはがでへと、。,.\s]+/g, ' ').trim();
+  // 2026-07-24 on-device finding: "毎週月曜の朝にゴミ出しをリマインドして"
+  // derived "の ゴミ出し リマインド" — の is a common connector left dangling
+  // once NAME_STRIP_RE removes the weekday/time-of-day tokens straddling it
+  // ("月曜の朝" → "の" once both neighbors are gone). Added to the same
+  // particle-collapse class as に/を/は/が/で/へ/と — safe for a short
+  // DISPLAY NAME the same way those already are (this never touches
+  // derivePrompt's full-fidelity task text).
+  let s = text.replace(NAME_STRIP_RE, ' ').replace(/[にをのはがでへと、。,.\s]+/g, ' ').trim();
   if (!s) s = text.trim();
   // Collapse and truncate.
   s = s.replace(/\s+/g, ' ');
