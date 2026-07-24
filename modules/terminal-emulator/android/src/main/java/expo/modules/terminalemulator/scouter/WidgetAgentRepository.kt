@@ -83,7 +83,8 @@ object WidgetAgentRepository {
                 if (json.isNull("schedule")) null
                 else json.optString("schedule").trim().ifBlank { null }
             ) ?: return null
-            val nextRunAt = AgentAlarmScheduler.nextTriggerAt(cron) ?: return null
+            val startNotBefore = if (json.has("startNotBefore") && !json.isNull("startNotBefore")) json.optLong("startNotBefore") else null
+            val nextRunAt = AgentAlarmScheduler.nextTriggerAt(cron, startNotBefore) ?: return null
             val hasRunArtifact = File(agentsDir, "run-agent-$id.sh").isFile ||
                 File(agentsDir, "plans/plan-agent-$id.json").isFile
             if (!hasRunArtifact) return null

@@ -1,4 +1,4 @@
-import { parseAgentNL } from '@/lib/agent-nl-parser';
+import { parseAgentNL, parseStartNotBefore } from '@/lib/agent-nl-parser';
 import type { SocialConnectorMeta } from '@/store/types';
 
 // The scheduler accepts ONLY these three cron shapes (lib/agent-scheduler.ts).
@@ -1053,5 +1053,153 @@ describe('parseAgentNL — api-call v1.1 narrow NL authoring', () => {
       'まずパープレのAPIを呼んでニュースを検索して、次に要約して、最後に保存して',
     );
     expect(d.action.type).not.toBe('api-call');
+  });
+});
+
+// 2026-07-24 on-device finding: "@agent 来週あたりから毎朝ニュースをチェックして"
+// resolved the schedule correctly (daily 08:00, from 朝) but silently ignored
+// "来週あたりから" (the agent fired starting tomorrow instead of next week) AND
+// leaked the leftover phrase into the derived name/prompt. parseStartNotBefore
+// is the fix for the first half; the NAME_STRIP_RE / derivePrompt updates fix
+// the second half. `now` is injected throughout so every assertion is
+// deterministic regardless of the actual date the suite runs on.
+describe('parseStartNotBefore — narrow start-date anchor whitelist', () => {
+  // Friday, 2026-07-24 09:00 local.
+  const FRI = new Date(2026, 6, 24, 9, 0, 0);
+  // A `now` that IS already a Monday, to exercise the "next week never
+  // silently means today" rule.
+  const MON = new Date(2026, 6, 20, 9, 0, 0);
+
+  function expectMidnightOn(ms: number | null, y: number, m: number, d: number) {
+    expect(ms).not.toBeNull();
+    const dt = new Date(ms as number);
+    expect(dt.getFullYear()).toBe(y);
+    expect(dt.getMonth()).toBe(m); // 0-indexed, matches Date's own convention
+    expect(dt.getDate()).toBe(d);
+    expect(dt.getHours()).toBe(0);
+    expect(dt.getMinutes()).toBe(0);
+    expect(dt.getSeconds()).toBe(0);
+  }
+
+  it.each(['来週あたりから', '来週くらいから', '来週から'])(
+    'JP "%s" → the upcoming Monday 00:00 (Friday `now`)',
+    (phrase) => {
+      expectMidnightOn(parseStartNotBefore(`${phrase}毎朝ニュースをチェックして`, FRI), 2026, 6, 27);
+    },
+  );
+
+  it('an already-Monday `now` resolves to the FOLLOWING Monday, not today', () => {
+    expectMidnightOn(parseStartNotBefore('来週からニュースをチェックして', MON), 2026, 6, 27);
+  });
+
+  it.each(['来月あたりから', '来月くらいから', '来月から'])(
+    'JP "%s" → the 1st of next month 00:00',
+    (phrase) => {
+      expectMidnightOn(parseStartNotBefore(`${phrase}ニュースをチェックして`, FRI), 2026, 7, 1);
+    },
+  );
+
+  it('JP "明日から" → tomorrow 00:00', () => {
+    expectMidnightOn(parseStartNotBefore('明日からニュースをチェックして', FRI), 2026, 6, 25);
+  });
+
+  it('JP "25日から" (not yet passed this month) → this month, the 25th, 00:00', () => {
+    expectMidnightOn(parseStartNotBefore('25日からニュースをチェックして', FRI), 2026, 6, 25);
+  });
+
+  it('JP "20日から" (already passed this month) → next month, the 20th, 00:00', () => {
+    expectMidnightOn(parseStartNotBefore('20日からニュースをチェックして', FRI), 2026, 7, 20);
+  });
+
+  it('JP "31日から" rolling over a 30-day month → null, never a silently-wrong date', () => {
+    const JUNE_1 = new Date(2026, 5, 1, 9, 0, 0); // June has 30 days
+    expect(parseStartNotBefore('31日からニュースをチェックして', JUNE_1)).toBeNull();
+  });
+
+  it.each(['starting next week', 'from next week'])(
+    'EN "%s" → the upcoming Monday 00:00',
+    (phrase) => {
+      expectMidnightOn(parseStartNotBefore(`${phrase} check the news`, FRI), 2026, 6, 27);
+    },
+  );
+
+  it.each(['starting next month', 'from next month'])(
+    'EN "%s" → the 1st of next month 00:00',
+    (phrase) => {
+      expectMidnightOn(parseStartNotBefore(`${phrase} check the news`, FRI), 2026, 7, 1);
+    },
+  );
+
+  it.each(['starting tomorrow', 'from tomorrow'])(
+    'EN "%s" → tomorrow 00:00',
+    (phrase) => {
+      expectMidnightOn(parseStartNotBefore(`${phrase} check the news`, FRI), 2026, 6, 25);
+    },
+  );
+
+  it('EN matching is case-insensitive', () => {
+    expectMidnightOn(parseStartNotBefore('Starting Next Week check the news', FRI), 2026, 6, 27);
+  });
+
+  // ── Negative cases: ordinary schedule/recurrence text must NOT be mistaken
+  // for a start-date phrase — the two are separate concepts. ──
+  it('a bare weekly recurrence ("毎週月曜に") is not mistaken for a start-date phrase', () => {
+    expect(parseStartNotBefore('毎週月曜にニュースをまとめて', FRI)).toBeNull();
+  });
+
+  it('"来週の月曜に" (weekday-qualified, no から) is NOT matched — distinct from "来週から"', () => {
+    // parseSchedule's own weekday parsing already owns this shape (a stated
+    // recurrence day); it must never collide with the start-date whitelist.
+    expect(parseStartNotBefore('来週の月曜にニュースをまとめて', FRI)).toBeNull();
+  });
+
+  it('"月曜日から" (explicit weekday-based start) is deliberately out of scope this pass', () => {
+    expect(parseStartNotBefore('月曜日からニュースをまとめて', FRI)).toBeNull();
+  });
+
+  it('no whitelisted phrase at all → null', () => {
+    expect(parseStartNotBefore('毎朝ニュースをチェックして', FRI)).toBeNull();
+  });
+});
+
+describe('parseAgentNL — startNotBefore wiring + prompt/name stripping (2026-07-24 on-device finding)', () => {
+  const REPRO = '来週あたりから毎朝ニュースをチェックして';
+
+  it('extracts a startNotBefore anchor from the utterance', () => {
+    const d = parseAgentNL(REPRO);
+    expect(d.startNotBefore).toBeDefined();
+    expect(typeof d.startNotBefore).toBe('number');
+  });
+
+  it('the schedule itself still resolves to daily 08:00 (the 朝 default), confident + assumed', () => {
+    const d = parseAgentNL(REPRO);
+    expect(d.schedule).toBe('0 8 * * *');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('strips the start-date clause out of the derived name — no more "来週あたりから" leak', () => {
+    const d = parseAgentNL(REPRO);
+    expect(d.name).not.toContain('来週');
+    expect(d.name).not.toContain('から');
+    expect(d.name).toContain('ニュース');
+  });
+
+  it('strips the start-date clause out of the derived prompt, keeping the task', () => {
+    const d = parseAgentNL(REPRO);
+    expect(d.prompt).not.toContain('来週');
+    expect(d.prompt).not.toContain('から');
+    expect(d.prompt).toContain('ニュース');
+    expect(d.prompt).toContain('チェック');
+  });
+
+  it('an utterance with no start-date phrase leaves startNotBefore undefined', () => {
+    expect(parseAgentNL('毎朝ニュースをチェックして').startNotBefore).toBeUndefined();
+  });
+
+  it('the G6 pipeline-preset return site also carries startNotBefore', () => {
+    const d = parseAgentNL('来週あたりからSTEAMのパイプライン');
+    expect(d.startNotBefore).toBeDefined();
+    expect(d.orchestrationSteps?.length).toBe(4);
   });
 });

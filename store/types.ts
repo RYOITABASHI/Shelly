@@ -866,6 +866,15 @@ export interface Agent {
    *  a new run's lastRun timestamp moves past this window. Absent = never
    *  notified. */
   lastMissedNotifiedAt?: number | null;
+  /** Deferred-start scheduling (2026-07-24): the schedule must not fire (and
+   *  is never counted as "missed") before this epoch ms. Parsed from phrases
+   *  like "来週あたりから" / "starting next week" (lib/agent-nl-parser.ts's
+   *  parseStartNotBefore) — absent/null = starts immediately, today's
+   *  behaviour unchanged. Purely an ANCHOR for the existing next/last-trigger
+   *  math (lib/agent-scheduler.ts's nextTriggerMs/isScheduleMissed) — once
+   *  real time passes this value it is a permanent no-op, so it needs no
+   *  explicit clearing after the first fire. */
+  startNotBefore?: number | null;
 }
 
 export interface AgentRunLog {

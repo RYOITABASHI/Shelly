@@ -235,8 +235,16 @@ object AgentAlarmScheduler {
      * (0 *​/N * * *), daily (m h * * *), and weekly single/CSV DOW (m h * * 1,5).
      * Returns null for anything else.
      * Mirrors the logic previously in AgentAlarmReceiver.nextTriggerAt verbatim.
+     *
+     * [notBeforeMs] (Agent.startNotBefore, epoch ms) implements deferred-start
+     * scheduling ("来週あたりから" / "starting next week") by simply moving the
+     * computation's anchor forward — every branch below already computes "the
+     * soonest matching time at or after now", so anchoring `now`/`target` to the
+     * later of (actual now, notBeforeMs) makes the exact same logic return the
+     * first occurrence on/after the requested start. Mirrors
+     * lib/agent-scheduler.ts's nextTriggerMs(cron, notBefore).
      */
-    fun nextTriggerAt(cron: String?): Long? {
+    fun nextTriggerAt(cron: String?, notBeforeMs: Long? = null): Long? {
         if (cron.isNullOrBlank()) return null
         val parts = cron.trim().split(Regex("\\s+"))
         if (parts.size != 5) return null
@@ -246,8 +254,9 @@ object AgentAlarmScheduler {
         val dayOfMonth = parts[2]
         val month = parts[3]
         val dayOfWeek = parts[4]
-        val now = Calendar.getInstance()
-        val target = Calendar.getInstance()
+        val anchorMs = if (notBeforeMs != null && notBeforeMs > System.currentTimeMillis()) notBeforeMs else System.currentTimeMillis()
+        val now = Calendar.getInstance().apply { timeInMillis = anchorMs }
+        val target = Calendar.getInstance().apply { timeInMillis = anchorMs }
 
         val everyMin = Regex("^\\*/(\\d+)$").matchEntire(minute)?.groupValues?.get(1)?.toIntOrNull()
         if (everyMin != null && everyMin > 0 && hour == "*" && dayOfMonth == "*" && month == "*" && dayOfWeek == "*") {

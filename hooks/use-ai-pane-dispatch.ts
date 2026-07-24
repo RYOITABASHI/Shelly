@@ -1740,6 +1740,7 @@ export function useAIPaneDispatch(paneId: string) {
                 }
               : undefined,
           notificationTrigger: confirmed.notificationTrigger,
+          startNotBefore: confirmed.startNotBefore,
         };
         const persisted = await persistAgentDraft({
           editingAgentId,

@@ -42,3 +42,28 @@ describe('createAgent — notificationTrigger param', () => {
     expect(agent.notificationTrigger).not.toBeUndefined();
   });
 });
+
+// Deferred-start scheduling (2026-07-24): createAgent must thread startNotBefore
+// through to the persisted Agent, same defaulting contract as notificationTrigger.
+describe('createAgent — startNotBefore param', () => {
+  const baseParams = {
+    name: 'Test agent',
+    description: 'desc',
+    prompt: 'do the thing',
+    schedule: '0 8 * * *',
+    tool: { type: 'cli' as const, cli: 'codex' as const },
+    outputPath: '/tmp/out',
+  };
+
+  it('threads startNotBefore through when provided', () => {
+    const notBefore = new Date(2026, 6, 21, 0, 0, 0, 0).getTime();
+    const agent = createAgent({ ...baseParams, startNotBefore: notBefore });
+    expect(agent.startNotBefore).toBe(notBefore);
+  });
+
+  it('defaults startNotBefore to null (not undefined) when omitted', () => {
+    const agent = createAgent({ ...baseParams });
+    expect(agent.startNotBefore).toBeNull();
+    expect(agent.startNotBefore).not.toBeUndefined();
+  });
+});

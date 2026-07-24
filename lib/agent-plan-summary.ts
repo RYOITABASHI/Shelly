@@ -198,6 +198,13 @@ function formatDateTimeForSummary(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** Date-only ("YYYY-MM-DD") trim of formatDateTimeForSummary, for the
+ *  start_not_before_note line — the deferred-start anchor is a day-level
+ *  concept ("来週あたりから"), so no HH:MM is shown. */
+function formatDateOnlyForSummary(d: Date): string {
+  return formatDateTimeForSummary(d).slice(0, 10);
+}
+
 /** First app-act param value that isn't the raw `{{result}}` placeholder — a
  *  literal, already-resolved preview of what will be posted, when one exists. */
 function appActContentPreview(params: Record<string, string> | undefined): string | undefined {
@@ -311,14 +318,24 @@ export function summarizeAgentDraftAsText(
   const lines: string[] = [];
   lines.push(markLine(t('agentplan.summary_name', { name: draft.name }), 'name', changedFields));
   lines.push(markLine(t('agentplan.summary_schedule', { schedule: scheduleText(draft) }), 'schedule', changedFields));
+
+  // Deferred-start ("来週あたりから毎朝…"): declare the "don't fire before"
+  // anchor right next to the schedule line it modifies, whenever it's still
+  // in the future (a past/elapsed anchor is a permanent no-op — see
+  // Agent.startNotBefore's doc comment in store/types.ts — and shows nothing
+  // here either, same as it's a no-op for the scheduler).
+  const startNotBeforeFuture = !!(draft.startNotBefore && draft.startNotBefore > Date.now());
+  if (startNotBeforeFuture) {
+    lines.push(t('agentplan.start_not_before_note', { date: formatDateOnlyForSummary(new Date(draft.startNotBefore!)) }));
+  }
+
   lines.push(markLine(t('agentplan.summary_action', { action: actionText(draft.action, draft) }), 'action', changedFields));
 
   // Phase B (2026-07-22): a schedule resolved from a bare time-of-day word
   // ("朝"→08:00, see lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS) is never
-  // left as a silent, opaque assumption — declare the interpretation AND
-  // show the concrete next-fire datetime, right where the schedule line
-  // itself was just rendered above, so a "that's not what I meant" is easy
-  // to catch before confirming.
+  // left as a silent, opaque assumption — declare the interpretation, right
+  // where the schedule line itself was just rendered above, so a "that's not
+  // what I meant" is easy to catch before confirming.
   if (draft.scheduleAssumed && draft.schedule) {
     const decoded = decodeCron(draft.schedule);
     const assumedHour = draft.suggestedTime?.hour ?? decoded.hour;
@@ -327,7 +344,20 @@ export function summarizeAgentDraftAsText(
     if (word !== undefined) {
       lines.push(t('agentplan.schedule_assumed_note', { word, time: fmtTime({ hour: assumedHour, minute: assumedMinute }) }));
     }
-    const next = nextFireDate(decoded);
+  }
+
+  // Next-run line: shown whenever a schedule is set AND either the time was
+  // assumed (existing case — a bare time-of-day word could easily be
+  // misread) or a deferred start is pushing the real first fire out past a
+  // naive "tomorrow" read (new case — e.g. an explicit "来週あたりから毎朝
+  // 9時に" has no assumed time but still needs its real next-fire date shown,
+  // not left implied as tomorrow). Uses the SAME anchor formula as
+  // lib/agent-scheduler.ts's nextTriggerMs so this line and the runtime's
+  // actual first fire never disagree.
+  if (draft.schedule && (draft.scheduleAssumed || startNotBeforeFuture)) {
+    const decoded = decodeCron(draft.schedule);
+    const anchorDate = startNotBeforeFuture ? new Date(draft.startNotBefore!) : new Date();
+    const next = nextFireDate(decoded, anchorDate);
     if (next) {
       lines.push(t('agentplan.next_fire_note', { datetime: formatDateTimeForSummary(next) }));
     }
@@ -425,5 +455,6 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     skillId: draft.matchedSkill?.id,
     orchestrationSteps: draft.orchestrationSteps,
     notificationTrigger: draft.notificationTrigger ?? null,
+    startNotBefore: draft.startNotBefore ?? null,
   };
 }

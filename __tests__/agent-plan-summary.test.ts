@@ -469,6 +469,61 @@ describe('summarizeAgentDraftAsText', () => {
     });
   });
 
+  // Deferred-start scheduling ("来週あたりから毎朝ニュースをチェックして"):
+  // startNotBefore is an epoch-ms "don't fire before this" anchor. See
+  // store/types.ts's Agent.startNotBefore doc comment and
+  // lib/agent-scheduler.ts's nextTriggerMs for the anchor formula this
+  // mirrors (`anchorMs = notBefore && notBefore > Date.now() ? notBefore : Date.now()`).
+  describe('startNotBefore (deferred start)', () => {
+    it('shows the "Starts from" line when startNotBefore is set and in the future', () => {
+      const future = Date.now() + 10 * 24 * 60 * 60 * 1000; // 10 days out
+      const draft = baseDraft({ startNotBefore: future });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.start_not_before_note|');
+    });
+
+    it('omits the "Starts from" line when startNotBefore is absent', () => {
+      const text = summarizeAgentDraftAsText(baseDraft());
+      expect(text).not.toContain('agentplan.start_not_before_note');
+    });
+
+    it('omits the "Starts from" line when startNotBefore is in the past (elapsed anchor is a permanent no-op)', () => {
+      const past = Date.now() - 24 * 60 * 60 * 1000; // yesterday
+      const draft = baseDraft({ startNotBefore: past });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).not.toContain('agentplan.start_not_before_note');
+    });
+
+    it('an explicit schedule (scheduleAssumed unset) with a future startNotBefore still gets a "Next run" line, using the deferred anchor rather than a naive tomorrow', () => {
+      // "来週あたりから毎朝9時に" — explicit 9am (scheduleAssumed false), but a
+      // deferred start. Without the fix this line was only shown when
+      // scheduleAssumed was true, silently implying the agent fires tomorrow.
+      const future = Date.now() + 10 * 24 * 60 * 60 * 1000;
+      const draft = baseDraft({ schedule: '0 9 * * *', scheduleAssumed: undefined, startNotBefore: future });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.next_fire_note|');
+      // Regression guard: the "Interpreted X as Y" sub-line stays gated on
+      // scheduleAssumed specifically — an explicit time must not get it.
+      expect(text).not.toContain('agentplan.schedule_assumed_note');
+
+      // The reported next-fire date should land on/after the deferred anchor
+      // date, not "tomorrow" from today.
+      const match = text.match(/agentplan\.next_fire_note\|(\{.*\})/);
+      expect(match).not.toBeNull();
+      const { datetime } = JSON.parse(match![1]);
+      const nextFireMs = new Date(datetime.replace(' ', 'T')).getTime();
+      expect(nextFireMs).toBeGreaterThanOrEqual(future - 24 * 60 * 60 * 1000); // same day as the anchor, allowing for HH:MM rounding
+    });
+
+    it('a startNotBefore-only draft with NO schedule set shows neither the next-run nor the assumed-note line (nothing to compute a next fire from)', () => {
+      const future = Date.now() + 10 * 24 * 60 * 60 * 1000;
+      const draft = baseDraft({ schedule: null, scheduleConfident: false, startNotBefore: future });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.start_not_before_note|');
+      expect(text).not.toContain('agentplan.next_fire_note');
+    });
+  });
+
   // Phase C (2026-07-22): lib/agent-draft-patch.ts's applyDraftPatch reports
   // which fields a follow-up reply touched; the re-posted summary marks
   // exactly those lines with '★' (and, once ANY field is marked, the other
@@ -543,6 +598,7 @@ describe('draftToConfirmedAgentDraft', () => {
       skillId: 'skill-1',
       orchestrationSteps: draft.orchestrationSteps,
       notificationTrigger: null,
+      startNotBefore: null,
     });
   });
 
@@ -598,5 +654,17 @@ describe('draftToConfirmedAgentDraft', () => {
     const confirmed = draftToConfirmedAgentDraft(draft);
     expect(confirmed.schedule).toBe('0 8 * * *');
     expect(isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)).toBe(false);
+  });
+
+  it('carries a deferred-start startNotBefore anchor through', () => {
+    const anchor = Date.now() + 10 * 24 * 60 * 60 * 1000;
+    const draft = baseDraft({ startNotBefore: anchor });
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(confirmed.startNotBefore).toBe(anchor);
+  });
+
+  it('defaults startNotBefore to null when the draft never set it', () => {
+    const confirmed = draftToConfirmedAgentDraft(baseDraft());
+    expect(confirmed.startNotBefore).toBeNull();
   });
 });

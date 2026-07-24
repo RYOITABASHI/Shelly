@@ -21,7 +21,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
 import { logInfo } from '@/lib/debug-logger';
-import { nextTriggerMs, isScheduleMissed } from '@/lib/agent-scheduler';
+import { nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from '@/lib/agent-scheduler';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, stopAgent, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
@@ -887,7 +887,7 @@ export function Sidebar() {
     // plain `string | undefined` instead of re-deriving it unsafely.
     const savedPath: string | undefined = lastLog?.savedPath;
     if (agent.schedule && agent.enabled) {
-      relLines.push(`${t('sidebar.agent_next_run')}: ${formatWhen(nextTriggerMs(agent.schedule))}`);
+      relLines.push(`${t('sidebar.agent_next_run')}: ${formatWhen(nextTriggerMs(agent.schedule, agent.startNotBefore))}`);
     }
     if (lastLog) {
       const dur = lastLog.durationMs ? ` · ${Math.round(lastLog.durationMs / 1000)}s` : '';
@@ -909,7 +909,7 @@ export function Sidebar() {
     }
     if (agent.schedule && agent.enabled) {
       const lastActual = agent.lastRun ?? lastLog?.timestamp ?? agent.createdAt;
-      const { missed, expectedAt } = isScheduleMissed(agent.schedule, lastActual, agent.createdAt);
+      const { missed, expectedAt } = isScheduleMissed(agent.schedule, lastActual, agent.createdAt, Date.now(), MISSED_RUN_GRACE_MS, agent.startNotBefore);
       if (missed && expectedAt != null) {
         relLines.push(`⚠ ${t('sidebar.agent_missed_run', { when: formatWhen(expectedAt) })}`);
       }

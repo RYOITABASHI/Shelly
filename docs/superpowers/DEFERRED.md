@@ -14,6 +14,31 @@
 
 ---
 
+### エージェントの「開始遅延スケジュール」（例:「来週あたりから毎朝」）— ✅ 実装済み（未コミット→次コミットで着地）・🔴 実機未検証 (P2)
+
+**優先度**: P2（次リリース推奨——on-deviceテスト中にユーザーが発見した実UXバグ。「来週あたりから毎朝ニュースをチェックして」で「来週あたりから」が完全に無視され、明日から即発火し、かつその文言がAgent名/promptに漏れ込んでいた）
+
+**発見（2026-07-24、on-device実機テスト）**: ユーザーが確認カード画面のスクショで「Agent: 来週あたりから ニュース チェック / Next run: 2026-07-25 08:00」を提示し「これはどうするの？」と指摘。調査の結果、`lib/agent-nl-parser.ts`に「開始日をずらす」概念自体が存在せず、「来週あたりから」がスケジュール指示として解釈されずプロンプト/名前にそのまま漏れていたことが判明（表示自体はチャット確認UI＝カード禁止ルール準拠、バグではない）。
+
+**実装（`startNotBefore`: epoch ms の「これより前に発火しない」アンカー）**:
+- `store/types.ts` / `lib/agent-nl-parser.ts`(`ParsedAgentDraft`): `startNotBefore?: number | null` 追加。
+- `lib/agent-nl-parser.ts`: `parseStartNotBefore()` 新設 — 「来週(あたり/くらい)?から」「来月(あたり/くらい)?から」「明日から」「N日から」＋英語版（starting/from next week|month|tomorrow）の狭いホワイトリストのみ対応（明示的な曜日指定「月曜日から」は既存の曜日スケジュールパースとの衝突回避のため今回は非対応、意図的スコープ外）。マッチしたフレーズは`deriveName`/`derivePrompt`両方から除去（漏れバグの直接修正）。
+- `lib/agent-scheduler.ts`: `nextTriggerMs(cron, notBefore?)` / `isScheduleMissed(..., notBefore?)` に第2〜第6引数追加。設計は「計算のアンカー（`now`）を未来のnotBeforeへ単純に前進させるだけ」——全既存ロジックが「now以降で最も近い発火」を計算する構造のため、アンカーを動かすだけでその後のロジックは無変更で正しく動く。過去/未指定のnotBeforeは自動的にno-op（明示的なクリア処理が一切不要）。
+- **重要な副作用の発見と対処**: `isScheduleMissed`（P0-1 missed-run検知、Sidebar詳細ポップアップ＋起動時repair共通）が`notBefore`を知らないままだと、開始日未到来のエージェントを「予定されていたのに実行されていない」と誤検知し、偽の「スケジュール逃した」通知を出してしまう実バグを発見・防止（`isScheduleMissed`に`now < notBefore`なら即`missed:false`を返すガードを追加）。
+- `lib/agent-manager.ts`: `createAgent`/`updateAgent`/`materializeAgentBody`の`nextExpectedAt`計算/`isScheduleMissed`呼び出し全箇所に`startNotBefore`を配線。
+- `lib/agent-plan-summary.ts`: 確認画面に「{{date}}から開始します」の新規行を追加（スケジュール行の直後）。既存の「Next run:」行は従来`scheduleAssumed`時のみ表示だったが、`startNotBefore`設定時にも（時刻が明示的でも）正しいアンカーで再計算して表示するよう拡張。
+- `components/panes/AgentConfirmCard.tsx` / `hooks/use-ai-pane-dispatch.ts`: `ConfirmedAgentDraft`→`createAgent`/`updateAgent`まで`startNotBefore`を配線。
+- Kotlin側（`AgentAlarmScheduler.kt`の`nextTriggerAt(cron, notBeforeMs?)`、`WidgetAgentRepository.kt`）: ホーム画面ウィジェットの「次回実行」表示が同じアンカーで再計算されるよう配線。**これは表示専用**——実際のアラーム発火は既にJS側(`installSchedule`)が正しいtriggerAtMsを計算しnative `AlarmManager`橋渡しに直接渡す設計のため、発火経路自体はこの変更の影響を受けない（`TerminalEmulatorModule.kt::scheduleAgent`が`triggerAtMs`をそのまま`AgentAlarmScheduler.schedule()`へ渡すだけで、cronから再計算しないことをコード読解で確認済み）。
+
+**実装体制**: コア（`agent-scheduler.ts`のアンカー計算＋missed-run誤検知防止、型定義配線）は直接実装。NLパース検知、確認UI配線、Kotlin側は3並列サブエージェントに委譲、各diffを手動レビューして統合。
+
+**検証**: `npx tsc --noEmit`クリーン。関連6スイート（agent-nl-parser/agent-plan-summary/agent-scheduler/agent-manager-create/agent-sidebar-edit/widget-agent-run-parity）計300件PASS。`widget-agent-run-parity.test.ts`（Kotlinソースの文字列一致ゲート）は`nextTriggerAt`呼び出しの期待文字列を更新して対応。フルスイートで無関係な既存Windows環境依存の失敗（plan-executor系3件+capability-broker、計24件）のみ、`git stash`でこのdiff適用前の状態でも同一失敗数を確認済み（本変更とは無関係）。Kotlin変更はこの環境でコンパイル不可のため、手動での差分読解のみ（実機ビルド確認は別途必要）。
+
+**未了（実機検証、on-device往復が必要）**: 「来週あたりから毎朝ニュースをチェックして」を実際に登録し、①確認画面に正しい「来週の月曜からXX開始」表示が出るか、②Confirm後に実際に来週まで発火しないか（できれば数日またいで確認）、③ホーム画面ウィジェットの「次回実行」表示が正しいか、④開始日到達前に「スケジュール逃した」の誤通知が出ないか、を確認すること。Kotlin変更のビルド確認も同時に必要（この環境ではコンパイル不可）。
+→ sync: なし。
+
+---
+
 ### エージェント作成の「タスク不明瞭」検知 — LLMがタスク内容自体を聞き返す — ✅ 実装済み（未コミット→次コミットで着地）・🔴 実機未検証 (P2)
 
 **優先度**: P2（次リリース推奨——on-deviceテスト中に発見された実UXバグ。「明日の準備をよろしく」のような曖昧な依頼で「いつ実行しますか？」と聞いてしまう＝タスク内容そのものが不明なまま先にスケジュールを聞く、という順序の誤り）

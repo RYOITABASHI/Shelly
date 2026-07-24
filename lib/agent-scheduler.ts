@@ -76,13 +76,24 @@ export function cronToIntervalMs(cron: string): number | null {
   return null;
 }
 
-export function nextTriggerMs(cron: string): number {
+/**
+ * `notBefore` (Agent.startNotBefore, epoch ms) implements deferred-start
+ * scheduling ("来週あたりから" / "starting next week") by simply moving the
+ * computation's ANCHOR forward — every branch below already computes "the
+ * soonest matching time at or after `now`", so anchoring `now`/`target` to
+ * the later of (actual now, notBefore) makes the exact same logic return the
+ * first occurrence on/after the requested start. A past/absent notBefore is
+ * a no-op (anchor stays the real current time) — no separate gating concept,
+ * no explicit clearing once the date passes.
+ */
+export function nextTriggerMs(cron: string, notBefore?: number | null): number {
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return Date.now() + 60000;
 
   const [min, hour, dom, mon, dow] = parts;
-  const now = new Date();
-  const target = new Date();
+  const anchorMs = notBefore && notBefore > Date.now() ? notBefore : Date.now();
+  const now = new Date(anchorMs);
+  const target = new Date(anchorMs);
 
   const everyMinMatch = min.match(/^\*\/(\d+)$/);
   if (everyMinMatch && hour === '*') {
@@ -292,14 +303,24 @@ export interface MissedScheduleCheck {
  * Pure function of its inputs — always recomputes from the cron string rather
  * than trusting any persisted "next expected" field, so a stale/missing
  * bookkeeping field can never mask (or fabricate) a missed-run signal.
+ *
+ * `notBefore` (Agent.startNotBefore): a deferred-start agent that simply
+ * hasn't reached its start date yet must NEVER be flagged missed — without
+ * this guard, lastTriggerMs (which knows nothing about notBefore) would
+ * report the most recent PAST cron occurrence as "expected", which for a
+ * freshly-created future-start agent is always before `lastActual`
+ * (createdAt), producing a false "schedule missed" notification days before
+ * the agent was ever meant to fire.
  */
 export function isScheduleMissed(
   schedule: string,
   lastRunAt: number | null,
   createdAt: number,
   now: number = Date.now(),
-  graceMs: number = MISSED_RUN_GRACE_MS
+  graceMs: number = MISSED_RUN_GRACE_MS,
+  notBefore?: number | null
 ): MissedScheduleCheck {
+  if (notBefore && now < notBefore) return { missed: false, expectedAt: null };
   const expectedAt = lastTriggerMs(schedule);
   const lastActual = lastRunAt ?? createdAt;
   const missed = expectedAt != null && expectedAt < now - graceMs && expectedAt > lastActual + graceMs;
@@ -312,7 +333,7 @@ export async function installSchedule(agent: Agent): Promise<void> {
   const intervalMs = cronToIntervalMs(agent.schedule);
 
   if (intervalMs !== null) {
-    const triggerAt = nextTriggerMs(agent.schedule);
+    const triggerAt = nextTriggerMs(agent.schedule, agent.startNotBefore);
     await TerminalEmulator.scheduleAgent(agent.id, intervalMs, triggerAt, agent.schedule);
   }
 }

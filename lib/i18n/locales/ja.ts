@@ -384,6 +384,9 @@ const ja: Record<string, string> = {
   // 2026-07-23: confirm_prompt_editの編集版カウンターパート。
   'agentplan.confirm_unclear_hint_edit': '編集待ちの下書きがあります。「更新して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
   'agentplan.schedule_assumed_note': '「{{word}}」→{{time}}と解釈しました。',
+  // 開始遅延（「来週あたりから…」）のアンカー行 — startNotBefore が未来の
+  // 日時に設定されているときだけ、スケジュール行の直後に表示する。
+  'agentplan.start_not_before_note': '{{date}}から開始します。',
   'agentplan.next_fire_note': '次回実行: {{datetime}}',
   // 2026-07-23: 上記の一部の項目がハイブリッドLLM抽出フォールバック
   // （lib/agent-llm-fallback.ts）によるものである場合に表示する注記

@@ -198,6 +198,37 @@ describe('nextTriggerMs — every-N-hours with N that does not divide 24 evenly'
   });
 });
 
+describe('nextTriggerMs — notBefore (deferred-start anchor)', () => {
+  const CRON = '0 8 * * *'; // daily 08:00
+  const day = (h: number, m = 0) => new Date(2026, 6, 15, h, m, 0, 0); // Wed 2026-07-15
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('a future notBefore pushes the first fire out to that date, not tomorrow', () => {
+    jest.setSystemTime(day(9, 0)); // past today's 08:00 — would normally roll to tomorrow 08:00
+    const notBefore = new Date(2026, 6, 21, 0, 0, 0, 0).getTime(); // next Monday
+    const ms = nextTriggerMs(CRON, notBefore);
+    const d = new Date(ms);
+    expect(d.getFullYear()).toBe(2026);
+    expect(d.getMonth()).toBe(6);
+    expect(d.getDate()).toBe(21);
+    expect(d.getHours()).toBe(8);
+  });
+
+  it('a past notBefore is a no-op — behaves identically to omitting it', () => {
+    jest.setSystemTime(day(7, 0));
+    const notBefore = day(1, 0).getTime(); // already elapsed
+    expect(nextTriggerMs(CRON, notBefore)).toBe(nextTriggerMs(CRON));
+  });
+
+  it('absent/null/undefined notBefore behaves identically to today (no third argument)', () => {
+    jest.setSystemTime(day(7, 0));
+    expect(nextTriggerMs(CRON, null)).toBe(nextTriggerMs(CRON));
+    expect(nextTriggerMs(CRON, undefined)).toBe(nextTriggerMs(CRON));
+  });
+});
+
 describe('lastTriggerMs — most recent past fire (missed-run detection)', () => {
   it('daily: returns a past time at the right hour:minute, within the last 24h', () => {
     const ms = lastTriggerMs('0 8 * * *')!;
@@ -326,5 +357,27 @@ describe('isScheduleMissed — P0-1 missed-run detection (shared by Sidebar + st
     expect(isScheduleMissed(CRON, null, day(7, 0).getTime()).missed).toBe(true);
     // A 15-minute grace absorbs the same 10-minute gap.
     expect(isScheduleMissed(CRON, null, day(7, 0).getTime(), Date.now(), 15 * 60 * 1000).missed).toBe(false);
+  });
+
+  it('never flags a deferred-start agent as missed before its notBefore date, even though lastTriggerMs alone would report a past due fire', () => {
+    // A brand-new agent created today for "starting next week" — without the
+    // notBefore guard, lastTriggerMs(CRON) would report TODAY 08:00 as the
+    // most recent expected fire (it knows nothing about the deferred start),
+    // which is well after createdAt (now) + grace, producing a false-positive
+    // "schedule missed" notification days before the agent was ever meant to run.
+    jest.setSystemTime(day(9, 0)); // 1h past today's 08:00
+    const createdAt = day(9, 0).getTime();
+    const notBefore = new Date(2026, 6, 21, 0, 0, 0, 0).getTime(); // next Monday
+    const { missed, expectedAt } = isScheduleMissed(CRON, null, createdAt, Date.now(), MISSED_RUN_GRACE_MS, notBefore);
+    expect(missed).toBe(false);
+    expect(expectedAt).toBeNull();
+  });
+
+  it('resumes normal missed-run detection once notBefore has passed', () => {
+    jest.setSystemTime(day(9, 0));
+    const createdAt = day(9, 0).getTime() - 7 * 24 * 60 * 60 * 1000;
+    const notBefore = day(1, 0).getTime(); // already elapsed
+    const { missed } = isScheduleMissed(CRON, null, createdAt, Date.now(), MISSED_RUN_GRACE_MS, notBefore);
+    expect(missed).toBe(true);
   });
 });

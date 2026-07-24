@@ -11,7 +11,7 @@ import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure,
 import { logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
-import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed } from './agent-scheduler';
+import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
 import { t } from '@/lib/i18n';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
 import {
@@ -244,6 +244,7 @@ export function createAgent(params: {
   memory?: Agent['memory'];
   skillId?: Agent['skillId'];
   orchestration?: Agent['orchestration'];
+  startNotBefore?: Agent['startNotBefore'];
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -267,6 +268,7 @@ export function createAgent(params: {
     memory: params.memory,
     skillId: params.skillId,
     orchestration: params.orchestration,
+    startNotBefore: params.startNotBefore ?? null,
     enabled: true,
     lastRun: null,
     lastResult: null,
@@ -500,7 +502,7 @@ async function materializeAgentBody(
   // string, so a stale value here can never mask or fabricate a notification.
   const metadataAgent: Agent =
     installAlarm && agent.schedule
-      ? { ...agent, nextExpectedAt: nextTriggerMs(agent.schedule) }
+      ? { ...agent, nextExpectedAt: nextTriggerMs(agent.schedule, agent.startNotBefore) }
       : agent;
   const commands = [
     `mkdir -p ${shellQuote(agentsDir())}`,
@@ -1820,7 +1822,7 @@ function scheduleAgentStartupRepair(
         // missed.
         let pendingMissedNotify: number | null = null;
         if (agent.schedule) {
-          const { missed, expectedAt } = isScheduleMissed(agent.schedule, storeAgent.lastRun, agent.createdAt);
+          const { missed, expectedAt } = isScheduleMissed(agent.schedule, storeAgent.lastRun, agent.createdAt, Date.now(), MISSED_RUN_GRACE_MS, agent.startNotBefore);
           if (missed && expectedAt != null && storeAgent.lastMissedNotifiedAt !== expectedAt) {
             useAgentStore.getState().updateAgent(agent.id, { lastMissedNotifiedAt: expectedAt });
             // Mutate the local snapshot too, BEFORE the materialize call below,

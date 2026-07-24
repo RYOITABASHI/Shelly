@@ -58,6 +58,10 @@ export interface ConfirmedAgentDraft {
   charLimit?: number;
   /** NOTIFY-001 Increment 2: notification-package allowlist that triggers this agent. */
   notificationTrigger?: { packageNames: string[] } | null;
+  /** Deferred-start anchor ("来週あたりから…") — no bespoke editor UI on this
+   *  card, passed through from the parsed draft unedited (see store/types.ts's
+   *  Agent.startNotBefore doc comment for the anchor semantics). */
+  startNotBefore?: number | null;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
@@ -465,6 +469,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       charLimit: draft.charLimit,
       // NOTIFY-001 Increment 2: carry the parsed package allowlist through to createAgent.
       notificationTrigger: notificationPackages.length > 0 ? { packageNames: notificationPackages } : null,
+      // Deferred-start anchor: no bespoke editor UI on this card, straight passthrough.
+      startNotBefore: draft.startNotBefore,
     });
   };
 

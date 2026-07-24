@@ -390,6 +390,9 @@ const en: Record<string, string> = {
   // confirm_prompt_edit's own comment).
   'agentplan.confirm_unclear_hint_edit': 'There is a pending edit. Reply "update" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',
   'agentplan.schedule_assumed_note': 'Interpreted "{{word}}" as {{time}}.',
+  // Deferred-start ("来週あたりから…") anchor line — shown next to the
+  // schedule line whenever startNotBefore is set and still in the future.
+  'agentplan.start_not_before_note': 'Starts from: {{date}}.',
   'agentplan.next_fire_note': 'Next run: {{datetime}}',
   // 2026-07-23: shown when one or more fields above were filled in by the
   // hybrid LLM-extraction fallback (lib/agent-llm-fallback.ts) instead of

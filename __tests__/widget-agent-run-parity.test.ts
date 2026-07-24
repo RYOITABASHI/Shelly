@@ -48,7 +48,12 @@ describe('Scouter widget registered-agent RUN security parity', () => {
     expect(repository).toContain('HomeInitializer.getHomeDir(context.applicationContext)');
     expect(repository).toContain('if (id != expectedId || !SAFE_AGENT_ID.matches(id)) return null');
     expect(repository).toContain('if (!json.optBoolean("enabled", false)) return null');
-    expect(repository).toContain('AgentAlarmScheduler.nextTriggerAt(cron) ?: return null');
+    // 2026-07-24: deferred-start scheduling ("来週あたりから") threads the
+    // agent's optional startNotBefore anchor through so the widget's
+    // independent next-run recompute doesn't show a naive "tomorrow" for an
+    // agent that hasn't reached its real start date yet — see
+    // lib/agent-scheduler.ts's nextTriggerMs for the JS-side twin.
+    expect(repository).toContain('AgentAlarmScheduler.nextTriggerAt(cron, startNotBefore) ?: return null');
     expect(repository).toContain('run-agent-$id.sh');
     expect(repository).toContain('plans/plan-agent-$id.json');
   });

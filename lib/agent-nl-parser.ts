@@ -145,6 +145,20 @@ export interface ParsedAgentDraft {
    *  'taskDetail' branch appends the user's own follow-up reply into
    *  draft.prompt, exactly like every other slot answer. */
   needsTaskClarification?: string;
+  /** Epoch-ms "don't fire before this date" anchor (see lib/agent-scheduler.ts's
+   *  nextTriggerMs/isScheduleMissed `notBefore` param and Agent.startNotBefore
+   *  on store/types.ts), extracted from a narrow whitelist of start-date phrases
+   *  ("来週あたりから" / "来月から" / "25日から" / "starting next week" / … — see
+   *  parseStartNotBefore) rather than general date NLU. Absent/null = no
+   *  constraint — the schedule fires on its normal cadence starting immediately,
+   *  today's existing behavior (unaffected). Present = the FIRST fire must not
+   *  happen before this date; the caller threads it through to installSchedule's
+   *  nextTriggerMs call so an utterance like "来週あたりから毎朝ニュースを
+   *  チェックして" resolves to daily 08:00 starting NEXT Monday instead of
+   *  firing tomorrow morning — the cron shape alone (`0 8 * * *`) has no way to
+   *  encode a start date. Purely a lower bound on when firing may begin; it
+   *  never changes what the cron itself computes once that date has passed. */
+  startNotBefore?: number | null;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -601,6 +615,86 @@ export function parseSchedule(text: string): ScheduleResult {
   return { schedule: null, confident: false, label: '未設定（要選択）' };
 }
 
+// ── Start-date anchor ("来週あたりから毎朝…" / "starting next week …") ──────────
+// A narrow, deliberately small phrase whitelist for "don't start firing until
+// this date" — NOT general date NLU. Feeds ParsedAgentDraft.startNotBefore
+// (see its doc comment for how the caller threads this through to
+// lib/agent-scheduler.ts's nextTriggerMs/isScheduleMissed `notBefore` param).
+// Explicit weekday-based start phrases ("月曜日から") are OUT OF SCOPE this
+// pass — they would collide with the existing recurrence-weekday parsing
+// above (the `dows`/JP_WEEKDAY scan), which already treats a bare 曜-qualified
+// weekday as the RECURRENCE day, not a one-time start anchor.
+
+/** Upcoming Monday 00:00:00 local time. If `now` IS already Monday, "next
+ *  week" means 7 days out (the FOLLOWING Monday), not today — "next X never
+ *  silently means today" is the same rule TIME_OF_DAY_DEFAULTS-adjacent code
+ *  follows elsewhere in this file. */
+function resolveNextMondayStart(now: Date): number {
+  const day = now.getDay(); // 0=Sun..6=Sat
+  let daysUntilMonday = (1 - day + 7) % 7;
+  if (daysUntilMonday === 0) daysUntilMonday = 7;
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntilMonday, 0, 0, 0, 0).getTime();
+}
+
+/** The 1st of next month, 00:00:00 local time. */
+function resolveNextMonthStart(now: Date): number {
+  return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0).getTime();
+}
+
+/** Tomorrow's date, 00:00:00 local time. */
+function resolveTomorrowStart(now: Date): number {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0).getTime();
+}
+
+/** The soonest occurrence of the matched day-of-month ("25日から" → match[1] ===
+ *  "25"), 00:00:00 local time — this month if that date hasn't passed yet
+ *  (day > today's date), else next month. Guards against a rolled-over Date
+ *  (e.g. "31日" landing in a 30-day month) by reading .getDate() back after
+ *  construction and rejecting the match outright rather than silently
+ *  producing the wrong day. */
+function resolveDayOfMonthStart(match: RegExpMatchArray, now: Date): number | null {
+  const day = parseInt(match[1], 10);
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  const alreadyPassed = day <= now.getDate();
+  const targetMonth = now.getMonth() + (alreadyPassed ? 1 : 0);
+  const candidate = new Date(now.getFullYear(), targetMonth, day, 0, 0, 0, 0);
+  if (candidate.getDate() !== day) return null; // JS Date rolled over — invalid day for the target month
+  return candidate.getTime();
+}
+
+// Ordered [pattern, resolver] pairs — same convention as TIME_OF_DAY_DEFAULTS
+// above. First match wins; parseStartNotBefore returns null when nothing
+// matches, or when a matched resolver itself rejects the date (the
+// day-of-month rollover guard).
+const START_NOT_BEFORE_PATTERNS: Array<[RegExp, (m: RegExpMatchArray, now: Date) => number | null]> = [
+  [/(\d{1,2})\s*日から/, resolveDayOfMonthStart],
+  [/来週(?:あたり|くらい)?から/, (_m, now) => resolveNextMondayStart(now)],
+  [/来月(?:あたり|くらい)?から/, (_m, now) => resolveNextMonthStart(now)],
+  [/明日から/, (_m, now) => resolveTomorrowStart(now)],
+  [/\b(?:starting|from)\s+next\s+week\b/i, (_m, now) => resolveNextMondayStart(now)],
+  [/\b(?:starting|from)\s+next\s+month\b/i, (_m, now) => resolveNextMonthStart(now)],
+  [/\b(?:starting|from)\s+tomorrow\b/i, (_m, now) => resolveTomorrowStart(now)],
+];
+
+/**
+ * Parse a "don't start firing before this date" anchor from a narrow JA/EN
+ * phrase whitelist (see the section doc comment above) — deliberately NOT
+ * general date NLU. `now` is injectable for deterministic tests (same
+ * convention as lib/agent-card-cron.ts's nextFireDate). Returns null when no
+ * whitelisted phrase matches, or when a matched phrase resolves to an invalid
+ * date (see resolveDayOfMonthStart's guard) — never a best-guess fallback.
+ */
+export function parseStartNotBefore(text: string, now: Date = new Date()): number | null {
+  for (const [re, resolve] of START_NOT_BEFORE_PATTERNS) {
+    const m = text.match(re);
+    if (m) {
+      const result = resolve(m, now);
+      if (result !== null) return result;
+    }
+  }
+  return null;
+}
+
 const URL_RE = /https?:\/\/[^\s、。)）]+/i;
 
 /** Slice `text` down to the clause that actually names the delivery action —
@@ -888,6 +982,12 @@ const NAME_STRIP_RE = new RegExp(
     // Weekday tokens (月曜日 / 月曜) — require 曜 so a bare 日月火水木金土 is NOT
     // stripped. Without it, '今日'→'今', '日本'→'本', '金融'→'融' all lost a char.
     '[日月火水木金土]曜日?',
+    // Start-date-anchor phrases (see parseStartNotBefore) — same set matched
+    // there, so "来週あたりから毎朝ニュースをチェックして" doesn't leak
+    // "来週あたりから" into the derived name (2026-07-24 on-device finding).
+    '来週(?:あたり|くらい)?から', '来月(?:あたり|くらい)?から', '明日から', '\\d{1,2}\\s*日から',
+    '\\b(?:starting|from)\\s+next\\s+week\\b', '\\b(?:starting|from)\\s+next\\s+month\\b',
+    '\\b(?:starting|from)\\s+tomorrow\\b',
     'を?(作って|作成して?|書いて|まとめて|要約して|送って|通知して|教えて|して)',
     // Memory markers (G2): "…と覚えておいて" etc. are the remember-fact trigger,
     // not the topic — they leaked into the derived display name.
@@ -921,6 +1021,18 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   let s = text.trim();
   if (schedule.confident) {
     s = s
+      // Start-date-anchor clause ("来週あたりから" / "来月から" / "25日から" /
+      // "starting next week" / … — same whitelist as parseStartNotBefore).
+      // States WHEN the agent may first start, not what to do, so it's stripped
+      // for the same reason the digit-time clauses below are. Not anchored to
+      // the string start (the phrase can lead the utterance, as in the repro
+      // "来週あたりから毎朝ニュースをチェックして", but doesn't have to) — an
+      // optional trailing 、/, is consumed too so a leading clause doesn't
+      // leave a stray comma. JP alternatives all require the literal から, so a
+      // bare 来週/来月/明日 mention elsewhere in the prompt (not paired with
+      // から) is left untouched.
+      .replace(/(?:来週(?:あたり|くらい)?から|来月(?:あたり|くらい)?から|明日から|\d{1,2}\s*日から)\s*[、,]?\s*/g, '')
+      .replace(/\b(?:starting|from)\s+(?:next\s+week|next\s+month|tomorrow)\b\s*[,]?\s*/gi, '')
       // Strip the schedule clause IN PLACE (no leading `.*?`) so a topic BEFORE it
       // survives: "GitHub Trendingを毎日8時にまとめて" → "GitHub Trendingをまとめて",
       // not "まとめて". Bounded by 、。 so it never crosses a clause boundary.
@@ -1056,6 +1168,7 @@ export function detectAutonomousIntent(text: string): boolean {
  */
 export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[] = []): ParsedAgentDraft {
   const rawText = utterance.trim();
+  const startNotBefore = parseStartNotBefore(rawText);
 
   // G6: a "パイプライン" request becomes the multi-step collection preset. The
   // user's own schedule (if confidently parsed) overrides the preset's Mon/Fri.
@@ -1103,6 +1216,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       memory: detectMemory(rawText),
       actionCaveat: presetActionCaveat,
       scheduleAssumed: presetSched.assumedTimeOfDay || undefined,
+      startNotBefore: startNotBefore || undefined,
       rawText,
     };
   }
@@ -1193,6 +1307,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     memory,
     actionCaveat,
     socialPostCandidates,
+    startNotBefore: startNotBefore || undefined,
     rawText,
   };
 }
