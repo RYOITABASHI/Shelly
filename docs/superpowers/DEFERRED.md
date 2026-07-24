@@ -14,6 +14,42 @@
 
 ---
 
+### 「今」/「今すぐ」が保留下書きへのパッチ・登録済みエージェントへの補正として schedule:'once' を無条件に信頼する — 未着手・設計判断待ち (P2)
+
+**優先度**: P2（次リリース検討——実害はあるが頻度は低いと想定。UXの意図次第で「バグ」ではなく「仕様」の可能性もあるため、プロダクト側の判断が先）
+
+**発見（2026-07-24、`lib/agent-draft-patch.ts`のfuzz調査中）**: `tryPatchSchedule`の confident-path は `parseSchedule()` が confident:true を返した結果を無条件に信頼する設計——`schedule !== 'once'` のような除外ガードが(b)経路にはあるが confident-path には無い。このため、保留中の下書き確認中やタスク不明瞭検知の質問中に単なる会話的な「今」を送ると、無関係にその下書きの schedule が `'once'` へパッチされてしまう。**さらに深刻なのは既に登録済みのエージェントに対する4分間の補正ウィンドウ中**——`applyCorrectionToJustRegisteredAgent`が`schedule:'once'`を`agentPartial.schedule: null`へ正規化するため、「今すぐ実行して」のつもりが実際には**そのエージェントの定期スケジュールをサイレントに消去**する（1回だけ実行、ではなく、スケジュール自体が無くなる）。
+
+**判断が必要な理由**: これは`agent-draft-patch.ts`固有の実装漏れではなく、`parseSchedule()`自身の「今/今すぐ」検知（今夜のbug修正の一部）がそのまま伝播した結果——単純な正規表現バグではなく、「保留中の下書きに対する会話的な『今』は、常に『今すぐ実行』という意図として信頼して良いか」というプロダクト判断。
+
+**次にやること**: 実機で頻度・実害を確認した上で、(a) このまま仕様として許容する（「今」を送れば`once`に変わるのは正しいショートカット）か、(b) パッチ経路・補正ウィンドウ経路の両方で`schedule:'once'`パッチを明示的に除外する、のどちらかを決めること。
+
+**テスト**: `__tests__/agent-draft-patch.test.ts`と`__tests__/agent-registered-correction.test.ts`に現状の（意図通りかもしれない）挙動を記録したDOCUMENTED, NOT FIXEDテストあり。
+→ sync: なし。
+
+---
+
+### bug #157 — presentDraftForConfirmationがpendingAgentSessionを無条件上書き、古い保留下書き（Sidebar編集含む）を型入力確認で到達不能にする — 未着手・原因特定済み (P1)
+
+**優先度**: P1（次リリース推奨——重複エージェント作成という具体的実害があるが、タップでの確認は常に無傷で動くため「サイレントなデータ破損」ではなく「型入力確認だけ効かなくなる」段階的劣化。bug #155ほど緊急ではないがbug #155と同根で、次に踏む可能性が高い）
+
+**発見**: bug #155の修正（`b1145a016`、`hasFresherPendingSlotFillQuestion`）を検証するために書いたdispatch()多ターン統合テスト（`__tests__/ai-pane-dispatch-interaction-order.test.tsx`）が、bug #155とは別の実バグを発見。`hooks/use-ai-pane-dispatch.ts`の`presentDraftForConfirmation`（~行294-364）が、新しい下書きがチャット確認（`useChatConfirm`）に到達するたびに、ペイン単一スロットの`pendingAgentSession`（`store/ai-pane-store.ts`）を**無条件に上書き**する。
+
+**再現**: ①「毎週月曜の朝にゴミ出しをリマインドして」がaw-confirmに到達（`pendingAgentSession`=ゴミ出し）→ ②`@agent ニュースを通知して`が割り込み、自分の「いつ実行しますか？」を聞く（bug #155の修正により`pendingAgentSession`は無傷のまま保持される、設計通り）→ ③「今」がニュース側の質問に正しく解決される（bug #155修正の効果）→ ④しかしニュースの下書きも`useChatConfirm`=trueなので`presentDraftForConfirmation`が呼ばれ、`pendingAgentSession`をニュースのセッションで**上書き** → ⑤この時点でゴミ出しの`pendingAgentSession`は失われる（バブル自体はまだ画面に残っているのに）→ ⑥ここで型入力「OK」を送ると、ニュース側のセッションに対して解決されてしまう。
+
+**より深刻な変種（Sidebar編集の場合）**: ゴミ出しの代わりに「Sidebar編集」（`editingAgentId`セット済み）がステップ①の位置にいた場合、割り込み後の型入力「OK」は`editingAgentId`が失われた状態でニュース側に解決され、`confirmAgentDraft`が`updateAgent`ではなく`createAgent`を呼んでしまう——**過去に一度直した「編集のはずが重複エージェント作成」バグの効果が、新しい経路から再発する**（元の修正は`messageId`ガードで対応済みだが、このセッション上書きパスはその対象外）。
+
+**なぜ今回は直さなかった**: `pendingAgentSession`が単一スロット（配列/マップではない）というストア設計そのものが根本原因。2つの緩和策を手でトレースしたが、どちらも「どちらのセッションが型入力の曖昧さを引き受けるか」を入れ替えるだけで、本質的な解決にならないことを確認——(a) 新しいセッションで上書きしない案 → 古いセッションが型入力を握り続けるが、今度は「新しい下書きへの型入力OK」が誤って古い方に適用される（対称的に同じバグが逆方向に発生）。(b) 上書き時に古いセッションを自動キャンセルする案 → ユーザーの同意なく保留下書きを破棄する、今夜一貫して避けてきたアンチパターンと同型。正しい修正には複数セッション同時保持のサポート（配列/マップ化）か、曖昧な時の明示的な確認（「どちらのエージェントについてですか？」）が必要——実装判断が要る設計変更で、on-device往復無しに拙速に入れるべきではない。
+
+**幸い実害は限定的**: `AgentChatConfirm`のタップ確認ボタンは`message.agentDraft`を直接読んで動作し、`pendingAgentSession`に依存しない（`components/panes/AIPane.tsx`の`onConfirm={(c) => onConfirmAgentDraft?.(message.id, c)}`）。つまり上書きされた古いセッションも**タップでの確認は常に正常動作**——影響を受けるのは型入力（自然言語での「OK」「キャンセル」「9時にして」等）による確認のみ。
+
+**次にやること**: `pendingAgentSession`を単一値からmessageIdキー付きのマップ/配列に拡張する設計を次回セッションで検討。または、上書きされそうな古いセッションがある場合にその下書きバブルへ視覚的な合図（「別の依頼が入ったため、こちらはタップでご確認ください」等）を出す軽量な緩和策も候補。実機での頻度・実害の大きさをまず確認してから優先度を再評価すること。
+
+**テスト**: `__tests__/ai-pane-dispatch-interaction-order.test.tsx`のScenario 1/2/6が現状の（バグのある）挙動を正確に記録——修正時にはこれらのアサーションを更新すること。
+→ sync: なし。
+
+---
+
 ### ✅ bug #155 — pendingAgentSession が同一ターンの新しいpendingSlotFillより優先され、無関係な保留下書きを誤って上書き — 実装済み（`b1145a016`）・🔴 実機未検証 (P1)
 
 **優先度**: P1（次リリース推奨——実際にユーザーの下書きを無言で破壊する重大度の高いバグ。ライブon-deviceテスト中に発見）
