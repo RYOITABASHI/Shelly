@@ -612,6 +612,12 @@ grep -iE 'escalation|approval|decline|unattended|denied' ~/.shelly/agents/audits
 
 2モデル＋人手のクロスレビューで挙がった自律エージェント制御面の穴。**#1（action approval 偽造）、#2（policy 配線漏れ）、#3（ab-article-eval driver 迂回）、one-shot cleanup（Med）すべて修正済**。
 
+✅ **#4 境界越え承認の通知見逃しがエージェントを恒久的に無効化していた（P1・reliability）— 解消済み（2026-07-24、`69434b748`）**
+- **発見**: 実機テストで「バッテリー残量を通知して」エージェントをRUN NOWしたところ、シェル経由のsysfs読み取り（`/sys/class/power_supply/...`）がcapability broker境界越え承認（`leaves-root`シグナル）を要求。通知を見落とした（または対応が遅れた）ケースを想定し`scripts/shelly-agent-driver.js`のコードを読解した結果、`--escalation-timeout-action`のデフォルトが`decline`であり、タイムアウト（デフォルト2分）時に**リクエストファイルごと削除**（`cleanupEscalationFiles`）していることを確認——無人スケジュール実行の場合、人間が通知に気づくのがタイムアウト後になるのはむしろ通常のケースなのに、その時点で承認しようとしても`AgentEscalationBridge.kt`の`writeHumanReply`は該当リクエストファイルの存在を要求するため、常に失敗する。エージェントを1回登録しても、通知を逃すたびに「その後何をやっても許可できない」状態になっていた。
+- **調査で判明**: `--escalation-timeout-action queue`という既存オプションが、まさにこの問題を解決するために実装済みだった（`markEscalationQueued`がファイルを削除せず`state: "queued"`で保存）。さらに native 側の`AgentEscalationBridge.writePreapprovalGrantFromRequest`は`allowLiveRequest=true`で呼ばれる`writeHumanReply`から、live状態・queued状態どちらのリクエストも正しく処理できる設計に既になっており（`DEFAULT_QUEUED_GRANT_TTL_MS = 24時間`の単発事前承認グラントを発行）、**遅れて「許可」をタップしても、次回（例: 翌日の定時実行）は自動的に承認済み扱いになる**設計が既に完成していた。唯一欠けていたのは`lib/agent-executor.ts`側で`--escalation-timeout-action queue`を渡すことだけ——3箇所のdriver呼び出し（単発ステップ・オーケストレーションchainステップ・article-eval）全てに追加。
+- 今回起動中のrunそのものは救済されない（プロセスは既にタイムアウトで終了済み）——次回以降のrun（同一コマンドの再生成時）が救済対象。`AGENT_SCRIPT_VERSION` 24→25。既存の`SHELLY_AGENT_SCRIPT_VERSION=24`文字列アサーション7件（6ファイル）を25へ更新、`agent-executor-autonomous.test.ts`に新規アサーション追加。`tsc --noEmit`クリーン、関連202件PASS。実機再検証は未実施（次回、実際に通知を意図的に見逃してからqueue→翌日再現でのgrant消費を確認すること）。
+- → sync: なし。
+
 ✅ **#1 action approval reply の偽造可能性（P1・security）— 解消済み（2026-07-17、実機未検証）**
 - 元の問題: `wait_action_approval`（lib/agent-executor.ts）は reply の `runId` と `requestSha256`（＝リクエストの sha256、秘密でない）一致のみ検証。同一 UID（＝エージェントスクリプト自身）が reply ファイルを書けば自分の action（cli/webhook/notify）承認を偽造できた。
 - 緩和事実（当時）：承認対象は作成時にユーザーが設定したアクション（cli コマンドは `agent.action.command` 固定）で、任意 RCE ではなく「ユーザー設定アクションの自動承認」。
