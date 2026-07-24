@@ -471,11 +471,20 @@ const en: Record<string, string> = {
   'social_connectors.field_appPassword': 'App Password',
   'social_connectors.field_handle': 'Handle',
 
-  'slot_fill.question_schedule': 'When should this run? (e.g. "every day at 8am", "every 3 hours", "Mon/Fri at 9am")',
+  // 2026-07-24: examples dropped from this question — a slot-fill answer the
+  // deterministic parser can't understand now falls back to the local LLM
+  // before re-asking (see hooks/use-ai-pane-dispatch.ts), so free-form
+  // phrasing no longer needs steering toward the parser's exact patterns.
+  'slot_fill.question_schedule': 'When should this run?',
   'slot_fill.question_notification_trigger': 'Which app\'s notifications should trigger this? (e.g. com.whatsapp or an app name like Slack)',
   'slot_fill.question_output_path': 'Where should the result be saved? (Leave blank or say "skip" to use Shelly\'s default folder.)',
   'slot_fill.question_social_connector': 'Which connector should this post to? Reply with the number or its label.',
   'slot_fill.social_connector_giveup_caveat': "Couldn't tell which connector you meant, so this is registered as a draft (file save) instead. Say the connector's exact label next time to post directly.",
+  // 2026-07-24: prepended to the re-asked question on a failed slot-fill
+  // attempt so a retry never reads byte-identical to the first ask (on-device
+  // feedback: repeating the exact same question with no acknowledgment that
+  // the previous answer wasn't understood read as unhelpful/robotic).
+  'slot_fill.not_understood': "Sorry, I didn't understand that.",
   'slot_fill.cancelled': 'Registration cancelled.',
   'codex_login.title': 'Codex Login',
   'codex_login.confirm_title': 'Sign in with ChatGPT?',

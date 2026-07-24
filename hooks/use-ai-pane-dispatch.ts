@@ -730,31 +730,35 @@ export function useAIPaneDispatch(paneId: string) {
         }
         let { draft: updatedDraft, resolved } = applySlotAnswer(field, partialDraft, userText, attemptCount);
         // 2026-07-24 on-device feedback: a slot-fill answer the deterministic
-        // parser can't parse at all ("今" alone — not matching the "今すぐ"-
-        // family regex parseSchedule() special-cases, unlike "今すぐ"/
-        // "immediately") was just re-asking the SAME question verbatim
-        // instead of trying harder, forcing the user to guess the exact
-        // magic phrasing. Give the local LLM ONE best-effort shot at this
-        // specific answer before falling back to re-asking — reuses the
-        // EXACT same safety-checked pipeline as the fresh-draft hybrid
-        // fallback above (extractAgentFieldsWithLlm): any schedule text the
-        // LLM proposes is re-validated through parseSchedule() before being
-        // trusted, and llmExtracted:true still forces the human confirm
-        // round-trip regardless of how "complete" the result looks. Scoped
-        // to the schedule field only — the one this was observed on, and
-        // the only field extractAgentFieldsWithLlm resolves via a
-        // re-validated deterministic parser rather than trusting the LLM's
-        // raw output outright (outputPath/notificationTrigger have no such
-        // re-validation path, so a wrong LLM guess there couldn't be caught
-        // the same way).
-        if (!resolved && field === 'schedule') {
+        // parser can't parse at all was just re-asking the SAME question
+        // verbatim instead of trying harder — the user's explicit ask was
+        // "switch to the LLM the moment a re-ask would happen, for every
+        // slot field uniformly, not just schedule" (a bare "今" not matching
+        // parseSchedule's "今すぐ"-family regex was the concrete repro, but
+        // the fix is deliberately field-agnostic, not a narrow patch for
+        // that one case). The LLM attempt always runs on any unresolved
+        // answer; whether it actually MOVES this specific field stays gated
+        // by extractAgentFieldsWithLlm's own re-validation pipeline (schedule
+        // text is re-run through parseSchedule() before being trusted,
+        // outputPath is accepted as advisory free text the same way a
+        // direct typed answer already is) — for notificationTrigger/
+        // socialConnector, which extractAgentFieldsWithLlm has no extraction
+        // support for at all, this is a harmless no-op and falls straight
+        // through to the unresolved branch below exactly as before. Any
+        // field the LLM DOES move still marks the draft llmExtracted:true,
+        // forcing the same human confirm round-trip an assumed schedule
+        // already requires — no new safety exception, just a smarter retry.
+        if (!resolved) {
           const llmFallbackSettings = useSettingsStore.getState().settings;
           const llmAttempt = await extractAgentFieldsWithLlm(userText, updatedDraft, {
             baseUrl: llmFallbackSettings.localLlmUrl,
             model: llmFallbackSettings.localLlmModel,
             enabled: llmFallbackSettings.localLlmEnabled,
           });
-          if (llmAttempt.scheduleConfident) {
+          const llmResolvedThisField =
+            (field === 'schedule' && llmAttempt.scheduleConfident === true) ||
+            (field === 'outputPath' && !!llmAttempt.outputPath);
+          if (llmResolvedThisField) {
             updatedDraft = llmAttempt;
             resolved = true;
           }
@@ -762,10 +766,16 @@ export function useAIPaneDispatch(paneId: string) {
         if (!resolved) {
           // Same field, still unresolved — re-ask, bump the attempt counter.
           // applySlotAnswer force-resolves after 1-2 attempts, so this can't loop forever.
+          // 2026-07-24 on-device feedback: re-posting the identical question
+          // text on every failed attempt read as the bot not acknowledging
+          // that the previous answer wasn't understood at all — prepend a
+          // short "didn't understand" line so a retry never looks like a
+          // byte-for-byte repeat of the first ask.
+          const retryStrings = detectMessageLocale(partialDraft.rawText) === 'ja' ? ja : en;
           store.addMessage(paneId, {
             id: generateId(),
             role: 'assistant',
-            content: question,
+            content: `${retryStrings['slot_fill.not_understood']}\n${question}`,
             timestamp: Date.now(),
             agent: agentLabel,
             pendingSlotFill: { field, question, partialDraft: updatedDraft, attemptCount: attemptCount + 1 },

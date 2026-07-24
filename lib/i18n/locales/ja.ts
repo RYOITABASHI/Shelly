@@ -460,11 +460,18 @@ const ja: Record<string, string> = {
   'social_connectors.field_appPassword': 'アプリパスワード',
   'social_connectors.field_handle': 'ハンドル',
 
-  'slot_fill.question_schedule': 'いつ実行しますか？（例: 「毎日8時」「3時間おきに」「月・金の9時に」）',
+  // 2026-07-24: 例示を削除——理解できない回答は再質問の前にローカルLLMへ
+  // フォールバックするようになった（hooks/use-ai-pane-dispatch.ts参照）ため、
+  // パーサーの決まった言い回しに誘導する例示は不要になった。
+  'slot_fill.question_schedule': 'いつ実行しますか？',
   'slot_fill.question_notification_trigger': 'どのアプリの通知が来たら実行しますか？（例: com.whatsapp や Slack のように、アプリ名かパッケージ名で教えてください）',
   'slot_fill.question_output_path': '結果はどこに保存しますか？（未設定の場合はShelly内の既定フォルダを使います。特に希望が無ければ「そのままでいい」と答えてください）',
   'slot_fill.question_social_connector': 'どのコネクタに投稿しますか？番号かラベル名で答えてください。',
   'slot_fill.social_connector_giveup_caveat': 'どのコネクタか特定できなかったため、下書き（ファイル保存）として登録します。次回はコネクタのラベル名を明確に指定すると直接投稿できます。',
+  // 2026-07-24: スロットフィルの回答が理解できなかった際、再質問の先頭に付けて
+  // 前回と全く同じ文言の繰り返しにならないようにする（実機フィードバック:
+  // 理解できなかった旨の言及なしに同じ質問をそのまま繰り返すのは不親切に見える）。
+  'slot_fill.not_understood': 'すみません、うまく理解できませんでした。',
   'slot_fill.cancelled': '登録をキャンセルしました。',
   'codex_login.title': 'Codexログイン',
   'codex_login.confirm_title': 'ChatGPTでサインインしますか？',
