@@ -56,6 +56,37 @@ describe('parseAgentNL — run immediately (Once)', () => {
     const d = parseAgentNL('毎日8時にすぐ終わるタスクを実行して');
     expect(d.schedule).not.toBe('once');
   });
+
+  // 2026-07-24 on-device finding: "今すぐデバイスのストレージとメモリの
+  // 空き容量を教えて" still asked "いつ実行しますか？" — the utterance IS a
+  // once-now command, but "今すぐ" appears as a LEADING CLAUSE of a longer
+  // sentence, not the whole trimmed string the block above covers (that one
+  // is for slot-fill replies, which are always short standalone answers).
+  it.each([
+    ['今すぐデバイスのストレージとメモリの空き容量を教えて', 'デバイスのストレージとメモリの空き容量を教えて'],
+    ['すぐにニュースをチェックして', 'ニュースをチェックして'],
+    ['直ちにバックアップを取って', 'バックアップを取って'],
+    ['right now check the news', 'check the news'],
+    ['immediately back up my files', 'back up my files'],
+  ])('%s → schedule "once", confident, and the leading clause is stripped from the prompt', (phrase, expectedPrompt) => {
+    const d = parseAgentNL(phrase);
+    expect(d.schedule).toBe('once');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.prompt).toBe(expectedPrompt);
+  });
+
+  it('a bare leading "今" (single char, no すぐ) is NOT treated as once-now — too ambiguous a prefix (今日/今回/今週/…)', () => {
+    const d = parseAgentNL('今日のニュースをチェックして');
+    expect(d.schedule).not.toBe('once');
+  });
+
+  it('a mid-sentence "すぐ" still does not misfire even right after a leading topic', () => {
+    const d = parseAgentNL('GitHub Trendingをすぐにまとめて');
+    // Not anchored at the very start (topic precedes it) — branch 0b requires
+    // the once-now phrase to LEAD the utterance, so this should NOT resolve
+    // to 'once' via that path (a topic-first phrasing is out of scope here).
+    expect(d.schedule).not.toBe('once');
+  });
 });
 
 describe('parseAgentNL — interval', () => {

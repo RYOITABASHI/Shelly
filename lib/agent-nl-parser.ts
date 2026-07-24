@@ -411,6 +411,23 @@ export function parseSchedule(text: string): ScheduleResult {
     return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
   }
 
+  // ── 0b. "run right now" as a LEADING clause of a longer utterance — distinct
+  // from branch 0 above (whole-string-only, for slot-fill replies). 2026-07-24
+  // on-device finding: "今すぐデバイスのストレージとメモリの空き容量を教え
+  // て" still asked "いつ実行しますか？" because only the whole-string branch
+  // recognized "今すぐ" — a leading clause within a real command was never
+  // handled. Deliberately excludes bare "今" here (unlike branch 0): as a
+  // 1-character PREFIX it collides with 今日/今回/今週/... constantly, so
+  // only the unambiguous multi-char phrases qualify as a leading clause.
+  // derivePrompt/NAME_STRIP_RE strip this same clause so it doesn't leak into
+  // the derived name/prompt (mirrors every other leading schedule clause).
+  if (
+    /^\s*(?:今すぐ|すぐに|すぐ|直ちに|即時|即座に)[、,]?\s*\S/.test(text) ||
+    /^\s*(?:right\s+now|right\s+away|immediately|asap)[,]?\s+\S/i.test(text)
+  ) {
+    return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
+  }
+
   // ── 1. Every-N-minutes interval → `*/N * * * *` (N must be 1..59) ──
   const intervalJp = text.match(/(\d+)\s*分\s*(?:ごと|おき|毎|間隔)|(\d+)\s*分に\s*1\s*回/);
   const intervalEn = lower.match(/every\s+(\d+)\s*(?:min|mins|minute|minutes)\b/);
@@ -988,6 +1005,10 @@ const NAME_STRIP_RE = new RegExp(
     '来週(?:あたり|くらい)?から', '来月(?:あたり|くらい)?から', '明日から', '\\d{1,2}\\s*日から',
     '\\b(?:starting|from)\\s+next\\s+week\\b', '\\b(?:starting|from)\\s+next\\s+month\\b',
     '\\b(?:starting|from)\\s+tomorrow\\b',
+    // Leading "run right now" clause (see parseSchedule's branch 0b) — same
+    // 2026-07-24 on-device finding: "今すぐ" leaking into the derived name.
+    '今すぐ', 'すぐに', 'すぐ', '直ちに', '即時', '即座に',
+    '\\bright\\s+now\\b', '\\bright\\s+away\\b', '\\basap\\b',
     'を?(作って|作成して?|書いて|まとめて|要約して|送って|通知して|教えて|して)',
     // Memory markers (G2): "…と覚えておいて" etc. are the remember-fact trigger,
     // not the topic — they leaked into the derived display name.
@@ -1033,6 +1054,13 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
       // から) is left untouched.
       .replace(/(?:来週(?:あたり|くらい)?から|来月(?:あたり|くらい)?から|明日から|\d{1,2}\s*日から)\s*[、,]?\s*/g, '')
       .replace(/\b(?:starting|from)\s+(?:next\s+week|next\s+month|tomorrow)\b\s*[,]?\s*/gi, '')
+      // Leading "run right now" clause (see parseSchedule's branch 0b) — the
+      // 2026-07-24 finding: "今すぐデバイスの...教えて" left "今すぐ" stuck
+      // to the front of the derived prompt. Anchored to the string START
+      // (unlike the start-date strip above) since this is specifically the
+      // LEADING-clause case; a mid-sentence "すぐ" mention is left alone.
+      .replace(/^\s*(?:今すぐ|すぐに|すぐ|直ちに|即時|即座に)[、,]?\s*/, '')
+      .replace(/^\s*(?:right\s+now|right\s+away|immediately|asap)[,]?\s*/i, '')
       // Strip the schedule clause IN PLACE (no leading `.*?`) so a topic BEFORE it
       // survives: "GitHub Trendingを毎日8時にまとめて" → "GitHub Trendingをまとめて",
       // not "まとめて". Bounded by 、。 so it never crosses a clause boundary.
