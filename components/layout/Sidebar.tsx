@@ -1203,7 +1203,15 @@ export function Sidebar() {
               >
                 <MaterialIcons name="help-outline" size={12} color={C.text2} />
               </Pressable>
-              {agents.length > 0 && (
+              {/* 2026-07-24 on-device finding: this was gated on agents.length > 0
+                  only, so once the global halt flag was set (e.g. from a prior
+                  session) and every agent was later deleted, the RESUME control
+                  vanished entirely — the halt sentinel (lib/agent-manager.ts's
+                  haltSentinelPath) persists independently of the agent list, so
+                  a halted-with-zero-agents state had NO way back through this
+                  UI. Show the pill whenever there's something to stop OR
+                  something to resume. */}
+              {(agents.length > 0 || agentsHalted) && (
                 <Pressable
                   onPress={() => void handleToggleHalt()}
                   hitSlop={8}
