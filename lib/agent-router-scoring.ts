@@ -103,8 +103,22 @@ const COLLECTION_KW = ['集め', '収集', 'gather', 'collect', 'scrape', 'aggre
 // before. Splitting the check this way closes the "notify me about the
 // news" gap without loosening the existing collection-verb requirement for
 // the ambiguous time-modifier case.
-const FRESHNESS_TOPIC_RE = /\b(news|trending)\b/;
-const FRESHNESS_TOPIC_JP_RE = /速報|ニュース|時事|トレンド/;
+// 2026-07-25 fuzz-sweep follow-up: 株価/為替 (a specific stock's price / an FX
+// rate) are the same KIND of signal as news — a single live, continuously-
+// changing external quote with no on-device source, named by a noun that
+// carries the "must be fresh" meaning on its own. "株価を教えて" and "為替レ
+// ートを通知して" fit the exact bug shape tonight's fix closed (delivery verb
+// + live-feed noun, no COLLECTION_KW verb). Deliberately NOT added here:
+// weather (天気) — the existing "今日の天気は？" test locks needsWeb=false for
+// it, and the module's own design treats weather as ambiguous (may have a
+// non-web source) unlike a market quote; sports scores/スコア — too broad a
+// word (credit score, golf score, test score all match "score"/"スコア" with
+// no live-web meaning), no narrow phrase found that is unambiguous the way
+// "stock price"/"exchange rate" are; 株式市場/"stock market" — reads more as
+// an analysis/trend topic (reasoning-shaped) than a single live point-in-time
+// quote, so left out of the "sufficient alone" tier as a judgment call.
+const FRESHNESS_TOPIC_RE = /\b(news|trending|stock price|exchange rate)\b/;
+const FRESHNESS_TOPIC_JP_RE = /速報|ニュース|時事|トレンド|株価|為替/;
 const FRESHNESS_MODIFIER_RE = /\b(latest|today|current|recent)\b/;
 const FRESHNESS_MODIFIER_JP_RE = /最新|今日|現在/;
 

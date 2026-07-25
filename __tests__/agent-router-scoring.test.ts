@@ -110,6 +110,78 @@ describe('detectRouteSignals', () => {
     expect(detectRouteSignals('ニュースを集めて').webDomain).toBe('general');
   });
 
+  it('the freshness-TOPIC branch generalizes to delivery verbs beyond "通知して" (2026-07-25 fuzz sweep)', () => {
+    // The 2026-07-25 fix made a freshness TOPIC noun sufficient on its own
+    // regardless of verb, so it already covers the full family of Japanese
+    // "tell me / let me know / report to me" delivery verbs, not just
+    // "通知して" — locking that generalization here so a future refactor
+    // can't accidentally narrow it back to a single verb.
+    expect(detectRouteSignals('ニュースを教えて').needsWeb).toBe(true);
+    expect(detectRouteSignals('ニュースを知らせて').needsWeb).toBe(true);
+    expect(detectRouteSignals('ニュースを届けて').needsWeb).toBe(true);
+    expect(detectRouteSignals('ニュースを伝えて').needsWeb).toBe(true);
+    expect(detectRouteSignals('ニュースを報告して').needsWeb).toBe(true);
+    expect(detectRouteSignals('ニュースを送って').needsWeb).toBe(true);
+    expect(detectRouteSignals('ニュースをリマインドして').needsWeb).toBe(true);
+    // Same generalization on the English side.
+    expect(detectRouteSignals('tell me the news').needsWeb).toBe(true);
+    expect(detectRouteSignals('let me know the news').needsWeb).toBe(true);
+    expect(detectRouteSignals('keep me posted on the news').needsWeb).toBe(true);
+    expect(detectRouteSignals('update me on the news').needsWeb).toBe(true);
+    expect(detectRouteSignals('report the news').needsWeb).toBe(true);
+    expect(detectRouteSignals('report on trending topics').needsWeb).toBe(true);
+    // A delivery verb does NOT override the transform exemption: "summarize
+    // the news AND convey/tell/pass it on" is still operating on content the
+    // agent already has, so it stays off the web-mandatory ladder exactly
+    // like plain "ニュースを要約して".
+    expect(detectRouteSignals('ニュースを要約して伝えて').needsWeb).toBe(false);
+    expect(detectRouteSignals('ニュースをまとめて教えて').needsWeb).toBe(false);
+    expect(detectRouteSignals('ニュースを要約して知らせて').needsWeb).toBe(false);
+  });
+
+  it('株価/為替 (a single live market quote) are freshness-TOPIC nouns, same bug class as news (2026-07-25 fuzz sweep)', () => {
+    // A stock price or FX rate is a continuously-changing external quote with
+    // no on-device source — the same shape as "news": naming it is enough,
+    // no COLLECTION_KW verb required.
+    expect(detectRouteSignals('株価を教えて').needsWeb).toBe(true);
+    expect(detectRouteSignals('株価を通知して').needsWeb).toBe(true);
+    expect(detectRouteSignals('為替を教えて').needsWeb).toBe(true);
+    expect(detectRouteSignals('為替レートを通知して').needsWeb).toBe(true);
+    expect(detectRouteSignals('tell me the stock price').needsWeb).toBe(true);
+    expect(detectRouteSignals('notify me about the exchange rate').needsWeb).toBe(true);
+    // Still gated by the transform exemption, same as news.
+    expect(detectRouteSignals('株価をまとめて').needsWeb).toBe(false);
+    // Still routes general (Gemini), not academic (Perplexity) — finance
+    // terms are not in ACADEMIC_WEB_KW.
+    expect(detectRouteSignals('株価を教えて').webDomain).toBe('general');
+  });
+
+  it('documents deliberately-NOT-added freshness topics (weather / sports score / stock market) — current behavior, not a bug', () => {
+    // Weather: LOCKED false by the pre-existing "今日の天気は？" test above —
+    // the module treats weather as ambiguous (may have a non-web source),
+    // unlike a market quote. Do not add 天気 to the topic tier.
+    expect(detectRouteSignals('天気を教えて').needsWeb).toBe(false);
+    expect(detectRouteSignals('天気を通知して').needsWeb).toBe(false);
+    expect(detectRouteSignals('tell me the weather').needsWeb).toBe(false);
+    // Sports score / "score": deliberately NOT added. "スコア"/"score" alone
+    // is too broad (credit score, golf score, test score all match with no
+    // live-web meaning) and no narrow phrase as unambiguous as "stock price"
+    // was found. Flagged here as a documented gap, not fixed.
+    expect(detectRouteSignals('スポーツの結果を教えて').needsWeb).toBe(false);
+    expect(detectRouteSignals('スポーツのスコアを通知して').needsWeb).toBe(false);
+    expect(detectRouteSignals('tell me the sports score').needsWeb).toBe(false);
+    // Stock MARKET (株式市場 / "stock market"): reads as an analysis/trend
+    // topic (reasoning-shaped: "how is the market doing") rather than a
+    // single live point-in-time quote like 株価, so left out of the
+    // "sufficient alone" tier as a judgment call — also documented, not fixed.
+    expect(detectRouteSignals('株式市場について分析して').needsWeb).toBe(false);
+    // Confirm the new topic words don't false-positive on unrelated "stock"/
+    // "score" usages that share a substring but not the meaning.
+    expect(detectRouteSignals('クレジットスコアを教えて').needsWeb).toBe(false);
+    expect(detectRouteSignals('在庫状況を教えて').needsWeb).toBe(false);
+    expect(detectRouteSignals('check the stock levels').needsWeb).toBe(false);
+  });
+
   it('"collect news WITH SOURCES (出典付き)" is general → Gemini, not academic → Perplexity', () => {
     // Regression: 出典 ∈ RESEARCH_KW flipped a news task to webDomain=academic →
     // ladder [Perplexity, Codex] (no Perplexity key) → dead-ended on Codex, Gemini
