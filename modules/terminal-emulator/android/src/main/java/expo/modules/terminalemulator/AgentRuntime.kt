@@ -184,7 +184,15 @@ object AgentRuntime {
     // runs unconditionally — the snapshot files are cheap to write regardless
     // of whether a given run's script actually reads them); bumped purely so a
     // stale pre-v29 on-disk script (unconditional injection) is regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 29
+    // v30 (2026-07-25, quality gate catches "meta-commentary about the
+    // delivery action" completions): lib/agent-executor.ts's
+    // is_low_quality_completion/is_low_quality_completion_file now also flag
+    // a short completion that announces the delivery action itself
+    // ("ニュース通知を送信します。") instead of delivering real content —
+    // found via direct A/B model comparison on the same repro task. No
+    // native-side change here; bumped purely so a stale pre-v30 on-disk
+    // script (missing this pattern set) is regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 30
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

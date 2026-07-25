@@ -295,7 +295,22 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // on-disk agent script predates this gate and would keep injecting
 // unconditionally forever with no error signal until regenerated, so this
 // bump matters for staleness detection, unlike v27/v28 above.
-const AGENT_SCRIPT_VERSION = 29;
+// v30 (2026-07-25, quality gate catches "meta-commentary about the delivery
+// action" completions): is_low_quality_completion / is_low_quality_completion_file
+// now also flag a short completion that announces the delivery action itself
+// ("ニュース通知を送信します。" / "notification sent.") instead of either
+// delivering real content or honestly admitting it can't — found via a direct
+// A/B comparison (0.8B vs 2B) on the same "notify me about the news" task: the
+// bigger model stopped hallucinating unrelated injected context but started
+// producing this instead, which neither the prompt-echo, refusal, nor
+// data-unavailable pattern sets catch. REAL BEHAVIOR CHANGE — a stale on-disk
+// script keeps accepting this as `success` (with a "Save as skill?" offer)
+// forever until regenerated. NOTE: the v29 bump above should also have
+// covered the DATA_UNAVAILABLE_PATTERNS addition landed in the same window
+// (commit fdfd7e38c) — that change shared v29's number without its own bump;
+// noted here rather than amended, since every script at v29 already carries
+// that fix regardless.
+const AGENT_SCRIPT_VERSION = 30;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1426,9 +1441,16 @@ const dataUnavailablePatterns = [
   /\\bcannot access\\b/i,
   /\\bdoes not have access to\\b/i,
 ];
+const actionMetaCommentaryPatterns = [
+  /(?:通知|お知らせ|メッセージ)を(?:送信します|送信しました|お送りします|お送りしました|完了します|完了しました|実行します|実行しました)/,
+  /\\bnotification (?:has been |is |was )?(?:sent|completed|delivered)\\b/i,
+  /\\b(?:sending|will send|i(?:\\x27ll| will) send) the notification\\b/i,
+  /\\btask (?:has been |is |was )?completed\\b/i,
+];
 const trimmedText = text.trim();
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
-  (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text)));
+  (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
+  (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text)));
 process.exit(bad ? 0 : 1);
 ' 2>/dev/null; then
       return 0
@@ -1485,9 +1507,16 @@ const dataUnavailablePatterns = [
   /\\bcannot access\\b/i,
   /\\bdoes not have access to\\b/i,
 ];
+const actionMetaCommentaryPatterns = [
+  /(?:通知|お知らせ|メッセージ)を(?:送信します|送信しました|お送りします|お送りしました|完了します|完了しました|実行します|実行しました)/,
+  /\\bnotification (?:has been |is |was )?(?:sent|completed|delivered)\\b/i,
+  /\\b(?:sending|will send|i(?:\\x27ll| will) send) the notification\\b/i,
+  /\\btask (?:has been |is |was )?completed\\b/i,
+];
 const trimmedText = text.trim();
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
-  (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text)));
+  (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
+  (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text)));
 process.exit(bad ? 0 : 1);
 NODEEOF
     then

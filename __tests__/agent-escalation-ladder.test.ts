@@ -351,6 +351,35 @@ describe('failure detection', () => {
       'gross margin holding steady at 71% for the third consecutive quarter.';
     expect(isLowQualityCompletion(longEnglishSummary)).toBe(false);
   });
+
+  it('isLowQualityCompletion catches the real on-device "meta-commentary about the delivery action" repro (2026-07-25, bug #158 follow-up)', () => {
+    // Verbatim (trimmed) shape of what Qwen3.5-2B reported for the same
+    // "notify me about the news" agent AFTER the needsWeb routing fix landed
+    // — a direct A/B test against 0.8B on the identical task. Neither the
+    // refusal nor data-unavailable pattern sets catch this: it isn't a
+    // refusal ("as an AI...") and it isn't an honest "I couldn't get this"
+    // — it announces the delivery mechanism itself instead of either
+    // delivering real content or admitting it can't.
+    expect(isLowQualityCompletion('ニュース通知を送信します。')).toBe(true);
+    expect(isLowQualityCompletion('ニュース通知を完了しました。')).toBe(true);
+    expect(attemptFailed('success', 'ニュース通知を完了しました。')).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches short EN "notification sent/completed" meta-commentary', () => {
+    expect(isLowQualityCompletion('The notification has been sent.')).toBe(true);
+    expect(isLowQualityCompletion('Notification completed.')).toBe(true);
+    expect(isLowQualityCompletion('Sending the notification now.')).toBe(true);
+    expect(isLowQualityCompletion('Task completed.')).toBe(true);
+  });
+
+  it('isLowQualityCompletion does NOT flag genuine notify content that happens to use similar words (explicit negative)', () => {
+    // A real, substantive notification about an actual event — "通知"/
+    // "お知らせ" appearing as part of real content, not as a meta-announcement
+    // of the delivery action itself, must not be caught.
+    expect(isLowQualityCompletion('明日の会議室変更のお知らせです。新しい会議室はB201です。')).toBe(false);
+    expect(isLowQualityCompletion('重要なお知らせ：システムメンテナンスは22時から実施されます。')).toBe(false);
+    expect(isLowQualityCompletion('Your package delivery notification: arriving between 2-4pm today.')).toBe(false);
+  });
 });
 
 describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double approval)', () => {

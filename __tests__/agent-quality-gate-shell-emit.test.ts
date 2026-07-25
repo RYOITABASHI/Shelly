@@ -206,6 +206,34 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
       'gross margin holding steady at 71% for the third consecutive quarter.';
     expect(runEmbeddedCheck(embeddedJs, longEnglishSummary)).toBe(1);
   });
+
+  it('the emitted regex source for the meta-commentary check has real backslash escapes', () => {
+    expect(embeddedJs).toContain('を(?:送信します|送信しました|お送りします|お送りしました|完了します|完了しました|実行します|実行しました)');
+    expect(embeddedJs).toContain('\\bnotification (?:has been |is |was )?(?:sent|completed|delivered)\\b');
+    expect(embeddedJs).toContain('\\btask (?:has been |is |was )?completed\\b');
+  });
+
+  it('detects the real on-device "meta-commentary about the delivery action" repro (2026-07-25, bug #158 follow-up)', () => {
+    // Verbatim (trimmed) shape of what Qwen3.5-2B reported for the same
+    // "notify me about the news" task after the needsWeb routing fix landed —
+    // a direct A/B comparison against 0.8B on the identical repro. Announces
+    // the delivery action instead of delivering content or admitting failure.
+    expect(runEmbeddedCheck(embeddedJs, 'ニュース通知を送信します。')).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, 'ニュース通知を完了しました。')).toBe(0);
+  });
+
+  it('detects short EN "notification sent/completed" meta-commentary', () => {
+    expect(runEmbeddedCheck(embeddedJs, 'The notification has been sent.')).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, 'Notification completed.')).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, 'Sending the notification now.')).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, 'Task completed.')).toBe(0);
+  });
+
+  it('does NOT flag genuine notify content that happens to use similar words (explicit negative)', () => {
+    expect(runEmbeddedCheck(embeddedJs, '明日の会議室変更のお知らせです。新しい会議室はB201です。')).toBe(1);
+    expect(runEmbeddedCheck(embeddedJs, '重要なお知らせ：システムメンテナンスは22時から実施されます。')).toBe(1);
+    expect(runEmbeddedCheck(embeddedJs, 'Your package delivery notification: arriving between 2-4pm today.')).toBe(1);
+  });
 });
 
 describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {

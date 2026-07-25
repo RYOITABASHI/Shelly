@@ -280,10 +280,43 @@ const DATA_UNAVAILABLE_PATTERNS = [
 const DATA_UNAVAILABLE_MAX_LEN = 200;
 
 /**
- * True when a completion is prompt-echo or refusal boilerplate, or a short
- * "honest failure to retrieve the requested data" response — see
- * PROMPT_ECHO_MARKERS / REFUSAL_PATTERNS / DATA_UNAVAILABLE_PATTERNS above.
- * NOTE: this
+ * "Meta-commentary describing the delivery action itself, instead of
+ * delivering real content" (2026-07-25 on-device finding, DEFERRED.md bug
+ * #158's follow-up): after fixing needsWeb routing for "notify me about the
+ * news"-shaped tasks, a direct comparison test on Qwen3.5-2B (not just the
+ * smaller 0.8B) showed a THIRD distinct failure mode neither
+ * REFUSAL_PATTERNS nor DATA_UNAVAILABLE_PATTERNS catches: given a task with
+ * no real content to report, the model announces the delivery mechanism
+ * ("ニュース通知を送信します。" / "ニュース通知を完了しました。" — "I will
+ * send the news notification." / "The news notification is complete.")
+ * instead of either producing real content or honestly admitting it can't.
+ * This reads as a plausible, on-topic completion (it correctly mentions
+ * "news notification") while containing zero actual information — status
+ * still logs `success`, escalation never fires, the "Save as skill?" offer
+ * still appears, exactly like the two failure modes already caught above.
+ *
+ * Deliberately narrow and JA/EN-specific to the "[delivery-action noun] +
+ * [send/complete/execute]" shape — a genuine notification's real content
+ * could legitimately use words like 送信/完了/notification as part of its
+ * substance, so this is NOT a bare keyword match; it requires the delivery
+ * noun to be the grammatical OBJECT of a send/complete/execute verb, which
+ * is specifically how a model announces its own action rather than
+ * performing it. Length-gated the same way as DATA_UNAVAILABLE_PATTERNS
+ * (the phrase plausibly IS the whole answer, not a passing remark).
+ */
+const ACTION_META_COMMENTARY_PATTERNS = [
+  /(?:通知|お知らせ|メッセージ)を(?:送信します|送信しました|お送りします|お送りしました|完了します|完了しました|実行します|実行しました)/,
+  /\bnotification (?:has been |is |was )?(?:sent|completed|delivered)\b/i,
+  /\b(?:sending|will send|i(?:'ll| will) send) the notification\b/i,
+  /\btask (?:has been |is |was )?completed\b/i,
+];
+
+/**
+ * True when a completion is prompt-echo or refusal boilerplate, a short
+ * "honest failure to retrieve the requested data" response, or a short
+ * "meta-commentary about the delivery action" response — see
+ * PROMPT_ECHO_MARKERS / REFUSAL_PATTERNS / DATA_UNAVAILABLE_PATTERNS /
+ * ACTION_META_COMMENTARY_PATTERNS above. NOTE: this
  * JS copy is the unit-tested source of truth, but it is a SECONDARY signal —
  * it only runs after a step's run log is read back, which for a step that
  * DISPATCHES an action (app-act/webhook/dm-reply) is already after the user
@@ -311,6 +344,9 @@ export function isLowQualityCompletion(text: string | null | undefined): boolean
   if (PROMPT_ECHO_MARKERS.some((pattern) => pattern.test(text))) return true;
   if (REFUSAL_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (trimmed.length <= DATA_UNAVAILABLE_MAX_LEN && DATA_UNAVAILABLE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  if (trimmed.length <= DATA_UNAVAILABLE_MAX_LEN && ACTION_META_COMMENTARY_PATTERNS.some((pattern) => pattern.test(text))) {
     return true;
   }
   return false;
