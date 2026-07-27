@@ -160,7 +160,7 @@ function printHuman(data) {
   console.log(`exec wrapper: ${mark(data.native.execWrapper.exists)}`);
   console.log(`xdg-open: ${mark(data.native.xdgOpen.exists)}`);
   console.log(`codex tui:  ${mark(data.codex.tui.version.ok)} ${data.codex.tui.version.output}`);
-  console.log(`codex exec: ${mark(data.codex.exec.version.ok)} ${data.codex.exec.version.output}`);
+  console.log(`codex exec: ${mark(data.codex.tui.execHelp.ok)} ${data.codex.tui.execHelp.output}`);
   console.log(`codex js:   ${mark(data.codex.jsDispatcher.exists)}`);
   console.log(`codex auth: ${data.codex.auth.exists ? 'present' : 'missing'}`);
   console.log(`local llm probes: ${data.local.endpoints.join(', ')}`);
