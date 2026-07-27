@@ -62,6 +62,21 @@
 
 ---
 
+### bug #159 — `ssh-keygen`（引数なし/未知フラグ時）の対話プロンプトがTermuxの固定パスをデフォルト表示する — 未着手・原因特定済み (P2)
+
+**優先度**: P2（次リリース検討——実害は「対話モードでパスを指定せずEnterを押すと書き込み失敗するかもしれない」程度で、`-f`明示指定なら無関係。ただしbug#119の残存ラッパー確認テスト中に偶然発見した実バグ）
+
+**発見（2026-07-27、bug#119残存ラッパー確認の実機テスト中）**: `gh --version`/`gpg --version`/`unzip -v`は正常。`ssh-keygen -h`を実行したところ、ヘルプ表示ではなく**引数なし実行と同じ対話的鍵生成モード**に入り、「Enter file in which to save the key (`/data/data/com.termux/files/home/.ssh/id_ed25519`):」と表示——**Shellyの実際のhomeパス（`/data/user/0/dev.shelly.terminal/files/home/...`）ではなく、Termuxの固定パスがデフォルト値として出た**。同じセッションで`gpg --version`は正しく`Home: /data/user/0/dev.shelly.terminal/files/home/.gnupg`を表示しており、シェル自体の`$HOME`環境変数は正しく設定されている（対照実験で確認済み）。
+
+**根本原因（コード読解で特定）**: `HomeInitializer.kt`（~行2130-2165）の`.bashrc`生成部分で、`ssh-keygen()`は`unzip()`と同型の単純ラッパー（`_run $libDir/ssh-keygen "$@"`、`LD_PRELOAD`無し）——bug#119の対象だった`vim`/`tmux`/`gh`/`gpg`等とは別カテゴリで、実行自体（exec許可）は正常に機能する。問題はラッパーの外側ではなくバイナリ内部: OpenSSHの`ssh-keygen`は対話プロンプトのデフォルトパスを`$HOME`環境変数ではなく`getpwuid(getuid())->pw_dir`（Cライブラリのパスワードエントリ）から取得する実装のため、TermuxのGitHubリリースバイナリ等をそのまま同梱している場合、ビルド時/Bionicパッチ由来の固定値`/data/data/com.termux/files/home`が`$HOME`を無視して出てくると推測される（他の同梱ツールの多くは`$HOME`を素直に読むため顕在化していなかった）。`-h`が未知フラグとして無視され通常実行にフォールスルーする挙動自体も本来のOpenSSH仕様と異なる可能性があるが、優先度は低い（本筋はパスの方）。
+
+**実害**: `ssh-keygen`を引数無し/`-f`省略で対話実行し、表示されたデフォルトパスをそのままEnterで受け入れた場合、Androidのアプリサンドボックス上`/data/data/com.termux/files/home/...`はShellyから書き込み不可能な別アプリの領域のはずで、書き込み失敗（またはサイレントな別挙動）になると予想される。`-f "$HOME/.ssh/id_ed25519"`等パスを明示すれば無関係——現状の一般的な使い方（`ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519`等）には影響しない。
+
+**次にやること**: (a) 恒久対策はssh-keygenバイナリの再ビルド（この環境にはNDK/ビルド環境が無く今回は不可）。(b) 暫定対策として`ssh-keygen()`ラッパー関数に、呼び出し引数に`-f`が含まれない場合だけ`-f "$HOME/.ssh/id_ed25519"`をデフォルト注入する軽量シムを検討（ただし`-l`/`-F`/`-R`等の別モードでも`-f`の意味は概ね「鍵/known_hostsファイル」で共通のため副作用は小さいと推測されるが、全モードを洗い出してからの実装が必要）。(c) 最小対応として、READMEまたはターミナル初回ヒントに「`ssh-keygen`は必ず`-f`でパスを明示すること」を明記するだけでも実害は防げる。
+→ sync: なし。
+
+---
+
 ### 「今」/「今すぐ」が保留下書きへのパッチ・登録済みエージェントへの補正として schedule:'once' を無条件に信頼する — 未着手・設計判断待ち (P2)
 
 **優先度**: P2（次リリース検討——実害はあるが頻度は低いと想定。UXの意図次第で「バグ」ではなく「仕様」の可能性もあるため、プロダクト側の判断が先）
@@ -2845,6 +2860,7 @@ claude() {
 
 ## History
 
+- **2026-07-27（bug#159発見: ssh-keygenのTermux固定パスデフォルト）**: 「全部試す」指示でDEFERRED.md網羅監査→カテゴリA（今すぐ試せる）5項目着手。bug#119残存ラッパー確認（gh/gpg/unzip/ssh-keygen）のうち3つは正常、`ssh-keygen -h`だけ対話鍵生成モードに入りTermuxの固定パスをデフォルト表示する新規バグを発見。原因はバイナリ内部の`getpwuid()`ベースのパス解決と推測、この環境にはビルド環境が無く暫定対応（README/ヒント文言での`-f`明示喚起）のみ記録。→ sync: なし。
 - **2026-07-27（実機テスト再開①〜⑥全PASS＋2件の実バグ発見・修正、`8be23e949`/`8ff31f8f7`）**: adb再接続後、①bug#158本体（ニュース通知needsWeb）②株価/為替needsWeb拡張③開始遅延スケジュール④タスク不明瞭検知⑤bug#155（pendingAgentSession優先度）⑥Sidebar STOP-ALL/Resume表示、の6項目を順に実機検証。③⑤⑥は完全PASS。①②はneedsWebルーティング自体はPASSしたが「毎回Gemini ではなく Codex CLI に落ちる」という新規現象を発見、④は「@agent 手伝って」でクラリファイ質問が出ずスケジュール質問に素通りする新規バグを発見——両方とも専門サブエージェントへ深掘り委託し、それぞれ実際のコード上のバグ（Gemini grounding citationsが別JSONフィールドにあるのをno-URLガードが考慮していなかった／`@agent`作成フローのLLM抽出呼び出しにlocal-LLM起動preflightが無く静かに疎通不能で失敗していた）を特定・修正・実bash実行テストで検証。詳細は各該当エントリの2026-07-27追記参照。→ sync: なし。
 - **2026-07-25（「全部並列で実装して」3並列フォローアップ: needsWebのfuzz-sweep横展開＋Gemini配線検証＋VERSION整合性履歴監査、`1106a9101`）**: bug #158まわりで見つかった気付きを深掘りする3タスクを並列dispatch。①`needsWeb`の同型バグ（株価/為替）を追加発見・修正、配信動詞ファミリー全体の一般化を回帰テストで固定。②Gemini grounded検索配線は「正しい、バグ無し」の検証結果（コード引用で確認、変更無し）。③AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSIONのバンプ漏れが今夜見つけた1件だけでなく過去に16件あったことが判明（新規P2エントリとして記録、恒久対策は未実装）。詳細はbug #158エントリの2026-07-25追記、および新規「AGENT_SCRIPT_VERSION...バンプ漏れ」エントリ参照。→ sync: なし。
 - **2026-07-24（登録確認デフォルトを「無承認」→「常時チャット確認」に方針転換、`0ea390e9e`）**: 2026-07-14の「デフォは承認なし」指示のうち、**登録確認（`agentRegistrationRequireConfirm`）のみ**を反転——`defaultRequireActionApproval`（実行時のper-action承認）は無変更のまま。draft/notifyの無承認即登録高速パスは、間違えた時のために専用の安全弁（`justRegisteredAgent`、登録直後4分間のクイック訂正窓）を必要としたが、その安全弁自体が今夜だけで3件の実バグ（スクロールで見えなくなったバブルへのメッセージ上書き、editingAgentId消失による複製エージェント作成、Sidebar編集時の「Register」文言の紛らわしさ）の温床になった。実機で両方のフローを経験した上でのプロジェクトオーナーの直接判断：「これでいいですか？」という自然言語チャット確認を毎回挟む方が、シンプルで摩擦もほぼ変わらない。`shouldAutoRegisterDraft`が`requireRegistrationConfirm`引数で既にこの分岐を持っていたため、`store/settings-store.ts`のデフォルト値1行（`false`→`true`）の変更のみで完結——他の呼び出し箇所は無変更。設定自体は残っているため「任意で確認」という元の指示の枠組みは維持（OFFに戻すことも可能）。`justRegisteredAgent`のクイック訂正機構は削除せず、設定をOFFに戻した場合のために残置。`tsc --noEmit`クリーン、関連142件PASS。→ sync: なし。
