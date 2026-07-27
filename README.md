@@ -245,7 +245,9 @@ and write the primary-source links + a short summary to my Obsidian vault
 
 The schedule above registers an agent that, when it fires, wakes the phone, researches via Perplexity, and drops a dated, sourced summary into Obsidian — unattended. (Observed end-to-end once so far; see the demo and [Status](#status) for what's actually been verified.) Swap in your own schedule, source, and output.
 
-Scheduling also understands a relative *start*, not just a recurrence — "starting next week, check the news every morning" registers the agent now but holds its first fire until the resolved date, instead of running tomorrow by mistake.
+Scheduling also understands a relative *start*, not just a recurrence — "starting next week, check the news every morning" registers the agent now but holds its first fire until the resolved date, instead of running tomorrow by mistake. (Confirmed on-device for the registration/confirm-card path; a real multi-day wait through to the actual delayed fire hasn't been observed yet.)
+
+If the request itself is too vague to act on — "help me out" with no object or domain — Shelly asks what you actually want done *before* it asks when to run it, instead of scheduling an agent with an empty task.
 
 **Honest caveat:** unattended firing depends on Android's background limits, which vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers). Shelly uses Android's highest-priority alarm path (named above) and surfaces missed runs, but it can't *guarantee* a fire on every device — grant the battery-optimization exemption and check the agent's run view.
 
@@ -423,7 +425,6 @@ the next already-registered scheduled agent without opening Shelly.
 - **File Tree** — see above; embedded as a section so it flexes with the sidebar height
 - **Tasks** — recent background-agent runs with duration and status
 - **Device** — quick-access folders (`~`, `/sdcard/Download`, …) that re-bind the file tree in one tap
-- **Ports** — designed to list loopback / wildcard listeners and open `http://localhost:<port>` in the Browser pane. Android 10+ SELinux currently blocks the `/proc/net/tcp{,6}` reads for normal apps, so this remains tracked as a platform limitation in [Status](#status).
 - **Profiles** — saved SSH connections. Tap to insert `ssh -i KEY user@host -p PORT` into the active terminal pane; long-press to edit or delete; `Import from ~/.ssh/config` bulk-adds hosts. Key-file auth only — no passwords or passphrases are persisted.
 
 > **Cloud storage?** Shelly deliberately doesn't ship a Google Drive / Dropbox / OneDrive UI. A terminal app should lean on the tools that already solve this — install [`rclone`](https://rclone.org) from your package manager, run `rclone config` once, and mount or sync any of 40+ cloud backends from the terminal pane.
@@ -521,7 +522,7 @@ Currently registered:
 | Gemini API in AI Pane / `@gemini` / `@team` / background agents | ✅ available when a Gemini API key is configured |
 | Background / autonomous agents — `@agent` registration, unattended AlarmManager execution (getForegroundService), run / next / last / missed-run visibility | ✅ wired; one unattended fire observed end-to-end on Z Fold6 (N=1, app cached at fire) — cross-OEM reliability not yet broadly tested |
 | Agent social-post connectors — Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress | ✅ Bluesky verified live end-to-end; the other six ship on the same code path and test coverage but haven't each been fired against a real account yet |
-| Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
+| Agent task-clarity detection — asks what the task actually is when a request is too vague, before asking about scheduling | ✅ shipping; confirmed on-device 2026-07-27 |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Sidebar Quick Launch / Worktrees (one-tap CLI shortcuts) | ✅ shipping for Codex |
 | In-app Android APK updates (`android-latest/latest.json`, SHA-256 verification, Package Installer handoff) | ✅ shipping |

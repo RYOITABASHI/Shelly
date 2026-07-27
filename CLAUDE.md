@@ -56,7 +56,7 @@
 ```
 ShellLayout
 ├── AgentBar       (上部) — エージェント状態・通知・グローバルアクション
-├── Sidebar        (左)   — Tasks / Repos / Files / Device / Ports / Profiles
+├── Sidebar        (左)   — Tasks / Repos / Files / Device / Profiles
 ├── PaneContainer  (中央) — ターミナル/AI/ブラウザ/Markdownのペイン群
 └── ContextBar     (下部) — cwd・gitブランチ・接続状態
 ```
@@ -78,7 +78,7 @@ Shelly/
 │   ├── layout/
 │   │   ├── ShellLayout.tsx         # 全体レイアウト（AgentBar+Sidebar+Pane+ContextBar）
 │   │   ├── AgentBar.tsx            # 上部バー（エージェント切替+検索+設定）
-│   │   ├── Sidebar.tsx             # 左サイドバー（Tasks/Repos/Files/Device/Ports/Profiles）
+│   │   ├── Sidebar.tsx             # 左サイドバー（Tasks/Repos/Files/Device/Profiles）
 │   │   ├── SidebarSection.tsx      # アコーディオンセクション
 │   │   ├── FileTree.tsx            # ファイルブラウザ
 │   │   ├── ContextBar.tsx          # 下部ステータス（cwd・gitブランチ・接続状態）
