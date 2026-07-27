@@ -46,6 +46,10 @@ function mockT(key: string, params?: Record<string, string | number>): string {
 jest.mock('@/lib/i18n', () => ({
   useTranslation: () => ({ t: mockT }),
   t: mockT,
+  // summarizeAgentDraftAsText routes through tFor(locale, ...) instead of the
+  // global-locale-bound t() (2026-07-27 language-mismatch fix) — keep the
+  // same key(params)-JSON shape so assertions stay locale-blind.
+  tFor: (_locale: string, key: string, params?: Record<string, string | number>) => mockT(key, params),
 }));
 
 jest.mock('@/hooks/use-native-exec', () => ({

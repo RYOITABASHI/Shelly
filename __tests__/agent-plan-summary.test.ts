@@ -10,6 +10,11 @@
 jest.mock('@/lib/i18n', () => ({
   t: (key: string, params?: Record<string, string | number>) =>
     params ? `${key}|${JSON.stringify(params)}` : key,
+  // summarizeAgentDraftAsText now routes through tFor(locale, ...) instead of
+  // the global-locale-bound t() (2026-07-27 language-mismatch fix) — mirror
+  // the same key|params-JSON shape so existing assertions stay locale-blind.
+  tFor: (_locale: string, key: string, params?: Record<string, string | number>) =>
+    params ? `${key}|${JSON.stringify(params)}` : key,
 }));
 
 import {

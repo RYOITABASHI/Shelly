@@ -32,7 +32,8 @@ import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime } from './agent
 import { AgentAction } from '@/store/types';
 import { toolChoiceToLabel } from './agent-tool-router';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
-import { t } from './i18n';
+import { t, tFor, type Locale } from './i18n';
+import { detectMessageLocale } from './agent-slot-fill';
 // Type-only: erased at compile time, so importing from the .tsx component this
 // pure module otherwise has nothing to do with never pulls React/RN into its
 // (or its jest unit-project's) runtime graph.
@@ -165,7 +166,8 @@ export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
   return (draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool);
 }
 
-function scheduleText(draft: ParsedAgentDraft): string {
+function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
+  const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
   if (draft.schedule !== null) {
     const decoded = decodeCron(draft.schedule);
     return scheduleHuman(
@@ -174,7 +176,7 @@ function scheduleText(draft: ParsedAgentDraft): string {
       decoded.minute,
       decoded.weekday,
       decoded.interval,
-      t,
+      tl,
       decoded.dowList,
       decoded.hourList
         ? decoded.hourList.split(',').map((h) => parseInt(h, 10)).filter((n) => !Number.isNaN(n))
@@ -184,9 +186,9 @@ function scheduleText(draft: ParsedAgentDraft): string {
   if (draft.suggestedFrequency !== undefined) {
     // Ambiguous — see hasFireableSchedule. Do not fabricate a time here; the
     // dedicated hint line (schedule_restate_hint) covers this case.
-    return t('agentcard.schedule_unset');
+    return tl('agentcard.schedule_unset');
   }
-  return t('agentcard.sched_once');
+  return tl('agentcard.sched_once');
 }
 
 /** Plain, locale-agnostic "YYYY-MM-DD HH:MM" rendering of a next-fire Date
@@ -228,15 +230,16 @@ function appActContentPreview(params: Record<string, string> | undefined): strin
  *   `notify` carries no additional param on AgentAction today, so it needs
  *   no equivalent branch.
  */
-function actionText(action: AgentAction, draft?: ParsedAgentDraft): string {
+function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, locale: Locale): string {
+  const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
   if (action.type === 'app-act') {
     const target = action.appActRecipeId === 'x.post'
-      ? t('agentplan.appact_x_target')
-      : (action.appActRecipeId ?? t('agentcard.action_app-act'));
+      ? tl('agentplan.appact_x_target')
+      : (action.appActRecipeId ?? tl('agentcard.action_app-act'));
     const preview = appActContentPreview(action.appActParams);
     return preview
-      ? t('agentplan.appact_line_with_preview', { target, preview })
-      : t('agentplan.appact_line', { target });
+      ? tl('agentplan.appact_line_with_preview', { target, preview })
+      : tl('agentplan.appact_line', { target });
   }
   if (action.type === 'social-post' && action.socialPost) {
     // No connector display-label is carried on AgentAction (only the
@@ -244,21 +247,21 @@ function actionText(action: AgentAction, draft?: ParsedAgentDraft): string {
     // comment in store/types.ts) — this function stays a PURE render with no
     // store lookup, so the user-chosen id slug (usually descriptive, e.g.
     // "my-mastodon") stands in for a display label here.
-    const platformLabel = t(`social_connectors.platform_${action.socialPost.platform}`);
+    const platformLabel = tl(`social_connectors.platform_${action.socialPost.platform}`);
     const preview = appActContentPreview({ text: action.socialPost.text ?? '{{result}}' });
     return preview
-      ? t('agentplan.socialpost_line_with_preview', {
+      ? tl('agentplan.socialpost_line_with_preview', {
           platform: platformLabel,
           connector: action.socialPost.connectorId,
           preview,
         })
-      : t('agentplan.socialpost_line', { platform: platformLabel, connector: action.socialPost.connectorId });
+      : tl('agentplan.socialpost_line', { platform: platformLabel, connector: action.socialPost.connectorId });
   }
-  const label = t(`agentcard.action_${action.type}`);
+  const label = tl(`agentcard.action_${action.type}`);
   switch (action.type) {
     case 'draft': {
       const outputHint = draft?.outputPath?.trim();
-      return outputHint ? t('agentplan.draft_line_with_path', { path: outputHint }) : label;
+      return outputHint ? tl('agentplan.draft_line_with_path', { path: outputHint }) : label;
     }
     case 'webhook':
       return action.webhookUrl ? `${label} → ${action.webhookUrl}` : label;
@@ -315,9 +318,17 @@ export function summarizeAgentDraftAsText(
   changedFields: ReadonlySet<string> = new Set(),
   isEditing: boolean = false,
 ): string {
+  // 2026-07-27 on-device finding: this whole card was rendering in English
+  // for a Japanese `@agent` request, because every line went through the
+  // global-locale-bound t() instead of matching what the user actually typed
+  // in THIS message. Same bug shape (and same fix — detectMessageLocale on
+  // draft.rawText) as lib/agent-slot-fill.ts's nextMissingSlot already uses
+  // for slot-fill questions; see tFor's doc comment in lib/i18n/index.ts.
+  const locale = detectMessageLocale(draft.rawText);
+  const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
   const lines: string[] = [];
-  lines.push(markLine(t('agentplan.summary_name', { name: draft.name }), 'name', changedFields));
-  lines.push(markLine(t('agentplan.summary_schedule', { schedule: scheduleText(draft) }), 'schedule', changedFields));
+  lines.push(markLine(tl('agentplan.summary_name', { name: draft.name }), 'name', changedFields));
+  lines.push(markLine(tl('agentplan.summary_schedule', { schedule: scheduleText(draft, locale) }), 'schedule', changedFields));
 
   // Deferred-start ("来週あたりから毎朝…"): declare the "don't fire before"
   // anchor right next to the schedule line it modifies, whenever it's still
@@ -326,10 +337,10 @@ export function summarizeAgentDraftAsText(
   // here either, same as it's a no-op for the scheduler).
   const startNotBeforeFuture = !!(draft.startNotBefore && draft.startNotBefore > Date.now());
   if (startNotBeforeFuture) {
-    lines.push(t('agentplan.start_not_before_note', { date: formatDateOnlyForSummary(new Date(draft.startNotBefore!)) }));
+    lines.push(tl('agentplan.start_not_before_note', { date: formatDateOnlyForSummary(new Date(draft.startNotBefore!)) }));
   }
 
-  lines.push(markLine(t('agentplan.summary_action', { action: actionText(draft.action, draft) }), 'action', changedFields));
+  lines.push(markLine(tl('agentplan.summary_action', { action: actionText(draft.action, draft, locale) }), 'action', changedFields));
 
   // Phase B (2026-07-22): a schedule resolved from a bare time-of-day word
   // ("朝"→08:00, see lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS) is never
@@ -342,7 +353,7 @@ export function summarizeAgentDraftAsText(
     const assumedMinute = draft.suggestedTime?.minute ?? decoded.minute;
     const word = TIME_OF_DAY_ASSUMPTION_LABEL[assumedHour];
     if (word !== undefined) {
-      lines.push(t('agentplan.schedule_assumed_note', { word, time: fmtTime({ hour: assumedHour, minute: assumedMinute }) }));
+      lines.push(tl('agentplan.schedule_assumed_note', { word, time: fmtTime({ hour: assumedHour, minute: assumedMinute }) }));
     }
   }
 
@@ -359,12 +370,12 @@ export function summarizeAgentDraftAsText(
     const anchorDate = startNotBeforeFuture ? new Date(draft.startNotBefore!) : new Date();
     const next = nextFireDate(decoded, anchorDate);
     if (next) {
-      lines.push(t('agentplan.next_fire_note', { datetime: formatDateTimeForSummary(next) }));
+      lines.push(tl('agentplan.next_fire_note', { datetime: formatDateTimeForSummary(next) }));
     }
   }
 
   if (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2) {
-    lines.push(t('agentcard.orchestration', { count: draft.orchestrationSteps.length }));
+    lines.push(tl('agentcard.orchestration', { count: draft.orchestrationSteps.length }));
     draft.orchestrationSteps.forEach((s, i) => {
       const instruction = typeof s === 'string' ? s : s.instruction;
       const pinnedTool = typeof s === 'string' ? undefined : s.tool;
@@ -380,15 +391,15 @@ export function summarizeAgentDraftAsText(
   // fallback (see hasDraftAssumptions's doc comment) rather than the
   // deterministic parser — never leave that opaque, same reasoning as the
   // scheduleAssumed note right above this block.
-  if (draft.llmExtracted) lines.push(t('agentplan.llm_extracted_note'));
+  if (draft.llmExtracted) lines.push(tl('agentplan.llm_extracted_note'));
 
-  if (draft.autonomous) lines.push(markLine(t('agentplan.autonomous_note'), 'autonomous', changedFields));
+  if (draft.autonomous) lines.push(markLine(tl('agentplan.autonomous_note'), 'autonomous', changedFields));
   if (draft.memory?.remember) {
-    lines.push(t('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
+    lines.push(tl('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
   }
   if (draft.matchedSkill) {
     lines.push(
-      t('agentplan.skill_note', {
+      tl('agentplan.skill_note', {
         name: draft.matchedSkill.name,
         count: draft.matchedSkill.successCount,
       }),
@@ -397,7 +408,7 @@ export function summarizeAgentDraftAsText(
   if (draft.actionCaveat) lines.push(draft.actionCaveat);
 
   if (!hasFireableSchedule(draft)) {
-    lines.push(t('agentplan.schedule_restate_hint'));
+    lines.push(tl('agentplan.schedule_restate_hint'));
   } else {
     // 2026-07-23: on-device test of the Sidebar "Edit" entry point found
     // this line reading "Register this agent..." while editing an
@@ -405,7 +416,7 @@ export function summarizeAgentDraftAsText(
     // is about to be created). isEditing swaps in the "Update"-worded
     // counterpart; every other call site defaults to false, so ordinary
     // creation output is byte-identical to before this param existed.
-    lines.push(t(isEditing ? 'agentplan.confirm_prompt_edit' : 'agentplan.confirm_prompt'));
+    lines.push(tl(isEditing ? 'agentplan.confirm_prompt_edit' : 'agentplan.confirm_prompt'));
   }
 
   return lines.join('\n');

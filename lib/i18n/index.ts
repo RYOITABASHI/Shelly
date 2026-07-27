@@ -70,7 +70,26 @@ function detectLocale(): Locale {
  * Supports interpolation: t('hello_name', { name: 'John' }) => "Hello, John!"
  */
 export function t(key: string, params?: Record<string, string | number>): string {
-  const locale = useI18n.getState().locale;
+  return tFor(useI18n.getState().locale, key, params);
+}
+
+/**
+ * Same as `t()`, but for an EXPLICIT locale instead of the app's global UI
+ * language setting.
+ *
+ * 2026-07-27 on-device finding: agent-draft summary text (confirm-card
+ * "Agent: ... / Schedule: ... / Action: ..." lines) was rendering in English
+ * for a Japanese `@agent` request, because it went through `t()` — which
+ * always reads the GLOBAL locale — instead of matching what the user
+ * actually typed in that message. Same bug shape lib/agent-slot-fill.ts's
+ * detectMessageLocale doc comment already documents for a different code
+ * path (a user whose app language is EN but writes in Japanese was getting
+ * English slot-fill questions from the same global-i18n mistake). Callers
+ * that are responding to a specific user message (agent creation/summary
+ * text) should detect that message's own language via detectMessageLocale
+ * and call tFor(detected, ...) instead of the global-locale-bound t().
+ */
+export function tFor(locale: Locale, key: string, params?: Record<string, string | number>): string {
   let text = LOCALES[locale]?.[key] ?? LOCALES.en[key] ?? key;
 
   if (params) {
