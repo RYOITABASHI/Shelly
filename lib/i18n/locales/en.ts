@@ -1934,6 +1934,7 @@ const en: Record<string, string> = {
   'updates.download_log_paused': 'Download paused - {{progress}} - {{reason}}',
   'updates.download_log_verify': 'Verifying SHA-256',
   'updates.download_log_ready': 'APK is ready',
+  'updates.download_log_fallback_direct': 'Android DownloadManager failed ({{reason}}) - retrying with a direct download instead',
   'updates.download_log_error': 'Download failed',
   'updates.download_missing_title': 'Downloaded APK not found',
   'updates.download_missing_body': 'The downloaded APK is missing or failed verification. Download the update again.',

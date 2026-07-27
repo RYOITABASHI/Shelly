@@ -16,6 +16,7 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystemLegacy from 'expo-file-system/legacy';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ModalHeader } from '@/components/settings/ModalHeader';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -696,6 +697,86 @@ async function downloadReleaseApk(
   return apkPath;
 }
 
+/**
+ * Fallback download path that bypasses Android's DownloadManager entirely.
+ *
+ * 2026-07-27 on-device finding: three separate update attempts each failed a
+ * DIFFERENT way through DownloadManager -- a generic failure, an enqueued
+ * download whose row then vanished ("missing", i.e. a later
+ * getApkDownloadStatus query found no cursor row at all for a downloadId
+ * enqueue() had just returned), and a download that entered 'running' but
+ * never advanced past 0 bytes until the stall watchdog killed it. Direct
+ * `adb shell curl` reachability to the exact same release-asset URL from the
+ * device succeeded immediately with the correct Content-Length every time,
+ * and on-device storage had 91GB free -- ruling out both the network path
+ * and disk space as the cause. That points at the DownloadManager system
+ * component/content-provider itself being unreliable on this device right
+ * now, not at Shelly's request construction or the release asset.
+ *
+ * Uses expo-file-system's own native HTTP downloader (a completely separate
+ * code path from the `android.app.DownloadManager` system service
+ * TerminalEmulatorModule.kt's enqueueApkDownload/getApkDownloadStatus wrap)
+ * to fetch the exact same URL to the exact same destination path. Reuses the
+ * SAME native verifyApkFile() sha256 pin as the primary path -- an
+ * alternate transport must never mean a weaker integrity check, so a corrupt
+ * or tampered download is rejected identically either way.
+ */
+async function downloadReleaseApkDirect(
+  update: AndroidUpdateManifest,
+  onProgress?: (progress: DownloadApkProgress) => void,
+): Promise<string> {
+  const apkPath = releaseApkPath(update);
+  const dirUri = 'file://' + releaseApkDir();
+  const fileUri = 'file://' + apkPath;
+
+  onProgress?.({ step: 'prepare' });
+  await FileSystemLegacy.makeDirectoryAsync(dirUri, { intermediates: true }).catch(() => undefined);
+  // Drop any partial file a prior DownloadManager attempt may have left at
+  // this same path before starting a fresh direct download into it.
+  await FileSystemLegacy.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
+
+  onProgress?.({ step: 'download', downloadedBytes: 0, totalBytes: update.apkSizeBytes });
+  let lastBytes = 0;
+  let lastAt = Date.now();
+  const resumable = FileSystemLegacy.createDownloadResumable(
+    update.apkUrl,
+    fileUri,
+    {},
+    (data) => {
+      const now = Date.now();
+      const elapsedSinceLast = Math.max(1, now - lastAt) / 1000;
+      const speedBytesPerSec = Math.max(0, data.totalBytesWritten - lastBytes) / elapsedSinceLast;
+      lastBytes = data.totalBytesWritten;
+      lastAt = now;
+      onProgress?.({
+        step: 'download',
+        downloadedBytes: data.totalBytesWritten,
+        totalBytes: data.totalBytesExpectedToWrite > 0 ? data.totalBytesExpectedToWrite : update.apkSizeBytes,
+        speedBytesPerSec,
+      });
+    },
+  );
+
+  let result: Awaited<ReturnType<typeof resumable.downloadAsync>>;
+  try {
+    result = await resumable.downloadAsync();
+  } catch (e: any) {
+    throw new Error(`Direct download failed: ${String(e?.message || e)}`);
+  }
+  if (!result || result.status < 200 || result.status >= 300) {
+    throw new Error(`Direct download failed: HTTP ${result?.status ?? 'unknown'}`);
+  }
+
+  onProgress?.({ step: 'verify' });
+  const verify = await TerminalEmulator.verifyApkFile(apkPath, update.sha256, Math.trunc(update.apkSizeBytes ?? -1));
+  if (!verify.ok) {
+    await FileSystemLegacy.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
+    throw new Error(verify.error || `sha256 mismatch: expected ${update.sha256}, got ${verify.actualSha256}`);
+  }
+  onProgress?.({ step: 'ready' });
+  return apkPath;
+}
+
 async function readPendingApkDownload(): Promise<PendingApkDownload | null> {
   try {
     const raw = await AsyncStorage.getItem(ANDROID_UPDATE_DOWNLOAD_KEY);
@@ -1135,7 +1216,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
       setPreparingUpdateInstall(false);
       setDownloadingUpdate(true);
       setDownloadingUpdateChannel(channel);
-      const apkPath = await downloadReleaseApk(update, (progress) => {
+      const onDownloadProgress = (progress: DownloadApkProgress) => {
         switch (progress.step) {
           case 'prepare':
             pushDownloadLog('prepare', t('updates.download_log_prepare'));
@@ -1167,7 +1248,24 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
             pushDownloadLog('ready', t('updates.download_log_ready'), 'done');
             break;
         }
-      });
+      };
+      // 2026-07-27 on-device finding: Android's DownloadManager failed three
+      // different ways in a row for the exact same, independently-confirmed-
+      // reachable URL (see downloadReleaseApkDirect's doc comment). Falling
+      // back to a completely separate download transport (expo-file-system's
+      // own native HTTP client, not the DownloadManager system service) on
+      // failure means a flaky DownloadManager no longer blocks updates
+      // entirely. The fallback re-verifies the SAME sha256 pin, so this does
+      // not weaken the install-integrity guarantee.
+      let apkPath: string;
+      try {
+        apkPath = await downloadReleaseApk(update, onDownloadProgress);
+      } catch (dmError: any) {
+        pushDownloadLog('download', t('updates.download_log_fallback_direct', {
+          reason: String(dmError?.message || dmError),
+        }));
+        apkPath = await downloadReleaseApkDirect(update, onDownloadProgress);
+      }
       setDownloadedApk({
         channel,
         versionCode: update.versionCode,

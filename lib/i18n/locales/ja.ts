@@ -1916,6 +1916,7 @@ const ja: Record<string, string> = {
   'updates.download_log_paused': 'ダウンロード一時停止 - {{progress}} - {{reason}}',
   'updates.download_log_verify': 'SHA-256 を検証中',
   'updates.download_log_ready': 'APK の準備ができました',
+  'updates.download_log_fallback_direct': 'Android DownloadManagerが失敗しました（{{reason}}）— 直接ダウンロードで再試行します',
   'updates.download_log_error': 'ダウンロードに失敗しました',
   'updates.download_missing_title': 'ダウンロード済み APK が見つかりません',
   'updates.download_missing_body': 'APK が削除されたか検証に失敗しました。もう一度ダウンロードしてください。',

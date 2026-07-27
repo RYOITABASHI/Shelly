@@ -65,6 +65,26 @@
 
 ---
 
+### bug #161 — Android DownloadManagerがアプリ内アップデートで頻繁に失敗する — 直接ダウンロードのフォールバック実装済み・実機未検証 (P1)
+
+**優先度**: P1（次リリース推奨——アプリ内アップデート自体が使えないと、以降のビルド配布経路が詰まる。実機で3回連続、3種類とも違う失敗モードで再現した実害あり）
+
+**発見（2026-07-27、実機でのアップデート試行）**: `android-latest`から`versionCode 1979`への更新を試行 → 3回とも失敗、しかも毎回違う症状:
+1. 汎用の「Download failed」（進捗0B/613.2MBのまま）
+2. 「Android DownloadManager missing: no reason reported」——Kotlin側`getApkDownloadStatus`が`cursor.moveToFirst()`でfalseを返す、つまりDownloadManagerの内部DBに該当downloadIdの行が一切無い状態
+3. 「APK download stalled (no progress). Tap update again to retry.」——既存のstall watchdog（`BuildsModal.tsx`）が正しく検知・タイムアウト
+
+**切り分け結果**: `adb shell curl`で同じリリースアセットURLへ直接アクセスしたところ、302リダイレクト→200 OK・正しいContent-Lengthで即座に取得成功（毎回）。ストレージも91GB空き（461GB中370GB使用、81%）で問題なし。ネットワーク到達性・ディスク容量ともに正常なのに、Android標準のDownloadManagerコンポーネント（システムサービス）だけが機能していない状態——Shelly側のURL構築やリクエスト内容の問題ではなく、端末のDownloadManager自体が今不安定と判断。
+
+**実装した対策**: `components/layout/BuildsModal.tsx`に`downloadReleaseApkDirect()`を新設。`expo-file-system/legacy`の`createDownloadResumable`（DownloadManagerとは完全に別系統のネイティブHTTPダウンローダ）を使い、同じURL・同じ保存先パス（`releaseApkPath()`、DownloadManager版と文字列同一性を保った既存の慣習を踏襲）へ直接ダウンロードする。既存の`downloadReleaseApk()`（DownloadManager版）が例外を投げたら自動的にこちらへフォールバックする2段構え。**整合性検証は弱めていない**——フォールバック側も同じ`TerminalEmulator.verifyApkFile()`（sha256ピン留め）を通してから初めて`apkPath`を返す。
+
+**なぜ実機未検証か**: この機能自体が「新しいビルドを配布する経路」の修正のため、今夜中に新しいビルドを配って検証する、という手順が原理的に組めない（直そうとしている経路がまさに新しいビルドを取得する唯一の手段だったため）。次回、何らかの形で新ビルドが端末に入った後、DownloadManagerが再び失敗する状況を意図的に再現して（または次に自然発生した際に）、フォールバックが実際に発火し正常に完了することを確認すること。
+
+**検証**: `npx tsc --noEmit`クリーン（`expo-file-system/legacy`の型解決含む）。新規のユニットテストは追加していない——`BuildsModal.tsx`自体に既存のテストインフラが無く（TerminalEmulatorネイティブモジュール・AsyncStorage・expo-file-systemの一括モックが必要な大掛かりな新規セットアップになるため）、今回はコードレビューのみ。
+→ sync: なし。
+
+---
+
 ### ✅ bug #160 — `shelly-doctor`（`--json`無し）が古いフィールド参照でクラッシュ — 解消済み（`5fe429b26`）
 
 **優先度**: P2（次リリース検討——`shelly doctor`はcodex-loginの確認手順としてUIヒント文言でも案内している再現性100%のクラッシュだったため実害あり。ただし設定画面のDoctorボタン（`--json`付き呼び出し）は無関係のため実害は限定的）
@@ -2880,6 +2900,7 @@ claude() {
 
 ## History
 
+- **2026-07-27（bug#161: Android DownloadManager不調→直接ダウンロードのフォールバック実装）**: アプリ内アップデートが3回連続、3種類の違う失敗モードで失敗。`adb shell curl`での直接検証でネットワーク到達性・ストレージとも正常と確認、Android標準DownloadManagerコンポーネント自体の不調と判断。`expo-file-system/legacy`の`createDownloadResumable`を使った完全に別系統のダウンロード経路を新設し、DownloadManager失敗時に自動フォールバックするよう実装（sha256検証は両経路とも同一）。この修正自体が配布経路の修正のため今夜中の実機検証は不可、次回の自然発生 or 意図的再現時に確認予定。→ sync: なし。
 - **2026-07-27（bug#122 Doctor UI 実機検証PASS）**: Settings → Doctor → Run diagnostics、11項目全部OK確認。`--json`経路のためbug #160のクラッシュとは無関係。これで今夜のカテゴリA実機テスト（音声/Immortal Sessions/Codexタブ/ウィジェットRUN/Doctor UI）が全完了、残るは①②Gemini実エンジン確認（無料枠リセット待ち）のみ。→ sync: なし。
 - **2026-07-27（残テスト完走: Immortal Sessions実機PASS発見、AIペイン言語不一致・ウィジェットラベリング修正、`c9b52dbc1`/`5aa881b98`）**: 音声ダイアログ(PASS、ただし応答言語がUI設定に固定される実バグ発見→`buildAIPaneSystemPrompt`/`buildLocalAIPaneSystemPrompt`/`getShellyIdentity`3箇所修正)、Codexセッションタブグルーピング(PASS)、ウィジェットRUNボタン→Gemini失敗→Codexフォールバックのエンジン表示ミスラベリング(発見・修正、v33)、Immortal Sessions(vim対話状態の完全保持を実機確認、bug #65 Case B「解決している可能性」として更新)。①②Gemini実エンジン確認のみ無料枠クォータリセット待ちで未完了。→ sync: なし。
 - **2026-07-27（bug#160発見・解消: shelly-doctorの古いフィールド参照クラッシュ、`5fe429b26`）**: カテゴリA実機テストの一環で`shelly-doctor`をターミナルから直接実行 → 即クラッシュ。`codexReport()`のリファクタで`exec`フィールドが`tui.execHelp`に統合されたのに`printHuman()`側が追随しておらず存在しないフィールドを参照していた。`--json`モード（設定画面のDoctorボタン）は無関係で無事。実スクリプトをnode子プロセスで実行する新規テスト2件で固定。→ sync: なし。
