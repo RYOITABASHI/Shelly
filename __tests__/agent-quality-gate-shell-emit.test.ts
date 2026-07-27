@@ -314,3 +314,103 @@ describe('dispatch_agent_action — quality gate wired into draft/notify (real e
     expect(notifyCase).toMatch(/if is_low_quality_completion "\$preview"; then/);
   });
 });
+
+/**
+ * Regression test for a real on-device finding 2026-07-27: a needsWeb task
+ * ("ニュースを通知して") routed all the way to Codex even though Gemini's grounded
+ * attempt already produced real, useful news content — the needsWeb no-URL
+ * guard (right after generateToolCommand's call in generateRunScript) could
+ * not tell "backend wrote a design essay" apart from "Gemini performed a real
+ * Google Search grounded call whose citations live in a separate
+ * groundingMetadata JSON field, never inline text". This extracts the REAL
+ * emitted guard snippet and executes it with real bash against fixture files,
+ * so it fails the same way production would if the escaping or the new
+ * groundingChunks skip-condition regresses.
+ */
+function extractNoUrlGuard(script: string): string {
+  const startMarker = 'if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE \'https?://\' "$RESULT_CONTENT_FILE"';
+  const start = script.indexOf(startMarker);
+  if (start === -1) throw new Error('needsWeb no-URL guard not found in generated script');
+  const endMarker = '\nrm -f "$RESULT_FILE.response.json.diag"';
+  const end = script.indexOf(endMarker, start);
+  if (end === -1) throw new Error('closing cleanup line for the no-URL guard not found');
+  return script.slice(start, end + endMarker.length);
+}
+
+function runNoUrlGuard(opts: { resultContent: string; diagContent?: string }): {
+  backendErrorTouched: boolean;
+  resultFileContent: string;
+  diagFileRemoved: boolean;
+} {
+  const script = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: '最新ニュースを集めて' });
+  const guard = extractNoUrlGuard(script);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-no-url-guard-'));
+  const RESULT_FILE = path.join(dir, 'result');
+  const RESULT_CONTENT_FILE = `${RESULT_FILE}.answer`;
+  const BACKEND_ERROR_FILE = path.join(dir, 'backend-error');
+  const DIAG_FILE = `${RESULT_FILE}.response.json.diag`;
+  fs.writeFileSync(RESULT_CONTENT_FILE, opts.resultContent, 'utf8');
+  fs.writeFileSync(RESULT_FILE, '', 'utf8');
+  if (opts.diagContent !== undefined) {
+    fs.writeFileSync(DIAG_FILE, opts.diagContent, 'utf8');
+  }
+  const wrapperPath = path.join(dir, 'wrapper.sh');
+  const wrapper = `RESULT_FILE="${RESULT_FILE}"
+RESULT_CONTENT_FILE="${RESULT_CONTENT_FILE}"
+BACKEND_ERROR_FILE="${BACKEND_ERROR_FILE}"
+${guard}
+`;
+  fs.writeFileSync(wrapperPath, wrapper, 'utf8');
+  try {
+    execFileSync('bash', [wrapperPath], { stdio: 'pipe' });
+    return {
+      backendErrorTouched: fs.existsSync(BACKEND_ERROR_FILE),
+      resultFileContent: fs.readFileSync(RESULT_FILE, 'utf8'),
+      diagFileRemoved: !fs.existsSync(DIAG_FILE),
+    };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('needsWeb no-URL guard — real bash execution (Gemini grounding skip, 2026-07-27 regression)', () => {
+  it('marks a plain no-URL, non-Gemini result as a soft failure (unchanged pre-v31 behavior)', () => {
+    const r = runNoUrlGuard({ resultContent: 'no links here' });
+    expect(r.backendErrorTouched).toBe(true);
+    expect(r.resultFileContent).toContain('Collection produced no primary-source links');
+    expect(r.diagFileRemoved).toBe(true);
+  });
+
+  it('does NOT mark a genuinely grounded Gemini result (groundingChunks>0) as a failure, even with no inline URL', () => {
+    const r = runNoUrlGuard({
+      resultContent: 'ニュースの要約はこちらです。特にURLの言及はありません。',
+      diagContent: 'gemini finishReason=STOP groundingChunks=5 inlineUrl=false\n',
+    });
+    expect(r.backendErrorTouched).toBe(false);
+    expect(r.resultFileContent).toBe('');
+    expect(r.diagFileRemoved).toBe(true);
+  });
+
+  it('still marks as a failure when the diag file exists but groundingChunks=0 (e.g. a genuine MAX_TOKENS truncation), and surfaces the diagnostic', () => {
+    const r = runNoUrlGuard({
+      resultContent: '',
+      diagContent: 'gemini finishReason=MAX_TOKENS groundingChunks=0 inlineUrl=false\n',
+    });
+    expect(r.backendErrorTouched).toBe(true);
+    expect(r.resultFileContent).toContain('Collection produced no primary-source links');
+    expect(r.resultFileContent).toContain('Diagnostic: gemini finishReason=MAX_TOKENS groundingChunks=0 inlineUrl=false');
+    expect(r.diagFileRemoved).toBe(true);
+  });
+
+  it('a result WITH an inline URL never even reaches the guard body (unchanged) — no diag file needed', () => {
+    const r = runNoUrlGuard({ resultContent: 'See https://example.com for details' });
+    expect(r.backendErrorTouched).toBe(false);
+    expect(r.resultFileContent).toBe('');
+  });
+
+  it('a non-Gemini backend (no diag file at all) falls through to the unchanged pre-v31 soft-failure path', () => {
+    const r = runNoUrlGuard({ resultContent: 'a plain essay with no sources' });
+    expect(r.backendErrorTouched).toBe(true);
+    expect(r.resultFileContent).not.toContain('Diagnostic:');
+  });
+});

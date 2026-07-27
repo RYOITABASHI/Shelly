@@ -310,7 +310,28 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // (commit fdfd7e38c) — that change shared v29's number without its own bump;
 // noted here rather than amended, since every script at v29 already carries
 // that fix regardless.
-const AGENT_SCRIPT_VERSION = 30;
+// v31 (2026-07-27, needsWeb no-URL guard stops false-failing genuinely grounded
+// Gemini responses): investigated a real on-device run where a needsWeb task
+// ("ニュースを通知して") routed all the way to Codex even though Gemini's grounded
+// attempt already produced real, useful news content — the no-URL guard (the
+// block right after generateToolCommand's call above) could not distinguish
+// "backend wrote a design essay" from "Gemini performed a real Google Search
+// grounded call but its own prose never happened to spell out a literal
+// http(s):// substring" (grounding citations live in a separate
+// groundingMetadata.groundingChunks JSON field extract_ai_content never read).
+// extract_ai_content now best-effort writes "$RESULT_FILE.response.json.diag"
+// (finishReason + groundingChunk count + whether the extracted text itself had
+// an inline URL) whenever the raw response is Gemini-shaped (candidates[]) — a
+// no-op for every OpenAI-shaped (choices[]) backend. REAL BEHAVIOR CHANGE: when
+// groundingChunks>0, the no-URL guard now trusts that stronger signal and skips
+// the soft-failure entirely instead of touching BACKEND_ERROR_FILE — a stale
+// on-disk script would keep needlessly bouncing every URL-less-but-grounded
+// Gemini answer to Codex forever. When the diag file is absent/groundingChunks=0
+// (every non-Gemini backend, or a genuinely non-grounded Gemini failure),
+// behavior is unchanged from pre-v31 (same grep, same touch), plus an optional
+// diagnostic note for whatever this still doesn't catch (e.g. a genuine
+// finishReason:MAX_TOKENS truncation with zero grounding chunks).
+const AGENT_SCRIPT_VERSION = 31;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -950,11 +971,57 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     // Obsidian. Runs BEFORE the web→Codex bake so that ladder picks it up. Only when
     // the backend didn't already error (no double-mark). 'https?://' is precise: a
     // contract-compliant result carries real links, an essay does not.
+    //
+    // v31 (2026-07-27, investigated a real on-device run where this guard fired
+    // against Gemini's grounded response even though the completion read as
+    // genuine, useful news — not a hallucinated essay, and the run still had to
+    // escalate all the way to Codex to get an answer that had already been sitting
+    // in Gemini's own response): this guard could not tell "the backend described
+    // a workflow" apart from "the backend performed a real Google Search grounded
+    // call but its OWN prose text never happened to spell out a literal http(s)://
+    // substring" — Gemini's grounding citations live in a separate
+    // groundingMetadata.groundingChunks JSON field (see extract_ai_content's
+    // Gemini branch above) that this URL-in-text heuristic was never taught to
+    // read. extract_ai_content best-effort writes "$RESULT_FILE.response.json.diag"
+    // ("gemini finishReason=... groundingChunks=<N> inlineUrl=<bool>") only for
+    // Gemini-shaped (candidates[]) responses — a no-op for every OpenAI-shaped
+    // (choices[]) backend, so this change is inert for Perplexity/Cerebras/Groq/
+    // local. When groundingChunks>0, real grounding demonstrably occurred — that
+    // is a STRONGER signal than an incidental inline URL substring (a model could
+    // easily quote a URL from training data without ever having searched), so this
+    // is trusted over the plain grep and the soft-failure is skipped entirely. When
+    // the diag file is absent/unreadable/groundingChunks=0, behavior is BYTE-FOR-
+    // BYTE identical to pre-v31 (same soft-failure note, same BACKEND_ERROR_FILE
+    // touch) plus an optional trailing diagnostic line for whatever future case
+    // this still doesn't cover (e.g. finishReason:MAX_TOKENS with zero grounding
+    // chunks — the budget-exhaustion failure the prior 4096→8192 maxOutputTokens
+    // fix targeted, see the "8192 output budget" test). The diag file is removed
+    // unconditionally right after (whether the guard fired or not) so it can never
+    // leak into the bakeWebCodexLadder re-check below (a DIFFERENT, later attempt)
+    // or into a future unrelated run of this same agent (RESULT_FILE's path is
+    // deterministic per-agent, reused run to run).
     toolCommand = `${toolCommand}
 if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_CONTENT_FILE" 2>/dev/null; then
-  printf '\\n%s\\n' 'Collection produced no primary-source links (the backend described a workflow instead of collecting). Marked as a soft failure so the run escalates rather than drafting an essay.' >> "$RESULT_FILE"
-  touch "$BACKEND_ERROR_FILE"
-fi`;
+  GEMINI_DIAG_NOTE=""
+  GEMINI_GROUNDING_CHUNKS=0
+  if [ -s "$RESULT_FILE.response.json.diag" ]; then
+    GEMINI_DIAG_NOTE=$(head -c 200 "$RESULT_FILE.response.json.diag" | tr '\\n' ' ')
+    GEMINI_GROUNDING_CHUNKS=$(grep -oE 'groundingChunks=[0-9]+' "$RESULT_FILE.response.json.diag" 2>/dev/null | head -1 | cut -d= -f2 || true)
+    GEMINI_GROUNDING_CHUNKS=\${GEMINI_GROUNDING_CHUNKS:-0}
+  fi
+  if [ "$GEMINI_GROUNDING_CHUNKS" -gt 0 ] 2>/dev/null; then
+    : # Real Google Search grounding occurred even though the model's own prose
+      # never spelled out a literal URL — trust the grounding signal over the
+      # URL-in-text heuristic, do not mark this as a soft failure.
+  else
+    printf '\\n%s\\n' 'Collection produced no primary-source links (the backend described a workflow instead of collecting). Marked as a soft failure so the run escalates rather than drafting an essay.' >> "$RESULT_FILE"
+    if [ -n "$GEMINI_DIAG_NOTE" ]; then
+      printf 'Diagnostic: %s\\n' "$GEMINI_DIAG_NOTE" >> "$RESULT_FILE"
+    fi
+    touch "$BACKEND_ERROR_FILE"
+  fi
+fi
+rm -f "$RESULT_FILE.response.json.diag"`;
   }
   if (bakeWebCodexLadder) {
     // The web backend already touches BACKEND_ERROR_FILE (+ TRANSIENT_ERROR_FILE on
@@ -3807,6 +3874,26 @@ try {
   if (lines.length) sourcesBlock = '\\n\\n## Sources\\n' + lines.join('\\n');
 } catch (_) {}
 
+// v31 diagnostic sidecar (best-effort, never affects this function's stdout/exit
+// code): Gemini is the only backend shaped with a top-level candidates[] array,
+// so this is a natural no-op for OpenAI-shaped (choices[]) backends. Written
+// next to the raw response file (a DIFFERENT filename than the two the caller
+// rm -f's right after this call, so it survives) purely so the needsWeb no-URL
+// guard in generateRunScript — which only ever sees the already-extracted TEXT,
+// never this raw JSON — can report finishReason / grounding-chunk presence
+// instead of guessing "wrote an essay" for every no-inline-URL case alike. See
+// that guard's own comment for the full rationale and cleanup lifecycle.
+try {
+  const cand = data && Array.isArray(data.candidates) ? data.candidates[0] : null;
+  if (cand) {
+    const finishReason = cand.finishReason || 'unknown';
+    const chunks = cand.groundingMetadata && cand.groundingMetadata.groundingChunks;
+    const chunkCount = Array.isArray(chunks) ? chunks.length : 0;
+    const hasInlineUrl = /https?:\\/\\//.test(content || '');
+    fs.writeFileSync(file + '.diag', 'gemini finishReason=' + finishReason + ' groundingChunks=' + chunkCount + ' inlineUrl=' + hasInlineUrl + '\\n');
+  }
+} catch (_) {}
+
 const err = data?.error || data?.message;
 if (content) {
   process.stdout.write(content + sourcesBlock);
@@ -3895,6 +3982,23 @@ try:
             sources_block = "\\n\\n## Sources\\n" + "\\n".join(lines)
 except Exception:
     sources_block = ""
+
+# v31 diagnostic sidecar (best-effort, mirrors the node branch above) — see the
+# needsWeb no-URL guard's own comment in generateRunScript for the full
+# rationale and cleanup lifecycle.
+try:
+    candidates = data.get("candidates")
+    cand = candidates[0] if isinstance(candidates, list) and candidates else None
+    if cand:
+        finish_reason = cand.get("finishReason") or "unknown"
+        grounding = cand.get("groundingMetadata") or {}
+        chunks = grounding.get("groundingChunks")
+        chunk_count = len(chunks) if isinstance(chunks, list) else 0
+        has_inline_url = bool(content) and ("http://" in content or "https://" in content)
+        with open(path + ".diag", "w", encoding="utf-8") as diag_f:
+            diag_f.write("gemini finishReason=" + str(finish_reason) + " groundingChunks=" + str(chunk_count) + " inlineUrl=" + str(has_inline_url) + "\\n")
+except Exception:
+    pass
 
 err = data.get("error") or data.get("message")
 if content:
@@ -4171,6 +4275,11 @@ fi
 
 # Execute tool
 rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
+# v31 diagnostic sidecar (see extract_ai_content's Gemini branch below): pre-clean
+# a stale one from an earlier crashed run of this SAME agent (RESULT_FILE's path
+# is deterministic per-agent, reused run to run) so a leftover diagnostic can
+# never get misattributed to THIS run's attempt.
+rm -f "$RESULT_FILE.response.json.diag"
 # CAP-001: each run opens a fresh egress budget envelope (drop any stale counter).
 rm -f "$TMP_DIR/cap-budget-$AGENT_ID.json"
 ${toolCommand}
@@ -4385,7 +4494,7 @@ LOGEOF
 ls -t "$LOG_DIR"/*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 
 # Cleanup temp
-rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE"
+rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE" "$RESULT_FILE.response.json.diag"
 finish 0
 `;
 }

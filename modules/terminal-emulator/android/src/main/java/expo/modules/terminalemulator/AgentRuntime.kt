@@ -192,7 +192,20 @@ object AgentRuntime {
     // found via direct A/B model comparison on the same repro task. No
     // native-side change here; bumped purely so a stale pre-v30 on-disk
     // script (missing this pattern set) is regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 30
+    // v31 (2026-07-27, needsWeb no-URL guard stops false-failing genuinely
+    // grounded Gemini responses): investigated an on-device run where a
+    // needsWeb task routed all the way to Codex even though Gemini's grounded
+    // attempt already produced real news content — the guard couldn't tell
+    // "wrote an essay" apart from "grounded content whose citations live in
+    // groundingMetadata, not inline text". lib/agent-executor.ts's
+    // extract_ai_content now best-effort writes a small diagnostic sidecar
+    // for Gemini-shaped responses, and the guard now SKIPS the soft-failure
+    // entirely when it shows real grounding occurred (a real pass/fail
+    // behavior change, not just diagnostics) — falls back to the unchanged
+    // pre-v31 check otherwise. No native-side change here; bumped purely so
+    // a stale pre-v31 on-disk script (still bouncing every URL-less-but-
+    // grounded Gemini answer to Codex) is regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 31
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
