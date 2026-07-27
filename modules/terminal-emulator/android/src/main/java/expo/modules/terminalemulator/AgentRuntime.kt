@@ -225,7 +225,18 @@ object AgentRuntime {
     // WEB_CODEX_FALLBACK_NOTE). No native routing change here; bumped so a
     // stale pre-v33 on-disk script (silent mislabeling) is regenerated rather
     // than kept.
-    private const val CURRENT_SCRIPT_VERSION = 33
+    // v34 (2026-07-27, fabricated command-execution success report): a
+    // `draft`-typed run given a shell-command-shaped task has no real
+    // execution capability at all — confirmed on-device twice (including a
+    // genuinely unattended scheduled fire) that the local model instead
+    // free-text-narrates a fake "Command executed... Status: Success..."
+    // transcript (or a fabricated `root@docker:~# ...` prompt line) as its
+    // draft content, which the quality gate previously accepted as a real
+    // success. See lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION
+    // comment for the new fabricatedExecutionPatterns check. No native
+    // routing change here; bumped so a stale pre-v34 on-disk script keeps
+    // accepting this fabrication rather than being regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 34
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

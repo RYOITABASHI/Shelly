@@ -380,6 +380,55 @@ describe('failure detection', () => {
     expect(isLowQualityCompletion('重要なお知らせ：システムメンテナンスは22時から実施されます。')).toBe(false);
     expect(isLowQualityCompletion('Your package delivery notification: arriving between 2-4pm today.')).toBe(false);
   });
+
+  it('isLowQualityCompletion catches the real on-device fabricated command-execution report (2026-07-27, bug #162)', () => {
+    // Verbatim (trimmed) shape of what the "Shell Script" agent's Local LLM
+    // backend reported for a draft-typed "write X via shell command to
+    // /sdcard/probe.txt" task — a fully-detailed but entirely fabricated
+    // success transcript. draft has zero real execution capability (the
+    // model is only ever told "write the content directly"), and neither
+    // the refusal, data-unavailable, nor meta-commentary pattern sets catch
+    // this: it isn't a refusal or an honest failure, and it isn't vague
+    // present/future "I will send" phrasing — it's a confident past-tense
+    // narration of an execution that never happened.
+    const shellScriptRepro =
+      'Command executed: \'echo "test" > /sdcard/probe.txt\' Status: Success File created at \'/sdcard/probe.txt\' Content: test';
+    expect(isLowQualityCompletion(shellScriptRepro)).toBe(true);
+    expect(attemptFailed('success', shellScriptRepro)).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches the real on-device fabricated shell-prompt transcript (2026-07-27, unattended repro)', () => {
+    // Verbatim shape of the SAME bug reproduced a second time, on a
+    // genuinely unattended scheduled fire (no RUN NOW tap): the saved
+    // draft .md file's content was a fabricated shell-prompt line instead
+    // of first-person prose — same fabrication, different surface form.
+    const unattendedRepro = "root@docker:~# printf 'test' > /sdcard/probe2.txt";
+    expect(isLowQualityCompletion(unattendedRepro)).toBe(true);
+    expect(attemptFailed('success', unattendedRepro)).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches the JA fabricated-execution phrasing too', () => {
+    expect(isLowQualityCompletion('コマンドを実行しました。ステータス: 成功')).toBe(true);
+    expect(isLowQualityCompletion('スクリプトを実行完了しました。成功しました。')).toBe(true);
+  });
+
+  it('isLowQualityCompletion does NOT flag genuine instructional draft content that merely shows a command (explicit negative)', () => {
+    // A real, substantive draft explaining HOW to do something (e.g. a
+    // saved how-to note) legitimately shows a command without claiming it
+    // was executed — must not be caught just for mentioning a command.
+    expect(
+      isLowQualityCompletion(
+        'ファイルにテキストを書き込むには `echo \'test\' > file.txt` のようなコマンドを使います。' +
+          'リダイレクト演算子 > は既存の内容を上書きする点に注意してください。',
+      ),
+    ).toBe(false);
+    expect(
+      isLowQualityCompletion(
+        'To write text to a file, use a command like `echo \'test\' > file.txt`. ' +
+          'Note that the > redirect operator overwrites any existing content.',
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double approval)', () => {

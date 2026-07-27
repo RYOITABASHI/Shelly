@@ -234,6 +234,52 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
     expect(runEmbeddedCheck(embeddedJs, '重要なお知らせ：システムメンテナンスは22時から実施されます。')).toBe(1);
     expect(runEmbeddedCheck(embeddedJs, 'Your package delivery notification: arriving between 2-4pm today.')).toBe(1);
   });
+
+  it('the emitted regex source for the fabricated-execution check has real backslash escapes', () => {
+    expect(embeddedJs).toContain('\\b(?:command|script)\\s+(?:was\\s+)?executed\\b[\\s\\S]{0,100}\\bstatus:\\s*success\\b');
+    expect(embeddedJs).toContain('(?:コマンド|スクリプト)を実行(?:しました|完了しました)');
+  });
+
+  it('detects the real on-device fabricated command-execution report via the actual emitted script (2026-07-27, bug #162)', () => {
+    // Verbatim (trimmed) shape of what the "Shell Script" agent's Local LLM
+    // backend reported for a draft-typed "write X via shell command" task —
+    // a fully-detailed but entirely fabricated success transcript. Confirmed
+    // on-device that draft has zero real execution capability; the model
+    // free-text-narrates this instead of refusing or admitting it can't run
+    // commands.
+    const shellScriptRepro =
+      'Command executed: \'echo "test" > /sdcard/probe.txt\' Status: Success File created at \'/sdcard/probe.txt\' Content: test';
+    expect(runEmbeddedCheck(embeddedJs, shellScriptRepro)).toBe(0);
+  });
+
+  it('detects the real on-device fabricated shell-prompt transcript via the actual emitted script (2026-07-27, unattended repro)', () => {
+    // Reproduced a SECOND time on a genuinely unattended scheduled fire — the
+    // saved draft .md content was a fabricated shell-prompt line instead of
+    // first-person prose.
+    expect(runEmbeddedCheck(embeddedJs, "root@docker:~# printf 'test' > /sdcard/probe2.txt")).toBe(0);
+  });
+
+  it('detects the JA fabricated-execution phrasing via the actual emitted script', () => {
+    expect(runEmbeddedCheck(embeddedJs, 'コマンドを実行しました。ステータス: 成功')).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, 'スクリプトを実行完了しました。成功しました。')).toBe(0);
+  });
+
+  it('does NOT flag genuine instructional draft content that merely shows a command (explicit negative)', () => {
+    expect(
+      runEmbeddedCheck(
+        embeddedJs,
+        'ファイルにテキストを書き込むには `echo \'test\' > file.txt` のようなコマンドを使います。' +
+          'リダイレクト演算子 > は既存の内容を上書きする点に注意してください。',
+      ),
+    ).toBe(1);
+    expect(
+      runEmbeddedCheck(
+        embeddedJs,
+        'To write text to a file, use a command like `echo \'test\' > file.txt`. ' +
+          'Note that the > redirect operator overwrites any existing content.',
+      ),
+    ).toBe(1);
+  });
 });
 
 describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {

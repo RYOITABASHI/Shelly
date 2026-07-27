@@ -355,7 +355,24 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // first one didn't, instead of silently attributing the run to the tool that
 // failed. Bumped so a stale pre-v33 on-disk script (silent mislabeling) is
 // regenerated rather than kept.
-const AGENT_SCRIPT_VERSION = 33;
+// v34 (2026-07-27, fabricated command-execution success report): confirmed
+// on-device TWICE (once unattended, on a genuine scheduled fire) that a
+// `draft`-typed run given a shell-command-shaped task ("write X via shell
+// command to /sdcard/...") has NO real execution capability at all — the
+// local model is only ever asked to "write the content directly" — and a
+// small model given that task instead free-text-narrates a fully-detailed
+// FAKE transcript ("Command executed: ... Status: Success File created
+// at...", or a fabricated `root@docker:~# printf ... > /sdcard/probe.txt`
+// prompt line) as its "content". Both is_low_quality_completion() and
+// is_low_quality_completion_file() below, and isLowQualityCompletion() in
+// lib/agent-escalation-ladder.ts, previously accepted this as success —
+// none of the existing echo/refusal/data-unavailable/meta-commentary pattern
+// sets match a past-tense fabricated-success narrative. New
+// fabricatedExecutionPatterns (this file) / FABRICATED_EXECUTION_PATTERNS
+// (agent-escalation-ladder.ts) close the gap. REAL BEHAVIOR CHANGE: a stale
+// pre-v34 on-disk script keeps accepting this exact fabrication as `success`
+// forever; bumped so it regenerates.
+const AGENT_SCRIPT_VERSION = 34;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1553,10 +1570,20 @@ const actionMetaCommentaryPatterns = [
   /\\b(?:sending|will send|i(?:\\x27ll| will) send) the notification\\b/i,
   /\\btask (?:has been |is |was )?completed\\b/i,
 ];
+const fabricatedExecutionPatterns = [
+  /\\b(?:command|script)\\s+(?:was\\s+)?executed\\b[\\s\\S]{0,100}\\bstatus:\\s*success\\b/i,
+  /\\bstatus:\\s*success\\b[\\s\\S]{0,100}\\b(?:command|script)\\s+(?:was\\s+)?executed\\b/i,
+  /\\bfile\\s+(?:was\\s+|is\\s+)?created\\s+at\\b[\\s\\S]{0,100}\\bstatus:\\s*success\\b/i,
+  /\\bstatus:\\s*success\\b[\\s\\S]{0,100}\\bfile\\s+(?:was\\s+|is\\s+)?created\\b/i,
+  /(?:コマンド|スクリプト)を実行(?:しました|完了しました)[\\s\\S]{0,60}(?:成功しました|ステータス[:：]\\s*成功)/,
+  /(?:成功しました|ステータス[:：]\\s*成功)[\\s\\S]{0,60}(?:コマンド|スクリプト)を実行(?:しました|完了しました)/,
+  /(?:^|\\n)\\s*(?:root|\\w+)@[\\w.-]+:[^\\n#$]{0,60}[#$]\\s+\\S[^\\n]{0,120}[>|][^\\n]{0,80}/,
+];
 const trimmedText = text.trim();
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
-  (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text)));
+  (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
+  fabricatedExecutionPatterns.some((p) => p.test(text));
 process.exit(bad ? 0 : 1);
 ' 2>/dev/null; then
       return 0

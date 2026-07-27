@@ -312,11 +312,51 @@ const ACTION_META_COMMENTARY_PATTERNS = [
 ];
 
 /**
+ * Fabricated command-execution success report (2026-07-27 on-device finding,
+ * DEFERRED.md bug #162): unlike ACTION_META_COMMENTARY_PATTERNS (model
+ * announces it WILL/DID send a notification, in vague present/future tense),
+ * this catches a model narrating a FULLY-DETAILED FAKE execution transcript
+ * in confident past tense — "Command executed: '...' Status: Success File
+ * created at '...'" or a fabricated shell-prompt line
+ * ("root@docker:~# printf 'test' > /sdcard/probe.txt") — for a `draft` (also
+ * `notify`/`webhook`/`dm-reply`, which share this same check) action, which
+ * has NO real command-execution capability at all: the model is given a
+ * plain "write the content" system prompt with no tool-calling wired up.
+ * Confirmed TWICE on-device with two independently-registered agents
+ * ("Shell Script", "自律的シェルコマンド..."), one of them a genuinely
+ * UNATTENDED scheduled fire: the claimed file was never created at the real
+ * target path, only a markdown draft was saved to the app's own
+ * agent-output/ sandbox containing this fabricated transcript as its
+ * "content". status still logged success, no escalation fired, because
+ * neither existing pattern set matches this past-tense-narrative shape.
+ *
+ * Deliberately requires an execution/creation claim paired closely with an
+ * explicit "success" declaration (not length-gated like
+ * DATA_UNAVAILABLE_PATTERNS/ACTION_META_COMMENTARY_PATTERNS — this phrase
+ * combination is distinctive enough on its own): genuine instructional draft
+ * content ("how to write a file: `echo x > file`") does not normally pair a
+ * literal "Status: Success"/"ステータス: 成功" declaration with a command.
+ */
+const FABRICATED_EXECUTION_PATTERNS = [
+  /\b(?:command|script)\s+(?:was\s+)?executed\b[\s\S]{0,100}\bstatus:\s*success\b/i,
+  /\bstatus:\s*success\b[\s\S]{0,100}\b(?:command|script)\s+(?:was\s+)?executed\b/i,
+  /\bfile\s+(?:was\s+|is\s+)?created\s+at\b[\s\S]{0,100}\bstatus:\s*success\b/i,
+  /\bstatus:\s*success\b[\s\S]{0,100}\bfile\s+(?:was\s+|is\s+)?created\b/i,
+  /(?:コマンド|スクリプト)を実行(?:しました|完了しました)[\s\S]{0,60}(?:成功しました|ステータス[:：]\s*成功)/,
+  /(?:成功しました|ステータス[:：]\s*成功)[\s\S]{0,60}(?:コマンド|スクリプト)を実行(?:しました|完了しました)/,
+  // A fabricated shell-prompt line (root@host:~# / user@host:~$) with a
+  // redirect/pipe — the on-device repro's other observed shape
+  // (`root@docker:~# printf 'test' > /sdcard/probe2.txt`).
+  /(?:^|\n)\s*(?:root|\w+)@[\w.-]+:[^\n#$]{0,60}[#$]\s+\S[^\n]{0,120}[>|][^\n]{0,80}/,
+];
+
+/**
  * True when a completion is prompt-echo or refusal boilerplate, a short
- * "honest failure to retrieve the requested data" response, or a short
- * "meta-commentary about the delivery action" response — see
- * PROMPT_ECHO_MARKERS / REFUSAL_PATTERNS / DATA_UNAVAILABLE_PATTERNS /
- * ACTION_META_COMMENTARY_PATTERNS above. NOTE: this
+ * "honest failure to retrieve the requested data" response, a short
+ * "meta-commentary about the delivery action" response, or a fabricated
+ * command-execution success report — see PROMPT_ECHO_MARKERS /
+ * REFUSAL_PATTERNS / DATA_UNAVAILABLE_PATTERNS /
+ * ACTION_META_COMMENTARY_PATTERNS / FABRICATED_EXECUTION_PATTERNS above. NOTE: this
  * JS copy is the unit-tested source of truth, but it is a SECONDARY signal —
  * it only runs after a step's run log is read back, which for a step that
  * DISPATCHES an action (app-act/webhook/dm-reply) is already after the user
@@ -349,6 +389,7 @@ export function isLowQualityCompletion(text: string | null | undefined): boolean
   if (trimmed.length <= DATA_UNAVAILABLE_MAX_LEN && ACTION_META_COMMENTARY_PATTERNS.some((pattern) => pattern.test(text))) {
     return true;
   }
+  if (FABRICATED_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) return true;
   return false;
 }
 
