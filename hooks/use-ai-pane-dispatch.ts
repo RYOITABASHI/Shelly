@@ -801,19 +801,33 @@ export function useAIPaneDispatch(paneId: string) {
           // (extractAgentFieldsWithLlm's own fail-closed design swallows the
           // connection error and returns the draft untouched), so the whole
           // slot-fill retry looked identical to "the LLM judged nothing
-          // extractable" from the user's perspective. Gated on `enabled` so
-          // a user who has local LLM turned off never triggers an autostart
-          // attempt just from typing a slot-fill answer. Best-effort: any
-          // autostart failure/timeout is logged (see extractAgentFieldsWithLlm's
-          // own diagnostic logging) and falls straight through to the
-          // existing fail-closed extraction attempt below.
-          if (llmFallbackSettings.localLlmEnabled) {
+          // extractable" from the user's perspective.
+          //
+          // 2026-07-27 follow-up on-device finding: the first fix gated this
+          // preflight (and the `enabled` flag below) on `localLlmEnabled` —
+          // but that field is NOT a user preference. hooks/use-tool-discovery.ts
+          // overwrites it every 120s based on a live health-check poll, so it
+          // reads `false` for up to two minutes after the server merely idles
+          // out, which is EXACTLY the situation this preflight exists to
+          // recover from. Gating the recovery attempt on the same flag that
+          // "not currently reachable" sets to false was circular — the
+          // preflight could only fire when the server was already confirmed
+          // running. There is no separate, stable "user turned local LLM off"
+          // signal anywhere in this codebase to gate on instead (ConfigTUI's
+          // toggle writes the same field the poll overwrites), so this now
+          // gates on `localLlmUrl` being configured (matching the exact same
+          // check `ensureLocalLlmServerRunningOnce` itself already does
+          // internally) — safe even for users who never touched local LLM,
+          // since both `ensureLocalLlmServerRunning` and `ollamaChat` already
+          // fail closed gracefully (throttled, no spam) when nothing is
+          // actually reachable.
+          if (llmFallbackSettings.localLlmUrl) {
             await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-slotfill' }).catch(() => {});
           }
           const llmAttempt = await extractAgentFieldsWithLlm(userText, updatedDraft, {
             baseUrl: llmFallbackSettings.localLlmUrl,
             model: llmFallbackSettings.localLlmModel,
-            enabled: llmFallbackSettings.localLlmEnabled,
+            enabled: !!llmFallbackSettings.localLlmUrl,
           });
           const llmResolvedThisField =
             (field === 'schedule' && llmAttempt.scheduleConfident === true) ||
@@ -1002,13 +1016,22 @@ export function useAIPaneDispatch(paneId: string) {
               // schedule question instead of ever asking a task-clarity
               // question: if llama-server wasn't already running, the
               // extraction call below fails closed with no visible symptom.
-              if (llmFallbackSettings.localLlmEnabled) {
+              // 2026-07-27 follow-up: gating on `localLlmEnabled` was itself
+              // circular (see the matching comment above) — this device
+              // reproduced the exact scenario: `@agent 手伝って` correctly
+              // computed isLowConfidenceAgentDraft=true, but
+              // extractAgentFieldsWithLlm skipped with
+              // "config not usable (enabled=false, ...)" because
+              // localLlmEnabled had lapsed false from the 120s availability
+              // poll — the ONE situation this preflight most needs to fire in.
+              // Gates on `localLlmUrl` instead (see above for why).
+              if (llmFallbackSettings.localLlmUrl) {
                 await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-initial' }).catch(() => {});
               }
               draft = await extractAgentFieldsWithLlm(promptText, draft, {
                 baseUrl: llmFallbackSettings.localLlmUrl,
                 model: llmFallbackSettings.localLlmModel,
-                enabled: llmFallbackSettings.localLlmEnabled,
+                enabled: !!llmFallbackSettings.localLlmUrl,
               });
             }
             // Conversational slot-filling (Phase 0 §2.1): a draft missing a

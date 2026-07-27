@@ -733,9 +733,13 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
 // silently (by design — see extractAgentFieldsWithLlm's own doc comment) and
 // the flow falls through to the ordinary schedule slot-fill question,
 // indistinguishable from "the LLM judged the task as clear" from the user's
-// perspective. Fixed by adding the same preflight call, gated on
-// localLlmEnabled so a user with local LLM turned off never triggers an
-// autostart attempt.
+// perspective. First fix gated the new preflight on `localLlmEnabled` — a
+// SECOND on-device repro then showed that field is not a user preference, it
+// is overwritten every 120s by hooks/use-tool-discovery.ts's live
+// availability poll, so it reads false for up to two minutes after the
+// server merely idles out — precisely when this preflight is needed most.
+// Re-gated on `localLlmUrl` being configured instead (matching the exact
+// check ensureLocalLlmServerRunningOnce already does internally).
 describe('Scenario 7 — task-clarity LLM fallback calls ensureLocalLlmServerRunning before extraction (2026-07-27 on-device finding)', () => {
   beforeEach(() => {
     useSettingsStore.setState((s) => ({
@@ -792,8 +796,39 @@ describe('Scenario 7 — task-clarity LLM fallback calls ensureLocalLlmServerRun
     expect(question.content).not.toBe(ja['slot_fill.question_schedule']);
   });
 
-  it('does not call ensureLocalLlmServerRunning when local LLM is disabled (respects the user setting)', async () => {
+  it('still calls ensureLocalLlmServerRunning even when localLlmEnabled has lapsed false from the availability poll (2026-07-27 follow-up finding)', async () => {
+    // localLlmEnabled=false here on purpose, WITH localLlmUrl still set — the
+    // exact on-device state that broke the first fix: the 120s poll had
+    // marked local LLM unavailable, but the URL/model are still configured.
     useSettingsStore.setState((s) => ({ settings: { ...s.settings, localLlmEnabled: false } }));
+    mockEnsureLocalLlmServerRunning.mockClear();
+    mockOllamaChat.mockClear();
+    mockOllamaChat.mockImplementation(async () => ({
+      success: true,
+      content: JSON.stringify({
+        name: '',
+        scheduleText: '',
+        actionType: 'draft',
+        outputPath: '',
+        prompt: '',
+        taskClear: false,
+        clarifyingQuestion: '何を手伝ってほしいか、具体的に教えてください',
+      }),
+    }));
+
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 手伝って');
+    });
+
+    expect(mockEnsureLocalLlmServerRunning).toHaveBeenCalled();
+    expect(mockOllamaChat).toHaveBeenCalled();
+    const question = lastMessage();
+    expect(question.pendingSlotFill?.field).toBe('taskDetail');
+  });
+
+  it('does not call ensureLocalLlmServerRunning when local LLM has never been configured (no URL at all)', async () => {
+    useSettingsStore.setState((s) => ({ settings: { ...s.settings, localLlmEnabled: false, localLlmUrl: '' } }));
     mockEnsureLocalLlmServerRunning.mockClear();
     mockOllamaChat.mockClear();
 
