@@ -10,12 +10,8 @@
 </h3>
 
 <p align="center">
-  <sub><em>Honesty first: the full unattended cycle — plain-language registration → alarm fire with the screen off → delivered result — has been observed end-to-end <b>once, on a Galaxy Z Fold6 (N=1)</b>. The <a href="#status">Status</a> table tracks exactly what is and isn't verified.</em></sub>
-</p>
-
-<p align="center">
-  <sub><b>Underneath the agent is why you can trust it:</b> a full native terminal IDE — the real Codex CLI in an app-owned JNI PTY, bash / git / Python 3 / Node.js bundled in the APK, and API-backed AI panes (Gemini, Cerebras, Groq, Perplexity, local models) beside it. Everything the agent does runs in the same on-device shell you can open, inspect, and drive by hand.<br>
-  No Termux install, no distro bootstrap, no WebView terminal, no remote IDE bridge.</sub>
+  <sub><em>Honesty first: the full unattended cycle has been observed end-to-end <b>once, on a Galaxy Z Fold6 (N=1)</b> — the <a href="#status">Status</a> table tracks exactly what is and isn't verified from here on.</em></sub><br>
+  <sub><b>Underneath the agent is why you can trust it:</b> a full native terminal IDE — the real Codex CLI in an app-owned JNI PTY, bash / git / Python 3 / Node.js bundled in the APK, and API-backed AI panes (Gemini, Cerebras, Groq, Perplexity, local models) beside it. Everything the agent does runs in the same on-device shell you can open, inspect, and drive by hand. No Termux install, no distro bootstrap, no WebView terminal, no remote IDE bridge.</sub>
 </p>
 
 <p align="center">
@@ -38,7 +34,7 @@
   <a href="#why-shelly"><b>Why Shelly?</b></a> &nbsp;&middot;&nbsp;
   <a href="#features"><b>Features</b></a> &nbsp;&middot;&nbsp;
   <a href="#architecture"><b>Architecture</b></a> &nbsp;&middot;&nbsp;
-  <a href="#operational-metrics"><b>Metrics</b></a> &nbsp;&middot;&nbsp;
+  <a href="#release-integrity"><b>Metrics</b></a> &nbsp;&middot;&nbsp;
   <a href="#status"><b>Status</b></a> &nbsp;&middot;&nbsp;
   <a href="#contributing"><b>Contributing</b></a> &nbsp;&middot;&nbsp;
   <a href="#support"><b>Support</b></a>
@@ -55,7 +51,7 @@
 
 https://github.com/user-attachments/assets/ab272ae8-c741-4acb-b71d-2da151f50d75
 
-Type `@agent` and a plain-language instruction. Shelly turns it into a scheduled on-device agent that fires on its own alarm — here it set itself for 16:16, woke up while the screen was off, collected sources with the user's own API key, and wrote a primary-source summary to the Obsidian vault. *Observed end-to-end once on a Galaxy Z Fold6 (N=1); cross-OEM and deep-Doze behavior is not yet tested beyond this device — see [Status](#status).*
+Type `@agent` and a plain-language instruction. Shelly turns it into a scheduled on-device agent that fires on its own alarm — here it set itself for 16:16, woke up while the screen was off, collected sources with the user's own API key, and wrote a primary-source summary to the Obsidian vault.
 
 <br>
 
@@ -230,7 +226,7 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 
 | | |
 |---|---|
-| **On-device autonomous agent** | Say it in plain language → a scheduled agent runs on the phone *by itself* (screen off), on your own keys and tools, and tells you when it ran. It works where a cloud agent can't reach — your files, terminal, local LLM, the device itself. *One unattended run observed end-to-end on one device (N=1) — cross-OEM reliability not yet proven; see [Status](#status).* ([details](#autonomous-agents)) |
+| **On-device autonomous agent** | Say it in plain language → a scheduled agent runs on the phone *by itself* (screen off), on your own keys and tools, and tells you when it ran. It works where a cloud agent can't reach — your files, terminal, local LLM, the device itself. *N=1 verified so far — see [Status](#status).* ([details](#autonomous-agents)) |
 | **Multi-platform delivery** | An agent's output isn't limited to a notification or an Obsidian draft — it can post directly to Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, or WordPress, or call a webhook. Store each platform's key once, then point an agent at it in plain language. *Bluesky is verified live end-to-end; the other six connectors ship on the same code path and test coverage but haven't each been fired against a real account yet.* |
 | **Cross-pane intelligence** | Say "fix the error." AI reads your terminal, suggests a fix, one tap to run. Zero copy-paste. |
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
@@ -258,7 +254,7 @@ It's a **capability you point at your own tools**, not a fixed feature. One exam
 and write the primary-source links + a short summary to my Obsidian vault
 ```
 
-The schedule above registers an agent that, when it fires, wakes the phone, researches via Perplexity, and drops a dated, sourced summary into Obsidian — unattended. (Observed end-to-end once so far; see the demo and [Status](#status) for what's actually been verified.) Swap in your own schedule, source, and output.
+The schedule above registers an agent that, when it fires, wakes the phone, researches via Perplexity, and drops a dated, sourced summary into Obsidian — unattended, the same run shown in the demo above. Swap in your own schedule, source, and output.
 
 Scheduling also understands a relative *start*, not just a recurrence — "starting next week, check the news every morning" registers the agent now but holds its first fire until the resolved date, instead of running tomorrow by mistake. (Confirmed on-device for the registration/confirm-card path; a real multi-day wait through to the actual delayed fire hasn't been observed yet.)
 
@@ -774,7 +770,7 @@ The `colors` object is mutable and keeps the same identity, so every `import { c
 
 ---
 
-## Operational Metrics
+## Release Integrity
 
 These are intentionally operational rather than synthetic — they show the cost
 of shipping a real Android-native toolchain, not a thin client. The exact
@@ -840,23 +836,19 @@ Read the contributing guide: **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 ## Vision
 
-In two years, mobile terminals will be standard. The hardware is already here — 40+ TOPS NPUs, 12 GB of RAM, 7B-parameter models running on-device at interactive speeds — and the only thing missing is the interface. Shelly is a bet on that timeline.
+In two years, phones won't just run AI chat — they'll run agents that work while you're not looking. The hardware is already here — 40+ TOPS NPUs, 12 GB of RAM, 7B-parameter models running on-device at interactive speeds — and the missing piece was never compute. It was an interface that could hold a real terminal, a real toolchain, and a real scheduler in one place you already carry.
 
-When a full IDE runs in your pocket and local-LLM work doesn't have to phone home, you can work on your own keys, keep on-device inference fully local, and ship real software from places no laptop reaches. The first person to ship a production app from a plane without wifi will be using something like this.
+When local-LLM inference doesn't have to phone home and a scheduled task can wake the phone itself, you get agents that work on your own keys, from places no cloud runner reaches — no laptop left on, no server to pay for, no wifi required until the result needs to go somewhere. The first person to ship real, unattended work from a plane without wifi will be using something like this.
 
-Shelly was built for that future. Local LLM routing is already wired. The native terminal is already there. The multi-agent routing already supports local models alongside cloud APIs. The layout system already handles the screen real estate of foldables and tablets.
+Shelly was built for that future, agent-first: the escalation ladder across local and cloud backends is already wired, the scheduler and quality gates are already hardening under real on-device testing, and underneath all of it is the native terminal — the same environment a scheduled agent uses is the one you can open and drive by hand.
 
-The question isn't whether mobile development will happen. It's who builds the tools for it first.
+The question isn't whether unattended, on-device AI will happen. It's who builds the tools for it first, and whether those tools are honest about what's actually been verified along the way.
 
 ---
 
 ## About the Creator
 
-**RYO ITABASHI** — Creative Director at [Rebuild Factoryz](https://rebuildfactoryz.com/). Branding and design are my profession. Code is not.
-
-I built Shelly because I wanted to use Claude Code on my phone, but Termux was too intimidating. So I made a chat interface that hides the terminal complexity while keeping its full power. Along the way, the foreground CLI shifted to Codex — Claude Code's Android compatibility moves faster than any third-party app can chase — but the original frustration stayed the same. Then I realized the real problem wasn't the terminal itself — it was the gap between the terminal and the AI. So I connected them. Then the WebView kept dying, so I directed the AI to replace the entire rendering layer with a native terminal emulator. Then I realized I needed a browser pane, a markdown viewer, a code preview, a sidebar, and a proper layout system to make it a real IDE.
-
-I still don't hand-write code. I describe what I need, the AI builds it, and I decide whether it ships — after it has run on the device in my hand.
+**RYO ITABASHI** — Creative Director at [Rebuild Factoryz](https://rebuildfactoryz.com/). Branding and design are my profession. Code is not. See [The Story](#the-story) above for how that actually works and why it doesn't lower the bar for what ships.
 
 The keyboard in the screenshots is **Nacre** — a split-layout Android IME I built (also through AI) to solve the input problem on mobile. Shelly handles the interface. Nacre handles the input. Together, they make phone-only development actually possible.
 
