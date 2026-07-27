@@ -223,6 +223,7 @@ No Termux install. No proot. No ttyd. No remote bridge.
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **7 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, and Ask. Split up to 4 live panes freely. |
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
+| **Multi-platform delivery** | An agent's output isn't limited to a notification or an Obsidian draft — it can post directly to Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, or WordPress, or call a webhook. Store each platform's key once, then point an agent at it in plain language. *Bluesky is verified live end-to-end; the other six connectors ship on the same code path and test coverage but haven't each been fired against a real account yet.* |
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A translucent Android widget shows Codex state, model, always-on token / context / limit cells, local LLM health, device load, and the next scheduled agent without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK**, **Allow / Deny**, and choice pills control the foreground Codex PTY. |
@@ -243,6 +244,8 @@ and write the primary-source links + a short summary to my Obsidian vault
 ```
 
 The schedule above registers an agent that, when it fires, wakes the phone, researches via Perplexity, and drops a dated, sourced summary into Obsidian — unattended. (Observed end-to-end once so far; see the demo and [Status](#status) for what's actually been verified.) Swap in your own schedule, source, and output.
+
+Scheduling also understands a relative *start*, not just a recurrence — "starting next week, check the news every morning" registers the agent now but holds its first fire until the resolved date, instead of running tomorrow by mistake.
 
 **Honest caveat:** unattended firing depends on Android's background limits, which vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers). Shelly uses Android's highest-priority alarm path (named above) and surfaces missed runs, but it can't *guarantee* a fire on every device — grant the battery-optimization exemption and check the agent's run view.
 
@@ -517,6 +520,7 @@ Currently registered:
 | Codex managed native runtime (`codex_tui` staged under `~/.shelly-runtime/codex/current`, `--version` and `exec --help` smoke-tested, repair / reset to bundled runtime) | ✅ managed latest |
 | Gemini API in AI Pane / `@gemini` / `@team` / background agents | ✅ available when a Gemini API key is configured |
 | Background / autonomous agents — `@agent` registration, unattended AlarmManager execution (getForegroundService), run / next / last / missed-run visibility | ✅ wired; one unattended fire observed end-to-end on Z Fold6 (N=1, app cached at fire) — cross-OEM reliability not yet broadly tested |
+| Agent social-post connectors — Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress | ✅ Bluesky verified live end-to-end; the other six ship on the same code path and test coverage but haven't each been fired against a real account yet |
 | Sidebar Ports monitor (`/proc/net/tcp` → tap to open in Browser pane) | ⚠ Android 10+ SELinux denies both `/proc/net/tcp{,6}` reads and `NETLINK_SOCK_DIAG` sockets from `untrusted_app`; tracked in `docs/superpowers/DEFERRED.md` (P1) — needs an alternative channel (e.g. a bundled privileged helper or system_server intent) in a future release |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Sidebar Quick Launch / Worktrees (one-tap CLI shortcuts) | ✅ shipping for Codex |
