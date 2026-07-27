@@ -792,6 +792,24 @@ export function useAIPaneDispatch(paneId: string) {
         // already requires — no new safety exception, just a smarter retry.
         if (!resolved) {
           const llmFallbackSettings = useSettingsStore.getState().settings;
+          // 2026-07-27 on-device finding: unlike the agent==='local' chat-
+          // streaming path below (which always calls
+          // ensureLocalLlmServerRunning before its first token), this
+          // extraction fallback used to fire straight at ollamaChat with no
+          // preflight at all — if llama-server had been stopped/idled out
+          // since the last local-LLM use, the fetch fails closed silently
+          // (extractAgentFieldsWithLlm's own fail-closed design swallows the
+          // connection error and returns the draft untouched), so the whole
+          // slot-fill retry looked identical to "the LLM judged nothing
+          // extractable" from the user's perspective. Gated on `enabled` so
+          // a user who has local LLM turned off never triggers an autostart
+          // attempt just from typing a slot-fill answer. Best-effort: any
+          // autostart failure/timeout is logged (see extractAgentFieldsWithLlm's
+          // own diagnostic logging) and falls straight through to the
+          // existing fail-closed extraction attempt below.
+          if (llmFallbackSettings.localLlmEnabled) {
+            await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-slotfill' }).catch(() => {});
+          }
           const llmAttempt = await extractAgentFieldsWithLlm(userText, updatedDraft, {
             baseUrl: llmFallbackSettings.localLlmUrl,
             model: llmFallbackSettings.localLlmModel,
@@ -976,6 +994,17 @@ export function useAIPaneDispatch(paneId: string) {
             // hasDraftAssumptions.
             if (isLowConfidenceAgentDraft(draft)) {
               const llmFallbackSettings = useSettingsStore.getState().settings;
+              // 2026-07-27 on-device finding: see the matching comment on the
+              // slot-fill resume branch above — this initial-parse call site
+              // had the exact same gap (no ensureLocalLlmServerRunning
+              // preflight), which is the likely reason a genuinely vague
+              // utterance ("手伝って") silently skipped straight to the
+              // schedule question instead of ever asking a task-clarity
+              // question: if llama-server wasn't already running, the
+              // extraction call below fails closed with no visible symptom.
+              if (llmFallbackSettings.localLlmEnabled) {
+                await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-initial' }).catch(() => {});
+              }
               draft = await extractAgentFieldsWithLlm(promptText, draft, {
                 baseUrl: llmFallbackSettings.localLlmUrl,
                 model: llmFallbackSettings.localLlmModel,

@@ -58,6 +58,19 @@ jest.mock('@/lib/local-llm', () => ({
   ollamaChatStream: jest.fn(),
 }));
 
+// 2026-07-27 regression coverage (on-device finding: "@agent 手伝って" never
+// asked its task-clarity clarifying question): the two
+// extractAgentFieldsWithLlm call sites in hooks/use-ai-pane-dispatch.ts now
+// call ensureLocalLlmServerRunning first when local LLM is enabled, mirroring
+// the agent==='local' chat-streaming path. Mocked here (real module reads
+// settings-store + shells out via execCommand) so Scenario 7 below can assert
+// it was actually invoked, without the real 30s+ connect-retry loop running
+// under Jest.
+jest.mock('@/lib/local-llm-autostart', () => ({
+  ensureLocalLlmServerRunning: jest.fn(async () => ({ ok: true, status: 'ready' })),
+  kickLocalLlmAutoStart: jest.fn(),
+}));
+
 jest.mock('@/lib/sounds', () => ({
   playSound: jest.fn(),
 }));
@@ -138,6 +151,11 @@ import type { Agent } from '@/store/types';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { hasDraftAssumptions, summarizeAgentDraftAsText } from '@/lib/agent-plan-summary';
 import ja from '@/lib/i18n/locales/ja';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { ollamaChat: mockOllamaChat } = require('@/lib/local-llm') as { ollamaChat: jest.Mock };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { ensureLocalLlmServerRunning: mockEnsureLocalLlmServerRunning } =
+  require('@/lib/local-llm-autostart') as { ensureLocalLlmServerRunning: jest.Mock };
 
 const PANE = 'pane-under-test';
 
@@ -699,5 +717,95 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
     expect(mockCreateAgent).not.toHaveBeenCalled();
     const editMsgAfter = conv().messages.find((m) => m.id === editMessageId);
     expect(editMsgAfter?.agentCardState).toBe('confirmed');
+  });
+});
+
+// ─── Scenario 7: task-clarity LLM fallback autostart preflight ────────────
+//
+// 2026-07-27 on-device finding: "@agent 手伝って" (an utterance with neither a
+// confident schedule NOR an explicit action — isLowConfidenceAgentDraft
+// should be true) skipped straight to "いつ実行しますか？" instead of ever
+// asking what the task actually is. Root cause: the two
+// extractAgentFieldsWithLlm call sites in hooks/use-ai-pane-dispatch.ts never
+// called ensureLocalLlmServerRunning before firing the extraction request —
+// unlike the agent==='local' chat-streaming path, which always does. If
+// llama-server wasn't already running, the extraction request fails closed
+// silently (by design — see extractAgentFieldsWithLlm's own doc comment) and
+// the flow falls through to the ordinary schedule slot-fill question,
+// indistinguishable from "the LLM judged the task as clear" from the user's
+// perspective. Fixed by adding the same preflight call, gated on
+// localLlmEnabled so a user with local LLM turned off never triggers an
+// autostart attempt.
+describe('Scenario 7 — task-clarity LLM fallback calls ensureLocalLlmServerRunning before extraction (2026-07-27 on-device finding)', () => {
+  beforeEach(() => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+  });
+
+  it('calls ensureLocalLlmServerRunning before ollamaChat, and a taskClear:false response asks the clarifying question BEFORE the schedule question', async () => {
+    mockEnsureLocalLlmServerRunning.mockClear();
+    mockOllamaChat.mockClear();
+    const callOrder: string[] = [];
+    mockEnsureLocalLlmServerRunning.mockImplementation(async () => {
+      callOrder.push('ensureLocalLlmServerRunning');
+      return { ok: true, status: 'ready' };
+    });
+    mockOllamaChat.mockImplementation(async () => {
+      callOrder.push('ollamaChat');
+      return {
+        success: true,
+        content: JSON.stringify({
+          name: '',
+          scheduleText: '',
+          actionType: 'draft',
+          outputPath: '',
+          prompt: '',
+          taskClear: false,
+          clarifyingQuestion: '何を手伝ってほしいか、具体的に教えてください',
+        }),
+      };
+    });
+
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 手伝って');
+    });
+
+    // The autostart preflight ran, and ran BEFORE the extraction call.
+    expect(mockEnsureLocalLlmServerRunning).toHaveBeenCalled();
+    expect(mockEnsureLocalLlmServerRunning.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ waitForReady: true, reason: 'agent-llm-fallback-initial' }),
+    );
+    expect(callOrder).toEqual(['ensureLocalLlmServerRunning', 'ollamaChat']);
+
+    // The clarifying question — NOT "いつ実行しますか？" — is what the user sees.
+    const question = lastMessage();
+    expect(question.role).toBe('assistant');
+    expect(question.pendingSlotFill?.field).toBe('taskDetail');
+    expect(question.content).toBe('何を手伝ってほしいか、具体的に教えてください');
+    expect(question.content).not.toBe(ja['slot_fill.question_schedule']);
+  });
+
+  it('does not call ensureLocalLlmServerRunning when local LLM is disabled (respects the user setting)', async () => {
+    useSettingsStore.setState((s) => ({ settings: { ...s.settings, localLlmEnabled: false } }));
+    mockEnsureLocalLlmServerRunning.mockClear();
+    mockOllamaChat.mockClear();
+
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 手伝って');
+    });
+
+    expect(mockEnsureLocalLlmServerRunning).not.toHaveBeenCalled();
+    expect(mockOllamaChat).not.toHaveBeenCalled();
+    // Falls through to the ordinary schedule question, exactly as before.
+    const question = lastMessage();
+    expect(question.pendingSlotFill?.field).toBe('schedule');
   });
 });

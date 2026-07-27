@@ -51,6 +51,7 @@ import { parseSchedule } from './agent-nl-parser';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { isCapabilityQuestion } from './ask-context';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
+import { logInfo } from './debug-logger';
 
 // ── §1: low-confidence detection ────────────────────────────────────────
 
@@ -104,12 +105,28 @@ const EXPLICIT_DRAFT_KEYWORD_RE = /ドラフト|下書き|\bdraft\b/i;
  * signal, which is a materially harder problem than this pass scopes to.
  */
 export function isLowConfidenceAgentDraft(draft: ParsedAgentDraft): boolean {
-  if (draft.scheduleConfident) return false;
-  const actionExplicit =
-    draft.action.type !== 'draft' ||
-    !!draft.actionCaveat ||
-    EXPLICIT_DRAFT_KEYWORD_RE.test(draft.rawText);
-  return !actionExplicit;
+  // 2026-07-27: this whole module had ZERO logging before tonight's on-device
+  // repro ("@agent 手伝って" silently skipped the task-clarity question), which
+  // made it impossible to tell from logcat whether this gate was the problem,
+  // the LLM call was never attempted, the call failed silently, or the model
+  // simply judged a vague utterance as clear. Every branch below logs its
+  // outcome + the specific reason, so a future repro shows a clear trail.
+  if (draft.scheduleConfident) {
+    logInfo('AgentLlmFallback', 'isLowConfidenceAgentDraft=false (scheduleConfident=true)');
+    return false;
+  }
+  const explicitActionType = draft.action.type !== 'draft';
+  const hasActionCaveat = !!draft.actionCaveat;
+  const hasExplicitDraftKeyword = EXPLICIT_DRAFT_KEYWORD_RE.test(draft.rawText);
+  const actionExplicit = explicitActionType || hasActionCaveat || hasExplicitDraftKeyword;
+  const result = !actionExplicit;
+  logInfo(
+    'AgentLlmFallback',
+    `isLowConfidenceAgentDraft=${result} (scheduleConfident=false, actionType=${draft.action.type}, ` +
+      `explicitActionType=${explicitActionType}, hasActionCaveat=${hasActionCaveat}, ` +
+      `hasExplicitDraftKeyword=${hasExplicitDraftKeyword})`,
+  );
+  return result;
 }
 
 // ── §2: capability-question detection ───────────────────────────────────
@@ -427,7 +444,19 @@ export async function extractAgentFieldsWithLlm(
   timeoutMs = 15_000,
   maxTokens = 300,
 ): Promise<ParsedAgentDraft> {
-  if (!llmConfig.enabled || !llmConfig.baseUrl || !llmConfig.model) return draft;
+  if (!llmConfig.enabled || !llmConfig.baseUrl || !llmConfig.model) {
+    logInfo(
+      'AgentLlmFallback',
+      `extractAgentFieldsWithLlm skipped: config not usable (enabled=${llmConfig.enabled}, ` +
+        `baseUrl=${llmConfig.baseUrl || '(empty)'}, model=${llmConfig.model || '(empty)'})`,
+    );
+    return draft;
+  }
+  logInfo(
+    'AgentLlmFallback',
+    `extractAgentFieldsWithLlm calling ollamaChat (baseUrl=${llmConfig.baseUrl}, model=${llmConfig.model}, ` +
+      `timeoutMs=${timeoutMs}, maxTokens=${maxTokens})`,
+  );
   try {
     const result = await ollamaChat(
       llmConfig,
@@ -436,11 +465,38 @@ export async function extractAgentFieldsWithLlm(
       undefined,
       maxTokens,
     );
-    if (!result.success || !result.content) return draft;
+    if (!result.success || !result.content) {
+      logInfo(
+        'AgentLlmFallback',
+        `extractAgentFieldsWithLlm: ollamaChat failed or empty (success=${result.success}, ` +
+          `error=${result.error ?? '(none)'}) — draft unchanged`,
+      );
+      return draft;
+    }
     const extraction = parseAgentLlmExtractionResponse(result.content);
-    if (!extraction) return draft;
-    return mergeLlmExtractionIntoDraft(draft, extraction);
-  } catch {
+    if (!extraction) {
+      logInfo(
+        'AgentLlmFallback',
+        `extractAgentFieldsWithLlm: response failed to parse as valid extraction JSON — draft unchanged. ` +
+          `raw (first 300 chars): ${result.content.slice(0, 300)}`,
+      );
+      return draft;
+    }
+    const merged = mergeLlmExtractionIntoDraft(draft, extraction);
+    logInfo(
+      'AgentLlmFallback',
+      `extractAgentFieldsWithLlm: extracted taskClear=${extraction.taskClear ?? '(unset)'}, ` +
+        `clarifyingQuestion=${extraction.clarifyingQuestion ? JSON.stringify(extraction.clarifyingQuestion) : '(none)'}, ` +
+        `scheduleText=${extraction.scheduleText ? JSON.stringify(extraction.scheduleText) : '(none)'}, ` +
+        `actionType=${extraction.actionType ?? '(unset)'} -> needsTaskClarification=` +
+        `${merged.needsTaskClarification ? JSON.stringify(merged.needsTaskClarification) : '(unset)'}`,
+    );
+    return merged;
+  } catch (err) {
+    logInfo(
+      'AgentLlmFallback',
+      `extractAgentFieldsWithLlm: threw (${err instanceof Error ? err.message : String(err)}) — draft unchanged`,
+    );
     return draft;
   }
 }
