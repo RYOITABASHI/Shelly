@@ -91,6 +91,24 @@ describe('AI pane terminal context', () => {
     expect(prompt).toContain('Do not say you cannot see the terminal');
     expect(prompt).toContain('untrusted data');
   });
+
+  // 2026-07-27 on-device finding: "今日の天気を教えて" (a Japanese question,
+  // via the LOCAL tool with terminal context active) got answered in
+  // English — neither system prompt builder had any language instruction at
+  // all, so the model fell back to its own training bias instead of matching
+  // the user's message. Both builders now instruct per-message language
+  // matching instead of a fixed language.
+  it('instructs per-message language matching (cloud/terminal-aware prompt)', () => {
+    const prompt = buildAIPaneSystemPrompt('codex-cli 0.135.0', 'local', null);
+    expect(prompt).toContain('SAME language the user\'s most recent message is written in');
+    expect(prompt).not.toMatch(/reply (concisely )?in english/i);
+  });
+
+  it('instructs per-message language matching (short local LLM prompt)', () => {
+    const prompt = buildLocalAIPaneSystemPrompt('codex-cli 0.135.0');
+    expect(prompt).toContain('SAME language the user\'s most recent message is written in');
+    expect(prompt).not.toMatch(/reply (concisely )?in english/i);
+  });
 });
 
 describe('AI pane capability grounding', () => {

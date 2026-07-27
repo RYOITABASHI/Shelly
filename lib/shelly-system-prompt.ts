@@ -20,9 +20,17 @@ import { getCurrentLocale } from '@/lib/i18n';
 
 function getShellyIdentity(): string {
   const locale = getCurrentLocale();
+  // 2026-07-27 on-device finding: a Japanese question got answered in
+  // English because this instruction picked a FIXED language from the app's
+  // global UI locale setting, not from what the user actually wrote in that
+  // message — the exact same bug shape lib/agent-slot-fill.ts's
+  // detectMessageLocale doc comment already documents (a user whose app
+  // language is EN but writes in Japanese was getting English answers from
+  // the global i18n lookup). Instructs per-message language matching instead
+  // of a fixed language either way.
   const langInstruction = locale === 'ja'
-    ? 'あなたはShellyのAIアシスタントです。日本語で簡潔に回答してください。'
-    : 'You are Shelly\'s AI assistant. Reply concisely in English.';
+    ? 'あなたはShellyのAIアシスタントです。ユーザーの直近のメッセージと同じ言語で簡潔に回答してください（アプリのUI言語設定に関わらず、日本語で聞かれたら日本語で、英語で聞かれたら英語で）。'
+    : 'You are Shelly\'s AI assistant. Reply concisely in the SAME language the user\'s most recent message is written in, regardless of this app\'s UI language setting.';
 
   const appDesc = locale === 'ja'
     ? 'Shellyは Android のAI統合ターミナルアプリです。'
