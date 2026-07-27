@@ -1997,7 +1997,9 @@ A が最小コスト、B が cleanest、C が radical。Codex review で意見�
 
 ---
 
-### ✅ bug #122 — Shelly Doctor UI dashboard (Codex AnyClaw review 2026-04-25) — 最小スライス実装済み (`de76b118b`、実機検証待ち)
+### ✅ bug #122 — Shelly Doctor UI dashboard (Codex AnyClaw review 2026-04-25) — 最小スライス実装済み・✅ 実機検証済み (`de76b118b`、2026-07-27)
+
+**→ 2026-07-27 実機検証PASS**: Settings → Doctor → `Run diagnostics`をタップ、11項目全部OK表示を確認（Node binary / Bash library / Exec wrapper / xdg-open shim / Codex TUI / Codex JS dispatcher / Codex auth / Leftover credentials in Download / auth.json permissions / .env permissions / API keys in environment）。`--json`経路を使うため、bug #160（CLIの`shelly-doctor`人間可読モードのクラッシュ）とは無関係で無事だったことも実機で確認済み。
 
 **発見**: 2026-04-25 Codex AnyClaw 比較レビュー
 **動機**: AnyClaw は health/auth/CLI version/proxy 状態を 1 画面 dashboard で出している。Shelly は `shelly doctor` を CLI で持っているが UI 化されていない。HN ローンチ後にユーザーが「動かない」と言ってきたとき、screenshot 1 枚で診断できると support コストが激減する。
@@ -2878,6 +2880,7 @@ claude() {
 
 ## History
 
+- **2026-07-27（bug#122 Doctor UI 実機検証PASS）**: Settings → Doctor → Run diagnostics、11項目全部OK確認。`--json`経路のためbug #160のクラッシュとは無関係。これで今夜のカテゴリA実機テスト（音声/Immortal Sessions/Codexタブ/ウィジェットRUN/Doctor UI）が全完了、残るは①②Gemini実エンジン確認（無料枠リセット待ち）のみ。→ sync: なし。
 - **2026-07-27（残テスト完走: Immortal Sessions実機PASS発見、AIペイン言語不一致・ウィジェットラベリング修正、`c9b52dbc1`/`5aa881b98`）**: 音声ダイアログ(PASS、ただし応答言語がUI設定に固定される実バグ発見→`buildAIPaneSystemPrompt`/`buildLocalAIPaneSystemPrompt`/`getShellyIdentity`3箇所修正)、Codexセッションタブグルーピング(PASS)、ウィジェットRUNボタン→Gemini失敗→Codexフォールバックのエンジン表示ミスラベリング(発見・修正、v33)、Immortal Sessions(vim対話状態の完全保持を実機確認、bug #65 Case B「解決している可能性」として更新)。①②Gemini実エンジン確認のみ無料枠クォータリセット待ちで未完了。→ sync: なし。
 - **2026-07-27（bug#160発見・解消: shelly-doctorの古いフィールド参照クラッシュ、`5fe429b26`）**: カテゴリA実機テストの一環で`shelly-doctor`をターミナルから直接実行 → 即クラッシュ。`codexReport()`のリファクタで`exec`フィールドが`tui.execHelp`に統合されたのに`printHuman()`側が追随しておらず存在しないフィールドを参照していた。`--json`モード（設定画面のDoctorボタン）は無関係で無事。実スクリプトをnode子プロセスで実行する新規テスト2件で固定。→ sync: なし。
 - **2026-07-27（Gemini→Codexフォールバック調査、真因確定: 無料枠クォータ超過、`8ff31f8f7`/`cf1e50f2b`/`5fefa309a`）**: v31修正後も同一症状が再現し実機テスト中に難航→Codexへ深掘り委託。副産物としてタスク不明瞭検知の第2の実バグ（`localLlmEnabled`が実は120秒ポーリングの自動検出フラグでユーザー設定ではなく、preflightのゲート条件に使うと循環構造になっていた）も発見・修正。Codexの調査結果は「コードのバグではなくアカウント/クォータ側の問題」——ただし診断情報を握りつぶす別バグ（v32で解消）も発見。最終的にユーザーがGoogle AI Studioダッシュボードで**Gemini 2.5 FlashのRPD 31/20（無料枠日次上限超過）**を直接確認し確定。詳細はbug#158エントリの一連の追記参照。→ sync: なし。
