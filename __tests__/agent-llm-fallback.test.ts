@@ -331,14 +331,39 @@ describe('mergeLlmExtractionIntoDraft', () => {
     expect(result.llmExtracted).toBe(true);
   });
 
-  it('sets needsTaskClarification from the LLM\'s own question when taskClear is false', () => {
+  it('sets needsTaskClarification from the LLM\'s own question when taskClear is false (same language as the request)', () => {
     const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, {
+      taskClear: false,
+      clarifyingQuestion: 'What specifically would you like prepared for tomorrow?',
+    });
+    expect(result.needsTaskClarification).toBe('What specifically would you like prepared for tomorrow?');
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('2026-07-27 on-device finding: falls back to a localized generic question when the LLM answers in the wrong language', () => {
+    // A real repro: "手伝って" (rawText is Japanese) got its clarifying
+    // question back in English despite the extraction prompt instructing
+    // "same language as the request" — small local models don't reliably
+    // follow that. detectMessageLocale is the SAME per-message heuristic
+    // lib/agent-slot-fill.ts's nextMissingSlot already uses, so this mirrors
+    // production behavior exactly rather than re-deriving a new check.
+    const draft = baseDraft({ rawText: '手伝って' });
+    const result = mergeLlmExtractionIntoDraft(draft, {
+      taskClear: false,
+      clarifyingQuestion: 'What task would you like me to perform?',
+    });
+    expect(result.needsTaskClarification).toBe('具体的に何をしてほしいか、もう少し詳しく教えてください。');
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('trusts a Japanese clarifyingQuestion for a Japanese request (matching languages, no fallback)', () => {
+    const draft = baseDraft({ rawText: '手伝って' });
     const result = mergeLlmExtractionIntoDraft(draft, {
       taskClear: false,
       clarifyingQuestion: '明日は何の準備をしますか？',
     });
     expect(result.needsTaskClarification).toBe('明日は何の準備をしますか？');
-    expect(result.llmExtracted).toBe(true);
   });
 
   it('does NOT set needsTaskClarification when taskClear is false but clarifyingQuestion is empty', () => {

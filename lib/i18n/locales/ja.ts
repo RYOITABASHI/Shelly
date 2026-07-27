@@ -466,6 +466,7 @@ const ja: Record<string, string> = {
   // 2026-07-24: 例示を削除——理解できない回答は再質問の前にローカルLLMへ
   // フォールバックするようになった（hooks/use-ai-pane-dispatch.ts参照）ため、
   // パーサーの決まった言い回しに誘導する例示は不要になった。
+  'slot_fill.question_task_detail_fallback': '具体的に何をしてほしいか、もう少し詳しく教えてください。',
   'slot_fill.question_schedule': 'いつ実行しますか？',
   'slot_fill.question_notification_trigger': 'どのアプリの通知が来たら実行しますか？（例: com.whatsapp や Slack のように、アプリ名かパッケージ名で教えてください）',
   'slot_fill.question_output_path': '結果はどこに保存しますか？（未設定の場合はShelly内の既定フォルダを使います。特に希望が無ければ「そのままでいい」と答えてください）',

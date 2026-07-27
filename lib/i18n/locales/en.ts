@@ -478,6 +478,7 @@ const en: Record<string, string> = {
   // deterministic parser can't understand now falls back to the local LLM
   // before re-asking (see hooks/use-ai-pane-dispatch.ts), so free-form
   // phrasing no longer needs steering toward the parser's exact patterns.
+  'slot_fill.question_task_detail_fallback': 'Could you tell me more specifically what you would like me to do?',
   'slot_fill.question_schedule': 'When should this run?',
   'slot_fill.question_notification_trigger': 'Which app\'s notifications should trigger this? (e.g. com.whatsapp or an app name like Slack)',
   'slot_fill.question_output_path': 'Where should the result be saved? (Leave blank or say "skip" to use Shelly\'s default folder.)',

@@ -52,6 +52,9 @@ import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { isCapabilityQuestion } from './ask-context';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
 import { logInfo } from './debug-logger';
+import { detectMessageLocale } from './agent-slot-fill';
+import en from './i18n/locales/en';
+import ja from './i18n/locales/ja';
 
 // ── §1: low-confidence detection ────────────────────────────────────────
 
@@ -406,7 +409,33 @@ export function mergeLlmExtractionIntoDraft(
 
   if (extraction.taskClear === false && extraction.clarifyingQuestion) {
     const m = next();
-    m.needsTaskClarification = extraction.clarifyingQuestion;
+    // 2026-07-27 on-device finding: the extraction prompt already instructs
+    // "written in the SAME language as the request" (see EXTRACTION_PROMPT
+    // above), but small local models don't reliably follow that instruction
+    // — a live repro asked "手伝って" and got the clarifying question back in
+    // English. The LLM is trusted to ask a question, but never trusted to
+    // pick the right language for it (same "LLM proposes, deterministic code
+    // decides" pattern this whole module already uses for schedule/action —
+    // see the module doc comment). detectMessageLocale is the SAME per-
+    // message heuristic lib/agent-slot-fill.ts's nextMissingSlot already
+    // uses to pick a question language independent of the device's global
+    // i18n setting, so a mismatch here would have shown the same question in
+    // the wrong language regardless of this fix. On a mismatch, fall back to
+    // a fixed, correctly-localized generic question rather than the LLM's
+    // own (wrong-language) text.
+    const requestLocale = detectMessageLocale(draft.rawText);
+    const questionLocale = detectMessageLocale(extraction.clarifyingQuestion);
+    if (requestLocale === questionLocale) {
+      m.needsTaskClarification = extraction.clarifyingQuestion;
+    } else {
+      const fallback = (requestLocale === 'ja' ? ja : en)['slot_fill.question_task_detail_fallback'];
+      logInfo(
+        'AgentLlmFallback',
+        `clarifyingQuestion language mismatch (request=${requestLocale}, question=${questionLocale}) — ` +
+          `using localized fallback instead of: ${JSON.stringify(extraction.clarifyingQuestion)}`,
+      );
+      m.needsTaskClarification = fallback;
+    }
     touched = true;
   } else if (extraction.taskClear === true && draft.needsTaskClarification) {
     const m = next();
