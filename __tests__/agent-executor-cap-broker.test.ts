@@ -63,7 +63,7 @@ describe('capability broker wiring — http_post_json seam (CAP/HTTP/SECRET-001)
   });
 
   it('bumps the script version in lockstep with the native gate', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=33');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=35');
   });
 
   // 2026-07-17 follow-up (docs/superpowers/DEFERRED.md "Capability broker
@@ -81,7 +81,13 @@ describe('capability broker wiring — http_post_json seam (CAP/HTTP/SECRET-001)
 describe('capability broker wiring — scoped.fs and workspace.exec seams (FS/EXEC-001)', () => {
   it('draft saving routes through scoped.fs when SHELLY_CAP_FS=1 and fails closed if unavailable', () => {
     const s = generateRunScript(agent({ type: 'local' }, false));
-    expect(s).toContain('cap_fs_write_file "$SAVED_FILE" "$result_file"');
+    // 2026-07-27 fix (plaintext-secret-in-saved-draft leak, AGENT_SCRIPT_VERSION
+    // v35): save_draft_result() now writes the redact_secrets_text()-passed
+    // "$redacted_result" temp file, not the raw "$result_file", into cap_fs_write_file
+    // — see lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION v35 comment.
+    // The scoped.fs broker plumbing itself (the assertions below) is unchanged.
+    expect(s).toContain('cap_fs_write_file "$SAVED_FILE" "$redacted_result"');
+    expect(s).not.toContain('cap_fs_write_file "$SAVED_FILE" "$result_file"');
     expect(s).toContain('cap_fs_write_file "$OBSIDIAN_DEST" "$SAVED_FILE"');
     expect(s).toContain('if [ "${SHELLY_CAP_FS:-0}" = "1" ] && node_usable && [ -f "$HOME/.shelly-capability-broker.js" ]; then');
     expect(s).toContain('--op fs.write --path "$dest" --input-file "$src"');

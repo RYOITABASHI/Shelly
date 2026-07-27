@@ -27,6 +27,18 @@ function redactString(input: string): string {
   return out;
 }
 
+/** String-typed entry point for callers that already know they have a plain
+ *  string and want a string back without the `unknown`-typed redactSecrets()
+ *  cast. Same SECRET_PATTERNS, same redaction behavior — just avoids `as
+ *  string` at every call site. Added for lib/agent-nl-parser.ts's deriveName()
+ *  (auto-derived agent display name — see its call site for the 2026-07-27
+ *  on-device finding that motivated this) and agent-executor.ts's
+ *  computeAgentSlug() (filename derivation), so both reuse this pattern list
+ *  instead of duplicating it. */
+export function redactSecretsText(input: string): string {
+  return redactString(input);
+}
+
 export function redactSecrets(value: unknown): unknown {
   if (typeof value === 'string') return redactString(value);
   if (value == null) return value;

@@ -1518,4 +1518,34 @@ describe('parseAgentNL — fuzz sweep findings (2026-07-24)', () => {
       expect(d.prompt).toContain('について'); // prompt (full-fidelity task text) is NOT affected, only the display name
     });
   });
+
+  describe('deriveName — secret redaction (2026-07-27 on-device finding, bug: plaintext key in saved note)', () => {
+    // Built at runtime (not a literal template) so repository secret scanning
+    // does not flag this test fixture as a live credential.
+    const FAKE_SECRET = ['sk-test-', '1234567890abcdef'].join('');
+
+    it('does not carry a raw API-key-shaped substring into the auto-derived display name (exact on-device repro utterance)', () => {
+      const d = parseAgentNL(`今すぐ、「API key: ${FAKE_SECRET}」という内容でメモを作成して`);
+      expect(d.name).not.toContain(FAKE_SECRET);
+      // the derived name still names an editable, non-empty label — this is a
+      // redaction fix, not a "reject the task" fix.
+      expect(d.name.length).toBeGreaterThan(0);
+    });
+
+    it('the full-fidelity prompt (what the agent actually writes into the note) is UNCHANGED — only the display name/filename surface is redacted', () => {
+      const d = parseAgentNL(`今すぐ、「API key: ${FAKE_SECRET}」という内容でメモを作成して`);
+      expect(d.prompt).toContain(FAKE_SECRET);
+    });
+
+    it('redacts other provider key shapes too (Anthropic, Google) via the same shared pattern list', () => {
+      const fakeAnthropic = ['sk-ant-', 'abcdefghijklmnopqrstuvwxyz123456'].join('');
+      const fakeGoogle = ['AI', 'za', 'abcdefghijklmnopqrstuvwxyz123456789'].join('');
+      expect(parseAgentNL(`${fakeAnthropic} をメモして`).name).not.toContain(fakeAnthropic);
+      expect(parseAgentNL(`${fakeGoogle} をメモして`).name).not.toContain(fakeGoogle);
+    });
+
+    it('leaves ordinary utterances with no secret-shaped substring unaffected (no regression)', () => {
+      expect(parseAgentNL('今日の主要ニュースを出典付きで3つ集めて').name).toContain('今日');
+    });
+  });
 });

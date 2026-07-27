@@ -329,7 +329,11 @@ describe('dated-folder output template (N4)', () => {
     expect(s).toContain('OUTPUT_NAME_TEMPLATE=');
     expect(s).toContain('s|{date}|$DATE|g');
     expect(s).toContain('s|{slug}|$SLUG|g');
-    expect(s).toContain('cap_fs_write_file "$SAVED_FILE" "$result_file"');
+    // 2026-07-27 fix (plaintext-secret-in-saved-draft leak, AGENT_SCRIPT_VERSION
+    // v35): save_draft_result() now writes the redact_secrets_text()-passed
+    // "$redacted_result" temp file, not the raw "$result_file" — see
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION v35 comment.
+    expect(s).toContain('cap_fs_write_file "$SAVED_FILE" "$redacted_result"');
     // The old hardcoded flat name is gone.
     expect(s).not.toContain('SAVED_FILE="$OUTPUT_DIR/$DATE-$SLUG.md"');
   });
@@ -549,7 +553,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=33');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=35');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');

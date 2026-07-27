@@ -21,6 +21,7 @@ import {
 } from './agent-orchestration';
 import { clampCharLimit } from './agent-pipeline-presets';
 import { isSafeConnectorId, socialConnectorEnvPrefix } from './social-connectors';
+import { redactSecretsText } from './redact-secrets';
 
 // MODEL-001 Phase A shadow instrumentation (read-only, observational only —
 // see lib/model-router/shadow.ts and lib/model-router/wiring.ts). This wires
@@ -372,7 +373,27 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // (agent-escalation-ladder.ts) close the gap. REAL BEHAVIOR CHANGE: a stale
 // pre-v34 on-disk script keeps accepting this exact fabrication as `success`
 // forever; bumped so it regenerates.
-const AGENT_SCRIPT_VERSION = 34;
+// v35 (2026-07-27, save_draft_result() plaintext-secret leak): confirmed
+// on-device that a draft agent's saved .md file persisted a raw, unredacted
+// API key in its CONTENT — save_draft_result() (both the USE_GLOBAL_OUTPUT=1
+// branch and the content-studio branch) wrote $result_file to disk via
+// cap_fs_write_file with NO redact_secrets_text pass at all, unlike
+// clean_result_preview()/clean_result_full() which already redact before a
+// result reaches a webhook body, notification, or dm-reply. A pasted "API
+// key: sk-test-..." task produced a saved note with the literal key text
+// still readable via `cat`. Fixed by redacting $result_file into a temp file
+// ONCE at the top of save_draft_result() and writing/mirroring/registering
+// source URLs from that redacted copy in both branches (register_source_urls
+// too, since a secret embedded in a URL query param would otherwise persist
+// into SOURCE_REGISTRY_FILE and get replayed into a FUTURE agent's prompt as
+// SOURCE_CONTEXT — a second exposure path). REAL BEHAVIOR CHANGE: previously
+// -unredacted saved draft content is now redacted; bumped so a stale pre-v35
+// on-disk script (which keeps writing raw secrets to disk) is regenerated
+// rather than kept. The companion filename/display-name leak (agent.name
+// auto-derived from the same secret-bearing prompt, then slugified into the
+// same filename) is a TS-side fix in deriveName()/computeAgentSlug() and
+// does not need a script-version bump on its own.
+const AGENT_SCRIPT_VERSION = 35;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -533,9 +554,17 @@ export function agentNeedsDeviceStatusContext(agent: Agent): boolean {
 // "" (the old [^a-z0-9] strip), producing "2026-06-24-.md" with an empty title.
 const SLUG_DROP_RE = /[^a-z0-9぀-ヿ㐀-鿿ｦ-ﾟ]+/g;
 
-/** Filesystem-safe slug from an agent name; falls back to the id when empty. */
+/** Filesystem-safe slug from an agent name; falls back to the id when empty.
+ *  Redacts secret-shaped substrings first as defense-in-depth: the normal
+ *  auto-naming path (deriveName() in lib/agent-nl-parser.ts) already redacts
+ *  before agent.name is ever set, but the confirm card's name field is
+ *  user-editable (components/panes/AgentConfirmCard.tsx), so a name that
+ *  never went through deriveName can still reach here. Mirrors the same
+ *  belt-and-suspenders pattern resolve_app_act_params() uses in the generated
+ *  shell script (redacting an already-redacted value is a cheap no-op; the
+ *  protection only matters on the path that skipped the first pass). */
 export function computeAgentSlug(name: string, fallback: string): string {
-  const s = (name || '')
+  const s = redactSecretsText(name || '')
     .toLowerCase()
     .replace(SLUG_DROP_RE, '-')
     .replace(/-{2,}/g, '-')
@@ -2451,6 +2480,25 @@ save_draft_result() {
   DATE=$(date +%Y-%m-%d)
   TIME=$(date +%H%M%S)
 
+  # 2026-07-27 on-device finding: a draft agent's saved .md file carried a raw
+  # unredacted API key (both in content and, separately, in the filename via
+  # SLUG — see computeAgentSlug()'s doc comment for that half of the fix).
+  # clean_result_preview()/clean_result_full() already redact before a result
+  # reaches a webhook body, notification, or dm-reply — this was the one
+  # emission point that wrote $result_file straight to disk with no
+  # redact_secrets_text pass at all. Redact into a temp file ONCE here and
+  # write/mirror/register-from THAT in both branches below, same
+  # redact-into-temp-file pattern clean_result_full() uses. Falls back to a
+  # raw copy only if both the node and sed paths inside redact_secrets_text
+  # themselves fail open (matches redact_secrets_text's own documented
+  # fail-open contract for its sed fallback) rather than silently saving
+  # nothing.
+  redacted_result="$TMP_DIR/draft-result-redacted-$AGENT_ID-$$.md"
+  redact_secrets_text "$result_file" > "$redacted_result" 2>/dev/null || true
+  if [ ! -s "$redacted_result" ] && [ -s "$result_file" ]; then
+    cp "$result_file" "$redacted_result" 2>/dev/null || true
+  fi
+
   # General collection agents: write to the user-chosen destination with a clean,
   # findable layout <base>/<topic?>/<date>/<date>_<title>.md. The .sh sources
   # ~/.shelly/agents/.env, so these globals (written by Settings) are in scope.
@@ -2471,9 +2519,17 @@ save_draft_result() {
         ;;
     esac
     SAVED_FILE="$OUT_BASE/$DATE/\${DATE}_$SLUG.md"
-    cap_fs_write_file "$SAVED_FILE" "$result_file"
+    cap_fs_write_file "$SAVED_FILE" "$redacted_result"
     SAVED_PATH=$(resolve_saved_path "$SAVED_FILE")
-    register_source_urls "$result_file"
+    # Registered from the REDACTED copy, not $result_file: register_source_urls
+    # only extracts https?:// substrings, but a secret-bearing query param
+    # (e.g. "...?key=sk-proj-...") would otherwise flow into the persisted
+    # SOURCE_REGISTRY_FILE tsv AND get replayed back into a future agent's
+    # prompt as SOURCE_CONTEXT — a second, worse exposure path than the file
+    # save itself. Ordinary source URLs have no secret-shaped substring, so
+    # this is a no-op for the normal case.
+    register_source_urls "$redacted_result"
+    rm -f "$redacted_result"
     return 0
   fi
 
@@ -2488,7 +2544,7 @@ save_draft_result() {
     *) REL_NAME="$REL_NAME.md" ;;
   esac
   SAVED_FILE="$OUTPUT_DIR/$REL_NAME"
-  cap_fs_write_file "$SAVED_FILE" "$result_file"
+  cap_fs_write_file "$SAVED_FILE" "$redacted_result"
   SAVED_PATH=$(resolve_saved_path "$SAVED_FILE")
 
   if [ -n "\${OBSIDIAN_VAULT_PATH:-}" ] && [ -d "$OBSIDIAN_VAULT_PATH" ]; then
@@ -2506,7 +2562,8 @@ save_draft_result() {
     SAVED_PATH_MIRROR=$(resolve_saved_path "$OBSIDIAN_DEST")
   fi
 
-  register_source_urls "$result_file"
+  register_source_urls "$redacted_result"
+  rm -f "$redacted_result"
 }
 
 dispatch_agent_action() {

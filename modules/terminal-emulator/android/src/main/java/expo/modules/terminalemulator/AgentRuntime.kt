@@ -236,7 +236,18 @@ object AgentRuntime {
     // comment for the new fabricatedExecutionPatterns check. No native
     // routing change here; bumped so a stale pre-v34 on-disk script keeps
     // accepting this fabrication rather than being regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 34
+    // v35 (2026-07-27, save_draft_result() plaintext-secret leak): confirmed
+    // on-device that a draft agent's saved .md file persisted a raw,
+    // unredacted API key in its CONTENT — save_draft_result() wrote
+    // $result_file to disk with no redact_secrets_text pass at all, unlike
+    // clean_result_preview()/clean_result_full() which already redact before
+    // a webhook body/notification/dm-reply. See lib/agent-executor.ts's
+    // matching AGENT_SCRIPT_VERSION comment for the full fix (redact into a
+    // temp file once, write/mirror/register-source-urls from that redacted
+    // copy in both output branches). No native routing change here; bumped
+    // so a stale pre-v35 on-disk script (still writing raw secrets to disk)
+    // is regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 35
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

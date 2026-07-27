@@ -20,6 +20,7 @@ import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnector
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, tagStepsWithToolMentions } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
+import { redactSecretsText } from './redact-secrets';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -1037,6 +1038,19 @@ const NAME_STRIP_RE = new RegExp(
 
 /** Derive a short, human-friendly name (editable in the card). */
 function deriveName(text: string): string {
+  // 2026-07-27 on-device finding: an agent registered from "「API key:
+  // sk-test-1234567890abcdef」という内容でメモを作成して" auto-named itself
+  // literally to that quoted excerpt, so the raw secret ended up in
+  // agent.name — the primary UI-facing surface (Sidebar rows, agent-detail
+  // popups, confirm cards, run-log entries, completion-notification titles)
+  // — AND, via computeAgentSlug() (lib/agent-executor.ts) slugifying that
+  // name, in the saved-output .md FILENAME too. Redact secret-shaped
+  // substrings from the raw utterance FIRST, before any stripping/truncation
+  // below, so a partial secret can't survive a 28-char cut either. Reuses
+  // lib/redact-secrets.ts's shared pattern list (same one lib/debug-logger.ts
+  // and agent-executor.ts's generated-script redact_secrets_text() already
+  // rely on) rather than a third divergent regex set.
+  const safeText = redactSecretsText(text);
   // 2026-07-24 on-device finding: "毎週月曜の朝にゴミ出しをリマインドして"
   // derived "の ゴミ出し リマインド" — の is a common connector left dangling
   // once NAME_STRIP_RE removes the weekday/time-of-day tokens straddling it
@@ -1044,8 +1058,8 @@ function deriveName(text: string): string {
   // particle-collapse class as に/を/は/が/で/へ/と — safe for a short
   // DISPLAY NAME the same way those already are (this never touches
   // derivePrompt's full-fidelity task text).
-  let s = text.replace(NAME_STRIP_RE, ' ').replace(/[にをのはがでへと、。,.\s]+/g, ' ').trim();
-  if (!s) s = text.trim();
+  let s = safeText.replace(NAME_STRIP_RE, ' ').replace(/[にをのはがでへと、。,.\s]+/g, ' ').trim();
+  if (!s) s = safeText.trim();
   // Collapse and truncate.
   s = s.replace(/\s+/g, ' ');
   if (s.length > 28) s = s.slice(0, 28).trim() + '…';
