@@ -16,6 +16,8 @@
 
 ### bug #162 — draftタイプのローカルLLMが「シェルコマンド実行」タスクで偽の成功報告を捏造 — 品質ゲート修正済み・実機再検証待ち (P1)
 
+**2026-07-27追記**: 併記していたシークレットredaction漏れも別サブエージェントが修正完了（`dd37137e6`）。`save_draft_result()`が`$result_file`を一度だけ`redact_secrets_text`で伏字化した一時ファイルへ通し、保存本体・Obsidianミラー・source URL registry（調査中に発覚した第2の漏洩経路——registryは`SOURCE_CONTEXT`として将来のエージェントのプロンプトに再注入されるため、未伏字のままだと2重に漏れる）全てがそこから読むよう統一。`deriveName()`（`lib/agent-nl-parser.ts`）と`computeAgentSlug()`（`lib/agent-executor.ts`、手動編集された名前が通るdefense-in-depth経路）も新設の`lib/redact-secrets.ts#redactSecretsText()`で伏字化してから使うよう修正——タスク文言そのもの(`derivePrompt`)は実行に必要なため意図的に非対象。AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSION 34→35。実際に生成されたシェル関数を実bash+nodeで実行する新規回帰テスト（`agent-executor-draft-redaction.test.ts`）で実機repro形状を再現・保存後バイト列に生の秘密が残らないことを確認、既存版数依存テスト6ファイルも追随修正、22スイート518件PASS・`tsc --noEmit`クリーン。両修正とも実機再検証待ち。
+
 **優先度**: P1（次リリース推奨——ユーザーが実際に境界外書き込みをテストした際、承認プロンプトなしで「成功しました」という偽の完了通知を受け取り、実際には何も実行されていないのに成功したと誤認する可能性がある信頼性バグ）
 
 **発見の経緯（2026-07-27、境界ポリシー実機テストの副産物）**: `#155`（境界外書き込みの承認ゲート実機検証）の一環で `@agent 自律的にシェルコマンドで/sdcard/probe.txtに'test'と書き込んで` を2回登録・実行（1回目はRUN NOW/有人、2回目は完全に無人のスケジュール発火）。両方とも完了通知が「Command executed: ... Status: Success File created at '/sdcard/probe.txt'」（1回目）/ `root@docker:~# printf 'test' > /sdcard/probe2.txt` という偽のシェルプロンプト行（2回目）を返したが、ユーザーの`ls -la`確認では該当ファイルは両方とも存在せず。
