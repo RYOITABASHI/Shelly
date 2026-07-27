@@ -5,11 +5,18 @@
 <h1 align="center">Shelly</h1>
 
 <h3 align="center">
-  <code>Terminal + AI + Browser + Markdown + Preview</code><br>
-  <sub>A native Android terminal IDE for running the real Codex CLI in an app-owned PTY, with API-backed AI agents — Gemini, Cerebras, Groq, Perplexity, and local models — plus Git, Bash, Python, and editors bundled in the APK.<br>
-  No Termux install, no distro bootstrap, no separate package manager setup. No WebView terminal, no remote IDE bridge.<br>
-  Open the app, authenticate your own AI accounts, and work in local multi-pane terminals on Android.</sub>
+  Shelly turns an Android phone into a self-contained agent machine.<br>
+  <sub>Describe a task in plain language, and it wakes on its own alarm — screen off — and does the work with your own AI accounts, local LLMs, and a real terminal underneath. No cloud runner. No PC. No Termux.</sub>
 </h3>
+
+<p align="center">
+  <sub><em>Honesty first: the full unattended cycle — plain-language registration → alarm fire with the screen off → delivered result — has been observed end-to-end <b>once, on a Galaxy Z Fold6 (N=1)</b>. The <a href="#status">Status</a> table tracks exactly what is and isn't verified.</em></sub>
+</p>
+
+<p align="center">
+  <sub><b>Underneath the agent is why you can trust it:</b> a full native terminal IDE — the real Codex CLI in an app-owned JNI PTY, bash / git / Python 3 / Node.js bundled in the APK, and API-backed AI panes (Gemini, Cerebras, Groq, Perplexity, local models) beside it. Everything the agent does runs in the same on-device shell you can open, inspect, and drive by hand.<br>
+  No Termux install, no distro bootstrap, no WebView terminal, no remote IDE bridge.</sub>
+</p>
 
 <p align="center">
   <a href="https://github.com/RYOITABASHI/Shelly/actions/workflows/build-android.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/RYOITABASHI/Shelly/build-android.yml?branch=main&style=flat-square&label=android%20build"></a>
@@ -44,14 +51,6 @@
 
 ## See it run
 
-**AI reading a runtime error and suggesting the fix in real time**
-
-https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
-
-No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI Codex — invoking on Android, plus an API-backed AI pane that reads terminal output and produces a one-tap fix.
-
-<br>
-
 **An autonomous agent, scheduled in plain language, that wakes itself to do the work**
 
 https://github.com/user-attachments/assets/ab272ae8-c741-4acb-b71d-2da151f50d75
@@ -60,13 +59,26 @@ Type `@agent` and a plain-language instruction. Shelly turns it into a scheduled
 
 <br>
 
+**The terminal underneath: AI reading a runtime error and suggesting the fix in real time**
+
+https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
+
+No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI Codex — invoking on Android, plus an API-backed AI pane that reads terminal output and produces a one-tap fix.
+
+<br>
+
 ---
 
 ## Why Shelly?
 
-Termux is a terminal. ChatGPT is an AI chat. Replit is a cloud workspace. Desktop AI coding CLIs are desktop-first.
+Termux is a terminal. ChatGPT is an AI chat. Replit is a cloud workspace. Cloud "agents" run on a computer you rent, far from your files.
 
-Shelly is the workspace that connects those pieces on the Android device you already carry: local terminal work, app-owned native PTYs, Codex CLI, AI panes, browser/docs, previews, and background API agents.
+Shelly's bet: the phone in your pocket is already the best agent host you own — always on, always with you, and already holding your files, your accounts, your context. Shelly turns it into a self-contained agent machine, and grounds that agent in a real terminal IDE so you can see, verify, and drive by hand everything it does on its own.
+
+**Two layers, one trust chain:**
+
+- **The agent layer** — say what you want in plain language; Shelly registers a scheduled agent that wakes on an AlarmManager alarm, screen off, runs on your own keys and local models, and reports when it ran. ([details](#autonomous-agents) — and the [Status](#status) caveats that go with them)
+- **The terminal layer** — everything the agent can do runs through the same on-device shell and toolchain you use interactively: an app-owned native PTY, the real Codex CLI, bundled bash / git / Python / Node. The agent isn't a cloud sandbox you take on faith; it's your own machine, inspectable down to the transcript.
 
 ### The copy-paste problem
 
@@ -82,11 +94,12 @@ Say **"fix the error on the right"**. Shelly reads the terminal output, explains
 
 No copy. No paste. No tab switching.
 
-**Three levels of value:**
+**Four levels of value:**
 
 - **Single pane:** a native terminal that is faster, smarter, and more usable than Termux alone — with inline content blocks, autocomplete, syntax highlighting, and clickable errors.
 - **Split panes:** terminal + AI side by side — the AI reads what the terminal shows and executes fixes with one tap. No copy-paste bridge needed.
 - **Full layout:** sidebar + up to 4 live panes + agent bar — a mobile IDE. Browse docs in the browser pane, preview code or markdown on the right, use API-backed agents in the background, and keep your terminal front and center.
+- **Unattended:** register a plain-language scheduled agent — the same machinery runs while the phone sits in your pocket, and tells you when it ran.
 
 ---
 
@@ -176,7 +189,7 @@ Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you 
 
 ## Runtime model
 
-Shelly's headline advantage is the runtime itself: a native PTY and a managed Codex CLI running in the same on-device shell as your files, with API-backed agents layered on top — not a WebView terminal, not a remote IDE client.
+Under the agent sits Shelly's structural advantage: the runtime itself — a native PTY and a managed Codex CLI running in the same on-device shell as your files, with API-backed agents layered on top. Not a WebView terminal, not a remote IDE client.
 
 If your AI coding CLI workflow stalled in Termux, proot, or another Android terminal setup, Shelly gives you a maintained on-device environment built around the constraints of real Android devices (bionic libc, `linker64` exec rules, SELinux on `app_data_file`).
 
@@ -203,19 +216,22 @@ This is the part that makes Shelly more than a terminal skin. It is the reason t
 
 Shelly is not a Termux skin, a WebView terminal, or a remote IDE client. It owns the Android terminal stack inside the app, runs Codex on-device in the same shell as your files, and layers API-backed agents next to that terminal instead of forcing you through copy/paste or a cloud workspace.
 
-No Termux install. No proot. No ttyd. No remote bridge.
+It is also not a cloud agent service. Scheduled agents run on the device, on your keys, with no server-side component and no subscription runner — if the phone is off, nothing pretends otherwise, and missed runs are surfaced instead of hidden.
+
+No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 
 ---
 
 ## Features
 
-> Features below describe implemented paths in the current build. Items with limited device validation (e.g. voice dialogue, immortal sessions, unattended agent firing) are caveated here and in [Status](#status) / [Coming Soon](#coming-soon).
+> Features below describe implemented paths in the current build. Items with limited device validation (e.g. unattended agent firing, TTS playback, cross-OEM reliability) are caveated here and in [Status](#status) / [Coming Soon](#coming-soon).
 
 ### Highlights
 
 | | |
 |---|---|
 | **On-device autonomous agent** | Say it in plain language → a scheduled agent runs on the phone *by itself* (screen off), on your own keys and tools, and tells you when it ran. It works where a cloud agent can't reach — your files, terminal, local LLM, the device itself. *One unattended run observed end-to-end on one device (N=1) — cross-OEM reliability not yet proven; see [Status](#status).* ([details](#autonomous-agents)) |
+| **Multi-platform delivery** | An agent's output isn't limited to a notification or an Obsidian draft — it can post directly to Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, or WordPress, or call a webhook. Store each platform's key once, then point an agent at it in plain language. *Bluesky is verified live end-to-end; the other six connectors ship on the same code path and test coverage but haven't each been fired against a real account yet.* |
 | **Cross-pane intelligence** | Say "fix the error." AI reads your terminal, suggests a fix, one tap to run. Zero copy-paste. |
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
 | **Codex apply_patch on-device** | Codex file edits land through the agent's native patch tool on Android, not a shell-only fallback. |
@@ -223,7 +239,6 @@ No Termux install. No proot. No ttyd. No remote bridge.
 | **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
 | **7 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, and Ask. Split up to 4 live panes freely. |
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
-| **Multi-platform delivery** | An agent's output isn't limited to a notification or an Obsidian draft — it can post directly to Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, or WordPress, or call a webhook. Store each platform's key once, then point an agent at it in plain language. *Bluesky is verified live end-to-end; the other six connectors ship on the same code path and test coverage but haven't each been fired against a real account yet.* |
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A translucent Android widget shows Codex state, model, always-on token / context / limit cells, local LLM health, device load, and the next scheduled agent without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK**, **Allow / Deny**, and choice pills control the foreground Codex PTY. |
@@ -285,7 +300,7 @@ the next already-registered scheduled agent without opening Shelly.
 <summary><strong>Interactive control</strong></summary>
 
 - **ASK** — tap the ASK pill to type a prompt; Shelly writes it into the bound foreground Codex terminal (clear line, paste, Enter) and returns you to the launcher
-- **RUN scheduled agent** — starts the next enabled, scheduled agent directly through the foreground service without opening the app; Shelly revalidates its disk metadata at tap time, honors STOP-ALL, and keeps unattended per-action approval fail-closed
+- **RUN scheduled agent** — starts the next enabled, scheduled agent directly through the foreground service without opening the app; Shelly revalidates its disk metadata at tap time, honors STOP-ALL, and keeps unattended per-action approval fail-closed. By design, unattended runs default to OAuth/local tools only — an agent that needs a cloud API key (Gemini, Perplexity, …) requires the opt-in **Autonomous Cloud** setting (off by default) before it can fire unattended at all, with an automatic Codex fallback if the cloud call fails.
 - **Cold-start ASK** — if no Codex or Agent Chat session is available, Shelly queues the widget prompt, opens a terminal, waits for the PTY to become alive, starts `codex`, waits for the Codex input surface, then delivers the queued prompt
 - **Approval pills** — when Codex is waiting for permission, **Allow** / **Deny** pills write `y` / `n` straight to the Codex PTY
 - **Choice pills** — for a numbered interactive prompt, up to six widget pills write the chosen digit to the PTY, each carrying the option label; Android notifications expose the first three actions
@@ -513,8 +528,8 @@ Currently registered:
 | AgentBar + Sidebar git dirty badge (single-writer poll) | ✅ shipping |
 | Sidebar Add Repository existence check + Alert on ghost path | ✅ shipping (bug #73) |
 | AI pane Local LLM routing (URL-driven, no enable toggle) | ✅ shipping (bug #68) |
-| Voice dialogue (VoiceChat + VoiceChain + TTS) | ✅ implemented, device smoke-test pending |
-| Immortal sessions (tmux keep-alive) | ✅ implemented, device smoke-test pending |
+| Voice dialogue (VoiceChat + VoiceChain + TTS) | ✅ voice input (mic → transcription → routed reply) confirmed on-device 2026-07-27; the dedicated full-screen VoiceChat mode and TTS playback weren't independently re-verified this pass |
+| Immortal sessions (tmux keep-alive) | ✅ confirmed on-device 2026-07-27 — a `vim` session's interactive state (insert mode, unsaved buffer, cursor position) survived a full background/foreground cycle intact, not just a transcript replay |
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
 | Codex CLI launch/auth | ✅ supported; bare `codex` runs over the native PTY, using Shelly device-code auth before TUI launch |
@@ -523,6 +538,7 @@ Currently registered:
 | Background / autonomous agents — `@agent` registration, unattended AlarmManager execution (getForegroundService), run / next / last / missed-run visibility | ✅ wired; one unattended fire observed end-to-end on Z Fold6 (N=1, app cached at fire) — cross-OEM reliability not yet broadly tested |
 | Agent social-post connectors — Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress | ✅ Bluesky verified live end-to-end; the other six ship on the same code path and test coverage but haven't each been fired against a real account yet |
 | Agent task-clarity detection — asks what the task actually is when a request is too vague, before asking about scheduling | ✅ shipping; confirmed on-device 2026-07-27 |
+| Scouter widget RUN (widget-triggered agent start) | ✅ shipping; runs through the same unattended execution gates as a scheduled alarm fire. Cloud-API-backed agents need the opt-in **Autonomous Cloud** setting (off by default) to run unattended at all — this is the credential policy working as designed, not a bug |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Sidebar Quick Launch / Worktrees (one-tap CLI shortcuts) | ✅ shipping for Codex |
 | In-app Android APK updates (`android-latest/latest.json`, SHA-256 verification, Package Installer handoff) | ✅ shipping |
@@ -540,7 +556,6 @@ Full validation checklist: [`docs/superpowers/specs/2026-04-13-validation-checkl
 Parts of the app are written but not yet verified. These are on the short-term roadmap, not in the current build:
 
 - **Play Store / F-Droid distribution** — the APK is published via GitHub Releases only; store submission flow not yet done
-- **End-to-end device validation** for voice dialogue and immortal sessions — wired but not yet smoke-tested on the target device
 - **Cross-OEM autonomous-agent reliability** — unattended scheduled firing is observed on the Z Fold6 (N=1), but Android background limits vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers); broad cross-device reliability + a device health/permission checklist are not done yet
 - **Snippet authoring UI** — the Command Palette shows the first 20 entries from your snippet store and dispatches them to the terminal, but the in-app create/import/edit flow was removed in an earlier cleanup pass. Snippets can still be added by editing `~/.shelly/snippets.json` directly or via `shelly config`.
 
@@ -550,9 +565,15 @@ Parts of the app are written but not yet verified. These are on the short-term r
 
 ### I don't hand-write code.
 
-I'm not an engineer by training — I'm a Creative Director. Every line in this repo was generated by AI under my direction, then reviewed, tested on-device, and shipped. What I bring is twenty years of product judgment about what belongs on a screen and what doesn't — and that turns out to be most of the job.
+I'm a Creative Director, not an engineer by training. Every line in this repo was generated by AI under my direction — through conversation with AI coding agents on a Samsung Galaxy Z Fold6, no desktop, no laptop — then reviewed, tested on-device, and shipped. Every architectural decision is mine. The keystrokes are not. What I bring is twenty years of product judgment about what belongs on a screen and what doesn't — and that turns out to be most of the job.
 
-Every architectural decision in Shelly is mine. The code is not. It was created through conversation with AI coding agents on a Samsung Galaxy Z Fold6: originally Claude Code, and now primarily Codex as the supported foreground CLI. I direct. The AI builds. No desktop. No laptop. Just a foldable phone and an AI that can execute commands.
+That's the origin story. It is deliberately **not** the trust story — "an AI wrote it" is a reason to hold the code to a *higher* verification standard, not a lower one. You're deciding whether to give this app shell execution, broad storage, and your API keys, so the honest answer to "why trust it?" is the discipline around the code, all of which is auditable in this repo:
+
+- **On-device verification before "done."** Features aren't marked shipped until they've been observed working on real hardware, and single observations stay labeled as such — the N=1 caveats in this README's [Status](#status) table are that policy in public.
+- **Tests that execute the real code.** The agent pipeline's regression tests run the actual generated scripts with real processes — real bash execution, real HTTP-failure surfaces — instead of hand-copied re-implementations that can silently drift from what ships.
+- **Adversarial review before risky merges.** Native, OAuth, IPC, and security-boundary changes get an explicit second-agent review pass before they land; the signed-approval channel and the autonomous-agent execution gates went through dedicated security reviews.
+- **An engineering ledger instead of vibes.** [`docs/superpowers/DEFERRED.md`](docs/superpowers/DEFERRED.md) is the single source of truth for what's shipped vs. flag-gated-off vs. known-broken, with reasons and priorities. When this README hedges, that's where the hedge comes from.
+- **The agent stack is engineered to fail loudly and closed.** Unattended runs climb an escalation ladder across local and cloud backends (`lib/agent-escalation-ladder.ts`), a quality gate rejects completions that merely announce the work instead of doing it, and unattended actions that would need approval fail closed rather than running unreviewed.
 
 The keyboard you see in the screenshots? I built that too. It's called [Nacre](https://github.com/RYOITABASHI/Nacre) — an Android IME written in Kotlin, also created entirely through AI conversation. I'm typing on it right now, inside Shelly, improving both apps simultaneously.
 
@@ -565,6 +586,8 @@ Mobile development never took off — not because phones lack computing power, b
 Chat apps (ChatGPT, Claude, Gemini) can *talk* about code, but they can't *run* it. Terminal emulators (Termux) can *run* anything, but they're hostile to anyone who isn't already a developer.
 
 Shelly fills the gap. You type "make me a portfolio site" in the AI pane, and a real shell runs the commands, generates files, and shows you the results — right next to the terminal that produced them.
+
+And once that machinery exists, the next step is obvious: let it run without you watching. Describe a recurring task once, and the phone does it on its own alarm — no laptop left running, no cloud runner subscription.
 
 ### Why every design decision is shaped like a question
 
@@ -589,6 +612,7 @@ For a React Native app this is an unusual architecture: an embedded native termi
 
 ### Who is this for?
 
+- **People who want an agent on their own hardware** — scheduled, unattended tasks that run on your alarm, your keys, and your files, auditable down to the shell transcript
 - **Vibe Coders** — Lovable / Bolt / Replit Agent, but on your phone with a real terminal underneath
 - **Mobile-first developers** — Codex CLI users and anyone serious about CLI-first AI coding workflows who want a proper multi-pane IDE around real local terminals
 - **Non-engineers with ideas** — Shelly translates everything. Dangerous operations are surfaced with explanations and approval steps before they run
@@ -832,7 +856,7 @@ The question isn't whether mobile development will happen. It's who builds the t
 
 I built Shelly because I wanted to use Claude Code on my phone, but Termux was too intimidating. So I made a chat interface that hides the terminal complexity while keeping its full power. Along the way, the foreground CLI shifted to Codex — Claude Code's Android compatibility moves faster than any third-party app can chase — but the original frustration stayed the same. Then I realized the real problem wasn't the terminal itself — it was the gap between the terminal and the AI. So I connected them. Then the WebView kept dying, so I directed the AI to replace the entire rendering layer with a native terminal emulator. Then I realized I needed a browser pane, a markdown viewer, a code preview, a sidebar, and a proper layout system to make it a real IDE.
 
-I still don't hand-write code. I describe what I need, the AI builds it, and I decide whether it ships.
+I still don't hand-write code. I describe what I need, the AI builds it, and I decide whether it ships — after it has run on the device in my hand.
 
 The keyboard in the screenshots is **Nacre** — a split-layout Android IME I built (also through AI) to solve the input problem on mobile. Shelly handles the interface. Nacre handles the input. Together, they make phone-only development actually possible.
 
