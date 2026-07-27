@@ -2821,12 +2821,12 @@ claude() {
 
 ---
 
-### bug #65 Case B — 真の Immortal Sessions (対話状態保持)
-- **現状**: Wave D で Case C (transcript replay) を実装。見た目は「続きから再開」に見えるが vim / claude --continue / REPL の対話状態は失われる
-- **Case B 方針**: fork 親を TerminalSessionService (FG service) に移動、sessionRegistry を Service の Binder 経由で Module から再取得可能にする
-- **工数**: ~300 LoC Kotlin (Binder plumbing, Service lifecycle, event emitter 再配線)
-- **Why not now**: v0.1.0 は Case C で十分、Case B は独立した大型タスク
-- → sync: v0.1.1 milestone の目玉機能候補
+### bug #65 Case B — 真の Immortal Sessions (対話状態保持) — 🟡 実機で解決している可能性が高い (2026-07-27 発見、原因未確認)
+- **旧記録**: Wave D で Case C (transcript replay) を実装。見た目は「続きから再開」に見えるが vim / claude --continue / REPL の対話状態は失われる、という前提でCase B（~300 LoC Kotlin Binder plumbing）を別タスクとして温存していた。
+- **2026-07-27 実機再テスト結果**: `vim test.txt`でインサートモードのまま`hello world`を未保存入力→ホームボタンでバックグラウンド送り→30秒待機→復帰、を実施したところ、**インサートモード表示・未保存バッファ内容・カーソル位置(2,1)まで完全に保持**されていた。これは旧記録が前提としていた「Case Cはtranscript replayのみ、対話状態は失われる」という制約に反する結果。
+- **推測される原因（未検証）**: 本記録作成時点（おそらくttyd/WebView時代）から、JNI forkpty + アプリバンドルの実tmuxへ全面移行済み（CLAUDE.mdのArchitecture Decisions参照）。実Unixプロセスとしてforkされたシェル+tmuxセッションは、Androidがアプリのフォアグラウンドプロセスを止めてもバックグラウンドで生存し続け（フォアグラウンドサービスによる保護等）、復帰時は単に同じPTY masterへ再接続するだけで対話状態がそのまま見える、という副産物である可能性が高い——つまりCase Bのために計画されていたBinder plumbingを実装しなくても、アーキテクチャ変更が結果的にCase Bを達成した可能性がある。
+- **次にやること**: このメカニズムを実際にコードで確認（`TerminalSessionService`/`ShellyTerminalSession.kt`等がバックグラウンド中もtmux/PTYプロセスを本当に生かし続けている経路を特定）し、確認できれば bug #65 Case B を✅解決としてクローズする。確認できるまでは「実機観測上は動いているが、なぜ動いているか未確認」の状態として残す。
+- → sync: README「Immortal sessions」Status行を「✅ shipping」寄りに更新（実機確認済み、メカニズム未解明の注記付き）
 
 ### i18n: `t()` 呼び出しの `useTranslation()` 移行
 - **現状**: Wave E で `<Stack key={locale}>` hack を入れ、EN/JA 切替は即反映。完全移行 (40+ ファイルの module-scope `t()` → `useTranslation()`) は実装中
@@ -2878,6 +2878,7 @@ claude() {
 
 ## History
 
+- **2026-07-27（残テスト完走: Immortal Sessions実機PASS発見、AIペイン言語不一致・ウィジェットラベリング修正、`c9b52dbc1`/`5aa881b98`）**: 音声ダイアログ(PASS、ただし応答言語がUI設定に固定される実バグ発見→`buildAIPaneSystemPrompt`/`buildLocalAIPaneSystemPrompt`/`getShellyIdentity`3箇所修正)、Codexセッションタブグルーピング(PASS)、ウィジェットRUNボタン→Gemini失敗→Codexフォールバックのエンジン表示ミスラベリング(発見・修正、v33)、Immortal Sessions(vim対話状態の完全保持を実機確認、bug #65 Case B「解決している可能性」として更新)。①②Gemini実エンジン確認のみ無料枠クォータリセット待ちで未完了。→ sync: なし。
 - **2026-07-27（bug#160発見・解消: shelly-doctorの古いフィールド参照クラッシュ、`5fe429b26`）**: カテゴリA実機テストの一環で`shelly-doctor`をターミナルから直接実行 → 即クラッシュ。`codexReport()`のリファクタで`exec`フィールドが`tui.execHelp`に統合されたのに`printHuman()`側が追随しておらず存在しないフィールドを参照していた。`--json`モード（設定画面のDoctorボタン）は無関係で無事。実スクリプトをnode子プロセスで実行する新規テスト2件で固定。→ sync: なし。
 - **2026-07-27（Gemini→Codexフォールバック調査、真因確定: 無料枠クォータ超過、`8ff31f8f7`/`cf1e50f2b`/`5fefa309a`）**: v31修正後も同一症状が再現し実機テスト中に難航→Codexへ深掘り委託。副産物としてタスク不明瞭検知の第2の実バグ（`localLlmEnabled`が実は120秒ポーリングの自動検出フラグでユーザー設定ではなく、preflightのゲート条件に使うと循環構造になっていた）も発見・修正。Codexの調査結果は「コードのバグではなくアカウント/クォータ側の問題」——ただし診断情報を握りつぶす別バグ（v32で解消）も発見。最終的にユーザーがGoogle AI Studioダッシュボードで**Gemini 2.5 FlashのRPD 31/20（無料枠日次上限超過）**を直接確認し確定。詳細はbug#158エントリの一連の追記参照。→ sync: なし。
 - **2026-07-27（bug#159発見: ssh-keygenのTermux固定パスデフォルト）**: 「全部試す」指示でDEFERRED.md網羅監査→カテゴリA（今すぐ試せる）5項目着手。bug#119残存ラッパー確認（gh/gpg/unzip/ssh-keygen）のうち3つは正常、`ssh-keygen -h`だけ対話鍵生成モードに入りTermuxの固定パスをデフォルト表示する新規バグを発見。原因はバイナリ内部の`getpwuid()`ベースのパス解決と推測、この環境にはビルド環境が無く暫定対応（README/ヒント文言での`-f`明示喚起）のみ記録。→ sync: なし。
