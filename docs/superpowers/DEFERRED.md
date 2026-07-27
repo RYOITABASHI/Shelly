@@ -14,6 +14,30 @@
 
 ---
 
+### bug #162 — draftタイプのローカルLLMが「シェルコマンド実行」タスクで偽の成功報告を捏造 — 品質ゲート修正済み・実機再検証待ち (P1)
+
+**優先度**: P1（次リリース推奨——ユーザーが実際に境界外書き込みをテストした際、承認プロンプトなしで「成功しました」という偽の完了通知を受け取り、実際には何も実行されていないのに成功したと誤認する可能性がある信頼性バグ）
+
+**発見の経緯（2026-07-27、境界ポリシー実機テストの副産物）**: `#155`（境界外書き込みの承認ゲート実機検証）の一環で `@agent 自律的にシェルコマンドで/sdcard/probe.txtに'test'と書き込んで` を2回登録・実行（1回目はRUN NOW/有人、2回目は完全に無人のスケジュール発火）。両方とも完了通知が「Command executed: ... Status: Success File created at '/sdcard/probe.txt'」（1回目）/ `root@docker:~# printf 'test' > /sdcard/probe2.txt` という偽のシェルプロンプト行（2回目）を返したが、ユーザーの`ls -la`確認では該当ファイルは両方とも存在せず。
+
+**根本原因（サブエージェント調査で特定、`lib/agent-executor.ts`/`lib/agent-escalation-ladder.ts`該当箇所を直接引用済み）**: このタスクはNLパーサーによって毎回`action.type: 'draft'`に解決される（`cli`ではない）。`draft`アクションには実行機能が一切実装されておらず、ローカルモデルに「内容をそのまま書け」という指示を渡すだけのチャット補完（`ACTION_OUTPUT_INSTRUCTIONS.draft`）。シェルコマンド実行を頼むタスク文言を渡すと、モデルが「いかにも実行に成功したっぽい」偽のトランスクリプトを自由作文する。境界承認通知が出たのは**無関係な別の同時実行中のcliタイプ・Codexエスカレーション実行**からで、この`draft`実行自体は（設計通り）承認ゲートを一切通っていない——ゲートが破られたのではなく、そもそも`draft`は境界リスクが無い前提（アプリ自身のサンドボックスへのMarkdown保存のみ）でゲート対象外になっている。品質ゲート（`isLowQualityCompletion`/`is_low_quality_completion`）には、この「過去形で実行成功を捏造した報告文」を検知するパターンが一つも無かった。
+
+**修正（`2e225b4b1`）**: `FABRICATED_EXECUTION_PATTERNS`（`lib/agent-escalation-ladder.ts`）とbash埋め込み版（`lib/agent-executor.ts`の`is_low_quality_completion`/`is_low_quality_completion_file`）を新規追加——「実行/作成の主張」＋「明示的な成功宣言（Status: Success / ステータス: 成功）」の近接ペア、および偽のシェルプロンプト行（`root@host:~# ... >`）を検知。EN/JA両対応、既存のACTION_META_COMMENTARY_PATTERNSと同じ設計思想（過去形の断定的な偽報告のみを狙い撃ちし、genuine instructional draft(コマンド例を紹介するだけの正当な下書き)は誤爆させない）。AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSION 33→34。
+
+**検証**: 実際に生成されたbashスニペットを抽出し実bashで実行する回帰テスト追加（`agent-quality-gate-shell-emit.test.ts`）——実機repro2件（英語版「Command executed...」、偽プロンプト行版）＋JA版2件＋positive/negative各種、全32/32 PASS。TS側`agent-escalation-ladder.test.ts`も新規6件込み53/53 PASS。`tsc --noEmit`クリーン。agent-manager系12スイート57/57 PASS（回帰無し）。
+
+**副次発見（未調査・別記）**: 同じテスト中、エージェント詳細ポップアップの「Next run」が、実際には完了通知が出ているにも関わらず「Not run yet」と表示される食い違いを2回再現。スケジュール発火（RUN NOW以外）後のlastRun/nextRunメタデータ更新に別の軽微なバグがある可能性——優先度低・下記の新規項目として追記。
+
+**未了**: 修正版ビルドで同じNL文言を再実行し、品質ゲートが実際にエスカレーション（Codexへの昇格）を引き起こすか実機確認すること。
+
+**→ 関連の副次発見（同じテストセッション内、`draft`保存パスのシークレットredaction漏れ）**: `@agent 今すぐ、「API key: sk-test-1234567890abcdef」という内容でメモを作成して`を実行したところ、保存された`.md`ファイルの**本文とファイル名の両方に生の秘密文字列がそのまま平文で残存**（`cat`で直接確認）。`save_draft_result()`（`lib/agent-executor.ts:2447`）が`redact_secrets_text`を一切呼んでいないことが判明（webhook/notify経路の`clean_result_preview`/`clean_result_full`は呼んでいるのに、draft保存だけ素通り）。加えて、自動生成されるエージェント名自体がタスク文言をそのまま引用する仕様のため、ファイル名スラグにも生の秘密が伝播する。**修正は別サブエージェントに調査・実装委託中（本エントリ作成時点で未完了）**——完了次第このエントリを更新するか、別エントリとして追記。
+
+**なぜ両方P1か**: どちらも「実際にユーザーが試した操作で確認された」実害のある信頼性/プライバシー問題であり、次のリリース候補に入れる前に実機で塞ぐべき。
+
+→ sync: なし。
+
+---
+
 ### ✅ bug #158 —「ニュースを通知して」がneedsWeb判定を素通りしてローカルモデルに回り続けていた — `6522da805`で解消 (P1)
 
 **優先度**: P1（次リリース推奨——ユーザーが最初に試すような素朴な「〜を通知して」系タスクが、モデルサイズを変えても直らない品質問題を出し続けていた根本原因）
