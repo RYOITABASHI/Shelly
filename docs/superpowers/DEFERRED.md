@@ -65,6 +65,21 @@
 
 ---
 
+### ✅ bug #160 — `shelly-doctor`（`--json`無し）が古いフィールド参照でクラッシュ — 解消済み（`5fe429b26`）
+
+**優先度**: P2（次リリース検討——`shelly doctor`はcodex-loginの確認手順としてUIヒント文言でも案内している再現性100%のクラッシュだったため実害あり。ただし設定画面のDoctorボタン（`--json`付き呼び出し）は無関係のため実害は限定的）
+
+**発見（2026-07-27、bug#119残存確認の流れで`shelly-doctor`をターミナルで直接実行）**: `TypeError: Cannot read properties of undefined (reading 'version')`で即クラッシュ。`codex tui: OK codex-cli 0.145.0`までは正常表示された直後に落ちる。
+
+**根本原因**: `modules/terminal-emulator/android/src/main/assets/shelly-doctor.js`の`codexReport()`が過去のリファクタで`exec`フィールドを廃止し、`tui: { ..., execHelp: runVersion(tui, ['exec','--help']) }`という形に統合済み（`codex_tui`バイナリ1本がTUIと`exec`サブコマンド両方を担うため）。しかし`printHuman()`（人間可読モード、`--json`無しの時のみ呼ばれる）側は更新されず`data.codex.exec.version.ok`という存在しない古いフィールドを参照し続けていた。`--json`モード（設定画面のDoctorボタンが使う経路）は`JSON.stringify(data)`を素通しするだけで`printHuman()`を一切呼ばないため無関係。
+
+**修正**: `data.codex.exec.version.ok`/`.output` → `data.codex.tui.execHelp.ok`/`.output`に修正。新規テスト`__tests__/shelly-doctor-script.test.ts`（実スクリプトをnode子プロセスで両モード実行、クラッシュしないこと・`data.codex.exec`が存在しないことを固定）。
+
+**検証**: ローカルで実行しクラッシュ解消を確認、`npx tsc --noEmit`クリーン、新規テスト2/2 PASS。
+→ sync: なし。
+
+---
+
 ### bug #159 — `ssh-keygen`（引数なし/未知フラグ時）の対話プロンプトがTermuxの固定パスをデフォルト表示する — 未着手・原因特定済み (P2)
 
 **優先度**: P2（次リリース検討——実害は「対話モードでパスを指定せずEnterを押すと書き込み失敗するかもしれない」程度で、`-f`明示指定なら無関係。ただしbug#119の残存ラッパー確認テスト中に偶然発見した実バグ）
@@ -2863,6 +2878,7 @@ claude() {
 
 ## History
 
+- **2026-07-27（bug#160発見・解消: shelly-doctorの古いフィールド参照クラッシュ、`5fe429b26`）**: カテゴリA実機テストの一環で`shelly-doctor`をターミナルから直接実行 → 即クラッシュ。`codexReport()`のリファクタで`exec`フィールドが`tui.execHelp`に統合されたのに`printHuman()`側が追随しておらず存在しないフィールドを参照していた。`--json`モード（設定画面のDoctorボタン）は無関係で無事。実スクリプトをnode子プロセスで実行する新規テスト2件で固定。→ sync: なし。
 - **2026-07-27（Gemini→Codexフォールバック調査、真因確定: 無料枠クォータ超過、`8ff31f8f7`/`cf1e50f2b`/`5fefa309a`）**: v31修正後も同一症状が再現し実機テスト中に難航→Codexへ深掘り委託。副産物としてタスク不明瞭検知の第2の実バグ（`localLlmEnabled`が実は120秒ポーリングの自動検出フラグでユーザー設定ではなく、preflightのゲート条件に使うと循環構造になっていた）も発見・修正。Codexの調査結果は「コードのバグではなくアカウント/クォータ側の問題」——ただし診断情報を握りつぶす別バグ（v32で解消）も発見。最終的にユーザーがGoogle AI Studioダッシュボードで**Gemini 2.5 FlashのRPD 31/20（無料枠日次上限超過）**を直接確認し確定。詳細はbug#158エントリの一連の追記参照。→ sync: なし。
 - **2026-07-27（bug#159発見: ssh-keygenのTermux固定パスデフォルト）**: 「全部試す」指示でDEFERRED.md網羅監査→カテゴリA（今すぐ試せる）5項目着手。bug#119残存ラッパー確認（gh/gpg/unzip/ssh-keygen）のうち3つは正常、`ssh-keygen -h`だけ対話鍵生成モードに入りTermuxの固定パスをデフォルト表示する新規バグを発見。原因はバイナリ内部の`getpwuid()`ベースのパス解決と推測、この環境にはビルド環境が無く暫定対応（README/ヒント文言での`-f`明示喚起）のみ記録。→ sync: なし。
 - **2026-07-27（実機テスト再開①〜⑥全PASS＋2件の実バグ発見・修正、`8be23e949`/`8ff31f8f7`）**: adb再接続後、①bug#158本体（ニュース通知needsWeb）②株価/為替needsWeb拡張③開始遅延スケジュール④タスク不明瞭検知⑤bug#155（pendingAgentSession優先度）⑥Sidebar STOP-ALL/Resume表示、の6項目を順に実機検証。③⑤⑥は完全PASS。①②はneedsWebルーティング自体はPASSしたが「毎回Gemini ではなく Codex CLI に落ちる」という新規現象を発見、④は「@agent 手伝って」でクラリファイ質問が出ずスケジュール質問に素通りする新規バグを発見——両方とも専門サブエージェントへ深掘り委託し、それぞれ実際のコード上のバグ（Gemini grounding citationsが別JSONフィールドにあるのをno-URLガードが考慮していなかった／`@agent`作成フローのLLM抽出呼び出しにlocal-LLM起動preflightが無く静かに疎通不能で失敗していた）を特定・修正・実bash実行テストで検証。詳細は各該当エントリの2026-07-27追記参照。→ sync: なし。
