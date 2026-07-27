@@ -211,7 +211,21 @@ object AgentRuntime {
     // an opaque exit code — see lib/agent-executor.ts's matching
     // AGENT_SCRIPT_VERSION comment. No native routing change; bumped so stale
     // pre-v32 scripts are regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 32
+    // v33 (2026-07-27, unattended web->Codex fallback mislabeling): a
+    // widget-triggered (unattended) run's TOOL_LABEL/routeDecision used to stay
+    // pinned to the originally-resolved web tool (e.g. "Gemini API") even when
+    // the in-shell bakeWebCodexLadder fallback below actually ran and Codex
+    // produced the final result (or both failed) — the Sidebar agent-detail
+    // popup's "エンジン:" badge and the run-log toolUsed field were therefore
+    // unable to distinguish "Gemini answered" from "Gemini failed silently,
+    // Codex answered instead" from "both failed", which made an on-device
+    // report of a widget RUN ending in a Gemini-key error impossible to
+    // diagnose from the log alone. See lib/agent-executor.ts's matching
+    // AGENT_SCRIPT_VERSION comment for the full fix (TOOL_LABEL reassignment +
+    // WEB_CODEX_FALLBACK_NOTE). No native routing change here; bumped so a
+    // stale pre-v33 on-disk script (silent mislabeling) is regenerated rather
+    // than kept.
+    private const val CURRENT_SCRIPT_VERSION = 33
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

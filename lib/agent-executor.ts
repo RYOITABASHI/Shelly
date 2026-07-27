@@ -337,7 +337,25 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // and diagnostic sidecar before deleting the raw response. This makes 400/401/
 // 429/model/quota failures visible in the Sidebar run-log errorMessage instead
 // of the previous opaque "exit 22/23:" message whose useful JSON body was lost.
-const AGENT_SCRIPT_VERSION = 32;
+// v33 (2026-07-27, unattended web→Codex fallback mislabeling): investigated a
+// real on-device report where a widget-triggered (unattended) run of a
+// needsWeb+autonomousCloudConsent agent failed with the raw "Gemini API key is
+// not set" message and the run-log's toolUsed/エンジン still read "Gemini API"
+// — TOOL_LABEL and ROUTE_DECISION_JSON were baked ONCE at generation time
+// (before this bakeWebCodexLadder block runs) and were never updated even when
+// the in-shell web→Codex fallback below actually executes, so a run that WAS
+// correctly retried via Codex (or one where the fallback never fired) were
+// visually indistinguishable in the log/notification — both showed "Gemini
+// API". Now TOOL_LABEL is reassigned after the fallback attempt to truthfully
+// name whichever backend produced the final result (or that both failed, or
+// that codex was unavailable), and a new WEB_CODEX_FALLBACK_NOTE captures the
+// ORIGINAL web backend's failure reason (mirroring the existing
+// ORCHESTRATION_COLLAPSED_NOTE prepend pattern) so the final preview/
+// notification/log always says which backend actually answered and WHY the
+// first one didn't, instead of silently attributing the run to the tool that
+// failed. Bumped so a stale pre-v33 on-disk script (silent mislabeling) is
+// regenerated rather than kept.
+const AGENT_SCRIPT_VERSION = 33;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1045,6 +1063,12 @@ rm -f "$RESULT_FILE.response.json.diag"`;
 if [ -f "$BACKEND_ERROR_FILE" ]; then
   WEB_WAS_TRANSIENT=0
   [ -f "$TRANSIENT_ERROR_FILE" ] && WEB_WAS_TRANSIENT=1
+  # v33: snapshot the ORIGINAL web backend's own label + failure text before
+  # anything below overwrites $RESULT_FILE or reassigns $TOOL_LABEL, so the
+  # final log/notification can truthfully say which backend answered AND why
+  # the first one didn't — see the AGENT_SCRIPT_VERSION v33 history comment.
+  WEB_TOOL_LABEL="$TOOL_LABEL"
+  WEB_FAILURE_REASON=$(head -c 200 "$RESULT_FILE" 2>/dev/null | tr '\\n' ' ')
   rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
   if command -v codex >/dev/null 2>&1; then
     ${codexDriverFallbackCommand(escapedPrompt, '"$RESULT_FILE"', agentPolicyJson)}
@@ -1054,9 +1078,18 @@ if [ -f "$BACKEND_ERROR_FILE" ]; then
     if [ ! -f "$BACKEND_ERROR_FILE" ] && ! grep -qE 'https?://' "$RESULT_CONTENT_FILE" 2>/dev/null; then
       touch "$BACKEND_ERROR_FILE"
     fi
+    if [ -f "$BACKEND_ERROR_FILE" ]; then
+      TOOL_LABEL="$WEB_TOOL_LABEL -> Codex CLI (both failed)"
+      WEB_CODEX_FALLBACK_NOTE="[$WEB_TOOL_LABEL failed: $WEB_FAILURE_REASON -- Codex CLI fallback also failed.]"
+    else
+      TOOL_LABEL="Codex CLI (fallback from $WEB_TOOL_LABEL)"
+      WEB_CODEX_FALLBACK_NOTE="[$WEB_TOOL_LABEL failed: $WEB_FAILURE_REASON -- answered via Codex CLI instead.]"
+    fi
   else
     touch "$BACKEND_ERROR_FILE"
     [ "$WEB_WAS_TRANSIENT" = "1" ] && touch "$TRANSIENT_ERROR_FILE"
+    TOOL_LABEL="$WEB_TOOL_LABEL (Codex fallback unavailable: codex not installed)"
+    WEB_CODEX_FALLBACK_NOTE="[$WEB_TOOL_LABEL failed: $WEB_FAILURE_REASON -- Codex CLI is not installed, no fallback available.]"
   fi
 fi`;
   }
@@ -4480,6 +4513,22 @@ if [ -n "$ORCHESTRATION_COLLAPSED_NOTE" ]; then
   PREVIEW="$ORCHESTRATION_COLLAPSED_NOTE $PREVIEW"
   if [ "$STATUS" != "success" ]; then
     ERROR_MESSAGE="$ORCHESTRATION_COLLAPSED_NOTE $ERROR_MESSAGE"
+  fi
+fi
+
+# v33 (see AGENT_SCRIPT_VERSION history): same safe-placement rationale as
+# ORCHESTRATION_COLLAPSED_NOTE just above — WEB_CODEX_FALLBACK_NOTE is only
+# ever set by the bakeWebCodexLadder block, AFTER the original web backend
+# (Gemini/Perplexity) failed and the in-shell Codex fallback was attempted.
+# Prepended here (log/errorMessage only, never the live notification/webhook/
+# app-act body already dispatched above) so the run-log always records WHICH
+# backend actually produced this result and WHY the first one didn't, instead
+# of silently attributing a Codex-produced (or doubly-failed) result to the
+# tool that failed first.
+if [ -n "\${WEB_CODEX_FALLBACK_NOTE:-}" ]; then
+  PREVIEW="$WEB_CODEX_FALLBACK_NOTE $PREVIEW"
+  if [ "$STATUS" != "success" ]; then
+    ERROR_MESSAGE="$WEB_CODEX_FALLBACK_NOTE $ERROR_MESSAGE"
   fi
 fi
 

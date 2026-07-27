@@ -549,7 +549,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=32');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=33');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -936,6 +936,52 @@ describe('generateRunScript — transient-failure resilience (P0/P1)', () => {
   it('emits parseable shell with the baked ladder', () => {
     const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
     assertParsesAsShell(s);
+  });
+
+  // v33 regression (on-device report: a widget-triggered run's run-log/エンジン
+  // badge still read "Gemini API" even when the baked ladder above had
+  // silently retried via Codex, or had failed closed with no fallback at all —
+  // TOOL_LABEL/ROUTE_DECISION_JSON were baked once at generation time and
+  // never updated by the in-shell fallback). These assert the script now
+  // truthfully re-labels TOOL_LABEL for all three outcomes and captures a
+  // WEB_CODEX_FALLBACK_NOTE explaining why the original web backend failed.
+  it('v33: reassigns TOOL_LABEL + records WEB_CODEX_FALLBACK_NOTE after a successful Codex fallback', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    expect(s).toContain('WEB_TOOL_LABEL="$TOOL_LABEL"');
+    expect(s).toContain('WEB_FAILURE_REASON=$(head -c 200 "$RESULT_FILE"');
+    expect(s).toContain('TOOL_LABEL="Codex CLI (fallback from $WEB_TOOL_LABEL)"');
+    expect(s).toContain('WEB_CODEX_FALLBACK_NOTE="[$WEB_TOOL_LABEL failed: $WEB_FAILURE_REASON -- answered via Codex CLI instead.]"');
+  });
+
+  it('v33: reassigns TOOL_LABEL when BOTH the web backend and the Codex fallback fail', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    expect(s).toContain('TOOL_LABEL="$WEB_TOOL_LABEL -> Codex CLI (both failed)"');
+    expect(s).toContain('-- Codex CLI fallback also failed.]"');
+  });
+
+  it('v33: reassigns TOOL_LABEL when Codex is not installed (no fallback possible)', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    expect(s).toContain('TOOL_LABEL="$WEB_TOOL_LABEL (Codex fallback unavailable: codex not installed)"');
+    expect(s).toContain('-- Codex CLI is not installed, no fallback available.]"');
+  });
+
+  it('v33: WEB_CODEX_FALLBACK_NOTE prepends to PREVIEW (and ERROR_MESSAGE on non-success) after the notification/action dispatch already ran, mirroring ORCHESTRATION_COLLAPSED_NOTE\'s safe placement', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true });
+    const noteIdx = s.indexOf('if [ -n "${WEB_CODEX_FALLBACK_NOTE:-}" ]; then');
+    const notifyIdx = s.indexOf('write_native_notification_request "$STATUS" "$PREVIEW" || true');
+    expect(noteIdx).toBeGreaterThan(-1);
+    expect(notifyIdx).toBeGreaterThan(-1);
+    expect(noteIdx).toBeGreaterThan(notifyIdx);
+    expect(s).toContain('PREVIEW="$WEB_CODEX_FALLBACK_NOTE $PREVIEW"');
+  });
+
+  it('v33: consent + STOP-on-exhaustion (no baked fallback at all) never declares WEB_CODEX_FALLBACK_NOTE/WEB_TOOL_LABEL', () => {
+    const s = generateRunScript(webAgent(), { autonomousCloudConsent: true, autonomousCloudStop: true });
+    expect(s).not.toContain('WEB_TOOL_LABEL=');
+    expect(s).not.toContain('WEB_CODEX_FALLBACK_NOTE=');
+    // The safe ${VAR:-} guard is still present and unconditional, so the
+    // script stays valid shell even though the variable is never assigned.
+    expect(s).toContain('if [ -n "${WEB_CODEX_FALLBACK_NOTE:-}" ]; then');
   });
 });
 
