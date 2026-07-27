@@ -331,7 +331,13 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // behavior is unchanged from pre-v31 (same grep, same touch), plus an optional
 // diagnostic note for whatever this still doesn't catch (e.g. a genuine
 // finishReason:MAX_TOKENS truncation with zero grounding chunks).
-const AGENT_SCRIPT_VERSION = 31;
+// v32 (2026-07-27, Gemini outright-HTTP-failure diagnostics): the generated
+// HTTP client now records the response status for Gemini, and geminiApiCommand
+// preserves that status plus a bounded error-body snippet in the attempt result
+// and diagnostic sidecar before deleting the raw response. This makes 400/401/
+// 429/model/quota failures visible in the Sidebar run-log errorMessage instead
+// of the previous opaque "exit 22/23:" message whose useful JSON body was lost.
+const AGENT_SCRIPT_VERSION = 32;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -2875,6 +2881,11 @@ const https = require('https');
 const [urlText, bodyFile] = process.argv.slice(2);
 const body = fs.readFileSync(bodyFile);
 const url = new URL(urlText);
+const statusFile = process.env.HTTP_STATUS_FILE || '';
+const writeStatus = (code) => {
+  if (!statusFile) return;
+  try { fs.writeFileSync(statusFile, String(code) + '\\n'); } catch (_) {}
+};
 const isHttps = url.protocol === 'https:';
 const client = isHttps ? https : http;
 const timeoutSeconds = Number(process.env.HTTP_TIMEOUT_SECONDS || '0');
@@ -2903,6 +2914,7 @@ const req = client.request({
   headers,
 }, (res) => {
   res.setEncoding('utf8');
+  writeStatus(res.statusCode || 0);
   res.on('data', (chunk) => process.stdout.write(chunk));
   res.on('end', () => {
     const code = res.statusCode || 0;
@@ -2917,6 +2929,7 @@ const req = client.request({
 });
 
 req.on('error', (err) => {
+  writeStatus(0);
   console.error(err && err.message ? err.message : String(err));
   process.exitCode = 23;               // network/DNS/reset → treat as transient (retryable)
 });
@@ -5223,6 +5236,7 @@ function geminiApiCommand(escapedPrompt: string, resultVar: string, systemPrompt
   const toolsFragment = grounded ? '\\"tools\\":[{\\"google_search\\":{}}],' : '';
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
+HTTP_STATUS_FILE="$RESULT_FILE.response.json.http-status"
 printf '%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
 PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
@@ -5235,22 +5249,31 @@ if [ -z "\${GEMINI_API_KEY:-}" ]; then
   echo 'Gemini API key is not set. Add it in Settings before running background agents.' > ${resultVar}
   touch "$BACKEND_ERROR_FILE"
 else
+  rm -f "$HTTP_STATUS_FILE"
   printf '{\\"systemInstruction\\":{\\"parts\\":[{\\"text\\":%s}]},\\"contents\\":[{\\"role\\":\\"user\\",\\"parts\\":[{\\"text\\":%s}]}],${toolsFragment}\\"generationConfig\\":{\\"maxOutputTokens\\":8192,\\"temperature\\":0.7}}' "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
   set +e
   if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
-    SHELLY_CAP_AUTH_REF=gemini HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+    SHELLY_CAP_AUTH_REF=gemini HTTP_STATUS_FILE="$HTTP_STATUS_FILE" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
   else
-    HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+    HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY" HTTP_STATUS_FILE="$HTTP_STATUS_FILE" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
   fi
   API_EXIT=$?
   set -e
   if [ "$API_EXIT" -ne 0 ] || [ ! -s "$RESULT_FILE.response.json" ]; then
     mark_http_failure "$API_EXIT"
-    echo "Gemini API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
+    GEMINI_HTTP_STATUS=$(head -n 1 "$HTTP_STATUS_FILE" 2>/dev/null | tr -cd '0-9')
+    if [ -z "$GEMINI_HTTP_STATUS" ]; then
+      GEMINI_HTTP_STATUS=$(head -c 800 "$RESULT_FILE.response.json" 2>/dev/null | sed -n 's/.*"code"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p')
+    fi
+    [ -n "$GEMINI_HTTP_STATUS" ] || GEMINI_HTTP_STATUS="unknown"
+    GEMINI_ERROR_BODY=$(head -c 480 "$RESULT_FILE.response.json" 2>/dev/null | tr '\\r\\n' '  ')
+    GEMINI_STDERR=$(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\r\\n' '  ')
+    printf 'gemini httpStatus=%s exit=%s errorBody=%s stderr=%s\\n' "$GEMINI_HTTP_STATUS" "$API_EXIT" "$GEMINI_ERROR_BODY" "$GEMINI_STDERR" > "$RESULT_FILE.response.json.diag"
+    echo "Gemini API call failed: $(cat "$RESULT_FILE.response.json.diag")" > ${resultVar}
   else
     extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
   fi
-  rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
+  rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr" "$HTTP_STATUS_FILE"
 fi
 rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
 }

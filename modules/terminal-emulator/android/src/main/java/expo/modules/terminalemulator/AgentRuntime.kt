@@ -205,7 +205,13 @@ object AgentRuntime {
     // pre-v31 check otherwise. No native-side change here; bumped purely so
     // a stale pre-v31 on-disk script (still bouncing every URL-less-but-
     // grounded Gemini answer to Codex) is regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 31
+    // v32 (2026-07-27, Gemini outright-HTTP-failure diagnostics): generated
+    // scripts preserve Gemini's HTTP status and bounded error-body detail in
+    // the run-log errorMessage instead of deleting the useful response behind
+    // an opaque exit code — see lib/agent-executor.ts's matching
+    // AGENT_SCRIPT_VERSION comment. No native routing change; bumped so stale
+    // pre-v32 scripts are regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 32
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

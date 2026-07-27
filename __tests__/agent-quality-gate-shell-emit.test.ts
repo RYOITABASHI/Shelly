@@ -16,7 +16,7 @@ jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -412,5 +412,109 @@ describe('needsWeb no-URL guard — real bash execution (Gemini grounding skip, 
     const r = runNoUrlGuard({ resultContent: 'a plain essay with no sources' });
     expect(r.backendErrorTouched).toBe(true);
     expect(r.resultFileContent).not.toContain('Diagnostic:');
+  });
+});
+
+function extractShellFunctionRange(script: string, startMarker: string, endMarker: string): string {
+  const start = script.indexOf(startMarker);
+  if (start === -1) throw new Error(`generated shell start marker not found: ${startMarker}`);
+  const end = script.indexOf(endMarker, start);
+  if (end === -1) throw new Error(`generated shell end marker not found: ${endMarker}`);
+  return script.slice(start, end);
+}
+
+function extractGeminiCommand(script: string): string {
+  const anchor = '# The 2.0-flash free tier is limit:0';
+  const anchorIndex = script.indexOf(anchor);
+  if (anchorIndex === -1) throw new Error('Gemini command anchor not found');
+  const start = script.lastIndexOf('PROMPT_FILE=', anchorIndex);
+  const end = script.indexOf('\nrm -f "$PROMPT_FILE" "$REQUEST_FILE"', anchorIndex);
+  if (start === -1 || end === -1) throw new Error('Gemini command bounds not found');
+  return script.slice(start, end + '\nrm -f "$PROMPT_FILE" "$REQUEST_FILE"'.length);
+}
+
+function waitForFile(file: string, timeoutMs = 5000): void {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(file)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${file}`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+}
+
+describe('Gemini HTTP failure diagnostics — real emitted bash against synthetic HTTP response', () => {
+  it('detects a 401, preserves its body/status, and sends the sourced key plus google_search tool', () => {
+    const emitted = generateRunScript({ ...agent({ type: 'gemini-api' }), prompt: '最新ニュースを集めて' });
+    const httpFunctions = extractShellFunctionRange(emitted, 'http_post_json() {', '\nhttp_get_ok() {');
+    const geminiCommand = extractGeminiCommand(emitted);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-gemini-http-diag-'));
+    const portFile = path.join(dir, 'port');
+    const captureFile = path.join(dir, 'capture.json');
+    const serverFile = path.join(dir, 'server.js');
+    fs.writeFileSync(serverFile, `
+const fs = require('fs');
+const http = require('http');
+const server = http.createServer((req, res) => {
+  let body = '';
+  req.setEncoding('utf8');
+  req.on('data', chunk => { body += chunk; });
+  req.on('end', () => {
+    fs.writeFileSync(process.argv[3], JSON.stringify({ key: req.headers['x-goog-api-key'], body }));
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 401, message: 'API key not valid. Please pass a valid API key.', status: 'UNAUTHENTICATED' } }));
+    server.close();
+  });
+});
+server.listen(0, '127.0.0.1', () => fs.writeFileSync(process.argv[2], String(server.address().port)));
+`, 'utf8');
+    const server = spawn(process.execPath, [serverFile, portFile, captureFile], { stdio: 'pipe' });
+    try {
+      waitForFile(portFile);
+      const port = fs.readFileSync(portFile, 'utf8');
+      const resultFile = path.join(dir, 'result');
+      const envFile = path.join(dir, 'agents.env');
+      fs.writeFileSync(envFile, "GEMINI_API_KEY='synthetic-key.with_punctuation-123'\n", 'utf8');
+      const nodeBin = process.execPath.replace(/\\/g, '/');
+      const wrapper = `set -e
+HOME="${dir.replace(/\\/g, '/')}"
+mkdir -p "$HOME/.shelly/tmp"
+AGENT_ID=a
+RESULT_FILE="${resultFile.replace(/\\/g, '/')}"
+RESULT_CONTENT_FILE="$RESULT_FILE"
+BACKEND_ERROR_FILE="$HOME/backend-error"
+TRANSIENT_ERROR_FILE="$HOME/transient-error"
+TIMEOUT=5
+SOURCE_CONTEXT=""
+CURRENT_DATETIME_CONTEXT=""
+DEVICE_STATUS_CONTEXT=""
+SHELLY_CAP_BROKER=0
+node_usable() { return 0; }
+shelly_node() { "${nodeBin}" "$@"; }
+json_string_file() { "${nodeBin}" -e 'const fs=require("fs");process.stdout.write(JSON.stringify(fs.readFileSync(process.argv[1],"utf8")))' "$1"; }
+extract_ai_content() { return 99; }
+source "${envFile.replace(/\\/g, '/')}"
+${httpFunctions}
+${geminiCommand.replaceAll('https://generativelanguage.googleapis.com', `http://127.0.0.1:${port}`)}
+`;
+      const wrapperFile = path.join(dir, 'wrapper.sh');
+      fs.writeFileSync(wrapperFile, wrapper, 'utf8');
+      execFileSync('bash', [wrapperFile], { stdio: 'pipe' });
+
+      const result = fs.readFileSync(resultFile, 'utf8');
+      const diag = fs.readFileSync(`${resultFile}.response.json.diag`, 'utf8');
+      if (!fs.existsSync(captureFile)) {
+        throw new Error(`synthetic server received no request; result=${result}; diag=${diag}`);
+      }
+      const capture = JSON.parse(fs.readFileSync(captureFile, 'utf8')) as { key: string; body: string };
+      expect(fs.existsSync(path.join(dir, 'backend-error'))).toBe(true);
+      expect(fs.existsSync(path.join(dir, 'transient-error'))).toBe(false);
+      expect(diag).toContain('gemini httpStatus=401 exit=22');
+      expect(diag).toContain('API key not valid');
+      expect(result).toContain('gemini httpStatus=401 exit=22');
+      expect(capture.key).toBe('synthetic-key.with_punctuation-123');
+      expect(JSON.parse(capture.body).tools).toEqual([{ google_search: {} }]);
+    } finally {
+      server.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

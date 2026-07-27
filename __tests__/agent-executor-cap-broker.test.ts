@@ -63,7 +63,7 @@ describe('capability broker wiring — http_post_json seam (CAP/HTTP/SECRET-001)
   });
 
   it('bumps the script version in lockstep with the native gate', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=31');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=32');
   });
 
   // 2026-07-17 follow-up (docs/superpowers/DEFERRED.md "Capability broker
@@ -111,7 +111,7 @@ describe('capability broker wiring — secret-by-reference per backend (SECRET-0
 
   it('gemini: broker mode uses auth-ref; legacy mode keeps the x-goog-api-key header', () => {
     const s = generateRunScript(agent({ type: 'gemini-api' }, false));
-    expect(s).toContain('SHELLY_CAP_AUTH_REF=gemini HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com');
+    expect(s).toContain('SHELLY_CAP_AUTH_REF=gemini HTTP_STATUS_FILE="$HTTP_STATUS_FILE" HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://generativelanguage.googleapis.com');
     expect(s).toContain('HTTP_EXTRA_HEADERS="x-goog-api-key: $GEMINI_API_KEY"');
   });
 

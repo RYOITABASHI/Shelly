@@ -828,7 +828,23 @@ export function Sidebar() {
 
   // Tap an agent row → full detail popup (the row only has room for the name).
   const showAgentDetail = React.useCallback(async (agent: Agent) => {
-    const lastLog = useAgentStore.getState().getRunHistory(agent.id).at(-1);
+    const runHistory = useAgentStore.getState().getRunHistory(agent.id);
+    const lastLog = runHistory.at(-1);
+    // Foreground escalation writes one log per attempt. If Gemini fails and
+    // Codex succeeds seconds later, looking only at `lastLog` hides the exact
+    // Gemini HTTP diagnosis this popup is meant to expose. Restrict this to a
+    // five-minute window before the final attempt so an unrelated old failure
+    // is never presented as part of today's successful run.
+    const recentPriorFailure = lastLog
+      ? runHistory
+          .slice(0, -1)
+          .reverse()
+          .find((log) =>
+            (log.status === 'error' || log.status === 'unavailable') &&
+            Boolean(log.errorMessage) &&
+            lastLog.timestamp >= log.timestamp &&
+            lastLog.timestamp - log.timestamp <= 5 * 60 * 1000)
+      : undefined;
     const routeDecision = lastLog?.routeDecision;
     const routeDetail = routeDecision
       ? [
@@ -892,10 +908,15 @@ export function Sidebar() {
     if (lastLog) {
       const dur = lastLog.durationMs ? ` · ${Math.round(lastLog.durationMs / 1000)}s` : '';
       relLines.push(`${t('sidebar.agent_last_run')}: ${formatWhen(lastLog.timestamp)} · ${lastLog.status}${dur}`);
-      if (lastLog.status === 'error' && lastLog.errorMessage) {
+      if ((lastLog.status === 'error' || lastLog.status === 'unavailable') && lastLog.errorMessage) {
         relLines.push(`${t('sidebar.agent_last_error')}: ${lastLog.errorMessage.slice(0, 160)}`);
       } else if (lastLog.outputPreview) {
         relLines.push(`— ${lastLog.outputPreview.slice(0, 120)}`);
+      }
+      if (recentPriorFailure?.errorMessage) {
+        relLines.push(
+          `${t('sidebar.agent_last_error')} (${recentPriorFailure.toolUsed}): ${recentPriorFailure.errorMessage.slice(0, 160)}`,
+        );
       }
       // Task C (Fable5 UX consultation, 2026-07-21): agent-executor.ts now
       // records the resolved primary destination for a successful draft
