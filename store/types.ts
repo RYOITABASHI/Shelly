@@ -498,6 +498,28 @@ export type AppSettings = {
    *  gates, which are hard content/action classifiers independent of any
    *  approval-frequency setting. */
   defaultRequireActionApproval?: boolean;
+  /** Optimistic (rollback-type) execution for REVERSIBLE workspace file writes.
+   *  Default false/absent = today's behaviour, byte-identical.
+   *
+   *  When true, a run whose every action is classified reversible by
+   *  lib/agent-action-reversibility.ts (today: a `draft` write into the local
+   *  $HOME/agent-output workspace, non-studio, non-orchestrated) skips the
+   *  pre-approval tap and instead runs as: auto-savepoint → execute → offer
+   *  "元に戻す" on the result. Modelled on Hermes Agent's `/rollback` UX but
+   *  deliberately narrower than it.
+   *
+   *  HARD BOUNDARY — this setting must never widen to irreversible actions.
+   *  webhook / social-post / intent / dm-reply / app-act / api-call leave the
+   *  device, `cli` is an arbitrary shell command that cannot be proven to be a
+   *  workspace-only file write, and `notify` has already been delivered. None
+   *  of those can be undone by a git revert, so all of them keep the
+   *  pre-approval gate regardless of this flag. See
+   *  lib/agent-action-reversibility.ts for the per-type ruling + rationale.
+   *
+   *  Also unaffected: agent REGISTRATION confirm
+   *  (agentRegistrationRequireConfirm), command-safety CRITICAL blocks, the
+   *  secret-guard route forcing, and app-act's Tier-B gate. */
+  agentOptimisticWorkspaceWrites?: boolean;
   /** P1 scheduling-reliability audit (2026-07-15): true once the user has
    *  dismissed the one-time AgentScheduleReadinessCard (exact-alarm grant /
    *  battery-optimization exemption / Samsung sleeping-apps guidance) shown

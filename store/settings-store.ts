@@ -157,6 +157,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // for anyone who flips this back off.
   agentRegistrationRequireConfirm: true,
   defaultRequireActionApproval: false,
+  // Opt-in. Off = today's behaviour exactly; see AppSettings' doc comment for
+  // why this can only ever cover reversible workspace file writes.
+  agentOptimisticWorkspaceWrites: false,
   scheduleReadinessNudgeShown: false,
 };
 

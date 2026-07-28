@@ -221,6 +221,41 @@ export async function revertLastSavepoint(
   return true;
 }
 
+/**
+ * Revert ONE specific savepoint by hash (non-destructive: adds an inverse
+ * commit). Used by the agent rollback tier (lib/agent-rollback.ts), where the
+ * commit to undo is known and may no longer be HEAD by the time the user taps
+ * "元に戻す" — reverting HEAD blindly would then undo the wrong thing.
+ *
+ * The hash is VALIDATED, not sanitized. checkoutSavepoint's strip-to-hex
+ * approach is injection-safe but not correctness-safe: stripping turns garbage
+ * like "$(whoami)" into the plausible short hash "a", which git may resolve to
+ * an unrelated commit — and here that would revert the WRONG work. Every hash
+ * this function is given came from our own `git rev-parse --short HEAD`, so
+ * anything that isn't a well-formed hash is a bug, and refusing is correct.
+ */
+const COMMIT_HASH_RE = /^[0-9a-f]{7,40}$/;
+
+export async function revertSavepoint(
+  projectDir: string,
+  hash: string,
+  runCommand: RunCommandFn,
+): Promise<boolean> {
+  const dir = shellEscape(projectDir);
+  const safeHash = hash.trim().toLowerCase();
+  if (!COMMIT_HASH_RE.test(safeHash)) {
+    console.warn('[AutoSave] refusing revert: malformed commit hash');
+    return false;
+  }
+  const { exitCode } = await runCommand(`git -C ${dir} revert ${safeHash} --no-edit`);
+  if (exitCode !== 0) {
+    console.warn('[AutoSave] revert of', safeHash, 'failed, aborting');
+    await runCommand(`git -C ${dir} revert --abort`);
+    return false;
+  }
+  return true;
+}
+
 /** Get diff of last commit for "view changes" */
 export async function getLastDiff(
   projectDir: string,

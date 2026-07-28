@@ -45,6 +45,18 @@ import {
 } from './agent-orchestration';
 import type { AgentRunStep } from '@/store/types';
 import { getHomePath } from '@/lib/home-path';
+import {
+  agentRollbackWorkspaceRoot,
+  isRollbackEligibleRun,
+  runWouldRequireApprovalTap,
+} from '@/lib/agent-action-reversibility';
+import {
+  captureRollbackPoint,
+  prepareRollbackWorkspace,
+  undoAgentRun,
+  type AgentRollbackHandle,
+  type RollbackRunCommand,
+} from '@/lib/agent-rollback';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import * as Notifications from 'expo-notifications';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -434,6 +446,13 @@ type MaterializeRunOpts = {
   // unset, so the stored script's baked nonce is always empty and can never
   // accidentally match a live chain lock (see generateRunScript's comment).
   chainLockNonce?: string;
+  // Optimistic (rollback-type) workspace writes. Threaded from runAgentNowInner's
+  // single validated decision down to generateRunScript, which bakes
+  // ACTION_APPROVAL_MODE_OVERRIDE='auto' — but ONLY after re-checking the action
+  // type against the reversible allowlist itself (see generateRunScript). Never
+  // set by install / restore / startup-repair / consent-rebake, so the STORED
+  // script an unattended AlarmManager fire reads always keeps the normal gate.
+  optimisticWorkspaceWrites?: boolean;
   // DEFERRED.md エージェント二重実行レース ("副産物として見つかった実在する
   // データ消失リスク" follow-up): runLadderAttempts's per-attempt materialize
   // is called with an already-shaped `Agent` — for an orchestration STEP the
@@ -577,6 +596,9 @@ async function materializeAgentBody(
     ...(effectiveRunOpts.skipMetadataWrite
       ? []
       : [writeFileCommand(metadataPath, JSON.stringify(metadataAgent, null, 2))]),
+    // effectiveRunOpts carries optimisticWorkspaceWrites straight through to
+    // generateRunScript's own re-check; the metadata write above deliberately
+    // does NOT, so the persisted agent record is never mutated by it.
     writeFileCommand(scriptPath, generateRunScript(agentForRun, effectiveRunOpts)),
     writeFileCommand(planSpecPath, JSON.stringify(planSpec, null, 2)),
     ...generateInstallCommands(agent),
@@ -802,6 +824,12 @@ export async function runAgentNow(
     waitTimeoutMs?: number;
     pollMs?: number;
     runStartedAtMs?: number;
+    /** Exit-code-returning command runner (hooks/use-native-exec's execCommand).
+     *  REQUIRED to unlock optimistic (rollback-type) execution: without it there
+     *  is no way to drive git, so no savepoint, so no undo, so the normal
+     *  pre-approval gate is kept. Fail-closed by omission — a caller that does
+     *  not pass it simply never gets the optimistic path. */
+    savepointRunner?: RollbackRunCommand;
   } = {}
 ): Promise<void> {
   const existing = inFlightAgentRuns.get(agentId);
@@ -829,6 +857,7 @@ async function runAgentNowInner(
     waitTimeoutMs?: number;
     pollMs?: number;
     runStartedAtMs?: number;
+    savepointRunner?: RollbackRunCommand;
   } = {}
 ): Promise<void> {
   assertSafeAgentId(agentId);
@@ -874,11 +903,86 @@ async function runAgentNowInner(
   const runStartedAtMs = options.runStartedAtMs ?? Date.now() - 5_000;
   const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
   if (agent) {
-    await runEscalatingAttempts(agent, runCommand, options, runStartedAtMs);
+    // ─── Optimistic (rollback-type) execution decision ──────────────────────
+    // THE choke point. Every condition below must hold; each one is a separate
+    // reason the "run first, undo later" trade would otherwise be unsound:
+    //   1. the caller supplied an exit-code-returning runner (else no git, so
+    //      no savepoint and no undo),
+    //   2. the user opted in AND the run is classified fully reversible
+    //      (isRollbackEligibleRun — see lib/agent-action-reversibility.ts; an
+    //      irreversible external side effect can never reach here),
+    //   3. the run would otherwise block on a pre-approval tap (otherwise this
+    //      changes nothing and we would take a pointless snapshot),
+    //   4. the workspace snapshot actually succeeded and left a clean tree.
+    // Any failure falls through to the normal pre-approval gate — the safe
+    // outcome — rather than running optimistically without an undo.
+    let optimistic = false;
+    const savepointRunner = options.savepointRunner;
+    const workspaceRoot = agentRollbackWorkspaceRoot();
+    if (savepointRunner) {
+      // Dynamic import ON PURPOSE. A static `import { useSettingsStore }` here
+      // transitively drags in expo-secure-store (an ESM native module) and
+      // breaks EVERY non-RN jest suite that imports agent-manager for its pure
+      // helpers — the exact trap already documented in lib/agent-executor.ts's
+      // ACTION_APPROVAL_MODE comment, re-hit while implementing this. Reaching
+      // it requires a savepointRunner, which only the RN attended path passes,
+      // so the module is never loaded in a unit-test context.
+      const { useSettingsStore } = await import('@/store/settings-store');
+      const { settings } = useSettingsStore.getState();
+      if (isRollbackEligibleRun(agent, settings) && runWouldRequireApprovalTap(agent, settings)) {
+        optimistic = await prepareRollbackWorkspace(workspaceRoot, savepointRunner);
+        if (!optimistic) {
+          logWarn(
+            'AgentRollback',
+            `${agentId}: could not snapshot ${workspaceRoot} — keeping the pre-approval gate`
+          );
+        }
+      }
+    }
+    await runEscalatingAttempts(agent, runCommand, { ...options, optimisticWorkspaceWrites: optimistic }, runStartedAtMs);
+    if (optimistic && savepointRunner) {
+      // Commit exactly what the run wrote and publish the undo handle. A null
+      // handle (nothing written, or the secret scan blocked the commit) means
+      // no undo affordance may be offered — see consumeAgentRollbackHandle.
+      const handle = await captureRollbackPoint(agentId, workspaceRoot, savepointRunner);
+      if (handle) pendingRollbackHandles.set(agentId, handle);
+      else pendingRollbackHandles.delete(agentId);
+    }
   }
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await bumpReusedSkillOnSuccess(agentId, runCommand);
+}
+
+/**
+ * Undo handles produced by the most recent optimistic run of each agent.
+ * Deliberately in-memory and single-slot: an undo offer is a fresh-result
+ * affordance, not a history feature (git history is the history feature), and
+ * keeping it out of any store avoids persisting a stale "元に戻す" that would
+ * revert a commit the user has since built on top of.
+ */
+const pendingRollbackHandles = new Map<string, AgentRollbackHandle>();
+
+/** Take (and clear) the undo handle for an agent's last optimistic run, if any. */
+export function consumeAgentRollbackHandle(agentId: string): AgentRollbackHandle | null {
+  const handle = pendingRollbackHandles.get(agentId) ?? null;
+  if (handle) pendingRollbackHandles.delete(agentId);
+  return handle;
+}
+
+/** Peek without consuming (UI wanting to decide whether to render the offer). */
+export function peekAgentRollbackHandle(agentId: string): AgentRollbackHandle | null {
+  return pendingRollbackHandles.get(agentId) ?? null;
+}
+
+/** Undo an agent's last optimistic run. Returns false when nothing was undone. */
+export async function rollbackAgentRun(
+  agentId: string,
+  savepointRunner: RollbackRunCommand
+): Promise<boolean> {
+  const handle = consumeAgentRollbackHandle(agentId);
+  if (!handle) return false;
+  return undoAgentRun(handle, savepointRunner);
 }
 
 /** Read which free-cloud-tier keys are configured (authoritative source: the
@@ -1081,7 +1185,7 @@ async function disarmChainLockToken(
 async function runEscalatingAttempts(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
-  options: { waitTimeoutMs?: number; pollMs?: number },
+  options: { waitTimeoutMs?: number; pollMs?: number; optimisticWorkspaceWrites?: boolean },
   runStartedAtMs: number,
 ): Promise<void> {
   // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): this
@@ -1095,6 +1199,7 @@ async function runEscalatingAttempts(
   try {
     const { ladder } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs, {
       chainLockSeed,
+      optimisticWorkspaceWrites: options.optimisticWorkspaceWrites,
     });
 
     // Restore the agent's own (un-overridden) script so a later scheduled fire uses
@@ -1104,11 +1209,17 @@ async function runEscalatingAttempts(
     // whenever an override could have been written, not only on multi-tool ladders
     // (otherwise adding the missing key later wouldn't reach the alarm path until
     // an unrelated re-materialize).
-    if (!ladder.noEscalation) {
+    // An optimistic run ALSO forces the restore even on a noEscalation ladder:
+    // the per-attempt script on disk carries ACTION_APPROVAL_MODE_OVERRIDE='auto'
+    // baked by the optimistic path, and that transient loosening must not
+    // survive as the STORED script a later unattended AlarmManager fire reads
+    // (an unattended fire has no savepoint and no one to press "元に戻す").
+    if (!ladder.noEscalation || options.optimisticWorkspaceWrites) {
       try {
         // Deliberately no chainLockNonce here — this is the STORED script a
         // later native alarm fire reads directly, so it must bake an empty
         // nonce (see MaterializeRunOpts.chainLockNonce's doc comment).
+        // Deliberately no optimisticWorkspaceWrites either, for the same reason.
         await materializeAgent(agent, runCommand, false);
       } catch (error) {
         // Best-effort: a later foreground run or startup-repair re-materializes. Log
@@ -1146,6 +1257,10 @@ async function runLadderAttempts(
     // runEscalatingAttempts and runAgentOrchestrated always pass it — but
     // kept optional defensively rather than assumed non-null).
     chainLockSeed?: string;
+    /** Set ONLY by runEscalatingAttempts for a validated optimistic run (see
+     *  runAgentNowInner). Never set on the orchestration path — multi-step runs
+     *  are not rollback-eligible. */
+    optimisticWorkspaceWrites?: boolean;
   } = {},
 ): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
@@ -1214,6 +1329,10 @@ async function runLadderAttempts(
       // `<id>.json` with that transient shape. See MaterializeRunOpts's doc
       // comment for why leaving the on-disk metadata untouched here is safe.
       skipMetadataWrite: true,
+      // Rollback-type execution: only reaches here for a run runAgentNowInner
+      // already validated as fully reversible AND successfully snapshotted.
+      // generateRunScript re-checks the action type before honouring it.
+      optimisticWorkspaceWrites: materializeOpts.optimisticWorkspaceWrites,
     });
     await TerminalEmulator.runAgent(agentId);
     await waitForAgentRunCompletion(runCommand, agentId, {

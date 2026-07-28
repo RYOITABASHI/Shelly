@@ -22,6 +22,7 @@ import {
 import { clampCharLimit } from './agent-pipeline-presets';
 import { isSafeConnectorId, socialConnectorEnvPrefix } from './social-connectors';
 import { redactSecretsText } from './redact-secrets';
+import { isReversibleActionType } from './agent-reversible-action-types';
 
 // MODEL-001 Phase A shadow instrumentation (read-only, observational only —
 // see lib/model-router/shadow.ts and lib/model-router/wiring.ts). This wires
@@ -862,7 +863,12 @@ function bashArrayLiteral(values: string[]): string {
  * Generate a per-agent script: run-agent-{id}.sh
  * All values pre-computed in TypeScript, embedded as bash string literals.
  */
-export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean; attended?: boolean; chainLockNonce?: string } = {}): string {
+export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean; suppressErrorNotification?: boolean; autonomousCloudConsent?: boolean; autonomousCloudStop?: boolean; suppressWebCodexBake?: boolean; attended?: boolean; chainLockNonce?: string;
+  /** Rollback-type execution: bake ACTION_APPROVAL_MODE_OVERRIDE='auto' for a
+   *  run whose every action is a reversible workspace file write AND whose
+   *  workspace was just snapshotted. Only lib/agent-manager.ts's attended-run
+   *  choke point may set this — see the block that consumes it below. */
+  optimisticWorkspaceWrites?: boolean } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile, dmPairingsFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -1091,8 +1097,36 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // store already syncs SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL to that file on
   // every change, so this reads the CURRENT global default on every run, not
   // a stale value from whenever the script was last (re)generated.
-  const actionApprovalModeOverride: 'manual' | 'auto' | '' =
+  const baseActionApprovalModeOverride: 'manual' | 'auto' | '' =
     agent.requireActionApproval === undefined ? '' : agent.requireActionApproval ? 'manual' : 'auto';
+  // ─── Optimistic (rollback-type) workspace writes ──────────────────────────
+  // AppSettings.agentOptimisticWorkspaceWrites, opt-in, default OFF. The
+  // AUTHORITATIVE decision is made once at lib/agent-manager.ts's attended-run
+  // choke point (runAgentNowInner), which is also the only place that can
+  // guarantee the precondition this override depends on: a git savepoint of the
+  // workspace was successfully taken immediately before the run, so the user's
+  // "元に戻す" actually has something to revert to. There is no way to verify
+  // that from here, hence the flag rather than a re-derivation.
+  //
+  // What IS re-checked here, as defense in depth, is the half that is knowable
+  // from the agent alone: the action type must be in the reversible allowlist
+  // (today: `draft` only). A caller that mistakenly passed this flag for a
+  // webhook / social-post / cli / intent / dm-reply / app-act / api-call agent
+  // gets the override silently ignored and the normal pre-approval gate kept —
+  // an irreversible external side effect must never be reachable by any single
+  // mistake. See lib/agent-action-reversibility.ts for the full ruling.
+  //
+  // Multi-action fan-out (agent.actions >= 2): EVERY entry must be reversible;
+  // one irreversible sibling disqualifies the whole run, because the fan-out
+  // shares a single baked ACTION_APPROVAL_MODE_OVERRIDE.
+  const optimisticActionTypesReversible =
+    Array.isArray(agent.actions) && agent.actions.length >= 2
+      ? agent.actions.every((a) => isReversibleActionType(a?.type))
+      : isReversibleActionType(agent.action?.type);
+  const actionApprovalModeOverride: 'manual' | 'auto' | '' =
+    opts.optimisticWorkspaceWrites === true && optimisticActionTypesReversible
+      ? 'auto'
+      : baseActionApprovalModeOverride;
   // app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md, resolved
   // 2026-07-14, widened same day per project owner directive: "最終的に
   // チャットで条件を示して、ユーザーが良しとしたものは実行で。たとえパープレ
