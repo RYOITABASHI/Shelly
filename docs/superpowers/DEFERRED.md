@@ -41,6 +41,9 @@
 
 → sync: なし（次バージョン企画時にREADMEのロードマップ的記述へ反映を検討）。
 
+**2026-07-28 進捗（Codex、実装コミット `24cd58d28` / `4481d099c` / `a8f80a2ca`）**:
+ロードマップのうち、(1) OpenRouterをOpenAI互換SSEクライアント＋model registry候補として追加し、API-key backendとして`resolveForAutonomous()`が必ず拒否するattended-only境界を回帰テストで固定、(2) 無人成功runのskill保存を事前Alertなしの即時保存＋削除アクション付き事後通知へ変更（attended runは従来の確認Alertを維持）、(3) 成功した複数step orchestrationのPlanSpecをskillへ保存し、類似タスクでsteps/provider/budget/charLimitをAgentへ復元して既存executor経路のまま再実行できるようにした。`npx tsc --noEmit`クリーン。検証JestはOpenRouter/model-router/escalation一式82件、skill-save/agent-skills一式20件、PlanSpec skill reuse＋agent-plan-spec/orchestration一式106件がPASS。**実機検証は未実施（本セッションは端末利用不可、adb切断）**。
+
 ---
 
 ### ✅ bug #165 — デバイス状態コンテキストでローカルLLMがバッテリー残量とメモリ容量を混同する（「バッテリー残量 3.2 GB」） — 緩和策実装済み（`697988433`）・実機検証PASS (P2)
