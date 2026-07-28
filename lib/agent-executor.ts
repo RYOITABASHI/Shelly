@@ -465,7 +465,26 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // fallback output otherwise) — the two paths can no longer both write.
 // REAL BEHAVIOR CHANGE (a stale pre-v40 on-disk script can still double-
 // write corrupt run-log JSON under this race): bumped so it regenerates.
-const AGENT_SCRIPT_VERSION = 40;
+// v41 (2026-07-28, bug #164 root cause — draft run-log JSON deterministically
+// malformed by unquoted savedPath fields): the SAVED_PATH_FIELDS assignments
+// below (added in 4b3315abc, v37 era) were written inside a TS template
+// literal as `\"savedPath\"`, which emits a PLAIN `"` into the generated
+// bash — bash then consumes those quotes as its own word-quoting, so the
+// heredoc-expanded run-log line came out as `,savedPath:/path/...` (key AND
+// value unquoted). Every draft-action run with a saved file produced invalid
+// JSON, which readAgentRunLogs() silently drops (malformed-log tolerance) —
+// so waitForAgentRunCompletion() NEVER saw the (actually successful, ~5s)
+// run and every attended draft one-shot "failed" with the 5-minute
+// ATTENDED timeout + a misleading "[@agent] failed: Timed out …" bubble.
+// On-device verified 2026-07-28 (agent-ms4aagxz: native exit=0 at +5s,
+// captured run-log byte-for-byte shows the unquoted fields, JS poll spun the
+// full 5 minutes). Fixed to `\\"` so the generated bash carries `\"` and the
+// JSON stays quoted. Also the real shape behind WidgetAgentRepository's
+// "Expected literal value at character 641" (bug #163's reported symptom —
+// org.json hits the unquoted `/data/...` value). REAL BEHAVIOR CHANGE (a
+// stale pre-v41 script keeps writing unparseable draft run-logs): bumped so
+// it regenerates.
+const AGENT_SCRIPT_VERSION = 41;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -4796,9 +4815,9 @@ ${hasDraftAction ? `
   SAVED_PATH_JSON=$(json_escape_text "\${SAVED_PATH:-}")
   if [ -n "\${SAVED_PATH_MIRROR:-}" ]; then
     SAVED_PATH_MIRROR_JSON=$(json_escape_text "$SAVED_PATH_MIRROR")
-    SAVED_PATH_FIELDS=",\"savedPath\":\"$SAVED_PATH_JSON\",\"savedPathMirror\":\"$SAVED_PATH_MIRROR_JSON\""
+    SAVED_PATH_FIELDS=",\\"savedPath\\":\\"$SAVED_PATH_JSON\\",\\"savedPathMirror\\":\\"$SAVED_PATH_MIRROR_JSON\\""
   elif [ -n "\${SAVED_PATH:-}" ]; then
-    SAVED_PATH_FIELDS=",\"savedPath\":\"$SAVED_PATH_JSON\""
+    SAVED_PATH_FIELDS=",\\"savedPath\\":\\"$SAVED_PATH_JSON\\""
   else
     SAVED_PATH_FIELDS=""
   fi

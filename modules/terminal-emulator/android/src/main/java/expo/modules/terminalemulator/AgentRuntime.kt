@@ -297,7 +297,19 @@ object AgentRuntime {
     // comment for the fix (capture node's stdout into a variable first,
     // print exactly once). No native routing change here; bumped so a stale
     // pre-v40 on-disk script keeps exposing this double-write race.
-    private const val CURRENT_SCRIPT_VERSION = 40
+    // v41 (2026-07-28, bug #164 root cause — draft run-log JSON
+    // deterministically malformed by unquoted savedPath fields): the
+    // generated bash's SAVED_PATH_FIELDS assignments lost their JSON quotes
+    // to bash word-quoting (TS template emitted `"` instead of `\"`), so
+    // EVERY draft-action run with a saved file wrote `,savedPath:/path/...`
+    // (key and value unquoted) into its run-log — invalid JSON that
+    // readAgentRunLogs() silently drops, making waitForAgentRunCompletion()
+    // time out after 5 attended minutes on runs that natively succeeded in
+    // ~5s (on-device verified, agent-ms4aagxz). See lib/agent-executor.ts's
+    // matching AGENT_SCRIPT_VERSION comment. No native routing change here;
+    // bumped so a stale pre-v41 on-disk script keeps writing unparseable
+    // draft run-logs.
+    private const val CURRENT_SCRIPT_VERSION = 41
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

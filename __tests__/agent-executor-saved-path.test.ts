@@ -44,8 +44,17 @@ describe('generateRunScript — saved destination and live chain progress', () =
     expect(script).toContain('SAVED_PATH=$(resolve_saved_path "$SAVED_FILE")');
     expect(script).toContain('SAVED_PATH_MIRROR=$(resolve_saved_path "$OBSIDIAN_DEST")');
     expect(script).toContain('write_native_notification_request "success" "保存: $SAVED_DISPLAY_PATH $preview"');
-    expect(logBlock).toContain('"savedPath":"$SAVED_PATH_JSON"');
-    expect(logBlock).toContain('"savedPathMirror":"$SAVED_PATH_MIRROR_JSON"');
+    // bug #164 root-cause fix (v41): the emitted bash MUST carry escaped
+    // quotes (\") around the savedPath key/value — a plain `"` here is
+    // consumed by bash's own word-quoting and the run-log comes out as
+    // unquoted `,savedPath:/path/...` (invalid JSON that readAgentRunLogs
+    // silently drops → false 5-minute attended timeout). The pre-v41 form
+    // this test used to pin ('"savedPath":"$SAVED_PATH_JSON"') was itself
+    // the bug. See agent-executor-runlog-savedpath-json.test.ts for the
+    // real-bash end-to-end JSON.parse proof.
+    expect(logBlock).toContain('SAVED_PATH_FIELDS=",\\"savedPath\\":\\"$SAVED_PATH_JSON\\""');
+    expect(logBlock).toContain('\\"savedPathMirror\\":\\"$SAVED_PATH_MIRROR_JSON\\"');
+    expect(logBlock).not.toContain('SAVED_PATH_FIELDS=","savedPath"');
     expect(logBlock).toContain('routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS');
     bashParses(script);
   });
