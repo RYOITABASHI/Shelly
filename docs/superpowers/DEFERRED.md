@@ -14,6 +14,35 @@
 
 ---
 
+### 次バージョンのロードマップ — Hermes Agent機能ギャップ分析（Fable5、2026-07-28）— 未着手・次リリース向けに意図的にdescope (P1)
+
+**優先度**: P1（次バージョンの主軸候補。今回のリリースには含めない——プロダクトオーナーの明示判断で、今回は現状の全実機テスト項目クリアをもってリリースとし、本ロードマップは次バージョンへ回す）
+
+**背景**: プロダクトオーナーから「Androidという制約の中で、Hermes Agent（Nous Research製、GitHub 18万スター超のOSS自律エージェント）のような体験をユーザーに感じさせられるプロダクトになるために、Shellyに足りない機能は何か、Android制約下での実現可能性は」という調査依頼を受け、Fable5（ネイティブ/Android詳細に強いエージェント）に分析を委託した。
+
+**重要な前提訂正**: 依頼時点で「Shellyにはスキル自動生成・永続メモリが無い」という認識で調査を始めたが、これは誤りだった。`lib/agent-skills.ts`（G3 Phase 2a、PR #87、build 1594実機PASS——成功実行をスキルレシピに蒸留→承認ゲート付き保存→CJKバイグラムマッチで次回再利用→プロンプト自動注入）、`lib/agent-memory.ts`（G2、PR #86、build 1591実機PASS——エージェント別markdownノート+recall注入、フラグ無しで本番稼働中）は**既に実装・実機検証済みで稼働中**。Hermesとの差は機能の有無ではなく「自動性の度合い・記憶の鮮度・チャネル幅」の3点に集約される。
+
+**実現可能性・優先順位付きロードマップ**（詳細な技術根拠はFable5の全文報告——本セッションのやり取りに保存、次回参照時は要約を再構成）:
+
+1. **OpenRouter統合**（小工数）— `lib/model-router/registry.ts`に1統合追加するだけで「20+プロバイダをmodel-agnosticに切替」という見出しギャップが解消。attended経路限定とし、無人実行の境界（local→Codex OAuthのみ、APIキーbackendはfail-closed、`lib/agent-escalation-ladder.ts`）は広げないこと。
+2. **無人実行時のスキル自動保存+埋め込みマッチへの格上げ**（小〜中）— 現在は保存前にユーザー確認Alertが必須。unattended（無人）実行に限り「自動保存+事後通知（1タップ削除可）」へ変更（外部副作用が無いスキル保存自体は事前ゲートの安全上の必然性が薄い）。マッチングも現状のキーワード/バイグラム重複から、既存の`lib/memory/embedding-llama.ts`（休眠資産）を流用したローカル埋め込み検索へ格上げ。
+3. **グローバル記憶名前空間+per-fire鮮度+MEMORY-001解禁**（小〜中）— 現状`lib/agent-memory.ts`はエージェント別で、recallは生成スクリプトに焼き込まれ発火のたびに再読込されない（stale化）。user-scope（`_global`等）の名前空間追加、recallのper-fireファイル読込化、および暗号化/PII分類付き強化層`lib/memory/`（MEMORY-001、Track A/B/C実装済み・実機未検証のまま休眠中）の実機検証・フラグON。
+4. **ワークスペース内ファイル操作限定のrollback型実行**（中、体験インパクト大）— Hermesが「自律的に感じる」最大の理由は「先に動いて`/rollback`で戻す」楽観型権限モデル。Shellyは事前承認ゲート型で安全だが体感の自律性を削る。既存`lib/auto-savepoint.ts`（秘密スキャン付きgit自動セーブ）を流用し、**可逆な操作（ワークスペース内ファイル書き込み）に限り**「自動セーブポイント→即実行→結果通知に『元に戻す』ボタン」の事後型へ切替可能にする。**不可逆な外部副作用（メッセージ送信・投稿・webhook）は原理的にrollback不可能なため、事前承認を維持**——この可逆/不可逆の線引きはHermesより筋の良い安全設計として主張できる。ただし2026-07-14に承認をデフォルトOFFへ緩めた後、2026-07-24に登録確認を必須へ戻した経緯があるため、緩める対象は「登録」ではなく「実行時のワークスペース内書き込み承認」に限定すること。
+5. **通知リスナーの汎用チャネル化**（中）— 既存の`ShellyNotificationListener.kt`（NOTIFY-001 Increment 2、パッケージトリガー+TriggerDebouncer実装済み）+ `lib/telegram-inbound.ts`（G5、PR #89、authzコア=送信者完全一致・サニタイズが純粋モジュールとして再利用可能）+ 既存の`dm-reply`アクション（RemoteInputでの通知スレッド内返信、本番配線済み）を合成し、「LINE/Discord/Slack等の通知テキスト→認可送信者チェック→エージェント起動→確認→同じ通知スレッドへ返信」の汎用チャネルを作る。サーバー常駐前提のHermesには不可能な、Android端末固有の到達経路。ただし通知本文の範囲でしか読めず、返信もRemoteInputが生きている間のみのベストエフォート止まりと明記すること。
+
+**明確に「困難」「追わない」と判断されたもの**:
+- サーバー常駐gateway相当の常時マルチチャネル待受（5チャネル同時等）— Doze/OEMバッテリーキラー/FCM非依存という制約下で原理的に不可能。かつ「Shellyはリモートチャネルを追わない」という既存プロダクト方針（[[feedback_no_remote_messaging_channels]]参照）とも矛盾するため、意図的に追わない。
+- 汎用ブラウザ自動化（Playwright級）— rootなしAndroidでは自前WebView内JS注入または`app-act`(Accessibility)レシピに限られ、bot検出・OAuth壁（`wv` token/X-Requested-With問題、既知）で実用範囲が狭い。「ログイン済みWebViewでの定型操作」程度に絞れば可能。
+- メモリバックエンド8種/TTS10種のような「構成の幅」— サーバー製品の勝負軸であり、端末内完結プロダクトでは価値にならず、追うとむしろ保守負債になる。
+
+**Shellyが既にHermesを上回っている点（比較資料で堂々と主張できる）**: 無人スケジュール実行の信頼性。`AgentAlarmScheduler.kt`のAlarmManager `setExactAndAllowWhileIdle`+FGS直撃PendingIntent+boot-autostart+circuit-breaker+STOP-ALL（Samsung One UIのbroadcast trampoline凍結プロセス問題まで特定・修正済み、2026-06-27）は、TermuxラッパーにすぎないHermes AgentのAndroid版より明確に堅牢。ただしOEMキラー・電池最適化除外への依存は残存リスクとして正直に注記すること。
+
+**次にやること**: 次バージョンの実装着手時に、上記優先順位（1→5）に沿って着手する。着手前に、本エントリの元になったFable5の全文報告（技術的根拠・具体的なファイルパス・工数感の詳細）を、このセッションの会話ログまたは次回セッション開始時のhandoffドキュメントとして再構成しておくこと。
+
+→ sync: なし（次バージョン企画時にREADMEのロードマップ的記述へ反映を検討）。
+
+---
+
 ### bug #165 — デバイス状態コンテキストでローカルLLMがバッテリー残量とメモリ容量を混同する（「バッテリー残量 3.2 GB」） — 未着手 (P2)
 
 **優先度**: P2（危険な操作にはつながらないが、明らかに誤った情報を「完了しました」として自信満々に提示する信頼性/品質問題。品質ゲートは検知できない——短く、空でも拒否でもecho でもない、一見もっともらしい文章のため）
@@ -3032,6 +3061,7 @@ claude() {
 
 ## History
 
+- **2026-07-28（Hermes Agent機能ギャップ分析、次バージョンロードマップとして記録）**: プロダクトオーナーから「Android制約下でHermes Agent的な体験を実現するために足りない機能とその実現可能性」の調査依頼。3並列レビュー（機能パリティ/信頼性/マーケティング妥当性の3観点）でHermes Agentの実態調査（Nous Research製、GitHub 18万スター超のOSS、Android版はTermuxラッパーでネイティブアプリではない）とShellyの現状照合を実施した後、Fable5にAndroid制約下での機能ギャップの技術的実現可能性を追加委託。既存の`lib/agent-skills.ts`/`lib/agent-memory.ts`（スキル自動生成・永続メモリ、いずれも実装済み・実機検証済みで稼働中）を「無い」と誤認していた前提を訂正した上で、優先順位付きロードマップ（OpenRouter統合→無人実行時スキル自動保存→グローバル記憶+MEMORY-001解禁→ワークスペース内rollback型実行→通知リスナー汎用チャネル化）を新規P1エントリとして記録。今回のリリースはこのロードマップを含めず、現状の実機テスト項目クリアをもってリリースとする、とプロダクトオーナーが明示的にスコープ確定。→ sync: なし。
 - **2026-07-27（bug#161: Android DownloadManager不調→直接ダウンロードのフォールバック実装）**: アプリ内アップデートが3回連続、3種類の違う失敗モードで失敗。`adb shell curl`での直接検証でネットワーク到達性・ストレージとも正常と確認、Android標準DownloadManagerコンポーネント自体の不調と判断。`expo-file-system/legacy`の`createDownloadResumable`を使った完全に別系統のダウンロード経路を新設し、DownloadManager失敗時に自動フォールバックするよう実装（sha256検証は両経路とも同一）。この修正自体が配布経路の修正のため今夜中の実機検証は不可、次回の自然発生 or 意図的再現時に確認予定。→ sync: なし。
 - **2026-07-27（bug#122 Doctor UI 実機検証PASS）**: Settings → Doctor → Run diagnostics、11項目全部OK確認。`--json`経路のためbug #160のクラッシュとは無関係。これで今夜のカテゴリA実機テスト（音声/Immortal Sessions/Codexタブ/ウィジェットRUN/Doctor UI）が全完了、残るは①②Gemini実エンジン確認（無料枠リセット待ち）のみ。→ sync: なし。
 - **2026-07-27（残テスト完走: Immortal Sessions実機PASS発見、AIペイン言語不一致・ウィジェットラベリング修正、`c9b52dbc1`/`5aa881b98`）**: 音声ダイアログ(PASS、ただし応答言語がUI設定に固定される実バグ発見→`buildAIPaneSystemPrompt`/`buildLocalAIPaneSystemPrompt`/`getShellyIdentity`3箇所修正)、Codexセッションタブグルーピング(PASS)、ウィジェットRUNボタン→Gemini失敗→Codexフォールバックのエンジン表示ミスラベリング(発見・修正、v33)、Immortal Sessions(vim対話状態の完全保持を実機確認、bug #65 Case B「解決している可能性」として更新)。①②Gemini実エンジン確認のみ無料枠クォータリセット待ちで未完了。→ sync: なし。
