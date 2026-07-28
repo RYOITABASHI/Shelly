@@ -839,11 +839,25 @@ ensure_local_llm_server() {
       # unsets it for the same reason — mirror that.
       unset LD_PRELOAD
       export LD_LIBRARY_PATH="$server_dir:${llama_lib_path}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-      nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      # COLD-START FIX (2026-07-28, on-device root-caused): a bare `nohup` here
+      # resolves to .bashrc's coreutils wrapper FUNCTION in any context that
+      # sourced .bashrc (the interactive terminal AND AgentRuntime's legacy .sh
+      # launch, which sources it before the run script). That wrapper prefixes
+      # its own per-command LD_LIBRARY_PATH=<termux-libs> assignment, which
+      # OVERRIDES the llama.cpp lib path exported just above for the entire
+      # nohup->nice->linker64->llama-server chain -> "CANNOT LINK EXECUTABLE
+      # ... libllama-server-impl.so not found" on every cold start (the reason
+      # every historical local-llm-start-*.reason with that message exists).
+      # /system/bin/nohup (toybox) is an absolute path, so bash function
+      # dispatch never fires and the exported LD_LIBRARY_PATH survives.
+      # Verified on-device 2026-07-28: bare nohup fails, absolute path serves
+      # /health within seconds from the exact same failing shell context.
+      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
       echo $! > "$pid_file"
     )
   else
-    nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+    # Same bashrc-wrapper hazard as the linker64 branch above: absolute path only.
+    /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
     echo $! > "$pid_file"
   fi
 

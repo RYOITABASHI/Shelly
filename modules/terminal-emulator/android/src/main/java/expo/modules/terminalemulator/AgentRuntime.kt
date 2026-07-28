@@ -309,7 +309,19 @@ object AgentRuntime {
     // matching AGENT_SCRIPT_VERSION comment. No native routing change here;
     // bumped so a stale pre-v41 on-disk script keeps writing unparseable
     // draft run-logs.
-    private const val CURRENT_SCRIPT_VERSION = 41
+    // v42 (2026-07-28, local-LLM cold-start autostart never worked from
+    // bashrc contexts): the generated script's ensure_local_llm_server launch
+    // used a bare `nohup`, which resolves to .bashrc's coreutils wrapper
+    // function in this class's own legacy .sh path (runAgent sources
+    // $HOME/.bashrc before the run script) — the wrapper's per-command
+    // LD_LIBRARY_PATH=<termux-libs> overrode the llama.cpp lib dir for the
+    // whole launch chain, so every cold start died with "CANNOT LINK
+    // EXECUTABLE … libllama-server-impl.so not found". Fixed to
+    // /system/bin/nohup (absolute path, no function dispatch); on-device
+    // verified 2026-07-28. See lib/agent-executor.ts's matching
+    // AGENT_SCRIPT_VERSION comment. No native routing change here; bumped so
+    // a stale pre-v42 on-disk script keeps failing local-LLM cold starts.
+    private const val CURRENT_SCRIPT_VERSION = 42
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

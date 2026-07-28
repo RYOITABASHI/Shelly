@@ -484,7 +484,24 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // org.json hits the unquoted `/data/...` value). REAL BEHAVIOR CHANGE (a
 // stale pre-v41 script keeps writing unparseable draft run-logs): bumped so
 // it regenerates.
-const AGENT_SCRIPT_VERSION = 41;
+// v42 (2026-07-28, local-LLM cold-start autostart never worked from bashrc
+// contexts): ensure_local_llm_server's launch used a bare `nohup`, which in
+// any shell that sourced .bashrc (interactive terminal AND AgentRuntime's
+// legacy .sh path — it sources .bashrc before the run script) resolves to
+// the bashrc coreutils wrapper function. That wrapper prefixes its own
+// per-command LD_LIBRARY_PATH=<termux-libs>, overriding the llama.cpp lib
+// dir exported one line earlier for the whole nohup→nice→linker64→
+// llama-server chain — every cold start died with "CANNOT LINK EXECUTABLE …
+// libllama-server-impl.so not found" (the message every historical
+// local-llm-start-*.reason carries) and agents fell into the 90s
+// wait-then-fail path whenever no server was already up. Fixed by invoking
+// /system/bin/nohup (toybox) by absolute path — function dispatch never
+// fires. On-device verified 2026-07-28: identical launch line failed with
+// bare nohup and served /health within seconds with the absolute path.
+// REAL BEHAVIOR CHANGE (a stale pre-v42 script still cannot cold-start the
+// local server): bumped so it regenerates. Lockstep with
+// scripts/shelly-local-llm-ensure.sh + its APK asset copy (parity test).
+const AGENT_SCRIPT_VERSION = 42;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -4071,11 +4088,22 @@ ensure_local_llm_server() {
       # unsets it for the same reason — mirror that.
       unset LD_PRELOAD
       export LD_LIBRARY_PATH="$server_dir:\${llama_lib_path}\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-      nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      # COLD-START FIX (v42, 2026-07-28): a bare \`nohup\` resolves to .bashrc's
+      # coreutils wrapper FUNCTION in any context that sourced .bashrc (the
+      # interactive terminal AND AgentRuntime's legacy .sh launch, which sources
+      # it before this script). The wrapper prefixes its own per-command
+      # LD_LIBRARY_PATH=<termux-libs>, OVERRIDING the llama.cpp lib path exported
+      # just above for the whole nohup->nice->linker64->llama-server chain ->
+      # "CANNOT LINK EXECUTABLE ... libllama-server-impl.so not found" on every
+      # cold start. /system/bin/nohup (toybox) is an absolute path, so function
+      # dispatch never fires. On-device verified 2026-07-28. Keep in lockstep
+      # with scripts/shelly-local-llm-ensure.sh (+ its asset copy).
+      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
       echo $! > "$pid_file"
     )
   else
-    nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+    # Same bashrc-wrapper hazard as the linker64 branch above: absolute path only.
+    /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
     echo $! > "$pid_file"
   fi
 
