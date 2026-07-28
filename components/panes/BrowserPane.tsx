@@ -19,6 +19,10 @@ import { usePaneStore } from '@/store/pane-store';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
+import {
+  BrowserPaneAutomationController,
+  registerBrowserPaneAutomation,
+} from '@/lib/browser-pane-automation';
 
 // JS injected before the page loads so our fullscreen hooks are in place
 // before YouTube or any other video app tries to go fullscreen.
@@ -359,6 +363,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const handleMessage = useCallback(
     (e: WebViewMessageEvent) => {
       const data = e.nativeEvent.data;
+      if (automationControllerRef.current?.handleMessage(data)) return;
       if (!paneId) return;
       const store = useMultiPaneStore.getState();
       if (data === 'shelly:fs:on') {
@@ -435,9 +440,26 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     initialResolvedUrl === 'about:blank' ? '' : initialResolvedUrl,
   );
   const [currentUrl, setCurrentUrl] = useState(initialResolvedUrl);
+  const currentUrlRef = useRef(initialResolvedUrl);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [activeBookmarkIdx, setActiveBookmarkIdx] = useState(0);
+
+  useEffect(() => {
+    currentUrlRef.current = currentUrl;
+  }, [currentUrl]);
+
+  const automationControllerRef = useRef<BrowserPaneAutomationController | null>(null);
+  if (!automationControllerRef.current) {
+    automationControllerRef.current = new BrowserPaneAutomationController(
+      () => webviewRef.current,
+      () => currentUrlRef.current,
+    );
+  }
+  useEffect(
+    () => registerBrowserPaneAutomation(paneId, automationControllerRef.current!),
+    [paneId],
+  );
 
   const navSignal = useBrowserStore((s) => s.navSignal);
   const openSignal = useBrowserStore((s) => s.openSignal);

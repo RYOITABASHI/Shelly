@@ -39,6 +39,8 @@
 
 **次にやること**: 次バージョンの実装着手時に、上記優先順位（1→5）に沿って着手する。着手前に、本エントリの元になったFable5の全文報告（技術的根拠・具体的なファイルパス・工数感の詳細）を、このセッションの会話ログまたは次回セッション開始時のhandoffドキュメントとして再構成しておくこと。
 
+**→ 2026-07-28 WebView限定ブラウザ操作のpane側実装完了（コード検証のみ・実機未検証）**: `BrowserPane`に登録される自己完結APIを追加し、操作種別を`click`/`fill`/`extractText`の閉じたunionに限定した。実行前と注入後のページ内の二段階で、現在URLをユーザー/エージェント設定の明示allowlist（scheme/host/port完全一致、任意のpath subtree）へ照合し、空・不正・不一致はfail-closed。既存capability-brokerの承認後にだけ発行されるgrantを必須とし、raw JS/scriptを受け取るフィールドやeval経路は設けず、selector/valueは`JSON.stringify`で文字列リテラル化した固定テンプレートにだけ渡す。OAuth壁・bot検出ページは既知制約のまま回避しない。新規安全境界Jest（非allowlist拒否、raw JS非受理、3操作、承認必須）と`tsc --noEmit`で検証。**残る統合**: 競合回避のため共有ファイルは未変更。別作業で`store/types.ts`に承認対象の新AgentActionType/設定スキーマを追加し、`lib/agent-executor.ts`（およびPlanSpec経路）から既存の署名付きaction approval/capability broker通過後に`executeBrowserPaneAction(paneId, request)`を呼ぶ配線が必要。allowlistとpaneIdは登録時の確認画面に明示し、エージェント生成値だけで承認grantを作らないこと。
+
 → sync: なし（次バージョン企画時にREADMEのロードマップ的記述へ反映を検討）。
 
 **2026-07-28 進捗（Codex、実装コミット `24cd58d28` / `4481d099c` / `a8f80a2ca`）**:
