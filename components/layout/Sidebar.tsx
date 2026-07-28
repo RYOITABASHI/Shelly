@@ -64,6 +64,7 @@ import {
   type SkillCatalogManifest,
 } from '@/lib/skill-catalog';
 import { getHomePath } from '@/lib/home-path';
+import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
@@ -391,6 +392,9 @@ export function Sidebar() {
       timestamp: latest?.timestamp,
       status: latest?.status,
       alreadySkillId: agent.skillId,
+      planSpec: latest?.steps && latest.steps.length >= 2
+        ? buildAgentPlanSpec(agent)
+        : undefined,
     });
   }, [offerSkillSaveForRun]);
 

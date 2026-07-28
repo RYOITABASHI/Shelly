@@ -75,6 +75,7 @@ import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { useTranslation } from '@/lib/i18n';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
+import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -2134,6 +2135,9 @@ export function useAIPaneDispatch(paneId: string) {
               timestamp: log?.timestamp,
               status: log?.status,
               alreadySkillId: created.skillId,
+              planSpec: log?.steps && log.steps.length >= 2
+                ? buildAgentPlanSpec(created)
+                : undefined,
             });
           } finally {
             // Always discard the ephemeral one-shot agent — including when the run

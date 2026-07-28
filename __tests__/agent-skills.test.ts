@@ -5,6 +5,7 @@ jest.mock('expo-file-system/legacy', () => ({}));
 
 import {
   buildSkillDeleteCommand,
+  applyExecutableSkillPlan,
   buildSkillInjectionContext,
   buildSkillRecipeMarkdown,
   buildSkillWriteCommand,
@@ -17,6 +18,8 @@ import {
   VAULT_SKILLS_DIR,
   type SkillRecipe,
 } from '@/lib/agent-skills';
+import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
+import type { Agent } from '@/store/types';
 import { scanForSecrets } from '@/lib/secret-guard';
 
 const recipe = (over: Partial<SkillRecipe> = {}): SkillRecipe =>
@@ -30,7 +33,27 @@ const recipe = (over: Partial<SkillRecipe> = {}): SkillRecipe =>
     successCount: over.successCount ?? 1,
     created: over.created ?? '2026-06-22T00:00:00.000Z',
     lastUsed: over.lastUsed ?? '2026-06-22T00:00:00.000Z',
+    planSpec: over.planSpec,
   });
+
+const executablePlan = {
+  kind: 'shelly.agent.plan',
+  schemaVersion: 1,
+  generatedAt: Date.UTC(2026, 6, 28),
+  agent: { id: 'source', name: 'Source', autonomous: false, autonomyLevel: 'L2' },
+  prompt: 'old task',
+  tool: { type: 'groq', label: 'Groq', model: 'llama-3.3-70b-versatile', authRef: 'groq' },
+  action: { type: 'draft' },
+  paths: { home: '/home', envFile: '', tmpDir: '', locksDir: '', logsDir: '', resultFile: '', lockFile: '', logDir: '' },
+  output: { outputDir: '/out', outputNameTemplate: '', slug: 'source', useGlobalOutput: true, suggestedRoots: [] },
+  limits: { timeoutSeconds: 600, maxConcurrent: 2, charLimit: 280 },
+  policy: {} as AgentPlanSpecV1['policy'],
+  routeDecision: { route: 'cloud', toolType: 'groq', toolLabel: 'Groq', guard: 'configured-tool', why: '' },
+  steps: {
+    list: [{ instruction: 'collect sources' }, { instruction: 'write summary' }],
+    budget: { maxSteps: 2, totalTimeoutMs: 120_000 },
+  },
+} as AgentPlanSpecV1;
 
 describe('skill recipe id', () => {
   it('is stable and idempotent for the same name+trigger', () => {
@@ -58,6 +81,52 @@ describe('markdown roundtrip', () => {
   it('rejects malformed recipes', () => {
     expect(parseSkillRecipeMarkdown('no frontmatter')).toBeNull();
     expect(parseSkillRecipeMarkdown('---\nname: x\n---\n')).toBeNull(); // no trigger/body
+  });
+
+  it('round-trips an executable multi-step PlanSpec payload', () => {
+    const parsed = parseSkillRecipeMarkdown(
+      buildSkillRecipeMarkdown(recipe({ planSpec: executablePlan })),
+    );
+    expect(parsed?.planSpec?.steps?.list.map((step) => step.instruction)).toEqual([
+      'collect sources',
+      'write summary',
+    ]);
+    expect(parsed?.prompt).toContain('5 bullets');
+  });
+});
+
+describe('executable PlanSpec reuse', () => {
+  it('rehydrates steps/provider/charLimit while preserving the new task and action', () => {
+    const agent = {
+      id: 'future',
+      name: 'Future task',
+      description: '',
+      prompt: 'Summarize this new topic',
+      schedule: null,
+      tool: { type: 'local' },
+      outputPath: '/out',
+      outputTemplate: null,
+      action: { type: 'notify' },
+      enabled: true,
+      lastRun: null,
+      lastResult: null,
+      createdAt: 1,
+      version: 1,
+    } as Agent;
+    const reused = applyExecutableSkillPlan(agent, recipe({ planSpec: executablePlan }));
+
+    expect(reused.prompt).toBe(agent.prompt);
+    expect(reused.action).toEqual({ type: 'notify' });
+    expect(reused.tool).toEqual({ type: 'groq', model: 'llama-3.3-70b-versatile' });
+    expect(reused.orchestration).toEqual({
+      steps: [
+        { instruction: 'collect sources' },
+        { instruction: 'write summary' },
+      ],
+      maxSteps: 2,
+      totalTimeoutMs: 120_000,
+      charLimit: 280,
+    });
   });
 });
 

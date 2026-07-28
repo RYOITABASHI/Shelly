@@ -16,6 +16,7 @@ import * as Notifications from 'expo-notifications';
 import { useTranslation } from '@/lib/i18n';
 import { deleteSkillRecipe, distillSkillFromRun, writeSkillRecipe } from '@/lib/agent-skills';
 import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
+import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 
 export interface SkillSaveOfferParams {
   name: string;
@@ -28,6 +29,8 @@ export interface SkillSaveOfferParams {
   alreadySkillId?: string;
   /** True only for an alarm/background fire with no observing human. */
   unattended?: boolean;
+  /** Present for a successful multi-step orchestration run. */
+  planSpec?: AgentPlanSpecV1;
 }
 
 export const SKILL_SAVED_NOTIFICATION_CATEGORY = 'skill-saved';
@@ -43,6 +46,7 @@ export async function saveSkillWithoutConfirmation(
     prompt: params.prompt,
     routeDecision: params.routeDecision,
     timestamp: params.timestamp,
+    planSpec: params.planSpec,
   });
   await writeSkillRecipe(runCommand, recipe);
   return recipe.id;

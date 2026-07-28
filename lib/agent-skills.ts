@@ -19,7 +19,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { getHomePath } from '@/lib/home-path';
 import { tokenizeForMatch } from '@/lib/agent-text-match';
-import type { AgentRouteDecision } from '@/store/types';
+import type { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
+import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 
 export interface SkillRecipe {
   id: string;
@@ -42,6 +43,9 @@ export interface SkillRecipe {
   /** Where this recipe came from: distilled from agent runs (default/omitted)
    *  vs. imported from a local SKILL.md via the SKILL-001 quarantine flow. */
   source?: 'distilled' | 'imported';
+  /** Executable procedure captured from a successful multi-step run. It is
+   *  converted back into Agent.orchestration and run by the existing executor. */
+  planSpec?: AgentPlanSpecV1;
 }
 
 /** Obsidian Vault folder for agent skills (sibling of 90_Agent_Memory). */
@@ -113,6 +117,7 @@ export function makeSkillRecipe(params: {
   successCount?: number;
   lastUsed?: string;
   created?: string;
+  planSpec?: AgentPlanSpecV1;
 }): SkillRecipe {
   const trigger = params.trigger.trim().slice(0, 200);
   const name = params.name.trim().slice(0, 80) || 'skill';
@@ -127,6 +132,9 @@ export function makeSkillRecipe(params: {
     successCount: Math.max(0, params.successCount ?? 1),
     lastUsed: safeLine(params.lastUsed) || new Date().toISOString(),
     created: safeLine(params.created) || new Date().toISOString(),
+    ...(params.planSpec?.steps?.list && params.planSpec.steps.list.length >= 2
+      ? { planSpec: params.planSpec }
+      : {}),
   };
 }
 
@@ -144,7 +152,10 @@ export function buildSkillRecipeMarkdown(recipe: SkillRecipe): string {
     '---',
     '',
   ].join('\n');
-  return `${fm}${recipe.prompt}\n`;
+  const executable = recipe.planSpec
+    ? `\n<!-- shelly-plan-spec\n${JSON.stringify(recipe.planSpec)}\n-->\n`
+    : '\n';
+  return `${fm}${recipe.prompt}${executable}`;
 }
 
 export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
@@ -159,7 +170,8 @@ export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
   }
   const name = fields.name;
   const trigger = fields.trigger;
-  const prompt = body.trim();
+  const planMatch = body.match(/\n?<!-- shelly-plan-spec\n([\s\S]*?)\n-->\s*$/);
+  const prompt = (planMatch ? body.slice(0, planMatch.index) : body).trim();
   if (!name || !trigger || !prompt) return null;
   const tags = (fields.tags ?? '')
     .replace(/^\[|\]$/g, '')
@@ -167,6 +179,17 @@ export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
     .map((t) => t.trim())
     .filter(Boolean);
   const successCount = Number.parseInt(fields.successCount ?? '1', 10);
+  let planSpec: AgentPlanSpecV1 | undefined;
+  if (planMatch) {
+    try {
+      const parsed = JSON.parse(planMatch[1]) as AgentPlanSpecV1;
+      if (parsed.kind === 'shelly.agent.plan' && parsed.steps?.list?.length >= 2) {
+        planSpec = parsed;
+      }
+    } catch {
+      // A malformed executable payload degrades to the safe prompt-only skill.
+    }
+  }
   return {
     id: skillRecipeId(name, trigger),
     name,
@@ -178,6 +201,7 @@ export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
     successCount: Number.isFinite(successCount) ? Math.max(0, successCount) : 1,
     lastUsed: fields.lastUsed || new Date(0).toISOString(),
     created: fields.created || new Date(0).toISOString(),
+    ...(planSpec ? { planSpec } : {}),
   };
 }
 
@@ -313,6 +337,7 @@ export function distillSkillFromRun(params: {
   prompt: string;
   routeDecision?: AgentRouteDecision;
   timestamp?: number;
+  planSpec?: AgentPlanSpecV1;
 }): SkillRecipe {
   const trigger = deriveTrigger(params.taskText);
   const tags = [...tokenizeForMatch(params.taskText)].slice(0, 6);
@@ -327,7 +352,48 @@ export function distillSkillFromRun(params: {
     successCount: 1,
     lastUsed: created,
     created,
+    planSpec: params.planSpec,
   });
+}
+
+function planToolChoice(spec: AgentPlanSpecV1): ToolChoice | null {
+  switch (spec.tool.type) {
+    case 'local':
+      return { type: 'local', model: spec.tool.model };
+    case 'gemini-api':
+    case 'perplexity':
+    case 'cerebras':
+    case 'groq':
+      return { type: spec.tool.type, model: spec.tool.model };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Rehydrate a stored PlanSpec onto a newly-confirmed agent. Only the procedure
+ * (steps, provider and budgets) is reused; the new task prompt and its reviewed
+ * action remain authoritative. runAgentNow/buildAgentPlanSpec then use the
+ * existing executor unchanged.
+ */
+export function applyExecutableSkillPlan(agent: Agent, recipe: SkillRecipe | null): Agent {
+  const spec = recipe?.planSpec;
+  if (!spec?.steps || spec.steps.list.length < 2) return agent;
+  const tool = planToolChoice(spec);
+  return {
+    ...agent,
+    ...(tool ? { tool } : {}),
+    orchestration: {
+      steps: spec.steps.list.map((step) => ({
+        instruction: step.instruction,
+        ...(step.tool ? { tool: step.tool } : {}),
+        ...(step.apiCall ? { apiCall: step.apiCall } : {}),
+      })),
+      maxSteps: spec.steps.budget.maxSteps,
+      totalTimeoutMs: spec.steps.budget.totalTimeoutMs,
+      ...(spec.limits.charLimit !== undefined ? { charLimit: spec.limits.charLimit } : {}),
+    },
+  };
 }
 
 /** Bump an existing skill's success count + lastUsed (idempotent id is unchanged). */

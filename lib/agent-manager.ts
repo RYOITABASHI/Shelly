@@ -29,6 +29,7 @@ import { MEMORY_ENABLED } from './memory/wiring';
 import { shadowMemoryRecall, activateMemoryRecall, activateMemoryWrite } from './memory/shadow';
 import {
   buildSkillInjectionContext,
+  applyExecutableSkillPlan,
   bumpSkillUsage,
   readSkillRecipes,
   writeSkillRecipe,
@@ -692,6 +693,7 @@ async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
   if (agent.skillId) {
     try {
       const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId) ?? null;
+      agent = applyExecutableSkillPlan(agent, recipe);
       const skillContext = buildSkillInjectionContext(recipe);
       if (skillContext) prompt = `${skillContext}\n\n---\n\n${prompt}`;
     } catch {
