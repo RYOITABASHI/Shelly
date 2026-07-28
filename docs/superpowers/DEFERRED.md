@@ -239,17 +239,19 @@ TS/Kotlin単一ソース化（案の後段）は今回スコープ外——2フ�
 
 ---
 
-### 「今」/「今すぐ」が保留下書きへのパッチ・登録済みエージェントへの補正として schedule:'once' を無条件に信頼する — 未着手・設計判断待ち (P2)
+### ✅ 「今」/「今すぐ」が保留下書きへのパッチ・登録済みエージェントへの補正として schedule:'once' を無条件に信頼する — 実装済み・🔴 実機未検証 (P2)
 
-**優先度**: P2（次リリース検討——実害はあるが頻度は低いと想定。UXの意図次第で「バグ」ではなく「仕様」の可能性もあるため、プロダクト側の判断が先）
+**優先度**: P2（次リリース検討——実害はあるが頻度は低いと想定）
 
 **発見（2026-07-24、`lib/agent-draft-patch.ts`のfuzz調査中）**: `tryPatchSchedule`の confident-path は `parseSchedule()` が confident:true を返した結果を無条件に信頼する設計——`schedule !== 'once'` のような除外ガードが(b)経路にはあるが confident-path には無い。このため、保留中の下書き確認中やタスク不明瞭検知の質問中に単なる会話的な「今」を送ると、無関係にその下書きの schedule が `'once'` へパッチされてしまう。**さらに深刻なのは既に登録済みのエージェントに対する4分間の補正ウィンドウ中**——`applyCorrectionToJustRegisteredAgent`が`schedule:'once'`を`agentPartial.schedule: null`へ正規化するため、「今すぐ実行して」のつもりが実際には**そのエージェントの定期スケジュールをサイレントに消去**する（1回だけ実行、ではなく、スケジュール自体が無くなる）。
 
-**判断が必要な理由**: これは`agent-draft-patch.ts`固有の実装漏れではなく、`parseSchedule()`自身の「今/今すぐ」検知（今夜のbug修正の一部）がそのまま伝播した結果——単純な正規表現バグではなく、「保留中の下書きに対する会話的な『今』は、常に『今すぐ実行』という意図として信頼して良いか」というプロダクト判断。
+**当初の判断保留理由**: これは`agent-draft-patch.ts`固有の実装漏れではなく、`parseSchedule()`自身の「今/今すぐ」検知（本エントリ発見当夜のbug修正の一部）がそのまま伝播した結果——単純な正規表現バグではなく、「保留中の下書きに対する会話的な『今』は、常に『今すぐ実行』という意図として信頼して良いか」というプロダクト判断が先に必要と判断し、いったん見送っていた。
 
-**次にやること**: 実機で頻度・実害を確認した上で、(a) このまま仕様として許容する（「今」を送れば`once`に変わるのは正しいショートカット）か、(b) パッチ経路・補正ウィンドウ経路の両方で`schedule:'once'`パッチを明示的に除外する、のどちらかを決めること。
+**実装（2段階）**:
+1. **登録済みエージェントへの補正ウィンドウ側**（`a8076125f`、2026-07-27、bug #164/#18の実機再現がきっかけ）: `applyCorrectionToJustRegisteredAgent`が、パッチ結果が`schedule:'once'`に解決され、かつ対象エージェントが既に実在する定期スケジュールを持っている場合、`schedule`をchangedFields/agentPartialから除外して定期スケジュールを維持し、代わりに`runNowRequested:true`を返す方針を採用。呼び出し側（`hooks/use-ai-pane-dispatch.ts`）はこれを検知して、スケジュールを書き換える代わりに`runAgentNow`を**追加の単発実行**として発火する。
+2. **保留中の下書き（まだ未登録）へのパッチ側**（`3646f1604`、2026-07-28、本タスクで実装——プロダクト判断は「登録済み側と一貫させる」方針に確定）: `applyPatchToPendingSession`に同型のガードを追加。パッチ結果が`schedule:'once'`に解決され、かつ`session.draft.schedule`が既に実在する定期スケジュール（null/`'once'`以外）を持っている場合、同様に`schedule`を除外して元のスケジュールを維持し、`runNowRequested:true`を返す。保留下書きはまだ未登録のため「即時実行」ではなく「登録と同時に一度だけ実行」という形が必要——新設した`ParsedAgentDraft.runOnceOnConfirm`フラグ（`lib/agent-nl-parser.ts`）にパッチ済み下書き自身が意図を保持し、`draftToConfirmedAgentDraft`→`ConfirmedAgentDraft.runOnceOnConfirm`経由で`confirmAgentDraft`（型入力確認・タップ確認どちらの経路でも、両方が同じパッチ済み下書きを参照するため自然に配線される）まで伝播、登録直後に`runAgentNow`を追加発火する。下書きがまだスケジュール未設定（null/`'once'`）の場合はガード対象外——従来通り「今」は`schedule:'once'`（正当なショートカット）として扱われる。
 
-**テスト**: `__tests__/agent-draft-patch.test.ts`と`__tests__/agent-registered-correction.test.ts`に現状の（意図通りかもしれない）挙動を記録したDOCUMENTED, NOT FIXEDテストあり。
+**テスト**: `__tests__/agent-draft-patch.test.ts`に新規describeブロック（8ケース——定期スケジュール保護、無関係フィールドとの複合パッチ、Sidebar編集セッション、既に`'once'`な下書きへの再応答、ガード対象外の正当ケース）追加。`__tests__/ai-pane-dispatch-interaction-order.test.tsx`に実dispatch()フック経由のend-to-end回帰テスト追加（下書き登録→「今すぐ実行して」パッチ→「OK」確認の一連の流れで、永続化されたスケジュールが不変かつ`runAgentNow`が追加発火されることを検証）。`applyDraftPatch`自体を対象とする既存の`[DOCUMENTED, NOT FIXED]`テスト（同ファイル）はガードが2つのラッパー関数側にのみ存在する設計のため意図的に変更なし。`npx tsc --noEmit`クリーン、フルテストスイートで新規リグレッション無し（既存の`plan-executor`/`capability-broker`関連失敗は本タスク着手前からの既知の無関係failure）。
 → sync: なし。
 
 ---
