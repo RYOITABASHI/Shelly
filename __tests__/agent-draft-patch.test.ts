@@ -439,3 +439,104 @@ describe('applyPatchToPendingSession — safety invariants', () => {
     expect(new Set(r!.changedFields)).toEqual(new Set(['name', 'schedule']));
   });
 });
+
+// ── FIXED — 2026-07-28, applied for consistency with the already-registered
+// correction-window fix (a8076125f, 2026-07-27) — see
+// docs/superpowers/DEFERRED.md's "「今」/「今すぐ」が保留下書きへのパッチ・
+// 登録済みエージェントへの補正として schedule:'once' を無条件に信頼する"
+// entry for the shared root-cause write-up. That entry's OTHER half — a
+// still-unregistered (pending) draft's OWN patch reply — is covered here.
+// Note applyDraftPatch itself is UNCHANGED (see the "[DOCUMENTED, NOT
+// FIXED]" tests above, still passing): the guard lives in this wrapper only,
+// mirroring how applyCorrectionToJustRegisteredAgent's guard lives in ITS
+// wrapper and not in applyDraftPatch either — a single shared core, two
+// callers each applying their own business rule on top. ──────────────────
+describe('applyPatchToPendingSession — bug fix (2026-07-28): "今"/"今すぐ" must not wipe an already-recurring PENDING draft schedule', () => {
+  it('a bare "今" against a pending draft that ALREADY has a real recurring schedule does not wipe it — flags runNowRequested and runOnceOnConfirm instead', () => {
+    const session = baseSession(); // draft.schedule = '0 8 * * *' — a real recurring cron
+    const r = applyPatchToPendingSession(session, '今');
+    expect(r).not.toBeNull();
+    // 'schedule' is deliberately EXCLUDED — nothing about the draft's
+    // schedule changed, so there is nothing left for changedFields to report.
+    expect(r!.changedFields).toEqual([]);
+    expect(r!.runNowRequested).toBe(true);
+    // The session's draft keeps the ORIGINAL recurring schedule...
+    expect(r!.session.draft.schedule).toBe('0 8 * * *');
+    // ...and carries the run-once-on-confirm intent forward instead, so it
+    // survives all the way to confirmAgentDraft (see
+    // ParsedAgentDraft.runOnceOnConfirm's doc comment, lib/agent-nl-parser.ts).
+    expect(r!.session.draft.runOnceOnConfirm).toBe(true);
+  });
+
+  it('the exact fuller phrasing "今すぐ実行して" behaves identically to the bare "今" above', () => {
+    const session = baseSession();
+    const r = applyPatchToPendingSession(session, '今すぐ実行して');
+    expect(r).not.toBeNull();
+    expect(r!.changedFields).not.toContain('schedule');
+    expect(r!.runNowRequested).toBe(true);
+    expect(r!.session.draft.schedule).toBe('0 8 * * *');
+    expect(r!.session.draft.runOnceOnConfirm).toBe(true);
+  });
+
+  it('EN "now" behaves identically', () => {
+    const session = baseSession();
+    const r = applyPatchToPendingSession(session, 'now');
+    expect(r).not.toBeNull();
+    expect(r!.changedFields).not.toContain('schedule');
+    expect(r!.runNowRequested).toBe(true);
+    expect(r!.session.draft.schedule).toBe('0 8 * * *');
+  });
+
+  it('still hard-codes phase "await-confirm" — the run-once fix does not weaken the never-auto-register invariant', () => {
+    const session = baseSession();
+    const r = applyPatchToPendingSession(session, '今');
+    expect(r).not.toBeNull();
+    expect(r!.session.phase).toBe('await-confirm');
+  });
+
+  it('the legitimate case is UNCHANGED: a draft with NO real schedule yet (still null) resolves "今" to a one-shot "once" schedule', () => {
+    const session = baseSession({
+      draft: baseDraft({ schedule: null, scheduleConfident: false, scheduleLabel: 'Manual only' }),
+    });
+    const r = applyPatchToPendingSession(session, '今');
+    expect(r).not.toBeNull();
+    expect(r!.changedFields).toEqual(['schedule']);
+    expect(r!.session.draft.schedule).toBe('once');
+    expect(r!.runNowRequested).toBe(false);
+    expect(r!.session.draft.runOnceOnConfirm).toBeUndefined();
+  });
+
+  it('a draft whose schedule is ALREADY the "once" sentinel (e.g. a prior "今" reply, not yet confirmed) can be answered "今" again without tripping the guard', () => {
+    const session = baseSession({
+      draft: baseDraft({ schedule: 'once', scheduleConfident: true, scheduleLabel: '今すぐ' }),
+    });
+    const r = applyPatchToPendingSession(session, '今すぐ');
+    expect(r).not.toBeNull();
+    expect(r!.runNowRequested).toBe(false);
+    expect(r!.session.draft.schedule).toBe('once');
+  });
+
+  it('a Sidebar edit session (editingAgentId set) whose draft was seeded from an already-registered recurring agent is protected the same way', () => {
+    const session = baseSession({
+      editingAgentId: 'agent-42',
+      draft: baseDraft({ schedule: '0 9 * * 1,3,5' }),
+    });
+    const r = applyPatchToPendingSession(session, '今');
+    expect(r).not.toBeNull();
+    expect(r!.runNowRequested).toBe(true);
+    expect(r!.session.draft.schedule).toBe('0 9 * * 1,3,5');
+    // editingAgentId itself is untouched by this fix (applyPatchToPendingSession
+    // never edits it) — preserved across the patch.
+    expect(r!.session.editingAgentId).toBe('agent-42');
+  });
+
+  it('a leading "今すぐ" combined with an unrelated field change in the same utterance only excludes schedule — the other field change survives', () => {
+    const session = baseSession(); // real recurring schedule
+    const r = applyPatchToPendingSession(session, '今すぐ実行して、名前は株価まとめ2にして');
+    expect(r).not.toBeNull();
+    expect(r!.changedFields).toEqual(['name']);
+    expect(r!.session.draft.name).toBe('株価まとめ2');
+    expect(r!.session.draft.schedule).toBe('0 8 * * *');
+    expect(r!.runNowRequested).toBe(true);
+  });
+});

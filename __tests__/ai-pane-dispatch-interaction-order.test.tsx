@@ -649,6 +649,82 @@ describe('Bug fix — "今すぐ実行して" in the correction window runs the 
   });
 });
 
+// ─── Bug fix regression (2026-07-28) — same shape as the correction-window
+// fix above (a8076125f, 2026-07-27), applied one layer earlier: a bare
+// "今"/"今すぐ" patch reply to a still-PENDING (not yet registered) draft
+// that ALREADY has a real recurring schedule must not silently overwrite it
+// with parseSchedule's 'once' sentinel — see lib/agent-draft-patch.ts's
+// applyPatchToPendingSession doc comment and
+// docs/superpowers/DEFERRED.md's "「今」/「今すぐ」が保留下書きへのパッチ・
+// 登録済みエージェントへの補正として schedule:'once' を無条件に信頼する"
+// entry for the shared root-cause write-up. This is the end-to-end version
+// of __tests__/agent-draft-patch.test.ts's pure-function coverage of the
+// same fix, driven through the REAL dispatch() hook so the
+// hooks/use-ai-pane-dispatch.ts wiring (the patch-reply message, the
+// eventual confirmAgentDraft registration with schedule left untouched, and
+// the additional runAgentNow call) is exercised too, not just the pure
+// decision core. ─────────────────────────────────────────────────────────
+
+describe('Bug fix — "今すぐ実行して" against a still-PENDING draft with a real recurring schedule does not wipe it either', () => {
+  it('on-device-shaped repro: a chat-native draft reaches await-confirm with a real weekly cron, "今すぐ実行して" patches it, then "OK" registers with the schedule intact and fires an additional run', async () => {
+    const { result } = setup();
+
+    // Turn 1: same single-message shape Scenario 1 already verified reaches
+    // await-confirm directly with a confident weekly cron (毎週月曜の朝 →
+    // Monday 08:00) — NOT yet confirmed/registered.
+    await act(async () => {
+      await result.current.dispatch('@agent 毎週月曜の朝にゴミ出しをリマインドして');
+    });
+    const sessionAfterTurn1 = conv().pendingAgentSession;
+    expect(sessionAfterTurn1).toBeTruthy();
+    expect(sessionAfterTurn1?.phase).toBe('await-confirm');
+    const originalSchedule = sessionAfterTurn1!.draft.schedule;
+    // Confirms this is a REAL recurring cron, not 'once'/null — the exact
+    // precondition the bug needed (nothing to protect otherwise).
+    expect(originalSchedule).toBeTruthy();
+    expect(originalSchedule).not.toBe('once');
+    expect(mockCreateAgent).not.toHaveBeenCalled(); // nothing registered yet
+
+    // Turn 2: NOT a confirm phrase (see lib/agent-confirm-phrase.ts's
+    // isConfirmPhrase — "今すぐ実行して" is not in its whitelist), so this
+    // falls through to the patch-detection branch, applyPatchToPendingSession.
+    await act(async () => {
+      await result.current.dispatch('今すぐ実行して');
+    });
+
+    // FIX: the draft's schedule survives untouched, and the patch reply
+    // carries the run-once-on-confirm note instead of a schedule-change line.
+    const sessionAfterTurn2 = conv().pendingAgentSession;
+    expect(sessionAfterTurn2).toBeTruthy();
+    expect(sessionAfterTurn2?.phase).toBe('await-confirm'); // still not registered
+    expect(sessionAfterTurn2?.draft.schedule).toBe(originalSchedule);
+    expect(sessionAfterTurn2?.draft.runOnceOnConfirm).toBe(true);
+    expect(lastMessage().content).toContain(ja['agentplan.run_once_on_confirm_note']);
+    expect(mockCreateAgent).not.toHaveBeenCalled(); // still not registered
+
+    // Turn 3: an actual confirm phrase now commits the draft.
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    // THE BUG (pre-fix): createAgent would have been called with
+    // schedule: null (parseSchedule's 'once' sentinel normalized straight
+    // through), silently registering a manual-only agent instead of the
+    // weekly recurring one the user actually asked for. Post-fix, the
+    // persisted schedule must be byte-for-byte the ORIGINAL cron.
+    expect(mockCreateAgent.mock.calls[0][0].schedule).toBe(originalSchedule);
+    const agentId = mockCreateAgent.mock.results[0].value.id;
+    const persistedSchedule = useAgentStore.getState().agents.find((a) => a.id === agentId)?.schedule;
+    expect(persistedSchedule).toBe(originalSchedule);
+
+    // FIX: the run-once intent was not lost either — an ADDITIONAL runAgentNow
+    // fired for the newly-registered agent right after registration.
+    expect(mockRunAgentNow).toHaveBeenCalled();
+    expect(mockRunAgentNow.mock.calls[0][0]).toBe(agentId);
+  });
+});
+
 // ─── Scenario 5: stale pendingAgentSession + fresh pendingSlotFill ────────
 
 describe('Scenario 5 — stale pendingAgentSession under a fresh pendingSlotFill', () => {

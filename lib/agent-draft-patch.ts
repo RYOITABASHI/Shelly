@@ -424,6 +424,23 @@ export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): Dra
   return { patchedDraft: patched, changedFields };
 }
 
+export interface PendingSessionPatchResult {
+  session: PendingAgentSession;
+  changedFields: string[];
+  /** true when the utterance resolved to parseSchedule's 'once' ("run now")
+   *  sentinel WHILE the pending draft already had a real recurring schedule
+   *  to protect — mirrors RegisteredAgentCorrectionResult.runNowRequested
+   *  below (added 2026-07-27 for the already-registered correction window;
+   *  see that field's doc comment and applyCorrectionToJustRegisteredAgent's
+   *  "bug fix" writeup for the shared root cause). When true, 'schedule' is
+   *  deliberately EXCLUDED from `changedFields` and `session.draft` keeps the
+   *  ORIGINAL recurring schedule; `session.draft.runOnceOnConfirm` is also
+   *  set to `true` (see ParsedAgentDraft's doc comment) so that whichever
+   *  confirm path the user eventually takes fires one ADDITIONAL runAgentNow
+   *  right after registration, without ever touching the persisted cron. */
+  runNowRequested: boolean;
+}
+
 /**
  * hooks/use-ai-pane-dispatch.ts's ONE call site for applying a patch to a
  * live `pendingAgentSession` — deliberately hard-codes `phase: 'await-confirm'`
@@ -437,21 +454,88 @@ export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): Dra
  * also resets the session's staleness clock. Returns null (session
  * untouched) when applyDraftPatch found nothing to change, so the caller can
  * fall through to its existing guidance branch unchanged.
+ *
+ * bug fix (2026-07-28, docs/superpowers/DEFERRED.md's "「今」/「今すぐ」が
+ * 保留下書きへのパッチ・登録済みエージェントへの補正として schedule:'once' を
+ * 無条件に信頼する" entry): this function used to trust ANY confident
+ * parseSchedule() result from applyDraftPatch outright — including a bare
+ * "今"/"今すぐ" resolving to the 'once' ("run now") sentinel — even when
+ * `session.draft.schedule` already carried a real recurring cron (e.g. a
+ * multi-turn draft that already resolved "毎週月曜の朝に…" to a weekly
+ * schedule, still sitting in await-confirm; or a Sidebar edit session whose
+ * draft was seeded from an already-registered agent's real cron). A
+ * conversational "今" sent for ANY reason while that draft was still pending
+ * — including one meant for a completely different question — would
+ * silently overwrite the recurring schedule with a one-shot the moment the
+ * draft was eventually confirmed. 2026-07-27's fix already closed the
+ * identically-shaped gap for the ALREADY-REGISTERED correction window
+ * (applyCorrectionToJustRegisteredAgent below); this closes the same gap one
+ * layer earlier, for a draft that has not been registered yet at all, for
+ * consistency.
+ *
+ * Fix: mirrors applyCorrectionToJustRegisteredAgent's own guard exactly —
+ * when the patch resolves to 'once' AND `session.draft.schedule` is already
+ * a real (non-null, non-'once') recurring cron, 'schedule' is stripped back
+ * out of `changedFields` and the returned draft's schedule-related fields are
+ * reverted to the session's ORIGINAL values, so a re-posted summary never
+ * shows a misleading "★実行タイミング: 今すぐ" line while the real cron
+ * survives unchanged. `runNowRequested` is set instead, and the returned
+ * draft carries `runOnceOnConfirm: true` (see ParsedAgentDraft) so the intent
+ * is not lost — it survives all the way to confirmAgentDraft via
+ * draftToConfirmedAgentDraft/ConfirmedAgentDraft, which fires the additional
+ * run right after this draft is eventually registered. When
+ * `session.draft.schedule` has NO real schedule to protect yet (still
+ * null/manual, or already 'once'), the patch proceeds exactly as before —
+ * there is nothing destructive to guard against, and this is also the shape
+ * a legitimate still-unregistered draft's very FIRST "今" reply needs (e.g.
+ * answering the initial "いつ実行しますか？" slot-fill question with "今" —
+ * that resolves to a one-shot 'once' schedule exactly as before this fix,
+ * since there is no pre-existing recurring schedule for this guard to
+ * protect).
  */
 export function applyPatchToPendingSession(
   session: PendingAgentSession,
   utterance: string,
-): { session: PendingAgentSession; changedFields: string[] } | null {
+): PendingSessionPatchResult | null {
   const result = applyDraftPatch(session.draft, utterance);
   if (!result) return null;
+
+  // See the "bug fix" doc comment above — this is the guard that keeps a
+  // "今"/"今すぐ" reply from silently wiping the pending draft's own
+  // already-recurring schedule instead of just flagging a run-now-on-confirm
+  // intent that leaves the schedule alone.
+  const scheduleWouldWipeRecurring =
+    result.changedFields.includes('schedule') &&
+    result.patchedDraft.schedule === 'once' &&
+    !!session.draft.schedule &&
+    session.draft.schedule !== 'once';
+
+  const patchedDraft: ParsedAgentDraft = scheduleWouldWipeRecurring
+    ? {
+        ...result.patchedDraft,
+        schedule: session.draft.schedule,
+        scheduleConfident: session.draft.scheduleConfident,
+        scheduleLabel: session.draft.scheduleLabel,
+        suggestedTime: session.draft.suggestedTime,
+        suggestedFrequency: session.draft.suggestedFrequency,
+        suggestedDowList: session.draft.suggestedDowList,
+        scheduleAssumed: session.draft.scheduleAssumed,
+        runOnceOnConfirm: true,
+      }
+    : result.patchedDraft;
+  const changedFields = scheduleWouldWipeRecurring
+    ? result.changedFields.filter((field) => field !== 'schedule')
+    : result.changedFields;
+
   return {
     session: {
       ...session,
-      draft: result.patchedDraft,
+      draft: patchedDraft,
       phase: 'await-confirm',
       createdAt: Date.now(),
     },
-    changedFields: result.changedFields,
+    changedFields,
+    runNowRequested: scheduleWouldWipeRecurring,
   };
 }
 
