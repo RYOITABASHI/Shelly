@@ -552,6 +552,103 @@ describe('Bonus finding — justRegisteredAgent correction window vs. a fresh ag
   });
 });
 
+// ─── Bug fix regression (2026-07-27, on-device repro at versionCode 1988):
+// "今すぐ実行して" during the post-registration correction window must NOT
+// silently wipe an already-registered agent's recurring schedule — see
+// lib/agent-draft-patch.ts's applyCorrectionToJustRegisteredAgent doc
+// comment (runNowRequested) for the root-cause writeup. This is the
+// end-to-end version of __tests__/agent-registered-correction.test.ts's
+// pure-function coverage of the same fix, driven through the REAL dispatch()
+// hook so the hooks/use-ai-pane-dispatch.ts wiring (runAgentNow call,
+// updateAgent partial, message content) is exercised too, not just the pure
+// decision core. ──────────────────────────────────────────────────────────
+
+describe('Bug fix — "今すぐ実行して" in the correction window runs the agent once without touching its persisted schedule', () => {
+  it('on-device repro sequence: register a real recurring-schedule agent, then "今すぐ実行して" — schedule survives unchanged, runAgentNow fires', async () => {
+    const { result } = setup();
+
+    // Turn 1+2: register a recurring agent via the chat-native flow — same
+    // single-message shape Scenario 1 already verified reaches await-confirm
+    // directly with a confident weekly cron (毎週月曜の朝 → Monday 08:00),
+    // then confirm it.
+    await act(async () => {
+      await result.current.dispatch('@agent 毎週月曜の朝にゴミ出しをリマインドして');
+    });
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    const agentId = mockCreateAgent.mock.results[0].value.id;
+    const registeredSchedule = useAgentStore.getState().agents.find((a) => a.id === agentId)?.schedule;
+    // Confirms this is a REAL recurring cron, not 'once'/null — the exact
+    // precondition the bug needed (nothing to protect otherwise).
+    expect(registeredSchedule).toBeTruthy();
+    expect(registeredSchedule).not.toBe('once');
+    expect(conv().justRegisteredAgent?.agentId).toBe(agentId);
+
+    // Turn 3: within the 4-minute post-registration correction window, the
+    // exact on-device repro phrasing — "run it right now".
+    await act(async () => {
+      await result.current.dispatch('今すぐ実行して');
+    });
+
+    // FIX: runAgentNow fired for this agent as an ADDITIONAL one-off action.
+    expect(mockRunAgentNow).toHaveBeenCalled();
+    expect(mockRunAgentNow.mock.calls[0][0]).toBe(agentId);
+
+    // THE BUG: pre-fix, updateAgent was called with { schedule: null } here
+    // (parseSchedule's 'once' sentinel normalized straight into a persisted
+    // null), flipping Sidebar's schedule column from the real cron to
+    // "manual". Post-fix, the agent's persisted schedule must be byte-for-
+    // byte unchanged.
+    const scheduleAfterRunNow = useAgentStore.getState().agents.find((a) => a.id === agentId)?.schedule;
+    expect(scheduleAfterRunNow).toBe(registeredSchedule);
+    // Belt-and-suspenders: updateAgent must never have been called with a
+    // `schedule` field at all as part of this correction (whether or not it
+    // was called for some other field).
+    for (const call of mockUpdateAgent.mock.calls) {
+      expect((call[1] as Record<string, unknown> | undefined)?.schedule).toBeUndefined();
+    }
+  });
+
+  it('sanity check: a still-unregistered draft\'s "今" reply during await-confirm is UNCHANGED by this fix — it still resolves to a one-shot schedule', async () => {
+    const { result } = setup();
+
+    // "ニュースを通知して" alone has no confident schedule, so it reaches
+    // await-confirm's message-attached pendingSlotFill question first (same
+    // as the Bonus finding scenario above) — NOT yet a registered agent, so
+    // applyCorrectionToJustRegisteredAgent is never even reached here; only
+    // applyPatchToPendingSession-adjacent slot-fill code runs.
+    await act(async () => {
+      await result.current.dispatch('@agent ニュースを通知して');
+    });
+    expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
+
+    // "今" answers the still-pending draft's OWN schedule question — this is
+    // the legitimate case the task explicitly requires stay intact: a
+    // genuinely new, still-unregistered draft resolving "今" to a one-shot
+    // ('once') schedule, exactly as before this fix (applyPatchToPendingSession
+    // and the slot-fill answer path are untouched by this fix — only
+    // applyCorrectionToJustRegisteredAgent, reached only AFTER registration,
+    // was changed).
+    await act(async () => {
+      await result.current.dispatch('今');
+    });
+
+    // Nothing else was missing once schedule resolved, so dispatch() moves
+    // straight to presentDraftForConfirmation — agentRegistrationRequireConfirm:true
+    // (this file's settings mock) means it becomes a pending chat-native
+    // confirmation rather than auto-registering, same as the Bonus finding
+    // scenario's "毎日7時" answer above. The point here is specifically that
+    // schedule resolved to 'once' (a real answer, not silently dropped) and
+    // registration was never blocked or forced into requiring a real cron.
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    const pendingAfterNow = conv().pendingAgentSession;
+    expect(pendingAfterNow).not.toBeNull();
+    expect(pendingAfterNow?.draft.schedule).toBe('once');
+  });
+});
+
 // ─── Scenario 5: stale pendingAgentSession + fresh pendingSlotFill ────────
 
 describe('Scenario 5 — stale pendingAgentSession under a fresh pendingSlotFill', () => {

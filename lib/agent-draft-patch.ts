@@ -478,6 +478,15 @@ export interface RegisteredAgentCorrectionResult {
    *  use-ai-pane-dispatch.ts) is responsible for that one field's separate
    *  tool/runOn resolution; this function only flags that it's needed. */
   autonomousTurnedOn: boolean;
+  /** true when the utterance resolved to parseSchedule's 'once' ("run now")
+   *  sentinel WHILE the agent already had a real recurring schedule to
+   *  protect (see the on-device bug this field exists to fix, documented on
+   *  applyCorrectionToJustRegisteredAgent below). When true, 'schedule' is
+   *  deliberately EXCLUDED from both `changedFields` and `agentPartial` —
+   *  the persisted cron is left untouched — and the caller is expected to
+   *  fire a one-off runAgentNow for the agent instead, as an ADDITIONAL
+   *  action rather than a schedule replacement. */
+  runNowRequested: boolean;
 }
 
 /**
@@ -504,6 +513,41 @@ export interface RegisteredAgentCorrectionResult {
  *    two apart if it ever needs to, even though today's caller treats them
  *    identically: do nothing, don't touch the reference);
  *  - applyDraftPatch itself found nothing to change.
+ *
+ * bug fix (2026-07-27, on-device repro at versionCode 1988 — see
+ * docs/superpowers/DEFERRED.md's "「今」/「今すぐ」が保留下書きへのパッチ・
+ * 登録済みエージェントへの補正として schedule:'once' を無条件に信頼する"
+ * entry for the original write-up): a schedule patch that resolves to
+ * parseSchedule's 'once' ("run now") sentinel used to be normalized straight
+ * into `agentPartial.schedule: null` below, UNCONDITIONALLY — including when
+ * `draftSnapshot` already carried a real recurring cron. Repro: register
+ * "毎日9時にニュースをまとめてファイルに保存して" (confirmed in Sidebar as
+ * "0 9 * * *"), then within the correction window reply "今すぐ実行して" —
+ * the Sidebar schedule column silently flipped to "manual" even though the
+ * chat reply still showed the OLD "毎日08:00" summary (summarizeAgentDraftAsText
+ * marks 'schedule' as unchanged in that stale-looking reply because the
+ * REGRESSION was in what got persisted, not what got summarized). "今すぐ
+ * 実行して" about an EXISTING recurring agent means "also run it right now",
+ * not "replace the recurring schedule with nothing" — those are different
+ * user intents that a single 'once' sentinel can't distinguish on its own,
+ * so the distinguishing signal has to come from whether `draftSnapshot`
+ * already had a real schedule to protect.
+ *
+ * Fix: when the patch resolves to 'once' AND `draftSnapshot.schedule` is
+ * already a real (non-null, non-'once') recurring cron, 'schedule' is
+ * stripped back out of both `changedFields` and `agentPartial` — the
+ * persisted cron is left completely untouched — and `runNowRequested` is
+ * set instead, so the caller can fire a one-off runAgentNow as an ADDITIONAL
+ * action. `patchedDraft.schedule`-shaped fields are reverted to the
+ * snapshot's ORIGINAL values in this case too, so a re-posted summary (built
+ * from `changedFields`, which no longer contains 'schedule') never shows a
+ * misleading "★実行タイミング: 今すぐ" line while the real cron survives
+ * unchanged. When `draftSnapshot` has NO real schedule to protect (already
+ * null/manual, or already 'once'), the patch proceeds exactly as before —
+ * there is nothing destructive to guard against, and this is also the shape
+ * a legitimate still-unregistered draft's "今" reply needs (handled by
+ * applyPatchToPendingSession above, which does not call this function at
+ * all and is intentionally left unmodified by this fix).
  */
 export function applyCorrectionToJustRegisteredAgent(
   draftSnapshot: ParsedAgentDraft,
@@ -518,25 +562,56 @@ export function applyCorrectionToJustRegisteredAgent(
   const result = applyDraftPatch(draftSnapshot, utterance);
   if (!result) return null;
 
+  // See the "bug fix" doc comment above — this is the guard that keeps a
+  // "今すぐ実行して" reply from silently wiping an existing recurring
+  // schedule instead of just running the agent once, right now.
+  const scheduleWouldWipeRecurring =
+    result.changedFields.includes('schedule') &&
+    result.patchedDraft.schedule === 'once' &&
+    !!draftSnapshot.schedule &&
+    draftSnapshot.schedule !== 'once';
+
+  const patchedDraft: ParsedAgentDraft = scheduleWouldWipeRecurring
+    ? {
+        ...result.patchedDraft,
+        schedule: draftSnapshot.schedule,
+        scheduleConfident: draftSnapshot.scheduleConfident,
+        scheduleLabel: draftSnapshot.scheduleLabel,
+        suggestedTime: draftSnapshot.suggestedTime,
+        suggestedFrequency: draftSnapshot.suggestedFrequency,
+        suggestedDowList: draftSnapshot.suggestedDowList,
+        scheduleAssumed: draftSnapshot.scheduleAssumed,
+      }
+    : result.patchedDraft;
+  const changedFields = scheduleWouldWipeRecurring
+    ? result.changedFields.filter((field) => field !== 'schedule')
+    : result.changedFields;
+
   const agentPartial: RegisteredAgentPatch = {};
-  if (result.changedFields.includes('schedule')) {
+  if (changedFields.includes('schedule')) {
     // 'once' is parseSchedule's "run now, don't schedule" sentinel — same
     // normalization draftToConfirmedAgentDraft applies (lib/agent-plan-
     // summary.ts, see its own comment) so a corrected agent is never
     // persisted with a literal 'once' schedule cronToIntervalMs can't parse.
-    agentPartial.schedule = result.patchedDraft.schedule === 'once' ? null : result.patchedDraft.schedule;
+    // Only reached when scheduleWouldWipeRecurring is false — i.e. there was
+    // no real recurring schedule to protect in the first place, so
+    // normalizing to null here is a no-op / genuinely intended (a still-
+    // manual agent gaining an explicit 'once' request that this function's
+    // caller doesn't otherwise act on).
+    agentPartial.schedule = patchedDraft.schedule === 'once' ? null : patchedDraft.schedule;
   }
-  if (result.changedFields.includes('name')) {
-    agentPartial.name = result.patchedDraft.name;
+  if (changedFields.includes('name')) {
+    agentPartial.name = patchedDraft.name;
   }
-  if (result.changedFields.includes('action')) {
-    agentPartial.action = result.patchedDraft.action;
+  if (changedFields.includes('action')) {
+    agentPartial.action = patchedDraft.action;
   }
 
   return {
-    patchedDraft: result.patchedDraft,
-    changedFields: result.changedFields,
+    patchedDraft,
+    changedFields,
     agentPartial,
-    autonomousTurnedOn: result.changedFields.includes('autonomous'),
+    autonomousTurnedOn: changedFields.includes('autonomous'),
+    runNowRequested: scheduleWouldWipeRecurring,
   };
 }

@@ -428,6 +428,15 @@ const en: Record<string, string> = {
   // Edge case: applyDraftPatch found a correction to apply, but the agent it
   // targets no longer exists (deleted via another surface in the gap).
   'agentplan.correction_agent_missing': 'That agent no longer exists, so nothing was changed.',
+  // 2026-07-27 bug fix: shown instead of a schedule-change line when a
+  // correction-window reply ("今すぐ実行して") resolves to parseSchedule's
+  // 'once' sentinel while the agent already has a real recurring schedule —
+  // see lib/agent-draft-patch.ts's applyCorrectionToJustRegisteredAgent doc
+  // comment. The recurring schedule is left untouched; this is an ADDITIONAL
+  // one-off run, not a schedule replacement.
+  'agentplan.run_now_started': 'Running "{{name}}" right now — its recurring schedule stays unchanged.',
+  'agentplan.run_now_done': 'Done.',
+  'agentplan.run_now_failed': 'The run-now request failed',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',

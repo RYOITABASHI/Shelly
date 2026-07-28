@@ -10,7 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ChatMessage, ChatAgent } from './chat-store';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { SlotField } from '@/lib/agent-slot-fill';
-import { logInfo, logError } from '@/lib/debug-logger';
+import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -283,11 +283,13 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
     },
 
     updateMessage: (paneId, msgId, updates) => {
+      let found = false;
       set((state) => {
         const conv = state.conversations[paneId];
         if (!conv) return state;
         const msgIdx = conv.messages.findIndex((m) => m.id === msgId);
         if (msgIdx === -1) return state;
+        found = true;
 
         const newMessages = [...conv.messages];
         newMessages[msgIdx] = { ...newMessages[msgIdx], ...updates };
@@ -299,8 +301,32 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         };
       });
 
-      // Persist when streaming completes
-      if (updates.isStreaming === false) {
+      // bug #164 diagnostics (2026-07-28): a silent no-op here (stale/wrong
+      // messageId, or the pane's conversation not yet materialized) would
+      // look identical, from the caller's side, to a successful update that
+      // simply never rendered — log it explicitly so a repro can rule this
+      // in or out instead of guessing from a blank chat bubble.
+      if (!found) {
+        logWarn('AIPaneStore', `updateMessage: no-op — message ${msgId} not found in pane ${paneId}`);
+        return;
+      }
+
+      // bug #164 fix (2026-07-28): this used to persist ONLY on the exact
+      // `isStreaming === false` transition (the streaming-completion case),
+      // which silently skipped persistence for every OTHER kind of update —
+      // including agentCardState transitions and their paired content (e.g.
+      // "✅ Agent ... registered ..." in hooks/use-ai-pane-dispatch.ts's
+      // confirmAgentDraft), since those updates never set `isStreaming` at
+      // all. In-memory the change is still applied immediately (the `set()`
+      // above is unconditional), so a live session renders correctly, but
+      // the write to AsyncStorage was silently dropped — an app kill/restart
+      // before the next unrelated persist-triggering update on the SAME pane
+      // would revert a "registered"/"confirmed"/"cancelled" bubble back to
+      // its pre-update (often empty/placeholder) seed content. Persist on
+      // every update except an in-progress streaming chunk itself
+      // (isStreaming: true / a streamingText delta), mirroring addMessage's
+      // own `!msg.isStreaming` gate just above.
+      if (updates.isStreaming !== true) {
         debouncedSave(persist);
       }
     },

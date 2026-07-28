@@ -749,19 +749,73 @@ export function useAIPaneDispatch(paneId: string) {
             partial.runOn = tool.type === 'local' ? 'on-device' : 'auto';
           }
 
-          const updatedAgent = await updateAgent(justRegistered.agentId, partial, runAgentShellCommand);
+          // 2026-07-27 bug fix: a pure "今すぐ実行して" run-now request (see
+          // applyCorrectionToJustRegisteredAgent's runNowRequested doc
+          // comment) leaves `partial` completely empty — there is no
+          // persisted field to write. Calling updateAgent(id, {}, ...) would
+          // still work (installAgent re-materializes/re-schedules the SAME
+          // values) but is a needless native round-trip for a no-op write,
+          // so it's skipped in favor of just reading the still-live agent
+          // straight from the store.
+          const hasPersistedFieldChange = Object.keys(partial).length > 0;
+          const updatedAgent = hasPersistedFieldChange
+            ? await updateAgent(justRegistered.agentId, partial, runAgentShellCommand)
+            : useAgentStore.getState().agents.find((a) => a.id === justRegistered.agentId) ?? null;
           const correctionStrings = detectMessageLocale(patchedDraft.rawText) === 'ja' ? ja : en;
           if (updatedAgent) {
-            store.addMessage(paneId, {
-              id: generateId(),
-              role: 'assistant',
-              content: `${correctionStrings['agentplan.patch_updated_header']}\n${summarizeAgentDraftAsText(
-                patchedDraft,
-                new Set(correction.changedFields),
-              )}`,
-              timestamp: Date.now(),
-              agent: justRegistered.agentLabel,
-            });
+            // changedFields no longer contains 'schedule' when
+            // runNowRequested is true (see applyCorrectionToJustRegisteredAgent),
+            // so this can legitimately be empty — e.g. a bare "今" with
+            // nothing else in the utterance patches nothing else at all.
+            const summaryText = correction.changedFields.length > 0
+              ? `${correctionStrings['agentplan.patch_updated_header']}\n${summarizeAgentDraftAsText(
+                  patchedDraft,
+                  new Set(correction.changedFields),
+                )}`
+              : null;
+
+            if (correction.runNowRequested) {
+              // Fire the one-off run as an ADDITIONAL action — the whole
+              // point of this fix is that the agent's persisted schedule
+              // (already left untouched in `partial` above) must survive
+              // this. Uses the same attended-wait bound as every other
+              // chat-visible run-now call site in this file (bug #164).
+              const runningMsgId = generateId();
+              const runningNote = correctionStrings['agentplan.run_now_started'].replace('{{name}}', updatedAgent.name);
+              store.addMessage(paneId, {
+                id: runningMsgId,
+                role: 'assistant',
+                content: summaryText ? `${summaryText}\n\n▶ ${runningNote}` : `▶ ${runningNote}`,
+                timestamp: Date.now(),
+                agent: justRegistered.agentLabel,
+              });
+              try {
+                await runAgentNow(updatedAgent.id, runAgentShellCommand, {
+                  waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+                });
+                const log = useAgentStore.getState().getRunHistory(updatedAgent.id).at(-1);
+                const preview = (log?.outputPreview || '').trim();
+                const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
+                const resultLine = preview ? `${icon} ${preview}` : `${icon} ${correctionStrings['agentplan.run_now_done']}`;
+                store.updateMessage(paneId, runningMsgId, {
+                  content: summaryText ? `${summaryText}\n\n${resultLine}` : resultLine,
+                });
+              } catch (runErr) {
+                const detail = runErr instanceof Error ? runErr.message : String(runErr);
+                const failureLine = `❌ ${correctionStrings['agentplan.run_now_failed']}: ${detail}`;
+                store.updateMessage(paneId, runningMsgId, {
+                  content: summaryText ? `${summaryText}\n\n${failureLine}` : failureLine,
+                });
+              }
+            } else if (summaryText) {
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content: summaryText,
+                timestamp: Date.now(),
+                agent: justRegistered.agentLabel,
+              });
+            }
             // Refresh, not clear: extends the window (a run of quick
             // follow-up corrections in the same breath should all land) and
             // keeps draftSnapshot in sync so the NEXT correction patches
@@ -2069,10 +2123,20 @@ export function useAIPaneDispatch(paneId: string) {
           const correctionHint = correctionEligible
             ? `\n\n${(detectMessageLocale(originalDraftSnapshot!.rawText) === 'ja' ? ja : en)['agentplan.correction_hint']}`
             : '';
+          // bug #164 diagnostics (2026-07-28): the registered-but-blank-bubble
+          // repro (real recurring cron, non-ephemeral, non-edit) lands in
+          // THIS branch — the ONLY updateMessage call for that case — but had
+          // no bracket logging, unlike every other step in this function
+          // (materializeAgentBody/installSchedule/installAgent above). Pins
+          // whether this call is even reached and whether the store call
+          // itself throws (an exception here would otherwise vanish into the
+          // outer catch with no trace of having gotten this far).
+          logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron calling updateMessage(content) for ${created.id} / message ${messageId}`);
           store.updateMessage(paneId, messageId, {
             agentCardState: 'confirmed',
             content: `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list${correctionHint}`,
           });
+          logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron updateMessage(content) returned for ${created.id} / message ${messageId}`);
           if (correctionEligible) {
             store.setJustRegisteredAgent(paneId, {
               agentId: created.id,

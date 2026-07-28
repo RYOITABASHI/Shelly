@@ -85,12 +85,16 @@ describe('applyCorrectionToJustRegisteredAgent', () => {
     expect(result!.agentPartial.schedule).toBeUndefined();
   });
 
-  it("1c. normalizes a schedule patch's 'once' sentinel to null (never persists a literal 'once' cron)", () => {
+  it("1c. a schedule patch that resolves to 'once' while the agent has NO real recurring schedule to protect still normalizes to null (unchanged pre-fix behavior)", () => {
     const createdAt = Date.now();
     // A patch that resolves to a one-shot "run now" via a full confident
-    // restatement — parseSchedule encodes that as schedule: 'once'.
+    // restatement — parseSchedule encodes that as schedule: 'once'. Here the
+    // agent is already manual-only (schedule: null), so there is nothing
+    // recurring to protect — see the "bug fix" doc comment on
+    // applyCorrectionToJustRegisteredAgent for why this case is deliberately
+    // NOT routed through runNowRequested.
     const result = applyCorrectionToJustRegisteredAgent(
-      baseDraft(),
+      baseDraft({ schedule: null, scheduleLabel: 'Manual only' }),
       'すぐに実行して',
       createdAt,
       STALE_MS,
@@ -104,6 +108,7 @@ describe('applyCorrectionToJustRegisteredAgent', () => {
       // "すぐに実行して" parses as 'once' at all.
       if (result.patchedDraft.schedule === 'once') {
         expect(result.agentPartial.schedule).toBeNull();
+        expect(result.runNowRequested).toBe(false);
       }
     }
   });
@@ -168,38 +173,66 @@ describe('applyCorrectionToJustRegisteredAgent', () => {
     expect(result).toBeNull();
   });
 
-  // ── DOCUMENTED, NOT FIXED — 2026-07-24 fuzz-sweep, design judgment call ──
+  // ── FIXED — 2026-07-27, on-device repro at versionCode 1988 ──────────────
   //
-  // The task's explicit concern (mirroring tonight's real routing bug, just
-  // at a different layer): "does a bare 今/今すぐ ever get misdetected as some
-  // OTHER field's patch attempt". Verified: lib/agent-draft-patch.ts does NOT
-  // have a dedicated schedule='once' patch detector of its own, but it DOES
-  // inherit one indirectly — tryPatchSchedule's path (a) trusts ANY confident
-  // parseSchedule() result outright, and parseSchedule('今') is confident
-  // (schedule: 'once', "run once, right now" — see agent-nl-parser.ts's
-  // branch 0). For an ALREADY-REGISTERED periodic agent within this
-  // correction window, that means a bare "今" reply — sent for any reason —
-  // silently clears the agent's schedule to null (agentPartial normalizes
-  // 'once' -> null, since 'once' isn't a real persisted cron) rather than
-  // actually running it immediately; the agent just stops firing on its
-  // periodic schedule until edited again. Whether trusting bare "今" here is
-  // the intended UX (arguably a legitimate "just run it now instead" request)
-  // or too easily confused with an unrelated conversational "今" is a product
-  // decision this task's own hard constraint (narrowing/additive fixes only)
-  // says NOT to resolve unilaterally — captured as current behavior only.
-  it('[DOCUMENTED, NOT FIXED] a bare "今" within the correction window clears the registered agent\'s schedule to null (not an actual "run now")', () => {
+  // Was: [DOCUMENTED, NOT FIXED] — a bare "今"/"今すぐ実行して" reply within
+  // the correction window silently cleared an ALREADY-REGISTERED recurring
+  // agent's schedule to null (Sidebar's schedule column visibly flipped from
+  // e.g. "0 9 * * *" to "manual") instead of just running it once, right
+  // now. See applyCorrectionToJustRegisteredAgent's "bug fix" doc comment
+  // for the full root-cause writeup and docs/superpowers/DEFERRED.md's
+  // "「今」/「今すぐ」が保留下書きへのパッチ・登録済みエージェントへの補正
+  // として schedule:'once' を無条件に信頼する" entry for the original
+  // (now-resolved) product-judgment writeup.
+  it('a bare "今" within the correction window does NOT clear an already-recurring agent\'s schedule — flags runNowRequested instead', () => {
     const createdAt = Date.now();
     const result = applyCorrectionToJustRegisteredAgent(
-      baseDraft(),
+      baseDraft(), // schedule: '0 9 * * *' — a real recurring cron
       '今',
       createdAt,
       STALE_MS,
       createdAt + 5_000,
     );
     expect(result).not.toBeNull();
-    expect(result!.changedFields).toEqual(['schedule']);
-    expect(result!.patchedDraft.schedule).toBe('once');
-    expect(result!.agentPartial.schedule).toBeNull();
+    // 'schedule' is deliberately EXCLUDED — nothing about the persisted
+    // cron changed, so there is nothing left for changedFields to report.
+    expect(result!.changedFields).toEqual([]);
+    // The draft handed back for any re-posted summary keeps the ORIGINAL
+    // schedule, not 'once' — a summary built from (empty) changedFields
+    // would never mark it anyway, but this also guards against a future
+    // caller reading patchedDraft.schedule directly.
+    expect(result!.patchedDraft.schedule).toBe('0 9 * * *');
+    expect(result!.agentPartial.schedule).toBeUndefined();
+    expect(result!.runNowRequested).toBe(true);
+  });
+
+  // The exact on-device repro shape from bug write-up: "毎日9時にニュースを
+  // まとめてファイルに保存して" registers with schedule "0 9 * * *", then
+  // within the correction window "今すぐ実行して" (not the bare "今" above —
+  // the fuller, more natural phrasing an actual user typed on-device).
+  it('the exact on-device repro: "今すぐ実行して" against an already-registered daily-9am agent leaves its schedule untouched', () => {
+    const createdAt = Date.now();
+    const dailyNineAmDraft = baseDraft({
+      name: 'ニュースまとめ',
+      prompt: 'ニュースをまとめてファイルに保存して',
+      schedule: '0 9 * * *',
+      scheduleLabel: '毎日 09:00',
+      rawText: '毎日9時にニュースをまとめてファイルに保存して',
+    });
+    const result = applyCorrectionToJustRegisteredAgent(
+      dailyNineAmDraft,
+      '今すぐ実行して',
+      createdAt,
+      STALE_MS,
+      createdAt + 30_000, // well inside the 4-minute correction window
+    );
+    expect(result).not.toBeNull();
+    expect(result!.runNowRequested).toBe(true);
+    expect(result!.changedFields).not.toContain('schedule');
+    expect(result!.agentPartial.schedule).toBeUndefined();
+    // The persisted cron the caller will (NOT) write back is the original —
+    // asserting this on patchedDraft mirrors what the caller actually reads.
+    expect(result!.patchedDraft.schedule).toBe('0 9 * * *');
   });
 
   it('flags autonomousTurnedOn (without touching tool/runOn itself — that is the caller\'s job)', () => {

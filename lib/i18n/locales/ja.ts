@@ -418,6 +418,15 @@ const ja: Record<string, string> = {
   // applyDraftPatch はヒットしたが、対象のエージェントが（別経路での削除等で）
   // 既に存在しなかった場合の案内。
   'agentplan.correction_agent_missing': 'そのエージェントは既に存在しないため、変更されませんでした。',
+  // 2026-07-27 バグ修正: 補正ウィンドウ中の返信（「今すぐ実行して」）が
+  // parseSchedule の 'once'（今すぐ実行）センチネルに解決され、かつエージェ
+  // ントが既に本物の定期スケジュールを持っている場合、スケジュール変更行の
+  // 代わりに表示する。定期スケジュールはそのまま維持され、これは「置き換
+  // え」ではなく追加の単発実行——lib/agent-draft-patch.ts の
+  // applyCorrectionToJustRegisteredAgent のコメント参照。
+  'agentplan.run_now_started': '「{{name}}」を今すぐ実行します（定期スケジュールはそのまま維持されます）。',
+  'agentplan.run_now_done': '完了しました。',
+  'agentplan.run_now_failed': '今すぐ実行がエラーになりました',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',
