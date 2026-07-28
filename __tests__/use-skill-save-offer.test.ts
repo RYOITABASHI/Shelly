@@ -7,6 +7,11 @@
 // (shouldOfferSkillSave), which is what actually encodes the "never re-offer /
 // only offer on success" invariants this task must not regress.
 jest.mock('react-native', () => ({ Alert: { alert: jest.fn() } }));
+jest.mock('expo-notifications', () => ({
+  addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+  setNotificationCategoryAsync: jest.fn(),
+  scheduleNotificationAsync: jest.fn(),
+}));
 jest.mock('@/lib/i18n', () => ({
   t: (key: string) => key,
   useTranslation: () => ({ t: (key: string) => key }),
@@ -16,7 +21,11 @@ jest.mock('@/lib/home-path', () => ({
 }));
 jest.mock('expo-file-system/legacy', () => ({}));
 
-import { shouldOfferSkillSave } from '@/hooks/use-skill-save-offer';
+import {
+  saveSkillWithoutConfirmation,
+  shouldOfferSkillSave,
+  skillSaveMode,
+} from '@/hooks/use-skill-save-offer';
 
 describe('shouldOfferSkillSave', () => {
   it('offers when the run succeeded and no skill is already bound', () => {
@@ -32,5 +41,31 @@ describe('shouldOfferSkillSave', () => {
 
   it('does not re-offer when the agent already reuses a skill, even on success', () => {
     expect(shouldOfferSkillSave({ status: 'success', alreadySkillId: 'skill-abc123' })).toBe(false);
+  });
+});
+
+describe('skill save mode', () => {
+  it('auto-saves only successful unattended runs', () => {
+    expect(skillSaveMode({ status: 'success', unattended: true })).toBe('auto');
+    expect(skillSaveMode({ status: 'success', unattended: false })).toBe('confirm');
+    expect(skillSaveMode({ status: 'success' })).toBe('confirm');
+    expect(skillSaveMode({ status: 'error', unattended: true })).toBe('none');
+    expect(
+      skillSaveMode({ status: 'success', unattended: true, alreadySkillId: 'skill-existing' }),
+    ).toBe('none');
+  });
+
+  it('writes the distilled unattended skill immediately without an Alert dependency', async () => {
+    const runCommand = jest.fn(async (_cmd: string): Promise<string> => '');
+    const id = await saveSkillWithoutConfirmation(runCommand, {
+      name: 'Morning digest',
+      prompt: 'Summarize the morning news in three bullets.',
+      status: 'success',
+      unattended: true,
+      timestamp: Date.UTC(2026, 6, 28),
+    });
+    expect(id).toMatch(/^skill-/);
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(runCommand.mock.calls[0][0]).toContain('Morning digest');
   });
 });
