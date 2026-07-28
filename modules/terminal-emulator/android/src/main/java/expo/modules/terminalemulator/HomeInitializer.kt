@@ -1084,7 +1084,15 @@ patchCodex(libDir);
     //      already runs on every initialize() call regardless of
     //      BASHRC_VERSION; bumping here is for the changelog/audit trail,
     //      not because the write itself needed a version gate.
-    private const val BASHRC_VERSION = 235
+    // 236: bug #159 — ssh-keygen() wrapper now injects a $HOME-based default
+    //      -f (identity file) when the caller omits -f, so the interactive
+    //      "Enter file in which to save the key" prompt shows this app's
+    //      real $HOME instead of the bundled OpenSSH binary's compiled-in
+    //      Termux path. Skipped for -A/-F/-R/-H/-G/-T/-M, where -f has a
+    //      different meaning (known_hosts file / host-key prefix / moduli
+    //      candidates file) and injecting the id-file default would be
+    //      wrong.
+    private const val BASHRC_VERSION = 236
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2162,7 +2170,35 @@ patchCodex(libDir);
             sb.appendLine("gpg() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gpg \"\$@\"; }")
             sb.appendLine("gpg-agent() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gpg-agent \"\$@\"; }")
             sb.appendLine("unzip() { _run $libDir/unzip \"\$@\"; }")
-            sb.appendLine("ssh-keygen() { _run $libDir/ssh-keygen \"\$@\"; }")
+            // v236: bug #159 — the bundled OpenSSH ssh-keygen resolves its
+            // interactive default identity-file path from getpwuid()->pw_dir
+            // (a Bionic passwd-entry lookup baked into the Termux-sourced
+            // binary), not from $HOME, so bare/-t invocations without -f show
+            // a stale Termux path ("/data/data/com.termux/files/home/...")
+            // in the "Enter file in which to save the key" prompt instead of
+            // this app's real $HOME. Inject the correct $HOME-based default
+            // when -f is absent from the call — EXCEPT for the handful of
+            // ssh-keygen modes where -f means something other than "the
+            // identity file": -F/-R/-H search/remove/hash known_hosts (their
+            // own default is ~/.ssh/known_hosts, not an id file), -A
+            // provisions host keys and treats -f as a directory prefix, and
+            // -G/-T/-M generate/screen DH moduli candidates where -f is a
+            // candidates file. For those modes pass args through unchanged
+            // so their own built-in defaults keep working.
+            sb.appendLine("ssh-keygen() {")
+            sb.appendLine("  local __sk_has_f=0 __sk_other_f_mode=0 __sk_arg")
+            sb.appendLine("  for __sk_arg in \"\$@\"; do")
+            sb.appendLine("    case \"\$__sk_arg\" in")
+            sb.appendLine("      -f*) __sk_has_f=1 ;;")
+            sb.appendLine("      -A*|-F*|-R*|-H*|-G*|-T*|-M*) __sk_other_f_mode=1 ;;")
+            sb.appendLine("    esac")
+            sb.appendLine("  done")
+            sb.appendLine("  if [ \"\$__sk_has_f\" = 0 ] && [ \"\$__sk_other_f_mode\" = 0 ]; then")
+            sb.appendLine("    _run $libDir/ssh-keygen -f \"\$HOME/.ssh/id_ed25519\" \"\$@\"")
+            sb.appendLine("  else")
+            sb.appendLine("    _run $libDir/ssh-keygen \"\$@\"")
+            sb.appendLine("  fi")
+            sb.appendLine("}")
             sb.appendLine()
 
             // AI CLI tools — use updated JS CLIs ($HOME/.shelly-cli) if available, else bundled
