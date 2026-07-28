@@ -85,10 +85,27 @@ object DeviceStatusBridge {
     /**
      * Battery level + charging state via the public BatteryManager API
      * (no permission required, unlike a raw sysfs read). Writes a single
-     * compact JSON line: {"battery":{"level":83,"charging":false,"asOf":"…"}}
+     * compact JSON line:
+     * {"battery":{"level":83,"levelHuman":"83%","charging":false,"asOf":"…"}}
      * — the top-level "battery" key is what lets lib/agent-executor.ts's
      * generic multi-file reader merge this with other capability files
      * (storage.json, network.json, …) into one object without collision.
+     *
+     * bug #165 (2026-07-28 on-device finding): a "notify battery level" agent
+     * answered "バッテリー残量 3.2 GB" — it took memory.availBytes (~2.96GB,
+     * carried right alongside a clearly-GB-labeled "availHuman" string per
+     * humanBytes()'s own 2026-07-24 fix below) and reported it as the battery
+     * level instead of battery.level (a bare, unlabeled 0-100 int with no
+     * sibling human string of its own). The bare number next to several
+     * clearly-unit-labeled GB strings was the likely confusion vector for a
+     * small local model composing a one-line answer. Fix mirrors humanBytes'
+     * own precedent exactly: give battery.level a sibling "levelHuman" string
+     * ("83%") so every numeric field in this snapshot has an explicit,
+     * unambiguous unit marker sitting right next to it — no field is "just a
+     * bare number" anymore. Not a guaranteed fix (this is a prompt-clarity
+     * mitigation against a probabilistic LLM failure mode, not a logic bug),
+     * but removes the specific asymmetry that made battery.level the odd
+     * field out.
      */
     private fun writeBatterySnapshot(context: Context, dir: File) {
         val file = File(dir, "battery.json")
@@ -117,6 +134,7 @@ object DeviceStatusBridge {
             val json = JSONObject()
                 .put("battery", JSONObject()
                     .put("level", level)
+                    .put("levelHuman", "$level%")
                     .put("charging", charging)
                     .put("asOf", Instant.now().toString()))
             val tmp = File(dir, ".battery.json.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")

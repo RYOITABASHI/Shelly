@@ -63,7 +63,7 @@ describe('capability broker wiring — http_post_json seam (CAP/HTTP/SECRET-001)
   });
 
   it('bumps the script version in lockstep with the native gate', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=37');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=39');
   });
 
   // 2026-07-17 follow-up (docs/superpowers/DEFERRED.md "Capability broker
@@ -100,7 +100,13 @@ describe('capability broker wiring — scoped.fs and workspace.exec seams (FS/EX
       action: { type: 'cli', command: 'printf ok' },
     } as Agent);
     expect(s).toContain('request_and_wait_approval "cli" "$preview" "$result_file" || return 1');
-    expect(s).toContain('if [ "${SHELLY_CAP_EXEC:-0}" = "1" ] && [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then');
+    // 2026-07-28 P0 fix: the CRITICAL command-safety hard-block is now
+    // unconditional (no longer gated behind SHELLY_CAP_EXEC=1) — see
+    // agent-executor-approval-default.test.ts's dedicated regression
+    // coverage for the fix itself. cap_workspace_exec's OWN internal
+    // SHELLY_CAP_EXEC gate (broker vs. unbrokered exec) is untouched here.
+    expect(s).toContain('if [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then');
+    expect(s).not.toContain('if [ "${SHELLY_CAP_EXEC:-0}" = "1" ] && [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then');
     expect(s).toContain('cap_workspace_exec "$ACTION_COMMAND" "$CLI_EXEC_CWD" "$cli_output" "$cli_error"');
     expect(s).toContain('--op workspace.exec --command-file "$command_file" --cwd "$cwd"');
     expect(s).toContain('workspace.exec broker requested but unavailable; refusing unbrokered exec.');

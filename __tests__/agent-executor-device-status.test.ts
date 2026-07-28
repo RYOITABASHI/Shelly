@@ -242,4 +242,44 @@ describe('generateRunScript — DEVICE_STATUS_CONTEXT (v26)', () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+
+  // v39 (2026-07-28, bug #165): a "notify battery level" agent reported
+  // "バッテリー残量 3.2 GB" — the local model took memory.availBytes and
+  // mislabeled it as the battery level, most likely because battery.level
+  // was the only bare, unlabeled number sitting next to several
+  // clearly-GB-labeled *Human strings (memory/storage already carry a
+  // humanBytes() sibling field). The fix spells out, right in the injected
+  // preamble text, which top-level key owns which unit — this test asserts
+  // that wording actually reaches the generated prompt line, using the same
+  // real battery+memory shapes (levelHuman included, per DeviceStatusBridge's
+  // matching fix) observed in the on-device repro.
+  it('the preamble explicitly disambiguates battery percent vs. memory/storage byte fields (bug #165)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-home-'));
+    try {
+      const dir = path.join(home, '.shelly/device-status');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'battery.json'),
+        '{"battery":{"level":99,"levelHuman":"99%","charging":true,"asOf":"2026-07-28T00:00:00Z"}}',
+      );
+      fs.writeFileSync(
+        path.join(dir, 'memory.json'),
+        '{"memory":{"availBytes":2960850944,"availHuman":"2.8 GB","totalBytes":8589934592,"totalHuman":"8.0 GB","lowMemory":false,"asOf":"2026-07-28T00:00:00Z"}}',
+      );
+      const result = runBlock(block, home);
+      expect(result).toContain('[Device status');
+      expect(result).toContain('do not attempt to re-derive via shell commands');
+      // The new explicit unit-scoping clarification.
+      expect(result).toContain('battery.level/battery.levelHuman is a 0-100 PERCENT charge level');
+      expect(result).toContain('are RAM/disk sizes, NOT the battery');
+      expect(result).toContain('never report a memory or storage value as the battery level, or vice versa');
+      // The real merged data is still present, unmangled.
+      expect(result).toContain(
+        '"battery":{"level":99,"levelHuman":"99%","charging":true,"asOf":"2026-07-28T00:00:00Z"}',
+      );
+      expect(result).toContain('"availHuman":"2.8 GB"');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

@@ -76,8 +76,8 @@ describe('generateRunScript — Agent.actions multi-destination fan-out (regress
   it('the SHELLY_AGENT_SCRIPT_VERSION bump (24) applies uniformly, single- or multi-action', () => {
     const single = generateRunScript(agent({ action: { type: 'draft' } }));
     const multi = generateRunScript(agent({ action: { type: 'draft' }, actions: [blueskyAction, xAppActAction] }));
-    expect(single).toContain('SHELLY_AGENT_SCRIPT_VERSION=37');
-    expect(multi).toContain('SHELLY_AGENT_SCRIPT_VERSION=37');
+    expect(single).toContain('SHELLY_AGENT_SCRIPT_VERSION=39');
+    expect(multi).toContain('SHELLY_AGENT_SCRIPT_VERSION=39');
   });
 });
 

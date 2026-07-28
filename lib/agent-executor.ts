@@ -417,7 +417,34 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // unconditionally (genuine JA/EN prose never opens a sentence with a bare
 // redirect/pipe operator). REAL BEHAVIOR CHANGE: bumped so a stale pre-v37
 // on-disk script keeps accepting this fabrication shape.
-const AGENT_SCRIPT_VERSION = 37;
+// v38 (2026-07-28, P0 security fix — CRITICAL cli command hard-block was
+// dead code on the legacy path): dispatch_agent_action's "cli" case only
+// blocked a CRITICAL-level command when `${SHELLY_CAP_EXEC:-0} = 1`, but
+// SHELLY_CAP_EXEC is exported in exactly one place (AgentRuntime.kt, only
+// when shouldRunPlanExecutor() routes to scripts/shelly-plan-executor.js) —
+// every single-step agent and every CLI-backend (Codex) agent instead runs
+// THIS generated .sh with SHELLY_CAP_EXEC unset, so a CRITICAL cli command
+// (e.g. `rm -rf ~`) was never blocked at all and fell through to plain
+// `bash -lc` via cap_workspace_exec. Made the CRITICAL hard-block
+// unconditional, matching shelly-plan-executor.js's already-correct
+// equivalent check (which has no such gate). Also added a CRITICAL carve-out
+// to request_and_wait_approval's 'auto'-mode skip so a CRITICAL cli command
+// still forces a human approval round trip even under
+// ACTION_APPROVAL_MODE=auto, as defense-in-depth alongside the hard block.
+// REAL BEHAVIOR CHANGE: bumped so a stale pre-v38 on-disk script keeps
+// letting a CRITICAL cli command execute unbrokered on the legacy path.
+// v39 (2026-07-28, bug #165 — battery/memory field confusion in
+// DEVICE_STATUS_CONTEXT): see the full writeup at this version's own comment
+// right above the DEVICE_STATUS_CONTEXT="" assembly line further down this
+// file. Summary: reworded the injected device-status preamble to spell out
+// which top-level key owns which unit (percent vs. bytes) and added a
+// "levelHuman":"NN%" sibling field to battery.json (DeviceStatusBridge.kt) so
+// battery.level is no longer the only unlabeled bare number next to several
+// clearly-GB-labeled strings. Prompt-clarity mitigation only, not a
+// deterministic fix. REAL BEHAVIOR CHANGE (the text sent to the model
+// changed): bumped so a stale pre-v39 on-disk script keeps carrying the less
+// explicit wording.
+const AGENT_SCRIPT_VERSION = 39;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -2361,6 +2388,19 @@ APPROVALEOF
 # RN/native — see dispatch_agent_action's own comments on each) and always go
 # through the full write+wait; auto-approval for THOSE happens via the
 # autoAccept/autoFireTrusted flags above instead, consumed by RN/native.
+#
+# 2026-07-28 P0 security fix: cli is ALSO excluded from the auto-mode skip
+# when its command is independently classified CRITICAL — it now writes+waits
+# like intent/dm-reply/app-act, exactly as if manual mode were on. This is
+# defense-in-depth alongside the unconditional CRITICAL hard-block just above
+# the "cli" case's request_and_wait_approval call in dispatch_agent_action
+# (that block already returns 1 before this function is ever reached for a
+# CRITICAL command today) — should that upstream block ever be weakened or
+# reordered by a future change, "auto" mode still can't silently wave through
+# the worst-tier commands. ACTION_COMMAND_SAFETY_LEVEL is a plain global set
+# immediately before every dispatch_agent_action call (single-action bake at
+# script-generation time, or per-iteration in the multi-action fan-out loop),
+# so it is always current for whichever action is in flight when this runs.
 request_and_wait_approval() {
   approval_type="$1"
   preview="$2"
@@ -2371,6 +2411,9 @@ request_and_wait_approval() {
   if [ "$ACTION_APPROVAL_MODE" != "manual" ]; then
     case "$approval_type" in
       intent|dm-reply|app-act) ;;
+      cli)
+        [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ] || return 0
+        ;;
       *) return 0 ;;
     esac
   fi
@@ -2745,7 +2788,23 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
-      if [ "\${SHELLY_CAP_EXEC:-0}" = "1" ] && [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then
+      # 2026-07-28 P0 security fix: this CRITICAL hard-block used to be gated
+      # behind SHELLY_CAP_EXEC=1, but SHELLY_CAP_EXEC is exported in
+      # exactly one place (AgentRuntime.kt, only when shouldRunPlanExecutor()
+      # routes to the newer shelly-plan-executor.js). Every single-step agent
+      # and every CLI-backend (Codex) agent instead runs THIS legacy generated
+      # script with SHELLY_CAP_EXEC unset/0, so the check never fired for the
+      # majority of real agents — a CRITICAL cli command (e.g. \`rm -rf ~\`)
+      # fell straight through to cap_workspace_exec's plain \`bash -lc\`. The
+      # newer engine's equivalent check (shelly-plan-executor.js's \`if
+      # (safety.level === 'CRITICAL')\`) has NO such gate, so this makes the
+      # legacy path match it: the CRITICAL hard-block is now unconditional.
+      # SHELLY_CAP_EXEC keeps its existing meaning everywhere else (broker vs.
+      # unbrokered exec, see cap_workspace_exec) — only THIS specific
+      # command-safety gate is removed. REAL BEHAVIOR CHANGE (bumped
+      # AGENT_SCRIPT_VERSION so a stale pre-v38 on-disk script keeps letting a
+      # CRITICAL cli command execute unbrokered).
+      if [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ]; then
         ACTION_DISPATCH_STATUS="error"
         ACTION_DISPATCH_MESSAGE="CLI action was blocked by command safety: $ACTION_COMMAND_SAFETY_REASON"
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
@@ -4296,6 +4355,28 @@ CURRENT_DATETIME_CONTEXT="[Current date/time: $(date '+%Y年%m月%d日')(\${CURR
 # with it removed — see agentNeedsDeviceStatusContext's own doc comment).
 # Mirrors STUDIO_CONTEXT's existing "only inject what a small local model can
 # be confused by when the task doesn't actually need it" gate below.
+# v39 (2026-07-28, bug #165 — battery/memory field confusion): on-device
+# repro, "@agent 今すぐ、バッテリー残量を通知して" (notify battery level) RUN
+# NOW completed with body "バッテリー残量 3.2 GB" — the local model took
+# memory.availBytes (~2.96GB) and reported it as the battery level instead of
+# battery.level (a percentage). Likely cause: battery.level was a bare,
+# unlabeled 0-100 int sitting next to several clearly-GB-labeled *Human
+# strings (memory/storage already carry a humanBytes() sibling field per
+# DeviceStatusBridge.kt's own 2026-07-24 fix for a similar unit-confusion
+# bug), making it the visually "odd one out" for a small model composing a
+# short answer. Two-part mitigation, both prompt-clarity only (no control-flow
+# or parsing change): (1) DeviceStatusBridge.kt's battery.json now also
+# carries a "levelHuman":"NN%" sibling field, same convention as
+# memory/storage, so every numeric field in the snapshot has an explicit unit
+# marker next to it; (2) this line's own bracketed preamble now spells out
+# which top-level key owns which unit (battery.level/levelHuman = percent;
+# *Bytes/*Human under memory/storage = RAM/disk size) and explicitly says not
+# to swap them. This is a probabilistic LLM-prompt-quality fix, not a
+# deterministic one — it reduces but cannot guarantee against this failure
+# mode. REAL BEHAVIOR CHANGE (the actual DEVICE_STATUS_CONTEXT text sent to
+# the model changed): bumped so a stale pre-v39 on-disk script keeps carrying
+# the less-explicit wording, following the v29 precedent of bumping whenever
+# the text handed to the model changes.
 DEVICE_STATUS_CONTEXT=""
 if [ "\${DEVICE_STATUS_RELEVANT:-0}" = "1" ]; then
   DEVICE_STATUS_DIR="$HOME/.shelly/device-status"
@@ -4314,7 +4395,7 @@ if [ "\${DEVICE_STATUS_RELEVANT:-0}" = "1" ]; then
       fi
     done
     if [ -n "$DEVICE_STATUS_JSON" ]; then
-      DEVICE_STATUS_CONTEXT="[Device status (read-only, refreshed by Shelly just now — treat as authoritative, do not attempt to re-derive via shell commands): {$DEVICE_STATUS_JSON}]"
+      DEVICE_STATUS_CONTEXT="[Device status (read-only, refreshed by Shelly just now — treat as authoritative, do not attempt to re-derive via shell commands. Each field's UNIT belongs only to its own top-level key: battery.level/battery.levelHuman is a 0-100 PERCENT charge level; memory.*Bytes/*Human and storage.*Bytes/*Human are RAM/disk sizes, NOT the battery — never report a memory or storage value as the battery level, or vice versa): {$DEVICE_STATUS_JSON}]"
     fi
   fi
 fi

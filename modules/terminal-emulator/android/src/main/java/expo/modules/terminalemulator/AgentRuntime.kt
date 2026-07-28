@@ -260,7 +260,31 @@ object AgentRuntime {
     // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment for the
     // bare-redirect check. No native routing change; bumped so a stale
     // pre-v37 on-disk script keeps accepting this fabrication shape.
-    private const val CURRENT_SCRIPT_VERSION = 37
+    // v38 (2026-07-28, P0 security fix — CRITICAL cli command hard-block was
+    // dead code on the legacy path): the generated script's "cli" case only
+    // blocked a CRITICAL-level command when SHELLY_CAP_EXEC=1, but that env
+    // var is only exported below (shouldRunPlanExecutor() branch), never for
+    // the legacy .sh path most agents (single-step, or CLI-backend/Codex)
+    // actually run — so a CRITICAL cli command was never blocked there. See
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment for the
+    // fix (unconditional hard-block + CRITICAL carve-out in the auto-mode
+    // approval skip). No native routing change here; bumped so a stale
+    // pre-v38 on-disk script keeps running a CRITICAL cli command unblocked.
+    // v39 (2026-07-28, bug #165 — battery/memory field confusion): a
+    // "notify battery level" agent answered "バッテリー残量 3.2 GB" — the
+    // local model took memory.availBytes and reported it as the battery
+    // level instead of battery.level (a percentage), likely because
+    // battery.level was the only bare, unlabeled number sitting next to
+    // several clearly-GB-labeled *Human strings. DeviceStatusBridge's
+    // writeBatterySnapshot now also writes a "levelHuman":"NN%" sibling
+    // field (same convention memory/storage already use), and
+    // lib/agent-executor.ts's DEVICE_STATUS_CONTEXT preamble text now
+    // explicitly spells out which top-level key owns which unit. See that
+    // file's matching AGENT_SCRIPT_VERSION comment for the full writeup.
+    // Prompt-clarity mitigation only, not a deterministic fix. Bumped so a
+    // stale pre-v39 on-disk script keeps injecting the less-explicit
+    // preamble text and a battery.json without the levelHuman field.
+    private const val CURRENT_SCRIPT_VERSION = 39
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
