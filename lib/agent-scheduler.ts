@@ -5,6 +5,7 @@
  */
 import { Agent } from '@/store/types';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { logInfo } from './debug-logger';
 
 // A day-of-week field of a single day OR a comma list (e.g. "1,5" = Mon & Fri).
 const DOW_LIST_RE = /^\d+(,\d+)*$/;
@@ -334,7 +335,18 @@ export async function installSchedule(agent: Agent): Promise<void> {
 
   if (intervalMs !== null) {
     const triggerAt = nextTriggerMs(agent.schedule, agent.startNotBefore);
+    // bug #164 diagnostics (2026-07-28): this is the leading candidate for the
+    // silent stall — a native Expo AsyncFunction bridge call with no JS-side
+    // logging on either side, crossing into Kotlin's AgentAlarmScheduler
+    // (module-level doc comment in lib/agent-manager.ts's
+    // materializeAgentBody has the full on-device evidence). If this pair of
+    // log lines shows a large gap (or the "returned" line never appears) on
+    // the next repro, the stall is confirmed to be inside this bridge call —
+    // check native-side `TerminalEmulator`/`AgentAlarmScheduler` logcat tags,
+    // which were not captured in the 2026-07-28 repro.
+    logInfo('AgentScheduler', `installSchedule: calling TerminalEmulator.scheduleAgent for ${agent.id}`);
     await TerminalEmulator.scheduleAgent(agent.id, intervalMs, triggerAt, agent.schedule);
+    logInfo('AgentScheduler', `installSchedule: TerminalEmulator.scheduleAgent returned for ${agent.id}`);
   }
 }
 

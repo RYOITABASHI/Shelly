@@ -8,7 +8,7 @@ import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
-import { logWarn } from './debug-logger';
+import { logInfo, logWarn } from './debug-logger';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
@@ -583,9 +583,24 @@ async function materializeAgentBody(
       : []),
   ];
 
+  // bug #164 diagnostics (2026-07-28 on-device re-repro, versionCode 1987):
+  // this write batch (mkdir + script/PlanSpec/metadata write) is the ONLY
+  // step confirmed present in every on-device repro's NativeExec log — it
+  // always completed (exit=0). Everything after it, up through
+  // confirmAgentDraft's final "✅ … registered" message update, produced ZERO
+  // further logging in the repro, so the stall's exact location inside that
+  // remaining span was unresolved from JS-side reading alone (see
+  // DEFERRED.md bug #164). installSchedule()'s TerminalEmulator.scheduleAgent
+  // call below is the ONE unlogged native-bridge await in this span — a
+  // hung/never-resolving promise there would be invisible on the
+  // ReactNativeJS logcat tag entirely. These log lines bracket it so the next
+  // repro shows definitively whether the stall is here or genuinely
+  // downstream (e.g. back in confirmAgentDraft's own JS-only tail).
   await runCommand(`set -e\n${commands.join('\n')}`);
+  logInfo('AgentManager', `materializeAgentBody: write batch ok for ${agent.id} (installAlarm=${installAlarm})`);
   if (installAlarm) {
     await installSchedule(agent);
+    logInfo('AgentManager', `materializeAgentBody: installSchedule returned for ${agent.id}`);
   }
   if (metadataAgent !== agent) {
     // Best-effort mirror into the in-memory store so UI reflecting nextExpectedAt
@@ -1581,12 +1596,26 @@ export async function deleteAgent(agentId: string): Promise<void> {
   // ids are generated slugs (`agent-<ts>`) or sanitized names; refuse anything
   // with shell metacharacters so the $HOME-relative rm below is injection-safe.
   assertSafeAgentId(agentId);
+  // bug #164 diagnostics (2026-07-28 on-device re-repro, versionCode 1987):
+  // deleteAgent is what confirmAgentDraft's ephemeral-one-shot branch runs in
+  // its `finally`, AFTER runAgentNow either succeeds or throws (e.g. the
+  // ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS timeout) — so the user-visible
+  // "[@agent] failed: …" message can never render until THIS resolves too. It
+  // makes two more unlogged native-bridge calls of its own
+  // (uninstallSchedule → TerminalEmulator.cancelAgent, then
+  // TerminalEmulator.execCommand below) — if either hangs, a correctly-
+  // detected timeout upstream would still leave the chat bubble looking
+  // permanently stuck with no error ever surfacing. Bracket both so a repro
+  // shows whether cleanup — not just the run itself — is where time (or the
+  // hang) is actually going.
+  logInfo('AgentManager', `deleteAgent: calling uninstallSchedule for ${agentId}`);
   try {
     await uninstallSchedule(agentId);
   } catch (error) {
     console.warn('deleteAgent: failed to cancel schedule before file cleanup', agentId, error);
     // Best-effort: deleting the run script below still neutralizes any leftover alarm.
   }
+  logInfo('AgentManager', `deleteAgent: uninstallSchedule settled for ${agentId}, starting file cleanup`);
   // Delete via the live shell $HOME — NOT the JS getHomePath() cache. The cache
   // can hold an unresolved /data/user/0 alias that doesn't resolve to the real
   // files dir on some OEM builds, so `rm -f <alias>` silently exits 0 while the
@@ -1612,7 +1641,9 @@ export async function deleteAgent(agentId: string): Promise<void> {
     `[ ! -e "$d/${agentId}.json" ] || { echo "delete failed: ${agentId}.json still present" >&2; exit 1; }\n` +
     `mkdir -p "$d/${DELETED_AGENT_MARKER_DIR}"\n` +
     `printf '%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)" > "$d/${DELETED_AGENT_MARKER_DIR}/${agentId}"`;
+  logInfo('AgentManager', `deleteAgent: calling execCommand for ${agentId}`);
   const result = await TerminalEmulator.execCommand(command, 30_000);
+  logInfo('AgentManager', `deleteAgent: execCommand returned for ${agentId} (exitCode=${result.exitCode})`);
   if (result.exitCode !== 0) {
     throw new Error(
       `deleteAgent(${agentId}) failed (exit ${result.exitCode}): ${(result.stderr || result.stdout || '').trim()}`

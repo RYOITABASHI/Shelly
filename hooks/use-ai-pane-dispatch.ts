@@ -22,7 +22,7 @@ import {
   getTerminalSnapshotForSession,
 } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/chat-store';
-import { logInfo, logError } from '@/lib/debug-logger';
+import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 import { detectPostFormatDirective } from '@/lib/post-format-directive';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
@@ -107,6 +107,38 @@ const SLOT_FILL_STALE_MS = 15 * 60 * 1000;
  * against a now-stale registration.
  */
 const JUST_REGISTERED_STALE_MS = 4 * 60 * 1000;
+
+/**
+ * bug #164 follow-up (2026-07-28 on-device re-repro, versionCode 1987):
+ * confirmAgentDraft() is NOT re-entrancy-guarded, and AgentConfirmCard's
+ * Confirm button has no "submitting…"/disabled state — `message.agentCardState`
+ * only flips away from 'pending' (which is what unmounts the card, see
+ * components/panes/AIPane.tsx's MessageBubble) once confirmAgentDraft's WHOLE
+ * async chain (persistAgentDraft → installAgent → materializeAgent →
+ * installSchedule, …) resolves. If any step in that chain is slow or hangs —
+ * confirmed on-device: `installAgent`'s single materialize write completes
+ * (logged, exit=0) but the run never progresses past it — the card stays
+ * fully visible and tappable for the ENTIRE stall. A user who sees no
+ * feedback naturally taps Confirm again, and each tap calls confirmAgentDraft
+ * fresh (`editingAgentId` is undefined for a new registration, so
+ * persistAgentDraft's create() branch runs again) — producing a BRAND NEW
+ * duplicate agent and a brand new independent stall. On-device this produced
+ * FOUR separate materialize (`mkdir -p .../agents`) NativeExec calls ~20-30s
+ * apart for what the user experienced as ONE registration attempt, then total
+ * silence (all four installSchedule calls stuck, none ever logging again).
+ *
+ * This map dedupes concurrent confirmAgentDraft calls for the SAME messageId
+ * — a second call while the first is still in flight JOINS the existing
+ * promise instead of starting an independent duplicate registration. Mirrors
+ * lib/agent-manager.ts's runAgentNow/inFlightAgentRuns guard, which fixed the
+ * identical double-tap/ghost-tap class of bug for Sidebar's RUN NOW control
+ * (see that module's "Concurrency-race investigation" doc comment). This does
+ * NOT fix whatever is actually stalling the first attempt (see the DEFERRED.md
+ * bug #164 entry — the leading candidate is the unlogged native bridge await
+ * in lib/agent-scheduler.ts's installSchedule/TerminalEmulator.scheduleAgent),
+ * but it stops one stuck attempt from silently multiplying into several.
+ */
+const inFlightConfirmDrafts = new Map<string, Promise<void>>();
 
 /**
  * Very lightweight token estimator (mirrors the one in use-ai-dispatch.ts).
@@ -1759,7 +1791,13 @@ export function useAIPaneDispatch(paneId: string) {
   // (Phase 0 §2.1 — registration happens only on explicit human confirm). The
   // card already guaranteed a valid whitelisted schedule, so this never registers
   // a never-firing agent. The card message flips to 'confirmed' with a result line.
-  const confirmAgentDraft = useCallback(
+  //
+  // bug #164 follow-up: this is the INNER implementation, wrapped by
+  // confirmAgentDraft below via inFlightConfirmDrafts so a duplicate tap on a
+  // still-visible (not-yet-'confirmed') card joins the in-flight attempt
+  // instead of starting an independent duplicate registration. See
+  // inFlightConfirmDrafts's doc comment above for the on-device evidence.
+  const confirmAgentDraftInner = useCallback(
     async (messageId: string, confirmed: ConfirmedAgentDraft) => {
       const store = useAIPaneStore.getState();
       // Phase A (2026-07-22): also clear the session-scoped pending state
@@ -1857,7 +1895,14 @@ export function useAIPaneDispatch(paneId: string) {
         const created = persisted.agent;
         if (!created) throw new Error(`Agent not found: ${editingAgentId}`);
         if (!persisted.edited) {
+          // bug #164 diagnostics (2026-07-28): brackets the ONLY await between
+          // "draft accepted" and the card flipping out of 'pending' for a
+          // fresh (non-edit) registration — see inFlightConfirmDrafts's doc
+          // comment above and materializeAgentBody's/installSchedule's
+          // matching bracket logs for the full trail this stitches together.
+          logInfo('AgentDraftConfirm', `confirmAgentDraft: calling installAgent for ${created.id}`);
           await installAgent(created, runAgentShellCommand);
+          logInfo('AgentDraftConfirm', `confirmAgentDraft: installAgent returned for ${created.id}`);
         } else {
           const scheduleDescription = confirmed.schedule
             ?? (confirmed.notificationTrigger
@@ -1881,9 +1926,20 @@ export function useAIPaneDispatch(paneId: string) {
             // user is watching the "▶ Running…" bubble, so bound the wait to
             // ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS rather than the 20-minute
             // unattended default.
+            //
+            // bug #164 diagnostics (2026-07-28): a 2026-07-28 on-device repro
+            // saw a CHAIN_LOCK_RELEASE NativeExec call ~5 minutes in (right at
+            // ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS) with the chat bubble still
+            // empty 17+s later. CHAIN_LOCK_RELEASE fires from
+            // runEscalatingAttempts's `finally` on BOTH success and a thrown
+            // timeout — it is not proof of success. This log pins whether
+            // runAgentNow actually threw (and with what message) so a repro
+            // can tell a genuine timeout throw apart from something else.
+            logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot calling runAgentNow for ${created.id}`);
             await runAgentNow(created.id, runAgentShellCommand, {
               waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
             });
+            logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot runAgentNow returned for ${created.id}`);
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
@@ -1910,9 +1966,19 @@ export function useAIPaneDispatch(paneId: string) {
             // Always discard the ephemeral one-shot agent — including when the run
             // THREW (runFinished=false). Gating cleanup on success leaked a
             // throwaway agent into the sidebar on any failure.
+            //
+            // bug #164 diagnostics (2026-07-28): deleteAgent makes its own
+            // unlogged native-bridge calls (see its doc comment in
+            // lib/agent-manager.ts) — if IT hangs, the outer catch below (which
+            // is what would finally populate the bubble with an
+            // "[@agent] failed: …" error after a runAgentNow timeout) never
+            // gets a chance to run at all, since this whole `finally` block
+            // hasn't returned yet.
+            logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot cleanup calling deleteAgent for ${created.id}`);
             {
               try {
                 await deleteAgent(created.id);
+                logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot cleanup deleteAgent returned for ${created.id}`);
               } catch (cleanupError) {
                 const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
                 store.updateMessage(paneId, messageId, {
@@ -1993,12 +2059,50 @@ export function useAIPaneDispatch(paneId: string) {
           }
         }
       } catch (err) {
+        // bug #164 diagnostics (2026-07-28): this is the single catch-all that
+        // is supposed to turn ANY throw in the whole confirm flow (including a
+        // runAgentNow timeout) into a visible "[@agent] failed: …" bubble —
+        // logged explicitly because a 2026-07-28 on-device repro left the
+        // bubble empty well past when this should have fired, and JS-side
+        // reading alone could not confirm whether this block was ever reached.
+        logWarn('AgentDraftConfirm', `confirmAgentDraft: outer catch reached for ${messageId}: ${err instanceof Error ? err.message : String(err)}`);
         store.updateMessage(paneId, messageId, {
           content: `[@agent] failed: ${err instanceof Error ? err.message : String(err)}`,
         });
       }
     },
     [paneId, offerSkillSave],
+  );
+
+  // bug #164 follow-up (2026-07-28): the actual exported/wired confirm
+  // handler. Dedupes concurrent calls for the same messageId against
+  // confirmAgentDraftInner — see inFlightConfirmDrafts's module-level doc
+  // comment for the full on-device evidence and reasoning. A second call
+  // while the first is still in flight logs a warning and joins the existing
+  // promise rather than re-running persistAgentDraft/installAgent from
+  // scratch (which — for a fresh, non-edit registration — would create a
+  // second, independent duplicate agent).
+  const confirmAgentDraft = useCallback(
+    async (messageId: string, confirmed: ConfirmedAgentDraft) => {
+      const existing = inFlightConfirmDrafts.get(messageId);
+      if (existing) {
+        logWarn(
+          'AgentDraftConfirmConcurrency',
+          `confirmAgentDraft(${messageId}) called while a confirm is already in flight — joining it instead of starting a duplicate registration`
+        );
+        return existing;
+      }
+      const turn = confirmAgentDraftInner(messageId, confirmed);
+      inFlightConfirmDrafts.set(messageId, turn);
+      try {
+        await turn;
+      } finally {
+        if (inFlightConfirmDrafts.get(messageId) === turn) {
+          inFlightConfirmDrafts.delete(messageId);
+        }
+      }
+    },
+    [confirmAgentDraftInner],
   );
 
   const cancelAgentDraft = useCallback(

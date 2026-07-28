@@ -153,7 +153,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { usePaneStore } from '@/store/pane-store';
 import type { Agent } from '@/store/types';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
-import { hasDraftAssumptions, summarizeAgentDraftAsText } from '@/lib/agent-plan-summary';
+import { hasDraftAssumptions, summarizeAgentDraftAsText, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import ja from '@/lib/i18n/locales/ja';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ollamaChat: mockOllamaChat } = require('@/lib/local-llm') as { ollamaChat: jest.Mock };
@@ -846,5 +846,80 @@ describe('Scenario 7 — task-clarity LLM fallback calls ensureLocalLlmServerRun
     // Falls through to the ordinary schedule question, exactly as before.
     const question = lastMessage();
     expect(question.pendingSlotFill?.field).toBe('schedule');
+  });
+});
+
+// ─── Scenario 8: confirmAgentDraft re-entrancy dedupe (bug #164 follow-up) ──
+//
+// 2026-07-28 on-device re-repro (versionCode 1987, DEFERRED.md bug #164):
+// AgentConfirmCard's Confirm button has no "submitting…"/disabled state, and
+// message.agentCardState only flips away from 'pending' (which is what
+// unmounts the card — components/panes/AIPane.tsx) once confirmAgentDraft's
+// WHOLE async chain (persistAgentDraft → installAgent → …) resolves. A slow
+// or hung installAgent therefore leaves the card fully visible and tappable
+// for the entire stall, and a user who sees no feedback naturally taps
+// Confirm again — each tap calling confirmAgentDraft fresh, and (since
+// editingAgentId is undefined for a new registration) each one independently
+// creating a BRAND NEW duplicate agent. On-device this produced four separate
+// materialize (`mkdir -p .../agents`) NativeExec bursts for what the user
+// experienced as one registration attempt. hooks/use-ai-pane-dispatch.ts's
+// confirmAgentDraft now dedupes concurrent calls for the same messageId via
+// the module-level inFlightConfirmDrafts map — mirrors lib/agent-manager.ts's
+// runAgentNow/inFlightAgentRuns guard for the identical double-tap class of
+// bug (see __tests__/agent-manager-inflight-dedupe.test.ts).
+describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-up)', () => {
+  it('a second confirm for the same pending draft while installAgent is still in flight joins the first instead of creating a duplicate agent', async () => {
+    const { result } = setup();
+
+    // Reach a pending chat-native confirmation the same way Scenario 4 does.
+    await act(async () => {
+      await result.current.dispatch('@agent 天気を通知して');
+    });
+    await act(async () => {
+      await result.current.dispatch('毎日7時');
+    });
+    const pending = conv().pendingAgentSession;
+    expect(pending).toBeTruthy();
+    const messageId = pending!.messageId;
+    const confirmed = draftToConfirmedAgentDraft(pending!.draft);
+
+    // Hold installAgent open (the exact stall shape observed on-device — see
+    // lib/agent-manager.ts's materializeAgentBody/installSchedule diagnostics
+    // added alongside this test) so a second confirm call provably starts
+    // while the first is still in flight, before either resolves.
+    let releaseInstall!: () => void;
+    const installGate = new Promise<void>((resolve) => {
+      releaseInstall = resolve;
+    });
+    mockInstallAgent.mockImplementation(async () => {
+      await installGate;
+    });
+
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = result.current.confirmAgentDraft(messageId, confirmed);
+      // Let the first call's microtasks run far enough to reach (and start
+      // awaiting) installAgent before firing the second — mirrors a real
+      // repeated tap landing while the card is still visibly 'pending'.
+      await Promise.resolve();
+      await Promise.resolve();
+      second = result.current.confirmAgentDraft(messageId, confirmed);
+    });
+
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockInstallAgent).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      releaseInstall();
+      await Promise.all([first, second]);
+    });
+
+    // Still exactly one agent created/installed — the second call joined the
+    // first instead of running persistAgentDraft/installAgent a second time.
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockInstallAgent).toHaveBeenCalledTimes(1);
+    const msgAfter = conv().messages.find((m) => m.id === messageId);
+    expect(msgAfter?.agentCardState).toBe('confirmed');
   });
 });
