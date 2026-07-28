@@ -738,6 +738,81 @@ describe('parseAgentNL — social-post intent detection (2026-07-22)', () => {
   });
 });
 
+describe('parseAgentNL — multi-platform simultaneous post detection (2026-07-28)', () => {
+  // DEFERRED.md's "エージェント1件から複数プラットフォームへ同時配信できない"
+  // entry (backend landed e2b65e16a — Agent.actions?: AgentAction[] — but NL
+  // detection stayed unwired). detectSocialPost alone only ever binds ONE
+  // platform directly to the posting verb, so a LIST of platforms sharing a
+  // single verb used to silently drop every platform except the one
+  // immediately before に/で. detectMultiSocialActions closes that gap for
+  // exactly the narrow "A and B" list shape — see its doc comment in
+  // lib/agent-nl-parser.ts for the full resolution contract.
+  function connector(overrides: Partial<SocialConnectorMeta> = {}): SocialConnectorMeta {
+    return {
+      id: 'my-bluesky',
+      platform: 'bluesky',
+      label: 'My Bluesky',
+      host: 'bsky.social',
+      fields: ['handle', 'appPassword'],
+      createdAt: 0,
+      ...overrides,
+    };
+  }
+
+  it('"毎朝ブルースカイとXに投稿して" resolves to a 2-entry actions array (social-post bluesky + app-act x.post)', () => {
+    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [connector()]);
+    expect(d.actions).toHaveLength(2);
+    expect(d.actions?.[0]).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' },
+    });
+    expect(d.actions?.[1]).toEqual({
+      type: 'app-act',
+      appActRecipeId: 'x.post',
+      appActParams: { text: '{{result}}' },
+    });
+    // `action` stays in sync as actions[0] so any caller unaware of `actions`
+    // keeps working exactly as before this feature existed.
+    expect(d.action).toEqual(d.actions?.[0]);
+  });
+
+  it('EN "post this to bluesky and x" also resolves to the same 2-entry actions array', () => {
+    const d = parseAgentNL('every day at 8, post this to bluesky and x', [connector()]);
+    expect(d.actions).toHaveLength(2);
+    expect(d.actions?.map((a) => a.type)).toEqual(['social-post', 'app-act']);
+  });
+
+  it('two connector-backed platforms ("DiscordとSlackに投稿して") both resolve when each has exactly one connector', () => {
+    const discord = connector({ id: 'my-discord', platform: 'discord', label: 'My Discord', host: 'discord.com', fields: ['webhookUrl'] });
+    const slack = connector({ id: 'my-slack', platform: 'slack', label: 'My Slack', host: 'hooks.slack.com', fields: ['webhookUrl'] });
+    const d = parseAgentNL('毎日8時にニュースをDiscordとSlackに投稿して', [discord, slack]);
+    expect(d.actions).toHaveLength(2);
+    expect(d.actions?.map((a) => (a.type === 'social-post' ? a.socialPost?.platform : a.type))).toEqual(['discord', 'slack']);
+  });
+
+  it('falls back to the single-target path (no actions array) when the named connector platform is unresolvable', () => {
+    // No bluesky connector registered at all — the multi-target read is
+    // abandoned rather than registering a partial list; existing
+    // single-target detectSocialPost behavior takes over (X alone resolves
+    // via the ordinary detectAction/X_POST_RE path, bluesky is dropped —
+    // pre-existing behavior, unaffected by this feature).
+    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', []);
+    expect(d.actions).toBeUndefined();
+    expect(d.action.type).toBe('app-act');
+  });
+
+  it('a single-platform mention ("Blueskyに投稿して") never populates actions — existing behavior unchanged', () => {
+    const d = parseAgentNL('毎日8時にBlueskyに投稿して', [connector()]);
+    expect(d.actions).toBeUndefined();
+    expect(d.action.type).toBe('social-post');
+  });
+
+  it('a bare mention with no shared posting verb ("BlueskyとXの違いを教えて") does not falsely trigger', () => {
+    const d = parseAgentNL('毎日8時にBlueskyとXの違いを教えて', [connector()]);
+    expect(d.actions).toBeUndefined();
+  });
+});
+
 describe('parseAgentNL — invariants', () => {
   const samples = [
     '毎日8時にXの下書きを作って',

@@ -367,6 +367,13 @@ const ja: Record<string, string> = {
   'agentplan.appact_line_with_preview': '{{target}}：「{{preview}}」',
   'agentplan.socialpost_line': '{{platform}}（{{connector}}）へ投稿（実行結果をそのまま投稿）',
   'agentplan.socialpost_line_with_preview': '{{platform}}（{{connector}}）へ投稿：「{{preview}}」',
+  // 2026-07-28: 複数プラットフォームへの同時配信（DEFERRED.md「エージェント1件
+  // から複数プラットフォームへ同時配信できない」の authoring 側フォロー
+  // アップ）— lib/agent-nl-parser.ts の detectMultiSocialActions が draft.actions
+  // を2件以上生成したときだけ、通常の「実行内容:」行に加えてこの1行を追加表示する。
+  'agentplan.summary_multi_targets': '配信先: {{targets}}',
+  // 一覧表示専用の短いXラベル（agentplan.appact_x_target は文章形式なので流用不可）。
+  'agentplan.multi_target_x_label': 'X',
   'agentplan.draft_line_with_path': '下書き（保存先: {{path}}）',
   // Phase C（2026-07-22）: 項目だけの言い直し（「9時にして」等）で下書きをその場
   // 修正できるようになったため、旧「キャンセルしてから言い直して」の文言を更新
@@ -427,6 +434,13 @@ const ja: Record<string, string> = {
   'agentplan.run_now_started': '「{{name}}」を今すぐ実行します（定期スケジュールはそのまま維持されます）。',
   'agentplan.run_now_done': '完了しました。',
   'agentplan.run_now_failed': '今すぐ実行がエラーになりました',
+  // 2026-07-28 バグ修正: まだ登録されていない保留下書きへのパッチ返信で、
+  // 「今」/「今すぐ」が既に実在する定期スケジュールに対して解決された場合に
+  // 表示する——lib/agent-draft-patch.ts の applyPatchToPendingSession の
+  // コメント参照。上のスケジュール行は（変更なしのため）★マークが付かない
+  // まま、代わりにこの一言で「確認後に追加でもう一度だけ実行する」ことを
+  // 案内する。
+  'agentplan.run_once_on_confirm_note': '確認後、定期スケジュールはそのまま、追加で一度だけ今すぐ実行します。',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',

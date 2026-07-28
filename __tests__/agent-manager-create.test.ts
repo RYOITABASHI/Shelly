@@ -67,3 +67,35 @@ describe('createAgent — startNotBefore param', () => {
     expect(agent.startNotBefore).not.toBeUndefined();
   });
 });
+
+// Multi-destination fan-out (2026-07-28 — DEFERRED.md's "エージェント1件から
+// 複数プラットフォームへ同時配信できない" authoring-side follow-up): createAgent
+// must thread an explicit `actions` param through to the persisted Agent,
+// same passthrough contract as notificationTrigger/startNotBefore above. See
+// store/types.ts's Agent.actions doc comment for why this stays undefined
+// (not null) when omitted — it's purely additive, unlike the other two
+// fields which have an explicit "no value" sentinel.
+describe('createAgent — actions param (multi-destination fan-out)', () => {
+  const baseParams = {
+    name: 'Test agent',
+    description: 'desc',
+    prompt: 'do the thing',
+    schedule: '0 8 * * *',
+    tool: { type: 'cli' as const, cli: 'codex' as const },
+    outputPath: '/tmp/out',
+  };
+
+  it('threads actions through when provided', () => {
+    const actions = [
+      { type: 'social-post' as const, socialPost: { platform: 'bluesky' as const, connectorId: 'my-bluesky', text: '{{result}}' } },
+      { type: 'app-act' as const, appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+    ];
+    const agent = createAgent({ ...baseParams, actions });
+    expect(agent.actions).toEqual(actions);
+  });
+
+  it('leaves actions undefined when omitted (existing single-action agents unaffected)', () => {
+    const agent = createAgent({ ...baseParams });
+    expect(agent.actions).toBeUndefined();
+  });
+});

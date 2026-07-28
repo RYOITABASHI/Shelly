@@ -369,6 +369,14 @@ const en: Record<string, string> = {
   'agentplan.appact_line_with_preview': '{{target}}: "{{preview}}"',
   'agentplan.socialpost_line': 'Post to {{platform}} ({{connector}}) (posts the run result as-is)',
   'agentplan.socialpost_line_with_preview': 'Post to {{platform}} ({{connector}}): "{{preview}}"',
+  // 2026-07-28: multi-platform simultaneous posting (DEFERRED.md's "エージェ
+  // ント1件から複数プラットフォームへ同時配信できない" authoring-side follow-up)
+  // — shown as an extra line alongside the normal "Action:" line only when
+  // lib/agent-nl-parser.ts's detectMultiSocialActions produced 2+ draft.actions.
+  'agentplan.summary_multi_targets': 'Destinations: {{targets}}',
+  // Short list-item label for X (agentplan.appact_x_target is a full sentence,
+  // not reusable in a comma-joined list).
+  'agentplan.multi_target_x_label': 'X',
   'agentplan.draft_line_with_path': 'draft (saved to {{path}})',
   // Phase C (2026-07-22): a plain field-only correction ("make it 9am") now
   // patches the draft in place instead of requiring cancel+redo — see
@@ -437,6 +445,13 @@ const en: Record<string, string> = {
   'agentplan.run_now_started': 'Running "{{name}}" right now — its recurring schedule stays unchanged.',
   'agentplan.run_now_done': 'Done.',
   'agentplan.run_now_failed': 'The run-now request failed',
+  // 2026-07-28 bug fix: shown on a patch reply to a still-PENDING (not yet
+  // registered) draft when "今"/"今すぐ" resolved against an already-real
+  // recurring schedule — see lib/agent-draft-patch.ts's
+  // applyPatchToPendingSession doc comment. The recurring schedule line above
+  // is left unmarked (unchanged); this note explains the additional run-now
+  // action that will fire once the draft is actually confirmed.
+  'agentplan.run_once_on_confirm_note': "This will also run once, right after you confirm — its recurring schedule stays unchanged.",
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',

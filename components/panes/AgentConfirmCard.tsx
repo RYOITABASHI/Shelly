@@ -43,6 +43,14 @@ export interface ConfirmedAgentDraft {
   schedule: string | null;
   tool: ToolChoice;
   action: AgentAction;
+  /** Multi-destination fan-out (2026-07-28) — see store/types.ts's
+   *  Agent.actions doc comment. Only ever set by
+   *  lib/agent-plan-summary.ts's draftToConfirmedAgentDraft (the chat-native
+   *  confirm path); this card has no editor UI for it and always leaves it
+   *  undefined — every draft that reaches `actions.length >= 2` resolves to
+   *  a 'social-post'/'app-act' action type, which shouldUseChatConfirm
+   *  already routes to the chat-native flow instead of this card. */
+  actions?: AgentAction[];
   runOn: 'auto' | 'on-device' | 'cloud';
   /** true = run via the B2 autonomous gate (driver/escalation), no per-step approval. */
   autonomous: boolean;
@@ -62,6 +70,14 @@ export interface ConfirmedAgentDraft {
    *  card, passed through from the parsed draft unedited (see store/types.ts's
    *  Agent.startNotBefore doc comment for the anchor semantics). */
   startNotBefore?: number | null;
+  /** 2026-07-28 bug fix: see ParsedAgentDraft.runOnceOnConfirm's doc comment
+   *  (lib/agent-nl-parser.ts) — passed through unedited by
+   *  draftToConfirmedAgentDraft so confirmAgentDraft (hooks/
+   *  use-ai-pane-dispatch.ts) can fire one ADDITIONAL runAgentNow call right
+   *  after this agent is created/updated with `schedule` left untouched.
+   *  AgentConfirmCard's own classic card flow never sets this (it has no
+   *  patch-a-pending-draft mechanism of its own) — always undefined here. */
+  runOnceOnConfirm?: boolean;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.

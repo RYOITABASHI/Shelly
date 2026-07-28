@@ -617,6 +617,15 @@ export function useAIPaneDispatch(paneId: string) {
             // as "already done" right next to the still-pending confirm
             // question summarizeAgentDraftAsText appends.
             const patchReplyMessageId = generateId();
+            // 2026-07-28 bug fix (lib/agent-draft-patch.ts's
+            // applyPatchToPendingSession doc comment): 'schedule' was
+            // deliberately excluded from changedFields above when the patch
+            // would have wiped an already-real recurring schedule — surface
+            // the run-once-on-confirm intent explicitly here instead of
+            // leaving it silently implied by patchedDraft.runOnceOnConfirm.
+            const runOnceNote = patchResult.runNowRequested
+              ? `\n\n${patchStrings['agentplan.run_once_on_confirm_note']}`
+              : '';
             store.addMessage(paneId, {
               id: patchReplyMessageId,
               role: 'assistant',
@@ -624,7 +633,7 @@ export function useAIPaneDispatch(paneId: string) {
                 patchedDraft,
                 new Set(patchResult.changedFields),
                 isEditingSession,
-              )}`,
+              )}${runOnceNote}`,
               timestamp: Date.now(),
               agent: pendingAgentSession.agentLabel,
             });
@@ -1982,6 +1991,13 @@ export function useAIPaneDispatch(paneId: string) {
           schedule: confirmed.schedule,
           tool: persistedTool,
           action: confirmed.action,
+          // 2026-07-28: multi-destination fan-out — see store/types.ts's
+          // Agent.actions doc comment and lib/agent-nl-parser.ts's
+          // ParsedAgentDraft.actions doc comment. Undefined on every draft
+          // except the ones lib/agent-nl-parser.ts's detectMultiSocialActions
+          // confidently resolved to 2+ targets; `action` above always stays
+          // in sync as actions[0] for that case, so this is purely additive.
+          actions: confirmed.actions,
           runOn: persistedRunOn,
           autonomous: confirmed.autonomous || undefined,
           memory: confirmed.memory,
@@ -2010,6 +2026,43 @@ export function useAIPaneDispatch(paneId: string) {
         });
         const created = persisted.agent;
         if (!created) throw new Error(`Agent not found: ${editingAgentId}`);
+
+        // 2026-07-28 bug fix (ParsedAgentDraft.runOnceOnConfirm's doc
+        // comment, lib/agent-nl-parser.ts): a still-pending draft's own
+        // schedule patch resolved a bare "今"/"今すぐ" against an
+        // ALREADY-recurring schedule — lib/agent-draft-patch.ts's
+        // applyPatchToPendingSession left `confirmed.schedule` (and the
+        // agent just created/updated above) with the real recurring cron
+        // untouched, and flagged this instead. Fires the ADDITIONAL one-off
+        // run the user actually asked for, appending to whatever success
+        // bubble `baseContent` the caller already posted — mirrors
+        // applyCorrectionToJustRegisteredAgent's runNowRequested handling
+        // (2026-07-27) for the already-registered correction window, one
+        // layer earlier (before registration instead of after). Shared by
+        // both the edit-update branch and the fresh-registration branch
+        // below since either can carry the flag (a Sidebar edit session's
+        // draft is patched the exact same way as a fresh draft's).
+        const fireRunOnceOnConfirm = async (baseContent: string, locale: 'en' | 'ja') => {
+          const runStrings = locale === 'ja' ? ja : en;
+          const runningNote = runStrings['agentplan.run_now_started'].replace('{{name}}', created.name);
+          store.updateMessage(paneId, messageId, { content: `${baseContent}\n\n▶ ${runningNote}` });
+          try {
+            await runAgentNow(created.id, runAgentShellCommand, {
+              waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+            });
+            const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
+            const preview = (log?.outputPreview || '').trim();
+            const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
+            const resultLine = preview ? `${icon} ${preview}` : `${icon} ${runStrings['agentplan.run_now_done']}`;
+            store.updateMessage(paneId, messageId, { content: `${baseContent}\n\n${resultLine}` });
+          } catch (runErr) {
+            const detail = runErr instanceof Error ? runErr.message : String(runErr);
+            store.updateMessage(paneId, messageId, {
+              content: `${baseContent}\n\n❌ ${runStrings['agentplan.run_now_failed']}: ${detail}`,
+            });
+          }
+        };
+
         if (!persisted.edited) {
           // bug #164 diagnostics (2026-07-28): brackets the ONLY await between
           // "draft accepted" and the card flipping out of 'pending' for a
@@ -2024,10 +2077,14 @@ export function useAIPaneDispatch(paneId: string) {
             ?? (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
               : 'no schedule');
-          store.updateMessage(paneId, messageId, {
-            agentCardState: 'confirmed',
-            content: `✅ Agent "${created.name}" updated — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}.`,
-          });
+          const updatedContent = `✅ Agent "${created.name}" updated — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}.`;
+          store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: updatedContent });
+          if (confirmed.runOnceOnConfirm) {
+            await fireRunOnceOnConfirm(
+              updatedContent,
+              detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+            );
+          }
           return;
         }
 
@@ -2131,10 +2188,11 @@ export function useAIPaneDispatch(paneId: string) {
           // whether this call is even reached and whether the store call
           // itself throws (an exception here would otherwise vanish into the
           // outer catch with no trace of having gotten this far).
+          const registeredContent = `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list${correctionHint}`;
           logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron calling updateMessage(content) for ${created.id} / message ${messageId}`);
           store.updateMessage(paneId, messageId, {
             agentCardState: 'confirmed',
-            content: `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list${correctionHint}`,
+            content: registeredContent,
           });
           logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron updateMessage(content) returned for ${created.id} / message ${messageId}`);
           if (correctionEligible) {
@@ -2146,6 +2204,16 @@ export function useAIPaneDispatch(paneId: string) {
               agentLabel: originatingMessage?.agent,
               createdAt: Date.now(),
             });
+          }
+          // 2026-07-28 bug fix: see fireRunOnceOnConfirm's doc comment above
+          // — a still-pending draft's own "今"/"今すぐ" patch against an
+          // already-recurring schedule lands here (real cron, non-ephemeral,
+          // freshly created, not an edit).
+          if (confirmed.runOnceOnConfirm) {
+            await fireRunOnceOnConfirm(
+              registeredContent,
+              detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+            );
           }
           // P1 scheduling-reliability audit (2026-07-15): a device's FIRST
           // real cron schedule (not a pure notification-trigger-only agent,

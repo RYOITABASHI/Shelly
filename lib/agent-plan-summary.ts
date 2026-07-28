@@ -279,6 +279,35 @@ function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, lo
 }
 
 /**
+ * 2026-07-28: render draft.actions (2+ entries — see
+ * lib/agent-nl-parser.ts's detectMultiSocialActions) as a short comma/読点-
+ * joined list of destination labels for the "配信先: …" / "Destinations: …"
+ * summary line. Each entry reuses the SAME platform display label
+ * summarizeAgentDraftAsText already trusts elsewhere (`social_connectors.
+ * platform_*`) for a social-post action, or a short 'X' label for the
+ * app-act 'x.post' recipe (its usual `agentplan.appact_x_target` string is a
+ * full sentence, not reusable in a list) — any other action type (not
+ * currently producible by the multi-target detector, but handled
+ * defensively) falls back to the generic `agentcard.action_<type>` label.
+ * Pure text formatting only — no store reads, mirrors this module's own
+ * "PURE render" convention (see actionText's doc comment).
+ */
+function multiActionsTargetsText(actions: AgentAction[], locale: Locale): string {
+  const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
+  const labels = actions.map((a) => {
+    if (a.type === 'social-post' && a.socialPost) {
+      return tl(`social_connectors.platform_${a.socialPost.platform}`);
+    }
+    if (a.type === 'app-act' && a.appActRecipeId === 'x.post') {
+      return tl('agentplan.multi_target_x_label');
+    }
+    return tl(`agentcard.action_${a.type}`);
+  });
+  const sep = locale === 'ja' ? '、' : ', ';
+  return labels.join(sep);
+}
+
+/**
  * Prefix a rendered summary line with a change marker: '★ ' when `field` is
  * in `changedFields` (Phase C, 2026-07-22 — a follow-up patch reply touched
  * this field, see lib/agent-draft-patch.ts), '・ ' when `changedFields` is
@@ -341,6 +370,22 @@ export function summarizeAgentDraftAsText(
   }
 
   lines.push(markLine(tl('agentplan.summary_action', { action: actionText(draft.action, draft, locale) }), 'action', changedFields));
+
+  // 2026-07-28: multi-destination fan-out (see multiActionsTargetsText's doc
+  // comment above) — additive only, the "実行内容:"/"Action:" line above is
+  // computed identically to before this feature existed (draft.action is
+  // always kept in sync as actions[0] by the parser, so it still reads as a
+  // sensible single-line summary on its own even without this extra line).
+  // Absent/<2 entries = no extra line, byte-identical to before.
+  if (draft.actions && draft.actions.length >= 2) {
+    lines.push(
+      markLine(
+        tl('agentplan.summary_multi_targets', { targets: multiActionsTargetsText(draft.actions, locale) }),
+        'action',
+        changedFields,
+      ),
+    );
+  }
 
   // Phase B (2026-07-22): a schedule resolved from a bare time-of-day word
   // ("朝"→08:00, see lib/agent-nl-parser.ts's TIME_OF_DAY_DEFAULTS) is never
@@ -460,6 +505,11 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     schedule: draft.schedule === 'once' ? null : draft.schedule,
     tool: draft.tool,
     action: draft.action,
+    // 2026-07-28: multi-destination fan-out passthrough — see
+    // lib/agent-nl-parser.ts's ParsedAgentDraft.actions doc comment and
+    // store/types.ts's Agent.actions doc comment. Absent/undefined on the
+    // vast majority of drafts (existing single-action behavior, unaffected).
+    actions: draft.actions,
     runOn: 'auto',
     autonomous: draft.autonomous ?? false,
     memory: draft.memory,
@@ -467,5 +517,12 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     orchestrationSteps: draft.orchestrationSteps,
     notificationTrigger: draft.notificationTrigger ?? null,
     startNotBefore: draft.startNotBefore ?? null,
+    // 2026-07-28 bug fix: pass through unedited — see
+    // ParsedAgentDraft.runOnceOnConfirm's doc comment (lib/agent-nl-parser.ts)
+    // and ConfirmedAgentDraft.runOnceOnConfirm's doc comment for the full
+    // wiring. Only ever true on a draft lib/agent-draft-patch.ts's
+    // applyPatchToPendingSession patched this way; every other draft (fresh
+    // parse, AgentConfirmCard's own card flow) carries it as undefined.
+    runOnceOnConfirm: draft.runOnceOnConfirm,
   };
 }

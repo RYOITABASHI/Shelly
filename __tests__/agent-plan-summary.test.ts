@@ -380,6 +380,45 @@ describe('summarizeAgentDraftAsText', () => {
     expect(text).toContain('Good morning from Shelly');
   });
 
+  // 2026-07-28: multi-destination fan-out (DEFERRED.md's "エージェント1件から
+  // 複数プラットフォームへ同時配信できない" authoring-side follow-up) — an
+  // ADDITIONAL "配信先: …" line appears only when draft.actions has 2+ entries.
+  describe('multi-destination actions (draft.actions)', () => {
+    it('appends a "summary_multi_targets" line listing every destination when actions has 2+ entries', () => {
+      const draft = baseDraft({
+        action: { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' } },
+        actions: [
+          { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' } },
+          { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+        ],
+      });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.summary_multi_targets|');
+      expect(text).toContain('social_connectors.platform_bluesky');
+      expect(text).toContain('agentplan.multi_target_x_label');
+      // The ordinary single-action line is still rendered (byte-identical to
+      // before this feature existed) — the multi-target line is additive.
+      expect(text).toContain('agentplan.summary_action|');
+    });
+
+    it('does NOT append the multi-target line for an ordinary single-action draft (actions absent)', () => {
+      const draft = baseDraft({
+        action: { type: 'social-post', socialPost: { platform: 'mastodon', connectorId: 'my-mastodon', text: '{{result}}' } },
+      });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).not.toContain('agentplan.summary_multi_targets');
+    });
+
+    it('does NOT append the multi-target line when actions has fewer than 2 entries', () => {
+      const draft = baseDraft({
+        action: { type: 'draft' },
+        actions: [{ type: 'draft' }],
+      });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).not.toContain('agentplan.summary_multi_targets');
+    });
+  });
+
   it('includes autonomous, memory, matched-skill, and actionCaveat lines when present', () => {
     const draft = baseDraft({
       autonomous: true,
@@ -652,6 +691,21 @@ describe('draftToConfirmedAgentDraft', () => {
       type: 'social-post',
       socialPost: { platform: 'mastodon', connectorId: 'my-mastodon', text: '{{result}}' },
     });
+  });
+
+  it('carries draft.actions (multi-destination fan-out) through verbatim when present', () => {
+    const multi: ParsedAgentDraft['actions'] = [
+      { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' } },
+      { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+    ];
+    const draft = baseDraft({ action: multi![0], actions: multi });
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(confirmed.actions).toEqual(multi);
+  });
+
+  it('leaves actions undefined for an ordinary single-action draft (existing behavior unaffected)', () => {
+    const confirmed = draftToConfirmedAgentDraft(baseDraft());
+    expect(confirmed.actions).toBeUndefined();
   });
 
   it('does not treat an unrelated cron schedule as ephemeral (sanity check for the isEphemeralOneShot regression test above)', () => {

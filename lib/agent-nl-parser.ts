@@ -43,6 +43,21 @@ export interface ParsedAgentDraft {
   suggestedDowList?: string;
   /** Delivery capability. Defaults to 'draft' (write to outputPath). Never 'publish'. */
   action: AgentAction;
+  /** Multi-destination fan-out (2026-07-28 — authoring-side follow-up to
+   *  backend commit e2b65e16a, which added Agent.actions?: AgentAction[] but
+   *  left NL detection/UI unwired). Set ONLY when detectMultiSocialActions
+   *  confidently resolved 2+ distinct post targets sharing one verb
+   *  ("ブルースカイとXに投稿して" / "post this to bluesky and x") — see that
+   *  function's doc comment in this file for the exact resolution rules
+   *  (every named platform must resolve to exactly one registered connector,
+   *  or the whole multi-target read is abandoned in favor of the ordinary
+   *  single-target `action` above). `action` above is always kept in sync as
+   *  `actions[0]` in this case, so every caller that only ever reads `action`
+   *  (unaware `actions` exists) keeps working exactly as before — mirrors
+   *  Agent.actions's own "`actions` is additive, `action` stays the
+   *  documented single-action field" contract. Absent/undefined = the
+   *  ordinary single-action case (existing behavior, byte-identical). */
+  actions?: AgentAction[];
   /** Routed tool (reuses the keyword router). */
   tool: ToolChoice;
   toolLabel: string;
@@ -160,6 +175,29 @@ export interface ParsedAgentDraft {
    *  encode a start date. Purely a lower bound on when firing may begin; it
    *  never changes what the cron itself computes once that date has passed. */
   startNotBefore?: number | null;
+  /** 2026-07-28 bug fix (docs/superpowers/DEFERRED.md's "「今」/「今すぐ」が
+   *  保留下書きへのパッチ・登録済みエージェントへの補正として schedule:'once'
+   *  を無条件に信頼する" entry): set by lib/agent-draft-patch.ts's
+   *  applyPatchToPendingSession when a follow-up patch to a still-pending
+   *  (not-yet-registered) draft would have overwritten an ALREADY-real
+   *  recurring `schedule` with parseSchedule's 'once' ("run now") sentinel —
+   *  mirrors applyCorrectionToJustRegisteredAgent's `runNowRequested` result
+   *  field (RegisteredAgentCorrectionResult) for the already-registered
+   *  correction window, applied one layer earlier, before registration even
+   *  happens. In that case `schedule` is left untouched (the recurring cron
+   *  survives) and this flag is set on the patched draft instead, so that
+   *  whichever confirm path the user eventually takes (a typed confirm reply,
+   *  which reads PendingAgentSession.draft, or an AgentChatConfirm tap, which
+   *  reads the same patched value off ChatMessage.agentDraft — both are kept
+   *  in sync by the same patch, see hooks/use-ai-pane-dispatch.ts) carries the
+   *  intent through draftToConfirmedAgentDraft into ConfirmedAgentDraft, and
+   *  confirmAgentDraft fires ONE ADDITIONAL runAgentNow right after the agent
+   *  is created/updated with its real recurring schedule intact. Absent/false
+   *  = no additional run-now action needed on confirm (existing behavior,
+   *  unaffected — this is also the shape a genuinely still-unregistered
+   *  draft's "今" reply needs when there is NO real schedule yet to protect,
+   *  which resolves `schedule` to 'once' exactly as before this fix). */
+  runOnceOnConfirm?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -901,6 +939,135 @@ function detectSocialPost(text: string, connectors: SocialConnectorMeta[]): Soci
 const SOCIAL_POST_NO_CONNECTOR_CAVEAT =
   'SNS投稿には登録済みのコネクタが必要です。まず Settings → Social Connectors でコネクタを登録してください。今回は下書き（ファイル保存）として登録します。';
 
+// ── Multi-platform social-post detection (2026-07-28 — DEFERRED.md's "エージェ
+// ント1件から複数プラットフォームへ同時配信できない" entry, authoring-side
+// follow-up to backend commit e2b65e16a which added Agent.actions?: AgentAction[]
+// but left NL detection untouched) ────────────────────────────────────────────
+//
+// detectSocialPost() above only ever binds ONE platform name directly to the
+// posting verb ("<platform>に投稿"), so a LIST of platforms sharing a single
+// verb ("ブルースカイとXに投稿して" / "post this to bluesky and x") only ever
+// matched whichever platform happened to sit immediately before に/で — every
+// other named platform in the list was silently dropped. This section adds a
+// narrow, deliberately separate detector for exactly that list shape (2+
+// platform names joined by と/、/,/・/&/"and" leading into ONE shared verb) and
+// resolves it into a real `AgentAction[]` — one entry per platform — instead of
+// forcing the whole request through the single-target path above.
+//
+// Deliberately scoped to the SAME word-list shape parseSchedule's own weekday
+// "runs" regex already uses (see the `runs` match a few hundred lines up) —
+// keep it simple, no general multi-clause NLU. X-posting is included as a
+// target (it's the driving example in DEFERRED.md — "ブルースカイとXに同時投
+// 稿") even though it dispatches via a different mechanism (`app-act`
+// 'x.post', not a social connector) — see MultiPostTarget's own doc comment.
+
+/** A single entry in a detected multi-target post list. The 7 SocialPlatform
+ *  values (connector-backed, dispatch via `social-post`) plus 'x' — X-posting
+ *  has no social connector at all; it dispatches through the existing
+ *  app-act 'x.post' recipe (see X_POST_RE above), so it needs its own literal
+ *  alias ('x', matched with a `\bx\b` word boundary — a bare single ASCII
+ *  letter is otherwise far too collision-prone to match unguarded, unlike the
+ *  multi-character platform aliases in SOCIAL_PLATFORM_ALIASES, which have
+ *  never needed a boundary in this file). */
+type MultiPostTarget = SocialPlatform | 'x';
+
+const MULTI_POST_TARGETS: MultiPostTarget[] = [...SOCIAL_PLATFORMS, 'x'];
+
+/** Regex alternation source (no anchors/flags) for one target's aliases. */
+function multiPostAliasSource(target: MultiPostTarget): string {
+  if (target === 'x') return '\\bx\\b';
+  return SOCIAL_PLATFORM_ALIASES[target].map(escapeRegExp).join('|');
+}
+
+const MULTI_POST_ALT = MULTI_POST_TARGETS.map((t) => `(?:${multiPostAliasSource(t)})`).join('|');
+
+// JP: a run of 2+ target names joined by と/、/,/，/・/＆/& (mirrors
+// parseSchedule's weekday `runs` regex), admitted ONLY when it leads DIRECTLY
+// into (に|で) + a posting verb — the same "adjacency proves this is a real
+// schedule/action, not an unrelated list" contract that regex already relies
+// on. Captured via lookahead (not consumed) so the match is just the target
+// list itself, same convention as the weekday `runs` regex.
+const MULTI_POST_JP_RUN_RE = new RegExp(
+  `(?:${MULTI_POST_ALT})(?:\\s*(?:と|、|,|，|・|＆|&)\\s*(?:${MULTI_POST_ALT}))+` +
+    `(?=\\s*(?:に|で)\\s*(?:${SOCIAL_POST_VERB_JP}))`,
+  'i',
+);
+
+// EN: "post/share/tweet (this/it)? to/on <target>(, <target>)*(,? and <target>)?"
+const MULTI_POST_EN_RUN_RE = new RegExp(
+  `(?:${SOCIAL_POST_VERB_EN})\\s+(?:this|it)?\\s*(?:to|on)\\s+` +
+    `((?:${MULTI_POST_ALT})(?:\\s*(?:,|and|&)\\s*(?:${MULTI_POST_ALT}))+)`,
+  'i',
+);
+
+/** Which MultiPostTarget(s) appear inside an already-matched list-run
+ *  substring — mirrors the weekday-run extraction a few hundred lines up
+ *  (test each candidate's own alias pattern against the run text, in a fixed
+ *  canonical order so output is deterministic regardless of mention order). */
+function extractMultiPostTargets(runText: string): MultiPostTarget[] {
+  const found: MultiPostTarget[] = [];
+  for (const target of MULTI_POST_TARGETS) {
+    const re = new RegExp(multiPostAliasSource(target), 'i');
+    if (re.test(runText)) found.push(target);
+  }
+  return found;
+}
+
+/** Detect a "post to A and B (and C…)" list naming 2+ distinct targets
+ *  sharing one posting verb. Returns [] when fewer than 2 distinct targets
+ *  are found (including the ordinary single-platform case, which stays on
+ *  detectSocialPost's existing path unchanged). */
+function detectMultiPostTargets(text: string): MultiPostTarget[] {
+  const scope = actionDetectionScope(text);
+  const jpMatch = scope.match(MULTI_POST_JP_RUN_RE);
+  if (jpMatch) {
+    const targets = extractMultiPostTargets(jpMatch[0]);
+    if (targets.length >= 2) return targets;
+  }
+  const enMatch = scope.match(MULTI_POST_EN_RUN_RE);
+  if (enMatch && enMatch[1]) {
+    const targets = extractMultiPostTargets(enMatch[1]);
+    if (targets.length >= 2) return targets;
+  }
+  return [];
+}
+
+/**
+ * Resolve a detected multi-target post list into a real `AgentAction[]` — one
+ * entry per target, each independently gated exactly like a single-target
+ * `social-post`/`app-act` action already is (see store/types.ts's
+ * Agent.actions doc comment — this is purely an authoring-side fan-out, no
+ * new dispatch/approval logic). X resolves unconditionally to the existing
+ * app-act 'x.post' recipe (no connector needed, mirrors detectAction's own
+ * X_POST_RE branch). Every OTHER target requires exactly ONE registered
+ * connector for that platform to auto-resolve — if ANY named platform has
+ * zero or 2+ matching connectors, the whole multi-target read is abandoned
+ * (returns null) rather than silently registering a PARTIAL list the user
+ * didn't ask for; the caller then falls back to the existing single-target
+ * detectSocialPost() path unchanged (which itself may resolve, ask, or fall
+ * back to draft+caveat for whatever single platform it can find — deliberately
+ * NOT extended here to keep this addition narrowly scoped).
+ */
+function detectMultiSocialActions(text: string, connectors: SocialConnectorMeta[]): AgentAction[] | null {
+  const targets = detectMultiPostTargets(text);
+  if (targets.length < 2) return null;
+
+  const actions: AgentAction[] = [];
+  for (const target of targets) {
+    if (target === 'x') {
+      actions.push({ type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } });
+      continue;
+    }
+    const matches = connectors.filter((c) => c.platform === target);
+    if (matches.length !== 1) return null;
+    actions.push({
+      type: 'social-post',
+      socialPost: { platform: target, connectorId: matches[0].id, text: '{{result}}' },
+    });
+  }
+  return actions.length >= 2 ? actions : null;
+}
+
 /** Detect the delivery action. Default = draft. Never returns 'publish'.
  *  Exported (Phase C, 2026-07-22) so lib/agent-draft-patch.ts can apply the
  *  SAME action-type detector to a follow-up patch utterance during
@@ -1370,11 +1537,25 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // (c) a platform/label was named but nothing usable is registered ->
   // forced to draft + a "register a connector first" caveat, never silently
   // dropped.
-  const socialPostDetection = detectSocialPost(rawText, connectors);
+  // Multi-target list ("ブルースカイとXに投稿して" / "post this to bluesky and
+  // x"): checked BEFORE the single-target detectSocialPost() scan below, since
+  // a 2+-platform list this confidently resolves would otherwise only ever
+  // bind to whichever single platform happens to sit immediately before the
+  // verb (see detectMultiSocialActions's doc comment). Only short-circuits
+  // detectSocialPost when it actually resolves (2+ distinct targets, each
+  // with exactly one connector or being 'x') — any other utterance computes
+  // socialPostDetection exactly as before this change, so ordinary
+  // single-platform behavior stays byte-identical.
+  const multiSocialActions = detectMultiSocialActions(rawText, connectors);
+  const socialPostDetection = multiSocialActions ? null : detectSocialPost(rawText, connectors);
   let action: AgentAction;
+  let actions: AgentAction[] | undefined;
   let actionCaveat: string | undefined;
   let socialPostCandidates: SocialConnectorMeta[] | undefined;
-  if (socialPostDetection?.connectorId && socialPostDetection.platform) {
+  if (multiSocialActions) {
+    action = multiSocialActions[0];
+    actions = multiSocialActions;
+  } else if (socialPostDetection?.connectorId && socialPostDetection.platform) {
     action = {
       type: 'social-post',
       socialPost: { platform: socialPostDetection.platform, connectorId: socialPostDetection.connectorId, text: '{{result}}' },
@@ -1439,6 +1620,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     suggestedDowList: sched.suggestedDowList,
     scheduleAssumed: sched.assumedTimeOfDay || undefined,
     action,
+    actions,
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
     autonomous: detectAutonomousIntent(rawText),

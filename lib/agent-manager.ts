@@ -262,6 +262,13 @@ export function createAgent(params: {
   outputPath: string;
   outputTemplate?: string;
   action?: Agent['action'];
+  /** Multi-destination fan-out (2026-07-28) — see store/types.ts's
+   *  Agent.actions doc comment. Undefined for the vast majority of agents
+   *  (single-action, existing behavior unaffected); only set by the
+   *  chat-native confirm path (hooks/use-ai-pane-dispatch.ts's
+   *  confirmAgentDraftInner) when lib/agent-nl-parser.ts's
+   *  detectMultiSocialActions confidently resolved 2+ post targets. */
+  actions?: Agent['actions'];
   runOn?: Agent['runOn'];
   memory?: Agent['memory'];
   skillId?: Agent['skillId'];
@@ -286,6 +293,7 @@ export function createAgent(params: {
     outputPath: params.outputPath,
     outputTemplate: params.outputTemplate || null,
     action: params.action,
+    actions: params.actions,
     runOn: params.runOn,
     memory: params.memory,
     skillId: params.skillId,
