@@ -158,7 +158,7 @@
 
 ---
 
-### AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSIONのバンプ漏れが手動運用のみで頻発している（履歴監査で17件確認） — 未着手・恒久対策の設計待ち (P2)
+### AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSIONのバンプ漏れが手動運用のみで頻発している（履歴監査で17件確認） — 再発防止ガード実装済み・実機不要 (P2)
 
 **優先度**: P2（次リリース検討——HEAD時点は整合済みで今すぐの実害は無いが、`generateRunScript()`を変更するたびに人力でバンプを覚えている運用は構造的に脆弱。既に18回のバージョン遷移中17回で何らかの逸脱＝ほぼ毎回何かが漏れている計算）
 
@@ -173,6 +173,14 @@
 **次にやること（案、要検討）**: `generateRunScript()`の出力を固定入力でスナップショットし、PRごとに前回コミットとの差分有無を検知、差分があるのに`AGENT_SCRIPT_VERSION`が動いていなければCI/pre-commitで機械的に落とす仕組み（例: jestのsnapshotテスト＋バージョン変更の相関チェック）。TS側とKotlin側の値を単一ソース（例: 共有JSON、またはTS側から自動生成するKotlin定数）にして「2ファイルを手で同時に直す」という構造自体を無くす案も候補。
 
 **テスト**: 監査自体は読み取り専用（git log/git show）、コード変更なし。
+→ sync: なし。
+
+**→ 2026-07-28 実装完了（`3e7762aac`）**: 案の前段（スナップショット＋バージョン相関チェック）を新規テストファイル`__tests__/agent-executor-script-version-guard.test.ts`のみの追加で実装（既存ファイルは無編集——並行して`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`をバンプしている可能性のある他エージェントとの衝突回避のため）。2段構え:
+1. `generateRunScript()`を固定の最小`draft`エージェント入力（Math.random()を踏む`ab-article-eval`等の非決定的経路を避けた選択）で呼び出し、出力をjestスナップショット化。`generateRunScript()`の出力が変われば`--ci`実行時にスナップショット差分で機械的に落ちる。
+2. `lib/agent-executor.ts`の`AGENT_SCRIPT_VERSION`と`AgentRuntime.kt`の`CURRENT_SCRIPT_VERSION`を、それぞれのソースファイルを`fs.readFileSync`＋正規表現で直接抽出し数値一致をassert——片方だけバンプされた乖離窓（過去3件観測済み）を検知。
+テストファイル冒頭のコメントに運用ルール（スナップショットが変化したら必ず両バージョンをバンプしてから`jest -u`で再生成すること。バンプせずスナップショットだけ更新するのは禁止）を明記。
+
+TS/Kotlin単一ソース化（案の後段）は今回スコープ外——2ファイル手動同期という構造自体は残るが、「気づかず本番に出る」事故は本ガードで防げる。HEAD時点（39/39）で両テストPASS、`npx tsc --noEmit`クリーン。既存スイート全体を回すと`__tests__/plan-executor.test.ts`で無関係な事前からの失敗4件（Windows環境のパス二重化バグ`C:\\C:\\Users...`起因、本タスクの変更とは無関係）が出るが、新規ファイル単体では2/2 PASS。実機テストは対象外（コード変更のみのタスクのため）。
 → sync: なし。
 
 ---
