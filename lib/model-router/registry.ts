@@ -55,6 +55,16 @@ export const MODEL_REGISTRY: readonly ModelCandidate[] = [
     preference: 54,
   },
   {
+    id: 'openrouter',
+    toolType: 'openrouter',
+    isLocal: false,
+    credentialClass: 'api-key',
+    capabilities: { web: false, taskKinds: ['code', 'research', 'prose', 'transform', 'general'] },
+    cost: 'medium',
+    latency: 'fast',
+    preference: 53,
+  },
+  {
     id: 'gemini-api',
     toolType: 'gemini-api',
     isLocal: false,

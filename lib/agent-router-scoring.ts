@@ -281,6 +281,7 @@ const LABELS: Record<ToolChoice['type'], string> = {
   'gemini-api': 'Gemini API',
   cerebras: 'Cerebras',
   groq: 'Groq',
+  openrouter: 'OpenRouter',
   'ab-article-eval': 'A/B Article Eval',
   auto: 'Auto',
 };

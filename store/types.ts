@@ -537,6 +537,7 @@ export type ToolChoice =
   | { type: 'gemini-api'; model?: string }
   | { type: 'cerebras'; model?: string }
   | { type: 'groq'; model?: string }
+  | { type: 'openrouter'; model?: string }
   | { type: 'local'; model?: string }
   | { type: 'perplexity'; model?: string }
   | { type: 'ab-article-eval'; localModel?: string; codexCmd?: string }

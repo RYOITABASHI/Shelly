@@ -122,6 +122,8 @@ export function candidateToToolChoice(candidate: ModelCandidate): ToolChoice {
       return { type: 'cerebras' };
     case 'groq':
       return { type: 'groq' };
+    case 'openrouter':
+      return { type: 'openrouter' };
     case 'perplexity':
       return { type: 'perplexity' };
     case 'ab-article-eval':

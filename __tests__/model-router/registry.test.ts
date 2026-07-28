@@ -1,6 +1,7 @@
 import { MODEL_REGISTRY } from '@/lib/model-router/registry';
 import { candidateToToolChoice } from '@/lib/model-router/wiring';
 import { credentialClass } from '@/lib/agent-credential-policy';
+import { resolveForAutonomous } from '@/lib/agent-credential-policy';
 
 describe('MODEL-001 registry parity with the cloud/local source of truth', () => {
   it('isLocal is true iff credentialClass is local', () => {
@@ -22,6 +23,16 @@ describe('MODEL-001 registry parity with the cloud/local source of truth', () =>
   it('has stable unique ids', () => {
     const ids = MODEL_REGISTRY.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('keeps OpenRouter attended-only and excluded from autonomous resolution', () => {
+    const openRouter = MODEL_REGISTRY.find((candidate) => candidate.id === 'openrouter');
+    expect(openRouter).toMatchObject({
+      toolType: 'openrouter',
+      credentialClass: 'api-key',
+      isLocal: false,
+    });
+    expect(resolveForAutonomous({ type: 'openrouter' })).toBeNull();
   });
 
   it('web-capable set mirrors the live escalation ladder (Gemini grounded + Perplexity)', () => {
