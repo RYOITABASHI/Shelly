@@ -57,7 +57,9 @@
 
 ---
 
-### ✅ bug #164 — アテンド系エージェント実行が最大20分間フィードバック無しでビジーポーリングし続ける — 根本原因特定・`f5bafb311`で修正（実機ビルド反映待ち） (P0→解消)
+### ✅ bug #164 — アテンド系エージェント実行が最大20分間フィードバック無しでビジーポーリングし続ける — 根本原因特定・`f5bafb311`で修正・実機検証PASS (P0→解消)
+
+**2026-07-28 実機検証PASS（versionCode 1994、修正版ビルド）**: REMOTE-INPUT-001経由で`@agent 今すぐ、テストメモを保存して`を送信、送信から約18秒で`✅ テストメモ 保存\n\nテストメモを保存しました。`という成功バブルが正しく表示された（5分タイムアウトは発生せず）。副次的にスキル自動保存の提案（`This run of "テストメモ 保存" succeeded. Save it as a reusable skill?`）も正しく発火することを確認——`lib/agent-skills.ts`のスキル学習機構が実機でも生きていることの副次確認になった。これでbug #164は根本原因の特定・修正・実機検証まで完全に完了。
 
 **2026-07-28 根本原因確定（実機再現+コード+実物run-logの三点照合、`f5bafb311`で修正済み・修正版ビルドでの実機再検証のみ未了）**: 真因は**draft系run-log JSONの決定論的破損**。`lib/agent-executor.ts`の`SAVED_PATH_FIELDS`（`4b3315abc`、2026-07-21、v37期に導入）がTSテンプレートリテラル内で`\"savedPath\"`と書かれており、生成bashには素の`"`が出力される→bash自身のワードクォートとして消費され、heredoc展開後のrun-logが`,savedPath:/data/...`（キーも値も無引用）になる→**保存パス付きdraftアクションの全runが不正JSON**→`readAgentRunLogs()`の寛容パース（malformedは黙って捨てる）が該当ログを毎回ドロップ→`waitForAgentRunCompletion()`が「新しいrun-log無し」と誤判定→ネイティブ側は**5秒で正常完了**（`AgentRuntime: Agent agent-ms4aagxz completed via Shelly runtime`、exit=0、メモも実際に保存済み）しているのに、JS側だけがATTENDED 5分タイムアウト→`[@agent] failed: Timed out...`という偽の失敗表示+ephemeral cleanupでエージェント削除。notify/cli系が正常でdraft系だけ3連続失敗した事実、`WidgetAgentRepository`の`Expected literal value at character 641`（bug #163の症状報告——org.jsonが無引用の`/data/...`値で literal 期待エラーを出す形状）とも完全に整合。**修正**: 両`SAVED_PATH_FIELDS`行を`\\"`（生成bashに`\"`が乗る形）へ、AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSION 40→41 lockstep、実bashで生成ログ書き込みブロックを実行して`JSON.parse`する回帰テスト（`agent-executor-runlog-savedpath-json.test.ts`）追加、旧・壊れた出力形を期待値として固定していた`agent-executor-saved-path.test.ts`も是正。35スイート348件PASS、`tsc --noEmit`クリーン。
 
