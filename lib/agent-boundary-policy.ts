@@ -81,7 +81,20 @@ export function isWithinRoot(root: string, target: string): boolean {
 export function extractPaths(command: string): string[] {
   return command
     .split(/\s+/)
-    .map((t) => t.replace(/^[<>|&]+/, '').replace(/[;,]+$/, '')) // strip redirection ops / trailing punct
+    .map((t) =>
+      t
+        .replace(/^[<>|&]+/, '')
+        .replace(/[;,]+$/, '') // strip redirection ops / trailing punct
+        // Adversarial review 2026-07-28: a QUOTED argument kept its quotes, so
+        // `cp src/a.ts "/sdcard/Download/a.ts"` produced the token
+        // `"/sdcard/Download/a.ts"` — which does not start with `/`, so
+        // isWithinRoot() treated it as workspace-relative, joined it to the
+        // root and declared it in-root. Quoting was therefore a
+        // one-character bypass of BOTH `leaves-root` and the `~` guard
+        // (`"~/x"` likewise). Strip surrounding quotes lexically.
+        .replace(/^['"`]+/, '')
+        .replace(/['"`]+$/, ''),
+    )
     .filter(
       (t) =>
         t.length > 0 &&
@@ -91,6 +104,14 @@ export function extractPaths(command: string): string[] {
 }
 
 const NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
+/**
+ * bash/ksh's BUILT-IN network primitive. `exec 3<>/dev/tcp/host/port` opens a
+ * TCP socket with no external tool name anywhere on the command line, so it
+ * evaded NETWORK_RE entirely; and because the token does not start with `/`
+ * (it starts with the fd number, e.g. `3<>/dev/tcp/...`) it did not trip
+ * `leaves-root` either. Adversarial review 2026-07-28.
+ */
+const SHELL_NET_DEVICE_RE = /\/dev\/(?:tcp|udp)\//;
 const READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
 const LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
 
@@ -110,7 +131,70 @@ const LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
  * `python3.9`) — a real, common invocation shape on Debian-derived bundles
  * like this project's, not just the bare `python3` this list started with.
  */
-const OPAQUE_SCRIPT_RE = /\b(?:python3?(?:\.\d+)*|node(?:js)?|ruby|perl|php|deno|bun)\b\s+\S/;
+const OPAQUE_SCRIPT_RE =
+  /\b(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh)\b\s+\S/;
+
+/**
+ * Adversarial review 2026-07-28 — gap 1 of 2 that OPAQUE_SCRIPT_RE alone left.
+ *
+ * A shell script file is exactly as opaque as a `.py`, and `bash` additionally
+ * has a *built-in* network primitive (`exec 3<>/dev/tcp/host/port`) that needs
+ * no external tool name at all, so `bash exfil.sh` was previously an
+ * unsignalled in-root `write-or-exec` (auto-allow at L2, including unattended
+ * scheduled runs).
+ *
+ * We can NOT simply add `sh|bash` to OPAQUE_SCRIPT_RE: the codex driver
+ * flattens codex's argv array (`["bash","-lc","<script>"]`, see
+ * scripts/shelly-agent-driver.js) into the classified string, so essentially
+ * EVERY proposed command starts with `bash -lc …`. Flagging that shape would
+ * gray every single command and, under `unattended` (fail-closed), deny the
+ * whole autonomous surface.
+ *
+ * So this matches only a shell followed by a script FILE argument — flags may
+ * precede it, but the first non-flag token must itself be the `.sh`/`.bash`
+ * file. `bash -lc '…'` and `bash -lc 'cat run.sh'` do not match; `bash x.sh`,
+ * `sh -e ./deploy.sh` and `bash -lc './run.sh'` do.
+ */
+const SHELL_SCRIPT_FILE_RE =
+  /(?:^|[\s;&|(])(?:ba|z|k|da)?sh\s+(?:-[A-Za-z]+\s+)*(?!-)[^\s;&|]*\.(?:sh|bash|zsh|ksh)\b/;
+
+/**
+ * Adversarial review 2026-07-28 — gap 2 of 2.
+ *
+ * OPAQUE_SCRIPT_RE requires an argument AFTER the interpreter (`\s+\S`), so
+ * feeding the script in over a pipe defeated it: `cat exfil.py | python3` has
+ * no token after `python3`. Worse, the OLD `isPureRead` looked only at the
+ * FIRST token, so `cat …` made the whole pipeline count as a "pure read" —
+ * i.e. that command auto-allowed even at **L1**, the read-only level.
+ *
+ * An interpreter (or shell) on the receiving end of a pipe is unambiguously
+ * script execution, so this has no meaningful false-positive surface. `awk` is
+ * deliberately excluded: `… | awk '{print $1}'` is a routine read-pipeline
+ * idiom and gating it would be pure noise.
+ */
+const PIPED_INTERPRETER_RE =
+  /\|\s*(?:sudo\s+)?(?:[^\s|;&]*\/)?(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)\b/;
+
+/**
+ * A command is a PURE READ only when every pipeline/list segment is a
+ * read-only tool AND nothing redirects into a file.
+ *
+ * The previous definition was `READ_ONLY_RE.test(command)`, which is anchored
+ * at `^` and therefore only ever inspected the FIRST segment. Everything after
+ * a `|`, `;`, `&&` or `>` was invisible to it, so `cat a > b`,
+ * `cat a | tee /sdcard/x` and `cat a | python3` all claimed "pure read" — and
+ * L1, whose entire contract is "reads auto-allow, anything else escalates",
+ * auto-allowed them.
+ */
+function isPureReadCommand(command: string): boolean {
+  if (command.includes('>')) return false; // any redirection ⇒ not a read
+  const segments = command
+    .split(/\|\||&&|[|;&]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((s) => READ_ONLY_RE.test(s));
+}
 
 /**
  * True when every network-tool target in `command` is a loopback host
@@ -156,9 +240,23 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   const paths = extractPaths(command);
   if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push('secret-read');
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p))) signals.push('leaves-root');
-  if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) signals.push('network-send');
-  if (OPAQUE_SCRIPT_RE.test(command)) signals.push('opaque-script-exec');
-  const isPureRead = READ_ONLY_RE.test(command) && !signals.includes('network-send');
+  if (
+    (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) ||
+    SHELL_NET_DEVICE_RE.test(command)
+  ) {
+    signals.push('network-send');
+  }
+  if (
+    OPAQUE_SCRIPT_RE.test(command) ||
+    SHELL_SCRIPT_FILE_RE.test(command) ||
+    PIPED_INTERPRETER_RE.test(command)
+  ) {
+    signals.push('opaque-script-exec');
+  }
+  const isPureRead =
+    isPureReadCommand(command) &&
+    !signals.includes('network-send') &&
+    !signals.includes('opaque-script-exec');
   if (!isPureRead) signals.push('write-or-exec');
 
   // 4. Decide by autonomy level. `write-or-exec` is a descriptor, not a boundary:

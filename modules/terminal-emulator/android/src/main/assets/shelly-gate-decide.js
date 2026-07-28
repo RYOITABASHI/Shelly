@@ -289,14 +289,25 @@ function isWithinRoot(root, target) {
   return t === r || t.startsWith(`${r}/`);
 }
 function extractPaths(command) {
-  return command.split(/\s+/).map((t) => t.replace(/^[<>|&]+/, "").replace(/[;,]+$/, "")).filter(
+  return command.split(/\s+/).map(
+    (t) => t.replace(/^[<>|&]+/, "").replace(/[;,]+$/, "").replace(/^['"`]+/, "").replace(/['"`]+$/, "")
+  ).filter(
     (t) => t.length > 0 && !t.startsWith("-") && (t.includes("/") || t.startsWith("~") || t === "." || t.startsWith("./") || t.startsWith("../"))
   );
 }
 var NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
+var SHELL_NET_DEVICE_RE = /\/dev\/(?:tcp|udp)\//;
 var READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
 var LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
-var OPAQUE_SCRIPT_RE = /\b(?:python3?(?:\.\d+)*|node(?:js)?|ruby|perl|php|deno|bun)\b\s+\S/;
+var OPAQUE_SCRIPT_RE = /\b(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh)\b\s+\S/;
+var SHELL_SCRIPT_FILE_RE = /(?:^|[\s;&|(])(?:ba|z|k|da)?sh\s+(?:-[A-Za-z]+\s+)*(?!-)[^\s;&|]*\.(?:sh|bash|zsh|ksh)\b/;
+var PIPED_INTERPRETER_RE = /\|\s*(?:sudo\s+)?(?:[^\s|;&]*\/)?(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)\b/;
+function isPureReadCommand(command) {
+  if (command.includes(">")) return false;
+  const segments = command.split(/\|\||&&|[|;&]/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((s) => READ_ONLY_RE.test(s));
+}
 function isLoopbackOnlyNetworkCommand(command) {
   const hosts = [...command.matchAll(/\bhttps?:\/\/(\[[0-9a-fA-F:]+\]|[^/\s:]+)/gi)].map((m) => m[1]);
   if (hosts.length === 0) return false;
@@ -316,9 +327,13 @@ function classifyProposedCommand(command, ctx) {
   const paths = extractPaths(command);
   if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push("secret-read");
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p))) signals.push("leaves-root");
-  if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) signals.push("network-send");
-  if (OPAQUE_SCRIPT_RE.test(command)) signals.push("opaque-script-exec");
-  const isPureRead = READ_ONLY_RE.test(command) && !signals.includes("network-send");
+  if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command) || SHELL_NET_DEVICE_RE.test(command)) {
+    signals.push("network-send");
+  }
+  if (OPAQUE_SCRIPT_RE.test(command) || SHELL_SCRIPT_FILE_RE.test(command) || PIPED_INTERPRETER_RE.test(command)) {
+    signals.push("opaque-script-exec");
+  }
+  const isPureRead = isPureReadCommand(command) && !signals.includes("network-send") && !signals.includes("opaque-script-exec");
   if (!isPureRead) signals.push("write-or-exec");
   const boundarySignals = signals.filter((s) => s !== "write-or-exec");
   const reason = signals.length ? `boundary: ${signals.join(", ")}` : "within policy";

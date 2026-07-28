@@ -15,12 +15,16 @@ import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MI
 import { t } from '@/lib/i18n';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
 import {
+  buildGlobalRecallContext,
   buildRecallContext,
   extractRunDigest,
+  makeGlobalMemoryNote,
   makeMemoryNote,
+  readGlobalMemoryNotes,
   readMemoryNotes,
   recallMemoryNotes,
   writeMemoryNote,
+  type MemoryNoteType,
 } from './agent-memory';
 // MEMORY-001 shadow/activation seam (dormant): flag + entry points imported
 // from their own modules (not the '@/lib/memory' index) so host memory tests
@@ -722,9 +726,16 @@ async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
       // Skill injection is best-effort; never block a run on a read failure.
     }
   }
-  // Phase 1 memory recall.
+  // Phase 1 memory recall. Reads the agent's own notes PLUS the user-scope
+  // `_global` namespace (lib/agent-memory.ts's GLOBAL_MEMORY_SCOPE), merged
+  // into one pool so ranking can pick the most relevant regardless of scope.
+  // The merged prompt still flows through generateRunScript → resolveAgentRoute,
+  // so a secret in a GLOBAL note forces the run on-device exactly like a secret
+  // in an agent-scoped one — the G2 invariant is unchanged by widening the pool.
   try {
-    const notes = await readMemoryNotes(agent.id);
+    const ownNotes = await readMemoryNotes(agent.id);
+    const globalNotes = await readGlobalMemoryNotes();
+    const notes = [...ownNotes, ...globalNotes].sort((a, b) => b.created.localeCompare(a.created));
     // MEMORY-001 Step 3 (strangler, flag-OFF today): while MEMORY_ENABLED is
     // false this whole branch is dead code and the G2 recall below is the ONLY
     // thing that ever runs — byte-identical to pre-Step-3 behavior. When the
@@ -735,8 +746,17 @@ async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
     // is safer than silently dropping the agent's memory.
     let recallContext: string | null = null;
     if (MEMORY_ENABLED) {
-      await shadowMemoryRecall(agent, notes).catch(() => {});
-      recallContext = await activateMemoryRecall(agent, notes);
+      // MEMORY-001 has no concept of the `_global` namespace yet, so it is fed
+      // the agent-scoped notes only (preserving the existing shadow/parity
+      // semantics) and the shared block is appended after whatever it renders.
+      // Widening MEMORY-001 itself to user scope belongs to its own rollout
+      // gate (encryption / PII classification / corpus tests), not here.
+      await shadowMemoryRecall(agent, ownNotes).catch(() => {});
+      recallContext = await activateMemoryRecall(agent, ownNotes);
+      if (recallContext !== null) {
+        const shared = buildGlobalRecallContext(globalNotes);
+        if (shared) recallContext = recallContext ? `${recallContext}\n\n${shared}` : shared;
+      }
     }
     if (recallContext === null) {
       if (notes.length > 0) {
@@ -751,6 +771,72 @@ async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
     // best-effort
   }
   return prompt === agent.prompt ? agent : { ...agent, prompt };
+}
+
+/**
+ * ─── Recall freshness (roadmap item 3, "per-fire 鮮度") ──────────────────────
+ *
+ * Recall is BAKED into each agent's on-disk run script at materialize time
+ * (applyMemoryAndSkills above). An UNATTENDED fire — AlarmManager → the .sh
+ * directly, no JS in the loop — therefore reads whatever recall was current
+ * when the script was last written, which until now meant "since the last app
+ * launch". A note written by a run at 09:00 was invisible to the 10:00 fire.
+ *
+ * Two ways to fix that were considered:
+ *
+ *  (a) Read the memory files from inside the generated script at fire time.
+ *      This is the literal "per-fire" reading, and it was REJECTED for now:
+ *      the recall block would then enter the prompt AFTER resolveAgentRoute has
+ *      already chosen a backend, so a secret written into memory since the bake
+ *      could ride a cloud route — the exact leak the G2 secret-guard invariant
+ *      exists to prevent (see lib/agent-memory.ts's INVARIANTS block). Making
+ *      it safe needs either an in-shell secret scan or a local-route-only gate,
+ *      plus on-device verification of a large new bash surface and an
+ *      AGENT_SCRIPT_VERSION/AgentRuntime.kt lockstep bump.
+ *
+ *  (b) Re-bake the affected scripts whenever memory CHANGES. Chosen. Recall
+ *      selection is a pure function of (notes, agent.name+prompt); the prompt
+ *      is fixed between edits, so the only thing that can make a baked block
+ *      stale is a new/changed note. Re-baking on write therefore makes the
+ *      baked block equal to what a fire-time read would have produced, while
+ *      keeping the write on the JS side where resolveAgentRoute still scans the
+ *      merged prompt before a backend is chosen. No script change, no version
+ *      bump, invariant preserved.
+ *
+ * Best-effort by design: a failed re-bake self-heals at the next startup repair
+ * or foreground run, exactly like the consent re-bake path above.
+ */
+async function refreshAgentRecall(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (!agent) return;
+  try {
+    // installAlarm=false (the schedule is untouched), persistFacts=false (the
+    // registering fact is already on disk — re-writing it here would be a
+    // redundant idempotent write on every single run).
+    await materializeAgent(agent, runCommand, false, false);
+  } catch (error) {
+    logWarn('AgentMemory', `failed to refresh baked recall for ${agentId}`, error);
+  }
+}
+
+/**
+ * Write a user-scope memory note and refresh EVERY agent's baked recall, since
+ * a global note is recalled by all of them. Global writes are rare (an explicit
+ * "remember this for everything" action), so the full pass is proportionate —
+ * unlike per-run result capture, which refreshes only its own agent.
+ */
+export async function writeGlobalMemoryNote(
+  runCommand: (cmd: string) => Promise<string>,
+  params: { type: MemoryNoteType; text: string; tags?: string[] }
+): Promise<void> {
+  await writeMemoryNote(runCommand, makeGlobalMemoryNote(params));
+  const agents = useAgentStore.getState().agents;
+  for (const agent of agents) {
+    await refreshAgentRecall(agent.id, runCommand);
+  }
 }
 
 /** Write the registering "remember that …" fact as a memory note (idempotent). */
@@ -1611,13 +1697,22 @@ async function captureRunMemory(
       text: digest,
       tags: agent.memory?.tags,
     });
-    if (ok) return;
+    if (ok) {
+      await refreshAgentRecall(agentId, runCommand);
+      return;
+    }
   }
   try {
-    await writeMemoryNote(
-      runCommand,
-      makeMemoryNote({ agentId, type: 'result', text: digest, tags: agent.memory?.tags })
-    );
+    const note = makeMemoryNote({ agentId, type: 'result', text: digest, tags: agent.memory?.tags });
+    // Idempotent id: an unchanged digest re-writes the same file, so there is
+    // nothing new to recall and no reason to pay for a re-bake.
+    const existing = await readMemoryNotes(agentId);
+    const isNew = !existing.some((n) => n.id === note.id);
+    await writeMemoryNote(runCommand, note);
+    // Recall freshness (see refreshAgentRecall): re-bake so the NEXT unattended
+    // fire recalls what this run just learned, instead of waiting for the next
+    // app launch's startup repair.
+    if (isNew) await refreshAgentRecall(agentId, runCommand);
   } catch (error) {
     console.warn('Failed to capture run memory for agent', agentId, error);
   }
@@ -1654,6 +1749,10 @@ async function captureRunMemoryFromSyncedLogs(
       const existing = await readMemoryNotes(agent.id);
       if (existing.some((n) => n.id === note.id)) continue;
       await writeMemoryNote(runCommand, note);
+      // Recall freshness: this is the UNATTENDED capture path (results synced
+      // from scheduled fires that never touched JS), so it is precisely the
+      // case that used to stay stale until the next app launch.
+      await refreshAgentRecall(agent.id, runCommand);
     } catch (error) {
       logWarn('AgentMemory', `failed to capture synced run memory for ${agent.id}`, error);
     }
