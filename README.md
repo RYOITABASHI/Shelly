@@ -1,3 +1,5 @@
+<p align="right"><a href="README.ja.md">日本語で読む</a></p>
+
 <p align="center">
   <img src="docs/images/shelly-logo.png" alt="Shelly" width="120">
 </p>
@@ -5,7 +7,7 @@
 <h1 align="center">Shelly</h1>
 
 <h3 align="center">
-  Shelly turns an Android phone into a self-contained agent machine.<br>
+  Shelly turns an Android phone — folded or unfolded — into a self-contained agent machine.<br>
   <sub>Describe a task in plain language, and it wakes on its own alarm — screen off — and does the work with your own AI accounts, local LLMs, and a real terminal underneath. No cloud runner. No PC. No Termux.</sub>
 </h3>
 
@@ -31,10 +33,11 @@
 <p align="center">
   <a href="#see-it-run"><b>Demo</b></a> &nbsp;&middot;&nbsp;
   <a href="#quick-start"><b>Quick Start</b></a> &nbsp;&middot;&nbsp;
+  <a href="docs/MANUAL.md"><b>Manual</b></a> &nbsp;&middot;&nbsp;
   <a href="#why-shelly"><b>Why Shelly?</b></a> &nbsp;&middot;&nbsp;
   <a href="#features"><b>Features</b></a> &nbsp;&middot;&nbsp;
   <a href="#architecture"><b>Architecture</b></a> &nbsp;&middot;&nbsp;
-  <a href="#release-integrity"><b>Metrics</b></a> &nbsp;&middot;&nbsp;
+  <a href="#release-integrity"><b>Release Integrity</b></a> &nbsp;&middot;&nbsp;
   <a href="#status"><b>Status</b></a> &nbsp;&middot;&nbsp;
   <a href="#contributing"><b>Contributing</b></a> &nbsp;&middot;&nbsp;
   <a href="#support"><b>Support</b></a>
@@ -61,13 +64,13 @@ https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
 
 No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI Codex — invoking on Android, plus an API-backed AI pane that reads terminal output and produces a one-tap fix.
 
-<br>
+<!-- TODO(release asset): unfolded 4-pane screenshot (sidebar + terminal + AI + browser, all live at once) — docs/images/unfolded-4-pane.jpg -->
 
 ---
 
 ## Why Shelly?
 
-Termux is a terminal. ChatGPT is an AI chat. Replit is a cloud workspace. Cloud "agents" run on a computer you rent, far from your files.
+Most of what exists today only covers one piece of this. A terminal app (like Termux) gives you a shell but no AI built in. An AI chat app gives you a smart assistant with no shell underneath it and no access to your files. A cloud coding workspace (like Replit) gives you both, but on a rented computer far from your device. Cloud "agents" run the same way — somewhere else, on files that aren't yours.
 
 Shelly's bet: the phone in your pocket is already the best agent host you own — always on, always with you, and already holding your files, your accounts, your context. Shelly turns it into a self-contained agent machine, and grounds that agent in a real terminal IDE so you can see, verify, and drive by hand everything it does on its own.
 
@@ -96,6 +99,8 @@ No copy. No paste. No tab switching.
 - **Split panes:** terminal + AI side by side — the AI reads what the terminal shows and executes fixes with one tap. No copy-paste bridge needed.
 - **Full layout:** sidebar + up to 4 live panes + agent bar — a mobile IDE. Browse docs in the browser pane, preview code or markdown on the right, use API-backed agents in the background, and keep your terminal front and center.
 - **Unattended:** register a plain-language scheduled agent — the same machinery runs while the phone sits in your pocket, and tells you when it ran.
+
+**On a foldable, that full layout is the default rather than an aspiration.** Folded, Shelly is a single-pane terminal. Unfold, and the same live shell expands into a sidebar plus up to four panes in a 2×2 grid — terminal, AI, browser, preview — without restarting the session. Shelly is developed daily on a Galaxy Z Fold6, which is why the unfolded layout is the design target and not an afterthought. (Rapid fold ↔ unfold during an active CLI stream is still listed under [Known Limitations](#known-limitations).)
 
 ---
 
@@ -149,7 +154,7 @@ pnpm install && pnpm android
 
 Expo Go is not supported — Shelly uses native Kotlin/C modules.
 
-Termux is not required. Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and ripgrep. For tools beyond the bundled set, Termux can be used alongside Shelly.
+Termux is not required. Shelly ships with bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, jq, make, and ripgrep. For tools beyond the bundled set, Termux can be used alongside Shelly.
 
 ### First launch
 
@@ -180,6 +185,8 @@ Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you 
 | `shelly-codex-diagnose` | Run deeper Codex smoke/canary/edit/patch diagnostics. |
 | `shelly-update-clis codex --check-only` | Probe the active Codex runtime. Runtime installs are normally driven by the Updates UI. |
 | `shelly-cs` / `cs` | GitHub Codespaces helper commands. |
+
+**First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every weekday at 8am, collect the latest STEAM×AI education papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
 
 ---
 
@@ -232,7 +239,7 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
 | **Codex apply_patch on-device** | Codex file edits land through the agent's native patch tool on Android, not a shell-only fallback. |
 | **Native PTY (JNI forkpty)** | Kotlin + C, direct PTY fd, no TCP/socket bridge — an embedded native terminal, not a WebView terminal. |
-| **Batteries included** | bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, ripgrep, jq ship inside the APK. Termux not required. |
+| **Batteries included** | bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, make, ripgrep, jq ship inside the APK. Termux not required. |
 | **7 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, and Ask. Split up to 4 live panes freely. |
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
@@ -296,7 +303,7 @@ the next already-registered scheduled agent without opening Shelly.
 <summary><strong>Interactive control</strong></summary>
 
 - **ASK** — tap the ASK pill to type a prompt; Shelly writes it into the bound foreground Codex terminal (clear line, paste, Enter) and returns you to the launcher
-- **RUN scheduled agent** — starts the next enabled, scheduled agent directly through the foreground service without opening the app; Shelly revalidates its disk metadata at tap time, honors STOP-ALL, and keeps unattended per-action approval fail-closed. By design, unattended runs default to OAuth/local tools only — an agent that needs a cloud API key (Gemini, Perplexity, …) requires the opt-in **Autonomous Cloud** setting (off by default) before it can fire unattended at all, with an automatic Codex fallback if the cloud call fails.
+- **RUN scheduled agent** — starts the next enabled, scheduled agent directly through the foreground service without opening the app; Shelly revalidates its disk metadata at tap time, honors STOP-ALL, and keeps unattended per-action approval fail-closed. By design, unattended runs default to OAuth/local tools only — an agent that would use a cloud API key (Gemini, Perplexity, …) unattended falls back to Codex instead unless the opt-in **Autonomous Cloud** setting (off by default) allows the cloud call.
 - **Cold-start ASK** — if no Codex or Agent Chat session is available, Shelly queues the widget prompt, opens a terminal, waits for the PTY to become alive, starts `codex`, waits for the Codex input surface, then delivers the queued prompt
 - **Approval pills** — when Codex is waiting for permission, **Allow** / **Deny** pills write `y` / `n` straight to the Codex PTY
 - **Choice pills** — for a numbered interactive prompt, up to six widget pills write the chosen digit to the PTY, each carrying the option label; Android notifications expose the first three actions
@@ -379,7 +386,7 @@ the next already-registered scheduled agent without opening Shelly.
 - **Immortal sessions** — tmux keeps your shell alive when the app is backgrounded; resume any session by name
 - **Japanese input in terminal** — compose CJK characters directly in the terminal pane
 - **Readable terminal glyphs** — the native Kotlin terminal view renders the PTY grid with JetBrains Mono so lowercase, columns, and code output stay legible
-- **Atomic paste** — all paste paths converge on `TerminalEmulator.paste()`, which wraps payloads in bracketed-paste markers (`\e[200~..\e[201~`) unconditionally. IME multi-line or ≥16-char commits, middle-click mouse paste, and the CommandKeyBar **Paste** key all reach the same normalizer; multi-line and complex one-liners arrive as one event so readline executes only the trailing newline.
+- **Atomic paste** — all paste paths converge on `TerminalEmulator.paste()`. When the guest shell has bracketed-paste mode on (DECSET 2004), the payload is wrapped so multi-line commands arrive as one event and readline executes only the trailing newline; shells/TUIs that don't advertise it (vim, less, nano) get a newline-normalized fallback instead. IME multi-line or ≥16-char commits, middle-click mouse paste, and the CommandKeyBar **Paste** key all reach the same normalizer.
 
 </details>
 
@@ -387,7 +394,7 @@ the next already-registered scheduled agent without opening Shelly.
 <summary><strong>AI Pane</strong></summary>
 
 - **Multi-agent routing** — the router picks the best AI for the task; override with `@mention`
-- **@mention** — direct AI Pane providers are `@gemini`, `@cerebras`, `@groq`, `@perplexity`, and `@local`; utility routes include `@team`, `@agent`, `@git`, `@open` / `@browse`, `@plan`, `@arena`, and `@actions` / `@ci`. There is no `@claude` — Claude Code is not a current provider. Codex remains available as the foreground terminal CLI via `codex`.
+- **@mention** — direct AI Pane providers are `@gemini`, `@cerebras`, `@perplexity`, and `@local`; utility routes include `@team`, `@agent`, `@git`, `@open` / `@browse`, `@plan`, `@arena`, and `@actions` / `@ci`. There is no `@claude` — Claude Code is not a current provider. Codex remains available as the foreground terminal CLI via `codex`. (Groq is configurable as a provider but isn't wired to a `@groq` mention pattern yet.)
 - **Terminal context injection** — the AI always has access to the current terminal transcript without you pasting anything
 - **InlineDiff with per-hunk write-back** — see above
 - **Voice input** — long-press the mic in the terminal action bar to open VoiceChat; speech → Groq transcription → AI → TTS response
@@ -432,13 +439,13 @@ the next already-registered scheduled agent without opening Shelly.
 <details>
 <summary><strong>Sidebar</strong></summary>
 
-- **Repositories** — list of bound repo paths; tap to switch; the active repo shows an amber badge with the number of uncommitted files, polled every 20 seconds from `git status --porcelain`
+- **Repositories** — list of bound repo paths; tap to switch and re-root the File Tree to that repo
 - **File Tree** — see above; embedded as a section so it flexes with the sidebar height
 - **Tasks** — recent background-agent runs with duration and status
 - **Device** — quick-access folders (`~`, `/sdcard/Download`, …) that re-bind the file tree in one tap
 - **Profiles** — saved SSH connections. Tap to insert `ssh -i KEY user@host -p PORT` into the active terminal pane; long-press to edit or delete; `Import from ~/.ssh/config` bulk-adds hosts. Key-file auth only — no passwords or passphrases are persisted.
 
-> **Cloud storage?** Shelly deliberately doesn't ship a Google Drive / Dropbox / OneDrive UI. A terminal app should lean on the tools that already solve this — install [`rclone`](https://rclone.org) from your package manager, run `rclone config` once, and mount or sync any of 40+ cloud backends from the terminal pane.
+> **Cloud storage?** Shelly deliberately doesn't ship a Google Drive / Dropbox / OneDrive UI. A terminal app should lean on the tools that already solve this — Shelly has no package manager of its own, but [`rclone`](https://rclone.org) ships as a single static binary: download the `arm64` release, drop it in a directory on `PATH` (or install it via Termux alongside Shelly), run `rclone config` once, and mount or sync any of 40+ cloud backends from the terminal pane.
 
 </details>
 
@@ -478,7 +485,6 @@ Currently registered:
 <details>
 <summary><strong>Git Integration</strong></summary>
 
-- **Dirty badge** — AgentBar (amber pill, global) and Sidebar (on the active repo row) both show the uncommitted-file count, polled every 20 seconds by a single writer in `useGitStatusStore`. Tapping the AgentBar badge opens the Command Palette filtered toward git actions.
 - **Command Palette** — the seven git actions listed above
 - **Auto-savepoint** — background git-based save system (`lib/auto-savepoint.ts`) with secret pattern scanning before each commit
 - **Git diff preview** — Preview pane Code tab renders `git diff <file>` with the neon diff palette
@@ -521,7 +527,6 @@ Currently registered:
 | Command Palette — settings, terminal, git, panes, layouts, theme, font, voice | ✅ shipping |
 | Browser fullscreen, desktop UA toggle, link capture, bookmarks | ✅ shipping |
 | Theme presets — Blue / Red / Purple, with legacy preset IDs accepted for saved settings (runtime swap, Text monkey-patch) | ✅ shipping |
-| AgentBar + Sidebar git dirty badge (single-writer poll) | ✅ shipping |
 | Sidebar Add Repository existence check + Alert on ghost path | ✅ shipping (bug #73) |
 | AI pane Local LLM routing (URL-driven, no enable toggle) | ✅ shipping (bug #68) |
 | Voice dialogue (VoiceChat + VoiceChain + TTS) | ✅ voice input (mic → transcription → routed reply) confirmed on-device 2026-07-27; the dedicated full-screen VoiceChat mode and TTS playback weren't independently re-verified this pass |
@@ -534,7 +539,7 @@ Currently registered:
 | Background / autonomous agents — `@agent` registration, unattended AlarmManager execution (getForegroundService), run / next / last / missed-run visibility | ✅ wired; one unattended fire observed end-to-end on Z Fold6 (N=1, app cached at fire) — cross-OEM reliability not yet broadly tested |
 | Agent social-post connectors — Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress | ✅ Bluesky verified live end-to-end; the other six ship on the same code path and test coverage but haven't each been fired against a real account yet |
 | Agent task-clarity detection — asks what the task actually is when a request is too vague, before asking about scheduling | ✅ shipping; confirmed on-device 2026-07-27 |
-| Scouter widget RUN (widget-triggered agent start) | ✅ shipping; runs through the same unattended execution gates as a scheduled alarm fire. Cloud-API-backed agents need the opt-in **Autonomous Cloud** setting (off by default) to run unattended at all — this is the credential policy working as designed, not a bug |
+| Scouter widget RUN (widget-triggered agent start) | ✅ shipping; runs through the same unattended execution gates as a scheduled alarm fire. Cloud-API-backed agents fall back to Codex unless the opt-in **Autonomous Cloud** setting (off by default) allows the unattended cloud call — this is the credential policy working as designed, not a bug |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
 | Sidebar Quick Launch / Worktrees (one-tap CLI shortcuts) | ✅ shipping for Codex |
 | In-app Android APK updates (`android-latest/latest.json`, SHA-256 verification, Package Installer handoff) | ✅ shipping |
@@ -683,7 +688,7 @@ move faster after SHA-256 verification and smoke tests.
 block-beta
   columns 5
   AB["Agent Bar — layout / add pane / search / settings"]:5
-  SB["Sidebar\nRepos (dirty badge)\nFile Tree\nTasks\nDevice"]:1 TP["Terminal Pane\n$ npm run build\nError: missing..."]:2 AP["AI Pane\n'Fix the error →'\n[Accept hunk]"]:2
+  SB["Sidebar\nRepos, File Tree\nTasks, Device"]:1 TP["Terminal Pane\n$ npm run build\nError: missing..."]:2 AP["AI Pane\n'Fix the error →'\n[Accept hunk]"]:2
   space:1 BP["Browser Pane\nlocalhost:3000\nYouTube / GitHub"]:2 MP["Preview Pane\nCode / MD / Image"]:2
   CB["Context Bar — ~/Shelly  main  ↑2  Native"]:5
 
@@ -836,7 +841,7 @@ Read the contributing guide: **[CONTRIBUTING.md](CONTRIBUTING.md)**
 
 ## Vision
 
-In two years, phones won't just run AI chat — they'll run agents that work while you're not looking. The hardware is already here — 40+ TOPS NPUs, 12 GB of RAM, 7B-parameter models running on-device at interactive speeds — and the missing piece was never compute. It was an interface that could hold a real terminal, a real toolchain, and a real scheduler in one place you already carry.
+In two years, phones won't just run AI chat — they'll run agents that work while you're not looking. The hardware is already here — 40+ TOPS NPUs, 12 GB of RAM, multi-billion-parameter models running on-device at usable speeds — and the missing piece was never compute. It was an interface that could hold a real terminal, a real toolchain, and a real scheduler in one place you already carry.
 
 When local-LLM inference doesn't have to phone home and a scheduled task can wake the phone itself, you get agents that work on your own keys, from places no cloud runner reaches — no laptop left on, no server to pay for, no wifi required until the result needs to go somewhere. The first person to ship real, unattended work from a plane without wifi will be using something like this.
 
@@ -858,7 +863,7 @@ The keyboard in the screenshots is **Nacre** — a split-layout Android IME I bu
 
 ## Support
 
-Shelly is a solo, self-funded project. If it saves you a Termux setup or makes phone development viable for you, a coffee goes a long way.
+Shelly is a solo, self-funded project. If it saves you a Termux setup or makes phone development viable for you, a coffee goes a long way. (A Z Fold8 also works — purely for testing purposes, obviously.)
 
 <p align="center">
   <a href="https://buymeacoffee.com/ryo1221"><img alt="Buy Me a Coffee" src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black"></a>
@@ -880,10 +885,10 @@ GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo
 Shelly is pre-release Android software. Here's what we know isn't perfect yet.
 
 - **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline with the bundled catalog and llama.cpp / llama-server controls; Qwen3.5-2B Q4_K_M is the recommended on-device default, Qwen3 1.7B / Qwen3.5 0.8B are lighter options, and 4B/9B models are reserved for short quality checks.
-- **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need them, install Termux alongside Shelly or open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
+- **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need them, install Termux alongside Shelly or open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
 - **`watch` is broken in the current release** — the bundled `watch` binary fails to invoke subcommands under Shelly's bionic environment and the watched command never actually runs, even though the header refreshes. Workaround: `while true; do clear; <cmd>; sleep 1; done`. Tracked as bug #34.
 - **`busybox` is not bundled** — `busybox httpd`, `busybox nc`, and other applets return `command not found`. Use the standalone equivalents where available (`curl`, `nc` from the bundle, `python3 -m http.server`), or bundle `busybox-static` yourself. Tracked as bug #35.
-- **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once; a cost warning is shown before execution.
+- **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once, with no confirmation step before it runs. Use it deliberately.
 - **Multi-hunk Accept against a partially-edited file** — per-hunk Accept uses fuzzy re-anchoring so successive hunks land, but if the AI's diff references context that has already been edited to something else, the hunk will be rejected with a toast asking you to regenerate.
 - **Terminal font mismatch** — if a saved legacy theme looks wrong after upgrading, switch Settings → Display → Theme to one of the three color presets.
 - **Codex CLI runs through Shelly-managed runtime routing** — Shelly prefers a healthy app-data runtime under `~/.shelly-runtime/codex/current`, then falls back to the APK-bundled runtime. If `codex --version` fails, run `shelly-doctor`, `shelly-update-clis codex --check-only`, or use **Settings → Updates → Repair Codex / Reset**.
