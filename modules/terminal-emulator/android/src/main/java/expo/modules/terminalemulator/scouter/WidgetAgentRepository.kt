@@ -35,6 +35,22 @@ object WidgetAgentRepository {
     private val SAFE_AGENT_ID = Regex("^[A-Za-z0-9_-]+$")
     private const val DEFAULT_WIDGET_AGENT_LIMIT = 3
 
+    // bug #163: a malformed run-log JSON (e.g. the double-escaped-output race
+    // in lib/agent-executor.ts's json_escape_text/json_string_file, fixed in
+    // AGENT_SCRIPT_VERSION v40 — see that file's changelog comment) made
+    // readLastRunStatus() below throw org.json.JSONException on EVERY 60s
+    // widget poll, forever, for the same file: no crash, but unbounded log
+    // spam, and it starved the widget row of ANY status once an agent's
+    // newest run-log happened to be the corrupt one (older, valid runs were
+    // never even attempted). Track already-seen-corrupt files (by absolute
+    // path + last-modified stamp, so a file that gets deleted/recreated with
+    // the same name is given a fresh chance) so the same broken file is only
+    // ever logged once, not once per poll. Process-lifetime cache only,
+    // deliberately not persisted — it clears itself on app restart, by which
+    // point the underlying log file has likely been pruned anyway (run-logs
+    // are capped at the last 30 per agent).
+    private val knownCorruptRunLogs = mutableSetOf<String>()
+
     /** Up to [limit] enabled, scheduled agents ordered by soonest next-fire. */
     fun nextScheduledAgents(context: Context, limit: Int = DEFAULT_WIDGET_AGENT_LIMIT): List<ScouterWidgetAgentTarget> {
         val candidates = readScheduledAgents(context)
@@ -111,21 +127,41 @@ object WidgetAgentRepository {
     // count, true for the foreseeable future). Never throws; any I/O or
     // parse failure just yields "no last-run data" rather than failing the
     // whole agent row.
+    //
+    // bug #163: previously only ever tried the single newest file — if THAT
+    // one happened to be malformed JSON, the row showed no status at all
+    // even though older, perfectly valid run-logs for the same agent existed
+    // right next to it. Now walks newest-first and falls through to the next
+    // file on a parse failure, so one corrupt log no longer blanks the row.
     private fun readLastRunStatus(agentsDir: File, agentId: String): Pair<String?, Long?> {
+        val logDir = File(agentsDir, "logs/$agentId")
+        val files = logDir.listFiles { f -> f.isFile && f.extension == "json" }
+        if (files.isNullOrEmpty()) return null to null
+        val candidates = files.sortedByDescending { it.nameWithoutExtension.toLongOrNull() ?: 0L }
+        for (file in candidates) {
+            val parsed = tryReadRunLogStatus(file) ?: continue
+            return parsed
+        }
+        return null to null
+    }
+
+    // Returns null (not a status pair) when the file fails to parse, so the
+    // caller can skip it and try the next-oldest run-log instead of treating
+    // "no data" as the final answer for the whole agent.
+    private fun tryReadRunLogStatus(file: File): Pair<String?, Long?>? {
         return try {
-            val logDir = File(agentsDir, "logs/$agentId")
-            val files = logDir.listFiles { f -> f.isFile && f.extension == "json" }
-            if (files.isNullOrEmpty()) return null to null
-            val latest = files.maxByOrNull { it.nameWithoutExtension.toLongOrNull() ?: 0L } ?: return null to null
-            val json = JSONObject(latest.readText())
+            val json = JSONObject(file.readText())
             val status = json.optString("status").takeIf {
                 it == "success" || it == "error" || it == "skipped" || it == "unavailable"
             }
             val timestamp = json.optLong("timestamp", 0L).takeIf { it > 0L }
             status to timestamp
         } catch (error: Exception) {
-            Log.w(TAG, "Ignoring unreadable run-log for $agentId", error)
-            null to null
+            val cacheKey = "${file.absolutePath}:${file.lastModified()}"
+            if (knownCorruptRunLogs.add(cacheKey)) {
+                Log.w(TAG, "Ignoring unreadable run-log ${file.name}", error)
+            }
+            null
         }
     }
 

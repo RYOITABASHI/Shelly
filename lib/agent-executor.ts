@@ -444,7 +444,28 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // deterministic fix. REAL BEHAVIOR CHANGE (the text sent to the model
 // changed): bumped so a stale pre-v39 on-disk script keeps carrying the less
 // explicit wording.
-const AGENT_SCRIPT_VERSION = 39;
+// v40 (2026-07-28, bug #163 — run-log JSON corruption from a double-output
+// race in json_escape_text/json_string_file): on-device logcat found
+// WidgetAgentRepository's 60s poll throwing the SAME org.json.JSONException
+// every minute forever on one agent's run-log ("Expected literal value at
+// character 641"). Root cause: both helpers ran their `shelly_node -e '...'`
+// escaping attempt directly against this function's own inherited stdout,
+// inside `if CMD; then return 0; fi`. If CMD fully wrote its correctly-
+// escaped output but still exited non-zero for a reason unrelated to the
+// write itself (e.g. the child process got reaped after the write() syscall
+// already landed — plausible on a memory-constrained on-device background
+// run), the `if` fell through to the plain-bash fallback below it, which
+// printed a SECOND, differently-escaped copy of the SAME text right after
+// the first. For json_escape_text that means raw un-escaped newlines/quotes
+// appended mid-string; for json_string_file (whose node path already
+// includes the surrounding quotes) it means two back-to-back JSON string
+// literals where a single value was expected — either shape is invalid
+// JSON. Fixed by capturing the node attempt's stdout into a variable FIRST
+// and printing exactly once (the captured node output on success, or the
+// fallback output otherwise) — the two paths can no longer both write.
+// REAL BEHAVIOR CHANGE (a stale pre-v40 on-disk script can still double-
+// write corrupt run-log JSON under this race): bumped so it regenerates.
+const AGENT_SCRIPT_VERSION = 40;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1411,7 +1432,23 @@ python3_usable() {
 json_escape_text() {
   text="$1"
   if node_usable; then
-    if SHELLY_JSON_TEXT="$text" shelly_node -e 'const s = process.env.SHELLY_JSON_TEXT || ""; process.stdout.write(JSON.stringify(s).slice(1, -1));' 2>/dev/null; then
+    # bug #163: the node attempt used to stream straight to this function's
+    # own (inherited) stdout inside the "if CMD; then return 0; fi" check —
+    # so if CMD ever wrote its full, correctly-escaped output but still
+    # exited non-zero for an UNRELATED reason (process reaped after the
+    # write() syscall already landed, an async warning tripping a non-zero
+    # exit after sync work finished, etc.), the "if" fell through to the
+    # plain-bash fallback below, which printed a SECOND, differently-escaped
+    # copy of the same text right after the first — two concatenated
+    # fragments, the second with raw un-escaped newlines/quotes, is exactly
+    # the shape of the corrupt run-log JSON found on-device (WidgetAgentRepository
+    # bug #163: "Expected literal value at character N"). Capture the node
+    # attempt's stdout into a variable FIRST and only print once, either the
+    # captured node output or the fallback output, never both.
+    node_escaped=$(SHELLY_JSON_TEXT="$text" shelly_node -e 'const s = process.env.SHELLY_JSON_TEXT || ""; process.stdout.write(JSON.stringify(s).slice(1, -1));' 2>/dev/null)
+    node_rc=$?
+    if [ "$node_rc" -eq 0 ]; then
+      printf '%s' "$node_escaped"
       return 0
     fi
   fi
@@ -1486,7 +1523,16 @@ mirror_driver_audit_to_sdcard() {
 json_string_file() {
   file="$1"
   if node_usable; then
-    if shelly_node -e 'const fs = require("fs"); const file = process.argv[1]; process.stdout.write(JSON.stringify(fs.readFileSync(file, "utf8")));' "$file" 2>/dev/null; then
+    # bug #163: same double-output hazard as json_escape_text above — capture
+    # first, print once, so a node attempt that fully wrote its (already
+    # quote-wrapped) JSON string but exited non-zero for an unrelated reason
+    # can't also fall through to the bash fallback and append a SECOND
+    # quoted-string literal right after the first (two back-to-back JSON
+    # strings where a single value was expected — invalid JSON).
+    node_json=$(shelly_node -e 'const fs = require("fs"); const file = process.argv[1]; process.stdout.write(JSON.stringify(fs.readFileSync(file, "utf8")));' "$file" 2>/dev/null)
+    node_rc=$?
+    if [ "$node_rc" -eq 0 ] && [ -n "$node_json" ]; then
+      printf '%s' "$node_json"
       return 0
     fi
   fi

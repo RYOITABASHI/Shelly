@@ -284,7 +284,20 @@ object AgentRuntime {
     // Prompt-clarity mitigation only, not a deterministic fix. Bumped so a
     // stale pre-v39 on-disk script keeps injecting the less-explicit
     // preamble text and a battery.json without the levelHuman field.
-    private const val CURRENT_SCRIPT_VERSION = 39
+    // v40 (2026-07-28, bug #163 — run-log JSON corruption from a double-
+    // output race in json_escape_text/json_string_file): both helpers used
+    // to run their `shelly_node -e '...'` escaping attempt directly against
+    // the function's own inherited stdout inside `if CMD; then return 0;
+    // fi`. A CMD that fully wrote correct output but still exited non-zero
+    // (e.g. reaped after its write() syscall already landed) fell through
+    // to the plain-bash fallback, which printed a SECOND, differently-
+    // escaped copy right after the first — producing invalid run-log JSON
+    // that WidgetAgentRepository's 60s poll then threw org.json.JSONException
+    // on forever. See lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION
+    // comment for the fix (capture node's stdout into a variable first,
+    // print exactly once). No native routing change here; bumped so a stale
+    // pre-v40 on-disk script keeps exposing this double-write race.
+    private const val CURRENT_SCRIPT_VERSION = 40
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
