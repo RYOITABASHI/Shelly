@@ -321,7 +321,15 @@ object AgentRuntime {
     // verified 2026-07-28. See lib/agent-executor.ts's matching
     // AGENT_SCRIPT_VERSION comment. No native routing change here; bumped so
     // a stale pre-v42 on-disk script keeps failing local-LLM cold starts.
-    private const val CURRENT_SCRIPT_VERSION = 42
+    // v43 (2026-07-28, bug #162 fifth fabrication shape — fenced shell
+    // transcript with no surrounding prose): a draft-type completion was a
+    // whole markdown code fence with zero prose outside it, still notified
+    // as a plain success though the target file was never created. Added
+    // isFencedShellCommandBlock detection. See lib/agent-executor.ts's
+    // matching AGENT_SCRIPT_VERSION comment. No native routing change here;
+    // bumped so a stale pre-v43 on-disk script keeps accepting this
+    // fabrication shape.
+    private const val CURRENT_SCRIPT_VERSION = 43
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

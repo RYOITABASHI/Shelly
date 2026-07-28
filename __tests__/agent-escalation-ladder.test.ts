@@ -469,6 +469,43 @@ describe('failure detection', () => {
       ),
     ).toBe(false);
   });
+
+  it('isLowQualityCompletion catches the real on-device fenced-shell-transcript repro (2026-07-28, fifth fabrication shape, bug #162 follow-up)', () => {
+    // Verbatim shape found on the very next build after task#17/#18/bug#165
+    // landed: no "Status: Success" wrapper, no fake prompt, no bare single
+    // line — a whole markdown code fence with no surrounding prose at all,
+    // still notified as a plain success ("✅ シェルコマンド ..."). The target
+    // file (/sdcard/probe_verify.txt) was never actually created.
+    const fencedRepro = "```text\ncd /sdcard\necho 'test' > probe_verify.txt\ncat probe_verify.txt\n```";
+    expect(isLowQualityCompletion(fencedRepro)).toBe(true);
+    expect(attemptFailed('success', fencedRepro)).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches other fenced shell-transcript shapes (untagged fence, single-command fence)', () => {
+    expect(isLowQualityCompletion('```\nrm -f /tmp/x; touch /tmp/x\n```')).toBe(true);
+    expect(isLowQualityCompletion('```bash\ncurl -s https://example.com | tee /tmp/out\n```')).toBe(true);
+  });
+
+  it('isLowQualityCompletion does NOT flag a legitimate fenced code answer in another language (explicit negative)', () => {
+    // A draft response that legitimately IS a code snippet the user asked
+    // for (e.g. "write me a fizzbuzz script") must not be caught just for
+    // being a fence — only a shell-transcript-shaped fence is suspicious.
+    expect(isLowQualityCompletion('```python\nfor i in range(1, 101):\n    print(i)\n```')).toBe(false);
+    expect(isLowQualityCompletion('```json\n{"key": "value"}\n```')).toBe(false);
+  });
+
+  it('isLowQualityCompletion does NOT flag a fenced code example with surrounding prose (explicit negative)', () => {
+    // Same "real instructional draft" carve-out as the bare-command-line
+    // case above, extended to the fenced-block shape: prose before/after
+    // the fence means this is a genuine how-to answer, not a fabricated
+    // execution transcript standing alone.
+    expect(
+      isLowQualityCompletion(
+        '以下のコマンドでファイルを作成できます。\n```text\necho \'test\' > file.txt\n```\n' +
+          '上書きされる点にご注意ください。',
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double approval)', () => {

@@ -501,7 +501,23 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // REAL BEHAVIOR CHANGE (a stale pre-v42 script still cannot cold-start the
 // local server): bumped so it regenerates. Lockstep with
 // scripts/shelly-local-llm-ensure.sh + its APK asset copy (parity test).
-const AGENT_SCRIPT_VERSION = 42;
+// v43 (2026-07-28, bug #162 fifth fabrication shape — fenced shell
+// transcript with no surrounding prose): re-testing task#17/#18/bug#165 on
+// the very next build, a draft-type completion was a whole markdown code
+// fence (```text\ncd /sdcard\necho 'test' > probe_verify.txt\ncat
+// probe_verify.txt\n```) with zero prose outside it, still notified as a
+// plain success — the target file was never created. Neither
+// isBareShellCommandLine (single-line only) nor FABRICATED_EXECUTION_PATTERNS
+// (requires an explicit "Status: Success" pairing or fake shell prompt)
+// matched this shape. Added isFencedShellCommandBlock: flags a completion
+// whose ENTIRE trimmed text is one fenced block (shell-ish language tag or
+// none) where at least one inner line matches the existing bare-command
+// verb+syntax / bare-redirect checks — same "no surrounding prose = never a
+// valid final answer for draft/notify" philosophy as the bare-line case,
+// restricted to shell-shaped fences so a legitimate ```python```/```json```
+// code answer is never caught. REAL BEHAVIOR CHANGE: bumped so a stale
+// pre-v43 script keeps accepting this fabrication shape.
+const AGENT_SCRIPT_VERSION = 43;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1747,10 +1763,16 @@ const bareRedirectOnlyRe = /^[>|]\\s*\\S/;
 const trimmedText = text.trim();
 const isBareShellCommandLine = trimmedText.length > 0 && trimmedText.length <= 200 && !trimmedText.includes(String.fromCharCode(10)) &&
   (bareRedirectOnlyRe.test(trimmedText) || (bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText)));
+const fencedBlockRe = /^\`\`\`(\\w*)\\r?\\n([\\s\\S]*?)\\r?\\n?\`\`\`$/;
+const fenceShellLangRe = /^(?:|text|bash|sh|shell|console|plaintext|plain|terminal)$/i;
+const fencedMatch = fencedBlockRe.exec(trimmedText);
+const isFencedShellCommandBlock = !!fencedMatch && fenceShellLangRe.test(fencedMatch[1]) &&
+  fencedMatch[2].split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => l.length > 0)
+    .some((l) => bareRedirectOnlyRe.test(l) || (bareShellCommandVerbRe.test(l) && bareShellCommandSyntaxRe.test(l)));
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
-  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine;
+  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock;
 process.exit(bad ? 0 : 1);
 ' 2>/dev/null; then
       return 0
@@ -1828,10 +1850,16 @@ const bareRedirectOnlyRe = /^[>|]\\s*\\S/;
 const trimmedText = text.trim();
 const isBareShellCommandLine = trimmedText.length > 0 && trimmedText.length <= 200 && !trimmedText.includes(String.fromCharCode(10)) &&
   (bareRedirectOnlyRe.test(trimmedText) || (bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText)));
+const fencedBlockRe = /^\`\`\`(\\w*)\\r?\\n([\\s\\S]*?)\\r?\\n?\`\`\`$/;
+const fenceShellLangRe = /^(?:|text|bash|sh|shell|console|plaintext|plain|terminal)$/i;
+const fencedMatch = fencedBlockRe.exec(trimmedText);
+const isFencedShellCommandBlock = !!fencedMatch && fenceShellLangRe.test(fencedMatch[1]) &&
+  fencedMatch[2].split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => l.length > 0)
+    .some((l) => bareRedirectOnlyRe.test(l) || (bareShellCommandVerbRe.test(l) && bareShellCommandSyntaxRe.test(l)));
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
-  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine;
+  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock;
 process.exit(bad ? 0 : 1);
 NODEEOF
     then

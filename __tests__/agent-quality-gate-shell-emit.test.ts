@@ -308,6 +308,26 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
     expect(runEmbeddedCheck(embeddedJs, '売上は前年比で50%以上伸びました。')).toBe(1);
     expect(runEmbeddedCheck(embeddedJs, 'Revenue grew more than 50% year over year.')).toBe(1);
   });
+
+  it('detects the real on-device fenced-shell-transcript repro via the actual emitted script (2026-07-28, fifth fabrication shape)', () => {
+    // Found re-testing task#17/#18/bug#165 on the very next build: a whole
+    // markdown code fence with no surrounding prose, still notified as a
+    // plain success — the target file was never actually created.
+    expect(runEmbeddedCheck(embeddedJs, "```text\ncd /sdcard\necho 'test' > probe_verify.txt\ncat probe_verify.txt\n```")).toBe(0);
+  });
+
+  it('does NOT flag a legitimate fenced code answer in another language via the actual emitted script', () => {
+    expect(runEmbeddedCheck(embeddedJs, '```python\nfor i in range(1, 101):\n    print(i)\n```')).toBe(1);
+  });
+
+  it('does NOT flag a fenced code example with surrounding prose via the actual emitted script', () => {
+    expect(
+      runEmbeddedCheck(
+        embeddedJs,
+        '以下のコマンドでファイルを作成できます。\n```text\necho \'test\' > file.txt\n```\n上書きされる点にご注意ください。',
+      ),
+    ).toBe(1);
+  });
 });
 
 describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {

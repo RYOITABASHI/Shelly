@@ -399,6 +399,56 @@ function isBareShellCommandLine(text: string): boolean {
 }
 
 /**
+ * A FIFTH fabricated-execution shape, found 2026-07-28 on-device re-testing
+ * the v37 fix (bug #162 verification pass): the model wraps a MULTI-LINE
+ * shell transcript in a markdown code fence with no surrounding prose at
+ * all — e.g. the entire completion is:
+ *   ```text
+ *   cd /sdcard
+ *   echo 'test' > probe_verify.txt
+ *   cat probe_verify.txt
+ *   ```
+ * — presented (with the app's own "✅ <name>" success header) as though the
+ * file write actually happened. It did not: the target file was never
+ * created. isBareShellCommandLine's single-line requirement
+ * (`!trimmed.includes('\n')`) does not match this shape because the fence
+ * spans multiple lines, and FABRICATED_EXECUTION_PATTERNS' explicit
+ * "Status: Success" / fake-prompt anchors are absent too — there is no
+ * narrative wrapper, just the bare fenced commands.
+ *
+ * Distinguishing signal (same philosophy as isBareShellCommandLine's own
+ * comment): a genuine instructional draft that legitimately shows a
+ * multi-line snippet as an example always has explanatory prose outside the
+ * fence ("以下のコマンドでファイルを作成できます:\n```\n...\n```"). A
+ * completion whose ENTIRE trimmed content, start to finish, is nothing but
+ * one fenced block is never a valid final answer for draft/notify/webhook/
+ * dm-reply — and requiring at least one inner line to itself look like a
+ * real shell command (reusing the same verb+syntax / bare-redirect checks
+ * above) keeps this from firing on a fenced block of plain data/prose that
+ * happens to use a code fence for formatting. The language tag, if present,
+ * is restricted to shell-ish values (text/bash/sh/shell/console/plaintext/
+ * plain/terminal or none) so a legitimate ```python``` / ```json``` code
+ * answer — a normal and valid draft response — is never caught.
+ */
+const FENCED_BLOCK_RE = /^```(\w*)\r?\n([\s\S]*?)\r?\n?```$/;
+const FENCE_SHELL_LANG_RE = /^(?:|text|bash|sh|shell|console|plaintext|plain|terminal)$/i;
+
+function isFencedShellCommandBlock(text: string): boolean {
+  const trimmed = text.trim();
+  const match = FENCED_BLOCK_RE.exec(trimmed);
+  if (!match) return false;
+  if (!FENCE_SHELL_LANG_RE.test(match[1])) return false;
+  const lines = match[2]
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return false;
+  return lines.some(
+    (line) => BARE_REDIRECT_ONLY_RE.test(line) || (BARE_SHELL_COMMAND_VERB_RE.test(line) && BARE_SHELL_COMMAND_SYNTAX_RE.test(line)),
+  );
+}
+
+/**
  * True when a completion is prompt-echo or refusal boilerplate, a short
  * "honest failure to retrieve the requested data" response, a short
  * "meta-commentary about the delivery action" response, or a fabricated
@@ -439,6 +489,7 @@ export function isLowQualityCompletion(text: string | null | undefined): boolean
   }
   if (FABRICATED_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (isBareShellCommandLine(text)) return true;
+  if (isFencedShellCommandBlock(text)) return true;
   return false;
 }
 
