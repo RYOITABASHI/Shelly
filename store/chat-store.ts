@@ -87,6 +87,22 @@ export type ChatMessage = {
    *  see lib/agent-plan-summary.ts's shouldUseChatConfirm. Absent/false = the
    *  existing card path, unchanged. */
   agentChatConfirm?: boolean;
+  /** bug #157 fix (docs/superpowers/DEFERRED.md): present when this draft
+   *  bubble (chat-native OR the classic AgentConfirmCard) edits an
+   *  already-registered agent rather than creating a new one — mirrors
+   *  store/ai-pane-store.ts's PendingAgentSession.editingAgentId, but lives
+   *  on the MESSAGE itself so confirmAgentDraft (hooks/use-ai-pane-
+   *  dispatch.ts) can recover it correctly even after the pane's single-slot
+   *  pendingAgentSession has since been overwritten by a newer, unrelated
+   *  draft (presentDraftForConfirmation unconditionally claims that slot for
+   *  typed confirm/cancel routing — see its own doc comment). Before this
+   *  field existed, editingAgentId was ONLY derivable from pendingAgentSession
+   *  by messageId match, so an orphaned edit session's eventual confirm
+   *  (tapped OR typed) silently fell back to creating a duplicate agent
+   *  instead of updating the one being edited. Set by components/layout/
+   *  Sidebar.tsx's "Edit" handler (the only current source of an editing
+   *  draft) alongside the matching pendingAgentSession it also sets. */
+  editingAgentId?: string;
   /** Conversational slot-filling for NL agent creation: when present on the
    *  MOST RECENT assistant message in a session, the dispatcher routes the
    *  next user message as the answer to this field instead of parsing it as

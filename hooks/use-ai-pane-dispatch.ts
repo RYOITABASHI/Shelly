@@ -356,6 +356,53 @@ export function useAIPaneDispatch(paneId: string) {
         // confirm affordance remains AgentConfirmCard's tap buttons, wired
         // directly to confirmAgentDraft/cancelAgentDraft below, unchanged.
         if (useChatConfirm) {
+          // bug #157 mitigation (docs/superpowers/DEFERRED.md): this
+          // pane-wide pendingAgentSession slot is single-valued, so setting
+          // it below for THIS draft unconditionally claims typed
+          // confirm/cancel routing away from any OLDER draft that was still
+          // awaiting its own confirm/cancel reply (including a Sidebar
+          // "Edit" session — see store/ai-pane-store.ts's PendingAgentSession
+          // doc comment). DEFERRED.md's own analysis traced two "fix" shapes
+          // that both just move the identical bug to the opposite draft
+          // (never overwriting leaves the NEW draft's own typed reply
+          // misrouted to the OLD one; auto-cancelling the old draft discards
+          // it without consent) and concluded the real fix needs either
+          // multi-session support (a messageId-keyed map/array — a real
+          // design change, not done here) or, at minimum, making the
+          // hand-off VISIBLE instead of silent. This is that minimum: before
+          // the old session is replaced, append a short notice to its own
+          // bubble so the user isn't left wondering why a later typed "OK"
+          // never seems to reach it — the tap-to-confirm buttons on that
+          // bubble remain fully functional (AgentChatConfirm reads
+          // message.agentDraft directly, and confirmAgentDraft now recovers
+          // editingAgentId from the message itself too — see
+          // ChatMessage.editingAgentId's doc comment for the companion fix
+          // to the Sidebar-edit "duplicate instead of update" variant).
+          const existingSession = useAIPaneStore.getState().getOrCreate(paneId).pendingAgentSession;
+          if (
+            existingSession &&
+            existingSession.phase === 'await-confirm' &&
+            existingSession.messageId !== draftMessageId &&
+            Date.now() - existingSession.createdAt <= SLOT_FILL_STALE_MS
+          ) {
+            const existingMsg = useAIPaneStore.getState().getOrCreate(paneId).messages
+              .find((m) => m.id === existingSession.messageId);
+            if (existingMsg) {
+              const supersededStrings = detectMessageLocale(existingSession.draft.rawText) === 'ja' ? ja : en;
+              const noticeKey = existingSession.editingAgentId
+                ? 'agentplan.superseded_notice_edit'
+                : 'agentplan.superseded_notice';
+              const notice = supersededStrings[noticeKey];
+              // Idempotent: a session can be superseded again (e.g. a THIRD
+              // interleaved draft) without the notice piling up duplicate
+              // copies on the same bubble.
+              if (!existingMsg.content.includes(notice)) {
+                store.updateMessage(paneId, existingSession.messageId, {
+                  content: `${existingMsg.content}\n\n${notice}`,
+                });
+              }
+            }
+          }
           useAIPaneStore.getState().setPendingAgentSession(paneId, {
             draft,
             phase: 'await-confirm',
@@ -1800,19 +1847,6 @@ export function useAIPaneDispatch(paneId: string) {
   const confirmAgentDraftInner = useCallback(
     async (messageId: string, confirmed: ConfirmedAgentDraft) => {
       const store = useAIPaneStore.getState();
-      // Phase A (2026-07-22): also clear the session-scoped pending state
-      // when this confirm came from AgentChatConfirm's TAP button rather
-      // than a typed reply (dispatch()'s own typed-confirm branch already
-      // clears it before calling this — this is a no-op then). Guarded by
-      // messageId so confirming an OLDER draft (e.g. via a stale re-render)
-      // can never clear a NEWER pending session for the same pane.
-      const currentPending = store.getOrCreate(paneId).pendingAgentSession;
-      const editingAgentId = currentPending?.messageId === messageId
-        ? currentPending.editingAgentId
-        : undefined;
-      if (currentPending?.messageId === messageId) {
-        store.setPendingAgentSession(paneId, null);
-      }
       // 2026-07-23 (justRegisteredAgent correction window): snapshot the
       // ORIGINATING draft bubble's own agentDraft/agentChatConfirm BEFORE any
       // mutation below — this is the ParsedAgentDraft applyDraftPatch expects
@@ -1821,10 +1855,38 @@ export function useAIPaneDispatch(paneId: string) {
       // came from the chat-native no-card flow" (eligible for the correction
       // window) from a classic AgentConfirmCard confirm (NOT eligible — see
       // store/ai-pane-store.ts's JustRegisteredAgentRef doc comment and the
-      // task's own scope exclusion for the card path).
+      // task's own scope exclusion for the card path). Looked up BEFORE the
+      // editingAgentId derivation below (bug #157 fix) so that derivation can
+      // read it.
       const originatingMessage = store.getOrCreate(paneId).messages.find((m) => m.id === messageId);
       const isChatNativeDraft = originatingMessage?.agentChatConfirm === true;
       const originalDraftSnapshot = originatingMessage?.agentDraft;
+      // Phase A (2026-07-22): also clear the session-scoped pending state
+      // when this confirm came from AgentChatConfirm's TAP button rather
+      // than a typed reply (dispatch()'s own typed-confirm branch already
+      // clears it before calling this — this is a no-op then). Guarded by
+      // messageId so confirming an OLDER draft (e.g. via a stale re-render)
+      // can never clear a NEWER pending session for the same pane.
+      const currentPending = store.getOrCreate(paneId).pendingAgentSession;
+      // bug #157 fix (docs/superpowers/DEFERRED.md): editingAgentId used to
+      // be derivable ONLY from the pane's single-slot pendingAgentSession by
+      // messageId match — but presentDraftForConfirmation unconditionally
+      // overwrites that slot the moment any OTHER draft also needs chat
+      // confirm, which silently stripped an orphaned edit session's
+      // editingAgentId by the time its OWN bubble was eventually confirmed
+      // (tapped OR typed), making persistAgentDraft create a duplicate agent
+      // instead of updating the one actually being edited — the "more severe
+      // variant" DEFERRED.md's bug #157 entry calls out by name. Prefer the
+      // MESSAGE's own editingAgentId (ChatMessage.editingAgentId, set by
+      // components/layout/Sidebar.tsx's Edit handler alongside the session),
+      // which survives regardless of what pendingAgentSession currently
+      // holds; fall back to the session-derived value only for a
+      // message/session pair that predates this field.
+      const editingAgentId = originatingMessage?.editingAgentId
+        ?? (currentPending?.messageId === messageId ? currentPending.editingAgentId : undefined);
+      if (currentPending?.messageId === messageId) {
+        store.setPendingAgentSession(paneId, null);
+      }
       const safeName = confirmed.name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
         || `agent-${Date.now().toString(36)}`;
       // Autonomous tool resolution goes through the SINGLE source of truth

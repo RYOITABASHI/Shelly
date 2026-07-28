@@ -988,6 +988,13 @@ export function Sidebar() {
           timestamp: now,
           agentDraft: draft,
           agentChatConfirm: true,
+          // bug #157 fix: carry editingAgentId on the message itself too (not
+          // just the pendingAgentSession below), so a later, unrelated
+          // presentDraftForConfirmation call that overwrites this pane's
+          // single-slot pendingAgentSession can never strip this bubble's own
+          // edit-vs-create identity — see ChatMessage.editingAgentId's doc
+          // comment (store/chat-store.ts).
+          editingAgentId: agent.id,
         });
         chatStore.setPendingAgentSession(aiSlot.id, {
           draft,

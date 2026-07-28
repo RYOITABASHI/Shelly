@@ -389,6 +389,12 @@ const en: Record<string, string> = {
   // 2026-07-23: edit-context counterpart of confirm_unclear_hint (see
   // confirm_prompt_edit's own comment).
   'agentplan.confirm_unclear_hint_edit': 'There is a pending edit. Reply "update" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',
+  // bug #157 fix (docs/superpowers/DEFERRED.md): appended to a draft bubble
+  // that just lost the pane's single pendingAgentSession slot to a newer,
+  // unrelated draft — typed confirm/cancel now resolves the newer one
+  // instead; the tap-to-confirm buttons on this bubble still work.
+  'agentplan.superseded_notice': '⚠ A different request came in — please use the button above to confirm this draft (a typed reply will resolve the newer one instead).',
+  'agentplan.superseded_notice_edit': '⚠ A different request came in — please use the button above to confirm this edit (a typed reply will resolve the newer one instead).',
   'agentplan.schedule_assumed_note': 'Interpreted "{{word}}" as {{time}}.',
   // Deferred-start ("来週あたりから…") anchor line — shown next to the
   // schedule line whenever startNotBefore is set and still in the future.

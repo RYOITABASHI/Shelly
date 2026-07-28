@@ -383,6 +383,11 @@ const ja: Record<string, string> = {
   'agentplan.confirm_unclear_hint': '登録待ちの下書きがあります。「登録して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
   // 2026-07-23: confirm_prompt_editの編集版カウンターパート。
   'agentplan.confirm_unclear_hint_edit': '編集待ちの下書きがあります。「更新して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
+  // bug #157 fix (docs/superpowers/DEFERRED.md): 別の下書きが割り込んで
+  // pendingAgentSession（型入力での確認/取消の宛先）を奪ったとき、奪われた
+  // 側のバブルに追記する注記。タップでの確認は引き続き機能する。
+  'agentplan.superseded_notice': '⚠ 別の依頼が入ったため、この下書きの確認は上のボタンをタップして行ってください（テキストでの返信は新しい方に届きます）。',
+  'agentplan.superseded_notice_edit': '⚠ 別の依頼が入ったため、この編集の確定は上のボタンをタップして行ってください（テキストでの返信は新しい方に届きます）。',
   'agentplan.schedule_assumed_note': '「{{word}}」→{{time}}と解釈しました。',
   // 開始遅延（「来週あたりから…」）のアンカー行 — startNotBefore が未来の
   // 日時に設定されているときだけ、スケジュール行の直後に表示する。

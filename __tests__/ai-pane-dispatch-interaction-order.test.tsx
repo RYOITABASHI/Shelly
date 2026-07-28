@@ -155,6 +155,7 @@ import type { Agent } from '@/store/types';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { hasDraftAssumptions, summarizeAgentDraftAsText, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import ja from '@/lib/i18n/locales/ja';
+import en from '@/lib/i18n/locales/en';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ollamaChat: mockOllamaChat } = require('@/lib/local-llm') as { ollamaChat: jest.Mock };
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -297,24 +298,19 @@ describe('Scenario 1 — exact on-device regression repro (commit b1145a016)', (
     // (it must not have been silently dropped).
     const pendingNow = conv().pendingAgentSession;
 
-    // ⚠️ SUSPECTED BUG (found by this test, NOT the one b1145a016 already
-    // fixed): presentDraftForConfirmation (hooks/use-ai-pane-dispatch.ts)
-    // unconditionally OVERWRITES the single per-pane pendingAgentSession
-    // slot (store/ai-pane-store.ts's setPendingAgentSession has no
-    // "don't clobber an unrelated live session" guard) whenever the newly
-    // resolved draft also needs `useChatConfirm` (true here — action.type
-    // is 'notify'). So immediately after this reply, pendingAgentSession is
-    // the NEWS session, and the ORIGINAL ゴミ出し pendingAgentSession
+    // bug #157 (docs/superpowers/DEFERRED.md, fixed): presentDraftForConfirmation
+    // (hooks/use-ai-pane-dispatch.ts) still claims the single per-pane
+    // pendingAgentSession slot for the NEWS draft here — DEFERRED.md's own
+    // analysis found that NOT doing so just moves the identical bug onto the
+    // news draft's own typed reply instead (a genuine multi-session redesign
+    // is out of scope for this fix), so this part of the behavior is
+    // unchanged by design. So immediately after this reply, pendingAgentSession
+    // is the NEWS session, and the ORIGINAL ゴミ出し pendingAgentSession
     // (`sessionAfterA`) is no longer reachable via pendingAgentSession at
-    // all — even though its own chat bubble is still on screen and still
-    // reads "...リマインド...よろしいですか？"). A typed confirm/cancel
-    // reply from here on can only ever resolve against the NEWS session,
-    // not ゴミ出し, until news's OWN session is cleared/replaced. This is a
-    // DIFFERENT bug from the one b1145a016 fixed (that fix protects the
-    // ANSWER text itself from being misrouted; this gap is about what
-    // happens to the session pointer immediately afterward) and was not
-    // in scope for that commit. Documenting the CURRENT actual behavior
-    // here per this task's instructions, not fixing it.
+    // all — its chat bubble is still on screen and still reads
+    // "...リマインド...よろしいですか？"). A typed confirm/cancel reply from
+    // here on can only ever resolve against the NEWS session, not ゴミ出し,
+    // until news's OWN session is cleared/replaced.
     expect(pendingNow).not.toBeNull();
     expect(pendingNow?.messageId).not.toBe(sessionAfterA?.messageId);
     expect(pendingNow?.draft.rawText).toContain('ニュース');
@@ -324,8 +320,17 @@ describe('Scenario 1 — exact on-device regression repro (commit b1145a016)', (
     // pane's pendingAgentSession — a typed confirm/cancel from here would
     // land on ニュース, not ゴミ出し, despite the task's expectation ("A's
     // pendingAgentSession is STILL there afterward, confirmable/cancelable
-    // later"). Recording the actual (buggy) outcome:
+    // later"). Recording the actual outcome:
     expect(conv().pendingAgentSession?.draft.rawText).not.toBe(sessionAfterA?.draft.rawText);
+
+    // ✅ THE FIX: unlike before, the takeover is no longer SILENT — the
+    // ゴミ出し bubble itself (still visible, still 'pending') was updated
+    // with a notice explaining that typed replies now resolve the newer
+    // (news) draft and that this one must be confirmed via its own tap
+    // button instead.
+    const gomiDashiMsg = conv().messages.find((m) => m.id === sessionAfterA?.messageId);
+    expect(gomiDashiMsg?.content).toContain(ja['agentplan.superseded_notice']);
+    expect(gomiDashiMsg?.agentCardState).toBe('pending'); // still tap-confirmable
   });
 });
 
@@ -361,7 +366,8 @@ describe('Scenario 2 — inverse ordering (answer the fresh command first, then 
       await result.current.dispatch('cancel');
     });
 
-    // ⚠️ Same session-overwrite gap as Scenario 1: since
+    // bug #157 (fixed — see Scenario 1's own updated notes): same
+    // session-overwrite as Scenario 1, unchanged by design. Since
     // pendingAgentSession currently points at the NEWS session (not
     // ゴミ出し), a cancel typed here cancels the NEWS draft, not the
     // original ゴミ出し one the user actually meant. isCancelPhrase's own
@@ -370,10 +376,15 @@ describe('Scenario 2 — inverse ordering (answer the fresh command first, then 
     expect(conv().pendingAgentSession).toBeNull();
     const cancelledMsg = conv().messages.find((m) => m.id === afterNewsAnswered?.messageId);
     expect(cancelledMsg?.agentCardState).toBe('cancelled');
-    // The ORIGINAL ゴミ出し bubble is untouched — never marked cancelled —
-    // demonstrating it was never actually reached by this "cancel" reply.
+    // The ORIGINAL ゴミ出し bubble's card state is untouched — never marked
+    // cancelled — demonstrating it was never actually reached by this
+    // "cancel" reply. ✅ THE FIX: it DOES carry the superseded notice from
+    // when the news draft first claimed pendingAgentSession (turn 3 above),
+    // so the user has a way to know a typed "cancel" no longer reaches it —
+    // and can still tap its own Cancel/Confirm button directly.
     const originalMsg = conv().messages.find((m) => m.id === original?.messageId);
     expect(originalMsg?.agentCardState).toBe('pending');
+    expect(originalMsg?.content).toContain(ja['agentplan.superseded_notice']);
   });
 });
 
@@ -579,14 +590,15 @@ describe('Scenario 5 — stale pendingAgentSession under a fresh pendingSlotFill
 // ─── Scenario 6: editingAgentId survives interleaving ─────────────────────
 
 describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent command', () => {
-  it('a typed confirm after the interleaving no longer reaches the ORIGINAL edit session — regresses the previously-fixed "duplicate instead of update" bug via a NEW path', async () => {
+  it('bug #157 fix: a tapped confirm on the ORIGINAL edit bubble still calls updateAgent, never createAgent, even after an interleaved draft overwrote pendingAgentSession', async () => {
     const { result } = setup();
     const existingAgent = baseAgent();
     useAgentStore.getState().addAgent(existingAgent);
 
     // Simulate Sidebar.tsx's "Edit" button handler exactly (components/
     // layout/Sidebar.tsx) — it does not go through dispatch() at all, it
-    // posts a chat-native draft bubble and sets pendingAgentSession with
+    // posts a chat-native draft bubble (now carrying editingAgentId on the
+    // MESSAGE too, per the bug #157 fix) and sets pendingAgentSession with
     // editingAgentId directly.
     const editDraft = agentToParsedAgentDraft(existingAgent);
     const editMessageId = 'agent-edit-existing';
@@ -598,6 +610,7 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
         timestamp: Date.now(),
         agentDraft: editDraft,
         agentChatConfirm: true,
+        editingAgentId: existingAgent.id,
       });
       useAIPaneStore.getState().setPendingAgentSession(PANE, {
         draft: editDraft,
@@ -621,9 +634,13 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
     expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
 
     // Resolve the new command's own question — reaches
-    // presentDraftForConfirmation for the WEATHER draft, which (per
-    // Scenarios 1/2's finding) overwrites pendingAgentSession, losing
-    // editingAgentId.
+    // presentDraftForConfirmation for the WEATHER draft, which (per bug
+    // #157's own analysis — see hooks/use-ai-pane-dispatch.ts's doc comment
+    // right above its setPendingAgentSession call) STILL overwrites
+    // pendingAgentSession (a genuine multi-session redesign is out of scope
+    // for this fix), losing editingAgentId FROM THE SESSION. The fix is that
+    // this no longer matters for the edit bubble's own eventual confirm —
+    // see below.
     await act(async () => {
       await result.current.dispatch('毎日7時');
     });
@@ -631,58 +648,55 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
     expect(afterWeatherResolved?.editingAgentId).toBeUndefined();
     expect(afterWeatherResolved?.draft.rawText).toContain('天気');
 
-    // The user now goes back and types a confirm phrase meaning to confirm
-    // the ORIGINAL edit.
+    // ✅ THE FIX (visible-signal mitigation): the overwrite is no longer
+    // silent — the edit bubble was updated with the edit-specific superseded
+    // notice (not the generic one) since editSession.editingAgentId was set.
+    // baseAgent()'s prompt ("Summarize the morning news") is English, so
+    // detectMessageLocale(editDraft.rawText) picks the 'en' table here,
+    // unlike Scenarios 1/2's Japanese-utterance drafts.
+    const editMsgAfterOverwrite = conv().messages.find((m) => m.id === editMessageId);
+    expect(editMsgAfterOverwrite?.content).toContain(en['agentplan.superseded_notice_edit']);
+
+    // The user now goes back and types a confirm phrase. Per bug #157's own
+    // documented tradeoff (see Scenario 1/2 above), a typed reply from here
+    // still resolves whichever session is CURRENTLY pending — the WEATHER
+    // one, not the edit — so this correctly registers 天気 as a NEW agent
+    // (it genuinely is one), not the edit.
     await act(async () => {
       await result.current.dispatch('OK');
     });
-
-    // ⚠️ SUSPECTED BUG — same root cause as Scenarios 1/2, but this is the
-    // more SEVERE variant the task specifically calls out: the confirm
-    // resolves against the WEATHER session (editingAgentId undefined), so
-    // confirmAgentDraft creates a brand-new agent for 天気 instead of
-    // touching the edit at all. The original edit to `existingAgent` is
-    // simply never applied — updateAgent is never called for it, and the
-    // edit's own chat bubble is left dangling in 'pending' state forever
-    // (no further reply can ever reach it via typed confirm, since
-    // pendingAgentSession no longer points at it and nothing re-derives
-    // editingAgentId from a stale messageId match). This reproduces the
-    // *effect* of the historical "duplicate agent instead of updating"
-    // bug (see hooks/use-ai-pane-dispatch.ts's own 2026-07-23 comment on
-    // the pendingAgentSession confirm branch) through a different trigger
-    // than the one already fixed there.
     expect(mockCreateAgent).toHaveBeenCalledTimes(1);
     expect(mockCreateAgent.mock.calls[0][0].name).toBe('天気');
     expect(mockUpdateAgent).not.toHaveBeenCalled();
 
     const editMsgAfter = conv().messages.find((m) => m.id === editMessageId);
-    // Never reached 'confirmed' (confirmAgentDraft's own doing when it
-    // actually resolves a session for THIS messageId) — it simply stays
-    // whatever it started as. Note components/layout/Sidebar.tsx's real
-    // Edit handler never sets agentCardState:'pending' on this bubble to
-    // begin with (unlike presentDraftForConfirmation's own addMessage call
-    // in hooks/use-ai-pane-dispatch.ts, which does) — mirrored here
-    // faithfully rather than "fixed" in the test, since this file is
-    // documenting actual current behavior, not an idealized one.
+    // Never reached 'confirmed' via the typed "OK" above (that resolved
+    // weather, not this bubble) — it simply stays whatever it started as.
+    // Note components/layout/Sidebar.tsx's real Edit handler never sets
+    // agentCardState:'pending' on this bubble to begin with (unlike
+    // presentDraftForConfirmation's own addMessage call in hooks/use-ai-pane-
+    // dispatch.ts, which does) — mirrored here faithfully.
     expect(editMsgAfter?.agentCardState).toBeUndefined();
 
-    // Tapping the ORIGINAL edit bubble's own Confirm button directly still
-    // calls confirmAgentDraft(editMessageId, ...) regardless of what
-    // pendingAgentSession currently holds (components/panes/AIPane.tsx
-    // wires AgentChatConfirm's onConfirm to the bubble's OWN message.id,
-    // not to whatever session happens to be pending) — but by then
-    // pendingAgentSession.messageId no longer matches editMessageId, so
-    // confirmAgentDraft's own `editingAgentId = currentPending?.messageId
-    // === messageId ? currentPending.editingAgentId : undefined` resolves
-    // to undefined, and persistAgentDraft creates ANOTHER new agent
-    // instead of updating existingAgent — the exact historical bug shape,
-    // reproduced here directly against the pure helper for clarity without
-    // needing to route back through dispatch()/component wiring:
-    const editingAgentIdAtTapTime =
-      conv().pendingAgentSession?.messageId === editMessageId
-        ? conv().pendingAgentSession?.editingAgentId
-        : undefined;
-    expect(editingAgentIdAtTapTime).toBeUndefined();
+    // ✅ THE FIX itself: tapping the ORIGINAL edit bubble's own Confirm
+    // button — exactly what AgentChatConfirm's onConfirm does, calling
+    // confirmAgentDraft(editMessageId, ...) directly regardless of what
+    // pendingAgentSession currently holds (components/panes/AIPane.tsx wires
+    // it to the bubble's OWN message.id) — now correctly calls updateAgent,
+    // not createAgent, because confirmAgentDraft recovers editingAgentId
+    // from the MESSAGE itself (ChatMessage.editingAgentId) rather than only
+    // from pendingAgentSession, which no longer matches this messageId.
+    await act(async () => {
+      await result.current.confirmAgentDraft(editMessageId, draftToConfirmedAgentDraft(editDraft));
+    });
+    expect(mockUpdateAgent).toHaveBeenCalledTimes(1);
+    expect(mockUpdateAgent).toHaveBeenCalledWith(existingAgent.id, expect.anything(), expect.anything());
+    // Still exactly one createAgent call (天気, from the typed "OK" above) —
+    // the historical "duplicate agent instead of updating" bug does NOT
+    // recur here.
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    const editMsgConfirmed = conv().messages.find((m) => m.id === editMessageId);
+    expect(editMsgConfirmed?.agentCardState).toBe('confirmed');
   });
 
   it('sanity check: WITHOUT any interleaving, a typed confirm on a Sidebar edit session correctly calls updateAgent, never createAgent', async () => {
@@ -690,6 +704,11 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
     const existingAgent = baseAgent();
     useAgentStore.getState().addAgent(existingAgent);
 
+    // Deliberately does NOT set editingAgentId on the message itself (unlike
+    // the fixed Scenario 6 test above) — this exercises confirmAgentDraft's
+    // fallback branch (originatingMessage?.editingAgentId ?? session-derived
+    // value), covering a message/session pair that predates the bug #157
+    // message-level field, e.g. state persisted before an app update.
     const editDraft = agentToParsedAgentDraft(existingAgent);
     const editMessageId = 'agent-edit-existing-clean';
     act(() => {
