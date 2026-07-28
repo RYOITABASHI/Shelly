@@ -28,7 +28,15 @@
 
 ---
 
-### bug #164 — アテンド系エージェント実行が最大20分間フィードバック無しでビジーポーリングし続ける — `70c526638`で部分修正・実機再検証で「タイムアウトが発火しない」新事実判明 (P0)
+### ✅ bug #164 — アテンド系エージェント実行が最大20分間フィードバック無しでビジーポーリングし続ける — 根本原因特定・`f5bafb311`で修正（実機ビルド反映待ち） (P0→解消)
+
+**2026-07-28 根本原因確定（実機再現+コード+実物run-logの三点照合、`f5bafb311`で修正済み・修正版ビルドでの実機再検証のみ未了）**: 真因は**draft系run-log JSONの決定論的破損**。`lib/agent-executor.ts`の`SAVED_PATH_FIELDS`（`4b3315abc`、2026-07-21、v37期に導入）がTSテンプレートリテラル内で`\"savedPath\"`と書かれており、生成bashには素の`"`が出力される→bash自身のワードクォートとして消費され、heredoc展開後のrun-logが`,savedPath:/data/...`（キーも値も無引用）になる→**保存パス付きdraftアクションの全runが不正JSON**→`readAgentRunLogs()`の寛容パース（malformedは黙って捨てる）が該当ログを毎回ドロップ→`waitForAgentRunCompletion()`が「新しいrun-log無し」と誤判定→ネイティブ側は**5秒で正常完了**（`AgentRuntime: Agent agent-ms4aagxz completed via Shelly runtime`、exit=0、メモも実際に保存済み）しているのに、JS側だけがATTENDED 5分タイムアウト→`[@agent] failed: Timed out...`という偽の失敗表示+ephemeral cleanupでエージェント削除。notify/cli系が正常でdraft系だけ3連続失敗した事実、`WidgetAgentRepository`の`Expected literal value at character 641`（bug #163の症状報告——org.jsonが無引用の`/data/...`値で literal 期待エラーを出す形状）とも完全に整合。**修正**: 両`SAVED_PATH_FIELDS`行を`\\"`（生成bashに`\"`が乗る形）へ、AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSION 40→41 lockstep、実bashで生成ログ書き込みブロックを実行して`JSON.parse`する回帰テスト（`agent-executor-runlog-savedpath-json.test.ts`）追加、旧・壊れた出力形を期待値として固定していた`agent-executor-saved-path.test.ts`も是正。35スイート348件PASS、`tsc --noEmit`クリーン。
+
+**同時に判明した2つの誤診の訂正**: (1)「llama-serverが起動していない」→**誤り**。linker64経由起動のためプロセスの`comm`は`linker64`であり、`ps -A | grep llama`は**構造的に絶対ヒットしない**（`cat /proc/<pid>/comm`=`linker64`、cmdlineにllama-serverフルパスあり、`/health`は200を返し続けていた。さらにadb shell側からは hidepid でアプリuidのプロセス自体が見えない）。今後のサーバー生存確認は`curl http://127.0.0.1:8080/health`か`cat $HOME/models/llama-server.pid`+`/proc/<pid>/cmdline`で行うこと。(2)「チャットバブルが空白のまま」→**少なくともbuild 1990では誤り（測定アーティファクト）**。store状態（AsyncStorage実物ダンプ）にもUI（uiautomator生XML）にも`[@agent] failed: Timed out waiting for agent "agent-..." to finish`は正しく描画されていた。従来の確認手順`grep -o 'text="[^"]*"'`は、**テキストにダブルクォートが含まれるとuiautomatorがtext属性をシングルクォートで直列化するため取りこぼす**（`[@agent] failed: ... "agent-..." ...`も`▶ Running "..."…`も両方ダブルクォート入り＝両方不可視だった）。UI確認時は`text='...'`（シングルクォート形）も拾うこと。
+
+**残る実機確認（修正版ビルドで）**: `@agent 今すぐ、テストメモを保存して`→数秒〜数十秒で`✅ <name>`+保存パス付きの成功バブルが出ること（5分タイムアウトが消えること）。
+
+**以下は根本原因特定前の調査履歴（経緯として残置）**:
 
 **2026-07-28 実機再検証結果（versionCode 1987、修正後ビルド）**: `@agent 毎日9時にニュースをまとめてファイルに保存して`を再送信。`AgentLlmFallback: isLowConfidenceAgentDraft=false`確認後、13:18:38〜13:19:38の1分間で`mkdir -p .../agents`（materialize、exit=0）が**4回**連続発火（ラダー候補を順に試している様子）。しかしその後、**7分経過（本来のATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS=5分の期限を大幅に超過）してもチャット応答は空のまま、"Timed out"等のエラーメッセージも一切表示されなかった**。この間`logcat`に残っていたのは60秒間隔の`for d in '.../agents/logs'/*; do`という**別の定期バックグラウンド処理**（全エージェント横断の定期同期とみられる、`waitForAgentRunCompletion`の1.5秒間隔`find`とは別物）のみで、実際の待機ループ由来のログは13:19:41を最後に一切出ていない。**つまり、今回のアテンドタイムアウト短縮修正（20分→5分）が対処した箇所（`waitForAgentRunCompletion`のポーリングループ）よりも手前の、別の場所で処理が止まっている可能性が高い**——4回のmaterialize(mkdir)が終わった直後から、その後続であるはずの実行試行(runCommand呼び出し)自体のログが皆無なため。今回の修正は無駄ではない（コードレベルでは正しく効くはずの箇所を直している）が、bug #164の実機症状を完全には解消していない。根本原因は依然未特定——次回、`materializeAgentBody`直後から`waitForAgentRunCompletion`呼び出しまでの間のどこかに詳細ログを仕込んで再現する必要がある。
 
