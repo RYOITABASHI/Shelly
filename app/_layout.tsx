@@ -24,6 +24,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
+import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
 import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
@@ -1286,83 +1287,40 @@ export default function RootLayout() {
         await FileSystem.deleteAsync(spoolPath, { idempotent: true });
         const lines = content.split('\n').map((s) => s.trim()).filter(Boolean);
         for (const line of lines) {
-          let url: string;
-          let provider: string | null = null;
-          let authMode: 'in-app' | 'external-browser' = 'in-app';
-          if (line.startsWith('{')) {
-            // JSON-line entry. Tolerate malformed JSON by logging and
-            // skipping rather than crashing the poll loop.
-            let parsed: any;
-            try {
-              parsed = JSON.parse(line);
-            } catch {
-              logError('DeepLinkQueue', `rejected malformed JSON line: ${line.slice(0, 96)}`);
-              continue;
-            }
-            if (typeof parsed?.url !== 'string') {
-              logError('DeepLinkQueue', `rejected JSON line without url field: ${line.slice(0, 96)}`);
-              continue;
-            }
-            url = parsed.url;
-            if (typeof parsed.provider === 'string') provider = parsed.provider;
-            if (parsed.authMode === 'external-browser') {
-              authMode = 'external-browser';
-            }
-          } else {
-            // Legacy plain-URL format (still emitted by shelly-xdg-open.c
-            // and shelly-codex-auth.js — keep working unchanged).
-            url = line;
-          }
-          if (!/^https?:\/\//i.test(url)) {
-            logError('DeepLinkQueue', `rejected non-http(s) url: ${url.slice(0, 64)}`);
+          // Phase 1.2 routing policy lives in lib/deep-link-queue-policy.ts so
+          // it is unit-testable (this drainQueue closure is not). It performs,
+          // in order: shape parse → http(s) scheme allowlist → host parse →
+          // DOWNGRADE an external-browser request whose host is not a Google
+          // OAuth host → UPGRADE an in-app request whose host IS one.
+          //
+          // The downgrade is the 2026-07-28 fix: the host check used to run
+          // only on the in-app branch, so it was an upgrade rule and never a
+          // validation rule. shelly-xdg-open.c sets authMode with a *substring*
+          // match (`strstr(url, "://accounts.google.com/")`), which also fires
+          // on `https://evil.example/r?next=https://accounts.google.com/` — so
+          // an arbitrary URL could be handed to the user's REAL browser
+          // (real cookies, real sessions) instead of the sandboxed pane.
+          //
+          // Upgrading in the other direction is kept because Google hard-blocks
+          // WebView sign-in via the `X-Requested-With` header Chromium injects
+          // unconditionally (established 2026-05-08); an emitter that pushes a
+          // bare/legacy line for an OAuth host would otherwise land in a
+          // known-broken path. Only the two OAuth hosts are upgraded (NOT
+          // *.google.com) so pasted YouTube / Drive / Maps URLs still open
+          // in-app.
+          const resolved = resolveQueueLine(line);
+          if (!resolved.entry) {
+            logError('DeepLinkQueue', `rejected line (${resolved.reason}): ${line.slice(0, 96)}`);
             continue;
           }
-          // Phase 1.2 Stage 2 (Google OAuth safety routing): upgrade any
-          // queue line currently routed in-app whose host is
-          // accounts.google.com to external-browser dispatch. Google's
-          // OAuth flow blocks WebView via the X-Requested-With header
-          // that Chromium injects unconditionally, and UA spoofing alone
-          // can't bypass it (established 2026-05-08). Custom Tabs runs
-          // the same Chromium core but as the system browser process, no
-          // `wv` token, no X-Requested-With, so Google accepts the sign-in.
-          //
-          // SAFETY WINS over explicit declaration: an emitter that sent
-          // {"authMode":"in-app"} for a Google OAuth URL is also upgraded.
-          // OAuth URLs in WebView fail predictably; routing them through
-          // Custom Tabs is the safer default. Emitters that have a real
-          // reason to need in-app rendering for accounts.google.com would
-          // be misrouting OAuth into a known-broken path. Explicit
-          // {"authMode":"external-browser"} is left untouched (already
-          // resolved upstream of this branch).
-          //
-          // We narrow the auto-upgrade to accounts.google.com exactly
-          // (NOT *.google.com) because:
-          //   - User-pasted YouTube / Drive / Maps URLs should still open
-          //     in-app (Phase 1 behaviour, no auth gating).
-          //   - Only the OAuth host is the one that fingerprints WebView.
-          //
-          // Scope note: this layer makes Google OAuth URLs SAFE once they
-          // reach the queue. It does NOT implement Gemini auth on its
-          // own — shelly-gemini-auth.js (Phase 1.2) is the emitter that
-          // detects the Google OAuth URL in Gemini CLI's own output and
-          // pushes the JSON queue line in the first place. This upgrade
-          // is a defense-in-depth net for any other emitter (or a future
-          // Gemini CLI version) that pushes a bare/legacy line for the
-          // same host.
-          if (authMode === 'in-app') {
-            try {
-              const parsedUrl = new URL(url);
-              if (parsedUrl.host.toLowerCase() === 'accounts.google.com') {
-                authMode = 'external-browser';
-                provider = provider ?? 'google';
-                logInfo('DeepLinkQueue', `auto-upgraded Google OAuth URL to external-browser: ${url}`);
-              }
-            } catch {
-              // URL constructor threw on a string that passed http(s)
-              // regex earlier — extremely unlikely. Fall through to
-              // existing in-app dispatch; safer than hard-fail on a path
-              // that's only best-effort anyway.
-            }
+          const { url, provider, authMode, host } = resolved.entry;
+          if (resolved.note === 'downgraded-to-in-app') {
+            logError(
+              'DeepLinkQueue',
+              `external-browser request for non-OAuth host ${host} downgraded to in-app: ${url.slice(0, 96)}`,
+            );
+          } else if (resolved.note === 'upgraded-to-external') {
+            logInfo('DeepLinkQueue', `auto-upgraded Google OAuth URL to external-browser: ${url}`);
           }
           if (authMode === 'external-browser') {
             await dispatchExternalBrowser(url, provider);

@@ -60,6 +60,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>  /* strncasecmp — used by url_host_equals() */
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -97,9 +98,58 @@ static int starts_with(const char *s, const char *prefix) {
     return strncmp(s, prefix, n) == 0;
 }
 
+/*
+ * Exact-host comparison against the URL's authority component.
+ *
+ * This used to be `strstr(url, "://accounts.google.com/")`, a plain substring
+ * match. That also fires when the string appears anywhere ELSE in the URL —
+ * `https://evil.example/r?next=https://accounts.google.com/` matched — so an
+ * arbitrary URL got tagged `authMode:"external-browser"` and was handed to the
+ * user's real browser process (real cookies / real sessions) instead of the
+ * sandboxed in-app Browser Pane. Adversarial review 2026-07-28, DEFERRED
+ * bug #102/#115 phase 1.2.
+ *
+ * The RN side (lib/deep-link-queue-policy.ts) now independently re-validates
+ * the host before any external-browser dispatch, so this is defense in depth
+ * rather than the sole gate — but the two must agree, and a correct check here
+ * keeps the queue file itself honest.
+ *
+ * Parses: scheme "://" [ userinfo "@" ] host [ ":" port ] ( "/" | "?" | "#" | end ).
+ * userinfo is stripped at the LAST '@' before the authority ends, so
+ * `https://accounts.google.com@evil.example/` correctly resolves to
+ * `evil.example` and NOT to the google host it is trying to impersonate.
+ */
+static int url_host_equals(const char *url, const char *want) {
+    const char *sep = strstr(url, "://");
+    if (sep == NULL) return 0;
+    const char *host = sep + 3;
+
+    const char *authority_end = host;
+    while (*authority_end && *authority_end != '/' &&
+           *authority_end != '?' && *authority_end != '#') {
+        authority_end++;
+    }
+
+    const char *at = NULL;
+    for (const char *p = host; p < authority_end; p++) {
+        if (*p == '@') at = p;
+    }
+    if (at != NULL) host = at + 1;
+
+    const char *host_end = authority_end;
+    for (const char *p = host; p < authority_end; p++) {
+        if (*p == ':') { host_end = p; break; }
+    }
+
+    size_t host_len = (size_t) (host_end - host);
+    size_t want_len = strlen(want);
+    if (host_len != want_len) return 0;
+    return strncasecmp(host, want, want_len) == 0;
+}
+
 static int is_google_auth_url(const char *url) {
-    return strstr(url, "://accounts.google.com/") != NULL ||
-           strstr(url, "://codeassist.google.com/") != NULL;
+    return url_host_equals(url, "accounts.google.com") ||
+           url_host_equals(url, "codeassist.google.com");
 }
 
 static char *json_open_url_entry(const char *url) {
