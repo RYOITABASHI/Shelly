@@ -30,7 +30,9 @@
 
 **副次発見（未調査・別記）**: 同じテスト中、エージェント詳細ポップアップの「Next run」が、実際には完了通知が出ているにも関わらず「Not run yet」と表示される食い違いを2回再現。スケジュール発火（RUN NOW以外）後のlastRun/nextRunメタデータ更新に別の軽微なバグがある可能性——優先度低・下記の新規項目として追記。
 
-**未了**: 修正版ビルドで同じNL文言を再実行し、品質ゲートが実際にエスカレーション（Codexへの昇格）を引き起こすか実機確認すること。
+**→ 2026-07-28追記（v34修正の実機再検証で第3の捏造パターンを発見・修正済み）**: `dd37137e6`/v35適用後の最新ビルド(versionCode 1983)で、同じ「シェルコマンドで書き込んで、今すぐ実行して」を英語で再実行（`echo "test" to /sdcard/probe3.txt ... run it now`）。今度は`agent-executor.ts`側のAI Chat入力欄からClaude自身がadb UIダンプ+`input text`（`MSYS_NO_PATHCONV=1`必須、日本語は`adb shell input text`が`NullPointerException`でクラッシュするため英語のみ）で操作、確認カードもConfirmタップまで実施。結果、`dumpsys notification --noredact`で完了通知本文を直接確認したところ、`android.title=「run_shell_test」が完了しました`（成功扱い）、本文が`エンジン: Local LLM echo "Test executed" > /sdcard/probe3.txt`——v34が検知する「Status: Success等の成功宣言」も「偽のuser@hostプロンプト行」もどちらも無い、**裸のコマンド行1行だけ**という第3の捏造形状で、既存パターンをすり抜けていた。**修正（`8d6b89d93`）**: `isBareShellCommandLine`（`lib/agent-escalation-ladder.ts`＋bash埋め込み版）を追加——trim後が改行なしの1行かつシェル動詞（echo/printf/cat等）で始まり、リダイレクト/パイプ/連結記号を含む場合に検知。既存の「コマンド例を紹介するだけの正当なdraft」negativeテスト（周囲に説明文があるケース）は誤爆しないことを確認済み。AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSION 35→36。実際に生成されたシェル関数を実bash+nodeで実行する回帰テスト追加、9スイート268/268 PASS、`tsc --noEmit`クリーン。**この3パターン目の発見自体が「実機再検証」の一部として機能した**——1パターン目・2パターン目の修正だけでは不十分だったことが、まさに再検証によって判明した形。
+
+**未了**: 修正版ビルド(v36)で同じNL文言を再実行し、①品質ゲートが実際にエスカレーション（Codexへの昇格）を引き起こすか、②さらに別の未知の捏造パターンが残っていないか、実機で確認すること。日本語入力での再検証は、別途実装中の「リモートUnicode入力ブロードキャストレシーバー」機能が着地してから行う（`adb shell input text`が日本語でクラッシュするため）。
 
 **→ 関連の副次発見（同じテストセッション内、`draft`保存パスのシークレットredaction漏れ）**: `@agent 今すぐ、「API key: sk-test-1234567890abcdef」という内容でメモを作成して`を実行したところ、保存された`.md`ファイルの**本文とファイル名の両方に生の秘密文字列がそのまま平文で残存**（`cat`で直接確認）。`save_draft_result()`（`lib/agent-executor.ts:2447`）が`redact_secrets_text`を一切呼んでいないことが判明（webhook/notify経路の`clean_result_preview`/`clean_result_full`は呼んでいるのに、draft保存だけ素通り）。加えて、自動生成されるエージェント名自体がタスク文言をそのまま引用する仕様のため、ファイル名スラグにも生の秘密が伝播する。**修正は別サブエージェントに調査・実装委託中（本エントリ作成時点で未完了）**——完了次第このエントリを更新するか、別エントリとして追記。
 
