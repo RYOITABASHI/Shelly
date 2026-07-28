@@ -412,6 +412,28 @@ describe('failure detection', () => {
     expect(isLowQualityCompletion('スクリプトを実行完了しました。成功しました。')).toBe(true);
   });
 
+  it('isLowQualityCompletion catches the real on-device bare-command-line repro (2026-07-28, third fabrication shape, bug #162 follow-up)', () => {
+    // Verbatim (trimmed) shape re-tested on the very next build after the
+    // v34 fix landed: no "Status: Success" wrapper, no fake prompt — just
+    // the raw command as the entire completion, still notified as
+    // "「run_shell_test」が完了しました" (success).
+    expect(isLowQualityCompletion('echo "Test executed" > /sdcard/probe3.txt')).toBe(true);
+    expect(attemptFailed('success', 'echo "Test executed" > /sdcard/probe3.txt')).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches other bare shell-command-line shapes (verb + redirect/pipe/chain, nothing else)', () => {
+    expect(isLowQualityCompletion('printf \'test\' > /sdcard/probe.txt')).toBe(true);
+    expect(isLowQualityCompletion('cat /etc/hosts | grep localhost')).toBe(true);
+    expect(isLowQualityCompletion('rm -f /tmp/x; touch /tmp/x')).toBe(true);
+  });
+
+  it('isLowQualityCompletion does NOT flag a bare non-command single line (no shell verb, or no shell syntax)', () => {
+    expect(isLowQualityCompletion('こんにちは、今日は晴れです。')).toBe(false);
+    expect(isLowQualityCompletion('The weather today is sunny.')).toBe(false);
+    // "git" is a shell verb but no redirect/pipe/chain syntax present.
+    expect(isLowQualityCompletion('git is a distributed version control system')).toBe(false);
+  });
+
   it('isLowQualityCompletion does NOT flag genuine instructional draft content that merely shows a command (explicit negative)', () => {
     // A real, substantive draft explaining HOW to do something (e.g. a
     // saved how-to note) legitimately shows a command without claiming it

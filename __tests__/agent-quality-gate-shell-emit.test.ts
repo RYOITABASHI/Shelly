@@ -280,6 +280,23 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
       ),
     ).toBe(1);
   });
+
+  it('detects the real on-device bare-command-line repro via the actual emitted script (2026-07-28, third fabrication shape)', () => {
+    // Re-tested the v34 fix on the very next build: no "Status: Success"
+    // wrapper, no fake prompt — just the raw command as the entire
+    // completion, still notified as success.
+    expect(runEmbeddedCheck(embeddedJs, 'echo "Test executed" > /sdcard/probe3.txt')).toBe(0);
+  });
+
+  it('detects other bare shell-command-line shapes via the actual emitted script', () => {
+    expect(runEmbeddedCheck(embeddedJs, "printf 'test' > /sdcard/probe.txt")).toBe(0);
+    expect(runEmbeddedCheck(embeddedJs, 'cat /etc/hosts | grep localhost')).toBe(0);
+  });
+
+  it('does NOT flag a bare non-command single line via the actual emitted script', () => {
+    expect(runEmbeddedCheck(embeddedJs, 'こんにちは、今日は晴れです。')).toBe(1);
+    expect(runEmbeddedCheck(embeddedJs, 'The weather today is sunny.')).toBe(1);
+  });
 });
 
 describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {

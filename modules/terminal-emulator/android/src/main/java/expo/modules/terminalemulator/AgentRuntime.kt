@@ -247,7 +247,14 @@ object AgentRuntime {
     // copy in both output branches). No native routing change here; bumped
     // so a stale pre-v35 on-disk script (still writing raw secrets to disk)
     // is regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 35
+    // v36 (2026-07-28, third fabricated-execution shape — bare command line):
+    // re-testing v34 on the very next build found a completion that is
+    // nothing but one bare shell-command line (no "Status: Success" wrapper,
+    // no fake prompt) still logged as a plain success. See
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment for the
+    // new isBareShellCommandLine check. No native routing change here;
+    // bumped so a stale pre-v36 on-disk script keeps accepting this shape.
+    private const val CURRENT_SCRIPT_VERSION = 36
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

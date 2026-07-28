@@ -351,6 +351,41 @@ const FABRICATED_EXECUTION_PATTERNS = [
 ];
 
 /**
+ * A THIRD fabricated-execution shape, found 2026-07-28 re-testing the fix
+ * above on the very next build: the model's ENTIRE completion is nothing
+ * but one bare shell-command line — no "Command executed"/"Status: Success"
+ * narrative wrapper, no fake `user@host:` prompt, just
+ * `echo "Test executed" > /sdcard/probe3.txt` verbatim as the whole
+ * "content" — which Shelly's draft-save path still logs and notifies as a
+ * plain `success` ("「run_shell_test」が完了しました") with zero indication
+ * anything was fabricated. Neither pattern set above matches this because
+ * there is no success-declaration phrase and no fake prompt prefix to
+ * anchor on — it's just the command, alone.
+ *
+ * Distinguishing signal: a genuine instructional draft that legitimately
+ * SHOWS a command as an example always has surrounding prose ("ファイルに
+ * 書き込むには `echo ... > file` を使います" — see the explicit negative
+ * regression test for this). A completion that, once trimmed, is ONE LINE
+ * and NOTHING ELSE, starting with a common shell verb and containing actual
+ * command syntax (a redirect/pipe/chain operator) is never a real "note" —
+ * whether it's a fabricated execution claim or just an unexplained command
+ * dump, it is not useful content for what draft/notify/webhook/dm-reply are
+ * meant to produce. Length-capped (a genuinely long single "line" is not
+ * this failure shape) and requires BOTH a leading command verb AND shell
+ * syntax so an ordinary one-line answer that happens to contain a stray
+ * "|" or ">" character is not caught.
+ */
+const BARE_SHELL_COMMAND_VERB_RE =
+  /^(?:sudo\s+)?(?:echo|printf|cat|touch|mkdir|rm|mv|cp|curl|wget|tee|dd|chmod|chown|kill|pkill|git|npm|npx|pip3?|python3?|node|bash|sh)\b/i;
+const BARE_SHELL_COMMAND_SYNTAX_RE = /[>|;&]/;
+
+function isBareShellCommandLine(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.includes('\n') || trimmed.length > 200) return false;
+  return BARE_SHELL_COMMAND_VERB_RE.test(trimmed) && BARE_SHELL_COMMAND_SYNTAX_RE.test(trimmed);
+}
+
+/**
  * True when a completion is prompt-echo or refusal boilerplate, a short
  * "honest failure to retrieve the requested data" response, a short
  * "meta-commentary about the delivery action" response, or a fabricated
@@ -390,6 +425,7 @@ export function isLowQualityCompletion(text: string | null | undefined): boolean
     return true;
   }
   if (FABRICATED_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (isBareShellCommandLine(text)) return true;
   return false;
 }
 

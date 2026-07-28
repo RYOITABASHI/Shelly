@@ -393,7 +393,21 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // auto-derived from the same secret-bearing prompt, then slugified into the
 // same filename) is a TS-side fix in deriveName()/computeAgentSlug() and
 // does not need a script-version bump on its own.
-const AGENT_SCRIPT_VERSION = 35;
+// v36 (2026-07-28, third fabricated-execution shape — bare command line):
+// re-testing the v34 quality-gate fix on the very next build found a THIRD
+// fabrication shape neither FABRICATED_EXECUTION_PATTERNS regex catches: the
+// model's entire completion is nothing but one bare shell-command line, no
+// "Status: Success" wrapper and no fake `user@host:` prompt —
+// `echo "Test executed" > /sdcard/probe3.txt` verbatim as the whole draft
+// content, still logged/notified as a plain success
+// ("「run_shell_test」が完了しました"). Added isBareShellCommandLine (this
+// file) / isBareShellCommandLine (lib/agent-escalation-ladder.ts): flags a
+// completion that, once trimmed, is a single line starting with a common
+// shell verb and containing real command syntax (redirect/pipe/chain) — a
+// genuine instructional draft that SHOWS a command always has surrounding
+// prose, so this stays narrow. REAL BEHAVIOR CHANGE: bumped so a stale
+// pre-v36 on-disk script keeps accepting this exact fabrication shape.
+const AGENT_SCRIPT_VERSION = 36;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1608,11 +1622,15 @@ const fabricatedExecutionPatterns = [
   /(?:成功しました|ステータス[:：]\\s*成功)[\\s\\S]{0,60}(?:コマンド|スクリプト)を実行(?:しました|完了しました)/,
   /(?:^|\\n)\\s*(?:root|\\w+)@[\\w.-]+:[^\\n#$]{0,60}[#$]\\s+\\S[^\\n]{0,120}[>|][^\\n]{0,80}/,
 ];
+const bareShellCommandVerbRe = /^(?:sudo\\s+)?(?:echo|printf|cat|touch|mkdir|rm|mv|cp|curl|wget|tee|dd|chmod|chown|kill|pkill|git|npm|npx|pip3?|python3?|node|bash|sh)\\b/i;
+const bareShellCommandSyntaxRe = /[>|;&]/;
 const trimmedText = text.trim();
+const isBareShellCommandLine = trimmedText.length > 0 && trimmedText.length <= 200 && !trimmedText.includes(String.fromCharCode(10)) &&
+  bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText);
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
-  fabricatedExecutionPatterns.some((p) => p.test(text));
+  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine;
 process.exit(bad ? 0 : 1);
 ' 2>/dev/null; then
       return 0
@@ -1675,10 +1693,24 @@ const actionMetaCommentaryPatterns = [
   /\\b(?:sending|will send|i(?:\\x27ll| will) send) the notification\\b/i,
   /\\btask (?:has been |is |was )?completed\\b/i,
 ];
+const fabricatedExecutionPatterns = [
+  /\\b(?:command|script)\\s+(?:was\\s+)?executed\\b[\\s\\S]{0,100}\\bstatus:\\s*success\\b/i,
+  /\\bstatus:\\s*success\\b[\\s\\S]{0,100}\\b(?:command|script)\\s+(?:was\\s+)?executed\\b/i,
+  /\\bfile\\s+(?:was\\s+|is\\s+)?created\\s+at\\b[\\s\\S]{0,100}\\bstatus:\\s*success\\b/i,
+  /\\bstatus:\\s*success\\b[\\s\\S]{0,100}\\bfile\\s+(?:was\\s+|is\\s+)?created\\b/i,
+  /(?:コマンド|スクリプト)を実行(?:しました|完了しました)[\\s\\S]{0,60}(?:成功しました|ステータス[:：]\\s*成功)/,
+  /(?:成功しました|ステータス[:：]\\s*成功)[\\s\\S]{0,60}(?:コマンド|スクリプト)を実行(?:しました|完了しました)/,
+  /(?:^|\\n)\\s*(?:root|\\w+)@[\\w.-]+:[^\\n#$]{0,60}[#$]\\s+\\S[^\\n]{0,120}[>|][^\\n]{0,80}/,
+];
+const bareShellCommandVerbRe = /^(?:sudo\\s+)?(?:echo|printf|cat|touch|mkdir|rm|mv|cp|curl|wget|tee|dd|chmod|chown|kill|pkill|git|npm|npx|pip3?|python3?|node|bash|sh)\\b/i;
+const bareShellCommandSyntaxRe = /[>|;&]/;
 const trimmedText = text.trim();
+const isBareShellCommandLine = trimmedText.length > 0 && trimmedText.length <= 200 && !trimmedText.includes(String.fromCharCode(10)) &&
+  bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText);
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
-  (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text)));
+  (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
+  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine;
 process.exit(bad ? 0 : 1);
 NODEEOF
     then
