@@ -540,6 +540,7 @@ export default function AIPane() {
         isRecording={isRecording}
         onMicPress={handleMicPress}
         onMicLongPress={handleMicLongPress}
+        paneId={paneId}
       />
 
       <VoiceChat

@@ -1188,6 +1188,19 @@ export default function TerminalScreen() {
     });
   }, [activeNativeSessionId, activeSessionRecordId]);
 
+  // REMOTE-INPUT-001: adb-triggerable Unicode text injection (see
+  // RemoteTextInputReceiver.kt). Reuses the existing bracketed-paste path
+  // above as a black box — routes here only while this pane is the focused
+  // one, same "am I focused" pattern already used elsewhere in this file
+  // (see the onFocusRequested handler and the keyboard-visibility effects).
+  useEffect(() => {
+    const sub = TerminalEmulator.addListener('onRemoteTextInput', (event: { text: string }) => {
+      if (!paneId || focusedPaneId !== paneId) return;
+      pasteToTerminal(event.text);
+    });
+    return () => sub.remove();
+  }, [paneId, focusedPaneId, pasteToTerminal]);
+
   const pasteClipboardToTerminal = useCallback(() => {
     if (!activeNativeSessionId) return;
     if (activeSessionRecordId) {

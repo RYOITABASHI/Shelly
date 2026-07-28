@@ -23,7 +23,7 @@ import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-
 import { useTheme } from '@/lib/theme-engine';
 import { execCommand } from '@/hooks/use-native-exec';
 import PaneInputBar from '@/components/panes/PaneInputBar';
-import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
+import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { usePaneLayout } from '@/hooks/use-pane-density';
 
 // ── Module-level state for imperative openMarkdownFile ────────────────────────
@@ -54,6 +54,7 @@ export async function openMarkdownFile(path: string): Promise<void> {
 
 export default function MarkdownPane() {
   const theme = useTheme();
+  const paneId = useContext(PaneIdContext);
   const [content, setContent] = useState<string | null>(null);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -300,6 +301,7 @@ export default function MarkdownPane() {
       <PaneInputBar
         placeholder="Search in document..."
         onSubmit={handleSearch}
+        paneId={paneId}
       />
     </View>
   );

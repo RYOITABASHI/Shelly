@@ -8,7 +8,7 @@
  * markdown panes.
  */
 
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 import {
   View,
   TextInput,
@@ -19,6 +19,8 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import { usePaneStore } from '@/store/pane-store';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 
 type Props = {
   placeholder?: string;
@@ -28,6 +30,13 @@ type Props = {
   isRecording?: boolean;
   onMicPress?: () => void;
   onMicLongPress?: () => void;
+  /** REMOTE-INPUT-001: this pane's leaf id (from PaneIdContext). When set,
+   *  the input bar listens for the native `onRemoteTextInput` event and
+   *  inserts the received text at the cursor — but only while this pane is
+   *  the focused one (usePaneStore.focusedPaneId), so an adb-triggered
+   *  broadcast lands in whichever AI/Browser/Markdown pane the user is
+   *  actually looking at, not every mounted PaneInputBar at once. */
+  paneId?: string;
 };
 
 export default function PaneInputBar({
@@ -38,12 +47,38 @@ export default function PaneInputBar({
   isRecording,
   onMicPress,
   onMicLongPress,
+  paneId,
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
   const containerBg = usePanelBackground(C.bgSidebar);
   const pillBg = usePanelBackground(C.bgSurface);
   const disabledBg = usePanelBackground(C.bgSidebar);
+
+  // REMOTE-INPUT-001: last-known cursor position, tracked passively via
+  // onSelectionChange (the `selection` prop is intentionally left
+  // uncontrolled — controlling it every render fights normal typing on RN).
+  // Falls back to "append at end" if the user never focused/selected in
+  // this field yet.
+  const selectionRef = useRef({ start: 0, end: 0 });
+  const textRef = useRef('');
+  textRef.current = text;
+
+  useEffect(() => {
+    if (!paneId) return;
+    const sub = TerminalEmulator.addListener('onRemoteTextInput', (event: { text: string }) => {
+      if (usePaneStore.getState().focusedPaneId !== paneId) return;
+      const current = textRef.current;
+      const { start, end } = selectionRef.current;
+      const from = Math.min(Math.max(start, 0), current.length);
+      const to = Math.min(Math.max(end, from), current.length);
+      const next = current.slice(0, from) + event.text + current.slice(to);
+      const cursor = from + event.text.length;
+      selectionRef.current = { start: cursor, end: cursor };
+      setText(next);
+    });
+    return () => sub.remove();
+  }, [paneId]);
 
   const handleSubmit = useCallback(() => {
     const trimmed = text.trim();
@@ -63,6 +98,9 @@ export default function PaneInputBar({
           style={styles.input}
           value={text}
           onChangeText={setText}
+          onSelectionChange={(e) => {
+            selectionRef.current = e.nativeEvent.selection;
+          }}
           placeholder={placeholder ?? ''}
           placeholderTextColor={C.text3}
           onSubmitEditing={handleSubmit}

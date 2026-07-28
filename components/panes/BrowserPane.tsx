@@ -761,6 +761,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
         <PaneInputBar
           placeholder="Search or enter URL..."
           onSubmit={handleBottomBarSubmit}
+          paneId={paneId}
         />
       )}
     </View>

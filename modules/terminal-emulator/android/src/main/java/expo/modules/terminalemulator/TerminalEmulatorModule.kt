@@ -30,6 +30,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
+import java.lang.ref.WeakReference
 import java.util.zip.ZipInputStream
 
 class TerminalEmulatorModule : Module() {
@@ -55,6 +56,30 @@ class TerminalEmulatorModule : Module() {
         // dotted segments) is resolved via getLaunchIntentForPackage; anything
         // else (a URI with a scheme) falls through to ACTION_VIEW.
         private val PACKAGE_NAME_RE = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
+
+        // REMOTE-INPUT-001: RemoteTextInputReceiver is a manifest-registered
+        // BroadcastReceiver, not itself a live Module instance — it has no
+        // access to sendEvent(). This WeakReference is set in OnCreate below
+        // (rewired on every Module re-instantiation, same as the session
+        // emitEvent rewiring a few lines down) so the receiver can forward
+        // adb-injected text into JS. WeakReference (not a hard reference) so
+        // this never keeps a dead Module instance alive after an RN reload.
+        @Volatile
+        private var activeInstanceRef: WeakReference<TerminalEmulatorModule>? = null
+
+        /**
+         * Called from [RemoteTextInputReceiver.onReceive]. Returns false (and
+         * drops the text) if no Module instance is currently bound to a live
+         * React context — this feature targets whatever's currently focused
+         * on-screen, which requires the app to already be running/foregrounded,
+         * so silently dropping when it isn't is the correct behavior rather
+         * than queuing for later delivery.
+         */
+        fun emitRemoteTextInput(text: String): Boolean {
+            val instance = activeInstanceRef?.get() ?: return false
+            instance.emitEvent("onRemoteTextInput", mapOf("text" to text))
+            return true
+        }
     }
 
     private val sessions get() = TerminalSessionService.sessionRegistry
@@ -438,13 +463,18 @@ class TerminalEmulatorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("TerminalEmulator")
 
-        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize", "onScouterEvent")
+        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize", "onScouterEvent", "onRemoteTextInput")
 
         // Module (re-)instantiation: rewire emitEvent on any sessions that
         // outlived the previous Module instance. Without this, live sessions
         // from before an RN reload would keep calling a stale sendEvent that
         // no longer reaches JS, and the UI would appear to freeze.
         OnCreate {
+            // REMOTE-INPUT-001: rebind the WeakReference every time a Module
+            // instance is (re-)created, same rationale as the session rewiring
+            // right below — an RN reload creates a new Module instance and the
+            // old one's sendEvent no longer reaches JS.
+            activeInstanceRef = WeakReference(this@TerminalEmulatorModule)
             for (session in sessions.values) {
                 session.emitEvent = ::emitEvent
             }
