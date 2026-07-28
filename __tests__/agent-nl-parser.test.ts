@@ -497,6 +497,23 @@ describe('parseAgentNL — action layer (capability boundary)', () => {
     expect(d.action.command).toBeUndefined();
   });
 
+  it('explicit 「シェルコマンドで…」 → cli even when 「コマンド」 and 「実行」 are separated by the object clause (bug #162 sixth-shape follow-up)', () => {
+    // Verbatim on-device repro utterance (versionCode 1995): previously fell
+    // to the draft default, where the local model fabricated an execution
+    // transcript instead of running anything.
+    const d = parseAgentNL('今すぐ、シェルコマンドで/sdcard/probe_verify2.txtにtestと書き込んで実行して');
+    expect(d.action.type).toBe('cli');
+    expect(d.action.command).toBeUndefined();
+  });
+
+  it('a mere mention of シェルコマンド (の-genitive, not を/で) does NOT escalate to cli', () => {
+    const d = parseAgentNL('毎日9時にシェルコマンドの使い方を1つ教えて');
+    // 「教えて」 resolves to notify — the load-bearing assertion is only that
+    // a genitive mention of シェルコマンド never triggers the cli privilege
+    // escalation.
+    expect(d.action.type).not.toBe('cli');
+  });
+
   it('default delivery is draft (never publish)', () => {
     const d = parseAgentNL('毎日8時にブログ記事を書いて');
     expect(d.action.type).toBe('draft');

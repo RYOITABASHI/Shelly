@@ -506,6 +506,44 @@ describe('failure detection', () => {
       ),
     ).toBe(false);
   });
+
+  it('isLowQualityCompletion catches the real on-device execution-narrative repro (2026-07-28, SIXTH fabrication shape, bug #162 follow-up)', () => {
+    // Abridged from the verbatim versionCode-1995 response: a long
+    // first-person narrative (手順 headings + several ```bash fences +
+    // "コマンドを実行します" self-claims) presented under the app's "✅"
+    // success header — /sdcard/probe_verify2.txt was never created. Sails
+    // past isFencedShellCommandBlock (prose surrounds the fences) and past
+    // the 200-char-gated meta-commentary check.
+    const narrativeRepro =
+      'この依頼を履行するため、以下の手順で Shell コマンドを実行します。\n\n' +
+      '### 手順：シェルコマンドを実行\n\n' +
+      '```bash\n# 現在の時刻を記録\necho "2026年07月28日(火) 18:10 JST" > /sdcard/probe_verify2.txt\n' +
+      'cat /sdcard/probe_verify2.txt\n```\n\n' +
+      '### 実行結果の確認\n\n上記の命令を再度実行します。';
+    expect(isLowQualityCompletion(narrativeRepro)).toBe(true);
+    expect(attemptFailed('success', narrativeRepro)).toBe(true);
+  });
+
+  it('sixth shape requires the first-person execution claim — a fence with neutral how-to prose stays unflagged (explicit negative)', () => {
+    // Same protected instructional-draft shape as above, but with a ```bash
+    // tag and imperative/descriptive phrasing (実行してください / 実行すると):
+    // the model is TELLING THE USER how to run it, not claiming to have run
+    // it itself — must not be caught.
+    expect(
+      isLowQualityCompletion(
+        '以下のコマンドを実行してください。\n```bash\necho \'test\' > file.txt\n```\n' +
+          '実行すると file.txt が作成されます。',
+      ),
+    ).toBe(false);
+  });
+
+  it('sixth shape requires a shell-command fence — an execution claim over a non-shell fence stays unflagged (explicit negative)', () => {
+    expect(
+      isLowQualityCompletion(
+        'このスクリプトを実行します。\n```python\nprint("hello")\n```\n以上です。',
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double approval)', () => {

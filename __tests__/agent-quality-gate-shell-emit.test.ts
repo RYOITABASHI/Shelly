@@ -328,6 +328,28 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
       ),
     ).toBe(1);
   });
+
+  it('detects the real on-device execution-narrative repro via the actual emitted script (2026-07-28, SIXTH fabrication shape)', () => {
+    // Abridged from the verbatim versionCode-1995 response (bug #162 v43
+    // verification pass): prose + ```bash fences + "コマンドを実行します"
+    // self-claims, no actual execution — the target file was never created.
+    expect(
+      runEmbeddedCheck(
+        embeddedJs,
+        'この依頼を履行するため、以下の手順で Shell コマンドを実行します。\n\n### 手順：シェルコマンドを実行\n\n' +
+          '```bash\necho "test" > /sdcard/probe_verify2.txt\ncat /sdcard/probe_verify2.txt\n```\n\n### 実行結果の確認\n\n上記の命令を再度実行します。',
+      ),
+    ).toBe(0);
+  });
+
+  it('does NOT flag an imperative how-to draft (実行してください) with a shell fence via the actual emitted script', () => {
+    expect(
+      runEmbeddedCheck(
+        embeddedJs,
+        '以下のコマンドを実行してください。\n```bash\necho \'test\' > file.txt\n```\n実行すると file.txt が作成されます。',
+      ),
+    ).toBe(1);
+  });
 });
 
 describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {

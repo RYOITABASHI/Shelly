@@ -517,7 +517,24 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // restricted to shell-shaped fences so a legitimate ```python```/```json```
 // code answer is never caught. REAL BEHAVIOR CHANGE: bumped so a stale
 // pre-v43 script keeps accepting this fabrication shape.
-const AGENT_SCRIPT_VERSION = 43;
+// v44 (2026-07-28, bug #162 SIXTH fabrication shape — first-person execution
+// narrative with fenced command blocks): verifying v43 on-device (versionCode
+// 1995), the model produced a ~1000-char structured narrative — numbered 手順
+// headings, several ```bash fences with real command lines (echo "..." >
+// /sdcard/probe_verify2.txt), and explicit self-announcements ("以下の手順で
+// Shell コマンドを実行します" / "タスクを Shell コマンドで実行します") —
+// still notified as a plain "✅" success; the target file was never created.
+// This slips past isFencedShellCommandBlock (entire-text-is-one-fence only,
+// deliberately) and ACTION_META_COMMENTARY_PATTERNS (JA nouns limited to
+// 通知/お知らせ/メッセージ + 200-char length gate). Added
+// isFencedShellExecutionNarrative: flags a completion where BOTH (1) a
+// first-person execution claim (コマンド/スクリプト(を|で)…実行します/
+// 実行しました — NOT the imperative 実行してください/実行すると shapes a
+// genuine how-to draft uses) AND (2) at least one shell-shaped fenced block
+// anywhere in the text containing a real command line (same verb+syntax /
+// bare-redirect checks) are present. REAL BEHAVIOR CHANGE: bumped so a stale
+// pre-v44 script keeps accepting this fabrication shape.
+const AGENT_SCRIPT_VERSION = 44;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1769,10 +1786,17 @@ const fencedMatch = fencedBlockRe.exec(trimmedText);
 const isFencedShellCommandBlock = !!fencedMatch && fenceShellLangRe.test(fencedMatch[1]) &&
   fencedMatch[2].split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => l.length > 0)
     .some((l) => bareRedirectOnlyRe.test(l) || (bareShellCommandVerbRe.test(l) && bareShellCommandSyntaxRe.test(l)));
+const executionAnnouncementRe = /(?:コマンド|スクリプト)(?:を|で)[^\\n。]{0,12}実行し(?:ます|ました)|\\bi(?:\\x27ll| will) (?:now )?(?:run|execute)\\b|\\bexecuting the (?:command|script)s?\\b/i;
+const anyFencedBlockRe = /\`\`\`(\\w*)[^\\S\\n]*\\r?\\n([\\s\\S]*?)\`\`\`/g;
+const isFencedShellExecutionNarrative = executionAnnouncementRe.test(text) &&
+  Array.from(text.matchAll(anyFencedBlockRe)).some((m) => fenceShellLangRe.test(m[1]) &&
+    m[2].split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => l.length > 0)
+      .some((l) => bareRedirectOnlyRe.test(l) || (bareShellCommandVerbRe.test(l) && bareShellCommandSyntaxRe.test(l))));
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
-  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock;
+  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock ||
+  isFencedShellExecutionNarrative;
 process.exit(bad ? 0 : 1);
 ' 2>/dev/null; then
       return 0
@@ -1856,10 +1880,17 @@ const fencedMatch = fencedBlockRe.exec(trimmedText);
 const isFencedShellCommandBlock = !!fencedMatch && fenceShellLangRe.test(fencedMatch[1]) &&
   fencedMatch[2].split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => l.length > 0)
     .some((l) => bareRedirectOnlyRe.test(l) || (bareShellCommandVerbRe.test(l) && bareShellCommandSyntaxRe.test(l)));
+const executionAnnouncementRe = /(?:コマンド|スクリプト)(?:を|で)[^\\n。]{0,12}実行し(?:ます|ました)|\\bi(?:\\x27ll| will) (?:now )?(?:run|execute)\\b|\\bexecuting the (?:command|script)s?\\b/i;
+const anyFencedBlockRe = /\`\`\`(\\w*)[^\\S\\n]*\\r?\\n([\\s\\S]*?)\`\`\`/g;
+const isFencedShellExecutionNarrative = executionAnnouncementRe.test(text) &&
+  Array.from(text.matchAll(anyFencedBlockRe)).some((m) => fenceShellLangRe.test(m[1]) &&
+    m[2].split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => l.length > 0)
+      .some((l) => bareRedirectOnlyRe.test(l) || (bareShellCommandVerbRe.test(l) && bareShellCommandSyntaxRe.test(l))));
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
-  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock;
+  fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock ||
+  isFencedShellExecutionNarrative;
 process.exit(bad ? 0 : 1);
 NODEEOF
     then

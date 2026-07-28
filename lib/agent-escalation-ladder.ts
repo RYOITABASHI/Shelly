@@ -449,6 +449,66 @@ function isFencedShellCommandBlock(text: string): boolean {
 }
 
 /**
+ * A SIXTH fabricated-execution shape, found 2026-07-28 on-device verifying the
+ * FIFTH fix (versionCode 1995 / v43): the model now wraps its fake transcript
+ * in a full first-person NARRATIVE — numbered 手順 headings, several fenced
+ * shell blocks, and explicit self-announcements ("この依頼を履行するため、
+ * 以下の手順で Shell コマンドを実行します" / "タスクを Shell コマンドで
+ * 実行します" / a "実行結果の確認" section) — presented under the app's own
+ * "✅" success header while the target file (/sdcard/probe_verify2.txt) was
+ * never created. This deliberately sails through isFencedShellCommandBlock's
+ * entire-text-is-one-fence requirement (there is plenty of surrounding prose)
+ * and through ACTION_META_COMMENTARY_PATTERNS (whose JA nouns are limited to
+ * 通知/お知らせ/メッセージ and which is length-gated to 200 chars — this
+ * response is ~1000+ chars).
+ *
+ * Distinguishing signal — TWO independent conditions must BOTH hold:
+ *  (1) an explicit first-person execution announcement: 「コマンド/
+ *      スクリプト(を|で)…実行します/実行しました」(declarative self-claim) or
+ *      the EN equivalent ("I will execute the command..."). A genuine
+ *      instructional draft addresses the USER imperatively (「このコマンドを
+ *      実行してください」「実行すると…」) and never claims to be executing
+ *      itself, so してください/すると shapes are NOT matched; and
+ *  (2) at least one fenced block (shell-ish language tag or none, ANYWHERE in
+ *      the text — not only entire-text) whose inner lines include a real
+ *      command line per the same verb+syntax / bare-redirect checks above.
+ * Either alone is legitimate: prose announcing 実行します with no commands is
+ * handled by the (length-gated) meta-commentary check; a fenced command block
+ * with neutral how-to prose around it is the explicitly-protected
+ * instructional-draft shape (see the negative regression test). Only the
+ * combination — "I am executing this" + a command transcript, from an action
+ * type with NO execution capability — is always fabricated.
+ */
+const EXECUTION_ANNOUNCEMENT_RE =
+  /(?:コマンド|スクリプト)(?:を|で)[^\n。]{0,12}実行し(?:ます|ました)|\bi(?:'ll| will) (?:now )?(?:run|execute)\b|\bexecuting the (?:command|script)s?\b/i;
+const ANY_FENCED_BLOCK_RE = /```(\w*)[^\S\n]*\r?\n([\s\S]*?)```/g;
+
+function hasFencedShellCommandContent(text: string): boolean {
+  ANY_FENCED_BLOCK_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ANY_FENCED_BLOCK_RE.exec(text)) !== null) {
+    if (!FENCE_SHELL_LANG_RE.test(match[1])) continue;
+    const lines = match[2]
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (
+      lines.some(
+        (line) => BARE_REDIRECT_ONLY_RE.test(line) || (BARE_SHELL_COMMAND_VERB_RE.test(line) && BARE_SHELL_COMMAND_SYNTAX_RE.test(line)),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isFencedShellExecutionNarrative(text: string): boolean {
+  if (!EXECUTION_ANNOUNCEMENT_RE.test(text)) return false;
+  return hasFencedShellCommandContent(text);
+}
+
+/**
  * True when a completion is prompt-echo or refusal boilerplate, a short
  * "honest failure to retrieve the requested data" response, a short
  * "meta-commentary about the delivery action" response, or a fabricated
@@ -490,6 +550,7 @@ export function isLowQualityCompletion(text: string | null | undefined): boolean
   if (FABRICATED_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) return true;
   if (isBareShellCommandLine(text)) return true;
   if (isFencedShellCommandBlock(text)) return true;
+  if (isFencedShellExecutionNarrative(text)) return true;
   return false;
 }
 

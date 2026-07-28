@@ -1084,7 +1084,18 @@ export function detectAction(text: string): AgentAction {
   // cli — only on an explicit "run a command" intent (privilege escalation guard:
   // do NOT infer cli from generic task text). Command template is left for the
   // user to fill in the card; cli is never one-tap (§2.6).
-  if (/コマンド(を)?実行|シェルで実行|run (the )?command|execute (the )?command|run a command/i.test(text)) {
+  // 「シェルコマンド(を|で)」 added 2026-07-28 (bug #162 sixth-shape follow-up):
+  // the on-device repro utterance 「シェルコマンドで/sdcard/…に書き込んで実行して」
+  // matched NONE of the previous alternatives (「コマンド」 and 「実行」 are
+  // separated by the object clause, and 「シェルで実行」 requires the literal
+  // contiguous phrase), so an explicitly shell-worded task silently fell to the
+  // draft default — where the local model then fabricated an execution
+  // transcript instead of running anything. Naming 「シェルコマンド」 as the
+  // instrument/object of the task IS an explicit run-a-command intent, so the
+  // privilege-escalation guard is preserved; a mere mention like
+  // 「シェルコマンドの使い方を教えて」 (の-genitive, not を/で) still does not
+  // match.
+  if (/コマンド(を)?実行|シェルコマンド(を|で)|シェルで実行|run (the )?command|execute (the )?command|run a command|\bwith a shell command\b|\busing a shell command\b/i.test(text)) {
     return { type: 'cli' };
   }
 

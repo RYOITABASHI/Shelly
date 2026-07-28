@@ -329,7 +329,16 @@ object AgentRuntime {
     // matching AGENT_SCRIPT_VERSION comment. No native routing change here;
     // bumped so a stale pre-v43 on-disk script keeps accepting this
     // fabrication shape.
-    private const val CURRENT_SCRIPT_VERSION = 43
+    // v44 (2026-07-28, bug #162 SIXTH fabrication shape — first-person
+    // execution narrative with fenced command blocks): the v43 verification
+    // pass itself surfaced a completion with prose + several ```bash fences
+    // announcing "コマンドを実行します" while nothing was executed. Added
+    // isFencedShellExecutionNarrative (execution self-claim + shell-shaped
+    // fenced command block anywhere in the text). See lib/agent-executor.ts's
+    // matching AGENT_SCRIPT_VERSION comment. No native routing change here;
+    // bumped so a stale pre-v44 on-disk script keeps accepting this
+    // fabrication shape.
+    private const val CURRENT_SCRIPT_VERSION = 44
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
