@@ -123,7 +123,11 @@
 
 ---
 
-### bug #163 — WidgetAgentRepositoryが壊れたrun-log JSONを毎分パースし続けて例外を吐き続ける — 実装済み・実機未検証 (P2)
+### ✅ bug #163 — WidgetAgentRepositoryが壊れたrun-log JSONを毎分パースし続けて例外を吐き続ける — 実装済み・実機検証PASS (P2)
+
+**2026-07-28 実機検証（versionCode 1994）**: ホーム画面ウィジェットを確認、「エージェント / 予定されたエージェントはありません」と正常表示、クラッシュなし。`adb logcat -s WidgetAgentRepository:*`を65秒監視、**元の症状（run-log破損によるJSONException連発）は再現せず**——bug#164の根本原因（JSON書き込み時のクォート欠落）修正が同じ問題を解消したことと整合。
+
+**新規発見（別件・低severity・P3として追記）**: 監視中、`dm-pairings.json`/`custom-auth-refs.json`という2つの無関係なメタデータファイルに対し、`Ignoring invalid agent metadata <file>`という警告が毎分（ウィジェット更新サイクルごと）記録されることを発見。`WidgetAgentRepository.kt`の`readScheduledAgentFile`が対象ディレクトリ内の全`.json`ファイルをエージェントメタデータとしてパースしようとし、この2ファイルは`JSONArray`（おそらく空配列`[]`、DM-pairing機能はデフォルトで空/未使用のため）を返すため`JSONObject`変換で型不一致例外が発生——ただし**例外は正しくキャッチされ握りつぶされており、クラッシュもスパムもUIへの影響も無い**（警告ログが毎分出るだけ）。実害はゼロだが、本来はエージェント以外のメタデータファイルを最初から対象外にフィルタすべき。→ 新規P3エントリとして別途起票（本ファイル下部、「WidgetAgentRepositoryがdm-pairings.json/custom-auth-refs.jsonを誤って毎分パース」参照）。
 
 **→ 2026-07-28追記（根本原因特定・修正実装、`b81ed1237`）**: `json_escape_text()`/`json_string_file()`（`lib/agent-executor.ts`）が共通で持っていた「nodeでのエスケープ処理をこの関数自身の（呼び出し元に継承された）標準出力へ直接書き込みつつ、`if CMD; then return 0; fi`で成否判定する」設計に実バグを発見: nodeが正しくエスケープ済みの出力を最後まで書き切った**にも関わらず**、書き込みそのものとは無関係な理由（例: write()システムコール完了直後にプロセスがOOM killer等でreapされる、端末上のメモリ制約下では十分あり得る）で終了コードが非0になった場合、`if`条件が偽と判定され、そのままフォールスルーしてbashフォールバック実装が**同じテキストをもう一度、別の方法でエスケープして**標準出力へ追記——結果、2つの断片が連結された壊れたJSON（`json_escape_text`なら生の改行/クォートが混入、`json_string_file`ならクォートで囲まれた文字列リテラルが2つ連続）が生成される。これは実機で観測された破損形状と正確に一致する。**修正**: 両関数ともnode側の試行を一旦変数へキャプチャしてから終了コードを判定し、成功時はキャプチャ済みの内容を、失敗時はフォールバック側の内容のみを、**必ず1回だけ**出力するよう変更（二重出力の経路自体を物理的に閉じた）。`WidgetAgentRepository.kt`側も防御的に強化——`readLastRunStatus()`が最新1ファイルのみを試す設計だったため、そのファイルが（既存の壊れたログや今後の未知の原因で）破損しているとウィジェット行全体のステータスが失われていた。新しい実装は新しい順に複数ファイルを試し、パース失敗したファイルはスキップして次の（有効な）ファイルへフォールバックする。また同一ファイル（絶対パス+mtimeで識別）に対する警告ログはプロセス生存中1回のみに制限し、60秒ごとの同一例外の無限反復を解消。AGENT_SCRIPT_VERSION/CURRENT_SCRIPT_VERSION 39→40。生成された実際のbash関数を実bashで実行し、「nodeが正しく書き込んだ後に終了コード非0を返す」レースを直接再現する新規回帰テスト（`agent-executor-json-escape-race.test.ts`、4/4 PASS——修正前コードに対しては実際に2件failすることも確認済み）。`npx tsc --noEmit`クリーン、agent-executor/quality-gate/webhook-payload系22スイート322件PASS（回帰無し）。**未了**: 実機再検証（既存の壊れたrun-logファイルが残っている場合は引き続き旧例外が出るはずなので、該当ファイルの削除または新規実行での再現待ち）。
 
@@ -2725,6 +2729,19 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 ---
 
 ## P3 — 長期ロードマップ / 検討中
+
+### WidgetAgentRepositoryがdm-pairings.json/custom-auth-refs.jsonを誤って毎分パースし警告を吐く — 未着手 (P3)
+
+**優先度**: P3（実害ゼロ——例外は正しくキャッチ・握りつぶされ、クラッシュもUI異常も無い。ログノイズのみ）
+
+**発見（2026-07-28、bug #163実機再検証中）**: ホーム画面ウィジェットのlogcatを監視中、`WidgetAgentRepository`が`dm-pairings.json`/`custom-auth-refs.json`という2つの無関係なメタデータファイルに対し、`Ignoring invalid agent metadata <file>`という警告を毎分（60秒のウィジェット更新サイクルごと）記録し続けていることを発見。`org.json.JSONException: Value [] of type org.json.JSONArray cannot be converted to JSONObject`——これら2ファイルはおそらく`[]`（空配列）形状で保存されている（DM-pairing機能はデフォルトで空/未使用のため）。
+
+**根本原因（推定）**: `WidgetAgentRepository.kt`の`readScheduledAgentFile`/`readScheduledAgents`が、対象ディレクトリ内の全`.json`ファイルを無条件でエージェントメタデータとしてパースしようとしている。エージェント以外の用途で同じディレクトリ（またはその親）に置かれるメタデータファイルを最初からフィルタ対象外にすべき。
+
+**次にやること**: `readScheduledAgents`のファイル列挙時に、ファイル名が既知の非エージェントメタデータ（`dm-pairings.json`/`custom-auth-refs.json`等）と一致する場合はスキップする、またはより堅牢に「ファイル名がエージェントID形式（`agent-`プレフィックス等）と一致する場合のみパース対象にする」ホワイトリスト方式へ変更する。
+→ sync: なし。
+
+---
 
 ### ✅ 未マージブランチ棚卸し — 3件とも死亡確定 (2026-07-15)
 
