@@ -3183,7 +3183,7 @@ claude() {
 
 ---
 
-### エージェント1件から複数プラットフォームへ同時配信できない（例: Bluesky+X同時投稿） — バックエンド着地(`e2b65e16a`)・authoring面は未着手 (P2)
+### エージェント1件から複数プラットフォームへ同時配信できない（例: Bluesky+X同時投稿） — バックエンド着地(`e2b65e16a`)・authoring面も実装済み・実機未検証 (P2)
 
 **優先度**: P2（回避策あり——プラットフォームごとに別エージェントを作れば実質同じ結果になる。ただしユーザー体感としては「1回の依頼で完結してほしい」）
 
@@ -3207,6 +3207,8 @@ claude() {
 - run-log: `AgentRunLog.actionResults?: AgentActionResult[]`を新設(1件でも成功があれば全体`success`、成功0件でエラー1件以上なら`error`、成功もエラーも0件でskip1件以上なら`skip`——新しいstatus値は追加せず既存4値のまま)。
 - UI(`AgentConfirmCard.tsx`)・NLパーサー(`lib/agent-nl-parser.ts`)は今回スコープ外のまま(手動で`~/.shelly/agents/<id>.json`を書く形での検証を想定)。UI導線は依然P2として残置。
 → sync: なし（バックエンドのみ、README/機能カタログへの反映はUI導線着地後）。
+
+**→ 2026-07-28 authoring面実装完了（`77f14b99a`、コード変更のみ・実機未検証）**: `lib/agent-nl-parser.ts`に`detectMultiSocialActions()`を新設。「ブルースカイとXに投稿して」/ "post this to bluesky and x" のように、と/、/,/・/＆/&/"and"で結ばれた2件以上のプラットフォーム名が同一の投稿動詞（投稿/ポスト/シェア/アップ/共有/つぶやく/呟く、EN: post/share/tweet）に直接係る「リスト」形を検出——既存の`detectSocialPost()`は1プラットフォームを動詞に直接束縛する形しか見ておらず、リストの先頭側プラットフォームは動詞直前でないため黙って落ちていた実ギャップを閉じた。各ターゲットは独立解決: SNS7プラットフォーム（Discord/Slack/Telegram/Mastodon/Misskey/WordPress/Bluesky）はそれぞれ登録済みコネクタが**ちょうど1件**のときのみ確定（0件・2件以上なら全体をfalseに倒し、既存の単一ターゲット経路へフォールバック——部分リストを勝手に登録しない）。X（SocialPlatformには存在せず、既存の`app-act` `x.post`経路）はコネクタ不要で常に解決可能——DEFERRED.mdの牽引例そのものである「ブルースカイとXへ同時投稿」を実際にカバーする形にした。`ParsedAgentDraft.actions?: AgentAction[]`を新設し、`action`は常に`actions[0]`と同期（`actions`を知らない既存呼び出し元は無改修で動作継続）。単一プラットフォーム検知の既存テスト（`__tests__/agent-nl-parser.test.ts`のsocial-post検知describe、225件）は無改修でも全PASSを確認済み——バイト単位不変の要件を満たす。`lib/agent-plan-summary.ts`の`summarizeAgentDraftAsText`は`draft.actions`が2件以上のときだけ「配信先: Bluesky, X（旧Twitter）への投稿」のような追加行を1行だけ足す（既存の「実行内容:」行はそのまま）。`draftToConfirmedAgentDraft`/`hooks/use-ai-pane-dispatch.ts`の`confirmAgentDraftInner`/`lib/agent-manager.ts`の`createAgent`をリレー配線し、`ConfirmedAgentDraft.actions` → 永続化される`Agent.actions`まで到達することを確認。`AgentConfirmCard.tsx`の`ConfirmedAgentDraft`型に`actions?`フィールドを追加したのみ（フォームUI自体は無改修）——`social-post`/`app-act`アクションは`shouldUseChatConfirm()`により既にこのカードをバイパスしてチャットネイティブ確認に回るため、カード側の編集UIは今回のシナリオに到達しない。新規回帰テスト6件（JP/EN driving example, 同系統2プラットフォーム, コネクタ未解決時のフォールバック, 単一プラットフォーム時の非発火, 投稿動詞なしの誤検知防止）+ `agent-plan-summary.test.ts`に3件（配信先行の追加表示、単一action時の非表示、1件以下のactions配列時の非表示）+ `agent-manager-create.test.ts`に2件（`actions`パラメータのスルー確認）。`npx tsc --noEmit`クリーン、フルjestスイート（165スイート）は5スイート33件失敗のみで、全て別件の既知Windows scoped-fs二重ドライブレターバグ（`mkdir 'C:\C:\...'`、本エントリ2026-07-23追記で既出）——新規リグレッションなし。**このセッション固有の注記**: 作業中、別の並行エージェント（"今"/"今すぐ"がpending draftの既存スケジュールを消してしまうbugの修正、`3646f1604`）が同じリポジトリ（非worktree、共有作業ディレクトリ）を同時編集していたことが判明。`git commit <pathspec>`がインデックスの部分ステージを無視してworking treeの全内容を採用する仕様のため、コミット`77f14b99a`には意図せず相手の未完成コード片が混入した（直後に相手が`3646f1604`で残りを自分でコミットし、HEAD全体としては`tsc`クリーン・テストPASSの一貫した状態に収束——実害は無し）。**未着手のまま残る**: 実機での動作確認（Bluesky/X同時投稿の実配信）、リンク付き投稿の実際の挙動検証。
 
 ---
 
