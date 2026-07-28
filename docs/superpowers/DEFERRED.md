@@ -14,7 +14,7 @@
 
 ---
 
-### bug #164 — スケジュール付きdraft/notify登録後、run-logを無限にビジーポーリングし続けCPU/バッテリーを消費する — 調査・修正委託中 (P0)
+### bug #164 — アテンド系エージェント実行が最大20分間フィードバック無しでビジーポーリングし続ける — 修正済み・実機未検証 (P0)
 
 **優先度**: P0（当初P1として起票したが、3回目の再現で「単なる無応答ハング」ではなく**無限ビジーポーリングループ**であることが判明したため格上げ——エラーも出ずタイムアウトも無く、ユーザーが気付かない限りバッテリーを消費し続ける。今日リリース予定のビルドに含めるべきではない）
 
@@ -23,6 +23,14 @@
 **傍証**: 同じセッション内で、即時実行(`run it now`)寄りのcliシェイプの同種タスク（bug #162のrepro）は問題なく最後まで進行し、Confirmタップ→実行→通知まで正常に到達した。スケジュール確認質問→登録後のpollingフローに固有の問題である可能性が高い。3回中3回、同じ箇所で再現——アプリのバックグラウンド化の有無に関わらず発生することも確認済み（偶然ではない）。
 
 **修正委託中（本エントリ作成時点で未完了）**: 別サブエージェントにコード調査＋可能なら修正を委託。最低限、ポーリングループにタイムアウト/リトライ上限を設けさせる（原因が完全に特定できなくても、無限ループを有限失敗に変えるだけでリリースブロッカーとしては解消される）よう指示済み。完了次第、本エントリを更新。
+
+**2026-07-28 追調査結果（修正実装済み・実機未検証）**: ポーリングループの実体は `lib/agent-manager.ts` の `waitForAgentRunCompletion`（`readAgentRunLogs` 経由で `find … -name '*.json'` を `AGENT_RUN_WAIT_POLL_MS`=1.5秒ごとに叩く）。呼び出し元は `runAgentNow` → `runEscalatingAttempts`/`runLadderAttempts`。**重要な訂正**: このループは実際には**真の無限ループではない**——`while (Date.now() <= deadline)` で明示的に打ち切られ、期限超過で `Timed out waiting for agent "…" to finish` を投げて呼び出し元の catch（`hooks/use-ai-pane-dispatch.ts` の `confirmAgentDraft`/`dispatch`）まで正しく伝播しテストでも確認済み（既存 `agent-manager-consent-race-round2.test.ts` が同じ「ログが一切増えない」形のタイムアウトを再現している）。ただし境界値は `AGENT_RUN_WAIT_TIMEOUT_MS = 20分`——これは**未アテンド（ネイティブAlarmManager発火などバックグラウンド）向けのデフォルト**であり、ラダーのTOCTOU（consent失効ウィンドウ）コメントが前提とする値。問題は、チャット上で人間が見ている**アテンド系フロー**（`@agent run` 明示コマンド、および登録直後に即時実行される ephemeral one-shot 自動実行）の2箇所とも `runAgentNow` にオプションを渡しておらず、この20分デフォルトをそのまま継承していたこと——観測された「30秒以上・12回以上ポーリング」は20分という期限に対してはまだ序盤に過ぎず、実機での「無限ハング」という印象は、進捗フィードバック皆無のまま最大20分（ラダーが複数候補ならその都度）待たされるUXそのものが原因だった可能性が高い。バッテリー消費（1.5秒間隔ポーリング）自体は無限ではないにせよ最大20分間続き得る点は是正の価値ありと判断。
+
+**適用した修正**: `lib/agent-manager.ts` に `ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS`（5分）を新設してexport、`hooks/use-ai-pane-dispatch.ts` の上記2箇所（`agentResult.type === 'run'` 分岐と ephemeral one-shot 分岐）双方が `runAgentNow(..., { waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS })` を渡すように変更。ネイティブAlarmManager発火など非アテンド経路（`runAgentNow` を経由せず `.sh` を直接叩く、と `acquireChainLock` のモジュールコメントに明記）はこのポーリングループ自体を通らないため無関係——本バグは「スケジュール発火後の未対応放置」まで拡大する種類の問題ではないと判断（ただし実機での裏取りはまだ）。`agent-executor.ts`/`AgentRuntime.kt` の `AGENT_SCRIPT_VERSION`（37）には一切触れていない。
+
+**検証**: `npx tsc --noEmit` クリーン。新規回帰テスト `__tests__/agent-manager-attended-run-timeout.test.ts`（同一stdoutを返し続けrun-logが一切増えないモックで、既定の20分ではなく短い境界内に必ずreject することを確認）追加、既存 `agent-manager-*`/`agent-executor-*`/`ai-pane-dispatch-interaction-order` 系32スイート325件、回帰含め全PASS。
+
+**未了（実機検証が必要）**: (1) 修正版ビルドで同じ2つの発話（`@agent 毎日9時に…` のスケジュール登録と `@agent now, create a note…` の即時実行）を再現し、5分以内にエラーメッセージ付きで終了することを確認。(2) スケジュール登録のみ（`isEphemeralOneShot`=false）のパスは登録直後に `runAgentNow` を呼ばず、単に確認メッセージを表示して戻るだけ——コード読解上は今回のポーリングとは無関係のはずだが、実機ログでは両方の発話が「同じ形」で再現したと報告されており、この food for thought（本当に同一原因かどうか）は実機で要再確認。(3) `readAgentRunLogs` が同一バイト数を返し続けていた根本原因（新しいrun-logがそもそも書かれていないのか、書かれているが `hasNewRun`/`timestamp >= runStartedAtMs` 判定に漏れているのか）はコードリーディングでは特定しきれず、実機ログ（`ShellyExec`/`HomeInitializer`等）での追跡が必要——今回はタイムアウト短縮による影響緩和を優先した。
 
 → sync: なし。
 

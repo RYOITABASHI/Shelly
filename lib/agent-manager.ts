@@ -52,8 +52,30 @@ const agentsDir = () => `${getHomePath()}/.shelly/agents`;
 export const DELETED_AGENT_MARKER_DIR = '.deleted';
 const deletedAgentsDir = () => `${agentsDir()}/${DELETED_AGENT_MARKER_DIR}`;
 const SAFE_AGENT_ID_RE = /^[A-Za-z0-9_-]+$/;
+// This is the UNATTENDED default (native alarm fires and other background
+// callers that never pass waitTimeoutMs). It intentionally stays generous —
+// the ladder-TOCTOU comment on runLadderAttempts's materializeAgent call
+// depends on this being the real worst-case window a mid-ladder consent
+// revoke has to land in. bug #164 (docs/superpowers/DEFERRED.md): an
+// ATTENDED call (chat-triggered "Run Now" / the post-registration
+// ephemeral one-shot auto-run in hooks/use-ai-pane-dispatch.ts) that never
+// overrides this DOES eventually reject with "Timed out waiting for agent"
+// (waitForAgentRunCompletion below is bounded, not an infinite loop — see
+// its own doc comment) — but a human staring at an empty/"Running…" chat
+// bubble for up to 20 minutes with zero incremental feedback is
+// indistinguishable from a genuine hang and burns CPU/battery the whole
+// time via AGENT_RUN_WAIT_POLL_MS's 1.5s find-log poll. Attended call sites
+// pass ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS instead so a stuck run fails fast
+// with a visible chat error.
 const AGENT_RUN_WAIT_TIMEOUT_MS = 20 * 60_000;
 const AGENT_RUN_WAIT_POLL_MS = 1_500;
+/** Bound for a human-attended, chat-visible run (explicit "@agent run" and the
+ * post-registration ephemeral one-shot auto-run). Generous enough for a slow
+ * cloud API call, on-device LLM inference, or a short Codex-driver turn, but
+ * short enough that a stuck run surfaces a visible error well within the
+ * time a user will plausibly wait looking at a chat bubble, instead of
+ * silently polling for up to the unattended 20-minute ceiling. */
+export const ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS = 5 * 60_000;
 
 export function isSafeAgentId(agentId: unknown): agentId is string {
   // typeof guard first: RegExp.test coerces its argument, so a missing id
@@ -1494,6 +1516,20 @@ async function captureRunMemoryFromSyncedLogs(
   }
 }
 
+/**
+ * Poll for a fresh run-log JSON under ~/.shelly/agents/logs/<agentId>/ (a
+ * `find … -name '*.json'` shell round-trip every `options.pollMs`, see
+ * readAgentRunLogs) until one appears whose timestamp is both newer than the
+ * pre-run snapshot AND >= runStartedAtMs, or `options.timeoutMs` elapses —
+ * whichever comes first. This loop is BOUNDED: the `while (Date.now() <=
+ * deadline)` guard always terminates and rejects with "Timed out waiting for
+ * agent …" once the deadline passes (see the throw below), it does not spin
+ * forever. bug #164 (docs/superpowers/DEFERRED.md): what looked like an
+ * infinite busy-poll on-device was this loop legitimately bounded but called
+ * with the 20-minute unattended default from an ATTENDED (chat-visible)
+ * call site with zero incremental UI feedback — see
+ * ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS's doc comment above.
+ */
 async function waitForAgentRunCompletion(
   runCommand: (cmd: string) => Promise<string>,
   agentId: string,

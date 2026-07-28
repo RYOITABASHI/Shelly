@@ -40,6 +40,7 @@ import {
   stopAgent,
   deleteAgent,
   updateAgent,
+  ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
 } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
 import type { ToolChoice, Agent } from '@/store/types';
@@ -1064,7 +1065,13 @@ export function useAIPaneDispatch(paneId: string) {
             await presentDraftForConfirmation(agent as ChatMessage['agent'], draft);
             return;
           } else if (agentResult.type === 'run') {
-            await runAgentNow(agentResult.data.agentId, runAgentShellCommand);
+            // bug #164: this is a chat-visible, human-attended run — bound the
+            // completion poll to a few minutes instead of the 20-minute
+            // unattended default so a stuck run fails fast with a visible
+            // error instead of silently polling with no feedback.
+            await runAgentNow(agentResult.data.agentId, runAgentShellCommand, {
+              waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+            });
             resultMessage = agentResult.message;
           } else if (agentResult.type === 'stop') {
             await stopAgent(agentResult.data.agentId, runAgentShellCommand);
@@ -1869,7 +1876,14 @@ export function useAIPaneDispatch(paneId: string) {
           store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });
           let finalContent: string | null = null;
           try {
-            await runAgentNow(created.id, runAgentShellCommand);
+            // bug #164: same reasoning as the explicit "@agent run" call site
+            // above — this fires immediately after registration while the
+            // user is watching the "▶ Running…" bubble, so bound the wait to
+            // ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS rather than the 20-minute
+            // unattended default.
+            await runAgentNow(created.id, runAgentShellCommand, {
+              waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+            });
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
