@@ -297,6 +297,17 @@ describe('is_low_quality_completion — real emitted-script escaping (regression
     expect(runEmbeddedCheck(embeddedJs, 'こんにちは、今日は晴れです。')).toBe(1);
     expect(runEmbeddedCheck(embeddedJs, 'The weather today is sunny.')).toBe(1);
   });
+
+  it('detects the real on-device bare-redirect repro via the actual emitted script (2026-07-28, fourth fabrication shape)', () => {
+    // Re-tested v36 on the SAME build within the hour: no command verb at
+    // all, just a redirect and a path, still notified as success.
+    expect(runEmbeddedCheck(embeddedJs, '> /sdcard/probe4.txt')).toBe(0);
+  });
+
+  it('does NOT flag genuine prose that merely contains a > or | character mid-sentence via the actual emitted script', () => {
+    expect(runEmbeddedCheck(embeddedJs, '売上は前年比で50%以上伸びました。')).toBe(1);
+    expect(runEmbeddedCheck(embeddedJs, 'Revenue grew more than 50% year over year.')).toBe(1);
+  });
 });
 
 describe('is_low_quality_completion — empty/whitespace-only completion (real bash execution, regression)', () => {

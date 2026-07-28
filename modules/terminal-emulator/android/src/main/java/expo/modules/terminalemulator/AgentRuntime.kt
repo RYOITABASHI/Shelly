@@ -254,7 +254,13 @@ object AgentRuntime {
     // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment for the
     // new isBareShellCommandLine check. No native routing change here;
     // bumped so a stale pre-v36 on-disk script keeps accepting this shape.
-    private const val CURRENT_SCRIPT_VERSION = 36
+    // v37 (2026-07-28, fourth fabricated-execution shape — bare redirect, no
+    // verb): re-tested v36 within the hour and found `> /sdcard/probe4.txt`
+    // (no command verb at all) still logged as success. See
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment for the
+    // bare-redirect check. No native routing change; bumped so a stale
+    // pre-v37 on-disk script keeps accepting this fabrication shape.
+    private const val CURRENT_SCRIPT_VERSION = 37
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

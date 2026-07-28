@@ -407,7 +407,17 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // genuine instructional draft that SHOWS a command always has surrounding
 // prose, so this stays narrow. REAL BEHAVIOR CHANGE: bumped so a stale
 // pre-v36 on-disk script keeps accepting this exact fabrication shape.
-const AGENT_SCRIPT_VERSION = 36;
+// v37 (2026-07-28, fourth fabricated-execution shape — bare redirect, no
+// verb at all): re-tested v36 on the SAME build within the hour and found
+// an even more degenerate completion — `> /sdcard/probe4.txt` verbatim, a
+// bare redirect operator and a path with no command verb — still logged as
+// a plain success ("「test probe」が完了しました"). isBareShellCommandLine's
+// verb requirement doesn't match because there's no verb to match. Added a
+// standalone check: a completion starting directly with `>`/`|` is flagged
+// unconditionally (genuine JA/EN prose never opens a sentence with a bare
+// redirect/pipe operator). REAL BEHAVIOR CHANGE: bumped so a stale pre-v37
+// on-disk script keeps accepting this fabrication shape.
+const AGENT_SCRIPT_VERSION = 37;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1624,9 +1634,10 @@ const fabricatedExecutionPatterns = [
 ];
 const bareShellCommandVerbRe = /^(?:sudo\\s+)?(?:echo|printf|cat|touch|mkdir|rm|mv|cp|curl|wget|tee|dd|chmod|chown|kill|pkill|git|npm|npx|pip3?|python3?|node|bash|sh)\\b/i;
 const bareShellCommandSyntaxRe = /[>|;&]/;
+const bareRedirectOnlyRe = /^[>|]\\s*\\S/;
 const trimmedText = text.trim();
 const isBareShellCommandLine = trimmedText.length > 0 && trimmedText.length <= 200 && !trimmedText.includes(String.fromCharCode(10)) &&
-  bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText);
+  (bareRedirectOnlyRe.test(trimmedText) || (bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText)));
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
@@ -1704,9 +1715,10 @@ const fabricatedExecutionPatterns = [
 ];
 const bareShellCommandVerbRe = /^(?:sudo\\s+)?(?:echo|printf|cat|touch|mkdir|rm|mv|cp|curl|wget|tee|dd|chmod|chown|kill|pkill|git|npm|npx|pip3?|python3?|node|bash|sh)\\b/i;
 const bareShellCommandSyntaxRe = /[>|;&]/;
+const bareRedirectOnlyRe = /^[>|]\\s*\\S/;
 const trimmedText = text.trim();
 const isBareShellCommandLine = trimmedText.length > 0 && trimmedText.length <= 200 && !trimmedText.includes(String.fromCharCode(10)) &&
-  bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText);
+  (bareRedirectOnlyRe.test(trimmedText) || (bareShellCommandVerbRe.test(trimmedText) && bareShellCommandSyntaxRe.test(trimmedText)));
 const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) => p.test(text)) ||
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||

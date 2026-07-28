@@ -434,6 +434,24 @@ describe('failure detection', () => {
     expect(isLowQualityCompletion('git is a distributed version control system')).toBe(false);
   });
 
+  it('isLowQualityCompletion catches the real on-device bare-redirect repro (2026-07-28, fourth fabrication shape, bug #162 follow-up)', () => {
+    // Verbatim shape re-tested on the SAME v36 build within the hour: no
+    // command verb at all, just a redirect operator and a path, still
+    // notified as "「test probe」が完了しました" (success).
+    expect(isLowQualityCompletion('> /sdcard/probe4.txt')).toBe(true);
+    expect(attemptFailed('success', '> /sdcard/probe4.txt')).toBe(true);
+  });
+
+  it('isLowQualityCompletion catches other bare-redirect/pipe-only shapes', () => {
+    expect(isLowQualityCompletion('| grep secret')).toBe(true);
+    expect(isLowQualityCompletion('>> /tmp/log.txt')).toBe(true);
+  });
+
+  it('isLowQualityCompletion does NOT flag genuine prose that merely contains a > or | character mid-sentence (explicit negative)', () => {
+    expect(isLowQualityCompletion('売上は前年比で50%以上伸びました。')).toBe(false);
+    expect(isLowQualityCompletion('Revenue grew more than 50% year over year.')).toBe(false);
+  });
+
   it('isLowQualityCompletion does NOT flag genuine instructional draft content that merely shows a command (explicit negative)', () => {
     // A real, substantive draft explaining HOW to do something (e.g. a
     // saved how-to note) legitimately shows a command without claiming it

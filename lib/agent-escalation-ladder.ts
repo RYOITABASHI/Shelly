@@ -379,9 +379,22 @@ const BARE_SHELL_COMMAND_VERB_RE =
   /^(?:sudo\s+)?(?:echo|printf|cat|touch|mkdir|rm|mv|cp|curl|wget|tee|dd|chmod|chown|kill|pkill|git|npm|npx|pip3?|python3?|node|bash|sh)\b/i;
 const BARE_SHELL_COMMAND_SYNTAX_RE = /[>|;&]/;
 
+/**
+ * A FOURTH fabricated-execution shape, found 2026-07-28 re-testing the v36
+ * fix on the very same build: an even more degenerate completion than the
+ * bare-command-line case — `> /sdcard/probe4.txt` verbatim, a redirect
+ * operator and a path with NO command verb at all — still logged/notified
+ * as a plain success. isBareShellCommandLine's verb requirement (echo/
+ * printf/...) doesn't match because there is no verb to match. Genuine
+ * prose (JA or EN) never opens with a bare `>`/`|` operator, so this is
+ * safe to catch unconditionally at the start of the line.
+ */
+const BARE_REDIRECT_ONLY_RE = /^[>|]\s*\S/;
+
 function isBareShellCommandLine(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.includes('\n') || trimmed.length > 200) return false;
+  if (BARE_REDIRECT_ONLY_RE.test(trimmed)) return true;
   return BARE_SHELL_COMMAND_VERB_RE.test(trimmed) && BARE_SHELL_COMMAND_SYNTAX_RE.test(trimmed);
 }
 
