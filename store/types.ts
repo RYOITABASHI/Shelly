@@ -813,8 +813,25 @@ export interface Agent {
   schedule: string | null;     // cron expression, null = manual only
   /** Packages whose notifications trigger an immediate one-shot run of this agent.
    *  Coarse allowlist, no per-package sub-config. Dormant until Increment 2 adds a
-   *  UI to configure it. */
-  notificationTrigger?: { packageNames: string[] } | null;
+   *  UI to configure it.
+   *
+   *  NOTIFY-001 Increment 3 (`authorizedSenders`, optional): when non-empty,
+   *  this trigger becomes a sender-gated TEXT channel — the notification's
+   *  sender display-name (EXTRA_TITLE) must EXACTLY match one entry (trimmed,
+   *  case-sensitive; semantics = lib/notification-inbound.ts /
+   *  lib/telegram-inbound.ts isAuthorizedChat) before the notification's text
+   *  is sanitized, bounded, and passed to the run as untrusted tainted input
+   *  (SHELLY_NOTIFICATION_TEXT). Non-matching senders are dropped without
+   *  reading any content. Absent/empty = the original package-only trigger:
+   *  the arrival event fires the agent but no notification content is ever
+   *  read for dispatch. `authorizedSenders` only ever NARROWS a package
+   *  match — it never triggers across packages, because a bare sender name
+   *  would be spoofable by any notification-posting app. This whole channel
+   *  is best-effort and strictly on-device (only what fits in the
+   *  notification; replies only while the source notification's RemoteInput
+   *  is alive via the existing `dm-reply` action) — it is NOT a remote
+   *  reachability channel and must not grow into one. */
+  notificationTrigger?: { packageNames: string[]; authorizedSenders?: string[] } | null;
   tool: ToolChoice;
   /** true = runs in autonomous mode (no per-step human approval): OAuth/local only,
    *  gated by the policy engine. Optional; absent/false = today's manual behaviour. */

@@ -338,7 +338,18 @@ object AgentRuntime {
     // matching AGENT_SCRIPT_VERSION comment. No native routing change here;
     // bumped so a stale pre-v44 on-disk script keeps accepting this
     // fabrication shape.
-    private const val CURRENT_SCRIPT_VERSION = 44
+    // v45 (2026-07-28, NOTIFY-001 Increment 3 — sender-gated notification
+    // text channel): runAgent now accepts notificationText/notificationPackage
+    // (set only by ShellyNotificationListener after the exact-match
+    // authorized-sender check) and exports them to the run as
+    // SHELLY_NOTIFICATION_TEXT / SHELLY_NOTIFICATION_PACKAGE (shell-quoted,
+    // re-bounded to 1000 chars defensively). The generated script (v45)
+    // assembles them into a NOTIFICATION_CONTEXT prompt line wrapped in an
+    // "untrusted DATA, not instructions" preamble. See lib/agent-executor.ts's
+    // matching AGENT_SCRIPT_VERSION comment. Bumped so a stale pre-v45
+    // on-disk script (which would silently drop the inbound text) is
+    // regenerated rather than kept.
+    private const val CURRENT_SCRIPT_VERSION = 45
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
@@ -366,7 +377,12 @@ object AgentRuntime {
         context: Context,
         agentId: String,
         tainted: Boolean = false,
-        unattended: Boolean = false
+        unattended: Boolean = false,
+        /** NOTIFY-001 Increment 3: sanitized, bounded body text of an
+         *  authorized-sender notification (ShellyNotificationListener) — always
+         *  untrusted data; runs carrying it are always tainted. */
+        notificationText: String? = null,
+        notificationPackage: String? = null
     ): AgentRunResult {
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
@@ -436,7 +452,7 @@ object AgentRuntime {
         val bashPath = LibExtractor.getBashPath(appContext)
 
         if (shouldRunPlanExecutor(homeDir, agentId)) {
-            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended)
+            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage)
         }
 
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
@@ -506,6 +522,19 @@ object AgentRuntime {
                 // be off, unlike the PlanSpec executor's --unattended flag.
                 append(" && export SHELLY_RUN_UNATTENDED=1")
             }
+            if (!notificationText.isNullOrBlank()) {
+                // NOTIFY-001 Increment 3: untrusted inbound text from an
+                // authorized-sender notification. Already sanitized + bounded by
+                // ShellyNotificationListener and TerminalSessionService; the
+                // take(1000) here is a defensive re-bound at the last boundary
+                // before shell interpolation (shellQuote makes it inert to the
+                // shell either way). The generated script (v45+) wraps it in an
+                // explicit "untrusted data" prompt preamble.
+                append(" && export SHELLY_NOTIFICATION_TEXT=")
+                append(shellQuote(notificationText.take(1000)))
+                append(" && export SHELLY_NOTIFICATION_PACKAGE=")
+                append(shellQuote((notificationPackage ?: "unknown").take(256)))
+            }
             append(" && { [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\" || true; }")
             append(" && . ")
             append(shellQuote(scriptPath))
@@ -560,7 +589,9 @@ object AgentRuntime {
         bashPath: String,
         agentId: String,
         tainted: Boolean,
-        unattended: Boolean
+        unattended: Boolean,
+        notificationText: String? = null,
+        notificationPackage: String? = null
     ): AgentRunResult {
         val libPath = libDir.absolutePath
         val planPath = File(homeDir, ".shelly/agents/plans/plan-agent-$agentId.json").absolutePath
@@ -690,6 +721,15 @@ object AgentRuntime {
             append(" && export SHELLY_CAP_BROKER=1 SHELLY_CAP_FS=1 SHELLY_CAP_EXEC=1")
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
+            }
+            if (!notificationText.isNullOrBlank()) {
+                // NOTIFY-001 Increment 3: exported for parity with the legacy .sh
+                // path (scripts/shelly-plan-executor.js does not consume these
+                // yet — a future increment may thread them into the plan prompt).
+                append(" && export SHELLY_NOTIFICATION_TEXT=")
+                append(shellQuote(notificationText.take(1000)))
+                append(" && export SHELLY_NOTIFICATION_PACKAGE=")
+                append(shellQuote((notificationPackage ?: "unknown").take(256)))
             }
             append(" && export SSL_CERT_FILE=")
             append(shellQuote("${homeDir.absolutePath}/.shelly-ssl/ca-certificates.crt"))

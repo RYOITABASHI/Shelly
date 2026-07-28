@@ -32,6 +32,7 @@ import { openFile } from '@/lib/open-file';
 import { formatElapsedMs } from '@/lib/agent-running-format';
 import { useMotion } from '@/hooks/use-motion';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
+import { parseAuthorizedSenders } from '@/lib/notification-inbound';
 import {
   deleteSkillRecipe,
   readSkillRecipes,
@@ -213,6 +214,9 @@ export function Sidebar() {
   const [repoInput, setRepoInput] = useState('');
   const [notifTriggerAgent, setNotifTriggerAgent] = useState<Agent | null>(null);
   const [notifTriggerDraft, setNotifTriggerDraft] = useState('');
+  // NOTIFY-001 Increment 3: exact-match sender allowlist editor (see
+  // store/types.ts's notificationTrigger doc comment).
+  const [notifSendersDraft, setNotifSendersDraft] = useState('');
   const [agentCapabilitiesVisible, setAgentCapabilitiesVisible] = useState(false);
 
   /**
@@ -1333,6 +1337,7 @@ export function Sidebar() {
                     onLongPress={() => {
                       setNotifTriggerAgent(agent);
                       setNotifTriggerDraft(agent.notificationTrigger?.packageNames.join('\n') ?? '');
+                      setNotifSendersDraft(agent.notificationTrigger?.authorizedSenders?.join('\n') ?? '');
                     }}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
@@ -1812,6 +1817,20 @@ export function Sidebar() {
                 </Text>
               );
             })()}
+            {/* NOTIFY-001 Increment 3: exact-match sender allowlist (text channel). */}
+            <TextInput
+              style={styles.modalInput}
+              value={notifSendersDraft}
+              onChangeText={setNotifSendersDraft}
+              placeholder={t('agentcard.notification_senders_placeholder')}
+              placeholderTextColor={C.text2}
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+            />
+            {parseAuthorizedSenders(notifSendersDraft).valid.length > 0 && (
+              <Text style={styles.modalHint}>{t('agentcard.notification_senders_hint')}</Text>
+            )}
             <View style={styles.modalBtns}>
               <Pressable
                 style={styles.modalCancelBtn}
@@ -1825,8 +1844,13 @@ export function Sidebar() {
                   const agent = notifTriggerAgent;
                   if (!agent) return;
                   const { valid } = parseNotificationTriggerPackages(notifTriggerDraft);
+                  const { valid: senders } = parseAuthorizedSenders(notifSendersDraft);
                   void persistAgentUpdate(agent, {
-                    notificationTrigger: valid.length ? { packageNames: valid } : null,
+                    // Senders only ever narrow a package match (see
+                    // store/types.ts) — dropped when no valid package remains.
+                    notificationTrigger: valid.length
+                      ? { packageNames: valid, ...(senders.length ? { authorizedSenders: senders } : {}) }
+                      : null,
                   });
                   setNotifTriggerAgent(null);
                 }}

@@ -107,7 +107,9 @@ describe('shelly-plan-executor.js parity', () => {
     expect(terminalSessionService).toContain('val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)');
     expect(terminalSessionService).toContain('val scheduled = intervalMs > 0 || !cron.isNullOrBlank()');
     expect(terminalSessionService).toContain('val unattended = scheduled || manual');
-    expect(terminalSessionService).toContain('runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name)');
+    // NOTIFY-001 Increment 3 extended the call with notification text/package
+    // params (null for widget/alarm runs) — extended in lockstep.
+    expect(terminalSessionService).toContain('runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)');
     expect(terminalSessionService).toContain('tainted = tainted');
     expect(terminalSessionService).toContain('unattended = unattended');
   });
@@ -162,7 +164,9 @@ describe('shelly-plan-executor.js parity', () => {
     // classifyEgress's tainted-secret-spend gate (shelly-capability-broker.js)
     // never applied once SHELLY_PLAN_EXECUTOR flips on.
     const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
-    expect(agentRuntime).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended)');
+    // NOTIFY-001 Increment 3 extended the call with notificationText/Package
+    // (still tainted-first) — extended in lockstep.
+    expect(agentRuntime).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage)');
     expect(agentRuntime).toMatch(/private fun runPlanAgent\(\s*context: Context,\s*homeDir: File,\s*libDir: File,\s*bashPath: String,\s*agentId: String,\s*tainted: Boolean,\s*unattended: Boolean/);
     // The env-var builder exports SHELLY_CAP_TAINTED=1 right after the other
     // CAP-001 flags (SHELLY_CAP_BROKER/FS/EXEC), guarded by the same `tainted`

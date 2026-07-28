@@ -67,8 +67,10 @@ describe('Scouter widget registered-agent RUN security parity', () => {
   it('keeps widget runs unattended and does not re-arm their schedule', () => {
     expect(service).toContain('val unattended = scheduled || manual');
     expect(service).toContain('if (!manual && scheduled)');
+    // NOTIFY-001 Increment 3 extended the call with notification text/package
+    // params (nullable, null for widget runs) — extended in lockstep.
     expect(service).toContain(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)',
     );
   });
 
@@ -76,7 +78,7 @@ describe('Scouter widget registered-agent RUN security parity', () => {
     const haltCheck = service.indexOf('if (isGloballyHalted())');
     const manualRead = service.indexOf('getBooleanExtra(EXTRA_MANUAL, false)');
     const runtimeCall = service.indexOf(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)',
     );
     expect(haltCheck).toBeGreaterThan(-1);
     expect(manualRead).toBeGreaterThan(haltCheck);

@@ -28,6 +28,7 @@ import { computeAgentSlug, resolveAgentOutputPathPreview } from '@/lib/agent-exe
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, scheduleHuman, WEEKDAY_LABELS, type Frequency } from '@/lib/agent-card-cron';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
+import { parseAuthorizedSenders } from '@/lib/notification-inbound';
 import { pairingConfidence, useDmPairingStore } from '@/store/dm-pairing-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { AUTH_REFS, EGRESS_ALLOWLIST } from '@/lib/capability-envelope';
@@ -65,7 +66,7 @@ export interface ConfirmedAgentDraft {
   /** G6: hard character budget for the final orchestration output. */
   charLimit?: number;
   /** NOTIFY-001 Increment 2: notification-package allowlist that triggers this agent. */
-  notificationTrigger?: { packageNames: string[] } | null;
+  notificationTrigger?: { packageNames: string[]; authorizedSenders?: string[] } | null;
   /** Deferred-start anchor ("来週あたりから…") — no bespoke editor UI on this
    *  card, passed through from the parsed draft unedited (see store/types.ts's
    *  Agent.startNotBefore doc comment for the anchor semantics). */
@@ -254,6 +255,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // this card mounts), falling back to empty when no NL-parse producer supplied one.
   const [notificationPackagesRaw, setNotificationPackagesRaw] = useState(
     draft.notificationTrigger?.packageNames.join('\n') ?? '',
+  );
+  // NOTIFY-001 Increment 3: optional exact-match sender allowlist. Only
+  // meaningful together with a package allowlist (see store/types.ts's
+  // notificationTrigger doc comment) — the confirm handler below drops it
+  // when no valid package is set.
+  const [notificationSendersRaw, setNotificationSendersRaw] = useState(
+    draft.notificationTrigger?.authorizedSenders?.join('\n') ?? '',
   );
   // null = not yet loaded from the native bridge — avoid flashing a wrong hint.
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState<boolean | null>(null);
@@ -465,6 +473,10 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
     const finalTool = resolveAutonomousFinalTool(autonomous, draft.tool, cloudConsent, needsWeb);
     const { valid: notificationPackages } = parseNotificationTriggerPackages(notificationPackagesRaw);
+    // NOTIFY-001 Increment 3: sender allowlist only ever narrows a package
+    // match — without a package it is meaningless (and a bare sender name
+    // matched across all apps would be spoofable), so it is dropped here.
+    const { valid: notificationSenders } = parseAuthorizedSenders(notificationSendersRaw);
     onConfirm({
       name: name.trim(),
       prompt: draft.prompt,
@@ -484,7 +496,13 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       // G6: carry the preset's hard final-output character budget through.
       charLimit: draft.charLimit,
       // NOTIFY-001 Increment 2: carry the parsed package allowlist through to createAgent.
-      notificationTrigger: notificationPackages.length > 0 ? { packageNames: notificationPackages } : null,
+      // Increment 3: plus the optional exact-match sender allowlist (package-scoped only).
+      notificationTrigger: notificationPackages.length > 0
+        ? {
+            packageNames: notificationPackages,
+            ...(notificationSenders.length > 0 ? { authorizedSenders: notificationSenders } : {}),
+          }
+        : null,
       // Deferred-start anchor: no bespoke editor UI on this card, straight passthrough.
       startNotBefore: draft.startNotBefore,
     });
@@ -891,6 +909,37 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         <Text style={[styles.warn, { color: colors.warning }]}>
           {t('agentcard.notification_trigger_hint_disabled')}
         </Text>
+      )}
+      {/* NOTIFY-001 Increment 3: exact-match sender allowlist (text channel).
+          Only shown once at least one package is configured — senders can only
+          narrow a package match, never trigger on their own. */}
+      {parseNotificationTriggerPackages(notificationPackagesRaw).valid.length > 0 && (
+        <>
+          <Text style={[styles.label, { color: colors.muted }]}>{t('agentcard.notification_senders_label')}</Text>
+          <TextInput
+            value={notificationSendersRaw}
+            onChangeText={setNotificationSendersRaw}
+            autoCapitalize="none"
+            multiline
+            placeholder={t('agentcard.notification_senders_placeholder')}
+            placeholderTextColor={colors.inactive}
+            style={[styles.input, fieldBg]}
+          />
+          {(() => {
+            const { valid, skippedCount } = parseAuthorizedSenders(notificationSendersRaw);
+            if (valid.length === 0 && skippedCount === 0) return null;
+            return (
+              <Text style={[styles.warn, { color: colors.muted }]}>
+                {t('agentcard.notification_trigger_hint_count', { valid: valid.length, skipped: skippedCount })}
+              </Text>
+            );
+          })()}
+          {parseAuthorizedSenders(notificationSendersRaw).valid.length > 0 && (
+            <Text style={[styles.warn, { color: colors.muted }]}>
+              {t('agentcard.notification_senders_hint')}
+            </Text>
+          )}
+        </>
       )}
 
       {/* Run on */}

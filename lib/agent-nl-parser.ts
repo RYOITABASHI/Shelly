@@ -94,8 +94,13 @@ export interface ParsedAgentDraft {
    *  confidently extractable from the utterance, OR filled in later via
    *  conversational slot-filling when the utterance implies a
    *  notification-triggered agent but no package was extractable. Absent =
-   *  not a notification-triggered agent. */
-  notificationTrigger?: { packageNames: string[] };
+   *  not a notification-triggered agent.
+   *  `authorizedSenders` (NOTIFY-001 Increment 3): optional exact-match sender
+   *  allowlist that upgrades the trigger to a sender-gated text channel. The
+   *  NL parser NEVER populates it (inferring an authz allowlist from free text
+   *  is too risky) — it is only entered explicitly on the confirm card /
+   *  Sidebar editor. See store/types.ts's Agent.notificationTrigger. */
+  notificationTrigger?: { packageNames: string[]; authorizedSenders?: string[] };
   /** Free-text output destination hint, gathered either from the utterance
    *  or via conversational slot-filling when the agent's action is 'draft'
    *  and no global vault/output-path preference is configured. Absent =

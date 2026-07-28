@@ -48,6 +48,17 @@ class TerminalSessionService : Service() {
         const val EXTRA_CRON = "cron"
         const val EXTRA_TAINTED = "tainted"
         const val EXTRA_MANUAL = "manual"
+        // NOTIFY-001 Increment 3 (sender-gated notification text channel): the
+        // sanitized, bounded body text of an authorized-sender notification and
+        // its source package. Only ShellyNotificationListener sets these; any
+        // run carrying text is FORCED tainted below regardless of EXTRA_TAINTED.
+        const val EXTRA_NOTIFICATION_TEXT = "notification_text"
+        const val EXTRA_NOTIFICATION_PACKAGE = "notification_package"
+        // Mirrors ShellyNotificationListener.MAX_INBOUND_NOTIFICATION_TEXT /
+        // lib/telegram-inbound.ts MAX_INBOUND_TEXT — defensive re-bound at the
+        // service boundary (the service is not exported, but bounding twice is
+        // cheap and keeps a future caller honest).
+        private const val MAX_NOTIFICATION_TEXT_CHARS = 1000
 
         /**
          * Authoritative session registry. Lives here (Service companion) rather
@@ -110,7 +121,13 @@ class TerminalSessionService : Service() {
                     startForegroundWithNotification(null)
                     return START_STICKY
                 }
-                val tainted = intent.getBooleanExtra(EXTRA_TAINTED, false)
+                val notificationText = intent.getStringExtra(EXTRA_NOTIFICATION_TEXT)
+                    ?.take(MAX_NOTIFICATION_TEXT_CHARS)?.takeIf { it.isNotBlank() }
+                val notificationPackage = intent.getStringExtra(EXTRA_NOTIFICATION_PACKAGE)
+                    ?.take(256)?.takeIf { it.isNotBlank() }
+                // Inbound notification text is untrusted third-party content by
+                // definition — force the taint even if a caller forgot the extra.
+                val tainted = intent.getBooleanExtra(EXTRA_TAINTED, false) || notificationText != null
                 val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)
                 val cron = intent.getStringExtra(EXTRA_CRON)
                 val manual = intent.getBooleanExtra(EXTRA_MANUAL, false)
@@ -144,7 +161,7 @@ class TerminalSessionService : Service() {
                     )
                     ScouterWidgetProvider.updateAll(applicationContext, force = true)
                 }
-                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name)
+                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)
                 // Alarm-fired runs carry interval/cron — re-arm the next fire here now
                 // that the alarm targets this service directly (no receiver in the
                 // loop). A manual run (no interval/cron extras) is a no-op.
@@ -287,7 +304,9 @@ class TerminalSessionService : Service() {
         tainted: Boolean,
         unattended: Boolean,
         widgetManual: Boolean = false,
-        widgetAgentName: String? = null
+        widgetAgentName: String? = null,
+        notificationText: String? = null,
+        notificationPackage: String? = null
     ) {
         activeAgentRuns.incrementAndGet()
         Thread {
@@ -306,7 +325,9 @@ class TerminalSessionService : Service() {
                     applicationContext,
                     agentId,
                     tainted = tainted,
-                    unattended = unattended
+                    unattended = unattended,
+                    notificationText = notificationText,
+                    notificationPackage = notificationPackage
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Agent $agentId crashed while running", e)

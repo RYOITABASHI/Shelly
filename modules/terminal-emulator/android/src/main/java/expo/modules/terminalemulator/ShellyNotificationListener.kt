@@ -72,6 +72,31 @@ data class PairingCandidate(
  * each independently matching the same agent — so a per-agent debounce
  * (see [shouldFireNow]) suppresses repeat fires of the same agent within a
  * short window, without persisting anything new to disk.
+ *
+ * NOTIFY-001 Increment 3 (sender-gated notification TEXT channel — the
+ * generic on-device inbound channel; JS twin: lib/notification-inbound.ts,
+ * string-gated by __tests__/notify-listener/notification-channel-parity.test.ts):
+ * when a matched agent's `notificationTrigger.authorizedSenders` is non-empty,
+ * the trigger is upgraded from arrival-only to a text channel — but ONLY after
+ * the notification's sender display-name (EXTRA_TITLE) passes an EXACT,
+ * trimmed, case-sensitive match against one of the pre-registered entries
+ * (same semantics as lib/telegram-inbound.ts's isAuthorizedChat; no case
+ * folding, no Unicode normalization, no substring match — loosening this
+ * would let arbitrary notification text launch an agent). Only then is the
+ * body text (EXTRA_BIG_TEXT, falling back to EXTRA_TEXT) read at all,
+ * control-char-stripped, bounded to [MAX_INBOUND_NOTIFICATION_TEXT] chars,
+ * and passed on the RUN_AGENT intent as untrusted input; the run stays
+ * tainted end-to-end exactly like a package-only trigger. A non-matching
+ * sender is dropped with only the rejection fact logged — never any content.
+ * An agent WITHOUT authorizedSenders keeps the Increment 1 behavior verbatim:
+ * fire on arrival, never read content for dispatch.
+ *
+ * This channel is BEST-EFFORT and strictly on-device by design: it sees only
+ * what the posting app put in the notification (long messages arrive
+ * pre-truncated), and the reply leg (the existing `dm-reply` action +
+ * [sendPairedDmReply]) works only while the source notification is still
+ * alive with a usable RemoteInput. It is NOT remote reachability (no server,
+ * no external inbox polling, no push registration) and must not grow into it.
  */
 class ShellyNotificationListener : NotificationListenerService() {
     companion object {
@@ -119,6 +144,49 @@ class ShellyNotificationListener : NotificationListenerService() {
          *  suppressed as a burst repeat. */
         private fun shouldFireNow(agentId: String): Boolean =
             triggerDebouncer.shouldFireNow(agentId, SystemClock.elapsedRealtime())
+
+        /** Increment 3: same bound as lib/telegram-inbound.ts's MAX_INBOUND_TEXT —
+         *  a giant notification body can't bloat the intent/prompt. */
+        private const val MAX_INBOUND_NOTIFICATION_TEXT = 1000
+
+        // C0/C1 control chars except newline (multi-line bigText is legitimate).
+        // Kotlin twin of lib/notification-inbound.ts's sanitizeInboundNotificationText.
+        private val INBOUND_CONTROL_CHARS = Regex("[\\u0000-\\u0009\\u000B-\\u001F\\u007F-\\u009F]")
+
+        // Leading "@agent" strip, mirroring lib/telegram-inbound.ts's
+        // normalizeInboundUtterance (an inbound message that says "@agent ..." is
+        // the utterance itself, not a literal mention to preserve).
+        private val LEADING_AGENT_MENTION = Regex("^\\s*@agent\\b\\s*", RegexOption.IGNORE_CASE)
+
+        /**
+         * THE sender-authorization decision for the notification text channel.
+         * EXACT, trimmed, case-sensitive, non-empty compare — identical semantics
+         * to lib/telegram-inbound.ts's isAuthorizedChat / lib/notification-inbound.ts's
+         * isAuthorizedNotificationSender (both sides compare UTF-16 strings for
+         * plain equality after trimming; deliberately NO case folding, NO Unicode
+         * normalization, NO substring/fuzzy match). Fail closed on an empty list
+         * or an empty title. Do not loosen: this is the security boundary that
+         * keeps arbitrary notification text from launching an agent.
+         */
+        internal fun isAuthorizedSender(senderTitle: String?, authorizedSenders: List<String>): Boolean {
+            val incoming = senderTitle?.trim().orEmpty()
+            if (incoming.isEmpty()) return false
+            return authorizedSenders.any { entry ->
+                val authorized = entry.trim()
+                authorized.isNotEmpty() && incoming == authorized
+            }
+        }
+
+        /** Kotlin twin of lib/notification-inbound.ts's sanitizeInboundNotificationText:
+         *  control-char strip (keep newlines) → leading "@agent" strip → trim →
+         *  bound to [MAX_INBOUND_NOTIFICATION_TEXT] chars. */
+        internal fun sanitizeInboundNotificationText(raw: String?): String {
+            if (raw.isNullOrEmpty()) return ""
+            return raw.replace(INBOUND_CONTROL_CHARS, " ")
+                .replace(LEADING_AGENT_MENTION, "")
+                .trim()
+                .take(MAX_INBOUND_NOTIFICATION_TEXT)
+        }
 
         private fun shouldReplyNow(packageName: String): Boolean {
             val now = SystemClock.elapsedRealtime()
@@ -316,15 +384,42 @@ class ShellyNotificationListener : NotificationListenerService() {
             // one-shot, tainted run. Wrapped in its own try so a lookup/dispatch
             // failure can never take down onNotificationPosted (this runs on the
             // system notification-listener binder thread).
+            // Increment 3: an agent whose trigger also carries authorizedSenders
+            // is a sender-gated TEXT channel — sender exact-match FIRST, and only
+            // an authorized match ever reads/forwards body text (see the class
+            // doc comment for the full security model).
             try {
-                val matchedAgentIds = findAgentsTriggeredBy(context, packageName)
-                for (agentId in matchedAgentIds) {
+                val matches = findAgentsTriggeredBy(context, packageName)
+                for (match in matches) {
+                    val agentId = match.agentId
+                    var inboundText: String? = null
+                    if (match.authorizedSenders.isNotEmpty()) {
+                        val senderTitle = title?.toString()
+                        if (!isAuthorizedSender(senderTitle, match.authorizedSenders)) {
+                            // Rejection FACT only — never the sender name or any content
+                            // (an unauthorized notification must not become a logcat leak).
+                            Log.i(TAG, "Notification from $packageName matched agent $agentId but sender failed the exact-match authorization — dropped, no content read or forwarded")
+                            continue
+                        }
+                        // Sender authorized: NOW (and only now) read the body text.
+                        // EXTRA_BIG_TEXT carries the expanded body when present;
+                        // EXTRA_TEXT is the collapsed fallback.
+                        val bigText = runCatching {
+                            extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+                        }.getOrNull()
+                        val body = if (!bigText.isNullOrBlank()) bigText else text?.toString()
+                        inboundText = sanitizeInboundNotificationText(body)
+                        if (inboundText.isEmpty()) {
+                            Log.i(TAG, "Notification from $packageName matched agent $agentId with an authorized sender but had no usable text — dropped")
+                            continue
+                        }
+                    }
                     if (!shouldFireNow(agentId)) {
                         Log.i(TAG, "Notification from $packageName matched agent $agentId but debounced (fired within last ${TRIGGER_DEBOUNCE_MS}ms)")
                         continue
                     }
-                    Log.i(TAG, "Notification from $packageName triggering agent $agentId (tainted run)")
-                    fireAgentRun(context, agentId)
+                    Log.i(TAG, "Notification from $packageName triggering agent $agentId (tainted run, inboundTextLen=${inboundText?.length ?: 0})")
+                    fireAgentRun(context, agentId, inboundText, packageName)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Notification-trigger agent lookup/dispatch failed defensively", e)
@@ -334,6 +429,14 @@ class ShellyNotificationListener : NotificationListenerService() {
         }
     }
 
+    /** One package-matched agent: [authorizedSenders] is empty for a legacy
+     *  arrival-only trigger, non-empty for an Increment 3 sender-gated text
+     *  channel (entries pre-trimmed, blanks dropped). */
+    private data class NotificationTriggerMatch(
+        val agentId: String,
+        val authorizedSenders: List<String>,
+    )
+
     /**
      * Scans the per-agent JSON files under $HOME/.shelly/agents (NOT
      * recursive — does not descend into plans/, which holds PlanSpec files,
@@ -342,13 +445,13 @@ class ShellyNotificationListener : NotificationListenerService() {
      * case-sensitive match). A single malformed agent file is skipped
      * defensively so it can't block the rest of the scan.
      */
-    private fun findAgentsTriggeredBy(context: Context, packageName: String): List<String> {
+    private fun findAgentsTriggeredBy(context: Context, packageName: String): List<NotificationTriggerMatch> {
         val homeDir = HomeInitializer.getHomeDir(context)
         val agentsDir = File(homeDir, ".shelly/agents")
         val files = agentsDir.listFiles { file -> file.isFile && file.name.endsWith(".json") }
             ?: return emptyList()
 
-        val matched = mutableListOf<String>()
+        val matched = mutableListOf<NotificationTriggerMatch>()
         for (file in files) {
             try {
                 val expectedId = file.name.removeSuffix(".json")
@@ -362,9 +465,8 @@ class ShellyNotificationListener : NotificationListenerService() {
                 val json = JSONObject(text)
                 if (json.optString("id") != expectedId) continue
                 if (!json.optBoolean("enabled", false)) continue
-                val packageNames = json.optJSONObject("notificationTrigger")
-                    ?.optJSONArray("packageNames")
-                    ?: continue
+                val trigger = json.optJSONObject("notificationTrigger") ?: continue
+                val packageNames = trigger.optJSONArray("packageNames") ?: continue
                 var matchesPackage = false
                 for (i in 0 until packageNames.length()) {
                     if (packageNames.optString(i) == packageName) {
@@ -372,7 +474,19 @@ class ShellyNotificationListener : NotificationListenerService() {
                         break
                     }
                 }
-                if (matchesPackage) matched.add(expectedId)
+                if (!matchesPackage) continue
+                // Increment 3: optional sender allowlist. Trim + drop blanks here so
+                // the match loop compares against exactly what the JS parser
+                // (lib/notification-inbound.ts parseAuthorizedSenders) persisted.
+                val sendersArray = trigger.optJSONArray("authorizedSenders")
+                val senders = mutableListOf<String>()
+                if (sendersArray != null) {
+                    for (i in 0 until sendersArray.length()) {
+                        val entry = sendersArray.optString(i).trim()
+                        if (entry.isNotEmpty()) senders.add(entry)
+                    }
+                }
+                matched.add(NotificationTriggerMatch(expectedId, senders))
             } catch (e: Exception) {
                 Log.w(TAG, "Skipping malformed agent file ${file.name} during notification-trigger scan", e)
             }
@@ -386,12 +500,27 @@ class ShellyNotificationListener : NotificationListenerService() {
      * TerminalSessionService computes unattended=false). The STOP-ALL
      * kill-switch check already lives inside TerminalSessionService's
      * ACTION_RUN_AGENT handler, so it is not duplicated here.
+     *
+     * Increment 3: [inboundText] (already sanitized + bounded, ONLY set after
+     * the sender passed the exact-match authorization) rides along as untrusted
+     * input for the run. EXTRA_TAINTED stays unconditionally true either way —
+     * sender authorization gates WHO can trigger, it never launders the
+     * content's untrusted status.
      */
-    private fun fireAgentRun(context: Context, agentId: String) {
+    private fun fireAgentRun(
+        context: Context,
+        agentId: String,
+        inboundText: String? = null,
+        sourcePackage: String? = null,
+    ) {
         val intent = Intent(context, TerminalSessionService::class.java).apply {
             action = TerminalSessionService.ACTION_RUN_AGENT
             putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
             putExtra(TerminalSessionService.EXTRA_TAINTED, true)
+            if (!inboundText.isNullOrEmpty()) {
+                putExtra(TerminalSessionService.EXTRA_NOTIFICATION_TEXT, inboundText.take(MAX_INBOUND_NOTIFICATION_TEXT))
+                putExtra(TerminalSessionService.EXTRA_NOTIFICATION_PACKAGE, sourcePackage ?: "")
+            }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent)
