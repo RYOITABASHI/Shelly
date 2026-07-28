@@ -269,6 +269,77 @@ describe('generateRunScript — real bash-side chain execution (bug #155(b) foll
   });
 });
 
+// 2026-07-28 adversarial review (no-device static audit of DEFERRED bug #155).
+// The load-bearing SECURITY claim of the bash-side chain is "chaining adds NO
+// privilege over a single manual run" — every step goes through the identical
+// B2-driver gate. That was documented in codexOrchestrationChainCommand()'s
+// doc comment but never asserted, so a future edit could quietly relax the
+// per-step gate (drop --policy-json, widen --approval-policy, point DRIVER_CWD
+// somewhere else) with the whole suite still green.
+describe('generateRunScript — chain execution grants no privilege the single-shot path lacks', () => {
+  const chain = baseAgent({ type: 'auto' }, {
+    steps: ['step one', 'step two', 'step three'],
+  });
+  const single = baseAgent({ type: 'auto' });
+
+  it('gates every chain step with the SAME --approval-policy untrusted the single-shot path uses', () => {
+    const s = generateRunScript(chain);
+    // The loop body appears once, so exactly one occurrence covers all N steps.
+    expect((s.match(/--approval-policy untrusted \\/g) ?? []).length).toBe(
+      (generateRunScript(single).match(/--approval-policy untrusted \\/g) ?? []).length,
+    );
+    expect(s).toContain('--approval-policy untrusted \\');
+    // and no other approval policy is emitted anywhere
+    expect(s).not.toMatch(/--approval-policy (?!untrusted)/);
+  });
+
+  it('passes a --policy-json to the chain driver that is byte-identical to the single-shot one', () => {
+    const grab = (script: string) => {
+      const m = /--policy-json (\S[^\n\\]*)/.exec(script);
+      expect(m).not.toBeNull();
+      return m![1].trim();
+    };
+    expect(grab(generateRunScript(chain))).toBe(grab(generateRunScript(single)));
+  });
+
+  it('keeps every step inside the same workspace boundary (DRIVER_CWD resolved once, never per-step)', () => {
+    const s = extractChainSnippet(generateRunScript(chain));
+    expect((s.match(/DRIVER_CWD="\$\{AGENT_WORKSPACE_ROOT:-\$PROJECT_DIR\}"/g) ?? []).length).toBe(1);
+    expect(s).toContain('[ -d "$DRIVER_CWD" ] || DRIVER_CWD="$HOME"');
+    // the loop must not reassign it
+    const loop = s.slice(s.indexOf('while [ "$CODEX_ORCH_STEP_INDEX"'));
+    expect(loop).not.toMatch(/^\s*DRIVER_CWD=/m);
+  });
+
+  it('keeps the escalation key + audit log wired on every step (unattended fail-closed depends on both)', () => {
+    const s = extractChainSnippet(generateRunScript(chain));
+    expect(s).toContain('--escalation-public-key-sha256 "${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}"');
+    expect(s).toContain('--escalation-timeout-action queue');
+    expect(s).toContain('--audit-log "$LOG_DIR/agent-driver-audit.jsonl"');
+  });
+
+  it('redacts the carry-forward BEFORE truncating, so a truncated secret cannot survive', () => {
+    // Order matters: collapse-then-redact could leave a half-redacted token,
+    // and truncate-then-redact could cut a secret mid-pattern so the redactor
+    // no longer recognises it. redact_secrets_text must run first.
+    const s = extractChainSnippet(generateRunScript(chain));
+    const fn = s.slice(s.indexOf('codex_orch_collapse_and_truncate() {'));
+    const redactAt = fn.indexOf('redact_secrets_text');
+    const truncateAt = fn.indexOf('head -c');
+    expect(redactAt).toBeGreaterThan(-1);
+    expect(truncateAt).toBeGreaterThan(redactAt);
+  });
+
+  it('never carries a FAILED step\'s output forward into the next prompt', () => {
+    const s = extractChainSnippet(generateRunScript(chain));
+    // The carry append is nested inside the success branch only.
+    const carry = s.indexOf('CODEX_ORCH_CARRY_ENTRY=$(codex_orch_collapse_and_truncate');
+    const successGuard = s.lastIndexOf('if [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then', carry);
+    expect(successGuard).toBeGreaterThan(-1);
+    expect(successGuard).toBeLessThan(carry);
+  });
+});
+
 describe('generateRunScript — chain execution: residual-unsupported cases still fall back correctly', () => {
   it('a step carrying apiCall keeps the OLD single-shot codexDriverCommand path (no CODEX_ORCH_ tokens at all)', () => {
     const agentWithApiCall = baseAgent({ type: 'auto' }, {
