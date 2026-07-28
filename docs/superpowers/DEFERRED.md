@@ -58,6 +58,8 @@
 
 **引き続き未解決**: native 側（Kotlin/JNI）のどこで実際にハングしているかは、この調査だけでは断定できない——次回実機リプロで今回追加した診断ログ（`AgentManager`/`AgentScheduler`/`AgentDraftConfirm`/`AgentDraftConfirmConcurrency` logcat タグ）と native 側ログを同時に取得する必要がある。
 
+**2026-07-28 追加リプロ（build 1988、上記診断ログ着地前の旧ビルドで実施・新事実）**: `@agent 今すぐ、ニュースを3つ調べて、それぞれ要約して、最後に1つのファイルにまとめて保存して`をREMOTE-INPUT-001経由で送信。`AgentRunDecision: stepCount=0 isOrchestrated=false`（この発話は3ステップに分解されず単一ステップ扱い——E2BIGの本来のリプロ条件とは別物になった点は要注意）。14:58:52 confirmAgentDraft開始 → 14:58:55 materializeAgentBody書き込み完了 → 5分間`waitForAgentRunCompletion`ポーリング → 15:03:56 ちょうど`ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS`=5分でCHAIN_LOCK_RELEASE → deleteAgent（cleanup、exitCode=0）→ 15:03:58 `outer catch reached: Timed out waiting for agent "agent-ms48wgxk" to finish`とログに正しく到達。**しかし対応するチャットバブルは最後まで完全に空のまま**（`[@agent] failed: …`の表示コードパスがあるにも関わらず描画されない）。**新事実**: 従来ドキュメントは「成功時に空白になる」パターンを主に扱っていたが、今回は**エラーcatchパスでも同一症状が起きる**ことを確認——store.updateMessage呼び出し自体に問題があるという説（成功パスの`confirmAgentDraftInner`固有の話）では説明しきれず、**チャットバブルのレンダリング/永続化がより広い箇所（エラーハンドラ含む）で壊れている可能性**が高まった。次回はこのエラーcatch分岐（confirmAgentDraftの外側catch、ephemeral one-shot cleanup直後）にも`store.updateMessage`呼び出し前後のbracketログを追加して同様に切り分けるべき。
+
 → sync: なし。
 
 ---
