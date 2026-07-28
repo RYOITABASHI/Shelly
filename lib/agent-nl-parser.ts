@@ -1068,6 +1068,35 @@ function detectMultiSocialActions(text: string, connectors: SocialConnectorMeta[
   return actions.length >= 2 ? actions : null;
 }
 
+/**
+ * The non-X platforms of a detected multi-target post list that could NOT be
+ * resolved to exactly one registered connector (zero or 2+ matches). Empty
+ * when the utterance is not a multi-target list at all. Companion to
+ * detectMultiSocialActions: when that returns null because of one of these,
+ * the caller can surface a caveat instead of letting the platform vanish
+ * silently (2026-07-28 on-device finding: "毎朝8時にブルースカイとXに投稿して"
+ * with no Bluesky connector registered produced an X-only registration with
+ * ZERO visible trace of Bluesky being dropped — the single-target path
+ * already refuses to drop silently via SOCIAL_POST_NO_CONNECTOR_CAVEAT, so
+ * this closes the same gap for the multi-target path WITHOUT touching the
+ * safe "exactly one connector or abandon" resolution rule itself).
+ */
+function detectUnresolvedMultiPostPlatforms(text: string, connectors: SocialConnectorMeta[]): SocialPlatform[] {
+  const targets = detectMultiPostTargets(text);
+  if (targets.length < 2) return [];
+  return targets.filter(
+    (target): target is SocialPlatform => target !== 'x' && connectors.filter((c) => c.platform === target).length !== 1,
+  );
+}
+
+function multiSocialUnresolvedCaveat(platforms: SocialPlatform[]): string {
+  return (
+    `複数プラットフォーム投稿のうち ${platforms.join(' / ')} はコネクタが未登録` +
+    '（または複数件登録されていて特定不可）のため、今回の登録では対象外です。' +
+    'Settings → Social Connectors で該当プラットフォームのコネクタを1件だけ登録すると同時投稿できます。'
+  );
+}
+
 /** Detect the delivery action. Default = draft. Never returns 'publish'.
  *  Exported (Phase C, 2026-07-22) so lib/agent-draft-patch.ts can apply the
  *  SAME action-type detector to a follow-up patch utterance during
@@ -1579,6 +1608,19 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       actionCaveat = SOCIAL_POST_NO_CONNECTOR_CAVEAT;
     } else if (socialPostDetection?.candidates && socialPostDetection.candidates.length >= 2) {
       socialPostCandidates = socialPostDetection.candidates;
+    }
+    // Multi-target list named but not fully resolvable (see
+    // detectUnresolvedMultiPostPlatforms): keep whatever action the fallback
+    // chain above resolved (e.g. X-only app-act) — the "exactly one connector
+    // or abandon" rule is deliberately untouched — but ALWAYS say which
+    // platforms were dropped and why, mirroring the single-target path's
+    // never-silently-dropped contract. An existing needsSetup caveat already
+    // tells the user to register a connector, so it takes precedence.
+    if (!actionCaveat) {
+      const unresolvedMulti = detectUnresolvedMultiPostPlatforms(rawText, connectors);
+      if (unresolvedMulti.length > 0) {
+        actionCaveat = multiSocialUnresolvedCaveat(unresolvedMulti);
+      }
     }
   }
 

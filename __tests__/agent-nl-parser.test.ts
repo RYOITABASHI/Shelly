@@ -811,11 +811,31 @@ describe('parseAgentNL — multi-platform simultaneous post detection (2026-07-2
     // No bluesky connector registered at all — the multi-target read is
     // abandoned rather than registering a partial list; existing
     // single-target detectSocialPost behavior takes over (X alone resolves
-    // via the ordinary detectAction/X_POST_RE path, bluesky is dropped —
-    // pre-existing behavior, unaffected by this feature).
+    // via the ordinary detectAction/X_POST_RE path). 2026-07-28 on-device
+    // finding: bluesky used to be dropped with ZERO visible trace — now the
+    // drop itself is unchanged (the "exactly one connector or abandon" rule
+    // stands) but an actionCaveat names the dropped platform so the user
+    // learns to register a connector instead of silently getting X-only.
     const d = parseAgentNL('毎朝ブルースカイとXに投稿して', []);
     expect(d.actions).toBeUndefined();
     expect(d.action.type).toBe('app-act');
+    expect(d.actionCaveat).toContain('bluesky');
+    expect(d.actionCaveat).toContain('Social Connectors');
+  });
+
+  it('2+ connectors for a named platform also abandons the multi-target read WITH the same caveat (ambiguous, cannot pick)', () => {
+    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [
+      connector(),
+      connector({ id: 'my-bluesky-2', label: 'My Bluesky 2' }),
+    ]);
+    expect(d.actions).toBeUndefined();
+    expect(d.actionCaveat).toContain('bluesky');
+  });
+
+  it('a fully-resolved multi-target list carries NO caveat (explicit negative)', () => {
+    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [connector()]);
+    expect(d.actions).toHaveLength(2);
+    expect(d.actionCaveat).toBeUndefined();
   });
 
   it('a single-platform mention ("Blueskyに投稿して") never populates actions — existing behavior unchanged', () => {
