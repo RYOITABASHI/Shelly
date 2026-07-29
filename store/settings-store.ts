@@ -156,6 +156,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // quick-correct mechanism is NOT removed — it still activates correctly
   // for anyone who flips this back off.
   agentRegistrationRequireConfirm: true,
+  // Widget-ASK-only confirm bypass — opt-in, default OFF (2026-07-29). OFF =
+  // widget `@agent` commands confirm exactly like AI-Pane ones (the
+  // 2026-07-24 confirm-by-default reversal above stays the default
+  // everywhere). See AppSettings.widgetAgentRegistrationNoConfirm.
+  widgetAgentRegistrationNoConfirm: false,
   defaultRequireActionApproval: false,
   // Opt-in. Off = today's behaviour exactly; see AppSettings' doc comment for
   // why this can only ever cover reversible workspace file writes.

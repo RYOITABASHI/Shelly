@@ -1,12 +1,33 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Package-visibility declaration (targetSdk 30+) so
+       ScouterWidgetPromptActivity's mic button can resolve/launch the OS
+       speech recognizer (RecognizerIntent.ACTION_RECOGNIZE_SPEECH). Without
+       this, resolveActivity() returns null on Android 11+ even when the
+       Google app's recognizer is installed, and the mic button would never
+       appear. Lives in this module manifest (source-controlled, merged at
+       build time) — NOT the app's generated android/ manifest, which expo
+       prebuild wipes (see CLAUDE.md "expo prebuild wipes manual manifest
+       edits"). -->
+  <queries>
+    <intent>
+      <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+    </intent>
+  </queries>
   <application>
+    <!-- 2026-07-29: android:noHistory REMOVED (was "true") for the voice-input
+         mic button. A noHistory activity never receives onActivityResult —
+         the OS finishes it the moment the RecognizerIntent activity stops it —
+         so recognized text could never come back. Back-stack hygiene is still
+         covered: every code path in the Activity explicitly finish()es,
+         excludeFromRecents keeps it out of the recents list, and
+         finishOnTaskLaunch tears down a stray instance on the next task
+         launch. -->
     <activity
       android:name=".scouter.ScouterWidgetPromptActivity"
       android:excludeFromRecents="true"
       android:exported="false"
       android:finishOnTaskLaunch="true"
       android:launchMode="singleTop"
-      android:noHistory="true"
       android:taskAffinity=""
       android:theme="@style/ShellyScouterPromptTheme" />
 

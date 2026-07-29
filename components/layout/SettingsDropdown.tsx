@@ -842,6 +842,7 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
   const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
   const cloudExhaustion = useSettingsStore((s) => s.settings.autonomousCloudOnExhaustion ?? 'escalate');
   const optimisticWrites = useSettingsStore((s) => s.settings.agentOptimisticWorkspaceWrites === true);
+  const widgetNoConfirm = useSettingsStore((s) => s.settings.widgetAgentRegistrationNoConfirm === true);
   const outputTarget = useSettingsStore((s) => s.settings.agentOutputTarget ?? 'local');
   const vaultPath = useSettingsStore((s) => s.settings.agentVaultPath ?? '');
   const topicFolder = useSettingsStore((s) => s.settings.agentTopicFolder ?? '');
@@ -931,6 +932,32 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
       if (!ok) return;
     }
     updateSettings({ agentOptimisticWorkspaceWrites: !optimisticWrites });
+  };
+
+  // Widget-ASK no-confirm registration. Same informed-consent shape as the
+  // two opt-ins above, for the same reason: it removes a human confirmation
+  // step. Blast radius is deliberately narrow — ONLY an `@agent …` command
+  // entered in the Scouter widget's ASK dialog (lib/widget-agent-registration.ts);
+  // the AI Pane's own `@agent` flow and every hard content gate (unclear
+  // schedule / assumed values / external-posting action types) are unchanged,
+  // and the copy says so. No .env flush: the decision is made entirely in JS
+  // at presentDraftForConfirmation's single decision point.
+  const toggleWidgetNoConfirm = async () => {
+    if (!widgetNoConfirm) {
+      const ok = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          t('agents.widget_noconfirm_consent_title'),
+          t('agents.widget_noconfirm_consent_body'),
+          [
+            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+            { text: t('agents.widget_noconfirm_consent_enable'), style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      });
+      if (!ok) return;
+    }
+    updateSettings({ widgetAgentRegistrationNoConfirm: !widgetNoConfirm });
   };
 
   const toggleExhaustion = async () => {
@@ -1117,6 +1144,31 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
           switch, so they must be visible BEFORE the user flips it. */}
       <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
         {t('agents.optimistic_writes_hint')}
+      </Text>
+      <Row label={t('agents.widget_noconfirm')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: widgetNoConfirm ? withAlpha(C.accent, 0.36) : C.border },
+          ]}
+          onPress={toggleWidgetNoConfirm}
+          hitSlop={4}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: widgetNoConfirm ? C.accent : C.text2 },
+              widgetNoConfirm && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      {/* Always shown (not only when on): the widget-ASK-only scope and the
+          "AI Pane still confirms" boundary are what stop this reading as a
+          general no-confirm switch, so they must be visible BEFORE the user
+          flips it. */}
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
+        {t('agents.widget_noconfirm_hint')}
       </Text>
       <Row label={t('agents.notification_trigger')}>
         <Pressable

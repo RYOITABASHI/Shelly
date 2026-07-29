@@ -30,7 +30,7 @@ import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/A
 import AgentScheduleReadinessCard from '@/components/panes/AgentScheduleReadinessCard';
 import AgentChatConfirm from '@/components/panes/AgentChatConfirm';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
-import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
+import { useAIPaneDispatch, type AIPaneDispatchOptions } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
 import { useSettingsStore } from '@/store/settings-store';
@@ -312,8 +312,8 @@ export default function AIPane() {
     useAIPaneDispatch(paneId);
 
   const handleSubmit = useCallback(
-    (text: string) => {
-      void dispatch(text).catch((err) => {
+    (text: string, dispatchOpts?: AIPaneDispatchOptions) => {
+      void dispatch(text, dispatchOpts).catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         try {
           logError('AIPane', 'dispatch rejected', err);
@@ -337,6 +337,26 @@ export default function AIPane() {
     },
     [dispatch, paneId],
   );
+
+  // Widget ASK → `@agent …` handoff (2026-07-29): a prompt queued from
+  // outside any AI Pane (app/_layout.tsx's `shelly:///ai?widgetAgentCommand=1`
+  // deep-link branch) is claimed here and fed through the SAME handleSubmit →
+  // dispatch() path a typed submission uses, so the widget-seeded `@agent`
+  // command lands in the identical NL-parse/slot-fill/confirm-card flow.
+  // takePendingExternalPrompt() is claim-and-clear (synchronous), so with
+  // multiple mounted AI Panes exactly one dispatches it. The claimed entry's
+  // `source` tag ('widget-ask') is threaded through so dispatch() can apply
+  // the widget-scoped registration-confirm policy — see
+  // lib/widget-agent-registration.ts (OFF-by-default opt-in; with it off this
+  // is byte-identical to a typed submission).
+  const pendingExternalPrompt = useAIPaneStore((s) => s.pendingExternalPrompt);
+  useEffect(() => {
+    if (!pendingExternalPrompt) return;
+    const taken = useAIPaneStore.getState().takePendingExternalPrompt();
+    if (taken?.text) {
+      handleSubmit(taken.text, taken.source ? { source: taken.source } : undefined);
+    }
+  }, [pendingExternalPrompt, handleSubmit]);
 
   const { startRecording, stopRecording, isRecording, isTranscribing } =
     usePaneVoice(handleSubmit);

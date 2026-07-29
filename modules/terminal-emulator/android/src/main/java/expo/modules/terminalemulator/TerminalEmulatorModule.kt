@@ -1397,6 +1397,17 @@ class TerminalEmulatorModule : Module() {
             }
         }
 
+        // Widget ASK → `@agent …` registration handoff (2026-07-29): one-shot
+        // consume of the pending agent command the widget prompt dialog
+        // recorded before deep-linking into the app. Returns the raw typed
+        // text (including the `@agent` prefix) or null; the JS side feeds it
+        // through the AI Pane's existing parse + confirm-card flow.
+        AsyncFunction("consumeScouterWidgetAgentCommand") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            ScouterStateStore(context).consumeWidgetAgentCommandPending()
+        }
+
         AsyncFunction("getScouterWidgetPendingPromptTarget") {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")

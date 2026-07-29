@@ -32,6 +32,7 @@ import { useBrowserStore } from '@/store/browser-store';
 import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
 import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
+import { useAIPaneStore } from '@/store/ai-pane-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
@@ -503,7 +504,7 @@ export default function RootLayout() {
       return 'p4';
     };
 
-    const focusPaneByTab = (tab: 'agent-chat') => {
+    const focusPaneByTab = (tab: 'agent-chat' | 'ai') => {
       const multiPane = useMultiPaneStore.getState();
       const existingIndex = multiPane.slots.findIndex((slot) => slot?.tab === tab);
       if (existingIndex >= 0) {
@@ -1138,6 +1139,44 @@ export default function RootLayout() {
             returnHomeFromWidgetFlow();
           }
           logInfo('DeepLink', `Agent Chat ${opened ? 'opened' : 'open failed'}`);
+        } else if (target === 'ai') {
+          // shelly:///ai?widgetAgentCommand=1 — Scouter widget ASK dialog
+          // handing an `@agent …` command to the REAL registration flow
+          // (2026-07-29). The widget records the typed text natively
+          // (ScouterStateStore.recordWidgetAgentCommandPending) and fires this
+          // deep link; we consume it exactly once and seed the AI Pane's
+          // dispatch with it (store/ai-pane-store.ts pendingExternalPrompt →
+          // AIPane's claim effect → dispatch()), so the user sees the same
+          // parse + confirm-card experience as typing it in the pane.
+          // Registration keeps the in-app confirm step by default; the
+          // 'widget-ask' source tag set below lets the OFF-by-default
+          // AppSettings.widgetAgentRegistrationNoConfirm opt-in skip that
+          // step for THIS surface only (see lib/widget-agent-registration.ts
+          // — AI-Pane-typed `@agent` always still confirms). Either way this
+          // branch never calls any registration API itself.
+          const widgetAgentCommand = queryValue(parsed.queryParams?.widgetAgentCommand) === '1';
+          if (widgetAgentCommand) {
+            await waitForMultiPaneHydration();
+            const command = TerminalEmulator.consumeScouterWidgetAgentCommand
+              ? await TerminalEmulator.consumeScouterWidgetAgentCommand().catch((e) => {
+                  logError('DeepLink', 'Widget agent command consume failed', e);
+                  return null;
+                })
+              : null;
+            if (typeof command === 'string' && command.trim().length > 0) {
+              const opened = focusPaneByTab('ai');
+              useAIPaneStore.getState().setPendingExternalPrompt(command, 'widget-ask');
+              logInfo(
+                'DeepLink',
+                `Widget agent command queued for AI Pane (opened=${opened}, ${command.trim().length} chars)`,
+              );
+            } else {
+              logInfo('DeepLink', 'Widget agent command deep link had no pending command (consumed/expired?)');
+            }
+          } else {
+            focusPaneByTab('ai');
+            logInfo('DeepLink', 'AI Pane opened');
+          }
         }
       } catch (e) {
         logError('DeepLink', 'parse failed', e);

@@ -189,6 +189,20 @@ const ja: Record<string, string> = {
   'agents.optimistic_writes_consent_title': 'ワークスペース内の下書きを承認なしで実行',
   'agents.optimistic_writes_consent_body': '対象は1つだけです: ローカルの agent-output フォルダへ下書きを保存するだけの実行。\n\n• 実行前に自動で git セーブポイントを取り、承認タップ無しで即実行します。\n• cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、引き続き承認が必要です。\n• エージェント登録時の確認・command-safety・秘密情報スキャンは変わりません。\n• 「元に戻す」導線はまだ未実装のため、現時点で実際にこの経路を通る実行はありません（設定のみ先行）。\n\n有効にしますか？',
   'agents.optimistic_writes_consent_enable': '有効にする',
+  // ウィジェットASKの確認省略登録 — AppSettings.widgetAgentRegistrationNoConfirm。
+  // 文言は lib/widget-agent-registration.ts の実装範囲（ウィジェットASK経由の
+  // @agent コマンドのみ）に厳密に合わせ、AIペイン側のフローと各ハードゲート
+  // （不明確なスケジュール・推測値・外部投稿系アクション）が対象外であることを
+  // 明記する。
+  'agents.widget_noconfirm': 'ウィジェット登録の確認省略',
+  'agents.widget_noconfirm_hint': 'ホーム画面ウィジェットの ASK に入力（または音声入力）した「@agent …」コマンドを、アプリ内の確認ステップなしで即登録し、登録内容を通知でお知らせします。対象はウィジェット ASK 経由のみ: AI ペインに直接入力した @agent は従来どおり確認が必要です。スケジュールが不明確・推測値を含む・外部投稿系のコマンドは従来どおりアプリ内フローが開きます。デフォルトはオフ。',
+  'agents.widget_noconfirm_consent_title': 'ウィジェットからのエージェント登録を確認なしにする',
+  'agents.widget_noconfirm_consent_body': '対象は1つだけです: ホーム画面ウィジェットの ASK に入力した「@agent …」コマンド。\n\n• 通常のアプリ内確認をスキップして即登録します。\n• 登録のたびに通知（名前+スケジュール）ですぐお知らせします。\n• AI ペインに直接入力した @agent は対象外で、従来どおり確認が必要です。\n• スケジュールが不明確・推測値を含む・外部投稿系（SNS投稿 / app-act）のコマンドは従来どおりアプリ内フローが開きます。\n• 実行時のアクション承認・command-safety・秘密情報スキャンは変わりません。\n\n有効にしますか？',
+  'agents.widget_noconfirm_consent_enable': '有効にする',
+  // 確認省略で登録が完了した直後に出す通知（「即実行して、後から通知」——
+  // unattended skill-save と同じ形）。
+  'agents.widget_registered_title': 'ウィジェットからエージェントを登録しました',
+  'agents.widget_registered_body': '「{{name}}」— {{schedule}}。確認ステップなしで登録されました（ウィジェット確認省略設定）。管理は @agent list から。',
   'agents.notification_trigger': '通知トリガー',
   'agents.notification_trigger_enabled': '通知トリガーを有効にしました',
   'agents.notification_trigger_disabled': '通知トリガーを無効にしました',

@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+  <!-- 2026-07-29: previously missing ASK/prompt-flow keys (fell back to
+       English). Register matches the widget's terminal-style short labels
+       (RUN=実行 → ASK=依頼). -->
+  <string name="scouter_ask_agent_chat_short">依頼</string>
+  <string name="scouter_ask_agent_chat">ウィジェットから Codex に依頼</string>
+  <string name="scouter_widget_prompt_resume">Codex を再開</string>
   <string name="scouter_widget_agent_run">予定済みエージェントを実行</string>
   <string name="scouter_widget_agent_run_named">実行 %1$s</string>
   <string name="scouter_widget_agent_none">エージェント  予定なし</string>
@@ -21,6 +27,10 @@
   <string name="scouter_widget_prompt_cancel">キャンセル</string>
   <string name="scouter_widget_prompt_close">閉じる</string>
   <string name="scouter_widget_prompt_empty">プロンプトが空です</string>
+  <!-- Voice input + @agent handoff (2026-07-29, widget ASK dialog) -->
+  <string name="scouter_widget_prompt_voice">音声</string>
+  <string name="scouter_widget_prompt_voice_unavailable">この端末では音声認識を利用できません</string>
+  <string name="scouter_widget_prompt_agent_command_failed">Shelly を開けませんでした（エージェント登録）</string>
   <string name="scouter_widget_prompt_sent">Codex に送信しました</string>
   <string name="scouter_widget_prompt_approval_needed">Codex が承認待ちです。ウィジェットの OK / NO を使ってください。</string>
   <string name="scouter_widget_prompt_interactive">Codex が選択待ちです</string>

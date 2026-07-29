@@ -29,6 +29,10 @@
   <string name="scouter_widget_prompt_close">Close</string>
   <string name="scouter_widget_prompt_resume">Resume Codex</string>
   <string name="scouter_widget_prompt_empty">Prompt is empty</string>
+  <!-- Voice input + @agent handoff (2026-07-29, widget ASK dialog) -->
+  <string name="scouter_widget_prompt_voice">Mic</string>
+  <string name="scouter_widget_prompt_voice_unavailable">Speech recognition is not available on this device</string>
+  <string name="scouter_widget_prompt_agent_command_failed">Could not open Shelly for agent setup</string>
   <string name="scouter_widget_prompt_sent">Sent to Codex</string>
   <string name="scouter_widget_prompt_approval_needed">Codex is waiting for approval. Use OK or NO on the widget.</string>
   <string name="scouter_widget_prompt_interactive">Codex is waiting for a terminal choice</string>

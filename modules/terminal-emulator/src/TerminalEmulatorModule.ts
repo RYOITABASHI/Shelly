@@ -115,6 +115,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ptySessionId?: string | null;
     shellySessionId?: string | null;
   } | null>;
+  /**
+   * Widget ASK → `@agent …` registration handoff (2026-07-29): one-shot
+   * consume of the agent command typed into the widget prompt dialog.
+   * Returns the raw text (including the `@agent` prefix) or null when
+   * nothing is pending / the pending entry expired (2-minute window,
+   * mirrored from the native widget-prompt expiry).
+   */
+  consumeScouterWidgetAgentCommand?(): Promise<string | null>;
   getScouterWidgetPendingPromptTarget?(): Promise<{
     queuedAt: number;
     codexSessionId?: string | null;

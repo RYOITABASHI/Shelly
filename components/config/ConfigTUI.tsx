@@ -117,6 +117,12 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // toggle is currently inert. Drop that sentence in the same commit that
       // wires the undo route, never before.
       { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap. Nothing else changes: cli / notify / webhook / social-post / dm-reply / app-act, and any Obsidian or custom output, still require approval. No "Undo" button exists yet, so no run takes this path today. Default off.' },
+      // Widget-ASK-only registration confirm bypass — scoped EXACTLY to what
+      // lib/widget-agent-registration.ts implements (see that module's doc):
+      // widget-ASK-originated `@agent` commands only; AI-Pane `@agent` and
+      // every hard content gate (unclear schedule / assumed values /
+      // external-posting action types) are unchanged.
+      { key: 'widgetAgentRegistrationNoConfirm', label: 'Widget No-Confirm Register', type: 'boolean', source: 'settings', description: 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately without the in-app confirmation step, and a notification reports what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.' },
     ],
   },
   {
@@ -613,6 +619,26 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           Alert.alert(
             'Run workspace drafts without approval',
             'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n• The "Undo" affordance is not built yet, so no run actually takes this path today; this setting is here ahead of it.\n\nEnable?',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          );
+        });
+        if (!ok) return; // leave the toggle OFF
+      }
+      // Same informed-consent shape as the two opt-ins above: enabling this
+      // removes the interactive registration-confirm step for widget-ASK
+      // `@agent` commands, so it states its own (narrow) blast radius first.
+      // (2026-07-24 context: registration confirm-by-default is a deliberate
+      // product-owner reversal — this opt-in never changes that default, it
+      // only adds a widget-scoped, explicitly-enabled bypass.)
+      if (def.key === 'widgetAgentRegistrationNoConfirm' && rawValue === true) {
+        const ok = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Register widget agents without confirmation',
+            'This covers ONE thing: an "@agent …" command entered in the home-screen widget\'s ASK dialog.\n\n• It registers immediately — the normal in-app confirmation bubble is skipped.\n• A notification reports each registration (name + schedule) right away.\n• "@agent" typed in the AI Pane is NOT affected and still confirms.\n• Commands with an unclear schedule, assumed values, or external-posting actions (social-post / app-act) still open the normal in-app flow.\n• Per-run action approval, command-safety and the secret scan are unchanged.\n\nEnable?',
             [
               { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
               { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },

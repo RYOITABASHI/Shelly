@@ -190,6 +190,21 @@ const en: Record<string, string> = {
   'agents.optimistic_writes_consent_title': 'Run workspace drafts without approval',
   'agents.optimistic_writes_consent_body': 'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n• The "Undo" affordance is not built yet, so no run actually takes this path today; this setting is here ahead of it.\n\nEnable?',
   'agents.optimistic_writes_consent_enable': 'Enable',
+  // Widget-ASK no-confirm registration — AppSettings.widgetAgentRegistrationNoConfirm.
+  // Copy is scoped to exactly what lib/widget-agent-registration.ts implements:
+  // widget-ASK-originated `@agent` commands only; the AI Pane's own flow and
+  // every hard content gate (unclear schedule, assumed/LLM-extracted values,
+  // high-risk action types) are explicitly named as unchanged.
+  'agents.widget_noconfirm': 'Widget No-Confirm Register',
+  'agents.widget_noconfirm_hint': 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately, without the in-app confirmation step, and posts a notification saying what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms as usual. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.',
+  'agents.widget_noconfirm_consent_title': 'Register widget agents without confirmation',
+  'agents.widget_noconfirm_consent_body': 'This covers ONE thing: an "@agent …" command entered in the home-screen widget\'s ASK dialog.\n\n• It registers immediately — the normal in-app confirmation bubble is skipped.\n• A notification reports each registration (name + schedule) right away.\n• "@agent" typed in the AI Pane is NOT affected and still confirms.\n• Commands with an unclear schedule, assumed values, or external-posting actions (social-post / app-act) still open the normal in-app flow.\n• Per-run action approval, command-safety and the secret scan are unchanged.\n\nEnable?',
+  'agents.widget_noconfirm_consent_enable': 'Enable',
+  // Posted after a widget-originated registration completed without the
+  // confirm step ("act immediately, notify after" — mirrors the unattended
+  // skill-save notification shape).
+  'agents.widget_registered_title': 'Agent registered from widget',
+  'agents.widget_registered_body': '"{{name}}" — {{schedule}}. Registered without the confirmation step (widget no-confirm setting). Manage it with @agent list.',
   'agents.notification_trigger': 'Notification Triggers',
   'agents.notification_trigger_enabled': 'Notification triggers enabled',
   'agents.notification_trigger_disabled': 'Notification triggers disabled',

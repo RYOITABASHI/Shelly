@@ -50,6 +50,10 @@ import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import {
+  resolveRegistrationConfirmRequirement,
+  notifyWidgetAgentRegistered,
+} from '@/lib/widget-agent-registration';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
@@ -288,6 +292,23 @@ function createThrottledUpdate(updateFn: UpdateFn) {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 /**
+ * Per-dispatch options (2026-07-29). `source: 'widget-ask'` marks a prompt
+ * claimed from the Scouter widget's ASK handoff (store/ai-pane-store.ts
+ * pendingExternalPrompt → AIPane's claim effect); presentDraftForConfirmation
+ * uses it to apply the widget-scoped registration-confirm policy
+ * (AppSettings.widgetAgentRegistrationNoConfirm — OFF-by-default opt-in, see
+ * lib/widget-agent-registration.ts). Omitted/undefined = a typed AI-Pane
+ * submission; the widget opt-in is never applied. Scope note: the tag lives
+ * only on THIS dispatch call — if the utterance detours into conversational
+ * slot-filling, the user's follow-up answers are ordinary typed dispatches,
+ * so the eventual registration confirms per the global setting (a partially
+ * specified command can never ride the widget bypass).
+ */
+export interface AIPaneDispatchOptions {
+  source?: 'widget-ask';
+}
+
+/**
  * `useAIPaneDispatch(paneId)` — call `dispatch(text)` to send a message.
  *
  * Routing:
@@ -314,7 +335,7 @@ export function useAIPaneDispatch(paneId: string) {
   const { offerSkillSave } = useSkillSaveOffer({ runCommand: runAgentShellCommand });
 
   const dispatch = useCallback(
-    async (userText: string) => {
+    async (userText: string, dispatchOpts?: AIPaneDispatchOptions) => {
       if (!userText.trim()) return;
 
       const store = useAIPaneStore.getState();
@@ -433,8 +454,22 @@ export function useAIPaneDispatch(paneId: string) {
         // helper the chat-native flow already reuses for app-act/
         // tool-pinned), so auto-registering here can never disagree with
         // what tapping Confirm on the card would have produced.
-        const requireRegistrationConfirm =
-          useSettingsStore.getState().settings.agentRegistrationRequireConfirm === true;
+        // 2026-07-29: the confirm requirement is now resolved through
+        // lib/widget-agent-registration.ts so the Scouter widget's
+        // OFF-by-default no-confirm opt-in
+        // (AppSettings.widgetAgentRegistrationNoConfirm) has exactly ONE
+        // decision point. For a typed AI-Pane dispatch (dispatchOpts absent)
+        // this is byte-identical to the previous inline
+        // `agentRegistrationRequireConfirm === true` read; only a
+        // widget-ASK-sourced dispatch with the opt-in enabled resolves to
+        // no-confirm, and every hard gate below (shouldAutoRegisterDraft's
+        // fireable-schedule/assumption checks, isAutoRegisterEligibleOnChatConfirm's
+        // risk tiering) still applies to it unchanged.
+        const registrationSource = dispatchOpts?.source === 'widget-ask' ? 'widget-ask' : 'ai-pane';
+        const requireRegistrationConfirm = resolveRegistrationConfirmRequirement(
+          useSettingsStore.getState().settings,
+          registrationSource,
+        );
         // See isAutoRegisterEligibleOnChatConfirm's doc comment (lib/agent-
         // plan-summary.ts): auto-register eligibility is scored by
         // action-type risk tier, not by which UI surface renders the pending
@@ -445,6 +480,31 @@ export function useAIPaneDispatch(paneId: string) {
         const autoRegisterEligible = !useChatConfirm || isAutoRegisterEligibleOnChatConfirm(draft.action.type);
         if (autoRegisterEligible && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
           await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
+          // Widget no-confirm follow-up ("act immediately, notify after" —
+          // same shape as lib/unattended-skill-save.ts): a widget-ASK-
+          // originated registration that just completed WITHOUT an
+          // interactive confirm step happens while the user is typically
+          // still on the home screen, so post a notification stating what
+          // got registered. Gated on the draft bubble actually flipping to
+          // 'confirmed' — confirmAgentDraft swallows its own failures into
+          // the bubble text, so a bare `await` returning is NOT proof of
+          // registration. Best-effort: a notification failure never fails
+          // the registration.
+          if (registrationSource === 'widget-ask') {
+            const confirmedMsg = useAIPaneStore
+              .getState()
+              .getOrCreate(paneId)
+              .messages.find((m) => m.id === draftMessageId);
+            if (confirmedMsg?.agentCardState === 'confirmed') {
+              const noticeLocale = detectMessageLocale(draft.rawText ?? draft.prompt);
+              notifyWidgetAgentRegistered(
+                { name: draft.name, scheduleLabel: draft.scheduleLabel },
+                noticeLocale,
+              ).catch((notifyErr) => {
+                logWarn('AIPaneDispatch', `widget registration notification failed: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
+              });
+            }
+          }
         }
       };
 

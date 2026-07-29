@@ -232,6 +232,43 @@ class ScouterStateStore(context: Context) {
         writeHelperState()
     }
 
+    // Widget ASK → `@agent …` registration handoff (2026-07-29). Deliberately a
+    // SEPARATE, minimal pending record from KEY_WIDGET_PENDING_PROMPT: the
+    // Codex-prompt pending machinery drives the widget's Codex status pills and
+    // the resume/redeliver state machine, none of which applies to an agent
+    // registration (no Codex session is involved and the widget must not show
+    // "PENDING" for it). The RN deep-link handler consumes this exactly once
+    // and feeds it through the SAME AI-Pane `@agent` parse + confirm-card flow
+    // a user gets typing it in the pane — registration still requires the
+    // in-app confirm step; nothing is created from the widget alone.
+    fun recordWidgetAgentCommandPending(command: String) {
+        prefs.edit()
+            .putString(KEY_WIDGET_AGENT_COMMAND, command)
+            .putLong(KEY_WIDGET_AGENT_COMMAND_AT, System.currentTimeMillis())
+            .commit()
+    }
+
+    // One-shot consume: clears the record even when it is stale so a dead
+    // entry can never be redelivered later. Freshness mirrors the Codex
+    // widget-prompt window (WIDGET_PROMPT_EXPIRE_AFTER_MS): if the app took
+    // longer than that to drain (e.g. it never actually opened), treat the
+    // command as expired rather than surprising the user minutes later.
+    fun consumeWidgetAgentCommandPending(now: Long = System.currentTimeMillis()): String? {
+        synchronized(lock) {
+            val command = prefs.getString(KEY_WIDGET_AGENT_COMMAND, null)?.ifBlank { null }
+            val queuedAt = prefs.getLong(KEY_WIDGET_AGENT_COMMAND_AT, 0L)
+            if (prefs.contains(KEY_WIDGET_AGENT_COMMAND) || prefs.contains(KEY_WIDGET_AGENT_COMMAND_AT)) {
+                prefs.edit()
+                    .remove(KEY_WIDGET_AGENT_COMMAND)
+                    .remove(KEY_WIDGET_AGENT_COMMAND_AT)
+                    .commit()
+            }
+            if (command == null) return null
+            if (queuedAt <= 0L || now - queuedAt > WIDGET_PROMPT_EXPIRE_AFTER_MS) return null
+            return command
+        }
+    }
+
     fun recordWidgetAgentRunStarted(agentId: String, agentName: String) {
         val now = System.currentTimeMillis()
         synchronized(lock) {
@@ -1111,6 +1148,8 @@ class ScouterStateStore(context: Context) {
         private const val KEY_WIDGET_STATUS = "widget_status"
         private const val KEY_WIDGET_STATUS_AT = "widget_status_at"
         private const val KEY_WIDGET_ERROR = "widget_error"
+        private const val KEY_WIDGET_AGENT_COMMAND = "widget_agent_command"
+        private const val KEY_WIDGET_AGENT_COMMAND_AT = "widget_agent_command_at"
         private const val KEY_WIDGET_AGENT_RUN_ID = "widget_agent_run_id"
         private const val KEY_WIDGET_AGENT_RUN_NAME = "widget_agent_run_name"
         private const val KEY_WIDGET_AGENT_RUN_STATUS = "widget_agent_run_status"

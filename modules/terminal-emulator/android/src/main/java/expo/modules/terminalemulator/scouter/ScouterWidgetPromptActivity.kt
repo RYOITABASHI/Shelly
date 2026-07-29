@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.text.InputType
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -144,6 +145,18 @@ class ScouterWidgetPromptActivity : Activity() {
                 Toast.makeText(this, R.string.scouter_widget_prompt_empty, Toast.LENGTH_SHORT).show()
                 return@actionText
             }
+            // Widget ASK → `@agent …` registration handoff (2026-07-29):
+            // agent-shaped input must NEVER be written into the Codex PTY as a
+            // literal prompt — it goes to the app's real `@agent` NL-parse +
+            // confirm-card flow instead (see sendAgentCommand). Everything
+            // else falls through to the pre-existing sendPrompt byte-for-byte.
+            if (isAgentMentionCommand(prompt)) {
+                if (sendAgentCommand(prompt)) {
+                    dialog.dismiss()
+                    finish()
+                }
+                return@actionText
+            }
             if (sendPrompt(prompt, dialog)) {
                 dialog.dismiss()
                 returnHomeAndFinish()
@@ -157,6 +170,27 @@ class ScouterWidgetPromptActivity : Activity() {
             addView(send)
         }
 
+        // Voice input (2026-07-29): OS-level RecognizerIntent only — the
+        // recognized text is placed into the EditText for review/edit, never
+        // auto-submitted (ASR misrecognition would otherwise feed a Codex
+        // prompt or an agent registration unreviewed). The row keeps the
+        // EditText itself untouched (same instance, same input flags) so IME
+        // behavior — including the keyboard's own voice key — is unaffected.
+        val inputRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(input, LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            ))
+            if (isSpeechRecognitionAvailable()) {
+                addView(actionText(R.string.scouter_widget_prompt_voice) {
+                    launchVoiceRecognition()
+                })
+            }
+        }
+
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = panelBackground(dp(8), dp(1))
@@ -165,7 +199,7 @@ class ScouterWidgetPromptActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ))
-            addView(input, LinearLayout.LayoutParams(
+            addView(inputRow, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
@@ -178,6 +212,108 @@ class ScouterWidgetPromptActivity : Activity() {
                 topMargin = dp(18)
             })
         }
+    }
+
+    // ── Widget ASK → agent registration handoff (2026-07-29) ─────────────────
+
+    /**
+     * Detection twin of lib/input-router.ts's `@agent` mention route
+     * (`/^@agent\s*/i` tested against `input.trim()` — see MENTION_PATTERNS
+     * and parseInput). Kept as the LITERAL same pattern source so the widget's
+     * idea of "this is an agent command" cannot drift from the real parser's;
+     * __tests__/widget-agent-command-parity.test.ts extracts both pattern
+     * literals from source and asserts they stay behaviorally identical.
+     * The `@edit` / `@code` aliases (which the AI Pane also routes to the
+     * agent handler) are deliberately NOT mirrored here: typed into the
+     * widget's ASK dialog they far more plausibly mean literal Codex text,
+     * and mis-routing a Codex prompt into agent registration is the worse
+     * failure mode.
+     */
+    private fun isAgentMentionCommand(prompt: String): Boolean =
+        AGENT_MENTION_RE.containsMatchIn(prompt.trim())
+
+    /**
+     * Hands the typed `@agent …` text to the RN side so the EXISTING AI-Pane
+     * NL-parse + confirm flow presents it — by default the user sees the same
+     * in-app confirmation they would get typing the command into the AI Pane
+     * directly. Nothing is registered from the widget alone: whether the
+     * JS side then requires the interactive confirm step is decided ONLY at
+     * lib/widget-agent-registration.ts's single decision point (confirm by
+     * default per the 2026-07-24 product ruling; the OFF-by-default
+     * AppSettings.widgetAgentRegistrationNoConfirm opt-in may skip it for
+     * this widget surface, with a post-hoc notification). This activity
+     * itself never registers anything and never reads that setting.
+     *
+     * Mechanism mirrors the Codex widget-prompt handoff (record pending in
+     * ScouterStateStore → deep-link the app → RN consumes exactly once):
+     * the pending record survives a cold start, and the deep link is fired
+     * via a real Activity startActivity (allowed) — NOT `am start`, which
+     * Knox sepolicy rejects from this uid.
+     */
+    private fun sendAgentCommand(command: String): Boolean {
+        val store = ScouterStateStore(this)
+        store.recordWidgetAgentCommandPending(command)
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AGENT_COMMAND_COMPOSE_URI))
+            .setPackage(packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return runCatching {
+            startActivity(intent)
+            Log.i(TAG, "Widget agent command handed off to app (length=${command.length})")
+            true
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to open app for widget agent command", error)
+            // Don't leave an orphaned pending command behind a failed launch.
+            store.consumeWidgetAgentCommandPending()
+            Toast.makeText(this, R.string.scouter_widget_prompt_agent_command_failed, Toast.LENGTH_SHORT).show()
+        }.getOrDefault(false)
+    }
+
+    // ── Voice input via the OS speech recognizer (2026-07-29) ────────────────
+
+    private fun isSpeechRecognitionAvailable(): Boolean = runCatching {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).resolveActivity(packageManager) != null
+    }.getOrDefault(false)
+
+    private fun launchVoiceRecognition() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, java.util.Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.scouter_widget_prompt_hint))
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        runCatching {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, REQUEST_VOICE_INPUT)
+        }.onFailure { error ->
+            // resolveActivity said yes but the launch still failed (package
+            // state changed, recognizer disabled, …) — degrade to a message,
+            // never crash the dialog.
+            Log.w(TAG, "Speech recognizer launch failed", error)
+            Toast.makeText(this, R.string.scouter_widget_prompt_voice_unavailable, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_VOICE_INPUT) return
+        if (resultCode != Activity.RESULT_OK) return
+        val recognized = data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+        if (recognized.isBlank()) return
+        // The intent-handling entry paths (approval/choice/pet) never build the
+        // prompt UI, so `input` may be uninitialized if a result is somehow
+        // delivered to one of those instances — bail instead of crashing.
+        if (!::input.isInitialized) return
+        val existing = input.text?.toString().orEmpty()
+        val merged = if (existing.isBlank()) recognized else "$existing $recognized"
+        // Populate for review/edit only — submission stays a deliberate SEND tap.
+        input.setText(merged)
+        input.setSelection(merged.length)
+        input.requestFocus()
     }
 
     private fun createUnavailableContent(dialog: Dialog, messageId: Int, showResume: Boolean): LinearLayout {
@@ -815,6 +951,18 @@ class ScouterWidgetPromptActivity : Activity() {
             ScouterStatus.WAITING_PERMISSION,
             ScouterStatus.ERROR
         )
+        // LITERAL twin of lib/input-router.ts MENTION_PATTERNS' agent route
+        // (`/^@agent\s*/i`, tested against the trimmed input in parseInput).
+        // `^` anchors at index 0 (no MULTILINE flag), so containsMatchIn on the
+        // trimmed prompt is exactly RegExp.test on the trimmed input. Change
+        // one side only and __tests__/widget-agent-command-parity.test.ts
+        // fails — update both together.
+        private val AGENT_MENTION_RE = Regex("""^@agent\s*""", RegexOption.IGNORE_CASE)
+        // Routes into app/_layout.tsx's deep-link handler (`target === 'ai'`
+        // branch), which consumes the pending command recorded in
+        // ScouterStateStore and seeds the AI Pane's dispatch with it.
+        private const val AGENT_COMMAND_COMPOSE_URI = "shelly:///ai?widgetAgentCommand=1"
+        private const val REQUEST_VOICE_INPUT = 4301
         private fun agentChatResumeUri(drainApprovalDecision: String?): String {
             val base = "shelly:///agent-chat?compose=1&source=widget&returnHome=1"
             return if (drainApprovalDecision == null) {

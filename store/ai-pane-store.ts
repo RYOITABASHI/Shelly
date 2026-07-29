@@ -125,6 +125,33 @@ export interface JustRegisteredAgentRef {
   createdAt: number;
 }
 
+/**
+ * Runtime-only handoff slot for a prompt that originates OUTSIDE any AI Pane
+ * (2026-07-29: the Scouter widget's ASK dialog handing an `@agent …` command
+ * to the real AI-Pane parse + confirm-card flow, via the native pending
+ * record + `shelly:///ai?widgetAgentCommand=1` deep link — see
+ * app/_layout.tsx's `target === 'ai'` branch). The deep-link handler sets it;
+ * the first mounted AIPane to observe it claims it atomically with
+ * takePendingExternalPrompt() and feeds it through the SAME dispatch() a
+ * typed submission uses — so `@agent` text lands in the identical
+ * NL-parse/slot-fill/confirm flow, never a parallel registration path.
+ *
+ * Deliberately NOT persisted (top-level field; persist()/load() only touch
+ * `conversations`): an app kill in the handoff window just drops the seed,
+ * mirroring the native record's own 2-minute expiry — the user retypes, and
+ * nothing half-registered survives.
+ */
+export interface PendingExternalPrompt {
+  text: string;
+  createdAt: number;
+  /** Physical origin of the prompt. 'widget-ask' marks the Scouter widget's
+   *  ASK-dialog handoff so dispatch() can apply the widget-scoped
+   *  registration-confirm policy (AppSettings.widgetAgentRegistrationNoConfirm
+   *  — see lib/widget-agent-registration.ts). Absent = treated exactly like a
+   *  typed AI-Pane submission; the widget opt-in is never applied. */
+  source?: 'widget-ask';
+}
+
 export type AIPaneConversation = {
   paneId: string;
   messages: ChatMessage[];
@@ -138,6 +165,8 @@ export type AIPaneConversation = {
 type AIPaneState = {
   conversations: Record<string, AIPaneConversation>;
   isLoaded: boolean;
+  /** See PendingExternalPrompt — runtime-only, never persisted. */
+  pendingExternalPrompt: PendingExternalPrompt | null;
 
   // Initialization
   load: () => Promise<void>;
@@ -156,6 +185,14 @@ type AIPaneState = {
   /** Set or clear (pass null) the pane's short-lived "agent I just
    *  registered" reference — see JustRegisteredAgentRef's doc comment above. */
   setJustRegisteredAgent: (paneId: string, ref: JustRegisteredAgentRef | null) => void;
+  /** Queue a prompt originating outside any AI Pane (widget ASK handoff).
+   *  `source` tags the origin — see PendingExternalPrompt.source. */
+  setPendingExternalPrompt: (text: string, source?: 'widget-ask') => void;
+  /** Atomically claim-and-clear the pending external prompt. Returns null when
+   *  nothing is pending or the entry is stale (EXTERNAL_PROMPT_STALE_MS —
+   *  mirrors the native widget record's 2-minute expiry window). Synchronous,
+   *  so with multiple mounted AI Panes exactly one claims it. */
+  takePendingExternalPrompt: () => PendingExternalPrompt | null;
 };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -163,6 +200,10 @@ type AIPaneState = {
 const STORAGE_KEY = 'shelly_ai_pane_conversations';
 const MAX_MESSAGES_PER_PANE = 200;
 const DEBOUNCE_MS = 2000;
+// Mirrors ScouterStateStore.kt's WIDGET_PROMPT_EXPIRE_AFTER_MS (2 minutes):
+// a widget-originated prompt that somehow sat unclaimed this long (no AI Pane
+// ever mounted) should expire, not fire surprisingly later.
+export const EXTERNAL_PROMPT_STALE_MS = 2 * 60 * 1000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -219,6 +260,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
   return {
     conversations: {},
     isLoaded: false,
+    pendingExternalPrompt: null,
 
     load: async () => {
       try {
@@ -407,6 +449,27 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       // worth surviving an app kill for. Losing it just means a correction
       // typed right after a restart falls through to normal chat instead of
       // patching the agent, same as if the window had simply expired.
+    },
+
+    setPendingExternalPrompt: (text, source) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      logInfo('AIPaneStore', `pendingExternalPrompt set (${trimmed.length} chars${source ? `, source=${source}` : ''})`);
+      set({ pendingExternalPrompt: { text: trimmed, createdAt: Date.now(), source } });
+    },
+
+    takePendingExternalPrompt: () => {
+      const pending = get().pendingExternalPrompt;
+      if (!pending) return null;
+      // Claim first (synchronous, single-threaded JS) so a second mounted
+      // AIPane observing the same store change gets null instead of a
+      // duplicate dispatch.
+      set({ pendingExternalPrompt: null });
+      if (Date.now() - pending.createdAt > EXTERNAL_PROMPT_STALE_MS) {
+        logWarn('AIPaneStore', 'pendingExternalPrompt expired unclaimed — dropped');
+        return null;
+      }
+      return pending;
     },
 
     clearConversation: (paneId) => {

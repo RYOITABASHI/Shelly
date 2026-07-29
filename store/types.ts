@@ -490,6 +490,36 @@ export type AppSettings = {
    *  that will never fire" is not an approval-frequency knob). true = restore
    *  today's mandatory Confirm tap. */
   agentRegistrationRequireConfirm?: boolean;
+  /** Widget-ASK-only registration confirm bypass (2026-07-29). Opt-in,
+   *  default false/absent = OFF = today's behaviour, byte-identical: an
+   *  `@agent …` command typed (or dictated) into the Scouter widget's ASK
+   *  dialog goes through the identical NL-parse → confirm flow as the AI
+   *  Pane, governed by agentRegistrationRequireConfirm above.
+   *
+   *  When true, ONLY a widget-ASK-originated `@agent …` command skips the
+   *  interactive confirm step and registers immediately via the SAME
+   *  auto-register fast path the global setting uses (see
+   *  lib/widget-agent-registration.ts's resolveRegistrationConfirmRequirement
+   *  and hooks/use-ai-pane-dispatch.ts's presentDraftForConfirmation), with a
+   *  post-hoc notification stating what got registered.
+   *
+   *  Hard scope limits (all enforced at the shared decision point, none
+   *  relaxed by this flag):
+   *  - `@agent` typed directly in the AI Pane ALWAYS keeps the
+   *    agentRegistrationRequireConfirm behavior — this flag is never read for
+   *    source 'ai-pane'.
+   *  - Drafts with no fireable schedule, with assumed/LLM-extracted values
+   *    (hasDraftAssumptions), or of a high-risk action type (app-act/
+   *    social-post/tool-pinned — isAutoRegisterEligibleOnChatConfirm) still
+   *    surface the normal in-app confirmation.
+   *  - Per-run action approval (defaultRequireActionApproval), command-safety
+   *    and the secret scan are unchanged.
+   *
+   *  History note: registration confirm-by-default is a deliberate 2026-07-24
+   *  product-owner reversal (see agentRegistrationRequireConfirm above); this
+   *  flag deliberately does NOT touch that default — it is an additional,
+   *  explicitly-enabled fast path for the widget surface only. */
+  widgetAgentRegistrationNoConfirm?: boolean;
   /** Runtime per-action "Runtime Review" approval tap (draft/notify/webhook/
    *  cli/intent/dm-reply — see wait_action_approval in lib/agent-executor.ts
    *  and scripts/shelly-plan-executor.js). Default false = auto-approve, no
