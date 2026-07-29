@@ -6,6 +6,93 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [7.5.0] - 2026-07-29
+
+### Added
+
+- **Scouter widget can register a brand-new agent, not just run an existing
+  one.** Typing `@agent ...`-shaped text into the widget's ASK box now hands
+  off through the app's deep-link queue into the AI Pane's own
+  `parseAgentCommand`/confirm-card flow, instead of landing as a literal
+  Codex prompt (which is what happened before — silently, with no agent ever
+  registered). An explicit opt-in setting (`Widget No-Confirm Register`,
+  off by default) lets this path skip the confirm card and register
+  immediately with a post-registration notification, without touching the
+  AI Pane's own always-confirms default.
+- **Voice input for the widget's ASK dialog**, via Android's built-in speech
+  recognizer — recognized text populates the field for review, never
+  auto-submits.
+- **OpenRouter** is wired in as an attended-only AI Pane provider (Settings
+  API key field, `@openrouter` mention, streaming dispatch). Unattended
+  agent runs never route through it.
+- **Agents can remember and reuse what worked.** Successful runs leave a
+  memory note the agent recalls later; multi-step successes distill into
+  a reusable skill that gets matched and replayed for similar requests.
+  Unattended successes of remembering agents auto-save a skill with a
+  post-hoc deletable notification instead of an interrupting prompt.
+- **Cross-agent shared memory**, gated behind an explicit natural-language
+  trigger plus a confirmation step before anything gets written into every
+  agent's shared context.
+- Bilingual documentation: `README.ja.md` and `docs/MANUAL.ja.md` join
+  `README.md` and the new `docs/MANUAL.md` (a full 9-chapter user manual).
+
+### Fixed
+
+- **Scheduled-run memory/skill capture never actually fired in production**
+  — the hook lived in a code path (`loadAgentsFromDisk`'s `syncLogs: true`
+  branch) that the app's one real startup call never used
+  (`syncLogs: false`, intentionally, for a fast launch). Moved the capture
+  call to `syncAgentRunLogsFromDisk`, the function actually driving the
+  periodic/foreground-resume sync — a second instance of the same
+  "implemented, unit-tested, zero production callers" bug class found
+  repeatedly this cycle.
+- **A skill-reuse re-run could permanently collide with its own chain lock**
+  — a rehydrated multi-step skill plan was routed as a single-attempt run
+  by the JS-side scheduler, whose native execution then got redirected to
+  the PlanSpec chain executor; that executor's chain-lock guard couldn't
+  tell the difference between "someone else's lock" and its own run's lock,
+  and skipped every time, regardless of how long you waited.
+- **Foreground-triggered notifications (e.g. the skill-save "delete" action)
+  never displayed** — the module that registers `expo-notifications`'
+  foreground display handler was never imported anywhere in the app.
+- Several Japanese widget strings silently fell back to English
+  (`scouter_ask_agent_chat_short` and others were missing from
+  `values-ja/scouter_strings.xml`).
+
+## [7.0.0] - 2026-06-27
+
+### Added
+
+- **Autonomous agents.** Plain-language `@agent` registration compiles to a
+  real Android `AlarmManager` alarm — not a cron shim, not a foreground
+  service — that wakes the phone screen-off and reports when it ran (or
+  flags a missed run). Vague requests get a clarifying question about *what*
+  before the app asks *when*.
+- **Deferred-start scheduling** ("starting next week, check the news every
+  morning") and a short correction window right after an agent is
+  auto-registered.
+- **Capability broker** — an allowlist-gated boundary for outbound network
+  calls from unattended runs, plus an explicit `Autonomous Cloud` opt-in
+  (default off) before a scheduled agent can spend a configured cloud API
+  key unattended; it falls back to local/Codex otherwise.
+- **Multi-platform delivery** — Bluesky, Discord, Slack, Telegram, Mastodon,
+  Misskey, WordPress connectors, plus a generic webhook, configured once per
+  platform and selectable per agent.
+- **Scouter widget redesigned from a Codex monitor into an agent launcher**
+  — RUN starts an already-registered scheduled agent through the same
+  unattended execution gates a real alarm fire uses.
+- Sidebar per-agent pause/resume, a RUNNING section with live progress, and
+  a chat-native agent editing/confirm flow.
+
+### Note
+
+This release window (85 commits between the `v6.0.0` and `v7.0.0` tags,
+514 total through the 7.5.0 work above) went undocumented here at the time
+— `CHANGELOG.md` sat at `[Unreleased]` while the autonomous-agent system
+was being built. This entry reconstructs the highlights after the fact;
+see `docs/superpowers/DEFERRED.md` for the detailed, contemporaneous
+engineering log this project actually kept up to date during that period.
+
 ## [6.0.0] - 2026-06-10
 
 ### Added
