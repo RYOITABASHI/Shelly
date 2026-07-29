@@ -1,4 +1,9 @@
 import "@/global.css";
+// Side-effect only: registers expo-notifications' foreground display handler.
+// Without this, JS-scheduled notifications (skill-save, etc.) never
+// surface while the app is in the foreground -- this module was never
+// imported anywhere, silently disabling that class of notification.
+import "@/lib/command-notifier";
 import React, { useCallback, useEffect, useState } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { Stack, type ErrorBoundaryProps } from "expo-router";
