@@ -218,8 +218,9 @@ class ScouterWidgetPromptActivity : Activity() {
 
     /**
      * Detection twin of lib/input-router.ts's `@agent` mention route
-     * (`/^@agent\s*/i` tested against `input.trim()` — see MENTION_PATTERNS
-     * and parseInput). Kept as the LITERAL same pattern source so the widget's
+     * (case-insensitive `^@agent\s*` tested against `input.trim()` — see
+     * MENTION_PATTERNS and parseInput). Kept as the LITERAL same pattern
+     * source so the widget's
      * idea of "this is an agent command" cannot drift from the real parser's;
      * __tests__/widget-agent-command-parity.test.ts extracts both pattern
      * literals from source and asserts they stay behaviorally identical.
