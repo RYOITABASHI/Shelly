@@ -486,6 +486,26 @@ type MaterializeRunOpts = {
   // materializeAgent call leaves it unset (default false), so `<id>.json` is
   // written exactly as before for every other caller.
   skipMetadataWrite?: boolean;
+  // 2026-07-29 on-device finding (docs/superpowers/DEFERRED.md's 2026-07-29
+  // "(3) PlanSpecスキル再利用" entry): a skill recipe carrying a PlanSpec
+  // (`a8f80a2ca`) is rehydrated back into `.orchestration` by
+  // applyExecutableSkillPlan inside applyMemoryAndSkills — i.e. at every
+  // materialize. For a per-attempt materialize that is WRONG twice over:
+  //   1. the caller (runAgentOrchestratedBody) has deliberately cleared
+  //      `.orchestration` so this one step doesn't recurse — re-expanding it
+  //      here silently undoes that, and
+  //   2. the resulting PlanSpec carries `steps.list` >= 2, which makes the
+  //      NATIVE launcher route this attempt through the PlanSpec executor
+  //      (AgentRuntime.kt's shouldRunPlanExecutor) instead of the legacy .sh.
+  //      runPlanAgent's chain-lock guard is a bare existence check — it
+  //      assumes this native path can never be the lock's own owner — so the
+  //      attended chain's OWN in-flight lock skipped its OWN attempt with
+  //      "previous run still active (chain lock held by an attended run)".
+  // Set only by runLadderAttempts's per-attempt materialize; every other
+  // caller (install, restore, startup repair, consent re-bake) leaves it unset
+  // so the STORED script/PlanSpec still gets the full rehydrated chain, which
+  // is what an unattended alarm fire is supposed to run.
+  skipSkillPlanRehydration?: boolean;
 };
 
 /**
@@ -556,7 +576,9 @@ async function materializeAgentBody(
   if (persistFacts) {
     await persistRememberFact(agent, runCommand);
   }
-  const agentForRun = await applyMemoryAndSkills(agent);
+  const agentForRun = await applyMemoryAndSkills(agent, {
+    rehydrateSkillPlan: !runOpts.skipSkillPlanRehydration,
+  });
 
   // P1: the install + restore paths (which write the script the UNATTENDED alarm
   // later runs) don't carry the consent flags the foreground ladder passes
@@ -712,14 +734,39 @@ export function rematerializeAutonomousAgents(
  * secret in the task text (no silent cloud leak). Returns the agent unchanged
  * when there is nothing to inject.
  */
-async function applyMemoryAndSkills(agent: Agent): Promise<Agent> {
+/**
+ * Resolve the EFFECTIVE shape of an agent whose attached skill recipe carries
+ * an executable PlanSpec (`a8f80a2ca`): the recipe's steps/tool/budget are
+ * restored onto the agent exactly as applyMemoryAndSkills would at materialize
+ * time. Used by runAgentNowInner so the orchestrated-vs-single routing
+ * decision sees the same shape the on-disk script/PlanSpec will be generated
+ * from — see that call site for the skip-loop this divergence caused.
+ * Best-effort: any read failure returns the agent untouched (today's behavior).
+ */
+async function rehydrateSkillPlan(agent: Agent): Promise<Agent> {
+  if (!agent.skillId) return agent;
+  try {
+    const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId) ?? null;
+    return applyExecutableSkillPlan(agent, recipe);
+  } catch {
+    return agent;
+  }
+}
+
+async function applyMemoryAndSkills(
+  agent: Agent,
+  opts: { rehydrateSkillPlan?: boolean } = {}
+): Promise<Agent> {
   let prompt = agent.prompt;
   // Phase 2a skill reuse: a skill was attached at creation via the gated
   // "use skill X?" confirm. Prepend its recipe.
   if (agent.skillId) {
     try {
       const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId) ?? null;
-      agent = applyExecutableSkillPlan(agent, recipe);
+      // Executable-plan rehydration is suppressed for a per-attempt materialize
+      // (see MaterializeRunOpts.skipSkillPlanRehydration) — the caller has
+      // already shaped `.orchestration` for exactly this one step/candidate.
+      if (opts.rehydrateSkillPlan !== false) agent = applyExecutableSkillPlan(agent, recipe);
       const skillContext = buildSkillInjectionContext(recipe);
       if (skillContext) prompt = `${skillContext}\n\n---\n\n${prompt}`;
     } catch {
@@ -953,7 +1000,22 @@ async function runAgentNowInner(
   }
   // Phase 4: a multi-step agent runs as a linear chain (each step through the
   // SAME gated single-run path below). Single-step agents fall through unchanged.
-  const orchestrationAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  const storedAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  // 2026-07-29 on-device fix (docs/superpowers/DEFERRED.md's 2026-07-29 "(3)
+  // PlanSpecスキル再利用" entry): a skill recipe carrying an executable
+  // PlanSpec (`a8f80a2ca`) restores its steps into `.orchestration` — but that
+  // rehydration used to happen ONLY inside materializeAgent, i.e. AFTER this
+  // routing decision. The store-shaped agent has just `skillId` and no
+  // `.orchestration`, so a reused multi-step plan took the SINGLE-run ladder
+  // here while the script/PlanSpec that same run then wrote to disk was
+  // multi-step — which flipped the native launcher onto the PlanSpec-executor
+  // route and made the chain's own lock skip its own attempt (see
+  // MaterializeRunOpts.skipSkillPlanRehydration for the full trace). Resolve
+  // the EFFECTIVE shape first so the JS route and the on-disk artifacts agree:
+  // a rehydrated multi-step plan runs as a real orchestrated chain, whose
+  // per-step materialize clears `.orchestration` again and therefore stays on
+  // the legacy .sh path the chain lock's nonce check understands.
+  const orchestrationAgent = storedAgent ? await rehydrateSkillPlan(storedAgent) : undefined;
   // api-call (v1) attended-run guard: runAgentOrchestrated's per-step `.sh`
   // generator (generateRunScript) has no concept of an apiCall step — without
   // this check it would silently send the step's synthetic display label
@@ -983,7 +1045,14 @@ async function runAgentNowInner(
     `agent ${agentId}: stepCount=${normalizeSteps(orchestrationAgent?.orchestration).length} isOrchestrated=${orchestrated}`
   );
   if (orchestrationAgent && orchestrated) {
-    await runAgentOrchestrated(orchestrationAgent, runCommand, options);
+    // The post-chain restore materialize deliberately gets the STORED agent,
+    // not the rehydrated one: materializeAgentBody writes `<id>.json` from its
+    // `agent` argument (the "metadata stores the ORIGINAL agent" rule) while
+    // deriving the script/PlanSpec from the rehydrated `agentForRun`. Passing
+    // the stored shape keeps the restored on-disk state byte-identical to what
+    // install-time materialize produces, instead of silently baking a reused
+    // skill's steps into the agent's persistent record.
+    await runAgentOrchestrated(orchestrationAgent, runCommand, options, storedAgent);
     return;
   }
   const runStartedAtMs = options.runStartedAtMs ?? Date.now() - 5_000;
@@ -1415,6 +1484,14 @@ async function runLadderAttempts(
       // `<id>.json` with that transient shape. See MaterializeRunOpts's doc
       // comment for why leaving the on-disk metadata untouched here is safe.
       skipMetadataWrite: true,
+      // 2026-07-29 on-device fix (see MaterializeRunOpts.skipSkillPlanRehydration):
+      // this attempt's `.orchestration` is already exactly what the caller
+      // wants run (cleared for an orchestration step, untouched for a
+      // single-run ladder). Re-expanding a skill recipe's stored PlanSpec into
+      // it here would both undo that shaping AND flip this attempt's native
+      // launch onto the PlanSpec-executor route, where the chain lock THIS
+      // chain is holding reads as a foreign holder and skips the attempt.
+      skipSkillPlanRehydration: true,
       // Rollback-type execution: only reaches here for a run runAgentNowInner
       // already validated as fully reversible AND successfully snapshotted.
       // generateRunScript re-checks the action type before honouring it.
@@ -1478,7 +1555,12 @@ async function runLadderAttempts(
 async function runAgentOrchestrated(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
-  options: { waitTimeoutMs?: number; pollMs?: number } = {}
+  options: { waitTimeoutMs?: number; pollMs?: number } = {},
+  /** Agent used for the post-chain restore materialize. Differs from `agent`
+   *  only on the skill-reuse path, where `agent` carries steps rehydrated from
+   *  a skill recipe and the persistent record should keep its stored shape —
+   *  see runAgentNowInner's call site. */
+  restoreAgent: Agent = agent,
 ): Promise<void> {
   const agentId = agent.id;
   // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): held across
@@ -1488,7 +1570,7 @@ async function runAgentOrchestrated(
   // module doc comment above acquireChainLock for the full design.
   const chainLockSeed = await acquireChainLock(agentId, runCommand);
   try {
-    await runAgentOrchestratedBody(agent, runCommand, options, chainLockSeed);
+    await runAgentOrchestratedBody(agent, runCommand, options, chainLockSeed, restoreAgent);
   } finally {
     await releaseChainLock(agentId, chainLockSeed, runCommand);
   }
@@ -1498,7 +1580,8 @@ async function runAgentOrchestratedBody(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
   options: { waitTimeoutMs?: number; pollMs?: number },
-  chainLockSeed: string
+  chainLockSeed: string,
+  restoreAgent: Agent = agent,
 ): Promise<void> {
   const agentId = agent.id;
   const steps = normalizeSteps(agent.orchestration);
@@ -1595,7 +1678,7 @@ async function runAgentOrchestratedBody(
   // native alarm fire reads directly, so it must bake an empty nonce (see
   // MaterializeRunOpts.chainLockNonce's doc comment).
   try {
-    await materializeAgent(agent, runCommand, false);
+    await materializeAgent(restoreAgent, runCommand, false);
   } catch {
     // best-effort
   }

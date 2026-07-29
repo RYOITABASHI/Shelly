@@ -35,6 +35,18 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 jest.mock('expo-notifications', () => ({}));
 jest.mock('expo-file-system/legacy', () => ({}));
 
+/** Skill recipes the module under test reads through readSkillRecipes(); the
+ *  real implementation goes through expo-file-system, which is mocked away
+ *  above. Everything else in lib/agent-skills (applyExecutableSkillPlan,
+ *  buildSkillInjectionContext, …) stays REAL so the rehydration under test is
+ *  the production one. */
+const mockSkillRecipes: Array<Record<string, unknown>> = [];
+jest.mock('@/lib/agent-skills', () => ({
+  ...jest.requireActual('@/lib/agent-skills'),
+  readSkillRecipes: jest.fn(async () => mockSkillRecipes),
+  writeSkillRecipe: jest.fn(async () => undefined),
+}));
+
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -403,6 +415,130 @@ describe('runAgentOrchestrated / runEscalatingAttempts — chain lock wraps the 
     // observed complete (closing the inter-step gap) before the NEXT step's
     // materialize re-arms it.
     expect(ev.filter((e) => e === 'disarm').length).toBeGreaterThanOrEqual(1);
+  });
+
+  /**
+   * 2026-07-29 on-device regression (docs/superpowers/DEFERRED.md's 2026-07-29
+   * "(3) PlanSpecスキル再利用" entry): a reused skill recipe carrying an
+   * executable PlanSpec (`a8f80a2ca`) rehydrated its steps back onto the agent
+   * ONLY inside materializeAgent — i.e. after runAgentNowInner had already
+   * routed the run. The store-shaped agent has just `skillId`, so the run took
+   * the single-attempt ladder while the PlanSpec it then wrote to disk carried
+   * `steps.list` >= 2. That flipped the NATIVE launcher onto the PlanSpec
+   * executor (AgentRuntime.kt's shouldRunPlanExecutor), whose chain-lock guard
+   * is a bare existence check — so the attended chain's OWN in-flight lock
+   * skipped its OWN attempt, three times in a row, with "previous run still
+   * active (chain lock held by an attended run)". Waiting longer could never
+   * help: the collision is with the run's own lock, not a leftover one.
+   */
+  describe('skill-reuse (PlanSpec rehydration) must not collide with its own chain lock', () => {
+    const SKILL_ID = 'skill-planspec-reuse';
+
+    beforeEach(() => {
+      mockSkillRecipes.length = 0;
+      mockSkillRecipes.push({
+        id: SKILL_ID,
+        name: 'haiku routine',
+        trigger: 'write a short haiku',
+        prompt: 'reusable recipe body',
+        tags: [],
+        successCount: 1,
+        lastUsed: new Date(0).toISOString(),
+        created: new Date(0).toISOString(),
+        planSpec: {
+          kind: 'shelly.agent.plan',
+          steps: {
+            list: [
+              { instruction: 'check today’s date' },
+              { instruction: 'write a short haiku' },
+              { instruction: 'save the result as a note' },
+            ],
+            budget: { maxSteps: 3, totalTimeoutMs: 1_800_000 },
+          },
+          tool: { type: 'local', model: 'Qwen3.5-0.8B-Q4_K_M' },
+          limits: {},
+        },
+      });
+    });
+
+    afterEach(() => {
+      mockSkillRecipes.length = 0;
+    });
+
+    /** Pull the PlanSpec JSON out of a materialize write batch (writeFileCommand
+     *  emits `cat > '<path>.<marker>.tmp' <<'<marker>'` heredocs). */
+    function extractPlanSpec(cmd: string, agentId: string): Record<string, unknown> | null {
+      // The heredoc marker is also embedded in the temp filename
+      // (`${path}.${marker}.tmp`), so one match yields both.
+      const m = cmd.match(new RegExp(`plan-agent-${agentId}\\.json\\.([A-Za-z0-9_]+)\\.tmp'`));
+      if (!m) return null;
+      const start = cmd.indexOf('\n', m.index!) + 1; // heredoc body starts on the next line
+      const end = cmd.indexOf(`\n${m[1]}`, start);
+      return JSON.parse(cmd.slice(start, end));
+    }
+
+    async function runReusedSkillAgent(agentId: string) {
+      useAgentStore.getState().setAgents([{ ...baseAgent(agentId), skillId: SKILL_ID }]);
+      const events: string[] = [];
+      const planSpecs: Array<Record<string, unknown>> = [];
+      const logs: Array<Record<string, unknown>> = [];
+      const runCommand = jest.fn(async (cmd: string) => {
+        if (cmd.includes('CHAIN_LOCK_ACQUIRE')) {
+          events.push('acquire');
+          return 'CHAIN_LOCK_OK';
+        }
+        if (cmd.includes('CHAIN_LOCK_RELEASE')) {
+          events.push('release');
+          return '';
+        }
+        if (cmd.includes(`# run-agent-${agentId}`)) {
+          const plan = extractPlanSpec(cmd, agentId);
+          if (plan) planSpecs.push(plan);
+          events.push('materialize');
+          logs.push({
+            agentId,
+            timestamp: Date.now() + logs.length,
+            status: 'success',
+            durationMs: 5,
+            toolUsed: 'attempt',
+            outputPreview: `ok-${logs.length + 1}`,
+          });
+          return '';
+        }
+        if (cmd.includes('CEREBRAS_API_KEY')) return '';
+        if (cmd.includes('---SHELLY_AGENT_LOG---')) {
+          return logs.map((l) => `${JSON.stringify(l)}\n---SHELLY_AGENT_LOG---\n`).join('');
+        }
+        return '';
+      });
+
+      await runAgentNow(agentId, runCommand, { waitTimeoutMs: 2000, pollMs: 1 });
+      return { events, planSpecs };
+    }
+
+    it('routes the rehydrated plan through the ORCHESTRATED chain (one materialize per step + the restore), not the single-attempt ladder', async () => {
+      const { events, planSpecs } = await runReusedSkillAgent('skill-plan-route-agent');
+      expect(events[0]).toBe('acquire');
+      expect(events[events.length - 1]).toBe('release');
+      // 3 rehydrated steps + 1 post-chain restore. A single-attempt ladder (the
+      // pre-fix routing) would have materialized twice: one attempt + restore.
+      expect(planSpecs.length).toBe(4);
+    });
+
+    it('every PER-ATTEMPT PlanSpec is step-free, so the native launcher keeps the legacy .sh route the chain lock nonce-matches instead of the PlanSpec-executor route it would be skipped on', async () => {
+      const { planSpecs } = await runReusedSkillAgent('skill-plan-attempt-agent');
+      // AgentRuntime.kt's shouldRunPlanExecutor routes on `steps.list.length > 0`
+      // — the exact condition that made the chain skip its own attempts.
+      for (const plan of planSpecs.slice(0, -1)) {
+        expect(plan.steps).toBeUndefined();
+      }
+    });
+
+    it('the post-chain restore PlanSpec still carries the full rehydrated chain, so an unattended alarm fire keeps running the reused plan', async () => {
+      const { planSpecs } = await runReusedSkillAgent('skill-plan-restore-agent');
+      const restore = planSpecs.at(-1) as { steps?: { list?: unknown[] } };
+      expect(restore.steps?.list?.length).toBe(3);
+    });
   });
 
   it('the chain lock is still released when a step throws mid-chain (early-exit path)', async () => {
