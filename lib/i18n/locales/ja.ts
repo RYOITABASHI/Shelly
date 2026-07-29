@@ -180,6 +180,15 @@ const ja: Record<string, string> = {
   'agents.cloud_consent_title': '自律エージェントのクラウド利用',
   'agents.cloud_consent_body': '自律エージェントが、設定済みのクラウドAPIキー(Gemini/Perplexity)を無人でWebタスクに使用します。\n\n• キーはプロバイダ認証に使われ、モデルには送信されません。\n• スケジュール実行が毎回確認なしであなたのクォータ/課金を消費します（Gemini=無料枠、Perplexityは有料）。\n• 機密情報は常にローカルに留まり、送信/実行には引き続き承認が必要です。\n\n有効にしますか？',
   'agents.cloud_consent_enable': '有効にする',
+  // 楽観的（rollback型）ワークスペース書き込み — AppSettings.agentOptimisticWorkspaceWrites。
+  // 文言は lib/agent-action-reversibility.ts が許可する範囲（ローカル
+  // agent-output への `draft` 書き込みのみ）に厳密に合わせ、「元に戻す」導線が
+  // 未実装であることも明記する（実装していない挙動を約束しない）。
+  'agents.optimistic_writes': '楽観的な書き込み',
+  'agents.optimistic_writes_hint': 'ローカルの agent-output フォルダへの下書き保存だけ、承認タップを待たずに自動セーブポイント付きで即実行します。cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、従来どおり承認が必要です。「元に戻す」ボタンはまだ無いため、現時点でこの経路を通る実行はありません。',
+  'agents.optimistic_writes_consent_title': 'ワークスペース内の下書きを承認なしで実行',
+  'agents.optimistic_writes_consent_body': '対象は1つだけです: ローカルの agent-output フォルダへ下書きを保存するだけの実行。\n\n• 実行前に自動で git セーブポイントを取り、承認タップ無しで即実行します。\n• cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、引き続き承認が必要です。\n• エージェント登録時の確認・command-safety・秘密情報スキャンは変わりません。\n• 「元に戻す」導線はまだ未実装のため、現時点で実際にこの経路を通る実行はありません（設定のみ先行）。\n\n有効にしますか？',
+  'agents.optimistic_writes_consent_enable': '有効にする',
   'agents.notification_trigger': '通知トリガー',
   'agents.notification_trigger_enabled': '通知トリガーを有効にしました',
   'agents.notification_trigger_disabled': '通知トリガーを無効にしました',

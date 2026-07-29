@@ -11,6 +11,11 @@ jest.mock('@/lib/home-path', () => ({ getHomePath: () => '/home/shelly-test' }))
 
 import type { Agent, AgentAction, AgentActionType } from '@/store/types';
 import { generateRunScript } from '@/lib/agent-executor';
+import {
+  isRollbackEligibleRun,
+  runWouldRequireApprovalTap,
+  type ReversibilitySettings,
+} from '@/lib/agent-action-reversibility';
 
 function agent(action: AgentAction | undefined, overrides: Partial<Agent> = {}): Agent {
   return {
@@ -99,5 +104,74 @@ describe('generateRunScript — optimistic approval override', () => {
     // With the flag off it must stay empty (inherit), not become 'auto'.
     const a = agent({ type: 'draft' }, { requireActionApproval: undefined });
     expect(bakedOverride(generateRunScript(a, {}))).toBe('');
+  });
+});
+
+/**
+ * The SETTINGS end of the wire, added when the ConfigTUI / SettingsDropdown
+ * toggle for AppSettings.agentOptimisticWorkspaceWrites landed (before it, the
+ * setting had no UI at all and could not be turned on by a real user).
+ *
+ * These reproduce, without a store or a React render, the exact chain
+ * lib/agent-manager.ts's runAgentNowInner runs:
+ *   settings.agentOptimisticWorkspaceWrites
+ *     → isRollbackEligibleRun + runWouldRequireApprovalTap
+ *     → generateRunScript({ optimisticWorkspaceWrites })
+ * so that "the toggle the user flips is the field the classifier reads" is
+ * pinned, not assumed. The suite above pins the executor's own re-check; this
+ * one pins that the settings field reaches it at all.
+ */
+describe('settings toggle → generated script', () => {
+  const LOCAL_DRAFT_SETTINGS = (on: boolean): ReversibilitySettings => ({
+    agentOptimisticWorkspaceWrites: on,
+    agentOutputTarget: 'local',
+    // The run must be one that would otherwise block on a tap, else switching
+    // it to the rollback tier changes nothing — same precondition the manager
+    // checks before it bothers taking a savepoint.
+    defaultRequireActionApproval: true,
+  });
+
+  /** What runAgentNowInner passes down, minus the savepoint success it can't fake here. */
+  function optimisticFlagFor(a: Agent, settings: ReversibilitySettings): boolean {
+    return isRollbackEligibleRun(a, settings) && runWouldRequireApprovalTap(a, settings);
+  }
+
+  it('ON: a local draft run reaches generateRunScript as auto', () => {
+    const a = agent({ type: 'draft' });
+    const settings = LOCAL_DRAFT_SETTINGS(true);
+    expect(optimisticFlagFor(a, settings)).toBe(true);
+    const script = generateRunScript(a, { optimisticWorkspaceWrites: optimisticFlagFor(a, settings) });
+    expect(bakedOverride(script)).toBe('auto');
+  });
+
+  it('OFF (the shipped default): byte-identical script, manual gate kept', () => {
+    const a = agent({ type: 'draft' });
+    const settings = LOCAL_DRAFT_SETTINGS(false);
+    expect(optimisticFlagFor(a, settings)).toBe(false);
+    const script = generateRunScript(a, { optimisticWorkspaceWrites: optimisticFlagFor(a, settings) });
+    expect(bakedOverride(script)).toBe('manual');
+    expect(script).toBe(generateRunScript(a, {}));
+  });
+
+  it('ON but output target is not local: still gated (the toggle cannot widen the destination)', () => {
+    const a = agent({ type: 'draft' });
+    for (const target of ['obsidian', 'custom'] as const) {
+      const settings: ReversibilitySettings = { ...LOCAL_DRAFT_SETTINGS(true), agentOutputTarget: target };
+      expect(optimisticFlagFor(a, settings)).toBe(false);
+      expect(generateRunScript(a, { optimisticWorkspaceWrites: optimisticFlagFor(a, settings) })).toBe(
+        generateRunScript(a, {})
+      );
+    }
+  });
+
+  it('ON but the action is irreversible: still gated at BOTH ends', () => {
+    for (const type of IRREVERSIBLE) {
+      const a = agent({ type } as AgentAction);
+      const settings = LOCAL_DRAFT_SETTINGS(true);
+      // end 1 — the classifier the manager consults
+      expect(optimisticFlagFor(a, settings)).toBe(false);
+      // end 2 — the executor's own re-check, even if end 1 were bypassed
+      expect(bakedOverride(generateRunScript(a, { optimisticWorkspaceWrites: true }))).toBe('manual');
+    }
   });
 });

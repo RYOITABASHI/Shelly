@@ -841,6 +841,7 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
   const autoApproveLevel = useSettingsStore((s) => s.settings.autoApproveLevel);
   const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
   const cloudExhaustion = useSettingsStore((s) => s.settings.autonomousCloudOnExhaustion ?? 'escalate');
+  const optimisticWrites = useSettingsStore((s) => s.settings.agentOptimisticWorkspaceWrites === true);
   const outputTarget = useSettingsStore((s) => s.settings.agentOutputTarget ?? 'local');
   const vaultPath = useSettingsStore((s) => s.settings.agentVaultPath ?? '');
   const topicFolder = useSettingsStore((s) => s.settings.agentTopicFolder ?? '');
@@ -904,6 +905,32 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
       cloudSyncBusyRef.current = false;
       setCloudSyncBusy(false);
     }
+  };
+
+  // Optimistic (rollback-type) workspace writes. Same informed-consent shape as
+  // toggleCloudConsent above, for the same reason: it is an opt-in that removes
+  // a per-run human tap. Its blast radius is far narrower — ONLY a `draft` write
+  // into the local agent-output workspace (lib/agent-action-reversibility.ts) —
+  // and the copy says so rather than reading as a general autopilot switch.
+  // No .env flush: the decision is made entirely in JS at the attended-run
+  // choke point (lib/agent-manager.ts's runAgentNowInner), so no generated
+  // script or unattended alarm fire reads this value.
+  const toggleOptimisticWrites = async () => {
+    if (!optimisticWrites) {
+      const ok = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          t('agents.optimistic_writes_consent_title'),
+          t('agents.optimistic_writes_consent_body'),
+          [
+            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+            { text: t('agents.optimistic_writes_consent_enable'), style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      });
+      if (!ok) return;
+    }
+    updateSettings({ agentOptimisticWorkspaceWrites: !optimisticWrites });
   };
 
   const toggleExhaustion = async () => {
@@ -1067,6 +1094,30 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
           </Pressable>
         </Row>
       )}
+      <Row label={t('agents.optimistic_writes')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: optimisticWrites ? withAlpha(C.accent, 0.36) : C.border },
+          ]}
+          onPress={toggleOptimisticWrites}
+          hitSlop={4}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: optimisticWrites ? C.accent : C.text2 },
+              optimisticWrites && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      {/* Always shown (not only when on): the scope limit and the "no undo
+          route yet" status are what stop this reading as a general autopilot
+          switch, so they must be visible BEFORE the user flips it. */}
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
+        {t('agents.optimistic_writes_hint')}
+      </Text>
       <Row label={t('agents.notification_trigger')}>
         <Pressable
           style={[

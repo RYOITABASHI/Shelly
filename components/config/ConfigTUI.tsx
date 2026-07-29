@@ -110,6 +110,13 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'default gemini-2.5-flash (free tier + grounding)' },
       { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
       { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
+      // Scoped EXACTLY to what lib/agent-action-reversibility.ts allows: a
+      // `draft` write into the local $HOME/agent-output workspace. The last
+      // sentence is deliberate honesty, not hedging — the undo affordance is
+      // still unbuilt and no run path passes a savepointRunner yet, so this
+      // toggle is currently inert. Drop that sentence in the same commit that
+      // wires the undo route, never before.
+      { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap. Nothing else changes: cli / notify / webhook / social-post / dm-reply / app-act, and any Obsidian or custom output, still require approval. No "Undo" button exists yet, so no run takes this path today. Default off.' },
     ],
   },
   {
@@ -589,6 +596,23 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           Alert.alert(
             'Autonomous cloud access',
             'Autonomous agents will use your configured cloud API keys (Gemini / Perplexity) UNATTENDED for web tasks.\n\n• Your key authenticates the request and is NEVER sent to the model.\n• A scheduled agent will consume your quota/cost without asking each time (Gemini free tier; Perplexity is paid).\n• Secrets are still always kept on-device; sending/running still needs your approval.\n\nEnable?',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          );
+        });
+        if (!ok) return; // leave the toggle OFF
+      }
+      // Same informed-consent shape as Autonomous Cloud above: this opt-in
+      // removes a per-run human tap, so it states its own (narrow) blast
+      // radius before it can be turned on.
+      if (def.key === 'agentOptimisticWorkspaceWrites' && rawValue === true) {
+        const ok = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Run workspace drafts without approval',
+            'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n• The "Undo" affordance is not built yet, so no run actually takes this path today; this setting is here ahead of it.\n\nEnable?',
             [
               { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
               { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },
