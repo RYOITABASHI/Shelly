@@ -64,7 +64,11 @@ https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
 
 Termux なし。root なし。リモート開発サーバーなし。本物の AI コーディング CLI ――現時点では OpenAI Codex ――が Android 上で起動し、その隣で API ベースの AI ペインがターミナル出力を読んで、ワンタップで実行できる修正を出してきます。
 
-<!-- TODO(release asset): unfolded 4-pane screenshot (sidebar + terminal + AI + browser, all live at once) — docs/images/unfolded-4-pane.jpg -->
+**開いた状態: サイドバー、ターミナル、AI、ブラウザ、プレビューが同時に生きている ―― 4 つの別々のアプリではなく、ひとつの同じセッション**
+
+<p align="center">
+  <img src="docs/images/unfolded-4-pane.jpg" alt="Galaxy Z Fold6 を開いた状態の Shelly。Terminal・AI・Browser・Preview の 4 ペインを 2x2 で並べ、サイドバーも表示している" width="800">
+</p>
 
 ---
 
@@ -160,7 +164,7 @@ Termux は不要です。bash、Node.js、Python 3、git、curl、ssh、sqlite3�
 
 ### AI の設定
 
-そのあと **Settings → API Keys** を開く（またはターミナルペインで `shelly config` を実行する）と、Gemini・Cerebras・Groq・Perplexity・OpenAI 互換のローカルサーバーなど、明示的な API プロバイダのキーを貼り付けられます。キーは `expo-secure-store` に保存され、ログには一切書き出されません。
+そのあと **Settings → API Keys** を開く（またはターミナルペインで `shelly config` を実行する）と、Gemini・Cerebras・Groq・Perplexity・OpenRouter・OpenAI 互換のローカルサーバーなど、明示的な API プロバイダのキーを貼り付けられます。キーは `expo-secure-store` に保存され、ログには一切書き出されません。
 
 ### サインイン
 
@@ -169,7 +173,7 @@ Shelly のフォアグラウンド AI CLI は **Codex** です。それ以外は
 | 対象 | サインイン方法 | 補足 |
 |---|---|---|
 | **Codex CLI**（ChatGPT サブスクリプション） | `codex` を実行、または `codex-login --open` を直接実行 | 唯一サポートされているフォアグラウンド CLI です。`~/.codex/auth.json` が無い、または無効な場合、`codex` ラッパーが Shelly のデバイスコードログインを開始し、OpenAI のデバイスコードページをアプリ内ブラウザペインで開き、成功したら `~/.codex/auth.json` をパーミッション `0600` で書き込んでから、通常の Codex TUI を起動します。OpenAI API キーは不要で、ChatGPT サブスクリプションに乗ります。 |
-| **API プロバイダ**（Gemini・Cerebras・Groq・Perplexity・ローカル） | **Settings → API Keys** または `shelly config` | AI ペイン / `@mention` / `@team` / バックグラウンドエージェント用に、プロバイダごとにキーを貼り付けます。キーは `expo-secure-store` に保存されます。ローカル / OpenAI 互換サーバーはベース URL だけで動きます。 |
+| **API プロバイダ**（Gemini・Cerebras・Groq・Perplexity・OpenRouter・ローカル） | **Settings → API Keys** または `shelly config` | AI ペイン / `@mention` / `@team` / バックグラウンドエージェント用に、プロバイダごとにキーを貼り付けます（OpenRouter は有人時のみ）。キーは `expo-secure-store` に保存されます。ローカル / OpenAI 互換サーバーはベース URL だけで動きます。 |
 
 > **Codex ログインについて。** REPL 内の `codex /login` は Shelly でのサポート対象パスではありません。素の `codex` を実行して Shelly のラッパーにデバイスコード認証を任せるか、bash から `codex-login --open` を実行してください。
 
@@ -208,7 +212,7 @@ Termux や proot、あるいは別の Android ターミナル環境で AI コー
 | 対象 | 状態 | 意味 |
 |---|---|---|
 | **Codex CLI** | サポート対象 | フォアグラウンド CLI。素の `codex` は、Shelly がアプリ内デバイスコード認証で `~/.codex/auth.json` を検証・作成したあと、ネイティブ PTY 上で通常の Codex TUI を起動します。 |
-| **AI ペイン / バックグラウンドエージェント** | API 経由でサポート | 設定済みプロバイダ（Gemini API・Cerebras・Groq・Perplexity・ローカルの OpenAI 互換サーバー）を使います。プロバイダキーベースで、サブスクリプションの隠れた再利用はありません。 |
+| **AI ペイン / バックグラウンドエージェント** | API 経由でサポート | 設定済みプロバイダ（Gemini API・Cerebras・Groq・Perplexity・OpenRouter〈有人の AI ペイン利用のみ〉・ローカルの OpenAI 互換サーバー）を使います。プロバイダキーベースで、サブスクリプションの隠れた再利用はありません。 |
 | **Gemini API** | 設定済みなら利用可 | Gemini API キーを設定すると、AI ペイン、`@gemini` ルーティング、`@team`、マルチモーダル / API ベースのタスク、バックグラウンドエージェントで使えます。（これは API プロバイダとしての話で、Gemini CLI は同梱していません。） |
 
 ---
@@ -239,7 +243,7 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 | **ネイティブ PTY（JNI forkpty）** | Kotlin + C、PTY の fd を直接扱い、TCP / ソケットのブリッジなし。WebView ターミナルではなく、組み込みのネイティブターミナルです。 |
 | **バッテリー同梱** | bash、Node.js、Python 3、git、curl、ssh、sqlite3、tmux、vim、less、make、ripgrep、jq が APK の中に入っています。Termux は不要です。 |
 | **7 種類のペイン** | Terminal、Agent Chat、AI、Browser（+ バックグラウンド再生）、Markdown、Preview、Ask。最大 4 つまで自由に分割できます。 |
-| **マルチエージェント AI** | API ベースの Gemini・Cerebras・Groq・Perplexity・ローカル LLM に加え、フォアグラウンドの Codex ターミナル CLI。自動ルーティング、または対応するものは `@mention` で指定できます。 |
+| **マルチエージェント AI** | API ベースの Gemini・Cerebras・Groq・Perplexity・OpenRouter・ローカル LLM に加え、フォアグラウンドの Codex ターミナル CLI。自動ルーティング、または対応するものは `@mention` で指定できます。 |
 | **ローカル LLM（端末上、llama.cpp）** | Qwen3.5 系モデルを同梱の llama.cpp / llama-server フローで端末上で動かします。日常使いのデフォルトは Qwen3.5-2B、軽量なフォールバックとして Qwen3 1.7B / Qwen3.5 0.8B、4B 以上は短時間の品質確認に限定しています。 |
 | **Android 上の Codex** | 上流を盲信せずに Codex を「管理された最新」に保ちます。各 APK は固定ランタイムを同梱し、Updates UI は検証済みランタイムリリースへ昇格でき、Reset で同梱ランタイムに戻せます。Codex は Shelly 自前のデバイスコードログインラッパーとともに、ネイティブ PTY 上で動きます。proot も root も不要です。 |
 | **Scouter ホームウィジェット** | 半透明の Android ウィジェットが、アプリを開かずに Codex の状態・モデル・常時表示のトークン / コンテキスト / リミットのセル・ローカル LLM の健全性・端末負荷・次のスケジュール済みエージェントを表示します。しかも操作可能で、**RUN** は登録済みエージェントを無人実行のゲートを通して起動し、**ASK**、**Allow / Deny**、選択肢のピルはフォアグラウンドの Codex PTY を制御します。 |
@@ -392,7 +396,7 @@ Codex PTY をコールドスタートしたり、次の登録済みスケジュ�
 <summary><strong>AI ペイン</strong></summary>
 
 - **マルチエージェントのルーティング** — ルーターがタスクに最適な AI を選びます。`@mention` で上書きできます
-- **@mention** — AI ペインの直接プロバイダは `@gemini`、`@cerebras`、`@perplexity`、`@local`。ユーティリティ系のルートには `@team`、`@agent`、`@git`、`@open` / `@browse`、`@plan`、`@arena`、`@actions` / `@ci` があります。`@claude` はありません――Claude Code は現在のプロバイダではないためです。Codex は `codex` によるフォアグラウンドのターミナル CLI として利用できます。（Groq はプロバイダとして設定できますが、`@groq` のメンションパターンにはまだ結線されていません。）
+- **@mention** — AI ペインの直接プロバイダは `@gemini`、`@cerebras`、`@perplexity`、`@openrouter`、`@local`。ユーティリティ系のルートには `@team`、`@agent`、`@git`、`@open` / `@browse`、`@plan`、`@arena`、`@actions` / `@ci` があります。`@claude` はありません――Claude Code は現在のプロバイダではないためです。Codex は `codex` によるフォアグラウンドのターミナル CLI として利用できます。（Groq はプロバイダとして設定できますが、`@groq` のメンションパターンにはまだ結線されていません。）
 - **ターミナルコンテキストの注入** — 何も貼り付けなくても、AI は常に現在のターミナルトランスクリプトにアクセスできます
 - **hunk 単位で書き戻す InlineDiff** — 上記参照
 - **音声入力** — ターミナルのアクションバーのマイクを長押しすると VoiceChat が開きます。音声 → Groq 文字起こし → AI → TTS 応答
@@ -492,7 +496,7 @@ Codex PTY をコールドスタートしたり、次の登録済みスケジュ�
 <details>
 <summary><strong>設定・API キー・バックグラウンドエージェント</strong></summary>
 
-- **インライン API キーエディタ** — Gemini / Cerebras / Groq / Perplexity とローカル / OpenAI 互換の API キーを、設定のドロップダウン内でマスク表示と行ごとの `EDIT / CLEAR / SAVE / CANCEL` で編集できます。キーは `expo-secure-store` に保存されます。
+- **インライン API キーエディタ** — Gemini / Cerebras / Groq / Perplexity / OpenRouter とローカル / OpenAI 互換の API キーを、設定のドロップダウン内でマスク表示と行ごとの `EDIT / CLEAR / SAVE / CANCEL` で編集できます。キーは `expo-secure-store` に保存されます。
 - **設定 TUI** — 全設定はターミナル風のテキスト UI からも触れます
 - **コマンドの安全性** — 正規表現ベースの 5 段階リスク評価（ファイアウォールではなくシートベルトです。[セキュリティ](#セキュリティ)を参照）
 - **ワークスペース分離** — プロジェクトごとの cwd / env / AI コンテキスト
@@ -534,6 +538,7 @@ Codex PTY をコールドスタートしたり、次の登録済みスケジュ�
 | Codex CLI の起動 / 認証 | ✅ サポート済み。素の `codex` は、TUI 起動前に Shelly のデバイスコード認証を通してネイティブ PTY 上で動きます |
 | 管理された Codex ネイティブランタイム（`codex_tui` を `~/.shelly-runtime/codex/current` にステージ、`--version` と `exec --help` でスモークテスト、同梱ランタイムへの修復 / リセット） | ✅ 管理された最新 |
 | AI ペイン / `@gemini` / `@team` / バックグラウンドエージェントでの Gemini API | ✅ Gemini API キーを設定していれば利用可 |
+| AI ペイン / `@openrouter` での OpenRouter（有人時のみ ―― 無人実行が OpenRouter を経由することはありません） | ✅ OpenRouter API キーを設定していれば利用可。実機ではライブのエンドポイントに到達するところまで確認済み（Settings の入力欄、メンションのルーティング、実際の HTTP 認証エラーが表示されること）―― 本物のキーでストリーミング応答を最後まで受け取るところまでは、まだ試せていません |
 | バックグラウンド / 自律エージェント — `@agent` での登録、AlarmManager による無人実行（getForegroundService）、実行 / 次回 / 前回 / 実行漏れの可視化 | ✅ 結線済み。無人での発火を Z Fold6 上で端から端まで 1 回観測（N=1、発火時点でアプリはキャッシュ済み）。メーカー横断の信頼性は、まだ広くはテストできていません |
 | エージェントの SNS 投稿コネクタ — Bluesky、Discord、Slack、Telegram、Mastodon、Misskey、WordPress | ✅ Bluesky はライブで端から端まで検証済み。残り 6 つは同じコードパスとテストカバレッジに乗っていますが、それぞれ実アカウントに対して発火させたわけではありません |
 | エージェントのタスク明確性検出 — リクエストが曖昧すぎるとき、スケジュールを聞く前に「実際に何をするのか」を尋ねる | ✅ 出荷済み。2026-07-27 に実機で確認済み |
@@ -901,7 +906,7 @@ Shelly はシェルコマンドを実行し、ファイルを編集し、AI API 
 | 権限 | 理由 | 拒否した場合 | 代替 |
 |---|---|---|---|
 | **MANAGE_EXTERNAL_STORAGE** | ターミナルが `/sdcard/Download` などの共有ディレクトリのスクリプトを読むため。「adb push でファイルを送り、シェルから source する」という定番のワークフローにはこれが必要です。 | `source /sdcard/Download/*.sh` が `Permission denied` で失敗します。`$HOME`（アプリの専用データディレクトリ）内はすべて従来どおり動きます。 | SAF ベースのファイル単位インポート UI を Play ストア配布向けに計画中です（DEFERRED P3）。当面は 設定 → アプリ → Shelly → 権限 → ファイルとメディア → すべてのファイルの管理を許可 から付与してください。 |
-| **INTERNET** | AI API の呼び出し（Gemini、Groq、Perplexity、Cerebras、OpenAI 互換 / ローカルサーバー）と、CLI のアカウント / デバイス認証フロー。CLI 更新のランタイムチェックにも使います。 | クラウド AI 機能とログイン / 更新フローが動かなくなります。ローカル LLM（`@local`）とターミナル機能はすべて動きます。 | 完全に端末上で推論するなら `@local` を使ってください。 |
+| **INTERNET** | AI API の呼び出し（Gemini、Groq、Perplexity、Cerebras、OpenRouter、OpenAI 互換 / ローカルサーバー）と、CLI のアカウント / デバイス認証フロー。CLI 更新のランタイムチェックにも使います。 | クラウド AI 機能とログイン / 更新フローが動かなくなります。ローカル LLM（`@local`）とターミナル機能はすべて動きます。 | 完全に端末上で推論するなら `@local` を使ってください。 |
 | **POST_NOTIFICATIONS** | CLI の完了通知（長時間かかるコマンドがシステム通知を出す）。 | 「コマンドが終わった」という通知が出なくなります。 | — |
 | **FOREGROUND_SERVICE** | アプリをバックグラウンドに回してもターミナルを生かし続けるため。 | アプリを切り替えたときに、シェルプロセスが OS に殺される可能性があります。 | — |
 | **RECORD_AUDIO** | 音声入力（VoiceChat + VoiceChain）。 | 音声機能が無効になります。入力は通常どおり打てます。 | — |
