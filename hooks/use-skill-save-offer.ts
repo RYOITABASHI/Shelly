@@ -14,7 +14,15 @@ import * as React from 'react';
 import { Alert } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { useTranslation } from '@/lib/i18n';
-import { deleteSkillRecipe, distillSkillFromRun, writeSkillRecipe } from '@/lib/agent-skills';
+import {
+  deleteSkillRecipe,
+  distillSkillFromRun,
+  writeSkillRecipe,
+} from '@/lib/agent-skills';
+import {
+  DELETE_SAVED_SKILL_ACTION,
+  saveUnattendedSkillWithNotification,
+} from '@/lib/unattended-skill-save';
 import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 
@@ -32,9 +40,6 @@ export interface SkillSaveOfferParams {
   /** Present for a successful multi-step orchestration run. */
   planSpec?: AgentPlanSpecV1;
 }
-
-export const SKILL_SAVED_NOTIFICATION_CATEGORY = 'skill-saved';
-export const DELETE_SAVED_SKILL_ACTION = 'delete-saved-skill';
 
 export async function saveSkillWithoutConfirmation(
   runCommand: (cmd: string) => Promise<string>,
@@ -99,24 +104,15 @@ export function useSkillSaveOffer(opts: {
     if (mode === 'auto') {
       void (async () => {
         try {
-          const skillId = await saveSkillWithoutConfirmation(runCommand, params);
-          onSaved?.();
-          await Notifications.setNotificationCategoryAsync(SKILL_SAVED_NOTIFICATION_CATEGORY, [
-            {
-              identifier: DELETE_SAVED_SKILL_ACTION,
-              buttonTitle: t('sidebar.skill_save_delete'),
-              options: { opensAppToForeground: false },
-            },
-          ]);
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: t('sidebar.skill_saved_title'),
-              body: t('sidebar.skill_saved_body', { name: params.name }),
-              categoryIdentifier: SKILL_SAVED_NOTIFICATION_CATEGORY,
-              data: { skillId },
-            },
-            trigger: null,
+          await saveUnattendedSkillWithNotification(runCommand, {
+            ...params,
+            unattended: true,
+          }, {
+            title: t('sidebar.skill_saved_title'),
+            body: t('sidebar.skill_saved_body', { name: params.name }),
+            deleteButton: t('sidebar.skill_save_delete'),
           });
+          onSaved?.();
         } catch (error) {
           Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
         }

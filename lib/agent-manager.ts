@@ -38,6 +38,7 @@ import {
   readSkillRecipes,
   writeSkillRecipe,
 } from './agent-skills';
+import { saveUnattendedSkillWithNotification } from './unattended-skill-save';
 import {
   buildStepPrompt,
   combineFinalPreview,
@@ -1753,6 +1754,32 @@ async function captureRunMemoryFromSyncedLogs(
       // from scheduled fires that never touched JS), so it is precisely the
       // case that used to stay stale until the next app launch.
       await refreshAgentRecall(agent.id, runCommand);
+      // The foreground/attended path captures this same content-derived note
+      // immediately. Reaching this point therefore identifies a newly synced
+      // native/background success, while the existing-note skip above prevents
+      // double-saving attended runs and repeat app-launch syncs.
+      // Ephemeral/attended @agent runs are manual-only and use the foreground
+      // offer. A schedule or native notification trigger marks a real native-fire
+      // agent; the existing-note check above handles attended "Run now" on it.
+      if (agent.schedule || agent.notificationTrigger) {
+        try {
+          await saveUnattendedSkillWithNotification(runCommand, {
+            name: agent.name,
+            prompt: agent.prompt,
+            routeDecision: latest.routeDecision,
+            timestamp: latest.timestamp,
+            status: latest.status,
+            alreadySkillId: agent.skillId,
+            unattended: true,
+          }, {
+            title: t('sidebar.skill_saved_title'),
+            body: t('sidebar.skill_saved_body', { name: agent.name }),
+            deleteButton: t('sidebar.skill_save_delete'),
+          });
+        } catch (error) {
+          logWarn('AgentSkills', `failed to save synced unattended run for ${agent.id}`, error);
+        }
+      }
     } catch (error) {
       logWarn('AgentMemory', `failed to capture synced run memory for ${agent.id}`, error);
     }

@@ -17,7 +17,17 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
     runAgent: jest.fn(async () => undefined),
   },
 }));
-jest.mock('expo-notifications', () => ({}));
+jest.mock('expo-notifications', () => ({
+  setNotificationCategoryAsync: jest.fn(async () => undefined),
+  scheduleNotificationAsync: jest.fn(async () => 'notification-id'),
+}));
+jest.mock('@/lib/unattended-skill-save', () => {
+  const actual = jest.requireActual('@/lib/unattended-skill-save');
+  return {
+    ...actual,
+    saveUnattendedSkillWithNotification: jest.fn(actual.saveUnattendedSkillWithNotification),
+  };
+});
 // Empty FileSystem mock: readAgentMetadataViaFileSystem/readMemoryNotes both
 // call into it and their try/catch falls back to the shell path / empty list,
 // exactly like the existing loadAgentsFromDisk tests in this suite.
@@ -27,6 +37,8 @@ import { loadAgentsFromDisk } from '@/lib/agent-manager';
 import { LOCAL_FALLBACK_DIGEST_MARKER } from '@/lib/agent-escalation-ladder';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, AgentRunLog } from '@/store/types';
+import * as Notifications from 'expo-notifications';
+import { saveUnattendedSkillWithNotification } from '@/lib/unattended-skill-save';
 
 const AGENT_LIST_MARKER = '---SEPARATOR---';
 const LOG_MARKER = '---SHELLY_AGENT_LOG---';
@@ -70,6 +82,7 @@ function buildRunCommand(opts: {
   log: AgentRunLog | null;
 }) {
   const memoryWrites: string[] = [];
+  const skillWrites: string[] = [];
   const writeSeen = deferredFlag();
   const runCommand = jest.fn(async (command: string): Promise<string> => {
     if (command.startsWith('[ -f ')) return 'HALTED_NO'; // halt-sentinel check
@@ -87,9 +100,13 @@ function buildRunCommand(opts: {
       writeSeen.resolve();
       return '';
     }
+    if (command.includes('.shelly/agents/skills/')) {
+      skillWrites.push(command);
+      return '';
+    }
     return '';
   });
-  return { runCommand, memoryWrites, writeSeen: writeSeen.promise };
+  return { runCommand, memoryWrites, skillWrites, writeSeen: writeSeen.promise };
 }
 
 function deferredFlag(): { promise: Promise<void>; resolve: () => void } {
@@ -127,6 +144,34 @@ describe('loadAgentsFromDisk — scheduled-run memory capture (G2 follow-up)', (
     expect(memoryWrites[0]).toContain('local news roundup');
   });
 
+  it('auto-saves a newly synced successful unattended run and posts a deletable notification', async () => {
+    const agent = makeAgent({ memory: { remember: true } });
+    const log = makeRunLog();
+    const { runCommand, skillWrites, writeSeen } = buildRunCommand({ agent, log });
+
+    await loadAgentsFromDisk(runCommand, { repairSchedules: false });
+    await Promise.race([writeSeen, settleMicrotasks(10)]);
+    await settleMicrotasks(20);
+
+    expect(skillWrites).toHaveLength(1);
+    expect(skillWrites[0]).toContain('Scheduled agent');
+    expect(saveUnattendedSkillWithNotification).toHaveBeenCalledWith(
+      runCommand,
+      expect.objectContaining({ status: 'success', unattended: true }),
+      expect.any(Object),
+    );
+    expect(Notifications.setNotificationCategoryAsync).toHaveBeenCalledWith(
+      'skill-saved',
+      expect.arrayContaining([
+        expect.objectContaining({
+          identifier: 'delete-saved-skill',
+          options: { opensAppToForeground: true },
+        }),
+      ]),
+    );
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+  });
+
   it('does not write memory for an agent that has not opted into remember', async () => {
     const agent = makeAgent({ memory: undefined });
     const log = makeRunLog();
@@ -141,12 +186,32 @@ describe('loadAgentsFromDisk — scheduled-run memory capture (G2 follow-up)', (
   it('does not write memory when the latest run was not a success', async () => {
     const agent = makeAgent({ memory: { remember: true } });
     const log = makeRunLog({ status: 'error', outputPreview: 'boom' });
-    const { runCommand, memoryWrites } = buildRunCommand({ agent, log });
+    const { runCommand, memoryWrites, skillWrites } = buildRunCommand({ agent, log });
 
     await loadAgentsFromDisk(runCommand, { repairSchedules: false });
     await settleMicrotasks(10);
 
     expect(memoryWrites).toHaveLength(0);
+    expect(skillWrites).toHaveLength(0);
+    expect(saveUnattendedSkillWithNotification).not.toHaveBeenCalled();
+    expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+
+  it('does not double-fire the synced hook for an attended manual @agent run', async () => {
+    const agent = makeAgent({
+      schedule: null,
+      memory: { remember: true },
+    });
+    const log = makeRunLog();
+    const { runCommand, memoryWrites, skillWrites } = buildRunCommand({ agent, log });
+
+    await loadAgentsFromDisk(runCommand, { repairSchedules: false });
+    await settleMicrotasks(20);
+
+    expect(memoryWrites.length).toBeGreaterThan(0);
+    expect(skillWrites).toHaveLength(0);
+    expect(saveUnattendedSkillWithNotification).not.toHaveBeenCalled();
+    expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
   });
 
   it('never captures a local-context-fallback digest, even one logged by an older script version (defense in depth)', async () => {
