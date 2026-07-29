@@ -180,6 +180,16 @@ const en: Record<string, string> = {
   'agents.cloud_consent_title': 'Autonomous cloud access',
   'agents.cloud_consent_body': 'Autonomous agents will use your configured cloud API keys (Gemini / Perplexity) UNATTENDED for web tasks.\n\n• Your key authenticates the request and is NEVER sent to the model.\n• A scheduled agent will consume your quota/cost without asking each time (Gemini free tier; Perplexity is paid).\n• Secrets are still always kept on-device; sending/running still needs your approval.\n\nEnable?',
   'agents.cloud_consent_enable': 'Enable',
+  // Optimistic (rollback-type) workspace writes — AppSettings.agentOptimisticWorkspaceWrites.
+  // Copy is scoped to exactly what lib/agent-action-reversibility.ts permits (a
+  // `draft` into the LOCAL agent-output workspace) and says plainly that the
+  // undo affordance is still unbuilt, so nothing here promises behaviour the
+  // code does not yet perform.
+  'agents.optimistic_writes': 'Optimistic Writes',
+  'agents.optimistic_writes_hint': 'Draft saves into the local agent-output folder run immediately behind an automatic savepoint instead of waiting for an approval tap. cli / notify / webhook / social-post / dm-reply / app-act, and Obsidian or custom output, still require approval. No "Undo" button exists yet, so no run takes this path today.',
+  'agents.optimistic_writes_consent_title': 'Run workspace drafts without approval',
+  'agents.optimistic_writes_consent_body': 'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n• The "Undo" affordance is not built yet, so no run actually takes this path today; this setting is here ahead of it.\n\nEnable?',
+  'agents.optimistic_writes_consent_enable': 'Enable',
   'agents.notification_trigger': 'Notification Triggers',
   'agents.notification_trigger_enabled': 'Notification triggers enabled',
   'agents.notification_trigger_disabled': 'Notification triggers disabled',
