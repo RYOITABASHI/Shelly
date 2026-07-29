@@ -2425,6 +2425,14 @@ export async function syncAgentRunLogsFromDisk(
   store.setRunHistory(mergedHistory);
   store.setAgents(agents);
 
+  // G2 follow-up: this is the actual production-live periodic/foreground-resume
+  // sync path (app/_layout.tsx's initial loadAgentsFromDisk call intentionally
+  // passes syncLogs:false for a fast startup, deferring heavy sync to here) --
+  // so the scheduled/alarm-fired-run memory+skill capture hook has to live in
+  // THIS function to ever run in production, not in loadAgentsFromDisk's own
+  // (currently unreachable) syncLogs:true branch.
+  void captureRunMemoryFromSyncedLogs(agents, mergedHistory, runCommand);
+
   for (const a of tripped) {
     if (a.schedule) {
       try {

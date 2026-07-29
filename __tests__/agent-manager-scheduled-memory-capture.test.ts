@@ -33,7 +33,7 @@ jest.mock('@/lib/unattended-skill-save', () => {
 // exactly like the existing loadAgentsFromDisk tests in this suite.
 jest.mock('expo-file-system/legacy', () => ({}));
 
-import { loadAgentsFromDisk } from '@/lib/agent-manager';
+import { loadAgentsFromDisk, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
 import { LOCAL_FALLBACK_DIGEST_MARKER } from '@/lib/agent-escalation-ladder';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, AgentRunLog } from '@/store/types';
@@ -233,6 +233,60 @@ describe('loadAgentsFromDisk — scheduled-run memory capture (G2 follow-up)', (
     const { runCommand, memoryWrites } = buildRunCommand({ agent, log: null });
 
     await loadAgentsFromDisk(runCommand, { repairSchedules: false });
+    await settleMicrotasks(10);
+
+    expect(memoryWrites).toHaveLength(0);
+  });
+});
+
+// Regression guard for a real production bug: app/_layout.tsx's only call to
+// loadAgentsFromDisk deliberately passes syncLogs:false (fast startup path),
+// so the capture hook above is unreachable in production. The actual live
+// entry point is syncAgentRunLogsFromDisk, called on a timer and on app-resume
+// (app/_layout.tsx's syncAgentLogs). It has to carry its own capture call --
+// this suite existing only for loadAgentsFromDisk is exactly what let that
+// gap ship unnoticed.
+describe('syncAgentRunLogsFromDisk — scheduled-run memory capture (the actual production path)', () => {
+  afterEach(() => {
+    useAgentStore.getState().setAgents([]);
+    useAgentStore.getState().setRunHistory({});
+    jest.clearAllMocks();
+  });
+
+  it('captures the latest success digest for a remember-enabled agent after a periodic sync', async () => {
+    const agent = makeAgent({ memory: { remember: true, tags: ['news'] } });
+    useAgentStore.getState().setAgents([agent]);
+    const log = makeRunLog();
+    const { runCommand, memoryWrites, writeSeen } = buildRunCommand({ agent, log });
+
+    await syncAgentRunLogsFromDisk(runCommand);
+    await Promise.race([writeSeen, settleMicrotasks(10)]);
+
+    expect(memoryWrites.length).toBeGreaterThan(0);
+    expect(memoryWrites[0]).toContain('local news roundup');
+  });
+
+  it('auto-saves a newly synced successful unattended run via the periodic sync path too', async () => {
+    const agent = makeAgent({ memory: { remember: true } });
+    useAgentStore.getState().setAgents([agent]);
+    const log = makeRunLog();
+    const { runCommand, skillWrites, writeSeen } = buildRunCommand({ agent, log });
+
+    await syncAgentRunLogsFromDisk(runCommand);
+    await Promise.race([writeSeen, settleMicrotasks(10)]);
+    await settleMicrotasks(20);
+
+    expect((saveUnattendedSkillWithNotification as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+    void skillWrites;
+  });
+
+  it('does not double-fire when there is no remember-enabled agent in the store', async () => {
+    const agent = makeAgent({ memory: undefined });
+    useAgentStore.getState().setAgents([agent]);
+    const log = makeRunLog();
+    const { runCommand, memoryWrites } = buildRunCommand({ agent, log });
+
+    await syncAgentRunLogsFromDisk(runCommand);
     await settleMicrotasks(10);
 
     expect(memoryWrites).toHaveLength(0);
