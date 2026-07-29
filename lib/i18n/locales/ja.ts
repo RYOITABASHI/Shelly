@@ -453,6 +453,21 @@ const ja: Record<string, string> = {
   // まま、代わりにこの一言で「確認後に追加でもう一度だけ実行する」ことを
   // 案内する。
   'agentplan.run_once_on_confirm_note': '確認後、定期スケジュールはそのまま、追加で一度だけ今すぐ実行します。',
+  // ── 共有メモリ（「全エージェントで覚えておいて」）の書き込み ────────────
+  // `_global` ノートは全エージェントの recall に載るため、通常のエージェント
+  // 別ノートと違って必ず1回の明示確認を挟む——lib/agent-global-memory-
+  // intent.ts 参照。この質問に確認フレーズで答えるまで何も保存されない。
+  'globalmemory.confirm_prompt':
+    'これを「全エージェント共通の記憶」として保存します。今後どのエージェントの実行でも参照されます。\n\n  「{{text}}」\n\n保存する場合は「はい」、やめる場合は「キャンセル」と答えてください。（1つのエージェントだけに覚えさせたい場合は「全エージェント」を付けずに言い直してください。）',
+  'globalmemory.confirm_unclear':
+    'まだ保存していません。全エージェント共通で保存する場合は「はい」、やめる場合は「キャンセル」と答えてください。\n\n  「{{text}}」',
+  'globalmemory.discarded_unclear':
+    '確認が取れなかったため、共有メモは破棄しました。何も保存していません。全エージェントに覚えさせたい場合は、もう一度言ってください。',
+  'globalmemory.cancelled': '破棄しました。何も保存していません。',
+  'globalmemory.saving': '共有メモリに保存中…',
+  'globalmemory.saved':
+    '✅ 共有メモリに保存しました。今後すべてのエージェントがこれを参照します。\n\n  「{{text}}」',
+  'globalmemory.failed': '❌ 共有メモの保存に失敗しました',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',

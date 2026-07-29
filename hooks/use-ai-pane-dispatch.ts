@@ -42,6 +42,7 @@ import {
   deleteAgent,
   updateAgent,
   ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+  writeGlobalMemoryNote,
 } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
 import type { ToolChoice, Agent } from '@/store/types';
@@ -52,6 +53,7 @@ import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
+import { detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
@@ -553,6 +555,124 @@ export function useAIPaneDispatch(paneId: string) {
         Date.now(),
         SLOT_FILL_STALE_MS,
       );
+
+      // ── Reply to a pending "save this for EVERY agent?" confirmation
+      // (2026-07-29, roadmap item 3 part 2) ────────────────────────────────
+      //
+      // This is the ONLY production path that writes a user-scope (`_global`)
+      // memory note, and it is placed FIRST among the pending-reply blocks on
+      // purpose: the question that asked for this confirmation is always the
+      // truly-latest message (the branch that posts it returns immediately),
+      // so by the same "a reply resolves the most recently asked question
+      // first" rule the block below documents, it must win this turn.
+      //
+      // Nothing is written unless the reply is an EXACT confirm phrase
+      // (lib/agent-confirm-phrase.ts, whole-message match). Deliberately NOT
+      // gated by `agentRegistrationRequireConfirm`: that setting trades
+      // approval frequency against convenience for ONE agent, whereas a
+      // global note lands in every agent's prompt, so it always costs a
+      // confirm turn no matter how the user configured agent registration.
+      //
+      // The commit call is lib/agent-manager.ts's writeGlobalMemoryNote —
+      // never writeMemoryNote directly — because that wrapper is what also
+      // re-bakes every agent's baked recall (docs/superpowers/DEFERRED.md's
+      // 書き込み時re-bake decision) and keeps the G2 secret-guard invariant
+      // intact: the note flows into run prompts through applyMemoryAndSkills
+      // → generateRunScript → resolveAgentRoute, so a secret inside a GLOBAL
+      // note forces the run on-device exactly like a secret in an
+      // agent-scoped one.
+      const pendingGlobalMemoryMsg =
+        freshestMsgForPendingCheck?.role === 'assistant' &&
+        freshestMsgForPendingCheck.pendingGlobalMemory &&
+        Date.now() - freshestMsgForPendingCheck.timestamp <= SLOT_FILL_STALE_MS
+          ? freshestMsgForPendingCheck
+          : null;
+      // An "@…" message is a fresh command, never an answer — same bypass the
+      // slot-fill / pendingAgentSession blocks use. The pending confirmation is
+      // dropped in that case rather than left dangling: unlike an agent draft
+      // (which keeps tap-to-confirm affordances on its own bubble), this one
+      // has no other affordance, and a silently surviving global write that
+      // fires on some later stray "OK" is exactly the surprise to avoid.
+      if (pendingGlobalMemoryMsg && pendingGlobalMemoryMsg.pendingGlobalMemory) {
+        const pendingGlobal = pendingGlobalMemoryMsg.pendingGlobalMemory;
+        // Locale is read off the QUESTION's own rendered text, not off the note
+        // payload: the payload can be pure ASCII inside an otherwise Japanese
+        // request ("全エージェントで reply in English と覚えておいて"), and the
+        // answer must come back in the same language the question was asked in.
+        const gmStrings = detectMessageLocale(pendingGlobalMemoryMsg.content) === 'ja' ? ja : en;
+        const clearPendingGlobal = () =>
+          store.updateMessage(paneId, pendingGlobalMemoryMsg.id, { pendingGlobalMemory: undefined });
+
+        if (userText.trim().startsWith('@')) {
+          clearPendingGlobal();
+          // Fall through to normal routing for the fresh command.
+        } else {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          if (isCancelPhrase(userText)) {
+            clearPendingGlobal();
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: gmStrings['globalmemory.cancelled'],
+              timestamp: Date.now(),
+              agent: pendingGlobalMemoryMsg.agent,
+            });
+            return;
+          }
+          if (isConfirmPhrase(userText)) {
+            // Clear BEFORE the await so a second reply that lands while the
+            // write is in flight cannot start a duplicate write.
+            clearPendingGlobal();
+            const savingMsgId = generateId();
+            store.addMessage(paneId, {
+              id: savingMsgId,
+              role: 'assistant',
+              content: gmStrings['globalmemory.saving'],
+              timestamp: Date.now(),
+              agent: pendingGlobalMemoryMsg.agent,
+            });
+            try {
+              await writeGlobalMemoryNote(runAgentShellCommand, {
+                type: 'preference',
+                text: pendingGlobal.text,
+              });
+              store.updateMessage(paneId, savingMsgId, {
+                content: gmStrings['globalmemory.saved'].replace('{{text}}', pendingGlobal.text),
+              });
+            } catch (writeErr) {
+              const detail = writeErr instanceof Error ? writeErr.message : String(writeErr);
+              store.updateMessage(paneId, savingMsgId, {
+                content: `${gmStrings['globalmemory.failed']}: ${detail}`,
+              });
+            }
+            return;
+          }
+          // Neither confirm nor cancel. Re-ask ONCE, carrying the pending
+          // state onto the new latest message; a second unclear reply drops
+          // it entirely so an abandoned confirmation can never keep swallowing
+          // the conversation (bounded at two absorbed messages by design).
+          clearPendingGlobal();
+          if (pendingGlobal.attempts >= 1) {
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: gmStrings['globalmemory.discarded_unclear'],
+              timestamp: Date.now(),
+              agent: pendingGlobalMemoryMsg.agent,
+            });
+            return;
+          }
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: gmStrings['globalmemory.confirm_unclear'].replace('{{text}}', pendingGlobal.text),
+            timestamp: Date.now(),
+            agent: pendingGlobalMemoryMsg.agent,
+            pendingGlobalMemory: { text: pendingGlobal.text, attempts: pendingGlobal.attempts + 1 },
+          });
+          return;
+        }
+      }
       const pendingAgentSession = store.getOrCreate(paneId).pendingAgentSession;
       if (
         pendingAgentSession &&
@@ -1110,6 +1230,38 @@ export function useAIPaneDispatch(paneId: string) {
             // lib/agent-llm-fallback.ts's isCapabilityQuestionForAgentFlow.
             if (isCapabilityQuestionForAgentFlow(promptText)) {
               await answerCapabilityQuestionInline(agent as ChatMessage['agent'], promptText);
+              return;
+            }
+
+            // Shared-memory write interception (2026-07-29, roadmap item 3
+            // part 2): "全エージェントで◯◯を覚えておいて" must write a
+            // user-scope (`_global`) note that EVERY agent recalls — not
+            // start an agent-creation draft. Checked BEFORE parseAgentNL for
+            // the same reason the capability question above is: the
+            // deterministic creation parser would otherwise happily turn
+            // "覚えておいて" into an agent's memory.rememberFact and register
+            // a whole scheduled agent for it.
+            //
+            // detectGlobalMemoryWrite is deliberately near-impossible to trip
+            // by accident (two required markers + a real payload — see its own
+            // module doc), and a hit still writes NOTHING here: it only posts
+            // the confirm question below. The actual write happens in the
+            // pendingGlobalMemory reply branch near the top of dispatch(),
+            // and ONLY through lib/agent-manager.ts's writeGlobalMemoryNote,
+            // which is what re-bakes every agent's baked recall and keeps the
+            // G2 secret-guard invariant (a secret in a global note forces the
+            // run on-device exactly like a secret in an agent-scoped one).
+            const globalMemoryIntent = detectGlobalMemoryWrite(promptText);
+            if (globalMemoryIntent) {
+              const gmStrings = detectMessageLocale(promptText) === 'ja' ? ja : en;
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content: gmStrings['globalmemory.confirm_prompt'].replace('{{text}}', globalMemoryIntent.text),
+                timestamp: Date.now(),
+                agent: agent as ChatMessage['agent'],
+                pendingGlobalMemory: { text: globalMemoryIntent.text, attempts: 0 },
+              });
               return;
             }
 

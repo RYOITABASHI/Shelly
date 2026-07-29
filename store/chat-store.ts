@@ -122,6 +122,22 @@ export type ChatMessage = {
      *  conversation can never get stuck in an infinite loop. */
     attemptCount: number;
   };
+  /** User-scope ("remember this for EVERY agent") memory write awaiting an
+   *  explicit human confirm. Present on the assistant message that asked the
+   *  confirm question; when THAT message is the most recent one in the pane,
+   *  hooks/use-ai-pane-dispatch.ts routes the next user message here and
+   *  commits the write via lib/agent-manager.ts's writeGlobalMemoryNote ONLY
+   *  on an exact confirm phrase. Nothing is written when this field is merely
+   *  created — see lib/agent-global-memory-intent.ts for why a global write
+   *  (recalled by every agent) gets a mandatory confirm turn that an ordinary
+   *  per-agent note does not. `attempts` bounds the re-ask loop so an
+   *  abandoned confirmation can never swallow the conversation. */
+  pendingGlobalMemory?: {
+    /** The exact note text that will be stored, already scope-stripped. */
+    text: string;
+    /** How many non-confirm / non-cancel replies this question has absorbed. */
+    attempts: number;
+  };
   /** P1 scheduling-reliability audit (2026-07-15): renders an
    *  AgentScheduleReadinessCard instead of plain text — a one-time,
    *  dismissible checklist (exact-alarm grant / battery-optimization
