@@ -1189,8 +1189,19 @@ const MEMORY_EN_RE = /\b(?:remember|note|keep in mind|don'?t forget)\b(?:\s+(?:t
 const EN_NEGATED_REMEMBER = /\b(?:do(?:n'?t| not)|can'?t|cannot|could ?n'?t|wo ?n'?t|will not|never|did ?n'?t)\s+remember\b/i;
 const JP_NEGATED_MEMORY = /覚えて(?:い)?ない|覚えてません|思い出せない|記憶にない/;
 
-/** Detect a "remember that …" request and extract the fact. Returns undefined when absent. */
-function detectMemory(text: string): AgentMemoryConfig | undefined {
+/**
+ * Detect a "remember that …" request and extract the fact. Returns undefined
+ * when absent.
+ *
+ * Exported (2026-07-29) so lib/agent-global-memory-intent.ts can reuse the
+ * EXACT same memory-marker semantics — including the negated-"remember"
+ * exclusions — for the user-scope (`_global`) write path. Reusing the function
+ * rather than re-implementing the regexes is deliberate: a drift between the
+ * per-agent and the global detector would mean a phrase that writes one scope
+ * but not the other, which is precisely the class of surprise a global write
+ * (visible to EVERY agent) must not have.
+ */
+export function detectMemory(text: string): AgentMemoryConfig | undefined {
   // JP imperative keep-this markers, excluding negated "don't remember" forms.
   const hasJp = !JP_NEGATED_MEMORY.test(text) &&
     /(?:覚えておいて|覚えてて|覚えといて|記憶して|メモして|忘れないで)/.test(text);

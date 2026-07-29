@@ -132,6 +132,7 @@ const mockInstallAgent = jest.fn(async () => {});
 const mockDeleteAgent = jest.fn(async () => {});
 const mockRunAgentNow = jest.fn(async () => {});
 const mockStopAgent = jest.fn(async () => {});
+const mockWriteGlobalMemoryNote = jest.fn(async () => {});
 jest.mock('@/lib/agent-manager', () => ({
   parseAgentCommand: jest.fn((input: string) => ({
     type: 'create',
@@ -144,6 +145,12 @@ jest.mock('@/lib/agent-manager', () => ({
   deleteAgent: (...args: unknown[]) => mockDeleteAgent(...args),
   runAgentNow: (...args: unknown[]) => mockRunAgentNow(...args),
   stopAgent: (...args: unknown[]) => mockStopAgent(...args),
+  // 2026-07-29: the ONLY production writer of a user-scope (`_global`) memory
+  // note. Mocked so Scenario 8 can assert the new entry point routes through
+  // THIS wrapper — the one that also re-bakes every agent's baked recall and
+  // therefore preserves the G2 secret-guard invariant — and never through a
+  // raw memory write.
+  writeGlobalMemoryNote: (...args: unknown[]) => mockWriteGlobalMemoryNote(...args),
 }));
 
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
@@ -1113,5 +1120,168 @@ describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-u
     expect(mockInstallAgent).toHaveBeenCalledTimes(1);
     const msgAfter = conv().messages.find((m) => m.id === messageId);
     expect(msgAfter?.agentCardState).toBe('confirmed');
+  });
+});
+
+// ─── Scenario 8: the shared ("every agent") memory write entry point ───────
+//
+// Roadmap item 3 part 2 (2026-07-29). Before this, writeGlobalMemoryNote had
+// no production caller at all — a `_global` note could only be created by
+// hand-writing the file on-device. These drive the real dispatch() and assert
+// the whole confidence bar end-to-end: detection, the MANDATORY confirm turn,
+// the commit going through writeGlobalMemoryNote (never a raw write), and —
+// most important — that ambiguous input writes NOTHING.
+
+describe('Scenario 8 — "remember this for every agent" write entry point', () => {
+  it('asks for confirmation first and writes nothing until an explicit confirm', async () => {
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('@agent 全エージェント共通で、返信は日本語でということを覚えておいて');
+    });
+
+    // Nothing written yet — this is the whole point of the confirm gate.
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    // …and it must NOT have been misread as an agent-creation request.
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    expect(conv().pendingAgentSession).toBeFalsy();
+
+    const question = lastMessage();
+    expect(question.role).toBe('assistant');
+    expect(question.pendingGlobalMemory?.text).toContain('日本語');
+    expect(question.pendingGlobalMemory?.attempts).toBe(0);
+    expect(question.content).toContain(
+      ja['globalmemory.confirm_prompt'].split('{{text}}')[0],
+    );
+
+    // Turn 2: an exact confirm phrase commits the write — and it goes through
+    // writeGlobalMemoryNote (the re-baking wrapper), with the scope-stripped
+    // text and the fixed 'preference' type.
+    await act(async () => {
+      await result.current.dispatch('はい');
+    });
+
+    expect(mockWriteGlobalMemoryNote).toHaveBeenCalledTimes(1);
+    const [, params] = mockWriteGlobalMemoryNote.mock.calls[0] as unknown as [
+      unknown,
+      { type: string; text: string },
+    ];
+    expect(params.type).toBe('preference');
+    expect(params.text).toBe(question.pendingGlobalMemory!.text);
+    expect(params.text).not.toContain('エージェント'); // scope clause stripped
+    expect(lastMessage().content).toContain(ja['globalmemory.saved'].split('{{text}}')[0]);
+    // The pending marker is cleared, so a later stray "OK" cannot re-fire it.
+    expect(conv().messages.some((m) => m.pendingGlobalMemory)).toBe(false);
+  });
+
+  it('the EN phrasing works the same way and reports in EN', async () => {
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('@agent remember for all agents that I prefer metric units');
+    });
+    expect(lastMessage().pendingGlobalMemory?.text).toBe('I prefer metric units');
+    expect(lastMessage().content).toContain(en['globalmemory.confirm_prompt'].split('{{text}}')[0]);
+
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockWriteGlobalMemoryNote).toHaveBeenCalledTimes(1);
+  });
+
+  it('a cancel reply discards it and writes nothing', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 全エージェントで、単位はメートル法を使うことを覚えておいて');
+    });
+    await act(async () => {
+      await result.current.dispatch('キャンセル');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    expect(lastMessage().content).toBe(ja['globalmemory.cancelled']);
+    expect(conv().messages.some((m) => m.pendingGlobalMemory)).toBe(false);
+  });
+
+  it('an unclear reply re-asks once, then discards — it never writes', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 全エージェントで、単位はメートル法を使うことを覚えておいて');
+    });
+
+    await act(async () => {
+      await result.current.dispatch('うーん、どうかな');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    expect(lastMessage().pendingGlobalMemory?.attempts).toBe(1);
+
+    await act(async () => {
+      await result.current.dispatch('やっぱりよくわからない');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    expect(lastMessage().content).toBe(ja['globalmemory.discarded_unclear']);
+    expect(conv().messages.some((m) => m.pendingGlobalMemory)).toBe(false);
+  });
+
+  // ── The important negatives: ambiguous / low-confidence input must never
+  // reach the global write path at all. A wrong `_global` note pollutes EVERY
+  // agent's prompt on every future run.
+  it('an ordinary per-agent "覚えておいて" never triggers a global write', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 毎朝8時にニュースをまとめて、要点を覚えておいて');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    expect(lastMessage().pendingGlobalMemory).toBeUndefined();
+    // It stayed on the ordinary agent-creation flow instead.
+    expect(
+      conv().pendingAgentSession !== null || conv().messages.some((m) => m.agentDraft || m.pendingSlotFill),
+    ).toBe(true);
+  });
+
+  it('an all-agents command with no memory marker never triggers a global write', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 全エージェントの状態を毎朝9時に教えて');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    expect(conv().messages.some((m) => m.pendingGlobalMemory)).toBe(false);
+  });
+
+  it('a scoped request with no actual payload never triggers a global write', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent これは全エージェントで覚えておいて');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    expect(conv().messages.some((m) => m.pendingGlobalMemory)).toBe(false);
+  });
+
+  it('a confirm phrase with no pending shared-memory question writes nothing', async () => {
+    const { result } = setup();
+    // Routed as an ordinary @agent utterance — there is no pending shared-memory
+    // question anywhere, so nothing may reach the global write path.
+    await act(async () => {
+      await result.current.dispatch('@agent はい');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+    expect(conv().messages.some((m) => m.pendingGlobalMemory)).toBe(false);
+  });
+
+  it('a fresh "@…" command drops the pending question instead of leaving it armed', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 全エージェントで、単位はメートル法を使うことを覚えておいて');
+    });
+    await act(async () => {
+      await result.current.dispatch('@agent 毎朝8時にニュースを通知して');
+    });
+    expect(conv().messages.some((m) => m.pendingGlobalMemory)).toBe(false);
+
+    // A later "OK" now belongs to whatever the fresh command asked for — it
+    // must never retro-commit the abandoned shared note.
+    await act(async () => {
+      await result.current.dispatch('はい');
+    });
+    expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
   });
 });

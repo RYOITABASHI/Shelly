@@ -455,6 +455,22 @@ const en: Record<string, string> = {
   // is left unmarked (unchanged); this note explains the additional run-now
   // action that will fire once the draft is actually confirmed.
   'agentplan.run_once_on_confirm_note': "This will also run once, right after you confirm — its recurring schedule stays unchanged.",
+  // ── Shared ("remember this for every agent") memory writes ────────────────
+  // A `_global` note is recalled by EVERY agent, so unlike an ordinary
+  // per-agent note it always costs one explicit confirm turn — see
+  // lib/agent-global-memory-intent.ts. Nothing is stored until the user
+  // answers this question with a confirm phrase.
+  'globalmemory.confirm_prompt':
+    'Save this so EVERY agent remembers it, now and in future runs?\n\n  "{{text}}"\n\nReply "OK" to save it, or "cancel" to discard. (This is shared across all your agents — for one agent only, say it without "all agents".)',
+  'globalmemory.confirm_unclear':
+    'Not saved yet. Reply "OK" to save this for every agent, or "cancel" to discard it:\n\n  "{{text}}"',
+  'globalmemory.discarded_unclear':
+    'Discarded the shared note (no confirmation was given). Nothing was saved — say it again if you still want every agent to remember it.',
+  'globalmemory.cancelled': 'Discarded. Nothing was saved.',
+  'globalmemory.saving': 'Saving to shared memory…',
+  'globalmemory.saved':
+    '✅ Saved to shared memory — every agent will see this from now on:\n\n  "{{text}}"',
+  'globalmemory.failed': '❌ Could not save the shared note',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',
