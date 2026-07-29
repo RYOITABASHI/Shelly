@@ -62,6 +62,11 @@ jest.mock('@/lib/local-llm', () => ({
   ollamaChatStream: jest.fn(),
 }));
 
+jest.mock('@/lib/openrouter', () => ({
+  OPENROUTER_DEFAULT_MODEL: 'openrouter/auto',
+  openRouterChatStream: jest.fn(),
+}));
+
 // 2026-07-27 regression coverage (on-device finding: "@agent 手伝って" never
 // asked its task-clarity clarifying question): the two
 // extractAgentFieldsWithLlm call sites in hooks/use-ai-pane-dispatch.ts now
@@ -161,6 +166,9 @@ const { ollamaChat: mockOllamaChat } = require('@/lib/local-llm') as { ollamaCha
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ensureLocalLlmServerRunning: mockEnsureLocalLlmServerRunning } =
   require('@/lib/local-llm-autostart') as { ensureLocalLlmServerRunning: jest.Mock };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { openRouterChatStream: mockOpenRouterChatStream } =
+  require('@/lib/openrouter') as { openRouterChatStream: jest.Mock };
 
 const PANE = 'pane-under-test';
 
@@ -240,6 +248,45 @@ beforeEach(() => {
 function setup() {
   return renderHook(() => useAIPaneDispatch(PANE));
 }
+
+describe('@openrouter attended dispatch', () => {
+  it('routes the mention to openRouterChatStream', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        openrouterApiKey: 'sk-or-test',
+        openrouterModel: 'openrouter/auto',
+      },
+    }));
+    mockOpenRouterChatStream.mockImplementation(
+      async (
+        _apiKey: string,
+        _prompt: string,
+        onChunk: (text: string, done: boolean) => void,
+      ) => {
+        onChunk('OpenRouter reply', false);
+        onChunk('', true);
+        return { success: true, content: 'OpenRouter reply' };
+      },
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('@openrouter hello');
+    });
+
+    expect(mockOpenRouterChatStream).toHaveBeenCalledWith(
+      'sk-or-test',
+      'hello',
+      expect.any(Function),
+      'openrouter/auto',
+      expect.any(Array),
+      expect.any(AbortSignal),
+      expect.any(String),
+    );
+    expect(lastMessage().content).toBe('OpenRouter reply');
+  });
+});
 
 // ─── Scenario 1: the exact regression repro ───────────────────────────────
 

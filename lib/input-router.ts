@@ -13,7 +13,7 @@ import { t } from '@/lib/i18n';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type RouteTarget = 'local' | 'shell' | 'suggest' | 'gemini' | 'perplexity' | 'groq' | 'cerebras' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena' | 'actions';
+export type RouteTarget = 'local' | 'shell' | 'suggest' | 'gemini' | 'perplexity' | 'groq' | 'cerebras' | 'openrouter' | 'team' | 'browser' | 'git' | 'agent' | 'codex' | 'plan' | 'arena' | 'actions';
 
 export type InputLayer =
   | 'mention'        // @codex / @local / @perplexity / etc.
@@ -65,6 +65,7 @@ const MENTION_PATTERNS: Array<{ pattern: RegExp; target: RouteTarget; label: str
   { pattern: /^@perplexity\s*/i, target: 'perplexity', label: 'Perplexity' },
   { pattern: /^@pplx\s*/i,       target: 'perplexity', label: 'Perplexity' },
   { pattern: /^@search\s*/i,     target: 'perplexity', label: 'Perplexity' },
+  { pattern: /^@openrouter\s*/i,  target: 'openrouter', label: 'OpenRouter' },
   { pattern: /^@open\s*/i,        target: 'browser',    label: 'Browser' },
   { pattern: /^@browse\s*/i,      target: 'browser',    label: 'Browser' },
   { pattern: /^@team\s*/i,         target: 'team',        label: 'Team Table' },
@@ -537,6 +538,7 @@ export function getTargetLabel(target: RouteTarget): string {
     codex: 'Codex CLI',
     groq: 'Groq',
     cerebras: 'Cerebras',
+    openrouter: 'OpenRouter',
     plan: 'Plan Mode',
     actions: 'Actions',
     arena: 'Arena Mode',
@@ -559,6 +561,7 @@ export function getTargetColor(target: RouteTarget): string {
     agent:      '#EF4444', // レッド（AI Agent）
     codex:      '#10B981', // グリーン（Codex）
     cerebras:   '#FF6B35', // オレンジレッド（Cerebras）
+    openrouter: '#6366F1', // インディゴ（OpenRouter）
     plan:       '#06B6D4', // シアン（Plan Mode）
     arena:      '#D946EF', // フューシャ（Arena Mode）
   };

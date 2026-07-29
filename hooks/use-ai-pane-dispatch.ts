@@ -28,6 +28,7 @@ import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
 import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
+import { openRouterChatStream, OPENROUTER_DEFAULT_MODEL } from '@/lib/openrouter';
 import { checkOllamaConnection, ollamaChatStream } from '@/lib/local-llm';
 import type { OllamaMessage } from '@/lib/local-llm';
 import { ensureLocalLlmServerRunning } from '@/lib/local-llm-autostart';
@@ -70,6 +71,7 @@ import { getLayout, useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-
 import type { GroqMessage } from '@/lib/groq';
 import type { GeminiMessage } from '@/lib/gemini';
 import type { CerebrasMessage } from '@/lib/cerebras';
+import type { OpenRouterMessage } from '@/lib/openrouter';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { useTranslation } from '@/lib/i18n';
@@ -1672,6 +1674,62 @@ export function useAIPaneDispatch(paneId: string) {
                 });
               }
               logInfo('AIPaneDispatch', 'Cerebras response complete');
+            }
+          }
+        } else if (agent === 'openrouter') {
+          // ── OpenRouter (generic OpenAI-compatible SSE) ──
+          const apiKey = settings.openrouterApiKey ?? '';
+          if (!apiKey) {
+            store.updateMessage(paneId, assistantId, {
+              content: 'OpenRouter API key is not set. Add it in Settings (gear icon) → OpenRouter API Key.',
+              isStreaming: false,
+              streamingText: undefined,
+            });
+          } else {
+            const openRouterHistory: OpenRouterMessage[] = history.map((m) => ({
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+            }));
+            let accumulated = '';
+            throttledUpdate(paneId, assistantId, { isStreaming: true, streamingText: '' });
+
+            const result = await openRouterChatStream(
+              apiKey,
+              promptText,
+              (chunk, done) => {
+                if (signal.aborted) return;
+                if (!done && chunk) {
+                  accumulated += chunk;
+                  throttledUpdate(paneId, assistantId, {
+                    streamingText: accumulated,
+                    tokenCount: estimateTokens(accumulated),
+                    isStreaming: true,
+                  });
+                }
+              },
+              settings.openrouterModel ?? OPENROUTER_DEFAULT_MODEL,
+              openRouterHistory,
+              signal,
+              systemPrompt,
+            );
+
+            if (!signal.aborted) {
+              const finalContent = result.content ?? accumulated;
+              if (!result.success && result.error) {
+                store.updateMessage(paneId, assistantId, {
+                  content: `OpenRouter error: ${result.error}`,
+                  isStreaming: false,
+                  streamingText: undefined,
+                });
+              } else {
+                store.updateMessage(paneId, assistantId, {
+                  content: finalContent,
+                  streamingText: undefined,
+                  isStreaming: false,
+                  tokenCount: estimateTokens(finalContent),
+                });
+              }
+              logInfo('AIPaneDispatch', 'OpenRouter response complete');
             }
           }
         } else if (agent === 'groq') {

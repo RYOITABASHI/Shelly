@@ -104,6 +104,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'groqApiKey',      label: 'Groq API Key',    type: 'secret',  source: 'settings' },
       { key: 'groqModel',       label: 'Groq Model',      type: 'string',  source: 'settings', description: 'e.g. llama-3.3-70b-versatile' },
       { key: 'cerebrasApiKey',  label: 'Cerebras API Key', type: 'secret', source: 'settings' },
+      { key: 'openrouterApiKey', label: 'OpenRouter API Key', type: 'secret', source: 'settings' },
       { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },
       { key: 'geminiApiKey',    label: 'Gemini API Key',   type: 'secret',  source: 'settings' },
       { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'default gemini-2.5-flash (free tier + grounding)' },

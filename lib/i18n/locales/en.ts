@@ -749,6 +749,13 @@ const en: Record<string, string> = {
   'settings.cerebras_key_desc': 'Chat AI — get from cloud.cerebras.ai (free)',
   'settings.cerebras_model': 'Cerebras Model',
   'settings.cerebras_configured': 'Cerebras configured ✓',
+
+  // OpenRouter
+  'settings.openrouter_title': 'OpenRouter API',
+  'settings.openrouter_key': 'OpenRouter API Key',
+  'settings.openrouter_key_desc': 'Chat AI — get from openrouter.ai/keys',
+  'settings.openrouter_model': 'OpenRouter Model',
+  'settings.openrouter_configured': 'OpenRouter configured ✓',
   'settings.cerebras_hint': 'Free: 1M tokens/day. Sign up at cloud.cerebras.ai',
 
   // Chat onboarding

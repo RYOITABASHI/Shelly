@@ -16,6 +16,7 @@ export const API_KEY_NAMES = [
   'perplexityApiKey',
   'groqApiKey',
   'cerebrasApiKey',
+  'openrouterApiKey',
   'codexAuthToken',
   // Phase 3 inbound gateway: the Telegram bot token is a secret → SecureStore.
   'telegramBotToken',

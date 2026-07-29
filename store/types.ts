@@ -383,6 +383,11 @@ export type AppSettings = {
   cerebrasApiKey?: string;
   /** Cerebrasに使用するモデル (default: qwen-3-235b-a22b-instruct-2507) */
   cerebrasModel?: string;
+  // ─── OpenRouter API ─────────────────────────────────────────────────────────────
+  /** OpenRouter API key (https://openrouter.ai/keys) */
+  openrouterApiKey?: string;
+  /** OpenRouter model (default: openrouter/auto) */
+  openrouterModel?: string;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:

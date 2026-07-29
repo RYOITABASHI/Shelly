@@ -10,9 +10,10 @@ import {
 
 describe('ai-pane agent registry', () => {
   it('contains only currently supported AI pane agents', () => {
-    expect(AI_PANE_AGENT_IDS).toEqual(['gemini', 'cerebras', 'groq', 'perplexity', 'local']);
+    expect(AI_PANE_AGENT_IDS).toEqual(['gemini', 'cerebras', 'openrouter', 'groq', 'perplexity', 'local']);
     expect(isAiPaneAgent('gemini')).toBe(true);
     expect(isAiPaneAgent('cerebras')).toBe(true);
+    expect(isAiPaneAgent('openrouter')).toBe(true);
     expect(isAiPaneAgent('claude')).toBe(false);
     expect(isAiPaneAgent(null)).toBe(false);
   });
@@ -36,6 +37,7 @@ describe('ai-pane agent registry', () => {
   it('filters disabled team members and picks the best available default', () => {
     expect(getEnabledAiPaneAgents({ cerebras: false, groq: true })).toEqual([
       'gemini',
+      'openrouter',
       'groq',
       'perplexity',
       'local',

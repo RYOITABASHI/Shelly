@@ -3,6 +3,7 @@ import type { AppSettings } from '@/store/types';
 export const AI_PANE_AGENT_IDS = [
   'gemini',
   'cerebras',
+  'openrouter',
   'groq',
   'perplexity',
   'local',
@@ -21,6 +22,7 @@ export type AiPaneAgentMeta = {
 export const AI_PANE_AGENT_META: Record<AiPaneAgentId, AiPaneAgentMeta> = {
   gemini: { id: 'gemini', label: 'Gemini', color: '#60A5FA' },
   cerebras: { id: 'cerebras', label: 'Cerebras', color: '#FF6B35' },
+  openrouter: { id: 'openrouter', label: 'OpenRouter', color: '#6366F1' },
   groq: { id: 'groq', label: 'Groq', color: '#F97316' },
   perplexity: { id: 'perplexity', label: 'Perplexity', color: '#38BDF8' },
   local: { id: 'local', label: 'Local', color: '#FFD700' },
@@ -58,10 +60,11 @@ export function pickDefaultAiPaneAgent(settings: AppSettings): AiPaneAgentId {
   return (
     firstEnabled('local') ??
     (settings.cerebrasApiKey ? firstEnabled('cerebras') : null) ??
+    (settings.openrouterApiKey ? firstEnabled('openrouter') : null) ??
     (settings.groqApiKey ? firstEnabled('groq') : null) ??
     (settings.geminiApiKey ? firstEnabled('gemini') : null) ??
     (settings.perplexityApiKey ? firstEnabled('perplexity') : null) ??
-    firstEnabled('cerebras', 'groq', 'gemini', 'perplexity', 'local') ??
+    firstEnabled('cerebras', 'openrouter', 'groq', 'gemini', 'perplexity', 'local') ??
     'local'
   );
 }

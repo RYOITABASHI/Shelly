@@ -1180,7 +1180,7 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
 
 // ─── API Keys ────────────────────────────────────────────────────────────────
 
-type ApiKeyFieldKey = 'geminiApiKey' | 'cerebrasApiKey' | 'groqApiKey' | 'perplexityApiKey';
+type ApiKeyFieldKey = 'geminiApiKey' | 'cerebrasApiKey' | 'openrouterApiKey' | 'groqApiKey' | 'perplexityApiKey';
 
 type ApiKeyField = {
   key: ApiKeyFieldKey;
@@ -1191,6 +1191,7 @@ type ApiKeyField = {
 const API_KEY_FIELDS: ApiKeyField[] = [
   { key: 'geminiApiKey',     label: 'Gemini',     hint: 'aistudio.google.com/app/apikey' },
   { key: 'cerebrasApiKey',   label: 'Cerebras',   hint: 'cloud.cerebras.ai' },
+  { key: 'openrouterApiKey', label: 'OpenRouter', hint: 'openrouter.ai/keys' },
   { key: 'groqApiKey',       label: 'Groq',       hint: 'console.groq.com' },
   { key: 'perplexityApiKey', label: 'Perplexity', hint: 'perplexity.ai/settings/api' },
 ];

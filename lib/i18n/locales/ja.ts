@@ -752,6 +752,13 @@ const ja: Record<string, string> = {
   'settings.cerebras_key_desc': 'チャットAI — cloud.cerebras.ai から取得（無料）',
   'settings.cerebras_model': 'Cerebrasモデル',
   'settings.cerebras_configured': 'Cerebras 設定済み ✓',
+
+  // OpenRouter
+  'settings.openrouter_title': 'OpenRouter API',
+  'settings.openrouter_key': 'OpenRouter APIキー',
+  'settings.openrouter_key_desc': 'チャットAI — openrouter.ai/keys から取得',
+  'settings.openrouter_model': 'OpenRouterモデル',
+  'settings.openrouter_configured': 'OpenRouter 設定済み ✓',
   'settings.cerebras_hint': '無料: 1日100万トークン。cloud.cerebras.ai で登録',
 
   // チャットオンボーディング
