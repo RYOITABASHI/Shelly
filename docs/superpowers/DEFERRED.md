@@ -45,6 +45,15 @@
 
 **次にやること**: 次CIビルド（versionCode 2002+）インストール後に手順2→3→6を通しで再検証（+ 手順4の発話部分と手順2随伴のフリーズ非再発確認）。
 
+**→ 2026-07-30 実機再検証（versionCode 2002 / commit `33bd946ea`、修正 `fadadc259` 込みビルド）— 手順2/3 PASS、手順6 PARTIAL、タイトル修正 PASS、フリーズ非再発**:
+
+- **手順2 = PASS**。ASK→`@agent every day at 7am summarize the news and notify me`→送信で、Unmatched Route は**出ない**（`app/ai.tsx` 修正が実機で有効）。チェーン全通し: `handed off (length=56)` → deep link → `pendingExternalPrompt set (source=widget-ask)` → `queued for AI Pane (opened=true)` → **AIPane が claim して dispatch**（`Dispatching to agent: local`）、AIペインに YOU バブルとして表示。JSフリーズも consume ハングも再発せず（以後の操作・ログ正常）——2001 で観測した2種の不健全化はどちらも Unmatched Route 状態の下流だったと判断してよい。スケジュール無し utterance（`@agent summarize the news and notify me`）では**スロットフィル質問「When should this run?」がAIペインに表示され、`cancel` 返信で「Registration cancelled.」**——widget発のコマンドがAIペイン直接入力と同一の対話フローに合流することを確認。**ダイアログのタイトル動的切替も実機PASS**: `@agent` 入力中はタイトルが「エージェント登録」に変化（非`@agent`では「Codex に依頼」のまま）。
+- **手順2の重要な副次的発見（別課題として要対処）**: この端末では `@agent`（時刻明示・notify）が確認カード無しで**即登録**された。原因はウィジェットのバグではなく、**persist 済み `agentRegistrationRequireConfirm: false`**（2026-07-24 の confirm-by-default 反転はデフォルト値の変更のみで、`loadSettings` の `{...DEFAULT_SETTINGS, ...persisted}` マージにより旧デフォルト時代の false を持つ既存端末では永久に無効。しかもこの設定を変更できる UI がどこにも無い——RKStorage 実物で `agentRegistrationRequireConfirm":false` を確認）。widget-ask はこのグローバル設定に正しくパリティ追従しており（AIペイン直打ちでも同様に即登録される端末状態）、即登録時には **`Agent registered from widget` 通知（名前+毎日 07:00）が実際に届き、AlarmManager に RTC_WAKEUP exact（翌 07:00、FGS直撃 PendingIntent）が登録され、ウィジェットにもエージェント行が出現**することまで実機確認（＝手順6が意図する挙動の実物）。テスト用エージェント `agent-ms6u4mjy` はサイドバーの削除ボタン→DELETE で削除済み（uninstallSchedule+ファイル削除 exit 0、アラーム消滅、`*.json` ベースライン復帰）。
+- **手順3 = PASS**。手順2のディスパッチ直後に ASK を再度開いて閉じても再ディスパッチなし（handed-off/deep-link/dispatch ログ増加ゼロ、native pending は consume 1回のみ）。
+- **手順6 = PARTIAL**。トグルUI（Settings→AI Agents→Widget No-Confirm Register）→ consent Alert「Register widget agents without confirmation」→ ENABLE で persist 値が `true` に、再タップ（確認なし）で `false` に戻ることを RKStorage 実物で確認。**ただしこの端末はグローバル設定が既に no-confirm のため、トグル ON/OFF の挙動差分（「OFF なら確認カード、ON ならスキップ」）は原理的に検証不能**——即登録+事後通知という到達点の挙動自体は上記のとおり実機観測済みで、確認要否の分岐ロジックは `resolveRegistrationConfirmRequirement` の Jest（widget-agent-registration-noconfirm、strict-boolean fail-closed 含む）で担保。完全な差分検証は `agentRegistrationRequireConfirm` を true にできる手段（下記フォローアップ）の実装後に。
+- **フォローアップ（新規課題、P2）**: `agentRegistrationRequireConfirm` の 2026-07-24 confirm-by-default 反転が「persist 済み false を持つ長期利用端末」で無効化されている問題。UI トグル追加（Settings→AI Agents）or 一回限りのマイグレーション（persisted false を新デフォルト true に引き上げ、オプトアウトは新設トグルで）を要検討。ウィジェット機能とは独立。
+- **検証後の状態復元（2002 ラウンド）**: テスト用エージェント削除済み・アラーム0・`agents/*.json` ベースライン一致・widget no-confirm トグル OFF（原状）・「Agent registered from widget」通知は手動 dismiss 済み・/sdcard/Download/wtest-* 全削除・codex TUI プロセス0。
+
 → sync: なし。
 
 ---
