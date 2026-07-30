@@ -150,11 +150,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // duplicate agent, confusing "Register"-worded footer during a Sidebar
   // edit). Direct project-owner call: plain natural-language chat confirm
   // ("これでいいですか？") before registering is simpler and equally
-  // low-friction, so default this back on — still a toggleable setting, not
-  // a hard-coded requirement, preserving the "任意で確認" (confirmation is a
-  // choice) framing from the original directive. justRegisteredAgent's
-  // quick-correct mechanism is NOT removed — it still activates correctly
-  // for anyone who flips this back off.
+  // low-friction, so default this back on — intended as a toggleable
+  // setting, not a hard-coded requirement, preserving the "任意で確認"
+  // (confirmation is a choice) framing from the original directive.
+  // justRegisteredAgent's quick-correct mechanism is NOT removed — it still
+  // activates correctly for anyone who flips this back off.
+  // CORRECTION (2026-07-30): no Settings UI actually writes this field today
+  // (grepped ConfigTUI.tsx / SettingsDropdown.tsx — neither references it),
+  // so in practice it is currently hard-enforced true: loadSettings() below
+  // migrates any persisted `false` (leftover from before this reversal, or
+  // any other source) back to `true` on every load. If a real UI toggle is
+  // ever added, that migration line must be removed or scoped to only
+  // pre-2026-07-24 values, or the new toggle would be silently overwritten.
   agentRegistrationRequireConfirm: true,
   // Widget-ASK-only confirm bypass — opt-in, default OFF (2026-07-29). OFF =
   // widget `@agent` commands confirm exactly like AI-Pane ones (the
@@ -310,6 +317,23 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       if (LEGACY_LOCAL_LLM_MODELS.has(settings.localLlmModel)) {
         settings.localLlmModel = DEFAULT_LOCAL_LLM_MODEL;
         settings.localLlmModelPath = '';
+        shouldPersist = true;
+      }
+      // Migration: any install that ever wrote `agentRegistrationRequireConfirm:
+      // false` to AsyncStorage before the 2026-07-24 confirm-by-default reversal
+      // (see the DEFAULT_SETTINGS doc comment above) keeps that stale value
+      // forever, because loadSettings spreads the stored blob OVER
+      // DEFAULT_SETTINGS -- the code-level default change alone never reaches
+      // an existing install. There is no Settings UI that can currently write
+      // `false` here (grepped ConfigTUI.tsx / SettingsDropdown.tsx -- neither
+      // references this key), so any `false` found on disk today is
+      // definitionally leftover pre-reversal state, not a recent deliberate
+      // choice. Force it back to the real default and persist the correction
+      // once, so this device's baseline actually matches what every other
+      // install already gets. (Found 2026-07-30 verifying the widget-ASK
+      // no-confirm opt-in on a device that still had the stale value.)
+      if (settings.agentRegistrationRequireConfirm === false) {
+        settings.agentRegistrationRequireConfirm = true;
         shouldPersist = true;
       }
       const sanitized = sanitizeRemovedAgents(settings);
