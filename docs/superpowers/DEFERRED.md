@@ -14,6 +14,27 @@
 
 ---
 
+### ウィジェットASKからのエージェント新規登録＋音声入力（v7.5.0、Fable5、2026-07-29）— 実装・ユニットテスト・コードレビュー済み、実機未検証 (P1)
+
+**内容**: Scouterウィジェットの ASK ダイアログに `@agent ...` 形の文字列を打つと、従来は生のCodexプロンプトとして流れてエージェント登録は一切行われなかった（`ScouterWidgetPromptActivity.kt`の`sendPrompt()`が直接PTYへ書き込むだけだった）。`isAgentMentionCommand()`（`lib/input-router.ts`の`@agent`検出正規表現とバイト同一、`__tests__/widget-agent-command-parity.test.ts`でドリフト防止）で判定し、一致すればネイティブ pending 記録 → `shelly:///ai?widgetAgentCommand=1` deep link → `app/_layout.tsx` が consume → `ai-pane-store.pendingExternalPrompt` → AIPane が既存の`dispatch()`経路へ投入、という形でAIペインに直接打ったときと同じ確認フローに合流させた。非`@agent`入力は完全に無変更（生PTY書き込みのまま）。
+
+あわせて (a) Android標準の`RecognizerIntent`によるASKダイアログの音声入力（認識結果はレビュー用にEditTextへ投入するのみ、自動送信なし）、(b) オプトイン設定`AppSettings.widgetAgentRegistrationNoConfirm`（デフォルトfalse、ONにするとウィジェット由来の`@agent`コマンドのみ確認カードを省略して即登録＋事後通知——2026-07-24の「登録は要確認がデフォルト」原則は不変、AIペイン直接入力は常に要確認のまま）も同時実装。
+
+**検証状況**: `npx tsc --noEmit`クリーン、新規3スイート（`widget-agent-command-parity`/`ai-pane-external-prompt`/`widget-agent-registration-noconfirm`）+ 隣接スイート合計200件超PASS。Kotlin側はこの環境にNDK/Gradleが無くローカルコンパイル不可のためコードレビューのみ（実際にv7.5.0のCIビルドでコメント内の`*/`誤閉じによる構文エラーが1件発見・修正されており、レビューだけでは拾えない類のバグが起こりうることは実証済み）。**実機での動作確認は一度も行われていない。**
+
+**次回の実機検証手順**（Fable5実装報告からそのまま転記）:
+事前に `adb logcat -s ScouterWidgetPrompt:D Shelly:D HomeInitializer:D` を流しておく。
+1. 通常ASKの無回帰確認: ウィジェットASK→「いまのブランチ名を教えて」→SEND→従来どおりbound CodexのPTYに入ることを確認。
+2. `@agent`ルーティング本命: ASK→「@agent 毎朝7時にニュースをまとめて通知して」→SEND→Codexに入らずShellyが前面化、AIペインで直接入力した場合と同一の確認（スケジュール質問 or confirmカード）が出ること。確認前に`~/.shelly/agents/*.json`が増えていないこと（サイレント登録の不在確認）。
+3. 一回性/失効: 手順2の直後にASKを再度開いて閉じても再ディスパッチされないこと。
+4. 音声: ASKの「MIC」（ja: 音声）タップ→OS音声認識→結果がEditTextに入り自動送信されないこと→手で編集してSEND。既存テキストがある場合は末尾追記されること。Gboardのマイクキーも従来どおり動くこと。
+5. ja表示: 端末言語=日本語でASKボタンが「依頼」、Resumeが「Codexを再開」と表示されること。
+6. 無承認オプトイン: Settings→「ウィジェット登録の確認省略」をONにしてから手順2を再実施し、確認カードを介さず即登録され、登録内容（名前・スケジュール）を知らせる通知が来ること。OFFに戻して通常確認フローに戻ることも確認。
+
+→ sync: なし。
+
+---
+
 ### 次バージョンのロードマップ — Hermes Agent機能ギャップ分析（Fable5、2026-07-28）— 未着手・次リリース向けに意図的にdescope (P1)
 
 **優先度**: P1（次バージョンの主軸候補。今回のリリースには含めない——プロダクトオーナーの明示判断で、今回は現状の全実機テスト項目クリアをもってリリースとし、本ロードマップは次バージョンへ回す）
