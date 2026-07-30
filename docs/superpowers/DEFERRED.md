@@ -31,6 +31,20 @@
 5. ja表示: 端末言語=日本語でASKボタンが「依頼」、Resumeが「Codexを再開」と表示されること。
 6. 無承認オプトイン: Settings→「ウィジェット登録の確認省略」をONにしてから手順2を再実施し、確認カードを介さず即登録され、登録内容（名前・スケジュール）を知らせる通知が来ること。OFFに戻して通常確認フローに戻ることも確認。
 
+**→ 2026-07-30 実機検証（versionCode 2001 / commit `dd0dfc828`、端末 192.168.3.38）— 手順2の本命経路に実バグ発見・修正コミット `fadadc259` 済み（実機再検証は次CIビルド待ち）**:
+
+- **手順1（通常ASK無回帰）= PASS**。サイドバー CODEX SESSIONS の▶で正規に resume した bound セッション（`codex_tui resume 019fa1a8-…`）に対し、ASK→ASCII プロンプト→送信で logcat `ScouterWidgetPrompt: Submitting widget prompt to Codex terminal session=shelly-2 length=29` を確認。さらに `~/.codex/sessions/2026/07/27/rollout-…019fa1a8….jsonl` に送信マーカー（`WTEST1-OK`）が19回出現しており、PTY到達だけでなくCodexが実際にターンを処理したことまでファイル実物で確認。bound が Stale の場合の queue+resume 分岐（`Widget prompt kept pending (not ready: not_codex_terminal)`）も副次的に観測。**注意: 手動で terminal に `codex` と打って起動した TUI は agent-chat-store 経由の binding を作らないため widget からは not_codex_terminal 扱いになる**（仕様どおりだが、検証時は必ずサイドバーから resume すること）。
+- **手順2（`@agent`ルーティング本命）= FAIL → 修正済み・次ビルドで要再検証**。前半は正常: `@agent every day at 7am summarize the news and notify me` → SEND で Codex PTY には一切入らず（`Submitting…` ログ無し）、`Widget agent command handed off to app (length=56)` → deep link 受信 → `pendingExternalPrompt set (56 chars, source=widget-ask)` まで logcat で確認。**しかしそこで画面は expo-router の「Unmatched Route / Page could not be found. (shelly://ai?widgetAgentCommand=1)」全面ページになり、確認フローは一度も表示されなかった**。根本原因: 発火URIはパス形式 `shelly:///ai` なのに **`app/ai.tsx` ルートファイルが存在しない**（`agent-chat`/`scouter` は既に landing route があるが `/ai` だけ欠落）。Unmatched ページが ShellLayout ごと隠すため AIPane の claim effect が走る余地がなく、pending は2分で失効する構造。修正 = `app/ai.tsx`（`./index` re-export、既存パターン踏襲）+ ドリフト防止 Jest `__tests__/widget-agent-deeplink-route.test.ts`（Kotlin の `AGENT_COMMAND_COMPOSE_URI` リテラルを抽出して対応ルートファイルの存在と re-export を強制）。サイレント登録の不在は確認済み: `dumpsys alarm` に dev.shelly.terminal のエージェントアラーム 0 件、widget は「予定されたエージェントはありません」のまま、検証終了時の `ls ~/.shelly/agents/*.json` もベースラインと同一（agent定義JSONは0個のまま）。**あわせてプロダクトオーナー実機指摘のタイトル問題**（@agent 入力でも「Codex に依頼」のまま＝誤誘導）も同コミットで修正: TextWatcher で SEND と同一の `isAgentMentionCommand` 判定を追い、agent入力時はタイトルを「エージェント登録」/"Register agent" に切替（Kotlin側はコードレビューのみ、要CIビルド）。
+  **未解決の随伴観測（次ビルドで要再確認）**: Unmatched Route 状態を経たプロセスで2種の不健全化を観測。(a) 初回（warm）: 以後 `consumeScouterWidgetAgentCommand` の AsyncFunction promise が settle せず（deep link 再発火で `received` ログ後に consume 結果ログが一切出ない、JS自体は生存）。(b) 再現2回目（restart後）: consume は成功したが直後に **JSスレッドが完全フリーズ**（以後 RN ログゼロ、タップ/BACK/Linkingイベント全て無反応、force-stop で回復）。どちらも Unmatched Route マウントとの複合で発生しており単独の根因特定には至っていない — route 修正後のビルドで再発しないことを確認すること（再発するなら別バグとして起票）。
+- **手順3（一回性/失効）= PASS（現ビルドで検証可能な範囲）**。native pending record は 09:44 の consume で正確に1回だけ消費され（`Widget agent command queued for AI Pane` が1回）、直後に ASK を再度開いて閉じても再ディスパッチなし（handed-off ログ・deep link とも増えず、EditText も空で再表示）。
+- **手順4（音声）= PARTIAL**。「音声」ボタンは ja で表示され、タップで OS 音声認識（`com.google.android.tts/…GoogleTTSActivity`）が topResumed になることを確認。BACK キャンセルでダイアログに復帰し、自動送信・ディスパッチが起きないことも確認。**認識結果の EditText 投入・既存テキストへの末尾追記・Gboard マイクキーは、リモート検証では音声入力源が無く実施不能**（実装はレビュー済み: RESULT_OK 時のみ merge、EditText/IME 無改変）— 人間の発話での確認は次ビルド検証時に合わせて実施推奨。
+- **手順5（ja表示）= PASS（依頼）/ PARTIAL（Codexを再開）**。端末 ja-JP でウィジェットの ASK ボタンが「依頼」（content-desc「ウィジェットから Codex に依頼」）、ダイアログは「Codex に依頼」+「送信/キャンセル/音声」を uiautomator dump で確認。RESUME ボタン文言「Codex を再開」は resume 起動失敗時にしか描画されない UI のため実機で表示させる手段がなく未観測（values-ja のキー `scouter_widget_prompt_resume` は確認済み）。
+- **手順6（無承認オプトイン）= BLOCKED（次ビルド待ち）**。手順2の修正済みフローの上にしか成立しないため未実施。Settings トグル（ja「ウィジェット登録の確認省略」）+ consent Alert + 通知文言はコード上存在（`SettingsDropdown.tsx` / `ConfigTUI.tsx` / i18n 両locale）。修正ビルドで手順2→6を通しで再検証すること。
+
+**検証後の状態復元**: テスト用エージェント登録なし（登録自体が一度も発生せず）、/sdcard/Download/wtest-* 削除済み、codex TUI プロセス 0（検証中に起動した2つは force-stop で終了、terminal は SHELL タブ1つの bash に復帰）、設定変更なし（widgetAgentRegistrationNoConfirm は一度もONにしていない）。残る軽微な痕跡: bound セッション 019fa1a8 の履歴に WTEST1-OK ターン1件、AIペイン会話に「Switched to Perplexity」システムメッセージ数件（検証中の誤タップ由来、再起動後のタブは LOCAL に復帰済み）。
+
+**次にやること**: 次CIビルド（versionCode 2002+）インストール後に手順2→3→6を通しで再検証（+ 手順4の発話部分と手順2随伴のフリーズ非再発確認）。
+
 → sync: なし。
 
 ---
