@@ -28,6 +28,7 @@
   <string name="scouter_widget_prompt_close">閉じる</string>
   <string name="scouter_widget_prompt_empty">プロンプトが空です</string>
   <!-- Voice input + @agent handoff (2026-07-29, widget ASK dialog) -->
+  <string name="scouter_widget_prompt_title_agent">エージェント登録</string>
   <string name="scouter_widget_prompt_voice">音声</string>
   <string name="scouter_widget_prompt_voice_unavailable">この端末では音声認識を利用できません</string>
   <string name="scouter_widget_prompt_agent_command_failed">Shelly を開けませんでした（エージェント登録）</string>

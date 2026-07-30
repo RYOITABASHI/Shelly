@@ -30,6 +30,11 @@
   <string name="scouter_widget_prompt_resume">Resume Codex</string>
   <string name="scouter_widget_prompt_empty">Prompt is empty</string>
   <!-- Voice input + @agent handoff (2026-07-29, widget ASK dialog) -->
+  <!-- Dynamic dialog title while the typed text matches the `@agent …`
+       mention pattern (isAgentMentionCommand): that input no longer goes to
+       Codex, so keeping the "Ask Codex" title would be misleading
+       (product-owner report, on-device 2026-07-30). -->
+  <string name="scouter_widget_prompt_title_agent">Register agent</string>
   <string name="scouter_widget_prompt_voice">Mic</string>
   <string name="scouter_widget_prompt_voice_unavailable">Speech recognition is not available on this device</string>
   <string name="scouter_widget_prompt_agent_command_failed">Could not open Shelly for agent setup</string>

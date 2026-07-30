@@ -135,6 +135,26 @@ class ScouterWidgetPromptActivity : Activity() {
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
 
+        // Dynamic title (2026-07-30, product-owner on-device report): once the
+        // typed/dictated text matches the `@agent …` mention pattern it will
+        // NOT be sent to Codex (see the isAgentMentionCommand branch in the
+        // send handler below), so the static "Ask Codex" title becomes
+        // actively misleading. Track the same detection the SEND tap uses so
+        // the title can never disagree with where the text will actually go.
+        input.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                title.text = getString(
+                    if (isAgentMentionCommand(s?.toString().orEmpty())) {
+                        R.string.scouter_widget_prompt_title_agent
+                    } else {
+                        R.string.scouter_widget_prompt_title
+                    }
+                )
+            }
+        })
+
         val cancel = actionText(R.string.scouter_widget_prompt_cancel) {
             dialog.dismiss()
             finish()
