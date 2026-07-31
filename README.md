@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/agent-chat-codex.jpg" alt="Shelly running Codex and Agent Chat side by side on Android" width="800">
+  <img src="docs/images/widget-register-agent-en.jpg" alt="Registering a new autonomous agent straight from the Scouter home-screen widget's ASK box, no app open" width="500">
 </p>
 
 <p align="center">
@@ -284,7 +284,7 @@ If the request itself is too vague to act on — "help me out" with no object or
 ### Scouter Widget
 
 <p align="center">
-  <img src="docs/images/scouter-widget.jpg" alt="Shelly Scouter widget showing Codex token usage, model state, rate-limit cooldown, local LLM health, and device load" width="800">
+  <img src="docs/images/scouter-widget.jpg" alt="Shelly Scouter widget showing a registered agent with its next scheduled run time, plus one-tap RUN and ASK buttons" width="500">
 </p>
 
 Scouter is Shelly's home-screen status layer. It keeps the current Codex
@@ -519,6 +519,10 @@ Currently registered:
 </details>
 
 ### Codex Runtime
+
+<p align="center">
+  <img src="docs/images/agent-chat-codex.jpg" alt="OpenAI Codex CLI running natively in Shelly's terminal pane on Android, with the AI pane reading its output alongside it" width="700">
+</p>
 
 - **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle the pinned Android-native unified `codex_tui` binary from `.ci-versions/`, and runtime updates install the same shape under `~/.shelly-runtime/codex/current`.
 - **Managed promotion** — a new runtime candidate is promoted only after download, SHA-256 verification, extraction, executable checks, and `codex_tui --version` / `codex_tui exec --help` smoke checks.

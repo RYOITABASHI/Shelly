@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/agent-chat-codex.jpg" alt="Android 上で Codex と Agent Chat を並べて動かしている Shelly" width="800">
+  <img src="docs/images/widget-register-agent-ja.jpg" alt="ホーム画面のScouterウィジェットのASKボックスから、アプリを開かずに新規の自律エージェントを登録している画面" width="500">
 </p>
 
 <p align="center">
@@ -282,7 +282,7 @@ and write the primary-source links + a short summary to my Obsidian vault
 ### Scouter ウィジェット
 
 <p align="center">
-  <img src="docs/images/scouter-widget.jpg" alt="Codex のトークン使用量、モデル状態、レートリミットのクールダウン、ローカル LLM の健全性、端末負荷を表示する Shelly の Scouter ウィジェット" width="800">
+  <img src="docs/images/scouter-widget.jpg" alt="登録済みエージェントと次回実行時刻、ワンタップの RUN / ASK ボタンを表示する Shelly の Scouter ウィジェット" width="500">
 </p>
 
 Scouter は Shelly のホーム画面ステータス層です。ランチャーや別のアプリを開いている間も、現在の
@@ -517,6 +517,10 @@ Codex PTY をコールドスタートしたり、次の登録済みスケジュ�
 </details>
 
 ### Codex ランタイム
+
+<p align="center">
+  <img src="docs/images/agent-chat-codex.jpg" alt="Android上のShellyのターミナルペインでネイティブに動くOpenAI Codex CLIと、その隣でAI出力を読み取るAIペイン" width="700">
+</p>
 
 - **ネイティブランタイム** — npm の `@openai/codex` パッケージは JS ディスパッチャ側の話の一部にすぎません。リリース APK には `.ci-versions/` の固定された Android ネイティブの統合 `codex_tui` バイナリが同梱され、ランタイム更新も同じ形のものを `~/.shelly-runtime/codex/current` にインストールします。
 - **管理された昇格** — 新しいランタイム候補は、ダウンロード・SHA-256 検証・展開・実行可能性チェック・`codex_tui --version` / `codex_tui exec --help` のスモークチェックをすべて通ってから初めて昇格します。
