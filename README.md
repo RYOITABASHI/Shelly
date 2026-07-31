@@ -52,7 +52,7 @@
 
 **Registering an autonomous agent from the home-screen widget — no need to open the app**
 
-https://github.com/user-attachments/assets/5fe0636f-f75f-4f74-8393-27c96e37587a
+https://github.com/user-attachments/assets/fbda309f-ad12-4a6d-a5b8-96b6ee4d4e57
 
 Type or speak `@agent ...` straight into the Scouter widget's ASK box. It routes through the exact same confirm flow as typing into the AI pane — same parse, same confirm card — then shows up in the scheduled-agent list with its next run time.
 
@@ -60,7 +60,7 @@ Type or speak `@agent ...` straight into the Scouter widget's ASK box. It routes
 
 **The terminal underneath: a real AI coding CLI running natively on Android**
 
-https://github.com/user-attachments/assets/15b793f7-6211-4567-913b-c360530ebe21
+https://github.com/user-attachments/assets/c87ea206-12f8-4b21-9089-0a373b0e8a2a
 
 No Termux. No proot. No remote dev server. OpenAI Codex — a real, full-featured coding CLI — invokes directly through Shelly's own JNI PTY, the same native terminal you can open and drive by hand.
 

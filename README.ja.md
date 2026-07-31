@@ -52,7 +52,7 @@
 
 **自律エージェントを、ホーム画面のウィジェットから登録する ―― アプリを開く必要すらない**
 
-https://github.com/user-attachments/assets/5fe0636f-f75f-4f74-8393-27c96e37587a
+https://github.com/user-attachments/assets/fbda309f-ad12-4a6d-a5b8-96b6ee4d4e57
 
 Scouter ウィジェットの ASK ボックスに `@agent ...` と直接打つ（または話しかける）だけ。AI ペインに直接打ったときとまったく同じ確認フロー ―― 同じパース、同じ確認カード ―― に合流し、登録が終わるとスケジュール済みエージェント一覧に次回実行時刻付きで表示されます。
 
@@ -60,7 +60,7 @@ Scouter ウィジェットの ASK ボックスに `@agent ...` と直接打つ�
 
 **その下にあるターミナル: 本物の AI コーディング CLI が Android 上でネイティブに動く**
 
-https://github.com/user-attachments/assets/15b793f7-6211-4567-913b-c360530ebe21
+https://github.com/user-attachments/assets/c87ea206-12f8-4b21-9089-0a373b0e8a2a
 
 Termux なし。proot なし。リモート開発サーバーなし。OpenAI Codex ――本物のフル機能コーディング CLI ―― が、Shelly 自前の JNI PTY ―― 手で開いて操作できるのと同じネイティブターミナル ―― の上で直接起動します。
 
