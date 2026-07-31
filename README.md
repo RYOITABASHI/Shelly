@@ -58,6 +58,14 @@ Type `@agent` and a plain-language instruction. Shelly turns it into a scheduled
 
 <br>
 
+**Registering that same kind of agent from the home-screen widget — no need to open the app**
+
+https://github.com/user-attachments/assets/5fe0636f-f75f-4f74-8393-27c96e37587a
+
+Type or speak `@agent ...` straight into the Scouter widget's ASK box. It routes through the exact same confirm flow as typing into the AI pane — same parse, same confirm card — then shows up in the scheduled-agent list with its next run time.
+
+<br>
+
 **The terminal underneath: AI reading a runtime error and suggesting the fix in real time**
 
 https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c

@@ -58,6 +58,14 @@ https://github.com/user-attachments/assets/ab272ae8-c741-4acb-b71d-2da151f50d75
 
 <br>
 
+**同じ種類のエージェントを、ホーム画面のウィジェットから登録する ―― アプリを開く必要すらない**
+
+https://github.com/user-attachments/assets/5fe0636f-f75f-4f74-8393-27c96e37587a
+
+Scouter ウィジェットの ASK ボックスに `@agent ...` と直接打つ（または話しかける）だけ。AI ペインに直接打ったときとまったく同じ確認フロー ―― 同じパース、同じ確認カード ―― に合流し、登録が終わるとスケジュール済みエージェント一覧に次回実行時刻付きで表示されます。
+
+<br>
+
 **その下にあるターミナル: AI がランタイムエラーを読んで、その場で修正案を出す**
 
 https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
