@@ -50,15 +50,7 @@
 
 ## See it run
 
-**An autonomous agent, scheduled in plain language, that wakes itself to do the work**
-
-https://github.com/user-attachments/assets/ab272ae8-c741-4acb-b71d-2da151f50d75
-
-Type `@agent` and a plain-language instruction. Shelly turns it into a scheduled on-device agent that fires on its own alarm — here it set itself for 16:16, woke up while the screen was off, collected sources with the user's own API key, and wrote a primary-source summary to the Obsidian vault.
-
-<br>
-
-**Registering that same kind of agent from the home-screen widget — no need to open the app**
+**Registering an autonomous agent from the home-screen widget — no need to open the app**
 
 https://github.com/user-attachments/assets/5fe0636f-f75f-4f74-8393-27c96e37587a
 
@@ -66,11 +58,11 @@ Type or speak `@agent ...` straight into the Scouter widget's ASK box. It routes
 
 <br>
 
-**The terminal underneath: AI reading a runtime error and suggesting the fix in real time**
+**The terminal underneath: a real AI coding CLI running natively on Android**
 
-https://github.com/user-attachments/assets/113ec26e-d289-4a06-a6d8-ef48158e874c
+https://github.com/user-attachments/assets/15b793f7-6211-4567-913b-c360530ebe21
 
-No Termux. No root. No remote dev server. A real AI coding CLI — today, OpenAI Codex — invoking on Android, plus an API-backed AI pane that reads terminal output and produces a one-tap fix.
+No Termux. No proot. No remote dev server. OpenAI Codex — a real, full-featured coding CLI — invokes directly through Shelly's own JNI PTY, the same native terminal you can open and drive by hand.
 
 **Unfolded: sidebar, terminal, AI, browser, and preview, all live at once — the same session, not four separate apps**
 
