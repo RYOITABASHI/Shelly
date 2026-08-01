@@ -108,6 +108,18 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },
       { key: 'geminiApiKey',    label: 'Gemini API Key',   type: 'secret',  source: 'settings' },
       { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'default gemini-2.5-flash (free tier + grounding)' },
+    ],
+  },
+  {
+    // 2026-08-02: split out of 'AI / LLM' — that section had grown to 15
+    // items mixing provider credentials/models with agent BEHAVIOR toggles,
+    // making the behavior toggles (the ones people actually need to find
+    // and flip while testing) hard to locate under 10 API-key rows. This
+    // section is exclusively "how agents register/run", never a provider
+    // setting; new agent-behavior toggles belong here, not in 'AI / LLM'.
+    title: 'Agents',
+    icon: 'smart-toy',
+    items: [
       { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
       { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
       // Scoped EXACTLY to what lib/agent-action-reversibility.ts allows: a
