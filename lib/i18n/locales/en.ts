@@ -422,6 +422,7 @@ const en: Record<string, string> = {
   // annotation for the chat-native flow (hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts).
   'agentplan.confirm_unclear_hint': 'There is a pending draft. Reply "register" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',
+  'agentplan.llm_conversation_fallback_notice': 'Switching to simple step-by-step questions.',
   // 2026-07-23: edit-context counterpart of confirm_unclear_hint (see
   // confirm_prompt_edit's own comment).
   'agentplan.confirm_unclear_hint_edit': 'There is a pending edit. Reply "update" / "OK" to confirm, "cancel" to discard it, or just say what to change (e.g. "make it 9am").',

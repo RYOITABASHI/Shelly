@@ -4,7 +4,7 @@
  */
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppSettings, SocialConnectorMeta } from './types';
+import { AppSettings as BaseAppSettings, SocialConnectorMeta } from './types';
 import {
   saveApiKey,
   loadApiKeys,
@@ -41,6 +41,11 @@ function dotenvValue(value: string): string {
 }
 
 const SOCIAL_CONNECTORS_STORAGE_KEY = 'shelly_social_connectors';
+
+export type AppSettings = BaseAppSettings & {
+  /** LLM-led multi-turn agent registration — opt-in, default OFF. */
+  agentConversationalRegistrationEnabled?: boolean;
+};
 
 /** Build the same replace-lines-in-.env shell command updateSettings uses.
  *  `removeKeys` additionally strips exact `KEY=` lines (connector removal).
@@ -168,6 +173,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 2026-07-24 confirm-by-default reversal above stays the default
   // everywhere). See AppSettings.widgetAgentRegistrationNoConfirm.
   widgetAgentRegistrationNoConfirm: false,
+  // LLM-led multi-turn agent registration — opt-in, default OFF.
+  agentConversationalRegistrationEnabled: false,
   defaultRequireActionApproval: false,
   // Opt-in. Off = today's behaviour exactly; see AppSettings' doc comment for
   // why this can only ever cover reversible workspace file writes.

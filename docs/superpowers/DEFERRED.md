@@ -2047,6 +2047,27 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### エージェント登録のLLMファースト化（Tier 3 会話型登録）— Phase 0/1 着地・デフォルトOFF・実機未検証
+
+**背景**: ユーザーから「`@エージェント`宣言時にシェリーの決定論パーサーが先取りするから固定パイプラインになり自由度が低い、Hermes Agentのように LLM 自身が会話を主導すべき」という根本的な指摘。DeepWiki 調査で Hermes に決定論的な事前分類器が無いことを確認した上で、Plan Mode で3段階(Tier)モデルを設計。プランは `docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md` に committed 済み。
+
+**実装内容**（Opus5 + Codex 並列ディスパッチ、CC統合レビュー）:
+- 新規 `lib/agent-conversational-registration.ts`: システムプロンプト構築・ターン応答パーサー・広域マージ関数。`actionType` は `draft`/`notify` のみ LLM-authorable（`webhook`/`cli`/`social-post` 直接昇格は拒否）、`connectorId`/host/secretはプロンプトに一切出さず`platformHint`(destination名)を`resolvePlatformHintConnector()`で実在照合、`autonomousIntent`はstrict boolean限定で`draft.autonomous`には触れず`draft.llmAutonomousIntent`にのみ格納。何も採用しない場合は`draft`を同一参照で返す(参照透過性)。新規テスト59件。
+- `hooks/use-ai-pane-dispatch.ts`: 初回ディスパッチと`llm-conversation`フェーズの多ターン会話ルーティングを追加。キャンセル、`@`バイパス、15分失効、5ターン上限で Tier 2 (`nextMissingSlot`) へフォールバック。`agentConversationalRegistrationEnabled`(default **false**)フラグで完全ゲート。
+- `store/settings-store.ts`: `agentConversationalRegistrationEnabled?: boolean`(default false)追加。
+- `store/ai-pane-store.ts`: `PendingAgentSession.phase`に`'llm-conversation'`追加。
+
+**CC統合レビューで発見・修正した実バグ**: Codex実装の`proposal`分岐2箇所(初回ディスパッチ・会話再開の両方)で、`mergeConversationalExtractionIntoDraft`が`draft.llmAutonomousIntent`に格納した値が`draft.autonomous`へ昇格されず、LLMが「確認なしで実行して」という意図を明確に読み取っても最終的に無視される欠陥があった(このセッション前半で狭いLLMフォールバック側に一度入れた同種の昇格漏れバグが、新しい会話フローのコードパスに再発したもの)。`if (draft.llmAutonomousIntent === true) draft.autonomous = true;`(true→trueのみ、既存のtrueをdemoteしない)を両箇所に追加して修正済み。
+
+**検証結果**: 新規テスト59件+既存`ai-pane-dispatch-interaction-order.test.tsx` 25件 全PASS、`npx tsc --noEmit`エラー0件、全体回帰 2579 passed / 24 failed(既知のWindows専用パスバグ4スイート、この変更と無関係、baseline通り)。
+
+**未了**:
+1. 実機検証(フラグOFF→ONで既存動作に回帰がないこと、ONで曖昧な発話に対しLLMが自分の言葉で聞き返すこと、ローカルLLM未起動時のfail-closed降格) — adb未接続のため今回のセッションでは未実施。
+2. Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)、Phase 5(整理)は未着手。
+3. Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。
+
+---
+
 ### bug #155 — codex/cli 系 unattended agent はケイパビリティブローカーではなく boundary-policy ゲートで保護（当初想定より狭いが実在する2つのギャップ）— (a)(b) ともに修正済み・(b)のフルチェーン実行フォローアップも着地・実機未検証
 
 **発見**: 2026-07-16、`AgentRuntime.kt:605-618`（今夜の別セッションが残した adversarial-review コメント、日付は2026-07-16）を起点にした CAP-001 ケイパビリティブローカーのバイパス懸念調査。「オーケストレーション済み unattended agent が `auto` → `{type:'cli', cli:'codex'}` に解決されると `planSpecHasOrchestrationSteps()` が false を返し、legacy `.sh` script にフォールバックし、その `.sh` は `SHELLY_CAP_BROKER` 環境フラグ（デフォルト OFF、UI トグルなし）でしかブローカーを通らないため、チェーン全体がブローカーなしで走るのでは」という仮説を、`lib/agent-plan-spec.ts` / `lib/agent-credential-policy.ts` / `lib/agent-tool-router.ts` / `scripts/shelly-plan-executor.js` / `lib/agent-boundary-policy.ts` / `lib/agent-policy.ts` / `lib/agent-manager.ts` / `lib/agent-executor.ts` を実コードで再検証した。

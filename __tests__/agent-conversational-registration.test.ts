@@ -1,0 +1,630 @@
+import {
+  buildRegistrationSystemPrompt,
+  parseConversationalTurnResponse,
+  mergeConversationalExtractionIntoDraft,
+  runConversationalRegistrationTurn,
+  type ConversationalRegistrationContext,
+} from '@/lib/agent-conversational-registration';
+import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import type { SocialConnectorMeta } from '@/store/types';
+
+jest.mock('@/lib/local-llm', () => ({
+  ollamaChat: jest.fn(),
+}));
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { ollamaChat } = require('@/lib/local-llm') as { ollamaChat: jest.Mock };
+
+const FENCE_TAG = '```shelly-agent-registration';
+const FENCE_END = '```';
+
+function fenced(json: string, opts: { close?: boolean } = {}): string {
+  const close = opts.close === false ? '' : `\n${FENCE_END}`;
+  return `${FENCE_TAG}\n${json}${close}`;
+}
+
+function baseDraft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft {
+  return {
+    name: 'Vague task',
+    prompt: 'do something vague',
+    schedule: null,
+    scheduleConfident: false,
+    scheduleLabel: '未設定（要選択）',
+    action: { type: 'draft' },
+    tool: { type: 'gemini-api' },
+    toolLabel: 'Gemini API',
+    rawText: 'do something vague',
+    ...overrides,
+  };
+}
+
+function connector(overrides: Partial<SocialConnectorMeta> = {}): SocialConnectorMeta {
+  return {
+    id: 'conn-secret-id-0001',
+    platform: 'bluesky',
+    label: 'My Bluesky',
+    host: 'pds.example-secret-host.test',
+    fields: ['handle', 'appPassword'],
+    createdAt: 0,
+    ...overrides,
+  };
+}
+
+function ctx(overrides: Partial<ConversationalRegistrationContext> = {}): ConversationalRegistrationContext {
+  return {
+    locale: 'ja',
+    deterministicHint: {},
+    connectors: [],
+    ...overrides,
+  };
+}
+
+// ─── buildRegistrationSystemPrompt ─────────────────────────────────────────
+
+describe('buildRegistrationSystemPrompt', () => {
+  it('produces a Japanese prompt for locale "ja"', () => {
+    const p = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(p).toContain('自動化エージェント登録アシスタント');
+    expect(p).toContain('日本語');
+    // The conditional-JSON instruction (small models drop language instructions
+    // when JSON is demanded unconditionally — see the module doc comment).
+    expect(p).toContain('JSON を一切出力しないでください');
+  });
+
+  it('produces an English prompt for locale "en"', () => {
+    const p = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(p).toContain("Shelly's automation-agent registration assistant");
+    expect(p).toContain('Do NOT emit any JSON on such a turn');
+    expect(p).not.toContain('自動化エージェント登録アシスタント');
+  });
+
+  it('documents the exact fence tag the model must use for a final proposal', () => {
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'ja' }))).toContain(FENCE_TAG);
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'en' }))).toContain(FENCE_TAG);
+  });
+
+  it('forbids raw cron and restricts actionType to draft/notify in BOTH locales', () => {
+    const ja = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(ja).toContain('cron 式は絶対に書かないでください');
+    expect(ja).toContain('"draft"（結果をファイルに保存）か "notify"');
+    expect(ja).toContain('webhook, cli, social-post など');
+
+    const en = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(en).toContain('Never write a cron expression');
+    expect(en).toContain('"actionType": either "draft"');
+    expect(en).toContain('Do not write webhook, cli, social-post');
+  });
+
+  it('lists each registered connector by label and platform', () => {
+    const p = buildRegistrationSystemPrompt(
+      ctx({
+        connectors: [
+          connector({ id: 'a1', label: 'My Bluesky', platform: 'bluesky' }),
+          connector({ id: 'b2', label: '会社Bot', platform: 'slack' }),
+        ],
+      }),
+    );
+    expect(p).toContain('- My Bluesky (bluesky)');
+    expect(p).toContain('- 会社Bot (slack)');
+  });
+
+  it('NEVER leaks connector secrets/identifiers — no id, no host, no secret field names', () => {
+    const c = connector({
+      id: 'conn-secret-id-0001',
+      label: 'My Bluesky',
+      host: 'pds.example-secret-host.test',
+      fields: ['handle', 'appPassword'],
+    });
+    for (const locale of ['ja', 'en'] as const) {
+      const p = buildRegistrationSystemPrompt(ctx({ locale, connectors: [c] }));
+      expect(p).toContain('My Bluesky');
+      expect(p).not.toContain('conn-secret-id-0001');
+      expect(p).not.toContain('pds.example-secret-host.test');
+      expect(p).not.toContain('appPassword');
+      // 'handle' is a common English word; assert the whole fields array shape
+      // never appears rather than the bare token.
+      expect(p).not.toContain('handle,appPassword');
+      expect(p).not.toContain('["handle","appPassword"]');
+    }
+  });
+
+  it('says so explicitly (and does not throw) when no connectors are registered', () => {
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'ja', connectors: [] }))).toContain(
+      '登録済みの投稿先はありません',
+    );
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'en', connectors: [] }))).toContain(
+      'no destinations are registered',
+    );
+  });
+
+  it('renders the deterministic hint as reference-only, and says so when it resolved nothing', () => {
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'ja' }))).toContain(
+      '(自動解析では何も取れませんでした)',
+    );
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'en' }))).toContain(
+      '(the automatic parse resolved nothing)',
+    );
+  });
+
+  it('includes the populated fields of the deterministic hint', () => {
+    const p = buildRegistrationSystemPrompt(
+      ctx({
+        locale: 'ja',
+        deterministicHint: {
+          name: '量子ニュース',
+          prompt: '量子コンピュータのニュースをまとめる',
+          scheduleLabel: '毎日 08:00',
+          scheduleConfident: true,
+          action: { type: 'notify' },
+          actionCaveat: 'LINE投稿は未対応',
+        },
+      }),
+    );
+    expect(p).toContain('- 名前: 量子ニュース');
+    expect(p).toContain('- やること: 量子コンピュータのニュースをまとめる');
+    expect(p).toContain('- スケジュール: 毎日 08:00 (確定)');
+    expect(p).toContain('- 動作: notify');
+    expect(p).toContain('- 注意: LINE投稿は未対応');
+    expect(p).toContain('間違っていると思ったら従わなくてよい');
+  });
+
+  it('marks a non-confident hint schedule as such', () => {
+    const p = buildRegistrationSystemPrompt(
+      ctx({ locale: 'ja', deterministicHint: { scheduleLabel: '未設定', scheduleConfident: false } }),
+    );
+    expect(p).toContain('- スケジュール: 未設定 (未確定)');
+  });
+});
+
+// ─── parseConversationalTurnResponse ───────────────────────────────────────
+
+describe('parseConversationalTurnResponse', () => {
+  it('treats a fence-less response as a question, trimmed', () => {
+    const turn = parseConversationalTurnResponse('\n  何時に実行しますか？  \n');
+    expect(turn).toEqual({ kind: 'question', text: '何時に実行しますか？' });
+  });
+
+  it('treats a fence-less response that merely MENTIONS json as a question, not a proposal', () => {
+    const turn = parseConversationalTurnResponse('```json\n{"name":"x"}\n```');
+    expect(turn.kind).toBe('question');
+  });
+
+  it('parses a well-formed fenced block as a proposal', () => {
+    const turn = parseConversationalTurnResponse(
+      fenced(
+        JSON.stringify({
+          name: '量子ニュース',
+          scheduleText: '毎日8時',
+          actionType: 'notify',
+          prompt: '量子コンピュータのニュースを要約する',
+          outputPath: '',
+          platformHint: '',
+          autonomousIntent: null,
+        }),
+      ),
+    );
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction).toEqual({
+      name: '量子ニュース',
+      scheduleText: '毎日8時',
+      actionType: 'notify',
+      prompt: '量子コンピュータのニュースを要約する',
+      outputPath: undefined,
+      platformHint: undefined,
+    });
+  });
+
+  it('extracts the JSON even when the model wraps the fence in prose', () => {
+    const raw = `わかりました、こちらで登録します。\n${fenced('{"name":"朝ニュース"}')}\n以上です。`;
+    const turn = parseConversationalTurnResponse(raw);
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.name).toBe('朝ニュース');
+  });
+
+  it('tolerates a truncated response with no closing fence', () => {
+    const turn = parseConversationalTurnResponse(fenced('{"name":"朝ニュース"}', { close: false }));
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.name).toBe('朝ニュース');
+  });
+
+  it('returns unparseable for a fence containing broken JSON', () => {
+    expect(parseConversationalTurnResponse(fenced('{"name": "oops",,,}')).kind).toBe('unparseable');
+  });
+
+  it('returns unparseable for a fence containing no object at all', () => {
+    expect(parseConversationalTurnResponse(fenced('just some words')).kind).toBe('unparseable');
+  });
+
+  it('returns unparseable for a fenced JSON array with no object inside it', () => {
+    expect(parseConversationalTurnResponse(fenced('[1, 2, 3]')).kind).toBe('unparseable');
+  });
+
+  // Documents the intentional salvage behavior of the first-{ ... last-} scan
+  // (identical to lib/agent-llm-fallback.ts's): an object wrapped in an array
+  // is recovered rather than discarded. Safe because every recovered field
+  // still passes through the same validation + merge gates.
+  it('salvages an object wrapped in an array', () => {
+    const turn = parseConversationalTurnResponse(fenced('[{"name":"x"}]'));
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.name).toBe('x');
+  });
+
+  it('returns unparseable for an empty / whitespace-only response (fail closed)', () => {
+    expect(parseConversationalTurnResponse('').kind).toBe('unparseable');
+    expect(parseConversationalTurnResponse('   \n  ').kind).toBe('unparseable');
+  });
+
+  it('drops non-string and blank fields rather than passing them through', () => {
+    const turn = parseConversationalTurnResponse(
+      fenced(JSON.stringify({ name: '   ', scheduleText: 42, prompt: null, platformHint: 'X' })),
+    );
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.name).toBeUndefined();
+    expect(turn.extraction.scheduleText).toBeUndefined();
+    expect(turn.extraction.prompt).toBeUndefined();
+    expect(turn.extraction.platformHint).toBe('X');
+  });
+
+  it('accepts autonomousIntent only as a strict boolean', () => {
+    const t1 = parseConversationalTurnResponse(fenced('{"autonomousIntent": true}'));
+    const t2 = parseConversationalTurnResponse(fenced('{"autonomousIntent": false}'));
+    const t3 = parseConversationalTurnResponse(fenced('{"autonomousIntent": null}'));
+    const t4 = parseConversationalTurnResponse(fenced('{"autonomousIntent": "true"}'));
+    const read = (t: ReturnType<typeof parseConversationalTurnResponse>) =>
+      t.kind === 'proposal' ? t.extraction.autonomousIntent : 'not-a-proposal';
+    expect(read(t1)).toBe(true);
+    expect(read(t2)).toBe(false);
+    expect(read(t3)).toBeUndefined();
+    expect(read(t4)).toBeUndefined();
+  });
+
+  it('caps over-long field values', () => {
+    const longPrompt = 'あ'.repeat(2500);
+    const turn = parseConversationalTurnResponse(fenced(JSON.stringify({ prompt: longPrompt })));
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.prompt).toHaveLength(2000);
+  });
+
+  it('an all-empty fenced object is still a proposal (the merge decides it is a no-op)', () => {
+    expect(parseConversationalTurnResponse(fenced('{}')).kind).toBe('proposal');
+  });
+});
+
+// ─── mergeConversationalExtractionIntoDraft ────────────────────────────────
+
+describe('mergeConversationalExtractionIntoDraft', () => {
+  const noConnectors = { connectors: [] as SocialConnectorMeta[] };
+
+  it('applies a scheduleText that parseSchedule resolves confidently', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { scheduleText: '毎日8時' },
+      noConnectors,
+    );
+    expect(out.scheduleConfident).toBe(true);
+    expect(out.schedule).toBe('0 8 * * *');
+    expect(out.llmExtracted).toBe(true);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('REJECTS a scheduleText parseSchedule cannot resolve confidently, and records it', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { scheduleText: 'いつか気が向いたら' },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.scheduleConfident).toBe(false);
+    expect(rejectedFields).toContain('scheduleText');
+  });
+
+  it('never accepts a raw cron string as a schedule (the model may not author cron)', () => {
+    const draft = baseDraft();
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { scheduleText: '0 8 * * *' },
+      noConnectors,
+    );
+    expect(out.schedule).toBeNull();
+    expect(out.scheduleConfident).toBe(false);
+  });
+
+  // ── actionType: the security-critical gate ──
+  it('upgrades a draft action to notify', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { actionType: 'notify' },
+      noConnectors,
+    );
+    expect(out.action).toEqual({ type: 'notify' });
+    expect(out.llmExtracted).toBe(true);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('IGNORES actionType "webhook" — a privileged action type is never LLM-authorable', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { actionType: 'webhook' },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.action).toEqual({ type: 'draft' });
+    expect(out.llmExtracted).toBeUndefined();
+    expect(rejectedFields).toEqual(['actionType']);
+  });
+
+  it.each(['cli', 'app-act', 'api-call', 'intent', 'dm-reply', 'social-post', 'publish', 'DRAFT', ''])(
+    'IGNORES the non-allowlisted actionType %p',
+    (bad) => {
+      const draft = baseDraft();
+      const { draft: out } = mergeConversationalExtractionIntoDraft(
+        draft,
+        // '' is dropped by the parser, but the merge must also stand alone.
+        { actionType: bad },
+        noConnectors,
+      );
+      expect(out).toBe(draft);
+      expect(out.action).toEqual({ type: 'draft' });
+    },
+  );
+
+  it('treats a redundant actionType "draft" as a silent no-op, not a rejection', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { actionType: 'draft' },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  // ── platformHint: existence-checked destination resolution ──
+  it('REJECTS a platformHint matching ZERO registered connectors', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { platformHint: 'discord' },
+      { connectors: [connector({ id: 'a1', platform: 'bluesky', label: 'My Bluesky' })] },
+    );
+    expect(out).toBe(draft);
+    expect(out.action).toEqual({ type: 'draft' });
+    expect(rejectedFields).toContain('platformHint');
+  });
+
+  it('REJECTS a platformHint matching TWO OR MORE registered connectors (genuinely ambiguous)', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { platformHint: 'bluesky' },
+      {
+        connectors: [
+          connector({ id: 'a1', platform: 'bluesky', label: 'Personal' }),
+          connector({ id: 'a2', platform: 'bluesky', label: 'Work' }),
+        ],
+      },
+    );
+    expect(out).toBe(draft);
+    expect(out.action).toEqual({ type: 'draft' });
+    expect(rejectedFields).toContain('platformHint');
+  });
+
+  it('promotes to social-post ONLY on a unique match, using the REAL connector id', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { platformHint: 'ブルースカイ' },
+      {
+        connectors: [
+          connector({ id: 'real-bsky-id', platform: 'bluesky', label: 'My Bluesky' }),
+          connector({ id: 'slack-id', platform: 'slack', label: '会社Bot' }),
+        ],
+      },
+    );
+    expect(out.action).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'bluesky', connectorId: 'real-bsky-id', text: '{{result}}' },
+    });
+    expect(out.llmExtracted).toBe(true);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('clears a stale caveat / candidate list once a destination genuinely resolves', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft({
+        actionCaveat: 'LINE投稿は未対応のため下書きにします',
+        socialPostCandidates: [connector({ id: 'x1' })],
+      }),
+      { platformHint: 'ブルースカイ' },
+      { connectors: [connector({ id: 'real-bsky-id', platform: 'bluesky', label: 'My Bluesky' })] },
+    );
+    expect(out.action.type).toBe('social-post');
+    expect(out.actionCaveat).toBeUndefined();
+    expect(out.socialPostCandidates).toBeUndefined();
+  });
+
+  it('lets a local notify win over a destination when the model proposes BOTH', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { actionType: 'notify', platformHint: 'ブルースカイ' },
+      { connectors: [connector({ id: 'real-bsky-id', platform: 'bluesky', label: 'My Bluesky' })] },
+    );
+    expect(out.action).toEqual({ type: 'notify' });
+    expect(rejectedFields).toContain('platformHint');
+  });
+
+  // ── autonomousIntent ──
+  it('stores autonomousIntent on llmAutonomousIntent and NEVER touches draft.autonomous', () => {
+    const draft = baseDraft();
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { autonomousIntent: true },
+      noConnectors,
+    );
+    expect(out.llmAutonomousIntent).toBe(true);
+    expect(out.autonomous).toBeUndefined();
+    expect(draft.autonomous).toBeUndefined();
+    expect(out.llmExtracted).toBe(true);
+  });
+
+  it('does not flip an existing draft.autonomous=false via autonomousIntent=true', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft({ autonomous: false }),
+      { autonomousIntent: true },
+      noConnectors,
+    );
+    expect(out.autonomous).toBe(false);
+    expect(out.llmAutonomousIntent).toBe(true);
+  });
+
+  it('treats an autonomousIntent identical to the draft as a no-op', () => {
+    const draft = baseDraft({ llmAutonomousIntent: true });
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { autonomousIntent: true },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.llmExtracted).toBeUndefined();
+  });
+
+  // ── remaining fields ──
+  it('applies name, prompt (re-routing the tool) and outputPath', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { name: '朝ニュース', prompt: 'ニュースを検索して要約する', outputPath: '~/notes/news.md' },
+      noConnectors,
+    );
+    expect(out.name).toBe('朝ニュース');
+    expect(out.prompt).toBe('ニュースを検索して要約する');
+    expect(out.outputPath).toBe('~/notes/news.md');
+    expect(out.toolLabel).toBeTruthy();
+    expect(out.llmExtracted).toBe(true);
+  });
+
+  it('drops outputPath once the action is no longer a local draft', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { actionType: 'notify', outputPath: '~/notes/news.md' },
+      noConnectors,
+    );
+    expect(out.outputPath).toBeUndefined();
+    expect(rejectedFields).toContain('outputPath');
+  });
+
+  // ── referential transparency ──
+  it('returns the ORIGINAL draft object (same reference, no llmExtracted) when nothing applies', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      {},
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.llmExtracted).toBeUndefined();
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('returns the ORIGINAL draft when EVERY proposed field is rejected', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { actionType: 'cli', scheduleText: 'いつか気が向いたら', platformHint: 'discord' },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.llmExtracted).toBeUndefined();
+    expect(rejectedFields).toEqual(
+      expect.arrayContaining(['actionType', 'scheduleText', 'platformHint']),
+    );
+  });
+
+  it('does not mutate the input draft when it DOES apply something', () => {
+    const draft = baseDraft();
+    const snapshot = JSON.stringify(draft);
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { name: '朝ニュース' },
+      noConnectors,
+    );
+    expect(out).not.toBe(draft);
+    expect(JSON.stringify(draft)).toBe(snapshot);
+  });
+});
+
+// ─── runConversationalRegistrationTurn (impure, network mocked) ────────────
+
+describe('runConversationalRegistrationTurn', () => {
+  const history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: '毎朝ニュースまとめて' },
+  ];
+  const enabled = { baseUrl: 'http://127.0.0.1:8080', model: 'Qwen3.5-2B-Q4_K_M', enabled: true };
+
+  beforeEach(() => {
+    ollamaChat.mockReset();
+  });
+
+  it('fails closed WITHOUT calling the model when the local LLM is disabled', async () => {
+    const res = await runConversationalRegistrationTurn(history, { ...enabled, enabled: false });
+    expect(res.success).toBe(false);
+    expect(res.raw).toBeUndefined();
+    expect(res.error).toContain('local LLM not usable');
+    expect(ollamaChat).not.toHaveBeenCalled();
+  });
+
+  it('fails closed WITHOUT calling the model when baseUrl/model are missing', async () => {
+    const res = await runConversationalRegistrationTurn(history, {
+      baseUrl: '',
+      model: '',
+      enabled: true,
+    });
+    expect(res.success).toBe(false);
+    expect(ollamaChat).not.toHaveBeenCalled();
+  });
+
+  it('returns the raw content on success and calls the model exactly once', async () => {
+    ollamaChat.mockResolvedValue({ success: true, content: '何時に実行しますか？' });
+    const res = await runConversationalRegistrationTurn(history, enabled);
+    expect(res).toEqual({ success: true, raw: '何時に実行しますか？' });
+    expect(ollamaChat).toHaveBeenCalledTimes(1);
+    const [cfg, msgs, timeoutMs] = ollamaChat.mock.calls[0];
+    expect(cfg).toEqual({ baseUrl: enabled.baseUrl, model: enabled.model, enabled: true });
+    expect(msgs).toBe(history);
+    expect(timeoutMs).toBe(30_000);
+  });
+
+  it('honors a caller-supplied timeout', async () => {
+    ollamaChat.mockResolvedValue({ success: true, content: 'ok' });
+    await runConversationalRegistrationTurn(history, enabled, 5_000);
+    expect(ollamaChat.mock.calls[0][2]).toBe(5_000);
+  });
+
+  it('fails closed when the model call reports failure (e.g. timeout/abort)', async () => {
+    ollamaChat.mockResolvedValue({ success: false, content: '', error: 'The operation was aborted' });
+    const res = await runConversationalRegistrationTurn(history, enabled);
+    expect(res.success).toBe(false);
+    expect(res.error).toBe('The operation was aborted');
+    expect(res.raw).toBeUndefined();
+  });
+
+  it('fails closed on an empty/whitespace-only response', async () => {
+    ollamaChat.mockResolvedValue({ success: true, content: '   \n ' });
+    const res = await runConversationalRegistrationTurn(history, enabled);
+    expect(res.success).toBe(false);
+    expect(res.error).toBe('empty response');
+  });
+
+  it('never throws — a rejected network call becomes success:false', async () => {
+    ollamaChat.mockRejectedValue(new Error('network down'));
+    const res = await runConversationalRegistrationTurn(history, enabled);
+    expect(res).toEqual({ success: false, error: 'network down' });
+  });
+});

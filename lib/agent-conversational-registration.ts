@@ -1,0 +1,605 @@
+/**
+ * lib/agent-conversational-registration.ts — Tier 3 "LLM leads the whole
+ * conversation" agent-registration core (Phase 0, 2026-08-02).
+ *
+ * See docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md.
+ *
+ * Background. Shelly's agent-registration flow today is deterministic-first:
+ * lib/agent-nl-parser.ts's parseAgentNL owns comprehension (Tier 1),
+ * lib/agent-slot-fill.ts asks fixed-template questions for whatever is missing
+ * (Tier 2), and lib/agent-llm-fallback.ts calls the LLM exactly ONCE to fill a
+ * narrow extraction schema. That structure keeps Shelly's own pipeline in the
+ * driver's seat and reduces the model to a tool. This module is the core of the
+ * opposite arrangement (Tier 3, Hermes-Agent style): the LLM drives the
+ * conversation, asks follow-up questions IN ITS OWN WORDS across multiple
+ * turns, and only hands back a structured proposal once it believes it has
+ * enough. The deterministic parse becomes a HINT it may ignore.
+ *
+ * What deliberately does NOT change, and is what makes this safe:
+ *
+ *   - The human Confirm tap stays mandatory. Any draft this module touches is
+ *     marked `llmExtracted: true`, which lib/agent-plan-summary.ts's
+ *     hasDraftAssumptions already treats as "never auto-registerable".
+ *   - "LLM proposes, deterministic code decides" is preserved field by field.
+ *     The model may never author a cron string (only a natural-language phrase,
+ *     re-validated through parseSchedule()), never a connectorId/platform/host
+ *     (only a destination NAME, resolved through resolvePlatformHintConnector()
+ *     against connectors the user already registered), and never a privileged
+ *     action type — Phase 0 accepts `'draft'` and `'notify'` and nothing else.
+ *     webhook / cli / app-act / api-call / intent / dm-reply / social-post
+ *     (directly) are all rejected, exactly as in lib/agent-llm-fallback.ts.
+ *   - Every step fails closed: a disabled/unreachable LLM, a timeout, an empty
+ *     response, a malformed fence, unparseable JSON, or a proposal where every
+ *     field is rejected all leave the caller's draft byte-for-byte unchanged,
+ *     so the existing Tier 1/Tier 2 flow proceeds as if this module did not
+ *     exist.
+ *
+ * Phase 0 is intentionally WIRING-FREE: nothing imports this module yet. The
+ * dispatcher hookup (hooks/use-ai-pane-dispatch.ts) plus the opt-in setting
+ * land in Phase 1; social-post / autonomous / high-risk action types in later
+ * phases.
+ */
+import type { ParsedAgentDraft } from './agent-nl-parser';
+import { parseSchedule } from './agent-nl-parser';
+import type { SocialConnectorMeta } from '@/store/types';
+import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+// Reused verbatim, NOT re-implemented: this is the one deterministic
+// destination resolver in the codebase, and a mirrored copy here would
+// silently drift from detectSocialPost()'s own matching rules the first time
+// either side changed. See its doc comment in lib/agent-llm-fallback.ts.
+import { resolvePlatformHintConnector } from './agent-llm-fallback';
+import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
+import { logInfo } from './debug-logger';
+
+const LOG = 'AgentConvRegistration';
+
+// ── Types ───────────────────────────────────────────────────────────────────
+
+export interface ConversationalRegistrationContext {
+  locale: 'ja' | 'en';
+  /** What parseAgentNL was able to resolve on its own. Supplied to the model as
+   *  a HINT only — unlike Tier 1/Tier 2, the model is explicitly told it may
+   *  disagree with any of it. */
+  deterministicHint: Partial<ParsedAgentDraft>;
+  /** Real registered connectors, for existence-checking a destination NAME the
+   *  model reports back. Only `platform` and `label` are ever shown to the
+   *  model — never `id`, never `host`, never `fields` (see
+   *  buildRegistrationSystemPrompt). */
+  connectors: SocialConnectorMeta[];
+}
+
+export interface AgentConversationalExtraction {
+  name?: string;
+  /** A natural-language schedule phrase ("毎朝8時" / "every weekday at 9am").
+   *  A raw cron string is NEVER accepted from the model — the caller re-runs
+   *  this through parseSchedule(), the same whitelisted-cron-shape gate the
+   *  deterministic parser uses, and drops it unless that comes back confident. */
+  scheduleText?: string;
+  /** Typed as a plain string on purpose: the model can emit ANY string here, so
+   *  the type must be able to REPRESENT a rejected value in order for
+   *  mergeConversationalExtractionIntoDraft to be able to reject it (and record
+   *  the rejection). Phase 0 accepts only 'draft' | 'notify'. */
+  actionType?: string;
+  prompt?: string;
+  outputPath?: string;
+  /** Free-text destination NAME ("ブルースカイ" / a connector's own label).
+   *  Never a connectorId, a platform enum value, a host, or a webhook URL —
+   *  resolved deterministically by resolvePlatformHintConnector(). */
+  platformHint?: string;
+  autonomousIntent?: boolean;
+}
+
+export type ConversationalTurn =
+  | { kind: 'question'; text: string }
+  | { kind: 'proposal'; extraction: AgentConversationalExtraction }
+  | { kind: 'unparseable' };
+
+export interface MergeConversationalResult {
+  draft: ParsedAgentDraft;
+  /** Field names the model proposed that were dropped by existence-checking or
+   *  validation. Debug/test surface (and useful for a future "I couldn't use
+   *  that destination" nudge); the UI is not required to render it. */
+  rejectedFields: string[];
+}
+
+export interface ConversationalRegistrationTurnResult {
+  success: boolean;
+  raw?: string;
+  error?: string;
+}
+
+// ── Field-length caps (same discipline as agent-llm-fallback.ts) ────────────
+
+/** Per-field hard caps. Truncation can only ever make a value match FEWER real
+ *  things (a shorter platformHint resolves to fewer connectors, a shorter
+ *  scheduleText parses to fewer crons), never more — so capping is always the
+ *  safe direction. Mirrors lib/agent-llm-fallback.ts's MAX_FIELD_LEN, plus an
+ *  `actionType` cap since that arrives here as an unconstrained string. */
+const MAX_FIELD_LEN: Record<
+  keyof Omit<AgentConversationalExtraction, 'autonomousIntent'>,
+  number
+> = {
+  name: 60,
+  scheduleText: 100,
+  actionType: 20,
+  prompt: 2000,
+  outputPath: 200,
+  // Short by design: a destination NAME, never a sentence.
+  platformHint: 60,
+};
+
+// ── §1: system-prompt construction (pure) ───────────────────────────────────
+
+/** The fenced block the model must use to hand back a final proposal. A
+ *  DISTINCT language tag (not ```json) is required deliberately: local models
+ *  emit incidental ```json blocks while thinking out loud, and treating those
+ *  as a final registration proposal would skip the conversation the user is
+ *  still having. Anything that is not this exact tag is read as prose (a
+ *  question), which is the recoverable direction — see
+ *  parseConversationalTurnResponse. */
+const FENCE_TAG = '```shelly-agent-registration';
+const FENCE_END = '```';
+
+/** Only `platform` + `label` — deliberately NOT `id` (used in SecureStore keys
+ *  and .env variable names), NOT `host`, NOT `fields` (the NAMES of the secret
+ *  fields the platform needs). The model needs to recognize a destination the
+ *  user names in conversation, and a display label plus its platform is
+ *  sufficient for that; everything else is attack surface for a hallucinated
+ *  or exfiltrated identifier. */
+function describeConnectors(ctx: ConversationalRegistrationContext): string {
+  if (ctx.connectors.length === 0) {
+    return ctx.locale === 'ja'
+      ? '(登録済みの投稿先はありません — 投稿を伴う依頼は、まず設定で投稿先を登録する必要があると伝えてください)'
+      : '(no destinations are registered — if the request involves posting, say that a destination must be registered in settings first)';
+  }
+  return ctx.connectors.map((c) => `- ${c.label} (${c.platform})`).join('\n');
+}
+
+/** Compact, human-readable summary of whatever the deterministic parser got.
+ *  Only fields that are actually present are listed, so an empty parse produces
+ *  an explicit "nothing" line rather than a wall of blanks. */
+function describeDeterministicHint(ctx: ConversationalRegistrationContext): string {
+  const h = ctx.deterministicHint;
+  const ja = ctx.locale === 'ja';
+  const lines: string[] = [];
+  if (h.name) lines.push(`- ${ja ? '名前' : 'name'}: ${h.name}`);
+  if (h.prompt) lines.push(`- ${ja ? 'やること' : 'task'}: ${h.prompt}`);
+  if (h.scheduleLabel) {
+    const confident = h.scheduleConfident ? (ja ? '確定' : 'confident') : (ja ? '未確定' : 'not confident');
+    lines.push(`- ${ja ? 'スケジュール' : 'schedule'}: ${h.scheduleLabel} (${confident})`);
+  }
+  if (h.action?.type) lines.push(`- ${ja ? '動作' : 'action'}: ${h.action.type}`);
+  if (h.outputPath) lines.push(`- ${ja ? '保存先' : 'outputPath'}: ${h.outputPath}`);
+  if (h.actionCaveat) lines.push(`- ${ja ? '注意' : 'caveat'}: ${h.actionCaveat}`);
+  if (lines.length === 0) {
+    return ja ? '(自動解析では何も取れませんでした)' : '(the automatic parse resolved nothing)';
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Build the system prompt for one Tier 3 conversational-registration turn.
+ *
+ * Two design choices carried over from lib/agent-llm-fallback.ts's on-device
+ * experience with small local models (Qwen3.5-2B class):
+ *
+ *  1. STRICT JSON IS DEMANDED ONLY CONDITIONALLY. A prompt that says "always
+ *     answer in JSON" makes a small model treat JSON-shape compliance as the
+ *     dominant instruction and quietly drop the others — most visibly the
+ *     language instruction (the 2026-07-27 repro where a Japanese request got
+ *     an English clarifying question back). Here the model is told: when you
+ *     need to ask something, answer in ordinary prose in the user's language,
+ *     and emit JSON *only* once you are done gathering.
+ *  2. AUTHORITY IS SCOPED, NOT ASSUMED. Every field the model must not author
+ *     itself (cron, connector id, URL, privileged action type) is named
+ *     explicitly with the reason, rather than relying on the schema shape to
+ *     imply it.
+ */
+export function buildRegistrationSystemPrompt(ctx: ConversationalRegistrationContext): string {
+  const connectors = describeConnectors(ctx);
+  const hint = describeDeterministicHint(ctx);
+
+  if (ctx.locale === 'ja') {
+    return `あなたは Shelly の「自動化エージェント登録アシスタント」です。ユーザーと日本語で会話しながら、定期実行エージェントの登録内容を組み立てます。
+
+【会話の進め方】
+- 情報が足りないときは、あなた自身の言葉で自然な日本語の質問を1つだけ返してください。そのときは JSON を一切出力しないでください。
+- 一度に複数のことをまとめて聞かないでください。短く、具体的に、1問ずつ聞いてください。
+- ユーザーが言っていないことを勝手に決めつけないでください。分からないことは聞いてください。
+- 登録に必要な情報がそろったと判断したときだけ、次の形式のブロックだけを出力してください（前後に説明文を付けないこと）。
+
+【最終提案の出力形式】
+${FENCE_TAG}
+{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "outputPath": "", "platformHint": "", "autonomousIntent": null}
+${FENCE_END}
+
+【各項目のルール】
+- "name": エージェントの短い表示名（20文字以内）。
+- "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
+- "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。
+- "prompt": 毎回の実行でエージェントが実際にやること。スケジュールの言い回しは含めないでください。
+- "outputPath": 保存先が明示されたときだけ。それ以外は空文字。
+- "platformHint": 投稿先の**名前だけ**をそのまま書いてください（例: "ブルースカイ", "会社Bot"）。ID・URL・ホスト名・接続設定を自分で作ってはいけません。システム側が実在の登録済み投稿先と突き合わせます。投稿先の話が出ていなければ空文字。
+- "autonomousIntent": 「確認なしで勝手にやっておいて」なら true、「毎回確認して」なら false、どちらとも言っていなければ null。推測しないでください。
+
+【登録済みの投稿先】
+${connectors}
+
+【自動解析のヒント（参考情報 — 間違っていると思ったら従わなくてよい）】
+${hint}`;
+  }
+
+  return `You are Shelly's automation-agent registration assistant. You talk with the user in English and assemble the definition of a scheduled agent together with them.
+
+【How to run the conversation】
+- When something is missing, reply with ONE short follow-up question in your own words, in ordinary prose. Do NOT emit any JSON on such a turn.
+- Ask one thing at a time. Keep it short and concrete.
+- Never assume anything the user did not say. If you don't know, ask.
+- ONLY once you believe you have everything, output the block below and nothing else (no text before or after it).
+
+【Final proposal format】
+${FENCE_TAG}
+{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "outputPath": "", "platformHint": "", "autonomousIntent": null}
+${FENCE_END}
+
+【Field rules】
+- "name": a short display label for the agent (<= 20 chars).
+- "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. Empty string if no schedule was stated.
+- "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.
+- "prompt": what the agent should actually DO on each run, with the scheduling phrasing removed.
+- "outputPath": only when a destination file/folder was explicitly stated. Empty string otherwise.
+- "platformHint": the destination NAME only, copied as written (e.g. "Bluesky", "Team Bot"). Never invent an id, a URL, a host, or connection settings — the system matches this against the destinations the user really registered. Empty string if no destination came up.
+- "autonomousIntent": true if the user asked for it to run unattended without confirming each time, false if they asked to be asked every time, null if they said nothing either way. Do not guess.
+
+【Registered destinations】
+${connectors}
+
+【Hint from the automatic parse (reference only — ignore it if you think it is wrong)】
+${hint}`;
+}
+
+// ── §2: turn-response parsing (pure) ────────────────────────────────────────
+
+/** Pull the first top-level `{...}` object out of a text span by plain string
+ *  search — local models routinely add a stray sentence or a nested fence
+ *  despite instructions. Deliberately a character scan, not a regex (a regex
+ *  for balanced braces is either wrong or unreadable). Mirrors
+ *  lib/agent-llm-fallback.ts's private helper of the same name; duplicated
+ *  rather than exported-and-shared to keep that module's public surface
+ *  unchanged during a parallel edit window. */
+function extractJsonObjectSpan(raw: string): string | null {
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  return raw.slice(start, end + 1);
+}
+
+/** Type-check → trim → drop-if-empty → cap. Anything that isn't a plain
+ *  non-empty string simply doesn't exist as far as the merge is concerned. */
+function readValidatedString(
+  rec: Record<string, unknown>,
+  key: keyof Omit<AgentConversationalExtraction, 'autonomousIntent'>,
+): string | undefined {
+  const v = rec[key];
+  if (typeof v !== 'string') return undefined;
+  const trimmed = v.trim();
+  if (!trimmed) return undefined;
+  const maxLen = MAX_FIELD_LEN[key];
+  return trimmed.length > maxLen ? trimmed.slice(0, maxLen) : trimmed;
+}
+
+/**
+ * Classify one raw LLM turn. NEVER throws.
+ *
+ *   - empty / whitespace-only     → 'unparseable' (fail closed: an empty
+ *                                   question is not something the caller can
+ *                                   show a user, so it must degrade to Tier 2
+ *                                   rather than render a blank turn)
+ *   - no `${FENCE_TAG}` fence     → 'question' with the whole trimmed response
+ *   - fence + valid JSON object   → 'proposal'
+ *   - fence + unusable JSON       → 'unparseable' (the caller's Tier 2 signal)
+ *
+ * A proposal whose every field is empty is still a 'proposal' — that is not an
+ * error, and mergeConversationalExtractionIntoDraft handles it correctly by
+ * returning the caller's original draft, untouched, with nothing applied.
+ */
+export function parseConversationalTurnResponse(raw: string): ConversationalTurn {
+  if (!raw || !raw.trim()) return { kind: 'unparseable' };
+
+  const tagIndex = raw.indexOf(FENCE_TAG);
+  if (tagIndex === -1) {
+    return { kind: 'question', text: raw.trim() };
+  }
+
+  // Body = everything after the opening tag, up to the closing fence. A missing
+  // closing fence (a truncated local-model response) is tolerated: we take the
+  // rest of the string and let the JSON scan decide.
+  const afterTag = raw.slice(tagIndex + FENCE_TAG.length);
+  const closeIndex = afterTag.indexOf(FENCE_END);
+  const body = closeIndex === -1 ? afterTag : afterTag.slice(0, closeIndex);
+
+  const span = extractJsonObjectSpan(body);
+  if (!span) return { kind: 'unparseable' };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(span);
+  } catch {
+    return { kind: 'unparseable' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { kind: 'unparseable' };
+  }
+  const rec = parsed as Record<string, unknown>;
+
+  const extraction: AgentConversationalExtraction = {
+    name: readValidatedString(rec, 'name'),
+    scheduleText: readValidatedString(rec, 'scheduleText'),
+    actionType: readValidatedString(rec, 'actionType'),
+    prompt: readValidatedString(rec, 'prompt'),
+    outputPath: readValidatedString(rec, 'outputPath'),
+    platformHint: readValidatedString(rec, 'platformHint'),
+  };
+
+  // Strict boolean ONLY. The prompt asks for null when the user said nothing
+  // about unattended execution, and JSON null (like a missing key, or a
+  // stringly-typed "true") must leave this UNSET rather than collapsing to
+  // false: "unclear" and "the user said no" are different answers downstream.
+  const autonomousIntentRaw = rec['autonomousIntent'];
+  if (typeof autonomousIntentRaw === 'boolean') {
+    extraction.autonomousIntent = autonomousIntentRaw;
+  }
+
+  return { kind: 'proposal', extraction };
+}
+
+// ── §3: proposal → draft merge (pure, existence-checked) ────────────────────
+
+/** Phase 0's closed set of LLM-authorable action types. Everything else — the
+ *  privileged types (webhook / cli / app-act / api-call / intent / dm-reply),
+ *  'social-post' as a DIRECT claim, and any hallucinated name — is rejected.
+ *  A social-post action is still reachable, but only via platformHint below,
+ *  i.e. only by naming a connector the user already registered. */
+const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify']);
+
+/**
+ * Merge one LLM proposal into `draft` under the same per-field gates
+ * lib/agent-llm-fallback.ts's mergeLlmExtractionIntoDraft uses, and in the same
+ * ORDER (the order encodes safety decisions, see the platformHint block).
+ *
+ *   - scheduleText: re-validated through parseSchedule(); applied only when
+ *     that comes back `confident`. The model never authors a cron.
+ *   - actionType: only 'draft' | 'notify'. 'notify' is applied only as an
+ *     upgrade FROM 'draft'; a redundant 'draft' is a silent no-op (and never
+ *     downgrades an already-resolved richer action). Anything else is dropped
+ *     and recorded in rejectedFields.
+ *   - platformHint: resolved by resolvePlatformHintConnector() against REAL
+ *     registered connectors; applied only on a UNIQUE match, and only while the
+ *     action is still 'draft'. Zero or 2+ matches change nothing.
+ *   - autonomousIntent: stored as `llmAutonomousIntent` ONLY. It NEVER touches
+ *     `draft.autonomous` — only a human answer (or the explicit
+ *     `@agent autonomous` alias) ever sets that.
+ *   - outputPath: only meaningful while the action is still 'draft'.
+ *   - prompt: also re-derives tool/toolLabel via suggestTool(), keeping tool
+ *     routing consistent with the (now more accurate) task description.
+ *
+ * Returns the ORIGINAL `draft` object by reference — not a copy, and without
+ * `llmExtracted` — when nothing was both present and valid. Callers rely on
+ * that referential identity to detect "the model gave us nothing usable".
+ */
+export function mergeConversationalExtractionIntoDraft(
+  draft: ParsedAgentDraft,
+  extraction: AgentConversationalExtraction,
+  ctx: { connectors: SocialConnectorMeta[] },
+): MergeConversationalResult {
+  let merged: ParsedAgentDraft = draft;
+  let touched = false;
+  const rejectedFields: string[] = [];
+  const next = () => {
+    if (merged === draft) merged = { ...draft };
+    return merged;
+  };
+
+  if (extraction.scheduleText) {
+    const sched = parseSchedule(extraction.scheduleText);
+    if (sched.confident) {
+      const m = next();
+      m.schedule = sched.schedule;
+      m.scheduleConfident = true;
+      m.scheduleLabel = sched.label;
+      m.suggestedTime = sched.suggestedTime;
+      m.suggestedFrequency = sched.suggestedFrequency;
+      m.suggestedDowList = sched.suggestedDowList;
+      m.scheduleAssumed = sched.assumedTimeOfDay || undefined;
+      touched = true;
+    } else {
+      rejectedFields.push('scheduleText');
+      logInfo(
+        LOG,
+        `scheduleText ${JSON.stringify(extraction.scheduleText)} did not parse to a confident cron — dropped`,
+      );
+    }
+  }
+
+  if (extraction.actionType !== undefined) {
+    if (!ALLOWED_ACTION_TYPES.has(extraction.actionType)) {
+      // The security-critical branch: a model that proposes 'webhook' / 'cli' /
+      // 'app-act' / 'social-post' (or invents a type name) gets it dropped
+      // here, never merged. Phase 0 has no path by which the model can author
+      // a privileged action at all.
+      rejectedFields.push('actionType');
+      logInfo(
+        LOG,
+        `actionType ${JSON.stringify(extraction.actionType)} is not LLM-authorable in Phase 0 — dropped`,
+      );
+    } else if (extraction.actionType === 'notify' && draft.action.type === 'draft') {
+      const m = next();
+      m.action = { type: 'notify' };
+      m.actionCaveat = undefined;
+      touched = true;
+    }
+    // A redundant 'draft' (or a 'notify' on an already-notify draft) is a
+    // deliberate no-op, not a rejection: nothing was refused, nothing changed.
+  }
+
+  // Placed AFTER the notify branch on purpose (same reasoning as
+  // mergeLlmExtractionIntoDraft): if the model proposed BOTH notify and a
+  // destination, the purely-local notify wins, because escalating a local
+  // notification into an external post is the one direction of this merge the
+  // user cannot undo. Placed BEFORE outputPath so a resolved destination
+  // correctly suppresses the now-meaningless draft file path.
+  if (extraction.platformHint) {
+    if (merged.action.type !== 'draft') {
+      rejectedFields.push('platformHint');
+      logInfo(
+        LOG,
+        `platformHint ${JSON.stringify(extraction.platformHint)} ignored — action is already ` +
+          `'${merged.action.type}', not 'draft'`,
+      );
+    } else {
+      const resolved = resolvePlatformHintConnector(extraction.platformHint, ctx.connectors);
+      if (resolved) {
+        const m = next();
+        m.action = {
+          type: 'social-post',
+          socialPost: {
+            platform: resolved.platform,
+            connectorId: resolved.id,
+            text: draft.action.socialPost?.text ?? '{{result}}',
+          },
+        };
+        m.actionCaveat = undefined;
+        m.socialPostCandidates = undefined;
+        touched = true;
+        logInfo(
+          LOG,
+          `platformHint ${JSON.stringify(extraction.platformHint)} resolved to connector ` +
+            `${resolved.id} (${resolved.platform})`,
+        );
+      } else {
+        rejectedFields.push('platformHint');
+        logInfo(
+          LOG,
+          `platformHint ${JSON.stringify(extraction.platformHint)} did not resolve to exactly one ` +
+            `registered connector (pool=${ctx.connectors.length}) — dropped`,
+        );
+      }
+    }
+  }
+
+  if (
+    typeof extraction.autonomousIntent === 'boolean' &&
+    draft.llmAutonomousIntent !== extraction.autonomousIntent
+  ) {
+    const m = next();
+    // NEVER m.autonomous — this is a proposal for lib/agent-slot-fill.ts's
+    // 'autonomous' slot to consider, not the decision itself.
+    m.llmAutonomousIntent = extraction.autonomousIntent;
+    touched = true;
+  }
+
+  if (extraction.outputPath) {
+    if (merged.action.type === 'draft') {
+      const m = next();
+      m.outputPath = extraction.outputPath;
+      touched = true;
+    } else {
+      rejectedFields.push('outputPath');
+    }
+  }
+
+  if (extraction.name) {
+    const m = next();
+    m.name = extraction.name;
+    touched = true;
+  }
+
+  if (extraction.prompt) {
+    const m = next();
+    const suggestion = suggestTool(extraction.prompt);
+    m.prompt = extraction.prompt;
+    m.tool = suggestion.tool;
+    m.toolLabel = suggestion.label ?? toolChoiceToLabel(suggestion.tool);
+    touched = true;
+  }
+
+  if (!touched) {
+    logInfo(LOG, `merge applied nothing (rejected=[${rejectedFields.join(',')}]) — draft unchanged`);
+    return { draft, rejectedFields };
+  }
+  // Forces the human confirm round-trip via lib/agent-plan-summary.ts's
+  // hasDraftAssumptions, no matter how complete the merged draft now looks.
+  merged.llmExtracted = true;
+  logInfo(
+    LOG,
+    `merge applied -> action=${merged.action.type}, scheduleConfident=${merged.scheduleConfident}, ` +
+      `rejected=[${rejectedFields.join(',')}]`,
+  );
+  return { draft: merged, rejectedFields };
+}
+
+// ── §4: impure orchestrator (the only network-calling function here) ────────
+
+/** A conversational turn needs more headroom than the 300-token single-shot
+ *  extraction budget in lib/agent-llm-fallback.ts — this turn may be a
+ *  free-form question plus reasoning — but must stay bounded so a runaway
+ *  local model can't stall the registration UI. */
+const TURN_MAX_TOKENS = 600;
+
+/**
+ * Run one conversational-registration turn against the LOCAL model. Never
+ * throws; every failure mode (config unusable, network error, timeout, empty
+ * response) returns `success: false`, which the caller treats as "fall back to
+ * Tier 2 slot-fill" — the same fail-closed discipline as
+ * extractAgentFieldsWithLlm.
+ *
+ * Phase 0/1 is local-only by design. The cloud-provider fallback chain
+ * (Groq/Cerebras first, local last — see lib/agent-capability-answer.ts's
+ * pattern) is deliberately out of scope here and lands as Phase 1.5; keeping
+ * this a thin ollamaChat wrapper means the provider question can be answered
+ * later without touching the pure functions above.
+ */
+export async function runConversationalRegistrationTurn(
+  history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
+  localLlmConfig: { baseUrl?: string; model?: string; enabled: boolean },
+  timeoutMs = 30_000,
+): Promise<ConversationalRegistrationTurnResult> {
+  if (!localLlmConfig.enabled || !localLlmConfig.baseUrl || !localLlmConfig.model) {
+    const error = `local LLM not usable (enabled=${localLlmConfig.enabled}, baseUrl=${
+      localLlmConfig.baseUrl || '(empty)'
+    }, model=${localLlmConfig.model || '(empty)'})`;
+    logInfo(LOG, `runConversationalRegistrationTurn skipped: ${error}`);
+    return { success: false, error };
+  }
+
+  // Narrowed above, so these are real strings — LocalLlmConfig requires them
+  // non-optional.
+  const cfg: LocalLlmConfig = {
+    baseUrl: localLlmConfig.baseUrl,
+    model: localLlmConfig.model,
+    enabled: true,
+  };
+
+  try {
+    const result = await ollamaChat(
+      cfg,
+      history as OllamaMessage[],
+      timeoutMs,
+      undefined,
+      TURN_MAX_TOKENS,
+    );
+    if (!result.success || !result.content || !result.content.trim()) {
+      const error = result.error ?? 'empty response';
+      logInfo(
+        LOG,
+        `runConversationalRegistrationTurn failed (success=${result.success}, error=${error})`,
+      );
+      return { success: false, error };
+    }
+    return { success: true, raw: result.content };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logInfo(LOG, `runConversationalRegistrationTurn threw: ${error}`);
+    return { success: false, error };
+  }
+}

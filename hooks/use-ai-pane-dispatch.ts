@@ -60,6 +60,12 @@ import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
+import {
+  buildRegistrationSystemPrompt,
+  mergeConversationalExtractionIntoDraft,
+  parseConversationalTurnResponse,
+  runConversationalRegistrationTurn,
+} from '@/lib/agent-conversational-registration';
 import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
@@ -876,6 +882,155 @@ export function useAIPaneDispatch(paneId: string) {
         // precedent for the identical "@ bypasses, doesn't clear" behavior).
       }
 
+      if (
+        pendingAgentSession?.phase === 'llm-conversation' &&
+        Date.now() - pendingAgentSession.createdAt <= SLOT_FILL_STALE_MS
+      ) {
+        if (isCancelPhrase(userText)) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          store.setPendingAgentSession(paneId, null);
+          return;
+        }
+        if (userText.trim().startsWith('@')) {
+          // A fresh command bypasses this conversation without discarding it.
+        } else {
+          const userMessageId = generateId();
+          store.addMessage(paneId, {
+            id: userMessageId,
+            role: 'user',
+            content: userText,
+            timestamp: Date.now(),
+          });
+          const connectors = useSettingsStore.getState().socialConnectors ?? [];
+          const conversationLocale = detectMessageLocale(pendingAgentSession.draft.rawText);
+          const systemPrompt = buildRegistrationSystemPrompt({
+            locale: conversationLocale,
+            deterministicHint: pendingAgentSession.draft,
+            connectors,
+          });
+          const llmTurns = pendingAgentSession.attemptCounts.llmTurns ?? 0;
+          let resumedDraft = pendingAgentSession.draft;
+
+          if (llmTurns < 5) {
+            const sessionMessages = useAIPaneStore.getState().getOrCreate(paneId).messages
+              .filter((message) => message.timestamp >= pendingAgentSession.createdAt)
+              .filter((message) => (message.role === 'user' || message.role === 'assistant') && !!message.content)
+              .map((message) => ({
+                role: message.role as 'user' | 'assistant',
+                content: message.content,
+              }));
+            const llmSettings = useSettingsStore.getState().settings;
+            const result = await runConversationalRegistrationTurn(
+              [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: pendingAgentSession.draft.rawText },
+                ...sessionMessages,
+              ],
+              {
+                baseUrl: llmSettings.localLlmUrl,
+                model: llmSettings.localLlmModel,
+                enabled: !!llmSettings.localLlmUrl,
+              },
+            );
+            if (result.success) {
+              const turn = parseConversationalTurnResponse(result.raw ?? '');
+              if (turn.kind === 'question') {
+                const messageId = generateId();
+                store.addMessage(paneId, {
+                  id: messageId,
+                  role: 'assistant',
+                  content: turn.text,
+                  timestamp: Date.now(),
+                  agent: pendingAgentSession.agentLabel,
+                });
+                store.setPendingAgentSession(paneId, {
+                  ...pendingAgentSession,
+                  attemptCounts: { ...pendingAgentSession.attemptCounts, llmTurns: llmTurns + 1 },
+                  messageId,
+                });
+                return;
+              }
+              if (turn.kind === 'proposal') {
+                resumedDraft = mergeConversationalExtractionIntoDraft(
+                  pendingAgentSession.draft,
+                  turn.extraction,
+                  { connectors },
+                ).draft;
+                // See the matching comment at the initial-dispatch proposal
+                // branch below: mergeConversationalExtractionIntoDraft only
+                // stores llmAutonomousIntent, it never writes draft.autonomous
+                // itself (same non-destructive contract as
+                // mergeLlmExtractionIntoDraft) — promote explicitly here, and
+                // only ever promote true → true, never demote.
+                if (resumedDraft.llmAutonomousIntent === true) resumedDraft.autonomous = true;
+                store.setPendingAgentSession(paneId, null);
+                await presentDraftForConfirmation(pendingAgentSession.agentLabel, resumedDraft);
+                return;
+              }
+            }
+            if (!result.success) {
+              const fallbackStrings = conversationLocale === 'ja' ? ja : en;
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content: fallbackStrings['agentplan.llm_conversation_fallback_notice'],
+                timestamp: Date.now(),
+                agent: pendingAgentSession.agentLabel,
+              });
+            }
+
+            const llmFallbackSettings = useSettingsStore.getState().settings;
+            if (llmFallbackSettings.localLlmUrl) {
+              await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-conversation' }).catch(() => {});
+            }
+            resumedDraft = await extractAgentFieldsWithLlm(
+              userText,
+              resumedDraft,
+              {
+                baseUrl: llmFallbackSettings.localLlmUrl,
+                model: llmFallbackSettings.localLlmModel,
+                enabled: !!llmFallbackSettings.localLlmUrl,
+              },
+              15_000,
+              300,
+              connectors,
+            );
+            if (resumedDraft.llmAutonomousIntent === true) resumedDraft.autonomous = true;
+          }
+
+          store.setPendingAgentSession(paneId, null);
+          const slotFillCtx = {
+            agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
+            agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
+          };
+          const missingSlot = nextMissingSlot(resumedDraft, slotFillCtx);
+          if (missingSlot) {
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: missingSlot.question,
+              timestamp: Date.now(),
+              agent: pendingAgentSession.agentLabel,
+              pendingSlotFill: {
+                field: missingSlot.field,
+                question: missingSlot.question,
+                partialDraft: resumedDraft,
+                attemptCount: 0,
+              },
+            });
+            return;
+          }
+          await presentDraftForConfirmation(pendingAgentSession.agentLabel, resumedDraft);
+          return;
+        }
+      }
+      if (
+        pendingAgentSession?.phase === 'llm-conversation' &&
+        Date.now() - pendingAgentSession.createdAt > SLOT_FILL_STALE_MS
+      ) {
+        store.setPendingAgentSession(paneId, null);
+      }
+
       // ── Correction window for an agent just registered via a chat-native
       // path (2026-07-23, product-owner request): only reached when the
       // pendingAgentSession block above did NOT already return — i.e. there
@@ -1403,6 +1558,75 @@ export function useAIPaneDispatch(paneId: string) {
             // hasDraftAssumptions.
             if (isLowConfidenceAgentDraft(draft)) {
               const llmFallbackSettings = useSettingsStore.getState().settings;
+              if (llmFallbackSettings.agentConversationalRegistrationEnabled) {
+                const connectors = useSettingsStore.getState().socialConnectors ?? [];
+                const conversationLocale = detectMessageLocale(promptText);
+                const systemPrompt = buildRegistrationSystemPrompt({
+                  locale: conversationLocale,
+                  deterministicHint: draft,
+                  connectors,
+                });
+                const result = await runConversationalRegistrationTurn(
+                  [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: promptText },
+                  ],
+                  {
+                    baseUrl: llmFallbackSettings.localLlmUrl,
+                    model: llmFallbackSettings.localLlmModel,
+                    enabled: !!llmFallbackSettings.localLlmUrl,
+                  },
+                );
+                if (result.success) {
+                  const turn = parseConversationalTurnResponse(result.raw ?? '');
+                  if (turn.kind === 'question') {
+                    const messageId = generateId();
+                    const createdAt = Date.now();
+                    store.addMessage(paneId, {
+                      id: messageId,
+                      role: 'assistant',
+                      content: turn.text,
+                      timestamp: createdAt,
+                      agent: agent as ChatMessage['agent'],
+                    });
+                    store.setPendingAgentSession(paneId, {
+                      draft,
+                      phase: 'llm-conversation',
+                      attemptCounts: {},
+                      hasAssumptions: true,
+                      createdAt,
+                      messageId,
+                      agentLabel: agent as ChatMessage['agent'],
+                    });
+                    return;
+                  }
+                  if (turn.kind === 'proposal') {
+                    const merged = mergeConversationalExtractionIntoDraft(
+                      draft,
+                      turn.extraction,
+                      { connectors },
+                    );
+                    // mergeConversationalExtractionIntoDraft only stores
+                    // llmAutonomousIntent, it never writes draft.autonomous
+                    // itself — promote explicitly (true → true only, never
+                    // demotes an already-true value), matching the same
+                    // promotion applied at the narrow extractAgentFieldsWithLlm
+                    // call sites elsewhere in this function.
+                    if (merged.draft.llmAutonomousIntent === true) merged.draft.autonomous = true;
+                    await presentDraftForConfirmation(agent as ChatMessage['agent'], merged.draft);
+                    return;
+                  }
+                } else {
+                  const fallbackStrings = conversationLocale === 'ja' ? ja : en;
+                  store.addMessage(paneId, {
+                    id: generateId(),
+                    role: 'assistant',
+                    content: fallbackStrings['agentplan.llm_conversation_fallback_notice'],
+                    timestamp: Date.now(),
+                    agent: agent as ChatMessage['agent'],
+                  });
+                }
+              }
               // 2026-07-27 on-device finding: see the matching comment on the
               // slot-fill resume branch above — this initial-parse call site
               // had the exact same gap (no ensureLocalLlmServerRunning

@@ -41,7 +41,13 @@ export interface PendingAgentSession {
   draft: ParsedAgentDraft;
   /** Present when this chat confirmation edits an already-registered agent. */
   editingAgentId?: string;
-  phase: 'slot-fill' | 'await-confirm';
+  /** 'llm-conversation' (2026-08-02): Tier 3 of the agent-registration flow
+   *  — the LLM is driving a multi-turn clarification dialogue (see
+   *  docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md).
+   *  Routed the same way slot-fill/await-confirm already are: keyed off this
+   *  session's phase, reusing the SAME staleness/cancel/attemptCounts
+   *  machinery rather than a parallel state shape. */
+  phase: 'slot-fill' | 'await-confirm' | 'llm-conversation';
   /** Reserved for a future slot-fill migration onto this session-scoped
    *  state (see doc comment above) — not populated today. */
   awaitingField?: SlotField;

@@ -414,6 +414,7 @@ const ja: Record<string, string> = {
   // 表現をデフォルト解釈した際の注記（hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts）。
   'agentplan.confirm_unclear_hint': '登録待ちの下書きがあります。「登録して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
+  'agentplan.llm_conversation_fallback_notice': '簡単な一問ずつの質問に切り替えます。',
   // 2026-07-23: confirm_prompt_editの編集版カウンターパート。
   'agentplan.confirm_unclear_hint_edit': '編集待ちの下書きがあります。「更新して」/「OK」で確定、「やめて」で破棄、または変更したい内容だけ言い直してください（例:「9時にして」）。',
   // bug #157 fix (docs/superpowers/DEFERRED.md): 別の下書きが割り込んで
