@@ -547,6 +547,14 @@ const en: Record<string, string> = {
   'social_connectors.field_username': 'Username',
   'social_connectors.field_appPassword': 'App Password',
   'social_connectors.field_handle': 'Handle',
+  'social_connectors.platform_x': 'X',
+  'social_connectors.hint_x': 'developer.x.com → create an app → copy its Client ID. Opens X in your browser to sign in; you’re redirected back here automatically.',
+  'social_connectors.field_refreshToken': 'Refresh Token',
+  'social_connectors.field_clientId': 'Client ID',
+  'social_connectors.x_client_id_placeholder': 'Client ID (from developer.x.com)',
+  'social_connectors.x_client_id_required': 'Enter your X app’s Client ID.',
+  'social_connectors.connect_x': 'Connect X',
+  'social_connectors.connecting': 'Opening browser…',
 
   // 2026-07-24: examples dropped from this question — a slot-fill answer the
   // deterministic parser can't understand now falls back to the local LLM
@@ -557,6 +565,7 @@ const en: Record<string, string> = {
   'slot_fill.question_notification_trigger': 'Which app\'s notifications should trigger this? (e.g. com.whatsapp or an app name like Slack)',
   'slot_fill.question_output_path': 'Where should the result be saved? (Leave blank or say "skip" to use Shelly\'s default folder.)',
   'slot_fill.question_social_connector': 'Which connector should this post to? Reply with the number or its label.',
+  'slot_fill.question_autonomous': 'Should this agent run unattended (autonomously)? Answer yes or no.',
   'slot_fill.social_connector_giveup_caveat': "Couldn't tell which connector you meant, so this is registered as a draft (file save) instead. Say the connector's exact label next time to post directly.",
   // 2026-07-24: prepended to the re-asked question on a failed slot-fill
   // attempt so a retry never reads byte-identical to the first ask (on-device

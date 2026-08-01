@@ -653,7 +653,7 @@ export type AgentActionType =
 
 // ─── Social connectors (free-API auto-posting, 2026-07-22) ──────────────────
 
-export type SocialPlatform = 'discord' | 'slack' | 'telegram' | 'mastodon' | 'misskey' | 'wordpress' | 'bluesky';
+export type SocialPlatform = 'discord' | 'slack' | 'telegram' | 'mastodon' | 'misskey' | 'wordpress' | 'bluesky' | 'x';
 
 /**
  * social-post: publish the run result to a user-registered social/publishing
@@ -677,6 +677,15 @@ export interface AgentSocialPostConfig {
    *  intentShareText/dmReplyText/appActParams/api-call's bodyTemplate. Absent/empty
    *  means "{{result}}" (post the run result itself). */
   text?: string;
+  /** X only (2026-08-02): publish a long-form Article (POST /2/articles/draft
+   *  then /publish, DraftJS content_state) instead of a plain /2/tweets post.
+   *  Ignored for every other platform — see lib/agent-executor.ts's
+   *  dispatch_social_post `x)` case and lib/x-articles.ts for the
+   *  text→content_state conversion. */
+  isArticle?: boolean;
+  /** Article title. May contain "{{result}}" like `text`. Required (falls
+   *  back to a generic default) when isArticle is true; ignored otherwise. */
+  title?: string;
 }
 
 /**
@@ -712,6 +721,13 @@ export interface SocialConnectorMeta {
    *  - misskey: ['apiToken']
    *  - wordpress: ['username', 'appPassword']
    *  - bluesky: ['handle', 'appPassword']
+   *  - x: ['refreshToken', 'clientId'] (OAuth 2.0 PKCE; refreshToken is exchanged
+   *    for a fresh access token on every dispatch, mirroring bluesky's
+   *    createSession-per-post pattern — see lib/x-oauth.ts and
+   *    dispatch_social_post's `x)` case. X rotates the refresh token on every
+   *    exchange, so a successful post writes the NEW refreshToken back via
+   *    the pending-token-update file drain in app/_layout.tsx, the same
+   *    poll-and-drain shape the deep-link queue already uses.)
    */
   fields: string[];
   createdAt: number;

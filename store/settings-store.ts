@@ -272,6 +272,14 @@ interface SettingsState {
   /** Deletes every SecureStore secret for the connector, strips its
    *  SOCIAL_CONNECTOR_<ID>_* lines from .env, then removes the metadata. */
   removeSocialConnector: (id: string) => Promise<void>;
+  /** Rewrites ONE secret field of an EXISTING connector (SecureStore + .env
+   *  sync only — metadata/fields list is untouched). The only current caller
+   *  is the X OAuth pending-token-update drain (app/_layout.tsx): X rotates
+   *  its refresh_token on every use, so a successful post must persist the
+   *  new one or the NEXT refresh fails with invalid_grant. No-ops (resolves)
+   *  if the connector id doesn't exist — the drain logs and drops the file
+   *  rather than throwing into a poll loop. */
+  updateSocialConnectorSecret: (id: string, field: string, value: string) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -525,6 +533,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ socialConnectors: next });
     persistSocialConnectors(next);
     logInfo('Settings', `Social connector added: ${id} (${platform} @ ${host})`);
+  },
+
+  updateSocialConnectorSecret: async (id: string, field: string, value: string) => {
+    if (!isSafeConnectorId(id) || !isSafeConnectorField(field) || !value) return;
+    const existing = get().socialConnectors.find((c) => c.id === id);
+    if (!existing || !existing.fields.includes(field)) return;
+    await saveConnectorSecret(id, field, value);
+    queueEnvSync(buildEnvSyncCommand([[socialConnectorEnvVar(id, field), value]]));
+    logInfo('Settings', `Social connector secret rotated: ${id}.${field}`);
   },
 
   removeSocialConnector: async (id: string) => {

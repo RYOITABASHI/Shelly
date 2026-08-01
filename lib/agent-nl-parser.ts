@@ -166,6 +166,20 @@ export interface ParsedAgentDraft {
    *  'taskDetail' branch appends the user's own follow-up reply into
    *  draft.prompt, exactly like every other slot answer. */
   needsTaskClarification?: string;
+  /** 2026-08-01 (Hermes-style "Smart" comprehension pass): the local-LLM
+   *  fallback's OWN read of whether the utterance expresses intent for
+   *  UNATTENDED/autonomous execution — see lib/agent-llm-fallback.ts's
+   *  AgentLlmExtraction.autonomousIntent / mergeLlmExtractionIntoDraft.
+   *  This is a PROPOSAL ONLY and must never be treated as the decision: it
+   *  deliberately does NOT flip `autonomous` above (the card/toggle stays the
+   *  source of truth), exactly the way an LLM-proposed schedule phrase never
+   *  becomes `schedule` without passing parseSchedule() first. The consumer
+   *  is lib/agent-slot-fill.ts's 'autonomous' slot, which uses it to decide
+   *  whether it still has to ASK — the human answer, not this flag, is what
+   *  ever sets `autonomous`. undefined = the LLM had no signal either way (or
+   *  never ran, the overwhelmingly common case — this field is untouched by
+   *  the deterministic parser). */
+  llmAutonomousIntent?: boolean;
   /** Epoch-ms "don't fire before this date" anchor (see lib/agent-scheduler.ts's
    *  nextTriggerMs/isScheduleMissed `notBefore` param and Agent.startNotBefore
    *  on store/types.ts), extracted from a narrow whitelist of start-date phrases
@@ -802,16 +816,36 @@ const X_POST_RE = /Xに(?:自動)?投稿|Xに上げて|Xでポスト|Xにポス�
 // action via the notify-keyword branch in detectAction below.
 const LINE_POST_RE = /LINEに(?:自動)?投稿|LINEに(?:メッセージを)?送(?:って|信)|send\s+(?:this|a\s+message)?\s*to\s+line\b|post(?:ing)?\s+to\s+line\b/i;
 
-/** Detect a delivery request for a not-yet-supported action (currently just
- *  LINE-posting — see LINE_POST_RE above; X-posting graduated to a real
- *  app-act action in Phase 6 and no longer needs this fallback). Returns a
- *  user-facing warning string, or undefined when none applies. Callers should
- *  only surface this when `detectAction()` actually fell back to `draft` for
- *  the same text (see parseAgentNL). */
+// "Articles" (X's long-form-post feature) mentioned near a posting verb
+// ("Articles用の…投稿して") — not yet wired to any real dispatch (only plain
+// /2/tweets posts exist, see lib/agent-executor.ts's dispatch_social_post
+// `x)` case). Distinct word ("Articles", capitalized English) is low-
+// collision enough to check for PRESENCE anywhere in the scope rather than
+// requiring LINE_POST_RE's tight adjacency — found 2026-08-02 via an actual
+// user utterance ("…Articles用の長文見解を投稿して下さい") that silently
+// became a plain draft with zero caveat because it never named a platform.
+const ARTICLES_POST_MENTION_RE = /\barticles?\b/i;
+// Japanese uses the bare noun "記事" in many unrelated writing requests, so
+// only the explicit Articles-style compounds are treated as a posting signal.
+const ARTICLES_POST_MENTION_JP_RE = /記事として|記事用に|長文記事/;
+
+function hasArticlesPostMention(text: string): boolean {
+  return ARTICLES_POST_MENTION_RE.test(text) || ARTICLES_POST_MENTION_JP_RE.test(text);
+}
+
+/** Detect a delivery request for a not-yet-supported action (LINE-posting,
+ *  X Articles — see the *_RE consts above; X's plain-post graduated to a
+ *  real social-post/app-act action and no longer needs this fallback).
+ *  Returns a user-facing warning string, or undefined when none applies.
+ *  Callers should only surface this when `detectAction()` actually fell back
+ *  to `draft` for the same text (see parseAgentNL). */
 function detectActionCaveat(text: string): string | undefined {
   const actionScope = actionDetectionScope(text);
   if (LINE_POST_RE.test(actionScope)) {
     return 'LINEへの投稿にはまだ対応していないため、下書き（ファイル保存）として登録します';
+  }
+  if (hasArticlesPostMention(actionScope) && GENERIC_SOCIAL_POST_VERB_RE.test(actionScope)) {
+    return 'X Articles（長文記事）への自動投稿にはまだ対応していないため、下書き（ファイル保存）として登録します';
   }
   return undefined;
 }
@@ -832,6 +866,21 @@ const SOCIAL_PLATFORM_ALIASES: Record<SocialPlatform, string[]> = {
   misskey: ['misskey', 'ミスキー'],
   wordpress: ['wordpress', 'ワードプレス'],
   bluesky: ['bluesky', 'ブルースカイ'],
+  // x: real aliases (2026-08-01 — API-over-app-act decision, project owner
+  // approved). "Xに投稿して" used to be owned unconditionally by
+  // X_POST_RE/detectAction, which always resolved it to the app-act
+  // ('x.post') UI-automation recipe — that path cannot run while the phone
+  // is locked, which defeats the entire point of a scheduled/autonomous
+  // agent. Now that a real X API connector exists (lib/social-connectors.ts),
+  // API takes priority unconditionally: with a registered connector,
+  // detectSocialPost resolves this directly to `social-post` (skipping
+  // detectAction/X_POST_RE entirely — see the resolution order in
+  // parseAgentNL). With NO connector registered, detectSocialPost's
+  // needsSetup branch now forces `draft` + a "register a connector first"
+  // caveat instead of silently falling back to app-act — fail loud rather
+  // than silently hand the user a UI-automation path that will just sit
+  // there doing nothing the next time the phone is asleep and locked.
+  x: ['x', 'twitter', 'エックス', 'ツイッター'],
 };
 const SOCIAL_PLATFORMS = Object.keys(SOCIAL_PLATFORM_ALIASES) as SocialPlatform[];
 
@@ -849,9 +898,27 @@ const SOCIAL_POST_VERB_EN = 'post(?:ing)?|share|tweet';
 
 /** "<platform>に/で(自動)?投稿/ポスト/シェア/…" or "post/share/tweet (this/it)?
  *  to/on <platform>" — same precise, verb-bound shape as X_POST_RE/LINE_POST_RE
- *  above, just parameterized per platform's alias list. */
+ *  above, just parameterized per platform's alias list. An EMPTY aliases list
+ *  (a platform intentionally not yet name-detectable — see x's comment below)
+ *  must produce a regex that matches NOTHING: `(?:${''})` is an empty
+ *  alternation, which matches the empty string, which would make the whole
+ *  "<platform>に投稿" clause match on ANY text containing a bare "に投稿"/
+ *  "で投稿" — i.e. every social-post utterance for every OTHER platform too.
+ *  /(?!)/ is the standard "never matches" regex (a negative lookahead on
+ *  nothing always fails).
+ *
+ *  A single-CHARACTER alias (x's 'x' — added 2026-08-01) is wrapped in `\b`
+ *  word boundaries; unguarded it would match the bare letter "x" inside ANY
+ *  word ("boxに投稿して" contains the substring "xに投稿"), the exact
+ *  collision risk multiPostAliasSource's own `\bx\b` handling already avoids
+ *  for the multi-target detector. Multi-character aliases (every other
+ *  platform, plus 'twitter'/'エックス'/'ツイッター') have never needed this —
+ *  left unguarded, matching detectMultiPostTargets' existing convention. */
 function buildSocialPlatformRe(aliases: string[]): RegExp {
-  const alt = aliases.map(escapeRegExp).join('|');
+  if (aliases.length === 0) return /(?!)/;
+  const alt = aliases
+    .map((a) => (a.length === 1 ? `\\b${escapeRegExp(a)}\\b` : escapeRegExp(a)))
+    .join('|');
   return new RegExp(
     `(?:${alt})(?:に|で)(?:${SOCIAL_POST_VERB_JP})` +
       `|(?:${SOCIAL_POST_VERB_EN})\\s+(?:this|it)?\\s*(?:to|on)\\s+(?:${alt})`,
@@ -892,6 +959,20 @@ export interface SocialPostDetection {
    *  in this case (there is nothing to dispatch to); fall back to draft with
    *  user-facing guidance instead of silently pretending it worked. */
   needsSetup?: boolean;
+  /** This request targets X Articles rather than a plain social post. */
+  isArticle?: boolean;
+}
+
+function detectArticlePost(text: string, connectors: SocialConnectorMeta[]): SocialPostDetection | null {
+  const scope = actionDetectionScope(text);
+  if (!hasArticlesPostMention(scope) || !GENERIC_SOCIAL_POST_VERB_RE.test(scope)) return null;
+
+  const candidates = connectors.filter((connector) => connector.platform === 'x');
+  if (candidates.length === 1) {
+    return { platform: 'x', connectorId: candidates[0].id, isArticle: true };
+  }
+  if (candidates.length >= 2) return { platform: 'x', candidates, isArticle: true };
+  return { platform: 'x', needsSetup: true, isArticle: true };
 }
 
 /**
@@ -966,17 +1047,25 @@ const SOCIAL_POST_NO_CONNECTOR_CAVEAT =
 // 稿") even though it dispatches via a different mechanism (`app-act`
 // 'x.post', not a social connector) — see MultiPostTarget's own doc comment.
 
-/** A single entry in a detected multi-target post list. The 7 SocialPlatform
- *  values (connector-backed, dispatch via `social-post`) plus 'x' — X-posting
- *  has no social connector at all; it dispatches through the existing
- *  app-act 'x.post' recipe (see X_POST_RE above), so it needs its own literal
- *  alias ('x', matched with a `\bx\b` word boundary — a bare single ASCII
- *  letter is otherwise far too collision-prone to match unguarded, unlike the
- *  multi-character platform aliases in SOCIAL_PLATFORM_ALIASES, which have
- *  never needed a boundary in this file). */
-type MultiPostTarget = SocialPlatform | 'x';
+/** A single entry in a detected multi-target post list. 'x' is now a real
+ *  SocialPlatform member (2026-08-01, the OAuth API connector), so this type
+ *  alias is just SocialPlatform — kept as its own name because the doc
+ *  comments throughout this section predate that and still call it out
+ *  explicitly: X-posting through THIS multi-target detector always resolves
+ *  to the existing app-act 'x.post' recipe (see X_POST_RE above and
+ *  detectMultiSocialActions below), never the social-post/connector path,
+ *  regardless of whether an X API connector is registered — deliberately
+ *  unchanged/out of scope for the same reason SOCIAL_PLATFORM_ALIASES.x is
+ *  intentionally empty (see that entry's comment). */
+type MultiPostTarget = SocialPlatform;
 
-const MULTI_POST_TARGETS: MultiPostTarget[] = [...SOCIAL_PLATFORMS, 'x'];
+// MUST be SOCIAL_PLATFORMS itself, not [...SOCIAL_PLATFORMS, 'x'] — 'x' is
+// already a member of SOCIAL_PLATFORMS (SocialPlatform includes it), so the
+// old spread-plus-literal form (written before 'x' was a real SocialPlatform)
+// would double-count it: extractMultiPostTargets iterates this array and
+// tests multiPostAliasSource('x') twice, matching the same run text twice
+// and producing two 'x.post' app-act actions for one "…とXに投稿して" mention.
+const MULTI_POST_TARGETS: MultiPostTarget[] = SOCIAL_PLATFORMS;
 
 /** Regex alternation source (no anchors/flags) for one target's aliases. */
 function multiPostAliasSource(target: MultiPostTarget): string {
@@ -1603,7 +1692,9 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // socialPostDetection exactly as before this change, so ordinary
   // single-platform behavior stays byte-identical.
   const multiSocialActions = detectMultiSocialActions(rawText, connectors);
-  const socialPostDetection = multiSocialActions ? null : detectSocialPost(rawText, connectors);
+  const socialPostDetection = multiSocialActions
+    ? null
+    : detectArticlePost(rawText, connectors) ?? detectSocialPost(rawText, connectors);
   let action: AgentAction;
   let actions: AgentAction[] | undefined;
   let actionCaveat: string | undefined;
@@ -1614,12 +1705,23 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   } else if (socialPostDetection?.connectorId && socialPostDetection.platform) {
     action = {
       type: 'social-post',
-      socialPost: { platform: socialPostDetection.platform, connectorId: socialPostDetection.connectorId, text: '{{result}}' },
+      socialPost: {
+        platform: socialPostDetection.platform,
+        connectorId: socialPostDetection.connectorId,
+        text: '{{result}}',
+        ...(socialPostDetection.isArticle
+          ? {
+              isArticle: true,
+              // Keep authoring deterministic until product-level title extraction exists.
+              title: 'X Article',
+            }
+          : {}),
+      },
     };
   } else {
     action = detectAction(rawText);
     actionCaveat = action.type === 'draft' ? detectActionCaveat(rawText) : undefined;
-    if (socialPostDetection?.needsSetup) {
+    if (socialPostDetection?.needsSetup && !socialPostDetection.isArticle) {
       action = { type: 'draft' };
       actionCaveat = SOCIAL_POST_NO_CONNECTOR_CAVEAT;
     } else if (socialPostDetection?.candidates && socialPostDetection.candidates.length >= 2) {

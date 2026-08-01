@@ -48,7 +48,7 @@ describe('generateRunScript — social-post action', () => {
   const s = generateRunScript(socialAgent('mastodon'));
 
   it('bumped the script version (originally to 23 for the new action case + helpers; now >= 23)', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=45');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=46');
   });
 
   it('bakes ACTION_TYPE and the social-post variables, with the env-prefix derived from the connector id', () => {
@@ -195,6 +195,30 @@ describe('generateRunScript — per-platform request composition (dispatch_socia
     expect(s).toContain('"collection":"app.bsky.feed.post"');
   });
 
+  it('x: refreshes the OAuth token first, then POSTs /2/tweets with a Bearer access token', () => {
+    expect(s).toContain('social_connector_env REFRESHTOKEN');
+    expect(s).toContain('social_connector_env CLIENTID');
+    expect(s).toContain('http_post_form "https://$sp_host/2/oauth2/token"');
+    expect(s).toContain('json_field_file "$sp_x_refresh_out" "access_token"');
+    expect(s).toContain('json_field_file "$sp_x_refresh_out" "refresh_token"');
+    expect(s).toContain('sp_url="https://$sp_host/2/tweets"');
+    expect(s).toContain('sp_auth_header="Bearer $sp_x_access"');
+    expect(s).toContain('printf \'{"text":"%s"}\' "$sp_text_json" > "$sp_body"');
+    // Missing refresh token/client id fails closed before any network call.
+    expect(s).toContain('X connector is missing its refresh token or client id');
+  });
+
+  it('x: the refresh exchange strictly precedes the tweet POST, and a rotated refresh token is persisted before posting', () => {
+    const refreshIdx = s.indexOf('grant_type=refresh_token');
+    const postIdx = s.indexOf('sp_url="https://$sp_host/2/tweets"');
+    const persistIdx = s.indexOf('write_pending_connector_secret_update "$ACTION_SOCIAL_CONNECTOR_ID" "refreshToken"');
+    expect(refreshIdx).toBeGreaterThan(-1);
+    expect(postIdx).toBeGreaterThan(-1);
+    expect(persistIdx).toBeGreaterThan(-1);
+    expect(refreshIdx).toBeLessThan(persistIdx);
+    expect(persistIdx).toBeLessThan(postIdx);
+  });
+
   it('binds the outbound URL to the connector-declared host (host-mismatch fail-closed)', () => {
     expect(s).toContain('social_require_url_host() {');
     expect(s).toContain('if ! social_require_url_host "$sp_url" "$sp_host"; then');
@@ -288,6 +312,6 @@ describe('PlanSpec executor + AgentRuntime.kt routing for social-post', () => {
       'utf8',
     );
     expect(kt).toContain('"social-post"');
-    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 45');
+    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 46');
   });
 });

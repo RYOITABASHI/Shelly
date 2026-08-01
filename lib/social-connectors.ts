@@ -29,6 +29,7 @@ export const SOCIAL_PLATFORMS: readonly SocialPlatform[] = Object.freeze([
   'misskey',
   'wordpress',
   'bluesky',
+  'x',
 ]);
 
 /**
@@ -43,6 +44,13 @@ export const SOCIAL_PLATFORM_FIELDS: Readonly<Record<SocialPlatform, readonly st
   misskey: ['apiToken'],
   wordpress: ['username', 'appPassword'],
   bluesky: ['handle', 'appPassword'],
+  // OAuth 2.0 PKCE. refreshToken is exchanged for a fresh access token on
+  // EVERY dispatch (mirrors bluesky's createSession-per-post pattern) rather
+  // than caching a short-lived access token — X access tokens expire in ~2h,
+  // which an unattended agent running for weeks would routinely outlive.
+  // clientId is not secret (it's the public OAuth client identifier) but
+  // travels alongside the refresh token since the token endpoint needs both.
+  x: ['refreshToken', 'clientId'],
 });
 
 /** Union of every known secret field name across platforms — used by
@@ -59,6 +67,7 @@ export const SOCIAL_DEFAULT_HOSTS: Readonly<Partial<Record<SocialPlatform, strin
   slack: 'hooks.slack.com',
   telegram: 'api.telegram.org',
   bluesky: 'bsky.social',
+  x: 'api.x.com',
 });
 
 const SAFE_CONNECTOR_ID_RE = /^[A-Za-z0-9-]+$/;

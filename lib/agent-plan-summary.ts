@@ -71,7 +71,21 @@ export function hasFireableSchedule(draft: ParsedAgentDraft): boolean {
  * to skip either.
  */
 export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
-  return draft.scheduleAssumed === true || draft.llmExtracted === true;
+  // actionCaveat (2026-08-02): set whenever the parser silently downgraded
+  // what the user actually asked for — no connector for a named platform, an
+  // unresolved multi-target list, LINE-posting's hardcoded no-API fallback,
+  // etc. (see agent-nl-parser.ts's SOCIAL_POST_NO_CONNECTOR_CAVEAT /
+  // detectActionCaveat / multiSocialUnresolvedCaveat, and
+  // agent-slot-fill.ts's slot_fill.social_connector_giveup_caveat). This is
+  // exactly the same class of "content classifier, not an approval-frequency
+  // knob" concern scheduleAssumed/llmExtracted already gate — a user who
+  // said "post this to X" and silently got a draft instead deserves a human
+  // to see that BEFORE it's registered, not just a plain-text line they can
+  // tap past. Found 2026-08-02: the widget no-confirm fast path
+  // (lib/widget-agent-registration.ts) never checked actionCaveat at all, so
+  // a caveat-bearing draft could register with zero interactive confirmation
+  // AND zero mention of the caveat in the post-hoc notification.
+  return draft.scheduleAssumed === true || draft.llmExtracted === true || !!draft.actionCaveat;
 }
 
 /**

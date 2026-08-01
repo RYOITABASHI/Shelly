@@ -24,6 +24,7 @@ import { usePluginStore } from '@/lib/plugin-api';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useDmPairingStore } from '@/store/dm-pairing-store';
+import { completeXOAuthCallback, isXOAuthSuccess, type XOAuthCallbackResult } from '@/lib/x-oauth-connect';
 import * as Linking from 'expo-linking';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -1006,6 +1007,20 @@ export default function RootLayout() {
       }
     };
 
+    // Isolated from handleDeepLink's own (very large) control-flow graph on
+    // purpose — TS's narrowing of a fresh discriminated union inside a huge,
+    // deeply-nested async function was unreliable here (a bare `if
+    // (result.ok)` inline still reported "Property 'error' does not exist on
+    // type '{ ok: true; ... }'" in the else branch); a small standalone
+    // function narrows the SAME type correctly.
+    const logXOAuthResult = (result: XOAuthCallbackResult) => {
+      if (isXOAuthSuccess(result)) {
+        logInfo('DeepLink', `X OAuth connect succeeded: ${result.connectorId}`);
+      } else {
+        logError('DeepLink', `X OAuth connect failed: ${result.error ?? 'unknown error'}`);
+      }
+    };
+
     const handleDeepLink = async (url: string) => {
       try {
         const parsed = Linking.parse(url);
@@ -1177,6 +1192,19 @@ export default function RootLayout() {
             focusPaneByTab('ai');
             logInfo('DeepLink', 'AI Pane opened');
           }
+        } else if (target === 'x-oauth-callback') {
+          // X (Twitter) OAuth 2.0 PKCE redirect_uri — see
+          // lib/x-oauth-connect.ts for the attempt state/token-exchange/
+          // connector-registration logic; this branch only extracts the
+          // query params and reports the outcome. A denied/failed/expired
+          // attempt is a normal, expected outcome (the user can just retry
+          // "Connect X" in Settings), not a crash-worthy error.
+          const result = await completeXOAuthCallback({
+            code: queryValue(parsed.queryParams?.code),
+            state: queryValue(parsed.queryParams?.state),
+            error: queryValue(parsed.queryParams?.error),
+          });
+          logXOAuthResult(result);
         }
       } catch (e) {
         logError('DeepLink', 'parse failed', e);
@@ -1381,6 +1409,52 @@ export default function RootLayout() {
       }
     };
     const queueInterval = setInterval(drainQueue, 250);
+
+    // X OAuth pending-token-update drain: dispatch_social_post's x) case
+    // (lib/agent-executor.ts) rotates the refresh token on every dispatch and
+    // cannot write to SecureStore itself (it's a detached bash/Node process),
+    // so it drops a one-shot JSON file under $HOME/.shelly/
+    // pending-connector-secret-updates/ instead — this poll picks those up
+    // and persists them via settings-store's updateSocialConnectorSecret.
+    // Same "background script writes a file, RN drains it" shape as the
+    // deep-link queue above and the escalation-request drain below; a longer
+    // 3s period is fine here (nothing waits on it — the NEXT agent dispatch
+    // just needs the rotated token in place before it runs, which is at
+    // minimum minutes away for any real schedule).
+    const pendingConnectorSecretUpdatesDirUri = `${FileSystem.documentDirectory}home/.shelly/pending-connector-secret-updates`;
+    let isDrainingConnectorSecretUpdates = false;
+    const drainPendingConnectorSecretUpdates = async () => {
+      if (isDrainingConnectorSecretUpdates) return;
+      isDrainingConnectorSecretUpdates = true;
+      try {
+        const names = await FileSystem.readDirectoryAsync(pendingConnectorSecretUpdatesDirUri).catch(() => null);
+        if (!names || names.length === 0) return;
+        const { updateSocialConnectorSecret } = useSettingsStore.getState();
+        for (const name of names) {
+          if (!name.endsWith('.json')) continue;
+          const fileUri = joinFileUri(pendingConnectorSecretUpdatesDirUri, name);
+          try {
+            const raw = JSON.parse(await FileSystem.readAsStringAsync(fileUri));
+            const connectorId = typeof raw?.connectorId === 'string' ? raw.connectorId : '';
+            const field = typeof raw?.field === 'string' ? raw.field : '';
+            const value = typeof raw?.value === 'string' ? raw.value : '';
+            if (connectorId && field && value) {
+              await updateSocialConnectorSecret(connectorId, field, value);
+              logInfo('XOAuth', `pending secret update applied: ${connectorId}.${field}`);
+            } else {
+              logError('XOAuth', `rejected malformed pending secret update: ${name}`);
+            }
+          } catch (e) {
+            logError('XOAuth', `pending secret update read/apply failed: ${name}`, e);
+          } finally {
+            await FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {});
+          }
+        }
+      } finally {
+        isDrainingConnectorSecretUpdates = false;
+      }
+    };
+    const connectorSecretUpdateInterval = setInterval(drainPendingConnectorSecretUpdates, 3000);
 
     const fallbackEscalationRequestDirUri = `${FileSystem.documentDirectory}home/.shelly/agents/escalations`;
     const notifiedEscalations = new Map<string, { runId: string; reqId: string; seenAt: number }>();
@@ -1703,6 +1777,7 @@ export default function RootLayout() {
       linkSub.remove();
       clearTimeout(agentLogStartTimer);
       clearInterval(queueInterval);
+      clearInterval(connectorSecretUpdateInterval);
       clearInterval(escalationInterval);
       clearInterval(actionApprovalInterval);
       if (agentLogInterval) clearInterval(agentLogInterval);

@@ -15,7 +15,7 @@ import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import en from './i18n/locales/en';
 import ja from './i18n/locales/ja';
 
-export type SlotField = 'taskDetail' | 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector';
+export type SlotField = 'taskDetail' | 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector' | 'autonomous';
 
 /**
  * Per-message language detection for slot-fill questions — deliberately NOT
@@ -121,6 +121,18 @@ export function nextMissingSlot(
     return {
       field: 'outputPath',
       question: strings['slot_fill.question_output_path'],
+    };
+  }
+  const autonomousActionTypes = new Set(['webhook', 'app-act', 'social-post', 'api-call', 'cli', 'dm-reply']);
+  if (
+    autonomousActionTypes.has(draft.action.type) &&
+    draft.scheduleConfident === true &&
+    draft.autonomous !== true &&
+    draft.llmAutonomousIntent === undefined
+  ) {
+    return {
+      field: 'autonomous',
+      question: strings['slot_fill.question_autonomous'],
     };
   }
   return null;
@@ -296,6 +308,21 @@ export function applySlotAnswer(
       // (possibly empty, meaning "not actually a notification-triggered
       // agent after all" — a false-positive needsNotificationTrigger match).
       return { draft: { ...draft, notificationTrigger: valid.length > 0 ? { packageNames: valid } : undefined }, resolved: true };
+    }
+    return { draft, resolved: false };
+  }
+  if (field === 'autonomous') {
+    const trimmed = answerText.trim();
+    const affirmative = /^(?:はい|うん|ok|いい|良い|yes|yeah|sure)[!！。.]?$/i.test(trimmed);
+    const negative = /^(?:いいえ|だめ|ダメ|no|nope)[!！。.]?$/i.test(trimmed);
+    if (affirmative !== negative) {
+      return { draft: { ...draft, autonomous: affirmative }, resolved: true };
+    }
+    // Mixed yes/no signals are ambiguous, so never grant unattended execution.
+    const hasAffirmative = /(?:はい|うん|\bok\b|いい|良い|\byes\b|\byeah\b|\bsure\b)/i.test(trimmed);
+    const hasNegative = /(?:いいえ|だめ|ダメ|\bno\b|\bnope\b)/i.test(trimmed);
+    if ((hasAffirmative && hasNegative) || attemptCount >= 2) {
+      return { draft: { ...draft, autonomous: false }, resolved: true };
     }
     return { draft, resolved: false };
   }

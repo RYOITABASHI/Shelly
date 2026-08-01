@@ -25,6 +25,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Clipboard from 'expo-clipboard';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
+import { startXOAuthConnect } from '@/lib/x-oauth-connect';
 import { useI18n, useTranslation } from '@/lib/i18n';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -1505,7 +1506,7 @@ const WebhookHostAllowlistSection = React.memo(function WebhookHostAllowlistSect
 // SecureStore via addSocialConnector's second (secrets) argument and this
 // component never reads it back.
 
-const SOCIAL_PLATFORMS: SocialPlatform[] = ['discord', 'slack', 'telegram', 'mastodon', 'misskey', 'wordpress', 'bluesky'];
+const SOCIAL_PLATFORMS: SocialPlatform[] = ['discord', 'slack', 'telegram', 'mastodon', 'misskey', 'wordpress', 'bluesky', 'x'];
 
 const SOCIAL_PLATFORM_ICON: Record<SocialPlatform, React.ComponentProps<typeof MaterialIcons>['name']> = {
   discord: 'forum',
@@ -1515,18 +1516,30 @@ const SOCIAL_PLATFORM_ICON: Record<SocialPlatform, React.ComponentProps<typeof M
   misskey: 'chat-bubble',
   wordpress: 'article',
   bluesky: 'cloud',
+  x: 'campaign',
 };
 
 // Field NAMES here must match Track A's dispatch code exactly — it reads the
 // SecureStore secret for each connector by these keys, so this list is the
 // single source of truth for what the add-connector form collects per
 // platform (feature spec's per-platform field table).
+//
+// x is intentionally NOT a plain field-entry form like the others: its
+// fields (refreshToken/clientId) come from an OAuth 2.0 PKCE exchange, not
+// something a user should ever paste in by hand (a refresh token pasted into
+// a text field would need to be copied out of a browser dev tool, which is
+// exactly the kind of credential-handling footgun this form otherwise
+// avoids). oauth:true routes the add-connector UI to lib/x-oauth-connect.ts's
+// startXOAuthConnect flow instead of rendering the field inputs below.
 const SOCIAL_PLATFORM_META: Record<SocialPlatform, {
   fields: string[];
   /** Host is fixed and baked in silently — never shown as an input. */
   fixedHost?: string;
   /** Host is user-instance-specific but has a sane prefilled default. */
   defaultHost?: string;
+  /** True when this platform's fields are populated by an OAuth flow rather
+   *  than manual text entry — see the module doc comment above. */
+  oauth?: boolean;
 }> = {
   discord:   { fields: ['webhookUrl'], fixedHost: 'discord.com' },
   slack:     { fields: ['webhookUrl'], fixedHost: 'hooks.slack.com' },
@@ -1535,6 +1548,7 @@ const SOCIAL_PLATFORM_META: Record<SocialPlatform, {
   misskey:   { fields: ['apiToken'] },
   wordpress: { fields: ['username', 'appPassword'] },
   bluesky:   { fields: ['handle', 'appPassword'], defaultHost: 'bsky.social' },
+  x:         { fields: ['refreshToken', 'clientId'], fixedHost: 'api.x.com', oauth: true },
 };
 
 const SOCIAL_ID_RE = /^[a-z0-9-]+$/;
@@ -1594,6 +1608,33 @@ function SocialConnectorAddForm({
   const [reveal, setReveal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // x (oauth): no field-value form — clientId is the only input, and
+  // refreshToken/clientId secrets get written by lib/x-oauth-connect.ts's
+  // completeXOAuthCallback once the shelly://x-oauth-callback deep link
+  // lands (see app/_layout.tsx). This form's job is just opening the
+  // browser; the connector APPEARS in the list once the flow completes
+  // (socialConnectors is read reactively in the parent section).
+  const [xClientIdDraft, setXClientIdDraft] = useState('');
+  const [connecting, setConnecting] = useState(false);
+
+  const handleConnectX = async () => {
+    const clientId = xClientIdDraft.trim();
+    if (!clientId) {
+      setError(t('social_connectors.x_client_id_required'));
+      return;
+    }
+    setConnecting(true);
+    setError(null);
+    try {
+      await startXOAuthConnect({ clientId });
+      onDone();
+    } catch (e: any) {
+      setError(String(e?.message || e));
+      logError('SettingsDropdown', 'startXOAuthConnect failed', e);
+    } finally {
+      setConnecting(false);
+    }
+  };
 
   const selectPlatform = (p: SocialPlatform) => {
     setPlatform(p);
@@ -1692,7 +1733,39 @@ function SocialConnectorAddForm({
           })}
         </View>
       )}
-      {platform && (
+      {platform && SOCIAL_PLATFORM_META[platform].oauth && (
+        <>
+          <Text style={[styles.credentialHint, { color: C.text2 }]}>{t(`social_connectors.hint_${platform}`)}</Text>
+          <TextInput
+            value={xClientIdDraft}
+            onChangeText={setXClientIdDraft}
+            style={[styles.apiKeyInput, { backgroundColor: C.bgDeep, borderColor: C.border, color: C.text1 }]}
+            placeholder={t('social_connectors.x_client_id_placeholder')}
+            placeholderTextColor={C.text3}
+            autoCapitalize="none"
+            autoCorrect={false}
+            spellCheck={false}
+          />
+          {error && <Text style={[styles.apiKeyHint, { color: C.errorText, marginTop: 4 }]}>{error}</Text>}
+          <View style={styles.apiKeyActions}>
+            <View style={{ flex: 1 }} />
+            <Pressable onPress={onDone} style={[styles.apiKeyBtn, { borderColor: C.border }]} hitSlop={6}>
+              <Text style={[styles.apiKeyBtnText, { color: C.text2 }]}>{t('common.cancel')}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => void handleConnectX()}
+              disabled={connecting}
+              style={[styles.apiKeyBtn, { backgroundColor: C.accent, borderColor: C.accent }, connecting && { opacity: 0.6 }]}
+              hitSlop={6}
+            >
+              <Text style={[styles.apiKeyBtnText, { color: C.bgDeep }]}>
+                {connecting ? t('social_connectors.connecting') : t('social_connectors.connect_x')}
+              </Text>
+            </Pressable>
+          </View>
+        </>
+      )}
+      {platform && !SOCIAL_PLATFORM_META[platform].oauth && (
         <>
           <Text style={[styles.credentialHint, { color: C.text2 }]}>{t(`social_connectors.hint_${platform}`)}</Text>
           <TextInput

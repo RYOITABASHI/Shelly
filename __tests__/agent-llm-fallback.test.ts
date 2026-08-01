@@ -5,10 +5,12 @@ import {
   mergeLlmExtractionIntoDraft,
   extractAgentFieldsWithLlm,
   buildAgentExtractionMessages,
+  resolvePlatformHintConnector,
   type AgentLlmExtraction,
 } from '@/lib/agent-llm-fallback';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { LocalLlmConfig } from '@/lib/local-llm';
+import type { SocialConnectorMeta } from '@/store/types';
 
 jest.mock('@/lib/local-llm', () => ({
   ollamaChat: jest.fn(),
@@ -28,6 +30,18 @@ function baseDraft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft 
     tool: { type: 'gemini-api' },
     toolLabel: 'Gemini API',
     rawText: 'do something vague',
+    ...overrides,
+  };
+}
+
+function connector(overrides: Partial<SocialConnectorMeta> = {}): SocialConnectorMeta {
+  return {
+    id: 'my-bluesky',
+    platform: 'bluesky',
+    label: 'My Bluesky',
+    host: 'bsky.social',
+    fields: ['handle', 'appPassword'],
+    createdAt: 0,
     ...overrides,
   };
 }
@@ -59,12 +73,134 @@ describe('isLowConfidenceAgentDraft', () => {
     ).toBe(false);
   });
 
-  it('false when the action stayed "draft" but an actionCaveat was set (e.g. LINE-posting fallback) — an explicit ask was understood', () => {
+  // 2026-08-01 WIDENING (reversed from the original expectation, deliberately):
+  // an actionCaveat is the parser SAYING it silently substituted a local draft
+  // for what the user actually asked for. That is the single most important
+  // case for the comprehension pass to see, not a reason to skip it.
+  it('true when the action stayed "draft" but an actionCaveat was set (e.g. LINE-posting fallback) — the parser silently substituted a draft', () => {
     expect(
       isLowConfidenceAgentDraft(
         baseDraft({ actionCaveat: 'LINEへの投稿にはまだ対応していないため、下書き（ファイル保存）として登録します' }),
       ),
+    ).toBe(true);
+  });
+
+  it('true for an actionCaveat EVEN WHEN the schedule is confident — a confidently-scheduled agent posting nowhere is just as wrong', () => {
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          actionCaveat: 'SNS投稿には登録済みのコネクタが必要です。',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('true when 2+ socialPostCandidates matched (ambiguous destination), even with a confident schedule', () => {
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          rawText: 'ブルースカイに投稿して',
+          socialPostCandidates: [
+            connector({ id: 'a', label: 'Personal' }),
+            connector({ id: 'b', label: 'Work' }),
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('false when only ONE socialPostCandidate is present (not ambiguous — nothing for the LLM to disambiguate)', () => {
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          rawText: '毎朝ニュースをまとめて',
+          prompt: 'ニュースをまとめて',
+          socialPostCandidates: [connector({ id: 'a', label: 'Personal' })],
+        }),
+      ),
     ).toBe(false);
+  });
+
+  it('true when a generic post/share verb was used but NO platform name was recognized (silently became a draft)', () => {
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          rawText: '毎朝ニュースをまとめて投稿して',
+          prompt: 'ニュースをまとめて投稿して',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('true for the EN equivalent ("share the summary" with no platform named)', () => {
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          rawText: 'every morning summarize the news and share it',
+          prompt: 'summarize the news and share it',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('false when a post verb IS present but a known platform was also named (the parser had something to bind to)', () => {
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          rawText: '毎朝ニュースをブルースカイに投稿して',
+          prompt: 'ニュースをブルースカイに投稿して',
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('false when a post verb is present but the action is already a real non-draft type (nothing was silently substituted)', () => {
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          rawText: '毎朝ニュースを投稿して',
+          action: { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bluesky' } },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('does not fire on a bare "x" inside an ordinary word (no unguarded single-char platform alias match)', () => {
+    // "box" contains "x"; if PLATFORM_NAME_MENTION_RE matched it, this
+    // utterance would look like it named a platform and (d) would go quiet.
+    // It must NOT — so this stays true (post verb, no real platform named).
+    expect(
+      isLowConfidenceAgentDraft(
+        baseDraft({
+          schedule: '0 8 * * *',
+          scheduleConfident: true,
+          scheduleLabel: '毎日 08:00',
+          rawText: 'boxの中身を毎朝共有して',
+          prompt: 'boxの中身を共有して',
+        }),
+      ),
+    ).toBe(true);
   });
 
   it('false when the raw utterance explicitly named "下書き"/"draft", even though action.type resolved to the same default value', () => {
@@ -239,6 +375,84 @@ describe('parseAgentLlmExtractionResponse', () => {
     const result = parseAgentLlmExtractionResponse(raw);
     expect(result?.clarifyingQuestion?.length).toBeLessThanOrEqual(200);
   });
+
+  it('parses platformHint as an ordinary validated string', () => {
+    const result = parseAgentLlmExtractionResponse(JSON.stringify({ platformHint: 'ブルースカイ' }));
+    expect(result?.platformHint).toBe('ブルースカイ');
+  });
+
+  it('treats an empty platformHint as absent and truncates an implausibly long one', () => {
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ platformHint: '  ' }))?.platformHint).toBeUndefined();
+    expect(
+      parseAgentLlmExtractionResponse(JSON.stringify({ platformHint: 'x'.repeat(500) }))?.platformHint?.length,
+    ).toBeLessThanOrEqual(60);
+  });
+
+  it('parses autonomousIntent true/false as strict booleans', () => {
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ autonomousIntent: true }))?.autonomousIntent).toBe(true);
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ autonomousIntent: false }))?.autonomousIntent).toBe(false);
+  });
+
+  it('leaves autonomousIntent UNSET (never false) for null/missing/wrong-typed values — "unclear" is not "no"', () => {
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ autonomousIntent: null }))?.autonomousIntent).toBeUndefined();
+    expect(parseAgentLlmExtractionResponse('{}')?.autonomousIntent).toBeUndefined();
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ autonomousIntent: 'true' }))?.autonomousIntent).toBeUndefined();
+    expect(parseAgentLlmExtractionResponse(JSON.stringify({ autonomousIntent: 1 }))?.autonomousIntent).toBeUndefined();
+  });
+});
+
+// ─── resolvePlatformHintConnector ───────────────────────────────────────────
+
+describe('resolvePlatformHintConnector', () => {
+  it('resolves a platform alias to the single registered connector on that platform', () => {
+    const pool = [connector({ id: 'bsky', platform: 'bluesky' }), connector({ id: 'slk', platform: 'slack', label: 'Team Slack' })];
+    expect(resolvePlatformHintConnector('ブルースカイ', pool)?.id).toBe('bsky');
+    expect(resolvePlatformHintConnector('bluesky', pool)?.id).toBe('bsky');
+  });
+
+  it('resolves the "twitter" alias to a registered X connector', () => {
+    const pool = [connector({ id: 'x1', platform: 'x', label: 'My X' })];
+    expect(resolvePlatformHintConnector('twitter', pool)?.id).toBe('x1');
+    expect(resolvePlatformHintConnector('X', pool)?.id).toBe('x1');
+  });
+
+  it('never lets the single-character alias "x" match as a substring of an unrelated hint', () => {
+    const pool = [connector({ id: 'x1', platform: 'x', label: 'My X' })];
+    expect(resolvePlatformHintConnector('dropbox', pool)).toBeNull();
+  });
+
+  it('resolves a connector LABEL the user named directly', () => {
+    const pool = [
+      connector({ id: 'a', platform: 'mastodon', label: '会社Bot' }),
+      connector({ id: 'b', platform: 'misskey', label: 'Personal' }),
+    ];
+    expect(resolvePlatformHintConnector('会社Bot', pool)?.id).toBe('a');
+  });
+
+  it('returns null when NOTHING matches (nothing registered for that platform) — never half-guesses', () => {
+    const pool = [connector({ id: 'bsky', platform: 'bluesky' })];
+    expect(resolvePlatformHintConnector('discord', pool)).toBeNull();
+    expect(resolvePlatformHintConnector('mastodon', pool)).toBeNull();
+  });
+
+  it('returns null when the hint matches 2+ connectors (genuinely ambiguous — must still ask)', () => {
+    const pool = [
+      connector({ id: 'a', platform: 'bluesky', label: 'Personal' }),
+      connector({ id: 'b', platform: 'bluesky', label: 'Work' }),
+    ];
+    expect(resolvePlatformHintConnector('bluesky', pool)).toBeNull();
+  });
+
+  it('returns null for an empty hint or an empty connector pool', () => {
+    expect(resolvePlatformHintConnector('', [connector()])).toBeNull();
+    expect(resolvePlatformHintConnector('   ', [connector()])).toBeNull();
+    expect(resolvePlatformHintConnector('bluesky', [])).toBeNull();
+  });
+
+  it('never resolves a hallucinated connector ID that does not exist in the pool', () => {
+    const pool = [connector({ id: 'bsky', platform: 'bluesky', label: 'My Bluesky' })];
+    expect(resolvePlatformHintConnector('prod-webhook-99', pool)).toBeNull();
+  });
 });
 
 // ─── mergeLlmExtractionIntoDraft ────────────────────────────────────────────
@@ -392,6 +606,113 @@ describe('mergeLlmExtractionIntoDraft', () => {
     expect(result).toBe(draft);
     expect(result.needsTaskClarification).toBeUndefined();
   });
+
+  // ── platformHint ────────────────────────────────────────────────────────
+
+  it('resolves platformHint against the draft\'s own socialPostCandidates and upgrades the draft to a real social-post', () => {
+    const draft = baseDraft({
+      rawText: '毎朝ニュースをまとめて投稿して',
+      actionCaveat: 'SNS投稿には登録済みのコネクタが必要です。',
+      socialPostCandidates: [
+        connector({ id: 'bsky', platform: 'bluesky', label: 'My Bluesky' }),
+        connector({ id: 'slk', platform: 'slack', label: 'Team Slack' }),
+      ],
+    });
+    const result = mergeLlmExtractionIntoDraft(draft, { platformHint: 'ブルースカイ' });
+    expect(result.action).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'bluesky', connectorId: 'bsky', text: '{{result}}' },
+    });
+    expect(result.actionCaveat).toBeUndefined();
+    expect(result.socialPostCandidates).toBeUndefined();
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('resolves platformHint against an explicitly passed live connector list (3rd argument)', () => {
+    const draft = baseDraft({ rawText: '毎朝まとめて共有して' });
+    const result = mergeLlmExtractionIntoDraft(draft, { platformHint: 'discord' }, [
+      connector({ id: 'dsc', platform: 'discord', label: 'Team Discord' }),
+      connector({ id: 'bsky', platform: 'bluesky', label: 'My Bluesky' }),
+    ]);
+    expect(result.action).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'discord', connectorId: 'dsc', text: '{{result}}' },
+    });
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('drops a platformHint that matches NO registered connector — never registers a half-guessed destination', () => {
+    const draft = baseDraft({ actionCaveat: 'SNS投稿には登録済みのコネクタが必要です。' });
+    const result = mergeLlmExtractionIntoDraft(draft, { platformHint: 'telegram' }, [
+      connector({ id: 'bsky', platform: 'bluesky' }),
+    ]);
+    expect(result).toBe(draft);
+    expect(result.action.type).toBe('draft');
+    expect(result.actionCaveat).toBe('SNS投稿には登録済みのコネクタが必要です。');
+  });
+
+  it('drops a platformHint that matches 2+ connectors — leaves socialPostCandidates for the existing slot-fill question', () => {
+    const candidates = [
+      connector({ id: 'a', platform: 'bluesky', label: 'Personal' }),
+      connector({ id: 'b', platform: 'bluesky', label: 'Work' }),
+    ];
+    const draft = baseDraft({ socialPostCandidates: candidates });
+    const result = mergeLlmExtractionIntoDraft(draft, { platformHint: 'bluesky' });
+    expect(result).toBe(draft);
+    expect(result.socialPostCandidates).toBe(candidates);
+  });
+
+  it('never lets a hallucinated connector id in platformHint reach draft.action', () => {
+    const draft = baseDraft({ socialPostCandidates: [connector({ id: 'bsky', label: 'My Bluesky' })] });
+    const result = mergeLlmExtractionIntoDraft(draft, { platformHint: 'internal-prod-webhook' });
+    expect(result).toBe(draft);
+    expect(result.action.type).toBe('draft');
+  });
+
+  it('does NOT escalate a notify action into an external post when the LLM proposes both', () => {
+    const draft = baseDraft({ socialPostCandidates: [connector({ id: 'bsky', platform: 'bluesky' })] });
+    const result = mergeLlmExtractionIntoDraft(draft, { actionType: 'notify', platformHint: 'bluesky' });
+    expect(result.action).toEqual({ type: 'notify' });
+  });
+
+  it('suppresses outputPath once platformHint resolved the destination to a social-post', () => {
+    const draft = baseDraft({ socialPostCandidates: [connector({ id: 'bsky', platform: 'bluesky' })] });
+    const result = mergeLlmExtractionIntoDraft(draft, { platformHint: 'bluesky', outputPath: 'news/' });
+    expect(result.action.type).toBe('social-post');
+    expect(result.outputPath).toBeUndefined();
+  });
+
+  // ── autonomousIntent ────────────────────────────────────────────────────
+
+  it('stores autonomousIntent as llmAutonomousIntent only — never flips draft.autonomous', () => {
+    const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, { autonomousIntent: true });
+    expect(result.llmAutonomousIntent).toBe(true);
+    expect(result.autonomous).toBeUndefined();
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('stores an explicit autonomousIntent:false too (a stated "ask me every time" is a real answer)', () => {
+    const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, { autonomousIntent: false });
+    expect(result.llmAutonomousIntent).toBe(false);
+    expect(result.autonomous).toBeUndefined();
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('an absent autonomousIntent is a no-op (leaves llmAutonomousIntent unset)', () => {
+    const draft = baseDraft();
+    const result = mergeLlmExtractionIntoDraft(draft, {});
+    expect(result).toBe(draft);
+    expect(result.llmAutonomousIntent).toBeUndefined();
+  });
+
+  it('an autonomousIntent identical to what the draft already carries is a no-op (does not spuriously set llmExtracted)', () => {
+    const draft = baseDraft({ llmAutonomousIntent: true });
+    const result = mergeLlmExtractionIntoDraft(draft, { autonomousIntent: true });
+    expect(result).toBe(draft);
+    expect(result.llmExtracted).toBeUndefined();
+  });
 });
 
 // ─── extractAgentFieldsWithLlm (impure orchestrator, network mocked) ───────
@@ -476,6 +797,35 @@ describe('extractAgentFieldsWithLlm', () => {
     expect(result).toBe(draft); // 'cli' was dropped, nothing else was present -> no-op merge
   });
 
+  it('forwards the connector list so a platformHint can resolve end-to-end', async () => {
+    ollamaChat.mockResolvedValue({
+      success: true,
+      content: JSON.stringify({ platformHint: 'ブルースカイ', autonomousIntent: true }),
+    });
+    const draft = baseDraft({ actionCaveat: 'SNS投稿には登録済みのコネクタが必要です。' });
+    const result = await extractAgentFieldsWithLlm(
+      '毎朝ニュースをブルースカイに投稿して',
+      draft,
+      enabledConfig,
+      15_000,
+      300,
+      [connector({ id: 'bsky', platform: 'bluesky', label: 'My Bluesky' })],
+    );
+    expect(result.action).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'bluesky', connectorId: 'bsky', text: '{{result}}' },
+    });
+    expect(result.llmAutonomousIntent).toBe(true);
+    expect(result.llmExtracted).toBe(true);
+  });
+
+  it('leaves the draft untouched when a platformHint arrives but no connectors are available anywhere', async () => {
+    ollamaChat.mockResolvedValue({ success: true, content: JSON.stringify({ platformHint: 'ブルースカイ' }) });
+    const draft = baseDraft();
+    const result = await extractAgentFieldsWithLlm('ブルースカイに投稿して', draft, enabledConfig);
+    expect(result).toBe(draft);
+  });
+
   it('passes a short timeout and small token budget suited to a lightweight single-shot call', async () => {
     ollamaChat.mockResolvedValue({ success: true, content: JSON.stringify({ name: 'x' }) });
     const draft = baseDraft();
@@ -494,5 +844,22 @@ describe('buildAgentExtractionMessages', () => {
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe('system');
     expect(messages[1]).toEqual({ role: 'user', content: '毎朝8時にニュースをまとめて' });
+  });
+
+  it('documents all nine extractable fields (including platformHint/autonomousIntent) in the system prompt schema', () => {
+    const system = buildAgentExtractionMessages('x')[0].content;
+    for (const field of [
+      'name',
+      'scheduleText',
+      'actionType',
+      'outputPath',
+      'prompt',
+      'taskClear',
+      'clarifyingQuestion',
+      'platformHint',
+      'autonomousIntent',
+    ]) {
+      expect(system).toContain(`"${field}"`);
+    }
   });
 });

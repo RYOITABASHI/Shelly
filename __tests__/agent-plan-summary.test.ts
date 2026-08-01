@@ -225,6 +225,21 @@ describe('hasDraftAssumptions', () => {
   it('true when llmExtracted is set, even with an otherwise fully explicit draft (2026-07-23)', () => {
     expect(hasDraftAssumptions(baseDraft({ llmExtracted: true }))).toBe(true);
   });
+
+  it('true when actionCaveat is set — a silently-downgraded action must never skip confirmation (2026-08-02)', () => {
+    // Found via the widget no-confirm fast path: a draft carrying a caveat
+    // (e.g. "posted to X" silently became "saved as draft" because no
+    // connector/platform could be resolved) used to sail through
+    // shouldAutoRegisterDraft with zero human eyes on it, and the post-hoc
+    // widget notification never mentioned the caveat either — see
+    // lib/widget-agent-registration.ts's module doc comment.
+    expect(hasDraftAssumptions(baseDraft({ actionCaveat: 'some downgrade happened' }))).toBe(true);
+  });
+
+  it('false when actionCaveat is absent/empty (explicit negative, guards against a stray falsy-string regression)', () => {
+    expect(hasDraftAssumptions(baseDraft({ actionCaveat: undefined }))).toBe(false);
+    expect(hasDraftAssumptions(baseDraft({ actionCaveat: '' }))).toBe(false);
+  });
 });
 
 describe('shouldUseChatConfirm', () => {

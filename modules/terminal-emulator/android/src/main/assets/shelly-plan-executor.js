@@ -446,14 +446,37 @@ function resolveCharLimit(plan) {
   return Math.min(Math.max(Math.floor(limit), 40), 4000);
 }
 
+// X-weighted length (full-width = 2, everything else = 1) — mirrors
+// lib/agent-pipeline-presets.ts's xWeightedLength/enforceCharLimit. Kept in
+// sync manually (three copies: the .ts source, this file, and
+// lib/agent-executor.ts's embedded enforce_char_limit_text Node script)
+// since these run in three different execution contexts with no shared
+// module system.
+const PLAN_FULLWIDTH_RE = /[　-〿぀-ゟ゠-ヿ㐀-䶿一-鿿豈-﫿＀-￯가-힯]/;
+function planXWeightedLength(s) {
+  let total = 0;
+  for (const ch of Array.from(s)) total += PLAN_FULLWIDTH_RE.test(ch) ? 2 : 1;
+  return total;
+}
+
 function enforcePlanCharLimit(plan, text) {
   const limit = resolveCharLimit(plan);
-  if (!limit) return String(text || '');
-  const chars = Array.from(String(text || ''));
-  if (chars.length <= limit) return chars.join('');
+  const str = String(text || '');
+  if (!limit || planXWeightedLength(str) <= limit) return str;
   const ellipsis = '…';
   const budget = Math.max(limit - 1, 1);
-  const head = chars.slice(0, budget);
+  const chars = Array.from(str);
+  let acc = 0;
+  let cutIdx = chars.length;
+  for (let i = 0; i < chars.length; i += 1) {
+    const w = PLAN_FULLWIDTH_RE.test(chars[i]) ? 2 : 1;
+    if (acc + w > budget) {
+      cutIdx = i;
+      break;
+    }
+    acc += w;
+  }
+  const head = chars.slice(0, cutIdx);
   const terminators = new Set(['。', '．', '.', '!', '?', '！', '？', '\n']);
   let cut = -1;
   for (let i = head.length - 1; i >= 0; i -= 1) {
@@ -462,7 +485,7 @@ function enforcePlanCharLimit(plan, text) {
       break;
     }
   }
-  if (cut >= Math.floor(budget * 0.6)) {
+  if (cut >= 0 && planXWeightedLength(head.slice(0, cut + 1).join('')) >= Math.floor(acc * 0.6)) {
     return head.slice(0, cut + 1).join('').trimEnd();
   }
   return head.join('').trimEnd() + ellipsis;

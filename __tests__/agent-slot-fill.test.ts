@@ -138,6 +138,59 @@ describe('nextMissingSlot', () => {
     const slot = nextMissingSlot(d, {});
     expect(slot?.field).toBe('schedule');
   });
+
+  it.each(['webhook', 'app-act', 'social-post', 'api-call', 'cli', 'dm-reply'] as const)(
+    'asks for autonomous last for scheduled real-world action %s',
+    (type) => {
+      const d = makeDraft({ action: { type } as ParsedAgentDraft['action'], autonomous: false, llmAutonomousIntent: undefined });
+      expect(nextMissingSlot(d, { agentVaultPath: '/configured' })?.field).toBe('autonomous');
+    },
+  );
+
+  it.each(['draft', 'notify'] as const)('does not ask autonomous for %s actions', (type) => {
+    const d = makeDraft({ action: { type }, autonomous: false, llmAutonomousIntent: undefined });
+    expect(nextMissingSlot(d, { agentVaultPath: '/configured' })).toBeNull();
+  });
+
+  it('does not ask when autonomous is already true', () => {
+    const d = makeDraft({ action: { type: 'webhook' }, autonomous: true, llmAutonomousIntent: undefined });
+    expect(nextMissingSlot(d, {})).toBeNull();
+  });
+
+  it('does not ask when the LLM already identified affirmative autonomous intent', () => {
+    const d = makeDraft({ action: { type: 'webhook' }, autonomous: false, llmAutonomousIntent: true });
+    expect(nextMissingSlot(d, {})).toBeNull();
+  });
+});
+
+describe('applySlotAnswer — autonomous', () => {
+  it.each([
+    ['はい', true],
+    ['yes', true],
+    ['いいえ', false],
+    ['no', false],
+  ] as const)('applies %s as autonomous=%s', (answer, expected) => {
+    const { draft, resolved } = applySlotAnswer('autonomous', makeDraft({ autonomous: false }), answer, 0);
+    expect(resolved).toBe(true);
+    expect(draft.autonomous).toBe(expected);
+  });
+
+  it('resolves mixed affirmative/negative wording to the safe false value', () => {
+    const { draft, resolved } = applySlotAnswer('autonomous', makeDraft({ autonomous: false }), 'yes... no', 0);
+    expect(resolved).toBe(true);
+    expect(draft.autonomous).toBe(false);
+  });
+
+  it('re-asks after the first unrecognized answer', () => {
+    const { resolved } = applySlotAnswer('autonomous', makeDraft({ autonomous: false }), '考えておきます', 0);
+    expect(resolved).toBe(false);
+  });
+
+  it('gives up after two failures and resolves safely to false', () => {
+    const { draft, resolved } = applySlotAnswer('autonomous', makeDraft({ autonomous: true }), '考えておきます', 2);
+    expect(resolved).toBe(true);
+    expect(draft.autonomous).toBe(false);
+  });
 });
 
 describe('applySlotAnswer — taskDetail', () => {

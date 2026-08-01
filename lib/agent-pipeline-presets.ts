@@ -60,9 +60,13 @@ export function buildSteamPipeline(opts: {
     `前段で挙がった各トピックについて、最新の一次情報をWebで収集し、重要な事実・数値・主張を出典URL付きで抽出して`,
     // 3) Summarize — transform (no collection verb) → on-device model.
     `一次情報をもとに各トピックを2〜3文の日本語で要約し、各項目に出典URLを付けて`,
-    // 4) Re-summarize for X within the char budget. charLimit below also enforces
-    //    a hard guarantee after the run, but instruct the model explicitly too.
-    `全体をX(Twitter)投稿用に${charLimit}文字以内で再要約して。最重要トピックのみ、絵文字は使わず、${charLimit}文字を絶対に超えないこと`,
+    // 4) Re-summarize for X within the char budget. charLimit is X's real
+    //    WEIGHTED budget (280 for a free-tier post); since Codex writes this
+    //    step in Japanese and full-width characters count as 2 units on X,
+    //    the character target given to the model is halved so the output
+    //    actually fits. enforceCharLimit (using the true weighted charLimit)
+    //    is the hard guarantee after the run regardless of what the model does.
+    `全体をX(Twitter)投稿用に${Math.floor(charLimit / 2)}文字以内（日本語の全角文字はXでは2文字分としてカウントされるため）で再要約して。最重要トピックのみ、絵文字は使わず、${Math.floor(charLimit / 2)}文字を絶対に超えないこと`,
   ];
 
   const orchestration: AgentOrchestrationConfig = { steps, charLimit };
@@ -87,22 +91,51 @@ export function clampCharLimit(limit: number): number {
 }
 
 /**
- * Guarantee text is ≤ `limit` CODE POINTS (Japanese counts as 1 here — keep it
- * simple; callers wanting Twitter's CJK=2 weighting can pre-halve the limit).
+ * X's actual free-tier post budget is 280 "weighted" units, where full-width
+ * characters (hiragana/katakana/CJK ideographs/fullwidth forms/hangul) count
+ * as 2 and everything else counts as 1 — so an all-Japanese post effectively
+ * caps at 140 characters, not 280. `enforceCharLimit` used to count plain code
+ * points (Japanese = 1), which let an all-Japanese "280文字以内" post through
+ * at roughly double X's real budget — found via on-device testing 2026-07-31
+ * when a generated post couldn't actually fit on X. Not a full reimplementation
+ * of twitter-text (no t.co URL discounting to 23, so URL-bearing text has some
+ * extra real-world slack beyond what this conservatively counts).
+ */
+const X_FULLWIDTH_RE = /[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿＀-￯가-힯]/;
+
+export function xWeightedLength(text: string): number {
+  let total = 0;
+  for (const ch of Array.from(text)) total += X_FULLWIDTH_RE.test(ch) ? 2 : 1;
+  return total;
+}
+
+/**
+ * Guarantee text is ≤ `limit` X-weighted units (see xWeightedLength) — i.e.
+ * the result is guaranteed to actually fit in an X post of that budget.
  * Prefers cutting at a sentence boundary (。．.!?！？ or newline) at or before the
  * limit so the result reads cleanly; falls back to a hard cut + ellipsis. The
- * ellipsis is included WITHIN the budget (result length ≤ limit).
+ * ellipsis is included WITHIN the budget (result weighted-length ≤ limit).
  */
 export function enforceCharLimit(text: string, limit: number): string {
   // Clamp first so a raw 0 / negative / NaN can never break the ≤-limit guarantee.
   const lim = clampCharLimit(limit);
+  if (xWeightedLength(text) <= lim) return text;
+  const ELLIPSIS = '…'; // not full-width per X_FULLWIDTH_RE — costs 1 unit.
+  const budget = Math.max(lim - 1, 1); // reserve 1 unit for the ellipsis
   const chars = Array.from(text);
-  if (chars.length <= lim) return text;
-  const ELLIPSIS = '…';
-  const budget = Math.max(lim - 1, 1); // reserve 1 for the ellipsis
-  const head = chars.slice(0, budget);
+  let acc = 0;
+  let cutIdx = chars.length;
+  for (let i = 0; i < chars.length; i++) {
+    const w = X_FULLWIDTH_RE.test(chars[i]) ? 2 : 1;
+    if (acc + w > budget) {
+      cutIdx = i;
+      break;
+    }
+    acc += w;
+  }
+  const head = chars.slice(0, cutIdx);
   // Find the last sentence terminator within the kept head; only honour it if it
-  // keeps a reasonable amount (≥ 60% of budget) so we don't gut the text.
+  // keeps a reasonable amount (≥ 60% of the consumed budget) so we don't gut the text.
   const terminators = new Set(['。', '．', '.', '!', '?', '！', '？', '\n']);
   let cut = -1;
   for (let i = head.length - 1; i >= 0; i--) {
@@ -111,7 +144,7 @@ export function enforceCharLimit(text: string, limit: number): string {
       break;
     }
   }
-  if (cut >= Math.floor(budget * 0.6)) {
+  if (cut >= 0 && xWeightedLength(head.slice(0, cut + 1).join('')) >= Math.floor(acc * 0.6)) {
     return head.slice(0, cut + 1).join('').trimEnd();
   }
   return head.join('').trimEnd() + ELLIPSIS;

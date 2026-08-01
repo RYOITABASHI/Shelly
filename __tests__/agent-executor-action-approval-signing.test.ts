@@ -103,7 +103,7 @@ function bashParses(script: string): void {
 describe('AGENT_SCRIPT_VERSION bump (docs/superpowers/DEFERRED.md 自律エージェント制御面レビュー #1)', () => {
   it('generateRunScript emits SHELLY_AGENT_SCRIPT_VERSION>=17 (signing was introduced at v17)', () => {
     const s = generateRunScript(agent());
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=45');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=46');
   });
 
   it('AgentRuntime.kt CURRENT_SCRIPT_VERSION is bumped in lockstep (>=17, signing was introduced at v17)', () => {
@@ -114,7 +114,7 @@ describe('AGENT_SCRIPT_VERSION bump (docs/superpowers/DEFERRED.md 自律エー�
       ),
       'utf8',
     );
-    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 45');
+    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 46');
   });
 
   it('the full generated script still parses (bash -n)', () => {

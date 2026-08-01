@@ -30,13 +30,19 @@
  *     which is then re-validated through parseSchedule(), the SAME
  *     whitelisted-cron-shape gate the deterministic parser itself uses.
  *   - The LLM is NEVER trusted to author a webhook URL, a cli command, an
- *     app-act recipe, or a social-post connector — those need structured
+ *     app-act recipe, or a social-post connector id — those need structured
  *     fields (a URL, a shell command, a fixed recipe id, a connector id) an
  *     LLM guess could turn into a real security/privacy hazard. The only
- *     action types this module will ever accept from the LLM are 'draft' and
- *     'notify' — both purely local, T0-risk (see
+ *     action types this module will ever accept DIRECTLY from the LLM are
+ *     'draft' and 'notify' — both purely local, T0-risk (see
  *     lib/agent-plan-summary.ts's isAutoRegisterEligibleOnChatConfirm for
- *     the same risk-tier distinction).
+ *     the same risk-tier distinction). A 'social-post' action can be reached
+ *     one way only (2026-08-01): the LLM hands back a free-text destination
+ *     NAME it saw in the utterance (`platformHint`), which
+ *     resolvePlatformHintConnector resolves DETERMINISTICALLY against the
+ *     connectors the user already registered, and only a unique match is
+ *     applied. The model still cannot author a connectorId, a platform, or a
+ *     host — it can only disambiguate among destinations that already exist.
  *   - Any draft touched by this fallback is marked `llmExtracted: true`,
  *     which lib/agent-plan-summary.ts's hasDraftAssumptions treats the same
  *     as an assumed schedule: it can never skip the human confirm
@@ -48,6 +54,7 @@
  */
 import type { ParsedAgentDraft } from './agent-nl-parser';
 import { parseSchedule } from './agent-nl-parser';
+import type { SocialConnectorMeta, SocialPlatform } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { isCapabilityQuestion } from './ask-context';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
@@ -70,63 +77,155 @@ import ja from './i18n/locales/ja';
 // and this one).
 const EXPLICIT_DRAFT_KEYWORD_RE = /ドラフト|下書き|\bdraft\b/i;
 
+// ── Mirrored social-post vocabulary (2026-08-01) ────────────────────────────
+//
+// lib/agent-nl-parser.ts keeps SOCIAL_PLATFORM_ALIASES / the posting-verb
+// vocabulary PRIVATE (module-local consts, no export) and its one exported
+// entry point for them, parseAgentNL, takes a whole utterance plus the live
+// connector list — neither shape answers the two questions this module needs
+// ("does this utterance mention a posting verb but no platform name" and
+// "does this SHORT hint phrase name exactly one registered connector").
+// Mirrored here verbatim, following the SAME duplication precedent
+// EXPLICIT_DRAFT_KEYWORD_RE above already established (and that
+// lib/agent-draft-patch.ts established before it). Kept in sync manually: if
+// agent-nl-parser.ts's SOCIAL_PLATFORM_ALIASES / SOCIAL_POST_VERB_JP /
+// SOCIAL_POST_VERB_EN ever change, update these copies too.
+const SOCIAL_PLATFORM_ALIASES_MIRROR: Record<SocialPlatform, string[]> = {
+  discord: ['discord', 'ディスコード'],
+  slack: ['slack', 'スラック'],
+  telegram: ['telegram', 'テレグラム'],
+  mastodon: ['mastodon', 'マストドン'],
+  misskey: ['misskey', 'ミスキー'],
+  wordpress: ['wordpress', 'ワードプレス'],
+  bluesky: ['bluesky', 'ブルースカイ'],
+  x: ['x', 'twitter', 'エックス', 'ツイッター'],
+};
+const SOCIAL_PLATFORMS_MIRROR = Object.keys(SOCIAL_PLATFORM_ALIASES_MIRROR) as SocialPlatform[];
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Bare posting/sharing verb, no platform bound — mirrors agent-nl-parser.ts's
+ *  GENERIC_SOCIAL_POST_VERB_RE (SOCIAL_POST_VERB_JP | SOCIAL_POST_VERB_EN). */
+const GENERIC_POST_VERB_RE =
+  /(?:自動)?(?:投稿|ポスト|シェア|アップ|共有)|つぶや(?:く|いて)|呟(?:く|いて)|\b(?:post(?:ing)?|share|tweet)\b/i;
+
+/** Any platform NAME appearing anywhere in the text, with no verb binding —
+ *  deliberately looser than agent-nl-parser.ts's SOCIAL_PLATFORM_RE (which
+ *  requires "<platform>に投稿"), because this is used only to answer "was a
+ *  destination named AT ALL", never to resolve one. Single-character aliases
+ *  ('x') get `\b` guards for the same reason buildSocialPlatformRe does: an
+ *  unguarded bare "x" matches inside any word ("box"). */
+const PLATFORM_NAME_MENTION_RE = new RegExp(
+  SOCIAL_PLATFORMS_MIRROR.flatMap((p) => SOCIAL_PLATFORM_ALIASES_MIRROR[p])
+    .map((a) => (a.length === 1 ? `\\b${escapeRegExp(a)}\\b` : escapeRegExp(a)))
+    .join('|'),
+  'i',
+);
+
+/** true when the utterance asks to post/share something but names no platform
+ *  we recognize — i.e. the deterministic parser had nothing to bind the verb
+ *  to and silently defaulted the action to 'draft'. See
+ *  isLowConfidenceAgentDraft's bullet (d). */
+function looksLikeUnresolvedPostIntent(draft: ParsedAgentDraft): boolean {
+  if (draft.action.type !== 'draft') return false;
+  if (!GENERIC_POST_VERB_RE.test(draft.rawText)) return false;
+  return !PLATFORM_NAME_MENTION_RE.test(draft.rawText);
+}
+
 /**
- * true when the deterministic parser found NEITHER a confident schedule NOR
- * any explicit action signal for this draft — i.e. `draft.action` is nothing
- * more than parseAgentNL's unconditional final default (`{ type: 'draft' }`
- * when nothing else matched at all), not an actual "the user asked for a
- * draft/file save" request. This is deliberately a NARROW gate (both
- * conditions, not either): a draft with an explicit action but no schedule
- * (or vice versa) already has a well-defined, safe path — conversational
- * slot-fill (lib/agent-slot-fill.ts) asks exactly the missing piece, one
- * question at a time, with no LLM involved. Widening this to "either" would
- * route the vast majority of ordinary agent-creation utterances through the
- * LLM fallback (almost every one is missing SOMETHING on first parse — that
- * is what slot-fill is FOR), defeating the "keep the common path
- * LLM-free" requirement this whole module exists to protect.
+ * true when the deterministic parse of this draft is not trustworthy enough
+ * to stand on its own — the gate hooks/use-ai-pane-dispatch.ts uses to decide
+ * whether to spend one local-LLM call re-reading the utterance.
  *
- * A single 'notify'/'webhook'/'cli'/'app-act'/'social-post' action.type is
- * always treated as explicit — those can only ever be produced by
- * detectAction()'s own keyword/URL branches, never its default. A 'draft'
- * action.type needs one more check, because it is BOTH the explicit-request
- * outcome ("下書き/draft" keyword) and the silent do-nothing-else-matched
- * default: `draft.actionCaveat` being set (the LINE-posting / "register a
- * social connector first" fallback notes) or an explicit draft keyword in
- * the raw utterance both count as "the user asked for something we
- * understood", even though the stored action.type ended up 'draft' either
- * way.
+ * 2026-08-01 WIDENING (project-owner directive: follow Hermes Agent's
+ * Security-and-Command-Approval model). Hermes' actual design is "Manual
+ * approval by default; in Smart mode an auxiliary LLM judges risk/ambiguity
+ * per command, auto-running only the clearly-low-risk ones and asking
+ * otherwise" — the no-confirmation `--yolo` mode is documented as
+ * trusted-sandbox-only. Shelly adopts the COMPREHENSION half of that and
+ * nothing else: the human Confirm tap stays mandatory exactly as before (see
+ * lib/agent-plan-summary.ts's hasDraftAssumptions, which this module's
+ * `llmExtracted` flag feeds and which can never be skipped). What changes is
+ * how hard we try to UNDERSTAND before asking — the original criterion below
+ * was so narrow that the most common real failure mode, "the parser quietly
+ * substituted a local draft for what the user actually asked for", never
+ * reached the LLM at all.
  *
- * Known residual gap (documented, not fixed here — see this module's own
- * doc comment): a compound utterance where the deterministic parser DOES
- * confidently resolve both a schedule and an action (e.g. the Bluesky
- * cross-post example in the module doc comment, which resolves a `daily`
- * schedule and a `social-post` action) but loses OTHER structured detail
- * (a character limit, a multi-condition chain) never reaches this fallback
- * at all under this narrow two-bullet criterion. Widening the trigger to
- * catch that class reliably needs a real "does this utterance look
- * under-parsed even though schedule+action both came back confident"
- * signal, which is a materially harder problem than this pass scopes to.
+ * Returns true when ANY of these holds:
+ *
+ *   (a) LEGACY (unchanged, kept for exact backward compatibility): the parser
+ *       found NEITHER a confident schedule NOR any explicit action signal —
+ *       i.e. `draft.action` is nothing more than parseAgentNL's unconditional
+ *       final default (`{ type: 'draft' }` when nothing matched at all). A
+ *       single 'notify'/'webhook'/'cli'/'app-act'/'social-post' action.type is
+ *       always treated as explicit — those can only ever come from
+ *       detectAction()'s own keyword/URL branches, never its default. A
+ *       'draft' action.type needs the extra keyword check, because 'draft' is
+ *       BOTH the explicit-request outcome ("下書き/draft") and the silent
+ *       nothing-else-matched default.
+ *   (b) `draft.actionCaveat` is set. A caveat is precisely the parser SAYING
+ *       it silently substituted something (SOCIAL_POST_NO_CONNECTOR_CAVEAT,
+ *       the LINE-posting fallback, the X-Articles fallback, an unresolved
+ *       multi-target list). Under the old criterion this made the draft look
+ *       MORE confident (it counted as "an explicit ask we understood") and
+ *       returned false — exactly backwards for a comprehension pass: a caveat
+ *       means the user asked for something we could not deliver as asked.
+ *   (c) `draft.socialPostCandidates` has 2+ entries — a named destination
+ *       matched several registered connectors, so which external account to
+ *       post to is genuinely ambiguous. An LLM-extracted platformHint can
+ *       often collapse that to one (see mergeLlmExtractionIntoDraft); when it
+ *       can't, the existing slot-fill question still asks, unchanged.
+ *   (d) the action is still 'draft' and the utterance contains a generic
+ *       post/share verb (投稿/シェア/ポスト/共有/つぶやく/post/share/tweet)
+ *       but names NO platform we recognize — the "silently became a draft
+ *       even though the user clearly wanted something delivered somewhere"
+ *       case, which produces no caveat and no candidates at all.
+ *
+ * Note that (b)/(c)/(d) are evaluated even when `scheduleConfident` is true:
+ * a confidently-scheduled agent that posts to the wrong place (or to nowhere)
+ * is exactly as wrong as an unscheduled one. Only the LEGACY criterion (a)
+ * keeps its original "no confident schedule" precondition.
+ *
+ * What deliberately still does NOT trigger this: an ordinary utterance merely
+ * MISSING a field ("毎朝ニュースまとめて" with no delivery target, or a task
+ * with no schedule). Conversational slot-fill (lib/agent-slot-fill.ts) already
+ * asks exactly the missing piece, one question at a time, with no LLM
+ * involved, and routing every such utterance through the LLM would defeat the
+ * "keep the common path LLM-free" requirement this module exists to protect.
+ *
+ * Known residual gap (documented, not fixed here): a compound utterance where
+ * the parser DOES confidently resolve schedule + action but loses OTHER
+ * structured detail (a character limit, a multi-condition chain) still never
+ * reaches this fallback. Catching that reliably needs a real "does this look
+ * under-parsed even though everything came back confident" signal, which is a
+ * materially harder problem than this pass scopes to.
  */
 export function isLowConfidenceAgentDraft(draft: ParsedAgentDraft): boolean {
-  // 2026-07-27: this whole module had ZERO logging before tonight's on-device
-  // repro ("@agent 手伝って" silently skipped the task-clarity question), which
-  // made it impossible to tell from logcat whether this gate was the problem,
-  // the LLM call was never attempted, the call failed silently, or the model
-  // simply judged a vague utterance as clear. Every branch below logs its
-  // outcome + the specific reason, so a future repro shows a clear trail.
-  if (draft.scheduleConfident) {
-    logInfo('AgentLlmFallback', 'isLowConfidenceAgentDraft=false (scheduleConfident=true)');
-    return false;
-  }
-  const explicitActionType = draft.action.type !== 'draft';
+  // 2026-07-27: this whole module had ZERO logging before that night's
+  // on-device repro ("@agent 手伝って" silently skipped the task-clarity
+  // question), which made it impossible to tell from logcat whether this gate
+  // was the problem, the LLM call was never attempted, the call failed
+  // silently, or the model simply judged a vague utterance as clear. Every
+  // branch below logs its outcome + the specific reason, so a future repro
+  // shows a clear trail.
   const hasActionCaveat = !!draft.actionCaveat;
+  const ambiguousSocialTarget = (draft.socialPostCandidates?.length ?? 0) >= 2;
+  const unresolvedPostIntent = looksLikeUnresolvedPostIntent(draft);
+
+  const explicitActionType = draft.action.type !== 'draft';
   const hasExplicitDraftKeyword = EXPLICIT_DRAFT_KEYWORD_RE.test(draft.rawText);
   const actionExplicit = explicitActionType || hasActionCaveat || hasExplicitDraftKeyword;
-  const result = !actionExplicit;
+  const legacyLowConfidence = !draft.scheduleConfident && !actionExplicit;
+
+  const result = legacyLowConfidence || hasActionCaveat || ambiguousSocialTarget || unresolvedPostIntent;
   logInfo(
     'AgentLlmFallback',
-    `isLowConfidenceAgentDraft=${result} (scheduleConfident=false, actionType=${draft.action.type}, ` +
-      `explicitActionType=${explicitActionType}, hasActionCaveat=${hasActionCaveat}, ` +
+    `isLowConfidenceAgentDraft=${result} (scheduleConfident=${draft.scheduleConfident}, ` +
+      `actionType=${draft.action.type}, legacyLowConfidence=${legacyLowConfidence}, ` +
+      `hasActionCaveat=${hasActionCaveat}, ambiguousSocialTarget=${ambiguousSocialTarget}, ` +
+      `unresolvedPostIntent=${unresolvedPostIntent}, explicitActionType=${explicitActionType}, ` +
       `hasExplicitDraftKeyword=${hasExplicitDraftKeyword})`,
   );
   return result;
@@ -209,18 +308,40 @@ export interface AgentLlmExtraction {
    *  false. The LLM is only ever trusted to ASK this question — never to
    *  invent an answer to it itself; see mergeLlmExtractionIntoDraft. */
   clarifyingQuestion?: string;
+  /** Free-text platform/destination hint (e.g. "X", "twitter", "ブルースカイ",
+   *  or a connector label the user seems to be naming) — NEVER a connectorId.
+   *  Resolved against real registered connectors by the SAME deterministic
+   *  matching logic detectSocialPost() already uses; if it doesn't resolve to
+   *  exactly one real connector, it is dropped (never silently registers a
+   *  half-guessed destination). */
+  platformHint?: string;
+  /** Whether the user's utterance expresses intent for UNATTENDED/autonomous
+   *  execution — true/false/undefined (undefined = unclear, should ask). LLM
+   *  proposes; final autonomous flag is still gated the same way scheduleText
+   *  is (this signal alone does not flip draft.autonomous — see the merge
+   *  function and the slot-fill autonomous question in
+   *  lib/agent-slot-fill.ts). */
+  autonomousIntent?: boolean;
 }
 
-const MAX_FIELD_LEN: Record<keyof Omit<AgentLlmExtraction, 'actionType' | 'taskClear'>, number> = {
+const MAX_FIELD_LEN: Record<
+  keyof Omit<AgentLlmExtraction, 'actionType' | 'taskClear' | 'autonomousIntent'>,
+  number
+> = {
   name: 60,
   scheduleText: 100,
   outputPath: 200,
   prompt: 2000,
   clarifyingQuestion: 200,
+  // Short by design: this is a single destination NAME ("ブルースカイ" / a
+  // connector label), never a sentence. A long value is a sign the model
+  // dumped prose in here, and truncating it can only make the deterministic
+  // resolution below match FEWER connectors, never more.
+  platformHint: 60,
 };
 
 const EXTRACTION_SYSTEM_PROMPT = `You extract structured fields from a single natural-language request to create a scheduled automation agent (JP or EN). Respond with STRICT JSON ONLY — no prose, no markdown fences, no explanation — matching exactly this shape:
-{"name": string, "scheduleText": string, "actionType": "draft" | "notify", "outputPath": string, "prompt": string, "taskClear": boolean, "clarifyingQuestion": string}
+{"name": string, "scheduleText": string, "actionType": "draft" | "notify", "outputPath": string, "prompt": string, "taskClear": boolean, "clarifyingQuestion": string, "platformHint": string, "autonomousIntent": true | false | null}
 
 Rules:
 - "name": a short (<= 20 char) human label for the agent, derived from the topic.
@@ -230,7 +351,9 @@ Rules:
 - "prompt": the core task instruction, with the schedule/delivery phrasing removed — what the agent should actually DO each run.
 - "taskClear": true only if "prompt" describes a concrete, executable action (what to look up, write, check, or send). false if the request only names a goal/outcome without saying HOW to accomplish it (e.g. "明日の準備をよろしく", "get ready for the trip", "handle the report" — prepare/handle WHAT, exactly?). When in doubt between true and false, prefer false — do NOT guess at what a vague request means.
 - "clarifyingQuestion": REQUIRED (non-empty) when taskClear is false — one short, concrete question, written in the SAME language as the request, asking what the task should actually involve. Empty string when taskClear is true.
-- Every string field must be a plain string (use "" for unknown/absent — never null, never omit a key). "taskClear" must be a plain boolean.
+- "platformHint": the destination/platform/service NAME mentioned in the request, copied as written (e.g. "X", "twitter", "ブルースカイ", "Slack", "会社Bot"). Just extract the word — do NOT judge whether it exists, do NOT map it to an id, do NOT invent one. Empty string if the request names no destination.
+- "autonomousIntent": true if the request explicitly asks to run unattended/automatically without asking each time ("勝手にやっておいて", "確認なしで", "fully automatic", "without asking me"); false if it explicitly asks to be asked/confirmed each time ("毎回確認して", "ask me first"); null if the request says nothing either way. Do NOT guess — null is the correct answer whenever it is not stated.
+- Every string field must be a plain string (use "" for unknown/absent — never null, never omit a key). "taskClear" must be a plain boolean. "autonomousIntent" must be true, false, or null.
 - Output ONLY the JSON object. Nothing before it, nothing after it.`;
 
 /** Builds the system+user message pair for the extraction call. Exported for
@@ -256,7 +379,7 @@ function extractJsonObjectSpan(raw: string): string | null {
 
 function readValidatedString(
   rec: Record<string, unknown>,
-  key: keyof Omit<AgentLlmExtraction, 'actionType' | 'taskClear'>,
+  key: keyof Omit<AgentLlmExtraction, 'actionType' | 'taskClear' | 'autonomousIntent'>,
 ): string | undefined {
   const v = rec[key];
   if (typeof v !== 'string') return undefined;
@@ -300,6 +423,7 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
     outputPath: readValidatedString(rec, 'outputPath'),
     prompt: readValidatedString(rec, 'prompt'),
     clarifyingQuestion: readValidatedString(rec, 'clarifyingQuestion'),
+    platformHint: readValidatedString(rec, 'platformHint'),
   };
 
   const actionTypeRaw = rec['actionType'];
@@ -316,7 +440,67 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
     out.taskClear = taskClearRaw;
   }
 
+  // Strict boolean only — the prompt asks for null when the utterance says
+  // nothing about unattended execution, and JSON null (like a missing key, or
+  // a stringly-typed "true") must leave this UNSET rather than collapsing to
+  // false. "Unclear" and "the user said no" are different answers: the former
+  // means slot-fill should ask, the latter means it already has its answer.
+  const autonomousIntentRaw = rec['autonomousIntent'];
+  if (typeof autonomousIntentRaw === 'boolean') {
+    out.autonomousIntent = autonomousIntentRaw;
+  }
+
   return out;
+}
+
+// ── platformHint resolution (deterministic, LLM output never trusted) ───────
+
+/**
+ * Resolve a SHORT free-text destination hint from the LLM against a pool of
+ * REAL registered connectors, returning a connector only when exactly one
+ * matches. This is the "LLM proposes, deterministic code decides" rule applied
+ * to destinations: the model is only ever allowed to hand us a NAME it saw in
+ * the utterance — never a connectorId, never a platform enum value, never a
+ * host — and that name only ever selects from connectors the user already
+ * registered themselves. A hint that matches zero connectors (nothing
+ * registered for it) or two or more (genuinely ambiguous) resolves to null and
+ * changes nothing, leaving the existing needsSetup caveat / socialPostCandidates
+ * slot-fill question to handle it exactly as before.
+ *
+ * Matching mirrors detectSocialPost()'s own two-way resolution — platform
+ * ALIAS match plus registered-connector LABEL match, unioned by connector id —
+ * with two extra guards appropriate to a short hint rather than a full
+ * utterance:
+ *   - a single-character alias ('x') must match the hint EXACTLY, never as a
+ *     substring (the same collision buildSocialPlatformRe's `\b` guards avoid);
+ *   - a label/alias is only allowed to match as a SUBSTRING when it is at
+ *     least 3 characters long, so a 1–2 char label can't sweep up every hint.
+ */
+export function resolvePlatformHintConnector(
+  hint: string,
+  connectors: SocialConnectorMeta[],
+): SocialConnectorMeta | null {
+  const h = hint.trim().toLowerCase();
+  if (!h || connectors.length === 0) return null;
+
+  const aliasMatches = (alias: string): boolean =>
+    alias === h || (alias.length >= 3 && h.includes(alias));
+  const platforms = SOCIAL_PLATFORMS_MIRROR.filter((p) =>
+    SOCIAL_PLATFORM_ALIASES_MIRROR[p].some(aliasMatches),
+  );
+
+  const matched: SocialConnectorMeta[] = connectors.filter((c) => platforms.includes(c.platform));
+  for (const c of connectors) {
+    const label = c.label.trim().toLowerCase();
+    if (!label) continue;
+    const labelMatch =
+      label === h ||
+      (label.length >= 3 && h.includes(label)) ||
+      (h.length >= 3 && label.includes(h));
+    if (labelMatch && !matched.some((m) => m.id === c.id)) matched.push(c);
+  }
+
+  return matched.length === 1 ? matched[0] : null;
 }
 
 /**
@@ -332,8 +516,21 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
  *     the reverse, and never to any other type) — see AgentLlmExtraction's
  *     doc comment for why those are the only two action types this module
  *     will ever accept from the LLM at all.
+ *   - `platformHint` is NEVER applied as given — it is resolved through
+ *     resolvePlatformHintConnector() against REAL registered connectors, and
+ *     only a UNIQUE match (exactly one) is applied, and only while the action
+ *     is still 'draft'. The LLM therefore cannot author a connectorId, a
+ *     platform, or a host; it can only pick out a name the user already said,
+ *     which can only ever select among connectors the user already registered.
+ *     Zero or 2+ matches change nothing — the existing needsSetup caveat /
+ *     socialPostCandidates slot-fill question handles those exactly as before.
+ *   - `autonomousIntent` is stored as `llmAutonomousIntent` ONLY — a proposal
+ *     for lib/agent-slot-fill.ts's 'autonomous' slot to consider. It never
+ *     touches `draft.autonomous`; only a human answer (or the explicit
+ *     `@agent autonomous` alias) ever sets that.
  *   - `outputPath` is only applied while the action is (still) 'draft' —
- *     an output path is meaningless for 'notify'.
+ *     an output path is meaningless for 'notify' (or for a resolved
+ *     social-post destination).
  *   - `prompt`, when present, also re-derives `tool`/`toolLabel` via
  *     suggestTool() so tool routing stays consistent with the (possibly
  *     now more accurate) task description, exactly the way the
@@ -356,6 +553,13 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
 export function mergeLlmExtractionIntoDraft(
   draft: ParsedAgentDraft,
   extraction: AgentLlmExtraction,
+  /** Live registered social connectors, for `platformHint` resolution only.
+   *  Optional and additive: when omitted, the pool falls back to
+   *  `draft.socialPostCandidates` — the connectors the deterministic parser
+   *  itself already matched but couldn't disambiguate, which is precisely the
+   *  case a hint is most useful for. Passing an empty/absent list simply means
+   *  no hint can ever resolve, i.e. the pre-2026-08-01 behavior. */
+  connectors?: SocialConnectorMeta[],
 ): ParsedAgentDraft {
   let merged: ParsedAgentDraft = draft;
   let touched = false;
@@ -383,6 +587,55 @@ export function mergeLlmExtractionIntoDraft(
     const m = next();
     m.action = { type: 'notify' };
     m.actionCaveat = undefined;
+    touched = true;
+  }
+
+  // platformHint — resolved deterministically, applied only on a UNIQUE match
+  // and only while the action is still 'draft'. Placed AFTER the notify branch
+  // deliberately: if the LLM proposed BOTH 'notify' and a destination, the
+  // purely-local notify wins, because escalating a local notification into an
+  // external post is the one direction of this merge that could surprise the
+  // user in a way they can't undo. Placed BEFORE outputPath so a resolved
+  // destination correctly suppresses the (now meaningless) draft file path.
+  if (extraction.platformHint && merged.action.type === 'draft') {
+    const pool = connectors && connectors.length > 0 ? connectors : (draft.socialPostCandidates ?? []);
+    const resolved = resolvePlatformHintConnector(extraction.platformHint, pool);
+    if (resolved) {
+      const m = next();
+      m.action = {
+        type: 'social-post',
+        socialPost: {
+          platform: resolved.platform,
+          connectorId: resolved.id,
+          text: draft.action.socialPost?.text ?? '{{result}}',
+        },
+      };
+      // The caveat/ambiguity that made this draft low-confidence in the first
+      // place is now genuinely resolved to a real registered connector, so
+      // neither should keep being surfaced. `llmExtracted` below still forces
+      // the human confirm round-trip (lib/agent-plan-summary.ts's
+      // hasDraftAssumptions), so clearing them cannot make this draft
+      // auto-registerable.
+      m.actionCaveat = undefined;
+      m.socialPostCandidates = undefined;
+      touched = true;
+      logInfo(
+        'AgentLlmFallback',
+        `platformHint ${JSON.stringify(extraction.platformHint)} resolved to connector ` +
+          `${resolved.id} (${resolved.platform})`,
+      );
+    } else {
+      logInfo(
+        'AgentLlmFallback',
+        `platformHint ${JSON.stringify(extraction.platformHint)} did not resolve to exactly one ` +
+          `registered connector (pool=${pool.length}) — dropped, draft destination unchanged`,
+      );
+    }
+  }
+
+  if (typeof extraction.autonomousIntent === 'boolean' && draft.llmAutonomousIntent !== extraction.autonomousIntent) {
+    const m = next();
+    m.llmAutonomousIntent = extraction.autonomousIntent;
     touched = true;
   }
 
@@ -472,6 +725,10 @@ export async function extractAgentFieldsWithLlm(
   llmConfig: LocalLlmConfig,
   timeoutMs = 15_000,
   maxTokens = 300,
+  /** Optional live connector list, forwarded verbatim to
+   *  mergeLlmExtractionIntoDraft for `platformHint` resolution — see that
+   *  function's own parameter doc for the fallback when it is omitted. */
+  connectors?: SocialConnectorMeta[],
 ): Promise<ParsedAgentDraft> {
   if (!llmConfig.enabled || !llmConfig.baseUrl || !llmConfig.model) {
     logInfo(
@@ -511,13 +768,16 @@ export async function extractAgentFieldsWithLlm(
       );
       return draft;
     }
-    const merged = mergeLlmExtractionIntoDraft(draft, extraction);
+    const merged = mergeLlmExtractionIntoDraft(draft, extraction, connectors);
     logInfo(
       'AgentLlmFallback',
       `extractAgentFieldsWithLlm: extracted taskClear=${extraction.taskClear ?? '(unset)'}, ` +
         `clarifyingQuestion=${extraction.clarifyingQuestion ? JSON.stringify(extraction.clarifyingQuestion) : '(none)'}, ` +
         `scheduleText=${extraction.scheduleText ? JSON.stringify(extraction.scheduleText) : '(none)'}, ` +
-        `actionType=${extraction.actionType ?? '(unset)'} -> needsTaskClarification=` +
+        `actionType=${extraction.actionType ?? '(unset)'}, ` +
+        `platformHint=${extraction.platformHint ? JSON.stringify(extraction.platformHint) : '(none)'}, ` +
+        `autonomousIntent=${extraction.autonomousIntent ?? '(unset)'} -> action=${merged.action.type}, ` +
+        `needsTaskClarification=` +
         `${merged.needsTaskClarification ? JSON.stringify(merged.needsTaskClarification) : '(unset)'}`,
     );
     return merged;

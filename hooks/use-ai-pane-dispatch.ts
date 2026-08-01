@@ -1150,16 +1150,46 @@ export function useAIPaneDispatch(paneId: string) {
           if (llmFallbackSettings.localLlmUrl) {
             await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-slotfill' }).catch(() => {});
           }
-          const llmAttempt = await extractAgentFieldsWithLlm(userText, updatedDraft, {
-            baseUrl: llmFallbackSettings.localLlmUrl,
-            model: llmFallbackSettings.localLlmModel,
-            enabled: !!llmFallbackSettings.localLlmUrl,
-          });
+          const llmAttempt = await extractAgentFieldsWithLlm(
+            userText,
+            updatedDraft,
+            {
+              baseUrl: llmFallbackSettings.localLlmUrl,
+              model: llmFallbackSettings.localLlmModel,
+              enabled: !!llmFallbackSettings.localLlmUrl,
+            },
+            15_000,
+            300,
+            useSettingsStore.getState().socialConnectors ?? [],
+          );
           const llmResolvedThisField =
             (field === 'schedule' && llmAttempt.scheduleConfident === true) ||
-            (field === 'outputPath' && !!llmAttempt.outputPath);
+            (field === 'outputPath' && !!llmAttempt.outputPath) ||
+            // platformHint resolution (lib/agent-llm-fallback.ts's
+            // mergeLlmExtractionIntoDraft) promotes a caveat-bearing draft
+            // straight to a real social-post action on success — recognize
+            // that as having resolved the socialConnector slot too, same as
+            // schedule/outputPath above.
+            (field === 'socialConnector' && llmAttempt.action.type === 'social-post') ||
+            // autonomousIntent alone doesn't flip draft.autonomous (see
+            // mergeLlmExtractionIntoDraft's doc comment — the autonomous
+            // slot-fill question is the thing that actually decides it), so
+            // this only recognizes the field as resolved when the LLM gave a
+            // definite yes/no the autonomous slot can trust outright.
+            (field === 'autonomous' && llmAttempt.llmAutonomousIntent !== undefined);
           if (llmResolvedThisField) {
             updatedDraft = llmAttempt;
+            // Same promotion gap as the initial-dispatch call site above:
+            // mergeLlmExtractionIntoDraft only stores llmAutonomousIntent, it
+            // never applies it to .autonomous. This IS the user's actual
+            // answer to the autonomous slot question (not a passive signal
+            // picked up mid-conversation), so unlike the other call site,
+            // applying false here is correct and expected too — mirrors
+            // applySlotAnswer's own 'autonomous' case (ambiguous/negative
+            // replies resolve to false, never left unset).
+            if (field === 'autonomous' && updatedDraft.llmAutonomousIntent !== undefined) {
+              updatedDraft.autonomous = updatedDraft.llmAutonomousIntent;
+            }
             resolved = true;
           }
         }
@@ -1331,7 +1361,14 @@ export function useAIPaneDispatch(paneId: string) {
             // pattern as slotFillCtx below reading agentVaultPath/agentTopicFolder
             // from the store for lib/agent-slot-fill.ts's SlotFillContext.
             let draft = parseAgentNL(promptText, useSettingsStore.getState().socialConnectors ?? []);
-            draft.autonomous = agentResult.data?.autonomous === true;
+            // The legacy `@agent autonomous …` alias only PRE-SETS the toggle (per
+            // the comment above) — it must never clobber a true value parseAgentNL
+            // already derived from richer, anywhere-in-the-sentence phrasing like
+            // "自律的に実行して。" (detectAutonomousIntent). Found via on-device
+            // testing 2026-07-31: every hand-authored (non-preset) multi-step agent
+            // silently lost its autonomous flag because this used to be an
+            // unconditional overwrite.
+            draft.autonomous = draft.autonomous || agentResult.data?.autonomous === true;
             if (draft.autonomous && agentResult.data?.suggestion?.tool) {
               draft.tool = agentResult.data.suggestion.tool;
               draft.toolLabel = agentResult.data.suggestion.label ?? draft.toolLabel;
@@ -1386,11 +1423,38 @@ export function useAIPaneDispatch(paneId: string) {
               if (llmFallbackSettings.localLlmUrl) {
                 await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-initial' }).catch(() => {});
               }
-              draft = await extractAgentFieldsWithLlm(promptText, draft, {
-                baseUrl: llmFallbackSettings.localLlmUrl,
-                model: llmFallbackSettings.localLlmModel,
-                enabled: !!llmFallbackSettings.localLlmUrl,
-              });
+              draft = await extractAgentFieldsWithLlm(
+                promptText,
+                draft,
+                {
+                  baseUrl: llmFallbackSettings.localLlmUrl,
+                  model: llmFallbackSettings.localLlmModel,
+                  enabled: !!llmFallbackSettings.localLlmUrl,
+                },
+                15_000,
+                300,
+                // platformHint resolution needs the REAL registered connector
+                // list, not just draft.socialPostCandidates (which is only
+                // populated for the "2+ ambiguous matches" case) — same read
+                // pattern as parseAgentNL's own connectors arg just above.
+                useSettingsStore.getState().socialConnectors ?? [],
+              );
+              // mergeLlmExtractionIntoDraft deliberately only STORES the LLM's
+              // autonomous-intent signal (draft.llmAutonomousIntent) — it
+              // never flips draft.autonomous itself (lib/agent-llm-fallback.ts
+              // doc comment: the autonomous slot-fill question is what
+              // actually decides it). nextMissingSlot then reads
+              // llmAutonomousIntent ONLY to decide whether to ask again, not
+              // to apply it — so a clear "yes, run this unattended" signal
+              // from the LLM would otherwise be detected and then silently
+              // dropped (the slot stops being asked, but draft.autonomous
+              // never becomes true). Promote true here, the one place that
+              // sees both the raw LLM output and is about to call
+              // nextMissingSlot. Never demote: an already-true autonomous
+              // flag (deterministic keyword match) must never be overridden
+              // by a WEAKER LLM signal, same "OR merge, never clobber" rule
+              // the legacy `@agent autonomous` alias follows above.
+              if (draft.llmAutonomousIntent === true) draft.autonomous = true;
             }
             // Conversational slot-filling (Phase 0 §2.1): a draft missing a
             // required field (schedule/notificationTrigger/outputPath) is not
