@@ -123,6 +123,14 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // every hard content gate (unclear schedule / assumed values /
       // external-posting action types) are unchanged.
       { key: 'widgetAgentRegistrationNoConfirm', label: 'Widget No-Confirm Register', type: 'boolean', source: 'settings', description: 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately without the in-app confirmation step, and a notification reports what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.' },
+      // Tier 3 (2026-08-02, docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md):
+      // when the deterministic parser is unsure, the LLM drives a multi-turn
+      // clarification dialogue in its own words instead of Shelly's fixed
+      // slot-fill questions. Local-LLM only in Phase 1; falls back to the
+      // existing narrow LLM extraction / Tier 2 slot-fill on any failure,
+      // timeout, or unparseable turn. The human confirm tap is unaffected
+      // either way. Default off.
+      { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let the local LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Requires Local LLM to be enabled and reachable; falls back to the existing behavior otherwise. The final registration always still needs your confirmation. Default off.' },
     ],
   },
   {
