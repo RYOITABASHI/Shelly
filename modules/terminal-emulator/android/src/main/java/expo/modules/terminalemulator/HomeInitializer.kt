@@ -1092,7 +1092,22 @@ patchCodex(libDir);
     //      different meaning (known_hosts file / host-key prefix / moduli
     //      candidates file) and injecting the id-file default would be
     //      wrong.
-    private const val BASHRC_VERSION = 236
+    // 237: bug — `shelly <subcommand>` printed "libbash.so: .../home/bin/bash:
+    //      Permission denied" (3x for chained calls) on real devices, clean
+    //      installs included. Root cause: the v141 `shelly()` function ran
+    //      `"$SHELL" "$HOME/bin/shelly" "$@"`, a direct execve of the
+    //      $HOME/bin/bash symlink -> app-data libbash.so. That was safe when
+    //      it shipped because the interactive PTY bash still preloaded
+    //      libexec_wrapper.so (which rewrote the execve through linker64),
+    //      but v180 removed the PTY-wide preload (and .bashrc unsets
+    //      LD_PRELOAD), so the raw execve now hits the Knox/SELinux
+    //      app_data_file exec denial — the v52/v163 "bionic child execs are
+    //      redirected by libexec_wrapper.so" assumption no longer holds for
+    //      the interactive shell itself. shelly() now routes through
+    //      `_run "$SHELLY_LIB_DIR/libbash.so" ...` (linker64), the same
+    //      pattern as bash()/node()/git(). The helper file is passed as a
+    //      script argument, so no shebang/binfmt dispatch is involved.
+    private const val BASHRC_VERSION = 237
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1583,8 +1598,17 @@ patchCodex(libDir);
             sb.appendLine("SHELLY_HELPER_EOF")
             sb.appendLine("__shelly_chmod 700 \"\$HOME/bin/shelly\" 2>/dev/null || true")
             sb.appendLine("fi")
+            // v237: do NOT exec "$SHELL" here. $SHELL is re-pointed at the
+            // $HOME/bin/bash symlink (-> app-data libbash.so) further down for
+            // basename($SHELL) validators, and since v180 the interactive PTY
+            // bash no longer preloads libexec_wrapper.so, so a direct
+            // execve("$SHELL") from the prompt hits the Knox/SELinux
+            // app_data_file exec denial ("libbash.so: .../bin/bash: Permission
+            // denied"). Route through _run (linker64) like every other
+            // app-data binary; the helper script body is read by bash as a
+            // script argument, so no shebang/binfmt dispatch is involved.
             sb.appendLine("shelly() {")
-            sb.appendLine("  \"\$SHELL\" \"\$HOME/bin/shelly\" \"\$@\"")
+            sb.appendLine("  _run \"\$SHELLY_LIB_DIR/libbash.so\" \"\$HOME/bin/shelly\" \"\$@\"")
             sb.appendLine("}")
             sb.appendLine("hash -r 2>/dev/null || true")
             // v138: PATH-level Codex wrapper. The bash `codex()` function

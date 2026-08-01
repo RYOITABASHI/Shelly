@@ -14,6 +14,22 @@
 
 ---
 
+### bug #166 — `shelly <subcommand>` がターミナルで「libbash.so: .../home/bin/bash: Permission denied」— 修正済み（BASHRC_VERSION 237）・実機未検証 (P1)
+
+**内容**: 実機（versionCode 2026-08-02、クリーンインストール後も再現）で `shelly config get localLlmUrl` 等の `shelly` サブコマンドが全て `libbash.so: /data/user/0/dev.shelly.terminal/files/home/bin/bash: Permission denied` で失敗。Tier 3（エージェント登録LLMファースト化）の実機検証中に偶然発見された、Tier 3 とは無関係の既存バグ。
+
+**根本原因**（`HomeInitializer.kt` バージョン履歴の突き合わせで確定）: v141（`5c2964fe0`）で導入された `shelly()` bash 関数が `"$SHELL" "$HOME/bin/shelly" "$@"` と、`$SHELL`（= `$HOME/bin/bash` symlink → app-data の `termux-libs/libbash.so`）を**直接 execve** していた。導入当時はインタラクティブ PTY bash に `libexec_wrapper.so` が LD_PRELOAD されており execve が linker64 経由に書き換えられていたため動いていたが、**v180 が PTY-wide preload を撤去**（クラッシュしたインターポーザを .bashrc から除去できない問題への対応）し、.bashrc 自体も冒頭で `unset LD_PRELOAD` するため、プロンプトからの `shelly` は生の execve となり Knox/SELinux の app_data_file exec 拒否（EACCES）を踏むようになった。v52/v163 コメントの「bionic child execs は libexec_wrapper.so が redirect する」という前提はインタラクティブシェル自身にはもう成立していない。bashrc 内で `"$SHELL"` を直接 exec する箇所はこの1箇所のみ（grep で確認済み）。
+
+**修正**（BASHRC_VERSION 236→237）: `shelly()` を `bash()`/`node()`/`git()` と同じ `_run`（linker64）パターンに変更 — `_run "$SHELLY_LIB_DIR/libbash.so" "$HOME/bin/shelly" "$@"`。ヘルパーファイルは bash へのスクリプト引数として読まれるだけなので shebang/binfmt ディスパッチは発生しない（v140/v141 の「bad interpreter」系制約も踏まない）。静的検証: 生成される関数体を抽出して `bash -n`（SYNTAX_OK）+ `_run` スタブでの引数ルーティング dry-run PASS。この環境に Android SDK が無いため Kotlin コンパイルは CI 任せ（変更は文字列リテラル2行+コメントのみ）。関連する JS/TS テスト・スナップショットへの影響なし（BASHRC_VERSION への言及はコメントのみと確認）。
+
+**注意（別課題、本修正のスコープ外）**: exec 拒否が消えても `$HOME/bin/shelly` ヘルパー（SHELLY_HELPER_SHIM v1、v139 導入）が実装しているのは `shelly scouter [status|hooks]` のみで、`shelly config get ...` は usage を出して exit 1 する（`shelly config` を処理するのは RN 側 `lib/pseudo-shell.ts` で、ネイティブ PTY からは到達しない——既知の「PTY helper vs pseudo-shell disconnect」ギャップ）。実機検証で `shelly config get` が usage 表示になるのは本修正としては正常（Permission denied が消えていれば PASS）。
+
+**次にやること（実機検証、別セッション依頼前提）**: 次 CI ビルドインストール後、(1) `type shelly` が `_run "$SHELLY_LIB_DIR/libbash.so" ...` 形の関数になっていること（= .bashrc v237 再生成の確認、`echo $BASHRC_VERSION` でも可）、(2) `shelly scouter status` が Permission denied なしで JSON を返すこと、(3) `shelly config get localLlmUrl` が Permission denied ではなく usage（`Usage: shelly scouter [status|hooks]`）になること、を確認。
+
+→ sync: なし。
+
+---
+
 ### ウィジェットASKからのエージェント新規登録＋音声入力（v7.5.0、Fable5、2026-07-29）— 実装・ユニットテスト・コードレビュー済み、実機未検証 (P1)
 
 **内容**: Scouterウィジェットの ASK ダイアログに `@agent ...` 形の文字列を打つと、従来は生のCodexプロンプトとして流れてエージェント登録は一切行われなかった（`ScouterWidgetPromptActivity.kt`の`sendPrompt()`が直接PTYへ書き込むだけだった）。`isAgentMentionCommand()`（`lib/input-router.ts`の`@agent`検出正規表現とバイト同一、`__tests__/widget-agent-command-parity.test.ts`でドリフト防止）で判定し、一致すればネイティブ pending 記録 → `shelly:///ai?widgetAgentCommand=1` deep link → `app/_layout.tsx` が consume → `ai-pane-store.pendingExternalPrompt` → AIPane が既存の`dispatch()`経路へ投入、という形でAIペインに直接打ったときと同じ確認フローに合流させた。非`@agent`入力は完全に無変更（生PTY書き込みのまま）。
@@ -3340,6 +3356,7 @@ claude() {
 
 ## History
 
+- **2026-08-02（bug #166発見・修正: `shelly`サブコマンドのSELinux execve拒否、BASHRC_VERSION 237）**: Tier 3（エージェント登録LLMファースト化）実機検証中にプロダクトオーナーが `shelly config get ...` の「libbash.so: .../home/bin/bash: Permission denied」を報告（クリーンインストールでも再現）。別セッションの一次調査を引き継いだFable5がバージョン履歴の突き合わせで根本原因を確定——v141の `shelly()` が `"$SHELL"` を直接 execve しており、v180 の PTY-wide LD_PRELOAD 撤去以降は誰も execve を linker64 に書き換えてくれない、という2つの修正の交差点で発生した回帰。`_run`（linker64）経由に変更。実機未検証。→ sync: なし。
 - **2026-07-28（Hermes Agent機能ギャップ分析、次バージョンロードマップとして記録）**: プロダクトオーナーから「Android制約下でHermes Agent的な体験を実現するために足りない機能とその実現可能性」の調査依頼。3並列レビュー（機能パリティ/信頼性/マーケティング妥当性の3観点）でHermes Agentの実態調査（Nous Research製、GitHub 18万スター超のOSS、Android版はTermuxラッパーでネイティブアプリではない）とShellyの現状照合を実施した後、Fable5にAndroid制約下での機能ギャップの技術的実現可能性を追加委託。既存の`lib/agent-skills.ts`/`lib/agent-memory.ts`（スキル自動生成・永続メモリ、いずれも実装済み・実機検証済みで稼働中）を「無い」と誤認していた前提を訂正した上で、優先順位付きロードマップ（OpenRouter統合→無人実行時スキル自動保存→グローバル記憶+MEMORY-001解禁→ワークスペース内rollback型実行→通知リスナー汎用チャネル化）を新規P1エントリとして記録。今回のリリースはこのロードマップを含めず、現状の実機テスト項目クリアをもってリリースとする、とプロダクトオーナーが明示的にスコープ確定。→ sync: なし。
 - **2026-07-27（bug#161: Android DownloadManager不調→直接ダウンロードのフォールバック実装）**: アプリ内アップデートが3回連続、3種類の違う失敗モードで失敗。`adb shell curl`での直接検証でネットワーク到達性・ストレージとも正常と確認、Android標準DownloadManagerコンポーネント自体の不調と判断。`expo-file-system/legacy`の`createDownloadResumable`を使った完全に別系統のダウンロード経路を新設し、DownloadManager失敗時に自動フォールバックするよう実装（sha256検証は両経路とも同一）。この修正自体が配布経路の修正のため今夜中の実機検証は不可、次回の自然発生 or 意図的再現時に確認予定。→ sync: なし。
 - **2026-07-27（bug#122 Doctor UI 実機検証PASS）**: Settings → Doctor → Run diagnostics、11項目全部OK確認。`--json`経路のためbug #160のクラッシュとは無関係。これで今夜のカテゴリA実機テスト（音声/Immortal Sessions/Codexタブ/ウィジェットRUN/Doctor UI）が全完了、残るは①②Gemini実エンジン確認（無料枠リセット待ち）のみ。→ sync: なし。
