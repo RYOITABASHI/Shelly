@@ -1001,6 +1001,15 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     maxHeight: '85%',
+    // Without this, panel's height is 'auto' (content-driven) inside a
+    // justifyContent:'flex-end' parent, which makes the ScrollView below
+    // (previously `flex: 1`) unable to resolve any space to grow into —
+    // Yoga can't give a flexGrow child a share of a still-undetermined
+    // parent height, so it silently collapses to 0 and only the header
+    // renders. flexShrink lets panel size from its children's natural
+    // height (header + scroll content) and only shrink once that exceeds
+    // maxHeight, which is what actually makes the cap take effect.
+    flexShrink: 1,
     borderTopWidth: 1,
     borderColor: BORDER,
   },
@@ -1025,7 +1034,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontFamily: 'JetBrainsMono_400Regular',
   },
-  scroll: { flex: 1 },
+  // NOT `flex: 1` — see panel's flexShrink comment. flexGrow: 0 stops this
+  // ScrollView from demanding a share of panel's still-undetermined auto
+  // height; flexShrink: 1 lets it size to its natural content height and
+  // only shrink once panel hits maxHeight, which is what makes the sheet
+  // both auto-size to short content AND cap+scroll for long content.
+  scroll: { flexGrow: 0, flexShrink: 1 },
   scrollContent: { paddingBottom: 32 },
 
   sectionFirst: { marginTop: 12 },
