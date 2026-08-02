@@ -2079,7 +2079,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 **未了**:
 1. ~~実機検証(フラグOFF→ONで既存動作に回帰がないこと、ONで曖昧な発話に対しLLMが自分の言葉で聞き返すこと、ローカルLLM未起動時のfail-closed降格) — adb未接続のため今回のセッションでは未実施。~~ → 2026-08-02 別環境PC(adb+scrcpyミラーリング接続)で実施、下記参照。
-2. Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)、Phase 5(整理)は未着手。
+2. Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 5(整理)は**2026-08-02、Opus5(コアモジュール側)+Codex(配線側)へ並列ディスパッチして実装中**。Opus5トラック(`lib/agent-conversational-registration.ts`: actionType許可集合へのsocial-post追加+プロンプトへのautonomous自然文ヒント+doc整理)はCCレビュー済み・commit済み。Codexトラック(`hooks/use-ai-pane-dispatch.ts`: Tier2→Tier3昇格の実配線+autonomous安全網の実チェック)は実装中。両方揃い次第この行を更新。Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)は意図的に対象外(別枠で要再相談)。
 3. ~~Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。~~ → 2026-08-02 Phase 1.5として実装(実機未検証)、下記参照。
 
 **→ 2026-08-02 実機検証5項目 全PASS**（別環境PC、adb+scrcpyミラーリング、ローカルLLM=Qwen3.5-2B、versionCode 2020相当のビルド）:

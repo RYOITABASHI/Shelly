@@ -1,6 +1,6 @@
 /**
  * lib/agent-conversational-registration.ts — Tier 3 "LLM leads the whole
- * conversation" agent-registration core (Phase 0, 2026-08-02).
+ * conversation" agent-registration core (Phase 0-3, 2026-08-02).
  *
  * See docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md.
  *
@@ -25,19 +25,28 @@
  *     re-validated through parseSchedule()), never a connectorId/platform/host
  *     (only a destination NAME, resolved through resolvePlatformHintConnector()
  *     against connectors the user already registered), and never a privileged
- *     action type — Phase 0 accepts `'draft'` and `'notify'` and nothing else.
- *     webhook / cli / app-act / api-call / intent / dm-reply / social-post
- *     (directly) are all rejected, exactly as in lib/agent-llm-fallback.ts.
+ *     action type — webhook / cli / app-act / api-call / intent / dm-reply are
+ *     all rejected, exactly as in lib/agent-llm-fallback.ts. The only action
+ *     types the model can CAUSE are `'draft'` and `'notify'`; `'social-post'`
+ *     is tolerated as a no-op declaration (Phase 2) but still reachable only
+ *     through the existence-checked platformHint path.
  *   - Every step fails closed: a disabled/unreachable LLM, a timeout, an empty
  *     response, a malformed fence, unparseable JSON, or a proposal where every
  *     field is rejected all leave the caller's draft byte-for-byte unchanged,
  *     so the existing Tier 1/Tier 2 flow proceeds as if this module did not
  *     exist.
  *
- * Phase 0 is intentionally WIRING-FREE: nothing imports this module yet. The
- * dispatcher hookup (hooks/use-ai-pane-dispatch.ts) plus the opt-in setting
- * land in Phase 1; social-post / autonomous / high-risk action types in later
- * phases.
+ * Wiring: hooks/use-ai-pane-dispatch.ts drives the conversation (Phase 1),
+ * gated behind the opt-in `agentConversationalRegistrationEnabled` setting.
+ * Whenever Tier 3 gives up — LLM unreachable, an unparseable turn, a repeated
+ * question, or the per-session turn cap — the dispatcher falls back to the
+ * NARROW single-shot extractor (extractAgentFieldsWithLlm in
+ * lib/agent-llm-fallback.ts) fed by buildConversationTranscript() below, and
+ * from there to Tier 2 deterministic slot-fill. That narrow extractor is not
+ * dead code left over from the pre-Tier-3 design: it is Tier 3's official
+ * fallback path and stays authoritative for its own (stricter) field set.
+ * High-risk action types (webhook / cli / app-act) remain out of scope, behind
+ * their own separate flag if they are ever added.
  */
 import type { ParsedAgentDraft } from './agent-nl-parser';
 import { parseSchedule } from './agent-nl-parser';
@@ -78,7 +87,9 @@ export interface AgentConversationalExtraction {
   /** Typed as a plain string on purpose: the model can emit ANY string here, so
    *  the type must be able to REPRESENT a rejected value in order for
    *  mergeConversationalExtractionIntoDraft to be able to reject it (and record
-   *  the rejection). Phase 0 accepts only 'draft' | 'notify'. */
+   *  the rejection). Only 'draft' | 'notify' | 'social-post' are accepted, and
+   *  of those only 'draft'/'notify' can actually change the action — see
+   *  ALLOWED_ACTION_TYPES. */
   actionType?: string;
   prompt?: string;
   outputPath?: string;
@@ -225,6 +236,7 @@ ${FENCE_END}
 - "outputPath": 保存先が明示されたときだけ。それ以外は空文字。
 - "platformHint": 投稿先の**名前だけ**をそのまま書いてください（例: "ブルースカイ", "会社Bot"）。ID・URL・ホスト名・接続設定を自分で作ってはいけません。システム側が実在の登録済み投稿先と突き合わせます。投稿先の話が出ていなければ空文字。
 - "autonomousIntent": 「確認なしで勝手にやっておいて」なら true、「毎回確認して」なら false、どちらとも言っていなければ null。推測しないでください。
+  - ただし、**外部への投稿・送信や端末側での実行を伴う動作**（投稿先が決まっている、通知だけでは終わらない、など）で、かつ**実行スケジュールも決まっている**のに、確認の要否をユーザーがまだ一度も言っていないときは、autonomousIntent を null のまま最終提案を出さないでください。その場合は先に「確認なしで実行するか、毎回確認してから実行するか」を1回だけ聞いて、その答えを autonomousIntent に入れてから最終提案を出してください。すでにどちらかを聞き取れているなら、重ねて聞かないでください。
 
 【登録済みの投稿先】
 ${connectors}
@@ -258,6 +270,7 @@ ${FENCE_END}
 - "outputPath": only when a destination file/folder was explicitly stated. Empty string otherwise.
 - "platformHint": the destination NAME only, copied as written (e.g. "Bluesky", "Team Bot"). Never invent an id, a URL, a host, or connection settings — the system matches this against the destinations the user really registered. Empty string if no destination came up.
 - "autonomousIntent": true if the user asked for it to run unattended without confirming each time, false if they asked to be asked every time, null if they said nothing either way. Do not guess.
+  - However, when the agent **acts outside this device** (posting or sending to a destination, running something) rather than just saving or notifying, **and the schedule is already settled**, do not send the final proposal with autonomousIntent still null. Ask once first whether it should run without confirmation or ask for confirmation every time, then put that answer in autonomousIntent and send the proposal. If the user already told you either way, do not ask again.
 
 【Registered destinations】
 ${connectors}
@@ -592,12 +605,24 @@ export function buildConversationTranscript(
 
 // ── §3: proposal → draft merge (pure, existence-checked) ────────────────────
 
-/** Phase 0's closed set of LLM-authorable action types. Everything else — the
- *  privileged types (webhook / cli / app-act / api-call / intent / dm-reply),
- *  'social-post' as a DIRECT claim, and any hallucinated name — is rejected.
- *  A social-post action is still reachable, but only via platformHint below,
- *  i.e. only by naming a connector the user already registered. */
-const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify']);
+/** The closed set of action-type NAMES the model is allowed to utter without
+ *  that being recorded as a rejection. Everything else — the privileged types
+ *  (webhook / cli / app-act / api-call / intent / dm-reply) and any
+ *  hallucinated name — is dropped and reported in rejectedFields.
+ *
+ *  'draft' and 'notify' are the two types the model can actually CAUSE (Phase
+ *  0). 'social-post' was added in Phase 2 and is deliberately different: it is
+ *  tolerated as a no-op declaration, NOT as an authorization. Saying
+ *  `"actionType": "social-post"` never promotes the action by itself — the
+ *  only path to a social-post action is still the platformHint block below,
+ *  where resolvePlatformHintConnector() existence-checks a destination NAME
+ *  against connectors the user already registered, so the model can never
+ *  author a connectorId / platform / host / secret. The allowlist entry exists
+ *  purely so that the extremely common "actionType: social-post +
+ *  platformHint: <name>" proposal — which resolves correctly through
+ *  platformHint — stops logging a misleading `rejectedFields: ['actionType']`
+ *  alongside its own success. */
+const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify', 'social-post']);
 
 /**
  * Merge one LLM proposal into `draft` under the same per-field gates
@@ -606,10 +631,11 @@ const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify']);
  *
  *   - scheduleText: re-validated through parseSchedule(); applied only when
  *     that comes back `confident`. The model never authors a cron.
- *   - actionType: only 'draft' | 'notify'. 'notify' is applied only as an
- *     upgrade FROM 'draft'; a redundant 'draft' is a silent no-op (and never
- *     downgrades an already-resolved richer action). Anything else is dropped
- *     and recorded in rejectedFields.
+ *   - actionType: only 'draft' | 'notify' | 'social-post'. 'notify' is applied
+ *     only as an upgrade FROM 'draft'; a redundant 'draft' is a silent no-op
+ *     (and never downgrades an already-resolved richer action); 'social-post'
+ *     is ALWAYS a no-op here and only ever takes effect via platformHint
+ *     below. Anything else is dropped and recorded in rejectedFields.
  *   - platformHint: resolved by resolvePlatformHintConnector() against REAL
  *     registered connectors; applied only on a UNIQUE match, and only while the
  *     action is still 'draft'. Zero or 2+ matches change nothing.
@@ -661,13 +687,13 @@ export function mergeConversationalExtractionIntoDraft(
   if (extraction.actionType !== undefined) {
     if (!ALLOWED_ACTION_TYPES.has(extraction.actionType)) {
       // The security-critical branch: a model that proposes 'webhook' / 'cli' /
-      // 'app-act' / 'social-post' (or invents a type name) gets it dropped
-      // here, never merged. Phase 0 has no path by which the model can author
-      // a privileged action at all.
+      // 'app-act' / 'api-call' / 'intent' / 'dm-reply' (or invents a type name)
+      // gets it dropped here, never merged. There is still no path by which the
+      // model can author a privileged action at all.
       rejectedFields.push('actionType');
       logInfo(
         LOG,
-        `actionType ${JSON.stringify(extraction.actionType)} is not LLM-authorable in Phase 0 — dropped`,
+        `actionType ${JSON.stringify(extraction.actionType)} is not LLM-authorable — dropped`,
       );
     } else if (extraction.actionType === 'notify' && draft.action.type === 'draft') {
       const m = next();
@@ -675,8 +701,15 @@ export function mergeConversationalExtractionIntoDraft(
       m.actionCaveat = undefined;
       touched = true;
     }
-    // A redundant 'draft' (or a 'notify' on an already-notify draft) is a
-    // deliberate no-op, not a rejection: nothing was refused, nothing changed.
+    // Everything else in the allowlist is a deliberate no-op, not a rejection:
+    // nothing was refused, nothing changed.
+    //   - a redundant 'draft' (or a 'notify' on an already-notify draft);
+    //   - 'social-post' (Phase 2). The declaration alone NEVER promotes the
+    //     action — that stays the exclusive job of the platformHint block
+    //     below, whose resolvePlatformHintConnector() existence-check is the
+    //     single safety valve keeping connectorId / platform / host / secret
+    //     out of the model's hands. So `actionType: 'social-post'` with no
+    //     resolvable platformHint correctly leaves the action as-is.
   }
 
   // Placed AFTER the notify branch on purpose (same reasoning as

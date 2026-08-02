@@ -441,11 +441,11 @@ describe('mergeConversationalExtractionIntoDraft', () => {
     expect(rejectedFields).toEqual(['actionType']);
   });
 
-  it.each(['cli', 'app-act', 'api-call', 'intent', 'dm-reply', 'social-post', 'publish', 'DRAFT', ''])(
+  it.each(['cli', 'app-act', 'api-call', 'intent', 'dm-reply', 'publish', 'DRAFT', ''])(
     'IGNORES the non-allowlisted actionType %p',
     (bad) => {
       const draft = baseDraft();
-      const { draft: out } = mergeConversationalExtractionIntoDraft(
+      const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
         draft,
         // '' is dropped by the parser, but the merge must also stand alone.
         { actionType: bad },
@@ -453,6 +453,7 @@ describe('mergeConversationalExtractionIntoDraft', () => {
       );
       expect(out).toBe(draft);
       expect(out.action).toEqual({ type: 'draft' });
+      expect(rejectedFields).toEqual(['actionType']);
     },
   );
 
@@ -465,6 +466,69 @@ describe('mergeConversationalExtractionIntoDraft', () => {
     );
     expect(out).toBe(draft);
     expect(rejectedFields).toEqual([]);
+  });
+
+  // ── actionType "social-post" (Phase 2) ──
+  //
+  // Allowlisted so the very common "actionType: social-post + platformHint:
+  // <name>" proposal stops logging a misleading rejection alongside its own
+  // success — NOT so the model can authorize a social post by declaring one.
+  // The existence-checked platformHint path is still the only way in.
+  it('treats actionType "social-post" as a no-op — never recorded as a rejection', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { actionType: 'social-post' },
+      noConnectors,
+    );
+    expect(rejectedFields).toEqual([]);
+    expect(out).toBe(draft);
+    expect(out.llmExtracted).toBeUndefined();
+  });
+
+  it('does NOT promote to social-post on the actionType declaration alone (no platformHint)', () => {
+    const draft = baseDraft();
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { actionType: 'social-post' },
+      // Even with a real connector available, the bare declaration may not
+      // reach it: only a NAME the user actually said can select a destination.
+      { connectors: [connector({ id: 'real-bsky-id', platform: 'bluesky', label: 'My Bluesky' })] },
+    );
+    expect(out.action).toEqual({ type: 'draft' });
+    expect(out).toBe(draft);
+  });
+
+  it('promotes correctly when BOTH actionType "social-post" and a resolvable platformHint are proposed', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { actionType: 'social-post', platformHint: 'ブルースカイ' },
+      {
+        connectors: [
+          connector({ id: 'real-bsky-id', platform: 'bluesky', label: 'My Bluesky' }),
+          connector({ id: 'slack-id', platform: 'slack', label: '会社Bot' }),
+        ],
+      },
+    );
+    expect(out.action).toEqual({
+      type: 'social-post',
+      socialPost: { platform: 'bluesky', connectorId: 'real-bsky-id', text: '{{result}}' },
+    });
+    expect(out.llmExtracted).toBe(true);
+    expect(rejectedFields).toEqual([]);
+    expect(rejectedFields).not.toContain('actionType');
+  });
+
+  it('still refuses the destination when actionType "social-post" comes with an UNRESOLVABLE platformHint', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { actionType: 'social-post', platformHint: 'discord' },
+      { connectors: [connector({ id: 'real-bsky-id', platform: 'bluesky', label: 'My Bluesky' })] },
+    );
+    expect(out).toBe(draft);
+    expect(out.action).toEqual({ type: 'draft' });
+    expect(rejectedFields).toEqual(['platformHint']);
   });
 
   // ── platformHint: existence-checked destination resolution ──
@@ -884,6 +948,30 @@ describe('buildRegistrationSystemPrompt fence-tag / boolean-type instruction', (
     expect(enPrompt).toContain('character for character');
     expect(enPrompt).toContain('Never use ```json or unfenced raw JSON');
     expect(enPrompt).toContain('never the strings "true"/"false"');
+  });
+});
+
+// Phase 3: a natural-language restatement of lib/agent-slot-fill.ts's existing
+// nextMissingSlot() autonomous trigger (an outward-acting action + a settled
+// schedule + no stated preference => ask). Prompt-level nudge ONLY — the
+// enforcing re-check lives on the dispatcher side, which reuses nextMissingSlot
+// directly, because a small local model cannot be relied on to obey this.
+describe('buildRegistrationSystemPrompt autonomous-question hint', () => {
+  it('asks the model to settle autonomousIntent before proposing an outward-acting scheduled agent, in BOTH locales', () => {
+    const jaPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(jaPrompt).toContain('外部への投稿・送信や端末側での実行を伴う動作');
+    expect(jaPrompt).toContain('実行スケジュールも決まっている');
+    expect(jaPrompt).toContain('autonomousIntent を null のまま最終提案を出さないでください');
+    expect(jaPrompt).toContain('確認なしで実行するか、毎回確認してから実行するか');
+    // Must not undo the anti-repeat instruction: don't re-ask what's known.
+    expect(jaPrompt).toContain('すでにどちらかを聞き取れているなら、重ねて聞かないでください');
+
+    const enPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(enPrompt).toContain('acts outside this device');
+    expect(enPrompt).toContain('the schedule is already settled');
+    expect(enPrompt).toContain('do not send the final proposal with autonomousIntent still null');
+    expect(enPrompt).toContain('run without confirmation or ask for confirmation every time');
+    expect(enPrompt).toContain('If the user already told you either way, do not ask again');
   });
 });
 
