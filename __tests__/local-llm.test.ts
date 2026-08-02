@@ -96,6 +96,101 @@ describe('local LLM request compatibility', () => {
     });
   });
 
+  it('sends an OpenAI-compatible response_format.json_schema.schema when jsonSchema is passed to ollamaChat', async () => {
+    const fetchMock = mockJsonFetch({
+      choices: [{ message: { role: 'assistant', content: '{"name":"x"}' }, finish_reason: 'stop' }],
+    });
+    const schema = { type: 'object', properties: { name: { type: 'string' } } };
+
+    await ollamaChat(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'qwen-3.5-local', enabled: true },
+      messages,
+      60000,
+      undefined,
+      640,
+      schema,
+    );
+
+    expect(requestBody(fetchMock)).toMatchObject({
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: 'agent_field_extraction', schema, strict: true },
+      },
+    });
+  });
+
+  it('sends the raw JSON Schema as `format` for Ollama-compatible requests when jsonSchema is passed', async () => {
+    const fetchMock = mockJsonFetch({
+      model: 'default',
+      message: { role: 'assistant', content: '{"name":"x"}' },
+      done: true,
+    });
+    const schema = { type: 'object', properties: { name: { type: 'string' } } };
+
+    await ollamaChat(
+      { baseUrl: 'http://127.0.0.1:11434', model: 'default', enabled: true },
+      messages,
+      60000,
+      undefined,
+      640,
+      schema,
+    );
+
+    expect(requestBody(fetchMock)).toMatchObject({ format: schema });
+  });
+
+  it('omits response_format/format entirely when jsonSchema is not passed (default, unaffected callers)', async () => {
+    const fetchMock = mockJsonFetch({
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    });
+
+    await ollamaChat(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'qwen-3.5-local', enabled: true },
+      messages,
+    );
+
+    const body = requestBody(fetchMock);
+    expect(body.response_format).toBeUndefined();
+    expect(body.format).toBeUndefined();
+  });
+
+  it('retries once WITHOUT the schema when a schema-constrained request fails at the HTTP level (fail-safe for old servers)', async () => {
+    const schema = { type: 'object', properties: { name: { type: 'string' } } };
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: async () => 'response_format not recognized',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: 'unconstrained ok' }, finish_reason: 'stop' }],
+        }),
+        text: async () => 'unconstrained ok',
+      });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await ollamaChat(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'qwen-3.5-local', enabled: true },
+      messages,
+      60000,
+      undefined,
+      640,
+      schema,
+    );
+
+    expect(result).toEqual({ success: true, content: 'unconstrained ok' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const secondBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    expect(firstBody.response_format).toBeDefined();
+    expect(secondBody.response_format).toBeUndefined();
+  });
+
   it('parses an unterminated final OpenAI SSE content chunk', async () => {
     const fetchMock = mockStreamFetch(
       'data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}',

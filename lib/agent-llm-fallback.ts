@@ -366,6 +366,46 @@ export function buildAgentExtractionMessages(utterance: string): OllamaMessage[]
   ];
 }
 
+/**
+ * JSON Schema handed to ollamaChat's opt-in `jsonSchema` decode-time
+ * constraint (lib/local-llm.ts) — a structural safety net UNDER the prompt
+ * above, not a replacement for it. This mirrors EXTRACTION_SYSTEM_PROMPT's
+ * documented shape field-for-field, so the schema can never disagree with
+ * what the prompt already asks for.
+ *
+ * Deliberately NO `required` array: every field stays independently
+ * optional/omittable. Constraining VALUE SHAPE (a string field can't come
+ * back as a boolean; actionType can't come back as anything outside the
+ * closed union) is exactly the class of small-model failure this exists to
+ * prevent — see this file's header comment ("指定フェンスタグを無視、真偽
+ * 値を文字列で返す等"). Forcing every field to be PRESENT would do the
+ * opposite: an under-informed model would be structurally compelled to
+ * invent a value for a field it has nothing to say about, which is worse
+ * than the field simply being absent (readValidatedString/the taskClear and
+ * autonomousIntent checks below already treat "absent" as "no signal" —
+ * exactly what an omitted/omittable field degrades to).
+ *
+ * `additionalProperties: false` keeps the model from padding the object with
+ * extra keys but does not, on its own, make any of the properties above
+ * mandatory — that still requires listing them in `required`, which is
+ * deliberately omitted here.
+ */
+const AGENT_EXTRACTION_JSON_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    scheduleText: { type: 'string' },
+    actionType: { type: 'string', enum: ['draft', 'notify'] },
+    outputPath: { type: 'string' },
+    prompt: { type: 'string' },
+    taskClear: { type: 'boolean' },
+    clarifyingQuestion: { type: 'string' },
+    platformHint: { type: 'string' },
+    autonomousIntent: { type: ['boolean', 'null'] },
+  },
+  additionalProperties: false,
+};
+
 /** Pull the first top-level `{...}` object out of a raw LLM response — local
  *  models frequently wrap JSON in a code fence or add a leading/trailing
  *  sentence despite instructions not to. Returns null when no plausible
@@ -718,6 +758,19 @@ export function mergeLlmExtractionIntoDraft(
  * isLowConfidenceAgentDraft(draft) themselves — this function does not
  * re-check that condition, so it will attempt extraction whenever asked
  * regardless of the input draft's confidence.
+ *
+ * 2026-08-02: passes AGENT_EXTRACTION_JSON_SCHEMA to ollamaChat's opt-in
+ * `jsonSchema` decode-time constraint (lib/local-llm.ts), so a small local
+ * model (Qwen3.5-2B) is structurally prevented from returning e.g. a
+ * stringly-typed boolean or an out-of-union actionType, on top of (not
+ * instead of) the prompt wording + extractJsonObjectSpan/
+ * parseAgentLlmExtractionResponse validation below, which stay exactly as
+ * they were: the schema only tightens what decode-time is ALLOWED to
+ * produce, it does not replace the parse/validate/fail-closed pipeline that
+ * already treats the response as untrusted input. If the local server
+ * doesn't understand response_format/format at all, ollamaChat itself
+ * retries once with the schema dropped, so this call degrades to its
+ * pre-2026-08-02 behavior rather than failing outright.
  */
 export async function extractAgentFieldsWithLlm(
   utterance: string,
@@ -750,6 +803,7 @@ export async function extractAgentFieldsWithLlm(
       timeoutMs,
       undefined,
       maxTokens,
+      AGENT_EXTRACTION_JSON_SCHEMA,
     );
     if (!result.success || !result.content) {
       logInfo(

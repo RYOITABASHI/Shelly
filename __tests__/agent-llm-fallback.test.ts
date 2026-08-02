@@ -766,6 +766,40 @@ describe('extractAgentFieldsWithLlm', () => {
     expect(ollamaChat).toHaveBeenCalledTimes(1);
   });
 
+  it('passes a JSON Schema constraint to ollamaChat (opt-in structured-output decode constraint)', async () => {
+    ollamaChat.mockResolvedValue({ success: true, content: '{}' });
+    const draft = baseDraft();
+    await extractAgentFieldsWithLlm('x', draft, enabledConfig, 15_000, 300);
+
+    expect(ollamaChat).toHaveBeenCalledTimes(1);
+    const callArgs = ollamaChat.mock.calls[0];
+    // config, messages, timeoutMs, externalSignal, maxTokens, jsonSchema
+    const schema = callArgs[5] as Record<string, unknown>;
+    expect(schema).toBeDefined();
+    expect(schema.type).toBe('object');
+    // No `required` array — every field must stay independently omittable so
+    // an under-informed model is never structurally forced to invent a value
+    // (see AGENT_EXTRACTION_JSON_SCHEMA's doc comment in agent-llm-fallback.ts).
+    expect(schema.required).toBeUndefined();
+    const properties = schema.properties as Record<string, unknown>;
+    expect(Object.keys(properties).sort()).toEqual(
+      [
+        'actionType',
+        'autonomousIntent',
+        'clarifyingQuestion',
+        'name',
+        'outputPath',
+        'platformHint',
+        'prompt',
+        'scheduleText',
+        'taskClear',
+      ].sort(),
+    );
+    expect(properties.actionType).toEqual({ type: 'string', enum: ['draft', 'notify'] });
+    expect(properties.taskClear).toEqual({ type: 'boolean' });
+    expect(properties.autonomousIntent).toEqual({ type: ['boolean', 'null'] });
+  });
+
   it('falls back to the ORIGINAL draft (untouched) when ollamaChat reports failure', async () => {
     ollamaChat.mockResolvedValue({ success: false, content: '', error: 'HTTP 503' });
     const draft = baseDraft();

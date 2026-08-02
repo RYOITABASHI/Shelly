@@ -33,6 +33,15 @@ export interface OllamaChatRequest {
   messages: OllamaMessage[];
   stream?: boolean;
   think?: boolean;
+  /** Ollama 0.5+ structured-output constraint: a raw JSON Schema object,
+   *  passed straight through as the `format` field (NOT wrapped — Ollama's
+   *  /api/chat accepts the schema object directly, unlike llama-server's
+   *  nested response_format.json_schema.schema). See
+   *  https://github.com/ollama/ollama/blob/main/docs/api.md's "Structured
+   *  outputs" section. Optional/opt-in — omitted entirely for every existing
+   *  caller, which keeps unconstrained free-text generation exactly as
+   *  before. */
+  format?: Record<string, unknown>;
   options?: {
     temperature?: number;
     num_ctx?: number;
@@ -90,6 +99,24 @@ export interface OpenAIChatRequest {
   max_tokens?: number;
   chat_template_kwargs?: {
     enable_thinking?: boolean;
+  };
+  /** llama-server's OpenAI-compatible structured-output constraint. Verified
+   *  against llama.cpp's current request parser (tools/server/server-common.cpp,
+   *  the `response_format` handling block): for `type: "json_schema"` it reads
+   *  `response_format.json_schema.schema` — the SAME nested shape the official
+   *  OpenAI API uses — and ignores any other sibling keys under `json_schema`
+   *  (so `name`/`strict` are accepted but not required; kept here only for
+   *  forward-compat with servers that do read them). The schema is compiled to
+   *  a GBNF grammar server-side, so a syntactically-valid-but-schema-violating
+   *  completion is impossible by construction, not just discouraged by prompt
+   *  wording. Optional/opt-in — omitted entirely for every existing caller. */
+  response_format?: {
+    type: 'json_schema';
+    json_schema: {
+      name: string;
+      schema: Record<string, unknown>;
+      strict?: boolean;
+    };
   };
 }
 
@@ -373,6 +400,21 @@ export async function checkOllamaConnection(baseUrl: string, timeoutMs = 5000): 
 /**
  * チャットリクエストを送信（非ストリーミング）。
  * llama-server（OpenAI互換）とOllama両方に対応。
+ *
+ * `jsonSchema` (opt-in, default undefined): when provided, constrains the
+ * model's output at DECODE time to match the given JSON Schema — the model
+ * cannot emit a structurally invalid response at all (llama-server compiles
+ * the schema to a GBNF grammar; Ollama 0.5+ does the equivalent natively),
+ * as opposed to merely being asked nicely via prompt wording. Every existing
+ * caller omits this argument and is completely unaffected. See
+ * OpenAIChatRequest.response_format / OllamaChatRequest.format for the
+ * verified wire formats.
+ *
+ * Fail-safe: if a schema-constrained request comes back as an HTTP error
+ * (e.g. an older llama-server build that doesn't recognize
+ * `response_format`/`format` at all), this retries ONCE with the schema
+ * dropped rather than failing the whole call — an unsupported server should
+ * degrade to the pre-existing unconstrained behavior, not break the caller.
  */
 export async function ollamaChat(
   config: LocalLlmConfig,
@@ -380,7 +422,9 @@ export async function ollamaChat(
   timeoutMs = 60000,
   externalSignal?: AbortSignal,
   maxTokens = DEFAULT_LOCAL_MAX_TOKENS,
+  jsonSchema?: Record<string, unknown>,
   _retried = false,
+  _schemaRetried = false,
 ): Promise<{ success: boolean; content: string; error?: string }> {
   try {
     const controller = new AbortController();
@@ -403,6 +447,14 @@ export async function ollamaChat(
         stream: false,
         temperature: 0.4,
         max_tokens: maxTokens,
+        ...(jsonSchema
+          ? {
+              response_format: {
+                type: 'json_schema' as const,
+                json_schema: { name: 'agent_field_extraction', schema: jsonSchema, strict: true },
+              },
+            }
+          : {}),
       });
       body = JSON.stringify(req);
     } else {
@@ -417,6 +469,7 @@ export async function ollamaChat(
           num_ctx: DEFAULT_LOCAL_CONTEXT_TOKENS,
           num_predict: maxTokens,
         },
+        ...(jsonSchema ? { format: jsonSchema } : {}),
       });
       body = JSON.stringify(req);
     }
@@ -432,6 +485,13 @@ export async function ollamaChat(
       clearTimeout(timer);
 
       if (!res.ok) {
+        // Schema-constrained request failed at the HTTP level — could be an
+        // older server build that rejects/ignores response_format/format
+        // outright. Retry once, unconstrained, rather than surfacing an
+        // error the caller has no way to recover from on its own.
+        if (jsonSchema && !_schemaRetried) {
+          return ollamaChat(config, messages, timeoutMs, externalSignal, maxTokens, undefined, _retried, true);
+        }
         const errText = await res.text().catch(() => res.statusText);
         return { success: false, content: '', error: `HTTP ${res.status}: ${errText}` };
       }
@@ -468,7 +528,7 @@ export async function ollamaChat(
     if (!_retried) {
       const check = await checkOllamaConnection(config.baseUrl);
       if (check.available) {
-        return ollamaChat(config, messages, timeoutMs, externalSignal, maxTokens, true);
+        return ollamaChat(config, messages, timeoutMs, externalSignal, maxTokens, jsonSchema, true, _schemaRetried);
       }
     }
 
