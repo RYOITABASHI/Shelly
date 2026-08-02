@@ -138,11 +138,16 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // Tier 3 (2026-08-02, docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md):
       // when the deterministic parser is unsure, the LLM drives a multi-turn
       // clarification dialogue in its own words instead of Shelly's fixed
-      // slot-fill questions. Local-LLM only in Phase 1; falls back to the
-      // existing narrow LLM extraction / Tier 2 slot-fill on any failure,
-      // timeout, or unparseable turn. The human confirm tap is unaffected
-      // either way. Default off.
-      { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let the local LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Requires Local LLM to be enabled and reachable; falls back to the existing behavior otherwise. The final registration always still needs your confirmation. Default off.' },
+      // slot-fill questions. Phase 1.5 (2026-08-02, same day): tries
+      // Cerebras -> Groq -> local, in that order (see
+      // runConversationalRegistrationTurn's own doc comment) — the on-device
+      // model is now an offline floor rather than the only option, after
+      // real-device testing showed Qwen3.5-2B repeating itself and ignoring
+      // formatting instructions. Falls back to the existing narrow LLM
+      // extraction / Tier 2 slot-fill on any failure, timeout, or
+      // unparseable turn regardless of which provider answered. The human
+      // confirm tap is unaffected either way. Default off.
+      { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let an LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Uses your configured Cerebras/Groq API key if present (faster, more capable), otherwise the Local LLM; falls back to the existing behavior if nothing is reachable. The final registration always still needs your confirmation. Default off.' },
     ],
   },
   {

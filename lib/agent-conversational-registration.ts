@@ -775,28 +775,131 @@ export function mergeConversationalExtractionIntoDraft(
   return { draft: merged, rejectedFields };
 }
 
-// ── §4: impure orchestrator (the only network-calling function here) ────────
+// ── §4: impure orchestrator (the only network-calling functions here) ───────
 
 /** A conversational turn needs more headroom than the 300-token single-shot
  *  extraction budget in lib/agent-llm-fallback.ts — this turn may be a
  *  free-form question plus reasoning — but must stay bounded so a runaway
- *  local model can't stall the registration UI. */
+ *  model can't stall the registration UI. Shared by every provider so a
+ *  cloud turn and a local turn are budgeted identically. */
 const TURN_MAX_TOKENS = 600;
 
+/** Optional cloud-provider credentials for runConversationalRegistrationTurn.
+ *  Every field is optional; a provider is only attempted when its own API key
+ *  is present, exactly like lib/agent-capability-answer.ts's
+ *  CapabilityAnswerConfig. Deliberately Cerebras + Groq only (no Gemini) —
+ *  matches lib/llm-interpreter.ts's interpretWithFallback, the project's
+ *  established "fast general-purpose text task" tier ordering; Gemini's
+ *  message format (`parts`, not `content`) is a structurally different shape
+ *  this module has no other reason to depend on. */
+export interface ConversationalCloudConfig {
+  cerebrasApiKey?: string;
+  cerebrasModel?: string;
+  groqApiKey?: string;
+  groqModel?: string;
+}
+
+/** No-op onChunk — every provider call here wants the FULL response before
+ *  handing it to parseConversationalTurnResponse (Tier 3 has no
+ *  incremental-render UI to stream into), so accumulate locally instead of
+ *  threading a real callback through. */
+function collectChunks(onText: (text: string) => void): (text: string, done: boolean) => void {
+  return (text) => { if (text) onText(text); };
+}
+
+/** Split a full conversational history into the three shapes the cloud
+ *  provider clients (groqChatStream/cerebrasChatStream) expect: a system
+ *  prompt string, prior turns as `history`, and the final user message as
+ *  `prompt`. Returns null when there is no user turn to send (should not
+ *  happen in practice — the caller always appends the latest user message
+ *  before calling — but this keeps the orchestrator itself total). */
+function splitHistoryForCloud(
+  history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
+): { systemPrompt: string; priorTurns: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>; lastUserContent: string } | null {
+  const systemPrompt = history.find((m) => m.role === 'system')?.content ?? '';
+  const nonSystem = history.filter((m) => m.role !== 'system');
+  const last = nonSystem[nonSystem.length - 1];
+  if (!last) return null;
+  return { systemPrompt, priorTurns: nonSystem.slice(0, -1), lastUserContent: last.content };
+}
+
 /**
- * Run one conversational-registration turn against the LOCAL model. Never
- * throws; every failure mode (config unusable, network error, timeout, empty
- * response) returns `success: false`, which the caller treats as "fall back to
- * Tier 2 slot-fill" — the same fail-closed discipline as
- * extractAgentFieldsWithLlm.
+ * Run one conversational-registration turn, trying each configured cloud
+ * provider before falling back to the local model. Never throws; every
+ * failure mode (nothing configured, network error, timeout, empty response)
+ * returns `success: false`, which the caller treats as "fall back to Tier 2
+ * slot-fill" — the same fail-closed discipline as extractAgentFieldsWithLlm.
  *
- * Phase 0/1 is local-only by design. The cloud-provider fallback chain
- * (Groq/Cerebras first, local last — see lib/agent-capability-answer.ts's
- * pattern) is deliberately out of scope here and lands as Phase 1.5; keeping
- * this a thin ollamaChat wrapper means the provider question can be answered
- * later without touching the pure functions above.
+ * 2026-08-02: Phase 1 shipped local-only; on-device testing then showed
+ * Qwen3.5-2B's real ceiling (repeated questions, ignored formatting
+ * instructions) directly degrading the "LLM converses in its own words"
+ * experience Tier 3 exists to provide — even though every failure mode was
+ * already handled safely by the fallback machinery elsewhere in this module
+ * and hooks/use-ai-pane-dispatch.ts. This is Phase 1.5: order matches
+ * lib/llm-interpreter.ts's interpretWithFallback (Cerebras -> Groq -> local),
+ * the codebase's established "fast general-purpose text task" tier — the
+ * on-device local model remains the OFFLINE FLOOR, tried last and always
+ * available, never removed. A provider is skipped (not treated as failure)
+ * when its API key is absent, and any provider's own exception/HTTP failure
+ * falls through to the next one rather than propagating.
  */
 export async function runConversationalRegistrationTurn(
+  history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
+  localLlmConfig: { baseUrl?: string; model?: string; enabled: boolean },
+  timeoutMs = 30_000,
+  cloudConfig: ConversationalCloudConfig = {},
+): Promise<ConversationalRegistrationTurnResult> {
+  const split = splitHistoryForCloud(history);
+
+  if (split && cloudConfig.cerebrasApiKey) {
+    try {
+      const { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } = await import('./cerebras');
+      let acc = '';
+      const result = await cerebrasChatStream(
+        cloudConfig.cerebrasApiKey,
+        split.lastUserContent,
+        collectChunks((t) => { acc += t; }),
+        cloudConfig.cerebrasModel ?? CEREBRAS_DEFAULT_MODEL,
+        split.priorTurns,
+        undefined,
+        split.systemPrompt,
+      );
+      if (result.success && acc.trim()) return { success: true, raw: acc };
+      logInfo(LOG, `runConversationalRegistrationTurn: Cerebras turn unusable (${result.error ?? 'empty response'}), trying next provider`);
+    } catch (err) {
+      logInfo(LOG, `runConversationalRegistrationTurn: Cerebras turn threw (${err instanceof Error ? err.message : String(err)}), trying next provider`);
+    }
+  }
+
+  if (split && cloudConfig.groqApiKey) {
+    try {
+      const { groqChatStream, GROQ_DEFAULT_MODEL } = await import('./groq');
+      let acc = '';
+      const result = await groqChatStream(
+        cloudConfig.groqApiKey,
+        split.lastUserContent,
+        collectChunks((t) => { acc += t; }),
+        cloudConfig.groqModel ?? GROQ_DEFAULT_MODEL,
+        split.priorTurns,
+        undefined,
+        split.systemPrompt,
+      );
+      if (result.success && acc.trim()) return { success: true, raw: acc };
+      logInfo(LOG, `runConversationalRegistrationTurn: Groq turn unusable (${result.error ?? 'empty response'}), trying next provider`);
+    } catch (err) {
+      logInfo(LOG, `runConversationalRegistrationTurn: Groq turn threw (${err instanceof Error ? err.message : String(err)}), trying next provider`);
+    }
+  }
+
+  return runConversationalRegistrationTurnLocal(history, localLlmConfig, timeoutMs);
+}
+
+/** The offline floor: the original Phase 1 local-only implementation,
+ *  unchanged, now the last link in runConversationalRegistrationTurn's
+ *  chain rather than the whole function. Exported separately so tests (and
+ *  any future caller that deliberately wants to skip the cloud chain — e.g.
+ *  an explicit "force local" setting) can call it directly. */
+export async function runConversationalRegistrationTurnLocal(
   history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
   localLlmConfig: { baseUrl?: string; model?: string; enabled: boolean },
   timeoutMs = 30_000,

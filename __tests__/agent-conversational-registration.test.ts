@@ -3,6 +3,7 @@ import {
   parseConversationalTurnResponse,
   mergeConversationalExtractionIntoDraft,
   runConversationalRegistrationTurn,
+  runConversationalRegistrationTurnLocal,
   normalizeRegistrationQuestion,
   isRepeatedRegistrationQuestion,
   buildConversationTranscript,
@@ -14,9 +15,21 @@ import type { SocialConnectorMeta } from '@/store/types';
 jest.mock('@/lib/local-llm', () => ({
   ollamaChat: jest.fn(),
 }));
+jest.mock('@/lib/cerebras', () => ({
+  cerebrasChatStream: jest.fn(),
+  CEREBRAS_DEFAULT_MODEL: 'qwen-3-235b-a22b-instruct-2507',
+}));
+jest.mock('@/lib/groq', () => ({
+  groqChatStream: jest.fn(),
+  GROQ_DEFAULT_MODEL: 'llama-3.3-70b-versatile',
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ollamaChat } = require('@/lib/local-llm') as { ollamaChat: jest.Mock };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { cerebrasChatStream } = require('@/lib/cerebras') as { cerebrasChatStream: jest.Mock };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { groqChatStream } = require('@/lib/groq') as { groqChatStream: jest.Mock };
 
 const FENCE_TAG = '```shelly-agent-registration';
 const FENCE_END = '```';
@@ -637,6 +650,8 @@ describe('runConversationalRegistrationTurn', () => {
 
   beforeEach(() => {
     ollamaChat.mockReset();
+    cerebrasChatStream.mockReset();
+    groqChatStream.mockReset();
   });
 
   it('fails closed WITHOUT calling the model when the local LLM is disabled', async () => {
@@ -693,6 +708,147 @@ describe('runConversationalRegistrationTurn', () => {
     ollamaChat.mockRejectedValue(new Error('network down'));
     const res = await runConversationalRegistrationTurn(history, enabled);
     expect(res).toEqual({ success: false, error: 'network down' });
+  });
+
+  it('runConversationalRegistrationTurnLocal is the same local-only implementation runConversationalRegistrationTurn falls back to (no cloudConfig -> identical behavior)', async () => {
+    ollamaChat.mockResolvedValue({ success: true, content: 'ローカルのみの応答' });
+    const viaLocal = await runConversationalRegistrationTurnLocal(history, enabled);
+    ollamaChat.mockResolvedValue({ success: true, content: 'ローカルのみの応答' });
+    const viaDefault = await runConversationalRegistrationTurn(history, enabled);
+    expect(viaLocal).toEqual(viaDefault);
+  });
+});
+
+// ─── runConversationalRegistrationTurn cloud fallback (2026-08-02 Phase 1.5) ─
+//
+// Order matches lib/llm-interpreter.ts's interpretWithFallback: Cerebras ->
+// Groq -> local. The local model is the OFFLINE FLOOR, never removed —
+// every test here that reaches it still goes through the exact same
+// ollamaChat call the local-only tests above assert on.
+
+describe('runConversationalRegistrationTurn cloud fallback', () => {
+  const history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+    { role: 'system', content: 'sys prompt' },
+    { role: 'user', content: '毎朝ニュースまとめて' },
+    { role: 'assistant', content: '何時にしますか？' },
+    { role: 'user', content: '8時' },
+  ];
+  const localCfg = { baseUrl: 'http://127.0.0.1:8080', model: 'Qwen3.5-2B-Q4_K_M', enabled: true };
+
+  function streamingSuccess(text: string) {
+    return jest.fn(
+      (
+        _apiKey: string,
+        _prompt: string,
+        onChunk: (text: string, done: boolean) => void,
+      ) => {
+        onChunk(text, true);
+        return Promise.resolve({ success: true, content: text });
+      },
+    );
+  }
+
+  beforeEach(() => {
+    ollamaChat.mockReset();
+    cerebrasChatStream.mockReset();
+    groqChatStream.mockReset();
+  });
+
+  it('with no cloud keys configured, goes straight to local without calling either cloud provider', async () => {
+    ollamaChat.mockResolvedValue({ success: true, content: 'local answer' });
+    const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {});
+    expect(res).toEqual({ success: true, raw: 'local answer' });
+    expect(cerebrasChatStream).not.toHaveBeenCalled();
+    expect(groqChatStream).not.toHaveBeenCalled();
+    expect(ollamaChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers Cerebras when configured, and never calls Groq or local', async () => {
+    cerebrasChatStream.mockImplementation(streamingSuccess('Cerebrasの応答'));
+    const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
+      cerebrasApiKey: 'csk_test',
+    });
+    expect(res).toEqual({ success: true, raw: 'Cerebrasの応答' });
+    expect(groqChatStream).not.toHaveBeenCalled();
+    expect(ollamaChat).not.toHaveBeenCalled();
+  });
+
+  it('splits history into systemPrompt / priorTurns / lastUserContent for the cloud call', async () => {
+    cerebrasChatStream.mockImplementation(streamingSuccess('ok'));
+    await runConversationalRegistrationTurn(history, localCfg, 30_000, { cerebrasApiKey: 'csk_test' });
+    const [apiKey, prompt, , , priorTurns, , systemPromptOverride] = cerebrasChatStream.mock.calls[0];
+    expect(apiKey).toBe('csk_test');
+    expect(prompt).toBe('8時'); // the LAST user message
+    expect(systemPromptOverride).toBe('sys prompt');
+    expect(priorTurns).toEqual([
+      { role: 'user', content: '毎朝ニュースまとめて' },
+      { role: 'assistant', content: '何時にしますか？' },
+    ]);
+  });
+
+  it('skips Cerebras when no key is present, and uses Groq instead', async () => {
+    groqChatStream.mockImplementation(streamingSuccess('Groqの応答'));
+    const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
+      groqApiKey: 'gsk_test',
+    });
+    expect(res).toEqual({ success: true, raw: 'Groqの応答' });
+    expect(cerebrasChatStream).not.toHaveBeenCalled();
+    expect(ollamaChat).not.toHaveBeenCalled();
+  });
+
+  it('falls through to Groq when Cerebras reports success:false', async () => {
+    cerebrasChatStream.mockResolvedValue({ success: false, error: 'quota exceeded' });
+    groqChatStream.mockImplementation(streamingSuccess('Groqが拾った'));
+    const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
+      cerebrasApiKey: 'csk_test',
+      groqApiKey: 'gsk_test',
+    });
+    expect(res).toEqual({ success: true, raw: 'Groqが拾った' });
+  });
+
+  it('falls through to Groq when Cerebras THROWS (never propagates)', async () => {
+    cerebrasChatStream.mockRejectedValue(new Error('network down'));
+    groqChatStream.mockImplementation(streamingSuccess('Groqが拾った'));
+    const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
+      cerebrasApiKey: 'csk_test',
+      groqApiKey: 'gsk_test',
+    });
+    expect(res).toEqual({ success: true, raw: 'Groqが拾った' });
+  });
+
+  it('falls all the way through to the LOCAL offline floor when both cloud providers fail', async () => {
+    cerebrasChatStream.mockResolvedValue({ success: false, error: 'down' });
+    groqChatStream.mockResolvedValue({ success: false, error: 'down' });
+    ollamaChat.mockResolvedValue({ success: true, content: 'ローカルが最後の砦' });
+    const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
+      cerebrasApiKey: 'csk_test',
+      groqApiKey: 'gsk_test',
+    });
+    expect(res).toEqual({ success: true, raw: 'ローカルが最後の砦' });
+    expect(ollamaChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats an empty/whitespace-only cloud response as unusable and falls through', async () => {
+    cerebrasChatStream.mockImplementation(streamingSuccess('   '));
+    groqChatStream.mockImplementation(streamingSuccess('Groqが拾った'));
+    const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
+      cerebrasApiKey: 'csk_test',
+      groqApiKey: 'gsk_test',
+    });
+    expect(res).toEqual({ success: true, raw: 'Groqが拾った' });
+  });
+
+  it('never throws even when every provider fails, including a disabled local LLM', async () => {
+    cerebrasChatStream.mockRejectedValue(new Error('down'));
+    groqChatStream.mockRejectedValue(new Error('down'));
+    const res = await runConversationalRegistrationTurn(
+      history,
+      { ...localCfg, enabled: false },
+      30_000,
+      { cerebrasApiKey: 'csk_test', groqApiKey: 'gsk_test' },
+    );
+    expect(res.success).toBe(false);
+    expect(ollamaChat).not.toHaveBeenCalled();
   });
 });
 

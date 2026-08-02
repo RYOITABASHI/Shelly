@@ -2080,7 +2080,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 **未了**:
 1. ~~実機検証(フラグOFF→ONで既存動作に回帰がないこと、ONで曖昧な発話に対しLLMが自分の言葉で聞き返すこと、ローカルLLM未起動時のfail-closed降格) — adb未接続のため今回のセッションでは未実施。~~ → 2026-08-02 別環境PC(adb+scrcpyミラーリング接続)で実施、下記参照。
 2. Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)、Phase 5(整理)は未着手。
-3. Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。
+3. ~~Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。~~ → 2026-08-02 Phase 1.5として実装(実機未検証)、下記参照。
 
 **→ 2026-08-02 実機検証5項目 全PASS**（別環境PC、adb+scrcpyミラーリング、ローカルLLM=Qwen3.5-2B、versionCode 2020相当のビルド）:
 1. フラグOFF回帰なし — `isLowConfidenceAgentDraft=false`のケースはTier 3の分岐に一切入らず、既存のTier 1即確認のまま。
@@ -2111,6 +2111,16 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
   - **検証**: 新規テスト16件追加（`__tests__/agent-conversational-registration.test.ts`、82→82件中の内訳としてスキーマフォールバック6件・prompt指示1件・autonomousIntent文字列許容の拡張1件他）、既存の「単一キーだけの ` ```json ` 言及は question のまま」というテストは無変更で green（誤検知防止の閾値2が機能していることの回帰確認）。両対象スイート 82+33=115 PASS、`tsc --noEmit` エラー0件。
 
   **→ 2026-08-02 実機検証PASS（`fe0357f4d`、別環境PC、Qwen3.5-2B、ADBKeyboard経由）**: シナリオ1（`@agent 定期的に何かやっておいて`）— 初回ターンで生JSON表示なし、いきなり確認カードに到達（`merge applied -> action=draft, scheduleConfident=true, rejected=[]`）。シナリオ2（webhook注入+autonomous複合、`@agent SNSに投稿しといて` → 「webhookで直接送って、URLはhttps://example.com/hook。確認なしで毎回勝手にやっておいて」）— わずか2ターンで確認カードに到達、実行内容は下書きのままでwebhookへの昇格なし（`platformHint "ブルースカイ" did not resolve to... — dropped` でplatformHint自体も安全に拒否）、autonomousIntentの文字列`"true"`受理も機能確認。以前の実機検証で見られた「生JSONが質問表示される」「虚偽の登録完了宣言を繰り返す」は再現せず。`fbe079682`(repeat検出+turn-cap値保持)と`fe0357f4d`(フェンスタグ非依存判定)の組み合わせで、Tier 3が意図通りのクリーンな完了フローに到達することを実機で確認済み。これでTier 3 Phase 0/1の実機検証は一通り完了。
+
+**→ 2026-08-02 Phase 1.5: クラウド優先フォールバックチェーンを実装（実機未検証）**: 上記の実機検証を経ても「ローカルLLM(Qwen3.5-2B)があんまり賢くない」という所感が残り(3つのバグは全てモデルの指示追従・会話理解の限界が根っこ)、Fable5への独立相談(コード変更なしの意見のみ依頼)でも「クラウドフォールバックの実装が最善、4B級ローカルモデルへの変更は多ターン会話でのCPU推論レイテンシ・コールドスタートの観点から非推奨、現状維持は"安全だが賢く感じない"がTier 3の存在意義を毀損するので単独では不十分」という一致した結論。プラン書のPhase 1で意図的に見送っていた項目を前倒しで実装:
+- `lib/agent-conversational-registration.ts`の`runConversationalRegistrationTurn()`を、`lib/llm-interpreter.ts`の`interpretWithFallback`と同じ確立済みの順序(**Cerebras → Groq → ローカル**、Geminiは意図的に除外——メッセージ形式が`{role,content}`ではなく`{role,parts}`で構造が異なるため)でクラウドプロバイダを試行するよう拡張。新規`ConversationalCloudConfig`(cerebrasApiKey/cerebrasModel/groqApiKey/groqModel、全optional)を第4引数として追加(既存呼び出し元は省略可、省略時は`{}`扱いで従来どおりローカルのみ)。
+- 元のローカル専用実装は`runConversationalRegistrationTurnLocal()`として分離・エクスポートし、新しい`runConversationalRegistrationTurn`から**最後のオフライン床**として呼ばれる形に整理。ローカルLLMは削除されておらず、常時利用可能な最終フォールバックとして残置。
+- 各プロバイダは`lib/agent-capability-answer.ts`と同じ確立済みパターン(動的import、try/catchで例外を握りつぶして次のプロバイダへ、`success && 非空`のときのみ採用)。APIキー未設定のプロバイダは試行自体をスキップ(失敗ではなく省略)。
+- `hooks/use-ai-pane-dispatch.ts`の2箇所の呼び出し元を更新し、`useSettingsStore`から`cerebrasApiKey`/`cerebrasModel`/`groqApiKey`/`groqModel`を渡すよう変更。
+- `components/config/ConfigTUI.tsx`の「LLM-Led Agent Registration」トグルの説明文も、クラウド優先の挙動を反映するよう更新。
+- **安全性**: プロバイダが変わっても、応答は依然`parseConversationalTurnResponse`(スキーマベースのフォールバック含む)を通り、`mergeConversationalExtractionIntoDraft`の全ゲート(actionType許可リスト、connector実在照合、cron再検証、autonomousIntentのstrict boolean/文字列限定)は無変更。会話内容が新たにクラウドへ送信される点は、既存の通常AIチャット機能が既に同種のデータをクラウドへ送っている前提と同じ扱い(新しいデータカテゴリの流出ではない)。
+- **検証**: 新規テスト9件追加(`__tests__/agent-conversational-registration.test.ts`、Cerebras優先/Groqへのフォールバック/例外時のフォールバック/両方失敗時のローカル床到達/空応答の扱い/history分割の正確性等)、既存テストは無改変で green。両対象スイート92+33=125 PASS、`tsc --noEmit`エラー0件、全体回帰2621 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**(Cerebras/Groq APIキー設定済みの環境での動作確認が必要)。
+- 並行して、Fable5の副次提案(Ollama/llama.cpp構造化出力によるローカル床自体の品質底上げ)も別エージェントに調査・実装依頼中(`extractAgentFieldsWithLlm`側への適用、Tier 3の会話ターン自体には適用しない設計——dual-mode[自然文の質問 or 最終JSON]を壊さないため)。
 
 **副次的に発見・修正された既存バグ(Tier 3実装とは無関係、実機検証中に偶然発見)**:
 - ConfigTUIのbottom sheetがCommand Palette経由で開くと高さ0(ヘッダーのみ)に潰れる表示崩れ → Yogaのflexトラップ(`panel`が`maxHeight`のみで`flexShrink`なし、中の`ScrollView`が`flex:1`で親の未確定な高さに対してgrowできず0に解決)と判明、`components/config/ConfigTUI.tsx`を修正(`92f1e9d73`)。実機タップで表示崩れ解消を確認済み。

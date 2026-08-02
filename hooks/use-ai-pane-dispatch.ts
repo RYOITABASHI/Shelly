@@ -939,6 +939,13 @@ export function useAIPaneDispatch(paneId: string) {
                 model: llmSettings.localLlmModel,
                 enabled: !!llmSettings.localLlmUrl,
               },
+              30_000,
+              {
+                cerebrasApiKey: llmSettings.cerebrasApiKey,
+                cerebrasModel: llmSettings.cerebrasModel,
+                groqApiKey: llmSettings.groqApiKey,
+                groqModel: llmSettings.groqModel,
+              },
             );
             if (result.success) {
               const turn = parseConversationalTurnResponse(result.raw ?? '');
@@ -1641,6 +1648,13 @@ export function useAIPaneDispatch(paneId: string) {
                     baseUrl: llmFallbackSettings.localLlmUrl,
                     model: llmFallbackSettings.localLlmModel,
                     enabled: !!llmFallbackSettings.localLlmUrl,
+                  },
+                  30_000,
+                  {
+                    cerebrasApiKey: llmFallbackSettings.cerebrasApiKey,
+                    cerebrasModel: llmFallbackSettings.cerebrasModel,
+                    groqApiKey: llmFallbackSettings.groqApiKey,
+                    groqModel: llmFallbackSettings.groqModel,
                   },
                 );
                 if (result.success) {
