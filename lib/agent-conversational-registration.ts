@@ -215,6 +215,8 @@ ${FENCE_TAG}
 {"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "outputPath": "", "platformHint": "", "autonomousIntent": null}
 ${FENCE_END}
 
+**このフェンスタグ（${FENCE_TAG}）を一字一句そのまま使ってください。 \`\`\`json や、フェンスなしの生JSONでは絶対に返さないでください** — システム側はこの正確なタグだけを「最終提案」として認識します。また、"autonomousIntent" は文字列 "true"/"false" ではなく **真偽値（true/false/null をそのまま）** で書いてください。まだ登録が完了していないのに「登録しました」「完了しました」のような完了を示す文章だけを返すのも禁止です — 完了したと判断したら、必ずこの形式のブロックを出力してください。
+
 【各項目のルール】
 - "name": エージェントの短い表示名（20文字以内）。
 - "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
@@ -245,6 +247,8 @@ ${hint}`;
 ${FENCE_TAG}
 {"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "outputPath": "", "platformHint": "", "autonomousIntent": null}
 ${FENCE_END}
+
+**Use this exact fence tag (${FENCE_TAG}), character for character. Never use \`\`\`json or unfenced raw JSON instead** — the system only recognizes this exact tag as your final proposal. Also write "autonomousIntent" as a real boolean (true/false/null), never the strings "true"/"false". Do not announce that registration is "done" or "complete" in plain text either — if you believe you are done, output the block above instead.
 
 【Field rules】
 - "name": a short display label for the agent (<= 20 chars).
@@ -292,50 +296,37 @@ function readValidatedString(
   return trimmed.length > maxLen ? trimmed.slice(0, maxLen) : trimmed;
 }
 
-/**
- * Classify one raw LLM turn. NEVER throws.
- *
- *   - empty / whitespace-only     → 'unparseable' (fail closed: an empty
- *                                   question is not something the caller can
- *                                   show a user, so it must degrade to Tier 2
- *                                   rather than render a blank turn)
- *   - no `${FENCE_TAG}` fence     → 'question' with the whole trimmed response
- *   - fence + valid JSON object   → 'proposal'
- *   - fence + unusable JSON       → 'unparseable' (the caller's Tier 2 signal)
- *
- * A proposal whose every field is empty is still a 'proposal' — that is not an
- * error, and mergeConversationalExtractionIntoDraft handles it correctly by
- * returning the caller's original draft, untouched, with nothing applied.
- */
-export function parseConversationalTurnResponse(raw: string): ConversationalTurn {
-  if (!raw || !raw.trim()) return { kind: 'unparseable' };
+/** Every field name a genuine final proposal can carry. Used only to judge
+ *  "does this JSON object look like a proposal" for the schema-based fallback
+ *  below — has no bearing on which fields actually get merged (that gate is
+ *  entirely readValidatedString + mergeConversationalExtractionIntoDraft). */
+const KNOWN_PROPOSAL_KEYS = [
+  'name', 'scheduleText', 'actionType', 'prompt', 'outputPath', 'platformHint', 'autonomousIntent',
+] as const;
 
-  const tagIndex = raw.indexOf(FENCE_TAG);
-  if (tagIndex === -1) {
-    return { kind: 'question', text: raw.trim() };
+/** How many recognized proposal keys an object needs before the schema-based
+ *  fallback (see parseConversationalTurnResponse) trusts it as a genuine final
+ *  answer rather than incidental JSON the model happened to produce mid-
+ *  conversation (an echoed example, a fragment of "thinking out loud", etc).
+ *  2 is deliberately conservative: a single matching key (e.g. a `"name"`
+ *  field inside some unrelated JSON) isn't enough evidence, but the real
+ *  proposal schema shares no field names with anything else Shelly's prompts
+ *  ask the model to emit, so 2+ matches is a strong signal in practice. */
+const MIN_SCHEMA_KEY_MATCHES = 2;
+
+function looksLikeProposalObject(rec: Record<string, unknown>): boolean {
+  let matches = 0;
+  for (const key of KNOWN_PROPOSAL_KEYS) {
+    if (key in rec) matches++;
   }
+  return matches >= MIN_SCHEMA_KEY_MATCHES;
+}
 
-  // Body = everything after the opening tag, up to the closing fence. A missing
-  // closing fence (a truncated local-model response) is tolerated: we take the
-  // rest of the string and let the JSON scan decide.
-  const afterTag = raw.slice(tagIndex + FENCE_TAG.length);
-  const closeIndex = afterTag.indexOf(FENCE_END);
-  const body = closeIndex === -1 ? afterTag : afterTag.slice(0, closeIndex);
-
-  const span = extractJsonObjectSpan(body);
-  if (!span) return { kind: 'unparseable' };
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(span);
-  } catch {
-    return { kind: 'unparseable' };
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { kind: 'unparseable' };
-  }
-  const rec = parsed as Record<string, unknown>;
-
+/** Build an AgentConversationalExtraction from an already-parsed JSON record.
+ *  Shared by the canonical-fence path and the schema-based fallback path so
+ *  field validation (length caps, autonomousIntent typing) can't drift
+ *  between the two. */
+function buildExtractionFromRecord(rec: Record<string, unknown>): AgentConversationalExtraction {
   const extraction: AgentConversationalExtraction = {
     name: readValidatedString(rec, 'name'),
     scheduleText: readValidatedString(rec, 'scheduleText'),
@@ -345,16 +336,123 @@ export function parseConversationalTurnResponse(raw: string): ConversationalTurn
     platformHint: readValidatedString(rec, 'platformHint'),
   };
 
-  // Strict boolean ONLY. The prompt asks for null when the user said nothing
-  // about unattended execution, and JSON null (like a missing key, or a
-  // stringly-typed "true") must leave this UNSET rather than collapsing to
-  // false: "unclear" and "the user said no" are different answers downstream.
+  // Primarily strict boolean. The prompt asks for JSON `null` when the user
+  // said nothing about unattended execution, and that (like a missing key)
+  // must leave this UNSET rather than collapsing to false: "unclear" and "the
+  // user said no" are different answers downstream.
+  //
+  // 2026-08-02 on-device finding (Qwen3.5-2B): the model routinely emits
+  // `"autonomousIntent": "true"` — a STRING, not JSON true — despite the
+  // prompt's example showing a bare boolean. A strict `typeof === 'boolean'`
+  // check silently drops this, discarding a clearly-stated user intent. Only
+  // the exact, unambiguous string forms "true"/"false" (trimmed, case
+  // -insensitive) are accepted as a stand-in for the boolean; anything else
+  // stringly-typed ("yes", "1", "たぶん", ...) still leaves this unset rather
+  // than guessing.
   const autonomousIntentRaw = rec['autonomousIntent'];
   if (typeof autonomousIntentRaw === 'boolean') {
     extraction.autonomousIntent = autonomousIntentRaw;
+  } else if (typeof autonomousIntentRaw === 'string') {
+    const normalized = autonomousIntentRaw.trim().toLowerCase();
+    if (normalized === 'true') extraction.autonomousIntent = true;
+    else if (normalized === 'false') extraction.autonomousIntent = false;
   }
 
-  return { kind: 'proposal', extraction };
+  return extraction;
+}
+
+/**
+ * Classify one raw LLM turn. NEVER throws.
+ *
+ *   - empty / whitespace-only            → 'unparseable' (fail closed: an
+ *                                          empty question is not something the
+ *                                          caller can show a user, so it must
+ *                                          degrade to Tier 2 rather than
+ *                                          render a blank turn)
+ *   - `${FENCE_TAG}` fence + valid JSON  → 'proposal' (the tag alone is
+ *                                          trusted — the model chose it
+ *                                          deliberately, see FENCE_TAG's doc)
+ *   - `${FENCE_TAG}` fence + bad JSON    → 'unparseable' (the caller's Tier 2
+ *                                          signal — an explicit intent to
+ *                                          finalize that came out malformed)
+ *   - no matching fence, but a JSON      → 'proposal' IF the object's shape
+ *     object elsewhere in the text         passes looksLikeProposalObject
+ *                                          (see its doc: this is the
+ *                                          2026-08-02 on-device fallback for
+ *                                          FENCE_TAG non-compliance)
+ *   - anything else                      → 'question' with the whole trimmed
+ *                                          response
+ *
+ * A proposal whose every field is empty is still a 'proposal' — that is not an
+ * error, and mergeConversationalExtractionIntoDraft handles it correctly by
+ * returning the caller's original draft, untouched, with nothing applied.
+ *
+ * 2026-08-02 on-device finding (Qwen3.5-2B): the model reliably decides WHEN
+ * it has enough information, but does NOT reliably reproduce the deliberately
+ * unusual ${FENCE_TAG} the prompt asks for — it defaults to a plain ```json
+ * fence, or no fence at all, even for a fully-formed final answer. Treating
+ * every such response as 'question' (the original behavior) meant the raw
+ * JSON got rendered to the user as if it were prose, and Tier 3 essentially
+ * never reached its own proposal→confirm handoff on-device, relying entirely
+ * on the Tier 2 fallback (5-turn cap / repeat detection) to end every
+ * conversation instead. The schema check (looksLikeProposalObject) is what
+ * replaces the fence tag as the "this is really a final answer, not the model
+ * thinking out loud" trust signal for this fallback path — it does not loosen
+ * what fields are ACCEPTED (that is still entirely
+ * mergeConversationalExtractionIntoDraft's per-field, existence-checked gate),
+ * only what raw text is recognized as worth attempting to parse as one.
+ */
+export function parseConversationalTurnResponse(raw: string): ConversationalTurn {
+  if (!raw || !raw.trim()) return { kind: 'unparseable' };
+
+  const tagIndex = raw.indexOf(FENCE_TAG);
+  if (tagIndex !== -1) {
+    // Body = everything after the opening tag, up to the closing fence. A
+    // missing closing fence (a truncated local-model response) is tolerated:
+    // we take the rest of the string and let the JSON scan decide.
+    const afterTag = raw.slice(tagIndex + FENCE_TAG.length);
+    const closeIndex = afterTag.indexOf(FENCE_END);
+    const body = closeIndex === -1 ? afterTag : afterTag.slice(0, closeIndex);
+
+    const span = extractJsonObjectSpan(body);
+    if (!span) return { kind: 'unparseable' };
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(span);
+    } catch {
+      return { kind: 'unparseable' };
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { kind: 'unparseable' };
+    }
+    return { kind: 'proposal', extraction: buildExtractionFromRecord(parsed as Record<string, unknown>) };
+  }
+
+  // Schema-based fallback (see doc comment above). Deliberately conservative
+  // in the OTHER direction from the tagged path: any failure here (no brace
+  // span, bad JSON, wrong shape) falls through to 'question' rather than
+  // 'unparseable', because — unlike a present-but-malformed FENCE_TAG block —
+  // there was never an explicit signal that this response was meant to be a
+  // final answer at all, so the safe default is to keep the conversation
+  // going rather than force a Tier 2 handoff.
+  const span = extractJsonObjectSpan(raw);
+  if (span) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(span);
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const rec = parsed as Record<string, unknown>;
+      if (looksLikeProposalObject(rec)) {
+        return { kind: 'proposal', extraction: buildExtractionFromRecord(rec) };
+      }
+    }
+  }
+
+  return { kind: 'question', text: raw.trim() };
 }
 
 // ── §2.5: conversation-progress heuristics (pure) ───────────────────────────

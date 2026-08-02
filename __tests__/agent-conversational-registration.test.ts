@@ -187,9 +187,66 @@ describe('parseConversationalTurnResponse', () => {
     expect(turn).toEqual({ kind: 'question', text: '何時に実行しますか？' });
   });
 
-  it('treats a fence-less response that merely MENTIONS json as a question, not a proposal', () => {
+  it('treats a fence-less response that merely MENTIONS json as a question, not a proposal (only 1 known key present, below MIN_SCHEMA_KEY_MATCHES)', () => {
     const turn = parseConversationalTurnResponse('```json\n{"name":"x"}\n```');
     expect(turn.kind).toBe('question');
+  });
+
+  // 2026-08-02 on-device finding (Qwen3.5-2B): the model reliably decides it
+  // is done, but does not reliably reproduce the custom FENCE_TAG — it
+  // defaults to a plain ```json fence, or no fence at all. Without this
+  // schema-based fallback, a fully-formed final answer was silently rendered
+  // to the user as if it were a question, and Tier 3 never reached its own
+  // proposal->confirm handoff on-device.
+  it('recognizes a ```json-fenced object as a proposal once it has >= 2 known proposal keys', () => {
+    const turn = parseConversationalTurnResponse(
+      '確認なしで勝手にやっておいて。\n\n```json\n' +
+        JSON.stringify({
+          name: '定期実行エージェント',
+          scheduleText: '毎週月曜の9時',
+          actionType: 'draft',
+          prompt: '定期実行エージェントは、毎週月曜の9時に実行されます。',
+          outputPath: '',
+          platformHint: 'ブルースカイ',
+          autonomousIntent: 'true',
+        }) +
+        '\n```',
+    );
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.name).toBe('定期実行エージェント');
+    expect(turn.extraction.autonomousIntent).toBe(true);
+  });
+
+  it('recognizes a completely unfenced JSON object as a proposal once it has >= 2 known proposal keys', () => {
+    const turn = parseConversationalTurnResponse(
+      JSON.stringify({ name: '朝ニュース', scheduleText: '毎朝8時', prompt: 'ニュースをまとめる' }),
+    );
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.name).toBe('朝ニュース');
+  });
+
+  it('does NOT promote an unfenced/mistagged object with only 1 matching key (guards against incidental JSON)', () => {
+    const turn = parseConversationalTurnResponse('例えばこんな感じです: ```json\n{"name":"例"}\n```');
+    expect(turn.kind).toBe('question');
+  });
+
+  it('does NOT promote unfenced JSON with zero matching keys', () => {
+    const turn = parseConversationalTurnResponse(JSON.stringify({ foo: 'bar', baz: 'qux' }));
+    expect(turn.kind).toBe('question');
+  });
+
+  it('still prefers the canonical FENCE_TAG when both a tagged and an untagged JSON block are present', () => {
+    const raw =
+      '参考までにこんな形式もあります: ```json\n{"name":"decoy","scheduleText":"毎日","prompt":"x"}\n```\n\n' +
+      fenced(JSON.stringify({ name: 'real', scheduleText: '毎日8時', prompt: 'y' }));
+    const turn = parseConversationalTurnResponse(raw);
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    // extractJsonObjectSpan on the canonical-tag body only sees what's after
+    // FENCE_TAG, so the decoy block never enters the parse at all.
+    expect(turn.extraction.name).toBe('real');
   });
 
   it('parses a well-formed fenced block as a proposal', () => {
@@ -273,17 +330,24 @@ describe('parseConversationalTurnResponse', () => {
     expect(turn.extraction.platformHint).toBe('X');
   });
 
-  it('accepts autonomousIntent only as a strict boolean', () => {
+  it('accepts autonomousIntent as a boolean, or the exact strings "true"/"false" (2026-08-02 on-device: Qwen3.5-2B emits the latter)', () => {
     const t1 = parseConversationalTurnResponse(fenced('{"autonomousIntent": true}'));
     const t2 = parseConversationalTurnResponse(fenced('{"autonomousIntent": false}'));
     const t3 = parseConversationalTurnResponse(fenced('{"autonomousIntent": null}'));
     const t4 = parseConversationalTurnResponse(fenced('{"autonomousIntent": "true"}'));
+    const t5 = parseConversationalTurnResponse(fenced('{"autonomousIntent": "false"}'));
+    const t6 = parseConversationalTurnResponse(fenced('{"autonomousIntent": "  TRUE "}'));
+    // A genuinely ambiguous string is still not guessed at.
+    const t7 = parseConversationalTurnResponse(fenced('{"autonomousIntent": "yes"}'));
     const read = (t: ReturnType<typeof parseConversationalTurnResponse>) =>
       t.kind === 'proposal' ? t.extraction.autonomousIntent : 'not-a-proposal';
     expect(read(t1)).toBe(true);
     expect(read(t2)).toBe(false);
     expect(read(t3)).toBeUndefined();
-    expect(read(t4)).toBeUndefined();
+    expect(read(t4)).toBe(true);
+    expect(read(t5)).toBe(false);
+    expect(read(t6)).toBe(true);
+    expect(read(t7)).toBeUndefined();
   });
 
   it('caps over-long field values', () => {
@@ -647,6 +711,23 @@ describe('buildRegistrationSystemPrompt anti-repeat instruction', () => {
     const enPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
     expect(enPrompt).toContain('Never repeat a question you have already asked');
     expect(enPrompt).toContain('move the conversation forward');
+  });
+});
+
+// 2026-08-02 on-device finding: Qwen3.5-2B almost never reproduced the exact
+// custom FENCE_TAG for its final proposal, defaulting to ```json instead —
+// the parser's schema-based fallback (above) is the real fix, this prompt
+// wording is a secondary mitigation only.
+describe('buildRegistrationSystemPrompt fence-tag / boolean-type instruction', () => {
+  it('explicitly forbids ```json / unfenced JSON and stringly-typed autonomousIntent, in BOTH locales', () => {
+    const jaPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(jaPrompt).toContain('一字一句そのまま使ってください');
+    expect(jaPrompt).toContain('json や、フェンスなしの生JSONでは絶対に返さないでください');
+    expect(jaPrompt).toContain('真偽値');
+    const enPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(enPrompt).toContain('character for character');
+    expect(enPrompt).toContain('Never use ```json or unfenced raw JSON');
+    expect(enPrompt).toContain('never the strings "true"/"false"');
   });
 });
 
