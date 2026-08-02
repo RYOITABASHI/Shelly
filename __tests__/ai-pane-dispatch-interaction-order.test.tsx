@@ -164,6 +164,7 @@ import { useAgentStore } from '@/store/agent-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { usePaneStore } from '@/store/pane-store';
 import type { Agent } from '@/store/types';
+import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { hasDraftAssumptions, summarizeAgentDraftAsText, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import ja from '@/lib/i18n/locales/ja';
@@ -1654,5 +1655,168 @@ describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02
     expect(draft?.name).toBe('天気チェッカー');
     expect(draft?.autonomous).toBe(true);
     expect(draft?.action.type).toBe('notify');
+  });
+});
+
+// ─── Scenarios (a)-(d): Phase 2/3 conversational-registration follow-up ───
+
+function phase23Draft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft {
+  return {
+    name: '安全確認テスト',
+    prompt: '毎朝コマンドを実行する',
+    schedule: null,
+    scheduleConfident: false,
+    scheduleLabel: '未設定（要選択）',
+    action: { type: 'cli', command: 'echo safe' },
+    tool: { type: 'cli', cli: 'codex' },
+    toolLabel: 'Codex',
+    rawText: '毎朝コマンドを実行する',
+    ...overrides,
+  } as ParsedAgentDraft;
+}
+
+function seedScheduleSlot(attemptCount: number): ParsedAgentDraft {
+  const draft = phase23Draft();
+  useAIPaneStore.getState().addMessage(PANE, {
+    id: `slot-${attemptCount}`,
+    role: 'assistant',
+    content: ja['slot_fill.question_schedule'],
+    timestamp: Date.now(),
+    agent: 'local',
+    pendingSlotFill: {
+      field: 'schedule',
+      question: ja['slot_fill.question_schedule'],
+      partialDraft: draft,
+      attemptCount,
+    },
+  });
+  return draft;
+}
+
+const PHASE23_QUESTION = 'もう少し自由に、いつ実行したいか教えてください。';
+
+describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety net', () => {
+  beforeEach(() => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        agentConversationalRegistrationEnabled: true,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+    mockOllamaChat.mockClear();
+  });
+
+  it('(a) keeps the ordinary Tier 2 retry after the first unresolved answer', async () => {
+    seedScheduleSlot(0);
+    mockOllamaChat.mockResolvedValue({ success: false, content: '', error: 'unavailable' });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('よくわからない');
+    });
+
+    expect(lastMessage().pendingSlotFill?.attemptCount).toBe(1);
+    expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
+    expect(conv().pendingAgentSession).toBeFalsy();
+    expect(tier3Calls()).toHaveLength(0);
+  });
+
+  it('(b) escalates the second unresolved Tier 2 answer into Tier 3 with the partial draft and latest answer', async () => {
+    const draft = seedScheduleSlot(1);
+    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
+      isTier3RegistrationCall(messages)
+        ? { success: true, content: PHASE23_QUESTION }
+        : { success: false, content: '', error: 'narrow extraction miss' },
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('よくわからない');
+    });
+
+    const session = conv().pendingAgentSession;
+    expect(session?.phase).toBe('llm-conversation');
+    expect(session?.draft).toEqual(draft);
+    expect(session?.lastLlmQuestion).toBe(PHASE23_QUESTION);
+    const messages = tier3Calls()[0][1] as Array<{ role: string; content: string }>;
+    expect(messages[1]).toEqual({ role: 'user', content: 'よくわからない' });
+  });
+
+  it.each([
+    ['provider failure', { success: false, content: '', error: 'offline' }],
+    ['unparseable response', { success: true, content: '' }],
+  ])('(c) falls back to the same Tier 2 question after a Tier 3 %s', async (_label, tier3Result) => {
+    seedScheduleSlot(1);
+    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
+      isTier3RegistrationCall(messages)
+        ? tier3Result
+        : { success: false, content: '', error: 'narrow extraction miss' },
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('よくわからない');
+    });
+
+    expect(conv().messages.some((m) => m.content === ja['agentplan.llm_conversation_fallback_notice'])).toBe(true);
+    expect(lastMessage().pendingSlotFill).toMatchObject({ field: 'schedule', attemptCount: 2 });
+    expect(conv().pendingAgentSession).toBeFalsy();
+  });
+
+  it('(d) re-checks the autonomous slot before confirmation for both initial and resumed Tier 3 proposals', async () => {
+    const proposal =
+      '```shelly-agent-registration\n' +
+      JSON.stringify({
+        name: '安全確認テスト',
+        scheduleText: '毎朝8時',
+        prompt: '毎朝Blueskyへ投稿する',
+        actionType: 'social-post',
+        platformHint: 'My Bluesky',
+      }) +
+      '\n```';
+    useSettingsStore.setState({
+      socialConnectors: [{
+        id: 'bsky-main',
+        platform: 'bluesky',
+        label: 'My Bluesky',
+        host: 'https://bsky.social',
+        fields: ['handle', 'appPassword'],
+        createdAt: 1,
+      }],
+    });
+    mockOllamaChat.mockResolvedValue({ success: true, content: proposal });
+    const { result } = setup();
+
+    // Initial-dispatch proposal: an action caveat makes this deterministic
+    // draft eligible for Tier 3 while retaining its high-risk action.
+    await act(async () => {
+      await result.current.dispatch('@agent 手伝って');
+    });
+    expect(lastMessage().pendingSlotFill?.field).toBe('autonomous');
+    expect(lastMessage().pendingSlotFill?.attemptCount).toBe(0);
+    expect(conv().pendingAgentSession?.phase).not.toBe('await-confirm');
+
+    // Resume proposal: seed the same high-risk draft in an active Tier 3
+    // session and verify the second proposal call site has the same guard.
+    useAIPaneStore.setState({ conversations: {}, isLoaded: true });
+    const resumedDraft = phase23Draft();
+    useAIPaneStore.getState().setPendingAgentSession(PANE, {
+      draft: resumedDraft,
+      phase: 'llm-conversation',
+      attemptCounts: {},
+      hasAssumptions: true,
+      createdAt: Date.now(),
+      messageId: 'tier3-seed',
+      agentLabel: 'local',
+    });
+    await act(async () => {
+      await result.current.dispatch('毎朝8時で');
+    });
+    expect(lastMessage().pendingSlotFill?.field).toBe('autonomous');
+    expect(lastMessage().pendingSlotFill?.partialDraft.scheduleConfident).toBe(true);
+    expect(conv().pendingAgentSession).toBeNull();
   });
 });

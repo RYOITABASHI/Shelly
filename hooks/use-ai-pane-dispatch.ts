@@ -1000,6 +1000,27 @@ export function useAIPaneDispatch(paneId: string) {
                 // only ever promote true → true, never demote.
                 if (resumedDraft.llmAutonomousIntent === true) resumedDraft.autonomous = true;
                 store.setPendingAgentSession(paneId, null);
+                const slotFillCtx = {
+                  agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
+                  agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
+                };
+                const missingSlot = nextMissingSlot(resumedDraft, slotFillCtx);
+                if (missingSlot?.field === 'autonomous') {
+                  store.addMessage(paneId, {
+                    id: generateId(),
+                    role: 'assistant',
+                    content: missingSlot.question,
+                    timestamp: Date.now(),
+                    agent: pendingAgentSession.agentLabel,
+                    pendingSlotFill: {
+                      field: 'autonomous',
+                      question: missingSlot.question,
+                      partialDraft: resumedDraft,
+                      attemptCount: 0,
+                    },
+                  });
+                  return;
+                }
                 await presentDraftForConfirmation(pendingAgentSession.agentLabel, resumedDraft);
                 return;
               }
@@ -1422,6 +1443,106 @@ export function useAIPaneDispatch(paneId: string) {
           }
         }
         if (!resolved) {
+          // Phase 2: after Tier 2 has failed to understand the same slot twice,
+          // let the conversational registrar recover using all of the partial
+          // deterministic work accumulated so far. The first miss deliberately
+          // keeps the familiar fixed-question retry.
+          const conversationalSettings = useSettingsStore.getState().settings;
+          if (conversationalSettings.agentConversationalRegistrationEnabled && attemptCount >= 1) {
+            const connectors = useSettingsStore.getState().socialConnectors ?? [];
+            const conversationLocale = detectMessageLocale(partialDraft.rawText);
+            const systemPrompt = buildRegistrationSystemPrompt({
+              locale: conversationLocale,
+              deterministicHint: updatedDraft,
+              connectors,
+            });
+            const result = await runConversationalRegistrationTurn(
+              [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userText },
+              ],
+              {
+                baseUrl: conversationalSettings.localLlmUrl,
+                model: conversationalSettings.localLlmModel,
+                enabled: !!conversationalSettings.localLlmUrl,
+              },
+              30_000,
+              {
+                cerebrasApiKey: conversationalSettings.cerebrasApiKey,
+                cerebrasModel: conversationalSettings.cerebrasModel,
+                groqApiKey: conversationalSettings.groqApiKey,
+                groqModel: conversationalSettings.groqModel,
+              },
+            );
+            if (result.success) {
+              const turn = parseConversationalTurnResponse(result.raw ?? '');
+              if (turn.kind === 'question') {
+                const messageId = generateId();
+                const createdAt = Date.now();
+                store.addMessage(paneId, {
+                  id: messageId,
+                  role: 'assistant',
+                  content: turn.text,
+                  timestamp: createdAt,
+                  agent: agentLabel,
+                });
+                store.setPendingAgentSession(paneId, {
+                  draft: updatedDraft,
+                  phase: 'llm-conversation',
+                  attemptCounts: {},
+                  hasAssumptions: true,
+                  createdAt,
+                  messageId,
+                  agentLabel,
+                  lastLlmQuestion: turn.text,
+                });
+                return;
+              }
+              if (turn.kind === 'proposal') {
+                const mergedDraft = mergeConversationalExtractionIntoDraft(
+                  updatedDraft,
+                  turn.extraction,
+                  { connectors },
+                ).draft;
+                if (mergedDraft.llmAutonomousIntent === true) mergedDraft.autonomous = true;
+                const slotFillCtx = {
+                  agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
+                  agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
+                };
+                const missingSlot = nextMissingSlot(mergedDraft, slotFillCtx);
+                if (missingSlot?.field === 'autonomous') {
+                  store.addMessage(paneId, {
+                    id: generateId(),
+                    role: 'assistant',
+                    content: missingSlot.question,
+                    timestamp: Date.now(),
+                    agent: agentLabel,
+                    pendingSlotFill: {
+                      field: 'autonomous',
+                      question: missingSlot.question,
+                      partialDraft: mergedDraft,
+                      attemptCount: 0,
+                    },
+                  });
+                  return;
+                }
+                await presentDraftForConfirmation(agentLabel, mergedDraft);
+                return;
+              }
+            }
+
+            // A provider failure or malformed/unparseable response must not
+            // strand the slot-fill flow. Explain the downgrade, then continue
+            // into the unchanged fixed-question retry below.
+            const fallbackStrings = conversationLocale === 'ja' ? ja : en;
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: fallbackStrings['agentplan.llm_conversation_fallback_notice'],
+              timestamp: Date.now(),
+              agent: agentLabel,
+            });
+          }
           // Same field, still unresolved — re-ask, bump the attempt counter.
           // applySlotAnswer force-resolves after 1-2 attempts, so this can't loop forever.
           // 2026-07-24 on-device feedback: re-posting the identical question
@@ -1698,6 +1819,27 @@ export function useAIPaneDispatch(paneId: string) {
                     // promotion applied at the narrow extractAgentFieldsWithLlm
                     // call sites elsewhere in this function.
                     if (merged.draft.llmAutonomousIntent === true) merged.draft.autonomous = true;
+                    const slotFillCtx = {
+                      agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
+                      agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
+                    };
+                    const missingSlot = nextMissingSlot(merged.draft, slotFillCtx);
+                    if (missingSlot?.field === 'autonomous') {
+                      store.addMessage(paneId, {
+                        id: generateId(),
+                        role: 'assistant',
+                        content: missingSlot.question,
+                        timestamp: Date.now(),
+                        agent: agent as ChatMessage['agent'],
+                        pendingSlotFill: {
+                          field: 'autonomous',
+                          question: missingSlot.question,
+                          partialDraft: merged.draft,
+                          attemptCount: 0,
+                        },
+                      });
+                      return;
+                    }
                     await presentDraftForConfirmation(agent as ChatMessage['agent'], merged.draft);
                     return;
                   }

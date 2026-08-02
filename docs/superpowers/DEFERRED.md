@@ -2079,7 +2079,16 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 **未了**:
 1. ~~実機検証(フラグOFF→ONで既存動作に回帰がないこと、ONで曖昧な発話に対しLLMが自分の言葉で聞き返すこと、ローカルLLM未起動時のfail-closed降格) — adb未接続のため今回のセッションでは未実施。~~ → 2026-08-02 別環境PC(adb+scrcpyミラーリング接続)で実施、下記参照。
-2. Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 5(整理)は**2026-08-02、Opus5(コアモジュール側)+Codex(配線側)へ並列ディスパッチして実装中**。Opus5トラック(`lib/agent-conversational-registration.ts`: actionType許可集合へのsocial-post追加+プロンプトへのautonomous自然文ヒント+doc整理)はCCレビュー済み・commit済み。Codexトラック(`hooks/use-ai-pane-dispatch.ts`: Tier2→Tier3昇格の実配線+autonomous安全網の実チェック)は実装中。両方揃い次第この行を更新。Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)は意図的に対象外(別枠で要再相談)。
+2. ~~Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 5(整理)は未着手。~~ → 2026-08-02、Opus5(コアモジュール側)+Codex(配線側)へ並列ディスパッチして実装完了・CCレビュー済み・commit済み(下記参照)。Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)のみ意図的に対象外のまま(別枠で要再相談)。
+
+**→ 2026-08-02 Phase 2/3/5 実装完了(実機未検証)**:
+- **Phase 2-a(social-post許可、Opus5)**: `ALLOWED_ACTION_TYPES`に`'social-post'`を追加、ただし宣言だけではno-op——実際の昇格は既存どおり`platformHint`の`resolvePlatformHintConnector()`実在照合のみが担う。`actionType:'social-post'`+有効な`platformHint`の組み合わせが、以前は無意味な`rejectedFields:['actionType']`を出していた点を解消しただけで、受理される値の範囲は一切広がっていない。
+- **Phase 2-b(Tier2→Tier3昇格、Codex)**: `hooks/use-ai-pane-dispatch.ts`のスロットフィル再開ブランチで、同一フィールドが**2回目以降**不解決になった時点(`attemptCount >= 1`、初回の不解決では従来どおりの固定質問リトライを維持)で、`agentConversationalRegistrationEnabled`が有効ならTier 3会話へ昇格。Tier3自体が失敗(プロバイダ不達/unparseable)した場合は降格通知を出した上で従来の固定質問リトライへ復帰し、詰まることがないようにフォールバック。
+- **Phase 3-a(プロンプト側ヒント、Opus5)**: `buildRegistrationSystemPrompt()`のja/en両方に、`lib/agent-slot-fill.ts`の`nextMissingSlot()`が持つautonomous質問トリガー条件(外部作用のあるaction種別+スケジュール確定+意向未取得)を自然文で言い換えたヒントを追加(あくまで補助)。
+- **Phase 3-b(コード側の強制再チェック、Codex)**: Tier 3が`proposal`を返して`presentDraftForConfirmation`へ進む**全3箇所**(初回ディスパッチ・会話再開・Phase 2-bで新設したTier2→Tier3昇格経路)それぞれで、確認画面へ進む直前に`nextMissingSlot()`を再実行し、戻り値が`'autonomous'`だった場合のみ確認をスキップして通常のTier 2 autonomous質問を挟む(他のフィールドが不足していても対象外、スコープを意図的にautonomousだけに絞っている)。既にautonomousが解決済みなら二重に聞かない。
+- **Phase 5**: モジュール冒頭のdocコメントの陳腐化記述(「Phase 0はまだ何もimportされていない」等)を現状に合わせて更新。
+- **安全性**: 両トラックともCCが差分レビュー済み。`actionType`許可集合の拡大は宣言レベルのみ(実際の権限は無変更)、autonomous安全網はコード側の強制チェック(プロンプトへの依存なし)、`resolvePlatformHintConnector`/`parseSchedule`/参照透過性/人間Confirm必須はいずれも無変更。
+- **検証**: 新規テスト計13件(Opus5側9件、Codex側4シナリオ(a)-(d))、対象2スイート96+38=134 PASS、`tsc --noEmit`エラー0件、全体回帰2634 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**。
 3. ~~Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。~~ → 2026-08-02 Phase 1.5として実装(実機未検証)、下記参照。
 
 **→ 2026-08-02 実機検証5項目 全PASS**（別環境PC、adb+scrcpyミラーリング、ローカルLLM=Qwen3.5-2B、versionCode 2020相当のビルド）:
