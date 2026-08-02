@@ -48,7 +48,7 @@ describe('generateRunScript — social-post action', () => {
   const s = generateRunScript(socialAgent('mastodon'));
 
   it('bumped the script version (originally to 23 for the new action case + helpers; now >= 23)', () => {
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=46');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=47');
   });
 
   it('bakes ACTION_TYPE and the social-post variables, with the env-prefix derived from the connector id', () => {
@@ -208,6 +208,44 @@ describe('generateRunScript — per-platform request composition (dispatch_socia
     expect(s).toContain('X connector is missing its refresh token or client id');
   });
 
+  it('x article: bakes article metadata and dispatches draft before publish without using the tweet endpoint', () => {
+    const article = generateRunScript(agent({
+      type: 'social-post',
+      socialPost: { platform: 'x', connectorId: 'my-x', text: '# Body', title: 'Title {{result}}', isArticle: true },
+    }));
+    expect(article).toContain("ACTION_SOCIAL_IS_ARTICLE='1'");
+    expect(article).toContain("ACTION_SOCIAL_TITLE='Title {{result}}'");
+    expect(article).toContain('social_title_resolved="${ACTION_SOCIAL_TITLE//\\{\\{result\\}\\}/$preview}"');
+    const branch = article.slice(article.indexOf('if [ "$ACTION_SOCIAL_IS_ARTICLE" = "1" ]'), article.indexOf('sp_url="https://$sp_host/2/tweets"'));
+    expect(branch.indexOf('/2/articles/draft')).toBeGreaterThan(-1);
+    expect(branch.indexOf('/2/articles/$sp_x_article_id/publish')).toBeGreaterThan(branch.indexOf('/2/articles/draft'));
+    expect(branch).toContain('return 0');
+    expect(() => bashParses(article)).not.toThrow();
+  });
+
+  it('x regular post: absent/false isArticle keeps the existing single /2/tweets request', () => {
+    const regular = generateRunScript(socialAgent('x'));
+    expect(regular).toContain("ACTION_SOCIAL_IS_ARTICLE=''");
+    expect(regular).toContain('sp_url="https://$sp_host/2/tweets"');
+    expect(regular).toContain('printf \'{"text":"%s"}\' "$sp_text_json" > "$sp_body"');
+  });
+
+  it('x article: draft failure returns before the publish call', () => {
+    const draftFailure = s.slice(s.indexOf('if [ "$sp_x_draft_rc" -ne 0 ]'), s.indexOf('printf \'{}\' > "$sp_x_publish_body"'));
+    expect(draftFailure).toContain('X article draft creation failed');
+    expect(draftFailure).toContain('return 1');
+    expect(draftFailure).not.toContain('/publish');
+  });
+
+  it('x article: empty title is baked with the generic Japanese default', () => {
+    const article = generateRunScript(agent({
+      type: 'social-post',
+      socialPost: { platform: 'x', connectorId: 'my-x', text: 'Body', title: '   ', isArticle: true },
+    }));
+    expect(article).toContain("ACTION_SOCIAL_TITLE='記事'");
+    expect(article).toContain('[ -n "$sp_article_title" ] || sp_article_title="記事"');
+  });
+
   it('x: the refresh exchange strictly precedes the tweet POST, and a rotated refresh token is persisted before posting', () => {
     const refreshIdx = s.indexOf('grant_type=refresh_token');
     const postIdx = s.indexOf('sp_url="https://$sp_host/2/tweets"');
@@ -312,6 +350,6 @@ describe('PlanSpec executor + AgentRuntime.kt routing for social-post', () => {
       'utf8',
     );
     expect(kt).toContain('"social-post"');
-    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 46');
+    expect(kt).toContain('CURRENT_SCRIPT_VERSION = 47');
   });
 });

@@ -555,7 +555,9 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // CHANGE (new dispatch capability): bumped so a stale pre-v46 on-disk script
 // (which would hit the `*)` "Unsupported social platform" fallback for an X
 // connector) is regenerated rather than kept.
-const AGENT_SCRIPT_VERSION = 46;
+// v47 (2026-08-03): wires X Articles social-post dispatch as draft→publish,
+// including runtime title/result substitution and multi-action field plumbing.
+const AGENT_SCRIPT_VERSION = 47;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -821,6 +823,8 @@ type ActionBakedFields = {
   socialConnectorId: string;
   socialEnvPrefix: string;
   socialText: string;
+  socialIsArticle: boolean;
+  socialTitle: string;
   commandSafety: ReturnType<typeof evaluateAgentActionCommand>;
 };
 
@@ -852,6 +856,8 @@ function bakeActionFields(action: AgentAction | undefined): ActionBakedFields {
     socialPost && isSafeConnectorId(socialPost.connectorId ?? '') ? socialPost.connectorId : '';
   const socialEnvPrefix = socialConnectorId ? socialConnectorEnvPrefix(socialConnectorId) : '';
   const socialText = socialPost ? (socialPost.text?.trim() ? socialPost.text : '{{result}}') : '';
+  const socialIsArticle = socialPost?.isArticle === true;
+  const socialTitle = socialIsArticle ? (socialPost?.title?.trim() ? socialPost.title : '記事') : '';
   const commandSafety = evaluateAgentActionCommand(command);
   return {
     type,
@@ -868,6 +874,8 @@ function bakeActionFields(action: AgentAction | undefined): ActionBakedFields {
     socialConnectorId,
     socialEnvPrefix,
     socialText,
+    socialIsArticle,
+    socialTitle,
     commandSafety,
   };
 }
@@ -1056,6 +1064,8 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     actionSocialPost && isSafeConnectorId(actionSocialPost.connectorId ?? '') ? actionSocialPost.connectorId : '';
   const actionSocialEnvPrefix = actionSocialConnectorId ? socialConnectorEnvPrefix(actionSocialConnectorId) : '';
   const actionSocialText = actionSocialPost ? (actionSocialPost.text?.trim() ? actionSocialPost.text : '{{result}}') : '';
+  const actionSocialIsArticle = actionSocialPost?.isArticle === true;
+  const actionSocialTitle = actionSocialIsArticle ? (actionSocialPost?.title?.trim() ? actionSocialPost.title : '記事') : '';
   const actionCommandSafety = evaluateAgentActionCommand(actionCommand);
 
   // Multi-action fan-out (v24, Agent.actions — see its own doc comment in
@@ -1384,6 +1394,8 @@ ACTION_SOCIAL_PLATFORM=${shellQuote(actionSocialPlatform)}
 ACTION_SOCIAL_CONNECTOR_ID=${shellQuote(actionSocialConnectorId)}
 ACTION_SOCIAL_ENV_PREFIX=${shellQuote(actionSocialEnvPrefix)}
 ACTION_SOCIAL_TEXT=${shellQuote(actionSocialText)}
+ACTION_SOCIAL_IS_ARTICLE=${shellQuote(actionSocialIsArticle ? '1' : '')}
+ACTION_SOCIAL_TITLE=${shellQuote(actionSocialTitle)}
 ACTION_COMMAND_SAFETY_LEVEL=${shellQuote(actionCommandSafety.level)}
 ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
 ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
@@ -1410,6 +1422,8 @@ ACTION_MULTI_SOCIAL_PLATFORMS=${bashArrayLiteral(multiActionFields.map((f) => f.
 ACTION_MULTI_SOCIAL_CONNECTOR_IDS=${bashArrayLiteral(multiActionFields.map((f) => f.socialConnectorId))}
 ACTION_MULTI_SOCIAL_ENV_PREFIXES=${bashArrayLiteral(multiActionFields.map((f) => f.socialEnvPrefix))}
 ACTION_MULTI_SOCIAL_TEXTS=${bashArrayLiteral(multiActionFields.map((f) => f.socialText))}
+ACTION_MULTI_SOCIAL_IS_ARTICLES=${bashArrayLiteral(multiActionFields.map((f) => (f.socialIsArticle ? '1' : '')))}
+ACTION_MULTI_SOCIAL_TITLES=${bashArrayLiteral(multiActionFields.map((f) => f.socialTitle))}
 ACTION_MULTI_COMMAND_SAFETY_LEVELS=${bashArrayLiteral(multiActionFields.map((f) => f.commandSafety.level))}
 ACTION_MULTI_COMMAND_SAFETY_REASONS=${bashArrayLiteral(multiActionFields.map((f) => f.commandSafety.reason))}
 ACTION_MULTI_COMMAND_AUTO_APPROVABLES=${bashArrayLiteral(multiActionFields.map((f) => (f.commandSafety.autoApprovable ? '1' : '0')))}
@@ -2340,13 +2354,15 @@ write_pending_connector_secret_update() {
 }
 
 # Composes and sends the per-platform HTTP request for the social-post action.
-# $1 = connector host, $2 = resolved post text. Secrets come only from env
+# $1 = connector host, $2 = resolved post text, $3 = resolved article title.
+# Secrets come only from env
 # vars (social_connector_env); response/error text is redacted
 # (redact_secrets_text) before any of it can reach a message/notification.
 # Returns non-zero with ACTION_DISPATCH_STATUS/MESSAGE set on failure.
 dispatch_social_post() {
   sp_host="$1"
   sp_text="$2"
+  sp_title="$3"
   sp_body="$TMP_DIR/social-post-body-$AGENT_ID-$$.json"
   sp_response="$TMP_DIR/social-post-response-$AGENT_ID-$$.txt"
   sp_error="$TMP_DIR/social-post-error-$AGENT_ID-$$.txt"
@@ -2510,6 +2526,140 @@ dispatch_social_post() {
       # one is already invalid on X's side the moment this exchange succeeded).
       if [ -n "$sp_x_new_refresh" ]; then
         write_pending_connector_secret_update "$ACTION_SOCIAL_CONNECTOR_ID" "refreshToken" "$sp_x_new_refresh" || true
+      fi
+      if [ "$ACTION_SOCIAL_IS_ARTICLE" = "1" ]; then
+        if ! node_usable; then
+          rm -f "$sp_body" "$sp_response" "$sp_error"
+          social_post_error "X article posting needs node to build DraftJS content."
+          return 1
+        fi
+        sp_article_title="$sp_title"
+        [ -n "$sp_article_title" ] || sp_article_title="記事"
+        sp_x_draft_body="$TMP_DIR/social-post-x-article-draft-$AGENT_ID-$$.json"
+        sp_x_draft_out="$TMP_DIR/social-post-x-article-draft-out-$AGENT_ID-$$.json"
+        sp_x_publish_body="$TMP_DIR/social-post-x-article-publish-$AGENT_ID-$$.json"
+        sp_x_publish_out="$TMP_DIR/social-post-x-article-publish-out-$AGENT_ID-$$.json"
+        if ! shelly_node - "$sp_text" "$sp_article_title" > "$sp_x_draft_body" <<'NODEEOF'
+const text = process.argv[2];
+const articleTitle = process.argv[3];
+const X_ARTICLE_TITLE_MAX = 100;
+const URL_RE = /https?:\\/\\/[^\\s]+/g;
+const URL_TRAILING_TRIM_RE = /[.,;:!?)\\]}'"”』」）、。]+$/;
+function classifyLine(line) {
+  const headerTwo = /^##\\s+(.*)$/.exec(line);
+  if (headerTwo) return { text: headerTwo[1].trim(), type: 'header-two' };
+  const headerOne = /^#\\s+(.*)$/.exec(line);
+  if (headerOne) return { text: headerOne[1].trim(), type: 'header-one' };
+  const unordered = /^[-*+]\\s+(.*)$/.exec(line);
+  if (unordered) return { text: unordered[1].trim(), type: 'unordered-list-item' };
+  const ordered = /^\\d+[.)]\\s+(.*)$/.exec(line);
+  if (ordered) return { text: ordered[1].trim(), type: 'ordered-list-item' };
+  return null;
+}
+function textToDraftJsContentState(text) {
+  const normalized = (text ?? '').replace(/\\r\\n?/g, '\\n');
+  const pending = [];
+  for (const paragraph of normalized.split(/\\n[ \\t]*\\n+/)) {
+    let prose = [];
+    const flushProse = () => {
+      if (prose.length === 0) return;
+      const joined = prose.join(' ').trim();
+      if (joined) pending.push({ text: joined, type: 'unstyled' });
+      prose = [];
+    };
+    for (const rawLine of paragraph.split('\\n')) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const structural = classifyLine(line);
+      if (structural) { flushProse(); pending.push(structural); } else { prose.push(line); }
+    }
+    flushProse();
+  }
+  if (pending.length === 0) pending.push({ text: '', type: 'unstyled' });
+  const entityMap = {};
+  let nextEntityKey = 0;
+  const blocks = pending.map((block, index) => {
+    const entityRanges = [];
+    URL_RE.lastIndex = 0;
+    let match;
+    while ((match = URL_RE.exec(block.text)) !== null) {
+      const trimmed = match[0].replace(URL_TRAILING_TRIM_RE, '');
+      if (!trimmed) continue;
+      const key = nextEntityKey++;
+      entityMap[String(key)] = { type: 'LINK', mutability: 'MUTABLE', data: { url: trimmed } };
+      entityRanges.push({ offset: match.index, length: trimmed.length, key });
+    }
+    return { key: \`block-\${index}\`, text: block.text, type: block.type, depth: 0, inlineStyleRanges: [], entityRanges, data: {} };
+  });
+  return { blocks, entityMap };
+}
+function buildArticleDraftBody(params) {
+  const title = (params.title ?? '').trim().slice(0, X_ARTICLE_TITLE_MAX);
+  return JSON.stringify({ title, content_state: params.contentState });
+}
+process.stdout.write(buildArticleDraftBody({ title: articleTitle, contentState: textToDraftJsContentState(text) }));
+NODEEOF
+        then
+          rm -f "$sp_body" "$sp_response" "$sp_error" "$sp_x_draft_body" "$sp_x_draft_out" "$sp_x_publish_body" "$sp_x_publish_out"
+          social_post_error "X article DraftJS conversion failed."
+          return 1
+        fi
+        set +e
+        SHELLY_CAP_APPROVED=1 HTTP_AUTH_HEADER="Bearer $sp_x_access" HTTP_TIMEOUT_SECONDS="\${SOCIAL_POST_TIMEOUT_SECONDS:-30}" http_post_json "https://$sp_host/2/articles/draft" "$sp_x_draft_body" "$sp_x_draft_out" "$sp_error"
+        sp_x_draft_rc=$?
+        set -e
+        rm -f "$sp_x_draft_body"
+        if [ "$sp_x_draft_rc" -ne 0 ] || [ ! -s "$sp_x_draft_out" ]; then
+          sp_x_draft_err=$(redact_secrets_text "$sp_error" 2>/dev/null | head -c 240 | tr '\\n' ' ')
+          rm -f "$sp_body" "$sp_response" "$sp_error" "$sp_x_draft_out" "$sp_x_publish_body" "$sp_x_publish_out"
+          social_post_error "X article draft creation failed with exit $sp_x_draft_rc: $sp_x_draft_err"
+          return 1
+        fi
+        sp_x_article_id=$(shelly_node - "$sp_x_draft_out" <<'NODEEOF' 2>/dev/null || true
+const fs = require('fs');
+const raw = fs.readFileSync(process.argv[2], 'utf8');
+const ARTICLE_ID_KEYS = ['id', 'article_id', 'articleId'];
+function pickArticleId(source) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+  for (const key of ARTICLE_ID_KEYS) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+function parseArticleDraftResponse(raw) {
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const fromData = pickArticleId(parsed.data);
+  const articleId = fromData ?? pickArticleId(parsed);
+  return articleId ? { articleId } : null;
+}
+const result = parseArticleDraftResponse(raw);
+if (result) process.stdout.write(result.articleId);
+NODEEOF
+        )
+        rm -f "$sp_x_draft_out"
+        if [ -z "$sp_x_article_id" ]; then
+          rm -f "$sp_body" "$sp_response" "$sp_error" "$sp_x_publish_body" "$sp_x_publish_out"
+          social_post_error "X article draft succeeded but no article id was returned — cannot publish."
+          return 1
+        fi
+        printf '{}' > "$sp_x_publish_body"
+        set +e
+        SHELLY_CAP_APPROVED=1 HTTP_AUTH_HEADER="Bearer $sp_x_access" HTTP_TIMEOUT_SECONDS="\${SOCIAL_POST_TIMEOUT_SECONDS:-30}" http_post_json "https://$sp_host/2/articles/$sp_x_article_id/publish" "$sp_x_publish_body" "$sp_x_publish_out" "$sp_error"
+        sp_x_publish_rc=$?
+        set -e
+        rm -f "$sp_x_publish_body"
+        if [ "$sp_x_publish_rc" -ne 0 ] || [ ! -s "$sp_x_publish_out" ]; then
+          sp_x_publish_err=$(redact_secrets_text "$sp_error" 2>/dev/null | head -c 240 | tr '\\n' ' ')
+          rm -f "$sp_body" "$sp_response" "$sp_error" "$sp_x_publish_out"
+          social_post_error "X article publish failed for draft $sp_x_article_id with exit $sp_x_publish_rc: $sp_x_publish_err"
+          return 1
+        fi
+        rm -f "$sp_body" "$sp_response" "$sp_error" "$sp_x_publish_out"
+        return 0
       fi
       sp_auth_header="Bearer $sp_x_access"
       sp_url="https://$sp_host/2/tweets"
@@ -3310,6 +3460,7 @@ dispatch_agent_action() {
         return 1
       fi
       social_text_resolved="\${ACTION_SOCIAL_TEXT//\\{\\{result\\}\\}/$preview}"
+      social_title_resolved="\${ACTION_SOCIAL_TITLE//\\{\\{result\\}\\}/$preview}"
       if [ -z "$social_text_resolved" ]; then
         social_post_error "Social-post action resolved to empty text."
         return 1
@@ -3330,7 +3481,7 @@ dispatch_agent_action() {
         write_action_approval_request "social-post" "$preview" "$result_file" "$social_host" "$social_payload" "$social_host_allowlisted"
         wait_action_approval "social-post" || return 1
       fi
-      dispatch_social_post "$social_host" "$social_text_resolved" || return 1
+      dispatch_social_post "$social_host" "$social_text_resolved" "$social_title_resolved" || return 1
       ACTION_DISPATCH_MESSAGE="Posted to $ACTION_SOCIAL_PLATFORM ($social_host)"
       write_native_notification_request "success" "$ACTION_DISPATCH_MESSAGE: $preview" || true
       return 0
@@ -4991,6 +5142,8 @@ ${useMultiActions ? `  # Multi-action fan-out (v24, Agent.actions): dispatch EVE
     ACTION_SOCIAL_CONNECTOR_ID="\${ACTION_MULTI_SOCIAL_CONNECTOR_IDS[$ACTION_MULTI_IDX]}"
     ACTION_SOCIAL_ENV_PREFIX="\${ACTION_MULTI_SOCIAL_ENV_PREFIXES[$ACTION_MULTI_IDX]}"
     ACTION_SOCIAL_TEXT="\${ACTION_MULTI_SOCIAL_TEXTS[$ACTION_MULTI_IDX]}"
+    ACTION_SOCIAL_IS_ARTICLE="\${ACTION_MULTI_SOCIAL_IS_ARTICLES[$ACTION_MULTI_IDX]}"
+    ACTION_SOCIAL_TITLE="\${ACTION_MULTI_SOCIAL_TITLES[$ACTION_MULTI_IDX]}"
     ACTION_COMMAND_SAFETY_LEVEL="\${ACTION_MULTI_COMMAND_SAFETY_LEVELS[$ACTION_MULTI_IDX]}"
     ACTION_COMMAND_SAFETY_REASON="\${ACTION_MULTI_COMMAND_SAFETY_REASONS[$ACTION_MULTI_IDX]}"
     ACTION_COMMAND_AUTO_APPROVABLE="\${ACTION_MULTI_COMMAND_AUTO_APPROVABLES[$ACTION_MULTI_IDX]}"

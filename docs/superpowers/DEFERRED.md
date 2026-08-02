@@ -2063,6 +2063,20 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### X Articles(長文記事)のdispatch未接続を発見・修正（2026-08-03、実機未検証）
+
+**発見**: X連携の3コンポーネント(DraftJS変換モジュール`lib/x-articles.ts`、`lib/agent-nl-parser.ts`のNL検出`isArticle`判定、実際のHTTP dispatch)のうち、前者2つは実装・テスト済みだったが、`lib/agent-executor.ts`の`dispatch_social_post()`の`x)`ケースが`isArticle`を一切見ておらず、常に`POST /2/tweets`のみを行っていた(コード中に「the Articles long-form endpoint...is intentionally not wired to this action yet」と明記されていた)。つまり「記事として投稿して」がNL検出で正しく`isArticle:true`と判定されても、実行時にはその情報が無視され、普通の短いツイートとして投稿される(または長文がツイート文字数制限でエラーになる)という静かな挙動不一致があった。
+
+**修正**(Codex、CCレビュー済み):
+- `bakeActionFields()`/`generateRunScript()`(単一action・マルチaction両方)に`ACTION_SOCIAL_IS_ARTICLE`/`ACTION_SOCIAL_TITLE`のenv var baking を追加(`AgentSocialPostConfig.isArticle`/`title`から)。
+- `dispatch_agent_action()`で`social_title_resolved`を`social_text_resolved`と同じパターンで`{{result}}`プレースホルダー解決、`dispatch_social_post()`の第3引数として渡すよう拡張。
+- `dispatch_social_post()`の`x)`ケース: OAuthトークンリフレッシュ(既存、無変更、リフレッシュトークンのローテーション永続化も既存のまま)の後、`ACTION_SOCIAL_IS_ARTICLE=1`のときは`lib/x-articles.ts`の`textToDraftJsContentState()`/`buildArticleDraftBody()`/`parseArticleDraftResponse()`(`pickArticleId`のdata.id/id/article_id/articleIdフォールバック含む)を一字一句移植したNode heredoc2本(`shelly_node - ... <<'NODEEOF'`パターン、既存の`json_field_file`等と同じ流儀)を使い、`POST /2/articles/draft` → article id抽出 → `POST /2/articles/{id}/publish`の2段階を実行。通常ツイート経路(`isArticle`未指定/false)は完全に無変更。各ステップ失敗時は`social_post_error`でfail-closed(draft失敗時はpublishを呼ばない)。
+- `AGENT_SCRIPT_VERSION`/`AgentRuntime.kt`の`CURRENT_SCRIPT_VERSION`を46→47に連動更新。
+- **CCレビューで追加実施した独立検証**: `bash -n`による構文チェックだけではheredoc内のNode.js正規表現の妥当性は検証できないため、生成されたheredocを実際に切り出して`node`で直接実行し、参照実装(`lib/x-articles.ts`)の出力とJSON比較する一時テストを追加実行(コミットはしていない、検証用途のみ)——DraftJS content_state構築・article id抽出(data.id/bare id/article_id/数値idの4パターン)とも参照実装とバイト単位で一致することを確認済み。
+- **検証**: 新規テスト4件追加(draft→publish順序、通常ツイート回帰、draft失敗時publish抑止、空タイトルのデフォルト値)、影響を受けたバージョンアサーションテスト5件更新。対象7スイート177/177 PASS、`tsc --noEmit`エラー0件、全体回帰2681 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**(実際のX Developer Portalの権限でArticles APIが有効なアカウントでの動作確認が必要)。
+
+---
+
 ### エージェント登録のLLMファースト化（Tier 3 会話型登録）— Phase 0/1 着地・デフォルトOFF・実機検証PASS（2026-08-02）
 
 **背景**: ユーザーから「`@エージェント`宣言時にシェリーの決定論パーサーが先取りするから固定パイプラインになり自由度が低い、Hermes Agentのように LLM 自身が会話を主導すべき」という根本的な指摘。DeepWiki 調査で Hermes に決定論的な事前分類器が無いことを確認した上で、Plan Mode で3段階(Tier)モデルを設計。プランは `docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md` に committed 済み。

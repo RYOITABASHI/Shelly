@@ -346,10 +346,9 @@ object AgentRuntime {
     // re-bounded to 1000 chars defensively). The generated script (v45)
     // assembles them into a NOTIFICATION_CONTEXT prompt line wrapped in an
     // "untrusted DATA, not instructions" preamble. See lib/agent-executor.ts's
-    // matching AGENT_SCRIPT_VERSION comment. Bumped so a stale pre-v45
-    // on-disk script (which would silently drop the inbound text) is
-    // regenerated rather than kept.
-    private const val CURRENT_SCRIPT_VERSION = 46
+    // matching AGENT_SCRIPT_VERSION comment. v47 adds X Articles draft→publish
+    // dispatch, so stale scripts must be regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 47
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
