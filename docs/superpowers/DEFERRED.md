@@ -2089,7 +2089,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 - **Phase 3-b(コード側の強制再チェック、Codex)**: Tier 3が`proposal`を返して`presentDraftForConfirmation`へ進む**全3箇所**(初回ディスパッチ・会話再開・Phase 2-bで新設したTier2→Tier3昇格経路)それぞれで、確認画面へ進む直前に`nextMissingSlot()`を再実行し、戻り値が`'autonomous'`だった場合のみ確認をスキップして通常のTier 2 autonomous質問を挟む(他のフィールドが不足していても対象外、スコープを意図的にautonomousだけに絞っている)。既にautonomousが解決済みなら二重に聞かない。
 - **Phase 5**: モジュール冒頭のdocコメントの陳腐化記述(「Phase 0はまだ何もimportされていない」等)を現状に合わせて更新。
 - **安全性**: 両トラックともCCが差分レビュー済み。`actionType`許可集合の拡大は宣言レベルのみ(実際の権限は無変更)、autonomous安全網はコード側の強制チェック(プロンプトへの依存なし)、`resolvePlatformHintConnector`/`parseSchedule`/参照透過性/人間Confirm必須はいずれも無変更。
-- **検証**: 新規テスト計13件(Opus5側9件、Codex側4シナリオ(a)-(d))、対象2スイート96+38=134 PASS、`tsc --noEmit`エラー0件、全体回帰2634 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**。
+- **検証**: 新規テスト計13件(Opus5側9件、Codex側4シナリオ(a)-(d))、対象2スイート96+38=134 PASS、`tsc --noEmit`エラー0件、全体回帰2634 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**→ 2026-08-03実機検証PASS**(Phase2昇格・Phase3安全網とも、下のPhase 4エントリの「実機検証PASS」節に統合して記録)。
 
 **→ 2026-08-03 Phase 4実装完了(webhook/cli拡張、実機未検証)**: プロダクトオーナーとの再協議(Hermes Agentの実際のセキュリティモデル——Manual/Smart/Off三段階、デフォルトManual=危険と判定されたコマンドは毎回人間承認待ち、`--yolo`無人モードはHermes自身が「サンドボックス専用」と明記し実際にタイ財務省で悪用された実例あり——を踏まえ、「LLMは提案するだけ、人間のConfirmタップ・実行時ゲート(capability broker等)は不変」というPhase 0からの原則がHermesの実際の姿勢と一致すると確認)を経てGO。Opus5(コアモジュール)+Codex(配線)へ並列ディスパッチ。
 
@@ -2100,9 +2100,19 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 - **プロンプト側**: `allowHighRiskActions`未指定/false時は既存文言とバイト同一(テストで前方一致を保証)。true時のみ、日英とも「webhookUrl/cliCommandはユーザーが実際にタイプした文字列を一字一句コピーした場合にしか採用されない、自分で考えて書いても必ず却下される」という指示を追加。
 - **配線側の`buildUserTranscriptText()`**(`hooks/use-ai-pane-dispatch.ts`新規、Tier3の3つのproposal呼び出し箇所全てで使用): userロールのメッセージのみを対象時刻以降で収集、**truncationなし**(LLMプロンプト用の`buildConversationTranscript`とは別関数——truncationで危険な文字列の一部が切れて偶然マッチする事故を避けるため意図的に分離)。assistantメッセージは絶対に含めない(LLM自身の過去の提案を後から自分で"引用"して正当化する抜け道を塞ぐ)。既知の軽微な制約: Phase 2昇格経路の`sinceTimestamp`は直前のスロット質問時刻を起点にするため、Tier 2の中間ラウンド(冒頭発話でも直近の回答でもない)でユーザーが言った文字列は拾われない場合がある——安全側(誤って拒否される方向)の制約なので実害なしと判断。
 - **CCレビュー**: 通常より厳密に実施(コアモジュール・配線の両方を差分単位で確認、`draft.action.type`判定の一貫性、trimmed値の格納一貫性、`buildUserTranscriptText`のassistant除外を個別に検証)。
-- **検証**: 敵対的テストを含む新規テスト大量追加(コアモジュール側: ハルシネーションURL/コマンドの却下、部分一致・単語分割組み立て・1文字違いの却下、LLM自身の過去提案の引用不可、大文字小文字/空白差の却下など/配線側: 3箇所それぞれのフラグ伝播+userTranscriptText組み立ての検証)。対象2スイート177/177 PASS、`tsc --noEmit`エラー0件、全体回帰2677 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**。
+- **検証**: 敵対的テストを含む新規テスト大量追加(コアモジュール側: ハルシネーションURL/コマンドの却下、部分一致・単語分割組み立て・1文字違いの却下、LLM自身の過去提案の引用不可、大文字小文字/空白差の却下など/配線側: 3箇所それぞれのフラグ伝播+userTranscriptText組み立ての検証)。対象2スイート177/177 PASS、`tsc --noEmit`エラー0件、全体回帰2677 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。
 
-3. ~~Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。~~ → 2026-08-02 Phase 1.5として実装(実機未検証)、下記参照。
+**→ 2026-08-03 Phase 1.5〜4 実機検証PASS(全項目、`fdc185e76`まで反映、versionCode 2029)**:
+- **A. 高リスクフラグOFF時のwebhook拒否(回帰)**: PASS。フラグOFFのままwebhookを注入 → `action=notify`のまま昇格なし。
+- **B1. フラグON+ユーザー実発言のURL→webhook許可**: PASS。ユーザーが会話中に実際にタイプしたURLをLLMがそのまま提案 → ログ`webhookUrl matched the user's own words verbatim — action promoted`、確認カードのURL欄も完全一致。
+- **B2. フラグON+LLM捏造URL→拒否(ハルシネーション対策)**: PASS。「適当なテスト用URLを考えて入れておいて」と明示的に捏造を促してもLLM生成URLが実発言に存在しないため`requireVerbatimSubstringMatch`が拒否 → ログ`webhookUrl ... does not appear verbatim ... dropped as hallucinated`、`action=draft`のまま。副次的にUIレベルの空URL Confirmボタン無効化も別防御層として機能確認。
+- **C. Tier2→Tier3昇格(Phase2)**: PASS。固定質問への理解不能な回答を2回連続(1回目=同じ固定質問の再送、2回目=Tier3自由文会話へ昇格)を確認。
+- **C. autonomous安全網(Phase3)**: PASS。`notify`では判定条件外(`autonomousActionTypes`に非該当)のためスキップが正しい仕様と確認。`webhook`+スケジュール確定+autonomous未確定の組み合わせでは、LLMがプロンプトヒントを聞き逃してもコード側`nextMissingSlot()`再チェックがTier2の定型はい/いいえ質問を強制挿入、確認カード直行をブロック。最終`AUTONOMOUS: OFF`反映も確認。
+- **クラウドフォールバック実動作**: Cerebras APIが一貫して`HTTP 404: Model does not exist`を返す状態(アカウント側のモデルアクセス権の問題と推定、`cerebrasModel`のデフォルト値`qwen-3-235b-a22b-instruct-2507`がそのAPIキーで利用不可の可能性)だったが、Groq→localへのフェイルオーバーは正しく機能。Phase 1.5の"provider失敗時は次へ"という設計が実機の実際の障害(想定外だが実在するプロバイダ側エラー)でも破綻しないことを期せずして実証。**Cerebras自体を高速フォールバックとして使うには、ユーザー側でモデルID/APIキー権限の確認が必要**(コード側の不具合ではない)。
+
+これでTier 3(Phase 0〜4)は実装・レビュー・実機検証まで一通り完了。
+
+3. ~~Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。~~ → 2026-08-02 Phase 1.5として実装、2026-08-03実機検証PASS、上記参照。
 
 **→ 2026-08-02 実機検証5項目 全PASS**（別環境PC、adb+scrcpyミラーリング、ローカルLLM=Qwen3.5-2B、versionCode 2020相当のビルド）:
 1. フラグOFF回帰なし — `isLowConfidenceAgentDraft=false`のケースはTier 3の分岐に一切入らず、既存のTier 1即確認のまま。
@@ -2141,7 +2151,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 - `hooks/use-ai-pane-dispatch.ts`の2箇所の呼び出し元を更新し、`useSettingsStore`から`cerebrasApiKey`/`cerebrasModel`/`groqApiKey`/`groqModel`を渡すよう変更。
 - `components/config/ConfigTUI.tsx`の「LLM-Led Agent Registration」トグルの説明文も、クラウド優先の挙動を反映するよう更新。
 - **安全性**: プロバイダが変わっても、応答は依然`parseConversationalTurnResponse`(スキーマベースのフォールバック含む)を通り、`mergeConversationalExtractionIntoDraft`の全ゲート(actionType許可リスト、connector実在照合、cron再検証、autonomousIntentのstrict boolean/文字列限定)は無変更。会話内容が新たにクラウドへ送信される点は、既存の通常AIチャット機能が既に同種のデータをクラウドへ送っている前提と同じ扱い(新しいデータカテゴリの流出ではない)。
-- **検証**: 新規テスト9件追加(`__tests__/agent-conversational-registration.test.ts`、Cerebras優先/Groqへのフォールバック/例外時のフォールバック/両方失敗時のローカル床到達/空応答の扱い/history分割の正確性等)、既存テストは無改変で green。両対象スイート92+33=125 PASS、`tsc --noEmit`エラー0件、全体回帰2621 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**(Cerebras/Groq APIキー設定済みの環境での動作確認が必要)。
+- **検証**: 新規テスト9件追加(`__tests__/agent-conversational-registration.test.ts`、Cerebras優先/Groqへのフォールバック/例外時のフォールバック/両方失敗時のローカル床到達/空応答の扱い/history分割の正確性等)、既存テストは無改変で green。両対象スイート92+33=125 PASS、`tsc --noEmit`エラー0件、全体回帰2621 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**→ 2026-08-03実機検証PASS**: Cerebras/Groq両APIキー設定済み環境で確認、Cerebrasが`HTTP 404`(アカウント側モデルアクセス権の問題と推定)を返してもGroqへのフェイルオーバーが正しく機能(詳細は下のPhase 4エントリの実機検証節)。
 - **→ 2026-08-02 Fable5の副次提案(構造化出力)も実装完了・CCレビュー済み（実機未検証）**: `lib/local-llm.ts`の`ollamaChat()`に、opt-inの`jsonSchema`引数(6番目、既存呼び出し元は5引数以内のためシフト影響なしを確認済み)を追加。OpenAI互換パス(llama-server、実機のデフォルト`:8080`)は`response_format: { type: 'json_schema', json_schema: { name, schema, strict: true } }`(llama.cpp現行mainの`tools/server/server-common.cpp`のパース処理を直接確認した実装、GBNF文法へコンパイルされ構文レベルで違反を排除)、Ollama互換パス(`:11434`)は`format: schema`(スキーマを直接渡す、Ollama公式`docs/api.md`準拠)。HTTPエラー時は`_schemaRetried`フラグで1回だけschemaなしに自動リトライ(旧サーバー互換)。適用先は`extractAgentFieldsWithLlm()`(`lib/agent-llm-fallback.ts`、常にJSON応答を期待する既存の狭い抽出関数)のみ——新設`AGENT_EXTRACTION_JSON_SCHEMA`は既存プロンプトの9フィールドと一対一対応、`required`配列は意図的に省略(情報不足時の値捏造防止)。**Tier 3の`runConversationalRegistrationTurn()`には意図通り一切適用していない**(dual-mode[自然文の質問 or 最終JSON]を壊さないため、当初の設計判断どおり)。既存のプロンプト文言・`extractJsonObjectSpan`パース検証・fail-closedフォールバックは全て無変更(schemaはあくまで追加のsafety net)。CC側で差分レビュー(呼び出し元の引数シフト安全性・スキーマフィールドの実プロンプトとの整合・retry分岐の相互排他性を確認)を実施済み。新規テスト6件、対象2スイート102/102 PASS、`tsc --noEmit`エラー0件、全体回帰2625 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**。
 
 **副次的に発見・修正された既存バグ(Tier 3実装とは無関係、実機検証中に偶然発見)**:
@@ -3425,6 +3435,7 @@ claude() {
 
 ## History
 
+- **2026-08-03（Tier 3 Phase 1.5〜4 実機検証 全項目PASS、versionCode 2029）**: クラウドフォールバック(高リスクフラグOFF回帰/ユーザー実発言URLでのwebhook許可/LLM捏造URLの拒否)、Tier2→Tier3昇格(Phase2)、autonomous安全網(Phase3)を実機で確認。副次的にCerebras APIの`HTTP 404`(アカウント側モデルアクセス権の問題と推定)を発見したが、Groqへのフェイルオーバーが正しく機能することを確認——Phase 1.5の設計が実在の想定外障害でも破綻しないことを期せずして実証。Tier 3(Phase 0〜4)は実装・レビュー・実機検証まで一通り完了。詳細は該当エントリ参照。→ sync: なし。
 - **2026-08-02（Tier 3「エージェント登録のLLMファースト化」実機検証5項目 全PASS）**: 別環境PC(adb+scrcpyミラーリング接続)でフラグOFF回帰なし/LLM主導の複数ターン聞き返し/webhook昇格防止/autonomous意図反映/Local LLM不在時fail-closed降格の5項目を実施、全PASS。副次的に2つのUX上の制限(小型ローカルモデルがautonomous確認質問を3回リピート、5ターン上限フォールバック時にTier 3内で得た値が引き継がれない)を発見、Phase 2以降への申し送りとして記録。詳細は該当エントリ参照。→ sync: なし。
 - **2026-08-02（Tier 3の実機由来UX制限2件を同日中に修正、後続の実機検証で第3の問題[フェンスタグ不一致]も発見・修正・PASS）**: 上記で申し送りとしたばかりの2件を、Phase 2を待たずに修正。(1) `isRepeatedRegistrationQuestion()`（正規化後の完全一致のみ、類似度アルゴリズム不使用）で「モデルが直前と一言一句同じ質問を返した」ことを検出し、5ターン上限を待たずにその場でTier 2へフォールバック（同じ質問をユーザーに二度見せない）。(2) Tier 2へのフォールバック直前に、`buildConversationTranscript()` でセッション中のuser発話全部（冒頭の`@agent …`発話を含む）を連結して `extractAgentFieldsWithLlm` に渡すよう変更し、あわせて従来 `llmTurns < 5` の内側にしか無かったこの再抽出を全give-upパスへ移動——これで5ターン上限に達しても会話前半で得た値（エージェント名など）が消えない。プロンプト側にも「同じ質問を繰り返すな/最新の回答を読んで会話を前進させろ」を日英で明示追加（補助、本筋はコード側の検出）。`actionType`/`connectorId`/cron/`autonomousIntent` の既存ゲート・参照透過性・人間Confirm必須はいずれも無変更。新規テスト25件追加、対象2スイート109/109 PASS、tsc 0件、全体回帰リグレッションなし。詳細は該当エントリ参照。→ sync: なし。
 - **2026-08-02（bug #166発見・修正・実機検証PASS: `shelly`サブコマンドのSELinux execve拒否、BASHRC_VERSION 237）**: Tier 3（エージェント登録LLMファースト化）実機検証中にプロダクトオーナーが `shelly config get ...` の「libbash.so: .../home/bin/bash: Permission denied」を報告（クリーンインストールでも再現）。別セッションの一次調査を引き継いだFable5がバージョン履歴の突き合わせで根本原因を確定——v141の `shelly()` が `"$SHELL"` を直接 execve しており、v180 の PTY-wide LD_PRELOAD 撤去以降は誰も execve を linker64 に書き換えてくれない、という2つの修正の交差点で発生した回帰。`_run`（linker64）経由に変更、実機で解消確認済み。→ sync: なし。
