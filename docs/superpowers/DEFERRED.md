@@ -2079,7 +2079,8 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 **未了**:
 1. ~~実機検証(フラグOFF→ONで既存動作に回帰がないこと、ONで曖昧な発話に対しLLMが自分の言葉で聞き返すこと、ローカルLLM未起動時のfail-closed降格) — adb未接続のため今回のセッションでは未実施。~~ → 2026-08-02 別環境PC(adb+scrcpyミラーリング接続)で実施、下記参照。
-2. ~~Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 5(整理)は未着手。~~ → 2026-08-02、Opus5(コアモジュール側)+Codex(配線側)へ並列ディスパッチして実装完了・CCレビュー済み・commit済み(下記参照)。Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)のみ意図的に対象外のまま(別枠で要再相談)。
+2. ~~Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 5(整理)は未着手。~~ → 2026-08-02、Opus5(コアモジュール側)+Codex(配線側)へ並列ディスパッチして実装完了・CCレビュー済み・commit済み。
+3. ~~Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)は意図的に対象外(別枠で要再相談)。~~ → 2026-08-03、プロダクトオーナーとHermes Agentの実際のセキュリティモデル(Manual/Smart/Off三段階、デフォルトManual=毎回人間承認、`--yolo`無人モードは実際にタイ財務省で悪用された実例あり)を踏まえて再協議し、「LLMは提案するだけ、人間のConfirmタップ・実行時ゲートは不変」というPhase 0からの原則がHermesの実際の姿勢と一致すると確認、着手をGO。実装完了・CCレビュー済み・commit済み(app-actは`store/types.ts`の`AgentAction.appActRecipeId`が「Schema only in this phase — no dispatch logic reads this yet」に留まるため意図的にスコープ外、webhook/cliのみ実装)。詳細は下記参照。
 
 **→ 2026-08-02 Phase 2/3/5 実装完了(実機未検証)**:
 - **Phase 2-a(social-post許可、Opus5)**: `ALLOWED_ACTION_TYPES`に`'social-post'`を追加、ただし宣言だけではno-op——実際の昇格は既存どおり`platformHint`の`resolvePlatformHintConnector()`実在照合のみが担う。`actionType:'social-post'`+有効な`platformHint`の組み合わせが、以前は無意味な`rejectedFields:['actionType']`を出していた点を解消しただけで、受理される値の範囲は一切広がっていない。
@@ -2089,6 +2090,18 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 - **Phase 5**: モジュール冒頭のdocコメントの陳腐化記述(「Phase 0はまだ何もimportされていない」等)を現状に合わせて更新。
 - **安全性**: 両トラックともCCが差分レビュー済み。`actionType`許可集合の拡大は宣言レベルのみ(実際の権限は無変更)、autonomous安全網はコード側の強制チェック(プロンプトへの依存なし)、`resolvePlatformHintConnector`/`parseSchedule`/参照透過性/人間Confirm必須はいずれも無変更。
 - **検証**: 新規テスト計13件(Opus5側9件、Codex側4シナリオ(a)-(d))、対象2スイート96+38=134 PASS、`tsc --noEmit`エラー0件、全体回帰2634 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**。
+
+**→ 2026-08-03 Phase 4実装完了(webhook/cli拡張、実機未検証)**: プロダクトオーナーとの再協議(Hermes Agentの実際のセキュリティモデル——Manual/Smart/Off三段階、デフォルトManual=危険と判定されたコマンドは毎回人間承認待ち、`--yolo`無人モードはHermes自身が「サンドボックス専用」と明記し実際にタイ財務省で悪用された実例あり——を踏まえ、「LLMは提案するだけ、人間のConfirmタップ・実行時ゲート(capability broker等)は不変」というPhase 0からの原則がHermesの実際の姿勢と一致すると確認)を経てGO。Opus5(コアモジュール)+Codex(配線)へ並列ディスパッチ。
+
+- **新フラグ`agentConversationalHighRiskActionsEnabled`(デフォルト**false**)**: `agentConversationalRegistrationEnabled`とは独立。両方ONで初めて有効。ConfigTUIの「Agents」セクション、`shelly config set`のBOOL_KEYSにも追加。
+- **中核安全策`requireVerbatimSubstringMatch(candidate, userTranscriptText)`**(`lib/agent-conversational-registration.ts`新規export): LLMが提案するwebhook URL/CLIコマンドが、ユーザー自身が会話中に実際にタイプした生テキストに**大文字小文字を区別する完全な部分文字列**として存在するかだけを判定する純関数。正規化は`candidate`側のtrimのみ(haystack側は無加工)、空文字列candidateは常にfalse(`"".includes("")`のfail-open罠を明示的に回避)、空transcriptはfail-closed。「安全に実行できるか」は一切判定しない——それは既存の`SHELLY_WEBHOOK_HOST_ALLOWLIST`/`lib/command-safety.ts`/capability broker/毎回の承認タップが無変更のまま担う。
+- **`ALLOWED_ACTION_TYPES`のゲート付き拡張**: `ctx.allowHighRiskActions === true`のときだけ`webhook`/`cli`を許可集合に追加(base setはmutateせず、呼び出しごとに選択——他の呼び出し元への意図しない波及を防止)。フラグOFF/未設定時はPhase 0-3とバイト同一の挙動(既存の拒否テストは無改変でgreen)。webhook/cliへの実際の昇格は、対応するpayload(`webhookUrl`/`cliCommand`)が`requireVerbatimSubstringMatch`を通り、かつ`draft.action.type`がまだ`'draft'`のときのみ。却下時は`'actionType'`ではなくフィールド名(`'webhookUrl'`/`'cliCommand'`)を`rejectedFields`に記録(型宣言自体は正当、payloadだけ却下——platformHintと同じ設計思想)。
+- **`app-act`は意図的にスコープ外**: `AgentAction.appActRecipeId`が`store/types.ts`に「Schema only in this phase — no dispatch logic reads this yet」と明記されており、他の2種と違って実dispatch経路自体が無いため。
+- **プロンプト側**: `allowHighRiskActions`未指定/false時は既存文言とバイト同一(テストで前方一致を保証)。true時のみ、日英とも「webhookUrl/cliCommandはユーザーが実際にタイプした文字列を一字一句コピーした場合にしか採用されない、自分で考えて書いても必ず却下される」という指示を追加。
+- **配線側の`buildUserTranscriptText()`**(`hooks/use-ai-pane-dispatch.ts`新規、Tier3の3つのproposal呼び出し箇所全てで使用): userロールのメッセージのみを対象時刻以降で収集、**truncationなし**(LLMプロンプト用の`buildConversationTranscript`とは別関数——truncationで危険な文字列の一部が切れて偶然マッチする事故を避けるため意図的に分離)。assistantメッセージは絶対に含めない(LLM自身の過去の提案を後から自分で"引用"して正当化する抜け道を塞ぐ)。既知の軽微な制約: Phase 2昇格経路の`sinceTimestamp`は直前のスロット質問時刻を起点にするため、Tier 2の中間ラウンド(冒頭発話でも直近の回答でもない)でユーザーが言った文字列は拾われない場合がある——安全側(誤って拒否される方向)の制約なので実害なしと判断。
+- **CCレビュー**: 通常より厳密に実施(コアモジュール・配線の両方を差分単位で確認、`draft.action.type`判定の一貫性、trimmed値の格納一貫性、`buildUserTranscriptText`のassistant除外を個別に検証)。
+- **検証**: 敵対的テストを含む新規テスト大量追加(コアモジュール側: ハルシネーションURL/コマンドの却下、部分一致・単語分割組み立て・1文字違いの却下、LLM自身の過去提案の引用不可、大文字小文字/空白差の却下など/配線側: 3箇所それぞれのフラグ伝播+userTranscriptText組み立ての検証)。対象2スイート177/177 PASS、`tsc --noEmit`エラー0件、全体回帰2677 passed/24 failed(既知のWindows専用バグ4スイート、無関係)。**実機検証は未実施**。
+
 3. ~~Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。~~ → 2026-08-02 Phase 1.5として実装(実機未検証)、下記参照。
 
 **→ 2026-08-02 実機検証5項目 全PASS**（別環境PC、adb+scrcpyミラーリング、ローカルLLM=Qwen3.5-2B、versionCode 2020相当のビルド）:

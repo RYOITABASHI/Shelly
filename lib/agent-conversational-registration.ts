@@ -1,6 +1,6 @@
 /**
  * lib/agent-conversational-registration.ts — Tier 3 "LLM leads the whole
- * conversation" agent-registration core (Phase 0-3, 2026-08-02).
+ * conversation" agent-registration core (Phase 0-4, 2026-08-03).
  *
  * See docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md.
  *
@@ -24,12 +24,28 @@
  *     The model may never author a cron string (only a natural-language phrase,
  *     re-validated through parseSchedule()), never a connectorId/platform/host
  *     (only a destination NAME, resolved through resolvePlatformHintConnector()
- *     against connectors the user already registered), and never a privileged
- *     action type — webhook / cli / app-act / api-call / intent / dm-reply are
- *     all rejected, exactly as in lib/agent-llm-fallback.ts. The only action
- *     types the model can CAUSE are `'draft'` and `'notify'`; `'social-post'`
- *     is tolerated as a no-op declaration (Phase 2) but still reachable only
- *     through the existence-checked platformHint path.
+ *     against connectors the user already registered), and — by default —
+ *     never a privileged action type: webhook / cli / app-act / api-call /
+ *     intent / dm-reply are all rejected, exactly as in
+ *     lib/agent-llm-fallback.ts. Out of the box the only action types the model
+ *     can CAUSE are `'draft'` and `'notify'`; `'social-post'` is tolerated as a
+ *     no-op declaration (Phase 2) but still reachable only through the
+ *     existence-checked platformHint path.
+ *   - Phase 4 (2026-08-03) adds ONE opt-in exception, behind its own separate
+ *     `allowHighRiskActions` flag that is absent/false by default: `'webhook'`
+ *     and `'cli'` become LLM-authorable, but the dangerous STRING each one
+ *     needs (a destination URL, a shell command) is accepted only when it
+ *     appears verbatim — byte for byte, case sensitive — inside the text the
+ *     USER themselves typed during this Tier 3 session. See
+ *     requireVerbatimSubstringMatch. That gate exists to answer exactly one
+ *     question — "did the human really say this string?" — and nothing more.
+ *     Whether the string is SAFE TO RUN is not this module's business and is
+ *     unchanged by Phase 4: the runtime gates (SHELLY_WEBHOOK_HOST_ALLOWLIST,
+ *     lib/command-safety.ts, the capability broker, the per-run approval tap)
+ *     all still apply unconditionally to anything registered this way, exactly
+ *     as they do to an action authored by hand in the UI. `'app-act'` stays out
+ *     of scope entirely — its AgentAction.appActRecipeId is documented in
+ *     store/types.ts as schema-only with no dispatch logic reading it yet.
  *   - Every step fails closed: a disabled/unreachable LLM, a timeout, an empty
  *     response, a malformed fence, unparseable JSON, or a proposal where every
  *     field is rejected all leave the caller's draft byte-for-byte unchanged,
@@ -44,13 +60,13 @@
  * lib/agent-llm-fallback.ts) fed by buildConversationTranscript() below, and
  * from there to Tier 2 deterministic slot-fill. That narrow extractor is not
  * dead code left over from the pre-Tier-3 design: it is Tier 3's official
- * fallback path and stays authoritative for its own (stricter) field set.
- * High-risk action types (webhook / cli / app-act) remain out of scope, behind
- * their own separate flag if they are ever added.
+ * fallback path and stays authoritative for its own (stricter) field set — it
+ * has NO webhook/cli path of its own and gained none in Phase 4, so falling
+ * back to it always narrows what can be authored, never widens it.
  */
 import type { ParsedAgentDraft } from './agent-nl-parser';
 import { parseSchedule } from './agent-nl-parser';
-import type { SocialConnectorMeta } from '@/store/types';
+import type { AgentAction, SocialConnectorMeta } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 // Reused verbatim, NOT re-implemented: this is the one deterministic
 // destination resolver in the codebase, and a mirrored copy here would
@@ -75,6 +91,16 @@ export interface ConversationalRegistrationContext {
    *  model — never `id`, never `host`, never `fields` (see
    *  buildRegistrationSystemPrompt). */
   connectors: SocialConnectorMeta[];
+  /** Phase 4 opt-in. When true, the prompt additionally tells the model that
+   *  `'webhook'` / `'cli'` are selectable action types AND that the URL/command
+   *  they carry is only ever accepted when copied verbatim out of the user's
+   *  own words. When false/absent (the default) the prompt is byte-identical to
+   *  Phase 0-3's — no mention of the high-risk types beyond the pre-existing
+   *  "do not write them" line. This is a PROMPT hint only: the actual
+   *  enforcement lives in mergeConversationalExtractionIntoDraft, which has its
+   *  own independent copy of the same flag, so a model that ignores this text
+   *  changes nothing. */
+  allowHighRiskActions?: boolean;
 }
 
 export interface AgentConversationalExtraction {
@@ -98,6 +124,13 @@ export interface AgentConversationalExtraction {
    *  resolved deterministically by resolvePlatformHintConnector(). */
   platformHint?: string;
   autonomousIntent?: boolean;
+  /** Phase 4 (gated): a webhook destination URL, verbatim from the user's own
+   *  words only — see requireVerbatimSubstringMatch. Never accepted unless
+   *  ctx.allowHighRiskActions is true AND the verbatim check passes. */
+  webhookUrl?: string;
+  /** Phase 4 (gated): a CLI command template, verbatim from the user's own
+   *  words only — same gating as webhookUrl. */
+  cliCommand?: string;
 }
 
 export type ConversationalTurn =
@@ -137,6 +170,16 @@ const MAX_FIELD_LEN: Record<
   outputPath: 200,
   // Short by design: a destination NAME, never a sentence.
   platformHint: 60,
+  // Phase 4. Capping stays safe here for a subtler reason than the fields
+  // above. Truncation makes requireVerbatimSubstringMatch EASIER to satisfy (a
+  // shorter needle is found more often), but the invariant it enforces is
+  // untouched: whatever survives the cap is still required to be a literal
+  // substring of what the user typed, so an over-long candidate can at worst be
+  // registered as a prefix the user really did write — never as a string they
+  // did not. Sized to match `prompt`, the other field that can legitimately
+  // carry a long payload.
+  webhookUrl: 2000,
+  cliCommand: 2000,
 };
 
 // ── §1: system-prompt construction (pure) ───────────────────────────────────
@@ -209,6 +252,22 @@ function describeDeterministicHint(ctx: ConversationalRegistrationContext): stri
 export function buildRegistrationSystemPrompt(ctx: ConversationalRegistrationContext): string {
   const connectors = describeConnectors(ctx);
   const hint = describeDeterministicHint(ctx);
+  // Phase 4. Appended (never substituted) right after the existing actionType
+  // bullet, so that with the flag off the prompt is byte-for-byte the Phase 0-3
+  // string. The first line explicitly overrides the pre-existing "do not write
+  // webhook/cli" sentence rather than editing it, keeping that guarantee. The
+  // second line is deliberately worded like the platformHint rule right below
+  // it — same "the system checks this against reality, inventing one is
+  // pointless" framing, because it is the same kind of gate.
+  const highRiskRules = ctx.allowHighRiskActions === true
+    ? (ctx.locale === 'ja'
+        ? `
+- **この会話に限り、"actionType" には "webhook"（指定されたURLへHTTP送信する）と "cli"（シェルコマンドを実行する）も選べます。** 直前の行の制限より、こちらの指示が優先されます。
+- "webhookUrl" / "cliCommand": **ユーザーがこの会話の中で実際にタイプした文字列を、一字一句そのままコピーした場合にしか採用されません。** システム側がユーザー自身の発言と突き合わせ、一文字でも違えば必ず却下します。URLやコマンドを自分で考えて書いてはいけません（必ず却下されるので無意味です）。ユーザーが明示的に書いていないなら、これらは空文字にしてください。`
+        : `
+- **In this conversation only, "actionType" may ALSO be "webhook" (send an HTTP request to a URL) or "cli" (run a shell command).** This overrides the restriction on the line above.
+- "webhookUrl" / "cliCommand": **only accepted when copied character for character from what the USER actually typed in this conversation.** The system matches the value against the user's own words and rejects it if even one character differs. Never invent a URL or a command yourself (it will always be rejected, so it is pointless). Leave these empty if the user did not explicitly write one.`)
+    : '';
 
   if (ctx.locale === 'ja') {
     return `あなたは Shelly の「自動化エージェント登録アシスタント」です。ユーザーと日本語で会話しながら、定期実行エージェントの登録内容を組み立てます。
@@ -231,7 +290,7 @@ ${FENCE_END}
 【各項目のルール】
 - "name": エージェントの短い表示名（20文字以内）。
 - "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
-- "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。
+- "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。${highRiskRules}
 - "prompt": 毎回の実行でエージェントが実際にやること。スケジュールの言い回しは含めないでください。
 - "outputPath": 保存先が明示されたときだけ。それ以外は空文字。
 - "platformHint": 投稿先の**名前だけ**をそのまま書いてください（例: "ブルースカイ", "会社Bot"）。ID・URL・ホスト名・接続設定を自分で作ってはいけません。システム側が実在の登録済み投稿先と突き合わせます。投稿先の話が出ていなければ空文字。
@@ -265,7 +324,7 @@ ${FENCE_END}
 【Field rules】
 - "name": a short display label for the agent (<= 20 chars).
 - "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. Empty string if no schedule was stated.
-- "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.
+- "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.${highRiskRules}
 - "prompt": what the agent should actually DO on each run, with the scheduling phrasing removed.
 - "outputPath": only when a destination file/folder was explicitly stated. Empty string otherwise.
 - "platformHint": the destination NAME only, copied as written (e.g. "Bluesky", "Team Bot"). Never invent an id, a URL, a host, or connection settings — the system matches this against the destinations the user really registered. Empty string if no destination came up.
@@ -312,7 +371,16 @@ function readValidatedString(
 /** Every field name a genuine final proposal can carry. Used only to judge
  *  "does this JSON object look like a proposal" for the schema-based fallback
  *  below — has no bearing on which fields actually get merged (that gate is
- *  entirely readValidatedString + mergeConversationalExtractionIntoDraft). */
+ *  entirely readValidatedString + mergeConversationalExtractionIntoDraft).
+ *
+ *  Phase 4 deliberately did NOT add `webhookUrl` / `cliCommand` here.
+ *  parseConversationalTurnResponse takes no context and therefore cannot see
+ *  the allowHighRiskActions flag, so anything added to this list would loosen
+ *  proposal-recognition for EVERY user, flag or no flag. A real high-risk
+ *  proposal always carries name/prompt/actionType alongside its URL or command
+ *  and so already clears MIN_SCHEMA_KEY_MATCHES on the pre-existing keys; a
+ *  bare `{"webhookUrl": ...}` blob stays a 'question', which is the harmless
+ *  direction (the conversation simply continues). */
 const KNOWN_PROPOSAL_KEYS = [
   'name', 'scheduleText', 'actionType', 'prompt', 'outputPath', 'platformHint', 'autonomousIntent',
 ] as const;
@@ -347,6 +415,13 @@ function buildExtractionFromRecord(rec: Record<string, unknown>): AgentConversat
     prompt: readValidatedString(rec, 'prompt'),
     outputPath: readValidatedString(rec, 'outputPath'),
     platformHint: readValidatedString(rec, 'platformHint'),
+    // Phase 4. Read unconditionally — this function has no context and so no
+    // notion of the flag. Reading is inert on its own: with
+    // allowHighRiskActions off, mergeConversationalExtractionIntoDraft never
+    // looks at either field (and rejects the 'webhook'/'cli' actionType that
+    // would have carried them) exactly as it did in Phase 0-3.
+    webhookUrl: readValidatedString(rec, 'webhookUrl'),
+    cliCommand: readValidatedString(rec, 'cliCommand'),
   };
 
   // Primarily strict boolean. The prompt asks for JSON `null` when the user
@@ -624,6 +699,63 @@ export function buildConversationTranscript(
  *  alongside its own success. */
 const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify', 'social-post']);
 
+/** Phase 4's opt-in superset. Built once from ALLOWED_ACTION_TYPES so the two
+ *  can never drift, and selected per call — NOT by mutating the base set,
+ *  which would leak one caller's opt-in into every other caller's merge. */
+const HIGH_RISK_ALLOWED_ACTION_TYPES = new Set([...ALLOWED_ACTION_TYPES, 'webhook', 'cli']);
+
+/**
+ * Phase 4's single new safety primitive: "did the user really say this?"
+ *
+ * Returns true only when `candidate` — after trimming ITS OWN surrounding
+ * whitespace and nothing else — occurs as a literal, case-sensitive substring
+ * of `userTranscriptText`.
+ *
+ * The point is structural, not heuristic. A language model asked for a webhook
+ * URL or a shell command will happily produce a plausible one out of thin air;
+ * `https://example.com/hook` and `curl -X POST ...` are exactly the shapes a
+ * model reaches for when it wants to look helpful. Requiring the string to be
+ * physically present in what the human typed removes the model's ability to
+ * ORIGINATE such a value at all — it can only ever relay one.
+ *
+ * Deliberately NOT normalized beyond the candidate's own trim:
+ *
+ *   - Case is significant. `example.COM/Hook` is a different host+path than
+ *     `example.com/hook` in the general case, and a matcher that shrugs at case
+ *     is a matcher an attacker can steer.
+ *   - Interior whitespace is significant. Collapsing runs of spaces would make
+ *     `rm  -rf /tmp/x` match a transcript containing `rm -rf /tmp/x` — and, far
+ *     worse, would let a model splice a command out of loose words that the
+ *     user never wrote as a command.
+ *   - `userTranscriptText` is not touched at all. Trimming or normalizing the
+ *     haystack can only ever create matches that the raw text did not have.
+ *
+ * Every relaxation of this function makes hallucination easier, so the bias is
+ * to be stricter than necessary: a false negative costs the user one retype, a
+ * false positive registers an action they never asked for.
+ *
+ * The empty candidate is rejected explicitly. JavaScript's
+ * `'anything'.includes('')` is `true`, so a model that emitted `"webhookUrl":
+ * ""` would otherwise "match" every transcript ever written — the exact
+ * fail-OPEN trap this whole gate exists to avoid.
+ *
+ * Scope note: this answers ONLY "is this the user's own string". It says
+ * nothing about whether the string is safe to send or run, and Phase 4 changes
+ * none of the machinery that decides that — SHELLY_WEBHOOK_HOST_ALLOWLIST,
+ * lib/command-safety.ts, the capability broker and the per-run approval tap all
+ * still apply unconditionally to an action registered through Tier 3, exactly
+ * as they do to one authored by hand.
+ */
+export function requireVerbatimSubstringMatch(candidate: string, userTranscriptText: string): boolean {
+  if (typeof candidate !== 'string' || typeof userTranscriptText !== 'string') return false;
+  const needle = candidate.trim();
+  if (!needle) return false;
+  // An absent/empty transcript can therefore never satisfy anything: the
+  // caller omitting it fails CLOSED, it does not wave the check through.
+  if (!userTranscriptText) return false;
+  return userTranscriptText.includes(needle);
+}
+
 /**
  * Merge one LLM proposal into `draft` under the same per-field gates
  * lib/agent-llm-fallback.ts's mergeLlmExtractionIntoDraft uses, and in the same
@@ -631,11 +763,19 @@ const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify', 'social-post']);
  *
  *   - scheduleText: re-validated through parseSchedule(); applied only when
  *     that comes back `confident`. The model never authors a cron.
- *   - actionType: only 'draft' | 'notify' | 'social-post'. 'notify' is applied
- *     only as an upgrade FROM 'draft'; a redundant 'draft' is a silent no-op
- *     (and never downgrades an already-resolved richer action); 'social-post'
- *     is ALWAYS a no-op here and only ever takes effect via platformHint
- *     below. Anything else is dropped and recorded in rejectedFields.
+ *   - actionType: only 'draft' | 'notify' | 'social-post' — plus 'webhook' |
+ *     'cli' when ctx.allowHighRiskActions is explicitly true (Phase 4).
+ *     'notify' is applied only as an upgrade FROM 'draft'; a redundant 'draft'
+ *     is a silent no-op (and never downgrades an already-resolved richer
+ *     action); 'social-post' is ALWAYS a no-op here and only ever takes effect
+ *     via platformHint below. Anything else is dropped and recorded in
+ *     rejectedFields.
+ *   - webhookUrl / cliCommand (Phase 4, gated): applied only when the opt-in
+ *     flag is on AND requireVerbatimSubstringMatch finds the exact string in
+ *     ctx.userTranscriptText AND the action is still 'draft'. Any of those
+ *     failing records the FIELD name (not 'actionType' — the type itself was
+ *     legitimately declared, only its payload was refused) and changes nothing,
+ *     mirroring how an unresolvable platformHint is handled.
  *   - platformHint: resolved by resolvePlatformHintConnector() against REAL
  *     registered connectors; applied only on a UNIQUE match, and only while the
  *     action is still 'draft'. Zero or 2+ matches change nothing.
@@ -653,7 +793,21 @@ const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify', 'social-post']);
 export function mergeConversationalExtractionIntoDraft(
   draft: ParsedAgentDraft,
   extraction: AgentConversationalExtraction,
-  ctx: { connectors: SocialConnectorMeta[] },
+  ctx: {
+    connectors: SocialConnectorMeta[];
+    /** Phase 4: when true, 'webhook'/'cli' become LLM-authorable action types
+     *  (still gated per-field by requireVerbatimSubstringMatch below). When
+     *  false/absent (default), behavior is BYTE-IDENTICAL to before this
+     *  phase — webhook/cli remain rejected exactly as Phase 0-3 did. */
+    allowHighRiskActions?: boolean;
+    /** Phase 4: concatenated raw text of every message the USER (never the
+     *  LLM) actually typed since this Tier 3 session began, including the
+     *  opening "@agent ..." utterance. Required (defaults to '' if omitted)
+     *  for the verbatim check to have anything to check against — an empty
+     *  string can never satisfy requireVerbatimSubstringMatch for any
+     *  non-empty candidate, so an omitted transcript fails closed. */
+    userTranscriptText?: string;
+  },
 ): MergeConversationalResult {
   let merged: ParsedAgentDraft = draft;
   let touched = false;
@@ -661,6 +815,57 @@ export function mergeConversationalExtractionIntoDraft(
   const next = () => {
     if (merged === draft) merged = { ...draft };
     return merged;
+  };
+  // `=== true` on purpose: only an explicit opt-in unlocks anything. Any other
+  // value (undefined, a truthy string smuggled in from persisted settings, ...)
+  // keeps the Phase 0-3 set.
+  const highRiskAllowed = ctx.allowHighRiskActions === true;
+  const allowedActionTypes = highRiskAllowed
+    ? HIGH_RISK_ALLOWED_ACTION_TYPES
+    : ALLOWED_ACTION_TYPES;
+  const userTranscriptText = ctx.userTranscriptText ?? '';
+
+  /** Phase 4's promotion path, shared by webhook and cli because the two
+   *  differ only in which AgentAction field carries the string. Every refusal
+   *  records the FIELD (never 'actionType') and leaves the draft untouched. */
+  const applyHighRiskAction = (
+    fieldName: 'webhookUrl' | 'cliCommand',
+    candidate: string | undefined,
+    build: (value: string) => AgentAction,
+  ) => {
+    // Declaring the type without supplying its payload is a no-op, exactly
+    // like a bare 'social-post' declaration: nothing was refused, so nothing
+    // is recorded and the conversation can still supply it later.
+    if (!candidate) return;
+    if (!requireVerbatimSubstringMatch(candidate, userTranscriptText)) {
+      // THE hallucination guard. The model produced a URL/command that does
+      // not appear in anything the human typed, so it was invented — drop it.
+      // Never logged in full: a hallucinated string is still untrusted input.
+      rejectedFields.push(fieldName);
+      logInfo(
+        LOG,
+        `${fieldName} (${candidate.trim().length} chars) does not appear verbatim in the user's own ` +
+          `messages (transcript=${userTranscriptText.length} chars) — dropped as hallucinated`,
+      );
+      return;
+    }
+    if (draft.action.type !== 'draft') {
+      // Same one-shot discipline as the platformHint block: an action that has
+      // already resolved to something richer is never overwritten.
+      rejectedFields.push(fieldName);
+      logInfo(
+        LOG,
+        `${fieldName} ignored — action is already '${draft.action.type}', not 'draft'`,
+      );
+      return;
+    }
+    const m = next();
+    // The TRIMMED value is what was verified, so the trimmed value is what is
+    // stored — never the raw candidate.
+    m.action = build(candidate.trim());
+    m.actionCaveat = undefined;
+    touched = true;
+    logInfo(LOG, `${fieldName} matched the user's own words verbatim — action promoted`);
   };
 
   if (extraction.scheduleText) {
@@ -685,11 +890,11 @@ export function mergeConversationalExtractionIntoDraft(
   }
 
   if (extraction.actionType !== undefined) {
-    if (!ALLOWED_ACTION_TYPES.has(extraction.actionType)) {
-      // The security-critical branch: a model that proposes 'webhook' / 'cli' /
-      // 'app-act' / 'api-call' / 'intent' / 'dm-reply' (or invents a type name)
-      // gets it dropped here, never merged. There is still no path by which the
-      // model can author a privileged action at all.
+    if (!allowedActionTypes.has(extraction.actionType)) {
+      // The security-critical branch: a model that proposes 'app-act' /
+      // 'api-call' / 'intent' / 'dm-reply' (or invents a type name) gets it
+      // dropped here, never merged — and so do 'webhook' / 'cli' unless the
+      // caller explicitly opted in via ctx.allowHighRiskActions.
       rejectedFields.push('actionType');
       logInfo(
         LOG,
@@ -700,6 +905,18 @@ export function mergeConversationalExtractionIntoDraft(
       m.action = { type: 'notify' };
       m.actionCaveat = undefined;
       touched = true;
+    } else if (highRiskAllowed && extraction.actionType === 'webhook') {
+      // Phase 4. Reachable ONLY with the opt-in flag on — without it,
+      // 'webhook' fails the allowlist check above and never gets here.
+      applyHighRiskAction('webhookUrl', extraction.webhookUrl, (webhookUrl) => ({
+        type: 'webhook',
+        webhookUrl,
+      }));
+    } else if (highRiskAllowed && extraction.actionType === 'cli') {
+      applyHighRiskAction('cliCommand', extraction.cliCommand, (command) => ({
+        type: 'cli',
+        command,
+      }));
     }
     // Everything else in the allowlist is a deliberate no-op, not a rejection:
     // nothing was refused, nothing changed.
@@ -710,6 +927,10 @@ export function mergeConversationalExtractionIntoDraft(
     //     single safety valve keeping connectorId / platform / host / secret
     //     out of the model's hands. So `actionType: 'social-post'` with no
     //     resolvable platformHint correctly leaves the action as-is.
+    //   - 'webhook'/'cli' when the opt-in flag is OFF never reach here at all
+    //     (they fail the allowlist check and are recorded as rejections); when
+    //     it is ON with no payload proposed, applyHighRiskAction returns
+    //     without touching anything, the same shape of no-op as 'social-post'.
   }
 
   // Placed AFTER the notify branch on purpose (same reasoning as

@@ -62,6 +62,15 @@ jest.mock('@/lib/local-llm', () => ({
   ollamaChatStream: jest.fn(),
 }));
 
+jest.mock('@/lib/agent-conversational-registration', () => {
+  const actual = jest.requireActual('@/lib/agent-conversational-registration');
+  return {
+    ...actual,
+    buildRegistrationSystemPrompt: jest.fn(actual.buildRegistrationSystemPrompt),
+    mergeConversationalExtractionIntoDraft: jest.fn(actual.mergeConversationalExtractionIntoDraft),
+  };
+});
+
 jest.mock('@/lib/openrouter', () => ({
   OPENROUTER_DEFAULT_MODEL: 'openrouter/auto',
   openRouterChatStream: jest.fn(),
@@ -177,6 +186,14 @@ const { ensureLocalLlmServerRunning: mockEnsureLocalLlmServerRunning } =
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { openRouterChatStream: mockOpenRouterChatStream } =
   require('@/lib/openrouter') as { openRouterChatStream: jest.Mock };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const {
+  buildRegistrationSystemPrompt: mockBuildRegistrationSystemPrompt,
+  mergeConversationalExtractionIntoDraft: mockMergeConversationalExtractionIntoDraft,
+} = require('@/lib/agent-conversational-registration') as {
+  buildRegistrationSystemPrompt: jest.Mock;
+  mergeConversationalExtractionIntoDraft: jest.Mock;
+};
 
 const PANE = 'pane-under-test';
 
@@ -221,6 +238,7 @@ beforeEach(() => {
       // requires an explicit confirm by default — see feedback memory
       // "Agent registration confirm default").
       agentRegistrationRequireConfirm: true,
+      agentConversationalHighRiskActionsEnabled: false,
       localLlmEnabled: false,
       agentVaultPath: '',
       agentTopicFolder: '',
@@ -1818,5 +1836,108 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
     expect(lastMessage().pendingSlotFill?.field).toBe('autonomous');
     expect(lastMessage().pendingSlotFill?.partialDraft.scheduleConfident).toBe(true);
     expect(conv().pendingAgentSession).toBeNull();
+  });
+});
+
+// ─── Phase 4: high-risk flag and verbatim user-transcript wiring ────────────
+
+const PHASE4_PROPOSAL =
+  '```shelly-agent-registration\n' +
+  JSON.stringify({
+    name: 'Phase 4 wiring',
+    scheduleText: '毎朝8時',
+    actionType: 'notify',
+    prompt: '結果を通知する',
+    autonomousIntent: true,
+  }) +
+  '\n```';
+
+function setHighRiskEnabled(enabled: boolean) {
+  useSettingsStore.setState((s) => ({
+    settings: {
+      ...s.settings,
+      agentConversationalRegistrationEnabled: true,
+      agentConversationalHighRiskActionsEnabled: enabled,
+      localLlmEnabled: true,
+      localLlmUrl: 'http://127.0.0.1:8080',
+      localLlmModel: 'qwen3.5-2b',
+    },
+  }));
+}
+
+function expectPhase4Arguments(enabled: boolean, userTexts: string[], assistantText: string) {
+  expect(mockBuildRegistrationSystemPrompt).toHaveBeenLastCalledWith(
+    expect.objectContaining({ allowHighRiskActions: enabled }),
+  );
+  const mergeContext = mockMergeConversationalExtractionIntoDraft.mock.calls.at(-1)?.[2];
+  expect(mergeContext).toEqual(expect.objectContaining({ allowHighRiskActions: enabled }));
+  for (const text of userTexts) expect(mergeContext.userTranscriptText).toContain(text);
+  expect(mergeContext.userTranscriptText).not.toContain(assistantText);
+}
+
+describe('Phase 4 — high-risk proposal wiring at all three proposal call sites', () => {
+  beforeEach(() => {
+    mockOllamaChat.mockResolvedValue({ success: true, content: PHASE4_PROPOSAL });
+  });
+
+  it.each([false, true])('initial dispatch passes allowHighRiskActions=%s and a user-only transcript', async (enabled) => {
+    setHighRiskEnabled(enabled);
+    const assistantText = 'ASSISTANT_INITIAL_MUST_NOT_APPEAR';
+    useAIPaneStore.getState().addMessage(PANE, {
+      id: 'old-assistant', role: 'assistant', content: assistantText, timestamp: Date.now(), agent: 'local',
+    });
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent 手伝って INITIAL_USER_TOKEN');
+    });
+    expectPhase4Arguments(enabled, ['@agent 手伝って INITIAL_USER_TOKEN'], assistantText);
+  });
+
+  it.each([false, true])('conversation resume passes allowHighRiskActions=%s and excludes assistant turns', async (enabled) => {
+    setHighRiskEnabled(enabled);
+    const createdAt = Date.now();
+    const draft = phase23Draft({ rawText: 'RESUME_OPENING_USER_TOKEN' });
+    useAIPaneStore.getState().addMessage(PANE, {
+      id: 'resume-user', role: 'user', content: 'RESUME_EARLIER_USER_TOKEN', timestamp: createdAt,
+    });
+    useAIPaneStore.getState().addMessage(PANE, {
+      id: 'resume-assistant', role: 'assistant', content: 'ASSISTANT_RESUME_MUST_NOT_APPEAR', timestamp: createdAt, agent: 'local',
+    });
+    useAIPaneStore.getState().setPendingAgentSession(PANE, {
+      draft, phase: 'llm-conversation', attemptCounts: {}, hasAssumptions: true,
+      createdAt, messageId: 'resume-assistant', agentLabel: 'local',
+    });
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('RESUME_LATEST_USER_TOKEN 毎朝8時で');
+    });
+    expectPhase4Arguments(
+      enabled,
+      ['RESUME_OPENING_USER_TOKEN', 'RESUME_EARLIER_USER_TOKEN', 'RESUME_LATEST_USER_TOKEN'],
+      'ASSISTANT_RESUME_MUST_NOT_APPEAR',
+    );
+  });
+
+  it.each([false, true])('Tier 2 escalation passes allowHighRiskActions=%s and a user-only transcript', async (enabled) => {
+    setHighRiskEnabled(enabled);
+    const draft = seedScheduleSlot(1);
+    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
+      isTier3RegistrationCall(messages)
+        ? { success: true, content: PHASE4_PROPOSAL }
+        : { success: false, content: '', error: 'narrow extraction miss' },
+    );
+    useAIPaneStore.getState().addMessage(PANE, {
+      id: 'tier2-assistant', role: 'assistant', content: 'ASSISTANT_TIER2_MUST_NOT_APPEAR',
+      timestamp: Date.now(), agent: 'local', pendingSlotFill: lastMessage().pendingSlotFill,
+    });
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('TIER2_LATEST_USER_TOKEN');
+    });
+    expectPhase4Arguments(
+      enabled,
+      [draft.rawText, 'TIER2_LATEST_USER_TOKEN'],
+      'ASSISTANT_TIER2_MUST_NOT_APPEAR',
+    );
   });
 });

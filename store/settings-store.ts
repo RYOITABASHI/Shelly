@@ -45,6 +45,7 @@ const SOCIAL_CONNECTORS_STORAGE_KEY = 'shelly_social_connectors';
 export type AppSettings = BaseAppSettings & {
   /** LLM-led multi-turn agent registration — opt-in, default OFF. */
   agentConversationalRegistrationEnabled?: boolean;
+  agentConversationalHighRiskActionsEnabled?: boolean;
 };
 
 /** Build the same replace-lines-in-.env shell command updateSettings uses.
@@ -175,6 +176,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   widgetAgentRegistrationNoConfirm: false,
   // LLM-led multi-turn agent registration — opt-in, default OFF.
   agentConversationalRegistrationEnabled: false,
+  agentConversationalHighRiskActionsEnabled: false,
   defaultRequireActionApproval: false,
   // Opt-in. Off = today's behaviour exactly; see AppSettings' doc comment for
   // why this can only ever cover reversible workspace file writes.

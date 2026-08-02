@@ -99,6 +99,25 @@ function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/** User-only, deliberately untruncated evidence for high-risk proposals. */
+function buildUserTranscriptText(
+  paneId: string,
+  sinceTimestamp: number,
+  openingUtterance: string,
+): string {
+  const userMessages = useAIPaneStore
+    .getState()
+    .getOrCreate(paneId)
+    .messages.filter(
+      (message) =>
+        message.role === 'user' &&
+        !!message.content &&
+        message.timestamp >= sinceTimestamp,
+    )
+    .map((message) => message.content);
+  return [openingUtterance, ...userMessages].filter((text) => text.length > 0).join('\n');
+}
+
 /** Shared staleness window for both the message-attached pendingSlotFill
  *  conversation and the session-scoped pendingAgentSession (see
  *  store/ai-pane-store.ts's PendingAgentSession) — an unanswered question or
@@ -904,6 +923,8 @@ export function useAIPaneDispatch(paneId: string) {
             timestamp: Date.now(),
           });
           const connectors = useSettingsStore.getState().socialConnectors ?? [];
+          const allowHighRiskActions =
+            useSettingsStore.getState().settings.agentConversationalHighRiskActionsEnabled === true;
           const conversationLocale = detectMessageLocale(pendingAgentSession.draft.rawText);
           const llmTurns = pendingAgentSession.attemptCounts.llmTurns ?? 0;
           let resumedDraft = pendingAgentSession.draft;
@@ -919,6 +940,7 @@ export function useAIPaneDispatch(paneId: string) {
               locale: conversationLocale,
               deterministicHint: pendingAgentSession.draft,
               connectors,
+              allowHighRiskActions,
             });
             const sessionMessages = useAIPaneStore.getState().getOrCreate(paneId).messages
               .filter((message) => message.timestamp >= pendingAgentSession.createdAt)
@@ -990,7 +1012,15 @@ export function useAIPaneDispatch(paneId: string) {
                 resumedDraft = mergeConversationalExtractionIntoDraft(
                   pendingAgentSession.draft,
                   turn.extraction,
-                  { connectors },
+                  {
+                    connectors,
+                    allowHighRiskActions,
+                    userTranscriptText: buildUserTranscriptText(
+                      paneId,
+                      pendingAgentSession.createdAt,
+                      pendingAgentSession.draft.rawText,
+                    ),
+                  },
                 ).draft;
                 // See the matching comment at the initial-dispatch proposal
                 // branch below: mergeConversationalExtractionIntoDraft only
@@ -1450,11 +1480,14 @@ export function useAIPaneDispatch(paneId: string) {
           const conversationalSettings = useSettingsStore.getState().settings;
           if (conversationalSettings.agentConversationalRegistrationEnabled && attemptCount >= 1) {
             const connectors = useSettingsStore.getState().socialConnectors ?? [];
+            const allowHighRiskActions =
+              conversationalSettings.agentConversationalHighRiskActionsEnabled === true;
             const conversationLocale = detectMessageLocale(partialDraft.rawText);
             const systemPrompt = buildRegistrationSystemPrompt({
               locale: conversationLocale,
               deterministicHint: updatedDraft,
               connectors,
+              allowHighRiskActions,
             });
             const result = await runConversationalRegistrationTurn(
               [
@@ -1502,7 +1535,15 @@ export function useAIPaneDispatch(paneId: string) {
                 const mergedDraft = mergeConversationalExtractionIntoDraft(
                   updatedDraft,
                   turn.extraction,
-                  { connectors },
+                  {
+                    connectors,
+                    allowHighRiskActions,
+                    userTranscriptText: buildUserTranscriptText(
+                      paneId,
+                      lastSlotFillMsg.timestamp,
+                      partialDraft.rawText,
+                    ),
+                  },
                 ).draft;
                 if (mergedDraft.llmAutonomousIntent === true) mergedDraft.autonomous = true;
                 const slotFillCtx = {
@@ -1754,11 +1795,14 @@ export function useAIPaneDispatch(paneId: string) {
               const llmFallbackSettings = useSettingsStore.getState().settings;
               if (llmFallbackSettings.agentConversationalRegistrationEnabled) {
                 const connectors = useSettingsStore.getState().socialConnectors ?? [];
+                const allowHighRiskActions =
+                  llmFallbackSettings.agentConversationalHighRiskActionsEnabled === true;
                 const conversationLocale = detectMessageLocale(promptText);
                 const systemPrompt = buildRegistrationSystemPrompt({
                   locale: conversationLocale,
                   deterministicHint: draft,
                   connectors,
+                  allowHighRiskActions,
                 });
                 const result = await runConversationalRegistrationTurn(
                   [
@@ -1810,7 +1854,15 @@ export function useAIPaneDispatch(paneId: string) {
                     const merged = mergeConversationalExtractionIntoDraft(
                       draft,
                       turn.extraction,
-                      { connectors },
+                      {
+                        connectors,
+                        allowHighRiskActions,
+                        userTranscriptText: buildUserTranscriptText(
+                          paneId,
+                          userMsg.timestamp,
+                          draft.rawText || promptText,
+                        ),
+                      },
                     );
                     // mergeConversationalExtractionIntoDraft only stores
                     // llmAutonomousIntent, it never writes draft.autonomous

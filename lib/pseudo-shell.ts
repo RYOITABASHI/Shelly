@@ -547,6 +547,7 @@ export async function executeCommand(
             'highContrastOutput', 'enableCommandSafety', 'llmInterpreterEnabled',
             'realtimeTranslateEnabled', 'gpuRendering', 'autocomplete', 'syntaxHighlight',
             'widgetAgentRegistrationNoConfirm', 'agentConversationalRegistrationEnabled',
+            'agentConversationalHighRiskActionsEnabled',
           ]);
           if (BOOL_KEYS.has(key)) {
             const boolVal = rawVal === 'true' || rawVal === '1' || rawVal === 'on';
