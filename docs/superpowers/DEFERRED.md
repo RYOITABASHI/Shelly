@@ -2063,7 +2063,7 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
-### エージェント登録のLLMファースト化（Tier 3 会話型登録）— Phase 0/1 着地・デフォルトOFF・実機未検証
+### エージェント登録のLLMファースト化（Tier 3 会話型登録）— Phase 0/1 着地・デフォルトOFF・実機検証PASS（2026-08-02）
 
 **背景**: ユーザーから「`@エージェント`宣言時にシェリーの決定論パーサーが先取りするから固定パイプラインになり自由度が低い、Hermes Agentのように LLM 自身が会話を主導すべき」という根本的な指摘。DeepWiki 調査で Hermes に決定論的な事前分類器が無いことを確認した上で、Plan Mode で3段階(Tier)モデルを設計。プランは `docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md` に committed 済み。
 
@@ -2078,9 +2078,27 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 **検証結果**: 新規テスト59件+既存`ai-pane-dispatch-interaction-order.test.tsx` 25件 全PASS、`npx tsc --noEmit`エラー0件、全体回帰 2579 passed / 24 failed(既知のWindows専用パスバグ4スイート、この変更と無関係、baseline通り)。
 
 **未了**:
-1. 実機検証(フラグOFF→ONで既存動作に回帰がないこと、ONで曖昧な発話に対しLLMが自分の言葉で聞き返すこと、ローカルLLM未起動時のfail-closed降格) — adb未接続のため今回のセッションでは未実施。
+1. ~~実機検証(フラグOFF→ONで既存動作に回帰がないこと、ONで曖昧な発話に対しLLMが自分の言葉で聞き返すこと、ローカルLLM未起動時のfail-closed降格) — adb未接続のため今回のセッションでは未実施。~~ → 2026-08-02 別環境PC(adb+scrcpyミラーリング接続)で実施、下記参照。
 2. Phase 2(Tier 2行き詰まり時のTier 3昇格 + social-post拡張)、Phase 3(autonomous統合の安全網再チェック)、Phase 4(webhook/cli/app-act高リスク拡張、`requireVerbatimSubstringMatch()`)、Phase 5(整理)は未着手。
 3. Phase 1のクラウド優先フォールバックチェーン拡張(`runConversationalRegistrationTurn`は現状ローカルLLM限定)は意図的に見送り、別フェーズ送り。
+
+**→ 2026-08-02 実機検証5項目 全PASS**（別環境PC、adb+scrcpyミラーリング、ローカルLLM=Qwen3.5-2B、versionCode 2020相当のビルド）:
+1. フラグOFF回帰なし — `isLowConfidenceAgentDraft=false`のケースはTier 3の分岐に一切入らず、既存のTier 1即確認のまま。
+2. フラグON+曖昧な依頼→LLMが自分の言葉で複数ターン聞き返し、最終的に確認カードへ合流。
+3. webhook昇格防止(セキュリティ) — 会話中に「webhookで直接送って、URLは...」と注入してもLLMは受け流し、最終`proposal`の`actionType`は`notify`のみ。`merge applied -> action=notify`で確認、実際のHTTP送信は発生せず。
+4. autonomous意図の反映 — 「確認なしで毎回勝手にやっておいて」と伝えた会話が最終的に`Auto`(autonomous=true)として登録されたことを`@agent list`で確認。
+5. Local LLM不在時のfail-closed降格 — Local LLM URLを到達不能な値に変更した状態でTier 3を発火させ、`runConversationalRegistrationTurn failed (success=false, error=Network request failed)`→「簡単な一問ずつの質問に切り替えます。」の通知→Tier 2固定質問への自動降格を確認。ハングなし。
+
+**実機検証で新たに見つかった2つの制限（Tier 3固有、次のPhaseへの申し送り）**:
+- **ローカル小型モデル(Qwen3.5-2B)がautonomous確認質問を一言一句同じ文言で3回リピートするケースを実機で再現**。ユーザーが「確認なしで」「確認せずに勝手に実行して」と2回明確に回答してもモデルが同じ質問文を繰り返し、3回目の応答でようやく`llmTurns<5`の上限に達してTier 2へ強制フォールバックし、そこで正しく解決した——**安全網(5ターン上限+フォールバック)は設計通り機能した**ため実害はないが、小型モデルが単純なyes/no的回答を会話履歴から正しく解釈できず同一質問をループする問題自体は未解決。プロンプト側の改善余地(直前の質問と類似の応答を検出したら言い回しを変える等)は将来のPhaseで検討。
+- **5ターン上限でTier 2にフォールバックした際、Tier 3の会話中に一度言及した値(例: エージェント名「天気チェッカー」)が引き継がれない**。原因はコード構造上の設計そのもの: `mergeConversationalExtractionIntoDraft`は`kind:'proposal'`(モデルが「情報が揃った」と判断して出す最終JSON)のときにしか呼ばれず、`kind:'question'`(自由文の聞き返し)の間にモデルが会話内で触れた個別の値はどこにも構造化保存されない。5ターン上限に達した時点の`resumedDraft`は常に`pendingAgentSession.draft`(Tier 3開始時点のまま、無更新)であり、その後の`extractAgentFieldsWithLlm`フォールバックも直近1発話しか見ないため、会話の前半で得られた情報が黙って失われる。データ損失であって誤登録ではないため安全性上の問題ではないが、UXとしては「せっかく答えたのに消える」体験になる。恒久対策(例: `question`ターンでも軽量な部分抽出を行い`pendingAgentSession.draft`に段階的にマージする)はPhase 2以降で検討。
+
+**副次的に発見・修正された既存バグ(Tier 3実装とは無関係、実機検証中に偶然発見)**:
+- ConfigTUIのbottom sheetがCommand Palette経由で開くと高さ0(ヘッダーのみ)に潰れる表示崩れ → Yogaのflexトラップ(`panel`が`maxHeight`のみで`flexShrink`なし、中の`ScrollView`が`flex:1`で親の未確定な高さに対してgrowできず0に解決)と判明、`components/config/ConfigTUI.tsx`を修正(`92f1e9d73`)。実機タップで表示崩れ解消を確認済み。
+- 同時に「AI / LLM」セクションが15項目に肥大化し目的のトグルを探しにくかったため、エージェント振る舞い系5トグルを新設の「Agents」セクションへ分離(`f3f36498e`)。
+- `shelly <subcommand>`実行時に`libbash.so: .../home/bin/bash: Permission denied`(bug #166、詳細は上のエントリ参照)→ Fable5が根本原因(v141の直接execveがv180のLD_PRELOAD撤去と交差した回帰)を特定・`_run`(linker64)経由に修正(`a9d403f1d`)、実機で解消確認済み。ただし`shelly config get/list`自体は元々ネイティブPTYヘルパーが未実装(既知の別ギャップ、pseudo-shell.tsとの断絶)なのでusage表示のまま——これは新規バグではない。
+
+→ sync: なし。
 
 ---
 
@@ -3356,7 +3374,8 @@ claude() {
 
 ## History
 
-- **2026-08-02（bug #166発見・修正: `shelly`サブコマンドのSELinux execve拒否、BASHRC_VERSION 237）**: Tier 3（エージェント登録LLMファースト化）実機検証中にプロダクトオーナーが `shelly config get ...` の「libbash.so: .../home/bin/bash: Permission denied」を報告（クリーンインストールでも再現）。別セッションの一次調査を引き継いだFable5がバージョン履歴の突き合わせで根本原因を確定——v141の `shelly()` が `"$SHELL"` を直接 execve しており、v180 の PTY-wide LD_PRELOAD 撤去以降は誰も execve を linker64 に書き換えてくれない、という2つの修正の交差点で発生した回帰。`_run`（linker64）経由に変更。実機未検証。→ sync: なし。
+- **2026-08-02（Tier 3「エージェント登録のLLMファースト化」実機検証5項目 全PASS）**: 別環境PC(adb+scrcpyミラーリング接続)でフラグOFF回帰なし/LLM主導の複数ターン聞き返し/webhook昇格防止/autonomous意図反映/Local LLM不在時fail-closed降格の5項目を実施、全PASS。副次的に2つのUX上の制限(小型ローカルモデルがautonomous確認質問を3回リピート、5ターン上限フォールバック時にTier 3内で得た値が引き継がれない)を発見、Phase 2以降への申し送りとして記録。詳細は該当エントリ参照。→ sync: なし。
+- **2026-08-02（bug #166発見・修正・実機検証PASS: `shelly`サブコマンドのSELinux execve拒否、BASHRC_VERSION 237）**: Tier 3（エージェント登録LLMファースト化）実機検証中にプロダクトオーナーが `shelly config get ...` の「libbash.so: .../home/bin/bash: Permission denied」を報告（クリーンインストールでも再現）。別セッションの一次調査を引き継いだFable5がバージョン履歴の突き合わせで根本原因を確定——v141の `shelly()` が `"$SHELL"` を直接 execve しており、v180 の PTY-wide LD_PRELOAD 撤去以降は誰も execve を linker64 に書き換えてくれない、という2つの修正の交差点で発生した回帰。`_run`（linker64）経由に変更、実機で解消確認済み。→ sync: なし。
 - **2026-07-28（Hermes Agent機能ギャップ分析、次バージョンロードマップとして記録）**: プロダクトオーナーから「Android制約下でHermes Agent的な体験を実現するために足りない機能とその実現可能性」の調査依頼。3並列レビュー（機能パリティ/信頼性/マーケティング妥当性の3観点）でHermes Agentの実態調査（Nous Research製、GitHub 18万スター超のOSS、Android版はTermuxラッパーでネイティブアプリではない）とShellyの現状照合を実施した後、Fable5にAndroid制約下での機能ギャップの技術的実現可能性を追加委託。既存の`lib/agent-skills.ts`/`lib/agent-memory.ts`（スキル自動生成・永続メモリ、いずれも実装済み・実機検証済みで稼働中）を「無い」と誤認していた前提を訂正した上で、優先順位付きロードマップ（OpenRouter統合→無人実行時スキル自動保存→グローバル記憶+MEMORY-001解禁→ワークスペース内rollback型実行→通知リスナー汎用チャネル化）を新規P1エントリとして記録。今回のリリースはこのロードマップを含めず、現状の実機テスト項目クリアをもってリリースとする、とプロダクトオーナーが明示的にスコープ確定。→ sync: なし。
 - **2026-07-27（bug#161: Android DownloadManager不調→直接ダウンロードのフォールバック実装）**: アプリ内アップデートが3回連続、3種類の違う失敗モードで失敗。`adb shell curl`での直接検証でネットワーク到達性・ストレージとも正常と確認、Android標準DownloadManagerコンポーネント自体の不調と判断。`expo-file-system/legacy`の`createDownloadResumable`を使った完全に別系統のダウンロード経路を新設し、DownloadManager失敗時に自動フォールバックするよう実装（sha256検証は両経路とも同一）。この修正自体が配布経路の修正のため今夜中の実機検証は不可、次回の自然発生 or 意図的再現時に確認予定。→ sync: なし。
 - **2026-07-27（bug#122 Doctor UI 実機検証PASS）**: Settings → Doctor → Run diagnostics、11項目全部OK確認。`--json`経路のためbug #160のクラッシュとは無関係。これで今夜のカテゴリA実機テスト（音声/Immortal Sessions/Codexタブ/ウィジェットRUN/Doctor UI）が全完了、残るは①②Gemini実エンジン確認（無料枠リセット待ち）のみ。→ sync: なし。
