@@ -61,7 +61,9 @@ import { detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import {
+  buildConversationTranscript,
   buildRegistrationSystemPrompt,
+  isRepeatedRegistrationQuestion,
   mergeConversationalExtractionIntoDraft,
   parseConversationalTurnResponse,
   runConversationalRegistrationTurn,
@@ -903,15 +905,21 @@ export function useAIPaneDispatch(paneId: string) {
           });
           const connectors = useSettingsStore.getState().socialConnectors ?? [];
           const conversationLocale = detectMessageLocale(pendingAgentSession.draft.rawText);
-          const systemPrompt = buildRegistrationSystemPrompt({
-            locale: conversationLocale,
-            deterministicHint: pendingAgentSession.draft,
-            connectors,
-          });
           const llmTurns = pendingAgentSession.attemptCounts.llmTurns ?? 0;
           let resumedDraft = pendingAgentSession.draft;
+          // Set when Tier 3 gives up mid-turn for a reason the user deserves a
+          // one-line explanation for (LLM unreachable, or the model looping on
+          // the same question). An unparseable turn deliberately does NOT set
+          // it: that path already degraded silently before this change, and a
+          // notice on every malformed fence would be noise.
+          let announceTier2Fallback = false;
 
           if (llmTurns < 5) {
+            const systemPrompt = buildRegistrationSystemPrompt({
+              locale: conversationLocale,
+              deterministicHint: pendingAgentSession.draft,
+              connectors,
+            });
             const sessionMessages = useAIPaneStore.getState().getOrCreate(paneId).messages
               .filter((message) => message.timestamp >= pendingAgentSession.createdAt)
               .filter((message) => (message.role === 'user' || message.role === 'assistant') && !!message.content)
@@ -935,20 +943,41 @@ export function useAIPaneDispatch(paneId: string) {
             if (result.success) {
               const turn = parseConversationalTurnResponse(result.raw ?? '');
               if (turn.kind === 'question') {
-                const messageId = generateId();
-                store.addMessage(paneId, {
-                  id: messageId,
-                  role: 'assistant',
-                  content: turn.text,
-                  timestamp: Date.now(),
-                  agent: pendingAgentSession.agentLabel,
-                });
-                store.setPendingAgentSession(paneId, {
-                  ...pendingAgentSession,
-                  attemptCounts: { ...pendingAgentSession.attemptCounts, llmTurns: llmTurns + 1 },
-                  messageId,
-                });
-                return;
+                // 2026-08-02 on-device finding (Qwen3.5-2B): a small local
+                // model can re-emit the PREVIOUS question verbatim after the
+                // user has already answered it — three turns running, in the
+                // repro. Re-showing it a second time teaches the user nothing
+                // and the model nothing; the conversation has stopped
+                // progressing, which is a different signal from a malformed
+                // turn and is not fixed by spending the remaining turns. Drop
+                // to Tier 2's deterministic slot-fill immediately instead of
+                // waiting for the 5-turn cap. Conservative by construction —
+                // see isRepeatedRegistrationQuestion: EXACT match after
+                // normalization only, so a reworded re-ask keeps the Tier 3
+                // conversation alive.
+                if (isRepeatedRegistrationQuestion(pendingAgentSession.lastLlmQuestion, turn.text)) {
+                  logInfo(
+                    'AIPaneDispatch',
+                    'Tier 3 conversation repeated the same question verbatim — falling back to Tier 2 slot-fill',
+                  );
+                  announceTier2Fallback = true;
+                } else {
+                  const messageId = generateId();
+                  store.addMessage(paneId, {
+                    id: messageId,
+                    role: 'assistant',
+                    content: turn.text,
+                    timestamp: Date.now(),
+                    agent: pendingAgentSession.agentLabel,
+                  });
+                  store.setPendingAgentSession(paneId, {
+                    ...pendingAgentSession,
+                    attemptCounts: { ...pendingAgentSession.attemptCounts, llmTurns: llmTurns + 1 },
+                    messageId,
+                    lastLlmQuestion: turn.text,
+                  });
+                  return;
+                }
               }
               if (turn.kind === 'proposal') {
                 resumedDraft = mergeConversationalExtractionIntoDraft(
@@ -969,34 +998,71 @@ export function useAIPaneDispatch(paneId: string) {
               }
             }
             if (!result.success) {
-              const fallbackStrings = conversationLocale === 'ja' ? ja : en;
-              store.addMessage(paneId, {
-                id: generateId(),
-                role: 'assistant',
-                content: fallbackStrings['agentplan.llm_conversation_fallback_notice'],
-                timestamp: Date.now(),
-                agent: pendingAgentSession.agentLabel,
-              });
+              announceTier2Fallback = true;
             }
-
-            const llmFallbackSettings = useSettingsStore.getState().settings;
-            if (llmFallbackSettings.localLlmUrl) {
-              await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-conversation' }).catch(() => {});
-            }
-            resumedDraft = await extractAgentFieldsWithLlm(
-              userText,
-              resumedDraft,
-              {
-                baseUrl: llmFallbackSettings.localLlmUrl,
-                model: llmFallbackSettings.localLlmModel,
-                enabled: !!llmFallbackSettings.localLlmUrl,
-              },
-              15_000,
-              300,
-              connectors,
-            );
-            if (resumedDraft.llmAutonomousIntent === true) resumedDraft.autonomous = true;
           }
+
+          // ── Tier 3 → Tier 2 handoff ────────────────────────────────────
+          // Reached by every give-up path: the 5-turn cap (which SKIPS the
+          // block above entirely), an unusable LLM turn, an unparseable
+          // response, and the repeated-question short-circuit.
+          if (announceTier2Fallback) {
+            const fallbackStrings = conversationLocale === 'ja' ? ja : en;
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: fallbackStrings['agentplan.llm_conversation_fallback_notice'],
+              timestamp: Date.now(),
+              agent: pendingAgentSession.agentLabel,
+            });
+          }
+
+          // 2026-08-02 on-device finding: this narrow re-extraction used to
+          // run ONLY inside the `llmTurns < 5` branch and to see ONLY the
+          // latest message — so hitting the turn cap dropped straight to Tier
+          // 2 with `pendingAgentSession.draft` exactly as Tier 3 had started,
+          // discarding everything the user had said during the conversation
+          // (the on-device repro lost an agent name the user had already
+          // given). It now runs on EVERY handoff path and is fed the whole
+          // user side of the session — see buildConversationTranscript for why
+          // assistant turns are deliberately excluded. Nothing about what is
+          // ACCEPTABLE changes: extractAgentFieldsWithLlm's own per-field
+          // gates (parseSchedule re-validation, the draft/notify-only
+          // actionType whitelist, connector existence-checking, strict-boolean
+          // autonomousIntent) are untouched, and it still fails closed by
+          // returning the draft by reference when nothing is usable.
+          const llmFallbackSettings = useSettingsStore.getState().settings;
+          if (llmFallbackSettings.localLlmUrl) {
+            await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'agent-llm-fallback-conversation' }).catch(() => {});
+          }
+          const conversationTranscript = buildConversationTranscript(
+            pendingAgentSession.draft.rawText,
+            useAIPaneStore
+              .getState()
+              .getOrCreate(paneId)
+              .messages.filter(
+                (message) =>
+                  message.role === 'user' &&
+                  !!message.content &&
+                  message.timestamp >= pendingAgentSession.createdAt,
+              )
+              .map((message) => message.content),
+          );
+          resumedDraft = await extractAgentFieldsWithLlm(
+            conversationTranscript || userText,
+            resumedDraft,
+            {
+              baseUrl: llmFallbackSettings.localLlmUrl,
+              model: llmFallbackSettings.localLlmModel,
+              enabled: !!llmFallbackSettings.localLlmUrl,
+            },
+            15_000,
+            300,
+            connectors,
+          );
+          // Same promotion contract as the proposal branch above: true → true
+          // only, never a demotion of an already-true deterministic match.
+          if (resumedDraft.llmAutonomousIntent === true) resumedDraft.autonomous = true;
 
           store.setPendingAgentSession(paneId, null);
           const slotFillCtx = {
@@ -1597,6 +1663,11 @@ export function useAIPaneDispatch(paneId: string) {
                       createdAt,
                       messageId,
                       agentLabel: agent as ChatMessage['agent'],
+                      // Seed for the repeated-question check on the NEXT turn
+                      // (see the resume branch above) — a small local model
+                      // re-asking this exact text after the user answers is
+                      // the 2026-08-02 on-device repro.
+                      lastLlmQuestion: turn.text,
                     });
                     return;
                   }

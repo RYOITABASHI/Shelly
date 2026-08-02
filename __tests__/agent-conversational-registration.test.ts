@@ -3,6 +3,9 @@ import {
   parseConversationalTurnResponse,
   mergeConversationalExtractionIntoDraft,
   runConversationalRegistrationTurn,
+  normalizeRegistrationQuestion,
+  isRepeatedRegistrationQuestion,
+  buildConversationTranscript,
   type ConversationalRegistrationContext,
 } from '@/lib/agent-conversational-registration';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
@@ -626,5 +629,125 @@ describe('runConversationalRegistrationTurn', () => {
     ollamaChat.mockRejectedValue(new Error('network down'));
     const res = await runConversationalRegistrationTurn(history, enabled);
     expect(res).toEqual({ success: false, error: 'network down' });
+  });
+});
+
+// ─── Repeated-question detection (2026-08-02 on-device finding) ────────────
+//
+// Qwen3.5-2B re-asked the SAME autonomous-confirmation question three turns
+// running while the user answered it twice. The 5-turn cap eventually rescued
+// the flow, so nothing was mis-registered — the fix is purely about not making
+// the user answer the same question over and over.
+
+describe('buildRegistrationSystemPrompt anti-repeat instruction', () => {
+  it('tells the model not to repeat a question it already asked, in BOTH locales', () => {
+    const jaPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(jaPrompt).toContain('同じ質問を、二度と繰り返さないでください');
+    expect(jaPrompt).toContain('会話を必ず一歩前に進めて');
+    const enPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(enPrompt).toContain('Never repeat a question you have already asked');
+    expect(enPrompt).toContain('move the conversation forward');
+  });
+});
+
+describe('normalizeRegistrationQuestion', () => {
+  it('drops surrounding/interior whitespace and sentence punctuation', () => {
+    expect(normalizeRegistrationQuestion('  実行するたびに 確認しますか？  ')).toBe(
+      '実行するたびに確認しますか',
+    );
+  });
+
+  it('treats an ideographic space like any other whitespace', () => {
+    expect(normalizeRegistrationQuestion('毎回　確認しますか？')).toBe(
+      normalizeRegistrationQuestion('毎回 確認しますか?'),
+    );
+  });
+
+  it('lowercases, so an English re-ask differing only in capitalization matches', () => {
+    expect(normalizeRegistrationQuestion('What Time Should It Run?')).toBe(
+      normalizeRegistrationQuestion('what time should it run'),
+    );
+  });
+
+  it('keeps word-internal characters (long-vowel marks, hyphens, digits) intact', () => {
+    expect(normalizeRegistrationQuestion('ユーザー名は 8 時で good-enough?')).toBe(
+      'ユーザー名は8時でgood-enough',
+    );
+  });
+});
+
+describe('isRepeatedRegistrationQuestion', () => {
+  const q = '実行するたびに確認しますか、それとも確認せずに実行しますか？';
+
+  it('returns false when there is no previous question at all (first turn)', () => {
+    expect(isRepeatedRegistrationQuestion(undefined, q)).toBe(false);
+    expect(isRepeatedRegistrationQuestion(null, q)).toBe(false);
+    expect(isRepeatedRegistrationQuestion('', q)).toBe(false);
+  });
+
+  it('detects a byte-for-byte repeat (the exact on-device repro)', () => {
+    expect(isRepeatedRegistrationQuestion(q, q)).toBe(true);
+  });
+
+  it('detects a repeat that differs only in whitespace/punctuation', () => {
+    expect(isRepeatedRegistrationQuestion(q, `  ${q.replace('？', '?')}  `)).toBe(true);
+    expect(isRepeatedRegistrationQuestion('何時に実行しますか？', '何時に実行しますか')).toBe(true);
+  });
+
+  it('does NOT fire on a reworded re-ask — the model is still making progress', () => {
+    expect(
+      isRepeatedRegistrationQuestion('何時に実行しますか？', '実行する時刻を教えてください。'),
+    ).toBe(false);
+    expect(
+      isRepeatedRegistrationQuestion('What time should it run?', 'Which hour should it run at?'),
+    ).toBe(false);
+  });
+
+  it('does NOT fire on a question that merely CONTAINS the previous one', () => {
+    expect(
+      isRepeatedRegistrationQuestion('何時に実行しますか？', '何時に実行しますか？ 平日だけですか？'),
+    ).toBe(false);
+  });
+
+  it('never claims a repeat when either side normalizes to nothing', () => {
+    expect(isRepeatedRegistrationQuestion('？？？', '。。。')).toBe(false);
+    expect(isRepeatedRegistrationQuestion('   ', '   ')).toBe(false);
+  });
+});
+
+// ─── Conversation transcript for the Tier 2 handoff ───────────────────────
+
+describe('buildConversationTranscript', () => {
+  it('joins the opening utterance and every later user message, newline-separated', () => {
+    expect(
+      buildConversationTranscript('@agent 手伝って', ['名前は天気チェッカー', '毎朝8時']),
+    ).toBe('@agent 手伝って\n名前は天気チェッカー\n毎朝8時');
+  });
+
+  it('trims each entry and skips blank ones', () => {
+    expect(buildConversationTranscript('  開始  ', ['', '   ', ' 名前はA '])).toBe('開始\n名前はA');
+  });
+
+  it('drops an immediately repeated entry (the opening utterance re-recorded as a chat message)', () => {
+    expect(buildConversationTranscript('手伝って', ['手伝って', '毎朝8時'])).toBe('手伝って\n毎朝8時');
+  });
+
+  it('returns an empty string when there is nothing at all to say', () => {
+    expect(buildConversationTranscript('   ', ['', '  '])).toBe('');
+  });
+
+  it('keeps the opening utterance AND the newest answers when over budget', () => {
+    const opening = 'OPEN';
+    const later = ['a'.repeat(20), 'b'.repeat(20), 'NEWEST'];
+    const out = buildConversationTranscript(opening, later, 20);
+    expect(out.startsWith('OPEN')).toBe(true);
+    expect(out).toContain('NEWEST');
+    expect(out).not.toContain('a'.repeat(20));
+    expect(out.length).toBeLessThanOrEqual(20);
+  });
+
+  it('truncates an over-budget opening utterance rather than returning nothing', () => {
+    const out = buildConversationTranscript('x'.repeat(50), ['later'], 10);
+    expect(out).toBe('x'.repeat(10));
   });
 });

@@ -205,6 +205,8 @@ export function buildRegistrationSystemPrompt(ctx: ConversationalRegistrationCon
 【会話の進め方】
 - 情報が足りないときは、あなた自身の言葉で自然な日本語の質問を1つだけ返してください。そのときは JSON を一切出力しないでください。
 - 一度に複数のことをまとめて聞かないでください。短く、具体的に、1問ずつ聞いてください。
+- **直前にあなたが聞いた質問と同じ質問を、二度と繰り返さないでください。** ユーザーの最新の回答を必ず読み、会話を必ず一歩前に進めてください。回答が短くても（「確認なしで」「はい」など）、それは有効な回答です。同じ文面を送り直すのではなく、次に足りない項目を聞くか、情報がそろったなら最終提案を出してください。
+- 回答がどうしても曖昧で聞き直すしかないときも、同じ文面のコピーではなく、別の言い方で、何が分からなかったのかを添えて聞いてください。
 - ユーザーが言っていないことを勝手に決めつけないでください。分からないことは聞いてください。
 - 登録に必要な情報がそろったと判断したときだけ、次の形式のブロックだけを出力してください（前後に説明文を付けないこと）。
 
@@ -234,6 +236,8 @@ ${hint}`;
 【How to run the conversation】
 - When something is missing, reply with ONE short follow-up question in your own words, in ordinary prose. Do NOT emit any JSON on such a turn.
 - Ask one thing at a time. Keep it short and concrete.
+- **Never repeat a question you have already asked.** Always read the user's most recent answer and move the conversation forward by one step. A short answer ("no confirmation", "yes") is still a valid answer — do not re-send the same text; ask for the next missing item instead, or emit the final proposal if you now have everything.
+- If an answer really is too ambiguous to use, re-ask in DIFFERENT words and say what was unclear — never resend an identical question.
 - Never assume anything the user did not say. If you don't know, ask.
 - ONLY once you believe you have everything, output the block below and nothing else (no text before or after it).
 
@@ -351,6 +355,141 @@ export function parseConversationalTurnResponse(raw: string): ConversationalTurn
   }
 
   return { kind: 'proposal', extraction };
+}
+
+// ── §2.5: conversation-progress heuristics (pure) ───────────────────────────
+
+/** Characters removed before comparing two questions for "is this literally the
+ *  same ask again". Deliberately ONLY sentence-level punctuation and quoting
+ *  marks — never word-internal characters (no `ー`, no `-`, no digits), because
+ *  stripping those could make two genuinely DIFFERENT questions normalize to
+ *  the same string, which is the one failure direction that actually hurts
+ *  (a false "the model is stuck" verdict cuts a working conversation short). */
+const QUESTION_PUNCT_RE = /[。、．，・？！?!,.:：;；…‥「」『』【】〔〕（）()［］[\]｛｝{}"'`“”‘’]/g;
+
+/** Whitespace incl. the ideographic space. Removed ENTIRELY rather than
+ *  collapsed: a local model re-emitting the same Japanese sentence routinely
+ *  inserts or drops an interior space (Japanese has no word separator, so
+ *  spacing carries no meaning to compare), and "same words, different
+ *  spacing" is never two different questions in any language. */
+const QUESTION_SPACE_RE = /[\s　]+/g;
+
+/**
+ * Normalize one assistant question for repeat-detection: drop all whitespace →
+ * drop sentence punctuation → lowercase (so an English re-ask that only
+ * differs in capitalization still counts).
+ *
+ * Intentionally NOT a similarity metric. See isRepeatedRegistrationQuestion.
+ */
+export function normalizeRegistrationQuestion(text: string): string {
+  return text
+    .replace(QUESTION_SPACE_RE, '')
+    .replace(QUESTION_PUNCT_RE, '')
+    .toLowerCase();
+}
+
+/**
+ * "The conversation is not progressing": the model just asked, word for word,
+ * the question it asked on the previous turn — even though the user answered
+ * in between.
+ *
+ * 2026-08-02 on-device finding (Qwen3.5-2B): after the model asked whether the
+ * agent should confirm before each run, the user answered "確認なしで" and then
+ * "確認せずに勝手に実行して", and the model re-emitted the IDENTICAL question
+ * text three turns running. The 5-turn cap eventually rescued it, so nothing
+ * was mis-registered — but the user had to answer the same thing three times
+ * first. A repeat is a DIFFERENT signal from a parse failure: the turn was
+ * perfectly well-formed, the model simply is not consuming the answer, and no
+ * number of additional turns will fix that. The caller therefore treats a
+ * repeat as an immediate "fall back to Tier 2 deterministic slot-fill", not as
+ * a retry.
+ *
+ * Deliberately conservative — EXACT equality after normalization, no fuzzy
+ * distance, no substring/prefix matching. A slightly reworded re-ask ("What
+ * time should it run?" → "Which hour should it run at?") is NOT a repeat: the
+ * model is still trying, and cutting the conversation off there would be a
+ * regression against a genuinely working Tier 3 dialogue.
+ */
+export function isRepeatedRegistrationQuestion(
+  previous: string | undefined | null,
+  next: string,
+): boolean {
+  if (!previous) return false;
+  const a = normalizeRegistrationQuestion(previous);
+  const b = normalizeRegistrationQuestion(next);
+  // An empty normalization ("？？？") carries no evidence either way — never
+  // let it stand in for "same question".
+  if (!a || !b) return false;
+  return a === b;
+}
+
+/** Total character budget for buildConversationTranscript's output. The narrow
+ *  extractor (lib/agent-llm-fallback.ts) is a single-shot, 300-token call whose
+ *  prompt was sized for ONE utterance; a long conversation must not push the
+ *  real content out of the model's attention (or its context) entirely. */
+const MAX_TRANSCRIPT_CHARS = 2000;
+
+/**
+ * Fold a Tier 3 conversation back into a single utterance for the narrow
+ * single-shot extractor.
+ *
+ * 2026-08-02 on-device finding: when Tier 3 gives up (5-turn cap, or the
+ * repeat-detection above), the caller previously handed
+ * extractAgentFieldsWithLlm only the user's LATEST message — so anything the
+ * user had already stated earlier in the same conversation (an agent name, a
+ * time, a destination) was silently dropped on the way down to Tier 2, and
+ * they were asked for it again. Passing the whole user side of the session
+ * fixes that WITHOUT loosening anything: every field still goes through
+ * mergeLlmExtractionIntoDraft's existing per-field gates (cron re-validated by
+ * parseSchedule, actionType restricted, connectors existence-checked), so a
+ * longer input can only ever change WHICH values are proposed, never which
+ * ones are acceptable.
+ *
+ * Only USER text is included — never assistant turns. Feeding the model's own
+ * earlier questions back into an extractor would let a hallucinated
+ * suggestion ("shall I post it to X?") be re-read as something the user asked
+ * for.
+ *
+ * When over budget, the OLDEST middle entries are dropped first: the opening
+ * utterance (which carries the task itself) and the most recent answers (which
+ * carry the corrections) are the two ends worth keeping.
+ */
+export function buildConversationTranscript(
+  openingUtterance: string,
+  laterUserTexts: string[],
+  maxChars: number = MAX_TRANSCRIPT_CHARS,
+): string {
+  const cleaned: string[] = [];
+  for (const raw of [openingUtterance, ...laterUserTexts]) {
+    const trimmed = (raw ?? '').trim();
+    if (!trimmed) continue;
+    // Drop an immediate repeat (the opening utterance is often re-recorded as
+    // the session's first chat message) — nothing is lost, and it keeps the
+    // budget for real content.
+    if (cleaned[cleaned.length - 1] === trimmed) continue;
+    cleaned.push(trimmed);
+  }
+  if (cleaned.length === 0) return '';
+
+  const joined = cleaned.join('\n');
+  if (joined.length <= maxChars) return joined;
+
+  const head = cleaned[0];
+  const kept: string[] = [];
+  let used = head.length;
+  // Walk backwards from the newest message, keeping whatever fits.
+  for (let i = cleaned.length - 1; i >= 1; i--) {
+    const cost = cleaned[i].length + 1;
+    if (used + cost > maxChars) break;
+    used += cost;
+    kept.unshift(cleaned[i]);
+  }
+  if (kept.length === 0) {
+    // Even the opening utterance alone is over budget — keep its head, which
+    // is where an opening utterance states the task.
+    return head.slice(0, maxChars);
+  }
+  return [head, ...kept].join('\n');
 }
 
 // ── §3: proposal → draft merge (pure, existence-checked) ────────────────────

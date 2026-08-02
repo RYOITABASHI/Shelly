@@ -75,6 +75,16 @@ export interface PendingAgentSession {
    *  reply (or a re-ask) keeps the same pane icon/color as the original
    *  draft message — mirrors pendingSlotFill's own agentLabel carry-through. */
   agentLabel?: ChatAgent;
+  /** 'llm-conversation' phase only (2026-08-02): the verbatim text of the
+   *  question the LLM asked on the PREVIOUS turn. Used solely by
+   *  hooks/use-ai-pane-dispatch.ts to notice that a small local model has
+   *  re-asked the identical question instead of consuming the user's answer
+   *  (see lib/agent-conversational-registration.ts's
+   *  isRepeatedRegistrationQuestion for the on-device repro), which
+   *  short-circuits Tier 3 straight to Tier 2 rather than making the user
+   *  answer the same thing up to five times. Never read by any other phase,
+   *  and absent on a session's first question. */
+  lastLlmQuestion?: string;
 }
 
 /**
