@@ -241,6 +241,90 @@ describe('resolveEscalationLadder — key preflight (G4 P1: keyless cloud degrad
   });
 });
 
+describe('resolveEscalationLadder — explicit web-tool pin beats the webDomain heuristic (2026-08-03 on-device bug 「なんでパープレじゃなくてこれ？」)', () => {
+  // Real on-device repro: the "Gemini Fix Test" agent's step 0 instruction is
+  // 「パープレキシティで最新のAIニュースを集めて」 with an explicit
+  // {type:'perplexity'} pin. needsWeb=true but "AIニュース" carries no
+  // ACADEMIC_WEB_KW keyword → webDomain='general' → the old code mechanically
+  // picked GEMINI, ignoring the user's explicit Perplexity choice — the run log
+  // showed gemini-api and the user caught it.
+  const PIN_PPLX: ToolChoice = { type: 'perplexity', model: 'sonar-deep-research' };
+  const PIN_GEMINI: ToolChoice = { type: 'gemini-api' };
+  const GENERAL_WEB = 'パープレキシティで最新のAIニュースを集めて';
+  const ACADEMIC_WEB = '最新の論文を集めて';
+  const CONSENT: LadderEnv = { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: true };
+
+  it('on-device repro (autonomous + consent): explicit perplexity pin on a general-domain web task → Perplexity, NOT Gemini', () => {
+    // Pre-fix this returned ['gemini-api', 'cli:codex'] — webDomain 'general'
+    // overrode the explicit pin. Post-fix the pin wins.
+    const l = resolveEscalationLadder(
+      mk({ prompt: GENERAL_WEB, autonomous: true, tool: PIN_PPLX }),
+      CONSENT,
+    );
+    expect(l.guard).toBe('configured-tool');
+    expect(types(l)).toEqual(['perplexity', 'cli:codex']);
+    expect(types(l)).not.toContain('gemini-api');
+    // The pinned model choice survives too (not replaced by the ladder constant).
+    expect(l.tools[0]).toEqual(PIN_PPLX);
+  });
+
+  it('attended (non-autonomous): explicit perplexity pin on a general-domain web task → Perplexity, NOT Gemini', () => {
+    const l = resolveEscalationLadder(mk({ prompt: GENERAL_WEB, tool: PIN_PPLX }), KEYED);
+    expect(types(l)).toEqual(['perplexity', 'cli:codex']);
+    expect(types(l)).not.toContain('gemini-api');
+  });
+
+  it('symmetric: explicit gemini-api pin on an ACADEMIC web task → Gemini, NOT Perplexity (both branches)', () => {
+    expect(types(resolveEscalationLadder(mk({ prompt: ACADEMIC_WEB, tool: PIN_GEMINI }), KEYED)))
+      .toEqual(['gemini-api', 'cli:codex']);
+    expect(types(resolveEscalationLadder(mk({ prompt: ACADEMIC_WEB, autonomous: true, tool: PIN_GEMINI }), CONSENT)))
+      .toEqual(['gemini-api', 'cli:codex']);
+  });
+
+  it('no regression: a NON-web explicit pin (local) on a web-mandatory task is still excluded — webDomain fallback forces Gemini/Perplexity', () => {
+    // The "非Web系バックエンドは幻覚するだけなので除外" design is unchanged:
+    // only a pin to a WEB backend can override the webDomain heuristic.
+    const attended = resolveEscalationLadder(mk({ prompt: GENERAL_WEB, tool: { type: 'local' } }), KEYED);
+    expect(types(attended)).toEqual(['gemini-api', 'cli:codex']);
+    expect(types(attended)).not.toContain('local');
+    const academic = resolveEscalationLadder(mk({ prompt: ACADEMIC_WEB, tool: { type: 'groq' } }), KEYED);
+    expect(types(academic)).toEqual(['perplexity', 'cli:codex']);
+    expect(types(academic)).not.toContain('groq');
+  });
+
+  it('no regression: auto tool (no pin) keeps the webDomain-based selection exactly as before', () => {
+    expect(types(resolveEscalationLadder(mk({ prompt: GENERAL_WEB }), KEYED))).toEqual(['gemini-api', 'cli:codex']);
+    expect(types(resolveEscalationLadder(mk({ prompt: ACADEMIC_WEB }), KEYED))).toEqual(['perplexity', 'cli:codex']);
+  });
+
+  it('safety gates unchanged: autonomous WITHOUT consent stays Codex-only even with an explicit web pin', () => {
+    const l = resolveEscalationLadder(mk({ prompt: GENERAL_WEB, autonomous: true, tool: PIN_PPLX }), KEYED);
+    expect(types(l)).toEqual(['cli:codex']);
+    expect(types(l)).not.toContain('perplexity');
+  });
+
+  it('safety gates unchanged: key preflight applies to the pinned tool (keyless pin → Codex, why names the pinned tool)', () => {
+    const noPplxKey: LadderEnv = { ...CONSENT, hasPerplexityKey: false };
+    const auton = resolveEscalationLadder(mk({ prompt: GENERAL_WEB, autonomous: true, tool: PIN_PPLX }), noPplxKey);
+    expect(types(auton)).toEqual(['cli:codex']);
+    expect(auton.why).toContain('Perplexity key is not configured');
+    const attended = resolveEscalationLadder(
+      mk({ prompt: GENERAL_WEB, tool: PIN_PPLX }),
+      { hasCerebrasKey: true, hasGroqKey: true, hasPerplexityKey: false },
+    );
+    expect(types(attended)).toEqual(['cli:codex']);
+    expect(attended.why).toContain('Perplexity key not configured');
+  });
+
+  it("N1 'stop' policy still halts at the pinned free tier (no Codex climb)", () => {
+    const l = resolveEscalationLadder(
+      mk({ prompt: GENERAL_WEB, autonomous: true, tool: PIN_PPLX }),
+      { ...CONSENT, autonomousCloudStop: true },
+    );
+    expect(types(l)).toEqual(['perplexity']);
+  });
+});
+
 describe('resolveEscalationLadder — routeTextOverride routes a chained step by its OWN instruction (2026-08-03 on-device bug)', () => {
   // Real on-device repro shape: a 2-step chain "パープレキシティで最新のAIニュースを
   // 集めて、ローカルLLMで要約して、通知して". Step 1 ("summarize") receives

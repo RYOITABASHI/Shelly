@@ -44,6 +44,30 @@
 
 ---
 
+### ✅ Web必須タスクのエスカレーションラダーが、明示的なPerplexity/Geminiピンを無視してwebDomain分類で機械的にツールを再選択（2026-08-03、実機発見「なんでパープレじゃなくてこれ？」、Fable5実装）— 未コミット・実機未検証
+
+**発見の経緯（実機）**: 上の`routeTextOverride`修正（`22b9cbaac`）の実機再検証で「Gemini Fix Test」エージェント（「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」）を再実行した際、ステップ1（要約）は正しく`local`にルーティングされたが、ユーザーが「なんでパープレじゃなくてこれ(Gemini)なんだっけ？」と指摘——ステップ0の指示は「**パープレキシティ**で」と明示的にツールを名指ししていた（ステップに`{type:'perplexity'}`ピンが付いていた）のに、実行ログは`gemini-api`だった。
+
+**根本原因**: `resolveAgentRoute`（`lib/agent-tool-router.ts`）自体は正しい——明示的ツールピン（`agent.tool.type !== 'auto'`）は末尾の`guard: 'configured-tool'`分岐でそのまま`primary`として返る。問題は`resolveEscalationLadder`（`lib/agent-escalation-ladder.ts`、修正前144-194行）のWeb必須分岐（`if (web.needsWeb)`）が、この`primary`を**一切参照せず**、`web.webDomain === 'academic' ? PERPLEXITY : GEMINI`という式で2箇所（autonomous+consent時の`consented`＝旧152行、非autonomous時の`webPrimary`＝旧176行）独自に再選択していたこと。`webDomain`は`detectRouteSignals`の**話題ドメイン分類**（ACADEMIC_WEB_KW: 論文/研究/paper/study等にヒットすればacademic）であり、ユーザーが名指ししたツール名とは無関係——「最新のAIニュース」には学術キーワードが無いため`webDomain='general'`→機械的にGeminiが選ばれ、明示的なPerplexity指定が黙って上書きされた。
+
+**修正内容（`lib/agent-escalation-ladder.ts`のみ、選択ロジックの狭い変更）**: `web.needsWeb`分岐の冒頭で`explicitWebToolPin`（`decision.guard === 'configured-tool'` かつ `primary.type`が`'perplexity'`または`'gemini-api'`の場合のみ`primary`、それ以外は`null`）を計算し、`chosenWeb = explicitWebToolPin ?? (webDomain === 'academic' ? PERPLEXITY : GEMINI)`に一本化——旧2箇所（`consented`/`webPrimary`）は両方この`chosenWeb`を使う。`why`文字列も実際に選ばれたツール名（＋ピン時は`(explicitly configured)`注記）を反映するよう更新。**意図的に変えていないもの**:
+- `'auto'`（ピン無し）/ autonomous-policy / scoredガードは従来通り`webDomain`ベースの選択（`explicitWebToolPin`が`null`になるため）。
+- 非Web系ツール（local/cerebras/groq/cli等）への明示ピンは引き続きWeb必須タスクから除外され`webDomain`ベースでPerplexity/Geminiへ強制エスカレーション（「非Web系は幻覚するだけなので除外」の設計は不変）。
+- consent/keyKnownMissingの安全ゲートは無変更——「そもそもWeb系を使ってよいか」（autonomousCloudConsent、キー未設定時のCodexフォールバック、autonomousCloudStop）は一切触らず、ピンされたツールに対してそのまま適用される（consent無しのautonomousは明示ピンがあってもCodexのみ、キー未設定のピンはCodex直行）。
+- autonomous+consent無しのCodexのみフォールバック分岐（旧149行付近）はWeb系ツールを使わない経路のため対象外・無変更。
+
+**同種ロジックの他ファイル確認（対象外の理由）**: `lib/agent-plan-spec.ts`の`buildAgentPlanSpec`（189-211行）と`lib/agent-executor.ts`の`generateRunScript`（970-1003行）はどちらも`resolveAgentRoute(agent).tool`（＝明示ピンを尊重済みの解決結果）をそのまま使い、`consentWebTool`判定も「解決されたツール自身が`gemini-api`/`perplexity`か」を見る——「Web必須だからwebDomainでPerplexity/Geminiを再選択する」ロジック自体を持たないため、同種の明示ピン無視バグは存在しない（`resolveForAutonomous`による自律ポリシー適用のみ）。修正不要・無変更。
+
+**テスト**: `__tests__/agent-escalation-ladder.test.ts`に新規describe（8件）追加——実機シナリオ再現（「パープレキシティで最新のAIニュースを集めて」＋明示perplexityピン＋autonomous+consent→修正前は`['gemini-api','cli:codex']`、修正後は`['perplexity','cli:codex']`、ピンの`model`指定も保持）、非autonomous（attended）分岐でも同様にピン優先、対称ケース（学術プロンプト＋明示gemini-apiピン→Gemini、両分岐）、非Web系ピン（local/groq）は従来通りwebDomainベースで強制エスカレーション（退行なし）、autoツールは従来挙動、consent無しautonomousはピンがあってもCodexのみ、キー未設定ピンはCodex直行＋`why`がピンされたツール名を正しく報告、`autonomousCloudStop`はピンされた無料枠で停止。
+
+**検証**: `npx tsc --noEmit`クリーン。`agent-escalation-ladder.test.ts` 79/79 PASS（既存71件無修正で全PASS＋新規8件）。関連スイート`agent-manager-step-route-text.test.ts`/`agent-manager-consent-race-round2.test.ts` 4/4 PASS。
+
+**実機未検証（次回オンデバイステストで確認すること）**: 「Gemini Fix Test」と同型のエージェント（ステップ0にperplexityピン）を再実行し、ステップ0の実行ログのエンジンが`perplexity`になること（修正前は`gemini-api`）。
+
+→ sync: なし（内部ロジックのみ）。
+
+---
+
 ### ✅ Hermes Agent機能ギャップ、Fable5提案の①②実装（2026-08-03、"①と②を実装しよう"指示） — コミット・実機未検証
 
 **背景**: 「HermesユーザーがShellyを使っても遜色ないか」という質問に対して正直に回答した後、ユーザーから「どうするべきかをFable5に聞いてアイデア貰って」との指示。Fable5は残存ギャップ（codexチェーンのper-stepツール振り分け未実装、並列サブエージェント実行、意味的メモリの弱さ）を優先度付きで提示し、「①メモリのBM25改善 → ②codexチェーン静的コード生成 → 並列実行はスキップ」を推奨。ユーザーが「①と②を実装しよう」と選択。
@@ -3607,6 +3631,7 @@ claude() {
 
 ## History
 
+- **2026-08-03**: `routeTextOverride`修正の実機再検証中にユーザーが「なんでパープレじゃなくてこれ(Gemini)なんだっけ？」と指摘・Fable5が修正: `resolveEscalationLadder`のWeb必須分岐が、`resolveAgentRoute`が正しく尊重した明示的なperplexity/gemini-apiピン（guard `configured-tool`）を無視して`webDomain`話題分類で機械的にツールを再選択していた。明示的なWeb系ピンをwebDomain判定より優先するよう修正（先頭付近のエントリ参照）。非Web系ピンの除外・consent/キー未設定ゲートは不変。
 - **2026-08-03**: 実機テスト中にユーザーが発見・Fable5が修正: オーケストレーションのステップ実行が`buildStepPrompt`の合成プロンプト全文（前ステップの時事的な結果を含む）でルーティング判定され、Web不要な要約ステップがPerplexityへ誤エスカレーション→無関係なエッセイが`success`扱いで**偽の完了通知が実際にユーザーへ届いた**。`resolveEscalationLadder`/`resolveAgentRoute`に`routeTextOverride`を追加し、ステップは自身の`step.instruction`でルーティングするよう修正（先頭のエントリ参照）。`generateRunScript`側の合成プロンプト由来collectionContract/no-URLガードはP2残課題として同エントリに記録。
 
 - **2026-08-03（Tier 3 Phase 1.5〜4 実機検証 全項目PASS、versionCode 2029）**: クラウドフォールバック(高リスクフラグOFF回帰/ユーザー実発言URLでのwebhook許可/LLM捏造URLの拒否)、Tier2→Tier3昇格(Phase2)、autonomous安全網(Phase3)を実機で確認。副次的にCerebras APIの`HTTP 404`(アカウント側モデルアクセス権の問題と推定)を発見したが、Groqへのフェイルオーバーが正しく機能することを確認——Phase 1.5の設計が実在の想定外障害でも破綻しないことを期せずして実証。Tier 3(Phase 0〜4)は実装・レビュー・実機検証まで一通り完了。詳細は該当エントリ参照。→ sync: なし。

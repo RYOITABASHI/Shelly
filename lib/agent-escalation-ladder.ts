@@ -142,6 +142,30 @@ export function resolveEscalationLadder(
   // Codex (danger-full-access shell) as the net fallback.
   const web = detectRouteSignals(routeText);
   if (web.needsWeb) {
+    // 2026-08-03 on-device bug (「なんでパープレじゃなくてこれ(Gemini)なんだっけ？」):
+    // when the agent/step is EXPLICITLY pinned to a web backend (guard
+    // 'configured-tool' + perplexity/gemini-api — e.g. an orchestration step 0
+    // saying "パープレキシティで最新のAIニュースを集めて" carrying a
+    // {type:'perplexity'} pin), resolveAgentRoute already honored that pin as
+    // `primary`, but this branch used to IGNORE it and re-pick mechanically by
+    // webDomain — a TOPIC classification (ACADEMIC_WEB_KW: 研究/論文/paper/…)
+    // that has nothing to do with which tool the user named. "AIニュース" has
+    // no academic keyword → webDomain 'general' → Gemini, silently overriding
+    // the user's explicit Perplexity choice. Fix: an explicit WEB-tool pin wins
+    // over the webDomain heuristic; webDomain remains the fallback for 'auto' /
+    // scored / autonomous-policy routes (no explicit pin). A pin to a NON-web
+    // backend (local/cerebras/groq/cli) stays excluded exactly as before — it
+    // would only hallucinate — so this deliberately does NOT widen what a pin
+    // can force onto a web-mandatory task, and the consent/keyKnownMissing
+    // safety gates below apply to the pinned tool unchanged.
+    const explicitWebToolPin =
+      decision.guard === 'configured-tool' && (primary.type === 'perplexity' || primary.type === 'gemini-api')
+        ? primary
+        : null;
+    const chosenWeb = explicitWebToolPin ?? (web.webDomain === 'academic' ? PERPLEXITY : GEMINI);
+    const chosenWebName = chosenWeb.type === 'perplexity' ? 'Perplexity' : 'Gemini';
+    const chosenWebLabel = chosenWeb.type === 'perplexity' ? 'Perplexity' : 'Gemini (grounded)';
+    const pinNote = explicitWebToolPin ? ' (explicitly configured)' : '';
     if (agent.autonomous) {
       // N1: with the user's informed consent, an autonomous web task may use the
       // keyed web backend (Gemini grounded / Perplexity) unattended — the key
@@ -149,7 +173,7 @@ export function resolveEscalationLadder(
       // exhaustion (429) the ladder climbs to Codex unless 'stop' is set, which
       // halts at the free tier rather than burning Codex/paid quota.
       if (env.autonomousCloudConsent) {
-        const consented = web.webDomain === 'academic' ? PERPLEXITY : GEMINI;
+        const consented = chosenWeb;
         // Key preflight: consent without the backend's key cannot work — fall
         // through to the fail-closed no-consent path (Codex/OAuth only) instead
         // of wasting the run on an unauthenticated request. 'stop' only governs
@@ -161,7 +185,7 @@ export function resolveEscalationLadder(
             tools,
             noEscalation: false,
             guard: decision.guard,
-            why: `Web-mandatory ${web.webDomain} task; autonomous cloud opt-in → ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini (grounded)'}${env.autonomousCloudStop ? ' (stop at free tier on 429)' : ' → Codex on 429'}.`,
+            why: `Web-mandatory ${web.webDomain} task; autonomous cloud opt-in → ${chosenWebLabel}${pinNote}${env.autonomousCloudStop ? ' (stop at free tier on 429)' : ' → Codex on 429'}.`,
           };
         }
       }
@@ -169,11 +193,11 @@ export function resolveEscalationLadder(
       // web-capable option is Codex (OAuth shell). Distinguish the keyless
       // consented case in the why — "enable cloud opt-in" would misdiagnose it.
       const why = env.autonomousCloudConsent
-        ? `Web-mandatory task; cloud opt-in is on but the ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini'} key is not configured → Codex only.`
+        ? `Web-mandatory task; cloud opt-in is on but the ${chosenWebName} key is not configured → Codex only.`
         : 'Web-mandatory task; autonomous policy → Codex only (enable cloud opt-in for Gemini/Perplexity).';
       return { tools: [CODEX], noEscalation: false, guard: decision.guard, why };
     }
-    const webPrimary = web.webDomain === 'academic' ? PERPLEXITY : GEMINI;
+    const webPrimary = chosenWeb;
     // Key preflight: a keyless web primary can't authenticate — go straight to
     // Codex (web-capable via its shell) instead of burning an attempt. Local /
     // Cerebras / Groq stay excluded (they would hallucinate a template).
@@ -182,14 +206,14 @@ export function resolveEscalationLadder(
         tools: [CODEX],
         noEscalation: false,
         guard: decision.guard,
-        why: `Web-mandatory ${web.webDomain} task; ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini'} key not configured → Codex directly; non-web backends excluded.`,
+        why: `Web-mandatory ${web.webDomain} task; ${chosenWebName} key not configured → Codex directly; non-web backends excluded.`,
       };
     }
     return {
       tools: dedupe([webPrimary, CODEX]),
       noEscalation: false,
       guard: decision.guard,
-      why: `Web-mandatory ${web.webDomain} task → ${web.webDomain === 'academic' ? 'Perplexity' : 'Gemini (grounded)'} → Codex; non-web backends excluded.`,
+      why: `Web-mandatory ${web.webDomain} task → ${chosenWebLabel}${pinNote} → Codex; non-web backends excluded.`,
     };
   }
 
