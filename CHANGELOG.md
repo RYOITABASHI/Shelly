@@ -6,6 +6,58 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [7.5.5] - 2026-08-03
+
+### Added
+
+- **LLM-led conversational agent registration ("Tier 3"), on by default.**
+  When a request is ambiguous, an LLM now drives the rest of the
+  clarification in its own words — asking one distinct follow-up at a
+  time — instead of Shelly's older fixed one-field prompts, trying a fast
+  cloud provider first (Cerebras, then Groq, if configured) and falling
+  back to the on-device model, then the fixed-question flow, so a
+  conversation never gets stuck. A request that turns out to need several
+  ordered steps ("look this up, summarize it, then post it") is kept as a
+  real multi-step chain — the same orchestration engine deterministic
+  registration already used — instead of collapsing into one prompt.
+  Every value the model proposes is still independently re-checked before
+  being trusted (deterministic cron re-parsing, connector existence
+  checks, and — for the separately-gated webhook/CLI action types — a
+  verbatim-substring match against what you actually typed), and the
+  human confirmation tap is never skipped. Toggle it off in
+  Settings → Agents → LLM-Led Agent Registration.
+- **X (Twitter) connector**: OAuth 2.0 PKCE connect, regular posts, and
+  long-form Articles (draft → publish).
+- **User-profile learning is now wired up.** Shelly observes command
+  patterns, agent usage, and self-introduced facts on-device and folds a
+  short summary into the AI Pane's system prompt to personalize
+  responses. (This existed in code before but had zero callers — it now
+  actually runs.)
+- **Skills carry a failure hint.** A skill recipe that failed its most
+  recent run surfaces a one-line caution the next time it's matched,
+  cleared automatically once a run succeeds again. The recipe body itself
+  is never auto-rewritten.
+
+### Fixed
+
+- **Cerebras's default model was silently 404ing on every call.** The
+  hardcoded default (`qwen-3-235b-a22b-instruct-2507`) had been removed
+  from Cerebras's own model catalog; switched to `gpt-oss-120b` across
+  every call site. Also added `reasoning_effort: 'low'` where a small
+  token budget made truncation-by-reasoning a real risk, and added a
+  success-path log line for Cerebras/Groq calls (previously only failures
+  were logged, making it impossible to tell which provider actually
+  answered from the logs alone).
+- **`shelly <subcommand>` failed with `Permission denied` in the
+  terminal** (bug #166) — a regression from a preload change; routed
+  through the same linker64 wrapper every other bundled binary uses.
+- ConfigTUI's bottom sheet could collapse to header-only on tap (a Yoga
+  flexbox sizing trap).
+- The local model could repeat an already-answered clarifying question
+  verbatim, or lose all conversation progress when the 5-turn cap was hit
+  — both now fall back cleanly to the fixed-question flow without
+  discarding what was already understood.
+
 ## [7.5.0] - 2026-07-29
 
 ### Added
