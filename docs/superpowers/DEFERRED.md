@@ -31,9 +31,11 @@
 - テスト: `__tests__/agent-executor-chain-execution.test.ts`の残存ケーステストを新挙動に更新（local型ピンは今やチェーンが実際に走る＝collapseしない）。`__tests__/agent-executor-orchestration-collapse.test.ts`を全面改訂——`orchestratedCodexWithToolPin`（local型ピン）はcollapseしなくなったことを確認する新テストへ差し替え、真のresidual-collapseケース（`ab-article-eval`型ピン——autonomous許可されるがbashディスパッチ非対応)を新フィクスチャとして追加（`openrouter`は当初の候補だったが、api-key系のため`resolveStepToolForChainScript`で剥奪される別経路と判明し不適切と判断・差し替え）。バージョン文字列48→49の一括更新を5ファイルに適用。
 - 検証: `npx tsc --noEmit`クリーン、`agent-executor`系テスト全PASS（313件）、全体回帰2745 passed/24 failed（既知のWindows固有4スイート: capability-broker.test.ts, plan-executor.test.ts, plan-executor-orchestration.test.ts, plan-executor-multi-action.test.tsと完全一致、新規リグレッションなし）。`bash -n`構文検証は各テストの`bashParses()`ヘルパー経由で実施済み。
 
-**実機未検証（次回オンデバイステストで確認すること）**:
+**実機未検証（次回オンデバイステストで確認すること）** — 2026-08-03 実機トライ2回、いずれも本コードパスに到達せず:
 1. codex解決（`auto`→OAuth codex）の無人発火エージェントで、ステップに`{ type: 'local' }`等のピンを付けた際、実際にそのステップだけ別プロバイダで実行されること（ログ/current.jsonの`tool`フィールドで確認可能）。
 2. ピン無しステップが引き続き従来通りcodexドライバを通ること（回帰確認）。
+
+**2026-08-03 実機テスト試行記録（未達）**: build versionCode 2040（`d5884df60`, CI green databaseId 30789756580）にて、ADBKeyboard + uiautomator dump による盲目UI操作（screencap系ツールは既知の理由で使用禁止のため）でNL登録を2回試行。1回目「パープレキシティで…ローカルLLMで要約して…通知して」→ `suggestTool()`のTRANSFORM_KEYWORDS（「要約」）ヒットにより agent-level tool が `local` に解決、`shouldRunPlanExecutor`がtrue → 既存検証済みのPlanSpec/JS経路（P1）を通っただけで本コミットの新コードには未到達（16:02:00発火、ログ`AgentRuntime: ... starting via PlanSpec executor ... trustedTool=local`で確認）。2回目、CODE_KEYWORDS（「コード」「イシュー」）を先頭に足して`cli`解決を誘導したが、それでも`local`寄りの信号が優勢だったのか同じくPlanSpec経路（16:14:00発火、`trustedTool=-`、ログに`CODEX_ORCH_`系トークン一切なし）。`suggestTool()`は単一プロンプト全文への単純キーワード優先順位（ARTICLE_EVAL→ACADEMIC→CODE→TRANSFORM→default gemini）だが、Tier3会話登録がagent-levelツール解決にどのテキストを実際に渡しているか（steps全文か、LLM要約後の別テキストか）は未確認——**次回はコードから該当箇所を先に特定してから誘導ワードを選ぶこと**。代替案: Sidebar「+」の手動エージェント作成でツールを明示指定できるなら、そちらの方が確実（未確認）。テスト用エージェント2件（Part2 Test / コードイシューとAIニュース）はSidebarのDelete Alertで削除済み、後始末問題なし。
 
 → sync: なし（内部ロジックのみ）。
 
