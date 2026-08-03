@@ -14,7 +14,7 @@
 
 ---
 
-### Hermes Agent 比較レビューで判明した2ギャップ、並列実装で解消（2026-08-03、Opus5+Codex+Fable5）— コミット待ち・実機未検証
+### ✅ Hermes Agent 比較レビューで判明した2ギャップ、並列実装で解消（2026-08-03、Opus5+Codex+Fable5+CC）— コミット・push・CI green・実機検証済み（`ab8b00909`/`7fab62f94`）
 
 **背景**: 「シェリーのリポジトリを見て『Androidヘルメスエージェントじゃん』と思ってもらえるか、複雑なパイプラインをまたぐタスクに対応できるか」というユーザーの問いに対し、Opus5（Hermes Agent実態比較）とFable5（複数ステップパイプライン実装状況）に独立レビューを依頼。両者とも実装自体は評価しつつ、収束する2つの実弱点を報告:
 
@@ -29,12 +29,22 @@
 
 **Track C（Fable5）— `lib/user-profile.ts`配線 + スキル自己改善**: 死んでいた`lib/user-profile.ts`（コマンド頻度・技術レベル推定・ファクト抽出・言語傾向、AsyncStorage永続化）を実働のAIペイン経路（`lib/ai-pane-context.ts`の`buildAIPaneSystemPrompt`/`buildLocalAIPaneSystemPrompt`、**`lib/local-llm.ts`のorchestrate系ではない**——これはFable5の調査で判明した訂正で、`orchestrateTask`/`orchestrateChatStream`自体が本番からの呼び出しゼロだったため）に配線。producer側は`hooks/use-ai-pane-dispatch.ts`のdispatch内`learnFromAgentUse`/`learnFromUserInput`（fire-and-forget）と`store/terminal-store.ts`の`runCommand()`内`learnFromCommand`（ユーザー入力のchoke pointのみ、エージェント発行の`execCommand()`は通らないため機械生成コマンドで汚染されない）。配線中に実バグ発見: `DEFAULT_PROFILE`がshallow spreadで使い回されており、`learnFrom*`のin-place`push()`が共有デフォルトのネスト配列を恒久汚染していた（`resetUserProfile()`しても学習内容が復活する）→ `freshDefaultProfile()`ファクトリ化で修正。プライバシー: 学習・保存は端末ローカルAsyncStorageのみ、クラウドAIへのリクエストにサマリが含まれる挙動はREADME Privacy節と一致（ただし「Settings で無効化できる」という記載に対応する実UIトグルは無く、README側修正が別途必要）。スキル自己改善は指示通り「本文の自動改稿」ではなく失敗ヒント蓄積方式（`SkillRecipe.lastFailure`、`recordSkillFailure()`、`buildSkillInjectionContext()`が次回注入時に注意書きとして表示、次回成功で自動クリア）。`agent-manager.ts`の`bumpReusedSkillOnSuccess`を`updateReusedSkillFromRun`に一般化、`unavailable`/`skipped`は既存サーキットブレーカーと同じ理由で失敗記録から除外。CC独自レビュー: diff読了、設計は安全原則に合致（secret-guardスキャンを通る、successCount/lastUsedは変異なし、recipe本文は不変）。新規テスト`user-profile.test.ts`(8件)+`agent-skills.test.ts`追加6件+`ai-pane-context.test.ts`追加3件、全PASS。
 
-**まだ残っている作業**:
-- README.md/README.ja.md（CC自身が並行して編集中）— Learning loopセクション + Statusテーブル行は追加済みだが、(a) 948行目のuser-profile記載を「Settingsで無効化できる」から実UIが無い現状に合わせて修正、(b) Tier3デフォルトON化に合わせた記述更新、が未反映。コミット未了。
-- 全体回帰の最終確認（Track B修正後の再実行）とコミット・push・CI green確認。
-- **実機検証が全トラック共通で未了**（ユーザー指示「実装完了後は実機テストも」）。ワイヤレスADB+scrcpryミラーリングは接続済みなので、次ビルドインストール後にこのセッションから直接検証できる可能性が高い。
+**README.md/README.ja.md**: Learning loopセクション + Statusテーブル行を追加。948行目のuser-profile記載を「Settingsで無効化できる」から実UIが無い現状に合わせて訂正、Tier3デフォルトON化に合わせて「opt-in」→「on by default」表記も修正。`7fab62f94`でコミット・push済み（`.md`のみの変更のためCIのAPKビルドはトリガーされず、直前の`ab8b00909`ビルドがそのままインストール対象）。
 
-→ sync: README.md/README.ja.md（Learning loop節・Statusテーブル・948行目の訂正）、ConfigTUI.tsxの`agentConversationalRegistrationEnabled`説明文言（反映済み）。
+**実機検証（2026-08-03、このセッションから直接、ワイヤレスADB + `adb shell input` + `uiautomator dump` で無人操作。screencap/screenrecordは方針上使用禁止のため、テキストベースのUIダンプとlogcatで検証）**:
+
+1. **versionCode 2032（`ab8b00909`ビルド）をアプリ内アップデーターで更新済みであることを確認**（ユーザー自身が更新・端末アンロックを実施）。
+2. **Tier3デフォルトON確認**: 設定を一切いじらずに曖昧な`@agent help me out`を送信 → `isLowConfidenceAgentDraft=true` → `runConversationalRegistrationTurn`が自動発火。フラグをONにする操作は一切不要だった。
+3. **クラウド→ローカルのフォールバック連鎖を実地確認**: 全ターンで`Cerebras turn unusable (HTTP 404: Model does not exist...)`が発生（この端末のCerebras APIキーが指すモデルIDが古い/存在しない——既知の端末固有の設定不備であり、今回の変更が原因ではない）。Groqキー未設定のため`if (split && cloudConfig.groqApiKey)`分岐は静かにスキップ（ログなし、設計通り）。最終的にローカルQwenモデルが応答し、ハードコード文字列に一致しない動的な聞き返し文（例:「What do you need help with?」「How would you like the agent to be named...」）を複数ターン生成——**リピートループ（過去の既知バグ）は再発せず**、毎回異なる具体的な質問だった。
+4. **スケジュール未確定時の安全網を実地確認**: 「every morning at 8am」という一見パース可能に見える表現が確定的cronに変換できず`rejected=[scheduleText]`でドロップ → 確認画面は`Schedule: now`にフォールバックしつつ「🤖 Some fields above were inferred by AI... please double-check them」と明示警告 → 人間の確認タップ必須。危険な誤登録なし。
+5. **🎯 Phase 6 `steps[]`を実地確認**: 「search for AI news → summarize the results → save the summary to a file、スケジュールは毎日9時」という3ステップ依頼を複数ターンの会話で登録 → ログに`steps applied -> 3 orchestration step(s)`+`merge applied -> action=draft, scheduleConfident=true, rejected=[]` → 確認画面に「Multi-step (3 steps, each gated): 1. search for AI news / 2. summarize the results / 3. save the summary to a file」と正しい順序で表示。**Track A（Opus5）のオーケストレーション接続がユニットテストだけでなく実機のローカルモデル出力でも機能することを確認。**
+6. 上記2件のテスト登録はいずれも実際にConfirmはタップせずCancel → `@agent status`で`No agents configured.`を確認、迷子エージェントなし。
+7. logcatに新規のクラッシュ・例外なし（`WidgetAgentRepository`のJSON警告は既知・別トラッキング済みの既存課題、今回の変更と無関係）。
+8. user-profile学習（Track C）はfire-and-forgetでログを出さない設計のため、クラッシュが起きていないこと（実際起きなかった）以上の直接確認はできず——プロンプトへの実際の注入内容はユニットテスト（`ai-pane-context.test.ts`）でのみ担保。
+
+**検証できなかった/対象外**: `agentConversationalHighRiskActionsEnabled`（webhook/cli、デフォルトOFFのまま）は今回テストせず。X Articles・複数SNS同時投稿は別トラッキング（本ファイル内の該当セクション参照）。
+
+→ sync: README.md/README.ja.md（Learning loop節・Statusテーブル・948行目の訂正、反映済み）、ConfigTUI.tsxの`agentConversationalRegistrationEnabled`説明文言（反映済み）。
 
 ---
 
