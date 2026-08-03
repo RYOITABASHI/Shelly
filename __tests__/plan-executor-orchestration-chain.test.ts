@@ -151,18 +151,18 @@ function makeHome(): string {
 const AGENT_ID = 'agent-chain-smoke';
 
 type StepsField = {
-  list: Array<{ instruction: string; apiCall?: { host: string; method: 'GET' | 'POST'; path: string; authRef?: string; bodyTemplate?: string } }>;
+  list: Array<{ instruction: string; apiCall?: { host: string; method: 'GET' | 'POST'; path: string; authRef?: string; bodyTemplate?: string }; tool?: { type: string; model?: string; cli?: string } }>;
   budget: { maxSteps: number; totalTimeoutMs: number };
 } | undefined;
 
-function writePlan(home: string, port: number, opts: { actionType?: string; steps?: StepsField } = {}) {
+function writePlan(home: string, port: number, opts: { actionType?: string; steps?: StepsField; toolModel?: string } = {}) {
   const plan = {
     kind: PLAN_SPEC_KIND,
     schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
     generatedAt: 1,
     agent: { id: AGENT_ID, name: 'Chain Smoke', autonomous: false, autonomyLevel: 'L2' },
     prompt: 'Base task',
-    tool: { type: 'local', label: 'Local LLM', model: 'fixture' },
+    tool: { type: 'local', label: 'Local LLM', model: opts.toolModel || 'fixture' },
     // Default action is 'notify', not 'draft': dispatchActionTrusted's 'draft'
     // branch goes through writeDraftOutputs -> the capability broker's fs.write
     // op, which is a PRE-EXISTING Windows-environment-specific failure mode
@@ -219,10 +219,12 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
   let server: http.Server;
   let port = 0;
   let requestPrompts: string[];
+  let requestModels: string[];
   let responses: string[];
 
   beforeEach((done) => {
     requestPrompts = [];
+    requestModels = [];
     responses = [];
     server = http.createServer((req, res) => {
       let body = '';
@@ -232,6 +234,7 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
         const parsed = JSON.parse(body);
         const userContent = parsed.messages[0].content;
         requestPrompts.push(userContent);
+        requestModels.push(parsed.model);
         const n = requestPrompts.length;
         const content = responses[n - 1] !== undefined ? responses[n - 1] : `RESULT#${n}`;
         res.setHeader('Content-Type', 'application/json');
@@ -474,4 +477,50 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
   // broker) — not here, since a NO-authRef apiCall step that actually
   // proceeds would need a real network response from a real external host to
   // exercise end-to-end, which is not offline-safe.
+
+  // Phase 7 (2026-08-03): a step's own tool pin is now honored here (was
+  // unconditionally ignored before — see runOrchestrationChain's own
+  // comment). This is the consuming half of the fix; the credential-gating
+  // half (a step's tool must already be vetted by resolveForAutonomous
+  // before it ever reaches this JSON) is covered separately in
+  // __tests__/agent-plan-spec.test.ts's "per-step credential resolution"
+  // suite — this executor makes no credential decision, it only dispatches.
+  it('(h) a step.tool pin changes which model this executor actually requests — proof step.tool is consumed, not ignored', async () => {
+    const home = makeHome();
+    responses = ['step-1 result', 'final result'];
+    const steps: StepsField = {
+      list: [
+        { instruction: 'gather sources', tool: { type: 'local', model: 'step-pinned-model' } },
+        { instruction: 'finalize' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { steps, toolModel: 'plan-level-model' }), home);
+    expect(rc).toBe(0);
+    expect(requestModels).toHaveLength(2);
+    // Step 1 carries its OWN pinned model, not the plan-level one.
+    expect(requestModels[0]).toBe('step-pinned-model');
+    // Step 2 (final, no tool pin) falls back to plan.tool's model, unchanged.
+    expect(requestModels[1]).toBe('plan-level-model');
+  }, 20000);
+
+  it('(i) a step.tool pinned to `cli` (a type this executor cannot dispatch) falls back to plan.tool instead of failing the run', async () => {
+    const home = makeHome();
+    responses = ['step-1 result', 'final result'];
+    const steps: StepsField = {
+      list: [
+        { instruction: 'review with Codex', tool: { type: 'cli', cli: 'codex' } },
+        { instruction: 'finalize' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { steps, toolModel: 'plan-level-model' }), home);
+    expect(rc).toBe(0);
+    // Both requests went to the local HTTP server (proving `cli` never got
+    // dispatched to some other, nonexistent path) and both used plan.tool's
+    // model — the step's `cli` pin was inert, not fatal.
+    expect(requestModels).toEqual(['plan-level-model', 'plan-level-model']);
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+  }, 20000);
 });

@@ -1050,13 +1050,14 @@ const SOCIAL_POST_NO_CONNECTOR_CAVEAT =
 /** A single entry in a detected multi-target post list. 'x' is now a real
  *  SocialPlatform member (2026-08-01, the OAuth API connector), so this type
  *  alias is just SocialPlatform — kept as its own name because the doc
- *  comments throughout this section predate that and still call it out
- *  explicitly: X-posting through THIS multi-target detector always resolves
- *  to the existing app-act 'x.post' recipe (see X_POST_RE above and
- *  detectMultiSocialActions below), never the social-post/connector path,
- *  regardless of whether an X API connector is registered — deliberately
- *  unchanged/out of scope for the same reason SOCIAL_PLATFORM_ALIASES.x is
- *  intentionally empty (see that entry's comment). */
+ *  comments throughout this section predate that. X-posting through THIS
+ *  multi-target detector now mirrors the single-target path's 2026-08-01
+ *  API-over-app-act decision (2026-08-03 fix — see detectMultiSocialActions
+ *  below): with a registered X API connector it resolves to `social-post`
+ *  like every other platform; with none, it falls back to the app-act
+ *  'x.post' UI-automation recipe (unchanged from before this fix) rather than
+ *  abandoning the whole multi-target list, since — unlike the other six
+ *  platforms — X has always been postable with zero connectors configured. */
 type MultiPostTarget = SocialPlatform;
 
 // MUST be SOCIAL_PLATFORMS itself, not [...SOCIAL_PLATFORMS, 'x'] — 'x' is
@@ -1067,10 +1068,20 @@ type MultiPostTarget = SocialPlatform;
 // and producing two 'x.post' app-act actions for one "…とXに投稿して" mention.
 const MULTI_POST_TARGETS: MultiPostTarget[] = SOCIAL_PLATFORMS;
 
-/** Regex alternation source (no anchors/flags) for one target's aliases. */
+/** Regex alternation source (no anchors/flags) for one target's aliases.
+ *  Uses the SAME SOCIAL_PLATFORM_ALIASES table every other platform (and the
+ *  single-target detectSocialPost path) already uses — until 2026-08-03 this
+ *  hardcoded a bare "x" boundary for X instead, so "…とツイッターに投稿して"/
+ *  "…and Twitter" never matched here even though the single-target path has
+ *  recognized those same aliases since 2026-08-01. Wraps any single-character
+ *  alias (i.e. the bare "x" alias itself) in \b...\b, mirroring
+ *  buildSocialPlatformRe's own per-alias logic above — without it, the raw
+ *  1-char "x" would false-positive match inside ordinary words/URLs
+ *  ("example.com", "Excel", …) once folded into MULTI_POST_ALT's alternation. */
 function multiPostAliasSource(target: MultiPostTarget): string {
-  if (target === 'x') return '\\bx\\b';
-  return SOCIAL_PLATFORM_ALIASES[target].map(escapeRegExp).join('|');
+  return SOCIAL_PLATFORM_ALIASES[target]
+    .map((a) => (a.length === 1 ? `\\b${escapeRegExp(a)}\\b` : escapeRegExp(a)))
+    .join('|');
 }
 
 const MULTI_POST_ALT = MULTI_POST_TARGETS.map((t) => `(?:${multiPostAliasSource(t)})`).join('|');
@@ -1148,11 +1159,25 @@ function detectMultiSocialActions(text: string, connectors: SocialConnectorMeta[
 
   const actions: AgentAction[] = [];
   for (const target of targets) {
+    const matches = connectors.filter((c) => c.platform === target);
     if (target === 'x') {
-      actions.push({ type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } });
+      // 2026-08-03: mirror the single-target path's 2026-08-01 API-over-app-act
+      // decision — a registered X connector means reliable scheduled posting
+      // is possible, so prefer it exactly like every other platform. Only
+      // fall back to app-act (unchanged from before this fix) when there is
+      // NO connector to prefer; X, unlike the other six platforms, still
+      // never abandons the whole multi-target list over this since it was
+      // always postable with zero connectors configured.
+      if (matches.length === 1) {
+        actions.push({
+          type: 'social-post',
+          socialPost: { platform: 'x', connectorId: matches[0].id, text: '{{result}}' },
+        });
+      } else {
+        actions.push({ type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } });
+      }
       continue;
     }
-    const matches = connectors.filter((c) => c.platform === target);
     if (matches.length !== 1) return null;
     actions.push({
       type: 'social-post',

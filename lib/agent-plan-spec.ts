@@ -190,12 +190,16 @@ export function buildAgentPlanSpec(
   const promptSignals = detectRouteSignals(agent.prompt);
   let tool: ToolChoice = routeResolution.tool;
   let unsupportedToolReason: string | undefined;
+  // Scoped above the `if (agent.autonomous)` block below so the per-step
+  // resolution near `orchestrationSteps` (Phase 7, 2026-08-03) can reuse the
+  // EXACT same web-consent exception the agent-level tool already gets —
+  // two independently-computed copies of this condition would drift.
+  const consentWebTool =
+    opts.autonomousCloudConsent === true &&
+    promptSignals.needsWeb &&
+    (tool.type === 'gemini-api' || tool.type === 'perplexity');
 
   if (agent.autonomous) {
-    const consentWebTool =
-      opts.autonomousCloudConsent === true &&
-      promptSignals.needsWeb &&
-      (tool.type === 'gemini-api' || tool.type === 'perplexity');
     if (!consentWebTool) {
       const resolved = resolveForAutonomous(tool);
       if (resolved) {
@@ -239,8 +243,34 @@ export function buildAgentPlanSpec(
     typeof agent.orchestration?.charLimit === 'number'
       ? clampCharLimit(agent.orchestration.charLimit)
       : undefined;
+  // Phase 7 (2026-08-03): resolve each step's own tool pin through the SAME
+  // resolveForAutonomous gate the agent-level `tool` above already goes
+  // through, at this single plan-build chokepoint — never on-device. Before
+  // this, a step.tool pin was written into the PlanSpec JSON completely
+  // unvetted (a step could name an api-key-class tool like Perplexity/Gemini
+  // even when the agent has no Autonomous Cloud consent), and the unattended
+  // PlanSpec executor (scripts/shelly-plan-executor.js) simply ignored
+  // step.tool outright rather than deal with that — see its own comment at
+  // runOrchestrationChain. Now that this function only ever emits an
+  // ALREADY-VETTED step.tool (or strips it), the executor can safely start
+  // honoring it (see runOrchestrationChain's own comment for the consuming
+  // half of this fix). A step whose tool the policy disallows unattended
+  // does NOT block the chain or drop the step — it just falls back to the
+  // step running with the agent-level `tool` instead, identical to how it
+  // behaved before this pin existed.
+  const resolveStepToolForPlan = (step: NormalizedStep): NormalizedStep => {
+    if (!step.tool || !agent.autonomous) return step;
+    if (consentWebTool && (step.tool.type === 'gemini-api' || step.tool.type === 'perplexity')) return step;
+    const resolved = resolveForAutonomous(step.tool);
+    if (resolved) return { ...step, tool: resolved };
+    const { tool: _dropped, ...rest } = step;
+    return rest;
+  };
   const orchestrationSteps = isOrchestrated(agent.orchestration)
-    ? { list: normalizeSteps(agent.orchestration), budget: resolveBudget(agent.orchestration) }
+    ? {
+        list: normalizeSteps(agent.orchestration).map(resolveStepToolForPlan),
+        budget: resolveBudget(agent.orchestration),
+      }
     : undefined;
 
   return {

@@ -1756,13 +1756,61 @@ describe('mergeConversationalExtractionIntoDraft — Phase 6 steps', () => {
     expect(out.orchestrationSteps?.[1]).toBe('GroqのAPIを呼んで要約する');
   });
 
-  it('does NOT upgrade a bare provider MENTION with no explicit call verb', () => {
+  it('does NOT upgrade a bare provider MENTION to an apiCall step (no explicit call verb) — but DOES tool-pin it (2026-08-03, Phase 7)', () => {
     const { draft: out } = mergeConversationalExtractionIntoDraft(
       baseDraft(),
       { steps: ['Perplexityで最新のAIニュースを調べる', '要約する'] },
       noConnectors,
     );
-    expect(out.orchestrationSteps?.[0]).toBe('Perplexityで最新のAIニュースを調べる');
+    const first = out.orchestrationSteps?.[0];
+    // Same detectApiCallSteps contract as the api-call test above: a bare
+    // mention with no "call the API" verb never becomes a structured apiCall
+    // step. It DOES now get tagStepsWithToolMentions's tool pin, mirroring
+    // Tier 1's own composition (tag mentions, then detect api-calls) — see
+    // this module's mergeConversationalExtractionIntoDraft doc comment.
+    expect(typeof first).toBe('object');
+    if (typeof first === 'string' || !first) throw new Error('unreachable');
+    expect(first.apiCall).toBeUndefined();
+    expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    expect(first.instruction).toBe('Perplexityで最新のAIニュースを調べる');
+    // The remaining step names no tool, so it stays a plain string.
+    expect(out.orchestrationSteps?.[1]).toBe('要約する');
+  });
+
+  it('tool-pins a step that names the local model or Codex, the same way (2026-08-03, Phase 7)', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['ローカルLLMで下書きを作る', 'Codexでレビューする'] },
+      noConnectors,
+    );
+    const first = out.orchestrationSteps?.[0];
+    const second = out.orchestrationSteps?.[1];
+    if (typeof first === 'string' || !first) throw new Error('unreachable');
+    expect(first.tool).toEqual({ type: 'local' });
+    // Final step: detectApiCallSteps never touches the last step, but
+    // tagStepsWithToolMentions (which runs first) still tags it — the tool
+    // pin on a final step is meaningful too (lib/agent-manager.ts's attended
+    // path and, since Phase 7, the unattended PlanSpec path both honor it).
+    if (typeof second === 'string' || !second) throw new Error('unreachable');
+    expect(second.tool).toEqual({ type: 'cli', cli: 'codex' });
+  });
+
+  it('grants nothing new: tool-pinning a step never bypasses resolveForAutonomous — the pin is only a routing hint, vetted later at plan-build time', () => {
+    // This module has no access to autonomous-credential state at merge time
+    // (that gate lives in lib/agent-plan-spec.ts's buildAgentPlanSpec, which
+    // runs later, at plan-build time — see that file's resolveStepToolForPlan).
+    // Confirms the merge itself does not special-case or reject an api-key
+    // class mention (Perplexity/Gemini) differently from a non-api-key one
+    // (local/Codex) — both are tagged identically here; credential gating is
+    // deliberately somebody else's job.
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['Geminiで調べる', 'ローカルLLMでまとめる'] },
+      noConnectors,
+    );
+    const first = out.orchestrationSteps?.[0];
+    if (typeof first === 'string' || !first) throw new Error('unreachable');
+    expect(first.tool).toEqual({ type: 'gemini-api' });
   });
 });
 
@@ -1844,12 +1892,15 @@ describe('buildRegistrationSystemPrompt — Phase 6 steps instructions', () => {
     }
   });
 
-  it('tells the model NOT to author ids/URLs/tool names inside a step', () => {
-    expect(buildRegistrationSystemPrompt(ctx({ locale: 'ja' }))).toContain(
-      'ID・URL・接続設定・ツール名の指定などをここに書く必要はありません',
-    );
-    expect(buildRegistrationSystemPrompt(ctx({ locale: 'en' }))).toContain(
-      'do not write ids, URLs, connection settings or tool names in it',
-    );
+  it('tells the model NOT to invent ids/URLs — but MAY name a real tool the user actually said (2026-08-03, Phase 7)', () => {
+    const ja = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(ja).toContain('ID・URL・接続設定を自分で考えて書いてはいけません');
+    expect(ja).toContain('ユーザーがその手順で使うツール');
+    expect(ja).toContain('システム側がその名前を認識してツールを割り当てます');
+
+    const en = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(en).toContain('never invent an id, a URL, or connection settings');
+    expect(en).toContain('the system recognizes that name and routes to it');
+    expect(en).toContain("Never invent a tool name the user didn't say");
   });
 });

@@ -534,27 +534,36 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
  * (today's exact behavior for the common case — regression-tested: a marker
  * chain with no tool mention must stay entirely untagged).
  *
- * KNOWN GAP (documented, not fixed by this function — see
- * docs/superpowers/DEFERRED.md): a step's `.tool` pin is honored ONLY on the
- * ATTENDED path (lib/agent-manager.ts's runAgentOrchestrated — foreground
- * "Run Now" / @agent run, `tool: step.tool ?? agent.tool`). The UNATTENDED/
- * scheduled path (scripts/shelly-plan-executor.js's runOrchestrationChain,
- * used by every gemini-api/local/perplexity/cerebras/groq-resolved
- * orchestrated agent on a native alarm fire — see agent-executor.ts's
- * canRunOrchestrationChain doc comment) explicitly ignores `step.tool`
- * ("v1 scope … step.tool (Phase 5 per-step pin) is intentionally ignored
- * here, not a bug"). A per-step tool pin authored via this function therefore
- * only takes effect when the user runs the agent manually from the app, NOT
- * on its own scheduled fire — extending the PlanSpec executor to re-resolve
- * and re-dispatch a per-step tool pin across every backend is a real, but
- * separate and larger, follow-up (out of scope here to keep this change
- * narrow and safe). By contrast `.apiCall` (the structured HTTP request
- * mechanism `detectApiCallSteps` below produces) IS already honored
- * end-to-end on BOTH the attended and unattended/PlanSpec paths today — which
- * is exactly why an "…のAPIを呼んで…" phrasing (like the bug's actual
- * utterance) already worked correctly before this function existed; this
- * function only closes the gap for a plain tool-name mention with no
- * explicit "call the API" phrasing (e.g. "まずPerplexityで調べて、次に…").
+ * RESOLVED GAP (2026-08-03, Phase 7 — was a KNOWN GAP here, see
+ * docs/superpowers/DEFERRED.md for the fix's history): a step's `.tool` pin
+ * used to be honored ONLY on the ATTENDED path (lib/agent-manager.ts's
+ * runAgentOrchestrated — foreground "Run Now" / @agent run,
+ * `tool: step.tool ?? agent.tool`), while the UNATTENDED/scheduled path
+ * (scripts/shelly-plan-executor.js's runOrchestrationChain, used by every
+ * gemini-api/local/perplexity/cerebras/groq-resolved orchestrated agent on a
+ * native alarm fire) unconditionally ignored `step.tool`. It now honors it
+ * too, for step.tool values the PlanSpec executor can actually dispatch
+ * (STEP_TOOL_DISPATCHABLE_TYPES there — a step pinned to `cli`, e.g. "Codex",
+ * still falls back to the agent-level tool for THAT step, since this JS
+ * runtime has no shell-exec path). The credential/consent boundary this gap
+ * used to accidentally protect (an unvetted step.tool could otherwise name an
+ * api-key-class tool the agent has no Autonomous Cloud consent to use
+ * unattended) is now protected properly instead: lib/agent-plan-spec.ts's
+ * buildAgentPlanSpec runs EVERY step.tool through the exact same
+ * resolveForAutonomous() gate the agent-level tool already goes through, at
+ * plan-BUILD time, before it's ever written to the PlanSpec JSON the
+ * unattended executor reads — the executor itself makes no credential
+ * decision, it only consumes an already-vetted value. By contrast `.apiCall`
+ * (the structured HTTP request mechanism `detectApiCallSteps` below produces)
+ * was already honored end-to-end on both paths before this fix, and remains
+ * unchanged.
+ *
+ * The legacy bash/codex path (lib/agent-executor.ts's canRunOrchestrationChain
+ * — used when the agent-level tool resolves to `cli`, i.e. Codex) still has
+ * its own, coarser gap: ANY step.tool or step.apiCall present collapses the
+ * WHOLE chain to a single step with a visible note, rather than running the
+ * real chain. That remains a separate, larger follow-up (bash has no HTTP
+ * broker abstraction to build per-step dispatch on, unlike this JS runtime).
  */
 export function tagStepsWithToolMentions(steps: string[]): Array<string | NormalizedStep> {
   return steps.map((instruction) => {

@@ -14,6 +14,41 @@
 
 ---
 
+### ✅ Fable5 second-pass レビューのP1/P2/P3全件実装（2026-08-03、"全部実装して下さい"指示） — コミット・実機未検証
+
+**背景**: v7.5.5リリース後、ユーザーから2回目のFable5レビュー依頼（「HermesユーザーがShellyを見てAndroid版Hermesだと思えるか」「複雑なパイプラインを自然言語で実行できるか」）。Fable5は自己申告（前回のDEFERRED.mdエントリ）を鵜呑みにせず実コードを読んで検証し、「条件付きYes」の両方を認めつつ、Tier3の`steps`が持つ約束と実装の間の実在するギャップを発見:
+
+1. **P1（2件セット）**: (a) Tier3の`steps`にper-stepツールルーティングが無い——プロンプトが「ツール名は書かなくていい、システムが判断する」と約束しているのに判断機構が実装されていなかった。(b) スケジュール無人発火経路（`scripts/shelly-plan-executor.js`）が`step.tool`を意図的に無視していた（"not a bug"というコメント付き）。Fable5は「この2件が揃えば質問2は無条件Yesになる」と評価。
+2. **P2**: codexツールのチェーンがピン混在で1ステップに潰れる問題（P1の(a)実装で頻度が上がる相互作用）。多重投稿のX側が常にapp-act（UI自動化、ロック中不動作）固定で、単一ターゲット側の2026-08-01 API優先化と不整合。陳腐化コメント（`SOCIAL_PLATFORM_ALIASES.x is intentionally empty`）が実物と矛盾。
+3. **P3**: READMEのStatusテーブルがDEFERRED.mdの実機検証結果より保守的（実機PASS済みを「未検証」表記）。「投稿して、通知して」の複合依頼でnotify優先rejectされる挙動が未文書化。
+
+ユーザー指示「全部実装して下さい」を受けて全件着手。**着手前に自分でアーキテクチャ調査を実施**（`step.tool`が無人経路で無視される理由を突き止めるため）——単なる未実装ではなく、「無人実行はAutonomous Cloud同意が無い限りAPIキー系ツールを使えない」という信頼境界を、`scripts/shelly-plan-executor.js`側に一切credential-policyロジックが無いことで偶然守っていた、という実態を確認。
+
+**P1実装**:
+- **`lib/agent-plan-spec.ts`**（Phase 7、新規`resolveStepToolForPlan`）: プランビルド時（TS側の一箇所）で、各ステップの`.tool`をエージェントレベルのtoolと**同じ**`resolveForAutonomous()`ゲート・**同じ**web-consent例外条件（`consentWebTool`、`autonomousCloudConsent`+`needsWeb`+gemini/perplexity限定）に通す。拒否された場合はステップを壊さず`.tool`だけを削除（エージェントレベルtoolへフォールバック、既存の「チェーン全体を壊さない」原則を踏襲）。オンデバイスのJS実行エンジンは一切credential判断をしない——常に既にvetted済みの値を消費するだけ。
+- **`scripts/shelly-plan-executor.js`（+ APKアセットミラー、byte-identical維持）**: `runOrchestrationChain`が`step.tool`を実際に消費するよう変更。`STEP_TOOL_DISPATCHABLE_TYPES = ['local','gemini-api','perplexity','cerebras','groq']`で、このJS実行エンジンが実際にdispatchできる型のみ許可——`cli`（Codex）等それ以外の型は黙ってplan.toolへフォールバック（エラーにしない、既存の「チェーン全体を壊さない」原則）。
+- **`lib/agent-conversational-registration.ts`**（Phase 7）: `steps`のmergeに`tagStepsWithToolMentions()`を追加（Tier1と同じ順序: タグ付け→`detectApiCallSteps`）。プロンプト文言も修正——旧来「ツール名を書くな」という指示が、新しい`tagStepsWithToolMentions`の検出メカニズム（ステップ本文中の既知ツール名を検出）と矛盾していたため、「ユーザーが実際に名指ししたツール名（Perplexity/ローカルLLM/Codex/Gemini）ならステップ文に含めてよい、自分で考えたツール名は書くな」という整合の取れた文言に変更（日英両方）。
+- **ドキュメント更新**: `lib/agent-orchestration.ts`のKNOWN GAPコメントをRESOLVED GAPに書き換え、`lib/agent-executor.ts`の`canRunOrchestrationChain`コメントを新状態に合わせて更新、`store/types.ts`の`AgentOrchestrationStep.tool`のdocコメントも更新（「無人実行でも各ステップが独自にresolveForAutonomousを通る」という主張を、実際に真になった今の状態に合わせた）。
+
+**P2実装**:
+- **codexチェーン潰れ問題**: あえて未着手（bashにHTTPブローカー抽象化が無く、per-step dispatch実装は別途大規模な作業と判断——既存の「潰れて1ステップ+注意書き」という安全な既存挙動を維持、コメントで新状態との関係を明記するに留めた）。
+- **X多重投稿API優先化**（`lib/agent-nl-parser.ts`）: `detectMultiSocialActions`のXブランチを、コネクタが1件登録されていれば`social-post`（API経由）、無ければ既存のapp-actフォールバックを維持する形に修正（単一ターゲット側の2026-08-01決定と整合）。`multiPostAliasSource('x')`が`\\bx\\b`固定だったのを`SOCIAL_PLATFORM_ALIASES.x`（'x'/'twitter'/'エックス'/'ツイッター'）を使うよう修正（「ブルースカイとツイッターに投稿」が検出されなかった実バグ）——1文字エイリアス"x"には単語境界`\b`保護を`buildSocialPlatformRe`と同じロジックで付与（素の"x"だとexample.com等に誤爆するため）。陳腐化コメントも修正。
+
+**P3実装**:
+- **README.md/README.ja.md**: Statusテーブルの2行（LLM-Led Agent Registration、複数ステップチェーン化）を実機検証済みの記述に更新。今回新規実装したper-stepツールルーティング（無人発火時のstep.tool反映含む）は明示的に「実機未検証」と記載。
+- **docs/MANUAL.md/MANUAL.ja.md**: 「投稿して、通知して」の複合依頼でnotifyが優先されpostがdropされる挙動を1文で明記（実行完了通知自体は投稿系エージェントでも別途出ることも注記）。
+
+**検証**: `npx tsc --noEmit`クリーン。新規/更新テスト——`agent-conversational-registration.test.ts`に3件追加（bare mention時のtool-pin確認、local/codex/geminiのtool-pin確認、resolveForAutonomousをmerge時には呼ばない確認）+ 既存2件更新（新しい仕様に合わせてアサーション変更）、`agent-plan-spec.test.ts`に7件追加（`per-step credential resolution`スイート——api-key系tool剥奪、local/cli系tool維持、非autonomous時は無変更、web-consent例外の踏襲、例外条件を満たさない場合は剥奪継続）、`plan-executor-orchestration-chain.test.ts`に2件追加（e2eでstep.toolが実際に別モデルへのHTTPリクエストを発生させることを実サーバーで確認、cli型ステップがplan.toolへフォールバックしrun自体は成功することを確認）。全体回帰2733 passed/24 failed（既知のWindows固有4スイートと完全一致、新規リグレッションなし、passed数は新規テスト分だけ純増）。
+
+**実機未検証（次回オンデバイステストで確認すること）**:
+1. Tier3会話で「Perplexityで調べて、ローカルで要約して」のように会話でツールを名指しした際、実際にsteps各要素へtool pinが付与されること。
+2. per-stepツールルーティングがスケジュール無人発火で実際に別プロバイダを呼び分けること（今回の修正の本丸）。
+3. X多重投稿のAPI優先化（Xコネクタ登録済み状態でのマルチターゲット投稿、Bluesky+X等）。
+
+→ sync: README.md/README.ja.md（Statusテーブル、反映済み）、docs/MANUAL.md/MANUAL.ja.md（notify優先の注記、反映済み）。
+
+---
+
 ### ✅ Cerebrasデフォルトモデル `qwen-3-235b-a22b-instruct-2507` が撤去済みで全経路404 — `gpt-oss-120b`へ修正・実機検証済み（2026-08-03、ユーザー指摘起点、`1f2cb017e`）
 
 **発見の経緯**: 実機検証中に観測したCerebras 404を「別途ユーザー側の設定不備」と本人へ伝えたところ、ユーザーがCerebras/Groqダッシュボードのスクリーンショットを提示。APIキーは3件ともACTIVEで課金の問題ではないと判明し、実際の原因を調査。WebFetchでCerebras公式ドキュメント（`inference-docs.cerebras.ai/models/overview`）を確認したところ、現行カタログはProduction帯`gpt-oss-120b`のみ、Preview帯`gemma-4-31b`/`zai-glm-4.7`（`zai-glm-4.7`は2026-08-17に非推奨予定）で**Qwenは一覧に存在しない**ことを確認——実機ログの`HTTP 404: Model does not exist or you do not have access to it.`と完全一致。副次的に、別プロジェクト（mizumawari-form）の引き継ぎ資料に同じ知見が既に記録されており（`gpt-oss-120b` + `reasoning_effort:low`採用、~0.5-0.6s）、独立に裏付けが取れた。

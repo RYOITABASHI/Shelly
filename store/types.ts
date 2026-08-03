@@ -1042,8 +1042,13 @@ export interface AgentOrchestrationStep {
   /** Absent/omitted = auto-routed exactly like a plain-string step. A concrete
    *  (non-'auto') tool here is resolved via the SAME 'configured-tool' path a
    *  top-level pinned `Agent.tool` already uses — it does not widen privilege:
-   *  autonomous unattended runs still force local/Codex via resolveForAutonomous,
-   *  and a top-level `Agent.runOn` on-device/cloud pin still outranks it. */
+   *  an autonomous unattended run resolves EACH step's own tool through
+   *  resolveForAutonomous, same as the top-level `Agent.tool` (2026-08-03,
+   *  Phase 7 — see lib/agent-plan-spec.ts's buildAgentPlanSpec, the single
+   *  plan-build-time chokepoint where this happens; scripts/shelly-plan-
+   *  executor.js only ever consumes an already-vetted value, never makes the
+   *  credential decision itself), and a top-level `Agent.runOn` on-device/
+   *  cloud pin still outranks it. */
   tool?: ToolChoice;
   /** api-call (v1): a structured HTTP call, consulted ONLY on NON-FINAL
    *  steps — the final step's real action is always Agent.action (or, when

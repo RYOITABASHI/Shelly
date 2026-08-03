@@ -1006,11 +1006,17 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   //     structured HTTP call — a materially different, PlanSpec-executor-only
   //     execution model; sending its synthesized display label to codex as a
   //     literal prompt would be silently wrong, not merely unsupported) nor a
-  //     per-step `tool` pin (Phase 5 — honoring a step's own tool choice would
-  //     require re-resolving and re-dispatching through every backend
-  //     generateToolCommand supports, per step; deliberately out of scope for
-  //     this pass to keep the new bash surface small and auditable). Both
-  //     residual cases keep the OLD single-step collapse + the note.
+  //     per-step `tool` pin. Honoring a step's own tool choice HAS been
+  //     implemented (2026-08-03, Phase 7) — but only on the PlanSpec/JS
+  //     executor (scripts/shelly-plan-executor.js), which per point 2 above is
+  //     exactly the executor every local/gemini-api/perplexity/cerebras/groq-
+  //     resolved orchestrated agent already uses instead of this .sh file.
+  //     Re-resolving and re-dispatching a per-step pin through every backend
+  //     generateToolCommand supports IN BASH remains deliberately out of scope
+  //     (no HTTP broker abstraction exists on this side to build it on) — an
+  //     agent whose AGENT-level tool resolves to codex/cli still collapses any
+  //     pinned/apiCall step to a single step + the note below. Both residual
+  //     cases keep that collapse behavior.
   const fullOrchestrationSteps: NormalizedStep[] = normalizeSteps(agent.orchestration);
   const orchestrationBudget = resolveBudget(agent.orchestration);
   const chainStepCount = Math.min(fullOrchestrationSteps.length, orchestrationBudget.maxSteps);

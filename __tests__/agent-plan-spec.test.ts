@@ -242,4 +242,108 @@ describe('Agent PlanSpec v1', () => {
       expect(validateAgentPlanSpec(spec).ok).toBe(true);
     });
   });
+
+  // Phase 7 (2026-08-03): per-step credential resolution. Before this, a
+  // step's `.tool` pin was written into the PlanSpec JSON completely
+  // unvetted — an unattended agent with NO Autonomous Cloud consent could
+  // carry a step pinned to an api-key-class tool (Perplexity/Gemini), and
+  // scripts/shelly-plan-executor.js would previously have ignored it
+  // entirely anyway (see that file's own comment). Now every step.tool goes
+  // through the SAME resolveForAutonomous() gate the agent-level tool
+  // already used, at this exact plan-build chokepoint, so the on-device
+  // executor never has to make (or could get wrong) that credential
+  // decision itself.
+  describe('per-step credential resolution (Phase 7)', () => {
+    it('strips an api-key-class step tool pin (Perplexity) on an autonomous agent with no consent', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'search for sources', tool: { type: 'perplexity' as const, model: 'sonar-deep-research' } },
+          'summarize and save it',
+        ],
+      };
+      const spec = buildAgentPlanSpec(agent({ autonomous: true, orchestration }));
+      expect(spec.steps!.list[0].tool).toBeUndefined();
+      // Non-destructive to the rest of the step — instruction survives.
+      expect(spec.steps!.list[0].instruction).toBe('search for sources');
+    });
+
+    it('strips an api-key-class step tool pin (Gemini) the same way', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'look it up', tool: { type: 'gemini-api' as const } },
+          'write it up',
+        ],
+      };
+      const spec = buildAgentPlanSpec(agent({ autonomous: true, orchestration }));
+      expect(spec.steps!.list[0].tool).toBeUndefined();
+    });
+
+    it('keeps a non-api-key step tool pin (local) unchanged on an autonomous agent', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'summarize locally', tool: { type: 'local' as const } },
+          'save the result',
+        ],
+      };
+      const spec = buildAgentPlanSpec(agent({ autonomous: true, orchestration }));
+      expect(spec.steps!.list[0].tool).toEqual({ type: 'local' });
+    });
+
+    it('keeps a step tool pin (cli:codex) unchanged too — codex is not api-key class, even though the JS executor cannot dispatch it', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'review it with Codex', tool: { type: 'cli' as const, cli: 'codex' as const } },
+          'post the result',
+        ],
+      };
+      const spec = buildAgentPlanSpec(agent({ autonomous: true, orchestration }));
+      expect(spec.steps!.list[0].tool).toEqual({ type: 'cli', cli: 'codex' });
+    });
+
+    it('never touches step.tool on a non-autonomous (attended-only) agent — that path already honors it directly, unvetted, at run time', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'search for sources', tool: { type: 'perplexity' as const, model: 'sonar-deep-research' } },
+          'summarize and save it',
+        ],
+      };
+      const spec = buildAgentPlanSpec(agent({ autonomous: false, orchestration }));
+      expect(spec.steps!.list[0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    });
+
+    it('honors the SAME web-consent exception the agent-level tool gets: an autonomous agent WITH Autonomous Cloud consent + a needs-web prompt keeps a Perplexity step pin', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'search for sources', tool: { type: 'perplexity' as const, model: 'sonar-deep-research' } },
+          'summarize and save it',
+        ],
+      };
+      const spec = buildAgentPlanSpec(
+        agent({ autonomous: true, prompt: 'ニュースを集めて', tool: { type: 'perplexity' }, orchestration }),
+        { autonomousCloudConsent: true },
+      );
+      // Sanity: this prompt/options combo is what exempts the AGENT-level
+      // tool too — confirms the fixture actually triggers the exception path
+      // this test means to exercise, not just asserting the step behavior in
+      // isolation against an unverified premise.
+      expect(spec.tool.type).toBe('perplexity');
+      expect(spec.steps!.list[0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    });
+
+    it('does NOT bypass consent for a step tool the agent-level exception does not cover (agent-level tool is local, not web-needing)', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'search for sources', tool: { type: 'perplexity' as const, model: 'sonar-deep-research' } },
+          'summarize and save it',
+        ],
+      };
+      // autonomousCloudConsent alone, with no needs-web prompt, does not
+      // exempt anything — consentWebTool requires promptSignals.needsWeb too.
+      const spec = buildAgentPlanSpec(
+        agent({ autonomous: true, prompt: 'say hello', orchestration }),
+        { autonomousCloudConsent: true },
+      );
+      expect(spec.steps!.list[0].tool).toBeUndefined();
+    });
+  });
 });

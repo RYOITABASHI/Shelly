@@ -73,12 +73,14 @@ import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 // silently drift from detectSocialPost()'s own matching rules the first time
 // either side changed. See its doc comment in lib/agent-llm-fallback.ts.
 import { resolvePlatformHintConnector } from './agent-llm-fallback';
-// Phase 6 (multi-step). Imported, never re-implemented: detectApiCallSteps is
-// the SAME deterministic api-call upgrade the Tier 1 parser runs over its own
-// split steps (lib/agent-nl-parser.ts), and HARD_MAX_STEPS is the same hard
-// ceiling the orchestration executor itself enforces — a locally-redeclared
-// copy of either would drift the moment one side changed.
-import { detectApiCallSteps, HARD_MAX_STEPS } from './agent-orchestration';
+// Phase 6 (multi-step). Imported, never re-implemented: detectApiCallSteps and
+// tagStepsWithToolMentions are the SAME deterministic upgrades the Tier 1
+// parser runs over its own split steps (lib/agent-nl-parser.ts), in the SAME
+// order (tag tool mentions, THEN detect api-calls — matches agent-nl-parser.ts
+// lines ~1770-1778), and HARD_MAX_STEPS is the same hard ceiling the
+// orchestration executor itself enforces — a locally-redeclared copy of any of
+// these would drift the moment one side changed.
+import { detectApiCallSteps, HARD_MAX_STEPS, tagStepsWithToolMentions } from './agent-orchestration';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
 import { logInfo } from './debug-logger';
 
@@ -326,7 +328,7 @@ ${FENCE_END}
 - "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
 - "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。${highRiskRules}
 - "prompt": 毎回の実行でエージェントが実際にやること。スケジュールの言い回しは含めないでください。
-- "steps": **複数の手順に分かれる依頼（例: 調べる → 要約する → 投稿する）のときだけ**、手順を順番どおりに、自然な指示文の配列として書いてください（最大${MAX_MODEL_AUTHORED_STEPS}個）。手順が1つしかない依頼なら空配列 [] のままにして、やることは "prompt" に書いてください。各要素はただの指示文です — ID・URL・接続設定・ツール名の指定などをここに書く必要はありません（システム側が判断します）。
+- "steps": **複数の手順に分かれる依頼（例: 調べる → 要約する → 投稿する）のときだけ**、手順を順番どおりに、自然な指示文の配列として書いてください（最大${MAX_MODEL_AUTHORED_STEPS}個）。手順が1つしかない依頼なら空配列 [] のままにして、やることは "prompt" に書いてください。各要素はただの指示文です — ID・URL・接続設定を自分で考えて書いてはいけません。ただし、**ユーザーがその手順で使うツール（Perplexity、ローカルLLM、Codex、Gemini）を実際に名指ししていた場合は、その名前をそのまま指示文の中に含めてください**（例:「Perplexityで最新ニュースを調べる」）。システム側がその名前を認識してツールを割り当てます。ユーザーが名指ししていないのに自分でツール名を考えて書いてはいけません。
 - "outputPath": 保存先が明示されたときだけ。それ以外は空文字。
 - "platformHint": 投稿先の**名前だけ**をそのまま書いてください（例: "ブルースカイ", "会社Bot"）。ID・URL・ホスト名・接続設定を自分で作ってはいけません。システム側が実在の登録済み投稿先と突き合わせます。投稿先の話が出ていなければ空文字。
 - "autonomousIntent": 「確認なしで勝手にやっておいて」なら true、「毎回確認して」なら false、どちらとも言っていなければ null。推測しないでください。
@@ -361,7 +363,7 @@ ${FENCE_END}
 - "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. Empty string if no schedule was stated.
 - "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.${highRiskRules}
 - "prompt": what the agent should actually DO on each run, with the scheduling phrasing removed.
-- "steps": **only when the request genuinely breaks into several ordered steps** (e.g. research → summarize → post), list them IN ORDER as an array of plain instruction sentences (${MAX_MODEL_AUTHORED_STEPS} max). If the request is a single step, leave "steps" as an empty array [] and put the task in "prompt" instead. Each entry is just an instruction sentence — do not write ids, URLs, connection settings or tool names in it (the system decides those).
+- "steps": **only when the request genuinely breaks into several ordered steps** (e.g. research → summarize → post), list them IN ORDER as an array of plain instruction sentences (${MAX_MODEL_AUTHORED_STEPS} max). If the request is a single step, leave "steps" as an empty array [] and put the task in "prompt" instead. Each entry is just an instruction sentence — never invent an id, a URL, or connection settings. If the user actually named which tool a step should use (Perplexity, the local model, Codex, Gemini), include that name naturally in the step's own sentence (e.g. "look up the latest news with Perplexity") — the system recognizes that name and routes to it. Never invent a tool name the user didn't say.
 - "outputPath": only when a destination file/folder was explicitly stated. Empty string otherwise.
 - "platformHint": the destination NAME only, copied as written (e.g. "Bluesky", "Team Bot"). Never invent an id, a URL, a host, or connection settings — the system matches this against the destinations the user really registered. Empty string if no destination came up.
 - "autonomousIntent": true if the user asked for it to run unattended without confirming each time, false if they asked to be asked every time, null if they said nothing either way. Do not guess.
@@ -1121,17 +1123,27 @@ export function mergeConversationalExtractionIntoDraft(
   // writes only `orchestrationSteps`, a field no other branch here touches.
   //
   // This is the SAME field lib/agent-nl-parser.ts's Tier 1 parser fills, run
-  // through the SAME detectApiCallSteps() upgrade, so everything downstream
-  // (the confirm card's step list, draftToConfirmedAgentDraft, the PlanSpec's
-  // additive `steps`) works on a Tier 3 draft exactly as it already does on a
-  // Tier 1 one. Nothing new is authorized: an entry is a plain instruction
-  // sentence, and whether a given step may do something privileged is decided
-  // — unchanged — by the orchestration executor's own gates.
+  // through the SAME tagStepsWithToolMentions() -> detectApiCallSteps() pipeline
+  // (2026-08-03, Phase 7 — previously only detectApiCallSteps ran here, which
+  // silently broke the system prompt's own promise that "the system decides"
+  // per-step tool routing: a step whose text named a real tool, e.g. "Perplexity
+  // で調べて", was never tagged, so it just inherited the agent-level tool like
+  // every other step, and a review caught it), so everything downstream (the
+  // confirm card's step list, draftToConfirmedAgentDraft, the PlanSpec's
+  // additive `steps`, and — once resolveForAutonomous vets it at plan-build
+  // time, see lib/agent-plan-spec.ts — the unattended PlanSpec executor) works
+  // on a Tier 3 draft exactly as it already does on a Tier 1 one. Nothing new
+  // is authorized: matchToolMention() only ever returns one of a fixed set of
+  // NAMED tools (Perplexity/local/Codex/Gemini — see TOOL_MENTIONS in
+  // lib/agent-orchestration.ts), never an arbitrary value the model invented,
+  // and whether a given step may actually USE that tool unattended is still
+  // decided — unchanged — by resolveForAutonomous + the orchestration
+  // executor's own gates, not by this merge.
   if (Array.isArray(extraction.steps)) {
     const validSteps = readValidatedSteps(extraction.steps) ?? [];
     if (validSteps.length >= MIN_ORCHESTRATION_STEPS) {
       const m = next();
-      m.orchestrationSteps = detectApiCallSteps(validSteps);
+      m.orchestrationSteps = detectApiCallSteps(tagStepsWithToolMentions(validSteps));
       touched = true;
       logInfo(LOG, `steps applied -> ${validSteps.length} orchestration step(s)`);
     } else if (extraction.steps.length > 0) {

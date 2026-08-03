@@ -2393,6 +2393,14 @@ function mirrorBrokerAudit(paths, plan) {
   }
 }
 
+// Tool types runOrchestrationChain (below) can actually dispatch a step
+// through — exactly the set modelRequest()/extractModelContent() have real
+// cases for. A step.tool of any OTHER type (namely `cli`, e.g. a step that
+// names "Codex" in its own text) falls back to plan.tool rather than being
+// attempted, since this JS executor has no shell-exec / non-HTTP dispatch
+// path at all (that's the legacy bash executor's job, lib/agent-executor.ts).
+const STEP_TOOL_DISPATCHABLE_TYPES = ['local', 'gemini-api', 'perplexity', 'cerebras', 'groq'];
+
 // Chain-mode execution (Increment 2, 2026-07-15): walk plan.steps.list as an
 // ORDERED LINEAR sequence within this single process/execSubprocess call — the
 // unattended (scheduled/native-fired) counterpart to the attended path's
@@ -2438,16 +2446,32 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
 
     const step = plan.steps.list[i];
     const isFinal = i === plan.steps.list.length - 1;
-    // v1 scope (see the file comment above): every step uses plan.tool
-    // unchanged — step.tool (Phase 5 per-step pin) is intentionally ignored
-    // here, not a bug. Only the FINAL step carries the plan's real action;
-    // every earlier step's stepPlan.action is `__suppressed__` (mirroring
-    // toPlanAction's shape, lib/agent-plan-spec.ts) purely for the model
-    // request/prompt shape — it is NOT dispatched through
-    // dispatchActionTrusted below (see that call site's own comment for why).
+    // Phase 7 (2026-08-03): a step's own tool pin (step.tool) is now honored
+    // here, when present and dispatchable — before this it was unconditionally
+    // ignored ("not a bug", the old comment said, because nothing on this side
+    // vetted it against Autonomous Cloud consent). It's safe now because
+    // lib/agent-plan-spec.ts's buildAgentPlanSpec already ran EVERY step.tool
+    // through the exact same resolveForAutonomous() gate the agent-level
+    // plan.tool went through, at plan-BUILD time — this executor never makes
+    // that credential decision itself, it only ever consumes an
+    // already-vetted value from disk. STEP_TOOL_DISPATCHABLE_TYPES additionally
+    // guards against a step pinned to a tool this JS executor has no dispatch
+    // code for at all (`cli`, e.g. "Codex" — codex-resolved AGENTS never reach
+    // this executor per AgentRuntime.kt's routing, but a step WITHIN a
+    // perplexity/gemini/local/etc-resolved agent can still legally name codex
+    // in its own text); such a step silently falls back to plan.tool exactly
+    // as every step did before this change, rather than throwing.
+    // Only the FINAL step carries the plan's real action; every earlier step's
+    // stepPlan.action is `__suppressed__` (mirroring toPlanAction's shape,
+    // lib/agent-plan-spec.ts) purely for the model request/prompt shape — it
+    // is NOT dispatched through dispatchActionTrusted below (see that call
+    // site's own comment for why).
     const stepPrompt = buildStepPrompt(plan.prompt, step.instruction, priorResults);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
-    const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction });
+    const stepTool = (step.tool && STEP_TOOL_DISPATCHABLE_TYPES.indexOf(step.tool.type) !== -1)
+      ? step.tool
+      : plan.tool;
+    const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction, tool: stepTool });
     const stepStart = Date.now();
 
     // api-call step (v1, non-final only — see AgentOrchestrationStep.apiCall's
