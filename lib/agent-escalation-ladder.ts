@@ -101,9 +101,34 @@ function dedupe(tools: ToolChoice[]): ToolChoice[] {
 /**
  * Build the ordered escalation ladder for an agent. Pure: the same agent + env
  * always yields the same ladder.
+ *
+ * `routeTextOverride` (2026-08-03 on-device bug, DEFERRED.md「オーケストレーション
+ * のステップ実行が合成プロンプト全文でルーティング判定され偽の成功通知に至る」):
+ * an orchestration step's `agent.prompt` is the COMPOSED text buildStepPrompt
+ * produced — base prompt + every prior step's full result + this step's
+ * instruction. Judging needsWeb / the auto scorer against that composite means
+ * a pure transform step ("ローカルLLMで要約する") inherits the freshness/
+ * collection keywords of the PREVIOUS step's collected news text, gets
+ * misclassified as web-mandatory, and escalates to Perplexity/Gemini — which
+ * then misread the composite as a research question and "succeed" with an
+ * unrelated essay (a real fake-success notification reached the user on
+ * device). Callers running a chained step pass the step's OWN raw instruction
+ * here so routing reflects what THIS step is, while `agent.prompt` (what is
+ * actually sent to the chosen tool) keeps the full composed context it needs.
+ * Absent/blank → falls back to `agent.prompt`, byte-identical to the old
+ * behavior for every non-orchestrated caller.
  */
-export function resolveEscalationLadder(agent: Agent, env: LadderEnv): EscalationLadder {
-  const { tool: primary, decision } = resolveAgentRoute(agent);
+export function resolveEscalationLadder(
+  agent: Agent,
+  env: LadderEnv,
+  routeTextOverride?: string,
+): EscalationLadder {
+  // NOTE: the override deliberately does NOT weaken any safety gate — the
+  // secret-guard scan inside resolveAgentRoute still runs over the FULL agent
+  // text (including the composed prompt actually sent to the backend), and the
+  // autonomous/manual-pin hard stops below are prompt-independent.
+  const routeText = routeTextOverride && routeTextOverride.trim() ? routeTextOverride : agent.prompt;
+  const { tool: primary, decision } = resolveAgentRoute(agent, routeText);
 
   // Hard stops — a single attempt, never climb to cloud.
   if (decision.guard === 'secret' || decision.guard === 'manual-pin') {
@@ -115,7 +140,7 @@ export function resolveEscalationLadder(agent: Agent, env: LadderEnv): Escalatio
   // hallucinate a plausible template and report a fake success. Web-capable
   // backends only: Gemini(grounded) for general / Perplexity for academic, then
   // Codex (danger-full-access shell) as the net fallback.
-  const web = detectRouteSignals(agent.prompt);
+  const web = detectRouteSignals(routeText);
   if (web.needsWeb) {
     if (agent.autonomous) {
       // N1: with the user's informed consent, an autonomous web task may use the

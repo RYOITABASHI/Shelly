@@ -1391,8 +1391,10 @@ async function runEscalatingAttempts(
 
 /**
  * Run one logical attempt-with-escalation: resolve the ladder for `runAgent`
- * (its prompt drives the route — so an orchestration STEP escalates by its own
- * step instruction, e.g. a collect-news step climbs Gemini→Codex), then try each
+ * (its prompt — or, on the orchestration path, materializeOpts.routeTextOverride,
+ * the step's own raw instruction — drives the route, so an orchestration STEP
+ * escalates by what IT is: a collect-news step climbs Gemini→Codex, a summarize
+ * step stays on the local→free-cloud→Codex ladder), then try each
  * candidate tool until one produces a real result (not error / fallback digest).
  * Shared by the single-run path and each orchestration step. Does NOT restore the
  * on-disk script — the caller owns that (single-run restores; orchestration
@@ -1418,10 +1420,24 @@ async function runLadderAttempts(
      *  runAgentNowInner). Never set on the orchestration path — multi-step runs
      *  are not rollback-eligible. */
     optimisticWorkspaceWrites?: boolean;
+    /**
+     * 2026-08-03 on-device fix (DEFERRED.md「オーケストレーションのステップ実行が
+     * 合成プロンプト全文でルーティング判定され偽の成功通知に至る」): the text the
+     * ladder/scorer judge the route by. Set ONLY by runAgentOrchestratedBody to
+     * the step's OWN raw instruction — runAgent.prompt there is buildStepPrompt's
+     * composite (base prompt + prior step results + instruction), and routing on
+     * that let a prior collect-news step's time-sensitive result text misclassify
+     * a pure summarize step as web-mandatory (Perplexity then answered the
+     * composite with an unrelated essay logged as success). The composite prompt
+     * itself is UNCHANGED — it is still what the chosen tool receives, since a
+     * summarize step needs the prior results to summarize. Absent → the ladder
+     * routes on runAgent.prompt exactly as before (single-run path unchanged).
+     */
+    routeTextOverride?: string;
   } = {},
 ): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
-  const ladder = resolveEscalationLadder(runAgent, env);
+  const ladder = resolveEscalationLadder(runAgent, env, materializeOpts.routeTextOverride);
   let finalLog: AgentRunLog | undefined;
 
   for (let i = 0; i < ladder.tools.length; i++) {
@@ -1637,13 +1653,19 @@ async function runAgentOrchestratedBody(
       // Each step escalates through the ladder by its OWN instruction — so a
       // collect-news step climbs Gemini(grounded)→Codex instead of dead-ending
       // on a non-web local digest. Non-final steps suppress the action.
+      // routeTextOverride (2026-08-03 on-device fix): route on step.instruction,
+      // NOT stepAgent.prompt — that composite carries the prior steps' results,
+      // whose time-sensitive content misclassified a pure summarize step as
+      // web-mandatory and escalated it to Perplexity, which "succeeded" with an
+      // off-task essay and fired a fake completion notification. The composite
+      // prompt still goes to the chosen tool unchanged.
       ({ finalLog: log } = await runLadderAttempts(
         stepAgent,
         agentId,
         runCommand,
         { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
         stepStart - 5_000,
-        { suppressAction: !isFinalStep, chainLockSeed },
+        { suppressAction: !isFinalStep, chainLockSeed, routeTextOverride: step.instruction },
       ));
     } catch (error) {
       records.push({

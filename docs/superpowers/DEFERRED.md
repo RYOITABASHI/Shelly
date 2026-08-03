@@ -14,6 +14,28 @@
 
 ---
 
+### ✅ オーケストレーションのステップ実行が合成プロンプト全文でルーティング判定され、Web不要な要約ステップがPerplexityへ誤エスカレーション→無関係な内容で偽の成功通知（2026-08-03、実機発見、Fable5実装）— 実装・テスト済み、未コミット・実機未検証
+
+**発見の経緯（実機再現済み）**: 自律エージェント「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」（2ステップチェーン）を実行したところ、ステップ0（収集）はgemini-apiで成功し実データを取得したが、ステップ1（要約）でローカルLLMが5分超タイムアウト → エスカレーションラダーが**Perplexityへフォールバック** → Perplexityが返したのは収集したニュースの要約ではなく「ローカルLLM要約技術についての一般論エッセイ」（架空の引用番号`[4][9][16]`付き）→ これが`success`としてrun logに記録され、**「完了しました」という偽の成功通知が実際にユーザーへ届いた**（通知スクリーンショットで実機確認）。
+
+**根本原因**: `lib/agent-manager.ts`の`runAgentOrchestratedBody`は各ステップの`stepAgent.prompt`を`buildStepPrompt(agent.prompt, step.instruction, priorResults)`の**合成済み全文**（ベースプロンプト＋前ステップの結果全文＋今回の指示）にしてから`runLadderAttempts`→`resolveEscalationLadder`（`lib/agent-escalation-ladder.ts:118`、修正前）へ渡していた。ラダーのWeb必須判定`detectRouteSignals(agent.prompt)`と、`resolveAgentRoute`（`lib/agent-tool-router.ts`）内のautoスコアラー`scoreRoutes(agent.prompt)`の両方がこの合成全文をキーワードマッチするため、(a) ベースプロンプト自体の収集動詞＋鮮度語（集めて/最新）と、(b) 前ステップが収集した時事テキスト（「…最新の研究成果を発表…」等）が、**そのステップ自身はWeb不要な純粋変換タスク**（要約/翻訳/整形/分類）のルーティングを汚染する。今回は前ステップ結果中の「研究」が`ACADEMIC_WEB_KW`にヒットしてwebDomain=academicとなり、要約ステップのラダーが`[perplexity, codex]`になった（localは「幻覚するだけ」として除外される設計のため候補から消える）。Perplexityには合成プロンプト全体が送られ、「ローカルLLMで要約する」を研究トピックと誤読して無関係な内容を返し、それが成功扱いになった。この誤判定パターンは汎用的——前ステップの結果が時事的・具体的なら、後続のどんなWeb不要ステップでも再現しうる。
+
+**修正内容（ルーティング判定のみ変更、ツールへ送るプロンプトは不変）**:
+1. `lib/agent-escalation-ladder.ts` — `resolveEscalationLadder(agent, env, routeTextOverride?)`に第3引数を追加。needsWeb判定（`detectRouteSignals`）と`resolveAgentRoute`呼び出しの両方を`routeTextOverride ?? agent.prompt`（空白のみは無視してフォールバック）で判定。省略時は従来とbyte-identical（単一実行パス`runEscalatingAttempts`は渡さないので非オーケストレーション挙動は不変）。
+2. `lib/agent-tool-router.ts` — `resolveAgentRoute(agent, routeTextOverride?)`に同じ第2引数を追加し、autoスコアラー`scoreRoutes`とcloud-pin時の`suggestTool`（`cloudFallbackTool`）をこのテキストで判定。**secret-guardの`scanForSecrets`は意図的に従来通り全文（合成プロンプト含む）をスキャン**——前ステップ結果に混入したシークレットでも on-device 強制が効く（テストで固定済み）。
+3. `lib/agent-manager.ts` — `runLadderAttempts`の`materializeOpts`に`routeTextOverride?`を追加して`resolveEscalationLadder`へ配線。`runAgentOrchestratedBody`のステップ実行呼び出し（1640行付近）で`routeTextOverride: step.instruction`（合成前の生の指示文）を渡す。`stepAgent.prompt`（実際にツールへ送られる合成全文）は一切変更しない——要約ステップは前ステップの結果が無いと要約できないため。
+4. `scripts/shelly-plan-executor.js` ＋ APKアセットミラー — `grep -c "needsWeb\|detectRouteSignals"` → **0件**（JS実行エンジンにはこのルーティングロジック自体が移植されていない。ステップのツールはPlanSpec生成時にvet済みのstep.toolピンかagent-levelツールを使うだけで、ステップごとのneedsWeb再判定は存在しない）。よって修正不要・両ファイル無変更、`diff`でbyte-identical確認済み。
+
+**テスト**: `__tests__/agent-escalation-ladder.test.ts`に新規5件——実バグ再現（`buildStepPrompt`で合成した実機同等プロンプトが**override無しだと**`[perplexity, codex]`に誤ルートされる形状の固定＝pre-fix挙動のロック、override有りだと`[local, cerebras, groq, codex]`）、Web必須ステップはoverride有りでも`[gemini-api, codex]`のまま（弱体化なし）、空白overrideのフォールバック、前ステップ結果由来シークレットでもsecret-guard勝利。新規`__tests__/agent-manager-step-route-text.test.ts`（step-tool-pinテストのハーネスを踏襲、shell境界とTerminalEmulatorのみモック）でend-to-end 2件——実機と同じ2ステップチェーンで、ステップ0の成功ログに時事ニューステキストを流し込み、ステップ1のmaterialize済みスクリプトのROUTE_DECISION_JSONが`local`（修正前はperplexity/gemini-api）になること＋合成プロンプト（前ステップ結果込み）が引き続きスクリプトに焼かれていることを確認。
+
+**検証**: `npx tsc --noEmit`クリーン。対象3スイート（agent-escalation-ladder / agent-manager-step-route-text / agent-manager-step-tool-pin）79件全PASS。広域回帰（agent-manager/orchestration/tool-router/router-scoring/plan-executor/plan-spec/executor）643 passed / 15 failed——失敗3スイート（plan-executor.test.ts / plan-executor-orchestration.test.ts / plan-executor-multi-action.test.ts）は`git stash`して未修正mainで再実行し**同一の失敗**であることを確認（既知のWindowsホスト固有、上の①②エントリの記録とも一致）。新規リグレッションなし。
+
+**残課題（P2、今回のスコープ外として意図的に見送り）**: `lib/agent-executor.ts`の`generateRunScript`側にも`detectRouteSignals(agent.prompt)`が3箇所あり（985行付近=autonomous consentWebTool判定、1272行付近=collectionContract/no-URLソフト失敗ガード、5454行付近=Gemini grounding判定）、これらはステップ実行時も合成プロンプトで判定される。今回の修正でラダーからPerplexity/Geminiは除外されるため偽成功経路は塞がったが、Web不要な要約ステップのローカル実行に「live web検索でURL付きリストを返せ」というcollectionContractが注入され、URL無しの正当な要約がno-URLガードでソフト失敗→ラダー内エスカレーション（local→cerebras→groq→codex、最終的にcodexが要約するので結果は正しいが無駄なホップ）する可能性が残る。`materializeAgent`→`generateRunScript`のオプション連鎖に同じ`routeTextOverride`を通す必要があり、変更範囲が大きいため別作業とする。
+
+→ sync: なし（内部ロジックのみ）。
+
+---
+
 ### ✅ Hermes Agent機能ギャップ、Fable5提案の①②実装（2026-08-03、"①と②を実装しよう"指示） — コミット・実機未検証
 
 **背景**: 「HermesユーザーがShellyを使っても遜色ないか」という質問に対して正直に回答した後、ユーザーから「どうするべきかをFable5に聞いてアイデア貰って」との指示。Fable5は残存ギャップ（codexチェーンのper-stepツール振り分け未実装、並列サブエージェント実行、意味的メモリの弱さ）を優先度付きで提示し、「①メモリのBM25改善 → ②codexチェーン静的コード生成 → 並列実行はスキップ」を推奨。ユーザーが「①と②を実装しよう」と選択。
@@ -3576,6 +3598,8 @@ claude() {
 ---
 
 ## History
+
+- **2026-08-03**: 実機テスト中にユーザーが発見・Fable5が修正: オーケストレーションのステップ実行が`buildStepPrompt`の合成プロンプト全文（前ステップの時事的な結果を含む）でルーティング判定され、Web不要な要約ステップがPerplexityへ誤エスカレーション→無関係なエッセイが`success`扱いで**偽の完了通知が実際にユーザーへ届いた**。`resolveEscalationLadder`/`resolveAgentRoute`に`routeTextOverride`を追加し、ステップは自身の`step.instruction`でルーティングするよう修正（先頭のエントリ参照）。`generateRunScript`側の合成プロンプト由来collectionContract/no-URLガードはP2残課題として同エントリに記録。
 
 - **2026-08-03（Tier 3 Phase 1.5〜4 実機検証 全項目PASS、versionCode 2029）**: クラウドフォールバック(高リスクフラグOFF回帰/ユーザー実発言URLでのwebhook許可/LLM捏造URLの拒否)、Tier2→Tier3昇格(Phase2)、autonomous安全網(Phase3)を実機で確認。副次的にCerebras APIの`HTTP 404`(アカウント側モデルアクセス権の問題と推定)を発見したが、Groqへのフェイルオーバーが正しく機能することを確認——Phase 1.5の設計が実在の想定外障害でも破綻しないことを期せずして実証。Tier 3(Phase 0〜4)は実装・レビュー・実機検証まで一通り完了。詳細は該当エントリ参照。→ sync: なし。
 - **2026-08-02（Tier 3「エージェント登録のLLMファースト化」実機検証5項目 全PASS）**: 別環境PC(adb+scrcpyミラーリング接続)でフラグOFF回帰なし/LLM主導の複数ターン聞き返し/webhook昇格防止/autonomous意図反映/Local LLM不在時fail-closed降格の5項目を実施、全PASS。副次的に2つのUX上の制限(小型ローカルモデルがautonomous確認質問を3回リピート、5ターン上限フォールバック時にTier 3内で得た値が引き継がれない)を発見、Phase 2以降への申し送りとして記録。詳細は該当エントリ参照。→ sync: なし。

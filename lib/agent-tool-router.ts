@@ -119,11 +119,11 @@ function routeForTool(tool: ToolChoice): AgentRouteDecision['route'] {
   return 'cloud';
 }
 
-function cloudFallbackTool(agent: Agent): ToolChoice {
+function cloudFallbackTool(agent: Agent, routeText: string): ToolChoice {
   if (credentialClass(agent.tool) === 'api-key' && agent.tool.type !== 'auto') {
     return agent.tool;
   }
-  const suggested = suggestTool(agent.prompt);
+  const suggested = suggestTool(routeText);
   return credentialClass(suggested.tool) === 'api-key' ? suggested.tool : { type: 'gemini-api' };
 }
 
@@ -132,7 +132,24 @@ function onDeviceFallbackTool(tool: ToolChoice): ToolChoice {
   return { type: 'local', model: 'Qwen3.5-0.8B-Q4_K_M' };
 }
 
-export function resolveAgentRoute(agent: Agent): AgentRouteResolution {
+/**
+ * `routeTextOverride` (2026-08-03, see resolveEscalationLadder's doc comment in
+ * lib/agent-escalation-ladder.ts for the full on-device bug write-up): the text
+ * the keyword scorer / suggestTool judge the task by. An orchestration step's
+ * `agent.prompt` is buildStepPrompt's COMPOSITE (base prompt + prior step
+ * results + instruction), so keyword-matching it lets the previous step's
+ * collected content (news text full of freshness/collection/research words)
+ * hijack THIS step's tool selection. Chained-step callers pass the step's own
+ * raw instruction. Absent/blank → `agent.prompt`, byte-identical to the old
+ * behavior for every existing caller.
+ *
+ * SECURITY: the override affects tool SELECTION only. scanForSecrets below
+ * deliberately keeps scanning the FULL agent text (textForSecretScan includes
+ * agent.prompt — the composite actually sent to the backend), so a secret
+ * carried in from a prior step's result still forces the on-device route.
+ */
+export function resolveAgentRoute(agent: Agent, routeTextOverride?: string): AgentRouteResolution {
+  const routeText = routeTextOverride && routeTextOverride.trim() ? routeTextOverride : agent.prompt;
   const secret = scanForSecrets(textForSecretScan(agent));
   if (secret.hasSecret) {
     // MODEL-001 Phase B (dormant, MODEL_ROUTER_ENABLED stays false — see
@@ -194,7 +211,7 @@ export function resolveAgentRoute(agent: Agent): AgentRouteResolution {
   }
 
   if (runOn === 'cloud') {
-    const tool = cloudFallbackTool(agent);
+    const tool = cloudFallbackTool(agent, routeText);
     return {
       tool,
       decision: {
@@ -224,7 +241,9 @@ export function resolveAgentRoute(agent: Agent): AgentRouteResolution {
     // Layer-2 (Phase 2b): after the hard guards, score candidate tools offline
     // and pick the best. Hard guards above already returned, so the scorer can
     // never override a forced-local secret-guard / pin / autonomous decision.
-    const scored = scoreRoutes(agent.prompt);
+    // Scored against routeText (the step's own instruction on the orchestration
+    // path), not the composite agent.prompt — see this function's doc comment.
+    const scored = scoreRoutes(routeText);
     return {
       tool: scored.tool,
       decision: {

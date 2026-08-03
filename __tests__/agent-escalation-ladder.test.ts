@@ -7,6 +7,7 @@ import {
   LadderEnv,
 } from '@/lib/agent-escalation-ladder';
 import { Agent, ToolChoice } from '@/store/types';
+import { buildStepPrompt } from '@/lib/agent-orchestration';
 
 const KEYED: LadderEnv = { hasCerebrasKey: true, hasGroqKey: true };
 const NO_KEYS: LadderEnv = { hasCerebrasKey: false, hasGroqKey: false };
@@ -237,6 +238,64 @@ describe('resolveEscalationLadder — key preflight (G4 P1: keyless cloud degrad
       { ...NO_CLOUD_KEYS, hasGeminiKey: true },
     );
     expect(types(l)).toEqual(['gemini-api', 'cli:codex']);
+  });
+});
+
+describe('resolveEscalationLadder — routeTextOverride routes a chained step by its OWN instruction (2026-08-03 on-device bug)', () => {
+  // Real on-device repro shape: a 2-step chain "パープレキシティで最新のAIニュースを
+  // 集めて、ローカルLLMで要約して、通知して". Step 1 ("summarize") receives
+  // buildStepPrompt's COMPOSITE — base prompt (collection verbs + freshness) +
+  // step 0's actual collected news text (time-sensitive, research-flavored).
+  // Judging needsWeb/the scorer on that composite misclassified the pure
+  // summarize step as a web-mandatory ACADEMIC task → Perplexity, which then
+  // answered the composite with an unrelated generic essay (fake citations
+  // [4][9][16]) that was logged as SUCCESS and fired a real completion
+  // notification to the user.
+  const BASE = 'パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して';
+  const PRIOR_NEWS =
+    'Perplexityは2026年8月に最新の研究成果を発表し、AIニュース各社が新型推論モデルの動向を報道した。';
+  const SUMMARIZE_INSTRUCTION = 'ローカルLLMで要約する';
+  const composite = buildStepPrompt(BASE, SUMMARIZE_INSTRUCTION, [PRIOR_NEWS]);
+
+  it('repro (locks the pre-fix misroute shape): WITHOUT the override, the composite prompt is misjudged web-mandatory and local is excluded', () => {
+    const l = resolveEscalationLadder(mk({ prompt: composite }), KEYED);
+    // The prior step's news text + the base prompt's collection/freshness words
+    // pollute the signals: the summarize step gets a web ladder (here academic →
+    // Perplexity, because the CARRIED RESULT contains 研究/最新, not the
+    // instruction). This is exactly the on-device failure path.
+    expect(types(l)[0]).toBe('perplexity');
+    expect(types(l)).not.toContain('local');
+  });
+
+  it("fix: WITH the step's own instruction as routeTextOverride, the summarize step stays on the non-web ladder — no Perplexity/Gemini escalation", () => {
+    const l = resolveEscalationLadder(mk({ prompt: composite }), KEYED, SUMMARIZE_INSTRUCTION);
+    expect(types(l)).toEqual(['local', 'cerebras', 'groq', 'cli:codex']);
+    expect(types(l)).not.toContain('perplexity');
+    expect(types(l)).not.toContain('gemini-api');
+  });
+
+  it('override does NOT weaken web routing for a step that genuinely IS a collect step', () => {
+    const l = resolveEscalationLadder(mk({ prompt: composite }), KEYED, '最新のAIニュースを集めて');
+    expect(types(l)).toEqual(['gemini-api', 'cli:codex']);
+    expect(types(l)).not.toContain('local');
+  });
+
+  it('blank/whitespace override falls back to agent.prompt (defensive — same ladder as no override)', () => {
+    const a = mk({ prompt: 'ニュースを集めて' });
+    expect(types(resolveEscalationLadder(a, KEYED, '   '))).toEqual(types(resolveEscalationLadder(a, KEYED)));
+    expect(types(resolveEscalationLadder(a, KEYED, undefined))).toEqual(types(resolveEscalationLadder(a, KEYED)));
+  });
+
+  it('secret-guard still wins when the secret arrived via a PRIOR step result (composite prompt), even though the override text is clean', () => {
+    // The override changes tool SELECTION only — scanForSecrets keeps scanning
+    // the full composite prompt that is actually sent to the backend.
+    const secretComposite = buildStepPrompt(BASE, '要約する', [
+      'prior result carrying key sk-ant-api03-AAAABBBBCCCCDDDD',
+    ]);
+    const l = resolveEscalationLadder(mk({ prompt: secretComposite }), KEYED, '要約する');
+    expect(l.guard).toBe('secret');
+    expect(l.noEscalation).toBe(true);
+    expect(types(l)).toEqual(['local']);
   });
 });
 
