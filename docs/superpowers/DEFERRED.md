@@ -14,7 +14,7 @@
 
 ---
 
-### ✅ オーケストレーションのステップ実行が合成プロンプト全文でルーティング判定され、Web不要な要約ステップがPerplexityへ誤エスカレーション→無関係な内容で偽の成功通知（2026-08-03、実機発見、Fable5実装）— 実装・テスト済み、未コミット・実機未検証
+### ✅ オーケストレーションのステップ実行が合成プロンプト全文でルーティング判定され、Web不要な要約ステップがPerplexityへ誤エスカレーション→無関係な内容で偽の成功通知（2026-08-03、実機発見、Fable5実装）— コミット・実機検証PASS
 
 **発見の経緯（実機再現済み）**: 自律エージェント「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」（2ステップチェーン）を実行したところ、ステップ0（収集）はgemini-apiで成功し実データを取得したが、ステップ1（要約）でローカルLLMが5分超タイムアウト → エスカレーションラダーが**Perplexityへフォールバック** → Perplexityが返したのは収集したニュースの要約ではなく「ローカルLLM要約技術についての一般論エッセイ」（架空の引用番号`[4][9][16]`付き）→ これが`success`としてrun logに記録され、**「完了しました」という偽の成功通知が実際にユーザーへ届いた**（通知スクリーンショットで実機確認）。
 
@@ -31,6 +31,14 @@
 **検証**: `npx tsc --noEmit`クリーン。対象3スイート（agent-escalation-ladder / agent-manager-step-route-text / agent-manager-step-tool-pin）79件全PASS。広域回帰（agent-manager/orchestration/tool-router/router-scoring/plan-executor/plan-spec/executor）643 passed / 15 failed——失敗3スイート（plan-executor.test.ts / plan-executor-orchestration.test.ts / plan-executor-multi-action.test.ts）は`git stash`して未修正mainで再実行し**同一の失敗**であることを確認（既知のWindowsホスト固有、上の①②エントリの記録とも一致）。新規リグレッションなし。
 
 **残課題（P2、今回のスコープ外として意図的に見送り）**: `lib/agent-executor.ts`の`generateRunScript`側にも`detectRouteSignals(agent.prompt)`が3箇所あり（985行付近=autonomous consentWebTool判定、1272行付近=collectionContract/no-URLソフト失敗ガード、5454行付近=Gemini grounding判定）、これらはステップ実行時も合成プロンプトで判定される。今回の修正でラダーからPerplexity/Geminiは除外されるため偽成功経路は塞がったが、Web不要な要約ステップのローカル実行に「live web検索でURL付きリストを返せ」というcollectionContractが注入され、URL無しの正当な要約がno-URLガードでソフト失敗→ラダー内エスカレーション（local→cerebras→groq→codex、最終的にcodexが要約するので結果は正しいが無駄なホップ）する可能性が残る。`materializeAgent`→`generateRunScript`のオプション連鎖に同じ`routeTextOverride`を通す必要があり、変更範囲が大きいため別作業とする。
+
+**→ 2026-08-03 実機検証PASS（`22b9cbaac`、versionCode 2046、アプリ内アップデーターで更新）**: バグを最初に踏んだのと同一のエージェント「Gemini Fix Test」（同一agentId、削除し忘れていたため再登録不要）を`@agent run`で再実行。**今回はステータス（✅/❌）だけでなく生ログと実際の通知本文まで確認**（前回それを怠って誤った完了報告をした反省を踏まえ）:
+- ステップ0（収集）: `gemini-api`で成功、実際のAIニュース（Explorative Modeling研究発表・経産省組織再編・EU AI法執行・NRI新サービス、実URL付き）を取得
+- ステップ1（要約）: **`local`に正しくルーティング**（修正前は`perplexity`に誤エスカレーション）、24秒で完了（タイムアウトなし）、出力「日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。」は**ステップ0の実際の収集結果1件目と完全に整合**
+- `adb shell dumpsys notification --noredact`でユーザーへ実際に届いた通知本文を確認: 「エンジン: Local LLM / 日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。」——修正前の「架空の一般論エッセイ」ではなく、実データに基づく正しい要約が届くことを確認
+- 前回見られた「48秒後に出所不明な2件目のログエントリが出現する」現象も再現せず（新規ログファイルは1件のみ）
+
+テスト用エージェントはSidebarのDelete Alertで削除済み。
 
 → sync: なし（内部ロジックのみ）。
 
