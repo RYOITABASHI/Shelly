@@ -45,8 +45,8 @@ import {
   writeGlobalMemoryNote,
 } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
-import type { ToolChoice, Agent } from '@/store/types';
-import { resolveAutonomousFinalTool } from '@/lib/agent-tool-router';
+import type { Agent } from '@/store/types';
+import { resolveConfirmedToolAndRunOn } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
@@ -1219,10 +1219,21 @@ export function useAIPaneDispatch(paneId: string) {
           if (correction.autonomousTurnedOn) {
             const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
             const needsWeb = detectRouteSignals(patchedDraft.prompt).needsWeb;
-            const tool = resolveAutonomousFinalTool(true, patchedDraft.tool, cloudConsent, needsWeb);
+            // Same single-source-of-truth derivation as confirmAgentDraft's
+            // persist boundary below — see resolveConfirmedToolAndRunOn's doc
+            // comment (lib/agent-tool-router.ts) for the 2026-08-03 bug this
+            // replaced: runOn is never auto-derived from tool.type anymore
+            // (a synthesized 'on-device' pin outranked step-level tool pins).
+            const resolved = resolveConfirmedToolAndRunOn({
+              autonomous: true,
+              runOn: 'auto',
+              tool: patchedDraft.tool,
+              cloudConsent,
+              needsWeb,
+            });
             partial.autonomous = true;
-            partial.tool = tool;
-            partial.runOn = tool.type === 'local' ? 'on-device' : 'auto';
+            partial.tool = resolved.tool;
+            partial.runOn = resolved.runOn;
           }
 
           // 2026-07-27 bug fix: a pure "今すぐ実行して" run-now request (see
@@ -2822,14 +2833,20 @@ export function useAIPaneDispatch(paneId: string) {
       // (draft.tool) would otherwise pin a concrete tool and bypass the scorer.
       const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
       const needsWeb = detectRouteSignals(confirmed.prompt).needsWeb;
-      const tool: ToolChoice = confirmed.autonomous
-        ? resolveAutonomousFinalTool(true, confirmed.tool, cloudConsent, needsWeb)
-        : confirmed.runOn === 'auto'
-        ? { type: 'auto' }
-        : confirmed.tool;
-      const runOn = confirmed.autonomous
-        ? tool.type === 'local' ? 'on-device' : 'auto'
-        : confirmed.runOn;
+      // 2026-08-03 bug fix: runOn is persisted exactly as the confirm surface
+      // handed it over — the old `tool.type === 'local' → runOn 'on-device'`
+      // auto-derivation forged a manual-strength pin the user never made,
+      // which resolveAgentRoute's manual-pin hard stop then let override
+      // every orchestration step's own explicit tool pin (Perplexity-pinned
+      // steps silently ran on the local model and fabricated results). See
+      // resolveConfirmedToolAndRunOn's doc comment in lib/agent-tool-router.ts.
+      const { tool, runOn } = resolveConfirmedToolAndRunOn({
+        autonomous: confirmed.autonomous,
+        runOn: confirmed.runOn,
+        tool: confirmed.tool,
+        cloudConsent,
+        needsWeb,
+      });
       try {
         // Editing a draft does not expose runOn/tool as patchable fields. Keep
         // the registered route byte-for-byte unless the autonomous toggle was

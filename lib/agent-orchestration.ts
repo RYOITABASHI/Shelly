@@ -472,7 +472,12 @@ function matchToolMention(clause: string): ToolChoice | undefined {
 const SCHEDULE_ONLY_CLAUSE_RE =
   /^(?:毎日|毎朝|毎晩|毎夕|毎週|每週|日次|定期的?に?)?\s*[日月火水木金土]曜日?(?:\s*(?:と|・|、|,|，|および|＆|&)\s*[日月火水木金土]曜?日?)*\s*(?:\d{1,2}\s*(?:時(?:半|\d{1,2}分)?|:\d{2}))?\s*(?:に|の)?$|^(?:毎日|毎朝|毎晩|毎夕|日次)\s*(?:\d{1,2}\s*(?:時(?:半|\d{1,2}分)?|:\d{2}))?\s*(?:に|の)?$/;
 
-function isScheduleOnlyClause(clause: string): boolean {
+/** Exported (2026-08-03) so lib/agent-conversational-registration.ts's Tier 3
+ *  step sanitizer can share the SAME weekday/daily schedule-clause detection
+ *  this file's Tier 1 splitter uses, instead of growing a drifting copy.
+ *  Tier 1's own usage (detectToolPinnedSteps' leading-clause drop below) is
+ *  unchanged. */
+export function isScheduleOnlyClause(clause: string): boolean {
   return SCHEDULE_ONLY_CLAUSE_RE.test(clause);
 }
 

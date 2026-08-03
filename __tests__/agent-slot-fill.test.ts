@@ -2,6 +2,7 @@ import {
   needsNotificationTrigger,
   nextMissingSlot,
   applySlotAnswer,
+  combinePartialScheduleWithDraft,
   isCancelPhrase,
   detectMessageLocale,
   hasFresherPendingSlotFillQuestion,
@@ -482,5 +483,45 @@ describe('nextMissingSlot — question language follows the ORIGINAL utterance, 
     const d = makeDraft({ scheduleConfident: false, rawText: '毎日レポートを作って', prompt: 'レポートを作って' });
     const missing = nextMissingSlot(d, {});
     expect(missing?.question).toMatch(/[ぁ-んァ-ヶ一-龯]/);
+  });
+});
+
+// 2026-08-03: extracted from applySlotAnswer's schedule branch so the Tier 3
+// conversational merge (lib/agent-conversational-registration.ts) can share
+// the cross-turn partial-schedule combination instead of re-asking the
+// schedule question for a bare-time answer (on-device bug agent-msd4bkjt).
+describe('combinePartialScheduleWithDraft', () => {
+  it('combines a bare time with a known daily frequency into a confident daily cron', () => {
+    const combined = combinePartialScheduleWithDraft(
+      { suggestedFrequency: 'daily' },
+      { suggestedTime: { hour: 20, minute: 0 } },
+    );
+    expect(combined).toEqual({
+      schedule: '0 20 * * *',
+      scheduleLabel: '毎日 20:00',
+      suggestedTime: { hour: 20, minute: 0 },
+    });
+  });
+
+  it('combines a bare time with a known weekday list into a confident weekly cron', () => {
+    const combined = combinePartialScheduleWithDraft(
+      { suggestedDowList: '1,5' },
+      { suggestedTime: { hour: 9, minute: 30 } },
+    );
+    expect(combined?.schedule).toBe('30 9 * * 1,5');
+    expect(combined?.scheduleLabel).toBe('毎週月・金 09:30');
+    expect(combined?.suggestedDowList).toBe('1,5');
+  });
+
+  it('returns null with no recurrence context (a bare time must never silently become daily)', () => {
+    expect(
+      combinePartialScheduleWithDraft({}, { suggestedTime: { hour: 20, minute: 0 } }),
+    ).toBeNull();
+  });
+
+  it('returns null when the answer carried no time at all', () => {
+    expect(
+      combinePartialScheduleWithDraft({ suggestedFrequency: 'daily' }, {}),
+    ).toBeNull();
   });
 });

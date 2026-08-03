@@ -80,7 +80,12 @@ import { resolvePlatformHintConnector } from './agent-llm-fallback';
 // lines ~1770-1778), and HARD_MAX_STEPS is the same hard ceiling the
 // orchestration executor itself enforces — a locally-redeclared copy of any of
 // these would drift the moment one side changed.
-import { detectApiCallSteps, HARD_MAX_STEPS, tagStepsWithToolMentions } from './agent-orchestration';
+import { detectApiCallSteps, HARD_MAX_STEPS, isScheduleOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
+// Tier 2's own cross-turn partial-schedule merge (a bare time completing a
+// recurrence the draft already knows), shared — NOT re-implemented — so the
+// Tier 3 merge can never drift from applySlotAnswer's behavior again. See the
+// 2026-08-03 repeated-schedule-question bug in the scheduleText branch below.
+import { combinePartialScheduleWithDraft } from './agent-slot-fill';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
 import { logInfo } from './debug-logger';
 
@@ -439,6 +444,132 @@ function readValidatedSteps(raw: unknown): string[] | undefined {
     if (out.length >= MAX_MODEL_AUTHORED_STEPS) break;
   }
   return out;
+}
+
+// ── Step sanitize (2026-08-03, on-device bug agent-msd4bkjt) ────────────────
+//
+// Tier 3 has no deterministic step splitter of its own — the model authors
+// `steps: string[]` freely, and on device it happily copied the user's
+// SCHEDULE fragment (「20時00分に」) and the DELIVERY directive (「通知して」)
+// into the step list as if they were work steps. Both then ran as real model
+// calls: the schedule fragment produced a nonsense "step result" that polluted
+// the next step's carried context, and the delivery step duplicated what the
+// agent's own action.type already does after the chain. Tier 1's splitter has
+// (narrow) schedule-clause dropping (isScheduleOnlyClause /
+// parseStepsFromText's raw[0] rule) but none of it ever ran on model-authored
+// steps. This sanitizer is the deterministic gate between the two.
+//
+// Deliberately ANCHORED whole-step matching throughout: a step that merely
+// CONTAINS a time or the word 通知 alongside real work (「20:00のログを調べる」,
+// 「通知内容を作成する」) must never be dropped — only a step that is a
+// schedule/delivery fragment and NOTHING else.
+
+/** A bare clock time and nothing else: 「20時00分に」「朝8時」「20:00」. The
+ *  trailing particle set (に/から/の) mirrors SCHEDULE_ONLY_CLAUSE_RE's. */
+const JA_BARE_TIME_ONLY_STEP_RE =
+  /^(?:午前|午後|朝|夜|夕方|晩|深夜|昼)?\s*\d{1,2}\s*(?:時\s*(?:半|\d{1,2}\s*分)?|[:：]\d{2})\s*(?:に|から|の)?$/;
+/** A bare interval and nothing else: 「5分ごとに」「3時間おき」. */
+const JA_INTERVAL_ONLY_STEP_RE = /^\d{1,3}\s*(?:分|時間)\s*(?:ごと|おき|毎|間隔)\s*(?:に|で)?$/;
+/** A bare frequency word and nothing else: 「毎日」「毎朝」「平日に」. */
+const JA_FREQ_ONLY_STEP_RE = /^(?:毎日|毎朝|毎晩|毎夕|毎週|日次|平日|週末)\s*(?:に|の)?$/;
+/** EN equivalents: "at 8pm", "every day at 20:00", "daily". */
+const EN_SCHEDULE_ONLY_STEP_RE =
+  /^(?:(?:every\s?day|everyday|daily|each\s+day|every\s+(?:sun|mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?)(?:day)?s?)[\s,]*)?(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i;
+const EN_FREQ_ONLY_STEP_RE = /^(?:every\s?day|everyday|daily|each\s+day)$/i;
+
+/** A pure delivery directive and nothing else — the agent's own action.type
+ *  already performs the delivery AFTER the chain, so a step saying only
+ *  "notify" duplicates it as a pointless model call. Allowed prefixes are the
+ *  object/recipient fillers (「結果を」「ユーザーに」…); anything else before
+ *  通知/お知らせ (e.g. 「通知内容を作成して」— 通知 is the object of real work
+ *  there, not the verb) fails the anchor and is kept. */
+const JA_NOTIFY_ONLY_STEP_RE =
+  /^(?:(?:結果|それ|完了|内容)[をは]\s*|私に\s*|ユーザー[にへ]\s*)*(?:プッシュ)?(?:通知|お知らせ)\s*(?:して(?:ね|ください)?|する|を(?:送信|送)(?:して(?:ください)?|する|って|る)?)?$/;
+const EN_NOTIFY_ONLY_STEP_RE =
+  /^(?:(?:please\s+)?notify(?:\s+me)?|send(?:\s+me)?\s+(?:a\s+)?(?:push\s+)?notification)\.?$/i;
+
+/** Strip trailing sentence punctuation before the anchored checks — the model
+ *  often writes steps as full sentences (「20時00分に。」). */
+function stripTrailingPunct(text: string): string {
+  return text.trim().replace(/[。．.、,！!]+$/, '').trim();
+}
+
+/** Whitespace/punctuation-insensitive comparison key, for "this step IS the
+ *  proposal's own scheduleText, re-listed as a step" detection. */
+function normalizeForScheduleComparison(text: string): string {
+  return text.replace(/[\s。．.、,！!　]/g, '').toLowerCase();
+}
+
+function isScheduleOnlyStepText(step: string): boolean {
+  const t = stripTrailingPunct(step);
+  if (!t) return false;
+  return (
+    // Tier 1's shared weekday/daily clause detector first (agent-orchestration.ts)…
+    isScheduleOnlyClause(t) ||
+    // …then the bare-time/interval/frequency shapes it deliberately does not
+    // cover (it requires a weekday or daily marker; a model-authored fragment
+    // like 「20時00分に」 has neither).
+    JA_BARE_TIME_ONLY_STEP_RE.test(t) ||
+    JA_INTERVAL_ONLY_STEP_RE.test(t) ||
+    JA_FREQ_ONLY_STEP_RE.test(t) ||
+    EN_SCHEDULE_ONLY_STEP_RE.test(t) ||
+    EN_FREQ_ONLY_STEP_RE.test(t)
+  );
+}
+
+function isNotifyOnlyStepText(step: string): boolean {
+  const t = stripTrailingPunct(step);
+  if (!t) return false;
+  return JA_NOTIFY_ONLY_STEP_RE.test(t) || EN_NOTIFY_ONLY_STEP_RE.test(t);
+}
+
+export interface SanitizedConversationalSteps {
+  steps: string[];
+  /** The fragments removed (schedule-only / delivery-only), for logging and
+   *  tests. Order preserved. */
+  dropped: string[];
+}
+
+/**
+ * Deterministically remove non-work fragments from a model-authored step list
+ * BEFORE it can become orchestrationSteps:
+ *
+ *  - schedule-only steps (「20時00分に」「毎日8時」"at 8pm") — the schedule is
+ *    scheduleText's job, never a work step;
+ *  - steps that are just the proposal's own scheduleText restated (normalized
+ *    comparison), whatever their shape;
+ *  - delivery-only steps (「通知して」"notify me") when the resolved action
+ *    type is 'notify' — the action already delivers after the chain. Steps
+ *    that CREATE deliverable content (「通知内容を作成する」) are real work
+ *    and are kept; only the bare directive is dropped. Scoped to 'notify' on
+ *    purpose: for any other action type a delivery-ish step may carry intent
+ *    this sanitizer cannot judge, and keeping it is the conservative failure.
+ *
+ * The caller applies MIN_ORCHESTRATION_STEPS to the SANITIZED list, so a list
+ * that sanitizes below 2 falls back to the ordinary single-prompt agent —
+ * never a 1-step "chain" the runtime/UI don't expect.
+ */
+export function sanitizeConversationalSteps(
+  steps: string[],
+  opts: { scheduleText?: string; actionType?: AgentAction['type'] } = {},
+): SanitizedConversationalSteps {
+  const normalizedSchedule = opts.scheduleText
+    ? normalizeForScheduleComparison(stripTrailingPunct(opts.scheduleText))
+    : '';
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  for (const step of steps) {
+    const matchesProposalSchedule =
+      normalizedSchedule.length > 0 &&
+      normalizeForScheduleComparison(stripTrailingPunct(step)) === normalizedSchedule;
+    const isDeliveryDirective = opts.actionType === 'notify' && isNotifyOnlyStepText(step);
+    if (isScheduleOnlyStepText(step) || matchesProposalSchedule || isDeliveryDirective) {
+      dropped.push(step);
+    } else {
+      kept.push(step);
+    }
+  }
+  return { steps: kept, dropped };
 }
 
 /** Type-check → trim → drop-if-empty → cap. Anything that isn't a plain
@@ -985,11 +1116,50 @@ export function mergeConversationalExtractionIntoDraft(
       m.scheduleAssumed = sched.assumedTimeOfDay || undefined;
       touched = true;
     } else {
-      rejectedFields.push('scheduleText');
-      logInfo(
-        LOG,
-        `scheduleText ${JSON.stringify(extraction.scheduleText)} did not parse to a confident cron — dropped`,
-      );
+      // 2026-08-03 on-device bug (「20時00分に」が延々と聞き直される): a bare
+      // time can complete a recurrence the draft ALREADY knows — Tier 2's
+      // applySlotAnswer has combined the two across turns since day one, but
+      // this Tier 3 merge just dropped the whole thing, structurally
+      // guaranteeing the schedule question got re-asked for an answer the
+      // rest of the pipeline would have accepted. Same shared helper, same
+      // conservative contract: NO recurrence context on the draft → no
+      // combination (a bare time stays ambiguous between once and daily —
+      // never unconditionally converted).
+      const combined = combinePartialScheduleWithDraft(draft, sched);
+      if (combined) {
+        const m = next();
+        m.schedule = combined.schedule;
+        m.scheduleConfident = true;
+        m.scheduleLabel = combined.scheduleLabel;
+        m.suggestedTime = combined.suggestedTime;
+        if (combined.suggestedDowList) m.suggestedDowList = combined.suggestedDowList;
+        m.scheduleAssumed = undefined;
+        touched = true;
+        logInfo(
+          LOG,
+          `scheduleText ${JSON.stringify(extraction.scheduleText)} combined with the draft's known ` +
+            `recurrence -> ${combined.scheduleLabel}`,
+        );
+      } else {
+        rejectedFields.push('scheduleText');
+        // Keep whatever PARTIAL signal the phrase carried (a bare time, a
+        // frequency with no time, a weekday list) on the draft — mirrors
+        // applySlotAnswer's own not-resolved branch — so a LATER turn's
+        // complementary half can complete it instead of starting from zero.
+        // Only fields the parse actually produced are written; an existing
+        // hint is never clobbered with undefined.
+        if (sched.suggestedTime || sched.suggestedFrequency || sched.suggestedDowList) {
+          const m = next();
+          if (sched.suggestedTime) m.suggestedTime = sched.suggestedTime;
+          if (sched.suggestedFrequency) m.suggestedFrequency = sched.suggestedFrequency;
+          if (sched.suggestedDowList) m.suggestedDowList = sched.suggestedDowList;
+          touched = true;
+        }
+        logInfo(
+          LOG,
+          `scheduleText ${JSON.stringify(extraction.scheduleText)} did not parse to a confident cron — dropped`,
+        );
+      }
     }
   }
 
@@ -1140,7 +1310,24 @@ export function mergeConversationalExtractionIntoDraft(
   // decided — unchanged — by resolveForAutonomous + the orchestration
   // executor's own gates, not by this merge.
   if (Array.isArray(extraction.steps)) {
-    const validSteps = readValidatedSteps(extraction.steps) ?? [];
+    const rawValidSteps = readValidatedSteps(extraction.steps) ?? [];
+    // 2026-08-03 (agent-msd4bkjt): deterministic sanitize BEFORE the chain
+    // gate — the model re-listed the schedule fragment (「20時00分に」) and
+    // the delivery directive (「通知して」) as work steps. See
+    // sanitizeConversationalSteps' doc comment; MIN_ORCHESTRATION_STEPS below
+    // is applied to the SANITIZED list, so a list that shrinks under 2 falls
+    // back to the ordinary single-prompt agent instead of a bogus chain.
+    const { steps: validSteps, dropped: droppedSteps } = sanitizeConversationalSteps(rawValidSteps, {
+      scheduleText: extraction.scheduleText,
+      actionType: merged.action.type,
+    });
+    if (droppedSteps.length > 0) {
+      logInfo(
+        LOG,
+        `steps sanitize dropped ${droppedSteps.length} schedule/delivery fragment(s) out of ` +
+          `${rawValidSteps.length} proposed`,
+      );
+    }
     if (validSteps.length >= MIN_ORCHESTRATION_STEPS) {
       const m = next();
       m.orchestrationSteps = detectApiCallSteps(tagStepsWithToolMentions(validSteps));

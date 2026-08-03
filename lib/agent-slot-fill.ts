@@ -8,7 +8,7 @@
  * Native, no store access, fully unit-testable (mirrors the extraction
  * precedent of lib/agent-card-cron.ts / lib/notification-trigger.ts).
  */
-import type { ParsedAgentDraft } from './agent-nl-parser';
+import type { ParsedAgentDraft, ScheduleResult } from './agent-nl-parser';
 import { parseSchedule, fmtTime, JP_DOW_LABEL } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
@@ -138,6 +138,65 @@ export function nextMissingSlot(
   return null;
 }
 
+/** The confident schedule fields produced by combinePartialScheduleWithDraft
+ *  when a bare-time answer completes a recurrence the draft already knew. */
+export interface CombinedPartialSchedule {
+  schedule: string;
+  scheduleLabel: string;
+  suggestedTime: NonNullable<ScheduleResult['suggestedTime']>;
+  /** Present only on the weekly (dow-list) combination path. */
+  suggestedDowList?: string;
+}
+
+/**
+ * Merge a NOT-confident parseSchedule() result against recurrence context the
+ * draft already carries. A bare time ("20時" / "9:30") parses to a
+ * suggestedTime with no frequency, which alone can never be a confident cron
+ * — but when the ORIGINAL utterance already established the recurrence
+ * (draft.suggestedDowList from "月曜と金曜に…", or draft.suggestedFrequency
+ * === 'daily' from "毎日…"), the two halves combine into a confident cron.
+ *
+ * Extracted 2026-08-03 from applySlotAnswer's schedule branch (where this
+ * cross-turn merge was born) so lib/agent-conversational-registration.ts's
+ * Tier 3 merge can share it: Tier 3 used to DROP a bare-time scheduleText
+ * outright even when the draft already knew the frequency, which re-asked
+ * "いつ実行しますか？" for an answer Tier 2 would have accepted — the exact
+ * structural asymmetry behind the repeated-schedule-question on-device bug.
+ *
+ * Returns null when nothing can be combined (no time in the answer, or no
+ * recurrence context on the draft). DELIBERATELY never invents a frequency:
+ * a bare time with no known recurrence stays ambiguous (once-vs-daily), so
+ * the caller keeps asking / falls back to the manual picker.
+ */
+export function combinePartialScheduleWithDraft(
+  draft: Pick<ParsedAgentDraft, 'suggestedDowList' | 'suggestedFrequency'>,
+  result: Pick<ScheduleResult, 'suggestedTime'>,
+): CombinedPartialSchedule | null {
+  if (!result.suggestedTime) return null;
+  const { hour, minute } = result.suggestedTime;
+  if (draft.suggestedDowList) {
+    const dowField = draft.suggestedDowList;
+    const dayLabel = dowField
+      .split(',')
+      .map((d) => JP_DOW_LABEL[Number(d)])
+      .join('・');
+    return {
+      schedule: `${minute} ${hour} * * ${dowField}`,
+      scheduleLabel: `毎週${dayLabel} ${fmtTime(result.suggestedTime)}`,
+      suggestedTime: result.suggestedTime,
+      suggestedDowList: dowField,
+    };
+  }
+  if (draft.suggestedFrequency === 'daily') {
+    return {
+      schedule: `${minute} ${hour} * * *`,
+      scheduleLabel: `毎日 ${fmtTime(result.suggestedTime)}`,
+      suggestedTime: result.suggestedTime,
+    };
+  }
+  return null;
+}
+
 /**
  * Applies a raw chat reply to the given field, returning an updated draft
  * copy. Per-field parsing failure NEVER blocks — it falls back to a safe
@@ -205,39 +264,21 @@ export function applySlotAnswer(
     // question was being asked again forever. If the answer supplies a time
     // and the draft already knows the days (or a daily marker), combine them
     // into a confident cron instead of discarding what the user already told
-    // us once.
-    if (result.suggestedTime) {
-      const { hour, minute } = result.suggestedTime;
-      if (draft.suggestedDowList) {
-        const dowField = draft.suggestedDowList;
-        const dayLabel = dowField
-          .split(',')
-          .map((d) => JP_DOW_LABEL[Number(d)])
-          .join('・');
-        return {
-          draft: {
-            ...draft,
-            schedule: `${minute} ${hour} * * ${dowField}`,
-            scheduleConfident: true,
-            scheduleLabel: `毎週${dayLabel} ${fmtTime(result.suggestedTime)}`,
-            suggestedTime: result.suggestedTime,
-            suggestedDowList: dowField,
-          },
-          resolved: true,
-        };
-      }
-      if (draft.suggestedFrequency === 'daily') {
-        return {
-          draft: {
-            ...draft,
-            schedule: `${minute} ${hour} * * *`,
-            scheduleConfident: true,
-            scheduleLabel: `毎日 ${fmtTime(result.suggestedTime)}`,
-            suggestedTime: result.suggestedTime,
-          },
-          resolved: true,
-        };
-      }
+    // us once. (Logic lives in combinePartialScheduleWithDraft above, shared
+    // with the Tier 3 conversational merge since 2026-08-03.)
+    const combined = combinePartialScheduleWithDraft(draft, result);
+    if (combined) {
+      return {
+        draft: {
+          ...draft,
+          schedule: combined.schedule,
+          scheduleConfident: true,
+          scheduleLabel: combined.scheduleLabel,
+          suggestedTime: combined.suggestedTime,
+          ...(combined.suggestedDowList ? { suggestedDowList: combined.suggestedDowList } : {}),
+        },
+        resolved: true,
+      };
     }
     if (attemptCount >= 2) {
       // Give up asking — AgentConfirmCard.tsx's own HARD REQUIREMENT (a

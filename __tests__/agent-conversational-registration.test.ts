@@ -8,6 +8,7 @@ import {
   isRepeatedRegistrationQuestion,
   buildConversationTranscript,
   requireVerbatimSubstringMatch,
+  sanitizeConversationalSteps,
   type ConversationalRegistrationContext,
 } from '@/lib/agent-conversational-registration';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
@@ -1902,5 +1903,218 @@ describe('buildRegistrationSystemPrompt — Phase 6 steps instructions', () => {
     expect(en).toContain('never invent an id, a URL, or connection settings');
     expect(en).toContain('the system recognizes that name and routes to it');
     expect(en).toContain("Never invent a tool name the user didn't say");
+  });
+});
+
+// ─── 2026-08-03 on-device bugs (agent-msd4bkjt): partial-schedule combine +
+//     step sanitize ─────────────────────────────────────────────────────────
+//
+// Two of the four defects found on device trace to this merge (see
+// docs/superpowers/DEFERRED.md):
+//  (A) a bare-time scheduleText (「20時00分に」) was dropped outright even when
+//      the draft ALREADY knew the recurrence — Tier 2's applySlotAnswer has
+//      combined that pair across turns since day one, so Tier 3 structurally
+//      re-asked a question the rest of the pipeline could answer;
+//  (D) the model re-listed the schedule fragment and the delivery directive
+//      (「通知して」) as work steps, and readValidatedSteps accepted any
+//      non-empty string — both then ran as real model calls in the chain.
+
+describe('mergeConversationalExtractionIntoDraft — partial-schedule combine (2026-08-03 bug A)', () => {
+  const noConnectors = { connectors: [] as SocialConnectorMeta[] };
+
+  it('BUG REPRO: a bare time completes a daily recurrence the draft already knows', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft({ suggestedFrequency: 'daily' }),
+      { scheduleText: '20時00分に' },
+      noConnectors,
+    );
+    expect(out.scheduleConfident).toBe(true);
+    expect(out.schedule).toBe('0 20 * * *');
+    expect(out.scheduleLabel).toBe('毎日 20:00');
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('a bare time completes a weekday list the draft already knows', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft({ suggestedDowList: '1,5', suggestedFrequency: 'weekly' }),
+      { scheduleText: '9時30分' },
+      noConnectors,
+    );
+    expect(out.scheduleConfident).toBe(true);
+    expect(out.schedule).toBe('30 9 * * 1,5');
+    expect(out.scheduleLabel).toBe('毎週月・金 09:30');
+    expect(out.suggestedDowList).toBe('1,5');
+  });
+
+  it('NEVER converts a bare time unconditionally: no known recurrence → still rejected (once-vs-daily stays ambiguous)', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { scheduleText: '20時00分に' },
+      noConnectors,
+    );
+    expect(out.scheduleConfident).toBe(false);
+    expect(out.schedule).toBeNull();
+    expect(rejectedFields).toContain('scheduleText');
+    // …but the partial signal is KEPT for a later turn to complete.
+    expect(out.suggestedTime).toEqual({ hour: 20, minute: 0 });
+  });
+
+  it('cross-turn completion: a frequency-only turn then a time-only turn resolves to a confident cron', () => {
+    // Turn 1: 「毎日」 alone — no time, not confident, but the hint sticks.
+    const turn1 = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { scheduleText: '毎日' },
+      noConnectors,
+    );
+    expect(turn1.draft.scheduleConfident).toBe(false);
+    expect(turn1.draft.suggestedFrequency).toBe('daily');
+    // Turn 2: 「20時02分」 alone — combines with turn 1's stored frequency.
+    const turn2 = mergeConversationalExtractionIntoDraft(
+      turn1.draft,
+      { scheduleText: '20時02分' },
+      noConnectors,
+    );
+    expect(turn2.draft.scheduleConfident).toBe(true);
+    expect(turn2.draft.schedule).toBe('2 20 * * *');
+    expect(turn2.draft.scheduleLabel).toBe('毎日 20:02');
+  });
+
+  it('a completely unparseable scheduleText still comes back rejected with the draft untouched by reference', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { scheduleText: 'いつか気が向いたら' },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(rejectedFields).toContain('scheduleText');
+  });
+});
+
+describe('sanitizeConversationalSteps — schedule/delivery fragments are never work steps (2026-08-03 bug D)', () => {
+  it('drops a bare-time fragment (the exact on-device shape 「20時00分に」)', () => {
+    const { steps, dropped } = sanitizeConversationalSteps(
+      ['ニュースを集める', '20時00分に', '要約する'],
+    );
+    expect(steps).toEqual(['ニュースを集める', '要約する']);
+    expect(dropped).toEqual(['20時00分に']);
+  });
+
+  it('drops frequency-only, interval-only and EN schedule-only fragments', () => {
+    const { steps, dropped } = sanitizeConversationalSteps([
+      '毎日',
+      '5分ごとに',
+      'at 8pm',
+      'every day at 20:00',
+      'daily',
+      '調べる',
+      'まとめる',
+    ]);
+    expect(steps).toEqual(['調べる', 'まとめる']);
+    expect(dropped).toHaveLength(5);
+  });
+
+  it("drops a step that restates the proposal's own scheduleText (normalized match)", () => {
+    const { steps } = sanitizeConversationalSteps(
+      ['調べる', '毎週月曜の朝9時に。', '投稿する'],
+      { scheduleText: '毎週月曜の朝9時に' },
+    );
+    expect(steps).toEqual(['調べる', '投稿する']);
+  });
+
+  it('drops a delivery-only step ONLY when the action type is notify', () => {
+    const forNotify = sanitizeConversationalSteps(['調べる', '要約する', '通知して'], { actionType: 'notify' });
+    expect(forNotify.steps).toEqual(['調べる', '要約する']);
+    expect(forNotify.dropped).toEqual(['通知して']);
+    // Conservative scope: for any other action type the step is kept.
+    const forDraft = sanitizeConversationalSteps(['調べる', '要約する', '通知して'], { actionType: 'draft' });
+    expect(forDraft.steps).toEqual(['調べる', '要約する', '通知して']);
+  });
+
+  it('recognizes the common delivery-directive variants (JA + EN)', () => {
+    const { steps } = sanitizeConversationalSteps(
+      ['調べる', '結果を通知して', 'ユーザーに通知する', '通知を送信して', 'notify me', 'send me a notification'],
+      { actionType: 'notify' },
+    );
+    expect(steps).toEqual(['調べる']);
+  });
+
+  it('NEVER drops real work that merely mentions a time or 通知 (the false-positive boundary)', () => {
+    const kept = [
+      '20:00のログを調べる', // a time inside real work
+      '通知内容を作成する', // 通知 as the OBJECT of real work
+      '通知文を要約して生成する',
+      '毎日の売上データを集計する', // frequency word inside real work
+      '朝8時の気温を記録する',
+      'check the 8pm backup log', // EN: time inside real work
+    ];
+    const { steps, dropped } = sanitizeConversationalSteps(kept, { actionType: 'notify' });
+    expect(steps).toEqual(kept);
+    expect(dropped).toEqual([]);
+  });
+});
+
+describe('mergeConversationalExtractionIntoDraft — sanitized steps end-to-end (2026-08-03 bug D)', () => {
+  const noConnectors = { connectors: [] as SocialConnectorMeta[] };
+
+  it('ON-DEVICE REPRO: schedule + delivery fragments are removed and the surviving 2 steps keep their tool pins', () => {
+    // agent-msd4bkjt's orchestration.steps as actually persisted on device
+    // included {"instruction":"20時00分に"} and {"instruction":"通知して"}.
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft({ suggestedFrequency: 'daily' }),
+      {
+        actionType: 'notify',
+        scheduleText: '20時00分に',
+        steps: [
+          'パープレキシティで最新のAIニュースを集める',
+          'ローカルLLMで要約する',
+          '20時00分に',
+          '通知して',
+        ],
+      },
+      noConnectors,
+    );
+    expect(rejectedFields).toEqual([]);
+    expect(out.action).toEqual({ type: 'notify' });
+    // The schedule fragment ALSO resolved as the real schedule (bug A's combine).
+    expect(out.scheduleConfident).toBe(true);
+    expect(out.schedule).toBe('0 20 * * *');
+    // Exactly the 2 real work steps survive, with their per-step pins intact.
+    expect(out.orchestrationSteps).toHaveLength(2);
+    const first = out.orchestrationSteps?.[0];
+    const second = out.orchestrationSteps?.[1];
+    if (typeof first === 'string' || !first) throw new Error('step 1 should be tool-pinned');
+    if (typeof second === 'string' || !second) throw new Error('step 2 should be tool-pinned');
+    expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+    expect(first.instruction).toBe('パープレキシティで最新のAIニュースを集める');
+    expect(second.tool).toEqual({ type: 'local' });
+    expect(second.instruction).toBe('ローカルLLMで要約する');
+  });
+
+  it('falls back to the ordinary single-prompt agent when sanitize leaves fewer than 2 steps', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { actionType: 'notify', steps: ['最新ニュースをまとめる', '20時00分に', '通知して'] },
+      noConnectors,
+    );
+    // 1 surviving work step is not a chain — no orchestration is created…
+    expect(out.orchestrationSteps).toBeUndefined();
+    expect(rejectedFields).toContain('steps');
+    // …but the actionType part of the proposal still applied normally.
+    expect(out.action).toEqual({ type: 'notify' });
+  });
+
+  it('regression: a fragment-free step list is applied byte-identically to before the sanitizer', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['Xで最新のAIニュースを調べる', '要約する', 'Blueskyに投稿する'] },
+      noConnectors,
+    );
+    expect(out.orchestrationSteps).toEqual([
+      'Xで最新のAIニュースを調べる',
+      '要約する',
+      'Blueskyに投稿する',
+    ]);
+    expect(rejectedFields).toEqual([]);
   });
 });

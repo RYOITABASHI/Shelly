@@ -354,3 +354,52 @@ export function resolveAutonomousFinalTool(
   const isWebTool = scoredTool.type === 'gemini-api' || scoredTool.type === 'perplexity';
   return cloudConsent && needsWeb && isWebTool ? scoredTool : { type: 'cli', cli: 'codex' };
 }
+
+/**
+ * The FULL tool + runOn pair an agent is PERSISTED with at the confirm/submit
+ * boundary (hooks/use-ai-pane-dispatch.ts's confirmAgentDraftInner, and the
+ * same hook's just-registered correction window when the autonomous toggle is
+ * turned on). Pure and exported so the derivation is unit-testable and can
+ * never drift between its two call sites.
+ *
+ * 2026-08-03 on-device bug (DEFERRED.md「会話型登録がステップピンを無視して
+ * エージェント全体をローカル固定にする」): this boundary used to AUTO-DERIVE
+ * `runOn: 'on-device'` whenever the resolved autonomous tool was local. That
+ * synthesized value is indistinguishable from a runOn the user really picked
+ * by hand, and resolveAgentRoute treats `runOn === 'on-device'` as a manual
+ * hard pin that outranks EVERYTHING below it — including an orchestration
+ * step's own explicit tool pin (`{...agent, tool: step.tool}` still carries
+ * the agent's runOn). Net effect on device: a chain registered as
+ * "Perplexityで集めて → ローカルLLMで要約して → 通知して" got agent-level
+ * tool=local (suggestTool saw 「要約」 in the composite prompt) → runOn
+ * 'on-device' auto-written → EVERY step forced to local/manual-pin, the
+ * Perplexity-pinned collect step included — which then fabricated "news" with
+ * invented URLs and logged success.
+ *
+ * The fix: runOn is a USER field — persist exactly what the confirm surface
+ * handed us (`runOn` here; AgentConfirmCard passes the picker value for
+ * non-autonomous and 'auto' for autonomous, draftToConfirmedAgentDraft always
+ * passes 'auto') and never synthesize a pin the user didn't make. A local
+ * tool needs no runOn pin to run locally: resolveAgentRoute's
+ * 'configured-tool' branch already routes tool:local on-device. The router's
+ * manual-pin precedence itself is intentionally UNCHANGED (see
+ * store/types.ts's Agent.runOn doc comment and ab514e73a7): a runOn the user
+ * really set still outranks step pins — it just has to actually come from
+ * the user now.
+ */
+export function resolveConfirmedToolAndRunOn(opts: {
+  autonomous: boolean;
+  /** The confirm surface's runOn value ('auto' unless the user picked a pin). */
+  runOn: 'auto' | 'on-device' | 'cloud';
+  /** The draft's scored/suggested tool (confirmed.tool). */
+  tool: ToolChoice;
+  cloudConsent: boolean;
+  needsWeb: boolean;
+}): { tool: ToolChoice; runOn: 'auto' | 'on-device' | 'cloud' } {
+  const tool: ToolChoice = opts.autonomous
+    ? resolveAutonomousFinalTool(true, opts.tool, opts.cloudConsent, opts.needsWeb)
+    : opts.runOn === 'auto'
+    ? { type: 'auto' }
+    : opts.tool;
+  return { tool, runOn: opts.runOn };
+}

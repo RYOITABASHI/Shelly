@@ -14,6 +14,28 @@
 
 ---
 
+### ✅ Tier3会話型登録の実機バグ4件（スケジュール質問ループ／エージェント全体がローカル固定でステップピン無効化／スケジュール・アクション断片がステップ混入）を一括修正（2026-08-03、実機発見 agent-msd4bkjt、Codex事前調査＋Fable5独立検証・実装の2段階レビュー体制）— 未コミット・実機未検証
+
+**発見の経緯（実機再現済み）**: Tier3会話型登録（`lib/agent-conversational-registration.ts`）で「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」を登録・実行したところ、(A) スケジュール質問「いつ実行しますか？」が「20時00分に」に対して聞き直され続けた、(B) 確認カードではステップ単位のツールピン（Perplexity/Local）が正しく表示されたのに、永続化された`agent-msd4bkjt.json`はエージェント全体が`tool:{type:'local'}`＋`runOn:'on-device'`になっており、(C) Perplexityピン付きステップの実行時ですら`routeDecision`が`{"toolType":"local","guard":"manual-pin"}`となってローカルLLMが架空URL（`https://www.aicnews.com/`）入りの捏造ニュースを生成し`success`記録、(D) `orchestration.steps`に`{"instruction":"20時00分に"}`（スケジュール断片）と`{"instruction":"通知して"}`（配信指示）が実作業ステップとして混入していた。**レビュー体制**: Codexが先行して静的調査（4問題の機構特定＋修正案）を行い、Fable5が現行HEAD（`f9da9ad58`）で全主張をコード直読で独立検証してから実装した。Codexの機構特定は4件とも正確だったが、修正案のうち1点（後述の「異種ピン時にエージェントレベルtoolをautoへ戻す」案）はFable5の追跡調査で逆効果と判明し不採用にした。
+
+**根本原因と修正内容**:
+1. **問題A（スケジュール質問ループ）**: `parseSchedule()`（`lib/agent-nl-parser.ts`）は裸の時刻（「20時00分に」）を常に`confident:false`で返す設計（once-vs-daily曖昧のため——これ自体は正しい）。Tier2の`applySlotAnswer`（`lib/agent-slot-fill.ts`）はこの裸時刻をdraftが既に知る頻度（`suggestedFrequency:'daily'`/`suggestedDowList`）とターン跨ぎで合成する機構を持つが、**Tier3の`mergeConversationalExtractionIntoDraft`には無かった**（構造的非対称）。修正: 合成ロジックを共有関数`combinePartialScheduleWithDraft()`として`agent-slot-fill.ts`へ抽出し、Tier2（挙動不変のリファクタ）とTier3の両方が使用。さらにTier3では合成不能時も部分ヒント（`suggestedTime`/`suggestedFrequency`/`suggestedDowList`）をdraftへ保存し、後続ターンの相補的な半分（「毎日」→「20時02分」）で完成できるようにした。**無条件の裸時刻→daily変換はしない**（頻度コンテキストが無ければ従来通りreject）。
+2. **問題B（エージェント全体のlocal/on-device固定）**: 間接連鎖だった——(i) mergeが`suggestTool(extraction.prompt)`（タスク全体の説明文）でエージェントレベル`draft.tool`を決め、「要約」がtransformキーワードにヒットしてlocalに（ステップピン自体は別途正しく付与済み）。(ii) 確定境界`confirmAgentDraftInner`（`hooks/use-ai-pane-dispatch.ts`旧2830行）がautonomous時に**`tool.type==='local'`なら`runOn:'on-device'`を自動生成**して保存。(iii) この合成された`runOn:'on-device'`が、ユーザーが本当に手動選択したピンと同じフィールド・同じ強さで`resolveAgentRoute`のmanual-pinハードストップを発火させ、ステップの`configured-tool`分岐（ピン尊重）に到達する前にreturnしていた。修正: 確定境界の導出を純関数`resolveConfirmedToolAndRunOn()`（`lib/agent-tool-router.ts`）へ抽出し、**`runOn`は確認サーフェスが渡した値をそのまま永続化（tool.typeからの自動導出を廃止）**。`tool:local`だけで`configured-tool`経由のon-deviceルーティングは十分成立するため機能的損失なし。同一の導出が登録直後の補正ウィンドウ（同フック旧1225行、autonomousをONにするパス）にもあり（**Codex調査が見落としていた箇所**）、同じヘルパーへ統一。確認カード（`AgentConfirmCard.tsx:486`）は元々autonomous時`runOn:'auto'`を渡しており、`draftToConfirmedAgentDraft`も常に`'auto'`なので、修正後のautonomous登録は`runOn:'auto'`で保存される。
+3. **問題C（runOn優先チェック）**: `resolveAgentRoute`の`runOn==='on-device'`早期return（manual-pin）がstep pinより優先されるのは`4ddf45029`/`ab514e73a7`以来の**意図的な安全設計**（「端末外送信をしないというユーザーの明示選択はステップの意図より優先」）であることをコミット履歴・`store/types.ts:926`コメントで確認し、**ルーター側は一切変更していない**。真の欠陥は問題Bの「自動導出されたrunOnが手動ピンと区別不能」であり、Bの修正（合成の廃止）でCは自然解消。ユーザーが本当に手動でRun On=on-deviceを選んだケース（非autonomousカードのピッカー、既存エージェントの保存済みrunOn）は引き続きmanual-pinとして機能することを回帰テストで固定。
+4. **問題D（断片のステップ混入）**: Tier3の`readValidatedSteps()`はモデル生成`steps[]`を非空文字列なら全採用（Tier1の`isScheduleOnlyClause`系の除去はモデル生成ステップに一切適用されない）。修正: 決定的サニタイザ`sanitizeConversationalSteps()`を`agent-conversational-registration.ts`に追加し、merge時に適用——(a) スケジュール専用ステップを除去（Tier1の`isScheduleOnlyClause`を`agent-orchestration.ts`からexportして共用＋既存regexがカバーしない裸時刻「20時00分に」/間隔「5分ごとに」/頻度単独「毎日」/EN形を全文アンカー付きregexで追加）、(b) proposal自身の`scheduleText`と正規化一致するステップを除去、(c) 配信専用ステップ（「通知して」「notify me」等）を**アクションタイプがnotifyの場合のみ**除去（「通知内容を作成する」のような実作業はアンカー構造上マッチせず保持——action directiveとcontent generationを区別）。サニタイズ後2件未満なら既存のdegradeパスで通常の単発promptエージェントへフォールバック（1ステップ「チェーン」は作らない）。
+
+**Codexの読みとの差分（Fable5の独立検証結果）**: 行番号・関数名・機構は全問題で一致。不一致は2点——(1) Codexの「stepsに異種の明示ピンがある場合エージェントレベル`tool`を`{type:'auto'}`へ戻す」案は不採用: 確定境界で`auto`は`resolveAutonomousFinalTool`により`cli:codex`へ解決され、cli解決されたオーケストレーションはレガシーbashチェーン実行経路に乗り、そこは**step pin/apiCallが1つでもあるとチェーン全体を単一ステップに折り畳む既知ギャップがある**（`tagStepsWithToolMentions`のdocコメント参照）ため、agent-level localのままの方が無人発火（PlanSpec executor、step pin尊重）に正しく乗る。runOn合成の廃止だけで実害（ピン無効化）は解消する。(2) 補正ウィンドウ（旧1225行）の同型導出はCodex調査に含まれていなかったが同時修正した。問題Aの「1回目失敗ターンのログ欠落」はCodex自身が未解明と明記しており、深追いせず（実機APKが旧ビルドだった可能性が高い）。
+
+**テスト**: 新規`__tests__/agent-confirm-runon-derivation.test.ts`（10件）——実機バグ再現（autonomous+local→旧: runOn on-device／新: auto）、`runOn:'auto'`＋Perplexityピンステップ＋consent→ladder先頭がPerplexity（`configured-tool`）、旧永続値`runOn:'on-device'`だと同じピンがlocal/manual-pinに潰される形状の固定、**問題C回帰**（本物の手動on-deviceピンは引き続きstep pinに勝つ）、異種ピン2ステップの独立解決。`__tests__/agent-conversational-registration.test.ts`に14件追加——問題A（daily/weekly合成・無条件変換しない・ターン跨ぎ完成・完全不能時のreject維持）、問題D（実機再現: 4ステップ→断片2件除去＋生存2ステップのピン維持＋スケジュール断片はbug Aの合成で本物のスケジュールとしても解決、2件未満フォールバック、境界の誤除去なし6形状）。`__tests__/agent-slot-fill.test.ts`に共有ヘルパー直接テスト4件追加。
+
+**検証**: `npx tsc --noEmit`クリーン。全スイート190中186 PASS（2790 passed / 24 failed）——失敗4スイート（plan-executor / plan-executor-orchestration / plan-executor-multi-action / capability-broker）は`git stash`して未修正mainで再実行し**同一の24件失敗**を確認（既知のWindowsホスト固有`C:\C:\`パス問題、上の既存エントリの記録とも一致）。新規リグレッションなし。
+
+**実機検証プラン（未実施）**: 修正ビルドで同じ発話「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」＋スケジュール回答「20時00分に」（毎日コンテキストあり）を登録し、(A) 聞き直しが起きない、(B/C) 保存JSONが`runOn:'auto'`でステップ0の`routeDecision`がperplexity系になる、(D) `orchestration.steps`が実作業2件のみ、を確認。
+
+→ sync: なし（内部ロジックのみ）。
+
+---
+
 ### ✅ オーケストレーションのステップ実行が合成プロンプト全文でルーティング判定され、Web不要な要約ステップがPerplexityへ誤エスカレーション→無関係な内容で偽の成功通知（2026-08-03、実機発見、Fable5実装）— コミット・実機検証PASS
 
 **発見の経緯（実機再現済み）**: 自律エージェント「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」（2ステップチェーン）を実行したところ、ステップ0（収集）はgemini-apiで成功し実データを取得したが、ステップ1（要約）でローカルLLMが5分超タイムアウト → エスカレーションラダーが**Perplexityへフォールバック** → Perplexityが返したのは収集したニュースの要約ではなく「ローカルLLM要約技術についての一般論エッセイ」（架空の引用番号`[4][9][16]`付き）→ これが`success`としてrun logに記録され、**「完了しました」という偽の成功通知が実際にユーザーへ届いた**（通知スクリーンショットで実機確認）。
@@ -3631,6 +3653,7 @@ claude() {
 
 ## History
 
+- **2026-08-03**: Tier3会話型登録の実機テスト（agent-msd4bkjt）でユーザーが実バグ4件を発見（スケジュール質問ループ／エージェント全体local+runOn:on-device固定でステップピン無効化・ローカルLLMが架空URL入り捏造ニュースをsuccess記録／スケジュール・配信断片のステップ混入）。Codexが事前静的調査、Fable5が現行HEADで独立検証のうえ実装する2段階レビュー体制で一括修正——確定境界のrunOn自動導出廃止（`resolveConfirmedToolAndRunOn`へ抽出）、Tier2/Tier3共有の部分スケジュール合成（`combinePartialScheduleWithDraft`）、決定的ステップサニタイズ（`sanitizeConversationalSteps`）。ルーターのmanual-pin優先設計自体は意図的設計と確認し不変更。先頭のエントリ参照。
 - **2026-08-03**: `routeTextOverride`修正の実機再検証中にユーザーが「なんでパープレじゃなくてこれ(Gemini)なんだっけ？」と指摘・Fable5が修正: `resolveEscalationLadder`のWeb必須分岐が、`resolveAgentRoute`が正しく尊重した明示的なperplexity/gemini-apiピン（guard `configured-tool`）を無視して`webDomain`話題分類で機械的にツールを再選択していた。明示的なWeb系ピンをwebDomain判定より優先するよう修正（先頭付近のエントリ参照）。非Web系ピンの除外・consent/キー未設定ゲートは不変。
 - **2026-08-03**: 実機テスト中にユーザーが発見・Fable5が修正: オーケストレーションのステップ実行が`buildStepPrompt`の合成プロンプト全文（前ステップの時事的な結果を含む）でルーティング判定され、Web不要な要約ステップがPerplexityへ誤エスカレーション→無関係なエッセイが`success`扱いで**偽の完了通知が実際にユーザーへ届いた**。`resolveEscalationLadder`/`resolveAgentRoute`に`routeTextOverride`を追加し、ステップは自身の`step.instruction`でルーティングするよう修正（先頭のエントリ参照）。`generateRunScript`側の合成プロンプト由来collectionContract/no-URLガードはP2残課題として同エントリに記録。
 
