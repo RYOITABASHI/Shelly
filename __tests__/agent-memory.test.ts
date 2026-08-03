@@ -109,6 +109,87 @@ describe('recall scoring', () => {
   });
 });
 
+// BM25 + recency-decay scoring (2026-08-03 Stage 1 upgrade, replacing the
+// original flat "+2 per tag, +1 per body token" scheme). These tests exercise
+// specifically what BM25 adds over the old scheme: real IDF term-weighting
+// (a token common across most of an agent's OWN notes contributes almost
+// nothing) and a bounded recency multiplier — not just "does relevant still
+// rank above irrelevant," which the suite above already covers and which any
+// reasonable scoring scheme would pass.
+describe('recall scoring — BM25 term-weighting (2026-08-03)', () => {
+  it('down-weights a token common across most notes, so a note matching only on it does NOT beat a note matching a rare, distinguishing term', () => {
+    // "エージェント" (agent) appears in every note's body — a routine word for
+    // this corpus, not a real relevance signal. "為替" (foreign exchange) is
+    // rare, appearing in exactly one note, and IS what the query is actually
+    // asking about.
+    const notes: MemoryNote[] = [
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'このエージェントは毎朝ニュースをまとめるエージェントです', created: '2026-06-01T00:00:00.000Z' }),
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'このエージェントは為替レートを記録するエージェントです', created: '2026-06-01T00:00:00.000Z' }),
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'このエージェントは天気を報告するエージェントです', created: '2026-06-01T00:00:00.000Z' }),
+    ];
+    const out = recallMemoryNotes(notes, '為替レートを教えて', 1);
+    expect(out[0].text).toContain('為替');
+  });
+
+  it('a note matching MULTIPLE query terms outranks one matching only one, even when both share the common corpus term', () => {
+    const notes: MemoryNote[] = [
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'ニュースをまとめるエージェント', created: '2026-06-01T00:00:00.000Z' }),
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: '為替のニュースをまとめて記録するエージェント', created: '2026-06-01T00:00:00.000Z' }),
+    ];
+    const out = recallMemoryNotes(notes, '為替のニュースをまとめて', 2);
+    expect(out[0].text).toContain('為替');
+  });
+
+  it('tag matches still outweigh a body-only match, same spirit as the original scoring', () => {
+    const notes: MemoryNote[] = [
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'crypto is mentioned once here in passing', created: '2026-06-01T00:00:00.000Z' }),
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'daily digest', tags: ['crypto'], created: '2026-06-01T00:00:00.000Z' }),
+    ];
+    const out = recallMemoryNotes(notes, 'crypto summary', 2);
+    expect(out[0].tags).toContain('crypto');
+  });
+
+  it('an OLD note that is still the best relevance match outranks a BRAND NEW note that is a worse match — recency never dominates real relevance', () => {
+    const notes: MemoryNote[] = [
+      makeMemoryNote({ agentId: 'a', type: 'preference', text: 'always summarize crypto prices in JPY', tags: ['crypto'], created: '2020-01-01T00:00:00.000Z' }),
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'the weather today is sunny', created: '2026-08-03T00:00:00.000Z' }),
+    ];
+    const out = recallMemoryNotes(notes, 'crypto price summary', 1, Date.parse('2026-08-03T00:00:00.000Z'));
+    expect(out[0].tags).toContain('crypto');
+  });
+
+  it('among equally-irrelevant notes, whichever the caller lists first wins (same index-tiebreak contract as before BM25 — callers pass notes newest-first, see readMemoryNotes)', () => {
+    const older = makeMemoryNote({ agentId: 'a', type: 'fact', text: 'alpha', created: '2026-01-01T00:00:00.000Z' });
+    const newer = makeMemoryNote({ agentId: 'a', type: 'fact', text: 'beta', created: '2026-06-01T00:00:00.000Z' });
+    // Both score 0 (no term overlap at all) -- the recency MULTIPLIER can only
+    // ever narrow a nonzero score, so a genuinely zero-relevance tie still
+    // resolves by input order, exactly like the pre-BM25 scoring's index
+    // tiebreak did. Passing newest-first (`newer` before `older`) is the real
+    // production contract every caller (readMemoryNotes's own return order)
+    // already honors.
+    const out = recallMemoryNotes([newer, older], 'completely unrelated zzz', 2, Date.parse('2026-08-03T00:00:00.000Z'));
+    expect(out[0].text).toBe('beta');
+  });
+
+  it('accepts an explicit `now` for deterministic testing, and defaults to Date.now() when omitted', () => {
+    const notes: MemoryNote[] = [
+      makeMemoryNote({ agentId: 'a', type: 'fact', text: 'test note', created: '2026-01-01T00:00:00.000Z' }),
+    ];
+    // No throw, no NaN-corrupted ordering, whichever `now` is used.
+    expect(recallMemoryNotes(notes, 'test note', 1).length).toBe(1);
+    expect(recallMemoryNotes(notes, 'test note', 1, Date.parse('2026-08-03T00:00:00.000Z')).length).toBe(1);
+  });
+
+  it('never throws or produces NaN ordering on a malformed `created` timestamp', () => {
+    const notes: MemoryNote[] = [
+      { id: 'x', agentId: 'a', type: 'fact', created: 'not-a-real-date', tags: [], text: 'test content' },
+    ];
+    const out = recallMemoryNotes(notes, 'test content', 1);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe('x');
+  });
+});
+
 describe('buildRecallContext', () => {
   it('returns empty string when there are no notes', () => {
     expect(buildRecallContext([])).toBe('');

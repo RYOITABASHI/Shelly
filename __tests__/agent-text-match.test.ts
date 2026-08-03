@@ -1,4 +1,4 @@
-import { tokenizeForMatch } from '@/lib/agent-text-match';
+import { tokenizeForMatch, tokenizeWithCounts } from '@/lib/agent-text-match';
 
 describe('tokenizeForMatch', () => {
   it('emits Latin/digit word tokens (length >= 2)', () => {
@@ -30,5 +30,35 @@ describe('tokenizeForMatch', () => {
     const b = tokenizeForMatch('株価のグラフを描画');
     const shared = [...a].filter((tok) => b.has(tok));
     expect(shared.length).toBeLessThan(3);
+  });
+});
+
+// tokenizeWithCounts (2026-08-03, added for BM25-style term-frequency scoring
+// in lib/agent-memory.ts): same token rules as tokenizeForMatch, but a
+// Map<token, count> instead of a Set — the whole point is NOT collapsing
+// repeats, since BM25's tf(t, D) needs exactly that count.
+describe('tokenizeWithCounts', () => {
+  it('counts repeated Latin tokens instead of collapsing them like tokenizeForMatch does', () => {
+    const counts = tokenizeWithCounts('crypto crypto crypto market summary');
+    expect(counts.get('crypto')).toBe(3);
+    expect(counts.get('market')).toBe(1);
+    expect(counts.get('summary')).toBe(1);
+  });
+
+  it('counts repeated CJK bigrams the same way', () => {
+    const counts = tokenizeWithCounts('要約して要約して');
+    expect(counts.get('要約')).toBe(2);
+  });
+
+  it('produces the exact same token VOCABULARY as tokenizeForMatch (only the counting differs)', () => {
+    const text = 'Summarize the crypto crypto market 簡潔な要約';
+    const asSet = tokenizeForMatch(text);
+    const asCounts = tokenizeWithCounts(text);
+    expect(new Set(asCounts.keys())).toEqual(asSet);
+  });
+
+  it('returns an empty map for text with no matchable tokens', () => {
+    expect(tokenizeWithCounts('').size).toBe(0);
+    expect(tokenizeWithCounts('a . , !').size).toBe(0); // single-char Latin dropped
   });
 });
