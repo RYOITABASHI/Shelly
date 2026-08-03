@@ -72,6 +72,11 @@ import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
+import {
+  getUserProfileSummaryForPrompt,
+  learnFromAgentUse,
+  learnFromUserInput,
+} from '@/lib/user-profile';
 import { useSkillSaveOffer } from '@/hooks/use-skill-save-offer';
 import { readApprovedImportedSkillsAsRecipes } from '@/lib/skill-import';
 import { getHomePath } from '@/lib/home-path';
@@ -1674,6 +1679,14 @@ export function useAIPaneDispatch(paneId: string) {
       };
       store.addMessage(paneId, userMsg);
 
+      // User-profile learning (lib/user-profile.ts): record which agent the
+      // user talks to and mine the message for self-introduced facts /
+      // language tendency. Local-only (AsyncStorage), fire-and-forget —
+      // profile learning must never delay or fail a dispatch. The learned
+      // summary is consumed further down when the system prompt is built.
+      void learnFromAgentUse(agent).catch(() => {});
+      void learnFromUserInput(userText).catch(() => {});
+
       if (requestedAgent && !promptText) {
         store.addMessage(paneId, {
           id: generateId(),
@@ -2217,9 +2230,15 @@ export function useAIPaneDispatch(paneId: string) {
           'AIPaneDispatch',
           `Terminal context: agent=${agent} session=${terminalSessionId ?? 'active'} raw=${describeTerminalContextForLog(terminalCtx)} injected=${describeTerminalContextForLog(promptTerminalCtx)}`,
         );
+        // User-profile summary (lib/user-profile.ts): computed locally from
+        // AsyncStorage (in-memory cached after the first load, so this await
+        // is effectively free per-dispatch) and injected as a background-info
+        // block. For cloud agents this rides in the API request — the exact
+        // behavior the README Privacy section documents.
+        const userProfileSummary = await getUserProfileSummaryForPrompt();
         const systemPrompt = (agent === 'local'
-          ? buildLocalAIPaneSystemPrompt(promptTerminalCtx)
-          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile, promptText))
+          ? buildLocalAIPaneSystemPrompt(promptTerminalCtx, userProfileSummary)
+          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile, promptText, userProfileSummary))
           + detectPostFormatDirective(promptText);
         const conv = store.getOrCreate(paneId);
         // Exclude the streaming placeholder and the current user message;

@@ -46,6 +46,14 @@ export interface SkillRecipe {
   /** Executable procedure captured from a successful multi-step run. It is
    *  converted back into Agent.orchestration and run by the existing executor. */
   planSpec?: AgentPlanSpecV1;
+  /** Learning-loop failure hint (2026-08-03): the most recent FAILED run that
+   *  used this skill. buildSkillInjectionContext surfaces it as a corrective
+   *  caution the next time the skill matches, and the next verified success
+   *  clears it (bumpSkillUsage). Deliberately NOT an auto-rewrite of `prompt`:
+   *  the recipe body only ever changes through the existing gated distill/save
+   *  flow, so a hallucinated "improvement" can never silently replace a recipe
+   *  that used to work. */
+  lastFailure?: { at: string; note: string };
 }
 
 /** Obsidian Vault folder for agent skills (sibling of 90_Agent_Memory). */
@@ -60,6 +68,9 @@ export const DEFAULT_SKILL_MATCH_LIMIT = 3;
 export const MIN_SKILL_MATCH_SCORE = 3;
 const MAX_RECIPE_PROMPT_CHARS = 2000;
 const MAX_INJECTION_CHARS = 800;
+/** A failure hint is a one-line nudge, not a log dump — mirrors the ~200-char
+ *  outputPreview discipline the run logs themselves use. */
+const MAX_FAILURE_NOTE_CHARS = 200;
 
 function skillsDir(): string {
   return `${getHomePath()}/.shelly/agents/skills`;
@@ -149,6 +160,14 @@ export function buildSkillRecipeMarkdown(recipe: SkillRecipe): string {
     `successCount: ${recipe.successCount}`,
     `lastUsed: ${safeLine(recipe.lastUsed)}`,
     `created: ${safeLine(recipe.created)}`,
+    // Failure hint rides the SAME line-based frontmatter as successCount —
+    // same persistence, same crash-safe write, same Vault mirror.
+    ...(recipe.lastFailure
+      ? [
+          `lastFailureAt: ${safeLine(recipe.lastFailure.at)}`,
+          `lastFailureNote: ${safeLine(recipe.lastFailure.note).slice(0, MAX_FAILURE_NOTE_CHARS)}`,
+        ]
+      : []),
     '---',
     '',
   ].join('\n');
@@ -202,6 +221,14 @@ export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
     lastUsed: fields.lastUsed || new Date(0).toISOString(),
     created: fields.created || new Date(0).toISOString(),
     ...(planSpec ? { planSpec } : {}),
+    ...(fields.lastFailureNote
+      ? {
+          lastFailure: {
+            at: fields.lastFailureAt || new Date(0).toISOString(),
+            note: fields.lastFailureNote.slice(0, MAX_FAILURE_NOTE_CHARS),
+          },
+        }
+      : {}),
   };
 }
 
@@ -320,11 +347,24 @@ export function matchSkillRecipes(
 export function buildSkillInjectionContext(recipe: SkillRecipe | null): string {
   if (!recipe) return '';
   const prompt = recipe.prompt.replace(/\s+/g, ' ').slice(0, MAX_INJECTION_CHARS);
-  return [
+  const lines = [
     `# Reusable skill: ${recipe.name} (${recipe.successCount}× successful, on-device)`,
     'A recipe that worked before for a similar task. Adapt it if helpful.',
     prompt,
-  ].join('\n');
+  ];
+  // Learning loop: surface the most recent failure as a corrective hint —
+  // auxiliary context only, the recipe body above is untouched. This block is
+  // part of the run prompt, so it flows through the SAME secret-guard scan as
+  // the recipe itself (a secret inside a failure note can never silently
+  // reach a cloud route).
+  if (recipe.lastFailure) {
+    lines.push(
+      `Caution: the most recent run using this skill FAILED (${recipe.lastFailure.at}): ` +
+        `${recipe.lastFailure.note}`,
+      'Adjust the approach to avoid repeating that failure.',
+    );
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -396,12 +436,43 @@ export function applyExecutableSkillPlan(agent: Agent, recipe: SkillRecipe | nul
   };
 }
 
-/** Bump an existing skill's success count + lastUsed (idempotent id is unchanged). */
+/** Bump an existing skill's success count + lastUsed (idempotent id is unchanged).
+ *  A verified success also CLEARS any stored failure hint — the deterministic
+ *  "trust only after verification" signal that the correction worked; keeping a
+ *  stale caution on a now-working recipe would only mislead the next run. */
 export function bumpSkillUsage(recipe: SkillRecipe, timestamp?: number): SkillRecipe {
+  const { lastFailure: _cleared, ...rest } = recipe;
   return {
-    ...recipe,
+    ...rest,
     successCount: recipe.successCount + 1,
     lastUsed: timestamp ? new Date(timestamp).toISOString() : new Date().toISOString(),
+  };
+}
+
+/**
+ * Learning loop (failure side of bumpSkillUsage): record the latest FAILED run
+ * that used this skill so the next injection carries a corrective hint. Pure —
+ * the caller persists via the same writeSkillRecipe path as the success bump.
+ * The note is flattened to one line and hard-capped; the recipe prompt itself
+ * is never modified (auto-rewriting the body from an LLM's failure output is
+ * a hallucination risk and explicitly out of scope). successCount/lastUsed are
+ * left untouched: a failure is evidence about the LAST run, not a demotion of
+ * the recipe's verified history.
+ */
+export function recordSkillFailure(
+  recipe: SkillRecipe,
+  failureNote: string,
+  timestamp?: number
+): SkillRecipe {
+  const note =
+    failureNote.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_FAILURE_NOTE_CHARS) ||
+    'run failed with no output';
+  return {
+    ...recipe,
+    lastFailure: {
+      at: timestamp ? new Date(timestamp).toISOString() : new Date().toISOString(),
+      note,
+    },
   };
 }
 

@@ -49,19 +49,29 @@ export interface UserProfile {
   updatedAt: number;
 }
 
-const DEFAULT_PROFILE: UserProfile = {
-  facts: [],
-  topCommands: [],
-  agentUsage: {},
-  recentProjects: [],
-  detectedSkills: [],
-  style: {
-    language: 'ja',
-    verbosity: 'unknown',
-    techLevel: 'unknown',
-  },
-  updatedAt: 0,
-};
+/**
+ * 2026-08-03 bug fix (配線時に発覚): これは元々モジュール定数
+ * `DEFAULT_PROFILE` を `{ ...DEFAULT_PROFILE }` と shallow spread して使って
+ * いたが、facts/topCommands 等のネスト配列は参照共有のままで、learnFrom* が
+ * `profile.topCommands.push(...)` と in-place 変異するため共有デフォルトが
+ * 恒久的に汚染されていた（resetUserProfile しても学習内容が復活する）。
+ * 毎回新しいオブジェクトを返すファクトリに変更。
+ */
+function freshDefaultProfile(): UserProfile {
+  return {
+    facts: [],
+    topCommands: [],
+    agentUsage: {},
+    recentProjects: [],
+    detectedSkills: [],
+    style: {
+      language: 'ja',
+      verbosity: 'unknown',
+      techLevel: 'unknown',
+    },
+    updatedAt: 0,
+  };
+}
 
 // ─── In-memory cache ──────────────────────────────────────────────────────────
 
@@ -76,12 +86,12 @@ export async function loadUserProfile(): Promise<UserProfile> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
     if (raw) {
-      profileCache = { ...DEFAULT_PROFILE, ...JSON.parse(raw) };
+      profileCache = { ...freshDefaultProfile(), ...JSON.parse(raw) };
     } else {
-      profileCache = { ...DEFAULT_PROFILE };
+      profileCache = freshDefaultProfile();
     }
   } catch {
-    profileCache = { ...DEFAULT_PROFILE };
+    profileCache = freshDefaultProfile();
   }
 
   return profileCache!;
@@ -228,6 +238,28 @@ export function formatProfileForPrompt(profile: UserProfile): string {
   return parts.join('\n');
 }
 
+/**
+ * ロード済みプロファイルをそのままプロンプト用サマリに変換する一括ヘルパー。
+ *
+ * 呼び出し元（AI Paneのシステムプロンプト構築、将来的にはlocal-llm.tsの
+ * orchestrate系）がloadUserProfile + formatProfileForPromptを毎回組み合わせる
+ * 代わりに使う。loadUserProfileはモジュール内のin-memoryキャッシュを持つため、
+ * 初回のAsyncStorage読み込み以降はディスパッチ毎に呼んでも実質コストゼロ。
+ * 失敗時は常に空文字（= プロンプトにセクションを追加しない）に落ちる。
+ *
+ * プライバシー: 返る文字列はformatProfileForPromptの要約のみ（端末ローカルの
+ * AsyncStorageから計算）。これをクラウドAIのシステムプロンプトに含める挙動は
+ * README Privacy節の記載（"when you send a message to a cloud AI, the profile
+ * context is included in the API request"）と一致する。
+ */
+export async function getUserProfileSummaryForPrompt(): Promise<string> {
+  try {
+    return formatProfileForPrompt(await loadUserProfile());
+  } catch {
+    return '';
+  }
+}
+
 // ─── 内部ヘルパー ────────────────────────────────────────────────────────────
 
 /**
@@ -362,6 +394,6 @@ function detectLanguage(input: string, profile: UserProfile): void {
  * プロファイルをリセットする
  */
 export async function resetUserProfile(): Promise<void> {
-  profileCache = { ...DEFAULT_PROFILE };
+  profileCache = freshDefaultProfile();
   await AsyncStorage.removeItem(STORAGE_KEY);
 }

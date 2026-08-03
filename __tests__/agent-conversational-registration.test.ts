@@ -1531,3 +1531,325 @@ describe('buildRegistrationSystemPrompt — Phase 4 high-risk instructions', () 
     expect(prompt).not.toContain('appPassword');
   });
 });
+
+// ─── Phase 6: multi-step (`steps`) ────────────────────────────────────────
+//
+// Before this, a request like "Xで調べて要約してBlueskyとWordPressに投稿して"
+// registered through Tier 3 collapsed into a single prompt + one platformHint,
+// no matter how carefully the LLM had unpacked it in conversation — the
+// extraction schema simply had nowhere to put the steps. `steps` writes the
+// SAME ParsedAgentDraft.orchestrationSteps field the Tier 1 deterministic
+// parser fills, through the SAME detectApiCallSteps() upgrade, so every
+// downstream consumer (confirm card, draftToConfirmedAgentDraft, PlanSpec)
+// already handles it.
+
+describe('mergeConversationalExtractionIntoDraft — Phase 6 steps', () => {
+  const noConnectors = { connectors: [] as SocialConnectorMeta[] };
+
+  it('applies 2+ steps to draft.orchestrationSteps in order', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { steps: ['Xで最新のAIニュースを調べる', '要約する', 'Blueskyに投稿する'] },
+      noConnectors,
+    );
+    expect(out).not.toBe(draft);
+    expect(out.orchestrationSteps).toEqual([
+      'Xで最新のAIニュースを調べる',
+      '要約する',
+      'Blueskyに投稿する',
+    ]);
+    // Still a Tier 3 draft: the human confirm round-trip stays mandatory.
+    expect(out.llmExtracted).toBe(true);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('accepts the minimum of exactly 2 steps', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['調べる', '投稿する'] },
+      noConnectors,
+    );
+    expect(out.orchestrationSteps).toEqual(['調べる', '投稿する']);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('REJECTS a single-element steps array — one step is not a chain', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { steps: ['調べて投稿する'] },
+      noConnectors,
+    );
+    // Nothing else was proposed, so the draft comes back by REFERENCE — the
+    // caller's "the model gave us nothing usable" signal.
+    expect(out).toBe(draft);
+    expect(out.orchestrationSteps).toBeUndefined();
+    expect(rejectedFields).toContain('steps');
+  });
+
+  it('an all-blank / non-string array is rejected the same way (0 usable entries)', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { steps: ['  ', '', null as unknown as string, 42 as unknown as string] },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.orchestrationSteps).toBeUndefined();
+    expect(rejectedFields).toContain('steps');
+  });
+
+  it('an EXPLICITLY EMPTY steps array is neither applied nor rejected (the single-step default)', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { steps: [] },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.orchestrationSteps).toBeUndefined();
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('an ABSENT steps field changes nothing about the existing single-prompt behavior', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { prompt: '毎朝ニュースをまとめる' },
+      noConnectors,
+    );
+    expect(out.prompt).toBe('毎朝ニュースをまとめる');
+    expect(out.orchestrationSteps).toBeUndefined();
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('a NON-ARRAY steps value is treated as "said nothing", never as a rejection', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { steps: '調べて、要約して、投稿する' as unknown as string[] },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('a rejected 1-element list does NOT clobber orchestrationSteps the Tier 1 parse already found', () => {
+    const draft = baseDraft({ orchestrationSteps: ['まず調べる', '次に投稿する'] });
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { steps: ['全部やる'] },
+      noConnectors,
+    );
+    expect(out.orchestrationSteps).toEqual(['まず調べる', '次に投稿する']);
+    expect(rejectedFields).toContain('steps');
+  });
+
+  it('caps a runaway list at 10 entries (HARD_MAX_STEPS)', () => {
+    const proposed = Array.from({ length: 14 }, (_, i) => `step ${i + 1}`);
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: proposed },
+      noConnectors,
+    );
+    expect(out.orchestrationSteps).toHaveLength(10);
+    expect(out.orchestrationSteps?.[0]).toBe('step 1');
+    expect(out.orchestrationSteps?.[9]).toBe('step 10');
+  });
+
+  it('trims each entry, drops blanks/non-strings, and keeps the survivors in order', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['  調べる  ', '', '   ', 7 as unknown as string, '\n投稿する\n'] },
+      noConnectors,
+    );
+    expect(out.orchestrationSteps).toEqual(['調べる', '投稿する']);
+  });
+
+  it('truncates an over-long entry to 2000 chars instead of deleting a link in the chain', () => {
+    const long = 'あ'.repeat(2500);
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['調べる', long, '投稿する'] },
+      noConnectors,
+    );
+    expect(out.orchestrationSteps).toHaveLength(3);
+    expect(out.orchestrationSteps?.[1]).toHaveLength(2000);
+    // Order is preserved — the truncated step is still step 2 of 3.
+    expect(out.orchestrationSteps?.[2]).toBe('投稿する');
+  });
+
+  it('grants nothing: steps never bypass the actionType allowlist', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      {
+        actionType: 'app-act',
+        steps: ['調べる', 'webhookに送る', 'シェルコマンドを実行する'],
+      },
+      noConnectors,
+    );
+    // The steps ARE applied (they are only instruction text)...
+    expect(out.orchestrationSteps).toHaveLength(3);
+    // ...but the privileged action type is still refused, and the action itself
+    // is untouched: a step that SAYS "send to a webhook" is just a sentence.
+    expect(out.action).toEqual({ type: 'draft' });
+    expect(rejectedFields).toContain('actionType');
+  });
+
+  it('grants nothing: a destination named inside a step is never existence-checked into a connector', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['調べる', 'My Blueskyに投稿する'] },
+      { connectors: [connector({ id: 'conn-1', label: 'My Bluesky', platform: 'bluesky' })] },
+    );
+    expect(out.action).toEqual({ type: 'draft' });
+    expect(out.orchestrationSteps).toEqual(['調べる', 'My Blueskyに投稿する']);
+  });
+
+  it('composes with the other fields in one proposal', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      {
+        name: 'AIニュース',
+        scheduleText: '毎日8時',
+        prompt: 'AIニュースをまとめて投稿する',
+        steps: ['最新のAIニュースを調べる', '要約する', 'Blueskyに投稿する'],
+      },
+      { connectors: [connector({ id: 'conn-1', label: 'My Bluesky', platform: 'bluesky' })] },
+    );
+    expect(out.name).toBe('AIニュース');
+    expect(out.schedule).toBe('0 8 * * *');
+    expect(out.prompt).toBe('AIニュースをまとめて投稿する');
+    expect(out.orchestrationSteps).toHaveLength(3);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  // ── detectApiCallSteps integration (NOT mocked — the real module) ──
+  it('upgrades an explicit provider-API step via the real detectApiCallSteps()', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      {
+        steps: ['PerplexityのAPIを呼んで最新のAIニュースを調べる', '要約する', 'Blueskyに投稿する'],
+      },
+      noConnectors,
+    );
+    const first = out.orchestrationSteps?.[0];
+    expect(typeof first).toBe('object');
+    if (typeof first === 'string' || !first) throw new Error('unreachable');
+    expect(first.apiCall?.host).toBe('api.perplexity.ai');
+    expect(first.apiCall?.method).toBe('POST');
+    expect(first.apiCall?.authRef).toBe('perplexity');
+    expect(first.instruction).toContain('Perplexity');
+    // The remaining steps stay plain strings (normal model routing).
+    expect(out.orchestrationSteps?.[1]).toBe('要約する');
+  });
+
+  it('leaves the FINAL step untouched even when it names a provider API (executor contract)', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['調べる', 'GroqのAPIを呼んで要約する'] },
+      noConnectors,
+    );
+    // detectApiCallSteps deliberately skips the last step — an api-call step is
+    // only meaningful when a later step consumes its result.
+    expect(out.orchestrationSteps?.[1]).toBe('GroqのAPIを呼んで要約する');
+  });
+
+  it('does NOT upgrade a bare provider MENTION with no explicit call verb', () => {
+    const { draft: out } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { steps: ['Perplexityで最新のAIニュースを調べる', '要約する'] },
+      noConnectors,
+    );
+    expect(out.orchestrationSteps?.[0]).toBe('Perplexityで最新のAIニュースを調べる');
+  });
+});
+
+// ─── Phase 6: parseConversationalTurnResponse reads `steps` ────────────────
+
+describe('parseConversationalTurnResponse — Phase 6 steps', () => {
+  it('reads a steps array out of a fenced proposal', () => {
+    const turn = parseConversationalTurnResponse(
+      fenced(JSON.stringify({ name: 'x', prompt: 'y', steps: ['調べる', '投稿する'] })),
+    );
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    expect(turn.extraction.steps).toEqual(['調べる', '投稿する']);
+  });
+
+  it('normalizes at parse time too (trim, drop blanks/non-strings, cap count and length)', () => {
+    const turn = parseConversationalTurnResponse(
+      fenced(
+        JSON.stringify({
+          name: 'x',
+          prompt: 'y',
+          steps: [
+            ' a ',
+            '',
+            null,
+            3,
+            'b'.repeat(2500),
+            ...Array.from({ length: 12 }, (_, i) => `s${i}`),
+          ],
+        }),
+      ),
+    );
+    if (turn.kind !== 'proposal') throw new Error('unreachable');
+    const steps = turn.extraction.steps ?? [];
+    expect(steps).toHaveLength(10);
+    expect(steps[0]).toBe('a');
+    expect(steps[1]).toHaveLength(2000);
+  });
+
+  it('leaves steps UNSET for a non-array value ("steps": null / a string)', () => {
+    for (const value of [null, '調べて投稿する', 42, { a: 1 }]) {
+      const turn = parseConversationalTurnResponse(
+        fenced(JSON.stringify({ name: 'x', prompt: 'y', steps: value })),
+      );
+      if (turn.kind !== 'proposal') throw new Error('unreachable');
+      expect(turn.extraction.steps).toBeUndefined();
+    }
+  });
+
+  it('does NOT count `steps` toward proposal recognition (an unfenced musing stays a question)', () => {
+    // Only 'steps' + an unknown key — no KNOWN_PROPOSAL_KEYS match, so the
+    // conversation continues instead of being finalized mid-thought.
+    const turn = parseConversationalTurnResponse(
+      JSON.stringify({ steps: ['調べる', '投稿する'], note: 'thinking' }),
+    );
+    expect(turn.kind).toBe('question');
+  });
+});
+
+// ─── Phase 6: system-prompt instructions ──────────────────────────────────
+
+describe('buildRegistrationSystemPrompt — Phase 6 steps instructions', () => {
+  it('explains the steps array in BOTH locales', () => {
+    const ja = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(ja).toContain('"steps"');
+    expect(ja).toContain('複数の手順に分かれる依頼');
+    expect(ja).toContain('空配列 [] のままにして');
+    expect(ja).toContain('最大10個');
+
+    const en = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(en).toContain('"steps"');
+    expect(en).toContain('only when the request genuinely breaks into several ordered steps');
+    expect(en).toContain('leave "steps" as an empty array []');
+    expect(en).toContain('10 max');
+  });
+
+  it('includes "steps": [] in the final-proposal format example, in BOTH locales', () => {
+    for (const locale of ['ja', 'en'] as const) {
+      expect(buildRegistrationSystemPrompt(ctx({ locale }))).toContain('"steps": []');
+    }
+  });
+
+  it('tells the model NOT to author ids/URLs/tool names inside a step', () => {
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'ja' }))).toContain(
+      'ID・URL・接続設定・ツール名の指定などをここに書く必要はありません',
+    );
+    expect(buildRegistrationSystemPrompt(ctx({ locale: 'en' }))).toContain(
+      'do not write ids, URLs, connection settings or tool names in it',
+    );
+  });
+});

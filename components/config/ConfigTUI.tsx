@@ -146,8 +146,10 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // formatting instructions. Falls back to the existing narrow LLM
       // extraction / Tier 2 slot-fill on any failure, timeout, or
       // unparseable turn regardless of which provider answered. The human
-      // confirm tap is unaffected either way. Default off.
-      { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let an LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Uses your configured Cerebras/Groq API key if present (faster, more capable), otherwise the Local LLM; falls back to the existing behavior if nothing is reachable. The final registration always still needs your confirmation. Default off.' },
+      // confirm tap is unaffected either way. Default ON since 2026-08-03
+      // (on-device-verified) — see AppSettings.agentConversationalRegistrationEnabled
+      // in store/settings-store.ts for why the fallback isn't a regression.
+      { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let an LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Uses your configured Cerebras/Groq API key if present (faster, more capable), otherwise the Local LLM; falls back to the existing behavior if nothing is reachable. The final registration always still needs your confirmation. Default ON.' },
       { key: 'agentConversationalHighRiskActionsEnabled', label: 'LLM-Proposed Webhook/CLI (High Risk)', type: 'boolean', source: 'settings', description: 'Only when LLM-led registration is enabled, allow the LLM to propose webhook/CLI actions using URLs or commands the user actually wrote verbatim in the conversation. URLs or commands the user did not provide are always rejected. Existing runtime host allowlists and command safety checks still apply unchanged. Default off.' },
     ],
   },

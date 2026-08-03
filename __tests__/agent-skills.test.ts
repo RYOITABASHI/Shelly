@@ -14,6 +14,7 @@ import {
   makeSkillRecipe,
   matchSkillRecipes,
   parseSkillRecipeMarkdown,
+  recordSkillFailure,
   skillRecipeId,
   VAULT_SKILLS_DIR,
   type SkillRecipe,
@@ -206,6 +207,71 @@ describe('distill + bump', () => {
     const bumped = bumpSkillUsage(r, Date.UTC(2026, 5, 23));
     expect(bumped.successCount).toBe(3);
     expect(bumped.id).toBe(r.id);
+  });
+});
+
+describe('learning loop — failure hints (2026-08-03)', () => {
+  it('recordSkillFailure flattens newlines, collapses whitespace, and caps the note', () => {
+    const failed = recordSkillFailure(
+      recipe(),
+      `line one\nline   two\r\n${'x'.repeat(400)}`,
+      Date.UTC(2026, 7, 3),
+    );
+    expect(failed.lastFailure).toBeDefined();
+    expect(failed.lastFailure!.at).toBe('2026-08-03T00:00:00.000Z');
+    expect(failed.lastFailure!.note).toContain('line one line two');
+    expect(failed.lastFailure!.note).not.toContain('\n');
+    expect(failed.lastFailure!.note.length).toBeLessThanOrEqual(200);
+    // The recipe body and verified history are untouched — no auto-rewrite.
+    expect(failed.prompt).toBe(recipe().prompt);
+    expect(failed.successCount).toBe(recipe().successCount);
+    expect(failed.id).toBe(recipe().id);
+  });
+
+  it('recordSkillFailure falls back to a placeholder for empty output', () => {
+    const failed = recordSkillFailure(recipe(), '   ');
+    expect(failed.lastFailure!.note).toBe('run failed with no output');
+  });
+
+  it('round-trips lastFailure through the markdown frontmatter', () => {
+    const failed = recordSkillFailure(recipe(), 'HTTP 429 from provider', Date.UTC(2026, 7, 3));
+    const parsed = parseSkillRecipeMarkdown(buildSkillRecipeMarkdown(failed));
+    expect(parsed?.lastFailure).toEqual({
+      at: '2026-08-03T00:00:00.000Z',
+      note: 'HTTP 429 from provider',
+    });
+    // A recipe without a failure hint stays clean after a roundtrip.
+    const clean = parseSkillRecipeMarkdown(buildSkillRecipeMarkdown(recipe()));
+    expect(clean?.lastFailure).toBeUndefined();
+  });
+
+  it('injection context carries the caution only while a failure is stored', () => {
+    const failed = recordSkillFailure(recipe(), 'output was in English, user wanted Japanese');
+    const ctx = buildSkillInjectionContext(failed);
+    expect(ctx).toContain('Caution: the most recent run using this skill FAILED');
+    expect(ctx).toContain('output was in English, user wanted Japanese');
+    expect(ctx).toContain('avoid repeating that failure');
+    expect(buildSkillInjectionContext(recipe())).not.toContain('Caution:');
+  });
+
+  it('a later verified success clears the failure hint (bumpSkillUsage)', () => {
+    const failed = recordSkillFailure(recipe({ successCount: 2 }), 'transient parse error');
+    const healed = bumpSkillUsage(failed, Date.UTC(2026, 7, 4));
+    expect(healed.lastFailure).toBeUndefined();
+    expect(healed.successCount).toBe(3);
+    expect(buildSkillInjectionContext(healed)).not.toContain('Caution:');
+    // And it no longer persists after the next write.
+    const parsed = parseSkillRecipeMarkdown(buildSkillRecipeMarkdown(healed));
+    expect(parsed?.lastFailure).toBeUndefined();
+  });
+
+  it('a secret inside a failure note is visible to secret-guard via the run prompt', () => {
+    const failed = recordSkillFailure(
+      recipe(),
+      'auth failed for token sk-ant-api03-AAAABBBBCCCCDDDDEEEE',
+    );
+    const effectivePrompt = `${buildSkillInjectionContext(failed)}\n\n---\n\nSummarize the news`;
+    expect(scanForSecrets(effectivePrompt).hasSecret).toBe(true);
   });
 });
 

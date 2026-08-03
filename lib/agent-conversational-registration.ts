@@ -73,6 +73,12 @@ import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 // silently drift from detectSocialPost()'s own matching rules the first time
 // either side changed. See its doc comment in lib/agent-llm-fallback.ts.
 import { resolvePlatformHintConnector } from './agent-llm-fallback';
+// Phase 6 (multi-step). Imported, never re-implemented: detectApiCallSteps is
+// the SAME deterministic api-call upgrade the Tier 1 parser runs over its own
+// split steps (lib/agent-nl-parser.ts), and HARD_MAX_STEPS is the same hard
+// ceiling the orchestration executor itself enforces — a locally-redeclared
+// copy of either would drift the moment one side changed.
+import { detectApiCallSteps, HARD_MAX_STEPS } from './agent-orchestration';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
 import { logInfo } from './debug-logger';
 
@@ -131,6 +137,25 @@ export interface AgentConversationalExtraction {
   /** Phase 4 (gated): a CLI command template, verbatim from the user's own
    *  words only — same gating as webhookUrl. */
   cliCommand?: string;
+  /** Phase 6 (2026-08-03): ordered plain-language sub-instructions for a
+   *  MULTI-step agent, e.g.
+   *  `["Xで最新のAIニュースを調べる", "要約する", "Blueskyに投稿する"]`.
+   *
+   *  Only meaningful when there are 2+ entries — a 0/1-element array degrades
+   *  to the ordinary `prompt` field being used instead (see the merge logic),
+   *  because "one step" is exactly the single-run agent Shelly already builds.
+   *
+   *  Each entry is a plain instruction STRING and nothing else. The model does
+   *  NOT author tool pins, connector ids, hosts, or API-call specifics here:
+   *  those still resolve deterministically downstream via detectApiCallSteps()
+   *  in lib/agent-orchestration.ts, exactly as they do for the Tier 1
+   *  deterministic parser (lib/agent-nl-parser.ts). This field therefore
+   *  AUTHORIZES nothing — it only lets a multi-step request stay multi-step
+   *  instead of being flattened into one prompt. Whether any given step is
+   *  allowed to do anything privileged is decided, unchanged, by the existing
+   *  orchestration executor gates (per-step boundary policy + command-safety +
+   *  capability broker + budget + host allowlist). */
+  steps?: string[];
 }
 
 export type ConversationalTurn =
@@ -160,7 +185,10 @@ export interface ConversationalRegistrationTurnResult {
  *  safe direction. Mirrors lib/agent-llm-fallback.ts's MAX_FIELD_LEN, plus an
  *  `actionType` cap since that arrives here as an unconstrained string. */
 const MAX_FIELD_LEN: Record<
-  keyof Omit<AgentConversationalExtraction, 'autonomousIntent'>,
+  // `steps` is excluded because it is an ARRAY, not a scalar string: it needs
+  // both a per-entry length cap AND an entry-count cap, which this single-number
+  // record cannot express. See MAX_STEP_TEXT_LEN / readValidatedSteps.
+  keyof Omit<AgentConversationalExtraction, 'autonomousIntent' | 'steps'>,
   number
 > = {
   name: 60,
@@ -282,7 +310,7 @@ export function buildRegistrationSystemPrompt(ctx: ConversationalRegistrationCon
 
 【最終提案の出力形式】
 ${FENCE_TAG}
-{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "outputPath": "", "platformHint": "", "autonomousIntent": null}
+{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "steps": [], "outputPath": "", "platformHint": "", "autonomousIntent": null}
 ${FENCE_END}
 
 **このフェンスタグ（${FENCE_TAG}）を一字一句そのまま使ってください。 \`\`\`json や、フェンスなしの生JSONでは絶対に返さないでください** — システム側はこの正確なタグだけを「最終提案」として認識します。また、"autonomousIntent" は文字列 "true"/"false" ではなく **真偽値（true/false/null をそのまま）** で書いてください。まだ登録が完了していないのに「登録しました」「完了しました」のような完了を示す文章だけを返すのも禁止です — 完了したと判断したら、必ずこの形式のブロックを出力してください。
@@ -292,6 +320,7 @@ ${FENCE_END}
 - "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
 - "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。${highRiskRules}
 - "prompt": 毎回の実行でエージェントが実際にやること。スケジュールの言い回しは含めないでください。
+- "steps": **複数の手順に分かれる依頼（例: 調べる → 要約する → 投稿する）のときだけ**、手順を順番どおりに、自然な指示文の配列として書いてください（最大${MAX_MODEL_AUTHORED_STEPS}個）。手順が1つしかない依頼なら空配列 [] のままにして、やることは "prompt" に書いてください。各要素はただの指示文です — ID・URL・接続設定・ツール名の指定などをここに書く必要はありません（システム側が判断します）。
 - "outputPath": 保存先が明示されたときだけ。それ以外は空文字。
 - "platformHint": 投稿先の**名前だけ**をそのまま書いてください（例: "ブルースカイ", "会社Bot"）。ID・URL・ホスト名・接続設定を自分で作ってはいけません。システム側が実在の登録済み投稿先と突き合わせます。投稿先の話が出ていなければ空文字。
 - "autonomousIntent": 「確認なしで勝手にやっておいて」なら true、「毎回確認して」なら false、どちらとも言っていなければ null。推測しないでください。
@@ -316,7 +345,7 @@ ${hint}`;
 
 【Final proposal format】
 ${FENCE_TAG}
-{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "outputPath": "", "platformHint": "", "autonomousIntent": null}
+{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "steps": [], "outputPath": "", "platformHint": "", "autonomousIntent": null}
 ${FENCE_END}
 
 **Use this exact fence tag (${FENCE_TAG}), character for character. Never use \`\`\`json or unfenced raw JSON instead** — the system only recognizes this exact tag as your final proposal. Also write "autonomousIntent" as a real boolean (true/false/null), never the strings "true"/"false". Do not announce that registration is "done" or "complete" in plain text either — if you believe you are done, output the block above instead.
@@ -326,6 +355,7 @@ ${FENCE_END}
 - "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. Empty string if no schedule was stated.
 - "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.${highRiskRules}
 - "prompt": what the agent should actually DO on each run, with the scheduling phrasing removed.
+- "steps": **only when the request genuinely breaks into several ordered steps** (e.g. research → summarize → post), list them IN ORDER as an array of plain instruction sentences (${MAX_MODEL_AUTHORED_STEPS} max). If the request is a single step, leave "steps" as an empty array [] and put the task in "prompt" instead. Each entry is just an instruction sentence — do not write ids, URLs, connection settings or tool names in it (the system decides those).
 - "outputPath": only when a destination file/folder was explicitly stated. Empty string otherwise.
 - "platformHint": the destination NAME only, copied as written (e.g. "Bluesky", "Team Bot"). Never invent an id, a URL, a host, or connection settings — the system matches this against the destinations the user really registered. Empty string if no destination came up.
 - "autonomousIntent": true if the user asked for it to run unattended without confirming each time, false if they asked to be asked every time, null if they said nothing either way. Do not guess.
@@ -354,11 +384,60 @@ function extractJsonObjectSpan(raw: string): string | null {
   return raw.slice(start, end + 1);
 }
 
+/** Per-ENTRY character cap for `steps`. Sized to match `prompt`, the other
+ *  field that carries a task description — a step IS a task description, just a
+ *  smaller one. Note the real ceiling downstream is tighter still
+ *  (normalizeStep in lib/agent-orchestration.ts truncates every instruction to
+ *  500 chars before it can ever run), so this cap only bounds what this module
+ *  hands on; it never widens anything. */
+const MAX_STEP_TEXT_LEN = 2000;
+
+/** Entry-COUNT cap: the same HARD_MAX_STEPS the orchestration executor enforces
+ *  (imported, not redeclared). A runaway model that emits 40 "steps" gets the
+ *  first 10 — the executor would refuse the rest anyway (nextStepGate's step
+ *  budget), so truncating here just keeps the confirm card honest about what
+ *  will actually run. */
+const MAX_MODEL_AUTHORED_STEPS = HARD_MAX_STEPS;
+
+/** Below this, "steps" is not a multi-step agent at all. Mirrors
+ *  isOrchestrated() in lib/agent-orchestration.ts and the `>= 2` guard in
+ *  lib/agent-plan-summary.ts / hooks/use-ai-pane-dispatch.ts: those are the
+ *  places that decide whether an agent runs as a chain, and a value they would
+ *  ignore must never be written as if it meant something. */
+const MIN_ORCHESTRATION_STEPS = 2;
+
+/**
+ * The array analogue of readValidatedString: type-check the container →
+ * type-check each entry → trim → drop empties → cap each entry's length → cap
+ * the entry count. Returns `undefined` for a non-array (the field effectively
+ * does not exist), and `[]` for an array that contained nothing usable — the
+ * caller distinguishes those two from "a real list" itself.
+ *
+ * Entries are TRUNCATED, never dropped, when over MAX_STEP_TEXT_LEN. Dropping
+ * one would silently delete a link from an ORDERED chain ("research → summarize
+ * → post" becoming "research → post"), which changes what the agent does; a
+ * truncated instruction is still the user's own step, just shortened, and the
+ * human still sees the exact text on the confirm card before anything is
+ * registered.
+ */
+function readValidatedSteps(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    out.push(trimmed.length > MAX_STEP_TEXT_LEN ? trimmed.slice(0, MAX_STEP_TEXT_LEN) : trimmed);
+    if (out.length >= MAX_MODEL_AUTHORED_STEPS) break;
+  }
+  return out;
+}
+
 /** Type-check → trim → drop-if-empty → cap. Anything that isn't a plain
  *  non-empty string simply doesn't exist as far as the merge is concerned. */
 function readValidatedString(
   rec: Record<string, unknown>,
-  key: keyof Omit<AgentConversationalExtraction, 'autonomousIntent'>,
+  key: keyof Omit<AgentConversationalExtraction, 'autonomousIntent' | 'steps'>,
 ): string | undefined {
   const v = rec[key];
   if (typeof v !== 'string') return undefined;
@@ -380,7 +459,14 @@ function readValidatedString(
  *  proposal always carries name/prompt/actionType alongside its URL or command
  *  and so already clears MIN_SCHEMA_KEY_MATCHES on the pre-existing keys; a
  *  bare `{"webhookUrl": ...}` blob stays a 'question', which is the harmless
- *  direction (the conversation simply continues). */
+ *  direction (the conversation simply continues).
+ *
+ *  Phase 6 leaves `steps` out for the same reason. A genuine multi-step
+ *  proposal always carries name/prompt/actionType/scheduleText alongside its
+ *  step list and so already clears MIN_SCHEMA_KEY_MATCHES on those; adding
+ *  `steps` here would only make a mid-conversation `{"steps": [...], "name":
+ *  ...}` musing — the exact shape a model produces while thinking out loud
+ *  about how to break a task down — get mistaken for a final answer. */
 const KNOWN_PROPOSAL_KEYS = [
   'name', 'scheduleText', 'actionType', 'prompt', 'outputPath', 'platformHint', 'autonomousIntent',
 ] as const;
@@ -422,6 +508,10 @@ function buildExtractionFromRecord(rec: Record<string, unknown>): AgentConversat
     // would have carried them) exactly as it did in Phase 0-3.
     webhookUrl: readValidatedString(rec, 'webhookUrl'),
     cliCommand: readValidatedString(rec, 'cliCommand'),
+    // Phase 6. `undefined` when the key is absent or not an array at all, so a
+    // model that answers `"steps": null` / `"steps": "調べて投稿する"` is treated
+    // as "said nothing about steps" rather than as a rejected proposal.
+    steps: readValidatedSteps(rec['steps']),
   };
 
   // Primarily strict boolean. The prompt asks for JSON `null` when the user
@@ -785,6 +875,12 @@ export function requireVerbatimSubstringMatch(candidate: string, userTranscriptT
  *   - outputPath: only meaningful while the action is still 'draft'.
  *   - prompt: also re-derives tool/toolLabel via suggestTool(), keeping tool
  *     routing consistent with the (now more accurate) task description.
+ *   - steps (Phase 6): applied only when 2+ entries survive validation, and
+ *     only ever as PLAIN instruction strings run through the same
+ *     detectApiCallSteps() the deterministic Tier 1 parser uses. 0 entries is a
+ *     no-op; 1 entry is recorded as a rejection and leaves any existing
+ *     deterministic orchestrationSteps untouched. Grants nothing — see the
+ *     field's doc comment on AgentConversationalExtraction.
  *
  * Returns the ORIGINAL `draft` object by reference — not a copy, and without
  * `llmExtracted` — when nothing was both present and valid. Callers rely on
@@ -1012,6 +1108,42 @@ export function mergeConversationalExtractionIntoDraft(
     m.tool = suggestion.tool;
     m.toolLabel = suggestion.label ?? toolChoiceToLabel(suggestion.tool);
     touched = true;
+  }
+
+  // Phase 6 (2026-08-03): multi-step. Placed last because it is
+  // order-independent — it reads nothing this function has already decided and
+  // writes only `orchestrationSteps`, a field no other branch here touches.
+  //
+  // This is the SAME field lib/agent-nl-parser.ts's Tier 1 parser fills, run
+  // through the SAME detectApiCallSteps() upgrade, so everything downstream
+  // (the confirm card's step list, draftToConfirmedAgentDraft, the PlanSpec's
+  // additive `steps`) works on a Tier 3 draft exactly as it already does on a
+  // Tier 1 one. Nothing new is authorized: an entry is a plain instruction
+  // sentence, and whether a given step may do something privileged is decided
+  // — unchanged — by the orchestration executor's own gates.
+  if (Array.isArray(extraction.steps)) {
+    const validSteps = readValidatedSteps(extraction.steps) ?? [];
+    if (validSteps.length >= MIN_ORCHESTRATION_STEPS) {
+      const m = next();
+      m.orchestrationSteps = detectApiCallSteps(validSteps);
+      touched = true;
+      logInfo(LOG, `steps applied -> ${validSteps.length} orchestration step(s)`);
+    } else if (extraction.steps.length > 0) {
+      // A 1-entry list (or a list whose entries were all blank/non-strings) is
+      // not a chain. Recorded as a rejection because the model DID propose
+      // something here and it was refused — but deliberately NOT destructive:
+      // any orchestrationSteps the deterministic Tier 1 parse already found
+      // stay exactly as they were, and the agent simply remains the ordinary
+      // single-prompt agent it was.
+      rejectedFields.push('steps');
+      logInfo(
+        LOG,
+        `steps proposed ${extraction.steps.length} entr(y|ies) but only ${validSteps.length} usable ` +
+          `(< ${MIN_ORCHESTRATION_STEPS}) — not a multi-step agent, dropped`,
+      );
+    }
+    // An explicitly empty `[]` — what the prompt asks for on a single-step
+    // request — is neither applied nor rejected. Nothing was refused.
   }
 
   if (!touched) {

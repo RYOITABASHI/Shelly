@@ -43,8 +43,19 @@ function dotenvValue(value: string): string {
 const SOCIAL_CONNECTORS_STORAGE_KEY = 'shelly_social_connectors';
 
 export type AppSettings = BaseAppSettings & {
-  /** LLM-led multi-turn agent registration — opt-in, default OFF. */
+  /** LLM-led multi-turn agent registration (Tier 3). Default ON since
+   *  2026-08-03 — on-device-verified (build 1570-class gate), fail-closed to
+   *  Tier 2 fixed-template questions when no LLM (cloud or local) is
+   *  reachable (runConversationalRegistrationTurnLocal returns
+   *  `{success:false}`, never throws). The only user-visible effect of that
+   *  fallback is the existing, benign `agentplan.llm_conversation_fallback_notice`
+   *  ("Switching to simple step-by-step questions.") — not a new failure mode.
+   *  High-risk (webhook/cli) authoring stays a SEPARATE opt-in below. */
   agentConversationalRegistrationEnabled?: boolean;
+  /** LLM-proposed webhook/cli actions — opt-in, default OFF. Independent of
+   *  the flag above: verbatim-substring-gated (requireVerbatimSubstringMatch)
+   *  but still a materially higher blast radius, so it stays a deliberate
+   *  separate opt-in rather than inheriting Tier 3's default. */
   agentConversationalHighRiskActionsEnabled?: boolean;
 };
 
@@ -174,8 +185,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 2026-07-24 confirm-by-default reversal above stays the default
   // everywhere). See AppSettings.widgetAgentRegistrationNoConfirm.
   widgetAgentRegistrationNoConfirm: false,
-  // LLM-led multi-turn agent registration — opt-in, default OFF.
-  agentConversationalRegistrationEnabled: false,
+  // LLM-led multi-turn agent registration (Tier 3) — default ON since
+  // 2026-08-03. Fail-closed to Tier 2 fixed-template questions whenever no
+  // LLM (cloud or local) is reachable; see the AppSettings doc comment above
+  // for why that fallback is not a regression. Still a real Settings toggle
+  // (ConfigTUI "Agents" section), so an existing install that explicitly
+  // turned this off is left alone — no forced migration, unlike
+  // agentRegistrationRequireConfirm below (which has no UI and so any stored
+  // `false` there is definitionally stale, not a deliberate choice).
+  agentConversationalRegistrationEnabled: true,
+  // High-risk (webhook/cli) authoring stays opt-in, default OFF.
   agentConversationalHighRiskActionsEnabled: false,
   defaultRequireActionApproval: false,
   // Opt-in. Off = today's behaviour exactly; see AppSettings' doc comment for

@@ -14,6 +14,30 @@
 
 ---
 
+### Hermes Agent 比較レビューで判明した2ギャップ、並列実装で解消（2026-08-03、Opus5+Codex+Fable5）— コミット待ち・実機未検証
+
+**背景**: 「シェリーのリポジトリを見て『Androidヘルメスエージェントじゃん』と思ってもらえるか、複雑なパイプラインをまたぐタスクに対応できるか」というユーザーの問いに対し、Opus5（Hermes Agent実態比較）とFable5（複数ステップパイプライン実装状況）に独立レビューを依頼。両者とも実装自体は評価しつつ、収束する2つの実弱点を報告:
+
+1. **ドキュメント/発見性ギャップ**: Tier 3会話型登録がREADMEに一切書かれておらず、デフォルトOFFで誰も気づけない。`lib/user-profile.ts`（ユーザー行動学習）はREADME 948行目で「動いている」と書かれているのにimportゼロの死んだコード。
+2. **アーキテクチャギャップ**: Tier 3の会話型登録が既存のマルチステップオーケストレーションエンジン（`lib/agent-orchestration.ts`）に一切繋がっておらず、会話でどれだけ丁寧に手順を分解しても最終的に1本のpromptへ潰れていた。
+
+ユーザーの指示「並列で全て実装して、実機テストも」に従い3トラックへ分解・並列実装（設計は既存の安全原則を完全踏襲、300件超の既存テストは無改変でgreen維持）:
+
+**Track A（Opus5）— Tier 3 → オーケストレーション接続（Phase 6, `steps[]`）**: `AgentConversationalExtraction`に`steps?: string[]`を追加。Tier 1パーサーが埋める**同じ**`ParsedAgentDraft.orchestrationSteps`フィールドに、**同じ**`detectApiCallSteps()`（`lib/agent-orchestration.ts`からimport、再実装せず）を通して書き込むため、confirmカード・`draftToConfirmedAgentDraft`・PlanSpecの`steps`は無改修で動く。安全設計: (a) 2要素未満は「チェーンではない」として`rejectedFields`に記録するが**既存のTier1由来`orchestrationSteps`を破壊しない**（non-destructive）、(b) 各要素は2000字で切り詰め（削除ではない — 順序付きチェーンから1リンクを消すと意味が変わるため）、(c) 件数は`HARD_MAX_STEPS`（10、import）でハードキャップ、(d) `steps`はプレーンな指示文のみで、webhook/cli等の特権actionTypeやコネクタ実在照合を一切バイパスしない（`actionType`許可集合・`resolvePlatformHintConnector`はいずれも無変更、専用テストで確認）。CC独自検証: `npx tsc --noEmit`クリーン、`agent-conversational-registration.test.ts` 157/157 PASS、全体回帰 2722 passed / 24 failed（既知のWindows固有`C:\C:\`パス二重化ベースラインと完全一致、新規リグレッションなし）。
+
+**Track B（Codex）— `agentConversationalRegistrationEnabled`デフォルトON化**: Codex自身は「デフォルトON化するとLLM未設定ユーザーが曖昧な`@agent`登録時に新規フォールバック通知(`agentplan.llm_conversation_fallback_notice`)を見ることになり『サイレント・挙動変更なし』の前提が崩れる」と報告し、コード変更なしで停止（指示通りの正しい判断）。CCが実際の通知文言（日本語「簡単な一問ずつの質問に切り替えます。」/英語 "Switching to simple step-by-step questions."）を確認したところ、既存のTier2降格と同一の穏当な文言であり、これは仕様通りのfail-closed動作であってバグではないと判断 → CC自身が`store/settings-store.ts`のデフォルトを`true`に変更（`agentConversationalHighRiskActionsEnabled`は独立フラグのままfalse維持）。ConfigTUI.tsxの説明文言「Default off.」も実装に合わせて更新。既存の`agentRegistrationRequireConfirm`と異なり本フラグには実UIトグルが存在するため、既存インストールで明示的にOFFにした値への強制マイグレーションは**行っていない**（ユーザーの明示選択を尊重）。デフォルト変更により露見した既存テスト2件の失敗（`ai-pane-dispatch-interaction-order.test.tsx`のScenario 7 — 狭いPhase-0時代の`extractAgentFieldsWithLlm`プリフライト順序を検証する意図のテストが、Tier3デフォルトONで想定外の経路に入っていた）は、そのdescribeブロックに`agentConversationalRegistrationEnabled: false`を明示追加して修正（Tier3自身のテストが`true`を明示するのと対称、アサーション自体は無変更）。修正後44/44 PASS、全体回帰も再確認予定。
+
+**Track C（Fable5）— `lib/user-profile.ts`配線 + スキル自己改善**: 死んでいた`lib/user-profile.ts`（コマンド頻度・技術レベル推定・ファクト抽出・言語傾向、AsyncStorage永続化）を実働のAIペイン経路（`lib/ai-pane-context.ts`の`buildAIPaneSystemPrompt`/`buildLocalAIPaneSystemPrompt`、**`lib/local-llm.ts`のorchestrate系ではない**——これはFable5の調査で判明した訂正で、`orchestrateTask`/`orchestrateChatStream`自体が本番からの呼び出しゼロだったため）に配線。producer側は`hooks/use-ai-pane-dispatch.ts`のdispatch内`learnFromAgentUse`/`learnFromUserInput`（fire-and-forget）と`store/terminal-store.ts`の`runCommand()`内`learnFromCommand`（ユーザー入力のchoke pointのみ、エージェント発行の`execCommand()`は通らないため機械生成コマンドで汚染されない）。配線中に実バグ発見: `DEFAULT_PROFILE`がshallow spreadで使い回されており、`learnFrom*`のin-place`push()`が共有デフォルトのネスト配列を恒久汚染していた（`resetUserProfile()`しても学習内容が復活する）→ `freshDefaultProfile()`ファクトリ化で修正。プライバシー: 学習・保存は端末ローカルAsyncStorageのみ、クラウドAIへのリクエストにサマリが含まれる挙動はREADME Privacy節と一致（ただし「Settings で無効化できる」という記載に対応する実UIトグルは無く、README側修正が別途必要）。スキル自己改善は指示通り「本文の自動改稿」ではなく失敗ヒント蓄積方式（`SkillRecipe.lastFailure`、`recordSkillFailure()`、`buildSkillInjectionContext()`が次回注入時に注意書きとして表示、次回成功で自動クリア）。`agent-manager.ts`の`bumpReusedSkillOnSuccess`を`updateReusedSkillFromRun`に一般化、`unavailable`/`skipped`は既存サーキットブレーカーと同じ理由で失敗記録から除外。CC独自レビュー: diff読了、設計は安全原則に合致（secret-guardスキャンを通る、successCount/lastUsedは変異なし、recipe本文は不変）。新規テスト`user-profile.test.ts`(8件)+`agent-skills.test.ts`追加6件+`ai-pane-context.test.ts`追加3件、全PASS。
+
+**まだ残っている作業**:
+- README.md/README.ja.md（CC自身が並行して編集中）— Learning loopセクション + Statusテーブル行は追加済みだが、(a) 948行目のuser-profile記載を「Settingsで無効化できる」から実UIが無い現状に合わせて修正、(b) Tier3デフォルトON化に合わせた記述更新、が未反映。コミット未了。
+- 全体回帰の最終確認（Track B修正後の再実行）とコミット・push・CI green確認。
+- **実機検証が全トラック共通で未了**（ユーザー指示「実装完了後は実機テストも」）。ワイヤレスADB+scrcpryミラーリングは接続済みなので、次ビルドインストール後にこのセッションから直接検証できる可能性が高い。
+
+→ sync: README.md/README.ja.md（Learning loop節・Statusテーブル・948行目の訂正）、ConfigTUI.tsxの`agentConversationalRegistrationEnabled`説明文言（反映済み）。
+
+---
+
 ### bug #166 — `shelly <subcommand>` がターミナルで「libbash.so: .../home/bin/bash: Permission denied」— 修正済み（BASHRC_VERSION 237）・実機未検証 (P1)
 
 **内容**: 実機（versionCode 2026-08-02、クリーンインストール後も再現）で `shelly config get localLlmUrl` 等の `shelly` サブコマンドが全て `libbash.so: /data/user/0/dev.shelly.terminal/files/home/bin/bash: Permission denied` で失敗。Tier 3（エージェント登録LLMファースト化）の実機検証中に偶然発見された、Tier 3 とは無関係の既存バグ。

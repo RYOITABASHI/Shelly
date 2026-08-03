@@ -35,6 +35,7 @@ import {
   buildSkillInjectionContext,
   applyExecutableSkillPlan,
   bumpSkillUsage,
+  recordSkillFailure,
   readSkillRecipes,
   writeSkillRecipe,
 } from './agent-skills';
@@ -1107,7 +1108,7 @@ async function runAgentNowInner(
   }
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
-  await bumpReusedSkillOnSuccess(agentId, runCommand);
+  await updateReusedSkillFromRun(agentId, runCommand);
 }
 
 /**
@@ -1716,7 +1717,7 @@ async function runAgentOrchestratedBody(
   // and run the same post-run hooks the single-run path uses.
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
-  await bumpReusedSkillOnSuccess(agentId, runCommand);
+  await updateReusedSkillFromRun(agentId, runCommand);
 }
 
 /** List the agent's run-log file paths on disk (best-effort). */
@@ -1735,23 +1736,35 @@ async function listAgentLogFiles(
 }
 
 /**
- * Phase 2a: when an agent that reuses a skill completes successfully, bump that
- * skill's success-count + lastUsed so good recipes float to the top. Best-effort.
+ * Phase 2a + learning loop (2026-08-03): after a run of an agent that reuses a
+ * skill, feed the outcome back into the recipe. Success bumps success-count +
+ * lastUsed (and clears any stored failure hint — see bumpSkillUsage); a real
+ * failure records a one-line hint (recordSkillFailure) that
+ * buildSkillInjectionContext surfaces as a caution on the NEXT matched run.
+ * 'unavailable' (transient web outage) and 'skipped' are deliberately ignored —
+ * the same statuses the circuit breaker excludes — so a flaky network never
+ * poisons a recipe with a bogus caution. Best-effort, same persistence path
+ * (crash-safe writeSkillRecipe + Vault mirror) in both directions.
  */
-async function bumpReusedSkillOnSuccess(
+async function updateReusedSkillFromRun(
   agentId: string,
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
   const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
   if (!agent?.skillId) return;
   const latest = useAgentStore.getState().getRunHistory(agentId).at(-1);
-  if (!latest || latest.status !== 'success') return;
+  if (!latest) return;
+  if (latest.status !== 'success' && latest.status !== 'error') return;
   try {
     const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId);
     if (!recipe) return;
-    await writeSkillRecipe(runCommand, bumpSkillUsage(recipe, latest.timestamp));
+    const updated =
+      latest.status === 'success'
+        ? bumpSkillUsage(recipe, latest.timestamp)
+        : recordSkillFailure(recipe, latest.outputPreview ?? '', latest.timestamp);
+    await writeSkillRecipe(runCommand, updated);
   } catch (error) {
-    console.warn('Failed to bump reused skill for agent', agentId, error);
+    console.warn('Failed to update reused skill for agent', agentId, error);
   }
 }
 

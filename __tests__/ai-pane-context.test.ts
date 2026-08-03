@@ -111,6 +111,31 @@ describe('AI pane terminal context', () => {
   });
 });
 
+describe('AI pane user-profile injection (2026-08-03 learning-loop wiring)', () => {
+  const summary = 'よく使うコマンド: git, docker\n技術スキル: Git, Docker';
+
+  it('includes the profile block in the cloud prompt when a summary is passed', () => {
+    const prompt = buildAIPaneSystemPrompt(null, 'local', null, undefined, summary);
+    expect(prompt).toContain('[User profile');
+    expect(prompt).toContain('よく使うコマンド: git, docker');
+    expect(prompt).toContain('background info only');
+    expect(prompt).toContain('[End user profile]');
+  });
+
+  it('includes the profile block in the short local prompt when passed', () => {
+    const prompt = buildLocalAIPaneSystemPrompt(null, summary);
+    expect(prompt).toContain('[User profile');
+    expect(prompt).toContain('技術スキル: Git, Docker');
+  });
+
+  it('adds nothing for an empty/omitted summary', () => {
+    expect(buildAIPaneSystemPrompt(null, 'local', null)).not.toContain('[User profile');
+    expect(buildAIPaneSystemPrompt(null, 'local', null, undefined, '')).not.toContain('[User profile');
+    expect(buildLocalAIPaneSystemPrompt(null)).not.toContain('[User profile');
+    expect(buildLocalAIPaneSystemPrompt(null, '')).not.toContain('[User profile');
+  });
+});
+
 describe('AI pane capability grounding', () => {
   it('always includes at least the ambient feature catalog', () => {
     const noPrompt = buildAIPaneSystemPrompt(null, null, null);

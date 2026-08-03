@@ -1017,6 +1017,18 @@ describe('Scenario 7 — task-clarity LLM fallback calls ensureLocalLlmServerRun
         localLlmEnabled: true,
         localLlmUrl: 'http://127.0.0.1:8080',
         localLlmModel: 'qwen3.5-2b',
+        // This scenario exercises the narrow Phase-0-era extractAgentFieldsWithLlm
+        // preflight/ordering directly (mocking ollamaChat's taskClear/
+        // clarifyingQuestion schema below), not Tier 3's own conversational
+        // turn format. agentConversationalRegistrationEnabled defaulted to
+        // false when this test was written; since 2026-08-03 it defaults to
+        // true, which would route '@agent 手伝って' through Tier 3 first and
+        // never reach the code path this test is pinning. Opt out explicitly,
+        // exactly as Tier 3's own tests opt IN explicitly elsewhere in this
+        // file — the narrow fallback path itself is unchanged and still real
+        // (Tier 3 falls back to it on its own exhaustion, see Phase 5's doc
+        // comment in lib/agent-conversational-registration.ts).
+        agentConversationalRegistrationEnabled: false,
       },
     }));
   });

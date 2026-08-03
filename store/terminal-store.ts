@@ -15,6 +15,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { useSettingsStore } from './settings-store';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { getHomePath } from '@/lib/home-path';
+import { learnFromCommand } from '@/lib/user-profile';
 import {
   getReservedNativeSessionIds,
   reserveNativeSessionIdIfCreating,
@@ -336,6 +337,15 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
           : s
       ),
     }));
+
+    // User-profile learning (lib/user-profile.ts): record the command head so
+    // top-command / skill-detection stats accumulate. This is the same
+    // user-typed choke point that records commandHistory above, so agent-
+    // generated execCommand() calls never pollute the profile. Local-only
+    // (AsyncStorage), fire-and-forget — never blocks or fails the command.
+    if (command.trim()) {
+      void learnFromCommand(command).catch(() => {});
+    }
 
     // Route: shelly <subcommand> → pseudo-shell (app-internal), everything else → JNI exec
     if (command.startsWith('shelly ') || command === 'shelly') {
