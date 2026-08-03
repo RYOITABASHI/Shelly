@@ -47,7 +47,7 @@
 
 **検証**: `npx tsc --noEmit`クリーン。`__tests__/plan-executor-orchestration-chain.test.ts`の期待値を`Step 2/2`→`Step 2/3`へ更新（新しい正しい挙動）、`__tests__/agent-orchestration.test.ts`に`totalSteps`の新規テスト2件追加（明示指定時/省略時のフォールバック）。全体回帰2747 passed/24 failed、既知のWindows固有4スイート（capability-broker.test.ts, plan-executor.test.ts, plan-executor-orchestration.test.ts, plan-executor-multi-action.test.ts）と完全一致、新規リグレッションなし。
 
-**実機未検証**: `reconcileApiKeysToEnv()`が次回アプリ起動時に実際に`.env`へ4キーを書き込むこと（次回の実機更新時に`grep API_KEY ~/.shelly/agents/.env`で確認すること）。
+**→ 2026-08-03 実機検証PASS（`e19289af7`、versionCode 2043、アプリ内アップデーターで更新）**: 更新直後にTerminalペインで`cut -d= -f1 ~/.shelly/agents/.env | grep API_KEY`を実行し、`PERPLEXITY_API_KEY`/`GEMINI_API_KEY`/`CEREBRAS_API_KEY`/`GROQ_API_KEY`の4行全てが出力されることを確認（修正前は0件だった）。`reconcileApiKeysToEnv()`が起動時に正しくSecureStore→`.env`の再同期を実行している。
 
 → sync: なし（内部ロジックのみ）。
 
