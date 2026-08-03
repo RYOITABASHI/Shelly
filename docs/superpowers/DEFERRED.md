@@ -49,6 +49,8 @@
 
 **→ 2026-08-03 実機検証PASS（`e19289af7`、versionCode 2043、アプリ内アップデーターで更新）**: 更新直後にTerminalペインで`cut -d= -f1 ~/.shelly/agents/.env | grep API_KEY`を実行し、`PERPLEXITY_API_KEY`/`GEMINI_API_KEY`/`CEREBRAS_API_KEY`/`GROQ_API_KEY`の4行全てが出力されることを確認（修正前は0件だった）。`reconcileApiKeysToEnv()`が起動時に正しくSecureStore→`.env`の再同期を実行している。
 
+**→ 2026-08-03 end-to-endでも実機検証PASS**: 最初に❌失敗した原因とほぼ同一のタスク（「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」、自律実行）を「Gemini Fix Test」として再登録し`@agent run`で手動実行 → `@agent status`で**✅ Gemini Fix Test — last: 2026/8/3 17:25:09**を確認（修正前は同種タスクが❌ no configured secret (GEMINI_API_KEY) で失敗していた）。`.env`同期バグの修正が実際に問題を解消したことをコード変更だけでなく実際の失敗シナリオの再現・解消で裏付けた。テスト用エージェントは削除済み。
+
 → sync: なし（内部ロジックのみ）。
 
 ---
