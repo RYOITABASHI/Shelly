@@ -276,7 +276,7 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
             cerebrasKey,
             transcript,
             () => {},
-            settings.cerebrasModel || 'qwen-3-235b-a22b-instruct-2507',
+            settings.cerebrasModel || 'gpt-oss-120b',
             chatHistory,
             abortRef.current.signal,
           );

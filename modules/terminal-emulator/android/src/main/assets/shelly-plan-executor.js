@@ -625,7 +625,7 @@ function modelRequest(plan, config) {
     case 'perplexity':
       return openAiCompatRequest('https://api.perplexity.ai/chat/completions', 'perplexity', config.PERPLEXITY_MODEL || plan.tool.model || 'sonar', prompt);
     case 'cerebras':
-      return openAiCompatRequest('https://api.cerebras.ai/v1/chat/completions', 'cerebras', config.CEREBRAS_MODEL || plan.tool.model || 'qwen-3-235b-a22b-instruct-2507', prompt);
+      return openAiCompatRequest('https://api.cerebras.ai/v1/chat/completions', 'cerebras', config.CEREBRAS_MODEL || plan.tool.model || 'gpt-oss-120b', prompt);
     case 'groq':
       return openAiCompatRequest('https://api.groq.com/openai/v1/chat/completions', 'groq', config.GROQ_MODEL || plan.tool.model || 'llama-3.3-70b-versatile', prompt);
     default:

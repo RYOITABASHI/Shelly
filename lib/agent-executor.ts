@@ -557,7 +557,12 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // connector) is regenerated rather than kept.
 // v47 (2026-08-03): wires X Articles social-post dispatch as draft→publish,
 // including runtime title/result substitution and multi-action field plumbing.
-const AGENT_SCRIPT_VERSION = 47;
+// v48 (2026-08-03): Cerebras default model qwen-3-235b-a22b-instruct-2507 ->
+// gpt-oss-120b — the old model ID was removed from Cerebras's catalog
+// (HTTP 404 "Model does not exist"), silently breaking the Cerebras leg of
+// every ③-ladder call an already-generated script would make. Bumped so a
+// stale on-disk script (baked with the dead model ID) gets regenerated.
+const AGENT_SCRIPT_VERSION = 48;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -5468,7 +5473,7 @@ function generateToolCommand(
         envModelVar: 'CEREBRAS_MODEL',
         keyHint: 'Add CEREBRAS_API_KEY in Settings → API Keys (free tier at cloud.cerebras.ai).',
         url: 'https://api.cerebras.ai/v1/chat/completions',
-        model: tool.model || 'qwen-3-235b-a22b-instruct-2507',
+        model: tool.model || 'gpt-oss-120b',
         label: 'Cerebras',
         authRef: 'cerebras',
       });

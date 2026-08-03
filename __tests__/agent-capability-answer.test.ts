@@ -10,7 +10,7 @@ jest.mock('@/lib/gemini', () => ({
 }));
 jest.mock('@/lib/cerebras', () => ({
   cerebrasChatStream: jest.fn(),
-  CEREBRAS_DEFAULT_MODEL: 'qwen-3-235b-a22b-instruct-2507',
+  CEREBRAS_DEFAULT_MODEL: 'gpt-oss-120b',
 }));
 jest.mock('@/lib/local-llm', () => ({
   ollamaChat: jest.fn(),

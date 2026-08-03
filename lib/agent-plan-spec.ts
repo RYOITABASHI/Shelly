@@ -355,7 +355,7 @@ function toPlanTool(tool: ToolChoice, unsupportedReason?: string): AgentPlanSpec
     case 'perplexity':
       return { type: 'perplexity', label: toolChoiceToLabel(tool), model: tool.model || 'sonar', authRef: 'perplexity' };
     case 'cerebras':
-      return { type: 'cerebras', label: toolChoiceToLabel(tool), model: tool.model || 'qwen-3-235b-a22b-instruct-2507', authRef: 'cerebras' };
+      return { type: 'cerebras', label: toolChoiceToLabel(tool), model: tool.model || 'gpt-oss-120b', authRef: 'cerebras' };
     case 'groq':
       return { type: 'groq', label: toolChoiceToLabel(tool), model: tool.model || 'llama-3.3-70b-versatile', authRef: 'groq' };
     default:

@@ -112,10 +112,15 @@ async function interpretWithFallback(
       const text = await callOpenAICompatible(
         'https://api.cerebras.ai/v1/chat/completions',
         fallback.cerebrasApiKey,
-        fallback.cerebrasModel ?? 'qwen-3-235b-a22b-instruct-2507',
+        fallback.cerebrasModel ?? 'gpt-oss-120b',
         systemPrompt,
         userContent,
         onChunk,
+        // gpt-oss-120b is a reasoning model, and this call's max_tokens (256)
+        // is small enough that default 'medium' reasoning could consume the
+        // whole budget before any content is emitted. Cerebras-only field;
+        // Groq/local ignore unknown body fields harmlessly.
+        { reasoning_effort: 'low' },
       );
       if (text) return { text, provider: 'cerebras' };
     } catch { /* fallthrough */ }
@@ -162,6 +167,7 @@ async function callOpenAICompatible(
   systemPrompt: string,
   userContent: string,
   onChunk: StreamingCallback,
+  extraBody?: Record<string, unknown>,
 ): Promise<string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
@@ -182,6 +188,7 @@ async function callOpenAICompatible(
         max_tokens: 256,
         temperature: 0.3,
         stream: true,
+        ...extraBody,
       }),
       signal: controller.signal,
     });

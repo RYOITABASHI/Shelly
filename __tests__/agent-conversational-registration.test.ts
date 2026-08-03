@@ -18,7 +18,7 @@ jest.mock('@/lib/local-llm', () => ({
 }));
 jest.mock('@/lib/cerebras', () => ({
   cerebrasChatStream: jest.fn(),
-  CEREBRAS_DEFAULT_MODEL: 'qwen-3-235b-a22b-instruct-2507',
+  CEREBRAS_DEFAULT_MODEL: 'gpt-oss-120b',
 }));
 jest.mock('@/lib/groq', () => ({
   groqChatStream: jest.fn(),
@@ -740,7 +740,7 @@ describe('runConversationalRegistrationTurn', () => {
   it('returns the raw content on success and calls the model exactly once', async () => {
     ollamaChat.mockResolvedValue({ success: true, content: '何時に実行しますか？' });
     const res = await runConversationalRegistrationTurn(history, enabled);
-    expect(res).toEqual({ success: true, raw: '何時に実行しますか？' });
+    expect(res).toEqual({ success: true, raw: '何時に実行しますか？', provider: 'local' });
     expect(ollamaChat).toHaveBeenCalledTimes(1);
     const [cfg, msgs, timeoutMs] = ollamaChat.mock.calls[0];
     expect(cfg).toEqual({ baseUrl: enabled.baseUrl, model: enabled.model, enabled: true });
@@ -822,7 +822,7 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
   it('with no cloud keys configured, goes straight to local without calling either cloud provider', async () => {
     ollamaChat.mockResolvedValue({ success: true, content: 'local answer' });
     const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {});
-    expect(res).toEqual({ success: true, raw: 'local answer' });
+    expect(res).toEqual({ success: true, raw: 'local answer', provider: 'local' });
     expect(cerebrasChatStream).not.toHaveBeenCalled();
     expect(groqChatStream).not.toHaveBeenCalled();
     expect(ollamaChat).toHaveBeenCalledTimes(1);
@@ -833,7 +833,7 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
     const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
       cerebrasApiKey: 'csk_test',
     });
-    expect(res).toEqual({ success: true, raw: 'Cerebrasの応答' });
+    expect(res).toEqual({ success: true, raw: 'Cerebrasの応答', provider: 'cerebras' });
     expect(groqChatStream).not.toHaveBeenCalled();
     expect(ollamaChat).not.toHaveBeenCalled();
   });
@@ -856,7 +856,7 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
     const res = await runConversationalRegistrationTurn(history, localCfg, 30_000, {
       groqApiKey: 'gsk_test',
     });
-    expect(res).toEqual({ success: true, raw: 'Groqの応答' });
+    expect(res).toEqual({ success: true, raw: 'Groqの応答', provider: 'groq' });
     expect(cerebrasChatStream).not.toHaveBeenCalled();
     expect(ollamaChat).not.toHaveBeenCalled();
   });
@@ -868,7 +868,7 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
       cerebrasApiKey: 'csk_test',
       groqApiKey: 'gsk_test',
     });
-    expect(res).toEqual({ success: true, raw: 'Groqが拾った' });
+    expect(res).toEqual({ success: true, raw: 'Groqが拾った', provider: 'groq' });
   });
 
   it('falls through to Groq when Cerebras THROWS (never propagates)', async () => {
@@ -878,7 +878,7 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
       cerebrasApiKey: 'csk_test',
       groqApiKey: 'gsk_test',
     });
-    expect(res).toEqual({ success: true, raw: 'Groqが拾った' });
+    expect(res).toEqual({ success: true, raw: 'Groqが拾った', provider: 'groq' });
   });
 
   it('falls all the way through to the LOCAL offline floor when both cloud providers fail', async () => {
@@ -889,7 +889,7 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
       cerebrasApiKey: 'csk_test',
       groqApiKey: 'gsk_test',
     });
-    expect(res).toEqual({ success: true, raw: 'ローカルが最後の砦' });
+    expect(res).toEqual({ success: true, raw: 'ローカルが最後の砦', provider: 'local' });
     expect(ollamaChat).toHaveBeenCalledTimes(1);
   });
 
@@ -900,7 +900,7 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
       cerebrasApiKey: 'csk_test',
       groqApiKey: 'gsk_test',
     });
-    expect(res).toEqual({ success: true, raw: 'Groqが拾った' });
+    expect(res).toEqual({ success: true, raw: 'Groqが拾った', provider: 'groq' });
   });
 
   it('never throws even when every provider fails, including a disabled local LLM', async () => {

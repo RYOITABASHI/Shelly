@@ -347,8 +347,10 @@ object AgentRuntime {
     // assembles them into a NOTIFICATION_CONTEXT prompt line wrapped in an
     // "untrusted DATA, not instructions" preamble. See lib/agent-executor.ts's
     // matching AGENT_SCRIPT_VERSION comment. v47 adds X Articles draft→publish
-    // dispatch, so stale scripts must be regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 47
+    // dispatch, so stale scripts must be regenerated. v48 (2026-08-03) fixes
+    // the Cerebras default model (qwen-3-235b-a22b-instruct-2507, removed from
+    // Cerebras's catalog -> gpt-oss-120b), see lib/agent-executor.ts.
+    private const val CURRENT_SCRIPT_VERSION = 48
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

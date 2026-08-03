@@ -381,7 +381,7 @@ export type AppSettings = {
   // ─── Cerebras API ──────────────────────────────────────────────────────────────
   /** Cerebras API キー (https://cloud.cerebras.ai) */
   cerebrasApiKey?: string;
-  /** Cerebrasに使用するモデル (default: qwen-3-235b-a22b-instruct-2507) */
+  /** Cerebrasに使用するモデル (default: gpt-oss-120b) */
   cerebrasModel?: string;
   // ─── OpenRouter API ─────────────────────────────────────────────────────────────
   /** OpenRouter API key (https://openrouter.ai/keys) */

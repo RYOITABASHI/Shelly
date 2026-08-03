@@ -1,15 +1,23 @@
 /**
  * Cerebras API クライアント
  *
- * - チャット: Qwen3 235B (OpenAI互換 API)
+ * - チャット: gpt-oss-120b (OpenAI互換 API)
  * - 無料枠: 30 RPM, 60K TPM, 1M tokens/日
  * - API仕様: https://inference-docs.cerebras.ai
+ *
+ * 2026-08-03: 旧デフォルト `qwen-3-235b-a22b-instruct-2507` は Cerebras 側の
+ * モデルカタログから撤去済み（`HTTP 404: Model does not exist or you do not
+ * have access to it.` で確認）。現行の Production 帯モデルは `gpt-oss-120b`
+ * のみ（Preview帯の `zai-glm-4.7` は reasoning 専用で content が空になり
+ * 不向き、既知）。gpt-oss-120b は reasoning モデルなので、既定の
+ * `reasoning_effort: 'medium'` のままだと推論トークンが応答を圧迫しうる
+ * ため `low` を明示。
  */
 
 export const CEREBRAS_API_BASE = 'https://api.cerebras.ai/v1';
 
 /** デフォルトチャットモデル */
-export const CEREBRAS_DEFAULT_MODEL = 'qwen-3-235b-a22b-instruct-2507';
+export const CEREBRAS_DEFAULT_MODEL = 'gpt-oss-120b';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -134,6 +142,11 @@ export async function cerebrasChatStream(
         temperature: 0.7,
         top_p: 0.95,
         stream: true,
+        // gpt-oss-120b is a reasoning model; 'low' keeps reasoning tokens from
+        // eating into the completion budget / adding latency. Optional per
+        // Cerebras's own docs (content is returned regardless), so harmless
+        // for any other model that ignores unknown fields.
+        reasoning_effort: 'low',
       }),
       signal: controller.signal,
     });

@@ -360,7 +360,7 @@ const API_CALL_PRESETS: ApiCallPreset[] = [
       path: '/v1/chat/completions',
       authRef: 'cerebras',
       bodyTemplate: JSON.stringify({
-        model: 'qwen-3-235b-a22b-instruct-2507',
+        model: 'gpt-oss-120b',
         messages: [{ role: 'user', content: apiPrompt(instruction, CEREBRAS_PROVIDER_RE) }],
       }),
     }),

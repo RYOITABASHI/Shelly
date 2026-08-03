@@ -54,7 +54,7 @@ describe('generateRunScript — free-cloud tier backends (Cerebras / Groq, ③b)
     expect(cb).not.toContain('[REFUSED]');
     expect(cb).toContain('https://api.cerebras.ai/v1/chat/completions');
     expect(cb).toContain('HTTP_AUTH_HEADER="Bearer $CEREBRAS_API_KEY"');
-    expect(cb).toContain('MODEL="${CEREBRAS_MODEL:-qwen-3-235b-a22b-instruct-2507}"');
+    expect(cb).toContain('MODEL="${CEREBRAS_MODEL:-gpt-oss-120b}"');
     expect(cb).not.toContain(UNSET); // key-bearing backend keeps its env
 
     const gq = generateRunScript(agent({ type: 'groq' }, false));
@@ -553,7 +553,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=47');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=48');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');

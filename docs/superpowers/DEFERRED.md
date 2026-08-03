@@ -14,6 +14,22 @@
 
 ---
 
+### ✅ Cerebrasデフォルトモデル `qwen-3-235b-a22b-instruct-2507` が撤去済みで全経路404 — `gpt-oss-120b`へ修正済み（2026-08-03、ユーザー指摘起点）
+
+**発見の経緯**: 実機検証中に観測したCerebras 404を「別途ユーザー側の設定不備」と本人へ伝えたところ、ユーザーがCerebras/Groqダッシュボードのスクリーンショットを提示。APIキーは3件ともACTIVEで課金の問題ではないと判明し、実際の原因を調査。WebFetchでCerebras公式ドキュメント（`inference-docs.cerebras.ai/models/overview`）を確認したところ、現行カタログはProduction帯`gpt-oss-120b`のみ、Preview帯`gemma-4-31b`/`zai-glm-4.7`（`zai-glm-4.7`は2026-08-17に非推奨予定）で**Qwenは一覧に存在しない**ことを確認——実機ログの`HTTP 404: Model does not exist or you do not have access to it.`と完全一致。副次的に、別プロジェクト（mizumawari-form）の引き継ぎ資料に同じ知見が既に記録されており（`gpt-oss-120b` + `reasoning_effort:low`採用、~0.5-0.6s）、独立に裏付けが取れた。
+
+**副次発見（ユーザーとの対話中に判明）**: Groqのダッシュボードで「Shelly」キーが「本日22 API Calls」と表示されており、実機テストでGroqキー未設定と説明していたのは誤り。コード上`runConversationalRegistrationTurn`はCerebras/Groqとも**失敗時のみ**ログを出す設計（成功時ログなし）だったため、実際には成功していたGroq呼び出しをローカルモデルの応答と誤認していた可能性が高いと判明——観測性の欠如自体もバグと判断し、`ConversationalRegistrationTurnResult`に`provider`フィールドを追加、成功時にも`logInfo`を出すよう修正。
+
+**修正内容**: `qwen-3-235b-a22b-instruct-2507`をハードコードしていた9ファイル全てを`gpt-oss-120b`へ置換——`lib/cerebras.ts`（`CEREBRAS_DEFAULT_MODEL`、成功時観測ログ追加、`reasoning_effort:'low'`をリクエストボディに追加）、`hooks/use-voice-chat.ts`、`lib/agent-executor.ts`（bash生成スクリプトへの焼き込み、`AGENT_SCRIPT_VERSION` 47→48）、`lib/agent-orchestration.ts`（`detectApiCallSteps`のCerebras `bodyTemplate`）、`lib/agent-plan-spec.ts`、`lib/llm-interpreter.ts`（`callOpenAICompatible`に`extraBody`引数を追加、Cerebras分岐のみ`reasoning_effort:'low'`——`max_tokens:256`という小さい予算でreasoningモデルのデフォルト`medium`が予算を食い潰すリスクへの対策）、`scripts/shelly-plan-executor.js`+APKアセットミラー（byte-identical維持）、`store/types.ts`（docコメント）。`AgentRuntime.kt`の`CURRENT_SCRIPT_VERSION`も48へ同期。
+
+**検証**: `npx tsc --noEmit`クリーン、影響テスト（`agent-conversational-registration.test.ts`157件——新規`provider`フィールドにより`toEqual`アサーション8件を更新、`agent-capability-answer.test.ts`、`agent-executor-autonomous.test.ts`、script-version-guard系6ファイルの`SHELLY_AGENT_SCRIPT_VERSION=47`→`48`、`CURRENT_SCRIPT_VERSION = 47`→`48`）全PASS、スナップショット1件更新（バージョン行のみの差分と確認）。全体回帰2722 passed/24 failed、既知のWindows固有4スイートと完全一致、新規リグレッションなし。**実機再検証は未実施**（次回オンデバイステスト時に、Cerebras優先経路が実際に成功しGroqへフォールバックしないことを確認すること）。
+
+**注意**: `zai-glm-4.7`（Preview帯）は2026-08-17に非推奨予定と公式ドキュメントに明記。`gpt-oss-120b`（Production帯）を採用したのはこの理由からも妥当。
+
+→ sync: なし（内部ロジックのみ、README/DEFERRED.md以外への影響なし）。
+
+---
+
 ### ✅ Hermes Agent 比較レビューで判明した2ギャップ、並列実装で解消（2026-08-03、Opus5+Codex+Fable5+CC）— コミット・push・CI green・実機検証済み（`ab8b00909`/`7fab62f94`）
 
 **背景**: 「シェリーのリポジトリを見て『Androidヘルメスエージェントじゃん』と思ってもらえるか、複雑なパイプラインをまたぐタスクに対応できるか」というユーザーの問いに対し、Opus5（Hermes Agent実態比較）とFable5（複数ステップパイプライン実装状況）に独立レビューを依頼。両者とも実装自体は評価しつつ、収束する2つの実弱点を報告:

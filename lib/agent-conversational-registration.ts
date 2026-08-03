@@ -175,6 +175,12 @@ export interface ConversationalRegistrationTurnResult {
   success: boolean;
   raw?: string;
   error?: string;
+  /** Which provider actually answered this turn. Debug/observability only —
+   *  nothing branches on this. Added 2026-08-03: without it, a successful
+   *  Cerebras/Groq turn was indistinguishable in logs from a local-model turn
+   *  (only FAILURE was logged per-provider), which made on-device debugging
+   *  of "why is this so fast" genuinely ambiguous. */
+  provider?: 'cerebras' | 'groq' | 'local';
 }
 
 // ── Field-length caps (same discipline as agent-llm-fallback.ts) ────────────
@@ -1250,7 +1256,10 @@ export async function runConversationalRegistrationTurn(
         undefined,
         split.systemPrompt,
       );
-      if (result.success && acc.trim()) return { success: true, raw: acc };
+      if (result.success && acc.trim()) {
+        logInfo(LOG, 'runConversationalRegistrationTurn: Cerebras turn succeeded');
+        return { success: true, raw: acc, provider: 'cerebras' };
+      }
       logInfo(LOG, `runConversationalRegistrationTurn: Cerebras turn unusable (${result.error ?? 'empty response'}), trying next provider`);
     } catch (err) {
       logInfo(LOG, `runConversationalRegistrationTurn: Cerebras turn threw (${err instanceof Error ? err.message : String(err)}), trying next provider`);
@@ -1270,7 +1279,10 @@ export async function runConversationalRegistrationTurn(
         undefined,
         split.systemPrompt,
       );
-      if (result.success && acc.trim()) return { success: true, raw: acc };
+      if (result.success && acc.trim()) {
+        logInfo(LOG, 'runConversationalRegistrationTurn: Groq turn succeeded');
+        return { success: true, raw: acc, provider: 'groq' };
+      }
       logInfo(LOG, `runConversationalRegistrationTurn: Groq turn unusable (${result.error ?? 'empty response'}), trying next provider`);
     } catch (err) {
       logInfo(LOG, `runConversationalRegistrationTurn: Groq turn threw (${err instanceof Error ? err.message : String(err)}), trying next provider`);
@@ -1322,7 +1334,7 @@ export async function runConversationalRegistrationTurnLocal(
       );
       return { success: false, error };
     }
-    return { success: true, raw: result.content };
+    return { success: true, raw: result.content, provider: 'local' };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     logInfo(LOG, `runConversationalRegistrationTurn threw: ${error}`);
