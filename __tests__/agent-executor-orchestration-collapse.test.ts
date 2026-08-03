@@ -46,11 +46,18 @@ const baseAgent = (tool: ToolChoice, orchestration?: AgentOrchestrationConfig, a
 // bash-side chain executor for the exact case this note used to warn about
 // (an orchestrated agent resolved to the codex driver, every step plain) — so
 // for THAT case the note no longer fires at all (the chain actually runs).
+// 2026-08-03: a further pass (codexOrchestrationStepDispatchArms/
+// STEP_TOOL_BASH_DISPATCHABLE_TYPES) added static-codegen bash dispatch arms
+// for step .tool pins of type local/gemini-api/perplexity/cerebras/groq, so
+// those no longer collapse either — the chain loop now honors them for real.
 // This file now covers the RESIDUAL cases codexOrchestrationChainCommand
-// deliberately does not attempt: a step carrying its own tool pin, a step
-// carrying a structured apiCall, and a non-cli/non-PlanSpec-supported tool
-// pin (e.g. an orchestrated agent explicitly pinned to 'local') — those still
-// collapse to a single step, with the note.
+// still deliberately does not attempt: a step carrying a structured apiCall,
+// and a step pinned to a tool type with no bash dispatch arm AND no
+// per-step credential-policy stripping (e.g. 'ab-article-eval' — unlike
+// 'openrouter'/'gemini-api'/'perplexity', which are api-key-class and get
+// silently STRIPPED by resolveStepToolForChainScript before this check ever
+// sees them, falling back to the agent-level tool instead of collapsing) —
+// those still collapse to a single step, with the note.
 describe('generateRunScript — orchestration-collapse note (bug #155(b), residual cases)', () => {
   const orchestratedCodexPlain = baseAgent(
     { type: 'auto' },
@@ -64,6 +71,18 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b), residu
       steps: [
         'collect the latest news with sources',
         { instruction: 'summarize using the local model', tool: { type: 'local' } },
+        'post a digest to X',
+      ],
+    },
+    true,
+  );
+
+  const orchestratedCodexWithUnsupportedToolPin = baseAgent(
+    { type: 'auto' },
+    {
+      steps: [
+        'collect the latest news with sources',
+        { instruction: 'evaluate using ab-article-eval', tool: { type: 'ab-article-eval' } },
         'post a digest to X',
       ],
     },
@@ -92,8 +111,18 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b), residu
     expect(s).not.toContain('[Shelly] Note: this agent is configured as a');
   });
 
-  it('bakes a non-empty ORCHESTRATION_COLLAPSED_NOTE when a step carries its own tool pin (residual, unsupported by the chain loop)', () => {
+  it('a step pinned to a bash-dispatchable tool (e.g. local) also now runs for REAL — no collapse note', () => {
+    // 2026-08-03: this used to be the exact fixture the collapse note fired
+    // for; codexOrchestrationStepDispatchArms now gives it a real dispatch arm.
     const s = generateRunScript(orchestratedCodexWithToolPin);
+    expect(s).toContain("ORCHESTRATION_COLLAPSED_NOTE=''");
+    expect(s).not.toContain('[Shelly] Note: this agent is configured as a');
+    expect(s).toContain('case "$CODEX_ORCH_STEP_INDEX" in');
+    bashParses(s);
+  });
+
+  it('bakes a non-empty ORCHESTRATION_COLLAPSED_NOTE when a step carries a tool pin with no bash dispatch arm (residual, unsupported by the chain loop)', () => {
+    const s = generateRunScript(orchestratedCodexWithUnsupportedToolPin);
     expect(s).toMatch(/ORCHESTRATION_COLLAPSED_NOTE='\[Shelly\] Note: this agent is configured as a 3-step chain/);
     expect(s).toContain('cannot run the full chain unattended');
     bashParses(s);
@@ -169,12 +198,12 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b), residu
   });
 
   it('bumps the script version in lockstep with the native gate (v21)', () => {
-    const s = generateRunScript(orchestratedCodexWithToolPin);
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=48');
+    const s = generateRunScript(orchestratedCodexWithUnsupportedToolPin);
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=49');
   });
 
-  it('reflects the resolved tool label in the note (autonomous auto -> codex, tool-pinned step residual case)', () => {
-    const s = generateRunScript(orchestratedCodexWithToolPin);
+  it('reflects the resolved tool label in the note (autonomous auto -> codex, unsupported-tool-pinned step residual case)', () => {
+    const s = generateRunScript(orchestratedCodexWithUnsupportedToolPin);
     expect(s).toMatch(/ORCHESTRATION_COLLAPSED_NOTE='\[Shelly\] Note:.*tool "[^"]*[Cc]odex[^"]*" cannot run the full chain/);
   });
 });

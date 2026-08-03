@@ -353,7 +353,12 @@ describe('generateRunScript — chain execution: residual-unsupported cases stil
     expect(s).toContain('DRIVER_CWD="${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"');
   });
 
-  it('a step carrying its own tool pin keeps the OLD single-shot codexDriverCommand path (no CODEX_ORCH_ tokens at all)', () => {
+  it('a step pinned to a bash-dispatchable tool (local/gemini-api/perplexity/cerebras/groq) now RUNS the chain loop instead of collapsing', () => {
+    // 2026-08-03: previously ANY step .tool pin forced a collapse to the old
+    // single-shot codexDriverCommand path. Now that per-step dispatch has a
+    // static-codegen bash arm (codexOrchestrationStepDispatchArms), pins of
+    // these types are honored inside the chain loop — only apiCall (and any
+    // future non-dispatchable tool type) still forces the old collapse.
     const agentWithToolPin = baseAgent({ type: 'auto' }, {
       steps: [
         'collect the news',
@@ -361,7 +366,11 @@ describe('generateRunScript — chain execution: residual-unsupported cases stil
       ],
     });
     const s = generateRunScript(agentWithToolPin);
-    expect(s).not.toContain('CODEX_ORCH_');
+    expect(s).toContain('CODEX_ORCH_');
+    expect(s).toContain('CODEX_ORCH_INSTRUCTIONS=(');
+    // The dispatch-arm case statement routes step 1 (index 1) to the local-tool
+    // snippet instead of the codex driver.
+    expect(s).toContain('case "$CODEX_ORCH_STEP_INDEX" in');
   });
 });
 

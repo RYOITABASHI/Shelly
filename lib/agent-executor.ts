@@ -562,7 +562,13 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // (HTTP 404 "Model does not exist"), silently breaking the Cerebras leg of
 // every ③-ladder call an already-generated script would make. Bumped so a
 // stale on-disk script (baked with the dead model ID) gets regenerated.
-const AGENT_SCRIPT_VERSION = 48;
+// v49 (2026-08-04): codexOrchestrationChainCommand's per-step loop now
+// honors a step's own tool pin (local/gemini-api/perplexity/cerebras/groq)
+// instead of unconditionally running every step through the codex driver —
+// see canRunOrchestrationChain's updated doc comment. Bumped so a stale
+// on-disk chain script (baked before this) gets regenerated rather than
+// silently keeping the old always-collapse-on-any-pin behavior.
+const AGENT_SCRIPT_VERSION = 49;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -582,7 +588,29 @@ export interface OrchestrationChainOptions {
   totalStepCount: number;
   maxSteps: number;
   totalTimeoutMs: number;
+  /** Phase 7 (2026-08-04): threaded through to each per-step tool-dispatch
+   *  snippet's own generateToolCommand() recursion (the 'local' case's model
+   *  tier / env-var-name selection depends on it) — same value the top-level
+   *  agent.autonomous already is, since a chain only ever exists on one
+   *  agent. */
+  autonomous: boolean;
 }
+
+/** Tool types codexOrchestrationChainCommand's per-step dispatch (Phase 7,
+ *  2026-08-04) can actually run a step through by recursing into
+ *  generateToolCommand — exactly the set that has a real HTTP-request case in
+ *  that function's switch. `cli` and `auto` are deliberately absent: `cli`
+ *  needs no special dispatch (it's what every unpinned step already does in
+ *  this executor), and `auto`/`ab-article-eval` never appear as a step's own
+ *  pin (matchToolMention/TOOL_MENTIONS, the only thing that ever produces a
+ *  step-level `.tool`, only ever names a concrete backend). */
+const STEP_TOOL_BASH_DISPATCHABLE_TYPES = new Set<ToolChoice['type']>([
+  'local',
+  'gemini-api',
+  'perplexity',
+  'cerebras',
+  'groq',
+]);
 
 type ToolCommandOptions = {
   autonomous: boolean;
@@ -594,6 +622,14 @@ type ToolCommandOptions = {
    *  validates (see its own doc comment) — swaps the 'cli' case's single
    *  codexDriverCommand() call for codexOrchestrationChainCommand()'s loop. */
   orchestrationChain?: OrchestrationChainOptions;
+  /** Phase 7 (2026-08-03): set ONLY by codexOrchestrationChainCommand's own
+   *  per-step dispatch generation (never by generateRunScript's top-level
+   *  call) when it recurses into generateToolCommand for a step pinned to a
+   *  non-cli tool. Threads down into geminiApiCommand/openAiCompatApiCommand/
+   *  the 'local'+'perplexity' cases' own skipPromptCompose parameter — see
+   *  their doc comments for why. Every top-level call site leaves this
+   *  undefined, so their generated script is completely unaffected. */
+  stepSkipPromptCompose?: boolean;
 };
 
 const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
@@ -938,9 +974,16 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // escalates web→Codex. Suppressed when the user opted to STOP on free-tier
   // exhaustion (autonomousCloudStop), and when Codex isn't a valid autonomous tool.
   let bakeWebCodexLadder = false;
+  // Scoped above the `if (agent.autonomous)` block so the per-step credential
+  // resolution near canRunOrchestrationChain (Phase 7, 2026-08-03) can reuse
+  // the EXACT same web-consent exception the agent-level tool already got —
+  // two independently-computed copies of this condition would drift. Mirrors
+  // the identical lift lib/agent-plan-spec.ts's buildAgentPlanSpec already
+  // did for the same reason.
+  let consentWebTool = false;
   if (agent.autonomous) {
     const sig = detectRouteSignals(agent.prompt);
-    const consentWebTool =
+    consentWebTool =
       opts.autonomousCloudConsent === true &&
       sig.needsWeb &&
       (tool.type === 'gemini-api' || tool.type === 'perplexity');
@@ -1011,21 +1054,49 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   //     executor (scripts/shelly-plan-executor.js), which per point 2 above is
   //     exactly the executor every local/gemini-api/perplexity/cerebras/groq-
   //     resolved orchestrated agent already uses instead of this .sh file.
-  //     Re-resolving and re-dispatching a per-step pin through every backend
-  //     generateToolCommand supports IN BASH remains deliberately out of scope
-  //     (no HTTP broker abstraction exists on this side to build it on) — an
-  //     agent whose AGENT-level tool resolves to codex/cli still collapses any
-  //     pinned/apiCall step to a single step + the note below. Both residual
-  //     cases keep that collapse behavior.
+  //     `.apiCall` steps remain deliberately out of scope for THIS executor
+  //     (no HTTP broker abstraction exists on this side to build the generic
+  //     {{result}}-template + broker-dispatch machinery on, unlike the
+  //     PlanSpec/JS executor which already has it) — any apiCall step still
+  //     collapses the chain to a single step + the note below. A per-step
+  //     `.tool` pin, however, HAS been implemented here too (2026-08-04,
+  //     Phase 7 follow-up): STEP_TOOL_BASH_DISPATCHABLE_TYPES below lists the
+  //     tool types this executor can actually run a step through by
+  //     recursing into generateToolCommand (reusing the SAME per-provider
+  //     bash generateToolCommand already emits for a top-level agent of that
+  //     tool type — see codexOrchestrationChainCommand's per-step dispatch).
+  //     A step pinned to `cli` (i.e. explicitly Codex) is equivalent to no
+  //     pin at all here, since that is already what every step in this
+  //     executor does by default.
   const fullOrchestrationSteps: NormalizedStep[] = normalizeSteps(agent.orchestration);
   const orchestrationBudget = resolveBudget(agent.orchestration);
   const chainStepCount = Math.min(fullOrchestrationSteps.length, orchestrationBudget.maxSteps);
-  const attemptableOrchestrationSteps = fullOrchestrationSteps.slice(0, chainStepCount);
+  const attemptableOrchestrationStepsRaw = fullOrchestrationSteps.slice(0, chainStepCount);
+  // Phase 7 (2026-08-04): resolve each step's own tool pin through the SAME
+  // resolveForAutonomous() gate (and the SAME web-consent exception) the
+  // agent-level `tool` above already went through — mirrors
+  // lib/agent-plan-spec.ts's buildAgentPlanSpec::resolveStepToolForPlan
+  // exactly, just for this executor's own step list. A step whose tool the
+  // policy disallows unattended does NOT collapse the chain or block the
+  // step — its pin is just stripped, so it falls back to running with the
+  // agent-level `tool` (codex) instead, identical to how an unpinned step
+  // already behaves.
+  const resolveStepToolForChainScript = (step: NormalizedStep): NormalizedStep => {
+    if (!step.tool || !agent.autonomous) return step;
+    if (consentWebTool && (step.tool.type === 'gemini-api' || step.tool.type === 'perplexity')) return step;
+    const resolved = resolveForAutonomous(step.tool);
+    if (resolved) return { ...step, tool: resolved };
+    const { tool: _dropped, ...rest } = step;
+    return rest;
+  };
+  const attemptableOrchestrationSteps = attemptableOrchestrationStepsRaw.map(resolveStepToolForChainScript);
   const canRunOrchestrationChain =
     isOrchestrated(agent.orchestration) &&
     tool.type === 'cli' &&
     chainStepCount > 0 &&
-    attemptableOrchestrationSteps.every((s) => !s.apiCall && !s.tool);
+    attemptableOrchestrationSteps.every(
+      (s) => !s.apiCall && (!s.tool || s.tool.type === 'cli' || STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(s.tool.type))
+    );
 
   // Deliberately kept OUT of the actual dispatched/posted content
   // (RESULT_CONTENT_FILE / the `preview` argument dispatch_agent_action passes
@@ -1246,6 +1317,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
           totalStepCount: fullOrchestrationSteps.length,
           maxSteps: orchestrationBudget.maxSteps,
           totalTimeoutMs: orchestrationBudget.totalTimeoutMs,
+          autonomous: agent.autonomous === true,
         }
       : undefined,
   });
@@ -5381,13 +5453,19 @@ function generateToolCommand(
       // grounding — otherwise plain Gemini hallucinates like a non-web LLM.
       const sig = detectRouteSignals(rawPrompt);
       const grounded = sig.needsWeb && sig.webDomain === 'general';
-      return geminiApiCommand(escapedPrompt, resultVar, systemPromptJson, tool.model, grounded);
+      return geminiApiCommand(escapedPrompt, resultVar, systemPromptJson, tool.model, grounded, options.stepSkipPromptCompose ?? false);
     }
     case 'local':
       const localModel = (tool.model || (options.autonomous ? selectAutonomousLocalModel(rawPrompt) : LOCAL_MODEL_LIGHT)).replace(/"/g, '\\"');
       const localModelAssignment = options.autonomous
         ? `LOCAL_MODEL="\${SHELLY_AGENT_LOCAL_MODEL:-${localModel}}"`
         : `LOCAL_MODEL="\${LOCAL_LLM_MODEL:-${localModel}}"`;
+      // skipPromptCompose (Phase 7): see openAiCompatApiCommand's doc comment.
+      // The local case does its own two-step (raw-write-then-truncate)
+      // compose, so the skip has to cover both lines, not just one printf.
+      const localPromptCompose = options.stepSkipPromptCompose
+        ? ''
+        : `\t{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"\n\thead -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"\n\trm -f "$PROMPT_FILE.full"\n`;
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 	${localModelAssignment}
@@ -5413,10 +5491,7 @@ function generateToolCommand(
 	# closes the pipe early (large context > pipe buffer) → exit 141 → under
 	# 'set -euo pipefail' the whole run aborts BEFORE the fallback. Reading a
 	# regular file with head has no producer to signal, so it is abort-safe.
-	{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
-	head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"
-	rm -f "$PROMPT_FILE.full"
-	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+${localPromptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
 	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
@@ -5441,12 +5516,15 @@ function generateToolCommand(
 		fi
 		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
-    case 'perplexity':
+    case 'perplexity': {
       const perplexityModel = tool.model || 'sonar';
-		      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
+      // skipPromptCompose (Phase 7): see openAiCompatApiCommand's doc comment.
+      const perplexityPromptCompose = options.stepSkipPromptCompose
+        ? ''
+        : `\t\tprintf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"\n`;
+      return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 		REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-		printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 		MODEL='${perplexityModel.replace(/'/g, "'\\''")}'
 		if [ -z "\${PERPLEXITY_API_KEY:-}" ]; then
@@ -5471,6 +5549,7 @@ function generateToolCommand(
 		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		fi
 		rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
+    }
     case 'cerebras':
       // Free-tier cloud tier of the ③ ladder (OpenAI-compatible). Used after
       // local when local can't fit/handle the task, BEFORE Codex (quota-preserving).
@@ -5482,7 +5561,7 @@ function generateToolCommand(
         model: tool.model || 'gpt-oss-120b',
         label: 'Cerebras',
         authRef: 'cerebras',
-      });
+      }, options.stepSkipPromptCompose ?? false);
     case 'groq':
       return openAiCompatApiCommand(escapedPrompt, resultVar, systemPromptJson, {
         keyVar: 'GROQ_API_KEY',
@@ -5492,7 +5571,7 @@ function generateToolCommand(
         model: tool.model || 'llama-3.3-70b-versatile',
         label: 'Groq',
         authRef: 'groq',
-      });
+      }, options.stepSkipPromptCompose ?? false);
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, systemPromptJson, tool.localModel, tool.codexCmd, options.policyJson ?? '');
     case 'auto':
@@ -5609,6 +5688,101 @@ rm -f "$PROMPT_FILE"`;
  * it, same as this whole feature's behavior before the North Star fix. Left
  * as a documented follow-up (DEFERRED.md bug #155) rather than guessed at.
  */
+/**
+ * Phase 7 (2026-08-04) per-step tool dispatch: for each step index that
+ * carries its own `.tool` pin (already vetted by generateRunScript's
+ * resolveStepToolForChainScript — resolveForAutonomous, at generation time,
+ * exactly like the agent-level tool — and already limited to
+ * STEP_TOOL_BASH_DISPATCHABLE_TYPES by canRunOrchestrationChain's own gate),
+ * generate that step's dispatch by RECURSING into generateToolCommand with
+ * stepSkipPromptCompose:true — the exact same per-provider bash this file
+ * already emits for a top-level agent of that tool type, just reading the
+ * step's already-composed $PROMPT_FILE (codex_orch_build_prompt, called
+ * immediately before this in the loop) instead of overwriting it from a
+ * static literal. Returns a `case` arm map: index -> dispatch snippet, empty
+ * for any step relying on the default (unpinned) codex-driver path.
+ *
+ * `step.instruction` stands in for `rawPrompt` (only ever consulted for
+ * gemini-api's web-grounding heuristic) — the best static approximation
+ * available at generation time, since the step's real runtime prompt
+ * (base prompt + prior-step carry + this instruction) only exists once
+ * codex_orch_build_prompt composes it during the actual run.
+ */
+function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions): string {
+  const arms: string[] = [];
+  chain.steps.forEach((step, index) => {
+    if (!step.tool || !STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(step.tool.type)) return;
+    const snippet = generateToolCommand(step.tool, '', step.instruction, {
+      autonomous: chain.autonomous,
+      actionType: 'draft',
+      stepSkipPromptCompose: true,
+    });
+    arms.push(`  ${index})\n${snippet}\n    RESULT_CONTENT_FILE="$RESULT_FILE"\n    RESULT_CONTENT_IS_DRIVER_ANSWER=0\n    ;;`);
+  });
+  return arms.join('\n');
+}
+
+/**
+ * The per-step dispatch body inside codexOrchestrationChainCommand's main
+ * loop. When `stepDispatchArms` is empty (no step in this chain carries a
+ * `.tool` pin — still the overwhelming common case), returns the ORIGINAL
+ * unconditional codex-driver if/else block, byte-for-byte, so a chain with no
+ * pinned steps generates an identical script to before Phase 7 existed. When
+ * non-empty, wraps it in a `case "$CODEX_ORCH_STEP_INDEX" in ... esac`: each
+ * pinned index gets its own tool-dispatch arm, everything else (`*)`) falls
+ * through to that SAME unchanged codex-driver block.
+ */
+function codexOrchestrationStepBody(stepDispatchArms: string, resultVar: string, policyJson: string): string {
+  const codexDriverBlock = `  if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+    CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
+    CURRENT_STEP_TMP="$LOG_DIR/current.json.tmp"
+    # CODEX_ORCH_TOOL_JSON is already a JSON string literal (JSON.stringify'd
+    # at generation time, including its own quotes) - %s here must NOT add a
+    # second pair of quotes around it, or "tool" comes out double-quoted
+    # (invalid JSON, found during Sidebar RUNNING-row current.json plumbing).
+    printf '{"step":%s,"total":%s,"tool":%s,"startedAt":%s,"phase":"dispatch"}\n' \
+      "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_STEP_TOTAL" "$CODEX_ORCH_TOOL_JSON" "$(date +%s)" > "$CURRENT_STEP_TMP"
+    mv "$CURRENT_STEP_TMP" "$LOG_DIR/current.json"
+    set +e
+    shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+      --cwd "$DRIVER_CWD" \\
+      --approval-policy untrusted \\
+      --policy-json ${shellQuote(policyJson)} \\
+      --agent-id "$AGENT_ID" \\
+      --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
+      --escalation-timeout-action queue \\
+      --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
+      --answer-file "$RESULT_FILE.answer" \\
+      --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1
+    DRIVER_EXIT=$?
+    set -e
+    mirror_driver_audit_to_app_private || true
+    mirror_driver_audit_to_sdcard || true
+    CODEX_RESULT_ACTIVE=1
+    if [ -s "$RESULT_FILE.answer" ]; then
+      RESULT_CONTENT_FILE="$RESULT_FILE.answer"
+      RESULT_CONTENT_IS_DRIVER_ANSWER=1
+    else
+      RESULT_CONTENT_FILE="$RESULT_FILE"
+      RESULT_CONTENT_IS_DRIVER_ANSWER=0
+      touch "$BACKEND_ERROR_FILE"
+    fi
+  else
+    echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
+    RESULT_CONTENT_FILE="$RESULT_FILE"
+    RESULT_CONTENT_IS_DRIVER_ANSWER=0
+    DRIVER_EXIT=1
+    touch "$BACKEND_ERROR_FILE"
+  fi`;
+  if (!stepDispatchArms) return codexDriverBlock;
+  return `  case "$CODEX_ORCH_STEP_INDEX" in
+${stepDispatchArms}
+  *)
+${codexDriverBlock}
+    ;;
+  esac`;
+}
+
 function codexOrchestrationChainCommand(
   chain: OrchestrationChainOptions,
   resultVar: string,
@@ -5616,6 +5790,7 @@ function codexOrchestrationChainCommand(
 ): string {
   const instructionsArray = chain.steps.map((s) => `  ${shellQuote(s.instruction)}`).join('\n');
   const totalTimeoutSec = Math.max(1, Math.floor(chain.totalTimeoutMs / 1000));
+  const stepDispatchArms = codexOrchestrationStepDispatchArms(chain);
   return `CODEX_ORCH_BASE_PROMPT=${shellQuote(chain.basePrompt.trim())}
 CODEX_ORCH_INSTRUCTIONS=(
 ${instructionsArray}
@@ -5700,47 +5875,7 @@ while [ "$CODEX_ORCH_STEP_INDEX" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; do
 
   codex_orch_build_prompt "\${CODEX_ORCH_INSTRUCTIONS[$CODEX_ORCH_STEP_INDEX]}"
   rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE" "$RESULT_FILE.answer"
-  if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
-    CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
-    CURRENT_STEP_TMP="$LOG_DIR/current.json.tmp"
-    # CODEX_ORCH_TOOL_JSON is already a JSON string literal (JSON.stringify'd
-    # at generation time, including its own quotes) - %s here must NOT add a
-    # second pair of quotes around it, or "tool" comes out double-quoted
-    # (invalid JSON, found during Sidebar RUNNING-row current.json plumbing).
-    printf '{"step":%s,"total":%s,"tool":%s,"startedAt":%s,"phase":"dispatch"}\n' \
-      "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_STEP_TOTAL" "$CODEX_ORCH_TOOL_JSON" "$(date +%s)" > "$CURRENT_STEP_TMP"
-    mv "$CURRENT_STEP_TMP" "$LOG_DIR/current.json"
-    set +e
-    shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
-      --cwd "$DRIVER_CWD" \\
-      --approval-policy untrusted \\
-      --policy-json ${shellQuote(policyJson)} \\
-      --agent-id "$AGENT_ID" \\
-      --escalation-public-key-sha256 "\${SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256:-}" \\
-      --escalation-timeout-action queue \\
-      --audit-log "$LOG_DIR/agent-driver-audit.jsonl" \\
-      --answer-file "$RESULT_FILE.answer" \\
-      --prompt-file "$PROMPT_FILE" > ${resultVar} 2>&1
-    DRIVER_EXIT=$?
-    set -e
-    mirror_driver_audit_to_app_private || true
-    mirror_driver_audit_to_sdcard || true
-    CODEX_RESULT_ACTIVE=1
-    if [ -s "$RESULT_FILE.answer" ]; then
-      RESULT_CONTENT_FILE="$RESULT_FILE.answer"
-      RESULT_CONTENT_IS_DRIVER_ANSWER=1
-    else
-      RESULT_CONTENT_FILE="$RESULT_FILE"
-      RESULT_CONTENT_IS_DRIVER_ANSWER=0
-      touch "$BACKEND_ERROR_FILE"
-    fi
-  else
-    echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > ${resultVar}
-    RESULT_CONTENT_FILE="$RESULT_FILE"
-    RESULT_CONTENT_IS_DRIVER_ANSWER=0
-    DRIVER_EXIT=1
-    touch "$BACKEND_ERROR_FILE"
-  fi
+${codexOrchestrationStepBody(stepDispatchArms, resultVar, policyJson)}
 
   CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
   if [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
@@ -6012,15 +6147,27 @@ function openAiCompatApiCommand(
   resultVar: string,
   systemPromptJson: string,
   opts: { keyVar: string; envModelVar: string; keyHint: string; url: string; model: string; label: string; authRef: string },
+  skipPromptCompose = false,
 ): string {
   const model = opts.model.replace(/"/g, '\\"');
   const keyHint = opts.keyHint.replace(/'/g, "'\\''");
   const url = opts.url.replace(/"/g, '\\"');
   const label = opts.label.replace(/"/g, '\\"');
+  // skipPromptCompose (Phase 7, 2026-08-03): a chain step's own dispatch
+  // (codexOrchestrationChainCommand's per-step case, see its own doc comment)
+  // has ALREADY composed and written $PROMPT_FILE for THIS step via
+  // codex_orch_build_prompt — dynamic prior-step-result carry-forward this
+  // function has no way to reconstruct from a single static escapedPrompt
+  // string. Skipping just this one line means the rest of the function reads
+  // whatever is already on disk instead of clobbering it with a blank/stale
+  // literal; every existing (non-chain) call site is unaffected, since they
+  // never pass this flag and the generated script is byte-for-byte unchanged.
+  const promptCompose = skipPromptCompose
+    ? ''
+    : `\tprintf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"\n`;
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
-	printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+${promptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	MODEL="\${${opts.envModelVar}:-${model}}"
 	if [ -z "\${${opts.keyVar}:-}" ]; then
@@ -6047,18 +6194,23 @@ function openAiCompatApiCommand(
 	rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
 }
 
-function geminiApiCommand(escapedPrompt: string, resultVar: string, systemPromptJson: string, model?: string, grounded = false): string {
+function geminiApiCommand(escapedPrompt: string, resultVar: string, systemPromptJson: string, model?: string, grounded = false, skipPromptCompose = false): string {
   // gemini-2.5-flash: the 2.0-flash free tier is limit:0 (no free quota); 2.5-flash
   // has a working free tier AND supports Google Search grounding (verified 2026-06-24).
   const defaultModel = model || 'gemini-2.5-flash';
   // Google Search grounding: only added for web-mandatory tasks so routine
   // Gemini calls aren't forced onto the search tool.
   const toolsFragment = grounded ? '\\"tools\\":[{\\"google_search\\":{}}],' : '';
+  // skipPromptCompose: see openAiCompatApiCommand's own doc comment — same
+  // Phase 7 chain-step reuse, same "byte-identical for every existing caller"
+  // guarantee (nothing passes this flag except codexOrchestrationChainCommand).
+  const promptCompose = skipPromptCompose
+    ? ''
+    : `printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"\n`;
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 HTTP_STATUS_FILE="$RESULT_FILE.response.json.http-status"
-printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
-PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
+${promptCompose}PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 MODEL="\${GEMINI_MODEL:-${defaultModel.replace(/"/g, '\\"')}}"
 # The 2.0-flash free tier is limit:0 (no free quota) → 429s and (in autonomous

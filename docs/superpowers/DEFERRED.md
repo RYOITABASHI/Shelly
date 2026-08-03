@@ -14,6 +14,31 @@
 
 ---
 
+### ✅ Hermes Agent機能ギャップ、Fable5提案の①②実装（2026-08-03、"①と②を実装しよう"指示） — コミット・実機未検証
+
+**背景**: 「HermesユーザーがShellyを使っても遜色ないか」という質問に対して正直に回答した後、ユーザーから「どうするべきかをFable5に聞いてアイデア貰って」との指示。Fable5は残存ギャップ（codexチェーンのper-stepツール振り分け未実装、並列サブエージェント実行、意味的メモリの弱さ）を優先度付きで提示し、「①メモリのBM25改善 → ②codexチェーン静的コード生成 → 並列実行はスキップ」を推奨。ユーザーが「①と②を実装しよう」と選択。
+
+**①メモリBM25改善**（`80210e268`）:
+- `lib/agent-text-match.ts`: 新規`tokenizeWithCounts()`（既存`tokenizeForMatch`と同じトークン規則だが、重複を潰さずカウントする——BM25のtf(t,D)に必要）。
+- `lib/agent-memory.ts`の`recallMemoryNotes()`を全面書き換え——Okapi BM25（`k1=1.5`, `b=0.75`）+ タグ一致ボーナス（`TAG_MATCH_WEIGHT=3`）+ 半減期90日の recency 乗数（`0.5 + 0.5*exp(-ageDays/90)`）に刷新。決定的テスト用に4番目の`now`引数を追加。全関連性0件時は呼び出し元の入力順（新しい順を渡す既存契約）にフォールバックする挙動を doc コメントで明記（独自の recency 再ソートではないことを明確化）。
+- 検証: 新規11テスト全PASS、既存回帰クリーン。push・CI green確認済み（databaseId 30788048592）。
+
+**②codexチェーン静的コード生成**（本コミット）:
+- 背景: P1実装（`lib/agent-plan-spec.ts`のper-stepツール解決）は`scripts/shelly-plan-executor.js`（JS実行エンジン、local/gemini-api/perplexity/cerebras/groq解決時に使われる）側だけで完結していた。`lib/agent-executor.ts`の**bash生成エンジン**（`auto`→codex CLI解決時に使われる無人スケジュール発火の主経路）は、ステップに`.tool`ピンが付いているだけでチェーン全体を1ステップに"潰す"（collapse）挙動のままだった——実際に実行はされるが、2ステップ目以降が silently スキップされる。
+- `lib/agent-executor.ts`: `AGENT_SCRIPT_VERSION`を48→49へバンプ。新規`STEP_TOOL_BASH_DISPATCHABLE_TYPES`（`local`/`gemini-api`/`perplexity`/`cerebras`/`groq`——bashチェーンループが実際にディスパッチできる型）。`generateRunScript`の`resolveStepToolForChainScript`が`lib/agent-plan-spec.ts`の`resolveStepToolForPlan`と**同一の**`resolveForAutonomous()`ゲート・web-consent例外を、生成時（オンデバイス実行時ではない）に各ステップの`.tool`へ適用——ポリシー的に許可されないピン（api-key系）は黙って削除されエージェントレベルtoolへフォールバック（チェーンを壊さない、既存原則を踏襲）。新規`codexOrchestrationStepDispatchArms()`が、許可された型のステップごとに`generateToolCommand()`を**再帰呼び出し**して bash ディスパッチ片を生成（新設の`stepSkipPromptCompose`オプションで、静的literalへの`$PROMPT_FILE`上書きをスキップし、チェーンループが動的合成した内容をそのまま読ませる）。新規`codexOrchestrationStepBody()`がそれらを`case "$CODEX_ORCH_STEP_INDEX" in ... esac`でラップ——ピン無しステップは従来通りcodexドライバへ（`*)`アーム、既存コードとbyte-identical）。
+- `canRunOrchestrationChain`のゲート条件を`.every(s => !s.apiCall && (!s.tool || s.tool.type==='cli' || STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(s.tool.type)))`へ拡張（`apiCall`のみ引き続き未対応=collapse）。**実装中に発見した自己矛盾バグ**: doc コメントは「`cli`ピンはピン無しと等価」と明記していたが、ゲート条件は`cli`を`STEP_TOOL_BASH_DISPATCHABLE_TYPES`に含めておらず矛盾——`cli`ピン付きステップが不要にcollapseしていた。ゲート条件に`s.tool.type==='cli'`を追加して doc コメント通りの挙動に修正。
+- `AgentRuntime.kt`の`CURRENT_SCRIPT_VERSION`を48→49へ同期。
+- テスト: `__tests__/agent-executor-chain-execution.test.ts`の残存ケーステストを新挙動に更新（local型ピンは今やチェーンが実際に走る＝collapseしない）。`__tests__/agent-executor-orchestration-collapse.test.ts`を全面改訂——`orchestratedCodexWithToolPin`（local型ピン）はcollapseしなくなったことを確認する新テストへ差し替え、真のresidual-collapseケース（`ab-article-eval`型ピン——autonomous許可されるがbashディスパッチ非対応)を新フィクスチャとして追加（`openrouter`は当初の候補だったが、api-key系のため`resolveStepToolForChainScript`で剥奪される別経路と判明し不適切と判断・差し替え）。バージョン文字列48→49の一括更新を5ファイルに適用。
+- 検証: `npx tsc --noEmit`クリーン、`agent-executor`系テスト全PASS（313件）、全体回帰2745 passed/24 failed（既知のWindows固有4スイート: capability-broker.test.ts, plan-executor.test.ts, plan-executor-orchestration.test.ts, plan-executor-multi-action.test.tsと完全一致、新規リグレッションなし）。`bash -n`構文検証は各テストの`bashParses()`ヘルパー経由で実施済み。
+
+**実機未検証（次回オンデバイステストで確認すること）**:
+1. codex解決（`auto`→OAuth codex）の無人発火エージェントで、ステップに`{ type: 'local' }`等のピンを付けた際、実際にそのステップだけ別プロバイダで実行されること（ログ/current.jsonの`tool`フィールドで確認可能）。
+2. ピン無しステップが引き続き従来通りcodexドライバを通ること（回帰確認）。
+
+→ sync: なし（内部ロジックのみ）。
+
+---
+
 ### ✅ Fable5 second-pass レビューのP1/P2/P3全件実装（2026-08-03、"全部実装して下さい"指示） — コミット・実機未検証
 
 **背景**: v7.5.5リリース後、ユーザーから2回目のFable5レビュー依頼（「HermesユーザーがShellyを見てAndroid版Hermesだと思えるか」「複雑なパイプラインを自然言語で実行できるか」）。Fable5は自己申告（前回のDEFERRED.mdエントリ）を鵜呑みにせず実コードを読んで検証し、「条件付きYes」の両方を認めつつ、Tier3の`steps`が持つ約束と実装の間の実在するギャップを発見:
