@@ -208,6 +208,17 @@ describe('reduceStatus / combineFinalPreview', () => {
     const out = combineFinalPreview([step({ index: 1, status: 'error', outputPreview: 'boom' })]);
     expect(out).toMatch(/Step 2.*failed.*boom/);
   });
+  it('totalSteps (2026-08-03): denominator reflects the PLANNED chain length, not just steps attempted before a fail-fast stop', () => {
+    // A 5-step chain that dies on step 1 used to render "Step 1/1 failed" —
+    // reading as if that were the whole chain — since combineFinalPreview only
+    // ever saw the single attempted record. Passing the real total fixes that.
+    const out = combineFinalPreview([step({ index: 0, status: 'error', outputPreview: 'boom' })], 5);
+    expect(out).toMatch(/Step 1\/5 failed/);
+  });
+  it('totalSteps omitted falls back to steps.length (unchanged default behavior)', () => {
+    const out = combineFinalPreview([step({ index: 0, status: 'error', outputPreview: 'boom' })]);
+    expect(out).toMatch(/Step 1\/1 failed/);
+  });
   it('a transient step (no hard error) reduces to unavailable, NOT error (breaker exclusion)', () => {
     // P0-b invariant must hold for multi-step agents too: a transient web outage
     // must not be folded into an 'error' that trips the circuit breaker.

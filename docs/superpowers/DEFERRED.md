@@ -39,6 +39,16 @@
 
 **2回目の実行失敗の原因訂正（2026-08-03、ユーザーが通知スクショで指摘・Fable5調査で確定）**: CC（Claude）は当初「Perplexity APIキー未接続」「壊れたステップ1（`"16時14分に"`という時刻断片がステップとして混入）による早期失敗」と2回連続で誤った推測を報告した。実際の通知本文は `エンジン: Gemini API / Step 1/1 failed: HTTP broker failed rc=43: capability broker: auth_ref "gemini" has no configured secret (GEMINI_API_KEY)` であり、ユーザーがPerplexityダッシュボード（クレジット残高$2.67、8/3の利用量ゼロ）を提示して指摘、Fable5に根本原因調査を依頼した。**確定した事実**: (1) この端末は設定「Autonomous Cloud」トグルがONで、`lib/agent-tool-router.ts`の`resolveAutonomousFinalTool()`（2026-07-14追加の明示同意N1例外——`agent-credential-policy.ts`冒頭の「APIキー系は自律経路から絶対除外」というコメントとは裏腹に、consent∧needsWeb∧gemini/perplexity限定で例外的に許可する設計）により、Web必須タスク（「最新のAIニュースを集めて」）でagent-level toolがGemini APIに正規に解決されていた——**ポリシー違反ではない**。(2) 実際の失敗原因は単純に、この端末のcapability brokerにGEMINI_API_KEYが未設定だったこと（フェイルクローズが正しく機能、鍵漏洩なし）。(3) 「Step 1/1」は総ステップ数ではなく「失敗ステップ番号／実行済みステップ数」を表す表示仕様（`scripts/shelly-plan-executor.js:412`）——5ステップのはずが1/1と出るのは紛らわしい表示バグ、次回整理时に`Step N/${totalSteps}`へ修正を検討。**残タスク**: `agent-credential-policy.ts`冒頭コメントにN1同意例外を追記してドキュメントと実装の乖離を解消（P3）。**教訓**: 実機ログ/通知を確認する前に原因を推測して報告しない——今回2回連続で誤った当て推量をユーザーに提示してしまった。
 
+**✅ 3件の修正を実装（同日、ユーザー指示「修正を実装して下さい」+「Gemini APIも登録済みです」の追加指摘を受けて）**:
+
+1. **本丸: `.env`未同期バグ（新発見）**——ユーザーから「Gemini APIキーは実際に登録済み」と提示され、Settings UIの「✓設定済み」表示を鵜呑みにせず端末のTerminalペインで直に`~/.shelly/agents/.env`を確認（`grep -c API_KEY ~/.shelly/agents/.env` → **0件**。LOCAL_LLM_*とSocial Connectorテスト用シークレットは同期済みだったため、同期機構自体は正常に動作することを確認——SecureStoreには4キー全て存在するが、`.env`には1行も無い）。原因: `store/settings-store.ts`の`updateSettings()`は`pendingEnvSync`キューに積むだけで、実際のflush（`flushPendingAgentEnvSync`）は各APIキー編集UIの保存ボタンでのみトリガーされる（`components/layout/SettingsDropdown.tsx:1328,1341`）——この同期機構が実装される前に登録されたキー、あるいはそれ以降一度も再保存していないキーは、SecureStore上は正しく「設定済み」に見えつつ`.env`には永遠に反映されない。**修正**: `lib/agent-env-sync.ts`に新規`reconcileApiKeysToEnv()`——保存済みの4キー+Autonomous Cloud同意フラグを現在値のまま`updateSettings()`へ再投入し1回flush（アラートを出さない静かな版、`flushPendingAgentEnvSync`とは別実装）。`app/_layout.tsx`の`loadSettings()`完了後（アプリ起動毎）に自動実行するよう配線。同期済み端末には無害な冪等操作。
+2. **「Step 1/1」表示の紛らわしさ**——`combineFinalPreview()`（`lib/agent-orchestration.ts`、`scripts/shelly-plan-executor.js`+APKアセットミラー）に第2引数`totalSteps`を追加、分母をチェーンの計画済み総ステップ数に変更（従来は「fail-fastで打ち切られるまでに実際に試行したステップ数」が分母になっていたため、5ステップ中1ステップ目で落ちても「Step 1/1 failed」と表示され、あたかもそれが全ステップであるかのように読めた）。呼び出し元`lib/agent-manager.ts`/`scripts/shelly-plan-executor.js`で総ステップ数を渡すよう更新。省略時は従来通り`steps.length`にフォールバック（後方互換）。
+3. **`agent-credential-policy.ts`冒頭コメントの陳腐化**——「APIキー系は自律経路から絶対除外」という記述に、2026-07-14追加のN1同意例外（`resolveAutonomousFinalTool()`/`consentWebTool`）の存在を明記し、実装との乖離を解消。
+
+**検証**: `npx tsc --noEmit`クリーン。`__tests__/plan-executor-orchestration-chain.test.ts`の期待値を`Step 2/2`→`Step 2/3`へ更新（新しい正しい挙動）、`__tests__/agent-orchestration.test.ts`に`totalSteps`の新規テスト2件追加（明示指定時/省略時のフォールバック）。全体回帰2747 passed/24 failed、既知のWindows固有4スイート（capability-broker.test.ts, plan-executor.test.ts, plan-executor-orchestration.test.ts, plan-executor-multi-action.test.ts）と完全一致、新規リグレッションなし。
+
+**実機未検証**: `reconcileApiKeysToEnv()`が次回アプリ起動時に実際に`.env`へ4キーを書き込むこと（次回の実機更新時に`grep API_KEY ~/.shelly/agents/.env`で確認すること）。
+
 → sync: なし（内部ロジックのみ）。
 
 ---

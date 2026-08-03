@@ -23,6 +23,24 @@
  * the autonomous path (their key would sit in an LLM-readable env — the exact
  * OpenClaw leak surface). They remain available in manual/foreground runs where
  * a human is present. See specs/2026-06-17-autonomous-mode-A-policy-gate.md §4, §7a.
+ *
+ * N1 exception (2026-07-14, docs/superpowers/DEFERRED.md): a user-granted
+ * "Autonomous Cloud" consent (settings-store's `autonomousCloudConsent`,
+ * synced to `SHELLY_AUTONOMOUS_CLOUD` in ~/.shelly/agents/.env) lets a
+ * genuinely web-mandatory autonomous task keep a gemini-api/perplexity tool
+ * INSTEAD of being forced onto OAuth/local. This function and
+ * `resolveForAutonomous()` below are deliberately unaware of that
+ * exception — they stay the strict OAuth/local-only baseline. The exception
+ * itself lives one layer up, at the two callers that actually decide a run's
+ * final tool: `lib/agent-tool-router.ts`'s `resolveAutonomousFinalTool()`
+ * (agent-level, at registration confirm) and `lib/agent-plan-spec.ts` /
+ * `lib/agent-executor.ts`'s `consentWebTool` (per-step, at script/plan
+ * generation) — both apply the identical `consent && needsWeb &&
+ * (gemini-api || perplexity)` condition before falling back to this file's
+ * `resolveForAutonomous()`. A run that reaches this exception still needs the
+ * matching *_API_KEY actually present in ~/.shelly/agents/.env (see
+ * `reconcileApiKeysToEnv()` in lib/agent-env-sync.ts) — the capability broker
+ * fails closed, not open, when consent is granted but the secret is missing.
  */
 import { ToolChoice } from '@/store/types';
 

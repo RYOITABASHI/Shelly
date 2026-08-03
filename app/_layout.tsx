@@ -17,6 +17,7 @@ import { JetBrainsMono_400Regular, JetBrainsMono_700Bold } from "@expo-google-fo
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
 import { loadAgentsFromDisk, syncAgentRunLogsFromDisk } from "@/lib/agent-manager";
+import { reconcileApiKeysToEnv } from "@/lib/agent-env-sync";
 import { useI18n, useTranslation } from '@/lib/i18n';
 import { useThemeStore } from '@/lib/theme-engine';
 import { useA11yStore } from '@/lib/accessibility';
@@ -340,6 +341,13 @@ export default function RootLayout() {
 
     loadSettings().then(() => {
       logInfo('RootLayout', 'Loaded: settings');
+      // Boot-time .env reconciliation (2026-08-03, docs/superpowers/DEFERRED.md):
+      // a key configured before flushPendingAgentEnvSync existed (or never
+      // re-saved since) can be correctly in SecureStore/Settings while
+      // ~/.shelly/agents/.env has no matching line, so the capability broker
+      // fails closed on every autonomous run needing it — see
+      // reconcileApiKeysToEnv's own doc comment for the reproduction.
+      void reconcileApiKeysToEnv();
     }).catch((e: any) => {
       logError('RootLayout', 'loadSettings failed', e);
     });

@@ -1692,7 +1692,7 @@ async function runAgentOrchestratedBody(
     agentId,
     timestamp: Date.now(),
     status: reduceStatus(records),
-    outputPreview: combineFinalPreview(records),
+    outputPreview: combineFinalPreview(records, steps.length),
     durationMs: Date.now() - startedAtMs,
     toolUsed: records.at(-1)?.routeDecision?.toolLabel ?? 'orchestration',
     routeDecision: records.at(-1)?.routeDecision,

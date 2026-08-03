@@ -1,8 +1,9 @@
 import { Alert, ToastAndroid } from 'react-native';
 import { execCommand } from '@/hooks/use-native-exec';
-import { logError, logWarn } from '@/lib/debug-logger';
+import { logError, logInfo, logWarn } from '@/lib/debug-logger';
 import { rematerializeAutonomousAgents } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
+import { useSettingsStore } from '@/store/settings-store';
 
 export async function flushPendingAgentEnvSync(label: string): Promise<boolean> {
   const cmd = useAgentStore.getState().consumePendingEnvSync();
@@ -21,6 +22,50 @@ export async function flushPendingAgentEnvSync(label: string): Promise<boolean> 
     Alert.alert(`${label} saved`, `Saved in secure storage, but background agent env sync failed:\n\n${String(e?.message || e)}`);
     logError('AgentEnvSync', `${label} env sync threw`, e);
     return false;
+  }
+}
+
+/**
+ * Boot-time reconciliation (2026-08-03, found via on-device Gemini-key
+ * failure): ~/.shelly/agents/.env only receives a key when its Settings row
+ * is EDITED AND SAVED — flushPendingAgentEnvSync is edit-triggered, not
+ * boot-triggered. A key that was configured before this sync mechanism
+ * existed (or restored from a backup, or simply never re-saved since) can
+ * sit correctly in SecureStore — Settings shows it as configured — while the
+ * capability broker's env file has no matching line at all, so every
+ * autonomous run needing that backend fails with "no configured secret"
+ * despite the UI insisting the key is set. Reproduced 2026-08-03: Settings
+ * showed all 4 API keys + Gemini configured, but ~/.shelly/agents/.env had
+ * zero *_API_KEY lines (LOCAL_LLM_* and social-connector secrets, which were
+ * configured more recently, WERE present — confirming the sync mechanism
+ * itself works, it just never fired for these older values).
+ *
+ * Re-queues the exact same fields updateSettings() already syncs on edit,
+ * using their CURRENT stored values (a no-op for anyone whose .env is
+ * already in sync — same idempotent grep-replace-rewrite the edit path
+ * uses), then flushes once. Silent best-effort: called on every app boot,
+ * so a transient failure here just retries next launch.
+ */
+export async function reconcileApiKeysToEnv(): Promise<void> {
+  try {
+    const s = useSettingsStore.getState().settings;
+    useSettingsStore.getState().updateSettings({
+      geminiApiKey: s.geminiApiKey ?? '',
+      cerebrasApiKey: s.cerebrasApiKey ?? '',
+      groqApiKey: s.groqApiKey ?? '',
+      perplexityApiKey: s.perplexityApiKey ?? '',
+      autonomousCloudConsent: s.autonomousCloudConsent ?? false,
+    });
+    const cmd = useAgentStore.getState().consumePendingEnvSync();
+    if (!cmd) return;
+    const result = await execCommand(cmd, 30_000);
+    if (result.exitCode !== 0) {
+      logWarn('AgentEnvSync', 'boot reconciliation failed', result.stderr || result.stdout);
+      return;
+    }
+    logInfo('AgentEnvSync', 'boot reconciliation: re-synced stored API keys to .env');
+  } catch (e) {
+    logWarn('AgentEnvSync', 'boot reconciliation threw', e);
   }
 }
 

@@ -405,15 +405,20 @@ function reduceStatus(records) {
 
 // Verbatim port of lib/agent-orchestration.ts's combineFinalPreview: the single
 // run-log preview for an orchestrated run (bounded to STEP_PREVIEW_MAX_CHARS).
-function combineFinalPreview(records) {
+function combineFinalPreview(records, totalSteps) {
   if (records.length === 0) return '';
+  // totalSteps (2026-08-03): see lib/agent-orchestration.ts's combineFinalPreview
+  // doc comment — a fail-fast chain's records array is "attempted so far", not
+  // the planned total, so a 5-step chain dying on step 1 used to render
+  // "Step 1/1 failed" instead of "Step 1/5 failed".
+  const total = totalSteps === undefined ? records.length : totalSteps;
   const failed = records.find((s) => s.status === 'error');
   if (failed) {
-    return `Step ${failed.index + 1}/${records.length} failed: ${failed.outputPreview}`.slice(0, STEP_PREVIEW_MAX_CHARS);
+    return `Step ${failed.index + 1}/${total} failed: ${failed.outputPreview}`.slice(0, STEP_PREVIEW_MAX_CHARS);
   }
   const transient = records.find((s) => s.status === 'unavailable');
   if (transient) {
-    return `Step ${transient.index + 1}/${records.length} temporarily unavailable (web backend busy): ${transient.outputPreview}`.slice(
+    return `Step ${transient.index + 1}/${total} temporarily unavailable (web backend busy): ${transient.outputPreview}`.slice(
       0,
       STEP_PREVIEW_MAX_CHARS,
     );
@@ -2587,7 +2592,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
   }
 
   const status = reduceStatus(records);
-  const preview = combineFinalPreview(records);
+  const preview = combineFinalPreview(records, plan.steps.list.length);
   if (!dispatchedFinal) {
     // The chain never reached (or never actually dispatched) its final step —
     // fire the ONE notification for the whole chain here. When the final step

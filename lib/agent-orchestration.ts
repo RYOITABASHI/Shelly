@@ -207,17 +207,24 @@ export function reduceStatus(
 }
 
 /** Build the single run-log preview for an orchestrated run (bounded). */
-export function combineFinalPreview(steps: AgentRunStep[]): string {
+export function combineFinalPreview(steps: AgentRunStep[], totalSteps?: number): string {
   if (steps.length === 0) return '';
+  // totalSteps (2026-08-03): the chain's FULL planned length. Defaults to
+  // steps.length (the old behavior) when the caller doesn't have it handy —
+  // but a fail-fast chain stops after the failing step, so steps.length is
+  // really "attempted so far", not "planned total". A 5-step chain that dies
+  // on step 1 used to render "Step 1/1 failed", reading as if that were the
+  // whole chain — pass the real total so it reads "Step 1/5 failed" instead.
+  const total = totalSteps ?? steps.length;
   const failed = steps.find((s) => s.status === 'error');
   if (failed) {
-    return `Step ${failed.index + 1}/${steps.length} failed: ${failed.outputPreview}`.slice(0, MAX_PREVIEW_CHARS);
+    return `Step ${failed.index + 1}/${total} failed: ${failed.outputPreview}`.slice(0, MAX_PREVIEW_CHARS);
   }
   // No hard error but a transient web outage stopped the chain — surface it as
   // "temporarily unavailable" (will retry next schedule), not a failure.
   const transient = steps.find((s) => s.status === 'unavailable');
   if (transient) {
-    return `Step ${transient.index + 1}/${steps.length} temporarily unavailable (web backend busy): ${transient.outputPreview}`.slice(
+    return `Step ${transient.index + 1}/${total} temporarily unavailable (web backend busy): ${transient.outputPreview}`.slice(
       0,
       MAX_PREVIEW_CHARS,
     );

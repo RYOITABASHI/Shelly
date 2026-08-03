@@ -317,7 +317,9 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
     expect(log.steps).toHaveLength(2);
     expect(log.steps[0].status).toBe('success');
     expect(log.steps[1].status).toBe('error');
-    expect(log.outputPreview).toMatch(/Step 2\/2 failed/);
+    // 2026-08-03: the denominator is now the chain's PLANNED total (3), not
+    // "steps attempted so far" (2) — see combineFinalPreview's doc comment.
+    expect(log.outputPreview).toMatch(/Step 2\/3 failed/);
 
     // The final step's dispatchActionTrusted was never reached, so this
     // executor's own fallback fired the ONE aggregate notification.
