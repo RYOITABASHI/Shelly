@@ -273,6 +273,15 @@ If the request itself is too vague to act on — "help me out" with no object or
 
 **Honest caveat:** unattended firing depends on Android's background limits, which vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers). Shelly uses Android's highest-priority alarm path (named above) and surfaces missed runs, but it can't *guarantee* a fire on every device — grant the battery-optimization exemption and check the agent's run view.
 
+### Learning loop
+
+Registering an agent isn't a fixed form. When what you asked for is ambiguous, an LLM — not a hardcoded pipeline — drives the rest of the conversation in its own words, asks follow-up questions one at a time, and only proposes a final registration once it believes it has enough (**LLM-Led Agent Registration**, on by default, toggle in Settings → Agents; tries a fast cloud provider first if you've configured one, then falls back to the on-device model, then to Shelly's fixed one-field-at-a-time prompts if nothing is reachable — so the conversation degrades gracefully instead of getting stuck). A request that turns out to have several ordered steps ("look this up, summarize it, then post it") is kept as a real multi-step chain — the same orchestration engine deterministic registration already used — instead of being collapsed into one prompt. Every value the model proposes is still independently re-checked before it's trusted: a schedule phrase is re-parsed by the same deterministic cron logic every other path uses, a posting destination has to match a connector you actually registered, and a webhook URL or shell command is only accepted when it's a literal, character-for-character copy of something you typed in that same conversation — never something the model invented. The human confirmation tap is never skipped, no matter which path produced the draft.
+
+Agents also get better with use, on-device, without a server:
+
+- **Skill distillation** — after a successful run, Shelly can distill it into a reusable "skill recipe" (a markdown file, GLOBAL across agents, not tied to the one that created it) and offers to save it; a later task that matches gets the recipe recalled and reused instead of solving the same problem from scratch. Nothing saves silently — you always see what would be kept.
+- **Persistent memory** — agents can write and recall small facts across runs ("remember that…"), stored as plain markdown notes on-device and mirrored into your Obsidian vault for inspection. A secret detected in a memory note forces that run onto a local/on-device model, never a cloud one — the same secret-guard every other execution path already enforces.
+
 ### Scouter Widget
 
 <p align="center">
@@ -550,6 +559,12 @@ Currently registered:
 | Background / autonomous agents — `@agent` registration, unattended AlarmManager execution (getForegroundService), run / next / last / missed-run visibility | ✅ wired; one unattended fire observed end-to-end on Z Fold6 (N=1, app cached at fire) — cross-OEM reliability not yet broadly tested |
 | Agent social-post connectors — Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress | ✅ Bluesky verified live end-to-end; the other six ship on the same code path and test coverage but haven't each been fired against a real account yet |
 | Agent task-clarity detection — asks what the task actually is when a request is too vague, before asking about scheduling | ✅ shipping; confirmed on-device 2026-07-27 |
+| LLM-Led Agent Registration (on by default, Settings → Agents) — the model drives multi-turn clarification in its own words instead of fixed prompts, cloud-provider-first with a local-model and fixed-prompt fallback chain, webhook/CLI proposals gated to literal copies of what you typed | ✅ shipping; on-device verified 2026-08-03 (flag-off regression, verbatim-URL acceptance, hallucinated-URL rejection, provider failover, Tier-2 escalation, autonomous-confirmation safety net). Multi-step chain authoring (below) and the default-on flip landed after that pass and are unit-tested only, not yet re-verified on-device |
+| LLM-Led Agent Registration — multi-step chain authoring (`steps`) — a conversational registration that turns out to need several ordered steps stays a real chain (same orchestration engine as deterministic registration) instead of collapsing into one prompt | ✅ shipping; unit-tested (157/157), not yet on-device verified |
+| Skill distillation — a successful run can be saved as a reusable, global skill recipe and recalled on a matching later task; a recipe that fails carries a corrective hint into its next use until a verified success clears it | ✅ shipping |
+| Persistent agent memory — write/recall facts across runs, secret-guarded to force local-only when a note contains a secret | ✅ shipping |
+| User profile learning — locally observes command/agent-usage patterns to personalize the AI Pane system prompt; see [Privacy](#privacy) for what leaves the device | ✅ shipping; unit-tested, not yet on-device verified |
+| X (Twitter) connector — OAuth 2.0 PKCE connect, regular posts, long-form Articles (draft → publish) | ✅ implemented, integration-tested; not yet fired against a live account with billing enabled |
 | Scouter widget RUN (widget-triggered agent start) | ✅ shipping; runs through the same unattended execution gates as a scheduled alarm fire. Cloud-API-backed agents fall back to Codex unless the opt-in **Autonomous Cloud** setting (off by default) allows the unattended cloud call — this is the credential policy working as designed, not a bug |
 | Scouter widget `@agent` registration (new-agent registration from ASK, voice input, opt-in no-confirm register) | ✅ shipping; confirmed on-device 2026-07-30 — ASK routes `@agent` text through the same AI Pane confirm flow as typing it directly; with **Widget No-Confirm Register** off it confirms normally, with it on it registers immediately and a notification confirms it; voice input populates the field without auto-submitting |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
@@ -945,7 +960,7 @@ See [SECURITY.md](./SECURITY.md) for the threat model and private vulnerability 
 
 ## Privacy
 
-- **User profile learning** — Shelly observes your command patterns and AI usage to personalize suggestions (`lib/user-profile.ts`). This data stays on-device in AsyncStorage. However, when you send a message to a cloud AI, the profile context is included in the API request to improve response quality. You can disable profile learning in Settings.
+- **User profile learning** — Shelly observes your command patterns and AI usage to personalize suggestions (`lib/user-profile.ts`). This data stays on-device in AsyncStorage. However, when you send a message to a cloud AI, the profile context is included in the API request to improve response quality. There is no Settings toggle to disable this yet — it always runs.
 - **No telemetry** — Shelly does not phone home: no analytics, no crash reporting, no usage tracking. Network traffic comes only from things you initiate — your AI API calls, Codex auth, update checks/downloads, Browser Pane use, and any local/API endpoints you configure.
 - **Local LLM mode** — For fully private usage, configure a local GGUF model through llama.cpp. Qwen3.5-2B Q4_K_M is the recommended default, Qwen3 1.7B and Qwen3.5 0.8B are available for lower memory pressure, and 4B/9B models are available for short quality checks. All processing stays on-device.
 
