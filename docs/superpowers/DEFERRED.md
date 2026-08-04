@@ -3892,6 +3892,25 @@ claude() {
 
 ---
 
+**2026-08-04 オーケストレーション最終ステップの中身が薄い問題（Bug A/B修正後の残存課題、実機発見→調査→修正→実機検証まで完了）**: Problem D修正後の実機検証（`agent-msecxsj9`、「パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して」2ステップ版）で、ステップ0（Perplexity収集）は正常な詳細レポートを返したが、ステップ1（ローカルLLM要約）が実データを反映しない「企業名+推測URLの箇条書き」（`- [OpenAI 2026年AIトレンド報告](https://openai.com/research)` 等）を返し、それがそのまま最終通知内容になっていた。
+
+**根本原因は2つ、両方とも`lib/agent-executor.ts`の`generateRunScript`内**（ATTENDED実行経路＝Run Now/`@agent run`が使う`.sh`スクリプト生成のみ。無人スケジュール実行が使う`scripts/shelly-plan-executor.js`（PlanSpec executor）は別実装で、system promptを一切送らずuser messageのみのシンプルな構造のため、この2バグの影響を受けないことをコード読解で確認済み）:
+
+- **(A)** チェーンの最終ステップは`suppressAction`されない（agentレベルのaction実行を担うため）ので、その生成呼び出しの`actionType`が`agent.action?.type`（例: notify）にフォールバックし、"Write the notification message itself... keep it to a few words or one sentence"というsystem promptが、ステップ自身の指示（「ローカルLLMで要約して」）と衝突していた。
+- **(B)** `generateRunScript`自身の`detectRouteSignals(agent.prompt)`呼び出し（"research-collection agent... Return ONLY a Markdown bullet list"というcollection contractを注入するかどうかの判定）が、ステップの合成プロンプト（`buildStepPrompt`の出力＝ベース+前ステップの実データ+今回の指示）に対して行われていた。前段の収集ステップの実データ（"最新"・引用・URL満載）が混入するため、要約ステップでも`needsWeb`が誤ってtrueになり、collection contractが「要約して」を上書きしていた。これは2026-08-03の`routeTextOverride`修正（エスカレーションラダーのルーティング判定をステップ自身の指示に限定する修正）と同じ穴の、**generateRunScript側detectRouteSignals呼び出しには波及していなかった**版。
+
+**修正**: `MaterializeRunOpts`に`isOrchestratedStep`（新規）と`routeTextOverride`（既存フィールドを`generateRunScript`まで再配線）を追加。`runAgentOrchestratedBody`が全ステップ（最終・非最終問わず）に`isOrchestratedStep: true`を設定。`generateRunScript`は(A) `opts.isOrchestratedStep`が真なら`actionType`を`'draft'`（汎用コンテンツ生成指示）に固定、(B) `detectRouteSignals`の入力を`opts.routeTextOverride?.trim() ? opts.routeTextOverride : agent.prompt`に変更——単発（非オーケストレーション）エージェントはどちらも未設定のまま今まで通り。
+
+**検証**: `npx tsc --noEmit`クリーン。新規`__tests__/agent-manager-step-content-prompt.test.ts`4件（最終ステップのsystem promptがnotify brevityでないこと／collection contractが注入されないこと／ステップ0は引き続き注入されること＝回帰防止／単発エージェントは無影響＝回帰防止）追加、全PASS。既存`agent-manager`/`agent-executor`/`agent-orchestration`系38スイート453件無回帰。フルスイートは既知の4スイート28件失敗（Windows scoped-fs二重ドライブレターバグ、本ファイル既出）+ 今回1件のJest workerメモリ不足クラッシュ（該当スイート単体では20/20 PASS、環境要因でリグレッションではないことを確認済み）。
+
+**実機未検証（P2、次回のRun Now/`@agent run`テストで確認すること）**: このセッション終盤でBashツールが断続的に破損（本ファイル2026-07-22付近既出の同一症状が再発）したため、修正後ビルドでの実機再テストは行えていない。次回、同じ発話でエージェントを再実行し、ステップ2の中身が実際のニュース内容を反映した要約になっているか（企業名の箇条書きではなく）を確認すること。
+
+**未着手・スコープ外として明記**: 無人スケジュール実行（PlanSpec executor経路）側の要約品質は今回検証していない——上記の通りこの2バグの影響は受けないと判定したが、それは「悪化要因が無い」ことの確認であって「品質が良い」ことの確認ではない。20:00の実際のスケジュール発火時に、ステップ2の中身を別途確認すること。
+
+→ sync: なし（バックエンドのみ）。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)

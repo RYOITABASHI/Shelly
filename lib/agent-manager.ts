@@ -513,6 +513,39 @@ type MaterializeRunOpts = {
   // so the STORED script/PlanSpec still gets the full rehydrated chain, which
   // is what an unattended alarm fire is supposed to run.
   skipSkillPlanRehydration?: boolean;
+  // 2026-08-04 on-device finding: a real orchestrated chain's FINAL step is not
+  // suppressed (it's the one that performs the agent-level action), so its
+  // generation used to fall through to `agent.action?.type`'s delivery-format
+  // system prompt — e.g. notify's "keep it to a few words or one sentence".
+  // That is correct for a genuinely single-shot notify agent (the whole prompt
+  // IS the notification request), but wrong for a chain step, whose OWN
+  // instruction (e.g. "ローカルLLMで要約して") already says what to produce; the
+  // brevity constraint fought that instruction and produced a shallow,
+  // near-content-free bullet list instead of a real summary. Set by
+  // runAgentOrchestratedBody for every step (final and non-final alike — a
+  // non-final step is already routed to '__suppressed__' regardless, so this
+  // is a no-op there) so generateRunScript can use generic 'draft'-style
+  // content-generation guidance instead. Never set by any single-run caller.
+  isOrchestratedStep?: boolean;
+  // 2026-08-04 on-device finding, second half of the same incident:
+  // runLadderAttempts already has a `routeTextOverride` (2026-08-03) that
+  // makes resolveEscalationLadder judge TOOL ROUTING by a step's own
+  // instruction instead of buildStepPrompt's composite — but that value was
+  // never forwarded past the ladder into materializeAgent/generateRunScript,
+  // so generateRunScript's OWN detectRouteSignals(agent.prompt) call (which
+  // decides whether to inject the "You are a research-collection agent...
+  // Return ONLY a Markdown bullet list of [title](url) — summary" contract)
+  // still ran on the full composite. A summarize step's composite carries the
+  // prior collect-step's real result verbatim — full of "最新"/citations/URLs —
+  // so needsWeb tripped true for it too, and the local LLM's actual "要約して"
+  // instruction got overridden by that bullet-list-of-links contract, producing
+  // a shallow entity-name list instead of a real summary. Threaded through
+  // exactly like routeTextOverride: set by runLadderAttempts from its own
+  // routeTextOverride param, used by generateRunScript ONLY to decide whether
+  // to inject the collection contract — the escapedPrompt actually sent to the
+  // model is unchanged (still the full composite, which a summarize step
+  // genuinely needs for context).
+  routeTextOverride?: string;
 };
 
 /**
@@ -1439,6 +1472,9 @@ async function runLadderAttempts(
      * routes on runAgent.prompt exactly as before (single-run path unchanged).
      */
     routeTextOverride?: string;
+    /** See MaterializeRunOpts.isOrchestratedStep's doc comment. Set ONLY by
+     *  runAgentOrchestratedBody, for every step (final and non-final alike). */
+    isOrchestratedStep?: boolean;
   } = {},
 ): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
@@ -1465,6 +1501,8 @@ async function runLadderAttempts(
     await materializeAgent(attemptAgent, runCommand, false, true, {
       suppressErrorNotification: !isLast,
       suppressAction: materializeOpts.suppressAction,
+      routeTextOverride: materializeOpts.routeTextOverride,
+      isOrchestratedStep: materializeOpts.isOrchestratedStep,
       // round 2 TOCTOU fix: deliberately do NOT pass env.autonomousCloudConsent
       // (read once, before this loop started) as the BAKED script value. A
       // multi-candidate ladder can span a full agent run — up to
@@ -1670,7 +1708,7 @@ async function runAgentOrchestratedBody(
         runCommand,
         { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
         stepStart - 5_000,
-        { suppressAction: !isFinalStep, chainLockSeed, routeTextOverride: step.instruction },
+        { suppressAction: !isFinalStep, chainLockSeed, routeTextOverride: step.instruction, isOrchestratedStep: true },
       ));
     } catch (error) {
       records.push({

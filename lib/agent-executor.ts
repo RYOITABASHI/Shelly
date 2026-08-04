@@ -949,7 +949,30 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
    *  run whose every action is a reversible workspace file write AND whose
    *  workspace was just snapshotted. Only lib/agent-manager.ts's attended-run
    *  choke point may set this — see the block that consumes it below. */
-  optimisticWorkspaceWrites?: boolean } = {}): string {
+  optimisticWorkspaceWrites?: boolean;
+  /** 2026-08-04 on-device finding: set for EVERY step (final or not) of a real
+   *  orchestrated chain — see MaterializeRunOpts.isOrchestratedStep's doc
+   *  comment in lib/agent-manager.ts for the full trace. Used below (actionType
+   *  computation) so a chain's final step gets generic 'draft'-style
+   *  content-generation guidance instead of `agent.action?.type`'s
+   *  delivery-format instruction (e.g. notify's brevity constraint), which
+   *  fought the step's own instruction and degraded its output. */
+  isOrchestratedStep?: boolean;
+  /** 2026-08-04 on-device finding, second half of the same incident: the text
+   *  detectRouteSignals below should judge THIS step's own nature by — mirrors
+   *  lib/agent-manager.ts's routeTextOverride (2026-08-03), which already made
+   *  the ESCALATION LADDER route on a step's own instruction instead of
+   *  buildStepPrompt's composite, but that value never reached here.
+   *  agent.prompt for a per-step invocation IS the composite (base + carried
+   *  prior results + this step's instruction) — a summarize step's composite
+   *  carries the prior collect-step's real result verbatim, full of
+   *  freshness/collection signals, so needsWeb tripped true for it too and the
+   *  research-collection "bullet list of [title](url)" contract overrode the
+   *  step's real "要約して" instruction. escapedPrompt (what the model actually
+   *  receives) is UNCHANGED — still the full composite, which a summarize step
+   *  genuinely needs. Absent → detectRouteSignals runs on agent.prompt exactly
+   *  as before (single-run path unchanged). */
+  routeTextOverride?: string } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile, dmPairingsFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -1127,7 +1150,18 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const outputDir = agent.outputPath.replace(/^~/, home).replace(/^\$HOME/, home);
   // Orchestration: non-final steps suppress the action so only the FINAL step
   // drafts/notifies once (otherwise a 3-step chain fires 3 approval prompts).
-  const actionType = opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
+  // 2026-08-04 on-device finding: a chain's FINAL step is not suppressed (see
+  // isOrchestratedStep's doc comment above) — without this branch it fell
+  // through to agent.action?.type's delivery-format instruction (e.g. notify's
+  // "keep it to a few words or one sentence"), which fought the step's own
+  // instruction ("ローカルLLMで要約して") and produced a shallow, near-content-free
+  // output instead of a real summary. A genuinely single-shot (non-chain)
+  // agent is unaffected — isOrchestratedStep is never set for that path.
+  const actionType = opts.suppressAction
+    ? '__suppressed__'
+    : opts.isOrchestratedStep
+      ? 'draft'
+      : (agent.action?.type ?? 'draft');
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
   const actionIntentMode = actionType === 'intent' ? (agent.action?.intentMode ?? '') : '';
@@ -1281,7 +1315,9 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // first), so this injects uniformly without per-backend system-message plumbing.
   // Gated on needsWeb so non-research agents (code tasks, file summaries) are
   // untouched (collectionContract === '' → byte-identical to the old prompt).
-  const promptSignals = detectRouteSignals(agent.prompt);
+  // routeTextOverride (2026-08-04): judge by the step's OWN instruction, not
+  // agent.prompt's composite — see the option's doc comment above.
+  const promptSignals = detectRouteSignals(opts.routeTextOverride?.trim() ? opts.routeTextOverride : agent.prompt);
   // (A) Output-language guard: deep-research models (Perplexity sonar-deep-research)
   // ignore a soft "same language as the task" hint and answer in English even for a
   // Japanese task. When the task is Japanese, lead with a forceful directive to write
@@ -1311,9 +1347,20 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // and the driver declines a gray verdict immediately (after grant consumption)
   // instead of leaning on the escalation timeout.
   const agentPolicyJson = JSON.stringify(buildAgentPolicy(agent, home, { unattended: opts.attended !== true }));
+  // 2026-08-04 on-device finding: this actionType feeds actionSystemPromptJson
+  // (via generateToolCommand → ToolCommandOptions.actionType) — the ACTUAL
+  // system prompt sent to the model. It used to ignore opts.suppressAction/
+  // isOrchestratedStep entirely and always use agent.action?.type, so a chain
+  // step's content generation (final OR non-final) got the top-level action's
+  // delivery-format instruction (e.g. notify's brevity constraint) regardless
+  // of what the step itself asked for. isOrchestratedStep is set for every
+  // step of a real chain (see its own doc comment above), so this one check
+  // covers both suppressed and final steps; a genuinely single-shot agent
+  // (isOrchestratedStep unset) is unaffected — same as the ACTION_TYPE bash
+  // variable's parallel fix above.
   let toolCommand = generateToolCommand(tool, escapedPrompt, agent.prompt, {
     autonomous: agent.autonomous === true,
-    actionType: agent.action?.type ?? 'draft',
+    actionType: opts.isOrchestratedStep ? 'draft' : (agent.action?.type ?? 'draft'),
     policyJson: agentPolicyJson,
     // bug #155(b) follow-up: only set for the exact case validated above
     // (canRunOrchestrationChain) — generateToolCommand's 'cli' case uses this
