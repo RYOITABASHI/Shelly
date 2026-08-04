@@ -55,6 +55,7 @@ import {
   agentRollbackWorkspaceRoot,
   isRollbackEligibleRun,
   runWouldRequireApprovalTap,
+  type ReversibilitySettings,
 } from '@/lib/agent-action-reversibility';
 import {
   captureRollbackPoint,
@@ -1038,6 +1039,23 @@ async function runAgentNowInner(
   if (useAgentStore.getState().halted) {
     throw new Error('All agents are stopped (global kill-switch is on). Resume agents to run.');
   }
+  // 2026-08-04 stray-handle fix: retire any undo handle left over from a
+  // PREVIOUS run of this SAME agentId the instant a NEW run starts. Without
+  // this, a handle captured by an earlier OPTIMISTIC run (e.g. the agent was
+  // a local `draft` at the time) survives untouched through a LATER run that
+  // is NOT optimistic (the agent was edited to an irreversible action type
+  // like `cli`, the user turned the settings toggle off, or this run took the
+  // orchestrated path, which returns before ever reaching the capture/clear
+  // logic below) — because that later run's own capture step only fires
+  // `pendingRollbackHandles.set/delete` when IT went optimistic. The result
+  // would be a handle that still exists in the map after an ineligible run
+  // completes, which is exactly the "stray/misapplied handle" shape the UI
+  // layer (AIPane's Undo affordance, hooks/use-ai-pane-dispatch.ts) must
+  // never trust on presence alone — see rollbackOfferEligible below, which
+  // re-derives eligibility from the run's OWN agent snapshot instead of just
+  // checking peekAgentRollbackHandle(). This clear is the root-cause fix;
+  // rollbackOfferEligible is the defense-in-depth backstop for it.
+  pendingRollbackHandles.delete(agentId);
   // Phase 4: a multi-step agent runs as a linear chain (each step through the
   // SAME gated single-run path below). Single-step agents fall through unchanged.
   const storedAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
@@ -1178,6 +1196,47 @@ export async function rollbackAgentRun(
   const handle = consumeAgentRollbackHandle(agentId);
   if (!handle) return false;
   return undoAgentRun(handle, savepointRunner);
+}
+
+/**
+ * Whether an "元に戻す" (Undo) affordance may be offered for a run that just
+ * completed. This is the single choke point every UI surface (currently
+ * hooks/use-ai-pane-dispatch.ts's attended run-result bubbles, rendered by
+ * components/panes/AIPane.tsx) MUST call — never render Undo off
+ * peekAgentRollbackHandle()/consumeAgentRollbackHandle() alone.
+ *
+ * Trusting handle-presence alone would be unsound in isolation: neither
+ * consumeAgentRollbackHandle() nor rollbackAgentRun() re-derives eligibility
+ * from the agent's current shape before undoing — they only check whether a
+ * handle object exists. That is safe TODAY only because runAgentNowInner's
+ * capture step (above) is the sole writer of pendingRollbackHandles and never
+ * sets one for a run classifyRunReversibility() would reject, AND because the
+ * 2026-08-04 fix at the top of runAgentNowInner now clears any stale handle
+ * from an EARLIER run the instant a new run of the same agentId starts (so an
+ * intervening non-optimistic run — e.g. the agent was edited to an
+ * irreversible action type, or the settings toggle got turned off — can never
+ * leave a stray handle sitting behind for a later message to pick up).
+ *
+ * This function is the independent second signal on top of that invariant:
+ * it re-runs classifyRunReversibility()-backed isRollbackEligibleRun() against
+ * the SAME agent snapshot the caller just ran, using CURRENT settings, and
+ * only says yes when that verdict AND a live handle both agree. A caller
+ * should snapshot the boolean this returns onto the completed run's message
+ * (see ChatMessage.agentRollbackOffer) rather than re-deriving eligibility
+ * later from a possibly-deleted agent (ephemeral one-shot runs delete their
+ * agent right after reporting the result) — but should call
+ * peekAgentRollbackHandle(agentId) again, live, immediately before rendering
+ * or acting on the Undo button, since only handle-liveness (not eligibility)
+ * can change after this snapshot (consumed by a prior tap, invalidated by a
+ * newer run, or lost to an app restart — pendingRollbackHandles is in-memory
+ * only, see its doc comment above).
+ */
+export function rollbackOfferEligible(
+  agentId: string,
+  agentSnapshot: Pick<Agent, 'action' | 'actions' | 'orchestration' | 'prompt' | 'name'> & Partial<Agent>,
+  settings: ReversibilitySettings
+): boolean {
+  return isRollbackEligibleRun(agentSnapshot, settings) && peekAgentRollbackHandle(agentId) !== null;
 }
 
 /** Read which free-cloud-tier keys are configured (authoritative source: the

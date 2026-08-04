@@ -182,13 +182,26 @@ const ja: Record<string, string> = {
   'agents.cloud_consent_enable': '有効にする',
   // 楽観的（rollback型）ワークスペース書き込み — AppSettings.agentOptimisticWorkspaceWrites。
   // 文言は lib/agent-action-reversibility.ts が許可する範囲（ローカル
-  // agent-output への `draft` 書き込みのみ）に厳密に合わせ、「元に戻す」導線が
-  // 未実装であることも明記する（実装していない挙動を約束しない）。
+  // agent-output への `draft` 書き込みのみ）に厳密に合わせる。
+  // 2026-08-04: 「元に戻す」導線を実装した（hooks/use-ai-pane-dispatch.ts が
+  // savepointRunner を配線し、components/panes/AIPane.tsx が対象runの完了
+  // バブルにボタンを描画）ため、「導線未実装／この経路を通る実行はまだ無い」
+  // という従来の注記は削除した — docs/superpowers/DEFERRED.md の2026-07-29の
+  // 記載どおり、undo導線を配線した同じコミットで削るべき一文だった。
   'agents.optimistic_writes': '楽観的な書き込み',
-  'agents.optimistic_writes_hint': 'ローカルの agent-output フォルダへの下書き保存だけ、承認タップを待たずに自動セーブポイント付きで即実行します。cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、従来どおり承認が必要です。「元に戻す」ボタンはまだ無いため、現時点でこの経路を通る実行はありません。',
+  'agents.optimistic_writes_hint': 'ローカルの agent-output フォルダへの下書き保存だけ、承認タップを待たずに自動セーブポイント付きで即実行し、気が変わった場合は結果バブルの「元に戻す」ボタンで取り消せます。cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、従来どおり承認が必要です。「元に戻す」はアプリを起動したままの間だけ有効で、再起動後は使えません。',
   'agents.optimistic_writes_consent_title': 'ワークスペース内の下書きを承認なしで実行',
-  'agents.optimistic_writes_consent_body': '対象は1つだけです: ローカルの agent-output フォルダへ下書きを保存するだけの実行。\n\n• 実行前に自動で git セーブポイントを取り、承認タップ無しで即実行します。\n• cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、引き続き承認が必要です。\n• エージェント登録時の確認・command-safety・秘密情報スキャンは変わりません。\n• 「元に戻す」導線はまだ未実装のため、現時点で実際にこの経路を通る実行はありません（設定のみ先行）。\n\n有効にしますか？',
+  'agents.optimistic_writes_consent_body': '対象は1つだけです: ローカルの agent-output フォルダへ下書きを保存するだけの実行。\n\n• 実行前に自動で git セーブポイントを取り、承認タップ無しで即実行します。\n• そのrunの結果バブルには、ファイルの書き込みを取り消せる「元に戻す」ボタンが付きます（このアプリセッション中のみ有効、再起動後は使えません）。\n• cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、引き続き承認が必要です。\n• エージェント登録時の確認・command-safety・秘密情報スキャンは変わりません。\n\n有効にしますか？',
   'agents.optimistic_writes_consent_enable': '有効にする',
+  // 「元に戻す」ボタン本体 — components/panes/AgentUndoButton.tsx。
+  // AIPane.tsx の MessageBubble が対象runの完了バブルに描画する。適格性の判定は
+  // ChatMessage.agentRollbackOffer（store/chat-store.ts）と
+  // lib/agent-manager.ts の rollbackOfferEligible() を参照。
+  'agents.undo_run_button': '元に戻す',
+  'agents.undo_run_in_progress': '元に戻しています…',
+  'agents.undo_run_success': '元に戻しました — ファイルの書き込みを取り消しました。',
+  'agents.undo_run_unavailable': '利用できません（既に元に戻したか、アプリが再起動されました）。',
+  'agents.undo_run_failed': '元に戻せませんでした。変更は agent-output の git 履歴に残っているので、手動で取り消せます。',
   // ウィジェットASKの確認省略登録 — AppSettings.widgetAgentRegistrationNoConfirm。
   // 文言は lib/widget-agent-registration.ts の実装範囲（ウィジェットASK経由の
   // @agent コマンドのみ）に厳密に合わせ、AIペイン側のフローと各ハードゲート

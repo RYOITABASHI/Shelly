@@ -182,14 +182,28 @@ const en: Record<string, string> = {
   'agents.cloud_consent_enable': 'Enable',
   // Optimistic (rollback-type) workspace writes — AppSettings.agentOptimisticWorkspaceWrites.
   // Copy is scoped to exactly what lib/agent-action-reversibility.ts permits (a
-  // `draft` into the LOCAL agent-output workspace) and says plainly that the
-  // undo affordance is still unbuilt, so nothing here promises behaviour the
-  // code does not yet perform.
+  // `draft` into the LOCAL agent-output workspace).
+  // 2026-08-04: the "Undo" affordance now exists (hooks/use-ai-pane-
+  // dispatch.ts wires a savepointRunner + components/panes/AIPane.tsx renders
+  // the button on an eligible run's completion bubble), so the previous
+  // "no Undo button / no run takes this path today" caveat is removed —
+  // per docs/superpowers/DEFERRED.md's 2026-07-29 entry, that sentence was to
+  // be dropped in the SAME commit that wires the undo route, never before.
   'agents.optimistic_writes': 'Optimistic Writes',
-  'agents.optimistic_writes_hint': 'Draft saves into the local agent-output folder run immediately behind an automatic savepoint instead of waiting for an approval tap. cli / notify / webhook / social-post / dm-reply / app-act, and Obsidian or custom output, still require approval. No "Undo" button exists yet, so no run takes this path today.',
+  'agents.optimistic_writes_hint': 'Draft saves into the local agent-output folder run immediately behind an automatic savepoint instead of waiting for an approval tap, with an "Undo" button on the result if you change your mind. cli / notify / webhook / social-post / dm-reply / app-act, and Obsidian or custom output, still require approval. Undo only works while the app stays running — it does not survive a restart.',
   'agents.optimistic_writes_consent_title': 'Run workspace drafts without approval',
-  'agents.optimistic_writes_consent_body': 'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n• The "Undo" affordance is not built yet, so no run actually takes this path today; this setting is here ahead of it.\n\nEnable?',
+  'agents.optimistic_writes_consent_body': 'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• The chat bubble for that run gets an "Undo" button that reverts the file write — available only for THIS app session (it does not survive a restart).\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n\nEnable?',
   'agents.optimistic_writes_consent_enable': 'Enable',
+  // Rollback ("元に戻す") affordance itself — components/panes/
+  // AgentUndoButton.tsx, rendered by AIPane.tsx's MessageBubble on an
+  // eligible attended run's completion bubble. See
+  // ChatMessage.agentRollbackOffer (store/chat-store.ts) and
+  // lib/agent-manager.ts's rollbackOfferEligible() for the eligibility chain.
+  'agents.undo_run_button': 'Undo',
+  'agents.undo_run_in_progress': 'Undoing…',
+  'agents.undo_run_success': 'Undone — the file write was reverted.',
+  'agents.undo_run_unavailable': 'No longer available (already undone, or the app was restarted).',
+  'agents.undo_run_failed': 'Undo failed. The change is still in git history in agent-output — you can revert it manually.',
   // Widget-ASK no-confirm registration — AppSettings.widgetAgentRegistrationNoConfirm.
   // Copy is scoped to exactly what lib/widget-agent-registration.ts implements:
   // widget-ASK-originated `@agent` commands only; the AI Pane's own flow and

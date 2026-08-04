@@ -123,12 +123,13 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
       { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
       // Scoped EXACTLY to what lib/agent-action-reversibility.ts allows: a
-      // `draft` write into the local $HOME/agent-output workspace. The last
-      // sentence is deliberate honesty, not hedging — the undo affordance is
-      // still unbuilt and no run path passes a savepointRunner yet, so this
-      // toggle is currently inert. Drop that sentence in the same commit that
-      // wires the undo route, never before.
-      { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap. Nothing else changes: cli / notify / webhook / social-post / dm-reply / app-act, and any Obsidian or custom output, still require approval. No "Undo" button exists yet, so no run takes this path today. Default off.' },
+      // `draft` write into the local $HOME/agent-output workspace. 2026-08-04:
+      // the undo route is wired (hooks/use-ai-pane-dispatch.ts passes a
+      // savepointRunner, components/panes/AIPane.tsx renders the "Undo"
+      // button on an eligible run's result bubble) — the previous "no Undo
+      // button / no run takes this path today" caveat was dropped in the
+      // SAME commit, per this comment's own original instruction.
+      { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap — the result bubble gets an "Undo" button. Nothing else changes: cli / notify / webhook / social-post / dm-reply / app-act, and any Obsidian or custom output, still require approval. Undo only lasts for the current app session (does not survive a restart). Default off.' },
       // Widget-ASK-only registration confirm bypass — scoped EXACTLY to what
       // lib/widget-agent-registration.ts implements (see that module's doc):
       // widget-ASK-originated `@agent` commands only; AI-Pane `@agent` and
