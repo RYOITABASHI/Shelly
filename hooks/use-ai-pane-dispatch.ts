@@ -43,6 +43,7 @@ import {
   updateAgent,
   ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
   writeGlobalMemoryNote,
+  rollbackOfferEligible,
 } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent } from '@/store/types';
@@ -278,6 +279,41 @@ async function runAgentShellCommand(cmd: string): Promise<string> {
     throw new Error(result.stderr || `exit ${result.exitCode}`);
   }
   return result.stdout;
+}
+
+// Rollback-type (optimistic) execution needs an exit-code-returning runner to
+// drive git (lib/agent-rollback.ts's RollbackRunCommand — a plain
+// `(cmd) => Promise<{stdout, exitCode}>`). execCommand's ExecResult
+// ({stdout, stderr, exitCode}) already satisfies that shape structurally, so
+// this is just a timeout binding, not a real adapter. Passing this as
+// runAgentNow's savepointRunner is what actually turns on the dormant
+// optimistic path end to end — see lib/agent-manager.ts's runAgentNowInner
+// doc comment ("REQUIRED to unlock optimistic execution... fail-closed by
+// omission"). It stays a no-op for every user until they flip
+// AppSettings.agentOptimisticWorkspaceWrites ON (default off) AND a run is
+// both reversible and would otherwise require an approval tap — this file
+// only supplies the plumbing, lib/agent-action-reversibility.ts still makes
+// every actual decision.
+const runSavepointCommand = (cmd: string) => execCommand(cmd, 30_000);
+
+/**
+ * Snapshot for ChatMessage.agentRollbackOffer, computed right after an
+ * attended run completes (while the agent snapshot used FOR that run is
+ * still available — an ephemeral one-shot agent gets deleted moments later).
+ * Delegates the actual eligibility call to lib/agent-manager.ts's
+ * rollbackOfferEligible(), which independently re-classifies reversibility
+ * from `agentSnapshot` rather than trusting that a handle merely exists.
+ * Returns undefined (no field set) rather than a "not eligible" object, so a
+ * ChatMessage from before this feature and one from an ineligible run are
+ * indistinguishable to the renderer — both simply have no offer.
+ */
+function buildRollbackOffer(
+  agentId: string,
+  agentSnapshot: Agent | null | undefined
+): ChatMessage['agentRollbackOffer'] {
+  if (!agentSnapshot) return undefined;
+  const settings = useSettingsStore.getState().settings;
+  return rollbackOfferEligible(agentId, agentSnapshot, settings) ? { agentId } : undefined;
 }
 
 // ─── Throttled update ─────────────────────────────────────────────────────────
@@ -1281,6 +1317,7 @@ export function useAIPaneDispatch(paneId: string) {
               try {
                 await runAgentNow(updatedAgent.id, runAgentShellCommand, {
                   waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+                  savepointRunner: runSavepointCommand,
                 });
                 const log = useAgentStore.getState().getRunHistory(updatedAgent.id).at(-1);
                 const preview = (log?.outputPreview || '').trim();
@@ -1288,6 +1325,7 @@ export function useAIPaneDispatch(paneId: string) {
                 const resultLine = preview ? `${icon} ${preview}` : `${icon} ${correctionStrings['agentplan.run_now_done']}`;
                 store.updateMessage(paneId, runningMsgId, {
                   content: summaryText ? `${summaryText}\n\n${resultLine}` : resultLine,
+                  agentRollbackOffer: buildRollbackOffer(updatedAgent.id, updatedAgent),
                 });
               } catch (runErr) {
                 const detail = runErr instanceof Error ? runErr.message : String(runErr);
@@ -1719,6 +1757,7 @@ export function useAIPaneDispatch(paneId: string) {
       // result so the UX matches every other chat response.
       if (parsed.layer === 'mention' && parsed.target === 'agent') {
         let resultMessage: string;
+        let rollbackOffer: ChatMessage['agentRollbackOffer'];
         try {
           const agentResult = parseAgentCommand(parsed.prompt);
           if (agentResult.type === 'create') {
@@ -2038,8 +2077,13 @@ export function useAIPaneDispatch(paneId: string) {
             // error instead of silently polling with no feedback.
             await runAgentNow(agentResult.data.agentId, runAgentShellCommand, {
               waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+              savepointRunner: runSavepointCommand,
             });
             resultMessage = agentResult.message;
+            rollbackOffer = buildRollbackOffer(
+              agentResult.data.agentId,
+              useAgentStore.getState().agents.find((a) => a.id === agentResult.data.agentId) ?? null,
+            );
           } else if (agentResult.type === 'stop') {
             await stopAgent(agentResult.data.agentId, runAgentShellCommand);
             resultMessage = agentResult.message;
@@ -2053,6 +2097,7 @@ export function useAIPaneDispatch(paneId: string) {
           id: generateId(),
           role: 'assistant',
           content: resultMessage,
+          agentRollbackOffer: rollbackOffer,
           timestamp: Date.now(),
           agent: agent as ChatMessage['agent'],
         });
@@ -2942,12 +2987,16 @@ export function useAIPaneDispatch(paneId: string) {
           try {
             await runAgentNow(created.id, runAgentShellCommand, {
               waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+              savepointRunner: runSavepointCommand,
             });
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
             const resultLine = preview ? `${icon} ${preview}` : `${icon} ${runStrings['agentplan.run_now_done']}`;
-            store.updateMessage(paneId, messageId, { content: `${baseContent}\n\n${resultLine}` });
+            store.updateMessage(paneId, messageId, {
+              content: `${baseContent}\n\n${resultLine}`,
+              agentRollbackOffer: buildRollbackOffer(created.id, created),
+            });
           } catch (runErr) {
             const detail = runErr instanceof Error ? runErr.message : String(runErr);
             store.updateMessage(paneId, messageId, {
@@ -3004,6 +3053,7 @@ export function useAIPaneDispatch(paneId: string) {
             logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot calling runAgentNow for ${created.id}`);
             await runAgentNow(created.id, runAgentShellCommand, {
               waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+              savepointRunner: runSavepointCommand,
             });
             logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot runAgentNow returned for ${created.id}`);
             const log = useAgentStore.getState().getRunHistory(created.id).at(-1);
@@ -3015,8 +3065,16 @@ export function useAIPaneDispatch(paneId: string) {
             finalContent = preview
               ? `${icon} ${created.name}\n\n${preview}${auditPath}`
               : `${icon} ${created.name} — done.${auditPath}`;
+            // Compute the undo offer BEFORE the agent is deleted below — the
+            // handle itself (in lib/agent-manager.ts's pendingRollbackHandles)
+            // survives agent deletion fine (it is keyed by agentId in its own
+            // map, independent of the agent-store record), but the ELIGIBILITY
+            // re-check needs the agent snapshot that was actually just run,
+            // and `created` is about to be gone.
+            const rollbackOffer = buildRollbackOffer(created.id, created);
             store.updateMessage(paneId, messageId, {
               content: finalContent,
+              agentRollbackOffer: rollbackOffer,
             });
             // Pull every value from local run-result variables, not the store —
             // `created` is about to be deleted (ephemeral one-shot agent).

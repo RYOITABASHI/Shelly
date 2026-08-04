@@ -47,6 +47,7 @@ import {
 } from '@/lib/ai-pane-agents';
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
 import { useTranslation } from '@/lib/i18n';
+import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -222,6 +223,9 @@ const MessageBubble = React.memo(function MessageBubble({
         )}
         {isLastStreaming && <StreamingDots color="#6B7280" />}
       </View>
+      {!isLastStreaming && message.agentRollbackOffer && (
+        <AgentUndoButton agentId={message.agentRollbackOffer.agentId} />
+      )}
     </View>
   );
 });

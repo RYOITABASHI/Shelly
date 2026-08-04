@@ -146,6 +146,24 @@ export type ChatMessage = {
    *  agent this follows is already created by the time this message is
    *  appended. See hooks/use-ai-pane-dispatch.ts's confirmAgentDraft. */
   scheduleReadinessCard?: boolean;
+  /** Rollback-type (optimistic) execution "元に戻す" affordance (2026-08-04).
+   *  Present on an attended run's completion bubble ONLY when
+   *  hooks/use-ai-pane-dispatch.ts already confirmed, via
+   *  lib/agent-manager.ts's rollbackOfferEligible(), that (a) the run's own
+   *  agent snapshot independently classifies as reversible under CURRENT
+   *  settings — never inferred from handle-presence alone — AND (b) a live
+   *  undo handle actually exists for it. components/panes/AgentUndoButton.tsx
+   *  re-checks peekAgentRollbackHandle(agentId) itself, live,
+   *  immediately before rendering the button (and again right before acting
+   *  on a tap) since only handle-LIVENESS can change after this snapshot was
+   *  taken — the handle may already have been consumed by an earlier tap,
+   *  invalidated by a newer run of the same agent, or lost to an app restart
+   *  (pendingRollbackHandles is intentionally in-memory-only, so an Undo
+   *  offer never survives a process restart; see lib/agent-manager.ts's doc
+   *  comment on that map for why persisting it was rejected). */
+  agentRollbackOffer?: {
+    agentId: string;
+  };
 };
 
 export type ChatSession = {
