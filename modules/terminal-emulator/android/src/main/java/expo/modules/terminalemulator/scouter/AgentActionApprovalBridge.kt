@@ -41,6 +41,18 @@ data class AgentActionApprovalRequest(
     val dmReplyText: String? = null,
     val appActRecipeId: String? = null,
     val appActParamsResolved: String? = null,
+    /** browser-pane (2026-08-04): drives a LIVE, on-screen Browser Pane
+     *  WebView via lib/browser-pane-automation.ts's closed click/fill/
+     *  extractText set. browserPaneValue is the ALREADY {{result}}-resolved
+     *  fill value (mirrors dmReplyText/intentShareText); browserPaneSelector
+     *  is never resolved (it is a CSS selector, not content).
+     *  browserPaneUrlAllowlist carries a JSON-encoded string[], mirroring
+     *  appActParamsResolved's plain-string convention -- decoded on the RN
+     *  side by lib/agent-browser-pane-review.ts, never parsed natively. */
+    val browserPaneActionKind: String? = null,
+    val browserPaneSelector: String? = null,
+    val browserPaneValue: String? = null,
+    val browserPaneUrlAllowlist: String? = null,
     /** Project owner directive 2026-07-14: true when the executor resolved
      *  the global/per-agent approval-mode default to 'auto' for this request
      *  (see requireActionApprovalTap / ACTION_APPROVAL_MODE). Consumed by RN
@@ -200,6 +212,10 @@ object AgentActionApprovalBridge {
         "dmReplyText" to request.dmReplyText,
         "appActRecipeId" to request.appActRecipeId,
         "appActParamsResolved" to request.appActParamsResolved,
+        "browserPaneActionKind" to request.browserPaneActionKind,
+        "browserPaneSelector" to request.browserPaneSelector,
+        "browserPaneValue" to request.browserPaneValue,
+        "browserPaneUrlAllowlist" to request.browserPaneUrlAllowlist,
         "autoAccept" to request.autoAccept,
         "autoFireTrusted" to request.autoFireTrusted,
     )
@@ -213,7 +229,7 @@ object AgentActionApprovalBridge {
         // from this list — a pre-existing gap; NotificationDispatcher already
         // carries an api-call branch that is unreachable through this parse.)
         val actionType = raw.optString("actionType").trim().takeIf {
-            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act" || it == "social-post"
+            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act" || it == "social-post" || it == "browser-pane"
         } ?: return null
         return AgentActionApprovalRequest(
             runId = runId,
@@ -240,6 +256,10 @@ object AgentActionApprovalBridge {
             dmReplyText = raw.optString("dmReplyText").takeIf { it.isNotBlank() },
             appActRecipeId = raw.optString("appActRecipeId").trim().takeIf { it.isNotBlank() },
             appActParamsResolved = raw.optString("appActParamsResolved").takeIf { it.isNotBlank() },
+            browserPaneActionKind = raw.optString("browserPaneActionKind").trim().takeIf { it.isNotBlank() },
+            browserPaneSelector = raw.optString("browserPaneSelector").takeIf { it.isNotBlank() },
+            browserPaneValue = raw.optString("browserPaneValue").takeIf { it.isNotBlank() },
+            browserPaneUrlAllowlist = raw.optString("browserPaneUrlAllowlist").takeIf { it.isNotBlank() },
             autoAccept = raw.optBoolean("autoAccept", false),
             autoFireTrusted = raw.optBoolean("autoFireTrusted", false)
         )

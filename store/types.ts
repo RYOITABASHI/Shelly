@@ -649,7 +649,8 @@ export type AgentActionType =
   | 'dm-reply'
   | 'app-act'
   | 'api-call'
-  | 'social-post';
+  | 'social-post'
+  | 'browser-pane';
 
 // ─── Social connectors (free-API auto-posting, 2026-07-22) ──────────────────
 
@@ -813,6 +814,48 @@ export interface AgentAction {
   /** social-post: publish the run result via a registered social connector.
    *  See AgentSocialPostConfig's doc comment for the approval tier. */
   socialPost?: AgentSocialPostConfig;
+  /**
+   * browser-pane (2026-08-04): drive a LIVE, on-screen Browser Pane WebView
+   * through lib/browser-pane-automation.ts's deliberately closed operation
+   * set (click/fill/extractText — no raw JS/eval, ever). This is the FIRST
+   * agent action type whose entire effect depends on a mounted UI surface
+   * with a real page loaded, not just an OS/app capability — there is no
+   * BrowserPane component instance during an unattended/alarm-fired run (no
+   * pane is rendered, nothing is on screen). ATTENDED-ONLY, same tier as
+   * cli/intent/dm-reply, and unlike app-act it has NO Tier-B unattended-allow
+   * — see lib/agent-executor.ts's dispatch_agent_action `browser-pane)` case
+   * and lib/agent-browser-pane-review.ts's doc comment for why no evidence
+   * supports a background-mounted WebView existing on this codebase's
+   * architecture. It is additionally NEVER auto-accepted even when attended
+   * (unlike intent/dm-reply, whose autoAccept follows the blanket
+   * requireActionApproval default) — a blind click/fill against a live page
+   * (e.g. silently submitting a form) is a materially different risk than
+   * launching a known app or replying to a known paired contact, so it
+   * always requires an explicit human Review tap, mirroring how app-act's
+   * autoFireTrusted and social-post's non-allowlisted-host case are each
+   * carved out of the blanket approval-frequency knob for their own reasons.
+   * WHICH Browser Pane receives the action is resolved at fire time by
+   * lib/agent-browser-pane-review.ts's resolveTargetBrowserPaneId — the SAME
+   * focused-else-first-in-slot-order algorithm BrowserPane.tsx's own
+   * isOpenSignalTargetPane already uses for openUrl signals — never authored
+   * here (there is no stable, author-time pane id to reference), and the
+   * action is refused when no Browser Pane is mounted at all.
+   */
+  browserPaneAction?:
+    | { kind: 'click'; selector: string }
+    | { kind: 'fill'; selector: string; value: string }
+    | { kind: 'extractText'; selector: string };
+  /**
+   * browser-pane: exact-origin URL allowlist, required and non-empty. Checked
+   * BOTH before dispatch (lib/agent-browser-pane-review.ts, mirroring the
+   * approval-request preview a human reviews) AND again inside the injected
+   * script after navigation (browser-pane-automation.ts's
+   * buildBrowserPaneActionScript) — see isBrowserUrlAllowlisted's doc
+   * comment for the origin+path-prefix match rule this reuses UNCHANGED. An
+   * action authored with an empty allowlist is refused before it ever
+   * requests approval.
+   */
+  browserPaneUrlAllowlist?: string[];
 }
 
 /** Phase 1 persistent memory (lib/agent-memory.ts). On-device only. */

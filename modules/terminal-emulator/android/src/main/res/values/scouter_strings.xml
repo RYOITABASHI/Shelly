@@ -96,6 +96,9 @@
   <string name="scouter_notification_agent_action_appact_review_required">App actions require in-app review of the exact content before running.</string>
   <string name="scouter_notification_agent_action_what_api_call">Will call an external API</string>
   <string name="scouter_notification_agent_action_api_call_request">Request: %1$s</string>
+  <string name="scouter_notification_agent_action_what_browser_pane">Will interact with the open Browser Pane page</string>
+  <string name="scouter_notification_agent_action_browser_pane_target">Action: %1$s</string>
+  <string name="scouter_notification_agent_action_browser_pane_review_required">Browser actions require in-app review and a live, on-screen Browser Pane. They never run unattended.</string>
   <string name="scouter_notification_agent_escalation_title">Agent %1$s: approve boundary op?</string>
   <string name="scouter_notification_agent_escalation_truncated">Long command: %1$d characters; review the full request in Shelly before allowing.</string>
   <string name="scouter_notification_agent_escalation_reason">Reason: %1$s</string>

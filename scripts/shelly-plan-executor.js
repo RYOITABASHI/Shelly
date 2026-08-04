@@ -1264,6 +1264,15 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     dmReplyText: extra.dmReplyText || '',
     appActRecipeId: extra.appActRecipeId || '',
     appActParamsResolved: extra.appActParamsResolved || '',
+    // browser-pane (2026-08-04): mirrors appActParamsResolved's plain-string
+    // convention -- browserPaneUrlAllowlist carries a JSON-encoded string[]
+    // (decoded by lib/agent-browser-pane-review.ts on the RN side), never a
+    // nested array field, so this stays a flat string map like every other
+    // field here.
+    browserPaneActionKind: extra.browserPaneActionKind || '',
+    browserPaneSelector: extra.browserPaneSelector || '',
+    browserPaneValue: extra.browserPaneValue || '',
+    browserPaneUrlAllowlist: extra.browserPaneUrlAllowlist || '',
     // Project owner directive 2026-07-14 (see requireActionApprovalTap /
     // trustedNativeLowRiskAction above): real JSON booleans, not the "1"/"0"
     // strings the rest of this legacy string-map uses, so Kotlin's
@@ -1382,7 +1391,13 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
 // autoAccept/autoFireTrusted request fields (set by the caller via `details`)
 // drive RN/native's auto-resolution instead.
 function maybeRequestActionApproval(paths, plan, actionType, preview, resultFile, config, details) {
-  if (actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && !requireActionApprovalTap(plan, config)) {
+  if (
+    actionType !== 'intent' &&
+    actionType !== 'dm-reply' &&
+    actionType !== 'app-act' &&
+    actionType !== 'browser-pane' &&
+    !requireActionApprovalTap(plan, config)
+  ) {
     return;
   }
   requestActionApproval(paths, plan, actionType, preview, resultFile, config, details);
@@ -1840,7 +1855,13 @@ function unattendedPreflightFailure(args, plan, config = {}) {
   if (!argTruthy(args.unattended)) return '';
   const actionType = plan.action.type;
   if (actionType === '__suppressed__') return '';
-  if (actionType === 'intent' || actionType === 'dm-reply') {
+  if (actionType === 'intent' || actionType === 'dm-reply' || actionType === 'browser-pane') {
+    // browser-pane (2026-08-04): joins intent/dm-reply's hard unattended
+    // refusal, with NO app-act-style Tier-B exception -- there is no
+    // BrowserPane UI surface (nothing rendered, nothing on screen) during an
+    // unattended/alarm-fired PlanSpec run for trustedNativeLowRiskAction to
+    // even meaningfully vouch for. See store/types.ts's
+    // AgentAction.browserPaneAction doc comment for the full rationale.
     return `unsupported unattended PlanSpec action: ${actionType}`;
   }
   if (actionType === 'app-act') {
@@ -1911,7 +1932,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && actionType !== 'api-call' && actionType !== 'social-post') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && actionType !== 'api-call' && actionType !== 'social-post' && actionType !== 'browser-pane') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   // draft/notify have no per-type validation branch below (unlike
@@ -2141,6 +2162,57 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       });
       // Side effect already happened in RN before the accept reply appeared —
       // no broker/native call here, unlike webhook/cli (mirrors intent/dm-reply).
+      return { status: 'success', preview };
+    }
+    if (actionType === 'browser-pane') {
+      // browser-pane (2026-08-04): drives a LIVE, on-screen Browser Pane
+      // WebView through lib/browser-pane-automation.ts's closed
+      // click/fill/extractText set. Unattended dispatch is refused upstream
+      // by unattendedPreflightFailure() unconditionally (no Tier-B exception
+      // exists for this type, unlike app-act) -- this case only ever runs on
+      // an attended fire. The actual side effect happens in RN
+      // (fireReviewedAgentBrowserPaneAction) at the moment the human taps
+      // Allow, BEFORE the accept reply appears -- mirrors intent/dm-reply/
+      // app-act's "fire-then-reply" invariant; no broker/native call here.
+      const browserAction = plan.action.browserPaneAction;
+      const kind = browserAction && String(browserAction.kind || '').trim();
+      const selector = browserAction && String(browserAction.selector || '').trim();
+      if (kind !== 'click' && kind !== 'fill' && kind !== 'extractText') {
+        const message = 'Browser action has an invalid kind.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      if (!selector) {
+        const message = 'Browser action is missing a CSS selector.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      const urlAllowlist = Array.isArray(plan.action.browserPaneUrlAllowlist)
+        ? plan.action.browserPaneUrlAllowlist.filter((entry) => typeof entry === 'string' && entry.length > 0)
+        : [];
+      if (urlAllowlist.length === 0) {
+        const message = 'Browser action is missing its URL allowlist.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
+      // Only the fill kind's value may carry {{result}} — the selector never
+      // does (it is a CSS selector, not content), mirroring intent/dm-reply's
+      // convention for which fields get the substitution.
+      const value = kind === 'fill'
+        ? String((browserAction && browserAction.value) || '').split('{{result}}').join(preview)
+        : '';
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+        browserPaneActionKind: kind,
+        browserPaneSelector: selector,
+        browserPaneValue: value,
+        browserPaneUrlAllowlist: JSON.stringify(urlAllowlist),
+        // Deliberately ALWAYS false, unlike intent/dm-reply's
+        // !requireActionApprovalTap(plan, config) -- a blind click/fill
+        // against a live page is a higher risk tier than launching a known
+        // app or replying to a known paired contact; see
+        // store/types.ts's AgentAction.browserPaneAction doc comment.
+        autoAccept: false,
+      });
       return { status: 'success', preview };
     }
     if (actionType === 'api-call') {

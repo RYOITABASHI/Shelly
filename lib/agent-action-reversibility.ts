@@ -65,6 +65,10 @@
  *                     AccessibilityService (e.g. publishing a post).
  *  - `api-call`     → IRREVERSIBLE. An outbound HTTP call to an allowlisted
  *                     host; the remote side's state is not ours to revert.
+ *  - `browser-pane` → IRREVERSIBLE. Clicks/fills a live, on-screen web page
+ *                     (another origin's DOM/session/form state) via a real
+ *                     WebView; no git object in our workspace can undo a
+ *                     page's own state change (e.g. a submitted form).
  *
  * The switch's DEFAULT branch is `irreversible`, so an action type added in the
  * future is excluded automatically (fail-closed). __tests__ additionally pin an
@@ -185,6 +189,7 @@ export function classifyActionReversibility(
     case 'intent':
     case 'dm-reply':
     case 'app-act':
+    case 'browser-pane':
       return irreversible(
         'irreversible-external-side-effect',
         `"${type}" leaves the device or another app; no local snapshot can undo it`
