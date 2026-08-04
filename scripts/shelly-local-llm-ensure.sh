@@ -344,6 +344,33 @@ local_llm_start_idle_watcher() {
   echo $! > "$watcher_pid_file"
 }
 
+# Integrity check (2026-08-04, on-device symptom: a run whose reason file
+# reported "CANNOT LINK EXECUTABLE ... library libllama-server-impl.so not
+# found" for an install that had previously been reported healthy). A
+# truncated/interrupted archive extract (network drop mid-download, disk full
+# during the `cp -R` install step, a process killed mid-`mv`) can leave the
+# llama-server ELF present and executable under $HOME/.local/llama.cpp while
+# its .so dependencies (libggml*, libllama-server-impl.so, ...) are missing or
+# incomplete. The OLD find_llama_server_bin only tested `[ -x "$candidate" ]`,
+# which is true for exactly this broken shape — the binary "is installed" by
+# that check, then hard-fails at ELF-load time on actual launch, 90s later,
+# after ensure_local_llm_server already burned its whole ready_seconds wait.
+# Only applies to the app-managed $HOME/.local/llama.cpp tree: a
+# PATH-resolved or agent-managed binary outside it is assumed to carry its own
+# resolvable deps and is not second-guessed here.
+local_llm_install_looks_complete() {
+  candidate_bin="$1"
+  case "$candidate_bin" in
+    "$HOME"/.local/llama.cpp/*) ;;
+    *) return 0 ;;
+  esac
+  [ -x "$candidate_bin" ] || return 1
+  install_root="$HOME/.local/llama.cpp"
+  [ -d "$install_root" ] || return 1
+  so_count="$(find "$install_root" -type f \( -name '*.so' -o -name '*.so.*' \) 2>/dev/null | wc -l | tr -d ' ')"
+  [ "${so_count:-0}" -gt 0 ]
+}
+
 find_llama_server_bin() {
   if [ -n "${LLAMA_SERVER_BIN:-}" ] && [ -x "$LLAMA_SERVER_BIN" ]; then
     printf '%s\n' "$LLAMA_SERVER_BIN"
@@ -355,17 +382,20 @@ find_llama_server_bin() {
   # the agent's exec context fails to resolve shared libs (cold-start blocker C).
   if [ -s "$HOME/.local/bin/llama-server.realpath" ]; then
     _real_bin="$(cat "$HOME/.local/bin/llama-server.realpath" 2>/dev/null || true)"
-    if [ -x "$_real_bin" ]; then
+    if [ -x "$_real_bin" ] && local_llm_install_looks_complete "$_real_bin"; then
       printf '%s\n' "$_real_bin"
       return 0
     fi
   fi
   if command -v llama-server >/dev/null 2>&1; then
-    command -v llama-server
-    return 0
+    _resolved="$(command -v llama-server)"
+    if local_llm_install_looks_complete "$_resolved"; then
+      printf '%s\n' "$_resolved"
+      return 0
+    fi
   fi
   for candidate in "$HOME/.local/bin/llama-server" "$HOME/bin/llama-server"; do
-    if [ -x "$candidate" ]; then
+    if [ -x "$candidate" ] && local_llm_install_looks_complete "$candidate"; then
       printf '%s\n' "$candidate"
       return 0
     fi
@@ -605,6 +635,21 @@ install_llama_server_bin() {
     return 1
   fi
   chmod +x "$installed_binary"
+  # Integrity check (2026-08-04): verify shared libs actually extracted
+  # alongside the binary BEFORE swapping it into $install_dir — see
+  # local_llm_install_looks_complete's doc comment above for the on-device
+  # symptom this guards against. Checked against install_tmp (not yet moved)
+  # so a bad/interrupted new extract never clobbers a working existing
+  # $install_dir; the caller (ensure_local_llm_server) treats this the same
+  # as "binary not found" and, with LOCAL_LLM_INSTALL_LLAMA_SERVER=1, will
+  # have already tried this once — a second manual retry starts from a fresh
+  # download, not a repeat of the same truncated archive.
+  tmp_lib_count=$(find "$install_tmp" -type f \( -name '*.so' -o -name '*.so.*' \) 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${tmp_lib_count:-0}" -eq 0 ]; then
+    echo "auto-install failed: extracted llama.cpp archive has no .so files under it — extract looked incomplete or corrupted; leaving any existing install untouched"
+    rm -rf "$install_tmp"
+    return 1
+  fi
   rm -rf "$install_dir"
   mv "$install_tmp" "$install_dir"
   installed_binary=$(find "$install_dir" -type f -name 'llama-server' 2>/dev/null | head -n 1 || true)
