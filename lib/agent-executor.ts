@@ -568,7 +568,19 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // see canRunOrchestrationChain's updated doc comment. Bumped so a stale
 // on-disk chain script (baked before this) gets regenerated rather than
 // silently keeping the old always-collapse-on-any-pin behavior.
-const AGENT_SCRIPT_VERSION = 49;
+// v50 (2026-08-04, real on-device run root-caused — Codex investigation +
+// Fable5 independent verification): codex_orch_build_prompt's `head -c`
+// truncation used to run over the FULL composed prompt (head + carried prior
+// results + "# This step\n{instruction}"), so a long enough carried-results
+// block could push the tail — the current step's OWN instruction, always
+// written last — entirely past CODEX_ORCH_MAX_PROMPT_CHARS. A step could then
+// receive prior-step content with no live instruction telling it what to do
+// with it. Fixed to reserve the tail's budget first and truncate only the
+// head+carried prefix (mirrors buildStepPrompt's matching fix in
+// lib/agent-orchestration.ts). Bumped so a stale on-disk chain script (baked
+// with the old truncate-the-whole-thing-from-the-front behavior) is
+// regenerated rather than silently kept.
+const AGENT_SCRIPT_VERSION = 50;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -5837,7 +5849,28 @@ codex_orch_collapse_and_truncate() {
 # a multi-step chain — not just the single-shot codexDriverCommand path — is
 # grounded in the real run-time date. Re-emitted on EVERY step (not baked
 # once) since a long chain may cross a day/midnight boundary between steps.
+#
+# 2026-08-04 fix (mirrors buildStepPrompt's matching fix in
+# lib/agent-orchestration.ts): the current step's own "# This step" +
+# instruction tail — always the LAST segment written — must never be silently
+# truncated away. The previous version composed the full text then ran
+# head -c CODEX_ORCH_MAX_PROMPT_CHARS over the WHOLE thing, so a long enough
+# carried-results block could push the tail entirely past the cutoff, leaving
+# the driver with prior-step content and no live instruction for the current
+# step (the same on-device symptom buildStepPrompt's fix addresses). Now the
+# tail's budget is reserved FIRST and only the head+carried prefix is
+# truncated to whatever budget remains.
 codex_orch_build_prompt() {
+  printf '# This step\\n%s' "$1" > "$PROMPT_FILE.orch-tail"
+  # Defensive cap: a step instruction is already bounded well below
+  # CODEX_ORCH_MAX_PROMPT_CHARS at generation time, but truncate the tail too
+  # so the final composed prompt can never exceed the budget even in a
+  # pathological case.
+  head -c "$CODEX_ORCH_MAX_PROMPT_CHARS" "$PROMPT_FILE.orch-tail" > "$PROMPT_FILE.orch-tail.capped"
+  mv "$PROMPT_FILE.orch-tail.capped" "$PROMPT_FILE.orch-tail"
+  CODEX_ORCH_TAIL_LEN=$(wc -c < "$PROMPT_FILE.orch-tail" | tr -d ' ')
+  CODEX_ORCH_HEAD_BUDGET=$((CODEX_ORCH_MAX_PROMPT_CHARS - CODEX_ORCH_TAIL_LEN))
+  [ "$CODEX_ORCH_HEAD_BUDGET" -lt 0 ] && CODEX_ORCH_HEAD_BUDGET=0
   {
     printf '%s\\n%s\\n%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}"
     if [ -n "$CODEX_ORCH_BASE_PROMPT" ]; then
@@ -5848,10 +5881,10 @@ codex_orch_build_prompt() {
       cat "$CODEX_ORCH_CARRY_FILE"
       printf '\\n\\n---\\n\\n'
     fi
-    printf '# This step\\n%s' "$1"
-  } > "$PROMPT_FILE.orch-full"
-  head -c "$CODEX_ORCH_MAX_PROMPT_CHARS" "$PROMPT_FILE.orch-full" > "$PROMPT_FILE"
-  rm -f "$PROMPT_FILE.orch-full"
+  } > "$PROMPT_FILE.orch-head"
+  head -c "$CODEX_ORCH_HEAD_BUDGET" "$PROMPT_FILE.orch-head" > "$PROMPT_FILE"
+  cat "$PROMPT_FILE.orch-tail" >> "$PROMPT_FILE"
+  rm -f "$PROMPT_FILE.orch-head" "$PROMPT_FILE.orch-tail"
 }
 
 PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"

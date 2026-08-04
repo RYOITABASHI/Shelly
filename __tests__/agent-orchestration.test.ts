@@ -9,6 +9,7 @@ import {
   HARD_MAX_STEPS,
   HARD_TOTAL_TIMEOUT_MS,
   isOrchestrated,
+  MAX_PROMPT_CHARS,
   nextStepGate,
   normalizeStep,
   normalizeSteps,
@@ -190,6 +191,40 @@ describe('buildStepPrompt', () => {
   it('bounds the prompt length', () => {
     const p = buildStepPrompt('x'.repeat(9000), 'y', ['z'.repeat(9000)]);
     expect(p.length).toBeLessThanOrEqual(6000);
+  });
+
+  // 2026-08-04: real on-device symptom (Codex investigation + Fable5
+  // independent verification) — a summarize-then-notify orchestrated chain's
+  // later step either fabricated content unrelated to the carried research or
+  // repeated the immediately preceding step's own output verbatim, both
+  // consistent with the model receiving prior-step context but NO live
+  // instruction for what to do with it. Root cause: the old implementation
+  // composed head+carried+tail and then sliced the WHOLE string to
+  // MAX_PROMPT_CHARS from the front — on a long enough carried block, the
+  // tail ("# This step\n{instruction}", always written last) landed entirely
+  // past the cutoff and was silently dropped.
+  it('never truncates away the current step instruction, however long the carried prior results are', () => {
+    const priorResults = ['a'.repeat(1500), 'b'.repeat(1500), 'c'.repeat(1500)];
+    const p = buildStepPrompt('Base task', '通知して', priorResults);
+    expect(p.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+    expect(p.endsWith('# This step\n通知して')).toBe(true);
+    expect(p).toContain('# This step');
+    expect(p).toContain('通知して');
+  });
+
+  it('truncates the head+carried prefix, not the instruction, when the composite would otherwise overflow', () => {
+    const p = buildStepPrompt('x'.repeat(9000), 'summarize and notify', ['z'.repeat(9000)]);
+    expect(p.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+    expect(p.endsWith('# This step\nsummarize and notify')).toBe(true);
+  });
+
+  it('reserves the tail budget even with the maximum number of carried prior results', () => {
+    // HARD_MAX_STEPS - 1 prior results, each near MAX_RESULT_CARRY_CHARS —
+    // the worst case a real chain can produce.
+    const priorResults = Array.from({ length: 9 }, (_, i) => `step ${i} result `.repeat(100));
+    const p = buildStepPrompt('base prompt text', 'final instruction', priorResults);
+    expect(p.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+    expect(p.endsWith('# This step\nfinal instruction')).toBe(true);
   });
 });
 

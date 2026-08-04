@@ -171,19 +171,41 @@ export function nextStepGate(opts: {
  * Build the prompt for step `i`: the base prompt + the carried (bounded) prior
  * results + this step's instruction. Bounded so a long chain can't unbounded-grow
  * the prompt.
+ *
+ * The current step's own instruction ("# This step\n...", always the LAST
+ * segment) must never be silently truncated away. The previous implementation
+ * composed the full string (head + carried + tail) and then sliced the WHOLE
+ * thing to MAX_PROMPT_CHARS from the front — on a long enough `carried` block
+ * (several prior steps each near their own MAX_RESULT_CARRY_CHARS budget),
+ * that cutoff could land before the tail even started, leaving the model with
+ * prior-step content and NO instruction telling it what to do with it.
+ * 2026-08-04 real on-device symptom this fixes: an orchestrated
+ * summarize-then-notify chain's later steps produced content that was either
+ * unrelated to (fabricated relative to) the carried research, or a
+ * byte-for-byte repeat of the immediately preceding step's own output — both
+ * consistent with the model receiving no live instruction for that step.
+ *
+ * Fix: reserve the tail's budget FIRST (it is small and already bounded —
+ * normalizeStep caps instruction to MAX_STEP_INSTRUCTION_CHARS before this
+ * function ever sees it), then truncate only the head+carried prefix to
+ * whatever budget remains. The tail itself is still defensively capped to
+ * MAX_PROMPT_CHARS so the overall return value can never exceed the budget
+ * even in a pathological case.
  */
 export function buildStepPrompt(
   basePrompt: string,
   instruction: string,
   priorResults: string[]
 ): string {
+  const tail = `# This step\n${instruction.trim()}`.slice(0, MAX_PROMPT_CHARS);
+  const headBudget = Math.max(0, MAX_PROMPT_CHARS - tail.length);
   const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
   const carried = priorResults.length
     ? `# Results from previous steps\n${priorResults
         .map((r, i) => `## Step ${i + 1}\n${r.replace(/\s+/g, ' ').trim().slice(0, MAX_RESULT_CARRY_CHARS)}`)
         .join('\n\n')}\n\n---\n\n`
     : '';
-  return `${head}${carried}# This step\n${instruction.trim()}`.slice(0, MAX_PROMPT_CHARS);
+  return `${`${head}${carried}`.slice(0, headBudget)}${tail}`;
 }
 
 /**

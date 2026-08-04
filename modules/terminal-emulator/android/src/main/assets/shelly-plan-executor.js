@@ -382,14 +382,25 @@ function nextStepGate(opts) {
 
 // Verbatim port of lib/agent-orchestration.ts's buildStepPrompt: the base
 // prompt + the carried (bounded) prior results + this step's instruction.
+//
+// 2026-08-04 fix (mirrors buildStepPrompt's matching fix in
+// lib/agent-orchestration.ts, found on the SAME real on-device run that
+// motivated it): the previous version composed the full string then sliced
+// the WHOLE thing to STEP_PROMPT_MAX_CHARS from the front, so a long enough
+// carried-results block could push "# This step\n{instruction}" — always the
+// last segment — entirely past the cutoff, leaving the step with prior-step
+// content and no live instruction. The instruction's budget is now reserved
+// first; only the head+carried prefix is truncated to whatever remains.
 function buildStepPrompt(basePrompt, instruction, priorResults) {
+  const tail = `# This step\n${instruction.trim()}`.slice(0, STEP_PROMPT_MAX_CHARS);
+  const headBudget = Math.max(0, STEP_PROMPT_MAX_CHARS - tail.length);
   const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
   const carried = priorResults.length
     ? `# Results from previous steps\n${priorResults
         .map((r, i) => `## Step ${i + 1}\n${String(r).replace(/\s+/g, ' ').trim().slice(0, STEP_PROMPT_MAX_RESULT_CARRY_CHARS)}`)
         .join('\n\n')}\n\n---\n\n`
     : '';
-  return `${head}${carried}# This step\n${instruction.trim()}`.slice(0, STEP_PROMPT_MAX_CHARS);
+  return `${`${head}${carried}`.slice(0, headBudget)}${tail}`;
 }
 
 // Verbatim port of lib/agent-orchestration.ts's reduceStatus. Precedence:

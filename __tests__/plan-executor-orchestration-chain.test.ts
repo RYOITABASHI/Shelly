@@ -79,6 +79,21 @@ describe('chain-mode pure-function parity with lib/agent-orchestration.ts', () =
       expect(jsOut).toBe(tsOut);
       expect(jsOut.length).toBeLessThanOrEqual(6000);
     });
+    // 2026-08-04: the unattended PlanSpec-executor path (this file) carries
+    // its own hand-ported buildStepPrompt — a THIRD copy of the same
+    // truncation logic alongside lib/agent-orchestration.ts's original and
+    // lib/agent-executor.ts's bash mirror (codex_orch_build_prompt). All
+    // three had the identical bug: slicing the full composite from the front
+    // could silently drop the current step's own instruction on a long
+    // enough carried-results block. Locks parity on the fix, not just the
+    // old truncate-from-the-front behavior.
+    it('never truncates away the current step instruction, identically to the TS original', () => {
+      const priorResults = ['a'.repeat(1500), 'b'.repeat(1500), 'c'.repeat(1500)];
+      const tsOut = tsBuildStepPrompt('Base task', '通知して', priorResults);
+      const jsOut = executor.buildStepPrompt('Base task', '通知して', priorResults);
+      expect(jsOut).toBe(tsOut);
+      expect(jsOut.endsWith('# This step\n通知して')).toBe(true);
+    });
   });
 
   describe('reduceStatus / combineFinalPreview', () => {

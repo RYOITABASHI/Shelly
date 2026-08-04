@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { generateRunScript } from '@/lib/agent-executor';
-import { MAX_RESULT_CARRY_CHARS } from '@/lib/agent-orchestration';
+import { MAX_PROMPT_CHARS, MAX_RESULT_CARRY_CHARS } from '@/lib/agent-orchestration';
 import { Agent, AgentOrchestrationConfig, ToolChoice } from '@/store/types';
 
 /** bash -n the script via a temp FILE (a full script exceeds the Windows argv limit for `-c`). */
@@ -218,6 +218,43 @@ describe('generateRunScript — real bash-side chain execution (bug #155(b) foll
     // Whitespace was actually collapsed (no run of 2+ raw newlines/tabs survives).
     expect(carriedSection).not.toMatch(/\n\n/);
     expect(carriedSection).not.toMatch(/\t/);
+  });
+
+  // 2026-08-04: real on-device symptom (Codex investigation + Fable5
+  // independent verification) — codex_orch_build_prompt used to `head -c
+  // CODEX_ORCH_MAX_PROMPT_CHARS` over the FULL composed prompt (head +
+  // carried prior results + "# This step\n{instruction}"), so a long enough
+  // carried-results block could push the tail — always written last — past
+  // the cutoff and silently drop the current step's own instruction. This
+  // drives every step's answer near MAX_RESULT_CARRY_CHARS (the worst case a
+  // real chain produces) and asserts the LAST step's actual $PROMPT_FILE
+  // content (not just the captured-prompt copy used elsewhere in this file)
+  // still ends with the step's own instruction.
+  it("never drops the current step's own instruction from the composed prompt, even with several near-budget carried results", () => {
+    const manyStepAgent = baseAgent({ type: 'auto' }, {
+      steps: [
+        'collect the latest AI news with sources',
+        'summarize the findings for a general audience',
+        '通知して',
+      ],
+    });
+    const nearBudgetAnswer = 'x'.repeat(MAX_RESULT_CARRY_CHARS + 500);
+    const snippet = extractChainSnippet(generateRunScript(manyStepAgent)).replace(
+      /printf 'ANSWER-FOR-STEP-%s' "\$n" > "\$answer_file"/,
+      `printf '%s' ${JSON.stringify(nearBudgetAnswer)} > "$answer_file"`,
+    );
+    const result = runChain(snippet);
+    expect(result.callCount).toBe(3);
+    expect(result.failed).toBe(false);
+    // Every step's composed prompt (as actually written to $PROMPT_FILE and
+    // read by the driver) ends with its own "# This step" + instruction —
+    // never silently truncated away by a long carried-results prefix.
+    expect(result.prompts[0].endsWith('# This step\ncollect the latest AI news with sources')).toBe(true);
+    expect(result.prompts[1].endsWith('# This step\nsummarize the findings for a general audience')).toBe(true);
+    expect(result.prompts[2].endsWith('# This step\n通知して')).toBe(true);
+    for (const prompt of result.prompts) {
+      expect(prompt.length).toBeLessThanOrEqual(MAX_PROMPT_CHARS);
+    }
   });
 
   it('stops the chain immediately on a failing step — no retry, no continuing (nextStepGate priorFailed mirror)', () => {

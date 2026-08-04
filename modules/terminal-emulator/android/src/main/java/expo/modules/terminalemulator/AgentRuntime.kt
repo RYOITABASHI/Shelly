@@ -351,8 +351,17 @@ object AgentRuntime {
     // the Cerebras default model (qwen-3-235b-a22b-instruct-2507, removed from
     // Cerebras's catalog -> gpt-oss-120b). v49 (2026-08-04) makes the codex
     // orchestration chain honor a step's own tool pin instead of always
-    // collapsing on one — see lib/agent-executor.ts.
-    private const val CURRENT_SCRIPT_VERSION = 49
+    // collapsing on one — see lib/agent-executor.ts. v50 (2026-08-04, real
+    // on-device run root-caused by a Codex investigation + Fable5 independent
+    // verification pass) fixes codex_orch_build_prompt's per-step prompt
+    // truncation: it used to `head -c` the FULL composed prompt (head +
+    // carried prior-step results + "# This step\n{instruction}"), so a long
+    // enough carried-results block could push the current step's OWN
+    // instruction -- always written last -- entirely past the cutoff,
+    // leaving that step with prior-step content and no live instruction to
+    // act on. Now the instruction's budget is reserved first. See
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment.
+    private const val CURRENT_SCRIPT_VERSION = 50
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
