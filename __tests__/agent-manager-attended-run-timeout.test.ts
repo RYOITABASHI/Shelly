@@ -19,7 +19,9 @@
  * minutes with zero incremental feedback, while the device silently
  * busy-polls every 1.5s, is indistinguishable from a genuine infinite hang
  * and wastes real CPU/battery. Fix: both attended call sites now pass
- * ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS (5 min) instead.
+ * ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS (10 min, raised from 5 min on
+ * 2026-08-04 after an on-device repro where a single slow orchestration
+ * step legitimately exceeded the old cap) instead.
  *
  * This test reproduces the exact repro shape reported on-device: a mocked
  * runCommand whose readAgentRunLogs branch always returns the SAME stable,

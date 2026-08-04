@@ -93,8 +93,13 @@ const AGENT_RUN_WAIT_POLL_MS = 1_500;
  * cloud API call, on-device LLM inference, or a short Codex-driver turn, but
  * short enough that a stuck run surfaces a visible error well within the
  * time a user will plausibly wait looking at a chat bubble, instead of
- * silently polling for up to the unattended 20-minute ceiling. */
-export const ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS = 5 * 60_000;
+ * silently polling for up to the unattended 20-minute ceiling. Raised from 5
+ * to 10 minutes (2026-08-04, on-device repro: a single Perplexity
+ * sonar-deep-research orchestration step legitimately took 330s and got cut
+ * off by the old 300s cap, killing the whole chain before later steps ran —
+ * multi-step orchestrated agents with a slow research step need the extra
+ * headroom). */
+export const ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS = 10 * 60_000;
 
 export function isSafeAgentId(agentId: unknown): agentId is string {
   // typeof guard first: RegExp.test coerces its argument, so a missing id
