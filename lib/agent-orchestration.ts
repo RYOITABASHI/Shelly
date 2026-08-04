@@ -503,6 +503,38 @@ export function isScheduleOnlyClause(clause: string): boolean {
   return SCHEDULE_ONLY_CLAUSE_RE.test(clause);
 }
 
+/** A pure delivery directive and nothing else — the agent's own action.type
+ *  already performs the delivery AFTER the chain, so a trailing step saying
+ *  only "notify" duplicates it as a pointless model call. Allowed prefixes
+ *  are object/recipient fillers (「結果を」「ユーザーに」…); anything else
+ *  before 通知/お知らせ (e.g. 「通知内容を作成して」— 通知 is the object of real
+ *  work there, not the verb) fails the anchor and is kept. Shared with
+ *  lib/agent-conversational-registration.ts's Tier 3 step sanitizer (2026-08-04)
+ *  — this was previously duplicated per-tier and drifted: Tier 1's own
+ *  detectToolPinnedSteps had NO equivalent filter at all, so a plain
+ *  conjunctive utterance ("…を集めて、…で要約して、通知して") kept a bare
+ *  "通知して" as its own orchestration step even after Tier 3's sanitizer was
+ *  fixed — on-device repro (2026-08-04) confirmed this exact utterance never
+ *  reaches Tier 3 at all when the deterministic parser already resolves
+ *  action.type + all steps and only the schedule time is missing (Tier 2
+ *  single-slot-fill path). */
+const JA_NOTIFY_ONLY_CLAUSE_RE =
+  /^(?:(?:結果|それ|完了|内容)[をは]\s*|私に\s*|ユーザー[にへ]\s*)*(?:プッシュ)?(?:通知|お知らせ)\s*(?:して(?:ね|ください)?|する|を(?:送信|送)(?:して(?:ください)?|する|って|る)?)?$/;
+const EN_NOTIFY_ONLY_CLAUSE_RE =
+  /^(?:(?:please\s+)?notify(?:\s+me)?|send(?:\s+me)?\s+(?:a\s+)?(?:push\s+)?notification)\.?$/i;
+
+/** Strip trailing sentence punctuation before the anchored checks — callers
+ *  may hand this a full-sentence clause ("通知して。"). */
+function stripTrailingClausePunct(text: string): string {
+  return text.trim().replace(/[。．.、,！!]+$/, '').trim();
+}
+
+export function isNotifyOnlyClause(clause: string): boolean {
+  const t = stripTrailingClausePunct(clause);
+  if (!t) return false;
+  return JA_NOTIFY_ONLY_CLAUSE_RE.test(t) || EN_NOTIFY_ONLY_CLAUSE_RE.test(t);
+}
+
 /**
  * Detect a tool-pinned multi-step chain in plain conjunctive text — e.g.
  * "パープレで論文を集めて、ローカルLLMで要約して、Xに投稿して". Returns null when

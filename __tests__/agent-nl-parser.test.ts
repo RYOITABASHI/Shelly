@@ -1247,6 +1247,66 @@ describe('parseAgentNL — Phase 6 target scenario: tool-pinned て-form chain �
   });
 });
 
+describe('parseAgentNL — trailing "通知して" step is dropped when action resolves to notify (2026-08-04 on-device repro)', () => {
+  // Exact utterance from the on-device repro (Problem D / Bug C): resolves
+  // FULLY deterministically (action:'notify' from the trailing 通知して verb,
+  // 2 tool-pinned real-work steps from detectToolPinnedSteps) except for the
+  // schedule TIME, so it never reaches Tier 3's LLM-led registration at all —
+  // it's a Tier 1 (this file) + Tier 2 (single "いつ？" slot-fill question)
+  // flow. Before this fix, detectToolPinnedSteps had no notify-only-clause
+  // filter (unlike lib/agent-conversational-registration.ts's Tier 3
+  // sanitizer, which already dropped it), so "通知して" survived as a bare,
+  // tool-less 3rd orchestration step with no real work — the agent-level
+  // notify action then delivered whatever that 3rd LLM call happened to
+  // hallucinate instead of the real 2nd-step summary.
+  const UTTERANCE = '毎日、パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、通知して';
+
+  it('resolves action to notify', () => {
+    expect(parseAgentNL(UTTERANCE).action.type).toBe('notify');
+  });
+
+  it('produces exactly 2 tool-pinned steps, not 3 — "通知して" is dropped', () => {
+    const d = parseAgentNL(UTTERANCE);
+    expect(d.orchestrationSteps).toBeDefined();
+    expect(d.orchestrationSteps!.length).toBe(2);
+    const [first, second] = d.orchestrationSteps!;
+    if (typeof first !== 'string') {
+      expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+      expect(first.instruction).toContain('パープレ');
+    }
+    if (typeof second !== 'string') {
+      expect(second.tool).toEqual({ type: 'local' });
+      expect(second.instruction).toContain('ローカルLLM');
+    }
+    for (const step of d.orchestrationSteps!) {
+      const instruction = typeof step === 'string' ? step : step.instruction;
+      expect(instruction).not.toMatch(/^通知して$/);
+    }
+  });
+
+  it('REGRESSION: a mid-chain notify-ish clause with real work (「通知内容を作成する」) is kept, not dropped', () => {
+    const d = parseAgentNL('毎日、パープレキシティで最新のAIニュースを集めて、通知内容を作成する、ローカルLLMで要約して');
+    expect(d.orchestrationSteps).toBeDefined();
+    expect(d.orchestrationSteps!.length).toBe(3);
+  });
+
+  it('REGRESSION: dropping the trailing notify clause never collapses below 2 steps into a stepless chain', () => {
+    // A 2-clause chain ending in a bare notify directive drops to 1 real step,
+    // which is below MIN_ORCHESTRATION_STEPS territory — orchestrationSteps
+    // must come back undefined (ordinary single-prompt agent), never a
+    // 1-element "chain".
+    const d = parseAgentNL('毎日、パープレキシティで最新のAIニュースを集めて、通知して');
+    expect(d.orchestrationSteps).toBeUndefined();
+  });
+
+  it('does NOT drop the trailing step when action is draft (not notify) — scoped exactly like Tier 3', () => {
+    const d = parseAgentNL('毎日、パープレキシティで最新のAIニュースを集めて、ローカルLLMで要約して、保存して');
+    expect(d.action.type).toBe('draft');
+    expect(d.orchestrationSteps).toBeDefined();
+    expect(d.orchestrationSteps!.length).toBe(3);
+  });
+});
+
 // api-call v1.1 deliberately narrows (rather than deletes) v1's UI-only
 // boundary: NL may author a non-final apiCall step only when one clause carries
 // BOTH a supported provider/host and an explicit API-call marker. Everything

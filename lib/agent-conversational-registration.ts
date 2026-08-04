@@ -80,7 +80,7 @@ import { resolvePlatformHintConnector } from './agent-llm-fallback';
 // lines ~1770-1778), and HARD_MAX_STEPS is the same hard ceiling the
 // orchestration executor itself enforces — a locally-redeclared copy of any of
 // these would drift the moment one side changed.
-import { detectApiCallSteps, HARD_MAX_STEPS, isScheduleOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
+import { detectApiCallSteps, HARD_MAX_STEPS, isNotifyOnlyClause, isScheduleOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
 // Tier 2's own cross-turn partial-schedule merge (a bare time completing a
 // recurrence the draft already knows), shared — NOT re-implemented — so the
 // Tier 3 merge can never drift from applySlotAnswer's behavior again. See the
@@ -477,17 +477,6 @@ const EN_SCHEDULE_ONLY_STEP_RE =
   /^(?:(?:every\s?day|everyday|daily|each\s+day|every\s+(?:sun|mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?)(?:day)?s?)[\s,]*)?(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i;
 const EN_FREQ_ONLY_STEP_RE = /^(?:every\s?day|everyday|daily|each\s+day)$/i;
 
-/** A pure delivery directive and nothing else — the agent's own action.type
- *  already performs the delivery AFTER the chain, so a step saying only
- *  "notify" duplicates it as a pointless model call. Allowed prefixes are the
- *  object/recipient fillers (「結果を」「ユーザーに」…); anything else before
- *  通知/お知らせ (e.g. 「通知内容を作成して」— 通知 is the object of real work
- *  there, not the verb) fails the anchor and is kept. */
-const JA_NOTIFY_ONLY_STEP_RE =
-  /^(?:(?:結果|それ|完了|内容)[をは]\s*|私に\s*|ユーザー[にへ]\s*)*(?:プッシュ)?(?:通知|お知らせ)\s*(?:して(?:ね|ください)?|する|を(?:送信|送)(?:して(?:ください)?|する|って|る)?)?$/;
-const EN_NOTIFY_ONLY_STEP_RE =
-  /^(?:(?:please\s+)?notify(?:\s+me)?|send(?:\s+me)?\s+(?:a\s+)?(?:push\s+)?notification)\.?$/i;
-
 /** Strip trailing sentence punctuation before the anchored checks — the model
  *  often writes steps as full sentences (「20時00分に。」). */
 function stripTrailingPunct(text: string): string {
@@ -518,9 +507,11 @@ function isScheduleOnlyStepText(step: string): boolean {
 }
 
 function isNotifyOnlyStepText(step: string): boolean {
-  const t = stripTrailingPunct(step);
-  if (!t) return false;
-  return JA_NOTIFY_ONLY_STEP_RE.test(t) || EN_NOTIFY_ONLY_STEP_RE.test(t);
+  // Delegates to the shared detector in lib/agent-orchestration.ts (2026-08-04)
+  // — see isNotifyOnlyClause's doc comment for why this moved: Tier 1's own
+  // step splitter needed the identical check and a per-tier copy had already
+  // drifted (Tier 1 had none at all).
+  return isNotifyOnlyClause(step);
 }
 
 export interface SanitizedConversationalSteps {

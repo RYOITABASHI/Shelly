@@ -18,7 +18,7 @@
  */
 import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
-import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, tagStepsWithToolMentions } from './agent-orchestration';
+import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
 
@@ -1790,10 +1790,37 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // path only takes effect on the attended/"Run Now" path today, not on an
   // unattended/scheduled fire — unlike `.apiCall`, which already works on
   // both).
-  const detectedSteps: Array<string | AgentOrchestrationStep> | undefined =
+  let detectedSteps: Array<string | AgentOrchestrationStep> | undefined =
     explicitSteps.length >= 2
       ? tagStepsWithToolMentions(explicitSteps)
       : detectToolPinnedSteps(prompt || rawText) ?? undefined;
+  // Drop a trailing pure-delivery step ("通知して") when the resolved action is
+  // already 'notify' — the action performs that delivery AFTER the chain, so
+  // keeping the step as its own model call just makes the last step regenerate
+  // (or, worse, verbatim-repeat) whatever the previous step produced, with no
+  // real instruction of its own (2026-08-04 on-device repro: "…を集めて、…で
+  // 要約して、通知して" kept all 3 clauses as steps; step 3 had no tool mention
+  // and no actual work, and the final agent-level notify then delivered
+  // whatever step 3's LLM call happened to hallucinate instead of step 2's real
+  // summary). Mirrors lib/agent-conversational-registration.ts's Tier 3
+  // sanitizeConversationalSteps, which already did this for the LLM-led path —
+  // this was the missing Tier 1 counterpart: a plain conjunctive utterance
+  // resolves fully deterministically (action.type + all steps) and only a
+  // missing time routes it through Tier 2's single slot-fill question, so it
+  // never reaches Tier 3's sanitizer at all. Only the LAST clause is checked
+  // (mirrors detectToolPinnedSteps' leading-schedule-clause drop applying only
+  // to clause 0) — a mid-chain "notify" mention is ambiguous and kept, same as
+  // Tier 3's scoping rationale. If removing it would leave fewer than 2 steps,
+  // drop the whole orchestration instead of stepless-chain — the agent falls
+  // back to an ordinary single-prompt agent.
+  if (action.type === 'notify' && detectedSteps && detectedSteps.length >= 2) {
+    const last = detectedSteps[detectedSteps.length - 1];
+    const lastInstruction = typeof last === 'string' ? last : last.instruction;
+    if (isNotifyOnlyClause(lastInstruction)) {
+      const trimmed = detectedSteps.slice(0, -1);
+      detectedSteps = trimmed.length >= 2 ? trimmed : undefined;
+    }
+  }
   // v1.1 api-call authoring: upgrade only explicit provider+API-call clauses,
   // after the established splitters have decided that this is genuinely a
   // multi-step utterance. This preserves bug #152's preamble-dropping behavior
