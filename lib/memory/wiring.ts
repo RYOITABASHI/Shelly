@@ -20,9 +20,15 @@
 import type { MemoryNote } from '@/lib/agent-memory';
 import { MemoryHit, MemoryRecord, MEMORY_SCHEMA_VERSION } from './types';
 
-// Master dormancy switch. Never flipped by this work — flipping it is the
-// separate "enable" decision, gated on a device-verified floor.
-export const MEMORY_ENABLED = false;
+// Master dormancy switch. Flipped 2026-08-05: Track A (at-rest encryption,
+// commit 690785cd4) and Track B/C (dev-data cleanup + PII guard, commit
+// e43894d59) landed weeks before this flip and were simply never wired to it
+// — DEFERRED.md's MEMORY-001 entry was stale (see the entry's 2026-08-05
+// correction). Steps 3/4 (agent-manager's activated recall/write) and the new
+// Step 5 (Sidebar's activateMemoryList) all fall back to G2 on any internal
+// failure, so a live bug here degrades to pre-flip behavior rather than
+// losing an agent's memory outright.
+export const MEMORY_ENABLED = true;
 
 // Optional semantic re-rank via localhost llama-server, broker-mediated only.
 // Off by default and independent of MEMORY_ENABLED.

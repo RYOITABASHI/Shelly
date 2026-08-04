@@ -2568,6 +2568,22 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 **✅ Track B + Track C 実装済み（2026-07-17、実機検証は未実施）**: Track B — 新規`lib/memory/dev-data-cleanup.ts`。`isPreEncryptionRecordFile`（純粋な形状判定）+ `cleanupStalePlaintextMemoryFiles`（Track A以前の平文`MemoryRecord`形状に一致するファイルのみ削除、envelope/破損JSON/未知形状は放置）。`shadow.ts`の`getShadowDeps`初回構築時にfire-and-forgetで走らせる。バージョンタグはTrack Aが既に`v`/`keyId`フィールドで対応済みのため追加変更なし。Track C — 新規`lib/memory/pii-guard.ts`（`secret-guard.ts`と同形の純粋ルールベーススキャナ、ML不使用）。7種のPII（住所/電話番号/公的ID/健康状態/金融情報/雇用機微/実名開示）をEN+JAで検出、検出種別のみ返し値そのものは返さない。write境界（`shadow.ts`の`activateMemoryWrite`）とrecall境界（`model-router/wiring.ts`の`toRunRequirementsFromAgent`、既存`scanForSecrets`が再スキャンする同じ`agent.prompt`フィールド集合を走査）の両方に接続。シグナルは新規`RunRequirements.touchesPii`（optional、`model-router`自体が`MODEL_ROUTER_ENABLED=false`で休眠のため配線先に影響なし）に到達するが、いかなるeligibility判定にも未接続（Track Cのスコープ外、意図通り）。`MEMORY_ENABLED`は無変更のまま`false`。新規テスト26件（`pii-guard.test.ts`/`dev-data-cleanup.test.ts`/`pii-signal.test.ts`+`shadow.test.ts`追加分）、baseline比較（変更前後で失敗テストの完全一致を確認）で新規失敗ゼロ。`tsc --noEmit`クリーン。**残タスク**: Track D（任意）、flag-ON rollout gate全体（実機検証込み）は未着手のまま。
 
+**🔴 2026-08-05 訂正（このentryの見出し・冒頭の「Track B/C/D未着手」は誤り）**: このentry自体の本文（上記2エントリ）に2026-07-16/17時点でTrack A/B/C実装済みと記録済みだったにも関わらず、entryの見出しとcontext-loadingが「未着手」のまま放置されていた。ユーザーからMEMORY-001解禁の相談を受けた際、最初にこの見出しだけを見て「Track B/Cはまだコード自体存在しない」と誤って回答した（`git log --oneline -- lib/memory/pii-guard.ts lib/memory/dev-data-cleanup.ts`で`e43894d59`が既に着地済みと確認して即訂正）。**教訓: DEFERRED.mdのentryは見出しだけでなく本文まで読む／実コードのgit logで裏取りする**（[[project_hermes_gap_roadmap_next_version]]と同じ「ドキュメントが古い」パターンの再発）。
+
+**✅ MEMORY_ENABLED を true に反転（2026-08-05、`lib/memory/wiring.ts`）**: ユーザーの明示指示（「まだテストばかりで実運用してないからこのタイミングで実装しちゃって良いよ」— 実データがまだ存在しないため、rollout gateの「実機で平文ファイルが一切残らないことの確認」を待たずに反転する判断はユーザー自身が下した）を受けて実施。反転前に見つけた**唯一の実コードギャップ**: 2026-07-16設計の「Sidebar count -> list().length」項目が未実装のままだった — `components/layout/Sidebar.tsx`のエージェント詳細ポップアップが常にG2の`readMemoryNotes`だけを読んでおり、Step 4 (`activateMemoryWrite`)がG2の代わりにMemoryStoreへ書くようになった後もSidebarはG2を見続けるため、flag-ON後は新しい記憶がポップアップに二度と反映されないままフリーズする実UIバグになるはずだった。これを「Step 5」として実装してから反転:
+- `lib/memory/memory-store.ts`: `MemoryStore.list(namespace)`追加（`adapter.list`への薄いpassthrough、inspection用途）。
+- `lib/memory/shadow.ts`: `activateMemoryList(agentId, deps?)`追加。未import状態のagentは`readMemoryNotes`経由でG2から一回限りimportしてから`store.list()`、結果を`MemoryRecord`→`MemoryNote`形状へ逆変換（Sidebarの既存レンダラを無改修で流用）。他のStep 3/4と同じfail-closed契約: 内部失敗時は`null`を返しG2へフォールバック（空リストと「エラーで失敗」を区別）。
+- `components/layout/Sidebar.tsx`: `showAgentDetail`のmemory読み込みを`if (MEMORY_ENABLED)`で分岐、`activateMemoryList`優先・`null`ならG2へフォールバック。
+- テスト: `shadow.test.ts`に`activateMemoryList`用5件追加、`memory-store.test.ts`に`list()`用2件追加、既存の「flag-OFF」前提だった3件（`ships flag-OFF`等）をflag-ON前提に更新。メモリ関連テストスイート計93件green。
+- **検証**: `git stash`で`wiring.ts`だけを一時的に戻し、`capability-broker.test.ts`/`plan-executor.test.ts`の失敗（Windows固有の`mkdir 'C:\C:\Users\...'`二重ドライブレターパスバグ、FS-001/EXEC-001のoutside-root検査が機能していない）が反転の有無に関わらず**完全に同一内容で再現する**ことを確認 — 今回の変更とは無関係の既存不具合と確定（別途調査タスクを切り出し済み、DEFERRED.md未登録・spawn_task経由で追跡）。
+
+**⚠️ 元のrollout gate未達のまま反転した項目（実機データが載る前に埋めること）**:
+1. 平文ファイルが実機で一切残らないことの確認・アンインストール後の復号不能確認 — Track A自体はホストテストのみ、`crypto-expo.ts`（実`expo-secure-store`/`expo-crypto`経路）の実機往復は依然未検証。
+2. non-secret-pattern機微proseのcorpusテストがcloud送信を止めることの証明 — Track Cの`touchesPii`シグナルはどのeligibility判定にも未接続のまま（設計時から意図的にスコープ外）なので、機微PIIを含む記憶がcloud routingを妨げる保証は今もない。`MODEL_ROUTER_ENABLED`自体が休眠のため実害は今のところないが、model-router を有効化する前に必ずこの接続を先に行うこと。
+3. READMEのprivacy/data-storage節の更新 — 次フェーズのREADME更新作業と合わせて実施予定。
+
+**優先度**: 上記⚠️3点はP1として残す（[[project_capability_broker_phase0]]と同様、フラグON後も安全網が効いている間に埋めるべき項目）。
+
 ---
 
 ### CC schema-diff watcher を updater に組み込む

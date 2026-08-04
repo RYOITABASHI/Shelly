@@ -21,6 +21,7 @@ import { getHomePath } from '@/lib/home-path';
 import {
   buildRecallContext,
   makeMemoryNote,
+  readMemoryNotes,
   recallMemoryNotes,
   type MemoryNote,
   type MemoryNoteType,
@@ -337,5 +338,65 @@ export async function activateMemoryWrite(
       error instanceof Error ? error.message : String(error)
     );
     return false;
+  }
+}
+
+// Convert a MemoryRecord back onto G2's MemoryNote shape (inverse of
+// g2NoteToRecord) so activateMemoryList's caller can reuse Sidebar's existing
+// MemoryNote-shaped renderer unchanged.
+function recordToNote(agentId: string, record: MemoryRecord): MemoryNote {
+  return {
+    id: record.key,
+    agentId,
+    type: (record.kind as MemoryNoteType) ?? 'fact',
+    created: new Date(record.createdAt).toISOString(),
+    tags: record.tags,
+    text: record.text,
+  };
+}
+
+/**
+ * MEMORY-001 Step 5 — activated list, for the Sidebar's per-agent memory
+ * detail popup (the "Sidebar count -> list().length" strangler item from the
+ * 2026-07-16 design that Steps 3/4 never covered). Only ever called from
+ * Sidebar.tsx inside `if (MEMORY_ENABLED)`; unreachable dead code while the
+ * flag stays false.
+ *
+ * A detail popup can be opened for an agent that has never gone through
+ * activateMemoryRecall/activateMemoryWrite yet (e.g. right after the flag is
+ * flipped, before that agent's next run), so this does its own one-time
+ * mirror-import from G2 rather than assuming importedAgents already has the
+ * agent — same idempotent adapter.put upsert import as importAndQuery, kept
+ * separate here so a display-only popup never has to fabricate the
+ * `notes`/`name`/`prompt` fields importAndQuery expects from a live run.
+ *
+ * Returns null (not []) on ANY internal failure so the caller falls back to
+ * G2's readMemoryNotes, exactly like activateMemoryRecall/activateMemoryWrite
+ * — G2 stays the safety net, never a silently-empty popup. Never throws.
+ */
+export async function activateMemoryList(
+  agentId: string,
+  deps: ShadowDeps = getShadowDeps()
+): Promise<MemoryNote[] | null> {
+  try {
+    const namespace = agentNamespace(agentId);
+    if (!deps.importedAgents.has(agentId)) {
+      const g2Notes = await readMemoryNotes(agentId);
+      for (const note of g2Notes) {
+        await deps.adapter.put(g2NoteToRecord(note));
+      }
+      deps.importedAgents.add(agentId);
+    }
+    const records = await deps.store.list(namespace);
+    return records
+      .map((record) => recordToNote(agentId, record))
+      .sort((a, b) => b.created.localeCompare(a.created));
+  } catch (error) {
+    logWarn(
+      LOG_MODULE,
+      'activated list failed, caller should fall back to G2 (live run unaffected)',
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
   }
 }

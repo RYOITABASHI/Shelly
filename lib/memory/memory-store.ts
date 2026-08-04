@@ -97,6 +97,12 @@ export class MemoryStore {
     return this.adapter.delete(namespace, key);
   }
 
+  // Unfiltered, unranked dump of every record in a namespace — inspection use
+  // (e.g. a Sidebar detail popup listing an agent's saved facts), not recall.
+  async list(namespace: string): Promise<MemoryRecord[]> {
+    return this.adapter.list(namespace);
+  }
+
   private resolve(q: MemoryQuery | undefined): ResolvedQuery {
     const requested = q?.mode ?? 'fulltext';
     // Degrade to fulltext when no embedding port is available.

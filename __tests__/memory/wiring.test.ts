@@ -12,8 +12,8 @@ import {
 import { buildRecallContext, type MemoryNote } from '@/lib/agent-memory';
 
 describe('MEMORY-001 dormancy + G2 mapping', () => {
-  it('ships disabled (queue + embedding both off)', () => {
-    expect(MEMORY_ENABLED).toBe(false);
+  it('ships with the memory store enabled but embedding still off (2026-08-05 flip)', () => {
+    expect(MEMORY_ENABLED).toBe(true);
     expect(MEMORY_EMBEDDING_ENABLED).toBe(false);
   });
 

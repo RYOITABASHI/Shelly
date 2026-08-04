@@ -28,6 +28,8 @@ import { deleteAgent, installAgent, runAgentNow, stopAgent, syncAgentRunLogsFrom
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
 import { normalizeSteps } from '@/lib/agent-orchestration';
 import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
+import { MEMORY_ENABLED } from '@/lib/memory/wiring';
+import { activateMemoryList } from '@/lib/memory/shadow';
 import { openFile } from '@/lib/open-file';
 import { formatElapsedMs } from '@/lib/agent-running-format';
 import { useMotion } from '@/hooks/use-motion';
@@ -870,9 +872,20 @@ export function Sidebar() {
         ].filter(Boolean).join('\n')
       : '';
     // Memory is best-effort: a read failure must not block the detail popup.
+    // MEMORY-001 Step 5 (strangler, flag-gated): once MEMORY_ENABLED, agent
+    // facts/results are written into the MemoryStore (agent-manager's Step 4),
+    // not new G2 .md files — reading G2 here would show a list that stops
+    // growing. activateMemoryList returns null (not []) on internal failure,
+    // so a genuine "no memory yet" and "the store errored" are distinguished:
+    // only the latter falls back to G2.
     let memoryNotes: MemoryNote[] = [];
     try {
-      memoryNotes = await readMemoryNotes(agent.id);
+      if (MEMORY_ENABLED) {
+        const activated = await activateMemoryList(agent.id);
+        memoryNotes = activated ?? (await readMemoryNotes(agent.id));
+      } else {
+        memoryNotes = await readMemoryNotes(agent.id);
+      }
     } catch {
       memoryNotes = [];
     }

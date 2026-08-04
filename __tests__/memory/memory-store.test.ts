@@ -61,4 +61,19 @@ describe('MemoryStore put/get', () => {
     await store.delete('A', rec.key);
     expect(await store.get('A', rec.key)).toBeNull();
   });
+
+  it('list() returns every record in a namespace, unfiltered/unranked (inspection, not recall)', async () => {
+    const { store } = makeStore();
+    await store.put({ namespace: 'A', text: 'first fact' });
+    await store.put({ namespace: 'A', text: 'second fact', kind: 'preference' });
+    await store.put({ namespace: 'B', text: 'other namespace' });
+    const listed = await store.list('A');
+    expect(listed).toHaveLength(2);
+    expect(listed.map((r) => r.text).sort()).toEqual(['first fact', 'second fact']);
+  });
+
+  it('list() on an empty namespace returns an empty array', async () => {
+    const { store } = makeStore();
+    expect(await store.list('never-written')).toEqual([]);
+  });
 });

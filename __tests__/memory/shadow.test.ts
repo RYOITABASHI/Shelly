@@ -13,6 +13,7 @@ jest.mock('expo-crypto', () => ({}));
 jest.mock('expo-secure-store', () => ({}));
 
 import {
+  activateMemoryList,
   activateMemoryRecall,
   activateMemoryWrite,
   compareShadowRecall,
@@ -22,6 +23,7 @@ import {
 } from '@/lib/memory/shadow';
 import { MEMORY_ENABLED, InMemoryMemoryStorage, MemoryStore, g2NoteToRecord } from '@/lib/memory';
 import { buildRecallContext, recallMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
+import * as agentMemoryModule from '@/lib/agent-memory';
 
 function note(id: string, created: string, text: string, tags: string[] = []): MemoryNote {
   return { id, agentId: 'agent-7', type: 'fact', created, tags, text };
@@ -45,22 +47,23 @@ function makeDeps(): ShadowDeps {
   };
 }
 
-describe('MEMORY-001 shadow seam — dormancy gate', () => {
-  it('ships flag-OFF', () => {
-    expect(MEMORY_ENABLED).toBe(false);
+describe('MEMORY-001 shadow seam — flag state (flipped ON 2026-08-05)', () => {
+  it('ships flag-ON', () => {
+    expect(MEMORY_ENABLED).toBe(true);
   });
 
-  it('shadowMemoryRecall is a silent no-op while MEMORY_ENABLED=false', async () => {
-    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+  it('shadowMemoryRecall never throws even when the real device modules are unavailable (fails safe, warns)', async () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      // If the gate leaked, the lazy expo port would be constructed over the
-      // empty expo-file-system mock, throw, and be logged via console.warn.
+      // The lazy expo port (getShadowDeps -> crypto-expo/fs-expo) is constructed
+      // over this file's empty expo-file-system/@noble-ciphers/expo-crypto/
+      // expo-secure-store mocks, since a host test has no real device. That must
+      // degrade to a caught, logged warning — never an unhandled throw — proving
+      // the "a MEMORY-001 bug degrades to G2, not to a crash" contract that lets
+      // agent-manager call this unguarded inside its own `if (MEMORY_ENABLED)`.
       await expect(shadowMemoryRecall(AGENT, NOTES)).resolves.toBeUndefined();
-      expect(logSpy).not.toHaveBeenCalled();
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalled();
     } finally {
-      logSpy.mockRestore();
       warnSpy.mockRestore();
     }
   });
@@ -195,11 +198,12 @@ describe('activateMemoryRecall (MEMORY-001 Step 3)', () => {
     expect(result).toBe('');
   });
 
-  it('is unreachable while MEMORY_ENABLED=false (agent-manager never calls it)', () => {
-    // Documents the contract enforced at the agent-manager call-site: this
-    // module has no internal flag check of its own (agent-manager gates the
-    // call), so the guarantee lives in agent-manager's `if (MEMORY_ENABLED)`.
-    expect(MEMORY_ENABLED).toBe(false);
+  it('is now live behind agent-manager\'s if (MEMORY_ENABLED) call-site (flag ON 2026-08-05)', () => {
+    // Documents the contract at the agent-manager call-site: this module has
+    // no internal flag check of its own (agent-manager gates the call), so
+    // the guarantee that this only runs while enabled lives entirely in
+    // agent-manager's `if (MEMORY_ENABLED)` branch, not here.
+    expect(MEMORY_ENABLED).toBe(true);
   });
 });
 
@@ -264,5 +268,81 @@ describe('activateMemoryWrite (MEMORY-001 Step 4)', () => {
     );
     const stored = await deps.adapter.list('agent-9');
     expect(stored[0].metadata).toBeUndefined();
+  });
+});
+
+describe('activateMemoryList (MEMORY-001 Step 5 — Sidebar detail popup)', () => {
+  it('lists records already imported/written, mapped back onto the MemoryNote shape', async () => {
+    const deps = makeDeps();
+    await deps.store.put({
+      namespace: 'agent-7',
+      key: 'fact-a',
+      text: 'api base url is example.com',
+      kind: 'fact',
+      tags: ['api'],
+    });
+    deps.importedAgents.add('agent-7'); // skip the G2 mirror-import for this call
+    const result = await activateMemoryList('agent-7', deps);
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(1);
+    expect(result![0]).toMatchObject({
+      id: 'fact-a',
+      agentId: 'agent-7',
+      type: 'fact',
+      tags: ['api'],
+      text: 'api base url is example.com',
+    });
+    expect(typeof result![0].created).toBe('string');
+    expect(Number.isNaN(Date.parse(result![0].created))).toBe(false);
+  });
+
+  it('sorts newest-first, matching readMemoryNotes ordering', async () => {
+    const deps = makeDeps();
+    for (const n of NOTES) {
+      await deps.adapter.put(g2NoteToRecord(n));
+    }
+    deps.importedAgents.add('agent-7');
+    const result = await activateMemoryList('agent-7', deps);
+    expect(result!.map((n) => n.id)).toEqual(['fact-c', 'fact-b', 'fact-a']);
+  });
+
+  it('performs a one-time G2 mirror-import when the agent was never imported before', async () => {
+    const deps = makeDeps();
+    const spy = jest.spyOn(agentMemoryModule, 'readMemoryNotes').mockResolvedValue(NOTES);
+    try {
+      const result = await activateMemoryList('agent-7', deps);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(result!.map((n) => n.id).sort()).toEqual(['fact-a', 'fact-b', 'fact-c']);
+      // Second call for the same agent reuses the cached import — no second G2 read.
+      await activateMemoryList('agent-7', deps);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('returns an empty array (not null) for an agent with no memory at all', async () => {
+    const deps = makeDeps();
+    const spy = jest.spyOn(agentMemoryModule, 'readMemoryNotes').mockResolvedValue([]);
+    try {
+      const result = await activateMemoryList('agent-empty', deps);
+      expect(result).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('falls back safely (returns null) when the store throws', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const brokenDeps = makeDeps();
+      brokenDeps.importedAgents.add('agent-7');
+      jest.spyOn(brokenDeps.store, 'list').mockRejectedValue(new Error('disk exploded'));
+      const result = await activateMemoryList('agent-7', brokenDeps);
+      expect(result).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
