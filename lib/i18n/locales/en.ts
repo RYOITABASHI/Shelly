@@ -2079,6 +2079,14 @@ const en: Record<string, string> = {
   'agent_action_confirm_webhook_known_host': 'Known host — previously vetted in Settings. Approval is still required.',
   'agent_action_confirm_webhook_new_host': 'New host — not in your trusted-host list. Review carefully before approving.',
   'agent_action_confirm_webhook_preview': 'Payload preview (first 500 characters)',
+  'agent_action_confirm_title_browserpane': 'Confirm browser action',
+  'agent_action_confirm_body_browserpane': 'This agent is requesting to interact with the currently open Browser Pane page. Review the exact action and the allowed pages before allowing it. This never runs unattended.',
+  'agent_action_confirm_browserpane_action': 'Action',
+  'agent_action_confirm_browserpane_selector': 'Element (CSS selector)',
+  'agent_action_confirm_browserpane_value': 'Value to fill in',
+  'agent_action_confirm_browserpane_allowlist': 'Allowed pages',
+  'agent_action_confirm_browserpane_failed': 'Failed to run the browser action. The request was declined.',
+  'agent_action_confirm_browserpane_no_pane': 'No Browser Pane is currently open. Open one showing the target page, then try again.',
 };
 
 export default en;

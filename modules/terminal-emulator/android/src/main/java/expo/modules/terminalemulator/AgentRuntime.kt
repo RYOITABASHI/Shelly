@@ -361,9 +361,13 @@ object AgentRuntime {
     // leaving that step with prior-step content and no live instruction to
     // act on. Now the instruction's budget is reserved first. See
     // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION comment.
-    private const val CURRENT_SCRIPT_VERSION = 50
+    // v51 (2026-08-04): new 'browser-pane' agent action type — see
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION v51 comment and
+    // PLAN_EXECUTOR_ACTIONS below (added so a PlanSpec-routed run isn't
+    // refused before the executor ever launches).
+    private const val CURRENT_SCRIPT_VERSION = 51
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "__suppressed__")
+    private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
     // LOCAL_MODEL_LIGHT and scripts/shelly-plan-executor.js's modelRequest()

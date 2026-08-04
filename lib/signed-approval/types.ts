@@ -35,7 +35,9 @@ export const SIGNED_APPROVAL_SCHEMA_VERSION = 2;
 // widened here immediately to avoid repeating the app-act drift described
 // above. (api-call is still absent — it predates this edit and its approval
 // surface is PlanSpec-executor-only; widening it is out of scope here.)
-export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'social-post';
+// browser-pane joined the gated set on 2026-08-04 (store/types.ts) and is
+// widened here immediately for the same reason.
+export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'social-post' | 'browser-pane';
 
 export type ApprovalDecision = 'accept' | 'decline';
 

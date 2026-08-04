@@ -50,6 +50,8 @@ import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 import { fireReviewedAgentAppAct, parseAppActParamsResolved } from '@/lib/agent-app-act-review';
+import { fireReviewedAgentBrowserPaneAction, resolveTargetBrowserPaneId } from '@/lib/agent-browser-pane-review';
+import { executeBrowserPaneAction } from '@/lib/browser-pane-automation';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -116,7 +118,7 @@ type AgentActionApprovalRequest = {
   agentId: string;
   agentName?: string | null;
   toolLabel?: string | null;
-  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
+  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane';
   preview?: string | null;
   destinationHost?: string | null;
   destinationHostAllowlisted?: boolean;
@@ -136,6 +138,15 @@ type AgentActionApprovalRequest = {
   dmReplyText?: string | null;
   appActRecipeId?: string | null;
   appActParamsResolved?: string | null;
+  /** browser-pane: already-validated action kind + selector, and the
+   *  ALREADY {{result}}-resolved fill value (mirrors dmReplyText). See
+   *  lib/agent-browser-pane-review.ts's ReviewedAgentBrowserPaneAction. */
+  browserPaneActionKind?: 'click' | 'fill' | 'extractText' | null;
+  browserPaneSelector?: string | null;
+  browserPaneValue?: string | null;
+  /** JSON-encoded string[] — see lib/agent-browser-pane-review.ts's
+   *  parseUrlAllowlist for the decode side. */
+  browserPaneUrlAllowlist?: string | null;
   actionNonce?: string | null;
   /** Project owner directive 2026-07-14: the executor resolved the global/
    *  per-agent runtime-approval default to 'auto' for this request. Only
@@ -163,6 +174,20 @@ function appActParamsPreviewText(paramsResolved: string | null | undefined): str
   if (keys.length === 0) return '';
   if (typeof params.text === 'string') return params.text;
   return keys.map((key) => `${key}: ${params[key]}`).join('\n');
+}
+
+/** browser-pane's URL allowlist arrives as a JSON-encoded string[] (same
+ *  convention as appActParamsResolved above) — render it one entry per line
+ *  so the reviewer sees exactly which origins/paths this action may touch. */
+function browserPaneUrlAllowlistPreviewText(allowlist: string | null | undefined): string {
+  if (!allowlist) return '';
+  try {
+    const parsed = JSON.parse(allowlist);
+    if (!Array.isArray(parsed)) return '';
+    return parsed.filter((entry): entry is string => typeof entry === 'string').join('\n');
+  } catch {
+    return '';
+  }
 }
 
 // bug #137 (DEFERRED.md): only call addPane('browser') if no Browser Pane
@@ -286,6 +311,52 @@ export default function RootLayout() {
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
         Alert.alert(t('agent_action_confirm_dmreply_failed'));
+        return;
+      }
+    }
+    if (decision === 'accept' && request.actionType === 'browser-pane') {
+      // Resolve WHICH Browser Pane receives the action the SAME way
+      // BrowserPane.tsx's own openUrl-signal targeting does (focused pane if
+      // it is a Browser Pane, else the first Browser Pane in slot order) —
+      // see lib/agent-browser-pane-review.ts's resolveTargetBrowserPaneId.
+      // Zero Browser Panes mounted is the concrete fail-closed case for this
+      // action type's attended-only, live-UI-required design: nothing to act
+      // on, so decline rather than guess.
+      const targetPaneId = resolveTargetBrowserPaneId(
+        useMultiPaneStore.getState().slots,
+        usePaneStore.getState().focusedPaneId,
+      );
+      if (!targetPaneId) {
+        await TerminalEmulator.resolveAgentActionApproval(
+          request.runId,
+          'decline',
+          requestSha256,
+          actionNonce,
+        ).catch(() => undefined);
+        setPendingAgentActionApproval(null);
+        setAgentActionResolving(false);
+        Alert.alert(t('agent_action_confirm_browserpane_no_pane'));
+        return;
+      }
+      try {
+        await fireReviewedAgentBrowserPaneAction(request, targetPaneId, request.runId, executeBrowserPaneAction);
+      } catch (e) {
+        // Mirrors resolvePendingAgentActionApproval's other catches: log only
+        // the error class/type (a thrown message can echo page-derived
+        // content, e.g. "Element not found" for an attacker-chosen selector
+        // string), fail closed (decline) rather than leaving the executor to
+        // time out after a failed/partial DOM mutation.
+        const errorKind = (e as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? 'UnknownError';
+        logError('AgentActionApproval', `fireReviewedAgentBrowserPaneAction failed: ${errorKind}`);
+        await TerminalEmulator.resolveAgentActionApproval(
+          request.runId,
+          'decline',
+          requestSha256,
+          actionNonce,
+        ).catch(() => undefined);
+        setPendingAgentActionApproval(null);
+        setAgentActionResolving(false);
+        Alert.alert(t('agent_action_confirm_browserpane_failed'));
         return;
       }
     }
@@ -879,7 +950,8 @@ export default function RootLayout() {
         actionType !== 'cli' &&
         actionType !== 'intent' &&
         actionType !== 'dm-reply' &&
-        actionType !== 'app-act'
+        actionType !== 'app-act' &&
+        actionType !== 'browser-pane'
       ) {
         return null;
       }
@@ -889,6 +961,11 @@ export default function RootLayout() {
         : null;
       const intentModeRaw = str('intentMode');
       const intentMode = intentModeRaw === 'launch' || intentModeRaw === 'share' ? intentModeRaw : null;
+      const browserPaneActionKindRaw = str('browserPaneActionKind');
+      const browserPaneActionKind =
+        browserPaneActionKindRaw === 'click' || browserPaneActionKindRaw === 'fill' || browserPaneActionKindRaw === 'extractText'
+          ? browserPaneActionKindRaw
+          : null;
       return {
         runId,
         agentId,
@@ -914,6 +991,10 @@ export default function RootLayout() {
         dmReplyText: typeof value.dmReplyText === 'string' ? value.dmReplyText : null,
         appActRecipeId: str('appActRecipeId') || null,
         appActParamsResolved: typeof value.appActParamsResolved === 'string' ? value.appActParamsResolved : null,
+        browserPaneActionKind,
+        browserPaneSelector: str('browserPaneSelector') || null,
+        browserPaneValue: typeof value.browserPaneValue === 'string' ? value.browserPaneValue : null,
+        browserPaneUrlAllowlist: typeof value.browserPaneUrlAllowlist === 'string' ? value.browserPaneUrlAllowlist : null,
         // Only ever populated by the native readAgentActionApprovalRequest
         // round trip (freshly minted per read). The raw-JSON fallback path
         // and the notify-only poll loop below never set it, and must not --
@@ -952,6 +1033,10 @@ export default function RootLayout() {
       dmReplyText: request.dmReplyText,
       appActRecipeId: request.appActRecipeId,
       appActParamsResolved: request.appActParamsResolved,
+      browserPaneActionKind: request.browserPaneActionKind,
+      browserPaneSelector: request.browserPaneSelector,
+      browserPaneValue: request.browserPaneValue,
+      browserPaneUrlAllowlist: request.browserPaneUrlAllowlist,
     });
 
     const getActionApprovalRequestDirUri = async () => {
@@ -999,7 +1084,8 @@ export default function RootLayout() {
           (request.actionType !== 'cli' &&
             request.actionType !== 'intent' &&
             request.actionType !== 'dm-reply' &&
-            request.actionType !== 'app-act')
+            request.actionType !== 'app-act' &&
+            request.actionType !== 'browser-pane')
         ) {
           Alert.alert(t('agent_action_confirm_not_ready'));
           return;
@@ -1819,6 +1905,8 @@ export default function RootLayout() {
                     ? t('agent_action_confirm_title_dmreply')
                   : pendingAgentActionApproval.actionType === 'app-act'
                     ? t('agent_action_confirm_title_appact')
+                  : pendingAgentActionApproval.actionType === 'browser-pane'
+                    ? t('agent_action_confirm_title_browserpane')
                   : t('agent_action_confirm_title')}
               </Text>
               <Text style={actionApprovalStyles.body}>
@@ -1828,6 +1916,8 @@ export default function RootLayout() {
                     ? t('agent_action_confirm_body_dmreply')
                   : pendingAgentActionApproval.actionType === 'app-act'
                     ? t('agent_action_confirm_body_appact')
+                  : pendingAgentActionApproval.actionType === 'browser-pane'
+                    ? t('agent_action_confirm_body_browserpane')
                   : t('agent_action_confirm_body')}
               </Text>
               {pendingAgentActionApproval.actionType === 'intent' ? (
@@ -1904,6 +1994,39 @@ export default function RootLayout() {
                       {appActParamsPreviewText(pendingAgentActionApproval.appActParamsResolved)}
                     </Text>
                   </ScrollView>
+                </>
+              ) : pendingAgentActionApproval.actionType === 'browser-pane' ? (
+                <>
+                  <Text style={actionApprovalStyles.label}>
+                    {t('agent_action_confirm_browserpane_action')}
+                  </Text>
+                  <Text style={actionApprovalStyles.meta}>
+                    {pendingAgentActionApproval.browserPaneActionKind || ''}
+                  </Text>
+                  <Text style={actionApprovalStyles.label}>
+                    {t('agent_action_confirm_browserpane_selector')}
+                  </Text>
+                  <Text selectable style={actionApprovalStyles.commandText}>
+                    {pendingAgentActionApproval.browserPaneSelector || ''}
+                  </Text>
+                  {pendingAgentActionApproval.browserPaneActionKind === 'fill' ? (
+                    <>
+                      <Text style={actionApprovalStyles.label}>
+                        {t('agent_action_confirm_browserpane_value')}
+                      </Text>
+                      <ScrollView style={actionApprovalStyles.commandBox}>
+                        <Text selectable style={actionApprovalStyles.commandText}>
+                          {pendingAgentActionApproval.browserPaneValue || ''}
+                        </Text>
+                      </ScrollView>
+                    </>
+                  ) : null}
+                  <Text style={actionApprovalStyles.label}>
+                    {t('agent_action_confirm_browserpane_allowlist')}
+                  </Text>
+                  <Text selectable style={actionApprovalStyles.commandText}>
+                    {browserPaneUrlAllowlistPreviewText(pendingAgentActionApproval.browserPaneUrlAllowlist)}
+                  </Text>
                 </>
               ) : (
                 <>

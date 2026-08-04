@@ -84,6 +84,9 @@
   <string name="scouter_notification_agent_action_appact_review_required">アプリ操作は実行前にアプリ内で内容の確認が必要です。</string>
   <string name="scouter_notification_agent_action_what_api_call">外部APIを呼び出します</string>
   <string name="scouter_notification_agent_action_api_call_request">リクエスト: %1$s</string>
+  <string name="scouter_notification_agent_action_what_browser_pane">開いているブラウザページを操作します</string>
+  <string name="scouter_notification_agent_action_browser_pane_target">操作: %1$s</string>
+  <string name="scouter_notification_agent_action_browser_pane_review_required">ブラウザ操作はアプリ内での確認と、表示中のブラウザペインが必要です。無人実行では動作しません。</string>
   <string name="scouter_notification_agent_escalation_title">エージェント %1$s: 境界操作を許可しますか？</string>
   <string name="scouter_notification_agent_escalation_truncated">長いコマンドです: %1$d 文字。許可前に Shelly で全文を確認してください。</string>
   <string name="scouter_notification_agent_escalation_reason">理由: %1$s</string>

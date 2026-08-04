@@ -2056,6 +2056,14 @@ const ja: Record<string, string> = {
   'agent_action_confirm_webhook_known_host': '既知のホスト — Settingsで確認済みです。今回の承認も引き続き必要です。',
   'agent_action_confirm_webhook_new_host': '新しいホスト — 信頼済みリストにありません。承認前に十分確認してください。',
   'agent_action_confirm_webhook_preview': 'ペイロードのプレビュー（先頭500文字）',
+  'agent_action_confirm_title_browserpane': 'ブラウザ操作の確認',
+  'agent_action_confirm_body_browserpane': 'エージェントが現在開いているブラウザペインのページを操作しようとしています。許可する前に正確な操作内容と対象ページを確認してください。この操作は無人実行では動作しません。',
+  'agent_action_confirm_browserpane_action': '操作',
+  'agent_action_confirm_browserpane_selector': '対象要素（CSSセレクタ）',
+  'agent_action_confirm_browserpane_value': '入力する値',
+  'agent_action_confirm_browserpane_allowlist': '許可されたページ',
+  'agent_action_confirm_browserpane_failed': 'ブラウザ操作の実行に失敗しました。リクエストは拒否されました。',
+  'agent_action_confirm_browserpane_no_pane': '現在開いているブラウザペインがありません。対象ページを表示してから再度お試しください。',
 };
 
 export default ja;

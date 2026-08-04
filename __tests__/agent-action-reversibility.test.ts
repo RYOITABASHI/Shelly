@@ -32,6 +32,7 @@ const ALL_ACTION_TYPES: AgentActionType[] = [
   'app-act',
   'api-call',
   'social-post',
+  'browser-pane',
 ];
 
 /** Types that MUST be classified irreversible, with the reason each one is. */
@@ -44,6 +45,7 @@ const IRREVERSIBLE_TYPES: AgentActionType[] = [
   'app-act', // drives another app's UI (e.g. publishes a post)
   'api-call', // outbound HTTP to an allowlisted host
   'social-post', // published publicly, with account credentials
+  'browser-pane', // mutates a live web page's DOM/session state
 ];
 
 const OPTIMISTIC_ON: ReversibilitySettings = {

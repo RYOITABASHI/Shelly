@@ -151,6 +151,7 @@ class NotificationDispatcher(private val context: Context) {
                 "dm-reply" -> context.getString(R.string.scouter_notification_agent_action_what_dm_reply)
                 "app-act" -> context.getString(R.string.scouter_notification_agent_action_what_appact)
                 "api-call" -> context.getString(R.string.scouter_notification_agent_action_what_api_call)
+                "browser-pane" -> context.getString(R.string.scouter_notification_agent_action_what_browser_pane)
                 else -> request.actionType
             }
             val previewText = request.preview.takeIf { it.isNotBlank() }?.redactForScouter()
@@ -222,6 +223,15 @@ class NotificationDispatcher(private val context: Context) {
                     },
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                 ).joinToString("\n")
+                "browser-pane" -> listOfNotNull(
+                    engineLine,
+                    actionPhrase,
+                    request.browserPaneActionKind?.takeIf { it.isNotBlank() }?.let { kind ->
+                        val selector = request.browserPaneSelector?.redactForScouter().orEmpty()
+                        context.getString(R.string.scouter_notification_agent_action_browser_pane_target, "$kind: $selector")
+                    },
+                    context.getString(R.string.scouter_notification_agent_action_browser_pane_review_required),
+                ).joinToString("\n")
                 else -> listOfNotNull(
                     engineLine,
                     actionPhrase,
@@ -237,7 +247,7 @@ class NotificationDispatcher(private val context: Context) {
             // resolve the approval as accepted while the recipe never actually
             // ran, AND would let a real external post go out (or silently not
             // go out) without the user ever seeing the resolved post text.
-            val actions = if (request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "app-act") {
+            val actions = if (request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "app-act" || request.actionType == "browser-pane") {
                 listOf(
                     action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),
                     action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, actionNonce, requestSha256)),
