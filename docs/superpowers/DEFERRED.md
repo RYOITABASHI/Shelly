@@ -350,6 +350,19 @@
 
 → sync: なし（次バージョン企画時にREADMEのロードマップ的記述へ反映を検討）。
 
+**→ 2026-08-04 ステータス総点検（ユーザー「これ、実装済みじゃない？」指摘起点、Explore調査で全項目を実コードで再確認）— 本ロードマップ本文（322-345行）は陳腐化していたと判明、5項目中4項目が着手・実装済み**:
+
+- **① OpenRouter統合 — 完全実装済み**。`lib/model-router/registry.ts:58-59`にエントリ、`lib/secure-store.ts:19`/`ConfigTUI.tsx:107`/`SettingsDropdown.tsx:1298`にAPIキー設定UI、`hooks/use-ai-pane-dispatch.ts:2488-2541`に呼び出し分岐。無人実行の境界は健在（`lib/agent-credential-policy.ts`が`openrouter`を`api-key`分類→自律候補から除外）。
+- **② 無人実行スキル自動保存 — 自動保存側は実装済み、埋め込みマッチ格上げは未着手**。`lib/unattended-skill-save.ts`の`saveUnattendedSkillWithNotification`+`hooks/use-skill-save-offer.ts:72-77`の`skillSaveMode()`が無人実行時は確認Alert無し（1タップ削除通知）へ既に切替済み。`lib/memory/embedding-llama.ts`は存在するが中身は`NOT_WIRED`スケルトンのままで、`lib/agent-skills.ts`は依然CJKバイグラムマッチ（`tokenizeForMatch`）。
+- **③ グローバル記憶+per-fire鮮度 — 別設計で実質解決、MEMORY-001本体は依然フラグOFF**。`lib/agent-memory.ts:42-47`の`GLOBAL_MEMORY_SCOPE='_global'`+`lib/agent-manager.ts:817`のマージで名前空間は実装済み。鮮度問題は「真のper-fire再読込」ではなく「メモリ変更のたびに即時re-bake」（`refreshAgentRecall`、`lib/agent-manager.ts:863-910`のコメントに、真のper-fire読込はsecret-guardバイパスリスクありと明記した上での意図的な設計選択と記載）で対応。MEMORY-001暗号化層自体（`lib/memory/`）は`MEMORY_ENABLED=false`のまま——**これは単なる未着手フラグではなく、`lib/memory/wiring.ts:1-18`のコメントに明記された「G2（現行の生きたメモリ）→MemoryStoreへの本番データ移行」を伴う意図的なゲート**。flip一つでは済まず、実データ移行手順（G2の.mdノートをMemoryStoreへ一括インポート→agent-manager側のread/write/recall呼び出しをMemoryStore経由に差し替え→バックエンド選定）が必要。
+- **④ rollback型実行 — バックエンドは完成・テスト済み、UndoのUIが一つも存在しない**。`lib/agent-action-reversibility.ts`（285行）・`lib/agent-rollback.ts`（152行）・`lib/agent-manager.ts:1127-1144`の実行フロー配線・`store/settings-store.ts`のトグル設定まで全部揃っている。しかし`rollbackAgentRun()`（`lib/agent-manager.ts:1174`）の呼び出し元はテストファイルのみで、`components/`にも`app/`にも実UIが存在しない。結果通知（`notifyAgentResult()`、`lib/agent-manager.ts:2175-2192`）にもアクションボタンが一切無い（②のスキル保存通知には削除ボタンがあるのと対照的）。
+- **⑤ 通知リスナーの汎用チャネル化 — 完全実装済み**。本ロードマップが書かれたわずか3時間後、同日2026-07-28 19:48のコミット`0ec880da7`「NOTIFY-001 Increment 3」で汎用化が着地していた。`ShellyNotificationListener.kt`はパッケージ非依存（`packageNames`に任意のアプリを登録可）、`lib/notification-inbound.ts`が`lib/telegram-inbound.ts`の`isAuthorizedChat`をverbatim再利用（ロードマップが求めた通りの再利用）。
+- **ブラウザ自動化（項目7、347行既出）— 変化なし**。`executeBrowserPaneAction`の呼び出し元は今も存在せず、未配線のまま。
+
+**残る本当のギャップ（次に着手すべきもの）**: (a) ②の埋め込みマッチ配線、(b) ③のMEMORY-001本番移行（別途、移行リスクを踏まえた個別判断が必要——単純な追加作業ではない）、(c) ④のUndo UI配線（体感インパクト最大）、(d) ブラウザ自動化の配線。①⑤は完了としてクローズ。
+
+→ sync: なし（次バージョン企画時にREADMEのロードマップ的記述へ反映を検討）。
+
 **2026-07-28 進捗（Codex、実装コミット `24cd58d28` / `4481d099c` / `a8f80a2ca`）**:
 ロードマップのうち、(1) OpenRouterをOpenAI互換SSEクライアント＋model registry候補として追加し、API-key backendとして`resolveForAutonomous()`が必ず拒否するattended-only境界を回帰テストで固定、(2) 無人成功runのskill保存を事前Alertなしの即時保存＋削除アクション付き事後通知へ変更（attended runは従来の確認Alertを維持）、(3) 成功した複数step orchestrationのPlanSpecをskillへ保存し、類似タスクでsteps/provider/budget/charLimitをAgentへ復元して既存executor経路のまま再実行できるようにした。`npx tsc --noEmit`クリーン。検証JestはOpenRouter/model-router/escalation一式82件、skill-save/agent-skills一式20件、PlanSpec skill reuse＋agent-plan-spec/orchestration一式106件がPASS。**実機検証は未実施（本セッションは端末利用不可、adb切断）**。
 
