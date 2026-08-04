@@ -13,6 +13,7 @@ import {
   distillSkillFromRun,
   makeSkillRecipe,
   matchSkillRecipes,
+  matchSkillRecipesHybrid,
   parseSkillRecipeMarkdown,
   recordSkillFailure,
   skillRecipeId,
@@ -22,6 +23,7 @@ import {
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 import type { Agent } from '@/store/types';
 import { scanForSecrets } from '@/lib/secret-guard';
+import type { EmbeddingPort } from '@/lib/memory/types';
 
 const recipe = (over: Partial<SkillRecipe> = {}): SkillRecipe =>
   makeSkillRecipe({
@@ -173,6 +175,45 @@ describe('matchSkillRecipes — conservative reuse', () => {
     expect(out[0].name).toBe('mem-test');
     // An unrelated Japanese task must not match.
     expect(matchSkillRecipes('明日の天気を教えて', jp)).toEqual([]);
+  });
+});
+
+describe('matchSkillRecipesHybrid — MEMORY_EMBEDDING_ENABLED off (real production default)', () => {
+  // This file does NOT mock lib/memory/wiring, so MEMORY_EMBEDDING_ENABLED is
+  // whatever it really is in wiring.ts today (false — dormant). These tests
+  // prove the hybrid matcher is byte-identical to the plain bigram matcher
+  // under the actual shipped flag state, even when a (never-consulted)
+  // embedding port is injected — i.e. the "additive, never a hard
+  // dependency" contract holds without needing to mock anything.
+  const recipes = [
+    recipe({ name: 'Crypto', trigger: 'crypto market summary', tags: ['crypto'] }),
+    recipe({ name: 'Weather', trigger: 'weather forecast tokyo', tags: ['weather'] }),
+  ];
+  const neverCalledPort: EmbeddingPort = {
+    embed: jest.fn(async () => {
+      throw new Error('must not be called while MEMORY_EMBEDDING_ENABLED is false');
+    }),
+  };
+
+  it('returns exactly matchSkillRecipes\' output, port injected or not', async () => {
+    const expected = matchSkillRecipes('give me a crypto market summary', recipes);
+    await expect(
+      matchSkillRecipesHybrid('give me a crypto market summary', recipes),
+    ).resolves.toEqual(expected);
+    await expect(
+      matchSkillRecipesHybrid('give me a crypto market summary', recipes, {
+        embeddingPort: neverCalledPort,
+      }),
+    ).resolves.toEqual(expected);
+    expect(neverCalledPort.embed).not.toHaveBeenCalled();
+  });
+
+  it('still returns nothing below the bigram score threshold', async () => {
+    await expect(
+      matchSkillRecipesHybrid('completely unrelated zzz qqq', recipes, {
+        embeddingPort: neverCalledPort,
+      }),
+    ).resolves.toEqual([]);
   });
 });
 
