@@ -14,13 +14,20 @@
  * it), so a secret inside a skill can never silently reach a cloud route.
  *
  * Pure helpers (markdown build/parse, id, match scoring, injection context,
- * distillation) are IO-free for offline unit tests.
+ * distillation) are IO-free for offline unit tests. The one exception is
+ * matchSkillRecipesHybrid, which OPTIONALLY calls out to an injected
+ * EmbeddingPort (see its own doc comment) — every existing caller and test
+ * that doesn't pass one gets the exact same pure, synchronous-feeling
+ * bigram-only behavior as matchSkillRecipes.
  */
 import * as FileSystem from 'expo-file-system/legacy';
 import { getHomePath } from '@/lib/home-path';
 import { tokenizeForMatch } from '@/lib/agent-text-match';
 import type { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
+import { cosineSimilarity } from '@/lib/memory/ranking-semantic';
+import { MEMORY_EMBEDDING_ENABLED } from '@/lib/memory/wiring';
+import type { EmbeddingPort } from '@/lib/memory/types';
 
 export interface SkillRecipe {
   id: string;
@@ -318,15 +325,15 @@ interface ScoredSkill {
 }
 
 /**
- * Score skills against a task. Unlike memory recall, reuse is CONSERVATIVE: only
- * recipes that clear MIN_SKILL_MATCH_SCORE are returned (no recency fallback), so
- * the "use skill X?" gate only fires on a genuine match.
+ * Score skills against a task via CJK-bigram/token overlap. Unlike memory
+ * recall, reuse is CONSERVATIVE: only recipes that clear MIN_SKILL_MATCH_SCORE
+ * are kept (no recency fallback), so the "use skill X?" gate only fires on a
+ * genuine match. Shared by matchSkillRecipes (bigram-only, byte-identical to
+ * before) and matchSkillRecipesHybrid (optional embedding re-rank) below —
+ * this function is the ONLY thing that decides which recipes qualify at all;
+ * the hybrid matcher can reorder its output but never add or drop a recipe.
  */
-export function matchSkillRecipes(
-  taskText: string,
-  recipes: SkillRecipe[],
-  limit = DEFAULT_SKILL_MATCH_LIMIT
-): SkillRecipe[] {
+function scoreSkillRecipes(taskText: string, recipes: SkillRecipe[]): ScoredSkill[] {
   if (recipes.length === 0) return [];
   const taskTokens = tokenizeForMatch(taskText);
   const scored: ScoredSkill[] = [];
@@ -340,7 +347,94 @@ export function matchSkillRecipes(
   scored.sort(
     (a, b) => b.score - a.score || b.recipe.successCount - a.recipe.successCount
   );
-  return scored.slice(0, limit).map((s) => s.recipe);
+  return scored;
+}
+
+/**
+ * Score skills against a task. Unlike memory recall, reuse is CONSERVATIVE: only
+ * recipes that clear MIN_SKILL_MATCH_SCORE are returned (no recency fallback), so
+ * the "use skill X?" gate only fires on a genuine match.
+ */
+export function matchSkillRecipes(
+  taskText: string,
+  recipes: SkillRecipe[],
+  limit = DEFAULT_SKILL_MATCH_LIMIT
+): SkillRecipe[] {
+  return scoreSkillRecipes(taskText, recipes)
+    .slice(0, limit)
+    .map((s) => s.recipe);
+}
+
+export interface HybridSkillMatchOptions {
+  limit?: number;
+  /** Injected on-device embedding port (e.g. a LlamaEmbeddingPort pointed at
+   *  the local llama-server). Omitted entirely by default — this function
+   *  never constructs network capability itself, the caller decides whether
+   *  and how to reach the local LLM. When omitted, or when
+   *  MEMORY_EMBEDDING_ENABLED (lib/memory/wiring.ts) is false, this degrades
+   *  to exactly matchSkillRecipes' bigram-only ordering. */
+  embeddingPort?: EmbeddingPort;
+}
+
+/**
+ * ADDITIVE hybrid variant of matchSkillRecipes — matchSkillRecipes itself is
+ * completely untouched and stays the byte-identical bigram-only default (see
+ * its own tests). Design: bigram overlap is the FAST PRE-FILTER — it alone
+ * decides which recipes clear MIN_SKILL_MATCH_SCORE, preserving the
+ * "conservative reuse" invariant documented above (an embedding can never
+ * pull in a recipe the bigram matcher would have rejected, and can never
+ * reject one it accepted). The embedding is used ONLY to RE-RANK: when two or
+ * more qualifying recipes tie on bigram score (a coarse integer count, so
+ * ties are common), cosine similarity of a real semantic embedding is a much
+ * better tiebreaker than the previous arbitrary "most successCount wins".
+ * Ties on score AND similarity still fall through to successCount, so the
+ * ordering stays fully deterministic with or without an embedding.
+ *
+ * Fails silently to the bigram-only ordering on ANY problem: no port
+ * injected, the flag is off, the embed() call throws, times out (see
+ * DEFAULT_EMBEDDING_TIMEOUT_MS in lib/memory/embedding-llama.ts), or returns
+ * a malformed/mismatched result. Skill matching must never feel slower or
+ * less reliable than today just because a local LLM happens to be starting,
+ * busy, or absent.
+ */
+export async function matchSkillRecipesHybrid(
+  taskText: string,
+  recipes: SkillRecipe[],
+  options: HybridSkillMatchOptions = {}
+): Promise<SkillRecipe[]> {
+  const limit = options.limit ?? DEFAULT_SKILL_MATCH_LIMIT;
+  const scored = scoreSkillRecipes(taskText, recipes);
+  if (scored.length === 0) return [];
+
+  const bigramOnly = () => scored.slice(0, limit).map((s) => s.recipe);
+  if (!MEMORY_EMBEDDING_ENABLED || !options.embeddingPort || scored.length < 2) {
+    return bigramOnly();
+  }
+
+  try {
+    const texts = [
+      taskText,
+      ...scored.map((s) => `${s.recipe.trigger} ${s.recipe.tags.join(' ')}`),
+    ];
+    const vectors = await options.embeddingPort.embed(texts);
+    if (!Array.isArray(vectors) || vectors.length !== texts.length) {
+      return bigramOnly();
+    }
+    const [taskVector, ...recipeVectors] = vectors;
+    const withSimilarity = scored.map((s, i) => ({
+      ...s,
+      similarity: cosineSimilarity(taskVector, recipeVectors[i]),
+    }));
+    withSimilarity.sort(
+      (a, b) =>
+        b.score - a.score || // bigram pre-filter tier always wins first
+        b.similarity - a.similarity || // semantic re-rank within a tier
+        b.recipe.successCount - a.recipe.successCount // final deterministic tiebreak
+    );
+    return withSimilarity.slice(0, limit).map((s) => s.recipe);
+  } catch {
+    return bigramOnly();
+  }
 }
 
 /** Build the recipe block prepended to a run prompt. '' when no recipe. */

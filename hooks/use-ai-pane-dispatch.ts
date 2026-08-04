@@ -71,7 +71,9 @@ import {
 import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
-import { matchSkillRecipes, readSkillRecipes } from '@/lib/agent-skills';
+import { matchSkillRecipesHybrid, readSkillRecipes } from '@/lib/agent-skills';
+import { LlamaEmbeddingPort, llamaEmbeddingEndpointFromBaseUrl } from '@/lib/memory/embedding-llama';
+import { MEMORY_EMBEDDING_ENABLED } from '@/lib/memory/wiring';
 import {
   getUserProfileSummaryForPrompt,
   learnFromAgentUse,
@@ -1790,10 +1792,27 @@ export function useAIPaneDispatch(paneId: string) {
             // Phase 2a: surface a matching reusable skill so the confirm card can
             // offer gated reuse ("use skill X?"). Best-effort; never blocks the card.
             try {
-              const matched = matchSkillRecipes(
-                promptText,
-                [...(await readSkillRecipes()), ...(await readApprovedImportedSkillsAsRecipes(getHomePath()))],
-                1,
+              // Hybrid (bigram pre-filter + optional on-device embedding
+              // re-rank — see lib/agent-skills.ts's matchSkillRecipesHybrid
+              // doc comment) is used here unconditionally; it degrades to
+              // the exact matchSkillRecipes ordering whenever
+              // MEMORY_EMBEDDING_ENABLED is off (it is, by default — see
+              // lib/memory/wiring.ts) or no local-LLM embedding endpoint
+              // answers in time, so this is a no-op swap today and only
+              // starts actually re-ranking once that flag is flipped.
+              const embeddingPort = MEMORY_EMBEDDING_ENABLED
+                ? new LlamaEmbeddingPort({
+                    endpoint: llamaEmbeddingEndpointFromBaseUrl(
+                      useSettingsStore.getState().settings.localLlmUrl,
+                    ),
+                  })
+                : undefined;
+              const matched = (
+                await matchSkillRecipesHybrid(
+                  promptText,
+                  [...(await readSkillRecipes()), ...(await readApprovedImportedSkillsAsRecipes(getHomePath()))],
+                  { limit: 1, embeddingPort },
+                )
               )[0];
               if (matched) {
                 draft.matchedSkill = { id: matched.id, name: matched.name, successCount: matched.successCount };

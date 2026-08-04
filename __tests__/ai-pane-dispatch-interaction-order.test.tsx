@@ -126,6 +126,7 @@ jest.mock('@/hooks/use-multi-pane', () => ({
 
 jest.mock('@/lib/agent-skills', () => ({
   matchSkillRecipes: jest.fn(() => []),
+  matchSkillRecipesHybrid: jest.fn(async () => []),
   readSkillRecipes: jest.fn(async () => []),
   distillSkillFromRun: jest.fn(),
   writeSkillRecipe: jest.fn(async () => {}),
