@@ -117,10 +117,15 @@ object LibExtractor {
         "lib/arm64-v8a/libmake.so" to "make",
         // less
         "lib/arm64-v8a/libless.so" to "less",
-        // proot + deps (kept for future use with other ET_EXEC binaries)
-        // bug #139 (2026-04-27): libproot/libtalloc removed — the proot
-        // routing path was replaced by direct linker64 invocation of
-        // codex-termux native binaries, see HomeInitializer.kt comment.
+        // bug #139 (2026-04-27): libproot/libtalloc removed from this LIBS
+        // map — the proot routing path was replaced by direct linker64
+        // invocation of codex-termux native binaries, see HomeInitializer.kt
+        // comment. 2026-08-06: the raw jniLibs/arm64-v8a/libproot.so and
+        // libtalloc.so asset files themselves (harmless-but-dead APK weight
+        // even though never extracted, since anything under jniLibs/<abi>/ is
+        // packaged into the APK unconditionally by AGP regardless of whether
+        // this map references it) were also deleted — recoverable from git
+        // history if a future ET_EXEC binary ever needs proot routing again.
         // Unified Codex native binary (ET_DYN, built from codex-termux for
         // Android/bionic). `codex exec ...` is routed by passing the `exec`
         // subcommand to this same binary; newer codex-termux packages no longer

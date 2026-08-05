@@ -190,7 +190,7 @@ Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you 
 | `shelly-update-clis codex --check-only` | Probe the active Codex runtime. Runtime installs are normally driven by the Updates UI. |
 | `shelly-cs` / `cs` | GitHub Codespaces helper commands. |
 
-**First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every weekday at 8am, collect the latest STEAM×AI education papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
+**First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every day at 8am, collect the latest STEAM×AI education papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
 
 ---
 
@@ -238,7 +238,9 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | | |
 |---|---|
 | **On-device autonomous agent** | Say it in plain language → a scheduled agent runs on the phone *by itself* (screen off), on your own keys and tools, and tells you when it ran. It works where a cloud agent can't reach — your files, terminal, local LLM, the device itself. *N=1 verified so far — see [Status](#status).* ([details](#autonomous-agents)) |
-| **Multi-platform delivery** | An agent's output isn't limited to a notification or an Obsidian draft — it can post directly to Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, or WordPress, or call a webhook. Store each platform's key once, then point an agent at it in plain language. *Bluesky is verified live end-to-end.* |
+| **Multi-platform delivery** | An agent's output isn't limited to a notification or an Obsidian draft — it can post directly to Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress, or X, or call a webhook. Store each platform's key once, then point an agent at it in plain language. *Bluesky is verified live end-to-end.* |
+| **Notification-triggered agents** | An agent can also fire when another app posts a matching notification — LINE, Discord, Slack, whatever you allowlist — instead of only on a schedule. Package allowlist gates first, an exact sender-name match narrows it further (fail-closed if unset), and the triggering text is always injected as tainted, untrusted data, never instructions. On-device, no server, no polling of an external inbox. |
+| **Agent browser automation** | An agent can click, fill, or extract text from the page already open in the Browser pane — a deliberately narrow action set (no navigation, no arbitrary script injection), gated to an explicit page-URL allowlist and a per-action approval tap; page-derived output is always treated as untrusted at the next capability boundary. |
 | **Cross-pane intelligence** | Say "fix the error." AI reads your terminal, suggests a fix, one tap to run. Zero copy-paste. |
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
 | **Codex apply_patch on-device** | Codex file edits land through the agent's native patch tool on Android, not a shell-only fallback. |
@@ -248,7 +250,7 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, OpenRouter, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
-| **Scouter home widget** | A translucent Android widget shows Codex state, model, always-on token / context / limit cells, local LLM health, device load, and the next scheduled agent without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK** can also register a brand-new agent — type or speak `@agent ...` straight into the widget and it routes through the same confirm flow as typing it in the AI Pane; **Allow / Deny** and choice pills control the foreground Codex PTY. |
+| **Scouter home widget** | A home-screen agent launcher and health list — up to 3 upcoming scheduled agents, each with a status glyph (last run's success/error/skipped) and next-fire time, without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK** can also register a brand-new agent — type or speak `@agent ...` and it routes through the same confirm flow as typing it in the AI Pane. |
 | **Color themes** | Blue / Red / Purple palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
 | **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
 
@@ -261,7 +263,7 @@ The wedge isn't "smarter than a cloud agent" — it's that it **works where a cl
 It's a **capability you point at your own tools**, not a fixed feature. One example (mine):
 
 ```
-@agent every weekday at 8am, collect the latest STEAM×AI education papers and news,
+@agent every day at 8am, collect the latest STEAM×AI education papers and news,
 and write the primary-source links + a short summary to my Obsidian vault
 ```
 
@@ -288,45 +290,39 @@ Agents also get better with use, on-device, without a server:
   <img src="docs/images/scouter-widget.jpg" alt="Shelly Scouter widget showing a registered agent with its next scheduled run time, plus one-tap RUN and ASK buttons" width="500">
 </p>
 
-Scouter is Shelly's home-screen status layer. It keeps the current Codex
-session, local LLM endpoint, token / context flow, rate-limit windows, and
-device load visible while the phone stays in the launcher or another app.
-It is not read-only — the widget can drive the foreground Codex terminal,
-resume a stale binding, cold-start a new Codex PTY for a queued prompt, or run
-the next already-registered scheduled agent without opening Shelly.
+Scouter is Shelly's home-screen agent launcher and health list. It shows up
+to 3 upcoming scheduled agents (name, last-run status glyph, next-fire time)
+and lets you run one, or register a new one via ASK, without opening the app.
+An earlier version of this widget also carried a live Codex session HUD
+(status/DOING line, token/context/rate-limit cells, local LLM health row) plus
+Allow/Deny and numbered-choice pills that wrote straight to the foreground
+Codex PTY — that was deliberately removed in a 2026-07-18 redesign to keep the
+widget a launcher, not a second copy of the terminal; approvals and choices
+are still available through Codex notification channels and the in-app Agent
+Chat pane (see below).
 
 <details>
 <summary><strong>What it shows</strong></summary>
 
-- **State-colored status** — the status dot and title track the bound Codex state (idle / thinking / running tool / waiting / error), with the current `DOING` line
-- **Model / cost line** — the active Codex model plus derived `$cost` when token counts are available
-- **Always-on usage cells** — `CTX`, `TOK`, `LIMIT`, `5H`, and `WK` stay visible even when Codex is not running; live Codex data wins, otherwise Scouter falls back to the latest sanitized usage snapshot or placeholder dashes
-- **Rate-limit quota gauge** — a 5-cell remaining-quota bar per window (`5H` / `WK`), green while healthy and red once it drops to its last cell (~<=25% left)
-- **Rate-limit override** — when the session is throttled the line collapses to `RATE LIMITED` with the reset detail
-- **Reset / session timer** — a self-ticking chronometer counts down to the rate-limit reset, or counts up the running session
-- **Privacy-safe prompt preview** — only the current widget ASK / approval / choice / error state can occupy the preview; historical JSONL prompts and replies are not surfaced, and closing all Agent Chat tabs blanks the preview area instead of shrinking the widget
-- **Scheduled-agent status** — shows the next registered agent and fire time plus the latest widget-triggered running / success / error result
-- **Local LLM row** — endpoint, backend, queue depth, and ping for the local server
-- **Footer** — CPU / RAM load and last-updated time
-- **Codex pets** — an optional PET button / pet image renders the bundled demo pet or the user's imported Codex pets without bundling private user pets into the APK
+- **Header** — a status dot (green, or red with a failure-count badge when any shown agent's last run errored) and the "AGENTS" title
+- **Up to 3 agent rows** — name, a last-run status glyph (✓ success / ✗ error / • skipped-or-transient / – never run), and either the next scheduled fire time or a live elapsed-seconds counter while that agent is running
+- **RUN per row** — starts that row's agent directly through the same unattended execution gates a scheduled alarm fire uses
+- **ASK** — opens a lightweight prompt dialog to send a Codex prompt or register a new `@agent`
+- **Decorative pet** — an optional imported/bundled Codex pet image renders in the widget; it is display-only (no tap-to-cycle) as of the 2026-07-18 redesign
 
 </details>
 
 <details>
 <summary><strong>Interactive control</strong></summary>
 
-- **ASK** — tap the ASK pill to type a prompt; Shelly writes it into the bound foreground Codex terminal (clear line, paste, Enter) and returns you to the launcher
+- **ASK** — tap ASK to open a prompt dialog; Shelly writes the text into the bound foreground Codex terminal (clear line, paste, Enter) and returns you to the launcher
 - **`@agent` registration from ASK** — type or speak `@agent ...` into the ASK box instead of a plain prompt, and it hands off to the same AI Pane `parseAgentCommand`/confirm-card flow used when you type `@agent` directly, instead of landing in the Codex PTY. An opt-in **Widget No-Confirm Register** setting (off by default) skips the confirm card for widget-originated `@agent` commands only and registers immediately with a post-registration notification; typing `@agent` directly in the AI Pane always confirms regardless of this setting.
 - **Voice input for ASK** — the ASK dialog's mic button uses Android's built-in speech recognizer; the recognized text lands in the field for you to review and edit, never auto-submitted.
-- **RUN scheduled agent** — starts the next enabled, scheduled agent directly through the foreground service without opening the app; Shelly revalidates its disk metadata at tap time, honors STOP-ALL, and keeps unattended per-action approval fail-closed. By design, unattended runs default to OAuth/local tools only — an agent that would use a cloud API key (Gemini, Perplexity, …) unattended falls back to Codex instead unless the opt-in **Autonomous Cloud** setting (off by default) allows the cloud call.
+- **RUN scheduled agent** — starts an agent directly through the foreground service without opening the app; Shelly revalidates its disk metadata at tap time, honors STOP-ALL, and keeps unattended per-action approval fail-closed. By design, unattended runs default to OAuth/local tools only — an agent that would use a cloud API key (Gemini, Perplexity, …) unattended falls back to Codex instead unless the opt-in **Autonomous Cloud** setting (off by default) allows the cloud call.
 - **Cold-start ASK** — if no Codex or Agent Chat session is available, Shelly queues the widget prompt, opens a terminal, waits for the PTY to become alive, starts `codex`, waits for the Codex input surface, then delivers the queued prompt
-- **Approval pills** — when Codex is waiting for permission, **Allow** / **Deny** pills write `y` / `n` straight to the Codex PTY
-- **Choice pills** — for a numbered interactive prompt, up to six widget pills write the chosen digit to the PTY, each carrying the option label; Android notifications expose the first three actions
-- **Pet cycle** — PET starts hidden by default; tap PET to show the first pet, tap the pet image to cycle through available pets, and the cycle hides again after the last pet. Approval / choice action rows take priority over pet controls
-- **Pet import** — Settings -> Scouter -> Import pet ZIP installs user pets into app-private storage. Shelly also discovers `Codex/pets` and `shelly-personal-pets.zip` sidecar files on shared storage for users who manage Codex pets outside the APK
-- **Stale-tap guard** — Allow / Deny / choice taps re-parse the live terminal screen and only fire if the same approval anchor or numbered option is still on screen; otherwise they no-op
-- **Resume when unbound** — if the bound terminal has exited, ASK (and a pending approval) queue the prompt/decision and open Agent Chat to resume the session, then drain the queued action
-- **How controls are dispatched** — ASK / approval / choice controls write to the live PTY through the in-process terminal session registry; RUN uses a direct foreground-service PendingIntent matching scheduled fires. Neither path shells out through `am start`
+- **Resume when unbound** — if the bound terminal has exited, a queued ASK prompt opens Agent Chat to resume the session, then drains the queued prompt
+- **Approvals and choices** — no longer surface as widget pills; use the Codex notification channels' one-tap Allow/Deny buttons and numbered actions, or the in-app Agent Chat pane's Approve/Deny bubbles (both below)
+- **How controls are dispatched** — ASK writes to the live PTY through the in-process terminal session registry; RUN uses a direct foreground-service PendingIntent matching scheduled fires. Neither path shells out through `am start`
 
 </details>
 
@@ -353,10 +349,6 @@ the next already-registered scheduled agent without opening Shelly.
 - **Real-time terminal awareness** — AI pane snapshots the terminal transcript on dispatch so the model sees what you just saw
 - **Terminal-safe context** — ANSI/OSC/control sequences and TUI redraw noise are stripped before injection; terminal output is treated as untrusted evidence, not instructions
 - **Local LLM compaction** — `@local` keeps important header/status/error lines and the recent tail so small on-device models still see the useful terminal state
-- **Error-file auto-stage** — when terminal output references a file path, Shelly can stage that file so an AI diff can be accepted directly
-- **CLI Co-Pilot** — in-flight translation of output, approval prompt explanations, session summaries
-- **Approval Proxy** — terminal `[Y/n]` prompts are lifted into chat-style `Approve / Deny / Ask AI` buttons so you never type blind 'Y'
-- **Error Summary** — detected errors surface as persistent chat bubbles with `[Suggest Fix]`
 - **Auto-savepoint** — every edit is auto-committed to a hidden git index so you can revert to any point with one tap
 - **Pre-commit secret scan** — API keys, private keys, and other secrets are blocked before they land in a savepoint commit
 
@@ -397,7 +389,7 @@ the next already-registered scheduled agent without opening Shelly.
 - **Inline content blocks** — JSON, markdown, images, and tables rendered inline inside the terminal output (Command Blocks)
 - **CLI notifications** — long-running commands surface a system notification when they complete
 - **Codex notification channels** — Scouter posts per-category Android notifications, each on its own channel so you can tune importance / sound / mute from Android's notification settings: approvals, choices, and errors arrive as heads-up alerts, rate limits at default importance, completions and long-running quietly. Approval notifications carry one-tap **Allow / Deny** buttons and choice notifications expose the first three numbered actions; the widget itself can show up to six choice pills. The expanded notification view shows the full request or menu text, and resolved cards are deduped and cancelled so nothing stacks or lingers
-- **SmartKeyBar** — 5 context-adaptive key sets (Default / Vim / Git / REPL / Navigate), swipe to switch
+- **SmartKeyBar** — 4 context-adaptive key sets by default (Default / Git / REPL / Navigate), swipe to switch; a 5th (Vim) is available via Settings → Terminal → "Show Vim key bar" (off by default, to avoid cluttering the bar for non-Vim users)
 - **Immortal sessions** — tmux keeps your shell alive when the app is backgrounded; resume any session by name
 - **Japanese input in terminal** — compose CJK characters directly in the terminal pane
 - **Readable terminal glyphs** — the native Kotlin terminal view renders the PTY grid with JetBrains Mono so lowercase, columns, and code output stay legible
@@ -423,7 +415,7 @@ the next already-registered scheduled agent without opening Shelly.
 - **Full WebView** — navigate any URL inside a pane; keep docs open next to your terminal
 - **Bookmarks** — save and organize URLs; preset icons for YouTube, X, GitHub, and `localhost:*`
 - **Background audio** — audio keeps playing when you switch panes
-- **Link capture** — share a URL to Shelly from any Android app; it opens in the browser pane
+- **Outbound share** — share plain text (a URL, terminal output, whatever) *from* Shelly to any other Android app via the standard share sheet (there is no inbound share-target yet — Shelly does not appear in other apps' own share sheets)
 - **Desktop UA toggle** — `📱` / `🖥` button in the URL row swaps the user agent so desktop-only sites behave
 - **Video fullscreen** — six detection paths (W3C / WebKit / video element / monkey-patched APIs) catch YouTube-style fullscreen and maximize the pane, hiding the system nav bar
 
@@ -551,7 +543,7 @@ Currently registered:
 | Voice dialogue (VoiceChat + VoiceChain + TTS) | ✅ voice input (mic → transcription → routed reply) confirmed on-device 2026-07-27; the dedicated full-screen VoiceChat mode and TTS playback weren't independently re-verified this pass |
 | Immortal sessions (tmux keep-alive) | ✅ confirmed on-device 2026-07-27 — a `vim` session's interactive state (insert mode, unsaved buffer, cursor position) survived a full background/foreground cycle intact, not just a transcript replay |
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
-| MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping |
+| MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping for server lifecycle management (install/start/stop, config generation for tools like Codex that consume MCP) — the AI Pane itself does not act as an MCP client (no `listTools`/`callTool`) |
 | Codex CLI launch/auth | ✅ supported; bare `codex` runs over the native PTY, using Shelly device-code auth before TUI launch |
 | Codex managed native runtime (`codex_tui` staged under `~/.shelly-runtime/codex/current`, `--version` and `exec --help` smoke-tested, repair / reset to bundled runtime) | ✅ managed latest |
 | Gemini API in AI Pane / `@gemini` / `@team` / background agents | ✅ available when a Gemini API key is configured |
@@ -564,7 +556,8 @@ Currently registered:
 | Skill distillation — a successful run can be saved as a reusable, global skill recipe and recalled on a matching later task; a recipe that fails carries a corrective hint into its next use until a verified success clears it | ✅ shipping |
 | Persistent agent memory — write/recall facts across runs, secret-guarded to force local-only when a note contains a secret | ✅ shipping |
 | User profile learning — locally observes command/agent-usage patterns to personalize the AI Pane system prompt; see [Privacy](#privacy) for what leaves the device | ✅ shipping; unit-tested, not yet on-device verified |
-| X (Twitter) connector — OAuth 2.0 PKCE connect, regular posts, long-form Articles (draft → publish) | ✅ implemented, integration-tested; not yet fired against a live account with billing enabled |
+| X (Twitter) connector — OAuth 2.0 PKCE connect, regular posts, long-form Articles (draft → publish) | ✅ implemented, integration-tested; not yet fired against a live account with billing enabled. Regular posts are reachable from BOTH the attended and the unattended/scheduled (PlanSpec) execution path as of 2026-08-06 — Articles remain attended-only |
+| Agent action Undo — for the narrow class of actions whose entire effect is a workspace file write (currently: `draft`), Shelly can run optimistically (auto-savepoint → run → offer a one-tap Undo on the result) instead of blocking on pre-approval; every other action type (network egress, notifications, cross-app automation, …) keeps the standard pre-approval gate, since a real `git revert` is the bar for "reversible," not "we could probably undo it" | ✅ shipping; on-device verified 2026-08-05 |
 | Scouter widget RUN (widget-triggered agent start) | ✅ shipping; runs through the same unattended execution gates as a scheduled alarm fire. Cloud-API-backed agents fall back to Codex unless the opt-in **Autonomous Cloud** setting (off by default) allows the unattended cloud call — this is the credential policy working as designed, not a bug |
 | Scouter widget `@agent` registration (new-agent registration from ASK, voice input, opt-in no-confirm register) | ✅ shipping; confirmed on-device 2026-07-30 — ASK routes `@agent` text through the same AI Pane confirm flow as typing it directly; with **Widget No-Confirm Register** off it confirms normally, with it on it registers immediately and a notification confirms it; voice input populates the field without auto-submitting |
 | Sidebar SSH Profiles (key-file auth, ~/.ssh/config import, tap-to-connect) | ✅ shipping |
@@ -585,7 +578,7 @@ Parts of the app are written but not yet verified. These are on the short-term r
 
 - **Play Store / F-Droid distribution** — the APK is published via GitHub Releases only; store submission flow not yet done
 - **Cross-OEM autonomous-agent reliability** — unattended scheduled firing is observed on the Z Fold6 (N=1), but Android background limits vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers); broad cross-device reliability + a device health/permission checklist are not done yet
-- **Snippet authoring UI** — the Command Palette shows the first 20 entries from your snippet store and dispatches them to the terminal, but the in-app create/import/edit flow was removed in an earlier cleanup pass. Snippets can still be added by editing `~/.shelly/snippets.json` directly or via `shelly config`.
+- **Snippet authoring UI** — the Command Palette shows the first 20 entries from your snippet store and dispatches them to the terminal, but the in-app create/import/edit flow was removed in an earlier cleanup pass. Snippets are stored in Android's AsyncStorage (`store/snippet-store.ts`), not a plain file — there is currently no supported way to bulk-add them outside the (removed) in-app UI.
 
 ---
 
@@ -623,7 +616,7 @@ Every feature in Shelly started as a frustration I had with existing tools:
 
 - The cross-pane system comes from *"Why do I have to copy an error from one window and paste it into another?"*
 - The native terminal comes from *"Why does the terminal die every time I switch apps?"*
-- The approval proxy comes from *"An AI CLI is asking me to approve something in English. I don't know what it means."*
+- The Codex notification channels and Agent Chat's Approve/Deny bubbles come from *"An AI CLI is asking me to approve something in English. I don't know what it means."*
 - The VoiceChain comes from *"I can't type on a phone keyboard fast enough to keep up with my ideas."*
 - The layout system comes from *"Why can't I have a browser, a terminal, and an AI all on the same screen at the same time?"*
 - The color theme presets come from *"Why do I have to choose between a usable UI and an aesthetically interesting one?"*

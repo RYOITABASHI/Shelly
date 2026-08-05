@@ -129,7 +129,6 @@ Shelly/
 │   ├── font-manager.ts             # フォント選択（CRT連動）
 │   ├── sound-profiles.ts           # Modern/Retro/Silent
 │   ├── haptics.ts                  # ハプティクスフィードバック
-│   ├── workspace-manager.ts        # リポジトリごとのワークスペース切替
 │   ├── local-llm.ts                # ローカルLLMオーケストレーション
 │   ├── groq.ts                     # Groq API (SSEストリーミング)
 │   ├── gemini.ts                   # Gemini API
@@ -154,7 +153,7 @@ Shelly/
 │   ├── cosmetic-store.ts      # CRT・フォント・ハプティクス
 │   ├── agent-store.ts         # バックグラウンドエージェント
 │   ├── profile-store.ts       # SSHプロファイル
-│   ├── workspace-store.ts     # リポジトリごとのワークスペース分離
+│   ├── workspace-store.ts     # リポジトリごとのワークスペース分離（2026-08-06確認: 現在UIから未参照、実質デッド）
 │   └── workflow-store.ts      # 保存済みワークフロー
 ├── hooks/
 │   ├── use-device-layout.ts      # レスポンシブ（compact/standard/wide）
@@ -265,7 +264,7 @@ first-time contributor が最も迷うのは「状態がどこにあるか」。
 | `cosmetic-store` | CRT、フォント、ハプティクス、サウンドプロファイル | ✅ |
 | `agent-store` | バックグラウンドエージェント定義、実行履歴 | ✅ |
 | `profile-store` | SSHプロファイル | ✅ |
-| `workspace-store` | リポジトリごとのワークスペース分離 | ✅ |
+| `workspace-store` | リポジトリごとのワークスペース分離（現在UIから未参照、実質デッド） | ✅ |
 | `snippet-store` | 保存済みスニペット（Command Palette 経由で実行） | ✅ |
 | `theme-version-store` | テーマプリセット切替時のkey-remount用カウンタ | — |
 | `savepoint-store` | auto-savepoint のコミット履歴 | ✅ |
