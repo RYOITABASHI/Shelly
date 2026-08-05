@@ -142,7 +142,7 @@ describe('shelly-plan-executor — toolLadder retry (real executor + real broker
     const runLog = readSoleRunLog(home);
     expect(runLog.status).toBe('success');
     expect(runLog.toolUsed).toBe('Local LLM');
-    expect(runLog.preview).toContain('retry candidate succeeded');
+    expect(runLog.outputPreview).toContain('retry candidate succeeded');
 
     const draftFiles = fs.readdirSync(path.join(home, 'agent-output'), { recursive: true } as any) as string[];
     expect(draftFiles.some((f) => f.endsWith('.md'))).toBe(true);
@@ -267,7 +267,7 @@ describe('shelly-plan-executor — toolLadder retries a LOW-QUALITY primary comp
     const runLog = readSoleRunLog(home);
     expect(runLog.status).toBe('success');
     expect(runLog.toolUsed).toBe('Local LLM (retry)');
-    expect(runLog.preview).toContain('genuinely good content from the retry');
+    expect(runLog.outputPreview).toContain('genuinely good content from the retry');
   }, 20000);
 });
 
