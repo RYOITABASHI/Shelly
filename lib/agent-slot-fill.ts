@@ -9,13 +9,31 @@
  * precedent of lib/agent-card-cron.ts / lib/notification-trigger.ts).
  */
 import type { ParsedAgentDraft, ScheduleResult } from './agent-nl-parser';
-import { parseSchedule, fmtTime, JP_DOW_LABEL } from './agent-nl-parser';
+import { parseSchedule, fmtTime, JP_DOW_LABEL, extractBrowserTargetUrl } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import en from './i18n/locales/en';
 import ja from './i18n/locales/ja';
 
-export type SlotField = 'taskDetail' | 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector' | 'autonomous';
+export type SlotField =
+  | 'taskDetail'
+  | 'schedule'
+  | 'notificationTrigger'
+  | 'outputPath'
+  | 'socialConnector'
+  | 'autonomous'
+  // browser-pane (2026-08-05): a page-operation intent was detected
+  // (lib/agent-nl-parser.ts's detectBrowserPaneIntent) but the target URL /
+  // CSS selector wasn't confidently extractable from the utterance — ask,
+  // exactly like the socialConnector precedent, instead of registering a
+  // half-filled action the runtime would only refuse fail-closed later.
+  | 'browserUrl'
+  | 'browserSelector';
+
+/** Runtime cap lib/browser-pane-automation.ts enforces on selectors (its
+ *  execute() rejects anything longer); mirrored here so a slot-fill answer
+ *  that could never run is re-asked instead of accepted. */
+const BROWSER_SELECTOR_MAX_LEN = 2048;
 
 /**
  * Per-message language detection for slot-fill questions — deliberately NOT
@@ -88,6 +106,30 @@ export function nextMissingSlot(
       field: 'taskDetail',
       question: draft.needsTaskClarification,
     };
+  }
+  // browser-pane (2026-08-05): both halves of the action are REQUIRED before
+  // the confirm step — an empty allowlist is refused by the runtime
+  // (lib/agent-browser-pane-review.ts throws on it; lib/browser-pane-
+  // automation.ts's allowlist check fails closed) and an empty selector can
+  // never match an element, so registering either would be registering an
+  // agent that can never act. Asked BEFORE the schedule question for the same
+  // reason taskDetail is (2026-07-24 precedent above): the page/element is
+  // part of WHAT the agent does — "いつ実行しますか？" reads as a non-sequitur
+  // while the operation's own target is still unknown. URL first: the
+  // selector question reads naturally only once the page is settled.
+  if (draft.action.type === 'browser-pane') {
+    if ((draft.action.browserPaneUrlAllowlist?.length ?? 0) === 0) {
+      return {
+        field: 'browserUrl',
+        question: strings['slot_fill.question_browser_url'],
+      };
+    }
+    if (!draft.action.browserPaneAction?.selector) {
+      return {
+        field: 'browserSelector',
+        question: strings['slot_fill.question_browser_selector'],
+      };
+    }
   }
   if (!draft.scheduleConfident) {
     return {
@@ -340,6 +382,59 @@ export function applySlotAnswer(
         resolved: true,
       };
     }
+    return { draft, resolved: false };
+  }
+  if (field === 'browserUrl' || field === 'browserSelector') {
+    // Stale question (the action was patched to something else between the
+    // question and the answer) — nothing left to fill, just resolve.
+    if (draft.action.type !== 'browser-pane' || !draft.action.browserPaneAction) {
+      return { draft, resolved: true };
+    }
+    const strings = detectMessageLocale(draft.rawText) === 'ja' ? ja : en;
+    /** Shared give-up: NEVER register a half-filled browser-pane action —
+     *  fall back to a safe local draft with a visible caveat, the exact
+     *  socialConnector-giveup posture (and, via actionCaveat,
+     *  hasDraftAssumptions forces a human confirm on the downgraded draft). */
+    const giveUp = () => ({
+      draft: {
+        ...draft,
+        action: { type: 'draft' as const },
+        actionCaveat: strings['slot_fill.browser_pane_giveup_caveat'],
+      },
+      resolved: true,
+    });
+    if (field === 'browserUrl') {
+      // Same extraction the original utterance went through — a full URL, a
+      // bare domain bound to an open-phrase, or an answer that IS just the
+      // domain. Never a free-text guess: an answer that doesn't parse to an
+      // http(s) URL re-asks once, then downgrades.
+      const url = extractBrowserTargetUrl(answerText);
+      if (url) {
+        return {
+          draft: { ...draft, action: { ...draft.action, browserPaneUrlAllowlist: [url] } },
+          resolved: true,
+        };
+      }
+      if (attemptCount >= 1) return giveUp();
+      return { draft, resolved: false };
+    }
+    // browserSelector: the user's own answer IS the selector (strip one layer
+    // of surrounding quotes/brackets — people quote selectors when asked for
+    // one). Cap mirrors the runtime's own hard limit.
+    const selector = answerText.trim().replace(/^[「『"'`]|[」』"'`]$/g, '').trim();
+    if (selector && selector.length <= BROWSER_SELECTOR_MAX_LEN) {
+      return {
+        draft: {
+          ...draft,
+          action: {
+            ...draft.action,
+            browserPaneAction: { ...draft.action.browserPaneAction, selector },
+          },
+        },
+        resolved: true,
+      };
+    }
+    if (attemptCount >= 1) return giveUp();
     return { draft, resolved: false };
   }
   if (field === 'notificationTrigger') {

@@ -276,6 +276,9 @@ const en: Record<string, string> = {
   'agentcard.socialpost_text_label': 'Post text',
   'agentcard.socialpost_text_hint': 'Use {{result}} to include the run result.',
   'agentcard.socialpost_warning': 'This posts to the connected platform every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
+  // browser-pane (2026-08-05) — attended-only Browser Pane page operation
+  // (click / extract text), never auto-accepted; see store/types.ts.
+  'agentcard.action_browser-pane': 'browser pane',
   // api-call (v1) — only offered for multi-step (>=2 step) agents.
   'agentcard.action_api-call': 'API call',
   'agentcard.apicall_authref': 'Credential (optional)',
@@ -420,6 +423,12 @@ const en: Record<string, string> = {
   // not reusable in a comma-joined list).
   'agentplan.multi_target_x_label': 'X',
   'agentplan.draft_line_with_path': 'draft (saved to {{path}})',
+  // browser-pane (2026-08-05) — the confirm bubble MUST spell out the exact
+  // selector + URL the human is approving; see lib/agent-plan-summary.ts.
+  'agentplan.browserpane_line_extract': 'Browser Pane: extract text from "{{selector}}" on {{url}} (attended only — you approve every run on screen)',
+  'agentplan.browserpane_line_click': 'Browser Pane: click "{{selector}}" on {{url}} (attended only — you approve every run on screen)',
+  'agentplan.browserpane_line_fill': 'Browser Pane: fill "{{selector}}" on {{url}} (attended only — you approve every run on screen)',
+  'agentplan.browserpane_unset_field': '(not set)',
   // Phase C (2026-07-22): a plain field-only correction ("make it 9am") now
   // patches the draft in place instead of requiring cancel+redo — see
   // lib/agent-draft-patch.ts. Reworded from the older "cancel and re-describe"
@@ -582,6 +591,11 @@ const en: Record<string, string> = {
   'slot_fill.question_social_connector': 'Which connector should this post to? Reply with the number or its label.',
   'slot_fill.question_autonomous': 'Should this agent run unattended (autonomously)? Answer yes or no.',
   'slot_fill.social_connector_giveup_caveat': "Couldn't tell which connector you meant, so this is registered as a draft (file save) instead. Say the connector's exact label next time to post directly.",
+  // browser-pane slot-fill (2026-08-05) — asked when a page-operation intent
+  // was detected but the target URL / CSS selector wasn't in the utterance.
+  'slot_fill.question_browser_url': 'Which page should this act on? Give the exact URL (e.g. https://example.com/news).',
+  'slot_fill.question_browser_selector': 'Which element on that page? Give a CSS selector (e.g. h1, .headline, #submit).',
+  'slot_fill.browser_pane_giveup_caveat': "Couldn't pin down the page URL / element for the browser operation, so this is registered as a draft (file save) instead. Re-register with an exact URL and CSS selector to drive the Browser Pane.",
   // 2026-07-24: prepended to the re-asked question on a failed slot-fill
   // attempt so a retry never reads byte-identical to the first ask (on-device
   // feedback: repeating the exact same question with no acknowledgment that

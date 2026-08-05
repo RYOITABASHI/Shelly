@@ -782,6 +782,220 @@ export function parseStartNotBefore(text: string, now: Date = new Date()): numbe
 // app's supported use cases are ASCII, so this can only narrow matches.
 const URL_RE = /https?:\/\/[^\s、。)）　-〿぀-ヿ一-鿿＀-￯]+/i;
 
+// ── browser-pane NL detection (2026-08-05 — DEFERRED.md "(d) ブラウザ自動化"
+// follow-up: the action type itself landed 2026-08-04 and was on-device
+// verified 2026-08-05, but the ONLY authoring path was hand-editing the
+// agent's JSON file; that omission was explicitly batch-scoping, not a safety
+// decision). This section is the deterministic Tier 1 NL authoring path for
+// the NARROW "open URL X and click / extract text from CSS selector Y" case.
+//
+// Deliberately conservative, mirroring the cli branch's privilege-escalation
+// guard: an utterance only resolves to `browser-pane` when it carries BOTH an
+// explicit page-operation verb (extract-text / click) AND a browser context
+// cue (an http(s) URL, a bare domain bound to an open/access verb, the word
+// ブラウザ/browser, or a ページ/サイト mention). Everything else keeps its
+// existing action resolution byte-identical. The action this produces is the
+// SAME attended-only, never-auto-accepted `browser-pane` type documented on
+// store/types.ts's AgentAction.browserPaneAction — nothing here changes any
+// runtime gate (per-run human Review approval, exact-origin allowlist check
+// before dispatch AND inside the injected script, unattended refusal).
+
+/** What the deterministic browser-pane detector could resolve. `url` /
+ *  `selector` stay undefined when not confidently extractable — the caller
+ *  (parseAgentNL → detectAction) then authors a PARTIAL browser-pane action
+ *  (empty allowlist / empty selector) whose missing halves are filled by
+ *  lib/agent-slot-fill.ts's browserUrl/browserSelector questions before the
+ *  draft can reach the confirm step. `fill` is deliberately NOT authorable
+ *  from NL this pass (its free-form value is exactly the kind of payload the
+ *  hand-edited-JSON path should keep owning until there's a concrete need). */
+export interface BrowserPaneIntentDetection {
+  kind: 'extractText' | 'click';
+  /** Normalized (https-defaulted, credential/hash-free) target URL. */
+  url?: string;
+  /** CSS selector, verbatim from the user's own text. */
+  selector?: string;
+}
+
+// Extraction-target nouns shared by the JP verb pattern and the JP selector
+// pattern below, so "h1のテキストを取得して" resolves both from one vocabulary.
+const BROWSER_EXTRACT_TARGET_WORDS = '(?:テキスト|内容|中身|文字|タイトル|見出し)';
+// A bounded gap (never `.*`) between the target noun and the verb, so
+// "タイトルをブラウザから取ってきて" still matches while the pattern can
+// never bridge into an unrelated later clause.
+const BROWSER_EXTRACT_VERB_JP_RE = new RegExp(
+  `${BROWSER_EXTRACT_TARGET_WORDS}\\s*を?[^、。!?！？]{0,15}?(?:取得|抽出|取って|読み取|拾って)`,
+);
+// EN: verb…target within one clause, either order ("extract the text of h1" /
+// "the h1 text, scrape it"). Bounded (no `.*`) so it can't bridge sentences.
+const BROWSER_EXTRACT_VERB_EN_RE =
+  /\b(?:extract|scrape|grab|fetch|read|pull|get)\b[^.。!?！？]{0,60}\b(?:text|title|heading|contents?)\b|\b(?:text|title|heading|contents?)\b[^.。!?！？]{0,30}\b(?:extract|scrape|grab)\b/i;
+// クリック / click only — deliberately NOT タップ/tap, which is this
+// project's app-act (AccessibilityService phone-UI automation) vocabulary,
+// not a WebView-page verb.
+const BROWSER_CLICK_VERB_RE = /クリック|\bclick(?:s|ed|ing)?\b/i;
+
+// Browser context cues. ブラウザ/browser is always a cue; ページ/サイト counts
+// only in COMBINATION with a page-operation verb (both are required before
+// detectBrowserPaneIntent returns anything at all, see its doc comment).
+const BROWSER_CONTEXT_WORD_RE = /ブラウザ|\bbrowser\b/i;
+const BROWSER_PAGE_WORD_RE = /ページ|サイト|\bpage\b|\bsite\b|\bwebsite\b|\bweb\s?page\b/i;
+
+// Bare (scheme-less) domain, e.g. "example.com" / "news.example.co.jp/tech".
+// The TLD alternation is a deliberate modest allowlist rather than a generic
+// `[a-z]{2,}`: a generic tail would match every dotted filename in an
+// utterance ("package.jsonを開いて" → "package.json" reads as domain "package"
+// + TLD "json"), and a missed real TLD only costs the user one slot-fill
+// question ("どのページ?") — the safe failure direction.
+const BROWSER_BARE_DOMAIN_SOURCE =
+  '(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:com|net|org|io|dev|app|co|jp|me|ai|info|xyz|blog|news|tech|cloud|gg|tv|fm|so|sh|ly|us|uk|de|fr|it|es|nl|se|ch|at|be|ca|au|nz|kr|cn|tw|hk|sg|in|br|ru|pl|edu|gov)\\b(?:/[\\w\\-./%?=&#~+]*)?';
+// A bare domain is only trusted when it is BOUND to an open/access phrase —
+// "example.comを開いて" / "open example.com" — mirroring how parseSchedule's
+// weekday-run regex requires adjacency to the time before trusting a bare
+// character run. A full http(s) URL (URL_RE) needs no such binding.
+const BROWSER_OPEN_DOMAIN_JP_RE = new RegExp(
+  `(${BROWSER_BARE_DOMAIN_SOURCE})\\s*(?:を開|にアクセス|を表示|を見て|のページ|というページ|のサイト|というサイト)`,
+  'i',
+);
+const BROWSER_OPEN_DOMAIN_EN_RE = new RegExp(
+  `\\b(?:open|go\\s+to|navigate\\s+to|visit)\\s+(?:https?://)?(${BROWSER_BARE_DOMAIN_SOURCE})`,
+  'i',
+);
+
+/**
+ * Normalize a user-stated browser target into an allowlist-ready URL string,
+ * or null when it cannot be one. Scheme-less input gets `https://` prefixed
+ * (never http); anything that then fails to parse as http(s), or carries
+ * credentials or a hash fragment — the exact entry shapes
+ * lib/browser-pane-automation.ts's isBrowserUrlAllowlisted refuses to match —
+ * is rejected here instead of being registered as a permanently-dead
+ * allowlist entry. Exported for lib/agent-conversational-registration.ts's
+ * Tier 3 merge, which normalizes AFTER its verbatim-transcript check passes
+ * (normalization is deterministic code's job; the verbatim gate runs on the
+ * candidate exactly as proposed).
+ */
+export function normalizeBrowserPaneUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Any EXPLICIT scheme is parsed as-is (so ftp:// etc. fail the http(s)
+  // check below instead of being mangled into "https://ftp://…", which URL()
+  // would happily parse as host "ftp"); only a genuinely scheme-less input
+  // gets the https default.
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(withScheme);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    if (url.username || url.password || url.hash) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pull the browser target URL out of an utterance (or a slot-fill answer):
+ * a full http(s) URL anywhere, a bare domain bound to an open/access phrase,
+ * or — the slot-fill-answer case — a message that IS just a domain/URL and
+ * nothing else. Returns the normalized allowlist-ready form, or null.
+ * Exported for lib/agent-slot-fill.ts's browserUrl answer parsing, so the
+ * follow-up answer goes through the exact same extraction the original
+ * utterance did.
+ */
+export function extractBrowserTargetUrl(text: string): string | null {
+  const full = text.match(URL_RE);
+  if (full) return normalizeBrowserPaneUrl(full[0]);
+  const jp = text.match(BROWSER_OPEN_DOMAIN_JP_RE);
+  if (jp) return normalizeBrowserPaneUrl(jp[1]);
+  const en = text.match(BROWSER_OPEN_DOMAIN_EN_RE);
+  if (en) return normalizeBrowserPaneUrl(en[1]);
+  const bare = text.trim().match(new RegExp(`^(${BROWSER_BARE_DOMAIN_SOURCE})$`, 'i'));
+  if (bare) return normalizeBrowserPaneUrl(bare[1]);
+  return null;
+}
+
+// Bare CSS-selector token. Split by risk direction:
+//  - extractText (read-only) additionally trusts a small common-tag whitelist
+//    ("h1のテキスト" → h1) — a wrong guess extracts the wrong text, which the
+//    human sees and rejects; nothing fires.
+//  - click (a real page side effect) trusts ONLY a .class/#id token or an
+//    explicitly quoted selector — a bare word like "button" is a LABEL guess,
+//    not a selector the user wrote, so it stays unresolved and slot-fill asks.
+const BROWSER_SELECTOR_CLASS_ID = '[.#][A-Za-z_][\\w-]*';
+const BROWSER_SELECTOR_TAG =
+  '(?:h[1-6]|title|main|article|header|footer|nav|table|thead|tbody|ul|ol|li|form|p|span|div|a|img|time|blockquote|pre|code)';
+// Quoted selector (「.foo」 / "`div.a > h2`" etc.), bound to the following
+// particle/verb so an unrelated quoted phrase (「◯◯というページ」's own
+// quoting) never matches: the closing quote must lead directly into
+// の/を/に/要素 (JP) or be the object of click (EN, handled separately).
+const BROWSER_QUOTED_SELECTOR_JP_RE = /[「『"'`]([^「」『』"'`]{1,200})[」』"'`]\s*(?:の|を|に|要素)/;
+const BROWSER_QUOTED_SELECTOR_EN_CLICK_RE = /\bclick(?:s|ed|ing)?\s+(?:on\s+)?(?:the\s+)?["'`]([^"'`]{1,200})["'`]/i;
+const BROWSER_QUOTED_SELECTOR_EN_EXTRACT_RE =
+  /\b(?:text|title|heading|contents?)\b[^.。!?！？]{0,20}(?:of|from|in)\s+(?:the\s+)?["'`]([^"'`]{1,200})["'`]|["'`]([^"'`]{1,200})["'`]\s*(?:の|element|selector)/i;
+
+const BROWSER_JP_SELECTOR_BEFORE_TARGET_RE = new RegExp(
+  `(${BROWSER_SELECTOR_CLASS_ID}|${BROWSER_SELECTOR_TAG})\\s*(?:要素|タグ)?\\s*の\\s*${BROWSER_EXTRACT_TARGET_WORDS}`,
+);
+const BROWSER_EN_SELECTOR_AFTER_TARGET_RE = new RegExp(
+  `\\b(?:text|title|heading|contents?)\\b[^.。!?！？]{0,20}\\b(?:of|from|in)\\s+(?:the\\s+)?(${BROWSER_SELECTOR_CLASS_ID}|${BROWSER_SELECTOR_TAG})\\b`,
+  'i',
+);
+const BROWSER_JP_CLICK_SELECTOR_RE = new RegExp(
+  `(${BROWSER_SELECTOR_CLASS_ID})\\s*(?:ボタン|要素|タグ|リンク)?\\s*を\\s*(?:クリック|押)`,
+);
+const BROWSER_EN_CLICK_SELECTOR_RE = new RegExp(
+  `\\bclick(?:s|ed|ing)?\\s+(?:on\\s+)?(?:the\\s+)?(${BROWSER_SELECTOR_CLASS_ID})\\b`,
+  'i',
+);
+
+/** Resolve the CSS selector for a detected browser-pane intent, or undefined
+ *  when nothing confidently selector-shaped was said (slot-fill asks then). */
+function extractBrowserSelector(text: string, kind: 'extractText' | 'click'): string | undefined {
+  if (kind === 'click') {
+    const quotedJp = text.match(BROWSER_QUOTED_SELECTOR_JP_RE);
+    if (quotedJp) return quotedJp[1].trim();
+    const quotedEn = text.match(BROWSER_QUOTED_SELECTOR_EN_CLICK_RE);
+    if (quotedEn) return quotedEn[1].trim();
+    const jp = text.match(BROWSER_JP_CLICK_SELECTOR_RE);
+    if (jp) return jp[1];
+    const en = text.match(BROWSER_EN_CLICK_SELECTOR_RE);
+    if (en) return en[1];
+    return undefined;
+  }
+  const quotedJp = text.match(BROWSER_QUOTED_SELECTOR_JP_RE);
+  if (quotedJp) return quotedJp[1].trim();
+  const quotedEn = text.match(BROWSER_QUOTED_SELECTOR_EN_EXTRACT_RE);
+  if (quotedEn) return (quotedEn[1] ?? quotedEn[2]).trim();
+  const jp = text.match(BROWSER_JP_SELECTOR_BEFORE_TARGET_RE);
+  if (jp) return jp[1];
+  const en = text.match(BROWSER_EN_SELECTOR_AFTER_TARGET_RE);
+  if (en) return en[1];
+  // Read-only convenience defaults, checked LAST so an explicit selector
+  // always wins: "(ページの)タイトル" / "the page title" → <title>,
+  // "見出し" / "heading" → h1.
+  if (/タイトル/.test(text) || /\btitle\b/i.test(text)) return 'title';
+  if (/見出し/.test(text) || /\bheading\b/i.test(text)) return 'h1';
+  return undefined;
+}
+
+/**
+ * Detect a browser-pane page-operation request. Returns null unless the text
+ * carries BOTH (a) an extract-text or click verb and (b) a browser context
+ * cue (URL / bound bare domain / ブラウザ・browser / ページ・サイト mention).
+ * When both verbs somehow appear, extract-text (read-only, the safer kind)
+ * wins. Exported for tests and for lib/agent-draft-patch.ts's reuse of
+ * detectAction (which calls this first).
+ */
+export function detectBrowserPaneIntent(text: string): BrowserPaneIntentDetection | null {
+  const hasExtract = BROWSER_EXTRACT_VERB_JP_RE.test(text) || BROWSER_EXTRACT_VERB_EN_RE.test(text);
+  const hasClick = BROWSER_CLICK_VERB_RE.test(text);
+  if (!hasExtract && !hasClick) return null;
+  const url = extractBrowserTargetUrl(text) ?? undefined;
+  if (!url && !BROWSER_CONTEXT_WORD_RE.test(text) && !BROWSER_PAGE_WORD_RE.test(text)) {
+    return null;
+  }
+  const kind: 'extractText' | 'click' = hasExtract ? 'extractText' : 'click';
+  return { kind, url, selector: extractBrowserSelector(text, kind) };
+}
+
 /** Slice `text` down to the clause that actually names the delivery action —
  *  the part after the LAST "たら" marker when a conditional ("Xたら、Y") is
  *  present, else the whole text. Shared by detectAction's own keyword scans
@@ -1223,6 +1437,30 @@ function multiSocialUnresolvedCaveat(platforms: SocialPlatform[]): string {
  *  explicit signal, not just the silent draft default" gating it layers on
  *  top of this function's own default-to-draft fallback. */
 export function detectAction(text: string): AgentAction {
+  // browser-pane (2026-08-05) — checked BEFORE the webhook branch on purpose:
+  // an utterance like "https://example.com を開いてh1のテキストを取得して"
+  // carries a URL (webhook's own strongest signal) but the page-operation
+  // verb + browser cue detectBrowserPaneIntent requires make the intent
+  // unambiguous. Utterances with a URL and NO extract/click verb ("…に
+  // POSTして") never reach this branch and stay webhook, byte-identical.
+  // A partially-resolved intent (missing URL or selector) is still authored
+  // as a browser-pane action here — with an EMPTY allowlist/selector that
+  // lib/agent-slot-fill.ts's browserUrl/browserSelector questions must fill
+  // before the confirm step, and that lib/browser-pane-automation.ts /
+  // lib/agent-browser-pane-review.ts refuse fail-closed at runtime if a
+  // half-filled draft somehow slipped through anyway.
+  const browserPane = detectBrowserPaneIntent(text);
+  if (browserPane) {
+    return {
+      type: 'browser-pane',
+      browserPaneAction:
+        browserPane.kind === 'click'
+          ? { kind: 'click', selector: browserPane.selector ?? '' }
+          : { kind: 'extractText', selector: browserPane.selector ?? '' },
+      browserPaneUrlAllowlist: browserPane.url ? [browserPane.url] : [],
+    };
+  }
+
   // webhook — an explicit URL is the strongest signal.
   const url = text.match(URL_RE);
   if (url || /webhook|フック/i.test(text)) {

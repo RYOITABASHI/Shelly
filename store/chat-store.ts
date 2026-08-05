@@ -110,7 +110,18 @@ export type ChatMessage = {
    *  reply, or the eventual agentDraft/agentCardState:'pending' card
    *  message) becomes the new most-recent message. */
   pendingSlotFill?: {
-    field: 'taskDetail' | 'schedule' | 'notificationTrigger' | 'outputPath' | 'socialConnector' | 'autonomous';
+    // Keep in sync with lib/agent-slot-fill.ts's SlotField (browserUrl/
+    // browserSelector added 2026-08-05 for the browser-pane NL authoring
+    // path — the URL / CSS-selector follow-up questions).
+    field:
+      | 'taskDetail'
+      | 'schedule'
+      | 'notificationTrigger'
+      | 'outputPath'
+      | 'socialConnector'
+      | 'autonomous'
+      | 'browserUrl'
+      | 'browserSelector';
     question: string;
     /** The draft accumulated so far; gets updated per-answer and re-checked
      *  for the next missing slot (or promoted to a full agentDraft once

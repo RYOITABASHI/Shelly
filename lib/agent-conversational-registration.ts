@@ -65,7 +65,13 @@
  * back to it always narrows what can be authored, never widens it.
  */
 import type { ParsedAgentDraft } from './agent-nl-parser';
-import { parseSchedule } from './agent-nl-parser';
+// normalizeBrowserPaneUrl: the SAME deterministic URL normalizer/validator the
+// Tier 1 parser uses to author a browser-pane allowlist entry — shared, never
+// re-implemented, so the two tiers can't drift on what counts as a valid
+// allowlist URL. Applied AFTER requireVerbatimSubstringMatch passes (the
+// verbatim gate runs on the candidate exactly as the model proposed it;
+// normalization is deterministic code's job).
+import { normalizeBrowserPaneUrl, parseSchedule } from './agent-nl-parser';
 import type { AgentAction, SocialConnectorMeta } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 // Reused verbatim, NOT re-implemented: this is the one deterministic
@@ -144,6 +150,23 @@ export interface AgentConversationalExtraction {
   /** Phase 4 (gated): a CLI command template, verbatim from the user's own
    *  words only — same gating as webhookUrl. */
   cliCommand?: string;
+  /** browser-pane (2026-08-05): which closed page operation to perform.
+   *  Only 'click' | 'extractText' are ever accepted ('fill' is deliberately
+   *  not NL-authorable — see mergeConversationalExtractionIntoDraft's
+   *  browser-pane branch); any other value rejects the whole browser-pane
+   *  proposal, fail-closed. */
+  browserActionKind?: string;
+  /** browser-pane: the target page URL, verbatim from the user's own words
+   *  only — same requireVerbatimSubstringMatch gate as webhookUrl/cliCommand,
+   *  but WITHOUT the allowHighRiskActions opt-in: unlike webhook/cli, the
+   *  registered action is attended-only, never auto-accepted even when
+   *  attended, and allowlist-checked twice more at fire time (see
+   *  store/types.ts's browserPaneAction doc comment), so the verbatim gate +
+   *  the mandatory registration confirm are the authoring-side controls. */
+  browserUrl?: string;
+  /** browser-pane: the CSS selector, verbatim from the user's own words only
+   *  — same gating as browserUrl. */
+  browserSelector?: string;
   /** Phase 6 (2026-08-03): ordered plain-language sub-instructions for a
    *  MULTI-step agent, e.g.
    *  `["Xで最新のAIニュースを調べる", "要約する", "Blueskyに投稿する"]`.
@@ -221,6 +244,14 @@ const MAX_FIELD_LEN: Record<
   // carry a long payload.
   webhookUrl: 2000,
   cliCommand: 2000,
+  // browser-pane (2026-08-05). Same truncation-safety argument as webhookUrl
+  // above: whatever survives the cap must still be a literal substring of
+  // what the user typed, so an over-long candidate can at worst become a
+  // prefix the user really wrote. browserSelector additionally sits under
+  // lib/browser-pane-automation.ts's own 2048-char runtime cap.
+  browserActionKind: 20,
+  browserUrl: 2000,
+  browserSelector: 2000,
 };
 
 // ── §1: system-prompt construction (pure) ───────────────────────────────────
@@ -310,6 +341,19 @@ export function buildRegistrationSystemPrompt(ctx: ConversationalRegistrationCon
 - "webhookUrl" / "cliCommand": **only accepted when copied character for character from what the USER actually typed in this conversation.** The system matches the value against the user's own words and rejects it if even one character differs. Never invent a URL or a command yourself (it will always be rejected, so it is pointless). Leave these empty if the user did not explicitly write one.`)
     : '';
 
+  // browser-pane (2026-08-05). Always appended (not gated behind
+  // allowHighRiskActions — see ALLOWED_ACTION_TYPES' doc comment for the full
+  // rationale). Worded like the highRiskRules block above because it relies
+  // on the same gate: the system verbatim-matches browserUrl/browserSelector
+  // against the user's own words, so inventing either is pointless.
+  const browserPaneRules = ctx.locale === 'ja'
+    ? `
+- ページ操作の依頼（Browser Paneに開いたページの要素をクリックする / テキストを取得する）のときだけ、"actionType" に "browser-pane" も選べます。その場合は "browserActionKind"（"click" か "extractText"）、"browserUrl"（対象ページのURL）、"browserSelector"（CSSセレクタ）を必ず全部入れてください。
+- "browserUrl" / "browserSelector": **ユーザーがこの会話の中で実際にタイプした文字列を、一字一句そのままコピーした場合にしか採用されません。** 一文字でも違えばシステムが必ず却下します。URLやセレクタを自分で考えて書いてはいけません。ユーザーがまだ書いていないなら、先に質問して聞き出してください。この動作は登録後も毎回ユーザーがその場で承認しないと実行されません。`
+    : `
+- Only for a page-operation request (clicking an element / extracting text on a page open in the Browser Pane), "actionType" may ALSO be "browser-pane". Then you MUST include all of "browserActionKind" ("click" or "extractText"), "browserUrl" (the target page URL) and "browserSelector" (the CSS selector).
+- "browserUrl" / "browserSelector": **only accepted when copied character for character from what the USER actually typed in this conversation.** The system rejects them if even one character differs. Never invent a URL or a selector yourself. If the user has not written one yet, ask for it first. Even after registration, this action only ever runs when the user approves it on screen each time.`;
+
   if (ctx.locale === 'ja') {
     return `あなたは Shelly の「自動化エージェント登録アシスタント」です。ユーザーと日本語で会話しながら、定期実行エージェントの登録内容を組み立てます。
 
@@ -331,7 +375,7 @@ ${FENCE_END}
 【各項目のルール】
 - "name": エージェントの短い表示名（20文字以内）。
 - "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
-- "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。${highRiskRules}
+- "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。${highRiskRules}${browserPaneRules}
 - "prompt": 毎回の実行でエージェントが実際にやること。スケジュールの言い回しは含めないでください。
 - "steps": **複数の手順に分かれる依頼（例: 調べる → 要約する → 投稿する）のときだけ**、手順を順番どおりに、自然な指示文の配列として書いてください（最大${MAX_MODEL_AUTHORED_STEPS}個）。手順が1つしかない依頼なら空配列 [] のままにして、やることは "prompt" に書いてください。各要素はただの指示文です — ID・URL・接続設定を自分で考えて書いてはいけません。ただし、**ユーザーがその手順で使うツール（Perplexity、ローカルLLM、Codex、Gemini）を実際に名指ししていた場合は、その名前をそのまま指示文の中に含めてください**（例:「Perplexityで最新ニュースを調べる」）。システム側がその名前を認識してツールを割り当てます。ユーザーが名指ししていないのに自分でツール名を考えて書いてはいけません。
 - "outputPath": 保存先が明示されたときだけ。それ以外は空文字。
@@ -366,7 +410,7 @@ ${FENCE_END}
 【Field rules】
 - "name": a short display label for the agent (<= 20 chars).
 - "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. Empty string if no schedule was stated.
-- "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.${highRiskRules}
+- "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.${highRiskRules}${browserPaneRules}
 - "prompt": what the agent should actually DO on each run, with the scheduling phrasing removed.
 - "steps": **only when the request genuinely breaks into several ordered steps** (e.g. research → summarize → post), list them IN ORDER as an array of plain instruction sentences (${MAX_MODEL_AUTHORED_STEPS} max). If the request is a single step, leave "steps" as an empty array [] and put the task in "prompt" instead. Each entry is just an instruction sentence — never invent an id, a URL, or connection settings. If the user actually named which tool a step should use (Perplexity, the local model, Codex, Gemini), include that name naturally in the step's own sentence (e.g. "look up the latest news with Perplexity") — the system recognizes that name and routes to it. Never invent a tool name the user didn't say.
 - "outputPath": only when a destination file/folder was explicitly stated. Empty string otherwise.
@@ -638,6 +682,13 @@ function buildExtractionFromRecord(rec: Record<string, unknown>): AgentConversat
     // would have carried them) exactly as it did in Phase 0-3.
     webhookUrl: readValidatedString(rec, 'webhookUrl'),
     cliCommand: readValidatedString(rec, 'cliCommand'),
+    // browser-pane (2026-08-05). Read unconditionally, same as webhookUrl/
+    // cliCommand above: reading is inert — every acceptance decision
+    // (verbatim-transcript match, kind whitelist, URL validity) lives in
+    // mergeConversationalExtractionIntoDraft's browser-pane branch.
+    browserActionKind: readValidatedString(rec, 'browserActionKind'),
+    browserUrl: readValidatedString(rec, 'browserUrl'),
+    browserSelector: readValidatedString(rec, 'browserSelector'),
     // Phase 6. `undefined` when the key is absent or not an array at all, so a
     // model that answers `"steps": null` / `"steps": "調べて投稿する"` is treated
     // as "said nothing about steps" rather than as a rejected proposal.
@@ -916,8 +967,25 @@ export function buildConversationTranscript(
  *  purely so that the extremely common "actionType: social-post +
  *  platformHint: <name>" proposal — which resolves correctly through
  *  platformHint — stops logging a misleading `rejectedFields: ['actionType']`
- *  alongside its own success. */
-const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify', 'social-post']);
+ *  alongside its own success.
+ *
+ *  'browser-pane' (2026-08-05) is in the BASE set — not behind Phase 4's
+ *  allowHighRiskActions opt-in — on three grounds, none of which is "it is
+ *  low risk": (1) both strings it needs (URL, CSS selector) are individually
+ *  gated by requireVerbatimSubstringMatch against the user's own transcript,
+ *  the same anti-hallucination primitive webhook/cli use, so the model can
+ *  only relay, never originate, a target; (2) the registration it produces
+ *  can NEVER skip the human confirm reply (shouldUseChatConfirm routes it to
+ *  chat-confirm while isAutoRegisterEligibleOnChatConfirm excludes it — see
+ *  lib/agent-plan-summary.ts — and this merge always stamps llmExtracted);
+ *  (3) at fire time the action type is attended-only with NO unattended
+ *  carve-out and is never auto-accepted even when attended, with the
+ *  allowlist re-checked before dispatch AND inside the injected page script
+ *  (store/types.ts's browserPaneAction doc comment). webhook/cli stay behind
+ *  the opt-in because their fire-time surface is categorically wider (any
+ *  host / a shell); browser-pane's is a closed 3-op set inside one on-screen
+ *  WebView the user is watching. */
+const ALLOWED_ACTION_TYPES = new Set(['draft', 'notify', 'social-post', 'browser-pane']);
 
 /** Phase 4's opt-in superset. Built once from ALLOWED_ACTION_TYPES so the two
  *  can never drift, and selected per call — NOT by mutating the base set,
@@ -983,8 +1051,12 @@ export function requireVerbatimSubstringMatch(candidate: string, userTranscriptT
  *
  *   - scheduleText: re-validated through parseSchedule(); applied only when
  *     that comes back `confident`. The model never authors a cron.
- *   - actionType: only 'draft' | 'notify' | 'social-post' — plus 'webhook' |
- *     'cli' when ctx.allowHighRiskActions is explicitly true (Phase 4).
+ *   - actionType: only 'draft' | 'notify' | 'social-post' | 'browser-pane' —
+ *     plus 'webhook' | 'cli' when ctx.allowHighRiskActions is explicitly true
+ *     (Phase 4). 'browser-pane' (2026-08-05) is applied only when its kind is
+ *     'click'/'extractText' AND both browserUrl and browserSelector pass
+ *     requireVerbatimSubstringMatch — see applyBrowserPaneAction and
+ *     ALLOWED_ACTION_TYPES' doc comment for why it needs no opt-in flag.
  *     'notify' is applied only as an upgrade FROM 'draft'; a redundant 'draft'
  *     is a silent no-op (and never downgrades an already-resolved richer
  *     action); 'social-post' is ALWAYS a no-op here and only ever takes effect
@@ -1094,6 +1166,78 @@ export function mergeConversationalExtractionIntoDraft(
     logInfo(LOG, `${fieldName} matched the user's own words verbatim — action promoted`);
   };
 
+  /** browser-pane (2026-08-05). Same shape as applyHighRiskAction above but
+   *  with TWO verbatim-gated strings (URL + selector) and a closed kind
+   *  whitelist, and always available (see ALLOWED_ACTION_TYPES' doc comment
+   *  for why no allowHighRiskActions opt-in applies here). Every refusal
+   *  records the specific FIELD that failed and leaves the draft untouched —
+   *  there is deliberately NO partial application: a browser-pane action
+   *  either arrives complete (kind + verbatim URL + verbatim selector) or
+   *  not at all, so a hallucinated half can never ride along with a real
+   *  half. */
+  const applyBrowserPaneAction = () => {
+    const kind = extraction.browserActionKind;
+    const urlCandidate = extraction.browserUrl;
+    const selectorCandidate = extraction.browserSelector;
+    // Declaring the type with no payload at all is a no-op, exactly like a
+    // bare 'social-post' declaration: nothing was refused, and the
+    // conversation (or Tier 2 slot-fill) can still supply the halves later.
+    if (!kind && !urlCandidate && !selectorCandidate) return;
+    if (kind !== 'click' && kind !== 'extractText') {
+      // 'fill' included on purpose: its free-form value is not NL-authorable
+      // this pass (hand-edited JSON keeps owning it).
+      rejectedFields.push('browserActionKind');
+      logInfo(LOG, `browserActionKind ${JSON.stringify(kind ?? '(missing)')} is not an NL-authorable browser operation — dropped`);
+      return;
+    }
+    if (!urlCandidate || !requireVerbatimSubstringMatch(urlCandidate, userTranscriptText)) {
+      // THE hallucination guard, same as applyHighRiskAction's: a URL the
+      // human never typed was invented by the model — drop the whole action.
+      rejectedFields.push('browserUrl');
+      logInfo(
+        LOG,
+        `browserUrl (${(urlCandidate ?? '').trim().length} chars) does not appear verbatim in the user's own ` +
+          `messages (transcript=${userTranscriptText.length} chars) — dropped as hallucinated`,
+      );
+      return;
+    }
+    if (!selectorCandidate || !requireVerbatimSubstringMatch(selectorCandidate, userTranscriptText)) {
+      rejectedFields.push('browserSelector');
+      logInfo(
+        LOG,
+        `browserSelector (${(selectorCandidate ?? '').trim().length} chars) does not appear verbatim in the ` +
+          `user's own messages (transcript=${userTranscriptText.length} chars) — dropped as hallucinated`,
+      );
+      return;
+    }
+    // Verbatim passed — NOW normalize deterministically (https default,
+    // http(s)-only, no credentials/hash), the same normalizer Tier 1 uses.
+    const normalizedUrl = normalizeBrowserPaneUrl(urlCandidate.trim());
+    if (!normalizedUrl) {
+      rejectedFields.push('browserUrl');
+      logInfo(LOG, 'browserUrl matched the transcript but is not a valid http(s) allowlist entry — dropped');
+      return;
+    }
+    if (draft.action.type !== 'draft') {
+      // One-shot discipline, mirroring platformHint/applyHighRiskAction: an
+      // action that already resolved to something richer is never overwritten.
+      rejectedFields.push('browserUrl');
+      logInfo(LOG, `browser-pane ignored — action is already '${draft.action.type}', not 'draft'`);
+      return;
+    }
+    const m = next();
+    const selector = selectorCandidate.trim();
+    m.action = {
+      type: 'browser-pane',
+      browserPaneAction:
+        kind === 'click' ? { kind: 'click', selector } : { kind: 'extractText', selector },
+      browserPaneUrlAllowlist: [normalizedUrl],
+    };
+    m.actionCaveat = undefined;
+    touched = true;
+    logInfo(LOG, `browser-pane ${kind} accepted — URL and selector matched the user's own words verbatim`);
+  };
+
   if (extraction.scheduleText) {
     const sched = parseSchedule(extraction.scheduleText);
     if (sched.confident) {
@@ -1182,6 +1326,11 @@ export function mergeConversationalExtractionIntoDraft(
         type: 'cli',
         command,
       }));
+    } else if (extraction.actionType === 'browser-pane') {
+      // browser-pane (2026-08-05): always reachable (base allowlist, no
+      // opt-in flag) — but only ever applied when BOTH payload strings pass
+      // the verbatim-transcript gate inside applyBrowserPaneAction.
+      applyBrowserPaneAction();
     }
     // Everything else in the allowlist is a deliberate no-op, not a rejection:
     // nothing was refused, nothing changed.

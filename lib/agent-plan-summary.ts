@@ -177,6 +177,16 @@ export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
   if (draft.action.type === 'social-post') return true;
   if (draft.action.type === 'draft') return true;
   if (draft.action.type === 'notify') return true;
+  // browser-pane (2026-08-05): chat-native from birth (the project owner's
+  // standing "no new card/modal confirm surfaces" rule — this action type
+  // never existed on AgentConfirmCard). Deliberately NOT added to
+  // isAutoRegisterEligibleOnChatConfirm above: routing browser-pane here
+  // while leaving it out of that eligibility list is exactly what makes the
+  // human Confirm reply mandatory on every registration path (including the
+  // widget no-confirm opt-in, which rides the same two gates) — the
+  // registration-side mirror of the runtime's own "never auto-accepted even
+  // when attended" rule (store/types.ts's browserPaneAction doc comment).
+  if (draft.action.type === 'browser-pane') return true;
   return (draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool);
 }
 
@@ -287,6 +297,26 @@ function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, lo
         : label;
     case 'dm-reply':
       return label;
+    case 'browser-pane': {
+      // The confirm bubble MUST show the EXACT target URL and CSS selector —
+      // this line is the human-review moment the whole NL registration path
+      // hangs its "the human explicitly confirmed the exact URL/selector"
+      // guarantee on (the Tier 3 verbatim-transcript gate in
+      // lib/agent-conversational-registration.ts is the other half). A
+      // still-unfilled half (slot-fill pending / given up mid-way) renders an
+      // explicit "(not set)" marker rather than being silently omitted.
+      const unset = tl('agentplan.browserpane_unset_field');
+      const selector = action.browserPaneAction?.selector?.trim() || unset;
+      const url = action.browserPaneUrlAllowlist?.[0]?.trim() || unset;
+      const kind = action.browserPaneAction?.kind;
+      const key =
+        kind === 'click'
+          ? 'agentplan.browserpane_line_click'
+          : kind === 'fill'
+          ? 'agentplan.browserpane_line_fill'
+          : 'agentplan.browserpane_line_extract';
+      return tl(key, { selector, url });
+    }
     default:
       return label;
   }
