@@ -23,14 +23,27 @@ import java.util.concurrent.atomic.AtomicBoolean
  * pollers (`pollForNodeByResourceId`, `pollForNodeByContentDescription`,
  * `pollForStableLineSearchResults`).
  *
- * Still reachable ONLY from the same debug entry points as before
- * (SettingsDropdown.tsx's AppActDebugSection, via
- * [ShellyAccessibilityService.debugSendLineMessageToContact] /
- * [ShellyAccessibilityService.debugPostToX]) — NOT wired into the agent/
- * PlanSpec pipeline. [resolveMatcherMiss] is a Track 3 (LLM fallback) stub
- * that always returns null (fail-closed, identical to today's zero-match
- * behavior); Track 3 will fill it in later without needing to change any
- * step's control flow.
+ * 2026-08-06 correction: the note this comment used to carry ("still
+ * reachable ONLY from the debug entry points, NOT wired into the agent/
+ * PlanSpec pipeline") was stale and actively misleading — it predates
+ * TerminalEmulatorModule.kt's `fireAgentAppAct` AsyncFunction and
+ * AgentRuntime.kt's trusted-unattended auto-fire path (both call [execute]
+ * for real, human-registered `app-act` agent actions, not just the debug
+ * buttons; see lib/agent-app-act-review.ts / lib/agent-executor.ts's
+ * `app-act)` dispatch case on the JS side). What is genuinely still missing
+ * is natural-language REGISTRATION coverage for recipes other than `x.post`
+ * (see `LINE_POST_RE` in lib/agent-nl-parser.ts) — and that gap is
+ * deliberate, not an oversight: a 2026-08-01 project-owner decision moved
+ * X's own NL detection AWAY from this executor and onto a real API
+ * connector specifically because AccessibilityService automation cannot run
+ * while the phone is locked, which defeats the point of a scheduled/
+ * autonomous agent. `line.send-message` has no API alternative, so it stays
+ * reachable via manual/attended dispatch (RUN NOW, phone unlocked) rather
+ * than being auto-registered as a scheduled action that would silently fail
+ * every time it actually fired unattended. [resolveMatcherMiss] is a
+ * Track 3 (LLM fallback) stub that always returns null (fail-closed,
+ * identical to today's zero-match behavior); Track 3 will fill it in later
+ * without needing to change any step's control flow.
  */
 object AppActExecutor {
     private const val TAG = "AppActExecutor"
