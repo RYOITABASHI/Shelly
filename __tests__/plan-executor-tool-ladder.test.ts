@@ -71,7 +71,12 @@ function writePlan(
 function writeEnv(home: string, localPort: number): void {
   // Deliberately NO GEMINI_API_KEY — the capability broker refuses the
   // primary attempt with a real, deterministic rc=43 before any network call.
-  fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${localPort}'\n`);
+  const envFile = path.join(home, '.shelly/agents/.env');
+  fs.writeFileSync(envFile, `LOCAL_LLM_URL='http://127.0.0.1:${localPort}'\n`);
+  // The broker's checkSecretFilePermissions() refuses a secrets file wider
+  // than 0600 on POSIX (CI/Android; a Windows dev checkout's chmod is a
+  // near-no-op, which is why this only surfaced on Linux CI).
+  fs.chmodSync(envFile, 0o600);
 }
 
 function runExecutor(planFile: string, home: string): Promise<number | null> {
@@ -228,7 +233,9 @@ describe('shelly-plan-executor — toolLadder retries a LOW-QUALITY primary comp
 
   it('retries after a low-quality primary completion and succeeds via the ladder candidate', async () => {
     const home = makeHome();
-    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\n`);
+    const qualityEnvFile = path.join(home, '.shelly/agents/.env');
+    fs.writeFileSync(qualityEnvFile, `LOCAL_LLM_URL='http://127.0.0.1:${port}'\n`);
+    fs.chmodSync(qualityEnvFile, 0o600);
     const plan: Record<string, unknown> = {
       kind: PLAN_SPEC_KIND,
       schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
@@ -346,6 +353,7 @@ describe('requestModelContentWithLadder — never mutates its plan argument (3rd
       brokerAuditFile: path.join(home, 'agent-driver-audit.jsonl'),
     };
     fs.writeFileSync(paths.envFile, '');
+    fs.chmodSync(paths.envFile, 0o600);
     const originalToolObject = { type: 'gemini-api', label: 'Gemini API', model: 'primary', authRef: 'gemini' };
     const plan = {
       agent: { id: 'agent-trust-check' },
