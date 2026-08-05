@@ -599,7 +599,7 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // and its server actually exposes embeddings. Kept in lockstep with
 // scripts/shelly-local-llm-ensure.sh (+ asset mirror) and
 // lib/llamacpp-setup.ts's buildServerStartCommand.
-const AGENT_SCRIPT_VERSION = 54;
+const AGENT_SCRIPT_VERSION = 55;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -4802,9 +4802,8 @@ ensure_local_llm_server() {
       # LD_LIBRARY_PATH=<termux-libs>, OVERRIDING the llama.cpp lib path exported
       # just above for the whole nohup->nice->linker64->llama-server chain ->
       # "CANNOT LINK EXECUTABLE ... libllama-server-impl.so not found" on every
-      # cold start. /system/bin/nohup (toybox) is an absolute path, so function
-      # dispatch never fires. On-device verified 2026-07-28. Keep in lockstep
-      # with scripts/shelly-local-llm-ensure.sh (+ its asset copy).
+      # cold start. On-device verified 2026-07-28. Keep in lockstep with
+      # scripts/shelly-local-llm-ensure.sh (+ its asset copy).
       # EMBEDDINGS (v52, 2026-08-05): --embedding + --pooling mean make this
       # same server also serve OAI /v1/embeddings for the skill-match re-rank
       # (lib/memory/embedding-llama.ts, MEMORY_EMBEDDING_ENABLED). Pooling
@@ -4812,7 +4811,23 @@ ensure_local_llm_server() {
       # default pooling 'none'; it never affects generation. Keep in lockstep
       # with scripts/shelly-local-llm-ensure.sh (+ its asset copy) and
       # lib/llamacpp-setup.ts's buildServerStartCommand.
-      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      # v54 FOLLOWUP (2026-08-05 on-device root-caused, Fable5 QA — second
+      # layer of the SAME symptom the v42 fix above never actually closed):
+      # even at an absolute path, exec-wrapper.c's should_scrub_system_env /
+      # scrub_system_envp strips BOTH LD_LIBRARY_PATH and LD_PRELOAD from
+      # envp on every exec of a /system/,/vendor/,/apex/ binary from the
+      # agent-exec context — EXCEPT linker64 itself (should_scrub_system_env's
+      # own explicit exemption). Routing through /system/bin/nohup and
+      # /system/bin/nice first meant THEIR exec got scrubbed before linker64's
+      # exemption could ever apply, so the LD_LIBRARY_PATH exported just above
+      # never survived past that first hop. Fix: exec linker64 DIRECTLY,
+      # skipping the nohup/nice hop entirely so linker64's own scrub exemption
+      # actually applies. \`trap '' HUP\` (a shell builtin, never touched by the
+      # wrapper) replaces nohup's SIGHUP-immunity. Losing \`nice -n 5\`'s
+      # priority deprioritization is an accepted trade-off — no shell-builtin
+      # equivalent and no bundled (non-/system) nice binary exist.
+      trap '' HUP
+      /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} < /dev/null > "$log_file" 2>&1 &
       echo $! > "$pid_file"
     )
   else

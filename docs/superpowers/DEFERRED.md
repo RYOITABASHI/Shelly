@@ -418,6 +418,19 @@
 
 **検証**: `npx tsc --noEmit`クリーン。`npx jest --ci`フルスイート2978件中2949件PASS（既知のWindows `scoped.fs`二重ドライブレターバグによる4スイート28件失敗のみ、`git stash`比較で変更前mainでも同様に発生することを確認済み——新規リグレッションなし）。**実機未検証**（次回オンデバイステストで6項目とも確認すること: (1)は`--embedding`同様サーバー冷起動を伴う操作での再現条件の確認、(2)(3)は`@agent run <name>`実行後にバブルが実際の結果へ更新されること、(4)はURL不一致時に新メッセージが出ること、(5)は通知本文タップでReview画面が開くこと・300秒に体感で余裕ができたこと、(6)はAllow直後にログにFileNotFoundExceptionが出ないこと）。
 
+**→ 2026-08-05 実機QA完了（versionCode 2078 / commit `bc71a0c2d`、Fable5エージェント経由）— 6項目中5項目PASS、項目1（local-LLM autostart）のみFAIL・真因を特定して即修正**:
+
+- **項目2/3/4/5/6 = 全PASS**。詳細:
+  - (2)(3): `@agent run テストメモ`実行→バブル「Running テストメモ...」が同一位置で実際の結果（✅+outputPreview）へ更新されることをuiautomator座標で確認。別のbrowser-pane runでも同様に確認。
+  - (4): Browser Paneを空白のまま登録・実行→Allow後のアラート実文言が新設`agent_action_confirm_browserpane_failed_url_mismatch`と完全一致（英語ロケール実機で確認、旧汎用文言ではない）。
+  - (5): 承認通知の**本文タップ**（展開せず）でReview画面（Confirm browser action画面）が直接開くことを確認。さらに通知post（20:22:36）から**174秒後**（20:25:30）のAllowが正常受理され、120秒を大きく超えても承認可能なことを実測。
+  - (6): Allow成功直後のlogcatで`rejected unreadable request`が0件（`AgentActionApproval`タグの出力に紛らわしいFileNotFoundException系ログが無いことを確認）。
+- **項目1 = FAIL、ただし真因を特定**: サーバー停止→対話ターミナルから再起動（成功）→`@agent run`（エージェント実行コンテキスト）で再度CANNOT LINK再発を実機確認（logcat: `F linker : CANNOT LINK EXECUTABLE ".../llama-server": library "libllama-server-impl.so" not found`）。Fable5の切り分けで、環境変数経由のLD_PRELOAD継承（今回の修正対象）は既に無害化されているが、**exec-wrapper.c（`modules/terminal-emulator/android/src/main/jni/exec-wrapper.c`）の`scrub_system_envp`/`should_scrub_system_env`が、エージェント実行コンテキストからの`/system/`,`/vendor/`,`/apex/`バイナリexec全てに対してLD_LIBRARY_PATH/LD_PRELOADを剥ぎ取る（`linker64`自身だけが明示的に例外）**という、今回のbash側修正とは別レイヤーの真因を特定。旧起動チェーン`/system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 ...`は、`nohup`（linker64ではない`/system/`バイナリ）がexecされた時点でスクラブが発動し、以降の`nice`→`linker64`→`llama-server`にLD_LIBRARY_PATHが一切届かない構造的欠陥だった——2026-07-28のv42修正（bare nohup対策）以降ずっと、この経路そのものが機能していなかったことになる。
+- **即修正**: `scripts/shelly-local-llm-ensure.sh`（+ APK asset mirror）と`lib/agent-executor.ts`のインラインコピー、両方のlinker64起動チェーンから`/system/bin/nohup /system/bin/nice -n 5`を除去し、`/system/bin/linker64`を直接execするよう変更（linker64はスクラブ対象外のため、これでLD_LIBRARY_PATHが実際にllama-serverまで届く）。`nohup`が担っていたSIGHUP耐性はシェルビルトイン`trap '' HUP`で代替（execを伴わないためスクラブの対象外）。`nice -n 5`の優先度調整は、シェルビルトイン代替も非`/system/`の同梱バイナリも存在しないため、意図的に諦める（トレードオフとしてコメントに明記）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を54→55。
+- **検証**: `npx tsc --noEmit`クリーン、`npx jest --ci`フルスイート2978件中2950件PASS（既知の4スイート27件失敗のみ、変化なし）。**この追加修正自体の実機再検証はまだ未実施** — 次回オンデバイステストで、サーバー停止→`@agent run`での自動起動がCANNOT LINK無しで成功することを最優先で確認すること。
+
+→ sync: なし。
+
 **2026-07-28 進捗（Codex、実装コミット `24cd58d28` / `4481d099c` / `a8f80a2ca`）**:
 ロードマップのうち、(1) OpenRouterをOpenAI互換SSEクライアント＋model registry候補として追加し、API-key backendとして`resolveForAutonomous()`が必ず拒否するattended-only境界を回帰テストで固定、(2) 無人成功runのskill保存を事前Alertなしの即時保存＋削除アクション付き事後通知へ変更（attended runは従来の確認Alertを維持）、(3) 成功した複数step orchestrationのPlanSpecをskillへ保存し、類似タスクでsteps/provider/budget/charLimitをAgentへ復元して既存executor経路のまま再実行できるようにした。`npx tsc --noEmit`クリーン。検証JestはOpenRouter/model-router/escalation一式82件、skill-save/agent-skills一式20件、PlanSpec skill reuse＋agent-plan-spec/orchestration一式106件がPASS。**実機検証は未実施（本セッションは端末利用不可、adb切断）**。
 

@@ -907,11 +907,28 @@ ensure_local_llm_server() {
       # nohup->nice->linker64->llama-server chain -> "CANNOT LINK EXECUTABLE
       # ... libllama-server-impl.so not found" on every cold start (the reason
       # every historical local-llm-start-*.reason with that message exists).
-      # /system/bin/nohup (toybox) is an absolute path, so bash function
-      # dispatch never fires and the exported LD_LIBRARY_PATH survives.
-      # Verified on-device 2026-07-28: bare nohup fails, absolute path serves
-      # /health within seconds from the exact same failing shell context.
-      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      # 2026-08-05 on-device root-caused (Fable5 QA, second layer of the same
+      # symptom): even with the absolute /system/bin/nohup path above, the
+      # exec-wrapper (modules/terminal-emulator/.../jni/exec-wrapper.c,
+      # should_scrub_system_env / scrub_system_envp) strips BOTH
+      # LD_LIBRARY_PATH and LD_PRELOAD from envp on every exec of a
+      # /system/,/vendor/,/apex/ binary from the agent-exec context — EXCEPT
+      # linker64 itself (should_scrub_system_env's own explicit exemption).
+      # Routing through /system/bin/nohup and /system/bin/nice first meant
+      # THEIR exec got scrubbed before linker64's exemption could ever apply,
+      # so the LD_LIBRARY_PATH exported just above never survived past that
+      # first hop — this is a DIFFERENT mechanism than the bashrc-wrapper
+      # issue above, not a regression of it, and neither `unset LD_PRELOAD`
+      # nor an absolute nohup path can fix it (both only affect what this
+      # bash process exports, not what the native wrapper strips on its own
+      # exec syscall interposition). Fix: exec linker64 DIRECTLY, skipping
+      # the nohup/nice hop so linker64's own scrub exemption actually
+      # applies. `trap '' HUP` (a shell builtin, never touched by the
+      # wrapper) replaces nohup's SIGHUP-immunity. Losing `nice -n 5`'s
+      # priority deprioritization is an accepted trade-off — there is no
+      # shell-builtin equivalent and no bundled (non-/system) nice binary.
+      trap '' HUP
+      /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} < /dev/null > "$log_file" 2>&1 &
       echo $! > "$pid_file"
     )
   else
