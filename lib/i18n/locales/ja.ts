@@ -271,6 +271,9 @@ const ja: Record<string, string> = {
   'agentcard.socialpost_text_label': '投稿テキスト',
   'agentcard.socialpost_text_hint': '{{result}} で実行結果を挿入できます。',
   'agentcard.socialpost_warning': 'このエージェントは実行のたびに接続先プラットフォームへ投稿します。実行時に個別の確認は挟まれないため、登録前によく確認してください。',
+  // browser-pane (2026-08-05) — Browser Pane ページ操作（クリック/テキスト取得）。
+  // attended限定・自動承認なし。store/types.ts 参照。
+  'agentcard.action_browser-pane': 'ブラウザ操作',
   // api-call (v1) — 2ステップ以上のエージェントにのみ提供
   'agentcard.action_api-call': 'API呼び出し',
   'agentcard.apicall_authref': '認証情報（任意）',
@@ -414,6 +417,12 @@ const ja: Record<string, string> = {
   // 一覧表示専用の短いXラベル（agentplan.appact_x_target は文章形式なので流用不可）。
   'agentplan.multi_target_x_label': 'X',
   'agentplan.draft_line_with_path': '下書き（保存先: {{path}}）',
+  // browser-pane (2026-08-05) — 確認バブルには承認対象のセレクタ+URLを
+  // 一字一句そのまま表示する。lib/agent-plan-summary.ts 参照。
+  'agentplan.browserpane_line_extract': 'Browser Pane操作: {{url}} の「{{selector}}」からテキスト取得（毎回その場での承認が必要・無人実行は不可）',
+  'agentplan.browserpane_line_click': 'Browser Pane操作: {{url}} の「{{selector}}」をクリック（毎回その場での承認が必要・無人実行は不可）',
+  'agentplan.browserpane_line_fill': 'Browser Pane操作: {{url}} の「{{selector}}」に入力（毎回その場での承認が必要・無人実行は不可）',
+  'agentplan.browserpane_unset_field': '（未設定）',
   // Phase C（2026-07-22）: 項目だけの言い直し（「9時にして」等）で下書きをその場
   // 修正できるようになったため、旧「キャンセルしてから言い直して」の文言を更新
   // — lib/agent-draft-patch.ts 参照。
@@ -564,6 +573,11 @@ const ja: Record<string, string> = {
   'slot_fill.question_social_connector': 'どのコネクタに投稿しますか？番号かラベル名で答えてください。',
   'slot_fill.question_autonomous': 'このエージェントは無人(自律)で自動実行してよいですか？「はい」または「いいえ」で答えてください。',
   'slot_fill.social_connector_giveup_caveat': 'どのコネクタか特定できなかったため、下書き（ファイル保存）として登録します。次回はコネクタのラベル名を明確に指定すると直接投稿できます。',
+  // browser-pane slot-fill (2026-08-05) — ページ操作の意図は検出できたが
+  // 対象URL/CSSセレクタが発話から取れなかったときに質問する。
+  'slot_fill.question_browser_url': 'どのページに対して操作しますか？URLを教えてください（例: https://example.com/news）。',
+  'slot_fill.question_browser_selector': 'そのページ内のどの要素ですか？CSSセレクタで教えてください（例: h1、.headline、#submit）。',
+  'slot_fill.browser_pane_giveup_caveat': 'ブラウザ操作の対象URL/要素を特定できなかったため、下書き（ファイル保存）として登録します。URLとCSSセレクタを明示して登録し直すとBrowser Pane操作として実行できます。',
   // 2026-07-24: スロットフィルの回答が理解できなかった際、再質問の先頭に付けて
   // 前回と全く同じ文言の繰り返しにならないようにする（実機フィードバック:
   // 理解できなかった旨の言及なしに同じ質問をそのまま繰り返すのは不親切に見える）。
