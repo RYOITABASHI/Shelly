@@ -13,6 +13,7 @@ import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
 import { isOrchestrated, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
+import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
 
 // NOT bumped for the `steps` field added below (orchestration schema-plumbing
 // increment 1, 2026-07-15). A bump here is load-bearing across THREE
@@ -98,6 +99,25 @@ export interface AgentPlanSpecV1 {
     authRef?: 'gemini' | 'perplexity' | 'cerebras' | 'groq';
     unsupportedReason?: string;
   };
+  /** DEFERRED.md「PlanSpec executor 経由の無人発火は、品質ゲートでlocalが弾かれても
+   *  エスカレーションラダーへ進まない」: ordered HTTP-dispatchable retry candidates
+   *  AFTER `tool` above, from resolveEscalationLadder — computed ONCE here (the
+   *  attended path's own single source of truth) so scripts/shelly-plan-executor.js
+   *  never needs its own copy of the routing rules, only a plain array to walk.
+   *  Non-HTTP-dispatchable entries (cli/codex — this executor cannot spawn a
+   *  process) are already filtered out; when the underlying ladder's true next
+   *  candidate was one of those, toolLadderExhaustedNote explains why retrying
+   *  stopped instead of silently looking like the ladder was never checked.
+   *  Always present (possibly empty) once schemaVersion >= this field's
+   *  introduction; absent only on a plan loaded from a PRE-existing on-disk
+   *  file written by an older app version — see the executor's own
+   *  `plan.toolLadder || []` read for that fallback. */
+  toolLadder?: AgentPlanSpecV1['tool'][];
+  /** Present only when toolLadder was truncated because the underlying ladder
+   *  continues into a tool this executor cannot dispatch (Codex) — appended to
+   *  the failure message once toolLadder is exhausted, so the run log honestly
+   *  says "needs Codex/attended run" instead of a bare unexplained failure. */
+  toolLadderExhaustedNote?: string;
   action: PlanAction;
   /** Multi-action fan-out (2026-07-23, mirrors Agent.actions — see its own
    *  doc comment in store/types.ts): present ONLY when agent.actions has
@@ -163,6 +183,14 @@ export type BuildAgentPlanSpecOptions = {
   suppressAction?: boolean;
   autonomousCloudConsent?: boolean;
   autonomousCloudStop?: boolean;
+  /** DEFERRED.md「PlanSpec executor 経由の無人発火は、品質ゲートでlocalが弾かれても
+   *  エスカレーションラダーへ進まない」: free-cloud key presence, used ONLY to bake
+   *  toolLadder below (whether a Cerebras/Groq retry hop is worth including —
+   *  mirrors lib/agent-manager.ts's ladderEnvFromDisk/LadderEnv exactly).
+   *  Absent → defaults to true (fail-open to "try it"), matching
+   *  ladderEnvFromDisk's own read-failure default. */
+  hasCerebrasKey?: boolean;
+  hasGroqKey?: boolean;
 };
 
 function planPaths(home: string, agentId: string) {
@@ -225,6 +253,28 @@ export function buildAgentPlanSpec(
 
   const toolSpec = toPlanTool(tool, unsupportedToolReason);
   const toolLabel = toolSpec.label;
+  // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ進まない」:
+  // the SAME ladder the attended path already trusts (resolveEscalationLadder),
+  // computed once here and serialized as plain data — see AgentPlanSpecV1.toolLadder's
+  // doc comment for why the executor gets no logic of its own. hasCerebrasKey/
+  // hasGroqKey default true (see BuildAgentPlanSpecOptions doc comment);
+  // Perplexity/Gemini key-presence is intentionally left unknown here (the
+  // ladder itself treats that as "assume present", LadderEnv's own default).
+  const ladderEnv: LadderEnv = {
+    hasCerebrasKey: opts.hasCerebrasKey ?? true,
+    hasGroqKey: opts.hasGroqKey ?? true,
+    autonomousCloudConsent: opts.autonomousCloudConsent,
+    autonomousCloudStop: opts.autonomousCloudStop,
+  };
+  const fullLadder = resolveEscalationLadder(agent, ladderEnv).tools;
+  const toolLadder = fullLadder
+    .filter((candidate) => candidate.type !== tool.type)
+    .map((candidate) => toPlanTool(candidate))
+    .filter((planTool) => planTool.type !== 'unsupported');
+  const toolLadderExhaustedNote =
+    fullLadder.some((candidate) => candidate.type !== tool.type && candidate.type === 'cli')
+      ? 'Every HTTP-dispatchable backend in the escalation ladder failed. This agent’s ladder continues to Codex, which the unattended PlanSpec executor cannot dispatch (Codex requires a spawned CLI process) — run this agent attended (Run now / @agent) or resolve it to a Codex tool to reach that step.'
+      : undefined;
   const routeDecision: AgentRouteDecision = {
     ...routeResolution.decision,
     toolType: tool.type,
@@ -296,6 +346,8 @@ export function buildAgentPlanSpec(
     },
     prompt: buildExecutorPrompt(agent.prompt),
     tool: toolSpec,
+    toolLadder,
+    ...(toolLadderExhaustedNote ? { toolLadderExhaustedNote } : {}),
     action,
     ...(multiActions ? { actions: multiActions } : {}),
     paths: {

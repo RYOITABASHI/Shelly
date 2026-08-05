@@ -90,17 +90,18 @@ function extractFullFunction(script: string): string {
  * unavailable on this dev machine) so the echo/refusal branch still executes
  * for real too, not just the early-return empty-check branch.
  */
-function runFullFunctionCheck(fnText: string, text: string): number {
+function runFullFunctionCheck(fnText: string, text: string, priorStepContent = ''): number {
   const wrapperPath = path.join(os.tmpdir(), `shelly-quality-gate-wrapper-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`);
   const nodeBin = process.execPath.replace(/\\/g, '/');
   const script = `node_usable() { return 0; }
 shelly_node() { "${nodeBin}" "$@"; }
+PRIOR_STEP_CONTENT="$2"
 ${fnText}
 is_low_quality_completion "$1"
 `;
   fs.writeFileSync(wrapperPath, script, 'utf8');
   try {
-    execFileSync('bash', [wrapperPath, text], { stdio: 'pipe' });
+    execFileSync('bash', [wrapperPath, text, priorStepContent], { stdio: 'pipe' });
     return 0;
   } catch (err: unknown) {
     const status = (err as { status?: number }).status;
@@ -111,12 +112,12 @@ is_low_quality_completion "$1"
   }
 }
 
-function runEmbeddedCheck(js: string, text: string): number {
+function runEmbeddedCheck(js: string, text: string, priorStepContent = ''): number {
   const tmpFile = path.join(os.tmpdir(), `shelly-quality-gate-check-${Date.now()}-${Math.random().toString(36).slice(2)}.js`);
   fs.writeFileSync(tmpFile, js, 'utf8');
   try {
     execFileSync(process.execPath, [tmpFile], {
-      env: { ...process.env, SHELLY_QUALITY_CHECK_TEXT: text },
+      env: { ...process.env, SHELLY_QUALITY_CHECK_TEXT: text, SHELLY_QUALITY_CHECK_PRIOR_TEXT: priorStepContent },
       stdio: 'pipe',
     });
     return 0;
@@ -382,6 +383,89 @@ describe('is_low_quality_completion — empty/whitespace-only completion (real b
 
   it('does not flag real content with surrounding whitespace', () => {
     expect(runFullFunctionCheck(fnText, '  STEAM教育×AIの最新動向まとめ。  ')).toBe(1);
+  });
+});
+
+describe('is_low_quality_completion — duplicate-of-prior-step detection (DEFERRED.md 重複コンテンツ検知の欠如(P1), real emitted script)', () => {
+  // 2026-08-04 on-device incident this closes: an orchestration chain's
+  // "notify" step echoed the prior "summarize" step's fabricated output back
+  // verbatim, and — because is_low_quality_completion had no notion of "the
+  // prior step's content" — it was recorded as a success. This describe
+  // block exercises the REAL emitted embedded JS (PRIOR_STEP_CONTENT baked
+  // via generateRunScript's priorStepContent opt) and the full bash function.
+  const priorContent =
+    '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。経産省の組織再編も発表された。';
+  const scriptNoPrior = generateRunScript(agent({ type: 'local' }));
+  const scriptWithPrior = generateRunScript(agent({ type: 'local' }), { priorStepContent: priorContent });
+  const embeddedJsNoPrior = extractEmbeddedJs(scriptNoPrior);
+  const embeddedJsWithPrior = extractEmbeddedJs(scriptWithPrior);
+
+  it('bakes PRIOR_STEP_CONTENT as an empty string when priorStepContent is not passed (single-run / first-step behavior unchanged)', () => {
+    expect(scriptNoPrior).toContain("PRIOR_STEP_CONTENT=''");
+  });
+
+  it('bakes PRIOR_STEP_CONTENT verbatim (shell-quoted) when passed', () => {
+    expect(scriptWithPrior).toContain('PRIOR_STEP_CONTENT=');
+    expect(scriptWithPrior).toContain('Explorative Modeling');
+  });
+
+  it('flags a near-verbatim repeat of the prior step as low quality', () => {
+    const duplicate = '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。';
+    expect(runEmbeddedCheck(embeddedJsWithPrior, duplicate, priorContent)).toBe(0);
+  });
+
+  it('does NOT flag the same text as low quality when no prior content is baked (no false positive on a non-orchestrated run)', () => {
+    const duplicate = '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。';
+    expect(runEmbeddedCheck(embeddedJsNoPrior, duplicate)).toBe(1);
+  });
+
+  it('does NOT flag genuinely fresh content just because a prior step exists', () => {
+    const fresh = '経産省の組織再編は来月1日付で施行され、新設のAI政策局が中心となる見込みです。';
+    expect(runEmbeddedCheck(embeddedJsWithPrior, fresh, priorContent)).toBe(1);
+  });
+
+  it('flags a real duplicate through the FULL bash function (not just the embedded JS)', () => {
+    const fnText = extractFullFunction(scriptWithPrior);
+    const duplicate = '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。';
+    expect(runFullFunctionCheck(fnText, duplicate, priorContent)).toBe(0);
+  });
+});
+
+describe('is_low_quality_completion_file — duplicate-of-prior-step detection stays byte-parity with is_low_quality_completion', () => {
+  // is_low_quality_completion_file's embedded JS is documented as kept
+  // byte-for-byte identical to is_low_quality_completion's own (see the doc
+  // comment above its definition in lib/agent-executor.ts) — this locks that
+  // invariant for the new duplicate-check branch specifically, the same way
+  // the file already implicitly relies on for every other check.
+  function extractEmbeddedJsFile(script: string): string {
+    const fnMarker = 'is_low_quality_completion_file() {';
+    const fnStart = script.indexOf(fnMarker);
+    if (fnStart === -1) throw new Error('is_low_quality_completion_file function not found in generated script');
+    const marker = "<<'NODEEOF'";
+    const start = script.indexOf(marker, fnStart);
+    if (start === -1) throw new Error('is_low_quality_completion_file node heredoc not found in generated script');
+    const bodyStart = start + marker.length + 1;
+    const end = script.indexOf('\nNODEEOF', bodyStart);
+    if (end === -1) throw new Error('closing NODEEOF marker not found');
+    return script.slice(bodyStart, end);
+  }
+
+  it('the file-based twin contains the exact same duplicate-check source as the arg-based function', () => {
+    const script = generateRunScript(agent({ type: 'local' }));
+    const argBased = extractEmbeddedJs(script);
+    const fileBased = extractEmbeddedJsFile(script);
+    // Both must reference PRIOR_STEP_CONTENT's env var by the same name and
+    // carry the same normalization/containment logic — asserting the whole
+    // duplicate-detection snippet is present verbatim in both catches drift
+    // between the two copies at the exact point a future edit is most likely
+    // to touch only one of them.
+    expect(argBased).toContain('SHELLY_QUALITY_CHECK_PRIOR_TEXT');
+    expect(fileBased).toContain('SHELLY_QUALITY_CHECK_PRIOR_TEXT');
+    const dupSnippetStart = argBased.indexOf('isDuplicateOfPriorStep');
+    expect(dupSnippetStart).toBeGreaterThan(-1);
+    const dupSnippetEnd = argBased.indexOf('const bad =', dupSnippetStart);
+    const dupSnippet = argBased.slice(dupSnippetStart, dupSnippetEnd);
+    expect(fileBased).toContain(dupSnippet);
   });
 });
 

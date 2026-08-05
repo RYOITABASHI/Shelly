@@ -171,9 +171,14 @@ describe('Agent PlanSpec v1', () => {
       expect(spec.schemaVersion).toBe(1);
       expect(spec.kind).toBe(PLAN_SPEC_KIND);
       // Full-shape parity: every key present is exactly the set that existed
-      // before this increment, plus nothing new.
+      // before this increment, plus nothing new — `toolLadder` (additive,
+      // DEFERRED.md "PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+      // 進まない") is now always present too (possibly empty), and
+      // `toolLadderExhaustedNote` is present for this fixture specifically
+      // because a plain pinned-local attended agent's ladder still climbs to
+      // Codex (see the toolLadder describe block below for the exact rules).
       expect(Object.keys(spec).sort()).toEqual(
-        ['action', 'agent', 'generatedAt', 'kind', 'limits', 'output', 'paths', 'policy', 'prompt', 'routeDecision', 'schemaVersion', 'tool'].sort(),
+        ['action', 'agent', 'generatedAt', 'kind', 'limits', 'output', 'paths', 'policy', 'prompt', 'routeDecision', 'schemaVersion', 'tool', 'toolLadder', 'toolLadderExhaustedNote'].sort(),
       );
     });
 
@@ -345,5 +350,74 @@ describe('Agent PlanSpec v1', () => {
       );
       expect(spec.steps!.list[0].tool).toBeUndefined();
     });
+  });
+});
+
+describe('buildAgentPlanSpec — toolLadder (DEFERRED.md "PlanSpec executor 経由の無人発火は...エスカレーションラダーへ進まない")', () => {
+  it('bakes the attended-ladder retry candidates (minus the primary tool, minus non-HTTP-dispatchable entries) for an autonomous transform task', () => {
+    // Deliberately NOT tool:{type:'auto'} — resolveAgentRoute special-cases
+    // `agent.autonomous && agent.tool.type==='auto'` by leaving it unresolved
+    // (so resolveForAutonomous alone decides, which maps bare 'auto' straight
+    // to Codex — a real, separate policy edge case, not this test's concern).
+    // A concretely-pinned 'local' resolves the way a scored 'auto' pick would
+    // for this same transform prompt, without tripping that edge case.
+    const spec = buildAgentPlanSpec(
+      agent({ autonomous: true, prompt: '要約して箇条書きにして', tool: { type: 'local' } }),
+      { hasCerebrasKey: true, hasGroqKey: true },
+    );
+    // Autonomous ladder for a non-web transform task is [local, codex] — see
+    // resolveEscalationLadder's own doc comment (autonomous api-key backends
+    // are dropped). Primary is local; codex is not HTTP-dispatchable by this
+    // executor, so toolLadder is empty, but a note explains why.
+    expect(spec.tool.type).toBe('local');
+    expect(spec.toolLadder ?? []).toEqual([]);
+    expect(spec.toolLadderExhaustedNote).toContain('Codex');
+  });
+
+  it('bakes Cerebras/Groq as HTTP-retry candidates for an autonomous cloud-consented web task', () => {
+    // Explicitly pinned to gemini-api (not 'auto') so resolveAgentRoute's
+    // configured-tool branch resolves it BEFORE buildAgentPlanSpec's own
+    // consentWebTool check — that check only exempts an already-concrete
+    // gemini-api/perplexity pin from resolveForAutonomous, mirroring how a
+    // real N1-consented agent is actually configured (see
+    // lib/agent-tool-router.ts's `agent.autonomous && agent.tool.type==='auto'`
+    // early-return, which deliberately leaves bare 'auto' for
+    // resolveForAutonomous to map straight to Codex instead).
+    const spec = buildAgentPlanSpec(
+      agent({ autonomous: true, prompt: 'ニュースを集めて', tool: { type: 'gemini-api' } }),
+      { autonomousCloudConsent: true, hasCerebrasKey: true, hasGroqKey: true },
+    );
+    // N1 web-consent ladder is [gemini-api, codex] (see the N1 tests in
+    // agent-escalation-ladder.test.ts) — primary is gemini-api, codex is
+    // filtered, so toolLadder is empty with the same exhausted note.
+    expect(spec.tool.type).toBe('gemini-api');
+    expect(spec.toolLadder ?? []).toEqual([]);
+    expect(spec.toolLadderExhaustedNote).toContain('Codex');
+  });
+
+  it('omits Cerebras/Groq from the ladder when their keys are absent (no wasted retry hop)', () => {
+    const spec = buildAgentPlanSpec(
+      agent({ autonomous: false, prompt: '要約して', tool: { type: 'auto' } }),
+      { hasCerebrasKey: false, hasGroqKey: false },
+    );
+    expect(spec.tool.type).toBe('local');
+    expect((spec.toolLadder ?? []).map((t) => t.type)).toEqual([]);
+  });
+
+  it('bakes real HTTP-dispatchable retry candidates for an attended (non-autonomous) transform task with both free-cloud keys present', () => {
+    const spec = buildAgentPlanSpec(
+      agent({ autonomous: false, prompt: '要約して', tool: { type: 'auto' } }),
+      { hasCerebrasKey: true, hasGroqKey: true },
+    );
+    expect(spec.tool.type).toBe('local');
+    expect((spec.toolLadder ?? []).map((t) => t.type)).toEqual(['cerebras', 'groq']);
+    // Every rung is a full PlanSpec tool object (usable directly as plan.tool
+    // for a retry attempt), not a bare type string.
+    expect(spec.toolLadder![0]).toMatchObject({ type: 'cerebras', authRef: 'cerebras' });
+  });
+
+  it('defaults hasCerebrasKey/hasGroqKey to true when the caller does not pass them (fail-open to "try it", matching ladderEnvFromDisk\'s own read-failure default)', () => {
+    const spec = buildAgentPlanSpec(agent({ autonomous: false, prompt: '要約して', tool: { type: 'auto' } }));
+    expect((spec.toolLadder ?? []).map((t) => t.type)).toEqual(['cerebras', 'groq']);
   });
 });

@@ -4,6 +4,7 @@ import {
   isDeterministicDispatchFailure,
   isLocalFallbackDigest,
   isLowQualityCompletion,
+  isDuplicateOfPriorStep,
   LadderEnv,
 } from '@/lib/agent-escalation-ladder';
 import { Agent, ToolChoice } from '@/store/types';
@@ -742,5 +743,76 @@ describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double appr
     expect(isDeterministicDispatchFailure('cli', null)).toBe(false);
     expect(isDeterministicDispatchFailure('cli', undefined)).toBe(false);
     expect(isDeterministicDispatchFailure(undefined, undefined)).toBe(false);
+  });
+});
+
+describe('isDuplicateOfPriorStep — DEFERRED.md "重複コンテンツ検知の欠如(P1)": an orchestration step whose output is a near-verbatim repeat of the PRIOR step is not a genuine new result', () => {
+  it('flags an exact match (after trim/whitespace/case normalization)', () => {
+    const prior = 'Explorative Modelingの成果を発表、データ効率が6.2倍。';
+    const current = '  explorative modelingの成果を発表、データ効率が6.2倍。  ';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(true);
+  });
+
+  it('flags a near-verbatim repeat where the current step is fully contained in the prior step (2026-08-04 real incident shape: notify step echoed the summarize step verbatim)', () => {
+    const prior =
+      '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。経産省の組織再編も発表された。';
+    const current = '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(true);
+  });
+
+  it('flags the symmetric case (prior fully contained in a longer current, with only a trivial addition)', () => {
+    const prior = 'Q3 revenue grew 12% year over year, driven by enterprise adoption.';
+    const current = 'Q3 revenue grew 12% year over year, driven by enterprise adoption. Yes.';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(true);
+  });
+
+  it('does NOT flag containment when the longer text adds substantial new content (net-new info, not a repeat)', () => {
+    const prior = 'Q3 revenue grew 12% year over year.';
+    const current = 'Q3 revenue grew 12% year over year. Also, churn improved to 4.2% and APAC led growth at 18%.';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(false);
+  });
+
+  it('does NOT flag genuinely different content, even if it shares some vocabulary', () => {
+    const prior = 'STEAM教育×AIの最新動向まとめ: 論文3件、ニュース2件を要約しました。';
+    const current =
+      '1件目は初等教育でのAI活用事例、2件目は高校でのプログラミング教育カリキュラム改訂、3件目は大学の産学連携プロジェクトについてです。';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(false);
+  });
+
+  it('does NOT flag short strings — too little signal to judge reliably (avoids false positives on short "OK"-style acks)', () => {
+    expect(isDuplicateOfPriorStep('Done.', 'Done.')).toBe(false);
+    expect(isDuplicateOfPriorStep('OK', 'OK')).toBe(false);
+  });
+
+  it('is false when there is no prior content (first step / non-orchestrated run)', () => {
+    expect(isDuplicateOfPriorStep('Some perfectly normal, reasonably long completion text here.', undefined)).toBe(false);
+    expect(isDuplicateOfPriorStep('Some perfectly normal, reasonably long completion text here.', null)).toBe(false);
+    expect(isDuplicateOfPriorStep('Some perfectly normal, reasonably long completion text here.', '')).toBe(false);
+  });
+
+  it('is false for empty/null current text (isLowQualityCompletion\'s own empty check already covers that case)', () => {
+    expect(isDuplicateOfPriorStep('', 'Some reasonably long prior step content right here.')).toBe(false);
+    expect(isDuplicateOfPriorStep(null, 'Some reasonably long prior step content right here.')).toBe(false);
+  });
+});
+
+describe('attemptFailed — third argument (priorStepContent) also escalates on a near-duplicate of the prior step', () => {
+  it('treats a "success" status with duplicate content as a failed attempt when priorStepContent is given', () => {
+    const prior =
+      '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。経産省の組織再編も発表された。';
+    const duplicate = '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。';
+    expect(attemptFailed('success', duplicate, prior)).toBe(true);
+  });
+
+  it('does not regress the no-priorStepContent call shape (existing 2-arg callers unaffected)', () => {
+    expect(attemptFailed('success', 'A perfectly normal completion.')).toBe(false);
+    expect(attemptFailed('error', 'anything')).toBe(true);
+  });
+
+  it('a genuinely fresh "success" completion is NOT flagged just because priorStepContent was passed', () => {
+    const prior = 'STEAM教育×AIの最新動向まとめ: 論文3件、ニュース2件を要約しました。';
+    const fresh =
+      '1件目は初等教育でのAI活用事例、2件目は高校でのプログラミング教育カリキュラム改訂について詳述しています。';
+    expect(attemptFailed('success', fresh, prior)).toBe(false);
   });
 });

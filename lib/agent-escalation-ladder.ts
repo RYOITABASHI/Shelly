@@ -584,6 +584,46 @@ function isFencedShellExecutionNarrative(text: string): boolean {
  * cause an escalation loop; it converts a silent blank card into a clear
  * step-failure error.
  */
+/** Below this length (after normalization) a near-duplicate verdict is not
+ *  reliable — short acks ("OK", "Done.") legitimately repeat across steps
+ *  without being a quality problem. Mirrors the bash-side
+ *  is_low_quality_completion()'s duplicate check so the two never disagree. */
+const DUPLICATE_CHECK_MIN_LEN = 20;
+/** A near-verbatim containment (shorter fully inside longer) below this
+ *  length ratio is coincidental overlap, not a repeat. */
+const DUPLICATE_CONTAINMENT_MIN_RATIO = 0.6;
+
+function normalizeForDuplicateCheck(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * True when `text` looks like a near-verbatim repeat of `priorStepContent` —
+ * DEFERRED.md「重複コンテンツ検知の欠如(P1)」: an orchestration step whose
+ * completion is (almost) identical to what the PRIOR step already produced
+ * is not a genuine new result, most often a model that ignored its own
+ * instruction and echoed the context it was given back. Deliberately coarse
+ * (exact match after normalization, or one text near-wholly contained in the
+ * other) rather than a fuzzy similarity score — the observed on-device
+ * incident was a verbatim repeat, and a stricter check risks false-flagging
+ * a later step that legitimately quotes part of an earlier one.
+ */
+export function isDuplicateOfPriorStep(
+  text: string | null | undefined,
+  priorStepContent: string | null | undefined,
+): boolean {
+  if (!text || !priorStepContent) return false;
+  const a = normalizeForDuplicateCheck(text);
+  const b = normalizeForDuplicateCheck(priorStepContent);
+  if (a.length < DUPLICATE_CHECK_MIN_LEN || b.length < DUPLICATE_CHECK_MIN_LEN) return false;
+  if (a === b) return true;
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  if (longer.includes(shorter) && shorter.length / longer.length >= DUPLICATE_CONTAINMENT_MIN_RATIO) {
+    return true;
+  }
+  return false;
+}
+
 export function isLowQualityCompletion(text: string | null | undefined): boolean {
   if (typeof text !== 'string') return false;
   const trimmed = text.trim();
@@ -615,12 +655,18 @@ export function isLowQualityCompletion(text: string | null | undefined): boolean
 export function attemptFailed(
   status: string | null | undefined,
   preview: string | null | undefined,
+  /** The immediately preceding orchestration step's outputPreview — see
+   *  isDuplicateOfPriorStep's doc comment. Absent for a non-orchestrated
+   *  single run or a chain's first step, in which case this check is a
+   *  no-op (byte-identical to the pre-existing 2-argument behavior). */
+  priorStepContent?: string | null,
 ): boolean {
   return (
     status === 'error' ||
     status === 'unavailable' ||
     isLocalFallbackDigest(preview) ||
-    isLowQualityCompletion(preview)
+    isLowQualityCompletion(preview) ||
+    isDuplicateOfPriorStep(preview, priorStepContent)
   );
 }
 

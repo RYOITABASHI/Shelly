@@ -994,7 +994,7 @@ function writeNotification(paths, plan, status, preview) {
 // Omitted (undefined) for every ordinary single-action call site, so
 // JSON.stringify drops the key entirely and that run-log output stays
 // byte-identical to before this field existed.
-function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, steps, actionResults) {
+function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, steps, actionResults, usedTool) {
   const ts = Date.now();
   const log = {
     agentId: plan.agent.id,
@@ -1002,7 +1002,14 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, ste
     status,
     outputPreview: previewText(preview),
     durationMs,
-    toolUsed: plan.tool.label,
+    // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+    // 進まない」(3rd-pass Codex review finding): `usedTool` is the actual
+    // ladder-resolved tool a caller may pass when it differs from
+    // `plan.tool` — see run()'s own comment for why `plan.tool` itself is
+    // deliberately NEVER mutated to the retry candidate (trustedNativeLowRiskAction
+    // compares plan.tool.type against native's --trusted-tool-type; swapping
+    // it would break that trust check for a successful ladder retry).
+    toolUsed: (usedTool || plan.tool).label,
     errorMessage: errorMessage ? previewText(errorMessage) : '',
     routeDecision: plan.routeDecision,
     executor: 'planspec',
@@ -2495,6 +2502,77 @@ function mirrorBrokerAudit(paths, plan) {
 // path at all (that's the legacy bash executor's job, lib/agent-executor.ts).
 const STEP_TOOL_DISPATCHABLE_TYPES = ['local', 'gemini-api', 'perplexity', 'cerebras', 'groq'];
 
+// DEFERRED.md「PlanSpec executor 経由の無人発火は、品質ゲートでlocalが弾かれても
+// エスカレーションラダーへ進まない」: requests model content for `plan`, retrying
+// across `plan.toolLadder` (baked once by lib/agent-plan-spec.ts's
+// buildAgentPlanSpec — see AgentPlanSpecV1.toolLadder's doc comment; this
+// executor carries NO routing logic of its own, only a plain ordered array to
+// walk) when an attempt fails with a hard error/unavailable status, or — when
+// `checkQuality` is true — a low-quality completion (isLowQualityCompletion).
+// Both call sites (run()'s single-shot branch and runOrchestrationChain's
+// per-step loop, final step included) pass `checkQuality: true` — a
+// low-quality completion from the FINAL step is exactly the bug this feature
+// exists to fix (2nd-pass Codex review caught an earlier cut that only
+// checked non-final steps, leaving the originally-reported dead-end
+// unfixed). dispatchActionTrusted's own later per-action-type gate still
+// runs on whatever this returns; re-checking the same predicate there is
+// harmless once this helper has already found acceptable content. A
+// TOOL_DENY PlanFailure (modelRequest()'s own policy/config refusals, e.g.
+// "local PlanSpec endpoint must be loopback") is NEVER retried — see the
+// catch block below; that guard's whole point is to stop the run, not hand
+// off to a different backend. Each retry swaps ONLY `plan.tool`; every other
+// field (prompt, action, limits, ...) is unchanged, matching how the
+// attended path's runLadderAttempts (lib/agent-manager.ts) also only ever
+// swaps the tool between attempts.
+//
+// Returns `{resultText, usedTool}` on the first attempt that produces
+// acceptable content. Throws the LAST attempt's PlanFailure once every
+// candidate (plan.tool followed by plan.toolLadder, in order) has been
+// tried — with plan.toolLadderExhaustedNote appended to the message when
+// present, so a chain that exhausted its HTTP-dispatchable candidates says
+// WHY it stopped (the ladder continues to Codex, which this executor cannot
+// spawn) instead of reading like an unexplained final failure.
+function requestModelContentWithLadder(paths, opts, plan, config, checkQuality) {
+  const candidates = [plan.tool].concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : []);
+  let lastError = new PlanFailure('no tool candidates to try', { handled: true });
+  for (let i = 0; i < candidates.length; i += 1) {
+    const attemptPlan = i === 0 ? plan : Object.assign({}, plan, { tool: candidates[i] });
+    try {
+      const request = modelRequest(attemptPlan, config);
+      const response = brokerHttp(paths, opts, attemptPlan, request);
+      let resultText = extractModelContent(attemptPlan.tool.type, response);
+      resultText = enforcePlanCharLimit(attemptPlan, resultText);
+      if (checkQuality && isLowQualityCompletion(previewText(resultText))) {
+        lastError = new PlanFailure(
+          'completion looks like a prompt echo or AI refusal, not real content',
+          { handled: true },
+        );
+        continue;
+      }
+      return { resultText: resultText, usedTool: attemptPlan.tool };
+    } catch (error) {
+      if (!(error instanceof PlanFailure)) throw error;
+      // Codex review finding: a PlanFailure with exitCode TOOL_DENY is a
+      // structural/policy refusal (e.g. modelRequest()'s "local PlanSpec
+      // endpoint must be loopback" guard, or an unsupported tool type) — NOT
+      // a backend that failed to produce a good response. Retrying past it
+      // would silently escalate a fail-closed policy denial to a different
+      // (possibly cloud) backend instead of stopping the run, defeating the
+      // guard's whole purpose. These must propagate immediately, exactly as
+      // they did before toolLadder existed — never added to the ladder walk.
+      if (error.exitCode === EXIT.TOOL_DENY) throw error;
+      lastError = error;
+    }
+  }
+  if (plan.toolLadderExhaustedNote) {
+    throw new PlanFailure(lastError.message + ' ' + plan.toolLadderExhaustedNote, {
+      status: lastError.status,
+      handled: lastError.handled,
+    });
+  }
+  throw lastError;
+}
+
 // Chain-mode execution (Increment 2, 2026-07-15): walk plan.steps.list as an
 // ORDERED LINEAR sequence within this single process/execSubprocess call — the
 // unattended (scheduled/native-fired) counterpart to the attended path's
@@ -2533,6 +2611,13 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
   // is populated for an orchestrated agent's fan-out final step exactly like
   // the non-chain single-shot path already does.
   let finalActionResults;
+  // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+  // 進まない」: the tool that ACTUALLY produced the final step's content, once
+  // it differs from plan.tool (a ladder retry happened) — threaded into this
+  // chain's return value so run()'s writeRunLog call reports the real tool,
+  // not the original (failed) primary. undefined when the final step never
+  // retried (or the chain never reached/dispatched a final step at all).
+  let finalUsedTool;
 
   for (let i = 0; i < plan.steps.list.length; i += 1) {
     const gate = nextStepGate({ stepIndex: i, budget, startedAtMs: startedAt, now: Date.now(), priorFailed });
@@ -2607,17 +2692,43 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
 
     let resultText;
     try {
-      const request = modelRequest(stepPlan, config);
-      const response = brokerHttp(paths, opts, stepPlan, request);
-      resultText = extractModelContent(stepPlan.tool.type, response);
-      resultText = enforcePlanCharLimit(stepPlan, resultText);
+      // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+      // 進まない」: requestModelContentWithLadder retries plan.toolLadder on a
+      // hard error/unavailable status automatically, and (checkQuality: true,
+      // for EVERY step, final included — 2nd-pass Codex review finding) on a
+      // low-quality completion too. Non-final steps need this because
+      // dispatchActionTrusted's `__suppressed__` branch has NO quality gate
+      // of its own (by design — a silent, best-effort intermediate save with
+      // no human-facing surface to gate), so a non-final step relies on THIS
+      // check alone to keep a bad completion from poisoning every later
+      // step's prompt (the exact on-device failure mode this whole
+      // quality-gate effort started from, 2026-07-15). The FINAL step needs
+      // it for the ORIGINAL reported bug this feature exists to fix: a
+      // low-quality primary completion must retry through the ladder, not
+      // dead-end — checking it here and then again inside
+      // dispatchActionTrusted below (its own per-action-type gate) is
+      // harmless double-checking of the same isLowQualityCompletion
+      // predicate, never a behavior conflict.
+      const attempt = requestModelContentWithLadder(paths, opts, stepPlan, config, true);
+      resultText = attempt.resultText;
+      // 3rd-pass Codex review finding (see run()'s own comment above its
+      // `let usedTool;` declaration for the full trust-check rationale):
+      // `stepPlan.tool` is deliberately NEVER mutated to the retry
+      // candidate — the FINAL step's `dispatchActionsTrusted` call below
+      // (a few lines down) runs the SAME trustedNativeLowRiskAction() check
+      // against `stepPlan.tool.type`, which must stay the ORIGINAL primary
+      // tool native vouched for. `finalUsedTool` (below) carries the actual
+      // tool forward for `toolUsed` reporting only, via run()'s own
+      // writeRunLog call.
+      if (isFinal) finalUsedTool = attempt.usedTool;
     } catch (error) {
-      // Model/broker-level failure for this step. Mirrors the single-shot
-      // path's own outer catch (below): a PlanFailure with status
-      // 'unavailable' is a transient web outage (still stops the chain, but
-      // reduceStatus folds it away from the circuit breaker); anything else
-      // is a hard 'error'. Never let a non-PlanFailure exception (a real bug)
-      // be silently absorbed here — rethrow it to run()'s own outer catch.
+      // Model/broker-level failure for this step (every ladder candidate
+      // exhausted). Mirrors the single-shot path's own outer catch (below): a
+      // PlanFailure with status 'unavailable' is a transient web outage
+      // (still stops the chain, but reduceStatus folds it away from the
+      // circuit breaker); anything else is a hard 'error'. Never let a
+      // non-PlanFailure exception (a real bug) be silently absorbed here —
+      // rethrow it to run()'s own outer catch.
       if (!(error instanceof PlanFailure)) throw error;
       const status = error.status === 'unavailable' ? 'unavailable' : 'error';
       const message = redact(error.message);
@@ -2628,24 +2739,6 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
 
     writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(stepPlan) ? '' : '\n'));
     const preview = previewText(resultText);
-
-    if (!isFinal && isLowQualityCompletion(preview)) {
-      // Non-final steps are `__suppressed__`, and dispatchActionTrusted's own
-      // `__suppressed__` branch has NO quality gate (by design — it is a
-      // silent, best-effort intermediate save with no human-facing surface to
-      // gate). The attended path gates every step's completion uniformly via
-      // lib/agent-escalation-ladder.ts's attemptFailed(), driven by a live JS
-      // process between steps; there is no such process here, so this
-      // executor must do the equivalent check itself before a bad completion
-      // can become "prior results" poisoning every later step's prompt (the
-      // exact on-device failure mode this whole quality-gate effort started
-      // from, 2026-07-15). The FINAL step does not need this: its real action
-      // type (draft/notify/webhook/dm-reply/app-act) is already gated inside
-      // dispatchActionTrusted below.
-      records.push({ index: i, instruction: step.instruction, status: 'error', durationMs: Date.now() - stepStart, outputPreview: preview });
-      priorFailed = true;
-      continue;
-    }
 
     // Non-final steps skip dispatchActionTrusted's shared `__suppressed__`
     // branch entirely (rather than routing through it, as `stepAction`'s
@@ -2696,6 +2789,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     errorMessage: status === 'success' ? '' : preview,
     steps: records,
     ...(finalActionResults ? { actionResults: finalActionResults } : {}),
+    ...(finalUsedTool ? { usedTool: finalUsedTool } : {}),
   };
 }
 
@@ -2717,7 +2811,7 @@ function finishSkipped(paths, plan, startedAt, message) {
 }
 
 function run(args) {
-  const plan = loadPlan(args['plan-file']);
+  let plan = loadPlan(args['plan-file']);
   const expectedAgentId = String(args['agent-id'] || '').trim();
   if (expectedAgentId && expectedAgentId !== plan.agent.id) {
     throw new PlanFailure(`plan agent id mismatch: expected ${expectedAgentId}`, { exitCode: EXIT.PLAN_DENY });
@@ -2815,24 +2909,45 @@ function run(args) {
   // to this executor's behavior before this increment.
   const hasChain = !!(plan.steps && Array.isArray(plan.steps.list) && plan.steps.list.length > 0);
 
+  // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+  // 進まない」(3rd-pass Codex review finding): the tool that ACTUALLY produced
+  // the run's content, tracked SEPARATELY from `plan.tool` — `plan.tool`
+  // itself must never be mutated here. trustedNativeLowRiskAction() (called
+  // from inside dispatchActionsTrusted below, for app-act/draft/notify's
+  // unattended fast-path) compares `plan.tool.type` against native's own
+  // `--trusted-tool-type`, fixed at launch time for the ORIGINAL primary
+  // tool native already vouched for. Swapping `plan.tool` to a retry
+  // candidate would make a successful ladder retry silently fail THAT check
+  // — an unattended app-act run that should auto-fire would instead fall
+  // through to a stalled/declined approval wait despite content generation
+  // having genuinely succeeded. `usedTool` is threaded into writeRunLog
+  // explicitly below instead, for `toolUsed` reporting only.
+  let usedTool;
   try {
     let action;
     if (hasChain) {
       action = runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt);
+      usedTool = action.usedTool;
     } else {
-      const request = modelRequest(plan, config);
-      const response = brokerHttp(paths, opts, plan, request);
-      let resultText = extractModelContent(plan.tool.type, response);
-      // G6: hard-clamp to the PlanSpec's char budget (if any) before it lands in
-      // either the agent-result sidecar or a dispatched draft — the confirm
-      // card's "final output hard limit" promise must hold on-device, not just
-      // as a soft instruction baked into the model prompt.
-      resultText = enforcePlanCharLimit(plan, resultText);
+      // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+      // 進まない」: retries plan.toolLadder on a hard error/unavailable status,
+      // AND (checkQuality: true — 2nd-pass Codex review finding; the original
+      // cut passed false here, which left the exact bug this feature exists
+      // to fix — a low-quality primary completion dead-ending instead of
+      // escalating — unfixed for every single-shot run) on a low-quality
+      // completion too. dispatchActionTrusted below still runs its own
+      // per-action-type gate on whatever this returns — harmless double-
+      // checking of the same isLowQualityCompletion predicate once this
+      // helper has already found acceptable content. enforcePlanCharLimit
+      // (G6 hard-clamp) already applied inside the helper.
+      const attempt = requestModelContentWithLadder(paths, opts, plan, config, true);
+      const resultText = attempt.resultText;
+      usedTool = attempt.usedTool;
       writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
       action = dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args);
     }
     const durationMs = Date.now() - startedAt;
-    writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps, action.actionResults);
+    writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps, action.actionResults, usedTool);
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -2923,6 +3038,10 @@ module.exports = {
   // 2026-07-16 webhook full-body redaction (P0(c) adversarial review fix) —
   // exported for host unit tests only, same convention as the exports above.
   fullResultText,
+  // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+  // 進まない」— exported for host unit tests only, same convention as the
+  // exports above.
+  requestModelContentWithLadder,
   // Orchestration chain mode (Increment 2, 2026-07-15) — exported for host unit
   // tests only (see __tests__/plan-executor-orchestration-chain.test.ts). The
   // four bound constants are asserted equal to lib/agent-orchestration.ts's

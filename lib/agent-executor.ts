@@ -599,7 +599,7 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // and its server actually exposes embeddings. Kept in lockstep with
 // scripts/shelly-local-llm-ensure.sh (+ asset mirror) and
 // lib/llamacpp-setup.ts's buildServerStartCommand.
-const AGENT_SCRIPT_VERSION = 55;
+const AGENT_SCRIPT_VERSION = 56;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1009,7 +1009,16 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
    *  receives) is UNCHANGED — still the full composite, which a summarize step
    *  genuinely needs. Absent → detectRouteSignals runs on agent.prompt exactly
    *  as before (single-run path unchanged). */
-  routeTextOverride?: string } = {}): string {
+  routeTextOverride?: string;
+  /** DEFERRED.md「重複コンテンツ検知の欠如(P1)」: the immediately preceding
+   *  orchestration step's outputPreview — baked below as the PRIOR_STEP_CONTENT
+   *  bash variable so is_low_quality_completion()/is_low_quality_completion_file()
+   *  can flag a completion that is a near-verbatim repeat of it. Mirrors
+   *  routeTextOverride's threading exactly (set only by lib/agent-manager.ts's
+   *  runLadderAttempts, from MaterializeRunOpts.priorStepContent). Absent for a
+   *  non-orchestrated single run or a chain's first step → bakes an empty
+   *  string, making the duplicate check a no-op (byte-identical to today). */
+  priorStepContent?: string } = {}): string {
   const { home, tmpDir, locksDir, logsDir, envFile, dmPairingsFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -1566,6 +1575,7 @@ ENV_FILE=${shellQuote(envFile)}
 DM_PAIRINGS_FILE=${shellQuote(dmPairingsFile)}
 LOCKS_DIR=${shellQuote(locksDir)}
 TMP_DIR=${shellQuote(tmpDir)}
+PRIOR_STEP_CONTENT=${shellQuote(opts.priorStepContent ?? '')}
 MAX_CONCURRENT=${MAX_CONCURRENT}
 AUDIT_MIRROR_SDCARD_ELIGIBLE=${auditMirrorSdcardEligible ? '1' : '0'}
 ACTION_TYPE=${shellQuote(actionType)}
@@ -2006,8 +2016,11 @@ is_low_quality_completion() {
     return 0
   fi
   if node_usable; then
-    if SHELLY_QUALITY_CHECK_TEXT="$text" shelly_node -e '
+    if SHELLY_QUALITY_CHECK_TEXT="$text" SHELLY_QUALITY_CHECK_PRIOR_TEXT="$PRIOR_STEP_CONTENT" shelly_node -e '
 const text = process.env.SHELLY_QUALITY_CHECK_TEXT || "";
+const priorStepText = process.env.SHELLY_QUALITY_CHECK_PRIOR_TEXT || "";
+function normalizeForDuplicateCheck(s) { return s.trim().toLowerCase().replace(/\\s+/g, " "); }
+function isDuplicateOfPriorStep(current, prior) { if (!current || !prior) return false; var a = normalizeForDuplicateCheck(current); var b = normalizeForDuplicateCheck(prior); if (a.length < 20 || b.length < 20) return false; if (a === b) return true; var shorter = a.length <= b.length ? a : b; var longer = a.length <= b.length ? b : a; return longer.indexOf(shorter) !== -1 && shorter.length / longer.length >= 0.6; }
 const echoPatterns = [/#\\s*Results from previous steps/, /#\\s*This step\\b/];
 const refusalPatterns = [
   /\\bas an ai\\b/i,
@@ -2064,7 +2077,7 @@ const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) =
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
   fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock ||
-  isFencedShellExecutionNarrative;
+  isFencedShellExecutionNarrative || isDuplicateOfPriorStep(text, priorStepText);
 process.exit(bad ? 0 : 1);
 ' 2>/dev/null; then
       return 0
@@ -2097,11 +2110,14 @@ is_low_quality_completion_file() {
     return 0
   fi
   if node_usable; then
-    if shelly_node - "$file" <<'NODEEOF' 2>/dev/null
+    if SHELLY_QUALITY_CHECK_PRIOR_TEXT="$PRIOR_STEP_CONTENT" shelly_node - "$file" <<'NODEEOF' 2>/dev/null
 const fs = require('fs');
 const file = process.argv[2];
 let text = '';
 try { text = fs.readFileSync(file, 'utf8'); } catch (_) {}
+const priorStepText = process.env.SHELLY_QUALITY_CHECK_PRIOR_TEXT || "";
+function normalizeForDuplicateCheck(s) { return s.trim().toLowerCase().replace(/\\s+/g, " "); }
+function isDuplicateOfPriorStep(current, prior) { if (!current || !prior) return false; var a = normalizeForDuplicateCheck(current); var b = normalizeForDuplicateCheck(prior); if (a.length < 20 || b.length < 20) return false; if (a === b) return true; var shorter = a.length <= b.length ? a : b; var longer = a.length <= b.length ? b : a; return longer.indexOf(shorter) !== -1 && shorter.length / longer.length >= 0.6; }
 const echoPatterns = [/#\\s*Results from previous steps/, /#\\s*This step\\b/];
 const refusalPatterns = [
   /\\bas an ai\\b/i,
@@ -2158,7 +2174,7 @@ const bad = echoPatterns.some((p) => p.test(text)) || refusalPatterns.some((p) =
   (trimmedText.length <= 200 && dataUnavailablePatterns.some((p) => p.test(text))) ||
   (trimmedText.length <= 200 && actionMetaCommentaryPatterns.some((p) => p.test(text))) ||
   fabricatedExecutionPatterns.some((p) => p.test(text)) || isBareShellCommandLine || isFencedShellCommandBlock ||
-  isFencedShellExecutionNarrative;
+  isFencedShellExecutionNarrative || isDuplicateOfPriorStep(text, priorStepText);
 process.exit(bad ? 0 : 1);
 NODEEOF
     then

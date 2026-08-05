@@ -548,6 +548,23 @@ type MaterializeRunOpts = {
   // model is unchanged (still the full composite, which a summarize step
   // genuinely needs for context).
   routeTextOverride?: string;
+  // DEFERRED.md「重複コンテンツ検知の欠如(P1)」: the immediately preceding
+  // orchestration step's outputPreview, baked into the generated script as
+  // PRIOR_STEP_CONTENT so is_low_quality_completion() (bash) can flag a step
+  // whose completion is a near-verbatim repeat of what the PRIOR step already
+  // produced — the on-device incident this closes was a "notify" step that
+  // echoed the "summarize" step's output back verbatim, recorded as success.
+  // Set ONLY by runAgentOrchestratedBody, from its own priorResults accumulator
+  // (see runLadderAttempts's matching materializeOpts field) — absent for a
+  // non-orchestrated single run or a chain's first step, in which case the
+  // baked value is empty and the check is a no-op (byte-identical to today).
+  priorStepContent?: string;
+  // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ進まない」:
+  // see BuildAgentPlanSpecOptions's doc comment in lib/agent-plan-spec.ts — set
+  // ONLY by this function's own ladderEnvFromDisk read above (autonomous
+  // agents only), passed straight through to buildAgentPlanSpec.
+  hasCerebrasKey?: boolean;
+  hasGroqKey?: boolean;
 };
 
 /**
@@ -634,6 +651,13 @@ async function materializeAgentBody(
       ...runOpts,
       autonomousCloudConsent: env.autonomousCloudConsent,
       autonomousCloudStop: env.autonomousCloudStop,
+      // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
+      // 進まない」: buildAgentPlanSpec's toolLadder needs the same key-presence
+      // signal the ladder itself already reads here — piggyback on this same
+      // disk read rather than a second one. Only reaches buildAgentPlanSpec
+      // (generateRunScript ignores unknown MaterializeRunOpts fields).
+      hasCerebrasKey: env.hasCerebrasKey,
+      hasGroqKey: env.hasGroqKey,
     };
   }
 
@@ -1535,6 +1559,8 @@ async function runLadderAttempts(
     /** See MaterializeRunOpts.isOrchestratedStep's doc comment. Set ONLY by
      *  runAgentOrchestratedBody, for every step (final and non-final alike). */
     isOrchestratedStep?: boolean;
+    /** See MaterializeRunOpts.priorStepContent's doc comment. */
+    priorStepContent?: string;
   } = {},
 ): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
@@ -1563,6 +1589,7 @@ async function runLadderAttempts(
       suppressAction: materializeOpts.suppressAction,
       routeTextOverride: materializeOpts.routeTextOverride,
       isOrchestratedStep: materializeOpts.isOrchestratedStep,
+      priorStepContent: materializeOpts.priorStepContent,
       // round 2 TOCTOU fix: deliberately do NOT pass env.autonomousCloudConsent
       // (read once, before this loop started) as the BAKED script value. A
       // multi-candidate ladder can span a full agent run — up to
@@ -1643,7 +1670,7 @@ async function runLadderAttempts(
     // THIS agent holds the per-agent lock, so climbing to another tool would just
     // skip again — let the concurrent run produce the result. Only a genuine
     // failure (error / fallback digest) climbs.
-    if (!attemptFailed(finalLog?.status, finalLog?.outputPreview)) break;
+    if (!attemptFailed(finalLog?.status, finalLog?.outputPreview, materializeOpts.priorStepContent)) break;
     // P3 UX fix (docs/superpowers/DEFERRED.md "エスカレーションラダーが「毎回
     // 人間承認」アクションで人間に多重リクエストする"): cli/intent/dm-reply
     // require an in-app approval tap on EVERY attempt because the run result
@@ -1768,7 +1795,17 @@ async function runAgentOrchestratedBody(
         runCommand,
         { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
         stepStart - 5_000,
-        { suppressAction: !isFinalStep, chainLockSeed, routeTextOverride: step.instruction, isOrchestratedStep: true },
+        {
+          suppressAction: !isFinalStep,
+          chainLockSeed,
+          routeTextOverride: step.instruction,
+          isOrchestratedStep: true,
+          // DEFERRED.md「重複コンテンツ検知の欠如(P1)」: the immediately
+          // preceding step's result (undefined for step 0, matching
+          // priorResults' own empty-at-start state) — see
+          // MaterializeRunOpts.priorStepContent's doc comment.
+          priorStepContent: priorResults.at(-1),
+        },
       ));
     } catch (error) {
       records.push({
