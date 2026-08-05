@@ -588,7 +588,18 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // on-disk script (baked before this dispatch case existed) doesn't fall
 // through to the `*)` "Unknown agent action" branch for an agent that
 // authors this new type.
-const AGENT_SCRIPT_VERSION = 51;
+// v52 (2026-08-05): ensure_local_llm_server's llama-server launch now passes
+// --embedding --pooling mean so the same local server also serves the OAI
+// /v1/embeddings endpoint (lib/memory/embedding-llama.ts's LlamaEmbeddingPort,
+// used by the skill-match re-rank behind MEMORY_EMBEDDING_ENABLED — flipped on
+// in the same pass). --pooling mean is required with it: /v1/embeddings
+// rejects causal chat models' default pooling 'none'. Generation is
+// unaffected (pooling only applies to the embedding-output path). Bumped so a
+// stale on-disk script (baked with the chat-only launch line) is regenerated
+// and its server actually exposes embeddings. Kept in lockstep with
+// scripts/shelly-local-llm-ensure.sh (+ asset mirror) and
+// lib/llamacpp-setup.ts's buildServerStartCommand.
+const AGENT_SCRIPT_VERSION = 52;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -4789,12 +4800,19 @@ ensure_local_llm_server() {
       # cold start. /system/bin/nohup (toybox) is an absolute path, so function
       # dispatch never fires. On-device verified 2026-07-28. Keep in lockstep
       # with scripts/shelly-local-llm-ensure.sh (+ its asset copy).
-      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      # EMBEDDINGS (v52, 2026-08-05): --embedding + --pooling mean make this
+      # same server also serve OAI /v1/embeddings for the skill-match re-rank
+      # (lib/memory/embedding-llama.ts, MEMORY_EMBEDDING_ENABLED). Pooling
+      # 'mean' is required because /v1/embeddings rejects causal models'
+      # default pooling 'none'; it never affects generation. Keep in lockstep
+      # with scripts/shelly-local-llm-ensure.sh (+ its asset copy) and
+      # lib/llamacpp-setup.ts's buildServerStartCommand.
+      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
       echo $! > "$pid_file"
     )
   else
     # Same bashrc-wrapper hazard as the linker64 branch above: absolute path only.
-    /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+    /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable \${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
     echo $! > "$pid_file"
   fi
 

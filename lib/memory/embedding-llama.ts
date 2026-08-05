@@ -14,29 +14,25 @@
 // the approval gate the broker exists to enforce only ever fires for
 // non-loopback hosts, which this port cannot reach even if asked to.
 //
-// CONSTRAINT VERIFIED 2026-08-04 (read scripts/shelly-local-llm-ensure.sh —
-// the bundled autostart helper every on-device local-LLM caller, including
-// this one, relies on to bring the server up): the autostart command line
-// passes only `--model/--alias/--host/--port/--ctx-size/--threads
-// /--log-disable` — no `--embedding`. llama.cpp's server only serves
-// /v1/embeddings (and the legacy /embedding) once started WITH `--embedding`
-// (it switches the model's pooling mode); an ordinary chat-mode
-// llama-server answers this path with an HTTP error. Net effect: **on the
-// currently-shipped autostart config, embed() below will normally fail, and
-// every caller in this codebase treats that failure as "embedding
-// unavailable" and falls back to its non-embedding behavior** — this is the
-// expected common case today, not a bug in this file, and matches the
-// flag-OFF/dormant convention of the rest of this module (MEMORY_ENABLED /
-// MEMORY_EMBEDDING_ENABLED in ./wiring.ts). Making it actually serve
-// embeddings on-device needs one of: (a) adding `--embedding` to the
-// autostart command — first verify chat completion still works from the
-// SAME llama-server process afterwards, since several llama.cpp builds
-// disable /completion while `--embedding` is active, which would break the
-// primary chat use of local-llm.ts sharing this exact process/port; or
-// (b) running a second, embedding-only llama-server on a different port.
-// Neither is done here — doing so is a local-LLM-runtime change, out of
-// scope for what is meant to stay an additive, never-hard-dependency skill
-// matcher.
+// CONSTRAINT RESOLVED 2026-08-05 (was: "CONSTRAINT VERIFIED 2026-08-04" —
+// the shipped autostart passed no `--embedding`, so /v1/embeddings always
+// answered with an HTTP error and embed() below could never succeed on
+// device). Option (a) from that note is now implemented: every llama-server
+// launch site (scripts/shelly-local-llm-ensure.sh + its APK asset mirror,
+// lib/agent-executor.ts's inline copy of ensure_local_llm_server, and
+// lib/llamacpp-setup.ts's buildServerStartCommand for the in-app Start)
+// passes `--embedding --pooling mean`, and MEMORY_EMBEDDING_ENABLED in
+// ./wiring.ts was flipped on in the same pass. `--pooling mean` is required
+// with `--embedding` because the OAI-compatible /v1/embeddings endpoint
+// rejects the pooling type 'none' that causal chat models (Qwen) default to;
+// pooling only affects the embedding-output path, so chat completion from
+// the SAME process/port is unaffected (the old llama.cpp behavior where
+// embeddings mode disabled /completion was removed upstream in 2024, and
+// every install path in this repo fetches releases/latest). embed() can
+// STILL fail routinely — a server started by a pre-flip script or an old
+// on-disk agent script, a cold/loading model, the 300ms timeout below — and
+// every caller keeps treating that as an ordinary "embedding unavailable"
+// fallback to non-embedding behavior, never an error to surface.
 //
 // This file pulls no network dependency at module load (only `embed()`
 // touches `fetch`) and is NOT re-exported from index.ts (see that file's
@@ -99,11 +95,12 @@ function isLoopbackEmbeddingEndpoint(endpoint: string): boolean {
 
 /**
  * EmbeddingPort backed by a local llama-server's OpenAI-compatible
- * /v1/embeddings endpoint. See the file header for the on-device constraint
- * (no `--embedding` flag in the current autostart config) that makes embed()
- * normally reject today, and for why that is treated as an ordinary,
- * silently-handled "unavailable" by every caller rather than an error to
- * surface to the user.
+ * /v1/embeddings endpoint. The current autostart/start commands pass
+ * `--embedding --pooling mean` (see the file header), so a freshly-started
+ * on-device server serves this path; embed() still rejects against servers
+ * started by older scripts or while the model is cold, and every caller
+ * treats that as an ordinary, silently-handled "unavailable" rather than an
+ * error to surface to the user.
  */
 export class LlamaEmbeddingPort implements EmbeddingPort {
   private readonly endpoint: string;
@@ -132,8 +129,9 @@ export class LlamaEmbeddingPort implements EmbeddingPort {
         signal: controller.signal,
       });
       if (!res.ok) {
-        // The expected shape when the server is running WITHOUT --embedding
-        // (see file header) — a plain thrown error so every caller's
+        // The expected shape when the server is running WITHOUT
+        // --embedding/--pooling (e.g. started by a pre-2026-08-05 script —
+        // see file header) — a plain thrown error so every caller's
         // existing try/catch-and-fall-back handles it the same as a network
         // failure or a timeout, with no special-casing needed.
         throw new Error(`embedding endpoint HTTP ${res.status}`);

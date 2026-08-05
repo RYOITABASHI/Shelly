@@ -1,10 +1,11 @@
 // matchSkillRecipesHybrid with MEMORY_EMBEDDING_ENABLED forced on, so these
-// tests can exercise the actual embedding re-rank path (lib/agent-skills.ts).
-// Kept in its own file (rather than __tests__/agent-skills.test.ts, which
-// deliberately does NOT mock lib/memory/wiring — see that file's own
-// "MEMORY_EMBEDDING_ENABLED off" describe block for the real-default-flag
-// parity coverage) because jest.mock is file-scoped and this file needs the
-// opposite flag value.
+// tests exercise the embedding re-rank path (lib/agent-skills.ts) regardless
+// of the flag's production value. The mock is kept even though the shipped
+// flag is now also true (flipped 2026-08-05) — it makes this file's
+// assumption explicit and keeps it green if the flag is ever rolled back.
+// __tests__/agent-skills.test.ts deliberately does NOT mock lib/memory/wiring
+// and covers the real-flag degradation path (single qualifying candidate →
+// no embed call) instead.
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));

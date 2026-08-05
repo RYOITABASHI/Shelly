@@ -178,20 +178,24 @@ describe('matchSkillRecipes — conservative reuse', () => {
   });
 });
 
-describe('matchSkillRecipesHybrid — MEMORY_EMBEDDING_ENABLED off (real production default)', () => {
+describe('matchSkillRecipesHybrid — real production flag state (MEMORY_EMBEDDING_ENABLED on since 2026-08-05)', () => {
   // This file does NOT mock lib/memory/wiring, so MEMORY_EMBEDDING_ENABLED is
-  // whatever it really is in wiring.ts today (false — dormant). These tests
-  // prove the hybrid matcher is byte-identical to the plain bigram matcher
-  // under the actual shipped flag state, even when a (never-consulted)
-  // embedding port is injected — i.e. the "additive, never a hard
-  // dependency" contract holds without needing to mock anything.
+  // whatever it really is in wiring.ts today (true since the 2026-08-05
+  // flip). These tests prove the hybrid matcher stays byte-identical to the
+  // plain bigram matcher under the actual shipped flag state whenever there
+  // is nothing to re-rank: here only ONE recipe ever clears the bigram
+  // pre-filter (the Weather recipe shares no tokens with the crypto task),
+  // and a single qualifying candidate skips the embedding call entirely —
+  // i.e. the "additive, never a hard dependency" contract holds without
+  // needing to mock anything. The actual re-rank behavior (ties, throwing/
+  // hanging/malformed ports) lives in agent-skills-hybrid-match.test.ts.
   const recipes = [
     recipe({ name: 'Crypto', trigger: 'crypto market summary', tags: ['crypto'] }),
     recipe({ name: 'Weather', trigger: 'weather forecast tokyo', tags: ['weather'] }),
   ];
   const neverCalledPort: EmbeddingPort = {
     embed: jest.fn(async () => {
-      throw new Error('must not be called while MEMORY_EMBEDDING_ENABLED is false');
+      throw new Error('must not be called when fewer than 2 candidates clear the bigram pre-filter');
     }),
   };
 

@@ -577,6 +577,19 @@ export function buildServerStartCommand(config: LlamaCppServerConfig): string {
     `--threads ${config.threads}`,
     config.gpuLayers > 0 ? `--n-gpu-layers ${config.gpuLayers}` : '',
     '--host 127.0.0.1',
+    // 2026-08-05: also serve OAI /v1/embeddings from this same process for
+    // the skill-match re-rank (lib/memory/embedding-llama.ts's
+    // LlamaEmbeddingPort, behind MEMORY_EMBEDDING_ENABLED in
+    // lib/memory/wiring.ts). --pooling mean is required alongside
+    // --embedding: /v1/embeddings rejects the pooling type 'none' that
+    // causal chat models default to. Chat completion is unaffected —
+    // pooling only applies to the embedding-output path, and current
+    // llama.cpp (this setup always installs releases/latest) serves both
+    // workloads from one server. Keep in lockstep with the agent-side
+    // launch lines in scripts/shelly-local-llm-ensure.sh (+ asset mirror)
+    // and lib/agent-executor.ts.
+    '--embedding',
+    '--pooling mean',
   ]
     .filter(Boolean)
     .join(' \\\n  ');

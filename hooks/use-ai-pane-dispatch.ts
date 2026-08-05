@@ -1835,10 +1835,12 @@ export function useAIPaneDispatch(paneId: string) {
               // re-rank — see lib/agent-skills.ts's matchSkillRecipesHybrid
               // doc comment) is used here unconditionally; it degrades to
               // the exact matchSkillRecipes ordering whenever
-              // MEMORY_EMBEDDING_ENABLED is off (it is, by default — see
-              // lib/memory/wiring.ts) or no local-LLM embedding endpoint
-              // answers in time, so this is a no-op swap today and only
-              // starts actually re-ranking once that flag is flipped.
+              // MEMORY_EMBEDDING_ENABLED is off (flipped ON 2026-08-05 —
+              // see lib/memory/wiring.ts) or no local-LLM embedding
+              // endpoint answers within the 300ms budget (server down,
+              // cold model, or started by a pre---embedding script), so a
+              // missing/slow local LLM can never make skill matching feel
+              // slower or less reliable than the bigram-only path.
               const embeddingPort = MEMORY_EMBEDDING_ENABLED
                 ? new LlamaEmbeddingPort({
                     endpoint: llamaEmbeddingEndpointFromBaseUrl(
