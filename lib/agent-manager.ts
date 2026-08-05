@@ -40,6 +40,7 @@ import {
   writeSkillRecipe,
 } from './agent-skills';
 import { saveUnattendedSkillWithNotification } from './unattended-skill-save';
+import { runSkillCuratorSweep } from './skill-curator';
 import {
   buildStepPrompt,
   combineFinalPreview,
@@ -2354,6 +2355,12 @@ export async function loadAgentsFromDisk(
     if (syncLogs) {
       // Sweep orphan scripts/logs left by past deletes (best-effort, non-blocking).
       void cleanupOrphanAgentFiles(runCommand);
+      // Skill curator (2026-08-05): best-effort registry sweep — promotes
+      // proven recipes, archives never-reused stale ones (reversible flag,
+      // never deletes), and only LOGS near-duplicate merge proposals. Same
+      // fire-and-forget contract as the cleanup above: it catches everything
+      // internally and can never block or break startup.
+      void runSkillCuratorSweep(runCommand);
       // G2 follow-up: scheduled (alarm-fired) runs have no TS post-run hook, so
       // their results never entered memory (recall is baked into scripts, but
       // new result digests were only captured by foreground runs). Capture the

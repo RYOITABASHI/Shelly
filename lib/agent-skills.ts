@@ -61,6 +61,19 @@ export interface SkillRecipe {
    *  flow, so a hallucinated "improvement" can never silently replace a recipe
    *  that used to work. */
   lastFailure?: { at: string; note: string };
+  /** Curator (2026-08-05): set once successCount crosses
+   *  SKILL_PROMOTION_MIN_SUCCESS_COUNT (lib/skill-curator.ts) so a future
+   *  consumer (e.g. the "use skill X?" confirm card) can prioritize proven
+   *  recipes. Additive metadata only — matching/injection behavior today is
+   *  unchanged, and files without the field parse exactly as before. */
+  promoted?: boolean;
+  /** Curator: stale/never-reused recipe. Excluded from the match candidate
+   *  pool (scoreSkillRecipes skips it) but NEVER deleted from disk — archival
+   *  is a reversible flag, deletion stays a separate explicit decision. A
+   *  later verified use (bumpSkillUsage) clears it, since a skillId-attached
+   *  agent can still exercise an archived recipe without going through the
+   *  matcher. */
+  archived?: boolean;
 }
 
 /** Obsidian Vault folder for agent skills (sibling of 90_Agent_Memory). */
@@ -167,6 +180,10 @@ export function buildSkillRecipeMarkdown(recipe: SkillRecipe): string {
     `successCount: ${recipe.successCount}`,
     `lastUsed: ${safeLine(recipe.lastUsed)}`,
     `created: ${safeLine(recipe.created)}`,
+    // Curator flags are emitted ONLY when true, so a never-curated recipe's
+    // markdown stays byte-identical to the pre-curator format.
+    ...(recipe.promoted ? ['promoted: true'] : []),
+    ...(recipe.archived ? ['archived: true'] : []),
     // Failure hint rides the SAME line-based frontmatter as successCount —
     // same persistence, same crash-safe write, same Vault mirror.
     ...(recipe.lastFailure
@@ -227,6 +244,9 @@ export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
     successCount: Number.isFinite(successCount) ? Math.max(0, successCount) : 1,
     lastUsed: fields.lastUsed || new Date(0).toISOString(),
     created: fields.created || new Date(0).toISOString(),
+    // Curator flags: absent lines parse to absent fields (additive migration).
+    ...(fields.promoted === 'true' ? { promoted: true } : {}),
+    ...(fields.archived === 'true' ? { archived: true } : {}),
     ...(planSpec ? { planSpec } : {}),
     ...(fields.lastFailureNote
       ? {
@@ -338,16 +358,46 @@ function scoreSkillRecipes(taskText: string, recipes: SkillRecipe[]): ScoredSkil
   const taskTokens = tokenizeForMatch(taskText);
   const scored: ScoredSkill[] = [];
   for (const recipe of recipes) {
-    const triggerTokens = tokenizeForMatch(`${recipe.trigger} ${recipe.tags.join(' ')}`);
-    let score = 0;
-    for (const tag of recipe.tags) if (taskTokens.has(tag)) score += 2;
-    for (const tok of triggerTokens) if (taskTokens.has(tok)) score += 1;
+    // Curator archival: an archived recipe is out of the candidate pool
+    // entirely (both bigram-only and hybrid matchers flow through here). The
+    // file stays on disk; a later verified use un-archives it (bumpSkillUsage).
+    if (recipe.archived) continue;
+    const score = scoreRecipeAgainstTaskTokens(taskTokens, recipe);
     if (score >= MIN_SKILL_MATCH_SCORE) scored.push({ recipe, score });
   }
   scored.sort(
     (a, b) => b.score - a.score || b.recipe.successCount - a.recipe.successCount
   );
   return scored;
+}
+
+/** The ONE scoring core (2 pts per matched tag, 1 pt per matched trigger
+ *  token) — extracted verbatim from scoreSkillRecipes so the curator's
+ *  duplicate detection reuses it instead of reinventing a second similarity
+ *  metric that could drift. */
+function scoreRecipeAgainstTaskTokens(taskTokens: Set<string>, recipe: SkillRecipe): number {
+  const triggerTokens = tokenizeForMatch(`${recipe.trigger} ${recipe.tags.join(' ')}`);
+  let score = 0;
+  for (const tag of recipe.tags) if (taskTokens.has(tag)) score += 2;
+  for (const tok of triggerTokens) if (taskTokens.has(tok)) score += 1;
+  return score;
+}
+
+/**
+ * Symmetric near-duplicate signal between two recipes, built on the SAME
+ * scoring core matchSkillRecipes uses: each recipe's trigger+tags text is
+ * scored as if it were the incoming task for the other recipe, and the MIN of
+ * the two directions is returned. Taking the min is deliberately conservative:
+ * a short trigger fully contained in a much longer, broader one scores high in
+ * one direction only, and must NOT read as a duplicate.
+ */
+export function skillPairSimilarity(a: SkillRecipe, b: SkillRecipe): number {
+  const aTokens = tokenizeForMatch(`${a.trigger} ${a.tags.join(' ')}`);
+  const bTokens = tokenizeForMatch(`${b.trigger} ${b.tags.join(' ')}`);
+  return Math.min(
+    scoreRecipeAgainstTaskTokens(aTokens, b),
+    scoreRecipeAgainstTaskTokens(bTokens, a)
+  );
 }
 
 /**
@@ -533,9 +583,13 @@ export function applyExecutableSkillPlan(agent: Agent, recipe: SkillRecipe | nul
 /** Bump an existing skill's success count + lastUsed (idempotent id is unchanged).
  *  A verified success also CLEARS any stored failure hint — the deterministic
  *  "trust only after verification" signal that the correction worked; keeping a
- *  stale caution on a now-working recipe would only mislead the next run. */
+ *  stale caution on a now-working recipe would only mislead the next run.
+ *  It likewise clears the curator's `archived` flag: a skillId-attached agent
+ *  bypasses the matcher, so an archived recipe can still be exercised — and a
+ *  verified success is exactly the "this is alive" signal archival predicted
+ *  would never come. */
 export function bumpSkillUsage(recipe: SkillRecipe, timestamp?: number): SkillRecipe {
-  const { lastFailure: _cleared, ...rest } = recipe;
+  const { lastFailure: _cleared, archived: _unarchived, ...rest } = recipe;
   return {
     ...rest,
     successCount: recipe.successCount + 1,
