@@ -365,7 +365,11 @@ object AgentRuntime {
     // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION v51 comment and
     // PLAN_EXECUTOR_ACTIONS below (added so a PlanSpec-routed run isn't
     // refused before the executor ever launches).
-    private const val CURRENT_SCRIPT_VERSION = 51
+    // v52 (2026-08-05): llama-server autostart now passes
+    // --embedding --pooling mean so the same local server also serves OAI
+    // /v1/embeddings (skill-match re-rank, MEMORY_EMBEDDING_ENABLED) — see
+    // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION v52 comment.
+    private const val CURRENT_SCRIPT_VERSION = 52
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

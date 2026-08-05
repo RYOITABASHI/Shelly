@@ -870,6 +870,20 @@ ensure_local_llm_server() {
   # empty, dropping to a libless plain exec → "CANNOT LINK EXECUTABLE … library
   # not found"). The find still contributes any sibling lib dirs. Trigger the
   # linker64 path whenever the binary lives under .local/llama.cpp.
+  # EMBEDDINGS (2026-08-05): --embedding makes this SAME server also serve
+  # /v1/embeddings for lib/memory/embedding-llama.ts's LlamaEmbeddingPort
+  # (skill-match re-rank behind MEMORY_EMBEDDING_ENABLED, lib/memory/wiring.ts
+  # — flipped on in the same pass that added these flags). --pooling mean is
+  # required WITH it: the OAI-compatible /v1/embeddings endpoint rejects the
+  # pooling type 'none' that causal chat models (Qwen) default to ("Pooling
+  # type 'none' is not OAI compatible"), so --embedding alone would leave the
+  # endpoint answering 400s. Both install paths in this file and in
+  # lib/llamacpp-setup.ts always fetch ggml-org/llama.cpp releases/latest,
+  # and current llama.cpp serves chat completions and embeddings from one
+  # process (the old embeddings-only server mode was removed upstream in
+  # 2024); pooling only affects the embedding-output path, never generation
+  # logits. Keep these flags in lockstep with lib/agent-executor.ts's inline
+  # copy of this function and lib/llamacpp-setup.ts's buildServerStartCommand.
   server_dir="$(dirname "$server_bin")"
   llama_lib_path="$(find "$HOME/.local/llama.cpp" -type f \( -name '*.so' -o -name '*.so.*' \) -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ':')"
   use_linker64=0
@@ -897,12 +911,12 @@ ensure_local_llm_server() {
       # dispatch never fires and the exported LD_LIBRARY_PATH survives.
       # Verified on-device 2026-07-28: bare nohup fails, absolute path serves
       # /health within seconds from the exact same failing shell context.
-      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      /system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
       echo $! > "$pid_file"
     )
   else
     # Same bashrc-wrapper hazard as the linker64 branch above: absolute path only.
-    /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+    /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
     echo $! > "$pid_file"
   fi
 

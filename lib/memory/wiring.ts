@@ -30,9 +30,19 @@ import { MemoryHit, MemoryRecord, MEMORY_SCHEMA_VERSION } from './types';
 // losing an agent's memory outright.
 export const MEMORY_ENABLED = true;
 
-// Optional semantic re-rank via localhost llama-server, broker-mediated only.
-// Off by default and independent of MEMORY_ENABLED.
-export const MEMORY_EMBEDDING_ENABLED = false;
+// Optional semantic re-rank via localhost llama-server (loopback-only by
+// construction — see lib/memory/embedding-llama.ts). Flipped 2026-08-05, the
+// same pass that added `--embedding --pooling mean` to every llama-server
+// launch site (scripts/shelly-local-llm-ensure.sh + its asset mirror,
+// lib/agent-executor.ts's inline copy, lib/llamacpp-setup.ts's
+// buildServerStartCommand): without those flags the shipped autostart never
+// exposed /v1/embeddings, so this flag guarded a feature that was dead in
+// the on-device config. Still independent of MEMORY_ENABLED, and still
+// additive-only: every caller treats any embed() failure (a server started
+// by a pre-flip script, cold model, 300ms timeout) as "embedding
+// unavailable" and silently falls back to bigram-only ranking, so a live
+// problem degrades to pre-flip behavior rather than breaking skill matching.
+export const MEMORY_EMBEDDING_ENABLED = true;
 
 // Per-agent namespace today (documents the per-agent-now / per-skill-later
 // generalization noted in the spec). Deterministic and stable.

@@ -12,9 +12,9 @@ import {
 import { buildRecallContext, type MemoryNote } from '@/lib/agent-memory';
 
 describe('MEMORY-001 dormancy + G2 mapping', () => {
-  it('ships with the memory store enabled but embedding still off (2026-08-05 flip)', () => {
+  it('ships with the memory store AND the embedding re-rank enabled (both flipped 2026-08-05)', () => {
     expect(MEMORY_ENABLED).toBe(true);
-    expect(MEMORY_EMBEDDING_ENABLED).toBe(false);
+    expect(MEMORY_EMBEDDING_ENABLED).toBe(true);
   });
 
   it('agentNamespace is deterministic/stable', () => {
