@@ -909,6 +909,83 @@ function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
   }
 }
 
+// In-process cache of X's rotated OAuth state, keyed by connectorId — Codex
+// review finding: a multi-action PlanSpec with two social-post actions
+// against the SAME X connector (dispatchActionsTrusted's fan-out, all within
+// this one executor process/invocation) would otherwise refresh twice. X
+// rotates the refresh token on EVERY exchange, so the first refresh
+// invalidates the token the second call would still read from `secrets`
+// (loaded once per-action from the on-disk .env, which the queued
+// writePendingConnectorSecretUpdate file hasn't been drained into yet — that
+// only happens on the RN layer's next app launch) — the second refresh
+// attempt would fail closed with invalid_grant. Reusing the in-memory
+// accessToken for a same-run repeat avoids a second (redundant and
+// self-defeating) token exchange entirely.
+const xAccessTokenCache = new Map();
+
+// Writes a one-shot "please update this SecureStore field" file for the RN
+// layer to drain (app/_layout.tsx polls the same directory the deep-link
+// queue already uses this pattern for) — JS-executor counterpart of the .sh
+// executor's write_pending_connector_secret_update (lib/agent-executor.ts).
+// Needed because a detached background process (this executor) can write
+// files but cannot call into Expo SecureStore directly. Best-effort: a
+// failure to persist here means the NEXT dispatch's token refresh fails
+// closed with a clear "reconnect it in Settings" error rather than silently
+// posting with a stale/invalid token.
+function writePendingConnectorSecretUpdate(paths, connectorId, field, value) {
+  try {
+    const dir = path.join(paths.home, '.shelly/pending-connector-secret-updates');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${connectorId}-${field}-${process.pid}.json`);
+    fs.writeFileSync(file, JSON.stringify({ connectorId, field, value }), { mode: 0o600 });
+  } catch (_) {
+    // best-effort, see doc comment above
+  }
+}
+
+// Codex review finding (2026-08-06): writePendingConnectorSecretUpdate ALONE
+// only queues the rotated value for the RN layer to drain into SecureStore
+// on next app launch — but the NEXT scheduled PlanSpec run (which may fire
+// again before the app is ever foregrounded) re-reads secrets straight from
+// this same on-disk envFile, which the queued update hasn't reached yet.
+// That makes X's mandatory refresh-token rotation (every exchange invalidates
+// the previous token) a "works once, then breaks until foregrounded" trap
+// for a genuinely unattended schedule. This synchronously rewrites the ONE
+// matching `KEY='value'` line in envFile in place — belt-and-suspenders with
+// the pending-update queue above (SecureStore/Settings-UI still needs that
+// eventual-consistency path; this closes the gap for the executor's OWN next
+// invocation, which never goes through SecureStore at all). Escaping mirrors
+// loadConnectorSecrets' single-quote convention (its unescape is
+// `val.replace(/'\\''/g, "'")`) so a value containing a literal `'` survives
+// a read-modify-write round trip.
+function updateEnvFileSecret(envFile, key, value) {
+  try {
+    let text = '';
+    try {
+      text = fs.readFileSync(envFile, 'utf8');
+    } catch (_) {
+      return;
+    }
+    const escaped = String(value).replace(/'/g, "'\\''");
+    const line = `${key}='${escaped}'`;
+    const lines = text.split('\n');
+    let found = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith(`${key}=`) || trimmed.startsWith(`export ${key}=`)) {
+        lines[i] = line;
+        found = true;
+        break;
+      }
+    }
+    if (!found) lines.push(line);
+    writeAtomic(envFile, lines.join('\n'));
+    fs.chmodSync(envFile, 0o600);
+  } catch (_) {
+    // best-effort — the pending-update queue above is the fallback path.
+  }
+}
+
 // social-post (2026-07-22): compose the per-platform request. Returns
 // { url, body, headers } — headers null/{} when the platform authenticates
 // via the URL (discord/slack webhooks, telegram bot token) or the body
@@ -917,7 +994,17 @@ function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
 // (through the same broker primitive) so the caller's single dispatch is the
 // final createRecord call. Field-name keys are the uppercased env suffixes
 // produced by lib/social-connectors.ts's socialConnectorEnvVar.
-function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets) {
+//
+// `isArticle` (2026-08-06): X-only flag threaded from
+// plan.action.socialPost.isArticle. X's long-form Articles endpoint needs a
+// title + DraftJS content_state built from the post text (see the .sh
+// executor's dispatch_social_post x) case), which this JS/unattended
+// executor does not implement — refused with a clear message rather than
+// silently posting the wrong shape. Regular tweets (POST /2/tweets) ARE
+// implemented here: this closes the DEFERRED-tracked asymmetry where an
+// orchestrated/scheduled X agent hard-failed with "Unsupported social
+// platform: x" while the same platform worked from the manual/.sh path.
+function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets, isArticle) {
   const missing = (what) => new PlanFailure(`${what} — re-register the connector in Settings.`, { handled: true });
   const hostMismatch = () =>
     new PlanFailure("Social-post destination host does not match the connector's registered host.", { handled: true });
@@ -1009,6 +1096,75 @@ function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets
         record: { text, createdAt: new Date().toISOString() },
       },
       headers: { Authorization: `Bearer ${accessJwt}` },
+    };
+  }
+  if (platform === 'x') {
+    if (isArticle) {
+      throw new PlanFailure(
+        'X article (long-form) posting is not supported for unattended/scheduled runs yet — use manual dispatch, or a regular (non-article) post.',
+        { handled: true },
+      );
+    }
+    const connectorId = plan.action.socialPost.connectorId;
+    let accessToken = xAccessTokenCache.get(connectorId) || '';
+    if (!accessToken) {
+      // OAuth 2.0 PKCE. Every dispatch exchanges the stored refresh token for
+      // a fresh access token — mirrors the .sh executor's x) case exactly
+      // (same rationale: X access tokens expire in ~2h, an unattended agent
+      // may run for weeks, and X rotates the refresh token on EVERY exchange,
+      // so the rotated token must be persisted or the very next post fails
+      // closed with invalid_grant).
+      const refreshToken = String(secrets.REFRESHTOKEN || '');
+      const clientId = String(secrets.CLIENTID || '');
+      if (!refreshToken || !clientId) {
+        throw new PlanFailure('X connector is missing its refresh token or client id — reconnect it in Settings.', { handled: true });
+      }
+      const formBody = `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}&client_id=${encodeURIComponent(clientId)}`;
+      const tokenBodyFile = path.join(paths.tmpDir, `plan-social-x-token-${plan.agent.id}-${process.pid}.json`);
+      const tokenHeaderFile = path.join(paths.tmpDir, `plan-social-x-token-headers-${plan.agent.id}-${process.pid}.json`);
+      fs.writeFileSync(tokenBodyFile, formBody, { mode: 0o600 });
+      fs.writeFileSync(tokenHeaderFile, JSON.stringify({ 'Content-Type': 'application/x-www-form-urlencoded' }), { mode: 0o600 });
+      let tokenRaw = '';
+      try {
+        tokenRaw = brokerHttpBodyFile(paths, opts, plan, {
+          url: `https://${host}/2/oauth2/token`,
+          bodyFile: tokenBodyFile,
+          headerFile: tokenHeaderFile,
+          approved: true,
+          timeoutSeconds: 30,
+        });
+      } catch (e) {
+        const detail = e instanceof PlanFailure ? e.message : String(e);
+        throw new PlanFailure(`X token refresh failed: ${redact(detail)}`, { handled: true });
+      } finally {
+        try { fs.unlinkSync(tokenBodyFile); } catch (_) {}
+        try { fs.unlinkSync(tokenHeaderFile); } catch (_) {}
+      }
+      let tokenResponse = null;
+      try { tokenResponse = JSON.parse(tokenRaw); } catch (_) { tokenResponse = null; }
+      accessToken = tokenResponse && typeof tokenResponse.access_token === 'string' ? tokenResponse.access_token : '';
+      const newRefreshToken = tokenResponse && typeof tokenResponse.refresh_token === 'string' ? tokenResponse.refresh_token : '';
+      if (!accessToken) {
+        throw new PlanFailure('X token refresh failed: response was missing access_token.', { handled: true });
+      }
+      xAccessTokenCache.set(connectorId, accessToken);
+      // Persist the rotated refresh token BEFORE attempting the post itself —
+      // a post failure must not strand a valid rotated token unsaved (the old
+      // one is already invalid on X's side the moment this exchange succeeded).
+      // Both writes are best-effort and independent: the pending-update queue
+      // is the eventual-consistency path into SecureStore (Settings UI etc.);
+      // updateEnvFileSecret closes the gap for THIS executor's own next
+      // invocation, which reads straight from envFile and never touches
+      // SecureStore at all — see that function's doc comment.
+      if (newRefreshToken) {
+        writePendingConnectorSecretUpdate(paths, connectorId, 'refreshToken', newRefreshToken);
+        updateEnvFileSecret(paths.envFile, `${socialConnectorEnvPrefix(connectorId)}_REFRESHTOKEN`, newRefreshToken);
+      }
+    }
+    return {
+      url: `https://${host}/2/tweets`,
+      body: { text },
+      headers: { Authorization: `Bearer ${accessToken}` },
     };
   }
   throw new PlanFailure(`Unsupported social platform: ${platform}`, { handled: true });
@@ -2476,7 +2632,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       const redactSocial = (t) => redactSecretValues(redact(t), socialSecretValues);
       let socialRequest;
       try {
-        socialRequest = buildSocialPostRequest(paths, opts, plan, platform, host, socialText, socialSecrets);
+        socialRequest = buildSocialPostRequest(paths, opts, plan, platform, host, socialText, socialSecrets, social.isArticle === true);
       } catch (e) {
         const message = redactSocial(e instanceof PlanFailure ? e.message : String(e));
         writeNotification(paths, plan, 'error', message);
@@ -3248,4 +3404,8 @@ module.exports = {
   loadConnectorSecrets,
   redactSecretValues,
   buildSocialPostRequest,
+  // x (Twitter) in-process token cache (2026-08-06 Codex review finding) —
+  // exported for host unit tests only, same convention as the exports above.
+  xAccessTokenCache,
+  updateEnvFileSecret,
 };
