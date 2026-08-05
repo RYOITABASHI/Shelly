@@ -7,7 +7,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { generateRunScript } from '@/lib/agent-executor';
-import { fireReviewedAgentBrowserPaneAction, resolveTargetBrowserPaneId } from '@/lib/agent-browser-pane-review';
+import {
+  fireReviewedAgentBrowserPaneAction,
+  resolveTargetBrowserPaneId,
+  isAcceptedBrowserPaneResult,
+} from '@/lib/agent-browser-pane-review';
 import { Agent } from '@/store/types';
 
 /** bash -n the script via a temp FILE (a full script exceeds the Windows argv limit for `-c`). */
@@ -257,5 +261,52 @@ describe('fireReviewedAgentBrowserPaneAction — mocked executeBrowserPaneAction
     await expect(fireReviewedAgentBrowserPaneAction(request, 'pane-1', 'run-8', executeAction)).rejects.toThrow(
       'Current WebView URL is not allowlisted.',
     );
+  });
+
+  // Bug: an in-page failure (element not found, not fillable, a caught DOM
+  // exception) does NOT reject the promise — browser-pane-automation.ts's
+  // handleMessage() resolves it with `ok: false` (see
+  // BrowserPaneActionResult.ok's doc comment). The test above only covers
+  // the *pre-flight* reject path (URL allowlist / validation), never this
+  // resolved-with-failure path. app/_layout.tsx's Review-accept handler
+  // awaited fireReviewedAgentBrowserPaneAction and, on no throw, fell
+  // through to reporting the pending approval as accepted — recording a
+  // failed DOM action as a successful one in the run log. This test locks
+  // the real (resolve-carries-status) contract so callers can't repeat that
+  // mistake.
+  it('resolves (does NOT throw) when the in-page script reports ok:false — callers must check .ok themselves', async () => {
+    const request = {
+      browserPaneActionKind: 'click' as const,
+      browserPaneSelector: '#missing',
+      browserPaneUrlAllowlist: JSON.stringify(['https://example.com/form']),
+    };
+    const executeAction = jest.fn(async () => ({
+      actionId: 'run-9',
+      kind: 'click' as const,
+      ok: false,
+      error: 'Element not found.',
+      tainted: true as const,
+    }));
+
+    const result = await fireReviewedAgentBrowserPaneAction(request, 'pane-1', 'run-9', executeAction);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('isAcceptedBrowserPaneResult', () => {
+  it('returns true only when the page-derived result is ok:true', () => {
+    expect(isAcceptedBrowserPaneResult({ actionId: 'a', kind: 'click', ok: true, tainted: true })).toBe(true);
+  });
+
+  it('returns false for an in-page failure, so the approval must be declined rather than accepted', () => {
+    expect(
+      isAcceptedBrowserPaneResult({
+        actionId: 'a',
+        kind: 'click',
+        ok: false,
+        error: 'Element not found.',
+        tainted: true,
+      }),
+    ).toBe(false);
   });
 });

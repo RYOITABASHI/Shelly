@@ -118,3 +118,20 @@ export async function fireReviewedAgentBrowserPaneAction(
     approval: { approved: true, actionId },
   });
 }
+
+/**
+ * Whether a fired browser-pane action's page-derived result should be
+ * reported back to the executor as an accepted action. A resolved
+ * BrowserPaneActionResult can still represent an IN-PAGE failure (element
+ * not found, not fillable, a caught DOM exception) — see
+ * BrowserPaneActionResult.ok's doc comment in browser-pane-automation.ts;
+ * browser-pane-automation.ts's execute()/handleMessage() only rejects for
+ * pre-flight validation failures and messaging-layer problems (bad URL
+ * allowlist, timeout, disposed pane), never for an in-page ok:false. A
+ * caller that treats "the promise resolved" as "the action succeeded"
+ * reports a failed DOM action as accepted (see app/_layout.tsx's Review
+ * accept handler, the only current caller).
+ */
+export function isAcceptedBrowserPaneResult(result: BrowserPaneActionResult): boolean {
+  return result.ok === true;
+}

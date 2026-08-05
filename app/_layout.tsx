@@ -50,7 +50,11 @@ import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 import { fireReviewedAgentAppAct, parseAppActParamsResolved } from '@/lib/agent-app-act-review';
-import { fireReviewedAgentBrowserPaneAction, resolveTargetBrowserPaneId } from '@/lib/agent-browser-pane-review';
+import {
+  fireReviewedAgentBrowserPaneAction,
+  resolveTargetBrowserPaneId,
+  isAcceptedBrowserPaneResult,
+} from '@/lib/agent-browser-pane-review';
 import { executeBrowserPaneAction, BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR } from '@/lib/browser-pane-automation';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
@@ -339,7 +343,22 @@ export default function RootLayout() {
         return;
       }
       try {
-        await fireReviewedAgentBrowserPaneAction(request, targetPaneId, request.runId, executeBrowserPaneAction);
+        const browserPaneResult = await fireReviewedAgentBrowserPaneAction(
+          request,
+          targetPaneId,
+          request.runId,
+          executeBrowserPaneAction,
+        );
+        // browser-pane-automation.ts resolves (never rejects) an in-page
+        // failure (element not found, not fillable, a caught DOM exception)
+        // as `{ ok: false, error }` — only pre-flight/messaging-layer
+        // problems reject. Without this check, a resolved-but-failed result
+        // fell through to the accept path below and reported a failed DOM
+        // action as an accepted one to the run log (see
+        // isAcceptedBrowserPaneResult's doc comment).
+        if (!isAcceptedBrowserPaneResult(browserPaneResult)) {
+          throw new Error('Browser action did not succeed.');
+        }
       } catch (e) {
         // Mirrors resolvePendingAgentActionApproval's other catches: log only
         // the error class/type (a thrown message can echo page-derived
