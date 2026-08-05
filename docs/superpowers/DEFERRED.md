@@ -385,6 +385,27 @@
 
 **2026-08-05 進捗（②の埋め込みマッチを本番有効化 — 実装済み・実機未検証）**: 直上エントリの既知の制約（autostartが`--embedding`を渡さないため埋め込みポートが常時fallback）を解消し、`MEMORY_EMBEDDING_ENABLED`（`lib/memory/wiring.ts`）をtrueへフリップ。llama-server起動サイト**全4箇所**（`scripts/shelly-local-llm-ensure.sh`＋APK asset mirror（byte-identical維持、parity test PASS）、`lib/agent-executor.ts`のインラインコピー（`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を51→52 lockstep bump＋snapshot再生成＋version文字列ハードコード8箇所を52へ更新）、`lib/llamacpp-setup.ts`の`buildServerStartCommand`（in-app Start/daemon autostart経路））に`--embedding --pooling mean`を追加。**`--pooling mean`が必須な理由**: OAI互換`/v1/embeddings`はpooling `none`（Qwen等causalモデルの既定）を`Pooling type 'none' is not OAI compatible`で拒否するため、`--embedding`単独ではエンドポイントが400を返し続け機能は死んだままになる。**chat completionへの影響**: 現行llama.cpp（本repoの全インストール経路はreleases/latestを取得）はembeddingsとcompletionsを同一プロセスで両立（embeddings-onlyモード化する旧挙動は2024年に上流で撤廃済み）、poolingはembedding出力パスのみに作用し生成logitsには無関係。**残リスク（実機検証項目）**: ①同一プロセス併用でのchat品質/リソースへの副作用の最終確認は実機のみ可能（`LLAMA_SERVER_EXTRA_ARGS`はエスケープハッチとして残置）、②旧スクリプトで起動済みのサーバーは再起動されるまで埋め込み非対応のまま（embed()は既定どおり黙ってbigram-onlyへfallback、リグレッションではない）。実機確認手順: サーバー冷起動→`curl http://127.0.0.1:8080/v1/embeddings -d '{"input":["test"]}'`が200を返すこと→chat completionが引き続き動くこと→`@agent`登録時のスキルマッチで同点候補の並びが変わり得ること。
 
+**✅ 2026-08-05 実機QA完了（Galaxy Z Fold6、versionCode 2076 / commit `0e1575d68`、Fable5エージェント経由）— rollback Undo UI再検証・browser-pane NL登録残り2項目・埋め込み本番設定、全PASS。新規バグ7件発見**:
+
+- **rollback Undo UI（907530b94込みの実ビルド） = PASS**: `agentOutputTarget=local`＋Optimistic Writes ONで`@agent run テストメモ`実行→承認タップなしで自動実行→完了バブルにUndoボタン→タップで「Undone」表示→`git -C ~/agent-output log`に`Revert "Auto: Updated ..."`コミット生成、ファイル内容が実行前へ完全復元を実測。git実測で907530b94の効果（`~/agent-output`直下に正しくリポジトリ作成、`$HOME`への誤帰属なし）を確認。再起動後にUndoボタンが消えること（仕様通り）も確認。
+- **browser-pane NL登録B1（正式名→Review承認→実WebView実行） = PASS**: 事前登録agentは存在せず新規登録（正式名「example com 開いてh1 テキスト 取得」）→`@agent run <正式名>`→承認通知（scouter_approvalチャネル）→Review画面に`ACTION: extractText / ELEMENT: h1 / ALLOWED PAGES: https://example.com/`表示→Allow→run log `status:"success"`を確認。前回セッションの失敗は正式名不一致が原因だったことが裏付けられた。
+- **browser-pane NL登録B2（セレクタ欠落時の聞き返し） = PASS**: 「example.comというページのボタンをクリックして」→期待文言と一字一句同一の聞き返しプロンプトを確認、「button」回答で正常に確認バブルまで到達。
+- **埋め込み本番設定（`--embedding --pooling mean`） = PASS**: 公式停止/起動手順でllama-server冷起動後、`/v1/embeddings`が実ベクトル付き200、同一プロセスで`/v1/chat/completions`も200（AIペインでの応答も実測）。稼働プロセスのcmdlineで`--embedding --pooling mean`が本番起動フラグに含まれることを確認。
+
+**新規発見バグ（未修正、優先度順）**:
+
+1. **【重大・要調査】エージェント実行コンテキストでのlocal-LLM autostartが`CANNOT LINK EXECUTABLE ".../llama-server": library "libllama-server-impl.so" not found`で失敗する事象を別条件で再現**（run log `1785917769`、script version 52）。2026-08-04の直上エントリ（17-40行、バグA）で`local_llm_install_looks_complete()`による防御チェックを追加し「実機で再発しないことを確認」（3957行）としていたが、今回**別のトリガー条件**（Task Cでサーバーを対話ターミナルから手動停止・再起動した直後に`@agent run`から起動を試みた）で同じ症状が再発した。同じ`ensure_local_llm_server`が対話ターミナルからは同時期に成功しているため、`.so`欠落という単純なインストール破損ではなく、**エージェント実行コンテキスト固有の環境差（LD_LIBRARY_PATH、cwd、並行起動時のレース等）**を疑う必要がある。90秒タイムアウト後にlocal-context-fallbackするため無人実行の信頼性に直結。次調査: `lib/agent-executor.ts`のインラインコピーと`scripts/shelly-local-llm-ensure.sh`本体とで環境変数の引き継ぎに差が無いか、対話ターミナルとエージェント実行(`AgentRuntime.kt`起点)のプロセス起動経路の違いを比較すること。
+2. **【中】`@agent run`が特定条件でサイレント無視される**: 直前runの完了バブルが「Running...」表示のまま更新されない状態(下記3と同一事象の可能性)で再度`@agent run`すると、ackバブルは出るが`AgentRunDecision`すら発火せずrunが開始しない(logcatにrun痕跡ゼロ)。数分後の再送では正常に起動した。
+3. **【軽・既知】完了後もチャットバブルが「Running &lt;name&gt;...」のまま更新されない** — 既知バグ`task_512efad1`（`hooks/use-ai-pane-dispatch.ts`の`agentResult.type === 'run'`分岐）と同一事象を実機で再確認。上記2との関連を疑う（stale run状態が新規run判定をブロックしている可能性）。
+4. **【設計ギャップ】browser-pane操作は「現在表示中のWebViewページ」がallowlistと一致する場合のみ実行され、自動遷移はしない**。ペインが空白/別ページだと`lib/browser-pane-automation.ts:138`の"Current WebView URL is not allowlisted"でfail-closedするが、UI側は汎用アラート「Failed to run the browser action. The request was declined.」のみで原因が分からない。「URLを開いて操作する」というNL登録時の文言(「example.comを開いてh1のテキストを取得して」)が実際の動作(既に開いているページのみ操作、ナビゲーションはしない)と乖離しており、少なくともエラー文言をURL不一致と分かる内容に改善する価値がある。
+5. **【UX】承認通知の本文タップではReview画面が開かず**、通知を展開して「確認」アクションボタンを個別にタップする必要がある。さらに**承認ウィンドウが約104秒と短く**、通知シェード操作の手間だけでタイムアウトする事例を2回実測(通知履歴の"approval timed out"表示で裏付け)。
+6. **【軽】Allow成功直後に`[AgentActionApproval] rejected unreadable request ...json / FileNotFoundException`のエラーログ**が出る(消費済み承認ファイルへのstaleスキャン競合と推定、実害は確認されず)。
+7. **【観察】ローカルLLM失敗→Codex CLIへエスカレートしたrunで、保存されたメモの内容がCodex自身の「承認が得られず保存できません」という文章そのものになっていた**——ドラフト保存はアプリ側が実行するため、ノート内容と実際の保存動作が乖離するケースがある。
+
+テスト用に作成したbrowser-paneエージェントは実機から削除済み(`agent-msftsxs7.json`のディスク上消滅を確認、delete-resurrection回帰なし)。テスト中に変更した`agentOutputTarget`(custom→local→custom復元)・Optimistic Writes(ON→OFF復元、ただし開始時の元値がON/OFF不明瞭)は元に戻した。
+
+→ sync: なし。上記1は次回セッションで優先調査対象とすること。
+
 **2026-07-28 進捗（Codex、実装コミット `24cd58d28` / `4481d099c` / `a8f80a2ca`）**:
 ロードマップのうち、(1) OpenRouterをOpenAI互換SSEクライアント＋model registry候補として追加し、API-key backendとして`resolveForAutonomous()`が必ず拒否するattended-only境界を回帰テストで固定、(2) 無人成功runのskill保存を事前Alertなしの即時保存＋削除アクション付き事後通知へ変更（attended runは従来の確認Alertを維持）、(3) 成功した複数step orchestrationのPlanSpecをskillへ保存し、類似タスクでsteps/provider/budget/charLimitをAgentへ復元して既存executor経路のまま再実行できるようにした。`npx tsc --noEmit`クリーン。検証JestはOpenRouter/model-router/escalation一式82件、skill-save/agent-skills一式20件、PlanSpec skill reuse＋agent-plan-spec/orchestration一式106件がPASS。**実機検証は未実施（本セッションは端末利用不可、adb切断）**。
 
