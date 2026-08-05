@@ -66,7 +66,13 @@ export async function prepareRollbackWorkspace(
     // drafted). Create it so `git init` has somewhere to go.
     const mk = await runCommand(`mkdir -p '${workspaceRoot.replace(/'/g, "'\\''")}'`);
     if (mk.exitCode !== 0) return false;
-    await initGitIfNeeded(workspaceRoot, runCommand);
+    // requireRepoAtRoot: the undo repo must live AT workspaceRoot. Without the
+    // flag, an ancestor repo (e.g. a $HOME/.git left by other tooling — the
+    // exact on-device state that kept Undo from ever appearing, 2026-08-05)
+    // satisfies rev-parse's walk-up check, init is skipped, and every later
+    // `git -C <root>` step operates on the ancestor repo instead. See
+    // initGitIfNeeded's doc comment in lib/auto-savepoint.ts.
+    await initGitIfNeeded(workspaceRoot, runCommand, { requireRepoAtRoot: true });
     // Baseline commit for any pre-existing dirt. A null result means "nothing to
     // commit", which is the normal, already-clean case — not a failure. A
     // secret-scan block DOES return null too, so verify cleanliness explicitly

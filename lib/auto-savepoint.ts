@@ -94,13 +94,34 @@ build/
 .DS_Store
 `;
 
-/** Check if directory has git repo, init if not */
+/** Check if directory has git repo, init if not.
+ *
+ * `requireRepoAtRoot` (2026-08-05 on-device fix, Galaxy Z Fold6 build ~1670):
+ * the default detection (`git rev-parse --git-dir`) walks UP the directory
+ * tree, so it answers "is this dir INSIDE any repo", not "is this dir a repo
+ * root". That is fine for the savepoint bridge's project dirs (a checked-out
+ * repo IS its own root), but it broke the agent-rollback workspace on any
+ * device where an ancestor of $HOME/agent-output is itself a git repo — on the
+ * verification device $HOME/.git exists, so rev-parse succeeded, `git init`
+ * was skipped, and the baseline add/commit then ran against the HOME repo
+ * (where they failed with exit 128 on a stale index.lock; even succeeding
+ * would have been worse — committing the user's entire home dirt as the
+ * agent's "baseline"). prepareRollbackWorkspace therefore fail-closed every
+ * time and the Undo affordance could never appear. With the flag set,
+ * detection is `test -e <dir>/.git` (a file, not just a dir — worktrees and
+ * submodules use a .git FILE), so a workspace nested inside some ancestor
+ * repo still gets its OWN repo rooted exactly at `projectDir`, which is the
+ * invariant every other rollback step (status/add/commit/revert via
+ * `git -C <root>`) silently assumed. */
 export async function initGitIfNeeded(
   projectDir: string,
   runCommand: RunCommandFn,
+  opts?: { requireRepoAtRoot?: boolean },
 ): Promise<void> {
   const dir = shellEscape(projectDir);
-  const { exitCode } = await runCommand(`git -C ${dir} rev-parse --git-dir`);
+  const { exitCode } = opts?.requireRepoAtRoot
+    ? await runCommand(`test -e ${dir}/.git`)
+    : await runCommand(`git -C ${dir} rev-parse --git-dir`);
   if (exitCode !== 0) {
     await runCommand(`git -C ${dir} init`);
     const { exitCode: igExists } = await runCommand(`test -f ${dir}/.gitignore`);

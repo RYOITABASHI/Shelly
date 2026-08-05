@@ -69,6 +69,33 @@ describe('prepareRollbackWorkspace', () => {
     await expect(prepareRollbackWorkspace(ROOT, run)).resolves.toBe(false);
   });
 
+  it('inits a repo AT the workspace root even when an ANCESTOR repo exists (2026-08-05 on-device bug)', async () => {
+    // On the verification device $HOME itself is a git repo, so the old
+    // ancestor-walking check (`git -C <root> rev-parse --git-dir`) succeeded,
+    // `git init` was skipped, and the baseline add/commit ran against the HOME
+    // repo — failing there (stale index.lock) and fail-closing the optimistic
+    // path forever. The fix keys repo detection off `test -e <root>/.git`.
+    const { run, calls } = fakeShell([
+      [/^test -e .*\/\.git$/, { exitCode: 1 }], // no repo AT the root…
+      [/rev-parse --git-dir/, { stdout: '/home/.git\n', exitCode: 0 }], // …but an ancestor repo exists
+      [/status --porcelain/, { stdout: '', exitCode: 0 }],
+    ]);
+    await expect(prepareRollbackWorkspace(ROOT, run)).resolves.toBe(true);
+    // The workspace must get its OWN repo, rooted exactly at ROOT.
+    expect(calls.some((c) => c.includes(`git -C '${ROOT}' init`))).toBe(true);
+    // And detection must NOT be the ancestor-walking rev-parse form.
+    expect(calls.some((c) => /rev-parse --git-dir/.test(c))).toBe(false);
+  });
+
+  it('skips init when the workspace root already has its own .git', async () => {
+    const { run, calls } = fakeShell([
+      [/^test -e .*\/\.git$/, { exitCode: 0 }],
+      [/status --porcelain/, { stdout: '', exitCode: 0 }],
+    ]);
+    await expect(prepareRollbackWorkspace(ROOT, run)).resolves.toBe(true);
+    expect(calls.some((c) => c.includes(' init'))).toBe(false);
+  });
+
   it('REFUSES when the workspace directory cannot be created', async () => {
     const { run } = fakeShell([[/^mkdir -p/, { exitCode: 1 }]]);
     await expect(prepareRollbackWorkspace(ROOT, run)).resolves.toBe(false);
