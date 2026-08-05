@@ -286,12 +286,18 @@ function fullResultText(text) {
 // content). Mirrors isLowQualityCompletion in lib/agent-escalation-ladder.ts
 // (the canonical, unit-tested JS implementation) and is_low_quality_completion
 // in the legacy .sh executor (lib/agent-executor.ts's generated script) — all
-// three copies must stay in sync. Checked BEFORE any action that publishes
-// outside the run's own log (webhook/dm-reply/app-act) in dispatchActionTrusted
-// below, so a bad completion never reaches the human-facing approval card in
-// the first place. Runs against the whitespace-collapsed `preview` (see
-// previewText above), matching what the .sh path checks (clean_result_preview
-// already tr's newlines to spaces there too).
+// three copies must stay in sync (2026-08-06: brought back into sync after a
+// Fable5/Codex Hermes-parity re-review independently found this copy had
+// stopped at the first two checks below while the other two grew six more
+// failure-family detectors over 2026-07-23..28 — see
+// lib/agent-escalation-ladder.ts's own doc comments on each pattern set for
+// the full on-device repro history; ported verbatim here, not re-derived).
+// Checked BEFORE any action that publishes outside the run's own log
+// (webhook/dm-reply/app-act) in dispatchActionTrusted below, so a bad
+// completion never reaches the human-facing approval card in the first
+// place. Runs against the whitespace-collapsed `preview` (see previewText
+// above), matching what the .sh path checks (clean_result_preview already
+// tr's newlines to spaces there too).
 const PROMPT_ECHO_MARKERS = [/#\s*Results from previous steps/, /#\s*This step\b/];
 const REFUSAL_PATTERNS = [
   /\bas an ai\b/i,
@@ -300,6 +306,91 @@ const REFUSAL_PATTERNS = [
   /私は\s*ai\s*(なので|として)/i,
   /(生成|投稿)できません/,
 ];
+const DATA_UNAVAILABLE_PATTERNS = [
+  /取得できません/,
+  /アクセスできず/,
+  /アクセスできません/,
+  /\bcould not (?:retrieve|access|obtain|fetch)\b/i,
+  /\bcouldn't (?:retrieve|access|obtain|fetch)\b/i,
+  /\bunable to (?:retrieve|access|obtain|fetch)\b/i,
+  /\bno access to\b/i,
+  /\bcannot access\b/i,
+  /\bdoes not have access to\b/i,
+];
+const DATA_UNAVAILABLE_MAX_LEN = 200;
+const ACTION_META_COMMENTARY_PATTERNS = [
+  /(?:通知|お知らせ|メッセージ)を(?:送信します|送信しました|お送りします|お送りしました|完了します|完了しました|実行します|実行しました)/,
+  /\bnotification (?:has been |is |was )?(?:sent|completed|delivered)\b/i,
+  /\b(?:sending|will send|i(?:'ll| will) send) the notification\b/i,
+  /\btask (?:has been |is |was )?completed\b/i,
+];
+const FABRICATED_EXECUTION_PATTERNS = [
+  /\b(?:command|script)\s+(?:was\s+)?executed\b[\s\S]{0,100}\bstatus:\s*success\b/i,
+  /\bstatus:\s*success\b[\s\S]{0,100}\b(?:command|script)\s+(?:was\s+)?executed\b/i,
+  /\bfile\s+(?:was\s+|is\s+)?created\s+at\b[\s\S]{0,100}\bstatus:\s*success\b/i,
+  /\bstatus:\s*success\b[\s\S]{0,100}\bfile\s+(?:was\s+|is\s+)?created\b/i,
+  /(?:コマンド|スクリプト)を実行(?:しました|完了しました)[\s\S]{0,60}(?:成功しました|ステータス[:：]\s*成功)/,
+  /(?:成功しました|ステータス[:：]\s*成功)[\s\S]{0,60}(?:コマンド|スクリプト)を実行(?:しました|完了しました)/,
+  /(?:^|\n)\s*(?:root|\w+)@[\w.-]+:[^\n#$]{0,60}[#$]\s+\S[^\n]{0,120}[>|][^\n]{0,80}/,
+];
+const BARE_SHELL_COMMAND_VERB_RE =
+  /^(?:sudo\s+)?(?:echo|printf|cat|touch|mkdir|rm|mv|cp|curl|wget|tee|dd|chmod|chown|kill|pkill|git|npm|npx|pip3?|python3?|node|bash|sh)\b/i;
+const BARE_SHELL_COMMAND_SYNTAX_RE = /[>|;&]/;
+const BARE_REDIRECT_ONLY_RE = /^[>|]\s*\S/;
+
+function isBareShellCommandLine(text) {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.includes('\n') || trimmed.length > 200) return false;
+  if (BARE_REDIRECT_ONLY_RE.test(trimmed)) return true;
+  return BARE_SHELL_COMMAND_VERB_RE.test(trimmed) && BARE_SHELL_COMMAND_SYNTAX_RE.test(trimmed);
+}
+
+const FENCED_BLOCK_RE = /^```(\w*)\r?\n([\s\S]*?)\r?\n?```$/;
+const FENCE_SHELL_LANG_RE = /^(?:|text|bash|sh|shell|console|plaintext|plain|terminal)$/i;
+
+function isFencedShellCommandBlock(text) {
+  const trimmed = text.trim();
+  const match = FENCED_BLOCK_RE.exec(trimmed);
+  if (!match) return false;
+  if (!FENCE_SHELL_LANG_RE.test(match[1])) return false;
+  const lines = match[2]
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return false;
+  return lines.some(
+    (line) => BARE_REDIRECT_ONLY_RE.test(line) || (BARE_SHELL_COMMAND_VERB_RE.test(line) && BARE_SHELL_COMMAND_SYNTAX_RE.test(line)),
+  );
+}
+
+const EXECUTION_ANNOUNCEMENT_RE =
+  /(?:コマンド|スクリプト)(?:を|で)[^\n。]{0,12}実行し(?:ます|ました)|\bi(?:'ll| will) (?:now )?(?:run|execute)\b|\bexecuting the (?:command|script)s?\b/i;
+const ANY_FENCED_BLOCK_RE = /```(\w*)[^\S\n]*\r?\n([\s\S]*?)```/g;
+
+function hasFencedShellCommandContent(text) {
+  ANY_FENCED_BLOCK_RE.lastIndex = 0;
+  let match;
+  while ((match = ANY_FENCED_BLOCK_RE.exec(text)) !== null) {
+    if (!FENCE_SHELL_LANG_RE.test(match[1])) continue;
+    const lines = match[2]
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (
+      lines.some(
+        (line) => BARE_REDIRECT_ONLY_RE.test(line) || (BARE_SHELL_COMMAND_VERB_RE.test(line) && BARE_SHELL_COMMAND_SYNTAX_RE.test(line)),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isFencedShellExecutionNarrative(text) {
+  if (!EXECUTION_ANNOUNCEMENT_RE.test(text)) return false;
+  return hasFencedShellCommandContent(text);
+}
 
 function isLowQualityCompletion(text) {
   if (typeof text !== 'string') return false;
@@ -308,9 +399,49 @@ function isLowQualityCompletion(text) {
   // empty preview once its telemetry is stripped (see the .sh executor's
   // clean_result_preview) — previously this matched neither pattern set and
   // silently reached the confirm card blank instead of failing loud.
-  if (text.trim().length === 0) return true;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return true;
   if (PROMPT_ECHO_MARKERS.some((pattern) => pattern.test(text))) return true;
-  return REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
+  if (REFUSAL_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (trimmed.length <= DATA_UNAVAILABLE_MAX_LEN && DATA_UNAVAILABLE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  if (trimmed.length <= DATA_UNAVAILABLE_MAX_LEN && ACTION_META_COMMENTARY_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  if (FABRICATED_EXECUTION_PATTERNS.some((pattern) => pattern.test(text))) return true;
+  if (isBareShellCommandLine(text)) return true;
+  if (isFencedShellCommandBlock(text)) return true;
+  if (isFencedShellExecutionNarrative(text)) return true;
+  return false;
+}
+
+// DEFERRED.md「重複コンテンツ検知の欠如(P1)」— ported verbatim from
+// lib/agent-escalation-ladder.ts's isDuplicateOfPriorStep/
+// normalizeForDuplicateCheck (see that file's doc comment for the full
+// on-device incident this catches: an orchestration step whose completion is
+// a near-verbatim repeat of the PRIOR step, most often a model that ignored
+// its own instruction and echoed the context it was given back). Exported
+// for host unit tests only, same convention as isLowQualityCompletion above.
+const DUPLICATE_CHECK_MIN_LEN = 20;
+const DUPLICATE_CONTAINMENT_MIN_RATIO = 0.6;
+
+function normalizeForDuplicateCheck(text) {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isDuplicateOfPriorStep(text, priorStepContent) {
+  if (!text || !priorStepContent) return false;
+  const a = normalizeForDuplicateCheck(text);
+  const b = normalizeForDuplicateCheck(priorStepContent);
+  if (a.length < DUPLICATE_CHECK_MIN_LEN || b.length < DUPLICATE_CHECK_MIN_LEN) return false;
+  if (a === b) return true;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  if (longer.includes(shorter) && shorter.length / longer.length >= DUPLICATE_CONTAINMENT_MIN_RATIO) {
+    return true;
+  }
+  return false;
 }
 
 // ─── Orchestration chain mode (Increment 2, 2026-07-15) ────────────────────
@@ -2532,7 +2663,21 @@ const STEP_TOOL_DISPATCHABLE_TYPES = ['local', 'gemini-api', 'perplexity', 'cere
 // present, so a chain that exhausted its HTTP-dispatchable candidates says
 // WHY it stopped (the ladder continues to Codex, which this executor cannot
 // spawn) instead of reading like an unexplained final failure.
-function requestModelContentWithLadder(paths, opts, plan, config, checkQuality) {
+//
+// `priorStepContent` (2026-08-06, DEFERRED.md「重複コンテンツ検知の欠如(P1)」
+// follow-up): the immediately preceding orchestration step's resultText, or
+// undefined for a non-orchestrated single-shot run / a chain's first step —
+// mirrors attemptFailed's own optional third argument in
+// lib/agent-escalation-ladder.ts. When `checkQuality` is also true, a
+// completion that is a near-verbatim repeat of this prior content is treated
+// exactly like a low-quality completion: retried across plan.toolLadder, not
+// silently accepted. Found missing entirely in a 2026-08-06 Fable5/Codex
+// Hermes-parity re-review: the attended path (lib/agent-manager.ts) already
+// threaded this through, but this unattended/scheduled executor had no
+// equivalent wiring, so the exact on-device incident isDuplicateOfPriorStep
+// was built to catch (a notify step echoing the summarize step verbatim)
+// could still slip through for a run nobody was watching.
+function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
   const candidates = [plan.tool].concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : []);
   let lastError = new PlanFailure('no tool candidates to try', { handled: true });
   for (let i = 0; i < candidates.length; i += 1) {
@@ -2542,12 +2687,34 @@ function requestModelContentWithLadder(paths, opts, plan, config, checkQuality) 
       const response = brokerHttp(paths, opts, attemptPlan, request);
       let resultText = extractModelContent(attemptPlan.tool.type, response);
       resultText = enforcePlanCharLimit(attemptPlan, resultText);
-      if (checkQuality && isLowQualityCompletion(previewText(resultText))) {
-        lastError = new PlanFailure(
-          'completion looks like a prompt echo or AI refusal, not real content',
-          { handled: true },
-        );
-        continue;
+      if (checkQuality) {
+        const preview = previewText(resultText);
+        // Codex review finding (2026-08-06): previewText whitespace-collapses
+        // ALL newlines, but the fenced-shell-block / execution-narrative
+        // detectors ported into isLowQualityCompletion above are
+        // newline-DEPENDENT (they match a fence's opening/inner/closing
+        // lines) — checking `preview` alone let a fenced-shell fabrication
+        // sail through undetected, since by the time isLowQualityCompletion
+        // saw it the fence had no line breaks left to recognize. Mirrors the
+        // established pattern dispatchActionTrusted's own webhook/api-call
+        // gates already use below (isLowQualityCompletion(preview) ||
+        // isLowQualityCompletion(webhookResultFull/apiResultFull)):
+        // fullResultText redacts but preserves newlines and does not
+        // truncate, so the structural checks see the real shape.
+        if (isLowQualityCompletion(preview) || isLowQualityCompletion(fullResultText(resultText))) {
+          lastError = new PlanFailure(
+            'completion looks like a prompt echo or AI refusal, not real content',
+            { handled: true },
+          );
+          continue;
+        }
+        if (isDuplicateOfPriorStep(preview, priorStepContent)) {
+          lastError = new PlanFailure(
+            'completion is a near-verbatim repeat of the prior step, not a new result',
+            { handled: true },
+          );
+          continue;
+        }
       }
       return { resultText: resultText, usedTool: attemptPlan.tool };
     } catch (error) {
@@ -2708,8 +2875,14 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       // dead-end — checking it here and then again inside
       // dispatchActionTrusted below (its own per-action-type gate) is
       // harmless double-checking of the same isLowQualityCompletion
-      // predicate, never a behavior conflict.
-      const attempt = requestModelContentWithLadder(paths, opts, stepPlan, config, true);
+      // predicate, never a behavior conflict. priorStepContent (2026-08-06)
+      // is the immediately preceding step's resultText — undefined for the
+      // chain's first step, exactly matching isDuplicateOfPriorStep's own
+      // "no prior content" no-op case — so a step that merely echoes what
+      // the PRIOR step already produced retries the ladder too, not just a
+      // prompt-echo/refusal shape.
+      const priorStepContent = priorResults.length ? priorResults[priorResults.length - 1] : undefined;
+      const attempt = requestModelContentWithLadder(paths, opts, stepPlan, config, true, priorStepContent);
       resultText = attempt.resultText;
       // 3rd-pass Codex review finding (see run()'s own comment above its
       // `let usedTool;` declaration for the full trust-check rationale):
@@ -3035,6 +3208,10 @@ module.exports = {
   // same convention as the exports above. See isLowQualityCompletion's doc
   // comment near previewText for the three-copy sync requirement.
   isLowQualityCompletion,
+  // 2026-08-06 duplicate-content detection (DEFERRED.md「重複コンテンツ検知の
+  // 欠如(P1)」follow-up) — exported for host unit tests only, same convention
+  // as the exports above.
+  isDuplicateOfPriorStep,
   // 2026-07-16 webhook full-body redaction (P0(c) adversarial review fix) —
   // exported for host unit tests only, same convention as the exports above.
   fullResultText,

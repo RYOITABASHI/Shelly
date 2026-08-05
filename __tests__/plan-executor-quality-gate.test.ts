@@ -13,7 +13,7 @@ const executor = path.join(root, 'scripts', 'shelly-plan-executor.js');
 const broker = path.join(root, 'scripts', 'shelly-capability-broker.js');
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { isLowQualityCompletion } = require(executor);
+const { isLowQualityCompletion, isDuplicateOfPriorStep } = require(executor);
 
 function makeHome(): string {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-plan-executor-quality-'));
@@ -96,6 +96,147 @@ describe('isLowQualityCompletion (pure)', () => {
   it('flags empty/whitespace-only completions (regression: codex-driver telemetry strip yields empty preview)', () => {
     expect(isLowQualityCompletion('')).toBe(true);
     expect(isLowQualityCompletion('   \n\t  ')).toBe(true);
+  });
+
+  // 2026-08-06: this JS copy previously stopped at the four checks above,
+  // while the canonical lib/agent-escalation-ladder.ts copy (and the
+  // hand-synced bash copy in lib/agent-executor.ts's generated script) grew
+  // six more failure-family detectors over 2026-07-23..28 on-device findings.
+  // Ported here verbatim (same literal repro strings as
+  // __tests__/agent-escalation-ladder.test.ts) so all three copies actually
+  // agree, per the "three copies must stay in sync" comment above
+  // isLowQualityCompletion in this same file — a claim that was false until
+  // this fix (Fable5/Codex 2026-08-06 Hermes-parity re-review finding: the
+  // unattended PlanSpec executor's quality gate was materially weaker than
+  // the attended path's, so a fabricated-success run fired via schedule could
+  // still slip through even though the identical content would be caught for
+  // a human-watched run).
+
+  it('catches the on-device "honest failure to retrieve data" repro (2026-07-23 battery-notify finding)', () => {
+    const honestFailure = 'この実行環境では端末のバッテリー情報へアクセスできず、残量を取得できませんでした。';
+    expect(isLowQualityCompletion(honestFailure)).toBe(true);
+    expect(isLowQualityCompletion('I could not retrieve the battery level in this execution environment.')).toBe(true);
+  });
+
+  it('does NOT flag a long, otherwise-substantive response that merely mentions a similar phrase in passing (explicit negative)', () => {
+    const longGenuineSummary =
+      'STEAM教育×AIの最新動向まとめ: 論文3件、ニュース2件を要約しました。' +
+      '1件目は初等教育でのAI活用事例、2件目は高校でのプログラミング教育カリキュラム改訂、' +
+      '3件目は大学の産学連携プロジェクトについてです。ニュースでは政府の教育予算方針と、' +
+      '地方自治体のICT導入状況を取り上げました。なお、この件については詳細情報が取得できません' +
+      'でしたので、続報が出次第追跡します。全体として教育現場でのAI活用は着実に進んでいます。';
+    expect(isLowQualityCompletion(longGenuineSummary)).toBe(false);
+  });
+
+  it('catches the on-device "meta-commentary about the delivery action" repro (2026-07-25, bug #158 follow-up)', () => {
+    expect(isLowQualityCompletion('ニュース通知を送信します。')).toBe(true);
+    expect(isLowQualityCompletion('ニュース通知を完了しました。')).toBe(true);
+    expect(isLowQualityCompletion('The notification has been sent.')).toBe(true);
+  });
+
+  it('does NOT flag genuine notify content that happens to use similar words (explicit negative)', () => {
+    expect(isLowQualityCompletion('明日の会議室変更のお知らせです。新しい会議室はB201です。')).toBe(false);
+    expect(isLowQualityCompletion('重要なお知らせ：システムメンテナンスは22時から実施されます。')).toBe(false);
+  });
+
+  it('catches the on-device fabricated command-execution report (2026-07-27, bug #162)', () => {
+    const shellScriptRepro =
+      'Command executed: \'echo "test" > /sdcard/probe.txt\' Status: Success File created at \'/sdcard/probe.txt\' Content: test';
+    expect(isLowQualityCompletion(shellScriptRepro)).toBe(true);
+    expect(isLowQualityCompletion("root@docker:~# printf 'test' > /sdcard/probe2.txt")).toBe(true);
+    expect(isLowQualityCompletion('コマンドを実行しました。ステータス: 成功')).toBe(true);
+  });
+
+  it('catches the on-device bare-command-line and bare-redirect repros (2026-07-28, third/fourth fabrication shapes)', () => {
+    expect(isLowQualityCompletion('echo "Test executed" > /sdcard/probe3.txt')).toBe(true);
+    expect(isLowQualityCompletion('cat /etc/hosts | grep localhost')).toBe(true);
+    expect(isLowQualityCompletion('> /sdcard/probe4.txt')).toBe(true);
+    expect(isLowQualityCompletion('| grep secret')).toBe(true);
+  });
+
+  it('does NOT flag a bare non-command line or genuine prose that merely contains > or | mid-sentence (explicit negative)', () => {
+    expect(isLowQualityCompletion('こんにちは、今日は晴れです。')).toBe(false);
+    expect(isLowQualityCompletion('git is a distributed version control system')).toBe(false);
+    expect(isLowQualityCompletion('売上は前年比で50%以上伸びました。')).toBe(false);
+  });
+
+  it('does NOT flag genuine instructional draft content that merely shows a command (explicit negative)', () => {
+    expect(
+      isLowQualityCompletion(
+        'ファイルにテキストを書き込むには `echo \'test\' > file.txt` のようなコマンドを使います。' +
+          'リダイレクト演算子 > は既存の内容を上書きする点に注意してください。',
+      ),
+    ).toBe(false);
+  });
+
+  it('catches the on-device fenced-shell-transcript repro (2026-07-28, fifth fabrication shape)', () => {
+    const fencedRepro = "```text\ncd /sdcard\necho 'test' > probe_verify.txt\ncat probe_verify.txt\n```";
+    expect(isLowQualityCompletion(fencedRepro)).toBe(true);
+    expect(isLowQualityCompletion('```\nrm -f /tmp/x; touch /tmp/x\n```')).toBe(true);
+  });
+
+  it('does NOT flag a legitimate fenced code answer, with or without surrounding prose (explicit negative)', () => {
+    expect(isLowQualityCompletion('```python\nfor i in range(1, 101):\n    print(i)\n```')).toBe(false);
+    expect(isLowQualityCompletion('```json\n{"key": "value"}\n```')).toBe(false);
+    expect(
+      isLowQualityCompletion(
+        '以下のコマンドでファイルを作成できます。\n```text\necho \'test\' > file.txt\n```\n' +
+          '上書きされる点にご注意ください。',
+      ),
+    ).toBe(false);
+  });
+
+  it('catches the on-device execution-narrative repro (2026-07-28, SIXTH fabrication shape)', () => {
+    const narrativeRepro =
+      'この依頼を履行するため、以下の手順で Shell コマンドを実行します。\n\n' +
+      '### 手順：シェルコマンドを実行\n\n' +
+      '```bash\n# 現在の時刻を記録\necho "2026年07月28日(火) 18:10 JST" > /sdcard/probe_verify2.txt\n' +
+      'cat /sdcard/probe_verify2.txt\n```\n\n' +
+      '### 実行結果の確認\n\n上記の命令を再度実行します。';
+    expect(isLowQualityCompletion(narrativeRepro)).toBe(true);
+  });
+
+  it('sixth shape requires BOTH the first-person execution claim AND a shell-command fence (explicit negatives)', () => {
+    expect(
+      isLowQualityCompletion(
+        '以下のコマンドを実行してください。\n```bash\necho \'test\' > file.txt\n```\n' +
+          '実行すると file.txt が作成されます。',
+      ),
+    ).toBe(false);
+    expect(
+      isLowQualityCompletion('このスクリプトを実行します。\n```python\nprint("hello")\n```\n以上です。'),
+    ).toBe(false);
+  });
+});
+
+describe('isDuplicateOfPriorStep / normalizeForDuplicateCheck (pure, ported from lib/agent-escalation-ladder.ts)', () => {
+  it('flags an exact match (after trim/whitespace/case normalization)', () => {
+    const prior = 'Explorative Modelingの成果を発表、データ効率が6.2倍。';
+    const current = '  explorative modelingの成果を発表、データ効率が6.2倍。  ';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(true);
+  });
+
+  it('flags a near-verbatim repeat where the current step is fully contained in the prior step (2026-08-04 real incident shape)', () => {
+    const prior =
+      '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。経産省の組織再編も発表された。';
+    const current = '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(true);
+  });
+
+  it('does NOT flag containment when the longer text adds substantial new content (net-new info, not a repeat)', () => {
+    const prior = 'Q3 revenue grew 12% year over year.';
+    const current = 'Q3 revenue grew 12% year over year. Also, churn improved to 4.2% and APAC led growth at 18%.';
+    expect(isDuplicateOfPriorStep(current, prior)).toBe(false);
+  });
+
+  it('does NOT flag short strings — too little signal to judge reliably (avoids false positives on short "OK"-style acks)', () => {
+    expect(isDuplicateOfPriorStep('Done.', 'Done.')).toBe(false);
+    expect(isDuplicateOfPriorStep('OK', 'OK')).toBe(false);
+  });
+
+  it('is false when there is no prior content (first step / non-orchestrated run)', () => {
+    expect(isDuplicateOfPriorStep('Some perfectly normal, reasonably long completion text here.', undefined)).toBe(false);
+    expect(isDuplicateOfPriorStep('Some perfectly normal, reasonably long completion text here.', null)).toBe(false);
   });
 });
 

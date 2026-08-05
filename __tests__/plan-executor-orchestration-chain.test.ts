@@ -342,6 +342,42 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
     expect(notification.status).toBe('error');
   }, 20000);
 
+  it('(j) a DUPLICATE-of-prior-step completion at a NON-final step stops the chain before it can poison later steps (2026-08-06 Fable5/Codex Hermes-parity re-review finding)', async () => {
+    // Mirrors (c) exactly, but step 2's completion is a near-verbatim repeat
+    // of step 1's — the "notify step echoed the summarize step verbatim"
+    // shape isDuplicateOfPriorStep exists to catch (see
+    // lib/agent-escalation-ladder.ts's doc comment and
+    // __tests__/plan-executor-quality-gate.test.ts's direct unit tests for the
+    // predicate itself). Before this fix, requestModelContentWithLadder had
+    // no priorStepContent wiring at all in the chain loop, so this exact
+    // on-device incident shape — a duplicate step slipping past the quality
+    // gate and poisoning every later step's prompt — was reproducible via the
+    // real executor, not just a unit-level gap.
+    const home = makeHome();
+    const summary =
+      '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。経産省の組織再編も発表された。';
+    responses = [summary, summary, 'never reached'];
+    const steps: StepsField = {
+      list: [{ instruction: 'summarize the news' }, { instruction: 'draft the notification' }, { instruction: 'polish and finalize' }],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { actionType: 'draft', steps }), home);
+    expect(rc).toBe(0);
+
+    // The chain stopped after the duplicate step 2 — step 3's model call never happened.
+    expect(requestPrompts).toHaveLength(2);
+
+    const log = readRunLog(home);
+    expect(log.status).toBe('error');
+    expect(log.steps).toHaveLength(2);
+    expect(log.steps[0].status).toBe('success');
+    expect(log.steps[1].status).toBe('error');
+    expect(log.outputPreview).toMatch(/Step 2\/3 failed/);
+
+    const notification = readNotification(home);
+    expect(notification.status).toBe('error');
+  }, 20000);
+
   it('(d) a low-quality completion at the FINAL step is rejected by dispatchActionTrusted\'s own gate, not silently drafted', async () => {
     const home = makeHome();
     responses = ['gathered sources', "I'm not able to help with that."];
