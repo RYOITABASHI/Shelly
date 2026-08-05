@@ -369,7 +369,7 @@ object AgentRuntime {
     // --embedding --pooling mean so the same local server also serves OAI
     // /v1/embeddings (skill-match re-rank, MEMORY_EMBEDDING_ENABLED) — see
     // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION v52 comment.
-    private const val CURRENT_SCRIPT_VERSION = 52
+    private const val CURRENT_SCRIPT_VERSION = 54
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に

@@ -2091,6 +2091,12 @@ const ja: Record<string, string> = {
   'agent_action_confirm_browserpane_allowlist': '許可されたページ',
   'agent_action_confirm_browserpane_failed': 'ブラウザ操作の実行に失敗しました。リクエストは拒否されました。',
   'agent_action_confirm_browserpane_no_pane': '現在開いているブラウザペインがありません。対象ページを表示してから再度お試しください。',
+  // 2026-08-05 on-device QAで判明: URL不一致は最も起きやすい失敗理由なのに、
+  // 汎用の「拒否されました」文言だけでは原因が分からなかった(DEFERRED.md
+  // 2026-08-05 QAスイープ バグ4)。ブラウザ操作は現在表示中のページに対して
+  // しか実行されず、許可リストに登録したページへ自動で遷移することはない
+  // ため、ユーザー自身にペインを該当ページへ移動してもらう必要がある。
+  'agent_action_confirm_browserpane_failed_url_mismatch': 'ブラウザペインが今開いているページが、このエージェントの許可リストと一致しません。この操作は自動でページ遷移しません — 対象ページをブラウザペインで開いてから、もう一度お試しください。',
 };
 
 export default ja;

@@ -51,7 +51,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 import { fireReviewedAgentAppAct, parseAppActParamsResolved } from '@/lib/agent-app-act-review';
 import { fireReviewedAgentBrowserPaneAction, resolveTargetBrowserPaneId } from '@/lib/agent-browser-pane-review';
-import { executeBrowserPaneAction } from '@/lib/browser-pane-automation';
+import { executeBrowserPaneAction, BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR } from '@/lib/browser-pane-automation';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -356,7 +356,20 @@ export default function RootLayout() {
         ).catch(() => undefined);
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
-        Alert.alert(t('agent_action_confirm_browserpane_failed'));
+        // 2026-08-05 on-device QA finding (DEFERRED.md 2026-08-05 QAスイープ
+        // バグ4): URL-allowlist mismatch is a fixed, app-controlled string —
+        // never page-derived content — so matching it EXACTLY (not echoing
+        // e.message generally, which stays fail-closed against any future
+        // page-derived rejection reason per the comment above) is safe and
+        // lets this one common case explain itself instead of the opaque
+        // generic "declined" alert.
+        Alert.alert(
+          t(
+            e instanceof Error && e.message === BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR
+              ? 'agent_action_confirm_browserpane_failed_url_mismatch'
+              : 'agent_action_confirm_browserpane_failed',
+          ),
+        );
         return;
       }
     }
@@ -1813,6 +1826,17 @@ export default function RootLayout() {
           try {
             parsed = parseActionApprovalRequest(JSON.parse(await FileSystem.readAsStringAsync(fileUri)));
           } catch (e) {
+            // 2026-08-05 on-device finding (DEFERRED.md 2026-08-05 QAスイープ
+            // バグ6): benign TOCTOU race, not a rejected/malformed request —
+            // readDirectoryAsync listed this file, but by the time
+            // readAsStringAsync ran here, a concurrent
+            // resolveAgentActionApproval() call (the user having just tapped
+            // Allow/Deny on THIS same request) had already consumed and
+            // deleted it. Skip silently instead of logging what reads as a
+            // scary error for an outcome that is actually the success path.
+            if (e instanceof Error && /FileNotFoundException|ENOENT|does not exist/i.test(e.message)) {
+              continue;
+            }
             logError('AgentActionApproval', `rejected unreadable request ${name}`, e);
             continue;
           }

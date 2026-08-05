@@ -1241,7 +1241,13 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
   const runId = `${plan.agent.id}-${Math.floor(Date.now() / 1000)}-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
   const requestFile = path.join(paths.actionApprovalDir, `action-${safeFilePart(runId)}.json`);
   const replyFile = path.join(paths.actionApprovalReplyDir, `action-${safeFilePart(runId)}.reply.json`);
-  const timeoutSeconds = Number(config.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || process.env.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || 120);
+  // 2026-08-05 on-device QA finding (DEFERRED.md 2026-08-05 QAスイープ バグ5):
+  // 120s repeatedly timed out in practice before the user even finished
+  // reading the notification. Bumped to 300s in lockstep with
+  // lib/agent-executor.ts's request_and_wait_approval default — both read the
+  // same SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS env var, so an explicit
+  // override still works identically for either executor.
+  const timeoutSeconds = Number(config.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || process.env.SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS || 300);
   const extra = details || {};
   const request = {
     runId,

@@ -916,8 +916,24 @@ ensure_local_llm_server() {
     )
   else
     # Same bashrc-wrapper hazard as the linker64 branch above: absolute path only.
-    /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
-    echo $! > "$pid_file"
+    # 2026-08-05 (on-device recurrence of blocker C in this branch specifically):
+    # this branch was missing the `unset LD_PRELOAD` that the linker64 branch
+    # above already has. The agent exec context sets LD_PRELOAD=libexec_wrapper.so
+    # (shelly-exec.c) unconditionally, regardless of which branch fires; a plain
+    # exec of $server_bin here inherits it just like the linker64 launch would,
+    # breaking llama-server's own .so resolution the same way -> the same
+    # "CANNOT LINK EXECUTABLE ... library not found" the comment above describes,
+    # just reached via the non-linker64 path (server_bin outside .local/llama.cpp
+    # and/or the .so find coming up empty, e.g. mid install-swap). The interactive
+    # terminal never hits this because shelly-pty.c unsets LD_PRELOAD for the
+    # whole session; only the agent exec context is exposed. Unsetting it here
+    # unconditionally is safe even for a genuinely self-contained binary that
+    # doesn't need it.
+    (
+      unset LD_PRELOAD
+      /system/bin/nohup /system/bin/nice -n 5 "$server_bin" --model "$model_path" --alias "$alias_name" --host 127.0.0.1 --port "$port" --ctx-size "$ctx_size" --threads "$threads" --embedding --pooling mean --log-disable ${LLAMA_SERVER_EXTRA_ARGS:-} > "$log_file" 2>&1 &
+      echo $! > "$pid_file"
+    )
   fi
 
   ready_seconds="${LOCAL_LLM_START_TIMEOUT_SECONDS:-90}"

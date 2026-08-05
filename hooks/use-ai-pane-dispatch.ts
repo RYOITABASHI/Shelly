@@ -2073,19 +2073,53 @@ export function useAIPaneDispatch(paneId: string) {
             await presentDraftForConfirmation(agent as ChatMessage['agent'], draft);
             return;
           } else if (agentResult.type === 'run') {
-            // bug #164: this is a chat-visible, human-attended run — bound the
-            // completion poll to a few minutes instead of the 20-minute
-            // unattended default so a stuck run fails fast with a visible
-            // error instead of silently polling with no feedback.
-            await runAgentNow(agentResult.data.agentId, runAgentShellCommand, {
-              waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
-              savepointRunner: runSavepointCommand,
+            // 2026-08-05 on-device finding (task_512efad1 / DEFERRED.md
+            // 2026-08-05 QA sweep バグ3): this branch used to fall through to
+            // the shared post-switch store.addMessage below with
+            // `resultMessage = agentResult.message`, which is the STATIC
+            // "Running {{name}}..." string agent-manager.ts's parseAgentCommand
+            // builds at PARSE time — before runAgentNow below ever executes.
+            // The completion bubble was therefore permanently stuck reading
+            // "Running..." regardless of the actual outcome. The other three
+            // chat-visible run-now call sites in this file (the corrected-draft
+            // runNowRequested branch, fireRunOnceOnConfirm, and the ephemeral
+            // one-shot branch) already avoid this by posting the "Running..."
+            // note as its own message, then updating THAT SAME message with the
+            // real run-history entry once runAgentNow resolves. Mirror that
+            // proven pattern here instead of leaving this the one call site
+            // that never updates.
+            const runningMsgId = generateId();
+            store.addMessage(paneId, {
+              id: runningMsgId,
+              role: 'assistant',
+              content: agentResult.message,
+              timestamp: Date.now(),
+              agent: agent as ChatMessage['agent'],
             });
-            resultMessage = agentResult.message;
-            rollbackOffer = buildRollbackOffer(
-              agentResult.data.agentId,
-              useAgentStore.getState().agents.find((a) => a.id === agentResult.data.agentId) ?? null,
-            );
+            try {
+              // bug #164: this is a chat-visible, human-attended run — bound the
+              // completion poll to a few minutes instead of the 20-minute
+              // unattended default so a stuck run fails fast with a visible
+              // error instead of silently polling with no feedback.
+              await runAgentNow(agentResult.data.agentId, runAgentShellCommand, {
+                waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
+                savepointRunner: runSavepointCommand,
+              });
+              const log = useAgentStore.getState().getRunHistory(agentResult.data.agentId).at(-1);
+              const preview = (log?.outputPreview || '').trim();
+              const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
+              store.updateMessage(paneId, runningMsgId, {
+                content: preview ? `${icon} ${preview}` : `${icon} Done.`,
+                agentRollbackOffer: buildRollbackOffer(
+                  agentResult.data.agentId,
+                  useAgentStore.getState().agents.find((a) => a.id === agentResult.data.agentId) ?? null,
+                ),
+              });
+            } catch (runErr) {
+              const detail = runErr instanceof Error ? runErr.message : String(runErr);
+              store.updateMessage(paneId, runningMsgId, { content: `❌ ${detail}` });
+            }
+            return;
           } else if (agentResult.type === 'stop') {
             await stopAgent(agentResult.data.agentId, runAgentShellCommand);
             resultMessage = agentResult.message;

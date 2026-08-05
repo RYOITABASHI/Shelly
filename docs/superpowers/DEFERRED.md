@@ -406,6 +406,18 @@
 
 → sync: なし。上記1は次回セッションで優先調査対象とすること。
 
+**✅ 2026-08-05 上記バグ1〜6を同一セッションで修正（コード実装のみ、実機未検証）**:
+
+1. **local-LLM autostart CANNOT LINK再発**: 根本原因はrequest_and_wait_approval系ではなく`ensure_local_llm_server`のELSE分岐（非linker64パス）——IF（linker64）分岐は`unset LD_PRELOAD`していたがELSE分岐は漏れていた。エージェント実行コンテキストは`shelly-exec.c`が常時`LD_PRELOAD=libexec_wrapper.so`を注入するため、ELSE分岐に落ちた瞬間だけllama-server自身の.so解決が壊れる（対話ターミナルは`shelly-pty.c`が`unsetenv("LD_PRELOAD")`するため無関係）。`scripts/shelly-local-llm-ensure.sh`（+ APK asset mirror）と`lib/agent-executor.ts`のインラインコピーのELSE分岐にサブシェル化した`unset LD_PRELOAD`を追加。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を52→53。
+2. **`@agent run`のサイレント無視・`Running...`固定表示**: `hooks/use-ai-pane-dispatch.ts`の`agentResult.type === 'run'`分岐が、`runAgentNow()`実行後に`agentResult.message`（パース時点の静的な"Running {{name}}..."文字列）をそのまま`resultMessage`へ代入していたのが原因——同ファイル内の他3箇所（登録後即実行/確認即実行/one-shot）は既に「Runningバブルを`store.addMessage`→実行後に`useAgentStore.getState().getRunHistory(agentId).at(-1)`から実際のstatus/outputPreviewを読んで同じバブルを`store.updateMessage`」という実証済みパターンを使っていたが、この`@agent run`コマンド経路だけそれを欠いていた。同じパターンに統一。
+3. 上記2の修正で解消（同一原因）。
+4. **browser-paneページ不一致の汎用エラー**: `lib/browser-pane-automation.ts`に`BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR`定数をexportし、`app/_layout.tsx`のcatchで厳密一致した場合だけ新設i18nキー`agent_action_confirm_browserpane_failed_url_mismatch`（ページ遷移が必要である旨を明記）を表示。他の失敗理由（ページ由来content echoのリスクがあるとコメントで明記されている既存の意図的な設計）は従来通り汎用メッセージのまま——ページ由来content(例: セレクタ不一致由来の"Element not found")は`handleMessage`側で常にresolveされthrowされないため実際には到達しないが、将来の変更に対する防御として汎用フォールバックを維持。
+5. **承認通知タップ導線+承認ウィンドウ**: `NotificationDispatcher.kt`の`notify()`に`contentIntent`オプション引数を追加し、cli/intent/dm-reply/app-act/browser-paneのReview必須アクションタイプでは本文タップも「確認」ボタンと同じ`agentActionReviewPendingIntent`（deep link）を開くようにした。`ACTION_APPROVAL_TIMEOUT_SECONDS`のデフォルトを120秒→300秒へ（`lib/agent-executor.ts`＋`scripts/shelly-plan-executor.js`＋そのAPK asset mirror、同じ`SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS`環境変数を参照するため両方同時に変更）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を53→54（さらにこの変更を含む）。
+6. **Allow成功直後の無害なFileNotFoundExceptionログ**: `app/_layout.tsx`の`drainAgentActionApprovalRequests`が、`readDirectoryAsync`でリストした直後に該当ファイルが（並行するAllow/Deny処理で）削除されるTOCTOUレースを、`FileNotFoundException|ENOENT|does not exist`にマッチする場合だけ黙ってスキップするよう修正（それ以外の読み取り失敗は従来通りエラーログ）。
+7. 未対応（Codexエスカレーション時のノート内容乖離は保存内容の設計に関わる別種の変更が必要と判断し、今回はスコープ外のまま）。
+
+**検証**: `npx tsc --noEmit`クリーン。`npx jest --ci`フルスイート2978件中2949件PASS（既知のWindows `scoped.fs`二重ドライブレターバグによる4スイート28件失敗のみ、`git stash`比較で変更前mainでも同様に発生することを確認済み——新規リグレッションなし）。**実機未検証**（次回オンデバイステストで6項目とも確認すること: (1)は`--embedding`同様サーバー冷起動を伴う操作での再現条件の確認、(2)(3)は`@agent run <name>`実行後にバブルが実際の結果へ更新されること、(4)はURL不一致時に新メッセージが出ること、(5)は通知本文タップでReview画面が開くこと・300秒に体感で余裕ができたこと、(6)はAllow直後にログにFileNotFoundExceptionが出ないこと）。
+
 **2026-07-28 進捗（Codex、実装コミット `24cd58d28` / `4481d099c` / `a8f80a2ca`）**:
 ロードマップのうち、(1) OpenRouterをOpenAI互換SSEクライアント＋model registry候補として追加し、API-key backendとして`resolveForAutonomous()`が必ず拒否するattended-only境界を回帰テストで固定、(2) 無人成功runのskill保存を事前Alertなしの即時保存＋削除アクション付き事後通知へ変更（attended runは従来の確認Alertを維持）、(3) 成功した複数step orchestrationのPlanSpecをskillへ保存し、類似タスクでsteps/provider/budget/charLimitをAgentへ復元して既存executor経路のまま再実行できるようにした。`npx tsc --noEmit`クリーン。検証JestはOpenRouter/model-router/escalation一式82件、skill-save/agent-skills一式20件、PlanSpec skill reuse＋agent-plan-spec/orchestration一式106件がPASS。**実機検証は未実施（本セッションは端末利用不可、adb切断）**。
 

@@ -2115,6 +2115,12 @@ const en: Record<string, string> = {
   'agent_action_confirm_browserpane_allowlist': 'Allowed pages',
   'agent_action_confirm_browserpane_failed': 'Failed to run the browser action. The request was declined.',
   'agent_action_confirm_browserpane_no_pane': 'No Browser Pane is currently open. Open one showing the target page, then try again.',
+  // 2026-08-05 on-device QA finding: URL mismatch is the most common failure
+  // reason, yet the generic "declined" message above gave no clue why
+  // (DEFERRED.md 2026-08-05 QA sweep bug 4). Browser-pane actions only ever
+  // act on whatever page is CURRENTLY shown — they never navigate there for
+  // you — so the fix is a page the user has to take themselves.
+  'agent_action_confirm_browserpane_failed_url_mismatch': "The Browser Pane's current page doesn't match this agent's allowed pages. This action never navigates for you — open the target page in the Browser Pane yourself, then try again.",
 };
 
 export default en;

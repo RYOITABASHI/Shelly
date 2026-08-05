@@ -39,6 +39,14 @@ interface PendingAction {
 
 const MESSAGE_PREFIX = 'shelly:browser-action:';
 
+/** Exported so callers (app/_layout.tsx's approval-resolution handler) can
+ *  show a more specific alert for this ONE pre-flight rejection reason
+ *  without echoing arbitrary thrown text — every other rejection in
+ *  execute() below is a fixed, non-page-derived string, so matching this
+ *  exact constant is safe (unlike a page-derived selector/DOM error, which
+ *  never reaches a throw — see handleMessage's always-resolve contract). */
+export const BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR = 'Current WebView URL is not allowlisted.';
+
 function parseHttpUrl(value: string): URL | null {
   try {
     const url = new URL(value);
@@ -136,7 +144,7 @@ export class BrowserPaneAutomationController {
       return Promise.reject(new Error('Browser action requires an approval-broker grant.'));
     }
     if (!isBrowserUrlAllowlisted(this.getCurrentUrl(), request.urlAllowlist)) {
-      return Promise.reject(new Error('Current WebView URL is not allowlisted.'));
+      return Promise.reject(new Error(BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR));
     }
     if (action.kind !== 'click' && action.kind !== 'fill' && action.kind !== 'extractText') {
       return Promise.reject(new Error('Unsupported browser action.'));

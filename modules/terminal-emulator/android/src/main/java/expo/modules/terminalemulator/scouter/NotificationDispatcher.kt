@@ -247,7 +247,8 @@ class NotificationDispatcher(private val context: Context) {
             // resolve the approval as accepted while the recipe never actually
             // ran, AND would let a real external post go out (or silently not
             // go out) without the user ever seeing the resolved post text.
-            val actions = if (request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "app-act" || request.actionType == "browser-pane") {
+            val requiresReview = request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "app-act" || request.actionType == "browser-pane"
+            val actions = if (requiresReview) {
                 listOf(
                     action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),
                     action(context.getString(R.string.scouter_notification_action_deny), agentActionApprovalPendingIntent(false, request, actionNonce, requestSha256)),
@@ -267,7 +268,17 @@ class NotificationDispatcher(private val context: Context) {
                 text = truncate(body, REPLY_MAX_CHARS),
                 bigText = truncate(body, APPROVAL_MAX_CHARS),
                 actions = actions,
-                autoCancel = false
+                autoCancel = false,
+                // 2026-08-05 on-device QA finding (DEFERRED.md 2026-08-05 QAスイープ
+                // バグ5): the notification BODY tap used to fall through to
+                // notify()'s default plain app-launch intent even for these
+                // review-required action types, so opening the Review screen
+                // required expanding the notification and tapping the separate
+                // "Review" action button specifically — the body tap just opened
+                // the app to whatever screen it was already on. Give the body tap
+                // the SAME deep link as the explicit Review action for these
+                // types, so either tap target reaches the approval screen.
+                contentIntent = if (requiresReview) agentActionReviewPendingIntent(request, requestSha256) else null
             )
         }.onFailure { Log.w(TAG, "agent action approval notify failed", it) }
     }
@@ -825,18 +836,27 @@ class NotificationDispatcher(private val context: Context) {
         bigText: String? = null,
         subText: String? = null,
         actions: List<Notification.Action> = emptyList(),
-        autoCancel: Boolean = true
+        autoCancel: Boolean = true,
+        // 2026-08-05: lets a caller route the notification BODY tap somewhere
+        // more specific than a plain app-launch (e.g. the same deep-link Review
+        // screen an action button already opens) — see
+        // notifyAgentActionApprovalNeeded's requiresReview branch. Defaults to
+        // null so every existing call site keeps its prior plain-launch body tap
+        // unchanged.
+        contentIntent: PendingIntent? = null
     ) {
         runCatching {
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            val pendingLaunch = if (launchIntent != null) {
-                PendingIntent.getActivity(
-                    context,
-                    id,
-                    launchIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-            } else null
+            val pendingLaunch = contentIntent ?: run {
+                val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                if (launchIntent != null) {
+                    PendingIntent.getActivity(
+                        context,
+                        id,
+                        launchIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                } else null
+            }
 
             val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Notification.Builder(context, channelForId(id))
