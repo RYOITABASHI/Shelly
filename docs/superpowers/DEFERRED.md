@@ -438,7 +438,7 @@
 
 **検証**: `npx tsc --noEmit`クリーン。`npx jest --ci`フルスイート2978件中2949件PASS（既知のWindows `scoped.fs`二重ドライブレターバグによる4スイート28件失敗のみ、`git stash`比較で変更前mainでも同様に発生することを確認済み——新規リグレッションなし）。**実機未検証**（次回オンデバイステストで6項目とも確認すること: (1)は`--embedding`同様サーバー冷起動を伴う操作での再現条件の確認、(2)(3)は`@agent run <name>`実行後にバブルが実際の結果へ更新されること、(4)はURL不一致時に新メッセージが出ること、(5)は通知本文タップでReview画面が開くこと・300秒に体感で余裕ができたこと、(6)はAllow直後にログにFileNotFoundExceptionが出ないこと）。
 
-**→ 2026-08-05 実機QA完了（versionCode 2078 / commit `bc71a0c2d`、Fable5エージェント経由）— 6項目中5項目PASS、項目1（local-LLM autostart）のみFAIL・真因を特定して即修正**:
+**✅ 2026-08-05 実機QA完了（versionCode 2078 / commit `bc71a0c2d`、Fable5エージェント経由）— 6項目中5項目PASS、項目1（local-LLM autostart）のみFAIL・真因を特定して即修正**:
 
 - **項目2/3/4/5/6 = 全PASS**。詳細:
   - (2)(3): `@agent run テストメモ`実行→バブル「Running テストメモ...」が同一位置で実際の結果（✅+outputPreview）へ更新されることをuiautomator座標で確認。別のbrowser-pane runでも同様に確認。
@@ -447,7 +447,9 @@
   - (6): Allow成功直後のlogcatで`rejected unreadable request`が0件（`AgentActionApproval`タグの出力に紛らわしいFileNotFoundException系ログが無いことを確認）。
 - **項目1 = FAIL、ただし真因を特定**: サーバー停止→対話ターミナルから再起動（成功）→`@agent run`（エージェント実行コンテキスト）で再度CANNOT LINK再発を実機確認（logcat: `F linker : CANNOT LINK EXECUTABLE ".../llama-server": library "libllama-server-impl.so" not found`）。Fable5の切り分けで、環境変数経由のLD_PRELOAD継承（今回の修正対象）は既に無害化されているが、**exec-wrapper.c（`modules/terminal-emulator/android/src/main/jni/exec-wrapper.c`）の`scrub_system_envp`/`should_scrub_system_env`が、エージェント実行コンテキストからの`/system/`,`/vendor/`,`/apex/`バイナリexec全てに対してLD_LIBRARY_PATH/LD_PRELOADを剥ぎ取る（`linker64`自身だけが明示的に例外）**という、今回のbash側修正とは別レイヤーの真因を特定。旧起動チェーン`/system/bin/nohup /system/bin/nice -n 5 /system/bin/linker64 ...`は、`nohup`（linker64ではない`/system/`バイナリ）がexecされた時点でスクラブが発動し、以降の`nice`→`linker64`→`llama-server`にLD_LIBRARY_PATHが一切届かない構造的欠陥だった——2026-07-28のv42修正（bare nohup対策）以降ずっと、この経路そのものが機能していなかったことになる。
 - **即修正**: `scripts/shelly-local-llm-ensure.sh`（+ APK asset mirror）と`lib/agent-executor.ts`のインラインコピー、両方のlinker64起動チェーンから`/system/bin/nohup /system/bin/nice -n 5`を除去し、`/system/bin/linker64`を直接execするよう変更（linker64はスクラブ対象外のため、これでLD_LIBRARY_PATHが実際にllama-serverまで届く）。`nohup`が担っていたSIGHUP耐性はシェルビルトイン`trap '' HUP`で代替（execを伴わないためスクラブの対象外）。`nice -n 5`の優先度調整は、シェルビルトイン代替も非`/system/`の同梱バイナリも存在しないため、意図的に諦める（トレードオフとしてコメントに明記）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`を54→55。
-- **検証**: `npx tsc --noEmit`クリーン、`npx jest --ci`フルスイート2978件中2950件PASS（既知の4スイート27件失敗のみ、変化なし）。**この追加修正自体の実機再検証はまだ未実施** — 次回オンデバイステストで、サーバー停止→`@agent run`での自動起動がCANNOT LINK無しで成功することを最優先で確認すること。
+- **検証**: `npx tsc --noEmit`クリーン、`npx jest --ci`フルスイート2978件中2950件PASS（既知の4スイート27件失敗のみ、変化なし）。
+
+**✅ 2026-08-05 追加修正の実機再検証完了（versionCode 2079 / commit `67190a84b` = origin/main HEAD、別セッション経由）— PASS、CANNOT LINK再発は解消**: サーバー停止（`local_llm_stop_server`, PORT_CLOSED確認）→対話ターミナルから`ensure_local_llm_server`で再起動（RC=0, `/health`200、PASSは想定通り）→再度サーバー停止→`adb logcat -c`→既存「テストメモ」エージェントをSidebarから RUN NOW（エージェント実行コンテキスト経由のautostartが本命）。`ps -ef`と`/proc/<pid>/cmdline`の生データ双方で`/system/bin/linker64 /data/.../llama-server ...`が**nohup/niceを経由せず直接exec**されていることを実測確認。logcatに`CANNOT LINK`該当行ゼロ、対応する`.reason`ファイルは空（=失敗理由なし=成功、mtimeが今回の実行時刻と一致することも確認。同ディレクトリに残る修正前セッションの古い`.reason`群は無関係と時刻で切り分け済み）。副次確認として`/v1/embeddings`・`/v1/chat/completions`とも200で正常応答（埋め込み機能とのリグレッションなし）。**2026-07-28のv42修正以来ずっと機能していなかったagent-execコンテキストからのlocal-LLM autostartが、今回の2段階修正（bc71a0c2d→67190a84b）で実際に直ったことを実機で確定**。これにより2026-08-05に見つかった6件のバグ修正すべてが実機PASSで完結した。
 
 → sync: なし。
 
