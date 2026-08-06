@@ -26,6 +26,7 @@ import { SaveBadge } from '@/components/SaveBadge';
 import { useFocusStore } from '@/store/focus-store';
 import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-actions';
 import { ScouterDetailModal } from '@/components/scouter/ScouterDetailModal';
+import { AgentSuggestionCard } from '@/components/suggestions/AgentSuggestionCard';
 
 const LAST_UNFOLDED_PRESET_KEY = 'shelly:lastUnfoldedPreset';
 const COVER_PRESET_ACTIVE_KEY = 'shelly:coverPresetActive';
@@ -363,6 +364,8 @@ export function ShellLayout() {
 
       {/* Agent Bar (top) */}
       <AgentBar />
+
+      <AgentSuggestionCard />
 
       {/* Main area: sidebar + panes */}
       <GestureDetector gesture={composed}>

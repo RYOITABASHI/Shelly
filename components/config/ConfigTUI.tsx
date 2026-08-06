@@ -31,7 +31,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { useCosmeticStore, SoundProfile, FontFamily } from '@/store/cosmetic-store';
 import { getAllThemes, useThemeStore } from '@/lib/theme-engine';
 import { TERMINAL_THEME_NAMES } from '@/lib/terminal-theme';
-import { useI18n, AVAILABLE_LOCALES } from '@/lib/i18n';
+import { useI18n, useTranslation, AVAILABLE_LOCALES } from '@/lib/i18n';
 import { useDotfilesStore } from '@/lib/dotfiles-sync';
 import { saveCustomContext, loadCustomContext } from '@/lib/shelly-system-prompt';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -40,6 +40,7 @@ import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
+import { resetUserProfile } from '@/lib/user-profile';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -57,12 +58,15 @@ type SettingType = 'boolean' | 'string' | 'number' | 'enum' | 'secret' | 'action
 interface SettingDef {
   key: string;
   label: string;
+  labelKey?: string;
   type: SettingType;
   options?: string[];          // for enum
   min?: number; max?: number;  // for number
   source: 'settings' | 'cosmetic' | 'custom';
   description?: string;
+  descriptionKey?: string;
   actionLabel?: string;        // for 'action' type
+  actionLabelKey?: string;     // for 'action' type
   dangerAction?: boolean;      // red styling for destructive actions
 }
 
@@ -152,6 +156,8 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // in store/settings-store.ts for why the fallback isn't a regression.
       { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let an LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Uses your configured Cerebras/Groq API key if present (faster, more capable), otherwise the Local LLM; falls back to the existing behavior if nothing is reachable. The final registration always still needs your confirmation. Default ON.' },
       { key: 'agentConversationalHighRiskActionsEnabled', label: 'LLM-Proposed Webhook/CLI (High Risk)', type: 'boolean', source: 'settings', description: 'Only when LLM-led registration is enabled, allow the LLM to propose webhook/CLI actions using URLs or commands the user actually wrote verbatim in the conversation. URLs or commands the user did not provide are always rejected. Existing runtime host allowlists and command safety checks still apply unchanged. Default off.' },
+      { key: 'profileLearningEnabled', label: 'Profile Learning', labelKey: 'settings.profile_learning_label', type: 'boolean', source: 'settings', description: 'Learn command, project, and AI usage patterns locally for personalization.', descriptionKey: 'settings.profile_learning_desc' },
+      { key: 'resetUserProfile', label: 'Reset Profile', labelKey: 'settings.profile_reset_label', type: 'action', source: 'custom', actionLabel: 'Reset', actionLabelKey: 'settings.profile_reset_action', description: 'Delete learned local profile facts and usage patterns.', descriptionKey: 'settings.profile_reset_desc', dangerAction: true },
     ],
   },
   {
@@ -511,6 +517,7 @@ interface ConfigTUIProps {
 
 export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const { settings, updateSettings } = useSettingsStore();
+  const { t } = useTranslation();
   const cosmetics = useCosmeticStore();
   const dotfiles = useDotfilesStore();
   const themeStore = useThemeStore();
@@ -812,6 +819,20 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           }},
         ]);
         break;
+      case 'resetUserProfile':
+        Alert.alert(t('settings.profile_reset_confirm_title'), t('settings.profile_reset_confirm_body'), [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('settings.profile_reset_action'),
+            style: 'destructive',
+            onPress: () => {
+              resetUserProfile()
+                .then(() => ToastAndroid.show(t('settings.profile_reset_done_toast'), ToastAndroid.SHORT))
+                .catch((e: unknown) => Alert.alert(t('settings.profile_reset_failed_title'), String((e as any)?.message || e)));
+            },
+          },
+        ]);
+        break;
       case 'syncToGist':
         dotfiles.syncToGist();
         ToastAndroid.show('Syncing to Gist...', ToastAndroid.SHORT);
@@ -904,7 +925,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     }
     // dotfiles is read from a ref above; onClose is the ShellLayout-provided
     // closeConfig callback (useCallback([]) there), so this stays stable too.
-  }, [onClose]);
+  }, [onClose, t]);
 
   const handleToggle = useCallback(
     (def: SettingDef) => applyValue(def, !getVal(def)),
@@ -972,7 +993,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
                     <View key={def.key}>
                       {ri > 0 && <View style={styles.divider} />}
                       <SettingRow
-                        def={def}
+                        def={{
+                          ...def,
+                          label: def.labelKey ? t(def.labelKey) : def.label,
+                          description: def.descriptionKey ? t(def.descriptionKey) : def.description,
+                          actionLabel: def.actionLabelKey ? t(def.actionLabelKey) : def.actionLabel,
+                        }}
                         value={getVal(def)}
                         onToggle={handleToggle}
                         onStringEdit={handleStringEdit}

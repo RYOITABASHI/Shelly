@@ -22,6 +22,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const STORAGE_KEY = 'shelly_user_profile';
+const SETTINGS_KEY = 'shelly_settings';
 const MAX_COMMANDS = 50;
 const MAX_FACTS = 30;
 const MAX_PROJECTS = 10;
@@ -77,6 +78,17 @@ function freshDefaultProfile(): UserProfile {
 
 let profileCache: UserProfile | null = null;
 
+export async function isProfileLearningEnabled(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(SETTINGS_KEY);
+    if (!raw) return true;
+    const parsed = JSON.parse(raw);
+    return parsed?.profileLearningEnabled !== false;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * プロファイルをロードする（キャッシュあり）
  */
@@ -116,6 +128,7 @@ async function saveProfile(profile: UserProfile): Promise<void> {
  * コマンド実行を記録する
  */
 export async function learnFromCommand(command: string): Promise<void> {
+  if (!(await isProfileLearningEnabled())) return;
   const profile = await loadUserProfile();
   const cmd = command.trim().split(/\s+/)[0]; // 最初のワードだけ
   if (!cmd || cmd.startsWith('#')) return;
@@ -143,6 +156,7 @@ export async function learnFromCommand(command: string): Promise<void> {
  * AIエージェント使用を記録する
  */
 export async function learnFromAgentUse(agent: string): Promise<void> {
+  if (!(await isProfileLearningEnabled())) return;
   const profile = await loadUserProfile();
   profile.agentUsage[agent] = (profile.agentUsage[agent] ?? 0) + 1;
   await saveProfile(profile);
@@ -152,6 +166,7 @@ export async function learnFromAgentUse(agent: string): Promise<void> {
  * プロジェクトアクセスを記録する
  */
 export async function learnFromProject(path: string, name: string): Promise<void> {
+  if (!(await isProfileLearningEnabled())) return;
   const profile = await loadUserProfile();
   const existing = profile.recentProjects.find(p => p.path === path);
   if (existing) {
@@ -170,6 +185,7 @@ export async function learnFromProject(path: string, name: string): Promise<void
  * LLMは使わず、パターンマッチで自己紹介的な情報を拾う。
  */
 export async function learnFromUserInput(input: string): Promise<void> {
+  if (!(await isProfileLearningEnabled())) return;
   const profile = await loadUserProfile();
   const extracted = extractFacts(input);
 
@@ -254,6 +270,7 @@ export function formatProfileForPrompt(profile: UserProfile): string {
  */
 export async function getUserProfileSummaryForPrompt(): Promise<string> {
   try {
+    if (!(await isProfileLearningEnabled())) return '';
     return formatProfileForPrompt(await loadUserProfile());
   } catch {
     return '';

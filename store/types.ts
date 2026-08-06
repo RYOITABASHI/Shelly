@@ -449,6 +449,8 @@ export type AppSettings = {
   /** Default agent for chat / AI pane. Legacy removed-agent values
    * are migrated to codex when old settings are loaded. */
   defaultAgent: 'cerebras' | 'groq' | 'codex';
+  /** Enables local user-profile learning and prompt personalization. */
+  profileLearningEnabled?: boolean;
   /** リアルタイム翻訳ON/OFF（デフォルト: false） */
   realtimeTranslateEnabled?: boolean;
   /** LLM出力通訳（学習モード）ON/OFF（デフォルト: false） */

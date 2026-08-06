@@ -19,6 +19,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   formatProfileForPrompt,
   getUserProfileSummaryForPrompt,
+  isProfileLearningEnabled,
   learnFromAgentUse,
   learnFromCommand,
   learnFromProject,
@@ -28,6 +29,7 @@ import {
 } from '@/lib/user-profile';
 
 beforeEach(async () => {
+  await AsyncStorage.clear();
   // resetUserProfile clears BOTH the module-level in-memory cache and storage,
   // so each test starts from DEFAULT_PROFILE.
   await resetUserProfile();
@@ -65,6 +67,23 @@ describe('learnFromCommand', () => {
     const raw = await AsyncStorage.getItem('shelly_user_profile');
     expect(raw).toBeTruthy();
     expect(JSON.parse(raw!).topCommands[0].cmd).toBe('git');
+  });
+
+  it('does not learn anything when profile learning is disabled in settings', async () => {
+    await AsyncStorage.setItem('shelly_settings', JSON.stringify({ profileLearningEnabled: false }));
+
+    expect(await isProfileLearningEnabled()).toBe(false);
+    await learnFromCommand('git status');
+    await learnFromAgentUse('codex');
+    await learnFromProject('/repo/app', 'App');
+    await learnFromUserInput('remember: I prefer concise output');
+
+    const profile = await loadUserProfile();
+    expect(profile.topCommands).toEqual([]);
+    expect(profile.agentUsage).toEqual({});
+    expect(profile.recentProjects).toEqual([]);
+    expect(profile.facts).toEqual([]);
+    expect(await getUserProfileSummaryForPrompt()).toBe('');
   });
 });
 

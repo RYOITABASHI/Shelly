@@ -155,6 +155,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalWallpaperTransparency: true,
   uiFont: 'blue',
   showVimKeyBar: false,
+  profileLearningEnabled: true,
   // 2026-07-24 reversal of the 2026-07-14 directive, specifically for
   // REGISTRATION confirm (not the separate defaultRequireActionApproval
   // below, which is about per-run dispatch approval and is unchanged):
