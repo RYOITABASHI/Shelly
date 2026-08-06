@@ -12,6 +12,7 @@ import {
 import WebView, { WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useBrowserStore, PRESET_BOOKMARKS } from '@/store/browser-store';
+import { shouldApplyLastOpenedUrlFallback } from '@/lib/browser-pane-last-url-fallback';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
@@ -424,6 +425,20 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   // from poisoning fresh manual Browser Pane opens long after the
   // last queued URL. Without it, a Sidebar "+ browser" hours later
   // would silently reload the last xdg-open'd URL.
+  // 2026-08-06 Codex review finding (round 3): whether this mount already
+  // resolved its initial URL some other way (an openSignal, an explicit
+  // caller-supplied initialUrl, or the synchronous lastOpenedUrl fallback
+  // right below) — threaded into appliedLastOpenedUrlRef's initial value
+  // below so the LATE-arriving fallback effect can never fire for a pane
+  // whose URL was already decided at mount time. Without this, a pane
+  // that resolved synchronously (or via openSignal) left the ref at its
+  // bare `false` default; if that pane's WebView later happened to be
+  // sitting at 'about:blank' again for any reason (a failed load, a user
+  // manually clearing it) at the exact moment some OTHER Browser Pane's
+  // navigation updated the shared lastOpenedUrl, this pane would silently
+  // adopt that unrelated pane's URL — not the "untouched cold-start" case
+  // this fallback exists for.
+  let resolvedAtMount = false;
   const initialResolvedUrl = (() => {
     const s = useBrowserStore.getState();
     if (
@@ -432,7 +447,27 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       /^https?:\/\//i.test(s.openSignal.url)
     ) {
       lastConsumedOpenSignalSeq = s.openSignal.seq;
+      resolvedAtMount = true;
       return s.openSignal.url;
+    }
+    if (initialUrl !== 'about:blank') {
+      resolvedAtMount = true;
+      return initialUrl;
+    }
+    // 2026-08-06 on-device QA finding (docs/superpowers/DEFERRED.md):
+    // currentUrl is plain component-local state, so a fresh mount (e.g. the
+    // app cold-starting from a killed process when a browser-pane agent
+    // action's approval notification is tapped) always re-initialized to
+    // a bare 'about:blank' — with nothing left to recover the page the
+    // user was actually on, a pending browser-pane approval's own
+    // URL-allowlist check declined every time. Falling back to the last
+    // real page any Browser Pane actually visited (persisted, see
+    // store/browser-store.ts's recordVisitedUrl) instead of a hardcoded
+    // `initialUrl` closes that gap without touching the approval/allowlist
+    // logic itself.
+    if (s.lastOpenedUrl) {
+      resolvedAtMount = true;
+      return s.lastOpenedUrl;
     }
     return initialUrl;
   })();
@@ -448,6 +483,35 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   useEffect(() => {
     currentUrlRef.current = currentUrl;
   }, [currentUrl]);
+
+  // 2026-08-06 Codex review finding (round 2): initialResolvedUrl's
+  // lastOpenedUrl fallback above only helps if the persisted value has
+  // already loaded into the store by the time this component's initial
+  // render runs — but app/_layout.tsx's loadLastOpenedUrl() is an async
+  // AsyncStorage read, so on a genuine cold start (the exact case this
+  // fix targets) a Browser Pane mounting alongside RootLayout almost
+  // always wins that race and initializes to 'about:blank' anyway, with
+  // nothing to ever revisit it. Subscribing here means a LATE-arriving
+  // lastOpenedUrl still gets applied once, via React's normal re-render
+  // (no timing assumption needed) — but only if the pane is still
+  // genuinely untouched (about:blank) and nothing else (an explicit
+  // initialUrl, an openSignal, or the synchronous fallback above) has
+  // already claimed it — see resolvedAtMount above (round 3 finding).
+  const lastOpenedUrl = useBrowserStore((s) => s.lastOpenedUrl);
+  const appliedLastOpenedUrlRef = useRef(resolvedAtMount);
+  useEffect(() => {
+    if (!shouldApplyLastOpenedUrlFallback({
+      alreadyApplied: appliedLastOpenedUrlRef.current,
+      lastOpenedUrl,
+      initialUrl,
+      currentUrl: currentUrlRef.current,
+    })) {
+      return;
+    }
+    appliedLastOpenedUrlRef.current = true;
+    setCurrentUrl(lastOpenedUrl as string);
+    setInputUrl(lastOpenedUrl as string);
+  }, [lastOpenedUrl, initialUrl]);
 
   const automationControllerRef = useRef<BrowserPaneAutomationController | null>(null);
   if (!automationControllerRef.current) {
@@ -534,6 +598,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       setInputUrl(state.url);
     }
     setCurrentUrl(state.url ?? 'about:blank');
+    if (state.url) useBrowserStore.getState().recordVisitedUrl(state.url);
   }, []);
 
   const handleBack = useCallback(() => { webviewRef.current?.goBack(); }, []);

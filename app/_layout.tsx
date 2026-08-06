@@ -25,6 +25,7 @@ import { usePluginStore } from '@/lib/plugin-api';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useDmPairingStore } from '@/store/dm-pairing-store';
+import { useDotfilesStore } from '@/lib/dotfiles-sync';
 import { completeXOAuthCallback, isXOAuthSuccess, type XOAuthCallbackResult } from '@/lib/x-oauth-connect';
 import * as Linking from 'expo-linking';
 import * as Clipboard from 'expo-clipboard';
@@ -436,6 +437,19 @@ export default function RootLayout() {
     logInfo('RootLayout', 'Loaded: cosmetics');
     useDmPairingStore.getState().loadPairings();
     logInfo('RootLayout', 'Loaded: dm-pairings');
+    // 2026-08-06 on-device QA finding (docs/superpowers/DEFERRED.md):
+    // useDotfilesStore.loadConfig() had no caller anywhere in the codebase,
+    // so the PAT/gistId/includeAgentData toggle never survived an app
+    // restart — every store above follows this same boot-time load pattern.
+    useDotfilesStore.getState().loadConfig();
+    logInfo('RootLayout', 'Loaded: dotfiles-sync');
+    // 2026-08-06 on-device QA finding: restores the last real page any
+    // Browser Pane visited, so a cold start (e.g. from a browser-pane
+    // agent action's approval notification tap) has it available as
+    // BrowserPane.tsx's fallback initial URL — see that file's
+    // initialResolvedUrl comment.
+    useBrowserStore.getState().loadLastOpenedUrl();
+    logInfo('RootLayout', 'Loaded: browser-last-url');
 
     // Resolve dynamic HOME path from native layer
     import('@/lib/home-path').then(({ initHomePath }) => {

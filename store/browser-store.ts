@@ -17,12 +17,27 @@ interface BrowserState {
   navSignal: { action: BrowserNavAction; seq: number };
   /** Incremented to tell BrowserPane to load a specific URL */
   openSignal: { url: string; seq: number };
+  /** Last real (http/https) page a Browser Pane actually navigated to,
+   *  persisted so a fresh mount (e.g. the app cold-starting from a killed
+   *  process when a browser-pane agent action's approval notification is
+   *  tapped) has something better than a bare 'about:blank' to fall back
+   *  to — see recordVisitedUrl's doc comment. */
+  lastOpenedUrl: string | null;
   addBookmark: (b: Bookmark) => void;
   removeBookmark: (url: string) => void;
   loadBookmarks: () => Promise<void>;
   triggerNav: (action: BrowserNavAction) => void;
   openUrl: (url: string) => void;
+  /** Records a page a Browser Pane actually navigated to. Ignores
+   *  'about:blank' (BrowserPane's own empty/loading state — recording it
+   *  would overwrite a real last-visited URL with nothing every time a
+   *  pane resets) and any non-http(s) scheme (e.g. 'javascript:', 'file:')
+   *  so this can never become a vector for restoring something unsafe. */
+  recordVisitedUrl: (url: string) => void;
+  loadLastOpenedUrl: () => Promise<void>;
 }
+
+const LAST_URL_STORAGE_KEY = 'shelly_browser_last_url';
 
 /** Built-in preset bookmarks. Always shown, not editable, not persisted. */
 export const PRESET_BOOKMARKS: readonly Bookmark[] = [
@@ -36,6 +51,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
   bookmarks: [],
   navSignal: { action: 'reload' as BrowserNavAction, seq: 0 },
   openSignal: { url: '', seq: 0 },
+  lastOpenedUrl: null,
 
   addBookmark: (b) => {
     set((s) => {
@@ -66,5 +82,18 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
 
   openUrl: (url) => {
     set((s) => ({ openSignal: { url, seq: s.openSignal.seq + 1 } }));
+  },
+
+  recordVisitedUrl: (url) => {
+    if (!/^https?:\/\//i.test(url)) return;
+    set({ lastOpenedUrl: url });
+    AsyncStorage.setItem(LAST_URL_STORAGE_KEY, url).catch(() => {});
+  },
+
+  loadLastOpenedUrl: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(LAST_URL_STORAGE_KEY);
+      if (raw) set({ lastOpenedUrl: raw });
+    } catch {}
   },
 }));
