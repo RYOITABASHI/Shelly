@@ -33,6 +33,8 @@ const OPTIONS: SheetOption[] = [
   // ASK — Shelly's self-documenting assistant. Answers "can Shelly do X?"
   // using the bundled feature catalog via Groq (free tier by default).
   { kind: 'pane', id: 'ask' },
+  // Memory Workbench — browse/search/edit/delete agent + shared memory notes.
+  { kind: 'pane', id: 'memory-workbench' },
   { kind: 'sidebar', id: 'fileTree', icon: 'folder-open' },
 ];
 

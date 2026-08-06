@@ -80,6 +80,7 @@ import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
 import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
+import { selectRunAgent } from '@/lib/agent-runs-selection';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { summarizeAgentDraftAsText, hasDraftAssumptions } from '@/lib/agent-plan-summary';
@@ -172,6 +173,9 @@ export function Sidebar() {
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
   const agentsHalted = useAgentStore((s) => s.halted);
+  // Read only to decide whether an agent row gets the "run history" affordance —
+  // the full list lives in the Agent Runs pane, not here.
+  const agentRunHistory = useAgentStore((s) => s.runHistory);
   // Surface the configured Obsidian vault (where collection agents write their dated
   // output folders) as a one-tap DEVICE shortcut, so generated results are easy to
   // open. Falls back to the runtime default when no custom vault path is set.
@@ -823,18 +827,49 @@ export function Sidebar() {
     }
   }, [runCommandForAgentSync, t]);
 
-  // Secondary popup: list the agent's saved memory notes (Phase 1).
-  const showMemoryList = React.useCallback((agent: Agent, notes: MemoryNote[]) => {
-    const body = notes.length
-      ? notes
-          .slice(0, 20)
-          .map((note) => `• [${note.type}] ${note.text.replace(/\s+/g, ' ').slice(0, 160)}`)
-          .join('\n\n')
-      : t('sidebar.agent_memory_empty');
-    Alert.alert(t('sidebar.agent_memory_title', { count: notes.length }), body, [
-      { text: t('common.close'), style: 'cancel' },
-    ]);
-  }, [t]);
+  // Memory button target: open (or focus) the Memory Workbench pane for the
+  // agent — replaces the old truncated showMemoryList Alert (20 notes / 160
+  // chars, no edit/delete/search). Mirrors the Edit button's addPane+focusSlot
+  // pattern below; the agent target flows through agent-store's transient
+  // memoryWorkbenchAgentId, which MemoryWorkbenchPane subscribes to.
+  const openMemoryWorkbench = React.useCallback((agent: Agent) => {
+    useAgentStore.getState().setMemoryWorkbenchAgentId(agent.id);
+    const multiPane = useMultiPaneStore.getState();
+    let slot = multiPane.slots.find((s) => s?.tab === 'memory-workbench') ?? null;
+    if (slot) {
+      const slotIndex = multiPane.slots.findIndex((s) => s?.id === slot!.id);
+      if (slotIndex >= 0) multiPane.focusSlot(slotIndex as SlotIndex);
+      usePaneStore.getState().setFocusedPane(slot.id);
+      return;
+    }
+    if (multiPane.addPane('memory-workbench') !== null) return;
+    const next = useMultiPaneStore.getState();
+    slot = next.slots[next.focusedSlot];
+    if (slot) usePaneStore.getState().setFocusedPane(slot.id);
+  }, []);
+
+  // Open the Agent Runs pane scoped to one agent. Mirrors the Edit button's
+  // reuse-or-add-then-focus pattern below, but for the 'agent-runs' tab.
+  // The agent id travels through lib/agent-runs-selection.ts rather than the
+  // slot itself, because hooks/use-multi-pane.ts's Slot carries no general
+  // per-pane metadata (only `sessionId`, terminal-only) — see that module's
+  // own doc comment. The selection is set BEFORE addPane so a pane that
+  // mounts immediately still reads the right agent.
+  const openAgentRunsPane = React.useCallback((agentId: string) => {
+    selectRunAgent(agentId);
+    const multiPane = useMultiPaneStore.getState();
+    let runsSlot = multiPane.slots.find((slot) => slot?.tab === 'agent-runs') ?? null;
+    if (runsSlot) {
+      const slotIndex = multiPane.slots.findIndex((slot) => slot?.id === runsSlot!.id);
+      if (slotIndex >= 0) multiPane.focusSlot(slotIndex as SlotIndex);
+      usePaneStore.getState().setFocusedPane(runsSlot.id);
+      return;
+    }
+    if (multiPane.addPane('agent-runs') !== null) return;
+    const next = useMultiPaneStore.getState();
+    runsSlot = next.slots[next.focusedSlot];
+    if (runsSlot) usePaneStore.getState().setFocusedPane(runsSlot.id);
+  }, []);
 
   // Tap an agent row → full detail popup (the row only has room for the name).
   const showAgentDetail = React.useCallback(async (agent: Agent) => {
@@ -1027,8 +1062,16 @@ export function Sidebar() {
           messageId,
         });
       } },
+      // Purely ADDITIVE — appended after the existing Run Now / Pause / Edit
+      // entries so none of them lose their slot. Android's AlertDialog only
+      // renders 3 buttons (see the slice(0, 3) note below), so on-device this
+      // entry is a fallback: the guaranteed-reachable entry point is the
+      // history icon on the agent row itself.
+      ...(runHistory.length
+        ? [{ text: t('sidebar.agent_view_runs'), onPress: () => openAgentRunsPane(agent.id) }]
+        : []),
       ...(memoryNotes.length
-        ? [{ text: t('sidebar.agent_memory_view'), onPress: () => showMemoryList(agent, memoryNotes) }]
+        ? [{ text: t('sidebar.agent_memory_view'), onPress: () => openMemoryWorkbench(agent) }]
         : []),
       // Task C: a single extra button (not two) to keep this Alert.alert's
       // button count in check — "Open" was picked over "Copy path" because
@@ -1062,7 +1105,7 @@ export function Sidebar() {
     // A real fix — replacing this Alert.alert with a custom bottom sheet
     // that supports more than 3 actions — is tracked in DEFERRED.md.
     Alert.alert(agent.name, body, buttons.slice(0, 3), { cancelable: true });
-  }, [t, handleRunScheduledAgent, handleTogglePause, showMemoryList, agentApprovalLabel]);
+  }, [t, handleRunScheduledAgent, handleTogglePause, openMemoryWorkbench, agentApprovalLabel, openAgentRunsPane]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
@@ -1362,6 +1405,17 @@ export function Sidebar() {
                       {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'} · {agentApprovalLabel(agent)}
                     </Text>
                   </Pressable>
+                  {(agentRunHistory[agent.id]?.length ?? 0) > 0 && (
+                    <Pressable
+                      onPress={() => openAgentRunsPane(agent.id)}
+                      hitSlop={8}
+                      style={styles.tasksAction}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('sidebar.agent_view_runs_a11y', { name: agent.name })}
+                    >
+                      <MaterialIcons name="history" size={12} color={C.text2} />
+                    </Pressable>
+                  )}
                   <Pressable
                     onPress={() => void handleRunScheduledAgent(agent.id, agent.name)}
                     disabled={pendingAgentIds.has(agent.id) || runningAgentIds.has(agent.id)}

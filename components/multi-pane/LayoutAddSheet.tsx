@@ -43,6 +43,8 @@ const ADD_OPTIONS: AddOption[] = [
   { kind: 'pane', id: 'preview' },
   { kind: 'pane', id: 'markdown' },
   { kind: 'pane', id: 'ask' },
+  // Memory Workbench — browse/search/edit/delete agent + shared memory notes.
+  { kind: 'pane', id: 'memory-workbench' },
   { kind: 'sidebar', id: 'fileTree', icon: 'folder-open' },
 ];
 

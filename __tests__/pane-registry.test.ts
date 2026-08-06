@@ -4,10 +4,12 @@ describe('PANE_REGISTRY', () => {
   it('registers every pane type used by the shell layout', () => {
     expect(Object.keys(PANE_REGISTRY).sort()).toEqual([
       'agent-chat',
+      'agent-runs',
       'ai',
       'ask',
       'browser',
       'markdown',
+      'memory-workbench',
       'preview',
       'terminal',
     ]);

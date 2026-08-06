@@ -37,6 +37,8 @@ const COMPACT_PANE_LABELS: Record<PaneTab, string> = {
   markdown: 'MD',
   preview: 'PREV',
   ask: 'ASK',
+  'agent-runs': 'RUNS',
+  'memory-workbench': 'MEM',
 };
 
 function OpenPaneTabs() {

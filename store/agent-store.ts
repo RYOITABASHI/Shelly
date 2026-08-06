@@ -24,6 +24,11 @@ interface AgentState {
    *  (AgentBar, widgets, notifications) can observe run state without each
    *  duplicating the lock-file poll. */
   runningAgentIds: string[];
+  /** Agent currently targeted by the Memory Workbench pane. Transient (this
+   *  store has no persist middleware) — set by Sidebar's agent detail popup
+   *  right before it opens/focuses a 'memory-workbench' pane, read by
+   *  components/panes/MemoryWorkbenchPane.tsx. */
+  memoryWorkbenchAgentId: string | null;
 
   setAgents: (agents: Agent[]) => void;
   setHalted: (halted: boolean) => void;
@@ -45,6 +50,8 @@ interface AgentState {
 
   setPendingEnvSync: (cmd: string | null) => void;
   consumePendingEnvSync: () => string | null;
+
+  setMemoryWorkbenchAgentId: (agentId: string | null) => void;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -54,6 +61,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   pendingEnvSync: null,
   halted: false,
   runningAgentIds: [],
+  memoryWorkbenchAgentId: null,
 
   setAgents: (agents) => set({ agents, isLoaded: true }),
   setHalted: (halted) => set({ halted }),
@@ -111,4 +119,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ pendingEnvSync: null });
     return cmd;
   },
+
+  setMemoryWorkbenchAgentId: (agentId) => set({ memoryWorkbenchAgentId: agentId }),
 }));

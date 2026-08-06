@@ -29,7 +29,9 @@ export type PaneTab =
   | 'browser'
   | 'markdown'
   | 'preview'
-  | 'ask';
+  | 'ask'
+  | 'agent-runs'
+  | 'memory-workbench';
 
 export type PresetId =
   | 'p1'

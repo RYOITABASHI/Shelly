@@ -20,6 +20,7 @@ import { logInfo, logWarn } from '@/lib/debug-logger';
 import { getHomePath } from '@/lib/home-path';
 import {
   buildRecallContext,
+  deleteMemoryNoteFile,
   makeMemoryNote,
   readMemoryNotes,
   recallMemoryNotes,
@@ -380,13 +381,7 @@ export async function activateMemoryList(
 ): Promise<MemoryNote[] | null> {
   try {
     const namespace = agentNamespace(agentId);
-    if (!deps.importedAgents.has(agentId)) {
-      const g2Notes = await readMemoryNotes(agentId);
-      for (const note of g2Notes) {
-        await deps.adapter.put(g2NoteToRecord(note));
-      }
-      deps.importedAgents.add(agentId);
-    }
+    await ensureAgentImported(agentId, deps);
     const records = await deps.store.list(namespace);
     return records
       .map((record) => recordToNote(agentId, record))
@@ -395,6 +390,136 @@ export async function activateMemoryList(
     logWarn(
       LOG_MODULE,
       'activated list failed, caller should fall back to G2 (live run unaffected)',
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
+  }
+}
+
+// One-time-per-session G2 mirror-import for callers (list/delete/update) that
+// can be reached before the agent's next live run — same idempotent
+// adapter.put upsert as importAndQuery, without needing a live run's
+// notes/name/prompt. Extracted from activateMemoryList so the Workbench CRUD
+// entry points below can never operate on a store that has not yet seen the
+// agent's pre-flip G2 notes (deleting/editing only the store copy of a note
+// that still exists as a G2 .md would let it resurrect on the next import).
+async function ensureAgentImported(agentId: string, deps: ShadowDeps): Promise<void> {
+  if (deps.importedAgents.has(agentId)) return;
+  const g2Notes = await readMemoryNotes(agentId);
+  for (const note of g2Notes) {
+    await deps.adapter.put(g2NoteToRecord(note));
+  }
+  deps.importedAgents.add(agentId);
+}
+
+/**
+ * Memory Workbench — delete one note by id (works for both a real agent's
+ * namespace and GLOBAL_MEMORY_SCOPE). Removes the record from the MEMORY-001
+ * store AND best-effort removes the G2 .md source file: without the latter,
+ * the per-session mirror-import (ensureAgentImported) would resurrect the
+ * note on the next app launch, which is the worst possible outcome for a
+ * user-facing delete. Both removals must succeed for a `true` result.
+ *
+ * Matches the module's fallback contract: returns false (never throws) on any
+ * internal failure so the caller can surface an error instead of crashing.
+ */
+export async function deleteMemoryNoteById(
+  agentId: string,
+  noteId: string,
+  deps: ShadowDeps = getShadowDeps()
+): Promise<boolean> {
+  try {
+    const namespace = agentNamespace(agentId);
+    // Import first so a note that today exists only as a G2 .md file is
+    // tracked (and removed) instead of surviving in G2 unnoticed.
+    await ensureAgentImported(agentId, deps);
+    await deps.store.delete(namespace, noteId);
+    const g2Removed = await deleteMemoryNoteFile(agentId, noteId);
+    if (!g2Removed) {
+      logWarn(
+        LOG_MODULE,
+        `delete of note ${noteId} (agent ${agentId}) removed the store record but the G2 file removal failed — the note may resurrect on next launch`
+      );
+      return false;
+    }
+    return true;
+  } catch (error) {
+    logWarn(
+      LOG_MODULE,
+      'note delete failed (live run unaffected)',
+      error instanceof Error ? error.message : String(error)
+    );
+    return false;
+  }
+}
+
+/**
+ * Memory Workbench — edit one note's text and/or tags by id. Reuses G2's OWN
+ * makeMemoryNote (same trim, MAX_NOTE_CHARS truncation, tag normalization and
+ * deterministic id derivation) exactly like activateMemoryWrite, so an edited
+ * note is normalized identically to a freshly-written one. Because the id is
+ * content-derived, an edited TEXT re-derives the id: the record is re-keyed,
+ * the stale key deleted, and `created` is preserved from the existing record
+ * (an edit is not a new fact). The G2 .md file for the OLD id is removed
+ * best-effort for the same resurrect-on-import reason as
+ * deleteMemoryNoteById; the edited content lives in the MEMORY-001 store
+ * only, exactly like an activateMemoryWrite write.
+ *
+ * Returns the updated MemoryNote (with the possibly-new id) on success, or
+ * null (never throws) on any internal failure / unknown id / empty text.
+ */
+export async function updateMemoryNoteById(
+  params: { agentId: string; id: string; text: string; tags?: string[] },
+  deps: ShadowDeps = getShadowDeps()
+): Promise<MemoryNote | null> {
+  try {
+    const namespace = agentNamespace(params.agentId);
+    await ensureAgentImported(params.agentId, deps);
+    const existing = await deps.store.get(namespace, params.id);
+    if (!existing) {
+      logWarn(LOG_MODULE, `note update failed — id ${params.id} not found for agent ${params.agentId}`);
+      return null;
+    }
+    const note = makeMemoryNote({
+      agentId: params.agentId,
+      type: (existing.kind as MemoryNoteType) ?? 'fact',
+      text: params.text,
+      tags: params.tags ?? existing.tags,
+      // ISO round-trips exactly through g2NoteToRecord's Date.parse, so the
+      // original creation time survives the edit.
+      created: new Date(existing.createdAt).toISOString(),
+    });
+    if (!note.text) {
+      logWarn(LOG_MODULE, `note update refused — empty replacement text for ${params.id}`);
+      return null;
+    }
+    // Same write-boundary PII/taint scan as activateMemoryWrite (Track C):
+    // an edit can introduce PII just as easily as a fresh write.
+    const pii = scanForPii(note.text);
+    const record: MemoryRecord = {
+      ...g2NoteToRecord(note),
+      updatedAt: Date.now(),
+      metadata: pii.hasPii ? { piiTaint: 'true', piiKinds: pii.kinds.join(',') } : undefined,
+    };
+    // adapter.put (not store.put): preserves the G2 created timestamp the
+    // record above already carries, same reasoning as the mirror-import.
+    await deps.adapter.put(record);
+    if (note.id !== params.id) {
+      await deps.store.delete(namespace, params.id);
+    }
+    const g2Removed = await deleteMemoryNoteFile(params.agentId, params.id);
+    if (!g2Removed) {
+      logWarn(
+        LOG_MODULE,
+        `update of note ${params.id} (agent ${params.agentId}) wrote the store record but the stale G2 file removal failed — the pre-edit note may resurrect on next launch`
+      );
+      return null;
+    }
+    return note;
+  } catch (error) {
+    logWarn(
+      LOG_MODULE,
+      'note update failed (live run unaffected)',
       error instanceof Error ? error.message : String(error)
     );
     return null;

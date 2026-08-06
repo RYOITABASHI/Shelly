@@ -72,6 +72,29 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
     icon: 'help-outline',
     getComponent: () => require('@/components/panes/AskPane').default,
   },
+  // Agent Runs pane — scrollable history of past background-agent runs
+  // (agent-store's runHistory, up to 30 per agent) with the per-run audit
+  // detail the Sidebar's 3-button Alert could never fit.
+  'agent-runs': {
+    title: 'Agent Runs',
+    titleKey: 'pane.agent_runs.title',
+    headerTitle: 'Agent Runs',
+    headerTitleKey: 'pane.agent_runs.header',
+    icon: 'history',
+    getComponent: () => require('@/components/panes/AgentRunsPane').default,
+  },
+  // Memory Workbench pane — browse/search/edit/delete an agent's memory
+  // notes plus the shared _global notes. Opened from the Sidebar agent
+  // detail popup's Memory button (agent target flows through agent-store's
+  // memoryWorkbenchAgentId).
+  'memory-workbench': {
+    title: 'Memory',
+    titleKey: 'pane.memory_workbench.title',
+    headerTitle: 'Memory',
+    headerTitleKey: 'pane.memory_workbench.header',
+    icon: 'psychology',
+    getComponent: () => require('@/components/panes/MemoryWorkbenchPane').default,
+  },
 };
 
 export function resolvePaneTitle(
