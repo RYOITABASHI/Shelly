@@ -14,6 +14,26 @@
 
 ---
 
+### ✅ Sync & Restore後続の4機能（プロフィール駆動エージェント提案／Agent Runsペイン／Memory Workbenchペイン）を実装（2026-08-06、並列サブエージェント編成：Codex CLI + Opus5 + Fable5、各Codex複数ラウンドのアドバーサリアルレビュー）— コミット済み・push済み・CI green・実機未検証
+
+**経緯**: Fable5/Codexへの全コードベースレビュー依頼（README＋ソース全文、「アンドロイド版ヘルメスエージェントと呼ぶに遜色ないか」）で指摘された機能ギャップのうち、実装済みだったSync & Restore（`390001b47`、別エントリなし・単体で完結）に続く残り3項目「優先度順に1つずつ実装」の指示のもと実装。後半3つは「並列分隊実装出来るものはサブエージェントで適宜最適なモデルを呼び出して」の指示により、Codex CLI（プロフィール駆動提案）・Opus5（Agent Runsペイン、git worktree分離）・Fable5（Memory Workbenchペイン、git worktree分離）に同時委託した。
+
+**実装内容**:
+1. **プロフィール駆動の自発的エージェント提案**（`6a994612b`）: `lib/agent-suggestion-engine.ts`（依存フリー、`lib/user-profile.ts`の`UserProfile`から候補エージェント案を生成）＋`components/suggestions/AgentSuggestionCard.tsx`（却下可能なバナー、Acceptは既存のchat-native確認フロー`presentDraftForConfirmation`と同一の`agentDraft`+`agentChatConfirm:true`メッセージを発行——直接`createAgent`は呼ばない）。ConfigTUIに「Profile Learning」トグル＋「Reset Profile」アクションを追加（既存の未使用`resetUserProfile()`をUIから呼べるようにし、README Privacy節が明記していた「トグルが無い」ギャップを解消）。Codexの2ラウンド目レビューで2件のバグを発見・修正・RED-GREEN検証済み: (a) 設定の非同期ロード完了前にProfile Learning=trueのデフォルト値で提案が一瞬表示されてしまう競合（`isSettingsLoaded`ガード追加）、(b) Accept時点でmarkSuggestionSeenを呼んでいたため、Accept後にチャット確認側でCancelしても提案が二度と出なくなるバグ（dismiss時のみseen化するよう修正）。
+2. **Agent Runsペイン**（`5c31d07c1`）: `components/panes/AgentRunsPane.tsx`。既存の`agent-store.ts`の`runHistory`（agentId毎最大30件）を全件スクロール表示、`routeDecision`/`steps`/`actionResults`まで含む詳細表示（従来のSidebar 3ボタンAlertでは入り切らなかった情報）。行アクション: Re-run（既存`runAgentNow`）、Save as skill（既存`offerSkillSave`の手動トリガー）、Undo（**バックエンドが存在しないため無効化＋説明表示のみ**、後述の残課題参照）。
+3. **Memory Workbenchペイン**（`5c31d07c1`、Agent Runsと同一コミットにまとめてマージ）: `components/panes/MemoryWorkbenchPane.tsx`。従来の`showMemoryList`Alert（20件・160文字切り捨て・閲覧専用）を置き換え、エージェント固有メモ＋共有`_global`メモを検索・編集・削除可能に。`lib/memory/shadow.ts`のstrangler層にUI呼び出し可能な`deleteMemoryNoteById`/`updateMemoryNoteById`を新設（既存のG2フォールバック契約に整合）。
+
+**マージ時に発覚した問題（教訓として記録）**: Agent RunsペインとMemory Workbenchペインは共有ファイル（`hooks/use-multi-pane.ts`のPaneTab union、`pane-registry.ts`、`AgentBar.tsx`、`Sidebar.tsx`、`lib/i18n/locales/{en,ja}.ts`）を両方が独立に編集していたため、各worktreeの差分を`git apply --3way`で統合した際、**一部のhunkがエラーメッセージ無しでサイレントに未適用のまま終わった**（`lib/agent-memory.ts`がNULバイトを含みバイナリ扱いされてパッチ全体が中断→以降のファイルの一部が適用漏れ）。具体的には、Memory Workbench側の新規ファイル5件と、`Sidebar.tsx`の`showMemoryList`→`openMemoryWorkbench`置き換えが消え古いAlertが復活、`memory-workbench`のPaneTab/registry/AgentBarラベル/i18nキー22件が丸ごと欠落——`npx tsc --noEmit`は当初通ってしまっていた（型エラーとして顕在化するまで気づかなかった）。worktreeから該当ファイルを直接コピー・共有ファイルを手動統合し、統合後の状態に対してCodexで専用のアドバーサリアルレビュー（「両機能の変更が本当に両方生き残っているか」観点）を追加実施してから確定。**教訓**: 複数worktreeが同じ共有ファイルを編集する並列実装のマージでは、`git apply`の「cleanly」ログを信用せず、共有ファイル側の型チェック（`Record<PaneTab, X>`の網羅性等）と機能キーワードのgrep突き合わせで両方の変更が生き残っているかを個別に確認する必要がある。
+
+**残課題（フォローアップ、DEFERRED登録）**:
+- **4機能とも実機（Z Fold6）未検証**: 単体テスト・型チェック・Codexレビューのみで確定。次回の実機QAセッションのスコープに追加が必要（既存タスク#10「browser-pane P0/重複コンテンツ検知/PlanSpecラダー」とは別スコープ）。
+- **Agent RunsペインのUndoは意図的に未実装（P2〜P3）**: 背景（無人）実行エージェントの結果をロールバックする仕組みが存在しない。AIペインのチャット実行結果に対するUndo（git savepointベース、`hooks/use-ai-pane-dispatch.ts`）とは別経路で、無人実行の各試行前にもsavepointを取る仕組みの新設が必要——スコープが大きいため今回は「無効化＋理由説明」に留めた。
+- **Agent RunsペインがAddPaneSheet.tsx/LayoutAddSheet.tsxの汎用ペイン追加シートに含まれていない（P3、軽微）**: Memory Workbenchは含まれるが、Agent RunsはSidebarの「View Run History」エントリポイント経由のみ。UIの一貫性の観点で改善余地あり。
+
+→ sync: README.mdへの機能表反映は未実施（次のREADME精査パスで反映予定）。MEMORY.md対象外（内部実装詳細のみ）。
+
+---
+
 ### ✅ 実機オーケストレーション実行ログの内容精査で判明した3件の疑義（ローカルLLM起動失敗／要約・通知ステップの捏造・重複コンテンツ／「通知して」のステップ混入）を調査・一部修正（2026-08-04、Codex事前調査＋Fable5独立検証・実装の2段階レビュー体制）— コミット・実機未検証
 
 **発見の経緯**: NL登録済みオーケストレーションエージェント（「パープレキシティで最新のAIニュースを集めて」→「ローカルLLMで要約して」→「通知して」の3ステップ）を実機で実行したところ、run-log JSONは3ステップとも`status:"success"`だったが、実際の内容は破綻していた。ステップ0（Perplexity）は引用`[1]`〜`[20]`付きの正しい実データ。ステップ1（「ローカルLLMで要約して」）はローカルLLMが`CANNOT LINK EXECUTABLE ".../llama-server": library "libllama-server-impl.so" not found`で起動失敗→Cerebrasへエスカレーション（ソフト拒否）→Groqへ再エスカレーションし、Groqは`success`扱いだがステップ0の内容と無関係な**架空リンク**（`https://www.papercity.com/`等）を返した。ステップ2（「通知して」）はCerebrasに回り、**ステップ1の捏造出力をそのまま逐語的に繰り返した**。加えて、「通知して」がそもそも独立したオーケストレーションステップとして残っていること自体、`sanitizeConversationalSteps()`（`40faf2fd0`で導入済み）が意図的に除去するはずの形状であり不審だった。Codexが先行して読み取り専用の静的調査を行い、Fable5が現行HEAD（`6d25c0381`）で全主張をコード直読で独立検証してから実装・不実装を判断した。
@@ -3782,6 +3802,7 @@ claude() {
 
 ## History
 
+- **2026-08-06**: プロフィール駆動エージェント提案／Agent Runsペイン／Memory Workbenchペインを並列サブエージェント編成（Codex CLI + Opus5 + Fable5、git worktree分離）で実装。マージ時に`git apply`の部分的サイレント失敗（共有ファイルの一部hunkが未適用のまま完了扱い）を発見・手動補完・Codexで統合後レビューを追加実施。4機能とも実機未検証。先頭のエントリ参照。
 - **2026-08-04**: 実機オーケストレーション実行の生ログ内容精査（ステータスだけでなく実テキスト）で3件の疑義を発見。Codexが読み取り専用の静的調査、Fable5が現行HEADで独立検証・実装する2段階レビュー体制で対応——(A)ローカルLLM起動失敗の`.so`欠落を検知しない健全性チェックのギャップを`scripts/shelly-local-llm-ensure.sh`に防御策実装、(B)`buildStepPrompt`の切り捨て順序が長い前ステップ結果で今回の指示を末尾ごと消し得るバグを3箇所（TS/bash/JSの独立コピー、うちJS版はCodex調査に無かった発見）で同時修正、(C)「通知して」のステップ混入はCodex仮説どおり現行コードにバグなし・stale agent state濃厚と判断しコード修正なし。重複コンテンツ検知の欠如はP1フォローアップとして記録。先頭のエントリ参照。
 - **2026-08-03**: Tier3会話型登録の実機テスト（agent-msd4bkjt）でユーザーが実バグ4件を発見（スケジュール質問ループ／エージェント全体local+runOn:on-device固定でステップピン無効化・ローカルLLMが架空URL入り捏造ニュースをsuccess記録／スケジュール・配信断片のステップ混入）。Codexが事前静的調査、Fable5が現行HEADで独立検証のうえ実装する2段階レビュー体制で一括修正——確定境界のrunOn自動導出廃止（`resolveConfirmedToolAndRunOn`へ抽出）、Tier2/Tier3共有の部分スケジュール合成（`combinePartialScheduleWithDraft`）、決定的ステップサニタイズ（`sanitizeConversationalSteps`）。ルーターのmanual-pin優先設計自体は意図的設計と確認し不変更。先頭のエントリ参照。
 - **2026-08-03**: `routeTextOverride`修正の実機再検証中にユーザーが「なんでパープレじゃなくてこれ(Gemini)なんだっけ？」と指摘・Fable5が修正: `resolveEscalationLadder`のWeb必須分岐が、`resolveAgentRoute`が正しく尊重した明示的なperplexity/gemini-apiピン（guard `configured-tool`）を無視して`webDomain`話題分類で機械的にツールを再選択していた。明示的なWeb系ピンをwebDomain判定より優先するよう修正（先頭付近のエントリ参照）。非Web系ピンの除外・consent/キー未設定ゲートは不変。
