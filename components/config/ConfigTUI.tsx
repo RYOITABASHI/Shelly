@@ -256,6 +256,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     icon: 'cloud',
     items: [
       { key: 'dotfilesPat',  label: 'GitHub PAT',      type: 'secret', source: 'custom', description: 'For dotfiles gist sync' },
+      { key: 'includeAgentData', label: 'Include Agents/Skills/Memory', type: 'boolean', source: 'custom', description: 'Also back up agent definitions, skill recipes, and memory notes to the same Gist. Off by default — memory notes and agent prompts may contain personal facts.' },
       { key: 'syncToGist',   label: 'Sync to Gist',    type: 'action', source: 'custom', actionLabel: 'Upload' },
       { key: 'syncFromGist', label: 'Sync from Gist',  type: 'action', source: 'custom', actionLabel: 'Download' },
     ],
@@ -580,11 +581,13 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     'teamMembers.local': settings.teamMembers?.local,
     customContext: customContextText,
     dotfilesPat: dotfiles.pat,
+    includeAgentData: dotfiles.includeAgentData,
     scouterEnabled,
     notificationTriggerEnabled,
   }), [
     customContextText,
     dotfiles.pat,
+    dotfiles.includeAgentData,
     i18n.locale,
     scouterEnabled,
     notificationTriggerEnabled,
@@ -719,6 +722,9 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           }
           case 'dotfilesPat':
             dotfiles.setPat(String(rawValue));
+            break;
+          case 'includeAgentData':
+            dotfiles.setIncludeAgentData(Boolean(rawValue));
             break;
           default:
             // teamMembers.xxx
