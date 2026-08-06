@@ -14,6 +14,40 @@
 
 ---
 
+### ✅ Hermes比較ロードマップ5項目に続く4件の未記録実装（browser-pane P0修正／重複コンテンツ検知＋PlanSpecエスカレーションラダー配線／X投稿対応／Gist同期）— 実装は別セッション、実機QAは本セッション（2026-08-06、Fable5、versionCode 2088 / commit `390001b47`）
+
+**発見の経緯**: 2026-08-05のセッションでCodexに独立コード監査を依頼したところ、browser-pane操作が`ok:false`（ページ内失敗）でも承認成功として記録されるP0バグを発見・報告した。ユーザーに「このセッションで直すか」を尋ねている間に、**別セッション（Codexとの直接レビューループ経由と推定）が並行してこの同じバグを`fb4626331`で修正し、さらに4件の追加実装を`390001b47`まで積み上げてpushしていた**ことが、翌セッション開始時の`git fetch`で判明（ローカル`main`が1コミット分`origin/main`から分岐していたため`git rebase origin/main`で追従）。この4件は**DEFERRED.mdに一切エントリが無いまま**mainへ着地しており、「新機能を追加するときは記録必須」という本ファイルの運用ルールが守られていなかった（本エントリはその欠落を埋めるための事後記録）。
+
+**実装内容（コミットから読み取り）**:
+1. `fb4626331 fix(agent): browser-pane approval reports in-page failures as accepted` — [[project_hermes_gap_roadmap_next_version]]のロードマップとは別件、2026-08-05にCodexが発見したP0の修正。`lib/browser-pane-automation.ts`の`handleMessage()`が`ok:false`でもPromiseをresolveし、`app/_layout.tsx`もその`result.ok`を検査せず無条件Acceptしていた構造的欠陥を修正。
+2. `cbe3b8ff5 feat(agent): duplicate-content detection + PlanSpec executor escalation ladder`（+ 追随修正`30b8b58ff`/`4dc62307c`/`e9de94dd7`一部） — `scripts/shelly-plan-executor.js`の品質ゲートに直前ステップとの重複/捏造出力検知を追加。**2026-08-04エントリ（17行目、本ファイル上部）が「実装なら見送り」としてP1フォローアップに記録した「重複コンテンツ検知の欠如」への対応**。同時にPlanSpec executor（無人実行）経由でも`lib/agent-escalation-ladder.ts`のラダーに沿ったツール選択が効くよう配線。
+3. `625e9b710 fix(agent): add X posting to unattended social-post dispatch` — 無人ソーシャル投稿ディスパッチにX（Twitter）投稿をOAuth2 PKCE＋トークンキャッシュ/リフレッシュ付きで追加。
+4. `390001b47 feat(sync): add agent/skill/memory backup+restore to Gist sync` — 既存dotfiles-syncのGitHub Gist同期に、`includeAgentData`トグル（opt-in）でエージェントJSON/スキル/メモリを含める機能を追加。Codexによる10ラウンドの敵対的レビュー（path traversal、mirror-delete範囲、bundle改ざん検知、同時sync競合ガード等）を経て着地、とコミットメッセージに明記。
+
+**実機QA結果（2026-08-06、Fable5、versionCode 2088、wireless adb再接続済み）**:
+
+- **①browser-pane P0修正 = PASS**。存在しないセレクタで意図的に失敗を誘発 → Allow後も run-log が`{"status":"skipped","errorMessage":"browser-pane action was declined."}`となり、承認成功として記録される旧挙動が解消されていることを確認。
+- **②重複コンテンツ検知 = PASS**（静的+部分動的）。実機`~/.shelly-plan-executor.js`のmd5がHEAD blobと完全一致、検知ロジックの実在をgrepで確認。2ステップの無人オーケストレーション実行で品質ゲート通過・別内容のoutputPreviewを確認（重複そのものを意図的に誘発するのは非現実的なため未実施）。
+- **③エスカレーションラダー配線 = PASS**。無人run-logの`routeDecision`に、Layer-2スコアラーによる妥当なツール選択（`"route":"cloud","toolType":"perplexity"..."confidence":1`等）とtoolLadder/toolLadderExhaustedNoteの生成を確認。
+- **④URL大文字小文字バグ修正 = FAIL（この修正自体がコードに存在しない）**。`lib/link-detector.ts`の`URL_REGEX`に`i`フラグは無く、history上もこの修正に該当するコミットが見当たらない。実機でも大文字・小文字どちらのURLも長押しメニューが出ず（現行のnative Canvasターミナルにはリンク長押し自体が未配線——`625e9b710`のコミットメッセージ自身が「real tap-to-open needs native touch-position-to-link hit-testing that doesn't exist yet」と明言）。**この項目はそもそも実装された形跡が無く、ユーザー側の依頼内容と実際の実装作業の間に何らかの行き違いがあった可能性が高い**（要ユーザー確認）。
+- **⑤X投稿対応 = BLOCKED（X未連携）**。実機`.env`にX用リフレッシュトークン/クライアントIDが存在せず（Blueskyテスト用キーのみ）、無人実行不能。コード自体の実在（`buildSocialPostRequest`等）は確認済み。**X連携後の再検証が必要**。
+- **⑥Gist同期 = BLOCKED（GitHub PAT未設定）+ 実バグ1件発見**。同期そのものは未検証（PAT未設定のため）だが、「Include Agents/Skills/Memory」トグルの表示・AsyncStorageへの書き込みまでは確認。**しかしアプリ再起動後にトグルがOFF表示へ戻る永続化バグを発見・再現（2回）**: `lib/dotfiles-sync.ts`の`loadConfig()`（PAT/gistId/includeAgentDataをストレージから読む関数）の**呼び出し元がコードベース全体でゼロ**（`app/_layout.tsx`起動時のload呼び出しはaccessibility側の別ストアのみ、`ConfigTUI.tsx`もopen時に呼ばない）。影響: Includeトグルだけでなく、**保存済みGitHub PAT自体も再起動後はストアに載らず、Sync機能全体が再起動をまたいで機能しない疑いが強い**（未検証だがloadConfig不在から論理的に導かれる）。
+
+**QAで新規に見つかった追加バグ（修正はしていません、次にやること）**:
+1. **【P1】承認通知の本文タップでBrowserペインがリセットされ、browser-pane承認が不安定に失敗する**: 通知本文タップ→Review画面遷移の間にBrowserペインが`about:blank`へ戻ることがある（3回中2回再現）ため、事前URL一致チェックで毎回decline。通知を展開して「確認」ボタンから開いた場合はペイン状態が保持され成功（1回）。2026-08-05に修正した「本文タップでもReview画面が開く」導線改善（本ファイル別エントリ参照）が、皮肉にもこの新しい失敗モードを踏みやすくしている可能性がある。関連: `app/_layout.tsx`のdeep-link処理、`components/panes/BrowserPane.tsx`の`currentUrl` state（remount時に初期化）。
+2. **【P2】`shelly config`ターミナルコマンドがConfigTUIを開かない**（exit 0だがUI無反応、2回再現）。CLAUDE.mdの「歯車ボタン or `shelly config`」という記述と実挙動が乖離。Command PaletteのSettingsアクションからは開ける。
+3. **【P2・仕様確認要】RUN NOWはディスク上のエージェント定義の手編集を反映しない**（in-memory定義から都度materializeするため、アプリ再起動まで反映されない）。バグか仕様か要判断。
+4. **【P3】force-stopでのラン中断後、staleロック（`locks/<id>.pid`・`<id>.chain.lock`）が残留し、次のRUN NOWが即座に失敗する**（run-logも書かれない）。起動時のstale lock掃除が無い模様。
+5. **【P3】schedule/nextExpectedAtのディスク直接編集がAlarmManagerへ反映されない**（UI経由編集は未検証のため直接編集限定の挙動である可能性、参考情報）。
+
+**テストで変更したまま残した状態**: 旧ビルドAPK104個（約65GB、`/sdcard/Android/data/dev.shelly.terminal/files/Download/`）を標準運用ルールに従い削除（ShellyModelsは残置）。他はすべて元の状態に復元済み（トグルOFF、テストエージェント2体削除、ペイン構成復帰）。
+
+**次にやること（優先度順）**: (a) Gist同期の`loadConfig()`未呼び出しバグ修正（P1、新機能が実質使えない）、(b) 承認通知タップでのBrowserペインリセット修正（P1）、(c) URL大文字小文字修正の実装状況をユーザーに確認、(d) X連携後のX投稿再検証、(e) PAT設定後のGist同期本検証。
+
+→ sync: なし。
+
+---
+
 ### ✅ Sync & Restore後続の4機能（プロフィール駆動エージェント提案／Agent Runsペイン／Memory Workbenchペイン）を実装（2026-08-06、並列サブエージェント編成：Codex CLI + Opus5 + Fable5、各Codex複数ラウンドのアドバーサリアルレビュー）— コミット済み・push済み・CI green・実機未検証
 
 **経緯**: Fable5/Codexへの全コードベースレビュー依頼（README＋ソース全文、「アンドロイド版ヘルメスエージェントと呼ぶに遜色ないか」）で指摘された機能ギャップのうち、実装済みだったSync & Restore（`390001b47`、別エントリなし・単体で完結）に続く残り3項目「優先度順に1つずつ実装」の指示のもと実装。後半3つは「並列分隊実装出来るものはサブエージェントで適宜最適なモデルを呼び出して」の指示により、Codex CLI（プロフィール駆動提案）・Opus5（Agent Runsペイン、git worktree分離）・Fable5（Memory Workbenchペイン、git worktree分離）に同時委託した。
