@@ -130,9 +130,14 @@ class ShellyTerminalView(
     // wash behind otherwise-empty terminal cells.
     private var transparentBackground = false
 
+    // onOutputDelta belongs to the session rather than the view. React can
+    // create a replacement native view before destroying the old one; keep
+    // the exact callback identity so the old view cannot clear the replacement
+    // view's newer wiring during OnViewDestroys.
+    private var attachedOutputDeltaCallback: ((String) -> Unit)? = null
+
     // Event callbacks set by the Expo module
     var onOutputEvent: ((text: String, isError: Boolean) -> Unit)? = null
-    var onBlockCompletedEvent: ((command: String, output: String, exitCode: Int) -> Unit)? = null
     var onSelectionChangedEvent: ((text: String) -> Unit)? = null
     var onUrlDetectedEvent: ((url: String, type: String) -> Unit)? = null
     var onBellEvent: (() -> Unit)? = null
@@ -140,10 +145,12 @@ class ShellyTerminalView(
 
     private val blockDetector = BlockDetector(
         onBlockCompleted = { block ->
-            onBlockCompletedEvent?.invoke(
-                block.command,
-                block.output,
-                block.exitCode ?: -1
+            onBlockCompleted(
+                mapOf(
+                    "command" to block.command,
+                    "output" to block.output,
+                    "exitCode" to (block.exitCode ?: -1)
+                )
             )
         }
     )
@@ -336,6 +343,7 @@ class ShellyTerminalView(
     // ===== Session Management =====
 
     fun attachShellySession(shellySession: ShellyTerminalSession, sessionId: String) {
+        clearOwnedOutputDeltaCallback()
         currentShellySession = shellySession
         currentSessionId = sessionId
 
@@ -344,7 +352,9 @@ class ShellyTerminalView(
         // output flows directly into the emulator via JNI — nothing else
         // feeds processTerminalOutput, so without this line Command Block
         // chrome never renders and onBlockCompleted never fires on JS.
-        shellySession.onOutputDelta = { text -> processTerminalOutput(text) }
+        val outputDeltaCallback: (String) -> Unit = { text -> processTerminalOutput(text) }
+        attachedOutputDeltaCallback = outputDeltaCallback
+        shellySession.onOutputDelta = outputDeltaCallback
 
         if (useGPU && glTerminalView != null) {
             glTerminalView?.attachSession(shellySession, inputHandler)
@@ -434,9 +444,18 @@ class ShellyTerminalView(
 
     fun detachCurrentSession() {
         currentShellySession?.onScreenUpdateCallback = null
-        currentShellySession?.onOutputDelta = null
+        clearOwnedOutputDeltaCallback()
         currentShellySession = null
         currentSessionId = null
+    }
+
+    private fun clearOwnedOutputDeltaCallback() {
+        val session = currentShellySession
+        val callback = attachedOutputDeltaCallback
+        if (session != null && callback != null && session.onOutputDelta === callback) {
+            session.onOutputDelta = null
+        }
+        attachedOutputDeltaCallback = null
     }
 
     // ===== Font & Appearance =====
@@ -902,6 +921,7 @@ class ShellyTerminalView(
     private val onResize by EventDispatcher()
     private val onScrollStateChanged by EventDispatcher()
     private val onBlockLongPress by EventDispatcher()
+    private val onBlockCompleted by EventDispatcher()
     // bug #116 follow-up: RN's onTouchStart on the parent <View> never fires
     // for taps inside the terminal body because TerminalView calls
     // requestDisallowInterceptTouchEvent(true). So `handleFocusPane` in

@@ -78,6 +78,12 @@ class BlockDetector(
                         blockStartTime = System.currentTimeMillis()
                     }
                     currentCommand.append(text)
+                    // A command with no output can arrive as the only
+                    // transcript delta. Start the timer on the first chunk;
+                    // otherwise COMMAND is stranded forever waiting for a
+                    // second processOutput() call that never comes.
+                    lastOutputTime = System.currentTimeMillis()
+                    resetIdleTimer()
                 }
             }
             State.COMMAND, State.OUTPUT -> {

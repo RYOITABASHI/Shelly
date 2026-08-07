@@ -45,10 +45,23 @@
 2. **【P2】`LinkDetector.kt`(native、ライブ経路)のURL検出も大文字非対応のまま残存**: 直前の`lib/link-detector.ts`修正はJS側(旧ブロックターミナル専用、そもそも実機到達不能と判明)にしか適用されておらず、実際にライブで動いている`modules/terminal-view/.../LinkDetector.kt`の`URL_PATTERN`には`RegexOption.IGNORE_CASE`が無く、大文字URLはネイティブ層でも検出されないままだった。追加。
 3. **【P2】`onUrlDetected`のURL自動オープンが小文字/大文字の食い違いで永久に不発**: `TerminalPane.tsx`が`type === 'url'`(小文字)を見ているのに対し、native側(`ShellyTerminalView.kt`の`link.type.name`、Kotlin enumのデフォルト`.name`)は`"URL"`(大文字)を送っていたため、**検出できた小文字URLでもタップでの自動オープンが一度も発火しない**バグを発見・修正(`type.toUpperCase() === 'URL'`に変更)。
 
-**【重大・未修正、Codexへ調査を引き継ぎ】既存のコア機能`onBlockCompleted`が実機で一切発火していない**:
-プロフィール学習(`learnFromCommand`)を追加した際の実機検証で、**新機能どころか既存のbug #59「`@agent`ターミナルインターセプト」機能自体が実機で完全に死んでいる**ことが判明した(`@agent testqa echo hello`をターミナルに打ってもエージェントが作成されない、`onBlockCompleted`内の`execCommand('pwd')`によるcwd同期の実行痕跡もlogcatに皆無)。関係する`ShellyTerminalSession.kt`(`onTextChanged`のtranscript長差分検出)→`ShellyTerminalView.kt`(`attachShellySession`での`onOutputDelta`配線、`processTerminalOutput`)→`BlockDetector.kt`(OSC 133無し前提のidle-timeoutフォールバックstate machine)→RN bridgeの一連のチェーンをコードレベルで精査したが、**各フックポイント単体は静的には正しく配線されているように見え、どこで途切れているか机上調査だけでは特定できなかった**——`attachShellySession`の`onOutputDelta`配線コメント自身が過去に一度この配線が抜けて同じ症状になったことを示唆しており、ペイン/セッション切り替え時の再配線漏れ等、実機の動的な挙動を見ないと切り分けが難しい種類のバグと判断。ユーザーの「難しければCodexかFable5に渡しな」との指示を受け、**Codexへ調査(+可能なら計装・修正)を委託し、バックグラウンドで進行中**。完了後、Fable5による実機再検証に引き継ぐ。
+**【重大】既存のコア機能`onBlockCompleted`が実機で一切発火していない — Codexが根本原因を特定・修正**:
+プロフィール学習(`learnFromCommand`)を追加した際の実機検証で、**新機能どころか既存のbug #59「`@agent`ターミナルインターセプト」機能自体が実機で完全に死んでいる**ことが判明した(`@agent testqa echo hello`をターミナルに打ってもエージェントが作成されない、`onBlockCompleted`内の`execCommand('pwd')`によるcwd同期の実行痕跡もlogcatに皆無)。CC自身のコードレベル精査では各フックポイントが静的には正しく配線されているように見え特定できなかったため、ユーザーの「難しければCodexかFable5に渡しな」との指示でCodexへ調査を委託。
 
-**検証**: `npx tsc --noEmit`クリーン、フルスイート3188件中3158件PASS(既知のWindows scoped.fsバグ5スイート28件のみ、変化なし)。native側(`HomeInitializer.kt`のシムガード変更、`LinkDetector.kt`)はKotlinコンパイラがローカルに無いため、生成シムをJS層に抽出しNode上で構文検証・動作確認する既存手法をシムガード変更には未適用(前回の`config`追加時の抽出検証スクリプトはガード条件そのものの変更なので対象外、ロジックの単純さから目視レビューのみ)。**実機未検証**(次回Fable5実機QAで、(1)`shelly config`/`shelly scouter status`が新しいシムへ更新後に動くこと、(2)大文字URLがnative検出・タップオープン共に動くこと、(3)Codexの`onBlockCompleted`調査結果を確認すること)。
+**Codexが特定した確定的な根本原因**: `ShellyTerminalView.kt`の`onBlockCompletedEvent`(nullableラムダ、`onBlockCompletedEvent?.invoke(...)`という形でRNへイベント送出するはずの変数)が**リポジトリ内のどこからも代入されておらず、常にnull**だった。`BlockDetector.completeBlock()`まではチェーン全体が正しく到達していたが、**RN bridgeへ渡す直前の最後の一手だけが存在しなかった**——全コマンド・全ペインで一度も発火しない症状と完全に一致。
+
+**追加で発見・修正した2件の関連バグ**:
+1. **OSC 133無しフォールバックのタイマー開始漏れ**(`BlockDetector.kt`): 最初のチャンクで`IDLE→COMMAND`へ遷移してもアイドルタイマーを開始しておらず、タイマー開始は2つ目の`processOutput()`呼び出し以降のみだった。出力なしコマンドや1チャンクにまとまったコマンドは永久に`COMMAND`状態へ取り残されていた。
+2. **ペイン再生成時のコールバック所有権競合**(`ShellyTerminalView.kt`): 旧実装は`detachCurrentSession()`でセッションの共有プロパティ`onOutputDelta`を無条件でnullクリアしていたため、Reactが「新Viewをattach→旧Viewをdestroy」の順で差し替えると、新Viewが設定した新しいコールバックまで旧Viewのdestroy処理が消してしまう経路があった(ペイン切り替え・再マウント後に配線が失われる)。
+
+**実施した修正**: `onBlockCompletedEvent`のnullableラムダを削除し、他の`onResize`/`onScrollStateChanged`/`onBlockLongPress`と同じExpo公式の`EventDispatcher()`プロパティデリゲートパターン(`private val onBlockCompleted by EventDispatcher()`)に統一、`onBlockCompleted(mapOf("command" to ..., "output" to ..., "exitCode" to ...))`で直接送出。CC側でJS期待形状(`NativeTerminalView.tsx`の`BlockCompletedEvent`の`command`/`output`/`exitCode`)との一致と、同一ファイル内で既に動いている3箇所の`EventDispatcher`呼び出しパターン(`onResize(mapOf(...))`等)との整合を確認済み。コールバック所有権は`attachedOutputDeltaCallback`フィールド+「現在の所有者と一致する場合のみクリア」する`clearOwnedOutputDeltaCallback()`で解消。アイドルタイマーは最初の非空チャンクから開始するよう修正。
+
+**検証**: `npx tsc --noEmit`クリーン(JS/TS側は無変更)。KotlinコンパイラがCodex実行環境・CC実行環境ともローカルに無いため(`ANDROID_HOME`/`android/local.properties`未設定)、Gradleでの実コンパイル確認はできていない——ただしCCが手動レビューで、修正後のイベント送出APIが同ファイル内の既存3箇所と完全に同一の呼び出し規約であることを確認済み。**次回のGitHub Actions CIビルド(Gradleフルビルド)がこの変更の実質的なコンパイル検証を兼ねる。**
+
+**実機未検証(次回Fable5実機QAで確認すること)**:
+1. `shelly config`/`shelly scouter status`が新しいシムへ更新後に動くこと
+2. 大文字URLがnative検出・タップオープン共に動くこと
+3. Codexの`onBlockCompleted`修正: (a) `true`または出力なしコマンド実行後、約2秒でJSイベントが届くこと、(b) `echo hello`等を複数回実行し`topCommands`が更新されること、(c) `@agent testqa echo hello`でエージェントが作成されること、(d) ペイン切り替え・分割・再マウント後も上記が継続すること
 
 → sync: なし。
 
