@@ -36,6 +36,7 @@ import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
 import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 import { useAIPaneStore } from '@/store/ai-pane-store';
+import { useProfileStore } from '@/store/profile-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
@@ -450,6 +451,17 @@ export default function RootLayout() {
     // initialResolvedUrl comment.
     useBrowserStore.getState().loadLastOpenedUrl();
     logInfo('RootLayout', 'Loaded: browser-last-url');
+    // 2026-08-06 on-device QA follow-up (same "load() has no caller" pattern
+    // as useDotfilesStore above, found by Codex while reviewing that fix):
+    // AI Pane conversation history was persisted on every update but never
+    // read back, so every restart silently emptied all chat history.
+    useAIPaneStore.getState().load();
+    logInfo('RootLayout', 'Loaded: ai-pane-conversations');
+    // Same pattern: SSH profiles were persisted on add/update but never
+    // loaded back, so every restart silently emptied the profile list even
+    // though the underlying AsyncStorage data was intact.
+    useProfileStore.getState().loadProfiles();
+    logInfo('RootLayout', 'Loaded: ssh-profiles');
 
     // Resolve dynamic HOME path from native layer
     import('@/lib/home-path').then(({ initHomePath }) => {

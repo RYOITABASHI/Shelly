@@ -60,5 +60,16 @@ describe('app/_layout.tsx boot-time store initialization', () => {
     // last-visited-URL fallback (store/browser-store.ts's lastOpenedUrl)
     // is useless if it never gets loaded back on a cold start either.
     expect(block).toContain('useBrowserStore.getState().loadLastOpenedUrl();');
+    // 2026-08-06 follow-up (found while reviewing the fix above, same root
+    // cause class): AI Pane conversation history and SSH profiles were both
+    // persisted on every update but never read back either, so both
+    // silently emptied on every cold start despite intact AsyncStorage data.
+    expect(block).toContain('useAIPaneStore.getState().load();');
+    expect(block).toContain('useProfileStore.getState().loadProfiles();');
+  });
+
+  it('imports useAIPaneStore and useProfileStore', () => {
+    expect(source).toMatch(/import\s*\{\s*useAIPaneStore\s*\}\s*from\s*'@\/store\/ai-pane-store'/);
+    expect(source).toMatch(/import\s*\{\s*useProfileStore\s*\}\s*from\s*'@\/store\/profile-store'/);
   });
 });

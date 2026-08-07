@@ -44,6 +44,16 @@
 
 **次にやること（優先度順）**: (a) Gist同期の`loadConfig()`未呼び出しバグ修正（P1、新機能が実質使えない）、(b) 承認通知タップでのBrowserペインリセット修正（P1）、(c) URL大文字小文字修正の実装状況をユーザーに確認、(d) X連携後のX投稿再検証、(e) PAT設定後のGist同期本検証。
 
+**✅ 2026-08-06 上記(a)(b) = P1バグ2件を修正（コミット`97271092e`、別マシン`info`ユーザーのセッション、TDD RED-GREEN徹底＋Codex複数ラウンドレビュー）— コミット済み・push済み・CI green・実機未検証**:
+
+- **(a) `useDotfilesStore.loadConfig()`配線**: `app/_layout.tsx`の起動時store初期化ブロック（`useI18n.loadLocale()`等が並ぶ既存パターン）に`useDotfilesStore.getState().loadConfig();`を追加。回帰テスト`__tests__/app-layout-store-boot-init.test.ts`新設（ソーステキストの静的アサーション方式——`app/_layout.tsx`はネイティブモジュール依存が重くJestでフルmountできないため、`agent-executor-script-version-guard.test.ts`と同じ「配線が外れたら機械的に落ちる」防止策）。
+- **(b) Browserペインのcold-start URL復旧**: 当初QAが立てた「本文タップ固有の問題」という仮説をKotlin側（`NotificationDispatcher.kt`）で検証した結果、**本文タップとボタンタップは完全同一のPendingIntentで技術的差異なし**と判明——真因は「通知タップ時にアプリプロセスが既にkillされていた場合（コールドスタート）、`BrowserPane.tsx`の`currentUrl`というReactローカルstateが失われ`about:blank`にリセットされる」というプロセスライフサイクル起因の問題と再特定。対応: `store/browser-store.ts`に`lastOpenedUrl`＋`loadLastOpenedUrl()`／`recordVisitedUrl()`を新設、`app/_layout.tsx`起動時に`loadLastOpenedUrl()`を配線、`BrowserPane.tsx`が`recordVisitedUrl`を都度呼び、初期URL解決に`lastOpenedUrl`をフォールバックとして使う——ただしCodexの1ラウンド目レビューで「非同期ロードとBrowserPaneの同期初期state設定の間にレース条件があり、コールドスタート時の実際のシナリオでは修正が効かない可能性が高い」「フォールバックが広すぎ、承認リカバリー以外の通常の+Browser新規ペイン追加でも最後に訪問したURLで開いてしまう」の2件を指摘され、ロジックを`lib/browser-pane-last-url-fallback.ts`の純粋関数へ抽出＋2ラウンド目レビューで指摘された「初回マウント時点で既にURL解決済みだったケース」も`appliedLastOpenedUrlRef`で吸収するよう追加修正——3ラウンド目でCodexクリーンを確認してから確定。
+- **副産物の発見（同種バグ、このセッションで検証・一部対応）**: Codexレビューが「storeのload関数が誰からも呼ばれていない」という同型バグを他3件（`useAIPaneStore.load()`＝AIペイン会話履歴、`profile-store.ts`の`loadProfiles()`＝SSHプロファイル、`workspace-store.ts`の`loadWorkspaces()`＝レガシー移行処理）指摘。本セッションで独立検証した結果、全て「呼び出し元ゼロ」自体は正確と確認：
+  - **AIペイン会話・SSHプロファイル = 実データ喪失（体感バグ）と判断し即修正**（コミット未定、本エントリ登録時点で作業中）: `app/_layout.tsx`の同じ起動時初期化ブロックに`useAIPaneStore.getState().load();`／`useProfileStore.getState().loadProfiles();`を追加、`app-layout-store-boot-init.test.ts`にRED-GREEN確認済みのアサーションを追加。
+  - **workspace-store = 意図的に見送り（実害ほぼ無しと判断）**: 実装を読むと「zustand `persist`ミドルウェア導入前の旧形式データを検出したら移行する、一度きりの処理」で、現行の`persist(...)`ミドルウェアが同じstorage keyを自動rehydrateするため通常の永続化・復元自体は`loadWorkspaces`なしでも機能する。加えて`useWorkspaceStore`自体がどこからもimportされていない未使用ストア。旧バージョンからのアップグレードユーザーの旧形式データ移行のみが影響範囲で、新規ユーザー・既にpersist形式で保存済みのユーザーには無関係。修正コストに見合わないと判断し放置（P3、参考記録のみ）。
+
+**検証**: `npx tsc --noEmit`クリーン。`app-layout-store-boot-init.test.ts`でRED（変更を一時的に戻す）→GREEN（復元）を確認。フルスイート実行で新規失敗5スイート/30件中、`plan-executor-tool-ladder.test.ts`の2件が今回追加で目についたが`git stash`比較で変更前でも同一に失敗することを確認済み（既知のWindows `scoped.fs`二重ドライブレターバグと同系統、新規リグレッションではない）。**実機未検証**——次回オンデバイステストで、(a)アプリ再起動後もGist PATとIncludeトグルが保持されること、(b)通知タップからのbrowser-pane承認がコールドスタート後も安定して成功すること、AIペイン会話・SSHプロファイルが再起動後も残ることを確認すること。
+
 → sync: なし。
 
 ---
