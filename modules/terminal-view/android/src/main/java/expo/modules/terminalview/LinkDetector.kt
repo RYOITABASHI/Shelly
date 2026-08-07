@@ -24,9 +24,14 @@ object LinkDetector {
         val column: Int? = null
     )
 
-    // URL pattern: http(s)://... until whitespace or common terminal chars
+    // URL pattern: http(s)://... until whitespace or common terminal chars.
+    // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md): no
+    // IGNORE_CASE meant an upper/mixed-case scheme (e.g. `echo
+    // "HTTPS://EXAMPLE.COM/PATH"`, common for shell-scripted output) was
+    // never detected as a link at all, not merely unclickable.
     private val URL_PATTERN = Regex(
-        """https?://[^\s<>"'\])|}\x1b]+"""
+        """https?://[^\s<>"'\])|}\x1b]+""",
+        RegexOption.IGNORE_CASE
     )
 
     // Error reference: file.ext:42 or file.ext:42:10

@@ -36,6 +36,24 @@
 
 ---
 
+### ✅ versionCode 2096実機QAで見つかった続報3件を修正 + 【重大】既存コア機能`onBlockCompleted`が実機で全滅している回帰を発見・調査をCodexへ引き継ぎ(2026-08-07、Fable5実機QA→CC調査→Codex引き継ぎ)
+
+**経緯**: 直前エントリの5件修正を含むversionCode 2096をFable5が実機再検証したところ、Memory Workbenchの2件(エージェント固有メモ導線・`_global`共有メモ表示、再起動後の保持・削除UIも含め)はPASSしたが、残り3項目(プロフィール提案・`shelly config`・URL大文字小文字)はいずれも**当初の修正が机上の想定と異なる、より深い根本原因を踏んでいて実機では効いていない**ことが判明した。
+
+**修正済み**:
+1. **【P1】`shelly config`が直前の修正後も無反応**: 真因は`HomeInitializer.kt`のシム再生成ガード `if [ ! -f "$HOME/bin/shelly" ] || grep -q SHELLY_HELPER_SHIM ...]` が「ファイル欠如」または「既に自分自身のマーカーを含む」場合しか再生成せず、**中身が空(0バイト)だが存在はしているファイル**(実機で確認: `May 20`のまま更新されていない0バイトファイル)を「認識できない外部ファイル=クロバーしてはいけない」という意図しない解釈で永久に温存してしまうバグだった。直前の`config`サブコマンド追加自体は正しかったが、シム自体が一度も新しいバージョンへ更新されないため到達しなかった。`! -f`を`! -s`(欠如または空)に変更——「ユーザーが独自に置いた実体のあるカスタムスクリプトは尊重する」という元の安全設計は維持したまま、空ファイルだけを「壊れている」として救済対象に含めた。`BASHRC_VERSION` 238→239(この変更を確実に既存端末へ配信するため)。
+2. **【P2】`LinkDetector.kt`(native、ライブ経路)のURL検出も大文字非対応のまま残存**: 直前の`lib/link-detector.ts`修正はJS側(旧ブロックターミナル専用、そもそも実機到達不能と判明)にしか適用されておらず、実際にライブで動いている`modules/terminal-view/.../LinkDetector.kt`の`URL_PATTERN`には`RegexOption.IGNORE_CASE`が無く、大文字URLはネイティブ層でも検出されないままだった。追加。
+3. **【P2】`onUrlDetected`のURL自動オープンが小文字/大文字の食い違いで永久に不発**: `TerminalPane.tsx`が`type === 'url'`(小文字)を見ているのに対し、native側(`ShellyTerminalView.kt`の`link.type.name`、Kotlin enumのデフォルト`.name`)は`"URL"`(大文字)を送っていたため、**検出できた小文字URLでもタップでの自動オープンが一度も発火しない**バグを発見・修正(`type.toUpperCase() === 'URL'`に変更)。
+
+**【重大・未修正、Codexへ調査を引き継ぎ】既存のコア機能`onBlockCompleted`が実機で一切発火していない**:
+プロフィール学習(`learnFromCommand`)を追加した際の実機検証で、**新機能どころか既存のbug #59「`@agent`ターミナルインターセプト」機能自体が実機で完全に死んでいる**ことが判明した(`@agent testqa echo hello`をターミナルに打ってもエージェントが作成されない、`onBlockCompleted`内の`execCommand('pwd')`によるcwd同期の実行痕跡もlogcatに皆無)。関係する`ShellyTerminalSession.kt`(`onTextChanged`のtranscript長差分検出)→`ShellyTerminalView.kt`(`attachShellySession`での`onOutputDelta`配線、`processTerminalOutput`)→`BlockDetector.kt`(OSC 133無し前提のidle-timeoutフォールバックstate machine)→RN bridgeの一連のチェーンをコードレベルで精査したが、**各フックポイント単体は静的には正しく配線されているように見え、どこで途切れているか机上調査だけでは特定できなかった**——`attachShellySession`の`onOutputDelta`配線コメント自身が過去に一度この配線が抜けて同じ症状になったことを示唆しており、ペイン/セッション切り替え時の再配線漏れ等、実機の動的な挙動を見ないと切り分けが難しい種類のバグと判断。ユーザーの「難しければCodexかFable5に渡しな」との指示を受け、**Codexへ調査(+可能なら計装・修正)を委託し、バックグラウンドで進行中**。完了後、Fable5による実機再検証に引き継ぐ。
+
+**検証**: `npx tsc --noEmit`クリーン、フルスイート3188件中3158件PASS(既知のWindows scoped.fsバグ5スイート28件のみ、変化なし)。native側(`HomeInitializer.kt`のシムガード変更、`LinkDetector.kt`)はKotlinコンパイラがローカルに無いため、生成シムをJS層に抽出しNode上で構文検証・動作確認する既存手法をシムガード変更には未適用(前回の`config`追加時の抽出検証スクリプトはガード条件そのものの変更なので対象外、ロジックの単純さから目視レビューのみ)。**実機未検証**(次回Fable5実機QAで、(1)`shelly config`/`shelly scouter status`が新しいシムへ更新後に動くこと、(2)大文字URLがnative検出・タップオープン共に動くこと、(3)Codexの`onBlockCompleted`調査結果を確認すること)。
+
+→ sync: なし。
+
+---
+
 ### ✅ Hermes比較ロードマップ5項目に続く4件の未記録実装（browser-pane P0修正／重複コンテンツ検知＋PlanSpecエスカレーションラダー配線／X投稿対応／Gist同期）— 実装は別セッション、実機QAは本セッション（2026-08-06、Fable5、versionCode 2088 / commit `390001b47`）
 
 **発見の経緯**: 2026-08-05のセッションでCodexに独立コード監査を依頼したところ、browser-pane操作が`ok:false`（ページ内失敗）でも承認成功として記録されるP0バグを発見・報告した。ユーザーに「このセッションで直すか」を尋ねている間に、**別セッション（Codexとの直接レビューループ経由と推定）が並行してこの同じバグを`fb4626331`で修正し、さらに4件の追加実装を`390001b47`まで積み上げてpushしていた**ことが、翌セッション開始時の`git fetch`で判明（ローカル`main`が1コミット分`origin/main`から分岐していたため`git rebase origin/main`で追従）。この4件は**DEFERRED.mdに一切エントリが無いまま**mainへ着地しており、「新機能を追加するときは記録必須」という本ファイルの運用ルールが守られていなかった（本エントリはその欠落を埋めるための事後記録）。

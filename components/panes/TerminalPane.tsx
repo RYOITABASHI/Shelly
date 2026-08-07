@@ -1496,7 +1496,13 @@ export default function TerminalScreen() {
             }}
             onUrlDetected={(e) => {
               const { url, type } = e.nativeEvent;
-              if (type === 'url') {
+              // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md):
+              // native sends Kotlin's LinkDetector.LinkType.URL.name, which is
+              // the literal enum name "URL" (ShellyTerminalView.kt's
+              // `link.type.name`) — this checked the lowercase 'url' and so
+              // never matched, meaning tapping a detected URL never opened
+              // it, even for a URL the native detector DID find correctly.
+              if (type.toUpperCase() === 'URL') {
                 import('expo-web-browser').then(m => m.openBrowserAsync(url)).catch(() => {});
               }
             }}
