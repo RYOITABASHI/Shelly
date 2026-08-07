@@ -375,6 +375,44 @@ function recordToNote(agentId: string, record: MemoryRecord): MemoryNote {
  * G2's readMemoryNotes, exactly like activateMemoryRecall/activateMemoryWrite
  * — G2 stays the safety net, never a silently-empty popup. Never throws.
  */
+/**
+ * 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md): Memory
+ * Workbench's GLOBAL_MEMORY_SCOPE section stayed permanently empty even
+ * right after writing a brand-new global note and pressing Reload — and
+ * even a pre-existing note from weeks earlier never showed either. Root
+ * cause: `ensureAgentImported`'s one-time-per-session mirror-import is a
+ * permanent skip once `importedAgents` has the id (by design, for the hot
+ * agent-recall path's "avoid re-writing every note on every run" perf
+ * reason documented on ShadowDeps above) — but G2-only writes
+ * (writeGlobalMemoryNote / persistRememberFact in lib/agent-manager.ts)
+ * never update the MEMORY-001 store OR clear that flag, so the FIRST
+ * activateMemoryList call for a given id/session poisons every later call
+ * for the rest of the app's lifetime: the store keeps returning whatever
+ * it saw at that first import (often `[]`, since `_global` had no notes
+ * yet the first time anything touched it), and `[] ?? G2fallback` never
+ * triggers the G2 fallback because `[]` is not nullish. Call this right
+ * after ANY G2 write path finishes, and from Memory Workbench's Reload
+ * button (reload should always mean "re-read from source"), so the next
+ * list/recall call re-syncs instead of trusting stale cached emptiness.
+ */
+export function invalidateMemoryImportCache(agentId: string, deps?: ShadowDeps): void {
+  // Deliberately never throws — this is best-effort cache maintenance, not a
+  // correctness-critical write, and a failure here must never surface as a
+  // failure of whatever G2 write this was called after. `deps` is a plain
+  // parameter (not a `= getShadowDeps()` default) so a caller that DOES pass
+  // its own deps (host tests, matching every other export in this file)
+  // never eagerly constructs the lazy Expo-backed singleton at all.
+  try {
+    (deps ?? getShadowDeps()).importedAgents.delete(agentId);
+  } catch (error) {
+    logWarn(
+      LOG_MODULE,
+      'invalidateMemoryImportCache failed (live write unaffected, next read may stay stale)',
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+
 export async function activateMemoryList(
   agentId: string,
   deps: ShadowDeps = getShadowDeps()

@@ -14,6 +14,28 @@
 
 ---
 
+### ✅ 2026-08-07実機QA(6項目)で見つかった不具合の一括修正 — 5件修正・1件は既存メカニズム健全と判明(コード変更なし)・2件は実機ログ必須のため要フォローアップ
+
+**経緯**: versionCode 2095(commit `8a963040e`)での実機QAで、Gist同期/browser-pane cold-start復旧のP1修正2件は共にPASS確認できたが、未検証の新規3ペイン機能の一部と、以前から積み残していた軽微バグ群が併せて報告された。ユーザーから「全ての不具合とバグを直してください」の指示を受け、報告された全項目に着手した。
+
+**修正済み**:
+1. **【P1】Memory Workbench: エージェント固有メモへの導線が実機で死んでいた**: 唯一の入口(`showAgentDetail`のAlert内「View Memory」ボタン)がAndroidの3ボタン制限(`buttons.slice(0,3)`)で常に脱落していた。`components/layout/Sidebar.tsx`のエージェント行に、既存のhistoryアイコンと同じ「常時表示・事前フェッチ不要」パターンで`psychology`アイコンを追加し、`openMemoryWorkbench(agent)`を直接呼ぶ導線を新設(i18nキー`sidebar.agent_memory_view_a11y`追加)。
+2. **【P1】Memory Workbench: `_global`共有メモが表示されない読み書き非対称バグ**: `writeGlobalMemoryNote`はG2にのみ書き込むが、`activateMemoryList`の`ensureAgentImported`はセッション内一度きりのG2→MEMORY-001ミラーインポートで、`importedAgents`に一度でも載ると**永久にスキップ**される設計(ホット経路の"毎回全ノート書き直しを避ける"というパフォーマンス上の意図的設計)。このため最初の読み取り時点でG2が空だった`_global`は、以後どれだけG2に書き込んでもストアが空配列を返し続け、`[] ?? G2fallback`の`??`は空配列をnullish扱いしないためG2フォールバックも発動しない。`lib/memory/shadow.ts`に`invalidateMemoryImportCache(agentId, deps?)`を新設(fail-safe、内部try/catchで例外を握りつぶし警告ログのみ——テスト環境でExpo専用の暗号化モジュールに到達して落ちる事故を防ぐため、eagerな`= getShadowDeps()`デフォルト引数ではなくoptional paramにした)。`writeGlobalMemoryNote`(`lib/agent-manager.ts`)の書き込み直後と、`MemoryWorkbenchPane.tsx`のReloadボタン押下時の両方で呼び出し、キャッシュを無効化して次回読み取りで再インポートさせる。回帰テスト2件を`__tests__/memory/shadow.test.ts`に追加(バグ再現テスト+修正確認テスト、RED-GREEN確認済み)。
+3. **プロフィール駆動の自発的エージェント提案が実質発火しない設計ギャップ**: 提案エンジンへのデータ供給元`learnFromCommand`(`lib/user-profile.ts`)が、旧ブロックターミナル(`store/terminal-store.ts`の`runCommand`、`TerminalBlock.tsx`/`FirstMateOverlay.tsx`専用)からしか呼ばれておらず、現行のnative PTYターミナル(`TerminalPane.tsx`、`NativeTerminalView`直結でPTY fdへ直接書き込み)の通常タイピングでは一切呼ばれていなかった。`TerminalPane.tsx`の`onBlockCompleted`(bug #59対応で既に「completed native commandに触れる最も早いJS可視ポイント」として使われている箇所)に`learnFromCommand`呼び出しを追加。
+4. **`shelly config`が実機のnative PTYターミナルで無反応(exit 0だがUI無反応)**: 調査の結果、**native側`$HOME/bin/shelly`シム(`HomeInitializer.kt`生成)は`scouter`サブコマンドしか実装しておらず**、`lib/pseudo-shell.ts`の`config`/`workflow`/`voice`実装は完全に別物で、旧ブロックターミナルの`runCommand()`経由でしか到達しない(native PTYの実タイピングは素通り)——これがtask 3と同根の「native PTYターミナルは`terminal-store.ts`の各種フック経由の処理を一切通らない」というアーキテクチャギャップの3件目の顕在化だった。`HomeInitializer.kt`のnative shimに`config`サブコマンドを追加(新設`$HOME/.shelly-command-queue`ファイルへ追記→`app/_layout.tsx`が既存のdeep-link queueと同じ250msポーリングパターンで検出→`setShowConfigTUI(true)`)。BASHRC_VERSION 237→238。シム本体をKotlin文字列ビルダーから実際に抽出し`node --check`で構文検証、`config`/`scouter status`/無引数の3パターンをNode上で実行してconfig新規動作・scouter既存動作とも無回帰であることを確認。`workflow`/`voice`は同根だが「結果をターミナルへ返す」より複雑な設計が要るため、意図的に今回のスコープ外(follow-up)。
+5. **URL大文字小文字バグ**: `lib/link-detector.ts`の`URL_REGEX`に`i`フラグが無く、大文字/混在ケースのURLが完全に検出されなかった(検出漏れであって、検出はできるがクリックできないだけではなかった)。`i`フラグを追加。新規`__tests__/link-detector.test.ts`(4件、RED-GREEN確認済み)。
+
+**コード変更なし・既存メカニズムが健全と判明**:
+- **stale lock掃除**: `lib/agent-executor.ts`の生成スクリプトには、force-stop後のstaleロック(`locks/<id>.pid`)を`kill -0`によるPID生存確認で正しく検出・自動reclaimする仕組みが**既に実装済み**（`shelly_try_acquire_lock_file` + stale reclaim、`エージェント二重実行レース`対応時に実装済み）。実際にbashで動作確認し、正しく機能することを確認した。**唯一の理論的残存ギャップ**: PID再利用(force-kill後、OSが同じPID番号を無関係な別プロセスへ再割り当てするレア事象)による誤検知——これに対して`/proc/<pid>/cmdline`とAGENT_IDの照合で追加検証する実装を一度試みたが、**既存の`agent-manager-chain-lock.test.ts`の正当なテスト(「本当に生きているプロセスが握るロックは二重実行させてはならない」)を壊すことが判明**: テストハーネスが生成する一時スクリプトのファイル名にAGENT_IDが含まれないため、cmdline照合では**本物の生存プロセスさえ「別物」と誤判定してreclaimしてしまう**——これは「稀に1回スキップされる」という元のバグより**大幅に悪い**(二重実行によるデータ不整合・重複副作用)ため、この変更は撤回した(`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION`も57→56へ差し戻し、スナップショットは元のコミット内容とdiffゼロまで確認)。PID再利用リスクは残存する既知の限界として記録するに留める(P3、対応する安全な手段が見つかるまで保留)。
+
+**要フォローアップ(実機ログが無いと確定できないため未着手)**:
+- **【P2】起動後約2分間Sidebar AGENTSが空表示になる**: `loadAgentsFromDisk`(`syncLogs:false`)は`useAgentStore.getState().setAgents(...)`を同期的に(スケジュール修復より前に)呼んでいるため、コードを読む限りこの遅延の直接原因は特定できなかった。`readAgentMetadataViaFileSystem`(Expo FileSystem直読、`runCommand`不使用)が主経路で、失敗時のみ`readAgentMetadataViaShell`(native exec)にフォールバックする構造。次回実機QAでlogcatタイムスタンプ付きで`Loaded: agents`ログの発火時刻と、どちらの読み取り経路が使われたかを特定すること。
+- **【P2】登録直後の初回RUN NOWタップが無反応(AgentRunDecisionログ自体が出ない、数十秒後の再タップは正常)**: `handleRunScheduledAgent`(`Sidebar.tsx`)の`pendingAgentIds`/`runningAgentIds`ガードで無音スキップされている可能性が高いが(タップ時に無効化されるplay-arrowボタンの`disabled`条件と一致する挙動)、登録直後の新規エージェントIDがなぜこれらのSetに入っているように見えるのかは特定できなかった。`refreshRunningAgents`は`locks/*.pid`をスキャンして`kill -0`で生存確認する仕組みで、こちらもPID再利用の影響を受けうる(ただし新規エージェントには対象となるロックファイル自体が存在しないはずで、単純な説明にはならない)。次回実機QAでこの2つのSetの実際の中身をログ出力させ、原因を特定すること。
+
+→ sync: なし。
+
+---
+
 ### ✅ Hermes比較ロードマップ5項目に続く4件の未記録実装（browser-pane P0修正／重複コンテンツ検知＋PlanSpecエスカレーションラダー配線／X投稿対応／Gist同期）— 実装は別セッション、実機QAは本セッション（2026-08-06、Fable5、versionCode 2088 / commit `390001b47`）
 
 **発見の経緯**: 2026-08-05のセッションでCodexに独立コード監査を依頼したところ、browser-pane操作が`ok:false`（ページ内失敗）でも承認成功として記録されるP0バグを発見・報告した。ユーザーに「このセッションで直すか」を尋ねている間に、**別セッション（Codexとの直接レビューループ経由と推定）が並行してこの同じバグを`fb4626331`で修正し、さらに4件の追加実装を`390001b47`まで積み上げてpushしていた**ことが、翌セッション開始時の`git fetch`で判明（ローカル`main`が1コミット分`origin/main`から分岐していたため`git rebase origin/main`で追従）。この4件は**DEFERRED.mdに一切エントリが無いまま**mainへ着地しており、「新機能を追加するときは記録必須」という本ファイルの運用ルールが守られていなかった（本エントリはその欠落を埋めるための事後記録）。

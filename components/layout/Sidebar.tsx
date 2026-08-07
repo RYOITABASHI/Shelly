@@ -1416,6 +1416,24 @@ export function Sidebar() {
                       <MaterialIcons name="history" size={12} color={C.text2} />
                     </Pressable>
                   )}
+                  {/* 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md):
+                      the only other entry point to Memory Workbench was a button
+                      inside showAgentDetail's Alert.alert, whose 3-button Android
+                      cap (see the slice(0, 3) comment there) reliably pushed it
+                      off the dialog in practice — the row-level history icon
+                      above already establishes the "guaranteed-reachable icon"
+                      pattern for exactly this reason, so mirror it here instead
+                      of gating on a pre-fetched note count (Memory Workbench's
+                      own empty state already handles zero notes fine). */}
+                  <Pressable
+                    onPress={() => openMemoryWorkbench(agent)}
+                    hitSlop={8}
+                    style={styles.tasksAction}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('sidebar.agent_memory_view_a11y', { name: agent.name })}
+                  >
+                    <MaterialIcons name="psychology" size={12} color={C.text2} />
+                  </Pressable>
                   <Pressable
                     onPress={() => void handleRunScheduledAgent(agent.id, agent.name)}
                     disabled={pendingAgentIds.has(agent.id) || runningAgentIds.has(agent.id)}

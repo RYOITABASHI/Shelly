@@ -17,6 +17,7 @@ import {
   activateMemoryRecall,
   activateMemoryWrite,
   compareShadowRecall,
+  invalidateMemoryImportCache,
   runShadowComparison,
   shadowMemoryRecall,
   type ShadowDeps,
@@ -343,6 +344,60 @@ describe('activateMemoryList (MEMORY-001 Step 5 — Sidebar detail popup)', () =
       expect(warnSpy).toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
+    }
+  });
+
+  // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md): Memory
+  // Workbench's GLOBAL_MEMORY_SCOPE ('_global') section stayed permanently
+  // empty even right after writing a brand-new global note and pressing
+  // Reload. Root cause: ensureAgentImported's one-time-per-session mirror
+  // import is a PERMANENT skip once importedAgents has the id — a G2-only
+  // write made after the first read (writeGlobalMemoryNote never touches
+  // the MEMORY-001 store) is invisible to every later activateMemoryList
+  // call for the rest of the app session, because `[] ?? G2fallback` never
+  // triggers the G2 fallback (`[]` is not nullish).
+  it('a G2 write made after the first read is invisible to later reads — reproduces the on-device bug', async () => {
+    const deps = makeDeps();
+    const readSpy = jest.spyOn(agentMemoryModule, 'readMemoryNotes').mockResolvedValue([]);
+    try {
+      // First read: G2 has nothing yet (the common case — global notes are rare).
+      const first = await activateMemoryList('_global', deps);
+      expect(first).toEqual([]);
+      expect(readSpy).toHaveBeenCalledTimes(1);
+
+      // A G2-only write happens now (simulating writeGlobalMemoryNote), but
+      // nothing tells this session's shadow deps about it.
+      readSpy.mockResolvedValue([
+        { id: 'fact-new', agentId: '_global', type: 'fact', created: '2026-08-07T00:00:00Z', tags: [], text: 'the QA marker is bluewhale42' },
+      ]);
+
+      // Without invalidation, the stale one-time-import guard skips the G2
+      // re-read entirely — the bug, reproduced.
+      const staleRead = await activateMemoryList('_global', deps);
+      expect(staleRead).toEqual([]);
+      expect(readSpy).toHaveBeenCalledTimes(1); // no second G2 read happened
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('invalidateMemoryImportCache forces the next read to re-sync from G2 — the fix', async () => {
+    const deps = makeDeps();
+    const readSpy = jest.spyOn(agentMemoryModule, 'readMemoryNotes').mockResolvedValue([]);
+    try {
+      await activateMemoryList('_global', deps);
+      expect(readSpy).toHaveBeenCalledTimes(1);
+
+      readSpy.mockResolvedValue([
+        { id: 'fact-new', agentId: '_global', type: 'fact', created: '2026-08-07T00:00:00Z', tags: [], text: 'the QA marker is bluewhale42' },
+      ]);
+      invalidateMemoryImportCache('_global', deps);
+
+      const freshRead = await activateMemoryList('_global', deps);
+      expect(readSpy).toHaveBeenCalledTimes(2); // re-imported from G2
+      expect(freshRead!.map((n) => n.id)).toEqual(['fact-new']);
+    } finally {
+      readSpy.mockRestore();
     }
   });
 });

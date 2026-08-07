@@ -18,6 +18,7 @@ import {
   buildGlobalRecallContext,
   buildRecallContext,
   extractRunDigest,
+  GLOBAL_MEMORY_SCOPE,
   makeGlobalMemoryNote,
   makeMemoryNote,
   readGlobalMemoryNotes,
@@ -30,7 +31,7 @@ import {
 // from their own modules (not the '@/lib/memory' index) so host memory tests
 // that import the index never transitively load expo-file-system via fs-expo.
 import { MEMORY_ENABLED } from './memory/wiring';
-import { shadowMemoryRecall, activateMemoryRecall, activateMemoryWrite } from './memory/shadow';
+import { shadowMemoryRecall, activateMemoryRecall, activateMemoryWrite, invalidateMemoryImportCache } from './memory/shadow';
 import {
   buildSkillInjectionContext,
   applyExecutableSkillPlan,
@@ -946,6 +947,15 @@ export async function writeGlobalMemoryNote(
   params: { type: MemoryNoteType; text: string; tags?: string[] }
 ): Promise<void> {
   await writeMemoryNote(runCommand, makeGlobalMemoryNote(params));
+  // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md): this is
+  // a G2-only write — it never touches the MEMORY-001 store — so without
+  // this, activateMemoryList('_global', ...)'s one-time-per-session
+  // mirror-import (lib/memory/shadow.ts) keeps returning whatever it saw
+  // the FIRST time anything read '_global' this session (often an empty
+  // list, since global notes are rare), and Memory Workbench's shared-notes
+  // section stays permanently empty even right after this write. Evicting
+  // the cache entry here means the next read re-syncs from G2.
+  invalidateMemoryImportCache(GLOBAL_MEMORY_SCOPE);
   const agents = useAgentStore.getState().agents;
   for (const agent of agents) {
     await refreshAgentRecall(agent.id, runCommand);

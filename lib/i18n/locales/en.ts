@@ -1611,6 +1611,7 @@ const en: Record<string, string> = {
   'sidebar.agent_memory_view': 'Memory',
   'sidebar.agent_view_runs': 'View Run History',
   'sidebar.agent_view_runs_a11y': 'View run history for {{name}}',
+  'sidebar.agent_memory_view_a11y': 'View memory for {{name}}',
   'sidebar.agent_memory_empty': 'No saved memories',
   'sidebar.skills': 'SKILLS',
   'sidebar.skill_empty': 'No saved skills yet',

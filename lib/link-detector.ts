@@ -9,8 +9,12 @@ export type DetectedLink = {
   end: number;
 };
 
-// URL pattern: http(s)://... or www....
-const URL_REGEX = /https?:\/\/[^\s<>"')\]},;]+|www\.[^\s<>"')\]},;]+/g;
+// URL pattern: http(s)://... or www.... Case-insensitive: a URL echoed back
+// in upper/mixed case (common for shell-scripted output, e.g. `echo
+// "HTTPS://EXAMPLE.COM/PATH"`) is just as clickable as a lowercase one — the
+// scheme/host are case-insensitive per RFC 3986, and this bare pattern-match
+// step doesn't care about the path's case either.
+const URL_REGEX = /https?:\/\/[^\s<>"')\]},;]+|www\.[^\s<>"')\]},;]+/gi;
 
 // File path pattern: /path/to/file or ./relative/path (with extension)
 const PATH_REGEX = /(?:\/[\w.-]+){2,}(?:\.\w{1,10})?|\.\/[\w./-]+/g;

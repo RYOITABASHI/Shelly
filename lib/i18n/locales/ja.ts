@@ -1587,6 +1587,7 @@ const ja: Record<string, string> = {
   'sidebar.agent_memory_view': 'メモリ',
   'sidebar.agent_view_runs': '実行履歴を見る',
   'sidebar.agent_view_runs_a11y': '{{name}} の実行履歴を表示',
+  'sidebar.agent_memory_view_a11y': '{{name}} のメモリを表示',
   'sidebar.agent_memory_empty': '保存されたメモリはありません',
   'sidebar.skills': 'スキル',
   'sidebar.skill_empty': '保存されたスキルはまだありません',

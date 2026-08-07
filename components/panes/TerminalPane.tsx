@@ -27,6 +27,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
+import { learnFromCommand } from '@/lib/user-profile';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
@@ -1374,6 +1375,20 @@ export default function TerminalScreen() {
               const { command, output, exitCode } = e.nativeEvent;
               if (command && command.trim()) {
                 const trimmedCmd = command.trim();
+
+                // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md):
+                // store/terminal-store.ts's runCommand() records this same
+                // choke point for the OLD block-terminal UI (TerminalBlock.tsx /
+                // FirstMateOverlay.tsx), but NativeTerminalView writes typed
+                // input straight to the PTY fd and never calls runCommand() —
+                // so lib/agent-suggestion-engine.ts's profile-driven suggestions
+                // (which need learnFromCommand's top-command/skill-detection
+                // stats) could never accumulate from real usage of the terminal
+                // people actually type in. onBlockCompleted is already the
+                // earliest JS-visible point a completed native command reaches
+                // (see bug #59 below), so it doubles as this store's choke
+                // point too. Fire-and-forget, same as terminal-store's own call.
+                void learnFromCommand(trimmedCmd).catch(() => {});
 
                 // bug #59: Intercept @mention commands (@agent / ...)
                 // Bash naturally rejects them ("@agent: command not found") so

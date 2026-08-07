@@ -1562,6 +1562,48 @@ export default function RootLayout() {
     };
     const queueInterval = setInterval(drainQueue, 250);
 
+    // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md):
+    // `shelly config` typed into the real, native PTY terminal used to be a
+    // silent no-op (exit 0, no UI reaction) — the native `$HOME/bin/shelly`
+    // shim (HomeInitializer.kt, SHELLY_HELPER_SHIM) only recognized the
+    // `scouter` subcommand; lib/pseudo-shell.ts's `config`/`workflow`/`voice`
+    // handling is a separate JS-side implementation only reachable from the
+    // legacy block-terminal's runCommand(), which the native PTY terminal
+    // never calls. Same shell->RN bridge shape as the deep-link queue above:
+    // the shim now appends "config" to this file, drained here.
+    const commandQueuePath = `${FileSystem.documentDirectory}home/.shelly-command-queue`;
+    let isDrainingCommandQueue = false;
+    const drainCommandQueue = async () => {
+      if (isDrainingCommandQueue) return;
+      isDrainingCommandQueue = true;
+      try {
+        const info = await FileSystem.getInfoAsync(commandQueuePath);
+        if (!info.exists) return;
+        const spoolPath = `${commandQueuePath}.${Date.now()}.${Math.random().toString(16).slice(2, 10)}.spool`;
+        try {
+          await FileSystem.moveAsync({ from: commandQueuePath, to: spoolPath });
+        } catch {
+          return;
+        }
+        const content = await FileSystem.readAsStringAsync(spoolPath);
+        await FileSystem.deleteAsync(spoolPath, { idempotent: true });
+        const lines = content.split('\n').map((s) => s.trim()).filter(Boolean);
+        for (const line of lines) {
+          if (line === 'config') {
+            useSettingsStore.getState().setShowConfigTUI(true);
+            logInfo('CommandQueue', 'opened ConfigTUI (shelly config)');
+          } else {
+            logError('CommandQueue', `unrecognized command queue line: ${line.slice(0, 64)}`);
+          }
+        }
+      } catch (e) {
+        logError('CommandQueue', 'poll iteration failed', e);
+      } finally {
+        isDrainingCommandQueue = false;
+      }
+    };
+    const commandQueueInterval = setInterval(drainCommandQueue, 250);
+
     // X OAuth pending-token-update drain: dispatch_social_post's x) case
     // (lib/agent-executor.ts) rotates the refresh token on every dispatch and
     // cannot write to SecureStore itself (it's a detached bash/Node process),
@@ -1940,6 +1982,7 @@ export default function RootLayout() {
       linkSub.remove();
       clearTimeout(agentLogStartTimer);
       clearInterval(queueInterval);
+      clearInterval(commandQueueInterval);
       clearInterval(connectorSecretUpdateInterval);
       clearInterval(escalationInterval);
       clearInterval(actionApprovalInterval);

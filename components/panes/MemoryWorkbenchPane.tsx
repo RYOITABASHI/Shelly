@@ -36,6 +36,7 @@ import { MEMORY_ENABLED } from '@/lib/memory/wiring';
 import {
   activateMemoryList,
   deleteMemoryNoteById,
+  invalidateMemoryImportCache,
   updateMemoryNoteById,
 } from '@/lib/memory/shadow';
 import { filterMemoryNotes, parseTagsInput } from '@/lib/memory-workbench';
@@ -90,6 +91,17 @@ export default function MemoryWorkbenchPane() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
+      // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md):
+      // activateMemoryList's one-time-per-session G2 mirror-import means a
+      // note written (or deleted, elsewhere) AFTER the first read of a
+      // given agentId/scope this session never shows up here no matter how
+      // many times Reload is pressed — the store keeps answering from
+      // whatever it saw at that first import. A manual Reload should always
+      // mean "re-read from source"; evict both scopes' cache entries first.
+      if (MEMORY_ENABLED) {
+        invalidateMemoryImportCache(GLOBAL_MEMORY_SCOPE);
+        if (agentId) invalidateMemoryImportCache(agentId);
+      }
       const [own, shared] = await Promise.all([
         agentId ? listNotesWithFallback(agentId) : Promise.resolve<MemoryNote[]>([]),
         listNotesWithFallback(GLOBAL_MEMORY_SCOPE),
