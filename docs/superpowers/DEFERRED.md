@@ -14,6 +14,49 @@
 
 ---
 
+### コマンド断片化の最終切り分け完了=【P1・実バグ確定】+ 実機QA続き5項目（shelly config/scouter/URL/未解決A/未解決B）で新規バグ2件発見（2026-08-09、`info`ユーザーのセッション続き、versionCode 2099 / commit `51694a367`、wireless adb・uiautomator dumpのみ使用）
+
+**1.【P1・実バグ確定】コマンド文字列断片化はタイムアウトと無関係の決定論的バグ — `BlockDetector.kt`のfallback状態機械が「1チャンク=1行」を誤仮定**
+
+前エントリの宿題(a)の切り分けを実機実験2本で完了。**adb input固有のテストノイズ説は棄却**:
+- **実験1**: `echo qafragA`を`input text`一括送信（全文字が2秒アイドルに絶対かからない高速バースト）→ それでも`topCommands`には`{"cmd":"e"}`の+1のみ。**タイムアウト説が正しければ完全記録されるはずなので棄却**。
+- **実験2**: `sleep 3 && echo IDLECHUNK_MARKER`を実行 → 3秒後にmarkerが**1チャンクでIDLE状態のBlockDetectorに到着** → `{"cmd":"IDLECHUNK_MARKER","count":1}`として**完全な文字列で記録**された。同一パイプラインでもチャンク粒度さえ大きければ完全記録される、の直接証明。
+- **根本原因（コード精読で特定、3段の合わせ技）**:
+  1. `TerminalBuffer.getTranscriptText()`（vendored termux）は`getSelectedText(...).trim()`で**編集中の行（プロンプト行）も含む**。よってreadlineのキーエコー1文字ごとにtranscript長が+1され、`ShellyTerminalSession.onTextChanged`の長さ差分検出が**1文字のdelta**を`onOutputDelta`→`processTerminalOutput`→`BlockDetector.processOutput`へ配る。
+  2. `BlockDetector.kt`のfallback状態機械（L72-95）は、IDLE時の最初の非空チャンクだけを`currentCommand`に入れ、**2チャンク目以降は無条件に`State.OUTPUT`へ遷移して`currentOutput`行き**。つまりcommandには常に「最初の1チャンク＝通常タイプ1文字目」しか入らない。
+  3. これはタイピング速度・アイドルタイムアウト・adb遅延と**一切無関係**。人間がソフトウェアキーボードで打ってもエコーはキーごとに返るので**必ず再現する**（前セッション観測の`{"cmd":"@","count":3}`=@agent系3回、`{"cmd":"e","count":9}`=echo系9回、「常に先頭1文字」というパターンとも完全一致）。baseline `topCommands`の`{"cmd":"~$","count":5}`はプロンプト再描画断片がIDLE時に「コマンド」扱いされた同根の副症状。bug #59 `@agent`インターセプト不発（cmd="@"でmentionにマッチしない）もこれで完全説明。
+- **修正候補（次のKotlinビルド可能セッション向け）**: (i) `State.COMMAND`中は改行が現れるまで`currentCommand`へ追記し続け、チャンク内の改行で command/output を分割して`OUTPUT`へ遷移する（エコーバックのEnterは必ず改行を produce する）。(ii) またはOSC 133をPS1に復活（`HomeInitializer.kt` bashrc履歴14番、削除コミット`0dff463b`の経緯を先に確認）。(iii) 副作用注意: 修正すると「出力の1行目」がcommandに化けるIDLE到着チャンク（上記実験2の挙動）も直る設計にすること。
+
+**2.【P1・新規発見】`onUrlDetectedEvent`が配線ゼロ — Codexが直した`onBlockCompletedEvent`と全く同じ「代入されないnullableラムダ」パターンがもう1箇所残っていた**
+- `ShellyTerminalView.kt` L142の`var onUrlDetectedEvent: ((url,type)->Unit)? = null`は**リポジトリ内のどこからも代入されておらず常にnull**。L920-931のExpo `EventDispatcher`群（onResize/onScrollStateChanged/onBlockLongPress/onBlockCompleted/onFocusRequested）に**onUrlDetectedだけ存在しない**。`TerminalViewModule.kt`のEvents(...)には"onUrlDetected"が登録済み、JS側`TerminalPane.tsx` L1497のハンドラ（`openBrowserAsync`呼び出し）も正しく待っているのに、native送出の最後の一手だけが無い。
+- 実機確認: `echo HTTPS://EXAMPLE.COM/PATH`実行 → `onBlockCompleted`は発火（約2.3秒後の`exec: pwd`で確認）するが、URL関連のJSログ・ブラウザ起動・Activity遷移は皆無。**大文字小文字（`LinkDetector.kt`のIGNORE_CASE、2026-08-07修正済み）以前に、全URLでタップオープン機能が死んでいる**。
+- 修正: 他イベントと同じ`private val onUrlDetected by EventDispatcher()`パターンへ統一し、`processTerminalOutput`のループから`onUrlDetected(mapOf("url" to ..., "type" to ...))`で送出。
+
+**3. `shelly config` / `shelly scouter status` = 両方PASS**
+- `shelly config`: native PTYターミナルで実行 → ConfigTUI（Font Size/Color Theme等）が実際に開いた。versionCode 2099のシム更新（`! -s`ガード修正、BASHRC_VERSION 239）が実機で機能していると確認。
+- `shelly scouter status`: 正しいJSON（sessions配列・hookURL等）を返した。
+
+**4. 未解決A（起動後約2分AGENTS空表示）= 今回は再現せず + 前セッションの空表示は正常動作と判明**
+- 重要な前提事実: このデバイスには**登録済みエージェントが0件だった**（`~/.shelly/agents/`直下に`<id>.json`が皆無、`.deleted/`にtombstone約190件。ディレクトリ群はmemory/出力の残骸）。つまりセッション冒頭からのAGENTS空表示は「空が正しい」状態で、未解決Aの再現条件自体が存在しなかった。
+- エージェント1件登録後にforce-stop→再起動して計測: `Displayed .MainActivity` 00:35:57.9 → `[Shelly][RootLayout] Loaded: agents` 00:36:04.0（**起動後約6秒**）→ 起動後23秒の初回uiautomator dumpで既にエージェント行表示済み。以降6回のポーリング全てで表示継続。
+- ただし今回はエージェント1件・run log最小の軽量状態。2026-08-07観測時はエージェント/ログが多く、`readAgentRunLogs`等の重い経路が効いていた可能性は残る。**再現には「多数のエージェント+大量のrun log」条件が必要かもしれない**（P3で監視継続、次に多エージェント状態で再観測）。
+
+**5. 未解決B（登録直後の初回RUN NOW無反応）= 無音吸収メカニズムを2つ特定・両方実機再現**
+- **(a)【最有力・P2】ソフトキーボードによるタップ吸収**: AIペインの対話型登録でConfirm後もキーボードは開いたまま。この状態でサイドバーのRUN NOW（play-arrow）をタップすると、**唯一のログは`[Shelly][Keyboard] didHide`**（AgentRunDecisionは皆無）——タップがキーボード閉じに消費されPressableに届かない（RN ScrollViewの`keyboardShouldPersistTaps`デフォルト挙動が原因候補）。キーボードが閉じた後に**同じ座標を再タップすると即座に`AgentRunDecision`発火→実行成功**。「数十秒後の再タップは正常」という前回観測はキーボードが閉じた後だったと解釈できる。
+- **(b)【P3・仕様寄り】ephemeral one-shot登録のConfirm自動実行との競合**: スケジュール無し登録はConfirm自体が`ephemeral one-shot calling runAgentNow`を自動実行（実測約20秒）。この間+15秒poll遅延+30秒pendingタイマーの窓でRUN NOWをタップすると`Sidebar.tsx` L766の`pendingAgentIds/runningAgentIds`ガードで**無音return**（AgentRunDecisionログ自体が出ない、前回観測と同一シグネチャ）。二重実行防止として意図された挙動だが、ユーザーへのフィードバックがゼロ（トースト等が無い）。
+- 修正候補: (a)はサイドバー（または該当ScrollView）に`keyboardShouldPersistTaps="handled"`、(b)はガード時に軽いトースト/ハプティクス。
+
+**6.【P2・新規発見】ephemeral one-shotエージェントのゾンビRUNNING表示（永久カウントアップ）**
+- ephemeral実行完了→自動`deleteAgent`でファイル・ロック全削除→`agents.length`が0に→`shouldPollRunningAgents = agents.length > 0 || pendingAgentCount > 0`（`Sidebar.tsx` L282）がfalse→`refreshRunningAgents`が**二度と走らない**→ローカルstate `runningAgentIds`に残ったIDが`runningSectionRows`（L1230、`agents.find`失敗を許容する設計）経由で「AGENT-MSKJ3FBT / Running · 1m06s」として**永久にカウントアップ表示**（ロックdir空・エージェントプロセス無しを確認済み、1m06s→3m06sまで観測）。
+- 次のエージェント登録で`agents.length>0`となりpollが復活すると消えることも確認（メカニズムの裏付け）。
+- 修正候補: `runningAgentIds`非空なら`agents.length`が0でもpollを継続／`deleteAgent`成功時に`runningAgentIds`・`runningAgentDetails`からも除去。
+
+**テストで変更したまま残した状態**: `shelly_user_profile`のtopCommandsにテスト断片（`e`/`s`/`IDLECHUNK_MARKER`等）追加混入（削除手段なし、実害は参考データ汚れのみ）。AIペインにQA用の登録対話ログ（qaprobe1/qaprobe2）残存。qaprobe2（毎日09:00スケジュール）は削除済み・`dumpsys alarm`で残留アラーム無しを確認。`/sdcard/qa_*`・UIダンプXMLは全削除。ConfigTUIは開閉のみで設定変更なし。
+
+→ sync: なし（コード変更なし、調査のみ）。
+
+---
+
 ### ✅ commit `51694a367`(onBlockCompleted修復)実機検証 — CIビルド成功・イベント発火自体は確認、ただし新たな懸念(コマンド文字列の断片化)を発見・要フォローアップ(2026-08-09、別マシン`info`ユーザーのセッション)
 
 **経緯**: 引き継ぎメッセージで「Kotlinコンパイラがローカルに無くコンパイル未確認」と申し送りされたため、まずGitHub Actions CI(run id `31261934289`)の成功を確認。続けて実機（wireless adb接続、`RFCX71399SK`）でCI成果物APK(versionCode 2099)を直接インストールし、`adb shell input`+`uiautomator dump`（screencap/screenrecord/monkeyは一切不使用）でQAを実施した。
