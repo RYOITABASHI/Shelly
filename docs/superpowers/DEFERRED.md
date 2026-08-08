@@ -16,7 +16,7 @@
 
 ### コマンド断片化の最終切り分け完了=【P1・実バグ確定】+ 実機QA続き5項目（shelly config/scouter/URL/未解決A/未解決B）で新規バグ2件発見（2026-08-09、`info`ユーザーのセッション続き、versionCode 2099 / commit `51694a367`、wireless adb・uiautomator dumpのみ使用）
 
-**1.【P1・実バグ確定】コマンド文字列断片化はタイムアウトと無関係の決定論的バグ — `BlockDetector.kt`のfallback状態機械が「1チャンク=1行」を誤仮定**
+**1. ✅（`af0608347`で修正、versionCode 2103実機QAでPASS — 下記追記その3）【P1・実バグ確定】コマンド文字列断片化はタイムアウトと無関係の決定論的バグ — `BlockDetector.kt`のfallback状態機械が「1チャンク=1行」を誤仮定**
 
 前エントリの宿題(a)の切り分けを実機実験2本で完了。**adb input固有のテストノイズ説は棄却**:
 - **実験1**: `echo qafragA`を`input text`一括送信（全文字が2秒アイドルに絶対かからない高速バースト）→ それでも`topCommands`には`{"cmd":"e"}`の+1のみ。**タイムアウト説が正しければ完全記録されるはずなので棄却**。
@@ -27,7 +27,7 @@
   3. これはタイピング速度・アイドルタイムアウト・adb遅延と**一切無関係**。人間がソフトウェアキーボードで打ってもエコーはキーごとに返るので**必ず再現する**（前セッション観測の`{"cmd":"@","count":3}`=@agent系3回、`{"cmd":"e","count":9}`=echo系9回、「常に先頭1文字」というパターンとも完全一致）。baseline `topCommands`の`{"cmd":"~$","count":5}`はプロンプト再描画断片がIDLE時に「コマンド」扱いされた同根の副症状。bug #59 `@agent`インターセプト不発（cmd="@"でmentionにマッチしない）もこれで完全説明。
 - **修正候補（次のKotlinビルド可能セッション向け）**: (i) `State.COMMAND`中は改行が現れるまで`currentCommand`へ追記し続け、チャンク内の改行で command/output を分割して`OUTPUT`へ遷移する（エコーバックのEnterは必ず改行を produce する）。(ii) またはOSC 133をPS1に復活（`HomeInitializer.kt` bashrc履歴14番、削除コミット`0dff463b`の経緯を先に確認）。(iii) 副作用注意: 修正すると「出力の1行目」がcommandに化けるIDLE到着チャンク（上記実験2の挙動）も直る設計にすること。
 
-**2.【P1・新規発見】`onUrlDetectedEvent`が配線ゼロ — Codexが直した`onBlockCompletedEvent`と全く同じ「代入されないnullableラムダ」パターンがもう1箇所残っていた**
+**2. ✅（`af0608347`で修正、versionCode 2103実機QAでPASS — 下記追記その3）【P1・新規発見】`onUrlDetectedEvent`が配線ゼロ — Codexが直した`onBlockCompletedEvent`と全く同じ「代入されないnullableラムダ」パターンがもう1箇所残っていた**
 - `ShellyTerminalView.kt` L142の`var onUrlDetectedEvent: ((url,type)->Unit)? = null`は**リポジトリ内のどこからも代入されておらず常にnull**。L920-931のExpo `EventDispatcher`群（onResize/onScrollStateChanged/onBlockLongPress/onBlockCompleted/onFocusRequested）に**onUrlDetectedだけ存在しない**。`TerminalViewModule.kt`のEvents(...)には"onUrlDetected"が登録済み、JS側`TerminalPane.tsx` L1497のハンドラ（`openBrowserAsync`呼び出し）も正しく待っているのに、native送出の最後の一手だけが無い。
 - 実機確認: `echo HTTPS://EXAMPLE.COM/PATH`実行 → `onBlockCompleted`は発火（約2.3秒後の`exec: pwd`で確認）するが、URL関連のJSログ・ブラウザ起動・Activity遷移は皆無。**大文字小文字（`LinkDetector.kt`のIGNORE_CASE、2026-08-07修正済み）以前に、全URLでタップオープン機能が死んでいる**。
 - 修正: 他イベントと同じ`private val onUrlDetected by EventDispatcher()`パターンへ統一し、`processTerminalOutput`のループから`onUrlDetected(mapOf("url" to ..., "type" to ...))`で送出。
@@ -39,6 +39,14 @@
 - **修正**: `processCommandChunk()`を`IDLE`/`PROMPT`分岐（`state = State.COMMAND`設定後）からも同一呼び出しに統一し、最初のチャンクも以降のチャンクも同じ改行分割ロジックで処理するよう変更。`blockStartTime`は`state == State.IDLE`のチェックを`state = State.COMMAND`代入より前に置くことで、真のIDLE→COMMAND遷移時のみ設定されPROMPTでは設定されない元の意図を保持。
 - **Codexレビュー round 2（round 1の修正後、再度読解のみでレビュー）**: `"echo hi\nhi\n"`が最初のチャンクとして届くシナリオを再検証、`blockStartTime`のIDLE専用設定順序を確認、`processCommandChunk`が2箇所の`when`分岐から呼ばれることによる状態タイミング問題の有無を確認——**「No findings... This looks ready for CI from the reading-only Kotlin review」**と結論、round 1の指摘は完全解消・新規バグなしと確認。
 - Kotlinコンパイル環境がこのマシンに無いため未コンパイル。GitHub Actions CIでのビルド成功確認と、次回実機QA（`echo qafragA`等の再実験でtopCommandsが完全な文字列として記録されるか）が必須の残タスク。
+
+**→ 2026-08-09追記その3（同日、実機QA検証セッション、commit `af0608347` / CI run `31265820479` / versionCode 2103、wireless adb・uiautomator dump・logcatのみ使用）: 上記1・2とも実機でPASS確定**
+- **修正1（コマンド断片化）= PASS**: ターミナルUIへ`input text`で`qafrag2103marker hello`と`echo QAFRAGTEST123`を打鍵→各ブロック完了（`exec: pwd`同期をlogcatで確認）→アプリ内ターミナルで`source /sdcard/qa_dump.sh`によりRKStorageの`shelly_user_profile`をsqlite3ダンプ→`adb pull`で取得。**`{"cmd":"qafrag2103marker","count":1}`・`{"cmd":"echo","count":3}`・`{"cmd":"bash","count":1}`と第1ワードが完全な文字列で記録された**（旧バグなら`q`/`e`/`b`の1文字断片になるはず）。旧断片（`e`:11 / `l`:10 / `s`:9 / `~$`:5 / `@`:3等）は修正前セッションの履歴データとして残存しているだけで、修正後の新規エントリに断片は一切なし。
+- **修正2（onUrlDetected配線）= PASS**: `echo https://example.com/qatest`実行→logcatに`ActivityTaskManager: START u0 {act=android.intent.action.VIEW dat=https://example.com/... cmp=com.android.chrome/...IntentDispatcher} from uid 10888 (dev.shelly.terminal)`が出現、`topResumedActivity`が`com.android.chrome/...CustomTabActivity`へ遷移（Back keyでShellyのMainActivityに復帰も確認）。native `processTerminalOutput`→`onUrlDetected` EventDispatcher→JS `openBrowserAsync`の全経路が実機で機能している。
+- **新規の気づき（2件、いずれも新P1ではない）**:
+  1. **【P3・UX観察】URLオープンは「タップ」ではなく「出力検出」トリガー**: `ShellyTerminalView.kt`の`processTerminalOutput`は出力デルタにURLが現れた時点で`onUrlDetected`を送出し、JS側（`TerminalPane.tsx` L1497）が即`openBrowserAsync`する。つまりターミナル出力にURLが印字されるだけで（タップ無しで）Custom Tabが自動で開く。`curl -v`等のURL多量出力でブラウザ連発、またはURLペースト時（コマンドライン組成中のtranscriptデルタに完全URLが載る）に実行前オープンの可能性がある。イベント配線自体は意図通り動作しているため、トリガー条件をタップ/長押しに絞るかはUX設計判断として別途検討。
+  2. **【P3・既知アーキテクチャの帰結】bundleツールは非interactiveシェルで使えない**: `sqlite3`等は.bashrc定義のbash関数（`_run /data/user/0/.../files/termux-libs/sqlite3`ラッパー）であり、`bash script.sh`（.bashrc未読込）では素のPATH解決が直接exec不可の`files/termux-libs/`実体に当たり`Permission denied`。interactiveシェルで`source script.sh`すれば動く。スクリプトからbundleツールを使う場合の既知の落とし穴として記録。
+- **テストで残した状態**: `topCommands`にテストエントリ（`qafrag2103marker`/`bash`/`cat`等）追加混入（削除手段なし、実害は参考データ汚れのみ）。bash履歴にQAコマンド残存。今セッション作成の`/sdcard/qa_*`は削除済み。**前セッション残留の`/sdcard/qa_hist2.txt`/`qa_hist3.txt`/`qa_ui2.xml`を発見**（前回「全削除」と記録されていたが3件残っていた。実害皆無のため残置）。Chrome Custom TabはBackで閉じ、Shellyフォアグラウンド復帰済み。
 
 **3. `shelly config` / `shelly scouter status` = 両方PASS**
 - `shelly config`: native PTYターミナルで実行 → ConfigTUI（Font Size/Color Theme等）が実際に開いた。versionCode 2099のシム更新（`! -s`ガード修正、BASHRC_VERSION 239）が実機で機能していると確認。
@@ -3980,6 +3988,7 @@ claude() {
 
 ## History
 
+- **2026-08-09**: commit `af0608347`（BlockDetectorコマンド断片化修正 + onUrlDetected配線）のversionCode 2103実機QA。両修正ともPASS確定（`topCommands`に`qafrag2103marker`が完全文字列で記録／`echo <URL>`でChrome Custom Tab起動をActivityTaskManagerログで確認）。新規の気づき2件（URL自動オープンは検出トリガーでタップ不要＝UX検討余地、bundleツールは非interactiveシェルで使用不可）をP3観察として記録。先頭のエントリ参照。
 - **2026-08-09**: commit `51694a367`(onBlockCompleted修復)のCI成功確認＋実機QA。イベント発火自体はPASS（`learnFromCommand`まで到達、AsyncStorage更新を確認）だが、記録されたコマンド文字列が単一文字に断片化する新たな懸念を発見——OSC 133がbashrcから意図的に無効化されておりタイムアウトベース検出に常時依存している事実も判明。adb inputのテスト手法固有ノイズか実バグか切り分け未了。先頭のエントリ参照。
 - **2026-08-06**: プロフィール駆動エージェント提案／Agent Runsペイン／Memory Workbenchペインを並列サブエージェント編成（Codex CLI + Opus5 + Fable5、git worktree分離）で実装。マージ時に`git apply`の部分的サイレント失敗（共有ファイルの一部hunkが未適用のまま完了扱い）を発見・手動補完・Codexで統合後レビューを追加実施。4機能とも実機未検証。先頭のエントリ参照。
 - **2026-08-04**: 実機オーケストレーション実行の生ログ内容精査（ステータスだけでなく実テキスト）で3件の疑義を発見。Codexが読み取り専用の静的調査、Fable5が現行HEADで独立検証・実装する2段階レビュー体制で対応——(A)ローカルLLM起動失敗の`.so`欠落を検知しない健全性チェックのギャップを`scripts/shelly-local-llm-ensure.sh`に防御策実装、(B)`buildStepPrompt`の切り捨て順序が長い前ステップ結果で今回の指示を末尾ごと消し得るバグを3箇所（TS/bash/JSの独立コピー、うちJS版はCodex調査に無かった発見）で同時修正、(C)「通知して」のステップ混入はCodex仮説どおり現行コードにバグなし・stale agent state濃厚と判断しコード修正なし。重複コンテンツ検知の欠如はP1フォローアップとして記録。先頭のエントリ参照。
