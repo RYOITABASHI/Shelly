@@ -1659,6 +1659,7 @@ const ja: Record<string, string> = {
   'sidebar.directory_not_found_body': 'パス "{{path}}" はこのデバイスに存在しません。スペルを確認するか、存在するフォルダを選んでください。',
   'sidebar.agent_failed_title': 'エージェントに失敗しました',
   'sidebar.agent_failed_body': '"{{name}}" を開始できませんでした。',
+  'sidebar.agent_already_running_toast': '"{{name}}" は開始中または実行中です',
   'sidebar.agent_completed_title': 'エージェントが完了しました',
   'sidebar.no_log_preview': 'ログのプレビューはありません。',
   'sidebar.tool': 'ツール',

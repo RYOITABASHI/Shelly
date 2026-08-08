@@ -1683,6 +1683,7 @@ const en: Record<string, string> = {
   'sidebar.directory_not_found_body': 'The path "{{path}}" does not exist on this device. Double-check the spelling or pick an existing folder.',
   'sidebar.agent_failed_title': 'Agent failed',
   'sidebar.agent_failed_body': 'Could not start "{{name}}".',
+  'sidebar.agent_already_running_toast': '"{{name}}" is already starting or running',
   'sidebar.agent_completed_title': 'Agent completed',
   'sidebar.no_log_preview': 'No log preview available.',
   'sidebar.tool': 'Tool',

@@ -31,7 +31,7 @@ import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import { MEMORY_ENABLED } from '@/lib/memory/wiring';
 import { activateMemoryList } from '@/lib/memory/shadow';
 import { openFile } from '@/lib/open-file';
-import { formatElapsedMs } from '@/lib/agent-running-format';
+import { formatElapsedMs, shouldPollRunningAgents as shouldPollRunningAgentsFn } from '@/lib/agent-running-format';
 import { useMotion } from '@/hooks/use-motion';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import { parseAuthorizedSenders } from '@/lib/notification-inbound';
@@ -279,7 +279,11 @@ export function Sidebar() {
 
   const agentsSectionOpen = mode === 'expanded' && openSections.tasks;
   const pendingAgentCount = pendingAgentIds.size;
-  const shouldPollRunningAgents = agents.length > 0 || pendingAgentCount > 0;
+  const shouldPollRunningAgents = shouldPollRunningAgentsFn({
+    agentCount: agents.length,
+    pendingAgentCount,
+    runningAgentCount: runningAgentIds.size,
+  });
 
   // The FILE TREE section is the only consumer of activeRepoPath; if it is
   // collapsed, selecting a folder (REPOSITORIES or DEVICE shortcut) silently
@@ -763,7 +767,15 @@ export function Sidebar() {
     // concurrent calls for the same agentId at the JS level (a second call
     // joins the in-flight one instead of starting its own), so this is
     // defense in depth — it also avoids a silently-wasted duplicate press.
-    if (pendingAgentIds.has(agentId) || runningAgentIds.has(agentId)) return;
+    if (pendingAgentIds.has(agentId) || runningAgentIds.has(agentId)) {
+      // Unresolved-B(b) (docs/superpowers/DEFERRED.md): this guard used to
+      // return silently, so a RUN NOW tap landing inside the ephemeral
+      // one-shot auto-run window (or the 30s post-run cooldown) looked like
+      // an unresponsive button with zero feedback. A short toast is enough
+      // to tell the user the tap registered but was intentionally deduped.
+      ToastAndroid.show(t('sidebar.agent_already_running_toast', { name: agentName }), ToastAndroid.SHORT);
+      return;
+    }
     setPendingAgentIds((prev) => new Set(prev).add(agentId));
     try {
       await runAgentNow(agentId, runCommandForAgentSync);
@@ -1273,6 +1285,7 @@ export function Sidebar() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {/* TASKS */}
         <SidebarSection

@@ -24,3 +24,20 @@ export function formatElapsedMs(ms: number): string {
   if (m > 0) return `${m}m${String(s).padStart(2, '0')}s`;
   return `${s}s`;
 }
+
+/** Decide whether the Sidebar's RUNNING-section poll loop should be active.
+ *  docs/superpowers/DEFERRED.md "zombie RUNNING display" bug: an ephemeral
+ *  one-shot agent auto-deletes its store entry (agentCount -> 0) while its
+ *  lock file may still be momentarily live, or runningAgentCount hasn't
+ *  caught up yet. Without runningAgentCount in this condition, polling
+ *  stopped the instant agentCount hit 0 and a stale running-id was never
+ *  refreshed away — the poll's own refresh always REPLACES its id set with
+ *  whatever `kill -0` confirms live, so keeping polling alive until that set
+ *  is actually empty is sufficient to self-heal with no extra plumbing. */
+export function shouldPollRunningAgents(params: {
+  agentCount: number;
+  pendingAgentCount: number;
+  runningAgentCount: number;
+}): boolean {
+  return params.agentCount > 0 || params.pendingAgentCount > 0 || params.runningAgentCount > 0;
+}
