@@ -74,25 +74,75 @@ class BlockDetector(
                 // No active block; accumulate as potential command
                 if (text.isNotBlank()) {
                     if (state == State.IDLE) {
-                        state = State.COMMAND
                         blockStartTime = System.currentTimeMillis()
                     }
-                    currentCommand.append(text)
-                    // A command with no output can arrive as the only
-                    // transcript delta. Start the timer on the first chunk;
-                    // otherwise COMMAND is stranded forever waiting for a
-                    // second processOutput() call that never comes.
-                    lastOutputTime = System.currentTimeMillis()
-                    resetIdleTimer()
+                    state = State.COMMAND
+                    // 2026-08-09 Codex review finding: the very first chunk
+                    // that enters COMMAND must go through the SAME
+                    // newline-splitting logic as later chunks — a paste, an
+                    // IME batch-commit, or output racing back fast enough to
+                    // arrive already joined with the command in one
+                    // transcript delta (e.g. "echo hi\nhi\n" as a single
+                    // chunk) must still split at the first newline instead
+                    // of dumping the whole thing into currentCommand.
+                    processCommandChunk(text)
                 }
             }
-            State.COMMAND, State.OUTPUT -> {
-                state = State.OUTPUT
+            // 2026-08-09 on-device QA finding (docs/superpowers/DEFERRED.md):
+            // this used to switch to OUTPUT unconditionally on the SECOND
+            // chunk of any command, so the command text was always just
+            // whatever arrived in the first chunk — on a real device, the
+            // transcript delta driving processOutput() is fed by
+            // ShellyTerminalSession.onTextChanged(), which fires on close to
+            // every readline keystroke-echo, so the "first chunk" was
+            // usually a single typed character (confirmed on-device: history
+            // recorded full commands correctly, proving PTY input itself
+            // was never fragmented — only this state machine's classification
+            // of it was). Bash's readline always echoes the terminating
+            // Enter as a newline before shell output begins, so staying in
+            // COMMAND and splitting on the first newline within a chunk
+            // (rather than switching state on ANY second chunk) correctly
+            // reassembles a command typed keystroke-by-keystroke, while
+            // still handling a command+newline+output arriving pre-joined
+            // in one chunk (e.g. output racing back before this callback
+            // runs again).
+            State.COMMAND -> {
+                processCommandChunk(text)
+            }
+            State.OUTPUT -> {
                 currentOutput.append(text)
                 lastOutputTime = System.currentTimeMillis()
                 resetIdleTimer()
             }
         }
+    }
+
+    /**
+     * Appends a chunk to currentCommand while still in State.COMMAND,
+     * splitting at the first newline (bash's readline always echoes the
+     * terminating Enter as one before shell output begins) to transition
+     * to State.OUTPUT and route anything after it to currentOutput. Shared
+     * by the IDLE/PROMPT->COMMAND entry chunk and every subsequent COMMAND
+     * chunk so both paths classify a mid-chunk newline identically.
+     */
+    private fun processCommandChunk(text: String) {
+        val newlineIdx = text.indexOf('\n')
+        if (newlineIdx == -1) {
+            currentCommand.append(text)
+        } else {
+            currentCommand.append(text.substring(0, newlineIdx))
+            state = State.OUTPUT
+            val rest = text.substring(newlineIdx + 1)
+            if (rest.isNotEmpty()) {
+                currentOutput.append(rest)
+            }
+        }
+        // A command with no output can arrive as the only transcript delta.
+        // Start/reset the timer on every chunk; otherwise COMMAND is
+        // stranded forever waiting for a processOutput() call that never
+        // comes.
+        lastOutputTime = System.currentTimeMillis()
+        resetIdleTimer()
     }
 
     /**

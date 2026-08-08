@@ -137,9 +137,19 @@ class ShellyTerminalView(
     private var attachedOutputDeltaCallback: ((String) -> Unit)? = null
 
     // Event callbacks set by the Expo module
+    // 2026-08-09 on-device QA finding (docs/superpowers/DEFERRED.md): this
+    // was the same "nullable lambda never assigned by anyone" shape as
+    // onBlockCompletedEvent (fixed in 51694a367) — onUrlDetectedEvent had
+    // zero assignment sites in this repo, so TerminalPane.tsx's onUrlDetected
+    // handler (URL tap-to-open) silently never fired for ANY url, case
+    // notwithstanding. onOutputEvent/onSelectionChangedEvent/onBellEvent/
+    // onTitleChangedEvent share the same unassigned shape but are left as-is:
+    // TerminalPane.tsx passes onOutput={() => {}} (deliberately inert, the
+    // native Canvas terminal doesn't need JS-side output text) and never
+    // wires onSelectionChanged/onBell/onTitleChanged at all, so those three
+    // have no JS-side consumer to reach — fixing them would be dead code.
     var onOutputEvent: ((text: String, isError: Boolean) -> Unit)? = null
     var onSelectionChangedEvent: ((text: String) -> Unit)? = null
-    var onUrlDetectedEvent: ((url: String, type: String) -> Unit)? = null
     var onBellEvent: (() -> Unit)? = null
     var onTitleChangedEvent: ((title: String) -> Unit)? = null
 
@@ -634,7 +644,7 @@ class ShellyTerminalView(
         blockDetector.processOutput(text)
         val links = linkDetector.detect(text)
         for (link in links) {
-            onUrlDetectedEvent?.invoke(link.text, link.type.name)
+            onUrlDetected(mapOf("url" to link.text, "type" to link.type.name))
         }
         onOutputEvent?.invoke(text, false)
     }
@@ -922,6 +932,12 @@ class ShellyTerminalView(
     private val onScrollStateChanged by EventDispatcher()
     private val onBlockLongPress by EventDispatcher()
     private val onBlockCompleted by EventDispatcher()
+    // 2026-08-09 on-device QA finding (docs/superpowers/DEFERRED.md): the
+    // "onUrlDetected" wire-format string was already registered in
+    // TerminalViewModule.kt's Events(...) and TerminalPane.tsx was already
+    // listening — only this native dispatch side was missing, so URL
+    // tap-to-open never fired for any URL, case-sensitivity notwithstanding.
+    private val onUrlDetected by EventDispatcher()
     // bug #116 follow-up: RN's onTouchStart on the parent <View> never fires
     // for taps inside the terminal body because TerminalView calls
     // requestDisallowInterceptTouchEvent(true). So `handleFocusPane` in

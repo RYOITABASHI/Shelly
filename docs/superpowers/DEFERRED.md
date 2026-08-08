@@ -32,6 +32,14 @@
 - 実機確認: `echo HTTPS://EXAMPLE.COM/PATH`実行 → `onBlockCompleted`は発火（約2.3秒後の`exec: pwd`で確認）するが、URL関連のJSログ・ブラウザ起動・Activity遷移は皆無。**大文字小文字（`LinkDetector.kt`のIGNORE_CASE、2026-08-07修正済み）以前に、全URLでタップオープン機能が死んでいる**。
 - 修正: 他イベントと同じ`private val onUrlDetected by EventDispatcher()`パターンへ統一し、`processTerminalOutput`のループから`onUrlDetected(mapOf("url" to ..., "type" to ...))`で送出。
 
+**→ 2026-08-09追記（同日、`info`ユーザーのセッション、Kotlin修正実装・実機未検証）**: 上記修正を実装(`modules/terminal-view/android/src/main/java/expo/modules/terminalview/ShellyTerminalView.kt`)。ついでに調査したところ、`onOutputEvent`/`onSelectionChangedEvent`/`onBellEvent`/`onTitleChangedEvent`も同型の「代入箇所ゼロ」だったが、`TerminalPane.tsx`は`onOutput={() => {}}`(意図的に空)、`onSelectionChanged`/`onBell`/`onTitleChanged`はそもそも props として渡していないことを確認したため、この3件は未配線でも実害なし(JS側に消費者が無い)と判断し**意図的にスコープ外**とした。Kotlinコンパイル環境がこのマシンに無いため、この修正はGitHub Actions CIでのコンパイル確認と、次回実機QAでのタップオープン動作確認が必要。
+
+**→ 2026-08-09追記その2（同日、同セッション、`BlockDetector.kt`本体のコマンド断片化バグ修正を実装・Codexレビュー2ラウンド完了）**: 上記1番の根本原因に対する修正候補(i)を実装。`State.COMMAND`分岐を`State.OUTPUT`から分離し、チャンク中に`\n`が現れるまで`currentCommand`へ追記し続け、最初の`\n`で分割(直前を`currentCommand`確定・`State.OUTPUT`へ遷移・直後を`currentOutput`へ)する`processCommandChunk(text: String)`ヘルパーを新設。
+- **Codexレビュー round 1（読解のみ、コンパイル不可環境）で発見**: 修正が`State.COMMAND`分岐にしか適用されておらず、`State.IDLE`/`State.PROMPT`→`State.COMMAND`遷移の**最初のチャンク**は旧ロジックのまま無条件で`currentCommand`に丸ごと追記されていた。ペースト・IME一括確定・出力が高速に追いついて`"echo hi\nhi\n"`のように1チャンクで届くケースで、command全体が誤って一体化する再発リスクが残っていた。
+- **修正**: `processCommandChunk()`を`IDLE`/`PROMPT`分岐（`state = State.COMMAND`設定後）からも同一呼び出しに統一し、最初のチャンクも以降のチャンクも同じ改行分割ロジックで処理するよう変更。`blockStartTime`は`state == State.IDLE`のチェックを`state = State.COMMAND`代入より前に置くことで、真のIDLE→COMMAND遷移時のみ設定されPROMPTでは設定されない元の意図を保持。
+- **Codexレビュー round 2（round 1の修正後、再度読解のみでレビュー）**: `"echo hi\nhi\n"`が最初のチャンクとして届くシナリオを再検証、`blockStartTime`のIDLE専用設定順序を確認、`processCommandChunk`が2箇所の`when`分岐から呼ばれることによる状態タイミング問題の有無を確認——**「No findings... This looks ready for CI from the reading-only Kotlin review」**と結論、round 1の指摘は完全解消・新規バグなしと確認。
+- Kotlinコンパイル環境がこのマシンに無いため未コンパイル。GitHub Actions CIでのビルド成功確認と、次回実機QA（`echo qafragA`等の再実験でtopCommandsが完全な文字列として記録されるか）が必須の残タスク。
+
 **3. `shelly config` / `shelly scouter status` = 両方PASS**
 - `shelly config`: native PTYターミナルで実行 → ConfigTUI（Font Size/Color Theme等）が実際に開いた。versionCode 2099のシム更新（`! -s`ガード修正、BASHRC_VERSION 239）が実機で機能していると確認。
 - `shelly scouter status`: 正しいJSON（sessions配列・hookURL等）を返した。
