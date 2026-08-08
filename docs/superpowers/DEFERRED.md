@@ -14,6 +14,31 @@
 
 ---
 
+### ✅ commit `51694a367`(onBlockCompleted修復)実機検証 — CIビルド成功・イベント発火自体は確認、ただし新たな懸念(コマンド文字列の断片化)を発見・要フォローアップ(2026-08-09、別マシン`info`ユーザーのセッション)
+
+**経緯**: 引き継ぎメッセージで「Kotlinコンパイラがローカルに無くコンパイル未確認」と申し送りされたため、まずGitHub Actions CI(run id `31261934289`)の成功を確認。続けて実機（wireless adb接続、`RFCX71399SK`）でCI成果物APK(versionCode 2099)を直接インストールし、`adb shell input`+`uiautomator dump`（screencap/screenrecord/monkeyは一切不使用）でQAを実施した。
+
+**確認できたこと（PASS）**:
+1. **CIビルド成功**: run `31261934289`が`success`で完了。Kotlin変更(`onBlockCompletedEvent`のEventDispatcherパターン統一、BlockDetectorのタイマー開始漏れ修正、コールバック所有権競合の解消)は実際にコンパイル可能と確認。
+2. **`onBlockCompleted`は実機で発火している**: ターミナルへタップ→コマンド入力→Enterの度に、`[Shelly][NativeExec] exec: pwd`（cwd同期処理）が`ReactNativeJS`ログタグに複数回出現することを確認（タップから2.5〜4秒程度）。これは以前のバージョンで「全コマンド・全ペインで一度も発火しない」という深刻な回帰だった状態から明確に回復している。
+3. **`learnFromCommand`（プロフィール学習）が実際に動作している**: `sqlite3 <RKStorage> .dump`でAsyncStorageを直接ダンプし、`shelly_user_profile`の`topCommands`/`updatedAt`が実際に更新されることを確認。onBlockCompleted経由でJS側のプロフィール学習ロジックまで到達している。
+
+**新たに発見した懸念（未確定、フォローアップ要）**:
+- **`topCommands`に記録されたコマンド文字列が単一文字に断片化している**（例: `{"cmd":"@","count":3}`、`{"cmd":"e","count":9}`、`{"cmd":"p","count":1}`など。本来なら`"@agent"`や`"echo"`のような完全な単語になるはず）。この断片化のせいで、`@agent testqa echo hello`のようなマルチワードコマンドが`@agent`インターセプト（bug #59）にマッチせず、意図通りエージェントが作成されないという二次症状も観測した。
+- **原因調査で判明した事実**: `modules/terminal-emulator/.../HomeInitializer.kt`のbashrcバージョン履歴コメント（14番）に「OSC 133 sequences dropped from PS1」とあり、**この端末のbashプロンプトはOSC 133を出力しない設定になっている**。つまり`BlockDetector.kt`のブロック検出は常に2秒アイドルタイムアウトのフォールバック経路に依存しており、OSC 133ベースの正確な検出は使われていない。
+- **切り分けできなかった点**: この文字断片化が、(a) タイムアウトベース検出の設計限界がadb `input text`特有の入力遅延（各文字送信間のADB通信ラウンドトリップ）と組み合わさって顕在化したテスト手法固有のノイズなのか、(b) 実際の（人間が手でソフトウェアキーボードから打っても再現する）新規デグレードなのか、adb経由の自動操作だけでは確定できなかった。クリップボード経由のペースト（`TerminalView.pasteViaEmulator()`、一括書き込み経路）で同じ現象が起きるか確認できれば切り分けられるが、ADB単体からクリップボードへの外部書き込みが本機ではブロックされており試せなかった。
+- **未検証のまま**: `shelly config`コマンドの動作（同じ文字断片化の影響で、コマンド全体が正しく認識されたか確証が持てなかった）、URL大文字小文字検出（`LinkDetector.kt`）、未解決A/B（Sidebar AGENTS一覧の遅延表示・登録直後RUN NOW無反応）の実機ログ採取——いずれも時間の都合で本セッションでは着手できず。
+
+**次回やること（優先度順）**:
+(a) 人間が実機で直接ソフトウェアキーボードから`@agent test echo hello`のような複数語コマンドを打ち、`topCommands`のコマンド文字列が完全な単語として記録されるか確認する（テスト手法由来のノイズかどうかの最終切り分け）。もし人間の手打ちでも断片化するなら、`BlockDetector.kt`のタイムアウト値(2000ms)またはOSC 133を意図的に無効化した経緯そのものを見直す必要がある。
+(b) `shelly config`/URL大文字小文字/未解決A・Bの実機確認を改めて実施。
+
+**テストで変更したまま残した状態**: 新規追加したTerminalペイン(スロット3)、AsyncStorageの`shelly_user_profile`にqatest1〜6等のテストコマンドが混入（削除手段が無いため復元不可、実害はプロフィール学習の参考データが汚れる程度で機能的な問題はない）。`/sdcard/qa_*.txt`・`/sdcard/ui*.xml`は削除済み。
+
+→ sync: なし。
+
+---
+
 ### ✅ 2026-08-07実機QA(6項目)で見つかった不具合の一括修正 — 5件修正・1件は既存メカニズム健全と判明(コード変更なし)・2件は実機ログ必須のため要フォローアップ
 
 **経緯**: versionCode 2095(commit `8a963040e`)での実機QAで、Gist同期/browser-pane cold-start復旧のP1修正2件は共にPASS確認できたが、未検証の新規3ペイン機能の一部と、以前から積み残していた軽微バグ群が併せて報告された。ユーザーから「全ての不具合とバグを直してください」の指示を受け、報告された全項目に着手した。
@@ -3901,6 +3926,7 @@ claude() {
 
 ## History
 
+- **2026-08-09**: commit `51694a367`(onBlockCompleted修復)のCI成功確認＋実機QA。イベント発火自体はPASS（`learnFromCommand`まで到達、AsyncStorage更新を確認）だが、記録されたコマンド文字列が単一文字に断片化する新たな懸念を発見——OSC 133がbashrcから意図的に無効化されておりタイムアウトベース検出に常時依存している事実も判明。adb inputのテスト手法固有ノイズか実バグか切り分け未了。先頭のエントリ参照。
 - **2026-08-06**: プロフィール駆動エージェント提案／Agent Runsペイン／Memory Workbenchペインを並列サブエージェント編成（Codex CLI + Opus5 + Fable5、git worktree分離）で実装。マージ時に`git apply`の部分的サイレント失敗（共有ファイルの一部hunkが未適用のまま完了扱い）を発見・手動補完・Codexで統合後レビューを追加実施。4機能とも実機未検証。先頭のエントリ参照。
 - **2026-08-04**: 実機オーケストレーション実行の生ログ内容精査（ステータスだけでなく実テキスト）で3件の疑義を発見。Codexが読み取り専用の静的調査、Fable5が現行HEADで独立検証・実装する2段階レビュー体制で対応——(A)ローカルLLM起動失敗の`.so`欠落を検知しない健全性チェックのギャップを`scripts/shelly-local-llm-ensure.sh`に防御策実装、(B)`buildStepPrompt`の切り捨て順序が長い前ステップ結果で今回の指示を末尾ごと消し得るバグを3箇所（TS/bash/JSの独立コピー、うちJS版はCodex調査に無かった発見）で同時修正、(C)「通知して」のステップ混入はCodex仮説どおり現行コードにバグなし・stale agent state濃厚と判断しコード修正なし。重複コンテンツ検知の欠如はP1フォローアップとして記録。先頭のエントリ参照。
 - **2026-08-03**: Tier3会話型登録の実機テスト（agent-msd4bkjt）でユーザーが実バグ4件を発見（スケジュール質問ループ／エージェント全体local+runOn:on-device固定でステップピン無効化・ローカルLLMが架空URL入り捏造ニュースをsuccess記録／スケジュール・配信断片のステップ混入）。Codexが事前静的調査、Fable5が現行HEADで独立検証のうえ実装する2段階レビュー体制で一括修正——確定境界のrunOn自動導出廃止（`resolveConfirmedToolAndRunOn`へ抽出）、Tier2/Tier3共有の部分スケジュール合成（`combinePartialScheduleWithDraft`）、決定的ステップサニタイズ（`sanitizeConversationalSteps`）。ルーターのmanual-pin優先設計自体は意図的設計と確認し不変更。先頭のエントリ参照。
