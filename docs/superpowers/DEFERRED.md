@@ -78,9 +78,11 @@
 - **項目5(a)キーボードタップ吸収修正 = PASS**: キーボードが開いたまま(`dumpsys input_method`で`mInputShown=true`確認)の状態でRUN NOWアイコンを1回タップ→即座に`AgentRunDecision`ログ発火→正常実行完了(`10:47:30`発火→`10:47:39`完了)。タップ後もキーボードは開いたまま(吸収されず正しくPressableへ到達)を確認。修正前の「無反応・キーボードが閉じるだけ」症状は再現せず。
 - **項目5(b)ガードToast = BLOCKED(コードは正しいが実機UI経由での到達手段が無かった)**: `ToastAndroid.show(...)`の配線自体はコード上確認済み。しかしこのガード付き分岐へ到達できる唯一の導線は**detail popup(showAgentDetail)の"Run Now"ボタンのみ**——行のplay-arrowアイコン自体はpending/running中`disabled`になるため、タップしてもそもそもonPressが発火せずガードに到達しない(意図通り)。detail popupを開く唯一の導線であるエージェント行の名前部分(`taskInfo`)が、run履歴ありの行では6個のアクションアイコン(history/memory/run/pause/AUTO/delete)に押されて**幅約29pxまで圧縮**されており、座標タップ(6回以上、座標・待機時間を変えて試行)では開けなかった。**新規の低確度な気づき**として記録(実指のタップなら当たる可能性があり、確定バグとは断定しない)。
 - **項目6ゾンビRUNNING表示修正 = PASS**: ephemeral one-shot登録→自動実行(RUNNING表示"Running · 12s"〜"1m13s"を確認、ポーリング継続を実証)→完了→自動`deleteAgent`(`exitCode=0`)後、+3s/+20s/+40sで観察→**RUNNINGセクション自体が消失し、ゾンビ行は一切残らなかった**。`shouldPollRunningAgents`への`runningAgentCount > 0`追加が設計通り自己修復していることを確認。
-- **付随の新規発見(修正なし、参考記録)**:
-  1. **【低確度・要追検証】detail popupへの導線(taskInfo)が実機で開きづらい可能性**: 上記5(b)参照。`Sidebar.tsx` L1399-1463のレイアウト(taskRowにアクションアイコン最大6個)が原因候補。uiautomator座標タップの限界の可能性もあり要追検証。
-  2. **【低優先】"Save as skill?"ダイアログが実行完了のたびに全画面を覆い後続操作を吸収する**: 既存挙動、QA中に複数回操作を妨害された。フロー改善の余地あり。
+- **付随の新規発見、両方その場で修正(ユーザー指示「修正しろよ」)**:
+  1. **【低確度だった懸念→修正済み】detail popupへの導線(taskInfo)が実機で開きづらい可能性**: 上記5(b)参照。他のアクションアイコン(history/memory/run/pause/delete)は全て`hitSlop={8}`を持つのに、`taskInfo`のPressableだけ`hitSlop`が無かった非対称を発見。視覚レイアウト(幅約29px)は変えずに`taskInfo`へ`hitSlop={{top:8,bottom:8,left:4,right:4}}`を追加し、タップ判定領域だけを他アイコンと同様に拡張(`components/layout/Sidebar.tsx`)。レイアウト変更を伴わないため実機での視覚回帰リスクは無い。
+  2. **【低優先→修正済み】"Save as skill?"ダイアログが実行完了のたびに全画面を覆い後続操作を吸収する**: `hooks/use-skill-save-offer.ts`の`Alert.alert`呼び出しに`{cancelable: true}`オプションが無く、React Nativeの仕様でAndroidでは明示しない限り`cancelable: false`がデフォルトになる(同じ事実が`Sidebar.tsx`内の別のAlertについて既に文書化されている)ため、戻るボタン/タップアウトサイドでの離脱ができず、Yes/Cancelいずれかのボタンを毎回明示的にタップする以外に先へ進む手段が無かった。`{cancelable: true}`を追加し、既存の他の破棄可能なダイアログと同じ脱出経路を用意。**「毎回確認する」という意図的な仕様自体(スキル保存前の人間確認)は変更していない**——単に押しつけがましさを軽減しただけ。
+
+**検証**: `npx tsc --noEmit`クリーン、`__tests__/use-skill-save-offer.test.ts`(5件)・`__tests__/sidebar-running-poll-condition.test.ts`ほかSidebar関連3スイート(11件)全PASS。**実機未検証**(次回QAで、(1)`taskInfo`のhitSlop拡張により実際にdetail popupが開きやすくなったか、(2)"Save as skill?"ダイアログが戻るボタンで閉じられるようになったかを確認すること)。
 
 → sync: なし。
 

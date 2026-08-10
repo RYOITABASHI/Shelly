@@ -119,22 +119,38 @@ export function useSkillSaveOffer(opts: {
       })();
       return;
     }
-    Alert.alert(t('sidebar.skill_save_title'), t('sidebar.skill_save_body', { name: params.name }), [
-      {
-        text: t('sidebar.skill_save_yes'),
-        onPress: () => {
-          void (async () => {
-            try {
-              await saveSkillWithoutConfirmation(runCommand, params);
-              onSaved?.();
-            } catch (error) {
-              Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
-            }
-          })();
+    Alert.alert(
+      t('sidebar.skill_save_title'),
+      t('sidebar.skill_save_body', { name: params.name }),
+      [
+        {
+          text: t('sidebar.skill_save_yes'),
+          onPress: () => {
+            void (async () => {
+              try {
+                await saveSkillWithoutConfirmation(runCommand, params);
+                onSaved?.();
+              } catch (error) {
+                Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
+              }
+            })();
+          },
         },
-      },
-      { text: t('common.cancel'), style: 'cancel' },
-    ]);
+        { text: t('common.cancel'), style: 'cancel' },
+      ],
+      // 2026-08-09 on-device QA finding (docs/superpowers/DEFERRED.md): this
+      // Alert fires after EVERY successful attended run (by design — it's
+      // never silent), so during a burst of runs it repeatedly blocked all
+      // other interaction. RN's Alert.alert defaults to `cancelable: false`
+      // on Android unless explicitly opted in (same fact already documented
+      // elsewhere in components/layout/Sidebar.tsx for a different dialog) —
+      // without this, the ONLY way past it was to find and tap a button;
+      // back-button / tap-outside did nothing. This doesn't change WHETHER
+      // the prompt appears (still every successful run, still a real human
+      // decision before a skill is persisted) — it only adds the same
+      // escape hatch every other dismissible dialog in this app already has.
+      { cancelable: true },
+    );
   }, [t, runCommand, onSaved]);
 
   return { offerSkillSave };

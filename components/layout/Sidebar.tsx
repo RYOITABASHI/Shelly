@@ -1408,6 +1408,18 @@ export function Sidebar() {
                       setNotifTriggerDraft(agent.notificationTrigger?.packageNames.join('\n') ?? '');
                       setNotifSendersDraft(agent.notificationTrigger?.authorizedSenders?.join('\n') ?? '');
                     }}
+                    // 2026-08-09 on-device QA finding (docs/superpowers/DEFERRED.md):
+                    // this is the ONLY entry point to showAgentDetail (Run Now /
+                    // Pause / Edit / Delete, plus the guard-skip toast), but its
+                    // visual width shrinks to as little as ~29px on a row with a
+                    // full set of action icons (history/memory/run/pause/AUTO/
+                    // delete) — every sibling icon already gets hitSlop={8} while
+                    // this one had none. Expanding the TOUCHABLE area (not the
+                    // visual layout) matches that existing pattern and gives a
+                    // real fingertip the same tolerance the icon buttons already
+                    // have, without risking a layout change no on-device
+                    // screenshot could verify.
+                    hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
                   >
