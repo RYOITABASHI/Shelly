@@ -28,6 +28,7 @@ import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 import { cosineSimilarity } from '@/lib/memory/ranking-semantic';
 import { MEMORY_EMBEDDING_ENABLED } from '@/lib/memory/wiring';
 import type { EmbeddingPort } from '@/lib/memory/types';
+import { scanForSecrets } from '@/lib/secret-guard';
 
 export interface SkillRecipe {
   id: string;
@@ -271,6 +272,15 @@ export function buildSkillWriteCommand(recipe: SkillRecipe): string {
   const file = `${dir}/${recipe.id}.md`;
   const marker = `SHELLY_SKILL_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
   const markdown = buildSkillRecipeMarkdown(recipe);
+  const vaultMirror = scanForSecrets(markdown).hasSecret
+    ? []
+    : [
+        `__vault="\${OBSIDIAN_VAULT_PATH:-${DEFAULT_VAULT_PATH}}"`,
+        `if [ -d "$__vault" ]; then`,
+        `  mkdir -p "$__vault/${VAULT_SKILLS_DIR}" 2>/dev/null || true`,
+        `  cp ${shellQuote(file)} "$__vault/${VAULT_SKILLS_DIR}/${recipe.id}.md" 2>/dev/null || true`,
+        `fi`,
+      ];
   return [
     `set -e`,
     `mkdir -p ${shellQuote(dir)}`,
@@ -278,11 +288,7 @@ export function buildSkillWriteCommand(recipe: SkillRecipe): string {
     markdown.replace(/\n$/, ''),
     marker,
     `[ -s ${shellQuote(file)} ] || { echo "skill write failed: ${recipe.id}" >&2; exit 1; }`,
-    `__vault="\${OBSIDIAN_VAULT_PATH:-${DEFAULT_VAULT_PATH}}"`,
-    `if [ -d "$__vault" ]; then`,
-    `  mkdir -p "$__vault/${VAULT_SKILLS_DIR}" 2>/dev/null || true`,
-    `  cp ${shellQuote(file)} "$__vault/${VAULT_SKILLS_DIR}/${recipe.id}.md" 2>/dev/null || true`,
-    `fi`,
+    ...vaultMirror,
   ].join('\n');
 }
 

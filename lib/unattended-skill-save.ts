@@ -1,6 +1,11 @@
 import * as Notifications from 'expo-notifications';
-import { distillSkillFromRun, writeSkillRecipe } from '@/lib/agent-skills';
+import {
+  buildSkillRecipeMarkdown,
+  distillSkillFromRun,
+  writeSkillRecipe,
+} from '@/lib/agent-skills';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
+import { scanForSecrets } from '@/lib/secret-guard';
 import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
 
 export const SKILL_SAVED_NOTIFICATION_CATEGORY = 'skill-saved';
@@ -32,6 +37,16 @@ export async function saveUnattendedSkillWithNotification(
     timestamp: params.timestamp,
     planSpec: params.planSpec,
   });
+  if (scanForSecrets(buildSkillRecipeMarkdown(recipe)).hasSecret) {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Skill auto-save skipped',
+        body: 'The recipe may contain a secret or personal information, so it was not saved automatically.',
+      },
+      trigger: null,
+    });
+    return null;
+  }
   await writeSkillRecipe(runCommand, recipe);
   await Notifications.setNotificationCategoryAsync(SKILL_SAVED_NOTIFICATION_CATEGORY, [
     {
