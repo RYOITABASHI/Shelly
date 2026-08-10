@@ -4,8 +4,7 @@
  * 利用可能なエージェントからランダムに2つ選択。
  */
 
-import type { ChatAgent } from '@/store/chat-store';
-import type { AppSettings } from '@/store/types';
+import type { ChatAgent, AppSettings } from '@/store/types';
 
 const ARENA_ELIGIBLE: ChatAgent[] = ['codex', 'groq', 'cerebras', 'local', 'perplexity'];
 

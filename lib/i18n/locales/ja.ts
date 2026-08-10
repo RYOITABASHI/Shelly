@@ -195,7 +195,7 @@ const ja: Record<string, string> = {
   'agents.optimistic_writes_consent_enable': '有効にする',
   // 「元に戻す」ボタン本体 — components/panes/AgentUndoButton.tsx。
   // AIPane.tsx の MessageBubble が対象runの完了バブルに描画する。適格性の判定は
-  // ChatMessage.agentRollbackOffer（store/chat-store.ts）と
+  // ChatMessage.agentRollbackOffer（store/types.ts）と
   // lib/agent-manager.ts の rollbackOfferEligible() を参照。
   'agents.undo_run_button': '元に戻す',
   'agents.undo_run_in_progress': '元に戻しています…',

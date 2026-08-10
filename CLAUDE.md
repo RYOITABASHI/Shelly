@@ -153,7 +153,6 @@ Shelly/
 │   ├── cosmetic-store.ts      # CRT・フォント・ハプティクス
 │   ├── agent-store.ts         # バックグラウンドエージェント
 │   ├── profile-store.ts       # SSHプロファイル
-│   ├── workspace-store.ts     # リポジトリごとのワークスペース分離（2026-08-06確認: 現在UIから未参照、実質デッド）
 │   └── workflow-store.ts      # 保存済みワークフロー
 ├── hooks/
 │   ├── use-device-layout.ts      # レスポンシブ（compact/standard/wide）
@@ -264,19 +263,17 @@ first-time contributor が最も迷うのは「状態がどこにあるか」。
 | `cosmetic-store` | CRT、フォント、ハプティクス、サウンドプロファイル | ✅ |
 | `agent-store` | バックグラウンドエージェント定義、実行履歴 | ✅ |
 | `profile-store` | SSHプロファイル | ✅ |
-| `workspace-store` | リポジトリごとのワークスペース分離（現在UIから未参照、実質デッド） | ✅ |
 | `snippet-store` | 保存済みスニペット（Command Palette 経由で実行） | ✅ |
 | `theme-version-store` | テーマプリセット切替時のkey-remount用カウンタ | — |
 | `savepoint-store` | auto-savepoint のコミット履歴 | ✅ |
 | `preview-store` | Preview ペインの表示ファイルパス | — |
 | `execution-log-store` | コマンド実行ログ | — |
-| `arena-store` | Arena モードの比較状態 | — |
 | `mcp-store` | MCP サーバー接続状態 | ✅ |
-| `plan-store` | AIプランカード | — |
 | `usage-store` | API使用量トラッキング | ✅ |
-| `chat-store` | 旧チャット画面用（chelly/ 削除後は dead、v0.1.1 で削除予定） | ✅ |
 
-**触る前の確認**: ストアを新設する前に、既存ストアに追加できないか検討すること。20 個は多い。
+**2026-08-10 削除**: `workspace-store`（リポジトリごとのワークスペース分離、UIから未参照の実質デッドストア）・`arena-store`（Arena モード比較、フック呼び出し箇所ゼロ）・`plan-store`（AIプランカード、フック呼び出し箇所ゼロ）・`chat-store`（旧チャット画面用、chelly/ 削除後は完全デッド）をコード監査で削除。`chat-store.ts`が定義していた`ChatMessage`/`ChatAgent`等の型のみ、他ファイル（`AIPane.tsx`、`use-ai-pane-dispatch.ts`、`ai-pane-store.ts`ほか）から実際に参照されていたため`store/types.ts`へ移設済み。ストア本体（`create()`フックと永続化ロジック）とそれ以外の型は削除。
+
+**触る前の確認**: ストアを新設する前に、既存ストアに追加できないか検討すること。上記表以外にも `agent-chat-store` / `dm-pairing-store` / `focus-store` / `inbound-store` / `worktree-store` が実在するが本表は未更新（別件）。
 
 ---
 

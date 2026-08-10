@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ChatMessage, ChatAgent } from './chat-store';
+import type { ChatMessage, ChatAgent } from './types';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { SlotField } from '@/lib/agent-slot-fill';
 import { logInfo, logWarn, logError } from '@/lib/debug-logger';
@@ -17,7 +17,7 @@ import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 /**
  * Session-scoped (per-pane) pending state for a chat-native agent draft
  * registration (Phase A, 2026-07-22). Unlike the pre-existing
- * `ChatMessage.pendingSlotFill` (store/chat-store.ts), which lives on the
+ * `ChatMessage.pendingSlotFill` (store/types.ts), which lives on the
  * MOST RECENT message and breaks if a single unrelated message lands in
  * between question and answer, this lives on the CONVERSATION itself — a
  * reply to a chat-native draft's await-confirm step is routed correctly

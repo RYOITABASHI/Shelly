@@ -43,7 +43,6 @@ Layout: AgentBar (top) + Sidebar (left) + PaneContainer (center, up to 4 panes) 
 | cosmetic-store | `store/cosmetic-store.ts` | CRT, fonts, sound profile, haptics |
 | browser-store | `store/browser-store.ts` | Bookmarks |
 | profile-store | `store/profile-store.ts` | SSH profiles |
-| workspace-store | `store/workspace-store.ts` | Per-repo isolation |
 | workflow-store | `store/workflow-store.ts` | Saved workflows |
 
 ## Build

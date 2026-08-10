@@ -23,7 +23,7 @@ import { usePaneStore } from '@/store/pane-store';
 import { useInboundStore } from '@/store/inbound-store';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { formatContextBadge } from '@/lib/ai-pane-context';
-import type { ChatMessage } from '@/store/chat-store';
+import type { ChatMessage } from '@/store/types';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import InlineDiff, { hasDiffContent } from '@/components/panes/InlineDiff';
 import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/AgentConfirmCard';

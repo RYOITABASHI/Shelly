@@ -21,7 +21,7 @@ import {
   describeTerminalContextForLog,
   getTerminalSnapshotForSession,
 } from '@/lib/ai-pane-context';
-import type { ChatMessage } from '@/store/chat-store';
+import type { ChatMessage } from '@/store/types';
 import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 import { detectPostFormatDirective } from '@/lib/post-format-directive';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
