@@ -98,7 +98,7 @@ describe('notification text channel native parity (NOTIFY-001 Increment 3)', () 
     expect(service).toContain('private const val MAX_NOTIFICATION_TEXT_CHARS = 1000');
     expect(service).toContain('?.take(MAX_NOTIFICATION_TEXT_CHARS)?.takeIf { it.isNotBlank() }');
     expect(service).toContain(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)',
     );
     expect(service).toContain('notificationText = notificationText');
   });

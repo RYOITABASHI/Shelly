@@ -106,10 +106,15 @@ describe('shelly-plan-executor.js parity', () => {
     // like an AlarmManager fire, even though it carries no interval/cron.
     expect(terminalSessionService).toContain('val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)');
     expect(terminalSessionService).toContain('val scheduled = intervalMs > 0 || !cron.isNullOrBlank()');
-    expect(terminalSessionService).toContain('val unattended = scheduled || manual');
+    expect(terminalSessionService).toContain('val notificationTriggered = intent.getBooleanExtra(EXTRA_NOTIFICATION_TRIGGER, false)');
+    expect(terminalSessionService).toContain(
+      'val unattended = scheduled || manual || (notificationTriggered && !isAppUiForeground())',
+    );
     // NOTIFY-001 Increment 3 extended the call with notification text/package
     // params (null for widget/alarm runs) — extended in lockstep.
-    expect(terminalSessionService).toContain('runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)');
+    expect(terminalSessionService).toContain(
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)',
+    );
     expect(terminalSessionService).toContain('tainted = tainted');
     expect(terminalSessionService).toContain('unattended = unattended');
   });

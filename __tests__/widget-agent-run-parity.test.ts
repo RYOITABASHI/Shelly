@@ -65,12 +65,19 @@ describe('Scouter widget registered-agent RUN security parity', () => {
   });
 
   it('keeps widget runs unattended and does not re-arm their schedule', () => {
-    expect(service).toContain('val unattended = scheduled || manual');
-    expect(service).toContain('if (!manual && scheduled)');
-    // NOTIFY-001 Increment 3 extended the call with notification text/package
-    // params (nullable, null for widget runs) — extended in lockstep.
     expect(service).toContain(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)',
+      'val unattended = scheduled || manual || (notificationTriggered && !isAppUiForeground())',
+    );
+    // Re-arm now happens after judging the run result for the native circuit
+    // breaker. Widget runs carry neither scheduling extra, so they cannot enter
+    // this outcome/re-arm branch even though `manual` makes them unattended.
+    expect(service).toContain("if (intervalMs > 0 || !cron.isNullOrBlank()) {");
+    expect(service).toContain('val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult))');
+    // NOTIFY-001 Increment 3 extended the call with notification text/package
+    // params, and the native circuit breaker later added schedule params. All
+    // are nullable/defaulted for widget runs — extended in lockstep.
+    expect(service).toContain(
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)',
     );
   });
 
@@ -78,7 +85,7 @@ describe('Scouter widget registered-agent RUN security parity', () => {
     const haltCheck = service.indexOf('if (isGloballyHalted())');
     const manualRead = service.indexOf('getBooleanExtra(EXTRA_MANUAL, false)');
     const runtimeCall = service.indexOf(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)',
     );
     expect(haltCheck).toBeGreaterThan(-1);
     expect(manualRead).toBeGreaterThan(haltCheck);
