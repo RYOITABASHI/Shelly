@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import {
   buildSkillRecipeMarkdown,
   distillSkillFromRun,
+  readSkillRecipes,
   writeSkillRecipe,
 } from '@/lib/agent-skills';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
@@ -37,6 +38,18 @@ export async function saveUnattendedSkillWithNotification(
     timestamp: params.timestamp,
     planSpec: params.planSpec,
   });
+  // Idempotent by the recipe's own content-derived id (name+trigger, see
+  // skillRecipeId in agent-skills.ts): a recurring schedule re-syncs the SAME
+  // latest success on every periodic log-sync poll until the agent's NEXT
+  // run, so without this check every poll would re-notify AND clobber a
+  // curator-promoted recipe's successCount/lastUsed back to a fresh 1
+  // (distillSkillFromRun always mints successCount: 1). The caller-supplied
+  // params.alreadySkillId can't substitute for this: it only reflects
+  // "this agent was created FROM an existing skill", never "this agent
+  // already auto-saved one of its own" — checking disk directly is what
+  // actually makes the auto-save (and its notification) a one-time event.
+  const existingRecipes = await readSkillRecipes();
+  if (existingRecipes.some((r) => r.id === recipe.id)) return null;
   if (scanForSecrets(buildSkillRecipeMarkdown(recipe)).hasSecret) {
     await Notifications.scheduleNotificationAsync({
       content: {
