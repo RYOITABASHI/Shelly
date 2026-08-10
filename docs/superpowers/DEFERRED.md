@@ -14,6 +14,25 @@
 
 ---
 
+### Fig風オートコンプリート復活 — プロダクトオーナー指示で調査したが、現行ネイティブPTYアーキテクチャではJS側だけでの復活が技術的に不可能と判明。ネイティブ変更のスコープを特定して報告のみ、実装は見送り (P1)
+
+**背景**: 2026-08-10のFable5実機②レビュー（本ファイル前掲、2026-08-10エントリのD-1）が「Fig風オートコンプリートが消失（`components/terminal/AutocompletePopup.tsx`/`hooks/use-autocomplete.ts`が現mainに無い、`lib/autocomplete-engine.ts`は参照ゼロのデッドコード）」と発見し、直後のTrack M（`d7ade2e0d`）でConfigTUIの孤児化「Autocomplete」トグルを削除した。今回、プロダクトオーナーから明示的に「機能自体を復活させる方針」の指示があり、`cce05d705`（2026-04-16「chore: remove dead code pre-v0.1.0」）で削除された当時の実装を精査した上での復活可否を再調査した。
+
+**調査結果**:
+
+1. **削除時のコミットメッセージ「autocomplete moved in-line」は誤り、少なくとも現mainに対しては虚偽**。`components/input/CommandInput.tsx`・`components/input/AutocompleteDropdown.tsx`・`lib/completions.ts`という一見それらしい「in-line実装」が現存し、`AutocompleteDropdown`は`lib/completions.ts`の`getCompletions()`を使って実際に補完チップUIを描画するコードを持つ。しかし`CommandInput.tsx`をimportしているファイルはコードベース全体でゼロ——`git log -S"components/input/CommandInput"`で追うと、これらは`v0.1.0`で意図的に切り出し予定として削除されたチャットUIサブシステム`chelly/`の兄弟ディレクトリで、`56dad02af`（"chore: remove chelly/ + components/chat/ + use-ai-dispatch dead code"）が`components/chat/`だけを消して`components/input/`を消し忘れた削除漏れの残骸だった。現行の`ShellLayout`／`PaneInputBar`アーキテクチャのどこにも接続されておらず、実機で到達不能。CLAUDE.mdに2026-08-10付けで書いた「実際の入力補完はcomponents/input/系統」という記載自体が誤りだったため、本セッションで訂正した（`CLAUDE.md`の`lib/autocomplete-engine.ts`行）。
+2. **`lib/autocomplete-engine.ts`は削除時から変化なく、そのまま再利用可能**。純粋ロジック（`fuzzyScore`のプレフィックス/連続一致/word-boundaryボーナス、`lib/completions.ts`の静的コマンド/サブコマンド/フラグDB、履歴マージ）でUI・ネイティブ依存ゼロ。削除された`hooks/use-autocomplete.ts`（`git show cce05d705~1:hooks/use-autocomplete.ts`で復元可能）はこのエンジンに`execCommand()`経由の非同期path/git-branch補完を足す薄いラッパーで、こちらも設計は現行`hooks/use-native-exec.ts`とそのまま噛み合う。
+3. **本質的なブロッカーはUI層ではなくターミナル入力アーキテクチャそのもの**。削除された`hooks/use-autocomplete.ts`は`useAutocomplete(input: string, cwd: string, history: string[])`というシグネチャで、呼び出し元がReact stateとして持つ「現在入力中のテキスト」を毎レンダー渡す設計——これはPTY移行前、JS管理のTextInputでコマンド行を打っていた旧アーキテクチャ向け。現行の`TerminalPane.tsx`は`NativeTerminalView`（`modules/terminal-view/`）へのPTY直結で、キー入力はAndroid側の`commitText`→ネイティブIME経路→forkptyへ直接流れ、JS側は一切経由しない（`TerminalPane.tsx`コード中のコメント「Japanese input proxy removed — NativeTerminalView handles inline JP input」が象徴的）。`NativeTerminalViewProps`が公開するイベントは`onOutput`（レンダリング済みANSI出力ストリーム）・`onBlockCompleted`・`onSelectionChanged`・`onUrlDetected`・`onBell`・`onTitleChanged`・`onResize`・`onScrollStateChanged`・`onFocusRequested`のみで、「現在入力中の行テキスト＋カーソル位置」を返すAPIが存在しない。`onOutput`の生ANSIストリームをJS側でパースして現在行を再構成する案は、複数行プロンプト・readlineの再描画・IME未確定文字・シェル自身のTab補完などと衝突し脆弱すぎるため却下（「見た目だけ動くが実際には機能しない」実装を避けるための判断）。
+4. **ただし完全に手詰まりではない——ネイティブ側に必要なフック点は既に存在する**。`modules/terminal-view/android/.../BlockDetector.kt`はOSC 133 (FinalTerm) semantic promptシーケンスを解析するWarp-styleのcommand block検出器で、`State.COMMAND`中は`processCommandChunk()`がPTYエコーの各チャンクを`currentCommand: StringBuilder`へ逐次appendしている。つまり「今まさに入力中のコマンド文字列」はネイティブ側では既にリアルタイムに構築されているが、これをJSへストリームするイベントが無い（`onBlockStarted`はOSC133 Bマーカー時に1回、`onBlockCompleted`はDマーカー完了時に1回のみで、キー入力ごとの差分は今は破棄されている）。したがって復活には「`processCommandChunk`から新規イベント（例: `onCommandBufferChanged: {text, cursorCol}`）を発火→`TerminalViewModule.kt`→`NativeTerminalViewProps`に新規propとして追加→`TerminalPane.tsx`で購読」という、範囲の絞られたKotlin側の変更が必要（JNI層は不要、forkpty自体には触れない）。
+
+**結論・今回のスコープでの対応**: 上記4番のネイティブ変更は本タスクの制約（「無理にネイティブコードまで書こうとせず」「中途半端な実装は避ける」）に反するため実装しない。`components/input/`の死んだ`chelly`残骸を無理に`ShellLayout`へ再接続することも、実際のターミナルコマンド行（PTY直結）とは別の非シェル的な入力面に見た目だけの補完UIを生やすだけで実用性が無く、同様に見送った。ConfigTUIの「Autocomplete」トグルの復活も、機能本体が無い状態でトグルだけ復活させるとTrack Mが直した「孤児トグル」問題を自ら再発させるため見送った。i18nキーの追加も同様の理由で見送り。ドキュメント面のみ本セッションで訂正: `CLAUDE.md`の`lib/autocomplete-engine.ts`コメントを「components/input/系統が実装」という誤情報から「chelly削除漏れの到達不能コード、ネイティブ変更が要件」という正確な記述に更新。
+
+**Why not now**: ネイティブ(Kotlin)変更を要する作業であり、今回のタスクはJSのみのworktreeで完結させる前提だったため。プロダクトオーナーが引き続き優先したい場合は、上記4番の`BlockDetector.kt`/`TerminalViewModule.kt`/`NativeTerminalView.tsx`/`TerminalPane.tsx`の4ファイルにまたがる変更をネイティブビルド込みの別タスクとして起票すること。JS側の資産（`lib/autocomplete-engine.ts`、削除済み`hooks/use-autocomplete.ts`の設計、`AutocompletePopup.tsx`のUI）はそのまま再利用できる想定。
+
+→ sync: CLAUDE.mdの`lib/autocomplete-engine.ts`行を本セッションで訂正済み（再訂正不要）。README側にFig補完の記載があれば要確認（本セッションでは未確認）。
+
+---
+
 ### `hooks/use-terminal-output.ts:126` — approval prompts / error detection / PackageDoctorがどこにも配線されていない（現行仕様からの機能欠損、意図的に見送り） (P2)
 
 **背景**: コード品質監査で、`hooks/use-terminal-output.ts`のバッチ解析ループ内（旧126行目付近）に「TODO: approval prompts, error detection, and PackageDoctor were routed to the deleted chat-store. Re-wire to AI pane in v0.2.」という孤児コメントが見つかった。将来機能の予告ではなく、削除済み経路の後始末が放置されている疑いがあったため調査した。
@@ -4137,6 +4156,7 @@ claude() {
 
 ## History
 
+- **2026-08-10（CC、Fig風オートコンプリート復活の技術調査、コード変更なし・ドキュメントのみ）**: プロダクトオーナー指示「機能を復活させる方針」を受け`cce05d705`削除時の実装・削除理由「autocomplete moved in-line」の真偽・現行ネイティブPTYアーキテクチャとの整合性を調査。**結論: JSのみでの復活は技術的に不可能と確定**——`NativeTerminalView`のPTY直結入力にはJS側から読める入力バッファ/カーソル位置APIが無い。「in-line実装」とされた`components/input/CommandInput.tsx`+`AutocompleteDropdown.tsx`は実は`chelly/`チャットUI削除(`56dad02af`)時の削除漏れ残骸で、現行アプリのどこからも到達不能と判明(CLAUDE.mdの2026-08-10付け記載自体が誤りだったため訂正)。`lib/autocomplete-engine.ts`は純粋ロジックのまま再利用可能と確認。ネイティブ側`BlockDetector.kt`が既にOSC133ベースで「入力中のコマンド文字列」をリアルタイム構築していることを発見し、復活に必要な最小ネイティブ変更(新規イベント`onCommandBufferChanged`をKotlin側で追加)を特定・新規P1エントリに記録。ConfigTUIトグル・i18nキーは機能本体が無い状態での復活は「孤児トグルの再発」になるため見送り。README(2箇所)・CLAUDE.mdを事実に合わせて訂正。先頭付近の新規エントリ参照。
 - **2026-08-10（CC、wallpaper説明文 vs CLAUDE.md矛盾の調査完了、コード変更なし）**: Fable5実機②レビューが指摘した「Show wallpaper in Terminal (experimental)」説明文とCLAUDE.mdのP3ゲート(opaque固定)の矛盾を調査。git log全履歴を確認した結果、`store/settings-store.ts`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示、3分前の`85da0d144`のrevert)で`true`に確定しHEADまで不変——**説明文は現行コードに対して正確、CLAUDE.md側の記述が陳腐化していた**と判明。設定テキスト・`TerminalPane.tsx`/`SettingsDropdown.tsx`/`ShellyTerminalView.kt`いずれも変更せず(挙動は現状のまま)、CLAUDE.md本文の当該行はP3チェックリストのスクショ証跡要求があり遡及提出不可のため直接書き換えは見送り。事実関係をD-4項目・末尾P3エントリ・新規P1エントリの3箇所に記録した。先頭付近のエントリ参照。
 - **2026-08-09**: commit `af0608347`（BlockDetectorコマンド断片化修正 + onUrlDetected配線）のversionCode 2103実機QA。両修正ともPASS確定（`topCommands`に`qafrag2103marker`が完全文字列で記録／`echo <URL>`でChrome Custom Tab起動をActivityTaskManagerログで確認）。新規の気づき2件（URL自動オープンは検出トリガーでタップ不要＝UX検討余地、bundleツールは非interactiveシェルで使用不可）をP3観察として記録。先頭のエントリ参照。
 - **2026-08-09**: commit `51694a367`(onBlockCompleted修復)のCI成功確認＋実機QA。イベント発火自体はPASS（`learnFromCommand`まで到達、AsyncStorage更新を確認）だが、記録されたコマンド文字列が単一文字に断片化する新たな懸念を発見——OSC 133がbashrcから意図的に無効化されておりタイムアウトベース検出に常時依存している事実も判明。adb inputのテスト手法固有ノイズか実バグか切り分け未了。先頭のエントリ参照。
