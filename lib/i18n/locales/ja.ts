@@ -483,6 +483,14 @@ const ja: Record<string, string> = {
   'agentplan.run_now_started': '「{{name}}」を今すぐ実行します（定期スケジュールはそのまま維持されます）。',
   'agentplan.run_now_done': '完了しました。',
   'agentplan.run_now_failed': '今すぐ実行がエラーになりました',
+  // 2026-08-10 実機QA所見: ローカルLLM（オンデバイスルート）経由の@agent
+  // one-shot実行が完了まで約3分10秒かかり、その間「▶実行中…」の吹き出しが
+  // 全く更新されないため「アプリが固まった」ように見えた（エージェント実行
+  // はトークンストリーミングではなく単発リクエスト/レスポンス——
+  // hooks/use-ai-pane-dispatch.ts の startAgentRunProgressTicker のコメント
+  // 参照）。実行中は数秒おきにこの経過時間を同じ吹き出しに追記し、「動作中」
+  // だとわかるようにする。
+  'agentplan.run_now_progress': '実行中…（経過{{seconds}}秒）',
   // 2026-07-28 バグ修正: まだ登録されていない保留下書きへのパッチ返信で、
   // 「今」/「今すぐ」が既に実在する定期スケジュールに対して解決された場合に
   // 表示する——lib/agent-draft-patch.ts の applyPatchToPendingSession の

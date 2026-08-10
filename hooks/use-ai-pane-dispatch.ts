@@ -316,6 +316,54 @@ function buildRollbackOffer(
   return rollbackOfferEligible(agentId, agentSnapshot, settings) ? { agentId } : undefined;
 }
 
+// ─── Attended run-now progress heartbeat (2026-08-10 on-device QA) ────────────
+//
+// Finding: a chat-visible `@agent` one-shot run routed through the on-device
+// local LLM took ~3m10s end to end, and the "▶ Running…" bubble every call
+// site below posts right before `await runAgentNow(...)` never changes again
+// until that single await resolves — read on-device as "the app is frozen".
+// Root cause is NOT a missing streaming UI: agent execution
+// (lib/agent-manager.ts's runAgentNowInner → the escalation ladder) is a
+// single request/response per step, not token-streamed, unlike the ordinary
+// AI-Pane chat path a few hundred lines below in this same file, which DOES
+// stream local-LLM tokens through lib/local-llm.ts's ollamaChatStream one
+// chunk at a time. Rewriting agent execution itself to stream tokens would
+// be a much bigger change (a run also shells out and drives the escalation
+// ladder, not just one LLM call), and is out of scope here — this instead
+// gives the existing static "Running…" bubble a lightweight elapsed-time
+// heartbeat so a slow run reads as "still working" instead of "stuck".
+//
+// Every chat-visible `runAgentNow` call site in dispatch() wraps its await
+// with this same helper: start it right after the "▶ Running…" bubble is
+// posted/updated, and always stop it (success or throw) before the final
+// content replaces the base text — a `finally` at each call site, mirroring
+// the existing discard-on-any-outcome pattern already used for the
+// ephemeral one-shot agent's own cleanup a bit further down this file.
+const AGENT_RUN_PROGRESS_TICK_MS = 2000;
+
+function startAgentRunProgressTicker(
+  paneId: string,
+  messageId: string,
+  baseContent: string,
+  locale: 'en' | 'ja',
+): () => void {
+  const strings = locale === 'ja' ? ja : en;
+  const startedAt = Date.now();
+  const tick = () => {
+    const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    const suffix = strings['agentplan.run_now_progress'].replace('{{seconds}}', String(elapsedSec));
+    // Direct store write, not throttledUpdate — this message is not
+    // "streaming" in the isStreaming sense (no isStreaming:false flush edge
+    // to worry about) and ticks are already spaced 2s apart, so there is no
+    // update-storm to coalesce.
+    useAIPaneStore.getState().updateMessage(paneId, messageId, {
+      content: `${baseContent}\n${suffix}`,
+    });
+  };
+  const interval = setInterval(tick, AGENT_RUN_PROGRESS_TICK_MS);
+  return () => clearInterval(interval);
+}
+
 // ─── Throttled update ─────────────────────────────────────────────────────────
 
 type UpdateFn = (paneId: string, msgId: string, updates: Partial<ChatMessage>) => void;
@@ -1307,13 +1355,23 @@ export function useAIPaneDispatch(paneId: string) {
               // chat-visible run-now call site in this file (bug #164).
               const runningMsgId = generateId();
               const runningNote = correctionStrings['agentplan.run_now_started'].replace('{{name}}', updatedAgent.name);
+              const runningBaseContent = summaryText ? `${summaryText}\n\n▶ ${runningNote}` : `▶ ${runningNote}`;
               store.addMessage(paneId, {
                 id: runningMsgId,
                 role: 'assistant',
-                content: summaryText ? `${summaryText}\n\n▶ ${runningNote}` : `▶ ${runningNote}`,
+                content: runningBaseContent,
                 timestamp: Date.now(),
                 agent: justRegistered.agentLabel,
               });
+              // See startAgentRunProgressTicker's doc comment above: local-LLM
+              // one-shot runs can take minutes with zero intermediate feedback
+              // otherwise (2026-08-10 on-device QA finding).
+              const stopProgressTicker = startAgentRunProgressTicker(
+                paneId,
+                runningMsgId,
+                runningBaseContent,
+                detectMessageLocale(patchedDraft.rawText),
+              );
               try {
                 await runAgentNow(updatedAgent.id, runAgentShellCommand, {
                   waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
@@ -1333,6 +1391,8 @@ export function useAIPaneDispatch(paneId: string) {
                 store.updateMessage(paneId, runningMsgId, {
                   content: summaryText ? `${summaryText}\n\n${failureLine}` : failureLine,
                 });
+              } finally {
+                stopProgressTicker();
               }
             } else if (summaryText) {
               store.addMessage(paneId, {
@@ -2096,6 +2156,15 @@ export function useAIPaneDispatch(paneId: string) {
               timestamp: Date.now(),
               agent: agent as ChatMessage['agent'],
             });
+            // See startAgentRunProgressTicker's doc comment above: local-LLM
+            // one-shot runs can take minutes with zero intermediate feedback
+            // otherwise (2026-08-10 on-device QA finding).
+            const stopProgressTicker = startAgentRunProgressTicker(
+              paneId,
+              runningMsgId,
+              agentResult.message,
+              detectMessageLocale(userText),
+            );
             try {
               // bug #164: this is a chat-visible, human-attended run — bound the
               // completion poll to a few minutes instead of the 20-minute
@@ -2118,6 +2187,8 @@ export function useAIPaneDispatch(paneId: string) {
             } catch (runErr) {
               const detail = runErr instanceof Error ? runErr.message : String(runErr);
               store.updateMessage(paneId, runningMsgId, { content: `❌ ${detail}` });
+            } finally {
+              stopProgressTicker();
             }
             return;
           } else if (agentResult.type === 'stop') {
@@ -3019,7 +3090,12 @@ export function useAIPaneDispatch(paneId: string) {
         const fireRunOnceOnConfirm = async (baseContent: string, locale: 'en' | 'ja') => {
           const runStrings = locale === 'ja' ? ja : en;
           const runningNote = runStrings['agentplan.run_now_started'].replace('{{name}}', created.name);
-          store.updateMessage(paneId, messageId, { content: `${baseContent}\n\n▶ ${runningNote}` });
+          const runningBaseContent = `${baseContent}\n\n▶ ${runningNote}`;
+          store.updateMessage(paneId, messageId, { content: runningBaseContent });
+          // See startAgentRunProgressTicker's doc comment above: local-LLM
+          // one-shot runs can take minutes with zero intermediate feedback
+          // otherwise (2026-08-10 on-device QA finding).
+          const stopProgressTicker = startAgentRunProgressTicker(paneId, messageId, runningBaseContent, locale);
           try {
             await runAgentNow(created.id, runAgentShellCommand, {
               waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
@@ -3038,6 +3114,8 @@ export function useAIPaneDispatch(paneId: string) {
             store.updateMessage(paneId, messageId, {
               content: `${baseContent}\n\n❌ ${runStrings['agentplan.run_now_failed']}: ${detail}`,
             });
+          } finally {
+            stopProgressTicker();
           }
         };
 
@@ -3069,7 +3147,17 @@ export function useAIPaneDispatch(paneId: string) {
         if (isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
-          store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: `▶ Running "${created.name}"…` });
+          const ephemeralRunningContent = `▶ Running "${created.name}"…`;
+          store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: ephemeralRunningContent });
+          // See startAgentRunProgressTicker's doc comment above: this is the
+          // exact call site the 2026-08-10 on-device QA finding (~3m10s local-
+          // LLM one-shot run, frozen bubble) was filed against.
+          const stopProgressTicker = startAgentRunProgressTicker(
+            paneId,
+            messageId,
+            ephemeralRunningContent,
+            detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+          );
           let finalContent: string | null = null;
           try {
             // bug #164: same reasoning as the explicit "@agent run" call site
@@ -3126,6 +3214,12 @@ export function useAIPaneDispatch(paneId: string) {
                 : undefined,
             });
           } finally {
+            // Stop the heartbeat before anything else in this block — the
+            // agent (and this message's relevance to it) may already be
+            // gone by the time deleteAgent below returns, and a tick firing
+            // after that point would just overwrite finalContent/the cleanup-
+            // warning text with a stale "still working…" suffix.
+            stopProgressTicker();
             // Always discard the ephemeral one-shot agent — including when the run
             // THREW (runFinished=false). Gating cleanup on success leaked a
             // throwaway agent into the sidebar on any failure.
