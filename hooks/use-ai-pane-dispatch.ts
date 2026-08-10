@@ -316,6 +316,47 @@ function buildRollbackOffer(
   return rollbackOfferEligible(agentId, agentSnapshot, settings) ? { agentId } : undefined;
 }
 
+// ─── NOTIFY-001 fallback-loss safeguard (2026-08-10 QA finding) ──────────────
+//
+// A notification-triggered request ("when I get a notification from
+// com.android.systemui, summarize it") almost always fails
+// lib/agent-llm-fallback.ts's isLowConfidenceAgentDraft (no schedule was ever
+// stated, and no explicit draft/notify keyword either), which routes it into
+// either the Tier 2 narrow LLM extractor (lib/agent-llm-fallback.ts's
+// AgentLlmExtraction) or the Tier 3 conversational registrar (lib/agent-
+// conversational-registration.ts's AgentConversationalExtraction). NEITHER of
+// those two fallback extraction schemas has a notificationTrigger field at
+// all — they can only ever hand back a draft with `notificationTrigger`
+// untouched. If the resulting draft also never regains a confident schedule
+// (the ordinary case for a notification-triggered request, which has no cron
+// schedule by definition), it reaches confirmAgentDraftInner below with BOTH
+// `schedule` and `notificationTrigger` empty. lib/notification-trigger.ts's
+// isEphemeralOneShot() — by design, per its own doc comment — treats that
+// exact shape as an ordinary one-shot ("run once right now, then discard"),
+// which silently throws away the notification-trigger intent the user
+// actually expressed instead of ever registering a live trigger.
+//
+// This is a narrow, deliberately conservative LAST-RESORT check — it mirrors
+// lib/agent-slot-fill.ts's needsNotificationTrigger phrasing (duplicated
+// here, not imported, because that function requires a full ParsedAgentDraft
+// and this guard also needs to run for callers that only have raw text; kept
+// in sync manually, same duplication precedent as lib/agent-llm-fallback.ts's
+// EXPLICIT_DRAFT_KEYWORD_RE). It does not attempt to RECOVER the trigger —
+// doing that would mean guessing an Android package name, exactly the kind of
+// invented value this codebase's "LLM proposes, deterministic code decides"
+// rule forbids. It only prevents the SILENT failure: see
+// confirmAgentDraftInner's use of this below, right before the
+// isEphemeralOneShot branch.
+function looksLikeNotificationTriggerIntent(...texts: Array<string | undefined>): boolean {
+  const text = texts.filter((t): t is string => !!t && t.length > 0).join(' ').toLowerCase();
+  if (!text) return false;
+  const triggerPhraseJp =
+    /通知(が来たら|が届いたら|をトリガー|で起動)/.test(text) || /(来たら|届いたら).*通知/.test(text);
+  const triggerPhraseEn =
+    /when\s+i\s+(get|receive)\s+a\s+notification|notification\s+triggers?|triggered\s+by\s+a\s+notification/.test(text);
+  return triggerPhraseJp || triggerPhraseEn;
+}
+
 // ─── Attended run-now progress heartbeat (2026-08-10 on-device QA) ────────────
 //
 // Finding: a chat-visible `@agent` one-shot run routed through the on-device
@@ -1125,8 +1166,16 @@ export function useAIPaneDispatch(paneId: string) {
                   agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
                   agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
                 };
+                // NOTIFY-001 fallback-loss fix (2026-08-10): this used to special-case
+                // ONLY the 'autonomous' field, so a still-missing schedule/
+                // notificationTrigger/outputPath/etc — none of which
+                // AgentConversationalExtraction can ever populate (it has no field for
+                // them) — silently fell through to presentDraftForConfirmation instead
+                // of being asked about. Mirrors the generic handling every OTHER
+                // missingSlot check in this file already uses (e.g. the Tier 2 handoff
+                // just below this block).
                 const missingSlot = nextMissingSlot(resumedDraft, slotFillCtx);
-                if (missingSlot?.field === 'autonomous') {
+                if (missingSlot) {
                   store.addMessage(paneId, {
                     id: generateId(),
                     role: 'assistant',
@@ -1134,7 +1183,7 @@ export function useAIPaneDispatch(paneId: string) {
                     timestamp: Date.now(),
                     agent: pendingAgentSession.agentLabel,
                     pendingSlotFill: {
-                      field: 'autonomous',
+                      field: missingSlot.field,
                       question: missingSlot.question,
                       partialDraft: resumedDraft,
                       attemptCount: 0,
@@ -1666,8 +1715,11 @@ export function useAIPaneDispatch(paneId: string) {
                   agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
                   agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
                 };
+                // NOTIFY-001 fallback-loss fix (2026-08-10) — see the matching comment
+                // on the other Tier 3 proposal branches in this file: ask about ANY
+                // still-missing slot generically, not just 'autonomous'.
                 const missingSlot = nextMissingSlot(mergedDraft, slotFillCtx);
-                if (missingSlot?.field === 'autonomous') {
+                if (missingSlot) {
                   store.addMessage(paneId, {
                     id: generateId(),
                     role: 'assistant',
@@ -1675,7 +1727,7 @@ export function useAIPaneDispatch(paneId: string) {
                     timestamp: Date.now(),
                     agent: agentLabel,
                     pendingSlotFill: {
-                      field: 'autonomous',
+                      field: missingSlot.field,
                       question: missingSlot.question,
                       partialDraft: mergedDraft,
                       attemptCount: 0,
@@ -2019,8 +2071,22 @@ export function useAIPaneDispatch(paneId: string) {
                       agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
                       agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
                     };
+                    // NOTIFY-001 fallback-loss fix (2026-08-10): this used to special-case
+                    // ONLY the 'autonomous' field, so a Tier 3 proposal that still left
+                    // schedule/notificationTrigger/outputPath/etc missing — none of which
+                    // AgentConversationalExtraction can ever populate, it has no field for
+                    // them — silently reached presentDraftForConfirmation instead of being
+                    // asked about. A notification-triggered utterance ("when I get a
+                    // notification from X, …") is the worst case: it has no schedule by
+                    // definition, so the draft would reach confirmation with BOTH schedule
+                    // and notificationTrigger empty, which lib/notification-trigger.ts's
+                    // isEphemeralOneShot() reads as an ordinary one-shot — the agent runs
+                    // once and is discarded, silently losing the trigger the user asked
+                    // for. Ask about ANY missing slot generically instead, exactly like
+                    // every other missingSlot check in this file already does (e.g. the
+                    // Tier 2 handoff a few hundred lines above).
                     const missingSlot = nextMissingSlot(merged.draft, slotFillCtx);
-                    if (missingSlot?.field === 'autonomous') {
+                    if (missingSlot) {
                       store.addMessage(paneId, {
                         id: generateId(),
                         role: 'assistant',
@@ -2028,7 +2094,7 @@ export function useAIPaneDispatch(paneId: string) {
                         timestamp: Date.now(),
                         agent: agent as ChatMessage['agent'],
                         pendingSlotFill: {
-                          field: 'autonomous',
+                          field: missingSlot.field,
                           question: missingSlot.question,
                           partialDraft: merged.draft,
                           attemptCount: 0,
@@ -2970,6 +3036,33 @@ export function useAIPaneDispatch(paneId: string) {
       // messageId so confirming an OLDER draft (e.g. via a stale re-render)
       // can never clear a NEWER pending session for the same pane.
       const currentPending = store.getOrCreate(paneId).pendingAgentSession;
+      // NOTIFY-001 fallback-loss safeguard (see looksLikeNotificationTriggerIntent's
+      // doc comment above): a draft that clearly asked for a notification-triggered
+      // agent but reaches confirmation with BOTH schedule and notificationTrigger
+      // empty must NEVER silently fall into isEphemeralOneShot's "run once, then
+      // discard" branch further down this function — that would throw away the
+      // user's actual trigger intent without a trace. Refuse the registration here,
+      // before any agent is created, and say so plainly instead. `confirmed.prompt`
+      // is checked too (not just rawText) because the deterministic parser strips
+      // schedule phrasing but preserves trigger phrasing into prompt on some paths.
+      if (
+        !confirmed.notificationTrigger &&
+        !confirmed.schedule &&
+        looksLikeNotificationTriggerIntent(originalDraftSnapshot?.rawText, confirmed.prompt)
+      ) {
+        if (currentPending?.messageId === messageId) {
+          store.setPendingAgentSession(paneId, null);
+        }
+        const noticeLocale = detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt);
+        const notice = noticeLocale === 'ja'
+          ? 'このエージェントは通知トリガー（どのアプリの通知で起動するか）を認識できず、スケジュールも設定されていないため、登録できませんでした。一度きりの実行として処理すると、せっかく指定した通知トリガーが失われてしまいます。対象アプリ名やパッケージ名を含めて、もう一度言い方を変えて試してください。'
+          : "I couldn't identify which app's notifications should trigger this agent, and no schedule was set either — so I did not register it. Registering it as a one-time run would have silently dropped the notification trigger you asked for. Please try again, naming the specific app or package that should trigger it.";
+        store.updateMessage(paneId, messageId, {
+          agentCardState: 'cancelled',
+          content: notice,
+        });
+        return;
+      }
       // bug #157 fix (docs/superpowers/DEFERRED.md): editingAgentId used to
       // be derivable ONLY from the pane's single-slot pendingAgentSession by
       // messageId match — but presentDraftForConfirmation unconditionally
