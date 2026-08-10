@@ -91,6 +91,18 @@ const TIMING_MS = 200;
 const AGENT_RUNNING_POLL_START_DELAY_MS = 15_000;
 const AGENT_RUNNING_POLL_INTERVAL_MS = 15_000;
 const AGENT_RUNNING_BACKGROUND_POLL_INTERVAL_MS = 60_000;
+// 2026-08-10 on-device QA finding (docs/superpowers/DEFERRED.md): the one-shot
+// `@agent` chat flow's useSkillSaveOffer instance (hooks/use-ai-pane-dispatch.ts)
+// lives in AIPane, a sibling component with its own React tree — it writes the
+// new skill straight to disk via writeSkillRecipe but has no `onSaved` wired
+// back into this Sidebar's `skills` state, so a skill saved from that flow
+// never refreshed the SKILLS section until the next full remount. Fixing that
+// properly means passing an onSaved callback across components, which needs a
+// shared store or event bus outside this file's scope. Reload-while-visible
+// polling below is the confined-to-Sidebar.tsx mitigation: cheap (a single
+// directory read), and it converges within one interval of ANY skill write,
+// regardless of which flow performed it.
+const SKILLS_POLL_INTERVAL_MS = 8_000;
 
 const QUICK_FOLDERS = [
   { label: '~',        path: '~/',                 icon: 'home' },
@@ -165,6 +177,44 @@ function truncateSkillDescription(description: string): string {
 // out defines locally (lib/agent-skills.ts, components/layout/FileTree.tsx).
 function shellQuoteSidebar(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+// Bug fix (2026-08-10 on-device QA, docs/superpowers/DEFERRED.md): pure
+// predicate behind the SKILLS-section reload effect below — a skill saved
+// via the AIPane one-shot `@agent` chat flow (hooks/use-ai-pane-dispatch.ts)
+// has no `onSaved` wired back into this component (different React tree), so
+// re-opening the SKILLS section is one of the few reliable local signals this
+// file can react to. Exported (and kept free of React/store state) so the
+// "reload fires exactly on a closed→open transition, not on every render or
+// on open→open" invariant is unit-testable without mounting Sidebar.
+export function skillsSectionBecameVisible(prevOpen: boolean, nextOpen: boolean): boolean {
+  return nextOpen && !prevOpen;
+}
+
+// Bug fix (2026-08-10 code-audit finding, docs/superpowers/DEFERRED.md): the
+// overflow-menu button spec for an agent row's "⋯" action (showAgentActionsMenu
+// below). Pulled out as a pure builder — no Alert.alert, no t(), no store
+// reads — so "every relocated action (history/memory/AUTO) is still reachable,
+// history is present only when there IS history, and the list never exceeds
+// Android's 3-button AlertDialog cap" is testable without React Native.
+export interface AgentOverflowMenuActionSpec {
+  key: 'history' | 'memory' | 'autonomous';
+  textKey: string;
+}
+export function buildAgentOverflowMenuActions(params: {
+  hasHistory: boolean;
+  autonomous: boolean;
+}): AgentOverflowMenuActionSpec[] {
+  const actions: AgentOverflowMenuActionSpec[] = [];
+  if (params.hasHistory) {
+    actions.push({ key: 'history', textKey: 'sidebar.agent_view_runs' });
+  }
+  actions.push({ key: 'memory', textKey: 'sidebar.agent_memory_view' });
+  actions.push({
+    key: 'autonomous',
+    textKey: params.autonomous ? 'sidebar.autonomous_toggle_menu_off' : 'sidebar.autonomous_toggle_menu_on',
+  });
+  return actions;
 }
 
 export function Sidebar() {
@@ -384,6 +434,46 @@ export function Sidebar() {
   React.useEffect(() => {
     void loadSkills();
   }, [loadSkills]);
+
+  // Bug fix (2026-08-10 on-device QA, docs/superpowers/DEFERRED.md): reload
+  // the SKILLS list whenever the section is (re)opened, and keep polling
+  // while it's open/app is active — see SKILLS_POLL_INTERVAL_MS's comment for
+  // why this is needed in addition to the mount-time load above (a skill
+  // saved via the AIPane one-shot chat flow has no direct signal into this
+  // component). Mirrors the TASKS section's agentsSectionOpen polling effect
+  // below (open-triggers-reload + poll-while-open + AppState resume), the
+  // established pattern in this file for "keep a disk-backed list fresh
+  // without a shared store."
+  const skillsSectionOpen = mode === 'expanded' && (openSections.skills ?? false);
+  const wasSkillsSectionOpenRef = React.useRef(skillsSectionOpen);
+  React.useEffect(() => {
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+    const becameVisible = skillsSectionBecameVisible(wasSkillsSectionOpenRef.current, skillsSectionOpen);
+    wasSkillsSectionOpenRef.current = skillsSectionOpen;
+    const stopPolling = () => {
+      if (interval) { clearInterval(interval); interval = null; }
+    };
+    const startPolling = () => {
+      if (!skillsSectionOpen || interval) return;
+      interval = setInterval(() => { if (!cancelled) void loadSkills(); }, SKILLS_POLL_INTERVAL_MS);
+    };
+    if (becameVisible) void loadSkills();
+    startPolling();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        void loadSkills();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    });
+    return () => {
+      cancelled = true;
+      stopPolling();
+      sub.remove();
+    };
+  }, [skillsSectionOpen, loadSkills]);
 
   // Gated skill creation: after a successful run, offer to distill it into a
   // reusable skill (user-visible — never silent). Shared with the one-shot
@@ -1168,6 +1258,49 @@ export function Sidebar() {
     );
   }, [applyAutonomousMode, t]);
 
+  // Bug fix (2026-08-10 code-audit finding, docs/superpowers/DEFERRED.md): a
+  // full agent row (history/memory/run/pause/AUTO/delete, 6 Pressables) left
+  // taskInfo — the ONLY entry point to showAgentDetail — with ~0px of visible
+  // width on a narrow device, collapsing its accessibility node. The previous
+  // session's hitSlop widening (taskInfo + its neighbors) only expanded the
+  // TOUCHABLE area, not the underlying layout, so it didn't fix this. Real
+  // fix: keep only the highest-frequency actions (run / pause / delete)
+  // inline, and move the two auxiliary, less-frequent actions (history,
+  // memory) plus the AUTO toggle behind a single "⋯" overflow button —
+  // shrinking the row from 6 action Pressables to 4 (3 inline + 1 overflow)
+  // recovers real width for taskInfo. No action is removed, only relocated;
+  // every accessibilityLabel below is carried over unchanged from the row.
+  //
+  // Alert.alert is the existing app-wide pattern for this kind of simple
+  // action menu (showAgentDetail / showSkillDetail above already use it), and
+  // Android's native AlertDialog only ever renders 3 buttons (see the
+  // slice(0, 3) comment in showAgentDetail) — this menu is deliberately
+  // capped at exactly 3 entries (history is conditional on run history
+  // existing; memory + the AUTO toggle are always present), so unlike
+  // showAgentDetail it never needs truncation.
+  const showAgentActionsMenu = React.useCallback((agent: Agent) => {
+    const actionHandlers: Record<AgentOverflowMenuActionSpec['key'], () => void> = {
+      history: () => openAgentRunsPane(agent.id),
+      memory: () => openMemoryWorkbench(agent),
+      autonomous: () => handleToggleAutonomous(agent),
+    };
+    const buttons = buildAgentOverflowMenuActions({
+      hasHistory: (agentRunHistory[agent.id]?.length ?? 0) > 0,
+      autonomous: !!agent.autonomous,
+    }).map((spec) => ({ text: t(spec.textKey), onPress: actionHandlers[spec.key] }));
+    Alert.alert(
+      agent.name,
+      t('sidebar.agent_more_actions_subtitle'),
+      buttons,
+      // Same rationale as showAgentDetail below: omit an explicit Close
+      // button (Android's 3-slot AlertDialog cap would just push it off
+      // anyway) and rely on cancelable:true for tap-outside/Back dismissal —
+      // RN defaults Android Alert.alert to non-dismissible unless this is
+      // passed explicitly.
+      { cancelable: true },
+    );
+  }, [agentRunHistory, t, openAgentRunsPane, openMemoryWorkbench, handleToggleAutonomous]);
+
   useEffect(() => {
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -1430,49 +1563,34 @@ export function Sidebar() {
                       {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'} · {agentApprovalLabel(agent)}
                     </Text>
                   </Pressable>
-                  {(agentRunHistory[agent.id]?.length ?? 0) > 0 && (
-                    <Pressable
-                      onPress={() => openAgentRunsPane(agent.id)}
-                      // 2026-08-10 on-device QA finding (docs/superpowers/DEFERRED.md):
-                      // this is the icon immediately right of taskInfo, whose own
-                      // hitSlop was widened the same day. A symmetric hitSlop={8}
-                      // here reaches 3px past the row's 4px gap into taskInfo's
-                      // real (visible) bounds, so a tap near taskInfo's right edge
-                      // could resolve to this icon instead of opening the agent
-                      // detail popup. Capping the left side to the gap width
-                      // removes that intrusion without shrinking the icon's own
-                      // reachable area on its other three sides.
-                      hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
-                      style={styles.tasksAction}
-                      accessibilityRole="button"
-                      accessibilityLabel={t('sidebar.agent_view_runs_a11y', { name: agent.name })}
-                    >
-                      <MaterialIcons name="history" size={12} color={C.text2} />
-                    </Pressable>
-                  )}
-                  {/* 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md):
-                      the only other entry point to Memory Workbench was a button
-                      inside showAgentDetail's Alert.alert, whose 3-button Android
-                      cap (see the slice(0, 3) comment there) reliably pushed it
-                      off the dialog in practice — the row-level history icon
-                      above already establishes the "guaranteed-reachable icon"
-                      pattern for exactly this reason, so mirror it here instead
-                      of gating on a pre-fetched note count (Memory Workbench's
-                      own empty state already handles zero notes fine). */}
+                  {/* 2026-08-10 bug-2 fix (docs/superpowers/DEFERRED.md, code-audit
+                      finding): a full 6-Pressable action row (history/memory/run/
+                      pause/AUTO/delete) collapsed taskInfo's visible width to ~0px
+                      on narrow devices — the prior session's hitSlop widening only
+                      expanded the TOUCHABLE area, not this structural crowding.
+                      History, memory, and the AUTO toggle (the lower-frequency /
+                      already-duplicated-elsewhere actions — history+memory both
+                      also live in showAgentDetail's Alert.alert, and history is
+                      itself conditional on a run existing) now live behind this
+                      single "⋯" overflow button instead of 3 separate row icons,
+                      shrinking the row to run/pause/delete + overflow. Nothing is
+                      removed — showAgentActionsMenu (above, in this file) opens
+                      an Alert.alert exposing all three, each with its own
+                      accessibilityLabel carried over unchanged from the icon it
+                      replaces (agent_view_runs_a11y is still reachable via the
+                      menu; only its ROW icon is gone). This button is the one
+                      immediately right of taskInfo now, so it inherits that same
+                      left-hitSlop-vs-gap capping the history/memory icons used to
+                      use, to keep a tap near taskInfo's right edge resolving to
+                      taskInfo, not here. */}
                   <Pressable
-                    onPress={() => openMemoryWorkbench(agent)}
-                    // 2026-08-10 on-device QA finding (docs/superpowers/DEFERRED.md):
-                    // when the history icon above is absent (no run yet), this
-                    // icon becomes the one immediately right of taskInfo — same
-                    // left-hitSlop-vs-gap intrusion as the history icon, capped
-                    // the same way. Kept 8 on the other three sides since this
-                    // side isn't adjacent to another touchable.
+                    onPress={() => showAgentActionsMenu(agent)}
                     hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
                     style={styles.tasksAction}
                     accessibilityRole="button"
-                    accessibilityLabel={t('sidebar.agent_memory_view_a11y', { name: agent.name })}
+                    accessibilityLabel={t('sidebar.agent_more_actions_a11y', { name: agent.name })}
                   >
-                    <MaterialIcons name="psychology" size={12} color={C.text2} />
+                    <MaterialIcons name="more-vert" size={12} color={C.text2} />
                   </Pressable>
                   <Pressable
                     onPress={() => void handleRunScheduledAgent(agent.id, agent.name)}
@@ -1504,24 +1622,6 @@ export function Sidebar() {
                       size={12}
                       color={agent.enabled ? C.text2 : C.warning}
                     />
-                  </Pressable>
-                  <Pressable
-                    onPress={() => handleToggleAutonomous(agent)}
-                    hitSlop={8}
-                    style={[
-                      styles.agentModePill,
-                      agent.autonomous && styles.agentModePillOn,
-                    ]}
-                    accessibilityRole="switch"
-                    accessibilityState={{ checked: !!agent.autonomous }}
-                    accessibilityLabel={t('sidebar.autonomous_toggle_a11y', { name: agent.name })}
-                  >
-                    <Text style={[
-                      styles.agentModeText,
-                      agent.autonomous && styles.agentModeTextOn,
-                    ]}>
-                      AUTO
-                    </Text>
                   </Pressable>
                   <Pressable
                     onPress={() => {
