@@ -40,6 +40,18 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
+// lib/secure-store.ts (transitively required via store/settings-store.ts) is
+// the only consumer of expo-secure-store on this file's import path — mocked
+// wholesale (same "true I/O boundary" precedent as the async-storage mock
+// right above) purely to avoid pulling in expo-modules-core's native-view
+// registration chain (which drags in nativewind/react-native-css-interop)
+// for scenarios that never touch a real secure-store read/write.
+jest.mock('expo-secure-store', () => ({
+  setItemAsync: jest.fn(async () => {}),
+  getItemAsync: jest.fn(async () => null),
+  deleteItemAsync: jest.fn(async () => {}),
+}));
+
 function mockT(key: string, params?: Record<string, string | number>): string {
   return params ? `${key}(${JSON.stringify(params)})` : key;
 }
@@ -2079,5 +2091,206 @@ describe('Progress ticker — ephemeral one-shot @agent run (2026-08-10 on-devic
     const afterExtraAdvance = conv().messages.find((m) => m.id === runningMsg!.id)?.content;
     expect(afterExtraAdvance).toBe(afterCompletion); // unchanged — ticker is stopped, not just idle
     expect(mockDeleteAgent).toHaveBeenCalledWith(createdId);
+  });
+});
+
+// ─── Scenario 10: NOTIFY-001 fallback-loss regression (2026-08-10 QA finding) ─
+//
+// Real-device repro: "when I get a notification from com.android.systemui,
+// summarize it" has neither a schedule nor an explicit draft/notify keyword,
+// so lib/agent-llm-fallback.ts's isLowConfidenceAgentDraft is true and the
+// utterance is routed into the LLM fallback (Tier 2 lib/agent-llm-fallback.ts
+// or Tier 3 lib/agent-conversational-registration.ts). NEITHER fallback
+// extraction schema has a notificationTrigger field, so the draft that comes
+// back never regains one. Two independent bugs compounded this into a
+// SILENT one-shot registration that discarded the user's actual trigger
+// intent:
+//
+//   (1) The Tier 3 proposal-merge branches in hooks/use-ai-pane-dispatch.ts
+//       used to special-case ONLY the 'autonomous' missingSlot field, so an
+//       unresolved schedule/notificationTrigger/etc silently fell straight
+//       through to presentDraftForConfirmation instead of ever being asked
+//       about.
+//   (2) Even when a draft correctly reached confirmAgentDraftInner with
+//       schedule===null and notificationTrigger===undefined,
+//       lib/notification-trigger.ts's isEphemeralOneShot() — by design —
+//       reads that shape as an ordinary one-shot ("run once now, then
+//       discard"), which is exactly wrong for a request that named a
+//       notification trigger.
+//
+// Scenario 10a tests fix (1) directly: a Tier 3 proposal that still leaves
+// `schedule` unset must now be asked about, not silently confirmed.
+// Scenario 10b tests fix (2), the last-resort safeguard in
+// confirmAgentDraftInner: ANY path that reaches confirmation with
+// notification-trigger phrasing but no schedule/trigger must refuse loudly
+// instead of silently running once and discarding the agent — plus two
+// negative controls proving the guard does not fire on ordinary requests.
+
+describe('Scenario 10a — Tier 3 fresh-dispatch proposal asks about ANY missing slot, not just autonomous', () => {
+  beforeEach(() => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        agentConversationalRegistrationEnabled: true,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+    mockOllamaChat.mockClear();
+  });
+
+  it('a Tier 3 proposal with no scheduleText now asks the schedule slot-fill question instead of silently reaching confirmation', async () => {
+    const PROPOSAL =
+      '```shelly-agent-registration\n' +
+      JSON.stringify({
+        name: 'Notify summarizer',
+        // The model has nothing to propose here — a notification-triggered
+        // request has no cron schedule by definition, and
+        // AgentConversationalExtraction has no notificationTrigger field at
+        // all for it to report the trigger through either.
+        scheduleText: '',
+        actionType: 'draft',
+        prompt: 'summarize the notification',
+      }) +
+      '\n```';
+    mockOllamaChat.mockResolvedValue({ success: true, content: PROPOSAL });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('@agent when I get a notification from com.android.systemui, summarize it');
+    });
+
+    // Pre-fix: this branch checked ONLY `missingSlot?.field === 'autonomous'`,
+    // so a still-missing schedule fell through to presentDraftForConfirmation
+    // unasked. Post-fix: any missing slot is asked about, same as every other
+    // missingSlot check in this file.
+    expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
+    expect(conv().pendingAgentSession).toBeFalsy();
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+  });
+});
+
+function notifyTriggerLostDraft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft {
+  return {
+    name: 'System UI summarizer',
+    prompt: 'summarize the notification',
+    schedule: null,
+    scheduleConfident: false,
+    scheduleLabel: '未設定（要選択）',
+    action: { type: 'draft' },
+    tool: { type: 'cli', cli: 'codex' },
+    toolLabel: 'Codex',
+    rawText: 'when I get a notification from com.android.systemui, summarize it',
+    ...overrides,
+  } as ParsedAgentDraft;
+}
+
+function seedPendingDraftMessage(messageId: string, draft: ParsedAgentDraft) {
+  useAIPaneStore.getState().addMessage(PANE, {
+    id: messageId,
+    role: 'assistant',
+    content: 'draft pending',
+    timestamp: Date.now(),
+    agentDraft: draft,
+    agentCardState: 'pending',
+  });
+}
+
+describe('Scenario 10b — confirmAgentDraft refuses a silent notification-trigger-loss one-shot', () => {
+  it('BUG REPRO: a draft that asked for a notification trigger, but reaches confirmation with schedule=null AND notificationTrigger=undefined, is refused instead of silently run-once-and-discarded', async () => {
+    const draft = notifyTriggerLostDraft();
+    const messageId = 'notif-trigger-lost';
+    act(() => {
+      seedPendingDraftMessage(messageId, draft);
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.confirmAgentDraft(messageId, draftToConfirmedAgentDraft(draft));
+    });
+
+    // Never silently registered, run, or discarded.
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    expect(mockInstallAgent).not.toHaveBeenCalled();
+    expect(mockRunAgentNow).not.toHaveBeenCalled();
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+
+    const msg = conv().messages.find((m) => m.id === messageId);
+    expect(msg?.agentCardState).toBe('cancelled');
+    // An explicit, non-empty notice replaced the placeholder bubble text —
+    // this must never look like a normal successful registration.
+    expect(msg?.content).not.toBe('draft pending');
+    expect(msg?.content.length).toBeGreaterThan(0);
+  });
+
+  it('sanity check: the SAME shape but WITHOUT notification-trigger phrasing is NOT blocked — an ordinary one-shot request still runs and is discarded (no false positive)', async () => {
+    const draft = notifyTriggerLostDraft({
+      rawText: 'check disk space right now',
+      prompt: 'check disk space',
+    });
+    const messageId = 'plain-one-shot';
+    act(() => {
+      seedPendingDraftMessage(messageId, draft);
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.confirmAgentDraft(messageId, draftToConfirmedAgentDraft(draft));
+    });
+
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockInstallAgent).toHaveBeenCalledTimes(1);
+    expect(mockRunAgentNow).toHaveBeenCalledTimes(1);
+    // The ordinary ephemeral one-shot cleanup still runs to completion.
+    expect(mockDeleteAgent).toHaveBeenCalled();
+  });
+
+  it('sanity check: a draft that already carries a RESOLVED notificationTrigger registers normally — the safeguard never fires when the trigger actually survived', async () => {
+    const draft = notifyTriggerLostDraft({
+      notificationTrigger: { packageNames: ['com.android.systemui'] },
+    });
+    const messageId = 'notif-trigger-resolved';
+    act(() => {
+      seedPendingDraftMessage(messageId, draft);
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.confirmAgentDraft(messageId, draftToConfirmedAgentDraft(draft));
+    });
+
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockCreateAgent.mock.calls[0][0].notificationTrigger).toEqual({
+      packageNames: ['com.android.systemui'],
+    });
+    expect(mockInstallAgent).toHaveBeenCalledTimes(1);
+    // A real notification-triggered agent is never treated as an ephemeral
+    // one-shot — isEphemeralOneShot(null, {packageNames:[...]}) is false, so
+    // it must survive registration, never be run-once-and-deleted.
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+  });
+
+  it('sanity check: a draft with a real cron schedule (no notification trigger at all) is also unaffected by the safeguard', async () => {
+    const draft = notifyTriggerLostDraft({
+      rawText: '毎朝8時にディスク空き容量を教えて',
+      prompt: 'ディスク空き容量を教えて',
+      schedule: '0 8 * * *',
+      scheduleConfident: true,
+      scheduleLabel: '毎日 08:00',
+    });
+    const messageId = 'real-schedule';
+    act(() => {
+      seedPendingDraftMessage(messageId, draft);
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.confirmAgentDraft(messageId, draftToConfirmedAgentDraft(draft));
+    });
+
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockInstallAgent).toHaveBeenCalledTimes(1);
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
   });
 });
