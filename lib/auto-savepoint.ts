@@ -24,44 +24,75 @@ const SKIP_PREFIXES = [
   '.cache/', '.local/', '.config/', '.yarn/',
 ];
 const MAX_FILES_TO_SCAN = 30;
+const MAX_LINES_PER_FILE = 500;
+
+type ScanSource = 'staged' | 'worktree';
+
+async function scanFilesForSecrets(
+  projectDir: string,
+  runCommand: RunCommandFn,
+  source: ScanSource,
+): Promise<SecurityIssue[]> {
+  const dir = shellEscape(projectDir);
+  const listCommand = source === 'staged'
+    ? `git -C ${dir} diff --cached --name-only`
+    : `git -C ${dir} ls-files --others --modified --exclude-standard`;
+  const { stdout: listedFiles, exitCode: listExitCode } = await runCommand(listCommand);
+  if (listExitCode !== 0) {
+    return [{ file: '.', label: 'secret scan failed: could not list files', line: 0 }];
+  }
+  if (!listedFiles.trim()) return [];
+
+  const filesToScan = listedFiles.trim().split('\n').filter(Boolean).filter(
+    (f) => !SKIP_PREFIXES.some((p) => f.startsWith(p)),
+  );
+  if (filesToScan.length > MAX_FILES_TO_SCAN) {
+    return [{
+      file: filesToScan[MAX_FILES_TO_SCAN],
+      label: `secret scan limit exceeded: more than ${MAX_FILES_TO_SCAN} files`,
+      line: 0,
+    }];
+  }
+
+  const issues: SecurityIssue[] = [];
+  for (const file of filesToScan) {
+    if (SENSITIVE_FILES.test(file)) {
+      issues.push({ file, label: 'sensitive file', line: 0 });
+      continue;
+    }
+    const readCommand = source === 'staged'
+      ? `git -C ${dir} show :${shellEscape(file)}`
+      : `cd ${dir} && head -n ${MAX_LINES_PER_FILE + 1} -- ${shellEscape(file)}`;
+    const { stdout: content, exitCode } = await runCommand(readCommand);
+    if (exitCode !== 0) {
+      issues.push({ file, label: 'secret scan failed: could not read file', line: 0 });
+      continue;
+    }
+    const lines = content.split('\n');
+    if (content.endsWith('\n')) lines.pop();
+    if (lines.length > MAX_LINES_PER_FILE) {
+      issues.push({
+        file,
+        label: `secret scan limit exceeded: more than ${MAX_LINES_PER_FILE} lines`,
+        line: MAX_LINES_PER_FILE + 1,
+      });
+      continue;
+    }
+    for (let i = 0; i < lines.length; i++) {
+      for (const { pattern, label } of SECURITY_PATTERNS) {
+        if (pattern.test(lines[i])) issues.push({ file, label, line: i + 1 });
+      }
+    }
+  }
+  return issues;
+}
 
 /** Scan staged files for secrets. Returns issues found. */
 export async function scanForSecrets(
   projectDir: string,
   runCommand: RunCommandFn,
 ): Promise<SecurityIssue[]> {
-  const dir = shellEscape(projectDir);
-  const { stdout: stagedFiles } = await runCommand(`git -C ${dir} diff --cached --name-only`);
-  if (!stagedFiles.trim()) return [];
-
-  const allFiles = stagedFiles.trim().split('\n').filter(Boolean);
-  const filesToScan = allFiles.filter(
-    (f) => !SKIP_PREFIXES.some((p) => f.startsWith(p)),
-  );
-
-  const issues: SecurityIssue[] = [];
-  let scanned = 0;
-  for (const file of filesToScan) {
-    if (SENSITIVE_FILES.test(file)) {
-      issues.push({ file, label: 'sensitive file', line: 0 });
-      continue;
-    }
-    if (scanned >= MAX_FILES_TO_SCAN) break;
-    scanned++;
-    const { stdout: content, exitCode } = await runCommand(
-      `git -C ${dir} show :${shellEscape(file)} 2>/dev/null | head -500`,
-    );
-    if (exitCode !== 0 || !content) continue;
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      for (const { pattern, label } of SECURITY_PATTERNS) {
-        if (pattern.test(lines[i])) {
-          issues.push({ file, label, line: i + 1 });
-        }
-      }
-    }
-  }
-  return issues;
+  return scanFilesForSecrets(projectDir, runCommand, 'staged');
 }
 
 /** Shell-escape a string for safe use in single-quoted arguments */
@@ -116,21 +147,29 @@ build/
 export async function initGitIfNeeded(
   projectDir: string,
   runCommand: RunCommandFn,
-  opts?: { requireRepoAtRoot?: boolean },
+  opts?: { requireRepoAtRoot?: boolean; onSecurityIssues?: (issues: SecurityIssue[]) => void },
 ): Promise<void> {
   const dir = shellEscape(projectDir);
   const { exitCode } = opts?.requireRepoAtRoot
     ? await runCommand(`test -e ${dir}/.git`)
     : await runCommand(`git -C ${dir} rev-parse --git-dir`);
   if (exitCode !== 0) {
-    await runCommand(`git -C ${dir} init`);
+    const initResult = await runCommand(`git -C ${dir} init`);
+    if (initResult.exitCode !== 0) throw new Error(`git init failed (${initResult.exitCode})`);
     const { exitCode: igExists } = await runCommand(`test -f ${dir}/.gitignore`);
     if (igExists !== 0) {
       const escaped = DEFAULT_GITIGNORE.replace(/'/g, "'\\''");
       await runCommand(`printf '%s' '${escaped}' > ${dir}/.gitignore`);
     }
-    await runCommand(`git -C ${dir} add -A`);
-    await runCommand(`git -C ${dir} commit -m "Auto: Initial savepoint" --allow-empty`);
+    const issues = await scanFilesForSecrets(projectDir, runCommand, 'worktree');
+    if (issues.length > 0) {
+      opts?.onSecurityIssues?.(issues);
+      throw new Error(`initial secret scan failed: ${issues[0].label}`);
+    }
+    const addResult = await runCommand(`git -C ${dir} add -A`);
+    if (addResult.exitCode !== 0) throw new Error(`git add failed (${addResult.exitCode})`);
+    const commitResult = await runCommand(`git -C ${dir} commit -m "Auto: Initial savepoint" --allow-empty`);
+    if (commitResult.exitCode !== 0) throw new Error(`git commit failed (${commitResult.exitCode})`);
   }
 }
 
@@ -149,7 +188,11 @@ export async function checkAndSave(
   const changedCount = status.trim().split('\n').filter(Boolean).length;
   console.log('[AutoSave] changes detected:', changedCount, 'files in', projectDir);
 
-  await runCommand(`git -C ${dir} add -A`);
+  const { exitCode: addExitCode } = await runCommand(`git -C ${dir} add -A`);
+  if (addExitCode !== 0) {
+    console.warn('[AutoSave] git add failed, exitCode=', addExitCode);
+    return null;
+  }
 
   // Security gate: scan staged files for secrets before committing
   const issues = await scanForSecrets(projectDir, runCommand);

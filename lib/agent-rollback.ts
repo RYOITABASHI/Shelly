@@ -72,7 +72,13 @@ export async function prepareRollbackWorkspace(
     // satisfies rev-parse's walk-up check, init is skipped, and every later
     // `git -C <root>` step operates on the ancestor repo instead. See
     // initGitIfNeeded's doc comment in lib/auto-savepoint.ts.
-    await initGitIfNeeded(workspaceRoot, runCommand, { requireRepoAtRoot: true });
+    await initGitIfNeeded(workspaceRoot, runCommand, {
+      requireRepoAtRoot: true,
+      onSecurityIssues: (issues) => logWarn(
+        'AgentRollback',
+        `initial rollback workspace scan blocked: ${issues.map((issue) => issue.label).join(', ')}`
+      ),
+    });
     // Baseline commit for any pre-existing dirt. A null result means "nothing to
     // commit", which is the normal, already-clean case — not a failure. A
     // secret-scan block DOES return null too, so verify cleanliness explicitly
