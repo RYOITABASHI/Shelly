@@ -1620,6 +1620,20 @@ export default function TerminalScreen() {
         </TouchableOpacity>
       )}
 
+      {/* Block History FAB — opens the Block History overlay, the only entry
+          point to inline content renderers (JSON tree / Markdown / image /
+          table blocks, see components/terminal/BlockList.tsx). */}
+      {isConnected && !showBlockHistory && activeSession && (
+        <TouchableOpacity
+          style={[styles.blockHistoryFab, { bottom: 160 + terminalKeyboardInset, backgroundColor: 'rgba(0,0,0,0.7)', borderColor: C.accent + '44' }]}
+          onPress={() => setShowBlockHistory(true)}
+          activeOpacity={0.7}
+          accessibilityLabel="Block History"
+        >
+          <MaterialIcons name="history" size={18} color="#fff" />
+        </TouchableOpacity>
+      )}
+
       {/* Voice Dialog Mode */}
       <VoiceChat
         visible={voiceChatVisible}

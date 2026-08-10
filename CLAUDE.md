@@ -96,12 +96,11 @@ Shelly/
 │   │   └── VoiceWaveform.tsx       # インライン音声波形
 │   ├── terminal/
 │   │   ├── TerminalBlock.tsx       # コマンドブロック（インラインコンテンツ対応）
-│   │   ├── AutocompletePopup.tsx   # Fig-style補完UI
 │   │   ├── RichInputOverlay.tsx    # シンタックスハイライトオーバーレイ
-│   │   ├── MarkdownBlock.tsx       # インラインMarkdownレンダラ
-│   │   ├── JsonTreeBlock.tsx       # 折りたたみJSON表示
-│   │   ├── ImagePreviewBlock.tsx   # インライン画像プレビュー
-│   │   ├── TableBlock.tsx          # テーブル表示
+│   │   ├── MarkdownBlock.tsx       # インラインMarkdownレンダラ（Block History経由で到達可能）
+│   │   ├── JsonTreeBlock.tsx       # 折りたたみJSON表示（Block History経由で到達可能）
+│   │   ├── ImagePreviewBlock.tsx   # インライン画像プレビュー（Block History経由で到達可能）
+│   │   ├── TableBlock.tsx          # テーブル表示（Block History経由で到達可能）
 │   │   └── LinkContextMenu.tsx     # パス/URL長押しメニュー
 │   ├── config/
 │   │   └── ConfigTUI.tsx           # 設定ボトムシート（全設定移植済み）
@@ -117,7 +116,7 @@ Shelly/
 │   │   └── android/src/main/jni/   # C — shelly-pty.c (forkpty), shelly-exec.c (exec)
 │   └── terminal-view/              # ネイティブターミナルビュー（Kotlin Canvas描画）
 ├── lib/
-│   ├── autocomplete-engine.ts      # Fig-style補完エンジン（fuzzyスコアリング）
+│   ├── autocomplete-engine.ts      # 2026-08-10確認: 旧Fig-style補完エンジン。参照ゼロのデッドコード（UIのAutocompletePopup.tsx / フックのuse-autocomplete.tsは既に削除済み。実際の入力補完はcomponents/input/AutocompleteDropdown.tsx+lib/completions.ts系統）
 │   ├── syntax-highlighter.ts       # シェルコマンドシンタックスハイライト
 │   ├── error-pattern-detector.ts   # file:line:col エラーパターン検出
 │   ├── content-block-detector.ts   # 出力タイプ判定（markdown/json/image/table）
@@ -159,7 +158,6 @@ Shelly/
 │   ├── use-device-layout.ts      # レスポンシブ（compact/standard/wide）
 │   ├── use-native-exec.ts        # execCommand() — JNI経由コマンド実行
 │   ├── use-multi-pane.ts         # ペインツリー管理（split/resize/remove）
-│   ├── use-autocomplete.ts       # 補完フック（sync+async path/git）
 │   ├── use-ai-pane-dispatch.ts   # AIペインストリーミング（Groq/Gemini/Perplexity/Local）
 │   ├── use-pane-voice.ts         # ペイン内音声入力
 │   ├── use-command-palette.ts    # コマンドパレット状態
