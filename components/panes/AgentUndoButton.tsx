@@ -4,7 +4,7 @@
  * The "元に戻す" (Undo) affordance for a rollback-eligible attended agent run
  * (2026-08-04). Rendered by AIPane.tsx's MessageBubble only when
  * ChatMessage.agentRollbackOffer is set on that message — see its doc
- * comment in store/chat-store.ts and lib/agent-manager.ts's
+ * comment in store/types.ts and lib/agent-manager.ts's
  * rollbackOfferEligible() for the full eligibility chain that decides that.
  *
  * That message-level flag proves the run which produced THIS message was, at

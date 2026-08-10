@@ -1124,3 +1124,178 @@ export interface AgentOrchestrationConfig {
    *  Enforced by the PlanSpec executor before result persistence/draft writes. */
   charLimit?: number;
 }
+
+// ─── Chat message (formerly store/chat-store.ts) ──────────────────────────────
+// store/chat-store.ts (the old Chat-first UI store, `useChatStore`) was deleted
+// as dead code — it had zero call sites for its hook. These types, however,
+// are still consumed by components/panes/AIPane.tsx, hooks/use-ai-pane-
+// dispatch.ts, store/ai-pane-store.ts, lib/arena-selector.ts and
+// lib/github-actions.ts, so they were preserved here rather than deleted
+// along with the store body.
+
+export type ChatAgent = 'local' | 'gemini' | 'groq' | 'cerebras' | 'perplexity' | 'team' | 'git' | 'codex';
+
+export type CommandExecution = {
+  command: string;
+  output: string;
+  exitCode: number | null;
+  isCollapsed: boolean;
+};
+
+/** Wizard types for interactive chat bubbles */
+export type WizardType = 'actions';
+
+/** GitHub Actions wizard state stored in message */
+export type ActionsWizardData = {
+  step: 'what' | 'when' | 'confirm' | 'done';
+  actions: Array<'build' | 'test' | 'deploy' | 'release'>;
+  trigger: 'push' | 'daily' | 'manual' | null;
+  projectType?: string;
+};
+
+/** Auto-check proposal state (shown after first push) */
+export type AutoCheckState = 'proposal' | 'setting_up' | 'done' | 'dismissed' | 'error';
+
+export type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: number;
+  /** コマンド実行結果の埋め込み */
+  executions?: CommandExecution[];
+  /** AI agent that handled this message */
+  agent?: ChatAgent;
+  /** Streaming state */
+  isStreaming?: boolean;
+  streamingText?: string;
+  tokenCount?: number;
+  streamingStartTime?: number;
+  /** Perplexity citations */
+  citations?: Array<{ url: string; title?: string }>;
+  /** Error */
+  error?: string;
+  /** Safety warning level */
+  dangerLevel?: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+  /** ローカルLLM応答時のモデル名+ポート (例: "gemma-3-4b-it (:8080)") */
+  llmModelLabel?: string;
+  /** Interactive wizard type */
+  wizardType?: WizardType;
+  /** Wizard state data (JSON-serializable) */
+  wizardData?: ActionsWizardData;
+  /** Auto-check proposal state */
+  autoCheckState?: AutoCheckState;
+  /** 承認プロキシ（ターミナルの [Y/n] をChat側ボタンに変換） */
+  approvalData?: {
+    sessionId: string;
+    command: string;
+    translation: string;
+    dangerLevel: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'SAFE';
+  };
+  /** エラー要約バブル（TranslateOverlayのWide時永続化版） */
+  errorSummaryData?: {
+    errorText: string;
+    translation: string;
+    provider: string;
+  };
+  /** Arena Mode 対決ID */
+  arenaId?: string;
+  /** NL-self-registration confirm card (Phase 0 §2.1). When present with
+   *  agentCardState==='pending', AIPane renders an AgentConfirmCard instead of
+   *  text; on confirm the agent is created+installed. JSON-serializable. */
+  agentDraft?: import('@/lib/agent-nl-parser').ParsedAgentDraft;
+  agentCardState?: 'pending' | 'confirmed' | 'cancelled';
+  /** Phase 7: true = render the chat-native AgentChatConfirm affordance (summary
+   *  text already in `content` + inline Confirm/Cancel) instead of AgentConfirmCard
+   *  for this pending draft. Set for app-act / tool-pinned orchestration drafts —
+   *  see lib/agent-plan-summary.ts's shouldUseChatConfirm. Absent/false = the
+   *  existing card path, unchanged. */
+  agentChatConfirm?: boolean;
+  /** bug #157 fix (docs/superpowers/DEFERRED.md): present when this draft
+   *  bubble (chat-native OR the classic AgentConfirmCard) edits an
+   *  already-registered agent rather than creating a new one — mirrors
+   *  store/ai-pane-store.ts's PendingAgentSession.editingAgentId, but lives
+   *  on the MESSAGE itself so confirmAgentDraft (hooks/use-ai-pane-
+   *  dispatch.ts) can recover it correctly even after the pane's single-slot
+   *  pendingAgentSession has since been overwritten by a newer, unrelated
+   *  draft (presentDraftForConfirmation unconditionally claims that slot for
+   *  typed confirm/cancel routing — see its own doc comment). Before this
+   *  field existed, editingAgentId was ONLY derivable from pendingAgentSession
+   *  by messageId match, so an orphaned edit session's eventual confirm
+   *  (tapped OR typed) silently fell back to creating a duplicate agent
+   *  instead of updating the one being edited. Set by components/layout/
+   *  Sidebar.tsx's "Edit" handler (the only current source of an editing
+   *  draft) alongside the matching pendingAgentSession it also sets. */
+  editingAgentId?: string;
+  /** Conversational slot-filling for NL agent creation: when present on the
+   *  MOST RECENT assistant message in a session, the dispatcher routes the
+   *  next user message as the answer to this field instead of parsing it as
+   *  a fresh command. Cleared implicitly once a subsequent message (a normal
+   *  reply, or the eventual agentDraft/agentCardState:'pending' card
+   *  message) becomes the new most-recent message. */
+  pendingSlotFill?: {
+    // Keep in sync with lib/agent-slot-fill.ts's SlotField (browserUrl/
+    // browserSelector added 2026-08-05 for the browser-pane NL authoring
+    // path — the URL / CSS-selector follow-up questions).
+    field:
+      | 'taskDetail'
+      | 'schedule'
+      | 'notificationTrigger'
+      | 'outputPath'
+      | 'socialConnector'
+      | 'autonomous'
+      | 'browserUrl'
+      | 'browserSelector';
+    question: string;
+    /** The draft accumulated so far; gets updated per-answer and re-checked
+     *  for the next missing slot (or promoted to a full agentDraft once
+     *  nothing is missing). */
+    partialDraft: import('@/lib/agent-nl-parser').ParsedAgentDraft;
+    /** How many times the user has already answered THIS field without it
+     *  resolving. lib/agent-slot-fill.ts's applySlotAnswer uses this to give
+     *  up asking and force a safe fallback after 1-2 failed attempts, so the
+     *  conversation can never get stuck in an infinite loop. */
+    attemptCount: number;
+  };
+  /** User-scope ("remember this for EVERY agent") memory write awaiting an
+   *  explicit human confirm. Present on the assistant message that asked the
+   *  confirm question; when THAT message is the most recent one in the pane,
+   *  hooks/use-ai-pane-dispatch.ts routes the next user message here and
+   *  commits the write via lib/agent-manager.ts's writeGlobalMemoryNote ONLY
+   *  on an exact confirm phrase. Nothing is written when this field is merely
+   *  created — see lib/agent-global-memory-intent.ts for why a global write
+   *  (recalled by every agent) gets a mandatory confirm turn that an ordinary
+   *  per-agent note does not. `attempts` bounds the re-ask loop so an
+   *  abandoned confirmation can never swallow the conversation. */
+  pendingGlobalMemory?: {
+    /** The exact note text that will be stored, already scope-stripped. */
+    text: string;
+    /** How many non-confirm / non-cancel replies this question has absorbed. */
+    attempts: number;
+  };
+  /** P1 scheduling-reliability audit (2026-07-15): renders an
+   *  AgentScheduleReadinessCard instead of plain text — a one-time,
+   *  dismissible checklist (exact-alarm grant / battery-optimization
+   *  exemption / Samsung sleeping-apps guidance) appended after the FIRST
+   *  scheduled agent a device registers. Never blocks registration — the
+   *  agent this follows is already created by the time this message is
+   *  appended. See hooks/use-ai-pane-dispatch.ts's confirmAgentDraft. */
+  scheduleReadinessCard?: boolean;
+  /** Rollback-type (optimistic) execution "元に戻す" affordance (2026-08-04).
+   *  Present on an attended run's completion bubble ONLY when
+   *  hooks/use-ai-pane-dispatch.ts already confirmed, via
+   *  lib/agent-manager.ts's rollbackOfferEligible(), that (a) the run's own
+   *  agent snapshot independently classifies as reversible under CURRENT
+   *  settings — never inferred from handle-presence alone — AND (b) a live
+   *  undo handle actually exists for it. components/panes/AgentUndoButton.tsx
+   *  re-checks peekAgentRollbackHandle(agentId) itself, live,
+   *  immediately before rendering the button (and again right before acting
+   *  on a tap) since only handle-LIVENESS can change after this snapshot was
+   *  taken — the handle may already have been consumed by an earlier tap,
+   *  invalidated by a newer run of the same agent, or lost to an app restart
+   *  (pendingRollbackHandles is intentionally in-memory-only, so an Undo
+   *  offer never survives a process restart; see lib/agent-manager.ts's doc
+   *  comment on that map for why persisting it was rejected). */
+  agentRollbackOffer?: {
+    agentId: string;
+  };
+};

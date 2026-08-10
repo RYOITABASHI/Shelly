@@ -197,7 +197,7 @@ const en: Record<string, string> = {
   // Rollback ("元に戻す") affordance itself — components/panes/
   // AgentUndoButton.tsx, rendered by AIPane.tsx's MessageBubble on an
   // eligible attended run's completion bubble. See
-  // ChatMessage.agentRollbackOffer (store/chat-store.ts) and
+  // ChatMessage.agentRollbackOffer (store/types.ts) and
   // lib/agent-manager.ts's rollbackOfferEligible() for the eligibility chain.
   'agents.undo_run_button': 'Undo',
   'agents.undo_run_in_progress': 'Undoing…',

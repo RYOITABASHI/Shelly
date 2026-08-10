@@ -5,7 +5,7 @@
  * and queries workflow run status via the GitHub API.
  */
 
-import type { ActionsWizardData } from '@/store/chat-store';
+import type { ActionsWizardData } from '@/store/types';
 import { getGitHubPAT } from '@/lib/github-auth';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
