@@ -934,9 +934,23 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
               </Text>
             );
           })()}
-          {parseAuthorizedSenders(notificationSendersRaw).valid.length > 0 && (
+          {parseAuthorizedSenders(notificationSendersRaw).valid.length > 0 ? (
             <Text style={[styles.warn, { color: colors.muted }]}>
               {t('agentcard.notification_senders_hint')}
+            </Text>
+          ) : (
+            // Security-audit finding (2026-08-10): with no authorized senders
+            // entered, ANY notification arriving from the listed package(s)
+            // triggers this agent — the "authorized senders" gate the field
+            // label implies is simply absent here, not narrowed. That's a
+            // deliberate, supported configuration (an arrival-only trigger
+            // that never reads notification text — see
+            // ShellyNotificationListener.kt), but it must never be a silent
+            // default the user didn't consciously choose — same "never leave
+            // an assumption opaque" rule as the scheduleAssumed/llmExtracted
+            // notes elsewhere in this card.
+            <Text style={[styles.warn, { color: colors.warning }]}>
+              {t('agentcard.notification_senders_unset_warning')}
             </Text>
           )}
         </>

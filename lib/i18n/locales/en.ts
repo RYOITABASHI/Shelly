@@ -348,6 +348,7 @@ const en: Record<string, string> = {
   'agentcard.notification_senders_label': 'Authorized senders (optional — reads notification text)',
   'agentcard.notification_senders_placeholder': 'e.g. Alice, Family Group',
   'agentcard.notification_senders_hint': 'Exact-match sender names only. Notification text from ONLY these senders is passed to the agent (best-effort: only what fits in the notification; replies work only while the notification is alive). Leave empty to trigger on arrival without reading any text.',
+  'agentcard.notification_senders_unset_warning': '⚠ No sender limit set. This agent will run whenever ANY notification arrives from the app(s) above — not just ones from a specific person. The notification text itself is never read (arrival-only trigger). Add a sender above to narrow this, or leave it as-is if that\'s what you intend.',
   'agentcard.runon': 'Run on',
   'agentcard.runon_auto': 'Auto',
   'agentcard.runon_on-device': 'On-device',
@@ -466,6 +467,14 @@ const en: Record<string, string> = {
   // hasDraftAssumptions doc comment for why this always forces one confirm
   // round-trip, same as an assumed schedule.
   'agentplan.llm_extracted_note': '🤖 Some fields above were inferred by AI from your message — please double-check them before confirming.',
+  // Security-audit finding (2026-08-10): disclosure line for a
+  // notification-triggered draft/notify agent on the chat-native confirm
+  // path (see agent-plan-summary.ts's summarizeAgentDraftAsText). The
+  // unscoped variant is the one that actually fires today — no producer of
+  // this draft ever fills in authorizedSenders — but the scoped variant is
+  // kept for forward-compatibility.
+  'agentplan.notification_trigger_unscoped_note': '⚠ Triggers on notification: runs whenever ANY notification arrives from {{packages}} — not limited to a specific sender, and the notification text is never read.',
+  'agentplan.notification_trigger_scoped_note': 'Triggers on notification: runs only for notifications from {{senders}} (app: {{packages}}).',
   // Phase C (2026-07-22): header line prepended (by hooks/use-ai-pane-dispatch.ts)
   // above the re-posted summary when a follow-up reply patched an
   // ALREADY-APPLIED change (the justRegisteredAgent quick-correct window —

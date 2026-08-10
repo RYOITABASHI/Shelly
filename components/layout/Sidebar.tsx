@@ -2053,8 +2053,23 @@ export function Sidebar() {
               autoCorrect={false}
               multiline
             />
-            {parseAuthorizedSenders(notifSendersDraft).valid.length > 0 && (
+            {parseAuthorizedSenders(notifSendersDraft).valid.length > 0 ? (
               <Text style={styles.modalHint}>{t('agentcard.notification_senders_hint')}</Text>
+            ) : (
+              // Security-audit finding (2026-08-10) — same disclosure as
+              // AgentConfirmCard.tsx's matching block: with no authorized
+              // senders AND at least one configured package, ANY notification
+              // from the listed package(s) fires this agent (arrival-only,
+              // notification text is never read). Only meaningful once a
+              // package is actually set — an empty-senders warning with no
+              // package configured either would be noise, not a disclosure.
+              // Mirrored here since this Sidebar long-press editor is the
+              // OTHER surface that can leave authorizedSenders unset.
+              parseNotificationTriggerPackages(notifTriggerDraft).valid.length > 0 && (
+                <Text style={[styles.modalHint, { color: C.warning }]}>
+                  {t('agentcard.notification_senders_unset_warning')}
+                </Text>
+              )
             )}
             <View style={styles.modalBtns}>
               <Pressable
