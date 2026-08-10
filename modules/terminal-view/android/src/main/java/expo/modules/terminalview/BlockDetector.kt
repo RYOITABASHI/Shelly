@@ -35,6 +35,20 @@ class BlockDetector(
         OUTPUT
     }
 
+    private enum class OscMarkerType {
+        PROMPT,
+        COMMAND,
+        OUTPUT,
+        END
+    }
+
+    private data class OscMarker(
+        val type: OscMarkerType,
+        val start: Int,
+        val end: Int,
+        val exitCode: Int? = null
+    )
+
     private var state = State.IDLE
     private var currentCommand = StringBuilder()
     private var currentOutput = StringBuilder()
@@ -150,52 +164,81 @@ class BlockDetector(
      * Returns true if any OSC 133 sequence was found and processed.
      */
     private fun processOsc133(text: String): Boolean {
-        var found = false
+        var cursor = 0
+        var marker = findNextOscMarker(text, cursor) ?: return false
 
-        if (text.contains(OSC_133_A_BEL) || text.contains(OSC_133_A_ST)) {
-            // Prompt start — if we have a pending block, complete it
-            if (state == State.OUTPUT || state == State.COMMAND) {
-                completeBlock(null)
+        while (true) {
+            appendOscSegment(text.substring(cursor, marker.start))
+
+            when (marker.type) {
+                OscMarkerType.PROMPT -> {
+                    // Prompt start — if we have a pending block, complete it
+                    if (state == State.OUTPUT || state == State.COMMAND) {
+                        completeBlock(null)
+                    }
+                    state = State.PROMPT
+                    blockStartTime = System.currentTimeMillis()
+                }
+                OscMarkerType.COMMAND -> {
+                    state = State.COMMAND
+                    // Fire onBlockStarted for GL renderer
+                    onBlockStarted?.invoke(currentCommand.toString().trim())
+                }
+                OscMarkerType.OUTPUT -> {
+                    state = State.OUTPUT
+                }
+                OscMarkerType.END -> {
+                    completeBlock(marker.exitCode)
+                }
             }
-            state = State.PROMPT
-            blockStartTime = System.currentTimeMillis()
-            found = true
+
+            cursor = marker.end
+            marker = findNextOscMarker(text, cursor) ?: break
         }
 
-        if (text.contains(OSC_133_B_BEL) || text.contains(OSC_133_B_ST)) {
-            // Command start — extract command text from prompt to here
-            state = State.COMMAND
-            // The command text is between prompt start and command start
-            val cleaned = text
-                .replace(OSC_133_A_BEL, "")
-                .replace(OSC_133_A_ST, "")
-                .replace(OSC_133_B_BEL, "")
-                .replace(OSC_133_B_ST, "")
-                .trim()
-            if (cleaned.isNotEmpty()) {
-                currentCommand.append(cleaned)
+        appendOscSegment(text.substring(cursor))
+        return true
+    }
+
+    /** Route text between OSC markers according to the preceding marker's state. */
+    private fun appendOscSegment(segment: String) {
+        when (state) {
+            State.COMMAND -> currentCommand.append(segment)
+            State.OUTPUT -> currentOutput.append(segment)
+            State.IDLE, State.PROMPT -> Unit
+        }
+    }
+
+    /** Find the earliest A/B/C/D marker at or after [fromIndex]. */
+    private fun findNextOscMarker(text: String, fromIndex: Int): OscMarker? {
+        var earliest: OscMarker? = null
+
+        fun consider(type: OscMarkerType, sequence: String) {
+            val start = text.indexOf(sequence, fromIndex)
+            if (start >= 0 && (earliest == null || start < earliest!!.start)) {
+                earliest = OscMarker(type, start, start + sequence.length)
             }
-            // Fire onBlockStarted for GL renderer
-            onBlockStarted?.invoke(currentCommand.toString().trim())
-            found = true
         }
 
-        if (text.contains(OSC_133_C_BEL) || text.contains(OSC_133_C_ST)) {
-            // Output start
-            state = State.OUTPUT
-            found = true
-        }
+        consider(OscMarkerType.PROMPT, OSC_133_A_BEL)
+        consider(OscMarkerType.PROMPT, OSC_133_A_ST)
+        consider(OscMarkerType.COMMAND, OSC_133_B_BEL)
+        consider(OscMarkerType.COMMAND, OSC_133_B_ST)
+        consider(OscMarkerType.OUTPUT, OSC_133_C_BEL)
+        consider(OscMarkerType.OUTPUT, OSC_133_C_ST)
 
-        val dMatch = OSC_133_D_PATTERN.find(text)
-        if (dMatch != null) {
-            // Command done with exit code
+        val dMatch = OSC_133_D_PATTERN.find(text, fromIndex)
+        if (dMatch != null && (earliest == null || dMatch.range.first < earliest!!.start)) {
             val exitCodeStr = dMatch.groupValues[1].ifEmpty { dMatch.groupValues[2] }
-            val exitCode = exitCodeStr.toIntOrNull()
-            completeBlock(exitCode)
-            found = true
+            earliest = OscMarker(
+                type = OscMarkerType.END,
+                start = dMatch.range.first,
+                end = dMatch.range.last + 1,
+                exitCode = exitCodeStr.toIntOrNull()
+            )
         }
 
-        return found
+        return earliest
     }
 
     private fun completeBlock(exitCode: Int?) {
