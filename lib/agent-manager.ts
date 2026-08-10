@@ -1978,6 +1978,7 @@ async function captureRunMemory(
     const existing = await readMemoryNotes(agentId);
     const isNew = !existing.some((n) => n.id === note.id);
     await writeMemoryNote(runCommand, note);
+    invalidateMemoryImportCache(agentId);
     // Recall freshness (see refreshAgentRecall): re-bake so the NEXT unattended
     // fire recalls what this run just learned, instead of waiting for the next
     // app launch's startup repair.
@@ -2018,6 +2019,7 @@ async function captureRunMemoryFromSyncedLogs(
       const existing = await readMemoryNotes(agent.id);
       if (existing.some((n) => n.id === note.id)) continue;
       await writeMemoryNote(runCommand, note);
+      invalidateMemoryImportCache(agent.id);
       // Recall freshness: this is the UNATTENDED capture path (results synced
       // from scheduled fires that never touched JS), so it is precisely the
       // case that used to stay stale until the next app launch.
