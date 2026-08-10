@@ -117,9 +117,23 @@ export function isWithinRoot(root: string, target: string): boolean {
 
   const fs = nodeFs();
   if (!fs) return true;
-  const realRoot = realpathAllowMissing(r, fs);
+  // The production gate receives an existing canonical workspace root. Some
+  // callers (including policy validation/tests) use a prospective or synthetic
+  // root, however. Do not walk above that boundary: on Linux an inaccessible
+  // ancestor (for example `/root`) makes realpathSync report EACCES, while the
+  // equivalent missing path on Windows can be reconstructed from the drive
+  // root. With no resolvable workspace there cannot be an inspectable symlink
+  // below it, so retain the already-completed lexical containment result.
+  let realRoot: string;
+  try {
+    realRoot = normalizePath(fs.realpathSync(r).replace(/\\/g, '/'));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EACCES') return true;
+    return false;
+  }
   const realTarget = realpathAllowMissing(t, fs);
-  if (!realRoot || !realTarget) return false;
+  if (!realTarget) return false;
   return realTarget === realRoot || realTarget.startsWith(`${realRoot}/`);
 }
 

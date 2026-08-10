@@ -374,9 +374,16 @@ function isWithinRoot(root, target) {
   if (t !== r && !t.startsWith(`${r}/`)) return false;
   const fs = nodeFs();
   if (!fs) return true;
-  const realRoot = realpathAllowMissing(r, fs);
+  let realRoot;
+  try {
+    realRoot = normalizePath(fs.realpathSync(r).replace(/\\/g, "/"));
+  } catch (error) {
+    const code = error.code;
+    if (code === "ENOENT" || code === "EACCES") return true;
+    return false;
+  }
   const realTarget = realpathAllowMissing(t, fs);
-  if (!realRoot || !realTarget) return false;
+  if (!realTarget) return false;
   return realTarget === realRoot || realTarget.startsWith(`${realRoot}/`);
 }
 function extractPaths(command) {
