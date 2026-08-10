@@ -83,7 +83,6 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'lineHeight',     label: 'Line Height',      type: 'number', min: 1.0, max: 2.5, source: 'settings', description: 'e.g. 1.4' },
       { key: 'cursorShape',    label: 'Cursor Shape',     type: 'enum',   options: ['block', 'underline', 'bar'], source: 'settings' },
       { key: 'autoScroll',     label: 'Auto Scroll',      type: 'boolean', source: 'settings' },
-      { key: 'autocomplete',   label: 'Autocomplete',     type: 'boolean', source: 'settings' },
       { key: 'syntaxHighlight',label: 'Syntax Highlight', type: 'boolean', source: 'settings' },
       { key: 'externalKeyboardShortcuts', label: 'External Keyboard', type: 'boolean', source: 'settings', description: 'Physical keyboard shortcuts' },
     ],
