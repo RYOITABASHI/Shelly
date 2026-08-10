@@ -3,6 +3,7 @@
  * Single source of truth for AppSettings.
  */
 import { create } from 'zustand';
+import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppSettings as BaseAppSettings, SocialConnectorMeta } from './types';
 import {
@@ -400,10 +401,26 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         ...newSettings,
         ...(shouldClearLocalLlmModelPath ? { localLlmModelPath: '' } : {}),
       };
-      // Save API keys to SecureStore, strip them from AsyncStorage
+      // Save API keys to SecureStore, strip them from AsyncStorage.
+      // updateSettings() is a synchronous zustand action (50+ call sites
+      // across the app expect a plain void return), so this stays
+      // fire-and-forget rather than becoming async — but saveApiKey() now
+      // re-throws on a SecureStore write failure instead of swallowing it
+      // (see lib/secure-store.ts), so a failure here must not disappear as
+      // an unhandled rejection. Surface it with an Alert: without this, the
+      // UI would keep showing the just-typed key as "saved" while it was
+      // never actually persisted (found in a code-quality audit).
       for (const [key, value] of Object.entries(newSettings)) {
         if (isApiKeyField(key) && typeof value === 'string') {
-          saveApiKey(key, value);
+          saveApiKey(key, value).catch((e) => {
+            logError('Settings', `Failed to persist API key "${key}" to SecureStore`, e);
+            Alert.alert(
+              'Failed to save API key',
+              `The "${key}" key could not be saved to secure storage and will not be remembered. ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+            );
+          });
         }
       }
       // Sync API settings to .env for headless/background agent execution.

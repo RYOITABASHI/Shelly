@@ -37,6 +37,9 @@ const DANGER_PATTERNS: DangerPattern[] = [
   // ── CRITICAL: システム破壊・データ全損 ──────────────────────────────────────
   {
     pattern: /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(\/|~\/?\s*$|\/\*|~\/\*)/i,
+    // NOTE: `rm -r -f ...` / `rm -f -r ...` (flags split across separate
+    // tokens) are normalized to a single combined flag token by
+    // mergeSeparatedRmFlags() before this pattern runs — see below.
     level: 'CRITICAL',
     reason: 'ルートディレクトリまたはホームディレクトリを再帰的に削除します。システムが起動不能になる可能性があります。',
   },
@@ -161,6 +164,100 @@ const DANGER_PATTERNS: DangerPattern[] = [
   },
 ];
 
+// ─── 前処理ヘルパー ────────────────────────────────────────────────────────────
+//
+// これらはあくまで「補助的な警告器」としての検出精度を上げるための軽量な前処理
+// であり、完全なshell構文パーサーではない（真の実行境界は
+// lib/agent-boundary-policy.ts）。見逃し（false negative）を減らす方向にのみ
+// 寄与するよう設計し、既存パターンの検出範囲を狭めないこと。
+
+/**
+ * シングル/ダブルクォートで囲まれた区間を追跡しながら # 以降のコメントを
+ * 除去する。素朴な正規表現置換（クォートを考慮せず最初の # から行末まで
+ * 削除するだけの実装）はクォート内の #
+ * （例: echo "hello # not a comment"）も誤ってコメント扱いしてしまい、
+ * その後に続く実際のコマンド（&& で連結された危険なコマンド等）が丸ごと
+ * 消えて検査対象から漏れてしまうバグがあった。
+ *
+ * クォートの対応が取れていない場合（閉じクォートがない）は、安全側に倒して
+ * # をコメント開始とみなさない（＝文字列内容として保持し、以降の走査で
+ * 危険パターンを見逃さないようにする）。
+ */
+function stripCommentsOutsideQuotes(command: string): string {
+  let result = '';
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+
+    if (inSingle) {
+      result += ch;
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+
+    if (inDouble) {
+      // シェルのダブルクォート内では `\"` でエスケープできる
+      if (ch === '\\' && i + 1 < command.length) {
+        result += ch + command[i + 1];
+        i++;
+        continue;
+      }
+      result += ch;
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+
+    // クォート外
+    if (ch === "'") {
+      inSingle = true;
+      result += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      result += ch;
+      continue;
+    }
+    if (ch === '#') {
+      const newlineIndex = command.indexOf('\n', i);
+      if (newlineIndex === -1) {
+        // 行末までコメント。走査終了。
+        break;
+      }
+      result += '\n';
+      i = newlineIndex;
+      continue;
+    }
+
+    result += ch;
+  }
+
+  return result;
+}
+
+/**
+ * `rm -r -f path` / `rm -f -r path` のように、短縮オプションが個別の
+ * トークンに分離されているケースを `rm -rf path` のような単一トークンへ
+ * 正規化する。既存の危険パターン（`-[a-zA-Z]*r[a-zA-Z]*f` 等）はオプション
+ * 文字が1トークンにまとまっていることを前提にしているため、分離された
+ * フラグ（`rm -r -f`, `rm -f -r -v` 等）を素通りさせてしまっていた。
+ *
+ * `--recursive` のような長いオプションや、フラグではない引数（`--` や
+ * パス）はマージ対象にしない。連続する短縮オプショントークンのみを対象に
+ * 保守的にマージすることで、誤検知を増やさず見逃しだけを減らす。
+ */
+function mergeSeparatedShortFlags(command: string, targetCmd: string): string {
+  const re = new RegExp(`\\b${targetCmd}\\b((?:\\s+-[a-zA-Z]+)+)`, 'gi');
+  return command.replace(re, (fullMatch, flagsPart: string) => {
+    const flagTokens = flagsPart.trim().split(/\s+/);
+    if (flagTokens.length <= 1) return fullMatch; // 分離されていなければ変更不要
+    const merged = flagTokens.map((f) => f.slice(1)).join('');
+    return `${targetCmd} -${merged}`;
+  });
+}
+
 // ─── メイン判定関数 ────────────────────────────────────────────────────────────
 
 /**
@@ -172,8 +269,8 @@ export function checkCommandSafety(command: string): SafetyResult {
     return { level: 'SAFE', message: '', reason: '' };
   }
 
-  // コメントを除去
-  const cleaned = command.replace(/#[^\n]*/g, '').trim();
+  // コメントを除去（クォート内の # は温存）→ 分離された rm フラグを正規化
+  const cleaned = mergeSeparatedShortFlags(stripCommentsOutsideQuotes(command), 'rm').trim();
 
   // 最も高い危険度を追跡
   let worst: SafetyResult = { level: 'SAFE', message: '', reason: '' };
