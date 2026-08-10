@@ -50,6 +50,42 @@
 
 ---
 
+### 2026-08-10 18トラック(A〜R)着地後の実機総合再検証(Fable5、versionCode 2143 / commit `aa4d53da2`)— 新規バグ6件発見、うち2件P0級
+
+**背景**: Hermes Agent妥当性デュアルレビューで見つかった問題を18本のワークパッケージ(Track A〜R)で修正・mainマージ・CI green確認後、実機での初検証をFable5に依頼した。tsc/Jestでは検出不能な、ネイティブ側ライフサイクル境界(削除・一時停止・再起動の交差)の実バグが見つかった。
+
+**検証結果サマリ**: UI/セキュリティ表示系(Track B routing guard, E, K, L, M, Q)とSTOP-ALL/スケジュール基本動作(Track D中核)は実機で健全。一方、以下6件の新規バグを発見(修正はまだ・報告のみ)。
+
+**P0級(次修正サイクル最優先)**:
+1. **削除済みcron agentのゾンビalarm無限ループ**: 実行中(in-flight)のcron agentを削除すると、run完了時の再armで`shelly_boot_schedules.xml`にエントリが残存/復活し、以後毎分「Agent refused: agent disabled」→即再armの永久ループになる。**force-stopでも消えない**(sticky serviceが即復活し再arm)。fail-closed違反(refusal経路が再armする)+電池消耗。再現: `*/1` cron agentを実行中に削除→翌分以降logcatで`AgentRuntime ... refused`と`AgentAlarmScheduler Scheduled agent`が交互発生。Fable5が`shelly_boot_schedules.xml`から該当エントリを手動除去して収束させたが、根治は未着手。
+2. **Pauseがapp再起動(startup repair)で無効化される**: Pause済み(alarm 0件確認済み)のcron agent×2が、app再起動のstartup repair時に**勝手に再arm・再発火**した。`enabled=false`がrepair経路で尊重されていない。
+
+**P1級**:
+3. **通知トリガーNL登録が低信頼時に黙って失われる**: 「when I get a notification from com.android.systemui, summarize it」のような発話がLLM会話登録fallback経路に落ちると、notificationTriggerが失われ、ephemeral one-shotとして即時実行・破棄される。ユーザーは「トリガー登録済み」と誤認する。純パーサ経路(明示的な"as a draft"等)なら成功するが、fallback経路との一貫性が無い。
+4. **Block Historyオーバーレイにブロックが一切表示されない**: Track MでFAB自体は復活・開閉できるようになったが、中身が空(greetingブロックのみ)。`store/terminal-store.ts:755`付近`addEntryBlock`のactiveSessionId不一致でentriesが捨てられている疑い(未確認、コード調査要)。`onBlockCompleted`自体は発火している(agent作成成功が別途証拠)。
+5. **無人実行のskill自動保存が発火しない**: secretなし+remember+schedule+成功runのpositive controlでも自動保存・通知が一度も発生しなかった。`captureRunMemoryFromSyncedLogs`の発火条件を要調査。Track B(secret scanゲート追加)自体のルーティング層(secret guard)は正しく動作している(sk-test文字列を検出、redacted化、on-device強制)ことは確認済み——問題はゲートより手前、auto-save自体が呼ばれていない可能性。
+
+**P3級(軽微)**:
+6. NL登録のslot-fillでアプリ名fuzzy解決が不成立(「Gmail」で「Sorry, I didn't understand」)。質問文は「app name like Slack」と案内しているのに機能していない。単発でScouterオーバーレイが自動再起動時に起動した事象も観測(再現未確認)。
+
+**QA自動化上の制約(メモ)**: AIペインの確認カード本文・markdown描画メッセージはaccessibilityツリーにテキストを一切出さないため、uiautomatorでは読めない。今後のQA自動化のためにはaccessibility付与を推奨。
+
+**クリーンアップ**: テストagent6体・テストskill・生成draft/memory dir・一時ファイル全削除済み。ゾンビalarmは手動収束済み(該当エントリのみ除去、他は無傷)。設定変更なし。
+
+**→ 2026-08-10追記: 6件全てTrack S/U/V/W/Xで修正・mainマージ・CI green(commit `a40785da9`)、実機再検証は未実施**
+
+- **✅ 項目1・2(P0、ゾンビalarm+Pause無効化)= Track S(`3f38b676a`)**: (1)`deleteAgent`のキャンセル処理タイミング+`TerminalSessionService.kt`の再arm処理が、既存・有効なagent metadataを持たないscheduleを再armしないよう修正、削除確認後の二段階キャンセルも追加。(2)`AgentAlarmScheduler.rearmAllFromPersistedSchedules()`(boot repair)とJS側startup repairの両方が、再arm前にagent JSONの現在の`enabled`状態を再確認し、stale/disabledなscheduleは除去するよう修正。Kotlin変更は静的レビューのみ、CIビルド成功は確認済みだが実機未検証。
+- **✅ 項目3(P1、通知トリガーNL登録消失)= Track U(`2105b8d48`)**: 根本原因は`hooks/use-ai-pane-dispatch.ts`のTier3会話登録が`nextMissingSlot()`の結果を`'autonomous'`フィールドだけ特別扱いし、`notificationTrigger`等の他スロットを無視してdraftを素通りさせていたこと。汎用的な`missingSlot`チェックに統一する根本修正に加え、`looksLikeNotificationTriggerIntent()`による最終防波堤(通知トリガーらしい発話でscheduleもtriggerも空ならagent作成せず再入力を促す)も追加。
+- **✅ 項目4(P1、Block History空表示)= Track V(`d50fbf1d0`)**: 根本原因は`addEntryBlock`(`store/terminal-store.ts`)がブロックの`sessionId`を無視して常にグローバル`activeSessionId`へ書き込み、`TerminalPane.tsx`の`onBlockCompleted`もグローバルIDでスタンプしていたため、マルチペイン時に実際にBlockListが読むペイン固有セッションID(`activeSessionRecordId`)と食い違っていたこと。RED-GREEN検証済み(`git stash`でpre-fixコードが実際に症状を再現することを確認)。
+- **✅ 項目5(P1、無人skill自動保存不発)= Track W(`7ad45c96e`)**: secretスキャンの誤検知ではなく、`captureRunMemoryFromSyncedLogs`内でskill-save呼び出しが`agent.memory?.remember`・digest非空・メモリノート重複チェックという、本来スキル保存とは無関係な3つのメモリ機能側ゲートの内側に置かれていたための呼び出し漏れ。スキル保存判定をメモリ判定から分離し、独立したidempotencyチェックも追加。
+- **✅ 項目6(P3、アプリ名fuzzy解決)= Track X(`baaf7afca`)**: 既存のマッピング機能が皆無だったため、主要アプリ(Gmail/Slack/WhatsApp/LINE/Discord等)の静的エイリアステーブル`APP_NAME_PACKAGE_ALIASES`を新設し、reverse-DNS形式で解決できない入力のfallbackとして使用。
+
+**実機未検証(次回Fable5 QAで確認すること)**: 上記6件は全てtsc/Jestレベルの検証のみ。特にTrack S(P0×2)はネイティブ変更でありCIビルド成功の確認のみ、実機での再現テスト(削除中agentのゾンビalarムが本当に消えたか、Pause後の再起動で本当に再armされないか)が必須。
+
+→ sync: なし。
+
+---
+
 ### 2026-08-10 Hermes Agent妥当性デュアルレビュー(Fable5×2実機 + Codex×2コード監査、計4件並列)— 総合判定「強い主張は支持できない」、P0/P1級の新規バグ多数【要トリアージ】
 
 **背景**: プロダクトオーナーから「これでやっと、Shellyが【Hermes AgentのAndroid版】と呼ぶにふさわしいプロダクトになったか」という純粋な実現可能性の問いを受け、Fable5(実機2件: Hermes 6本柱E2E + Shelly本体の一般レビュー)とCodex(コード監査2件: Hermes 6本柱 + Shelly本体全体)を独立並列で実施。対象HEAD: `af24f46b3`。過去の楽観的な記録(2026-07-28ロードマップ、2026-08-04/05のステータス総点検・実機PASS)を鵜呑みにせず、ゼロから再検証した。
