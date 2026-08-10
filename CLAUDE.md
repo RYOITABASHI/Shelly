@@ -116,7 +116,7 @@ Shelly/
 │   │   └── android/src/main/jni/   # C — shelly-pty.c (forkpty), shelly-exec.c (exec)
 │   └── terminal-view/              # ネイティブターミナルビュー（Kotlin Canvas描画）
 ├── lib/
-│   ├── autocomplete-engine.ts      # 2026-08-10確認: 旧Fig-style補完エンジン。参照ゼロのデッドコード（UIのAutocompletePopup.tsx / フックのuse-autocomplete.tsは既に削除済み。実際の入力補完はcomponents/input/AutocompleteDropdown.tsx+lib/completions.ts系統）
+│   ├── autocomplete-engine.ts      # 2026-08-10訂正（当初「実際の入力補完はcomponents/input/系統」と記載したのは誤り）: 旧Fig-style補完エンジン、参照ゼロのデッドコードで確定。components/input/CommandInput.tsx+AutocompleteDropdown.tsx+lib/completions.tsは「代替のin-line実装」ではなく、v0.1.0で意図的に削除されたchelly/チャットUIサブシステムの削除漏れ残骸（56dad02af時点でcomponents/chat/のみ削除、兄弟ディレクトリcomponents/input/が消し忘れられた）。CommandInput.tsxはShellLayout配下のどこからも import されておらず現行アプリでは到達不能。ターミナル本体の入力はNativeTerminalViewのPTY直結でJS側に入力バッファ/カーソル位置を取得するAPIが無いため、Fig風補完の実機復活にはネイティブ変更が必須（詳細はDEFERRED.md「Fig風オートコンプリート復活」項目）
 │   ├── syntax-highlighter.ts       # シェルコマンドシンタックスハイライト
 │   ├── error-pattern-detector.ts   # file:line:col エラーパターン検出
 │   ├── content-block-detector.ts   # 出力タイプ判定（markdown/json/image/table）

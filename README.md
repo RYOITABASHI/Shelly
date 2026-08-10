@@ -99,7 +99,7 @@ No copy. No paste. No tab switching.
 
 **Four levels of value:**
 
-- **Single pane:** a native terminal that is faster, smarter, and more usable than Termux alone — with inline content blocks, autocomplete, syntax highlighting, and clickable errors.
+- **Single pane:** a native terminal that is faster, smarter, and more usable than Termux alone — with inline content blocks, syntax highlighting, and clickable errors.
 - **Split panes:** terminal + AI side by side — the AI reads what the terminal shows and executes fixes with one tap. No copy-paste bridge needed.
 - **Full layout:** sidebar + up to 4 live panes + agent bar — a mobile IDE. Browse docs in the browser pane, preview code or markdown on the right, use API-backed agents in the background, and keep your terminal front and center.
 - **Unattended:** register a plain-language scheduled agent — the same machinery runs while the phone sits in your pocket, and tells you when it ran.
@@ -384,7 +384,7 @@ Chat pane (see below).
 <details>
 <summary><strong>Terminal Enhancements</strong></summary>
 
-- **Fig-style autocomplete** — top-level commands with subcommand and flag completion, rendered as an inline popup
+- **Fig-style autocomplete** *(not currently implemented — see `docs/superpowers/DEFERRED.md`)* — the completion engine (`lib/autocomplete-engine.ts`) and command database exist and are reusable, but the terminal input path is a native PTY passthrough (`NativeTerminalView`) with no JS-visible input buffer/cursor, so reviving the popup requires a scoped native (Kotlin) change to stream the in-progress command line to JS
 - **Syntax highlighting** — terminal output colorized by content type
 - **Clickable paths and errors** — tap a file path or stack trace line to jump to it
 - **Inline content blocks** — JSON, markdown, images, and tables rendered inline inside the terminal output (Command Blocks)
