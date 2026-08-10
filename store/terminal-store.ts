@@ -753,10 +753,32 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   },
 
   addEntryBlock: (block: CommandBlock) => {
-    const { activeSessionId } = get();
+    // bug (Block History always empty): this used to route by the
+    // GLOBAL `activeSessionId` unconditionally, ignoring `block.sessionId`
+    // entirely. In multi-pane usage the pane that actually produced the
+    // block (per-pane bound session, see TerminalPane.tsx's
+    // `activeSessionRecordId`) is not always the same session as the
+    // last-focused pane's global `activeSessionId` — e.g. right after a
+    // cold start where terminal-store's persisted activeSessionId and
+    // multi-pane-store's persisted per-slot sessionId were hydrated
+    // independently, or after PaneCliTabs rebinds a pane's session via
+    // `setSlotSessionId` without touching the global active session by
+    // design. Blocks landed on the (invisible) globally-active session
+    // while BlockList read from the pane's own bound session, so the
+    // overlay always looked empty. Honor the caller-supplied
+    // `block.sessionId` (the session the block actually belongs to) when
+    // it names a real session; fall back to the global activeSessionId
+    // only for callers that don't resolve a specific session (e.g. the
+    // legacy runCommand() path, which already uses activeSessionId for
+    // both fields so it round-trips fine either way).
+    const { activeSessionId, sessions } = get();
+    const targetSessionId =
+      block.sessionId && sessions.some((s) => s.id === block.sessionId)
+        ? block.sessionId
+        : activeSessionId;
     set((state) => ({
       sessions: state.sessions.map((s) =>
-        s.id === activeSessionId
+        s.id === targetSessionId
           ? { ...s, entries: [...s.entries, block] }
           : s
       ),
