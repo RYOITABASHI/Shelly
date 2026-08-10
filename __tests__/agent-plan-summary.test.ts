@@ -463,6 +463,46 @@ describe('summarizeAgentDraftAsText', () => {
     expect(text).toContain('agentcard.action_draft');
   });
 
+  // Security-audit finding (2026-08-10): draft/notify are chat-native by
+  // default (shouldUseChatConfirm/isAutoRegisterEligibleOnChatConfirm), so
+  // this summary text — not AgentConfirmCard — is what most notification-
+  // triggered agents actually get confirmed through. Without a disclosure
+  // line here, "package match alone starts this agent, no sender check" was
+  // invisible on the majority path.
+  describe('notificationTrigger disclosure', () => {
+    it('no notificationTrigger: no disclosure line at all', () => {
+      const text = summarizeAgentDraftAsText(baseDraft());
+      expect(text).not.toContain('agentplan.notification_trigger_unscoped_note');
+      expect(text).not.toContain('agentplan.notification_trigger_scoped_note');
+    });
+
+    it('packages set, no authorizedSenders (today\'s only real-world shape — NL/slot-fill never populate senders): unscoped warning naming the packages', () => {
+      const draft = baseDraft({ notificationTrigger: { packageNames: ['com.whatsapp'] } });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.notification_trigger_unscoped_note|');
+      expect(text).toContain('"packages":"com.whatsapp"');
+      expect(text).not.toContain('agentplan.notification_trigger_scoped_note');
+    });
+
+    it('packages + authorizedSenders both set: scoped note naming both', () => {
+      const draft = baseDraft({
+        notificationTrigger: { packageNames: ['com.whatsapp'], authorizedSenders: ['Alice'] },
+      });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).toContain('agentplan.notification_trigger_scoped_note|');
+      expect(text).toContain('"senders":"Alice"');
+      expect(text).toContain('"packages":"com.whatsapp"');
+      expect(text).not.toContain('agentplan.notification_trigger_unscoped_note');
+    });
+
+    it('notificationTrigger present but with an empty packageNames array: no disclosure line', () => {
+      const draft = baseDraft({ notificationTrigger: { packageNames: [] } });
+      const text = summarizeAgentDraftAsText(draft);
+      expect(text).not.toContain('agentplan.notification_trigger_unscoped_note');
+      expect(text).not.toContain('agentplan.notification_trigger_scoped_note');
+    });
+  });
+
   // Phase B (2026-07-22): a schedule DEFAULTED from a bare time-of-day word
   // declares its interpretation and the concrete next-fire datetime.
   describe('scheduleAssumed annotation', () => {

@@ -343,6 +343,7 @@ const ja: Record<string, string> = {
   'agentcard.notification_senders_label': '認可送信者（任意 — 通知テキストを読み取ります）',
   'agentcard.notification_senders_placeholder': '例: 田中さん, 家族グループ',
   'agentcard.notification_senders_hint': '送信者名の完全一致のみ許可。設定した送信者からの通知テキストだけがエージェントに渡ります（通知に表示される範囲のみのベストエフォート。返信は通知が生きている間のみ）。空欄なら従来どおりテキストを読まずに起動だけします。',
+  'agentcard.notification_senders_unset_warning': '⚠ 送信者を限定していません。上記アプリの通知が届くだけで、送信者を問わずこのエージェントが起動します（通知本文は読み取りません — 到達イベントのみのトリガーです）。特定の相手に限定したい場合は送信者を追加してください。このままでよければ変更不要です。',
   'agentcard.runon': '実行先',
   'agentcard.runon_auto': '自動',
   'agentcard.runon_on-device': '端末内',
@@ -454,6 +455,13 @@ const ja: Record<string, string> = {
   // — lib/agent-plan-summary.ts の hasDraftAssumptions のコメント参照。
   // 推定スケジュールと同様、必ず1往復の確認を挟む理由をここでも示す。
   'agentplan.llm_extracted_note': '🤖 一部の項目はAIが発話から推測しました。確定前に内容をご確認ください。',
+  // セキュリティ監査 (2026-08-10): チャットネイティブの確認フロー
+  // (agent-plan-summary.ts の summarizeAgentDraftAsText) 上での通知トリガー
+  // agent の開示行。現状 unscoped 側のみ実際に到達する（NL parser も
+  // slot-fill も authorizedSenders を埋めることはない）が、scoped 側も将来
+  // 対応のため残す。
+  'agentplan.notification_trigger_unscoped_note': '⚠ 通知トリガー: {{packages}} からの通知が届くだけで起動します（送信者は限定されず、通知本文も読み取りません）。',
+  'agentplan.notification_trigger_scoped_note': '通知トリガー: {{senders}} からの通知でのみ起動します（アプリ: {{packages}}）。',
   // Phase C（2026-07-22）: 言い直しで「既に確定済みの変更」をその場修正した際
   // （justRegisteredAgentのクイック訂正窓——この文言が表示される時点で既に
   // updateAgentが実行済みのため「更新しました」で正確）に付けるヘッダー行

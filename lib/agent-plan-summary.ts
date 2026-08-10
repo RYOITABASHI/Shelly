@@ -496,6 +496,30 @@ export function summarizeAgentDraftAsText(
   }
   if (draft.actionCaveat) lines.push(draft.actionCaveat);
 
+  // Security-audit finding (2026-08-10): draft/notify are the two action types
+  // registered chat-native by default (shouldUseChatConfirm/isAutoRegisterEligibleOnChatConfirm
+  // above) — the majority case for a notification-triggered agent. Without this
+  // line, a user confirming via plain chat never saw AgentConfirmCard's
+  // notification-trigger section at all, so the "package match alone starts
+  // this agent, sender is never checked" fact (authorizedSenders is NEVER
+  // populated by the deterministic parser or slot-fill — see
+  // ParsedAgentDraft.notificationTrigger's doc comment in agent-nl-parser.ts)
+  // was invisible on this path. Mirrors AgentConfirmCard's own
+  // notification_senders_unset_warning disclosure; the `authorizedSenders`
+  // branch is included for forward-compatibility even though today's
+  // NL/slot-fill producers never actually populate it.
+  if (draft.notificationTrigger && draft.notificationTrigger.packageNames.length > 0) {
+    const packages = draft.notificationTrigger.packageNames.join(', ');
+    lines.push(
+      draft.notificationTrigger.authorizedSenders && draft.notificationTrigger.authorizedSenders.length > 0
+        ? tl('agentplan.notification_trigger_scoped_note', {
+            packages,
+            senders: draft.notificationTrigger.authorizedSenders.join(', '),
+          })
+        : tl('agentplan.notification_trigger_unscoped_note', { packages }),
+    );
+  }
+
   if (!hasFireableSchedule(draft)) {
     lines.push(tl('agentplan.schedule_restate_hint'));
   } else {

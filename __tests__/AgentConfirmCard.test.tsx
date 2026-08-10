@@ -217,4 +217,60 @@ describe('AgentConfirmCard', () => {
       expect(onConfirm).not.toHaveBeenCalled();
     });
   });
+
+  // Security-audit finding (2026-08-10): a package-matched notification
+  // trigger with no authorizedSenders fires on ANY notification from that
+  // app, not just from an authorized sender — the label's implication
+  // otherwise. Must be surfaced explicitly rather than left as a silent
+  // default. See ShellyNotificationListener.kt:391-422,478-489 for the
+  // underlying (unchanged, intentional) native trigger behavior.
+  describe('notification trigger — unset authorized-senders disclosure', () => {
+    it('shows no sender-related text at all when no package is configured', () => {
+      const { queryByText } = render(
+        <AgentConfirmCard draft={draft} onConfirm={jest.fn()} onCancel={jest.fn()} />,
+      );
+      expect(queryByText('agentcard.notification_senders_unset_warning')).toBeNull();
+      expect(queryByText('agentcard.notification_senders_hint')).toBeNull();
+      expect(queryByText('agentcard.notification_senders_label')).toBeNull();
+    });
+
+    it('warns once a package is configured but no authorized sender is entered', () => {
+      const { getByPlaceholderText, getByText, queryByText } = render(
+        <AgentConfirmCard draft={draft} onConfirm={jest.fn()} onCancel={jest.fn()} />,
+      );
+      fireEvent.changeText(
+        getByPlaceholderText('agentcard.notification_trigger_placeholder'),
+        'com.whatsapp',
+      );
+      expect(getByText('agentcard.notification_senders_unset_warning')).toBeTruthy();
+      expect(queryByText('agentcard.notification_senders_hint')).toBeNull();
+    });
+
+    it('replaces the warning with the ordinary hint once a sender is entered', () => {
+      const { getByPlaceholderText, getByText, queryByText } = render(
+        <AgentConfirmCard draft={draft} onConfirm={jest.fn()} onCancel={jest.fn()} />,
+      );
+      fireEvent.changeText(
+        getByPlaceholderText('agentcard.notification_trigger_placeholder'),
+        'com.whatsapp',
+      );
+      fireEvent.changeText(
+        getByPlaceholderText('agentcard.notification_senders_placeholder'),
+        'Alice',
+      );
+      expect(getByText('agentcard.notification_senders_hint')).toBeTruthy();
+      expect(queryByText('agentcard.notification_senders_unset_warning')).toBeNull();
+    });
+
+    it('shows the warning immediately for a draft pre-seeded with a package-only trigger (e.g. via slot-fill)', () => {
+      const draftWithTrigger: ParsedAgentDraft = {
+        ...draft,
+        notificationTrigger: { packageNames: ['com.whatsapp'] },
+      };
+      const { getByText } = render(
+        <AgentConfirmCard draft={draftWithTrigger} onConfirm={jest.fn()} onCancel={jest.fn()} />,
+      );
+      expect(getByText('agentcard.notification_senders_unset_warning')).toBeTruthy();
+    });
+  });
 });
