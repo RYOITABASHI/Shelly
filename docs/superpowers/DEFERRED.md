@@ -14,6 +14,93 @@
 
 ---
 
+### 2026-08-10 Hermes Agent妥当性デュアルレビュー(Fable5×2実機 + Codex×2コード監査、計4件並列)— 総合判定「強い主張は支持できない」、P0/P1級の新規バグ多数【要トリアージ】
+
+**背景**: プロダクトオーナーから「これでやっと、Shellyが【Hermes AgentのAndroid版】と呼ぶにふさわしいプロダクトになったか」という純粋な実現可能性の問いを受け、Fable5(実機2件: Hermes 6本柱E2E + Shelly本体の一般レビュー)とCodex(コード監査2件: Hermes 6本柱 + Shelly本体全体)を独立並列で実施。対象HEAD: `af24f46b3`。過去の楽観的な記録(2026-07-28ロードマップ、2026-08-04/05のステータス総点検・実機PASS)を鵜呑みにせず、ゼロから再検証した。
+
+**結論(4レポート共通の総合判定)**: 6本柱(NL登録→確認→実行→スキル学習→メモリ→無人スケジュール発火)は**実機で実際に一気通貫に連鎖することを確認**(Fable5#1がPASS、成果物がディスク上の正しい場所に着地することも確認済み)——「機能が個別に存在するだけ」ではなく統合されている、という点は肯定的に支持された。**しかし**、Codexのコード監査2件がこの統合の裏で複数のFAIL級の安全性・完成度ギャップを発見し、「Androidの制約下でHermes Agentのような自律AIエージェント体験を実現できる」という強い主張はコードレベルでは支持できないと結論。またFable5#2がCLAUDE.mdの記載と現mainの実体が乖離している非エージェント機能(Fig風補完・インラインコンテンツ表示)も発見した。**「高機能な上級ベータ」が現時点での最も正確な評価。**
+
+---
+
+#### A. Codex監査①(Hermes 6本柱のコードレベル安全性) — 新規発見16件、Codexセッション`019fe9b3-cc6d-79e0-87e1-e57b2ccccee0`
+
+**FAIL級(優先度P0候補、安全性に直結)**:
+1. **無人skill自動保存がsecret/PII未スキャンで平文永続化+Vault複製** — `lib/unattended-skill-save.ts:26-35`、`lib/agent-skills.ts:266-286`。無人実行の成功promptをそのままskill recipeへ保存、`/sdcard`のObsidian Vaultへもbest-effortコピー。secret-guardは「prompt注入後のcloud route停止」は守るが「secretを平文skillに保存しない」という別の不変条件は守っていない。
+2. **rollback用git repoの初回commitがsecretスキャンを迂回** — `lib/auto-savepoint.ts:116-134`、`lib/agent-rollback.ts:64-95`。`initGitIfNeeded()`が`git add -A && git commit --allow-empty`をscan前に直接実行、以後`checkAndSave()`はclean repoなので何も検査しない。「secretスキャン付きgit自動セーブ」という設計主張を実質破る。
+3. **secret scannerが30ファイル・各500行で打切り** — `lib/auto-savepoint.ts:26,37-63`。上限超過分は無検査で許可され、fail-closedではない。
+4. **メモリv2キャッシュ無効化が無人経路に未配線(このセッションの自分の修正が不完全だった)** — `lib/agent-manager.ts:1998-2024`(無人ログ同期後キャプチャ)と`1962-1984`(v2書込失敗→G2 fallback)の両経路で`invalidateMemoryImportCache()`が呼ばれておらず、stale recallが再bakeされ得る。globalメモリ書込み(`945-962`)だけが正しく配線されている。**今セッションで`lib/memory/shadow.ts`に追加した`invalidateMemoryImportCache`自体は正しいが、呼び出し箇所の網羅が漏れていた。**
+5. **STOP-ALLキルスイッチがI/O失敗時にfail-open** — `AgentAlarmScheduler.kt:100-113`、`TerminalSessionService.kt:390-398`。sentinel読取で例外が起きると「not halted」に倒れる。
+6. **STOP-ALL処理がalarm解除失敗とsentinel書込失敗を握り潰せる** — `lib/agent-manager.ts:2235-2253`。両方失敗するとUI上はhaltedなのにnative alarmが動き続け得る。
+7. **circuit breakerがforeground同期依存** — `lib/agent-manager.ts:2578-2648`。無人発火直後には作動せず、アプリが長期間フォアグラウンドに来なければ連続失敗を止められない。真の意味でheadlessに完結していない。
+
+**CONCERN級**:
+8. OpenRouter統合はAI Pane限定、agent executor/PlanSpecへの実行バックエンド配線が無い(`lib/model-router/wiring.ts`の`MODEL_ROUTER_ENABLED=false`のまま)。headless `.env`同期対象外(`store/settings-store.ts:409-431`)。
+9. `MEMORY_ENABLED=true`(現HEAD)なのに`lib/memory/shadow.ts`/`lib/agent-manager.ts`の複数コメントが「flag-OFF today」「unreachable」と書かれたまま矛盾。ドキュメントと実行状態の不一致。
+10. globalメモリは`MEMORY_ENABLED=true`下でも引き続きG2平文+Vaultへ直接書込み(`lib/agent-manager.ts:945-958`)、v2への統一がされていない。
+11. 通知リスナーで`authorizedSenders`が空のagentは、送信者認可なしでpackage到着だけによりagentが起動する(`ShellyNotificationListener.kt:391-422,478-489`)。本文は渡らないため文字列漏洩ではないが、「通知起動=認可送信者必須」という主張は成立しない。
+12. notification-trigger発火は`unattended=false`固定(`ShellyNotificationListener.kt:497-502`)で、alarm/widget発火との無人境界の扱いが不統一。
+13. `lib/agent-boundary-policy.ts:16-18` — 境界判定は字句パスのみでsymlink escapeを検知しない。
+14. `lib/agent-boundary-policy.ts:239-280` — L3(silentモード最上位)はsecret-read/leaves-root/network-send/HIGH destructiveをhard-denyせずallowする設計。CRITICAL/policy-writeのみ死守。
+
+**PASS**: WebView限定ブラウザ自動化(項目6)は closed-union操作+二段allowlist+raw JS経路なしを確認、fail-closed設計として支持できる。
+
+---
+
+#### B. Codex監査②(Shelly本体全体のコード品質) — Codexセッション`019fe9cc-c29f-7191-930c-977d71ce1e64`
+
+**FAIL級**:
+1. **Zustandストア4個が完全にデッド**: `useWorkspaceStore`/`useArenaStore`/`usePlanStore`/`useChatStore`(定義以外に参照ゼロ、`arena-store`/`plan-store`は独自AsyncStorage永続化まで実装した状態でデッド、`store/workspace-store.ts`は既知だったが`arena`/`plan`は新規発見)。
+2. **設定状態の二重管理**: `settings-store.ts`が「Single source of truth」を宣言しているが、`terminal-store.ts`が`subscribe()`でミラーし、TerminalPane/BlockList等はミラー側を購読(`store/terminal-store.ts:207,821`)。責務分離未完了。
+3. **Sidebar 6アイコン行問題は構造的欠陥(P3から格上げ)**: 直前セッションのhitSlop修正はタップ判定の衝突緩和であり、`taskInfo`の可視幅が実質0pxになる根本(折返し・優先度・オーバーフローメニューが無い固定row構造、`Sidebar.tsx:2098`の`gap:4`のみ)は未解決。
+
+**CONCERN級**:
+4. `BlockDetector.kt`にユニットテストが皆無(直前セッションで断片化バグを修正した当のファイル)。OSC 133と通常文字が同一チャンクに混在するケース(`processOsc133`が`contains()`ベースでB処理時にチャンク全体を無条件commandへ追記)で内容取りこぼしの懸念あり。
+5. `command-safety.ts`は「5段階の安全チェック」を謳うが実体は字句解析(コメント除去が引用符非対応`:175`、`rm -r -f`のトークン分割形は検出漏れ`:96`)——「補助的警告器」レベルであり単独のセキュリティ境界としては不十分。
+6. `lib/secure-store.ts:34,84` — SecureStore書込み失敗が呼び出し元に伝わらずcatchしてログのみ、UIは保存成功と誤認しうる。
+7. `hooks/use-terminal-output.ts:126` — 削除済みchat-store由来のTODO「approval prompts/error detection/PackageDoctorが未配線のまま」——将来機能ではなく現行仕様からの欠損。
+8. `components/layout/BuildsModal.tsx:356,407` — 信頼できないGitHub API/manifest JSONを`any`で処理(更新インストール導線に近く相対的にリスク高)。
+9. `TerminalPane.tsx`が肥大化し多責務(native session/focus/IME/block完了/学習/URL/resize)——今回の未配線バグが埋もれた一因。
+
+**総合所見**: ネイティブ実行基盤(JNI forkpty、linker64、LD_PRELOAD境界設計)は商用品質に近いが、上位の状態管理・UI到達性・回帰防止テストが追いついておらず、全体としては「高機能な上級ベータ」。
+
+---
+
+#### C. Fable5実機①(Hermes 6本柱E2E) — Galaxy Z Fold6、logcat/uiautomator/ディスク実体で裏取り
+
+**総合判定: 統合された自律エージェント体験として成立している(条件付きPASS)**。NL発話→チャット確認(カード/タイプ入力`OK`両方)→ローカルLLM実行(約3分10秒)→スキル保存確認→スキルmd実在確認→メモリノート実在確認(agent削除後も残存)→無人スケジュール(`every 1 minute`)が**秒精度(13:02:00.031/13:03:00.019)で2回実発火**、を単一のチャットフローから確認。ephemeral one-shotの自動削除も残骸ゼロで正常(delete-resurrection回帰なし)。
+
+**新規実バグ3件**:
+1. **SKILLSサイドバーが保存済みスキルを表示しない**(ディスクに`skill-q9ngve.md`実在、UI一覧は「No saved skills yet」のまま) — 学習ループの可視化が欠落
+2. **RN Pressableへの合成タップが間欠的に無応答**(Send/Confirm/歯車ボタンで再現、Enterキー/タイプ確認/キーボード閉→再タップで回避可) — 前回までのhitSlop QA項目と関連の可能性、実指での再現有無は未確認
+3. **ローカルLLM one-shot実行が3分超無フィードバック**(スピナーのみ、体感的に「固まった」と区別不能)
+
+**Undo**: 発火条件(workspace内ファイル書込み)を今回のシナリオ(メモリノート行き)が満たさず判定不能。2026-08-05のPASS実績を覆す証拠はなし、別途workspace-write経路での再検証が必要。
+
+---
+
+#### D. Fable5実機②(Shelly本体一般レビュー: コアターミナル/ペイン/Sidebar/設定/安定性)
+
+**総合所見: ターミナルIDEとしての基礎体験は実用レベルで安定しているが、CLAUDE.mdが謳う付加価値機能2点が現mainではデッドコード化しており、ドキュメントと実体の乖離解消が急務。**
+
+**新規FAIL(非エージェント機能)**:
+1. **Fig風オートコンプリートが消失**: `components/terminal/AutocompletePopup.tsx`と`hooks/use-autocomplete.ts`が現mainに存在しない。`lib/autocomplete-engine.ts`は参照ゼロのデッドコード。CLAUDE.mdの「Fig-style補完エンジン」記載が陳腐化。
+2. **インラインコンテンツ検出(JSON折りたたみ/Markdown/画像/テーブル)がUI到達不能**: 実装(`JsonTreeBlock`等)はBlock Historyオーバーレイ内にのみ存在するが、`TerminalPane.tsx:345`の`setShowBlockHistory(true)`を呼ぶコードがどこにも無く、開く導線が消失(`blockHistoryFab`スタイルは定義済みだがFAB自体が未レンダリング)。
+
+**軽微な新規発見**:
+3. ConfigTUIに孤児化した「Autocomplete」トグルが残存(対応機能はデッドコード化済み)
+4. ✅ **調査完了（コード変更なし、CC本セッション2026-08-10）**: Settings内「Show wallpaper in Terminal (experimental)」の説明文「On by default, matching the other panes」が、CLAUDE.mdのP3ゲート(Terminal paneはopaque固定)と矛盾する可能性を調査。**結論: 説明文は現行コードに対して正確。矛盾しているのはCLAUDE.md側の記述（陳腐化）。** `store/settings-store.ts:155`の`DEFAULT_SETTINGS.terminalWallpaperTransparency`は現在`true`(ON既定)——2026-07-15 18:20:26の`85da0d144`(default→false、opaque固定へ再修正)は、**同日18:23:58、プロダクトオーナー本人により3分後に明示的revert**(`2211047a2` "fix(ui): restore terminalWallpaperTransparency default to true"、コミットメッセージ内「the request was full transparency matching the other panes, not backing off to opaque」)されており、`2211047a2`はHEAD(`af24f46b3`)の祖先で以降一度も再度falseに戻されていない(git log全履歴で確認)。`2211047a2`が指摘したネイティブ側の未解決ギャップ(`ShellyTerminalView.kt`のtransparent分岐が`mCurrentColors[0]/[COLOR_INDEX_BACKGROUND]`を更新せず、OSC 10/11やGLスナップショットが古い値を読み得る)も、現行コード(`ShellyTerminalView.kt`の`applyTerminalSurface()` L521-537、transparent branch内で明示的にOPAQUE_TERMINAL_BACKGROUNDを両カラースロットへ書き込む実装)で解消済みと確認した。`components/panes/TerminalPane.tsx`(`terminalWallpaperOptIn`/`transparentBackground={terminalWallpaperActive}`)と`components/layout/SettingsDropdown.tsx`のトグルはこのデフォルト値と整合しており、設定説明文もこの実際の挙動(壁紙がセットされていればデフォルトでターミナルも透過)と一致している。**→ sync**: CLAUDE.mdの「Terminal pane background」節、および本ファイル末尾の「Terminal pane wallpaper transparency re-enable」P3エントリ（次項）は、この2026-07-15の最終確定状態を反映しておらず、いずれも要更新。CLAUDE.md本文はこの行の変更に「P3チェックリストのスクショ証跡」を明記して要求しているが、本セッションはコード変更を伴わない事実確認のみであり遡及的なスクショ証跡を提出できないため、CLAUDE.md本文の直接書き換えは見送り、事実関係を本entryと直後のP3エントリに記録するに留めた。設定テキスト(en.ts/ja.ts)・`TerminalPane.tsx`/`SettingsDropdown.tsx`/`ShellyTerminalView.kt`のいずれも変更なし。
+5. REPOSITORIESに`SHELLY-CODEX-PATCH-CANARY-*`残骸3件、ホームディレクトリに`%24HOME`(リテラル`$HOME`)ゴミディレクトリ
+
+**PASS確認済み**: 基本コマンド実行、onBlockCompleted発火・learnFromCommand配線(直前セッション修正の実機効果を再確認)、ペースト(断片化なし)、バンドルツール全種(git/python3/node/rg/sqlite3/jq)、マルチペイン(AI/Browser/Markdown追加・4分割・リフロー)、AIペインストリーミング、Browserペイン(ナビゲーション+ブックマーク)、Sidebar全セクション、設定(言語/フォントサイズ切替+復元、`shelly config`起動)、40分セッション中クラッシュ/ANR/RN JSエラー0件(展開状態のみ、折りたたみ状態はBLOCKED=物理操作不可)。
+
+---
+
+**次にやること(トリアージ、ユーザー判断待ち)**: 上記A~Dの発見事項をP0(次リリースブロッカー候補: A-1〜7のセキュリティ/fail-open系)、P1(次リリース推奨: B-1〜3の構造課題、D-1/2のドキュメント乖離)、P2以下(その他CONCERN)に仕分けし、対応順序をプロダクトオーナーと合意すること。特にA-4(メモリv2キャッシュ無効化の配線漏れ)は今セッション自身の修正が不完全だったことが判明したケースであり優先度が高い。
+
+→ sync: README/CLAUDE.mdのFig補完・インラインコンテンツ記載は現状と乖離しているため、次回ドキュメント更新時に反映要。
+
+---
+
 ### コマンド断片化の最終切り分け完了=【P1・実バグ確定】+ 実機QA続き5項目（shelly config/scouter/URL/未解決A/未解決B）で新規バグ2件発見（2026-08-09、`info`ユーザーのセッション続き、versionCode 2099 / commit `51694a367`、wireless adb・uiautomator dumpのみ使用）
 
 **1. ✅（`af0608347`で修正、versionCode 2103実機QAでPASS — 下記追記その3）【P1・実バグ確定】コマンド文字列断片化はタイムアウトと無関係の決定論的バグ — `BlockDetector.kt`のfallback状態機械が「1チャンク=1行」を誤仮定**
@@ -2620,6 +2707,16 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
+### CLAUDE.md「Terminal pane background」節がP3ゲート再合意（2026-07-15）を反映せず陳腐化 — 未着手（2026-08-10発見）
+
+**発見**: Fable5実機②レビュー(2026-08-10)がSettings内「Show wallpaper in Terminal (experimental)」の説明文(「On by default, matching the other panes」)とCLAUDE.mdの「Terminal pane背景はopaque固定」記載の矛盾を指摘。CC本セッションで調査した結果、**矛盾しているのはCLAUDE.md側**と判明: `store/settings-store.ts:155`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示による同日3分前`85da0d144`のrevert)で`true`(ON)に確定し、HEAD(`af24f46b3`)まで3週間以上変更なし。CLAUDE.mdの該当節は`85da0d144`時点(opaque固定)の記述のまま、その3分後の最終revertが反映されていない。詳細な調査記録は上記2026-08-10エントリのD-4項目、および末尾P3セクション「Terminal pane wallpaper transparency re-enable」の2026-08-10追記を参照。
+
+**Why not now（本セッションで直接修正しなかった理由）**: CLAUDE.md本文は当該行の変更に「P3チェックリストのスクショ証跡」を明記して要求している。本セッションはコード変更を伴わない事実確認(git log調査)のみであり、要求されている6シナリオ(first frame/theme apply/new tab/split layout/IME resize/settings modal背面)の実機スクショ証跡を遡及的に提出できない。設定説明文・コード自体は現状(既定ON)と整合しているため実害はなく、テキスト修正も不要と判断。
+
+**次にやること**: (a) 次回オンデバイスQA枠でP3チェックリスト6シナリオのスクショを取得し証跡として残す、または (b) 少なくともCLAUDE.mdの「Terminal pane background」節と本ファイルのP3エントリを2026-07-15の実際の最終状態(既定ON)に合わせて書き換える。両方とも実施していない状態で本v0.1.1に入れば、次にこの節を読む人がまた同じ「矛盾」に気づいて調査コストを払うことになる。
+
+---
+
 ### X Articles(長文記事)のdispatch未接続を発見・修正（2026-08-03、実機未検証）
 
 **発見**: X連携の3コンポーネント(DraftJS変換モジュール`lib/x-articles.ts`、`lib/agent-nl-parser.ts`のNL検出`isArticle`判定、実際のHTTP dispatch)のうち、前者2つは実装・テスト済みだったが、`lib/agent-executor.ts`の`dispatch_social_post()`の`x)`ケースが`isArticle`を一切見ておらず、常に`POST /2/tweets`のみを行っていた(コード中に「the Articles long-form endpoint...is intentionally not wired to this action yet」と明記されていた)。つまり「記事として投稿して」がNL検出で正しく`isArticle:true`と判定されても、実行時にはその情報が無視され、普通の短いツイートとして投稿される(または長文がツイート文字数制限でエラーになる)という静かな挙動不一致があった。
@@ -4012,16 +4109,18 @@ claude() {
 - MEMORY.md の「やりたいことリスト」参照
 
 ### Terminal pane wallpaper transparency re-enable
-- **優先度**: P3
-- **現状**: build 1560–1565 の実機確認で、Terminal pane の native surface / Termux color default / GL surface が wallpaper や panel tint を拾い、プロンプト表示・新規タブ・IME resize・設定パネル表示時に全面グレー化する回帰を確認。安定性優先で Terminal pane は opaque black に fail-closed した。
+- **優先度**: P3 → **2026-08-10時点で本entryの前提そのものが陳腐化していることが判明（下記追記参照）。要トリアージ格上げ検討。**
+- **現状（当初記録、2026-06-19時点）**: build 1560–1565 の実機確認で、Terminal pane の native surface / Termux color default / GL surface が wallpaper や panel tint を拾い、プロンプト表示・新規タブ・IME resize・設定パネル表示時に全面グレー化する回帰を確認。安定性優先で Terminal pane は opaque black に fail-closed した。
 - **Why not now**: ターミナルの主機能は文字の視認性と IME/PTY 安定性。wallpaper 透過を維持すると Android compositor / RN panel / Termux palette / GL renderer の境界で再発しやすく、B2 検証の本線も妨げる。
-- **戻す条件**: TerminalView(Canvas) と GLTerminalView の両方で first frame / theme apply / new tab / split layout / IME resize / settings modal 背面の実機スクショを取り、黒以外の背景が出ないことを証明する。戻す場合も設定フラグで既定 OFF から開始。
-- → sync: Terminal pane は当面 wallpaper 透過対象外。Browser/AI/Markdown pane の wallpaper 表示は維持。
+- **戻す条件（当初記録）**: TerminalView(Canvas) と GLTerminalView の両方で first frame / theme apply / new tab / split layout / IME resize / settings modal 背面の実機スクショを取り、黒以外の背景が出ないことを証明する。戻す場合も設定フラグで既定 OFF から開始。
+- **2026-08-10追記（CC本セッション、Fable5実機②レビューのD-4項目調査中に発見）**: 上記「戻す条件」（デフォルトOFFから開始）は**既に満たされていない**。`store/settings-store.ts`の`terminalWallpaperTransparency`は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示「ターミナルも他のペインと同様に透過させる」)で既定`true`(ON)に変更され、HEAD(`af24f46b3`)まで3週間以上そのまま。同コミットが指摘したネイティブ色パレット未更新のギャップは`ShellyTerminalView.kt::applyTerminalSurface()`で解消済みと確認。ただし当初記録にある「first frame/theme apply/new tab/split layout/IME resize/settings modal背面での実機スクショ証跡」は、`2211047a2`のコミットメッセージにも本DEFERRED.mdにも見当たらず、**正式なP3チェックリスト消化の記録が無いままデフォルトONへ移行した可能性がある**（2026-08-10のFable5実機②レビューでは40分セッション中グレー化等のクラッシュ/描画異常は報告なし＝間接的な傍証はあるが、上記6シナリオを狙った専用検証ではない）。CLAUDE.mdの「Terminal pane background」節も同様にこの2026-07-15最終状態を反映しておらず陳腐化。**本セッションはコード非変更の事実確認のみでスクショ証跡を遡及提出できないため、CLAUDE.md本文・本P3エントリの「解決済み」化は行わず、次回セッションでのP3チェックリスト実施 or 少なくともCLAUDE.md/本entryの記述更新をP1として推奨する。**
+- → sync: 当初の「Terminal pane は当面 wallpaper 透過対象外」は現状と不一致（実際は既定ONで3週間超稼働中）。CLAUDE.mdの「Terminal pane background」節を次回ドキュメント更新時にこの実体へ同期すること。Browser/AI/Markdown pane の wallpaper 表示は変更なし。
 
 ---
 
 ## History
 
+- **2026-08-10（CC、wallpaper説明文 vs CLAUDE.md矛盾の調査完了、コード変更なし）**: Fable5実機②レビューが指摘した「Show wallpaper in Terminal (experimental)」説明文とCLAUDE.mdのP3ゲート(opaque固定)の矛盾を調査。git log全履歴を確認した結果、`store/settings-store.ts`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示、3分前の`85da0d144`のrevert)で`true`に確定しHEADまで不変——**説明文は現行コードに対して正確、CLAUDE.md側の記述が陳腐化していた**と判明。設定テキスト・`TerminalPane.tsx`/`SettingsDropdown.tsx`/`ShellyTerminalView.kt`いずれも変更せず(挙動は現状のまま)、CLAUDE.md本文の当該行はP3チェックリストのスクショ証跡要求があり遡及提出不可のため直接書き換えは見送り。事実関係をD-4項目・末尾P3エントリ・新規P1エントリの3箇所に記録した。先頭付近のエントリ参照。
 - **2026-08-09**: commit `af0608347`（BlockDetectorコマンド断片化修正 + onUrlDetected配線）のversionCode 2103実機QA。両修正ともPASS確定（`topCommands`に`qafrag2103marker`が完全文字列で記録／`echo <URL>`でChrome Custom Tab起動をActivityTaskManagerログで確認）。新規の気づき2件（URL自動オープンは検出トリガーでタップ不要＝UX検討余地、bundleツールは非interactiveシェルで使用不可）をP3観察として記録。先頭のエントリ参照。
 - **2026-08-09**: commit `51694a367`(onBlockCompleted修復)のCI成功確認＋実機QA。イベント発火自体はPASS（`learnFromCommand`まで到達、AsyncStorage更新を確認）だが、記録されたコマンド文字列が単一文字に断片化する新たな懸念を発見——OSC 133がbashrcから意図的に無効化されておりタイムアウトベース検出に常時依存している事実も判明。adb inputのテスト手法固有ノイズか実バグか切り分け未了。先頭のエントリ参照。
 - **2026-08-06**: プロフィール駆動エージェント提案／Agent Runsペイン／Memory Workbenchペインを並列サブエージェント編成（Codex CLI + Opus5 + Fable5、git worktree分離）で実装。マージ時に`git apply`の部分的サイレント失敗（共有ファイルの一部hunkが未適用のまま完了扱い）を発見・手動補完・Codexで統合後レビューを追加実施。4機能とも実機未検証。先頭のエントリ参照。
