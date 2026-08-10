@@ -497,6 +497,14 @@ const en: Record<string, string> = {
   'agentplan.run_now_started': 'Running "{{name}}" right now — its recurring schedule stays unchanged.',
   'agentplan.run_now_done': 'Done.',
   'agentplan.run_now_failed': 'The run-now request failed',
+  // 2026-08-10 on-device QA finding: a local-LLM (on-device route) one-shot
+  // @agent run took ~3m10s with the "▶ Running…" bubble frozen the entire
+  // time (agent execution is a single request/response, not token-streamed
+  // — see hooks/use-ai-pane-dispatch.ts's startAgentRunProgressTicker doc
+  // comment), which reads as "the app is frozen". This elapsed-time suffix
+  // is appended to that same bubble every couple seconds while the run is
+  // in flight so it reads as "still working" instead.
+  'agentplan.run_now_progress': 'still working… ({{seconds}}s)',
   // 2026-07-28 bug fix: shown on a patch reply to a still-PENDING (not yet
   // registered) draft when "今"/"今すぐ" resolved against an already-real
   // recurring schedule — see lib/agent-draft-patch.ts's

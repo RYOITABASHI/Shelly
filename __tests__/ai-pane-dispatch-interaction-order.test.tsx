@@ -1954,3 +1954,130 @@ describe('Phase 4 — high-risk proposal wiring at all three proposal call sites
     );
   });
 });
+
+// ─── Progress ticker regression coverage (2026-08-10 on-device QA fix) ────
+//
+// On-device finding: a chat-visible @agent one-shot run routed through the
+// on-device local LLM took ~3m10s end to end with the "▶ Running…" bubble
+// frozen for the entire wait — read on-device as "the app is frozen" (see
+// hooks/use-ai-pane-dispatch.ts's startAgentRunProgressTicker doc comment
+// for the full root-cause writeup: agent execution is a single request/
+// response, not token-streamed, unlike the ordinary AI-Pane chat path).
+// This drives the most common trigger for that bubble — a fresh @agent
+// draft resolved to a one-shot ('今') schedule and then confirmed — through
+// the REAL dispatch() hook with a controllable, never-auto-resolving
+// runAgentNow mock and fake timers, so the INTERMEDIATE (still-running)
+// message state is directly observable instead of only the before/after
+// snapshots the rest of this file asserts on. Deliberately placed at the
+// end of the file: this is the only describe block in this file that swaps
+// in a non-default mockRunAgentNow implementation and enables fake timers,
+// and neither should leak into any test that runs after it.
+describe('Progress ticker — ephemeral one-shot @agent run (2026-08-10 on-device QA fix)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    // Restore the file's default immediate-resolve behavior in case a later
+    // test file run (or --watch cycle) reuses this module registry.
+    mockRunAgentNow.mockImplementation(async () => {});
+  });
+
+  it('appends an elapsed-time heartbeat to the "Running…" bubble while runAgentNow is in flight, then replaces it with the final result once it resolves', async () => {
+    let resolveRun: (() => void) | undefined;
+    mockRunAgentNow.mockImplementation(
+      () => new Promise<void>((resolve) => { resolveRun = resolve; }),
+    );
+    const { result } = setup();
+
+    // Turns 1+2: reach a pending chat-native draft with a one-shot ('今')
+    // schedule — same shape the earlier "sanity check" test in this file
+    // already verifies stops short of registering.
+    await act(async () => {
+      await result.current.dispatch('@agent ニュースを通知して');
+    });
+    await act(async () => {
+      await result.current.dispatch('今');
+    });
+    expect(conv().pendingAgentSession?.draft.schedule).toBe('once');
+
+    // Turn 3: confirm. This routes through confirmAgentDraft → createAgent →
+    // installAgent → the isEphemeralOneShot branch, which starts the ticker
+    // and then blocks on the deliberately never-(yet)-resolving runAgentNow
+    // mock above. Don't await the dispatch promise itself yet.
+    let dispatchSettled = false;
+    let dispatchPromise!: Promise<void>;
+    act(() => {
+      dispatchPromise = result.current.dispatch('OK').finally(() => {
+        dispatchSettled = true;
+      });
+    });
+
+    // Flush the microtask queue so dispatch() runs forward through every
+    // intermediate await (createAgent/installAgent are immediate mocks)
+    // up to the point where it's genuinely blocked on runAgentNow. Fake
+    // timers freeze Date.now() during this — nothing here advances wall
+    // time, so the ticker's own startedAt capture is unaffected.
+    await act(async () => {
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    });
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockCreateAgent.mock.calls[0][0].name).toBe('ニュース');
+    expect(mockRunAgentNow).toHaveBeenCalled();
+    expect(resolveRun).toBeDefined();
+    expect(dispatchSettled).toBe(false); // still in flight — this is the bug repro window
+
+    const createdId = mockCreateAgent.mock.results[0].value.id;
+    const runningMsg = [...conv().messages].reverse().find((m) => m.role === 'assistant');
+    expect(runningMsg?.content).toContain('Running "ニュース"');
+    const baseContentBeforeTick = runningMsg!.content;
+
+    // Advance past two ticks (AGENT_RUN_PROGRESS_TICK_MS = 2000ms). The
+    // heartbeat must append the Japanese progress suffix — the draft's
+    // rawText ('ニュースを通知して') is Japanese — with a growing elapsed-
+    // seconds count, without dropping the original base text.
+    act(() => {
+      jest.advanceTimersByTime(2000);
+    });
+    const afterFirstTick = conv().messages.find((m) => m.id === runningMsg!.id);
+    expect(afterFirstTick?.content).toContain(baseContentBeforeTick);
+    expect(afterFirstTick?.content).toContain(
+      ja['agentplan.run_now_progress'].replace('{{seconds}}', '2'),
+    );
+
+    act(() => {
+      jest.advanceTimersByTime(2000);
+    });
+    const afterSecondTick = conv().messages.find((m) => m.id === runningMsg!.id);
+    expect(afterSecondTick?.content).toContain(
+      ja['agentplan.run_now_progress'].replace('{{seconds}}', '4'),
+    );
+    // Not an ever-growing log — each tick REPLACES the previous suffix
+    // rather than appending another copy of it.
+    expect(afterSecondTick?.content).not.toContain(
+      ja['agentplan.run_now_progress'].replace('{{seconds}}', '2'),
+    );
+
+    // Now let the run actually finish.
+    act(() => {
+      resolveRun?.();
+    });
+    await act(async () => {
+      await dispatchPromise;
+    });
+    expect(dispatchSettled).toBe(true);
+
+    // The heartbeat must stop firing once the run resolves (the interval
+    // was cleared) and the final bubble must show the real result, never a
+    // stale "still working…" suffix.
+    const afterCompletion = conv().messages.find((m) => m.id === runningMsg!.id)?.content;
+    expect(afterCompletion).not.toContain('実行中');
+    act(() => {
+      jest.advanceTimersByTime(10_000);
+    });
+    const afterExtraAdvance = conv().messages.find((m) => m.id === runningMsg!.id)?.content;
+    expect(afterExtraAdvance).toBe(afterCompletion); // unchanged — ticker is stopped, not just idle
+    expect(mockDeleteAgent).toHaveBeenCalledWith(createdId);
+  });
+});
