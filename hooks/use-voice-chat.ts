@@ -8,7 +8,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { speakText, stopSpeaking } from '@/lib/tts';
 import { groqTranscribe } from '@/lib/groq';
@@ -156,7 +156,7 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
         return;
       }
 
-      const settings = useTerminalStore.getState().settings;
+      const settings = useSettingsStore.getState().settings;
       const groqKey = settings.groqApiKey;
 
       // ── Step 1: Transcribe ──────────────────────────────────────────────────

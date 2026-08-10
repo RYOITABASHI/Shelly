@@ -13,7 +13,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { SPRING_CONFIGS, TIMING_CONFIGS } from '@/hooks/use-motion';
@@ -147,7 +147,7 @@ export function ShortcutBar({
   const toastOpacity = useSharedValue(0);
   const toastTranslateY = useSharedValue(10);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { settings } = useTerminalStore();
+  const settings = useSettingsStore((s) => s.settings);
 
   const toastAnimStyle = useAnimatedStyle(() => ({
     opacity: toastOpacity.value,

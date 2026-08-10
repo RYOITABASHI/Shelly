@@ -10,6 +10,7 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { getActiveLlmLabel } from '@/hooks/use-tool-discovery';
 
 function getActiveChat(settings: {
@@ -35,7 +36,8 @@ type StatusIndicatorProps = {
 };
 
 export function StatusIndicator({ bridgeOnly }: StatusIndicatorProps = {}) {
-  const { settings, activeCliSession } = useTerminalStore();
+  const settings = useSettingsStore((s) => s.settings);
+  const activeCliSession = useTerminalStore((s) => s.activeCliSession);
   // Plan B: native terminal is always ready
   const bridgeColor = '#4ADE80';
   const bridgeLabel = 'Native';

@@ -15,7 +15,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { useNativeExec } from '@/hooks/use-native-exec';
 import { checkOllamaConnection } from '@/lib/local-llm';
 import type { ToolStatus } from '@/lib/shelly-system-prompt';
@@ -62,7 +62,7 @@ export function getDetectedLlms(): DetectedLlm[] {
 
 /** 現在アクティブなLLMのラベルを取得（例: "gemma-3-4b-it (:8080)"） */
 export function getActiveLlmLabel(): string | undefined {
-  const { settings } = useTerminalStore.getState();
+  const { settings } = useSettingsStore.getState();
   if (!settings.localLlmEnabled) return undefined;
   const url = settings.localLlmUrl || 'http://127.0.0.1:8080';
   const portMatch = url.match(/:(\d+)$/);
@@ -82,7 +82,7 @@ export function useToolDiscovery() {
   const checkAll = useCallback(async () => {
     if (!mountedRef.current) return;
 
-    const { settings, updateSettings } = useTerminalStore.getState();
+    const { settings, updateSettings } = useSettingsStore.getState();
     const tools: ToolStatus[] = [];
 
     // ── CLI検出 ──────────────────────────────────────────────────

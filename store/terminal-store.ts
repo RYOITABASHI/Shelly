@@ -6,7 +6,6 @@ import {
   SetupBlock,
   TerminalEntry,
   TabSession,
-  AppSettings,
   OutputLine,
   ConnectionMode,
 } from './types';
@@ -101,8 +100,6 @@ function parseDurablePendingCommand(value: unknown): PendingCommand | null {
 type TerminalState = {
   sessions: TabSession[];
   activeSessionId: string;
-  settings: AppSettings;
-  isSettingsLoaded: boolean;
 
   // Connection mode (always 'native' — JNI forkpty, no Termux bridge)
   connectionMode: ConnectionMode;
@@ -154,7 +151,6 @@ type TerminalState = {
   }) => void;
 
   // Actions — settings
-  updateSettings: (settings: Partial<AppSettings>) => void;
   loadSettings: () => Promise<void>;
   saveSnippet: (blockId: string) => void;
 
@@ -204,9 +200,6 @@ const initialSession = createSession('session-1', 'Terminal 1');
 export const useTerminalStore = create<TerminalState>((set, get) => ({
   sessions: [initialSession],
   activeSessionId: 'session-1',
-  // Settings synced from settings-store (backward compat)
-  settings: useSettingsStore.getState().settings,
-  isSettingsLoaded: false,
 
   // Native terminal (Plan B: JNI forkpty + linker64)
   connectionMode: 'native',
@@ -541,12 +534,6 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     set({ sessions: updatedSessions });
   },
 
-  // ── Settings (deprecated — use useSettingsStore directly) ────────────────
-
-  updateSettings: (newSettings: Partial<AppSettings>) => {
-    useSettingsStore.getState().updateSettings(newSettings);
-  },
-
   saveSnippet: (blockId: string) => {
     const { sessions, activeSessionId } = get();
     const sIdx = sessions.findIndex((s) => s.id === activeSessionId);
@@ -565,9 +552,6 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
   loadSettings: async () => {
     await useSettingsStore.getState().loadSettings();
-    // Sync loaded values to terminal-store for backward compat
-    const { settings, isSettingsLoaded } = useSettingsStore.getState();
-    set({ settings, isSettingsLoaded });
     // Restore terminal sessions
     await get().loadSessionState();
   },
@@ -817,11 +801,3 @@ export const useActiveSession = () =>
   useTerminalStore(
     (s) => s.sessions.find((sess) => sess.id === s.activeSessionId) ?? s.sessions[0],
   );
-
-// ─── Sync settings-store → terminal-store (backward compat) ────────────────
-useSettingsStore.subscribe((state) => {
-  useTerminalStore.setState({
-    settings: state.settings,
-    isSettingsLoaded: state.isSettingsLoaded,
-  });
-});
