@@ -2013,12 +2013,60 @@ async function captureRunMemoryFromSyncedLogs(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
   for (const agent of agents) {
-    if (!agent.memory?.remember) continue;
-    // Skip agents deleted since the sync snapshot — writing a note would
-    // resurrect their memory/<id>/ dir until the next orphan sweep.
+    // Skip agents deleted since the sync snapshot — writing a note (or saving
+    // a skill) would resurrect their memory/<id>/ dir or skill state until
+    // the next orphan sweep.
     if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
     const latest = (runHistory[agent.id] ?? []).at(-1);
     if (!latest || latest.status !== 'success') continue;
+
+    // --- Skill auto-save (G3, unattended-only) -------------------------
+    // On-device QA bug: a genuinely successful, secret-free, correctly
+    // remember+schedule-configured unattended run never triggered an
+    // auto-save. Root cause was here — this call used to live INSIDE the
+    // memory-write try block below, downstream of three gates
+    // (`!agent.memory?.remember`, `!digest`, and the memory-note dedup
+    // check) that exist for the MEMORY feature and have nothing to do with
+    // skill-save eligibility. A real run whose outputPreview happens to be
+    // entirely a fenced code block collapses to an empty digest
+    // (extractRunDigest strips ``` fences before collapsing whitespace),
+    // silently skipping BOTH memory-write and skill-save; an agent that
+    // never opted into memory.remember could never get an auto-saved skill
+    // either, even with a real, non-empty digest. Skill-save now runs
+    // unconditionally on every synced success (still gated on being an
+    // unattended trigger — schedule or notificationTrigger — and on not
+    // already reusing a skill), independent of the memory gates below.
+    // Ephemeral/attended @agent runs are manual-only and use the foreground
+    // offer (hooks/use-skill-save-offer.ts) instead of this path.
+    if (agent.schedule || agent.notificationTrigger) {
+      try {
+        // saveUnattendedSkillWithNotification is itself idempotent (skips a
+        // recipe whose content-derived id already exists on disk), so a
+        // recurring schedule's repeat log-sync polls of the same latest
+        // success don't re-notify or clobber a curator-promoted recipe.
+        await saveUnattendedSkillWithNotification(runCommand, {
+          name: agent.name,
+          prompt: agent.prompt,
+          routeDecision: latest.routeDecision,
+          timestamp: latest.timestamp,
+          status: latest.status,
+          alreadySkillId: agent.skillId,
+          unattended: true,
+        }, {
+          title: t('sidebar.skill_saved_title'),
+          body: t('sidebar.skill_saved_body', { name: agent.name }),
+          deleteButton: t('sidebar.skill_save_delete'),
+        });
+      } catch (error) {
+        logWarn('AgentSkills', `failed to save synced unattended run for ${agent.id}`, error);
+      }
+    }
+
+    // --- Memory-write (G2 follow-up) ------------------------------------
+    // Unrelated to skill-save above: an agent that hasn't opted into
+    // memory.remember, or whose output has no extractable digest, simply
+    // gets no memory note — skill-save above already ran regardless.
+    if (!agent.memory?.remember) continue;
     // Defense in depth: current scripts mark a local-context fallback as an
     // error, but a log written by an OLDER script version could carry
     // success + the fallback digest — never let that poison recall.
@@ -2035,32 +2083,6 @@ async function captureRunMemoryFromSyncedLogs(
       // from scheduled fires that never touched JS), so it is precisely the
       // case that used to stay stale until the next app launch.
       await refreshAgentRecall(agent.id, runCommand);
-      // The foreground/attended path captures this same content-derived note
-      // immediately. Reaching this point therefore identifies a newly synced
-      // native/background success, while the existing-note skip above prevents
-      // double-saving attended runs and repeat app-launch syncs.
-      // Ephemeral/attended @agent runs are manual-only and use the foreground
-      // offer. A schedule or native notification trigger marks a real native-fire
-      // agent; the existing-note check above handles attended "Run now" on it.
-      if (agent.schedule || agent.notificationTrigger) {
-        try {
-          await saveUnattendedSkillWithNotification(runCommand, {
-            name: agent.name,
-            prompt: agent.prompt,
-            routeDecision: latest.routeDecision,
-            timestamp: latest.timestamp,
-            status: latest.status,
-            alreadySkillId: agent.skillId,
-            unattended: true,
-          }, {
-            title: t('sidebar.skill_saved_title'),
-            body: t('sidebar.skill_saved_body', { name: agent.name }),
-            deleteButton: t('sidebar.skill_save_delete'),
-          });
-        } catch (error) {
-          logWarn('AgentSkills', `failed to save synced unattended run for ${agent.id}`, error);
-        }
-      }
     } catch (error) {
       logWarn('AgentMemory', `failed to capture synced run memory for ${agent.id}`, error);
     }

@@ -183,6 +183,56 @@ describe('loadAgentsFromDisk — scheduled-run memory capture (G2 follow-up)', (
     expect(memoryWrites).toHaveLength(0);
   });
 
+  // Regression test for the on-device QA bug this fix addresses: a real
+  // successful, secret-free, correctly schedule-configured unattended run
+  // never triggered a skill auto-save. Root cause was that the skill-save
+  // call lived downstream of memory-only gates (agent.memory?.remember,
+  // a non-empty digest, and the memory-note dedup check) that have nothing
+  // to do with skill-save eligibility. Skill-save must fire on its own even
+  // when the agent never opted into memory.remember at all.
+  it('auto-saves a successful scheduled run even when the agent has not opted into memory.remember', async () => {
+    const agent = makeAgent({ memory: undefined });
+    const log = makeRunLog();
+    const { runCommand, memoryWrites, skillWrites, writeSeen } = buildRunCommand({ agent, log });
+
+    await loadAgentsFromDisk(runCommand, { repairSchedules: false });
+    await Promise.race([writeSeen, settleMicrotasks(10)]);
+    await settleMicrotasks(20);
+
+    expect(memoryWrites).toHaveLength(0);
+    expect(skillWrites).toHaveLength(1);
+    expect(saveUnattendedSkillWithNotification).toHaveBeenCalledWith(
+      runCommand,
+      expect.objectContaining({ status: 'success', unattended: true }),
+      expect.any(Object),
+    );
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+  });
+
+  // Second regression case for the same bug: a run whose ENTIRE outputPreview
+  // is a fenced code block collapses to an empty digest (extractRunDigest
+  // strips ``` fences before collapsing whitespace), which used to `continue`
+  // past the skill-save call even for a remember-enabled agent. Skill-save
+  // doesn't need a digest at all (the recipe is built from the agent's
+  // prompt/name/route, never from outputPreview), so it must still fire.
+  it('auto-saves a successful scheduled run whose output has no extractable memory digest', async () => {
+    const agent = makeAgent({ memory: { remember: true } });
+    const log = makeRunLog({ outputPreview: '```\nfully fenced output, nothing left after stripping\n```' });
+    const { runCommand, memoryWrites, skillWrites } = buildRunCommand({ agent, log });
+
+    await loadAgentsFromDisk(runCommand, { repairSchedules: false });
+    await settleMicrotasks(20);
+
+    expect(memoryWrites).toHaveLength(0);
+    expect(skillWrites).toHaveLength(1);
+    expect(saveUnattendedSkillWithNotification).toHaveBeenCalledWith(
+      runCommand,
+      expect.objectContaining({ status: 'success', unattended: true }),
+      expect.any(Object),
+    );
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+  });
+
   it('does not write memory when the latest run was not a success', async () => {
     const agent = makeAgent({ memory: { remember: true } });
     const log = makeRunLog({ status: 'error', outputPreview: 'boom' });
