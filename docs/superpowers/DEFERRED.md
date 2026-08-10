@@ -95,7 +95,13 @@
 **→ 2026-08-10追記その2（同日、CC本セッション、ユーザー指示「見つかった問題は直してからプッシュします」で即座に修正・実機未検証）**: 上記2件のP3観察を修正。
 1. **hitSlop重なり修正**: `taskInfo`の右隣に来る最初のアクションアイコン(run履歴があれば`history`、無ければ`memory`)の`hitSlop`を対称`8`から`{top:8,bottom:8,left:4,right:8}`へ変更。`taskRow`の`gap`が5(後述の修正で4)しかない中、左側`8`のhitSlopは実際には対応する隣接view(`taskInfo`)の可視領域に最大3px食い込んでいた——これがQAで観測された「taskInfo中央寄りタップがMemory Workbenchを開いてしまう」の直接原因。左側だけgap幅以内(4)に抑え、他3辺は元の`8`のまま維持(タップ判定を大きく縮小しない)。
 2. **deleteアイコンのクリップ緩和**: `taskRow.gap`を`5`→`4`、`tasksAction.paddingHorizontal`を`3`→`2`へトリム。アクションアイコンが最大6個(history/memory/run/pause/AUTO/delete)並ぶ行で、アイコン間ギャップ×7箇所+アイコンpadding×6箇所ぶんの水平スペースを削減し、sidebar右端でのクリップ発生条件を緩和。`taskRow`/`tasksAction`はagent行だけでなくskills行(通常/quarantined/imported)でも共用されているため、全taskRow系の行に均一に適用される(視覚的な違いは僅少、アイコンサイズ自体は不変)。
-- **検証**: `npx tsc --noEmit`クリーン、`__tests__/sidebar-running-poll-condition.test.ts`・`__tests__/sidebar-running-elapsed.test.ts`・`__tests__/agent-sidebar-edit.test.ts`(計11件)全PASS。**実機未検証**(次回QAで、(1)taskInfo中央〜端タップで確実にdetail popupが開く/memoryへ誤爆しないか、(2)deleteアイコンが右端でクリップされず全域タップ可能かを確認すること)。
+- **検証**: `npx tsc --noEmit`クリーン、`__tests__/sidebar-running-poll-condition.test.ts`・`__tests__/sidebar-running-elapsed.test.ts`・`__tests__/agent-sidebar-edit.test.ts`(計11件)全PASS。
+
+**→ 2026-08-10追記その3（同日、CC本セッション、Fable5実機QA、commit `06afed2ad` / CI run `31350350779` / versionCode 2108）: 両方とも実機PASS確定**
+- **hitSlop重なり解消 = PASS**: ジオメトリ実測(5アイコン行、density≒2.9x): taskInfo=[55,403][95,450]、隣のmemoryアイコン=[107,408][153,445]、gap=12px(4dp)。新hitSlop(left:4dp)でのmemoryタッチ域左端はx=95(taskInfo可視右端)ちょうどで食い込みゼロ(旧8dpならx≈84まで食い込んでいた計算)。旧仕様なら誤爆していたはずの座標(x=88/90/93/94、y=426)を4回タップ→**全てagent detail popupが正しく開き、Memory Workbenchは一度も誤って開かなかった**。サニティチェックとしてgap内(x=100)をタップ→Memory Workbenchが開くことも確認(検出方法の有効性とmemoryアイコンの到達性維持を両方裏付け)。
+- **deleteアイコンのクリップ緩和 = PASS**: 6アイコンフル行(history/memory/run/pause/AUTO/delete)でuiautomator dump実測、deleteボタンbounds=[392,309][439,346]、アイコングリフ幅は他アイコンと同一の35px(12dp)フル。sidebar右端450pxに対し右端439で**クリップなし・全域可視**。実タップで削除確認ダイアログ表示→DELETE実行→agent行消滅・ディスク上のjsonも消えることを確認(end-to-end正常)。
+- **新規の副次的観測(今回のcommitの回帰ではない、既存の狭小レイアウトの延長・今回は未修正)**: 6アイコンフル行では、この端末幅(sidebar 450px)だと**taskInfoの可視幅が実質0pxまで潰れる**(taskDot右端44→最初のアイコン左端67のgap間のみで、「Open ... details」のa11yノード自体がuiautomatorツリーから消失)。5アイコン行では40px。2026-08-09時点の「~29pxまで縮む」所見よりさらに悪化したケースで、フル行ではdetail popupへの入口が実質hitSlop 4dp分のみになる。将来対応候補(例: アイコンを2行に分ける、履歴の多いagentは「⋯」メニューに畳む等)としてP3のまま監視継続。
+- テストagent2件・合成run logは実行不要な安全な手書きJSON方式(`store/types.ts`のコメントに記載のパターン)で作成、検証後UI削除で除去確認。前回8/9 QA由来の残骸ファイル(`qa_hist2.txt`/`qa_hist3.txt`/`Download/qa_locks.txt`/`qa_ping.txt`)も今回発見・削除。誤って開いたMemory Workbenchペインを閉じて元の2ペイン構成に復元。
 
 → sync: なし。
 
