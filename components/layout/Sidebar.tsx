@@ -1433,7 +1433,16 @@ export function Sidebar() {
                   {(agentRunHistory[agent.id]?.length ?? 0) > 0 && (
                     <Pressable
                       onPress={() => openAgentRunsPane(agent.id)}
-                      hitSlop={8}
+                      // 2026-08-10 on-device QA finding (docs/superpowers/DEFERRED.md):
+                      // this is the icon immediately right of taskInfo, whose own
+                      // hitSlop was widened the same day. A symmetric hitSlop={8}
+                      // here reaches 3px past the row's 4px gap into taskInfo's
+                      // real (visible) bounds, so a tap near taskInfo's right edge
+                      // could resolve to this icon instead of opening the agent
+                      // detail popup. Capping the left side to the gap width
+                      // removes that intrusion without shrinking the icon's own
+                      // reachable area on its other three sides.
+                      hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
                       style={styles.tasksAction}
                       accessibilityRole="button"
                       accessibilityLabel={t('sidebar.agent_view_runs_a11y', { name: agent.name })}
@@ -1452,7 +1461,13 @@ export function Sidebar() {
                       own empty state already handles zero notes fine). */}
                   <Pressable
                     onPress={() => openMemoryWorkbench(agent)}
-                    hitSlop={8}
+                    // 2026-08-10 on-device QA finding (docs/superpowers/DEFERRED.md):
+                    // when the history icon above is absent (no run yet), this
+                    // icon becomes the one immediately right of taskInfo — same
+                    // left-hitSlop-vs-gap intrusion as the history icon, capped
+                    // the same way. Kept 8 on the other three sides since this
+                    // side isn't adjacent to another touchable.
+                    hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
                     style={styles.tasksAction}
                     accessibilityRole="button"
                     accessibilityLabel={t('sidebar.agent_memory_view_a11y', { name: agent.name })}
@@ -2085,7 +2100,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: P.sidebarItem.px,
     height: S.sidebarItemHeight,
-    gap: 5,
+    // 2026-08-10 on-device QA finding (docs/superpowers/DEFERRED.md): an
+    // agent row with a full action-icon set (history/memory/run/pause/AUTO/
+    // delete) pushed the delete icon to the sidebar's right edge with only
+    // ~14px still visible. Trimmed from 5 to 4 here (and tasksAction's
+    // paddingHorizontal below) to reclaim a few px across every icon gap —
+    // applies to all taskRow rows (agents/skills), not just the worst case.
+    gap: 4,
   },
   taskRowPressed: {
     backgroundColor: withAlpha(C.accent, 0.08),
@@ -2110,7 +2131,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   tasksAction: {
-    paddingHorizontal: 3,
+    paddingHorizontal: 2,
   },
   tasksEmpty: {
     fontFamily: F.family,

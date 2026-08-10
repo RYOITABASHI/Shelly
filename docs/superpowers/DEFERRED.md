@@ -82,7 +82,20 @@
   1. **【低確度だった懸念→修正済み】detail popupへの導線(taskInfo)が実機で開きづらい可能性**: 上記5(b)参照。他のアクションアイコン(history/memory/run/pause/delete)は全て`hitSlop={8}`を持つのに、`taskInfo`のPressableだけ`hitSlop`が無かった非対称を発見。視覚レイアウト(幅約29px)は変えずに`taskInfo`へ`hitSlop={{top:8,bottom:8,left:4,right:4}}`を追加し、タップ判定領域だけを他アイコンと同様に拡張(`components/layout/Sidebar.tsx`)。レイアウト変更を伴わないため実機での視覚回帰リスクは無い。
   2. **【低優先→修正済み】"Save as skill?"ダイアログが実行完了のたびに全画面を覆い後続操作を吸収する**: `hooks/use-skill-save-offer.ts`の`Alert.alert`呼び出しに`{cancelable: true}`オプションが無く、React Nativeの仕様でAndroidでは明示しない限り`cancelable: false`がデフォルトになる(同じ事実が`Sidebar.tsx`内の別のAlertについて既に文書化されている)ため、戻るボタン/タップアウトサイドでの離脱ができず、Yes/Cancelいずれかのボタンを毎回明示的にタップする以外に先へ進む手段が無かった。`{cancelable: true}`を追加し、既存の他の破棄可能なダイアログと同じ脱出経路を用意。**「毎回確認する」という意図的な仕様自体(スキル保存前の人間確認)は変更していない**——単に押しつけがましさを軽減しただけ。
 
-**検証**: `npx tsc --noEmit`クリーン、`__tests__/use-skill-save-offer.test.ts`(5件)・`__tests__/sidebar-running-poll-condition.test.ts`ほかSidebar関連3スイート(11件)全PASS。**実機未検証**(次回QAで、(1)`taskInfo`のhitSlop拡張により実際にdetail popupが開きやすくなったか、(2)"Save as skill?"ダイアログが戻るボタンで閉じられるようになったかを確認すること)。
+**検証**: `npx tsc --noEmit`クリーン、`__tests__/use-skill-save-offer.test.ts`(5件)・`__tests__/sidebar-running-poll-condition.test.ts`ほかSidebar関連3スイート(11件)全PASS。
+
+**→ 2026-08-10追記（CC本セッション、Fable5実機QA、commit `10e4e0f00` / CI run `31347649888` / versionCode 2107）: 両方とも実機PASS確定**
+- **taskInfo hitSlop拡張 = PASS**: テストagent登録(`@agent every day at 9am ...`)後、taskInfo領域(x≈48)のタップでdetail popupが開いた。さらに行の視覚上端より9px上(y=300、行上端y=309)のタップでも開いた→`hitSlop top:8`(dp換算≈21px)が実機で有効に機能していることを確認。
+- **"Save as skill?" cancelable化 = PASS**: attended実行を2回成功させ、1回目は戻るボタンでdismiss、2回目はダイアログ外タップでdismiss、いずれもアプリは前面のまま正常終了。dismiss後にスキルが保存されていない(SKILLS = "No saved skills yet")ことも確認。
+- **付随の新規発見(いずれも新規P3、今回は未修正)**:
+  1. **【P3・UX観察】taskInfoとmemoryアイコンのhitSlop重なり**: taskInfo(`hitSlop top:8,bottom:8,left:4,right:4`)と隣接するmemoryアイコン(`hitSlop 8`)のタッチ域が、taskInfoの狭い可視域(~29px)上で重なっており、中央寄り(x=58)のタップだとmemoryアイコン側に吸われてMemory Workbenchペインが開くケースがある。detail popupを開く目的自体はx≈44–52あたりで確実に達成されるが、「行のどこを押しても確実にpopupが開く」わけではない。
+  2. **【P3・UX観察】deleteアイコンのクリップ**: 実行履歴アイコンが増えるとアクションアイコン列が右に伸び、sidebar右端でdeleteアイコンの可視幅が14px(436–450)まで削られる行がある。
+- テストagent・ダンプファイルはFable5がクリーンアップ済み(削除確認ダイアログ経由でagent削除、`dumpsys alarm`残留なし、`/sdcard/qa_dump.xml`削除、誤って開いたMemoryペインを閉じて元の2ペイン構成に復元)。AIペインにテスト時の会話履歴が残存(通常操作の痕跡、データ破壊なし)。
+
+**→ 2026-08-10追記その2（同日、CC本セッション、ユーザー指示「見つかった問題は直してからプッシュします」で即座に修正・実機未検証）**: 上記2件のP3観察を修正。
+1. **hitSlop重なり修正**: `taskInfo`の右隣に来る最初のアクションアイコン(run履歴があれば`history`、無ければ`memory`)の`hitSlop`を対称`8`から`{top:8,bottom:8,left:4,right:8}`へ変更。`taskRow`の`gap`が5(後述の修正で4)しかない中、左側`8`のhitSlopは実際には対応する隣接view(`taskInfo`)の可視領域に最大3px食い込んでいた——これがQAで観測された「taskInfo中央寄りタップがMemory Workbenchを開いてしまう」の直接原因。左側だけgap幅以内(4)に抑え、他3辺は元の`8`のまま維持(タップ判定を大きく縮小しない)。
+2. **deleteアイコンのクリップ緩和**: `taskRow.gap`を`5`→`4`、`tasksAction.paddingHorizontal`を`3`→`2`へトリム。アクションアイコンが最大6個(history/memory/run/pause/AUTO/delete)並ぶ行で、アイコン間ギャップ×7箇所+アイコンpadding×6箇所ぶんの水平スペースを削減し、sidebar右端でのクリップ発生条件を緩和。`taskRow`/`tasksAction`はagent行だけでなくskills行(通常/quarantined/imported)でも共用されているため、全taskRow系の行に均一に適用される(視覚的な違いは僅少、アイコンサイズ自体は不変)。
+- **検証**: `npx tsc --noEmit`クリーン、`__tests__/sidebar-running-poll-condition.test.ts`・`__tests__/sidebar-running-elapsed.test.ts`・`__tests__/agent-sidebar-edit.test.ts`(計11件)全PASS。**実機未検証**(次回QAで、(1)taskInfo中央〜端タップで確実にdetail popupが開く/memoryへ誤爆しないか、(2)deleteアイコンが右端でクリップされず全域タップ可能かを確認すること)。
 
 → sync: なし。
 
