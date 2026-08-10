@@ -2185,6 +2185,15 @@ export async function deleteAgent(agentId: string): Promise<void> {
       `deleteAgent(${agentId}) failed (exit ${result.exitCode}): ${(result.stderr || result.stdout || '').trim()}`
     );
   }
+  // An in-flight native run can finish after the cancellation above and re-arm
+  // from its captured cron extras. Cancel once more after metadata deletion is
+  // confirmed so every ordering of delete vs completion ends with no live or
+  // boot-persisted schedule. Native post-run validation is the second fence.
+  try {
+    await uninstallSchedule(agentId);
+  } catch (error) {
+    console.warn('deleteAgent: failed to cancel schedule after file cleanup', agentId, error);
+  }
   useAgentStore.getState().removeAgent(agentId);
 }
 
@@ -2462,6 +2471,17 @@ function scheduleAgentStartupRepair(
         // captured snapshot would rewrite its <id>.json + alarm and resurrect it.
         const storeAgent = useAgentStore.getState().agents.find((a) => a.id === agent.id);
         if (!storeAgent) continue;
+        // The agent may have been paused during the repair delay. Never use the
+        // captured enabled snapshot to resurrect it; also remove any stale native
+        // or boot-persisted schedule left by an earlier build/startup pass.
+        if (!storeAgent.enabled) {
+          try {
+            await uninstallSchedule(agent.id);
+          } catch (error) {
+            console.warn('Failed to remove disabled agent schedule during startup repair', agent.id, error);
+          }
+          continue;
+        }
         // P0-1: a single lost alarm (Doze / OEM battery kill / FGS start
         // failure) otherwise leaves this schedule permanently and silently
         // dead — the only existing signal was the Sidebar detail popup, which
@@ -2498,7 +2518,7 @@ function scheduleAgentStartupRepair(
           // repair: every enabled scheduled agent gets a fresh native alarm for
           // its next legitimate occurrence on every app launch, independent of
           // whatever state AlarmManager silently ended up in.
-          await materializeAgent(agent, runCommand, true, false);
+          await materializeAgent(storeAgent, runCommand, true, false);
           repaired = true;
           await new Promise((resolve) => setTimeout(resolve, 250));
         } catch (error) {

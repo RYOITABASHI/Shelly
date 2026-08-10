@@ -35,6 +35,10 @@ import type { Agent } from '@/store/types';
 import * as Notifications from 'expo-notifications';
 
 const scheduleNotificationAsync = Notifications.scheduleNotificationAsync as jest.Mock;
+const terminalEmulator = jest.requireMock('@/modules/terminal-emulator/src/TerminalEmulatorModule').default as {
+  scheduleAgent: jest.Mock;
+  cancelAgent: jest.Mock;
+};
 
 const AGENT_LIST_MARKER = '---SEPARATOR---';
 
@@ -213,6 +217,26 @@ describe('scheduleAgentStartupRepair — missed-schedule detection (P0-1)', () =
     await settleMicrotasks();
 
     expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+  });
+
+  it('does not re-arm an agent paused during the startup-repair delay', async () => {
+    const agent = makeAgent({ lastRun: Date.now(), createdAt: Date.now() - 24 * 60 * 60 * 1000 });
+    useAgentStore.getState().setAgents([agent]);
+    const runCommand = buildRunCommand(agent);
+
+    await loadAgentsFromDisk(runCommand, {
+      syncLogs: false,
+      repairSchedules: true,
+      repairDelayMs: 1_000,
+      shouldRepair: () => true,
+    });
+    useAgentStore.getState().updateAgent(agent.id, { enabled: false });
+    await jest.advanceTimersByTimeAsync(2_000);
+    await settleMicrotasks();
+
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(terminalEmulator.cancelAgent).toHaveBeenCalledWith(agent.id);
   });
 
   it('does not claim a successful re-arm when the repair-pass materialize call itself fails', async () => {

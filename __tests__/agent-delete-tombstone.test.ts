@@ -73,6 +73,8 @@ describe('agent deletion tombstones', () => {
 
     await deleteAgent('agent-x');
 
+    expect(mockTerminalEmulator.cancelAgent).toHaveBeenCalledTimes(2);
+
     const calls = mockTerminalEmulator.execCommand.mock.calls as unknown as Array<[string, number?]>;
     const command = calls[0]?.[0] ?? '';
     expect(command).toContain('if [ -s "$d/logs/agent-x/agent-driver-audit.jsonl" ]; then');

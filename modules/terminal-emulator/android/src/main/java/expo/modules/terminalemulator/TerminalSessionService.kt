@@ -344,7 +344,7 @@ class TerminalSessionService : Service() {
                 val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult))
                 if (shouldRearm) {
                     try {
-                        AgentAlarmScheduler.scheduleNext(applicationContext, agentId, intervalMs, cron)
+                        AgentAlarmScheduler.scheduleNextIfAgentEnabled(applicationContext, agentId, intervalMs, cron)
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to re-arm next alarm for $agentId", e)
                     }

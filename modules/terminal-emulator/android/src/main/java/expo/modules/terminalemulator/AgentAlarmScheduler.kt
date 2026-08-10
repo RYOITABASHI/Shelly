@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import org.json.JSONObject
 import java.io.File
 import java.util.Calendar
 
@@ -84,6 +85,11 @@ object AgentAlarmScheduler {
         var count = 0
         for ((agentId, raw) in prefs.all) {
             if (agentId.isNullOrBlank() || raw !is String) continue
+            if (!isPersistedAgentEnabled(context, agentId)) {
+                cancel(context, agentId)
+                Log.i(TAG, "Boot re-arm removed stale schedule for missing/disabled agent $agentId")
+                continue
+            }
             val parts = raw.split(BOOT_FIELD_SEP)
             val intervalMs = parts.getOrNull(0)?.toLongOrNull() ?: 0L
             val cron = parts.getOrNull(1)?.ifBlank { null }
@@ -95,6 +101,38 @@ object AgentAlarmScheduler {
         }
         Log.i(TAG, "Boot re-armed $count scheduled agent(s)")
         return count
+    }
+
+    /**
+     * Re-arm after an alarm-fired run only while the persisted agent still exists
+     * and is enabled. A delete/pause may race an in-flight run; treating that
+     * terminal state as an ordinary run failure recreates the boot schedule that
+     * delete/pause just removed and produces a permanent zombie loop.
+     */
+    fun scheduleNextIfAgentEnabled(
+        context: Context,
+        agentId: String,
+        intervalMs: Long,
+        cron: String?
+    ): Boolean {
+        if (!isPersistedAgentEnabled(context, agentId)) {
+            cancel(context, agentId)
+            Log.i(TAG, "Post-run re-arm removed stale schedule for missing/disabled agent $agentId")
+            return false
+        }
+        return scheduleNext(context, agentId, intervalMs, cron)
+    }
+
+    private fun isPersistedAgentEnabled(context: Context, agentId: String): Boolean {
+        val agentFile = File(HomeInitializer.getHomeDir(context), ".shelly/agents/$agentId.json")
+        return try {
+            if (!agentFile.isFile) return false
+            val json = JSONObject(agentFile.readText())
+            json.optString("id") == agentId && json.optBoolean("enabled", false)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to verify scheduled agent $agentId; suppressing re-arm", e)
+            false
+        }
     }
 
     /**
@@ -204,7 +242,10 @@ object AgentAlarmScheduler {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         try { am.cancel(runServicePendingIntent(context, agentId, 0L, null)) } catch (_: Exception) {}
         try { am.cancel(legacyBroadcastPendingIntent(context, agentId)) } catch (_: Exception) {}
-        if (bootAutostartEnabled(context)) forgetScheduleForBoot(context, agentId)
+        // Cancellation is authoritative even if boot autostart is currently off:
+        // retaining an old entry would resurrect the agent if the flag is later
+        // enabled, and makes delete/pause cleanup dependent on unrelated state.
+        forgetScheduleForBoot(context, agentId)
         Log.i(TAG, "Cancelled agent $agentId (service + legacy)")
     }
 
