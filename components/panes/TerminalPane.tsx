@@ -1399,7 +1399,13 @@ export default function TerminalScreen() {
                 // the failed bash block with a synthetic success block.
                 const parsed = parseInput(trimmedCmd);
                 if (parsed.layer === 'mention' && parsed.target === 'agent') {
-                  const { addEntryBlock, activeSessionId } = useTerminalStore.getState();
+                  // bug fix (Block History always empty): route the block to
+                  // THIS pane's own bound session (`activeSessionRecordId`,
+                  // the same session BlockList reads via `activeSession`),
+                  // not the store's global `activeSessionId` — those two can
+                  // diverge in multi-pane usage (see addEntryBlock's comment
+                  // in store/terminal-store.ts for the full explanation).
+                  const { addEntryBlock } = useTerminalStore.getState();
                   let resultMessage: string;
                   try {
                     const agentResult = parseAgentCommand(parsed.prompt);
@@ -1452,7 +1458,7 @@ export default function TerminalScreen() {
                   }
                   addEntryBlock({
                     id: generateId(),
-                    sessionId: activeSessionId ?? '',
+                    sessionId: activeSessionRecordId ?? '',
                     command: trimmedCmd,
                     output: resultMessage.split('\n').map((line: string) => ({ text: line, type: 'stdout' as const })),
                     timestamp: Date.now(),
@@ -1464,10 +1470,12 @@ export default function TerminalScreen() {
                   return;
                 }
 
-                const { addEntryBlock, activeSessionId } = useTerminalStore.getState();
+                // Same fix as above — write to this pane's own session, not
+                // the global activeSessionId.
+                const { addEntryBlock } = useTerminalStore.getState();
                 addEntryBlock({
                   id: generateId(),
-                  sessionId: activeSessionId ?? '',
+                  sessionId: activeSessionRecordId ?? '',
                   command: trimmedCmd,
                   output: (output || '').split('\n').map((line: string) => ({ text: line, type: 'stdout' as const })),
                   timestamp: Date.now(),
@@ -1479,16 +1487,21 @@ export default function TerminalScreen() {
                   connectionMode: 'native',
                 });
               }
-              // Sync currentDir from PTY after each command block
+              // Sync currentDir from PTY after each command block. Same
+              // pane-vs-global-session fix as addEntryBlock above — this
+              // pane's own resolved session, not the global activeSessionId,
+              // is what BlockList's PromptFooter (`activeSession.currentDir`)
+              // actually reads.
               execCommand('pwd').then((pwdResult) => {
                 if (pwdResult.exitCode === 0 && pwdResult.stdout.trim()) {
                   const newDir = pwdResult.stdout.trim();
                   const store = useTerminalStore.getState();
-                  const session = store.sessions.find(s => s.id === store.activeSessionId);
+                  const targetSessionId = activeSessionRecordId ?? store.activeSessionId;
+                  const session = store.sessions.find(s => s.id === targetSessionId);
                   if (session && session.currentDir !== newDir) {
                     useTerminalStore.setState((state) => ({
                       sessions: state.sessions.map(s =>
-                        s.id === store.activeSessionId ? { ...s, currentDir: newDir } : s
+                        s.id === targetSessionId ? { ...s, currentDir: newDir } : s
                       ),
                     }));
                   }
