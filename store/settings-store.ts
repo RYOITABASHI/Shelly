@@ -446,6 +446,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       if ('groqModel' in newSettings && typeof newSettings.groqModel === 'string') {
         envUpdates.push(['GROQ_MODEL', newSettings.groqModel]);
       }
+      // DEFERRED.md item 8 (2026-08-10 audit): OpenRouter was missing from this
+      // headless .env sync — Settings saved the key to SecureStore (for the AI
+      // Pane chat client) but never mirrored it to ~/.shelly/agents/.env, so a
+      // background/attended agent run (lib/agent-executor.ts's 'openrouter'
+      // case, added alongside this) could never read OPENROUTER_API_KEY.
+      // Mirrors the cerebras/groq pattern immediately above.
+      if ('openrouterApiKey' in newSettings && typeof newSettings.openrouterApiKey === 'string') {
+        envUpdates.push(['OPENROUTER_API_KEY', newSettings.openrouterApiKey]);
+      }
+      if ('openrouterModel' in newSettings && typeof newSettings.openrouterModel === 'string') {
+        envUpdates.push(['OPENROUTER_MODEL', newSettings.openrouterModel]);
+      }
       if ('autonomousCloudConsent' in newSettings) {
         envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD', newSettings.autonomousCloudConsent ? '1' : '0']);
       }

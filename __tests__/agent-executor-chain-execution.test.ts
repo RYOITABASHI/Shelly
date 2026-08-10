@@ -409,6 +409,56 @@ describe('generateRunScript — chain execution: residual-unsupported cases stil
     // snippet instead of the codex driver.
     expect(s).toContain('case "$CODEX_ORCH_STEP_INDEX" in');
   });
+
+  // DEFERRED.md item 8 (2026-08-10 audit): OpenRouter joins
+  // STEP_TOOL_BASH_DISPATCHABLE_TYPES alongside cerebras/groq. Unlike those
+  // (which have no special autonomous-mode interaction of their own), this is
+  // an EXPLICIT attended-only regression: an openrouter step pin must be
+  // honored on an ATTENDED chain (autonomous:false, exercised here) and must
+  // be silently dropped — never dispatched — on an autonomous one (covered by
+  // the api-key-class stripping already asserted in
+  // agent-executor-orchestration-collapse.test.ts's file comment / cases).
+  it('honors an attended openrouter step pin inside the chain loop (attended-only api-key backend)', () => {
+    const agentWithOpenRouterPin = baseAgent(
+      { type: 'cli', cli: 'codex' },
+      {
+        steps: [
+          'collect the news',
+          { instruction: 'summarize via OpenRouter', tool: { type: 'openrouter' } },
+        ],
+      },
+      false, // attended — a human is present, so the api-key pin is NOT stripped
+    );
+    const s = generateRunScript(agentWithOpenRouterPin);
+    expect(s).toContain('CODEX_ORCH_');
+    expect(s).toContain('case "$CODEX_ORCH_STEP_INDEX" in');
+    expect(s).toContain('https://openrouter.ai/api/v1/chat/completions');
+    expect(s).toContain('HTTP_AUTH_HEADER="Bearer $OPENROUTER_API_KEY"');
+  });
+
+  it('strips an openrouter step pin on an AUTONOMOUS chain instead of dispatching it (attended-only boundary)', () => {
+    const agentWithOpenRouterPin = baseAgent(
+      { type: 'cli', cli: 'codex' },
+      {
+        steps: [
+          'collect the news',
+          { instruction: 'summarize via OpenRouter', tool: { type: 'openrouter' } },
+        ],
+      },
+      true, // autonomous — no human present
+    );
+    const s = generateRunScript(agentWithOpenRouterPin);
+    // The pin is stripped (resolveStepToolForChainScript), so the step falls
+    // back to the default codex-driver path — the chain still runs (every
+    // remaining step is now unpinned-or-cli, so canRunOrchestrationChain still
+    // holds), but it must NEVER emit the OpenRouter dispatch snippet. (The bare
+    // string "OPENROUTER_API_KEY" IS still expected to appear once, in the
+    // top-level `unset ... OPENROUTER_API_KEY` env-scrub line for this
+    // non-key top-level tool — the real regression guard is the ABSENCE of an
+    // actual dispatch call using it.)
+    expect(s).not.toContain('openrouter.ai');
+    expect(s).not.toContain('HTTP_AUTH_HEADER="Bearer $OPENROUTER_API_KEY"');
+  });
 });
 
 describe('generateRunScript — non-orchestrated agent: no capability/behavior regression', () => {
