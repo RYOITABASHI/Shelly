@@ -101,15 +101,15 @@ object AgentAlarmScheduler {
      * Mirrors lib/agent-manager.ts's halt sentinel and TerminalSessionService's
      * execution-time guard. STOP-ALL promises that no agent alarm is armed, so
      * boot restoration must stop before activating any persisted schedule.
-     * Unexpected I/O failures default to not-halted, matching the existing
-     * native and JS checks rather than treating uncertainty as an implicit halt.
+     * Unexpected I/O failures fail closed: uncertainty must never re-enable a
+     * kill switch or restore alarms that STOP-ALL was intended to suppress.
      */
     private fun isGloballyHalted(context: Context): Boolean {
         return try {
             File(HomeInitializer.getHomeDir(context), ".shelly/agents/.halted").exists()
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to check global halt sentinel; defaulting to not-halted", e)
-            false
+            Log.e(TAG, "Failed to check global halt sentinel; defaulting to halted (fail closed)", e)
+            true
         }
     }
 

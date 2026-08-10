@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -20,6 +21,7 @@ import expo.modules.terminalemulator.scouter.ScouterWidgetProvider
 import expo.modules.terminalemulator.scouter.WidgetAgentRepository
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
+import org.json.JSONObject
 
 /**
  * Foreground service that keeps the Shelly process alive when the user
@@ -54,11 +56,14 @@ class TerminalSessionService : Service() {
         // run carrying text is FORCED tainted below regardless of EXTRA_TAINTED.
         const val EXTRA_NOTIFICATION_TEXT = "notification_text"
         const val EXTRA_NOTIFICATION_PACKAGE = "notification_package"
+        const val EXTRA_NOTIFICATION_TRIGGER = "notification_trigger"
         // Mirrors ShellyNotificationListener.MAX_INBOUND_NOTIFICATION_TEXT /
         // lib/telegram-inbound.ts MAX_INBOUND_TEXT — defensive re-bound at the
         // service boundary (the service is not exported, but bounding twice is
         // cheap and keeps a future caller honest).
         private const val MAX_NOTIFICATION_TEXT_CHARS = 1000
+        private const val CIRCUIT_BREAKER_PREFS = "shelly_agent_circuit_breaker"
+        private const val CIRCUIT_BREAKER_THRESHOLD = 3
 
         /**
          * Authoritative session registry. Lives here (Service companion) rather
@@ -132,6 +137,7 @@ class TerminalSessionService : Service() {
                 val cron = intent.getStringExtra(EXTRA_CRON)
                 val manual = intent.getBooleanExtra(EXTRA_MANUAL, false)
                 val scheduled = intervalMs > 0 || !cron.isNullOrBlank()
+                val notificationTriggered = intent.getBooleanExtra(EXTRA_NOTIFICATION_TRIGGER, false)
                 val widgetAgent = if (manual) WidgetAgentRepository.scheduledById(applicationContext, agentId) else null
                 if (manual && widgetAgent == null) {
                     // A widget PendingIntent can outlive the rendered RemoteViews.
@@ -152,7 +158,7 @@ class TerminalSessionService : Service() {
                 // unattended so per-action approval remains fail-closed exactly as
                 // for an AlarmManager fire, even though it intentionally carries no
                 // interval/cron extras and must not re-arm the schedule.
-                val unattended = scheduled || manual
+                val unattended = scheduled || manual || (notificationTriggered && !isAppUiForeground())
                 startForegroundWithNotification("Agent running in background")
                 if (manual) {
                     ScouterStateStore(applicationContext).recordWidgetAgentRunStarted(
@@ -161,17 +167,7 @@ class TerminalSessionService : Service() {
                     )
                     ScouterWidgetProvider.updateAll(applicationContext, force = true)
                 }
-                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage)
-                // Alarm-fired runs carry interval/cron — re-arm the next fire here now
-                // that the alarm targets this service directly (no receiver in the
-                // loop). A manual run (no interval/cron extras) is a no-op.
-                if (!manual && scheduled) {
-                    try {
-                        AgentAlarmScheduler.scheduleNext(applicationContext, agentId, intervalMs, cron)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to re-arm next alarm for $agentId", e)
-                    }
-                }
+                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)
                 return START_STICKY
             }
         }
@@ -306,7 +302,9 @@ class TerminalSessionService : Service() {
         widgetManual: Boolean = false,
         widgetAgentName: String? = null,
         notificationText: String? = null,
-        notificationPackage: String? = null
+        notificationPackage: String? = null,
+        intervalMs: Long = 0L,
+        cron: String? = null
     ) {
         activeAgentRuns.incrementAndGet()
         Thread {
@@ -335,6 +333,22 @@ class TerminalSessionService : Service() {
             } finally {
                 runCatching { approvalObserver?.stopWatching() }
                 releaseAgentWakeLock(wakeLock, agentId)
+            }
+
+            // Decide the next alarm only after the unattended run outcome is
+            // known. This makes the circuit breaker independent of RN/foreground
+            // log sync. The counter is native-persistent across process death;
+            // the third consecutive failure disables metadata and cancels both
+            // live and boot-restored schedules before another alarm can be armed.
+            if (intervalMs > 0 || !cron.isNullOrBlank()) {
+                val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult))
+                if (shouldRearm) {
+                    try {
+                        AgentAlarmScheduler.scheduleNext(applicationContext, agentId, intervalMs, cron)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to re-arm next alarm for $agentId", e)
+                    }
+                }
             }
 
             if (widgetManual) {
@@ -382,18 +396,91 @@ class TerminalSessionService : Service() {
      * Mirrors lib/agent-manager.ts's haltSentinelPath() ($HOME/.shelly/agents/.halted).
      * Written/removed by haltAllAgents()/resumeAllAgents() on the JS side; this is a
      * plain file existence check so a JS-thread pause/kill can never mask the halt.
-     * Fails OPEN to false (not halted) only on an unexpected I/O error reading the
-     * home dir itself, matching the JS-side try/catch-defaults-to-not-halted behavior
-     * in agent-manager.ts's own halted-state refresh — losing the ability to read the
-     * sentinel is treated as "we don't know", not as an implicit resume.
+     * Fails closed on unexpected I/O: losing the ability to verify a kill switch
+     * must never be interpreted as permission to execute.
      */
     private fun isGloballyHalted(): Boolean {
         return try {
             val homeDir = HomeInitializer.getHomeDir(applicationContext)
             File(homeDir, ".shelly/agents/.halted").exists()
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to check global halt sentinel; defaulting to not-halted", e)
-            false
+            Log.e(TAG, "Failed to check global halt sentinel; defaulting to halted (fail closed)", e)
+            true
+        }
+    }
+
+    private fun isAppUiForeground(): Boolean {
+        val state = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(state)
+        return state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    }
+
+    private fun scheduledRunFailed(agentId: String, result: AgentRunResult?): Boolean {
+        if (result == null) return true
+        if (result.success) return false
+        return try {
+            val homeDir = HomeInitializer.getHomeDir(applicationContext)
+            val logDir = File(homeDir, ".shelly/agents/logs/$agentId")
+            val latestStatus = logDir.listFiles { file -> file.isFile && file.extension == "json" }
+                ?.mapNotNull { file ->
+                    runCatching {
+                        val json = JSONObject(file.readText())
+                        if (json.optString("agentId") != agentId || !json.has("timestamp")) null
+                        else json.optLong("timestamp") to json.optString("status")
+                    }.getOrNull()
+                }
+                ?.maxByOrNull { it.first }
+                ?.second
+                ?: return true
+            // Match the JS circuit breaker: skipped and transient unavailable
+            // outcomes break the error streak; only status=error increments it.
+            latestStatus == "error"
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not classify scheduled outcome for $agentId; counting as failure", e)
+            true
+        }
+    }
+
+    @Synchronized
+    private fun recordScheduledRunOutcome(agentId: String, success: Boolean): Boolean {
+        val prefs = getSharedPreferences(CIRCUIT_BREAKER_PREFS, Context.MODE_PRIVATE)
+        if (success) {
+            prefs.edit().remove(agentId).commit()
+            return true
+        }
+        val failures = prefs.getInt(agentId, 0) + 1
+        if (!prefs.edit().putInt(agentId, failures).commit()) {
+            Log.e(TAG, "Circuit breaker counter persistence failed for $agentId; suppressing re-arm")
+            disableScheduledAgent(agentId)
+            return false
+        }
+        if (failures < CIRCUIT_BREAKER_THRESHOLD) return true
+
+        Log.e(TAG, "Circuit breaker tripped for $agentId after $failures consecutive failures")
+        // A later explicit re-enable starts a fresh consecutive-failure window.
+        prefs.edit().remove(agentId).commit()
+        disableScheduledAgent(agentId)
+        return false
+    }
+
+    private fun disableScheduledAgent(agentId: String) {
+        try {
+            AgentAlarmScheduler.cancel(applicationContext, agentId)
+        } catch (e: Exception) {
+            Log.e(TAG, "Circuit breaker failed to cancel alarm for $agentId", e)
+        }
+        try {
+            val homeDir = HomeInitializer.getHomeDir(applicationContext)
+            val agentFile = File(homeDir, ".shelly/agents/$agentId.json")
+            val json = JSONObject(agentFile.readText())
+            if (json.optString("id") == agentId) {
+                json.put("enabled", false)
+                agentFile.writeText(json.toString(2))
+            } else {
+                Log.e(TAG, "Circuit breaker refused metadata update for $agentId: id mismatch")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Circuit breaker failed to persist disabled state for $agentId", e)
         }
     }
 

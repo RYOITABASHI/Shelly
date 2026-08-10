@@ -2236,20 +2236,26 @@ export async function haltAllAgents(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
   const store = useAgentStore.getState();
+  const failures: string[] = [];
   for (const a of store.agents) {
     if (a.schedule) {
       try {
         await uninstallSchedule(a.id);
-      } catch {
-        // best-effort: keep halting the rest even if one uninstall fails
+      } catch (error) {
+        // Keep halting the rest, but fail loudly after every cancellation has
+        // been attempted so the UI cannot report an unqualified success.
+        failures.push(`alarm cancellation failed for ${a.id}: ${String(error)}`);
       }
     }
   }
   store.setHalted(true);
   try {
     await runCommand(`set -e\n${writeFileCommand(haltSentinelPath(), 'halted\n')}`);
-  } catch {
-    // store flag is the source of truth this session; sentinel is for persistence
+  } catch (error) {
+    failures.push(`halt sentinel write failed: ${String(error)}`);
+  }
+  if (failures.length > 0) {
+    throw new Error(`STOP-ALL could not be fully applied: ${failures.join('; ')}`);
   }
 }
 

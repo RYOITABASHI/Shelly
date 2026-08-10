@@ -496,8 +496,9 @@ class ShellyNotificationListener : NotificationListenerService() {
 
     /**
      * Fires an immediate, one-shot, tainted run of [agentId] — same shape as a
-     * manual "Once" run (no EXTRA_INTERVAL_MS/EXTRA_CRON, so
-     * TerminalSessionService computes unattended=false). The STOP-ALL
+     * notification-trigger run. TerminalSessionService combines the explicit
+     * trigger marker with the app's foreground state so a background delivery
+     * is unattended while an on-screen delivery remains attended. The STOP-ALL
      * kill-switch check already lives inside TerminalSessionService's
      * ACTION_RUN_AGENT handler, so it is not duplicated here.
      *
@@ -517,6 +518,7 @@ class ShellyNotificationListener : NotificationListenerService() {
             action = TerminalSessionService.ACTION_RUN_AGENT
             putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
             putExtra(TerminalSessionService.EXTRA_TAINTED, true)
+            putExtra(TerminalSessionService.EXTRA_NOTIFICATION_TRIGGER, true)
             if (!inboundText.isNullOrEmpty()) {
                 putExtra(TerminalSessionService.EXTRA_NOTIFICATION_TEXT, inboundText.take(MAX_INBOUND_NOTIFICATION_TEXT))
                 putExtra(TerminalSessionService.EXTRA_NOTIFICATION_PACKAGE, sourcePackage ?: "")
