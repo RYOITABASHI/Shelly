@@ -14,6 +14,23 @@
 
 ---
 
+### `hooks/use-terminal-output.ts:126` — approval prompts / error detection / PackageDoctorがどこにも配線されていない（現行仕様からの機能欠損、意図的に見送り） (P2)
+
+**背景**: コード品質監査で、`hooks/use-terminal-output.ts`のバッチ解析ループ内（旧126行目付近）に「TODO: approval prompts, error detection, and PackageDoctor were routed to the deleted chat-store. Re-wire to AI pane in v0.2.」という孤児コメントが見つかった。将来機能の予告ではなく、削除済み経路の後始末が放置されている疑いがあったため調査した。
+
+**調査結果**: `git grep`で全コードベースを確認。
+- `lib/realtime-translate.ts`の`detectApprovalPrompt`/`detectSecurityOutput`、`lib/package-doctor.ts`の`diagnosePackageError`は関数定義自体は現存するが、呼び出し元は`hooks/use-terminal-output.ts`のimport文のみで、実際に呼び出している箇所はコードベース全体でゼロ。
+- `components/panes/AIPane.tsx`・`AgentChatPane.tsx`など現行のAIペイン側にも、承認プロンプト表示・エラー検出・PackageDoctor診断に相当する再配線は見つからなかった（`ApprovalBubble`/`ErrorSummaryBubble`という名前のコンポーネント自体が存在しない）。
+- TODOコメントの「deleted chat-store」という記述は不正確: `store/chat-store.ts`はファイルとして現存する（CLAUDE.mdのストア一覧に「chelly/削除後はdead、v0.1.1で削除予定」と記載の通り、UIから参照されない死んだストア）。ファイル自体は消えていないが、そこへ配線しても表示先のUIが無いため無意味な点は変わらない。
+
+**結論**: 承認プロンプト検出・エラー検出・PackageDoctor自動診断は、いずれも現在ユーザーに一切提示されていない、本当の機能欠損。
+
+**Why not now**: 今回のタスクは「孤児TODOコメントの状態を正確化する」ことがスコープであり、AI Pane側への再配線は別の設計判断（どのUIコンポーネントに出すか、Wide/Compact両対応、既存のExecutionLogとの重複回避、承認プロンプトなら誤操作防止のUX）を要する別タスクのため、無理な新規実装は見送った。TODOコメントを「NOT IMPLEMENTED (intentionally deferred)」という正確な状態を示す文言に書き換えるに留めた。
+
+→ sync: なし
+
+---
+
 ### コマンド断片化の最終切り分け完了=【P1・実バグ確定】+ 実機QA続き5項目（shelly config/scouter/URL/未解決A/未解決B）で新規バグ2件発見（2026-08-09、`info`ユーザーのセッション続き、versionCode 2099 / commit `51694a367`、wireless adb・uiautomator dumpのみ使用）
 
 **1. ✅（`af0608347`で修正、versionCode 2103実機QAでPASS — 下記追記その3）【P1・実バグ確定】コマンド文字列断片化はタイムアウトと無関係の決定論的バグ — `BlockDetector.kt`のfallback状態機械が「1チャンク=1行」を誤仮定**

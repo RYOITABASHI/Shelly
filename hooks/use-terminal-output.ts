@@ -3,9 +3,11 @@
  * Feeds terminal output to execution-log-store for ALL sessions,
  * including background tabs. Independent of view lifecycle.
  *
- * Also detects file-changing output patterns to trigger savepoints,
- * approval prompts to show ApprovalBubble (Wide mode),
- * and error output to show ErrorSummaryBubble (Wide mode).
+ * Also detects file-changing output patterns to trigger savepoints, and
+ * localhost URLs to offer a preview. Approval-prompt / error-output /
+ * PackageDoctor detection is NOT implemented (see the comment further down
+ * and docs/superpowers/DEFERRED.md) -- there is currently no ApprovalBubble
+ * or ErrorSummaryBubble consumer anywhere in the app.
  */
 import { useEffect, useRef } from 'react';
 import TerminalEmulator from '@/modules/terminal-emulator';
@@ -123,8 +125,16 @@ export function useTerminalOutput() {
             }
           }
 
-          // TODO: approval prompts, error detection, and PackageDoctor
-          // were routed to the deleted chat-store. Re-wire to AI pane in v0.2.
+          // NOT IMPLEMENTED (intentionally deferred): approval-prompt
+          // detection (lib/realtime-translate.ts detectApprovalPrompt),
+          // error detection, and PackageDoctor auto-diagnosis
+          // (lib/package-doctor.ts diagnosePackageError) have no live call
+          // site anywhere in the app today -- this is a real feature gap,
+          // not a "TODO: build this later" placeholder. They used to be
+          // routed through chat-store, which is now dead UI (see the store
+          // table in CLAUDE.md) and was never re-wired to the AI pane.
+          // See docs/superpowers/DEFERRED.md (P2 entry for this file/line)
+          // for the investigation and why no re-wiring was done here.
         }
       }, BATCH_INTERVAL);
     });

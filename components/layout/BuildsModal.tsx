@@ -353,20 +353,80 @@ async function fetchInstalledCodexVersion(): Promise<CodexVersionInfo | null> {
   };
 }
 
-function mapApiRuns(payload: any): BuildRun[] {
-  const runs = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
-  return runs.map((run: any) => ({
-    databaseId: Number(run.id),
-    number: Number(run.run_number || 0) || undefined,
-    status: String(run.status || 'unknown'),
-    conclusion: run.conclusion ? String(run.conclusion) : null,
-    displayTitle: String(run.display_title || run.name || `Run #${run.id}`),
-    headSha: String(run.head_sha || ''),
-    createdAt: String(run.created_at || run.createdAt || ''),
-    startedAt: String(run.run_started_at || run.started_at || run.created_at || ''),
-    updatedAt: String(run.updated_at || run.updatedAt || ''),
-    url: String(run.html_url || run.url || ''),
-  }));
+// GitHub Actions / Releases responses are untrusted external JSON: validate
+// shape at runtime instead of trusting `any`, and skip malformed entries
+// rather than let a missing/renamed field throw deep inside a `.map()` and
+// crash the Updates screen (this surface feeds the self-update/install flow).
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function toBuildRun(run: unknown): BuildRun | null {
+  if (!isRecord(run)) return null;
+  const databaseId = Number(run.id);
+  if (!Number.isFinite(databaseId)) return null;
+  const runNumber = Number(run.run_number);
+  return {
+    databaseId,
+    number: Number.isFinite(runNumber) && runNumber > 0 ? runNumber : undefined,
+    status: asOptionalString(run.status) ?? 'unknown',
+    conclusion: asOptionalString(run.conclusion) ?? null,
+    displayTitle:
+      asOptionalString(run.display_title) ?? asOptionalString(run.name) ?? `Run #${databaseId}`,
+    headSha: asOptionalString(run.head_sha) ?? '',
+    createdAt: asOptionalString(run.created_at) ?? asOptionalString(run.createdAt) ?? '',
+    startedAt:
+      asOptionalString(run.run_started_at) ??
+      asOptionalString(run.started_at) ??
+      asOptionalString(run.created_at) ??
+      '',
+    updatedAt: asOptionalString(run.updated_at) ?? asOptionalString(run.updatedAt) ?? '',
+    url: asOptionalString(run.html_url) ?? asOptionalString(run.url) ?? '',
+  };
+}
+
+// Exported so tests can feed malformed/adversarial API payloads through the
+// same validation the live fetch path uses, without mocking `fetch`.
+export function mapApiRuns(payload: unknown): BuildRun[] {
+  const runs = isRecord(payload) && Array.isArray(payload.workflow_runs) ? payload.workflow_runs : [];
+  const result: BuildRun[] = [];
+  for (const run of runs) {
+    const parsed = toBuildRun(run);
+    if (parsed) result.push(parsed);
+  }
+  return result;
+}
+
+// A validated GitHub release asset: name + download URL are required, size
+// is best-effort. Assets that don't match this shape are dropped rather than
+// propagated as `any` into the update-download path.
+export type GitHubReleaseAsset = {
+  name: string;
+  size?: number;
+  browser_download_url: string;
+};
+
+export function toGitHubReleaseAsset(value: unknown): GitHubReleaseAsset | null {
+  if (!isRecord(value)) return null;
+  const name = value.name;
+  const url = value.browser_download_url;
+  if (typeof name !== 'string' || typeof url !== 'string') return null;
+  const size = typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : undefined;
+  return { name, size, browser_download_url: url };
+}
+
+export function parseGitHubReleaseAssets(value: unknown): GitHubReleaseAsset[] {
+  if (!Array.isArray(value)) return [];
+  const result: GitHubReleaseAsset[] = [];
+  for (const item of value) {
+    const asset = toGitHubReleaseAsset(item);
+    if (asset) result.push(asset);
+  }
+  return result;
 }
 
 export async function fetchBuildRuns(): Promise<BuildRun[]> {
@@ -402,14 +462,14 @@ async function fetchLatestAndroidUpdate(tag = STABLE_UPDATE_TAG): Promise<Androi
     throw new Error(body || `GitHub release API HTTP ${releaseResponse.status}`);
   }
 
-  const release = await releaseResponse.json();
-  const assets = Array.isArray(release?.assets) ? release.assets : [];
-  const manifestAsset = assets.find((asset: any) => asset?.name === UPDATE_MANIFEST_ASSET);
-  if (!manifestAsset?.browser_download_url) {
+  const release: unknown = await releaseResponse.json();
+  const assets = parseGitHubReleaseAssets(isRecord(release) ? release.assets : undefined);
+  const manifestAsset = assets.find((asset) => asset.name === UPDATE_MANIFEST_ASSET);
+  if (!manifestAsset) {
     throw new Error(`Release ${tag} has no ${UPDATE_MANIFEST_ASSET} asset.`);
   }
 
-  const manifestResponse = await fetchWithTimeout(String(manifestAsset.browser_download_url), {
+  const manifestResponse = await fetchWithTimeout(manifestAsset.browser_download_url, {
     headers: {
       Accept: 'application/json',
       'User-Agent': 'Shelly',
@@ -420,12 +480,13 @@ async function fetchLatestAndroidUpdate(tag = STABLE_UPDATE_TAG): Promise<Androi
     throw new Error(body || `GitHub release manifest HTTP ${manifestResponse.status}`);
   }
 
-  const raw = await manifestResponse.json();
-  const versionCode = Number(raw?.versionCode);
-  const apkAssetName = String(raw?.apkAssetName || '');
-  const sha256 = String(raw?.sha256 || '').toLowerCase();
-  const apkAsset = assets.find((asset: any) => asset?.name === apkAssetName);
-  const rawApkSizeBytes = Number(raw?.apkSizeBytes);
+  const rawManifest: unknown = await manifestResponse.json();
+  const raw = isRecord(rawManifest) ? rawManifest : {};
+  const versionCode = Number(raw.versionCode);
+  const apkAssetName = asOptionalString(raw.apkAssetName) ?? '';
+  const sha256 = (asOptionalString(raw.sha256) ?? '').toLowerCase();
+  const apkAsset = assets.find((asset) => asset.name === apkAssetName);
+  const rawApkSizeBytes = Number(raw.apkSizeBytes);
   const assetSizeBytes = Number(apkAsset?.size);
   // The GitHub asset's own .size is authoritative — it is exactly the byte
   // count the DownloadManager fetches and what verifyApkFile must check against.
@@ -448,23 +509,23 @@ async function fetchLatestAndroidUpdate(tag = STABLE_UPDATE_TAG): Promise<Androi
   if (!SHA256_RE.test(sha256)) {
     throw new Error('Release manifest has an invalid sha256.');
   }
-  if (!apkAsset?.browser_download_url) {
+  if (!apkAsset) {
     throw new Error(`Release ${tag} has no APK asset named ${apkAssetName}.`);
   }
 
   return {
-    schemaVersion: Number(raw?.schemaVersion || 1),
-    channel: raw?.channel ? String(raw.channel) : tag,
+    schemaVersion: Number(raw.schemaVersion) || 1,
+    channel: asOptionalString(raw.channel) ?? tag,
     versionCode,
-    versionName: String(raw?.versionName || ''),
-    codexVersion: raw?.codexVersion ? String(raw.codexVersion) : undefined,
-    codexTermuxVersion: raw?.codexTermuxVersion ? String(raw.codexTermuxVersion) : undefined,
-    gitSha: String(raw?.gitSha || ''),
-    runId: Number.isInteger(Number(raw?.runId)) ? Number(raw.runId) : undefined,
-    runNumber: Number.isInteger(Number(raw?.runNumber)) ? Number(raw.runNumber) : undefined,
-    createdAt: raw?.createdAt ? String(raw.createdAt) : undefined,
+    versionName: asOptionalString(raw.versionName) ?? '',
+    codexVersion: asOptionalString(raw.codexVersion),
+    codexTermuxVersion: asOptionalString(raw.codexTermuxVersion),
+    gitSha: asOptionalString(raw.gitSha) ?? '',
+    runId: Number.isInteger(Number(raw.runId)) ? Number(raw.runId) : undefined,
+    runNumber: Number.isInteger(Number(raw.runNumber)) ? Number(raw.runNumber) : undefined,
+    createdAt: asOptionalString(raw.createdAt),
     apkAssetName,
-    apkUrl: String(apkAsset.browser_download_url),
+    apkUrl: apkAsset.browser_download_url,
     apkSizeBytes,
     sha256,
   };
@@ -484,14 +545,14 @@ async function fetchLatestCodexRuntime(): Promise<CodexRuntimeManifest | null> {
     throw new Error(body || `GitHub Codex runtime release API HTTP ${releaseResponse.status}`);
   }
 
-  const release = await releaseResponse.json();
-  const assets = Array.isArray(release?.assets) ? release.assets : [];
-  const manifestAsset = assets.find((asset: any) => asset?.name === CODEX_RUNTIME_MANIFEST_ASSET);
-  if (!manifestAsset?.browser_download_url) {
+  const release: unknown = await releaseResponse.json();
+  const assets = parseGitHubReleaseAssets(isRecord(release) ? release.assets : undefined);
+  const manifestAsset = assets.find((asset) => asset.name === CODEX_RUNTIME_MANIFEST_ASSET);
+  if (!manifestAsset) {
     throw new Error(`Release ${CODEX_RUNTIME_TAG} has no ${CODEX_RUNTIME_MANIFEST_ASSET} asset.`);
   }
 
-  const manifestResponse = await fetchWithTimeout(String(manifestAsset.browser_download_url), {
+  const manifestResponse = await fetchWithTimeout(manifestAsset.browser_download_url, {
     headers: {
       Accept: 'application/json',
       'User-Agent': 'Shelly',
@@ -502,11 +563,12 @@ async function fetchLatestCodexRuntime(): Promise<CodexRuntimeManifest | null> {
     throw new Error(body || `GitHub Codex runtime manifest HTTP ${manifestResponse.status}`);
   }
 
-  const raw = await manifestResponse.json();
-  const version = String(raw?.version || '').replace(/^v/, '');
-  const assetName = String(raw?.assetName || '');
-  const sha256 = String(raw?.sha256 || '').toLowerCase();
-  const runtimeAsset = assets.find((asset: any) => asset?.name === assetName);
+  const rawManifest: unknown = await manifestResponse.json();
+  const raw = isRecord(rawManifest) ? rawManifest : {};
+  const version = (asOptionalString(raw.version) ?? '').replace(/^v/, '');
+  const assetName = asOptionalString(raw.assetName) ?? '';
+  const sha256 = (asOptionalString(raw.sha256) ?? '').toLowerCase();
+  const runtimeAsset = assets.find((asset) => asset.name === assetName);
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error('Codex runtime manifest has an invalid version.');
   }
@@ -516,22 +578,22 @@ async function fetchLatestCodexRuntime(): Promise<CodexRuntimeManifest | null> {
   if (!SHA256_RE.test(sha256)) {
     throw new Error('Codex runtime manifest has an invalid sha256.');
   }
-  if (!runtimeAsset?.browser_download_url) {
+  if (!runtimeAsset) {
     throw new Error(`Release ${CODEX_RUNTIME_TAG} has no asset named ${assetName}.`);
   }
 
   return {
-    schemaVersion: Number(raw?.schemaVersion || 1),
-    channel: raw?.channel ? String(raw.channel) : undefined,
+    schemaVersion: Number(raw.schemaVersion) || 1,
+    channel: asOptionalString(raw.channel),
     version,
-    codexVersion: raw?.codexVersion ? String(raw.codexVersion) : undefined,
-    codexTermuxVersion: raw?.codexTermuxVersion ? String(raw.codexTermuxVersion) : undefined,
-    gitSha: String(raw?.gitSha || ''),
-    runId: Number.isInteger(Number(raw?.runId)) ? Number(raw.runId) : undefined,
-    runNumber: Number.isInteger(Number(raw?.runNumber)) ? Number(raw.runNumber) : undefined,
-    createdAt: raw?.createdAt ? String(raw.createdAt) : undefined,
+    codexVersion: asOptionalString(raw.codexVersion),
+    codexTermuxVersion: asOptionalString(raw.codexTermuxVersion),
+    gitSha: asOptionalString(raw.gitSha) ?? '',
+    runId: Number.isInteger(Number(raw.runId)) ? Number(raw.runId) : undefined,
+    runNumber: Number.isInteger(Number(raw.runNumber)) ? Number(raw.runNumber) : undefined,
+    createdAt: asOptionalString(raw.createdAt),
     assetName,
-    tarballUrl: String(runtimeAsset.browser_download_url),
+    tarballUrl: runtimeAsset.browser_download_url,
     sha256,
   };
 }
