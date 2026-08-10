@@ -1,20 +1,28 @@
 // MEMORY-001 memory layer — Step 2 shadow-read seam + Step 3 activated recall
-// + Step 4 activated write (dormant, flag-OFF).
+// + Step 4 activated write. LIVE since MEMORY_ENABLED flipped true on
+// 2026-08-05 (see lib/memory/wiring.ts) — no longer dormant.
 //
 // Called from agent-manager's applyMemoryAndSkills / persistRememberFact /
-// captureRunMemory, all behind MEMORY_ENABLED. While the flag is false (today,
-// always) shadowMemoryRecall, activateMemoryRecall, and activateMemoryWrite are
-// all unreachable (agent-manager only calls the latter two inside
-// `if (MEMORY_ENABLED)`), so live behavior stays byte-identical to G2-only.
-// When the flag is eventually flipped, this module: (a) mirrors the agent's G2
-// notes into the NEW memory-v2 store (a sibling dir — G2's .md files are never
-// read or written by the store, so deleting memory-v2/ reverts everything),
-// (b) replays the exact recall query G2 ran, and (c) either logs order/content
-// divergence (shadowMemoryRecall, observability-only), actually renders the
-// MEMORY-001 result into the recall context that reaches the prompt
-// (activateMemoryRecall, Step 3), or writes a new fact/result straight into the
-// MEMORY-001 store instead of a G2 .md file (activateMemoryWrite, Step 4).
-// Strangler convention: additive, reversible, "実装されるが有効化はされない."
+// captureRunMemory, all behind MEMORY_ENABLED. Now that the flag is true,
+// shadowMemoryRecall runs on every recall (still observability-only — it only
+// logs order/content divergence, it never changes what reaches the prompt),
+// and activateMemoryRecall / activateMemoryWrite run inside agent-manager's
+// `if (MEMORY_ENABLED)` branches as the PRIMARY recall/write path, with G2
+// used only as the fallback when either returns null/false (any internal
+// MEMORY-001 failure) — never as a silent loss of the agent's memory. This
+// module: (a) mirrors the agent's G2 notes into the NEW memory-v2 store (a
+// sibling dir — G2's .md files are never read or written by the store, so
+// deleting memory-v2/ reverts everything) lazily, the first time that agent's
+// (or `_global`'s) namespace is touched in a given app session — there is no
+// batch/one-shot migration of every existing G2 note at flip time, (b) replays
+// the exact recall query G2 ran, and (c) either logs order/content divergence
+// (shadowMemoryRecall, observability-only), actually renders the MEMORY-001
+// result into the recall context that reaches the prompt (activateMemoryRecall,
+// Step 3), or writes a new fact/result straight into the MEMORY-001 store
+// instead of a G2 .md file (activateMemoryWrite, Step 4).
+// Strangler convention: additive, reversible — G2's .md files stay on disk,
+// untouched and authoritative-on-failure, even though MEMORY-001 is now the
+// primary path. "実装され、有効化もされた（が G2 は退役していない）."
 
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import { getHomePath } from '@/lib/home-path';
@@ -62,20 +70,29 @@ export interface ShadowDeps {
   importedAgents: Set<string>;
 }
 
-// Lazy singleton: the expo FsPort + store are only constructed the first time a
-// flag-ON shadow pass actually runs, so the dormant (flag-OFF) app pays zero
-// cost and host tests never construct the expo port.
+// Lazy singleton: the expo FsPort + store are only constructed the first time
+// one of this module's exported functions actually calls getShadowDeps() —
+// not at module import. Now that MEMORY_ENABLED=true, that first call happens
+// in production on an agent's first recall/write/list of a given app session
+// (this is no longer a permanently-dormant path); the laziness now mainly
+// matters for host tests, which import this module unconditionally (it's
+// imported by lib/agent-manager.ts, which dozens of unrelated test files
+// import) but only construct the expo port if a test actually exercises a
+// MEMORY-001 entry point.
 //
 // crypto-expo.ts is require()'d HERE (not statically imported at module top)
 // deliberately: it pulls in @noble/ciphers, which ships pure ESM with no CJS
 // build. Jest's default config never transforms node_modules, so any test
 // file that merely IMPORTS this module (shadow.ts is imported unconditionally
 // by lib/agent-manager.ts, which dozens of unrelated test files import) would
-// fail to parse — even though MEMORY_ENABLED gates every call site so the
-// port is never actually constructed. A lazy require() means the ESM-only
-// dependency graph is only touched by a test/build that actually reaches this
-// line, matching the "dormant, zero cost while off" contract the rest of this
-// file already documents.
+// fail to parse if crypto-expo were a static import — regardless of whether
+// MEMORY_ENABLED is true, since a static import is evaluated at module-load
+// time, before any flag check runs. A lazy require() means the ESM-only
+// dependency graph is only touched when a test/build actually calls
+// getShadowDeps() (now routine in production, since MEMORY_ENABLED=true means
+// every recall/write/list call site reaches this line) — a test that merely
+// imports shadow.ts transitively, without exercising one of its exported
+// functions, still never constructs the port.
 let sharedDeps: ShadowDeps | null = null;
 
 function getShadowDeps(): ShadowDeps {
@@ -93,9 +110,10 @@ function getShadowDeps(): ShadowDeps {
     // Track B (MEMORY-001, see DEFERRED.md): one-time, non-blocking sweep for
     // stale pre-encryption plaintext files a developer machine may still have
     // on disk from before Track A's envelope encryption landed. This is the
-    // first point ANY code touches the memory-v2 store on a given app launch
-    // (this whole function is unreachable while MEMORY_ENABLED is false), so
-    // it doubles as the "startup" detection hook the design calls for.
+    // first point ANY code touches the memory-v2 store on a given app launch —
+    // getShadowDeps() is only reached from MEMORY_ENABLED-gated call sites,
+    // and the flag is true since 2026-08-05 so this now runs in production —
+    // so it doubles as the "startup" detection hook the design calls for.
     // Fire-and-forget: a cleanup failure must never block or break the live
     // memory read/write path that's about to use `adapter`.
     cleanupStalePlaintextMemoryFiles(fsPort, root)
@@ -180,9 +198,11 @@ async function importAndQuery(
 }
 
 // The unconditional import→query→compare pipeline, separated from the flag
-// gate so host tests can exercise it with an injected in-memory store while
-// MEMORY_ENABLED stays false. `notes` is the same newest-first list
-// applyMemoryAndSkills already read via readMemoryNotes (no double disk read).
+// gate (MEMORY_ENABLED, now true — see wiring.ts) so host tests can exercise
+// it directly with an injected in-memory store, without needing to flip a
+// real flag or reach an actual MEMORY_ENABLED-gated call site. `notes` is the
+// same newest-first list applyMemoryAndSkills already read via
+// readMemoryNotes (no double disk read).
 export async function runShadowComparison(
   agent: { id: string; name: string; prompt: string },
   notes: MemoryNote[],
@@ -197,16 +217,18 @@ export async function runShadowComparison(
 }
 
 /**
- * Shadow a G2 memory recall. No-op while MEMORY_ENABLED is false. Never throws
- * and never changes what gets injected into the prompt — a shadow failure is
- * logged and swallowed so it cannot break the live run.
+ * Shadow a G2 memory recall. MEMORY_ENABLED has been true since 2026-08-05, so
+ * this now runs (and logs a parity/divergence finding) on every recall; it is
+ * only a no-op if the flag were ever flipped back off. Never throws and never
+ * changes what gets injected into the prompt — a shadow failure is logged and
+ * swallowed so it cannot break the live run.
  */
 export async function shadowMemoryRecall(
   agent: { id: string; name: string; prompt: string },
   notes: MemoryNote[]
 ): Promise<void> {
-  // Master dormancy gate (wiring.ts). Everything below is dead code until the
-  // separate, device-verified "enable" decision flips the flag.
+  // Master enable/kill switch (wiring.ts): everything below only goes dead
+  // again if MEMORY_ENABLED is flipped back to false.
   if (!MEMORY_ENABLED) return;
   try {
     const cmp = await runShadowComparison(agent, notes, getShadowDeps());
@@ -235,8 +257,10 @@ export async function shadowMemoryRecall(
 
 /**
  * MEMORY-001 Step 3 — activated recall. Only ever called from agent-manager
- * inside `if (MEMORY_ENABLED)`, so it is unreachable dead code while the flag
- * stays false; nothing here changes today's byte-identical G2 behavior.
+ * inside `if (MEMORY_ENABLED)`; the flag has been true since 2026-08-05, so
+ * this runs on every applyMemoryAndSkills call and is now the PRIMARY recall
+ * path — G2's own recallMemoryNotes only runs as the fallback below when this
+ * returns `null`.
  *
  * Runs the same import→query pipeline as shadowMemoryRecall but returns the
  * MEMORY-001 store's rendered recall context instead of only comparing it.
@@ -271,8 +295,12 @@ export async function activateMemoryRecall(
 
 /**
  * MEMORY-001 Step 4 — activated write. Only ever called from agent-manager's
- * persistRememberFact / captureRunMemory inside `if (MEMORY_ENABLED)`, so it is
- * unreachable dead code while the flag stays false.
+ * persistRememberFact / captureRunMemory inside `if (MEMORY_ENABLED)`; the
+ * flag has been true since 2026-08-05, so this is now the PRIMARY write path
+ * for both callers — G2's own writeMemoryNote only runs as the fallback when
+ * this returns `false`. (writeGlobalMemoryNote in lib/agent-manager.ts is a
+ * separate, still-G2-only write path that never calls this function at all —
+ * see that function's comment for why.)
  *
  * Builds the record through G2's OWN makeMemoryNote (same trim, MAX_NOTE_CHARS
  * truncation, tag normalization, and deterministic id derivation G2 applies to
@@ -359,9 +387,13 @@ function recordToNote(agentId: string, record: MemoryRecord): MemoryNote {
 /**
  * MEMORY-001 Step 5 — activated list, for the Sidebar's per-agent memory
  * detail popup (the "Sidebar count -> list().length" strangler item from the
- * 2026-07-16 design that Steps 3/4 never covered). Only ever called from
- * Sidebar.tsx inside `if (MEMORY_ENABLED)`; unreachable dead code while the
- * flag stays false.
+ * 2026-07-16 design that Steps 3/4 never covered — implemented 2026-08-05 as
+ * a prerequisite for flipping the flag, since without it the popup would have
+ * frozen on stale G2 reads once Step 4 started writing new notes to
+ * MEMORY-001 instead of G2). Only ever called from Sidebar.tsx (and
+ * MemoryWorkbenchPane.tsx) inside `if (MEMORY_ENABLED)`; the flag has been
+ * true since 2026-08-05, so this is now the PRIMARY list path — G2's own
+ * readMemoryNotes only runs as the fallback when this returns `null`.
  *
  * A detail popup can be opened for an agent that has never gone through
  * activateMemoryRecall/activateMemoryWrite yet (e.g. right after the flag is

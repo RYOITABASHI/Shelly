@@ -27,9 +27,10 @@ import {
   writeMemoryNote,
   type MemoryNoteType,
 } from './agent-memory';
-// MEMORY-001 shadow/activation seam (dormant): flag + entry points imported
-// from their own modules (not the '@/lib/memory' index) so host memory tests
-// that import the index never transitively load expo-file-system via fs-expo.
+// MEMORY-001 shadow/activation seam (live: MEMORY_ENABLED=true since 2026-08-05,
+// see lib/memory/wiring.ts): flag + entry points imported from their own
+// modules (not the '@/lib/memory' index) so host memory tests that import the
+// index never transitively load expo-file-system via fs-expo.
 import { MEMORY_ENABLED } from './memory/wiring';
 import { shadowMemoryRecall, activateMemoryRecall, activateMemoryWrite, invalidateMemoryImportCache } from './memory/shadow';
 import {
@@ -850,14 +851,13 @@ async function applyMemoryAndSkills(
     const ownNotes = await readMemoryNotes(agent.id);
     const globalNotes = await readGlobalMemoryNotes();
     const notes = [...ownNotes, ...globalNotes].sort((a, b) => b.created.localeCompare(a.created));
-    // MEMORY-001 Step 3 (strangler, flag-OFF today): while MEMORY_ENABLED is
-    // false this whole branch is dead code and the G2 recall below is the ONLY
-    // thing that ever runs — byte-identical to pre-Step-3 behavior. When the
-    // flag is eventually flipped, activateMemoryRecall's rendered context is
-    // injected INSTEAD OF G2's, but a `null` return (any internal MEMORY-001
-    // failure) falls back to the G2 result computed below rather than to no
-    // recall at all — G2 is the on-device-verified path, so falling back to IT
-    // is safer than silently dropping the agent's memory.
+    // MEMORY-001 Step 3 (strangler; MEMORY_ENABLED=true since 2026-08-05, see
+    // lib/memory/wiring.ts): this branch now runs on every call, and
+    // activateMemoryRecall's rendered context is injected INSTEAD OF the G2
+    // result computed below. A `null` return (any internal MEMORY-001 failure)
+    // falls back to that G2 result rather than to no recall at all — G2 is the
+    // on-device-verified path, so falling back to IT is safer than silently
+    // dropping the agent's memory.
     let recallContext: string | null = null;
     if (MEMORY_ENABLED) {
       // MEMORY-001 has no concept of the `_global` namespace yet, so it is fed
@@ -941,6 +941,18 @@ async function refreshAgentRecall(
  * a global note is recalled by all of them. Global writes are rare (an explicit
  * "remember this for everything" action), so the full pass is proportionate —
  * unlike per-run result capture, which refreshes only its own agent.
+ *
+ * NOT unified with MEMORY-001 (gap, not fixed here — tracked in DEFERRED.md's
+ * 2026-08-10 audit, item 10): unlike persistRememberFact/captureRunMemory below,
+ * this write is unconditional G2 (via writeMemoryNote, which also Vault-copies)
+ * — there is no `if (MEMORY_ENABLED) activateMemoryWrite(...)` attempt here at
+ * all. This is a real coverage gap, not a technical limitation of the store:
+ * activateMemoryWrite's `agentNamespace()` is the identity function, so nothing
+ * stops it being called with agentId=GLOBAL_MEMORY_SCOPE, and the read-side CRUD
+ * below (activateMemoryList/deleteMemoryNoteById/updateMemoryNoteById) already
+ * treats '_global' as an ordinary namespace this way for Memory Workbench.
+ * Writing global notes through MEMORY-001 was simply never wired up when Step 4
+ * activation landed; it stayed on the pre-existing G2-only path instead.
  */
 export async function writeGlobalMemoryNote(
   runCommand: (cmd: string) => Promise<string>,
@@ -969,13 +981,11 @@ async function persistRememberFact(
 ): Promise<void> {
   const fact = agent.memory?.rememberFact?.trim();
   if (!fact) return;
-  // MEMORY-001 Step 4 (strangler, flag-OFF today): while MEMORY_ENABLED is
-  // false this branch never runs and G2's writeMemoryNote below is the ONLY
-  // write path — byte-identical to pre-Step-4 behavior. When the flag is
-  // flipped, activateMemoryWrite (which reuses G2's own makeMemoryNote for
-  // normalization) replaces the G2 write; a `false` return (any internal
-  // MEMORY-001 failure) falls back to G2's write rather than silently losing
-  // the fact.
+  // MEMORY-001 Step 4 (strangler; MEMORY_ENABLED=true since 2026-08-05, see
+  // lib/memory/wiring.ts): activateMemoryWrite (which reuses G2's own
+  // makeMemoryNote for normalization) now runs first and, on success, replaces
+  // the G2 write below. A `false` return (any internal MEMORY-001 failure)
+  // falls back to G2's write rather than silently losing the fact.
   if (MEMORY_ENABLED) {
     const ok = await activateMemoryWrite({
       agentId: agent.id,
@@ -1957,8 +1967,9 @@ async function captureRunMemory(
   if (!latest || latest.status !== 'success') return;
   const digest = extractRunDigest(latest.outputPreview || '');
   if (!digest) return;
-  // MEMORY-001 Step 4 (strangler, flag-OFF today): see persistRememberFact for
-  // the fallback rationale — same G2-fallback-on-failure contract applies here.
+  // MEMORY-001 Step 4 (strangler; MEMORY_ENABLED=true since 2026-08-05): see
+  // persistRememberFact for the fallback rationale — same G2-fallback-on-failure
+  // contract applies here.
   if (MEMORY_ENABLED) {
     const ok = await activateMemoryWrite({
       agentId,
