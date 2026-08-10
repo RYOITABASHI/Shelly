@@ -76,7 +76,7 @@ describe('generateRunScript — free-cloud tier backends (Cerebras / Groq, ③b)
   it('scrubs Cerebras/Groq keys from the env of non-key backends (no cross-backend leak)', () => {
     // A local/oauth run must not carry ANY api key, including the new ones.
     const local = generateRunScript(agent({ type: 'local' }, true));
-    expect(local).toContain('unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY');
+    expect(local).toContain('unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY OPENROUTER_API_KEY');
   });
 
   it('emits parseable shell for the new backends', () => {
@@ -84,6 +84,54 @@ describe('generateRunScript — free-cloud tier backends (Cerebras / Groq, ③b)
       const s = generateRunScript(agent({ type: t }, false));
       assertParsesAsShell(s);
     }
+  });
+});
+
+// DEFERRED.md item 8 (2026-08-10 audit): OpenRouter had a model-router registry
+// entry and an AI Pane chat client, but no agent-executor dispatch case at
+// all — an agent whose tool resolved to 'openrouter' hit no matching arm in
+// generateToolCommand's switch. Mirrors the Cerebras/Groq describe block
+// immediately above exactly (same OpenAI-compatible dispatch shape via
+// openAiCompatApiCommand), plus an explicit attended-only regression: unlike
+// Cerebras/Groq (which have no special web-consent carve-out either), this
+// backend's whole reason for existing behind an api-key gate is documented in
+// lib/openrouter.ts as "intentionally foreground-only" — this suite locks
+// that in at the generateRunScript layer too.
+describe('generateRunScript — OpenRouter (attended-only, ③b-adjacent api-key backend)', () => {
+  it('non-autonomous OpenRouter calls its OpenAI-compatible endpoint with a Bearer key', () => {
+    const s = generateRunScript(agent({ type: 'openrouter' }, false));
+    expect(s).not.toContain('[REFUSED]');
+    expect(s).toContain('https://openrouter.ai/api/v1/chat/completions');
+    expect(s).toContain('HTTP_AUTH_HEADER="Bearer $OPENROUTER_API_KEY"');
+    expect(s).toContain('MODEL="${OPENROUTER_MODEL:-openrouter/auto}"');
+    expect(s).not.toContain(UNSET); // key-bearing backend keeps its env
+  });
+
+  it('honours an explicit model override instead of the openrouter/auto default', () => {
+    const s = generateRunScript(agent({ type: 'openrouter', model: 'anthropic/claude-3.5-sonnet' }, false));
+    expect(s).toContain('MODEL="${OPENROUTER_MODEL:-anthropic/claude-3.5-sonnet}"');
+  });
+
+  it('refuses autonomous OpenRouter, fail-closed (API-key backend, no key in the autonomous path)', () => {
+    const s = generateRunScript(agent({ type: 'openrouter' }, true));
+    expect(s).toContain('[REFUSED]');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION');
+    expect(s).not.toContain('openrouter.ai');
+  });
+
+  it('scrubs the OpenRouter key from the env of non-key backends (no cross-backend leak)', () => {
+    const local = generateRunScript(agent({ type: 'local' }, true));
+    expect(local).toContain('OPENROUTER_API_KEY');
+    expect(local).toContain('unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY OPENROUTER_API_KEY');
+  });
+
+  it('emits parseable shell', () => {
+    assertParsesAsShell(generateRunScript(agent({ type: 'openrouter' }, false)));
+  });
+
+  it('produces the correct human-readable tool label', () => {
+    const s = generateRunScript(agent({ type: 'openrouter' }, false));
+    expect(s).toContain('"toolLabel":"OpenRouter"');
   });
 });
 

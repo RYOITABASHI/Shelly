@@ -316,6 +316,8 @@ export function toolChoiceToLabel(tool: ToolChoice): string {
       return tool.model ? `Cerebras (${tool.model})` : 'Cerebras';
     case 'groq':
       return tool.model ? `Groq (${tool.model})` : 'Groq';
+    case 'openrouter':
+      return tool.model ? `OpenRouter (${tool.model})` : 'OpenRouter';
     case 'local':
       return 'Local LLM';
     case 'perplexity':

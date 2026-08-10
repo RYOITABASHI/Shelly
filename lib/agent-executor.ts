@@ -641,6 +641,13 @@ const STEP_TOOL_BASH_DISPATCHABLE_TYPES = new Set<ToolChoice['type']>([
   'perplexity',
   'cerebras',
   'groq',
+  // openrouter (2026-08-10, DEFERRED.md item 8): same api-key-class shape as
+  // cerebras/groq — resolveStepToolForChainScript already strips it from an
+  // AUTONOMOUS run before this set is ever consulted (see
+  // __tests__/agent-executor-orchestration-collapse.test.ts's file comment),
+  // so listing it here only enables the attended (human-present) per-step
+  // dispatch path, consistent with credential-policy's attended-only gate.
+  'openrouter',
 ]);
 
 type ToolCommandOptions = {
@@ -1096,7 +1103,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const routeDecisionJson = JSON.stringify(routeDecision);
   const apiKeyEnvScrub = requiresApiKeyEnv(tool)
     ? ''
-    : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY\n';
+    : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY OPENROUTER_API_KEY\n';
 
   // bug #155(b) (docs/superpowers/DEFERRED.md): this function used to have no
   // concept of agent.orchestration.steps at all — a genuinely orchestrated
@@ -5807,6 +5814,27 @@ ${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
         model: tool.model || 'llama-3.3-70b-versatile',
         label: 'Groq',
         authRef: 'groq',
+      }, options.stepSkipPromptCompose ?? false);
+    case 'openrouter':
+      // DEFERRED.md item 8 (2026-08-10 audit): OpenRouter had a registry entry
+      // (lib/model-router/registry.ts) and an AI Pane chat client
+      // (lib/openrouter.ts) but no agent-executor dispatch case — an agent
+      // whose tool somehow resolved to 'openrouter' fell through this switch
+      // with no matching arm and generated a broken/empty command. Same
+      // OpenAI-compatible shape as Cerebras/Groq; credentialClass() already
+      // classifies it 'api-key' (agent-credential-policy.ts), so
+      // resolveForAutonomous() strips it to null before an autonomous run
+      // ever reaches this arm — reachable only from an attended run (Run now
+      // / @agent chat) or an attended per-step chain dispatch, exactly like
+      // Cerebras/Groq today. That attended-only boundary is NOT touched here.
+      return openAiCompatApiCommand(escapedPrompt, resultVar, systemPromptJson, {
+        keyVar: 'OPENROUTER_API_KEY',
+        envModelVar: 'OPENROUTER_MODEL',
+        keyHint: 'Add OPENROUTER_API_KEY in Settings → API Keys (get one at openrouter.ai/keys).',
+        url: 'https://openrouter.ai/api/v1/chat/completions',
+        model: tool.model || 'openrouter/auto',
+        label: 'OpenRouter',
+        authRef: 'openrouter',
       }, options.stepSkipPromptCompose ?? false);
     case 'ab-article-eval':
       return articleEvalCommand(rawPrompt, resultVar, systemPromptJson, tool.localModel, tool.codexCmd, options.policyJson ?? '');
