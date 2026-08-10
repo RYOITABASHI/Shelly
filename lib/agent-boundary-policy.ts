@@ -13,9 +13,10 @@
  * runs danger-full-access with zero gating. The enforceable surface is the
  * command codex shows at each approval prompt — visible, classifiable here.
  *
- * Scope note (MVP): path extraction + `..` resolution is LEXICAL. Full symlink
- * resolution needs an fs `realpath` (native exec / bridge) and is a follow-up —
- * a symlink whose target escapes root is NOT yet caught here; flagged below.
+ * Path extraction starts lexically, then the Node gate resolves the workspace
+ * root and each candidate through realpath. Missing leaf paths are resolved via
+ * their nearest existing ancestor so commands that create a new file still gate
+ * without throwing. Non-Node callers retain the lexical check.
  */
 import { checkCommandSafety, DangerLevel } from '@/lib/command-safety';
 
@@ -69,12 +70,57 @@ export function normalizePath(p: string): string {
   return (isAbs ? '/' : '') + out.join('/');
 }
 
-/** True if `target` is inside (or equal to) `root` after lexical normalisation. */
+interface NodeFsLike {
+  realpathSync(path: string): string;
+}
+
+function nodeFs(): NodeFsLike | null {
+  if (typeof process === 'undefined' || !process.versions?.node) return null;
+  try {
+    // This module is also imported by the React Native app. Keep the Node-only
+    // dependency out of Metro's static module graph; the production gate is an
+    // esbuild-generated Node bundle and supplies `require` at runtime.
+    const runtimeModule = typeof module === 'undefined' ? null : module;
+    if (!runtimeModule || typeof runtimeModule.require !== 'function') return null;
+    return runtimeModule.require('fs') as NodeFsLike;
+  } catch {
+    return null;
+  }
+}
+
+function realpathAllowMissing(path: string, fs: NodeFsLike): string | null {
+  const missing: string[] = [];
+  let candidate = path;
+  while (true) {
+    try {
+      const resolved = normalizePath(fs.realpathSync(candidate).replace(/\\/g, '/'));
+      return normalizePath(`${resolved}/${missing.reverse().join('/')}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
+      const slash = candidate.lastIndexOf('/');
+      if (slash < 0) return null;
+      missing.push(candidate.slice(slash + 1));
+      const parent = candidate.slice(0, slash) || '/';
+      if (parent === candidate) return null;
+      candidate = parent;
+    }
+  }
+}
+
+/** True if `target` is inside (or equal to) `root`, including symlink resolution in Node. */
 export function isWithinRoot(root: string, target: string): boolean {
   if (target.startsWith('~')) return false; // home-relative = outside the project workspace
   const r = normalizePath(root).replace(/\/$/, '');
-  const t = normalizePath(target.startsWith('/') ? target : `${r}/${target}`);
-  return t === r || t.startsWith(`${r}/`);
+  const targetIsAbsolute = target.startsWith('/') || /^[A-Za-z]:\//.test(target);
+  const t = normalizePath(targetIsAbsolute ? target : `${r}/${target}`);
+  if (t !== r && !t.startsWith(`${r}/`)) return false;
+
+  const fs = nodeFs();
+  if (!fs) return true;
+  const realRoot = realpathAllowMissing(r, fs);
+  const realTarget = realpathAllowMissing(t, fs);
+  if (!realRoot || !realTarget) return false;
+  return realTarget === realRoot || realTarget.startsWith(`${realRoot}/`);
 }
 
 /** Best-effort extraction of path-like argument tokens from a shell command. */
@@ -276,8 +322,16 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
         return { decision: 'allow', signals, reason: 'L2 in-workspace', dangerLevel: safety.level };
       }
       return { decision: 'gray', signals, reason, dangerLevel: safety.level };
-    case 'L3': // full opt-in: auto-allow everything not hard-denied (audited upstream)
-      return { decision: 'allow', signals, reason: signals.length ? `L3 (audited): ${reason}` : 'L3', dangerLevel: safety.level };
+    case 'L3': { // silent opt-in relaxes prompts, never safety boundaries
+      const hardDenySignals: BoundarySignal[] = ['secret-read', 'leaves-root', 'network-send'];
+      if (safety.level === 'HIGH' || hardDenySignals.some((s) => signals.includes(s))) {
+        return { decision: 'deny', signals, reason: `L3 safety boundary: ${reason}`, dangerLevel: safety.level };
+      }
+      if (boundarySignals.length > 0) {
+        return { decision: 'gray', signals, reason, dangerLevel: safety.level };
+      }
+      return { decision: 'allow', signals, reason: 'L3 in-workspace', dangerLevel: safety.level };
+    }
   }
 }
 

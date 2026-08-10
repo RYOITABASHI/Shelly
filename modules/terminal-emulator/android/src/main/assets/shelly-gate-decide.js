@@ -47,6 +47,9 @@ var DANGER_PATTERNS = [
   // ── CRITICAL: システム破壊・データ全損 ──────────────────────────────────────
   {
     pattern: /rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(\/|~\/?\s*$|\/\*|~\/\*)/i,
+    // NOTE: `rm -r -f ...` / `rm -f -r ...` (flags split across separate
+    // tokens) are normalized to a single combined flag token by
+    // mergeSeparatedRmFlags() before this pattern runs — see below.
     level: "CRITICAL",
     reason: "\u30EB\u30FC\u30C8\u30C7\u30A3\u30EC\u30AF\u30C8\u30EA\u307E\u305F\u306F\u30DB\u30FC\u30E0\u30C7\u30A3\u30EC\u30AF\u30C8\u30EA\u3092\u518D\u5E30\u7684\u306B\u524A\u9664\u3057\u307E\u3059\u3002\u30B7\u30B9\u30C6\u30E0\u304C\u8D77\u52D5\u4E0D\u80FD\u306B\u306A\u308B\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059\u3002"
   },
@@ -168,11 +171,64 @@ var DANGER_PATTERNS = [
     reason: "SSH\u9375\u3092\u751F\u6210\u307E\u305F\u306F\u8EE2\u9001\u3057\u307E\u3059\u3002"
   }
 ];
+function stripCommentsOutsideQuotes(command) {
+  let result = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (inSingle) {
+      result += ch;
+      if (ch === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (ch === "\\" && i + 1 < command.length) {
+        result += ch + command[i + 1];
+        i++;
+        continue;
+      }
+      result += ch;
+      if (ch === '"') inDouble = false;
+      continue;
+    }
+    if (ch === "'") {
+      inSingle = true;
+      result += ch;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      result += ch;
+      continue;
+    }
+    if (ch === "#") {
+      const newlineIndex = command.indexOf("\n", i);
+      if (newlineIndex === -1) {
+        break;
+      }
+      result += "\n";
+      i = newlineIndex;
+      continue;
+    }
+    result += ch;
+  }
+  return result;
+}
+function mergeSeparatedShortFlags(command, targetCmd) {
+  const re = new RegExp(`\\b${targetCmd}\\b((?:\\s+-[a-zA-Z]+)+)`, "gi");
+  return command.replace(re, (fullMatch, flagsPart) => {
+    const flagTokens = flagsPart.trim().split(/\s+/);
+    if (flagTokens.length <= 1) return fullMatch;
+    const merged = flagTokens.map((f) => f.slice(1)).join("");
+    return `${targetCmd} -${merged}`;
+  });
+}
 function checkCommandSafety(command) {
   if (!command || !command.trim()) {
     return { level: "SAFE", message: "", reason: "" };
   }
-  const cleaned = command.replace(/#[^\n]*/g, "").trim();
+  const cleaned = mergeSeparatedShortFlags(stripCommentsOutsideQuotes(command), "rm").trim();
   let worst = { level: "SAFE", message: "", reason: "" };
   for (const { pattern, level, reason } of DANGER_PATTERNS) {
     if (pattern.test(cleaned)) {
@@ -282,11 +338,46 @@ function normalizePath(p) {
   }
   return (isAbs ? "/" : "") + out.join("/");
 }
+function nodeFs() {
+  if (typeof process === "undefined" || !process.versions?.node) return null;
+  try {
+    const runtimeModule = typeof module === "undefined" ? null : module;
+    if (!runtimeModule || typeof runtimeModule.require !== "function") return null;
+    return runtimeModule.require("fs");
+  } catch {
+    return null;
+  }
+}
+function realpathAllowMissing(path, fs) {
+  const missing = [];
+  let candidate = path;
+  while (true) {
+    try {
+      const resolved = normalizePath(fs.realpathSync(candidate).replace(/\\/g, "/"));
+      return normalizePath(`${resolved}/${missing.reverse().join("/")}`);
+    } catch (error) {
+      if (error.code !== "ENOENT") return null;
+      const slash = candidate.lastIndexOf("/");
+      if (slash < 0) return null;
+      missing.push(candidate.slice(slash + 1));
+      const parent = candidate.slice(0, slash) || "/";
+      if (parent === candidate) return null;
+      candidate = parent;
+    }
+  }
+}
 function isWithinRoot(root, target) {
   if (target.startsWith("~")) return false;
   const r = normalizePath(root).replace(/\/$/, "");
-  const t = normalizePath(target.startsWith("/") ? target : `${r}/${target}`);
-  return t === r || t.startsWith(`${r}/`);
+  const targetIsAbsolute = target.startsWith("/") || /^[A-Za-z]:\//.test(target);
+  const t = normalizePath(targetIsAbsolute ? target : `${r}/${target}`);
+  if (t !== r && !t.startsWith(`${r}/`)) return false;
+  const fs = nodeFs();
+  if (!fs) return true;
+  const realRoot = realpathAllowMissing(r, fs);
+  const realTarget = realpathAllowMissing(t, fs);
+  if (!realRoot || !realTarget) return false;
+  return realTarget === realRoot || realTarget.startsWith(`${realRoot}/`);
 }
 function extractPaths(command) {
   return command.split(/\s+/).map(
@@ -348,8 +439,16 @@ function classifyProposedCommand(command, ctx) {
         return { decision: "allow", signals, reason: "L2 in-workspace", dangerLevel: safety.level };
       }
       return { decision: "gray", signals, reason, dangerLevel: safety.level };
-    case "L3":
-      return { decision: "allow", signals, reason: signals.length ? `L3 (audited): ${reason}` : "L3", dangerLevel: safety.level };
+    case "L3": {
+      const hardDenySignals = ["secret-read", "leaves-root", "network-send"];
+      if (safety.level === "HIGH" || hardDenySignals.some((s) => signals.includes(s))) {
+        return { decision: "deny", signals, reason: `L3 safety boundary: ${reason}`, dangerLevel: safety.level };
+      }
+      if (boundarySignals.length > 0) {
+        return { decision: "gray", signals, reason, dangerLevel: safety.level };
+      }
+      return { decision: "allow", signals, reason: "L3 in-workspace", dangerLevel: safety.level };
+    }
   }
 }
 function escapeRe(s) {

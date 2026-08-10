@@ -36,13 +36,13 @@
     "expectedAnswer": "escalate"
   },
   {
-    "name": "out-of-root write L3 -> allow (audited)",
+    "name": "out-of-root write L3 -> deny",
     "command": "cp src/a.ts /sdcard/x",
     "policy": {
       "level": "L3",
       "workspaceRoot": "/root/app"
     },
-    "expectedAnswer": "y"
+    "expectedAnswer": "n"
   },
   {
     "name": "rm -rf / any level -> deny",
@@ -105,13 +105,13 @@
     "expectedAnswer": "escalate"
   },
   {
-    "name": "bug #155a: script indirection L3 -> allow (audited)",
+    "name": "bug #155a: script indirection L3 -> escalate",
     "command": "python3 script.py",
     "policy": {
       "level": "L3",
       "workspaceRoot": "/root/app"
     },
-    "expectedAnswer": "y"
+    "expectedAnswer": "escalate"
   },
   {
     "name": "adversarial: piped interpreter L2 -> escalate (was: allow, even at L1)",

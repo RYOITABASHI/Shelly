@@ -112,7 +112,7 @@ export interface GateOutcome {
 /**
  * Decide how the approval bridge should answer codex's prompt for `command`.
  * Operator denyPatterns hard-deny (any level); allowPatterns upgrade a gray to
- * allow but NEVER override a hard-deny — the §2 invariant.
+ * allow but NEVER override a hard-deny — including L3 safety boundaries.
  */
 export function decideAutoAnswer(command: string, policy: AutonomyPolicy): GateOutcome {
   const ctx: GateContext = {
