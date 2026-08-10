@@ -30,12 +30,19 @@ const LEGACY_SECRET_NAMES = [
 
 /**
  * Save an API key to secure storage.
+ *
+ * Re-throws on failure (after logging) instead of swallowing the error —
+ * callers must be able to detect a failed write and tell the user, rather
+ * than silently behaving as if the key was persisted when it wasn't. Falling
+ * back to plaintext storage is never an option here; the only acceptable
+ * failure mode is "the caller finds out and surfaces it."
  */
 export async function saveApiKey(name: ApiKeyName, value: string): Promise<void> {
   try {
     await SecureStore.setItemAsync(`${KEY_PREFIX}${name}`, value);
   } catch (e) {
     console.warn('[SecureStore] Failed to save key:', name, e);
+    throw e;
   }
 }
 
@@ -81,12 +88,18 @@ function connectorSecretKey(connectorId: string, field: string): string {
   return `${KEY_PREFIX}social-connector.${connectorId}.${field}`;
 }
 
+/**
+ * Re-throws on failure (after logging) — same rationale as saveApiKey above.
+ * A swallowed failure here would leave a social connector registered with a
+ * "successfully saved" secret that was never actually written.
+ */
 export async function saveConnectorSecret(connectorId: string, field: string, value: string): Promise<void> {
   const key = connectorSecretKey(connectorId, field);
   try {
     await SecureStore.setItemAsync(key, value);
   } catch (e) {
     console.warn('[SecureStore] Failed to save connector secret:', connectorId, field, e);
+    throw e;
   }
 }
 
