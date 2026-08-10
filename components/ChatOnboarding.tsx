@@ -11,7 +11,7 @@ import React, { useState } from 'react';
 import { View, Text, Pressable, TextInput, StyleSheet, Linking } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTranslation } from '@/lib/i18n';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import {
   type OnboardingStep,
   setOnboardingStep,
@@ -26,7 +26,7 @@ type Props = {
 
 export function ChatOnboarding({ step, onStepChange }: Props) {
   const { t } = useTranslation();
-  const { updateSettings } = useTerminalStore();
+  const { updateSettings } = useSettingsStore();
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [saving, setSaving] = useState(false);
 

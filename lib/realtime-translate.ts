@@ -9,7 +9,7 @@
  * 承認プロンプト検出（Phase 5-2）も含む。
  */
 
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 
 // ─── 承認プロンプト検出 (5-2) ────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ export async function translateTerminalOutput(
   contextLines: string[],
   signal?: AbortSignal,
 ): Promise<TranslateResult | null> {
-  const settings = useTerminalStore.getState().settings;
+  const settings = useSettingsStore.getState().settings;
 
   const isApproval = detectApprovalPrompt(text);
   const isSecurity = detectSecurityOutput(text);

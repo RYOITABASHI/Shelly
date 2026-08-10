@@ -13,7 +13,7 @@ import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { KEY_BAR_HEIGHT, BORDER_WIDTH } from '@/lib/layout-constants';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
 import { fonts as F } from '@/theme.config';
@@ -127,7 +127,7 @@ const SET_ORDER_NO_VIM: KeySetId[] = ['default', 'git', 'repl', 'navigate'];
 
 export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard, isCompact, suggestedSet, onAttach, onVoice, onVoiceLong, backgroundColor }: Props) {
   const { colors: c } = useTheme();
-  const { settings } = useTerminalStore();
+  const settings = useSettingsStore((s) => s.settings);
   const visualPreset =
     settings.uiFont === 'orange' ? 'orange'
       : settings.uiFont === 'scouter-green' ? 'green'

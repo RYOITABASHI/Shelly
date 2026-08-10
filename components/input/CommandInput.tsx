@@ -26,7 +26,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { isShellCommand } from '@/lib/input-router';
 import { useSpeechInput } from '@/hooks/use-speech-input';
 import { ShortcutBar } from './ShortcutBar';
@@ -139,7 +139,7 @@ export const CommandInput = forwardRef<CommandInputHandle, Props>(function Comma
       setTimeout(() => inputRef.current?.focus(), 100);
     },
   }), []);
-  const { settings } = useTerminalStore();
+  const settings = useSettingsStore((s) => s.settings);
   const insets = useSafeAreaInsets();
 
   const isNaturalMode = useMemo(() => {

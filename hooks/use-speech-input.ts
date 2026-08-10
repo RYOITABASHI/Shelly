@@ -8,7 +8,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { groqTranscribe } from '@/lib/groq';
 import { useTranslation } from '@/lib/i18n';
 
@@ -168,7 +168,7 @@ export function useSpeechInput() {
       }
 
       // Transcription: Groq Whisper.
-      const settings = useTerminalStore.getState().settings;
+      const settings = useSettingsStore.getState().settings;
       const groqKey = settings.groqApiKey;
 
       let text = '';

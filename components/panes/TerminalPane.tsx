@@ -27,6 +27,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useActiveSession, useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { learnFromCommand } from '@/lib/user-profile';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
@@ -307,7 +308,7 @@ export default function TerminalScreen() {
   // its own slice — `sessions` array reference only flips on
   // add/remove/edit, not on every byte append.
   const sessions = useTerminalStore((s) => s.sessions);
-  const settings = useTerminalStore((s) => s.settings);
+  const settings = useSettingsStore((s) => s.settings);
   const activeSession = paneSessionId
     ? sessions.find((s) => s.id === paneSessionId) ?? globalActiveSession
     : globalActiveSession;

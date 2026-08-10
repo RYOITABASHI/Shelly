@@ -4,7 +4,7 @@
  * Summarizes long terminal output for natural speech reading.
  */
 
-import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 
 /**
  * Summarize terminal output for voice reading.
@@ -15,7 +15,7 @@ export async function summarizeForSpeech(output: string): Promise<string> {
   if (!output.trim()) return 'Done.';
   if (output.length <= 200) return output.trim();
 
-  const settings = useTerminalStore.getState().settings;
+  const settings = useSettingsStore.getState().settings;
 
   // Try Groq first (fastest)
   const groqKey = settings.groqApiKey;

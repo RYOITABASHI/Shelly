@@ -21,6 +21,7 @@ import { TerminalBlock } from './TerminalBlock';
 import { AiBlock } from '@/components/terminal/AiBlock';
 import { SetupBlock } from '@/components/terminal/SetupBlock';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { useTranslation } from '@/lib/i18n';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
@@ -130,9 +131,9 @@ function ScrollToBottomButton({ onPress }: { onPress: () => void }) {
 export function BlockList({ blocks, entries, currentDir, onRerun, onCancel, onSelectTool }: Props) {
   const { colors } = useTheme();
   const flatListRef = useRef<FlatList>(null);
-  const fontSize = useTerminalStore((s) => s.settings.fontSize);
-  const lineHeight = useTerminalStore((s) => s.settings.lineHeight);
-  const autoScroll = useTerminalStore((s) => s.settings.autoScroll);
+  const fontSize = useSettingsStore((s) => s.settings.fontSize);
+  const lineHeight = useSettingsStore((s) => s.settings.lineHeight);
+  const autoScroll = useSettingsStore((s) => s.settings.autoScroll);
 
   const displayData: TerminalEntry[] = entries && entries.length > 0 ? entries : blocks;
 

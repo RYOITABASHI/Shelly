@@ -24,6 +24,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { CommandBlock, BlockStatus } from '@/store/types';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { useSnippetStore } from '@/store/snippet-store';
 import { getOutputColor } from '@/lib/output-colors';
 import { segmentText } from '@/lib/link-detector';
@@ -196,9 +197,9 @@ function ActionMenu({
 function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel, highContrastOutput }: Props) {
   const { colors } = useTheme();
   const runCommand = useTerminalStore((s) => s.runCommand);
-  const hapticFeedback = useTerminalStore((s) => s.settings.hapticFeedback);
-  const highContrastSetting = useTerminalStore((s) => s.settings.highContrastOutput);
-  const llmInterpreterEnabled = useTerminalStore((s) => s.settings.llmInterpreterEnabled ?? false);
+  const hapticFeedback = useSettingsStore((s) => s.settings.hapticFeedback);
+  const highContrastSetting = useSettingsStore((s) => s.settings.highContrastOutput);
+  const llmInterpreterEnabled = useSettingsStore((s) => s.settings.llmInterpreterEnabled ?? false);
   const { addSnippet: saveSnippet, findByCommand, updateSnippet } = useSnippetStore();
   // Exit code badge animation
   const exitScale = useSharedValue(0);
