@@ -50,9 +50,10 @@ import { generateId } from '@/lib/id';
 import { BlockList } from '@/components/terminal/BlockList';
 import { execCommand } from '@/hooks/use-native-exec';
 import { parseInput } from '@/lib/input-router';
-import { parseAgentCommand, createAgent, installAgent, runAgentNow, stopAgent } from '@/lib/agent-manager';
-import { suggestTool } from '@/lib/agent-tool-router';
+import { parseAgentCommand, runAgentNow, stopAgent } from '@/lib/agent-manager';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
+import { focusPaneByTab } from '@/lib/pane-focus';
+import { useAIPaneStore } from '@/store/ai-pane-store';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import {
   abandonNativeSessionCreate,
@@ -149,6 +150,86 @@ export function resolveNativeBlockExitCode(
   const exitCode = typeof rawExitCode === 'number' && rawExitCode >= 0 ? rawExitCode : null;
   const blockStatus = exitCode === null ? undefined : exitCode === 0 ? 'done' : 'error';
   return { exitCode, blockStatus };
+}
+
+/**
+ * bug fix (2026-08-12, on-device QA): typing `@agent <NL>` directly into the
+ * terminal (onBlockCompleted's bug #59 mention-intercept below) used to call
+ * `createAgent()` + `installAgent()` right here, materializing a brand-new
+ * agent with ZERO confirmation — a direct violation of the 2026-07-24
+ * standing policy that EVERY `@agent <NL>` registration goes through a
+ * confirm card / chat confirm before anything is installed (see
+ * hooks/use-ai-pane-dispatch.ts's dispatch(), whose own comment says "EVERY
+ * `@agent <NL>` goes through the confirm card... Nothing is created/run
+ * until the human taps Confirm"). It also derived the agent's name by
+ * truncating the raw utterance to its first whitespace-delimited word, so
+ * "@agent when I get a notification from Gmail, notify me with a summary"
+ * registered an agent literally named "when".
+ *
+ * The terminal pane cannot host the confirm-card/chat-confirm UI itself —
+ * it's a native PTY view (NativeTerminalView), not a React tree that could
+ * render AgentConfirmCard/AgentChatConfirm inline (see this file's own
+ * "NativeTerminalView = PTY直結" architecture note in CLAUDE.md). So instead
+ * of reimplementing registration + confirmation UI here, `create` results
+ * are handed off to a mounted AI Pane through the SAME mechanism the
+ * 2026-07-29 widget-ASK handoff uses (app/_layout.tsx's `target === 'ai'`
+ * deep-link branch, and lib/pane-focus.ts's focusPaneByTab, extracted from
+ * that same handler): focus/open an AI pane, then queue the full raw
+ * `@agent ...` text via `useAIPaneStore.pendingExternalPrompt` for the first
+ * mounted AIPane to claim (components/panes/AIPane.tsx's claim effect) and
+ * run through its normal dispatch() → parseAgentCommand → parseAgentNL →
+ * confirm-card/chat-confirm → confirmAgentDraft → installAgent chain —
+ * identical to typing the same text directly into the AI pane.
+ *
+ * `source` is deliberately left undefined (never 'widget-ask') when queuing
+ * the prompt: passing 'widget-ask' would let the OFF-by-default
+ * AppSettings.widgetAgentRegistrationNoConfirm opt-in skip the confirm step
+ * for this surface (see lib/widget-agent-registration.ts) — terminal-typed
+ * `@agent` must always confirm, with no opt-out, exactly like AI-Pane-typed
+ * input.
+ *
+ * `run` and `stop` are unaffected by this fix and keep executing inline —
+ * they act on an ALREADY-registered agent and require no confirmation in
+ * the AI pane's own dispatch() either (see its `agentResult.type === 'run'`
+ * / `'stop'` branches), so terminal and AI-pane behavior already matched
+ * for those two subcommands before this fix.
+ *
+ * Exported (rather than kept as an inline closure inside onBlockCompleted)
+ * so it can be unit-tested directly without rendering the full
+ * TerminalScreen component — see __tests__/terminal-pane-agent-mention-confirm.test.tsx,
+ * which follows the same "mock the native surface, import the pure/async
+ * helper" pattern __tests__/terminal-pane-block-exit-code.test.tsx already
+ * established for resolveNativeBlockExitCode above.
+ */
+export async function resolveTerminalAgentMention(prompt: string, rawCommand: string): Promise<string> {
+  try {
+    const agentResult = parseAgentCommand(prompt);
+    if (agentResult.type === 'create') {
+      const opened = focusPaneByTab('ai');
+      useAIPaneStore.getState().setPendingExternalPrompt(rawCommand);
+      return opened
+        ? '➜ Agent registration needs your confirmation — handed off to the AI pane. Review the draft there and tap Confirm to install it.'
+        : '[@agent] Could not open the AI pane to confirm registration (layout full). Open an AI pane manually, then re-run this @agent command there.';
+    } else if (agentResult.type === 'run') {
+      await runAgentNow(agentResult.data.agentId, async (cmd) => {
+        const result = await execCommand(cmd, 120_000);
+        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+        return result.stdout;
+      });
+      return agentResult.message;
+    } else if (agentResult.type === 'stop') {
+      await stopAgent(agentResult.data.agentId, async (cmd) => {
+        const result = await execCommand(cmd, 120_000);
+        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+        return result.stdout;
+      });
+      return agentResult.message;
+    } else {
+      return agentResult.message;
+    }
+  } catch (err) {
+    return `[@agent] error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 function withNativeSessionCreateTimeout<T>(promise: Promise<T>, nativeSessionId: string): Promise<T> {
@@ -1445,56 +1526,7 @@ export default function TerminalScreen() {
                   // diverge in multi-pane usage (see addEntryBlock's comment
                   // in store/terminal-store.ts for the full explanation).
                   const { addEntryBlock } = useTerminalStore.getState();
-                  let resultMessage: string;
-                  try {
-                    const agentResult = parseAgentCommand(parsed.prompt);
-                    if (agentResult.type === 'create') {
-                      // Natural-language agent creation. Build a minimal agent
-                      // with sensible defaults — the full creation wizard can
-                      // refine this later. Name is derived from the first word
-                      // of the prompt (e.g. "test echo hello" -> "test").
-                      const promptText = agentResult.message;
-                      const firstWord = promptText.split(/\s+/)[0] || 'agent';
-                      const name = firstWord.replace(/[^a-zA-Z0-9_-]/g, '') || `agent-${Date.now().toString(36)}`;
-                      const suggestion = agentResult.data?.suggestion ?? suggestTool(promptText);
-                      const autonomous = agentResult.data?.autonomous === true;
-                      const agent = createAgent({
-                        name,
-                        description: promptText.slice(0, 120),
-                        prompt: promptText,
-                        schedule: null,
-                        // G4: non-autonomous terminal @agent routes via the Layer-2
-                        // scorer at run time (tool 'auto'); autonomous keeps Codex.
-                        tool: autonomous ? suggestion.tool : { type: 'auto' },
-                        autonomous,
-                        outputPath: `~/.shelly/agents/${name}/output`,
-                      });
-                      await installAgent(agent, async (cmd) => {
-                        const result = await execCommand(cmd, 120_000);
-                        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
-                        return result.stdout;
-                      });
-                      resultMessage = `✅ Agent "${agent.name}" installed (${suggestion.label}${autonomous ? ', autonomous' : ''}). Run it with: @agent run ${agent.name}`;
-                    } else if (agentResult.type === 'run') {
-                      await runAgentNow(agentResult.data.agentId, async (cmd) => {
-                        const result = await execCommand(cmd, 120_000);
-                        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
-                        return result.stdout;
-                      });
-                      resultMessage = agentResult.message;
-                    } else if (agentResult.type === 'stop') {
-                      await stopAgent(agentResult.data.agentId, async (cmd) => {
-                        const result = await execCommand(cmd, 120_000);
-                        if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
-                        return result.stdout;
-                      });
-                      resultMessage = agentResult.message;
-                    } else {
-                      resultMessage = agentResult.message;
-                    }
-                  } catch (err) {
-                    resultMessage = `[@agent] error: ${err instanceof Error ? err.message : String(err)}`;
-                  }
+                  const resultMessage = await resolveTerminalAgentMention(parsed.prompt, trimmedCmd);
                   addEntryBlock({
                     id: generateId(),
                     sessionId: activeSessionRecordId ?? '',

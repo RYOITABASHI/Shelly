@@ -33,7 +33,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
-import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { focusPaneByTab } from '@/lib/pane-focus';
 import { usePaneStore } from '@/store/pane-store';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { useProfileStore } from '@/store/profile-store';
@@ -634,36 +635,10 @@ export default function RootLayout() {
       return pathTarget || hostTarget;
     };
 
-    const visiblePresetForSlot = (currentPreset: PresetId, slotIndex: number): PresetId => {
-      const currentCapacity = PRESET_CAPACITY[currentPreset] ?? 1;
-      if (slotIndex < currentCapacity) return currentPreset;
-      if (slotIndex <= 1) return 'p2h';
-      if (slotIndex === 2) return 'p3l';
-      return 'p4';
-    };
-
-    const focusPaneByTab = (tab: 'agent-chat' | 'ai') => {
-      const multiPane = useMultiPaneStore.getState();
-      const existingIndex = multiPane.slots.findIndex((slot) => slot?.tab === tab);
-      if (existingIndex >= 0) {
-        const slot = multiPane.slots[existingIndex];
-        multiPane.maximizeSlot(null);
-        const visiblePreset = visiblePresetForSlot(multiPane.preset, existingIndex);
-        if (visiblePreset !== multiPane.preset) {
-          multiPane.setPreset(visiblePreset);
-        }
-        multiPane.focusSlot(existingIndex as 0 | 1 | 2 | 3);
-        if (slot) usePaneStore.getState().setFocusedPane(slot.id);
-        return true;
-      }
-
-      const result = multiPane.addPane(tab);
-      if (result) {
-        logInfo('DeepLink', `could not add ${tab} pane: ${result}`);
-        return false;
-      }
-      return true;
-    };
+    // focusPaneByTab (and its visiblePresetForSlot helper) now live in
+    // lib/pane-focus.ts — shared with components/panes/TerminalPane.tsx's
+    // `@agent` mention hand-off, which needs the identical "make the AI
+    // pane visible before queuing a hand-off" sequence.
 
     const waitForMultiPaneHydration = () => new Promise<void>((resolve) => {
       if (useMultiPaneStore.getState()._hasHydrated) {
