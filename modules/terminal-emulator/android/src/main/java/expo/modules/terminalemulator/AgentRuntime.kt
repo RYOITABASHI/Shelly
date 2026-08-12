@@ -562,6 +562,14 @@ object AgentRuntime {
 
         val actionApprovalNotifierStop = AtomicBoolean(false)
         val actionApprovalNotifier = startActionApprovalNotifier(appContext, actionApprovalNotifierStop)
+        if (unattended && !isAgentEnabled(homeDir, agentId)) {
+            actionApprovalNotifierStop.set(true)
+            runCatching { actionApprovalNotifier.join(1000) }
+            val message = "agent disabled immediately before launch: $agentId"
+            Log.i(TAG, "Agent $agentId refused: $message")
+            writeReceiverLog(homeDir, agentId, "skipped", message)
+            return AgentRunResult(agentId, 129, "", message)
+        }
         val result = try {
             ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
@@ -804,6 +812,14 @@ object AgentRuntime {
         Log.i(TAG, "Agent $agentId starting via PlanSpec executor plan=$planPath version=$planVersion unattended=$unattended trustedAction=${trustedLaunch?.actionType ?: "-"} trustedTool=${trustedLaunch?.toolType ?: "-"}")
         val actionApprovalNotifierStop = AtomicBoolean(false)
         val actionApprovalNotifier = startActionApprovalNotifier(context, actionApprovalNotifierStop)
+        if (unattended && !isAgentEnabled(homeDir, agentId)) {
+            actionApprovalNotifierStop.set(true)
+            runCatching { actionApprovalNotifier.join(1000) }
+            val message = "agent disabled immediately before launch: $agentId"
+            Log.i(TAG, "Agent $agentId refused: $message")
+            writeReceiverLog(homeDir, agentId, "skipped", message)
+            return AgentRunResult(agentId, 129, "", message)
+        }
         val result = try {
             ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
