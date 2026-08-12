@@ -14,6 +14,26 @@
 
 ---
 
+### ✅ Track BB 実機検証完了(Fable5、versionCode 2163 / commit `c25355544`)— 3項目全PASS、軽微な新規観察3件(P2/P3)
+
+**背景**: ターミナルペイン経由の`@agent`登録が確認カードを経由せず即登録されてしまう不整合(2026-07-24方針との齟齬)をTrack BBで修正、実機検証した。
+
+**結果: 3項目全PASS**:
+1. ターミナル経由`@agent`登録の確認経由化 = PASS。`@agent when I get a notification from Gmail, ...`をターミナルに入力→即登録されずAIペインへ引き渡され、スロットフィリング質問→確認カード→Confirmを経て初めてSidebarに登録されることを実機確認。
+2. 既存agentへの`@agent run`は引き続き確認不要即実行 = PASS。
+3. AIペイン経由の`@agent`登録の回帰なし = PASS。
+
+**新規軽微な観察(P2/P3、報告のみ)**:
+- **【P2】run結果の通知内容が指示と無関係**: 通知トリガーagentの`@agent run`実行結果通知が「What would you like me to do with `C:/Program`?」という、元の指示(Gmail通知の要約)と無関係な内容だった。local LLMへ渡るコンテキストに何らかの断片が混入している疑い、原因未特定。即実行のゲート自体は正常。
+- **【P3】通知トリガー付きagentのSidebar表示にトリガー明示が無い**: `manual`としか表示されず、どのアプリがトリガーか判別不可(release buildのためJSON実体は未確認、表示の問題か実体の問題か未切り分け)。
+- **【P3・軽微】確認カード本文がaccessibilityツリーに非露出**: スクリーンリーダー観点の軽微な課題。
+
+**クリーンアップ**: テストagent2体削除・pending alarm 0件確認済み。
+
+→ sync: なし。
+
+---
+
 ### ✅ Track Y/Z/AA 実機再検証完了(Fable5、versionCode 2159 / commit `96223443f`)— 5項目全PASS、新規1件発見(P1)
 
 **背景**: Track S/U/V/W/Xの実機再検証で見つかった3件(通知トリガー会話型登録の構造的欠陥、Block History exit code誤表示、Pause/cron分境界レース)をTrack Y/Z/AAで修正後、実機で再検証した。
