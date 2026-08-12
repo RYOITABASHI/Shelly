@@ -369,7 +369,19 @@ object AgentRuntime {
     // --embedding --pooling mean so the same local server also serves OAI
     // /v1/embeddings (skill-match re-rank, MEMORY_EMBEDDING_ENABLED) — see
     // lib/agent-executor.ts's matching AGENT_SCRIPT_VERSION v52 comment.
-    private const val CURRENT_SCRIPT_VERSION = 56
+    // v57 (2026-08-12, on-device QA finding — notification-trigger manual-run
+    // off-topic hallucination): a manual `@agent run <name>` of a
+    // notification-triggered agent never sets SHELLY_NOTIFICATION_TEXT (only
+    // this class's own runAgent() exports it, on a real notification fire),
+    // so the generated script used to send the model just the bare, still
+    // trigger-worded prompt with no notification content and no
+    // acknowledgement that none was available — see lib/agent-executor.ts's
+    // matching AGENT_SCRIPT_VERSION v57 comment for the full trace and fix
+    // (a new NOTIFICATION_CONTEXT branch, gated on the newly-baked
+    // AGENT_HAS_NOTIFICATION_TRIGGER, that tells the model the true
+    // situation instead of asking it to invent one). No native change here;
+    // bumped only so a stale pre-v57 on-disk script is regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 57
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
