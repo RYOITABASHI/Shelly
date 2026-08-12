@@ -26,13 +26,13 @@
 5. Pause/cron分境界レース(Track AA) = PASS、**実機でレース条件自体の再現に成功**。分境界alarm発火直後(run進行中)にPauseが成立するシナリオを作り、in-flight runは完走しつつpost-run再armが正しく抑止されることを確認(以後の分境界で余分な発火なし)。
 
 **新規発見(未修正・報告のみ)**:
-- **【P1・要確認】ターミナルペイン経由の`@agent`入力が確認なしで即登録される**: AIペイン経由の`@agent`はNL confirm必須(2026-07-24方針)だが、ターミナルペインへ直接`@agent when I get a notification from Gmail, notify me with a summary`を入力すると、会話型登録(確認カード)を経ずに即座にagentが材料化される。名前導出も発話の先頭切り詰め(「when I get a notification fr…」)で不自然。**「登録はNL confirm必須」という既存方針との不整合の可能性がある**ため、次回精査が必要。再現: ターミナルで`@agent`発話を直接入力しEnter。
+- ✅(`170d7042c`で修正、実機未検証)**【P1】ターミナルペイン経由の`@agent`入力が確認なしで即登録される**: AIペイン経由の`@agent`はNL confirm必須(2026-07-24方針)だが、ターミナルペインへ直接`@agent when I get a notification from Gmail, notify me with a summary`を入力すると、会話型登録(確認カード)を経ずに即座にagentが材料化される。名前導出も発話の先頭切り詰め(「when I get a notification fr…」)で不自然。**「登録はNL confirm必須」という既存方針との不整合**が確定した。根本原因: `components/panes/TerminalPane.tsx`の`onBlockCompleted`(bug #59 `@mention`インターセプト)が`parseAgentCommand`の`'create'`結果に対し`createAgent()`+`installAgent()`をその場で直接呼んでおり、AIペイン側`dispatch()`(`hooks/use-ai-pane-dispatch.ts`)が強制している confirm-card/chat-confirm を完全に迂回していた。修正: ターミナルペインはネイティブPTYビューでconfirm-card UIを自前ホストできないため、2026-07-29のwidget ASK handoffと同じ経路(`lib/pane-focus.ts`の`focusPaneByTab`でAIペインをフォーカス/オープン→`useAIPaneStore.pendingExternalPrompt`に生の`@agent ...`テキストをキュー→AIPaneの既存claim effectが通常の`dispatch()`→confirm-card/chat-confirm→`confirmAgentDraft`→`installAgent`チェーンを実行)へハンドオフするよう変更。`source`タグは付与しない(widgetのno-confirmオプトインが誤って適用されるのを防ぐため)。`run`/`stop`サブコマンドは元々AIペイン側でも確認不要のため無変更。回帰テスト`__tests__/terminal-pane-agent-mention-confirm.test.tsx`追加(6件、'create'がcreateAgent/installAgentを直接呼ばないこと・focusPaneByTab+pendingExternalPromptへ委譲することを確認)。`npx tsc --noEmit`クリーン、既存テストスイート無回帰(環境起因の`plan-executor*`/`capability-broker`のWindowsパス系失敗は本修正前から存在する既知の無関係な事前障害と分離確認済み)。**実機QAでの確認(ターミナルで`@agent`発話→AIペインに確認待ちメッセージが現れること)が未了。**
 - 【軽微】自動命名がcron文除去後の途中から切れて不自然(「UTE WRITE A SHORT TEST NOTE…」)。
 - 【軽微】通知トリガー付きagentでも、Sidebar行・詳細popupに「manual · draft」とだけ表示され、トリガーアプリ名がどこにも見えない。
 
 **クリーンアップ**: テストagent4体・自動保存skill・出力dir・一時ファイル全削除済み、pending alarm 0件確認済み。
 
-→ sync: なし(次回、ターミナル経由@agent入力の確認省略問題から着手することを推奨)。
+→ sync: なし(ターミナル経由@agent入力の確認省略問題は`170d7042c`で修正済み、次回は実機QAでの確認を推奨)。
 
 ---
 
