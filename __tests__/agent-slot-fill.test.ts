@@ -64,7 +64,27 @@ describe('needsNotificationTrigger', () => {
 });
 
 describe('nextMissingSlot', () => {
-  it('prioritises schedule over other missing slots even when other things are also missing', () => {
+  it('prioritises schedule over other missing slots for an ordinary (non-trigger) draft', () => {
+    const d = makeDraft({
+      scheduleConfident: false,
+      rawText: '毎朝レポートを作って保存して',
+      prompt: 'レポートを作って保存して',
+      action: { type: 'draft' },
+    });
+    const slot = nextMissingSlot(d, {});
+    expect(slot?.field).toBe('schedule');
+  });
+
+  // 2026-08-12 on-device fix (Track after Track U): a notification-triggered
+  // request ("〇〇の通知が来たら…") has no cron schedule by definition —
+  // lib/agent-manager.ts registers an agent on `agent.schedule ||
+  // agent.notificationTrigger`, either suffices. Before this fix, the
+  // (unconditional) `!draft.scheduleConfident` check ran BEFORE
+  // needsNotificationTrigger, so this exact shape of draft asked for a
+  // schedule FOREVER — parseSchedule can never turn a notification-trigger
+  // phrase into a confident cron, so the schedule question could never be
+  // satisfied. notificationTrigger must now be asked FIRST.
+  it('asks for notificationTrigger BEFORE schedule when the trigger phrase is present and schedule is not confident', () => {
     const d = makeDraft({
       scheduleConfident: false,
       rawText: 'LINEの通知が来たら実行して',
@@ -72,7 +92,22 @@ describe('nextMissingSlot', () => {
       action: { type: 'draft' },
     });
     const slot = nextMissingSlot(d, {});
-    expect(slot?.field).toBe('schedule');
+    expect(slot?.field).toBe('notificationTrigger');
+  });
+
+  // Once a notification trigger IS resolved, the schedule requirement must be
+  // skipped entirely (not merely deprioritized) — a notification-triggered
+  // agent has no time/frequency to ask about at all.
+  it('does not ask for schedule once notificationTrigger is resolved, even though scheduleConfident is false', () => {
+    const d = makeDraft({
+      scheduleConfident: false,
+      schedule: null,
+      rawText: 'LINEの通知が来たら実行して',
+      prompt: '実行して',
+      action: { type: 'notify' },
+      notificationTrigger: { packageNames: ['jp.naver.line.android'] },
+    });
+    expect(nextMissingSlot(d, {})).toBeNull();
   });
 
   it('returns null for a fully-resolved draft whose action is not draft, even with no vault path configured', () => {

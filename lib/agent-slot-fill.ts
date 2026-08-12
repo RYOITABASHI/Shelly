@@ -131,7 +131,30 @@ export function nextMissingSlot(
       };
     }
   }
-  if (!draft.scheduleConfident) {
+  // NOTIFY-001 (2026-08-12 on-device finding): a notification-triggered
+  // request ("when I get a notification from X, do Y") is fired by the
+  // notification's ARRIVAL, not a time or frequency — lib/agent-manager.ts
+  // registers an agent on `agent.schedule || agent.notificationTrigger`
+  // (either suffices), so this shape of agent structurally has no cron
+  // schedule at all. This check therefore MUST run, and its slot MUST be
+  // resolved (or explicitly declined via applySlotAnswer's give-up path),
+  // BEFORE the schedule requirement below: parseSchedule() can never turn
+  // "when I get a notification from com.android.systemui" into a confident
+  // cron, so when this was checked only AFTER `!draft.scheduleConfident`
+  // (unreachable — the schedule check always won first), the schedule
+  // question was asked forever for a request that structurally can never
+  // satisfy it. See also the matching `hasNotificationTrigger` guard just
+  // below, which stops a resolved trigger from being asked to ALSO supply a
+  // schedule it doesn't need.
+  if (needsNotificationTrigger(draft)) {
+    return {
+      field: 'notificationTrigger',
+      question: strings['slot_fill.question_notification_trigger'],
+    };
+  }
+  const hasNotificationTrigger =
+    !!draft.notificationTrigger && draft.notificationTrigger.packageNames.length > 0;
+  if (!draft.scheduleConfident && !hasNotificationTrigger) {
     return {
       field: 'schedule',
       question: strings['slot_fill.question_schedule'],
@@ -140,10 +163,10 @@ export function nextMissingSlot(
   // social-post (2026-07-22): lib/agent-nl-parser.ts's detectSocialPost sets
   // socialPostCandidates when 2+ registered connectors matched the named
   // platform/label — genuinely ambiguous which one to post to. Ask before
-  // anything else action-related (notificationTrigger/outputPath don't apply
-  // to a social-post agent anyway once resolved). List each candidate so a
-  // plain number reply ("1") or its label ("my-mastodon") both work — see
-  // applySlotAnswer's socialConnector branch.
+  // anything else action-related (outputPath doesn't apply to a social-post
+  // agent anyway once resolved). List each candidate so a plain number reply
+  // ("1") or its label ("my-mastodon") both work — see applySlotAnswer's
+  // socialConnector branch.
   if ((draft.socialPostCandidates?.length ?? 0) > 1) {
     const options = draft.socialPostCandidates!
       .map((c, i) => `${i + 1}. ${c.label} (${strings[`social_connectors.platform_${c.platform}`] ?? c.platform})`)
@@ -151,12 +174,6 @@ export function nextMissingSlot(
     return {
       field: 'socialConnector',
       question: `${strings['slot_fill.question_social_connector']}\n${options}`,
-    };
-  }
-  if (needsNotificationTrigger(draft)) {
-    return {
-      field: 'notificationTrigger',
-      question: strings['slot_fill.question_notification_trigger'],
     };
   }
   if (draft.action.type === 'draft' && !ctx.agentVaultPath && !ctx.agentTopicFolder) {

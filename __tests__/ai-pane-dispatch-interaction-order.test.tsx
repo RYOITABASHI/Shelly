@@ -1809,6 +1809,49 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
     expect(conv().pendingAgentSession).toBeFalsy();
   });
 
+  // 2026-08-12 on-device state-loop fix: the Phase 2 rescue in scenario (b)
+  // above is invoked specifically because the ordinary retry for `field`
+  // ('schedule' here) already failed once. If the rescue's OWN proposal also
+  // fails to move that SAME field forward (nextMissingSlot flags it again),
+  // spinning up yet another brand-new, context-poor pendingSlotFill for it
+  // would just repeat the failure with fresh amnesia each time — no message
+  // history, only a deterministicHint text summary — which on-device
+  // manifested as "keeps re-asking name/schedule after answering autonomous"
+  // (each hop resets attemptCount to 0 and starts a new one-shot LLM call).
+  // Post-fix, a same-field miss defers to the confirm decision instead of
+  // bouncing back into Tier 3 forever — mirroring the identical guard the
+  // plain fixed-question retry already applies.
+  it('(e) a Tier 3 rescue proposal that does NOT resolve the same field it was invoked for stops looping and proceeds to confirmation instead of re-asking that field again', async () => {
+    const draft = seedScheduleSlot(1);
+    const rescueProposal =
+      '```shelly-agent-registration\n' +
+      // The rescue model applied a DIFFERENT field (name) but, just like the
+      // user's own answer, said nothing usable about schedule — scheduleText
+      // is omitted entirely, so the merge cannot move draft.scheduleConfident
+      // at all.
+      JSON.stringify({ name: '改名済みエージェント' }) +
+      '\n```';
+    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
+      isTier3RegistrationCall(messages)
+        ? { success: true, content: rescueProposal }
+        : { success: false, content: '', error: 'narrow extraction miss' },
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('よくわからない');
+    });
+
+    // Never spins up ANOTHER 'schedule' pendingSlotFill question — that would
+    // be the loop.
+    expect(lastMessage().pendingSlotFill).toBeUndefined();
+    // The merge's OTHER field (name) still applied — this is a genuine
+    // hand-off to confirmation with partial progress, not a discard.
+    expect(lastMessage().agentDraft?.name).toBe('改名済みエージェント');
+    expect(lastMessage().agentDraft?.scheduleConfident).toBe(false);
+    expect(lastMessage().agentDraft?.rawText).toBe(draft.rawText);
+  });
+
   it('(d) re-checks the autonomous slot before confirmation for both initial and resumed Tier 3 proposals', async () => {
     const proposal =
       '```shelly-agent-registration\n' +
@@ -2140,16 +2183,21 @@ describe('Scenario 10a — Tier 3 fresh-dispatch proposal asks about ANY missing
     mockOllamaChat.mockClear();
   });
 
-  it('a Tier 3 proposal with no scheduleText now asks the schedule slot-fill question instead of silently reaching confirmation', async () => {
+  it('a Tier 3 proposal with no scheduleText now asks the notificationTrigger slot-fill question instead of silently reaching confirmation', async () => {
     const PROPOSAL =
       '```shelly-agent-registration\n' +
       JSON.stringify({
         name: 'Notify summarizer',
-        // The model has nothing to propose here — a notification-triggered
-        // request has no cron schedule by definition, and
-        // AgentConversationalExtraction has no notificationTrigger field at
-        // all for it to report the trigger through either.
+        // 2026-08-12: the model did NOT follow the (now-added)
+        // notificationTriggerApp field rule and left both scheduleText and
+        // notificationTriggerApp empty — the "model got it wrong" case this
+        // scenario exercises. nextMissingSlot must still recover: it detects
+        // the notification-trigger PHRASE in the original utterance
+        // (rawText) independently of what the model proposed, and asks for
+        // it directly instead of asking for a schedule that can never be
+        // satisfied for this kind of request.
         scheduleText: '',
+        notificationTriggerApp: '',
         actionType: 'draft',
         prompt: 'summarize the notification',
       }) +
@@ -2161,13 +2209,49 @@ describe('Scenario 10a — Tier 3 fresh-dispatch proposal asks about ANY missing
       await result.current.dispatch('@agent when I get a notification from com.android.systemui, summarize it');
     });
 
-    // Pre-fix: this branch checked ONLY `missingSlot?.field === 'autonomous'`,
-    // so a still-missing schedule fell through to presentDraftForConfirmation
-    // unasked. Post-fix: any missing slot is asked about, same as every other
-    // missingSlot check in this file.
-    expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
+    // Pre-fix (2026-08-10, Track U): this branch checked ONLY
+    // `missingSlot?.field === 'autonomous'`, so a still-missing schedule fell
+    // through to presentDraftForConfirmation unasked.
+    // Pre-fix (2026-08-12, this fix): nextMissingSlot asked for 'schedule'
+    // unconditionally before ever considering a notification-trigger phrase,
+    // which a notification-triggered request can never satisfy — asking it
+    // forever. Post-fix: the notification-trigger intent is recognized from
+    // the original utterance and asked about directly.
+    expect(lastMessage().pendingSlotFill?.field).toBe('notificationTrigger');
     expect(conv().pendingAgentSession).toBeFalsy();
     expect(mockCreateAgent).not.toHaveBeenCalled();
+  });
+
+  // 2026-08-12: the "ideal" path from the same on-device finding — the model
+  // DOES follow the new notificationTriggerApp field rule, so the trigger
+  // resolves directly out of the Tier 3 proposal and registration can proceed
+  // straight to confirmation without an extra round-trip.
+  it('a Tier 3 proposal that DOES supply notificationTriggerApp resolves the trigger directly, with no extra question', async () => {
+    const PROPOSAL =
+      '```shelly-agent-registration\n' +
+      JSON.stringify({
+        name: 'Notify summarizer',
+        scheduleText: '',
+        notificationTriggerApp: 'com.android.systemui',
+        actionType: 'draft',
+        prompt: 'summarize the notification',
+      }) +
+      '\n```';
+    mockOllamaChat.mockResolvedValue({ success: true, content: PROPOSAL });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('@agent when I get a notification from com.android.systemui, summarize it');
+    });
+
+    // No further slot-fill question — outputPath still applies (action is
+    // 'draft' with no vault/topic folder configured in this test's settings),
+    // so the flow proceeds to the outputPath question rather than silently
+    // reaching confirmation; the key assertion is that it is NOT re-asking
+    // about schedule or notificationTrigger.
+    expect(lastMessage().pendingSlotFill?.field).not.toBe('schedule');
+    expect(lastMessage().pendingSlotFill?.field).not.toBe('notificationTrigger');
+    expect(conv().pendingAgentSession).toBeFalsy();
   });
 });
 
