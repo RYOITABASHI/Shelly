@@ -112,6 +112,45 @@ function sessionStatusToConnectionState(status: SessionStatus | undefined): Conn
   }
 }
 
+/**
+ * Resolves the exit code + blockStatus to store for a completed native
+ * command block, given the raw `exitCode` number from
+ * `NativeTerminalView`'s `onBlockCompleted` event.
+ *
+ * 2026-08-12 on-device QA finding (Track V follow-up,
+ * docs/superpowers/DEFERRED.md): successful commands (pwd, date, ...) were
+ * rendering a "✗ -1" failure badge in Block History. Root cause is
+ * native-side: Kotlin's `BlockDetector.completeBlock()`
+ * (modules/terminal-view/.../BlockDetector.kt) legitimately produces a
+ * `null` exitCode whenever a block completes WITHOUT having observed an
+ * OSC 133;D;<code> marker — the idle-timeout fallback for shells without
+ * OSC 133 support, or a new prompt (133;A) arriving before D was parsed
+ * (e.g. a D sequence split across two `processOutput()` chunks).
+ * `ShellyTerminalView.kt`'s `onBlockCompleted` bridge collapses that
+ * `Int?` to a `-1` sentinel before it ever reaches JS
+ * (`"exitCode" to (block.exitCode ?: -1)`), and since real process exit
+ * statuses are always in the 0..255 range, -1 is an unambiguous "unknown,
+ * not observed" marker rather than an actual failure.
+ *
+ * This maps that -1 sentinel to `exitCode: null`, matching this
+ * codebase's existing convention for "not yet determined" (see the
+ * initial `exitCode: null` in terminal-store.ts's `runCommand()`, and the
+ * identical `b.exitCode === 0 ? 'done' : b.exitCode !== null ? 'error' :
+ * undefined` derivation in that store's `saveSessionState()`).
+ * `components/terminal/TerminalBlock.tsx` already treats `exitCode ===
+ * null` as "unknown" everywhere (badge, sound effect, and rich-content
+ * renderer all gate on `exitCode !== null`), so a block with an
+ * unresolved exit code now renders without a ✓/✗ badge instead of a
+ * misleading ✗.
+ */
+export function resolveNativeBlockExitCode(
+  rawExitCode: number,
+): { exitCode: number | null; blockStatus: 'done' | 'error' | undefined } {
+  const exitCode = typeof rawExitCode === 'number' && rawExitCode >= 0 ? rawExitCode : null;
+  const blockStatus = exitCode === null ? undefined : exitCode === 0 ? 'done' : 'error';
+  return { exitCode, blockStatus };
+}
+
 function withNativeSessionCreateTimeout<T>(promise: Promise<T>, nativeSessionId: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -1472,6 +1511,13 @@ export default function TerminalScreen() {
 
                 // Same fix as above — write to this pane's own session, not
                 // the global activeSessionId.
+                //
+                // exitCode/blockStatus go through resolveNativeBlockExitCode
+                // (defined above) rather than being used verbatim — see its
+                // doc comment for why: the native side sends -1 as a
+                // sentinel for "no exit code observed", which used to be
+                // stored and rendered as a literal failing exit code.
+                const { exitCode: resolvedExitCode, blockStatus } = resolveNativeBlockExitCode(exitCode);
                 const { addEntryBlock } = useTerminalStore.getState();
                 addEntryBlock({
                   id: generateId(),
@@ -1479,9 +1525,9 @@ export default function TerminalScreen() {
                   command: trimmedCmd,
                   output: (output || '').split('\n').map((line: string) => ({ text: line, type: 'stdout' as const })),
                   timestamp: Date.now(),
-                  exitCode: typeof exitCode === 'number' ? exitCode : 0,
+                  exitCode: resolvedExitCode,
                   isRunning: false,
-                  blockStatus: exitCode !== 0 ? 'error' : 'done',
+                  blockStatus,
                   // onBlockCompleted only fires when a native session is alive,
                   // so connectionMode is always 'native' here.
                   connectionMode: 'native',
