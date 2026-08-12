@@ -14,6 +14,32 @@
 
 ---
 
+### 2026-08-12 Track S/U/V/W/X修正の実機再検証(Fable5、versionCode 2152 / commit `a40785da9`)— P0 2件PASS(logcat防御ログ確認済み)、通知トリガー会話型登録に新規の構造的欠陥を発見
+
+**背景**: 前回の実機QAで見つけた6件のバグ(P0×2: ゾンビalarm/Pause無効化、P1×3: 通知トリガー消失/Block History空表示/skill自動保存不発、P3×1: アプリ名fuzzy解決)をTrack S/U/V/W/Xで修正・mainマージ・CI green後、実機で再検証した。
+
+**PASS(4件)**:
+1. **ゾンビalarm無限ループ(P0)= PASS**: `*/1`cron agentを実行中に削除→3分半監視でpending alarm 0件を維持。logcatに`Post-run re-arm removed stale schedule for missing/disabled agent`が明確に出力され、post-run再arm処理が削除済みagentを正しく検知・スキップしていることを確認。
+2. **Pauseのapp再起動耐性(P0)= PASS**: Pause済みagentをforce-stop→再起動、logcatに`Boot re-armed 0 scheduled agent(s)`。3分以上監視してもpending alarm 0件を維持、startup repairでの復活なし。
+3. **Block History表示 = PASS**: `echo hello`/`pwd`/`date`実行後、実コマンドブロックが正しく表示されるようになった(以前はgreetingのみで空)。
+4. **無人skill自動保存 = PASS**: remember付きone-shot発火完了直後にSidebar SKILLSへ自動保存、「Skill saved automatically」通知も確認。
+
+**条件付きPASS/BLOCKED(新規の構造的問題を発見)**:
+5. **通知トリガーNL登録のサイレント消失(Track U) = 消失自体は解消、ただし登録を完遂する経路が無い**: 「サイレントにephemeral one-shot化する」という当初症状は解消し、会話型slot-fillへの誘導と明示的な再質問は出るようになった。しかし**scheduleスロットがcron専用パーサのため、「when I get a notification」系の発話を`did not parse to a confident cron — dropped`として常に破棄**し、通知トリガーagentのNL登録が最後まで完遂できない(無限に「いつ実行しますか?」を聞き直す)。
+6. **アプリ名fuzzy解決(Track X) = 部分的に前進、実機での最終確認は不可能**: LLM抽出層は「Gmail」を`platformHint="Gmail"`と正しく認識するようになった(以前の「Sorry, I didn't understand」門前払いより前進)。しかし項目5のスロットフロー欠陥により、パッケージ名を尋ねる質問自体に到達できず、`com.google.android.gm`への解決を実機確認できなかった。
+
+**新規発見バグ(未修正・報告のみ)**:
+- **【要修正】会話型登録(Tier3)のscheduleスロットが通知トリガー句を一切受理しない**: 上記5の根本原因。`lib/agent-conversational-registration.ts`(または対応するschedule抽出ロジック)がcron形式のみを期待しており、notificationTrigger意図の発話をfallback先無しに`dropped`する。
+- **【中】slot-fillの状態喪失ループ**: autonomous回答後などに名前→scheduleを再質問し直す周回、質問文の重複連結表示(「What short name...?What short name...?」)、assistant吹き出しが空で描画され約2分無応答に見えるケースを観察。
+- **【軽微】Block Historyの終了ステータス誤表示**: 成功コマンド(pwd/date等)にも「✗ -1」と表示される。
+- **【軽微】Pauseとcron分境界発火のレース**: Pause操作が分境界の0.5秒後に届くと1回だけ実行されてしまう(post-run再arm自体は正しく抑止するため実害は限定的)。
+
+**クリーンアップ**: テストagent2体・自動保存テストスキル・一時ファイル全削除済み、最終pending alarm 0件確認済み。
+
+→ sync: なし(次回修正サイクルで「会話型登録のscheduleスロットが通知トリガー句を受理しない」問題から着手することを推奨)。
+
+---
+
 ### Fig風オートコンプリート復活 — プロダクトオーナー指示で調査したが、現行ネイティブPTYアーキテクチャではJS側だけでの復活が技術的に不可能と判明。ネイティブ変更のスコープを特定して報告のみ、実装は見送り (P1)
 
 **背景**: 2026-08-10のFable5実機②レビュー（本ファイル前掲、2026-08-10エントリのD-1）が「Fig風オートコンプリートが消失（`components/terminal/AutocompletePopup.tsx`/`hooks/use-autocomplete.ts`が現mainに無い、`lib/autocomplete-engine.ts`は参照ゼロのデッドコード）」と発見し、直後のTrack M（`d7ade2e0d`）でConfigTUIの孤児化「Autocomplete」トグルを削除した。今回、プロダクトオーナーから明示的に「機能自体を復活させる方針」の指示があり、`cce05d705`（2026-04-16「chore: remove dead code pre-v0.1.0」）で削除された当時の実装を精査した上での復活可否を再調査した。
