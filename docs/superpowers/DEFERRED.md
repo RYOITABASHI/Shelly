@@ -14,6 +14,28 @@
 
 ---
 
+### ✅ Track Y/Z/AA 実機再検証完了(Fable5、versionCode 2159 / commit `96223443f`)— 5項目全PASS、新規1件発見(P1)
+
+**背景**: Track S/U/V/W/Xの実機再検証で見つかった3件(通知トリガー会話型登録の構造的欠陥、Block History exit code誤表示、Pause/cron分境界レース)をTrack Y/Z/AAで修正後、実機で再検証した。
+
+**結果: 5項目全PASS**:
+1. 通知トリガーのNL登録完遂 = PASS。`when I get a notification from com.android.systemui`が1ターンでnotificationTrigger意図として認識され、schedule質問を経ずに登録完遂(`"schedule": null`/`"notificationTrigger":{"packageNames":["com.android.systemui"]}`をagent JSONで確認)。
+2. slot-fill状態ループ・重複連結・空吹き出し = PASS。複数フロー通しで再現せず、質問は一度だけ正常表示。
+3. アプリ名fuzzy解決(Track X、前回BLOCKED) = PASS。「Gmail」→`com.google.android.gm`への解決を実機確認、前回のブロック要因(#1の欠陥)が解消されたことで到達・確認できた。
+4. Block Historyの「✗ -1」誤表示(Track Z) = PASS。成功コマンドブロックに誤った✗バッジなし。
+5. Pause/cron分境界レース(Track AA) = PASS、**実機でレース条件自体の再現に成功**。分境界alarm発火直後(run進行中)にPauseが成立するシナリオを作り、in-flight runは完走しつつpost-run再armが正しく抑止されることを確認(以後の分境界で余分な発火なし)。
+
+**新規発見(未修正・報告のみ)**:
+- **【P1・要確認】ターミナルペイン経由の`@agent`入力が確認なしで即登録される**: AIペイン経由の`@agent`はNL confirm必須(2026-07-24方針)だが、ターミナルペインへ直接`@agent when I get a notification from Gmail, notify me with a summary`を入力すると、会話型登録(確認カード)を経ずに即座にagentが材料化される。名前導出も発話の先頭切り詰め(「when I get a notification fr…」)で不自然。**「登録はNL confirm必須」という既存方針との不整合の可能性がある**ため、次回精査が必要。再現: ターミナルで`@agent`発話を直接入力しEnter。
+- 【軽微】自動命名がcron文除去後の途中から切れて不自然(「UTE WRITE A SHORT TEST NOTE…」)。
+- 【軽微】通知トリガー付きagentでも、Sidebar行・詳細popupに「manual · draft」とだけ表示され、トリガーアプリ名がどこにも見えない。
+
+**クリーンアップ**: テストagent4体・自動保存skill・出力dir・一時ファイル全削除済み、pending alarm 0件確認済み。
+
+→ sync: なし(次回、ターミナル経由@agent入力の確認省略問題から着手することを推奨)。
+
+---
+
 ### 2026-08-12 Track S/U/V/W/X修正の実機再検証(Fable5、versionCode 2152 / commit `a40785da9`)— P0 2件PASS(logcat防御ログ確認済み)、通知トリガー会話型登録に新規の構造的欠陥を発見
 
 **背景**: 前回の実機QAで見つけた6件のバグ(P0×2: ゾンビalarm/Pause無効化、P1×3: 通知トリガー消失/Block History空表示/skill自動保存不発、P3×1: アプリ名fuzzy解決)をTrack S/U/V/W/Xで修正・mainマージ・CI green後、実機で再検証した。
