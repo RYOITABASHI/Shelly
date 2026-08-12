@@ -94,6 +94,28 @@ import { detectApiCallSteps, HARD_MAX_STEPS, isNotifyOnlyClause, isScheduleOnlyC
 import { combinePartialScheduleWithDraft } from './agent-slot-fill';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
 import { logInfo } from './debug-logger';
+// NOTIFY-001 (2026-08-12): the SAME deterministic package-name/app-name
+// resolver lib/agent-slot-fill.ts's applySlotAnswer uses for the identical
+// notificationTrigger slot-fill question — reused, not re-implemented, so
+// Tier 3's own resolution of "which app's notification triggers this" can
+// never drift from Tier 2's (or accept something Tier 2 would have
+// rejected).
+import { parseNotificationTriggerPackages } from './notification-trigger';
+// 2026-08-12 on-device finding: a reasoning-capable local model can emit a
+// <think>...</think> trace even with the `think: false` / `enable_thinking:
+// false` request options lib/local-llm.ts already sends (imperfect
+// instruction-following on-device, the same class of unreliability
+// documented throughout this module). Every OTHER raw-LLM-text consumer in
+// this codebase already strips this before treating the text as real content
+// (see lib/parse-code-blocks.ts's own doc comment) — this module was the one
+// place that did not, so a stray think-trace was shown to the user verbatim:
+// its own repeated, self-correcting internal reasoning read as a garbled,
+// duplicated question, and a turn that was ENTIRELY inside an (often
+// truncated, given TURN_MAX_TOKENS) unclosed <think> block collapsed to an
+// empty bubble once the chat renderer's OWN stripThinkTags call removed it
+// for display — while this module's internal state still believed a real
+// clarifying question had been generated. See parseConversationalTurnResponse.
+import { stripThinkTags } from './parse-code-blocks';
 
 const LOG = 'AgentConvRegistration';
 
@@ -129,6 +151,20 @@ export interface AgentConversationalExtraction {
    *  this through parseSchedule(), the same whitelisted-cron-shape gate the
    *  deterministic parser uses, and drops it unless that comes back confident. */
   scheduleText?: string;
+  /** NOTIFY-001 (2026-08-12): the app name or package name the user named for
+   *  a NOTIFICATION-triggered request ("when I get a notification from X, do
+   *  Y") — distinct from scheduleText, which is a time/frequency and cannot
+   *  express "on arrival of a notification" at all (parseSchedule() has
+   *  nothing to parse in such a phrase and always comes back not-confident,
+   *  which is exactly the on-device bug this field exists to prevent — see
+   *  buildRegistrationSystemPrompt's notification-trigger rule). Never a
+   *  connectorId, a boolean, or anything the model invents: resolved
+   *  deterministically by parseNotificationTriggerPackages() — the SAME
+   *  validator lib/agent-slot-fill.ts's applySlotAnswer uses for the
+   *  identical follow-up question — against a real Android package-name
+   *  shape or a small known app-alias table, so a value that doesn't
+   *  resolve is dropped, never guessed into an arbitrary package. */
+  notificationTriggerApp?: string;
   /** Typed as a plain string on purpose: the model can emit ANY string here, so
    *  the type must be able to REPRESENT a rejected value in order for
    *  mergeConversationalExtractionIntoDraft to be able to reject it (and record
@@ -229,6 +265,11 @@ const MAX_FIELD_LEN: Record<
 > = {
   name: 60,
   scheduleText: 100,
+  // NOTIFY-001. Free text (a comma-separated list is tolerated the same way
+  // lib/agent-slot-fill.ts's own notificationTrigger slot-fill answer is),
+  // sized to comfortably fit a short app-name/package-name list, well short
+  // of `prompt`'s budget since this is never a sentence.
+  notificationTriggerApp: 200,
   actionType: 20,
   prompt: 2000,
   outputPath: 200,
@@ -293,6 +334,14 @@ function describeDeterministicHint(ctx: ConversationalRegistrationContext): stri
   if (h.scheduleLabel) {
     const confident = h.scheduleConfident ? (ja ? '確定' : 'confident') : (ja ? '未確定' : 'not confident');
     lines.push(`- ${ja ? 'スケジュール' : 'schedule'}: ${h.scheduleLabel} (${confident})`);
+  }
+  // NOTIFY-001. Surfaced so the model doesn't re-ask for a notification
+  // trigger the deterministic parse (or an earlier turn's own proposal)
+  // already resolved.
+  if (h.notificationTrigger && h.notificationTrigger.packageNames.length > 0) {
+    lines.push(
+      `- ${ja ? '通知トリガー' : 'notification trigger'}: ${h.notificationTrigger.packageNames.join(', ')}`,
+    );
   }
   if (h.action?.type) lines.push(`- ${ja ? '動作' : 'action'}: ${h.action.type}`);
   if (h.outputPath) lines.push(`- ${ja ? '保存先' : 'outputPath'}: ${h.outputPath}`);
@@ -367,7 +416,7 @@ export function buildRegistrationSystemPrompt(ctx: ConversationalRegistrationCon
 
 【最終提案の出力形式】
 ${FENCE_TAG}
-{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "steps": [], "outputPath": "", "platformHint": "", "autonomousIntent": null}
+{"name": "...", "scheduleText": "...", "notificationTriggerApp": "", "actionType": "draft", "prompt": "...", "steps": [], "outputPath": "", "platformHint": "", "autonomousIntent": null}
 ${FENCE_END}
 
 **このフェンスタグ（${FENCE_TAG}）を一字一句そのまま使ってください。 \`\`\`json や、フェンスなしの生JSONでは絶対に返さないでください** — システム側はこの正確なタグだけを「最終提案」として認識します。また、"autonomousIntent" は文字列 "true"/"false" ではなく **真偽値（true/false/null をそのまま）** で書いてください。まだ登録が完了していないのに「登録しました」「完了しました」のような完了を示す文章だけを返すのも禁止です — 完了したと判断したら、必ずこの形式のブロックを出力してください。
@@ -375,6 +424,8 @@ ${FENCE_END}
 【各項目のルール】
 - "name": エージェントの短い表示名（20文字以内）。
 - "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
+  - **「〇〇の通知が来たら」「〇〇からの通知をトリガーに」のような依頼は、時刻や頻度ではなく“通知の到着”そのものが実行のきっかけです。** この場合 "scheduleText" は空文字のままにして、代わりに下の "notificationTriggerApp" にアプリ名／パッケージ名を書いてください。このタイプの依頼にはそもそも時刻・頻度が存在しないので、「いつ実行しますか」と聞き直してはいけません。
+- "notificationTriggerApp": 通知トリガーの対象アプリを、ユーザーが名指しした名前またはパッケージ名のまま書いてください（例: "com.android.systemui", "Slack"）。ID・パッケージ名を自分で考えて書いてはいけません。通知トリガーの話が出ていなければ空文字。
 - "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。${highRiskRules}${browserPaneRules}
 - "prompt": 毎回の実行でエージェントが実際にやること。スケジュールの言い回しは含めないでください。
 - "steps": **複数の手順に分かれる依頼（例: 調べる → 要約する → 投稿する）のときだけ**、手順を順番どおりに、自然な指示文の配列として書いてください（最大${MAX_MODEL_AUTHORED_STEPS}個）。手順が1つしかない依頼なら空配列 [] のままにして、やることは "prompt" に書いてください。各要素はただの指示文です — ID・URL・接続設定を自分で考えて書いてはいけません。ただし、**ユーザーがその手順で使うツール（Perplexity、ローカルLLM、Codex、Gemini）を実際に名指ししていた場合は、その名前をそのまま指示文の中に含めてください**（例:「Perplexityで最新ニュースを調べる」）。システム側がその名前を認識してツールを割り当てます。ユーザーが名指ししていないのに自分でツール名を考えて書いてはいけません。
@@ -402,7 +453,7 @@ ${hint}`;
 
 【Final proposal format】
 ${FENCE_TAG}
-{"name": "...", "scheduleText": "...", "actionType": "draft", "prompt": "...", "steps": [], "outputPath": "", "platformHint": "", "autonomousIntent": null}
+{"name": "...", "scheduleText": "...", "notificationTriggerApp": "", "actionType": "draft", "prompt": "...", "steps": [], "outputPath": "", "platformHint": "", "autonomousIntent": null}
 ${FENCE_END}
 
 **Use this exact fence tag (${FENCE_TAG}), character for character. Never use \`\`\`json or unfenced raw JSON instead** — the system only recognizes this exact tag as your final proposal. Also write "autonomousIntent" as a real boolean (true/false/null), never the strings "true"/"false". Do not announce that registration is "done" or "complete" in plain text either — if you believe you are done, output the block above instead.
@@ -410,6 +461,8 @@ ${FENCE_END}
 【Field rules】
 - "name": a short display label for the agent (<= 20 chars).
 - "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. Empty string if no schedule was stated.
+  - **A request phrased as "when I get a notification from X" (or "triggered by a notification from X") is fired by the notification's ARRIVAL, not a time or frequency.** For this kind of request, leave "scheduleText" empty and use "notificationTriggerApp" below instead. Do not keep asking "when should this run" — this shape of agent has no time/frequency at all.
+- "notificationTriggerApp": the app name or package name the user named for the notification trigger, copied as written (e.g. "com.android.systemui", "Slack"). Never invent one. Empty string if no notification trigger was mentioned.
 - "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.${highRiskRules}${browserPaneRules}
 - "prompt": what the agent should actually DO on each run, with the scheduling phrasing removed.
 - "steps": **only when the request genuinely breaks into several ordered steps** (e.g. research → summarize → post), list them IN ORDER as an array of plain instruction sentences (${MAX_MODEL_AUTHORED_STEPS} max). If the request is a single step, leave "steps" as an empty array [] and put the task in "prompt" instead. Each entry is just an instruction sentence — never invent an id, a URL, or connection settings. If the user actually named which tool a step should use (Perplexity, the local model, Codex, Gemini), include that name naturally in the step's own sentence (e.g. "look up the latest news with Perplexity") — the system recognizes that name and routes to it. Never invent a tool name the user didn't say.
@@ -671,6 +724,10 @@ function buildExtractionFromRecord(rec: Record<string, unknown>): AgentConversat
   const extraction: AgentConversationalExtraction = {
     name: readValidatedString(rec, 'name'),
     scheduleText: readValidatedString(rec, 'scheduleText'),
+    // NOTIFY-001. Read unconditionally, same posture as the other optional
+    // fields here — reading is inert, all acceptance logic lives in
+    // mergeConversationalExtractionIntoDraft's own resolution block.
+    notificationTriggerApp: readValidatedString(rec, 'notificationTriggerApp'),
     actionType: readValidatedString(rec, 'actionType'),
     prompt: readValidatedString(rec, 'prompt'),
     outputPath: readValidatedString(rec, 'outputPath'),
@@ -762,14 +819,27 @@ function buildExtractionFromRecord(rec: Record<string, unknown>): AgentConversat
  * only what raw text is recognized as worth attempting to parse as one.
  */
 export function parseConversationalTurnResponse(raw: string): ConversationalTurn {
-  if (!raw || !raw.trim()) return { kind: 'unparseable' };
+  // 2026-08-12 on-device finding: strip a reasoning-model <think>...</think>
+  // trace FIRST, before any other check — including the empty-response check
+  // right below, since a response that is ENTIRELY an (often truncated,
+  // unclosed) think block must be treated as though nothing usable came
+  // back, not as a real question. See this file's import comment for
+  // stripThinkTags for the full on-device symptom this fixes (a garbled,
+  // self-repeating "question" bubble; a bubble that renders empty because the
+  // chat UI's OWN think-stripping — lib/parse-code-blocks.ts, used elsewhere
+  // for markdown rendering — removes what this function had treated as real
+  // content). Every subsequent line in this function reads `cleaned`, never
+  // `raw`, so what gets classified and what eventually gets stored/rendered
+  // as the turn's text are always the same string.
+  const cleaned = stripThinkTags(raw);
+  if (!cleaned || !cleaned.trim()) return { kind: 'unparseable' };
 
-  const tagIndex = raw.indexOf(FENCE_TAG);
+  const tagIndex = cleaned.indexOf(FENCE_TAG);
   if (tagIndex !== -1) {
     // Body = everything after the opening tag, up to the closing fence. A
     // missing closing fence (a truncated local-model response) is tolerated:
     // we take the rest of the string and let the JSON scan decide.
-    const afterTag = raw.slice(tagIndex + FENCE_TAG.length);
+    const afterTag = cleaned.slice(tagIndex + FENCE_TAG.length);
     const closeIndex = afterTag.indexOf(FENCE_END);
     const body = closeIndex === -1 ? afterTag : afterTag.slice(0, closeIndex);
 
@@ -795,7 +865,7 @@ export function parseConversationalTurnResponse(raw: string): ConversationalTurn
   // there was never an explicit signal that this response was meant to be a
   // final answer at all, so the safe default is to keep the conversation
   // going rather than force a Tier 2 handoff.
-  const span = extractJsonObjectSpan(raw);
+  const span = extractJsonObjectSpan(cleaned);
   if (span) {
     let parsed: unknown;
     try {
@@ -811,7 +881,7 @@ export function parseConversationalTurnResponse(raw: string): ConversationalTurn
     }
   }
 
-  return { kind: 'question', text: raw.trim() };
+  return { kind: 'question', text: cleaned.trim() };
 }
 
 // ── §2.5: conversation-progress heuristics (pure) ───────────────────────────
@@ -1051,6 +1121,11 @@ export function requireVerbatimSubstringMatch(candidate: string, userTranscriptT
  *
  *   - scheduleText: re-validated through parseSchedule(); applied only when
  *     that comes back `confident`. The model never authors a cron.
+ *   - notificationTriggerApp (NOTIFY-001): resolved through
+ *     parseNotificationTriggerPackages() — the same validator the
+ *     notificationTrigger slot-fill question uses — against a real Android
+ *     package-name shape or a known app alias. Applied independently of
+ *     scheduleText/actionType (describes WHEN, not WHAT).
  *   - actionType: only 'draft' | 'notify' | 'social-post' | 'browser-pane' —
  *     plus 'webhook' | 'cli' when ctx.allowHighRiskActions is explicitly true
  *     (Phase 4). 'browser-pane' (2026-08-05) is applied only when its kind is
@@ -1295,6 +1370,40 @@ export function mergeConversationalExtractionIntoDraft(
           `scheduleText ${JSON.stringify(extraction.scheduleText)} did not parse to a confident cron — dropped`,
         );
       }
+    }
+  }
+
+  // NOTIFY-001 (2026-08-12 on-device fix). Independent of the scheduleText
+  // branch above on purpose: a notification-triggered agent structurally has
+  // NO schedule (see buildRegistrationSystemPrompt's notification-trigger
+  // rule and lib/agent-slot-fill.ts's nextMissingSlot, which — after this
+  // same fix — stops requiring a confident schedule once a notification
+  // trigger is present). The model may only relay a NAME (an app name or
+  // package name it heard from the user), never invent an arbitrary
+  // identifier: parseNotificationTriggerPackages is the SAME deterministic
+  // validator lib/agent-slot-fill.ts's applySlotAnswer uses for the identical
+  // follow-up question, so a value that doesn't look like a real Android
+  // package and isn't a known app alias is rejected rather than registered
+  // as a guess. Applied unconditionally (not gated on draft.action.type,
+  // unlike platformHint/outputPath) — a notification trigger describes WHEN
+  // the agent fires, not WHAT it does, so it never conflicts with any action.
+  if (extraction.notificationTriggerApp) {
+    const { valid } = parseNotificationTriggerPackages(extraction.notificationTriggerApp);
+    if (valid.length > 0) {
+      const m = next();
+      m.notificationTrigger = { packageNames: valid };
+      touched = true;
+      logInfo(
+        LOG,
+        `notificationTriggerApp ${JSON.stringify(extraction.notificationTriggerApp)} resolved -> ${valid.join(', ')}`,
+      );
+    } else {
+      rejectedFields.push('notificationTriggerApp');
+      logInfo(
+        LOG,
+        `notificationTriggerApp ${JSON.stringify(extraction.notificationTriggerApp)} did not resolve to a ` +
+          'valid Android package name or known app alias — dropped',
+      );
     }
   }
 

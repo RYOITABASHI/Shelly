@@ -1718,7 +1718,23 @@ export function useAIPaneDispatch(paneId: string) {
                 // NOTIFY-001 fallback-loss fix (2026-08-10) — see the matching comment
                 // on the other Tier 3 proposal branches in this file: ask about ANY
                 // still-missing slot generically, not just 'autonomous'.
-                const missingSlot = nextMissingSlot(mergedDraft, slotFillCtx);
+                const rawMissingSlot = nextMissingSlot(mergedDraft, slotFillCtx);
+                // 2026-08-12 on-device state-loop fix: this Phase 2 rescue was invoked
+                // specifically because the ORDINARY fixed-question retry for `field`
+                // (the one this whole pendingSlotFill answer is for) had already failed
+                // once. If the rescue's own proposal ALSO fails to move `field` forward
+                // — nextMissingSlot flags the SAME field again — spinning up yet another
+                // brand-new, context-poor pendingSlotFill for it here would just repeat
+                // the failure with fresh amnesia each time (no history, only the
+                // deterministicHint text), which is exactly the observed "keeps
+                // re-asking name/schedule after answering autonomous" loop: each hop
+                // resets attemptCount to 0 and starts a new one-shot LLM call with no
+                // memory of the conversation so far. Mirrors the identical guard the
+                // plain fixed-question retry path already applies a bit further down
+                // this function (`missing.field !== field`): defer to the SAME
+                // downstream safety net (the confirm card's own forced manual picker /
+                // chat-confirm decision) instead of bouncing back into Tier 3 forever.
+                const missingSlot = rawMissingSlot && rawMissingSlot.field !== field ? rawMissingSlot : null;
                 if (missingSlot) {
                   store.addMessage(paneId, {
                     id: generateId(),

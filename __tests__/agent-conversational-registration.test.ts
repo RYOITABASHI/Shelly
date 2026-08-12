@@ -2118,3 +2118,160 @@ describe('mergeConversationalExtractionIntoDraft — sanitized steps end-to-end 
     expect(rejectedFields).toEqual([]);
   });
 });
+
+// ─── NOTIFY-001: notification-trigger support in Tier 3 (2026-08-12) ───────
+//
+// On-device finding: "@agent when I get a notification from
+// com.android.systemui, summarize it" could never complete registration
+// through the conversational (Tier 3) flow — the model had no field to
+// express "this is a notification trigger, not a schedule", so it either
+// left scheduleText empty forever (re-asked "when should this run?" without
+// end) or stuffed the trigger phrase into scheduleText, which
+// mergeConversationalExtractionIntoDraft correctly rejects (parseSchedule
+// has nothing to parse). These tests cover the new notificationTriggerApp
+// field this fix adds.
+describe('mergeConversationalExtractionIntoDraft — notificationTriggerApp (NOTIFY-001, 2026-08-12)', () => {
+  const noConnectors = { connectors: [] as SocialConnectorMeta[] };
+
+  it('resolves a verbatim Android package name into draft.notificationTrigger', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { notificationTriggerApp: 'com.android.systemui' },
+      noConnectors,
+    );
+    expect(out.notificationTrigger).toEqual({ packageNames: ['com.android.systemui'] });
+    expect(out.llmExtracted).toBe(true);
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('resolves a known app alias name (not just a raw package id)', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { notificationTriggerApp: 'Slack' },
+      noConnectors,
+    );
+    expect(out.notificationTrigger).toEqual({ packageNames: ['com.Slack'] });
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('REJECTS an app name that resolves to nothing, and leaves the draft unchanged (fail closed)', () => {
+    const draft = baseDraft();
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      { notificationTriggerApp: 'this is not an app name at all' },
+      noConnectors,
+    );
+    expect(out).toBe(draft);
+    expect(out.notificationTrigger).toBeUndefined();
+    expect(rejectedFields).toEqual(['notificationTriggerApp']);
+  });
+
+  it('applies independently of actionType — describes WHEN, not WHAT', () => {
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      baseDraft(),
+      { notificationTriggerApp: 'com.whatsapp', actionType: 'notify' },
+      noConnectors,
+    );
+    expect(out.notificationTrigger).toEqual({ packageNames: ['com.whatsapp'] });
+    expect(out.action).toEqual({ type: 'notify' });
+    expect(rejectedFields).toEqual([]);
+  });
+
+  it('ON-DEVICE REPRO: a notification-trigger request no longer gets stuck rejecting an empty/mangled scheduleText forever — notificationTriggerApp alone is enough to move the draft forward', () => {
+    const draft = baseDraft({
+      rawText: 'when I get a notification from com.android.systemui, summarize it',
+      prompt: 'summarize it',
+    });
+    const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
+      draft,
+      // The model correctly followed the new prompt rule: scheduleText left
+      // empty, the trigger app named in notificationTriggerApp instead.
+      { notificationTriggerApp: 'com.android.systemui', prompt: 'summarize the notification' },
+      noConnectors,
+    );
+    expect(out.notificationTrigger).toEqual({ packageNames: ['com.android.systemui'] });
+    expect(out.scheduleConfident).toBe(false);
+    expect(out.llmExtracted).toBe(true);
+    expect(rejectedFields).toEqual([]);
+  });
+});
+
+// ─── parseConversationalTurnResponse: <think> trace stripping (2026-08-12) ──
+//
+// On-device finding: a reasoning-capable local model can emit a
+// <think>...</think> trace even though lib/local-llm.ts already requests
+// `think: false` / `enable_thinking: false` — imperfect on-device
+// instruction-following. Leaving that trace in meant the model's own
+// repeated, self-correcting internal reasoning was shown to the user
+// verbatim as a garbled "question" bubble, and a response that was ENTIRELY
+// inside an unclosed think block (truncated by TURN_MAX_TOKENS) collapsed to
+// an empty bubble once the chat renderer's own think-stripping ran — while
+// this module's internal state still believed a real question had been
+// generated.
+describe('parseConversationalTurnResponse — <think> trace stripping (2026-08-12)', () => {
+  it('strips a closed <think>...</think> block and returns only the real question', () => {
+    const raw = '<think>Let me think about a good name. What short name? Actually, reconsider.</think>What should I call this agent?';
+    const turn = parseConversationalTurnResponse(raw);
+    expect(turn.kind).toBe('question');
+    if (turn.kind !== 'question') throw new Error('expected question');
+    expect(turn.text).toBe('What should I call this agent?');
+    expect(turn.text).not.toContain('<think>');
+  });
+
+  it('a response that is ENTIRELY an unclosed <think> block is unparseable, not an empty question', () => {
+    const raw = '<think>Let me think about what to ask next. Hmm, maybe the schedule. Or the name.';
+    const turn = parseConversationalTurnResponse(raw);
+    expect(turn.kind).toBe('unparseable');
+  });
+
+  it('a fenced final proposal AFTER a think block is still recognized as a proposal', () => {
+    const raw = fenced(
+      JSON.stringify({ name: 'Weather', scheduleText: '毎日8時', actionType: 'notify' }),
+    );
+    const withThink = `<think>Okay, I have everything now.</think>${raw}`;
+    const turn = parseConversationalTurnResponse(withThink);
+    expect(turn.kind).toBe('proposal');
+    if (turn.kind !== 'proposal') throw new Error('expected proposal');
+    expect(turn.extraction.name).toBe('Weather');
+  });
+
+  it('the schema-based fallback (no fence tag) still recognizes a proposal after a think block', () => {
+    const raw = `<think>done thinking</think>${JSON.stringify({
+      name: 'Weather',
+      scheduleText: '毎日8時',
+      actionType: 'notify',
+    })}`;
+    const turn = parseConversationalTurnResponse(raw);
+    expect(turn.kind).toBe('proposal');
+  });
+
+  it('a response with no <think> tag at all behaves exactly as before (regression guard)', () => {
+    const turn = parseConversationalTurnResponse('いつ実行しますか？');
+    expect(turn.kind).toBe('question');
+    if (turn.kind !== 'question') throw new Error('expected question');
+    expect(turn.text).toBe('いつ実行しますか？');
+  });
+});
+
+// ─── buildRegistrationSystemPrompt: notification-trigger instructions ──────
+describe('buildRegistrationSystemPrompt — notification-trigger instructions (NOTIFY-001, 2026-08-12)', () => {
+  it('JA prompt mentions notificationTriggerApp and tells the model to leave scheduleText empty for a trigger request', () => {
+    const prompt = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(prompt).toContain('notificationTriggerApp');
+    expect(prompt).toContain('通知が来たら');
+  });
+
+  it('EN prompt mentions notificationTriggerApp and the "when I get a notification" phrasing', () => {
+    const prompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(prompt).toContain('notificationTriggerApp');
+    expect(prompt).toContain('when I get a notification');
+  });
+
+  it('the final-proposal JSON template includes the notificationTriggerApp key so the model knows it exists', () => {
+    const ja = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    const en = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(ja).toContain('"notificationTriggerApp"');
+    expect(en).toContain('"notificationTriggerApp"');
+  });
+});
