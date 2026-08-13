@@ -9,6 +9,7 @@ import {
   buildConversationTranscript,
   requireVerbatimSubstringMatch,
   sanitizeConversationalSteps,
+  ensureNonEmptyConversationalQuestionText,
   type ConversationalRegistrationContext,
 } from '@/lib/agent-conversational-registration';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
@@ -2251,6 +2252,60 @@ describe('parseConversationalTurnResponse — <think> trace stripping (2026-08-1
     expect(turn.kind).toBe('question');
     if (turn.kind !== 'question') throw new Error('expected question');
     expect(turn.text).toBe('いつ実行しますか？');
+  });
+});
+
+// ─── runConversationalRegistrationTurnLocal: unclosed-<think> truncation ────
+// 2026-08-13 on-device finding: QA reproduced an "empty assistant bubble"
+// AGAIN after the 2026-08-12 <think>-stripping fix above had already been
+// verified on-device. This section documents the ACTUAL end-to-end gap:
+// runConversationalRegistrationTurnLocal's own `!result.content.trim()` guard
+// only ever sees the RAW ollamaChat response — a response that is entirely
+// an unclosed <think> block IS non-empty raw text (the model's reasoning
+// trace), so the turn is reported `success: true`. It is only
+// parseConversationalTurnResponse, one layer up, that strips the trace and
+// discovers there is nothing left. The bug was never in the stripping logic
+// itself (see the describe block above — it already handles this exact
+// shape correctly); it was that hooks/use-ai-pane-dispatch.ts's callers did
+// not all treat a success-but-unparseable turn the same as an outright
+// failure. See the matching fix + comments in hooks/use-ai-pane-dispatch.ts.
+describe('runConversationalRegistrationTurnLocal — unclosed <think> truncation (2026-08-13)', () => {
+  it('reports success=true for a raw response that is ENTIRELY an unclosed <think> block (the actual on-device shape)', async () => {
+    // The model spent its whole TURN_MAX_TOKENS budget reasoning and never
+    // got to emit a real answer — a very plausible outcome for a small
+    // reasoning-capable model with think:false/enable_thinking:false only
+    // imperfectly honored, especially on an ambiguous notification-trigger-
+    // only utterance (no schedule to reason toward).
+    ollamaChat.mockResolvedValueOnce({
+      success: true,
+      content: '<think>Let me think about what to ask. Hmm, there is no schedule mentioned, so maybe I should ask about the notification trigger app. Actually wait, let me reconsider the whole request once more from the top...',
+    });
+    const result = await runConversationalRegistrationTurnLocal(
+      [{ role: 'user', content: 'Slackの通知が来たら要約して' }],
+      { baseUrl: 'http://127.0.0.1:11434', model: 'qwen3.5:2b', enabled: true },
+    );
+    // The raw text is non-empty, so the turn-runner itself cannot see the
+    // problem — it correctly reports success.
+    expect(result.success).toBe(true);
+    // But the response is unusable once parsed — this is the exact
+    // success-but-unparseable combination the dispatch-layer fix handles.
+    const turn = parseConversationalTurnResponse(result.raw ?? '');
+    expect(turn.kind).toBe('unparseable');
+  });
+});
+
+// ─── ensureNonEmptyConversationalQuestionText: defensive display floor ──────
+describe('ensureNonEmptyConversationalQuestionText (2026-08-13 defensive fallback)', () => {
+  it('returns the trimmed text unchanged when it is non-empty', () => {
+    expect(ensureNonEmptyConversationalQuestionText('  いつ実行しますか？  ', 'FALLBACK')).toBe('いつ実行しますか？');
+  });
+
+  it('returns the fallback for an empty string', () => {
+    expect(ensureNonEmptyConversationalQuestionText('', 'FALLBACK')).toBe('FALLBACK');
+  });
+
+  it('returns the fallback for a whitespace-only string', () => {
+    expect(ensureNonEmptyConversationalQuestionText('   \n\t  ', 'FALLBACK')).toBe('FALLBACK');
   });
 });
 
