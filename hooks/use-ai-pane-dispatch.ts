@@ -64,6 +64,7 @@ import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAge
 import {
   buildConversationTranscript,
   buildRegistrationSystemPrompt,
+  ensureNonEmptyConversationalQuestionText,
   isRepeatedRegistrationQuestion,
   mergeConversationalExtractionIntoDraft,
   parseConversationalTurnResponse,
@@ -1127,7 +1128,15 @@ export function useAIPaneDispatch(paneId: string) {
                   store.addMessage(paneId, {
                     id: messageId,
                     role: 'assistant',
-                    content: turn.text,
+                    // Defensive floor (2026-08-13) — see
+                    // ensureNonEmptyConversationalQuestionText's doc comment:
+                    // turn.text is guaranteed non-empty today, but this keeps
+                    // a genuinely blank bubble structurally impossible even
+                    // if that guarantee ever regresses.
+                    content: ensureNonEmptyConversationalQuestionText(
+                      turn.text,
+                      (conversationLocale === 'ja' ? ja : en)['agentplan.llm_conversation_fallback_notice'],
+                    ),
                     timestamp: Date.now(),
                     agent: pendingAgentSession.agentLabel,
                   });
@@ -1139,6 +1148,22 @@ export function useAIPaneDispatch(paneId: string) {
                   });
                   return;
                 }
+              }
+              // 2026-08-13 on-device finding: a raw LLM response can be
+              // non-empty (so runConversationalRegistrationTurn* reports
+              // result.success = true) yet collapse to nothing once
+              // parseConversationalTurnResponse strips a <think> trace —
+              // e.g. a response that is ENTIRELY an unclosed <think> block,
+              // truncated by TURN_MAX_TOKENS before the model ever reached
+              // its real answer. That combination (success=true,
+              // kind='unparseable') used to fall through SILENTLY into the
+              // slower extractAgentFieldsWithLlm() rescue below with no
+              // interim message, which read on-device as an empty response /
+              // ~2 minutes of apparent silence. Treat it exactly like a
+              // failed turn — same immediate, visible fallback notice as
+              // `!result.success` gets just below.
+              if (turn.kind === 'unparseable') {
+                announceTier2Fallback = true;
               }
               if (turn.kind === 'proposal') {
                 resumedDraft = mergeConversationalExtractionIntoDraft(
@@ -1680,7 +1705,15 @@ export function useAIPaneDispatch(paneId: string) {
                 store.addMessage(paneId, {
                   id: messageId,
                   role: 'assistant',
-                  content: turn.text,
+                  // Defensive floor (2026-08-13) — see
+                  // ensureNonEmptyConversationalQuestionText's doc comment:
+                  // turn.text is guaranteed non-empty today, but this keeps
+                  // a genuinely blank bubble structurally impossible even if
+                  // that guarantee ever regresses.
+                  content: ensureNonEmptyConversationalQuestionText(
+                    turn.text,
+                    (conversationLocale === 'ja' ? ja : en)['agentplan.llm_conversation_fallback_notice'],
+                  ),
                   timestamp: createdAt,
                   agent: agentLabel,
                 });
@@ -2034,15 +2067,37 @@ export function useAIPaneDispatch(paneId: string) {
                     groqModel: llmFallbackSettings.groqModel,
                   },
                 );
-                if (result.success) {
-                  const turn = parseConversationalTurnResponse(result.raw ?? '');
-                  if (turn.kind === 'question') {
+                // 2026-08-13 on-device finding: a raw LLM response can be
+                // non-empty (so runConversationalRegistrationTurn* reports
+                // result.success = true) yet collapse to nothing once
+                // parseConversationalTurnResponse strips a <think> trace —
+                // e.g. a response that is ENTIRELY an unclosed <think> block,
+                // truncated by TURN_MAX_TOKENS before the model ever reached
+                // its real answer. `turn` is computed once, outside the
+                // success branch, so the unparseable-with-success=true case
+                // reaches the SAME fallback-notice branch below as an
+                // outright provider failure, instead of falling through
+                // SILENTLY into the slower extractAgentFieldsWithLlm() rescue
+                // with no interim message — that silent gap is what read
+                // on-device as an empty response / ~2 minutes of apparent
+                // silence, even though this original `if/else` already
+                // handled `!result.success` correctly.
+                const turn = result.success ? parseConversationalTurnResponse(result.raw ?? '') : null;
+                if (turn?.kind === 'question') {
                     const messageId = generateId();
                     const createdAt = Date.now();
                     store.addMessage(paneId, {
                       id: messageId,
                       role: 'assistant',
-                      content: turn.text,
+                      // Defensive floor (2026-08-13) — see
+                      // ensureNonEmptyConversationalQuestionText's doc
+                      // comment: turn.text is guaranteed non-empty today,
+                      // but this keeps a genuinely blank bubble structurally
+                      // impossible even if that guarantee ever regresses.
+                      content: ensureNonEmptyConversationalQuestionText(
+                        turn.text,
+                        (conversationLocale === 'ja' ? ja : en)['agentplan.llm_conversation_fallback_notice'],
+                      ),
                       timestamp: createdAt,
                       agent: agent as ChatMessage['agent'],
                     });
@@ -2061,8 +2116,7 @@ export function useAIPaneDispatch(paneId: string) {
                       lastLlmQuestion: turn.text,
                     });
                     return;
-                  }
-                  if (turn.kind === 'proposal') {
+                } else if (turn?.kind === 'proposal') {
                     const merged = mergeConversationalExtractionIntoDraft(
                       draft,
                       turn.extraction,
@@ -2120,8 +2174,11 @@ export function useAIPaneDispatch(paneId: string) {
                     }
                     await presentDraftForConfirmation(agent as ChatMessage['agent'], merged.draft);
                     return;
-                  }
                 } else {
+                  // Reached on an outright provider failure (result.success
+                  // === false) AND on a success-but-unparseable turn (see the
+                  // 2026-08-13 comment above `turn` for why the latter must
+                  // land here too, not fall through silently).
                   const fallbackStrings = conversationLocale === 'ja' ? ja : en;
                   store.addMessage(paneId, {
                     id: generateId(),

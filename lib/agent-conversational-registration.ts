@@ -884,6 +884,39 @@ export function parseConversationalTurnResponse(raw: string): ConversationalTurn
   return { kind: 'question', text: cleaned.trim() };
 }
 
+// 2026-08-13 on-device finding: QA reproduced an "empty assistant bubble"
+// symptom in the Tier 3 conversational flow AGAIN, after the 2026-08-12
+// <think>-stripping fix (parseConversationalTurnResponse above) had already
+// been verified on-device. Root cause was NOT a gap in that stripping (it
+// already handles an unclosed/truncated <think> block correctly — see the
+// "ENTIRELY an unclosed <think> block is unparseable" test — because
+// runConversationalRegistrationTurnLocal's `!result.content.trim()` guard
+// only sees the RAW, pre-strip text; a response that is non-empty RAW text
+// but collapses to nothing once <think> is stripped still reports
+// `success: true`, and parseConversationalTurnResponse correctly reports
+// `{ kind: 'unparseable' }` for it — but two of the three call sites in
+// hooks/use-ai-pane-dispatch.ts only treated `!result.success` as "the turn
+// failed", so this specific success-but-unparseable combination fell through
+// SILENTLY into a second, slower fallback LLM call with no interim user-
+// visible message, which read on-device as "empty response" / "~2 minutes of
+// silence" depending on timing. The primary fix (see hooks/
+// use-ai-pane-dispatch.ts) is to treat `turn.kind === 'unparseable'` the same
+// as `!result.success` at every call site, so the user always sees an
+// immediate, explicit fallback notice instead of a silent gap.
+//
+// This helper is the secondary, defense-in-depth half of that fix: a floor
+// under whatever text a 'question' turn is about to render as, so that even
+// an as-yet-undiscovered edge case that slips an empty/whitespace-only
+// string past parseConversationalTurnResponse's own non-empty guarantee
+// (guaranteed today — see the early `!cleaned.trim()` return above — but
+// this is cheap insurance against a future regression of that guarantee)
+// can never reach the user as a genuinely blank chat bubble. Trivial and
+// pure so it's unit-testable on its own, independent of the dispatch wiring.
+export function ensureNonEmptyConversationalQuestionText(text: string, fallback: string): string {
+  const trimmed = text.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
 // ── §2.5: conversation-progress heuristics (pure) ───────────────────────────
 
 /** Characters removed before comparing two questions for "is this literally the
