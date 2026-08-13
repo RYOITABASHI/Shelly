@@ -166,6 +166,91 @@ export interface AgentCommandResult {
   data?: any;
 }
 
+/**
+ * Result of resolveAgentByNameLoose: exactly one of `agent` (a unique
+ * resolution — possibly null when nothing matched at all) or `ambiguous`
+ * (2+ candidates tied at the same match tier) is populated.
+ */
+export interface AgentNameResolution {
+  agent: Agent | null;
+  ambiguous?: Agent[];
+}
+
+/** Strip a trailing ellipsis — the real "…" (U+2026) char OR a naive "..."
+ *  someone typed in its place — so a name copied verbatim off a UI surface
+ *  that itself visually truncates (e.g. Sidebar's `numberOfLines={1}` row)
+ *  still prefix-matches the real, un-truncated stored agent.name. */
+function stripTrailingEllipsis(s: string): string {
+  return s.replace(/(?:…|\.{3})\s*$/, '');
+}
+
+/**
+ * Resolve `@agent run/stop/delete/history/edit <name>`'s free-text name
+ * argument against the registered agents — tolerant of common near-misses
+ * instead of requiring a byte-exact match (2026-08-13 on-device QA finding:
+ * lib/agent-nl-parser.ts's deriveName used to hard-truncate the PERSISTED
+ * agent.name with a trailing "…" for display purposes, so a name copied
+ * from the Sidebar and typed back here could easily be a truncated/partial
+ * or off-by-a-character version of the real stored name; deriveName no
+ * longer truncates at all, but this stays as defense-in-depth for any name
+ * a user free-hand retypes, abbreviates, or copies from a UI surface that
+ * still elides on its own — e.g. a notification title or Sidebar row).
+ *
+ * Falls through three tiers, stopping at the FIRST tier that produces any
+ * match at all:
+ *   1. exact match (case-insensitive, trimmed) — same semantics as
+ *      store/agent-store.ts's getAgentByName.
+ *   2. case-insensitive PREFIX match, after stripping a trailing ellipsis
+ *      from the query (see stripTrailingEllipsis).
+ *   3. case-insensitive SUBSTRING match anywhere in the stored name.
+ *
+ * If a tier produces exactly one match, that agent is returned. If a tier
+ * produces MORE THAN ONE, resolution stops there and `ambiguous` is
+ * populated instead of silently picking one — running (or worse, deleting)
+ * the wrong agent on a guess is exactly the accident this must avoid.
+ * Returns `{ agent: null }` when no tier matched anything.
+ */
+export function resolveAgentByNameLoose(agents: Agent[], rawName: string): AgentNameResolution {
+  const query = rawName.trim();
+  if (!query) return { agent: null };
+  const queryLower = query.toLowerCase();
+
+  const exact = agents.filter((a) => (a.name || '').trim().toLowerCase() === queryLower);
+  if (exact.length === 1) return { agent: exact[0] };
+  if (exact.length > 1) return { agent: null, ambiguous: exact };
+
+  const queryPrefix = stripTrailingEllipsis(queryLower).trim();
+  if (queryPrefix) {
+    const prefixMatches = agents.filter((a) => (a.name || '').trim().toLowerCase().startsWith(queryPrefix));
+    if (prefixMatches.length === 1) return { agent: prefixMatches[0] };
+    if (prefixMatches.length > 1) return { agent: null, ambiguous: prefixMatches };
+  }
+
+  const substringMatches = agents.filter((a) => (a.name || '').trim().toLowerCase().includes(queryLower));
+  if (substringMatches.length === 1) return { agent: substringMatches[0] };
+  if (substringMatches.length > 1) return { agent: null, ambiguous: substringMatches };
+
+  return { agent: null };
+}
+
+/** Shared "resolve or produce the right AgentCommandResult error" helper for
+ *  every @agent <subcommand> <name> branch below — keeps the not-found vs.
+ *  ambiguous messaging consistent across run/stop/delete/history/edit. */
+function resolveNamedAgentOrError(agents: Agent[], nameArg: string): { agent: Agent } | { error: AgentCommandResult } {
+  const resolution = resolveAgentByNameLoose(agents, nameArg);
+  if (resolution.agent) return { agent: resolution.agent };
+  if (resolution.ambiguous && resolution.ambiguous.length > 0) {
+    const names = resolution.ambiguous.map((a) => `"${a.name}"`).join(', ');
+    return {
+      error: {
+        type: 'error',
+        message: `Multiple agents match "${nameArg}": ${names}. Use a more specific (or the full) name.`,
+      },
+    };
+  }
+  return { error: { type: 'error', message: `Agent "${nameArg}" not found` } };
+}
+
 export function parseAgentCommand(input: string): AgentCommandResult {
   const trimmed = input.trim();
   const parts = trimmed.split(/\s+/);
@@ -179,33 +264,38 @@ export function parseAgentCommand(input: string): AgentCommandResult {
       return listAgents(store.agents);
 
     case 'run': {
-      const agent = store.getAgentByName(nameArg);
-      if (!agent) return { type: 'error', message: `Agent "${nameArg}" not found` };
+      const resolved = resolveNamedAgentOrError(store.agents, nameArg);
+      if ('error' in resolved) return resolved.error;
+      const agent = resolved.agent;
       return { type: 'run', message: `Running ${agent.name}...`, data: { agentId: agent.id } };
     }
 
     case 'stop': {
-      const agent = store.getAgentByName(nameArg);
-      if (!agent) return { type: 'error', message: `Agent "${nameArg}" not found` };
+      const resolved = resolveNamedAgentOrError(store.agents, nameArg);
+      if ('error' in resolved) return resolved.error;
+      const agent = resolved.agent;
       return { type: 'stop', message: `Stopping ${agent.name}...`, data: { agentId: agent.id } };
     }
 
     case 'delete': {
-      const agent = store.getAgentByName(nameArg);
-      if (!agent) return { type: 'error', message: `Agent "${nameArg}" not found` };
+      const resolved = resolveNamedAgentOrError(store.agents, nameArg);
+      if ('error' in resolved) return resolved.error;
+      const agent = resolved.agent;
       return { type: 'delete', message: `Delete ${agent.name}?`, data: { agent } };
     }
 
     case 'history': {
-      const agent = store.getAgentByName(nameArg);
-      if (!agent) return { type: 'error', message: `Agent "${nameArg}" not found` };
+      const resolved = resolveNamedAgentOrError(store.agents, nameArg);
+      if ('error' in resolved) return resolved.error;
+      const agent = resolved.agent;
       const logs = store.getRunHistory(agent.id);
       return { type: 'history', message: formatHistory(agent, logs), data: { logs } };
     }
 
     case 'edit': {
-      const agent = store.getAgentByName(nameArg);
-      if (!agent) return { type: 'error', message: `Agent "${nameArg}" not found` };
+      const resolved = resolveNamedAgentOrError(store.agents, nameArg);
+      if ('error' in resolved) return resolved.error;
+      const agent = resolved.agent;
       return { type: 'create', message: nameArg, data: { suggestion: suggestTool(agent.prompt), editAgent: agent } };
     }
 
