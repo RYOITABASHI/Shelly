@@ -14,6 +14,18 @@
 
 ---
 
+### ✅ Track GG/HH着地後のCI回帰修正(commit `b22fb1f1a`)— skill-self-improveのトップレベルimportがネイティブモジュール解決を巻き込みAgentRunsPane.test.tsxをクラッシュさせていた
+
+**背景**: Track GG/HH(サブエージェント並列生成・スキル自己改善)のpush後、CI(Linux)で`AgentRunsPane.test.tsx`が「Cannot find native module 'TerminalEmulator'」でsuite全体クラッシュ。原因は`lib/skill-self-improve.ts`のトップレベル`import { getHomePath } from '@/lib/home-path'`が、このテストの`jest.requireActual('@/hooks/use-skill-save-offer')`経由でモックを迂回し、ネイティブTerminalEmulatorモジュール解決を巻き込んだこと。ローカルの通常のフルスイート実行では、この失敗が既存の別理由(タイムアウトflake)による同名suite失敗と紛れて検出できなかった(suite名だけで既知失敗と照合していたため、失敗理由の変化を見落とした)。
+
+**修正**: `lib/skill-self-improve.ts`の`getHomePath`importを関数内lazy requireへ変更。あわせて`offerSkillImprovement`の全6呼び出し箇所(`AgentRunsPane.tsx`/`Sidebar.tsx`/`use-ai-pane-dispatch.ts`×4)にoptional chaining追加、該当テストの`useSkillSaveOffer`モックに`offerSkillImprovement: jest.fn()`を補完。CI green確認済み。
+
+**副次的な発見**: この過程で、以前実行した`pnpm install <package> --force`が`node_modules/.bin`のシンボリックリンクを部分的に壊し、`npx tsc`がローカルpin(5.9.3)ではなくグローバルの6.0.3を誤って使用する状態になっていたことも発覚・`pnpm install`(force)で修復した。今後、単一パッケージへの`--force`インストールは避け、通常の`pnpm install`を優先すること。
+
+→ sync: なし。
+
+---
+
 ### スキル自己改善 Phase 1 実装（Hermes機能ギャップ、2026-08-13、Fable5）— 決定論的な学習昇格を実装、LLMによる本文リファインは意図的に見送り (P2)
 
 **背景**: Hermes Agentの「保存済みスキルが使用中に自己改善される」機能とのギャップ解消依頼。既存の学習ループ（2026-08-03 Track C: `SkillRecipe.lastFailure`失敗ヒント蓄積、次回成功で自動クリア）は本文を一切変更しない設計だったため、「実際のスキル本文が改善される」仕組みを追加した。
