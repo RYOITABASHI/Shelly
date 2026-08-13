@@ -47,6 +47,18 @@ export const MAX_PROMPT_CHARS = 6000;
 // never silently drift back out of sync the way 500-vs-1500 did.
 export const MAX_RESULT_CARRY_CHARS = 1500;
 const MAX_PREVIEW_CHARS = 500;
+// Fan-out subtasks (2026-08-13): hard cap on branches per parallel group.
+// Chosen well below HARD_MAX_STEPS and mindful of the same Android
+// phantom-process ceiling the step budget protects — even though v1 dispatch
+// is serial (see AgentOrchestrationStep.parallelGroup's doc comment in
+// store/types.ts), this cap is the value any future concurrent dispatch would
+// inherit, so it must already be conservative. Mirrored (parity-tested) into
+// scripts/shelly-plan-executor.js.
+export const MAX_PARALLEL_BRANCHES = 3;
+// Group ids come from user-authored config (or a future NL parser) — bound
+// them to a safe, display-friendly charset; anything else fails safe to
+// serial (marker dropped at normalization, never an error).
+const PARALLEL_GROUP_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -82,6 +94,14 @@ export interface NormalizedStep {
    *  See AgentOrchestrationStep.apiCall's doc comment for the non-final-only,
    *  display-only-instruction contract. */
   apiCall?: AgentApiCallConfig;
+  /** Fan-out subtasks (2026-08-13): sanitized group id carried through from
+   *  AgentOrchestrationStep.parallelGroup (see its doc comment in
+   *  store/types.ts for the full contract). Presence here means only "the
+   *  author marked this step"; whether the marker takes EFFECT (>= 2
+   *  consecutive members, not the final step, within the branch cap) is
+   *  decided exclusively by planParallelGroups() below — executors must
+   *  consume that plan, never this raw field. */
+  parallelGroup?: string;
 }
 
 /**
@@ -102,8 +122,13 @@ export function normalizeStep(step: string | AgentOrchestrationStep): Normalized
   if (step.apiCall && instruction.length === 0) {
     instruction = apiCallLabel(step.apiCall);
   }
-  if (step.apiCall) return { instruction, apiCall: step.apiCall };
-  return step.tool ? { instruction, tool: step.tool } : { instruction };
+  // Fan-out subtasks: carry the group id only when it passes the strict id
+  // charset — a malformed id silently degrades that step to serial (fail-safe)
+  // rather than failing the whole normalization.
+  const rawGroup = typeof step.parallelGroup === 'string' ? step.parallelGroup.trim() : '';
+  const groupField = PARALLEL_GROUP_ID_RE.test(rawGroup) ? { parallelGroup: rawGroup } : {};
+  if (step.apiCall) return { instruction, apiCall: step.apiCall, ...groupField };
+  return step.tool ? { instruction, tool: step.tool, ...groupField } : { instruction, ...groupField };
 }
 
 /** A human-readable, display-only label for an api-call step (e.g. shown in
@@ -139,6 +164,76 @@ export function normalizeSteps(cfg: AgentOrchestrationConfig | undefined): Norma
 /** True when the agent should run as a multi-step orchestration (≥ 2 steps). */
 export function isOrchestrated(cfg: AgentOrchestrationConfig | undefined): boolean {
   return normalizeSteps(cfg).length >= 2;
+}
+
+// ── Fan-out subtasks (parallel groups) ───────────────────────────────────────
+
+/** The resolved fan-out plan for one normalized step list — see
+ *  planParallelGroups() below. Index-aligned with the steps array. */
+export interface ParallelPlan {
+  /** For step i: how many entries of the chain's ordered success-result list
+   *  this step's prompt/quality-check may SEE. Serial steps see everything
+   *  before them (contextBase[i] === i, the exact pre-existing behavior, so
+   *  `results.slice(0, contextBase[i])` is a no-op there); every branch of an
+   *  effective group shares its group's START index — the pre-group snapshot —
+   *  so no branch ever sees a sibling's output. Valid to use as a slice bound
+   *  only under the chain's fail-fast invariant (a step only runs when every
+   *  earlier step succeeded, so the results list has exactly i entries when
+   *  step i launches), which both executors preserve unchanged. */
+  contextBase: number[];
+  /** For step i: the group id it EFFECTIVELY runs as a branch of, after the
+   *  >= 2-consecutive-members / not-final-step / branch-cap rules — undefined
+   *  for every serial step (including marked steps whose marker was severed
+   *  by those rules). */
+  group: (string | undefined)[];
+}
+
+/**
+ * Resolve which steps EFFECTIVELY run as fan-out branches. Pure; the single
+ * place the grouping rules live (see AgentOrchestrationStep.parallelGroup's
+ * doc comment in store/types.ts for the user-facing contract):
+ *   1. only CONSECUTIVE steps sharing the same sanitized group id group;
+ *   2. an effective group needs >= 2 members — a singleton stays serial;
+ *   3. the chain's FINAL step is never a branch (it performs the agent
+ *      action and must see the aggregated context) — it is severed first,
+ *      and the remaining run may still group if >= 2 members survive;
+ *   4. members beyond MAX_PARALLEL_BRANCHES are severed to serial (the cap
+ *      is a hard limit, deterministic, never an error).
+ * Severing NEVER drops a step — a severed member runs as an ordinary serial
+ * step at its declared position, seeing everything before it (including its
+ * former group's branch results), so every authored instruction still runs.
+ * Mirrored (parity-tested) into scripts/shelly-plan-executor.js.
+ */
+export function planParallelGroups(steps: NormalizedStep[]): ParallelPlan {
+  const contextBase = steps.map((_, i) => i);
+  const group: (string | undefined)[] = steps.map(() => undefined);
+  let runStart = 0;
+  for (let i = 0; i <= steps.length; i++) {
+    const sameRun =
+      i < steps.length &&
+      steps[i].parallelGroup !== undefined &&
+      steps[i].parallelGroup === steps[runStart]?.parallelGroup;
+    if (sameRun) continue;
+    // [runStart, i) is a maximal run of one marker value (or unmarked steps).
+    if (steps[runStart]?.parallelGroup !== undefined) {
+      // Rule 3: the final step never groups — a run reaching the end of the
+      // chain is trimmed by one (runStart < steps.length here, so this can
+      // only shrink the run, never underflow past runStart).
+      let runEnd = i;
+      if (runEnd === steps.length) runEnd = steps.length - 1;
+      // Rule 4: cap the group size.
+      const effectiveEnd = Math.min(runEnd, runStart + MAX_PARALLEL_BRANCHES);
+      // Rule 2: >= 2 members or stay serial.
+      if (effectiveEnd - runStart >= 2) {
+        for (let j = runStart; j < effectiveEnd; j++) {
+          group[j] = steps[j].parallelGroup;
+          contextBase[j] = runStart;
+        }
+      }
+    }
+    runStart = i;
+  }
+  return { contextBase, group };
 }
 
 export interface StepGate {

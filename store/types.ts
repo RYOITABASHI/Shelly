@@ -1074,6 +1074,12 @@ export interface AgentRunStep {
   durationMs: number;
   outputPreview: string;
   routeDecision?: AgentRouteDecision;
+  /** Fan-out subtasks (2026-08-13): the EFFECTIVE parallel-group id this step
+   *  ran as a branch of (see AgentOrchestrationStep.parallelGroup), recorded
+   *  so the run detail can show which steps were isolated fan-out branches of
+   *  the same group. Absent for every ordinary serial step and for every run
+   *  log written before this field existed (additive only). */
+  parallelGroup?: string;
 }
 
 /**
@@ -1108,6 +1114,48 @@ export interface AgentOrchestrationStep {
    *  e.g. via apiCallLabel()) and is NEVER sent to a model — contrast with
    *  a plain/tool-pinned step, where instruction IS the model prompt. */
   apiCall?: AgentApiCallConfig;
+  /** Fan-out subtasks (2026-08-13, Hermes sub-agent gap increment 1): marks
+   *  this step as a BRANCH of a named fan-out group. CONSECUTIVE steps
+   *  sharing the same group id form one group whose branches are
+   *  context-ISOLATED from each other: every branch's prompt (and its
+   *  duplicate-of-prior-step quality check) sees only the results produced
+   *  BEFORE the group — never a sibling branch's output — and the first step
+   *  AFTER the group receives all branch results, in declared order, as its
+   *  "Results from previous steps" context. That is the aggregation contract
+   *  Hermes-style sub-agents provide (decompose → process each subtask from
+   *  the same context → aggregate), minus wall-clock concurrency.
+   *
+   *  DISPATCH IS STILL SERIAL in every executor, v1 — deliberately. Both
+   *  executors are per-agent single-flight by hard safety design (the
+   *  attended chain's rotating chain-lock nonce + shared per-agent
+   *  script/result/log paths; the global MAX_CONCURRENT=2 guard baked into
+   *  every generated .sh for the Android phantom-process ceiling; the
+   *  unattended PlanSpec executor's fully synchronous spawnSync broker
+   *  dispatch). Concurrent branch dispatch therefore CANNOT be added here
+   *  without re-architecting those guards, and is deferred with the full
+   *  blocker list in docs/superpowers/DEFERRED.md (2026-08-13 fan-out entry).
+   *  This marker is a SEMANTICS contract (isolation + aggregation), not a
+   *  wall-clock promise.
+   *
+   *  Safety invariants (all enforced by planParallelGroups() in
+   *  lib/agent-orchestration.ts, the single normalization chokepoint):
+   *  a group never includes the chain's FINAL step (the final step performs
+   *  the agent action and must see the aggregated context); groups are capped
+   *  at MAX_PARALLEL_BRANCHES members (overflow members run as ordinary
+   *  serial steps); an invalid id (not 1-32 chars of [A-Za-z0-9_-]) is
+   *  dropped at normalization (fail-safe to serial). Branches inherit every
+   *  policy of their agent by construction — each branch runs through the
+   *  IDENTICAL per-step path (same boundary policy, same per-step
+   *  resolveForAutonomous credential vetting at plan-build time, same quality
+   *  gates) an unmarked step already uses; grouping changes only which prior
+   *  results a branch can SEE, never what it may DO. Fail-fast is unchanged:
+   *  a failed branch stops the chain exactly like a failed serial step.
+   *
+   *  The legacy codex/bash chain executor (lib/agent-executor.ts's
+   *  codexOrchestrationChainCommand) ignores this marker and runs the chain
+   *  with today's serial carry-forward (quality-only divergence, no safety
+   *  impact) — see canRunOrchestrationChain's comment. */
+  parallelGroup?: string;
 }
 
 /** Phase 4 orchestration config on an agent. Absent = single-run (today). */
