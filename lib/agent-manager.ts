@@ -37,11 +37,16 @@ import {
   buildSkillInjectionContext,
   applyExecutableSkillPlan,
   bumpSkillUsage,
-  recordSkillFailure,
   readSkillRecipes,
   writeSkillRecipe,
 } from './agent-skills';
 import { saveUnattendedSkillWithNotification } from './unattended-skill-save';
+import {
+  applyUnattendedSkillImprovement,
+  clearSkillImprovementProposal,
+  proposeSkillImprovement,
+  stageSkillImprovementProposal,
+} from './skill-self-improve';
 import { runSkillCuratorSweep } from './skill-curator';
 import {
   buildStepPrompt,
@@ -1191,6 +1196,11 @@ async function runAgentNowInner(
   // checking peekAgentRollbackHandle(). This clear is the root-cause fix;
   // rollbackOfferEligible is the defense-in-depth backstop for it.
   pendingRollbackHandles.delete(agentId);
+  // Same hygiene for skill-improvement proposals: a NEW run of this agent
+  // retires any un-consumed confirm proposal from a previous run, so the
+  // foreground offer can never present a stale learning as if it came from
+  // the run that just finished.
+  clearSkillImprovementProposal(agentId);
   // Phase 4: a multi-step agent runs as a linear chain (each step through the
   // SAME gated single-run path below). Single-step agents fall through unchanged.
   const storedAgent = useAgentStore.getState().agents.find((a) => a.id === agentId);
@@ -2008,15 +2018,22 @@ async function listAgentLogFiles(
 }
 
 /**
- * Phase 2a + learning loop (2026-08-03): after a run of an agent that reuses a
- * skill, feed the outcome back into the recipe. Success bumps success-count +
- * lastUsed (and clears any stored failure hint — see bumpSkillUsage); a real
- * failure records a one-line hint (recordSkillFailure) that
- * buildSkillInjectionContext surfaces as a caution on the NEXT matched run.
- * 'unavailable' (transient web outage) and 'skipped' are deliberately ignored —
- * the same statuses the circuit breaker excludes — so a flaky network never
- * poisons a recipe with a bogus caution. Best-effort, same persistence path
- * (crash-safe writeSkillRecipe + Vault mirror) in both directions.
+ * Phase 2a + learning loop (2026-08-03) + self-improvement (2026-08-13): after
+ * a run of an agent that reuses a skill, feed the outcome back into the recipe
+ * via lib/skill-self-improve.ts's ONE decision function. Success bumps
+ * success-count + lastUsed (clearing any stored failure hint); a real failure
+ * records a one-line, secret-scanned hint that buildSkillInjectionContext
+ * surfaces as a caution on the NEXT matched run. NEW: a success that resolves
+ * a pending failure hint additionally proposes promoting that hint into a
+ * persistent body learning — this JS-driven path is ATTENDED (every
+ * runAgentNow caller is a human-driven UI flow; see runLadderAttempts'
+ * `attended: true` bake), so per skillImproveMode the body change is only
+ * STAGED here and applied after the user confirms in the foreground offer
+ * (hooks/use-skill-save-offer.ts). 'unavailable' (transient web outage) and
+ * 'skipped' are deliberately ignored — the same statuses the circuit breaker
+ * excludes — so a flaky network never poisons a recipe with a bogus caution.
+ * Best-effort, same persistence path (crash-safe writeSkillRecipe + Vault
+ * mirror) in both directions.
  */
 async function updateReusedSkillFromRun(
   agentId: string,
@@ -2030,11 +2047,23 @@ async function updateReusedSkillFromRun(
   try {
     const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId);
     if (!recipe) return;
-    const updated =
-      latest.status === 'success'
-        ? bumpSkillUsage(recipe, latest.timestamp)
-        : recordSkillFailure(recipe, latest.outputPreview ?? '', latest.timestamp);
-    await writeSkillRecipe(runCommand, updated);
+    const proposal = proposeSkillImprovement({
+      recipe,
+      status: latest.status,
+      outputPreview: latest.outputPreview,
+      timestamp: latest.timestamp,
+    });
+    if (proposal.kind === 'noop') return;
+    if (proposal.kind === 'bump-with-learning') {
+      // Attended discipline: persist the metadata bump now (exactly what this
+      // function always did on success) and stage the BODY change for the
+      // foreground confirm. Declining (or never answering) simply keeps
+      // today's behavior — the bump below already cleared the failure hint.
+      await writeSkillRecipe(runCommand, bumpSkillUsage(recipe, latest.timestamp));
+      stageSkillImprovementProposal(agentId, { ...proposal, agentName: agent.name });
+      return;
+    }
+    await writeSkillRecipe(runCommand, proposal.improved);
   } catch (error) {
     console.warn('Failed to update reused skill for agent', agentId, error);
   }
@@ -2175,6 +2204,60 @@ async function captureRunMemoryFromSyncedLogs(
       await refreshAgentRecall(agent.id, runCommand);
     } catch (error) {
       logWarn('AgentMemory', `failed to capture synced run memory for ${agent.id}`, error);
+    }
+  }
+}
+
+/**
+ * Skill self-improvement, UNATTENDED side (2026-08-13): scheduled/alarm-fired
+ * runs finish with no TS runtime alive, so — exactly like memory capture and
+ * skill auto-save above — their outcome feedback for a REUSED skill happens at
+ * the next log sync. Per skillImproveMode's 'auto' mode, everything applies
+ * without a confirm; a BODY change (learning promoted) additionally posts a
+ * notification with a one-tap revert action, mirroring the auto-save's
+ * post-hoc delete. Gated to unattended-trigger agents (schedule /
+ * notificationTrigger — the same gate the auto-save uses): a manual-only
+ * agent's improvements go through updateReusedSkillFromRun's attended confirm
+ * instead. Repeat polls of the same latest run are no-ops —
+ * proposeSkillImprovement compares the run timestamp against the recipe's
+ * lastUsed/lastFailure.at, which the previous application already advanced.
+ */
+async function improveReusedSkillsFromSyncedLogs(
+  agents: Agent[],
+  runHistory: Record<string, AgentRunLog[]>,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  for (const agent of agents) {
+    if (!agent.skillId) continue;
+    if (!agent.schedule && !agent.notificationTrigger) continue;
+    // Skip agents deleted since the sync snapshot (same rule as memory/save).
+    if (!useAgentStore.getState().agents.some((a) => a.id === agent.id)) continue;
+    const latest = (runHistory[agent.id] ?? []).at(-1);
+    if (!latest) continue;
+    if (latest.status !== 'success' && latest.status !== 'error') continue;
+    try {
+      // Re-read inside the loop: two agents can share one skill, and each
+      // application must build on the previous write, not a stale snapshot.
+      const recipe = (await readSkillRecipes()).find((s) => s.id === agent.skillId);
+      if (!recipe) continue;
+      const proposal = proposeSkillImprovement({
+        recipe,
+        status: latest.status,
+        outputPreview: latest.outputPreview,
+        timestamp: latest.timestamp,
+      });
+      if (proposal.kind === 'noop') continue;
+      await applyUnattendedSkillImprovement(
+        runCommand,
+        { ...proposal, agentName: agent.name },
+        {
+          title: t('sidebar.skill_improved_title'),
+          body: t('sidebar.skill_improved_body', { name: agent.name }),
+          revertButton: t('sidebar.skill_improve_revert'),
+        }
+      );
+    } catch (error) {
+      logWarn('AgentSkills', `failed to improve reused skill for ${agent.id}`, error);
     }
   }
 }
@@ -2553,6 +2636,9 @@ export async function loadAgentsFromDisk(
       // new result digests were only captured by foreground runs). Capture the
       // latest success per remember-enabled agent from the just-synced history.
       void captureRunMemoryFromSyncedLogs(agentsWithStatus, runHistory, runCommand);
+      // Self-improvement: same fire-and-forget contract, same synced history —
+      // feed unattended run outcomes back into REUSED skill recipes.
+      void improveReusedSkillsFromSyncedLogs(agentsWithStatus, runHistory, runCommand);
     }
     if (repairSchedules) {
       scheduleAgentStartupRepair(agentsWithStatus, runCommand, repairDelayMs, shouldRepair);
@@ -2774,6 +2860,9 @@ export async function syncAgentRunLogsFromDisk(
   // THIS function to ever run in production, not in loadAgentsFromDisk's own
   // (currently unreachable) syncLogs:true branch.
   void captureRunMemoryFromSyncedLogs(agents, mergedHistory, runCommand);
+  // Self-improvement: the production-live periodic/foreground-resume sync is
+  // the hook unattended (alarm-fired) runs of a skill-reusing agent get.
+  void improveReusedSkillsFromSyncedLogs(agents, mergedHistory, runCommand);
 
   for (const a of tripped) {
     if (a.schedule) {

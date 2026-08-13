@@ -492,7 +492,7 @@ export function useAIPaneDispatch(paneId: string) {
   // agent right after the run, so this is the same gated save prompt the
   // Sidebar "Run now" flow offers, just fed from local run-result variables
   // instead of a store lookup (see confirmAgentDraft below).
-  const { offerSkillSave } = useSkillSaveOffer({ runCommand: runAgentShellCommand });
+  const { offerSkillSave, offerSkillImprovement } = useSkillSaveOffer({ runCommand: runAgentShellCommand });
 
   const dispatch = useCallback(
     async (userText: string, dispatchOpts?: AIPaneDispatchOptions) => {
@@ -1459,6 +1459,9 @@ export function useAIPaneDispatch(paneId: string) {
                   content: summaryText ? `${summaryText}\n\n${resultLine}` : resultLine,
                   agentRollbackOffer: buildRollbackOffer(updatedAgent.id, updatedAgent),
                 });
+                // Skill self-improvement confirm (no-op unless this run of a
+                // skill-reusing agent staged a body-learning proposal).
+                offerSkillImprovement(updatedAgent.id);
               } catch (runErr) {
                 const detail = runErr instanceof Error ? runErr.message : String(runErr);
                 const failureLine = `❌ ${correctionStrings['agentplan.run_now_failed']}: ${detail}`;
@@ -2323,6 +2326,9 @@ export function useAIPaneDispatch(paneId: string) {
                   useAgentStore.getState().agents.find((a) => a.id === agentResult.data.agentId) ?? null,
                 ),
               });
+              // Skill self-improvement confirm (no-op unless this run of a
+              // skill-reusing agent staged a body-learning proposal).
+              offerSkillImprovement(agentResult.data.agentId);
             } catch (runErr) {
               const detail = runErr instanceof Error ? runErr.message : String(runErr);
               store.updateMessage(paneId, runningMsgId, { content: `❌ ${detail}` });
@@ -3066,7 +3072,7 @@ export function useAIPaneDispatch(paneId: string) {
         try { playSound('ai_complete'); } catch {}
       }
     },
-    [paneId, throttledUpdate],
+    [paneId, throttledUpdate, offerSkillImprovement],
   );
 
   const cancelStreaming = useCallback(() => {
@@ -3275,6 +3281,9 @@ export function useAIPaneDispatch(paneId: string) {
               content: `${baseContent}\n\n${resultLine}`,
               agentRollbackOffer: buildRollbackOffer(created.id, created),
             });
+            // Skill self-improvement confirm (no-op unless this run of a
+            // skill-reusing agent staged a body-learning proposal).
+            offerSkillImprovement(created.id);
           } catch (runErr) {
             const detail = runErr instanceof Error ? runErr.message : String(runErr);
             store.updateMessage(paneId, messageId, {
@@ -3379,6 +3388,11 @@ export function useAIPaneDispatch(paneId: string) {
                 ? buildAgentPlanSpec(created)
                 : undefined,
             });
+            // Complementary to the save offer (skipped for skill-reusing
+            // agents): consume any staged body-learning proposal. The staged
+            // proposal is keyed by agentId in its own map, so it survives the
+            // ephemeral agent's deletion below just like the rollback handle.
+            offerSkillImprovement(created.id);
           } finally {
             // Stop the heartbeat before anything else in this block — the
             // agent (and this message's relevance to it) may already be
@@ -3515,7 +3529,7 @@ export function useAIPaneDispatch(paneId: string) {
         });
       }
     },
-    [paneId, offerSkillSave],
+    [paneId, offerSkillSave, offerSkillImprovement],
   );
 
   // bug #164 follow-up (2026-07-28): the actual exported/wired confirm

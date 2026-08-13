@@ -23,6 +23,12 @@ import {
   DELETE_SAVED_SKILL_ACTION,
   saveUnattendedSkillWithNotification,
 } from '@/lib/unattended-skill-save';
+import {
+  REVERT_SKILL_IMPROVEMENT_ACTION,
+  consumeSkillImprovementProposal,
+  persistSkillImprovement,
+  revertSkillImprovement,
+} from '@/lib/skill-self-improve';
 import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 
@@ -86,16 +92,68 @@ export function useSkillSaveOffer(opts: {
 
   React.useEffect(() => {
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      if (response.actionIdentifier !== DELETE_SAVED_SKILL_ACTION) return;
-      const skillId = response.notification.request.content.data?.skillId;
-      if (typeof skillId !== 'string') return;
-      void deleteSkillRecipe(runCommand, skillId)
-        .then(() => onSaved?.())
-        .catch((error) => {
-          Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
-        });
+      const data = response.notification.request.content.data;
+      if (response.actionIdentifier === DELETE_SAVED_SKILL_ACTION) {
+        const skillId = data?.skillId;
+        if (typeof skillId !== 'string') return;
+        void deleteSkillRecipe(runCommand, skillId)
+          .then(() => onSaved?.())
+          .catch((error) => {
+            Alert.alert(t('sidebar.skill_save_failed_title'), String((error as Error)?.message || error));
+          });
+        return;
+      }
+      // Self-improvement: post-hoc revert for an unattended auto-improvement —
+      // the improvement-side mirror of the auto-save's one-tap delete above.
+      if (response.actionIdentifier === REVERT_SKILL_IMPROVEMENT_ACTION) {
+        const skillId = data?.skillId;
+        const learningAt = data?.learningAt;
+        if (typeof skillId !== 'string' || typeof learningAt !== 'string') return;
+        void revertSkillImprovement(runCommand, skillId, learningAt)
+          .then(() => onSaved?.())
+          .catch((error) => {
+            Alert.alert(t('sidebar.skill_improve_failed_title'), String((error as Error)?.message || error));
+          });
+      }
     });
     return () => subscription.remove();
+  }, [t, runCommand, onSaved]);
+
+  /**
+   * Attended half of the self-improvement flow (skillImproveMode 'confirm'):
+   * consume the body-change proposal updateReusedSkillFromRun staged for this
+   * agent's just-finished run and put it to the user. Declining (or dismissing
+   * — cancelable, same burst-of-runs escape hatch as the save offer) keeps
+   * today's behavior: the metadata bump already landed, the body is untouched.
+   * No-op when nothing was staged, so call sites can invoke unconditionally.
+   */
+  const offerSkillImprovement = React.useCallback((agentId: string) => {
+    const proposal = consumeSkillImprovementProposal(agentId);
+    if (!proposal || proposal.kind !== 'bump-with-learning' || !proposal.learning) return;
+    Alert.alert(
+      t('sidebar.skill_improve_title'),
+      t('sidebar.skill_improve_body', {
+        name: proposal.agentName ?? proposal.improved.name,
+        note: proposal.learning.note,
+      }),
+      [
+        {
+          text: t('sidebar.skill_improve_yes'),
+          onPress: () => {
+            void persistSkillImprovement(runCommand, proposal)
+              .then(() => onSaved?.())
+              .catch((error) => {
+                Alert.alert(
+                  t('sidebar.skill_improve_failed_title'),
+                  String((error as Error)?.message || error)
+                );
+              });
+          },
+        },
+        { text: t('common.cancel'), style: 'cancel' },
+      ],
+      { cancelable: true },
+    );
   }, [t, runCommand, onSaved]);
 
   const offerSkillSave = React.useCallback((params: SkillSaveOfferParams) => {
@@ -153,5 +211,5 @@ export function useSkillSaveOffer(opts: {
     );
   }, [t, runCommand, onSaved]);
 
-  return { offerSkillSave };
+  return { offerSkillSave, offerSkillImprovement };
 }

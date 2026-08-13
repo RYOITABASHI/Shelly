@@ -125,7 +125,7 @@ export default function AgentRunsPane() {
     // not a poller; the Sidebar already owns the periodic sync.
   }, [refresh]);
 
-  const { offerSkillSave } = useSkillSaveOffer({ runCommand: runAgentShellCommand });
+  const { offerSkillSave, offerSkillImprovement } = useSkillSaveOffer({ runCommand: runAgentShellCommand });
 
   const agentById = React.useCallback(
     (agentId: string): Agent | undefined => agents.find((a) => a.id === agentId),
@@ -160,6 +160,9 @@ export default function AgentRunsPane() {
       setBusyAgentId(agentId);
       try {
         await runAgentNow(agentId, runAgentShellCommand);
+        // Skill self-improvement confirm (no-op unless this re-run of a
+        // skill-reusing agent staged a body-learning proposal).
+        offerSkillImprovement(agentId);
         await syncAgentRunLogsFromDisk(runAgentShellCommand, agentId);
       } catch (error) {
         Alert.alert(
@@ -173,7 +176,7 @@ export default function AgentRunsPane() {
         setBusyAgentId(null);
       }
     },
-    [agentById, busyAgentId, t],
+    [agentById, busyAgentId, offerSkillImprovement, t],
   );
 
   // Undo is deliberately inert here. The only rollback mechanism in the app
