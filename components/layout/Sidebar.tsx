@@ -873,7 +873,7 @@ export function Sidebar() {
       // Complementary to the save offer (which is skipped for agents already
       // reusing a skill): a skill-reusing run may have staged a body-learning
       // proposal — no-op otherwise.
-      offerSkillImprovement(agentId);
+      offerSkillImprovement?.(agentId);
       setTimeout(() => void refreshRunningAgents(), 1_000);
       setTimeout(() => void refreshRunningAgents(), 5_000);
       setTimeout(() => {

@@ -80,7 +80,7 @@ jest.mock('@/hooks/use-skill-save-offer', () => {
   const actual = jest.requireActual('@/hooks/use-skill-save-offer');
   return {
     ...actual,
-    useSkillSaveOffer: () => ({ offerSkillSave: mockOfferSkillSave }),
+    useSkillSaveOffer: () => ({ offerSkillSave: mockOfferSkillSave, offerSkillImprovement: jest.fn() }),
   };
 });
 

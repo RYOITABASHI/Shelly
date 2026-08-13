@@ -162,7 +162,7 @@ export default function AgentRunsPane() {
         await runAgentNow(agentId, runAgentShellCommand);
         // Skill self-improvement confirm (no-op unless this re-run of a
         // skill-reusing agent staged a body-learning proposal).
-        offerSkillImprovement(agentId);
+        offerSkillImprovement?.(agentId);
         await syncAgentRunLogsFromDisk(runAgentShellCommand, agentId);
       } catch (error) {
         Alert.alert(

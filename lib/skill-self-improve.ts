@@ -28,7 +28,6 @@
  *   (the same shape the auto-save path already defends against) are no-ops.
  */
 import * as Notifications from 'expo-notifications';
-import { getHomePath } from '@/lib/home-path';
 import { scanForSecrets } from '@/lib/secret-guard';
 import {
   MAX_SKILL_LEARNINGS,
@@ -194,6 +193,13 @@ function shellQuote(value: string): string {
 }
 
 export function skillImprovementAuditLogPath(): string {
+  // Lazy require: this module is pulled in by hooks/use-skill-save-offer.ts,
+  // which some tests load via jest.requireActual() while mocking everything
+  // else. A top-level import of home-path.ts eagerly resolves the native
+  // TerminalEmulator module and breaks those tests even though they never
+  // call this function. Deferring the require keeps module load side-effect
+  // free.
+  const { getHomePath } = require('@/lib/home-path');
   return `${getHomePath()}/.shelly/agents/skills/improvements.log`;
 }
 
