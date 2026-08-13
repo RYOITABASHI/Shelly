@@ -87,6 +87,35 @@ describe('parseAgentNL — run immediately (Once)', () => {
     // to 'once' via that path (a topic-first phrasing is out of scope here).
     expect(d.schedule).not.toBe('once');
   });
+
+  // 2026-08-13 on-device QA finding: an utterance combining a notification
+  // trigger / conditional lead-in with a "run it right now" clause was
+  // matched by neither branch 0 (whole-string) nor 0b (must LEAD the entire
+  // utterance) — it fell through to the ambiguous/no-schedule fallback and,
+  // reported by QA, could resolve as an unrelated "daily 08:00" cron instead
+  // of the user's actual one-shot intent. Three phrasings were reproduced:
+  // EN trailing "right now", JP conditional "たら" with no written comma
+  // (common in voice dictation), and the same JP conditional WITH a comma.
+  it.each([
+    'when I get a notification, summarize it right now',
+    '通知が来たらすぐに要約して',
+    '通知が来たら、今すぐ要約して',
+  ])('%s → schedule "once", confident (not an unrelated daily/weekly default)', (phrase) => {
+    const d = parseAgentNL(phrase);
+    expect(d.schedule).toBe('once');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('EN postposed "right now" at the very end of a longer instruction resolves to once', () => {
+    const d = parseAgentNL('please back up my important files right now');
+    expect(d.schedule).toBe('once');
+    expect(d.scheduleConfident).toBe(true);
+  });
+
+  it('a trailing bare "すぐ" (no すぐに/今すぐ) is NOT treated as once-now — collides with the locative sense ("駅からすぐ" = nearby)', () => {
+    const d = parseAgentNL('最寄り駅からすぐ');
+    expect(d.schedule).not.toBe('once');
+  });
 });
 
 describe('parseAgentNL — interval', () => {

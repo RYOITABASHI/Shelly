@@ -486,6 +486,43 @@ export function parseSchedule(text: string): ScheduleResult {
     return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
   }
 
+  // ── 0c. "run right now" as a CLAUSE-LEADING or TRAILING phrase elsewhere in
+  // a longer utterance — 2026-08-13 on-device QA finding: branch 0 is
+  // whole-string-only and 0b requires the phrase to lead the ENTIRE
+  // utterance, so a notification-trigger / conditional lead-in placed before
+  // the once-now phrase ("通知が来たらすぐに要約して", "when I get a
+  // notification, summarize it right now") matched neither — it fell through
+  // every later branch to the generic ambiguous-schedule fallback (or, worse,
+  // to an unrelated daily/weekly cron if the utterance also happened to carry
+  // a recurrence word), silently discarding the user's actual "just run this
+  // once, now" intent. Two additional shapes are recognized here, chosen to
+  // be narrow enough that the pre-existing "GitHub Trendingをすぐにまとめて"
+  // case (a mid-clause adverb fused directly onto its own verb, no clause
+  // boundary before it) still does NOT match, exactly as before:
+  //   (i) CLAUSE-LEADING: immediately after a comma/reading-mark (、,) or a
+  //       conditional-clause ending (たら/れば) — covers JP "Xしたら(、)今すぐ
+  //       Yして" (with or without the written comma — voice dictation often
+  //       drops it) and an EN ", right now do Y" phrasing.
+  //   (ii) TRAILING: at the very end of the utterance — covers EN's natural
+  //       postposed-adverb phrasing ("do Y right now"). Bare "すぐ" is
+  //       deliberately excluded from the trailing set (unlike the leading
+  //       sets above and in 0b): a trailing bare "すぐ" collides with the
+  //       unrelated locative sense ("駅からすぐ" = "right by the station"),
+  //       whereas a trailing multi-character phrase (今すぐ/すぐに/直ちに/
+  //       即時/即座に) is not ambiguous that way.
+  // derivePrompt is deliberately NOT extended to strip these new shapes: they
+  // sit mid-utterance next to real content (the trigger/conditional clause),
+  // unlike 0b's purely-leading case, so leaving the wording in `prompt` is
+  // the safer default — see 0b's own doc comment for the leading-only strip.
+  if (
+    /(?:^|[、,]|たら|れば)\s*(?:今すぐ|すぐに|すぐ|直ちに|即時|即座に)[、,]?\s*\S/.test(text) ||
+    /(?:^|,)\s*(?:right\s+now|right\s+away|immediately|asap)[,]?\s+\S/i.test(text) ||
+    /\S\s*(?:今すぐ|すぐに|直ちに|即時|即座に)\s*[。！!？?]?\s*$/.test(text) ||
+    /\s(?:right\s+now|right\s+away|immediately|asap)\s*[.!?]?\s*$/i.test(text)
+  ) {
+    return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
+  }
+
   // ── 1. Every-N-minutes interval → `*/N * * * *` (N must be 1..59) ──
   const intervalJp = text.match(/(\d+)\s*分\s*(?:ごと|おき|毎|間隔)|(\d+)\s*分に\s*1\s*回/);
   const intervalEn = lower.match(/every\s+(\d+)\s*(?:min|mins|minute|minutes)\b/);
