@@ -1829,6 +1829,41 @@ describe('parseAgentNL — fuzz sweep findings (2026-07-24)', () => {
     });
   });
 
+  describe('deriveName — no cosmetic truncation of the persisted name (2026-08-13 on-device QA finding)', () => {
+    // Root cause: deriveName used to hard-truncate the STORED agent.name at
+    // 28 chars with a trailing "…", but that name is also the identity
+    // `@agent run/stop/delete/history/edit <name>` must match against (see
+    // lib/agent-manager.ts's resolveAgentByNameLoose and its own test
+    // coverage in agent-manager-name-resolution.test.ts). A name copied off
+    // the Sidebar (which applies its OWN separate numberOfLines={1} display
+    // ellipsis) rarely lined up byte-for-byte with the already-truncated
+    // stored name either. Fix: stop truncating for cosmetic reasons here —
+    // display-only shortening belongs in the UI layer.
+    it('a long utterance no longer produces a name truncated with a trailing "…"', () => {
+      const d = parseAgentNL('when I get a notification from Gmail, notify me with a summary');
+      expect(d.name).not.toMatch(/…$/);
+      expect(d.name.toLowerCase()).toContain('notification');
+      expect(d.name.toLowerCase()).toContain('summary');
+    });
+
+    it('a long Japanese utterance is likewise kept whole (no "…" cut)', () => {
+      const d = parseAgentNL('今日の主要ニュースと株式市場の動向と為替レートをまとめて詳しく報告して出典付きでレポートを作成して');
+      expect(d.name).not.toMatch(/…$/);
+    });
+
+    it('a short utterance is completely unaffected (no regression)', () => {
+      expect(parseAgentNL('今日の主要ニュースを出典付きで3つ集めて').name).not.toMatch(/…$/);
+    });
+
+    it('an extreme/degenerate-length input is still bounded by the safety cap (not unbounded)', () => {
+      // A run with no NAME_STRIP_RE-stoppable tokens at all — the safety cap
+      // (not a cosmetic truncation) is the only thing limiting this.
+      const longWord = 'あ'.repeat(500);
+      const d = parseAgentNL(`${longWord}をメモして`);
+      expect(d.name.length).toBeLessThanOrEqual(200);
+    });
+  });
+
   describe('deriveName — secret redaction (2026-07-27 on-device finding, bug: plaintext key in saved note)', () => {
     // Built at runtime (not a literal template) so repository secret scanning
     // does not flag this test fixture as a live credential.

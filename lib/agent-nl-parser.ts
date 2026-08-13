@@ -1648,7 +1648,35 @@ const NAME_STRIP_RE = new RegExp(
   'gi',
 );
 
-/** Derive a short, human-friendly name (editable in the card). */
+// Hard safety ceiling for the derived name — NOT a display-truncation device.
+// 2026-08-13 on-device QA finding: this used to be 28 (with a trailing "…"
+// appended below), and that 28-char cut was applied to the PERSISTED
+// agent.name itself — the identity `@agent run <name>` / `stop` / `delete` /
+// `history` / `edit` match against (store/agent-store.ts's getAgentByName,
+// and now lib/agent-manager.ts's resolveAgentByNameLoose) — not merely to
+// how the name is later shown. A long utterance ("when I get a notification
+// from Gmail, notify me with a summary") therefore saved as "when I get a
+// notification fr…", and the Sidebar row ALSO applies its own independent
+// `numberOfLines={1}` ellipsis on top of that already-truncated stored
+// string, so what the user could read/copy off-screen never reliably lined
+// up with the true persisted name either — two independent, unaligned
+// truncation points. Fix: separate identity from display. The stored name
+// is no longer cut here for cosmetic reasons; Sidebar's existing
+// `numberOfLines`/`ellipsizeMode` already does that job non-destructively at
+// render time (components/layout/Sidebar.tsx). This constant only guards
+// against a truly degenerate input (e.g. a multi-KB pasted block with no
+// NAME_STRIP_RE-stoppable tokens) from flowing whole into chat bubbles,
+// notification titles, and log lines — computeAgentSlug() (lib/agent-
+// executor.ts) has its own independent 48-char cap for the on-disk filename,
+// unaffected by this constant.
+const DERIVED_NAME_SAFETY_CAP = 200;
+
+/** Derive a human-friendly name (editable in the card). This is the value
+ *  PERSISTED as Agent.name — the identity `@agent run/stop/delete/history/
+ *  edit <name>` resolves against — so it must never be cosmetically
+ *  shortened here; only the `DERIVED_NAME_SAFETY_CAP` safety ceiling applies
+ *  (see that constant's doc comment for why). Any *display*-only truncation
+ *  belongs in the UI layer (Sidebar row numberOfLines, etc.), not here. */
 function deriveName(text: string): string {
   // 2026-07-27 on-device finding: an agent registered from "「API key:
   // sk-test-1234567890abcdef」という内容でメモを作成して" auto-named itself
@@ -1657,11 +1685,12 @@ function deriveName(text: string): string {
   // popups, confirm cards, run-log entries, completion-notification titles)
   // — AND, via computeAgentSlug() (lib/agent-executor.ts) slugifying that
   // name, in the saved-output .md FILENAME too. Redact secret-shaped
-  // substrings from the raw utterance FIRST, before any stripping/truncation
-  // below, so a partial secret can't survive a 28-char cut either. Reuses
-  // lib/redact-secrets.ts's shared pattern list (same one lib/debug-logger.ts
-  // and agent-executor.ts's generated-script redact_secrets_text() already
-  // rely on) rather than a third divergent regex set.
+  // substrings from the raw utterance FIRST, before any stripping/capping
+  // below, so a partial secret can't survive the safety-cap cut either.
+  // Reuses lib/redact-secrets.ts's shared pattern list (same one
+  // lib/debug-logger.ts and agent-executor.ts's generated-script
+  // redact_secrets_text() already rely on) rather than a third divergent
+  // regex set.
   const safeText = redactSecretsText(text);
   // 2026-07-24 on-device finding: "毎週月曜の朝にゴミ出しをリマインドして"
   // derived "の ゴミ出し リマインド" — の is a common connector left dangling
@@ -1672,9 +1701,10 @@ function deriveName(text: string): string {
   // derivePrompt's full-fidelity task text).
   let s = safeText.replace(NAME_STRIP_RE, ' ').replace(/[にをのはがでへと、。,.\s]+/g, ' ').trim();
   if (!s) s = safeText.trim();
-  // Collapse and truncate.
+  // Collapse whitespace only — see DERIVED_NAME_SAFETY_CAP's doc comment for
+  // why this no longer cosmetically truncates with a trailing "…".
   s = s.replace(/\s+/g, ' ');
-  if (s.length > 28) s = s.slice(0, 28).trim() + '…';
+  if (s.length > DERIVED_NAME_SAFETY_CAP) s = s.slice(0, DERIVED_NAME_SAFETY_CAP).trim();
   return s || 'Agent';
 }
 
