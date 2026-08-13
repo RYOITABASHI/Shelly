@@ -54,6 +54,7 @@ import {
   isOrchestrated,
   nextStepGate,
   normalizeSteps,
+  planParallelGroups,
   reduceStatus,
   resolveBudget,
 } from './agent-orchestration';
@@ -1854,6 +1855,25 @@ async function runAgentOrchestratedBody(
   const agentId = agent.id;
   const steps = normalizeSteps(agent.orchestration);
   const budget = resolveBudget(agent.orchestration);
+  // Fan-out subtasks (2026-08-13): resolve which steps run as isolated
+  // branches of a parallel group (see AgentOrchestrationStep.parallelGroup's
+  // doc comment in store/types.ts for the full contract). DISPATCH BELOW
+  // STAYS SERIAL — this attended path is per-agent single-flight by hard
+  // design (the chain lock's single rotating live nonce, the shared per-agent
+  // script/result-file/log-dir paths every per-step materialize writes, the
+  // run-log-count completion detection, and the global MAX_CONCURRENT=2
+  // guard baked into every generated .sh for the Android phantom-process
+  // ceiling), so concurrent branch dispatch is structurally unsafe here and
+  // deferred — see DEFERRED.md's 2026-08-13 fan-out entry for the blocker
+  // list. What a group changes TODAY is context flow only: each branch's
+  // prompt and duplicate-of-prior-step check use the PRE-group results
+  // snapshot (contextBase) instead of the running carry, so sibling branches
+  // never contaminate (or false-positive the duplicate detector against)
+  // each other, and the first post-group step aggregates every branch's
+  // result in declared order. Grouping never widens privilege: branches run
+  // through the IDENTICAL runLadderAttempts path (same boundary policy, same
+  // credential vetting, same quality gates) an unmarked step uses.
+  const parallelPlan = planParallelGroups(steps);
   const startedAtMs = Date.now();
   const priorResults: string[] = [];
   const records: AgentRunStep[] = [];
@@ -1879,9 +1899,15 @@ async function runAgentOrchestratedBody(
     // non-final steps suppress it so the chain fires ONE approval/notification,
     // not one per step.
     const isFinalStep = i === steps.length - 1;
+    // Fan-out subtasks: a branch of a parallel group sees only the results
+    // produced BEFORE the group (its group's start index); a serial step's
+    // slice is a no-op (contextBase[i] === i === priorResults.length under
+    // the fail-fast invariant — every earlier step succeeded or we never got
+    // here). See the parallelPlan comment above.
+    const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
     const stepAgent: Agent = {
       ...agent,
-      prompt: buildStepPrompt(agent.prompt, step.instruction, priorResults),
+      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults),
       // Orchestration is otherwise cleared so a step's own script generation
       // doesn't recurse into runAgentOrchestrated again — isOrchestrated()
       // only keys off .steps.length >= 2 (via normalizeSteps), so an object
@@ -1923,8 +1949,14 @@ async function runAgentOrchestratedBody(
           // DEFERRED.md「重複コンテンツ検知の欠如(P1)」: the immediately
           // preceding step's result (undefined for step 0, matching
           // priorResults' own empty-at-start state) — see
-          // MaterializeRunOpts.priorStepContent's doc comment.
-          priorStepContent: priorResults.at(-1),
+          // MaterializeRunOpts.priorStepContent's doc comment. Fan-out
+          // subtasks: taken from the SAME pre-group snapshot the prompt uses,
+          // so two branches of one group legitimately producing similar
+          // results are never compared against each other (only against the
+          // last PRE-group result) — a sibling comparison would false-positive
+          // the duplicate detector on exactly the similar-parallel-research
+          // outputs fan-out exists to produce.
+          priorStepContent: contextResults.at(-1),
         },
       ));
     } catch (error) {
@@ -1934,6 +1966,7 @@ async function runAgentOrchestratedBody(
         status: 'error',
         durationMs: Date.now() - stepStart,
         outputPreview: error instanceof Error ? error.message.slice(0, 200) : 'step failed',
+        ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
       });
       priorFailed = true;
       continue;
@@ -1950,6 +1983,7 @@ async function runAgentOrchestratedBody(
       durationMs: Date.now() - stepStart,
       outputPreview: log?.outputPreview ?? '',
       routeDecision: log?.routeDecision,
+      ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
     });
     // A transient step carries no usable result downstream, so it stops the chain
     // just like an error — only success feeds the next step's context.

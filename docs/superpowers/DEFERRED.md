@@ -36,6 +36,32 @@
 
 ---
 
+### Hermesサブエージェント並列生成ギャップ — ファンアウト・サブタスク(parallel group)のセマンティクスを実装、真の並列(wall-clock)ディスパッチは意図的に見送り (2026-08-13、Fable5、実機未検証) — 残タスクは P2
+
+**背景**: Hermes Agentの「タスクをサブタスクに分解し、複数サブエージェントを並列生成して処理させ、結果を集約する」機能がShellyに一切無いギャップの解消依頼。2026-08-03に一度「並列実行はスキップ」と判断した経緯があり(下記「Hermes Agent機能ギャップ、Fable5提案の①②実装」エントリ参照)、今回は実装前に両executorのアーキテクチャを精査した上でスコープを二分した。
+
+**実装した範囲(ファンアウト・サブタスクのセマンティクス — Hermesサブエージェントの「分解→各サブタスクを同一コンテキストから処理→集約」の意味論)**:
+- **スキーマ**: `AgentOrchestrationStep.parallelGroup?: string`(`store/types.ts`)— 連続するステップに同じgroup idを付けると1つのファンアウト・グループになる。`AgentRunStep.parallelGroup`も追加(実行ログでどのステップがブランチだったか可視化)。すべて additive(既存agent/plan/ログは無変更、`PLAN_SPEC_SCHEMA_VERSION` bump不要——`steps`フィールド追加時と同じ前例)。
+- **純粋コア**: `lib/agent-orchestration.ts`の`planParallelGroups()`+`MAX_PARALLEL_BRANCHES=3`が唯一のルール置き場: ①連続する同一idのみグループ化 ②2メンバー以上必須(単独はserial) ③**最終ステップは絶対にグループ化しない**(agent actionを実行し集約コンテキストを見る必要がある) ④cap超過メンバーはserialに降格。不正なid(`[A-Za-z0-9_-]{1,32}`以外)は正規化時に破棄(fail-safe to serial)。
+- **両executorでコンテキスト分離+集約**: attended TSチェーン(`lib/agent-manager.ts` `runAgentOrchestratedBody`)と無人PlanSpec executor(`scripts/shelly-plan-executor.js` `runOrchestrationChain`+APK assetミラー、byte-identical維持・parity test更新)の両方で、グループのブランチは**グループ開始前の結果スナップショットだけを見る**(兄弟ブランチの出力はプロンプトにも重複検知(`isDuplicateOfPriorStep`)の比較対象にも入らない——類似した並列リサーチ結果同士が重複偽陽性でチェーンを殺す問題も同時に解消)。グループ直後のステップは全ブランチの結果を宣言順で集約して受け取る。api-callステップの`{{result}}`も同じスナップショット規則。
+- **安全境界の継承(構造的)**: ブランチは無印ステップと**同一のper-stepパス**を通る——attended側は同じ`runLadderAttempts`(boundary policy/品質ゲート/アクション抑制すべて同一)、無人側はplan-build時の`resolveStepToolForPlan`による`resolveForAutonomous`審査済みツールのみ消費(Phase 7の既存チョークポイント、`__tests__/agent-plan-spec.test.ts`にparallelGroup付きの継承回帰テストを追加)。グループ化が変えるのは「どの前段結果を**見るか**」だけで「何を**できるか**」は一切変えない。fail-fastも不変(ブランチ失敗=チェーン停止、circuit breaker/`reduceStatus`のセマンティクス無変更)。
+- **UI最小可視化**: Sidebarのagent詳細(計画ステップ+実行ログステップ)と確認カードのNLサマリ(`lib/agent-plan-summary.ts`)に言語中立の`∥<group>`サフィックス。i18nキー追加なし。
+- **テスト**: 新規`__tests__/agent-orchestration-parallel-groups.test.ts`(純粋コア15件)、`__tests__/agent-manager-parallel-group.test.ts`(attended分離/集約/ログ/serial回帰5件)、`plan-executor-orchestration-chain.test.ts`に統合3件(分離+集約、重複検知免除、最終ステップ切除)+TS/JS parity 9件、`agent-plan-spec.test.ts`に継承1件。`npx tsc --noEmit`クリーン。関連スイート回帰: agent-manager系全PASS、plan-executor系はWindows既知失敗4スイート(17件、broker scoped-fsの`C:\C:\`パス重複——**stash検証でHEADでも同一17件失敗を確認、本変更と無関係**)を除き全PASS。
+
+**意図的に見送った範囲(wall-clockの並列ディスパッチ)— P2**: 調査の結果、両executorとも**per-agent単一飛行(single-flight)が意図的な安全設計**であり、並列ディスパッチはその再設計なしに安全に成立しないと判断した。具体的なブロッカー4点:
+1. **attended TSチェーン**: chain lockの回転式単一live nonce(`token`ファイル1個/agent)、per-agent共有の`<id>.sh`スクリプト/`agent-result-<id>.md`/logs dirをステップごとにmaterializeで上書きする構造、run-log件数ベースの完了検知——同時実行するとスクリプト上書き・ログ帰属・nonce照合がすべて壊れる。回避には合成sub-agent id(`<id>__sub<n>`)方式が必要だが、孤児ファイル/幽霊メタデータ(delete-resurrectionバグ族の再来リスク)/orphan sweepとの相互作用の検証が必要。
+2. **生成スクリプトのグローバル`MAX_CONCURRENT=2`ガード**(`lib/agent-executor.ts`)— Androidのphantom-processセイリング(上限32)保護のための意図的な全agent横断制限。並列ブランチはこれと衝突して非決定的に'skipped'になるか、他agentのスケジュール発火を飢餓させる。capを上げること自体が安全性の後退。
+3. **無人PlanSpec executorは完全同期**(モデル呼び出し=capability brokerの`spawnSync`)— 並列化にはexecutor全体のasync化(byte-identical APKミラー+`AgentRuntime.kt`のバージョンlockstep込み)が必要で、セキュリティクリティカルな無人経路の制御フロー全面改修になる。Track P(OpenRouter attended限定)と同じ理由で無人経路の大改修は単独タスクとして分離すべき。
+4. **デバイス資源**: 並列local LLM呼び出しはllama-serverの単一スロットでどのみち直列化され、並列cloud呼び出しもfold端末の熱/メモリ予算を食う。並列化の実益はネットワーク待ちの重ね合わせに限られる。
+**将来並列化する場合の道筋**: `planParallelGroups()`が既にグループ境界を執行済みなので、変更点は「グループ内ディスパッチのループをPromise.all/spawn相当に置き換える」1点に集約されている(セマンティクスとcapは本増分で確定済み)。最有力候補は無人executorのasync化(ブランチ=in-process HTTPなので単一飛行制約に触れない)だが、上記3の理由で専用タスク+Codexレビュー+実機検証を要する。
+**その他の見送り**: NL発話からの自動グループ判定(「AとBを並行して調べて」等)は次スコープ(現状はPlanSpec/`orchestration.steps`での明示指定のみ。会話登録Tier3のLLM抽出スキーマにも未追加)。codex/bashチェーン(`codexOrchestrationChainCommand`)はマーカーを無視して従来のserial carry-forwardで実行(品質のみの分岐、安全性影響なし——`canRunOrchestrationChain`のコメント参照)。グループ内の部分失敗許容(1ブランチ失敗でも他の成功ブランチで続行)も見送り(`reduceStatus`/circuit breakerのセマンティクス変更を伴うため)。
+
+**実機未検証**: tsc/Jestレベルのみ。次回実機QAで、`orchestration.steps`にparallelGroup付きagentを登録→attended Run now+スケジュール発火の両方でブランチ分離と集約を確認要。
+
+→ sync: CLAUDE.mdのArchitecture Decisions表に1行追加済み(本コミット)。README反映は実機検証後。
+
+---
+
 ### ✅ Track DD/EE/FF 実装完了(commit `4332e7245`)— Hermes比較レビュー中にFable5が発見した3件、実機未検証
 
 **背景**: Hermes Agentとの最終比較レビュー中、Fable5がStep2作業(後に中止)で新たに3件のバグを発見した。
@@ -4315,6 +4341,7 @@ claude() {
 ## History
 
 - **2026-08-13（Fable5、スキル自己改善 Phase 1）**: Hermes機能ギャップ「スキルの自己改善」を実装。決定論的な学習昇格（解消済み失敗ヒント→本文`learnings`、5件FIFO・240字上限・secret gate・追記型監査ログ・attended confirm/unattended auto+revert通知）。LLMによる本文リファインは2026-08-03 Track Cの安全判断とバックグラウンドLLM呼び出し経路の不在を理由にP2で意図的見送り、必要事項を先頭付近の新規エントリに記録。
+- **2026-08-13（Fable5、Hermesサブエージェント並列生成ギャップ）**: ファンアウト・サブタスク（`parallelGroup`）のセマンティクス——ブランチのコンテキスト分離（兄弟ブランチの出力をプロンプト/重複検知から遮断）+宣言順集約+最終ステップ除外+`MAX_PARALLEL_BRANCHES=3` cap——をattended TSチェーンと無人PlanSpec executor（APK assetミラー同期）の両方に実装。真のwall-clock並列ディスパッチは、両executorのper-agent単一飛行安全設計（chain lock回転nonce／グローバル`MAX_CONCURRENT=2`／同期spawnSync broker）と衝突するため意図的に見送り、ブロッカー4点と将来の道筋を新規エントリに記録。tsc/Jest PASS（Windows既知失敗4スイートはHEADでも同一と stash 検証済み）、実機未検証。先頭のエントリ参照。
 - **2026-08-10（CC、Fig風オートコンプリート復活の技術調査、コード変更なし・ドキュメントのみ）**: プロダクトオーナー指示「機能を復活させる方針」を受け`cce05d705`削除時の実装・削除理由「autocomplete moved in-line」の真偽・現行ネイティブPTYアーキテクチャとの整合性を調査。**結論: JSのみでの復活は技術的に不可能と確定**——`NativeTerminalView`のPTY直結入力にはJS側から読める入力バッファ/カーソル位置APIが無い。「in-line実装」とされた`components/input/CommandInput.tsx`+`AutocompleteDropdown.tsx`は実は`chelly/`チャットUI削除(`56dad02af`)時の削除漏れ残骸で、現行アプリのどこからも到達不能と判明(CLAUDE.mdの2026-08-10付け記載自体が誤りだったため訂正)。`lib/autocomplete-engine.ts`は純粋ロジックのまま再利用可能と確認。ネイティブ側`BlockDetector.kt`が既にOSC133ベースで「入力中のコマンド文字列」をリアルタイム構築していることを発見し、復活に必要な最小ネイティブ変更(新規イベント`onCommandBufferChanged`をKotlin側で追加)を特定・新規P1エントリに記録。ConfigTUIトグル・i18nキーは機能本体が無い状態での復活は「孤児トグルの再発」になるため見送り。README(2箇所)・CLAUDE.mdを事実に合わせて訂正。先頭付近の新規エントリ参照。
 - **2026-08-10（CC、wallpaper説明文 vs CLAUDE.md矛盾の調査完了、コード変更なし）**: Fable5実機②レビューが指摘した「Show wallpaper in Terminal (experimental)」説明文とCLAUDE.mdのP3ゲート(opaque固定)の矛盾を調査。git log全履歴を確認した結果、`store/settings-store.ts`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示、3分前の`85da0d144`のrevert)で`true`に確定しHEADまで不変——**説明文は現行コードに対して正確、CLAUDE.md側の記述が陳腐化していた**と判明。設定テキスト・`TerminalPane.tsx`/`SettingsDropdown.tsx`/`ShellyTerminalView.kt`いずれも変更せず(挙動は現状のまま)、CLAUDE.md本文の当該行はP3チェックリストのスクショ証跡要求があり遡及提出不可のため直接書き換えは見送り。事実関係をD-4項目・末尾P3エントリ・新規P1エントリの3箇所に記録した。先頭付近のエントリ参照。
 - **2026-08-09**: commit `af0608347`（BlockDetectorコマンド断片化修正 + onUrlDetected配線）のversionCode 2103実機QA。両修正ともPASS確定（`topCommands`に`qafrag2103marker`が完全文字列で記録／`echo <URL>`でChrome Custom Tab起動をActivityTaskManagerログで確認）。新規の気づき2件（URL自動オープンは検出トリガーでタップ不要＝UX検討余地、bundleツールは非interactiveシェルで使用不可）をP3観察として記録。先頭のエントリ参照。

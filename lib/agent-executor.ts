@@ -1192,6 +1192,17 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     return rest;
   };
   const attemptableOrchestrationSteps = attemptableOrchestrationStepsRaw.map(resolveStepToolForChainScript);
+  // Fan-out subtasks (2026-08-13): a step's `parallelGroup` marker is
+  // deliberately IGNORED by this bash chain — the chain runs with today's
+  // exact serial carry-forward (each step's prompt carries the immediately
+  // preceding results, including a sibling branch's). That is a
+  // quality/semantics divergence from the TS attended path and the PlanSpec
+  // executor (both give branches the pre-group context snapshot), NOT a
+  // safety divergence: ignoring the marker never widens what a step may do,
+  // and this executor's prompt-carry is assembled in generated bash with no
+  // per-step context-slicing machinery to build on (same class of reason
+  // `.apiCall` steps stay out of scope here). Tracked in DEFERRED.md's
+  // 2026-08-13 fan-out entry.
   const canRunOrchestrationChain =
     isOrchestrated(agent.orchestration) &&
     tool.type === 'cli' &&

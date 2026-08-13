@@ -31,6 +31,7 @@
 import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime } from './agent-nl-parser';
 import { AgentAction } from '@/store/types';
 import { toolChoiceToLabel } from './agent-tool-router';
+import { normalizeStep, planParallelGroups } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
 import { t, tFor, type Locale } from './i18n';
 import { detectMessageLocale } from './agent-slot-fill';
@@ -465,13 +466,20 @@ export function summarizeAgentDraftAsText(
 
   if (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2) {
     lines.push(tl('agentcard.orchestration', { count: draft.orchestrationSteps.length }));
+    // Fan-out subtasks (2026-08-13): mark only the EFFECTIVE branches (via
+    // the same planParallelGroups the executors consume — a marker severed by
+    // the final-step/cap/singleton rules shows nothing here, matching what
+    // will actually run). Language-neutral "∥<group>" suffix, same convention
+    // as Sidebar.tsx's step detail.
+    const summaryGroups = planParallelGroups(draft.orchestrationSteps.map(normalizeStep));
     draft.orchestrationSteps.forEach((s, i) => {
       const instruction = typeof s === 'string' ? s : s.instruction;
       const pinnedTool = typeof s === 'string' ? undefined : s.tool;
+      const groupSuffix = summaryGroups.group[i] ? ` ∥${summaryGroups.group[i]}` : '';
       lines.push(
         pinnedTool
-          ? `${i + 1}. [${toolChoiceToLabel(pinnedTool)}] ${instruction}`
-          : `${i + 1}. ${instruction}`,
+          ? `${i + 1}. [${toolChoiceToLabel(pinnedTool)}] ${instruction}${groupSuffix}`
+          : `${i + 1}. ${instruction}${groupSuffix}`,
       );
     });
   }

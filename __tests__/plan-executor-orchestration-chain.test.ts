@@ -166,7 +166,7 @@ function makeHome(): string {
 const AGENT_ID = 'agent-chain-smoke';
 
 type StepsField = {
-  list: Array<{ instruction: string; apiCall?: { host: string; method: 'GET' | 'POST'; path: string; authRef?: string; bodyTemplate?: string }; tool?: { type: string; model?: string; cli?: string } }>;
+  list: Array<{ instruction: string; apiCall?: { host: string; method: 'GET' | 'POST'; path: string; authRef?: string; bodyTemplate?: string }; tool?: { type: string; model?: string; cli?: string }; parallelGroup?: string }>;
   budget: { maxSteps: number; totalTimeoutMs: number };
 } | undefined;
 
@@ -576,4 +576,167 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
     const log = readRunLog(home);
     expect(log.status).toBe('success');
   }, 20000);
+
+  it('(k) FAN-OUT (2026-08-13): branches of a parallel group are context-isolated from each other and aggregated for the post-group step', async () => {
+    const home = makeHome();
+    responses = ['BASE_R', 'BRANCH_A_R', 'BRANCH_B_R', 'final digest'];
+    const steps: StepsField = {
+      list: [
+        { instruction: 'collect the base data' },
+        { instruction: 'research angle A', parallelGroup: 'research' },
+        { instruction: 'research angle B', parallelGroup: 'research' },
+        { instruction: 'aggregate everything' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { steps }), home);
+    expect(rc).toBe(0);
+
+    expect(requestPrompts).toHaveLength(4);
+    // Branch A sees the pre-group snapshot (the base result).
+    expect(requestPrompts[1]).toContain('BASE_R');
+    expect(requestPrompts[1]).not.toContain('BRANCH_B_R');
+    // Branch B: SAME snapshot — sibling branch A's output is NOT in its prompt.
+    expect(requestPrompts[2]).toContain('BASE_R');
+    expect(requestPrompts[2]).not.toContain('BRANCH_A_R');
+    // The post-group (final) step aggregates every branch result, in declared
+    // order (buildStepPrompt labels: base = Step 1, A = Step 2, B = Step 3).
+    expect(requestPrompts[3]).toContain('BRANCH_A_R');
+    expect(requestPrompts[3]).toContain('BRANCH_B_R');
+    expect(requestPrompts[3]).toMatch(/## Step 2[\s\S]{0,40}BRANCH_A_R/);
+    expect(requestPrompts[3]).toMatch(/## Step 3[\s\S]{0,40}BRANCH_B_R/);
+
+    // The aggregate run log records which steps ran as branches.
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(log.steps.map((s: any) => s.parallelGroup)).toEqual([undefined, 'research', 'research', undefined]);
+  }, 20000);
+
+  it('(l) FAN-OUT: two branches legitimately producing near-identical output are NOT duplicate-failed against each other (contrast with (j))', async () => {
+    const home = makeHome();
+    const similarResearch =
+      '日本の研究チーム「Explorative Modeling」の成果を発表、データ効率が6.2倍。経産省の組織再編も発表された。';
+    // Branch B returns the SAME >= 20-char text as branch A — in a serial
+    // chain (case (j)) this is exactly what isDuplicateOfPriorStep rejects;
+    // as sibling branches it must pass, because each branch is compared only
+    // against the last PRE-group result.
+    responses = ['BASE_R', similarResearch, similarResearch, 'final digest'];
+    const steps: StepsField = {
+      list: [
+        { instruction: 'collect the base data' },
+        { instruction: 'research angle A', parallelGroup: 'research' },
+        { instruction: 'research angle B', parallelGroup: 'research' },
+        { instruction: 'aggregate everything' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { steps }), home);
+    expect(rc).toBe(0);
+    expect(requestPrompts).toHaveLength(4);
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(readNotification(home).status).toBe('success');
+  }, 20000);
+
+  it('(m) FAN-OUT: a marker that only ever reaches the FINAL step is severed — the chain runs serially, records carry no group', async () => {
+    const home = makeHome();
+    responses = ['step-1 result', 'final result'];
+    const steps: StepsField = {
+      list: [
+        { instruction: 'gather' },
+        { instruction: 'finalize', parallelGroup: 'g' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { steps }), home);
+    expect(rc).toBe(0);
+    // Serial carry-forward preserved (the final step still sees step 1).
+    expect(requestPrompts[1]).toContain('step-1 result');
+    const log = readRunLog(home);
+    expect(log.status).toBe('success');
+    expect(log.steps.map((s: any) => s.parallelGroup)).toEqual([undefined, undefined]);
+  }, 20000);
+});
+
+// ─── Fan-out subtasks (parallel groups, 2026-08-13): pure-function parity ────
+
+describe('fan-out parallel-groups pure-function parity with lib/agent-orchestration.ts', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { MAX_PARALLEL_BRANCHES: TS_MAX_PARALLEL_BRANCHES, planParallelGroups: tsPlanParallelGroups } =
+    require('@/lib/agent-orchestration');
+
+  it('MAX_PARALLEL_BRANCHES is numerically identical', () => {
+    expect(executor.MAX_PARALLEL_BRANCHES).toBe(TS_MAX_PARALLEL_BRANCHES);
+  });
+
+  const fixtures: Array<{ name: string; steps: Array<{ instruction: string; parallelGroup?: string }> }> = [
+    { name: 'all serial', steps: [{ instruction: 'a' }, { instruction: 'b' }, { instruction: 'c' }] },
+    {
+      name: 'group of two mid-chain',
+      steps: [
+        { instruction: 'collect' },
+        { instruction: 'A', parallelGroup: 'g' },
+        { instruction: 'B', parallelGroup: 'g' },
+        { instruction: 'aggregate' },
+      ],
+    },
+    {
+      name: 'final-step severing',
+      steps: [
+        { instruction: 'a', parallelGroup: 'g' },
+        { instruction: 'b', parallelGroup: 'g' },
+        { instruction: 'final', parallelGroup: 'g' },
+      ],
+    },
+    {
+      name: 'cap overflow',
+      steps: [
+        { instruction: 'b1', parallelGroup: 'g' },
+        { instruction: 'b2', parallelGroup: 'g' },
+        { instruction: 'b3', parallelGroup: 'g' },
+        { instruction: 'b4', parallelGroup: 'g' },
+        { instruction: 'b5', parallelGroup: 'g' },
+        { instruction: 'final' },
+      ],
+    },
+    { name: 'singleton stays serial', steps: [{ instruction: 'a', parallelGroup: 'g' }, { instruction: 'b' }, { instruction: 'c' }] },
+    {
+      name: 'adjacent different groups',
+      steps: [
+        { instruction: 'a1', parallelGroup: 'g1' },
+        { instruction: 'a2', parallelGroup: 'g1' },
+        { instruction: 'b1', parallelGroup: 'g2' },
+        { instruction: 'b2', parallelGroup: 'g2' },
+        { instruction: 'final' },
+      ],
+    },
+  ];
+
+  for (const { name, steps } of fixtures) {
+    it(`planParallelGroups behaves identically for: ${name}`, () => {
+      expect(executor.planParallelGroups(steps)).toEqual(tsPlanParallelGroups(steps));
+    });
+  }
+
+  it('JS-side extra hardening: an invalid group id read from an untrusted on-disk plan is dropped (fail-safe to serial)', () => {
+    // The TS original only ever sees normalizeStep-sanitized ids; the JS port
+    // re-validates because its input is the raw plan file.
+    const plan = executor.planParallelGroups([
+      { instruction: 'a', parallelGroup: 'has spaces' },
+      { instruction: 'b', parallelGroup: 'has spaces' },
+      { instruction: 'final' },
+    ]);
+    expect(plan.group).toEqual([undefined, undefined, undefined]);
+    expect(plan.contextBase).toEqual([0, 1, 2]);
+  });
+
+  it('JS-side hardening: ids are trimmed before comparison, matching normalizeStep', () => {
+    const plan = executor.planParallelGroups([
+      { instruction: 'a', parallelGroup: ' g ' },
+      { instruction: 'b', parallelGroup: 'g' },
+      { instruction: 'final' },
+    ]);
+    expect(plan.group).toEqual(['g', 'g', undefined]);
+    expect(plan.contextBase).toEqual([0, 0, 2]);
+  });
 });

@@ -576,6 +576,70 @@ function apiCallLabel(cfg) {
   return `${cfg.method} ${cfg.host}${cfg.path}`.slice(0, STEP_INSTRUCTION_MAX_CHARS);
 }
 
+// ── Fan-out subtasks (parallel groups, 2026-08-13) ──────────────────────────
+// Verbatim port of lib/agent-orchestration.ts's MAX_PARALLEL_BRANCHES /
+// planParallelGroups — asserted numerically/behaviorally in
+// __tests__/plan-executor-orchestration-chain.test.ts, same convention as the
+// STEP_* constants above. See AgentOrchestrationStep.parallelGroup's doc
+// comment (store/types.ts) for the user-facing contract; the short version:
+// consecutive steps sharing a group id are context-ISOLATED branches (each
+// sees only the results produced BEFORE the group, never a sibling's output;
+// the first post-group step aggregates every branch result in declared
+// order). DISPATCH IN THIS EXECUTOR STAYS SERIAL, deliberately: every model
+// call here is a synchronous spawnSync of the capability broker, and making
+// this security-critical unattended executor concurrent is out of scope —
+// see DEFERRED.md's 2026-08-13 fan-out entry. Grouping changes which prior
+// results a branch can SEE, never what it may do: every branch still goes
+// through the identical requestModelContentWithLadder / quality-gate /
+// suppressed-action path an unmarked step uses, with its step.tool already
+// vetted at plan-BUILD time (lib/agent-plan-spec.ts's resolveStepToolForPlan)
+// exactly like any other step.
+const MAX_PARALLEL_BRANCHES = 3;
+const PARALLEL_GROUP_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+
+// Grouping rules (single source: lib/agent-orchestration.ts's
+// planParallelGroups — keep byte-equivalent):
+//   1. only CONSECUTIVE steps sharing the same valid group id group;
+//   2. an effective group needs >= 2 members;
+//   3. the chain's FINAL step never groups (it dispatches the real action and
+//      must see the aggregated context);
+//   4. members beyond MAX_PARALLEL_BRANCHES are severed to serial.
+// Severing never drops a step. contextBase[i] is how many entries of the
+// ordered success-result list step i may see (i for serial steps — a no-op
+// slice under the chain's fail-fast invariant; the group's start index for
+// branches). Unlike the TS original this also re-validates the id charset,
+// since this side reads the field from an untrusted on-disk plan file rather
+// than from normalizeStep's own sanitized output.
+function planParallelGroups(steps) {
+  const contextBase = steps.map((_, i) => i);
+  const group = steps.map(() => undefined);
+  const groupIdOf = (step) =>
+    step && typeof step.parallelGroup === 'string' && PARALLEL_GROUP_ID_RE.test(step.parallelGroup.trim())
+      ? step.parallelGroup.trim()
+      : undefined;
+  let runStart = 0;
+  for (let i = 0; i <= steps.length; i += 1) {
+    const sameRun =
+      i < steps.length &&
+      groupIdOf(steps[i]) !== undefined &&
+      groupIdOf(steps[i]) === groupIdOf(steps[runStart]);
+    if (sameRun) continue;
+    if (groupIdOf(steps[runStart]) !== undefined) {
+      let runEnd = i;
+      if (runEnd === steps.length) runEnd = steps.length - 1;
+      const effectiveEnd = Math.min(runEnd, runStart + MAX_PARALLEL_BRANCHES);
+      if (effectiveEnd - runStart >= 2) {
+        for (let j = runStart; j < effectiveEnd; j += 1) {
+          group[j] = groupIdOf(steps[j]);
+          contextBase[j] = runStart;
+        }
+      }
+    }
+    runStart = i;
+  }
+  return { contextBase: contextBase, group: group };
+}
+
 // Verbatim port of lib/agent-orchestration.ts's resolveApiCallTemplate: plain
 // string-replace of the literal "{{result}}" placeholder, no template engine.
 // Callers URL-encode lastResult themselves before calling this for `path`
@@ -2914,6 +2978,10 @@ function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, 
 // (lib/agent-manager.ts's runAgentOrchestrated doc comment).
 function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt) {
   const budget = resolveStepBudget(plan.steps.budget);
+  // Fan-out subtasks (2026-08-13): which steps run as context-isolated
+  // branches — see planParallelGroups' own comment above. Dispatch stays
+  // serial; only the context each step SEES changes (contextResults below).
+  const parallelPlan = planParallelGroups(plan.steps.list);
   const priorResults = [];
   const records = [];
   let priorFailed = false;
@@ -2968,7 +3036,13 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     // lib/agent-plan-spec.ts) purely for the model request/prompt shape — it
     // is NOT dispatched through dispatchActionTrusted below (see that call
     // site's own comment for why).
-    const stepPrompt = buildStepPrompt(plan.prompt, step.instruction, priorResults);
+    // Fan-out subtasks: a branch of a parallel group sees only the results
+    // produced BEFORE its group (pre-group snapshot); a serial step's slice
+    // is a no-op (contextBase[i] === i === priorResults.length under the
+    // chain's fail-fast invariant — a step only launches when every earlier
+    // step succeeded).
+    const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
+    const stepPrompt = buildStepPrompt(plan.prompt, step.instruction, contextResults);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     const stepTool = (step.tool && STEP_TOOL_DISPATCHABLE_TYPES.indexOf(step.tool.type) !== -1)
       ? step.tool
@@ -2984,7 +3058,10 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     // is the HTTP response body itself, dispatched through the SAME
     // capability broker every model call already uses.
     if (!isFinal && step.apiCall) {
-      const lastResult = priorResults.length ? priorResults[priorResults.length - 1] : '';
+      // Fan-out subtasks: {{result}} resolves against the last PRE-group
+      // result for a branch (same snapshot its prompt would use), keeping an
+      // api-call branch as sibling-isolated as a model-call branch.
+      const lastResult = contextResults.length ? contextResults[contextResults.length - 1] : '';
       const resolvedApiCall = Object.assign({}, step.apiCall, {
         path: resolveApiCallTemplate(step.apiCall.path, encodeURIComponent(lastResult)),
       });
@@ -3001,7 +3078,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
         if (!preview.trim()) {
           throw new PlanFailure('api-call response was empty', { handled: true });
         }
-        records.push({ index: i, instruction: step.instruction, status: 'success', durationMs: Date.now() - stepStart, outputPreview: preview });
+        records.push({ index: i, instruction: step.instruction, status: 'success', durationMs: Date.now() - stepStart, outputPreview: preview, ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) });
         priorResults.push(preview);
       } catch (error) {
         if (!(error instanceof PlanFailure)) throw error;
@@ -3037,7 +3114,11 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       // "no prior content" no-op case — so a step that merely echoes what
       // the PRIOR step already produced retries the ladder too, not just a
       // prompt-echo/refusal shape.
-      const priorStepContent = priorResults.length ? priorResults[priorResults.length - 1] : undefined;
+      // Fan-out subtasks: compared against the last PRE-group result for a
+      // branch (contextResults), never a sibling branch's output — sibling
+      // comparison would false-positive isDuplicateOfPriorStep on exactly the
+      // similar-parallel-research outputs fan-out exists to produce.
+      const priorStepContent = contextResults.length ? contextResults[contextResults.length - 1] : undefined;
       const attempt = requestModelContentWithLadder(paths, opts, stepPlan, config, true, priorStepContent);
       resultText = attempt.resultText;
       // 3rd-pass Codex review finding (see run()'s own comment above its
@@ -3061,7 +3142,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       if (!(error instanceof PlanFailure)) throw error;
       const status = error.status === 'unavailable' ? 'unavailable' : 'error';
       const message = redact(error.message);
-      records.push({ index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message) });
+      records.push({ index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message), ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) });
       priorFailed = true;
       continue;
     }
@@ -3097,7 +3178,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       dispatchedFinal = true;
       if (action.actionResults) finalActionResults = action.actionResults;
     }
-    records.push({ index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview });
+    records.push({ index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview, ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) });
     if (action.status === 'success') priorResults.push(action.preview);
     else priorFailed = true;
   }
@@ -3391,6 +3472,12 @@ module.exports = {
   reduceStatus,
   combineFinalPreview,
   runOrchestrationChain,
+  // Fan-out subtasks (2026-08-13) — exported for host unit tests only, same
+  // convention as the exports above. MAX_PARALLEL_BRANCHES is asserted equal
+  // to lib/agent-orchestration.ts's export; planParallelGroups is asserted to
+  // behave identically to its TS original for the same inputs.
+  MAX_PARALLEL_BRANCHES,
+  planParallelGroups,
   // api-call (v1, 2026-07-16) — exported for host unit tests only, same
   // convention as the exports above. Not part of the executor's CLI surface.
   apiCallLabel,

@@ -350,6 +350,29 @@ describe('Agent PlanSpec v1', () => {
       );
       expect(spec.steps!.list[0].tool).toBeUndefined();
     });
+
+    it('FAN-OUT (2026-08-13): a parallelGroup marker never weakens the vetting — an api-key step pin inside a group is still stripped on an autonomous agent, and the group id itself survives into steps.list', () => {
+      const orchestration = {
+        steps: [
+          'collect the base data',
+          { instruction: 'research angle A', tool: { type: 'perplexity' as const }, parallelGroup: 'research' },
+          { instruction: 'research angle B', tool: { type: 'local' as const }, parallelGroup: 'research' },
+          'aggregate everything',
+        ],
+      };
+      const spec = buildAgentPlanSpec(agent({ autonomous: true, orchestration }));
+      // Branch A: perplexity is api-key class -> pin stripped (inherits the
+      // agent's unattended credential boundary exactly like a serial step);
+      // the group marker is untouched by the strip.
+      expect(spec.steps!.list[1].tool).toBeUndefined();
+      expect(spec.steps!.list[1].parallelGroup).toBe('research');
+      // Branch B: local is allowed unattended -> pin kept, marker kept.
+      expect(spec.steps!.list[2].tool).toEqual({ type: 'local' });
+      expect(spec.steps!.list[2].parallelGroup).toBe('research');
+      // Serial neighbors carry no marker.
+      expect(spec.steps!.list[0].parallelGroup).toBeUndefined();
+      expect(spec.steps!.list[3].parallelGroup).toBeUndefined();
+    });
   });
 });
 

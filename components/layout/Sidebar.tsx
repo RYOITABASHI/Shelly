@@ -26,7 +26,7 @@ import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
 import { deleteAgent, installAgent, runAgentNow, stopAgent, syncAgentRunLogsFromDisk, setAgentEnabled, haltAllAgents, resumeAllAgents } from '@/lib/agent-manager';
 import { toolChoiceToLabel } from '@/lib/agent-tool-router';
-import { normalizeSteps } from '@/lib/agent-orchestration';
+import { normalizeSteps, planParallelGroups } from '@/lib/agent-orchestration';
 import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import { MEMORY_ENABLED } from '@/lib/memory/wiring';
 import { activateMemoryList } from '@/lib/memory/shadow';
@@ -1046,13 +1046,20 @@ export function Sidebar() {
     // default" policy needs (the user can see up front which steps skip
     // auto-routing and which backend they'll actually use).
     const plannedSteps = normalizeSteps(agent.orchestration);
+    // Fan-out subtasks (2026-08-13): a branch of a parallel group is marked
+    // with a language-neutral "∥<group>" suffix (planned steps use
+    // planParallelGroups so only EFFECTIVE branches are marked — a marker
+    // severed by the final-step/cap/singleton rules shows nothing, matching
+    // what will actually run; run-log steps carry the effective group the
+    // executor recorded). Deliberately minimal — no new i18n keys.
+    const plannedGroups = planParallelGroups(plannedSteps);
     const stepDetail = lastLog?.steps?.length
       ? `${t('sidebar.agent_steps', { count: lastLog.steps.length })}\n${lastLog.steps
-          .map((s) => `  ${s.index + 1}. [${s.status}] ${s.instruction.slice(0, 60)}`)
+          .map((s) => `  ${s.index + 1}. [${s.status}] ${s.instruction.slice(0, 60)}${s.parallelGroup ? ` ∥${s.parallelGroup}` : ''}`)
           .join('\n')}`
       : plannedSteps.length >= 2
       ? `${t('sidebar.agent_steps', { count: plannedSteps.length })}\n${plannedSteps
-          .map((s, i) => `  ${i + 1}. ${s.instruction.slice(0, 60)}${s.tool ? ` (${toolChoiceToLabel(s.tool)})` : ''}`)
+          .map((s, i) => `  ${i + 1}. ${s.instruction.slice(0, 60)}${s.tool ? ` (${toolChoiceToLabel(s.tool)})` : ''}${plannedGroups.group[i] ? ` ∥${plannedGroups.group[i]}` : ''}`)
           .join('\n')}`
       : '';
     // Reliability block (proof-of-execution): next scheduled run, last run (time ·
