@@ -30,6 +30,17 @@ import { MEMORY_EMBEDDING_ENABLED } from '@/lib/memory/wiring';
 import type { EmbeddingPort } from '@/lib/memory/types';
 import { scanForSecrets } from '@/lib/secret-guard';
 
+/** One verified lesson attached to a skill (self-improvement, 2026-08-13).
+ *  Learnings are DETERMINISTIC: a learning is only ever minted by promoting a
+ *  resolved failure hint (a failure that was followed by a verified success),
+ *  never by an LLM rewriting the recipe. See lib/skill-self-improve.ts. */
+export interface SkillLearning {
+  /** ISO-8601 timestamp of the verified success that promoted this learning. */
+  at: string;
+  /** One-line lesson, hard-capped at MAX_SKILL_LEARNING_NOTE_CHARS. */
+  note: string;
+}
+
 export interface SkillRecipe {
   id: string;
   /** Short human label (usually the source agent's name). */
@@ -75,6 +86,18 @@ export interface SkillRecipe {
    *  agent can still exercise an archived recipe without going through the
    *  matcher. */
   archived?: boolean;
+  /** Self-improvement (2026-08-13): bounded, append-only list of VERIFIED
+   *  lessons. A lesson enters this list through exactly one deterministic
+   *  path — lib/skill-self-improve.ts promotes a `lastFailure` hint here when
+   *  a LATER run of the same skill verifiably succeeds (evidence the caution
+   *  mattered). The original `prompt` stays immutable (the 2026-08-03 Track C
+   *  decision against LLM auto-rewrites stands); learnings extend the body
+   *  additively and are capped at MAX_SKILL_LEARNINGS (oldest dropped). */
+  learnings?: SkillLearning[];
+  /** ISO-8601 of the most recent body improvement (audit anchor). */
+  lastImprovedAt?: string;
+  /** How many times the body was improved (learnings added), for audit. */
+  improveCount?: number;
 }
 
 /** Obsidian Vault folder for agent skills (sibling of 90_Agent_Memory). */
@@ -92,6 +115,14 @@ const MAX_INJECTION_CHARS = 800;
 /** A failure hint is a one-line nudge, not a log dump — mirrors the ~200-char
  *  outputPreview discipline the run logs themselves use. */
 const MAX_FAILURE_NOTE_CHARS = 200;
+/** Self-improvement bloat caps: a skill can hold at most this many learnings
+ *  (FIFO — the oldest is dropped when a new one lands)… */
+export const MAX_SKILL_LEARNINGS = 5;
+/** …each hard-capped to one line of this many chars (a promoted failure note
+ *  is <= MAX_FAILURE_NOTE_CHARS plus a short deterministic prefix). */
+export const MAX_SKILL_LEARNING_NOTE_CHARS = 240;
+/** Injection stays compact: only the most recent learnings are surfaced. */
+const MAX_INJECTED_LEARNINGS = 3;
 
 function skillsDir(): string {
   return `${getHomePath()}/.shelly/agents/skills`;
@@ -193,13 +224,24 @@ export function buildSkillRecipeMarkdown(recipe: SkillRecipe): string {
           `lastFailureNote: ${safeLine(recipe.lastFailure.note).slice(0, MAX_FAILURE_NOTE_CHARS)}`,
         ]
       : []),
+    // Self-improvement audit fields: emitted ONLY when present, so a
+    // never-improved recipe's markdown stays byte-identical to before.
+    ...(recipe.lastImprovedAt ? [`lastImprovedAt: ${safeLine(recipe.lastImprovedAt)}`] : []),
+    ...(recipe.improveCount ? [`improveCount: ${recipe.improveCount}`] : []),
     '---',
     '',
   ].join('\n');
+  // Learnings ride the body (same delimited-comment pattern as the plan spec)
+  // so they flow through the SAME crash-safe write, Vault mirror, and secret
+  // scan as the recipe prompt itself.
+  const learningsBlock =
+    recipe.learnings && recipe.learnings.length > 0
+      ? `\n\n<!-- shelly-skill-learnings\n${JSON.stringify(recipe.learnings)}\n-->`
+      : '';
   const executable = recipe.planSpec
     ? `\n<!-- shelly-plan-spec\n${JSON.stringify(recipe.planSpec)}\n-->\n`
     : '\n';
-  return `${fm}${recipe.prompt}${executable}`;
+  return `${fm}${recipe.prompt}${learningsBlock}${executable}`;
 }
 
 export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
@@ -215,14 +257,46 @@ export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
   const name = fields.name;
   const trigger = fields.trigger;
   const planMatch = body.match(/\n?<!-- shelly-plan-spec\n([\s\S]*?)\n-->\s*$/);
-  const prompt = (planMatch ? body.slice(0, planMatch.index) : body).trim();
+  const bodyBeforePlan = planMatch ? body.slice(0, planMatch.index) : body;
+  const learningsMatch = bodyBeforePlan.match(
+    /\n?<!-- shelly-skill-learnings\n([\s\S]*?)\n-->\s*$/
+  );
+  const prompt = (
+    learningsMatch ? bodyBeforePlan.slice(0, learningsMatch.index) : bodyBeforePlan
+  ).trim();
   if (!name || !trigger || !prompt) return null;
+  let learnings: SkillLearning[] | undefined;
+  if (learningsMatch) {
+    try {
+      const parsed = JSON.parse(learningsMatch[1]) as unknown;
+      if (Array.isArray(parsed)) {
+        const clean = parsed
+          .filter(
+            (l): l is { at: string; note: string } =>
+              !!l &&
+              typeof (l as { at?: unknown }).at === 'string' &&
+              typeof (l as { note?: unknown }).note === 'string' &&
+              (l as { note: string }).note.trim().length > 0
+          )
+          .map((l) => ({
+            at: safeLine(l.at),
+            note: safeLine(l.note).slice(0, MAX_SKILL_LEARNING_NOTE_CHARS),
+          }))
+          .slice(-MAX_SKILL_LEARNINGS);
+        if (clean.length > 0) learnings = clean;
+      }
+    } catch {
+      // A malformed learnings payload degrades to the safe prompt-only skill.
+    }
+  }
   const tags = (fields.tags ?? '')
     .replace(/^\[|\]$/g, '')
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
   const successCount = Number.parseInt(fields.successCount ?? '1', 10);
+  // NaN > 0 is false, so a malformed value simply drops the field.
+  const improveCount = Number.parseInt(fields.improveCount ?? '0', 10);
   let planSpec: AgentPlanSpecV1 | undefined;
   if (planMatch) {
     try {
@@ -257,6 +331,11 @@ export function parseSkillRecipeMarkdown(content: string): SkillRecipe | null {
           },
         }
       : {}),
+    // Self-improvement fields: absent lines/blocks parse to absent fields
+    // (additive migration — pre-improvement files parse exactly as before).
+    ...(learnings ? { learnings } : {}),
+    ...(fields.lastImprovedAt ? { lastImprovedAt: fields.lastImprovedAt } : {}),
+    ...(improveCount > 0 ? { improveCount } : {}),
   };
 }
 
@@ -502,6 +581,17 @@ export function buildSkillInjectionContext(recipe: SkillRecipe | null): string {
     'A recipe that worked before for a similar task. Adapt it if helpful.',
     prompt,
   ];
+  // Self-improvement: verified learnings (failures that a later verified
+  // success resolved) ride along as standing cautions. Bounded to the most
+  // recent few; each note is already hard-capped at write time. This block is
+  // part of the run prompt, so it flows through the SAME secret-guard as the
+  // recipe itself.
+  if (recipe.learnings && recipe.learnings.length > 0) {
+    lines.push('Learned cautions from earlier runs of this skill:');
+    for (const learning of recipe.learnings.slice(-MAX_INJECTED_LEARNINGS)) {
+      lines.push(`- ${learning.note}`);
+    }
+  }
   // Learning loop: surface the most recent failure as a corrective hint —
   // auxiliary context only, the recipe body above is untouched. This block is
   // part of the run prompt, so it flows through the SAME secret-guard scan as

@@ -478,7 +478,7 @@ export function Sidebar() {
   // Gated skill creation: after a successful run, offer to distill it into a
   // reusable skill (user-visible — never silent). Shared with the one-shot
   // @agent chat flow (use-ai-pane-dispatch.ts) via hooks/use-skill-save-offer.
-  const { offerSkillSave: offerSkillSaveForRun } = useSkillSaveOffer({
+  const { offerSkillSave: offerSkillSaveForRun, offerSkillImprovement } = useSkillSaveOffer({
     runCommand: runCommandForAgentSync,
     onSaved: loadSkills,
   });
@@ -870,6 +870,10 @@ export function Sidebar() {
     try {
       await runAgentNow(agentId, runCommandForAgentSync);
       offerSkillSave(agentId);
+      // Complementary to the save offer (which is skipped for agents already
+      // reusing a skill): a skill-reusing run may have staged a body-learning
+      // proposal — no-op otherwise.
+      offerSkillImprovement(agentId);
       setTimeout(() => void refreshRunningAgents(), 1_000);
       setTimeout(() => void refreshRunningAgents(), 5_000);
       setTimeout(() => {
@@ -890,7 +894,7 @@ export function Sidebar() {
       });
       Alert.alert(t('sidebar.agent_failed_title'), t('sidebar.agent_failed_body', { name: agentName }));
     }
-  }, [refreshRunningAgents, runCommandForAgentSync, offerSkillSave, t, pendingAgentIds, runningAgentIds]);
+  }, [refreshRunningAgents, runCommandForAgentSync, offerSkillSave, offerSkillImprovement, t, pendingAgentIds, runningAgentIds]);
 
   // Task B STOP button: reuses lib/agent-executor.ts's generateStopCommand
   // (via agent-manager's stopAgent wrapper) — the same kill+lock-cleanup

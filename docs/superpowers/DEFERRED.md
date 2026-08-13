@@ -14,6 +14,28 @@
 
 ---
 
+### スキル自己改善 Phase 1 実装（Hermes機能ギャップ、2026-08-13、Fable5）— 決定論的な学習昇格を実装、LLMによる本文リファインは意図的に見送り (P2)
+
+**背景**: Hermes Agentの「保存済みスキルが使用中に自己改善される」機能とのギャップ解消依頼。既存の学習ループ（2026-08-03 Track C: `SkillRecipe.lastFailure`失敗ヒント蓄積、次回成功で自動クリア）は本文を一切変更しない設計だったため、「実際のスキル本文が改善される」仕組みを追加した。
+
+**実装した範囲（Phase 1: 決定論的・証拠ゲート付きの本文改善）**:
+- **新モジュール `lib/skill-self-improve.ts`**: 唯一の意思決定関数`proposeSkillImprovement()`（純関数）。スキル再利用runの成否を既存の`updateReusedSkillFromRun`と同じstatusフィルタ（success/errorのみ、unavailable/skippedはサーキットブレーカーと同じ理由で除外）で受け、(a) 成功→メタデータbump（従来通り）、(b) **失敗ヒントが残っている状態での成功→そのヒントを恒久的な`learnings`（本文の教訓リスト）へ昇格**（「失敗→その注意書き付きで再実行→検証済み成功」という証拠が揃った時だけ本文が変わる）、(c) 失敗→ヒント記録（従来通り＋secret gate強化）。
+- **肥大化防止**: `MAX_SKILL_LEARNINGS=5`（FIFO、最古を破棄）、1件`MAX_SKILL_LEARNING_NOTE_CHARS=240`、注入時はさらに直近3件のみ（`buildSkillInjectionContext`）。
+- **secret/PIIゲート（Track Bの更新時適用）**: ①失敗ヒント記録時にoutputPreviewをスキャン→検出時は汎用文へ差し替え（従来は未スキャンで frontmatter に書いていた——強化）、②learning昇格前にノートをスキャン→検出時は昇格せずbumpのみ、③改善後markdown全体を再スキャンし「新たにsecretが入る」改善は拒否（belt-and-braces）。
+- **監査**: frontmatter `lastImprovedAt`/`improveCount` ＋ 追記型JSONLログ `~/.shelly/agents/skills/improvements.log`（learning-added/learning-reverted、1000行超で自動ローテート）。learnings自体も各エントリが`at`を持つ。
+- **attended/unattended一貫性（skillSaveMode踏襲）**: attended（全JS駆動run——`runLadderAttempts`が`attended:true`を焼く経路）は本文変更を`stageSkillImprovementProposal`でステージし、`useSkillSaveOffer`の新`offerSkillImprovement`がAlert confirm（cancelable、拒否＝従来挙動でbumpのみ）。unattended（native alarm発火→ログ同期`improveReusedSkillsFromSyncedLogs`、schedule/notificationTriggerエージェント限定）は自動適用＋通知＋**ワンタップrevert**（`REVERT_SKILL_IMPROVEMENT_ACTION`、auto-saveのワンタップdeleteのミラー）。冪等性: 提案はrunタイムスタンプをrecipeの`lastUsed`/`lastFailure.at`と比較するので、同一runの再poll・attended適用後のsync再処理はnoop。
+- **副次改善**: 従来unattended（alarm発火）runはスキル再利用のフィードバック（bump/失敗ヒント）が一切入らなかった——ログ同期経路に接続したことでこれも解消。
+- ファイル形式は追加的（learningsは`<!-- shelly-skill-learnings -->`ブロック、planSpecと同パターン）。未改善レシピのmarkdownはバイト同一を維持、旧ファイルは従来通りパース。
+- テスト: 新規`__tests__/skill-self-improve.test.ts` 25件（発火条件・secretゲート・上限・冪等・attended staging・unattended通知/revert・markdownラウンドトリップ・監査ログ）＋既存スキル系8スイート134件・agent-manager系16スイート83件PASS、`npx tsc --noEmit`クリーン。
+
+**意図的に見送ったもの（このエントリの本体）— LLMによるスキル本文のリファイン（要約・簡潔化・書き換え） (P2)**:
+- **Why not now**: (1) 2026-08-03 Track Cのレビュー済み設計判断——「動いていたレシピ本文をLLMの幻覚が黙って置き換えられてはならない」——は今も有効。今回のconfirm/revertゲートで「黙って」は解消できるが、(2) バックグラウンドでの非ストリーミングLLM呼び出し経路が現状存在しない（`use-ai-pane-dispatch.ts`はUIフック、`agent-executor.ts`はbash生成）ため、新規のモデル呼び出し経路＋スキル本文（ユーザータスク文を含む）をどのプロバイダへ送ってよいかのconsent/credential-policy統合が必要で、今回のスコープを超える。(3) 決定論的な学習昇格だけでも「使うたびに本文が改善される」というHermesの趣旨は満たせる。
+- **実装する場合に必要なもの**: ①`lib/llm-interpreter.ts`の`callOpenAICompatible`あるいはconversational-registrationのCerebras/Groq/localフォールバックチェーンを流用した非UI・非ストリーミングのリファイン呼び出し（新規経路を作らない）、②スキル本文をクラウドへ送る前の`resolveForAutonomous`/`consentWebTool`相当のポリシーゲート＋secret-guardスキャン、③リファイン結果のバリデーション（元promptとの類似度下限、長さ上限、planSpec/learningsの保全）、④今回実装済みのconfirm（attended）/notify+revert（unattended）ゲートへの接続——ここは再利用可能、⑤改善前本文の保全（revert用に旧promptをどこかへ退避——今回のlearnings revertより難しい）。
+
+→ sync: なし（README Status表の変更なし——スキル機能自体の表記は従来のまま）。
+
+---
+
 ### ✅ Track DD/EE/FF 実装完了(commit `4332e7245`)— Hermes比較レビュー中にFable5が発見した3件、実機未検証
 
 **背景**: Hermes Agentとの最終比較レビュー中、Fable5がStep2作業(後に中止)で新たに3件のバグを発見した。
@@ -4292,6 +4314,7 @@ claude() {
 
 ## History
 
+- **2026-08-13（Fable5、スキル自己改善 Phase 1）**: Hermes機能ギャップ「スキルの自己改善」を実装。決定論的な学習昇格（解消済み失敗ヒント→本文`learnings`、5件FIFO・240字上限・secret gate・追記型監査ログ・attended confirm/unattended auto+revert通知）。LLMによる本文リファインは2026-08-03 Track Cの安全判断とバックグラウンドLLM呼び出し経路の不在を理由にP2で意図的見送り、必要事項を先頭付近の新規エントリに記録。
 - **2026-08-10（CC、Fig風オートコンプリート復活の技術調査、コード変更なし・ドキュメントのみ）**: プロダクトオーナー指示「機能を復活させる方針」を受け`cce05d705`削除時の実装・削除理由「autocomplete moved in-line」の真偽・現行ネイティブPTYアーキテクチャとの整合性を調査。**結論: JSのみでの復活は技術的に不可能と確定**——`NativeTerminalView`のPTY直結入力にはJS側から読める入力バッファ/カーソル位置APIが無い。「in-line実装」とされた`components/input/CommandInput.tsx`+`AutocompleteDropdown.tsx`は実は`chelly/`チャットUI削除(`56dad02af`)時の削除漏れ残骸で、現行アプリのどこからも到達不能と判明(CLAUDE.mdの2026-08-10付け記載自体が誤りだったため訂正)。`lib/autocomplete-engine.ts`は純粋ロジックのまま再利用可能と確認。ネイティブ側`BlockDetector.kt`が既にOSC133ベースで「入力中のコマンド文字列」をリアルタイム構築していることを発見し、復活に必要な最小ネイティブ変更(新規イベント`onCommandBufferChanged`をKotlin側で追加)を特定・新規P1エントリに記録。ConfigTUIトグル・i18nキーは機能本体が無い状態での復活は「孤児トグルの再発」になるため見送り。README(2箇所)・CLAUDE.mdを事実に合わせて訂正。先頭付近の新規エントリ参照。
 - **2026-08-10（CC、wallpaper説明文 vs CLAUDE.md矛盾の調査完了、コード変更なし）**: Fable5実機②レビューが指摘した「Show wallpaper in Terminal (experimental)」説明文とCLAUDE.mdのP3ゲート(opaque固定)の矛盾を調査。git log全履歴を確認した結果、`store/settings-store.ts`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示、3分前の`85da0d144`のrevert)で`true`に確定しHEADまで不変——**説明文は現行コードに対して正確、CLAUDE.md側の記述が陳腐化していた**と判明。設定テキスト・`TerminalPane.tsx`/`SettingsDropdown.tsx`/`ShellyTerminalView.kt`いずれも変更せず(挙動は現状のまま)、CLAUDE.md本文の当該行はP3チェックリストのスクショ証跡要求があり遡及提出不可のため直接書き換えは見送り。事実関係をD-4項目・末尾P3エントリ・新規P1エントリの3箇所に記録した。先頭付近のエントリ参照。
 - **2026-08-09**: commit `af0608347`（BlockDetectorコマンド断片化修正 + onUrlDetected配線）のversionCode 2103実機QA。両修正ともPASS確定（`topCommands`に`qafrag2103marker`が完全文字列で記録／`echo <URL>`でChrome Custom Tab起動をActivityTaskManagerログで確認）。新規の気づき2件（URL自動オープンは検出トリガーでタップ不要＝UX検討余地、bundleツールは非interactiveシェルで使用不可）をP3観察として記録。先頭のエントリ参照。
