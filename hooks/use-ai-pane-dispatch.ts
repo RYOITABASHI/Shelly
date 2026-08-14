@@ -97,7 +97,7 @@ import type { CerebrasMessage } from '@/lib/cerebras';
 import type { OpenRouterMessage } from '@/lib/openrouter';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
-import { useTranslation } from '@/lib/i18n';
+import { tFor, useTranslation } from '@/lib/i18n';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
@@ -3308,7 +3308,15 @@ export function useAIPaneDispatch(paneId: string) {
             ?? (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
               : 'no schedule');
-          const updatedContent = `✅ Agent "${created.name}" updated — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}.`;
+          const updatedContent = tFor(
+            detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+            'agentplan.updated_notice',
+            {
+              name: created.name,
+              scheduleDescription,
+              autonomousSuffix: confirmed.autonomous ? ' · autonomous' : '',
+            },
+          );
           store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: updatedContent });
           if (confirmed.runOnceOnConfirm) {
             await fireRunOnceOnConfirm(
@@ -3452,7 +3460,16 @@ export function useAIPaneDispatch(paneId: string) {
           // whether this call is even reached and whether the store call
           // itself throws (an exception here would otherwise vanish into the
           // outer catch with no trace of having gotten this far).
-          const registeredContent = `✅ Agent "${created.name}" registered — ${scheduleDescription}${confirmed.autonomous ? ' · autonomous' : ''}. Manage it with: @agent list${correctionHint}`;
+          const registeredContent = tFor(
+            detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+            'agentplan.registered_notice',
+            {
+              name: created.name,
+              scheduleDescription,
+              autonomousSuffix: confirmed.autonomous ? ' · autonomous' : '',
+              correctionHint,
+            },
+          );
           logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron calling updateMessage(content) for ${created.id} / message ${messageId}`);
           store.updateMessage(paneId, messageId, {
             agentCardState: 'confirmed',

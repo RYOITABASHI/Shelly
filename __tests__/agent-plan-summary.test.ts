@@ -30,6 +30,8 @@ import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { AgentOrchestrationStep } from '@/store/types';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
+import en from '@/lib/i18n/locales/en';
+import ja from '@/lib/i18n/locales/ja';
 
 function baseDraft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft {
   return {
@@ -45,6 +47,17 @@ function baseDraft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft 
     ...overrides,
   };
 }
+
+describe('Phase 1 companion copy parity', () => {
+  it.each([
+    ['en', en, "I'll call this: {{name}}", 'Got it — I\'ll do this as described above. Say the word and I\'ll start, or tell me what to change (e.g. "make it 9am"); say "cancel" to drop it.', 'Got it — I\'ll update it to what\'s described above. Say the word, or tell me what else to change; "cancel" drops the edit.'],
+    ['ja', ja, '呼び方: {{name}}', 'この内容で大丈夫そうです。OKなら教えてください。変更したい項目だけ言い直せば直せます（例:「9時にして」）。取消は「やめて」。', 'この内容に更新します。OKなら教えてください。他に変更したい項目があれば言い直してください。取消は「やめて」。'],
+  ])('%s pins the companion-framed summary and confirmation copy', (_locale, strings, summaryName, confirmPrompt, confirmPromptEdit) => {
+    expect(strings['agentplan.summary_name']).toBe(summaryName);
+    expect(strings['agentplan.confirm_prompt']).toBe(confirmPrompt);
+    expect(strings['agentplan.confirm_prompt_edit']).toBe(confirmPromptEdit);
+  });
+});
 
 describe('hasFireableSchedule', () => {
   it('true for a confident cron', () => {

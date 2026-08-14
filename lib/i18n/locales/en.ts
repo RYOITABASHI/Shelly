@@ -403,7 +403,7 @@ const en: Record<string, string> = {
 
   // ── Chat-native agent confirmation (Phase 7) — used for app-act / tool-pinned
   // orchestration instead of the card: this summary text plus a Confirm/Cancel pair.
-  'agentplan.summary_name': 'Agent: {{name}}',
+  'agentplan.summary_name': "I'll call this: {{name}}",
   'agentplan.summary_schedule': 'Schedule: {{schedule}}',
   'agentplan.summary_action': 'Action: {{action}}',
   'agentplan.autonomous_note': 'Runs autonomously (no per-run human approval).',
@@ -434,14 +434,16 @@ const en: Record<string, string> = {
   // patches the draft in place instead of requiring cancel+redo — see
   // lib/agent-draft-patch.ts. Reworded from the older "cancel and re-describe"
   // copy to reflect that.
-  'agentplan.confirm_prompt': 'Register this agent as described above? To change something, just say the change (e.g. "make it 9am"); "cancel" discards it.',
+  'agentplan.confirm_prompt': 'Got it — I\'ll do this as described above. Say the word and I\'ll start, or tell me what to change (e.g. "make it 9am"); say "cancel" to drop it.',
   // 2026-07-23: Sidebar "Edit" entry point (components/layout/Sidebar.tsx)
   // routes an already-registered agent through this SAME chat-confirm flow —
   // the draft is fully formed already, so "register" here would misleadingly
   // suggest a brand-new/duplicate agent is about to be created instead of the
   // existing one being updated. See summarizeAgentDraftAsText's isEditing
   // param.
-  'agentplan.confirm_prompt_edit': 'Update this agent as described above? To change something, just say the change (e.g. "make it 9am"); "cancel" discards the edit.',
+  'agentplan.confirm_prompt_edit': 'Got it — I\'ll update it to what\'s described above. Say the word, or tell me what else to change; "cancel" drops the edit.',
+  'agentplan.registered_notice': 'Got it — "{{name}}" is set. I\'ll {{scheduleDescription}}{{autonomousSuffix}}. You can check on it anytime with @agent list.{{correctionHint}}',
+  'agentplan.updated_notice': 'Got it — "{{name}}" is updated. I\'ll {{scheduleDescription}}{{autonomousSuffix}} from now on.',
   // Phase A/B (2026-07-22) — type-to-confirm and the assumed-schedule
   // annotation for the chat-native flow (hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts).
@@ -1021,6 +1023,7 @@ const en: Record<string, string> = {
 
   // ── Chat Message List ───────────────────────────────────────────
   'chat.empty_title': 'Shelly',
+  'chat.companion_label': 'Shelly',
   'chat.empty_subtitle': 'Ask me anything\nUse @codex @local @team to choose an AI',
   'chat.sample_list_files': 'List files',
   'chat.sample_ask_claude': 'Ask Codex',
@@ -1732,7 +1735,7 @@ const en: Record<string, string> = {
   'sidebar.autonomous_tool_restricted_title': 'Autonomous requires Codex or Local',
   'sidebar.autonomous_tool_restricted_body': '{{tool}} uses an API-key backend. Autonomous mode can run only Codex OAuth or Local LLM. Switch this agent to Codex?',
   'sidebar.autonomous_use_codex': 'Use Codex',
-  'sidebar.tasks_empty': 'Type `@agent status` in an AI pane to manage background agents.',
+  'sidebar.tasks_empty': 'Nothing yet — just tell Shelly what to remember or when to check in, and it\'ll show up here.',
   'sidebar.agent_capabilities_a11y': 'What can agents do?',
   'agent_capabilities.title': 'What Can Agents Do?',
   'agent_capabilities.intro': 'Say what you want in plain language and Shelly registers a background agent that runs on the device, by itself — even with the screen off. Here is the real capability surface, and a few utterances you can copy straight into an AI pane.',

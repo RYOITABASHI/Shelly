@@ -110,6 +110,7 @@ const MessageBubble = React.memo(function MessageBubble({
   onCancelAgentDraft,
   onDismissScheduleReadiness,
 }: BubbleProps) {
+  const { t } = useTranslation();
   const containerMaxWidth = maxWidth && maxWidth > 0 ? { maxWidth } : null;
   const isUser = message.role === 'user';
   const isLastStreaming = isStreaming && message.isStreaming;
@@ -137,10 +138,15 @@ const MessageBubble = React.memo(function MessageBubble({
     // Confirm/Cancel row, NOT a card. Everything else keeps AgentConfirmCard.
     if (message.agentChatConfirm) {
       const agentKeyChat = resolveAiPaneAgent(message.agent, 'local');
-      const agentLabelChat = getAiPaneAgentMeta(agentKeyChat).label.toUpperCase();
+      const providerLabelChat = getAiPaneAgentMeta(agentKeyChat).label.toUpperCase();
       return (
         <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
-          <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>{agentLabelChat}</Text>
+          <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
+            {t('chat.companion_label')}
+            {agentKeyChat !== 'local' && (
+              <Text style={bubbleStyles.providerTag}> · {providerLabelChat}</Text>
+            )}
+          </Text>
           <View style={bubbleStyles.assistantContent}>
             <Text style={bubbleStyles.assistantText} selectable>{message.content}</Text>
           </View>
@@ -191,12 +197,15 @@ const MessageBubble = React.memo(function MessageBubble({
   const containsDiff = !isLastStreaming && hasDiffContent(displayText);
   const agentKey = resolveAiPaneAgent(message.agent, 'local');
   const agentMeta = getAiPaneAgentMeta(agentKey);
-  const agentLabel = agentMeta.label.toUpperCase();
+  const providerLabel = agentMeta.label.toUpperCase();
 
   return (
     <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
       <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
-        {agentLabel}
+        {t('chat.companion_label')}
+        {agentKey !== 'local' && (
+          <Text style={bubbleStyles.providerTag}> · {providerLabel}</Text>
+        )}
       </Text>
       <View style={bubbleStyles.assistantContent}>
         {containsDiff ? (
@@ -255,6 +264,11 @@ const bubbleStyles = StyleSheet.create({
     color: C.text2,
     marginBottom: 2,
     textTransform: 'uppercase',
+  },
+  providerTag: {
+    fontSize: 6,
+    fontWeight: '600',
+    opacity: 0.6,
   },
   userText: {
     fontSize: 8,

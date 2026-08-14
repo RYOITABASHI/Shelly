@@ -14,6 +14,25 @@
 
 ---
 
+## History
+
+- 2026-08-14: Fable5 UX review「一人の相棒」診断を受け、Phase 1 companion copyの実装範囲と後続P2項目を記録。
+
+### 「一人の相棒」プレゼンテーション層 Phase 1（2026-08-14、Fable5 UX review）— コピー/話者表示を実装、意味論・構造変更は P2
+
+**今回の実装**: Fable5 UX reviewが、Shellyの入口を「登録フォーム」ではなく「一人の常駐する相棒との会話」として読めるようにする必要を指摘した。承認済み計画 `C:\Users\ryoxr\.claude\plans\async-churning-emerson.md` に沿い、AI Paneのassistant話者名を既定で「Shelly」に統一（明示provider route時だけ低優先度タグを併記）、登録確認・完了・Sidebar空状態の英日コピーを会話調へ変更した。データモデル、登録、スケジュール、アラームの意味論は変更していない。
+
+**P2として見送る項目**:
+
+- **スケジュール必須ゲートの緩和**: `Agent.schedule`はnullableだが、`hasFireableSchedule`等の「絶対に発火しないagentを登録しない」安全不変条件に関わる意味論変更であり、コピー変更とは分離して設計する。
+- **一人格が複数の具体的schedule agentを束ねるmeta-agent orchestration layer**: 現行の「1 agent = 1 schedule」前提を越え、memory/skills/Sidebarを横断する新規アーキテクチャが必要。
+- **skill-save / skill-improve offerのAlertからチャット発話へのre-platforming**: `use-skill-save-offer.ts`の「silentにしない」意図的設計と最近修正した通知経路を変更するため、単独タスクで安全性を再検討する。
+- **suggestion engineの能動的発話trigger拡張**: 実装機構は既存`addMessage()`を再利用できるが、発話タイミング・頻度はプロダクト判断と実機QAの反復が必要。
+
+→ sync: README Status表の変更なし（Phase 1はpresentation-layerのみ。上記4項目は計画ファイル「今回スコープ外」を参照）。
+
+---
+
 ### ✅ `.env` startup reconciliation race修正（2026-08-14、versionCode=2186実機PASS）
 
 **バグ / 再現**: Fable5実機で同じon-device sessionの起動2回中1回、Settings/SecureStoreからreconcileされたはずのAPI keyが`~/.shelly/agents/.env`から消失した。
@@ -103,6 +122,8 @@
 ### Hermesサブエージェント並列生成ギャップ — ファンアウト・サブタスク(parallel group)のセマンティクスを実装、真の並列(wall-clock)ディスパッチは意図的に見送り (2026-08-13、Fable5、実機未検証) — 残タスクは P2
 
 **2026-08-14 Increment 0追記（plumbingのみ、挙動変更なし）**: 真の並列ディスパッチへ進む前提として、PlanSpec executorに`EXECUTOR_SCRIPT_VERSION=1`の可読マーカーを追加し、`AgentRuntime.kt`で`CURRENT_EXECUTOR_VERSION=1`との完全一致を要求するexit 126のversion gateを着地させた。現時点は両側が1のため完全にinert。あわせて、将来ブランチを同時dispatchしてもbrokerの`plan-request`/`plan-response`/`plan-apicall`一時ファイルが衝突しないよう、オーケストレーションのstep indexをbranch nonceとしてファイル名へthreadした（step 0および非オーケストレーション実行は従来ファイル名をbyte-identicalに維持）。本項は既存エントリ「Hermesサブエージェント並列生成ギャップ」の土台のみであり、`spawnSync`→async化、実際のwall-clock並列dispatch、budget lock、X token refresh除外、実機phantom-process検証は後続Incrementに引き続きdeferする。
+
+**2026-08-14 Increment 1a追記（async broker dispatch、直列順序は不変）**: PlanSpec executorのbroker起動を`spawnSync`から明示的な700000ms timeout＋killを持つasync `spawn`へ変更し、全呼び出し元をtop-level `main()`まで`async`/`await`で接続した。オーケストレーションのper-step `for` loopとmulti-action/draft mirrorの各loopは構造を変えず、各iterationで1件ずつawaitするため、dispatch順序と外部結果は従来どおり直列である。`EXECUTOR_SCRIPT_VERSION`は1のまま据え置き。実際のwall-clock並列dispatch、budget lock、X token refresh除外、実機phantom-process検証は後続Incrementに引き続きdeferする。
 
 **背景**: Hermes Agentの「タスクをサブタスクに分解し、複数サブエージェントを並列生成して処理させ、結果を集約する」機能がShellyに一切無いギャップの解消依頼。2026-08-03に一度「並列実行はスキップ」と判断した経緯があり(下記「Hermes Agent機能ギャップ、Fable5提案の①②実装」エントリ参照)、今回は実装前に両executorのアーキテクチャを精査した上でスコープを二分した。
 

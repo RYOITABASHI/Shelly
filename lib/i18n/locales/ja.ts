@@ -398,7 +398,7 @@ const ja: Record<string, string> = {
 
   // ── チャット内エージェント確認 (Phase 7) — app-act / ツール指定オーケストレーション向け。
   // カードを出さず、この要約テキスト + 確認/キャンセルの2ボタンのみで登録する。
-  'agentplan.summary_name': 'エージェント名: {{name}}',
+  'agentplan.summary_name': '呼び方: {{name}}',
   'agentplan.summary_schedule': '実行タイミング: {{schedule}}',
   'agentplan.summary_action': '実行内容: {{action}}',
   'agentplan.autonomous_note': '自律実行（実行のたびに人の承認は挟まれません）',
@@ -427,12 +427,14 @@ const ja: Record<string, string> = {
   // Phase C（2026-07-22）: 項目だけの言い直し（「9時にして」等）で下書きをその場
   // 修正できるようになったため、旧「キャンセルしてから言い直して」の文言を更新
   // — lib/agent-draft-patch.ts 参照。
-  'agentplan.confirm_prompt': 'この内容で登録しますか？変更したい項目だけ言い直せば直せます（例:「9時にして」）。取消は「やめて」。',
+  'agentplan.confirm_prompt': 'この内容で大丈夫そうです。OKなら教えてください。変更したい項目だけ言い直せば直せます（例:「9時にして」）。取消は「やめて」。',
   // 2026-07-23: Sidebarの「Edit」導線（components/layout/Sidebar.tsx）は既存の
   // 登録済みエージェントを同じチャット確認フローに乗せる——「登録」という文言
   // だと新規（重複）作成のように誤解されるため編集専用の文言を用意。
   // summarizeAgentDraftAsTextのisEditing引数参照。
-  'agentplan.confirm_prompt_edit': 'この内容で更新しますか？変更したい項目だけ言い直せば直せます（例:「9時にして」）。取消は「やめて」。',
+  'agentplan.confirm_prompt_edit': 'この内容に更新します。OKなら教えてください。他に変更したい項目があれば言い直してください。取消は「やめて」。',
+  'agentplan.registered_notice': '了解しました。「{{name}}」を登録しました。{{scheduleDescription}}{{autonomousSuffix}}ようにします。いつでも @agent list で確認できます。{{correctionHint}}',
+  'agentplan.updated_notice': '了解しました。「{{name}}」を更新しました。これからは{{scheduleDescription}}{{autonomousSuffix}}ようにします。',
   // Phase A/B (2026-07-22) — チャット返信そのものでの確定と、あいまいな時刻帯
   // 表現をデフォルト解釈した際の注記（hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts）。
@@ -999,6 +1001,7 @@ const ja: Record<string, string> = {
 
   // ── Chat Message List ───────────────────────────────────────────
   'chat.empty_title': 'Shelly',
+  'chat.companion_label': 'Shelly',
   'chat.empty_subtitle': '何でも聞いてください\n@codex @local @team でAIを選べます',
   'chat.sample_list_files': 'ファイル一覧',
   'chat.sample_ask_claude': 'Codexに聞く',
@@ -1707,7 +1710,7 @@ const ja: Record<string, string> = {
   'sidebar.autonomous_tool_restricted_title': '自律モードは Codex / Local のみ',
   'sidebar.autonomous_tool_restricted_body': '{{tool}} は API キー backend です。自律モードでは Codex OAuth または Local LLM のみ実行できます。このエージェントを Codex に切り替えますか？',
   'sidebar.autonomous_use_codex': 'Codexを使う',
-  'sidebar.tasks_empty': 'AIペインで `@agent status` と入力すると、バックグラウンドエージェントを管理できます。',
+  'sidebar.tasks_empty': 'まだ何もありません。Shellyに「いつ」「何を」頼めば、ここに表示されます。',
   'sidebar.agent_capabilities_a11y': 'エージェントにできること',
   'agent_capabilities.title': 'エージェントにできること',
   'agent_capabilities.intro': '自然な言葉で頼むだけで、Shellyは画面オフでも端末上で単独動作するバックグラウンドエージェントを登録します。実際にできることと、AIペインにそのままコピペできる例文をいくつか紹介します。',

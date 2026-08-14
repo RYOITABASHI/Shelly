@@ -61,7 +61,7 @@ jest.mock('@/lib/i18n', () => ({
   // summarizeAgentDraftAsText routes through tFor(locale, ...) instead of the
   // global-locale-bound t() (2026-07-27 language-mismatch fix) — keep the
   // same key(params)-JSON shape so assertions stay locale-blind.
-  tFor: (_locale: string, key: string, params?: Record<string, string | number>) => mockT(key, params),
+  tFor: jest.fn((_locale: string, key: string, params?: Record<string, string | number>) => mockT(key, params)),
 }));
 
 jest.mock('@/hooks/use-native-exec', () => ({
@@ -191,6 +191,7 @@ import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { hasDraftAssumptions, summarizeAgentDraftAsText, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import ja from '@/lib/i18n/locales/ja';
 import en from '@/lib/i18n/locales/en';
+import { tFor as mockedTFor } from '@/lib/i18n';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ollamaChat: mockOllamaChat } = require('@/lib/local-llm') as { ollamaChat: jest.Mock };
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1158,6 +1159,62 @@ describe('Scenario 7 — task-clarity LLM fallback calls ensureLocalLlmServerRun
 // runAgentNow/inFlightAgentRuns guard for the identical double-tap class of
 // bug (see __tests__/agent-manager-inflight-dedupe.test.ts).
 describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-up)', () => {
+  it('renders the post-registration notice in Japanese for a Japanese-authored draft', async () => {
+    const interpolate = (template: string, params?: Record<string, string | number>) =>
+      Object.entries(params ?? {}).reduce(
+        (text, [key, value]) => text.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(value)),
+        template,
+      );
+    const tForMock = mockedTFor as jest.Mock;
+    tForMock.mockImplementation((locale: 'en' | 'ja', key: string, params?: Record<string, string | number>) =>
+      interpolate((locale === 'ja' ? ja : en)[key] ?? key, params),
+    );
+
+    const draft: ParsedAgentDraft = {
+      name: '朝のニュース',
+      prompt: '毎朝ニュースを確認する',
+      schedule: '0 8 * * *',
+      scheduleConfident: true,
+      scheduleLabel: '毎日 08:00',
+      action: { type: 'notify' },
+      tool: { type: 'local' },
+      toolLabel: 'Local LLM',
+      rawText: '毎朝8時にニュースを確認して',
+    };
+    const messageId = 'japanese-registration-notice';
+    act(() => {
+      useAIPaneStore.getState().addMessage(PANE, {
+        id: messageId,
+        role: 'assistant',
+        content: summarizeAgentDraftAsText(draft),
+        timestamp: Date.now(),
+        agentDraft: draft,
+        agentChatConfirm: true,
+        agentCardState: 'pending',
+      });
+      useAIPaneStore.getState().setPendingAgentSession(PANE, {
+        draft,
+        phase: 'await-confirm',
+        attemptCounts: {},
+        hasAssumptions: false,
+        createdAt: Date.now(),
+        messageId,
+      });
+    });
+
+    const { result } = setup();
+    await act(async () => {
+      await result.current.confirmAgentDraft(messageId, draftToConfirmedAgentDraft(draft));
+    });
+
+    const notice = conv().messages.find((message) => message.id === messageId)?.content ?? '';
+    expect(notice).toContain('了解しました。');
+    expect(notice).toContain('いつでも @agent list で確認できます。');
+    expect(notice).not.toContain('registered');
+
+    tForMock.mockImplementation((_locale: string, key: string, params?: Record<string, string | number>) => mockT(key, params));
+  });
+
   it('a second confirm for the same pending draft while installAgent is still in flight joins the first instead of creating a duplicate agent', async () => {
     const { result } = setup();
 
