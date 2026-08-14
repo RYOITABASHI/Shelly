@@ -874,9 +874,56 @@ function loadBudgetState(budgetFile, nowMs) {
 function saveBudgetState(budgetFile, state) {
   try {
     fs.writeFileSync(budgetFile, JSON.stringify(state));
+    return true;
   } catch (_) {
-    /* best-effort; a lost counter fails safe on the next read (fresh, still capped) */
+    return false;
   }
+}
+
+function withBudgetLock(budgetFile, operation) {
+  const lockDir = budgetFile + '.lock';
+  let lockAcquired = false;
+  try {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        fs.mkdirSync(lockDir);
+        lockAcquired = true;
+        break;
+      } catch (error) {
+        if (!error || error.code !== 'EEXIST') throw error;
+        if (attempt < 19) sleepMs(50);
+      }
+    }
+    if (!lockAcquired) {
+      return { ok: false, reason: 'budget lock timed out (' + lockDir + ')' };
+    }
+    return operation();
+  } catch (error) {
+    return { ok: false, reason: 'budget lock failed (' + redact(error && error.message ? error.message : String(error)) + ')' };
+  } finally {
+    if (lockAcquired) {
+      try {
+        fs.rmdirSync(lockDir);
+      } catch (_) {
+        /* The counter was already persisted; a stale lock fails future calls closed. */
+      }
+    }
+  }
+}
+
+function inspectOrChargeBudget(budgetFile, budget, nowMs, charge) {
+  return withBudgetLock(budgetFile, function () {
+    const state = loadBudgetState(budgetFile, nowMs);
+    const verdict = checkBudget(state, budget, nowMs);
+    if (!verdict.ok) return { ok: false, reason: verdict.reason, state: state };
+    if (charge) {
+      state.calls += 1;
+      if (!saveBudgetState(budgetFile, state)) {
+        return { ok: false, reason: 'budget counter write failed', state: state };
+      }
+    }
+    return { ok: true, state: state };
+  });
 }
 
 function checkBudget(state, budget, nowMs) {
@@ -1577,7 +1624,7 @@ function main() {
   // see the charge below the approval branch. A run that has exhausted its
   // budget must not be able to keep generating human-facing approval
   // notifications; it should hit BUDGET immediately instead.
-  const budgetState = loadBudgetState(budgetFile, nowMs);
+  let budgetState = loadBudgetState(budgetFile, nowMs);
   const budgetVerdict = checkBudget(budgetState, DEFAULT_BUDGET, nowMs);
   if (!budgetVerdict.ok) {
     const budgetMessage = formatBudgetExceededMessage(budgetState, DEFAULT_BUDGET, nowMs);
@@ -1605,9 +1652,14 @@ function main() {
       // or an agent stuck in a retry loop against a non-allowlisted host
       // could generate unbounded Allow/Deny notifications for the human with
       // zero cost to itself (independent security review, 2026-07-17).
-      budgetState.calls += 1;
+      const chargeVerdict = inspectOrChargeBudget(budgetFile, DEFAULT_BUDGET, nowMs, true);
+      budgetState = chargeVerdict.state || budgetState;
+      if (!chargeVerdict.ok) {
+        const budgetMessage = formatBudgetExceededMessage(budgetState, DEFAULT_BUDGET, nowMs);
+        fs.writeSync(errFd, 'capability broker BUDGET EXCEEDED: ' + budgetMessage + '\n');
+        return finish(EXIT.BUDGET, verdict, { reason: chargeVerdict.reason });
+      }
       approvalAttemptCharged = true;
-      saveBudgetState(budgetFile, budgetState);
       let approvalPath = '';
       try {
         approvalPath = new URL(url).pathname;
@@ -1729,8 +1781,13 @@ function main() {
   // logical calls. Skipped if this call already paid the attempt-charge above
   // (a just-approved mid-run host) to avoid double-counting one egress as two.
   if (!approvalAttemptCharged) {
-    budgetState.calls += 1;
-    saveBudgetState(budgetFile, budgetState);
+    const chargeVerdict = inspectOrChargeBudget(budgetFile, DEFAULT_BUDGET, nowMs, true);
+    budgetState = chargeVerdict.state || budgetState;
+    if (!chargeVerdict.ok) {
+      const budgetMessage = formatBudgetExceededMessage(budgetState, DEFAULT_BUDGET, nowMs);
+      fs.writeSync(errFd, 'capability broker BUDGET EXCEEDED: ' + budgetMessage + '\n');
+      return finish(EXIT.BUDGET, verdict, { reason: chargeVerdict.reason });
+    }
   }
 
   try {

@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -439,6 +439,45 @@ describe('shelly-capability-broker: secret injection + send (loopback server)', 
     // no auth header was sent for an un-authed call
     expect(lastAuthHeader).toBeUndefined();
   });
+
+  it('serializes concurrent budget read-modify-write updates for the same agent', async () => {
+    const callCount = 8;
+    const budgetFile = path.join(dir, 'cap-budget-agent-race.json');
+    const preload = path.join(dir, 'delay-budget-read.js');
+    fs.writeFileSync(budgetFile, JSON.stringify({ calls: 0, startedAtMs: Date.now() }));
+    // Widen the vulnerable read→write window in every real child process. With
+    // the old unlocked implementation, the children read the same counter and
+    // overwrite one another; under the lock this delay is serialized too.
+    fs.writeFileSync(
+      preload,
+      `const fs = require('fs'); const original = fs.readFileSync; fs.readFileSync = function (file, ...args) { const value = original.call(this, file, ...args); if (String(file).endsWith('cap-budget-agent-race.json')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 75); return value; }; if (process.env.SHELLY_TEST_DISABLE_BUDGET_LOCK === '1') { const mkdir = fs.mkdirSync; const rmdir = fs.rmdirSync; fs.mkdirSync = function (file, ...args) { if (String(file).endsWith('.json.lock')) return; return mkdir.call(this, file, ...args); }; fs.rmdirSync = function (file, ...args) { if (String(file).endsWith('.json.lock')) return; return rmdir.call(this, file, ...args); }; }\n`,
+    );
+
+    const children = Array.from({ length: callCount }, (_, index) => {
+      const argv = [
+        BROKER,
+        '--method', 'POST',
+        '--url', `http://127.0.0.1:${port}/race`,
+        '--budget-file', budgetFile,
+        '--body-file', path.join(dir, `body-${index}.json`),
+        '--out', path.join(dir, `out-${index}.txt`),
+        '--err', path.join(dir, `err-${index}.txt`),
+      ];
+      fs.writeFileSync(path.join(dir, `body-${index}.json`), '{}');
+      return new Promise<number>((resolve, reject) => {
+        const child = spawn(process.execPath, argv, {
+          env: { ...process.env, NODE_OPTIONS: `--require=${preload}` },
+          stdio: 'ignore',
+        });
+        child.once('error', reject);
+        child.once('close', (code) => resolve(code ?? -1));
+      });
+    });
+
+    await expect(Promise.all(children)).resolves.toEqual(Array(callCount).fill(0));
+    expect(JSON.parse(fs.readFileSync(budgetFile, 'utf8')).calls).toBe(callCount);
+    expect(fs.existsSync(budgetFile + '.lock')).toBe(false);
+  }, 15000);
 
   it('redacts a synchronous request error and audits the failed attempt', async () => {
     const secret = 'gsk_SECRETSECRETSECRETSECRET';

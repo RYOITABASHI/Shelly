@@ -119,7 +119,7 @@
 
 ---
 
-### Hermesサブエージェント並列生成ギャップ — ファンアウト・サブタスク(parallel group)のセマンティクスを実装、真の並列(wall-clock)ディスパッチは意図的に見送り (2026-08-13、Fable5、実機未検証) — 残タスクは P2
+### ✅ Hermesサブエージェント並列生成ギャップ — wall-clock並列dispatchまでfeature-complete、実機検証待ち (2026-08-13〜2026-08-14、Fable5)
 
 **2026-08-14 Increment 0追記（plumbingのみ、挙動変更なし）**: 真の並列ディスパッチへ進む前提として、PlanSpec executorに`EXECUTOR_SCRIPT_VERSION=1`の可読マーカーを追加し、`AgentRuntime.kt`で`CURRENT_EXECUTOR_VERSION=1`との完全一致を要求するexit 126のversion gateを着地させた。現時点は両側が1のため完全にinert。あわせて、将来ブランチを同時dispatchしてもbrokerの`plan-request`/`plan-response`/`plan-apicall`一時ファイルが衝突しないよう、オーケストレーションのstep indexをbranch nonceとしてファイル名へthreadした（step 0および非オーケストレーション実行は従来ファイル名をbyte-identicalに維持）。本項は既存エントリ「Hermesサブエージェント並列生成ギャップ」の土台のみであり、`spawnSync`→async化、実際のwall-clock並列dispatch、budget lock、X token refresh除外、実機phantom-process検証は後続Incrementに引き続きdeferする。
 
@@ -128,6 +128,12 @@
 **2026-08-14 Increment 1b追記（parallelGroupの実wall-clock並列dispatch）**: PlanSpec executorが`planParallelGroups().group[]`上の連続同一group runを検出し、run内の全branchを`Promise.allSettled`で同時dispatchするよう変更した。実行時にも`MAX_PARALLEL_BRANCHES=3`をin-process semaphoreで明示的に強制し、branch outcomeは完了順pushではなくpre-sized slotへ宣言index順に格納するため、post-group contextとrun-logの順序は決定論的なまま。各branchは同一のpre-group `contextResults` snapshotを受け、兄弟outputをprompt/duplicate判定へ混入させない。group内のいずれかが失敗してもin-flight siblingは取消さず全件settleまで待ち、その後だけ`priorFailed`を既存`nextStepGate`へ渡して次group/step前に停止する（fail-fast単位をstepからgroupへ意図的に変更）。3 branch×700msのstand-in endpointは984msで完了（直列delay下限2100ms）し、tainted 3-branchは全branchが独立拒否・model endpoint 0 call、失敗branch＋slow siblingはsibling完了後に次step未dispatchを確認した。`EXECUTOR_SCRIPT_VERSION`は1のまま。
 
 **version gate再確認（Increment 1b）**: Increment 0 commit `e98d83d5f`のnative diffを確認すると、`AgentRuntime.kt`はexecutor起動直前にファイル先頭markerを読み、`CURRENT_EXECUTOR_VERSION`との一致/不一致で「このファイル全体を実行するか」を判定するだけで、executor内部にconcurrency feature flag/runtime branchは無い。現在はnative=1/script=1で一致するため、Increment 1bの並列code pathはこの変更を含むassetが端末へ配備された時点で即liveになる。したがってbudget file lockとX token refresh grouping exclusionを行うIncrement 1cは「将来version bump時のactivation準備」ではなく、1b配備後の既知race windowを閉じる緊急follow-upとして、実機unattended運用前に連続して着地・検証する必要がある。
+
+**2026-08-14 Increment 1c追記（budget race封鎖＋native gate v2化）**: 同一agentの並列broker childが共有する`cap-budget-<agentId>.json`について、既存の`.env` race修正と同じatomic `mkdir`、20回×50ms bounded retry、同期sleep、`finally` releaseのper-budget-file lockをNode実装し、budgetのcheck＋increment＋writeを単一critical sectionにした。lock timeout/write failureはsecurity counterをunlockedで続行せずBUDGET (42)でfail closedする。script/APK asset mirrorはbyte-identicalを維持した。最後の既知raceが閉じたためexecutor marker/constとnative `CURRENT_EXECUTOR_VERSION`を2へ同期し、native compatibility gateを実際の並列対応版へ進めた。
+
+**当初予定していたX token refresh grouping exclusionをDROPした理由**: `social-post`（X/Twitter OAuth token refreshを含む）はplanのtop-level `action`にしか存在できず、`AgentOrchestrationStep`にはstep単位のaction/social-post fieldが無い。top-level actionはchainのfinal stepでのみ`dispatchActionsTrusted`からdispatchされ、そのfinal stepは`planParallelGroups()`のIncrement-0-era invariantにより常にgrouping対象外である。従ってtoken refreshがparallelGroup branchへ入る構造は存在せず、追加 exclusion logicは不要かつ誤った前提に基づくため実装しない。
+
+**現在の状態**: Hermesギャップのwall-clock dispatch portionはfeature-complete。host側回帰検証後も、Android native変更のcompileと実際のphantom-process/並列挙動はCI APKおよびFable5実機gateが残る。プロジェクトオーナーのtimelineどおり、**on-device Fable5 QAは明日（2026-08-15）予定であり、本日時点では未検証**。実機PASSまでは検証済みとは主張しない。
 
 **背景**: Hermes Agentの「タスクをサブタスクに分解し、複数サブエージェントを並列生成して処理させ、結果を集約する」機能がShellyに一切無いギャップの解消依頼。2026-08-03に一度「並列実行はスキップ」と判断した経緯があり(下記「Hermes Agent機能ギャップ、Fable5提案の①②実装」エントリ参照)、今回は実装前に両executorのアーキテクチャを精査した上でスコープを二分した。
 
@@ -4431,6 +4437,7 @@ claude() {
 
 ## History
 
+- **2026-08-14 (Codex、PlanSpec executor並列化 Increment 1c)**: per-agent budget JSONのmkdir bounded-retry lockで最後の既知concurrent RMW raceをfail-closedに封鎖し、executor/native version gateを2へ同期。当初予定のX token refresh exclusionは、social-postがplan-level actionのみかつnever-groupable final stepでだけdispatchされるため構造的に不要と確定しDROP。wall-clock dispatch portionはfeature-complete、Fable5実機QAはオーナーtimelineどおり2026-08-15予定。
 - **2026-08-14 (Codex、PlanSpec executor並列化 Increment 1b)**: contiguous parallelGroup runをsemaphore上限3で実並列dispatchし、pre-sized declared-order aggregationとallSettled後のgroup単位fail-fastを実装。version markerはfeature gateではなくファイル全体のnative pre-launch compatibility checkのみと確認したため、budget/.env raceを閉じるIncrement 1cを実機unattended運用前の緊急follow-upとして明記。
 - **2026-08-14 (Codex、PlanSpec executor並列化 Increment 0)**: 既存「Hermesサブエージェント並列生成ギャップ」の後続土台として、inertなexecutor version gate（1↔1）とstep-index branch nonceによるbroker一時ファイル衝突回避を追加。真の並列dispatch・budget lock・X token refresh除外・実機検証は後続Incrementへ継続defer。
 - **2026-08-14 (CC、Track KK/LL実機QA結果反映+通知id再利用のP3記録)**: Fable5実機QA(versionCode=2186)でTrack KK(.envレース修正、8/8回でキー残存)とTrack LL(ソフト失敗backoff、3回到達→通知1件→以降skipped、attended非干渉)の両方PASSを確認しentryへ反映。副次的に見つけたattended実行時のbackoff通知上書き(同一notification id再利用)をP3として記録、対応は見送り。

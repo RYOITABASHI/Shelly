@@ -15,8 +15,8 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=1
-const EXECUTOR_SCRIPT_VERSION = 1;
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=2
+const EXECUTOR_SCRIPT_VERSION = 2;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
 // 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 (lib/signed-approval/wiring.ts).
