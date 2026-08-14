@@ -14,6 +14,38 @@
 
 ---
 
+### ✅ Track HH 実機QA修正（2026-08-14、versionCode 2179）— 改善確認本文の空表示とUndo二重処理
+
+**実機QAで判明した問題**: attendedの「スキルを改善しますか？」Alertで本文が空になり、対象agentと追加予定のlearningを確認できなかった。またunattended改善通知の「改善を取り消す」を1回タップすると、複数の`useSkillSaveOffer`呼び出しがそれぞれ登録したprocess-global通知listenerが同じresponseを処理し、`learning-reverted`監査ログが約400ms差で二重記録された。
+
+**修正**: 改善Alert本文をagent名とlearning本文が実際に含まれることを保証する共通builderで生成し、空または補間欠落の本文をAndroidへ渡さないようにした。通知responseはmodule-level singleton listener 1個へ集約し、複数のhook instanceがmountedでも最新の有効handlerだけがUndoを1回処理する。複数hook mount時のlistener登録回数・revert回数と、Alert本文のagent名＋learning本文をcomponent testで固定した。
+
+→ sync: なし（README Status表の変更なし）。
+
+---
+
+### ✅ 手動再有効化したagentが同じ失敗履歴で即座に再無効化される問題（2026-08-14、P1修正）
+
+**バグ**: circuit breakerで3回連続失敗後に自動無効化されたagentをユーザーが手動で再有効化しても、次回syncが同じrun-log履歴を再評価し、次の実行前に即座に再無効化していた。
+
+**根本原因と修正**: `consecutiveFailures()`はログ末尾だけを数え、ユーザーが失敗を確認して再有効化した時点を表せなかった。`Agent.circuitBreakerResetAt`を追加して手動enable時にepoch msを永続化し、`syncAgentRunLogsFromDisk()`のcircuit-breaker呼び出し地点でこの時刻より新しいログだけを評価するよう修正した。reset timestampは恒久的なfloorとして保持し、再有効化後の新しい3連続失敗では従来どおり再度tripする。
+
+→ sync: なし。
+
+---
+
+### ✅ Force-stop中のheadless agent無限失敗・通知spamをnative backoffで封じる (2026-08-14、P0修正、実機未検証)
+
+**バグ / 根本原因**: Fable5実機QA (versionCode=2179、commit `b22fb1f1a`) で、アプリforce-stop後の5分cron agentが約22時間に268回失敗し、そのたび通知した。`~/.shelly/agents/.env`へのAPI key reconciliation (`lib/agent-env-sync.ts`) と3連続失敗でdisableするcircuit breaker (`lib/agent-manager.ts` / `lib/agent-circuit-breaker.ts`) はどちらもJS/RN runtimeが動いて初めて実行される。一方AlarmManager発火はpure nativeの`AgentRuntime.kt`から生成済みscriptを直接実行するため、force-stop中は両方とも到達不能で、force-stop時点の`.env`がstaleなら失敗と通知を無期限に繰り返せた。
+
+**実装した修正**: `AgentRuntime.kt`のunattended/native-only経路に、agentごとの連続hard-error数を`$HOME/.shelly/agents/.native-failure-count-<agentId>`へ保存する軽量backoffを追加。既存の`writeReceiverLog(..., "error", ...)`分類と同じhard error（legacy script / PlanSpec executor / native preflight）だけを加算し、JS側と同じ閾値3 (`DEFAULT_CIRCUIT_BREAKER_THRESHOLD`) に達した後のAlarmManager fireは実行せず`skipped` receiver logだけを残す。閾値到達runでは通知を1件だけ残し、以後のskipでは通知しない。成功runはcounter fileを削除（削除失敗時は0を書き込み）するため、アプリ再開後にkey reconciliationが直りmanual runが成功すればscheduleを再開可能。native側からagentを永続disableしたりscheduleをuninstallしたりはしない。
+
+**残る制約 / deferred (P2)**: native codeがSecureStore-backed API keysを直接読み、`.env`を自己reconcileする完全修正は見送り。SecureStore/JS境界とKnox sepolicy上、headless native pathからRN runtimeを起動する設計は現行architectureに反し、credential storageの二重実装も新しいsecurity boundaryになるため。このbackoffはcredential欠落の根因をforce-stop中に直すものではなく、被害を3連続失敗で有限化するmitigation。次回実機QAで、3回目のfailure後にrunが`skipped`となること、通知が以後増えないこと、アプリ再開→reconcile→manual successでcounterがresetされることを確認する。
+
+→ sync: README Status表の変更なし（公開featureのdescopingではなくruntime reliability fix）。
+
+---
+
 ### ✅ Track GG/HH着地後のCI回帰修正(commit `b22fb1f1a`)— skill-self-improveのトップレベルimportがネイティブモジュール解決を巻き込みAgentRunsPane.test.tsxをクラッシュさせていた
 
 **背景**: Track GG/HH(サブエージェント並列生成・スキル自己改善)のpush後、CI(Linux)で`AgentRunsPane.test.tsx`が「Cannot find native module 'TerminalEmulator'」でsuite全体クラッシュ。原因は`lib/skill-self-improve.ts`のトップレベル`import { getHomePath } from '@/lib/home-path'`が、このテストの`jest.requireActual('@/hooks/use-skill-save-offer')`経由でモックを迂回し、ネイティブTerminalEmulatorモジュール解決を巻き込んだこと。ローカルの通常のフルスイート実行では、この失敗が既存の別理由(タイムアウトflake)による同名suite失敗と紛れて検出できなかった(suite名だけで既知失敗と照合していたため、失敗理由の変化を見落とした)。
@@ -4351,6 +4383,9 @@ claude() {
 ---
 
 ## History
+
+- **2026-08-14 (Codex、circuit-breaker再有効化trap修正)**: 手動再有効化後も古い3連続失敗を再評価して即時無効化するP1 bugを、`circuitBreakerResetAt`の永続化とsync時のログfloor filteringで修正。
+- **2026-08-14 (Codex / Fable5 P0 follow-up)**: force-stop中はJS-only key reconciliationとJS-only circuit breakerが双方とも到達不能になり、scheduled agentが無期限に失敗・通知する問題を確認。native per-agent 3-failure backoffを実装し、SecureStoreのnative直接読取はP2として明示的にdefer。
 
 - **2026-08-13（Fable5、スキル自己改善 Phase 1）**: Hermes機能ギャップ「スキルの自己改善」を実装。決定論的な学習昇格（解消済み失敗ヒント→本文`learnings`、5件FIFO・240字上限・secret gate・追記型監査ログ・attended confirm/unattended auto+revert通知）。LLMによる本文リファインは2026-08-03 Track Cの安全判断とバックグラウンドLLM呼び出し経路の不在を理由にP2で意図的見送り、必要事項を先頭付近の新規エントリに記録。
 - **2026-08-13（Fable5、Hermesサブエージェント並列生成ギャップ）**: ファンアウト・サブタスク（`parallelGroup`）のセマンティクス——ブランチのコンテキスト分離（兄弟ブランチの出力をプロンプト/重複検知から遮断）+宣言順集約+最終ステップ除外+`MAX_PARALLEL_BRANCHES=3` cap——をattended TSチェーンと無人PlanSpec executor（APK assetミラー同期）の両方に実装。真のwall-clock並列ディスパッチは、両executorのper-agent単一飛行安全設計（chain lock回転nonce／グローバル`MAX_CONCURRENT=2`／同期spawnSync broker）と衝突するため意図的に見送り、ブロッカー4点と将来の道筋を新規エントリに記録。tsc/Jest PASS（Windows既知失敗4スイートはHEADでも同一と stash 検証済み）、実機未検証。先頭のエントリ参照。

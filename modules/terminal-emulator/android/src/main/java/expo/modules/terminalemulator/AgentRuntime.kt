@@ -30,6 +30,10 @@ data class AgentRunResult(
 object AgentRuntime {
     private const val TAG = "AgentRuntime"
     private const val DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
+    // Keep in sync with DEFAULT_CIRCUIT_BREAKER_THRESHOLD in
+    // lib/agent-circuit-breaker.ts. This native-only backoff covers scheduled
+    // fires while the RN/JS runtime is not alive to run that circuit breaker.
+    private const val NATIVE_FAILURE_BACKOFF_THRESHOLD = 3
     // v13 (bug #155(b), docs/superpowers/DEFERRED.md): lib/agent-executor.ts's
     // generateRunScript now surfaces a clear run-log note when a real
     // multi-step orchestrated agent falls back to this legacy single-shot
@@ -473,12 +477,20 @@ object AgentRuntime {
             return AgentRunResult(agentId, 129, "", message)
         }
 
+        if (unattended && readNativeFailureCount(homeDir, agentId) >= NATIVE_FAILURE_BACKOFF_THRESHOLD) {
+            val message = "native failure backoff active after $NATIVE_FAILURE_BACKOFF_THRESHOLD consecutive errors; open Shelly to reconcile credentials and review this agent"
+            Log.i(TAG, "Agent $agentId refused: $message")
+            writeReceiverLog(homeDir, agentId, "skipped", message)
+            return AgentRunResult(agentId, 130, "", message)
+        }
+
         val libDir = try {
             LibExtractor.extractAll(appContext)
         } catch (e: Exception) {
             val message = "runtime extraction failed before script: ${e.javaClass.simpleName}: ${e.message}"
             Log.e(TAG, message, e)
             writeReceiverLog(homeDir, agentId, "error", message)
+            recordNativeHardFailure(appContext, homeDir, agentId, unattended, message)
             return AgentRunResult(agentId, 125, "", message)
         }
         val bashPath = LibExtractor.getBashPath(appContext)
@@ -494,6 +506,7 @@ object AgentRuntime {
             val message = "missing script: $scriptPath"
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
+            recordNativeHardFailure(appContext, homeDir, agentId, unattended, message)
             return AgentRunResult(agentId, 127, "", message)
         }
         val scriptVersion = readScriptVersion(script)
@@ -501,11 +514,13 @@ object AgentRuntime {
             val message = "stale script: $scriptPath version=$scriptVersion expected=$CURRENT_SCRIPT_VERSION. Open Shelly or run the agent manually once to regenerate it."
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
-            NotificationDispatcher(appContext).notifyAgentResult(
-                agentId = agentId,
-                status = "error",
-                preview = message
-            )
+            if (!recordNativeHardFailure(appContext, homeDir, agentId, unattended, message)) {
+                NotificationDispatcher(appContext).notifyAgentResult(
+                    agentId = agentId,
+                    status = "error",
+                    preview = message
+                )
+            }
             return AgentRunResult(agentId, 126, "", message)
         }
 
@@ -599,12 +614,23 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
-        val notificationPosted = postAgentResultNotificationIfRequested(appContext, homeDir, agentId)
         if (exitCode == 0) {
+            resetNativeFailureCount(homeDir, agentId)
+            postAgentResultNotificationIfRequested(appContext, homeDir, agentId)
             Log.i(TAG, "Agent $agentId completed via Shelly runtime")
         } else {
             Log.e(TAG, "Agent $agentId failed via Shelly runtime: exit=$exitCode stderr=${stderr.take(300)}")
-            if (!notificationPosted) {
+            val failureMessage = "exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+            val backoffNotificationPosted = recordNativeHardFailure(
+                appContext, homeDir, agentId, unattended, failureMessage
+            )
+            val notificationPosted = if (backoffNotificationPosted) {
+                discardAgentResultNotificationRequest(homeDir, agentId)
+                false
+            } else {
+                postAgentResultNotificationIfRequested(appContext, homeDir, agentId)
+            }
+            if (!notificationPosted && !backoffNotificationPosted) {
                 NotificationDispatcher(appContext).notifyAgentResult(
                     agentId = agentId,
                     status = "error",
@@ -615,7 +641,7 @@ object AgentRuntime {
                 homeDir,
                 agentId,
                 "error",
-                "exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+                failureMessage
             )
         }
 
@@ -658,7 +684,9 @@ object AgentRuntime {
             val message = "missing PlanSpec: $planPath"
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
-            NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            if (!recordNativeHardFailure(context, homeDir, agentId, unattended, message)) {
+                NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            }
             return AgentRunResult(agentId, 127, "", message)
         }
         val planVersion = readPlanSpecVersion(plan)
@@ -666,7 +694,9 @@ object AgentRuntime {
             val message = "stale PlanSpec: $planPath version=$planVersion expected=$CURRENT_PLAN_SPEC_VERSION. Open Shelly or run the agent manually once to regenerate it."
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
-            NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            if (!recordNativeHardFailure(context, homeDir, agentId, unattended, message)) {
+                NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            }
             return AgentRunResult(agentId, 126, "", message)
         }
         val planAgentId = readPlanSpecAgentId(plan)
@@ -674,7 +704,9 @@ object AgentRuntime {
             val message = "PlanSpec agent id mismatch: plan=$planAgentId expected=$agentId"
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
-            NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            if (!recordNativeHardFailure(context, homeDir, agentId, unattended, message)) {
+                NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            }
             return AgentRunResult(agentId, 127, "", message)
         }
         val planActionType = readPlanSpecActionType(plan)
@@ -682,14 +714,18 @@ object AgentRuntime {
             val message = "unsupported PlanSpec action: $planActionType"
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
-            NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            if (!recordNativeHardFailure(context, homeDir, agentId, unattended, message)) {
+                NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            }
             return AgentRunResult(agentId, 127, "", message)
         }
         if (!executor.isFile || !broker.isFile) {
             val message = "PlanSpec executor assets missing: executor=${executor.isFile} broker=${broker.isFile}"
             Log.e(TAG, message)
             writeReceiverLog(homeDir, agentId, "error", message)
-            NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            if (!recordNativeHardFailure(context, homeDir, agentId, unattended, message)) {
+                NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            }
             return AgentRunResult(agentId, 127, "", message)
         }
         val trustedLaunch = trustedPlanLaunch(homeDir, agentId)
@@ -849,12 +885,23 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
-        val notificationPosted = postAgentResultNotificationIfRequested(context, homeDir, agentId)
         if (exitCode == 0) {
+            resetNativeFailureCount(homeDir, agentId)
+            postAgentResultNotificationIfRequested(context, homeDir, agentId)
             Log.i(TAG, "Agent $agentId completed via PlanSpec executor")
         } else {
             Log.e(TAG, "Agent $agentId failed via PlanSpec executor: exit=$exitCode stderr=${stderr.take(300)}")
-            if (!notificationPosted) {
+            val failureMessage = "plan-executor exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+            val backoffNotificationPosted = recordNativeHardFailure(
+                context, homeDir, agentId, unattended, failureMessage
+            )
+            val notificationPosted = if (backoffNotificationPosted) {
+                discardAgentResultNotificationRequest(homeDir, agentId)
+                false
+            } else {
+                postAgentResultNotificationIfRequested(context, homeDir, agentId)
+            }
+            if (!notificationPosted && !backoffNotificationPosted) {
                 NotificationDispatcher(context).notifyAgentResult(
                     agentId = agentId,
                     status = "error",
@@ -865,7 +912,7 @@ object AgentRuntime {
                 homeDir,
                 agentId,
                 "error",
-                "plan-executor exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+                failureMessage
             )
         }
         return AgentRunResult(agentId, exitCode, stdout, stderr)
@@ -1286,6 +1333,61 @@ object AgentRuntime {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read enabled state for $agentId; defaulting to disabled (fail closed)", e)
             false
+        }
+    }
+
+    private fun nativeFailureCountFile(homeDir: File, agentId: String): File =
+        File(homeDir, ".shelly/agents/.native-failure-count-$agentId")
+
+    private fun readNativeFailureCount(homeDir: File, agentId: String): Int =
+        try {
+            nativeFailureCountFile(homeDir, agentId).readText().trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+        } catch (_: Exception) {
+            0
+        }
+
+    /** Returns true only when this failure first crosses the native threshold
+     *  and this method posts the one backoff notification. Attended failures do
+     *  not participate; a later attended success may still clear stale state. */
+    private fun recordNativeHardFailure(
+        context: Context,
+        homeDir: File,
+        agentId: String,
+        unattended: Boolean,
+        failureMessage: String
+    ): Boolean {
+        if (!unattended) return false
+        val previous = readNativeFailureCount(homeDir, agentId)
+        val next = (previous + 1).coerceAtMost(NATIVE_FAILURE_BACKOFF_THRESHOLD)
+        try {
+            nativeFailureCountFile(homeDir, agentId).writeText("$next\n")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to persist native failure count for $agentId", e)
+            return false
+        }
+        if (previous < NATIVE_FAILURE_BACKOFF_THRESHOLD && next >= NATIVE_FAILURE_BACKOFF_THRESHOLD) {
+            val preview = "Agent paused by native backoff after $next consecutive errors. Open Shelly to reconcile credentials and review it. Last error: ${failureMessage.take(200)}"
+            NotificationDispatcher(context).notifyAgentResult(agentId, "error", preview)
+            return true
+        }
+        return false
+    }
+
+    private fun resetNativeFailureCount(homeDir: File, agentId: String) {
+        val countFile = nativeFailureCountFile(homeDir, agentId)
+        if (!countFile.exists()) return
+        try {
+            if (!countFile.delete()) {
+                countFile.writeText("0\n")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to reset native failure count for $agentId", e)
+        }
+    }
+
+    private fun discardAgentResultNotificationRequest(homeDir: File, agentId: String) {
+        runCatching {
+            File(homeDir, ".shelly/agents/logs/$agentId/native-result-notification.json").delete()
         }
     }
 
