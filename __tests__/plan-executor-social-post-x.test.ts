@@ -45,10 +45,10 @@ const plan = {
 const opts = { libDir: '', broker: path.join(root, 'scripts', 'shelly-capability-broker.js'), tainted: false };
 
 describe('buildSocialPostRequest — x (Twitter) platform', () => {
-  it('refuses immediately when the refresh token or client id secret is missing, without any network attempt', () => {
+  it('refuses immediately when the refresh token or client id secret is missing, without any network attempt', async () => {
     let threw: any = null;
     try {
-      buildSocialPostRequest(makePaths(), opts, plan, 'x', 'api.x.com', 'hello world', {}, false);
+      await buildSocialPostRequest(makePaths(), opts, plan, 'x', 'api.x.com', 'hello world', {}, false);
     } catch (e) {
       threw = e;
     }
@@ -56,10 +56,10 @@ describe('buildSocialPostRequest — x (Twitter) platform', () => {
     expect(threw.message).toContain('X connector is missing its refresh token or client id');
   });
 
-  it('refuses article (long-form) posts for unattended runs with a clear, actionable message', () => {
+  it('refuses article (long-form) posts for unattended runs with a clear, actionable message', async () => {
     let threw: any = null;
     try {
-      buildSocialPostRequest(
+      await buildSocialPostRequest(
         makePaths(),
         opts,
         plan,
@@ -77,22 +77,22 @@ describe('buildSocialPostRequest — x (Twitter) platform', () => {
     expect(threw.message).toContain('not supported for unattended');
   });
 
-  it('does not attempt any network call before validating credentials (fails synchronously, not via a timeout)', () => {
+  it('does not attempt any network call before validating credentials (rejects immediately, not via a timeout)', async () => {
     const start = Date.now();
-    expect(() => buildSocialPostRequest(makePaths(), opts, plan, 'x', 'api.x.com', 'hi', { REFRESHTOKEN: '', CLIENTID: '' }, false)).toThrow();
+    await expect(buildSocialPostRequest(makePaths(), opts, plan, 'x', 'api.x.com', 'hi', { REFRESHTOKEN: '', CLIENTID: '' }, false)).rejects.toThrow();
     // A real network attempt against a real host would take much longer than
     // this on any CI/dev machine; a synchronous validation failure is near-instant.
     expect(Date.now() - start).toBeLessThan(1000);
   });
 
-  it('reuses an already-refreshed access token for the same connector within one run, without re-checking credentials or hitting the network (2026-08-06 Codex review finding: multi-action fan-out posting to the same X connector twice would otherwise re-refresh and invalidate its own just-rotated token)', () => {
+  it('reuses an already-refreshed access token for the same connector within one run, without re-checking credentials or hitting the network (2026-08-06 Codex review finding: multi-action fan-out posting to the same X connector twice would otherwise re-refresh and invalidate its own just-rotated token)', async () => {
     xAccessTokenCache.set('x-test-connector', 'cached-access-token-from-a-prior-action-this-run');
     try {
       // Deliberately pass EMPTY secrets — if this reached the refresh branch
       // at all it would throw "missing its refresh token or client id"
       // immediately. Returning successfully proves the cache short-circuited
       // before that check.
-      const result = buildSocialPostRequest(makePaths(), opts, plan, 'x', 'api.x.com', 'second post this run', {}, false);
+      const result = await buildSocialPostRequest(makePaths(), opts, plan, 'x', 'api.x.com', 'second post this run', {}, false);
       expect(result).toEqual({
         url: 'https://api.x.com/2/tweets',
         body: { text: 'second post this run' },

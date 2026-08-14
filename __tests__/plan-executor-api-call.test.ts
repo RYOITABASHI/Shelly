@@ -12,7 +12,7 @@
  * dispatchApiCallRequest always builds `https://${host}${path}` with no port
  * override, so a real live HTTPS endpoint (default port 443) can't be stood
  * up offline/unprivileged the way the existing loopback-HTTP model-call
- * fixtures do. Instead this file mocks `child_process.spawnSync` — the SAME
+ * fixtures do. Instead this file mocks `child_process.spawn` — the SAME
  * seam runBroker() itself calls through — so the executor's own JS dispatch
  * logic runs for real (in-process, via require()) while the broker's
  * OS-process boundary is stubbed with a canned response. "Broker mocked
@@ -25,20 +25,21 @@
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
-jest.mock('child_process', () => ({ spawnSync: jest.fn() }));
+jest.mock('child_process', () => ({ spawn: jest.fn(), spawnSync: jest.fn() }));
 
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { spawnSync } from 'child_process';
+import { EventEmitter } from 'events';
+import { spawn } from 'child_process';
 
 const root = path.resolve(__dirname, '..');
 const scriptCopy = path.join(root, 'scripts', 'shelly-plan-executor.js');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const executor = require(scriptCopy);
 
-const mockedSpawnSync = spawnSync as unknown as jest.Mock;
+const mockedSpawn = spawn as unknown as jest.Mock;
 
 function makeHome(): string {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-plan-apicall-'));
@@ -61,9 +62,10 @@ interface CannedResponse {
   rc: number;
   body?: string;
   err?: string;
+  delayMs?: number;
 }
 
-/** Wires the mocked spawnSync to serve one canned response per http.request
+/** Wires the mocked spawn to serve one canned response per http.request
  *  call (in order) and to perform a REAL best-effort file copy for fs.write
  *  calls (so writeDraftOutputs' actual output can be asserted on disk) —
  *  mirroring just enough of the real broker's on-disk contract for these
@@ -71,8 +73,10 @@ interface CannedResponse {
 function setupBrokerMock(httpResponses: CannedResponse[]): CapturedCall[] {
   const calls: CapturedCall[] = [];
   let httpCallIndex = 0;
-  mockedSpawnSync.mockReset();
-  mockedSpawnSync.mockImplementation((_file: string, args: string[]) => {
+  mockedSpawn.mockReset();
+  mockedSpawn.mockImplementation((_file: string, args: string[]) => {
+    const child = new EventEmitter() as EventEmitter & { kill: jest.Mock };
+    child.kill = jest.fn();
     const get = (flag: string) => {
       const idx = args.indexOf(flag);
       return idx >= 0 ? args[idx + 1] : null;
@@ -93,9 +97,12 @@ function setupBrokerMock(httpResponses: CannedResponse[]): CapturedCall[] {
       });
       const resp = httpResponses[httpCallIndex] ?? { rc: 0, body: '' };
       httpCallIndex += 1;
-      if (outFile) fs.writeFileSync(outFile, resp.body ?? '');
-      if (errFile) fs.writeFileSync(errFile, resp.err ?? '');
-      return { status: resp.rc, error: null };
+      setTimeout(() => {
+        if (outFile) fs.writeFileSync(outFile, resp.body ?? '');
+        if (errFile) fs.writeFileSync(errFile, resp.err ?? '');
+        child.emit('close', resp.rc);
+      }, resp.delayMs ?? 0);
+      return child;
     }
     if (op === 'fs.write') {
       // Real best-effort copy, mirroring the broker's own fs.write op just
@@ -109,15 +116,18 @@ function setupBrokerMock(httpResponses: CannedResponse[]): CapturedCall[] {
         }
         if (outFile) fs.writeFileSync(outFile, '');
         if (errFile) fs.writeFileSync(errFile, '');
-        return { status: 0, error: null };
+        setImmediate(() => child.emit('close', 0));
+        return child;
       } catch (e) {
         if (errFile) fs.writeFileSync(errFile, String(e));
-        return { status: 1, error: null };
+        setImmediate(() => child.emit('close', 1));
+        return child;
       }
     }
     if (outFile) fs.writeFileSync(outFile, '');
     if (errFile) fs.writeFileSync(errFile, 'unsupported mocked op');
-    return { status: 1, error: null };
+    setImmediate(() => child.emit('close', 1));
+    return child;
   });
   return calls;
 }
@@ -155,12 +165,13 @@ function preparePaths(home: string, agentId: string) {
 const OPTS = { broker: scriptCopy, tainted: false, libDir: '' };
 
 describe('runOrchestrationChain — api-call non-final step (broker mocked)', () => {
-  it('GET step: broker success -> response lands in priorResults, visible in the NEXT step\'s built prompt', () => {
+  it('GET step: broker success -> response lands in priorResults, visible in the NEXT step\'s built prompt', async () => {
+    const startedAt = Date.now();
     const home = makeHome();
     const agentId = 'agent-get-success';
     const rtPaths = preparePaths(home, agentId);
     const calls = setupBrokerMock([
-      { rc: 0, body: '{"answer":42}' }, // step 0: api-call GET
+      { rc: 0, body: '{"answer":42}', delayMs: 40 }, // step 0: deliberately async api-call GET
       { rc: 0, body: JSON.stringify({ choices: [{ message: { content: 'final content' } }] }) }, // step 1: model call
     ]);
     const plan = {
@@ -173,9 +184,10 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
 
     expect(result.status).toBe('success');
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30);
     expect(result.steps).toHaveLength(2);
     expect(result.steps[0].status).toBe('success');
     expect(result.steps[0].outputPreview).toContain('42');
@@ -192,7 +204,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
     expect(calls[1].bodyText).toContain('summarize');
   });
 
-  it('POST step: sends a templated body with {{result}} resolved from the prior step', () => {
+  it('POST step: sends a templated body with {{result}} resolved from the prior step', async () => {
     const home = makeHome();
     const agentId = 'agent-post-template';
     const rtPaths = preparePaths(home, agentId);
@@ -215,7 +227,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
 
     expect(result.status).toBe('success');
     expect(result.steps[1].status).toBe('success');
@@ -226,7 +238,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
     expect(calls[1].bodyText).toBe('{"q":"gathered sources"}');
   });
 
-  it('GET step sends no body file at all (--body-file is never passed)', () => {
+  it('GET step sends no body file at all (--body-file is never passed)', async () => {
     const home = makeHome();
     const agentId = 'agent-get-no-body';
     const rtPaths = preparePaths(home, agentId);
@@ -244,12 +256,12 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
     expect(calls[0].bodyFile).toBe('');
     expect(calls[0].bodyText).toBeNull();
   });
 
-  it('broker failure (generic rc) marks the step error and halts the chain — NOT silent success', () => {
+  it('broker failure (generic rc) marks the step error and halts the chain — NOT silent success', async () => {
     const home = makeHome();
     const agentId = 'agent-broker-fail';
     const rtPaths = preparePaths(home, agentId);
@@ -264,14 +276,14 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
     expect(result.status).toBe('error');
     expect(result.steps).toHaveLength(1);
     expect(result.steps[0].status).toBe('error');
     expect(result.steps[0].outputPreview).toMatch(/boom: connection refused/);
   });
 
-  it('broker failure with rc=23 (transient) marks the step unavailable, not a hard error', () => {
+  it('broker failure with rc=23 (transient) marks the step unavailable, not a hard error', async () => {
     const home = makeHome();
     const agentId = 'agent-broker-unavailable';
     const rtPaths = preparePaths(home, agentId);
@@ -286,12 +298,12 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
     expect(result.status).toBe('unavailable');
     expect(result.steps[0].status).toBe('unavailable');
   });
 
-  it('an empty response body is a step error, not a silent success', () => {
+  it('an empty response body is a step error, not a silent success', async () => {
     const home = makeHome();
     const agentId = 'agent-empty-response';
     const rtPaths = preparePaths(home, agentId);
@@ -306,13 +318,13 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
     expect(result.status).toBe('error');
     expect(result.steps[0].status).toBe('error');
     expect(result.steps[0].outputPreview).toMatch(/empty/i);
   });
 
-  it('apiCall on the FINAL step index is a no-op: the final step still dispatches via plan.action unchanged', () => {
+  it('apiCall on the FINAL step index is a no-op: the final step still dispatches via plan.action unchanged', async () => {
     const home = makeHome();
     const agentId = 'agent-final-noop';
     const rtPaths = preparePaths(home, agentId);
@@ -331,7 +343,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
 
     expect(result.status).toBe('success');
     // The ONE broker call made was the MODEL call (loopback-shaped local URL
@@ -348,7 +360,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
   // broker's own classifyEgress only gates tainted+authRef ("trifecta") or a
   // non-allowlisted host, not tainted-with-no-secret against an allowlisted
   // host, which would otherwise fall through to 'allow'.
-  it('SECURITY: a tainted run with a NO-authRef apiCall step is refused BEFORE the broker is ever invoked', () => {
+  it('SECURITY: a tainted run with a NO-authRef apiCall step is refused BEFORE the broker is ever invoked', async () => {
     const home = makeHome();
     const agentId = 'agent-tainted-no-authref';
     const rtPaths = preparePaths(home, agentId);
@@ -364,7 +376,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
       },
     };
     const taintedOpts = { ...OPTS, tainted: true };
-    const result = executor.runOrchestrationChain(rtPaths, taintedOpts, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, taintedOpts, plan, {}, [], {}, Date.now());
 
     expect(result.status).toBe('error');
     expect(result.steps[0].status).toBe('error');
@@ -372,7 +384,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
     expect(calls).toHaveLength(0); // the broker was NEVER invoked for this step
   });
 
-  it('REGRESSION: the tainted+no-authRef guard does not fire for a non-tainted run (no over-refusal)', () => {
+  it('REGRESSION: the tainted+no-authRef guard does not fire for a non-tainted run (no over-refusal)', async () => {
     const home = makeHome();
     const agentId = 'agent-nontainted-no-authref';
     const rtPaths = preparePaths(home, agentId);
@@ -390,13 +402,13 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now()); // OPTS.tainted === false
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now()); // OPTS.tainted === false
     expect(result.status).toBe('success');
     expect(result.steps[0].status).toBe('success');
     expect(calls).toHaveLength(2);
   });
 
-  it('REGRESSION: the tainted guard does not fire for a tainted run when authRef IS set (the trifecta case is handled by the broker, not this guard)', () => {
+  it('REGRESSION: the tainted guard does not fire for a tainted run when authRef IS set (the trifecta case is handled by the broker, not this guard)', async () => {
     const home = makeHome();
     const agentId = 'agent-tainted-with-authref';
     const rtPaths = preparePaths(home, agentId);
@@ -415,7 +427,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
       },
     };
     const taintedOpts = { ...OPTS, tainted: true };
-    const result = executor.runOrchestrationChain(rtPaths, taintedOpts, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, taintedOpts, plan, {}, [], {}, Date.now());
     expect(result.status).toBe('error');
     expect(calls).toHaveLength(1); // reached the broker (unlike the no-authRef case)
     expect(result.steps[0].outputPreview).not.toMatch(/no credential is refused on a tainted/);
@@ -427,14 +439,14 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     return { ...makeBasePlan(home, agentId, 'api-call'), action: { type: 'api-call', apiCall } };
   }
 
-  it('success: writes the response as a draft and fires a success notification', () => {
+  it('success: writes the response as a draft and fires a success notification', async () => {
     const home = makeHome();
     const agentId = 'agent-dispatch-success';
     const rtPaths = preparePaths(home, agentId);
     setupBrokerMock([{ rc: 0, body: '{"result":"the api response"}' }]);
     const plan = apiCallPlan(home, agentId, { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search' });
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
 
     expect(result.status).toBe('success');
     expect(result.preview).toContain('the api response');
@@ -453,14 +465,14 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     expect(draftContent).toContain('the api response');
   });
 
-  it('missing apiCall config -> clean error, no notification of success', () => {
+  it('missing apiCall config -> clean error, no notification of success', async () => {
     const home = makeHome();
     const agentId = 'agent-missing-config';
     const rtPaths = preparePaths(home, agentId);
     setupBrokerMock([]);
     const plan = { ...makeBasePlan(home, agentId, 'api-call'), action: { type: 'api-call' } }; // no apiCall at all
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     const notification = JSON.parse(fs.readFileSync(rtPaths.notifyFile, 'utf8'));
@@ -469,27 +481,27 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     expect(fs.existsSync(path.join(home, 'agent-output'))).toBe(false);
   });
 
-  it('empty response -> clean error, no partial draft', () => {
+  it('empty response -> clean error, no partial draft', async () => {
     const home = makeHome();
     const agentId = 'agent-empty-dispatch';
     const rtPaths = preparePaths(home, agentId);
     setupBrokerMock([{ rc: 0, body: '' }]);
     const plan = apiCallPlan(home, agentId, { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search' });
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     expect(fs.existsSync(path.join(home, 'agent-output'))).toBe(false);
   });
 
-  it('broker failure -> clean error, no partial draft', () => {
+  it('broker failure -> clean error, no partial draft', async () => {
     const home = makeHome();
     const agentId = 'agent-broker-fail-dispatch';
     const rtPaths = preparePaths(home, agentId);
     setupBrokerMock([{ rc: 1, err: 'network unreachable' }]);
     const plan = apiCallPlan(home, agentId, { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search' });
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     expect(result.errorMessage).toMatch(/network unreachable/);
@@ -500,7 +512,7 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
   // (single-step / final-step) dispatch path is guarded by the SAME
   // tainted+no-authRef check as the non-final chain-step path — this proves
   // it applies uniformly, not just in runOrchestrationChain.
-  it('SECURITY: a tainted terminal api-call action with NO authRef is refused BEFORE the broker is ever invoked', () => {
+  it('SECURITY: a tainted terminal api-call action with NO authRef is refused BEFORE the broker is ever invoked', async () => {
     const home = makeHome();
     const agentId = 'agent-dispatch-tainted-no-authref';
     const rtPaths = preparePaths(home, agentId);
@@ -508,7 +520,7 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     const plan = apiCallPlan(home, agentId, { host: 'api.github.com', method: 'GET', path: '/rate_limit' }); // no authRef
 
     const taintedOpts = { ...OPTS, tainted: true };
-    const result = executor.dispatchActionTrusted(rtPaths, taintedOpts, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, taintedOpts, plan, {}, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     expect(result.errorMessage).toMatch(/no credential is refused on a tainted/);
@@ -574,7 +586,7 @@ describe('dispatchActionTrusted — api-call approval-request payload (Track F, 
     return { get: () => captured };
   }
 
-  it('includes destinationHost, destinationHostAllowlisted=true, and a "METHOD /resolved/path" command — the fields NotificationDispatcher.kt\'s "api-call" branch reads', () => {
+  it('includes destinationHost, destinationHostAllowlisted=true, and a "METHOD /resolved/path" command — the fields NotificationDispatcher.kt\'s "api-call" branch reads', async () => {
     const home = makeHome();
     const agentId = 'agent-approval-payload';
     const rtPaths = preparePaths(home, agentId);
@@ -590,7 +602,7 @@ describe('dispatchActionTrusted — api-call approval-request payload (Track F, 
     // request file instead of maybeRequestActionApproval's unattended skip.
     (plan.agent as any).requireActionApproval = true;
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
 
     expect(result.status).toBe('success');
     const request = capture.get();
@@ -603,7 +615,7 @@ describe('dispatchActionTrusted — api-call approval-request payload (Track F, 
     expect(request.command).toBe('GET /v1/search?q=q1');
   });
 
-  it('a POST api-call also carries method+path in `command` (bodyTemplate itself is not echoed into it)', () => {
+  it('a POST api-call also carries method+path in `command` (bodyTemplate itself is not echoed into it)', async () => {
     const home = makeHome();
     const agentId = 'agent-approval-payload-post';
     const rtPaths = preparePaths(home, agentId);
@@ -617,7 +629,7 @@ describe('dispatchActionTrusted — api-call approval-request payload (Track F, 
     });
     (plan.agent as any).requireActionApproval = true;
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
 
     expect(result.status).toBe('success');
     const request = capture.get();

@@ -12,7 +12,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
 // SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=1
@@ -775,14 +775,38 @@ function nodeInvocation(script, args, paths, opts) {
   return { file: process.execPath, args: [script].concat(args) };
 }
 
-function runBroker(paths, opts, brokerArgs) {
+async function runBroker(paths, opts, brokerArgs) {
   const broker = opts.broker || path.join(paths.home, '.shelly-capability-broker.js');
   if (!fs.existsSync(broker)) throw new PlanFailure('capability broker is missing', { exitCode: EXIT.TOOL_DENY });
   const invocation = nodeInvocation(broker, brokerArgs, paths, opts);
-  const result = spawnSync(invocation.file, invocation.args, {
-    env: childEnv(paths, opts),
-    encoding: 'utf8',
-    timeout: 700000,
+  const result = await new Promise((resolve) => {
+    const child = spawn(invocation.file, invocation.args, {
+      env: childEnv(paths, opts),
+      stdio: 'ignore',
+    });
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      const error = new Error(`spawnSync ${invocation.file} ETIMEDOUT`);
+      error.code = 'ETIMEDOUT';
+      error.errno = 'ETIMEDOUT';
+      error.syscall = `spawnSync ${invocation.file}`;
+      error.path = invocation.file;
+      error.spawnargs = invocation.args;
+      finish({ status: null, error });
+    }, 700000);
+    child.once('error', (error) => {
+      // Preserve the spawnSync-era text consumed by the PlanFailure below.
+      error.message = String(error.message || '').replace(/^spawn /, 'spawnSync ');
+      finish({ status: null, error });
+    });
+    child.once('close', (status) => finish({ status, error: null }));
   });
   if (result.error) {
     throw new PlanFailure(`capability broker spawn failed: ${redact(result.error.message)}`, { exitCode: EXIT.TOOL_DENY });
@@ -865,12 +889,12 @@ function brokerStepSuffix(opts) {
   return stepIndex === 0 ? '' : `-${stepIndex}`;
 }
 
-function brokerHttp(paths, opts, plan, request) {
+async function brokerHttp(paths, opts, plan, request) {
   const stepSuffix = brokerStepSuffix(opts);
   const bodyFile = path.join(paths.tmpDir, `plan-request-${plan.agent.id}-${process.pid}${stepSuffix}.json`);
   writeJsonRequest(bodyFile, request.body);
   try {
-    return brokerHttpBodyFile(paths, opts, plan, {
+    return await brokerHttpBodyFile(paths, opts, plan, {
       url: request.url,
       authRef: request.authRef,
       bodyFile,
@@ -884,7 +908,7 @@ function brokerHttp(paths, opts, plan, request) {
   }
 }
 
-function brokerHttpBodyFile(paths, opts, plan, request) {
+async function brokerHttpBodyFile(paths, opts, plan, request) {
   const stepSuffix = brokerStepSuffix(opts);
   const outFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.json`);
   const errFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.err`);
@@ -912,7 +936,7 @@ function brokerHttpBodyFile(paths, opts, plan, request) {
   if (request.authRef) args.push('--auth-ref', request.authRef);
   if (request.approved) args.push('--approved', '1');
   if (opts.tainted) args.push('--tainted', '1');
-  const rc = runBroker(paths, opts, args);
+  const rc = await runBroker(paths, opts, args);
   const response = readFile(outFile);
   const errorText = readFile(errFile);
   if (rc !== 0) {
@@ -930,7 +954,7 @@ function brokerHttpBodyFile(paths, opts, plan, request) {
 // the SAME capability broker every other egress already goes through — this
 // is a new AUTHORING surface (lib/capability-envelope.ts's host allowlist +
 // AUTH_REFS still fully own enforcement), not a new enforcement path.
-function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
+async function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
   const url = `https://${apiCall.host}${apiCall.path}`;
   // Tainted-run defense-in-depth (2026-07-16 adversarial security review
   // finding): classifyEgress's taint gate (lib/capability-envelope.ts) only
@@ -965,7 +989,7 @@ function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
     writeAtomic(bodyFile, resolvedBodyText);
   }
   try {
-    return brokerHttpBodyFile(paths, opts, plan, {
+    return await brokerHttpBodyFile(paths, opts, plan, {
       url,
       authRef: apiCall.authRef,
       bodyFile,
@@ -1080,7 +1104,7 @@ function updateEnvFileSecret(envFile, key, value) {
 // implemented here: this closes the DEFERRED-tracked asymmetry where an
 // orchestrated/scheduled X agent hard-failed with "Unsupported social
 // platform: x" while the same platform worked from the manual/.sh path.
-function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets, isArticle) {
+async function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets, isArticle) {
   const missing = (what) => new PlanFailure(`${what} — re-register the connector in Settings.`, { handled: true });
   const hostMismatch = () =>
     new PlanFailure("Social-post destination host does not match the connector's registered host.", { handled: true });
@@ -1145,7 +1169,7 @@ function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets
     fs.writeFileSync(sessionBodyFile, JSON.stringify({ identifier: handle, password: appPassword }), { mode: 0o600 });
     let sessionRaw = '';
     try {
-      sessionRaw = brokerHttpBodyFile(paths, opts, plan, {
+      sessionRaw = await brokerHttpBodyFile(paths, opts, plan, {
         url: `https://${host}/xrpc/com.atproto.server.createSession`,
         bodyFile: sessionBodyFile,
         approved: true,
@@ -1202,7 +1226,7 @@ function buildSocialPostRequest(paths, opts, plan, platform, host, text, secrets
       fs.writeFileSync(tokenHeaderFile, JSON.stringify({ 'Content-Type': 'application/x-www-form-urlencoded' }), { mode: 0o600 });
       let tokenRaw = '';
       try {
-        tokenRaw = brokerHttpBodyFile(paths, opts, plan, {
+        tokenRaw = await brokerHttpBodyFile(paths, opts, plan, {
           url: `https://${host}/2/oauth2/token`,
           bodyFile: tokenBodyFile,
           headerFile: tokenHeaderFile,
@@ -1275,11 +1299,11 @@ function extractModelContent(toolType, raw) {
   throw new PlanFailure('model response did not contain assistant content', { handled: true });
 }
 
-function brokerFsWrite(paths, opts, roots, dest, src) {
+async function brokerFsWrite(paths, opts, roots, dest, src) {
   const rootsFile = writeRootsFile(paths, roots);
   const outFile = path.join(paths.tmpDir, `plan-fs-${process.pid}.out`);
   const errFile = path.join(paths.tmpDir, `plan-fs-${process.pid}.err`);
-  const rc = runBroker(paths, opts, [
+  const rc = await runBroker(paths, opts, [
     '--op', 'fs.write',
     '--path', dest,
     '--input-file', src,
@@ -1852,7 +1876,7 @@ function resolveObsidianMirror(plan, config, rel) {
 // mirror, both through the root-jailed broker fs.write. `bestEffort` mirrors the .sh:
 // the terminal `draft` action runs save_draft_result under `set -e` (fatal), while an
 // orchestration `__suppressed__` step runs it `2>/dev/null || true` (swallow errors).
-function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
+async function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
   const { dest, rel, useGlobalOutput } = resolveDraftDestination(paths, plan, config);
   const targets = [dest];
   if (!useGlobalOutput) {
@@ -1863,7 +1887,7 @@ function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
   // the .sh `save_draft_result ... || true` under `set -e` (a failed primary write
   // aborts before the mirror). The terminal draft path lets the failure propagate.
   try {
-    for (const target of targets) brokerFsWrite(paths, opts, roots, target, paths.resultFile);
+    for (const target of targets) await brokerFsWrite(paths, opts, roots, target, paths.resultFile);
     // save_draft_result appends source URLs to the shared dedup registry AFTER the
     // write, inside set -e — a failed write aborts before it. Keep it inside the try
     // so a swallowed bestEffort write failure also skips the registry (parity).
@@ -2119,13 +2143,13 @@ function resolveCliCwd(paths, plan, config) {
   return fallback;
 }
 
-function brokerWorkspaceExec(paths, opts, roots, plan, commandText, cwd) {
+async function brokerWorkspaceExec(paths, opts, roots, plan, commandText, cwd) {
   const commandFile = path.join(paths.tmpDir, `plan-exec-command-${plan.agent.id}-${process.pid}.txt`);
   const rootsFile = writeRootsFile(paths, roots);
   const outFile = path.join(paths.logDir, `cli-action-output-${Date.now()}.txt`);
   const errFile = path.join(paths.logDir, `cli-action-error-${Date.now()}.txt`);
   writeAtomic(commandFile, commandText);
-  const rc = runBroker(paths, opts, [
+  const rc = await runBroker(paths, opts, [
     '--op', 'workspace.exec',
     '--command-file', commandFile,
     '--cwd', cwd,
@@ -2285,7 +2309,7 @@ function requireActionApprovalTap(plan, config) {
   return argTruthy(config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL);
 }
 
-function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args) {
+async function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args) {
   const actionType = plan.action.type;
   const preview = previewText(resultText);
   if (actionType === '__suppressed__') {
@@ -2305,7 +2329,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
     // differentiation, so writing here from a chain's intermediate step
     // would land at the exact same destination the chain's FINAL step
     // uses, which caused a real stale-content bug, 2026-07-15).
-    writeDraftOutputs(paths, opts, plan, config, roots, true);
+    await writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && actionType !== 'api-call' && actionType !== 'social-post' && actionType !== 'browser-pane') {
@@ -2387,7 +2411,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         payloadPath: path.basename(payloadFile),
       });
       try {
-        brokerHttpBodyFile(paths, opts, plan, {
+        await brokerHttpBodyFile(paths, opts, plan, {
           url: webhookUrl,
           bodyFile: payloadFile,
           approved: true,
@@ -2419,7 +2443,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         safetyReason: safety.reason || '',
       });
       const cwd = resolveCliCwd(paths, plan, config);
-      const execResult = brokerWorkspaceExec(paths, opts, roots, plan, commandText, cwd);
+      const execResult = await brokerWorkspaceExec(paths, opts, roots, plan, commandText, cwd);
       appendCliActionReport(paths.resultFile, commandText, cwd, safety, execResult);
       if (execResult.rc !== 0) {
         const message = `CLI action failed with exit ${execResult.rc}.`;
@@ -2634,7 +2658,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       });
       let response;
       try {
-        response = dispatchApiCallRequest(paths, opts, plan, resolvedApiCall, resolvedBody);
+        response = await dispatchApiCallRequest(paths, opts, plan, resolvedApiCall, resolvedBody);
       } catch (e) {
         const message = e instanceof PlanFailure ? redact(e.message) : redact(String(e));
         writeNotification(paths, plan, 'error', message);
@@ -2649,7 +2673,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       writeAtomic(paths.resultFile, responsePreview + (responsePreview.endsWith('\n') ? '' : '\n'));
       // Reuses the SAME persistence path 'draft' uses — no new persistence
       // mechanism invented for api-call's response content.
-      writeDraftOutputs(paths, opts, plan, config, roots, false);
+      await writeDraftOutputs(paths, opts, plan, config, roots, false);
       writeNotification(paths, plan, 'success', responsePreview);
       return { status: 'success', preview: responsePreview };
     }
@@ -2708,7 +2732,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
       const redactSocial = (t) => redactSecretValues(redact(t), socialSecretValues);
       let socialRequest;
       try {
-        socialRequest = buildSocialPostRequest(paths, opts, plan, platform, host, socialText, socialSecrets, social.isArticle === true);
+        socialRequest = await buildSocialPostRequest(paths, opts, plan, platform, host, socialText, socialSecrets, social.isArticle === true);
       } catch (e) {
         const message = redactSocial(e instanceof PlanFailure ? e.message : String(e));
         writeNotification(paths, plan, 'error', message);
@@ -2722,7 +2746,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
         fs.writeFileSync(socialHeaderFile, JSON.stringify(socialRequest.headers), { mode: 0o600 });
       }
       try {
-        brokerHttpBodyFile(paths, opts, plan, {
+        await brokerHttpBodyFile(paths, opts, plan, {
           url: socialRequest.url,
           bodyFile: socialBodyFile,
           headerFile: socialHeaderFile,
@@ -2745,7 +2769,7 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
   if (actionType === 'draft') {
     // Terminal draft: primary + (content-studio) Obsidian mirror, fatal on failure
     // (parity with the .sh save_draft_result under `set -euo pipefail`).
-    writeDraftOutputs(paths, opts, plan, config, roots, false);
+    await writeDraftOutputs(paths, opts, plan, config, roots, false);
   }
   if (actionType === 'draft' || actionType === 'notify') {
     writeNotification(paths, plan, 'success', preview);
@@ -2763,9 +2787,9 @@ function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, arg
 // dispatchActionTrusted(plan) call, UNCHANGED from before this function
 // existed — every existing single-shot/chain call site keeps its exact
 // pre-2026-07-23 behavior for a single-action plan.
-function dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args) {
+async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args) {
   if (!Array.isArray(plan.actions) || plan.actions.length < 2) {
-    return dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
+    return await dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args);
   }
   const results = [];
   let successCount = 0;
@@ -2789,7 +2813,7 @@ function dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, ar
       outcome = { status: 'skipped', preview: redact(gateFailure), errorMessage: redact(gateFailure) };
     } else {
       try {
-        outcome = dispatchActionTrusted(paths, opts, subPlan, config, roots, resultText, args);
+        outcome = await dispatchActionTrusted(paths, opts, subPlan, config, roots, resultText, args);
       } catch (e) {
         // A single action's decline/timeout (ActionSkipped) or a classified
         // PlanFailure must not abort the loop — the whole point of `actions`
@@ -2909,14 +2933,14 @@ const STEP_TOOL_DISPATCHABLE_TYPES = ['local', 'gemini-api', 'perplexity', 'cere
 // equivalent wiring, so the exact on-device incident isDuplicateOfPriorStep
 // was built to catch (a notify step echoing the summarize step verbatim)
 // could still slip through for a run nobody was watching.
-function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
+async function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, priorStepContent) {
   const candidates = [plan.tool].concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : []);
   let lastError = new PlanFailure('no tool candidates to try', { handled: true });
   for (let i = 0; i < candidates.length; i += 1) {
     const attemptPlan = i === 0 ? plan : Object.assign({}, plan, { tool: candidates[i] });
     try {
       const request = modelRequest(attemptPlan, config);
-      const response = brokerHttp(paths, opts, attemptPlan, request);
+      const response = await brokerHttp(paths, opts, attemptPlan, request);
       let resultText = extractModelContent(attemptPlan.tool.type, response);
       resultText = enforcePlanCharLimit(attemptPlan, resultText);
       if (checkQuality) {
@@ -2988,7 +3012,7 @@ function requestModelContentWithLadder(paths, opts, plan, config, checkQuality, 
 // whole chain — see the `dispatchedFinal` tracking below — matching the
 // attended path's own "collapse all per-step logs into one aggregate" contract
 // (lib/agent-manager.ts's runAgentOrchestrated doc comment).
-function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt) {
+async function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt) {
   const budget = resolveStepBudget(plan.steps.budget);
   // Fan-out subtasks (2026-08-13): which steps run as context-isolated
   // branches — see planParallelGroups' own comment above. Dispatch stays
@@ -3082,7 +3106,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
         ? resolveApiCallTemplate(step.apiCall.bodyTemplate, lastResult)
         : '';
       try {
-        const response = dispatchApiCallRequest(paths, stepOpts, stepPlan, resolvedApiCall, resolvedBody);
+        const response = await dispatchApiCallRequest(paths, stepOpts, stepPlan, resolvedApiCall, resolvedBody);
         const preview = redact(response).slice(0, 20000);
         // Deliberately do NOT run isLowQualityCompletion here (unlike the
         // model-call branch's quality gate below): that heuristic targets
@@ -3132,7 +3156,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       // comparison would false-positive isDuplicateOfPriorStep on exactly the
       // similar-parallel-research outputs fan-out exists to produce.
       const priorStepContent = contextResults.length ? contextResults[contextResults.length - 1] : undefined;
-      const attempt = requestModelContentWithLadder(paths, stepOpts, stepPlan, config, true, priorStepContent);
+      const attempt = await requestModelContentWithLadder(paths, stepOpts, stepPlan, config, true, priorStepContent);
       resultText = attempt.resultText;
       // 3rd-pass Codex review finding (see run()'s own comment above its
       // `let usedTool;` declaration for the full trust-check rationale):
@@ -3185,7 +3209,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     // on the chain's FINAL step exactly like the non-chain single-shot path
     // below — see that function's own doc comment.
     const action = isFinal
-      ? dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
+      ? await dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
       : { status: 'success', preview };
     if (isFinal) {
       dispatchedFinal = true;
@@ -3233,7 +3257,7 @@ function finishSkipped(paths, plan, startedAt, message) {
   return EXIT.OK;
 }
 
-function run(args) {
+async function run(args) {
   let plan = loadPlan(args['plan-file']);
   const expectedAgentId = String(args['agent-id'] || '').trim();
   if (expectedAgentId && expectedAgentId !== plan.agent.id) {
@@ -3349,7 +3373,7 @@ function run(args) {
   try {
     let action;
     if (hasChain) {
-      action = runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt);
+      action = await runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt);
       usedTool = action.usedTool;
     } else {
       // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
@@ -3363,11 +3387,11 @@ function run(args) {
       // checking of the same isLowQualityCompletion predicate once this
       // helper has already found acceptable content. enforcePlanCharLimit
       // (G6 hard-clamp) already applied inside the helper.
-      const attempt = requestModelContentWithLadder(paths, opts, plan, config, true);
+      const attempt = await requestModelContentWithLadder(paths, opts, plan, config, true);
       const resultText = attempt.resultText;
       usedTool = attempt.usedTool;
       writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
-      action = dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args);
+      action = await dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args);
     }
     const durationMs = Date.now() - startedAt;
     writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps, action.actionResults, usedTool);
@@ -3416,9 +3440,9 @@ function run(args) {
   }
 }
 
-function main() {
+async function main() {
   try {
-    process.exit(run(parseArgs(process.argv.slice(2))));
+    process.exit(await run(parseArgs(process.argv.slice(2))));
   } catch (e) {
     process.stderr.write(redact(e && e.stack ? e.stack : e && e.message ? e.message : String(e)) + '\n');
     process.exit(e instanceof PlanFailure ? e.exitCode : EXIT.INTERNAL);
@@ -3426,7 +3450,7 @@ function main() {
 }
 
 if (require.main === module) {
-  main();
+  void main();
 }
 
 module.exports = {

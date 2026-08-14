@@ -399,7 +399,7 @@ describe('requestModelContentWithLadder — does NOT retry a TOOL_DENY policy/co
     };
   }
 
-  it('propagates the TOOL_DENY failure immediately, without ever reaching a toolLadder candidate', () => {
+  it('propagates the TOOL_DENY failure immediately, without ever reaching a toolLadder candidate', async () => {
     const badPlan = plan({
       // Non-loopback — modelRequest() refuses this synchronously.
       toolLadder: [{ type: 'cerebras', label: 'Cerebras', model: 'fixture', authRef: 'cerebras' }],
@@ -410,7 +410,7 @@ describe('requestModelContentWithLadder — does NOT retry a TOOL_DENY policy/co
     // brokerHttp reads LOCAL_LLM_URL from parsed .env at runtime).
     let threw: any = null;
     try {
-      executorModule.requestModelContentWithLadder(paths, opts, badPlan, { LOCAL_LLM_URL: 'https://not-loopback.example.test' }, false);
+      await executorModule.requestModelContentWithLadder(paths, opts, badPlan, { LOCAL_LLM_URL: 'https://not-loopback.example.test' }, false);
     } catch (error) {
       threw = error;
     }
@@ -438,11 +438,8 @@ describe('requestModelContentWithLadder — never mutates its plan argument (3rd
   // Deliberately network-free: both candidates fail via a broker-level
   // missing-secret check (no GEMINI_API_KEY / PERPLEXITY_API_KEY in config),
   // which happens before any HTTP dial. A live-server variant of this test
-  // would deadlock — brokerHttp() dispatches to the capability broker via a
-  // BLOCKING spawnSync, which would freeze this same Node process's event
-  // loop while a same-process HTTP server needed to answer it never gets a
-  // chance to run.
-  it('leaves plan.tool completely untouched across a full (failed) ladder walk', () => {
+  // stays network-free so the assertion remains focused on plan immutability.
+  it('leaves plan.tool completely untouched across a full (failed) ladder walk', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-plan-ladder-trust-'));
     const paths = {
       tmpDir: home,
@@ -464,7 +461,7 @@ describe('requestModelContentWithLadder — never mutates its plan argument (3rd
 
     let threw: any = null;
     try {
-      executorModule.requestModelContentWithLadder(paths, { libDir: '', broker, tainted: false }, plan, {}, true);
+      await executorModule.requestModelContentWithLadder(paths, { libDir: '', broker, tainted: false }, plan, {}, true);
     } catch (error) {
       threw = error;
     }

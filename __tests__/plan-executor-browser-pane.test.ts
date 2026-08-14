@@ -70,7 +70,7 @@ function browserPanePlan(home: string, agentId: string, browserPaneAction: unkno
 }
 
 describe('unattendedPreflightFailure — browser-pane is ALWAYS refused unattended, no Tier-B exception', () => {
-  it('refuses regardless of trusted-* args (unlike app-act)', () => {
+  it('refuses regardless of trusted-* args (unlike app-act)', async () => {
     const home = makeHome();
     const agentId = 'agent-unattended';
     const plan = browserPanePlan(home, agentId, { kind: 'click', selector: '#go' }, ['https://example.com/form']);
@@ -94,7 +94,7 @@ describe('unattendedPreflightFailure — browser-pane is ALWAYS refused unattend
     expect(reasonTrusted).toMatch(/unsupported unattended PlanSpec action: browser-pane/);
   });
 
-  it('is a no-op (empty string) when NOT unattended', () => {
+  it('is a no-op (empty string) when NOT unattended', async () => {
     const home = makeHome();
     const plan = browserPanePlan(home, 'agent-attended', { kind: 'click', selector: '#go' }, ['https://example.com/form']);
     expect(executor.unattendedPreflightFailure({}, plan, {})).toBe('');
@@ -135,14 +135,14 @@ describe('dispatchActionTrusted — action.type === "browser-pane" (approval-req
     return { get: () => captured };
   }
 
-  it('success: requests approval, then reports success with no broker/native call', () => {
+  it('success: requests approval, then reports success with no broker/native call', async () => {
     const home = makeHome();
     const agentId = 'agent-click-success';
     const rtPaths = preparePaths(home, agentId);
     const capture = captureApprovalRequest(rtPaths);
     const plan = browserPanePlan(home, agentId, { kind: 'click', selector: '#submit' }, ['https://example.com/form']);
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
 
     expect(result.status).toBe('success');
     const request = capture.get();
@@ -153,7 +153,7 @@ describe('dispatchActionTrusted — action.type === "browser-pane" (approval-req
     expect(JSON.parse(request.browserPaneUrlAllowlist)).toEqual(['https://example.com/form']);
   });
 
-  it('ALWAYS requests approval (autoAccept is always false), even when the global default is auto and requireActionApproval is unset', () => {
+  it('ALWAYS requests approval (autoAccept is always false), even when the global default is auto and requireActionApproval is unset', async () => {
     const home = makeHome();
     const agentId = 'agent-always-review';
     const rtPaths = preparePaths(home, agentId);
@@ -164,7 +164,7 @@ describe('dispatchActionTrusted — action.type === "browser-pane" (approval-req
     // -- absent from config here, so it resolves to 'auto'/false).
     const config = {};
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, config, [], 'q1', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, config, [], 'q1', {});
 
     expect(result.status).toBe('success');
     const request = capture.get();
@@ -172,7 +172,7 @@ describe('dispatchActionTrusted — action.type === "browser-pane" (approval-req
     expect(request.autoAccept).toBe(false);
   });
 
-  it('a fill action resolves {{result}} in the value, never in the selector', () => {
+  it('a fill action resolves {{result}} in the value, never in the selector', async () => {
     const home = makeHome();
     const agentId = 'agent-fill';
     const rtPaths = preparePaths(home, agentId);
@@ -184,7 +184,7 @@ describe('dispatchActionTrusted — action.type === "browser-pane" (approval-req
       ['https://example.com/search'],
     );
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'hello world', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'hello world', {});
 
     expect(result.status).toBe('success');
     const request = capture.get();
@@ -194,55 +194,55 @@ describe('dispatchActionTrusted — action.type === "browser-pane" (approval-req
     expect(request.browserPaneValue).toBe('query: hello world');
   });
 
-  it('rejects an invalid kind before ever requesting approval', () => {
+  it('rejects an invalid kind before ever requesting approval', async () => {
     const home = makeHome();
     const agentId = 'agent-bad-kind';
     const rtPaths = preparePaths(home, agentId);
     const capture = captureApprovalRequest(rtPaths);
     const plan = browserPanePlan(home, agentId, { kind: 'eval', selector: '#x' }, ['https://example.com']);
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {});
 
     expect(result.status).toBe('error');
     expect(result.errorMessage).toMatch(/invalid kind/);
     expect(capture.get()).toBeNull();
   });
 
-  it('rejects a missing selector before ever requesting approval', () => {
+  it('rejects a missing selector before ever requesting approval', async () => {
     const home = makeHome();
     const agentId = 'agent-no-selector';
     const rtPaths = preparePaths(home, agentId);
     const capture = captureApprovalRequest(rtPaths);
     const plan = browserPanePlan(home, agentId, { kind: 'click', selector: '' }, ['https://example.com']);
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {});
 
     expect(result.status).toBe('error');
     expect(result.errorMessage).toMatch(/missing a CSS selector/);
     expect(capture.get()).toBeNull();
   });
 
-  it('rejects an empty/missing URL allowlist before ever requesting approval', () => {
+  it('rejects an empty/missing URL allowlist before ever requesting approval', async () => {
     const home = makeHome();
     const agentId = 'agent-no-allowlist';
     const rtPaths = preparePaths(home, agentId);
     const capture = captureApprovalRequest(rtPaths);
     const plan = browserPanePlan(home, agentId, { kind: 'click', selector: '#x' }, []);
 
-    const result = executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {});
 
     expect(result.status).toBe('error');
     expect(result.errorMessage).toMatch(/missing its URL allowlist/);
     expect(capture.get()).toBeNull();
   });
 
-  it('a declined Review throws (never silently reports success)', () => {
+  it('a declined Review throws (never silently reports success)', async () => {
     const home = makeHome();
     const agentId = 'agent-declined';
     const rtPaths = preparePaths(home, agentId);
     captureApprovalRequest(rtPaths, 'decline');
     const plan = browserPanePlan(home, agentId, { kind: 'click', selector: '#submit' }, ['https://example.com/form']);
 
-    expect(() => executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {})).toThrow(/declined/);
+    await expect(executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q', {})).rejects.toThrow(/declined/);
   });
 });
