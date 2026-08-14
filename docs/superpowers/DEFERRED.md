@@ -102,6 +102,8 @@
 
 ### Hermesサブエージェント並列生成ギャップ — ファンアウト・サブタスク(parallel group)のセマンティクスを実装、真の並列(wall-clock)ディスパッチは意図的に見送り (2026-08-13、Fable5、実機未検証) — 残タスクは P2
 
+**2026-08-14 Increment 0追記（plumbingのみ、挙動変更なし）**: 真の並列ディスパッチへ進む前提として、PlanSpec executorに`EXECUTOR_SCRIPT_VERSION=1`の可読マーカーを追加し、`AgentRuntime.kt`で`CURRENT_EXECUTOR_VERSION=1`との完全一致を要求するexit 126のversion gateを着地させた。現時点は両側が1のため完全にinert。あわせて、将来ブランチを同時dispatchしてもbrokerの`plan-request`/`plan-response`/`plan-apicall`一時ファイルが衝突しないよう、オーケストレーションのstep indexをbranch nonceとしてファイル名へthreadした（step 0および非オーケストレーション実行は従来ファイル名をbyte-identicalに維持）。本項は既存エントリ「Hermesサブエージェント並列生成ギャップ」の土台のみであり、`spawnSync`→async化、実際のwall-clock並列dispatch、budget lock、X token refresh除外、実機phantom-process検証は後続Incrementに引き続きdeferする。
+
 **背景**: Hermes Agentの「タスクをサブタスクに分解し、複数サブエージェントを並列生成して処理させ、結果を集約する」機能がShellyに一切無いギャップの解消依頼。2026-08-03に一度「並列実行はスキップ」と判断した経緯があり(下記「Hermes Agent機能ギャップ、Fable5提案の①②実装」エントリ参照)、今回は実装前に両executorのアーキテクチャを精査した上でスコープを二分した。
 
 **実装した範囲(ファンアウト・サブタスクのセマンティクス — Hermesサブエージェントの「分解→各サブタスクを同一コンテキストから処理→集約」の意味論)**:
@@ -4404,6 +4406,7 @@ claude() {
 
 ## History
 
+- **2026-08-14 (Codex、PlanSpec executor並列化 Increment 0)**: 既存「Hermesサブエージェント並列生成ギャップ」の後続土台として、inertなexecutor version gate（1↔1）とstep-index branch nonceによるbroker一時ファイル衝突回避を追加。真の並列dispatch・budget lock・X token refresh除外・実機検証は後続Incrementへ継続defer。
 - **2026-08-14 (CC、Track KK/LL実機QA結果反映+通知id再利用のP3記録)**: Fable5実機QA(versionCode=2186)でTrack KK(.envレース修正、8/8回でキー残存)とTrack LL(ソフト失敗backoff、3回到達→通知1件→以降skipped、attended非干渉)の両方PASSを確認しentryへ反映。副次的に見つけたattended実行時のbackoff通知上書き(同一notification id再利用)をP3として記録、対応は見送り。
 - **2026-08-14 (CC、native circuit breakerの二層構造を実機QAソース照合で訂正)**: Force-stop中headless backoffのentryが「TerminalSessionService側に第二の防御層がある」としていた記述を、`TerminalSessionService.kt`の実ソース(`scheduledRunFailed()`が`result.success`(`exitCode==0`)をrun-log `status`より先にreturnする)で検証したところ誤りと判明。exitCode 0のソフト失敗(APIキー未設定等)は`AgentRuntime.kt`側backoffにも`TerminalSessionService`側breakerにも一切カウントされず、元インシデントの実際の失敗モードはforce-stop中依然無制限に繰り返され得ることをentryに反映。次のP1候補として`recordNativeHardFailure`のrun-log status拡張を記録。
 - **2026-08-14 (Codex、`.env` startup race修正)**: 実機起動2回中1回API keyが消失した原因を、native migrationとJS reconciliationの同一`.env`全体read-modify-write競合と確認。共有`env.lock`のbounded `mkdir` lockを全writerへ適用し、既存force-stop incidentのstale `.env`のlikely true root causeとして相互参照した。

@@ -15,6 +15,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=1
+const EXECUTOR_SCRIPT_VERSION = 1;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
 // 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 (lib/signed-approval/wiring.ts).
@@ -855,8 +857,17 @@ function openAiCompatRequest(url, authRef, model, prompt) {
   };
 }
 
+function brokerStepSuffix(opts) {
+  // Step zero deliberately keeps the historical single-shot filename. Later
+  // orchestration steps get stable, branch-safe names before dispatch becomes
+  // concurrent in a later increment.
+  const stepIndex = opts && Number.isInteger(opts.stepIndex) && opts.stepIndex >= 0 ? opts.stepIndex : 0;
+  return stepIndex === 0 ? '' : `-${stepIndex}`;
+}
+
 function brokerHttp(paths, opts, plan, request) {
-  const bodyFile = path.join(paths.tmpDir, `plan-request-${plan.agent.id}-${process.pid}.json`);
+  const stepSuffix = brokerStepSuffix(opts);
+  const bodyFile = path.join(paths.tmpDir, `plan-request-${plan.agent.id}-${process.pid}${stepSuffix}.json`);
   writeJsonRequest(bodyFile, request.body);
   try {
     return brokerHttpBodyFile(paths, opts, plan, {
@@ -874,8 +885,9 @@ function brokerHttp(paths, opts, plan, request) {
 }
 
 function brokerHttpBodyFile(paths, opts, plan, request) {
-  const outFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}.json`);
-  const errFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}.err`);
+  const stepSuffix = brokerStepSuffix(opts);
+  const outFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.json`);
+  const errFile = path.join(paths.tmpDir, `plan-response-${plan.agent.id}-${process.pid}${stepSuffix}.err`);
   const args = [
     '--op', 'http.request',
     // Generalized (api-call v1) to carry an optional request.method — default
@@ -949,7 +961,7 @@ function dispatchApiCallRequest(paths, opts, plan, apiCall, resolvedBodyText) {
   }
   let bodyFile = null;
   if (apiCall.method === 'POST' && resolvedBodyText) {
-    bodyFile = path.join(paths.tmpDir, `plan-apicall-${plan.agent.id}-${process.pid}.json`);
+    bodyFile = path.join(paths.tmpDir, `plan-apicall-${plan.agent.id}-${process.pid}${brokerStepSuffix(opts)}.json`);
     writeAtomic(bodyFile, resolvedBodyText);
   }
   try {
@@ -3048,6 +3060,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       ? step.tool
       : plan.tool;
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction, tool: stepTool });
+    const stepOpts = Object.assign({}, opts, { stepIndex: i });
     const stepStart = Date.now();
 
     // api-call step (v1, non-final only — see AgentOrchestrationStep.apiCall's
@@ -3069,7 +3082,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
         ? resolveApiCallTemplate(step.apiCall.bodyTemplate, lastResult)
         : '';
       try {
-        const response = dispatchApiCallRequest(paths, opts, stepPlan, resolvedApiCall, resolvedBody);
+        const response = dispatchApiCallRequest(paths, stepOpts, stepPlan, resolvedApiCall, resolvedBody);
         const preview = redact(response).slice(0, 20000);
         // Deliberately do NOT run isLowQualityCompletion here (unlike the
         // model-call branch's quality gate below): that heuristic targets
@@ -3119,7 +3132,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
       // comparison would false-positive isDuplicateOfPriorStep on exactly the
       // similar-parallel-research outputs fan-out exists to produce.
       const priorStepContent = contextResults.length ? contextResults[contextResults.length - 1] : undefined;
-      const attempt = requestModelContentWithLadder(paths, opts, stepPlan, config, true, priorStepContent);
+      const attempt = requestModelContentWithLadder(paths, stepOpts, stepPlan, config, true, priorStepContent);
       resultText = attempt.resultText;
       // 3rd-pass Codex review finding (see run()'s own comment above its
       // `let usedTool;` declaration for the full trust-check rationale):
@@ -3172,7 +3185,7 @@ function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt
     // on the chain's FINAL step exactly like the non-chain single-shot path
     // below — see that function's own doc comment.
     const action = isFinal
-      ? dispatchActionsTrusted(paths, opts, stepPlan, config, roots, resultText, args)
+      ? dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
       : { status: 'success', preview };
     if (isFinal) {
       dispatchedFinal = true;
@@ -3418,6 +3431,7 @@ if (require.main === module) {
 
 module.exports = {
   PLAN_SPEC_SCHEMA_VERSION,
+  EXECUTOR_SCRIPT_VERSION,
   PLAN_SPEC_KIND,
   validatePlan,
   runtimePaths,
@@ -3483,6 +3497,7 @@ module.exports = {
   apiCallLabel,
   resolveApiCallTemplate,
   dispatchApiCallRequest,
+  brokerStepSuffix,
   dispatchActionTrusted,
   // social-post (2026-07-22) — exported for host unit tests only, same
   // convention as the exports above. Not part of the executor's CLI surface.

@@ -45,6 +45,24 @@ describe('shelly-plan-executor.js parity', () => {
     expect(agentRuntime).toContain(`private const val CURRENT_PLAN_SPEC_VERSION = ${PLAN_SPEC_SCHEMA_VERSION}`);
   });
 
+  it('keeps executor script version lockstep across JS and the native gate', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const executor = require(scriptCopy);
+    expect(executor.EXECUTOR_SCRIPT_VERSION).toBe(1);
+    expect(fs.readFileSync(scriptCopy, 'utf8')).toContain('SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=1');
+    expect(agentRuntime).toContain('private const val CURRENT_EXECUTOR_VERSION = 1');
+    expect(agentRuntime).toContain('executorVersion != CURRENT_EXECUTOR_VERSION');
+  });
+
+  it('keeps single-step broker filenames unchanged and discriminates later orchestration steps', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const executor = require(scriptCopy);
+    expect(executor.brokerStepSuffix(undefined)).toBe('');
+    expect(executor.brokerStepSuffix({ stepIndex: 0 })).toBe('');
+    expect(executor.brokerStepSuffix({ stepIndex: 1 })).toBe('-1');
+    expect(executor.brokerStepSuffix({ stepIndex: 2 })).toBe('-2');
+  });
+
   it('keeps orchestration budget constants lockstep between lib/agent-orchestration.ts and the JS chain-mode port (Increment 2)', () => {
     // Unlike the schema-version check above (TS vs. Kotlin source text, since
     // Kotlin isn't require()-able from Jest), both sides here are plain JS/TS
@@ -119,13 +137,14 @@ describe('shelly-plan-executor.js parity', () => {
     expect(terminalSessionService).toContain('unattended = unattended');
   });
 
-  it('launches the executor via linker64 node with SHELLY_LIB_DIR and the plan version gate', () => {
+  it('launches the executor via linker64 node with SHELLY_LIB_DIR and version gates', () => {
     // Startup contract: bionic node under the dynamic linker, lib dir exported,
     // and the schema-version gate that refuses a stale on-disk PlanSpec.
     expect(agentRuntime).toContain('/system/bin/linker64');
     expect(agentRuntime).toContain('"$libPath/node"');
     expect(agentRuntime).toContain('export SHELLY_LIB_DIR=');
     expect(agentRuntime).toContain('planVersion != CURRENT_PLAN_SPEC_VERSION');
+    expect(agentRuntime).toContain('executorVersion != CURRENT_EXECUTOR_VERSION');
   });
 
   it('never falls back to the .sh runner once the PlanSpec path is chosen', () => {

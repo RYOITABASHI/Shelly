@@ -387,6 +387,7 @@ object AgentRuntime {
     // bumped only so a stale pre-v57 on-disk script is regenerated.
     private const val CURRENT_SCRIPT_VERSION = 57
     private const val CURRENT_PLAN_SPEC_VERSION = 1
+    private const val CURRENT_EXECUTOR_VERSION = 1
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
@@ -740,6 +741,16 @@ object AgentRuntime {
                 NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
             }
             return AgentRunResult(agentId, 127, "", message)
+        }
+        val executorVersion = readExecutorScriptVersion(executor)
+        if (executorVersion != CURRENT_EXECUTOR_VERSION) {
+            val message = "stale PlanSpec executor: $executorPath version=$executorVersion expected=$CURRENT_EXECUTOR_VERSION. Open Shelly to refresh bundled runtime files."
+            Log.e(TAG, message)
+            writeReceiverLog(homeDir, agentId, "error", message)
+            if (!recordNativeHardFailure(context, homeDir, agentId, unattended, message)) {
+                NotificationDispatcher(context).notifyAgentResult(agentId, "error", message)
+            }
+            return AgentRunResult(agentId, 126, "", message)
         }
         val trustedLaunch = trustedPlanLaunch(homeDir, agentId)
 
@@ -1359,6 +1370,24 @@ object AgentRuntime {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read enabled state for $agentId; defaulting to disabled (fail closed)", e)
             false
+        }
+    }
+
+    private fun readExecutorScriptVersion(executor: File): Int {
+        return try {
+            executor.useLines { lines ->
+                val versionRegex = Regex("""^// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=(\d+)\s*$""")
+                for (line in lines.take(20)) {
+                    val version = versionRegex.find(line.trim())
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+                    if (version != null) return@useLines version
+                }
+                0
+            } ?: 0
+        } catch (_: Exception) {
+            0
         }
     }
 
