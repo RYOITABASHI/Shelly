@@ -32,6 +32,60 @@ import {
 import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 
+type TranslationFn = (key: string, params?: Record<string, string | number>) => string;
+type NotificationResponseHandler = (response: Notifications.NotificationResponse) => void;
+
+const notificationResponseHandlers = new Set<NotificationResponseHandler>();
+let notificationResponseSubscription: Notifications.EventSubscription | null = null;
+
+/**
+ * Expo notification responses are process-global. Keep one native listener and
+ * route each response to the most recently mounted hook instance, whose
+ * runCommand/onSaved closures are current. Calling every hook subscriber would
+ * apply a destructive notification action once per mounted UI surface.
+ */
+export function registerSkillNotificationResponseHandler(
+  handler: NotificationResponseHandler,
+): () => void {
+  notificationResponseHandlers.add(handler);
+  if (!notificationResponseSubscription) {
+    notificationResponseSubscription = Notifications.addNotificationResponseReceivedListener(
+      (response) => {
+        const activeHandler = Array.from(notificationResponseHandlers).at(-1);
+        activeHandler?.(response);
+      },
+    );
+  }
+  return () => {
+    notificationResponseHandlers.delete(handler);
+    if (notificationResponseHandlers.size === 0) {
+      notificationResponseSubscription?.remove();
+      notificationResponseSubscription = null;
+    }
+  };
+}
+
+export function buildSkillImprovementAlertMessage(
+  translate: TranslationFn,
+  name: string,
+  note: string,
+): string {
+  const agentName = name.trim();
+  const learningNote = note.trim();
+  if (!agentName || !learningNote) return '';
+
+  const message = translate('sidebar.skill_improve_body', {
+    name: agentName,
+    note: learningNote,
+  });
+  // Do not hand Android a translation result that lost its interpolated
+  // runtime values: this confirmation is meaningful only when both are shown.
+  if (message.trim() && message.includes(agentName) && message.includes(learningNote)) {
+    return message;
+  }
+  return `${agentName}\n\n${learningNote}`;
+}
+
 export interface SkillSaveOfferParams {
   name: string;
   prompt: string;
@@ -90,8 +144,7 @@ export function useSkillSaveOffer(opts: {
   const { t } = useTranslation();
   const { runCommand, onSaved } = opts;
 
-  React.useEffect(() => {
-    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+  React.useEffect(() => registerSkillNotificationResponseHandler((response) => {
       const data = response.notification.request.content.data;
       if (response.actionIdentifier === DELETE_SAVED_SKILL_ACTION) {
         const skillId = data?.skillId;
@@ -115,9 +168,7 @@ export function useSkillSaveOffer(opts: {
             Alert.alert(t('sidebar.skill_improve_failed_title'), String((error as Error)?.message || error));
           });
       }
-    });
-    return () => subscription.remove();
-  }, [t, runCommand, onSaved]);
+    }), [t, runCommand, onSaved]);
 
   /**
    * Attended half of the self-improvement flow (skillImproveMode 'confirm'):
@@ -130,12 +181,12 @@ export function useSkillSaveOffer(opts: {
   const offerSkillImprovement = React.useCallback((agentId: string) => {
     const proposal = consumeSkillImprovementProposal(agentId);
     if (!proposal || proposal.kind !== 'bump-with-learning' || !proposal.learning) return;
+    const name = proposal.agentName ?? proposal.improved.name;
+    const message = buildSkillImprovementAlertMessage(t, name, proposal.learning.note);
+    if (!message) return;
     Alert.alert(
       t('sidebar.skill_improve_title'),
-      t('sidebar.skill_improve_body', {
-        name: proposal.agentName ?? proposal.improved.name,
-        note: proposal.learning.note,
-      }),
+      message,
       [
         {
           text: t('sidebar.skill_improve_yes'),
