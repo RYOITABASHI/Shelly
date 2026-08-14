@@ -236,11 +236,15 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
   let requestPrompts: string[];
   let requestModels: string[];
   let responses: string[];
+  let responseByInstruction: Record<string, string>;
+  let delayByInstruction: Record<string, number>;
 
   beforeEach((done) => {
     requestPrompts = [];
     requestModels = [];
     responses = [];
+    responseByInstruction = {};
+    delayByInstruction = {};
     server = http.createServer((req, res) => {
       let body = '';
       req.setEncoding('utf8');
@@ -251,9 +255,15 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
         requestPrompts.push(userContent);
         requestModels.push(parsed.model);
         const n = requestPrompts.length;
-        const content = responses[n - 1] !== undefined ? responses[n - 1] : `RESULT#${n}`;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+        const instruction = Object.keys(responseByInstruction).find((candidate) => userContent.includes(candidate));
+        const content = instruction
+          ? responseByInstruction[instruction]
+          : (responses[n - 1] !== undefined ? responses[n - 1] : `RESULT#${n}`);
+        const delayMs = instruction ? (delayByInstruction[instruction] || 0) : 0;
+        setTimeout(() => {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+        }, delayMs);
       });
     });
     server.listen(0, '127.0.0.1', () => {
@@ -579,7 +589,12 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
 
   it('(k) FAN-OUT (2026-08-13): branches of a parallel group are context-isolated from each other and aggregated for the post-group step', async () => {
     const home = makeHome();
-    responses = ['BASE_R', 'BRANCH_A_R', 'BRANCH_B_R', 'final digest'];
+    responseByInstruction = {
+      'collect the base data': 'BASE_R',
+      'research angle A': 'BRANCH_A_R',
+      'research angle B': 'BRANCH_B_R',
+      'aggregate everything': 'final digest',
+    };
     const steps: StepsField = {
       list: [
         { instruction: 'collect the base data' },
@@ -593,23 +608,107 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
     expect(rc).toBe(0);
 
     expect(requestPrompts).toHaveLength(4);
-    // Branch A sees the pre-group snapshot (the base result).
-    expect(requestPrompts[1]).toContain('BASE_R');
-    expect(requestPrompts[1]).not.toContain('BRANCH_B_R');
-    // Branch B: SAME snapshot — sibling branch A's output is NOT in its prompt.
-    expect(requestPrompts[2]).toContain('BASE_R');
-    expect(requestPrompts[2]).not.toContain('BRANCH_A_R');
+    const branchAPrompt = requestPrompts.find((prompt) => prompt.includes('research angle A'))!;
+    const branchBPrompt = requestPrompts.find((prompt) => prompt.includes('research angle B'))!;
+    const aggregatePrompt = requestPrompts.find((prompt) => prompt.includes('aggregate everything'))!;
+    // Both branches see the same pre-group snapshot, regardless of arrival order.
+    expect(branchAPrompt).toContain('BASE_R');
+    expect(branchAPrompt).not.toContain('BRANCH_B_R');
+    expect(branchBPrompt).toContain('BASE_R');
+    expect(branchBPrompt).not.toContain('BRANCH_A_R');
     // The post-group (final) step aggregates every branch result, in declared
     // order (buildStepPrompt labels: base = Step 1, A = Step 2, B = Step 3).
-    expect(requestPrompts[3]).toContain('BRANCH_A_R');
-    expect(requestPrompts[3]).toContain('BRANCH_B_R');
-    expect(requestPrompts[3]).toMatch(/## Step 2[\s\S]{0,40}BRANCH_A_R/);
-    expect(requestPrompts[3]).toMatch(/## Step 3[\s\S]{0,40}BRANCH_B_R/);
+    expect(aggregatePrompt).toContain('BRANCH_A_R');
+    expect(aggregatePrompt).toContain('BRANCH_B_R');
+    expect(aggregatePrompt).toMatch(/## Step 2[\s\S]{0,40}BRANCH_A_R/);
+    expect(aggregatePrompt).toMatch(/## Step 3[\s\S]{0,40}BRANCH_B_R/);
 
     // The aggregate run log records which steps ran as branches.
     const log = readRunLog(home);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.parallelGroup)).toEqual([undefined, 'research', 'research', undefined]);
+  }, 20000);
+
+  it('(k2) FAN-OUT concurrency proof: three delayed branches complete near max latency, not summed latency', async () => {
+    const home = makeHome();
+    responseByInstruction = {
+      'slow branch A': 'BRANCH_A_R',
+      'slow branch B': 'BRANCH_B_R',
+      'slow branch C': 'BRANCH_C_R',
+      'aggregate delayed branches': 'final digest',
+    };
+    delayByInstruction = { 'slow branch A': 700, 'slow branch B': 700, 'slow branch C': 700 };
+    const steps: StepsField = {
+      list: [
+        { instruction: 'slow branch A', parallelGroup: 'slow' },
+        { instruction: 'slow branch B', parallelGroup: 'slow' },
+        { instruction: 'slow branch C', parallelGroup: 'slow' },
+        { instruction: 'aggregate delayed branches' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const started = Date.now();
+    const rc = await runExecutor(writePlan(home, port, { steps }), home);
+    const elapsedMs = Date.now() - started;
+    console.info(`[concurrency-proof] elapsedMs=${elapsedMs} (three branches x 700ms)`);
+
+    expect(rc).toBe(0);
+    expect(elapsedMs).toBeGreaterThanOrEqual(650);
+    expect(elapsedMs).toBeLessThan(1800);
+    const log = readRunLog(home);
+    expect(log.steps.map((step: any) => step.outputPreview)).toEqual([
+      'BRANCH_A_R', 'BRANCH_B_R', 'BRANCH_C_R', 'final digest',
+    ]);
+  }, 20000);
+
+  it('(k3) SECURITY: every tainted apiCall branch is independently refused before the next step dispatches', async () => {
+    const home = makeHome();
+    const steps: StepsField = {
+      list: [
+        { instruction: 'tainted branch A', apiCall: { host: 'api.github.com', method: 'GET', path: '/a' }, parallelGroup: 'tainted' },
+        { instruction: 'tainted branch B', apiCall: { host: 'api.github.com', method: 'GET', path: '/b' }, parallelGroup: 'tainted' },
+        { instruction: 'tainted branch C', apiCall: { host: 'api.github.com', method: 'GET', path: '/c' }, parallelGroup: 'tainted' },
+        { instruction: 'must never dispatch' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const rc = await runExecutor(writePlan(home, port, { actionType: 'draft', steps }), home, { SHELLY_CAP_TAINTED: '1' });
+
+    expect(rc).toBe(0);
+    expect(requestPrompts).toHaveLength(0);
+    const log = readRunLog(home);
+    expect(log.steps).toHaveLength(3);
+    expect(log.steps.map((step: any) => step.status)).toEqual(['error', 'error', 'error']);
+    expect(log.steps.every((step: any) => /no credential is refused on a tainted/.test(step.outputPreview))).toBe(true);
+  }, 20000);
+
+  it('(k4) FAN-OUT fail-fast waits for in-flight siblings, then halts before the next step', async () => {
+    const home = makeHome();
+    responseByInstruction = {
+      'failing branch': 'As an AI, I cannot generate that content.',
+      'slow successful sibling': 'SLOW_SIBLING_FINISHED',
+      'must not run after failed group': 'unexpected',
+    };
+    delayByInstruction = { 'slow successful sibling': 450 };
+    const steps: StepsField = {
+      list: [
+        { instruction: 'failing branch', parallelGroup: 'atomic' },
+        { instruction: 'slow successful sibling', parallelGroup: 'atomic' },
+        { instruction: 'must not run after failed group' },
+      ],
+      budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
+    };
+    const started = Date.now();
+    const rc = await runExecutor(writePlan(home, port, { actionType: 'draft', steps }), home);
+    const elapsedMs = Date.now() - started;
+
+    expect(rc).toBe(0);
+    expect(elapsedMs).toBeGreaterThanOrEqual(400);
+    expect(requestPrompts.some((prompt) => prompt.includes('must not run after failed group'))).toBe(false);
+    const log = readRunLog(home);
+    expect(log.steps).toHaveLength(2);
+    expect(log.steps.map((step: any) => step.status)).toEqual(['error', 'success']);
+    expect(log.steps[1].outputPreview).toBe('SLOW_SIBLING_FINISHED');
   }, 20000);
 
   it('(l) FAN-OUT: two branches legitimately producing near-identical output are NOT duplicate-failed against each other (contrast with (j))', async () => {

@@ -125,6 +125,10 @@
 
 **2026-08-14 Increment 1a追記（async broker dispatch、直列順序は不変）**: PlanSpec executorのbroker起動を`spawnSync`から明示的な700000ms timeout＋killを持つasync `spawn`へ変更し、全呼び出し元をtop-level `main()`まで`async`/`await`で接続した。オーケストレーションのper-step `for` loopとmulti-action/draft mirrorの各loopは構造を変えず、各iterationで1件ずつawaitするため、dispatch順序と外部結果は従来どおり直列である。`EXECUTOR_SCRIPT_VERSION`は1のまま据え置き。実際のwall-clock並列dispatch、budget lock、X token refresh除外、実機phantom-process検証は後続Incrementに引き続きdeferする。
 
+**2026-08-14 Increment 1b追記（parallelGroupの実wall-clock並列dispatch）**: PlanSpec executorが`planParallelGroups().group[]`上の連続同一group runを検出し、run内の全branchを`Promise.allSettled`で同時dispatchするよう変更した。実行時にも`MAX_PARALLEL_BRANCHES=3`をin-process semaphoreで明示的に強制し、branch outcomeは完了順pushではなくpre-sized slotへ宣言index順に格納するため、post-group contextとrun-logの順序は決定論的なまま。各branchは同一のpre-group `contextResults` snapshotを受け、兄弟outputをprompt/duplicate判定へ混入させない。group内のいずれかが失敗してもin-flight siblingは取消さず全件settleまで待ち、その後だけ`priorFailed`を既存`nextStepGate`へ渡して次group/step前に停止する（fail-fast単位をstepからgroupへ意図的に変更）。3 branch×700msのstand-in endpointは984msで完了（直列delay下限2100ms）し、tainted 3-branchは全branchが独立拒否・model endpoint 0 call、失敗branch＋slow siblingはsibling完了後に次step未dispatchを確認した。`EXECUTOR_SCRIPT_VERSION`は1のまま。
+
+**version gate再確認（Increment 1b）**: Increment 0 commit `e98d83d5f`のnative diffを確認すると、`AgentRuntime.kt`はexecutor起動直前にファイル先頭markerを読み、`CURRENT_EXECUTOR_VERSION`との一致/不一致で「このファイル全体を実行するか」を判定するだけで、executor内部にconcurrency feature flag/runtime branchは無い。現在はnative=1/script=1で一致するため、Increment 1bの並列code pathはこの変更を含むassetが端末へ配備された時点で即liveになる。したがってbudget file lockとX token refresh grouping exclusionを行うIncrement 1cは「将来version bump時のactivation準備」ではなく、1b配備後の既知race windowを閉じる緊急follow-upとして、実機unattended運用前に連続して着地・検証する必要がある。
+
 **背景**: Hermes Agentの「タスクをサブタスクに分解し、複数サブエージェントを並列生成して処理させ、結果を集約する」機能がShellyに一切無いギャップの解消依頼。2026-08-03に一度「並列実行はスキップ」と判断した経緯があり(下記「Hermes Agent機能ギャップ、Fable5提案の①②実装」エントリ参照)、今回は実装前に両executorのアーキテクチャを精査した上でスコープを二分した。
 
 **実装した範囲(ファンアウト・サブタスクのセマンティクス — Hermesサブエージェントの「分解→各サブタスクを同一コンテキストから処理→集約」の意味論)**:
@@ -4427,6 +4431,7 @@ claude() {
 
 ## History
 
+- **2026-08-14 (Codex、PlanSpec executor並列化 Increment 1b)**: contiguous parallelGroup runをsemaphore上限3で実並列dispatchし、pre-sized declared-order aggregationとallSettled後のgroup単位fail-fastを実装。version markerはfeature gateではなくファイル全体のnative pre-launch compatibility checkのみと確認したため、budget/.env raceを閉じるIncrement 1cを実機unattended運用前の緊急follow-upとして明記。
 - **2026-08-14 (Codex、PlanSpec executor並列化 Increment 0)**: 既存「Hermesサブエージェント並列生成ギャップ」の後続土台として、inertなexecutor version gate（1↔1）とstep-index branch nonceによるbroker一時ファイル衝突回避を追加。真の並列dispatch・budget lock・X token refresh除外・実機検証は後続Incrementへ継続defer。
 - **2026-08-14 (CC、Track KK/LL実機QA結果反映+通知id再利用のP3記録)**: Fable5実機QA(versionCode=2186)でTrack KK(.envレース修正、8/8回でキー残存)とTrack LL(ソフト失敗backoff、3回到達→通知1件→以降skipped、attended非干渉)の両方PASSを確認しentryへ反映。副次的に見つけたattended実行時のbackoff通知上書き(同一notification id再利用)をP3として記録、対応は見送り。
 - **2026-08-14 (CC、native circuit breakerの二層構造を実機QAソース照合で訂正)**: Force-stop中headless backoffのentryが「TerminalSessionService側に第二の防御層がある」としていた記述を、`TerminalSessionService.kt`の実ソース(`scheduledRunFailed()`が`result.success`(`exitCode==0`)をrun-log `status`より先にreturnする)で検証したところ誤りと判明。exitCode 0のソフト失敗(APIキー未設定等)は`AgentRuntime.kt`側backoffにも`TerminalSessionService`側breakerにも一切カウントされず、元インシデントの実際の失敗モードはforce-stop中依然無制限に繰り返され得ることをentryに反映。次のP1候補として`recordNativeHardFailure`のrun-log status拡張を記録。

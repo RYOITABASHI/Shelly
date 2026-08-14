@@ -3015,8 +3015,9 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
 async function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt) {
   const budget = resolveStepBudget(plan.steps.budget);
   // Fan-out subtasks (2026-08-13): which steps run as context-isolated
-  // branches — see planParallelGroups' own comment above. Dispatch stays
-  // serial; only the context each step SEES changes (contextResults below).
+  // branches — see planParallelGroups' own comment above. Consecutive steps
+  // with the same non-undefined group id dispatch concurrently below; every
+  // branch still sees only the pre-group snapshot (contextResults below).
   const parallelPlan = planParallelGroups(plan.steps.list);
   const priorResults = [];
   const records = [];
@@ -3046,10 +3047,27 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // retried (or the chain never reached/dispatched a final step at all).
   let finalUsedTool;
 
-  for (let i = 0; i < plan.steps.list.length; i += 1) {
-    const gate = nextStepGate({ stepIndex: i, budget, startedAtMs: startedAt, now: Date.now(), priorFailed });
-    if (!gate.proceed) break;
+  // Defensive runtime cap: planParallelGroups currently limits each group to
+  // MAX_PARALLEL_BRANCHES too, but dispatch must remain bounded even if that
+  // grouping implementation changes later.
+  let activeBranches = 0;
+  const branchWaiters = [];
+  async function withBranchPermit(task) {
+    if (activeBranches < MAX_PARALLEL_BRANCHES) {
+      activeBranches += 1;
+    } else {
+      await new Promise((resolve) => branchWaiters.push(resolve));
+    }
+    try {
+      return await task();
+    } finally {
+      const next = branchWaiters.shift();
+      if (next) next(); // transfer this permit directly to the next waiter
+      else activeBranches -= 1;
+    }
+  }
 
+  async function executeStep(i, contextResults) {
     const step = plan.steps.list[i];
     const isFinal = i === plan.steps.list.length - 1;
     // Phase 7 (2026-08-03): a step's own tool pin (step.tool) is now honored
@@ -3077,7 +3095,6 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // is a no-op (contextBase[i] === i === priorResults.length under the
     // chain's fail-fast invariant — a step only launches when every earlier
     // step succeeded).
-    const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
     const stepPrompt = buildStepPrompt(plan.prompt, step.instruction, contextResults);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     const stepTool = (step.tool && STEP_TOOL_DISPATCHABLE_TYPES.indexOf(step.tool.type) !== -1)
@@ -3115,16 +3132,19 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
         if (!preview.trim()) {
           throw new PlanFailure('api-call response was empty', { handled: true });
         }
-        records.push({ index: i, instruction: step.instruction, status: 'success', durationMs: Date.now() - stepStart, outputPreview: preview, ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) });
-        priorResults.push(preview);
+        return {
+          record: { index: i, instruction: step.instruction, status: 'success', durationMs: Date.now() - stepStart, outputPreview: preview, ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
+          result: preview,
+        };
       } catch (error) {
         if (!(error instanceof PlanFailure)) throw error;
         const status = error.status === 'unavailable' ? 'unavailable' : 'error';
         const message = redact(error.message);
-        records.push({ index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message) });
-        priorFailed = true;
+        return {
+          record: { index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message), ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
+          failed: true,
+        };
       }
-      continue;
     }
 
     let resultText;
@@ -3179,12 +3199,17 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       if (!(error instanceof PlanFailure)) throw error;
       const status = error.status === 'unavailable' ? 'unavailable' : 'error';
       const message = redact(error.message);
-      records.push({ index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message), ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) });
-      priorFailed = true;
-      continue;
+      return {
+        record: { index: i, instruction: step.instruction, status, durationMs: Date.now() - stepStart, outputPreview: previewText(message), ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
+        failed: true,
+      };
     }
 
-    writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(stepPlan) ? '' : '\n'));
+    const resultFileText = resultText + (resultText.endsWith('\n') || resolveCharLimit(stepPlan) ? '' : '\n');
+    // Parallel branches share paths.resultFile. Defer their writes until the
+    // group settles so writeAtomic's PID+millisecond temp name cannot collide;
+    // the coordinator replays them in declared order below.
+    if (parallelPlan.group[i] === undefined) writeAtomic(paths.resultFile, resultFileText);
     const preview = previewText(resultText);
 
     // Non-final steps skip dispatchActionTrusted's shared `__suppressed__`
@@ -3215,9 +3240,57 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       dispatchedFinal = true;
       if (action.actionResults) finalActionResults = action.actionResults;
     }
-    records.push({ index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview, ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) });
-    if (action.status === 'success') priorResults.push(action.preview);
-    else priorFailed = true;
+    return {
+      record: { index: i, instruction: step.instruction, status: action.status, durationMs: Date.now() - stepStart, outputPreview: action.preview, ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
+      ...(action.status === 'success' ? { result: action.preview } : { failed: true }),
+      resultFileText,
+    };
+  }
+
+  for (let i = 0; i < plan.steps.list.length;) {
+    const gate = nextStepGate({ stepIndex: i, budget, startedAtMs: startedAt, now: Date.now(), priorFailed });
+    if (!gate.proceed) break;
+
+    const groupId = parallelPlan.group[i];
+    let runEnd = i + 1;
+    if (groupId !== undefined) {
+      while (runEnd < plan.steps.list.length && parallelPlan.group[runEnd] === groupId) runEnd += 1;
+    }
+
+    if (groupId !== undefined && runEnd - i > 1) {
+      const runLength = runEnd - i;
+      // Pre-sized slots preserve declared order regardless of completion order.
+      const runResults = new Array(runLength);
+      const contextSnapshot = priorResults.slice(0, parallelPlan.contextBase[i]);
+      const settled = await Promise.allSettled(Array.from({ length: runLength }, (_, offset) =>
+        withBranchPermit(async () => {
+          const outcome = await executeStep(i + offset, contextSnapshot);
+          runResults[offset] = outcome;
+          return outcome;
+        })));
+
+      // allSettled deliberately lets every in-flight sibling finish. Only now
+      // do failures halt the chain before the next group/serial step launches.
+      const rejected = settled.find((entry) => entry.status === 'rejected');
+      for (let offset = 0; offset < runResults.length; offset += 1) {
+        const outcome = runResults[offset];
+        if (!outcome) continue;
+        records.push(outcome.record);
+        if (outcome.resultFileText !== undefined) writeAtomic(paths.resultFile, outcome.resultFileText);
+        if (outcome.result !== undefined) priorResults.push(outcome.result);
+        if (outcome.failed) priorFailed = true;
+      }
+      if (rejected) throw rejected.reason;
+      i = runEnd;
+      continue;
+    }
+
+    const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
+    const outcome = await executeStep(i, contextResults);
+    records.push(outcome.record);
+    if (outcome.result !== undefined) priorResults.push(outcome.result);
+    if (outcome.failed) priorFailed = true;
+    i += 1;
   }
 
   const status = reduceStatus(records);
