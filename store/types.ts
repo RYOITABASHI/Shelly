@@ -983,6 +983,9 @@ export interface Agent {
    *  runs through the SAME gated single-run path, so chaining adds no privilege. */
   orchestration?: AgentOrchestrationConfig;
   enabled: boolean;
+  /** Epoch ms of the latest manual enable. Circuit-breaker failures at or
+   *  before this timestamp are acknowledged and do not count toward a new streak. */
+  circuitBreakerResetAt?: number;
   lastRun: number | null;
   lastResult: 'success' | 'error' | null;
   createdAt: number;

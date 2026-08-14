@@ -30,6 +30,8 @@
 
 **根本原因と修正**: `consecutiveFailures()`はログ末尾だけを数え、ユーザーが失敗を確認して再有効化した時点を表せなかった。`Agent.circuitBreakerResetAt`を追加して手動enable時にepoch msを永続化し、`syncAgentRunLogsFromDisk()`のcircuit-breaker呼び出し地点でこの時刻より新しいログだけを評価するよう修正した。reset timestampは恒久的なfloorとして保持し、再有効化後の新しい3連続失敗では従来どおり再度tripする。
 
+**回帰テスト**: 初回の3失敗でtrip → 手動再有効化 → stale logsの再syncではenabled維持 → reset後の新しい3失敗で再trip、をproduction sync pathで固定した。
+
 → sync: なし。
 
 ---

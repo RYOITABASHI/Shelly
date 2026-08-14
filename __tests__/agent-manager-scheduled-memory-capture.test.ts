@@ -15,6 +15,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
     cancelAgent: jest.fn(async () => undefined),
     execCommand: jest.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
     runAgent: jest.fn(async () => undefined),
+    scheduleAgent: jest.fn(async () => undefined),
   },
 }));
 jest.mock('expo-notifications', () => ({
@@ -33,7 +34,7 @@ jest.mock('@/lib/unattended-skill-save', () => {
 // exactly like the existing loadAgentsFromDisk tests in this suite.
 jest.mock('expo-file-system/legacy', () => ({}));
 
-import { loadAgentsFromDisk, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
+import { loadAgentsFromDisk, setAgentEnabled, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
 import { LOCAL_FALLBACK_DIGEST_MARKER } from '@/lib/agent-escalation-ladder';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, AgentRunLog } from '@/store/types';
@@ -340,5 +341,58 @@ describe('syncAgentRunLogsFromDisk — scheduled-run memory capture (the actual 
     await settleMicrotasks(10);
 
     expect(memoryWrites).toHaveLength(0);
+  });
+});
+
+describe('syncAgentRunLogsFromDisk — circuit-breaker manual reset', () => {
+  afterEach(() => {
+    useAgentStore.getState().setAgents([]);
+    useAgentStore.getState().setRunHistory({});
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+  });
+
+  it('keeps a manually re-enabled agent enabled for stale failures and trips after three new failures', async () => {
+    const agent = makeAgent();
+    useAgentStore.getState().setAgents([agent]);
+    let logs = [
+      makeRunLog({ timestamp: 100, status: 'error', outputPreview: 'failure 1' }),
+      makeRunLog({ timestamp: 200, status: 'error', outputPreview: 'failure 2' }),
+      makeRunLog({ timestamp: 300, status: 'error', outputPreview: 'failure 3' }),
+    ];
+    const persistedWrites: string[] = [];
+    const runCommand = jest.fn(async (command: string): Promise<string> => {
+      if (command.startsWith('for d in')) {
+        return logs.map((entry) => `${JSON.stringify(entry)}\n${LOG_MARKER}\n`).join('');
+      }
+      if (command.includes('/sched-agent.json')) persistedWrites.push(command);
+      return '';
+    });
+
+    await syncAgentRunLogsFromDisk(runCommand);
+    expect(useAgentStore.getState().agents[0].enabled).toBe(false);
+
+    jest.spyOn(Date, 'now').mockReturnValue(400);
+    await setAgentEnabled(agent.id, true, runCommand);
+    expect(useAgentStore.getState().agents[0]).toMatchObject({
+      enabled: true,
+      circuitBreakerResetAt: 400,
+    });
+    expect(persistedWrites.at(-1)).toContain('"circuitBreakerResetAt": 400');
+
+    await syncAgentRunLogsFromDisk(runCommand);
+    expect(useAgentStore.getState().agents[0].enabled).toBe(true);
+
+    logs = [...logs, makeRunLog({ timestamp: 500, status: 'error', outputPreview: 'failure 4' })];
+    await syncAgentRunLogsFromDisk(runCommand);
+    expect(useAgentStore.getState().agents[0].enabled).toBe(true);
+
+    logs = [
+      ...logs,
+      makeRunLog({ timestamp: 600, status: 'error', outputPreview: 'failure 5' }),
+      makeRunLog({ timestamp: 700, status: 'error', outputPreview: 'failure 6' }),
+    ];
+    await syncAgentRunLogsFromDisk(runCommand);
+    expect(useAgentStore.getState().agents[0].enabled).toBe(false);
   });
 });

@@ -2464,8 +2464,11 @@ export async function setAgentEnabled(
   const store = useAgentStore.getState();
   const agent = store.agents.find((a) => a.id === agentId);
   if (!agent) return;
-  const updated: Agent = { ...agent, enabled };
-  store.updateAgent(agentId, { enabled });
+  const changes: Partial<Agent> = enabled
+    ? { enabled, circuitBreakerResetAt: Date.now() }
+    : { enabled };
+  const updated: Agent = { ...agent, ...changes };
+  store.updateAgent(agentId, changes);
   // Persist the flag so a restart doesn't silently re-enable a paused agent.
   await runCommand(
     `set -e\n${writeFileCommand(`${agentsDir()}/${agentId}.json`, JSON.stringify(updated, null, 2))}`
@@ -2877,7 +2880,11 @@ export async function syncAgentRunLogsFromDisk(
       : agent;
     // Circuit breaker (§2.5): auto-disable a still-enabled agent after N
     // consecutive failed runs so a misfiring agent can't loop forever.
-    if (next.enabled && shouldTripCircuitBreaker(logs)) {
+    const resetAt = agent.circuitBreakerResetAt;
+    const circuitBreakerLogs = resetAt
+      ? logs?.filter((log) => log.timestamp > resetAt)
+      : logs;
+    if (next.enabled && shouldTripCircuitBreaker(circuitBreakerLogs)) {
       next = { ...next, enabled: false };
       tripped.push(next);
     }
