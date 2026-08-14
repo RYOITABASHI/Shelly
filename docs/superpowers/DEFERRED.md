@@ -50,7 +50,7 @@
 
 ---
 
-### ⚠️ Force-stop中のheadless agent無限失敗・通知spamをnative backoffで封じる (2026-08-14、P0修正、実機検証済みだが元インシデントの失敗モードは未カバーと判明)
+### ✅ Force-stop中のheadless agent無限失敗・通知spamをnative backoffで封じる (2026-08-14、P0修正、ソフト失敗対応は実機再検証待ち)
 
 **バグ / 根本原因**: Fable5実機QA (versionCode=2179、commit `b22fb1f1a`) で、アプリforce-stop後の5分cron agentが約22時間に268回失敗し、そのたび通知した。`~/.shelly/agents/.env`へのAPI key reconciliation (`lib/agent-env-sync.ts`) と3連続失敗でdisableするJS circuit breaker (`lib/agent-manager.ts` / `lib/agent-circuit-breaker.ts`) はどちらもJS/RN runtimeが動いて初めて実行される。一方AlarmManager発火はpure nativeの`AgentRuntime.kt`から生成済みscriptを直接実行するため、force-stop中は両方とも到達不能で、force-stop時点の`.env`がstaleなら失敗と通知を無期限に繰り返せた。
 
@@ -58,7 +58,7 @@
 
 **2026-08-14 versionCode=2183実機QAでの追加発見・訂正**: 当初この記述は「native側に第二の防御層(TerminalSessionService由来)がある」としていたが、`TerminalSessionService.kt`のソースを直接確認した結果は誤りだった。`scheduledRunFailed()`は`if (result.success) return false`（`success` = `exitCode == 0`）を run-log の `status` フィールドを見るより先に評価するため、**exitCode 0で終わりつつ run-log に `status:"error"` を書く「ソフト失敗」（APIキー未設定・認証エラー等、generateRunScriptが内部でcatchして正常終了するケース）は、`TerminalSessionService`側のSharedPreferences circuit breaker (`CIRCUIT_BREAKER_THRESHOLD=3`) でも一切カウントされない**。`AgentRuntime.kt`の`recordNativeHardFailure`も同様にhard error（missing/stale script・非ゼロexit）のみを対象としており、このソフト失敗モードには反応しない(counterファイルが増えないことを実機で確認済み)。**つまり、元インシデントの実際の失敗モード(`.env`のAPIキーがforce-stop中にstaleでscript内部がAPI呼び出し失敗をハンドルして正常終了する形)は、native側のどちらの機構でも force-stop 中は依然として無制限に繰り返され得る。** 唯一の実質的な緩和は、Track KK(`.env` startup reconciliation race修正、本ファイル先頭付近)による「stale `.env`そのものの発生頻度を下げる」ことである。
 
-**残る制約 / 次のP1候補**: `AgentRuntime.kt`の`recordNativeHardFailure`系のカウント対象を、非ゼロexitだけでなく「exitCode==0だが直近run-logの`status`が`error`」のケースにも拡張すれば、元インシデントの失敗モードを直接カバーできる(`TerminalSessionService.scheduledRunFailed()`が既に同じrun-log読み取りロジックを持っているので実装パターンの流用は可能)。native codeがSecureStore-backed API keysを直接読み`.env`を自己reconcileする完全修正は引き続き見送り(理由は従来どおり: SecureStore/JS境界とKnox sepolicy)。
+**残る制約 / 次のP1候補（対応済み、実機再検証待ち）**: `AgentRuntime.kt`の両実行経路で、unattendedかつexitCode==0の場合に直近run-logを確認し、`status`が`error`なら既存の`recordNativeHardFailure`系backoffへ流すよう拡張した。run-log読み取りは`TerminalSessionService.scheduledRunFailed()`と同じく、agentId一致かつtimestampを持つJSONの最大timestampを採用する。ログが無い・読めない場合は新たなfalse positiveを避けてunknownとしてfail openする。これにより元インシデントのscript内部ソフト失敗を直接カバーするが、CI Build Android APK workflowでのcompile確認と実機での3-strikes・通知抑制再検証が残る。native codeがSecureStore-backed API keysを直接読み`.env`を自己reconcileする完全修正は引き続き見送り(理由は従来どおり: SecureStore/JS境界とKnox sepolicy)。
 
 → sync: README Status表の変更なし（公開featureのdescopingではなくruntime reliability fix）。
 

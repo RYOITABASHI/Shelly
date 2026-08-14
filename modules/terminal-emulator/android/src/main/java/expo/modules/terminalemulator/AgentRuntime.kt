@@ -614,13 +614,22 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
-        if (exitCode == 0) {
+        val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"
+        if (exitCode == 0 && !softFailure) {
             resetNativeFailureCount(homeDir, agentId)
             postAgentResultNotificationIfRequested(appContext, homeDir, agentId)
             Log.i(TAG, "Agent $agentId completed via Shelly runtime")
         } else {
-            Log.e(TAG, "Agent $agentId failed via Shelly runtime: exit=$exitCode stderr=${stderr.take(300)}")
-            val failureMessage = "exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+            val failureMessage = if (softFailure) {
+                "script-internal failure: exit=0 latest run-log status=error"
+            } else {
+                "exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+            }
+            if (softFailure) {
+                Log.e(TAG, "Agent $agentId failed via Shelly runtime: $failureMessage")
+            } else {
+                Log.e(TAG, "Agent $agentId failed via Shelly runtime: exit=$exitCode stderr=${stderr.take(300)}")
+            }
             val backoffNotificationPosted = recordNativeHardFailure(
                 appContext, homeDir, agentId, unattended, failureMessage
             )
@@ -634,7 +643,11 @@ object AgentRuntime {
                 NotificationDispatcher(appContext).notifyAgentResult(
                     agentId = agentId,
                     status = "error",
-                    preview = "Agent script failed. exit=$exitCode stderr=${stderr.take(300)}"
+                    preview = if (softFailure) {
+                        "Agent script failed. ${failureMessage.take(300)}"
+                    } else {
+                        "Agent script failed. exit=$exitCode stderr=${stderr.take(300)}"
+                    }
                 )
             }
             writeReceiverLog(
@@ -885,13 +898,22 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
-        if (exitCode == 0) {
+        val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"
+        if (exitCode == 0 && !softFailure) {
             resetNativeFailureCount(homeDir, agentId)
             postAgentResultNotificationIfRequested(context, homeDir, agentId)
             Log.i(TAG, "Agent $agentId completed via PlanSpec executor")
         } else {
-            Log.e(TAG, "Agent $agentId failed via PlanSpec executor: exit=$exitCode stderr=${stderr.take(300)}")
-            val failureMessage = "plan-executor exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+            val failureMessage = if (softFailure) {
+                "plan-executor script-internal failure: exit=0 latest run-log status=error"
+            } else {
+                "plan-executor exit=$exitCode stderr=${stderr.take(500)} stdout=${stdout.take(500)}"
+            }
+            if (softFailure) {
+                Log.e(TAG, "Agent $agentId failed via PlanSpec executor: $failureMessage")
+            } else {
+                Log.e(TAG, "Agent $agentId failed via PlanSpec executor: exit=$exitCode stderr=${stderr.take(300)}")
+            }
             val backoffNotificationPosted = recordNativeHardFailure(
                 context, homeDir, agentId, unattended, failureMessage
             )
@@ -905,7 +927,11 @@ object AgentRuntime {
                 NotificationDispatcher(context).notifyAgentResult(
                     agentId = agentId,
                     status = "error",
-                    preview = "PlanSpec executor failed. exit=$exitCode stderr=${stderr.take(300)}"
+                    preview = if (softFailure) {
+                        "PlanSpec executor failed. ${failureMessage.take(300)}"
+                    } else {
+                        "PlanSpec executor failed. exit=$exitCode stderr=${stderr.take(300)}"
+                    }
                 )
             }
             writeReceiverLog(
@@ -1382,6 +1408,25 @@ object AgentRuntime {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to reset native failure count for $agentId", e)
+        }
+    }
+
+    private fun latestRunLogStatus(homeDir: File, agentId: String): String? {
+        return try {
+            val logDir = File(homeDir, ".shelly/agents/logs/$agentId")
+            logDir.listFiles { file -> file.isFile && file.extension == "json" }
+                ?.mapNotNull { file ->
+                    runCatching {
+                        val json = JSONObject(file.readText())
+                        if (json.optString("agentId") != agentId || !json.has("timestamp")) null
+                        else json.optLong("timestamp") to json.optString("status")
+                    }.getOrNull()
+                }
+                ?.maxByOrNull { it.first }
+                ?.second
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read latest run-log status for $agentId; treating as unknown", e)
+            null
         }
     }
 
