@@ -14,7 +14,7 @@
 
 ---
 
-### ✅ `.env` startup reconciliation race修正（2026-08-14、実機未検証）
+### ✅ `.env` startup reconciliation race修正（2026-08-14、versionCode=2186実機PASS）
 
 **バグ / 再現**: Fable5実機で同じon-device sessionの起動2回中1回、Settings/SecureStoreからreconcileされたはずのAPI keyが`~/.shelly/agents/.env`から消失した。
 
@@ -22,7 +22,7 @@
 
 **修正**: native migrationと、`store/settings-store.ts`内の全`.env` read-modify-write（通常Settings更新、reset、social connector追加・更新・削除）が同じ`~/.shelly/agents/locks/env.lock` directoryをatomic `mkdir`で取得するよう統一した。両側とも短いsleep付き20回のbounded retry後はstartup/settings saveをhangさせず処理を続行し、lock取得時は例外を含む全exit pathで`finally`/shell `trap`からreleaseする。JS側の重複inline rewriteは共通builderへ集約した。native migrationのversion-stamp guardは、同じ関数がfresh seedと既存install migrationの双方を担い、将来のmigration変更時にstamp更新漏れを作るriskがlock追加より大きいため今回は追加していない。
 
-**検証**: TypeScript/Jestでlock acquire・bounded retry・release command shapeと既存env syncを回帰確認。Kotlin変更はlocal Android SDK未構成のため未compileで、CIのBuild Android APK workflowと次回実機QAで確認する。
+**検証**: TypeScript/Jestでlock acquire・bounded retry・release command shapeと既存env syncを回帰確認。CIのBuild Android APK workflow green確認済み。**2026-08-14実機QA(versionCode=2186)**: force-stop→再起動を8回連続実施し、8/8回でAPIキー4本が完全長のまま残存、logcatに`HomeInitializer`の"agent env lock timed out"警告ゼロを確認。PASS。
 
 → sync: README Status表の変更なし（runtime correctness fix）。
 
@@ -50,7 +50,7 @@
 
 ---
 
-### ✅ Force-stop中のheadless agent無限失敗・通知spamをnative backoffで封じる (2026-08-14、P0修正、ソフト失敗対応は実機再検証待ち)
+### ✅ Force-stop中のheadless agent無限失敗・通知spamをnative backoffで封じる (2026-08-14、P0修正、versionCode=2186でソフト失敗backoffも実機PASS)
 
 **バグ / 根本原因**: Fable5実機QA (versionCode=2179、commit `b22fb1f1a`) で、アプリforce-stop後の5分cron agentが約22時間に268回失敗し、そのたび通知した。`~/.shelly/agents/.env`へのAPI key reconciliation (`lib/agent-env-sync.ts`) と3連続失敗でdisableするJS circuit breaker (`lib/agent-manager.ts` / `lib/agent-circuit-breaker.ts`) はどちらもJS/RN runtimeが動いて初めて実行される。一方AlarmManager発火はpure nativeの`AgentRuntime.kt`から生成済みscriptを直接実行するため、force-stop中は両方とも到達不能で、force-stop時点の`.env`がstaleなら失敗と通知を無期限に繰り返せた。
 
@@ -58,7 +58,9 @@
 
 **2026-08-14 versionCode=2183実機QAでの追加発見・訂正**: 当初この記述は「native側に第二の防御層(TerminalSessionService由来)がある」としていたが、`TerminalSessionService.kt`のソースを直接確認した結果は誤りだった。`scheduledRunFailed()`は`if (result.success) return false`（`success` = `exitCode == 0`）を run-log の `status` フィールドを見るより先に評価するため、**exitCode 0で終わりつつ run-log に `status:"error"` を書く「ソフト失敗」（APIキー未設定・認証エラー等、generateRunScriptが内部でcatchして正常終了するケース）は、`TerminalSessionService`側のSharedPreferences circuit breaker (`CIRCUIT_BREAKER_THRESHOLD=3`) でも一切カウントされない**。`AgentRuntime.kt`の`recordNativeHardFailure`も同様にhard error（missing/stale script・非ゼロexit）のみを対象としており、このソフト失敗モードには反応しない(counterファイルが増えないことを実機で確認済み)。**つまり、元インシデントの実際の失敗モード(`.env`のAPIキーがforce-stop中にstaleでscript内部がAPI呼び出し失敗をハンドルして正常終了する形)は、native側のどちらの機構でも force-stop 中は依然として無制限に繰り返され得る。** 唯一の実質的な緩和は、Track KK(`.env` startup reconciliation race修正、本ファイル先頭付近)による「stale `.env`そのものの発生頻度を下げる」ことである。
 
-**残る制約 / 次のP1候補（対応済み、実機再検証待ち）**: `AgentRuntime.kt`の両実行経路で、unattendedかつexitCode==0の場合に直近run-logを確認し、`status`が`error`なら既存の`recordNativeHardFailure`系backoffへ流すよう拡張した。run-log読み取りは`TerminalSessionService.scheduledRunFailed()`と同じく、agentId一致かつtimestampを持つJSONの最大timestampを採用する。ログが無い・読めない場合は新たなfalse positiveを避けてunknownとしてfail openする。これにより元インシデントのscript内部ソフト失敗を直接カバーするが、CI Build Android APK workflowでのcompile確認と実機での3-strikes・通知抑制再検証が残る。native codeがSecureStore-backed API keysを直接読み`.env`を自己reconcileする完全修正は引き続き見送り(理由は従来どおり: SecureStore/JS境界とKnox sepolicy)。
+**ソフト失敗backoff拡張 (versionCode=2186で実機PASS)**: `AgentRuntime.kt`の両実行経路で、unattendedかつexitCode==0の場合に直近run-logを確認し、`status`が`error`なら既存の`recordNativeHardFailure`系backoffへ流すよう拡張した。run-log読み取りは`TerminalSessionService.scheduledRunFailed()`と同じく、agentId一致かつtimestampを持つJSONの最大timestampを採用する。ログが無い・読めない場合は新たなfalse positiveを避けてunknownとしてfail openする。**2026-08-14実機QA**: 存在しないモデル名で確実にソフト失敗するagentをcron `*/2 * * * *`で force-stop 中に3回連続発火させ、counterが3に到達→通知1件のみ→以降`skipped`のみ(追加通知なし)を確認。attended(Run now)実行はcounter値に関わらず正常実行され、成功でcounterがリセットされることも確認。PASS。native codeがSecureStore-backed API keysを直接読み`.env`を自己reconcileする完全修正は引き続き見送り(理由は従来どおり: SecureStore/JS境界とKnox sepolicy)。
+
+**P3(軽微・cosmetic、未対応)**: 3回目のbackoff通知投稿後、同じagentでattended実行して失敗すると、attended結果通知が同じnotification idを再利用するためbackoff通知を上書きする。ユーザーがbackoff通知を見る前にattended実行するとその内容が失われる。実害は無し(receiver log/counterファイルには両方正しく記録される)。優先度低のため今回は対応せず記録のみ。
 
 → sync: README Status表の変更なし（公開featureのdescopingではなくruntime reliability fix）。
 
@@ -4402,6 +4404,7 @@ claude() {
 
 ## History
 
+- **2026-08-14 (CC、Track KK/LL実機QA結果反映+通知id再利用のP3記録)**: Fable5実機QA(versionCode=2186)でTrack KK(.envレース修正、8/8回でキー残存)とTrack LL(ソフト失敗backoff、3回到達→通知1件→以降skipped、attended非干渉)の両方PASSを確認しentryへ反映。副次的に見つけたattended実行時のbackoff通知上書き(同一notification id再利用)をP3として記録、対応は見送り。
 - **2026-08-14 (CC、native circuit breakerの二層構造を実機QAソース照合で訂正)**: Force-stop中headless backoffのentryが「TerminalSessionService側に第二の防御層がある」としていた記述を、`TerminalSessionService.kt`の実ソース(`scheduledRunFailed()`が`result.success`(`exitCode==0`)をrun-log `status`より先にreturnする)で検証したところ誤りと判明。exitCode 0のソフト失敗(APIキー未設定等)は`AgentRuntime.kt`側backoffにも`TerminalSessionService`側breakerにも一切カウントされず、元インシデントの実際の失敗モードはforce-stop中依然無制限に繰り返され得ることをentryに反映。次のP1候補として`recordNativeHardFailure`のrun-log status拡張を記録。
 - **2026-08-14 (Codex、`.env` startup race修正)**: 実機起動2回中1回API keyが消失した原因を、native migrationとJS reconciliationの同一`.env`全体read-modify-write競合と確認。共有`env.lock`のbounded `mkdir` lockを全writerへ適用し、既存force-stop incidentのstale `.env`のlikely true root causeとして相互参照した。
 - **2026-08-14 (Codex、circuit-breaker再有効化trap修正)**: 手動再有効化後も古い3連続失敗を再評価して即時無効化するP1 bugを、`circuitBreakerResetAt`の永続化とsync時のログfloor filteringで修正。
