@@ -14,6 +14,20 @@
 
 ---
 
+### ✅ `.env` startup reconciliation race修正（2026-08-14、実機未検証）
+
+**バグ / 再現**: Fable5実機で同じon-device sessionの起動2回中1回、Settings/SecureStoreからreconcileされたはずのAPI keyが`~/.shelly/agents/.env`から消失した。
+
+**根本原因**: native startupの`HomeInitializer.migrateContentAgentEnv()`と、JS startupの`reconcileApiKeysToEnv()`からqueueされるSettings env syncが、同じ`.env`に対して独立に「全体read → transform → 全体write」を行い、相互の順序保証もlockも無かった。nativeがJS write前のsnapshotを読み、JS write後にその古いsnapshotを書き戻すinterleavingでは、nativeのline-preservation logic自体が正しくてもsnapshotに存在しなかったAPI key行をdropした。このstale `.env`は、既存エントリ「Force-stop中のheadless agent無限失敗・通知spamをnative backoffで封じる」で観測されたincidentの、likely true root causeである。
+
+**修正**: native migrationと、`store/settings-store.ts`内の全`.env` read-modify-write（通常Settings更新、reset、social connector追加・更新・削除）が同じ`~/.shelly/agents/locks/env.lock` directoryをatomic `mkdir`で取得するよう統一した。両側とも短いsleep付き20回のbounded retry後はstartup/settings saveをhangさせず処理を続行し、lock取得時は例外を含む全exit pathで`finally`/shell `trap`からreleaseする。JS側の重複inline rewriteは共通builderへ集約した。native migrationのversion-stamp guardは、同じ関数がfresh seedと既存install migrationの双方を担い、将来のmigration変更時にstamp更新漏れを作るriskがlock追加より大きいため今回は追加していない。
+
+**検証**: TypeScript/Jestでlock acquire・bounded retry・release command shapeと既存env syncを回帰確認。Kotlin変更はlocal Android SDK未構成のため未compileで、CIのBuild Android APK workflowと次回実機QAで確認する。
+
+→ sync: README Status表の変更なし（runtime correctness fix）。
+
+---
+
 ### ✅ Track HH 実機QA修正（2026-08-14、versionCode 2179）— 改善確認本文の空表示とUndo二重処理
 
 **実機QAで判明した問題**: attendedの「スキルを改善しますか？」Alertで本文が空になり、対象agentと追加予定のlearningを確認できなかった。またunattended改善通知の「改善を取り消す」を1回タップすると、複数の`useSkillSaveOffer`呼び出しがそれぞれ登録したprocess-global通知listenerが同じresponseを処理し、`learning-reverted`監査ログが約400ms差で二重記録された。
@@ -4386,6 +4400,7 @@ claude() {
 
 ## History
 
+- **2026-08-14 (Codex、`.env` startup race修正)**: 実機起動2回中1回API keyが消失した原因を、native migrationとJS reconciliationの同一`.env`全体read-modify-write競合と確認。共有`env.lock`のbounded `mkdir` lockを全writerへ適用し、既存force-stop incidentのstale `.env`のlikely true root causeとして相互参照した。
 - **2026-08-14 (Codex、circuit-breaker再有効化trap修正)**: 手動再有効化後も古い3連続失敗を再評価して即時無効化するP1 bugを、`circuitBreakerResetAt`の永続化とsync時のログfloor filteringで修正。
 - **2026-08-14 (Codex / Fable5 P0 follow-up)**: force-stop中はJS-only key reconciliationとJS-only circuit breakerが双方とも到達不能になり、scheduled agentが無期限に失敗・通知する問題を確認。native per-agent 3-failure backoffを実装し、SecureStoreのnative直接読取はP2として明示的にdefer。
 

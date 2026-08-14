@@ -78,4 +78,23 @@ describe('settings-store — OpenRouter headless .env sync', () => {
     expect(cmd).toContain('GROQ_API_KEY=');
     expect(cmd).toContain('OPENROUTER_API_KEY=');
   });
+
+  it('wraps env rewrites in the shared bounded mkdir lock and always registers cleanup', () => {
+    useSettingsStore.getState().updateSettings({ openrouterApiKey: 'sk-or-v1-lock-test' });
+    const cmd = useAgentStore.getState().pendingEnvSync;
+    expect(cmd).toContain('mkdir -p ~/.shelly/agents/locks');
+    expect(cmd).toContain('mkdir "$env_lock"');
+    expect(cmd).toContain('[ "$env_lock_attempt" -lt 20 ]');
+    expect(cmd).toContain('trap cleanup_env_lock EXIT');
+    expect(cmd).toContain("trap 'exit 143' TERM");
+    expect(cmd).toContain('rmdir "$env_lock"');
+  });
+
+  it('uses the same lock wrapper for resetSettings env rewrites', () => {
+    useSettingsStore.getState().resetSettings();
+    const cmd = useAgentStore.getState().pendingEnvSync;
+    expect(cmd).toContain('~/.shelly/agents/locks/env.lock');
+    expect(cmd).toContain('trap cleanup_env_lock EXIT');
+    expect(cmd).toContain('SHELLY_WEBHOOK_HOST_ALLOWLIST=');
+  });
 });

@@ -76,7 +76,8 @@ function buildEnvSyncCommand(envUpdates: Array<[string, string]>, removeKeys: st
     .map(([key, value]) => `printf '%s\\n' ${shQuote(`${key}=${dotenvValue(value)}`)}`)
     .join('; ');
   const emit = lines ? `; ${lines}` : '';
-  return `mkdir -p ~/.shelly/agents && (grep -Ev '${grepPattern}' ~/.shelly/agents/.env 2>/dev/null || true${emit}) > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
+  const rewrite = `(grep -Ev '${grepPattern}' ~/.shelly/agents/.env 2>/dev/null || true${emit}) > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
+  return `mkdir -p ~/.shelly/agents/locks && (env_lock=~/.shelly/agents/locks/env.lock; env_lock_acquired=0; env_lock_attempt=0; while [ "$env_lock_attempt" -lt 20 ]; do if mkdir "$env_lock" 2>/dev/null; then env_lock_acquired=1; break; fi; env_lock_attempt=$((env_lock_attempt + 1)); sleep 0.05; done; cleanup_env_lock() { if [ "$env_lock_acquired" -eq 1 ]; then rmdir "$env_lock" 2>/dev/null || true; fi; }; trap cleanup_env_lock EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; ${rewrite})`;
 }
 
 /** Queue an .env sync without clobbering an undrained pending one (the
@@ -511,13 +512,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         envUpdates.push(['LOCAL_LLM_MODEL_PATH', newSettings.localLlmModelPath]);
       }
       if (envUpdates.length > 0) {
-        const keys = envUpdates.map(([key]) => key);
-        const grepPattern = keys.map((key) => `^${key}=`).join('|');
-        const lines = envUpdates
-          .map(([key, value]) => `printf '%s\\n' ${shQuote(`${key}=${dotenvValue(value)}`)}`)
-          .join('; ');
-        const cmd = `mkdir -p ~/.shelly/agents && (grep -Ev '${grepPattern}' ~/.shelly/agents/.env 2>/dev/null || true; ${lines}) > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
-        useAgentStore.getState().setPendingEnvSync(cmd);
+        queueEnvSync(buildEnvSyncCommand(envUpdates));
       }
       // Sync sound store with settings
       if ('soundEffects' in newSettings) {
@@ -537,8 +532,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   resetSettings: () => {
     set({ settings: DEFAULT_SETTINGS });
     AsyncStorage.setItem('shelly_settings', JSON.stringify(DEFAULT_SETTINGS)).catch(() => {});
-    const cmd = `mkdir -p ~/.shelly/agents && (grep -Ev '^SHELLY_WEBHOOK_HOST_ALLOWLIST=' ~/.shelly/agents/.env 2>/dev/null || true; printf '%s\\n' ${shQuote(`SHELLY_WEBHOOK_HOST_ALLOWLIST=${dotenvValue('')}`)}) > ~/.shelly/agents/.env.tmp && mv ~/.shelly/agents/.env.tmp ~/.shelly/agents/.env && chmod 600 ~/.shelly/agents/.env`;
-    useAgentStore.getState().setPendingEnvSync(cmd);
+    queueEnvSync(buildEnvSyncCommand([['SHELLY_WEBHOOK_HOST_ALLOWLIST', '']]));
   },
 
   setShowConfigTUI: (show: boolean) => set({ showConfigTUI: show }),

@@ -3401,7 +3401,20 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
     }
 
     private fun migrateContentAgentEnv(envFile: File) {
+        val lockDir = File(envFile.parentFile, "locks/env.lock")
+        var lockAcquired = false
         try {
+            lockDir.parentFile?.mkdirs()
+            repeat(20) { attempt ->
+                if (!lockAcquired && lockDir.mkdirs()) {
+                    lockAcquired = true
+                } else if (!lockAcquired && attempt < 19) {
+                    Thread.sleep(50)
+                }
+            }
+            if (!lockAcquired) {
+                android.util.Log.w("HomeInitializer", "agent env lock timed out; migration continuing")
+            }
             val current = if (envFile.exists()) envFile.readText() else ""
             val lines = current.lines().filter { it.isNotEmpty() }.toMutableList()
             var hasUrl = false
@@ -3460,6 +3473,10 @@ Focus on thesis alignment, source faithfulness, Japanese readability, structure,
             envFile.writeText(migrated.joinToString("\n") + "\n")
         } catch (e: Exception) {
             android.util.Log.w("HomeInitializer", "agent env migration skipped: ${e.message}")
+        } finally {
+            if (lockAcquired && !lockDir.delete()) {
+                android.util.Log.w("HomeInitializer", "agent env lock release failed: ${lockDir.absolutePath}")
+            }
         }
     }
 
