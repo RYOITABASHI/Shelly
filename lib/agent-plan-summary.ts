@@ -191,23 +191,29 @@ export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
   return (draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool);
 }
 
-function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
+/** Humanize a persisted cron using the exact phrasing shared with the confirm card. */
+export function humanizeCronSchedule(schedule: string, locale: Locale): string {
   const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
+  const decoded = decodeCron(schedule);
+  return scheduleHuman(
+    decoded.frequency,
+    decoded.hour,
+    decoded.minute,
+    decoded.weekday,
+    decoded.interval,
+    tl,
+    decoded.dowList,
+    decoded.hourList
+      ? decoded.hourList.split(',').map((h) => parseInt(h, 10)).filter((n) => !Number.isNaN(n))
+      : [],
+  );
+}
+
+function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
   if (draft.schedule !== null) {
-    const decoded = decodeCron(draft.schedule);
-    return scheduleHuman(
-      decoded.frequency,
-      decoded.hour,
-      decoded.minute,
-      decoded.weekday,
-      decoded.interval,
-      tl,
-      decoded.dowList,
-      decoded.hourList
-        ? decoded.hourList.split(',').map((h) => parseInt(h, 10)).filter((n) => !Number.isNaN(n))
-        : [],
-    );
+    return humanizeCronSchedule(draft.schedule, locale);
   }
+  const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
   if (draft.suggestedFrequency !== undefined) {
     // Ambiguous — see hasFireableSchedule. Do not fabricate a time here; the
     // dedicated hint line (schedule_restate_hint) covers this case.

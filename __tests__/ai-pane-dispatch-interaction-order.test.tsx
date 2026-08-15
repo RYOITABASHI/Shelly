@@ -1288,7 +1288,9 @@ describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-u
 
     const notice = conv().messages.find((message) => message.id === messageId)?.content ?? '';
     expect(notice).toContain('了解しました。');
+    expect(notice).toContain('毎日08:00ようにします。');
     expect(notice).toContain('いつでも @agent list で確認できます。');
+    expect(notice).not.toContain('0 8 * * *');
     expect(notice).not.toContain('registered');
 
     tForMock.mockImplementation((_locale: string, key: string, params?: Record<string, string | number>) => mockT(key, params));

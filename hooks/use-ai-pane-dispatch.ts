@@ -55,7 +55,7 @@ import {
   resolveRegistrationConfirmRequirement,
   notifyWidgetAgentRegistered,
 } from '@/lib/widget-agent-registration';
-import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm } from '@/lib/agent-plan-summary';
+import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
@@ -3396,12 +3396,14 @@ export function useAIPaneDispatch(paneId: string) {
           await installAgent(created, runAgentShellCommand);
           logInfo('AgentDraftConfirm', `confirmAgentDraft: installAgent returned for ${created.id}`);
         } else {
+          const noticeLocale = detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt);
           const scheduleDescription = confirmed.schedule
-            ?? (confirmed.notificationTrigger
+            ? humanizeCronSchedule(confirmed.schedule, noticeLocale)
+            : (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
               : 'no schedule');
           const updatedContent = tFor(
-            detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+            noticeLocale,
             'agentplan.updated_notice',
             {
               name: created.name,
@@ -3413,7 +3415,7 @@ export function useAIPaneDispatch(paneId: string) {
           if (confirmed.runOnceOnConfirm) {
             await fireRunOnceOnConfirm(
               updatedContent,
-              detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+              noticeLocale,
             );
           }
           return;
@@ -3528,8 +3530,10 @@ export function useAIPaneDispatch(paneId: string) {
           // confirmed.schedule is null for a pure notification-triggered agent
           // (no cron schedule -- it waits for an event), so fall back to a
           // trigger-specific description instead of literally interpolating "null".
+          const noticeLocale = detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt);
           const scheduleDescription = confirmed.schedule
-            ?? (confirmed.notificationTrigger
+            ? humanizeCronSchedule(confirmed.schedule, noticeLocale)
+            : (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
               : 'no schedule');
           // 2026-07-23: only a chat-native draft (not AgentConfirmCard) gets
@@ -3542,7 +3546,7 @@ export function useAIPaneDispatch(paneId: string) {
           // snapshot must never crash a successful registration).
           const correctionEligible = isChatNativeDraft && !!originalDraftSnapshot;
           const correctionHint = correctionEligible
-            ? `\n\n${(detectMessageLocale(originalDraftSnapshot!.rawText) === 'ja' ? ja : en)['agentplan.correction_hint']}`
+            ? `\n\n${(noticeLocale === 'ja' ? ja : en)['agentplan.correction_hint']}`
             : '';
           // bug #164 diagnostics (2026-07-28): the registered-but-blank-bubble
           // repro (real recurring cron, non-ephemeral, non-edit) lands in
@@ -3553,7 +3557,7 @@ export function useAIPaneDispatch(paneId: string) {
           // itself throws (an exception here would otherwise vanish into the
           // outer catch with no trace of having gotten this far).
           const registeredContent = tFor(
-            detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+            noticeLocale,
             'agentplan.registered_notice',
             {
               name: created.name,

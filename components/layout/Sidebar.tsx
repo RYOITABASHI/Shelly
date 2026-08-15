@@ -83,7 +83,7 @@ import { usePaneStore } from '@/store/pane-store';
 import { selectRunAgent } from '@/lib/agent-runs-selection';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
-import { summarizeAgentDraftAsText, hasDraftAssumptions } from '@/lib/agent-plan-summary';
+import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 
 const WIDTH_ICONS = 48;
 const WIDTH_HIDDEN = 0;
@@ -218,7 +218,7 @@ export function buildAgentOverflowMenuActions(params: {
 }
 
 export function Sidebar() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo, removeRepo } =
     useSidebarStore();
   const agents = useAgentStore((s) => s.agents);
@@ -1568,10 +1568,10 @@ export function Sidebar() {
                     accessibilityLabel={t('sidebar.agent_detail_a11y', { name: agent.name })}
                   >
                     <Text style={styles.taskName} numberOfLines={1}>
-                      {(agent.name || '').toUpperCase()}
+                      {agent.name || ''}
                     </Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
-                      {agent.autonomous ? '⛓ ' : ''}{agent.schedule || t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'} · {agentApprovalLabel(agent)}
+                      {agent.autonomous ? '⛓ ' : ''}{agent.schedule ? humanizeCronSchedule(agent.schedule, locale) : t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'} · {agentApprovalLabel(agent)}
                     </Text>
                   </Pressable>
                   {/* 2026-08-10 bug-2 fix (docs/superpowers/DEFERRED.md, code-audit

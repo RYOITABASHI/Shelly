@@ -13,8 +13,9 @@ jest.mock('@/lib/i18n', () => ({
   // summarizeAgentDraftAsText now routes through tFor(locale, ...) instead of
   // the global-locale-bound t() (2026-07-27 language-mismatch fix) — mirror
   // the same key|params-JSON shape so existing assertions stay locale-blind.
-  tFor: (_locale: string, key: string, params?: Record<string, string | number>) =>
+  tFor: jest.fn((_locale: string, key: string, params?: Record<string, string | number>) =>
     params ? `${key}|${JSON.stringify(params)}` : key,
+  ),
 }));
 
 import {
@@ -25,7 +26,9 @@ import {
   isAutoRegisterEligibleOnChatConfirm,
   summarizeAgentDraftAsText,
   draftToConfirmedAgentDraft,
+  humanizeCronSchedule,
 } from '@/lib/agent-plan-summary';
+import { tFor as mockedTFor } from '@/lib/i18n';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { AgentOrchestrationStep } from '@/store/types';
@@ -47,6 +50,29 @@ function baseDraft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDraft 
     ...overrides,
   };
 }
+
+describe('humanizeCronSchedule', () => {
+  it.each([
+    ['en' as const, 'daily at 07:00'],
+    ['ja' as const, '毎日07:00'],
+  ])('renders a daily cron in %s with the confirm-card phrasing', (locale, expected) => {
+    const interpolate = (template: string, params?: Record<string, string | number>) =>
+      Object.entries(params ?? {}).reduce(
+        (text, [key, value]) => text.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(value)),
+        template,
+      );
+    const tForMock = mockedTFor as jest.Mock;
+    tForMock.mockImplementation((selectedLocale: 'en' | 'ja', key: string, params?: Record<string, string | number>) =>
+      interpolate((selectedLocale === 'ja' ? ja : en)[key] ?? key, params),
+    );
+
+    expect(humanizeCronSchedule('0 7 * * *', locale)).toBe(expected);
+
+    tForMock.mockImplementation((_locale: string, key: string, params?: Record<string, string | number>) =>
+      params ? `${key}|${JSON.stringify(params)}` : key,
+    );
+  });
+});
 
 describe('Phase 1 companion copy parity', () => {
   it.each([

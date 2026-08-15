@@ -16,6 +16,8 @@
 
 ## History
 
+- 2026-08-15: Fable5によるCompanion Phase 1実機再レビュー（versionCode 2196）で、登録・更新完了メッセージとSidebar行がraw cronを会話面へ漏らす問題を発見・修正。confirm card既存のhumanizerを共有化した。
+
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
@@ -51,6 +53,16 @@
 - **suggestion engineの能動的発話trigger拡張**: 実装機構は既存`addMessage()`を再利用できるが、発話タイミング・頻度はプロダクト判断と実機QAの反復が必要。
 
 → sync: README Status表の変更なし（Phase 1はpresentation-layerのみ。上記4項目は計画ファイル「今回スコープ外」を参照）。
+
+---
+
+### ✅ Companion completion / Sidebarのraw cron表示（2026-08-15、Fable5実機再レビュー、versionCode 2196）
+
+**バグ**: Companion Phase 1の実機再レビューで、登録・更新完了メッセージが `0 7 * * *` をそのまま補間し、Sidebar行も同じraw cronを表示していた。これは「人格の錯覚を壊す、最も安価で最も影響の大きいダメージが、それを売り込むためのまさにその瞬間に出る」問題だった。Sidebarのagent名にはさらに表示時の強制大文字化が掛かり、自然文の名前をshouting-caseにしていた。
+
+**根本原因 / 修正**: confirm cardは既に `decodeCron` + `scheduleHuman` で自然文へ変換していたが、完了メッセージとSidebarはそのhumanizerを再利用せずraw cronを直接描画していた。既存ロジックをraw cron向けの共有helperとしてexportし、confirm summary・登録/更新完了メッセージ・Sidebarの3箇所で共用した。Sidebarの表示専用 `.toUpperCase()` も除去し、永続化された `Agent.name` 自体は変更していない。
+
+→ sync: README Status表の変更なし（既存会話/UI surfaceのruntime presentation fix）。
 
 ---
 
