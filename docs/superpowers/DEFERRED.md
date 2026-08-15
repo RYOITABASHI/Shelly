@@ -4805,6 +4805,25 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+---
+
+**2026-08-15 Companion 4変更の実機検証(Fable5、build 2211)— 3/4 PASS、1件は機構PASSだが実バグ発見・修正着手**
+
+- **検証1(Increment B書き込み)= PASS**: プレフィックス無し「remember that my favorite color is teal」→確認ターン→承諾→`_global`実書き込み確認。
+- **検証2(プロファイル二重捕捉修正)= PASS**: ノート削除後、同じ質問への回答に「teal」が一切出ないことを確認(以前は`rememberPatterns`経由で残り続けていた実害の実機裏付け)。
+- **検証4(proactive再入場)= PASS**: テストagent(daily 21:00・draft俳句)をRun Now実行、companionスレッドへの自動投稿を確認、AlarmManager実armも確認。同期ループ複数サイクル後も投稿1件のまま=dedup継続動作を確認。
+- **検証3(会話の連続性)= 機構はPASS、ただし実バグ発見**: 共有・独立性・切替notice自体は正常動作。しかし**スレッド切替を引き起こした発話とその応答が、切替「前」の(古い)スレッドに記録される**——ユーザー体験としては「質問したら自分のペインから回答が消えて隣のペインに現れる」。
+
+**根本原因(CCが自分でコード確認)**: `hooks/use-ai-pane-dispatch.ts`の`dispatch`が`const paneId = resolveAiPaneStoreKey(paneIdRaw)`を関数冒頭で一度だけ確定するが、その後(~line 1960-1961)で`@mention`によるリバインドが同一呼び出し内で発生した場合、ユーザーメッセージの書き込み(~line 1974)は依然としてリバインド前の古い`paneId`を使い続けてしまう。
+
+**修正**: `paneId`を`let`化し、リバインド判定直後に`resolveAiPaneStoreKey(paneIdRaw)`で再解決——Codexへディスパッチ済み、回帰テスト追加(切替発話自体が新スレッド側に正しく記録されることを検証)を要求。
+
+**実機での残置事項(削除手段なし、Increment D検討課題)**: companionスレッド(`__companion__`)・閉じたペインのpane-localスレッドとも、個別メッセージ削除UIが無いためテスト会話がpersistしたまま残る。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
