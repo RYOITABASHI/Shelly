@@ -523,6 +523,17 @@ const ja: Record<string, string> = {
   'globalmemory.saved':
     '✅ 共有メモリに保存しました。今後すべてのエージェントがこれを参照します。\n\n  「{{text}}」',
   'globalmemory.failed': '❌ 共有メモの保存に失敗しました',
+  // ── エージェント削除の確認 ──────────────────────────────────────────────
+  'agentdelete.confirm_prompt':
+    '「{{name}}」を見つけました。計画とスケジュールも含めて削除できます。よければ「はい」、残すなら「キャンセル」と教えてください。',
+  'agentdelete.confirm_unclear':
+    '「{{name}}」はまだ削除していません。削除するなら「はい」、残すなら「キャンセル」と教えてください。',
+  'agentdelete.discarded_unclear':
+    'はっきり確認できなかったので、削除は取り下げました。「{{name}}」はそのまま残っています。',
+  'agentdelete.cancelled': '了解しました。「{{name}}」はそのまま残しました。',
+  'agentdelete.deleting': '「{{name}}」を削除しています…',
+  'agentdelete.deleted': '✅ 「{{name}}」を削除しました。',
+  'agentdelete.failed': '❌ 「{{name}}」を削除できませんでした',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',

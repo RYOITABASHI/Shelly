@@ -16,7 +16,16 @@
 
 ## History
 
+- 2026-08-15: Fable5 実機QAで `@agent delete <name>` が成功表示のまま何も削除しない欠落実装を発見・修正（versionCode 2192）。
 - 2026-08-14: Fable5 UX review「一人の相棒」診断を受け、Phase 1 companion copyの実装範囲と後続P2項目を記録。
+
+### `@agent delete <name>` が削除を実行しない欠落実装（2026-08-15、Fable5実機QA、versionCode 2192）
+
+**バグ / 根本原因**: AI Pane chatで `@agent delete <name>` を実行すると削除できたような返答は出るが、agent JSON、PlanSpec、Sidebar行、scheduled alarmがすべて残存した。`parseAgentCommand()` の `delete` caseは `{ type: 'delete', data: { agent } }` という純粋なparse結果を返すだけなのに、`use-ai-pane-dispatch.ts` のdispatch chainに `delete` branchがなく、generic message表示へfall throughして `deleteAgent()` を一度も呼んでいなかった。Sidebar自身の削除ボタンは同関数を正しく呼ぶため影響なし。他の最近変更によるregressionではなく、chat command経路の実装漏れ。
+
+**修正**: 既存 `pendingGlobalMemory` と同じmessage-attachedのconfirm-then-act patternで `pendingAgentDelete` を追加。削除commandはまず確認質問を投げ、明示確認のみ保留stateをawait前にclearしてSidebarと同じ `deleteAgent(agentId)` を実行する。cancelは無変更、不明瞭な返答は1回だけ聞き直し、2回目で破棄、fresh `@` commandは保留をdropする。Companion Phase 1の一人称会話調に合わせたen/ja copyと、実dispatchのconfirm前非実行・confirm実行・cancel・有界聞き直しの回帰テストを追加。
+
+→ sync: README Status表の変更なし（既存コマンドのruntime correctness fix）。
 
 ### 「一人の相棒」プレゼンテーション層 Phase 1（2026-08-14、Fable5 UX review）— コピー/話者表示を実装、意味論・構造変更は P2
 

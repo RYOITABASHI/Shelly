@@ -1323,6 +1323,17 @@ export type ChatMessage = {
     /** How many non-confirm / non-cancel replies this question has absorbed. */
     attempts: number;
   };
+  /** Agent deletion awaiting an explicit human confirm. Present on the
+   *  assistant message that asked the confirm question; while that message is
+   *  fresh and latest, hooks/use-ai-pane-dispatch.ts routes the next user
+   *  message to the delete/cancel decision. Nothing is deleted when this field
+   *  is created. `attempts` bounds unclear replies so an abandoned deletion
+   *  can never keep swallowing the conversation. */
+  pendingAgentDelete?: {
+    agentId: string;
+    agentName: string;
+    attempts: number;
+  };
   /** P1 scheduling-reliability audit (2026-07-15): renders an
    *  AgentScheduleReadinessCard instead of plain text — a one-time,
    *  dismissible checklist (exact-alarm grant / battery-optimization

@@ -539,6 +539,17 @@ const en: Record<string, string> = {
   'globalmemory.saved':
     '✅ Saved to shared memory — every agent will see this from now on:\n\n  "{{text}}"',
   'globalmemory.failed': '❌ Could not save the shared note',
+  // ── Agent deletion confirmation ────────────────────────────────────────────────
+  'agentdelete.confirm_prompt':
+    'I found "{{name}}". I can delete it, including its plan and schedule. Say "OK" and I\'ll delete it, or "cancel" to keep it.',
+  'agentdelete.confirm_unclear':
+    'I haven\'t deleted "{{name}}" yet. Say "OK" to delete it, or "cancel" to keep it.',
+  'agentdelete.discarded_unclear':
+    'I didn\'t get a clear confirmation, so I\'ve dropped the delete request. "{{name}}" is still there.',
+  'agentdelete.cancelled': 'Got it — I kept "{{name}}".',
+  'agentdelete.deleting': 'I\'m deleting "{{name}}"…',
+  'agentdelete.deleted': '✅ I deleted "{{name}}".',
+  'agentdelete.failed': '❌ I couldn\'t delete "{{name}}"',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',

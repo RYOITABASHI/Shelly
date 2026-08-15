@@ -160,12 +160,13 @@ const mockDeleteAgent = jest.fn(async () => {});
 const mockRunAgentNow = jest.fn(async () => {});
 const mockStopAgent = jest.fn(async () => {});
 const mockWriteGlobalMemoryNote = jest.fn(async () => {});
+const mockParseAgentCommand = jest.fn((input: string) => ({
+  type: 'create',
+  message: input.trim(),
+  data: {},
+}));
 jest.mock('@/lib/agent-manager', () => ({
-  parseAgentCommand: jest.fn((input: string) => ({
-    type: 'create',
-    message: input.trim(),
-    data: {},
-  })),
+  parseAgentCommand: (...args: unknown[]) => mockParseAgentCommand(...args as [string]),
   createAgent: (...args: unknown[]) => mockCreateAgent(...args),
   updateAgent: (...args: unknown[]) => mockUpdateAgent(...args),
   installAgent: (...args: unknown[]) => mockInstallAgent(...args),
@@ -242,6 +243,11 @@ function baseAgent(overrides: Partial<Agent> = {}): Agent {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockParseAgentCommand.mockImplementation((input: string) => ({
+    type: 'create',
+    message: input.trim(),
+    data: {},
+  }));
   useAIPaneStore.setState({ conversations: {}, isLoaded: true });
   useAgentStore.setState({ agents: [] } as any);
   usePaneStore.setState({ paneAgents: {} } as any);
@@ -282,6 +288,79 @@ beforeEach(() => {
     const updated = { ...current, ...partial };
     useAgentStore.getState().updateAgent(agentId, partial);
     return updated;
+  });
+});
+
+describe('Scenario 8b — @agent delete confirmation gate', () => {
+  const agentToDelete = baseAgent({ id: 'agent-morning-brief', name: 'Morning brief' });
+
+  beforeEach(() => {
+    useAgentStore.setState({ agents: [agentToDelete] } as any);
+    mockParseAgentCommand.mockImplementation((input: string) =>
+      input === 'delete Morning brief'
+        ? { type: 'delete', message: 'unused parser copy', data: { agent: agentToDelete } }
+        : { type: 'create', message: input.trim(), data: {} },
+    );
+  });
+
+  it('asks for confirmation without deleting, then confirms with the right agent id', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent delete Morning brief');
+    });
+
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+    expect(lastMessage().pendingAgentDelete).toEqual({
+      agentId: agentToDelete.id,
+      agentName: agentToDelete.name,
+      attempts: 0,
+    });
+    expect(lastMessage().content).toBe(
+      en['agentdelete.confirm_prompt'].replace('{{name}}', agentToDelete.name),
+    );
+
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockDeleteAgent).toHaveBeenCalledTimes(1);
+    expect(mockDeleteAgent).toHaveBeenCalledWith(agentToDelete.id);
+    expect(lastMessage().content).toBe(
+      en['agentdelete.deleted'].replace('{{name}}', agentToDelete.name),
+    );
+    expect(conv().messages.some((message) => message.pendingAgentDelete)).toBe(false);
+  });
+
+  it('cancels without deleting and posts a cancellation message', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent delete Morning brief');
+      await result.current.dispatch('cancel');
+    });
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+    expect(lastMessage().content).toBe(
+      en['agentdelete.cancelled'].replace('{{name}}', agentToDelete.name),
+    );
+  });
+
+  it('re-asks once for an unclear reply, then discards without deleting', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('@agent delete Morning brief');
+      await result.current.dispatch('maybe');
+    });
+    expect(lastMessage().pendingAgentDelete?.attempts).toBe(1);
+    expect(lastMessage().content).toBe(
+      en['agentdelete.confirm_unclear'].replace('{{name}}', agentToDelete.name),
+    );
+
+    await act(async () => {
+      await result.current.dispatch('I am not sure');
+    });
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+    expect(lastMessage().content).toBe(
+      en['agentdelete.discarded_unclear'].replace('{{name}}', agentToDelete.name),
+    );
+    expect(conv().messages.some((message) => message.pendingAgentDelete)).toBe(false);
   });
 });
 

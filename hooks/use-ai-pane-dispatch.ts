@@ -893,6 +893,83 @@ export function useAIPaneDispatch(paneId: string) {
           return;
         }
       }
+      const pendingAgentDeleteMsg =
+        freshestMsgForPendingCheck?.role === 'assistant' &&
+        freshestMsgForPendingCheck.pendingAgentDelete &&
+        Date.now() - freshestMsgForPendingCheck.timestamp <= SLOT_FILL_STALE_MS
+          ? freshestMsgForPendingCheck
+          : null;
+      if (pendingAgentDeleteMsg && pendingAgentDeleteMsg.pendingAgentDelete) {
+        const pendingDelete = pendingAgentDeleteMsg.pendingAgentDelete;
+        const deleteStrings = detectMessageLocale(pendingAgentDeleteMsg.content) === 'ja' ? ja : en;
+        const withAgentName = (key: keyof typeof deleteStrings) =>
+          deleteStrings[key].replace('{{name}}', pendingDelete.agentName);
+        const clearPendingDelete = () =>
+          store.updateMessage(paneId, pendingAgentDeleteMsg.id, { pendingAgentDelete: undefined });
+
+        if (userText.trim().startsWith('@')) {
+          clearPendingDelete();
+          // Fall through to normal routing for the fresh command.
+        } else {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          if (isCancelPhrase(userText)) {
+            clearPendingDelete();
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: withAgentName('agentdelete.cancelled'),
+              timestamp: Date.now(),
+              agent: pendingAgentDeleteMsg.agent,
+            });
+            return;
+          }
+          if (isConfirmPhrase(userText)) {
+            // Clear before awaiting native cleanup so a second reply cannot
+            // start the same destructive operation twice.
+            clearPendingDelete();
+            const deletingMsgId = generateId();
+            store.addMessage(paneId, {
+              id: deletingMsgId,
+              role: 'assistant',
+              content: withAgentName('agentdelete.deleting'),
+              timestamp: Date.now(),
+              agent: pendingAgentDeleteMsg.agent,
+            });
+            try {
+              await deleteAgent(pendingDelete.agentId);
+              store.updateMessage(paneId, deletingMsgId, {
+                content: withAgentName('agentdelete.deleted'),
+              });
+            } catch (deleteErr) {
+              const detail = deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
+              store.updateMessage(paneId, deletingMsgId, {
+                content: `${withAgentName('agentdelete.failed')}: ${detail}`,
+              });
+            }
+            return;
+          }
+          clearPendingDelete();
+          if (pendingDelete.attempts >= 1) {
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: withAgentName('agentdelete.discarded_unclear'),
+              timestamp: Date.now(),
+              agent: pendingAgentDeleteMsg.agent,
+            });
+            return;
+          }
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: withAgentName('agentdelete.confirm_unclear'),
+            timestamp: Date.now(),
+            agent: pendingAgentDeleteMsg.agent,
+            pendingAgentDelete: { ...pendingDelete, attempts: pendingDelete.attempts + 1 },
+          });
+          return;
+        }
+      }
       const pendingAgentSession = store.getOrCreate(paneId).pendingAgentSession;
       if (
         pendingAgentSession &&
@@ -2339,6 +2416,21 @@ export function useAIPaneDispatch(paneId: string) {
           } else if (agentResult.type === 'stop') {
             await stopAgent(agentResult.data.agentId, runAgentShellCommand);
             resultMessage = agentResult.message;
+          } else if (agentResult.type === 'delete') {
+            const deleteStrings = detectMessageLocale(userText) === 'ja' ? ja : en;
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: deleteStrings['agentdelete.confirm_prompt'].replace('{{name}}', agentResult.data.agent.name),
+              timestamp: Date.now(),
+              agent: agent as ChatMessage['agent'],
+              pendingAgentDelete: {
+                agentId: agentResult.data.agent.id,
+                agentName: agentResult.data.agent.name,
+                attempts: 0,
+              },
+            });
+            return;
           } else {
             resultMessage = agentResult.message;
           }
