@@ -4824,6 +4824,20 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+**2026-08-15 スレッド切替バグ修正完了・push・CI green(`93fdc6e0e`)**
+
+`hooks/use-ai-pane-dispatch.ts`の`dispatch`冒頭の`paneId`を`const`→`let`化し、リバインド判定(~line 1960-1961)直後に`paneId = resolveAiPaneStoreKey(paneIdRaw)`を再実行する2行の修正。実質の差分は3行のみ、意図しない他箇所への影響なし(diffで確認)。
+
+**特筆すべき点**: 追加された`ai-pane-dispatch-interaction-order.test.tsx`の回帰テストは`dispatch()`本体を実際に呼び出す統合テストで、**修正前は旧バグの挙動をそのまま「正しい」として期待していた既存テスト**(local→`@openrouter`切替時、切替発話がcompanionスレッド側に残ることを`toBe('OpenRouter reply')`でアサートしていた)を、正しい期待値(切替後のペイン固有スレッドに両方のメッセージが入り、companionスレッド側は空)に訂正した上で、逆方向(`@openrouter`→`@local`)のテストも新規追加。バグそのものを再現する経路を通した検証になっている。
+
+**検証**: `npx tsc --noEmit`クリーン、`ai-pane-companion-thread.test.ts`+`ai-pane-dispatch-interaction-order.test.tsx`計64/64 PASS(CC自身で再検証済み)。CI green。
+
+これでCompanion 4変更(Increment A/B/C1/C2)全て実機検証PASS(C1のスレッド切替バグも修正・自動テストで再現確認済み、実機再検証は次回)。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
