@@ -4787,7 +4787,19 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 **残置した軽微な副作用(要フォローアップ、緊急度低)**: `setTerminalContext(paneId, ...)`が解決後の共有キーに書き込まれるため、コンパニオンスレッドを共有する複数ペインで「コンテキストバッジ」UI表示(`AIPane.tsx:504-505`、`conversation.terminalContext`由来)が最後にdispatchしたペインの端末内容を指す可能性がある。**実害は表示のみ**——実際にLLMへ送るプロンプトの`terminalCtx`は各dispatch呼び出しで`terminalSessionForAiPane(paneIdRaw)`から都度フレッシュに計算されており、この副作用の影響を受けない。今回のCodex dispatch prompt作成時にCC自身がこのフィールドの存在を見落としていたのが原因(Codexの実装ミスではなく指示の抜け)。
 
-**② proactive再入場(run完了をチャットへ書き込む) → 実装中(Codex dispatch済み)**。attended(Sidebar Run Now)は`lib/agent-manager.ts`の`syncAgentRunLogsFromDisk`直後にJS到達可能な結果を`COMPANION_CONVERSATION_KEY`へ書き込み(既存の in-chat `@agent run` フローと同じフォーマットを流用)。unattended(AlarmManager/headless)は`shelly-plan-executor.js`が別Node.jsプロセスで動くためJS到達不可——新規キューファイルは追加コスト・リスクが高いと判断し不採用、代わりに`app/_layout.tsx`の既存60秒ポーリング(`syncAgentLogs`)に便乗、新規run-logの差分検出で書き込む設計を選択(「最速で」という指示のもとリスク最小の選択肢を採用)。attendedとunattendedの二重投稿を防ぐdedup設計が正しく成立するか、Codexの実装完了後にCCが個別レビューする。
+**② proactive再入場(run完了をチャットへ書き込む) → 実装完了・push済み・CI green(`5ae498c08`)**。新規`lib/agent-companion-notice.ts`に集約:
+- `postAgentCompanionNotice(log, agentName, fallbackText)` — コンパニオンスレッドの既存メッセージを`agentRunLogId`(`agentId:timestamp`)でスキャンし、既に同じrunの投稿があれば何もせずfalseを返す。**これが実際の重複防止の本体**(メッセージ実体に対する直接の冪等性チェック)。
+- `AgentRunLogNoticeTracker`(`app/_layout.tsx`の`syncAgentLogs`が保持)は`beginSync`/`completeSync`で「このポーリングサイクルで新規に現れたrun-logのみ」を差分抽出する最適化レイヤー——初回サイクルは何もせず既存履歴をシードするのみ(バックフィル防止)。
+- Sidebar「Run Now」(attended)は`runAgentNow`成功直後に`postLatestAgentRunToCompanion`を1行追加で呼ぶだけ、既存の in-chat `@agent run` フォーマット(アイコン/プレビュー選択ロジック)をそのまま再利用。
+- `shelly-plan-executor.js`・APKミラー・生成`.sh`スクリプトは無変更(新規キューファイル方式は不採用、既存ポーリングへの便乗のみ)。
+
+**CCが個別に検証した重複防止の健全性**: `AgentRunLogNoticeTracker`の差分検出だけに頼らず、`postAgentCompanionNotice`自体がコンパニオンスレッドの実メッセージに対して`agentRunLogId`の存在チェックを行う二重防御構造になっている——tracker側の差分ロジックにもし想定外のエッジケースがあっても、この直接スキャンが最終防波堤として機能する設計。テストで実際にこのレース(attended経路が先に投稿→同じrunをtrackerが「新規」と誤判定→`postAgentCompanionNotice`を再度呼ぶ→false・メッセージ数1のまま)を再現・PASSさせていることを確認(`__tests__/agent-companion-notice.test.ts`「does not double-post a run already surfaced by the attended path」)。アプリ再起動でtrackerがリセットされても、コンパニオンスレッド自体はAsyncStorage永続化されているため、この二重防御は再起動後も有効。
+
+**検証**: `npx tsc --noEmit`クリーン、`agent-companion-notice.test.ts`9/9 PASS(CC自身で再検証済み)。CI green。
+
+**実機未検証(①②とも)**: 今回の一連の変更(共有コンパニオンスレッド+proactive再入場)は、tsc・Jestユニットテストのみで検証済み。実機での動作確認(複数AI Paneでの会話共有、Sidebar Run Now/実際のスケジュール発火でのチャット再入場)はまだ行っていない。
+
+**既知の軽微な未修正事項**: Increment C1由来の`terminalContext`コンテキストバッジ表示問題(前エントリ参照)は今回未着手のまま。
 
 → sync: なし。
 
