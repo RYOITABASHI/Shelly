@@ -4785,7 +4785,7 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 `store/ai-pane-store.ts`に予約キー`COMPANION_CONVERSATION_KEY`('__companion__')+リゾルバ`resolveAiPaneStoreKey(paneId)`(ペインの現在の`bound agent`が`local`/未設定なら共有キー、明示プロバイダなら従来通りpaneId固有)を追加。`hooks/use-ai-pane-dispatch.ts`の4クロージャ(dispatch/confirmAgentDraftInner/cancelAgentDraft/cancelStreaming)冒頭で`paneId`をシャドーイングして解決後キーへリダイレクト——ただし`pane-store`側(`paneAgents`読み取り・`bindAgent`呼び出し・`terminalSessionForAiPane`)は生の`paneIdRaw`を使い続ける必要があり、これを取り違えるとagent-binding自体が壊れる重大なポイント。CCが自分で全箇所diffを読み、この区別が正しく守られていることを確認済み。`AIPane.tsx`の6箇所も同様に解決。既存の「Switched to X」通知パターンを模した「スレッド切替」通知(新規i18nキー、en/ja両方)も追加。事前調査(Explore、読み取り専用)で「2つのAI Paneが今日は完全に独立した会話を持つ」ことを実コードで確認した上での設計。`npx tsc --noEmit`クリーン、85/85 PASS(CC自身で再検証済み)。
 
-**残置した軽微な副作用(要フォローアップ、緊急度低)**: `setTerminalContext(paneId, ...)`が解決後の共有キーに書き込まれるため、コンパニオンスレッドを共有する複数ペインで「コンテキストバッジ」UI表示(`AIPane.tsx:504-505`、`conversation.terminalContext`由来)が最後にdispatchしたペインの端末内容を指す可能性がある。**実害は表示のみ**——実際にLLMへ送るプロンプトの`terminalCtx`は各dispatch呼び出しで`terminalSessionForAiPane(paneIdRaw)`から都度フレッシュに計算されており、この副作用の影響を受けない。今回のCodex dispatch prompt作成時にCC自身がこのフィールドの存在を見落としていたのが原因(Codexの実装ミスではなく指示の抜け)。
+**✅ `80ba92fd9` 残置していた軽微な副作用を修正**: `setTerminalContext` の2呼び出しを解決後の共有キーではなくraw pane IDへ書き込むよう変更し、`AIPane.tsx`のコンテキストバッジもraw pane ID専用レコードから読むよう分離した。コンパニオンスレッドを共有する複数ペインでも、各バッジは各ペイン自身に紐づく端末コンテキストを表示する。実際にLLMへ送るプロンプトの`terminalCtx`計算と、共有メッセージの解決処理は変更していない。回帰テストで共有メッセージとper-pane terminal contextの独立を固定し、関連3 suites 89 testsと`npx tsc --noEmit`がPASS。
 
 **② proactive再入場(run完了をチャットへ書き込む) → 実装完了・push済み・CI green(`5ae498c08`)**。新規`lib/agent-companion-notice.ts`に集約:
 - `postAgentCompanionNotice(log, agentName, fallbackText)` — コンパニオンスレッドの既存メッセージを`agentRunLogId`(`agentId:timestamp`)でスキャンし、既に同じrunの投稿があれば何もせずfalseを返す。**これが実際の重複防止の本体**(メッセージ実体に対する直接の冪等性チェック)。
@@ -4799,7 +4799,7 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 **実機未検証(①②とも)**: 今回の一連の変更(共有コンパニオンスレッド+proactive再入場)は、tsc・Jestユニットテストのみで検証済み。実機での動作確認(複数AI Paneでの会話共有、Sidebar Run Now/実際のスケジュール発火でのチャット再入場)はまだ行っていない。
 
-**既知の軽微な未修正事項**: Increment C1由来の`terminalContext`コンテキストバッジ表示問題(前エントリ参照)は今回未着手のまま。
+**当時の既知の軽微な未修正事項**: Increment C1由来の`terminalContext`コンテキストバッジ表示問題は、後続コミット`80ba92fd9`で修正済み(前エントリ参照)。
 
 → sync: なし。
 
@@ -4844,7 +4844,7 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 前回発見と同一シナリオ(3ペイン構成)で再検証。`@gemini`切替: 発話・両notice・応答すべてがペイン自身のスレッドに記録され、companion側への混入なし = FIXED確認。`@local`復帰: 発話・両notice・応答すべてがcompanionスレッドに記録されPane A/B両方に表示、孤児化解消 = FIXED確認。共有スレッド自体の回帰もなし。
 
-**これでCompanion記憶(Increment A/B)+会話の連続性(Increment C1、スレッド切替バグ含む)+proactive再入場(Increment C2)の一連の作業が、実機検証まで含めて完全に完了。** 残るのは緊急度の低い既知の小課題(terminalContextバッジ、個別メッセージ削除UI無し)のみ。
+**これでCompanion記憶(Increment A/B)+会話の連続性(Increment C1、スレッド切替バグ含む)+proactive再入場(Increment C2)の一連の作業が、実機検証まで含めて完全に完了。** 当時残っていた緊急度の低い小課題のうちterminalContextバッジは後続コミット`80ba92fd9`で修正済み。個別メッセージ削除UI無しのみ継続。
 
 → sync: なし。
 
