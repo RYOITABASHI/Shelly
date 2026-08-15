@@ -4769,9 +4769,9 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 **検証**: `npx tsc --noEmit`クリーン(CC自身で再検証)、`agent-memory-global-scope.test.ts`+`ai-pane-dispatch-interaction-order.test.tsx`計104/104 PASS(CC自身で再検証)。CI green。
 
-**Fable5のIncrement A実機検証で発見済みの重複懸念(未対応)**: `learnFromUserInput`のプロファイルfact学習が"remember"発話を独立に横取りする経路と、今回追加した`_global`書き込み経路が、同じ発話に対して両方発火しうる(実害は同一情報がプロンプトに二重に乗る程度で有害ではないが、設計上の重複)。次回on-deviceテストで実際に二重発火するか確認し、要すれば一本化を検討すること。
+**Fable5のIncrement A実機検証で発見済みの重複懸念 → 修正完了・push済み(`5126d6d33`)**: `lib/user-profile.ts`の`extractFacts()`から`rememberPatterns`(「覚えて/remember」を含む任意の発話を無条件・無確認でプロファイルfactへ書き込む正規表現)を完全削除。CCが自分で調査し、この経路が`learnFromUserInput`(`hooks/use-ai-pane-dispatch.ts:1981`、全dispatchでfire-and-forget実行)経由で確認フロー無しに発火していたことを確認——`_global`メモリ削除後も「覚えている」ように見え続けたFable5の1回目テストの汚染源そのもの。「覚えて」系の明示的記憶依頼は今後`lib/agent-global-memory-intent.ts`の確認ゲート付きフロー(`detectGlobalMemoryWrite`/`detectCompanionMemoryWrite`)のみが担う。自己紹介・好みパターン(selfPatterns/prefPatterns)は無変更、影響なし。回帰テスト3件追加(覚えて/remember非捕捉2件+自己紹介系は引き続き捕捉される回帰防止1件)。`npx tsc --noEmit`クリーン、`user-profile.test.ts`11/11 PASS。
 
-**実機未検証**: Increment B自体の実機テスト(「remember that I prefer dark mode」のような`@agent`無しの素の発話で確認質問が出て、承諾すると`_global`に保存されるか)。
+**実機未検証**: Increment B自体の実機テスト(「remember that I prefer dark mode」のような`@agent`無しの素の発話で確認質問が出て、承諾すると`_global`に保存されるか)、および今回の重複修正が実機で効いているか(同じテストトークンで「削除後は本当に忘れる」ことを再確認)。
 
 → sync: なし。
 
