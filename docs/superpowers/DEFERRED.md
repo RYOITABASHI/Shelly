@@ -16,7 +16,17 @@
 
 ## History
 
+- 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
+
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### AI Pane scrollback forced auto-follow (2026-08-15, user-reported on-device)
+
+**Bug / root cause**: AI Pane had no scroll-position tracking. Every streamed token triggered the tail-signal effect, and every content-size change unconditionally invoked the existing triple-fire `scrollToEnd` workaround, so a user reading earlier history was immediately yanked back to the bottom.
+
+**Fix**: Track whether the list is within 100 px of the bottom in a ref, gate both automatic scroll triggers on that ref, and reset auto-follow when the local user submits a message. The triple-fire measurement workaround remains unchanged. A jump-to-latest button or badge is intentionally deferred as a possible P3 enhancement because this immediate correctness fix does not require new UI.
+
+→ sync: README Status table unchanged (runtime UX correctness fix).
 
 - 2026-08-15: Fable5 実機QAで `@agent delete <name>` が成功表示のまま何も削除しない欠落実装を発見・修正（versionCode 2192）。
 - 2026-08-14: Fable5 UX review「一人の相棒」診断を受け、Phase 1 companion copyの実装範囲と後続P2項目を記録。

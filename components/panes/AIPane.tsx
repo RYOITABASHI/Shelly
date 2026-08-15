@@ -15,6 +15,8 @@ import {
   Easing,
   TouchableOpacity,
   type ListRenderItemInfo,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { PaneIdContext, MultiPaneContext } from '@/components/multi-pane/PaneSlot';
@@ -48,6 +50,8 @@ import {
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
 import { useTranslation } from '@/lib/i18n';
 import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
+
+const AUTO_FOLLOW_THRESHOLD_PX = 100;
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -328,9 +332,11 @@ export default function AIPane() {
 
   const { dispatch, cancelStreaming, isStreaming: dispatchStreaming, confirmAgentDraft, cancelAgentDraft } =
     useAIPaneDispatch(paneId);
+  const isNearBottomRef = useRef(true);
 
   const handleSubmit = useCallback(
     (text: string, dispatchOpts?: AIPaneDispatchOptions) => {
+      isNearBottomRef.current = true;
       void dispatch(text, dispatchOpts).catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         try {
@@ -433,6 +439,14 @@ export default function AIPane() {
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
     setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 80);
   }, []);
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    isNearBottomRef.current = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD_PX;
+  }, []);
+  const handleContentSizeChange = useCallback(() => {
+    if (isNearBottomRef.current) scrollToLatest();
+  }, [scrollToLatest]);
 
   const prevAgentRef = useRef<string | null>(boundAgent);
   useEffect(() => {
@@ -484,7 +498,7 @@ export default function AIPane() {
   const last = messages[messages.length - 1];
   const tailSignal = `${messages.length}:${(last?.streamingText ?? last?.content ?? '').length}:${isStreaming ? 1 : 0}`;
   useEffect(() => {
-    if (messages.length > 0) scrollToLatest();
+    if (messages.length > 0 && isNearBottomRef.current) scrollToLatest();
   }, [tailSignal, scrollToLatest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // P1 scheduling-reliability audit (2026-07-15): dismissing the checklist
@@ -548,7 +562,9 @@ export default function AIPane() {
           contentContainerStyle={paneStyles.listContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
-          onContentSizeChange={scrollToLatest}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+          onContentSizeChange={handleContentSizeChange}
           removeClippedSubviews
         />
       )}
