@@ -39,6 +39,11 @@ import { usePaneStore } from '@/store/pane-store';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { useProfileStore } from '@/store/profile-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
+import { useAgentStore } from '@/store/agent-store';
+import {
+  AgentRunLogNoticeTracker,
+  postAgentCompanionNotice,
+} from '@/lib/agent-companion-notice';
 import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
   getCodexApprovalReadiness,
@@ -514,13 +519,21 @@ export default function RootLayout() {
     let agentLogSyncInFlight = false;
     let agentLogSyncReady = false;
     let agentLogInterval: ReturnType<typeof setInterval> | null = null;
+    const agentRunLogNoticeTracker = new AgentRunLogNoticeTracker();
     const syncAgentLogs = async () => {
       if (disposed || agentLogSyncInFlight) return;
       agentLogSyncInFlight = true;
       try {
         await import('@/lib/home-path').then(({ initHomePath }) => initHomePath());
         if (disposed) return;
+        agentRunLogNoticeTracker.beginSync(useAgentStore.getState().runHistory);
         await syncAgentRunLogsFromDisk(runNativeShell);
+        if (disposed) return;
+        const agentState = useAgentStore.getState();
+        for (const log of agentRunLogNoticeTracker.completeSync(agentState.runHistory)) {
+          const agentName = agentState.agents.find((agent) => agent.id === log.agentId)?.name ?? log.agentId;
+          postAgentCompanionNotice(log, agentName, t('agentplan.run_now_done'));
+        }
       } catch (e: any) {
         logError('RootLayout', 'syncAgentRunLogsFromDisk failed', e);
       } finally {

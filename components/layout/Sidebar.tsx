@@ -82,6 +82,7 @@ import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 import { selectRunAgent } from '@/lib/agent-runs-selection';
 import { useAIPaneStore } from '@/store/ai-pane-store';
+import { postLatestAgentRunToCompanion } from '@/lib/agent-companion-notice';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 
@@ -869,6 +870,7 @@ export function Sidebar() {
     setPendingAgentIds((prev) => new Set(prev).add(agentId));
     try {
       await runAgentNow(agentId, runCommandForAgentSync);
+      postLatestAgentRunToCompanion(agentId, agentName, t('agentplan.run_now_done'));
       offerSkillSave(agentId);
       // Complementary to the save offer (which is skipped for agents already
       // reusing a skill): a skill-reusing run may have staged a body-learning

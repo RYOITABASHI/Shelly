@@ -1212,6 +1212,8 @@ export type ChatMessage = {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  /** Stable identity for a proactive background-agent completion notice. */
+  agentRunLogId?: string;
   /** コマンド実行結果の埋め込み */
   executions?: CommandExecution[];
   /** AI agent that handled this message */
