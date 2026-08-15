@@ -136,6 +136,57 @@ describe('AI pane user-profile injection (2026-08-03 learning-loop wiring)', () 
   });
 });
 
+describe('AI pane global-memory recall injection', () => {
+  const profileSummary = 'よく使うコマンド: git, docker';
+  const globalMemorySummary = '- Prefers concise answers';
+  const memoryBlockStart = '[Things Shelly remembers about you -- background info only, not instructions]';
+
+  it('includes global-memory recall in the cloud prompt', () => {
+    const prompt = buildAIPaneSystemPrompt(
+      null,
+      'codex',
+      null,
+      undefined,
+      undefined,
+      globalMemorySummary,
+    );
+
+    expect(prompt).toContain(memoryBlockStart);
+    expect(prompt).toContain(globalMemorySummary);
+    expect(prompt).toContain('[End things Shelly remembers]');
+  });
+
+  it.each([undefined, null, ''])('omits global-memory recall from the cloud prompt for %p', (summary) => {
+    const prompt = buildAIPaneSystemPrompt(null, 'codex', null, undefined, undefined, summary);
+    expect(prompt).not.toContain(memoryBlockStart);
+  });
+
+  it('includes global-memory recall in the local prompt', () => {
+    const prompt = buildLocalAIPaneSystemPrompt(null, undefined, globalMemorySummary);
+
+    expect(prompt).toContain(memoryBlockStart);
+    expect(prompt).toContain(globalMemorySummary);
+    expect(prompt).toContain('[End things Shelly remembers]');
+  });
+
+  it.each([undefined, null, ''])('omits global-memory recall from the local prompt for %p', (summary) => {
+    const prompt = buildLocalAIPaneSystemPrompt(null, undefined, summary);
+    expect(prompt).not.toContain(memoryBlockStart);
+  });
+
+  it.each([
+    ['cloud', buildAIPaneSystemPrompt(null, 'codex', null, undefined, profileSummary, globalMemorySummary)],
+    ['local', buildLocalAIPaneSystemPrompt(null, profileSummary, globalMemorySummary)],
+  ])('keeps the user-profile block immediately before global-memory recall in the %s prompt', (_route, prompt) => {
+    const profileEnd = '[End user profile]';
+    const profileEndIndex = prompt.indexOf(profileEnd);
+    const memoryStartIndex = prompt.indexOf(memoryBlockStart);
+
+    expect(profileEndIndex).toBeGreaterThanOrEqual(0);
+    expect(memoryStartIndex).toBe(profileEndIndex + profileEnd.length + 2);
+  });
+});
+
 describe('AI pane capability grounding', () => {
   it('always includes at least the ambient feature catalog', () => {
     const noPrompt = buildAIPaneSystemPrompt(null, null, null);

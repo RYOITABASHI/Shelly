@@ -59,6 +59,7 @@ import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraf
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
+import { buildGlobalRecallContext, readGlobalMemoryNotes } from '@/lib/agent-memory';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import {
@@ -2655,9 +2656,11 @@ export function useAIPaneDispatch(paneId: string) {
         // block. For cloud agents this rides in the API request — the exact
         // behavior the README Privacy section documents.
         const userProfileSummary = await getUserProfileSummaryForPrompt();
+        const globalMemoryNotesForPrompt = await readGlobalMemoryNotes();
+        const globalMemorySummary = buildGlobalRecallContext(globalMemoryNotesForPrompt);
         const systemPrompt = (agent === 'local'
-          ? buildLocalAIPaneSystemPrompt(promptTerminalCtx, userProfileSummary)
-          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile, promptText, userProfileSummary))
+          ? buildLocalAIPaneSystemPrompt(promptTerminalCtx, userProfileSummary, globalMemorySummary)
+          : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile, promptText, userProfileSummary, globalMemorySummary))
           + detectPostFormatDirective(promptText);
         const conv = store.getOrCreate(paneId);
         // Exclude the streaming placeholder and the current user message;
