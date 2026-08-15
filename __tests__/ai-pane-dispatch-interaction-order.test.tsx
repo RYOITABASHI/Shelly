@@ -413,8 +413,37 @@ describe('@openrouter attended dispatch', () => {
     expect(usePaneStore.getState().paneAgents[PANE]).toBe('openrouter');
     expect(usePaneStore.getState().paneAgents.__companion__).toBeUndefined();
     expect(resolveAiPaneStoreKey(PANE)).toBe(PANE);
-    expect(useAIPaneStore.getState().getOrCreate(COMPANION_CONVERSATION_KEY).messages.at(-1)?.content)
-      .toBe('OpenRouter reply');
+    expect(useAIPaneStore.getState().getOrCreate(PANE).messages.map((message) => message.content))
+      .toEqual(['@openrouter hello', 'OpenRouter reply']);
+    expect(useAIPaneStore.getState().getOrCreate(COMPANION_CONVERSATION_KEY).messages).toEqual([]);
+  });
+
+  it('routes the switch-triggering turn back into the companion thread', async () => {
+    usePaneStore.setState({ paneAgents: { [PANE]: 'openrouter' } } as any);
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('pong', false);
+      return { success: true, content: 'pong' };
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('@local reply with just the word pong');
+    });
+
+    expect(usePaneStore.getState().paneAgents[PANE]).toBe('local');
+    expect(resolveAiPaneStoreKey(PANE)).toBe(COMPANION_CONVERSATION_KEY);
+    expect(useAIPaneStore.getState().getOrCreate(COMPANION_CONVERSATION_KEY).messages.map((message) => message.content))
+      .toEqual(['@local reply with just the word pong', 'pong']);
+    expect(useAIPaneStore.getState().getOrCreate(PANE).messages).toEqual([]);
   });
 });
 

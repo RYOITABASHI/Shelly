@@ -497,7 +497,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
 
   const dispatch = useCallback(
     async (userText: string, dispatchOpts?: AIPaneDispatchOptions) => {
-      const paneId = resolveAiPaneStoreKey(paneIdRaw);
+      let paneId = resolveAiPaneStoreKey(paneIdRaw);
       if (!userText.trim()) return;
 
       const store = useAIPaneStore.getState();
@@ -1960,6 +1960,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       if (agent !== rawAgent) {
         usePaneStore.getState().bindAgent(paneIdRaw, agent);
       }
+      paneId = resolveAiPaneStoreKey(paneIdRaw);
       logInfo('AIPaneDispatch', 'Dispatching to agent: ' + agent);
 
       // ── Add user message ──

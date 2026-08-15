@@ -63,3 +63,45 @@ it('switches a rebound pane to its private thread and posts the switch notice th
   ]);
   expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY]).toBeUndefined();
 });
+
+it('routes a local-to-provider switch turn into the post-rebind private thread', () => {
+  const paneId = 'pane-local-to-gemini';
+  usePaneStore.setState({ paneAgents: { [paneId]: 'local' } } as any);
+  let dispatchKey = resolveAiPaneStoreKey(paneId);
+  expect(dispatchKey).toBe(COMPANION_CONVERSATION_KEY);
+
+  usePaneStore.getState().bindAgent(paneId, 'gemini');
+  dispatchKey = resolveAiPaneStoreKey(paneId);
+  useAIPaneStore.getState().addMessage(dispatchKey, {
+    id: 'provider-user', role: 'user', content: '@gemini reply with just the word ping', timestamp: 1,
+  });
+  useAIPaneStore.getState().addMessage(dispatchKey, {
+    id: 'provider-assistant', role: 'assistant', content: 'ping', timestamp: 2, agent: 'gemini',
+  });
+
+  expect(dispatchKey).toBe(paneId);
+  expect(useAIPaneStore.getState().getOrCreate(paneId).messages.map((message) => message.content))
+    .toEqual(['@gemini reply with just the word ping', 'ping']);
+  expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY]).toBeUndefined();
+});
+
+it('routes a provider-to-local switch turn into the post-rebind companion thread', () => {
+  const paneId = 'pane-gemini-to-local';
+  usePaneStore.setState({ paneAgents: { [paneId]: 'gemini' } } as any);
+  let dispatchKey = resolveAiPaneStoreKey(paneId);
+  expect(dispatchKey).toBe(paneId);
+
+  usePaneStore.getState().bindAgent(paneId, 'local');
+  dispatchKey = resolveAiPaneStoreKey(paneId);
+  useAIPaneStore.getState().addMessage(dispatchKey, {
+    id: 'local-user', role: 'user', content: '@local reply with just the word pong', timestamp: 1,
+  });
+  useAIPaneStore.getState().addMessage(dispatchKey, {
+    id: 'local-assistant', role: 'assistant', content: 'pong', timestamp: 2, agent: 'local',
+  });
+
+  expect(dispatchKey).toBe(COMPANION_CONVERSATION_KEY);
+  expect(useAIPaneStore.getState().getOrCreate(COMPANION_CONVERSATION_KEY).messages.map((message) => message.content))
+    .toEqual(['@local reply with just the word pong', 'pong']);
+  expect(useAIPaneStore.getState().conversations[paneId]).toBeUndefined();
+});
