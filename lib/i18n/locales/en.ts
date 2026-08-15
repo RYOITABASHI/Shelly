@@ -1035,6 +1035,8 @@ const en: Record<string, string> = {
   // ── Chat Message List ───────────────────────────────────────────
   'chat.empty_title': 'Shelly',
   'chat.companion_label': 'Shelly',
+  'chat.switched_to_companion_thread': 'Switched to Shelly thread',
+  'chat.switched_to_pane_thread': 'Switched to pane thread',
   'chat.empty_subtitle': 'Ask me anything\nUse @codex @local @team to choose an AI',
   'chat.sample_list_files': 'List files',
   'chat.sample_ask_claude': 'Ask Codex',

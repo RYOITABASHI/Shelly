@@ -20,7 +20,11 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { PaneIdContext, MultiPaneContext } from '@/components/multi-pane/PaneSlot';
-import { useAIPaneStore } from '@/store/ai-pane-store';
+import {
+  addAiPaneThreadSwitchNotice,
+  resolveAiPaneStoreKey,
+  useAIPaneStore,
+} from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useInboundStore } from '@/store/inbound-store';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
@@ -344,8 +348,9 @@ export default function AIPane() {
         } catch {}
         try {
           const store = useAIPaneStore.getState();
-          store.setStreaming(paneId, false);
-          store.addMessage(paneId, {
+          const conversationKey = resolveAiPaneStoreKey(paneId);
+          store.setStreaming(conversationKey, false);
+          store.addMessage(conversationKey, {
             id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
             role: 'assistant',
             content: `Error: ${message}`,
@@ -405,7 +410,7 @@ export default function AIPane() {
   }, [dispatchStreaming, cancelStreaming]);
 
   const conversation = useAIPaneStore((s) => {
-    return s.conversations[paneId] ?? null;
+    return s.conversations[resolveAiPaneStoreKey(paneId)] ?? null;
   });
 
   const initialised = useRef(false);
@@ -449,6 +454,8 @@ export default function AIPane() {
   }, [scrollToLatest]);
 
   const prevAgentRef = useRef<string | null>(boundAgent);
+  const resolvedConversationKey = resolveAiPaneStoreKey(paneId);
+  const prevConversationKeyRef = useRef(resolvedConversationKey);
   useEffect(() => {
     const prev = prevAgentRef.current;
     prevAgentRef.current = boundAgent;
@@ -462,8 +469,14 @@ export default function AIPane() {
       content: `Switched to ${agentName}`,
       timestamp: Date.now(),
     };
-    useAIPaneStore.getState().addMessage(paneId, systemMsg);
+    useAIPaneStore.getState().addMessage(resolveAiPaneStoreKey(paneId), systemMsg);
   }, [boundAgent, paneId]);
+
+  useEffect(() => {
+    const prev = prevConversationKeyRef.current;
+    prevConversationKeyRef.current = resolvedConversationKey;
+    addAiPaneThreadSwitchNotice(prev, resolvedConversationKey, t);
+  }, [resolvedConversationKey, t]);
 
   // Phase 3 inbound gateway: drain authorized Telegram utterances into the SAME
   // @agent confirm-card pipeline a local utterance uses. consume() pops atomically
@@ -476,7 +489,7 @@ export default function AIPane() {
     const item = useInboundStore.getState().consume();
     if (!item) return;
     const draft = parseAgentNL(item.text, useSettingsStore.getState().socialConnectors ?? []);
-    useAIPaneStore.getState().addMessage(paneId, {
+    useAIPaneStore.getState().addMessage(resolveAiPaneStoreKey(paneId), {
       id: `inb-card-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       role: 'assistant',
       content: '',
@@ -507,7 +520,7 @@ export default function AIPane() {
   // at append time (confirmAgentDraft), not here, so leaving the card
   // undismissed can't cause it to resurface on a later scheduled agent.
   const dismissScheduleReadiness = useCallback((messageId: string) => {
-    useAIPaneStore.getState().updateMessage(paneId, messageId, {
+    useAIPaneStore.getState().updateMessage(resolveAiPaneStoreKey(paneId), messageId, {
       scheduleReadinessCard: false,
       content: `✓ ${t('schedulereadiness.title')}`,
     });

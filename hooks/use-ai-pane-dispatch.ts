@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
-import { useAIPaneStore } from '@/store/ai-pane-store';
+import { resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
 import type { JustRegisteredAgentRef } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
@@ -477,7 +477,7 @@ export interface AIPaneDispatchOptions {
  * - cloud/API agents → Cerebras, Groq, Perplexity
  * - foreground terminal CLIs stay outside the AI Pane
  */
-export function useAIPaneDispatch(paneId: string) {
+export function useAIPaneDispatch(paneIdRaw: string) {
   const { t } = useTranslation();
   const abortRef = useRef<AbortController | null>(null);
   const lastLocalStreamOkAtRef = useRef(0);
@@ -497,6 +497,7 @@ export function useAIPaneDispatch(paneId: string) {
 
   const dispatch = useCallback(
     async (userText: string, dispatchOpts?: AIPaneDispatchOptions) => {
+      const paneId = resolveAiPaneStoreKey(paneIdRaw);
       if (!userText.trim()) return;
 
       const store = useAIPaneStore.getState();
@@ -1952,12 +1953,12 @@ export function useAIPaneDispatch(paneId: string) {
         ? parsed.target
         : null;
       const promptText = requestedAgent ? parsed.prompt.trim() : userText.trim();
-      const rawAgent = usePaneStore.getState().paneAgents[paneId];
+      const rawAgent = usePaneStore.getState().paneAgents[paneIdRaw];
       const agent = requestedAgent ?? (isAiPaneAgent(rawAgent)
         ? rawAgent
         : pickDefaultAiPaneAgent(settings));
       if (agent !== rawAgent) {
-        usePaneStore.getState().bindAgent(paneId, agent);
+        usePaneStore.getState().bindAgent(paneIdRaw, agent);
       }
       logInfo('AIPaneDispatch', 'Dispatching to agent: ' + agent);
 
@@ -2491,7 +2492,7 @@ export function useAIPaneDispatch(paneId: string) {
           return;
         }
 
-        const terminalSessionId = terminalSessionForAiPane(paneId);
+        const terminalSessionId = terminalSessionForAiPane(paneIdRaw);
         const terminalCtx = getTerminalSnapshotForSession(terminalSessionId);
         store.setTerminalContext(paneId, terminalCtx);
         logInfo(
@@ -2613,7 +2614,7 @@ export function useAIPaneDispatch(paneId: string) {
       }
 
       // ── Snapshot terminal context ──
-      const terminalSessionId = terminalSessionForAiPane(paneId);
+      const terminalSessionId = terminalSessionForAiPane(paneIdRaw);
       const terminalCtx = getTerminalSnapshotForSession(terminalSessionId);
       store.setTerminalContext(paneId, terminalCtx);
 
@@ -3191,14 +3192,15 @@ export function useAIPaneDispatch(paneId: string) {
         try { playSound('ai_complete'); } catch {}
       }
     },
-    [paneId, throttledUpdate, offerSkillImprovement],
+    [paneIdRaw, throttledUpdate, offerSkillImprovement],
   );
 
   const cancelStreaming = useCallback(() => {
+    const paneId = resolveAiPaneStoreKey(paneIdRaw);
     abortRef.current?.abort();
     abortRef.current = null;
     useAIPaneStore.getState().setStreaming(paneId, false);
-  }, [paneId]);
+  }, [paneIdRaw]);
 
   // Confirm a pending NL-self-registration card: NOW create + install the agent
   // (Phase 0 §2.1 — registration happens only on explicit human confirm). The
@@ -3212,6 +3214,7 @@ export function useAIPaneDispatch(paneId: string) {
   // inFlightConfirmDrafts's doc comment above for the on-device evidence.
   const confirmAgentDraftInner = useCallback(
     async (messageId: string, confirmed: ConfirmedAgentDraft) => {
+      const paneId = resolveAiPaneStoreKey(paneIdRaw);
       const store = useAIPaneStore.getState();
       // 2026-07-23 (justRegisteredAgent correction window): snapshot the
       // ORIGINATING draft bubble's own agentDraft/agentChatConfirm BEFORE any
@@ -3669,7 +3672,7 @@ export function useAIPaneDispatch(paneId: string) {
         });
       }
     },
-    [paneId, offerSkillSave, offerSkillImprovement],
+    [paneIdRaw, offerSkillSave, offerSkillImprovement],
   );
 
   // bug #164 follow-up (2026-07-28): the actual exported/wired confirm
@@ -3705,6 +3708,7 @@ export function useAIPaneDispatch(paneId: string) {
 
   const cancelAgentDraft = useCallback(
     (messageId: string) => {
+      const paneId = resolveAiPaneStoreKey(paneIdRaw);
       const store = useAIPaneStore.getState();
       // Phase A (2026-07-22): mirrors confirmAgentDraft's own clear — covers
       // AgentChatConfirm's TAP-to-cancel path (dispatch()'s typed-cancel
@@ -3718,11 +3722,11 @@ export function useAIPaneDispatch(paneId: string) {
         content: 'Registration cancelled.',
       });
     },
-    [paneId],
+    [paneIdRaw],
   );
 
   const isStreaming = useAIPaneStore(
-    (s) => s.conversations[paneId]?.isStreaming ?? false,
+    (s) => s.conversations[resolveAiPaneStoreKey(paneIdRaw)]?.isStreaming ?? false,
   );
 
   return { dispatch, cancelStreaming, isStreaming, confirmAgentDraft, cancelAgentDraft };

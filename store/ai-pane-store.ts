@@ -1,8 +1,8 @@
 /**
  * store/ai-pane-store.ts
  *
- * Per-pane AI conversation store for the Superset UI redesign.
- * Each terminal pane has its own independent AI conversation history.
+ * AI conversation store for the Superset UI redesign. The local Shelly
+ * persona shares one conversation; explicit-provider panes remain independent.
  */
 
 import { create } from 'zustand';
@@ -11,6 +11,35 @@ import type { ChatMessage, ChatAgent } from './types';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { SlotField } from '@/lib/agent-slot-fill';
 import { logInfo, logWarn, logError } from '@/lib/debug-logger';
+import { usePaneStore } from '@/store/pane-store';
+
+export const COMPANION_CONVERSATION_KEY = '__companion__';
+
+/**
+ * Resolve the conversation key for a multi-pane slot. The default Shelly
+ * persona shares one persistent thread; explicitly routed providers retain
+ * the pane-local histories they have always used.
+ */
+export function resolveAiPaneStoreKey(paneId: string): string {
+  const bound = usePaneStore.getState().paneAgents[paneId];
+  return bound == null || bound === 'local' ? COMPANION_CONVERSATION_KEY : paneId;
+}
+
+export function addAiPaneThreadSwitchNotice(
+  previousKey: string,
+  nextKey: string,
+  translate: (key: string) => string,
+): void {
+  if (previousKey === nextKey) return;
+  useAIPaneStore.getState().addMessage(nextKey, {
+    id: `system-thread-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role: 'system',
+    content: translate(nextKey === COMPANION_CONVERSATION_KEY
+      ? 'chat.switched_to_companion_thread'
+      : 'chat.switched_to_pane_thread'),
+    timestamp: Date.now(),
+  });
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

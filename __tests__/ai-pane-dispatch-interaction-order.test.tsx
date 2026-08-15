@@ -182,7 +182,11 @@ jest.mock('@/lib/agent-manager', () => ({
 }));
 
 import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
-import { useAIPaneStore } from '@/store/ai-pane-store';
+import {
+  COMPANION_CONVERSATION_KEY,
+  resolveAiPaneStoreKey,
+  useAIPaneStore,
+} from '@/store/ai-pane-store';
 import { useAgentStore } from '@/store/agent-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { usePaneStore } from '@/store/pane-store';
@@ -213,9 +217,10 @@ const {
 };
 
 const PANE = 'pane-under-test';
+const conversationKey = () => resolveAiPaneStoreKey(PANE);
 
 function conv() {
-  return useAIPaneStore.getState().getOrCreate(PANE);
+  return useAIPaneStore.getState().getOrCreate(conversationKey());
 }
 
 function lastMessage() {
@@ -405,7 +410,11 @@ describe('@openrouter attended dispatch', () => {
       expect.any(AbortSignal),
       expect.any(String),
     );
-    expect(lastMessage().content).toBe('OpenRouter reply');
+    expect(usePaneStore.getState().paneAgents[PANE]).toBe('openrouter');
+    expect(usePaneStore.getState().paneAgents.__companion__).toBeUndefined();
+    expect(resolveAiPaneStoreKey(PANE)).toBe(PANE);
+    expect(useAIPaneStore.getState().getOrCreate(COMPANION_CONVERSATION_KEY).messages.at(-1)?.content)
+      .toBe('OpenRouter reply');
   });
 });
 
@@ -638,7 +647,7 @@ describe('Scenario 4 — two agents both reach pendingSlotFill sequentially, no 
     const firstSession = conv().pendingAgentSession;
     expect(firstSession?.draft.rawText).toContain('ニュース');
     expect(firstSession?.draft.schedule).toBe('0 8 * * *');
-    useAIPaneStore.getState().setPendingAgentSession(PANE, null);
+    useAIPaneStore.getState().setPendingAgentSession(conversationKey(), null);
 
     // Second, unrelated agent — sequential, not interleaved.
     await act(async () => {
@@ -906,7 +915,7 @@ describe('Scenario 5 — stale pendingAgentSession under a fresh pendingSlotFill
     expect(original).toBeTruthy();
 
     // Backdate it past SLOT_FILL_STALE_MS (15 minutes).
-    useAIPaneStore.getState().setPendingAgentSession(PANE, {
+    useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
       ...original!,
       createdAt: Date.now() - 20 * 60 * 1000,
     });
@@ -944,7 +953,7 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
     const editDraft = agentToParsedAgentDraft(existingAgent);
     const editMessageId = 'agent-edit-existing';
     act(() => {
-      useAIPaneStore.getState().addMessage(PANE, {
+      useAIPaneStore.getState().addMessage(conversationKey(), {
         id: editMessageId,
         role: 'assistant',
         content: summarizeAgentDraftAsText(editDraft, undefined, true),
@@ -953,7 +962,7 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
         agentChatConfirm: true,
         editingAgentId: existingAgent.id,
       });
-      useAIPaneStore.getState().setPendingAgentSession(PANE, {
+      useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
         draft: editDraft,
         editingAgentId: existingAgent.id,
         phase: 'await-confirm',
@@ -1053,7 +1062,7 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
     const editDraft = agentToParsedAgentDraft(existingAgent);
     const editMessageId = 'agent-edit-existing-clean';
     act(() => {
-      useAIPaneStore.getState().addMessage(PANE, {
+      useAIPaneStore.getState().addMessage(conversationKey(), {
         id: editMessageId,
         role: 'assistant',
         content: summarizeAgentDraftAsText(editDraft, undefined, true),
@@ -1061,7 +1070,7 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
         agentDraft: editDraft,
         agentChatConfirm: true,
       });
-      useAIPaneStore.getState().setPendingAgentSession(PANE, {
+      useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
         draft: editDraft,
         editingAgentId: existingAgent.id,
         phase: 'await-confirm',
@@ -1264,7 +1273,7 @@ describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-u
     };
     const messageId = 'japanese-registration-notice';
     act(() => {
-      useAIPaneStore.getState().addMessage(PANE, {
+      useAIPaneStore.getState().addMessage(conversationKey(), {
         id: messageId,
         role: 'assistant',
         content: summarizeAgentDraftAsText(draft),
@@ -1273,7 +1282,7 @@ describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-u
         agentChatConfirm: true,
         agentCardState: 'pending',
       });
-      useAIPaneStore.getState().setPendingAgentSession(PANE, {
+      useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
         draft,
         phase: 'await-confirm',
         attemptCounts: {},
@@ -1787,7 +1796,7 @@ describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02
     // re-test the per-turn wiring the tests above already cover.
     const session = conv().pendingAgentSession!;
     act(() => {
-      useAIPaneStore.getState().setPendingAgentSession(PANE, {
+      useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
         ...session,
         attemptCounts: { ...session.attemptCounts, llmTurns: 5 },
       });
@@ -1900,7 +1909,7 @@ function phase23Draft(overrides: Partial<ParsedAgentDraft> = {}): ParsedAgentDra
 
 function seedScheduleSlot(attemptCount: number): ParsedAgentDraft {
   const draft = phase23Draft();
-  useAIPaneStore.getState().addMessage(PANE, {
+  useAIPaneStore.getState().addMessage(conversationKey(), {
     id: `slot-${attemptCount}`,
     role: 'assistant',
     content: ja['slot_fill.question_schedule'],
@@ -2069,7 +2078,7 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
     // session and verify the second proposal call site has the same guard.
     useAIPaneStore.setState({ conversations: {}, isLoaded: true });
     const resumedDraft = phase23Draft();
-    useAIPaneStore.getState().setPendingAgentSession(PANE, {
+    useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
       draft: resumedDraft,
       phase: 'llm-conversation',
       attemptCounts: {},
@@ -2131,7 +2140,7 @@ describe('Phase 4 — high-risk proposal wiring at all three proposal call sites
   it.each([false, true])('initial dispatch passes allowHighRiskActions=%s and a user-only transcript', async (enabled) => {
     setHighRiskEnabled(enabled);
     const assistantText = 'ASSISTANT_INITIAL_MUST_NOT_APPEAR';
-    useAIPaneStore.getState().addMessage(PANE, {
+    useAIPaneStore.getState().addMessage(conversationKey(), {
       id: 'old-assistant', role: 'assistant', content: assistantText, timestamp: Date.now(), agent: 'local',
     });
     const { result } = setup();
@@ -2145,13 +2154,13 @@ describe('Phase 4 — high-risk proposal wiring at all three proposal call sites
     setHighRiskEnabled(enabled);
     const createdAt = Date.now();
     const draft = phase23Draft({ rawText: 'RESUME_OPENING_USER_TOKEN' });
-    useAIPaneStore.getState().addMessage(PANE, {
+    useAIPaneStore.getState().addMessage(conversationKey(), {
       id: 'resume-user', role: 'user', content: 'RESUME_EARLIER_USER_TOKEN', timestamp: createdAt,
     });
-    useAIPaneStore.getState().addMessage(PANE, {
+    useAIPaneStore.getState().addMessage(conversationKey(), {
       id: 'resume-assistant', role: 'assistant', content: 'ASSISTANT_RESUME_MUST_NOT_APPEAR', timestamp: createdAt, agent: 'local',
     });
-    useAIPaneStore.getState().setPendingAgentSession(PANE, {
+    useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
       draft, phase: 'llm-conversation', attemptCounts: {}, hasAssumptions: true,
       createdAt, messageId: 'resume-assistant', agentLabel: 'local',
     });
@@ -2174,7 +2183,7 @@ describe('Phase 4 — high-risk proposal wiring at all three proposal call sites
         ? { success: true, content: PHASE4_PROPOSAL }
         : { success: false, content: '', error: 'narrow extraction miss' },
     );
-    useAIPaneStore.getState().addMessage(PANE, {
+    useAIPaneStore.getState().addMessage(conversationKey(), {
       id: 'tier2-assistant', role: 'assistant', content: 'ASSISTANT_TIER2_MUST_NOT_APPEAR',
       timestamp: Date.now(), agent: 'local', pendingSlotFill: lastMessage().pendingSlotFill,
     });
@@ -2451,7 +2460,7 @@ function notifyTriggerLostDraft(overrides: Partial<ParsedAgentDraft> = {}): Pars
 }
 
 function seedPendingDraftMessage(messageId: string, draft: ParsedAgentDraft) {
-  useAIPaneStore.getState().addMessage(PANE, {
+  useAIPaneStore.getState().addMessage(conversationKey(), {
     id: messageId,
     role: 'assistant',
     content: 'draft pending',
