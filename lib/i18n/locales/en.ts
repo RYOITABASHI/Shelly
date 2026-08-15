@@ -1027,6 +1027,8 @@ const en: Record<string, string> = {
   'chat.delete_confirm': 'Delete this message?',
   'chat.cancel': 'Cancel',
   'chat.delete': 'Delete',
+  'chat.delete_message_title': 'Delete message',
+  'chat.delete_message_body': 'Delete this message?',
   'chat.safety_risk': '{{level}} RISK',
   'chat.safety_confirm': 'Confirm before running',
   'chat.safety_cancel': 'Cancel',

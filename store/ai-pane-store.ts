@@ -220,6 +220,7 @@ type AIPaneState = {
   getOrCreate: (paneId: string) => AIPaneConversation;
   addMessage: (paneId: string, msg: ChatMessage) => void;
   updateMessage: (paneId: string, msgId: string, updates: Partial<ChatMessage>) => void;
+  deleteMessage: (paneId: string, messageId: string) => void;
   setStreaming: (paneId: string, streaming: boolean) => void;
   setTerminalContext: (paneId: string, context: string | null) => void;
   setActiveAgent: (paneId: string, agent: ChatAgent | null) => void;
@@ -416,6 +417,23 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       if (updates.isStreaming !== true) {
         debouncedSave(persist);
       }
+    },
+
+    deleteMessage: (paneId, messageId) => {
+      get().getOrCreate(paneId);
+      set((state) => {
+        const conv = state.conversations[paneId] ?? makeEmptyConversation(paneId);
+        return {
+          conversations: {
+            ...state.conversations,
+            [paneId]: {
+              ...conv,
+              messages: conv.messages.filter((message) => message.id !== messageId),
+            },
+          },
+        };
+      });
+      debouncedSave(persist);
     },
 
     setStreaming: (paneId, streaming) => {

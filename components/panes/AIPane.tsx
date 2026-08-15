@@ -14,6 +14,7 @@ import {
   Animated,
   Easing,
   TouchableOpacity,
+  Alert,
   type ListRenderItemInfo,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -528,18 +529,42 @@ export default function AIPane() {
     });
   }, [paneId]);
 
+  const confirmDeleteMessage = useCallback((messageId: string) => {
+    Alert.alert(
+      t('chat.delete_message_title'),
+      t('chat.delete_message_body'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: () => useAIPaneStore.getState().deleteMessage(
+            resolveAiPaneStoreKey(paneId),
+            messageId,
+          ),
+        },
+      ],
+    );
+  }, [paneId, t]);
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
-      <MessageBubble
-        message={item}
-        isStreaming={isStreaming}
-        maxWidth={bubbleMaxWidth}
-        onConfirmAgentDraft={confirmAgentDraft}
-        onCancelAgentDraft={cancelAgentDraft}
-        onDismissScheduleReadiness={dismissScheduleReadiness}
-      />
+      <TouchableOpacity
+        activeOpacity={1}
+        onLongPress={() => confirmDeleteMessage(item.id)}
+        delayLongPress={350}
+      >
+        <MessageBubble
+          message={item}
+          isStreaming={isStreaming}
+          maxWidth={bubbleMaxWidth}
+          onConfirmAgentDraft={confirmAgentDraft}
+          onCancelAgentDraft={cancelAgentDraft}
+          onDismissScheduleReadiness={dismissScheduleReadiness}
+        />
+      </TouchableOpacity>
     ),
-    [isStreaming, bubbleMaxWidth, confirmAgentDraft, cancelAgentDraft, dismissScheduleReadiness],
+    [isStreaming, bubbleMaxWidth, confirmAgentDraft, cancelAgentDraft, dismissScheduleReadiness, confirmDeleteMessage],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);

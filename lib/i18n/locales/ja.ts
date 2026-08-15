@@ -1005,6 +1005,8 @@ const ja: Record<string, string> = {
   'chat.delete_confirm': 'このメッセージを削除しますか？',
   'chat.cancel': 'キャンセル',
   'chat.delete': '削除',
+  'chat.delete_message_title': 'メッセージを削除',
+  'chat.delete_message_body': 'このメッセージを削除しますか？',
   'chat.safety_risk': '{{level}} リスク',
   'chat.safety_confirm': '実行前に確認',
   'chat.safety_cancel': 'キャンセル',
