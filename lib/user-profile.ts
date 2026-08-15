@@ -318,17 +318,18 @@ function extractFacts(input: string): string[] {
     }
   }
 
-  // 明示的な「覚えて」指示
-  const rememberPatterns = [
-    /(?:覚えて(?:おいて)?|remember|記録して|メモして)(?:[:：]?\s*)([^。！？\n]{3,60})/gi,
-  ];
-
-  for (const pat of rememberPatterns) {
-    let match;
-    while ((match = pat.exec(sanitized)) !== null) {
-      facts.push(match[1].trim());
-    }
-  }
+  // NOTE: an explicit "覚えて/remember" instruction is deliberately NOT
+  // captured here. It used to be (a naive regex below), which silently wrote
+  // an unconfirmed fact into this profile — no delete UI, no confirm turn —
+  // completely bypassing lib/agent-global-memory-intent.ts's confirm-gated
+  // `_global` memory system. Once that system also started catching bare
+  // "remember this" utterances (Companion Increment B,
+  // detectCompanionMemoryWrite), the same utterance would silently duplicate
+  // into BOTH stores and both get injected into every future prompt (found
+  // on-device 2026-08-15: a test token remained "remembered" via this path
+  // even after its `_global` note was deleted). The self-introduction/
+  // preference patterns above stay — they're ambient, not an explicit
+  // memory request, so there's no confirm-gated system to defer to.
 
   return facts;
 }

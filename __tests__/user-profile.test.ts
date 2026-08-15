@@ -88,11 +88,32 @@ describe('learnFromCommand', () => {
 });
 
 describe('learnFromUserInput', () => {
-  it('extracts an explicit "覚えて" fact', async () => {
+  // 2026-08-15: an explicit "覚えて/remember" utterance must NOT be silently
+  // captured into profile facts anymore — it now goes exclusively through
+  // lib/agent-global-memory-intent.ts's confirm-gated `_global` memory flow
+  // (detectGlobalMemoryWrite / detectCompanionMemoryWrite). Silently
+  // duplicating the same fact into this unconfirmed, no-delete-UI store was
+  // an on-device-found bug (a "forgotten" _global note stayed remembered via
+  // this path). See extractFacts' doc comment for the full reasoning.
+  it('does NOT capture an explicit "覚えて" instruction as a profile fact', async () => {
     await learnFromUserInput('覚えておいて: 毎朝9時にニュース要約が欲しい');
 
     const profile = await loadUserProfile();
-    expect(profile.facts.some((f) => f.includes('毎朝9時にニュース要約が欲しい'))).toBe(true);
+    expect(profile.facts.some((f) => f.includes('毎朝9時にニュース要約が欲しい'))).toBe(false);
+  });
+
+  it('does NOT capture an explicit "remember" instruction as a profile fact', async () => {
+    await learnFromUserInput('remember: I prefer concise output');
+
+    const profile = await loadUserProfile();
+    expect(profile.facts.some((f) => f.includes('I prefer concise output'))).toBe(false);
+  });
+
+  it('still captures ambient self-introduction facts (unaffected by the remember-pattern removal)', async () => {
+    await learnFromUserInput('私の名前はりょうです');
+
+    const profile = await loadUserProfile();
+    expect(profile.facts.some((f) => f.includes('りょう'))).toBe(true);
   });
 
   it('detects the language tendency from the message', async () => {
