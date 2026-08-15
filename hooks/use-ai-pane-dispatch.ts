@@ -2495,7 +2495,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
 
         const terminalSessionId = terminalSessionForAiPane(paneIdRaw);
         const terminalCtx = getTerminalSnapshotForSession(terminalSessionId);
-        store.setTerminalContext(paneId, terminalCtx);
+        store.setTerminalContext(paneIdRaw, terminalCtx);
         logInfo(
           'AIPaneDispatch',
           `Terminal context: agent=team session=${terminalSessionId ?? 'active'} raw=${describeTerminalContextForLog(terminalCtx)} injected=${describeTerminalContextForLog(terminalCtx)}`,
@@ -2617,7 +2617,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // ── Snapshot terminal context ──
       const terminalSessionId = terminalSessionForAiPane(paneIdRaw);
       const terminalCtx = getTerminalSnapshotForSession(terminalSessionId);
-      store.setTerminalContext(paneId, terminalCtx);
+      store.setTerminalContext(paneIdRaw, terminalCtx);
 
       // Auto-stage a referenced file so InlineDiff's Accept can actually
       // write the patch back to disk without the user first opening the

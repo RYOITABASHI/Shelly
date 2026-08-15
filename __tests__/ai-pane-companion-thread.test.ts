@@ -34,6 +34,33 @@ it('shares one persistent conversation across local Shelly panes', () => {
   );
 });
 
+it('keeps terminal context independent for panes sharing the companion thread', () => {
+  usePaneStore.setState({ paneAgents: { left: 'local', right: 'local' } } as any);
+  useAIPaneStore.getState().getOrCreate('left');
+  useAIPaneStore.getState().getOrCreate('right');
+
+  const leftKey = resolveAiPaneStoreKey('left');
+  const rightKey = resolveAiPaneStoreKey('right');
+  expect(leftKey).toBe(COMPANION_CONVERSATION_KEY);
+  expect(rightKey).toBe(COMPANION_CONVERSATION_KEY);
+
+  useAIPaneStore.getState().addMessage(leftKey, {
+    id: 'left-message', role: 'user', content: 'from left', timestamp: 1,
+  });
+  useAIPaneStore.getState().addMessage(rightKey, {
+    id: 'right-message', role: 'user', content: 'from right', timestamp: 2,
+  });
+  useAIPaneStore.getState().setTerminalContext('left', 'left terminal session');
+  useAIPaneStore.getState().setTerminalContext('right', 'right terminal session');
+
+  const conversations = useAIPaneStore.getState().conversations;
+  expect(conversations[COMPANION_CONVERSATION_KEY].messages.map((message) => message.content))
+    .toEqual(['from left', 'from right']);
+  expect(conversations.left.terminalContext).toBe('left terminal session');
+  expect(conversations.right.terminalContext).toBe('right terminal session');
+  expect(conversations[COMPANION_CONVERSATION_KEY].terminalContext).toBeNull();
+});
+
 it('keeps explicitly bound provider panes independent', () => {
   usePaneStore.setState({ paneAgents: { left: 'gemini', right: 'codex' } } as any);
   const leftKey = resolveAiPaneStoreKey('left');

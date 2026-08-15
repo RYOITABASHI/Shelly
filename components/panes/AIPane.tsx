@@ -412,6 +412,9 @@ export default function AIPane() {
   const conversation = useAIPaneStore((s) => {
     return s.conversations[resolveAiPaneStoreKey(paneId)] ?? null;
   });
+  const paneTerminalContext = useAIPaneStore(
+    (s) => s.conversations[paneId]?.terminalContext ?? null,
+  );
 
   const initialised = useRef(false);
   if (!initialised.current) {
@@ -501,8 +504,7 @@ export default function AIPane() {
 
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.isStreaming ?? false;
-  const terminalContext = conversation?.terminalContext ?? null;
-  const contextBadge = formatContextBadge(terminalContext);
+  const contextBadge = formatContextBadge(paneTerminalContext);
 
   // Tail-follow signal: changes on every new message AND on each streamed token,
   // since the store mutates the last message's streamingText in place (the array
