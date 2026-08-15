@@ -1604,7 +1604,7 @@ const en: Record<string, string> = {
   'sidebar.running': 'RUNNING',
   'sidebar.log': 'LOG',
   'sidebar.scheduled': 'SCHEDULED',
-  'sidebar.agents': 'AGENTS',
+  'sidebar.agents': 'MY AGENTS',
   'sidebar.agent_manual': 'manual',
   'sidebar.agent_autonomous': 'autonomous',
   'sidebar.agent_paused': 'paused',
@@ -1617,7 +1617,7 @@ const en: Record<string, string> = {
   // approval layer — a SEPARATE capability-broker boundary-crossing approval
   // (e.g. reading /sys/class/power_supply) can still prompt even when this is
   // off. Clarified in-label rather than adding new UI.
-  'sidebar.agent_approval_auto': 'no-approval (dispatch only)',
+  'sidebar.agent_approval_auto': 'runs automatically (dispatch only)',
   'sidebar.agent_approval_manual': 'approval required',
   'sidebar.agent_last': 'Last',
   'sidebar.agent_next_run': 'Next run',

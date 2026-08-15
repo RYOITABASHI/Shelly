@@ -1583,7 +1583,7 @@ const ja: Record<string, string> = {
   'sidebar.running': '実行中',
   'sidebar.log': 'ログ',
   'sidebar.scheduled': '予約済み',
-  'sidebar.agents': 'エージェント',
+  'sidebar.agents': 'マイエージェント',
   'sidebar.agent_manual': '手動',
   'sidebar.agent_autonomous': '自律',
   'sidebar.agent_paused': '一時停止中',
@@ -1593,7 +1593,7 @@ const ja: Record<string, string> = {
   // 発生しないように読めるが、これは通知配信の承認レイヤーのみを指す —
   // capability broker の境界越え承認（例: /sys/class/power_supply 読み取り）
   // は別レイヤーで、これがOFFでも別途プロンプトが出ることがある。
-  'sidebar.agent_approval_auto': '承認なし（配信のみ）',
+  'sidebar.agent_approval_auto': '自動で実行（配信のみ）',
   'sidebar.agent_approval_manual': '承認必須',
   'sidebar.agent_last': '直近',
   'sidebar.agent_next_run': '次回実行',
