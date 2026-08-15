@@ -4763,6 +4763,20 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+**2026-08-15 Increment B(`_global`メモリ書き側、AI Pane会話からの素の「覚えておいて」)実装完了・push済み・CI green(`d0b016373`)**
+
+`lib/agent-global-memory-intent.ts`に`detectCompanionMemoryWrite`を新設(既存`detectGlobalMemoryWrite`の全エージェントスコープマーカー必須ゲートを持たない、しかしペイロード品質ゲートは共有プライベート関数`buildGlobalMemoryWriteIntent`経由で完全に同一)。`hooks/use-ai-pane-dispatch.ts`に`parsed.layer !== 'mention' && agent === 'local'`(デフォルトのShellyペルソナ経由のみ、`@gemini`/`@codex`/`@local`等の明示ルーティングは除外)というガード付きで新規interceptionを追加、既存の`pendingGlobalMemory`確認フロー・既存i18nキーをそのまま再利用。`detectGlobalMemoryWrite`自体の挙動・既存テストは無傷。
+
+**検証**: `npx tsc --noEmit`クリーン(CC自身で再検証)、`agent-memory-global-scope.test.ts`+`ai-pane-dispatch-interaction-order.test.tsx`計104/104 PASS(CC自身で再検証)。CI green。
+
+**Fable5のIncrement A実機検証で発見済みの重複懸念(未対応)**: `learnFromUserInput`のプロファイルfact学習が"remember"発話を独立に横取りする経路と、今回追加した`_global`書き込み経路が、同じ発話に対して両方発火しうる(実害は同一情報がプロンプトに二重に乗る程度で有害ではないが、設計上の重複)。次回on-deviceテストで実際に二重発火するか確認し、要すれば一本化を検討すること。
+
+**実機未検証**: Increment B自体の実機テスト(「remember that I prefer dark mode」のような`@agent`無しの素の発話で確認質問が出て、承諾すると`_global`に保存されるか)。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
