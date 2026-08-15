@@ -4777,6 +4777,22 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+**2026-08-15 「Hermesと呼べるか」残り2ギャップ(会話連続性/proactive再入場)着手 — OSの限界ではなく単なる未実装と判断、並列squad方式で実装**
+
+ユーザーから「これはOS制限で無理では？」と問われ、両方とも検証の上「OS制限ではない、単に作っていないだけ」と回答・訂正した上で実装着手(ブラウザ自動操作の広さのような真のOS制約とは性質が違う)。
+
+**① 会話の連続性(複数AI Paneでの単一Shellyスレッド化) → 実装完了・push済み・CI green(`b095a611a`)**
+
+`store/ai-pane-store.ts`に予約キー`COMPANION_CONVERSATION_KEY`('__companion__')+リゾルバ`resolveAiPaneStoreKey(paneId)`(ペインの現在の`bound agent`が`local`/未設定なら共有キー、明示プロバイダなら従来通りpaneId固有)を追加。`hooks/use-ai-pane-dispatch.ts`の4クロージャ(dispatch/confirmAgentDraftInner/cancelAgentDraft/cancelStreaming)冒頭で`paneId`をシャドーイングして解決後キーへリダイレクト——ただし`pane-store`側(`paneAgents`読み取り・`bindAgent`呼び出し・`terminalSessionForAiPane`)は生の`paneIdRaw`を使い続ける必要があり、これを取り違えるとagent-binding自体が壊れる重大なポイント。CCが自分で全箇所diffを読み、この区別が正しく守られていることを確認済み。`AIPane.tsx`の6箇所も同様に解決。既存の「Switched to X」通知パターンを模した「スレッド切替」通知(新規i18nキー、en/ja両方)も追加。事前調査(Explore、読み取り専用)で「2つのAI Paneが今日は完全に独立した会話を持つ」ことを実コードで確認した上での設計。`npx tsc --noEmit`クリーン、85/85 PASS(CC自身で再検証済み)。
+
+**残置した軽微な副作用(要フォローアップ、緊急度低)**: `setTerminalContext(paneId, ...)`が解決後の共有キーに書き込まれるため、コンパニオンスレッドを共有する複数ペインで「コンテキストバッジ」UI表示(`AIPane.tsx:504-505`、`conversation.terminalContext`由来)が最後にdispatchしたペインの端末内容を指す可能性がある。**実害は表示のみ**——実際にLLMへ送るプロンプトの`terminalCtx`は各dispatch呼び出しで`terminalSessionForAiPane(paneIdRaw)`から都度フレッシュに計算されており、この副作用の影響を受けない。今回のCodex dispatch prompt作成時にCC自身がこのフィールドの存在を見落としていたのが原因(Codexの実装ミスではなく指示の抜け)。
+
+**② proactive再入場(run完了をチャットへ書き込む) → 実装中(Codex dispatch済み)**。attended(Sidebar Run Now)は`lib/agent-manager.ts`の`syncAgentRunLogsFromDisk`直後にJS到達可能な結果を`COMPANION_CONVERSATION_KEY`へ書き込み(既存の in-chat `@agent run` フローと同じフォーマットを流用)。unattended(AlarmManager/headless)は`shelly-plan-executor.js`が別Node.jsプロセスで動くためJS到達不可——新規キューファイルは追加コスト・リスクが高いと判断し不採用、代わりに`app/_layout.tsx`の既存60秒ポーリング(`syncAgentLogs`)に便乗、新規run-logの差分検出で書き込む設計を選択(「最速で」という指示のもとリスク最小の選択肢を採用)。attendedとunattendedの二重投稿を防ぐdedup設計が正しく成立するか、Codexの実装完了後にCCが個別レビューする。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
