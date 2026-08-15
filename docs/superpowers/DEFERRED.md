@@ -4708,7 +4708,19 @@ claude() {
 
 **未着手・スコープ外として明記**: 無人スケジュール実行（PlanSpec executor経路）側の要約品質は今回未検証——上記の通りこの2バグの影響は受けないと判定したが、それは「悪化要因が無い」ことの確認であって「品質が良い」ことの確認ではない。20:00の実際のスケジュール発火時に、ステップ2の中身を別途確認すること（P2、任意）。
 
-→ sync: なし（バックエンドのみ）。
+→ sync: なし(バックエンドのみ)。
+
+---
+
+**2026-08-15 Fable5レビュー指摘の残り2項目(cron人間語化以外)の決着**: 「Hermesと呼べるか」再レビューで見つかった3項目のうち、cron人間語化(Sidebar/完了メッセージ)は前エントリで実装・検証済み。残り2項目の決着:
+
+1. **Sidebarの`AGENTS`全大文字ラベル/`no-approval (dispatch only)`ラベル → コピーのみ書き換えで対応(実装完了・push済み `eb09364e8`)**。`sidebar.agents`(`AGENTS`→`MY AGENTS`、ja: `エージェント`→`マイエージェント`)、`sidebar.agent_approval_auto`(`no-approval (dispatch only)`→`runs automatically (dispatch only)`、ja: `承認なし（配信のみ）`→`自動で実行（配信のみ）`)。**2026-07-24に追加された「(dispatch only)」スコープ限定子(承認なしはnotify-dispatch層のみを指し、capability broker境界越え承認は別途発生しうる、という注記)は文言レベルでそのまま保持**——「runs automatically」に差し替えたのは冒頭の"no-approval"という事務的表現のみで、スコープの正確性を後退させていない。他の兄弟見出し(`TASKS`/`RUNNING`/`LOG`/`SCHEDULED`)が全て全大文字の技術ラベル規約(`styles.tasksSubheader`、fontSize 7、letterSpacing 0.5、CSS textTransform無し=文字列そのものが大文字)であることを確認した上で、視覚的一貫性を壊さない範囲(短い全大文字のまま)で言葉だけ和らげた。`npx tsc --noEmit`クリーン、既存テストに文字列アサーションなし(grep確認済み)。
+
+2. **英語スロットフィリングの「every morning/evening/night」認識漏れ → 実装しないことを決定(意図的スコープ外)**。前回投稿時に自分で懸念していた衝突リスク(`dailyMarker`に`every\s*morning|every\s*evening|every\s*night`を追加すると、既存の別regex`[/夜|\bnight\b|\bevening\b/i, { hour: 21, minute: 0 }]`と組み合わさり、"every evening"/"every night"のような**時刻を一切明示していない**発話が確信度高くdaily 21:00として確定登録されてしまう)を、狭くスコープしたCodex follow-up job(`task-mstuyojf-8c5vju`)が実装前チェックで検出、「安全に狭い変更ではない」と判断して**ファイル変更ゼロで停止**(タスク側で明示的に禁止していた「裸の時間帯語→デフォルト時刻の当てはめ」領域に踏み込まないと直せない)。この判断は正しい——実装するには`dailyMarker`の追加だけでなく、「時間帯語はdaily頻度のシグナルにはなるが、確信度high・確定登録には十分でない」という区別をパーサー全体に持ち込む設計変更が要る。既存のAsk-for-time安全網(datetime未確定時は`rejected=[scheduleText]`でconfirmカードに警告を出す、2026-08-XXエントリ参照)がこのケースをどう扱うかは別途要調査。
+
+**この2件でFable5指摘3項目は全て決着(cron人間語化=実装済み、コピー2件=実装済み、slot-fill=意図的見送り・理由記録済み)**。
+
+→ sync: なし。
 
 ---
 
