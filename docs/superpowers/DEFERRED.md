@@ -4838,6 +4838,18 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+---
+
+**2026-08-15 スレッド切替バグ修正の実機再検証 = 両方向PASS(Fable5、build 2214、`93fdc6e0e`)**
+
+前回発見と同一シナリオ(3ペイン構成)で再検証。`@gemini`切替: 発話・両notice・応答すべてがペイン自身のスレッドに記録され、companion側への混入なし = FIXED確認。`@local`復帰: 発話・両notice・応答すべてがcompanionスレッドに記録されPane A/B両方に表示、孤児化解消 = FIXED確認。共有スレッド自体の回帰もなし。
+
+**これでCompanion記憶(Increment A/B)+会話の連続性(Increment C1、スレッド切替バグ含む)+proactive再入場(Increment C2)の一連の作業が、実機検証まで含めて完全に完了。** 残るのは緊急度の低い既知の小課題(terminalContextバッジ、個別メッセージ削除UI無し)のみ。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
