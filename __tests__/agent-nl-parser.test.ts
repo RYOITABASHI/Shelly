@@ -334,6 +334,38 @@ describe('parseAgentNL — scheduleAssumed (bare time-of-day word defaults)', ()
     const d = parseAgentNL('朝ニュースをまとめて'); // no 毎, no recurrence established
     expect(d.scheduleAssumed).toBeUndefined();
   });
+
+  it('EN "every morning" (no digit) → daily 08:00, scheduleAssumed true', () => {
+    const d = parseAgentNL('every morning summarize the news');
+    expect(d.schedule).toBe('0 8 * * *');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.scheduleAssumed).toBe(true);
+    expect(d.suggestedTime).toEqual({ hour: 8, minute: 0 });
+  });
+
+  it('EN "every evening" (no digit) → daily 21:00, scheduleAssumed true', () => {
+    const d = parseAgentNL('every evening summarize the news');
+    expect(d.schedule).toBe('0 21 * * *');
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('EN "every night" (no digit) → daily 21:00, scheduleAssumed true', () => {
+    const d = parseAgentNL('every night summarize the news');
+    expect(d.schedule).toBe('0 21 * * *');
+    expect(d.scheduleAssumed).toBe(true);
+  });
+
+  it('EN explicit digit time ("every evening at 6pm") is UNAFFECTED — never marked as assumed', () => {
+    const d = parseAgentNL('every evening at 6pm summarize the news');
+    expect(d.schedule).toBe('0 18 * * *');
+    expect(d.scheduleAssumed).toBeUndefined();
+  });
+
+  it('EN explicit digit time ("every morning at 7am") is UNAFFECTED — never marked as assumed', () => {
+    const d = parseAgentNL('every morning at 7am summarize the news');
+    expect(d.schedule).toBe('0 7 * * *');
+    expect(d.scheduleAssumed).toBeUndefined();
+  });
 });
 
 describe('parseAgentNL — "daily-multi" (multiple specific times per day)', () => {

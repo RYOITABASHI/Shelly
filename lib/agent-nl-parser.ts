@@ -401,7 +401,7 @@ export const JP_DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'];
  */
 const TIME_OF_DAY_DEFAULTS: Array<[RegExp, ParsedTime]> = [
   [/深夜/, { hour: 0, minute: 0 }],
-  [/朝イチ|起きたら|朝/, { hour: 8, minute: 0 }],
+  [/朝イチ|起きたら|朝|\bmorning\b/i, { hour: 8, minute: 0 }],
   [/正午|昼/, { hour: 12, minute: 0 }],
   [/夕方/, { hour: 18, minute: 0 }],
   [/夜|\bnight\b|\bevening\b/i, { hour: 21, minute: 0 }],
@@ -584,10 +584,18 @@ export function parseSchedule(text: string): ScheduleResult {
   const dailyOnce = /(?:^|[^0-9０-９月/／])[1１一]\s*日\s*に?\s*[1１一]\s*[回度]/.test(text);
   // An explicit daily marker (毎日 / daily) outranks an incidental weekday mention,
   // so "毎日月曜の予定を8時に通知" stays daily instead of collapsing to weekly-Mon.
+  // "every morning/evening/night" carry the same daily-recurrence force as
+  // "every day" — they just also imply a time-of-day word, which is handled
+  // by the exact same assumedTimeOfDay/resolveTimeOfDayDefault path already
+  // used for bare JP 毎朝/毎晩/毎夕 below (see TIME_OF_DAY_DEFAULTS's doc
+  // comment). A digit time still wins when present ("every evening at 6pm" —
+  // `time` is non-null so the assumed-default branch is never reached).
   const dailyMarker =
     /毎日|毎朝|毎晩|毎夕|日次/.test(text) ||
     dailyOnce ||
-    /\b(every\s*day|everyday|daily|each\s+day|once\s+a\s+day)\b/.test(lower);
+    /\b(every\s*day|everyday|daily|each\s+day|once\s+a\s+day|every\s*morning|every\s*evening|every\s*night)\b/.test(
+      lower,
+    );
 
   // ── 2. Weekly → `M H * * D` (single day) or `M H * * d1,d2,…` (multi-day) ──
   // Collect EVERY weekday mentioned so "月曜と金曜" → `* * 1,5` instead of being
