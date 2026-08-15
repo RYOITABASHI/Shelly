@@ -58,7 +58,7 @@ import {
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
-import { detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
+import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildGlobalRecallContext, readGlobalMemoryNotes } from '@/lib/agent-memory';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
@@ -1987,6 +1987,30 @@ export function useAIPaneDispatch(paneId: string) {
           content: `Usage: @${requestedAgent} <message>`,
           timestamp: Date.now(),
           agent: agent as ChatMessage['agent'],
+        });
+        return;
+      }
+
+      // Companion-memory write interception (Increment B): an unprefixed
+      // "remember this" addressed to Shelly may propose a `_global` note.
+      // Keep this narrower than provider routing: `agent === 'local'` proves
+      // the resolved destination is the default Shelly persona, while the
+      // non-mention gate excludes every explicit route (including @local).
+      // The strict @agent producer below is a disjoint mention-only path, so a
+      // dual-marker utterance cannot be handled by both producers in one turn.
+      const companionMemoryIntent =
+        parsed.layer !== 'mention' && agent === 'local'
+          ? detectCompanionMemoryWrite(promptText)
+          : null;
+      if (companionMemoryIntent) {
+        const gmStrings = detectMessageLocale(promptText) === 'ja' ? ja : en;
+        store.addMessage(paneId, {
+          id: generateId(),
+          role: 'assistant',
+          content: gmStrings['globalmemory.confirm_prompt'].replace('{{text}}', companionMemoryIntent.text),
+          timestamp: Date.now(),
+          agent: agent as ChatMessage['agent'],
+          pendingGlobalMemory: { text: companionMemoryIntent.text, attempts: 0 },
         });
         return;
       }

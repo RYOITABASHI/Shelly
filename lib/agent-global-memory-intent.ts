@@ -158,6 +158,18 @@ function stripScopePhrases(fact: string): string {
     .trim();
 }
 
+/** Apply the shared payload-quality bar after detectMemory extracts a fact. */
+function buildGlobalMemoryWriteIntent(fact: string): GlobalMemoryWriteIntent | null {
+  const stripped = stripScopePhrases(fact);
+  if (!stripped) return null;
+  if (BARE_PARTICLE_RE.test(stripped)) return null;
+  const normalized = stripped.toLowerCase().replace(/[。、.!！]+$/, '').replace(/(?:は|を|も|が|に|で|の)$/, '');
+  if (CONTENTLESS_RESIDUES.has(normalized)) return null;
+  if (stripped.length < MIN_GLOBAL_NOTE_CHARS) return null;
+
+  return { text: stripped, type: 'preference' };
+}
+
 /**
  * Detect an explicit "remember this for every agent" request.
  *
@@ -187,12 +199,32 @@ export function detectGlobalMemoryWrite(raw: string): GlobalMemoryWriteIntent | 
   if (!fact) return null;
 
   // Gate 2 — the payload must survive scope-stripping as real content.
-  const stripped = stripScopePhrases(fact);
-  if (!stripped) return null;
-  if (BARE_PARTICLE_RE.test(stripped)) return null;
-  const normalized = stripped.toLowerCase().replace(/[。、.!！]+$/, '').replace(/(?:は|を|も|が|に|で|の)$/, '');
-  if (CONTENTLESS_RESIDUES.has(normalized)) return null;
-  if (stripped.length < MIN_GLOBAL_NOTE_CHARS) return null;
+  return buildGlobalMemoryWriteIntent(fact);
+}
 
-  return { text: stripped, type: 'preference' };
+/**
+ * Detect a memory-write request addressed directly to the Shelly companion.
+ *
+ * This deliberately omits detectGlobalMemoryWrite's explicit all-agents scope
+ * gate: an unscoped AI-Pane-chat "remember this" is presumed to address the
+ * Shelly persona, whose `_global` memory fans out through every agent via
+ * agent-manager's applyMemoryAndSkills. It remains IDENTICALLY strict about
+ * payload quality, including harmlessly stripping a scope phrase when one is
+ * present. Like detectGlobalMemoryWrite, this pure detector writes NOTHING;
+ * only the caller's mandatory confirm-then-write flow may commit the note.
+ */
+export function detectCompanionMemoryWrite(raw: string): GlobalMemoryWriteIntent | null {
+  const text = (raw ?? '').trim();
+  if (!text) return null;
+
+  // Keep the same question guard as the stricter sibling. A polite
+  // question-form request is an intentional false negative.
+  if (/[?？]\s*$/.test(text)) return null;
+
+  const memory = detectMemory(text);
+  if (!memory?.remember) return null;
+  const fact = memory.rememberFact?.trim();
+  if (!fact) return null;
+
+  return buildGlobalMemoryWriteIntent(fact);
 }

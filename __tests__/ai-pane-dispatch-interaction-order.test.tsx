@@ -196,6 +196,8 @@ import { tFor as mockedTFor } from '@/lib/i18n';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ollamaChat: mockOllamaChat } = require('@/lib/local-llm') as { ollamaChat: jest.Mock };
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const { ollamaChatStream: mockOllamaChatStream } = require('@/lib/local-llm') as { ollamaChatStream: jest.Mock };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { ensureLocalLlmServerRunning: mockEnsureLocalLlmServerRunning } =
   require('@/lib/local-llm-autostart') as { ensureLocalLlmServerRunning: jest.Mock };
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1362,6 +1364,46 @@ describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-u
 // most important — that ambiguous input writes NOTHING.
 
 describe('Scenario 8 — "remember this for every agent" write entry point', () => {
+  it('intercepts a bare ordinary-chat memory request before the local LLM', async () => {
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('remember that I prefer dark mode');
+    });
+
+    expect(mockOllamaChatStream).not.toHaveBeenCalled();
+    expect(lastMessage()).toMatchObject({
+      role: 'assistant',
+      pendingGlobalMemory: { text: 'I prefer dark mode', attempts: 0 },
+    });
+    expect(lastMessage().content).toContain(en['globalmemory.confirm_prompt'].split('{{text}}')[0]);
+  });
+
+  it('leaves an ordinary chat message with no memory marker on the local LLM path', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('Ordinary reply', false);
+      return { success: true, content: 'Ordinary reply' };
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('tell me a short joke');
+    });
+
+    expect(mockOllamaChatStream).toHaveBeenCalledTimes(1);
+    expect(conv().messages.some((message) => message.pendingGlobalMemory)).toBe(false);
+    expect(lastMessage().content).toBe('Ordinary reply');
+  });
+
   it('asks for confirmation first and writes nothing until an explicit confirm', async () => {
     const { result } = setup();
 

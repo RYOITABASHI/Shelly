@@ -25,7 +25,7 @@ import {
   recallMemoryNotes,
   type MemoryNote,
 } from '@/lib/agent-memory';
-import { detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
+import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 
 const iso = (n: number) => new Date(Date.UTC(2026, 6, 28, 0, 0, n)).toISOString();
@@ -267,6 +267,39 @@ describe('detectGlobalMemoryWrite — misses (a wrong global write is worse than
   it('rejects empty / whitespace input', () => {
     expect(detectGlobalMemoryWrite('')).toBeNull();
     expect(detectGlobalMemoryWrite('   ')).toBeNull();
+  });
+});
+
+describe('detectCompanionMemoryWrite — bare AI Pane companion requests', () => {
+  it('accepts a bare memory marker without an all-agents scope phrase', () => {
+    expect(detectCompanionMemoryWrite('remember that I prefer dark mode')).toEqual({
+      text: 'I prefer dark mode',
+      type: 'preference',
+    });
+  });
+
+  it('also accepts and strips the existing scope-marker phrases', () => {
+    expect(detectCompanionMemoryWrite('remember for all agents that I prefer metric units')).toEqual({
+      text: 'I prefer metric units',
+      type: 'preference',
+    });
+  });
+
+  it.each([
+    "I don't remember whether I prefer dark mode",
+    'do you remember that I prefer dark mode?',
+    '返信は日本語だと覚えている？',
+  ])('rejects negated or question form: %s', (utterance) => {
+    expect(detectCompanionMemoryWrite(utterance)).toBeNull();
+  });
+
+  it.each([
+    'remember this',
+    'remember that it',
+    'これを覚えておいて',
+    '猫を覚えておいて',
+  ])('rejects contentless or too-short payload: %s', (utterance) => {
+    expect(detectCompanionMemoryWrite(utterance)).toBeNull();
   });
 });
 
