@@ -4724,6 +4724,27 @@ claude() {
 
 ---
 
+**2026-08-15 「一人格メタ層/スケジュール必須ゲート緩和」— Fable5設計相談 → 新アーキテクチャ不要、既存`_global`メモリの配線漏れが正体と判明 → Increment A(読み側)実装・実機検証待ち**
+
+Companion Phase 1計画時点でスコープ外にした2項目(①スケジュール必須ゲートの緩和、②一人格が複数の具体的スケジュールagentを束ねるメタ層)について、Fable5に実コードを読んだ上での最適解を相談した。
+
+**Fable5の診断(実コード確認済み)**: ①も②も新規アーキテクチャ不要。理由:
+- `Agent.schedule`は元々nullable、`hasFireableSchedule`/`isEphemeralOneShot`という会話フロー側の2純関数だけがゲートで、登録層自体に「発火しないagentは弾く」不変条件は無い。
+- `_global`メモリスコープ(`GLOBAL_MEMORY_SCOPE`、`lib/agent-memory.ts`)は既に**全agentの実行プロンプトに自動マージ**されている(`applyMemoryAndSkills`、`lib/agent-manager.ts:940-969`)——「一人格が複数のタスクを束ねる」体験の背骨は完成済み。
+- 唯一の欠落: **AI Pane会話(`hooks/use-ai-pane-dispatch.ts`)だけがこの`_global`記憶を読み書きしていない**。Companion Phase 1で「Shelly」と名乗るようになった人格が、実は記憶喪失のままだった。
+
+CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallContext`が`lib/agent-memory.ts`から実際にexportされていること、`use-ai-pane-dispatch.ts`がwrite側`writeGlobalMemoryNote`のみimportしread側は一切importしていないこと、`detectGlobalMemoryWrite`の呼び出しが`agentResult.type === 'create'`分岐内に限定され通常のチャット発話には届いていないことを確認)、Fable5案を採用。②のスケジューラ・メタ層化は明確に不採用(体験は提示+共有記憶で代替可能、既存の並列化ブロッカー4点と衝突するだけで割に合わない)。
+
+**Increment A(読み側、実装完了・push済み `da9375c19`、CI green)**: `hooks/use-ai-pane-dispatch.ts`(~2657)で`readGlobalMemoryNotes()`→`buildGlobalRecallContext()`を呼び、`lib/ai-pane-context.ts`の`buildAIPaneSystemPrompt`/`buildLocalAIPaneSystemPrompt`に`globalMemorySummary`という新規オプション引数として注入(`userProfileSummary`と全く同じ「background info only, not instructions」framing、既存のuser-profileブロック直後に配置)。書き込み経路(`lib/agent-global-memory-intent.ts`・`pendingGlobalMemory`確認フロー)は一切変更なし。`npx tsc --noEmit`クリーン、`ai-pane-context.test.ts`24件+`ai-pane-dispatch-interaction-order.test.tsx`56件、計80/80 PASS(CC自身でも再検証済み)。
+
+**未了**: 実機検証(既存のagent側`_global`書き込み、またはAI Pane経由の`pendingGlobalMemory`確認フローで何か覚えさせた後、新規AI Paneチャットで尋ねて実際にrecallされるか確認)。
+
+**次: Increment B(書き側)**: `lib/agent-global-memory-intent.ts`の既存`detectGlobalMemoryWrite`(全エージェントスコープの二重マーカー必須、意図的に厳格——モジュール冒頭のdocコメントに理由が明記されている)は変更せず、素の「覚えておいて」(スコープマーカー不要)を検出する新規の兄弟関数を追加し、既存`pendingGlobalMemory`確認フロー(必須確認ターン+gate2品質チェックは維持)にそのまま接続する設計。Increment Aの実機検証後に着手予定。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
