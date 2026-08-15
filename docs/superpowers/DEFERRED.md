@@ -4745,6 +4745,24 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+**2026-08-15 Increment A(`_global`メモリ読み側配線)実機検証 = PASS(Fable5、versionCode 2202、`da9375c19`)**
+
+`_global`ノートにしか存在しないテストトークンが、完全新規のAI Paneペイン1通目で正答されることを確認。ローカルLLM(Qwen)・クラウド(`@gemini`)両ルートで検証、いずれも正答。1回目のトークンは後述の理由で証拠棄却し、汚染源を排除した2回目のトークンで再証明(決定的)。既存機能(通常チャット・@mention切替・@agent NLフロー・ターミナル実行)の回帰なしも副次確認。
+
+**実機検証で新規発見した3件(Increment Bの設計に直結)**:
+
+1. **【Increment Bが解決する問題そのもの】`@agent`プレフィックス無しの素の「remember for all agents that...」はどこにもインターセプトされず、LLMが「Understood, I will remember」と応答するだけで実際には何も永続化されない**。`detectGlobalMemoryWrite`の呼び出しが`use-ai-pane-dispatch.ts`の`agentResult.type === 'create'`分岐(`@agent`メンション経由)の内側にしか無いため。「記憶喪失の一人称」問題の実機での直接証拠。
+
+2. **【新規発見・Increment Bへの設計インプット】`learnFromUserInput`(dispatch冒頭で全入力に対し実行)の`rememberPatterns`が、"remember"を含む発話から独立にfactを抽出しAsyncStorageのユーザープロファイルへ永続化・毎プロンプト注入している**。つまりIncrement Bが素の「remember」を`_global`へも書けるようにすると、同じ事実がプロファイルfactと`_global`ノートの**両方**に重複して乗る可能性がある(実害は「同じ情報が2回プロンプトに現れる」程度で有害ではないが、設計上の重複)。Increment Bのレビュー時に、この経路との重複をどう扱うか(一本化する/そのまま許容する)を検討すること。
+
+3. **【軽微・テスト手法上の注意】AI Paneの`[Terminal Output]`は`execution-log-store`のsessionBuffer(直近80行)由来で、画面`clear`では消えない(仕様通り)**。記憶機能を実機デモ/検証する際、過去の`cat`出力がプロンプトに残り続けて偽陽性を生みうる点に注意。
+
+**残置物(要ユーザー判断、緊急度低)**: 検証中にプロファイルへ紛れ込んだテスト用fact(「AOI-TURTLE-42」)の外科的削除手段が無い(編集UIなし、Settings側の全リセットは実データごと破壊するため実行せず)。`MAX_FACTS=30`のスライドウィンドウで自然消滅するが、それまでは全プロンプトに注入され続ける。デフォルト対応は「放置して自然消滅を待つ」、能動的な対応が必要ならユーザー判断待ち。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
