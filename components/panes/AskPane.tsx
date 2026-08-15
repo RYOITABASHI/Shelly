@@ -28,6 +28,8 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   KeyboardAvoidingView,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -74,11 +76,19 @@ export default function AskPane() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  const isAtBottomRef = useRef(true);
   const groqModel = useSettingsStore((s) => s.settings.groqModel ?? 'llama-3.3-70b-versatile');
+
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    isAtBottomRef.current = distanceFromBottom < 60;
+  }, []);
 
   const ask = useCallback(async () => {
     const q = question.trim();
     if (!q || busy) return;
+    isAtBottomRef.current = true;
 
     const turnId = `ask-${Date.now()}`;
     setTurns((prev) => [...prev, { id: turnId, question: q, answer: '', status: null, streaming: true }]);
@@ -108,7 +118,9 @@ export default function AskPane() {
             : t,
           ));
           // Keep the scroll pinned near the bottom while the answer streams in.
-          requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }));
+          if (isAtBottomRef.current) {
+            requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }));
+          }
         },
         groqModel,
         [],
@@ -159,6 +171,8 @@ export default function AskPane() {
           style={styles.conversation}
           contentContainerStyle={{ paddingBottom: 16 }}
           keyboardShouldPersistTaps="handled"
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
         >
           {turns.length === 0 && (
             <View style={styles.empty}>

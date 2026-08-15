@@ -16,6 +16,8 @@
 
 ## History
 
+- 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
 - 2026-08-15: Fable5 実機QAで `@agent delete <name>` が成功表示のまま何も削除しない欠落実装を発見・修正（versionCode 2192）。
 - 2026-08-14: Fable5 UX review「一人の相棒」診断を受け、Phase 1 companion copyの実装範囲と後続P2項目を記録。
 

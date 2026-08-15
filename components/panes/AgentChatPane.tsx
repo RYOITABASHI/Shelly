@@ -11,6 +11,8 @@ import {
   View,
   type GestureResponderEvent,
   type ListRenderItemInfo,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
@@ -157,6 +159,7 @@ export default function AgentChatPane() {
   const [interruptWorkingSessionId, setInterruptWorkingSessionId] = useState<string | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const listRef = useRef<FlatList<AgentChatEvent>>(null);
+  const isAtBottomRef = useRef(true);
 
   useEffect(() => {
     mountedAgentChatPaneCount += 1;
@@ -228,6 +231,7 @@ export default function AgentChatPane() {
     && !interruptWorking,
   );
   const scrollToLatest = useCallback((animated = false) => {
+    if (!isAtBottomRef.current) return;
     listRef.current?.scrollToEnd({ animated });
     requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated });
@@ -237,8 +241,14 @@ export default function AgentChatPane() {
     }, 80);
   }, []);
 
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    isAtBottomRef.current = distanceFromBottom < 60;
+  }, []);
+
   useEffect(() => {
-    if (!latestTimelineEventId) return;
+    if (!latestTimelineEventId || !isAtBottomRef.current) return;
     const frame = requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated: false });
     });
@@ -452,6 +462,7 @@ export default function AgentChatPane() {
 
   const sendReply = useCallback(async () => {
     if (!activeSession || replySending || !draft.trim()) return;
+    isAtBottomRef.current = true;
     const sessionId = activeSession.codexSessionId;
     const sentText = normalizeReplyTextForDisplay(draft);
     const sentAt = Date.now();
@@ -651,6 +662,8 @@ export default function AgentChatPane() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
           onContentSizeChange={() => scrollToLatest(false)}
           onLayout={() => scrollToLatest(false)}
           removeClippedSubviews={false}
