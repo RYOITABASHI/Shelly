@@ -531,10 +531,12 @@ export async function installAgent(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>
 ): Promise<void> {
-  await materializeAgent(agent, runCommand, true);
+  await materializeAgent(agent, runCommand, true, true, { allowDeletedAgentRegistration: true });
 }
 
 type MaterializeRunOpts = {
+  /** Only explicit registration may revive an id whose deletion marker exists. */
+  allowDeletedAgentRegistration?: boolean;
   suppressAction?: boolean;
   suppressErrorNotification?: boolean;
   autonomousCloudConsent?: boolean;
@@ -774,10 +776,21 @@ async function materializeAgentBody(
       ? { ...agent, nextExpectedAt: nextTriggerMs(agent.schedule, agent.startNotBefore) }
       : agent;
   const commands = [
+    // Deletion markers are authoritative. A run can retain an Agent snapshot
+    // after deleteAgent, then reach a completion/ladder restore materialize.
+    // Guard the existing write batch itself so that stale completion cannot
+    // recreate metadata. Only installAgent deliberately clears the marker.
+    ...(!effectiveRunOpts.allowDeletedAgentRegistration
+      ? [`if [ -e "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}" ] || [ -e ${shellQuote(`${deletedAgentsDir()}/${agent.id}`)} ]; then exit 0; fi`]
+      : []),
     `mkdir -p ${shellQuote(agentsDir())}`,
     `mkdir -p ${shellQuote(`${agentsDir()}/plans`)}`,
-    `rm -f ${shellQuote(`${deletedAgentsDir()}/${agent.id}`)}`,
-    `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
+    ...(effectiveRunOpts.allowDeletedAgentRegistration
+      ? [
+          `rm -f ${shellQuote(`${deletedAgentsDir()}/${agent.id}`)}`,
+          `rm -f "$HOME/.shelly/agents/${DELETED_AGENT_MARKER_DIR}/${agent.id}"`,
+        ]
+      : []),
     // Metadata stores the ORIGINAL agent (no baked recall) so memory never
     // compounds across materializations; the script gets the effective prompt.
     // skipMetadataWrite (see MaterializeRunOpts's doc comment): a per-attempt

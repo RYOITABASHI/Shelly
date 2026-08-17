@@ -90,6 +90,54 @@ describe('agent deletion tombstones', () => {
     expect(useAgentStore.getState().agents).toEqual([]);
   });
 
+  it('does not let in-flight run completion restore resurrect a deleted agent', async () => {
+    useAgentStore.getState().setAgents([agent('agent-x')]);
+    let deleted = false;
+    let metadataExists = true;
+    let releaseRun!: () => void;
+    const runFinished = new Promise<void>((resolve) => { releaseRun = resolve; });
+
+    mockTerminalEmulator.runAgent.mockImplementationOnce(async () => runFinished);
+    mockTerminalEmulator.execCommand.mockImplementationOnce(async () => {
+      metadataExists = false;
+      deleted = true;
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+
+    const log = {
+      agentId: 'agent-x', timestamp: 1_800_000, status: 'success' as const,
+      durationMs: 42, toolUsed: 'Codex', outputPreview: 'ok',
+    };
+    let logReads = 0;
+    const runCommand = jest.fn(async (cmd: string) => {
+      if (cmd.includes('/.deleted/agent-x') && cmd.includes('then exit 0')) {
+        return deleted ? 'deleted' : '';
+      }
+      if (cmd.includes('CEREBRAS_API_KEY')) return '';
+      if (cmd.includes('SHELLY_AGENT_LOG')) {
+        logReads += 1;
+        return logReads === 1 ? '' : `${JSON.stringify(log)}\n---SHELLY_AGENT_LOG---\n`;
+      }
+      if (cmd.includes('/agent-x.json')) metadataExists = true;
+      return '';
+    });
+
+    const inFlight = runAgentNow('agent-x', runCommand, {
+      runStartedAtMs: 1_799_000, waitTimeoutMs: 2_000, pollMs: 1,
+    });
+    await Promise.resolve();
+    await deleteAgent('agent-x');
+    releaseRun();
+    await inFlight;
+
+    expect(useAgentStore.getState().agents).toEqual([]);
+    expect(deleted).toBe(true);
+    expect(metadataExists).toBe(false);
+    expect(runCommand.mock.calls.some(([cmd]) =>
+      cmd.includes('/.deleted/agent-x') && cmd.includes('then exit 0')
+    )).toBe(true);
+  });
+
   it('waits for the native agent service to write a run log before returning', async () => {
     useAgentStore.getState().setAgents([agent('agent-x')]);
     const log = {
