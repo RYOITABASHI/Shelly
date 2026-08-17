@@ -17,6 +17,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  deleteProfileFact,
   formatProfileForPrompt,
   getUserProfileSummaryForPrompt,
   isProfileLearningEnabled,
@@ -124,6 +125,27 @@ describe('learnFromUserInput', () => {
     await learnFromUserInput('ログを要約して');
     profile = await loadUserProfile();
     expect(profile.style.language).toBe('ja');
+  });
+});
+
+describe('deleteProfileFact', () => {
+  it('removes exactly the matching fact and leaves other facts untouched', async () => {
+    await learnFromUserInput('私の名前はりょうです。Dockerが好き');
+    const before = [...(await loadUserProfile()).facts];
+    expect(before.length).toBeGreaterThanOrEqual(2);
+
+    await deleteProfileFact(before[0]);
+
+    expect((await loadUserProfile()).facts).toEqual(before.slice(1));
+  });
+
+  it('is a harmless no-op when the fact does not exist', async () => {
+    await learnFromUserInput('私の名前はりょうです。Dockerが好き');
+    const before = [...(await loadUserProfile()).facts];
+
+    await expect(deleteProfileFact('AOI-TURTLE-42')).resolves.toBeUndefined();
+
+    expect((await loadUserProfile()).facts).toEqual(before);
   });
 });
 

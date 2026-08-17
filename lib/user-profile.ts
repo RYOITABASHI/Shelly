@@ -210,6 +210,15 @@ export async function learnFromUserInput(input: string): Promise<void> {
 }
 
 /**
+ * 学習済みファクトを完全一致で削除する
+ */
+export async function deleteProfileFact(fact: string): Promise<void> {
+  const profile = await loadUserProfile();
+  profile.facts = profile.facts.filter(f => f !== fact);
+  await saveProfile(profile);
+}
+
+/**
  * プロファイルをLLMシステムプロンプト用の文字列に変換する
  */
 export function formatProfileForPrompt(profile: UserProfile): string {

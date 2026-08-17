@@ -40,7 +40,7 @@ import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
-import { resetUserProfile } from '@/lib/user-profile';
+import { deleteProfileFact, loadUserProfile, resetUserProfile } from '@/lib/user-profile';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -156,6 +156,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let an LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Uses your configured Cerebras/Groq API key if present (faster, more capable), otherwise the Local LLM; falls back to the existing behavior if nothing is reachable. The final registration always still needs your confirmation. Default ON.' },
       { key: 'agentConversationalHighRiskActionsEnabled', label: 'LLM-Proposed Webhook/CLI (High Risk)', type: 'boolean', source: 'settings', description: 'Only when LLM-led registration is enabled, allow the LLM to propose webhook/CLI actions using URLs or commands the user actually wrote verbatim in the conversation. URLs or commands the user did not provide are always rejected. Existing runtime host allowlists and command safety checks still apply unchanged. Default off.' },
       { key: 'profileLearningEnabled', label: 'Profile Learning', labelKey: 'settings.profile_learning_label', type: 'boolean', source: 'settings', description: 'Learn command, project, and AI usage patterns locally for personalization.', descriptionKey: 'settings.profile_learning_desc' },
+      { key: 'viewProfileFacts', label: 'View/Edit Facts', labelKey: 'settings.profile_facts_label', type: 'action', source: 'custom', actionLabel: 'View', actionLabelKey: 'settings.profile_facts_action', description: 'View learned facts and delete individual entries.', descriptionKey: 'settings.profile_facts_desc' },
       { key: 'resetUserProfile', label: 'Reset Profile', labelKey: 'settings.profile_reset_label', type: 'action', source: 'custom', actionLabel: 'Reset', actionLabelKey: 'settings.profile_reset_action', description: 'Delete learned local profile facts and usage patterns.', descriptionKey: 'settings.profile_reset_desc', dangerAction: true },
     ],
   },
@@ -336,6 +337,61 @@ function EnumPickerSheet({ visible, label, options, current, onSelect, onClose }
             )}
           </TouchableOpacity>
         ))}
+      </Animated.View>
+    </Modal>
+  );
+}
+
+interface ProfileFactsSheetProps {
+  facts: string[];
+  onDelete: (fact: string) => void;
+  onClose: () => void;
+}
+
+function ProfileFactsSheet({ facts, onDelete, onClose }: ProfileFactsSheetProps) {
+  const { t } = useTranslation();
+
+  const confirmDeleteFact = useCallback((fact: string) => {
+    Alert.alert(
+      t('settings.profile_fact_delete_title'),
+      t('settings.profile_fact_delete_body'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: () => onDelete(fact),
+        },
+      ],
+    );
+  }, [onDelete, t]);
+
+  return (
+    <Modal visible transparent animationType="none" onRequestClose={onClose}>
+      <Pressable style={styles.pickerBackdrop} onPress={onClose} />
+      <Animated.View entering={SlideInDown.duration(200)} exiting={SlideOutDown.duration(150)} style={styles.factsSheet}>
+        <View style={styles.pickerHeader}>
+          <Text style={styles.pickerTitle}>{t('settings.profile_facts_title')}</Text>
+          <TouchableOpacity onPress={onClose}>
+            <MaterialIcons name="close" size={20} color={MUTED} />
+          </TouchableOpacity>
+        </View>
+        <ScrollView style={styles.factsScroll} contentContainerStyle={styles.factsContent}>
+          {facts.length === 0 ? (
+            <Text style={styles.factsEmpty}>{t('settings.profile_facts_empty')}</Text>
+          ) : facts.map((fact, index) => (
+            <TouchableOpacity
+              key={`${fact}-${index}`}
+              style={styles.factRow}
+              activeOpacity={1}
+              onLongPress={() => confirmDeleteFact(fact)}
+              delayLongPress={350}
+            >
+              <Text style={styles.factText}>{fact}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+        {facts.length > 0 && <Text style={styles.factsHint}>{t('settings.profile_facts_delete_hint')}</Text>}
       </Animated.View>
     </Modal>
   );
@@ -553,6 +609,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const [scouterEnabled, setScouterEnabled] = useState(false);
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState(false);
   const [cloudSyncBusy, setCloudSyncBusy] = useState(false);
+  const [profileFacts, setProfileFacts] = useState<string[] | null>(null);
   const cloudSyncBusyRef = useRef(false);
   useEffect(() => {
     if (visible) {
@@ -832,6 +889,11 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           },
         ]);
         break;
+      case 'viewProfileFacts':
+        loadUserProfile()
+          .then((profile) => setProfileFacts([...profile.facts]))
+          .catch((e: unknown) => Alert.alert(t('settings.profile_facts_load_failed_title'), String((e as any)?.message || e)));
+        break;
       case 'syncToGist':
         dotfiles.syncToGist();
         ToastAndroid.show('Syncing to Gist...', ToastAndroid.SHORT);
@@ -943,6 +1005,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
     setPicker({ def, current: String(getVal(def) ?? '') });
   }, [getVal]);
 
+  const handleDeleteProfileFact = useCallback((fact: string) => {
+    deleteProfileFact(fact)
+      .then(() => setProfileFacts((current) => current?.filter((entry) => entry !== fact) ?? null))
+      .catch((e: unknown) => Alert.alert(t('settings.profile_fact_delete_failed_title'), String((e as any)?.message || e)));
+  }, [t]);
+
   if (!visible) return null;
 
   return (
@@ -1031,6 +1099,13 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           current={picker.current}
           onSelect={(v) => applyValue(picker.def, v)}
           onClose={() => setPicker(null)}
+        />
+      )}
+      {profileFacts && (
+        <ProfileFactsSheet
+          facts={profileFacts}
+          onDelete={handleDeleteProfileFact}
+          onClose={() => setProfileFacts(null)}
         />
       )}
     </Modal>
@@ -1212,6 +1287,45 @@ const styles = StyleSheet.create({
   },
   pickerOptionActive: {
     color: C.accent,
+  },
+  factsSheet: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    maxHeight: '75%',
+    backgroundColor: SURFACE,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderTopWidth: 1,
+    borderColor: BORDER,
+    paddingBottom: 20,
+  },
+  factsScroll: { flexGrow: 0, flexShrink: 1 },
+  factsContent: { paddingBottom: 8 },
+  factRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  factText: {
+    color: TEXT,
+    fontSize: 13,
+    fontFamily: 'JetBrainsMono_400Regular',
+  },
+  factsEmpty: {
+    color: MUTED,
+    fontSize: 13,
+    textAlign: 'center',
+    padding: 24,
+  },
+  factsHint: {
+    color: MUTED,
+    fontSize: 10,
+    textAlign: 'center',
+    paddingTop: 10,
+    paddingHorizontal: 16,
   },
 
   footer: {
