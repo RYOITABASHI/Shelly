@@ -4919,6 +4919,16 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 これでFable5の最終レビュー7件指摘は全て決着(6件実装・実機PASS、1件は理由付きで意図的に見送り)。
 
+**→ 2026-08-17 新規発見3件のうち2件を修正・push・CI green(3件目は「仕様通り」のため対象外)**
+
+1. **ladder経過時間表示のリセット問題 → 修正完了**(`938cf7c0c`)。原因はSidebarが読んでいた`stat`のmtimeが、ladder再試行のたびに再作成される「per-attempt PIDロック」のものだったこと(chain lockの回転nonce自体は意図的な安全設計のため無変更)。既に存在していた`<agent>.chain.lock/acquired-at`(chain lock取得時に一度だけ書かれる、ladder全体を通して不変のタイムスタンプ)を発見し、Sidebarのポーリングがこちらを優先して読むよう変更(新規マーカーファイルの追加は不要だった)。優先順位: chain開始時刻→PIDロックmtime→ステップ開始時刻→0。純粋関数`runningDisplayElapsedMs`に切り出し、リトライでリセットされない回帰テストを含め7/7 PASS。
+
+2. **実行中agent削除の再発 → 根本原因修正**(`f04a849cf`)。原因はJS側: `materializeAgentBody()`が、run完了/ladder復元処理からの呼び出しも含めて無条件に`.deleted/<agentId>`マーカーを削除してからメタデータを再書き込みしていたため、削除確定後もin-flightのAgentスナップショットを持つ完了処理がtombstoneを解除し復活させていた。ネイティブ(Kotlin)側の独立書き込みは無関与と判明。修正: `.deleted`マーカーを絶対的な権威とし、通常のmaterialize呼び出しはtombstoneが存在すれば即座に処理を打ち切る(メタデータ書き込み前でexit)。tombstoneを解除できるのは明示的な`installAgent()`(意図的なID再利用の新規登録)のみに限定。回帰テスト「in-flight run completion restoreがdeleted agentを復活させない」を含め6/6 PASS。
+
+両方ともCC自身がdiffを読み・tsc/テストを再実行して検証済み。**実機検証はまだ未実施**——次回on-deviceテストで確認すること。
+
+**3件目(NL登録のスキル再利用自動マッチによる確認ダイアログ省略)は対象外のまま**: Fable5自身が「仕様通り」と明記しており、バグではなく検証・デモ時の紛らわしさの指摘のため、今回は着手せず。
+
 → sync: なし。
 
 ---
