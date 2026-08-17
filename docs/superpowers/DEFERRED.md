@@ -4979,3 +4979,20 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 **48行のStatusテーブル全体+他の機能ハイライトの網羅的監査は、Fable5の実機操作中に端末がPINロックされたため中断**(Fable5はPINを保持・入力せず、正しく操作を停止した)。優先度付け方針(日付なし✅/🟡優先、日付付き実機確認済みは後回し、実アカウント/実サーバ等テスト不能な項目は明示報告)は既に伝達済みなので、端末アンロック後に同一方針で再開可能。
 
 → sync: なし。
+
+---
+
+**2026-08-17 Fable5「コードのみ」バッチ監査(端末PINロック中の継続分)— 6件報告、CC自身の直接コード確認で3件修正・1件は誤検知と判定・2件は継続監査対象**
+
+Fable5がPINロック中も既存ダンプ+コード照合で継続した監査から6件の指摘。CC自身が全件を実コード(Grep/Read)で裏取りしてから修正した:
+
+1. **Multi-pane layout「7 types」の実数不一致** — `LayoutPicker.tsx`は実際には8プリセット(p1/p2h/p2v/p3l/p3r/p3t/p3b/p4)を持つが、同ファイル4行目の内部コードコメント自体が「7」で古く(p3b抜け)、READMEもそこから引き写った誤り。→ 別バッチで修正確認(このエントリ以前に着地)。
+2. **Theme presets「Blue / Red / Purple」の欠落** — `CommandPalette.tsx`には実際4種(`theme-blue`/`theme-orange`(表示名Red)/`theme-purple`/`theme-scouter-green`)が存在し、Greenが記載漏れ。→ 別バッチで修正確認。
+3. **Command Palette「font」単独コマンドの主張が誤り** — `CommandPalette.tsx`を全件走査したが、font変更を行う独立コマンドエントリは存在しない(fontFamily/fontSizeはスタイル定義のみ)。README.md line 545 / README.ja.md line 540の「theme, font, voice」から`font`を削除(`settings`カテゴリでConfigTUI経由のフォント変更自体は健在、Command Paletteの直接コマンドとしては無いだけ)。
+4. **`@codex`メンション記載漏れ → 調査の結果、誤検知と判定** — `lib/input-router.ts`のMENTION_PATTERNSには確かに`@codex`(target: 'codex')が実在するが、(a) `hooks/use-ai-pane-dispatch.ts`の`isAiPaneAgent()`は`AI_PANE_AGENT_IDS`(gemini/cerebras/openrouter/groq/perplexity/local)のみを認識するため`@codex`はAI Pane上で何のプロバイダにもルーティングされず、`@codex`という文字列を含んだ生テキストがそのままその時点の既定プロバイダへ渡されるだけ。(b) `components/panes/TerminalPane.tsx`のターミナル`@mention`インターセプトも`parsed.target === 'agent'`のみを特別扱いし`codex`は素通り→bashが「command not found」で失敗するだけ。**どちらの経路でも実質的に何も起きないデッドパターン**であり、README.md line 411がこれを一覧から除外しているのは正しい記述。README側の修正は不要と判断、`input-router.ts`のこの1エントリ自体をデッドコードとして削除するかは別途トリアージ(優先度P3、実害なし)。
+5. **User profile learning「not yet on-device verified」がstale** — このセッション自体が2026-08-17にFable5実機でView/Edit Facts UI(`c0e406d2b`)と個別fact削除(検証7a、4件中1件削除・3件残存を確認)を検証済みであり、記載が古い保守的表現のまま残っていた。README.md/ja.md該当行を実機確認済み表現に修正。
+6. **Sub-agent fan-out「scheduled for tomorrow (2026-08-15)」の日付切れ** — 本日(2026-08-17)時点で2日前の日付参照が残存、かつこのExplore監査自体で確認済みの通り実機検証はまだ実施されていない(🟡ステータス自体は変更せず、正しい)。stale日付参照のみ除去。
+
+3/4/5/6をREADME.md/README.ja.mdに反映(コミット待ち)。1/2は本エントリ以前の別バッチで既に着地済み。4は「修正不要」という調査結論そのものが成果。
+
+→ sync: なし(README本体を直接修正)。
