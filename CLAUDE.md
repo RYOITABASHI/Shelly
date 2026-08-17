@@ -226,8 +226,7 @@ Shelly/
 | `ShellyPTY` | `shelly-pty.c createSubprocess` | fork / ptsname / termios 設定結果 |
 | `HomeInitializer` | `HomeInitializer.kt` | .bashrc バージョンチェック、CLI staging promote、stale rootfs/proot のクリーンアップ |
 | `TerminalEmulator` | `TerminalEmulatorModule.kt` | hasAllFilesAccess / requestAllFilesAccess の権限状態遷移 |
-| `Sidebar` | `Sidebar.tsx` | tryAddRepo の probe 結果、ghost entry 診断 |
-| `Shelly` | `lib/debug-logger.ts` | `logInfo(module, ...)` 経由の汎用 JS ログ |
+| `Shelly` | `lib/debug-logger.ts` | `logInfo(module, ...)` 経由の汎用 JS ログ。**`Sidebar`はここに含まれるmoduleラベルの一つであり、独立したlogcat tagではない**(`logInfo`は`console.log`実装のみでネイティブLog呼び出しが無いため、`adb logcat -s Sidebar:D`は何も出力しない — 2026-08-17実機調査で確認)。`tryAddRepo`のprobe結果/ghost entry診断を追うには`adb logcat -s ReactNativeJS:V \| grep -F '[Shelly][Sidebar]'`を使うこと |
 
 **典型的な使い方**:
 
@@ -239,10 +238,13 @@ adb logcat -s ShellyPaste:D ShellyIME:D
 adb logcat -s HomeInitializer:* ShellyPTY:* ShellyExec:*
 
 # /sdcard 権限問題
-adb logcat -s TerminalEmulator:* Sidebar:*
+adb logcat -s TerminalEmulator:*
 
-# 全部
-adb logcat -s ShellyPaste:D ShellyIME:D ShellyExec:D ShellyPTY:D HomeInitializer:D TerminalEmulator:D Sidebar:D Shelly:D
+# Sidebar(REPOSITORIES追加/ghost entry診断など、JSログのmodule="Sidebar")
+adb logcat -s ReactNativeJS:V | grep -F '[Shelly][Sidebar]'
+
+# 全部(ネイティブtagのみ。Shelly配下の汎用JSログは上記のgrep併用)
+adb logcat -s ShellyPaste:D ShellyIME:D ShellyExec:D ShellyPTY:D HomeInitializer:D TerminalEmulator:D
 ```
 
 ---

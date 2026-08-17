@@ -5068,6 +5068,23 @@ Fan-out実機検証をFable5→(利用上限3連続ヒットのため)Opusへ引
 
 ---
 
+**2026-08-17 48行監査続行中: AI Edit golden path / Add Repositoryゴーストパスのコード調査(実機は端末再ロックで継続中)— CLAUDE.mdのlogcat tag表の誤りを発見・修正**
+
+Opus引き継ぎエージェントが実機再ロックで待機中に並走させた2件のコード調査サブエージェントから報告が届いた。AI Edit(diff→Accept/Reject)の正確な再現手順(`@cerebras`で明示ルーティング、単一hunkのdiff指定、`stageAiEdit`のterminalContext注入が実は無効な死んだコードである点)と、Add Repositoryのghost entry検証手順(SQLite直読みでAsyncStorage `sidebar-store-v1`の`repoPaths`を確認できる、`tryAddRepo`を通さない別経路は無い)が判明。実機操作は端末解錠待ち。
+
+その過程で、**CLAUDE.mdのlogcat tag一覧表自体に実害のある誤りがあった**とわかったのでCC自身が実装コードを確認して修正した:
+
+- 表に`Sidebar`という独立したlogcat tagの行があったが、`lib/debug-logger.ts`の`logInfo(module, message)`は`console.log`実装のみでネイティブ`Log.d/i`呼び出しが一切無い(grep確認)。「Sidebar」は`logInfo('Sidebar', ...)`呼び出し時の`module`引数(文字列ラベル)にすぎず、独立したandroid logcat tagではないため、**`adb logcat -s Sidebar:D`は実際には何も出力しない**。正しい追跡方法は`adb logcat -s ReactNativeJS:V | grep -F '[Shelly][Sidebar]'`(Hermes JSブリッジのタグ経由)。表の該当行を削除し、`Shelly`行の説明に統合、「典型的な使い方」の2箇所のコマンド例(`Sidebar:*`を含んでいた)も修正した。
+- なお`TerminalEmulator`/`HomeInitializer`等の他の行は`TerminalEmulatorModule.kt`の`Log.i("TerminalEmulator", ...)`等、実際にネイティブ側で`Log`呼び出しがあることを確認済みで、これらの行自体は正確。
+
+同時に判明した実バグ2件(コード変更はしていない、別タスクへ切り出し):
+- **Add Repositoryのghost entry検証が実質機能していない**(「bug #73」の主張と裏腹)。(a) `readDirEntries`は親ディレクトリの読み取りエラー全般(存在しない/権限無し/IOエラー)で`[]`を返し例外を投げない仕様のため、`tryAddRepo`はその`[]`を「親が読めないので許容」と誤って解釈し、存在しない親パスでもghost entryを素通しする。(b) 実在するディレクトリであっても`.git`の有無を一切チェックしていないため、非gitフォルダも「リポジトリ」として登録されてしまう——bug #73のコメントが説明する症状そのものが実は未解決。spawn_task(`task_48be12cd`)で別セッションへ切り出し済み。
+- (Groqデフォルトモデル404の件は前エントリで切り出し済み、`task_5348798a`)
+
+→ sync: CLAUDE.mdのlogcat tag表を直接修正済み(コミット待ち)。README.md/ja.mdは今回変更なし。
+
+---
+
 ## Sync ゲート: README.md/README.ja.mdの🟡ステータス行
 
 - **2026-08-17時点で残る🟡は1行のみ**: 「Distribution channels (Play Store / F-Droid)」— GitHub Releasesのみでの配布が実態どおりのステータスであり、実機検証で解消できる性質のものではない(実ストア掲載自体が未着手なため)。Sub-agent fan-outの格上げでこれ以外の🟡はすべて解消。48行監査自体は継続中(未到達分: AI Edit golden path / Scouter widget RUN / Add Repositoryゴーストパスa11y)。
