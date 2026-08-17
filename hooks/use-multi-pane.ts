@@ -19,6 +19,11 @@ import { create } from 'zustand';
 import { persist, createJSONStorage, type PersistOptions } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
+import {
+  COMPANION_CONVERSATION_KEY,
+  resolveAiPaneStoreKey,
+  useAIPaneStore,
+} from '@/store/ai-pane-store';
 
 // ─── Core types ──────────────────────────────────────────────────────────────
 
@@ -538,6 +543,13 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         }
       };
 
+      const cleanupDroppedAiConversation = (slot: Slot): void => {
+        if (!slot || slot.tab !== 'ai') return;
+        const conversationKey = resolveAiPaneStoreKey(slot.id);
+        if (conversationKey === COMPANION_CONVERSATION_KEY) return;
+        useAIPaneStore.getState().clearConversation(slot.id);
+      };
+
       const doRemoveBySlot = (slotIdx: SlotIndex): void => {
         const { slots, preset, focusedSlot, maximizedSlot } = get();
         if (!slots[slotIdx]) return;
@@ -546,8 +558,12 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           return;
         }
 
-        // Cascade destroy for the slot being removed (terminal only).
-        cleanupDroppedSlot(slots[slotIdx]);
+        const removedSlot = slots[slotIdx];
+
+        // Cascade cleanup while the removed slot's type and provider binding
+        // are still available. Shared companion history must outlive panes.
+        cleanupDroppedSlot(removedSlot);
+        cleanupDroppedAiConversation(removedSlot);
 
         const removedId = slots[slotIdx]?.id ?? null;
         const focusedId = slots[focusedSlot]?.id ?? null;

@@ -536,12 +536,16 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
     },
 
     clearConversation: (paneId) => {
-      set((state) => ({
-        conversations: {
-          ...state.conversations,
-          [paneId]: makeEmptyConversation(paneId),
-        },
-      }));
+      get().getOrCreate(paneId);
+      set((state) => {
+        const conv = state.conversations[paneId] ?? makeEmptyConversation(paneId);
+        return {
+          conversations: {
+            ...state.conversations,
+            [paneId]: { ...conv, messages: [] },
+          },
+        };
+      });
       debouncedSave(persist);
     },
   };

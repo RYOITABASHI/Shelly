@@ -70,3 +70,33 @@ it('deletes only the targeted message from a pane-private thread', () => {
     ]);
   expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY]).toBeUndefined();
 });
+
+it('clears the shared companion thread without touching a pane-private thread', () => {
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: 'shared', role: 'user', content: 'shared message', timestamp: 1,
+  });
+  useAIPaneStore.getState().addMessage('provider-pane', {
+    id: 'private', role: 'assistant', content: 'private message', timestamp: 2,
+  });
+
+  useAIPaneStore.getState().clearConversation(COMPANION_CONVERSATION_KEY);
+
+  expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages).toEqual([]);
+  expect(useAIPaneStore.getState().conversations['provider-pane'].messages)
+    .toEqual([expect.objectContaining({ id: 'private' })]);
+});
+
+it('clears a pane-private thread without touching the shared companion thread', () => {
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: 'shared', role: 'user', content: 'shared message', timestamp: 1,
+  });
+  useAIPaneStore.getState().addMessage('provider-pane', {
+    id: 'private', role: 'assistant', content: 'private message', timestamp: 2,
+  });
+
+  useAIPaneStore.getState().clearConversation('provider-pane');
+
+  expect(useAIPaneStore.getState().conversations['provider-pane'].messages).toEqual([]);
+  expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages)
+    .toEqual([expect.objectContaining({ id: 'shared' })]);
+});

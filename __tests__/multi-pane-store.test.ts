@@ -5,6 +5,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import { resolveSinglePaneSlot, useMultiPaneStore } from '@/hooks/use-multi-pane';
+import {
+  COMPANION_CONVERSATION_KEY,
+  useAIPaneStore,
+} from '@/store/ai-pane-store';
+import { usePaneStore } from '@/store/pane-store';
 
 const ratios = {
   mainH: 0.5,
@@ -69,5 +74,74 @@ describe('multi-pane single-pane switching', () => {
     expect(state.preset).toBe('p3l');
     expect(state.slots[2]?.tab).toBe('ai');
     expect(state.focusedSlot).toBe(2);
+  });
+});
+
+describe('multi-pane AI conversation cleanup', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    useAIPaneStore.setState({ conversations: {}, isLoaded: true });
+    usePaneStore.setState({ paneAgents: {} } as any);
+    useMultiPaneStore.setState({
+      preset: 'p2h',
+      slots: [
+        { id: 'pane-terminal', tab: 'terminal' },
+        { id: 'pane-ai', tab: 'ai' },
+        null,
+        null,
+      ],
+      focusedSlot: 1,
+      ratios,
+      maximizedSlot: null,
+      _hasHydrated: true,
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  it('clears a removed explicit-provider pane private thread', () => {
+    usePaneStore.setState({ paneAgents: { 'pane-ai': 'gemini' } } as any);
+    useAIPaneStore.getState().addMessage('pane-ai', {
+      id: 'private', role: 'user', content: 'private message', timestamp: 1,
+    });
+
+    useMultiPaneStore.getState().removePane('pane-ai');
+
+    expect(useAIPaneStore.getState().conversations['pane-ai'].messages).toEqual([]);
+  });
+
+  it('preserves the shared companion thread when its AI pane is removed', () => {
+    usePaneStore.setState({ paneAgents: { 'pane-ai': 'local' } } as any);
+    useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+      id: 'shared', role: 'user', content: 'keep shared history', timestamp: 1,
+    });
+
+    useMultiPaneStore.getState().removePane('pane-ai');
+
+    expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages)
+      .toEqual([expect.objectContaining({ id: 'shared' })]);
+  });
+
+  it('does not clear an AI conversation when a non-AI pane is removed', () => {
+    useMultiPaneStore.setState({
+      slots: [
+        { id: 'pane-ai', tab: 'browser' },
+        { id: 'pane-terminal', tab: 'terminal' },
+        null,
+        null,
+      ],
+    });
+    usePaneStore.setState({ paneAgents: { 'pane-ai': 'gemini' } } as any);
+    useAIPaneStore.getState().addMessage('pane-ai', {
+      id: 'private', role: 'user', content: 'keep private history', timestamp: 1,
+    });
+
+    useMultiPaneStore.getState().removePane('pane-ai');
+
+    expect(useAIPaneStore.getState().conversations['pane-ai'].messages)
+      .toEqual([expect.objectContaining({ id: 'private' })]);
   });
 });

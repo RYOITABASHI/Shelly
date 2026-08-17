@@ -547,6 +547,23 @@ export default function AIPane() {
     );
   }, [paneId, t]);
 
+  const confirmClearConversation = useCallback(() => {
+    Alert.alert(
+      t('chat.clear_conversation_title'),
+      t('chat.clear_conversation_body'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: () => useAIPaneStore.getState().clearConversation(
+            resolveAiPaneStoreKey(paneId),
+          ),
+        },
+      ],
+    );
+  }, [paneId, t]);
+
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<ChatMessage>) => (
       <TouchableOpacity
@@ -577,6 +594,18 @@ export default function AIPane() {
     // shrinks the whole grid by keyboardHeight once, panes render
     // at their natural size.
     <View style={[paneStyles.container, { backgroundColor: paneBg }, compactOverlay]}>
+      {messages.length > 0 && (
+        <TouchableOpacity
+          style={paneStyles.clearConversationButton}
+          onPress={confirmClearConversation}
+          accessibilityRole="button"
+          accessibilityLabel={t('chat.clear_conversation_button')}
+          hitSlop={6}
+        >
+          <MaterialIcons name="delete-sweep" size={15} color={C.text2} />
+        </TouchableOpacity>
+      )}
+
       {/* Context badge — READING TERMINAL 1 */}
       {contextBadge && (
         <View style={paneStyles.contextBadge}>
@@ -667,6 +696,16 @@ const paneStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: withAlpha(C.accent, 0.35),
     backgroundColor: withAlpha(C.accent, 0.08),
+  },
+  clearConversationButton: {
+    position: 'absolute',
+    top: 4,
+    right: 6,
+    zIndex: 2,
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   contextDot: {
     width: 6,
