@@ -587,11 +587,16 @@ function apiCallLabel(cfg) {
 // consecutive steps sharing a group id are context-ISOLATED branches (each
 // sees only the results produced BEFORE the group, never a sibling's output;
 // the first post-group step aggregates every branch result in declared
-// order). DISPATCH IN THIS EXECUTOR STAYS SERIAL, deliberately: every model
-// call here is a synchronous spawnSync of the capability broker, and making
-// this security-critical unattended executor concurrent is out of scope —
-// see DEFERRED.md's 2026-08-13 fan-out entry. Grouping changes which prior
-// results a branch can SEE, never what it may do: every branch still goes
+// order). DISPATCH WITHIN A GROUP RUNS CONCURRENTLY (Increments 1a-1c,
+// 2026-08-13/14): withBranchPermit below bounds concurrency to
+// MAX_PARALLEL_BRANCHES via an in-process semaphore, model calls go through
+// spawn + await (not spawnSync — see runCapabilityBroker), and
+// runOrchestrationChain's per-group Promise.allSettled writes each branch's
+// outcome into a pre-sized slot so aggregation stays in declared order
+// regardless of completion order. See DEFERRED.md's 2026-08-13/14 fan-out
+// entries for the concurrency-safety proof (wall-clock timing test, budget-
+// lock race coverage). Grouping changes which prior results a branch can
+// SEE, never what it may do: every branch still goes
 // through the identical requestModelContentWithLadder / quality-gate /
 // suppressed-action path an unmarked step uses, with its step.tool already
 // vetted at plan-BUILD time (lib/agent-plan-spec.ts's resolveStepToolForPlan)

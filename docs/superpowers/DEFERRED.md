@@ -5018,3 +5018,21 @@ Fable5がPINロック中も既存ダンプ+コード照合で継続した監査�
 **テスト不能(明示・実行せず)**: Atomic paste実機注入信頼性(bug番号4件で歴史的検証済みのため今回省略)/X OAuth実課金アカウント/Bluesky以外のsocial実投稿/OpenRouter実キーstreamed reply/SSH実接続/APK・Codexランタイム保留中更新フロー/無人AlarmManager発火のN増し/配信チャネル。
 
 → sync: README.md/ja.md/CLAUDE.md/LayoutPicker.tsxを直接修正済み。Codex runtime promotion根本原因は別途調査要(P2)。
+
+---
+
+**2026-08-17 Sub-agent fan-out実機検証の試行 — 端末再ロックで中断、ただし調査中に発見したコードコメント/CLAUDE.md記述のstale化2件をCC自身が確認・修正**
+
+Fan-out実機検証をFable5→(利用上限3連続ヒットのため)Opusへ引き継いで試行。実機の中核検証(既存`fanout parallel probe`エージェントのログ確認、または新規4ブランチテストでのセマフォ上限の直接証拠取得)は**端末が画面タイムアウトで再ロックし、PIN入力はせず正しく中断**(過去のPINロック中断と同じ既知の再発ブロッカー)。README該当行の🟡ステータスは今回も変更なしで維持が妥当。
+
+調査の過程で、コード自体は**すでにReadmeの主張通り実装済み**であることをOpusが直接確認した(`scripts/shelly-plan-executor.js:3265` Promise.allSettled並行dispatch、`:3053-3068` MAX_PARALLEL_BRANCHES=3のin-processセマフォ、`:3262-3282` 宣言順集約用pre-sized slot、`:782` spawnSync→async spawn移行済み)。これは[[project_hermes_gap_roadmap_next_version]]系のIncrement 1a/1b/1c(2026-08-14、本ファイル上記4474/159-165行)が実装した内容そのもの。
+
+しかし**それを説明するコメント/ドキュメントが2箇所、実装より古いまま取り残されていた**とOpusが発見、CC自身が直接コードを読んで裏取りしてから修正:
+
+1. **`scripts/shelly-plan-executor.js:590-592`(+APK assetミラー)** — 「DISPATCH IN THIS EXECUTOR STAYS SERIAL, deliberately: every model call here is a synchronous spawnSync」という2026-08-13時点(Increment 1a-1c以前)のコメントが残置され、同じファイルの`:3019`「dispatch concurrently below」や`:3265`の実際のPromise.allSettled実装と自己矛盾していた。Increment 1a-1cの内容(セマフォ・async spawn・宣言順slot集約)を反映したコメントに書き換え、`cp`でAPK assetミラーを再同期(md5一致確認済み)。
+
+2. **`CLAUDE.md`のArchitecture Decisions表** — 「エージェントのファンアウト・サブタスク(`parallelGroup`)はセマンティクスのみ、ディスパッチは直列」「wall-clock並列ディスパッチは意図的に無し」という2026-08-13時点の行がIncrement 1a-1c後も更新されないまま残っていた。**重要な補足**: `lib/agent-manager.ts`(attended TSチェーン)には引き続きPromise.allSettled等の並列実装が無い(grep確認済み)ため、並列dispatchが実装されたのは**無人PlanSpec executor(`shelly-plan-executor.js`)のみ**——attended側は依然として意図的直列のまま。この非対称性を正確に書き分けてCLAUDE.mdの行を更新した(README.md:568の既存の書きぶり「unattended PlanSpec branches dispatch concurrently」はこの非対称性を最初から正しく反映しており、修正不要だった)。
+
+`__tests__/plan-executor-orchestration-chain.test.ts` 44/44 PASS(コメントのみの変更のため無影響、念のため再実行して確認)。
+
+→ sync: `scripts/shelly-plan-executor.js`・そのAPK assetミラー・`CLAUDE.md`を直接修正済み(コミット待ち)。README.md/ja.mdは今回変更なし(既に正確だった)。Sub-agent fan-outの実機検証自体は次回、端末が長時間ロックされない状態で再試行。
