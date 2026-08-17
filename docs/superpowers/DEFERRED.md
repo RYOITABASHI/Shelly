@@ -4965,3 +4965,17 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 - README.md / CHANGELOG.md / MEMORY.md の更新が必要なものは `→ sync:` で明記
 - リリース前に P0 を空にすること
 - 新セッションで Shelly を触るときは **このファイルを必ず読む**
+
+---
+
+**2026-08-17 README.md/MANUAL.mdのCompanion系記述をFable5が実機文言と突き合わせ監査 — 2件の実質的な差分を発見・修正済み(`ca62c063f`)、48行のStatusテーブル全体監査は端末PINロックで中断**
+
+本日取得済みのuiautomatorダンプ実物+コード照合により、Companion系の主張(README.md line 241/407-410/558-562)はほぼ全て文言レベルで一致確認。ただし2件の実質的な差分を発見:
+
+1. **「scheduled and Run Now completions」の無条件✅主張が過大** — 全セッションを通じて実機観測できたのはRun Now(attended)側のみ。scheduled(AlarmManager無人発火)側はコード+ユニットテストの担保のみで、実際の発火→チャット再入場は一度も観測していない。隣接する「Background / autonomous agents」行が丁寧にN=1注記している水準と揃えるべき、との指摘 → README.md/ja.md両方、Status表・AI Pane機能一覧の該当箇所を「Run Now確認済み、scheduled側は同経路で出荷済みだが未観測」に訂正済み。
+
+2. **README/MANUALの例文「remember that I prefer dark mode」が未記載の副作用を誘発** — この例文をそのまま使うと、記載通りの確認ゲート付き`_global`書き込みに**加えて**、`lib/user-profile.ts`のambient `prefPatterns`(`/(?:prefer|love|like using)\s+…/`)が「prefer」に反応し、確認なしのprofile fact「darkを好む」が同時に永続化される。8/17の`5126d6d33`で`rememberPatterns`(明示的な「覚えて」指示の捕捉)は意図的に削除したが、`prefPatterns`(好み表現の周辺学習)は当時の設計判断通り意図的に残置されており、両者が同じ文の中で同時発火する組み合わせが今回露見した形。**設計自体は変更せず**(8/17時点の意図的判断を維持)、README/MANUAL(en/ja)の例文を`prefPatterns`と重ならない事実文(「デプロイブランチはstagingだと覚えておいて」)に差し替え、MANUALには重複が起きうる旨の注記を追加。
+
+**48行のStatusテーブル全体+他の機能ハイライトの網羅的監査は、Fable5の実機操作中に端末がPINロックされたため中断**(Fable5はPINを保持・入力せず、正しく操作を停止した)。優先度付け方針(日付なし✅/🟡優先、日付付き実機確認済みは後回し、実アカウント/実サーバ等テスト不能な項目は明示報告)は既に伝達済みなので、端末アンロック後に同一方針で再開可能。
+
+→ sync: なし。
