@@ -34,7 +34,7 @@ jest.mock('@/lib/unattended-skill-save', () => {
 // exactly like the existing loadAgentsFromDisk tests in this suite.
 jest.mock('expo-file-system/legacy', () => ({}));
 
-import { loadAgentsFromDisk, setAgentEnabled, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
+import { loadAgentsFromDisk, runAgentNow, setAgentEnabled, syncAgentRunLogsFromDisk } from '@/lib/agent-manager';
 import { LOCAL_FALLBACK_DIGEST_MARKER } from '@/lib/agent-escalation-ladder';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, AgentRunLog } from '@/store/types';
@@ -333,6 +333,55 @@ describe('syncAgentRunLogsFromDisk — scheduled-run memory capture (the actual 
     void skillWrites;
   });
 
+  it('permanently excludes a completed attended log after runAgentNow clears its in-flight entry', async () => {
+    const agent = makeAgent({ memory: undefined });
+    useAgentStore.getState().setAgents([agent]);
+    const logs: AgentRunLog[] = [];
+    const runCommand = jest.fn(async (command: string): Promise<string> => {
+      if (command.includes(`# run-agent-${agent.id}`) && logs.length === 0) {
+        logs.push(makeRunLog({ timestamp: Date.now() }));
+        return '';
+      }
+      if (command.includes('CEREBRAS_API_KEY')) return '';
+      if (command.includes(LOG_MARKER)) {
+        return logs.map((log) => `${JSON.stringify(log)}\n${LOG_MARKER}\n`).join('');
+      }
+      return '';
+    });
+
+    await runAgentNow(agent.id, runCommand, { waitTimeoutMs: 2000, pollMs: 1 });
+    expect(saveUnattendedSkillWithNotification).not.toHaveBeenCalled();
+
+    // runAgentNow has returned (and therefore removed inFlightAgentRuns). Even
+    // much later, the same concrete agentId:timestamp log remains attended and
+    // must not be silently saved if the confirm dialog sat open or was cancelled.
+    const realNow = Date.now();
+    const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(realNow + 10 * 60_000);
+    await syncAgentRunLogsFromDisk(runCommand);
+    await settleMicrotasks(20);
+
+    expect(saveUnattendedSkillWithNotification).not.toHaveBeenCalled();
+    expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+    dateNowSpy.mockRestore();
+  });
+
+  it('still auto-saves a genuinely unattended log not handled by runAgentNow', async () => {
+    const agent = makeAgent({ memory: undefined });
+    const log = makeRunLog({ timestamp: Date.now() + 1 });
+    useAgentStore.getState().setAgents([agent]);
+    const { runCommand } = buildRunCommand({ agent, log });
+
+    await syncAgentRunLogsFromDisk(runCommand);
+    await settleMicrotasks(20);
+
+    expect(saveUnattendedSkillWithNotification).toHaveBeenCalledWith(
+      runCommand,
+      expect.objectContaining({ timestamp: log.timestamp, unattended: true }),
+      expect.any(Object),
+    );
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+  });
+
   it('does not double-fire when there is no remember-enabled agent in the store', async () => {
     const agent = makeAgent({ memory: undefined });
     useAgentStore.getState().setAgents([agent]);
@@ -374,6 +423,7 @@ describe('syncAgentRunLogsFromDisk — circuit-breaker manual reset', () => {
       managerSource.indexOf('// --- Memory-write (G2 follow-up)'),
     );
     expect(syncedSave).toMatch(/!inFlightAgentRuns\.has\(agent\.id\)/);
+    expect(syncedSave).toMatch(/!attendedAgentRunLogIdentities\.has\(agentRunLogIdentity\(latest\)\)/);
     expect(syncedSave).toMatch(/unattended:\s*true/);
   });
 

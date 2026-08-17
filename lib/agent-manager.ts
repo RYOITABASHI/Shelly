@@ -41,6 +41,7 @@ import {
   writeSkillRecipe,
 } from './agent-skills';
 import { saveUnattendedSkillWithNotification } from './unattended-skill-save';
+import { agentRunLogIdentity } from './agent-companion-notice';
 import {
   applyUnattendedSkillImprovement,
   clearSkillImprovementProposal,
@@ -1144,6 +1145,19 @@ async function persistRememberFact(
  * in-progress state, which lives outside this process; see DEFERRED.md.
  */
 const inFlightAgentRuns = new Map<string, Promise<void>>();
+/**
+ * Process-lifetime identities of logs produced by the foreground attended path.
+ * Unlike inFlightAgentRuns, entries are deliberately never cleared: once a
+ * concrete run log has been routed through confirm-or-decline UI, a later
+ * periodic disk sync must never reinterpret that same log as unattended.
+ * This matches the existing in-memory lifetime of other foreground-only run
+ * state; a process restart cannot preserve an unanswered native Alert anyway.
+ */
+const attendedAgentRunLogIdentities = new Set<string>();
+
+function markAttendedAgentRunLog(log: AgentRunLog | undefined): void {
+  if (log) attendedAgentRunLogIdentities.add(agentRunLogIdentity(log));
+}
 
 export async function runAgentNow(
   agentId: string,
@@ -1311,7 +1325,8 @@ async function runAgentNowInner(
         }
       }
     }
-    await runEscalatingAttempts(agent, runCommand, { ...options, optimisticWorkspaceWrites: optimistic }, runStartedAtMs);
+    const completedLog = await runEscalatingAttempts(agent, runCommand, { ...options, optimisticWorkspaceWrites: optimistic }, runStartedAtMs);
+    markAttendedAgentRunLog(completedLog);
     if (optimistic && savepointRunner) {
       // Commit exactly what the run wrote and publish the undo handle. A null
       // handle (nothing written, or the secret scan blocked the commit) means
@@ -1600,7 +1615,7 @@ async function runEscalatingAttempts(
   runCommand: (cmd: string) => Promise<string>,
   options: { waitTimeoutMs?: number; pollMs?: number; optimisticWorkspaceWrites?: boolean },
   runStartedAtMs: number,
-): Promise<void> {
+): Promise<AgentRunLog | undefined> {
   // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): this
   // single-run ladder has the exact same "materialize+run per candidate,
   // release LOCK_FILE between candidates" shape runAgentOrchestrated's
@@ -1610,7 +1625,7 @@ async function runEscalatingAttempts(
   // throw from runLadderAttempts still releases it).
   const chainLockSeed = await acquireChainLock(agent.id, runCommand);
   try {
-    const { ladder } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs, {
+    const { ladder, finalLog } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs, {
       chainLockSeed,
       optimisticWorkspaceWrites: options.optimisticWorkspaceWrites,
     });
@@ -1640,6 +1655,7 @@ async function runEscalatingAttempts(
         logWarn('AgentEscalation', `failed to restore configured script for ${agent.id}`, error);
       }
     }
+    return finalLog;
   } finally {
     await releaseChainLock(agent.id, chainLockSeed, runCommand);
   }
@@ -2027,6 +2043,7 @@ async function runAgentOrchestratedBody(
     routeDecision: records.at(-1)?.routeDecision,
     steps: records,
   };
+  markAttendedAgentRunLog(aggregate);
   try {
     const afterFiles = await listAgentLogFiles(runCommand, agentId);
     const newFiles = afterFiles.filter((f) => !beforeFiles.includes(f));
@@ -2208,7 +2225,11 @@ async function captureRunMemoryFromSyncedLogs(
     // explicit Run Now path. While runAgentNow owns that foreground turn, its
     // caller supplies the confirm-mode save offer; do not misclassify the same
     // log as an unattended alarm fire during the run's internal log sync.
-    if ((agent.schedule || agent.notificationTrigger) && !inFlightAgentRuns.has(agent.id)) {
+    if (
+      (agent.schedule || agent.notificationTrigger) &&
+      !inFlightAgentRuns.has(agent.id) &&
+      !attendedAgentRunLogIdentities.has(agentRunLogIdentity(latest))
+    ) {
       try {
         // saveUnattendedSkillWithNotification is itself idempotent (skips a
         // recipe whose content-derived id already exists on disk), so a
