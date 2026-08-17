@@ -5085,6 +5085,40 @@ Opus引き継ぎエージェントが実機再ロックで待機中に並走さ�
 
 ---
 
+**2026-08-17 48行監査: 残り3項目(AI Edit golden path / Scouter widget RUN / Add Repositoryゴーストパス)実機検証完了**
+
+端末解錠後、Opus引き継ぎエージェントが3項目すべてを実機で検証した。
+
+**① AI Edit golden path — ✅ Accept/Reject両方確認**。ターミナルで`grep -Hn answer $HOME/scratch/demo.ts`を打つだけで`tryAutoStageFromTerminal`が自動ステージ、`@cerebras`明示ルーティングでdiff生成、Acceptで実際にファイル内容・mtimeが変化(md5で前後比較確認)、Rejectでは書き込みexecが一切発火せずファイル無変更を確認。README.md/ja.mdの該当行に実機確認日を追記。
+
+**② Scouter widget RUN — ✅ 実機確認**。ウィジェットのRUNボタン→実launcher-uid由来のPendingIntent→エージェント実行→draft書き出しまでログで完全追跡。**新たに判明した前提条件**: ウィジェットは`hasRunArtifact`(生成済み`.sh`か`plans/plan-agent-*.json`のいずれか)が無いエージェントを一覧に一切表示しない——手置きしたagent JSONは、アプリが一度materializeするまで見えない。README.md/ja.mdに実機確認日+この前提条件を追記。
+
+**③ Add Repositoryゴーストパス — バグを逐語で再現、かつ2件の追加事実が判明**。前回セッションで既にコード確認済みだった「親ディレクトリ読み取りエラーで無条件許容」バグが、実機で寸分違わず再現した:
+```
+[Shelly][Sidebar] tryAddRepo parent="/nonexistent/zzz" unreadable, accepting add
+```
+UIには`GHOST1`が**捏造されたバージョンバッジ(`V9.2`)付きで、本物と見分けがつかない状態**で登録され、AsyncStorage(`sidebar-store-v1`のRKStorage実体)にも永続化を確認。ただし**新事実**: アプリ再起動で`loadRepos()`の`find`ベース再走査により自己修復し、`repoPaths`から消える——**セッション限定の不具合であり、永続的な状態破損ではない**ことが判明(README.mdの訂正文言に反映済み)。
+
+**新たに発見した2件の実バグ(コード変更はしていない)**:
+1. **Add Repositoryモーダルがa11yツリーに一切現れないアクセシビリティ欠陥**。RN `Modal`の中身(タイトル/TextInput/CANCEL/ADD)が、`mIsImeShowing=true`(TextInputがフォーカス保持)であるにもかかわらずuiautomatorツリーに一切出現しない。TalkBackユーザーはこの画面を操作不能——実際のアクセシビリティ欠陥。回避策としては`autoFocus`+`onSubmitEditing`があるため盲目のままEnter送信は可能。優先度P2〜P3として今回はDEFERRED.mdへの記録のみ(修正タスクへの切り出しは見送り、次回まとめて他のa11y項目と一緒に着手が妥当)。
+2. **`WidgetAgentRepository`のJSON型前提バグ+ログへのPII流出**。`~/.shelly/agents/`配下の全`*.json`をJSONObjectと仮定しているが、`dm-pairings.json`はJSON**配列**のため、ウィジェットの60秒ポーリングのたびに`org.json.JSONException`が発生。catchされ機能への影響は無いが、**例外メッセージがDMペアリング内容(実在の連絡先表示名+Spark通知ID)ごとlogcatへ平文で出力される**。これは「bug #163」が対処しようとしたログスパム問題の再発(型不一致自体は未修正のまま、スパムパターンだけ変わった形)。spawn_task(`task_1900751a`)で別セッションへ切り出し済み。
+
+**QA手法上の重要な発見**: `adb shell input tap`はShellyのRN `Pressable`コンポーネントに全く届かない(瞬間タップは無反応)。`input swipe X Y X Y 140`(約140msの短いプレス相当)に変えて初めて発火する。今後の実機QA全般で必須のノウハウ——瞬間tapで無反応だったからといって機能が壊れていると即断してはいけない。
+
+**後片付け**: テストagent(`agent-qa-widget`)・過去バッチの取りこぼし分(par1/par4/par5の`.sh`)・自動生成skill・`~/scratch/demo.ts`・`/sdcard/Download/shelly-qa/`・AIペイン会話を全て削除済み。最終状態、Shellyのアラームはユーザーの21:00の1本のみ、エージェントは既存の1件のみ、スキル0件、ghostリポジトリなし。**申し送り**: AIペインのプロバイダが検証の副作用でCEREBRASのまま(元はGEMINIと推定、ワンタップで戻せる)。`screen_off_timeout`復元値(30000)は前回の推定値の読み戻しであり、真の元値の裏付けにはなっていない。
+
+→ sync: README.md/ja.mdのAI Edit golden path行・Scouter widget RUN行に実機確認日を追記、Add Repository行を✅→🟡に訂正(実機で確認された不具合の正確な記述付き)。全てコミット・push済み。
+
+---
+
+## 48行監査の現状(2026-08-17時点)
+
+**優先対象(日付なし✅/🟡)はほぼ処理完了**。今回のセッションで扱った行数(概算): 実機/コードで確認・修正した行が約20行超、テスト不能で明示フラグのみの行が6〜8行、うち1行(Add Repository)は実機検証の結果✅→🟡へ格下げ。
+
+**残作業**: 48行全体を機械的に上から一巡できたわけではないため、Browser系の未走査の細部や、今回サンプリング的に扱わなかった行が無いか、次回改めて通し読みでの確認が望ましい。ただし主要な「怪しい」候補(日付なし✅/🟡)は本セッションでほぼ手当て済みなので、次回は軽い確認作業になる見込み。
+
+---
+
 ## Sync ゲート: README.md/README.ja.mdの🟡ステータス行
 
 - **2026-08-17時点で残る🟡は1行のみ**: 「Distribution channels (Play Store / F-Droid)」— GitHub Releasesのみでの配布が実態どおりのステータスであり、実機検証で解消できる性質のものではない(実ストア掲載自体が未着手なため)。Sub-agent fan-outの格上げでこれ以外の🟡はすべて解消。48行監査自体は継続中(未到達分: AI Edit golden path / Scouter widget RUN / Add Repositoryゴーストパスa11y)。
