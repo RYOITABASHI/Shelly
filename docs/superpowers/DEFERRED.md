@@ -4929,6 +4929,16 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 **3件目(NL登録のスキル再利用自動マッチによる確認ダイアログ省略)は対象外のまま**: Fable5自身が「仕様通り」と明記しており、バグではなく検証・デモ時の紛らわしさの指摘のため、今回は着手せず。
 
+**→ 2026-08-17 実機検証完了(Fable5、build 2234)。両方PASS**:
+- 検証1(ladder経過時間): 壁時計と完全一致して単調増加(31s→53s→1m09s→1m46s)。ただしこのrunは約2.5分で一発成功し、修正が対象とした「ladder再試行境界を跨ぐ」シナリオ自体は今回発生しなかった。正常系は実機確認、リトライ時の非リセットはdiff読解+ユニットテストでの担保にとどまる。次回不調が再発した際に通算表示を再確認すること。
+- 検証2(削除再発防止): 実行75秒時点でDELETE確定→Sidebar即時消滅→完了(〜12:01)+同期サイクル数回後も再出現なし・`agent-*.json`ゼロ・`.deleted/`にtombstone実在確認・auto-saveも不発(skip-deletedガード動作)。同名再登録が正常に通ることも確認(意図的なID再利用は妨げられない)。全項目PASS。
+
+**🚨 新規発見(検証中に発覚) — 前回の`7f7baf635`(attended実行のスキル保存通知修正)に取りこぼしあり**:
+
+`!inFlightAgentRuns.has()`ガードは**実行中のみ**を保護する。`runAgentNow`が復帰し「Save as skill?」ダイアログが表示された時点でin-flightは解除されるため、ユーザーがダイアログを**未応答のまま放置、またはCANCEL**すると、次の定期ログ同期パス(root layoutの周期ループ)が同じattendedログを無人発火と誤分類し、結局auto-save+「unattended run」の誤通知が発行されてしまう。実機で再現手順込みで確認済み(ダイアログを1〜2分放置後CANCEL→スキルが自動保存され誤通知が投稿された)。build 2230時点で顕在化しなかったのは、両検証runとも`agent.skillId`がすぐ付き`alreadySkillId`ゲートに隠れていたため(偶然の回避)。
+
+**修正方針(Fable5提案)**: attendedターンが所有したログのidentity(`agentId:timestamp`)を記録し、定期同期側のスキル保存ゲートで除外する——`lib/agent-companion-notice.ts`の`AgentRunLogNoticeTracker`と同型のパターンが転用できる。次回対応時に着手。
+
 → sync: なし。
 
 ---
