@@ -1740,6 +1740,8 @@ const en: Record<string, string> = {
   'sidebar.collapse': 'Collapse',
   'sidebar.directory_not_found_title': 'Directory not found',
   'sidebar.directory_not_found_body': 'The path "{{path}}" does not exist on this device. Double-check the spelling or pick an existing folder.',
+  'sidebar.directory_not_git_title': 'Not a git repository',
+  'sidebar.directory_not_git_body': 'The path "{{path}}" exists but doesn\'t contain a .git folder. Pick a folder that\'s already a git repository.',
   'sidebar.agent_failed_title': 'Agent failed',
   'sidebar.agent_failed_body': 'Could not start "{{name}}".',
   'sidebar.agent_already_running_toast': '"{{name}}" is already starting or running',

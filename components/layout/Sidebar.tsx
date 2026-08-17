@@ -20,6 +20,7 @@ import { useSidebarStore } from '@/store/sidebar-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
+import { validateRepoPath } from '@/lib/repo-path-validation';
 import { logInfo } from '@/lib/debug-logger';
 import { nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from '@/lib/agent-scheduler';
 import { useAgentStore } from '@/store/agent-store';
@@ -286,46 +287,30 @@ export function Sidebar() {
   /**
    * bug #73: validate a repo path before adding it. Previously the UI
    * accepted any string and stored it, leading to ghost entries that just
-   * showed empty file trees and 0 git dirty counts. Now we try to list
-   * the directory via JNI readDir (which never throws; it returns an empty
-   * array on ENOENT/EACCES) and refuse the add if the readdir yields
-   * nothing AND a probe lstat via readDirEntries on the parent also shows
-   * the entry is missing. The heuristic is cheap and catches the common
-   * mistakes: typos, Termux-era paths, and unmounted SD-card paths.
+   * showed empty file trees and 0 git dirty counts. The validation itself
+   * lives in lib/repo-path-validation.ts (see its header comment for why the
+   * naive parent-only probe used to fail open on any read error, and why a
+   * `.git` entry check is required) so it has direct unit coverage.
    */
   const tryAddRepo = async (rawPath: string): Promise<void> => {
     const path = rawPath.trim();
     if (!path) return;
     const normalized = normalizePath(path);
     logInfo('Sidebar', `tryAddRepo raw="${path}" normalized="${normalized}"`);
-    // readDirEntries returns [] on missing dir; empty repo is unlikely.
-    // To distinguish "empty" from "missing", probe the parent and check
-    // whether the basename is present. Still permissive: if the parent is
-    // unreadable we fall through and accept the add (likely a permission
-    // corner case rather than a typo).
-    const slash = normalized.lastIndexOf('/');
-    const parent = slash > 0 ? normalized.slice(0, slash) : '/';
-    const basename = slash >= 0 ? normalized.slice(slash + 1) : normalized;
-    let exists = false;
-    try {
-      const parentEntries = await readDirEntries(parent);
-      if (parentEntries.length === 0) {
-        // Parent unreadable — fall through and accept the add.
-        logInfo('Sidebar', `tryAddRepo parent="${parent}" unreadable, accepting add`);
-        exists = true;
+    const result = await validateRepoPath(normalized, readDirEntries);
+    logInfo('Sidebar', `tryAddRepo normalized="${normalized}" result=${JSON.stringify(result)}`);
+    if (result.ok === false) {
+      if (result.reason === 'not_git') {
+        Alert.alert(
+          t('sidebar.directory_not_git_title'),
+          t('sidebar.directory_not_git_body', { path }),
+        );
       } else {
-        exists = parentEntries.some((e) => e.name === basename && (e.type === 'd' || e.type === 'l'));
-        logInfo('Sidebar', `tryAddRepo probe parent="${parent}" basename="${basename}" exists=${exists}`);
+        Alert.alert(
+          t('sidebar.directory_not_found_title'),
+          t('sidebar.directory_not_found_body', { path }),
+        );
       }
-    } catch (e) {
-      logInfo('Sidebar', `tryAddRepo probe threw: ${String(e)}; accepting add`);
-      exists = true; // don't block on probe failure
-    }
-    if (!exists) {
-      Alert.alert(
-        t('sidebar.directory_not_found_title'),
-        t('sidebar.directory_not_found_body', { path }),
-      );
       return;
     }
     addRepo(path);

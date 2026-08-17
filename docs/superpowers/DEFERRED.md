@@ -16,6 +16,8 @@
 
 ## History
 
+- 2026-08-17: 静的コード監査（バックグラウンドresearch agent）で`tryAddRepo`のbug #73対応が実は機能していない（親probeの読み取りエラーをfail-openで受理、`.git`チェック皆無）ことを発見・修正。あわせて、dotセグメント (`.claude/`) を含むrootDirでは`npx jest`のtestMatch globがWindows上で壊れ全テストがdiscovery段階で0件になるworktree特有のjest基盤バグを発見・記録した。
+
 - 2026-08-15: Fable5によるCompanion Phase 1実機再レビュー（versionCode 2196）で、登録・更新完了メッセージとSidebar行がraw cronを会話面へ漏らす問題を発見・修正。confirm card既存のhumanizerを共有化した。
 
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
@@ -53,6 +55,32 @@
 - **suggestion engineの能動的発話trigger拡張**: 実装機構は既存`addMessage()`を再利用できるが、発話タイミング・頻度はプロダクト判断と実機QAの反復が必要。
 
 → sync: README Status表の変更なし（Phase 1はpresentation-layerのみ。上記4項目は計画ファイル「今回スコープ外」を参照）。
+
+---
+
+### `tryAddRepo`のghost-entry検証がfail-open + `.git`未チェック（2026-08-17、静的コード監査由来）
+
+**バグ / 根本原因**: bug #73対応の`tryAddRepo`（`components/layout/Sidebar.tsx`）は親ディレクトリを`readDirEntries()`でprobeしていたが、`readDirEntries`はENOENT/EACCES/IOエラーを空配列`[]`で示し、genuinely空のディレクトリと区別できない（`lib/fs-native.ts`のdoc comment参照）。旧実装は`parentEntries.length === 0`を「親が読めない→addを通す」として扱っており、存在しない親パス（例: `/nonexistent/zzz/ghost1`）を入力すると無条件にghost entryが作成されていた。直下の`catch`ブロックも、`readDirEntries`が内部で例外を握りつぶし絶対にthrowしないため到達不能なdead codeだった。さらに、親内にbasenameが見つかった場合でもディレクトリ/シンボリックリンクの存在チェックのみで`.git`の有無を一切確認しておらず、既存の非gitディレクトリ（例: `$HOME/Downloads`）がそのまま「リポジトリ」として追加できた——bug #73のコメントが防ごうとしていた「空のfile treeと0件のgit dirty count」の症状をそのまま再現していた。
+
+**修正**: 検証ロジックを`lib/repo-path-validation.ts`の純粋関数`validateRepoPath()`へ切り出した。親probeが空を返した場合はfail-openせず、target自身を直接probeするフォールバックへ進む（親がlist不可・traverse可能な711権限のような正当なPOSIXケースをカバーしつつ、target側も空ならnot_foundとして拒否——一切のパスでfail-openしない）。加えて`.git`エントリの存在チェックを追加（`d`と`f`両方を許可——worktree/submoduleは`.git`がgitdirポインタを含むfileであるため）。`not_found`と`not_git`を明確に区別し、i18nに`sidebar.directory_not_git_title`/`_body`をen/ja両方に追加。到達不能だった`catch`ブロックは削除（呼び出し元の`try/catch`ごと不要になった）。
+
+**テスト追加**: `__tests__/repo-path-validation.test.ts`に7ケース（存在しないパス、親も対象も読めないケースでのfail-open防止確認、親のみ空で対象は読めるフォールバック、既存の非gitディレクトリ、既存gitディレクトリのhappy path、`.git`がfileのworktree/submoduleケース、シンボリックリンクエントリ）を追加。
+
+**検証**: `npx tsc --noEmit`はclean（このプロジェクトの`tsconfig`は`expo/tsconfig.base`由来で`strict`/`strictNullChecks`が無効なため、TypeScript 5.9.3では`!result.ok`によるdiscriminated union絞り込みが機能しない既知の挙動を発見——`result.ok === false`の明示比較に変更して回避した）。`npx jest`は本worktree（`.claude/worktrees/trusting-euler-8c802a/`のようなdotセグメントを含むrootDir）ではjestのWindows向けpath正規化バグにより全テストがdiscovery段階で0件になる（testMatchのglobが`C:/Users/.../Shelly\.claude/...`のようにスラッシュが壊れる）ことを確認した——これは既存のテスト（`sidebar-running-poll-condition.test.ts`等）も同様に影響を受ける、worktree固有の既知の制約であり本fixとは無関係（下記「jestのtestMatchがdotセグメント付きrootDirで壊れる」項目参照）。実際の検証は(1) コンパイル済みJSに対する素のnode assertion実行で7/7 pass、(2) rootDirを`.claude`セグメントを含まない一時ディレクトリへ複製した状態での実`npx jest`実行で7/7 pass、の2通りで行った。メイン`Shelly`チェックアウト側では未コミット・未検証（本worktreeのブランチのみで作業）。
+
+→ sync: README Status表の変更なし（既存機能のcorrectness fix + i18nキー追加）。
+
+---
+
+### jestの`testMatch`がdotセグメント付きrootDirで壊れる（2026-08-17、本タスクの検証中に発見、P2・ツーリング）
+
+**現象**: `rootDir`（またはcwd）のパスに`.claude`のようなdotプレフィックス付きセグメントが含まれると、Windows上で`npx jest`のglob正規化が壊れ、`testMatch`パターンの表示が`C:/Users/ryoxr/Shelly\.claude/worktrees/...`のように一部だけbackslashが残る不正な文字列になる。結果、その`rootDir`配下にある全テストファイルがdiscovery段階で「0 matches」となり、`No tests found`で終了する。`.claude/worktrees/<name>/`のようなworktreeで作業しているセッションは全員この影響を受ける——今回のbug fix自体とは無関係の既存インフラ制約。
+
+**回避策（今回使用）**: (1) 対象ファイルをdotセグメントを含まない一時ディレクトリへ複製してそこで`npx jest`を実行、(2) メインrepoチェックアウト（`C:\Users\ryoxr\Shelly`、dotセグメントを含まない）から実行すればテストは正常発見される。ただしその場合は当然worktree側の未コミット変更ではなくmainチェックアウト側のファイルを見に行くため、worktreeでの変更を検証したい場合は方法(1)が必要。
+
+**Why not now**: jest本体（またはこのプロジェクトのjest.config.cjs）側のバグ調査・報告は本タスクのスコープ外。ワークアラウンドで十分実用に耐える。
+
+→ sync: 対応不要（ツーリング既知issueとして記録のみ）。
 
 ---
 

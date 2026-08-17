@@ -1715,6 +1715,8 @@ const ja: Record<string, string> = {
   'sidebar.collapse': '折りたたむ',
   'sidebar.directory_not_found_title': 'ディレクトリが見つかりません',
   'sidebar.directory_not_found_body': 'パス "{{path}}" はこのデバイスに存在しません。スペルを確認するか、存在するフォルダを選んでください。',
+  'sidebar.directory_not_git_title': 'Gitリポジトリではありません',
+  'sidebar.directory_not_git_body': 'パス "{{path}}" は存在しますが、.git フォルダが含まれていません。既存のGitリポジトリを選んでください。',
   'sidebar.agent_failed_title': 'エージェントに失敗しました',
   'sidebar.agent_failed_body': '"{{name}}" を開始できませんでした。',
   'sidebar.agent_already_running_toast': '"{{name}}" は開始中または実行中です',
