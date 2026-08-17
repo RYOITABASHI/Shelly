@@ -40,6 +40,8 @@ import { useAgentStore } from '@/store/agent-store';
 import type { Agent, AgentRunLog } from '@/store/types';
 import * as Notifications from 'expo-notifications';
 import { saveUnattendedSkillWithNotification } from '@/lib/unattended-skill-save';
+import fs from 'fs';
+import path from 'path';
 
 const AGENT_LIST_MARKER = '---SEPARATOR---';
 const LOG_MARKER = '---SHELLY_AGENT_LOG---';
@@ -350,6 +352,29 @@ describe('syncAgentRunLogsFromDisk — circuit-breaker manual reset', () => {
     useAgentStore.getState().setRunHistory({});
     jest.restoreAllMocks();
     jest.clearAllMocks();
+  });
+
+  it('keeps Sidebar Run Now in confirm mode while scheduled log sync remains unattended auto mode', () => {
+    const sidebarSource = fs.readFileSync(
+      path.join(__dirname, '..', 'components', 'layout', 'Sidebar.tsx'),
+      'utf8',
+    );
+    const sidebarOffer = sidebarSource.slice(
+      sidebarSource.indexOf('const offerSkillSave = React.useCallback'),
+      sidebarSource.indexOf('const handleDeleteSkill'),
+    );
+    expect(sidebarOffer).not.toMatch(/unattended\s*:\s*true/);
+
+    const managerSource = fs.readFileSync(
+      path.join(__dirname, '..', 'lib', 'agent-manager.ts'),
+      'utf8',
+    );
+    const syncedSave = managerSource.slice(
+      managerSource.indexOf('// --- Skill auto-save (G3, unattended-only)'),
+      managerSource.indexOf('// --- Memory-write (G2 follow-up)'),
+    );
+    expect(syncedSave).toMatch(/!inFlightAgentRuns\.has\(agent\.id\)/);
+    expect(syncedSave).toMatch(/unattended:\s*true/);
   });
 
   it('keeps a manually re-enabled agent enabled for stale failures and trips after three new failures', async () => {

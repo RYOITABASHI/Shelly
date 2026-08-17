@@ -2191,7 +2191,11 @@ async function captureRunMemoryFromSyncedLogs(
     // already reusing a skill), independent of the memory gates below.
     // Ephemeral/attended @agent runs are manual-only and use the foreground
     // offer (hooks/use-skill-save-offer.ts) instead of this path.
-    if (agent.schedule || agent.notificationTrigger) {
+    // A scheduled agent can also produce an attended log through Sidebar's
+    // explicit Run Now path. While runAgentNow owns that foreground turn, its
+    // caller supplies the confirm-mode save offer; do not misclassify the same
+    // log as an unattended alarm fire during the run's internal log sync.
+    if ((agent.schedule || agent.notificationTrigger) && !inFlightAgentRuns.has(agent.id)) {
       try {
         // saveUnattendedSkillWithNotification is itself idempotent (skips a
         // recipe whose content-derived id already exists on disk), so a
