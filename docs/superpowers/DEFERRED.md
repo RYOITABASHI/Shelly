@@ -4943,6 +4943,18 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+**2026-08-17 attended skill-save分類の取りこぼし修正完了・push・CI green(`0a55064b8`)**
+
+`inFlightAgentRuns`(実行中のみ有効)とは別に、プロセス寿命の`attendedAgentRunLogIdentities`(`Set<string>`、`agent-companion-notice.ts`の`agentRunLogIdentity`を再利用、`agentId:timestamp`形式)を新設。単発ladder実行(`runEscalatingAttempts`が返す`finalLog`)・オーケストレーション実行(`aggregate`ログ)の両方で、attended経路を通った具体的なログのidentityを記録。`captureRunMemoryFromSyncedLogs`の定期同期ゲートに、この既知identityの除外チェックを追加(`inFlightAgentRuns`チェックと並列)。**意図的にタイムアウト解除なし**——一度attended経路を通ったログは、確認ダイアログが何分放置されようと、プロセスが生きている限り二度と無人auto-save対象にならない(未応答のnative Alertはプロセス再起動を跨いでも保持されないため、既存の`inFlightAgentRuns`と同じin-memory-onlyの前例に合わせた設計)。
+
+**検証**: `npx tsc --noEmit`クリーン、`agent-manager-scheduled-memory-capture.test.ts`+`agent-companion-notice.test.ts`計26/26 PASS(CC自身で再検証済み)。ダイアログ放置10分後を模したタイマー遅延の回帰テストも追加。CI green。
+
+これで今回の一連のCompanion/実行系まわりの改善(Fable5指摘7件+新規発見3件のうち2件の修正+今回のattended skill-save取りこぼし)は全て決着。**実機検証はまだ未実施**——次回on-deviceテストで確認すること。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
