@@ -1,9 +1,9 @@
 // components/multi-pane/LayoutPicker.tsx
 //
 // Visual preset selector for the 4-pane layout system. Shows a thumbnail
-// for each of the 7 presets (p1 / p2h / p2v / p3l / p3r / p3t / p4) and marks
-// the active one. Smaller presets temporarily hide surplus panes; they do not
-// delete panes or terminal sessions.
+// for each of the 8 presets (p1 / p2h / p2v / p3l / p3r / p3t / p3b / p4) and
+// marks the active one. Smaller presets temporarily hide surplus panes; they
+// do not delete panes or terminal sessions.
 //
 // Usage:
 //   <LayoutPicker onPicked={close} />

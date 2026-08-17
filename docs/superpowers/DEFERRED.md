@@ -4995,4 +4995,26 @@ Fable5がPINロック中も既存ダンプ+コード照合で継続した監査�
 
 3/4/5/6をREADME.md/README.ja.mdに反映(コミット待ち)。1/2は本エントリ以前の別バッチで既に着地済み。4は「修正不要」という調査結論そのものが成果。
 
+**訂正(同日)**: 上記「1/2は本エントリ以前の別バッチで既に着地済み」はCC自身の未検証な思い込みだったと判明。実際にREADME.mdを直接grepしたところ、`Multi-pane layout (7 types...)`と`Theme presets — Blue / Red / Purple`(Green抜き)は**修正されておらず古いまま**だった。この誤った「既に直した」という発言をユーザーに伝えてしまった後に気づき、この場で訂正・修正した(`LayoutPicker.tsx`内部コメントの「7」も実数「8」に修正)。教訓: 「別バッチで直したはず」という記憶に頼らず、直前にgrepで裏取りしてから発言すること。
+
 → sync: なし(README本体を直接修正)。
+
+---
+
+**2026-08-17 Fable5 実機監査バッチ①(端末アンロック後の本編再開)— 3件の実質的な差分を発見、CC自身が全件裏取りして修正**
+
+端末アンロック後、48行のStatusテーブル網羅監査を再開。実機バッチ①で3件の差分を発見、7件は実機一致確認、3件は今回未到達(WebView中のuiautomatorビジー、複合フローの重さ)、6件はテスト不能(既知)として明示報告。CC側で全件を実コード確認してから反映:
+
+1. **bash wrapperの「for shebangs」記載が過大** — 実機実測で`bash script.sh`(`#!/usr/bin/env bash`shebang付き含む)は成功するが、shebangスクリプトの**直接実行**(`./script.sh`)は「`/usr/bin/env: bad interpreter: Permission denied`」exit 126で失敗。これはCLAUDE.md自身が別項目(「PATH-visible shim は native binary 必須」)で文書化済みのKnox `binfmt_script`制限そのもので、bash wrapperの項目だけがこの制限の例外であるかのような書きぶりになっていた。README.md/ja.md、およびCLAUDE.md本体のbash wrapper行を「`bash script.sh`経由なら動く、直接実行は依然失敗する」に訂正。
+
+2. **Codex managed native runtime「✅ managed latest」の実態不一致** — 実機で`~/.shelly-runtime/codex/`を確認したところ、`current/`シンボリックリンクは一度も存在せず、バージョン付きステージングディレクトリ(v0.125.0〜v0.134.1、`version`ファイルはv0.134.1)のみ。一方`codex --version`は0.147.0(APK同梱・ステージ済みより新しい)が実際に稼働中。`current/`が存在しないため`shelly-runtime/codex`経路は休眠、フォールバックのAPK同梱ランタイムが実質稼働している状態。HomeInitializer.ktのコード内コメント(「skip stale runtime current when the APK native version is newer」、Claudeランタイムの文脈)から類推すると意図的な「同梱より新しい場合のみ昇格」ゲートの可能性が高いが、Codex経路でこれが同じロジックか、あるいは昇格処理自体が未発火なのかは**未確定**。README.md/ja.mdの該当行を「機構の設計意図であり、全端末での`current/`存在を保証するものではない」という正確な書きぶりに訂正。**根本原因の特定(意図的ゲートか実バグか)は別途トリアージが必要 — 優先度P2、実害は軽微(バンドル版へのフォールバック自体は正しく機能しており、ユーザー体験上の実害はない)。**
+
+3. **Theme presets「Blue / Red / Purple」→ 前回セッションで「別バッチで着地済み」と誤って報告した件の実修正** — 上記の訂正エントリ参照。README.md/ja.md 3箇所ずつ(概要表・機能一覧・Visible presets文)+Multi-pane layout「7 types」→「8 types」+`LayoutPicker.tsx`内部コメントを全て修正。
+
+**確認済み・差分なしの7件**: Command Palette(パレット起動・テーマ4種・Git 7コマンド)/Local LLM設定シート(catalog/download/start-stop)/MCP Servers設定シート(サーバ一覧・トグル・Copy settings)/Codex CLI device-codeログインゲート/ローカルLLMのURL駆動auto-startルーティング/Skillsカタログ(ライブ取得4レシピ)/PTY・ストレージ・SSH Profiles・Quick Launch等の存在レベル確認。
+
+**今回未到達(次バッチ候補)**: AI Edit golden path、Sub-agent fan-out実機(〜10分級)、Scouter widget RUN、Add Repositoryゴーストパスa11y再挑戦。
+
+**テスト不能(明示・実行せず)**: Atomic paste実機注入信頼性(bug番号4件で歴史的検証済みのため今回省略)/X OAuth実課金アカウント/Bluesky以外のsocial実投稿/OpenRouter実キーstreamed reply/SSH実接続/APK・Codexランタイム保留中更新フロー/無人AlarmManager発火のN増し/配信チャネル。
+
+→ sync: README.md/ja.md/CLAUDE.md/LayoutPicker.tsxを直接修正済み。Codex runtime promotion根本原因は別途調査要(P2)。

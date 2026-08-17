@@ -251,7 +251,7 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 | **ローカル LLM（端末上、llama.cpp）** | Qwen3.5 系モデルを同梱の llama.cpp / llama-server フローで端末上で動かします。日常使いのデフォルトは Qwen3.5-2B、軽量なフォールバックとして Qwen3 1.7B / Qwen3.5 0.8B、4B 以上は短時間の品質確認に限定しています。 |
 | **Android 上の Codex** | 上流を盲信せずに Codex を「管理された最新」に保ちます。各 APK は固定ランタイムを同梱し、Updates UI は検証済みランタイムリリースへ昇格でき、Reset で同梱ランタイムに戻せます。Codex は Shelly 自前のデバイスコードログインラッパーとともに、ネイティブ PTY 上で動きます。proot も root も不要です。 |
 | **Scouter ホームウィジェット** | ホーム画面のエージェント起動パッド兼ヘルス一覧です。アプリを開かずに、直近実行予定のエージェント最大3件をそれぞれのステータスグリフ（前回実行の成功 / 失敗 / スキップ）と次回発火時刻つきで表示します。しかも操作可能で、**RUN** は登録済みエージェントを無人実行のゲートを通して起動し、**ASK** は新規エージェントの登録にも使えます——`@agent ...` と打つ（または話す）と、AI ペインに直接打ったときと同じ確認フローに合流します。 |
-| **カラーテーマ** | Blue / Red / Purple のパレットは既存のプリセット ID の上で動くので、実行中に切り替えても設定のマイグレーションなしでシェルが生き残ります。 |
+| **カラーテーマ** | Blue / Red / Purple / Green のパレットは既存のプリセット ID の上で動くので、実行中に切り替えても設定のマイグレーションなしでシェルが生き残ります。 |
 | **音声入力** | コマンドや AI プロンプトを話しかけられます。文字起こしは Groq Whisper が担当し、そのテキストを VoiceChain がキーボードと同じ入力ルーターに流します。 |
 
 ### 自律エージェント
@@ -470,7 +470,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 - **Git** — Status / Diff / Log / Add all / Commit / Push / Pull --rebase *（アクティブなターミナルペインの `pendingCommand` チャンネル経由）*
 - **Panes** — Terminal / AI / Browser / Markdown / Preview の追加
 - **Layouts** — Single Terminal / Terminal + AI / Terminal + Browser / 3-Way Triple
-- **Theme presets** — Blue / Red / Purple
+- **Theme presets** — Blue / Red / Purple / Green
 - **Font presets** — Silk / 8bit / Mono とレガシーのエディタパレット
 - **Voice** — 対話を開く（VoiceChat モーダル）
 - **Snippets** — スニペットストアの先頭 20 件。それぞれターミナルにディスパッチされます
@@ -482,7 +482,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 <summary><strong>テーマとフォント</strong></summary>
 
 - **カラープリセット** — Blue がデフォルトのクールなパレット、Red は赤〜オレンジ系のクローム、Purple は紫にネオングリーンのアクセント。
-- **表に出ているプリセット** — 設定とコマンドパレットに出すのは 3 つのカラーテーマです。レガシーやエディタ系のパレット ID は古い保存設定のために受け付け続けますが、UI の主役ではありません。
+- **表に出ているプリセット** — 設定とコマンドパレットに出すのは 4 つのカラーテーマです。レガシーやエディタ系のパレット ID は古い保存設定のために受け付け続けますが、UI の主役ではありません。
 - **実行中の切り替え** — プリセットの切り替えは、ライブの `colors` オブジェクトを（同一性を保ったまま）その場で書き換え、シェルレイアウトを key-remount させる theme-version ストアを進めることで行います。PTY セッションは切り替えを生き延びます――開いている vim はそのままです。
 - **単一ファミリでの描画** — すべての Text は `fontWeight` に関係なく JetBrains Mono を通るので、UI とターミナルのタイポグラフィが揃います。
 - **Text.render のモンキーパッチ** — 子が独自の `style` を渡した場合、`Text.defaultProps.style` はマージではなく置換されます。そのままだと 100 箇所以上の呼び出し元がテーマフォントから外れてしまいます。パッチはすべての Text の style 配列の先頭に `{ fontFamily }` を挿し込むので、呼び出し元を触らずにプリセットのフォントが行き渡ります。
@@ -530,16 +530,16 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | 領域 | 状態 |
 |---|---|
 | ネイティブ PTY、セッション、tmux 復活 | ✅ 出荷済み |
-| マルチペインレイアウト（7 種類、分割、プリセット、ドラッグリサイズ、空状態の CTA） | ✅ 出荷済み |
+| マルチペインレイアウト（8 種類、分割、プリセット、ドラッグリサイズ、空状態の CTA） | ✅ 出荷済み |
 | アトミックペースト（ゲストが DECSET 2004 で申告したときの bracketed-paste ラップ、`TerminalEmulator.paste()` 単一チョークポイント、IME のチャンク分割の統合） | ✅ 出荷済み（bug #91、#94、#97、#106） |
 | `MANAGE_EXTERNAL_STORAGE` による `/sdcard` アクセス（初回起動時の許可フロー） | ✅ 出荷済み（bug #92） |
-| shebang と `bash script.sh` のための `$HOME/bin/bash` の bash ラッパー | ✅ 出荷済み（bug #93） |
+| `bash -c "…"` と `bash script.sh`（`#!/usr/bin/env bash` shebang付きスクリプト含む）のための `$HOME/bin/bash` の bash ラッパー | ✅ 出荷済み（bug #93）。shebangスクリプトの直接実行（`./script.sh`）はKnoxの`binfmt_script`制限により依然失敗する — 必ず`bash script.sh`経由で実行すること |
 | `execSubprocess` の JNI 読み取りループ（EAGAIN と EOF の区別） | ✅ 出荷済み（bug #70） |
 | AI Edit のゴールデンパス（ステージ → diff → hunk 単位の承認 → ディスク書き戻し） | ✅ 出荷済み。後続 hunk のためのファジー再アンカー付き |
 | FileTree の CRUD（作成 / リネーム / 削除 / パスのコピー） | ✅ 出荷済み |
 | コマンドパレット — settings、terminal、git、panes、layouts、theme、voice | ✅ 出荷済み |
 | ブラウザの全画面、デスクトップ UA トグル、リンク取り込み、ブックマーク | ✅ 出荷済み |
-| テーマプリセット — Blue / Red / Purple（保存済み設定のためにレガシープリセット ID も受け付け。実行中の切り替え、Text のモンキーパッチ） | ✅ 出荷済み |
+| テーマプリセット — Blue / Red / Purple / Green（保存済み設定のためにレガシープリセット ID も受け付け。実行中の切り替え、Text のモンキーパッチ） | ✅ 出荷済み |
 | サイドバーの Add Repository の存在チェックとゴーストパス時の Alert | ✅ 出荷済み（bug #73） |
 | AI ペインのローカル LLM ルーティング（URL 駆動、有効化トグル不要） | ✅ 出荷済み（bug #68） |
 | 音声対話（VoiceChat + VoiceChain + TTS） | ✅ 音声入力（マイク → 文字起こし → ルーティングされた応答）は 2026-07-27 に実機で確認済み。専用のフルスクリーン VoiceChat モードと TTS 再生については、今回のパスでは独立に再検証していません |
@@ -547,7 +547,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | llama.cpp による `@local` のローカル LLM（Settings · Integrations · Local LLM: カタログ、ダウンロード、開始 / 停止） | ✅ 出荷済み |
 | MCP サーバー（Settings · Integrations · MCP Servers） | ✅ サーバーのライフサイクル管理（インストール/起動/停止、Codex など MCP を利用するツール向けの設定生成）としては出荷済み。AI Pane 自体は MCP クライアントとしては動作しません（`listTools` / `callTool` なし） |
 | Codex CLI の起動 / 認証 | ✅ サポート済み。素の `codex` は、TUI 起動前に Shelly のデバイスコード認証を通してネイティブ PTY 上で動きます |
-| 管理された Codex ネイティブランタイム（`codex_tui` を `~/.shelly-runtime/codex/current` にステージ、`--version` と `exec --help` でスモークテスト、同梱ランタイムへの修復 / リセット） | ✅ 管理された最新 |
+| 管理された Codex ネイティブランタイム（`codex_tui` を `~/.shelly-runtime/codex/current` にステージ、`--version` と `exec --help` でスモークテスト、同梱ランタイムへの修復 / リセット） | ✅ 出荷済み。ある実機（2026-08-17）では `current/` が一度も昇格されておらず、バージョン付きステージングディレクトリ（〜0.134.1まで）のみが存在、実際に稼働していたのはより新しい APK 同梱ランタイム（0.147.0）へのフォールバックだった。「同梱より新しい場合のみ昇格する」意図的なゲートなのか、昇格処理自体が一度も発火していないのかは未特定。「管理された最新」は機構の設計意図であり、全端末で`current/`が必ず存在することの保証ではないと理解されたい |
 | AI ペイン / `@gemini` / `@team` / バックグラウンドエージェントでの Gemini API | ✅ Gemini API キーを設定していれば利用可 |
 | AI ペイン / `@openrouter` での OpenRouter（有人時のみ ―― 無人実行が OpenRouter を経由することはありません） | ✅ OpenRouter API キーを設定していれば利用可。実機ではライブのエンドポイントに到達するところまで確認済み（Settings の入力欄、メンションのルーティング、実際の HTTP 認証エラーが表示されること）―― 本物のキーでストリーミング応答を最後まで受け取るところまでは、まだ試せていません |
 | Shelly の相棒としての表示 — AI ペインの応答では生のプロバイダ名ではなく「Shelly」を既定の話者名として表示し、`@` で明示的にルーティングしたプロバイダだけを副次タグとして残す。登録 / 確認の文言も会話調に変更 | ✅ 出荷済み。2026-08-15に実機確認済み |

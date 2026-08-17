@@ -253,7 +253,7 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A home-screen agent launcher and health list — up to 3 upcoming scheduled agents, each with a status glyph (last run's success/error/skipped) and next-fire time, without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK** can also register a brand-new agent — type or speak `@agent ...` and it routes through the same confirm flow as typing it in the AI Pane. |
-| **Color themes** | Blue / Red / Purple palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
+| **Color themes** | Blue / Red / Purple / Green palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
 | **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
 
 ### Autonomous agents
@@ -475,7 +475,7 @@ Currently registered:
 - **Git** — Status / Diff / Log / Add all / Commit / Push / Pull --rebase *(routed through the active terminal pane's `pendingCommand` channel)*
 - **Panes** — Add Terminal / AI / Browser / Markdown / Preview
 - **Layouts** — Single Terminal / Terminal + AI / Terminal + Browser / 3-Way Triple
-- **Theme presets** — Blue / Red / Purple
+- **Theme presets** — Blue / Red / Purple / Green
 - **Font presets** — Silk / 8bit / Mono and legacy editor palettes
 - **Voice** — Open dialogue (VoiceChat modal)
 - **Snippets** — first 20 entries from your snippet store, each dispatches to the terminal
@@ -487,7 +487,7 @@ Currently registered:
 <summary><strong>Theme &amp; Fonts</strong></summary>
 
 - **Color presets** — Blue is the default cool palette, Red is red-orange chrome, and Purple is purple with neon green accents.
-- **Visible presets** — Settings and the Command Palette expose the three color themes. Legacy and editor palette IDs remain accepted for old saved settings but are no longer the primary UI surface.
+- **Visible presets** — Settings and the Command Palette expose the four color themes. Legacy and editor palette IDs remain accepted for old saved settings but are no longer the primary UI surface.
 - **Runtime swap** — presets are swapped by mutating the live `colors` object in place (identity preserved) and bumping a theme-version store that key-remounts the shell layout. PTY sessions survive the switch — your vim stays open.
 - **Single-family rendering** — every Text is forced through JetBrains Mono regardless of its `fontWeight`, keeping UI and terminal typography consistent.
 - **Text.render monkey-patch** — `Text.defaultProps.style` is replaced (not merged) when a child passes its own `style`, which would otherwise let 100+ call sites escape the theme font. The patch prepends `{ fontFamily }` to every Text's style array so the preset font reaches every call site without touching them.
@@ -535,16 +535,16 @@ Currently registered:
 | Area | State |
 |---|---|
 | Native PTY, sessions, tmux revival | ✅ shipping |
-| Multi-pane layout (7 types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
+| Multi-pane layout (8 types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
 | Atomic paste (bracketed-paste wrap when guest opts in via DECSET 2004, single `TerminalEmulator.paste()` choke point, IME chunk-split coalesced) | ✅ shipping (bugs #91, #94, #97, #106) |
 | `/sdcard` access via `MANAGE_EXTERNAL_STORAGE` (first-launch grant flow) | ✅ shipping (bug #92) |
-| `bash` wrapper at `$HOME/bin/bash` for shebangs and `bash script.sh` | ✅ shipping (bug #93) |
+| `bash` wrapper at `$HOME/bin/bash` for `bash -c "…"` and `bash script.sh` (including scripts with a `#!/usr/bin/env bash` shebang line) | ✅ shipping (bug #93); direct execution of a shebang script (`./script.sh`) still fails under Knox's `binfmt_script` restriction — always invoke via `bash script.sh` |
 | `execSubprocess` JNI read loop (EAGAIN vs EOF distinction) | ✅ shipping (bug #70) |
 | AI Edit golden path (stage → diff → per-hunk accept → disk writeback) | ✅ shipping, fuzzy re-anchor for successive hunks |
 | FileTree CRUD (create / rename / delete / copy path) | ✅ shipping |
 | Command Palette — settings, terminal, git, panes, layouts, theme, voice | ✅ shipping |
 | Browser fullscreen, desktop UA toggle, link capture, bookmarks | ✅ shipping |
-| Theme presets — Blue / Red / Purple, with legacy preset IDs accepted for saved settings (runtime swap, Text monkey-patch) | ✅ shipping |
+| Theme presets — Blue / Red / Purple / Green, with legacy preset IDs accepted for saved settings (runtime swap, Text monkey-patch) | ✅ shipping |
 | Sidebar Add Repository existence check + Alert on ghost path | ✅ shipping (bug #73) |
 | AI pane Local LLM routing (URL-driven, no enable toggle) | ✅ shipping (bug #68) |
 | Voice dialogue (VoiceChat + VoiceChain + TTS) | ✅ voice input (mic → transcription → routed reply) confirmed on-device 2026-07-27; the dedicated full-screen VoiceChat mode and TTS playback weren't independently re-verified this pass |
@@ -552,7 +552,7 @@ Currently registered:
 | Local LLM via llama.cpp `@local` (Settings · Integrations · Local LLM: catalog, download, start/stop) | ✅ shipping |
 | MCP Servers (Settings · Integrations · MCP Servers) | ✅ shipping for server lifecycle management (install/start/stop, config generation for tools like Codex that consume MCP) — the AI Pane itself does not act as an MCP client (no `listTools`/`callTool`) |
 | Codex CLI launch/auth | ✅ supported; bare `codex` runs over the native PTY, using Shelly device-code auth before TUI launch |
-| Codex managed native runtime (`codex_tui` staged under `~/.shelly-runtime/codex/current`, `--version` and `exec --help` smoke-tested, repair / reset to bundled runtime) | ✅ managed latest |
+| Codex managed native runtime (`codex_tui` staged under `~/.shelly-runtime/codex/current`, `--version` and `exec --help` smoke-tested, repair / reset to bundled runtime) | ✅ shipping; on one real device (2026-08-17) no `current/` had ever been promoted — only versioned staging dirs up to 0.134.1 — while the APK-bundled runtime (0.147.0, newer) was the one actually running via fallback. Whether that reflects an intentional "only promote if newer than bundled" gate or a promotion step that never fired hasn't been root-caused yet; treat "managed latest" as the mechanism's design intent, not a guarantee that `current/` is populated on every device |
 | Gemini API in AI Pane / `@gemini` / `@team` / background agents | ✅ available when a Gemini API key is configured |
 | OpenRouter in AI Pane / `@openrouter` (attended only — unattended runs never route through it) | ✅ available when an OpenRouter API key is configured; verified on-device up to the live endpoint (Settings field, mention routing, real HTTP auth errors surfaced) — a full streamed reply with a real key hasn't been exercised yet |
 | Shelly companion presentation — AI Pane replies use “Shelly” as the default speaker instead of the raw provider name; an explicitly `@`-routed provider remains visible as a secondary tag, with conversational registration / confirmation copy | ✅ shipping; confirmed on-device 2026-08-15 |
