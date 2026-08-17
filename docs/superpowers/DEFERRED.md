@@ -4858,7 +4858,7 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 **新規発見(スコープ外・要トリアージ)**:
 1. **【最重要・新規発見】ローカルpersonaの会話履歴は直前1往復のみ**(`hooks/use-ai-pane-dispatch.ts`の`toOpenAIHistory(..., agent==='local' ? 1 : 8)`)。共有スレッドで「見た目の連続性」は今日完成したが、既定personaの「脳の連続性」は1往復+`_global`ノートのみで、3ターン前の話題を受けられない。次のHermesギャップ本丸として、ローリング会話要約(スレッド要約を保持し毎プロンプト注入)のような中間層を推奨。
-2. **【要調査】a11yテキスト露出の不安定** — globalmemory確認バブル等の複数行メッセージがアクセシビリティツリーにテキストを露出しないことが検証横断で頻発。TalkBackユーザーには確認ゲートが読み上げられない可能性があり、確認型UXの根幹に関わる懸念。
+2. **✅ `3692a8370` a11yテキスト露出の不安定** — AI Paneの全MessageBubble分岐と関連する3種の確認カードに、全文を含む明示的な`accessibilityLabel`を追加。可変高行をnative treeからdetachし得る`removeClippedSubviews`も削除し、複数行メッセージがTalkBackから到達不能になる既知経路を解消した。
 3. **【軽微・コピーバグ】attended Run Now完了通知が「was saved after an unattended run」と表示** — 動作は正しいが実行モードとコピーが矛盾。
 4. **【体験改善】run開始が会話に現れない** — 完了通知はチャットに戻るようになったが(Increment C2)、実行中は会話面が無言。「やっておくね」的な開始noticeがあるとcompanion感が向上。
 5. **【既知・再掲】閉じたペインのpane-localスレッドが到達不能データ化**。
