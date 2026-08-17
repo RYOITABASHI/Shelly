@@ -25,6 +25,19 @@ export function formatElapsedMs(ms: number): string {
   return `${s}s`;
 }
 
+/** Pick the elapsed time shown in Sidebar's RUNNING row. Attended chains
+ * expose a chain-lifetime start marker; older and single-attempt runs fall
+ * back to the per-invocation PID lock, then the live step marker. */
+export function runningDisplayElapsedMs(
+  nowMs: number,
+  chainStartedAtMs: number | null,
+  lockMtimeMs: number | null,
+  stepStartedAtMs: number | null,
+): number {
+  const startedAtMs = chainStartedAtMs ?? lockMtimeMs ?? stepStartedAtMs;
+  return startedAtMs == null ? 0 : Math.max(0, nowMs - startedAtMs);
+}
+
 /** Decide whether the Sidebar's RUNNING-section poll loop should be active.
  *  docs/superpowers/DEFERRED.md "zombie RUNNING display" bug: an ephemeral
  *  one-shot agent auto-deletes its store entry (agentCount -> 0) while its

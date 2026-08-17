@@ -3,7 +3,7 @@
 // test can run in the plain 'unit' jest project (ts-jest/node) without
 // mocking the native TerminalEmulator module and the rest of Sidebar.tsx's
 // import graph — see that file's own header comment for why.
-import { formatElapsedMs } from '@/lib/agent-running-format';
+import { formatElapsedMs, runningDisplayElapsedMs } from '@/lib/agent-running-format';
 
 describe('formatElapsedMs (Sidebar RUNNING-row elapsed display)', () => {
   it('renders sub-minute durations as plain seconds', () => {
@@ -29,5 +29,23 @@ describe('formatElapsedMs (Sidebar RUNNING-row elapsed display)', () => {
   it('clamps negative input to 0s instead of throwing or going negative', () => {
     expect(formatElapsedMs(-1)).toBe('0s');
     expect(formatElapsedMs(-100_000)).toBe('0s');
+  });
+});
+
+describe('runningDisplayElapsedMs (Sidebar RUNNING-row start selection)', () => {
+  const now = 40 * 60_000;
+
+  it('keeps the whole-chain elapsed time when a ladder retry refreshes the PID lock', () => {
+    expect(runningDisplayElapsedMs(now, 5 * 60_000, 39 * 60_000, 39 * 60_000)).toBe(35 * 60_000);
+  });
+
+  it('falls back to the PID lock and then step marker for older or non-chain runs', () => {
+    expect(runningDisplayElapsedMs(now, null, 30 * 60_000, 39 * 60_000)).toBe(10 * 60_000);
+    expect(runningDisplayElapsedMs(now, null, null, 39 * 60_000)).toBe(60_000);
+    expect(runningDisplayElapsedMs(now, null, null, null)).toBe(0);
+  });
+
+  it('clamps a future timestamp instead of displaying a negative duration', () => {
+    expect(runningDisplayElapsedMs(now, now + 1_000, null, null)).toBe(0);
   });
 });

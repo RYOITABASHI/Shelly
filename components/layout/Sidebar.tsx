@@ -31,7 +31,11 @@ import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import { MEMORY_ENABLED } from '@/lib/memory/wiring';
 import { activateMemoryList } from '@/lib/memory/shadow';
 import { openFile } from '@/lib/open-file';
-import { formatElapsedMs, shouldPollRunningAgents as shouldPollRunningAgentsFn } from '@/lib/agent-running-format';
+import {
+  formatElapsedMs,
+  runningDisplayElapsedMs,
+  shouldPollRunningAgents as shouldPollRunningAgentsFn,
+} from '@/lib/agent-running-format';
 import { useMotion } from '@/hooks/use-motion';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
 import { parseAuthorizedSenders } from '@/lib/notification-inbound';
@@ -137,6 +141,9 @@ function isUiAutonomousTool(tool: ToolChoice): boolean {
 // as refreshRunningAgents' `kill -0` check — see that callback below for the
 // shell command that populates this per agent.
 interface RunningAgentDetail {
+  /** Whole-chain acquisition time, ms since epoch. Unlike the per-attempt PID
+   * lock below, this marker is written once and survives ladder retries. */
+  chainStartedAtMs: number | null;
   /** Lock file mtime, ms since epoch — when the run was picked up. Null if
    *  `stat` failed (should not normally happen once the lock file exists). */
   lockMtimeMs: number | null;
@@ -360,7 +367,8 @@ export function Sidebar() {
   // by lib/agent-executor.ts for its own staleness checks) and — best-effort —
   // the per-agent $LOG_DIR/current.json live step marker, so the RUNNING
   // sub-section never needs a second round-trip per agent. One tab-separated
-  // line per running agent: `<id>\t<lockMtimeEpochSec>\t<current.json line>`.
+  // line per running agent:
+  // `<id>\t<lockMtimeEpochSec>\t<chainStartedEpochSec>\t<current.json line>`.
   const refreshRunningAgents = React.useCallback(async () => {
     const result = await TerminalEmulator.execCommand(
       `for f in "$HOME"/.shelly/agents/locks/*.pid; do ` +
@@ -370,10 +378,11 @@ export function Sidebar() {
         `if kill -0 "$pid" 2>/dev/null; then ` +
           `id="$(basename "$f" .pid)"; ` +
           `mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"; ` +
+          `chainstart="$(cat "$HOME/.shelly/agents/locks/$id.chain.lock/acquired-at" 2>/dev/null || echo 0)"; ` +
           `cur="$HOME/.shelly/agents/logs/$id/current.json"; ` +
           `curline=""; ` +
           `[ -f "$cur" ] && curline="$(tr -d '\\n' < "$cur" 2>/dev/null)"; ` +
-          `printf '%s\\t%s\\t%s\\n' "$id" "$mtime" "$curline"; ` +
+          `printf '%s\\t%s\\t%s\\t%s\\n' "$id" "$mtime" "$chainstart" "$curline"; ` +
         `fi; ` +
       `done`,
       10_000,
@@ -386,13 +395,19 @@ export function Sidebar() {
       if (!line) continue;
       const tab1 = line.indexOf('\t');
       const tab2 = tab1 >= 0 ? line.indexOf('\t', tab1 + 1) : -1;
+      const tab3 = tab2 >= 0 ? line.indexOf('\t', tab2 + 1) : -1;
       const id = tab1 >= 0 ? line.slice(0, tab1) : line;
       if (!id) continue;
       const mtimeStr = tab1 >= 0 ? line.slice(tab1 + 1, tab2 >= 0 ? tab2 : undefined) : '';
-      const curJson = tab2 >= 0 ? line.slice(tab2 + 1) : '';
+      const chainStartedStr = tab2 >= 0 ? line.slice(tab2 + 1, tab3 >= 0 ? tab3 : undefined) : '';
+      const curJson = tab3 >= 0 ? line.slice(tab3 + 1) : '';
       ids.push(id);
       const mtimeSec = Number(mtimeStr);
       const lockMtimeMs = Number.isFinite(mtimeSec) && mtimeSec > 0 ? mtimeSec * 1000 : null;
+      const chainStartedSec = Number(chainStartedStr);
+      const chainStartedAtMs = Number.isFinite(chainStartedSec) && chainStartedSec > 0
+        ? chainStartedSec * 1000
+        : null;
       let currentStep: RunningAgentDetail['currentStep'] = null;
       if (curJson) {
         try {
@@ -408,7 +423,7 @@ export function Sidebar() {
           // script version) — best-effort only, never blocks the row.
         }
       }
-      details[id] = { lockMtimeMs, currentStep };
+      details[id] = { chainStartedAtMs, lockMtimeMs, currentStep };
     }
     setRunningAgentIds(new Set(ids));
     setRunningAgentDetails(details);
@@ -1398,7 +1413,12 @@ export function Sidebar() {
       ? RUNNING_STALL_THRESHOLD_WITH_MARKER_MS
       : RUNNING_STALL_THRESHOLD_NO_MARKER_MS;
     const stalled = stallReferenceMs > stallThresholdMs;
-    const displayElapsedMs = lockElapsedMs ?? stepElapsedMs ?? 0;
+    const displayElapsedMs = runningDisplayElapsedMs(
+      now,
+      detail?.chainStartedAtMs ?? null,
+      detail?.lockMtimeMs ?? null,
+      currentStep?.startedAtMs ?? null,
+    );
     return { id, agent, currentStep, displayElapsedMs, stalled };
   });
 
