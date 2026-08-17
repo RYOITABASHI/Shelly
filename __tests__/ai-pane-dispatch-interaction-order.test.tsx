@@ -447,6 +447,81 @@ describe('@openrouter attended dispatch', () => {
   });
 });
 
+describe('AI pane provider history depth', () => {
+  function seedPriorTurns(turns: number) {
+    for (let turn = 1; turn <= turns; turn += 1) {
+      useAIPaneStore.getState().addMessage(conversationKey(), {
+        id: `history-user-${turn}`,
+        role: 'user',
+        content: `prior user ${turn}`,
+        timestamp: turn * 2,
+      });
+      useAIPaneStore.getState().addMessage(conversationKey(), {
+        id: `history-assistant-${turn}`,
+        role: 'assistant',
+        content: `prior assistant ${turn}`,
+        timestamp: turn * 2 + 1,
+        agent: 'local',
+      });
+    }
+  }
+
+  it('sends six prior turns to the local LLM, not only the immediately preceding turn', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('local reply', false);
+      return { success: true, content: 'local reply' };
+    });
+    seedPriorTurns(7);
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('current local prompt');
+    });
+
+    const messages = mockOllamaChatStream.mock.calls[0][1];
+    expect(messages.slice(1, -1).map((message: { content: string }) => message.content)).toEqual([
+      'prior user 2', 'prior assistant 2',
+      'prior user 3', 'prior assistant 3',
+      'prior user 4', 'prior assistant 4',
+      'prior user 5', 'prior assistant 5',
+      'prior user 6', 'prior assistant 6',
+      'prior user 7', 'prior assistant 7',
+    ]);
+  });
+
+  it('keeps the cloud route at eight prior turns', async () => {
+    usePaneStore.setState({ paneAgents: { [PANE]: 'openrouter' } } as any);
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        openrouterApiKey: 'sk-or-test',
+        openrouterModel: 'openrouter/auto',
+      },
+    }));
+    mockOpenRouterChatStream.mockResolvedValue({ success: true, content: 'cloud reply' });
+    seedPriorTurns(9);
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('current cloud prompt');
+    });
+
+    const history = mockOpenRouterChatStream.mock.calls[0][4];
+    expect(history).toHaveLength(16);
+    expect(history[0].content).toBe('prior user 2');
+    expect(history.at(-1).content).toBe('prior assistant 9');
+  });
+});
+
 // ─── Scenario 1: the exact regression repro ───────────────────────────────
 
 describe('Scenario 1 — exact on-device regression repro (commit b1145a016)', () => {

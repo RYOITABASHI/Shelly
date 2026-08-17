@@ -2691,9 +2691,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         const conv = store.getOrCreate(paneId);
         // Exclude the streaming placeholder and the current user message;
         // the active prompt is passed separately to each provider below.
+        // 2026-08-17 on-device review found one prior turn too shallow for the
+        // shared companion thread to feel continuous. Keep local at six turns
+        // (each message is capped below) to balance a 2B model's context/latency
+        // budget; cloud providers retain their deeper eight-turn history.
         const history = toOpenAIHistory(
           conv.messages.filter((m) => m.id !== assistantId && m.id !== userMessageId),
-          agent === 'local' ? 1 : 8,
+          agent === 'local' ? 6 : 8,
         ).map((m) => ({
           role: m.role,
           content: agent === 'local' ? compactForLocalLlm(m.content, 500) : m.content,
