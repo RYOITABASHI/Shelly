@@ -5042,3 +5042,32 @@ Fan-out実機検証をFable5→(利用上限3連続ヒットのため)Opusへ引
 - `lib/agent-orchestration.ts:50-56`(`MAX_PARALLEL_BRANCHES`のコメント) — 「even though v1 dispatch is serial」という記述。無人executorが実際にこのcapをin-processセマフォとして生かしている旨に更新。
 
 `npx tsc --noEmit`クリーン(コメントのみの変更)。
+
+---
+
+**2026-08-17 ✅ Sub-agent fan-out 実機検証 完了 — README 🟡→✅ に格上げ(1点のみ実機未確認のまま明示)**
+
+端末解錠後、Opus引き継ぎエージェントが正確なテストフィクスチャ(`autonomous`省略でapi-key credentialClassの「無人不可」罠を回避、`tool: groq`、`action: draft`、`requireActionApproval: false`、4ステップ`[g1,g1,g1,aggregate]`)で実AlarムManager発火を3回(既存probe含む)取得し、README/CLAUDE.mdの主張4点すべてを実機で確認した:
+
+1. **ブランチが実際に走った** — 宣言4ステップ中3つが`parallelGroup`付きで個別実行ログに記録、単一化されていない。
+2. **コンテキスト分離** — 陽性対照が決め手: グループから切り離されたstep3(serial)は3ブランチ全ての出力(`SEEN=ALPHA-111,BRAVO-222,CHARLIE-333`)を正しく見られたのに対し、グループ内の各ブランチは互いのコードワードを一切見ていない(例: step1は`SEEN=NONE`)。
+3. **3ブランチ上限のセマフォ** — 4メンバー宣言のうち3つのみ`parallelGroup`が付き、4本目は`effectiveEnd = min(4, 0+3) = 3`で正しくserialへ切り離された(ドロップはなし、5ステップ全て実行)。
+4. **宣言順集約** — 出力`ORDER=ALPHA-111,BRAVO-222,CHARLIE-333,DELTA-444`は宣言順。完了順(duration比較で判明: idx2→idx0→idx1)とは異なり、フレームワークが宣言順を強制していることを確認。
+
+**wall-clock並行性(README追加主張)も数値で確認**: broker監査ログの各ブランチAPIリクエストのタイムスタンプが36ms(gemini 3ブランチ run)〜42ms(groq 4メンバー宣言run)以内に集中、かつts順不同(3つの独立brokerプロセスが同一JSONLへ交互追記した証拠)。個別duration合計(12173ms)が実測総時間(7589ms)を明らかに超過、並列モデルでの予測値(7580ms)とは9ms差で一致 — 直列では説明不可能。裏付けrun(16:08発火・local LLM3ブランチ、18:47発火・groq4メンバー宣言)でも同様の数値パターンを再現確認。
+
+**未確認のまま残った1点**: 「locked shared capability budget」(`shelly-capability-broker.js:883 withBudgetLock`)は今回の実行でbudget競合が一度も発生しなかったため独立した実証ができていない(否定もされていない — 全リクエストが`decision:allow`)。README/ja.mdの✅格上げ時、この1点だけは「実機での直接確認なし」と明示して他3+wall-clock証明と書き分けた。
+
+**副次的な発見(コード変更はしていない、別タスクへ切り出し)**:
+- **Groq既定モデル`llama-3.3-70b-versatile`がGroq実API相手に404を返す実バグ**(7箇所ハードコード: `lib/groq.ts:12`, `lib/agent-plan-spec.ts:458`, `lib/agent-orchestration.ts:501`, `lib/agent-executor.ts:5867`, `scripts/shelly-plan-executor.js:872`, `lib/llm-interpreter.ts:135`, `lib/voice-chain-helpers.ts:30`)。エスカレーションラダーがlocalへ静かにフォールバックして「成功」扱いになるため(`toolUsed`は正しく`Local LLM`と報告)、症状に気づきにくいサイレント劣化。spawn_task(`task_5348798a`)で別セッションへ切り出し済み。
+- 副産物として、無人PlanSpec経路でもエスカレーションラダーが機能することを実機確認できた(これも別懸案の解消エビデンス)。
+
+テストデータは全て後片付け済み(テストagent3件・PlanSpec・logs・audits・draft出力・自動生成skill3件・`/sdcard/Download/shelly-qa/`)。端末のアラームはユーザーの既存`agent-mswv6hkc`(21:00)1本のみに復元。**画面ロック防止のため`svc power stayon`と`screen_off_timeout`を一時変更し復元したが、元のtimeout値を記録し忘れたため30秒は推定値** — ユーザーに要確認。
+
+→ sync: README.md/ja.mdのSub-agent fan-out行を🟡→✅に更新済み(コミット待ち)。
+
+---
+
+## Sync ゲート: README.md/README.ja.mdの🟡ステータス行
+
+- **2026-08-17時点で残る🟡は1行のみ**: 「Distribution channels (Play Store / F-Droid)」— GitHub Releasesのみでの配布が実態どおりのステータスであり、実機検証で解消できる性質のものではない(実ストア掲載自体が未着手なため)。Sub-agent fan-outの格上げでこれ以外の🟡はすべて解消。48行監査自体は継続中(未到達分: AI Edit golden path / Scouter widget RUN / Add Repositoryゴーストパスa11y)。
