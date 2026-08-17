@@ -509,29 +509,36 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   };
 
   const fieldBg = { backgroundColor: colors.surface, borderColor: colors.border, color: colors.foreground };
+  const scheduleLabel = isOnce
+    ? hasNotificationTrigger
+      ? t('agentcard.sched_notification_trigger')
+      : t('agentcard.sched_once')
+    : cron
+      ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow, dailyMultiHours)
+      : t('agentcard.schedule_unset');
+  const routeLabel = autonomous
+    ? keepWebTool
+      ? t('agentcard.autonomous_route_web', { engine: webEngineLabel })
+      : keepLocal
+        ? t('agentcard.autonomous_route_local')
+        : t('agentcard.autonomous_route')
+    : t(`agentcard.runon_${runOn}`);
+  const summaryLabel = t('agentcard.summary', {
+    action: t(`agentcard.action_${actionType}`),
+    schedule: scheduleLabel,
+    route: routeLabel,
+  });
 
   return (
-    <View style={[styles.card, { backgroundColor: colors.surfaceHigh, borderColor: colors.accent }]}>
+    <View
+      accessible
+      accessibilityLabel={`${t('agentcard.title')}. ${summaryLabel}. ${draft.prompt}`}
+      style={[styles.card, { backgroundColor: colors.surfaceHigh, borderColor: colors.accent }]}
+    >
       {/* Header sentence: "I'll run <action> <schedule> using <route>." */}
       <Text style={[styles.title, { color: colors.accent }]}>{t('agentcard.title')}</Text>
       <Text style={[styles.summary, { color: colors.foreground }]}>
-        {t('agentcard.summary', {
-          action: t(`agentcard.action_${actionType}`),
-          schedule: isOnce
-            ? hasNotificationTrigger
-              ? t('agentcard.sched_notification_trigger')
-              : t('agentcard.sched_once')
-            : cron
-            ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow, dailyMultiHours)
-            : t('agentcard.schedule_unset'),
-          route: autonomous
-            ? keepWebTool
-              ? t('agentcard.autonomous_route_web', { engine: webEngineLabel })
-              : keepLocal
-              ? t('agentcard.autonomous_route_local')
-              : t('agentcard.autonomous_route')
-            : t(`agentcard.runon_${runOn}`),
-        })}
+        {summaryLabel}
       </Text>
 
       {/* Requested-but-unsupported delivery action (e.g. X-posting): the parser

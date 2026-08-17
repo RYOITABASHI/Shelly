@@ -52,6 +52,13 @@ const unfireableDraft: ParsedAgentDraft = {
 };
 
 describe('AgentChatConfirm', () => {
+  it('exposes the complete confirm and cancel text as one accessibility label', () => {
+    const { getByLabelText } = render(
+      <AgentChatConfirm draft={scheduledDraft} onConfirm={jest.fn()} onCancel={jest.fn()} />,
+    );
+    expect(getByLabelText('agentcard.cancel. agentcard.confirm')).toBeTruthy();
+  });
+
   it('renders without throwing for a draft with a fireable schedule', () => {
     expect(() =>
       render(<AgentChatConfirm draft={scheduledDraft} onConfirm={jest.fn()} onCancel={jest.fn()} />),

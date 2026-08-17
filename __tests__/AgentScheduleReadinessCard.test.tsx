@@ -57,6 +57,13 @@ describe('AgentScheduleReadinessCard', () => {
     expect(() => render(<AgentScheduleReadinessCard onDismiss={jest.fn()} />)).not.toThrow();
   });
 
+  it('exposes the full readiness introduction as one accessibility label', () => {
+    const { getByLabelText } = render(<AgentScheduleReadinessCard onDismiss={jest.fn()} />);
+    expect(getByLabelText(
+      'schedulereadiness.title. schedulereadiness.intro. schedulereadiness.exact_alarm_title. schedulereadiness.battery_title',
+    )).toBeTruthy();
+  });
+
   it('shows a Grant action for exact-alarm scheduling when not granted, and fires the request on tap', async () => {
     mockCanScheduleExactAlarms.mockResolvedValue(false);
     const { getByText } = render(<AgentScheduleReadinessCard onDismiss={jest.fn()} />);

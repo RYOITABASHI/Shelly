@@ -85,8 +85,23 @@ export default function AgentScheduleReadinessCard({ onDismiss }: Props) {
     });
   }, [samsungProfile]);
 
+  const accessibilityLabel = [
+    t('schedulereadiness.title'),
+    t('schedulereadiness.intro'),
+    t('schedulereadiness.exact_alarm_title'),
+    exactAlarmGranted === null ? null : t(exactAlarmGranted ? 'schedulereadiness.exact_alarm_ok' : 'schedulereadiness.exact_alarm_missing'),
+    t('schedulereadiness.battery_title'),
+    batteryExempt === null ? null : t(batteryExempt ? 'schedulereadiness.battery_ok' : 'schedulereadiness.battery_missing'),
+    samsungProfile ? t('schedulereadiness.samsung_title') : null,
+    samsungProfile ? t('schedulereadiness.samsung_body') : null,
+  ].filter(Boolean).join('. ');
+
   return (
-    <View style={[styles.card, { backgroundColor: colors.surfaceHigh, borderColor: colors.accent }]}>
+    <View
+      accessible
+      accessibilityLabel={accessibilityLabel}
+      style={[styles.card, { backgroundColor: colors.surfaceHigh, borderColor: colors.accent }]}
+    >
       <Text style={[styles.title, { color: colors.accent }]}>{t('schedulereadiness.title')}</Text>
       <Text style={[styles.intro, { color: colors.muted }]}>{t('schedulereadiness.intro')}</Text>
 

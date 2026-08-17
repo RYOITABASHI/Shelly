@@ -40,9 +40,12 @@ export default function AgentChatConfirm({ draft, onConfirm, onCancel }: Props) 
   const { colors } = useTheme();
   const { t } = useTranslation();
   const canConfirm = hasFireableSchedule(draft);
+  const accessibilityLabel = canConfirm
+    ? `${t('agentcard.cancel')}. ${t('agentcard.confirm')}`
+    : t('agentcard.cancel');
 
   return (
-    <View style={styles.row}>
+    <View accessible accessibilityLabel={accessibilityLabel} style={styles.row}>
       <TouchableOpacity
         onPress={onCancel}
         style={[styles.btn, { borderColor: colors.border }]}

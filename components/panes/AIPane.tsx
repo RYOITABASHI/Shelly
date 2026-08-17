@@ -124,6 +124,7 @@ const MessageBubble = React.memo(function MessageBubble({
   const isUser = message.role === 'user';
   const isLastStreaming = isStreaming && message.isStreaming;
   const displayText = message.streamingText ?? message.content;
+  const accessibilityLabel = `${isUser ? 'You' : 'Shelly'}: ${displayText}`;
 
   // P1 scheduling-reliability audit (2026-07-15): one-time, dismissible
   // checklist appended after a device's first scheduled agent registration —
@@ -131,7 +132,7 @@ const MessageBubble = React.memo(function MessageBubble({
   // registration gate: the agent it follows already exists.
   if (message.scheduleReadinessCard) {
     return (
-      <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+      <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
         <AgentScheduleReadinessCard onDismiss={() => onDismissScheduleReadiness?.(message.id)} />
       </View>
     );
@@ -149,7 +150,7 @@ const MessageBubble = React.memo(function MessageBubble({
       const agentKeyChat = resolveAiPaneAgent(message.agent, 'local');
       const providerLabelChat = getAiPaneAgentMeta(agentKeyChat).label.toUpperCase();
       return (
-        <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+        <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
           <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
             {t('chat.companion_label')}
             {agentKeyChat !== 'local' && (
@@ -168,7 +169,7 @@ const MessageBubble = React.memo(function MessageBubble({
       );
     }
     return (
-      <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+      <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
         <AgentConfirmCard
           draft={message.agentDraft}
           onConfirm={(c) => onConfirmAgentDraft?.(message.id, c)}
@@ -180,7 +181,7 @@ const MessageBubble = React.memo(function MessageBubble({
 
   if (message.role === 'system') {
     return (
-      <View style={[bubbleStyles.systemRow, containerMaxWidth]}>
+      <View accessible accessibilityLabel={`System: ${displayText}`} style={[bubbleStyles.systemRow, containerMaxWidth]}>
         <Text style={bubbleStyles.systemText}>{displayText}</Text>
       </View>
     );
@@ -188,7 +189,7 @@ const MessageBubble = React.memo(function MessageBubble({
 
   if (isUser) {
     return (
-      <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+      <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
         <Text
           style={[
             bubbleStyles.roleLabel,
@@ -209,7 +210,7 @@ const MessageBubble = React.memo(function MessageBubble({
   const providerLabel = agentMeta.label.toUpperCase();
 
   return (
-    <View style={[bubbleStyles.messageContainer, containerMaxWidth]}>
+    <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
       <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
         {t('chat.companion_label')}
         {agentKey !== 'local' && (
@@ -634,7 +635,6 @@ export default function AIPane() {
           onScroll={handleScroll}
           scrollEventThrottle={16}
           onContentSizeChange={handleContentSizeChange}
-          removeClippedSubviews
         />
       )}
 

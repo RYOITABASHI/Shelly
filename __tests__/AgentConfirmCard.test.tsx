@@ -70,6 +70,18 @@ describe('AgentConfirmCard', () => {
     ).not.toThrow();
   });
 
+  it('exposes the full multi-line prompt in the card accessibility label', () => {
+    const multiLinePrompt = 'Summarize the first section.\nInclude every detail from the second section.';
+    const { getByLabelText } = render(
+      <AgentConfirmCard
+        draft={{ ...draft, prompt: multiLinePrompt }}
+        onConfirm={jest.fn()}
+        onCancel={jest.fn()}
+      />,
+    );
+    expect(getByLabelText(/Summarize the first section\.\s+Include every detail from the second section\./)).toBeTruthy();
+  });
+
   // api-call (v1) — Track D authoring UI.
   describe('api-call (v1)', () => {
     const singleStepDraft: ParsedAgentDraft = draft; // no orchestrationSteps
