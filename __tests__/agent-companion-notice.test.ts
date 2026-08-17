@@ -2,6 +2,7 @@ import {
   AgentRunLogNoticeTracker,
   agentRunLogIdentity,
   postAgentCompanionNotice,
+  postAgentRunStartedNotice,
   postLatestAgentRunToCompanion,
 } from '@/lib/agent-companion-notice';
 import { COMPANION_CONVERSATION_KEY, useAIPaneStore } from '@/store/ai-pane-store';
@@ -25,6 +26,25 @@ beforeEach(() => {
 });
 
 describe('attended Sidebar run completion', () => {
+  it('posts a distinct starting notice before the Sidebar runAgentNow call', () => {
+    postAgentRunStartedNotice('agent-a', 'Morning Brief');
+
+    const messages = useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual(expect.objectContaining({
+      role: 'assistant',
+      content: 'Morning Brief: ⏳ Running',
+    }));
+    expect(messages[0].agentRunLogId).toBeUndefined();
+
+    const source = fs.readFileSync(path.join(__dirname, '..', 'components', 'layout', 'Sidebar.tsx'), 'utf8');
+    const handler = source.slice(
+      source.indexOf('const handleRunScheduledAgent'),
+      source.indexOf('// Task B STOP button'),
+    );
+    expect(handler).toMatch(/postAgentRunStartedNotice\(agentId, agentName\);\s*await runAgentNow\(agentId, runCommandForAgentSync\);/);
+  });
+
   it('is wired immediately after the Sidebar runAgentNow success point', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'components', 'layout', 'Sidebar.tsx'), 'utf8');
     const handler = source.slice(

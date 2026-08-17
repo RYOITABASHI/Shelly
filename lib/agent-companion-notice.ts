@@ -27,6 +27,17 @@ export function buildAgentCompanionNotice(
   };
 }
 
+/** Sidebar attended-run start hook: append an independent in-progress notice. */
+export function postAgentRunStartedNotice(agentId: string, agentName: string): void {
+  const now = Date.now();
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: `agent-run-started-${agentId}-${now.toString(36)}`,
+    role: 'assistant',
+    content: `${agentName}: ⏳ Running`,
+    timestamp: now,
+  });
+}
+
 /** Add one completion notice, unless this exact on-disk run is already present. */
 export function postAgentCompanionNotice(
   log: AgentRunLog,
