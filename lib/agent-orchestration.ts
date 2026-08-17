@@ -49,10 +49,11 @@ export const MAX_RESULT_CARRY_CHARS = 1500;
 const MAX_PREVIEW_CHARS = 500;
 // Fan-out subtasks (2026-08-13): hard cap on branches per parallel group.
 // Chosen well below HARD_MAX_STEPS and mindful of the same Android
-// phantom-process ceiling the step budget protects — even though v1 dispatch
-// is serial (see AgentOrchestrationStep.parallelGroup's doc comment in
-// store/types.ts), this cap is the value any future concurrent dispatch would
-// inherit, so it must already be conservative. Mirrored (parity-tested) into
+// phantom-process ceiling the step budget protects. The unattended PlanSpec
+// executor enforces this as a live in-process semaphore on real concurrent
+// dispatch (Increments 1a-1c, 2026-08-14); the attended TS chain remains
+// serial (see AgentOrchestrationStep.parallelGroup's doc comment in
+// store/types.ts for the split). Mirrored (parity-tested) into
 // scripts/shelly-plan-executor.js.
 export const MAX_PARALLEL_BRANCHES = 3;
 // Group ids come from user-authored config (or a future NL parser) — bound

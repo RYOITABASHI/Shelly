@@ -1126,19 +1126,25 @@ export interface AgentOrchestrationStep {
    *  AFTER the group receives all branch results, in declared order, as its
    *  "Results from previous steps" context. That is the aggregation contract
    *  Hermes-style sub-agents provide (decompose → process each subtask from
-   *  the same context → aggregate), minus wall-clock concurrency.
+   *  the same context → aggregate).
    *
-   *  DISPATCH IS STILL SERIAL in every executor, v1 — deliberately. Both
-   *  executors are per-agent single-flight by hard safety design (the
-   *  attended chain's rotating chain-lock nonce + shared per-agent
-   *  script/result/log paths; the global MAX_CONCURRENT=2 guard baked into
-   *  every generated .sh for the Android phantom-process ceiling; the
-   *  unattended PlanSpec executor's fully synchronous spawnSync broker
-   *  dispatch). Concurrent branch dispatch therefore CANNOT be added here
-   *  without re-architecting those guards, and is deferred with the full
-   *  blocker list in docs/superpowers/DEFERRED.md (2026-08-13 fan-out entry).
-   *  This marker is a SEMANTICS contract (isolation + aggregation), not a
-   *  wall-clock promise.
+   *  DISPATCH IS CONCURRENT in the unattended PlanSpec executor only
+   *  (scripts/shelly-plan-executor.js, Increments 1a-1c, 2026-08-14):
+   *  in-flight branches within a group are dispatched via Promise.allSettled,
+   *  bounded by an in-process semaphore at MAX_PARALLEL_BRANCHES, with a
+   *  locked shared capability budget and results collected into pre-sized
+   *  slots so aggregation stays in declared order regardless of completion
+   *  order. The ATTENDED TS chain (lib/agent-manager.ts) remains serial by
+   *  design — its rotating chain-lock nonce and shared per-agent
+   *  script/result/log paths assume per-agent single-flight, and the global
+   *  MAX_CONCURRENT=2 guard baked into every generated .sh (Android
+   *  phantom-process ceiling) is a separate constraint on that path.
+   *  Concurrent branch dispatch was deferred there without re-architecting
+   *  those guards — see docs/superpowers/DEFERRED.md (2026-08-13 fan-out
+   *  entry for the original semantics-only landing, 2026-08-14 Increment
+   *  1a-1c entries for the unattended concurrency work).
+   *  This marker is a SEMANTICS contract (isolation + aggregation) on both
+   *  executors; only the unattended one also gets a wall-clock promise.
    *
    *  Safety invariants (all enforced by planParallelGroups() in
    *  lib/agent-orchestration.ts, the single normalization chokepoint):

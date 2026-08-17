@@ -5036,3 +5036,9 @@ Fan-out実機検証をFable5→(利用上限3連続ヒットのため)Opusへ引
 `__tests__/plan-executor-orchestration-chain.test.ts` 44/44 PASS(コメントのみの変更のため無影響、念のため再実行して確認)。
 
 → sync: `scripts/shelly-plan-executor.js`・そのAPK assetミラー・`CLAUDE.md`を直接修正済み(コミット待ち)。README.md/ja.mdは今回変更なし(既に正確だった)。Sub-agent fan-outの実機検証自体は次回、端末が長時間ロックされない状態で再試行。
+
+**追記(同日、並走していた別サブエージェントの詳細トレースより)**: 上記2箇所に加え、同じ「v1 dispatch is serial」という古い前提に基づくstale記述がさらに2箇所発見された。CC自身がコードを直接確認して修正:
+- `store/types.ts:1131-1141`(`AgentOrchestrationStep.parallelGroup`のdocコメント) — 「DISPATCH IS STILL SERIAL in every executor, v1 — deliberately」という記述。無人executorのみ並行dispatchが実装済みである実態(attended TSチェーンは引き続き直列)を正確に書き分けて更新。
+- `lib/agent-orchestration.ts:50-56`(`MAX_PARALLEL_BRANCHES`のコメント) — 「even though v1 dispatch is serial」という記述。無人executorが実際にこのcapをin-processセマフォとして生かしている旨に更新。
+
+`npx tsc --noEmit`クリーン(コメントのみの変更)。
