@@ -4883,6 +4883,30 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 ---
 
+**2026-08-17 Fable5最終レビュー7件指摘の解消 — 6件実装・push・CI green、1件は意図的に見送り(全てCC自身がdiffレビュー+tsc/テスト独立検証済み、実機検証は次回)**
+
+並列squad方式(Codex 6並列+Explore 1)でディスパッチ。以下、findings番号順:
+
+1. **ローカルpersona会話履歴を1→6往復に拡張**(`e7921df92`)。`hooks/use-ai-pane-dispatch.ts`の`toOpenAIHistory(..., agent === 'local' ? 1 : 8)`を`6`に変更。各メッセージ500字上限(`compactForLocalLlm`)と組み合わせ、2Bモデルの許容範囲内。クラウド側の`8`は無変更。回帰テスト2件追加、61/61 PASS。
+
+2. **AI Paneメッセージのaccessibility露出修正**(`3692a8370`+`4c5ea9d10`)。Explore調査(read-only)が有力仮説を特定: `FlatList`の`removeClippedSubviews`+可変行高さの推定誤差により、複数行メッセージが描画直後のタイミングでネイティブView自体がデタッチされ、accessibilityノードが一切生成されないレース。修正: 全6種の`MessageBubble`分岐に`accessible`+全文を含む`accessibilityLabel`を追加(「Shelly:」「You:」「System:」プレフィックス)、`FlatList`から`removeClippedSubviews`を削除(会話は数十件規模でvirtualization効果より正確性を優先)、`AgentConfirmCard`/`AgentChatConfirm`/`AgentScheduleReadinessCard`にも同様の明示ラベルを追加。純粋な追加的変更(見た目は不変)、111/111 PASS。
+
+3. **attended実行のスキル保存通知「unattended」誤表示 → 根本原因修正**(`7f7baf635`)。当初の仮説(Sidebar呼び出し側の誤フラグ)は外れ、実際は`lib/agent-manager.ts`の`runAgentNow`内部ログ同期処理(`captureRunMemoryFromSyncedLogs`)が「スケジュール/通知トリガー持ちagentの成功ログ=無人発火」と一律仮定していたのが原因。既存の`inFlightAgentRuns`(同一プロセス内二重実行防止用Map、以前から実績あり)への該当判定を追加し、attended実行が進行中のagentIdはこの内部auto-save経路から除外。ジェニュインな無人発火は引き続き自動保存される。回帰テスト含め37/37 PASS。
+
+4. **attended Run Now開始時のコンパニオン通知追加**(`23f704988`)。Sidebar `handleRunScheduledAgent`限定(既存の in-chat `@agent run` フローには既に十分な即時フィードバックがあることを確認済みのため対象外、無人経路はJS側での開始検知手段が無いため対象外と明記)。`lib/agent-companion-notice.ts`に`postAgentRunStartedNotice`追加、完了通知(Increment C2)とは独立した別メッセージとして投稿。16/16 PASS。
+
+5+6. **会話の一括クリア+閉じたペインの孤児スレッド自動掃除**(`63e5690f8`)。既存`clearConversation`アクションを改善(全消去→`messages`のみクリア、他の会話状態は温存)、AIPane.tsxに確認ダイアログ付きクリアボタン追加。`hooks/use-multi-pane.ts`のペイン削除処理に`cleanupDroppedAiConversation`を追加し、解決後キーが`COMPANION_CONVERSATION_KEY`と**一致しない**(＝ペイン固有の非共有スレッドである)場合のみ自動クリア——共有コンパニオンスレッドは安全性チェックで確実に除外。この安全性を明示的にテストで検証済み。16/16 PASS。
+
+7a. **プロファイルfact個別削除UI**(`c0e406d2b`)。`lib/user-profile.ts`に`deleteProfileFact(fact)`追加(完全一致フィルタ)、ConfigTUIのProfile Learningセクションに「View/Edit Facts」アクション→ボトムシート+長押し削除(メッセージ削除と同じAlert確認パターン)を追加。既存の全消去`resetUserProfile()`は無変更。13/13 PASS。
+
+7b. **「覚えてる?」への明示検索ハンドラ = 意図的に見送り**。Increment A(`_global`recallのAI Paneプロンプト注入)により、この種の質問は既にLLMのコンテキストに記憶内容が入った状態で回答されるため、専用の決定論的検索ロジックは費用対効果が低いと判断。実機で明らかな不具合が出た場合に個別対応する方針。
+
+**全6件、CC自身がdiffを読み・tsc/テストを再実行して検証済み**(各Codexジョブの自己申告のみに依存せず)。CI全てgreen。**実機検証はまだ未実施**——次回on-deviceテストで確認すること。
+
+→ sync: なし。
+
+---
+
 ## 管理ルール (自分への覚書)
 
 - このファイルを編集したらコミット必須 (`docs(deferred): ...`)
