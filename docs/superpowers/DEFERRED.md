@@ -4949,7 +4949,11 @@ CCが実コードで裏取りし(`readGlobalMemoryNotes`/`buildGlobalRecallConte
 
 **検証**: `npx tsc --noEmit`クリーン、`agent-manager-scheduled-memory-capture.test.ts`+`agent-companion-notice.test.ts`計26/26 PASS(CC自身で再検証済み)。ダイアログ放置10分後を模したタイマー遅延の回帰テストも追加。CI green。
 
-これで今回の一連のCompanion/実行系まわりの改善(Fable5指摘7件+新規発見3件のうち2件の修正+今回のattended skill-save取りこぼし)は全て決着。**実機検証はまだ未実施**——次回on-deviceテストで確認すること。
+これで今回の一連のCompanion/実行系まわりの改善(Fable5指摘7件+新規発見3件のうち2件の修正+今回のattended skill-save取りこぼし)は全て決着。
+
+**→ 2026-08-17 実機検証完了(Fable5、build 2237)= PASS**。build 2234で実際に再現した手順(ダイアログ出現→1分放置→2分放置→CANCEL→4.5分待機)を完全リプレイし、放置中・CANCEL後どちらの窓でも誤通知0件・skillsディレクトリ空(auto-saveなし)を確認。CANCELの意思がディスクレベルで正しく反映されることも確認。
+
+これでスキル保存フローの既知の穴は全て塞がった: (a) 実行中の同期誤分類(`inFlightAgentRuns`ガード)、(b) 実行復帰後の同期誤分類(`attendedAgentRunLogIdentities`)、(c) 削除済みagentログのスキップ、いずれも実機PASS。
 
 → sync: なし。
 
