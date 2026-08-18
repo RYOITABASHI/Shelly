@@ -90,8 +90,25 @@ object WidgetAgentRepository {
         file: File,
         expectedId: String
     ): ScouterWidgetAgentTarget? {
+        // Non-agent state files can share this directory (e.g. dm-pairings.json,
+        // a JSON *array* of DM pairings — its filename "dm-pairings" happens to
+        // match SAFE_AGENT_ID's charset, so the filename filter above doesn't
+        // exclude it). org.json's JSONObject(String) constructor embeds the
+        // *entire remaining source text* in its JSONException message when the
+        // input isn't an object (JSONTokener.syntaxError appends "at character
+        // N of <source>"), so letting that exception reach any Log call would
+        // leak file contents (e.g. contact names/IDs) to logcat on every widget
+        // poll. Check the shape before parsing so mismatched files are skipped
+        // silently, with no exception ever constructed from their content.
+        val text = try {
+            file.readText()
+        } catch (error: Exception) {
+            Log.w(TAG, "Ignoring unreadable agent metadata: ${file.name}")
+            return null
+        }
+        if (text.trimStart().firstOrNull() != '{') return null
         return try {
-            val json = JSONObject(file.readText())
+            val json = JSONObject(text)
             val id = json.optString("id").trim()
             if (id != expectedId || !SAFE_AGENT_ID.matches(id)) return null
             if (!json.optBoolean("enabled", false)) return null
@@ -114,7 +131,9 @@ object WidgetAgentRepository {
                 lastRunAt = lastRunAt
             )
         } catch (error: Exception) {
-            Log.w(TAG, "Ignoring invalid agent metadata ${file.name}", error)
+            // Filename only — never pass `error` here, its message can embed
+            // raw file content (see the shape-check comment above).
+            Log.w(TAG, "Ignoring invalid agent metadata: ${file.name}")
             null
         }
     }
@@ -159,7 +178,9 @@ object WidgetAgentRepository {
         } catch (error: Exception) {
             val cacheKey = "${file.absolutePath}:${file.lastModified()}"
             if (knownCorruptRunLogs.add(cacheKey)) {
-                Log.w(TAG, "Ignoring unreadable run-log ${file.name}", error)
+                // Filename only, same reasoning as readScheduledAgentFile above —
+                // a run-log JSONException's message can embed raw file content.
+                Log.w(TAG, "Ignoring unreadable run-log: ${file.name}")
             }
             null
         }

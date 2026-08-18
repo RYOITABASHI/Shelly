@@ -16,11 +16,23 @@
 
 ## History
 
+- 2026-08-17: background agentによるScouterウィジェットのagent一覧実機QAで、`WidgetAgentRepository`が`dm-pairings.json`（JSON配列）を毎分agentメタデータとしてパース試行し、失敗時の`org.json.JSONException`メッセージに生ファイル内容（連絡先名等）が埋め込まれてlogcatへ漏れる問題を発見・修正。
+
 - 2026-08-15: Fable5によるCompanion Phase 1実機再レビュー（versionCode 2196）で、登録・更新完了メッセージとSidebar行がraw cronを会話面へ漏らす問題を発見・修正。confirm card既存のhumanizerを共有化した。
 
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### ✅ bug #167 — `WidgetAgentRepository`が`dm-pairings.json`をagentメタデータとしてパース試行し、例外メッセージ経由で連絡先名がlogcatへ漏洩 — 修正済み・実機未検証 (P1)
+
+**バグ / 再現**: Scouterホームスクリーンウィジェットは約60秒ごとに`~/.shelly/agents/*.json`を列挙し、ファイル名が`SAFE_AGENT_ID`（`^[A-Za-z0-9_-]+$`、ハイフン許容）にマッチする全ファイルをagentメタデータとして`JSONObject(file.readText())`でパースしていた。DM/通知pairing状態を保持する`dm-pairings.json`（`store/dm-pairing-store.ts`が書き込む、トップレベルがJSON**配列**）のファイル名`dm-pairings`はこの正規表現にマッチするため除外されず、毎回パースが試みられていた。org.json の`JSONObject(String)`コンストラクタは入力がオブジェクトでない場合、`JSONTokener.syntaxError()`が例外メッセージに残りソース全体（`"at character N of <source>"`）を埋め込む。この`JSONException`がそのまま`Log.w(TAG, "Ignoring invalid agent metadata ...", error)`に渡されていたため、**dm-pairings.jsonの生内容（連絡先表示名・pairing IDなど）がポーリングのたびにlogcatへ平文で出力**されていた。bug #163で対処したのはrun-log側の同種例外スパム（機能影響のみ、PII露出なし）で、今回のagentメタデータ側の型不一致自体は未修正のまま残っていた。
+
+**修正**: `readScheduledAgentFile`（`modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/scouter/WidgetAgentRepository.kt`）に、`JSONObject`へ渡す前のシェイプチェックを追加 — trim後の先頭文字が`{`でないファイル（`dm-pairings.json`の配列など）は例外を発生させずに無言でスキップする。ファイル名の許可リストではなく形状チェックを選んだのは、将来同ディレクトリに置かれうる他の非agent状態ファイル（配列型に限らず）にも一般化して効くため。加えて、agentメタデータ側・run-log側（`tryReadRunLogStatus`）の両方の`Log.w`呼び出しから例外オブジェクト自体を渡すのをやめ、ファイル名のみをログに残すよう変更（真に壊れたJSONの場合でも内容が漏れないように）。
+
+**検証**: コードパスの手動確認で、`dm-pairings.json`が形状チェックで例外なしにスキップされること、残るcatchブロックが例外メッセージ/内容を一切ログに渡さないことを確認。**実機logcat検証は未実施**（次回on-device QA時に`adb logcat -s WidgetAgentRepository:W`でdm-pairings.json関連の警告が消え、連絡先名が出力されないことを確認すること）。
+
+→ sync: README Status表の変更なし（内部ログの情報漏洩fix、機能変更なし）。
 
 ### AI Pane scrollback forced auto-follow (2026-08-15, user-reported on-device)
 
