@@ -5150,6 +5150,33 @@ UIには`GHOST1`が**捏造されたバージョンバッジ(`V9.2`)付きで、
 
 ---
 
+---
+
+**2026-08-17 build 2251実機検証: Add Repositoryゴーストパス修正+WidgetAgentRepository PII漏洩修正、両方✅確認**
+
+新ビルド(build 2251、commit `0f01193c5`/`53e0c0ef8`)導入後、Opus引き継ぎエージェントが2件の修正を実機で確認した。
+
+**① Add Repositoryゴーストパス修正 — 3ケース全て確認**:
+- 親パス不存在(`/nonexistent/zzz/ghost2`)→`result={"ok":false,"reason":"not_found"}`、Alert表示、ストアに未登録(修正前は無条件でghost entry化していた挙動が完全に消滅)
+- 既存の非gitフォルダ(`$HOME/qa-nongit`)→`result={"ok":false,"reason":"not_git"}`、専用Alert表示
+- 実在するgitリポジトリ(`/sdcard/qa-gitrepo4`)→`result={"ok":true}`、正常追加、過剰拒否なし
+- AsyncStorage(`repoPaths`)の内容を直接確認し、拒否した2件が実際に不在であることも確認
+
+**② WidgetAgentRepository PII漏洩修正 — 確認**:
+- 約200秒(ポーリング3回以上+強制更新1回)の観測窓で`WidgetAgentRepository`タグのログ0件、Shelly固有の内容マーカー(`pairedAt`等)も0件
+- **重要な追加検証**: ウィジェットが実際に`dm-pairings.json`を含む全JSONファイルを走査していることを、ウィジェット描画内容(スケジュール済みagent行の表示)から間接的に確認——「ファイルを処理しているのにログが一切出ない」ことを立証し、単に処理をスキップしただけでなく修正のshape checkが意図通り機能していることを裏付けた
+- `dm-pairings.json`自体はサイズ・mtimeとも修正前から不変(修正がログ出力のみでファイル自体に触れていないことの傍証)
+
+**新たに見つかった軽微な不具合(コード変更はしていない)**: ターミナル操作の直後に「+ ADD REPOSITORY」ボタンが反応しなくなる症状。`addRepoVisible`がtrueのままモーダルのAndroidウィンドウだけ消えるstuck状態と推測され、アプリ再起動でのみ復帰する。今回の2件の修正とは無関係。優先度P3、実機QA時の妨げになる程度で実害は軽微なため、今回はDEFERRED.mdへの記録のみ。
+
+**QA手法上の注意点(記録)**: このモーダルの開閉判定にIME表示状態(`mIsImeShowing`)は使えない——ターミナルのネイティブビューがIMEを保持するため、モーダルが閉じていてもtrueになりうる。確実な判定は`dumpsys window windows | grep -c 'Window #[0-9]+ Window{.*shelly'`(1=閉、2=開)。
+
+後片付け確認済み(テストディレクトリ4件、`/sdcard/Download/shelly-qa/`、再起動後のghost entry残存0件)。
+
+→ sync: README.md/ja.mdのAdd Repository行を🟡→✅(実機確認済み)に更新。
+
+---
+
 ## 48行監査の現状(2026-08-17時点)
 
 **優先対象(日付なし✅/🟡)はほぼ処理完了**。今回のセッションで扱った行数(概算): 実機/コードで確認・修正した行が約20行超、テスト不能で明示フラグのみの行が6〜8行、うち1行(Add Repository)は実機検証の結果✅→🟡へ格下げ。
