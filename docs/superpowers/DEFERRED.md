@@ -5334,6 +5334,10 @@ Opus引き継ぎエージェントが再検証。**①言語ミスマッチ修�
 
 **実機検証は未実施**(この場での修正であり、Opus引き継ぎエージェントの検証セッション終了後に実装したため)。次回on-device QA時に元の再現手順(登録ドラフト→Clear conversation→別発話→cancel)を再実行し、「Registration cancelled.」ではなく通常のLLM応答が返ることを確認すること。
 
-**自己レビューで見つけた関連の残存リスク(未対応、意図的に見送り)**: `confirmAgentDraftInner`(Confirmボタン/確定応答側)にも`store.updateMessage(paneId, messageId, ...)`呼び出しが11箇所あり、少なくとも成功時の最終確認("registered-cron"パス、`agentplan.registered_notice`をcontentへ書き込む箇所)は、それが**唯一の**ユーザー向け可視シグナル——対象メッセージが既に存在しなければ、エージェント登録自体は裏で成功しているのに画面上は何も起きたように見えない、cancelと同型のリスク。ただし今回のclearConversation/deleteMessage修正により、そもそも`pendingAgentSession`がダングリングした状態で`confirmAgentDraft`が呼ばれる経路自体が塞がれたため、実質的にはほぼ理論上のリスクに後退している。11箇所は用途が一様ではなく(ストリーミング中の進捗更新↔最終確定)、`cancelAgentDraft`と同じ画一的なフォールバックをそのまま適用すると、進捗更新のno-opのたびに新規メッセージが乱立するなど不適切な箇所も含まれるため、今回は拙速な一括対応を避けて見送った。対応する場合は、11箇所を「進捗更新(no-opでも無視して良い)」と「終端シグナル(no-opならフォールバック要)」に選別する設計作業が必要。
+**→ 追記(同日、対応完了)**: 「特に修正は不要?」というユーザーの問いを受けて再考し、当初の「拙速な一括対応を避けて見送り」を撤回、実装した(commit `231a4b326`)。`confirmAgentDraftInner`内の`store.updateMessage`呼び出し11箇所を精読し、「進行中の"▶ Running…"のような一時的な進捗表示(2箇所、次の終端更新で必ず上書きされる)」と「その時点でのユーザーへの唯一の可視シグナルとなる終端結果(8箇所: 通知トリガー喪失時の拒否通知、run-now-on-confirmの成功/失敗結果、edit更新成功、ephemeral one-shotの最終結果とそのcleanup警告、registered-cronの登録成功、外側catch-allのエラー)」に選別。後者8箇所を`cancelAgentDraft`と同型の`updateOrFallback`ヘルパー経由に置き換え、no-opなら新規メッセージへフォールバックするようにした。
+
+**設計上の追加考慮点**: ヘルパーは「実際に有効なメッセージID」(成功時は元のID、フォールバック時は新規投稿のID)を返すようにし、`registered-cron`成功パスがその戻り値を`setJustRegisteredAgent`の`messageId`へ渡すよう修正——フォールバックが発生したのに古いIDをそのまま次の状態(訂正ウィンドウ機能)に渡すと、1手先で同じダングリング参照バグを再生産してしまうため。最も実害が大きいのは**ephemeral one-shot**の最終結果(3601行目付近)——このエージェントは実行後に即削除されるため、更新が失われるとアプリ内のどこにも痕跡が残らない。
+
+**検証**: `npx tsc --noEmit` clean。新規回帰テスト1件追加(`__tests__/ai-pane-dispatch-interaction-order.test.tsx`)——`mockRunAgentNow`のモック実装内で`clearConversation`を呼び出し、`confirmAgentDraftInner`が実際にawaitしている最中に対象メッセージが消える、という現実的な競合を再現。影響範囲の全テストスイート118本・2340件、全PASS(以前一度flakeした`agent-manager-chain-lock`も今回は通しで安定PASS)。**実機検証は未実施**——次回on-device QA項目に追加。
 
 → sync: README Status表の変更なし。
