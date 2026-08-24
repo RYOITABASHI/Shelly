@@ -5192,6 +5192,21 @@ UIには`GHOST1`が**捏造されたバージョンバッジ(`V9.2`)付きで、
 
 ---
 
+---
+
+**2026-08-17 コードのみ最終スイープ(実機不要分)— @mention「ユーティリティルート」の大半が実は死んでいることが判明、修正**
+
+背景側のresearch agentがREADME全体を上から通し読みし、これまで未着手だった行を実装コードと突き合わせた。3件報告され、CC自身が全件裏取りした結果、1件は誤検知(false positive)と判明、2件は真の不具合として修正:
+
+1. **`@mention`の「utility routes」リストの大半が非機能** — README.md line 411は`@team`、`@agent`、`@git`、`@open`/`@browse`、`@plan`、`@arena`、`@actions`/`@ci`を「utility routes」としてまとめて紹介していたが、CC自身が`parsed.target`(`lib/input-router.ts`の`parseInput()`が返す値)の全消費箇所を横断grepしたところ、実際に`===`で分岐処理しているのは**`'agent'`と`'team'`の2つだけ**だった。`@plan`/`@arena`は2026-08-10に`plan-store`/`arena-store`が呼び出し箇所ゼロで削除済み(CLAUDE.mdのストア表に記録済み)であることをCLAUDE.mdの記述と照合して確認。`@git`が意図していた「Git Guide」機能(`components/terminal/GitGuideBlock.tsx`が表示層として実在)は、その唯一のトリガーであるはずの`lib/git-assistant.ts`の`detectGitIntent`/`generateGuide`の2関数が**呼び出し箇所ゼロ**(定義されているだけで一度も呼ばれていない)であることを確認、end-to-endで完全にデッド。`@open`/`@browse`/`@actions`/`@ci`も同様に`parsed.target`の消費箇所なし。README.md/ja.mdの当該行を、実際に機能する`@team`/`@agent`(+エイリアスの`@edit`/`@code`)のみを明記し、残りは「パーサーには認識されるが実際のディスパッチ処理は無い」ことを明示する書きぶりに訂正。
+2. **Codex通知チャンネル節の「ウィジェット本体では最大6つの選択ピルを表示できる」が同一ファイル内で自己矛盾** — README.md line 394(Codex notification channels)が上記の主張をしていたが、同じREADME内のScouterウィジェット節(line 314/327)は「2026-07-18のリデザインで選択・承認ピルはウィジェット本体から撤去済み」と明記しており、真っ向から矛盾していた。`ScouterWidgetProvider.kt`を確認したところ、pill描画コードは存在せず、旧設計を参照する古いdocコメントが1箇所残っているのみ。line 394側の記述を削除し、撤去済みである旨とリデザイン後の代替導線(通知チャンネル/Agent Chatペイン)への参照を追加。
+
+**誤検知として却下した1件**: 「Multi-pane layout (8 types...)のStatus表行がpane-registry.tsの実数9と食い違う」という指摘。実際にはこの行は`LayoutPicker.tsx`の**レイアウト分割プリセット数**(p1/p2h/p2v/p3l/p3r/p3t/p3b/p4 = 8)を指しており、READMEの別箇所(line 251/336)が言う「9 pane types」(Terminal/AI/Browser等の**ペイン内容の種類数**)とは全く別の軸のカウントだった。両方とも現状の記述で正しく、修正不要と判断(一度9に書き換えてから、2つの数字が指している対象が違うことに気づいて元に戻した——今後同種の「数字の食い違い」指摘が来たら、まず両者が本当に同じものを数えているか確認すること)。
+
+→ sync: README.md/ja.mdの@mention utility routes記述・Codex通知チャンネル節を直接修正済み。
+
+---
+
 ## 48行監査の現状(2026-08-17時点)
 
 **優先対象(日付なし✅/🟡)はほぼ処理完了**。今回のセッションで扱った行数(概算): 実機/コードで確認・修正した行が約20行超、テスト不能で明示フラグのみの行が6〜8行、うち1行(Add Repository)は実機検証の結果✅→🟡へ格下げ。
