@@ -5334,4 +5334,6 @@ Opus引き継ぎエージェントが再検証。**①言語ミスマッチ修�
 
 **実機検証は未実施**(この場での修正であり、Opus引き継ぎエージェントの検証セッション終了後に実装したため)。次回on-device QA時に元の再現手順(登録ドラフト→Clear conversation→別発話→cancel)を再実行し、「Registration cancelled.」ではなく通常のLLM応答が返ることを確認すること。
 
+**自己レビューで見つけた関連の残存リスク(未対応、意図的に見送り)**: `confirmAgentDraftInner`(Confirmボタン/確定応答側)にも`store.updateMessage(paneId, messageId, ...)`呼び出しが11箇所あり、少なくとも成功時の最終確認("registered-cron"パス、`agentplan.registered_notice`をcontentへ書き込む箇所)は、それが**唯一の**ユーザー向け可視シグナル——対象メッセージが既に存在しなければ、エージェント登録自体は裏で成功しているのに画面上は何も起きたように見えない、cancelと同型のリスク。ただし今回のclearConversation/deleteMessage修正により、そもそも`pendingAgentSession`がダングリングした状態で`confirmAgentDraft`が呼ばれる経路自体が塞がれたため、実質的にはほぼ理論上のリスクに後退している。11箇所は用途が一様ではなく(ストリーミング中の進捗更新↔最終確定)、`cancelAgentDraft`と同じ画一的なフォールバックをそのまま適用すると、進捗更新のno-opのたびに新規メッセージが乱立するなど不適切な箇所も含まれるため、今回は拙速な一括対応を避けて見送った。対応する場合は、11箇所を「進捗更新(no-opでも無視して良い)」と「終端シグナル(no-opならフォールバック要)」に選別する設計作業が必要。
+
 → sync: README Status表の変更なし。
