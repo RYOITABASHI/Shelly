@@ -2671,3 +2671,69 @@ describe('Scenario 10b — confirmAgentDraft refuses a silent notification-trigg
     expect(mockDeleteAgent).not.toHaveBeenCalled();
   });
 });
+
+describe('Implicit agent-delegation intent (2026-08-24, Fable5 product review)', () => {
+  it('a bare confidently-scheduled request reaches agent-draft confirmation without the @agent prefix', async () => {
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('毎朝8時に天気を確認して教えて');
+    });
+
+    // Never fell through to an ordinary chat reply.
+    expect(mockOllamaChatStream).not.toHaveBeenCalled();
+    // notify has no other required slot, so this reaches confirmation
+    // directly — same shape as an equivalent `@agent`-prefixed request.
+    expect(lastMessage()).toMatchObject({ role: 'assistant', agentChatConfirm: true });
+    expect(lastMessage().agentDraft?.scheduleConfident).toBe(true);
+    expect(conv().pendingAgentSession?.phase).toBe('await-confirm');
+    // Still requires an explicit confirm — nothing registered yet.
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+  });
+
+  it('the same bare request under an explicit @gemini binding is left to that provider, not implicitly registered', async () => {
+    const { result } = setup();
+    act(() => {
+      usePaneStore.getState().bindAgent(PANE, 'gemini');
+    });
+
+    await act(async () => {
+      await result.current.dispatch('毎朝8時に天気を確認して教えて');
+    });
+
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    expect(conv().pendingAgentSession).toBeFalsy();
+  });
+
+  it('does not misfire on an ordinary notify-shaped verb with no schedule ("let me know if you need anything")', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, localLlmEnabled: true, localLlmUrl: 'http://127.0.0.1:8080', localLlmModel: 'qwen3.5-2b' },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('Sure thing!', false);
+      return { success: true, content: 'Sure thing!' };
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('let me know if you need anything else from me');
+    });
+
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    expect(conv().pendingAgentSession).toBeFalsy();
+    expect(mockOllamaChatStream).toHaveBeenCalledTimes(1);
+    expect(lastMessage().content).toBe('Sure thing!');
+  });
+
+  it('a capability question about scheduling is answered, not treated as a registration attempt', async () => {
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('毎朝天気を確認する機能はある？');
+    });
+
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    expect(conv().pendingAgentSession).toBeFalsy();
+  });
+});

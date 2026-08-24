@@ -47,7 +47,7 @@ import {
 } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent } from '@/store/types';
-import { resolveConfirmedToolAndRunOn } from '@/lib/agent-tool-router';
+import { resolveConfirmedToolAndRunOn, suggestTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
@@ -2017,17 +2017,67 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         return;
       }
 
+      // Implicit agent-delegation intent (2026-08-24, Fable5 product review):
+      // a bare request like "every morning at 7 check the weather and tell
+      // me" used to require the literal `@agent` prefix to reach the
+      // deterministic NL parser at all — without it, the LOCAL persona just
+      // answered "I can't check the weather directly" and handed back a
+      // curl command, even though scheduling/notify/HTTP-broker capability
+      // was fully implemented. That parser is already precise here on this
+      // exact utterance (scheduleConfident=true, explicitActionType=true) —
+      // this was a routing gap, not a capability or model-quality gap.
+      //
+      // Kept deliberately narrow to avoid hijacking ordinary chat into
+      // registration drafts: only fires for the default `local` persona
+      // (never an explicit @gemini/@cerebras/... conversation — those are
+      // clearly "just talk to this provider"), never for a mention layer
+      // (so `@agent`/`@team`/`@git`/etc keep their own explicit routing
+      // unchanged), never for a capability question ("can you check the
+      // weather?" must get an answer, not a draft), and requires BOTH (a)
+      // `scheduleConfident === true` — a genuine, unambiguous recurrence/
+      // time expression, not just any action-type match — AND (b)
+      // isLowConfidenceAgentDraft still says NOT low-confidence overall
+      // (rules out the ambiguous-social-target / unresolved-post-intent
+      // cases that can co-occur with a confident schedule). (a) alone is
+      // NOT enough on its own reasoning: `@agent`'s own low-confidence bar
+      // is satisfied by explicitActionType alone (no schedule needed), but
+      // reusing that exact bar here misfired on plain chat — "tell me a
+      // short joke" parses to an explicit notify-shaped action (the verb
+      // "tell me" alone reads as a notify request) with no schedule at all,
+      // which would otherwise register a draft for an ordinary question.
+      // Requiring a real schedule is the precise signal that distinguishes
+      // "please set up a standing routine" from "answer me right now".
+      const implicitAgentDraft =
+        parsed.layer !== 'mention' && agent === 'local' && !isCapabilityQuestionForAgentFlow(promptText)
+          ? parseAgentNL(promptText, useSettingsStore.getState().socialConnectors ?? [])
+          : null;
+      const implicitAgentIntent =
+        implicitAgentDraft !== null &&
+        implicitAgentDraft.scheduleConfident === true &&
+        !isLowConfidenceAgentDraft(implicitAgentDraft);
+
       // bug: @agent used to only be wired into TerminalPane.onBlockCompleted,
       // so typing `@agent status` in the AI pane fell through to the LLM
       // (which has no idea what it means). The AI pane is the natural home
       // for @mention commands — intercept here and run the agent-manager
       // handler inline, appending a synthetic assistant message with the
       // result so the UX matches every other chat response.
-      if (parsed.layer === 'mention' && parsed.target === 'agent') {
+      if ((parsed.layer === 'mention' && parsed.target === 'agent') || implicitAgentIntent) {
         let resultMessage: string;
         let rollbackOffer: ChatMessage['agentRollbackOffer'];
         try {
-          const agentResult = parseAgentCommand(parsed.prompt);
+          // The implicit path never runs @agent's list/run/stop/delete/
+          // history/edit/status subcommand matching — a bare message has no
+          // channel to signal "manage an existing agent" (that requires the
+          // explicit @agent prefix), and reusing parseAgentCommand's
+          // first-word matching here would misfire on ordinary sentences
+          // that happen to start with one of those words (e.g. "Stop
+          // reminding me about X" -> parts[0] === 'stop'). It always enters
+          // the 'create' branch directly, reusing the confident draft
+          // already computed above instead of re-parsing.
+          const agentResult = (parsed.layer === 'mention' && parsed.target === 'agent')
+            ? parseAgentCommand(parsed.prompt)
+            : { type: 'create' as const, message: promptText, data: { suggestion: suggestTool(promptText) } };
           if (agentResult.type === 'create') {
             // Unified entry (Phase 0 §2.1 / A5): EVERY `@agent <NL>` goes through the
             // confirm card — one-shot, scheduled, and autonomous alike. The legacy
