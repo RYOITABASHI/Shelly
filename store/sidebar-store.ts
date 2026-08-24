@@ -14,7 +14,6 @@ export type SidebarSection =
   | 'repos'
   | 'files'
   | 'device'
-  | 'ports'
   | 'profiles'
   | 'worktrees'
   | 'quickLaunch'
@@ -159,7 +158,7 @@ export const useSidebarStore = create<SidebarState>()(
 // This is safe for EXISTING installs specifically because of how
 // `migrate` above works: `{ ...defaultOpenSections(), ...persistedSections }`
 // always lets a persisted value win. Any install that has ever loaded
-// this store already has all 11 keys written to AsyncStorage, so changing
+// this store already has all 10 keys written to AsyncStorage, so changing
 // this function's return value affects ONLY installs with no persisted
 // openSections yet — i.e. genuinely fresh installs. An existing user's
 // months of accordion state (which sections they've opened/closed
@@ -172,7 +171,6 @@ function defaultOpenSections(): Record<SidebarSection, boolean> {
     repos: false,
     files: false,
     device: false,
-    ports: false,
     profiles: false,
     worktrees: false,
     quickLaunch: false,
