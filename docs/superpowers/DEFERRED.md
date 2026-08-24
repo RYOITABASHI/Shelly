@@ -5338,6 +5338,20 @@ Opus引き継ぎエージェントが再検証。**①言語ミスマッチ修�
 
 **設計上の追加考慮点**: ヘルパーは「実際に有効なメッセージID」(成功時は元のID、フォールバック時は新規投稿のID)を返すようにし、`registered-cron`成功パスがその戻り値を`setJustRegisteredAgent`の`messageId`へ渡すよう修正——フォールバックが発生したのに古いIDをそのまま次の状態(訂正ウィンドウ機能)に渡すと、1手先で同じダングリング参照バグを再生産してしまうため。最も実害が大きいのは**ephemeral one-shot**の最終結果(3601行目付近)——このエージェントは実行後に即削除されるため、更新が失われるとアプリ内のどこにも痕跡が残らない。
 
-**検証**: `npx tsc --noEmit` clean。新規回帰テスト1件追加(`__tests__/ai-pane-dispatch-interaction-order.test.tsx`)——`mockRunAgentNow`のモック実装内で`clearConversation`を呼び出し、`confirmAgentDraftInner`が実際にawaitしている最中に対象メッセージが消える、という現実的な競合を再現。影響範囲の全テストスイート118本・2340件、全PASS(以前一度flakeした`agent-manager-chain-lock`も今回は通しで安定PASS)。**実機検証は未実施**——次回on-device QA項目に追加。
+**検証**: `npx tsc --noEmit` clean。新規回帰テスト1件追加(`__tests__/ai-pane-dispatch-interaction-order.test.tsx`)——`mockRunAgentNow`のモック実装内で`clearConversation`を呼び出し、`confirmAgentDraftInner`が実際にawaitしている最中に対象メッセージが消える、という現実的な競合を再現。影響範囲の全テストスイート118本・2340件、全PASS(以前一度flakeした`agent-manager-chain-lock`も今回は通しで安定PASS)。
+
+**→ 2026-08-24 実機検証完了(build 2271、commit `e71eeeb37`)= ①②③すべてPASS**。①Clear conversationバグ: 前回の再現手順を再実行し、「There is a pending draft…」への吸収・`updateMessage: no-op`警告・無言化のいずれも発生せず、通常のLLM応答(19秒の実往復)が返ることを確認。②cancel通常経路の回帰確認: 「Registration cancelled.」が元のカードをin-placeで正しく置換して表示されることを確認(no-op警告なし)。③confirmAgentDraftの通常フロー: Confirm押下で登録成功メッセージが正しく表示され、Sidebar MY AGENTSへの実登録・`dumpsys alarm`でのAlarmManager投入(1→3)も確認。新設の計装ログ(`registered-cron calling/returned updateMessage`)もno-op警告なしで通過しており、フォールバックには落ちず通常経路が期待通り動作していることを確認。後片付け(テストagent削除、force-stop+再起動後も削除維持を確認)も完了。
+
+→ sync: README Status表の変更なし。
+
+---
+
+### 軽微な追加修正2件(2026-08-24実機QAで見つかった副次的なコピー品質issue)
+
+**① 登録/更新完了通知の文法崩れ**: 実機検証で見つかった「Got it — "..." is set. I'll daily at 07:00.」という壊れた英文。`agentplan.registered_notice`/`agentplan.updated_notice`のテンプレートが`scheduleDescription`(`humanizeCronSchedule`が返す「daily at 07:00」のような時刻句)を`"I'll {{scheduleDescription}}"`に直接埋め込んでおり、動詞句を期待する文型に名詞句を入れていたため。`"I'll do this {{scheduleDescription}}"`に修正し、通知トリガー由来の記述("on notification from X")や"no schedule"フォールバックも含め、あらゆる`scheduleDescription`の形で文法的に破綻しないようにした。
+
+**② 確認要約の「実行内容」行が内部語彙(`Action: notify`)を露出**: Fable5の包括レビューで指摘されていた項目。`lib/agent-plan-summary.ts`の`actionText()`が、フォームピッカー用の簡潔なラベル(`agentcard.action_notify`="notify"、ドロップダウンの選択肢としては適切な短さ)を確認要約の文中にもそのまま流用していたため。確認要約専用の自然な言い回し(`agentplan.action_label_notify`="send you a notification")を新設し、`actionText()`側だけをそちらへ切り替え(フォームピッカー自体は`agentcard.action_*`のまま無変更)。draft/notify/webhook/cli/intent/dm-reply/app-act/api-call/browser-pane(未使用だが将来のfallback参照に備え)の8〜9種を用意。
+
+**検証**: 両方とも`npx tsc --noEmit` clean。既存テスト1件(`agentcard.action_draft`をpinしていたもの)が新キー名を期待するよう自動的に失敗、期待値を`agentplan.action_label_draft`へ更新して修正確認。影響範囲の13テストスイート756件、全PASS。**実機検証は未実施**——次回on-device QA時に、登録確認の文面が自然な文になっているか(「Action: notify」ではなく「Action: send you a notification」等)を確認すること。
 
 → sync: README Status表の変更なし。
