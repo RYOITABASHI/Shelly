@@ -3285,6 +3285,46 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       const originatingMessage = store.getOrCreate(paneId).messages.find((m) => m.id === messageId);
       const isChatNativeDraft = originatingMessage?.agentChatConfirm === true;
       const originalDraftSnapshot = originatingMessage?.agentDraft;
+      const originatingAgentLabel = originatingMessage?.agent;
+      // 2026-08-24: same dangling-reference class as cancelAgentDraft's own
+      // fallback (see that function's comment) — the draft bubble this
+      // whole function updates in place can vanish out from under it mid-
+      // flow (Clear conversation, a long-press delete, or any future path
+      // with the same shape), especially since several branches below
+      // `await` a real agent run that can take minutes. Every call site
+      // below that represents a TERMINAL outcome (a result the user isn't
+      // shown anywhere else — vs. an ephemeral "▶ Running…" progress
+      // update, which intentionally still calls store.updateMessage
+      // directly and skips this) goes through here instead, so a no-op
+      // update still reaches the user as a new message rather than
+      // vanishing silently. Most acute for the ephemeral-one-shot path
+      // (line ~3561 below): that agent is deleted right after running, so
+      // a lost update there would leave literally no trace anywhere in the
+      // app that anything happened at all.
+      // Returns the id of whichever message now actually carries this
+      // content — messageId itself on a successful in-place update, or the
+      // freshly-posted fallback message's id on a no-op. A couple of call
+      // sites (the correction-window setJustRegisteredAgent call, notably)
+      // go on to store THIS SAME messageId for later reference — if they
+      // kept using the original id after a fallback just proved that id no
+      // longer resolves to anything, they would recreate the identical
+      // dangling-reference bug this whole helper exists to close.
+      const updateOrFallback = (updates: Partial<ChatMessage>): string => {
+        const ok = store.updateMessage(paneId, messageId, updates);
+        if (!ok && updates.content !== undefined) {
+          const fallbackId = generateId();
+          store.addMessage(paneId, {
+            id: fallbackId,
+            role: 'assistant',
+            content: updates.content,
+            timestamp: Date.now(),
+            agent: originatingAgentLabel,
+            ...(updates.agentRollbackOffer !== undefined ? { agentRollbackOffer: updates.agentRollbackOffer } : {}),
+          });
+          return fallbackId;
+        }
+        return messageId;
+      };
       // Phase A (2026-07-22): also clear the session-scoped pending state
       // when this confirm came from AgentChatConfirm's TAP button rather
       // than a typed reply (dispatch()'s own typed-confirm branch already
@@ -3313,7 +3353,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         const notice = noticeLocale === 'ja'
           ? 'このエージェントは通知トリガー（どのアプリの通知で起動するか）を認識できず、スケジュールも設定されていないため、登録できませんでした。一度きりの実行として処理すると、せっかく指定した通知トリガーが失われてしまいます。対象アプリ名やパッケージ名を含めて、もう一度言い方を変えて試してください。'
           : "I couldn't identify which app's notifications should trigger this agent, and no schedule was set either — so I did not register it. Registering it as a one-time run would have silently dropped the notification trigger you asked for. Please try again, naming the specific app or package that should trigger it.";
-        store.updateMessage(paneId, messageId, {
+        updateOrFallback({
           agentCardState: 'cancelled',
           content: notice,
         });
@@ -3454,7 +3494,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
             const resultLine = preview ? `${icon} ${preview}` : `${icon} ${runStrings['agentplan.run_now_done']}`;
-            store.updateMessage(paneId, messageId, {
+            updateOrFallback({
               content: `${baseContent}\n\n${resultLine}`,
               agentRollbackOffer: buildRollbackOffer(created.id, created),
             });
@@ -3463,7 +3503,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             offerSkillImprovement?.(created.id);
           } catch (runErr) {
             const detail = runErr instanceof Error ? runErr.message : String(runErr);
-            store.updateMessage(paneId, messageId, {
+            updateOrFallback({
               content: `${baseContent}\n\n❌ ${runStrings['agentplan.run_now_failed']}: ${detail}`,
             });
           } finally {
@@ -3496,7 +3536,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               autonomousSuffix: confirmed.autonomous ? ' · autonomous' : '',
             },
           );
-          store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: updatedContent });
+          updateOrFallback({ agentCardState: 'confirmed', content: updatedContent });
           if (confirmed.runOnceOnConfirm) {
             await fireRunOnceOnConfirm(
               updatedContent,
@@ -3558,7 +3598,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             // re-check needs the agent snapshot that was actually just run,
             // and `created` is about to be gone.
             const rollbackOffer = buildRollbackOffer(created.id, created);
-            store.updateMessage(paneId, messageId, {
+            updateOrFallback({
               content: finalContent,
               agentRollbackOffer: rollbackOffer,
             });
@@ -3605,7 +3645,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot cleanup deleteAgent returned for ${created.id}`);
               } catch (cleanupError) {
                 const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-                store.updateMessage(paneId, messageId, {
+                updateOrFallback({
                   content: `${finalContent ?? `✅ ${created.name} — done.`}\n\nCleanup warning: temporary agent was not removed. ${detail}`,
                 });
               }
@@ -3652,7 +3692,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             },
           );
           logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron calling updateMessage(content) for ${created.id} / message ${messageId}`);
-          store.updateMessage(paneId, messageId, {
+          const registeredMessageId = updateOrFallback({
             agentCardState: 'confirmed',
             content: registeredContent,
           });
@@ -3662,7 +3702,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               agentId: created.id,
               agentName: created.name,
               draftSnapshot: originalDraftSnapshot!,
-              messageId,
+              messageId: registeredMessageId,
               agentLabel: originatingMessage?.agent,
               createdAt: Date.now(),
             });
@@ -3722,7 +3762,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // bubble empty well past when this should have fired, and JS-side
         // reading alone could not confirm whether this block was ever reached.
         logWarn('AgentDraftConfirm', `confirmAgentDraft: outer catch reached for ${messageId}: ${err instanceof Error ? err.message : String(err)}`);
-        store.updateMessage(paneId, messageId, {
+        updateOrFallback({
           content: `[@agent] failed: ${err instanceof Error ? err.message : String(err)}`,
         });
       }

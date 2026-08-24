@@ -2601,6 +2601,52 @@ describe('Scenario 10b — confirmAgentDraft refuses a silent notification-trigg
     expect(msg?.content.length).toBeGreaterThan(0);
   });
 
+  // 2026-08-24: same dangling-reference class as clearConversation/
+  // deleteMessage/cancelAgentDraft's own fixes -- confirmAgentDraft's final
+  // result is normally shown by updating the ORIGINAL draft bubble in
+  // place. Several branches (this one included) await a real agent run in
+  // between reading that bubble and posting the result, leaving a window
+  // where a concurrent Clear conversation (or any other deletion) can
+  // remove it. This is the MOST acute of the 8 terminal call sites fixed
+  // in confirmAgentDraftInner: the ephemeral one-shot agent is deleted
+  // right after running, so a lost update here would leave literally no
+  // trace anywhere in the app that anything happened at all -- not even an
+  // agent left behind in the Sidebar to notice after the fact.
+  it('BUG FIX: ephemeral one-shot result posts as a NEW message when the draft bubble vanished mid-run', async () => {
+    const draft = notifyTriggerLostDraft({
+      rawText: 'check disk space right now',
+      prompt: 'check disk space',
+    });
+    const messageId = 'ephemeral-deleted-mid-run';
+    act(() => {
+      seedPendingDraftMessage(messageId, draft);
+    });
+    // Simulate a concurrent Clear conversation landing WHILE runAgentNow is
+    // in flight -- the realistic version of this race, since the bubble
+    // demonstrably still existed when confirmAgentDraftInner started (its
+    // own synchronous originatingMessage read succeeded), and only a gap
+    // like this awaited call gives an external action room to remove it.
+    mockRunAgentNow.mockImplementationOnce(async () => {
+      useAIPaneStore.getState().clearConversation(conversationKey());
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.confirmAgentDraft(messageId, draftToConfirmedAgentDraft(draft));
+    });
+
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockRunAgentNow).toHaveBeenCalledTimes(1);
+    expect(mockDeleteAgent).toHaveBeenCalled();
+    // The result reached the user as a brand-new message, not silence --
+    // clearConversation already emptied messages, so this is the only one.
+    expect(conv().messages).toHaveLength(1);
+    const posted = conv().messages[0];
+    expect(posted.id).not.toBe(messageId);
+    expect(posted.role).toBe('assistant');
+    expect(posted.content.length).toBeGreaterThan(0);
+  });
+
   it('sanity check: the SAME shape but WITHOUT notification-trigger phrasing is NOT blocked — an ordinary one-shot request still runs and is discarded (no false positive)', async () => {
     const draft = notifyTriggerLostDraft({
       rawText: 'check disk space right now',
