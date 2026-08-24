@@ -1042,7 +1042,7 @@ const en: Record<string, string> = {
   'chat.companion_label': 'Shelly',
   'chat.switched_to_companion_thread': 'Switched to Shelly thread',
   'chat.switched_to_pane_thread': 'Switched to pane thread',
-  'chat.empty_subtitle': 'Ask me anything\nUse @codex @local @team to choose an AI',
+  'chat.empty_subtitle': 'Ask anything. I can see your terminal output.',
   'chat.sample_list_files': 'List files',
   'chat.sample_ask_claude': 'Ask Codex',
   'chat.sample_ask_gemini': 'Ask Gemini',

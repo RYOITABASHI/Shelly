@@ -1020,7 +1020,7 @@ const ja: Record<string, string> = {
   'chat.companion_label': 'Shelly',
   'chat.switched_to_companion_thread': 'Shellyスレッドに切り替えました',
   'chat.switched_to_pane_thread': 'ペインスレッドに切り替えました',
-  'chat.empty_subtitle': '何でも聞いてください\n@codex @local @team でAIを選べます',
+  'chat.empty_subtitle': '何でも聞いてください。ターミナルの出力も見えています。',
   'chat.sample_list_files': 'ファイル一覧',
   'chat.sample_ask_claude': 'Codexに聞く',
   'chat.sample_ask_gemini': 'Geminiに聞く',

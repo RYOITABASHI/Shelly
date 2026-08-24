@@ -619,7 +619,7 @@ export default function AIPane() {
       {messages.length === 0 ? (
         <View style={paneStyles.emptyState}>
           <Text style={paneStyles.emptyText}>
-            Ask anything. I can see your terminal output.
+            {t('chat.empty_subtitle')}
           </Text>
         </View>
       ) : (
