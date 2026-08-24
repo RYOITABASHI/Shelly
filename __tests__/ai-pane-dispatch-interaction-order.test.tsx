@@ -520,6 +520,59 @@ describe('AI pane provider history depth', () => {
     expect(history[0].content).toBe('prior user 2');
     expect(history.at(-1).content).toBe('prior assistant 9');
   });
+
+  // 2026-08-24 (Fable5 design consult, G1-P0): adjacent same-role entries
+  // must merge into one turn, not be sent as separate consecutive turns --
+  // some providers (Gemini in particular) reject a request whose history
+  // has two consecutive same-role entries. This is currently unreachable
+  // via the local-only companion thread (its own messages always
+  // alternate), but lib/agent-companion-notice.ts posts back-to-back
+  // assistant entries (a run-completion notice right after a normal
+  // assistant reply) that WOULD produce this exact invalid shape if a
+  // cloud provider ever reads that thread's history -- this test proves
+  // the merge itself works, independent of when/whether that happens.
+  it('merges adjacent same-role history entries into one turn (provider alternation safety)', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, localLlmEnabled: true, localLlmUrl: 'http://127.0.0.1:8080', localLlmModel: 'qwen3.5-2b' },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('local reply', false);
+      return { success: true, content: 'local reply' };
+    });
+    act(() => {
+      useAIPaneStore.getState().addMessage(conversationKey(), {
+        id: 'u0', role: 'user', content: 'an earlier question', timestamp: 1,
+      });
+      useAIPaneStore.getState().addMessage(conversationKey(), {
+        id: 'a1', role: 'assistant', content: 'first assistant turn', timestamp: 2, agent: 'local',
+      });
+      // Back-to-back assistant entries -- the exact shape agent-companion-
+      // notice.ts produces (a run-completion notice right after a reply).
+      useAIPaneStore.getState().addMessage(conversationKey(), {
+        id: 'a2', role: 'assistant', content: 'weather agent: done', timestamp: 3, agent: 'local',
+      });
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('current prompt');
+    });
+
+    const messages = mockOllamaChatStream.mock.calls[0][1];
+    // The seeded history (everything except the system prompt at [0] and
+    // the just-dispatched current prompt at the end) must never have two
+    // consecutive same-role entries, and the two assistant turns must have
+    // merged into one with their content joined.
+    const history = messages.slice(1, -1);
+    for (let i = 1; i < history.length; i += 1) {
+      expect(history[i].role).not.toBe(history[i - 1].role);
+    }
+    expect(history).toEqual([
+      { role: 'user', content: 'an earlier question' },
+      { role: 'assistant', content: 'first assistant turn\nweather agent: done' },
+    ]);
+  });
 });
 
 // ─── Scenario 1: the exact regression repro ───────────────────────────────

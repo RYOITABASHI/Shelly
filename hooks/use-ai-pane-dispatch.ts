@@ -208,7 +208,26 @@ function estimateTokens(text: string): number {
   return Math.round(cjk / 1.5 + ascii / 4);
 }
 
-/** Convert AI-pane messages to OpenAI-compatible chat format for the local LLM. */
+/** Convert AI-pane messages to OpenAI-compatible chat format for the local LLM.
+ *
+ * 2026-08-24 (Fable5 design consult, "一人の相棒" Phase 3, G1-P0 — a
+ * prerequisite identified while investigating whether the companion and
+ * provider threads could safely share history): adjacent entries of the
+ * SAME role are merged into one (content joined with a newline) instead of
+ * being sent as separate consecutive turns. Two providers this hook already
+ * dispatches to reject a request whose `contents`/`messages` array has
+ * consecutive same-role turns — Gemini in particular requires strict
+ * user/assistant alternation (see lib/gemini.ts's `contents` builder, which
+ * sends this array with no normalization of its own). The companion
+ * thread's own `lib/agent-companion-notice.ts` already posts
+ * `role: 'assistant'` run-completion notices back-to-back with a normal
+ * assistant reply, which — once/if a cloud provider ever reads the
+ * companion thread's history — would produce exactly that invalid shape.
+ * Harmless no-op today for the local-only path this function currently
+ * serves (there's nothing to merge unless two same-role messages already
+ * happen to be adjacent), and unconditionally correct for every provider
+ * regardless of its alternation requirements, so applying it now needs no
+ * feature flag. */
 function toOpenAIHistory(
   messages: ChatMessage[],
   maxPairs = 8,
@@ -216,10 +235,13 @@ function toOpenAIHistory(
   const result: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   const recent = messages.slice(-(maxPairs * 2));
   for (const m of recent) {
-    if (m.role === 'user' && m.content) {
-      result.push({ role: 'user', content: m.content });
-    } else if (m.role === 'assistant' && m.content) {
-      result.push({ role: 'assistant', content: m.content });
+    if (m.role !== 'user' && m.role !== 'assistant') continue;
+    if (!m.content) continue;
+    const last = result[result.length - 1];
+    if (last && last.role === m.role) {
+      last.content = `${last.content}\n${m.content}`;
+    } else {
+      result.push({ role: m.role, content: m.content });
     }
   }
   return result;
