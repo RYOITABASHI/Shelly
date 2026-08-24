@@ -109,6 +109,54 @@ describe('AI pane terminal context', () => {
     expect(prompt).toContain('SAME language the user\'s most recent message is written in');
     expect(prompt).not.toMatch(/reply (concisely )?in english/i);
   });
+
+  // 2026-08-24 on-device finding (Fable5 follow-up QA): the INVERSE of the
+  // 2026-07-27 finding above — an ENGLISH message via @gemini got answered
+  // in Japanese, despite the (correct) instruction above being present.
+  // Likely cause: this same prompt also carries Japanese-language profile/
+  // memory context, a plausible competing signal. When promptText is given,
+  // both builders now state the detected language as a concrete fact
+  // instead of asking the model to infer it, and explicitly name the
+  // competing context blocks as NOT the language cue to use.
+  it('states the detected language as a concrete directive when promptText is given (cloud)', () => {
+    const en = buildAIPaneSystemPrompt(null, 'gemini', null, 'let me know if the disk fills up');
+    expect(en).toContain('written in English');
+    expect(en).toContain('Reply in English');
+    expect(en).not.toContain('SAME language the user\'s most recent message is written in');
+
+    const ja = buildAIPaneSystemPrompt(null, 'gemini', null, '毎朝8時に天気を確認して教えて');
+    expect(ja).toContain('written in Japanese');
+    expect(ja).toContain('Reply in Japanese');
+  });
+
+  it('states the detected language as a concrete directive when promptText is given (local)', () => {
+    const en = buildLocalAIPaneSystemPrompt(null, undefined, undefined, 'tell me a short joke');
+    expect(en).toContain('written in English');
+    expect(en).toContain('Reply in English');
+
+    const ja = buildLocalAIPaneSystemPrompt(null, undefined, undefined, '今日の天気を教えて');
+    expect(ja).toContain('written in Japanese');
+    expect(ja).toContain('Reply in Japanese');
+  });
+
+  it('falls back to the generic instruction when promptText is omitted (backward compatible)', () => {
+    expect(buildAIPaneSystemPrompt(null, 'gemini', null)).toContain('SAME language the user\'s most recent message is written in');
+    expect(buildLocalAIPaneSystemPrompt(null)).toContain('SAME language the user\'s most recent message is written in');
+  });
+
+  // 2026-08-24 on-device finding (Fable5 follow-up QA): a less clear-cut
+  // ongoing request ("let me know if the disk fills up") reached the local
+  // model and got exactly the anti-pattern the capability-awareness
+  // instruction was meant to prevent -- "As an AI, I cannot monitor... run
+  // df -h". Strengthened the local prompt with a named anti-pattern and a
+  // worked example, both proven few-shot techniques for weak
+  // instruction-following in small models.
+  it('local prompt names the anti-pattern and gives a worked example', () => {
+    const prompt = buildLocalAIPaneSystemPrompt(null);
+    expect(prompt).toContain('As an AI, I cannot monitor');
+    expect(prompt).toContain('let me know if the disk fills up');
+    expect(prompt).toContain('how often should I check');
+  });
 });
 
 describe('AI pane user-profile injection (2026-08-03 learning-loop wiring)', () => {

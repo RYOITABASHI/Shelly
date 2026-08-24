@@ -2735,7 +2735,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         const globalMemoryNotesForPrompt = await readGlobalMemoryNotes();
         const globalMemorySummary = buildGlobalRecallContext(globalMemoryNotesForPrompt);
         const systemPrompt = (agent === 'local'
-          ? buildLocalAIPaneSystemPrompt(promptTerminalCtx, userProfileSummary, globalMemorySummary)
+          ? buildLocalAIPaneSystemPrompt(promptTerminalCtx, userProfileSummary, globalMemorySummary, promptText)
           : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile, promptText, userProfileSummary, globalMemorySummary))
           + detectPostFormatDirective(promptText);
         const conv = store.getOrCreate(paneId);
