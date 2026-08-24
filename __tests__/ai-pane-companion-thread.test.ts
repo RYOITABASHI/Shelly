@@ -132,3 +132,46 @@ it('routes a provider-to-local switch turn into the post-rebind companion thread
     .toEqual(['@local reply with just the word pong', 'pong']);
   expect(useAIPaneStore.getState().conversations[paneId]).toBeUndefined();
 });
+
+it('ghost-thread fix: drops pane-scoped conversations on load since their provider binding never survives a restart', async () => {
+  // Simulates AsyncStorage still holding a pane-keyed conversation from
+  // before a restart — pane-store's paneAgents (the binding that scoped it)
+  // is never persisted, so this pane starts the new session unbound. Without
+  // the fix, re-binding 'pane-1' to gemini again would silently resurrect
+  // this old conversation.
+  const staleData = {
+    [COMPANION_CONVERSATION_KEY]: {
+      paneId: COMPANION_CONVERSATION_KEY,
+      messages: [{ id: 'companion-msg', role: 'user', content: 'still here', timestamp: 1 }],
+      activeAgent: null,
+      isStreaming: false,
+      terminalContext: null,
+    },
+    'pane-1': {
+      paneId: 'pane-1',
+      messages: [{ id: 'gemini-msg', role: 'user', content: 'old gemini context', timestamp: 1 }],
+      activeAgent: null,
+      isStreaming: false,
+      terminalContext: null,
+    },
+  };
+  await AsyncStorage.setItem('shelly_ai_pane_conversations', JSON.stringify(staleData));
+  useAIPaneStore.setState({ conversations: {}, isLoaded: false });
+
+  await useAIPaneStore.getState().load();
+
+  const { conversations } = useAIPaneStore.getState();
+  expect(conversations[COMPANION_CONVERSATION_KEY].messages[0].content).toBe('still here');
+  expect(conversations['pane-1']).toBeUndefined();
+
+  // Re-binding the same pane to the same provider afterwards must start
+  // from an empty thread, not resurrect the dropped one.
+  usePaneStore.setState({ paneAgents: { 'pane-1': 'gemini' } } as any);
+  expect(useAIPaneStore.getState().getOrCreate(resolveAiPaneStoreKey('pane-1')).messages).toEqual([]);
+
+  // The purge must also reach disk, so a later load() doesn't resurrect it.
+  const persistedRaw = await AsyncStorage.getItem('shelly_ai_pane_conversations');
+  const persisted = JSON.parse(persistedRaw as string);
+  expect(persisted['pane-1']).toBeUndefined();
+  expect(persisted[COMPANION_CONVERSATION_KEY]).toBeDefined();
+});

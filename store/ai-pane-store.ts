@@ -321,7 +321,22 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         if (raw) {
           const data = JSON.parse(raw) as Record<string, AIPaneConversation>;
           const conversations: Record<string, AIPaneConversation> = {};
+          let droppedStale = false;
           for (const [paneId, conv] of Object.entries(data)) {
+            // 2026-08-24 ghost-thread-revival fix: a non-companion
+            // conversation is keyed by paneId only because pane-store's
+            // paneAgents bound that pane to an explicit provider — and
+            // paneAgents is deliberately NOT persisted across restarts
+            // (see pane-store.ts: "must be reconstructed ... not restored
+            // blindly"). Restoring the conversation anyway meant re-binding
+            // the same pane to the same provider after a restart silently
+            // resurrected old context the user had no reason to expect
+            // still existed. Only the companion thread has no such binding
+            // dependency, so only it survives a restart.
+            if (paneId !== COMPANION_CONVERSATION_KEY) {
+              droppedStale = true;
+              continue;
+            }
             conversations[paneId] = {
               ...conv,
               isStreaming: false,
@@ -329,6 +344,12 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
             };
           }
           set({ conversations, isLoaded: true });
+          // Purge the dropped entries from disk too, so a later unrelated
+          // persist() (which writes the full in-memory map) isn't the only
+          // thing that eventually cleans them up.
+          if (droppedStale) {
+            await persist();
+          }
         } else {
           set({ isLoaded: true });
         }
