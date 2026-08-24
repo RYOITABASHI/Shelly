@@ -319,7 +319,16 @@ export type MultiPaneStore =
 function makeInitialCore(): MultiPaneCoreState {
   return {
     preset: 'p1',
-    slots: [{ id: genId(), tab: 'terminal' }, null, null, null],
+    // 2026-08-24 Fable5 product review: a fresh install's first screen was a
+    // bare terminal + git toolbar — the app opened as "a shell", not "a
+    // companion you can talk to". Terminal is one tap away either way (the
+    // pane switcher / layout presets), so defaulting to the AI pane instead
+    // makes the actual first impression match the rest of the "one
+    // companion" work (Shelly-labeled chat, shared thread, conversational
+    // registration). Existing installs are unaffected — this is the store's
+    // NEVER-PERSISTED first-boot default; a real device's persisted slots
+    // (multi-pane-state-v2) always win once hydration completes.
+    slots: [{ id: genId(), tab: 'ai' }, null, null, null],
     focusedSlot: 0,
     ratios: { ...DEFAULT_RATIOS },
     maximizedSlot: null,
