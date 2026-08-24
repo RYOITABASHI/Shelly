@@ -219,7 +219,14 @@ type AIPaneState = {
   // Actions
   getOrCreate: (paneId: string) => AIPaneConversation;
   addMessage: (paneId: string, msg: ChatMessage) => void;
-  updateMessage: (paneId: string, msgId: string, updates: Partial<ChatMessage>) => void;
+  /** Returns true when the message was found and updated, false on a silent
+   *  no-op (stale/wrong messageId, or the message was deleted/cleared out
+   *  from under the caller) — 2026-08-24, so a caller relying on this
+   *  update to be the user's only visible confirmation (e.g.
+   *  cancelAgentDraft) can fall back to posting a new message instead of
+   *  leaving the conversation looking unresponsive. Existing callers that
+   *  don't need this may ignore the return value. */
+  updateMessage: (paneId: string, msgId: string, updates: Partial<ChatMessage>) => boolean;
   deleteMessage: (paneId: string, messageId: string) => void;
   setStreaming: (paneId: string, streaming: boolean) => void;
   setTerminalContext: (paneId: string, context: string | null) => void;
@@ -396,7 +403,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       // in or out instead of guessing from a blank chat bubble.
       if (!found) {
         logWarn('AIPaneStore', `updateMessage: no-op — message ${msgId} not found in pane ${paneId}`);
-        return;
+        return false;
       }
 
       // bug #164 fix (2026-07-28): this used to persist ONLY on the exact
@@ -417,6 +424,7 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       if (updates.isStreaming !== true) {
         debouncedSave(persist);
       }
+      return true;
     },
 
     deleteMessage: (paneId, messageId) => {
@@ -429,6 +437,14 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
             [paneId]: {
               ...conv,
               messages: conv.messages.filter((message) => message.id !== messageId),
+              // Same dangling-reference class as clearConversation's fix
+              // above: long-press-deleting the specific draft-confirm or
+              // just-registered bubble these fields point at must drop the
+              // reference along with it, or a later "cancel"/correction
+              // reply tries to updateMessage() a message that's gone —
+              // silent no-op, app looks unresponsive.
+              pendingAgentSession: conv.pendingAgentSession?.messageId === messageId ? null : conv.pendingAgentSession,
+              justRegisteredAgent: conv.justRegisteredAgent?.messageId === messageId ? null : conv.justRegisteredAgent,
             },
           },
         };
@@ -542,7 +558,19 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
         return {
           conversations: {
             ...state.conversations,
-            [paneId]: { ...conv, messages: [] },
+            // 2026-08-24 on-device finding: clearConversation used to spread
+            // ...conv and only reset `messages`, leaving pendingAgentSession
+            // (and justRegisteredAgent) pointing at a messageId that no
+            // longer exists. The next message the user sent got silently
+            // absorbed into the stale pending-draft reply handler instead of
+            // reaching the LLM, and typing "cancel" tried to updateMessage()
+            // the deleted bubble — a no-op, so the "Registration cancelled."
+            // confirmation never appeared and the app looked completely
+            // unresponsive. terminalContext deliberately stays (it's a
+            // snapshot of what's visible right now, not tied to any specific
+            // message) — only the two fields that reference a specific
+            // messageId need to go with the messages they point at.
+            [paneId]: { ...conv, messages: [], pendingAgentSession: null, justRegisteredAgent: null },
           },
         };
       });

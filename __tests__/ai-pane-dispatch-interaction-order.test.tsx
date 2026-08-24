@@ -2737,3 +2737,39 @@ describe('Implicit agent-delegation intent (2026-08-24, Fable5 product review)',
     expect(conv().pendingAgentSession).toBeFalsy();
   });
 });
+
+describe('cancelAgentDraft fallback when the target bubble is already gone (2026-08-24)', () => {
+  it('posts a NEW cancellation message instead of silently no-op-ing when updateMessage finds nothing', async () => {
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('毎朝8時に天気を確認して教えて');
+    });
+    const draftMessageId = lastMessage().id;
+    expect(conv().pendingAgentSession?.messageId).toBe(draftMessageId);
+
+    // Simulate the draft bubble having been removed out from under
+    // cancelAgentDraft (e.g. by a Clear conversation race, or any other
+    // path) WITHOUT going through clearConversation/deleteMessage's own
+    // pendingAgentSession-clearing fix -- this isolates the cancelAgentDraft
+    // fallback itself as defense-in-depth, independent of whether the
+    // upstream fix already prevents this specific trigger.
+    act(() => {
+      useAIPaneStore.setState((state) => ({
+        conversations: {
+          ...state.conversations,
+          [conversationKey()]: { ...state.conversations[conversationKey()], messages: [] },
+        },
+      }));
+    });
+
+    act(() => {
+      result.current.cancelAgentDraft(draftMessageId);
+    });
+
+    // The user still sees an explicit cancellation, not silence.
+    expect(conv().messages).toHaveLength(1);
+    expect(conv().messages[0]).toMatchObject({ role: 'assistant', content: 'Registration cancelled.' });
+    expect(conv().pendingAgentSession).toBeNull();
+  });
+});

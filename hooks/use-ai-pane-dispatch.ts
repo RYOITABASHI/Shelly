@@ -3772,10 +3772,27 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       if (currentPending?.messageId === messageId) {
         store.setPendingAgentSession(paneId, null);
       }
-      store.updateMessage(paneId, messageId, {
+      const updated = store.updateMessage(paneId, messageId, {
         agentCardState: 'cancelled',
         content: 'Registration cancelled.',
       });
+      // 2026-08-24 on-device finding: the draft bubble this was meant to
+      // edit can already be gone by the time cancel runs (found via Clear
+      // conversation leaving a dangling pendingAgentSession, now fixed at
+      // the source — see ai-pane-store.ts's clearConversation/deleteMessage
+      // — but this is defense-in-depth against any other path that could
+      // do the same). Without a fallback, the cancellation was still
+      // applied internally (setPendingAgentSession above always runs) but
+      // the user saw no confirmation at all — the conversation just looked
+      // unresponsive, worse than a wrong message would have been.
+      if (!updated) {
+        store.addMessage(paneId, {
+          id: generateId(),
+          role: 'assistant',
+          content: 'Registration cancelled.',
+          timestamp: Date.now(),
+        });
+      }
     },
     [paneIdRaw],
   );

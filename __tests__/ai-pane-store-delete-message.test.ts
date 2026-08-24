@@ -100,3 +100,68 @@ it('clears a pane-private thread without touching the shared companion thread', 
   expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages)
     .toEqual([expect.objectContaining({ id: 'shared' })]);
 });
+
+// 2026-08-24 on-device finding: clearConversation only reset `messages`,
+// leaving pendingAgentSession/justRegisteredAgent pointing at a messageId
+// that no longer existed. A later message got silently absorbed by the
+// stale pending-draft reply handler instead of reaching the LLM, and typing
+// "cancel" tried to updateMessage() the deleted bubble — a no-op, so the
+// user saw no response at all and the app looked unresponsive.
+it('clearConversation also drops pendingAgentSession and justRegisteredAgent (2026-08-24)', () => {
+  const draft = { name: 'weather', prompt: 'check weather', rawText: 'check weather', tool: { type: 'local' as const } };
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: 'draft-bubble', role: 'assistant', content: 'draft', timestamp: 1, agentDraft: draft as any,
+  });
+  useAIPaneStore.getState().setPendingAgentSession(COMPANION_CONVERSATION_KEY, {
+    draft: draft as any,
+    phase: 'await-confirm',
+    attemptCounts: {},
+    hasAssumptions: false,
+    createdAt: Date.now(),
+    messageId: 'draft-bubble',
+  });
+  useAIPaneStore.getState().setJustRegisteredAgent(COMPANION_CONVERSATION_KEY, {
+    agentId: 'agent-1', agentName: 'weather', draftSnapshot: draft as any, messageId: 'draft-bubble', createdAt: Date.now(),
+  });
+
+  useAIPaneStore.getState().clearConversation(COMPANION_CONVERSATION_KEY);
+
+  const conv = useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY];
+  expect(conv.messages).toEqual([]);
+  expect(conv.pendingAgentSession).toBeNull();
+  expect(conv.justRegisteredAgent).toBeNull();
+});
+
+it('deleteMessage drops pendingAgentSession/justRegisteredAgent only when it targets that exact message', () => {
+  const draft = { name: 'weather', prompt: 'check weather', rawText: 'check weather', tool: { type: 'local' as const } };
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: 'draft-bubble', role: 'assistant', content: 'draft', timestamp: 1, agentDraft: draft as any,
+  });
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: 'unrelated', role: 'assistant', content: 'unrelated', timestamp: 2,
+  });
+  useAIPaneStore.getState().setPendingAgentSession(COMPANION_CONVERSATION_KEY, {
+    draft: draft as any,
+    phase: 'await-confirm',
+    attemptCounts: {},
+    hasAssumptions: false,
+    createdAt: Date.now(),
+    messageId: 'draft-bubble',
+  });
+
+  // Deleting an unrelated message must leave the pending session intact.
+  useAIPaneStore.getState().deleteMessage(COMPANION_CONVERSATION_KEY, 'unrelated');
+  expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].pendingAgentSession).not.toBeNull();
+
+  // Deleting the draft bubble itself must drop the dangling reference.
+  useAIPaneStore.getState().deleteMessage(COMPANION_CONVERSATION_KEY, 'draft-bubble');
+  expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].pendingAgentSession).toBeNull();
+});
+
+it('updateMessage reports false on a no-op (message not found) instead of only logging', () => {
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: 'exists', role: 'assistant', content: 'x', timestamp: 1,
+  });
+  expect(useAIPaneStore.getState().updateMessage(COMPANION_CONVERSATION_KEY, 'exists', { content: 'y' })).toBe(true);
+  expect(useAIPaneStore.getState().updateMessage(COMPANION_CONVERSATION_KEY, 'does-not-exist', { content: 'y' })).toBe(false);
+});
