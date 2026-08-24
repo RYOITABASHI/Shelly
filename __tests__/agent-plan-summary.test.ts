@@ -499,7 +499,11 @@ describe('summarizeAgentDraftAsText', () => {
     const draft = baseDraft({ action: { type: 'draft' }, outputPath: undefined });
     const text = summarizeAgentDraftAsText(draft);
     expect(text).not.toContain('agentplan.draft_line_with_path');
-    expect(text).toContain('agentcard.action_draft');
+    // 2026-08-24: the plain label now comes from agentplan.action_label_draft
+    // (a natural-language phrasing for the confirm-summary prose), not
+    // agentcard.action_draft (the form picker's terse option text — still
+    // used there, just no longer reused for this line).
+    expect(text).toContain('agentplan.action_label_draft');
   });
 
   // Security-audit finding (2026-08-10): draft/notify are chat-native by

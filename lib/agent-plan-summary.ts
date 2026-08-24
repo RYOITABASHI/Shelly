@@ -288,7 +288,12 @@ function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, lo
         })
       : tl('agentplan.socialpost_line', { platform: platformLabel, connector: action.socialPost.connectorId });
   }
-  const label = tl(`agentcard.action_${action.type}`);
+  // 2026-08-24: a dedicated prose label, distinct from agentcard.action_*
+  // (the form picker's terse option text, e.g. "notify") — see that key's
+  // own doc comment for why the confirm-summary line needs a separate,
+  // more natural phrasing ("send you a notification") instead of exposing
+  // the raw internal action-type word.
+  const label = tl(`agentplan.action_label_${action.type}`);
   switch (action.type) {
     case 'draft': {
       const outputHint = draft?.outputPath?.trim();

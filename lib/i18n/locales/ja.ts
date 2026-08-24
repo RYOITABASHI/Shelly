@@ -401,6 +401,22 @@ const ja: Record<string, string> = {
   'agentplan.summary_name': '呼び方: {{name}}',
   'agentplan.summary_schedule': '実行タイミング: {{schedule}}',
   'agentplan.summary_action': '実行内容: {{action}}',
+  // 2026-08-24 Fable5レビューでの指摘対応: 確認要約の「実行内容」行が内部の
+  // action.type名(agentcard.action_*、フォームのドロップダウン選択肢として
+  // は簡潔で適切)をそのまま流用していた。ここでは会話文向けに、より自然な
+  // 言い回しを別キーとして用意する(agentcard.action_*自体はフォーム側で
+  // 引き続き使用、変更なし)。
+  'agentplan.action_label_draft': '下書きを作成',
+  'agentplan.action_label_notify': '通知でお知らせ',
+  'agentplan.action_label_webhook': 'Webhookを呼び出し',
+  'agentplan.action_label_cli': 'コマンドを実行',
+  'agentplan.action_label_intent': 'アプリを起動',
+  'agentplan.action_label_dm-reply': 'DM返信を送信',
+  'agentplan.action_label_app-act': 'アプリ操作を実行',
+  'agentplan.action_label_api-call': 'APIを呼び出し',
+  // 実際には未使用(actionText()のbrowser-pane分岐は専用のURL/セレクタ行を
+  // 常に返すため)。将来のリファクタでfallback参照される場合に備え念のため用意。
+  'agentplan.action_label_browser-pane': 'ブラウザで操作',
   'agentplan.autonomous_note': '自律実行（実行のたびに人の承認は挟まれません）',
   'agentplan.memory_note': '実行後に記憶: {{fact}}',
   'agentplan.skill_note': '既存スキル「{{name}}」を再利用します（成功実績 {{count}}回）',

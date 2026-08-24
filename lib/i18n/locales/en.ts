@@ -406,6 +406,27 @@ const en: Record<string, string> = {
   'agentplan.summary_name': "I'll call this: {{name}}",
   'agentplan.summary_schedule': 'Schedule: {{schedule}}',
   'agentplan.summary_action': 'Action: {{action}}',
+  // 2026-08-24 Fable5 product review finding: the confirm summary's Action
+  // line rendered the raw internal action.type name verbatim ("Action:
+  // notify") — reused agentcard.action_* (the FORM PICKER's terse option
+  // labels, appropriately short for a dropdown) for this prose line too.
+  // These separate, natural-language equivalents are used ONLY by
+  // actionText() in lib/agent-plan-summary.ts for the confirm-bubble/card
+  // summary text; agentcard.action_* is untouched and still drives the
+  // picker.
+  'agentplan.action_label_draft': 'save a draft',
+  'agentplan.action_label_notify': 'send you a notification',
+  'agentplan.action_label_webhook': 'call a webhook',
+  'agentplan.action_label_cli': 'run a command',
+  'agentplan.action_label_intent': 'open an app',
+  'agentplan.action_label_dm-reply': 'send a DM reply',
+  'agentplan.action_label_app-act': 'take an app action',
+  'agentplan.action_label_api-call': 'make an API call',
+  // Computed but unused in practice (the browser-pane switch case in
+  // actionText() always returns its own dedicated URL/selector line
+  // instead) — present anyway so a future refactor that starts relying on
+  // this fallback doesn't silently render the raw i18n key string.
+  'agentplan.action_label_browser-pane': 'act in the browser',
   'agentplan.autonomous_note': 'Runs autonomously (no per-run human approval).',
   'agentplan.memory_note': 'Will remember after running: {{fact}}',
   'agentplan.skill_note': 'Reuses the existing skill "{{name}}" ({{count}} prior successes).',
@@ -442,8 +463,8 @@ const en: Record<string, string> = {
   // existing one being updated. See summarizeAgentDraftAsText's isEditing
   // param.
   'agentplan.confirm_prompt_edit': 'Got it — I\'ll update it to what\'s described above. Say the word, or tell me what else to change; "cancel" drops the edit.',
-  'agentplan.registered_notice': 'Got it — "{{name}}" is set. I\'ll {{scheduleDescription}}{{autonomousSuffix}}. You can check on it anytime with @agent list.{{correctionHint}}',
-  'agentplan.updated_notice': 'Got it — "{{name}}" is updated. I\'ll {{scheduleDescription}}{{autonomousSuffix}} from now on.',
+  'agentplan.registered_notice': 'Got it — "{{name}}" is set. I\'ll do this {{scheduleDescription}}{{autonomousSuffix}}. You can check on it anytime with @agent list.{{correctionHint}}',
+  'agentplan.updated_notice': 'Got it — "{{name}}" is updated. I\'ll do this {{scheduleDescription}}{{autonomousSuffix}} from now on.',
   // Phase A/B (2026-07-22) — type-to-confirm and the assumed-schedule
   // annotation for the chat-native flow (hooks/use-ai-pane-dispatch.ts /
   // lib/agent-plan-summary.ts).
