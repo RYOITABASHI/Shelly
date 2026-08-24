@@ -60,7 +60,7 @@ describe('generateRunScript — free-cloud tier backends (Cerebras / Groq, ③b)
     const gq = generateRunScript(agent({ type: 'groq' }, false));
     expect(gq).toContain('https://api.groq.com/openai/v1/chat/completions');
     expect(gq).toContain('HTTP_AUTH_HEADER="Bearer $GROQ_API_KEY"');
-    expect(gq).toContain('MODEL="${GROQ_MODEL:-llama-3.3-70b-versatile}"');
+    expect(gq).toContain('MODEL="${GROQ_MODEL:-openai/gpt-oss-120b}"');
   });
 
   it('refuses autonomous Cerebras/Groq, fail-closed (API-key backend, no key in the autonomous path)', () => {

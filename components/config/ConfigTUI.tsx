@@ -105,7 +105,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'localLlmUrl',     label: 'Local LLM URL',   type: 'string',  source: 'settings', description: 'e.g. http://127.0.0.1:8080' },
       { key: 'localLlmModel',   label: 'Local LLM Model', type: 'string',  source: 'settings' },
       { key: 'groqApiKey',      label: 'Groq API Key',    type: 'secret',  source: 'settings' },
-      { key: 'groqModel',       label: 'Groq Model',      type: 'string',  source: 'settings', description: 'e.g. llama-3.3-70b-versatile' },
+      { key: 'groqModel',       label: 'Groq Model',      type: 'string',  source: 'settings', description: 'e.g. openai/gpt-oss-120b' },
       { key: 'cerebrasApiKey',  label: 'Cerebras API Key', type: 'secret', source: 'settings' },
       { key: 'openrouterApiKey', label: 'OpenRouter API Key', type: 'secret', source: 'settings' },
       { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },

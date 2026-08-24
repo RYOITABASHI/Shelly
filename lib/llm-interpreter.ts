@@ -16,6 +16,7 @@
  */
 
 import type { OutputLine } from '@/store/types';
+import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 
 export type InterpretType = 'success' | 'error' | 'progress';
 
@@ -132,7 +133,7 @@ async function interpretWithFallback(
       const text = await callOpenAICompatible(
         'https://api.groq.com/openai/v1/chat/completions',
         fallback.groqApiKey,
-        fallback.groqModel ?? 'llama-3.3-70b-versatile',
+        fallback.groqModel ?? GROQ_DEFAULT_MODEL,
         systemPrompt,
         userContent,
         onChunk,

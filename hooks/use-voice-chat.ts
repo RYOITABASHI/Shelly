@@ -286,7 +286,7 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
           }
           response = result.content ?? '';
         } else if (groqKey && groqKey.trim().length >= 10) {
-          const { groqChatStream } = await import('@/lib/groq');
+          const { groqChatStream, GROQ_DEFAULT_MODEL } = await import('@/lib/groq');
           const groqHistory = conversationRef.current.slice(0, -1).map((m) => ({
             role: (m.role === 'model' ? 'assistant' : m.role) as 'user' | 'assistant',
             content: m.parts[0]?.text ?? '',
@@ -295,7 +295,7 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
             groqKey,
             transcript,
             () => {},
-            settings.groqModel || 'llama-3.3-70b-versatile',
+            settings.groqModel || GROQ_DEFAULT_MODEL,
             groqHistory,
             abortRef.current.signal,
           );

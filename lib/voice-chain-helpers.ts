@@ -21,13 +21,13 @@ export async function summarizeForSpeech(output: string): Promise<string> {
   const groqKey = settings.groqApiKey;
   if (groqKey && groqKey.trim().length >= 10) {
     try {
-      const { groqChatStream } = await import('@/lib/groq');
+      const { groqChatStream, GROQ_DEFAULT_MODEL } = await import('@/lib/groq');
       let result = '';
       const res = await groqChatStream(
         groqKey,
         `Summarize this terminal output for voice reading. Use natural spoken language. 2 sentences max. If it's in a Japanese context, respond in Japanese:\n\n${output.slice(0, 2000)}`,
         (chunk) => { result += chunk; },
-        settings.groqModel || 'llama-3.3-70b-versatile',
+        settings.groqModel || GROQ_DEFAULT_MODEL,
         [],
       );
       if (res.success && result) return result;

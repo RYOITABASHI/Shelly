@@ -18,6 +18,7 @@
 import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { GEMINI_WEB, PERPLEXITY_WEB } from './agent-router-scoring';
 import { AUTH_REFS } from './capability-envelope';
+import { GROQ_DEFAULT_MODEL } from './groq';
 
 /** Sensible default; the hard cap protects the phantom-process ceiling. */
 export const DEFAULT_MAX_STEPS = 6;
@@ -498,7 +499,7 @@ const API_CALL_PRESETS: ApiCallPreset[] = [
       path: '/openai/v1/chat/completions',
       authRef: 'groq',
       bodyTemplate: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_DEFAULT_MODEL,
         messages: [{ role: 'user', content: apiPrompt(instruction, GROQ_PROVIDER_RE) }],
       }),
     }),

@@ -1,15 +1,17 @@
 /**
  * Groq API クライアント
  *
- * - チャット: Llama 3.3 70B (OpenAI互換 API)
+ * - チャット: GPT-OSS 120B (OpenAI互換 API)
  * - 音声文字起こし: Whisper Large v3 Turbo
  * - API仕様: https://console.groq.com/docs
  */
 
 export const GROQ_API_BASE = 'https://api.groq.com/openai/v1';
 
-/** デフォルトチャットモデル */
-export const GROQ_DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+/** デフォルトチャットモデル。旧 'llama-3.3-70b-versatile' は2026-06-17にGroqが
+ *  deprecate、free/developer tierで404を返すようになった(実機で確認、
+ *  2026-08-17)。Groq公式の移行先である 'openai/gpt-oss-120b' に変更。 */
+export const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-120b';
 
 /** Whisperモデル（音声文字起こし） */
 export const GROQ_WHISPER_MODEL = 'whisper-large-v3-turbo';
@@ -75,7 +77,7 @@ async function handleGroqHttpError(res: Response): Promise<GroqResult> {
  * @param apiKey  Groq API キー
  * @param prompt  ユーザーのプロンプト
  * @param onChunk チャンクごとのコールバック (text, done)
- * @param model   使用モデル（デフォルト: llama-3.3-70b-versatile）
+ * @param model   使用モデル（デフォルト: openai/gpt-oss-120b）
  * @param history 会話履歴
  */
 export async function groqChatStream(

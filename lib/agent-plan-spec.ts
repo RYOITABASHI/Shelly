@@ -1,5 +1,6 @@
 import type { Agent, AgentApiCallConfig, AgentRouteDecision, AgentSocialPostConfig, ToolChoice } from '@/store/types';
 import { getHomePath } from '@/lib/home-path';
+import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { detectRouteSignals } from './agent-router-scoring';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
@@ -455,7 +456,7 @@ function toPlanTool(tool: ToolChoice, unsupportedReason?: string): AgentPlanSpec
     case 'cerebras':
       return { type: 'cerebras', label: toolChoiceToLabel(tool), model: tool.model || 'gpt-oss-120b', authRef: 'cerebras' };
     case 'groq':
-      return { type: 'groq', label: toolChoiceToLabel(tool), model: tool.model || 'llama-3.3-70b-versatile', authRef: 'groq' };
+      return { type: 'groq', label: toolChoiceToLabel(tool), model: tool.model || GROQ_DEFAULT_MODEL, authRef: 'groq' };
     default:
       return {
         type: 'unsupported',

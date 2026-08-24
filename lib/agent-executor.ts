@@ -3,6 +3,7 @@
  * Generates per-agent shell scripts and manages execution lifecycle.
  */
 import { Agent, AgentAction, AgentActionType, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
 import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
@@ -5864,7 +5865,7 @@ ${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
         envModelVar: 'GROQ_MODEL',
         keyHint: 'Add GROQ_API_KEY in Settings → API Keys (free tier at console.groq.com).',
         url: 'https://api.groq.com/openai/v1/chat/completions',
-        model: tool.model || 'llama-3.3-70b-versatile',
+        model: tool.model || GROQ_DEFAULT_MODEL,
         label: 'Groq',
         authRef: 'groq',
       }, options.stepSkipPromptCompose ?? false);

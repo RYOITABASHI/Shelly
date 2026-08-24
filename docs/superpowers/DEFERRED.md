@@ -5218,3 +5218,21 @@ UIには`GHOST1`が**捏造されたバージョンバッジ(`V9.2`)付きで、
 ## Sync ゲート: README.md/README.ja.mdの🟡ステータス行
 
 - **2026-08-17時点で残る🟡は1行のみ**: 「Distribution channels (Play Store / F-Droid)」— GitHub Releasesのみでの配布が実態どおりのステータスであり、実機検証で解消できる性質のものではない(実ストア掲載自体が未着手なため)。Sub-agent fan-outの格上げでこれ以外の🟡はすべて解消。48行監査自体は継続中(未到達分: AI Edit golden path / Scouter widget RUN / Add Repositoryゴーストパスa11y)。
+
+---
+
+### ✅ Groq既定モデル404 — `openai/gpt-oss-120b`へ移行、実際に使われている既定値も含めて全箇所修正(2026-08-17)
+
+**バグ / 根本原因**: Groqが2026-06-17に`llama-3.3-70b-versatile`をfree/developer tierでdeprecate(WebSearchで確認: [Model Deprecation - GroqDocs](https://console.groq.com/docs/deprecations))、以降このモデルへの実APIコールは404を返す。ファンアウト実機検証(前掲エントリ)で発見。当初は`tool.model || 'llama-3.3-70b-versatile'`という7箇所のフォールバック文字列が原因と見て切り出したが、実際に調べると**`store/settings-store.ts`の`DEFAULT_SETTINGS.groqModel`自体が同じ古い文字列**であり、`settings.groqModel`は通常falsyにならないためこれら7箇所のフォールバックは実質デッドコードだった——真の既定値はここにあった。
+
+**修正**:
+1. `lib/groq.ts`の`GROQ_DEFAULT_MODEL`を`'openai/gpt-oss-120b'`へ変更(Groq公式ドキュメントの移行先: [Llama-3.3-70B-Versatile - GroqDocs](https://console.groq.com/docs/model/llama-3.3-70b-versatile)、正確なモデルID文字列は`openai/gpt-oss-120b`と確認: [OpenAI GPT-OSS 120B - GroqDocs](https://console.groq.com/docs/model/openai/gpt-oss-120b))。以後この1箇所が唯一の真実の情報源。
+2. `lib/agent-plan-spec.ts`・`lib/agent-orchestration.ts`・`lib/agent-executor.ts`・`lib/llm-interpreter.ts`・`lib/voice-chain-helpers.ts`の5箇所のハードコードされたフォールバック文字列を、`GROQ_DEFAULT_MODEL`のimport(静的または動的import)に置き換え。
+3. `scripts/shelly-plan-executor.js`(JSのためTS定数を直接importできない)のリテラル文字列を更新し、APK assetミラーを`cp`で再同期(md5一致確認済み)。
+4. **真の既定値**: `store/settings-store.ts`の`DEFAULT_SETTINGS.groqModel`を`GROQ_DEFAULT_MODEL`へ変更。
+5. **既存インストール向けマイグレーション**: `loadSettings()`は保存済みblobを`DEFAULT_SETTINGS`の上にspreadするため、コード側の既定値変更だけでは既にAsyncStorageへ`groqModel: 'llama-3.3-70b-versatile'`を書き込み済みの端末には効かない(既存の`agentRegistrationRequireConfirm`マイグレーションと同じ問題)。同じパターンで`settings.groqModel === 'llama-3.3-70b-versatile'`を検出したら`GROQ_DEFAULT_MODEL`へ強制上書き+再保存する1回限りのマイグレーションを追加。ConfigTUIのGroq Modelフィールドは自由入力のため、ユーザーが意図的にこの文字列を打った可能性はあるが、Groq側で削除済みモデルである以上どちらにせよ動かないため、アップグレードは無条件に改善。
+6. ついでに`lib/groq.ts`/`store/types.ts`/`components/config/ConfigTUI.tsx`/`components/panes/AskPane.tsx`内の古いモデル名を参照するdocコメント・UI説明文もあわせて更新。
+
+**検証**: `npx tsc --noEmit` clean。関連テストスイート(agent-orchestration系・agent-plan-spec・plan-executor-orchestration-chain・settings-store系)177件PASS。既定モデル文字列を生成bashスクリプトへpinしていた`__tests__/agent-executor-autonomous.test.ts`の1件が新モデル名を期待するよう自動的に失敗し、期待値を更新して90/90 PASS(このテストが即座に不整合を検出したこと自体が仕組みとして機能した好例)。skill/conversational-registration系テストの`llama-3.3-70b-versatile`参照4件は、defaultの実値ではなく任意のfixtureデータ/mock値としての使用であることを確認し変更不要と判断。**実機検証は未実施**(次回on-device QA時にGroq経由のAI Pane応答・スケジュール済みagentのGroq経由実行が実際に200を返すことを確認すること)。
+
+→ sync: README Status表の変更なし(内部実装fix、機能変更なし)。

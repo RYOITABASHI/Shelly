@@ -29,6 +29,7 @@ import { useSoundStore } from '@/lib/sounds';
 import { useAgentStore } from '@/store/agent-store';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { normalizeWebhookHostAllowlist } from '@/lib/webhook-host-allowlist';
+import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -118,7 +119,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   localLlmUrl: 'http://127.0.0.1:8080',
   localLlmModel: DEFAULT_LOCAL_LLM_MODEL,
   localLlmModelPath: '',
-  groqModel: 'llama-3.3-70b-versatile',
+  groqModel: GROQ_DEFAULT_MODEL,
   telegramInboundEnabled: false,
   telegramBotToken: '',
   telegramAuthorizedChatId: '',
@@ -373,6 +374,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // no-confirm opt-in on a device that still had the stale value.)
       if (settings.agentRegistrationRequireConfirm === false) {
         settings.agentRegistrationRequireConfirm = true;
+        shouldPersist = true;
+      }
+      // Migration: Groq deprecated 'llama-3.3-70b-versatile' 2026-06-17 (free/
+      // developer tier), and every real call against it now 404s (found
+      // 2026-08-17 during on-device fan-out QA — the escalation ladder
+      // silently fell back to the local LLM, masking the failure). Same
+      // spread-over-stored-blob problem as the migration above: DEFAULT_SETTINGS
+      // moving to GROQ_DEFAULT_MODEL only helps a fresh install, since any
+      // install that ever persisted a settings blob keeps the old literal
+      // forever. Unlike that boolean case, ConfigTUI's Groq Model field IS a
+      // free-text string a user could have deliberately typed this exact value
+      // into — but since Groq removed the model, that value is dead either way,
+      // so upgrading it is strictly an improvement regardless of intent.
+      if (settings.groqModel === 'llama-3.3-70b-versatile') {
+        settings.groqModel = GROQ_DEFAULT_MODEL;
         shouldPersist = true;
       }
       const sanitized = sanitizeRemovedAgents(settings);

@@ -869,7 +869,7 @@ function modelRequest(plan, config) {
     case 'cerebras':
       return openAiCompatRequest('https://api.cerebras.ai/v1/chat/completions', 'cerebras', config.CEREBRAS_MODEL || plan.tool.model || 'gpt-oss-120b', prompt);
     case 'groq':
-      return openAiCompatRequest('https://api.groq.com/openai/v1/chat/completions', 'groq', config.GROQ_MODEL || plan.tool.model || 'llama-3.3-70b-versatile', prompt);
+      return openAiCompatRequest('https://api.groq.com/openai/v1/chat/completions', 'groq', config.GROQ_MODEL || plan.tool.model || 'openai/gpt-oss-120b', prompt);
     default:
       throw new PlanFailure(`unsupported PlanSpec tool: ${plan.tool.type}`, { exitCode: EXIT.TOOL_DENY });
   }

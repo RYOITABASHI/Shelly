@@ -376,7 +376,7 @@ export type AppSettings = {
   // ─── Groq API ─────────────────────────────────────────────────────────────────
   /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
   groqApiKey?: string;
-  /** Groqに使用するモデル (default: llama-3.3-70b-versatile) */
+  /** Groqに使用するモデル (default: openai/gpt-oss-120b) */
   groqModel?: string;
   // ─── Cerebras API ──────────────────────────────────────────────────────────────
   /** Cerebras API キー (https://cloud.cerebras.ai) */

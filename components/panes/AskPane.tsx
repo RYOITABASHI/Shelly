@@ -5,7 +5,7 @@
  *
  * Answers "can Shelly do X?" / "how do I use Y?" using the bundled
  * feature catalog + curated docs as system prompt. Calls Groq's free-
- * tier llama-3.3-70b-versatile by default (user can override the
+ * tier GPT-OSS 120B by default (user can override the
  * provider via AI Pane settings — we just reuse whatever API key is
  * already configured there).
  *
@@ -39,7 +39,7 @@ import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-
 import { useSettingsStore } from '@/store/settings-store';
 import { getApiKey } from '@/lib/secure-store';
 import { buildAskSystemPrompt, extractStatus, stripStatusTag, type AskStatus } from '@/lib/ask-context';
-import { groqChatStream } from '@/lib/groq';
+import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { logInfo, logError } from '@/lib/debug-logger';
 import IssueDraftAction from '@/components/panes/IssueDraftAction';
 
@@ -77,7 +77,7 @@ export default function AskPane() {
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const isAtBottomRef = useRef(true);
-  const groqModel = useSettingsStore((s) => s.settings.groqModel ?? 'llama-3.3-70b-versatile');
+  const groqModel = useSettingsStore((s) => s.settings.groqModel ?? GROQ_DEFAULT_MODEL);
 
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
