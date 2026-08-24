@@ -5390,3 +5390,15 @@ Opus引き継ぎエージェントが再検証。**①言語ミスマッチ修�
 - ~~**P3**: 死にキー`'ports'`(`SidebarSection`のunion型、どこにもレンダリングされない)の削除~~ → **同日中に対応済み(commit `d90f064b4`)**。grepでSidebar.tsx含む全コードから`openSections.ports`読み取り箇所ゼロを確認した上で型・デフォルト値から除去。`npx tsc --noEmit` clean、既存sidebar関連4テストスイート24件PASS。
 
 → sync: README Status表の変更なし(UX調整、機能一覧に影響する構造変化なし)。
+
+---
+
+### ✅ CI: `eas-cli`インストール失敗(Node 20→22未対応)の修正(2026-08-24)
+
+`chore(sidebar): remove dead 'ports' SidebarSection key`(`d90f064b4`)のpush後、CIビルドが失敗(run `32788926676`)。**コード変更とは無関係**——原因はCI環境側: 「Setup Expo」ステップの`yarn add eas-cli@22.4.0`が、その依存先`@oclif/plugin-autocomplete@3.3.0`の`engines.node: ">=22.0.0"`要求を満たせず`error @oclif/plugin-autocomplete@3.3.0: The engine "node" is incompatible with this module. Expected version ">=22.0.0". Got "20.20.2"`で失敗。ワークフローの`actions/setup-node@v4`が`node-version: 20`に固定されていたため。
+
+**修正**: `build-android.yml`(quality/buildジョブ両方)と`ota-update.yml`(いずれも`expo/expo-github-action@v8`経由で`eas-cli`をインストールする)のNodeバージョンを20→22へ引き上げ(commit `19ca61f8e`)。`package.json`に`engines`ピンが無いこと、Node 20固定に依存する他のCIステップが無いことを確認した上で変更。`bump-codex-runtime.yml`は`eas-cli`を呼ばないため対象外(20のまま)。
+
+**検証**: push後のCIビルド(run `32790133526`)green確認。
+
+→ sync: README Status表の変更なし(CI/インフラのみ)。
