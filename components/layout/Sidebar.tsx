@@ -454,7 +454,7 @@ export function Sidebar() {
   // below (open-triggers-reload + poll-while-open + AppState resume), the
   // established pattern in this file for "keep a disk-backed list fresh
   // without a shared store."
-  const skillsSectionOpen = mode === 'expanded' && (openSections.skills ?? false);
+  const skillsSectionOpen = mode === 'expanded' && (openSections.skills ?? true);
   const wasSkillsSectionOpenRef = React.useRef(skillsSectionOpen);
   React.useEffect(() => {
     let cancelled = false;
@@ -1698,7 +1698,7 @@ export function Sidebar() {
         <SidebarSection
           title={t('sidebar.skills')}
           icon="auto-awesome"
-          isOpen={openSections.skills ?? false}
+          isOpen={openSections.skills ?? true}
           onToggle={() => toggleSection('skills')}
           badge={skills.length}
           iconsOnly={iconsOnly}
@@ -1865,18 +1865,31 @@ export function Sidebar() {
           </Pressable>
         </SidebarSection>
 
+        {/* Non-collapsible visual divider (Fable5 design consult, "一人の
+            相棒" Phase 3, G2-P2) — everything below this point (Quick
+            Launch through Profiles) is a developer/IDE concern; everything
+            above (Tasks, Skills, Imported Skills) is companion-relevant.
+            Purely a grouping label, same visual weight as the MY AGENTS/
+            RUNNING subheaders above — no section is merged, hidden, or
+            made harder to reach; each keeps its own independent
+            open/closed state exactly as before. Hidden in icons-only mode
+            like every other section label, since there's no room for text. */}
+        {!iconsOnly && (
+          <Text style={styles.sectionGroupDivider}>{t('sidebar.group_developer')}</Text>
+        )}
+
         {/* QUICK LAUNCH — one-tap CLI shortcuts
             into a fresh Terminal pane. Sits between TASKS and REPOSITORIES
             so the most-used "I just want a REPL right now" affordance is
             top of the sidebar, mirroring Apple Superset's CLI launch row. */}
         <QuickLaunchSection
-          isOpen={openSections.quickLaunch ?? true}
+          isOpen={openSections.quickLaunch ?? false}
           onToggle={() => toggleSection('quickLaunch')}
           iconsOnly={iconsOnly}
         />
 
         <CodexSessionsSection
-          isOpen={openSections.codexSessions ?? true}
+          isOpen={openSections.codexSessions ?? false}
           onToggle={() => toggleSection('codexSessions')}
           iconsOnly={iconsOnly}
         />
@@ -2284,6 +2297,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: P.sidebarItem.px,
     paddingVertical: 2,
     letterSpacing: 0.5,
+  },
+  // Fable5 design consult (2026-08-24), "一人の相棒" Phase 3, G2-P2 — same
+  // visual weight as tasksSubheader (this file's existing non-collapsible
+  // group-label pattern), plus a top border to read as a section BOUNDARY
+  // rather than a label belonging to the section above it.
+  sectionGroupDivider: {
+    fontFamily: F.family,
+    fontSize: 7,
+    color: C.text3,
+    paddingHorizontal: P.sidebarItem.px,
+    paddingTop: 8,
+    paddingBottom: 2,
+    letterSpacing: 0.5,
+    borderTopWidth: 1,
+    borderTopColor: C.border,
+    marginTop: 4,
   },
   tasksAction: {
     paddingHorizontal: 2,

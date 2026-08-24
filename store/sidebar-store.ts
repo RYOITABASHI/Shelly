@@ -146,19 +146,37 @@ export const useSidebarStore = create<SidebarState>()(
   )
 );
 
+// 2026-08-24 (Fable5 design consult, "一人の相棒" Phase 3 — reducing
+// IDE-first cognitive load without hiding or removing any IDE feature):
+// the 6 developer/IDE sections (repos/files/device/worktrees/quickLaunch/
+// codexSessions) used to default OPEN, so every new install's very first
+// Sidebar view was dominated by developer chrome regardless of whether
+// that install is being used as a companion or as a terminal IDE. Only
+// tasks (agents) and skills — the companion-relevant sections — now
+// default open; every developer section still exists, one tap away,
+// nothing removed or hidden permanently.
+//
+// This is safe for EXISTING installs specifically because of how
+// `migrate` above works: `{ ...defaultOpenSections(), ...persistedSections }`
+// always lets a persisted value win. Any install that has ever loaded
+// this store already has all 11 keys written to AsyncStorage, so changing
+// this function's return value affects ONLY installs with no persisted
+// openSections yet — i.e. genuinely fresh installs. An existing user's
+// months of accordion state (which sections they've opened/closed
+// themselves) is untouched.
 function defaultOpenSections(): Record<SidebarSection, boolean> {
   return {
     tasks: true,
-    skills: false,
+    skills: true,
     importedSkills: false,
-    repos: true,
-    files: true,
-    device: true,
+    repos: false,
+    files: false,
+    device: false,
     ports: false,
     profiles: false,
-    worktrees: true,
-    quickLaunch: true,
-    codexSessions: true,
+    worktrees: false,
+    quickLaunch: false,
+    codexSessions: false,
   };
 }
 
