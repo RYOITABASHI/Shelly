@@ -5387,6 +5387,6 @@ Opus引き継ぎエージェントが再検証。**①言語ミスマッチ修�
 - **P3**: G1-P3(完全統合のopt-inフラグ)——P1/P2が実機で数週間安定してから検討。
 - **P3**: G2-P1b(既存インストール向けv6 migrate、`repoPaths.length === 0`を代理指標に既定値を新規相当へ落とす)——既存ユーザーの状態を触るため単独出荷せず別PRで。
 - **P3**: G2-P3(SettingsDropdown 2679行の「コンパニオン設定」/「開発者設定」分離)——差分規模が最大で実機QA依存度も最も高いため最後に実施。既存の「1タップ先」slideモーダルパターン(`ModalHeader.tsx`)を再利用する設計まで文書化済み。
-- **P3**: 死にキー`'ports'`(`SidebarSection`のunion型、どこにもレンダリングされない)の削除——影響ゼロの単独クリーンアップ。
+- ~~**P3**: 死にキー`'ports'`(`SidebarSection`のunion型、どこにもレンダリングされない)の削除~~ → **同日中に対応済み(commit `d90f064b4`)**。grepでSidebar.tsx含む全コードから`openSections.ports`読み取り箇所ゼロを確認した上で型・デフォルト値から除去。`npx tsc --noEmit` clean、既存sidebar関連4テストスイート24件PASS。
 
 → sync: README Status表の変更なし(UX調整、機能一覧に影響する構造変化なし)。
