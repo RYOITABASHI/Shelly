@@ -5304,3 +5304,34 @@ Opus引き継ぎエージェントからの分析: 「tell me a short joke」も
 **検証**: `npx tsc --noEmit` clean。`__tests__/ai-pane-context.test.ts`(28件、新規5件)含め、影響範囲の12テストスイート736件全PASS。**実機検証は未実施**——次回on-device QA時に、(1)`@gemini`へ英語メッセージを送り日本語で返らないことの再現、(2)ローカルpersonaへ「let me know if the disk fills up」を再送し、"As an AI, I cannot"パターンが減っているか(完全な解消は保証できないため「改善したか」の確認)の2点を見ること。
 
 → sync: README Status表の変更なし。
+
+**→ 2026-08-24 実機検証完了(build 2266、commit `469094058`)= ①②とも✅ PASS、加えて新規バグ1件発見**
+
+Opus引き継ぎエージェントが再検証。**①言語ミスマッチ修正 — 両方向でPASS**: `@gemini`へ英語「let me know if the disk fills up」→英語で応答、日本語「毎朝8時に天気を確認して教えて」→日本語で応答、逆方向のミスマッチも発生せず。**②ローカルモデルの能力自覚 — 3/3で安定して改善**: 同じ文を既定LOCALペルソナへ3回送信、前回の「As an AI, I cannot monitor... df -h」は一度も再現せず、毎回「監視できます、頻度を教えてください」的な適切な応答に着地。①のリグレッション確認(確信スケジュールの自動ルーティング、「tell me a short joke」の誤検知ガード)も健在。
+
+---
+
+### ✅ 新規発見: Clear conversationが保留中のエージェント登録ドラフト状態を消し忘れ、後続のcancel操作が無反応になるバグ — 発見即修正(2026-08-24)
+
+**バグ / 再現手順**(Opus引き継ぎエージェントが実機で発見):
+1. 天気の依頼を送信 → 登録ドラフトカード(messageId=X)が生成される
+2. **Clear conversation**でメッセージを消去 → メッセージ配列は空になるが、会話レベルの`pendingAgentSession.messageId`(=X)は生存したまま
+3. 次の任意の発話(「tell me a short joke」)を送信 → 通常のLLM応答ではなく、生き残った`pendingAgentSession`の汎用フォールバック("There is a pending draft. Reply register/OK to confirm, cancel to discard")に吸収される
+4. `cancel`と返信 → `cancelAgentDraft(X)`が`store.updateMessage(paneId, X, {...})`を呼ぶが、Xは既に削除済みのため`updateMessage`が内部で静かにno-op(ログ`updateMessage: no-op — message X not found`のみ) → 「Registration cancelled.」の確認メッセージが一切表示されず、**ユーザーにはアプリが完全に無反応に見える**
+
+内部的にはキャンセル自体(`setPendingAgentSession(null)`)は正しく実行されており実害(誤登録等)は無いが、UXとしては致命的("固まった"と誤認される)。
+
+**根本原因**: `store/ai-pane-store.ts`の`clearConversation`が`...conv`をスプレッドして`messages: []`だけを上書きしており、`pendingAgentSession`/`justRegisteredAgent`という「特定のmessageIdを指す会話レベルの状態」がそのまま生き残っていた(2026-08-15の`63e5690f8`で「全消去→messagesのみクリア、他の会話状態は温存」という設計判断を下した際、`terminalContext`のような「メッセージに依存しない状態」と、`pendingAgentSession`のような「特定メッセージへのダングリング参照」を区別できていなかった)。`deleteMessage`(個別メッセージの長押し削除)にも全く同じ欠陥があり、ドラフトカード自体を長押し削除すると同じ症状を起こせることも確認。
+
+**修正**:
+1. `clearConversation`: `messages: []`と同時に`pendingAgentSession: null`・`justRegisteredAgent: null`を明示的にクリア。`terminalContext`は特定メッセージを参照しないため意図的に温存(変更なし)。
+2. `deleteMessage`: 削除対象のmessageIdが`pendingAgentSession?.messageId`または`justRegisteredAgent?.messageId`と一致する場合のみ、該当フィールドをクリア(無関係なメッセージの削除では触らない)。
+3. **防御的な保険**: `updateMessage`の戻り値を`void`から`boolean`(見つけて更新できたか)に変更(既存の51箇所の呼び出し元は戻り値を使わないため無変更で動作、TSでも後方互換)。`cancelAgentDraft`がこの戻り値を見て、`false`(no-op)だった場合は`updateMessage`の代わりに**新規のassistantメッセージとして**「Registration cancelled.」を投稿するフォールバックを追加——今回の根本原因(1〜2)を塞いだ後も、将来同じ形の別バグが再発した場合に「ユーザーには無反応に見える」症状だけは起きないようにする多層防御。
+
+**検証**: `npx tsc --noEmit` clean(`updateMessage`のシグネチャ変更含む全呼び出し元)。新規テスト6件追加——`__tests__/ai-pane-store-delete-message.test.ts`に4件(`clearConversation`/`deleteMessage`が`pendingAgentSession`/`justRegisteredAgent`を正しく処理すること、無関係な削除では触らないこと、`updateMessage`の新しい戻り値)、`__tests__/ai-pane-dispatch-interaction-order.test.tsx`に1件(`cancelAgentDraft`のフォールバック自体を、根本修正から独立して直接検証)。影響範囲の全テストスイート2338件+新規6件、全PASS(既知の無関係な`agent-manager-chain-lock`並列実行時flakeを除く、単体実行で別途PASS確認済み)。
+
+**新規発見時に一緒に見つかった軽微な副次事象への言及**: 同じ実機検証で、汚染された会話文脈下で1/3の確率でローカルモデルが実在しないタスク登録を口走る事象も観測されたが(実体は作られておらず被害なし)、これは今回のClear conversationバグが引き起こした「汚染された文脈」でのみ発生した現象であり、根本原因の修正により再発しなくなる可能性が高いと判断。別途の対応は行わず、次回on-device QAで自然と解消しているか確認する。
+
+**実機検証は未実施**(この場での修正であり、Opus引き継ぎエージェントの検証セッション終了後に実装したため)。次回on-device QA時に元の再現手順(登録ドラフト→Clear conversation→別発話→cancel)を再実行し、「Registration cancelled.」ではなく通常のLLM応答が返ることを確認すること。
+
+→ sync: README Status表の変更なし。
