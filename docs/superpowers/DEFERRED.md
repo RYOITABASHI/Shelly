@@ -5246,3 +5246,23 @@ UIには`GHOST1`が**捏造されたバージョンバッジ(`V9.2`)付きで、
 **副産物**: アップデーターが`/sdcard/Android/data/dev.shelly.terminal/files/Download`に溜め込んでいた旧APK 29個・16GBを削除(既存のクリーンアップ方針どおり)。
 
 **軽微な申し送り**: テストデータの後片付けで`~/.shelly/agents/skills/*.md`を一括削除した際、ユーザーの実在エージェント(`draft one short haiku`)の自動生成スキル記録も巻き込んだ可能性がある。再起動後に同名スキルは再生成されたが、`successCount`等の蓄積値はリセットされたかもしれない(実害は軽微、再蓄積されるのみ)。今後のQAセッションでは、skillsディレクトリの一括削除ではなくQA由来のファイルをエージェントID/名前で選別して消すこと。
+
+---
+
+### ✅「一人の相棒」Phase 2 — Fable5包括レビューが示した最小労力・最大効果の3点+付随2件を実装(2026-08-24)
+
+**背景**: ユーザーから改めて「これでAndroid版Hermes Agentと呼べるか」と問われ、Fable5に今度は個別機能ではなくShelly全体(コールドスタート・AIペインの一貫性・登録〜実行フロー・Sidebar・通知/ウィジェット・視覚統一感・当日の修正の実使用感)を対象とした包括レビューを依頼した。結論: 「まだAndroid版Hermesとは思わないが、不足の位置が変わった」。決定的な実験——AIペインに`Every morning at 7 check the weather and tell me`と送ると、「直接はできません」+ Workflow Managerの使い方説明 + `YOUR_API_KEY`を自分で埋めるcurlコマンドが返り、登録フローは一切起動しなかった。同じ文に`@agent`を付けると決定論的パーサが`scheduleConfident=true, actionType=notify, explicitActionType=true`と完璧に解釈した——**能力ではなくルーティングの欠落**と判明。Fable5は最小労力で最大効果の3点(①`@agent`必須の撤廃、②コンパニオンに自分の能力を教える、③初期ペインをAIにする)と、副次的に2件(スキル誤マッチ、AIペイン空状態のi18n未対応)を提案し、ユーザーの「修正して下さい」を受けて全5件を実装した。
+
+**① 暗黙のエージェント委任意図(`hooks/use-ai-pane-dispatch.ts`)**: `@agent`プレフィックス無しの裸メッセージでも、デフォルトの`local`persona宛て・非mention・確信度の高いスケジュールを検出した場合は、`@agent`と全く同じ登録ドラフトフローに入るようにした。ゲート条件は意図的に狭い: `parsed.layer !== 'mention' && agent === 'local'`(明示的な`@gemini`等の会話やmentionレイヤーの`@agent`/`@team`/`@git`は自身の既存ルーティングのまま無変更)、`isCapabilityQuestionForAgentFlow()`が偽(能力質問は素通しで通常の回答)、そして**`draft.scheduleConfident === true`かつ`!isLowConfidenceAgentDraft(draft)`の両方**——後者だけ(`@agent`自身が使う閾値、explicitActionType単独でも満たされる)を流用したところ、"tell me a short joke"のような何気ない一言が`action.type='notify'`相当と誤解釈され登録ドラフトに化けるリグレッションを自作のテストで検出、確信度の高いスケジュール表現を必須要件に締め直して解消した。実装は`parseAgentCommand`のサブコマンド判定(list/run/stop/delete/history/edit/status)を裸メッセージでは一切経由しない設計——「Stop reminding me about X」のような文がparts[0]==='stop'で誤ってエージェント管理コマンドとして解釈されるのを防ぐため。既存の`@agent`分岐(350行超、極めて多くの安全不変条件がコメントで文書化されている)は一切書き換えず、エントリ条件だけを広げ、`agentResult`を三項演算子で合成する最小差分アプローチを採用。新規テスト4件追加(`__tests__/ai-pane-dispatch-interaction-order.test.tsx`): 確信度の高い裸リクエストが確認まで到達/明示的`@gemini`バインド中は発火しない/確信度の低い一般的な依頼(let me know if you need anything)は誤発火しない/能力質問は登録ではなく回答される。
+
+**② コンパニオンに自分の能力を教える(`lib/ai-pane-context.ts`)**: `buildAIPaneSystemPrompt`(クラウド)・`buildLocalAIPaneSystemPrompt`(ローカル)の両方に、「①で自動ルーティングされない、確信度の低い継続/監視系リクエストが来た場合、curlコマンドやAPIキー手動設定などの技術的な自己構築手順を渡すのではなく、一文でバックグラウンドタスクとして自分が設定できる旨を伝え、いつ/どのくらいの頻度かを聞き返す」という明示的な指示を追加。既存の`buildAmbientCapabilityBlock()`(機能名一覧、「能力質問でなければ無視してよい」という受動的な枠組み)はそのまま残し、これは別の——タスク依頼への対応方針という——能動的な指示。
+
+**③ 初期ペインをAIに変更(`hooks/use-multi-pane.ts`)**: `makeInitialCore()`の`slots[0]`を`{tab:'terminal'}`から`{tab:'ai'}`へ変更。新規インストールの第一画面が「シェル+gitツールバー」から「コンパニオンとの会話」になる。既存インストールは無影響(この関数は`_hasHydrated`前のフォールバック値のみで、永続化済みslotsが必ず優先される)。
+
+**④ スキル誤マッチの修正(`lib/agent-skills.ts`)**: Fable5の実機レビュー中、天気の登録ドラフトが無関係な既存スキル「draft one short haiku」を再利用提案する実バグを発見。原因: `deriveTrigger`/`distillSkillFromRun`のtags共に、タスク文の生トークンを先頭からN個切り出すだけで有意性の重み付けが皆無——"draft one short haiku"のような短いタスクでは"draft","one","short"という完全に汎用的な単語がtrigger/tagsの大半を占め、無関係なタスクとの単語一致だけで`MIN_SKILL_MATCH_SCORE`(3点)を超えてしまう。英語のみを対象としたstopwordリスト(`SKILL_MATCH_STOPWORDS`)を新設し、(a) trigger/tags導出時、(b) マッチ時のスコアリング(`scoreRecipeAgainstTaskTokens`)の両方に適用——(a)は今後作られるスキルの質を上げ、(b)は導入前に既に永続化済みの低品質なtrigger/tagsを持つスキル(実機の「draft one short haiku」含む)も再作成なしに恩恵を受ける。共有トークナイザー本体(`lib/agent-text-match.ts`、メモリ想起G2と共用)は意図的に触れず、スキルマッチングに閉じたスコープに限定。CJK側のstopword除外は「本物の日本語マッチを弱める安全確認が別途必要」として意図的に見送り。新規テスト2件追加(`__tests__/agent-skills.test.ts`): 実際の再現ケース(英語/日本語両方の無関係タスクで非マッチ、類似タスクでは引き続きマッチすることも確認)、`deriveTrigger`が汎用語を除外し有意語を残すことの直接確認。
+
+**⑤ AIペイン空状態のi18n化(`components/panes/AIPane.tsx` + `lib/i18n/locales/{en,ja}.ts`)**: ハードコードされた英文"Ask anything. I can see your terminal output."を、既存だが参照ゼロだった`chat.empty_subtitle`キーへ差し替えて`t()`経由に変更。このキーの旧い値("Use @codex @local @team to choose an AI")は、今回のセッション前半で判明した`@codex`の死んだメンションパターン言及を含んでいたため、現在の画面文言に合わせて値自体も更新(内容変更なし、i18n化のみ)。
+
+**検証**: 全5件について`npx tsc --noEmit` clean。触れたファイルに対応する既存テストスイート16本・775件全PASS(regression確認)。フルスイート実行(3509件)では①と無関係な7スイート32件が失敗したが、`plan-executor*`/`capability-broker`系は`git stash`で今回の変更を除いた状態でも同一箇所(`C:\C:\`パス重複、Windows専用の既知test-infra不具合)で同様に失敗することを確認、`agent-manager-chain-lock`系は単体実行で19/19 PASSすることを確認——いずれも今回の変更とは無関係な既存の並列実行時リソース競合/Windows既知issue。**実機検証は未実施**——次回on-device QA時にFable5へ同じ「Every morning at 7 check the weather and tell me」の再実験を依頼し、登録ドラフトへ到達すること・スキル誤マッチが解消していること・初期ペインがAIになっていることを確認すること。
+
+→ sync: README Status表の変更なし(UX/プロンプト/デフォルト値の変更、機能一覧に影響する構造変化なし)。
