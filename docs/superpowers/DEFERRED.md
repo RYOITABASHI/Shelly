@@ -5288,3 +5288,19 @@ Opus引き継ぎエージェントからの分析: 「tell me a short joke」も
 **後片付け確認済み**: 天気ドラフト2件・haiku登録試行、全て「Registration cancelled.」。会話クリア、ペインを`@gemini`→LOCALへ復元、IMEを標準へ復元、`/sdcard`のダンプファイル削除、MY AGENTS/SKILLSとも空、新規アラームなし。リポジトリの追跡ファイル変更0件(検証専用、コード変更なし)。
 
 → sync: README Status表の変更なし。②の残存ギャップは「実装未完了」ではなく「小型ローカルモデルの指示追従限界」であり、コードの追加修正だけでは閉じられない性質のものとして記録。
+
+---
+
+### ✅「一人の相棒」Phase 2 follow-up — 新規発見の`@gemini`言語ミスマッチを修正、②の残存ギャップに対応可能な範囲で最善策を実装(2026-08-24)
+
+**背景**: ユーザーから「新規バグも含めて完全に直して下さい」との指示。対象は実機検証で見つかった(a)`@gemini`が英語入力に日本語で応答した新規バグ、(b)ローカル小型モデルが能力自覚プロンプトに従わない残存ギャップの2点。
+
+**(a) 言語ミスマッチの修正**: 根本原因を「モデルに言語を推論させている」ことと特定。既存の指示文("Reply in the SAME language...")自体は正しく入っていたが、同じプロンプト内に日本語のuserProfileSummary/globalMemorySummaryという競合シグナルが同居しており、モデルがそちらに引っ張られた可能性が高い。`lib/agent-slot-fill.ts`の既存`detectMessageLocale`(2026-07-09由来、slot-fill専用に既に実績あり)を`lib/ai-pane-context.ts`へ流用し、「推論させる」から「アプリ側が確定した言語を事実として伝える」方式に変更。新設の`languageDirective(promptText)`が`buildAIPaneSystemPrompt`(クラウド)・`buildLocalAIPaneSystemPrompt`(ローカル、新規に`promptText`引数を追加)の両方に適用され、「プロンプト内の他の言語(プロフィール/記憶ノート/ターミナル出力)に引っ張られるな」という競合シグナルの明示的な無効化も追加。`promptText`未指定時は旧来の抽象的指示にフォールバック(既存呼び出し元は無変更で動作)。新規テスト4件追加(`__tests__/ai-pane-context.test.ts`): EN/JA両方向の具体的指示を確認、フォールバック動作の確認。
+
+**(b) ローカル小型モデルの指示追従ギャップへの対応**: 実機で確認された「As an AI, I cannot monitor... run df -h」という具体的なアンチパターンをプロンプトに直接明記して禁止し、正しい応答例("let me know if the disk fills up" → "I can watch for that — how often should I check?")を few-shot 形式で追加。小型モデルは抽象的な振る舞いルールより具体例の模倣の方が確実に従う傾向があるという、確立されたプロンプトエンジニアリング手法。**これは保証ではなく最善の手立てである点を明記**——プロンプトはコードパスのように振る舞いを強制できない。
+
+**検討した上で見送った選択肢**: 「actionTypeは確信できるがscheduleは確信できない」曖昧な継続系リクエスト("let me know if the disk fills up"等)を、LLM任せにせず新しいdeterministicな「条件付き監視意図」検出器で捕捉し、`@agent`経路が既に持つ「When should this run?」スロット埋めへ橋渡しする案を検討した。しかし"if"/"let me know if"を含む一般的な会話文("let me know if that works for you"等)との判別が本質的に困難で、今回のセッション自体で発見・修正した「tell me a short joke」の誤検知(①の実装時に発見)と全く同じ形の危険——「tell me」も「let me know」も同じ`notify`寄りの浅いキーワードマッチしか持たず、確信度の高い新シグナルを安全に設計するには相応のテストコーパスと実機検証ループが要る。このファイル群(`agent-nl-parser.ts`/`agent-llm-fallback.ts`)全体を貫く既存の設計哲学("false negatives ... are much safer than false positives")とも整合させ、今回は実装を見送り、プロンプト強化(b)による緩和のみに留めた。
+
+**検証**: `npx tsc --noEmit` clean。`__tests__/ai-pane-context.test.ts`(28件、新規5件)含め、影響範囲の12テストスイート736件全PASS。**実機検証は未実施**——次回on-device QA時に、(1)`@gemini`へ英語メッセージを送り日本語で返らないことの再現、(2)ローカルpersonaへ「let me know if the disk fills up」を再送し、"As an AI, I cannot"パターンが減っているか(完全な解消は保証できないため「改善したか」の確認)の2点を見ること。
+
+→ sync: README Status表の変更なし。
