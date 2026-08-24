@@ -1034,8 +1034,15 @@ const ja: Record<string, string> = {
   // ── Chat Message List ───────────────────────────────────────────
   'chat.empty_title': 'Shelly',
   'chat.companion_label': 'Shelly',
-  'chat.switched_to_companion_thread': 'Shellyスレッドに切り替えました',
-  'chat.switched_to_pane_thread': 'ペインスレッドに切り替えました',
+  // 2026-08-24(Fable5設計コンサル、「一人の相棒」Phase 3): 内部用語「スレッド」
+  // を撤去。ユーザーは「スレッド」が何かを説明されたことがなく、実装内部の
+  // 露出にしか読めなかったため。同じ人格が道具を持ち替える表現に変更、
+  // 具体的なプロバイダ名は含めない(ペインヘッダ/枠線色で既に表示されている
+  // ため——PaneSlot.tsxのプロバイダバッジ参照。この関数はキー比較のみで
+  // 「gemini→cerebras」と「gemini→gemini」を区別できないため、プロバイダ名
+  // を含めるには別途パラメータ追加が必要)。
+  'chat.switched_to_companion_thread': 'ここからは私が対応しますね。',
+  'chat.switched_to_pane_thread': '今回は別のモデルで考えますね。',
   'chat.empty_subtitle': '何でも聞いてください。ターミナルの出力も見えています。',
   'chat.sample_list_files': 'ファイル一覧',
   'chat.sample_ask_claude': 'Codexに聞く',
@@ -1617,6 +1624,13 @@ const ja: Record<string, string> = {
   'sidebar.log': 'ログ',
   'sidebar.scheduled': '予約済み',
   'sidebar.agents': 'マイエージェント',
+  // 2026-08-24(Fable5設計コンサル、「一人の相棒」Phase 3、G2-P2): 折りたたみ
+  // 不可のグループラベル——TASKS内の既存MY AGENTS/RUNNINGサブヘッダと同じ
+  // 見た目。Quick LaunchからProfilesまでの開発者/IDE向けセクションを、上の
+  // コンパニオン関連セクション(Tasks/Skills/Imported Skills)から視覚的に
+  // 区切るだけのもの。各セクション自体は引き続き独立したアコーディオンで、
+  // 統合や非表示化は一切していない。
+  'sidebar.group_developer': '開発ツール',
   'sidebar.agent_manual': '手動',
   'sidebar.agent_autonomous': '自律',
   'sidebar.agent_paused': '一時停止中',

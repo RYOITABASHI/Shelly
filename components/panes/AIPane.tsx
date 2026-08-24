@@ -47,10 +47,8 @@ import { withAlpha } from '@/lib/theme-utils';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { logError } from '@/lib/debug-logger';
 import {
-  getAiPaneAgentMeta,
   isAiPaneAgent,
   pickDefaultAiPaneAgent,
-  resolveAiPaneAgent,
 } from '@/lib/ai-pane-agents';
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
 import { useTranslation } from '@/lib/i18n';
@@ -147,15 +145,10 @@ const MessageBubble = React.memo(function MessageBubble({
     // summarizeAgentDraftAsText at creation) with a trailing inline
     // Confirm/Cancel row, NOT a card. Everything else keeps AgentConfirmCard.
     if (message.agentChatConfirm) {
-      const agentKeyChat = resolveAiPaneAgent(message.agent, 'local');
-      const providerLabelChat = getAiPaneAgentMeta(agentKeyChat).label.toUpperCase();
       return (
         <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
           <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
             {t('chat.companion_label')}
-            {agentKeyChat !== 'local' && (
-              <Text style={bubbleStyles.providerTag}> · {providerLabelChat}</Text>
-            )}
           </Text>
           <View style={bubbleStyles.assistantContent}>
             <Text style={bubbleStyles.assistantText} selectable>{message.content}</Text>
@@ -205,17 +198,11 @@ const MessageBubble = React.memo(function MessageBubble({
 
   // Assistant message
   const containsDiff = !isLastStreaming && hasDiffContent(displayText);
-  const agentKey = resolveAiPaneAgent(message.agent, 'local');
-  const agentMeta = getAiPaneAgentMeta(agentKey);
-  const providerLabel = agentMeta.label.toUpperCase();
 
   return (
     <View accessible accessibilityLabel={accessibilityLabel} style={[bubbleStyles.messageContainer, containerMaxWidth]}>
       <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
         {t('chat.companion_label')}
-        {agentKey !== 'local' && (
-          <Text style={bubbleStyles.providerTag}> · {providerLabel}</Text>
-        )}
       </Text>
       <View style={bubbleStyles.assistantContent}>
         {containsDiff ? (
@@ -274,11 +261,6 @@ const bubbleStyles = StyleSheet.create({
     color: C.text2,
     marginBottom: 2,
     textTransform: 'uppercase',
-  },
-  providerTag: {
-    fontSize: 6,
-    fontWeight: '600',
-    opacity: 0.6,
   },
   userText: {
     fontSize: 8,
@@ -458,25 +440,18 @@ export default function AIPane() {
     if (isNearBottomRef.current) scrollToLatest();
   }, [scrollToLatest]);
 
-  const prevAgentRef = useRef<string | null>(boundAgent);
+  // 2026-08-24 (Fable5 design consult, "一人の相棒" Phase 3): this used to
+  // be two separate effects — one posting a hardcoded, non-i18n'd
+  // "Switched to Gemini" system message on every boundAgent change, the
+  // other calling addAiPaneThreadSwitchNotice on every resolved-key
+  // change. Since binding to any explicit provider always changes BOTH at
+  // once, switching produced two stacked system lines every time. Only
+  // the conversation-key-based notice remains — see its own i18n key
+  // comments (chat.switched_to_companion_thread/chat.switched_to_pane_thread
+  // in lib/i18n/locales) for why the provider name itself was dropped
+  // from the wording (shown in the pane header instead).
   const resolvedConversationKey = resolveAiPaneStoreKey(paneId);
   const prevConversationKeyRef = useRef(resolvedConversationKey);
-  useEffect(() => {
-    const prev = prevAgentRef.current;
-    prevAgentRef.current = boundAgent;
-    if (prev === boundAgent) return;
-    const agentName = boundAgent
-      ? boundAgent.charAt(0).toUpperCase() + boundAgent.slice(1)
-      : 'Unbound';
-    const systemMsg: ChatMessage = {
-      id: `system-agent-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      role: 'system',
-      content: `Switched to ${agentName}`,
-      timestamp: Date.now(),
-    };
-    useAIPaneStore.getState().addMessage(resolveAiPaneStoreKey(paneId), systemMsg);
-  }, [boundAgent, paneId]);
-
   useEffect(() => {
     const prev = prevConversationKeyRef.current;
     prevConversationKeyRef.current = resolvedConversationKey;

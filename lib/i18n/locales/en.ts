@@ -1061,8 +1061,18 @@ const en: Record<string, string> = {
   // ── Chat Message List ───────────────────────────────────────────
   'chat.empty_title': 'Shelly',
   'chat.companion_label': 'Shelly',
-  'chat.switched_to_companion_thread': 'Switched to Shelly thread',
-  'chat.switched_to_pane_thread': 'Switched to pane thread',
+  // 2026-08-24 (Fable5 design consult, "一人の相棒" Phase 3): dropped the
+  // internal "thread" vocabulary — a user was never told what a "thread"
+  // is, so both variants read as an app-internals leak rather than
+  // something a companion would actually say. Reworded as the same
+  // persona picking up (or setting down) a different tool, without
+  // naming which specific provider (that's shown in the pane header/
+  // border color instead — see PaneSlot.tsx's provider badge) so this
+  // stays accurate for a plain-key comparison this function already does
+  // (it can't distinguish "gemini -> cerebras" from "gemini -> gemini"
+  // without a provider param it doesn't currently take).
+  'chat.switched_to_companion_thread': "I'll take it from here.",
+  'chat.switched_to_pane_thread': "I'll think this one through with a different model.",
   'chat.empty_subtitle': 'Ask anything. I can see your terminal output.',
   'chat.sample_list_files': 'List files',
   'chat.sample_ask_claude': 'Ask Codex',
@@ -1643,6 +1653,14 @@ const en: Record<string, string> = {
   'sidebar.log': 'LOG',
   'sidebar.scheduled': 'SCHEDULED',
   'sidebar.agents': 'MY AGENTS',
+  // 2026-08-24 (Fable5 design consult, "一人の相棒" Phase 3, G2-P2): a
+  // non-collapsible group label — same visual treatment as the existing
+  // MY AGENTS/RUNNING subheaders inside TASKS — separating the developer/
+  // IDE sections (Quick Launch through Profiles) from the companion-
+  // relevant ones above (Tasks, Skills, Imported Skills). Purely a visual
+  // grouping cue; every section below it is still its own independent,
+  // fully-functional accordion, nothing merged or hidden.
+  'sidebar.group_developer': 'DEVELOPER',
   'sidebar.agent_manual': 'manual',
   'sidebar.agent_autonomous': 'autonomous',
   'sidebar.agent_paused': 'paused',
