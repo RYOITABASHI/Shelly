@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-17: background agentによるShelly実機QA（terminal⇄sidebar併用セッション）で、REPOSITORIESセクションの「+ ADD REPOSITORY」ボタンが特定の操作後に無反応になる（`addRepoVisible`はtrueのままだがモーダルのネイティブwindowが消失、アプリ再起動でのみ復帰）問題を発見。原因はデバイス非接続のPCワークツリーセッションでは特定できず（下記bug #168参照）、確定原因調査ではなく防御的fixで対応した。
 - 2026-08-17: background agentによるScouterウィジェットのagent一覧実機QAで、`WidgetAgentRepository`が`dm-pairings.json`（JSON配列）を毎分agentメタデータとしてパース試行し、失敗時の`org.json.JSONException`メッセージに生ファイル内容（連絡先名等）が埋め込まれてlogcatへ漏れる問題を発見・修正。
 - 2026-08-17: 静的コード監査（バックグラウンドresearch agent）で`tryAddRepo`のbug #73対応が実は機能していない（親probeの読み取りエラーをfail-openで受理、`.git`チェック皆無）ことを発見・修正。あわせて、dotセグメント (`.claude/`) を含むrootDirでは`npx jest`のtestMatch globがWindows上で壊れ全テストがdiscovery段階で0件になるworktree特有のjest基盤バグを発見・記録した。
 
@@ -34,6 +35,20 @@
 **検証**: コードパスの手動確認で、`dm-pairings.json`が形状チェックで例外なしにスキップされること、残るcatchブロックが例外メッセージ/内容を一切ログに渡さないことを確認。**実機logcat検証は未実施**（次回on-device QA時に`adb logcat -s WidgetAgentRepository:W`でdm-pairings.json関連の警告が消え、連絡先名が出力されないことを確認すること）。
 
 → sync: README Status表の変更なし（内部ログの情報漏洩fix、機能変更なし）。
+
+### bug #168 — 「+ ADD REPOSITORY」ボタンが特定操作後に無反応化（`addRepoVisible=true`のままモーダルwindow消失）— 防御的fix実装済み・根本原因は未確定・実機未検証 (P3)
+
+**バグ / 再現**: background agentによる実機QA中（terminal入力とSidebar操作を交互に行うセッション）、REPOSITORIESセクションの「+ ADD REPOSITORY」を再タップしてもモーダルが開かなくなる事象が発生した。`adb shell dumpsys window windows | grep -c 'Window #[0-9]+ Window{.*shelly'`でwindow数を確認したところ、React state側の`addRepoVisible`は`true`のままなのに対応するネイティブwindowが存在しない状態になっていた（このModalはaccessibility/uiautomatorツリーに一切現れない別の既知issueがあるため、IME状態ではなくdumpsys windowのwindow数が唯一の信頼できるopen/closed判定手段——ターミナルのnative viewはmodalと独立にIMEフォーカスを保持しうるため）。アプリ再起動でのみ復帰した。
+
+**根本原因調査**: 本タスクを担当したセッションはPC上のgit worktree（実機adb接続なし、`adb devices`が空リストを返す）だったため、on-device repro自体が実行不能だった。コード監査ベースの有力仮説は以下——このAdd Repositoryモーダルは`components/layout/ShellyModal.tsx`（bug #112由来の共有Modalラッパー、13箇所で使用済み）ではなく生の`react-native`製`Modal`を直接使っていた唯一の箇所の一つで、独自に4か所で`useFocusStore.getState().requestTerminalRefocus()`を手動呼び出ししていた。一方`TerminalPane.tsx`には、`refocusTick`変化（グローバル）・`focusedPaneId`変化（bug #116、pane間フォーカス追従）・`shouldRestoreTerminalFocus()`（セッション復帰）の3つの独立したeffectがあり、いずれも条件が揃えば無条件にネイティブ`TerminalView.requestFocus()`+`showSoftInput`を発火する。このモーダルが開いている最中に、これら3effectのいずれかが（このモーダルとは無関係な理由で）発火し、Dialog backedなModal windowが表示された状態のActivityで背後のTerminalView側へネイティブフォーカスを強制すると、Android側でDialog windowが破棄されてもReact側の`visible` propは変化しない、という競合が発生しうる。RN Androidの`Modal`は`visible` propの**true→trueの遷移では何もしない**（前回の値と同じため）ため、一度この競合でwindowが消えると、再タップで`setAddRepoVisible(true)`を呼んでも実質no-opでwindowは復活しない。ただしこれは実機ログで確認していない仮説であり、確定原因ではない。
+
+**修正（防御的fix）**: 確定原因を特定できなかったため、タスク指示に従い自己修復型の防御的fixを実装した。`components/layout/Sidebar.tsx`に`addRepoOpenKey`（単調増加カウンタ）を追加し、「+ ADD REPOSITORY」タップのたびにインクリメント、`key={addRepoOpenKey}`をモーダル要素へ付与。Reactは`key`が変わる要素を常に旧インスタンスをunmount→新規インスタンスをmountするため、直前の`addRepoVisible`が既に`true`のまま（=window消失済み）であっても、タップのたびに強制的に旧Modalコンポーネントを破棄し新規インスタンスを生成することでネイティブwindowの再生成を保証する——真因がフォーカス競合であろうと他の要因であろうと自己修復する設計。あわせて生`Modal`を`ShellyModal`へ置き換え、4箇所に重複していた手動`requestTerminalRefocus()`呼び出しを削除した（`ShellyModal`が`visible: true→false`遷移で自動的に同じ呼び出しを行うため、内容は等価で単一箇所に集約）。この変更に伴い`useFocusStore`の直接import自体が本ファイルで不要になったため削除した。
+
+**やらなかったこと**: 同ファイル内の「Notification-trigger編集モーダル」「skill catalogモーダル」も同じく生`Modal`のままで、後者2つは`requestTerminalRefocus()`すら呼んでいない（bug #112対応漏れの可能性があるが、今回の再現報告はAdd Repositoryのみだったため対象外。関連issueとして別途調査価値あり）。また`TerminalPane.tsx`側の3つのフォーカスeffectとModal可視状態の一般的な調整（「Modalが開いている間はネイティブフォーカス強制effectを抑制する」）は、bug #112/#116の既存修正を壊すリスクがあるアプリ全体規模の変更になるため、本P3 fixのスコープ外とした。
+
+**検証**: `npx tsc --noEmit` clean（exit 0）。既存`__tests__/`にAdd Repositoryモーダル固有のテストは存在せず、影響を受ける既存テストなし。本worktree（`.claude/worktrees/priceless-lichterman-5c4e80/`）は既知のjest `.claude`セグメントrootDirバグ（本ファイル内「jestの`testMatch`がdotセグメント付きrootDirで壊れる」参照）の影響を受けるため`npx jest`は実行していない。今回の修正はReact要素のkey-remountというUIプラミング（純粋関数への切り出しなし）であり、真のトリガーはネイティブwindowライフサイクルのタイミング依存である可能性が高くJestでのシミュレーションは困難なため、単体テストは追加していない。**実機検証未実施**（adb未接続のPCワークツリーセッションのため）。次回on-device QA時は、(1) 元の再現手順（terminal操作とAdd Repository open/closeの交互操作）で再度windowが消失するか、(2) 消失した場合でも再タップで正しくモーダルが開き直すか（自己修復の確認）、(3) 通常のopen→入力→Add/Cancelのgolden pathに回帰がないか、の3点を確認すること。
+
+→ sync: README Status表の変更なし（既存UIのcorrectness fix、機能変更なし）。
 
 ### AI Pane scrollback forced auto-follow (2026-08-15, user-reported on-device)
 

@@ -1,7 +1,6 @@
 // components/layout/Sidebar.tsx
 import React, { useState, useEffect } from 'react';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import { useFocusStore } from '@/store/focus-store';
 import {
   View,
   Text,
@@ -77,6 +76,7 @@ import { SidebarSection } from './SidebarSection';
 import { FileTree } from './FileTree';
 import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
+import { ShellyModal } from './ShellyModal';
 import { QuickLaunchSection } from './QuickLaunchSection';
 import { CodexSessionsSection } from './CodexSessionsSection';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
@@ -276,6 +276,16 @@ export function Sidebar() {
   const runningHighlightOpacity = useSharedValue(0);
   const runningHighlightStyle = useAnimatedStyle(() => ({ opacity: runningHighlightOpacity.value }));
   const [addRepoVisible, setAddRepoVisible] = useState(false);
+  // bug #175: forced-remount key. If the modal's native Android window is
+  // ever torn down out-of-band (see ShellyModal's bug #112 header comment —
+  // any effect that forces native TerminalView.requestFocus() while this
+  // Dialog-backed Modal is open is a plausible culprit) while addRepoVisible
+  // stays true in JS, toggling visible true->true again is a no-op prop diff
+  // and RN never recreates the window — the button becomes permanently dead
+  // until app restart. Bumping this key on every open forces React to fully
+  // unmount+remount the ShellyModal instance, which guarantees a fresh
+  // native window regardless of whatever state the previous one was left in.
+  const [addRepoOpenKey, setAddRepoOpenKey] = useState(0);
   const [repoInput, setRepoInput] = useState('');
   const [notifTriggerAgent, setNotifTriggerAgent] = useState<Agent | null>(null);
   const [notifTriggerDraft, setNotifTriggerDraft] = useState('');
@@ -317,7 +327,6 @@ export function Sidebar() {
     setActiveRepo(path);
     setRepoInput('');
     setAddRepoVisible(false);
-    useFocusStore.getState().requestTerminalRefocus();
   };
 
   const agentsSectionOpen = mode === 'expanded' && openSections.tasks;
@@ -1932,7 +1941,13 @@ export function Sidebar() {
               );
             })
           )}
-          <Pressable style={styles.addRow} onPress={() => setAddRepoVisible(true)}>
+          <Pressable
+            style={styles.addRow}
+            onPress={() => {
+              setAddRepoOpenKey((k) => k + 1);
+              setAddRepoVisible(true);
+            }}
+          >
             <Text style={[styles.addRowText, { color: C.accent }]}>{t('sidebar.add_repository')}</Text>
           </Pressable>
         </SidebarSection>
@@ -1991,14 +2006,20 @@ export function Sidebar() {
         </SidebarSection>
       </ScrollView>
 
-      {/* Add repository modal */}
-      <Modal
+      {/* Add repository modal. `key={addRepoOpenKey}` forces a full
+          unmount+remount on every open (see the addRepoOpenKey comment
+          above) so a desynced native window self-heals without an app
+          restart. ShellyModal (not raw Modal) owns the bug #112 refocus
+          call on its own true->false transition, so callers here don't
+          need to call useFocusStore.requestTerminalRefocus() manually. */}
+      <ShellyModal
+        key={addRepoOpenKey}
         visible={addRepoVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => { setAddRepoVisible(false); useFocusStore.getState().requestTerminalRefocus(); }}
+        onRequestClose={() => setAddRepoVisible(false)}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => { setAddRepoVisible(false); useFocusStore.getState().requestTerminalRefocus(); }}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setAddRepoVisible(false)}>
           <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>{t('sidebar.add_repo_title')}</Text>
             <TextInput
@@ -2015,7 +2036,7 @@ export function Sidebar() {
             <View style={styles.modalBtns}>
               <Pressable
                 style={styles.modalCancelBtn}
-                onPress={() => { setRepoInput(''); setAddRepoVisible(false); useFocusStore.getState().requestTerminalRefocus(); }}
+                onPress={() => { setRepoInput(''); setAddRepoVisible(false); }}
               >
                 <Text style={styles.modalCancelText}>{t('common.cancel')}</Text>
               </Pressable>
@@ -2028,7 +2049,7 @@ export function Sidebar() {
             </View>
           </Pressable>
         </Pressable>
-      </Modal>
+      </ShellyModal>
 
       {/* Notification-trigger edit modal */}
       <Modal
