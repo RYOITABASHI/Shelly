@@ -5233,6 +5233,16 @@ UIには`GHOST1`が**捏造されたバージョンバッジ(`V9.2`)付きで、
 5. **既存インストール向けマイグレーション**: `loadSettings()`は保存済みblobを`DEFAULT_SETTINGS`の上にspreadするため、コード側の既定値変更だけでは既にAsyncStorageへ`groqModel: 'llama-3.3-70b-versatile'`を書き込み済みの端末には効かない(既存の`agentRegistrationRequireConfirm`マイグレーションと同じ問題)。同じパターンで`settings.groqModel === 'llama-3.3-70b-versatile'`を検出したら`GROQ_DEFAULT_MODEL`へ強制上書き+再保存する1回限りのマイグレーションを追加。ConfigTUIのGroq Modelフィールドは自由入力のため、ユーザーが意図的にこの文字列を打った可能性はあるが、Groq側で削除済みモデルである以上どちらにせよ動かないため、アップグレードは無条件に改善。
 6. ついでに`lib/groq.ts`/`store/types.ts`/`components/config/ConfigTUI.tsx`/`components/panes/AskPane.tsx`内の古いモデル名を参照するdocコメント・UI説明文もあわせて更新。
 
-**検証**: `npx tsc --noEmit` clean。関連テストスイート(agent-orchestration系・agent-plan-spec・plan-executor-orchestration-chain・settings-store系)177件PASS。既定モデル文字列を生成bashスクリプトへpinしていた`__tests__/agent-executor-autonomous.test.ts`の1件が新モデル名を期待するよう自動的に失敗し、期待値を更新して90/90 PASS(このテストが即座に不整合を検出したこと自体が仕組みとして機能した好例)。skill/conversational-registration系テストの`llama-3.3-70b-versatile`参照4件は、defaultの実値ではなく任意のfixtureデータ/mock値としての使用であることを確認し変更不要と判断。**実機検証は未実施**(次回on-device QA時にGroq経由のAI Pane応答・スケジュール済みagentのGroq経由実行が実際に200を返すことを確認すること)。
+**検証**: `npx tsc --noEmit` clean。関連テストスイート(agent-orchestration系・agent-plan-spec・plan-executor-orchestration-chain・settings-store系)177件PASS。既定モデル文字列を生成bashスクリプトへpinしていた`__tests__/agent-executor-autonomous.test.ts`の1件が新モデル名を期待するよう自動的に失敗し、期待値を更新して90/90 PASS(このテストが即座に不整合を検出したこと自体が仕組みとして機能した好例)。skill/conversational-registration系テストの`llama-3.3-70b-versatile`参照4件は、defaultの実値ではなく任意のfixtureデータ/mock値としての使用であることを確認し変更不要と判断。
 
-→ sync: README Status表の変更なし(内部実装fix、機能変更なし)。
+**→ 2026-08-17 実機検証完了(build 2256、commit `014133dd9`)= PASS**。アプリ内アップデーターでbuild 2251→2256へ更新後:
+- 既存インストールの保存済み`groqModel`が`"openai/gpt-oss-120b"`へマイグレーション経由で上書きされていることを確認
+- PlanSpecの`tool.model`が正しく新モデルを解決
+- **決定的証拠**: capability broker監査ログ(`agent-driver-audit.jsonl`)で`host=api.groq.com`への実リクエスト2件が両方とも`status:200`(修正前の同一計測では3件とも`status:404`だった)
+- run logの`toolUsed`が`"Groq"`(修正前はエスカレーションラダーが404を検知してlocal LLMへ静かにフォールバックし`"Local LLM"`と表示されていた——これがバグの症状そのものだった)
+- 無人経路(ウィジェットRUN)・有人経路(Sidebar Run now)の両方で成功を確認
+- 副次確認: `@groq`メンションは実際に未配線であること(`local`へdispatchされる)を再確認、README「configurable as a provider but not wired to a mention pattern」の記述が正確であることを裏付け。AI Pane経由は`settings.groqModel`が新モデルへ移行済みのため実質カバー範囲内。
+
+**副産物**: アップデーターが`/sdcard/Android/data/dev.shelly.terminal/files/Download`に溜め込んでいた旧APK 29個・16GBを削除(既存のクリーンアップ方針どおり)。
+
+**軽微な申し送り**: テストデータの後片付けで`~/.shelly/agents/skills/*.md`を一括削除した際、ユーザーの実在エージェント(`draft one short haiku`)の自動生成スキル記録も巻き込んだ可能性がある。再起動後に同名スキルは再生成されたが、`successCount`等の蓄積値はリセットされたかもしれない(実害は軽微、再蓄積されるのみ)。今後のQAセッションでは、skillsディレクトリの一括削除ではなくQA由来のファイルをエージェントID/名前で選別して消すこと。
