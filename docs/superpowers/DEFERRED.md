@@ -5266,3 +5266,25 @@ UIには`GHOST1`が**捏造されたバージョンバッジ(`V9.2`)付きで、
 **検証**: 全5件について`npx tsc --noEmit` clean。触れたファイルに対応する既存テストスイート16本・775件全PASS(regression確認)。フルスイート実行(3509件)では①と無関係な7スイート32件が失敗したが、`plan-executor*`/`capability-broker`系は`git stash`で今回の変更を除いた状態でも同一箇所(`C:\C:\`パス重複、Windows専用の既知test-infra不具合)で同様に失敗することを確認、`agent-manager-chain-lock`系は単体実行で19/19 PASSすることを確認——いずれも今回の変更とは無関係な既存の並列実行時リソース競合/Windows既知issue。**実機検証は未実施**——次回on-device QA時にFable5へ同じ「Every morning at 7 check the weather and tell me」の再実験を依頼し、登録ドラフトへ到達すること・スキル誤マッチが解消していること・初期ペインがAIになっていることを確認すること。
 
 → sync: README Status表の変更なし(UX/プロンプト/デフォルト値の変更、機能一覧に影響する構造変化なし)。
+
+**→ 2026-08-24 実機検証完了(build 2263、commit `c3878c5ef`)= 混合結果(①④✅ PASS、②🟡部分的、③未検証)**
+
+Opus引き継ぎエージェント(Claude API 529エラーが4回連続でFable5に発生したため、新規agentへ切り替え)が実機検証。
+
+**① 暗黙のエージェント委任意図 — ✅ PASS**。英語「Every morning at 7 check the weather and tell me」・日本語「毎朝8時に天気を確認して教えて」の両方が、curlコマンドではなく登録ドラフト(Cancel/Confirmボタン付き)に到達することを確認。logcatでも`isLowConfidenceAgentDraft=false (scheduleConfident=true, actionType=notify, explicitActionType=true)`を確認。**誤検知リグレッション「tell me a short joke」も再発なし**——ゲート評価自体が走らず通常のチャット応答のみ。
+
+**② コンパニオンの能力自覚プロンプト — 🟡 部分的(プロバイダ依存)**。確信あるスケジュールの無い曖昧な継続系リクエスト(「let me know if the disk fills up」)を試したところ、**`@gemini`では期待通り動作**(「どのくらいの頻度で確認すればよいですか?」と聞き返す)したが、**既定persona(ローカル小型モデル)では修正が狙ったアンチパターンそのものが再現**(「As an AI, I cannot monitor...」+ `df -h`コマンドの提示)。コード側の指示文自体は`buildLocalAIPaneSystemPrompt`に正しく入っていることを確認済み——**配線の問題ではなく、端末上の小型ローカルモデル(Qwen3.5等)がこの種の微妙な振る舞い指示に確実に従わない**という、プロンプトエンジニアリングだけでは解決しきれない既知の限界。
+
+Opus引き継ぎエージェントからの分析: 「tell me a short joke」も「let me know if the disk fills up」も同じ`actionType=notify`相当のシグナルを出すため、①のゲート(schedule確信度必須)をこれ以上緩めて②のケースを自動ルーティングに含めることはできない(緩めると①で既に修正済みの誤検知が再発する)。deterministic層でこれ以上の解決を図るには、「actionTypeは確信できるがscheduleが確信できない」場合にLLM任せにせず、コード側で`@agent`経路が既に持っている「When should this run?」スロット埋め質問へ直接橋渡しする、という追加の中間層が必要——ただし新たな確信度シグナルの設計が要るため、今回のスコープでは実装せず提案のみ記録。
+
+**③ スキル誤マッチ修正 — 未検証(端末にスキルが1件も存在しないため再現不能)**。`deriveTrigger`が生成時点でもstopwordを除外するようになったため、これから新規作成されるスキルは最初からクリーンなtriggerを持ち、旧バグ(劣化triggerによる誤マッチ)自体を再現する前提が成立しない。永続化済みデータの改変は検証専用の範囲を超えるため見送り。間接的な陰性証拠として、①の天気ドラフトに「Reuses the existing skill …」の表示は出なかった。
+
+**④ AIペイン空状態のi18n — ✅ PASS**。初期表示・Clear conversation後とも`chat.empty_subtitle`が正しく描画(空白でも生キーでもエラーでもない)。
+
+**⑤ 初期ペインのAIデフォルト化 — 指示通りスキップ**(既存端末では永続化済みレイアウトが優先されるため実機確認不能、コードレビューのみで十分と判断)。
+
+**副次的に見つかった既存の別件(今回のスコープ外、修正せず記録のみ)**: `@gemini`が英語入力に対し日本語で応答した——`buildAIPaneSystemPrompt`の"Reply in the SAME language"指示への違反。今回の5修正とは無関係の既存の別バグ。優先度P2〜P3として次回のトリアージ対象。
+
+**後片付け確認済み**: 天気ドラフト2件・haiku登録試行、全て「Registration cancelled.」。会話クリア、ペインを`@gemini`→LOCALへ復元、IMEを標準へ復元、`/sdcard`のダンプファイル削除、MY AGENTS/SKILLSとも空、新規アラームなし。リポジトリの追跡ファイル変更0件(検証専用、コード変更なし)。
+
+→ sync: README Status表の変更なし。②の残存ギャップは「実装未完了」ではなく「小型ローカルモデルの指示追従限界」であり、コードの追加修正だけでは閉じられない性質のものとして記録。
