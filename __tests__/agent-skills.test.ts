@@ -10,6 +10,7 @@ import {
   buildSkillRecipeMarkdown,
   buildSkillWriteCommand,
   bumpSkillUsage,
+  deriveTrigger,
   distillSkillFromRun,
   makeSkillRecipe,
   matchSkillRecipes,
@@ -175,6 +176,33 @@ describe('matchSkillRecipes — conservative reuse', () => {
     expect(out[0].name).toBe('mem-test');
     // An unrelated Japanese task must not match.
     expect(matchSkillRecipes('明日の天気を教えて', jp)).toEqual([]);
+  });
+
+  // 2026-08-24 Fable5 product review, real on-device false positive: a
+  // WEATHER agent's registration draft reported "Reuses the existing skill
+  // 'draft one short haiku'". Both trigger and tags for a short, generic
+  // task like this are just its own raw tokens verbatim ("draft", "one",
+  // "short", "haiku") with no salience weighting, so generic-word overlap
+  // alone could clear MIN_SKILL_MATCH_SCORE against an unrelated task.
+  it('does not reuse a short generic-word skill for an unrelated task (2026-08-24 false-positive repro)', () => {
+    const haiku = [
+      recipe({
+        name: 'draft one short haiku',
+        trigger: deriveTrigger('draft one short haiku'),
+        tags: [...deriveTrigger('draft one short haiku').split(' ')],
+      }),
+    ];
+    expect(matchSkillRecipes('every morning at 7 check the weather and tell me', haiku)).toEqual([]);
+    expect(matchSkillRecipes('毎朝8時に天気を確認して教えて', haiku)).toEqual([]);
+    // The skill still matches a genuinely similar request — the fix must not
+    // make matching impossible, only stop generic-word false positives.
+    expect(matchSkillRecipes('draft another short haiku for me', haiku)).not.toEqual([]);
+  });
+
+  it('deriveTrigger excludes generic filler words, keeping the distinctive ones', () => {
+    expect(deriveTrigger('draft one short haiku')).toBe('haiku');
+    expect(deriveTrigger('every morning check the weather and tell me')).not.toContain('tell');
+    expect(deriveTrigger('every morning check the weather and tell me')).toContain('weather');
   });
 });
 

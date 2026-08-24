@@ -110,6 +110,37 @@ export const DEFAULT_SKILL_MATCH_LIMIT = 3;
  *  Tuned for the CJK-bigram tokenizer (a similar task shares several bigrams;
  *  an unrelated one shares ~none). */
 export const MIN_SKILL_MATCH_SCORE = 3;
+/** 2026-08-24 Fable5 product review, real on-device false positive: a WEATHER
+ *  agent's registration draft reported "Reuses the existing skill 'draft one
+ *  short haiku'". Both `trigger` (deriveTrigger) and `tags`
+ *  (distillSkillFromRun) are derived by taking the first N raw
+ *  tokenizeForMatch() tokens of the task text verbatim, with zero salience
+ *  weighting — a short task like "draft one short haiku" derives a trigger
+ *  and tags entirely from generic filler words ("draft", "one", "short"),
+ *  none of which are actually distinctive to the task, leaving only "haiku"
+ *  as a real signal. Any other short task sharing those filler words (or a
+ *  longer one whose OWN filler words happen to overlap) can then clear
+ *  MIN_SKILL_MATCH_SCORE on generic-word overlap alone. Excluded from both
+ *  trigger/tag derivation (lib/agent-skills.ts) AND match-time scoring
+ *  (scoreRecipeAgainstTaskTokens below) — English-only by design, matching
+ *  where the repro occurred; CJK bigram stop-listing would need its own,
+ *  carefully-considered list to avoid quietly weakening genuine Japanese
+ *  matches, which is out of scope for this fix. Applying the filter at BOTH
+ *  points means newly-derived triggers/tags are more distinctive going
+ *  forward, AND an already-persisted low-quality trigger (like the
+ *  real-world "draft one short haiku" skill already on a device) still
+ *  matches less promiscuously without needing to be re-created. */
+const SKILL_MATCH_STOPWORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'so', 'to', 'of', 'in', 'on', 'at',
+  'for', 'with', 'me', 'my', 'you', 'your', 'it', 'this', 'that', 'is', 'are',
+  'be', 'do', 'does', 'did', 'can', 'could', 'will', 'would', 'should', 'get',
+  'go', 'make', 'let', 'know', 'tell', 'check', 'give', 'send', 'show', 'run',
+  'draft', 'one', 'short', 'please', 'just', 'about', 'each', 'every', 'up', 'out',
+]);
+
+function isSkillStopword(token: string): boolean {
+  return SKILL_MATCH_STOPWORDS.has(token);
+}
 const MAX_RECIPE_PROMPT_CHARS = 2000;
 const MAX_INJECTION_CHARS = 800;
 /** A failure hint is a one-line nudge, not a log dump — mirrors the ~200-char
@@ -463,8 +494,12 @@ function scoreSkillRecipes(taskText: string, recipes: SkillRecipe[]): ScoredSkil
 function scoreRecipeAgainstTaskTokens(taskTokens: Set<string>, recipe: SkillRecipe): number {
   const triggerTokens = tokenizeForMatch(`${recipe.trigger} ${recipe.tags.join(' ')}`);
   let score = 0;
-  for (const tag of recipe.tags) if (taskTokens.has(tag)) score += 2;
-  for (const tok of triggerTokens) if (taskTokens.has(tok)) score += 1;
+  // Stopword-filtered at match time too (not just at trigger/tag derivation
+  // above) so an already-persisted skill whose trigger/tags predate this
+  // filter — like the real on-device "draft one short haiku" repro — still
+  // gets the benefit without needing to be re-created.
+  for (const tag of recipe.tags) if (!isSkillStopword(tag) && taskTokens.has(tag)) score += 2;
+  for (const tok of triggerTokens) if (!isSkillStopword(tok) && taskTokens.has(tok)) score += 1;
   return score;
 }
 
@@ -620,7 +655,7 @@ export function distillSkillFromRun(params: {
   planSpec?: AgentPlanSpecV1;
 }): SkillRecipe {
   const trigger = deriveTrigger(params.taskText);
-  const tags = [...tokenizeForMatch(params.taskText)].slice(0, 6);
+  const tags = [...tokenizeForMatch(params.taskText)].filter((t) => !isSkillStopword(t)).slice(0, 6);
   const created = params.timestamp ? new Date(params.timestamp).toISOString() : new Date().toISOString();
   return makeSkillRecipe({
     name: params.name,
@@ -724,6 +759,6 @@ export function recordSkillFailure(
  *  trigger from its description with the same tokenizer, instead of
  *  reimplementing this logic. */
 export function deriveTrigger(taskText: string): string {
-  const tokens = [...tokenizeForMatch(taskText)].slice(0, 8);
+  const tokens = [...tokenizeForMatch(taskText)].filter((t) => !isSkillStopword(t)).slice(0, 8);
   return tokens.length ? tokens.join(' ') : taskText.trim().slice(0, 80);
 }
