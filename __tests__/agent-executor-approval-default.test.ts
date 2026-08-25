@@ -2,15 +2,17 @@ jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
 
-// Project owner directive 2026-07-14 ("デフォは承認なしな。任意で確認" —
-// default is no-approval, confirmation optional; "実行時の許可も任意だって
-// 言ってんだろ。デフォは承認なし" — runtime permission is optional too,
-// default is no-approval): covers the four things the task asked for —
-// (1) default-OFF behavior, (2) opt-in-ON restores today's mandatory flow,
-// (3) the hard safety floor (command-safety CRITICAL / secret-scan /
-// workspace-root) is untouched by the approval-frequency default, and
-// (4) app-act's Tier-B unattended path (registration-time consent binding,
-// not a blanket unattended-allow).
+// Superseded 2026-08-25 (Fable5 review): the 2026-07-14 project-owner
+// directive this file used to cite ("デフォは承認なしな" — default is
+// no-approval) meant an unset/misconfigured device got zero human approval
+// on real-side-effect actions by default — the wrong failure mode for a
+// security gate. Reversed: default is now require-approval (manual); only
+// an explicit opt-out restores the old auto-approve behavior. Covers the
+// four things the task asked for — (1) default-ON behavior, (2) explicit
+// opt-out restores auto, (3) the hard safety floor (command-safety CRITICAL
+// / secret-scan / workspace-root) is untouched by the approval-frequency
+// default, and (4) app-act's Tier-B unattended path (registration-time
+// consent binding, not a blanket unattended-allow) is unaffected.
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -40,8 +42,8 @@ function extractAppActCase(s: string): string {
   return s.slice(s.indexOf('\n    app-act)'), s.indexOf('\n    *)', s.indexOf('\n    app-act)')));
 }
 
-describe('runtime approval default (project owner directive 2026-07-14)', () => {
-  it('bakes ACTION_APPROVAL_MODE_OVERRIDE empty and ACTION_APPROVAL_MODE="auto" as the compile-time seed when no per-agent override is set', () => {
+describe('runtime approval default (reversed 2026-08-25, Fable5 review)', () => {
+  it('bakes ACTION_APPROVAL_MODE_OVERRIDE empty and an "auto" compile-time placeholder (overwritten by the live .env resolution below) when no per-agent override is set', () => {
     const s = generateRunScript(agent());
     expect(s).toContain("ACTION_APPROVAL_MODE_OVERRIDE=''");
     expect(s).toContain('ACTION_APPROVAL_MODE="auto"');
@@ -65,9 +67,25 @@ describe('runtime approval default (project owner directive 2026-07-14)', () => 
     );
     expect(runtimeBlock).toContain('if [ -n "$ACTION_APPROVAL_MODE_OVERRIDE" ]; then');
     expect(runtimeBlock).toContain('ACTION_APPROVAL_MODE="$ACTION_APPROVAL_MODE_OVERRIDE"');
-    expect(runtimeBlock).toContain('elif [ "${SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL:-0}" = "1" ]; then');
-    expect(runtimeBlock).toContain('ACTION_APPROVAL_MODE="manual"');
+    // Fable5 review 2026-08-25: flipped from "manual only on explicit '1'"
+    // to "auto only on explicit '0'" — unset/anything-else now resolves to
+    // manual, not auto. See the block's own comment for why.
+    expect(runtimeBlock).toContain('elif [ "${SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL:-1}" = "0" ]; then');
     expect(runtimeBlock).toContain('ACTION_APPROVAL_MODE="auto"');
+    expect(runtimeBlock).toContain('ACTION_APPROVAL_MODE="manual"');
+  });
+
+  it('an unset/absent SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL resolves to manual, not auto (bash proof of the new fail-closed default)', () => {
+    const s = generateRunScript(agent());
+    // Isolate just the resolution if/elif/else, skipping the `.env` source
+    // line (irrelevant here — nothing sets SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL).
+    const resolutionBlock = s.slice(
+      s.indexOf('if [ -n "$ACTION_APPROVAL_MODE_OVERRIDE" ]; then'),
+      s.indexOf('PROJECT_DIR='),
+    );
+    const script = `set -euo pipefail\nACTION_APPROVAL_MODE_OVERRIDE=''\n${resolutionBlock}\necho "$ACTION_APPROVAL_MODE"`;
+    const out = execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim();
+    expect(out).toBe('manual');
   });
 
   it('draft/notify/webhook/cli skip the approval round trip ENTIRELY in auto mode; intent/dm-reply/app-act always request (bash proof of request_and_wait_approval)', () => {

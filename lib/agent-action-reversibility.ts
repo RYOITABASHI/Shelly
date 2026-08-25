@@ -285,5 +285,9 @@ export function runWouldRequireApprovalTap(
   agent: Pick<Agent, 'requireActionApproval'>,
   settings: ReversibilitySettings
 ): boolean {
-  return agent.requireActionApproval ?? settings.defaultRequireActionApproval === true;
+  // Fable5 review 2026-08-25: defaultRequireActionApproval's own default
+  // flipped from false to true, so an absent settings value must now read as
+  // "would require a tap" too — `!== false` (was `=== true`) keeps this in
+  // lockstep with that flip instead of silently treating unset as "no tap".
+  return agent.requireActionApproval ?? settings.defaultRequireActionApproval !== false;
 }

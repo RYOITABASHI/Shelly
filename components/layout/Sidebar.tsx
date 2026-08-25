@@ -239,9 +239,10 @@ export function Sidebar() {
   // output folders) as a one-tap DEVICE shortcut, so generated results are easy to
   // open. Falls back to the runtime default when no custom vault path is set.
   const agentVaultPath = useSettingsStore((s) => s.settings.agentVaultPath);
-  // Project owner directive 2026-07-14: runtime per-action approval defaults
-  // to OFF (no human tap). Removing that mandatory gate must not remove
-  // visibility into which mode an agent will actually run under — see the
+  // Fable5 review 2026-08-25 reversed the 2026-07-14 directive this comment
+  // used to cite: runtime per-action approval now defaults to ON (manual
+  // tap required); an agent must opt OUT to skip it. Either way, this label
+  // must keep showing which mode an agent will actually run under — see the
   // agentApprovalLabel() row/detail-popup usage below.
   const defaultRequireActionApproval = useSettingsStore((s) => s.settings.defaultRequireActionApproval === true);
   const agentApprovalLabel = React.useCallback(

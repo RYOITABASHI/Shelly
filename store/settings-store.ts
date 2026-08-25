@@ -200,7 +200,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agentConversationalRegistrationEnabled: true,
   // High-risk (webhook/cli) authoring stays opt-in, default OFF.
   agentConversationalHighRiskActionsEnabled: false,
-  defaultRequireActionApproval: false,
+  // Fable5 review 2026-08-25 reversed the 2026-07-14 "defaults off" directive:
+  // no Settings UI has ever written this field (ConfigTUI.tsx/
+  // SettingsDropdown.tsx grepped clean — same "no writer exists" situation
+  // agentRegistrationRequireConfirm was in above), and the auto-approve
+  // default meant a run whose .env sourcing failed, or a device that never
+  // persisted this key, got zero human approval on real-side-effect actions
+  // (webhook/cli/dm-reply/notify) by default. See lib/agent-executor.ts's
+  // ACTION_APPROVAL_MODE resolution and scripts/shelly-plan-executor.js's
+  // requireActionApprovalTap for the matching runtime-side flip.
+  defaultRequireActionApproval: true,
   // Opt-in. Off = today's behaviour exactly; see AppSettings' doc comment for
   // why this can only ever cover reversible workspace file writes.
   agentOptimisticWorkspaceWrites: false,
@@ -374,6 +383,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // no-confirm opt-in on a device that still had the stale value.)
       if (settings.agentRegistrationRequireConfirm === false) {
         settings.agentRegistrationRequireConfirm = true;
+        shouldPersist = true;
+      }
+      // Migration: same shape as the agentRegistrationRequireConfirm fix
+      // above — defaultRequireActionApproval's default flipped 2026-08-25
+      // (Fable5 review) and no Settings UI has ever written this field, so
+      // any persisted `false` on disk is definitionally leftover pre-flip
+      // state, not a deliberate choice. Force it to the real default once.
+      if (settings.defaultRequireActionApproval === false) {
+        settings.defaultRequireActionApproval = true;
         shouldPersist = true;
       }
       // Migration: Groq deprecated 'llama-3.3-70b-versatile' 2026-06-17 (free/

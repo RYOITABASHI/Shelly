@@ -30,6 +30,11 @@ export type BoundarySignal =
   | 'opaque-script-exec' // interpreter invocation (python/node/ruby/…) whose
                           // script contents aren't inspected — may perform
                           // undetectable network I/O (DEFERRED bug #155a)
+  | 'indirect-exec'      // command substitution ($(...)/`...`), eval, xargs
+                          // with an argument, or `env` invoking a command —
+                          // the actual executed command isn't the literal
+                          // string we classified, so we can't reason about it
+                          // (Fable5 review 2026-08-25, DEFERRED.md 2026-08-10 A-1..A-5 note)
   | 'secret-read'        // reads a protected secret path (auth.json, keystore)
   | 'policy-write'       // writes the policy file / autonomy config (hard-deny)
   | 'write-or-exec';     // mutating/executing op (vs a pure read) — heuristic
@@ -110,6 +115,13 @@ function realpathAllowMissing(path: string, fs: NodeFsLike): string | null {
 /** True if `target` is inside (or equal to) `root`, including symlink resolution in Node. */
 export function isWithinRoot(root: string, target: string): boolean {
   if (target.startsWith('~')) return false; // home-relative = outside the project workspace
+  // Fable5 review 2026-08-25: `$HOME/.ssh/id_rsa` isn't recognized as
+  // absolute below (it doesn't start with `/` or a drive letter), so it fell
+  // through to being joined onto `root` and declared in-root — a one-token
+  // bypass of the exact same shape the `~` guard above exists to close. We
+  // can't resolve the variable's value statically, so treat any `$`-led
+  // token the same way: outside the workspace, fail-closed.
+  if (target.startsWith('$')) return false;
   const r = normalizePath(root).replace(/\/$/, '');
   const targetIsAbsolute = target.startsWith('/') || /^[A-Za-z]:\//.test(target);
   const t = normalizePath(targetIsAbsolute ? target : `${r}/${target}`);
@@ -137,6 +149,19 @@ export function isWithinRoot(root: string, target: string): boolean {
   return realTarget === realRoot || realTarget.startsWith(`${realRoot}/`);
 }
 
+/**
+ * Adversarial review 2026-08-25 (second pass): the new bare-`$`-token guard
+ * below flagged shell SPECIAL parameters too — `$$` (own PID), `$?` (last
+ * exit code), `$#` (arg count), `$@`/`$*` (all args), `$0`-`$9` (positional/
+ * script name) — as if they were unresolvable path variables. `echo $?` has
+ * no path semantics at all; treating it as "leaves root" is a pure
+ * false-positive that would gray/deny routine commands for no security
+ * benefit. Excluded from the path-candidate filter, NOT from isWithinRoot's
+ * general `$`-guard (a real named variable like `$HOME` or `$PROJECT_DIR`
+ * must still be treated as unresolvable).
+ */
+const SHELL_SPECIAL_PARAM_RE = /^\$(?:\$|\?|#|@|\*|[0-9])$/;
+
 /** Best-effort extraction of path-like argument tokens from a shell command. */
 export function extractPaths(command: string): string[] {
   return command
@@ -159,8 +184,80 @@ export function extractPaths(command: string): string[] {
       (t) =>
         t.length > 0 &&
         !t.startsWith('-') &&
-        (t.includes('/') || t.startsWith('~') || t === '.' || t.startsWith('./') || t.startsWith('../')),
+        (t.includes('/') ||
+          t.startsWith('~') ||
+          t === '.' ||
+          t === '..' || // Fable5 review 2026-08-25: a bare `..` (no `/`) matched
+                        // none of the conditions below, so `cd ..` was invisible
+                        // to isWithinRoot entirely — see hasUnsafeCd() for the
+                        // companion fix (a `cd` outside root taints every
+                        // relative path after it, which this filter alone can't).
+          (t.startsWith('$') && !SHELL_SPECIAL_PARAM_RE.test(t)) || // bare `$HOME` (no `/`) — see isWithinRoot's `$` guard
+          t.startsWith('./') ||
+          t.startsWith('../')),
     );
+}
+
+/**
+ * A `cd` to somewhere we can't prove is in-root taints every *relative* path
+ * token later in the command: `cd ..; cat other/.env` — `other/.env` alone
+ * looks in-root when checked against `workspaceRoot`, but the shell actually
+ * resolves it against the post-`cd` cwd (the workspace's PARENT), so it reads
+ * a real path this classifier has no way to reconstruct. We don't track cwd
+ * across `;`/`&&`/`||`/`|`/`&` (that needs a real shell parser), so this is a
+ * deliberately conservative rule: any `cd` argument that isn't itself
+ * provably within `root` marks the WHOLE command `leaves-root`, even though
+ * only the *subsequent* segments are actually affected. Accepted
+ * false-positive — same tradeoff this file already makes for
+ * OPAQUE_SCRIPT_RE. Fable5 review 2026-08-25.
+ *
+ * Finds `cd` at the start of a shell statement WHEREVER one begins in the
+ * string — not only at the very start of `command` itself. The file header's
+ * own SHELL_SCRIPT_FILE_RE comment explains why that distinction matters:
+ * the driver flattens codex's argv (`["bash","-lc","<script>"]`) into the
+ * string this function receives, so "essentially EVERY proposed command
+ * starts with `bash -lc …`" — meaning a real `cd` is always buried inside
+ * that quoted payload, e.g. `bash -lc 'cd ..; cat other/.env'`, never at
+ * true string-index 0. A naive top-level split (this function's first
+ * version) only ever found `cd` as segment zero and missed every realistic
+ * wrapped case. This scans for `cd` immediately after a statement-start
+ * character INCLUDING an opening quote (`'`/`"`/backtick), so the `-lc`
+ * payload's own first statement is reachable too.
+ *
+ * Adversarial review 2026-08-25 (second pass, same day): the first version's
+ * boundary set (`;&|(\n` + quotes) missed `{ cd; cat .env; }`,
+ * `if true; then cd; cat .env; fi`, and `for i in 1; do cd; cat .env; done`
+ * — none of `{`/`then`/`do`/`else`/`elif`/`until` were in the set, so a BARE
+ * `cd` (the exact "no argument → $HOME" case this function's own top
+ * comment calls out as the primary motivating case) sailed through
+ * undetected in all three, because a bare `cd` produces no token
+ * `extractPaths()` independently catches either. Rather than enumerate every
+ * shell keyword (an open-ended list), any whitespace-preceded `cd` is now
+ * also a candidate — broader than a real shell parser would allow (e.g.
+ * `mkdir cd` false-positives), but that's the same accepted tradeoff this
+ * file already makes elsewhere (OPAQUE_SCRIPT_RE, `$`-prefix guard).
+ */
+const CD_START_RE = /(?:^|[;&|(\n'"`\s])\s*cd(?=[\s;&|)'"`]|$)/g;
+
+export function hasUnsafeCd(command: string, root: string): boolean {
+  CD_START_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CD_START_RE.exec(command))) {
+    const afterCd = command.slice(match.index + match[0].length);
+    // The rest of THIS statement: up to the next unescaped statement/quote
+    // boundary. Best-effort, same lexical (not real shell-parse) limitation
+    // as the rest of this file.
+    const restMatch = afterCd.match(/^[^;&|)'"`\n]*/);
+    const rest = (restMatch ? restMatch[0] : '').trim();
+    if (!rest) return true; // bare `cd` → $HOME, always outside the workspace root
+    const tokens = rest.split(/\s+/);
+    // `cd -L /foo` / `cd -P /foo`: skip leading option flags to find the target.
+    const argToken = tokens.find((t) => !t.startsWith('-'));
+    if (!argToken || argToken === '-') return true; // `cd -` → $OLDPWD, unprovable
+    const arg = argToken.replace(/^['"`]+/, '').replace(/['"`]+$/, '');
+    if (!isWithinRoot(root, arg)) return true;
+  }
+  return false;
 }
 
 const NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
@@ -236,6 +333,21 @@ const PIPED_INTERPRETER_RE =
   /\|\s*(?:sudo\s+)?(?:[^\s|;&]*\/)?(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)\b/;
 
 /**
+ * Fable5 review 2026-08-25 — `eval`, command substitution (`$(...)`/backticks),
+ * `xargs <cmd>`, and `env <cmd>` all run a command that is NOT the literal
+ * string classifyProposedCommand() inspected: `bash -lc 'eval "$X"'` matches
+ * neither OPAQUE_SCRIPT_RE (no interpreter name) nor a network/path signal,
+ * so it fell through as plain `write-or-exec` — auto-allow at L2. We can't
+ * know what these actually run, so — same shape-not-content heuristic as
+ * OPAQUE_SCRIPT_RE — flag the shape and let the boundary gate treat it with
+ * the same caution as an opaque script. `env` alone (list env vars, a common
+ * read-only idiom) must NOT match; only `env` immediately followed by
+ * flags/assignments/a command does.
+ */
+const INDIRECT_EXEC_RE =
+  /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
+
+/**
  * A command is a PURE READ only when every pipeline/list segment is a
  * read-only tool AND nothing redirects into a file.
  *
@@ -299,7 +411,12 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   // 3. Boundary signals.
   const paths = extractPaths(command);
   if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push('secret-read');
-  if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p))) signals.push('leaves-root');
+  if (
+    paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p)) ||
+    hasUnsafeCd(command, ctx.workspaceRoot)
+  ) {
+    signals.push('leaves-root');
+  }
   if (
     (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command)) ||
     SHELL_NET_DEVICE_RE.test(command)
@@ -313,6 +430,7 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   ) {
     signals.push('opaque-script-exec');
   }
+  if (INDIRECT_EXEC_RE.test(command)) signals.push('indirect-exec');
   const isPureRead =
     isPureReadCommand(command) &&
     !signals.includes('network-send') &&
@@ -351,4 +469,57 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export interface WorkspaceRootVerdict {
+  ok: boolean;
+  /** human-readable reason, present only when ok is false */
+  reason?: string;
+}
+
+/**
+ * Reject a workspace root that would make the boundary gate meaningless —
+ * every in-root check in this file is only as strong as the root itself.
+ * Registering an agent with `workspaceRoot` set to `$HOME` (or the app's own
+ * home dir) means the "jail" contains the agent's own generated run scripts
+ * (`~/.shelly/agents/*.sh`), Codex auth, and `.ssh` — the agent could rewrite
+ * its own script and the gate would never see it, since everything it
+ * touches is "in-root" by definition. Fable5 review 2026-08-25; see
+ * DEFERRED.md's 2026-08-10 Hermes dual-review entry, A-1..A-5 note.
+ *
+ * `homePaths` should include both the JS-visible home path and any known
+ * real/alias equivalents (Android's app-private home resolves through more
+ * than one string depending on caller — see CLAUDE.md's adb `$HOME` note).
+ */
+export function validateWorkspaceRoot(root: string, homePaths: string[] = []): WorkspaceRootVerdict {
+  const trimmed = (root ?? '').trim();
+  if (!trimmed || trimmed === '~' || trimmed === '$HOME') {
+    return { ok: false, reason: 'workspace root cannot be empty or the home directory itself' };
+  }
+  const normalized = normalizePath(trimmed).replace(/\/$/, '');
+  if (!normalized || normalized === '/') {
+    return { ok: false, reason: 'workspace root cannot be the filesystem root' };
+  }
+  for (const home of homePaths) {
+    const normHome = normalizePath(home).replace(/\/$/, '');
+    if (normHome && normalized === normHome) {
+      return { ok: false, reason: 'workspace root cannot be the app home directory' };
+    }
+  }
+  // Adversarial review 2026-08-25: `/storage/self/primary` is Android's
+  // standard per-uid symlink alias to the same location as `/sdcard` and
+  // `/storage/emulated/<uid>` — without it, registering that exact string
+  // would defeat this whole check.
+  if (
+    normalized === '/sdcard' ||
+    normalized === '/storage/self/primary' ||
+    /^\/storage\/emulated\/\d+$/.test(normalized)
+  ) {
+    return { ok: false, reason: 'workspace root cannot be the entire external storage root' };
+  }
+  const segments = normalized.split('/');
+  if (segments.some((seg) => seg === '.shelly' || seg === '.codex' || seg === '.ssh')) {
+    return { ok: false, reason: 'workspace root cannot be inside .shelly, .codex, or .ssh' };
+  }
+  return { ok: true };
 }

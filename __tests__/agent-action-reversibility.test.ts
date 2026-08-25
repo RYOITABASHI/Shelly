@@ -212,7 +212,9 @@ describe('runWouldRequireApprovalTap', () => {
   it('follows the global default when the agent has no override', () => {
     expect(runWouldRequireApprovalTap({}, { defaultRequireActionApproval: true })).toBe(true);
     expect(runWouldRequireApprovalTap({}, { defaultRequireActionApproval: false })).toBe(false);
-    expect(runWouldRequireApprovalTap({}, {})).toBe(false);
+    // Fable5 review 2026-08-25: an absent setting must resolve the same way
+    // as an explicit `true` now (fail-closed default), not the same as `false`.
+    expect(runWouldRequireApprovalTap({}, {})).toBe(true);
   });
 
   it('lets the per-agent override win in both directions', () => {

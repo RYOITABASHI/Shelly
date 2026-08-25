@@ -15,8 +15,8 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=2
-const EXECUTOR_SCRIPT_VERSION = 2;
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=3
+const EXECUTOR_SCRIPT_VERSION = 3;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
 // 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 (lib/signed-approval/wiring.ts).
@@ -2207,6 +2207,14 @@ function argTruthy(value) {
   return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
 }
 
+// Fable5 review 2026-08-25 companion to argTruthy: for the action-approval
+// default we need the OPPOSITE failure mode — absent/unrecognized must read
+// as "still requires approval", not "auto-approved". See
+// requireActionApprovalTap's comment below for why.
+function argFalsy(value) {
+  return ['0', 'false', 'no', 'off'].includes(String(value ?? '').trim().toLowerCase());
+}
+
 function trustedNativeLowRiskAction(args, plan, actionType) {
   const trustedAgentId = String(args['trusted-autonomous-agent-id'] || '').trim();
   const trustedAction = String(args['trusted-autonomous-action'] || '').trim();
@@ -2300,18 +2308,31 @@ function unattendedPreflightFailure(args, plan, config = {}) {
   return '';
 }
 
-// Project owner directive 2026-07-14: resolves whether the mandatory
-// "Runtime Review" approval TAP defaults on or off for THIS plan/action —
-// independent of trustedNativeLowRiskAction (which governs whether the
-// action may run unattended at all, and for app-act specifically whether it
-// may auto-fire with no reply-waiter at all). plan.agent.requireActionApproval
-// is the per-agent override baked at plan-build time (lib/agent-plan-spec.ts);
-// config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL is the global default, read
-// live from .env (settings-store.ts syncs it on every change) so toggling it
-// applies to already-generated plans without needing an agent re-save.
+// Resolves whether the mandatory "Runtime Review" approval TAP defaults on
+// or off for THIS plan/action — independent of trustedNativeLowRiskAction
+// (which governs whether the action may run unattended at all, and for
+// app-act specifically whether it may auto-fire with no reply-waiter at
+// all). plan.agent.requireActionApproval is the per-agent override baked at
+// plan-build time (lib/agent-plan-spec.ts); config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL
+// is the global default, read live from .env (settings-store.ts syncs it on
+// every change) so toggling it applies to already-generated plans without
+// needing an agent re-save.
+//
+// Fable5 review 2026-08-25 (superseding the 2026-07-14 "defaults off"
+// directive this comment used to cite): the original argTruthy() form read
+// an ABSENT or unset config value as "no tap needed" — so a run whose .env
+// sourcing failed, or that predates this setting existing at all, silently
+// got zero human approval for actions with real side effects (webhook/cli/
+// dm-reply/notify). That is the wrong failure mode for a security gate:
+// unknown state must mean "still gated", not "already approved". Only an
+// EXPLICIT opt-out (argFalsy: '0'/'false'/'no'/'off') now skips the tap;
+// anything else — including absence — requires it. Bumped
+// EXECUTOR_SCRIPT_VERSION alongside this change so a stale on-device copy of
+// this script (still running the old fail-open read) is detected and
+// refreshed rather than silently kept.
 function requireActionApprovalTap(plan, config) {
   if (typeof plan.agent.requireActionApproval === 'boolean') return plan.agent.requireActionApproval;
-  return argTruthy(config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL);
+  return !argFalsy(config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL);
 }
 
 async function dispatchActionTrusted(paths, opts, plan, config, roots, resultText, args) {

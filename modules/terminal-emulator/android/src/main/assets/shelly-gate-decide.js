@@ -368,6 +368,7 @@ function realpathAllowMissing(path, fs) {
 }
 function isWithinRoot(root, target) {
   if (target.startsWith("~")) return false;
+  if (target.startsWith("$")) return false;
   const r = normalizePath(root).replace(/\/$/, "");
   const targetIsAbsolute = target.startsWith("/") || /^[A-Za-z]:\//.test(target);
   const t = normalizePath(targetIsAbsolute ? target : `${r}/${target}`);
@@ -386,12 +387,36 @@ function isWithinRoot(root, target) {
   if (!realTarget) return false;
   return realTarget === realRoot || realTarget.startsWith(`${realRoot}/`);
 }
+var SHELL_SPECIAL_PARAM_RE = /^\$(?:\$|\?|#|@|\*|[0-9])$/;
 function extractPaths(command) {
   return command.split(/\s+/).map(
     (t) => t.replace(/^[<>|&]+/, "").replace(/[;,]+$/, "").replace(/^['"`]+/, "").replace(/['"`]+$/, "")
   ).filter(
-    (t) => t.length > 0 && !t.startsWith("-") && (t.includes("/") || t.startsWith("~") || t === "." || t.startsWith("./") || t.startsWith("../"))
+    (t) => t.length > 0 && !t.startsWith("-") && (t.includes("/") || t.startsWith("~") || t === "." || t === ".." || // Fable5 review 2026-08-25: a bare `..` (no `/`) matched
+    // none of the conditions below, so `cd ..` was invisible
+    // to isWithinRoot entirely — see hasUnsafeCd() for the
+    // companion fix (a `cd` outside root taints every
+    // relative path after it, which this filter alone can't).
+    t.startsWith("$") && !SHELL_SPECIAL_PARAM_RE.test(t) || // bare `$HOME` (no `/`) — see isWithinRoot's `$` guard
+    t.startsWith("./") || t.startsWith("../"))
   );
+}
+var CD_START_RE = /(?:^|[;&|(\n'"`\s])\s*cd(?=[\s;&|)'"`]|$)/g;
+function hasUnsafeCd(command, root) {
+  CD_START_RE.lastIndex = 0;
+  let match;
+  while (match = CD_START_RE.exec(command)) {
+    const afterCd = command.slice(match.index + match[0].length);
+    const restMatch = afterCd.match(/^[^;&|)'"`\n]*/);
+    const rest = (restMatch ? restMatch[0] : "").trim();
+    if (!rest) return true;
+    const tokens = rest.split(/\s+/);
+    const argToken = tokens.find((t) => !t.startsWith("-"));
+    if (!argToken || argToken === "-") return true;
+    const arg = argToken.replace(/^['"`]+/, "").replace(/['"`]+$/, "");
+    if (!isWithinRoot(root, arg)) return true;
+  }
+  return false;
 }
 var NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 var SHELL_NET_DEVICE_RE = /\/dev\/(?:tcp|udp)\//;
@@ -400,6 +425,7 @@ var LOOPBACK_HOST_RE = /^(127(?:\.\d{1,3}){3}|localhost|\[?::1\]?)$/i;
 var OPAQUE_SCRIPT_RE = /\b(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh)\b\s+\S/;
 var SHELL_SCRIPT_FILE_RE = /(?:^|[\s;&|(])(?:ba|z|k|da)?sh\s+(?:-[A-Za-z]+\s+)*(?!-)[^\s;&|]*\.(?:sh|bash|zsh|ksh)\b/;
 var PIPED_INTERPRETER_RE = /\|\s*(?:sudo\s+)?(?:[^\s|;&]*\/)?(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)\b/;
+var INDIRECT_EXEC_RE = /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
 function isPureReadCommand(command) {
   if (command.includes(">")) return false;
   const segments = command.split(/\|\||&&|[|;&]/).map((s) => s.trim()).filter(Boolean);
@@ -424,13 +450,16 @@ function classifyProposedCommand(command, ctx) {
   if (safety.level === "HIGH") signals.push("destructive");
   const paths = extractPaths(command);
   if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push("secret-read");
-  if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p))) signals.push("leaves-root");
+  if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p)) || hasUnsafeCd(command, ctx.workspaceRoot)) {
+    signals.push("leaves-root");
+  }
   if (NETWORK_RE.test(command) && !isLoopbackOnlyNetworkCommand(command) || SHELL_NET_DEVICE_RE.test(command)) {
     signals.push("network-send");
   }
   if (OPAQUE_SCRIPT_RE.test(command) || SHELL_SCRIPT_FILE_RE.test(command) || PIPED_INTERPRETER_RE.test(command)) {
     signals.push("opaque-script-exec");
   }
+  if (INDIRECT_EXEC_RE.test(command)) signals.push("indirect-exec");
   const isPureRead = isPureReadCommand(command) && !signals.includes("network-send") && !signals.includes("opaque-script-exec");
   if (!isPureRead) signals.push("write-or-exec");
   const boundarySignals = signals.filter((s) => s !== "write-or-exec");

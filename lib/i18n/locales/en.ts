@@ -1680,10 +1680,10 @@ const en: Record<string, string> = {
   'sidebar.agent_manual': 'manual',
   'sidebar.agent_autonomous': 'autonomous',
   'sidebar.agent_paused': 'paused',
-  // Project owner directive 2026-07-14: runtime approval defaults to OFF —
-  // this agent's EFFECTIVE approval mode (per-agent override, else the
-  // global default) must stay visible even though the mandatory-tap gate
-  // itself was removed.
+  // Runtime approval now defaults to ON (Fable5 review 2026-08-25, reversing
+  // the 2026-07-14 "defaults to OFF" directive) — this agent's EFFECTIVE
+  // approval mode (per-agent override, else the global default) must stay
+  // visible either way, since an agent can still opt out.
   // 2026-07-24 (DEFERRED.md §対応方針(3)): "no-approval" alone reads as "no
   // approval needed at all", but this setting only covers the notify-dispatch
   // approval layer — a SEPARATE capability-broker boundary-crossing approval

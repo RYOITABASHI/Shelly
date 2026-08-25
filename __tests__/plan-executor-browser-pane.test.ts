@@ -159,9 +159,14 @@ describe('dispatchActionTrusted — action.type === "browser-pane" (approval-req
     const rtPaths = preparePaths(home, agentId);
     const capture = captureApprovalRequest(rtPaths);
     const plan = browserPanePlan(home, agentId, { kind: 'click', selector: '#submit' }, ['https://example.com/form']);
-    // requireActionApproval left unset (falls back to the global default,
-    // which requireActionApprovalTap treats as SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL
-    // -- absent from config here, so it resolves to 'auto'/false).
+    // requireActionApproval left unset, config = {} (no
+    // SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL at all). Doesn't matter for this
+    // test either way — browser-pane's autoAccept is unconditionally false
+    // regardless of what requireActionApprovalTap resolves to (that's the
+    // whole point of the test title below) — but noting it for anyone who
+    // later copies this fixture into a test that DOES care: since the
+    // 2026-08-25 approval-default reversal, an absent config now resolves to
+    // manual/true, not auto/false.
     const config = {};
 
     const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, config, [], 'q1', {});

@@ -6,6 +6,7 @@ import { useAgentStore } from '@/store/agent-store';
 import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
+import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logInfo, logWarn } from './debug-logger';
@@ -372,6 +373,29 @@ function formatHistory(agent: Agent, logs: any[]): string {
 }
 
 /**
+ * Same write-boundary discipline as sanitizeAgentName above: validate
+ * `workspaceRoot` at the single point every caller (createAgent, updateAgent)
+ * funnels through, so a bad root (`$HOME`, the app's own home dir, `/sdcard`,
+ * a `.shelly`/`.codex`/`.ssh` ancestor — see validateWorkspaceRoot's own
+ * comment) can never reach the generated run script's AGENT_WORKSPACE_ROOT.
+ * Falls back to `undefined` (agent-executor's PROJECT_DIR default) rather
+ * than throwing — an agent creation/edit should never hard-fail because of
+ * this field; it should just decline the unsafe root and keep the safe
+ * default, fail-closed. Fable5 review 2026-08-25.
+ */
+function sanitizeWorkspaceRoot(root: string | undefined): string | undefined {
+  if (!root) return root;
+  const verdict = validateWorkspaceRoot(root, [
+    getHomePath(),
+    '/data/user/0/dev.shelly.terminal/files/home',
+    '/data/data/dev.shelly.terminal/files/home',
+  ]);
+  if (verdict.ok) return root;
+  logWarn('AgentManager', `Rejected unsafe workspaceRoot "${root}": ${verdict.reason}`);
+  return undefined;
+}
+
+/**
  * Create a new agent from parsed creation data.
  */
 export function createAgent(params: {
@@ -414,7 +438,7 @@ export function createAgent(params: {
     tool: params.tool,
     autonomous: params.autonomous || undefined,
     autonomyLevel: params.autonomous ? (params.autonomyLevel ?? 'L2') : undefined,
-    workspaceRoot: params.workspaceRoot,
+    workspaceRoot: sanitizeWorkspaceRoot(params.workspaceRoot),
     outputPath: params.outputPath,
     outputTemplate: params.outputTemplate || null,
     action: params.action,
@@ -480,6 +504,9 @@ export async function updateAgent(
   const safePartial: Partial<Agent> = { ...partial };
   if (typeof safePartial.name === 'string') {
     safePartial.name = sanitizeAgentName(safePartial.name, current.name);
+  }
+  if (typeof safePartial.workspaceRoot === 'string') {
+    safePartial.workspaceRoot = sanitizeWorkspaceRoot(safePartial.workspaceRoot);
   }
 
   const updated: Agent = { ...current, ...safePartial };

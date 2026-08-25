@@ -385,9 +385,9 @@ object AgentRuntime {
     // AGENT_HAS_NOTIFICATION_TRIGGER, that tells the model the true
     // situation instead of asking it to invent one). No native change here;
     // bumped only so a stale pre-v57 on-disk script is regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 57
+    private const val CURRENT_SCRIPT_VERSION = 58
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private const val CURRENT_EXECUTOR_VERSION = 2
+    private const val CURRENT_EXECUTOR_VERSION = 3
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

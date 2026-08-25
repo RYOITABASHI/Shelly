@@ -1,10 +1,16 @@
-// Project owner directive 2026-07-14 ("デフォは承認なしな。任意で確認" —
-// default is no-approval, confirmation optional; "実行時の許可も任意だって
-// 言ってんだろ。デフォは承認なし" — runtime permission is optional too,
-// default is no-approval). Node PlanSpec executor counterpart to
+// Superseded 2026-08-25 (Fable5 review): the 2026-07-14 project-owner
+// directive this file used to cite ("デフォは承認なしな" — default is
+// no-approval) put an unattended agent with real side effects (webhook/cli/
+// dm-reply/notify) at zero human approval the moment `.env` sourcing failed
+// or a device had never persisted the setting — an "unknown state ⇒
+// approved" failure mode for a security gate. Reversed: the default is now
+// REQUIRE approval (manual), and only an explicit opt-out
+// (SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'/'false'/'no'/'off') restores
+// the old auto-approve behavior. Node PlanSpec executor counterpart to
 // __tests__/agent-executor-approval-default.test.ts (the .sh executor):
-// (1) default-OFF, (2) opt-in-ON, (3) hard safety floor untouched,
-// (4) app-act's Tier-B unattended path (registration-time consent binding).
+// (1) default-ON, (2) opt-out via explicit falsy value, (3) hard safety
+// floor untouched, (4) app-act's Tier-B unattended path (registration-time
+// consent binding, unaffected by this flip).
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
@@ -28,8 +34,12 @@ function basePlan(overrides: any = {}) {
 }
 
 describe('requireActionApprovalTap (Node executor global/per-agent resolution)', () => {
-  it('defaults to false (auto-approve) when neither the per-agent field nor the global .env flag is set', () => {
-    expect(executor.requireActionApprovalTap(basePlan(), {})).toBe(false);
+  it('defaults to true (require approval) when neither the per-agent field nor the global .env flag is set', () => {
+    expect(executor.requireActionApprovalTap(basePlan(), {})).toBe(true);
+  });
+
+  it('an unrecognized/garbage config value is treated as unset — still requires approval, never silently auto-approves', () => {
+    expect(executor.requireActionApprovalTap(basePlan(), { SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL: 'nonsense' })).toBe(true);
   });
 
   it('the per-agent override wins over the global default in both directions', () => {
@@ -101,21 +111,35 @@ describe('trustedNativeLowRiskAction / unattendedPreflightFailure — app-act Ti
   // North Star P0(c) fix (docs/superpowers/DEFERRED.md's "スケジュール実行が
   // 多段オーケストレーションを使わない問題"): AgentRuntime.kt now routes ANY
   // scheduled/unattended fire with orchestration.steps through this executor,
-  // not just agent.autonomous ones. Before this fix, cli/webhook were always
-  // refused unattended here (unconditionally, via trustedNativeLowRiskAction),
-  // which was STRICTER than the legacy .sh executor's actual policy — .sh
-  // fires draft/notify/webhook/cli unattended whenever approval mode is
-  // "auto" (the default), independent of agent.autonomous. That mismatch
-  // meant a real orchestrated agent (which today fires successfully via the
-  // collapsed single-step .sh script) would have been silently skipped after
-  // the routing change, a strict regression. This block verifies the fix:
-  // cli/webhook now mirror .sh's policy exactly.
-  it('cli/webhook fire unattended when approval mode is auto (the default) — mirrors the .sh executor policy, independent of agent.autonomous', () => {
+  // not just agent.autonomous ones. cli/webhook mirror the legacy .sh
+  // executor's policy exactly: whatever requireActionApprovalTap resolves to
+  // (see the describe block above) is what gates unattended cli/webhook here
+  // too, independent of agent.autonomous. Fable5 review 2026-08-25 flipped
+  // that resolution's default from auto-approve to require-approval, so
+  // cli/webhook now need an EXPLICIT opt-out to fire unattended — this block
+  // was rewritten to match (it used to assert the opposite: that they fired
+  // unattended with no config at all).
+  it('cli/webhook now REQUIRE the explicit opt-out to fire unattended — the bare default (no config) blocks them', () => {
     for (const actionType of ['cli', 'webhook']) {
       // basePlan() has agent.autonomous: false and no requireActionApproval
-      // override, and no config is passed (defaults to {}) — auto-approve.
+      // override, and no config is passed (defaults to {}) — this used to
+      // mean auto-approve; it now means "still gated", per the reversal above.
       const plan = basePlan({ action: { type: actionType } });
-      expect(executor.unattendedPreflightFailure({ unattended: '1' }, plan)).toBe('');
+      const failure = executor.unattendedPreflightFailure({ unattended: '1' }, plan);
+      expect(failure).not.toBe('');
+      expect(failure).toContain('requires manual approval and cannot run unattended');
+    }
+  });
+
+  it('cli/webhook fire unattended only once the global default is EXPLICITLY opted out (mirrors the .sh executor policy)', () => {
+    for (const actionType of ['cli', 'webhook']) {
+      const plan = basePlan({ action: { type: actionType } });
+      const failure = executor.unattendedPreflightFailure(
+        { unattended: '1' },
+        plan,
+        { SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL: '0' },
+      );
+      expect(failure).toBe('');
     }
   });
 
@@ -175,10 +199,17 @@ describe('parseConfigEnv reads SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL from a rea
     expect(executor.requireActionApprovalTap(basePlan(), config)).toBe(true);
   });
 
-  it('a real .env with the flag absent falls back to auto-approve, matching the no-file case', () => {
+  it('a real .env with the flag absent falls back to require-approval, matching the no-file case', () => {
     const envFile = withTempEnvFile("LOCAL_LLM_URL='http://127.0.0.1:8080'\n");
     const config = executor.parseConfigEnv(envFile);
     expect(config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL).toBeUndefined();
+    expect(executor.requireActionApprovalTap(basePlan(), config)).toBe(true);
+  });
+
+  it('a real .env that explicitly opts out (=0) reads as auto-approve', () => {
+    const envFile = withTempEnvFile("SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n");
+    const config = executor.parseConfigEnv(envFile);
+    expect(config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL).toBe('0');
     expect(executor.requireActionApprovalTap(basePlan(), config)).toBe(false);
   });
 

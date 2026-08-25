@@ -524,8 +524,9 @@ export type AppSettings = {
   widgetAgentRegistrationNoConfirm?: boolean;
   /** Runtime per-action "Runtime Review" approval tap (draft/notify/webhook/
    *  cli/intent/dm-reply — see wait_action_approval in lib/agent-executor.ts
-   *  and scripts/shelly-plan-executor.js). Default false = auto-approve, no
-   *  human tap required. true = restore today's mandatory-approval flow.
+   *  and scripts/shelly-plan-executor.js). Default true (since 2026-08-25,
+   *  Fable5 review — previously false) = mandatory-approval flow; false =
+   *  auto-approve, no human tap required, opt-in only.
    *  Per-agent Agent.requireActionApproval overrides this when set.
    *  Does NOT affect app-act, which has its own narrower Tier-B trust gate
    *  (Agent.autonomous alone, see AgentActionType's doc comment) —
