@@ -28,6 +28,7 @@ import {
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import {
+  COMPANION_MEMORY_SCOPE,
   GLOBAL_MEMORY_SCOPE,
   readMemoryNotes,
   type MemoryNote,
@@ -83,6 +84,7 @@ export default function MemoryWorkbenchPane() {
   const [loading, setLoading] = useState(false);
   const [ownNotes, setOwnNotes] = useState<MemoryNote[]>([]);
   const [globalNotes, setGlobalNotes] = useState<MemoryNote[]>([]);
+  const [companionNotes, setCompanionNotes] = useState<MemoryNote[]>([]);
   const [query, setQuery] = useState('');
   const [expandedNoteId, setExpandedNoteId] = useState<string | null>(null);
   const [editState, setEditState] = useState<EditState | null>(null);
@@ -100,14 +102,17 @@ export default function MemoryWorkbenchPane() {
       // mean "re-read from source"; evict both scopes' cache entries first.
       if (MEMORY_ENABLED) {
         invalidateMemoryImportCache(GLOBAL_MEMORY_SCOPE);
+        invalidateMemoryImportCache(COMPANION_MEMORY_SCOPE);
         if (agentId) invalidateMemoryImportCache(agentId);
       }
-      const [own, shared] = await Promise.all([
+      const [own, shared, companion] = await Promise.all([
         agentId ? listNotesWithFallback(agentId) : Promise.resolve<MemoryNote[]>([]),
         listNotesWithFallback(GLOBAL_MEMORY_SCOPE),
+        listNotesWithFallback(COMPANION_MEMORY_SCOPE),
       ]);
       setOwnNotes(own);
       setGlobalNotes(shared);
+      setCompanionNotes(companion);
     } finally {
       setLoading(false);
     }
@@ -119,6 +124,7 @@ export default function MemoryWorkbenchPane() {
 
   const filteredOwn = useMemo(() => filterMemoryNotes(ownNotes, query), [ownNotes, query]);
   const filteredGlobal = useMemo(() => filterMemoryNotes(globalNotes, query), [globalNotes, query]);
+  const filteredCompanion = useMemo(() => filterMemoryNotes(companionNotes, query), [companionNotes, query]);
   const hasQuery = query.trim().length > 0;
 
   const handleDelete = useCallback(
@@ -324,8 +330,11 @@ export default function MemoryWorkbenchPane() {
         </View>
       ) : (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          {/* Agent's own notes */}
-          {agentId ? (
+          {/* Agent's own notes — skipped entirely (not an error state) when
+              this pane was opened without a specific agent, e.g. via
+              Settings' companion-only entry point (SettingsDropdown.tsx's
+              CompanionMemorySection, memoryWorkbenchAgentId=null). */}
+          {agentId && (
             <>
               <Text style={styles.sectionHeader}>
                 {t('pane.memory_workbench.section_agent', {
@@ -343,8 +352,26 @@ export default function MemoryWorkbenchPane() {
                 filteredOwn.map((note) => renderNote(agentId, note))
               )}
             </>
+          )}
+
+          {/* Companion journal (_companion) — 2026-08-25, "一人の相棒" Gap②.
+              Own distinct section, same reasoning as _global: auto-written
+              notes must be visible/correctable, but they are a DIFFERENT
+              trust scope from a registered agent's own notes or the
+              all-agents shared _global notes (see lib/agent-memory.ts's
+              COMPANION_MEMORY_SCOPE doc comment), so they never merge into
+              either list above. */}
+          <Text style={[styles.sectionHeader, styles.globalSectionHeader]}>
+            {t('pane.memory_workbench.section_companion', { count: filteredCompanion.length })}
+          </Text>
+          {filteredCompanion.length === 0 ? (
+            <Text style={styles.emptyText}>
+              {hasQuery
+                ? t('pane.memory_workbench.no_results')
+                : t('pane.memory_workbench.empty_companion')}
+            </Text>
           ) : (
-            <Text style={styles.emptyText}>{t('pane.memory_workbench.no_agent')}</Text>
+            filteredCompanion.map((note) => renderNote(COMPANION_MEMORY_SCOPE, note))
           )}
 
           {/* Shared _global notes — always a distinct section, never merged */}

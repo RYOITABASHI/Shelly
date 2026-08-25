@@ -42,6 +42,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { DmPairingSection } from '@/components/layout/DmPairingSection';
 import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
+import { useAgentStore } from '@/store/agent-store';
 import type { SocialConnectorMeta, SocialPlatform } from '@/store/types';
 
 type Props = {
@@ -152,6 +153,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <WallpaperSection />
             <LanguageSection />
             <AgentsSection visible={visible} />
+            <CompanionMemorySection onClose={onClose} />
             <ApiKeysSection />
             <SocialConnectorsSection />
             <DmPairingSection />
@@ -483,6 +485,49 @@ const IntegrationsSection = React.memo(function IntegrationsSection({
       >
         <MaterialIcons name="memory" size={13} color={C.text2} />
         <Text style={[styles.integrationLabel, { color: C.text1 }]}>Local LLM · llama.cpp</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+});
+
+// 2026-08-25 (Fable5 design review of the companion journal, "一人の相棒"
+// Gap②): MemoryWorkbenchPane previously had exactly one entry point — a
+// specific registered agent's "Memory" button in the Sidebar (Sidebar.tsx's
+// openMemoryWorkbench). A companion-only user with zero registered agents
+// could never reach it, and therefore had NO way to see, correct, or
+// delete a `_companion` journal note the local LLM wrote automatically —
+// the review's stated precondition for shipping auto-write-with-no-confirm
+// ("editable/deletable later") was false until this existed. Opens the
+// SAME pane with memoryWorkbenchAgentId explicitly cleared, so it shows
+// only the shared `_global` and `_companion` sections (own-agent notes are
+// naturally empty for a null agentId — MemoryWorkbenchPane already handles
+// that case).
+const CompanionMemorySection = React.memo(function CompanionMemorySection({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const addPane = useAddPane();
+
+  const open = React.useCallback(() => {
+    useAgentStore.getState().setMemoryWorkbenchAgentId(null);
+    const result = addPane('memory-workbench');
+    if (result !== null) return; // useAddPane already alerted
+    onClose();
+  }, [addPane, onClose]);
+
+  return (
+    <Section title={t('companion_memory.title')}>
+      <Text style={[styles.credentialHint, { color: C.text2 }]}>
+        {t('companion_memory.description')}
+      </Text>
+      <Pressable
+        style={[styles.integrationRow, borderedChromeStyle()]}
+        onPress={open}
+        accessibilityRole="button"
+        accessibilityLabel={t('companion_memory.open_a11y')}
+      >
+        <MaterialIcons name="psychology" size={13} color={C.text2} />
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('companion_memory.open')}</Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>

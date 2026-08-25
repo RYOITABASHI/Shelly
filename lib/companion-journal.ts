@@ -95,13 +95,25 @@ export async function digestConversationForJournal(
   try {
     const result = await ollamaChat(config, digestMessages, DIGEST_TIMEOUT_MS, undefined, DIGEST_MAX_TOKENS);
     if (!result.success) return; // leave the marker unset so a transient failure retries next switch
-    lastDigestedMessageId.set(sourceKey, lastId);
 
     const text = result.content.trim();
-    if (!text || /^nothing\.?$/i.test(text)) return;
+    // Widened past an exact "NOTHING" match (2026-08-25 review finding): a
+    // 2B-class local model won't reliably follow "reply with exactly X" to
+    // the letter, and a stray "NOTHING worth remembering." matched by only
+    // an exact-equality check would have been saved as a junk note.
+    if (!text || /^nothing\b/i.test(text)) {
+      lastDigestedMessageId.set(sourceKey, lastId); // successfully decided there's nothing to save -- don't re-ask
+      return;
+    }
 
     const note = makeMemoryNote({ agentId: COMPANION_MEMORY_SCOPE, type: 'fact', text });
     await writeMemoryNote(runCommand, note);
+    // Only mark this tail as digested once the note is actually on disk —
+    // 2026-08-25 review finding: setting this right after the LLM call
+    // succeeded (before the write was attempted) meant a write failure
+    // alone was never retried on a later switch, even though the LLM half
+    // of the work had genuinely succeeded.
+    lastDigestedMessageId.set(sourceKey, lastId);
     logInfo('CompanionJournal', `digested ${eligible.length} messages from ${sourceKey}`);
   } catch (e: any) {
     logWarn('CompanionJournal', 'digest failed', e?.message ?? e);

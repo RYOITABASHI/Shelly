@@ -554,6 +554,13 @@ const ja: Record<string, string> = {
   'agentdelete.deleting': '「{{name}}」を削除しています…',
   'agentdelete.deleted': '✅ 「{{name}}」を削除しました。',
   'agentdelete.failed': '❌ 「{{name}}」を削除できませんでした',
+  // G2-P3フォローアップ(2026-08-25): 登録済みエージェントが無いユーザーでも
+  // コンパニオンジャーナルの自動記録を閲覧・編集・削除できるよう、
+  // MemoryWorkbenchPaneへのcompanion専用入口を追加。
+  'companion_memory.title': 'コンパニオンの記憶',
+  'companion_memory.description': 'Shellyがあなたとの会話から覚えていること、全エージェント共通の標準設定。',
+  'companion_memory.open': 'コンパニオンの記憶を見る',
+  'companion_memory.open_a11y': 'コンパニオンの記憶メモを開く',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',
@@ -1824,9 +1831,10 @@ const ja: Record<string, string> = {
   'pane.memory_workbench.search_placeholder': 'テキストまたはタグで検索...',
   'pane.memory_workbench.section_agent': 'エージェントのメモ — {{name}}（{{count}}件）',
   'pane.memory_workbench.section_global': '共有メモ — 全エージェント共通（{{count}}件）',
-  'pane.memory_workbench.no_agent': 'エージェントが未選択です。サイドバーのエージェント詳細ポップアップから「メモリ」を開くと、そのエージェントのメモを表示できます。共有メモは以下に表示されます。',
+  'pane.memory_workbench.section_companion': 'コンパニオンジャーナル（{{count}}件）',
   'pane.memory_workbench.empty_agent': 'このエージェントの保存メモはありません',
   'pane.memory_workbench.empty_global': '共有メモはありません',
+  'pane.memory_workbench.empty_companion': 'ジャーナルのメモはまだありません。プロバイダを切り替えると会話の要点が自動で記録されます。',
   'pane.memory_workbench.no_results': '検索に一致するメモはありません',
   'pane.memory_workbench.tags_label': 'タグ（カンマ区切り）',
   'pane.memory_workbench.save': '保存',

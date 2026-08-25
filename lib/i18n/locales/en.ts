@@ -575,6 +575,13 @@ const en: Record<string, string> = {
   'agentdelete.deleting': 'I\'m deleting "{{name}}"…',
   'agentdelete.deleted': '✅ I deleted "{{name}}".',
   'agentdelete.failed': '❌ I couldn\'t delete "{{name}}"',
+  // G2-P3 follow-up (2026-08-25): companion-only entry point into
+  // MemoryWorkbenchPane, so a user with no registered agents can still
+  // see/edit/delete what the companion journal auto-wrote.
+  'companion_memory.title': 'Companion Memory',
+  'companion_memory.description': 'What Shelly remembers about your conversations, and standing preferences shared with every agent.',
+  'companion_memory.open': 'View companion memory',
+  'companion_memory.open_a11y': 'Open companion memory notes',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',
@@ -1859,9 +1866,10 @@ const en: Record<string, string> = {
   'pane.memory_workbench.search_placeholder': 'Search notes by text or tag...',
   'pane.memory_workbench.section_agent': 'Agent notes — {{name}} ({{count}})',
   'pane.memory_workbench.section_global': 'Shared notes — all agents ({{count}})',
-  'pane.memory_workbench.no_agent': 'No agent selected. Open Memory from an agent detail popup in the sidebar to inspect its notes. Shared notes are listed below.',
+  'pane.memory_workbench.section_companion': 'Companion journal ({{count}})',
   'pane.memory_workbench.empty_agent': 'No saved notes for this agent',
   'pane.memory_workbench.empty_global': 'No shared notes',
+  'pane.memory_workbench.empty_companion': 'No journal notes yet. Switching providers automatically records what your conversation established.',
   'pane.memory_workbench.no_results': 'No notes match the search',
   'pane.memory_workbench.tags_label': 'Tags (comma-separated)',
   'pane.memory_workbench.save': 'Save',

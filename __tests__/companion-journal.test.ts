@@ -67,12 +67,30 @@ describe('digestConversationForJournal', () => {
     expect(writeMemoryNote).toHaveBeenCalledTimes(1);
   });
 
-  it('writes no note when the model replies NOTHING', async () => {
+  it.each(['NOTHING', 'NOTHING worth remembering.', 'nothing.'])(
+    'writes no note when the model replies with a NOTHING-led response: %s',
+    async (reply) => {
+      ollamaChat.mockResolvedValueOnce({ success: true, content: reply });
+      // Unique key + unique last-message id per case: reusing one key across
+      // iterations would make the idempotency marker (correctly) skip the
+      // 2nd/3rd calls entirely, leaving their queued mock responses
+      // unconsumed and bleeding into later tests.
+      const key = `nothing-variant-${reply}`;
+      const messages = [msg('1', 'user', 'hi'), msg('2', 'assistant', 'hello'), msg('3', 'user', 'how are you'), msg(`4-${reply}`, 'assistant', 'good, you?')];
+      await digestConversationForJournal(key, messages, config, runCommand);
+      expect(ollamaChat).toHaveBeenCalledTimes(1);
+      expect(writeMemoryNote).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not re-ask about a tail the model already determined has nothing worth saving', async () => {
     ollamaChat.mockResolvedValueOnce({ success: true, content: 'NOTHING' });
-    const messages = [msg('1', 'user', 'hi'), msg('2', 'assistant', 'hello'), msg('3', 'user', 'how are you'), msg('4', 'assistant', 'good, you?')];
-    await digestConversationForJournal('key', messages, config, runCommand);
+    const messages = [msg('1', 'user', 'a'), msg('2', 'assistant', 'b'), msg('3', 'user', 'c'), msg('4', 'assistant', 'd')];
+    await digestConversationForJournal('nothing-key', messages, config, runCommand);
     expect(ollamaChat).toHaveBeenCalledTimes(1);
-    expect(writeMemoryNote).not.toHaveBeenCalled();
+
+    await digestConversationForJournal('nothing-key', messages, config, runCommand);
+    expect(ollamaChat).toHaveBeenCalledTimes(1); // marker set even on a no-write outcome
   });
 
   it('writes no note and leaves the digest marker unset when the model call fails, so a later switch retries', async () => {
@@ -85,6 +103,19 @@ describe('digestConversationForJournal', () => {
     await digestConversationForJournal('retry-key', messages, config, runCommand);
     expect(ollamaChat).toHaveBeenCalledTimes(2); // NOT skipped as already-digested
     expect(writeMemoryNote).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the digest marker unset when the LLM call succeeds but the write fails, so a later switch retries the write', async () => {
+    ollamaChat.mockResolvedValueOnce({ success: true, content: 'a durable fact.' });
+    writeMemoryNote.mockRejectedValueOnce(new Error('scoped filesystem write denied'));
+    const messages = [msg('1', 'user', 'a'), msg('2', 'assistant', 'b'), msg('3', 'user', 'c'), msg('4', 'assistant', 'd')];
+    await digestConversationForJournal('write-fail-key', messages, config, runCommand);
+    expect(writeMemoryNote).toHaveBeenCalledTimes(1);
+
+    ollamaChat.mockResolvedValueOnce({ success: true, content: 'a durable fact.' });
+    await digestConversationForJournal('write-fail-key', messages, config, runCommand);
+    expect(ollamaChat).toHaveBeenCalledTimes(2); // NOT skipped -- the first attempt never actually landed
+    expect(writeMemoryNote).toHaveBeenCalledTimes(2);
   });
 
   it('is idempotent: a repeated call for the same source key with no new tail content does not re-digest', async () => {
