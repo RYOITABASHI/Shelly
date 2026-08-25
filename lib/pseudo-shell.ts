@@ -611,7 +611,7 @@ export async function executeCommand(
               'Available packs:',
               ...rows,
               '',
-              'Note: optional-pack downloads are not published yet (deferred — see DEFERRED.md).'
+              'Note: installed tools are not yet added to $PATH automatically (deferred — see DEFERRED.md).'
             ),
             newState: {},
           };

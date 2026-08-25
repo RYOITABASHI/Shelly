@@ -2,9 +2,14 @@
  * lib/optional-packs.ts — pack manifest data. Fable5 roadmap item #6
  * (on-demand optional-tool packs, dormant infra ahead of any real bundle
  * split). This suite locks down the shape every consumer (pseudo-shell.ts's
- * `shelly install`, optional-pack-installer.ts) depends on, and — critically
- * — that every pack is still marked `published: false` since no pack
- * archive has actually been built or uploaded yet.
+ * `shelly install`, optional-pack-installer.ts) depends on. Since
+ * 2026-08-25 the archives are real and `published: true`
+ * (.github/workflows/build-android.yml's "Publish optional tool pack
+ * archives" step republishes them from the live jniLibs binaries on every
+ * push to main) — `sha256` stays deliberately null (see lib/optional-packs.ts's
+ * own doc comment for why a hardcoded hash would go stale), but the
+ * download URL must point at the real `optional-packs-latest` release, not
+ * a placeholder.
  */
 import {
   OPTIONAL_PACKS,
@@ -50,19 +55,24 @@ describe('OPTIONAL_PACKS manifest', () => {
     expect(allTools).toEqual(expected);
   });
 
-  // The single most important invariant this task must uphold: nothing is
-  // "live" yet. If this ever flips to true without a real release asset
-  // behind it, `shelly install` would try to download a 404.
-  it('every pack is unpublished (no real release asset exists yet)', () => {
+  // Every pack is live (2026-08-25) — the CI publishing step confirmed the
+  // release + assets actually exist (gh release view optional-packs-latest).
+  // sha256 stays deliberately null (a hardcoded hash would go stale the
+  // next time the underlying binary changes and the archive is
+  // republished) — installOptionalPack() treats null as "skip the optional
+  // integrity check", not a bug.
+  it('every pack is published, with sha256 deliberately left unpinned', () => {
     for (const pack of Object.values(OPTIONAL_PACKS)) {
-      expect(pack.published).toBe(false);
+      expect(pack.published).toBe(true);
       expect(pack.sha256).toBeNull();
+      expect(pack.approxSizeBytes).toBeGreaterThan(0);
     }
   });
 
-  it('downloadUrl is a clearly-marked placeholder, not a real GitHub release asset', () => {
+  it('downloadUrl points at the real optional-packs-latest release, not a placeholder', () => {
     for (const pack of Object.values(OPTIONAL_PACKS)) {
-      expect(pack.downloadUrl).toContain('NOT-YET-PUBLISHED');
+      expect(pack.downloadUrl).not.toContain('NOT-YET-PUBLISHED');
+      expect(pack.downloadUrl).toContain('/releases/download/optional-packs-latest/');
       expect(pack.downloadUrl).toContain(pack.archiveAssetName);
     }
   });

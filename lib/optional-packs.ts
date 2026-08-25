@@ -11,11 +11,20 @@
  * This module is ONLY the data description of what would live in an
  * optional pack. It intentionally changes nothing about what LibExtractor.kt
  * extracts unconditionally on first launch and nothing about what CI packages
- * into jniLibs — see CLAUDE.md item #6 for why that step is explicitly
- * deferred to a dedicated on-device QA pass. `published` is false for every
- * pack below because no pack archive has actually been built or uploaded to
- * a GitHub release yet; `downloadUrl` is a clearly-marked placeholder, not a
- * real asset.
+ * into jniLibs — see docs/superpowers/DEFERRED.md's item #6 entry for why
+ * that step is explicitly deferred to a dedicated on-device QA pass.
+ *
+ * `published: true` below (2026-08-25) means the archives are real and live
+ * — .github/workflows/build-android.yml's "Publish optional tool pack
+ * archives" step republishes them from the same jniLibs binaries the real
+ * APK ships from, on every push to main; `shelly install <pack>` can
+ * genuinely download and extract them today. What's STILL deferred: nothing
+ * wires the extracted binaries onto `$HOME/bin`'s PATH yet (that needs a
+ * HomeInitializer.kt bashrc change, deliberately left for a session with
+ * real-device access — see DEFERRED.md), and no tool has actually been
+ * removed from LibExtractor.kt's always-bundled LIBS map, so the default
+ * APK size is unchanged. `shelly install` already prints a note explaining
+ * this (lib/pseudo-shell.ts).
  */
 
 export interface OptionalPackManifest {
@@ -48,13 +57,13 @@ export interface OptionalPackManifest {
 }
 
 const REPO = 'RYOITABASHI/Shelly';
-// Placeholder release tag — no such release exists yet. Marked clearly so a
-// future implementer building the real pack-publishing CI step knows exactly
-// what to replace, rather than silently trusting a URL that looks real.
-const PLACEHOLDER_RELEASE_TAG = 'optional-packs-latest-TODO-NOT-YET-PUBLISHED';
+// Real release tag, published by .github/workflows/build-android.yml's
+// "Publish optional tool pack archives" step on every push to main —
+// confirmed live 2026-08-25 (gh release view optional-packs-latest).
+const RELEASE_TAG = 'optional-packs-latest';
 
-function placeholderDownloadUrl(archiveAssetName: string): string {
-  return `https://github.com/${REPO}/releases/download/${PLACEHOLDER_RELEASE_TAG}/${archiveAssetName}`;
+function releaseDownloadUrl(archiveAssetName: string): string {
+  return `https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${archiveAssetName}`;
 }
 
 // Two packs, splitting the 11 tools Fable5's review flagged as movable out
@@ -64,6 +73,20 @@ function placeholderDownloadUrl(archiveAssetName: string): string {
 // revision, not a load-bearing decision — the important part is that NONE
 // of these tools are removed from the default LibExtractor.kt LIBS map by
 // this change.
+//
+// `sha256` is deliberately left null, not pinned to the digest of any one
+// build: the CI step above republishes these archives (via --clobber) on
+// EVERY push to main that reaches that step, so a hardcoded hash here would
+// silently go stale the next time any of these binaries changes and start
+// rejecting every future install with a false integrity failure —
+// `installOptionalPack()` already treats a null sha256 as "skip the
+// optional integrity check", which is the correct behavior here: transport
+// is already HTTPS from GitHub's own release CDN, and the supply-chain
+// trust boundary is identical to trusting the APK build itself (same repo,
+// same CI, same review process), not a new weaker link. `approxSizeBytes`
+// is informational-only (CLI display), so a point-in-time value confirmed
+// against the live release is fine even though it too will drift slightly
+// over time.
 export const OPTIONAL_PACKS: Record<string, OptionalPackManifest> = {
   'dev-tools': {
     id: 'dev-tools',
@@ -71,10 +94,10 @@ export const OPTIONAL_PACKS: Record<string, OptionalPackManifest> = {
     description: 'Scripting and dev-workflow tools: python3, sqlite3, jq, make, gh.',
     tools: ['python3', 'sqlite3', 'jq', 'make', 'gh'],
     archiveAssetName: 'shelly-pack-dev-tools-arm64.tar.gz',
-    downloadUrl: placeholderDownloadUrl('shelly-pack-dev-tools-arm64.tar.gz'),
+    downloadUrl: releaseDownloadUrl('shelly-pack-dev-tools-arm64.tar.gz'),
     sha256: null,
-    approxSizeBytes: null,
-    published: false,
+    approxSizeBytes: 14817440,
+    published: true,
   },
   'editor-tools': {
     id: 'editor-tools',
@@ -82,10 +105,10 @@ export const OPTIONAL_PACKS: Record<string, OptionalPackManifest> = {
     description: 'Interactive TUI and file tools: vim, tmux, nano, less, unzip, ripgrep.',
     tools: ['vim', 'tmux', 'nano', 'less', 'unzip', 'rg'],
     archiveAssetName: 'shelly-pack-editor-tools-arm64.tar.gz',
-    downloadUrl: placeholderDownloadUrl('shelly-pack-editor-tools-arm64.tar.gz'),
+    downloadUrl: releaseDownloadUrl('shelly-pack-editor-tools-arm64.tar.gz'),
     sha256: null,
-    approxSizeBytes: null,
-    published: false,
+    approxSizeBytes: 4451673,
+    published: true,
   },
 };
 

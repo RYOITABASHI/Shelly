@@ -1,14 +1,16 @@
 /**
  * lib/pseudo-shell.ts — `shelly install <pack>` (Fable5 roadmap item #6).
  * Exercises the command dispatch against the REAL lib/optional-packs.ts
- * manifest (not a mock) so this suite also proves the production manifest's
- * `published: false` gate is honored end-to-end through the terminal
- * command surface — today `shelly install <any-real-pack-id>` must always
- * report the "not published yet" error, never attempt a live download.
- * Only the native TerminalEmulatorModule bridge and the other `shelly`
- * subcommand dependencies (workflow/settings/cosmetic/skill stores) are
- * mocked, following the existing convention used by other pseudo-shell-
- * adjacent unit tests (see __tests__/agent-rollback-offer-eligibility.test.ts).
+ * manifest (not a mock) — since 2026-08-25 every pack in that manifest is
+ * `published: true` (real, CI-published release archives — see
+ * lib/optional-packs.ts's own doc comment), so with a fully-mocked native
+ * bridge that reports success at every step, `shelly install <pack-id>`
+ * must reach a real success outcome end-to-end through the terminal command
+ * surface, not stop at a "not published yet" refusal. Only the native
+ * TerminalEmulatorModule bridge and the other `shelly` subcommand
+ * dependencies (workflow/settings/cosmetic/skill stores) are mocked,
+ * following the existing convention used by other pseudo-shell-adjacent
+ * unit tests (see __tests__/agent-rollback-offer-eligibility.test.ts).
  */
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
@@ -86,7 +88,7 @@ describe('shelly install — usage / listing', () => {
     for (const id of listOptionalPackIds()) {
       expect(text).toContain(id);
     }
-    expect(text).toContain('not published yet');
+    expect(text).toContain('Usage: shelly install <pack-id>');
   });
 
   it('shelly install list behaves the same as no args', async () => {
@@ -105,13 +107,24 @@ describe('shelly install <pack-id> — validation', () => {
     expect(mockTerminalEmulator.enqueuePackDownload).not.toHaveBeenCalled();
   });
 
-  it('accepts a known pack id and reaches the install path (refused as unpublished today)', async () => {
+  it('accepts a known, published pack id and installs successfully against a fully-mocked native bridge', async () => {
     const { lines } = await executeCommand('shelly install dev-tools', state());
-    expect(lines).toHaveLength(1);
-    expect(lines[0].type).toBe('stderr');
-    expect(lines[0].text).toMatch(/install: Pack 'dev-tools' has no published release asset yet/);
-    // The publication gate fires before any bridge call is made.
-    expect(mockTerminalEmulator.enqueuePackDownload).not.toHaveBeenCalled();
+    const text = lines.map((l) => l.text).join('\n');
+    expect(lines.some((l) => l.type === 'stderr')).toBe(false);
+    expect(text).toContain("Installed pack 'dev-tools'");
+    expect(text).toContain('python3');
+    expect(text).toContain('Extracted to: /fake/libDir/packs');
+    expect(text).toContain('not yet wired onto $PATH automatically');
+    expect(mockTerminalEmulator.enqueuePackDownload).toHaveBeenCalledWith(
+      expect.stringContaining('/releases/download/optional-packs-latest/'),
+      'dev-tools',
+      'shelly-pack-dev-tools-arm64.tar.gz'
+    );
+    expect(mockTerminalEmulator.extractPackArchive).toHaveBeenCalledWith(
+      'dev-tools',
+      '/fake/archive.tar.gz',
+      ['python3', 'sqlite3', 'jq', 'make', 'gh']
+    );
   });
 
   it('reports a clear error when the installed build lacks native pack-download support', async () => {
