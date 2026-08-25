@@ -37,6 +37,29 @@
  */
 import { detectMemory } from '@/lib/agent-nl-parser';
 
+/**
+ * A question is never a write request ("do you remember what color I
+ * picked?" must fall through to the normal chat handler, not be read as
+ * "please remember what color I picked"). A trailing "?"/"？" alone misses
+ * the common case of a casually-typed or voice-transcribed question with no
+ * terminal punctuation at all — 2026-08-25 on-device finding: "do you
+ * remember what color I decided to repaint my kitchen" (no "?") tripped
+ * detectCompanionMemoryWrite's memory-write path purely because it contains
+ * the word "remember". A leading question auxiliary/wh-word is a second,
+ * independent signal that catches exactly that case. Per this module's own
+ * asymmetry (false negatives are cheap, false positives are not): a benign
+ * imperative that happens to start the same way ("Do remember to lock the
+ * door") is an intentionally acceptable false negative here, same as an
+ * unpunctuated question was already an accepted false negative for the
+ * memory GATE itself before this fix — this only widens which inputs land
+ * on the safe side of that same asymmetry.
+ */
+const QUESTION_LEAD_RE = /^(?:do|does|did|is|are|was|were|can|could|would|will|should|have|has|had)\b|^(?:what|who|whom|whose|which|when|where|why|how)\b/i;
+
+function looksLikeQuestion(text: string): boolean {
+  return /[?？]\s*$/.test(text) || QUESTION_LEAD_RE.test(text);
+}
+
 export interface GlobalMemoryWriteIntent {
   /** The fact/preference to store, with the scope phrasing stripped out. */
   text: string;
@@ -184,9 +207,9 @@ export function detectGlobalMemoryWrite(raw: string): GlobalMemoryWriteIntent | 
   if (!text) return null;
 
   // Questions ("do you remember what all agents did?") are never write
-  // requests. Cheap guard; a polite question-form request ("…覚えておいて？")
-  // is a tolerated false negative.
-  if (/[?？]\s*$/.test(text)) return null;
+  // requests. A polite question-form request ("…覚えておいて？") is a
+  // tolerated false negative.
+  if (looksLikeQuestion(text)) return null;
 
   // Gate 1a — explicit all-agents scope.
   if (!hasGlobalScopeMarker(text)) return null;
@@ -219,7 +242,7 @@ export function detectCompanionMemoryWrite(raw: string): GlobalMemoryWriteIntent
 
   // Keep the same question guard as the stricter sibling. A polite
   // question-form request is an intentional false negative.
-  if (/[?？]\s*$/.test(text)) return null;
+  if (looksLikeQuestion(text)) return null;
 
   const memory = detectMemory(text);
   if (!memory?.remember) return null;

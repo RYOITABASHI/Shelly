@@ -235,6 +235,10 @@ describe('detectGlobalMemoryWrite — misses (a wrong global write is worse than
   it('does NOT fire on a question', () => {
     expect(detectGlobalMemoryWrite('do you remember what all agents do?')).toBeNull();
     expect(detectGlobalMemoryWrite('全エージェントで覚えておいてくれる？')).toBeNull();
+    // Unpunctuated question form (2026-08-25 fix) -- caught by the
+    // question-lead-word check even though "for all agents" would
+    // otherwise satisfy the scope-marker gate on its own.
+    expect(detectGlobalMemoryWrite('did you remember to save that for all agents')).toBeNull();
   });
 
   it('does NOT fire when the payload is empty after the scope clause is stripped', () => {
@@ -289,8 +293,23 @@ describe('detectCompanionMemoryWrite — bare AI Pane companion requests', () =>
     "I don't remember whether I prefer dark mode",
     'do you remember that I prefer dark mode?',
     '返信は日本語だと覚えている？',
+    // 2026-08-25 on-device finding: an unpunctuated question (common from
+    // voice input or casual typing) used to slip through the old
+    // trailing-"?"-only guard purely because it contains "remember".
+    'do you remember what color I decided to repaint my kitchen',
+    'what do you remember about my kitchen color',
   ])('rejects negated or question form: %s', (utterance) => {
     expect(detectCompanionMemoryWrite(utterance)).toBeNull();
+  });
+
+  it('still accepts an ordinary imperative that happens to start with a question-lead word', () => {
+    // "Do remember to..." is a rare but real emphatic imperative, not a
+    // question -- the guard's cheap lead-word heuristic can't tell the two
+    // apart, so it's swallowed as an intentional false negative (this
+    // module's own stated asymmetry: false negatives cost one rephrase,
+    // false positives cost silent memory pollution). This test exists so a
+    // future change doesn't quietly widen it into a real false positive.
+    expect(detectCompanionMemoryWrite('do remember to lock the door before you leave')).toBeNull();
   });
 
   it.each([
