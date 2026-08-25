@@ -181,7 +181,7 @@ jest.mock('@/lib/agent-manager', () => ({
   writeGlobalMemoryNote: (...args: unknown[]) => mockWriteGlobalMemoryNote(...args),
 }));
 
-import { useAIPaneDispatch } from '@/hooks/use-ai-pane-dispatch';
+import { useAIPaneDispatch, createThrottledUpdate } from '@/hooks/use-ai-pane-dispatch';
 import {
   COMPANION_CONVERSATION_KEY,
   resolveAiPaneStoreKey,
@@ -2870,5 +2870,80 @@ describe('cancelAgentDraft fallback when the target bubble is already gone (2026
     expect(conv().messages).toHaveLength(1);
     expect(conv().messages[0]).toMatchObject({ role: 'assistant', content: 'Registration cancelled.' });
     expect(conv().pendingAgentSession).toBeNull();
+  });
+});
+
+describe('createThrottledUpdate', () => {
+  // 2026-08-25: found while curating a companion-journal README screenshot
+  // -- a chunk update still sitting in the throttle's `pending` slot when a
+  // RAW (non-throttled) completion write landed could fire its own 50ms
+  // timer AFTER completion and stomp `isStreaming` back to `true`
+  // permanently (nothing writes to that message again), silently
+  // disqualifying it from isDigestEligible (lib/companion-journal.ts) and
+  // isCarryForwardEligible (store/ai-pane-store.ts), both of which gate on
+  // `!m.isStreaming`. Fix: every completion-time write in
+  // use-ai-pane-dispatch.ts now goes through this SAME throttled instance
+  // instead of a raw store call, so `updates.isStreaming === false` always
+  // clears the pending entry/timer before writing.
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('a completion write is not stomped by a stale pending chunk update firing after it', () => {
+    const calls: Array<{ paneId: string; msgId: string; updates: Record<string, unknown> }> = [];
+    const updateFn = jest.fn((paneId: string, msgId: string, updates: Record<string, unknown>) => {
+      calls.push({ paneId, msgId, updates });
+    });
+    const throttled = createThrottledUpdate(updateFn);
+
+    // A chunk update queues a 50ms flush timer (isStreaming: true, as the
+    // first-chunk-received call sites in use-ai-pane-dispatch.ts do).
+    throttled('pane-1', 'msg-1', { isStreaming: true, streamingText: 'partial' });
+    expect(updateFn).not.toHaveBeenCalled(); // throttled, not yet flushed
+
+    // Completion arrives before the 50ms timer fires (the race window the
+    // bug lived in) -- must flush immediately AND cancel the stale timer.
+    throttled('pane-1', 'msg-1', { isStreaming: false, streamingText: undefined, content: 'done' });
+    expect(updateFn).toHaveBeenCalledTimes(1);
+    expect(calls[0].updates.isStreaming).toBe(false);
+
+    // Advance past the original 50ms window -- the stale pending chunk
+    // update must NOT fire and re-assert isStreaming: true.
+    jest.advanceTimersByTime(100);
+    expect(updateFn).toHaveBeenCalledTimes(1); // still just the one completion write
+  });
+
+  it('a chunk update queued AFTER completion still flushes normally on its own timer', () => {
+    const calls: Array<{ paneId: string; msgId: string; updates: Record<string, unknown> }> = [];
+    const updateFn = jest.fn((paneId: string, msgId: string, updates: Record<string, unknown>) => {
+      calls.push({ paneId, msgId, updates });
+    });
+    const throttled = createThrottledUpdate(updateFn);
+
+    throttled('pane-1', 'msg-1', { isStreaming: false, content: 'first message done' });
+    expect(updateFn).toHaveBeenCalledTimes(1);
+
+    // A second, later message on the same pane streams normally.
+    throttled('pane-1', 'msg-2', { isStreaming: true, streamingText: 'new' });
+    expect(updateFn).toHaveBeenCalledTimes(1); // still throttled
+
+    jest.advanceTimersByTime(50);
+    expect(updateFn).toHaveBeenCalledTimes(2);
+    expect(calls[1]).toEqual({ paneId: 'pane-1', msgId: 'msg-2', updates: { isStreaming: true, streamingText: 'new' } });
+  });
+
+  it('cleanup() cancels a pending timer without flushing it', () => {
+    const updateFn = jest.fn();
+    const throttled = createThrottledUpdate(updateFn);
+
+    throttled('pane-1', 'msg-1', { isStreaming: true, streamingText: 'partial' });
+    throttled.cleanup();
+
+    jest.advanceTimersByTime(100);
+    expect(updateFn).not.toHaveBeenCalled();
   });
 });

@@ -434,12 +434,22 @@ function startAgentRunProgressTicker(
 type UpdateFn = (paneId: string, msgId: string, updates: Partial<ChatMessage>) => void;
 
 /** 50 ms throttle for streaming partial updates — same pattern as use-ai-dispatch.ts. */
-function createThrottledUpdate(updateFn: UpdateFn) {
+// Exported only for the race-condition regression test below — every real
+// caller in this file goes through the useMemo-created instance inside
+// useAIPaneDispatch.
+export function createThrottledUpdate(updateFn: UpdateFn) {
   let pending: { paneId: string; msgId: string; updates: Partial<ChatMessage> } | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const throttled = (paneId: string, msgId: string, updates: Partial<ChatMessage>) => {
-    // Flush immediately when streaming ends
+    // Flush immediately when streaming ends. Every completion write for a
+    // message this hook is streaming into MUST go through here (never a raw
+    // store.updateMessage) — otherwise a chunk update still sitting in
+    // `pending` from just before completion fires its 50ms timer AFTER the
+    // completion write and stomps isStreaming back to true forever (nothing
+    // clears it later), which silently disqualifies the message from
+    // isDigestEligible/isCarryForwardEligible. Root-caused 2026-08-25 via a
+    // companion-journal digest that only ever saw user messages.
     if (updates.isStreaming === false) {
       if (timer) {
         clearTimeout(timer);
@@ -737,20 +747,20 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             throttledUpdate(paneId, msgId, { streamingText: accumulated, content: accumulated });
           });
           if (result.success) {
-            store.updateMessage(paneId, msgId, {
+            throttledUpdate(paneId, msgId, {
               isStreaming: false,
               streamingText: undefined,
               content: result.text,
             });
           } else {
-            store.updateMessage(paneId, msgId, {
+            throttledUpdate(paneId, msgId, {
               isStreaming: false,
               streamingText: undefined,
               content: result.error ?? 'No AI provider is configured.',
             });
           }
         } catch (err) {
-          store.updateMessage(paneId, msgId, {
+          throttledUpdate(paneId, msgId, {
             isStreaming: false,
             streamingText: undefined,
             content: `[@agent] error: ${err instanceof Error ? err.message : String(err)}`,
@@ -2905,7 +2915,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               latencyMs: Date.now() - localStartedAt,
               firstTokenLatencyMs,
             });
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content: accumulated,
               streamingText: undefined,
               isStreaming: false,
@@ -2923,7 +2933,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 inputTokens: localInputTokens,
                 latencyMs: Date.now() - localStartedAt,
               });
-              store.updateMessage(paneId, assistantId, {
+              throttledUpdate(paneId, assistantId, {
                 content:
                   `Local LLM returned an empty response from ${settings.localLlmUrl}. ` +
                   `Restart llama.cpp and try again.`,
@@ -2947,7 +2957,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               latencyMs: Date.now() - localStartedAt,
               firstTokenLatencyMs,
             });
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content: accumulated,
               streamingText: undefined,
               isStreaming: false,
@@ -2964,7 +2974,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               inputTokens: localInputTokens,
               latencyMs: Date.now() - localStartedAt,
             });
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content:
                 `Could not reach the local LLM at ${settings.localLlmUrl}. ` +
                 `Make sure llama-server (or Ollama) is running.\n\n${result.error ?? ''}`.trim(),
@@ -2976,7 +2986,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // ── Cerebras Qwen3-235B (frontier-class, fastest, 1M tok/day) ──
           const apiKey = settings.cerebrasApiKey ?? '';
           if (!apiKey) {
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content: 'Cerebras API key is not set. Add it in Settings (gear icon) → Cerebras API Key.',
               isStreaming: false,
               streamingText: undefined,
@@ -3012,13 +3022,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: `Cerebras error: ${result.error}`,
                   isStreaming: false,
                   streamingText: undefined,
                 });
               } else {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: finalContent,
                   streamingText: undefined,
                   isStreaming: false,
@@ -3032,7 +3042,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // ── OpenRouter (generic OpenAI-compatible SSE) ──
           const apiKey = settings.openrouterApiKey ?? '';
           if (!apiKey) {
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content: 'OpenRouter API key is not set. Add it in Settings (gear icon) → OpenRouter API Key.',
               isStreaming: false,
               streamingText: undefined,
@@ -3068,13 +3078,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: `OpenRouter error: ${result.error}`,
                   isStreaming: false,
                   streamingText: undefined,
                 });
               } else {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: finalContent,
                   streamingText: undefined,
                   isStreaming: false,
@@ -3088,7 +3098,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // ── Groq (Llama 3.3 70B, OpenAI-compatible SSE) ──
           const apiKey = settings.groqApiKey ?? '';
           if (!apiKey) {
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content: 'Groq API key is not set. Add it in Settings (gear icon) → Groq API Key.',
               isStreaming: false,
               streamingText: undefined,
@@ -3128,13 +3138,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: `Groq error: ${result.error}`,
                   isStreaming: false,
                   streamingText: undefined,
                 });
               } else {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: finalContent,
                   streamingText: undefined,
                   isStreaming: false,
@@ -3148,7 +3158,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // ── Gemini (SSE via Google AI Studio) ──
           const apiKey = settings.geminiApiKey ?? '';
           if (!apiKey) {
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content: 'Gemini API key is not set. Add it in Settings (gear icon) → Gemini API Key.',
               isStreaming: false,
               streamingText: undefined,
@@ -3185,13 +3195,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: `Gemini error: ${result.error}`,
                   isStreaming: false,
                   streamingText: undefined,
                 });
               } else {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: finalContent,
                   streamingText: undefined,
                   isStreaming: false,
@@ -3205,7 +3215,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // ── Perplexity Sonar (web-search SSE) ──
           const apiKey = settings.perplexityApiKey ?? '';
           if (!apiKey) {
-            store.updateMessage(paneId, assistantId, {
+            throttledUpdate(paneId, assistantId, {
               content: 'Perplexity API key is not set. Add it in Settings (gear icon) → Perplexity API Key.',
               isStreaming: false,
               streamingText: undefined,
@@ -3251,13 +3261,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 : accumulated;
 
               if (!result.success && result.error) {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: `Perplexity error: ${result.error}`,
                   isStreaming: false,
                   streamingText: undefined,
                 });
               } else {
-                store.updateMessage(paneId, assistantId, {
+                throttledUpdate(paneId, assistantId, {
                   content: finalContent,
                   streamingText: undefined,
                   isStreaming: false,
@@ -3269,7 +3279,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           }
         } else {
           // ── Unknown agent ──
-          store.updateMessage(paneId, assistantId, {
+          throttledUpdate(paneId, assistantId, {
             content: `Unknown agent "${agent}". Switch the pane agent in the pane header.`,
             isStreaming: false,
             streamingText: undefined,
@@ -3278,7 +3288,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       } catch (err: unknown) {
         if (signal.aborted) {
           // Cancelled by user — leave partial content as-is
-          store.updateMessage(paneId, assistantId, {
+          throttledUpdate(paneId, assistantId, {
             isStreaming: false,
             streamingText: undefined,
           });
@@ -3287,7 +3297,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         logError('AIPaneDispatch', 'Dispatch failed', err);
         const message =
           err instanceof Error ? err.message : 'Failed to get response';
-        store.updateMessage(paneId, assistantId, {
+        throttledUpdate(paneId, assistantId, {
           content: `Error: ${message}`,
           isStreaming: false,
           streamingText: undefined,
