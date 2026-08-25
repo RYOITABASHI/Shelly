@@ -26,6 +26,8 @@ import {
   resolveAiPaneStoreKey,
   useAIPaneStore,
 } from '@/store/ai-pane-store';
+import { digestConversationForJournal } from '@/lib/companion-journal';
+import { execCommand } from '@/hooks/use-native-exec';
 import { usePaneStore } from '@/store/pane-store';
 import { useInboundStore } from '@/store/inbound-store';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
@@ -55,6 +57,16 @@ import { useTranslation } from '@/lib/i18n';
 import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
 
 const AUTO_FOLLOW_THRESHOLD_PX = 100;
+
+// Adapter matching lib/companion-journal.ts's `(cmd) => Promise<string>`
+// runCommand shape — same small pattern used by
+// hooks/use-ai-pane-dispatch.ts's and AgentRunsPane.tsx's own
+// runAgentShellCommand.
+async function runCompanionJournalCommand(cmd: string): Promise<string> {
+  const result = await execCommand(cmd, 30_000);
+  if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+  return result.stdout;
+}
 
 // ─── Streaming Indicator ─────────────────────────────────────────────────────
 
@@ -456,6 +468,22 @@ export default function AIPane() {
     const prev = prevConversationKeyRef.current;
     prevConversationKeyRef.current = resolvedConversationKey;
     addAiPaneThreadSwitchNotice(prev, resolvedConversationKey, t);
+    // Companion journal (G1-P2's sibling, "一人の相棒" Gap②): distill the
+    // thread being LEFT into a note before it's forgotten. Same trigger
+    // point as carry-forward (this is the sole switch-notice caller,
+    // trigger-source-agnostic — covers the pane-header "SWITCH AGENT" menu
+    // AND an `@mention` switch alike), but deliberately NOT awaited: it
+    // only feeds a FUTURE conversation, never the one in progress.
+    if (prev !== resolvedConversationKey) {
+      const settings = useSettingsStore.getState().settings;
+      const sourceMessages = useAIPaneStore.getState().conversations[prev]?.messages ?? [];
+      void digestConversationForJournal(
+        prev,
+        sourceMessages,
+        { baseUrl: settings.localLlmUrl, model: settings.localLlmModel ?? 'default', enabled: true },
+        runCompanionJournalCommand,
+      );
+    }
   }, [resolvedConversationKey, t]);
 
   // Phase 3 inbound gateway: drain authorized Telegram utterances into the SAME

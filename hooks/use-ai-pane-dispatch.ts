@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
-import { carryForwardOnThreadSwitch, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
+import { COMPANION_CONVERSATION_KEY, carryForwardOnThreadSwitch, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
 import type { JustRegisteredAgentRef } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
@@ -59,7 +59,7 @@ import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraf
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
-import { buildGlobalRecallContext, readGlobalMemoryNotes } from '@/lib/agent-memory';
+import { buildCompanionRecallContext, buildGlobalRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes } from '@/lib/agent-memory';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import {
@@ -2768,7 +2768,16 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // behavior the README Privacy section documents.
         const userProfileSummary = await getUserProfileSummaryForPrompt();
         const globalMemoryNotesForPrompt = await readGlobalMemoryNotes();
-        const globalMemorySummary = buildGlobalRecallContext(globalMemoryNotesForPrompt);
+        // Companion journal (G1-P2's sibling, "一人の相棒" Gap②): injected ONLY
+        // into the companion conversation, never into an explicit-provider
+        // pane's prompt — see lib/agent-memory.ts's COMPANION_MEMORY_SCOPE doc
+        // comment for why this stays narrower than `_global`.
+        const companionJournalSummary = paneId === COMPANION_CONVERSATION_KEY
+          ? buildCompanionRecallContext(await readCompanionMemoryNotes())
+          : '';
+        const globalMemorySummary = [buildGlobalRecallContext(globalMemoryNotesForPrompt), companionJournalSummary]
+          .filter(Boolean)
+          .join('\n\n');
         const systemPrompt = (agent === 'local'
           ? buildLocalAIPaneSystemPrompt(promptTerminalCtx, userProfileSummary, globalMemorySummary, promptText)
           : buildAIPaneSystemPrompt(promptTerminalCtx, agent, stagedFile, promptText, userProfileSummary, globalMemorySummary))
