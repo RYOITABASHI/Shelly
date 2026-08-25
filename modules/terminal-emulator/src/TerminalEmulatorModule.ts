@@ -85,6 +85,39 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     error?: string | null;
   }>;
   removeApkDownload(downloadId: number): Promise<void>;
+  /**
+   * On-demand optional-tool pack download (Fable5 roadmap item #6, dormant
+   * infra — see lib/optional-packs.ts / lib/optional-pack-installer.ts).
+   * Same DownloadManager mechanism as enqueueApkDownload
+   * (setDestinationInExternalFilesDir, never the public Downloads dir, which
+   * throws SecurityException on targetSdk>=29) but generic — no APK-specific
+   * mimetype/extension — targeting Download/packs/<fileName> instead of
+   * Download/<fileName>. Poll with the existing getApkDownloadStatus /
+   * removeApkDownload (both already generic, keyed only by downloadId).
+   */
+  enqueuePackDownload?(url: string, packId: string, fileName: string): Promise<{ downloadId: number; path: string }>;
+  /**
+   * Sibling of verifyApkFile for a downloaded pack archive (.tar.gz instead
+   * of .apk). expectedSizeBytes <= 0 skips the size check (used when the
+   * manifest doesn't know the size yet).
+   */
+  verifyPackArchive?(archivePath: string, expectedSha256: string, expectedSizeBytes: number): Promise<{
+    ok: boolean;
+    actualSha256: string;
+    bytes: number;
+    error?: string | null;
+  }>;
+  /**
+   * Extracts a downloaded pack .tar.gz into app-private storage under
+   * termux-libs/packs/<packId>/ and chmods the listed tool binaries
+   * executable. Does NOT wire the binaries onto $PATH — that ($HOME/bin
+   * symlinking via HomeInitializer.kt's bashrc generation) is deferred, see
+   * CLAUDE.md item #6 / DEFERRED.md.
+   */
+  extractPackArchive?(packId: string, archivePath: string, tools: string[]): Promise<{
+    extractedPaths: string[];
+    libDir: string;
+  }>;
   pasteToSession(sessionId: string, text: string): Promise<void>;
   pasteClipboardToSession(sessionId: string): Promise<void>;
   setScouterEnabled(enabled: boolean): Promise<void>;

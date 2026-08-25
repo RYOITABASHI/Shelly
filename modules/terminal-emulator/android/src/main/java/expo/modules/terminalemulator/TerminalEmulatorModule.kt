@@ -172,6 +172,31 @@ class TerminalEmulatorModule : Module() {
         return target
     }
 
+    /**
+     * Sibling of validateDownloadPath for optional-pack archives (Fable5
+     * roadmap item #6). Same app-private-external-files-dir rationale (no
+     * storage permission needed, unlike the public Downloads dir which
+     * throws SecurityException on targetSdk>=29), but archives live under a
+     * `packs/` subdirectory so they never collide with APK update downloads,
+     * and the extension check is `.tar.gz` instead of `.apk`.
+     */
+    private fun validatePackDownloadPath(context: Context, packId: String, fileName: String): java.io.File {
+        val packIdRe = Regex("^[a-z0-9][a-z0-9-]{0,63}$")
+        val archiveNameRe = Regex("^[A-Za-z0-9._-]+\\.tar\\.gz$", RegexOption.IGNORE_CASE)
+        require(packIdRe.matches(packId)) { "Invalid pack id: $packId" }
+        require(archiveNameRe.matches(fileName)) { "Invalid pack archive file name: $fileName" }
+
+        val downloadsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: throw IllegalStateException("External files dir unavailable")
+        val packsDir = java.io.File(downloadsRoot, "packs")
+        val target = java.io.File(packsDir, fileName).canonicalFile
+        val root = packsDir.canonicalFile
+        require(target.path == root.path || target.path.startsWith(root.path + java.io.File.separator)) {
+            "Download path escapes app pack-download directory"
+        }
+        return target
+    }
+
     private fun isSafePetSegment(value: String): Boolean =
         Regex("^[A-Za-z0-9_-]{1,80}$").matches(value)
 
@@ -1289,6 +1314,94 @@ class TerminalEmulatorModule : Module() {
             val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             manager.remove(downloadId)
             null
+        }
+
+        // ── On-demand optional-tool packs (Fable5 roadmap item #6) ──────────
+        // Dormant infra: no caller reaches these unless a user explicitly runs
+        // `shelly install <pack>`, and every pack manifest's `published` flag
+        // is false today (lib/optional-packs.ts) so the JS side refuses
+        // before ever calling enqueuePackDownload. Kept additive and separate
+        // from the APK update path above rather than reusing it, since
+        // enqueueApkDownload/verifyApkFile hardcode .apk-specific mimetype
+        // and extension checks.
+        AsyncFunction("enqueuePackDownload") { url: String, packId: String, fileName: String ->
+            val context = requireReactContext()
+            val target = validatePackDownloadPath(context, packId, fileName)
+            target.parentFile?.mkdirs()
+            if (target.exists() && !target.delete()) {
+                throw IllegalStateException("Could not replace existing pack archive: ${target.absolutePath}")
+            }
+
+            val request = DownloadManager.Request(Uri.parse(url)).apply {
+                setTitle(fileName)
+                setDescription("Shelly optional pack: $packId")
+                setMimeType("application/gzip")
+                setAllowedOverMetered(true)
+                setAllowedOverRoaming(true)
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                setDestinationInExternalFilesDir(
+                    context,
+                    Environment.DIRECTORY_DOWNLOADS,
+                    "packs/$fileName",
+                )
+            }
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val downloadId = try {
+                manager.enqueue(request)
+            } catch (e: Exception) {
+                Log.e("TerminalEmulator", "enqueuePackDownload: enqueue failed", e)
+                throw IllegalStateException("DownloadManager.enqueue failed: ${e.message}", e)
+            }
+            Log.i("TerminalEmulator", "enqueuePackDownload: id=$downloadId target=${target.absolutePath}")
+            mapOf(
+                "downloadId" to downloadId,
+                "path" to target.absolutePath,
+            )
+        }
+
+        AsyncFunction("verifyPackArchive") { archivePath: String, expectedSha256: String, expectedSizeBytes: Long ->
+            val archive = java.io.File(archivePath)
+            if (!archive.exists() || !archive.isFile) {
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to 0L,
+                    "error" to "Pack archive not found: $archivePath",
+                )
+            }
+            if (!archive.name.endsWith(".tar.gz", ignoreCase = true)) {
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to archive.length(),
+                    "error" to "Not a pack archive (.tar.gz): $archivePath",
+                )
+            }
+            val bytes = archive.length()
+            if (expectedSizeBytes > 0 && bytes != expectedSizeBytes) {
+                return@AsyncFunction mapOf(
+                    "ok" to false,
+                    "actualSha256" to "",
+                    "bytes" to bytes,
+                    "error" to "size mismatch: expected $expectedSizeBytes, got $bytes",
+                )
+            }
+            val actualSha256 = sha256Hex(archive)
+            mapOf(
+                "ok" to actualSha256.equals(expectedSha256, ignoreCase = true),
+                "actualSha256" to actualSha256,
+                "bytes" to bytes,
+                "error" to if (actualSha256.equals(expectedSha256, ignoreCase = true)) null else "sha256 mismatch",
+            )
+        }
+
+        AsyncFunction("extractPackArchive") { packId: String, archivePath: String, tools: List<String> ->
+            val context = requireReactContext()
+            val result = LibExtractor.extractPack(context, packId, archivePath, tools)
+            mapOf(
+                "extractedPaths" to result.extractedPaths,
+                "libDir" to result.libDir,
+            )
         }
 
         AsyncFunction("getAppVersionInfo") {

@@ -588,6 +588,71 @@ export async function executeCommand(
         };
       }
 
+      // ── shelly install ───────────────────────────────────────────────────────
+      // On-demand optional-tool packs (Fable5 roadmap item #6): additive,
+      // dormant-until-invoked infra for fetching tools that are NOT part of
+      // the always-bundled jniLibs set. See lib/optional-packs.ts and
+      // lib/optional-pack-installer.ts for the full design/deferred-scope notes.
+      if (sub === 'install') {
+        const { getOptionalPack, listOptionalPackIds } = require('@/lib/optional-packs');
+        const { installOptionalPack, PackNotPublishedError } = require('@/lib/optional-pack-installer');
+        const packId = args[1];
+
+        if (!packId || packId === 'list') {
+          const ids: string[] = listOptionalPackIds();
+          const rows = ids.map((id) => {
+            const pack = getOptionalPack(id);
+            return `  ${id.padEnd(16)} ${pack.tools.join(', ')}`;
+          });
+          return {
+            lines: out(
+              'Usage: shelly install <pack-id>',
+              '',
+              'Available packs:',
+              ...rows,
+              '',
+              'Note: optional-pack downloads are not published yet (deferred — see DEFERRED.md).'
+            ),
+            newState: {},
+          };
+        }
+
+        const pack = getOptionalPack(packId);
+        if (!pack) {
+          return {
+            lines: err(`install: unknown pack '${packId}'. Run 'shelly install' to see available packs.`),
+            newState: {},
+          };
+        }
+
+        const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+        if (typeof TerminalEmulator.enqueuePackDownload !== 'function') {
+          return {
+            lines: err(
+              'install: pack downloads are not supported by this build of Shelly (missing native support). Update Shelly and try again.'
+            ),
+            newState: {},
+          };
+        }
+
+        try {
+          const result = await installOptionalPack(pack, TerminalEmulator);
+          return {
+            lines: out(
+              `Installed pack '${pack.id}': ${pack.tools.join(', ')}`,
+              `Extracted to: ${result.libDir}`,
+              'Note: these binaries are not yet wired onto $PATH automatically — that step is deferred (see DEFERRED.md).'
+            ),
+            newState: {},
+          };
+        } catch (e: any) {
+          if (e instanceof PackNotPublishedError) {
+            return { lines: err(`install: ${e.message}`), newState: {} };
+          }
+          return { lines: err(`install: ${String(e?.message || e)}`), newState: {} };
+        }
+      }
+
       // ── shelly voice ─────────────────────────────────────────────────────────
       if (sub === 'voice') {
         useSettingsStore.getState().setShowVoiceMode(true);
@@ -761,7 +826,8 @@ export async function executeCommand(
             '  shelly voice     Open full-screen voice chat',
             '  shelly setup     Interactive setup wizard',
             '  shelly workflow  Manage saved workflows',
-            '  shelly skill     Import and manage SKILL.md skills'
+            '  shelly skill     Import and manage SKILL.md skills',
+            '  shelly install   Download and extract an optional tool pack'
           ),
           newState: {},
         };

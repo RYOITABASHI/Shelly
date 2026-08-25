@@ -376,6 +376,74 @@ object LibExtractor {
         throw java.io.FileNotFoundException("None of ${candidates.toList()} found in assets")
     }
 
+    /** Result of an on-demand optional-tool-pack extraction (extractPack below). */
+    data class PackExtractionResult(val extractedPaths: List<String>, val libDir: String)
+
+    /**
+     * On-demand extraction for optional tool packs downloaded at runtime via
+     * `shelly install <pack>` (Fable5 roadmap item #6 — dormant infra, see
+     * lib/optional-packs.ts / lib/optional-pack-installer.ts; no caller wires
+     * this into $HOME/bin PATH yet, and the pack archives themselves are not
+     * published — every OptionalPackManifest.published is false, so this
+     * function is never reached from a real device today).
+     *
+     * Deliberately separate from extractAll(): this NEVER runs on first
+     * launch or as part of the unconditional startup extraction path, only
+     * when a user explicitly runs `shelly install <pack>`. Mirrors the same
+     * ProcessBuilder("/system/bin/tar", "xzf", ...) pattern already proven
+     * by extractTarGzAsset() above, extracting into a pack-scoped
+     * subdirectory instead of directly under libDir so multiple packs never
+     * collide.
+     *
+     * packId is expected to already be validated by the native bridge
+     * caller (TerminalEmulatorModule's own regex check before invoking this),
+     * but is re-validated here defensively since it becomes part of a
+     * filesystem path under the shared termux-libs directory.
+     */
+    fun extractPack(context: Context, packId: String, archivePath: String, tools: List<String>): PackExtractionResult {
+        require(Regex("^[a-z0-9][a-z0-9-]{0,63}$").matches(packId)) { "Invalid pack id: $packId" }
+        val archive = File(archivePath)
+        require(archive.exists() && archive.isFile) { "Pack archive not found: $archivePath" }
+
+        val libDir = getLibDir(context)
+        val packsRoot = File(libDir, "packs")
+        val packDir = File(packsRoot, packId)
+        // Extract fresh every time: a re-run of `shelly install <pack>` after a
+        // previous partial/corrupt extraction must not silently keep stale files.
+        if (packDir.exists()) packDir.deleteRecursively()
+        packDir.mkdirs()
+
+        val pb = ProcessBuilder("/system/bin/tar", "xzf", archive.absolutePath, "-C", packDir.absolutePath)
+        pb.redirectErrorStream(true)
+        val proc = pb.start()
+        val tarOutput = proc.inputStream.bufferedReader().readText()
+        val exitCode = proc.waitFor()
+        if (exitCode != 0) {
+            throw java.io.IOException("pack extraction failed (exit $exitCode): $tarOutput")
+        }
+
+        val extracted = mutableListOf<String>()
+        for (toolName in tools) {
+            // Tool names come from the JS-side pack manifest constant (not
+            // network- or archive-controlled data), but validate defensively
+            // anyway since this becomes a File path and an executable-bit flip.
+            if (!Regex("^[A-Za-z0-9._-]+$").matches(toolName)) {
+                Log.w(TAG, "extractPack: skipping unsafe tool name '$toolName' for pack '$packId'")
+                continue
+            }
+            val toolFile = File(packDir, toolName)
+            if (!toolFile.exists()) {
+                Log.w(TAG, "extractPack: '$toolName' not found in pack '$packId' archive")
+                continue
+            }
+            toolFile.setExecutable(true, false)
+            extracted.add(toolFile.absolutePath)
+        }
+
+        Log.i(TAG, "extractPack: pack=$packId extracted=${extracted.size}/${tools.size} to ${packDir.absolutePath}")
+        return PackExtractionResult(extracted, packDir.absolutePath)
+    }
+
     private fun extractTarGzAsset(
         context: Context,
         assetName: String,
