@@ -159,6 +159,10 @@ const ja: Record<string, string> = {
   'settings.enable_safety': '安全チェックを有効化',
   'settings.safety_level': '確認レベル',
   'settings.close_a11y': '設定を閉じる',
+  // G2-P3(2026-08-25): 開発者/IDE向け設定への1タップ導線+ドリルダウン画面。
+  'settings.developer_title': '開発者向け',
+  'settings.developer_open_a11y': '開発者向け設定を開く',
+  'settings.developer_row_subtitle': 'Doctor・連携・Webhook許可リスト・Scouter・リセット',
 
   // ── Settings: panels ─────────────────────────────────────────────
   'agents.title': 'AIエージェント',

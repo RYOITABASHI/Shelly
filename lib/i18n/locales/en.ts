@@ -159,6 +159,10 @@ const en: Record<string, string> = {
   'settings.enable_safety': 'Enable Safety Check',
   'settings.safety_level': 'Confirmation Level',
   'settings.close_a11y': 'Close settings',
+  // G2-P3 (2026-08-25): the developer/IDE drill-down row + screen.
+  'settings.developer_title': 'Developer',
+  'settings.developer_open_a11y': 'Open developer settings',
+  'settings.developer_row_subtitle': 'Doctor · Integrations · Webhook Allowlist · Scouter · Reset',
 
   // ── Settings: panels ─────────────────────────────────────────────
   'agents.title': 'AI Agents',

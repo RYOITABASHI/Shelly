@@ -31,6 +31,7 @@ import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
+import { ModalHeader } from '@/components/settings/ModalHeader';
 import { applyThemePreset, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { execCommand } from '@/hooks/use-native-exec';
@@ -79,6 +80,15 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
   const { t } = useTranslation();
   const [mcpOpen, setMcpOpen] = useState(false);
   const [llamaOpen, setLlamaOpen] = useState(false);
+  // G2-P3 (2026-08-25, Fable5 design consult): the companion/developer split
+  // reuses this exact drill-down pattern as its 3rd instance — a sibling
+  // full-screen Modal, not a new navigation primitive. DoctorSection /
+  // IntegrationsSection / WebhookHostAllowlistSection / ScouterSection (whole)
+  // / ResetSettingsSection moved out of the main companion list into
+  // DeveloperSettingsScreen below, reachable via one "DEVELOPER" row at the
+  // bottom of the companion list — still one tap away, nothing removed,
+  // same "still there, not primary" philosophy as the Sidebar's G2-P1/P2.
+  const [devOpen, setDevOpen] = useState(false);
   // Deliberately opaque, not wallpaper-transparent: usePanelBackground's own
   // scope is Sidebar/AgentBar/ContextBar/PaneSlot header, not this dense
   // text-heavy settings sheet — wallpaper bleeding through hurt readability.
@@ -92,6 +102,16 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
   }, [onOpenBuilds]);
   const handleOpenMcp = React.useCallback(() => setMcpOpen(true), []);
   const handleOpenLlama = React.useCallback(() => setLlamaOpen(true), []);
+  const handleOpenDev = React.useCallback(() => setDevOpen(true), []);
+  const handleCloseDev = React.useCallback(() => setDevOpen(false), []);
+  // ScouterSection's "Open Monitor" button used to just call the outer
+  // onClose (it lived directly in the companion list). Now that it lives
+  // inside the developer drill-down, a single onClose would leave the
+  // developer Modal stacked (now empty) behind the Monitor pane. Close both.
+  const handleCloseAllSettingsForMonitor = React.useCallback(() => {
+    setDevOpen(false);
+    onClose();
+  }, [onClose]);
 
   return (
     <Modal
@@ -121,7 +141,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
           <ScrollView
             style={styles.scroll}
             showsVerticalScrollIndicator={false}
-            // Perf: this ScrollView renders ~13 always-mounted, non-virtualized
+            // Perf: this ScrollView renders ~10 always-mounted, non-virtualized
             // section components with no windowing. removeClippedSubviews lets
             // Android detach off-screen native views from the hierarchy instead
             // of keeping them all mounted+drawn, which is the standard fix for
@@ -133,23 +153,33 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <LanguageSection />
             <AgentsSection visible={visible} />
             <ApiKeysSection />
-            <WebhookHostAllowlistSection />
             <SocialConnectorsSection />
             <DmPairingSection />
             <UpdatesSection onOpenBuilds={handleOpenBuilds} />
-            <ScouterSection visible={visible} onCloseSettings={onClose} />
             <CodexLoginSection onClose={onClose} />
-            <DoctorSection />
-            <ResetSettingsSection />
-            <IntegrationsSection
-              onOpenMcp={handleOpenMcp}
-              onOpenLlama={handleOpenLlama}
-            />
             <RecoverySection />
+            <DeveloperSettingsRow onPress={handleOpenDev} />
           </ScrollView>
         </Pressable>
       </Pressable>
 
+      <Modal
+        visible={devOpen}
+        animationType="slide"
+        onRequestClose={handleCloseDev}
+      >
+        <DeveloperSettingsScreen
+          onClose={handleCloseDev}
+          scouterVisible={devOpen}
+          onCloseAllForMonitor={handleCloseAllSettingsForMonitor}
+          onOpenMcp={handleOpenMcp}
+          onOpenLlama={handleOpenLlama}
+        />
+      </Modal>
+
+      {/* mcp/llama must mount AFTER devOpen's Modal (RN Modal z-order is
+          mount order) so opening either from inside the developer screen
+          stacks correctly above it instead of behind. */}
       <Modal
         visible={mcpOpen}
         animationType="slide"
@@ -168,6 +198,57 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
     </Modal>
   );
 }
+
+// G2-P3: developer/IDE settings, one tap away from the companion list via
+// DeveloperSettingsRow. Every section here is unmodified from its original
+// SettingsDropdown form — only the container changed. See the design
+// rationale in docs/superpowers/DEFERRED.md (2026-08-25 entry).
+function DeveloperSettingsScreen({
+  onClose,
+  scouterVisible,
+  onCloseAllForMonitor,
+  onOpenMcp,
+  onOpenLlama,
+}: {
+  onClose: () => void;
+  scouterVisible: boolean;
+  onCloseAllForMonitor: () => void;
+  onOpenMcp: () => void;
+  onOpenLlama: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <View style={styles.devScreenRoot}>
+      <ModalHeader title={t('settings.developer_title')} onClose={onClose} />
+      <ScrollView style={styles.devScreenBody} removeClippedSubviews>
+        <DoctorSection />
+        <IntegrationsSection onOpenMcp={onOpenMcp} onOpenLlama={onOpenLlama} />
+        <WebhookHostAllowlistSection />
+        <ScouterSection visible={scouterVisible} onCloseSettings={onCloseAllForMonitor} />
+        <ResetSettingsSection />
+      </ScrollView>
+    </View>
+  );
+}
+
+const DeveloperSettingsRow = React.memo(function DeveloperSettingsRow({ onPress }: { onPress: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Pressable
+      style={[styles.integrationRow, borderedChromeStyle(), styles.developerRow]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={t('settings.developer_open_a11y')}
+    >
+      <MaterialIcons name="build" size={13} color={C.text2} />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('settings.developer_title')}</Text>
+        <Text style={[styles.developerRowSubtitle, { color: C.text3 }]}>{t('settings.developer_row_subtitle')}</Text>
+      </View>
+      <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+    </Pressable>
+  );
+});
 
 // Perf: this file mounts ~13 always-expanded section components in a single
 // non-virtualized ScrollView (see SettingsDropdown's ScrollView above). None
@@ -2520,6 +2601,22 @@ const styles = StyleSheet.create({
   },
   integrationRowDisabled: {
     opacity: 0.55,
+  },
+  // G2-P3: developer drill-down row + screen
+  developerRow: {
+    marginTop: 4,
+  },
+  developerRowSubtitle: {
+    fontFamily: F.family,
+    fontSize: F.badge.size,
+    marginTop: 2,
+  },
+  devScreenRoot: {
+    flex: 1,
+    backgroundColor: C.bgDeep,
+  },
+  devScreenBody: {
+    flex: 1,
   },
   integrationLabel: {
     fontFamily: F.family,
