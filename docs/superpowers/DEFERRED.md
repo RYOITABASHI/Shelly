@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-25: Fable5の新規性・需要・完成度レビュー(ロードマップ7項目)を受けて実装した5項目の未検証部分を記録。Fix1/Fix2(境界ポリシー・承認デフォルト)はCI実行のtsc/jestで検証済み、item #3/4/5/6/7はコードレベル検証(tsc+jest)のみで実機QA未実施として上記P1/P2エントリに追加。
 - 2026-08-17: background agentによるShelly実機QA（terminal⇄sidebar併用セッション）で、REPOSITORIESセクションの「+ ADD REPOSITORY」ボタンが特定の操作後に無反応になる（`addRepoVisible`はtrueのままだがモーダルのネイティブwindowが消失、アプリ再起動でのみ復帰）問題を発見。原因はデバイス非接続のPCワークツリーセッションでは特定できず（下記bug #168参照）、確定原因調査ではなく防御的fixで対応した。
 - 2026-08-17: background agentによるScouterウィジェットのagent一覧実機QAで、`WidgetAgentRepository`が`dm-pairings.json`（JSON配列）を毎分agentメタデータとしてパース試行し、失敗時の`org.json.JSONException`メッセージに生ファイル内容（連絡先名等）が埋め込まれてlogcatへ漏れる問題を発見・修正。
 - 2026-08-17: 静的コード監査（バックグラウンドresearch agent）で`tryAddRepo`のbug #73対応が実は機能していない（親probeの読み取りエラーをfail-openで受理、`.git`チェック皆無）ことを発見・修正。あわせて、dotセグメント (`.claude/`) を含むrootDirでは`npx jest`のtestMatch globがWindows上で壊れ全テストがdiscovery段階で0件になるworktree特有のjest基盤バグを発見・記録した。
@@ -3992,7 +3993,35 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ---
 
+### `shelly install <pack>` オンデマンドツールパック — 配管のみ実装済み、実際のパック配布・PATH配線・APK本体の削減は未着手 (P1)
+
+**背景**: 2026-08-25、Fable5の総合レビュー(新規性・需要・完成度)ロードマップ item #6。800MBのサイドロードAPKが新規ユーザーの最大の障壁との指摘を受け、`python3`/`sqlite3`/`vim`/`tmux`/`ripgrep`/`jq`/`make`/`gh`/`nano`/`unzip`/`less`の11ツールを常時同梱から外し、`shelly install <pack>`で必要時にオンデマンド取得する設計の**配管部分のみ**を実装(コミット`841ae2865`)。
+
+**実装済み**: `lib/optional-packs.ts`(パックマニフェスト、`dev-tools`/`editor-tools`の2パック)、`lib/optional-pack-installer.ts`(ダウンロード→検証→展開のオーケストレーション、既存self-updaterの`DownloadManager`機構を再利用)、`lib/pseudo-shell.ts`の`shelly install <pack-id>`サブコマンド、`TerminalEmulatorModule.kt/.ts`の新規3ネイティブメソッド(`enqueuePackDownload`/`verifyPackArchive`/`extractPackArchive`、既存コードに一切変更なしの追加のみ)、`LibExtractor.kt`の新規`extractPack()`(`extractAll()`/`LIBS`は無変更)。
+
+**未実装(意図的に見送り)**:
+1. **実際のパックアーカイブが存在しない** — 全パックの`published: false`でゲートされており、`shelly install`は常に「未公開」エラーを返す。GitHub Releasesへの実アーカイブのビルド・アップロードが必要。
+2. **PATH配線が無い** — 展開されたバイナリは`termux-libs/packs/<packId>/`配下のapp-private storageに置かれるが、`$HOME/bin`へのシンボリックリンクが無いためシェルから見つからない。`HomeInitializer.kt`のbashrc生成ロジックへの追加が必要(常時実行される既存コードへの変更のため、実機なしでは検証不可と判断し今回は見送り)。
+3. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。`build-android.yml`/`app.config.ts`は無変更で、現行APKのデフォルト同梱物は今回のコミット前後でバイト単位で同一。
+
+**実機QAで確認すべきこと**(将来のオンデバイス検証パス向け):(a) `DownloadManager`が実アーカイブを実際に配信できるか、(b) Knox/SELinux下で`tar`展開が既存の`extractTarGzAsset()`と同様に成功するか、(c) 展開されたバイナリが実際に実行可能か(動的リンク、`chmod`)、(d) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか。
+
+**優先度**: P1(需要面の主要ボトルネック解消に直結するが、実機無しで安全に進められる範囲は今回で使い切った——次のステップ(パックビルド・公開・PATH配線)は実機保有セッションでの着手を推奨)
+
+---
+
 ## P2 — 2 リリース先 (v0.2.0 milestone)
+
+### Fable5ロードマップ item #3/4/5/7 — 実装・単体/コンポーネントテスト完了、実機未検証 (P2)
+
+**背景**: 2026-08-25、Fable5の総合レビュー(コミット`9cd167064`)で以下4項目を並行実装・コード検証済み。tsc/jestは全てグリーンだが、いずれもUI/ストリーミング/ネイティブ監査ログ読み取りが絡むため、この session 標準の実機QA(スクリーンショット・logcat証跡)は未実施。
+
+1. **コンパニオンジャーニーの休眠通知 + MEMORY-001経路化**(`lib/companion-journal.ts`他)— ローカルLLM未設定時の休眠を検知しチャット内通知+Settings常設バナーで知らせる、新規ジャーナル書込みをMEMORY-001エンジン優先に変更。実機確認事項: 休眠通知が実際にチャットへ挿入されるか、`localLlmUrl`未設定/設定済み双方でのバナー表示切替。
+2. **OpenRouterストリーミング完遂**(`lib/openrouter.ts`)— SSEレスポンスを全文バッファしてから疑似ストリーミングしていたバグを修正し、実バイトストリーミングに変更。実機確認事項: OpenRouterプロバイダ選択時に実際にチャンク単位でテキストが流れて見えるか(体感速度)。
+3. **エージェント「フライトレコーダー」可視化**(`components/panes/AgentRunsPane.tsx`)— 既存の`agent-driver-audit.jsonl`を読み、Run詳細内にallow/gray/deny タイムラインを表示。実機確認事項: 実際のエージェント実行後、監査ログが正しくパースされ色分け表示されるか。
+4. **ゴールデンパス・オンボーディングナッジ**(`components/panes/AIPane.tsx`)— エージェント未登録の新規状態でコンパニオンがチャット内に一度だけ発話し、パーサー検証済みの実例文を提示。実機確認事項: 実際に新規状態(agents.length===0)でナッジが表示され、例文をそのまま送信するとparser通りにエージェント登録まで到達するか。
+
+**優先度**: P2(コードレベルの正しさは検証済み、実機でのUX確認が残っているのみ——動作しない可能性は低いが、この session 標準の実機証跡取得は次回オンデバイスQA枠で行う)
 
 ### バッテリー残量など端末システム情報の取得にネイティブAPIブリッジが無い — バッテリー/ストレージ/メモリ/ネットワークで解消・実機再検証中 (P2)
 
