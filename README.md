@@ -287,6 +287,14 @@ Agents also get better with use, on-device, without a server:
 - **Skills catalog** — the Sidebar's **Browse Catalog** action fetches Shelly's first-party catalog of importable skill recipes, verifies each download, and places it in the same quarantine/review flow as a local skill import; catalog availability follows the published `skills-catalog-latest` release.
 - **Persistent memory** — agents can write and recall small facts across runs ("remember that…"). Per-agent writes now use the encrypted MEMORY-001 store by default, with the older markdown/Obsidian path retained as a fallback; shared `_global` writes still use that older path. See [Privacy](#privacy) for the current storage and verification limits.
 
+### The Companion
+
+<p align="center">
+  <img src="docs/images/companion-memory.jpg" alt="Shelly's Companion Memory screen — session digests the companion journaled on its own, plus notes you asked it to remember, all viewable, editable, and deletable" width="500">
+</p>
+
+Shelly keeps its own journal. Sessions end with a digest it writes for itself; anything you ask it to remember is recalled by the companion and every background agent — and you can read, edit, or delete all of it from **Settings → Companion Memory**, reachable even before you've registered a single agent.
+
 ### Scouter Widget
 
 <p align="center">
