@@ -5528,3 +5528,23 @@ Fable5のcalibration question再評決(「初見はYes寄りだが使い込む�
 **検証**: `npx tsc --noEmit` clean。新規テスト7件(`agent-memory-global-scope.test.ts`)——不完全疑問文の棄却・命令文の意図的false negative維持を含め全PASS。全体回帰スイート241本中、失敗は既知のWindows固有パスバグ6本のみ。
 
 → sync: README Status表の変更なし。
+
+---
+
+### ✅ Fable5レビュー指摘4件を修正(2026-08-25, commit `eaedfdf60`)
+
+companion journal実装をFable5に3回目のcalibration questionと合わせてコードレビューさせたところ、「条件付きyes、ただし数週間スケールでは以下2点が先に壊れる」との指摘。両方とも製品判断不要の増分工事だったため即座に対応。
+
+**①(最重要)ジャーナルに上限が無い**: `buildCompanionRecallContext`が`_companion`ノートを無条件・無制限に全件注入していた(既存の`recallMemoryNotes`のBM25+recencyスコアリングが他の全recallパスで使われているのに、ここだけ未使用)。週スケールで確実にローカル2Bモデルの文脈予算を圧迫する。**修正**: `hooks/use-ai-pane-dispatch.ts`の注入箇所で`recallMemoryNotes(notes, promptText)`を経由させ、現在のメッセージとの関連度でスコアリング・上限(`DEFAULT_RECALL_LIMIT=5`)を適用するよう変更。
+
+**②`_companion`ノートの閲覧/編集/削除UIがゼロ**: 「自動書き込みは後から編集可」という安全性の前提が、実際には偽だった——`MemoryWorkbenchPane`は`_global`と特定エージェント自身のノートしか一覧しておらず、しかも唯一の入口(Sidebarのエージェント詳細ポップアップ「メモリ」ボタン)は**登録済みエージェントが1つ以上ないと到達不能**。登録エージェントゼロのcompanion専用ユーザーは誤って蒸留されたノートを一切訂正できなかった。**修正**: `MemoryWorkbenchPane.tsx`に`_companion`専用の第3セクション(`_global`と同じ閲覧/編集/削除機構)を追加、`SettingsDropdown.tsx`のAgentsSection直後に新規「Companion Memory」行(companion向けリスト内、G2-P3)を追加——`memoryWorkbenchAgentId`を明示的に`null`にして同じペインを開くことで、登録エージェント0件でも到達可能に。
+
+**副次的に修正した小さな不整合(いずれもFable5のコード読解で発見)**:
+- `NOTHING`判定が完全一致のみで、2Bモデルが「reply with exactly X」を厳密に守らない場合(例: "NOTHING worth remembering.")にジャンクノートとして保存されうる問題 → 先頭一致に緩和
+- 冪等性マーカーがLLM呼び出し成功直後(`writeMemoryNote`実行前)にセットされていたため、LLM成功後の書き込み失敗だけがリトライされない不整合 → ノートが実際にディスクへ書かれた後(または「保存不要」と確定した後)にのみマーカーをセットするよう修正
+
+**別件: ソース衛生の回帰を自己発見・修正**: Fable5のリポジトリ横断grepが`lib/agent-memory.ts`を完全に取りこぼしていたのを追跡したところ、本セッション中盤の「NULバイト revert」作業で、コメント内に書くつもりだったエスケープ表記の代わりに**生のNULバイトが2個誤って挿入されていた**(Editツール経由でエスケープ文字列をタイプする際の転送問題)。`lib/memory/ranking.ts`の`KEY_FIELD_SEP`と同じ命名で`ID_FIELD_SEP`という名前付き定数を導入し、生バイトを直接埋め込む代わりにエスケープシーケンスとして記述——ランタイムのハッシュ挙動は完全に同一のまま、ファイルが再びプレーンなUTF-8テキストとしてgit diff/grepから見えるように。**教訓**: エスケープシーケンスを含む文字列をツール経由で書く際は、実際に書き込まれたバイト列を都度検証すること(python3での直接バイト確認等)。
+
+**検証**: 新規/更新テスト10件——テスト自身の不備(3つの`it.each`ケースが同一sourceKey+同一メッセージIDを共有し、冪等性マーカーが2件目以降を正しくスキップしてモックキューが後続テストへ漏れる)も発見・修正。`npx tsc --noEmit` clean。全体回帰スイート241本中、失敗は既知のWindows固有パスバグのみ。**実機検証は未実施**——次回QA時に、(1)Companion Memory行から`_companion`ノートが実際に見える・編集・削除できること、(2)スコアリング後も直近の重要な会話が正しく想起されること、を確認すること。
+
+→ sync: README Status表の変更なし。
