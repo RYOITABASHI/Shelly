@@ -99,7 +99,7 @@ No copy. No paste. No tab switching.
 
 **Four levels of value:**
 
-- **Single pane:** a native terminal that is faster, smarter, and more usable than Termux alone — with inline content blocks, syntax highlighting, and clickable errors.
+- **Single pane:** a native terminal that is faster, smarter, and more usable than Termux alone — with content blocks, syntax highlighting, and clickable errors.
 - **Split panes:** terminal + AI side by side — the AI reads what the terminal shows and executes fixes with one tap. No copy-paste bridge needed.
 - **Full layout:** sidebar + up to 4 live panes + agent bar — a mobile IDE. Browse docs in the browser pane, preview code or markdown on the right, use API-backed agents in the background, and keep your terminal front and center.
 - **Unattended:** register a plain-language scheduled agent — the same machinery runs while the phone sits in your pocket, and tells you when it ran.
@@ -294,7 +294,7 @@ Agents also get better with use, on-device, without a server:
   <img src="docs/images/carry-forward.jpg" alt="A companion conversation switched to Gemini mid-thread — a carry-forward notice explains the hand-off, and Gemini's next reply is already grounded in what was said before the switch" width="420">
 </p>
 
-Shelly keeps its own journal. Sessions end with a digest it writes for itself; anything you ask it to remember is recalled by the companion and every background agent — and you can read, edit, or delete all of it from **Settings → Companion Memory**, reachable even before you've registered a single agent. Switch a pane to an explicit provider mid-conversation and Shelly carries the last few messages along with it, so the new provider already has the thread's context on its very first reply — same companion, different brain.
+Shelly keeps its own journal. Whenever a pane switches away from it, it writes a digest of that conversation for itself; anything you ask it to remember is recalled by the companion and every background agent — and you can read, edit, or delete all of it from **Settings → Companion Memory**, reachable even before you've registered a single agent. Switch a pane to an explicit provider mid-conversation and Shelly carries the last few messages along with it, so the new provider already has the thread's context on its very first reply — same companion, different brain.
 
 ### Scouter Widget
 
@@ -398,7 +398,7 @@ Chat pane (see below).
 - **Fig-style autocomplete** *(not currently implemented — see `docs/superpowers/DEFERRED.md`)* — the completion engine (`lib/autocomplete-engine.ts`) and command database exist and are reusable, but the terminal input path is a native PTY passthrough (`NativeTerminalView`) with no JS-visible input buffer/cursor, so reviving the popup requires a scoped native (Kotlin) change to stream the in-progress command line to JS
 - **Syntax highlighting** — terminal output colorized by content type
 - **Clickable paths and errors** — tap a file path or stack trace line to jump to it
-- **Inline content blocks** — JSON, markdown, images, and tables rendered inline inside the terminal output (Command Blocks)
+- **Content blocks** — JSON, markdown, images, and tables from command output render as formatted blocks in the **Block History** panel, an overlay opened via the terminal pane's FAB, not literally inline in the scrolling PTY output
 - **CLI notifications** — long-running commands surface a system notification when they complete
 - **Codex notification channels** — Scouter posts per-category Android notifications, each on its own channel so you can tune importance / sound / mute from Android's notification settings: approvals, choices, and errors arrive as heads-up alerts, rate limits at default importance, completions and long-running quietly. Approval notifications carry one-tap **Allow / Deny** buttons and choice notifications expose the first three numbered actions. The expanded notification view shows the full request or menu text, and resolved cards are deduped and cancelled so nothing stacks or lingers. (Choice/approval pills were removed from the widget face itself in the 2026-07-18 redesign — see the Scouter Widget section below; use these notification channels or the in-app Agent Chat pane instead.)
 - **SmartKeyBar** — 4 context-adaptive key sets by default (Default / Git / REPL / Navigate), swipe to switch; a 5th (Vim) is available via Settings → Terminal → "Show Vim key bar" (off by default, to avoid cluttering the bar for non-Vim users)
@@ -549,7 +549,7 @@ Currently registered:
 | Area | State |
 |---|---|
 | Native PTY, sessions, tmux revival | ✅ shipping |
-| Multi-pane layout (8 types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
+| Multi-pane layout (9 pane types, splits, presets, drag resize, empty-state CTA) | ✅ shipping |
 | Atomic paste (bracketed-paste wrap when guest opts in via DECSET 2004, single `TerminalEmulator.paste()` choke point, IME chunk-split coalesced) | ✅ shipping (bugs #91, #94, #97, #106) |
 | `/sdcard` access via `MANAGE_EXTERNAL_STORAGE` (first-launch grant flow) | ✅ shipping (bug #92) |
 | `bash` wrapper at `$HOME/bin/bash` for `bash -c "…"` and `bash script.sh` (including scripts with a `#!/usr/bin/env bash` shebang line) | ✅ shipping (bug #93); direct execution of a shebang script (`./script.sh`) still fails under Knox's `binfmt_script` restriction — always invoke via `bash script.sh` |
@@ -936,8 +936,7 @@ GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo
 Shelly is pre-release Android software. Here's what we know isn't perfect yet.
 
 - **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline with the bundled catalog and llama.cpp / llama-server controls; Qwen3.5-2B Q4_K_M is the recommended on-device default, Qwen3 1.7B / Qwen3.5 0.8B are lighter options, and 4B/9B models are reserved for short quality checks.
-- **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need them, install Termux alongside Shelly or open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
-- **`watch` is broken in the current release** — the bundled `watch` binary fails to invoke subcommands under Shelly's bionic environment and the watched command never actually runs, even though the header refreshes. Workaround: `while true; do clear; <cmd>; sleep 1; done`. Tracked as bug #34.
+- **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need `watch`, use the workaround `while true; do clear; <cmd>; sleep 1; done` (tracked as bug #34) or install Termux alongside Shelly; for anything else, open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
 - **`busybox` is not bundled** — `busybox httpd`, `busybox nc`, and other applets return `command not found`. Use the standalone equivalents where available (`curl`, `nc` from the bundle, `python3 -m http.server`), or bundle `busybox-static` yourself. Tracked as bug #35.
 - **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once, with no confirmation step before it runs. Use it deliberately.
 - **Multi-hunk Accept against a partially-edited file** — per-hunk Accept uses fuzzy re-anchoring so successive hunks land, but if the AI's diff references context that has already been edited to something else, the hunk will be rejected with a toast asking you to regenerate.

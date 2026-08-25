@@ -145,7 +145,7 @@ Everything above sits on top of an actual terminal, and most of what makes a ter
 
 **It's bundled, not fetched.** bash, GNU coreutils, Node.js, Python 3, git, curl, ssh, sqlite3, ripgrep, jq, tmux, vim, make, less, `gh`, nano, and unzip all ship inside the APK as real compiled binaries, extracted to app-private storage on first launch. There's no Termux dependency, no distro bootstrap, no `pkg install` step standing between opening the app and having a working toolchain. (Termux itself works fine *alongside* Shelly if you need something outside the bundled set — `busybox` and `htop` are two examples that aren't included.)
 
-**Fig-style autocomplete does not exist yet.** The reusable completion engine remains in the codebase, but terminal input goes straight through the native PTY and does not expose the in-progress input buffer or cursor to JavaScript. Restoring the popup therefore needs a scoped native (Kotlin) input event, not a setting you can turn on today. Terminal output highlighting, clickable file paths and stack-trace lines, and the **SmartKeyBar** are available now; SmartKeyBar swaps between five context-adaptive key sets — Default, Vim, Git, REPL, Navigate — so the symbols you actually need (`|`, `~`, `Ctrl`, arrow keys) are one tap away instead of buried in a symbol picker.
+**Fig-style autocomplete does not exist yet.** The reusable completion engine remains in the codebase, but terminal input goes straight through the native PTY and does not expose the in-progress input buffer or cursor to JavaScript. Restoring the popup therefore needs a scoped native (Kotlin) input event, not a setting you can turn on today. Terminal output highlighting, clickable file paths and stack-trace lines, and the **SmartKeyBar** are available now; SmartKeyBar swaps between four context-adaptive key sets by default — Default, Git, REPL, Navigate — so the symbols you actually need (`|`, `~`, `Ctrl`, arrow keys) are one tap away instead of buried in a symbol picker. A fifth set (Vim) is available via Settings → Terminal → "Show Vim key bar," off by default so it doesn't clutter the bar if you don't use Vim.
 
 **Sessions survive backgrounding.** tmux keeps your shell alive underneath when you switch apps or the screen locks, and you can resume any named session later exactly where you left it — including mid-edit in vim, cursor position and unsaved buffer intact.
 
@@ -153,7 +153,7 @@ Everything above sits on top of an actual terminal, and most of what makes a ter
 
 **SSH profiles live in the sidebar.** Save a connection once — host, user, port, key file — and tapping it inserts the full `ssh -i KEY user@host -p PORT` command into your active terminal pane, ready to run. Long-press to edit or delete. `Import from ~/.ssh/config` bulk-adds every host you already have configured elsewhere. Only key-file auth is supported; Shelly never persists a password or a passphrase.
 
-**Snippets** are short commands you use often, saved once and dispatched from the Command Palette. The in-app authoring UI for creating them isn't built yet — for now, add them by editing `~/.shelly/snippets.json` directly, or through `shelly config`.
+**Snippets** are short commands you use often, saved once and dispatched from the Command Palette (it shows your first 20). The in-app create/import/edit UI was removed in an earlier cleanup pass and hasn't been rebuilt — snippets live in Android's AsyncStorage (`store/snippet-store.ts`), not a plain file, so there's currently no supported way to bulk-add them outside that removed UI.
 
 ---
 

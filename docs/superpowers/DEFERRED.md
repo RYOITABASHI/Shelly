@@ -501,7 +501,15 @@
 
 **次にやること(トリアージ、ユーザー判断待ち)**: 上記A~Dの発見事項をP0(次リリースブロッカー候補: A-1〜7のセキュリティ/fail-open系)、P1(次リリース推奨: B-1〜3の構造課題、D-1/2のドキュメント乖離)、P2以下(その他CONCERN)に仕分けし、対応順序をプロダクトオーナーと合意すること。特にA-4(メモリv2キャッシュ無効化の配線漏れ)は今セッション自身の修正が不完全だったことが判明したケースであり優先度が高い。
 
-→ sync: README/CLAUDE.mdのFig補完・インラインコンテンツ記載は現状と乖離しているため、次回ドキュメント更新時に反映要。
+→ sync: README/CLAUDE.mdのFig補完・インラインコンテンツ記載は現状と乖離しているため、次回ドキュメント更新時に反映要。**✅ 2026-08-24 反映済み**(README.md/README.ja.md、Fig補完は「未実装」明記に統一、インラインコンテンツ記載はBlock Historyオーバーレイ経由である旨に訂正)。
+
+**✅ 2026-08-24 トリアージ完了(Fable5監査、CC本セッション)**: A-1〜A-5は以下の通り修正済みと確認。A-6は今回個別未確認(要再監査)。A-7は依然未解決の実課題として残置(下記参照、解決扱いにしない)。
+- **A-1**(無人skill自動保存がsecret/PII未スキャン): `lib/unattended-skill-save.ts:53` でsecretスキャンを通してから保存する経路に修正済み。
+- **A-2**(rollback用git repo初回commitがsecretスキャン迂回): `lib/auto-savepoint.ts:164-168` で初回commit前にスキャンを通す経路に修正済み。
+- **A-3**(secret scannerが30ファイル・各500行で打切りfail-open): `lib/auto-savepoint.ts:49-55,73-79` で上限超過時にfail-closed(拒否)へ変更済み。
+- **A-4**(メモリv2キャッシュ無効化が無人経路に未配線): `lib/agent-manager.ts:1080,2175,2272` の該当箇所すべてに `invalidateMemoryImportCache()` 配線済み。
+- **A-5**(STOP-ALLキルスイッチがI/O失敗時にfail-open): `AgentAlarmScheduler.kt:145-152` でI/O例外時もhalted側に倒すfail-closedへ修正済み。
+- **A-7**(circuit breakerがforeground同期依存)は解決扱いにしない — DEFERRED.md:165 に既存のP1級課題として引き続き追跡中(exitCode-0の"soft failure"がどちらのネイティブ機構でもカウントされない)。
 
 ---
 
