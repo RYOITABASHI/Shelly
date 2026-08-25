@@ -5447,3 +5447,26 @@ Fable5 Phase 3の4項目(G2-P1/P2, G1-P0/P1)+ghost-thread-revival修正(`d95f198
 **次のロードマップ**: G2-P3(SettingsDropdown 2679行の「コンパニオン設定」/「開発者設定」分離)。実装後、改めてFable5に「Hermesユーザーが触ったらAndroid版だと思うか」の calibration question を問い直す予定。
 
 → sync: README Status表の変更なし(UX調整、機能一覧に影響する構造変化なし)。
+
+---
+
+### ✅ G2-P3: Settings のコンパニオン/開発者分離 実装(2026-08-25, commit `05ae65f78`)
+
+G1-P2に続きロードマップ最後の項目G2-P3に着手。Fable5にread-only設計コンサルを依頼(`SettingsDropdown.tsx`全2679行+既存のMCP/llama.cpp drill-downパターンを読了)、15セクション全ての実内容を精査した分類結果を得て実装。
+
+**分類結果**: companion 10個(Display/Wallpaper/Language/Agents/API Keys/Social Connectors/DM Pairing/Updates/Codex Login/Recovery) + developer 5個(Doctor/Integrations/Webhook Allowlist/Scouter/Reset)。境界的だったCodex Login(実装はターミナル起動だが意味は「デフォルト脳へのサインイン」)とRecovery(bug#131/#136のdiscoverable break-glass、非技術者ほど必要)はcompanion側に残し、Reset(破壊操作、リストが短くなると相対的に目立ち誤タップリスクが上がる)はdeveloper側末尾へ。
+
+**実装**: 新規ナビゲーション原語は導入せず、既存のMCP/llama.cpp drill-down(`ModalHeader`+sibling`<Modal animationType="slide">`)の3例目として`DeveloperSettingsScreen`を追加。gearボタン→従来通りSettingsDropdownが開くが、リストはcompanion 10セクション+末尾の非折りたたみ「Developer」1行のみ。タップでdeveloper 5セクションへ。**セクション内部のコードは1行も変更せず、コンテナ(render list)のみ変更**。
+
+**実装時の注意点(設計コンサルが事前に指摘、実際に対応が必要だった)**:
+- Android Modalのスタッキング順はmount順——developer用Modalを既存のmcp/llama用Modalより「前」にJSX配置しないと、developer画面から開いたMCP/llama drill-downがdeveloper画面の下に隠れる。
+- `ScouterSection`の`visible`propは元々outer Settingsの`visible`を見ていたが、developer画面へ移動後は`devOpen`を見るよう変更(でないとdebug情報がSettings起動時に毎回loadされ、developer画面を開くタイミングと合わなくなる)。
+- `ScouterSection`の「Open Monitor」ボタンは元々outer `onClose`だけを呼んでいたが、developer画面という1階層深い場所に移動したため、developer ModalとSettings Modalの両方を閉じる合成ハンドラ(`handleCloseAllSettingsForMonitor`)に差し替え。
+
+**移行安全性**: sidebar-storeと異なり、Settingsのセクション開閉状態はそもそも永続化されていない(全セクション常時展開)ため、`{...defaults,...persisted}`型の証明は不要——純粋な表示層の変更。既存ユーザーの習慣パス断絶リスクへの対策として、Developer行のサブタイトルに移動先セクション名を列挙(`Doctor · Integrations · Webhook Allowlist · Scouter · Reset`)。
+
+**検証**: `npx tsc --noEmit` clean。既存テスト書き換えゼロ——`widget-agent-registration-noconfirm.test.ts`のソース文字列スキャン(SettingsDropdown.tsx内の文字列存在を assert)も、全セクションが同一ファイル内に留まる設計のため無風。settings関連5テストスイート40件PASS。全体回帰スイートで`agent-manager-chain-lock.test.ts`が並列実行時に一時的にFAILしたが単独実行では19件全PASS(実fs/実bash使用テストの既知のflakiness、本変更と無関係)。残りの失敗は既知のWindows固有パスバグ(plan-executor系)のみ。**実機検証は未実施**——次回QA時に、(1)Developer行タップでdeveloper画面が開くこと、(2)developer画面からMCP/llama.cpp drill-downを開いても正しく最前面に重なること、(3)developer画面からScouterの「Open Monitor」を押すとSettings全体が閉じてMonitorが正しく前面に出ること、(4)Doctor/Webhook Allowlist/Resetがdeveloper画面で正常動作すること、を確認すること。
+
+**今回でFable5 Phase 3ロードマップの主要4項目(G1-P0/P1/P2, G2-P1/P2/P3)が全て実装完了。** 次はFable5に改めてcalibration question(「Hermesユーザーが触ったらAndroid版だと思うか」)を問い直す。
+
+→ sync: README Status表の変更なし(UX調整、機能一覧に影響する構造変化なし)。
