@@ -183,6 +183,7 @@ jest.mock('@/lib/agent-manager', () => ({
 
 import { useAIPaneDispatch, createThrottledUpdate } from '@/hooks/use-ai-pane-dispatch';
 import {
+  carryForwardOnThreadSwitch,
   COMPANION_CONVERSATION_KEY,
   resolveAiPaneStoreKey,
   useAIPaneStore,
@@ -2945,5 +2946,83 @@ describe('createThrottledUpdate', () => {
 
     jest.advanceTimersByTime(100);
     expect(updateFn).not.toHaveBeenCalled();
+  });
+});
+
+// ─── G1-P2 carry-forward, driven through the REAL local-dispatch finalization
+// path (2026-08-25 on-device report) ────────────────────────────────────────
+//
+// Every existing carry-forward test (__tests__/ai-pane-companion-thread.test.ts)
+// hand-seeds ChatMessage objects directly into the store, so none of them
+// would have caught a bug in the finalization write itself (the completion
+// `throttledUpdate(..., { isStreaming: false, ... })` calls in
+// hooks/use-ai-pane-dispatch.ts's local-LLM branch) leaving some exclusion
+// field (isStreaming stuck true, agentRunLogId, autoCheckState, ...) set on
+// the finished assistant message. This test drives two full turns through
+// the REAL dispatch() -> ollamaChatStream streaming path so the assistant
+// message that reaches carryForwardOnThreadSwitch is exactly the one
+// production code produces, not a hand-authored stand-in.
+describe('G1-P2 carry-forward through the real local-dispatch finalization path', () => {
+  it('carries finished local-LLM assistant replies, not just user messages, into the destination thread on a companion -> explicit-provider switch', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+    mockOllamaChatStream
+      .mockImplementationOnce(async (_config: unknown, _messages: unknown, onChunk: (chunk: string, done: boolean) => void) => {
+        onChunk('first reply', false);
+        return { success: true, content: 'first reply' };
+      })
+      .mockImplementationOnce(async (_config: unknown, _messages: unknown, onChunk: (chunk: string, done: boolean) => void) => {
+        onChunk('second reply', false);
+        return { success: true, content: 'second reply' };
+      });
+    const { result } = setup();
+
+    // Two full turns through the REAL dispatch() -> local-LLM streaming
+    // finalization path, not hand-seeded messages.
+    await act(async () => {
+      await result.current.dispatch('first question');
+    });
+    await act(async () => {
+      await result.current.dispatch('second question');
+    });
+
+    const companionKey = conversationKey();
+    expect(companionKey).toBe(COMPANION_CONVERSATION_KEY);
+    const companionMessages = conv().messages;
+    expect(companionMessages.map((m) => m.content)).toEqual([
+      'first question', 'first reply', 'second question', 'second reply',
+    ]);
+    // The finalization write must actually have cleared isStreaming — this
+    // is the exact field isCarryForwardEligible (store/ai-pane-store.ts)
+    // gates on.
+    for (const m of companionMessages) {
+      expect(m.isStreaming).toBeFalsy();
+    }
+
+    // Switch the pane to an explicit provider, exactly like the pane-header
+    // SWITCH AGENT menu does (components/panes/AIPane.tsx's resolvedConversationKey
+    // effect), and carry forward.
+    usePaneStore.getState().bindAgent(PANE, 'gemini');
+    const geminiKey = resolveAiPaneStoreKey(PANE);
+    const carried = carryForwardOnThreadSwitch(companionKey, geminiKey);
+
+    expect(carried).toBe(true);
+    const destMessages = useAIPaneStore.getState().getOrCreate(geminiKey).messages;
+    // THE BUG as reported: only user messages carried, so this would have
+    // been ['first question', 'second question'] with both assistant
+    // replies silently dropped. Both roles must be present.
+    expect(destMessages.map((m) => ({ role: m.role, content: m.content }))).toEqual([
+      { role: 'user', content: 'first question' },
+      { role: 'assistant', content: 'first reply' },
+      { role: 'user', content: 'second question' },
+      { role: 'assistant', content: 'second reply' },
+    ]);
   });
 });
