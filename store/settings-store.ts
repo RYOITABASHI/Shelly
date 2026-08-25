@@ -214,6 +214,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // why this can only ever cover reversible workspace file writes.
   agentOptimisticWorkspaceWrites: false,
   scheduleReadinessNudgeShown: false,
+  agentOnboardingNudgeShown: false,
+  companionJournalDormancyNoticeShown: false,
 };
 
 const ACTIVE_TEAM_PRIORITY: AppSettings['teamFacilitatorPriority'] = ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'];

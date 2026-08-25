@@ -17,10 +17,22 @@ import { act, render, fireEvent, waitFor, within } from '@testing-library/react-
 const mockRunAgentNow = jest.fn();
 const mockSync = jest.fn();
 const mockOfferSkillSave = jest.fn();
+const mockReadFlightRecorder = jest.fn();
 
 jest.mock('@/lib/agent-manager', () => ({
   runAgentNow: (...args: unknown[]) => mockRunAgentNow(...args),
   syncAgentRunLogsFromDisk: (...args: unknown[]) => mockSync(...args),
+}));
+
+// lib/agent-audit-log.ts's readAgentFlightRecorder is the only I/O in the new
+// module (it goes through lib/home-path.ts → the real TerminalEmulator native
+// module, unavailable under jest-expo) — mocked away entirely, no
+// requireActual, so that native chain is never loaded. entriesForRun is pure
+// and already pinned by __tests__/agent-audit-log.test.ts; a passthrough here
+// keeps this file focused on the pane's own loading/empty/render behavior.
+jest.mock('@/lib/agent-audit-log', () => ({
+  readAgentFlightRecorder: (...args: unknown[]) => mockReadFlightRecorder(...args),
+  entriesForRun: (entries: unknown[]) => entries,
 }));
 
 jest.mock('@/lib/agent-plan-spec', () => ({
@@ -133,6 +145,7 @@ describe('AgentRunsPane', () => {
     mockRunAgentNow.mockReset().mockResolvedValue(undefined);
     mockSync.mockReset().mockResolvedValue(undefined);
     mockOfferSkillSave.mockReset();
+    mockReadFlightRecorder.mockReset().mockResolvedValue([]);
     jest.spyOn(Alert, 'alert').mockImplementation(() => {});
     act(() => selectRunAgent(null));
     seed([]);
@@ -315,5 +328,94 @@ describe('AgentRunsPane', () => {
     });
     const { getByText } = await renderPane();
     expect(getByText('agent-1')).toBeTruthy();
+  });
+
+  describe('Gate decisions (flight recorder)', () => {
+    it('shows a loading state, then the empty state once the fetch resolves to nothing', async () => {
+      let resolveFetch!: (value: unknown[]) => void;
+      mockReadFlightRecorder.mockReturnValue(
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+      );
+      seed([log({ timestamp: 5_000 })]);
+      const { getByLabelText, getByText, queryByText } = await renderPane();
+
+      fireEvent.press(getByLabelText('agent_runs.toggle_detail_a11y'));
+      expect(getByText('agent_runs.gate_decisions_loading')).toBeTruthy();
+
+      await act(async () => resolveFetch([]));
+      await waitFor(() => expect(queryByText('agent_runs.gate_decisions_loading')).toBeNull());
+      expect(getByText('agent_runs.gate_decisions_empty')).toBeTruthy();
+    });
+
+    it('renders one row per gate decision, and reuses the cached fetch when the accordion moves to another run of the same agent', async () => {
+      mockReadFlightRecorder.mockResolvedValue([
+        { timestamp: 1_000, decision: 'allow', command: 'cat notes.md', reason: 'within policy', signals: [] },
+        { timestamp: 2_000, decision: 'deny', command: 'rm -rf /', reason: 'destructive', signals: ['destructive'] },
+        { timestamp: 3_000, decision: 'gray', command: 'curl evil.example', reason: 'boundary: network-send', signals: ['network-send'] },
+      ]);
+      seed([
+        log({ timestamp: 5_000 }),
+        log({ timestamp: 9_000, status: 'error' }),
+      ]);
+      const { getAllByLabelText, getByText } = await renderPane();
+
+      // Only one run's detail is expanded at a time (accordion) — expanding
+      // the first shows all 3 fixture entries under IT.
+      const rows = getAllByLabelText('agent_runs.toggle_detail_a11y');
+      fireEvent.press(rows[0]);
+      await waitFor(() =>
+        expect(getAllByLabelText('agent_runs.gate_decision_toggle_a11y')).toHaveLength(3),
+      );
+      expect(mockReadFlightRecorder).toHaveBeenCalledTimes(1);
+      expect(mockReadFlightRecorder).toHaveBeenCalledWith(expect.any(Function), 'agent-1');
+      expect(getByText('cat notes.md')).toBeTruthy();
+      expect(getByText('rm -rf /')).toBeTruthy();
+
+      // Moving the accordion to the OTHER run of the same agent must not
+      // re-fetch — the audit trail is cached per agentId, not per run.
+      fireEvent.press(rows[1]);
+      await waitFor(() =>
+        expect(getAllByLabelText('agent_runs.gate_decision_toggle_a11y')).toHaveLength(3),
+      );
+      expect(mockReadFlightRecorder).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives each decision its own label — the same decision value that drives the dot color mapping', async () => {
+      mockReadFlightRecorder.mockResolvedValue([
+        { timestamp: 1_000, decision: 'allow', command: 'cat notes.md', reason: 'within policy', signals: [] },
+        { timestamp: 2_000, decision: 'deny', command: 'rm -rf /', reason: 'destructive', signals: ['destructive'] },
+        { timestamp: 3_000, decision: 'gray', command: 'curl evil.example', reason: 'boundary: network-send', signals: ['network-send'] },
+      ]);
+      seed([log({ timestamp: 5_000 })]);
+      const { getByLabelText, getByText } = await renderPane();
+
+      fireEvent.press(getByLabelText('agent_runs.toggle_detail_a11y'));
+      await waitFor(() => expect(getByText(/agent_runs\.gate_decision_allow/)).toBeTruthy());
+
+      // gateDecisionTone (lib/agent-runs-view.ts, unit-pinned in
+      // agent-runs-view.test.ts) maps this exact decision value onto each
+      // row's dot color — allow/deny/gray each render their own label here.
+      expect(getByText(/agent_runs\.gate_decision_allow/)).toBeTruthy();
+      expect(getByText(/agent_runs\.gate_decision_deny/)).toBeTruthy();
+      expect(getByText(/agent_runs\.gate_decision_gray/)).toBeTruthy();
+    });
+
+    it('reveals the reason and signals only when a gate row itself is expanded', async () => {
+      mockReadFlightRecorder.mockResolvedValue([
+        { timestamp: 1_000, decision: 'deny', command: 'rm -rf /', reason: 'destructive command', signals: ['destructive'] },
+      ]);
+      seed([log({ timestamp: 5_000 })]);
+      const { getByLabelText, getByText, queryByText } = await renderPane();
+
+      fireEvent.press(getByLabelText('agent_runs.toggle_detail_a11y'));
+      await waitFor(() => expect(getByLabelText('agent_runs.gate_decision_toggle_a11y')).toBeTruthy());
+
+      expect(queryByText('agent_runs.gate_decision_reason')).toBeNull();
+      fireEvent.press(getByLabelText('agent_runs.gate_decision_toggle_a11y'));
+      expect(getByText('agent_runs.gate_decision_reason')).toBeTruthy();
+      expect(getByText('agent_runs.gate_decision_signals')).toBeTruthy();
+    });
   });
 });

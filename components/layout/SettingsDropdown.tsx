@@ -507,6 +507,15 @@ const IntegrationsSection = React.memo(function IntegrationsSection({
 const CompanionMemorySection = React.memo(function CompanionMemorySection({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const addPane = useAddPane();
+  // Fable5 product-review Gap A (2026-08-25): persistent (not one-time)
+  // banner — lib/companion-journal.ts's digestConversationForJournal skips
+  // every journal write while this is unset, so the banner should always
+  // reflect current dormancy state rather than being dismissible and going
+  // stale. The separate one-time plain-chat notice (companionJournalDormancy
+  // NoticeShown, posted from components/panes/AIPane.tsx) is independent of
+  // this — this banner is the always-current status, that notice is a
+  // single heads-up.
+  const localLlmConfigured = useSettingsStore((s) => !!s.settings.localLlmUrl);
 
   const open = React.useCallback(() => {
     useAgentStore.getState().setMemoryWorkbenchAgentId(null);
@@ -520,6 +529,15 @@ const CompanionMemorySection = React.memo(function CompanionMemorySection({ onCl
       <Text style={[styles.credentialHint, { color: C.text2 }]}>
         {t('companion_memory.description')}
       </Text>
+      {!localLlmConfigured && (
+        <View style={[styles.integrationRow, borderedChromeStyle(), { borderColor: C.errorText, marginBottom: 6 }]}>
+          <MaterialIcons name="warning" size={13} color={C.errorText} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('companion_memory.dormant_title')}</Text>
+            <Text style={[styles.apiKeyHint, { color: C.text3 }]}>{t('companion_memory.dormant_hint')}</Text>
+          </View>
+        </View>
+      )}
       <Pressable
         style={[styles.integrationRow, borderedChromeStyle()]}
         onPress={open}

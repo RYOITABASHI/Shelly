@@ -11,6 +11,13 @@
  * missing scrollable list, plus the per-run audit detail (full routeDecision,
  * output preview, error, orchestration steps, multi-action results).
  *
+ * "Gate decisions" (Fable5 review 2026-08-25) is the flight recorder for the
+ * unattended boundary gate (lib/agent-boundary-policy.ts): every allow/deny/
+ * gray verdict the driver recorded during a run, lazily fetched per agent
+ * from lib/agent-audit-log.ts (which owns the on-disk JSONL contract) the
+ * first time one of that agent's runs is expanded, then sliced down to each
+ * run's own time window.
+ *
  * All display logic (grouping, ordering, formatting, route-row explosion)
  * lives in lib/agent-runs-view.ts so it is unit-testable outside RN.
  */
@@ -38,11 +45,19 @@ import {
   buildAgentRunGroups,
   buildRouteDecisionRows,
   describeRunAge,
+  formatGateTimestamp,
   formatRunDuration,
+  gateDecisionTone,
   runStatusIcon,
   runStatusTone,
+  truncateGateCommand,
   type RunStatusTone,
 } from '@/lib/agent-runs-view';
+import {
+  entriesForRun,
+  readAgentFlightRecorder,
+  type FlightRecorderEntry,
+} from '@/lib/agent-audit-log';
 import {
   getSelectedRunAgentId,
   selectRunAgent,
@@ -79,6 +94,16 @@ export default function AgentRunsPane() {
   const [expandedKey, setExpandedKey] = React.useState<string | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
   const [busyAgentId, setBusyAgentId] = React.useState<string | null>(null);
+
+  // Flight recorder (Fable5 review 2026-08-25): the boundary gate's
+  // allow/deny/gray decisions, lazily fetched per agent the first time one of
+  // its runs is expanded — cached by agentId (not by run) because the
+  // on-disk audit trail (lib/agent-audit-log.ts) is one accumulating file
+  // per agent, not per run; entriesForRun() slices the cached array down to
+  // each run's own time window at render time.
+  const [gateLogByAgent, setGateLogByAgent] = React.useState<Record<string, FlightRecorderEntry[]>>({});
+  const [gateLogLoading, setGateLogLoading] = React.useState<Record<string, boolean>>({});
+  const [expandedGateKey, setExpandedGateKey] = React.useState<string | null>(null);
 
   const paneBg = usePaneContentBackground(C.bgDeep);
   const cardBg = usePanelBackground(colors.surface);
@@ -191,6 +216,35 @@ export default function AgentRunsPane() {
     ]);
   }, [t]);
 
+  // Fetches the whole agent's audit trail at most once (skips if already
+  // cached or a fetch is already in flight) — subsequent row expansions for
+  // the same agent reuse the cached array via entriesForRun().
+  const ensureGateLogLoaded = React.useCallback(
+    (agentId: string) => {
+      if (gateLogByAgent[agentId] || gateLogLoading[agentId]) return;
+      setGateLogLoading((prev) => ({ ...prev, [agentId]: true }));
+      void readAgentFlightRecorder(runAgentShellCommand, agentId)
+        .then((entries) => {
+          setGateLogByAgent((prev) => ({ ...prev, [agentId]: entries }));
+        })
+        .finally(() => {
+          setGateLogLoading((prev) => ({ ...prev, [agentId]: false }));
+        });
+    },
+    [gateLogByAgent, gateLogLoading],
+  );
+
+  const toggleRun = React.useCallback(
+    (agentId: string, key: string) => {
+      setExpandedKey((prev) => {
+        const next = prev === key ? null : key;
+        if (next) ensureGateLogLoaded(agentId);
+        return next;
+      });
+    },
+    [ensureGateLogLoaded],
+  );
+
   const filteredAgentName =
     agentFilter ? agentById(agentFilter)?.name ?? agentFilter : null;
 
@@ -266,6 +320,9 @@ export default function AgentRunsPane() {
                   const canSaveSkill =
                     Boolean(agent) &&
                     shouldOfferSkillSave({ status: run.status, alreadySkillId: agent?.skillId });
+                  const gateEntries = gateLogByAgent[group.agentId];
+                  const gateLoading = gateLogLoading[group.agentId] ?? false;
+                  const runGateEntries = gateEntries ? entriesForRun(gateEntries, run) : [];
 
                   return (
                     <View
@@ -274,7 +331,7 @@ export default function AgentRunsPane() {
                     >
                       <TouchableOpacity
                         style={styles.row}
-                        onPress={() => setExpandedKey(expanded ? null : key)}
+                        onPress={() => toggleRun(group.agentId, key)}
                         accessibilityLabel={t('agent_runs.toggle_detail_a11y')}
                       >
                         <MaterialIcons
@@ -350,6 +407,71 @@ export default function AgentRunsPane() {
                               </Text>
                             </View>
                           ) : null}
+
+                          {/* Flight recorder: boundary-gate allow/deny/gray decisions */}
+                          <View style={styles.section}>
+                            <Text style={[styles.sectionTitle, { color: colors.accent }]}>
+                              {t('agent_runs.section_gate_decisions')}
+                            </Text>
+                            {gateLoading && !gateEntries ? (
+                              <View style={styles.gateLoadingRow}>
+                                <ActivityIndicator size="small" color={colors.accent} />
+                                <Text style={[styles.body, { color: colors.muted }]}>
+                                  {t('agent_runs.gate_decisions_loading')}
+                                </Text>
+                              </View>
+                            ) : runGateEntries.length === 0 ? (
+                              <Text style={[styles.body, { color: colors.muted }]}>
+                                {t('agent_runs.gate_decisions_empty')}
+                              </Text>
+                            ) : (
+                              runGateEntries.map((entry, index) => {
+                                const gateKey = `${key}-gate-${index}`;
+                                const gateExpanded = expandedGateKey === gateKey;
+                                const gateColor = toneColor(gateDecisionTone(entry.decision));
+                                return (
+                                  <TouchableOpacity
+                                    key={gateKey}
+                                    style={styles.gateRow}
+                                    onPress={() => setExpandedGateKey(gateExpanded ? null : gateKey)}
+                                    accessibilityLabel={t('agent_runs.gate_decision_toggle_a11y')}
+                                  >
+                                    <View style={[styles.gateDot, { backgroundColor: gateColor }]} />
+                                    <View style={styles.gateMain}>
+                                      <Text
+                                        style={[styles.gateMeta, { color: colors.muted }]}
+                                        numberOfLines={1}
+                                      >
+                                        {`${formatGateTimestamp(entry.timestamp)} · ${t(`agent_runs.gate_decision_${entry.decision}`)}`}
+                                      </Text>
+                                      <Text
+                                        style={[styles.body, { color: colors.foreground }]}
+                                        numberOfLines={gateExpanded ? undefined : 1}
+                                      >
+                                        {truncateGateCommand(entry.command)}
+                                      </Text>
+                                      {gateExpanded ? (
+                                        <>
+                                          {entry.reason ? (
+                                            <Text style={[styles.body, { color: colors.muted }]}>
+                                              {t('agent_runs.gate_decision_reason', { reason: entry.reason })}
+                                            </Text>
+                                          ) : null}
+                                          {entry.signals.length > 0 ? (
+                                            <Text style={[styles.body, { color: colors.muted }]}>
+                                              {t('agent_runs.gate_decision_signals', {
+                                                signals: entry.signals.join(', '),
+                                              })}
+                                            </Text>
+                                          ) : null}
+                                        </>
+                                      ) : null}
+                                    </View>
+                                  </TouchableOpacity>
+                                );
+                              })
+                            )}
+                          </View>
 
                           {/* Orchestration steps */}
                           {run.steps && run.steps.length > 0 ? (
@@ -523,6 +645,11 @@ const styles = StyleSheet.create({
   kvLabel: { fontSize: 11, minWidth: 78 },
   kvValue: { flex: 1, fontSize: 11 },
   body: { fontSize: 11, lineHeight: 16 },
+  gateLoadingRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  gateRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingVertical: 3 },
+  gateDot: { width: 8, height: 8, borderRadius: 4, marginTop: 3 },
+  gateMain: { flex: 1, gap: 1 },
+  gateMeta: { fontSize: 10, fontWeight: '600' },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   actionButton: {
     flexDirection: 'row',

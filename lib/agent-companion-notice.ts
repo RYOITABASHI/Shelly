@@ -65,6 +65,42 @@ export function postLatestAgentRunToCompanion(
   return log ? postAgentCompanionNotice(log, agentName, fallbackText) : false;
 }
 
+// Fixed id (not per-timestamp, unlike the run-started/run-completed notices
+// above) so a within-session dedup check is a plain lookup rather than a
+// scan for a marker field — there is only ever at most ONE of these in a
+// conversation, ever.
+const COMPANION_JOURNAL_DORMANT_NOTICE_ID = 'companion-journal-dormant-notice';
+
+/**
+ * Companion journal dormancy notice (Fable5 review Gap A, 2026-08-25): posts
+ * ONE plain-chat-text line — never a card/modal, see this session's standing
+ * no-confirm-card rule and lib/agent-onboarding-nudge.ts's sibling comment —
+ * the first time lib/companion-journal.ts's digestConversationForJournal
+ * detects it had something worth journaling but no local LLM configured to
+ * write it with (its `onDormant` callback).
+ *
+ * Idempotent WITHIN a session via the fixed id above (same "check messages
+ * before appending" shape as postAgentCompanionNotice's agentRunLogId
+ * check). The CALLER (components/panes/AIPane.tsx) is additionally
+ * responsible for checking AppSettings.companionJournalDormancyNoticeShown
+ * before calling this, and flipping it true after a `true` result, so the
+ * notice also never resurfaces across app restarts — this function alone
+ * has no settings-store access, consistent with every other export in this
+ * file being conversation/run-log-scoped, not settings-scoped.
+ */
+export function postCompanionJournalDormancyNotice(noticeText: string): boolean {
+  const store = useAIPaneStore.getState();
+  const messages = store.conversations[COMPANION_CONVERSATION_KEY]?.messages ?? [];
+  if (messages.some((message) => message.id === COMPANION_JOURNAL_DORMANT_NOTICE_ID)) return false;
+  store.addMessage(COMPANION_CONVERSATION_KEY, {
+    id: COMPANION_JOURNAL_DORMANT_NOTICE_ID,
+    role: 'assistant',
+    content: noticeText,
+    timestamp: Date.now(),
+  });
+  return true;
+}
+
 /**
  * Session-only cursor for the root disk-sync loop. `beginSync` deliberately
  * observes everything already in the RN store (including attended runs) before

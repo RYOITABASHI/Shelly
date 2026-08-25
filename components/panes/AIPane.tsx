@@ -27,9 +27,12 @@ import {
   useAIPaneStore,
 } from '@/store/ai-pane-store';
 import { digestConversationForJournal } from '@/lib/companion-journal';
+import { postCompanionJournalDormancyNotice } from '@/lib/agent-companion-notice';
 import { execCommand } from '@/hooks/use-native-exec';
 import { usePaneStore } from '@/store/pane-store';
+import { useAgentStore } from '@/store/agent-store';
 import { useInboundStore } from '@/store/inbound-store';
+import { shouldShowAgentOnboardingNudge } from '@/lib/agent-onboarding-nudge';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { formatContextBadge } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/types';
@@ -482,6 +485,24 @@ export default function AIPane() {
         sourceMessages,
         { baseUrl: settings.localLlmUrl, model: settings.localLlmModel ?? 'default', enabled: true },
         runCompanionJournalCommand,
+        // Fable5 review Gap A (2026-08-25): fired only when the digest had
+        // real content to save but no local LLM to save it with. Own
+        // try/catch (not the outer effect) so a failure here — settings
+        // read, message append, whatever — can never surface as a broken
+        // pane switch; same defensive shape as use-ai-pane-dispatch.ts's
+        // schedule-readiness nudge append.
+        () => {
+          try {
+            const shown = useSettingsStore.getState().settings.companionJournalDormancyNoticeShown ?? false;
+            if (shown) return;
+            const posted = postCompanionJournalDormancyNotice(t('chat.companion_journal_dormant'));
+            if (posted) {
+              useSettingsStore.getState().updateSettings({ companionJournalDormancyNoticeShown: true });
+            }
+          } catch (nudgeError) {
+            logError('AIPane', `failed to post companion journal dormancy notice: ${nudgeError instanceof Error ? nudgeError.message : String(nudgeError)}`);
+          }
+        },
       );
     }
   }, [resolvedConversationKey, t]);
@@ -506,6 +527,38 @@ export default function AIPane() {
       agentCardState: 'pending',
     });
   }, [pendingInboundCount, paneId]);
+
+  // Fable5 review item #7 (2026-08-25): one-time first-agent onboarding nudge.
+  // A plain companion chat message — never a modal/wizard, see CLAUDE.md's
+  // "旧 AuthWizard / WelcomeWizard は廃止" and this codebase's standing
+  // no-confirm-card rule — explaining what an agent is plus one
+  // parser-verified example utterance. The gating rule itself is the pure,
+  // unit-tested shouldShowAgentOnboardingNudge (lib/agent-onboarding-nudge.ts,
+  // covered by __tests__/agent-onboarding-nudge.test.ts, which also proves
+  // the example utterance parses via lib/agent-nl-parser.ts's parseAgentNL).
+  // Reads fresh store state (not the `messages`/`conversation` closures
+  // below) so this only ever fires once even if the effect re-runs. Message
+  // is appended THEN the flag is flipped — same order as
+  // scheduleReadinessNudgeShown's nudge (hooks/use-ai-pane-dispatch.ts) —
+  // so a crash between the two can never mark "shown" without the message
+  // actually landing.
+  useEffect(() => {
+    const key = resolveAiPaneStoreKey(paneId);
+    const existing = useAIPaneStore.getState().conversations[key]?.messages ?? [];
+    const eligible = shouldShowAgentOnboardingNudge(
+      useAgentStore.getState().agents.length,
+      useSettingsStore.getState().settings.agentOnboardingNudgeShown ?? false,
+      existing.length,
+    );
+    if (!eligible) return;
+    useAIPaneStore.getState().addMessage(key, {
+      id: `agent-onboarding-nudge-${Date.now()}`,
+      role: 'assistant',
+      content: t('chat.agent_onboarding_nudge'),
+      timestamp: Date.now(),
+    });
+    useSettingsStore.getState().updateSettings({ agentOnboardingNudgeShown: true });
+  }, [paneId, t]);
 
   const messages = conversation?.messages ?? [];
   const isStreaming = conversation?.isStreaming ?? false;

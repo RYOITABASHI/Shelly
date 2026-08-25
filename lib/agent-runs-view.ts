@@ -188,3 +188,43 @@ export function buildRouteDecisionRows(decision: AgentRouteDecision | undefined)
   rows.push({ labelKey: 'agent_runs.route_why', value: decision.why });
   return rows;
 }
+
+/** Semantic tone for a flight-recorder gate decision — mirrors RunStatusTone's
+ *  allow/deny/gray → success/error/warning mapping so the pane can reuse the
+ *  same toneColor() lookup it already has for run status. A string type
+ *  (not GateDecision) keeps this file dependency-free of lib/agent-audit-log
+ *  at runtime, matching this module's existing zero-runtime-dependency rule. */
+export function gateDecisionTone(decision: 'allow' | 'deny' | 'gray' | string): RunStatusTone {
+  switch (decision) {
+    case 'allow':
+      return 'success';
+    case 'deny':
+      return 'error';
+    case 'gray':
+    default:
+      return 'warning';
+  }
+}
+
+/** Local `HH:mm:ss` for one flight-recorder row — a run's gate decisions are
+ *  usually seconds apart, so this needs finer granularity than
+ *  formatAbsolute's date+minute format above, but the same locale-neutral
+ *  reasoning (both en and ja read a bare 24h clock the same way). */
+export function formatGateTimestamp(timestamp: number): string {
+  const d = new Date(timestamp);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * Single-line, length-capped command preview for a flight-recorder row. The
+ * driver has already redacted secrets before writing the audit line (see
+ * lib/agent-audit-log.ts's doc comment) — this only trims for layout, and
+ * collapses embedded whitespace/newlines (the classified string is usually a
+ * `bash -lc '<script>'` payload) so the row never wraps to multiple lines.
+ */
+export function truncateGateCommand(command: string, maxLen = 80): string {
+  const flat = command.replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  if (flat.length <= maxLen) return flat;
+  return `${flat.slice(0, Math.max(maxLen - 1, 1))}…`;
+}

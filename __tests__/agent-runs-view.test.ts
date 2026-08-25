@@ -11,9 +11,12 @@ import {
   buildAgentRunGroups,
   buildRouteDecisionRows,
   describeRunAge,
+  formatGateTimestamp,
   formatRunDuration,
+  gateDecisionTone,
   runStatusIcon,
   runStatusTone,
+  truncateGateCommand,
 } from '@/lib/agent-runs-view';
 import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
 
@@ -240,5 +243,45 @@ describe('buildRouteDecisionRows', () => {
   it('omits an empty secretKinds array rather than rendering a blank row', () => {
     const keys = buildRouteDecisionRows({ ...base, secretKinds: [] }).map((r) => r.labelKey);
     expect(keys).not.toContain('agent_runs.route_secrets');
+  });
+});
+
+describe('gateDecisionTone', () => {
+  it('maps allow/deny/gray onto the same success/error/warning tones runStatusTone uses', () => {
+    expect(gateDecisionTone('allow')).toBe('success');
+    expect(gateDecisionTone('deny')).toBe('error');
+    expect(gateDecisionTone('gray')).toBe('warning');
+  });
+
+  it('falls back to warning for an unrecognized decision rather than throwing', () => {
+    expect(gateDecisionTone('anything-else')).toBe('warning');
+  });
+});
+
+describe('formatGateTimestamp', () => {
+  it('renders a zero-padded local HH:mm:ss', () => {
+    const d = new Date(2026, 7, 25, 9, 5, 3);
+    expect(formatGateTimestamp(d.getTime())).toBe('09:05:03');
+  });
+});
+
+describe('truncateGateCommand', () => {
+  it('returns short commands unchanged', () => {
+    expect(truncateGateCommand('cat notes.md')).toBe('cat notes.md');
+  });
+
+  it('caps length and appends an ellipsis for a long command', () => {
+    const long = 'x'.repeat(100);
+    const result = truncateGateCommand(long, 80);
+    expect(result.length).toBe(80);
+    expect(result.endsWith('…')).toBe(true);
+  });
+
+  it('collapses embedded newlines/whitespace so a wrapped bash -lc payload stays one line', () => {
+    expect(truncateGateCommand('bash -lc \'echo a\n  echo b\'')).toBe("bash -lc 'echo a echo b'");
+  });
+
+  it('returns an empty string for blank input', () => {
+    expect(truncateGateCommand('   ')).toBe('');
   });
 });

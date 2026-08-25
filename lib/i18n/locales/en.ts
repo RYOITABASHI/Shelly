@@ -582,6 +582,11 @@ const en: Record<string, string> = {
   'companion_memory.description': 'What Shelly remembers about your conversations, and standing preferences shared with every agent.',
   'companion_memory.open': 'View companion memory',
   'companion_memory.open_a11y': 'Open companion memory notes',
+  // Fable5 review Gap A (2026-08-25): persistent banner (not a one-time
+  // dismiss) shown whenever settings.localLlmUrl is unset, since
+  // digestConversationForJournal skips every write without it.
+  'companion_memory.dormant_title': 'Dormant — no local LLM configured',
+  'companion_memory.dormant_hint': 'The journal only writes when a local LLM is set up, so nothing from your conversations is being saved yet. Configure one in Local LLM settings to turn this on.',
   'api_keys.title': 'API Keys',
   'api_keys.paste_placeholder': 'Paste {{name}} API key',
   'webhook_allowlist.title': 'Webhook trusted hosts',
@@ -1090,6 +1095,21 @@ const en: Record<string, string> = {
   'chat.carried_forward_to_companion': "I brought our conversation with me — I'll take it from here.",
   'chat.carried_forward_to_pane': "I brought our conversation along — I'll think this one through with a different model.",
   'chat.empty_subtitle': 'Ask anything. I can see your terminal output.',
+  // Fable5 review item #7 (2026-08-25): one-time first-agent onboarding
+  // nudge, shown as a plain companion chat message (never a modal/wizard —
+  // see CLAUDE.md's "旧 AuthWizard / WelcomeWizard は廃止") when the device
+  // has no registered agents yet. The example utterance is parser-verified
+  // against lib/agent-nl-parser.ts's parseAgentNL — see
+  // __tests__/agent-onboarding-nudge.test.ts.
+  'chat.agent_onboarding_nudge': "I can also run things for you in the background — that's an **agent**. Describe a task once in plain English and I'll keep doing it on a schedule (or right now).\n\nTry telling me:\n`every day at 8am, summarize the news`\n\nI'll show you exactly what I'm about to set up before anything runs.",
+  // Fable5 product-review Gap A (2026-08-25): one-time plain-chat notice —
+  // never a modal/card, same standing rule as chat.agent_onboarding_nudge —
+  // posted by lib/agent-companion-notice.ts's
+  // postCompanionJournalDormancyNotice the first time
+  // lib/companion-journal.ts's digestConversationForJournal detects it had
+  // something worth journaling but no local LLM configured to write it
+  // with. See AppSettings.companionJournalDormancyNoticeShown.
+  'chat.companion_journal_dormant': "By the way, I can't save notes from our chats yet — no local LLM is set up. Add one in Settings → Local LLM if you'd like me to start remembering things between conversations.",
   'chat.sample_list_files': 'List files',
   'chat.sample_ask_claude': 'Ask Codex',
   'chat.sample_ask_gemini': 'Ask Gemini',
@@ -1941,6 +1961,15 @@ const en: Record<string, string> = {
     'Undo is only available for AI Pane chat results, which keep a git savepoint. A background agent run keeps no rollback handle, so its side effects cannot be reverted from here.',
   'agent_runs.rerun_failed_title': 'Re-run failed',
   'agent_runs.rerun_failed_body': '{{name}} could not be started: {{error}}',
+  'agent_runs.section_gate_decisions': 'Gate decisions',
+  'agent_runs.gate_decisions_loading': 'Loading gate decisions…',
+  'agent_runs.gate_decisions_empty': 'No gate decisions recorded for this run.',
+  'agent_runs.gate_decision_toggle_a11y': 'Show gate decision reason',
+  'agent_runs.gate_decision_allow': 'Allowed',
+  'agent_runs.gate_decision_deny': 'Denied',
+  'agent_runs.gate_decision_gray': 'Escalated',
+  'agent_runs.gate_decision_reason': 'Reason: {{reason}}',
+  'agent_runs.gate_decision_signals': 'Signals: {{signals}}',
   'agent_chat.title': 'Agent Chat',
   'agent_chat.read_only': 'READ ONLY',
   'agent_chat.reply_ready': 'READY',

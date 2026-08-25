@@ -18,6 +18,29 @@
  * occasional low-value or slightly-off notes, editable/deletable later,
  * in exchange for the companion actually feeling like it remembers without
  * the user having to explicitly say "remember that" every time.
+ *
+ * Fable5 product-review gaps (2026-08-25), both addressed here:
+ *  - Gap A (silent dormancy): a cloud-only user with no local LLM configured
+ *    used to get a totally silent no-op on every switch — the journal exists
+ *    but never indicates it's inactive. `digestConversationForJournal` now
+ *    takes an optional `onDormant` callback, fired only when there was
+ *    genuinely enough eligible content to be worth journaling (same
+ *    MIN_MESSAGES_TO_DIGEST floor a real digest uses) but no baseUrl to
+ *    write it with. The caller (components/panes/AIPane.tsx) uses this to
+ *    surface a ONE-TIME plain-chat notice (lib/agent-companion-notice.ts's
+ *    postCompanionJournalDormancyNotice) gated by
+ *    AppSettings.companionJournalDormancyNoticeShown, plus a persistent
+ *    banner in the Companion Memory view — this module itself stays
+ *    settings-store-agnostic (matching the rest of its design), it only
+ *    signals the condition.
+ *  - Gap B (legacy-only storage): a successful digest now writes through the
+ *    MEMORY-001 engine first (lib/memory/shadow.ts's activateMemoryWrite,
+ *    gated by MEMORY_ENABLED — see lib/memory/wiring.ts), falling back to
+ *    G2's own writeMemoryNote only when MEMORY_ENABLED is false or the v2
+ *    write reports an internal failure. Exactly the same v2-primary /
+ *    G2-fallback contract lib/agent-manager.ts's persistRememberFact already
+ *    uses for per-agent "remember that" facts — see that function's comment
+ *    for the precedent this mirrors.
  */
 import {
   COMPANION_MEMORY_SCOPE,
@@ -27,6 +50,13 @@ import {
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from '@/lib/local-llm';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import type { ChatMessage } from '@/store/types';
+// MEMORY-001 shadow/activation seam (live: MEMORY_ENABLED=true since
+// 2026-08-05, see lib/memory/wiring.ts): imported from their own modules
+// (not the '@/lib/memory' index), same reasoning as agent-manager.ts's own
+// import comment — keeps any test that merely imports this file from
+// transitively loading expo-file-system via fs-expo.ts.
+import { MEMORY_ENABLED } from '@/lib/memory/wiring';
+import { activateMemoryWrite } from '@/lib/memory/shadow';
 
 /** Below this many eligible messages, a switch isn't worth an LLM round-trip. */
 const MIN_MESSAGES_TO_DIGEST = 4;
@@ -69,10 +99,19 @@ export async function digestConversationForJournal(
   messages: ChatMessage[],
   config: LocalLlmConfig,
   runCommand: (cmd: string) => Promise<string>,
+  onDormant?: () => void,
 ): Promise<void> {
-  if (!config.baseUrl) return;
   const eligible = messages.filter(isDigestEligible);
   if (eligible.length < MIN_MESSAGES_TO_DIGEST) return;
+
+  if (!config.baseUrl) {
+    // Gap A: only signal dormancy when there was actually something worth
+    // journaling (the same floor a real digest requires) — a pane switch on
+    // an empty/short conversation must not spam the caller's one-time-nudge
+    // check every time.
+    onDormant?.();
+    return;
+  }
 
   const lastId = eligible[eligible.length - 1].id;
   if (lastDigestedMessageId.get(sourceKey) === lastId) return; // nothing new since the last digest
@@ -107,7 +146,19 @@ export async function digestConversationForJournal(
     }
 
     const note = makeMemoryNote({ agentId: COMPANION_MEMORY_SCOPE, type: 'fact', text });
-    await writeMemoryNote(runCommand, note);
+    // Gap B: MEMORY-001 v2-primary / G2-fallback write, mirroring
+    // lib/agent-manager.ts's persistRememberFact exactly. activateMemoryWrite
+    // reuses makeMemoryNote's own normalization internally and never throws
+    // (false = any internal failure), so a `false` result here — or
+    // MEMORY_ENABLED itself being false — falls back to G2's writeMemoryNote
+    // rather than silently losing the note. On v2 success the G2 write below
+    // is skipped entirely, same as persistRememberFact's `if (ok) return`.
+    const wroteViaV2 = MEMORY_ENABLED
+      ? await activateMemoryWrite({ agentId: COMPANION_MEMORY_SCOPE, type: 'fact', text })
+      : false;
+    if (!wroteViaV2) {
+      await writeMemoryNote(runCommand, note);
+    }
     // Only mark this tail as digested once the note is actually on disk —
     // 2026-08-25 review finding: setting this right after the LLM call
     // succeeded (before the write was attempted) meant a write failure

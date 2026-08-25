@@ -561,6 +561,11 @@ const ja: Record<string, string> = {
   'companion_memory.description': 'Shellyがあなたとの会話から覚えていること、全エージェント共通の標準設定。',
   'companion_memory.open': 'コンパニオンの記憶を見る',
   'companion_memory.open_a11y': 'コンパニオンの記憶メモを開く',
+  // Fable5レビュー Gap A(2026-08-25): settings.localLlmUrl 未設定の間は
+  // digestConversationForJournal が書き込みを一切行わないため、一度きりの
+  // 通知ではなく常時表示のバナーとして表示する。
+  'companion_memory.dormant_title': '休眠中 — ローカルLLM未設定',
+  'companion_memory.dormant_hint': 'ローカルLLMが設定されていないため、会話の内容はまだ記録されていません。有効にするには「ローカルLLM」設定で構成してください。',
   'api_keys.title': 'APIキー',
   'api_keys.paste_placeholder': '{{name}} APIキーを貼り付け',
   'webhook_allowlist.title': 'Webhook 信頼済みホスト',
@@ -1059,6 +1064,20 @@ const ja: Record<string, string> = {
   'chat.carried_forward_to_companion': 'ここまでの話を持ってきましたよ。この先は私が対応しますね。',
   'chat.carried_forward_to_pane': 'ここまでの話を持ってきました。今回は別のモデルで考えますね。',
   'chat.empty_subtitle': '何でも聞いてください。ターミナルの出力も見えています。',
+  // Fable5レビュー項目#7 (2026-08-25): 初回エージェント登録前の一度きりの
+  // オンボーディング案内。モーダルやウィザードではなく、相棒からの普通の
+  // チャットメッセージとして表示する（CLAUDE.mdの「旧 AuthWizard /
+  // WelcomeWizard は廃止」参照）。端末にエージェントが1件も登録されていない
+  // 間だけ表示。例文はlib/agent-nl-parser.tsのparseAgentNLで実際にパース
+  // できることを検証済み（__tests__/agent-onboarding-nudge.test.ts参照）。
+  'chat.agent_onboarding_nudge': '実は、頼まれたことを裏で自動的にやっておく「エージェント」も作れます。普段の言葉で1回説明するだけで、あとは決めた時間に（または今すぐ）代わりに動いてくれます。\n\n例えば、こう話しかけてみてください：\n`毎日8時にニュースをまとめて`\n\n実行する前に、何をするか必ず確認してからお知らせします。',
+  // Fable5製品レビュー Gap A(2026-08-25): モーダルやカードではなく、
+  // chat.agent_onboarding_nudgeと同じ一度きりの普通のチャットメッセージ。
+  // lib/companion-journal.tsのdigestConversationForJournalが「記録する
+  // 価値はあるがローカルLLM未設定で書き込めない」と検知した最初のタイミングで
+  // lib/agent-companion-notice.tsのpostCompanionJournalDormancyNoticeから
+  // 投稿される。AppSettings.companionJournalDormancyNoticeShown参照。
+  'chat.companion_journal_dormant': 'ところで、ローカルLLMが未設定なので、まだ会話の内容を記録できていません。会話の間も覚えておいてほしければ、設定→ローカルLLM から設定してみてください。',
   'chat.sample_list_files': 'ファイル一覧',
   'chat.sample_ask_claude': 'Codexに聞く',
   'chat.sample_ask_gemini': 'Geminiに聞く',
@@ -1907,6 +1926,15 @@ const ja: Record<string, string> = {
     '「元に戻す」は git セーブポイントを持つ AI ペインのチャット結果でのみ利用できます。バックグラウンド実行はロールバック用のハンドルを保持しないため、ここから副作用を取り消すことはできません。',
   'agent_runs.rerun_failed_title': '再実行に失敗しました',
   'agent_runs.rerun_failed_body': '{{name}} を開始できませんでした: {{error}}',
+  'agent_runs.section_gate_decisions': 'ゲート判定',
+  'agent_runs.gate_decisions_loading': 'ゲート判定を読み込み中…',
+  'agent_runs.gate_decisions_empty': 'この実行に記録されたゲート判定はありません。',
+  'agent_runs.gate_decision_toggle_a11y': 'ゲート判定の理由を表示',
+  'agent_runs.gate_decision_allow': '許可',
+  'agent_runs.gate_decision_deny': '拒否',
+  'agent_runs.gate_decision_gray': 'エスカレーション',
+  'agent_runs.gate_decision_reason': '理由: {{reason}}',
+  'agent_runs.gate_decision_signals': 'シグナル: {{signals}}',
   'agent_chat.title': 'エージェントチャット',
   'agent_chat.read_only': '読み取り専用',
   'agent_chat.reply_ready': '送信可',

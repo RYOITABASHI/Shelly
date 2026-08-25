@@ -567,6 +567,35 @@ export type AppSettings = {
    *  = not yet shown. This is a dismissible nudge, never a registration gate:
    *  the agent is always created first, the card is a best-effort follow-up. */
   scheduleReadinessNudgeShown?: boolean;
+  /** Fable5 review item #7 (2026-08-25): true once the companion has shown the
+   *  one-time first-agent onboarding nudge in the AI Pane — a plain chat
+   *  message explaining what an agent is plus ONE parser-verified example
+   *  utterance ("毎日8時にニュースをまとめて" / "every day at 8am, summarize
+   *  the news" — see __tests__/agent-onboarding-nudge.test.ts for the
+   *  parseAgentNL() proof). Device-scoped, not per-pane, mirroring
+   *  scheduleReadinessNudgeShown's shape exactly. Shown only while the device
+   *  has NO registered agents yet (see components/panes/AIPane.tsx); once
+   *  either an agent is registered or this flips true, it never shows again.
+   *  Default false/absent = not yet shown. Deliberately NOT a modal/wizard —
+   *  see CLAUDE.md's "旧 AuthWizard / WelcomeWizard は廃止" and this
+   *  session's no-confirm-card standing rule: plain NL chat text only. */
+  agentOnboardingNudgeShown?: boolean;
+  /** Fable5 product-review Gap A (2026-08-25): true once the companion has
+   *  shown the one-time plain-chat notice explaining that its journal
+   *  (lib/companion-journal.ts's digestConversationForJournal) is dormant
+   *  because no local LLM is configured — see lib/agent-companion-notice.ts's
+   *  postCompanionJournalDormancyNotice, called from
+   *  components/panes/AIPane.tsx's digestConversationForJournal `onDormant`
+   *  callback. Device-scoped, not per-conversation, mirroring
+   *  scheduleReadinessNudgeShown's / agentOnboardingNudgeShown's shape
+   *  exactly, so it never nags again once seen. Default false/absent = not
+   *  yet shown. Purely informational, never a feature gate: the companion
+   *  conversation itself works identically either way — only the journal
+   *  note is skipped until a local LLM is set up. The Companion Memory view
+   *  (components/layout/SettingsDropdown.tsx's CompanionMemorySection) also
+   *  shows a persistent (not one-time) banner for the same condition,
+   *  independent of this flag. */
+  companionJournalDormancyNoticeShown?: boolean;
   /** UI visual preset. Legacy ids remain accepted for existing installs. */
   uiFont?:
     | 'blue'

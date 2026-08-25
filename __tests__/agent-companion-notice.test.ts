@@ -3,6 +3,7 @@ import {
   agentRunLogIdentity,
   postAgentCompanionNotice,
   postAgentRunStartedNotice,
+  postCompanionJournalDormancyNotice,
   postLatestAgentRunToCompanion,
 } from '@/lib/agent-companion-notice';
 import { COMPANION_CONVERSATION_KEY, useAIPaneStore } from '@/store/ai-pane-store';
@@ -113,5 +114,34 @@ describe('unattended run-log sync deduplication', () => {
     const [fresh] = tracker.completeSync({ 'agent-a': [log] });
     expect(postAgentCompanionNotice(fresh, 'Agent A', 'Done.')).toBe(false);
     expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages).toHaveLength(1);
+  });
+});
+
+// Fable5 product-review Gap A (2026-08-25): companion journal dormancy
+// notice. The one-time-across-app-restarts guarantee is
+// AppSettings.companionJournalDormancyNoticeShown, checked by the caller
+// (components/panes/AIPane.tsx) BEFORE calling this function; what this
+// function itself guarantees is that a second post within the same session
+// (e.g. a settings-flag write racing/failing between two switches) can
+// never produce two lines in the companion thread.
+describe('companion journal dormancy notice', () => {
+  it('posts a single plain-chat-text line into the shared companion thread', () => {
+    expect(postCompanionJournalDormancyNotice('no local LLM is configured yet')).toBe(true);
+
+    const messages = useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual(expect.objectContaining({
+      role: 'assistant',
+      content: 'no local LLM is configured yet',
+    }));
+  });
+
+  it('does not double-post within the same session', () => {
+    postCompanionJournalDormancyNotice('first call');
+    expect(postCompanionJournalDormancyNotice('second call')).toBe(false);
+
+    const messages = useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY].messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe('first call');
   });
 });
