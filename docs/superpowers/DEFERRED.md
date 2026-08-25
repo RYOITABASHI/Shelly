@@ -3111,13 +3111,13 @@ coreutils: /sdcard/Download/patch-codex.sh: Permission denied
 
 ---
 
-### CLAUDE.md「Terminal pane background」節がP3ゲート再合意（2026-07-15）を反映せず陳腐化 — 未着手（2026-08-10発見）
+### ✅ CLAUDE.md「Terminal pane background」節の陳腐化 — ドキュメント同期完了（2026-08-25）
 
-**発見**: Fable5実機②レビュー(2026-08-10)がSettings内「Show wallpaper in Terminal (experimental)」の説明文(「On by default, matching the other panes」)とCLAUDE.mdの「Terminal pane背景はopaque固定」記載の矛盾を指摘。CC本セッションで調査した結果、**矛盾しているのはCLAUDE.md側**と判明: `store/settings-store.ts:155`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示による同日3分前`85da0d144`のrevert)で`true`(ON)に確定し、HEAD(`af24f46b3`)まで3週間以上変更なし。CLAUDE.mdの該当節は`85da0d144`時点(opaque固定)の記述のまま、その3分後の最終revertが反映されていない。詳細な調査記録は上記2026-08-10エントリのD-4項目、および末尾P3セクション「Terminal pane wallpaper transparency re-enable」の2026-08-10追記を参照。
+**発見**: Fable5実機②レビュー(2026-08-10)がSettings内「Show wallpaper in Terminal (experimental)」の説明文(「On by default, matching the other panes」)とCLAUDE.mdの「Terminal pane背景はopaque固定」記載の矛盾を指摘。CC調査の結果、**矛盾しているのはCLAUDE.md側**と判明: `store/settings-store.ts`の`terminalWallpaperTransparency`既定値は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示による同日3分前`85da0d144`のrevert)で`true`(ON)に確定し、HEADまで一貫して変更なし。CLAUDE.mdの該当節はそれより前の中間状態(opaque固定)の記述のままだった。
 
-**Why not now（本セッションで直接修正しなかった理由）**: CLAUDE.md本文は当該行の変更に「P3チェックリストのスクショ証跡」を明記して要求している。本セッションはコード変更を伴わない事実確認(git log調査)のみであり、要求されている6シナリオ(first frame/theme apply/new tab/split layout/IME resize/settings modal背面)の実機スクショ証跡を遡及的に提出できない。設定説明文・コード自体は現状(既定ON)と整合しているため実害はなく、テキスト修正も不要と判断。
+**2026-08-25 対応**: 2026-08-10時点で「次にやること」として残っていた(b)を実施——CLAUDE.mdの「Terminal pane background」節を2026-07-15の実際の最終状態(既定ON、経緯の完全なコミットチェーン`fb85a0b0c`→`61e9bea15`→`70ccd1e63`→`85da0d144`→`2211047a2`)に書き換えた。これは同ユーザーが2026-08-25のオンデバイス確認で三度目にこの「矛盾」を指摘したことを受けたもの(2026-08-10のCC調査では未着手のまま放置されていた)。設定文言・コードは変更していない(元々実体と一致していたため)。
 
-**次にやること**: (a) 次回オンデバイスQA枠でP3チェックリスト6シナリオのスクショを取得し証跡として残す、または (b) 少なくともCLAUDE.mdの「Terminal pane background」節と本ファイルのP3エントリを2026-07-15の実際の最終状態(既定ON)に合わせて書き換える。両方とも実施していない状態で本v0.1.1に入れば、次にこの節を読む人がまた同じ「矛盾」に気づいて調査コストを払うことになる。
+**残課題(未解消、P3エントリへ格上げ不要・そのまま継続)**: (a)の実機スクショ証跡6シナリオ(first frame/theme apply/new tab/split layout/IME resize/settings modal背面)は今回も取得していない——CLAUDE.mdの当該節が要求するP3チェックリストへの遡及的な証跡提出はテキスト同期のみでは満たせないため。末尾P3セクション「Terminal pane wallpaper transparency re-enable」に追跡を残す。
 
 ---
 
@@ -4513,12 +4513,13 @@ claude() {
 - MEMORY.md の「やりたいことリスト」参照
 
 ### Terminal pane wallpaper transparency re-enable
-- **優先度**: P3 → **2026-08-10時点で本entryの前提そのものが陳腐化していることが判明（下記追記参照）。要トリアージ格上げ検討。**
+- **優先度**: P3（**2026-08-25時点でCLAUDE.md本文はこの実体に同期済み**——残るのは下記スクショ証跡未取得のみ、格上げは見送り）
 - **現状（当初記録、2026-06-19時点）**: build 1560–1565 の実機確認で、Terminal pane の native surface / Termux color default / GL surface が wallpaper や panel tint を拾い、プロンプト表示・新規タブ・IME resize・設定パネル表示時に全面グレー化する回帰を確認。安定性優先で Terminal pane は opaque black に fail-closed した。
 - **Why not now**: ターミナルの主機能は文字の視認性と IME/PTY 安定性。wallpaper 透過を維持すると Android compositor / RN panel / Termux palette / GL renderer の境界で再発しやすく、B2 検証の本線も妨げる。
 - **戻す条件（当初記録）**: TerminalView(Canvas) と GLTerminalView の両方で first frame / theme apply / new tab / split layout / IME resize / settings modal 背面の実機スクショを取り、黒以外の背景が出ないことを証明する。戻す場合も設定フラグで既定 OFF から開始。
 - **2026-08-10追記（CC本セッション、Fable5実機②レビューのD-4項目調査中に発見）**: 上記「戻す条件」（デフォルトOFFから開始）は**既に満たされていない**。`store/settings-store.ts`の`terminalWallpaperTransparency`は2026-07-15 18:23:58の`2211047a2`(プロダクトオーナー明示指示「ターミナルも他のペインと同様に透過させる」)で既定`true`(ON)に変更され、HEAD(`af24f46b3`)まで3週間以上そのまま。同コミットが指摘したネイティブ色パレット未更新のギャップは`ShellyTerminalView.kt::applyTerminalSurface()`で解消済みと確認。ただし当初記録にある「first frame/theme apply/new tab/split layout/IME resize/settings modal背面での実機スクショ証跡」は、`2211047a2`のコミットメッセージにも本DEFERRED.mdにも見当たらず、**正式なP3チェックリスト消化の記録が無いままデフォルトONへ移行した可能性がある**（2026-08-10のFable5実機②レビューでは40分セッション中グレー化等のクラッシュ/描画異常は報告なし＝間接的な傍証はあるが、上記6シナリオを狙った専用検証ではない）。CLAUDE.mdの「Terminal pane background」節も同様にこの2026-07-15最終状態を反映しておらず陳腐化。**本セッションはコード非変更の事実確認のみでスクショ証跡を遡及提出できないため、CLAUDE.md本文・本P3エントリの「解決済み」化は行わず、次回セッションでのP3チェックリスト実施 or 少なくともCLAUDE.md/本entryの記述更新をP1として推奨する。**
-- → sync: 当初の「Terminal pane は当面 wallpaper 透過対象外」は現状と不一致（実際は既定ONで3週間超稼働中）。CLAUDE.mdの「Terminal pane background」節を次回ドキュメント更新時にこの実体へ同期すること。Browser/AI/Markdown pane の wallpaper 表示は変更なし。
+- **2026-08-25追記**: ユーザーがオンデバイス確認(build 2295)で三度目にこの矛盾を指摘。CLAUDE.mdの「Terminal pane background」節を2026-07-15の実際の最終状態(既定ON、フルコミットチェーン)へ同期済み(コード・設定文言は無変更)。残るのは本entry当初記録の6シナリオ実機スクショ証跡が今も未取得という一点のみ——次回オンデバイスQA枠で消化すること。
+- → sync: 当初の「Terminal pane は当面 wallpaper 透過対象外」は現状と不一致（実際は既定ONで稼働中）。Browser/AI/Markdown pane の wallpaper 表示は変更なし。
 
 ---
 
