@@ -5402,3 +5402,24 @@ Opus引き継ぎエージェントが再検証。**①言語ミスマッチ修�
 **検証**: push後のCIビルド(run `32790133526`)green確認。
 
 → sync: README Status表の変更なし(CI/インフラのみ)。
+
+---
+
+### ✅「一人の相棒」Phase 3バッチ + ghost-thread修正、実機検証PASS(2026-08-25, build 2282)
+
+Fable5 Phase 3の4項目(G2-P1/P2, G1-P0/P1)+ghost-thread-revival修正(`d95f198b9`)を、Galaxy Z Fold6実機(build 2282 = origin/main、上記全コミット含む)で検証。ワイヤレスadb切断による中断を挟み2回に分けて実施。
+
+**結果**: 5項目中4 PASS、1 SKIPPED(理由は既存端末の`openSections`永続化——設計通りの挙動でありバグではない)。新規バグなし。
+
+- **G2-P2(DEVELOPERディバイダ)PASS**: uiautomator dumpでIMPORTED SKILLSとQUICK LAUNCHの間に非折りたたみラベルを確認。
+- **G1-P1(プロバイダタグ除去+通知1行化)PASS**: `@gemini`切替後、`· GEMINI`等のタグ0件、システム通知1行のみ(「I'll think this one through with a different model.」)。
+- **G1-P0(履歴マージ回帰)PASS**: 通常チャットが正常応答、文脈も正しく踏まえている。
+- **ghost-thread-revival修正 PASS(最重要)**: `@gemini`で合言葉BANANA123を伝達→`am force-stop`+再起動→同一ペインを再度`@gemini`にバインドしても旧会話は復活せず(BANANA123への言及0件)。**companion回帰なし**も同時確認——非`@`のコンパニオン会話(RINGO456のやり取り)はアプリ再起動を2回またいで正しく残存。修正が意図通り「companionのみ生存、pane固有は破棄」という設計を実現していることを実機で確認。
+
+**気付き事項(バグではない)**: 検証中の応答に「QA marker is bluewhale42」という一見不可解な既知情報が出たが、これは過去のQAセッションが実機の`_global`共有メモリに残したテスト用ファクトが全エージェントへ設計通り注入されたもの(`__tests__/memory/shadow.test.ts`のフィクスチャと同一文言)——ゴーストスレッドの再発ではない。実機の`_global`メモリとcompanionスレッドにテスト残骸(bluewhale42, RINGO456等)が残っているが、機能上の実害はなし。気になる場合は「QAマーカーを忘れて」等の会話で本人が掃除可能。
+
+**G2-P1(サイドバー既定開閉)は当面SKIPPEDのまま**——既存インストールでは`pm clear`(全データ消去)なしに観測不能なため、新規インストール/端末でのみ検証可能。
+
+これでFable5 Phase 3バッチは実装・回帰テスト・実機検証まで完了。次のロードマップ項目はG1-P2(双方向キャリーフォワード)。
+
+→ sync: README Status表の変更なし。
