@@ -1331,6 +1331,15 @@ export type ChatMessage = {
     /** How many non-confirm / non-cancel replies this question has absorbed. */
     attempts: number;
   };
+  /** G1-P2 (2026-08-25): present on a message that was copied into a
+   *  DIFFERENT pane's conversation by store/ai-pane-store.ts's
+   *  carryForwardOnThreadSwitch, when the user switches a pane's bound
+   *  provider (companion↔explicit-provider). Always the id of the ORIGINAL
+   *  message (never another copy's id — the chain collapses to one hop so
+   *  a copy-of-a-copy still dedupes correctly against the true original).
+   *  Used only for idempotency (has this exact message already been
+   *  carried into this destination?) — never rendered differently. */
+  carriedFromId?: string;
   /** Agent deletion awaiting an explicit human confirm. Present on the
    *  assistant message that asked the confirm question; while that message is
    *  fresh and latest, hooks/use-ai-pane-dispatch.ts routes the next user

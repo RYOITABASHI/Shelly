@@ -25,18 +25,121 @@ export function resolveAiPaneStoreKey(paneId: string): string {
   return bound == null || bound === 'local' ? COMPANION_CONVERSATION_KEY : paneId;
 }
 
+// ─── G1-P2: thread-switch continuity (carry-forward) ──────────────────────────
+
+/** Max trailing eligible messages carried into the destination thread on a
+ *  companion↔explicit-provider switch. Kept small on purpose: this should
+ *  read as "the same Shelly, picking up where we left off," not a full
+ *  transcript dump into a fresh thread. */
+const CARRY_FORWARD_MAX_MESSAGES = 4;
+
+/** A message may be carried into another thread only if it's plain
+ *  conversational text with no interactive state attached. Anything with a
+ *  pending confirm/slot-fill/wizard/approval/rollback affordance is
+ *  excluded outright (not sanitized) — copying a confirm card's rendered
+ *  text without its live state would let a user tap/type "confirm" in the
+ *  new thread and have nothing happen, and copying pendingSlotFill /
+ *  pendingGlobalMemory / pendingAgentDelete would let the same
+ *  field-answer routing apply to one underlying question from two
+ *  different conversations. In-progress streaming text is excluded too —
+ *  only the finished message (picked up on a later switch) is ever
+ *  carried. */
+function isCarryForwardEligible(m: ChatMessage): boolean {
+  if (m.role !== 'user' && m.role !== 'assistant') return false;
+  if (m.isStreaming) return false;
+  if (m.agentDraft || m.agentCardState || m.agentChatConfirm || m.editingAgentId) return false;
+  if (m.pendingSlotFill || m.pendingGlobalMemory || m.pendingAgentDelete) return false;
+  if (m.scheduleReadinessCard || m.agentRollbackOffer) return false;
+  if (m.approvalData || m.wizardType || m.autoCheckState) return false;
+  if (m.agentRunLogId) return false;
+  return true;
+}
+
+/** The id a message's carry-forward lineage dedupes on: its own id for an
+ *  original message, or the original's id for a message that's already a
+ *  copy — so a copy-of-a-copy still collapses to one hop instead of
+ *  growing an ever-longer chain. */
+function carryForwardOriginId(m: ChatMessage): string {
+  return m.carriedFromId ?? m.id;
+}
+
+/**
+ * G1-P2 (2026-08-25): when a pane switches between the companion thread and
+ * an explicit-provider thread (either direction), copy the tail of the
+ * SOURCE conversation into the DESTINATION conversation so the switch feels
+ * like continuity ("the same Shelly, now thinking with a different model")
+ * instead of a blank slate.
+ *
+ * Idempotent by design — safe to call more than once for the same switch
+ * (it's called both synchronously from the `@mention` dispatch path, which
+ * needs the copy in place before the very next LLM history snapshot, and
+ * again from addAiPaneThreadSwitchNotice below): a message already
+ * represented at the destination (by carryForwardOriginId) is never copied
+ * twice, so a rapid companion→gemini→companion→gemini back-and-forth
+ * converges instead of accumulating duplicates.
+ *
+ * Deliberately does NOT touch pendingAgentSession/justRegisteredAgent on
+ * either side — those are scoped to the SOURCE conversation's own
+ * messageId references (see their own doc comments) and must never be
+ * copied or cleared by a switch. An in-flight slot-fill in the source
+ * thread is simply left behind, exactly like switching already behaved
+ * before this function existed (switching never calls clearConversation).
+ *
+ * Returns true when the destination now represents a carried-forward
+ * continuation of the source — i.e. the source's eligible tail is present
+ * at the destination, whether THIS call just copied it or an earlier call
+ * already did. Callers use this to choose notice wording, not to detect
+ * "did I personally do work just now."
+ */
+export function carryForwardOnThreadSwitch(sourceKey: string, destKey: string): boolean {
+  if (sourceKey === destKey) return false;
+  const state = useAIPaneStore.getState();
+  const sourceConv = state.conversations[sourceKey];
+  if (!sourceConv || sourceConv.messages.length === 0) return false;
+
+  const destConv = state.conversations[destKey];
+  const destOriginIds = new Set((destConv?.messages ?? []).map(carryForwardOriginId));
+
+  const fresh: ChatMessage[] = [];
+  let sawEligible = false;
+  for (let i = sourceConv.messages.length - 1; i >= 0 && fresh.length < CARRY_FORWARD_MAX_MESSAGES; i--) {
+    const m = sourceConv.messages[i];
+    if (!isCarryForwardEligible(m)) continue;
+    sawEligible = true;
+    const originId = carryForwardOriginId(m);
+    if (destOriginIds.has(originId)) continue; // already carried previously — keep walking back for fresh content
+    fresh.unshift(m);
+  }
+  if (!sawEligible) return false;
+
+  for (const m of fresh) {
+    state.addMessage(destKey, {
+      id: `carry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: m.role,
+      content: m.content,
+      timestamp: m.timestamp,
+      agent: m.agent,
+      carriedFromId: carryForwardOriginId(m),
+    });
+  }
+  return true;
+}
+
 export function addAiPaneThreadSwitchNotice(
   previousKey: string,
   nextKey: string,
   translate: (key: string) => string,
 ): void {
   if (previousKey === nextKey) return;
+  const carried = carryForwardOnThreadSwitch(previousKey, nextKey);
+  const toCompanion = nextKey === COMPANION_CONVERSATION_KEY;
+  const noticeKey = carried
+    ? (toCompanion ? 'chat.carried_forward_to_companion' : 'chat.carried_forward_to_pane')
+    : (toCompanion ? 'chat.switched_to_companion_thread' : 'chat.switched_to_pane_thread');
   useAIPaneStore.getState().addMessage(nextKey, {
     id: `system-thread-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role: 'system',
-    content: translate(nextKey === COMPANION_CONVERSATION_KEY
-      ? 'chat.switched_to_companion_thread'
-      : 'chat.switched_to_pane_thread'),
+    content: translate(noticeKey),
     timestamp: Date.now(),
   });
 }

@@ -1073,6 +1073,11 @@ const en: Record<string, string> = {
   // without a provider param it doesn't currently take).
   'chat.switched_to_companion_thread': "I'll take it from here.",
   'chat.switched_to_pane_thread': "I'll think this one through with a different model.",
+  // G1-P2 (2026-08-25): used instead of the two keys above when
+  // carryForwardOnThreadSwitch actually found continuity to bring along —
+  // see store/ai-pane-store.ts's addAiPaneThreadSwitchNotice.
+  'chat.carried_forward_to_companion': "I brought our conversation with me — I'll take it from here.",
+  'chat.carried_forward_to_pane': "I brought our conversation along — I'll think this one through with a different model.",
   'chat.empty_subtitle': 'Ask anything. I can see your terminal output.',
   'chat.sample_list_files': 'List files',
   'chat.sample_ask_claude': 'Ask Codex',

@@ -1043,6 +1043,10 @@ const ja: Record<string, string> = {
   // を含めるには別途パラメータ追加が必要)。
   'chat.switched_to_companion_thread': 'ここからは私が対応しますね。',
   'chat.switched_to_pane_thread': '今回は別のモデルで考えますね。',
+  // G1-P2(2026-08-25): carryForwardOnThreadSwitchが実際に会話の継続を
+  // 見つけたときだけ、上の2キーの代わりに使われる。
+  'chat.carried_forward_to_companion': 'ここまでの話を持ってきましたよ。この先は私が対応しますね。',
+  'chat.carried_forward_to_pane': 'ここまでの話を持ってきました。今回は別のモデルで考えますね。',
   'chat.empty_subtitle': '何でも聞いてください。ターミナルの出力も見えています。',
   'chat.sample_list_files': 'ファイル一覧',
   'chat.sample_ask_claude': 'Codexに聞く',

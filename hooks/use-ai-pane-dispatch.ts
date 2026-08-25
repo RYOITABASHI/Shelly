@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
-import { resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
+import { carryForwardOnThreadSwitch, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
 import type { JustRegisteredAgentRef } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
@@ -1979,10 +1979,23 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       const agent = requestedAgent ?? (isAiPaneAgent(rawAgent)
         ? rawAgent
         : pickDefaultAiPaneAgent(settings));
+      const preSwitchConversationKey = paneId;
       if (agent !== rawAgent) {
         usePaneStore.getState().bindAgent(paneIdRaw, agent);
       }
       paneId = resolveAiPaneStoreKey(paneIdRaw);
+      // G1-P2: an `@mention` switch resolves and binds synchronously, but
+      // the actual notice (AIPane.tsx's effect) only fires on the NEXT
+      // render — too late for the user message we're about to add just
+      // below, and too late for the history snapshot this dispatch will
+      // read a few lines further down. Do the copy here so the destination
+      // already has continuity before either of those happen. Idempotent —
+      // the effect's own call to the same function (via
+      // addAiPaneThreadSwitchNotice) just confirms "yes, carried" and picks
+      // notice wording; it never re-copies what's already here.
+      if (preSwitchConversationKey !== paneId) {
+        carryForwardOnThreadSwitch(preSwitchConversationKey, paneId);
+      }
       logInfo('AIPaneDispatch', 'Dispatching to agent: ' + agent);
 
       // ── Add user message ──
