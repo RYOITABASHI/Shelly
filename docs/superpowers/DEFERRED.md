@@ -5423,3 +5423,27 @@ Fable5 Phase 3の4項目(G2-P1/P2, G1-P0/P1)+ghost-thread-revival修正(`d95f198
 これでFable5 Phase 3バッチは実装・回帰テスト・実機検証まで完了。次のロードマップ項目はG1-P2(双方向キャリーフォワード)。
 
 → sync: README Status表の変更なし。
+
+---
+
+### ✅ G1-P2: スレッド切替時の会話キャリーフォワード 実装(2026-08-25, commit `20f42f90a`)
+
+ユーザー指示「Fable5がHermes Agentと認める仕様になるまで開発実装して下さい」を受け、ロードマップの次項目G1-P2に着手。まずFable5に read-only 設計コンサルを依頼(既存のダングリング参照バグ・ghost-thread修正・`toOpenAIHistory`との整合性を重点調査)、その設計をレビューした上で実装。
+
+**設計コンサルでの発見(実装判断の根拠)**:
+- `@gemini`のような@メンション経路は`dispatch()`が同期的に`bindAgent`→キー再解決→userメッセージ追加まで一気に走るため、**AIPane.tsxのuseEffectだけをフックポイントにすると、コピーが history snapshot に間に合わないレースが起きる**——同期呼び出しがdispatch側にも必要と判明。
+- 明示プロバイダA→B(同一ペイン、例: gemini→cerebras)は`resolveAiPaneStoreKey`が両方ともpaneIdを返すためキー変化なし——キャリーフォワードの対象はcompanion⇄pane会話キーの2方向のみで、双方向要件はこの対称実装で自然に満たされる。
+- 切替自体は`clearConversation`を呼ばないため、ソース会話の`pendingAgentSession`等は無傷で残る——危険なのは「コピー」がダングリング参照を運ぶ場合のみ。
+
+**実装(`store/ai-pane-store.ts`)**:
+- `carryForwardOnThreadSwitch(sourceKey, destKey): boolean` — ソース会話末尾から最大4通(概ね直近2往復)の「対話状態を持たないuser/assistantメッセージ」のみをコピー。`agentDraft`/`agentCardState`/`pendingSlotFill`/`pendingGlobalMemory`/`pendingAgentDelete`/`scheduleReadinessCard`/`agentRollbackOffer`/`approvalData`/`wizardType`/`autoCheckState`/`agentRunLogId`/`isStreaming`のいずれかを持つメッセージはサニタイズせず**除外**(confirmカード等をテキストだけ運んでも宛先で操作不能になるだけのため)。
+- 冪等性: 新設`ChatMessage.carriedFromId`フィールド(常に大元の原本idを伝播、コピーのコピーでも1ホップに収束)で「宛先に既に同じ原本由来のメッセージがあるか」を判定、往復切替を繰り返しても増殖しない。
+- `pendingAgentSession`/`justRegisteredAgent`は一切コピーしない・ソース側もクリアしない(既存のダングリング参照ガード対象と重ならない設計)。
+- 呼び出し箇所2つ(両方必要、冪等性により二重発火しても安全): (1) `hooks/use-ai-pane-dispatch.ts`の`@mention`パスから同期呼び出し(history snapshot前に確実に反映)、(2) 既存の`addAiPaneThreadSwitchNotice`(AIPane.tsxのeffectが唯一呼ぶ)内から呼び、実際に何か運ばれた場合は通知文言を「ここまでの話を持ってきました」系(`chat.carried_forward_to_companion`/`chat.carried_forward_to_pane`、新規i18nキー、en/ja両方)に差し替え。何も運ぶものが無ければ従来通りの単純な切替通知。
+- ghost-thread-revival修正(`d95f198b9`)との関係: **永続化のcarve-outは意図的に作らない**——pane側にコピーされたメッセージも、companionと違って再起動を跨いでは生存しない(束縛自体が再起動で消えるため)。これはバグではなく、ghost-thread修正の前提条件をそのまま尊重した設計。
+
+**検証**: `npx tsc --noEmit` clean。新規テスト6件(`ai-pane-companion-thread.test.ts`)——末尾2ペアのコピー+除外フィールド確認/往復での非増殖/`pendingAgentSession`非運搬+ソース無傷/コピー入りpane会話もrestartで正しく消える/ソース空でのno-op+通常通知/dispatch+effectの二重発火での非重複、全PASS。既存テスト(companion-thread 7件含む全94件)は書き換えゼロで無風。全体回帰スイート239本中失敗は既知のWindows固有パスバグ7本のみ(本変更と無関係、`git stash`で修正前でも同一失敗を確認済み)。**実機検証は未実施**——次回QA時に、`@gemini`等への初回切替でBANANA123のような会話継続が実際に体感できること、往復切替で通知や会話が増殖しないこと、対話中(スロットフィル/確認カード表示中)に切替えても宛先で誤動作しないことを確認すること。
+
+**次のロードマップ**: G2-P3(SettingsDropdown 2679行の「コンパニオン設定」/「開発者設定」分離)。実装後、改めてFable5に「Hermesユーザーが触ったらAndroid版だと思うか」の calibration question を問い直す予定。
+
+→ sync: README Status表の変更なし(UX調整、機能一覧に影響する構造変化なし)。
