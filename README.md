@@ -290,10 +290,11 @@ Agents also get better with use, on-device, without a server:
 ### The Companion
 
 <p align="center">
-  <img src="docs/images/companion-memory.jpg" alt="Shelly's Companion Memory screen — session digests the companion journaled on its own, plus notes you asked it to remember, all viewable, editable, and deletable" width="500">
+  <img src="docs/images/companion-memory.jpg" alt="Shelly's Companion Memory screen — session digests the companion journaled on its own, plus notes you asked it to remember, all viewable, editable, and deletable" width="420">
+  <img src="docs/images/carry-forward.jpg" alt="A companion conversation switched to Gemini mid-thread — a carry-forward notice explains the hand-off, and Gemini's next reply is already grounded in what was said before the switch" width="420">
 </p>
 
-Shelly keeps its own journal. Sessions end with a digest it writes for itself; anything you ask it to remember is recalled by the companion and every background agent — and you can read, edit, or delete all of it from **Settings → Companion Memory**, reachable even before you've registered a single agent.
+Shelly keeps its own journal. Sessions end with a digest it writes for itself; anything you ask it to remember is recalled by the companion and every background agent — and you can read, edit, or delete all of it from **Settings → Companion Memory**, reachable even before you've registered a single agent. Switch a pane to an explicit provider mid-conversation and Shelly carries the last few messages along with it, so the new provider already has the thread's context on its very first reply — same companion, different brain.
 
 ### Scouter Widget
 
