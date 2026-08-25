@@ -1193,6 +1193,135 @@ jobs:
             "${manifest_src}" \
             --clobber
 
+      - name: Publish optional tool pack archives
+        # Fable5 roadmap item #6 (2026-08-25): packages a SUBSET of the same
+        # already-prepared jniLibs/arm64-v8a binaries this job just built the
+        # APK from (committed .so files plus the Termux-fetched ones from the
+        # "Bundle Termux extras" step above) into .tar.gz archives for
+        # on-demand `shelly install <pack>` (lib/optional-packs.ts,
+        # lib/optional-pack-installer.ts). Deliberately does NOT touch what
+        # ships in the APK itself — jniLibs/, app.config.ts, and every step
+        # above this one are untouched; this only reads the files those
+        # steps already produced. Mirrors "Publish skills catalog release"
+        # above: staging dir, sha256 recompute, gh release create/edit +
+        # upload --clobber, then a post-upload digest verification against
+        # the release's own server-side metadata before trusting it.
+        #
+        # IMPORTANT: this step publishes the archives but deliberately does
+        # NOT flip OPTIONAL_PACKS[*].published to true in
+        # lib/optional-packs.ts, and does not update its sha256/
+        # approxSizeBytes/downloadUrl fields — that is a separate, manual
+        # follow-up commit made only after confirming from a real run of
+        # this step that the release and assets actually exist and verify
+        # correctly. Until that follow-up lands, `shelly install <pack>`
+        # keeps refusing with PackNotPublishedError regardless of what this
+        # step publishes, so a bad run here cannot affect any user.
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPTIONAL_PACKS_TAG: optional-packs-latest
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "Skipping optional-pack publish: not building refs/heads/main (ref=${GITHUB_REF})."
+            exit 0
+          fi
+
+          jnilibs="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          staging_dir="${RUNNER_TEMP}/optional-pack-assets"
+          mkdir -p "${staging_dir}"
+
+          # tool name -> jniLibs .so file, matching LibExtractor.kt's LIBS map
+          # exactly (lib/optional-packs.ts's OPTIONAL_PACKS.*.tools lists the
+          # left-hand side of each pair below).
+          declare -A tool_so=(
+            [python3]=libpython3.so
+            [sqlite3]=libsqlite3_bin.so
+            [jq]=libjq_bin.so
+            [make]=libmake.so
+            [gh]=libgh.so
+            [vim]=libvim.so
+            [tmux]=libtmux.so
+            [nano]=libnano.so
+            [less]=libless.so
+            [unzip]=libunzip.so
+            [rg]=librg.so
+          )
+          declare -A pack_tools=(
+            [dev-tools]="python3 sqlite3 jq make gh"
+            [editor-tools]="vim tmux nano less unzip rg"
+          )
+
+          summary=""
+          for pack_id in "${!pack_tools[@]}"; do
+            pack_dir="${staging_dir}/${pack_id}"
+            mkdir -p "${pack_dir}"
+            for tool in ${pack_tools[$pack_id]}; do
+              so_name="${tool_so[$tool]}"
+              src="${jnilibs}/${so_name}"
+              test -f "${src}" || { echo "FATAL: ${src} not found for pack '${pack_id}' tool '${tool}'" >&2; exit 1; }
+              cp "${src}" "${pack_dir}/${tool}"
+              chmod 755 "${pack_dir}/${tool}"
+            done
+            archive_name="shelly-pack-${pack_id}-arm64.tar.gz"
+            tar -C "${pack_dir}" -czf "${staging_dir}/${archive_name}" .
+            archive_sha256="$(sha256sum "${staging_dir}/${archive_name}" | awk '{print $1}')"
+            archive_bytes="$(stat -c%s "${staging_dir}/${archive_name}")"
+            echo "pack=${pack_id} archive=${archive_name} sha256=${archive_sha256} bytes=${archive_bytes} tools=[${pack_tools[$pack_id]}]"
+            summary="${summary}- ${archive_name}: sha256=${archive_sha256} bytes=${archive_bytes}\n"
+          done
+
+          cat > /tmp/shelly-optional-packs-release.md <<EOF
+          Rolling optional-tool-pack archives for \`shelly install <pack>\`.
+
+          Not yet wired up as a supported install path (see
+          docs/superpowers/DEFERRED.md) — these assets exist so that step can
+          be completed later without a rebuild. Every pack in
+          lib/optional-packs.ts still declares \`published: false\` and
+          ignores these URLs until a follow-up commit confirms them.
+
+          - commit: ${GITHUB_SHA}
+          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          printf '%b' "${summary}" >> /tmp/shelly-optional-packs-release.md
+
+          if gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${OPTIONAL_PACKS_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly optional tool packs (dormant)" \
+              --notes-file /tmp/shelly-optional-packs-release.md
+          else
+            gh release create "${OPTIONAL_PACKS_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly optional tool packs (dormant)" \
+              --notes-file /tmp/shelly-optional-packs-release.md \
+              --latest=false
+          fi
+
+          gh release upload "${OPTIONAL_PACKS_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            "${staging_dir}"/*.tar.gz \
+            --clobber
+
+          # Never-trust-an-upload: verify the release's own server-side
+          # digest for each archive before considering this step successful.
+          uploaded_assets_json="$(gh release view "${OPTIONAL_PACKS_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets)"
+          for archive_path in "${staging_dir}"/*.tar.gz; do
+            archive_name="$(basename "${archive_path}")"
+            expected_sha256="$(sha256sum "${archive_path}" | awk '{print $1}')"
+            uploaded_digest="$(printf '%s' "${uploaded_assets_json}" | jq -r --arg name "${archive_name}" '.assets[] | select(.name == $name) | .digest // ""')"
+            test -n "${uploaded_digest}" || { echo "FATAL: uploaded pack asset '${archive_name}' not visible in release" >&2; exit 1; }
+            if [ "${uploaded_digest}" != "sha256:${expected_sha256}" ]; then
+              echo "FATAL: pack asset '${archive_name}' digest mismatch: ${uploaded_digest}" >&2
+              exit 1
+            fi
+          done
+
       - name: Publish EAS Update (OTA)
         # Expo Updates are disabled in app.config.ts for the v5.1.x release
         # train. JS changes ship through APK releases only, so scheduled APK
