@@ -5576,3 +5576,17 @@ companion journal実装をFable5に3回目のcalibration questionと合わせて
 **このスレッドの総括**: G1-P0/P1/P2(プロバイダ切替継続性)+ G2-P1/P2/P3(サイドバー/設定companion-first化)+ companion journal(自動要約記憶、上限付き注入、閲覧/編集/削除UI)——全て実装・回帰テスト・実機検証・Fable5レビューのサイクルを経て着地。プロダクト判断が必要な構造的欠落は無くなった。以降の作業は「育てば効いてくる」項目の先回りメンテナンスと通常の品質改善であり、この一連の設計コンサルとしては完結。
 
 → sync: README Status表の変更なし(内部アーキテクチャの到達点記録、機能一覧に影響する構造変化なし)。
+
+---
+
+### ✅ ストリーミング完了時の`isStreaming`固着レースを修正(2026-08-25, commit `b810b9ca2`)
+
+README用スクリーンショットの実機セッティング中(別セッション`claude/quirky-nash-22c2fe`が担当)、「2往復の会話がジャーナルに一度も蒸留されない」現象を発見。`isDigestEligible`自体は問題なく(user/assistant両ロールを許可)、根本原因は`hooks/use-ai-pane-dispatch.ts`にあった。
+
+**原因**: 全プロバイダ分岐(local/Cerebras/OpenRouter/Groq/Gemini/Perplexity + `@agent`インライン分岐 + catchブロック)が、ストリーミング中のチャンク更新は50msバッチの`createThrottledUpdate`スロットル経由で送るが、**完了時の最終状態(`isStreaming: false`)だけは生の`store.updateMessage(...)`でスロットルを迂回して書き込んでいた**。最後のチャンク更新がスロットルの`pending`に残ったまま完了が発火した場合(その間隔が50ms未満なら常に発生しうる)、後から発火する古いpendingのタイマーが完了書き込みの**後に**上書きし、`isStreaming`を`true`のまま永久固着させる——それ以降そのメッセージは誰も更新しないため、`isDigestEligible`(companion journal)と`isCarryForwardEligible`(G1-P2キャリーフォワード)の両方から静かに除外され続ける。バグはeligibilityチェック自体ではなく、チェックが読む前の状態そのものにあった。
+
+**修正**: 完了時の書き込み22箇所全てを、スロットルを迂回する生の`store.updateMessage`から同一の`throttledUpdate`インスタンス経由に統一。`throttledUpdate`は元々`isStreaming===false`の高速パス(pendingとタイマーをクリアしてから即書き込み)を持っていたため、完了時もこの経路を通すだけでレースが根本的に解消される。テスト用に`createThrottledUpdate`をexport。
+
+**検証**: 新規回帰テスト3件(`ai-pane-dispatch-interaction-order.test.tsx`)——完了直前にpendingだったチャンク更新が完了書き込み後に発火してもストンプされないこと、完了後に来た新しいチャンク更新は通常通りスロットルされること、`cleanup()`がpendingを破棄すること。`npx tsc --noEmit` clean。全体回帰スイート241本中、失敗は既知のWindows固有パスバグ6本のみ(修正前でも同一失敗を確認済み、無関係)。**実機検証は未実施**——次回QA時に、短い応答(ローカルLLM等、50ms未満で完了しうる)を含む会話がキャリーフォワード・companion journalの両方で正しく対象になることを確認すること。この修正は今セッションでshipしたG1-P2とcompanion journalの両方の実効性に関わるため、単体の実機PASSだけでは検出できなかったクラスのバグだった点を記録しておく。
+
+→ sync: README Status表の変更なし(内部バグ修正、機能一覧に影響なし)。
