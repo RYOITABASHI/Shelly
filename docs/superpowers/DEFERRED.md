@@ -5514,3 +5514,17 @@ Fable5のcalibration question再評決(「初見はYes寄りだが使い込む�
 - ジャーナルの全ペイン共通注入(Fold6での「どのペインでも同じShelly」の完成) — 今回はcompanion限定、次スライス候補
 
 → sync: README Status表の変更なし。
+
+---
+
+### ✅ Companion Journal 実機検証PASS + 副次バグ修正(2026-08-25, build main `984c5c2db`)
+
+**実機検証: PASS**(会話全削除+アプリ強制再起動という最も厳しい条件下で検証)。「kitchen repaint bright yellow→pale yellow」の会話をcompanionで確立→`@gemini`等へ切替→`digested 10 messages from __companion__`のログ確認→逆方向切替でも`digested 4 messages`確認→**アプリforce-stop+再起動、かつcompanion会話を`Clear conversation`で全削除**した上で新規に「what color did I choose for my kitchen repaint」と質問→「You decided to repaint your kitchen with **pale yellow**.」と正答。この時点で生スレッドにもcarry-forwardコピーにも該当情報は一切残っておらず、`_companion`ジャーナルノートが唯一の情報源であることを消去法で確立。非ブロッキング(digestによるチャット遅延なし)も確認。
+
+**副次的に発見・修正した実バグ**: 検証中の質問「do you remember what color I decided to repaint my kitchen」(末尾に`?`なし)が、既存の`detectCompanionMemoryWrite`(`_global`書き込み意図検出、`lib/agent-global-memory-intent.ts`)の質問ガードをすり抜けた。ガードが末尾の`?`/`？`のみをチェックしており、"remember"という単語を含む無punctuationの質問(音声入力や口語タイプで頻出)を「覚えておいて」コマンドと誤認——メモリ確認カードに横取りされる(クラッシュはなし、「cancel」で正常離脱)。
+
+**修正**: `detectGlobalMemoryWrite`/`detectCompanionMemoryWrite`共通の`looksLikeQuestion()`ヘルパーを新設、末尾punctuationに加えて疑問詞・助動詞先頭(do/does/did/what/who/when/where/why/how等)も検出。本モジュール自身の設計哲学(「false negativeは安い、false positiveは高くつく」)に忠実に、"Do remember to lock the door"のような紛らわしい命令文が誤って弾かれる(false negative)ことは許容し、テストで固定。
+
+**検証**: `npx tsc --noEmit` clean。新規テスト7件(`agent-memory-global-scope.test.ts`)——不完全疑問文の棄却・命令文の意図的false negative維持を含め全PASS。全体回帰スイート241本中、失敗は既知のWindows固有パスバグ6本のみ。
+
+→ sync: README Status表の変更なし。
