@@ -205,7 +205,15 @@ function writePlan(home: string, port: number, opts: { actionType?: string; step
   };
   const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${AGENT_ID}.json`);
   fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-  fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\n`);
+  // Fable5 review 2026-08-25 flipped the default action-approval mode to
+  // manual-unless-explicitly-opted-out — without this line, requestActionApproval()
+  // in the real subprocess spawned below actually waits for an approval
+  // reply that never comes, and these tests are about chain-mode
+  // orchestration mechanics, not the approval gate itself.
+  fs.writeFileSync(
+    path.join(home, '.shelly/agents/.env'),
+    `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`,
+  );
   return planFile;
 }
 

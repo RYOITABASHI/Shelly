@@ -72,7 +72,14 @@ function writeEnv(home: string, localPort: number): void {
   // Deliberately NO GEMINI_API_KEY — the capability broker refuses the
   // primary attempt with a real, deterministic rc=43 before any network call.
   const envFile = path.join(home, '.shelly/agents/.env');
-  fs.writeFileSync(envFile, `LOCAL_LLM_URL='http://127.0.0.1:${localPort}'\n`);
+  // Fable5 review 2026-08-25 flipped the default action-approval mode to
+  // manual-unless-explicitly-opted-out — without this line the real
+  // subprocess these tests spawn waits for an approval reply that never
+  // comes; this file is about toolLadder retry mechanics, not the gate.
+  fs.writeFileSync(
+    envFile,
+    `LOCAL_LLM_URL='http://127.0.0.1:${localPort}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`,
+  );
   // The broker's checkSecretFilePermissions() refuses a secrets file wider
   // than 0600 on POSIX (CI/Android; a Windows dev checkout's chmod is a
   // near-no-op, which is why this only surfaced on Linux CI).
@@ -234,7 +241,10 @@ describe('shelly-plan-executor — toolLadder retries a LOW-QUALITY primary comp
   it('retries after a low-quality primary completion and succeeds via the ladder candidate', async () => {
     const home = makeHome();
     const qualityEnvFile = path.join(home, '.shelly/agents/.env');
-    fs.writeFileSync(qualityEnvFile, `LOCAL_LLM_URL='http://127.0.0.1:${port}'\n`);
+    fs.writeFileSync(
+      qualityEnvFile,
+      `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`,
+    );
     fs.chmodSync(qualityEnvFile, 0o600);
     const plan: Record<string, unknown> = {
       kind: PLAN_SPEC_KIND,
@@ -326,7 +336,10 @@ describe('shelly-plan-executor — toolLadder retries a STRUCTURAL fabrication s
   it('retries after a fenced-shell-transcript primary completion and succeeds via the ladder candidate', async () => {
     const home = makeHome();
     const qualityEnvFile = path.join(home, '.shelly/agents/.env');
-    fs.writeFileSync(qualityEnvFile, `LOCAL_LLM_URL='http://127.0.0.1:${port}'\n`);
+    fs.writeFileSync(
+      qualityEnvFile,
+      `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`,
+    );
     fs.chmodSync(qualityEnvFile, 0o600);
     const plan: Record<string, unknown> = {
       kind: PLAN_SPEC_KIND,

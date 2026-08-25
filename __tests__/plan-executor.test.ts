@@ -50,7 +50,16 @@ function makePlan(home: string, port: number) {
   };
   const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${agentId}.json`);
   fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-  fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\n`);
+  // Fable5 review 2026-08-25 flipped the GLOBAL default action-approval mode
+  // to manual-unless-explicitly-opted-out. The per-agent
+  // requireActionApproval:true above always wins over this regardless, so
+  // this line only matters for tests that override the per-agent field to
+  // false/undefined and rely on the global default resolving to auto — same
+  // real-subprocess-hang risk as elsewhere in this file if left unset.
+  fs.writeFileSync(
+    path.join(home, '.shelly/agents/.env'),
+    `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`,
+  );
   return { plan, planFile };
 }
 
@@ -583,7 +592,10 @@ describe('shelly-plan-executor host smoke', () => {
     plan.output.outputDir = path.join(home, 'projects/shelly-content-studio/drafts/x');
     plan.output.outputNameTemplate = '{date}-{slug}';
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nOBSIDIAN_VAULT_PATH='${vault}'\n`);
+    fs.writeFileSync(
+      path.join(home, '.shelly/agents/.env'),
+      `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${vault}'\n`,
+    );
 
     // No approval helper: a suppressed step must not request approval (else it would hang).
     const result = await runExecutor([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
@@ -612,7 +624,10 @@ describe('shelly-plan-executor host smoke', () => {
     // URLs on separate lines: the line-oriented .sh grep must not merge them.
     plan.prompt = 'refs:\nhttps://a.example/x\nhttps://b.example/y';
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_CONTENT_PROJECT='${contentProject}'\n`);
+    fs.writeFileSync(
+      path.join(home, '.shelly/agents/.env'),
+      `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nSHELLY_CONTENT_PROJECT='${contentProject}'\n`,
+    );
 
     const registry = path.join(contentProject, 'sources', 'source-registry.tsv');
     await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
@@ -635,7 +650,10 @@ describe('shelly-plan-executor host smoke', () => {
     plan.output.outputDir = path.join(contentProject, 'drafts/x');
     plan.prompt = 'ref https://c.example/z';
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_CONTENT_PROJECT='${contentProject}'\n`);
+    fs.writeFileSync(
+      path.join(home, '.shelly/agents/.env'),
+      `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nSHELLY_CONTENT_PROJECT='${contentProject}'\n`,
+    );
 
     const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
     expect(result.status).toBe(0);
@@ -653,7 +671,10 @@ describe('shelly-plan-executor host smoke', () => {
     plan.output.outputDir = path.join(home, 'projects/shelly-content-studio/drafts/x');
     plan.output.outputNameTemplate = '{date}-{slug}';
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nOBSIDIAN_VAULT_PATH='${vault}'\n`);
+    fs.writeFileSync(
+      path.join(home, '.shelly/agents/.env'),
+      `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${vault}'\n`,
+    );
 
     const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
     expect(result.status).toBe(0);
@@ -679,7 +700,10 @@ describe('shelly-plan-executor host smoke', () => {
     plan.output.outputNameTemplate = '{date}-{slug}';
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
     // OBSIDIAN_VAULT_PATH points at a non-existent dir: the mirror must be skipped, run still succeeds.
-    fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nOBSIDIAN_VAULT_PATH='${path.join(home, 'no-vault')}'\n`);
+    fs.writeFileSync(
+      path.join(home, '.shelly/agents/.env'),
+      `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\nOBSIDIAN_VAULT_PATH='${path.join(home, 'no-vault')}'\n`,
+    );
 
     const result = await runExecutorWithApproval([executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker], home);
     expect(result.status).toBe(0);

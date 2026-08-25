@@ -163,6 +163,14 @@ function preparePaths(home: string, agentId: string) {
 }
 
 const OPTS = { broker: scriptCopy, tainted: false, libDir: '' };
+// Fable5 review 2026-08-25 flipped the default action-approval mode to
+// manual-unless-explicitly-opted-out (lib/agent-executor.ts, scripts/
+// shelly-plan-executor.js's requireActionApprovalTap). This file tests
+// api-call dispatch mechanics (broker mocking, templating, tainted-run
+// refusal), not the approval gate itself, so every dispatch call here opts
+// out explicitly rather than relying on an implicit default — without this,
+// requestActionApproval() actually waits for a reply that never comes.
+const NO_APPROVAL_CONFIG = { SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL: '0' };
 
 describe('runOrchestrationChain — api-call non-final step (broker mocked)', () => {
   it('GET step: broker success -> response lands in priorResults, visible in the NEXT step\'s built prompt', async () => {
@@ -184,7 +192,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
 
     expect(result.status).toBe('success');
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(30);
@@ -227,7 +235,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
 
     expect(result.status).toBe('success');
     expect(result.steps[1].status).toBe('success');
@@ -256,7 +264,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
     expect(calls[0].bodyFile).toBe('');
     expect(calls[0].bodyText).toBeNull();
   });
@@ -276,7 +284,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
     expect(result.status).toBe('error');
     expect(result.steps).toHaveLength(1);
     expect(result.steps[0].status).toBe('error');
@@ -298,7 +306,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
     expect(result.status).toBe('unavailable');
     expect(result.steps[0].status).toBe('unavailable');
   });
@@ -318,7 +326,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
     expect(result.status).toBe('error');
     expect(result.steps[0].status).toBe('error');
     expect(result.steps[0].outputPreview).toMatch(/empty/i);
@@ -343,7 +351,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
 
     expect(result.status).toBe('success');
     // The ONE broker call made was the MODEL call (loopback-shaped local URL
@@ -376,7 +384,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
       },
     };
     const taintedOpts = { ...OPTS, tainted: true };
-    const result = await executor.runOrchestrationChain(rtPaths, taintedOpts, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, taintedOpts, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
 
     expect(result.status).toBe('error');
     expect(result.steps[0].status).toBe('error');
@@ -402,7 +410,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
         budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 },
       },
     };
-    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, {}, [], {}, Date.now()); // OPTS.tainted === false
+    const result = await executor.runOrchestrationChain(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], {}, Date.now()); // OPTS.tainted === false
     expect(result.status).toBe('success');
     expect(result.steps[0].status).toBe('success');
     expect(calls).toHaveLength(2);
@@ -427,7 +435,7 @@ describe('runOrchestrationChain — api-call non-final step (broker mocked)', ()
       },
     };
     const taintedOpts = { ...OPTS, tainted: true };
-    const result = await executor.runOrchestrationChain(rtPaths, taintedOpts, plan, {}, [], {}, Date.now());
+    const result = await executor.runOrchestrationChain(rtPaths, taintedOpts, plan, NO_APPROVAL_CONFIG, [], {}, Date.now());
     expect(result.status).toBe('error');
     expect(calls).toHaveLength(1); // reached the broker (unlike the no-authRef case)
     expect(result.steps[0].outputPreview).not.toMatch(/no credential is refused on a tainted/);
@@ -446,7 +454,7 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     setupBrokerMock([{ rc: 0, body: '{"result":"the api response"}' }]);
     const plan = apiCallPlan(home, agentId, { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search' });
 
-    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], 'the prompt result', {});
 
     expect(result.status).toBe('success');
     expect(result.preview).toContain('the api response');
@@ -472,7 +480,7 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     setupBrokerMock([]);
     const plan = { ...makeBasePlan(home, agentId, 'api-call'), action: { type: 'api-call' } }; // no apiCall at all
 
-    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     const notification = JSON.parse(fs.readFileSync(rtPaths.notifyFile, 'utf8'));
@@ -488,7 +496,7 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     setupBrokerMock([{ rc: 0, body: '' }]);
     const plan = apiCallPlan(home, agentId, { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search' });
 
-    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     expect(fs.existsSync(path.join(home, 'agent-output'))).toBe(false);
@@ -501,7 +509,7 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     setupBrokerMock([{ rc: 1, err: 'network unreachable' }]);
     const plan = apiCallPlan(home, agentId, { host: 'api.perplexity.ai', method: 'GET', path: '/v1/search' });
 
-    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     expect(result.errorMessage).toMatch(/network unreachable/);
@@ -520,7 +528,7 @@ describe('dispatchActionTrusted — action.type === "api-call" (broker mocked)',
     const plan = apiCallPlan(home, agentId, { host: 'api.github.com', method: 'GET', path: '/rate_limit' }); // no authRef
 
     const taintedOpts = { ...OPTS, tainted: true };
-    const result = await executor.dispatchActionTrusted(rtPaths, taintedOpts, plan, {}, [], 'the prompt result', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, taintedOpts, plan, NO_APPROVAL_CONFIG, [], 'the prompt result', {});
 
     expect(result.status).toBe('error');
     expect(result.errorMessage).toMatch(/no credential is refused on a tainted/);
@@ -602,7 +610,7 @@ describe('dispatchActionTrusted — api-call approval-request payload (Track F, 
     // request file instead of maybeRequestActionApproval's unattended skip.
     (plan.agent as any).requireActionApproval = true;
 
-    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], 'q1', {});
 
     expect(result.status).toBe('success');
     const request = capture.get();
@@ -629,7 +637,7 @@ describe('dispatchActionTrusted — api-call approval-request payload (Track F, 
     });
     (plan.agent as any).requireActionApproval = true;
 
-    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, {}, [], 'q1', {});
+    const result = await executor.dispatchActionTrusted(rtPaths, OPTS, plan, NO_APPROVAL_CONFIG, [], 'q1', {});
 
     expect(result.status).toBe('success');
     const request = capture.get();
