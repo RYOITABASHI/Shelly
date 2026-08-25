@@ -5470,3 +5470,17 @@ G1-P2に続きロードマップ最後の項目G2-P3に着手。Fable5にread-on
 **今回でFable5 Phase 3ロードマップの主要4項目(G1-P0/P1/P2, G2-P1/P2/P3)が全て実装完了。** 次はFable5に改めてcalibration question(「Hermesユーザーが触ったらAndroid版だと思うか」)を問い直す。
 
 → sync: README Status表の変更なし(UX調整、機能一覧に影響する構造変化なし)。
+
+---
+
+### ✅ G1-P2 + G2-P3 実機検証PASS(2026-08-25, build 2287)
+
+**G1-P2**: PASS。`the code word for today is PAPAYA99`をcompanionへ送信後、同一dispatch内で`@gemini what is the code word...`と切替えたところ、**Geminiの初回応答が正しくPAPAYA99を回答**——history snapshotへの同期反映(dispatch内呼び出し)が実機で機能していることの決定的証拠。システム通知も文言差し替え(`I brought our conversation along...`/`...with me...`)を確認。往復再切替でも重複コピーなし(companion側は`user,assistant,system`の3件のみ追加=origin-id dedupが実機で機能)。切替UIはAIペインヘッダのagent badgeタップ→SWITCH AGENTメニュー(Gemini/Cerebras/OpenRouter/Groq/Perplexity/Local)であることも判明。
+
+**G2-P3**: PASS(5ステップ全て)。メインSettingsがcompanion 10セクションのみ+末尾「Developer」1行になっていること、タップでDoctor/Integrations/Webhook/Scouter/Resetの5セクションのみを含むdrill-down画面が開くこと、そこからMCP Serversを開いてもDeveloper画面の前面に正しく重なること(Modal z-order問題なし)、BACKでDeveloper画面へ戻ること(メインへ飛ばない)、Scouterの「Open Scouter monitor」でDeveloper+Settings両方が同時に閉じてMonitorが正しく前面に出ること、を確認。
+
+**要再検証(バグ未確定、P3)**: 実機ログの粗い役割列(`user,user,assistant,user`)から、検証エージェントは「companionの直近assistant返答(`Got it...`)がcarry対象から除外され、1件古い`RINGO456`関連メッセージまで遡った」と推測したが、これはログの役割列からの間接推定であり、実際にコピーされた4件の内容(uiautomatorでの直接確認)までは特定されていない。コード側を確認した限り、(a) 全プロバイダ経路で`isStreaming: false`が正しくストリーム完了時に設定されている(`hooks/use-ai-pane-dispatch.ts`の該当updateMessage呼び出し十数箇所を確認)、(b) `detectCompanionMemoryWrite`は明示的な"remember"系キーワードが無いと発火しない(`lib/agent-nl-parser.ts`の`detectMemory`)ため「the code word for today is X」自体はどちらの除外条件にも該当しないはず——**バグと断定する材料は無い**。次回on-device QA時に、carry-forward後の宛先スレッドの実際の4件の内容をuiautomatorで直接確認し、除外されたメッセージがあれば`isCarryForwardEligible`のどの条件でスキップされたか特定すること。機能自体(Geminiが初回応答でPAPAYA99を正答)は正しく動作しており、ユーザー体感には影響していない。
+
+**副次観察(低優先度)**: ソフトキーボード表示中にAIペインのagent badgeタップが反応しないことがある(キーボードを閉じると即座に反応)。tap注入の取りこぼしと未分離、再現性の確認から。
+
+→ sync: README Status表の変更なし。
