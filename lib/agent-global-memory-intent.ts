@@ -73,6 +73,18 @@ export interface GlobalMemoryWriteIntent {
    * accumulating near-duplicates across every agent's recall.
    */
   type: 'preference';
+  /**
+   * Design 2-b ("keep an eye on X" commitment detection, 2026-08-28): set
+   * when the utterance that triggered this write used one of the explicit
+   * watch-phrases (WATCH_MARKER_RE below) rather than an ordinary "remember
+   * this" phrase. The write side (hooks/use-ai-pane-dispatch.ts) prefixes
+   * the saved note body with "[watch] " when this is set, and its
+   * save-acknowledgment points at agent registration as the real
+   * active-monitoring mechanism — this passive note is recall-only, never a
+   * poller. See the module doc above: this is still the SAME narrow,
+   * marker-based detector, just tagging which marker matched.
+   */
+  kind?: 'watch';
 }
 
 /**
@@ -160,6 +172,19 @@ const TRAILING_NOISE_RE = /[\s、。「」『』]+$/;
 /** Bare particles that can survive as the whole residue (e.g. "は" alone). */
 const BARE_PARTICLE_RE = /^(?:は|を|も|が|に|で|の|と|へ|や|か)+$/;
 
+/**
+ * Design 2-b: which of detectMemory's markers (lib/agent-nl-parser.ts)
+ * triggered this hit — tested against the RAW utterance (not the extracted
+ * fact), since for the JP markers the marker itself sits after the fact and
+ * would already be stripped out of it. Mirrors the watch-phrase set added to
+ * MEMORY_JP_RE/MEMORY_EN_RE/hasJp/hasEnAlways there exactly; kept as its own
+ * regex here (rather than threading a return value through detectMemory)
+ * because AgentMemoryConfig is shared with unrelated per-agent registration
+ * fields (tags, etc.) that a `_global`-only concept like "watch" has no
+ * business touching.
+ */
+const WATCH_MARKER_RE = /気にかけておいて|気にかけて|気にしておいて|見ておいて|keep\s+(?:an\s+eye\s+on|track\s+of)/i;
+
 function hasGlobalScopeMarker(text: string): boolean {
   return GLOBAL_SCOPE_PATTERNS.some((re) => re.test(text));
 }
@@ -181,8 +206,12 @@ function stripScopePhrases(fact: string): string {
     .trim();
 }
 
-/** Apply the shared payload-quality bar after detectMemory extracts a fact. */
-function buildGlobalMemoryWriteIntent(fact: string): GlobalMemoryWriteIntent | null {
+/**
+ * Apply the shared payload-quality bar after detectMemory extracts a fact.
+ * `sourceText` is the original, un-stripped utterance — used only to check
+ * WATCH_MARKER_RE, since the fact itself may no longer contain the marker.
+ */
+function buildGlobalMemoryWriteIntent(fact: string, sourceText: string): GlobalMemoryWriteIntent | null {
   const stripped = stripScopePhrases(fact);
   if (!stripped) return null;
   if (BARE_PARTICLE_RE.test(stripped)) return null;
@@ -190,7 +219,8 @@ function buildGlobalMemoryWriteIntent(fact: string): GlobalMemoryWriteIntent | n
   if (CONTENTLESS_RESIDUES.has(normalized)) return null;
   if (stripped.length < MIN_GLOBAL_NOTE_CHARS) return null;
 
-  return { text: stripped, type: 'preference' };
+  const kind: GlobalMemoryWriteIntent['kind'] = WATCH_MARKER_RE.test(sourceText) ? 'watch' : undefined;
+  return kind ? { text: stripped, type: 'preference', kind } : { text: stripped, type: 'preference' };
 }
 
 /**
@@ -222,7 +252,7 @@ export function detectGlobalMemoryWrite(raw: string): GlobalMemoryWriteIntent | 
   if (!fact) return null;
 
   // Gate 2 — the payload must survive scope-stripping as real content.
-  return buildGlobalMemoryWriteIntent(fact);
+  return buildGlobalMemoryWriteIntent(fact, text);
 }
 
 /**
@@ -249,5 +279,5 @@ export function detectCompanionMemoryWrite(raw: string): GlobalMemoryWriteIntent
   const fact = memory.rememberFact?.trim();
   if (!fact) return null;
 
-  return buildGlobalMemoryWriteIntent(fact);
+  return buildGlobalMemoryWriteIntent(fact, text);
 }

@@ -901,12 +901,23 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               flowTurn: true,
             });
             try {
+              // Design 2-b: a watch-triggered note is prefixed on disk so the
+              // greeting (lib/companion-greeting.ts) can find and prefer it —
+              // the displayed confirmation text below still shows the plain
+              // fact, only the persisted body carries the marker.
+              const isWatch = pendingGlobal.kind === 'watch';
               await writeGlobalMemoryNote(runAgentShellCommand, {
                 type: 'preference',
-                text: pendingGlobal.text,
+                text: isWatch ? `[watch] ${pendingGlobal.text}` : pendingGlobal.text,
               });
+              const savedText = gmStrings['globalmemory.saved'].replace('{{text}}', pendingGlobal.text);
+              // This is a passive, recall-only note — it does not poll or
+              // actively monitor anything. Point at agent registration (the
+              // real active-monitoring mechanism) so the wording never
+              // implies otherwise. See CLAUDE.md's "実装しないこと" scope note
+              // for this feature.
               store.updateMessage(paneId, savingMsgId, {
-                content: gmStrings['globalmemory.saved'].replace('{{text}}', pendingGlobal.text),
+                content: isWatch ? `${savedText}\n\n${gmStrings['globalmemory.watch_hint']}` : savedText,
               });
             } catch (writeErr) {
               const detail = writeErr instanceof Error ? writeErr.message : String(writeErr);
@@ -938,7 +949,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             content: gmStrings['globalmemory.confirm_unclear'].replace('{{text}}', pendingGlobal.text),
             timestamp: Date.now(),
             agent: pendingGlobalMemoryMsg.agent,
-            pendingGlobalMemory: { text: pendingGlobal.text, attempts: pendingGlobal.attempts + 1 },
+            pendingGlobalMemory: {
+              text: pendingGlobal.text,
+              attempts: pendingGlobal.attempts + 1,
+              ...(pendingGlobal.kind ? { kind: pendingGlobal.kind } : {}),
+            },
             flowTurn: true,
           });
           return;
@@ -2074,7 +2089,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           content: gmStrings['globalmemory.confirm_prompt'].replace('{{text}}', companionMemoryIntent.text),
           timestamp: Date.now(),
           agent: agent as ChatMessage['agent'],
-          pendingGlobalMemory: { text: companionMemoryIntent.text, attempts: 0 },
+          pendingGlobalMemory: {
+            text: companionMemoryIntent.text,
+            attempts: 0,
+            ...(companionMemoryIntent.kind ? { kind: companionMemoryIntent.kind } : {}),
+          },
           // Design A (2026-08-28): app-driven confirmation-flow turn — kept
           // out of prompt history and journal digestion (see ChatMessage's
           // flowTurn doc comment) so the local model never imitates this
@@ -2190,7 +2209,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 content: gmStrings['globalmemory.confirm_prompt'].replace('{{text}}', globalMemoryIntent.text),
                 timestamp: Date.now(),
                 agent: agent as ChatMessage['agent'],
-                pendingGlobalMemory: { text: globalMemoryIntent.text, attempts: 0 },
+                pendingGlobalMemory: {
+                  text: globalMemoryIntent.text,
+                  attempts: 0,
+                  ...(globalMemoryIntent.kind ? { kind: globalMemoryIntent.kind } : {}),
+                },
                 // Design A (2026-08-28): see companionMemoryIntent's identical
                 // flowTurn comment above.
                 flowTurn: true,

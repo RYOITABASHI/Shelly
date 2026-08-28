@@ -1374,6 +1374,14 @@ export type ChatMessage = {
     text: string;
     /** How many non-confirm / non-cancel replies this question has absorbed. */
     attempts: number;
+    /** Design 2-b ("keep an eye on X" commitment detection, 2026-08-28): set
+     *  when the write was triggered by a watch-phrase ("keep an eye on…",
+     *  "気にかけておいて"…) rather than an ordinary "remember this" phrase —
+     *  see lib/agent-global-memory-intent.ts's GlobalMemoryWriteIntent.kind.
+     *  Carried through the confirm turn so the eventual write can prefix the
+     *  saved note with "[watch] " and the save-acknowledgment can point at
+     *  agent registration as the actual active-monitoring mechanism. */
+    kind?: 'watch';
   };
   /** G1-P2 (2026-08-25): present on a message that was copied into a
    *  DIFFERENT pane's conversation by store/ai-pane-store.ts's
