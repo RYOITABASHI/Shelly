@@ -3993,7 +3993,7 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ---
 
-### `shelly install <pack>` オンデマンドツールパック — 到達性バグは修正済み、展開バイナリのSELinux実行不可バグを実機QAで新規発見 (P1)
+### `shelly install <pack>` オンデマンドツールパック — SELinux実行不可バグはコード修正済み、実機再検証待ち (P1)
 
 **背景**: 2026-08-25、Fable5の総合レビュー(新規性・需要・完成度)ロードマップ item #6。800MBのサイドロードAPKが新規ユーザーの最大の障壁との指摘を受け、`python3`/`sqlite3`/`vim`/`tmux`/`ripgrep`/`jq`/`make`/`gh`/`nano`/`unzip`/`less`の11ツールを常時同梱から外し、`shelly install <pack>`で必要時にオンデマンド取得する設計。配管実装(コミット`841ae2865`)→パック実ビルド・公開(コミット`d5b525bca`/`33b78196e`、`optional-packs-latest`リリースとして実在確認済み)まで進めた。
 
@@ -4020,13 +4020,14 @@ libbash.so: /data/user/0/dev.shelly.terminal/files/termux-libs/packs/dev-tools/p
 ```
 `chmod 755`(`extractPack()`の`setExecutable(true, false)`)は正しく効いているが、実行できない。原因はCLAUDE.mdに既に記録されている既知の制約そのもの: 「PATH-visible shim は native binary 必須 (#! script 不可)...jniLibs に native binary を同梱、LibExtractor で **$libDir に展開**、$HOME/bin から symlink するパターンが唯一動く (**libDir SELinux label が exec 許可**)」。`extractPack()`は`libDir`直下ではなく`libDir/packs/<packId>/`という**アプリが`mkdir`で作った通常のサブディレクトリ**に展開しており、Androidのネイティブライブラリディレクトリ(APKインストール時にパッケージマネージャがOSレベルで特別なexec許可ラベルを付与する場所)と違い、アプリが自分で作ったサブディレクトリはこのラベルを持てないため、`chmod`だけでは実行不可のまま。
 
-**未実装(意図的に見送り)**:
-1. **PATH配線 + 実行権限問題の両方が未解決** — 上記の理由で、たとえ`$HOME/bin`へシンボリックリンクを張っても直接execできない。この既存コードベースが`bash`/`node`/`git`で既に使っている「`/system/bin/linker64 <path> <args>`経由で実行する」ラッパーパターン(`_run`関数、`HomeInitializer.kt`)を、パック展開バイナリにも適用する必要がある——単純なsymlink実装では済まないことが実機で判明した。
-2. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。現行APKのデフォルト同梱物はバイト単位で同一。
+**✅ 2026-08-28 コード修正完了(linker64ラッパー化 + PATH配線、コミット未push、BASHRC_VERSION 240→241)**: 上記(e)/(f)が求めていた一般化を実装。`jq`/`sqlite3`/`make`/`gh`/`vim`/`tmux`/`nano`/`less`/`rg`/`unzip`/`python3`の11個の同梱ツール向けbashラッパー関数を、生成時に焼き込んだ`$libDir/<tool>`固定パスから、呼び出し時解決(新規`__shelly_tool_path()`/`__shelly_pack_hint()`ヘルパー)へ書き換えた。挙動: `$SHELLY_LIB_DIR/<tool>`(同梱版)が存在すればそちらを優先、無ければ`$SHELLY_LIB_DIR/packs/<packId>/<tool>`(パックインストール版)にフォールバック、どちらも無ければ`shelly install <pack>`を促すヒントを表示して127を返す。実行はいずれの場合も既存の`_run`(linker64)経路を通す——`packs/<packId>/`はOSがexec許可ラベルを付与する`libDir`直下ではなくアプリ作成のサブディレクトリなので、`chmod`だけでなく`linker64`ラッパー化が必須というQA発見の通り。新規ネイティブshimは追加していない(同梱11ツールが既にプレーンなbash関数で動いている以上、パックツールにだけ別の重い仕組みを与える理由がない、という設計判断)。副次効果として「パックインストール直後、既に開いているタブでも即座に使える」(呼び出し時解決なので新規シェル不要)も同時に得られた。`python3`のPYTHONHOME/PYTHONPATHも解決済みバイナリ自身のディレクトリから動的計算するよう変更、CI「Publish optional tool pack archives」ステップも`dev-tools`パックへ`python3.13`スタブディレクトリ(`modules/.../assets/python3.tar.gz`)を同梱するよう修正(旧実装は同梱しておらず、修正前は`shelly install dev-tools`後の`python3`が`ModuleNotFoundError: No module named 'encodings'`で即失敗する状態だった——これも今回のコード監査で新規発見)。tsc/jest(新規`__tests__/optional-packs-bashrc-sync.test.ts`含む)は全てグリーン、`bash -n`構文チェック+`__shelly_tool_path`/`__shelly_pack_hint`の手動functional testも実施済み。**ただし本セッションはWindows worktree上で実機アクセスが無く、次回オンデバイスQA枠での実機再検証が必須**(下記(e)(f)はまだ未消化のまま)。
 
-**実機QAで確認すべきこと(残り)**: ~~(a)到達性修正の成功~~ ✅、~~(b)DownloadManagerでの実配信~~ ✅、~~(c)Knox/SELinux下でのtar展開成功~~ ✅、~~(d)展開バイナリの実行確認~~ ✅(結果: **実行不可、要`linker64`ラッパー化**、2026-08-28実機確認)。残るは (e) `linker64`ラッパー実装後の再検証、(f) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか。
+**未実装(意図的に見送り、変わらず)**:
+1. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。現行APKのデフォルト同梱物はバイト単位で同一。今回のPATH配線修正は意図的にこの削減を含まないスコープ。
 
-**優先度**: P1へ格上げ(単なる「未実装」ではなく、実機で確認済みの具体的な実行不可バグ。ただし修正には`bash`/`node`/`git`と同じラッパー生成ロジックをパックツール向けに一般化する設計作業が要るため、次回セッションでの着手を推奨)
+**実機QAで確認すべきこと(残り)**: ~~(a)到達性修正の成功~~ ✅、~~(b)DownloadManagerでの実配信~~ ✅、~~(c)Knox/SELinux下でのtar展開成功~~ ✅、~~(d)展開バイナリの実行確認~~ ✅(結果: **実行不可、要`linker64`ラッパー化**、2026-08-28実機確認)。残るは (e) 今回のコード修正が実機で実際に`shelly install dev-tools`後の`python3 --version`等を成功させるかの再検証、(f) 既に開いているタブでインストール直後にツールが使えるようになるかの実機確認。
+
+**優先度**: P1のまま(コード修正は着地したが、この種のSELinux/linker64まわりは過去何度も「ローカルでは正しく見えたが実機で違った」実績があるため、実機QAで(e)(f)を確認するまではP1を維持する)
 
 ---
 
