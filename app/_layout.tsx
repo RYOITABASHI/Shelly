@@ -56,6 +56,8 @@ import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/c
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { getOptionalPack } from '@/lib/optional-packs';
+import { installOptionalPack } from '@/lib/optional-pack-installer';
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 import { fireReviewedAgentAppAct, parseAppActParamsResolved } from '@/lib/agent-app-act-review';
 import {
@@ -1559,6 +1561,58 @@ export default function RootLayout() {
     // legacy block-terminal's runCommand(), which the native PTY terminal
     // never calls. Same shell->RN bridge shape as the deep-link queue above:
     // the shim now appends "config" to this file, drained here.
+    // 2026-08-25 on-device QA finding (docs/superpowers/DEFERRED.md): `shelly
+    // install <pack>` (lib/optional-packs.ts's on-demand tool packs) has the
+    // exact gap `config`'s own comment above already named as unsolved for
+    // `workflow`/`voice` -- it needs a real RESULT printed back to the
+    // terminal, not just a one-shot UI toggle. Same file-queue bridge as
+    // `config`, but round-trip: the native $HOME/bin/shelly shim
+    // (HomeInitializer.kt) appends `install:<reqId>:<packId>`, blocks
+    // synchronously polling for `.shelly-install-results/<reqId>.json`, and
+    // this handler is what actually writes that file once
+    // installOptionalPack() (lib/optional-pack-installer.ts) resolves.
+    // Fire-and-forget from the queue loop below -- a real download can take
+    // a while, and must not block draining any OTHER queued lines.
+    const handleInstallRequest = async (reqId: string, packId: string) => {
+      const resultDir = `${FileSystem.documentDirectory}home/.shelly-install-results`;
+      const resultPath = `${resultDir}/${reqId}.json`;
+      const writeResult = async (payload: { ok: boolean; lines?: string[]; error?: string }) => {
+        try {
+          await FileSystem.makeDirectoryAsync(resultDir, { intermediates: true }).catch(() => {});
+          await FileSystem.writeAsStringAsync(resultPath, JSON.stringify(payload));
+        } catch (e) {
+          logError('CommandQueue', `install: failed to write result for ${reqId}`, e);
+        }
+      };
+      try {
+        const pack = getOptionalPack(packId);
+        if (!pack) {
+          await writeResult({ ok: false, error: `install: unknown pack '${packId}'` });
+          return;
+        }
+        if (typeof TerminalEmulator.enqueuePackDownload !== 'function') {
+          await writeResult({
+            ok: false,
+            error: 'install: pack downloads are not supported by this build of Shelly. Update Shelly and try again.',
+          });
+          return;
+        }
+        const result = await installOptionalPack(pack, TerminalEmulator);
+        await writeResult({
+          ok: true,
+          lines: [
+            `Installed pack '${pack.id}': ${pack.tools.join(', ')}`,
+            `Extracted to: ${result.libDir}`,
+            'Note: these binaries are not yet wired onto $PATH automatically (deferred — see DEFERRED.md).',
+          ],
+        });
+        logInfo('CommandQueue', `installed pack '${pack.id}' (shelly install)`);
+      } catch (e: any) {
+        await writeResult({ ok: false, error: `install: ${e?.message || String(e)}` });
+        logError('CommandQueue', `install: pack '${packId}' failed`, e);
+      }
+    };
+
     const commandQueuePath = `${FileSystem.documentDirectory}home/.shelly-command-queue`;
     let isDrainingCommandQueue = false;
     const drainCommandQueue = async () => {
@@ -1580,6 +1634,13 @@ export default function RootLayout() {
           if (line === 'config') {
             useSettingsStore.getState().setShowConfigTUI(true);
             logInfo('CommandQueue', 'opened ConfigTUI (shelly config)');
+          } else if (line.startsWith('install:')) {
+            const [, reqId, packId] = line.split(':');
+            if (reqId && packId) {
+              void handleInstallRequest(reqId, packId);
+            } else {
+              logError('CommandQueue', `malformed install command queue line: ${line.slice(0, 64)}`);
+            }
           } else {
             logError('CommandQueue', `unrecognized command queue line: ${line.slice(0, 64)}`);
           }

@@ -3993,20 +3993,25 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ---
 
-### `shelly install <pack>` オンデマンドツールパック — 配管のみ実装済み、実際のパック配布・PATH配線・APK本体の削減は未着手 (P1)
+### `shelly install <pack>` オンデマンドツールパック — 到達不能バグを実機QAで発見・修正済み、PATH配線とAPK本体削減が残作業 (P1)
 
-**背景**: 2026-08-25、Fable5の総合レビュー(新規性・需要・完成度)ロードマップ item #6。800MBのサイドロードAPKが新規ユーザーの最大の障壁との指摘を受け、`python3`/`sqlite3`/`vim`/`tmux`/`ripgrep`/`jq`/`make`/`gh`/`nano`/`unzip`/`less`の11ツールを常時同梱から外し、`shelly install <pack>`で必要時にオンデマンド取得する設計の**配管部分のみ**を実装(コミット`841ae2865`)。
+**背景**: 2026-08-25、Fable5の総合レビュー(新規性・需要・完成度)ロードマップ item #6。800MBのサイドロードAPKが新規ユーザーの最大の障壁との指摘を受け、`python3`/`sqlite3`/`vim`/`tmux`/`ripgrep`/`jq`/`make`/`gh`/`nano`/`unzip`/`less`の11ツールを常時同梱から外し、`shelly install <pack>`で必要時にオンデマンド取得する設計。配管実装(コミット`841ae2865`)→パック実ビルド・公開(コミット`d5b525bca`/`33b78196e`、`optional-packs-latest`リリースとして実在確認済み)まで進めた。
 
-**実装済み**: `lib/optional-packs.ts`(パックマニフェスト、`dev-tools`/`editor-tools`の2パック)、`lib/optional-pack-installer.ts`(ダウンロード→検証→展開のオーケストレーション、既存self-updaterの`DownloadManager`機構を再利用)、`lib/pseudo-shell.ts`の`shelly install <pack-id>`サブコマンド、`TerminalEmulatorModule.kt/.ts`の新規3ネイティブメソッド(`enqueuePackDownload`/`verifyPackArchive`/`extractPackArchive`、既存コードに一切変更なしの追加のみ)、`LibExtractor.kt`の新規`extractPack()`(`extractAll()`/`LIBS`は無変更)。
+**✅ 実機QAで発見・修正した重大バグ**: `841ae2865`時点の実装は`lib/pseudo-shell.ts`にのみ`install`サブコマンドを追加していたが、これは**実機のネイティブPTYターミナルから根本的に到達不能**なコードだった。`NativeTerminalView`はPTY fdへ直接書き込むため、`lib/pseudo-shell.ts`のJS実装は「レガシーなブロックターミナルUI」経由でしか呼ばれず、現行の生きたUIには存在しない経路。実際に実機で`shelly install dev-tools`を打つと、`$HOME/bin/shelly`ネイティブシム(`HomeInitializer.kt`生成、当時はscouterサブコマンドのみ認識)の汎用フォールバックに落ち、無関係な`shelly scouter`のUsageメッセージが表示されるという分かりにくい形で露見した(ユーザーの実機スクショで発覚)。
+
+これは`shelly config`が2026-08-06/07に同じ理由で踏んだのと全く同じ穴で、`config`はv238で`$HOME/.shelly-command-queue`ファイル経由の一方向ブリッジ(UIトグルを開くだけ、結果を返さない)で解決済みだったが、`install`は「ターミナルへ実際の結果を返す必要がある」ため、v238のコメント自身が`workflow`/`voice`と共に「見送り」と明記していたカテゴリだった。
+
+**修正(BASHRC_VERSION 239→240、SHELLY_HELPER_SHIM v2→v3)**: `config`と同じキュー(`.shelly-command-queue`)を拡張し、`install:<reqId>:<packId>`形式の往復ブリッジを追加。シム側(Node.js、`Atomics.wait`で同期ポーリング、外部`sleep`バイナリ非依存)がリクエストをキューへ書いて`.shelly-install-results/<reqId>.json`を待ち、`app/_layout.tsx`の`drainCommandQueue`が`installOptionalPack()`を実際に呼んで結果ファイルを書く。ローカルでNode.jsへ抽出して`node --check`+実行での動作確認(成功パス・一覧表示パス・エラーパスの3パターン)を実施済み。**このKotlin変更は実機での再検証が必須**(次回ビルド更新後)。
+
+**実装済み**: `lib/optional-packs.ts`(パックマニフェスト、`dev-tools`/`editor-tools`の2パック、`published: true`)、`lib/optional-pack-installer.ts`、`lib/pseudo-shell.ts`の`shelly install <pack-id>`(レガシー経路、到達不能のまま残置)、`TerminalEmulatorModule.kt/.ts`の新規3ネイティブメソッド、`LibExtractor.kt`の新規`extractPack()`、`HomeInitializer.kt`のシム拡張+`app/_layout.tsx`のキュー処理拡張(今回追加)。
 
 **未実装(意図的に見送り)**:
-1. **実際のパックアーカイブが存在しない** — 全パックの`published: false`でゲートされており、`shelly install`は常に「未公開」エラーを返す。GitHub Releasesへの実アーカイブのビルド・アップロードが必要。
-2. **PATH配線が無い** — 展開されたバイナリは`termux-libs/packs/<packId>/`配下のapp-private storageに置かれるが、`$HOME/bin`へのシンボリックリンクが無いためシェルから見つからない。`HomeInitializer.kt`のbashrc生成ロジックへの追加が必要(常時実行される既存コードへの変更のため、実機なしでは検証不可と判断し今回は見送り)。
-3. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。`build-android.yml`/`app.config.ts`は無変更で、現行APKのデフォルト同梱物は今回のコミット前後でバイト単位で同一。
+1. **PATH配線が無い** — 展開されたバイナリは`termux-libs/packs/<packId>/`配下のapp-private storageに置かれるが、`$HOME/bin`へのシンボリックリンクが無いためシェルから見つからない。`shelly install`自体は成功メッセージでこれを明示。
+2. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。現行APKのデフォルト同梱物はバイト単位で同一。
 
-**実機QAで確認すべきこと**(将来のオンデバイス検証パス向け):(a) `DownloadManager`が実アーカイブを実際に配信できるか、(b) Knox/SELinux下で`tar`展開が既存の`extractTarGzAsset()`と同様に成功するか、(c) 展開されたバイナリが実際に実行可能か(動的リンク、`chmod`)、(d) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか。
+**実機QAで確認すべきこと**(次回オンデバイス検証パス向け、優先度順):(a) **今回の到達性修正が新ビルドで実際に`shelly install dev-tools`を成功させるか**(最優先——ローカルNode検証は通ったがKotlin heredoc生成自体は未実機検証)、(b) `DownloadManager`が実アーカイブ(`optional-packs-latest`リリース、確認済み実在)を実際に配信できるか、(c) Knox/SELinux下で`tar`展開が成功するか、(d) 展開されたバイナリが実際に実行可能か、(e) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか。
 
-**優先度**: P1(需要面の主要ボトルネック解消に直結するが、実機無しで安全に進められる範囲は今回で使い切った——次のステップ(パックビルド・公開・PATH配線)は実機保有セッションでの着手を推奨)
+**優先度**: P1(到達性バグの修正で`shelly install`は理論上機能する状態になったが、実機での動作確認が最優先の残作業)
 
 ---
 
