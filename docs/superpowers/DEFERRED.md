@@ -3993,7 +3993,7 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ---
 
-### `shelly install <pack>` オンデマンドツールパック — 実機QAで到達性バグ発見→修正→再検証まで完了、PATH配線とAPK本体削減が残作業 (P2)
+### `shelly install <pack>` オンデマンドツールパック — 到達性バグは修正済み、展開バイナリのSELinux実行不可バグを実機QAで新規発見 (P1)
 
 **背景**: 2026-08-25、Fable5の総合レビュー(新規性・需要・完成度)ロードマップ item #6。800MBのサイドロードAPKが新規ユーザーの最大の障壁との指摘を受け、`python3`/`sqlite3`/`vim`/`tmux`/`ripgrep`/`jq`/`make`/`gh`/`nano`/`unzip`/`less`の11ツールを常時同梱から外し、`shelly install <pack>`で必要時にオンデマンド取得する設計。配管実装(コミット`841ae2865`)→パック実ビルド・公開(コミット`d5b525bca`/`33b78196e`、`optional-packs-latest`リリースとして実在確認済み)まで進めた。
 
@@ -4014,13 +4014,19 @@ Note: these binaries are not yet wired onto $PATH automatically (deferred — se
 
 **実装済み**: `lib/optional-packs.ts`(パックマニフェスト、`dev-tools`/`editor-tools`の2パック、`published: true`)、`lib/optional-pack-installer.ts`、`lib/pseudo-shell.ts`の`shelly install <pack-id>`(レガシー経路、到達不能のまま残置)、`TerminalEmulatorModule.kt/.ts`の新規3ネイティブメソッド、`LibExtractor.kt`の新規`extractPack()`、`HomeInitializer.kt`のシム拡張+`app/_layout.tsx`のキュー処理拡張(今回追加)。
 
+**❌ 2026-08-28 実機QAで発見: 展開したバイナリがSELinuxにより実行不可**。`termux-libs/packs/dev-tools/python3 --version`を直接パスで実行したところ:
+```
+libbash.so: /data/user/0/dev.shelly.terminal/files/termux-libs/packs/dev-tools/python3: Permission denied
+```
+`chmod 755`(`extractPack()`の`setExecutable(true, false)`)は正しく効いているが、実行できない。原因はCLAUDE.mdに既に記録されている既知の制約そのもの: 「PATH-visible shim は native binary 必須 (#! script 不可)...jniLibs に native binary を同梱、LibExtractor で **$libDir に展開**、$HOME/bin から symlink するパターンが唯一動く (**libDir SELinux label が exec 許可**)」。`extractPack()`は`libDir`直下ではなく`libDir/packs/<packId>/`という**アプリが`mkdir`で作った通常のサブディレクトリ**に展開しており、Androidのネイティブライブラリディレクトリ(APKインストール時にパッケージマネージャがOSレベルで特別なexec許可ラベルを付与する場所)と違い、アプリが自分で作ったサブディレクトリはこのラベルを持てないため、`chmod`だけでは実行不可のまま。
+
 **未実装(意図的に見送り)**:
-1. **PATH配線が無い** — 展開されたバイナリは`termux-libs/packs/<packId>/`配下のapp-private storageに置かれるが、`$HOME/bin`へのシンボリックリンクが無いためシェルから見つからない。`shelly install`自体は成功メッセージでこれを明示。
+1. **PATH配線 + 実行権限問題の両方が未解決** — 上記の理由で、たとえ`$HOME/bin`へシンボリックリンクを張っても直接execできない。この既存コードベースが`bash`/`node`/`git`で既に使っている「`/system/bin/linker64 <path> <args>`経由で実行する」ラッパーパターン(`_run`関数、`HomeInitializer.kt`)を、パック展開バイナリにも適用する必要がある——単純なsymlink実装では済まないことが実機で判明した。
 2. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。現行APKのデフォルト同梱物はバイト単位で同一。
 
-**実機QAで確認すべきこと(残り)**: ~~(a)到達性修正の成功~~ ✅、~~(b)DownloadManagerでの実配信~~ ✅、~~(c)Knox/SELinux下でのtar展開成功~~ ✅ — いずれも2026-08-28実機確認済み。残るは (d) 展開されたバイナリが実際に実行可能か(`python3`/`sqlite3`等を`termux-libs/packs/dev-tools/`から直接パスで叩いて動作確認)、(e) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか(PATH配線自体が未実装のため、実装後の話)。
+**実機QAで確認すべきこと(残り)**: ~~(a)到達性修正の成功~~ ✅、~~(b)DownloadManagerでの実配信~~ ✅、~~(c)Knox/SELinux下でのtar展開成功~~ ✅、~~(d)展開バイナリの実行確認~~ ✅(結果: **実行不可、要`linker64`ラッパー化**、2026-08-28実機確認)。残るは (e) `linker64`ラッパー実装後の再検証、(f) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか。
 
-**優先度**: P2(到達性・ダウンロード・展開という主要リスクは実機で解消確認済み。残るPATH配線とAPK本体削減は「動くと分かった上での機能拡張」フェーズであり、緊急度は下がった)
+**優先度**: P1へ格上げ(単なる「未実装」ではなく、実機で確認済みの具体的な実行不可バグ。ただし修正には`bash`/`node`/`git`と同じラッパー生成ロジックをパックツール向けに一般化する設計作業が要るため、次回セッションでの着手を推奨)
 
 ---
 
