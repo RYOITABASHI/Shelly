@@ -1166,7 +1166,14 @@ const styles = StyleSheet.create({
   // height; flexShrink: 1 lets it size to its natural content height and
   // only shrink once panel hits maxHeight, which is what makes the sheet
   // both auto-size to short content AND cap+scroll for long content.
-  scroll: { flexGrow: 0, flexShrink: 1 },
+  // minHeight: 0 is required alongside flexShrink — Yoga's default
+  // flexBasis is the content's own natural height, so without an explicit
+  // floor a flex item won't shrink past that size. Without this the
+  // ScrollView's laid-out height can stay taller than its actual clipped
+  // viewport, desyncing its internal scroll-range math from what's visibly
+  // on screen (a slow drag appears to do nothing; only a fast fling that
+  // outruns the mismatch visibly moves content).
+  scroll: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
   scrollContent: { paddingBottom: 32 },
 
   sectionFirst: { marginTop: 12 },
@@ -1301,7 +1308,9 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     paddingBottom: 20,
   },
-  factsScroll: { flexGrow: 0, flexShrink: 1 },
+  // Same flexShrink/minHeight fix as `scroll` above — this sheet's own
+  // maxHeight: '75%' cap on factsSheet has the identical shrink-clamping gap.
+  factsScroll: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
   factsContent: { paddingBottom: 8 },
   factRow: {
     paddingHorizontal: 16,

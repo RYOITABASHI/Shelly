@@ -2424,14 +2424,21 @@ const styles = StyleSheet.create({
     // the panel's overflow: 'hidden' then silently clipped any
     // section past the screen edge. Recovery (last in the list)
     // got clipped on Z Fold6 cover-screen, looking like it didn't
-    // render. ConfigTUI has used `flex: 1` since the start which is
-    // why its identical Recovery entry has always been reachable.
-    // Diagnosed by independent agent review of build #749 — agent
-    // verified bundled JS contained the section AND verified
+    // render. Diagnosed by independent agent review of build #749 —
+    // agent verified bundled JS contained the section AND verified
     // expo-updates `enabled: false` was actually bypassing OTA cache
     // (DisabledUpdatesController → NoDatabaseLauncher,
     // isUsingEmbeddedAssets = true) before pinning the layout bug.
+    // 2026-08-28: `flexShrink: 1` alone was still incomplete — Yoga's
+    // default flexBasis is the content's own natural height, so
+    // without an explicit minHeight floor the ScrollView's laid-out
+    // height can stay taller than its actual clipped viewport,
+    // desyncing its internal scroll-range math from what's visibly
+    // on screen (a slow drag does nothing; only a fast fling that
+    // outruns the mismatch visibly moves content). Same fix applied
+    // to ConfigTUI.tsx's identically-shaped `scroll` style.
     flexShrink: 1,
+    minHeight: 0,
   },
   // Section
   section: {

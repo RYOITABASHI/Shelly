@@ -110,7 +110,12 @@ const styles = StyleSheet.create({
   card: { width: '100%', maxWidth: 440, maxHeight: '82%', borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 16, borderBottomWidth: 1 },
   title: { flex: 1, fontFamily: F.family, fontSize: 15, fontWeight: '700' },
-  content: { flexGrow: 0 },
+  // flexShrink + minHeight: 0 required alongside card's maxHeight: '82%' —
+  // without them this ScrollView sizes to its natural content height (RN's
+  // default flexShrink is 0, unlike web CSS), ignoring the cap entirely;
+  // card's overflow: 'hidden' then silently clips whatever content falls
+  // past the screen edge instead of it being reachable by scrolling.
+  content: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
   contentInner: { padding: 16, gap: 6 },
   intro: { fontFamily: F.family, fontSize: 12, lineHeight: 18, marginBottom: 4 },
   sectionHeading: {
