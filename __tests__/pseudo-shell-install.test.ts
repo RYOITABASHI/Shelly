@@ -114,7 +114,7 @@ describe('shelly install <pack-id> — validation', () => {
     expect(text).toContain("Installed pack 'dev-tools'");
     expect(text).toContain('python3');
     expect(text).toContain('Extracted to: /fake/libDir/packs');
-    expect(text).toContain('not yet wired onto $PATH automatically');
+    expect(text).toContain('available immediately');
     expect(mockTerminalEmulator.enqueuePackDownload).toHaveBeenCalledWith(
       expect.stringContaining('/releases/download/optional-packs-latest/'),
       'dev-tools',

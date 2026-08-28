@@ -18,13 +18,22 @@
  * — .github/workflows/build-android.yml's "Publish optional tool pack
  * archives" step republishes them from the same jniLibs binaries the real
  * APK ships from, on every push to main; `shelly install <pack>` can
- * genuinely download and extract them today. What's STILL deferred: nothing
- * wires the extracted binaries onto `$HOME/bin`'s PATH yet (that needs a
- * HomeInitializer.kt bashrc change, deliberately left for a session with
- * real-device access — see DEFERRED.md), and no tool has actually been
- * removed from LibExtractor.kt's always-bundled LIBS map, so the default
- * APK size is unchanged. `shelly install` already prints a note explaining
- * this (lib/pseudo-shell.ts).
+ * genuinely download and extract them today.
+ *
+ * 2026-08-28: the last gap — nothing wired the extracted binaries onto
+ * PATH — is closed. HomeInitializer.kt's 11 bundled-tool wrapper functions
+ * (jq/sqlite3/make/gh/vim/tmux/nano/less/rg/unzip/python3) now resolve
+ * their target at CALL time via a new `__shelly_tool_path()` bash helper
+ * (bundled $SHELLY_LIB_DIR copy first, then $SHELLY_LIB_DIR/packs/<packId>/
+ * from a `shelly install <pack>` extraction) instead of a path baked in at
+ * bashrc-generation time — see BASHRC_VERSION 241's changelog comment
+ * there. A pack tool becomes usable immediately after install, even in an
+ * already-open terminal tab, with no new native shim (it reuses the same
+ * `_run`/linker64 SELinux-exec route the bundled copies already use). Still
+ * NOT done, deliberately out of scope for that change: no tool has actually
+ * been removed from LibExtractor.kt's always-bundled LIBS map, so the
+ * default APK size is unchanged — that removal is explicit future
+ * follow-up work, not part of the PATH-wiring fix.
  */
 
 export interface OptionalPackManifest {

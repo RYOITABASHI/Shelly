@@ -1264,6 +1264,25 @@ jobs:
               cp "${src}" "${pack_dir}/${tool}"
               chmod 755 "${pack_dir}/${tool}"
             done
+            # 2026-08-28: python3 needs its stdlib tree alongside the binary,
+            # not just the interpreter itself — LibExtractor.kt's extractAll()
+            # extracts the same checked-in modules/.../assets/python3.tar.gz
+            # asset to $libDir/python3.13/ for the bundled copy, and
+            # HomeInitializer.kt's python3() wrapper sets
+            # PYTHONHOME=PYTHONPATH=<resolved binary's dir>/python3.13 (see
+            # BASHRC_VERSION 241) — resolved to $SHELLY_LIB_DIR/python3.13 for
+            # the bundled copy, or $SHELLY_LIB_DIR/packs/dev-tools/python3.13
+            # for a pack install. Without this, `shelly install dev-tools`
+            # would extract a python3 binary that immediately fails with
+            # "ModuleNotFoundError: No module named 'encodings'" (bootstrap
+            # cannot find its own stdlib). Reuse that same source asset here
+            # rather than re-deriving it from jniLibs (it isn't one).
+            if [ "${pack_id}" = "dev-tools" ]; then
+              python_stdlib_asset="modules/terminal-emulator/android/src/main/assets/python3.tar.gz"
+              test -f "${python_stdlib_asset}" || { echo "FATAL: ${python_stdlib_asset} not found for dev-tools python3.13 stdlib bundling" >&2; exit 1; }
+              tar -xzf "${python_stdlib_asset}" -C "${pack_dir}"
+              test -d "${pack_dir}/python3.13" || { echo "FATAL: ${python_stdlib_asset} did not extract a python3.13/ directory into ${pack_dir}" >&2; exit 1; }
+            fi
             archive_name="shelly-pack-${pack_id}-arm64.tar.gz"
             tar -C "${pack_dir}" -czf "${staging_dir}/${archive_name}" .
             archive_sha256="$(sha256sum "${staging_dir}/${archive_name}" | awk '{print $1}')"

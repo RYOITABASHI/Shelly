@@ -1603,7 +1603,7 @@ export default function RootLayout() {
           lines: [
             `Installed pack '${pack.id}': ${pack.tools.join(', ')}`,
             `Extracted to: ${result.libDir}`,
-            'Note: these binaries are not yet wired onto $PATH automatically (deferred — see DEFERRED.md).',
+            'Installed tools are available immediately — just type the command (existing tabs included).',
           ],
         });
         logInfo('CommandQueue', `installed pack '${pack.id}' (shelly install)`);

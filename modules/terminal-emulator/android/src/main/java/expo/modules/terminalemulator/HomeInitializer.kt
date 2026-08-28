@@ -1135,7 +1135,29 @@ patchCodex(libDir);
     // "never clobber a real custom script at this path" safety intent.
     // v240: SHELLY_HELPER_SHIM v3 — added `install <pack-id>` (see that
     // branch's own comment above, next to the `config` branch it mirrors).
-    private const val BASHRC_VERSION = 240
+    // v241: `shelly install <pack>` (v240) could download+extract pack
+    // tools to $SHELLY_LIB_DIR/packs/<packId>/, but every one of the 11
+    // wrapper functions below (jq/sqlite3/make/gh/vim/tmux/nano/less/rg/
+    // unzip/python3) still resolved to a BAKED $libDir/<tool> path chosen
+    // at bashrc-generation time — a pack-only tool with no bundled copy had
+    // no wrapper at all, and even for tools that DO ship bundled, an
+    // installed pack copy was never reachable because the wrapper never
+    // looked there. Same root cause class as v232's "no wrapper == raw
+    // execve == Knox app_data_file denial" finding (see that comment
+    // further down), just for packs/ instead of libDir/ directly. Fixed by
+    // making every one of those 11 wrappers resolve their target at CALL
+    // time via the new __shelly_tool_path() helper (bundled copy first,
+    // then $SHELLY_LIB_DIR/packs/<packId>/<tool>) instead of a
+    // generation-time-baked path — this also means a pack installed into an
+    // already-open terminal tab is usable immediately, no new shell needed,
+    // since the function re-resolves on every invocation. No new native
+    // shim needed either way: $SHELLY_LIB_DIR/packs/<packId>/ is an
+    // app-created subdirectory, NOT the OS-labeled libDir itself, so SELinux
+    // denies a raw execve() on a pack tool exactly like it would for any
+    // other app_data_file — pack tools go through the exact same _run
+    // (linker64) plumbing the bundled copies already use, which is why this
+    // works with zero native changes.
+    private const val BASHRC_VERSION = 241
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1633,7 +1655,7 @@ patchCodex(libDir);
             sb.appendLine("    console.log('  dev-tools        python3, sqlite3, jq, make, gh');")
             sb.appendLine("    console.log('  editor-tools     vim, tmux, nano, less, unzip, rg');")
             sb.appendLine("    console.log('');")
-            sb.appendLine("    console.log('Note: installed tools are not yet added to \$PATH automatically (deferred — see DEFERRED.md).');")
+            sb.appendLine("    console.log('Installed tools are available immediately — just type the command (existing tabs included).');")
             sb.appendLine("    process.exit(0);")
             sb.appendLine("  }")
             sb.appendLine("  const reqId = Date.now() + '-' + Math.random().toString(16).slice(2, 10);")
@@ -2101,6 +2123,29 @@ patchCodex(libDir);
             sb.appendLine("  esac")
             sb.appendLine("}")
             sb.appendLine("export -f _run")
+            // v241: call-time tool resolution for the 11 wrappers that can now
+            // ALSO be satisfied by a `shelly install <pack>` pack extraction
+            // (lib/optional-packs.ts, LibExtractor.kt's extractPack()) instead
+            // of only the always-bundled copy under $SHELLY_LIB_DIR. Bundled
+            // wins when both exist (never silently prefer a pack copy over
+            // the one the APK shipped). Prints the resolved absolute path on
+            // stdout and returns 0, or returns 127 (the shell's own "command
+            // not found" convention) with no output so callers can chain
+            // `|| { __shelly_pack_hint ...; return 127; }`.
+            sb.appendLine("__shelly_tool_path() {  # \$1=tool \$2=packId")
+            sb.appendLine("  if [ -x \"\$SHELLY_LIB_DIR/\$1\" ]; then")
+            sb.appendLine("    printf '%s' \"\$SHELLY_LIB_DIR/\$1\"")
+            sb.appendLine("  elif [ -x \"\$SHELLY_LIB_DIR/packs/\$2/\$1\" ]; then")
+            sb.appendLine("    printf '%s' \"\$SHELLY_LIB_DIR/packs/\$2/\$1\"")
+            sb.appendLine("  else")
+            sb.appendLine("    return 127")
+            sb.appendLine("  fi")
+            sb.appendLine("}")
+            sb.appendLine("__shelly_pack_hint() {  # \$1=tool \$2=packId")
+            sb.appendLine("  printf '%s: not installed. Run: shelly install %s\\n' \"\$1\" \"\$2\" >&2")
+            sb.appendLine("  return 127")
+            sb.appendLine("}")
+            sb.appendLine("export -f __shelly_tool_path __shelly_pack_hint")
             sb.appendLine("__shelly_run_node_clean() {")
             sb.appendLine("  local __shelly_tmp=\"\${TMPDIR:-\$HOME/.tmp}\"")
             sb.appendLine("  __shelly_mkdir -p \"\$__shelly_tmp\" \"\$HOME/.config\" \"\$HOME/.cache\" \"\$HOME/.local/share\" 2>/dev/null || true")
@@ -2273,15 +2318,32 @@ patchCodex(libDir);
             // "ModuleNotFoundError: No module named 'encodings'" before it
             // even evaluates user code. Setting PYTHONPATH to the same prefix
             // is respected during bootstrap and unblocks the import lookup.
-            sb.appendLine("python3() { PYTHONHOME=$libDir/python3.13 PYTHONPATH=$libDir/python3.13 _run $libDir/python3 \"\$@\"; }")
+            // v241: PYTHONHOME/PYTHONPATH are now computed from the RESOLVED
+            // binary's own directory (`${__t%/*}`) instead of the baked
+            // $libDir, so this keeps working whether __shelly_tool_path
+            // resolved the bundled copy or a `shelly install dev-tools`
+            // pack copy (whose python3.13/ stdlib sits alongside packs/
+            // dev-tools/python3, mirroring the bundled layout — see the CI
+            // "Publish optional tool pack archives" step, which bundles the
+            // same python3.tar.gz stdlib asset into the pack archive for
+            // exactly this reason).
+            sb.appendLine("python3() {")
+            sb.appendLine("  local __t; __t=\$(__shelly_tool_path python3 dev-tools) || { __shelly_pack_hint python3 dev-tools; return 127; }")
+            sb.appendLine("  local __pyhome=\"\${__t%/*}/python3.13\"")
+            sb.appendLine("  PYTHONHOME=\"\$__pyhome\" PYTHONPATH=\"\$__pyhome\" _run \"\$__t\" \"\$@\"")
+            sb.appendLine("}")
             sb.appendLine("python() { python3 \"\$@\"; }")
             sb.appendLine("pip() { python3 -m pip \"\$@\"; }")
             sb.appendLine("pip3() { pip \"\$@\"; }")
             sb.appendLine("curl() { _run $libDir/curl \"\$@\"; }")
             sb.appendLine("ssh() { _run $libDir/ssh \"\$@\"; }")
-            sb.appendLine("rg() { _run $libDir/rg \"\$@\"; }")
-            sb.appendLine("jq() { _run $libDir/jq \"\$@\"; }")
-            sb.appendLine("sqlite3() { _run $libDir/sqlite3 \"\$@\"; }")
+            // v241: rg/jq/sqlite3 now resolve bundled-vs-pack at call time (see
+            // __shelly_tool_path above) instead of a baked $libDir path, so
+            // `shelly install editor-tools`/`dev-tools` makes them usable
+            // immediately, even in an already-open tab.
+            sb.appendLine("rg() { local __t; __t=\$(__shelly_tool_path rg editor-tools) || { __shelly_pack_hint rg editor-tools; return 127; }; _run \"\$__t\" \"\$@\"; }")
+            sb.appendLine("jq() { local __t; __t=\$(__shelly_tool_path jq dev-tools) || { __shelly_pack_hint jq dev-tools; return 127; }; _run \"\$__t\" \"\$@\"; }")
+            sb.appendLine("sqlite3() { local __t; __t=\$(__shelly_tool_path sqlite3 dev-tools) || { __shelly_pack_hint sqlite3 dev-tools; return 127; }; _run \"\$__t\" \"\$@\"; }")
             // v232: bug #119-adjacent on-device smoke test found `vim` (and,
             // by the same missing-wrapper root cause, tmux/make/less/nano/
             // gh/gpg/unzip/ssh-keygen) fail bare in the terminal with
@@ -2299,16 +2361,30 @@ patchCodex(libDir);
             // $HOME/bin shim, so they were unreachable bare in the terminal
             // on every build since v180, not just this one. Do NOT revert
             // 3bed887ad — keep the preload scoped per-command, not PTY-wide.
-            sb.appendLine("vim() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/vim \"\$@\"; }")
+            //
+            // v241: vim/tmux/make/less/nano/gh/rg/unzip (all editor-tools or
+            // dev-tools pack members) plus jq/sqlite3/python3 above now
+            // resolve their target via __shelly_tool_path (bundled copy
+            // first, then $SHELLY_LIB_DIR/packs/<packId>/<tool> once
+            // `shelly install <pack>` has run) instead of the $libDir path
+            // baked in at bashrc-generation time. LD_PRELOAD keeps pointing
+            // at the bundled libexec_wrapper.so — that shared library is
+            // never removed from the default bundle by this change (only
+            // these 11 TOOL binaries are pack-eligible), so it is always at
+            // $libDir regardless of which copy of the tool itself resolved.
+            // gpg/gpg-agent are NOT part of any optional pack (not in
+            // lib/optional-packs.ts's OPTIONAL_PACKS), so they keep the
+            // baked $libDir path unchanged.
+            sb.appendLine("vim() { local __t; __t=\$(__shelly_tool_path vim editor-tools) || { __shelly_pack_hint vim editor-tools; return 127; }; LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__t\" \"\$@\"; }")
             sb.appendLine("vi() { vim \"\$@\"; }")
-            sb.appendLine("tmux() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/tmux \"\$@\"; }")
-            sb.appendLine("make() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/make \"\$@\"; }")
-            sb.appendLine("less() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/less \"\$@\"; }")
-            sb.appendLine("nano() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/nano \"\$@\"; }")
-            sb.appendLine("gh() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gh \"\$@\"; }")
+            sb.appendLine("tmux() { local __t; __t=\$(__shelly_tool_path tmux editor-tools) || { __shelly_pack_hint tmux editor-tools; return 127; }; LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__t\" \"\$@\"; }")
+            sb.appendLine("make() { local __t; __t=\$(__shelly_tool_path make dev-tools) || { __shelly_pack_hint make dev-tools; return 127; }; LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__t\" \"\$@\"; }")
+            sb.appendLine("less() { local __t; __t=\$(__shelly_tool_path less editor-tools) || { __shelly_pack_hint less editor-tools; return 127; }; LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__t\" \"\$@\"; }")
+            sb.appendLine("nano() { local __t; __t=\$(__shelly_tool_path nano editor-tools) || { __shelly_pack_hint nano editor-tools; return 127; }; LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__t\" \"\$@\"; }")
+            sb.appendLine("gh() { local __t; __t=\$(__shelly_tool_path gh dev-tools) || { __shelly_pack_hint gh dev-tools; return 127; }; LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run \"\$__t\" \"\$@\"; }")
             sb.appendLine("gpg() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gpg \"\$@\"; }")
             sb.appendLine("gpg-agent() { LD_PRELOAD=\"$libDir/libexec_wrapper.so\" _run $libDir/gpg-agent \"\$@\"; }")
-            sb.appendLine("unzip() { _run $libDir/unzip \"\$@\"; }")
+            sb.appendLine("unzip() { local __t; __t=\$(__shelly_tool_path unzip editor-tools) || { __shelly_pack_hint unzip editor-tools; return 127; }; _run \"\$__t\" \"\$@\"; }")
             // v236: bug #159 — the bundled OpenSSH ssh-keygen resolves its
             // interactive default identity-file path from getpwuid()->pw_dir
             // (a Bionic passwd-entry lookup baked into the Termux-sourced
