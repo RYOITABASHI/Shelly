@@ -388,6 +388,20 @@ export type AppSettings = {
   openrouterApiKey?: string;
   /** OpenRouter model (default: openrouter/auto) */
   openrouterModel?: string;
+  // ─── Companion brain routing (Fable5 quality-floor Design C, 2026-08-28) ────
+  /** Where the companion thread's (agent === 'local') response GENERATION
+   *  runs. 'auto' (default) = lib/companion-brain.ts's resolveCompanionBrain
+   *  cascades through configured cloud keys (Cerebras → Groq → Gemini →
+   *  OpenRouter) and only falls back to the on-device model when none are
+   *  configured (or the cloud call itself errors — single fallback-to-local
+   *  retry, no multi-provider cascade at dispatch time). 'local-only' = never
+   *  leave the device, byte-identical to pre-Design-C behavior. This only
+   *  changes which backend GENERATES a companion reply — the companion
+   *  THREAD identity (agent === 'local'), its memory/agent-intent intercepts,
+   *  and its truncated history window are unaffected, and journal digestion
+   *  (lib/companion-journal.ts's digestConversationForJournal) always stays
+   *  on-device regardless of this setting. */
+  companionBrainMode?: 'auto' | 'local-only';
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:
@@ -1407,4 +1421,18 @@ export type ChatMessage = {
   agentRollbackOffer?: {
     agentId: string;
   };
+  /** Fable5 quality-floor Design A (2026-08-28): true for any turn that is
+   *  part of the app-driven confirmation-flow UI itself (the confirmation
+   *  prompt, its cancelled/saving/saved/failed/confirm_unclear result
+   *  bubbles, AND the user's own reply that resolved it) — currently only
+   *  the pendingGlobalMemory flow. Excluded from BOTH the prompt history
+   *  sent back to the model (store/ai-pane-store.ts's
+   *  isPromptHistoryEligible, applied in hooks/use-ai-pane-dispatch.ts's
+   *  toOpenAIHistory) and journal digestion (lib/companion-journal.ts's
+   *  isDigestEligible), so the local model can never imitate its own past
+   *  save-confirmation phrasing ("Reply OK to save") — the bug that made it
+   *  self-generate fake confirmation flows outside the real one-time
+   *  question. Not rendered any differently — purely a history/digest
+   *  filter marker. */
+  flowTurn?: boolean;
 };

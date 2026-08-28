@@ -270,6 +270,23 @@ beforeEach(() => {
       localLlmEnabled: false,
       agentVaultPath: '',
       agentTopicFolder: '',
+      // Fable5 quality-floor Design C (2026-08-28): the settings store is a
+      // module-level singleton shared across every `it()` in this file, and
+      // this spread-based beforeEach only ever overrides specific fields —
+      // so a provider key an EARLIER test set (e.g. the @openrouter/@cerebras
+      // scenarios below) would otherwise stay live for every later test.
+      // Before companionBrainMode existed that leakage was harmless (the
+      // companion thread always stayed local regardless of stray keys); now
+      // that 'auto' mode cascades to whichever key is configured, a leaked
+      // key would silently auto-route an unrelated test's companion-thread
+      // dispatch to the wrong cloud backend. Reset explicitly so each test
+      // starts from a clean slate — companionBrainMode stays 'auto' (the
+      // real default) and any test that wants a cloud key sets it itself.
+      cerebrasApiKey: '',
+      groqApiKey: '',
+      geminiApiKey: '',
+      openrouterApiKey: '',
+      companionBrainMode: 'auto',
     },
   }));
 
@@ -1721,6 +1738,74 @@ describe('Scenario 8 — "remember this for every agent" write entry point', () 
       await result.current.dispatch('はい');
     });
     expect(mockWriteGlobalMemoryNote).not.toHaveBeenCalled();
+  });
+
+  // Fable5 quality-floor Design A (2026-08-28): the local model used to see
+  // its own past "Reply OK to save"-style confirmation phrasing in its own
+  // prompt history and imitate/self-generate that pattern on later,
+  // unrelated turns. flowTurn (store/types.ts) marks every bubble that is
+  // part of the confirmation-flow UI itself — the confirm question, the
+  // saved/cancelled/discarded_unclear result bubbles, and the resolving
+  // "OK"/"cancel" reply — and store/ai-pane-store.ts's isPromptHistoryEligible
+  // (applied in hooks/use-ai-pane-dispatch.ts's toOpenAIHistory) excludes all
+  // of them from what gets sent back to the model. This drives the REAL
+  // dispatch() end to end through a full pendingGlobalMemory round trip, then
+  // asserts on the actual history array handed to ollamaChatStream on the
+  // very next companion turn.
+  it('excludes the pendingGlobalMemory confirmation flow from the history sent to the local LLM afterward', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: {
+        ...s.settings,
+        localLlmEnabled: true,
+        localLlmUrl: 'http://127.0.0.1:8080',
+        localLlmModel: 'qwen3.5-2b',
+      },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('local reply', false);
+      return { success: true, content: 'local reply' };
+    });
+    const { result } = setup();
+
+    // Turn 1: an ordinary companion-thread request triggers the confirmation
+    // question (companionMemoryIntent) — the local LLM must never even be
+    // called for this turn (the question is posted directly).
+    await act(async () => {
+      await result.current.dispatch('remember that I prefer dark mode');
+    });
+    expect(mockOllamaChatStream).not.toHaveBeenCalled();
+    const confirmQuestion = lastMessage();
+    expect(confirmQuestion.pendingGlobalMemory).toBeTruthy();
+    expect(confirmQuestion.flowTurn).toBe(true);
+
+    // Turn 2: the exact confirm phrase resolves it and commits the write.
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockWriteGlobalMemoryNote).toHaveBeenCalledTimes(1);
+    const savedMsg = lastMessage();
+    expect(savedMsg.content).toContain(en['globalmemory.saved'].split('{{text}}')[0]);
+    expect(savedMsg.flowTurn).toBe(true);
+    // The user's own "OK" reply that resolved the flow is also marked.
+    const okReply = [...conv().messages].reverse().find((m) => m.role === 'user' && m.content === 'OK');
+    expect(okReply?.flowTurn).toBe(true);
+
+    // Turn 3: a fresh, ordinary companion turn actually reaches the local LLM
+    // — assert the confirmation-flow bubbles never made it into its history.
+    await act(async () => {
+      await result.current.dispatch('what time is it');
+    });
+    expect(mockOllamaChatStream).toHaveBeenCalledTimes(1);
+    const messages = mockOllamaChatStream.mock.calls[0][1] as Array<{ role: string; content: string }>;
+    const history = messages.slice(1, -1); // drop the system prompt and the just-dispatched current turn
+    expect(history.some((m) => m.content === 'OK')).toBe(false);
+    expect(
+      history.some((m) => m.content.includes(en['globalmemory.confirm_prompt'].split('{{text}}')[0])),
+    ).toBe(false);
+    expect(
+      history.some((m) => m.content.includes(en['globalmemory.saved'].split('{{text}}')[0])),
+    ).toBe(false);
   });
 });
 

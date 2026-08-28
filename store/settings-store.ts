@@ -216,6 +216,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   scheduleReadinessNudgeShown: false,
   agentOnboardingNudgeShown: false,
   companionJournalDormancyNoticeShown: false,
+  // Fable5 quality-floor Design C (2026-08-28): 'auto' = companion reply
+  // GENERATION cascades to a configured cloud key (Cerebras → Groq → Gemini →
+  // OpenRouter) when available, falling back to on-device otherwise — see
+  // lib/companion-brain.ts's resolveCompanionBrain. 'local-only' opts back
+  // out to byte-identical pre-Design-C behavior.
+  companionBrainMode: 'auto',
 };
 
 const ACTIVE_TEAM_PRIORITY: AppSettings['teamFacilitatorPriority'] = ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'];
