@@ -30,15 +30,23 @@
  * native module double that doesn't implement them, and `shelly install`
  * degrades to a clear error instead of a crash on an old build.
  *
- * Explicitly NOT done here (deferred remainder, see CLAUDE.md item #6):
- *   - No pack archive has actually been built or published — every
- *     `OptionalPackManifest.published` is `false`, so `installOptionalPack`
- *     refuses before ever calling the download bridge.
- *   - PATH wiring ($HOME/bin symlinks) is not attempted. Binaries land under
- *     app-private storage (`termux-libs/packs/<packId>/`) but a shell won't
- *     find them until a future HomeInitializer.kt bashrc change adds that —
- *     deliberately out of scope for this task (native build-system /
- *     always-on bashrc-generation change, can't be verified without a device).
+ * 2026-08-25: every pack archive is now actually built and published (see
+ * lib/optional-packs.ts's own doc comment) — `OptionalPackManifest.published`
+ * is `true`, so `installOptionalPack` genuinely downloads and extracts.
+ *
+ * 2026-08-28: PATH wiring is also done. Binaries land under app-private
+ * storage (`termux-libs/packs/<packId>/`, i.e. $SHELLY_LIB_DIR/packs/<packId>/
+ * on-device), and HomeInitializer.kt's 11 bundled-tool bash wrapper
+ * functions (jq/sqlite3/make/gh/vim/tmux/nano/less/rg/unzip/python3) now
+ * resolve bundled-vs-pack at CALL time (`__shelly_tool_path()`, BASHRC_VERSION
+ * 241) instead of a path baked in at bashrc-generation time, so an installed
+ * pack tool is usable immediately — no `$HOME/bin` symlinks needed, and no
+ * new shell required, not even in an already-open terminal tab.
+ *
+ * Still explicitly NOT done here (deferred remainder, see CLAUDE.md item #6):
+ *   - No tool has actually been removed from LibExtractor.kt's always-bundled
+ *     LIBS map, so the default APK size is unchanged. That removal is a
+ *     separate, deliberate follow-up task, not part of the PATH-wiring fix.
  */
 
 export type PackDownloadStatus = {

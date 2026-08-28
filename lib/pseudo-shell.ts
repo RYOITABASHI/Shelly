@@ -641,7 +641,7 @@ export async function executeCommand(
             lines: out(
               `Installed pack '${pack.id}': ${pack.tools.join(', ')}`,
               `Extracted to: ${result.libDir}`,
-              'Note: these binaries are not yet wired onto $PATH automatically — that step is deferred (see DEFERRED.md).'
+              'Installed tools are available immediately — just type the command (existing tabs included).'
             ),
             newState: {},
           };
