@@ -85,6 +85,11 @@ function isDigestEligible(m: ChatMessage): boolean {
   if (m.scheduleReadinessCard || m.agentRollbackOffer) return false;
   if (m.approvalData || m.wizardType || m.autoCheckState) return false;
   if (m.agentRunLogId) return false;
+  // Fable5 quality-floor Design A (2026-08-28): app-driven confirmation-flow
+  // turns (e.g. the pendingGlobalMemory prompt/result bubbles and the user's
+  // reply that resolved it) must never feed the digest — otherwise the
+  // journal note itself could immortalize the confirmation phrasing.
+  if (m.flowTurn) return false;
   return true;
 }
 

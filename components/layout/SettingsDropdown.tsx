@@ -988,6 +988,16 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
   const cloudExhaustion = useSettingsStore((s) => s.settings.autonomousCloudOnExhaustion ?? 'escalate');
   const optimisticWrites = useSettingsStore((s) => s.settings.agentOptimisticWorkspaceWrites === true);
   const widgetNoConfirm = useSettingsStore((s) => s.settings.widgetAgentRegistrationNoConfirm === true);
+  // Fable5 quality-floor Design C (2026-08-28): which backend generates the
+  // companion (default Shelly persona) thread's replies — see
+  // lib/companion-brain.ts's resolveCompanionBrain. ON (default) = 'auto':
+  // cascades to a configured Cerebras/Groq/Gemini/OpenRouter key when one
+  // exists, falling back to the on-device model otherwise. OFF = 'local-only':
+  // byte-identical to pre-Design-C behavior, the companion never leaves the
+  // device. This only changes which backend ANSWERS the companion thread —
+  // journal digestion (lib/companion-journal.ts) always stays on-device
+  // regardless of this setting.
+  const companionBrainAuto = useSettingsStore((s) => (s.settings.companionBrainMode ?? 'auto') !== 'local-only');
   const outputTarget = useSettingsStore((s) => s.settings.agentOutputTarget ?? 'local');
   const vaultPath = useSettingsStore((s) => s.settings.agentVaultPath ?? '');
   const topicFolder = useSettingsStore((s) => s.settings.agentTopicFolder ?? '');
@@ -1105,6 +1115,17 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
     updateSettings({ widgetAgentRegistrationNoConfirm: !widgetNoConfirm });
   };
 
+  // Companion brain routing (Design C). No informed-consent dialog like the
+  // opt-ins above — 'auto' is already the default (a configured cloud key
+  // means the user already opted into that provider for the AI Pane), so
+  // this toggle only lets them opt the companion thread specifically BACK
+  // OUT to on-device-only. No .env flush needed: read directly by
+  // hooks/use-ai-pane-dispatch.ts's resolveCompanionBrain call at dispatch
+  // time, never baked into a generated script.
+  const toggleCompanionBrainMode = () => {
+    updateSettings({ companionBrainMode: companionBrainAuto ? 'local-only' : 'auto' });
+  };
+
   const toggleExhaustion = async () => {
     if (cloudSyncBusyRef.current) return;
     cloudSyncBusyRef.current = true;
@@ -1214,6 +1235,27 @@ const AgentsSection = React.memo(function AgentsSection({ visible }: { visible: 
           })}
         </View>
       )}
+      <Row label={t('agents.companion_brain')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: companionBrainAuto ? withAlpha(C.accent, 0.36) : C.border },
+          ]}
+          onPress={toggleCompanionBrainMode}
+          hitSlop={4}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: companionBrainAuto ? C.accent : C.text2 },
+              companionBrainAuto && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
+        {companionBrainAuto ? t('agents.companion_brain_hint_auto') : t('agents.companion_brain_hint_local')}
+      </Text>
       <Row label={t('agents.auto_approve')}>
         <Pressable
           style={[

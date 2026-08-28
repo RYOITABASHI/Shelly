@@ -167,6 +167,14 @@ const ja: Record<string, string> = {
   // ── Settings: panels ─────────────────────────────────────────────
   'agents.title': 'AIエージェント',
   'agents.default': 'デフォルト',
+  // Fable5 品質改善 Design C (2026-08-28) — lib/companion-brain.ts の
+  // resolveCompanionBrain。ON（既定）= 'auto': 相棒（既定のShellyペルソナ）
+  // スレッドの返信は、設定済みの Cerebras/Groq/Gemini/OpenRouter のいずれか
+  // のキーがあればそれを使って生成し、なければオンデバイスにフォールバック
+  // する。OFF = 'local-only': 相棒は常に端末内で完結する。
+  'agents.companion_brain': '相棒の頭脳',
+  'agents.companion_brain_hint_auto': 'Auto: 設定済みのクラウドキー（Cerebras → Groq → Gemini → OpenRouterの順）があれば相棒の応答に使用し、未設定またはクラウド応答失敗時はオンデバイスにフォールバックします。',
+  'agents.companion_brain_hint_local': 'On-device only: クラウドキーが設定されていても、相棒は常にローカルモデルで応答します。',
   'agents.auto_approve': '自動承認',
   'agents.autonomous_cloud': '自律クラウド',
   'agents.cloud_on_exhaustion': 'クォータ枯渇時',

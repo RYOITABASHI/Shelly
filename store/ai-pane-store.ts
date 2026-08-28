@@ -55,6 +55,28 @@ function isCarryForwardEligible(m: ChatMessage): boolean {
   return true;
 }
 
+/**
+ * Fable5 quality-floor Design A (2026-08-28): eligibility for the prompt
+ * history sent back to the LLM (hooks/use-ai-pane-dispatch.ts's
+ * toOpenAIHistory). Same marker-exclusion pattern as isCarryForwardEligible
+ * above, PLUS an exclusion for `flowTurn` — turns that are part of the
+ * app-driven confirmation-flow UI itself (the pendingGlobalMemory prompt,
+ * its cancelled/saving/saved/failed/confirm_unclear result bubbles, and the
+ * user's own reply that resolved it). Without this, the local model would
+ * still see its own past "Reply OK to save" phrasing in history and imitate
+ * it on unrelated turns — the self-generated-fake-confirmation bug this
+ * closes. Kept as a separate exported predicate (not a flag on
+ * isCarryForwardEligible) because carry-forward and prompt-history answer
+ * different questions: a flow turn is legitimate, already-resolved
+ * conversation content that's fine to see once carried into a fresh thread,
+ * it just must never re-enter as few-shot precedent for a live model call.
+ */
+export function isPromptHistoryEligible(m: ChatMessage): boolean {
+  if (!isCarryForwardEligible(m)) return false;
+  if (m.flowTurn) return false;
+  return true;
+}
+
 /** The id a message's carry-forward lineage dedupes on: its own id for an
  *  original message, or the original's id for a message that's already a
  *  copy — so a copy-of-a-copy still collapses to one hop instead of

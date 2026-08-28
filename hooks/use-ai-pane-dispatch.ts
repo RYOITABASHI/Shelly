@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
-import { COMPANION_CONVERSATION_KEY, carryForwardOnThreadSwitch, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
+import { COMPANION_CONVERSATION_KEY, carryForwardOnThreadSwitch, isPromptHistoryEligible, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
 import type { JustRegisteredAgentRef } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
@@ -29,6 +29,7 @@ import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
 import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
 import { openRouterChatStream, OPENROUTER_DEFAULT_MODEL } from '@/lib/openrouter';
+import { resolveCompanionBrain } from '@/lib/companion-brain';
 import { checkOllamaConnection, ollamaChatStream } from '@/lib/local-llm';
 import type { OllamaMessage } from '@/lib/local-llm';
 import { ensureLocalLlmServerRunning } from '@/lib/local-llm-autostart';
@@ -233,7 +234,13 @@ function toOpenAIHistory(
   maxPairs = 8,
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
   const result: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-  const recent = messages.slice(-(maxPairs * 2));
+  // Design A (2026-08-28): drop app-driven confirmation-flow turns (the
+  // pendingGlobalMemory prompt/result bubbles + the resolving reply) BEFORE
+  // windowing to maxPairs, so a flow turn can never occupy a history slot the
+  // model would otherwise use for real conversation — see
+  // store/ai-pane-store.ts's isPromptHistoryEligible.
+  const eligible = messages.filter(isPromptHistoryEligible);
+  const recent = eligible.slice(-(maxPairs * 2));
   for (const m of recent) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     if (!m.content) continue;
@@ -861,7 +868,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           clearPendingGlobal();
           // Fall through to normal routing for the fresh command.
         } else {
-          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          // Design A (2026-08-28): flowTurn:true on this reply AND every
+          // bubble this block posts below — none of these may leak into the
+          // prompt history sent back to the model or into journal digestion
+          // (see store/ai-pane-store.ts's isPromptHistoryEligible and
+          // lib/companion-journal.ts's isDigestEligible), or the local model
+          // would imitate its own past save-confirmation phrasing.
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
           if (isCancelPhrase(userText)) {
             clearPendingGlobal();
             store.addMessage(paneId, {
@@ -870,6 +883,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               content: gmStrings['globalmemory.cancelled'],
               timestamp: Date.now(),
               agent: pendingGlobalMemoryMsg.agent,
+              flowTurn: true,
             });
             return;
           }
@@ -884,6 +898,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               content: gmStrings['globalmemory.saving'],
               timestamp: Date.now(),
               agent: pendingGlobalMemoryMsg.agent,
+              flowTurn: true,
             });
             try {
               await writeGlobalMemoryNote(runAgentShellCommand, {
@@ -913,6 +928,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               content: gmStrings['globalmemory.discarded_unclear'],
               timestamp: Date.now(),
               agent: pendingGlobalMemoryMsg.agent,
+              flowTurn: true,
             });
             return;
           }
@@ -923,6 +939,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             timestamp: Date.now(),
             agent: pendingGlobalMemoryMsg.agent,
             pendingGlobalMemory: { text: pendingGlobal.text, attempts: pendingGlobal.attempts + 1 },
+            flowTurn: true,
           });
           return;
         }
@@ -2058,6 +2075,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           timestamp: Date.now(),
           agent: agent as ChatMessage['agent'],
           pendingGlobalMemory: { text: companionMemoryIntent.text, attempts: 0 },
+          // Design A (2026-08-28): app-driven confirmation-flow turn — kept
+          // out of prompt history and journal digestion (see ChatMessage's
+          // flowTurn doc comment) so the local model never imitates this
+          // phrasing later.
+          flowTurn: true,
         });
         return;
       }
@@ -2169,6 +2191,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 timestamp: Date.now(),
                 agent: agent as ChatMessage['agent'],
                 pendingGlobalMemory: { text: globalMemoryIntent.text, attempts: 0 },
+                // Design A (2026-08-28): see companionMemoryIntent's identical
+                // flowTurn comment above.
+                flowTurn: true,
               });
               return;
             }
@@ -2815,7 +2840,34 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           content: agent === 'local' ? compactForLocalLlm(m.content, 500) : m.content,
         }));
 
-        if (agent === 'local') {
+        // Fable5 quality-floor Design C (2026-08-28): `effectiveProvider` is
+        // ONLY which backend GENERATES the reply — it must never be conflated
+        // with `agent`, which stays the THREAD identity every intercept above
+        // (companionMemoryIntent, implicitAgentIntent) and the history/
+        // system-prompt shaping just above are keyed on unchanged. An
+        // explicit `@cerebras`/`@gemini`/... conversation always has
+        // `agent !== 'local'`, so effectiveProvider trivially equals `agent`
+        // for those — resolveCompanionBrain only ever runs for the companion
+        // thread itself.
+        const effectiveProvider = agent === 'local'
+          ? resolveCompanionBrain(useSettingsStore.getState().settings)
+          : agent;
+        // True only when the companion thread's reply is being auto-routed to
+        // a cloud backend (never for an explicit @provider conversation,
+        // never for the companion thread's own genuinely-local replies) —
+        // this is what gates BOTH the single fallback-to-local retry below
+        // and (per-branch) turning a cloud provider's inline "X error: ..."
+        // bubble into a throw the fallback can catch instead.
+        const isCompanionAutoRoute = agent === 'local' && effectiveProvider !== 'local';
+
+        // The full local-LLM streaming path, extracted into a closure so it
+        // can be called both as the primary path (effectiveProvider==='local')
+        // and, unchanged, as the ONE-TIME fallback when a companion-auto-
+        // routed cloud call throws or reports a soft error (isCompanionAutoRoute)
+        // — see the try/catch wrapping the branch chain below. Never called
+        // more than twice in one dispatch (primary + at most one fallback),
+        // so there is no multi-provider cascade or unbounded retry.
+        const runLocalCompanionDispatch = async (): Promise<void> => {
           // ── Local LLM streaming (RN-aware XHR client from lib/local-llm) ──
           if (!settings.localLlmUrl) {
             throw new Error(
@@ -2982,7 +3034,22 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               isStreaming: false,
             });
           }
-        } else if (agent === 'cerebras') {
+        };
+
+        // Fable5 quality-floor Design C: the branch chain below dispatches on
+        // `effectiveProvider` (which backend answers) rather than `agent`
+        // (the thread identity) — for an explicit @provider conversation the
+        // two are always equal, so this is a no-op change for that case. On
+        // an auto-routed companion turn (isCompanionAutoRoute), a thrown
+        // error OR an inline provider error is caught below and retried
+        // EXACTLY ONCE via the local backend — never a multi-provider
+        // cascade, and never applied to an explicit @provider dispatch
+        // (which keeps showing its own inline "X error: ..." bubble exactly
+        // as before this feature existed).
+        try {
+        if (effectiveProvider === 'local') {
+          await runLocalCompanionDispatch();
+        } else if (effectiveProvider === 'cerebras') {
           // ── Cerebras Qwen3-235B (frontier-class, fastest, 1M tok/day) ──
           const apiKey = settings.cerebrasApiKey ?? '';
           if (!apiKey) {
@@ -3022,6 +3089,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
+                // Design C: a companion-auto-routed call throws instead of
+                // showing this inline bubble, so the try/catch above can
+                // retry once via local — an explicit @cerebras dispatch is
+                // unaffected and still shows this message exactly as before.
+                if (isCompanionAutoRoute) throw new Error(result.error);
                 throttledUpdate(paneId, assistantId, {
                   content: `Cerebras error: ${result.error}`,
                   isStreaming: false,
@@ -3038,7 +3110,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               logInfo('AIPaneDispatch', 'Cerebras response complete');
             }
           }
-        } else if (agent === 'openrouter') {
+        } else if (effectiveProvider === 'openrouter') {
           // ── OpenRouter (generic OpenAI-compatible SSE) ──
           const apiKey = settings.openrouterApiKey ?? '';
           if (!apiKey) {
@@ -3078,6 +3150,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
+                // Design C: see the matching comment in the Cerebras branch above.
+                if (isCompanionAutoRoute) throw new Error(result.error);
                 throttledUpdate(paneId, assistantId, {
                   content: `OpenRouter error: ${result.error}`,
                   isStreaming: false,
@@ -3094,7 +3168,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               logInfo('AIPaneDispatch', 'OpenRouter response complete');
             }
           }
-        } else if (agent === 'groq') {
+        } else if (effectiveProvider === 'groq') {
           // ── Groq (Llama 3.3 70B, OpenAI-compatible SSE) ──
           const apiKey = settings.groqApiKey ?? '';
           if (!apiKey) {
@@ -3138,6 +3212,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
+                // Design C: see the matching comment in the Cerebras branch above.
+                if (isCompanionAutoRoute) throw new Error(result.error);
                 throttledUpdate(paneId, assistantId, {
                   content: `Groq error: ${result.error}`,
                   isStreaming: false,
@@ -3154,7 +3230,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               logInfo('AIPaneDispatch', 'Groq response complete');
             }
           }
-        } else if (agent === 'gemini') {
+        } else if (effectiveProvider === 'gemini') {
           // ── Gemini (SSE via Google AI Studio) ──
           const apiKey = settings.geminiApiKey ?? '';
           if (!apiKey) {
@@ -3195,6 +3271,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;
               if (!result.success && result.error) {
+                // Design C: see the matching comment in the Cerebras branch above.
+                if (isCompanionAutoRoute) throw new Error(result.error);
                 throttledUpdate(paneId, assistantId, {
                   content: `Gemini error: ${result.error}`,
                   isStreaming: false,
@@ -3211,7 +3289,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               logInfo('AIPaneDispatch', 'Gemini response complete');
             }
           }
-        } else if (agent === 'perplexity') {
+        } else if (effectiveProvider === 'perplexity') {
           // ── Perplexity Sonar (web-search SSE) ──
           const apiKey = settings.perplexityApiKey ?? '';
           if (!apiKey) {
@@ -3284,6 +3362,25 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             isStreaming: false,
             streamingText: undefined,
           });
+        }
+        } catch (providerErr: unknown) {
+          // Fable5 quality-floor Design C: ONE fallback-to-local retry, only
+          // for a companion-thread turn that was auto-routed to a cloud
+          // backend — never for an explicit @provider dispatch (rethrown
+          // below, unchanged from this feature's pre-existing behavior) and
+          // never a cascade (runLocalCompanionDispatch is called at most once
+          // here; if IT also throws, that propagates to the outer catch just
+          // like any other dispatch failure always has).
+          if (isCompanionAutoRoute && !signal.aborted) {
+            logWarn(
+              'AIPaneDispatch',
+              `Companion brain ${effectiveProvider} failed, falling back to local`,
+              providerErr instanceof Error ? providerErr.message : providerErr,
+            );
+            await runLocalCompanionDispatch();
+          } else {
+            throw providerErr;
+          }
         }
       } catch (err: unknown) {
         if (signal.aborted) {
