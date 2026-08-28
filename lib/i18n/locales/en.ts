@@ -564,6 +564,14 @@ const en: Record<string, string> = {
   'globalmemory.saved':
     '✅ Saved to shared memory — every agent will see this from now on:\n\n  "{{text}}"',
   'globalmemory.failed': '❌ Could not save the shared note',
+  // Design 2-b ("keep an eye on X" commitment detection, 2026-08-28):
+  // appended to globalmemory.saved only when the write came from a
+  // watch-phrase ("keep an eye on…"), not an ordinary "remember this". This
+  // note is passive and recall-only — it surfaces again next time the topic
+  // comes up, it does NOT poll or actively monitor anything — so the
+  // acknowledgment must never let that be assumed. Points at agent
+  // registration, which IS the active-monitoring mechanism.
+  'globalmemory.watch_hint': "Just so you know, this is a passive note — I'll only bring it up again if it comes up in conversation. If you need it actively checked on a schedule, you can register an agent for that instead.",
   // ── Agent deletion confirmation ────────────────────────────────────────────────
   'agentdelete.confirm_prompt':
     'I found "{{name}}". I can delete it, including its plan and schedule. Say "OK" and I\'ll delete it, or "cancel" to keep it.',
@@ -1110,6 +1118,18 @@ const en: Record<string, string> = {
   // something worth journaling but no local LLM configured to write it
   // with. See AppSettings.companionJournalDormancyNoticeShown.
   'chat.companion_journal_dormant': "By the way, I can't save notes from our chats yet — no local LLM is set up. Add one in Settings → Local LLM if you'd like me to start remembering things between conversations.",
+  // Design 2-a ("welcome back" session-start greeting, 2026-08-28): a plain
+  // companion chat message — never a modal/card, same standing rule as the
+  // onboarding nudge above — appended once per app-process-lifetime when
+  // there's a recent companion-journal note to reference. Deliberately
+  // TEMPLATE-based, never handed to the local model to freeform-generate —
+  // see lib/companion-greeting.ts's module doc for why (quality-floor risk:
+  // self-generated fake confirmations / refusal-flavored non-answers).
+  'chat.companion_greeting': 'Welcome back. Last time we were talking about "{{topic}}" — happy to pick that back up, or start something new.',
+  // Design 2-b: used instead of the plain greeting above when the note being
+  // referenced came from an explicit "keep an eye on X" watch-phrase rather
+  // than an ordinary journal note — see lib/companion-greeting.ts.
+  'chat.companion_greeting_watch': 'By the way, you asked me to keep an eye on "{{topic}}" — how\'s that going?',
   'chat.sample_list_files': 'List files',
   'chat.sample_ask_claude': 'Ask Codex',
   'chat.sample_ask_gemini': 'Ask Gemini',

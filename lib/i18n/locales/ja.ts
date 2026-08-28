@@ -543,6 +543,14 @@ const ja: Record<string, string> = {
   'globalmemory.saved':
     '✅ 共有メモリに保存しました。今後すべてのエージェントがこれを参照します。\n\n  「{{text}}」',
   'globalmemory.failed': '❌ 共有メモの保存に失敗しました',
+  // Design 2-b（「気にかけておいて」コミットメント検出、2026-08-28）:
+  // 監視系フレーズ（「気にかけておいて」等）由来の保存にのみ
+  // globalmemory.saved の後ろに付け足す。このノートはあくまで受動的な
+  // 記憶であり、実際にポーリング/監視はしない——次に会話でその話題が
+  // 出たときに思い出すだけ——ため、能動的に見張っていると誤解させない
+  // 文言にすること。常時監視が必要な場合の実際の手段（エージェント登録）
+  // へ誘導する。
+  'globalmemory.watch_hint': 'なお、これは受動的なメモなので、会話でまた話題に出たときに思い出す形になります。常時監視が必要な場合は、エージェント登録もできます。',
   // ── エージェント削除の確認 ──────────────────────────────────────────────
   'agentdelete.confirm_prompt':
     '「{{name}}」を見つけました。計画とスケジュールも含めて削除できます。よければ「はい」、残すなら「キャンセル」と教えてください。',
@@ -1078,6 +1086,18 @@ const ja: Record<string, string> = {
   // lib/agent-companion-notice.tsのpostCompanionJournalDormancyNoticeから
   // 投稿される。AppSettings.companionJournalDormancyNoticeShown参照。
   'chat.companion_journal_dormant': 'ところで、ローカルLLMが未設定なので、まだ会話の内容を記録できていません。会話の間も覚えておいてほしければ、設定→ローカルLLM から設定してみてください。',
+  // Design 2-a（セッション開始「おかえりなさい」挨拶、2026-08-28）:
+  // 上のオンボーディング促しと同じ、普通のチャットメッセージ（モーダル/
+  // カード禁止のstanding ruleは同じ）。プロセス起動ごとに一度だけ、直近の
+  // companion journal ノートがあれば表示する。ローカル2Bモデルの品質下限
+  // 問題（自己生成の偽確認・拒否っぽい非回答）を避けるため、必ずテンプレ
+  // ート組み立てで、フリーフォームでLLM生成させない
+  // ——lib/companion-greeting.ts のモジュールコメント参照。
+  'chat.companion_greeting': 'おかえりなさい。前回は「{{topic}}」の話をしていましたね。続きでも、別の話でも。',
+  // Design 2-b: 参照するノートが通常のjournalノートではなく、明示的な
+  // 「気にかけておいて」系フレーズ由来だった場合はこちらを使う
+  // ——lib/companion-greeting.ts 参照。
+  'chat.companion_greeting_watch': 'そういえば、「{{topic}}」を気にかけておいてと言われていましたね。最近どうですか?',
   'chat.sample_list_files': 'ファイル一覧',
   'chat.sample_ask_claude': 'Codexに聞く',
   'chat.sample_ask_gemini': 'Geminiに聞く',

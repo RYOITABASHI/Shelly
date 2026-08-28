@@ -33,6 +33,15 @@ import { usePaneStore } from '@/store/pane-store';
 import { useAgentStore } from '@/store/agent-store';
 import { useInboundStore } from '@/store/inbound-store';
 import { shouldShowAgentOnboardingNudge } from '@/lib/agent-onboarding-nudge';
+import {
+  buildCompanionGreetingText,
+  hasShownCompanionGreetingThisProcess,
+  markCompanionGreetingShown,
+  pickGreetingNote,
+  shouldShowCompanionGreeting,
+  WATCH_NOTE_PREFIX,
+} from '@/lib/companion-greeting';
+import { readCompanionMemoryNotes, readGlobalMemoryNotes } from '@/lib/agent-memory';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { formatContextBadge } from '@/lib/ai-pane-context';
 import type { ChatMessage } from '@/store/types';
@@ -558,6 +567,79 @@ export default function AIPane() {
       timestamp: Date.now(),
     });
     useSettingsStore.getState().updateSettings({ agentOnboardingNudgeShown: true });
+  }, [paneId, t]);
+
+  // Design 2-a ("welcome back" session-start greeting) + 2-b ("keep an eye
+  // on X" watch-note preference), 2026-08-28 (Fable5 minimal-slice
+  // proactivity pass). A plain companion chat message — never a modal/card,
+  // same standing rule as the onboarding nudge above — appended AT MOST ONCE
+  // PER APP PROCESS, when there's a recent (<=7 day) companion-journal note
+  // or "[watch] "-tagged shared note to reference. See
+  // lib/companion-greeting.ts's module doc for why this is assembled from a
+  // template (never handed to the local model to freeform-generate) and why
+  // the "shown" gate is a plain in-memory flag rather than new persisted
+  // storage.
+  //
+  // Mutual exclusion with the onboarding nudge effect above: never append
+  // two auto-greeting messages on the same mount. In practice the two are
+  // already disjoint by construction (onboarding requires an EMPTY
+  // conversation; this greeting requires a non-empty one), but this calls
+  // the nudge's own pure gate directly rather than depending on that always
+  // staying true — see the design brief's ordering rule.
+  useEffect(() => {
+    if (hasShownCompanionGreetingThisProcess()) return;
+    const key = resolveAiPaneStoreKey(paneId);
+    const existing = useAIPaneStore.getState().conversations[key]?.messages ?? [];
+
+    const onboardingEligible = shouldShowAgentOnboardingNudge(
+      useAgentStore.getState().agents.length,
+      useSettingsStore.getState().settings.agentOnboardingNudgeShown ?? false,
+      existing.length,
+    );
+    if (onboardingEligible) return;
+
+    void (async () => {
+      let journalNotes: { text: string; created: string }[] = [];
+      let watchNotes: { text: string; created: string }[] = [];
+      try {
+        journalNotes = await readCompanionMemoryNotes();
+      } catch (err) {
+        logError('AIPane', `failed to read companion journal notes for greeting: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      try {
+        watchNotes = (await readGlobalMemoryNotes()).filter((n) => n.text.startsWith(WATCH_NOTE_PREFIX));
+      } catch (err) {
+        // Watch notes are an enhancement on top of the plain greeting, not a
+        // requirement — a failed _global read must not block the ordinary
+        // journal-based greeting.
+        logError('AIPane', `failed to read shared watch notes for greeting: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // Re-check after the await: this pane may have unmounted, another
+      // pane may have already shown the greeting, or the onboarding nudge
+      // may have landed while the disk read was in flight.
+      if (hasShownCompanionGreetingThisProcess()) return;
+      const freshExisting = useAIPaneStore.getState().conversations[key]?.messages ?? [];
+      if (freshExisting.length !== existing.length) return;
+
+      const picked = pickGreetingNote(journalNotes, watchNotes, Date.now());
+      const eligible = shouldShowCompanionGreeting(
+        picked !== null,
+        picked?.ageMs ?? Number.POSITIVE_INFINITY,
+        freshExisting.length,
+        hasShownCompanionGreetingThisProcess(),
+      );
+      if (!eligible || !picked) return;
+
+      useAIPaneStore.getState().addMessage(key, {
+        id: `companion-greeting-${Date.now()}`,
+        role: 'assistant',
+        content: buildCompanionGreetingText(picked.text, t, picked.isWatch),
+        timestamp: Date.now(),
+      });
+      markCompanionGreetingShown();
+    })();
   }, [paneId, t]);
 
   const messages = conversation?.messages ?? [];

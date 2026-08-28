@@ -1577,8 +1577,18 @@ export function detectAction(text: string): AgentAction {
 
 // Memory-write markers (JP/EN). Presence flips on memory.remember; the clause
 // captured before the marker (JP) or after it (EN) becomes the remembered fact.
-const MEMORY_JP_RE = /(.+?)(?:を|って|と)?\s*(?:覚えておいて|覚えてて|覚えといて|記憶しておいて|メモしておいて|メモして|忘れないで)/;
-const MEMORY_EN_RE = /\b(?:remember|note|keep in mind|don'?t forget)\b(?:\s+(?:that|to|this)?)?\s*[:：]?\s*(.+)/i;
+//
+// Design 2-b ("keep an eye on X" commitment detection, 2026-08-28): 気にかけて
+// (おいて) / 気にしておいて / 見ておいて and "keep an eye on" / "keep track of"
+// were added to this SAME marker set on purpose — a prior design pass
+// explicitly rejected free-form NL commitment detection (false-positive risk;
+// see lib/agent-global-memory-intent.ts's module doc), so these are just a
+// few more EXPLICIT phrases feeding the existing deterministic detector, not
+// a new fuzzy path. They inherit every existing guard below unchanged
+// (negation handling, looksLikeQuestion, the payload-quality bar in
+// lib/agent-global-memory-intent.ts) — narrowness is not loosened.
+const MEMORY_JP_RE = /(.+?)(?:を|って|と)?\s*(?:覚えておいて|覚えてて|覚えといて|記憶しておいて|メモしておいて|メモして|忘れないで|気にかけておいて|気にかけて|気にしておいて|見ておいて)/;
+const MEMORY_EN_RE = /\b(?:remember|note|keep in mind|don'?t forget|keep (?:an eye on|track of))\b(?:\s+(?:that|to|this)?)?\s*[:：]?\s*(.+)/i;
 
 // A NEGATED "remember" is a statement about NOT recalling ("I don't remember the
 // password") — not a request to store. It must never write a memory note. Note
@@ -1601,10 +1611,11 @@ const JP_NEGATED_MEMORY = /覚えて(?:い)?ない|覚えてません|思い出�
 export function detectMemory(text: string): AgentMemoryConfig | undefined {
   // JP imperative keep-this markers, excluding negated "don't remember" forms.
   const hasJp = !JP_NEGATED_MEMORY.test(text) &&
-    /(?:覚えておいて|覚えてて|覚えといて|記憶して|メモして|忘れないで)/.test(text);
-  // EN: "keep in mind" / "don't forget" / "note that" are always affirmative;
-  // bare "remember" counts only when it is NOT negated.
-  const hasEnAlways = /\b(?:keep in mind|don'?t forget|note that)\b/i.test(text);
+    /(?:覚えておいて|覚えてて|覚えといて|記憶して|メモして|忘れないで|気にかけておいて|気にかけて|気にしておいて|見ておいて)/.test(text);
+  // EN: "keep in mind" / "don't forget" / "note that" / "keep an eye on" /
+  // "keep track of" are always affirmative; bare "remember" counts only when
+  // it is NOT negated.
+  const hasEnAlways = /\b(?:keep in mind|don'?t forget|note that|keep (?:an eye on|track of))\b/i.test(text);
   const hasEnRemember = !EN_NEGATED_REMEMBER.test(text) && /\bremember\b/i.test(text);
   const hasEn = hasEnAlways || hasEnRemember;
   if (!hasJp && !hasEn) return undefined;
