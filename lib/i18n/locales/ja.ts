@@ -1398,6 +1398,8 @@ const ja: Record<string, string> = {
   'settings.reset_confirm_title': '全設定をリセットしますか？',
   'settings.reset_confirm_body': 'フォント・テーマ・ここに保存されたAPIキー・ローカルLLM設定など、全ての設定がデフォルトに戻ります。ペア設定済みの会話・保存済みエージェント・スキルは影響を受けません。',
   'settings.reset_done_toast': '設定をデフォルトに戻しました。',
+  'settings.reset_hints_action': '一度きりのヒントをリセット',
+  'settings.reset_hints_done_toast': '一度きりのヒントが再び表示されるようになります。',
   'settings.profile_learning_label': 'プロファイル学習',
   'settings.profile_learning_desc': 'コマンド・プロジェクト・AI利用傾向を端末内で学習し、提案とAI文脈に使います。',
   'settings.profile_facts_label': 'ファクトを表示・削除',

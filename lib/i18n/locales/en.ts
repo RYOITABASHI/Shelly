@@ -1430,6 +1430,8 @@ const en: Record<string, string> = {
   'settings.reset_confirm_title': 'Reset all settings?',
   'settings.reset_confirm_body': 'This resets font, theme, API keys stored here, local LLM config, and every other setting back to defaults. Paired conversations, saved agents, and skills are not affected.',
   'settings.reset_done_toast': 'Settings reset to defaults.',
+  'settings.reset_hints_action': 'Reset one-time hints',
+  'settings.reset_hints_done_toast': 'One-time hints will show again.',
   'settings.profile_learning_label': 'Profile Learning',
   'settings.profile_learning_desc': 'Learn command, project, and AI usage patterns locally for personalized suggestions and AI context.',
   'settings.profile_facts_label': 'View/Edit Facts',

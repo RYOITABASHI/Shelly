@@ -2396,8 +2396,31 @@ const ResetSettingsSection = React.memo(function ResetSettingsSection() {
     );
   }, [t]);
 
+  // Fable5 review item #4 (2026-08-28, "verification debt"): every one-shot
+  // chat nudge (onboarding, schedule-readiness, companion-journal-dormancy)
+  // has no other reset path — once shown, the persisted flag blocks it
+  // forever, which made on-device re-testing after each build a one-way
+  // door. Non-destructive (no user data touched), so no confirm dialog.
+  const resetOneTimeHints = React.useCallback(() => {
+    useSettingsStore.getState().updateSettings({
+      agentOnboardingNudgeShown: false,
+      scheduleReadinessNudgeShown: false,
+      companionJournalDormancyNoticeShown: false,
+    });
+    ToastAndroid.show(t('settings.reset_hints_done_toast'), ToastAndroid.SHORT);
+  }, [t]);
+
   return (
     <Section title={t('settings.reset_title')}>
+      <Pressable
+        style={[styles.integrationRow, borderedChromeStyle()]}
+        onPress={resetOneTimeHints}
+        accessibilityRole="button"
+        accessibilityLabel={t('settings.reset_hints_action')}
+      >
+        <MaterialIcons name="mark-chat-unread" size={13} color={C.accent} />
+        <Text style={styles.integrationLabel}>{t('settings.reset_hints_action')}</Text>
+      </Pressable>
       <Pressable
         style={[styles.integrationRow, borderedChromeStyle(), { borderColor: C.errorText }]}
         onPress={confirmReset}

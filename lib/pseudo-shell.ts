@@ -611,7 +611,7 @@ export async function executeCommand(
               'Available packs:',
               ...rows,
               '',
-              'Note: installed tools are not yet added to $PATH automatically (deferred — see DEFERRED.md).'
+              'Installed tools are available immediately — just type the command (existing tabs included).'
             ),
             newState: {},
           };
