@@ -142,12 +142,14 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
           <ScrollView
             style={styles.scroll}
             showsVerticalScrollIndicator={false}
-            // Perf: this ScrollView renders ~10 always-mounted, non-virtualized
-            // section components with no windowing. removeClippedSubviews lets
-            // Android detach off-screen native views from the hierarchy instead
-            // of keeping them all mounted+drawn, which is the standard fix for
-            // long non-virtualized ScrollView content on Android (no-op on iOS).
-            removeClippedSubviews
+            // removeClippedSubviews REMOVED 2026-08-28: reproduced on-device as
+            // a slow/normal-speed drag doing nothing while only a fast repeated
+            // flick moved content, and jumping erratically rather than tracking
+            // the finger — a known Android RN correctness issue with this prop
+            // when content height changes dynamically (Switch/slider toggles,
+            // "Show full text" expansion, all present in this section list).
+            // ~10 always-mounted sections is small enough that the offscreen-
+            // view-detach perf win isn't worth the scroll breakage.
           >
             <DisplaySection />
             <WallpaperSection />
@@ -789,8 +791,21 @@ function SliderRow({
   const valueAtGrant = useRef(value);
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      // Root cause of a 2026-08-28 on-device scroll bug: this used to claim
+      // the responder unconditionally on touch-down AND on every move, which
+      // meant a vertical scroll gesture starting anywhere over this row's
+      // slider track never reached the parent Settings ScrollView at all —
+      // it got swallowed here first. Only claim once a move is clearly
+      // horizontal (past a small touch-slop), so a vertical drag over the
+      // track falls through to the ScrollView like it does everywhere else.
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_e, gestureState) => {
+        const TOUCH_SLOP = 4;
+        return (
+          Math.abs(gestureState.dx) > TOUCH_SLOP &&
+          Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
+        );
+      },
       onPanResponderGrant: () => {
         valueAtGrant.current = value;
       },
