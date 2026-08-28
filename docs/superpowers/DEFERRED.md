@@ -3993,7 +3993,7 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ---
 
-### `shelly install <pack>` オンデマンドツールパック — 到達不能バグを実機QAで発見・修正済み、PATH配線とAPK本体削減が残作業 (P1)
+### `shelly install <pack>` オンデマンドツールパック — 実機QAで到達性バグ発見→修正→再検証まで完了、PATH配線とAPK本体削減が残作業 (P2)
 
 **背景**: 2026-08-25、Fable5の総合レビュー(新規性・需要・完成度)ロードマップ item #6。800MBのサイドロードAPKが新規ユーザーの最大の障壁との指摘を受け、`python3`/`sqlite3`/`vim`/`tmux`/`ripgrep`/`jq`/`make`/`gh`/`nano`/`unzip`/`less`の11ツールを常時同梱から外し、`shelly install <pack>`で必要時にオンデマンド取得する設計。配管実装(コミット`841ae2865`)→パック実ビルド・公開(コミット`d5b525bca`/`33b78196e`、`optional-packs-latest`リリースとして実在確認済み)まで進めた。
 
@@ -4001,7 +4001,16 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 これは`shelly config`が2026-08-06/07に同じ理由で踏んだのと全く同じ穴で、`config`はv238で`$HOME/.shelly-command-queue`ファイル経由の一方向ブリッジ(UIトグルを開くだけ、結果を返さない)で解決済みだったが、`install`は「ターミナルへ実際の結果を返す必要がある」ため、v238のコメント自身が`workflow`/`voice`と共に「見送り」と明記していたカテゴリだった。
 
-**修正(BASHRC_VERSION 239→240、SHELLY_HELPER_SHIM v2→v3)**: `config`と同じキュー(`.shelly-command-queue`)を拡張し、`install:<reqId>:<packId>`形式の往復ブリッジを追加。シム側(Node.js、`Atomics.wait`で同期ポーリング、外部`sleep`バイナリ非依存)がリクエストをキューへ書いて`.shelly-install-results/<reqId>.json`を待ち、`app/_layout.tsx`の`drainCommandQueue`が`installOptionalPack()`を実際に呼んで結果ファイルを書く。ローカルでNode.jsへ抽出して`node --check`+実行での動作確認(成功パス・一覧表示パス・エラーパスの3パターン)を実施済み。**このKotlin変更は実機での再検証が必須**(次回ビルド更新後)。
+**修正(BASHRC_VERSION 239→240、SHELLY_HELPER_SHIM v2→v3、コミット`eb5a9780a`)**: `config`と同じキュー(`.shelly-command-queue`)を拡張し、`install:<reqId>:<packId>`形式の往復ブリッジを追加。シム側(Node.js、`Atomics.wait`で同期ポーリング、外部`sleep`バイナリ非依存)がリクエストをキューへ書いて`.shelly-install-results/<reqId>.json`を待ち、`app/_layout.tsx`の`drainCommandQueue`が`installOptionalPack()`を実際に呼んで結果ファイルを書く。ローカルでNode.jsへ抽出して`node --check`+実行での動作確認(成功パス・一覧表示パス・エラーパスの3パターン)を実施済み。
+
+**✅ 2026-08-28 実機再検証 完了・成功**: ビルド更新後、ユーザーが実機で`shelly install dev-tools`を直接タイプして実行、以下の出力を確認(スクショで裏取り済み):
+```
+Installing pack 'dev-tools'…
+Installed pack 'dev-tools': python3, sqlite3, jq, make, gh
+Extracted to: /data/user/0/dev.shelly.terminal/files/termux-libs/packs/dev-tools
+Note: these binaries are not yet wired onto $PATH automatically (deferred — see DEFERRED.md).
+```
+これにより下記「実機QAで確認すべきこと」の(a)〜(c)を実機で確認済み:到達性修正が機能し、`DownloadManager`が`optional-packs-latest`リリースから実アーカイブを実際に配信し、Knox/SELinux下での`tar`展開も成功、`termux-libs/packs/dev-tools/`配下に5ツールが実際に展開された。
 
 **実装済み**: `lib/optional-packs.ts`(パックマニフェスト、`dev-tools`/`editor-tools`の2パック、`published: true`)、`lib/optional-pack-installer.ts`、`lib/pseudo-shell.ts`の`shelly install <pack-id>`(レガシー経路、到達不能のまま残置)、`TerminalEmulatorModule.kt/.ts`の新規3ネイティブメソッド、`LibExtractor.kt`の新規`extractPack()`、`HomeInitializer.kt`のシム拡張+`app/_layout.tsx`のキュー処理拡張(今回追加)。
 
@@ -4009,9 +4018,9 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 1. **PATH配線が無い** — 展開されたバイナリは`termux-libs/packs/<packId>/`配下のapp-private storageに置かれるが、`$HOME/bin`へのシンボリックリンクが無いためシェルから見つからない。`shelly install`自体は成功メッセージでこれを明示。
 2. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。現行APKのデフォルト同梱物はバイト単位で同一。
 
-**実機QAで確認すべきこと**(次回オンデバイス検証パス向け、優先度順):(a) **今回の到達性修正が新ビルドで実際に`shelly install dev-tools`を成功させるか**(最優先——ローカルNode検証は通ったがKotlin heredoc生成自体は未実機検証)、(b) `DownloadManager`が実アーカイブ(`optional-packs-latest`リリース、確認済み実在)を実際に配信できるか、(c) Knox/SELinux下で`tar`展開が成功するか、(d) 展開されたバイナリが実際に実行可能か、(e) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか。
+**実機QAで確認すべきこと(残り)**: ~~(a)到達性修正の成功~~ ✅、~~(b)DownloadManagerでの実配信~~ ✅、~~(c)Knox/SELinux下でのtar展開成功~~ ✅ — いずれも2026-08-28実機確認済み。残るは (d) 展開されたバイナリが実際に実行可能か(`python3`/`sqlite3`等を`termux-libs/packs/dev-tools/`から直接パスで叩いて動作確認)、(e) PATH配線実装後、新規ターミナルタブが導入済みツールを認識するか(PATH配線自体が未実装のため、実装後の話)。
 
-**優先度**: P1(到達性バグの修正で`shelly install`は理論上機能する状態になったが、実機での動作確認が最優先の残作業)
+**優先度**: P2(到達性・ダウンロード・展開という主要リスクは実機で解消確認済み。残るPATH配線とAPK本体削減は「動くと分かった上での機能拡張」フェーズであり、緊急度は下がった)
 
 ---
 
