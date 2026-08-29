@@ -208,6 +208,20 @@ function appActRecipesDir(): string {
  * is not a `user.`-prefixed safe id — this must never be used to write
  * outside the user-recipe namespace, matching the same
  * SAFE_USER_APP_ACT_RECIPE_ID_RE the native loader enforces on read.
+ *
+ * Codex review (2026-08-29, app.act Phase 1 batch), P0: a saved recipe is a
+ * plain on-disk JSON file, so its content can drift after a human reviewed
+ * it once at agent-registration time — e.g. a later `cli` action (itself
+ * separately approval-gated) could rewrite the SAME file to retarget an
+ * already-approved agent's app-act action without any new review surfacing.
+ * `chmod 444` after the write does not make this impossible (anything with
+ * shell access can chmod it back before rewriting), but it does turn a
+ * casual/accidental overwrite into a deliberate two-step action, which is
+ * a real, cheap narrowing of the risk to ship now. A full fix — binding a
+ * content hash into the agent's registration/approval record and rejecting
+ * at execution time if the loaded recipe's hash has changed — is tracked
+ * as a follow-up in docs/superpowers/DEFERRED.md rather than rushed into
+ * this pass.
  */
 export function buildAppActRecipeSaveCommand(recipe: AppActRecipeDraft): string {
   if (!SAFE_USER_APP_ACT_RECIPE_ID_RE.test(recipe.id)) {
@@ -220,9 +234,15 @@ export function buildAppActRecipeSaveCommand(recipe: AppActRecipeDraft): string 
   return [
     `set -e`,
     `mkdir -p ${shellQuote(dir)}`,
+    // A re-save under the SAME id (e.g. redrafting after a mistake) must
+    // still work even though the previous save left the file read-only —
+    // restore write permission first (best-effort; a fresh file has
+    // nothing to chmod, hence the trailing `|| true`).
+    `chmod u+w ${shellQuote(file)} 2>/dev/null || true`,
     `cat > ${shellQuote(file)} <<'${marker}'`,
     json,
     marker,
     `[ -s ${shellQuote(file)} ] || { echo "app.act recipe save failed: ${recipe.id}" >&2; exit 1; }`,
+    `chmod 444 ${shellQuote(file)}`,
   ].join('\n');
 }

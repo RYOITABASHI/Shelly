@@ -170,6 +170,16 @@ describe('buildAppActRecipeSaveCommand', () => {
     expect(cmd).toMatch(/\[ -s .* \] \|\|/);
   });
 
+  // Codex review (2026-08-29): read-only after write narrows (does not
+  // eliminate) the "content can silently drift after a one-time review"
+  // risk — a casual/accidental rewrite via `cat > file` now fails instead
+  // of silently succeeding.
+  it('chmods the saved file read-only, restoring write permission first for a re-save', () => {
+    const cmd = buildAppActRecipeSaveCommand(validDraft);
+    expect(cmd).toMatch(/chmod u\+w .*user\.line-quick-reply\.json.* \|\| true/);
+    expect(cmd.trim().endsWith("chmod 444 '/home/shelly-test/.shelly/app-act-recipes/user.line-quick-reply.json'")).toBe(true);
+  });
+
   it('refuses to build a command for a non-"user."-prefixed id', () => {
     expect(() => buildAppActRecipeSaveCommand({ ...validDraft, id: 'line.send-message' })).toThrow(/unsafe id/);
   });

@@ -56,6 +56,25 @@ class ShellyAccessibilityService : AccessibilityService() {
         // original com.twitter.android package through the rebrand.
         private const val X_PACKAGE = "com.twitter.android"
 
+        /** app.act Phase 1 follow-up (Fable5 review, 2026-08-29 batch): the
+         *  single source of truth for "is this package one this service is
+         *  allowed to observe/act on" — [onAccessibilityEvent] and
+         *  [captureScreenSnapshot] already re-check against this allowlist
+         *  as defense-in-depth on top of the OS-level `packageNames` bound
+         *  (plugins/with-accessibility-service.js), but [AppActExecutor]'s
+         *  actual ACTING path (click/setText/scroll) had no equivalent
+         *  check — it trusted `recipe.pkg` unconditionally, which was safe
+         *  ONLY while every recipe was one of the two bundled, read-only
+         *  APK-asset recipes. Phase 1 made recipe id resolution able to
+         *  read a `user.`-prefixed recipe from a writable on-disk location
+         *  (AppActRecipeStore.load), so `recipe.pkg` is no longer
+         *  guaranteed to be LINE/X — a recipe declaring an arbitrary `pkg`
+         *  must still be refused before any performAction() runs against
+         *  it. `internal` (not private) so AppActExecutor, in a different
+         *  file of the same Gradle module, can call it without widening
+         *  LINE_PACKAGE/X_PACKAGE themselves beyond this file. */
+        internal fun isAllowlistedAppActPackage(pkg: String): Boolean = pkg == LINE_PACKAGE || pkg == X_PACKAGE
+
         /** Live reference to the connected service instance, set/cleared in
          *  [onServiceConnected]/[onDestroy] — same pattern as
          *  ShellyNotificationListener.activeInstance. Null whenever the

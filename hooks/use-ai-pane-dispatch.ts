@@ -1015,7 +1015,16 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           clearPendingDelete();
           // Fall through to normal routing for the fresh command.
         } else {
-          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          // Codex review (2026-08-29, app.act Phase 1 batch): this whole
+          // confirm/cancel/re-ask exchange used to lack the flowTurn:true
+          // marking the structurally-identical pendingGlobalMemory confirm
+          // flow right above already carries — without it, "OK"/"delete
+          // it"/the deleting/deleted status bubbles read as ordinary
+          // conversation and can enter later prompt history (see
+          // isPromptHistoryEligible in store/ai-pane-store.ts), which for a
+          // whole-agent-deletion confirm exchange is exactly the kind of
+          // app-driven bookkeeping turn that mechanism exists to exclude.
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
           if (isCancelPhrase(userText)) {
             clearPendingDelete();
             store.addMessage(paneId, {
@@ -1024,6 +1033,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               content: withAgentName('agentdelete.cancelled'),
               timestamp: Date.now(),
               agent: pendingAgentDeleteMsg.agent,
+              flowTurn: true,
             });
             return;
           }
@@ -1038,6 +1048,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               content: withAgentName('agentdelete.deleting'),
               timestamp: Date.now(),
               agent: pendingAgentDeleteMsg.agent,
+              flowTurn: true,
             });
             try {
               await deleteAgent(pendingDelete.agentId);
@@ -1060,6 +1071,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               content: withAgentName('agentdelete.discarded_unclear'),
               timestamp: Date.now(),
               agent: pendingAgentDeleteMsg.agent,
+              flowTurn: true,
             });
             return;
           }
@@ -1070,6 +1082,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             timestamp: Date.now(),
             agent: pendingAgentDeleteMsg.agent,
             pendingAgentDelete: { ...pendingDelete, attempts: pendingDelete.attempts + 1 },
+            flowTurn: true,
           });
           return;
         }
@@ -2137,6 +2150,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             agentName: agentToDelete.name,
             attempts: 0,
           },
+          // Codex review (2026-08-29): app-driven confirmation-flow turn —
+          // kept out of prompt history and journal digestion (see
+          // ChatMessage's flowTurn doc comment), matching the
+          // structurally-identical pendingGlobalMemory confirm prompt above.
+          flowTurn: true,
         });
       };
 

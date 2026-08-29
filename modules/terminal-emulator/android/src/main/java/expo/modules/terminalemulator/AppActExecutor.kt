@@ -90,6 +90,21 @@ object AppActExecutor {
     private fun executeInner(service: ShellyAccessibilityService, context: Context, recipeId: String, params: Map<String, String>): AppActDebugResult {
         val recipe = AppActRecipeStore.load(context, recipeId)
             ?: return AppActDebugResult(false, "Recipe not found: $recipeId")
+        // Fable5 review (2026-08-29, app.act Phase 1 batch): before Phase 1,
+        // every recipe was one of the two bundled, read-only APK-asset
+        // recipes (line.send-message / x.post), so recipe.pkg was
+        // implicitly always LINE/X and this check was redundant. Phase 1
+        // added a `user.`-prefixed on-disk recipe path
+        // (AppActRecipeStore.load), so recipe.pkg can now be anything a
+        // recipe author (a human via AppActRecipeDraftModal, or an agent
+        // writing the file directly with shell access) declared. This
+        // service's whole design is "never a general screen-reader" — that
+        // invariant must hold here, at the one chokepoint that actually
+        // performs clicks/setText/scroll, not just be assumed from the
+        // OS-level packageNames bound the observe path already distrusts.
+        if (!ShellyAccessibilityService.isAllowlistedAppActPackage(recipe.pkg)) {
+            return AppActDebugResult(false, "Recipe $recipeId targets a package outside the app.act allowlist: ${recipe.pkg}")
+        }
         for (spec in recipe.params) {
             if (spec.required && params[spec.name].isNullOrEmpty()) {
                 return AppActDebugResult(false, "Missing required param \"${spec.name}\" for recipe $recipeId")
@@ -110,7 +125,23 @@ object AppActExecutor {
         step: AppActRecipeStore.RecipeStep,
         params: Map<String, String>,
     ): AppActDebugResult = when (step.op) {
-        "launch" -> executeLaunch(service, step)
+        // Codex review (2026-08-29, app.act Phase 1 batch): the allowlist
+        // check in executeInner validates recipe.pkg, but a `launch` step's
+        // OWN target package was never required to match it — a user-saved
+        // recipe declaring pkg="jp.naver.line.android" (to pass the
+        // allowlist check) could still carry a launch step targeting an
+        // arbitrary OTHER installed app. The subsequent click/setText/
+        // scroll steps already refuse to act unless the CURRENT foreground
+        // root's package equals `pkg` (see their own `r.packageName == pkg`
+        // checks below), so this could never actually click/type into the
+        // wrong app — but launch alone still had the side effect of
+        // bringing an arbitrary app to the foreground. Reject the mismatch
+        // outright instead of relying on later steps to fail closed.
+        "launch" -> if (step.target != pkg) {
+            AppActDebugResult(false, "launch step target (${step.target}) does not match recipe pkg ($pkg)")
+        } else {
+            executeLaunch(service, step)
+        }
         "click" -> executeClick(service, recipeId, stepIndex, pkg, step, params)
         "setText" -> executeSetText(service, recipeId, stepIndex, pkg, step, params)
         "scroll" -> executeScroll(service, recipeId, stepIndex, pkg, step, params)
