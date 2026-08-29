@@ -172,9 +172,9 @@ describe('AgentRuntime.runAgent enabled re-check (TOCTOU Finding 6)', () => {
       path.resolve(__dirname, '..', 'components/layout/Sidebar.tsx'),
       'utf8',
     );
-    expect(sidebar).toContain("{ text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) }");
+    expect(sidebar).toContain("{ key: 'run', labelKey: 'sidebar.agent_run_now', onPress: () => void handleRunScheduledAgent(agent.id, agent.name) }");
     expect(sidebar).toContain(
-      "{ text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) }",
+      "{ key: 'pause', labelKey: agent.enabled ? 'sidebar.agent_pause' : 'sidebar.agent_resume', onPress: () => void handleTogglePause(agent) }",
     );
   });
 });

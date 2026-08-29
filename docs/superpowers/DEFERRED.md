@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-29: ユーザー指示「未実装あるなら進めて下さい」を受け、Fable5・Codex双方が繰り返し指摘していたAgent contract view(下記574行目・615行目参照)を実装。`components/layout/AgentDetailModal.tsx`新設(Modal+ScrollView、セクション表示+ボタン数無制限)、`Sidebar.tsx`の`showAgentDetail`をAlert.alert(3ボタン制限あり)からこのモーダルへ置換。データ収集ロジック(run history/memory notes/route decision等)は無変更、表示先のみ変更。i18nキー6件(`agent_detail.task`/`contract`/`reliability`/`memory`/`steps`/`routing`)をen.ts/ja.tsに追加。`npx tsc --noEmit` clean、関連jest 5スイート35件全PASS。実機QA未実施(ユーザー指示によりコードレベルの完了のみ)。
 - 2026-08-29: Fable5/Codexに実装5件のコードレビューを依頼(実機テスト除外)。両者「マージ可」判定。Fable5が画像サイズガード欠如(実機クラッシュ候補)とextractText空文字無音バグを発見、即修正(expo-image-manipulator追加、長辺1568px上限)。extractText→AI Pane注入がP1最優先に浮上。
 - 2026-08-29: Fable5・Codex双方が「Yes」到達後、Hermes Agent公式サイト実確認とユーザー指示「同等以上を目指す」を受け、両者に完全ロードマップを再依頼。5件実装(signed-approval schema一元化、A-7秒精度バグ、extractText結果表示、TTSロケール修正、ビジョン解析配線)。フルテスト3706件中3678件PASS(既知のWindows固有失敗除く)。
 - 2026-08-29: CIビルド成功後、実機(Z Fold6、versionCode 2334)にインストールしA-7中心に検証。3連続approval timeout(skipped)ではbreaker非発動という設計通りの実データを確認したが、意図したexitCode0+status:errorの完全シナリオ再現はterminal input経由のシェルスクリプト編集がAndroid input textの制約で困難と判明し断念。新規P3(自由文でのagent削除依頼がローカルLLMのハルシネーションを招く)を発見。
@@ -571,7 +572,7 @@
 **検証**: `npx tsc --noEmit` clean。フルテストスイート3706件中3678件PASS(失敗26件は前回セッションで変更前から存在すると確認済みのWindows固有パスバグ、`plan-executor*`/`capability-broker`系、今回の変更と無関係)。新規テスト計7件(tts-locale 4件+ai-pane-dispatch画像添付3件)含め全PASS。
 
 **次回持ち越し(未着手)**:
-- Agent contract view(Fable5 P1-3、中規模): `lib/agent-contract-view.ts`新設、`Sidebar.tsx`のAlertベース`showAgentDetail`を置換。
+- ✅ Agent contract view(Fable5 P1-3、中規模): 2026-08-29に実装完了(`components/layout/AgentDetailModal.tsx`新設、`lib/agent-contract-view.ts`は新設せず`Sidebar.tsx`内でデータ構築を維持)。詳細は本ファイル冒頭Historyの同日エントリ参照。
 - スキルカタログ拡充 4→20+(P1-1、コンテンツ作業中心)。
 - app.actの段階的汎用化Phase 1(P1-4、大規模): 観測専用accessibility-tree snapshot→レシピ下書き生成→ユーザー保存。
 - オンデバイスメッセージングゲートウェイ方針の明文化(README比較表への反映)。
@@ -612,7 +613,7 @@
 **次回持ち越し(優先順位、Fable5評)**:
 1. extractText→AI Pane注入(知覚ループ閉鎖) — 新規最優先
 2. ビジョンv1.1(handleAttachの二役ボタン分離、画像ステージング+自由入力、履歴マーカー)
-3. Agent contract view
+3. ✅ Agent contract view — 2026-08-29実装完了(本ファイル冒頭History参照)
 4. スキルカタログ拡充
 
 → sync: README Status表の変更なし(内部correctness fix + 依存追加)。

@@ -78,6 +78,7 @@ import { ProfilesSection } from './ProfilesSection';
 import { WorktreesSection } from './WorktreesSection';
 import { ShellyModal } from './ShellyModal';
 import { QuickLaunchSection } from './QuickLaunchSection';
+import { AgentDetailModal, type AgentDetailData } from './AgentDetailModal';
 import { CodexSessionsSection } from './CodexSessionsSection';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
@@ -294,6 +295,10 @@ export function Sidebar() {
   // store/types.ts's notificationTrigger doc comment).
   const [notifSendersDraft, setNotifSendersDraft] = useState('');
   const [agentCapabilitiesVisible, setAgentCapabilitiesVisible] = useState(false);
+  // Agent contract view (Fable5 + Codex, 2026-08-29): replaces the old
+  // showAgentDetail Alert.alert with a scrollable modal — see
+  // AgentDetailModal.tsx's module doc comment for why.
+  const [agentDetailData, setAgentDetailData] = useState<AgentDetailData | null>(null);
 
   /**
    * bug #73: validate a repo path before adding it. Previously the UI
@@ -1134,19 +1139,30 @@ export function Sidebar() {
       }
     }
     const reliability = relLines.join('\n');
-    const body = [
-      (agent.prompt || agent.description || '').trim(),
-      '',
-      meta,
-      reliability,
-      `${t('sidebar.agent_memory_title', { count: memoryNotes.length })}`,
-      stepDetail,
-      routeDetail,
-    ].filter(Boolean).join('\n');
-    const buttons = [
-      { text: t('sidebar.agent_run_now'), onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
-      { text: agent.enabled ? t('sidebar.agent_pause') : t('sidebar.agent_resume'), onPress: () => void handleTogglePause(agent) },
-      { text: t('common.edit'), onPress: () => {
+    // Agent contract view (Fable5 + Codex, 2026-08-29): this used to be a
+    // single Alert.alert body string plus a button array Android's native
+    // AlertDialog silently truncates to 3 (see the long comment trail that
+    // used to live here, most recently 2026-07-23 — preserved in git
+    // history). Both reviewers independently flagged the same gap: an
+    // agent's task/authority/reliability/steps/routing should read as
+    // labeled sections on one screen, and every action (Run Now / Pause /
+    // Edit / Runs / Memory / Open path) should be reachable, not just
+    // whichever three RN happens to keep on Android. All of the DATA
+    // collection above this point (run history, memory notes, route
+    // decision, missed-run detection, exact-alarm health) is UNCHANGED —
+    // only the display target changed, from Alert.alert to AgentDetailModal.
+    const sections: AgentDetailData['sections'] = [
+      { key: 'task', titleKey: 'agent_detail.task', text: (agent.prompt || agent.description || '').trim() },
+      { key: 'contract', titleKey: 'agent_detail.contract', text: meta },
+      { key: 'reliability', titleKey: 'agent_detail.reliability', text: reliability },
+      { key: 'memory', titleKey: 'agent_detail.memory', text: t('sidebar.agent_memory_title', { count: memoryNotes.length }) },
+      { key: 'steps', titleKey: 'agent_detail.steps', text: stepDetail },
+      { key: 'routing', titleKey: 'agent_detail.routing', text: routeDetail },
+    ];
+    const buttons: AgentDetailData['buttons'] = [
+      { key: 'run', labelKey: 'sidebar.agent_run_now', onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
+      { key: 'pause', labelKey: agent.enabled ? 'sidebar.agent_pause' : 'sidebar.agent_resume', onPress: () => void handleTogglePause(agent) },
+      { key: 'edit', labelKey: 'common.edit', onPress: () => {
         const multiPane = useMultiPaneStore.getState();
         let aiSlot = multiPane.slots.find((slot) => slot?.tab === 'ai') ?? null;
         if (aiSlot) {
@@ -1188,49 +1204,17 @@ export function Sidebar() {
           messageId,
         });
       } },
-      // Purely ADDITIVE — appended after the existing Run Now / Pause / Edit
-      // entries so none of them lose their slot. Android's AlertDialog only
-      // renders 3 buttons (see the slice(0, 3) note below), so on-device this
-      // entry is a fallback: the guaranteed-reachable entry point is the
-      // history icon on the agent row itself.
       ...(runHistory.length
-        ? [{ text: t('sidebar.agent_view_runs'), onPress: () => openAgentRunsPane(agent.id) }]
+        ? [{ key: 'runs', labelKey: 'sidebar.agent_view_runs', onPress: () => openAgentRunsPane(agent.id) }]
         : []),
       ...(memoryNotes.length
-        ? [{ text: t('sidebar.agent_memory_view'), onPress: () => openMemoryWorkbench(agent) }]
+        ? [{ key: 'memory-view', labelKey: 'sidebar.agent_memory_view', onPress: () => openMemoryWorkbench(agent) }]
         : []),
-      // Task C: a single extra button (not two) to keep this Alert.alert's
-      // button count in check — "Open" was picked over "Copy path" because
-      // it reuses lib/open-file.ts's existing MarkdownPane/Preview routing,
-      // the same one-tap-to-result path the DEVICE section's AGENT/OBSIDIAN
-      // shortcuts already promise.
       ...(savedPath
-        ? [{ text: t('sidebar.agent_saved_path_open'), onPress: () => void openFile(savedPath) }]
+        ? [{ key: 'open-path', labelKey: 'sidebar.agent_saved_path_open', onPress: () => void openFile(savedPath) }]
         : []),
     ];
-    // 2026-07-23: on-device test found the CLOSE button missing from this
-    // dialog on Android after the Edit button (above) was added — Android's
-    // native AlertDialog only has 3 real button slots (RN's Alert.alert
-    // silently drops anything past the 3rd on Android, with no warning
-    // visible at runtime), so Run Now / Pause / Edit already filled every
-    // slot even in the common case (no memory notes, no saved path), pushing
-    // Close off the dialog entirely. slice(0, 3) makes the truncation
-    // deterministic and priority-ordered (Run Now > Pause > Edit > Memory >
-    // Open path) instead of relying on RN's undocumented Android drop order.
-    //
-    // No explicit Close button is added back — instead the dialog is made
-    // dismissible via tap-outside/Back. CORRECTION (also found on-device,
-    // same session): react-native's Alert.js hardcodes
-    // `cancelable: false` on Android UNLESS an `options` object with
-    // `cancelable: true` is explicitly passed (see node_modules/react-native/
-    // Libraries/Alert/Alert.js) — omitting `options` entirely, as this call
-    // did right after the first fix, does NOT default to cancelable; it
-    // defaults to NOT dismissible at all. `{ cancelable: true }` below is
-    // therefore required, not optional decoration.
-    //
-    // A real fix — replacing this Alert.alert with a custom bottom sheet
-    // that supports more than 3 actions — is tracked in DEFERRED.md.
-    Alert.alert(agent.name, body, buttons.slice(0, 3), { cancelable: true });
+    setAgentDetailData({ agentName: agent.name, sections, buttons });
   }, [t, handleRunScheduledAgent, handleTogglePause, openMemoryWorkbench, agentApprovalLabel, openAgentRunsPane]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
@@ -2160,6 +2144,13 @@ export function Sidebar() {
       <AgentCapabilitiesModal
         visible={agentCapabilitiesVisible}
         onClose={() => setAgentCapabilitiesVisible(false)}
+      />
+
+      {/* Agent contract view — replaces the old showAgentDetail Alert.alert,
+          see AgentDetailModal.tsx's module doc comment. */}
+      <AgentDetailModal
+        data={agentDetailData}
+        onClose={() => setAgentDetailData(null)}
       />
 
       {/* SKILL-002: curated skill catalog browse modal. Lists
