@@ -307,6 +307,11 @@ class TerminalSessionService : Service() {
         cron: String? = null
     ) {
         activeAgentRuns.incrementAndGet()
+        // Fable5 review (2026-08-29): recorded before the run starts so
+        // scheduledRunFailed() can require a run-log written at or after
+        // this point — see its own doc comment for why a stale log from a
+        // PREVIOUS run must never be misread as this run's outcome.
+        val runStartMs = System.currentTimeMillis()
         Thread {
             val wakeLock = acquireAgentWakeLock(agentId)
             // B: watch the action-approval request dir natively from the FGS so a
@@ -341,7 +346,7 @@ class TerminalSessionService : Service() {
             // the third consecutive failure disables metadata and cancels both
             // live and boot-restored schedules before another alarm can be armed.
             if (intervalMs > 0 || !cron.isNullOrBlank()) {
-                val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult))
+                val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))
                 if (shouldRearm) {
                     try {
                         AgentAlarmScheduler.scheduleNextIfAgentEnabled(applicationContext, agentId, intervalMs, cron)
@@ -415,9 +420,18 @@ class TerminalSessionService : Service() {
         return state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
     }
 
-    private fun scheduledRunFailed(agentId: String, result: AgentRunResult?): Boolean {
+    private fun scheduledRunFailed(agentId: String, result: AgentRunResult?, runStartMs: Long): Boolean {
         if (result == null) return true
-        if (result.success) return false
+        // Fable5 review A-7 (2026-08-29, tracked in DEFERRED.md since
+        // 2026-08-14): this used to `if (result.success) return false` before
+        // ever looking at the run-log, so a "soft failure" — the script
+        // itself exits 0 but writes status:"error" to its run-log (e.g. a
+        // missing/invalid API key it catches and reports rather than
+        // crashing on) — could never be counted by this circuit breaker no
+        // matter how many times it repeated. The run-log's own status is now
+        // always consulted first; exitCode is only a fallback for when no
+        // run-log is found at all (e.g. the script crashed before it could
+        // write one).
         return try {
             val homeDir = HomeInitializer.getHomeDir(applicationContext)
             val logDir = File(homeDir, ".shelly/agents/logs/$agentId")
@@ -429,12 +443,27 @@ class TerminalSessionService : Service() {
                         else json.optLong("timestamp") to json.optString("status")
                     }.getOrNull()
                 }
+                // Fable5 follow-up (2026-08-29): only a log written at or
+                // after THIS run started may be trusted as this run's
+                // outcome — every writer (both PlanSpec executor's Date.now()
+                // and the legacy .sh executor's `${TS}000`) uses millisecond
+                // epoch, matching runStartMs, so this comparison is safe
+                // across both executors. Without this filter, a script that
+                // crashes before writing its own log (before its `finish`/
+                // `write_failure_log` trap fires) would fall through to the
+                // PREVIOUS run's now-stale log — silently miscounting today's
+                // crash as yesterday's outcome, or missing a failure entirely
+                // if the stale log happened to say "ok".
+                ?.filter { (timestamp, _) -> timestamp >= runStartMs }
                 ?.maxByOrNull { it.first }
                 ?.second
-                ?: return true
-            // Match the JS circuit breaker: skipped and transient unavailable
-            // outcomes break the error streak; only status=error increments it.
-            latestStatus == "error"
+            if (latestStatus != null) {
+                // Match the JS circuit breaker: skipped and transient unavailable
+                // outcomes break the error streak; only status=error increments it.
+                latestStatus == "error"
+            } else {
+                !result.success
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Could not classify scheduled outcome for $agentId; counting as failure", e)
             true

@@ -225,11 +225,18 @@ object AgentActionApprovalBridge {
         // social-post (2026-07-22): must be accepted here or the native watcher
         // silently DROPS its approval request and the executor's mandatory
         // non-allowlisted-host wait can only ever time out — the human never
-        // sees an Allow/Deny notification. (NOTE: "api-call" is still absent
-        // from this list — a pre-existing gap; NotificationDispatcher already
-        // carries an api-call branch that is unreachable through this parse.)
+        // sees an Allow/Deny notification.
+        // api-call (Codex review, 2026-08-29): was missing from this list for
+        // the exact same reason -- NotificationDispatcher.kt has carried a
+        // working "api-call" display branch since Track F, but any approval
+        // request for it was silently dropped right here before ever
+        // reaching that code. Only matters when approval mode is NOT 'auto'
+        // (api-call's destinationHostAllowlisted is always true by
+        // construction, so maybeRequestActionApproval skips the request
+        // entirely under 'auto'); under Manual/per-action-approval mode this
+        // was a permanent hang/timeout with no notification ever shown.
         val actionType = raw.optString("actionType").trim().takeIf {
-            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act" || it == "social-post" || it == "browser-pane"
+            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act" || it == "social-post" || it == "browser-pane" || it == "api-call"
         } ?: return null
         return AgentActionApprovalRequest(
             runId = runId,

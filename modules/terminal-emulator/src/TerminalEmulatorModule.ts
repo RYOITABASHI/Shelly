@@ -226,7 +226,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   readAgentActionApprovalRequest?(runId: string): Promise<{
     runId: string;
     agentId: string;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane' | 'social-post' | 'api-call';
     preview?: string | null;
     destinationHost?: string | null;
     destinationHostAllowlisted?: boolean;
@@ -251,7 +251,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   notifyAgentActionApprovalNeeded?(request: {
     runId: string;
     agentId?: string | null;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane' | 'social-post' | 'api-call';
     preview?: string | null;
     destinationHost?: string | null;
     destinationHostAllowlisted?: boolean;

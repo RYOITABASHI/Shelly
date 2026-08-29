@@ -132,7 +132,23 @@ type AgentActionApprovalRequest = {
   agentId: string;
   agentName?: string | null;
   toolLabel?: string | null;
-  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane';
+  // 'social-post' added 2026-08-29 (Codex review finding): native
+  // (AgentActionApprovalBridge.kt) has accepted 'social-post' since
+  // 2026-07-22 and requires a mandatory human tap for non-allowlisted
+  // destination hosts, but this JS-side parser/review-bucket/UI never
+  // learned the type — a non-allowlisted social-post approval request could
+  // only ever time out, the human never seeing an Allow/Deny prompt.
+  // 'api-call' added the same day (same review, same class of gap): native
+  // accepts it too but this parser didn't — see
+  // lib/agent-action-types.ts's ALL_APPROVAL_ACTION_TYPES, which every
+  // duplicate of this list (including this one) is checked against by
+  // __tests__/agent-action-type-schema-parity.test.ts. api-call never
+  // reaches the confirm modal below in practice (it is NOT in
+  // REVIEW_REQUIRED_ACTION_TYPES — same one-tap-Allow-from-notification path
+  // as webhook), but the type/parser stay complete for consistency and so a
+  // future review-required flag flip for it doesn't ALSO require rediscovering
+  // this gap.
+  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane' | 'social-post' | 'api-call';
   preview?: string | null;
   destinationHost?: string | null;
   destinationHostAllowlisted?: boolean;
@@ -999,7 +1015,9 @@ export default function RootLayout() {
         actionType !== 'intent' &&
         actionType !== 'dm-reply' &&
         actionType !== 'app-act' &&
-        actionType !== 'browser-pane'
+        actionType !== 'browser-pane' &&
+        actionType !== 'social-post' &&
+        actionType !== 'api-call'
       ) {
         return null;
       }
@@ -1133,7 +1151,8 @@ export default function RootLayout() {
             request.actionType !== 'intent' &&
             request.actionType !== 'dm-reply' &&
             request.actionType !== 'app-act' &&
-            request.actionType !== 'browser-pane')
+            request.actionType !== 'browser-pane' &&
+            request.actionType !== 'social-post')
         ) {
           Alert.alert(t('agent_action_confirm_not_ready'));
           return;
@@ -2068,6 +2087,8 @@ export default function RootLayout() {
                     ? t('agent_action_confirm_title_appact')
                   : pendingAgentActionApproval.actionType === 'browser-pane'
                     ? t('agent_action_confirm_title_browserpane')
+                  : pendingAgentActionApproval.actionType === 'social-post'
+                    ? t('agent_action_confirm_title_socialpost')
                   : t('agent_action_confirm_title')}
               </Text>
               <Text style={actionApprovalStyles.body}>
@@ -2079,6 +2100,8 @@ export default function RootLayout() {
                     ? t('agent_action_confirm_body_appact')
                   : pendingAgentActionApproval.actionType === 'browser-pane'
                     ? t('agent_action_confirm_body_browserpane')
+                  : pendingAgentActionApproval.actionType === 'social-post'
+                    ? t('agent_action_confirm_body_socialpost')
                   : t('agent_action_confirm_body')}
               </Text>
               {pendingAgentActionApproval.actionType === 'intent' ? (
@@ -2133,6 +2156,24 @@ export default function RootLayout() {
                       : 'agent_action_confirm_webhook_new_host')}
                   </Text>
                   <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_webhook_preview')}</Text>
+                  <ScrollView style={actionApprovalStyles.commandBox}>
+                    <Text selectable style={actionApprovalStyles.commandText}>
+                      {pendingAgentActionApproval.preview || ''}
+                    </Text>
+                  </ScrollView>
+                </>
+              ) : pendingAgentActionApproval.actionType === 'social-post' ? (
+                <>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_socialpost_host')}</Text>
+                  <Text selectable style={actionApprovalStyles.commandText}>
+                    {pendingAgentActionApproval.destinationHost || ''}
+                  </Text>
+                  <Text style={actionApprovalStyles.meta}>
+                    {t(pendingAgentActionApproval.destinationHostAllowlisted
+                      ? 'agent_action_confirm_socialpost_known_host'
+                      : 'agent_action_confirm_socialpost_new_host')}
+                  </Text>
+                  <Text style={actionApprovalStyles.label}>{t('agent_action_confirm_socialpost_preview')}</Text>
                   <ScrollView style={actionApprovalStyles.commandBox}>
                     <Text selectable style={actionApprovalStyles.commandText}>
                       {pendingAgentActionApproval.preview || ''}

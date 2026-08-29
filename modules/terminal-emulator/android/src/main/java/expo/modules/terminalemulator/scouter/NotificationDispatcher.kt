@@ -247,7 +247,17 @@ class NotificationDispatcher(private val context: Context) {
             // resolve the approval as accepted while the recipe never actually
             // ran, AND would let a real external post go out (or silently not
             // go out) without the user ever seeing the resolved post text.
-            val requiresReview = request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "app-act" || request.actionType == "browser-pane"
+            //
+            // social-post (Codex review, 2026-08-29): same class of bug as
+            // app-act above and arguably worse -- the resolved post TEXT is
+            // never shown anywhere except app/_layout.tsx's review modal, and
+            // a published social post cannot be un-published. This action
+            // type was added to app/_layout.tsx's review-required deep-link
+            // bucket in the same 2026-08-29 fix, but was missed here, so a
+            // one-tap Allow from the notification shade could accept the post
+            // sight-unseen -- exactly the failure mode this comment warns
+            // against for app-act.
+            val requiresReview = request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "app-act" || request.actionType == "browser-pane" || request.actionType == "social-post"
             val actions = if (requiresReview) {
                 listOf(
                     action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),
