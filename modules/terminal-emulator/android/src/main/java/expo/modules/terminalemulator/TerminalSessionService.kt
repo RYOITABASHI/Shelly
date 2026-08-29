@@ -454,7 +454,17 @@ class TerminalSessionService : Service() {
                 // PREVIOUS run's now-stale log — silently miscounting today's
                 // crash as yesterday's outcome, or missing a failure entirely
                 // if the stale log happened to say "ok".
-                ?.filter { (timestamp, _) -> timestamp >= runStartMs }
+                //
+                // Fable5 3rd-pass review (2026-08-29): the legacy .sh executor's
+                // `${TS}000` has second precision (its sub-second digits are
+                // always 000), but runStartMs is millisecond-precise. A script
+                // that starts and finishes within the SAME second as this run
+                // began could log e.g. 45000ms against a runStartMs of 45678ms
+                // and get wrongly filtered out as "before this run started".
+                // Floor runStartMs to the second before comparing -- a log from
+                // the genuinely previous run is always at least tens of seconds
+                // older, so this can't reintroduce a stale-log false positive.
+                ?.filter { (timestamp, _) -> timestamp >= (runStartMs / 1000) * 1000 }
                 ?.maxByOrNull { it.first }
                 ?.second
             if (latestStatus != null) {
