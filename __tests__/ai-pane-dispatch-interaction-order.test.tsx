@@ -403,6 +403,113 @@ describe('Scenario 8b — @agent delete confirmation gate', () => {
   });
 });
 
+// 2026-08-29 (DEFERRED.md follow-up: "自由文でのagent削除依頼のパーサー対応"):
+// a plain-language delete request typed into the default companion chat
+// WITHOUT the exact `@agent delete <name>` command used to fall straight
+// through to the LLM chat completion — this proves detectFreeTextAgentDeleteIntent
+// (lib/agent-nl-parser.ts) now intercepts it BEFORE any LLM call, routing it
+// through the EXACT SAME pendingAgentDelete confirm flow Scenario 8b already
+// covers for the explicit `@agent delete <name>` command — and that declining
+// the confirm never deletes anything.
+describe('Scenario 8c — free-text agent-delete intent (no @agent mention) reaches the same confirm flow', () => {
+  const agentToDelete = baseAgent({ id: 'agent-morning-brief', name: 'Morning brief' });
+
+  beforeEach(() => {
+    useAgentStore.setState({ agents: [agentToDelete] } as any);
+  });
+
+  it('a plain "delete the ... agent" message posts the identical confirm prompt as @agent delete, without calling the LLM', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('please delete the morning brief agent');
+    });
+
+    // Never reached the LLM chat path or the @agent command parser.
+    expect(mockOllamaChatStream).not.toHaveBeenCalled();
+    expect(mockParseAgentCommand).not.toHaveBeenCalled();
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+
+    expect(lastMessage().pendingAgentDelete).toEqual({
+      agentId: agentToDelete.id,
+      agentName: agentToDelete.name,
+      attempts: 0,
+    });
+    expect(lastMessage().content).toBe(
+      en['agentdelete.confirm_prompt'].replace('{{name}}', agentToDelete.name),
+    );
+
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockDeleteAgent).toHaveBeenCalledTimes(1);
+    expect(mockDeleteAgent).toHaveBeenCalledWith(agentToDelete.id);
+    expect(lastMessage().content).toBe(
+      en['agentdelete.deleted'].replace('{{name}}', agentToDelete.name),
+    );
+  });
+
+  it('declining the confirm ("cancel") never deletes the agent', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('please delete the morning brief agent');
+      await result.current.dispatch('cancel');
+    });
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+    expect(lastMessage().content).toBe(
+      en['agentdelete.cancelled'].replace('{{name}}', agentToDelete.name),
+    );
+    expect(useAgentStore.getState().agents).toEqual([agentToDelete]);
+  });
+
+  it('a Japanese free-text delete request ("というエージェントを削除して") reaches the same confirm flow', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('Morning briefというエージェントを削除して');
+    });
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+    expect(lastMessage().pendingAgentDelete).toEqual({
+      agentId: agentToDelete.id,
+      agentName: agentToDelete.name,
+      attempts: 0,
+    });
+    expect(lastMessage().content).toBe(
+      ja['agentdelete.confirm_prompt'].replace('{{name}}', agentToDelete.name),
+    );
+  });
+
+  it('an ambiguous free-text name candidate asks the user to be specific instead of guessing', async () => {
+    const morningNews = baseAgent({ id: 'agent-morning-news', name: 'Morning News' });
+    const morningNotes = baseAgent({ id: 'agent-morning-notes', name: 'Morning Notes' });
+    useAgentStore.setState({ agents: [morningNews, morningNotes] } as any);
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('please delete the morning agent');
+    });
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+    expect(lastMessage().pendingAgentDelete).toBeUndefined();
+    expect(lastMessage().content).toBe(
+      en['agentdelete.ambiguous'].replace(
+        '{{names}}',
+        '"Morning News", "Morning Notes"',
+      ),
+    );
+  });
+
+  it('an unrelated plain message does not trigger any delete confirmation', async () => {
+    mockOllamaChatStream.mockImplementation(async (_config: unknown, _messages: unknown, onChunk: (t: string, d: boolean) => void) => {
+      onChunk('sure thing', false);
+      return { success: true, content: 'sure thing' };
+    });
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('what is the weather like today');
+    });
+    expect(lastMessage().pendingAgentDelete).toBeUndefined();
+    expect(mockDeleteAgent).not.toHaveBeenCalled();
+    expect(useAgentStore.getState().agents).toEqual([agentToDelete]);
+  });
+});
+
 function setup() {
   return renderHook(() => useAIPaneDispatch(PANE));
 }

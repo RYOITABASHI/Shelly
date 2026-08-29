@@ -50,7 +50,7 @@ import { useAgentStore } from '@/store/agent-store';
 import type { Agent } from '@/store/types';
 import { resolveConfirmedToolAndRunOn, suggestTool } from '@/lib/agent-tool-router';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
-import { parseAgentNL } from '@/lib/agent-nl-parser';
+import { parseAgentNL, detectFreeTextAgentDeleteIntent } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import {
   resolveRegistrationConfirmRequirement,
@@ -2114,6 +2114,32 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         return;
       }
 
+      // Shared "ask before deleting" poster — used by BOTH the deterministic
+      // `@agent delete <name>` command (parseAgentCommand's 'delete' result,
+      // below) AND the free-text delete-intent detector right after this
+      // (detectFreeTextAgentDeleteIntent, lib/agent-nl-parser.ts). One code
+      // path so a destructive action is never a hair's-breadth from two
+      // subtly different confirm flows. Posts the SAME agentdelete.confirm_
+      // prompt bubble + pendingAgentDelete field the pendingAgentDeleteMsg
+      // handling near the top of this function already drives (confirm →
+      // deleteAgent, cancel → no-op, unclear → re-ask once, per its own doc
+      // comment). Nothing is deleted here — this only ever asks.
+      const presentAgentDeleteConfirmPrompt = (agentToDelete: Agent, localeSourceText: string): void => {
+        const deleteStrings = detectMessageLocale(localeSourceText) === 'ja' ? ja : en;
+        store.addMessage(paneId, {
+          id: generateId(),
+          role: 'assistant',
+          content: deleteStrings['agentdelete.confirm_prompt'].replace('{{name}}', agentToDelete.name),
+          timestamp: Date.now(),
+          agent: agent as ChatMessage['agent'],
+          pendingAgentDelete: {
+            agentId: agentToDelete.id,
+            agentName: agentToDelete.name,
+            attempts: 0,
+          },
+        });
+      };
+
       // Companion-memory write interception (Increment B): an unprefixed
       // "remember this" addressed to Shelly may propose a `_global` note.
       // Keep this narrower than provider routing: `agent === 'local'` proves
@@ -2144,6 +2170,46 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // phrasing later.
           flowTurn: true,
         });
+        return;
+      }
+
+      // Free-text agent-deletion interception (2026-08-29, DEFERRED.md
+      // follow-up: "自由文でのagent削除依頼のパーサー対応"): a plain-language
+      // delete request typed into the default companion chat WITHOUT the
+      // exact `@agent delete <name>` command — e.g. "delete the news agent"
+      // / "このエージェントを削除して" — used to fall straight through to
+      // the LLM chat completion below, relying entirely on an advisory
+      // system-prompt line (lib/ai-pane-context.ts, "Agents CAN be deleted")
+      // to steer the model away from hallucinating that agents can't be
+      // deleted. That is advisory to an LLM, never a guarantee, and this is
+      // a DESTRUCTIVE action — it must be decided deterministically, not by
+      // a model's guess. Scoped identically to companionMemoryIntent above
+      // (never in a mention layer, so `@agent`/`@team`/`@local`/etc keep
+      // their own explicit routing unchanged; only the default `local`
+      // persona, never an explicit @gemini/@cerebras/... conversation) and
+      // checked BEFORE the implicit-agent-creation detection right below, so
+      // a delete request is never misread as a request to CREATE an agent.
+      // Any earlier pendingAgentDelete/pendingAgentSession/pendingSlotFill
+      // flow for THIS message would already have `return`ed above, so this
+      // never fires mid-registration or mid-confirm for something else.
+      const freeTextAgentDeleteIntent =
+        parsed.layer !== 'mention' && agent === 'local'
+          ? detectFreeTextAgentDeleteIntent(promptText, useAgentStore.getState().agents)
+          : null;
+      if (freeTextAgentDeleteIntent) {
+        if ('ambiguous' in freeTextAgentDeleteIntent) {
+          const deleteStrings = detectMessageLocale(promptText) === 'ja' ? ja : en;
+          const names = freeTextAgentDeleteIntent.ambiguous.map((a) => `"${a.name}"`).join(', ');
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: deleteStrings['agentdelete.ambiguous'].replace('{{names}}', names),
+            timestamp: Date.now(),
+            agent: agent as ChatMessage['agent'],
+          });
+          return;
+        }
+        presentAgentDeleteConfirmPrompt(freeTextAgentDeleteIntent.agent, promptText);
         return;
       }
 
@@ -2631,19 +2697,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             await stopAgent(agentResult.data.agentId, runAgentShellCommand);
             resultMessage = agentResult.message;
           } else if (agentResult.type === 'delete') {
-            const deleteStrings = detectMessageLocale(userText) === 'ja' ? ja : en;
-            store.addMessage(paneId, {
-              id: generateId(),
-              role: 'assistant',
-              content: deleteStrings['agentdelete.confirm_prompt'].replace('{{name}}', agentResult.data.agent.name),
-              timestamp: Date.now(),
-              agent: agent as ChatMessage['agent'],
-              pendingAgentDelete: {
-                agentId: agentResult.data.agent.id,
-                agentName: agentResult.data.agent.name,
-                attempts: 0,
-              },
-            });
+            presentAgentDeleteConfirmPrompt(agentResult.data.agent, userText);
             return;
           } else {
             resultMessage = agentResult.message;

@@ -16,7 +16,7 @@
  *
  * The result is a PREVIEW draft, not a live agent. The caller shows it in the confirm card.
  */
-import { AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
+import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
@@ -1939,6 +1939,151 @@ const NEGATED_AUTONOMOUS_INTENT_JP_RE =
 export function detectAutonomousIntent(text: string): boolean {
   if (NEGATED_AUTONOMOUS_INTENT_EN_RE.test(text) || NEGATED_AUTONOMOUS_INTENT_JP_RE.test(text)) return false;
   return AUTONOMOUS_INTENT_RE.test(text);
+}
+
+// ── Free-text agent-deletion intent (2026-08-29, DEFERRED.md follow-up:
+// "自由文でのagent削除依頼のパーサー対応") ──────────────────────────────────
+// A user typing plain language into the default companion chat — e.g. "この
+// エージェント消して" / "〇〇というエージェントを削除して" / "delete the
+// news agent" — used to fall straight through to the general LLM chat
+// completion instead of the deterministic `@agent delete <name>` command
+// path (lib/agent-manager.ts's parseAgentCommand). The ONLY existing
+// mitigation was an advisory system-prompt line (lib/ai-pane-context.ts,
+// "Agents CAN be deleted") telling the model not to hallucinate that agents
+// are undeletable — advisory to an LLM, never a guarantee, and this is a
+// DESTRUCTIVE action that must never be gated by a model's guess.
+//
+// Deliberately conservative — a false negative here is always safe (it just
+// falls through to the unchanged LLM-advisory path); a false positive only
+// risks one extra confirm-prompt interruption (the caller must still route
+// any match through the SAME human confirm-then-delete flow
+// `@agent delete <name>` already uses, never straight to deleteAgent()):
+//   - only fires on an explicit deletion-intent phrase carrying the literal
+//     word "agent"/"エージェント" — a bare "delete"/"削除" alone never
+//     matches ("I deleted a file yesterday" / "削除する予定です" must not);
+//   - a negated phrase ("don't delete the agent" / "削除しないでください")
+//     never matches, same guard shape as detectAutonomousIntent above;
+//   - a demonstrative form with no captured name ("delete this agent" /
+//     "delete the agent" / "このエージェントを削除して") only resolves when
+//     EXACTLY ONE agent is registered — with 0 (nothing to delete) or 2+
+//     (can't tell which) there is nothing safe to guess, so it returns null;
+//   - a named form resolves its captured candidate through the SAME tiered
+//     exact/prefix/substring matcher lib/agent-manager.ts's
+//     resolveAgentByNameLoose uses for the real `@agent delete <name>`
+//     command, so an ambiguous candidate surfaces distinctly as
+//     `{ ambiguous }` instead of ever guessing. The matcher is intentionally
+//     RE-IMPLEMENTED here (matchAgentByLooseName) rather than imported from
+//     lib/agent-manager.ts: that module pulls in native modules
+//     (TerminalEmulatorModule, expo-notifications, expo-file-system) at its
+//     top level, and lib/agent-nl-parser.ts is imported by many otherwise
+//     lightweight pure-function test suites (agent-slot-fill.ts,
+//     agent-plan-summary.ts, agent-llm-fallback.ts,
+//     agent-global-memory-intent.ts, agent-conversational-registration.ts,
+//     agent-draft-patch.ts, and this file's own tests) that would all
+//     suddenly need those native mocks for no benefit. Keep this in sync
+//     with resolveAgentByNameLoose's three-tier semantics if either changes.
+
+const NEGATED_AGENT_DELETE_INTENT_EN_RE =
+  /\b(?:don'?t|do not|never|shouldn'?t|please don'?t)\b[^.!?]{0,25}\b(?:delete|remove)\b/i;
+const NEGATED_AGENT_DELETE_INTENT_JP_RE = /(?:消し|削除し)[^。！？]{0,10}(?:ないで|ては(?:い)?けない)/;
+
+// Ordered patterns — checked top-to-bottom, first match wins. The more
+// specific "という"/demonstrative forms are listed BEFORE the generic
+// bare-name forms so they aren't swallowed as garbage "name" text (same
+// "specific before broad" ordering rule as TIME_OF_DAY_DEFAULTS elsewhere in
+// this file). A pattern with no capturing group signals a demonstrative
+// (nameless) match; one with a capturing group supplies the name candidate.
+const FREE_TEXT_AGENT_DELETE_PATTERNS: RegExp[] = [
+  // JP: "〇〇というエージェントを削除して" — explicit naming marker.
+  /(.{1,20}?)という\s*エージェント\s*を?\s*(?:消して|削除して|消去して|消したい|削除したい|やめて|止めて)/,
+  // JP demonstrative: "このエージェントを消して" — no name to capture.
+  /(?:この|その|あの)\s*エージェント\s*を?\s*(?:消して|削除して|消去して|消したい|削除したい|やめて|止めて)/,
+  // JP bare: "〇〇エージェントを消して" (no という marker).
+  /([^\s、。！？「」]{1,20}?)\s*エージェント\s*を?\s*(?:消して|削除して|消去して|消したい|削除したい|やめて|止めて)/,
+  // EN demonstrative: "delete this/that/the agent" — no name to capture.
+  /\b(?:delete|remove|get\s+rid\s+of)\s+(?:this|that|the)\s+agents?\b/i,
+  // EN bare: "delete/remove/get rid of (the/my) X agent".
+  /\b(?:delete|remove|get\s+rid\s+of)\s+(?:the\s+|my\s+)?([a-z0-9][a-z0-9 '-]{0,40}?)\s+agents?\b/i,
+];
+
+/** Returns `undefined` when no deletion-intent phrase matched at all (safe
+ *  to fall through unchanged); `''` for a demonstrative match with no name
+ *  captured; otherwise the trimmed captured name candidate. */
+function extractFreeTextAgentDeleteCandidate(text: string): string | undefined {
+  if (NEGATED_AGENT_DELETE_INTENT_EN_RE.test(text) || NEGATED_AGENT_DELETE_INTENT_JP_RE.test(text)) {
+    return undefined;
+  }
+  for (const re of FREE_TEXT_AGENT_DELETE_PATTERNS) {
+    const m = text.match(re);
+    if (m) return (m[1] ?? '').trim();
+  }
+  return undefined;
+}
+
+/** Mirrors lib/agent-manager.ts's resolveAgentByNameLoose exactly (exact →
+ *  prefix → substring, case-insensitive, stopping at the first tier that
+ *  produces any match) — see this section's doc comment above for why it's
+ *  duplicated here instead of imported. */
+function matchAgentByLooseName(agents: Agent[], rawName: string): { agent: Agent | null; ambiguous?: Agent[] } {
+  const query = rawName.trim();
+  if (!query) return { agent: null };
+  const queryLower = query.toLowerCase();
+
+  const exact = agents.filter((a) => (a.name || '').trim().toLowerCase() === queryLower);
+  if (exact.length === 1) return { agent: exact[0] };
+  if (exact.length > 1) return { agent: null, ambiguous: exact };
+
+  const queryPrefix = query.replace(/(?:…|\.{3})\s*$/, '').trim().toLowerCase();
+  if (queryPrefix) {
+    const prefixMatches = agents.filter((a) => (a.name || '').trim().toLowerCase().startsWith(queryPrefix));
+    if (prefixMatches.length === 1) return { agent: prefixMatches[0] };
+    if (prefixMatches.length > 1) return { agent: null, ambiguous: prefixMatches };
+  }
+
+  const substringMatches = agents.filter((a) => (a.name || '').trim().toLowerCase().includes(queryLower));
+  if (substringMatches.length === 1) return { agent: substringMatches[0] };
+  if (substringMatches.length > 1) return { agent: null, ambiguous: substringMatches };
+
+  return { agent: null };
+}
+
+/**
+ * Detect a free-text (non-`@agent delete <name>`) request to delete a
+ * registered agent, and resolve it to a SPECIFIC agent when confidently
+ * possible. Returns:
+ *   - `{ agent }` — a single agent was confidently identified;
+ *   - `{ ambiguous }` — the deletion intent is clear but the named
+ *     candidate matches 2+ registered agents (caller should ask the user to
+ *     be more specific, exactly like `@agent delete <name>`'s own
+ *     ambiguous-name handling);
+ *   - `null` — no deletion intent was detected, or the deletion intent
+ *     couldn't be tied to any specific registered agent. ALWAYS safe to
+ *     ignore (falls through to whatever the caller would otherwise do).
+ *
+ * Pure and deterministic — never calls an LLM, never deletes anything
+ * itself. See this section's doc comment above for the full design
+ * rationale (deliberately conservative on false positives).
+ */
+export function detectFreeTextAgentDeleteIntent(
+  text: string,
+  agents: Agent[],
+): { agent: Agent } | { ambiguous: Agent[] } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const candidate = extractFreeTextAgentDeleteCandidate(trimmed);
+  if (candidate === undefined) return null;
+
+  if (candidate === '') {
+    // Demonstrative/no-name form — only safe when exactly one agent exists;
+    // 0 (nothing to delete) or 2+ (can't tell which) both fall through.
+    return agents.length === 1 ? { agent: agents[0] } : null;
+  }
+
+  const resolution = matchAgentByLooseName(agents, candidate);
+  if (resolution.agent) return { agent: resolution.agent };
+  if (resolution.ambiguous && resolution.ambiguous.length > 0) return { ambiguous: resolution.ambiguous };
+  return null;
 }
 
 /**

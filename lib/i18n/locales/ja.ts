@@ -570,6 +570,13 @@ const ja: Record<string, string> = {
   'agentdelete.deleting': '「{{name}}」を削除しています…',
   'agentdelete.deleted': '✅ 「{{name}}」を削除しました。',
   'agentdelete.failed': '❌ 「{{name}}」を削除できませんでした',
+  // 2026-08-29: 自由文の削除意図検出(detectFreeTextAgentDeleteIntent、
+  // lib/agent-nl-parser.ts)で候補名が複数のエージェントに一致した場合。
+  // 「@agent delete <name>」コマンド側の曖昧一致処理
+  // (lib/agent-manager.ts の resolveNamedAgentOrError) と同じ状況を、
+  // 自由文の入口向けに表示する。
+  'agentdelete.ambiguous':
+    '一致するエージェントが複数見つかりました: {{names}}。もう少し具体的に教えていただくか、「@agent delete <name>」で正確な名前を指定してください。',
   // G2-P3フォローアップ(2026-08-25): 登録済みエージェントが無いユーザーでも
   // コンパニオンジャーナルの自動記録を閲覧・編集・削除できるよう、
   // MemoryWorkbenchPaneへのcompanion専用入口を追加。

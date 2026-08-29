@@ -592,6 +592,13 @@ const en: Record<string, string> = {
   'agentdelete.deleting': 'I\'m deleting "{{name}}"…',
   'agentdelete.deleted': '✅ I deleted "{{name}}".',
   'agentdelete.failed': '❌ I couldn\'t delete "{{name}}"',
+  // 2026-08-29: free-text delete detector (detectFreeTextAgentDeleteIntent,
+  // lib/agent-nl-parser.ts) found more than one agent matching the named
+  // candidate — same ambiguous-name situation `@agent delete <name>` already
+  // handles (lib/agent-manager.ts's resolveNamedAgentOrError), surfaced here
+  // for the free-text entry point instead of ever guessing which one.
+  'agentdelete.ambiguous':
+    'More than one agent matches that: {{names}}. Could you be more specific, or use "@agent delete <name>" with the exact name?',
   // G2-P3 follow-up (2026-08-25): companion-only entry point into
   // MemoryWorkbenchPane, so a user with no registered agents can still
   // see/edit/delete what the companion journal auto-wrote.
