@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-29: ユーザー指示「完成まで勝手にやれって言ったでしょ」を受け、Fable5がビジョン配線後に最優先(1位)へ格上げしていたextractText知覚ループ問題(下記613行目参照)を実装。過去に検討され断念された`pendingExternalPrompt`相当のペイン注入(「どのペインが処理するか不定」で頓挫)ではなく、既存のper-agent memory機構(`lib/agent-memory.ts`、`agent.memory.remember`オプトイン)を転用: `lib/agent-manager.ts`に`captureBrowserExtractMemory`を新設(`captureRunMemory`と同じMEMORY_ENABLED/activateMemoryWrite→G2 writeMemoryNoteフォールバックパターン)、`app/_layout.tsx`のextractText承認成功パスから呼び出し、抽出テキストをtype:'result'のメモリノートとして書き込み。次回のそのagentの実行プロンプトに`buildRecallContext`経由で自動的に注入されるため、エージェント自身が次ターンで抽出結果を参照できるようになった。人間向けのAlert表示は変更なし。既存の他のメモリ書き込みと同じ`memory.remember`オプトインゲートを尊重(オプトインしていないagentは従来通りAlertのみ)。新規テスト5件(`__tests__/agent-manager-browser-extract-memory-capture.test.ts`)全PASS、`npx tsc --noEmit` clean、フルテスト3711件中3682件PASS(既知のWindows固有失敗5スイートのみ、無関係)。実機QA未実施(ユーザー指示によりコードレベルの完了を優先、継続作業中のため)。
 - 2026-08-29: ユーザー指示「未実装あるなら進めて下さい」を受け、Fable5・Codex双方が繰り返し指摘していたAgent contract view(下記574行目・615行目参照)を実装。`components/layout/AgentDetailModal.tsx`新設(Modal+ScrollView、セクション表示+ボタン数無制限)、`Sidebar.tsx`の`showAgentDetail`をAlert.alert(3ボタン制限あり)からこのモーダルへ置換。データ収集ロジック(run history/memory notes/route decision等)は無変更、表示先のみ変更。i18nキー6件(`agent_detail.task`/`contract`/`reliability`/`memory`/`steps`/`routing`)をen.ts/ja.tsに追加。`npx tsc --noEmit` clean、関連jest 5スイート35件全PASS。実機QA未実施(ユーザー指示によりコードレベルの完了のみ)。
 - 2026-08-29: Fable5/Codexに実装5件のコードレビューを依頼(実機テスト除外)。両者「マージ可」判定。Fable5が画像サイズガード欠如(実機クラッシュ候補)とextractText空文字無音バグを発見、即修正(expo-image-manipulator追加、長辺1568px上限)。extractText→AI Pane注入がP1最優先に浮上。
 - 2026-08-29: Fable5・Codex双方が「Yes」到達後、Hermes Agent公式サイト実確認とユーザー指示「同等以上を目指す」を受け、両者に完全ロードマップを再依頼。5件実装(signed-approval schema一元化、A-7秒精度バグ、extractText結果表示、TTSロケール修正、ビジョン解析配線)。フルテスト3706件中3678件PASS(既知のWindows固有失敗除く)。
@@ -611,7 +612,7 @@
 **検証**: `npx tsc --noEmit` clean。フルテストスイート3706件中3674件PASS(失敗30件、既知のWindows固有パスバグ5スイートのみ、今回変更したファイルとは無関係。前回26件から30件への変動はこれらのテストの非決定的な性質によるもの)。`ai-pane-dispatch-interaction-order.test.tsx`(76件)は全PASS。
 
 **次回持ち越し(優先順位、Fable5評)**:
-1. extractText→AI Pane注入(知覚ループ閉鎖) — 新規最優先
+1. ✅ extractText→AI Pane注入(知覚ループ閉鎖) — 2026-08-29実装完了。「AI Pane」への直接注入ではなく、per-agent memory(`agent.memory.remember`)への書き込み+`buildRecallContext`経由の次回実行時自動注入という形で解決(本ファイル冒頭History参照、詳細な設計判断あり)。
 2. ビジョンv1.1(handleAttachの二役ボタン分離、画像ステージング+自由入力、履歴マーカー)
 3. ✅ Agent contract view — 2026-08-29実装完了(本ファイル冒頭History参照)
 4. スキルカタログ拡充

@@ -1111,6 +1111,63 @@ export async function writeGlobalMemoryNote(
   }
 }
 
+/**
+ * Capture externally-sourced content (currently: an approved browser-pane
+ * extractText result) as a 'result' memory note, so the agent recalls it on
+ * its OWN next run — not just the human via the in-app Alert. This closes
+ * the perception-loop gap Fable5 flagged as top P1 after vision wiring
+ * landed (DEFERRED.md 2026-08-29): "extractText's whole point is to hand
+ * page content back to the human/agent" but the executor process has
+ * already exited by the time the DOM read resolves (fire-then-reply design,
+ * see app/_layout.tsx's resolvePendingAgentActionApproval), so there is no
+ * run-log field left to backfill and no live step chain left to feed
+ * synchronously. Memory is the correct next-best channel: buildRecallContext
+ * (called from the same EFFECTIVE-agent path captureRunMemory writes into)
+ * prepends recalled notes to the agent's NEXT run prompt, so a captured
+ * extraction is available to the agent's own reasoning starting with its
+ * very next invocation — no new pane-routing decision needed (the earlier
+ * "which pane handles it" blocker that stalled a pendingExternalPrompt-style
+ * design does not apply here, since memory is keyed by agentId, not pane).
+ *
+ * Gated on `agent.memory?.remember` — the same per-agent opt-in every other
+ * memory write in this file respects — so an agent that has not opted into
+ * persistent recall does not silently start accumulating page content
+ * either. When memory is off, the caller's existing in-app Alert remains the
+ * only surface, same as before this function existed.
+ */
+export async function captureBrowserExtractMemory(
+  agentId: string,
+  text: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<void> {
+  const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
+  if (!agent?.memory?.remember) return;
+  const digest = extractRunDigest(text);
+  if (!digest) return;
+  if (MEMORY_ENABLED) {
+    const ok = await activateMemoryWrite({
+      agentId,
+      type: 'result',
+      text: digest,
+      tags: agent.memory?.tags,
+    });
+    if (ok) {
+      await refreshAgentRecall(agentId, runCommand);
+      return;
+    }
+  }
+  try {
+    const note = makeMemoryNote({ agentId, type: 'result', text: digest, tags: agent.memory?.tags });
+    const existing = await readMemoryNotes(agentId);
+    const isNew = !existing.some((n) => n.id === note.id);
+    await writeMemoryNote(runCommand, note);
+    invalidateMemoryImportCache(agentId);
+    if (isNew) await refreshAgentRecall(agentId, runCommand);
+  } catch (error) {
+    console.warn('Failed to capture browser-extract memory for agent', agentId, error);
+  }
+}
+
 /** Write the registering "remember that …" fact as a memory note (idempotent). */
 async function persistRememberFact(
   agent: Agent,

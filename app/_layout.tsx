@@ -66,6 +66,7 @@ import {
   isAcceptedBrowserPaneResult,
 } from '@/lib/agent-browser-pane-review';
 import { executeBrowserPaneAction, BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR } from '@/lib/browser-pane-automation';
+import { captureBrowserExtractMemory } from '@/lib/agent-manager';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -408,6 +409,25 @@ export default function RootLayout() {
             t('agent_action_confirm_browserpane_extracted_title'),
             preview || t('agent_action_confirm_browserpane_extracted_empty'),
           );
+          // Fable5 P1 (2026-08-29, promoted to top priority after vision
+          // wiring landed): the Alert above is human-only — the agent itself
+          // never perceives what it extracted, since the executor process
+          // that made this request already exited (fire-then-reply design,
+          // see the comment above this block). Best-effort mirror into the
+          // agent's own memory (opt-in via agent.memory.remember, same gate
+          // every other memory write in lib/agent-manager.ts respects) so it
+          // is recalled into the agent's OWN next run prompt. Never blocks or
+          // fails this approval flow — a memory-write failure here must not
+          // turn into a declined browser-pane action.
+          if (text) {
+            void captureBrowserExtractMemory(request.agentId, text, async (cmd) => {
+              const result = await execCommand(cmd, 30_000);
+              if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+              return result.stdout;
+            }).catch((e) => {
+              logError('AgentActionApproval', 'captureBrowserExtractMemory failed', e);
+            });
+          }
         }
       } catch (e) {
         // Mirrors resolvePendingAgentActionApproval's other catches: log only
