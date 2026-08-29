@@ -23,10 +23,6 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-
-// Fable5 review (2026-08-29): caps the longer edge of an AI Pane image
-// attachment before base64 encoding — see handleAttach below.
-const MAX_IMAGE_ATTACHMENT_EDGE = 1568;
 import { PaneIdContext, MultiPaneContext } from '@/components/multi-pane/PaneSlot';
 import {
   addAiPaneThreadSwitchNotice,
@@ -77,6 +73,9 @@ import { useTranslation } from '@/lib/i18n';
 import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
 
 const AUTO_FOLLOW_THRESHOLD_PX = 100;
+// Fable5 review (2026-08-29): caps the longer edge of an AI Pane image
+// attachment before base64 encoding — see handleAttach below.
+const MAX_IMAGE_ATTACHMENT_EDGE = 1568;
 
 // Adapter matching lib/companion-journal.ts's `(cmd) => Promise<string>`
 // runCommand shape — same small pattern used by

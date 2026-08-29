@@ -16,7 +16,7 @@ import { useFonts } from "expo-font";
 import { JetBrainsMono_400Regular, JetBrainsMono_700Bold } from "@expo-google-fonts/jetbrains-mono";
 import { useTerminalStore } from "@/store/terminal-store";
 import { useSoundStore, unloadSounds } from "@/lib/sounds";
-import { loadAgentsFromDisk, syncAgentRunLogsFromDisk } from "@/lib/agent-manager";
+import { loadAgentsFromDisk, syncAgentRunLogsFromDisk, captureBrowserExtractMemory } from "@/lib/agent-manager";
 import { reconcileApiKeysToEnv } from "@/lib/agent-env-sync";
 import { useI18n, useTranslation } from '@/lib/i18n';
 import { useThemeStore } from '@/lib/theme-engine';
@@ -66,7 +66,6 @@ import {
   isAcceptedBrowserPaneResult,
 } from '@/lib/agent-browser-pane-review';
 import { executeBrowserPaneAction, BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR } from '@/lib/browser-pane-automation';
-import { captureBrowserExtractMemory } from '@/lib/agent-manager';
 import { truncateAtCodePointBoundary } from '@/lib/text-truncate';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
