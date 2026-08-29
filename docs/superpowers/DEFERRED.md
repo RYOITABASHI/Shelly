@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-29: Fable5/Codexに実装5件のコードレビューを依頼(実機テスト除外)。両者「マージ可」判定。Fable5が画像サイズガード欠如(実機クラッシュ候補)とextractText空文字無音バグを発見、即修正(expo-image-manipulator追加、長辺1568px上限)。extractText→AI Pane注入がP1最優先に浮上。
 - 2026-08-29: Fable5・Codex双方が「Yes」到達後、Hermes Agent公式サイト実確認とユーザー指示「同等以上を目指す」を受け、両者に完全ロードマップを再依頼。5件実装(signed-approval schema一元化、A-7秒精度バグ、extractText結果表示、TTSロケール修正、ビジョン解析配線)。フルテスト3706件中3678件PASS(既知のWindows固有失敗除く)。
 - 2026-08-29: CIビルド成功後、実機(Z Fold6、versionCode 2334)にインストールしA-7中心に検証。3連続approval timeout(skipped)ではbreaker非発動という設計通りの実データを確認したが、意図したexitCode0+status:errorの完全シナリオ再現はterminal input経由のシェルスクリプト編集がAndroid input textの制約で困難と判明し断念。新規P3(自由文でのagent削除依頼がローカルLLMのハルシネーションを招く)を発見。
 - 2026-08-29: Fable5/Codexへの再評価依頼で「social-post修正は部分解消(NotificationDispatcher.ktのrequiresReview漏れ、one-tap Allow経路が残存)」「A-7にstale-log誤読の残存エッジ」を発見、5件追加実装(社会投稿review漏れ修正、api-call到達不能解消、A-7 run開始時刻照合、TS型同期、approval action type schema一元化+parityテスト新設)。全309テストPASS。
@@ -578,6 +579,43 @@
 - A-7完全シナリオの実機検証(Codexが`adb push`ベースの具体的なQAスクリプトを提供済み、次回実機QA枠で使用)。
 
 → sync: README Status表の変更なし(内部correctness fix + 実装済み資産の配線)。
+
+---
+
+### 2026-08-29 Fable5/Codexコードレビュー(実機テスト除外) — 5件とも「マージ可」判定、画像サイズガード欠如(実機クラッシュ候補)を発見・即修正
+
+**背景**: ユーザー指示により、上記5件の実装について実機テストを除いたコードレベルのレビューをFable5・Codex双方に依頼。
+
+**判定**: 両者とも「重大な問題なし、既存の承認/taint境界を壊していない、マージ可」。個別確認事項:
+- signed-approval schema一元化: 副作用なし、`wiring.ts`はdormant flagのみで無関係。
+- A-7秒精度修正: Kotlin構文・型ともに正しい、逆方向リスク(前回runの誤混入)は実質ゼロと確認。
+- extractTextのAlert表示: `browserPaneResult.text`はtainted(page-derived)だが、sinkがネイティブAlert文字列表示のみでHTML/JS評価・WebView注入・モデル入力・外部送信のいずれでもないためXSS相当のリスクなし、既存taint規約と整合。
+- TTSロケール: React hook規約違反なし。
+- ビジョン配線: 非Gemini providerの明示エラー分岐がcompanion auto-routeのlocalリトライを誘発しないことを確認(throwせずcontent直接設定)。Gemini応答は既存untrusted contentと同じ扱いで新規の外部実行sinkに接続されていない。
+
+**Fable5が発見した重大指摘(即修正)— 画像サイズガード欠如、「唯一の実機クラッシュ候補」**: `ImagePicker.launchImageLibraryAsync`の`quality: 0.7`はJPEG再エンコード品質のみでピクセル寸法を制限しない。高解像度写真のbase64がGeminiのinline_data制限(~20MB)やRN bridgeメモリを圧迫しクラッシュしうる。**同セッション内で修正**: `expo-image-manipulator`(`~14.0.8`、corepack経由のpnpmでインストール — 環境のPATHにpnpm本体が無かったため`corepack pnpm add`で回避)を追加し、長辺が1568pxを超える場合のみリサイズ(縮小のみ、拡大なし)、常にJPEG形式・quality 0.7で再エンコードしてbase64取得するよう`AIPane.tsx`の`handleAttach`を修正。
+
+**Fable5が発見した軽微バグ(即修正)— extractText空文字結果が無音**: `browserPaneResult.text`の真偽値チェック(`&& browserPaneResult.text`)が空文字列("")の場合falsyになり、「抽出成功だが要素が空だった」ケースでAlert自体が出ず、ユーザーが「実行されたか」すら分からなかった。`kind === 'extractText'`のみでAlertを出すよう変更し、空文字時は`agent_action_confirm_browserpane_extracted_empty`の専用文言を表示するよう修正。
+
+**Fable5のUI設計への懸念(v1として許容、恒久設計への反対意見、未対応)**: `handleAttach`の「ストリーミング中はキャンセル、そうでなければ画像添付」という二役ボタンは、300msのタイミングでキャンセルと添付を取り違えるレースリスクがあると指摘。恒久対応案(キャンセルをストリーミング中のバブル内停止ボタンへ分離、添付は画像ステージング+自由入力に変更)はP1として次回持ち越し。
+
+**Fable5の指摘・未対応(P1として記録)**:
+1. **extractText結果をエージェント自身が見られない** — Alertは人間向けの最低ラインとしては十分だが、「extract→判断→次アクション」というエージェントの知覚ループが閉じない。Fable5は「ビジョン配線が入った今、これが最優先(1位)に昇格」と評価。AI Paneへの`pendingExternalPrompt`相当の注入経路でコンテキスト投入する形が本命。
+2. 画像添付が会話履歴にマーカーなしで残るため、次ターンで「さっきの画像」への言及が来るとGeminiが幻覚を起こしうる。履歴に`[image attached — not carried forward]`等のマーカー追加を推奨(影響範囲の特定に追加調査が必要なため今回は見送り)。
+3. ユーザーバブルに画像サムネイル表示がない(UX follow-up)。
+4. `.slice(0, 1000)`はサロゲートペア分断の可能性(絵文字末尾での文字化け、cosmetic)。
+
+**Codexの指摘・未対応(P2として記録)**: `lib/gemini.ts:269`のAPIキー欠落エラーメッセージが日本語ハードコードのまま(TTSロケール修正と同種の既存負債、今回のスコープ外)。
+
+**検証**: `npx tsc --noEmit` clean。フルテストスイート3706件中3674件PASS(失敗30件、既知のWindows固有パスバグ5スイートのみ、今回変更したファイルとは無関係。前回26件から30件への変動はこれらのテストの非決定的な性質によるもの)。`ai-pane-dispatch-interaction-order.test.tsx`(76件)は全PASS。
+
+**次回持ち越し(優先順位、Fable5評)**:
+1. extractText→AI Pane注入(知覚ループ閉鎖) — 新規最優先
+2. ビジョンv1.1(handleAttachの二役ボタン分離、画像ステージング+自由入力、履歴マーカー)
+3. Agent contract view
+4. スキルカタログ拡充
+
+→ sync: README Status表の変更なし(内部correctness fix + 依存追加)。
 
 ---
 
