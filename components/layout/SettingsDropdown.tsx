@@ -791,21 +791,17 @@ function SliderRow({
   const valueAtGrant = useRef(value);
   const panResponder = useRef(
     PanResponder.create({
-      // Root cause of a 2026-08-28 on-device scroll bug: this used to claim
-      // the responder unconditionally on touch-down AND on every move, which
-      // meant a vertical scroll gesture starting anywhere over this row's
-      // slider track never reached the parent Settings ScrollView at all —
-      // it got swallowed here first. Only claim once a move is clearly
-      // horizontal (past a small touch-slop), so a vertical drag over the
-      // track falls through to the ScrollView like it does everywhere else.
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_e, gestureState) => {
-        const TOUCH_SLOP = 4;
-        return (
-          Math.abs(gestureState.dx) > TOUCH_SLOP &&
-          Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
-        );
-      },
+      // 2026-08-29: `32a9c6a27`'s dx/dy heuristic (claim only once a move is
+      // clearly horizontal) still let an accidental horizontal jitter right
+      // at the start of a vertical scroll win the 4px slop check and claim
+      // the responder permanently — reported on-device as "scrolls fine at
+      // first, then freezes", root-caused via Codex review. This screen has
+      // no horizontal scrolling anywhere, so there's no direction to
+      // disambiguate: the responder is now scoped to touches starting on the
+      // thumb itself (see hitSlop below), not the whole track. A vertical
+      // drag starting anywhere else on the track always falls through to the
+      // Settings ScrollView untouched.
+      onStartShouldSetPanResponder: () => true,
       onPanResponderGrant: () => {
         valueAtGrant.current = value;
       },
@@ -819,10 +815,14 @@ function SliderRow({
   return (
     <Row label={label}>
       <View style={styles.sliderGroup}>
-        <View style={styles.sliderTrackWrap} {...panResponder.panHandlers}>
+        <View style={styles.sliderTrackWrap}>
           <View style={[styles.sliderTrack, { backgroundColor: C.border }]}>
             <View style={[styles.sliderFill, { width: fillWidth, backgroundColor: C.accent }]} />
-            <View style={[styles.sliderThumb, { left: fillWidth - 5, backgroundColor: C.accent }]} />
+            <View
+              style={[styles.sliderThumb, { left: fillWidth - 5, backgroundColor: C.accent }]}
+              hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+              {...panResponder.panHandlers}
+            />
           </View>
         </View>
         <Text style={[styles.sliderPercent, { color: C.text2 }]}>{value}%</Text>
