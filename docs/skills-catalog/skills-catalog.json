@@ -38,6 +38,159 @@
       "contentAssetName": "agent-skill-authoring.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/agent-skill-authoring.SKILL.md",
       "sha256": "4a797013c6a2ca961585db6666470af4f132f81e3a13ce57f51b0107a0fe3313"
+    },
+    {
+      "name": "daily-digest-composer",
+      "description": "Compose a scheduled digest (daily/weekly) that is skimmable in ten seconds instead of a raw dump of everything collected during the run.",
+      "version": "1.0.0",
+      "tags": ["agent", "digest", "notify"],
+      "contentAssetName": "daily-digest-composer.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/daily-digest-composer.SKILL.md",
+      "sha256": "1ef1cb74f878230d22ae06c57135d52f5541fe37b4ed394fe7832f6197bd1bc7"
+    },
+    {
+      "name": "notification-triage",
+      "description": "Decide whether an incoming notification-triggered agent run actually warrants an action, instead of firing every time the trigger matches.",
+      "version": "1.0.0",
+      "tags": ["agent", "notification", "safety"],
+      "contentAssetName": "notification-triage.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/notification-triage.SKILL.md",
+      "sha256": "da2b99a53cabc569b09f0217f66209b60cdb0c380d927cef93bd6001d2b7d7eb"
+    },
+    {
+      "name": "social-post-drafting",
+      "description": "Draft a platform-appropriate social/chat post before an agent's Social Post or App-Act action publishes it, instead of posting the raw run output.",
+      "version": "1.0.0",
+      "tags": ["agent", "social", "drafting"],
+      "contentAssetName": "social-post-drafting.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/social-post-drafting.SKILL.md",
+      "sha256": "042b6c2b8363e1f1489e8a3ccf11a8cfe4e556fb8ed2212e310c013d9f790a04"
+    },
+    {
+      "name": "repo-maintenance-sweep",
+      "description": "Run a periodic repo-hygiene pass (stale branches, uncommitted work, dependency drift, stray TODOs) instead of letting small maintenance debt accumulate silently.",
+      "version": "1.0.0",
+      "tags": ["git", "maintenance", "workflow"],
+      "contentAssetName": "repo-maintenance-sweep.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/repo-maintenance-sweep.SKILL.md",
+      "sha256": "1b78c205ccce2afe05a21c8ce218c5a342a505e79c6623b8740ebca17ffbb479"
+    },
+    {
+      "name": "web-research-brief",
+      "description": "Turn a browser-pane research session into a short, cited brief instead of handing back a pile of open tabs and raw page text.",
+      "version": "1.0.0",
+      "tags": ["browser", "research", "dev"],
+      "contentAssetName": "web-research-brief.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/web-research-brief.SKILL.md",
+      "sha256": "befc78a5aa60ae68fe59a661f05c39a1ee60e5a6e365b79566d5d826d7ec3dc4"
+    },
+    {
+      "name": "browser-change-watch",
+      "description": "Design a browser-pane page-change monitoring agent that alerts on a real change, not on every reload's incidental noise.",
+      "version": "1.0.0",
+      "tags": ["browser", "agent", "monitoring"],
+      "contentAssetName": "browser-change-watch.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/browser-change-watch.SKILL.md",
+      "sha256": "33cc2a562d409e9564db9afc98e5fcc4c4dd1ebaf39a3ace93f9b681ab8ce335"
+    },
+    {
+      "name": "privacy-local-only-analysis",
+      "description": "Keep a sensitive task strictly on-device (local LLM only), refusing the normal cloud-escalation ladder even when the local model struggles.",
+      "version": "1.0.0",
+      "tags": ["privacy", "local-llm", "agent"],
+      "contentAssetName": "privacy-local-only-analysis.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/privacy-local-only-analysis.SKILL.md",
+      "sha256": "552df7faac6c0d78d91a7efb3c62c64264923b81ae895b4279d61b17a24727d8"
+    },
+    {
+      "name": "app-act-flow-design",
+      "description": "Design a safe, narrowly-scoped App-Act recipe (cross-app UI automation) before registering it for unattended use.",
+      "version": "1.0.0",
+      "tags": ["agent", "app-act", "safety"],
+      "contentAssetName": "app-act-flow-design.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/app-act-flow-design.SKILL.md",
+      "sha256": "1d2172d5e5e3b7aa42ab0e85fd44b2932f52a44e80a37e85e4e92cd5781da14f"
+    },
+    {
+      "name": "code-review-checklist",
+      "description": "Review a diff systematically for correctness, safety, and test coverage before approving it, instead of skimming for obvious typos.",
+      "version": "1.0.0",
+      "tags": ["dev", "review", "quality"],
+      "contentAssetName": "code-review-checklist.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/code-review-checklist.SKILL.md",
+      "sha256": "4e42245dc76bc093063e52898362142046c92752a994fc07e92fba1072efcacb"
+    },
+    {
+      "name": "test-coverage-gapfinder",
+      "description": "Find the highest-value untested code paths and propose tests for those first, instead of chasing a coverage percentage.",
+      "version": "1.0.0",
+      "tags": ["dev", "testing", "quality"],
+      "contentAssetName": "test-coverage-gapfinder.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/test-coverage-gapfinder.SKILL.md",
+      "sha256": "2a2c9d888d72215cd480178ba9055d2a1531b94f2beab8cf33528ea2b984a940"
+    },
+    {
+      "name": "dependency-audit",
+      "description": "Triage outdated and vulnerable dependencies by real upgrade risk before touching any lockfile, instead of bulk-bumping everything.",
+      "version": "1.0.0",
+      "tags": ["dev", "security", "dependencies"],
+      "contentAssetName": "dependency-audit.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/dependency-audit.SKILL.md",
+      "sha256": "b6bb583020f99ea03900087aec80e6988f65fbe96a888968d292332d8909fcab"
+    },
+    {
+      "name": "disk-cleanup-triage",
+      "description": "Reclaim device or project storage by deleting genuinely reproducible files, never anything irreplaceable, and always showing what would be freed before deleting.",
+      "version": "1.0.0",
+      "tags": ["device", "storage", "safety"],
+      "contentAssetName": "disk-cleanup-triage.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/disk-cleanup-triage.SKILL.md",
+      "sha256": "34aebd03cbdca44a8ef28193549a0021c4645a44cd4c5f3a148ad0f4e1d752c8"
+    },
+    {
+      "name": "meeting-notes-summarizer",
+      "description": "Turn raw meeting notes or a voice transcript into clear decisions and action items, instead of a re-formatted wall of everything that was said.",
+      "version": "1.0.0",
+      "tags": ["productivity", "voice", "summarization"],
+      "contentAssetName": "meeting-notes-summarizer.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/meeting-notes-summarizer.SKILL.md",
+      "sha256": "566072efb44035ada717b55d8f0ea4ff9116487814cc030b69f0cc0382bc8df3"
+    },
+    {
+      "name": "rss-digest-curation",
+      "description": "Curate a list of feeds/sources into a skimmable digest by relevance, instead of forwarding every new item as noise.",
+      "version": "1.0.0",
+      "tags": ["agent", "digest", "research"],
+      "contentAssetName": "rss-digest-curation.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/rss-digest-curation.SKILL.md",
+      "sha256": "7d98b74f37ff7c24017d33a785ff6c6c21741de99982cf0e87c29b54841ca6d6"
+    },
+    {
+      "name": "build-health-monitor",
+      "description": "Periodically check CI/build status and catch a regression trend early, instead of only noticing a broken build when someone hits it.",
+      "version": "1.0.0",
+      "tags": ["agent", "ci", "monitoring"],
+      "contentAssetName": "build-health-monitor.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/build-health-monitor.SKILL.md",
+      "sha256": "41db44c53551c6076f310be04726d865e7dd79dd95a23e6c3d20033098cdfab7"
+    },
+    {
+      "name": "translation-pass",
+      "description": "Add or update a translated string so it matches every locale's keys and tone, instead of leaving locale files out of sync.",
+      "version": "1.0.0",
+      "tags": ["i18n", "dev", "quality"],
+      "contentAssetName": "translation-pass.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/translation-pass.SKILL.md",
+      "sha256": "17b116dce4d2a500a9b5c7f7562bd8ba8d26bff275699c0b325329ecfcc76763"
+    },
+    {
+      "name": "incident-postmortem",
+      "description": "Write a blameless postmortem that identifies the real root cause and a concrete follow-up, instead of a narrative that just restates what happened.",
+      "version": "1.0.0",
+      "tags": ["dev", "incident", "process"],
+      "contentAssetName": "incident-postmortem.SKILL.md",
+      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/incident-postmortem.SKILL.md",
+      "sha256": "d93397b7a2475e8c31ccf70296a263a1952ae6db6ac23e5522a0c9725563cf01"
     }
   ]
 }
