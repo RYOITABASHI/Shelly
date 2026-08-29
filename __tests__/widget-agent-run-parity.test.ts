@@ -72,7 +72,10 @@ describe('Scouter widget registered-agent RUN security parity', () => {
     // breaker. Widget runs carry neither scheduling extra, so they cannot enter
     // this outcome/re-arm branch even though `manual` makes them unattended.
     expect(service).toContain("if (intervalMs > 0 || !cron.isNullOrBlank()) {");
-    expect(service).toContain('val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult))');
+    // bug #170 A-7 fix (2026-08-29): scheduledRunFailed gained a runStartMs
+    // parameter so it can require a run-log written at or after this run
+    // started, guarding against misreading a stale log from a previous run.
+    expect(service).toContain('val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))');
     // NOTIFY-001 Increment 3 extended the call with notification text/package
     // params, and the native circuit breaker later added schedule params. All
     // are nullable/defaulted for widget runs — extended in lockstep.
