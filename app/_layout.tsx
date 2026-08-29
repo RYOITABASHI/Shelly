@@ -67,6 +67,7 @@ import {
 } from '@/lib/agent-browser-pane-review';
 import { executeBrowserPaneAction, BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR } from '@/lib/browser-pane-automation';
 import { captureBrowserExtractMemory } from '@/lib/agent-manager';
+import { truncateAtCodePointBoundary } from '@/lib/text-truncate';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -404,7 +405,11 @@ export default function RootLayout() {
           // way to tell "it extracted nothing" apart from "did this even
           // run?". Show the empty-result copy explicitly instead.
           const text = browserPaneResult.text ?? '';
-          const preview = text.length > 1000 ? `${text.slice(0, 1000)}…` : text;
+          // truncateAtCodePointBoundary (lib/text-truncate.ts): a plain
+          // `.slice(0, 1000)` can split a surrogate pair (emoji, some CJK
+          // extension characters) right at the cut, leaving a lone
+          // unpaired surrogate that renders as mojibake (DEFERRED.md).
+          const preview = truncateAtCodePointBoundary(text, 1000);
           Alert.alert(
             t('agent_action_confirm_browserpane_extracted_title'),
             preview || t('agent_action_confirm_browserpane_extracted_empty'),
