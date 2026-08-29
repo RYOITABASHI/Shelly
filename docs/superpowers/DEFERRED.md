@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-29: Fable5・Codex双方が「Yes」到達後、Hermes Agent公式サイト実確認とユーザー指示「同等以上を目指す」を受け、両者に完全ロードマップを再依頼。5件実装(signed-approval schema一元化、A-7秒精度バグ、extractText結果表示、TTSロケール修正、ビジョン解析配線)。フルテスト3706件中3678件PASS(既知のWindows固有失敗除く)。
 - 2026-08-29: CIビルド成功後、実機(Z Fold6、versionCode 2334)にインストールしA-7中心に検証。3連続approval timeout(skipped)ではbreaker非発動という設計通りの実データを確認したが、意図したexitCode0+status:errorの完全シナリオ再現はterminal input経由のシェルスクリプト編集がAndroid input textの制約で困難と判明し断念。新規P3(自由文でのagent削除依頼がローカルLLMのハルシネーションを招く)を発見。
 - 2026-08-29: Fable5/Codexへの再評価依頼で「social-post修正は部分解消(NotificationDispatcher.ktのrequiresReview漏れ、one-tap Allow経路が残存)」「A-7にstale-log誤読の残存エッジ」を発見、5件追加実装(社会投稿review漏れ修正、api-call到達不能解消、A-7 run開始時刻照合、TS型同期、approval action type schema一元化+parityテスト新設)。全309テストPASS。
 - 2026-08-29: Codex単独コード監査で同じ問い(Fable5と独立)を再評価、同じ「条件付きYes(late beta)」判定。新規P1(social-post承認UIのnative/JS drift)を発見・同セッションで修正実装。A-7(circuit breaker soft-failure非対称)修正済み実装をCodexの指摘と突き合わせて再確認。
@@ -533,6 +534,50 @@
 - 新規P3: `delete the <agent> agent`のような自由文でのエージェント削除依頼が、決定論的パーサー未対応のためローカルLLMのハルシネーション回答を招く。
 
 → sync: README Status表の変更なし(実機QA記録)。
+
+---
+
+### 2026-08-29 Fable5/Codex最終判定「Yes」到達 + 実サイト確認による「同等以上」ロードマップ策定 + P0/P1実装ラウンド
+
+**背景**: A-7 stale-log秒精度修正(下記1番)以外の追加5件実装(social-post requiresReview/api-call到達可能化/TS型同期/schema一元化/A-7 runStartMs)を経て、Fable5・Codex双方に再評価を依頼した結果、**両者とも初めて「Yes」(無条件/GA候補)と判定**。Fable5は「Hermes同等以上はまだ主張しない」と明言し、残差分として(a)app.actの汎用性、(b)クロスOEM未検証、(c)Agent contract view不在を挙げた。
+
+**ユーザー指摘によりHermes Agent公式サイト(https://hermes-agent.org/ja/)を直接確認**した結果、これまでの前提(DEFERRED.mdの過去調査ベース)との差分が判明: マルチプラットフォーム対応(Telegram/Discord/Slack/WhatsApp/Signal/CLI)、40+組み込みスキル、MLOpsプラットフォーム機能、完全ブラウザ制御/ビジョン/画像生成/音声合成が、想定より前面に出た機能として存在。
+
+**プロダクトオーナー指示**: 「N=1(クロスOEM未検証)のようにどうしようもない条件を除いて、全てクリアし同等以上を目指す」。Fable5・Codexへ新情報を踏まえた完全ロードマップ策定を再依頼(Fable5は3つの並列探索エージェント[スキルカタログ/ブラウザ・ビジョン・音声/メッセージング接続]で実コード精査、Codexも独立監査)。
+
+**両者のロードマップから判明した実ギャップ(想定より少ない)**:
+1. スキルカタログの量(4個のみ、「40+」は誇張。インフラは完成、コンテンツ不足)
+2. **ビジョン解析が配線されていない** — `lib/gemini.ts`の`geminiMultimodalStream`は完全実装済みだが呼び出し元ゼロ(デッドコード)。画像添付UI(`components/input/CommandInput.tsx`)もCLAUDE.md記載の既知デッドコード
+3. **extractText結果が破棄される** — `app/_layout.tsx`のbrowser-pane accept処理が`isAcceptedBrowserPaneResult`のok/errorだけ見て`browserPaneResult.text`を握りつぶす。executorの「fire-then-reply」設計(run-logは承認要求成功時点で即書き込み、実際のDOM操作は非同期)によりrun-log側に結果を書き戻す経路が存在しない
+4. 音声合成(`lib/tts.ts`)が**`language: 'ja-JP'`にハードコード**——英語返信/英語ロケールでも日本語音声で読み上げられる
+5. マルチプラットフォーム: Discord/Slack公式bot・WhatsApp/Signal API統合は無いが、`lib/notification-inbound.ts`の汎用通知チャネル(任意アプリの通知→sender exact match→dm-reply)が実質的に代替(「オンデバイスメッセージングゲートウェイ」として方針明文化が必要、Hermesと同じサーバー常駐bot方式は追わない判断を維持)
+6. `lib/signed-approval/types.ts`の`ApprovalActionType`が`lib/agent-action-types.ts`と別定義のまま(`api-call`欠落)でschema一元化から漏れていた
+
+**MLOps/画像生成/Discord・Slack公式bot/Playwright級ブラウザ自動化は「意図的に追わない」と結論**(端末内完結プロダクトの設計思想、2026-07-28ロードマップの判断を再確認)。
+
+**今回実装した5件**:
+
+1. **`lib/signed-approval/types.ts`のschema一元化**: 独自定義していた`ApprovalActionType`を`lib/agent-action-types.ts`からの re-export に変更。`__tests__/agent-action-type-schema-parity.test.ts`に再エクスポート形を検査するテストを追加。
+
+2. **A-7のstale-log秒精度バグ修正**(Fable5指摘): レガシー`.sh`executorの`${TS}000`(秒精度、下3桁は常に000)とKotlin側`runStartMs`(ミリ秒精度)の粒度差により、run開始と同一秒内に書かれた新鮮なログが最大999ms差で誤って「run開始前」判定されうる問題を、`runStartMs`を秒に切り捨てて比較する1行修正で解消(`TerminalSessionService.kt`)。
+
+3. **extractText結果破棄の修正**(Fable5 P0-2): `app/_layout.tsx`のbrowser-pane accept処理で、`kind === 'extractText'`かつ結果テキストがある場合にAlertで表示するよう追加。executor側のrun-logには経路が無いため、アプリ内アラートが人間に結果を届けられる唯一の残された場所と判断。
+
+4. **音声合成のロケールハードコード修正**: `lib/tts.ts`の`speakText`が常に`ja-JP`で読み上げていたのを、`useI18n`の現在ロケールに応じて`ja-JP`/`en-US`を切り替えるよう修正。「コードブロック省略」「以下省略」の文言もi18nキー化(`tts_code_block_omitted`/`tts_truncated_suffix`)。新規テスト`__tests__/tts-locale.test.ts`(4件)。
+
+5. **ビジョン解析の配線**(Fable5 P1-2、実装済み資産の活用): `hooks/use-ai-pane-dispatch.ts`の`AIPaneDispatchOptions`に`images`フィールドを追加し、Gemini分岐で画像がある場合は`geminiMultimodalStream`(既存実装、これまで呼び出し元ゼロだった)を呼ぶよう配線。Gemini以外のプロバイダで画像添付があった場合は`ai_pane_images_require_gemini`メッセージで明示的に説明(サイレントに無視しない)。`components/panes/AIPane.tsx`の`handleAttach`(これまで実際には「添付」ではなくストリーミングキャンセル専用だった、紛らわしい実装)を、ストリーミング中は従来通りキャンセル、そうでなければ`expo-image-picker`でギャラリーから1枚選択しデフォルトプロンプト付きで即送信するよう拡張。新規回帰テスト3件を`__tests__/ai-pane-dispatch-interaction-order.test.tsx`に追加(画像添付時にgeminiMultimodalStreamが呼ばれる/呼ばれない/他プロバイダでの明示エラー)。
+
+**検証**: `npx tsc --noEmit` clean。フルテストスイート3706件中3678件PASS(失敗26件は前回セッションで変更前から存在すると確認済みのWindows固有パスバグ、`plan-executor*`/`capability-broker`系、今回の変更と無関係)。新規テスト計7件(tts-locale 4件+ai-pane-dispatch画像添付3件)含め全PASS。
+
+**次回持ち越し(未着手)**:
+- Agent contract view(Fable5 P1-3、中規模): `lib/agent-contract-view.ts`新設、`Sidebar.tsx`のAlertベース`showAgentDetail`を置換。
+- スキルカタログ拡充 4→20+(P1-1、コンテンツ作業中心)。
+- app.actの段階的汎用化Phase 1(P1-4、大規模): 観測専用accessibility-tree snapshot→レシピ下書き生成→ユーザー保存。
+- オンデバイスメッセージングゲートウェイ方針の明文化(README比較表への反映)。
+- 自由文でのagent削除依頼のパーサー対応(前回発見のローカルLLMハルシネーションへの根本対応、現状はsystem prompt注記のみ)。
+- A-7完全シナリオの実機検証(Codexが`adb push`ベースの具体的なQAスクリプトを提供済み、次回実機QA枠で使用)。
+
+→ sync: README Status表の変更なし(内部correctness fix + 実装済み資産の配線)。
 
 ---
 
