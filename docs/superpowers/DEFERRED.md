@@ -16,6 +16,10 @@
 
 ## History
 
+- 2026-08-29: Fable5/Codexへの再評価依頼で「social-post修正は部分解消(NotificationDispatcher.ktのrequiresReview漏れ、one-tap Allow経路が残存)」「A-7にstale-log誤読の残存エッジ」を発見、5件追加実装(社会投稿review漏れ修正、api-call到達不能解消、A-7 run開始時刻照合、TS型同期、approval action type schema一元化+parityテスト新設)。全309テストPASS。
+- 2026-08-29: Codex単独コード監査で同じ問い(Fable5と独立)を再評価、同じ「条件付きYes(late beta)」判定。新規P1(social-post承認UIのnative/JS drift)を発見・同セッションで修正実装。A-7(circuit breaker soft-failure非対称)修正済み実装をCodexの指摘と突き合わせて再確認。
+- 2026-08-29: Fable5単独レビューで「Android版Hermes Agentと呼べるプロダクトになったか」を再評価、2026-08-10の「強い主張は支持できない」判定を覆し「条件付きYes(late beta)」と判定。ユーザー指摘を受けbug #170(Settingsスクロール固着)をSliderRowの当たり判定をつまみのみに限定する形で修正実装、コードベース横断で同種のPanResponder/GestureHandler競合が他に無いことも確認。
+- 2026-08-29: ローカル`main`が222コミット遅れ(2026-08-09時点)だったため`origin/main`(`f4281e9d8`)へfast-forward、Z Fold6実機(versionCode 2327)でQA。`shelly install <pack>`の残タスク(e)(f)が全PASS、8/25〜8/28にmainへ着地した3 squadブランチ(quality-floor/proactivity/packs)がDEFERRED.mdに一切記録されていなかった記録漏れを発見。squad2-proactivityのwelcome-back挨拶に新規バグ(下記)を発見、squad1-qualityのCompanion brain auto-routingトグルとsquad3(SliderRow/ScrollViewスクロール修正)は実機で到達性・動作を確認。
 - 2026-08-25: Fable5の新規性・需要・完成度レビュー(ロードマップ7項目)を受けて実装した5項目の未検証部分を記録。Fix1/Fix2(境界ポリシー・承認デフォルト)はCI実行のtsc/jestで検証済み、item #3/4/5/6/7はコードレベル検証(tsc+jest)のみで実機QA未実施として上記P1/P2エントリに追加。
 - 2026-08-17: background agentによるShelly実機QA（terminal⇄sidebar併用セッション）で、REPOSITORIESセクションの「+ ADD REPOSITORY」ボタンが特定の操作後に無反応になる（`addRepoVisible`はtrueのままだがモーダルのネイティブwindowが消失、アプリ再起動でのみ復帰）問題を発見。原因はデバイス非接続のPCワークツリーセッションでは特定できず（下記bug #168参照）、確定原因調査ではなく防御的fixで対応した。
 - 2026-08-17: background agentによるScouterウィジェットのagent一覧実機QAで、`WidgetAgentRepository`が`dm-pairings.json`（JSON配列）を毎分agentメタデータとしてパース試行し、失敗時の`org.json.JSONException`メッセージに生ファイル内容（連絡先名等）が埋め込まれてlogcatへ漏れる問題を発見・修正。
@@ -424,6 +428,85 @@
 **背景**: プロダクトオーナーから「これでやっと、Shellyが【Hermes AgentのAndroid版】と呼ぶにふさわしいプロダクトになったか」という純粋な実現可能性の問いを受け、Fable5(実機2件: Hermes 6本柱E2E + Shelly本体の一般レビュー)とCodex(コード監査2件: Hermes 6本柱 + Shelly本体全体)を独立並列で実施。対象HEAD: `af24f46b3`。過去の楽観的な記録(2026-07-28ロードマップ、2026-08-04/05のステータス総点検・実機PASS)を鵜呑みにせず、ゼロから再検証した。
 
 **結論(4レポート共通の総合判定)**: 6本柱(NL登録→確認→実行→スキル学習→メモリ→無人スケジュール発火)は**実機で実際に一気通貫に連鎖することを確認**(Fable5#1がPASS、成果物がディスク上の正しい場所に着地することも確認済み)——「機能が個別に存在するだけ」ではなく統合されている、という点は肯定的に支持された。**しかし**、Codexのコード監査2件がこの統合の裏で複数のFAIL級の安全性・完成度ギャップを発見し、「Androidの制約下でHermes Agentのような自律AIエージェント体験を実現できる」という強い主張はコードレベルでは支持できないと結論。またFable5#2がCLAUDE.mdの記載と現mainの実体が乖離している非エージェント機能(Fig風補完・インラインコンテンツ表示)も発見した。**「高機能な上級ベータ」が現時点での最も正確な評価。**
+
+---
+
+### 2026-08-29 Hermes Agent妥当性再レビュー(Fable5単独、対象main `f4281e9d8` / versionCode 2327)— 総合判定「条件付きYes」、2026-08-10のNo判定を覆す
+
+**背景**: プロダクトオーナーから改めて「現状のShellyでAndroid版のヘルメスエージェントと呼べるプロダクトになったか」を問われ、Fable5(`model: fable`)に単独レビューを依頼。DEFERRED.md(5,707行)の過去レビュー記録全系列、README.md Status表、および2026-08-10当時FAIL判定だった安全性ギャップの実コード(`lib/agent-boundary-policy.ts`/`store/settings-store.ts`/`lib/agent-manager.ts`/`ShellyNotificationListener.kt`/`store/`ディレクトリ実体)を突き合わせて検証した。
+
+**結論**: **条件付きYes — 初めて「呼べる」側に判定を動かす。ただし「呼べる製品」であって「呼べる安定版」ではまだない。** 2026-08-10時点でNo判定の根拠だったFAIL級ギャップ(A-1〜A-6、A-13、A-14、B-1、D-1/D-2)は全て実コード上で解消を確認。セキュリティモデルはHermesのManual-defaultに相当する形(登録確認+実行時per-action承認がデフォルトON=`store/settings-store.ts:212`、L1/L2/L3のautonomy ladder、fail-closed化された`haltAllAgents()`=`lib/agent-manager.ts:2554-2579`)に収束。6本柱は2026-08-10以降もparallelGroupファンアウト3並列実発火・companionスレッド再入場・キャリーフォワードまで実機で伸びており、Hermesの6本柱に対して欠けている柱はもう無いと判定。
+
+**Shellyの独自の強み(Hermesを上回る点、Fable5評)**: (1)モバイルで動く点そのもの——Hermesはデスクトップ専用でモバイル対応ゼロ、画面OFF・force-stop中でもAlarmManager+native backoffで発火が生き残る土俵はHermesに存在しない。(2)app.actがモバイル版computer-use相当として差別化点になっている。(3)端末ネイティブ統合(JNI forkpty+バンドルツール+オンデバイスllama.cpp)。(4)説明責任のある記憶UI(journal閲覧/編集/削除+上限付きrecall)はHermesの水準を超えている。(5)README Status表のN=1明記等、正直さの文化。
+
+**残存ギャップ(「呼べる」の条件部分、P1/P2として要対応)**:
+1. bug #170(Settingsスクロール固着)— 本セッション内で修正実装済み(下記参照)、実機再検証待ち。
+2. bug #169(welcome-back挨拶の重複永続化)— 未修正。squad2の「プロセス毎1回」設計が実機ではActivity再開毎に発火。digest対象への混入も未確認。
+3. A-7(circuit breakerのforeground依存)は保守的に未解決扱いを維持——`TerminalSessionService`側breakerがexitCode-0のソフト失敗を数えない非対称は残存。
+4. A-11/A-12は「修正」ではなく「文書化された設計」のまま——`authorizedSenders`空のagentはpackage到着だけで起動する。
+5. 検証の広さ: 完全無人サイクルの通し観測はN=1系、クロスOEM(Samsung以外のbattery-freezer)は未検証。2026-08-25実装群の一部がtsc/jestのみで実機QA未消化。
+6. 運用規律の綻び: squad3ブランチがDEFERRED.md未記録でmain着地(2026-08-29に事後記録、bug #169はその直接の副産物)。「安定版」を名乗るにはこの規律の回復が前提。
+7. computer-use相当の射程差: app.actはレシピベースでHermesの`cua-driver`のような汎用accessibility-tree駆動ではない(方針として妥当だが継続課題)。URL出力即オープンのP3挙動(bug #170と同セッションで実機再確認)もUX棘として残る。
+
+**総括(Fable5自身の言葉)**: 「2026-08-10の『強い主張は支持できない』を覆す材料は揃った——当時の否定根拠は個別に潰され、その解消の大半が実機検証まで通っている。よって『Android版Hermes Agentと呼べるプロダクトになったか』にはYesと答える。ただしそれは『カテゴリとして到達した』というYesであり、bug #170の修正、#169の修正とdigest汚染確認、squad実装群の実機QA消化、そしてDEFERRED.md記録規律の回復までは、『呼べる』の後ろに小さく『(late beta)』を付けておくのが、このリポジトリ自身の正直さの流儀に合う。」
+
+→ sync: README Status表の変更なし(内部レビュー記録、機能一覧に影響する変更なし)。
+
+---
+
+### 2026-08-29 Codex単独レビュー(コード監査、対象main `f4281e9d8`直後) — Fable5と同じ「条件付きYes」判定+新規P1発見(social-post approval UI drift)
+
+**背景**: 上記Fable5レビューに続き、ユーザー指示によりCodexにも独立でコード監査ベースの同じ問いを依頼。Fable5のレポートを判断材料として渡しつつ、Codex自身のコード監査で検証させた。
+
+**結論**: 条件付きYes、Fable5と同一の判定。「6本柱はコード上ほぼ統合されている。一方で外部イベント起動、native/JS の breaker 非対称、approval action type の drift、実機検証の狭さが残っており、まだ強い安全性主張には caveat が必要」「late beta 判定が妥当」。
+
+**新規発見1(P1)— social-postの承認UIがnative/JS間でdrift、実在確認・修正実装済み**: `AgentActionApprovalBridge.kt:225-232`は`social-post`を2026-07-22から正式サポートしコメント自身が「must be accepted here or the native watcher silently DROPS its approval request...the human never sees an Allow/Deny notification」と明記していたが、`app/_layout.tsx`側の`AgentActionApprovalRequest`型・パース許可リスト・通知タップのreview-requiredバケット・確認モーダルのUI分岐のいずれにも`social-post`が含まれていなかった。非allowlistホストへのsocial-post(常に人間承認必須の設計)がJS側に一切表示されずタイムアウトし得る、という実害のある構造的ギャップだった。**同セッション内で修正実装完了**: `actionType`型・パース許可リスト・review-requiredバケット(1130-1140行目)・title/body/detail UI分岐(`webhook`と同じhost+preview表示パターン)に`social-post`を追加、en/ja i18nキー6個(`agent_action_confirm_{title,body,socialpost_host,socialpost_known_host,socialpost_new_host,socialpost_preview}`)を追加。`webhook`同様、承認後の実処理はexecutor側が担当するため専用のacceptハンドラーは不要と判断(既存の`app-act`/`intent`/`dm-reply`/`browser-pane`のような追加ネイティブ呼び出しが無い設計との整合を確認)。`npx tsc --noEmit` clean。実機検証は次回オンデバイスQA枠で必須(非allowlistホストのsocial-postエージェントを実際に登録し、承認モーダルが正しく表示・Allow/Denyが機能するか確認すること)。
+
+→ sync: README Status表の変更なし(既存機能のcorrectness fix)。
+
+**新規発見2 — Codexが指摘したA-7の時点でのコード状態、実際には並行して既に修正着手していた**: Codexの調査は`TerminalSessionService.kt`の`scheduledRunFailed()`が`if (result.success) return false`を先に評価しrun-log statusを見ないままsoft failureを見逃す、という2026-08-14以来の既知ギャップを再確認したが、Codexの調査実行と並行して**本セッションが既にこの箇所を修正済み**(下記A-7エントリ参照)だったため、Codexが読んだのは修正前のコード。念のため修正後のロジックと突き合わせ、Codexの指摘した根本原因・修正方針(exitCodeより先にrun-log statusを見る)と完全に一致することを確認した。
+
+**その他の指摘(未対応、P1/P2として次回以降に持ち越し)**:
+- ~~P1: A-11/A-12(通知起動の認可送信者検証)~~ → **調査の結果、既に十分対応済みと判明(2026-08-29)**。`AgentConfirmCard.tsx:948-961`に2026-08-10のsecurity-audit finding由来の明示的な警告UIが既に実装されていた——`authorizedSenders`未設定時、`agentcard.notification_senders_unset_warning`(「⚠ 送信者を限定していません。上記アプリの通知が届くだけで...このエージェントが起動します（通知本文は読み取りません）」)が表示され、「deliberate, supported configuration」であることをコメント自身が明記。Fable5・Codexともにこの既存UIをコード監査で見落としていた。`mode`分離+デフォルト反転(Codex提案)は「文書化+明示警告」を超えるさらなる安全強化だが、既存の「明示的選択+警告表示」で「ユーザーが意識せず設定してしまう」というA-11/A-12の実害は既に解消されている。追加実装なし、P1→対応不要に格下げ。
+- P2: approval action typeが増えるたびにTS/native/executorがdriftしやすい構造課題(今回のsocial-postがその症状)。action approval schemaの単一定義からの生成、Jestのstring-gateを`app/_layout.tsx`まで拡張、を提案。
+- P2: computer-use相当(app.act)はHermesのcua-driverより狭い(方針として妥当、既知)。段階的な汎用化案(観測専用tree snapshot→human-approved recipe suggestion→saved recipe)を提案。
+- P2(UI/UX構造): 承認カードがaction/schedule/autonomy/skill/orchestrationを個別に見せ、「このagent contractは何か」が一枚で読める形になっていない。エラーもrun-log/notification/Agent Runsに分散し原因分類が直感的でない。Agent detailに「trigger / authority / approval mode / outputs / last failure reason」を統合したcontract viewを作ることを提案(P2、規模大きめ)。
+- P1: 完全無人サイクルの通し観測がSamsung N=1系のまま、クロスOEM(Pixel/Xiaomi/Oppo等のbattery-freezer)未検証。
+
+→ sync: README Status表の変更なし(内部レビュー記録)。
+
+---
+
+### 2026-08-29 フォローアップ実装ラウンド — Fable5/Codex双方の再評価を経て5件追加実装(social-post review漏れ、api-call到達不能、A-7 stale-log、schema一元化)
+
+**背景**: 上記2件のレビュー(Fable5・Codex)を踏まえた4件の初回実装(bug #170/#169/A-7/social-post drift)を、両者に再度独立検証させたところ、**「部分解消」の指摘が2件見つかった**。
+
+**Fable5の再評価**: 4件とも根本原因は正しく解消と確認しつつ、A-7に残存エッジケースを新規発見——「log選択が『ディレクトリ内の最新timestamp』のみで、run開始時刻との照合が無い。スクリプトがlogを書く前にクラッシュした場合、前回の`status:"ok"`のstale logを今回の結果として誤読し、失敗がカウントされない」(P2)。判定は「条件付きYes(late beta)維持、ただし機能面のP1バグはゼロになった」。
+
+**Codexの再評価**: A-7・A-11/A-12は解消を確認したが、**social-post修正は「部分解消」**——`app/_layout.tsx`のモーダル表示は直したが、`NotificationDispatcher.kt`の`requiresReview`に`social-post`が入っておらず、**通知シェードからone-tap Allowできてしまう経路が残っていた**(モーダル表示より深刻——app-actと同じ「resolved contentを人間が一度も見ないまま承認されてしまう」クラスのバグ)。さらに既存ギャップとして`api-call`が`AgentActionApprovalBridge.kt`のパース許可リストから漏れており、承認要求自体が到達不能(Manual承認モード時は永久ハング)だったことも指摘。
+
+**実装した5件**:
+
+1. **`NotificationDispatcher.kt`のrequiresReviewにsocial-post追加**(P1、Codex発見の真の穴): 250行目の`requiresReview`条件に`social-post`を追加。コメントで「app-actと同じクラスのバグで、むしろ悪い(公開後は取り消せない)」ことを明記。
+
+2. **`AgentActionApprovalBridge.kt`のapi-call到達不能を解消**: `fromJson`の許可リストに`api-call`を追加(コメント自身が「pre-existing gap」と認めていた箇所)。Manual承認モード時にapi-callの承認要求が永久にドロップされる問題を解消。
+
+3. **`app/_layout.tsx`にapi-call追加(一貫性のため)**: `AgentActionApprovalRequest`型・パース許可リストに`api-call`を追加。one-tap Allow経路(`REVIEW_REQUIRED_ACTION_TYPES`外)なので実際にモーダル表示されることは無いが、型/パーサーの一貫性のため追加。
+
+4. **`TerminalEmulatorModule.ts`のactionType型を現行実装に同期**: `readAgentActionApprovalRequest`/`notifyAgentActionApprovalNeeded`の2箇所とも`browser-pane`/`social-post`/`api-call`が抜けていた古い列挙(`draft|notify|webhook|cli|intent|dm-reply|app-act`のみ)を全action typeに拡張。
+
+5. **A-7のstale-log誤読リスクを解消**(Fable5指摘): `runAgentInBackground`のスレッド開始直後に`runStartMs = System.currentTimeMillis()`を記録し、`scheduledRunFailed(agentId, runResult, runStartMs)`へ渡す。run-log選定を`timestamp >= runStartMs`でフィルタしてから最新を選ぶよう変更——run-logがこのフィルタで全滅した場合のみexitCodeにフォールバック。PlanSpec executor(`Date.now()`)・レガシー`.sh`executor(`${TS}000`)の両方がミリ秒epoch統一であることを事前に確認した上で実装(単位不整合による誤検知リスクを排除)。
+
+**schema一元化(Fable5・Codex双方が強く提案、構造的な予防措置)**: `lib/agent-action-types.ts`を新規作成し、`ALL_APPROVAL_ACTION_TYPES`/`REVIEW_REQUIRED_ACTION_TYPES`/`UNATTENDED_SAFE_ACTION_TYPES`を単一の真実の情報源として定義。TS/Kotlin/bundled-JSの3言語にまたがりcodegenパイプラインが無いため重複自体は解消できないが、`__tests__/agent-action-type-schema-parity.test.ts`を新設し、`app/_layout.tsx`(型・パーサー・review-requiredバケット)・`TerminalEmulatorModule.ts`・`AgentActionApprovalBridge.kt`・`NotificationDispatcher.kt`・`AgentRuntime.kt`(`PLAN_EXECUTOR_ACTIONS`)・`shelly-plan-executor.js`(フルリスト+unattended-safeサブセット)の計8箇所を、各ファイル固有の構文に合わせた正規表現でテキスト抽出しSetとして`lib/agent-action-types.ts`と突合。今回のsocial-post/api-call driftのような「一箇所だけ更新し忘れる」失敗を次回からCIで即座に検知できる。テスト実装中に実際に`app/_layout.tsx`の`api-call`漏れをこのテスト自身が検出し(上記3番の実装のきっかけ)、実効性を確認済み。
+
+**検証**: `npx tsc --noEmit` clean。関連jest全17スイート309テスト全PASS(新規`agent-action-type-schema-parity.test.ts`の10テスト含む)。Kotlin側3ファイル(`NotificationDispatcher.kt`/`AgentActionApprovalBridge.kt`/`TerminalSessionService.kt`)の変更は実機/CI未検証のまま(Windows環境にAndroidビルド環境なし)。
+
+**次回持ち越し(未着手)**:
+- 実機QA一巡(Fable5指摘、格上げの直接条件): A-7はソフト失敗を書くテストエージェントで3連続→breaker発動確認、social-postは通知シェードのAllow/Deny両方でreview画面必須になったことを確認、api-callはManual承認モードで実際にApprovalモーダル相当(one-tap Allow)が機能するか確認。
+- Agent contract view(P2、Codex/Fable5双方提案): `Sidebar.tsx`の`showAgentDetail()`から文字列組み立てを切り出し`lib/agent-contract-view.ts`のようなpure formatterへ。trigger/authority/approval mode/outputs/last failure reasonを統合表示。
+- computer-use相当(app.act)の段階的汎用化、クロスOEM検証は引き続き未着手。
+
+→ sync: README Status表の変更なし(既存機能のcorrectness fix + 内部テストインフラ追加)。
 
 ---
 
@@ -3993,7 +4076,49 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 
 ---
 
-### `shelly install <pack>` オンデマンドツールパック — SELinux実行不可バグはコード修正済み、実機再検証待ち (P1)
+### bug #169 — companion welcome-back挨拶がアプリ再起動/フォアグラウンド復帰のたびに会話ログへ重複して永続化される（2026-08-29、実機発見、versionCode 2327） (P2)
+
+**背景**: `58e457429`(squad2-proactive、2026-08-28マージ)が実装したテンプレートベースのwelcome-back挨拶(`lib/companion-greeting.ts::shouldShowCompanionGreeting`)は、「アプリプロセスごとに最大1回、in-memoryのモジュール変数で管理」という設計。DEFERRED.mdへの記録自体が漏れていたため(下記History参照)、本セッションが初の実機QA。
+
+**バグ / 再現**: Z Fold6実機で、ロック解除→`am start`でShellyを前面化する操作を数回行った後(実際のアプリ再起動ではなく、既存タスクの再開＝Activity再開のみ)、AIペイン(companion thread、LOCALプロバイダ)の会話ログに、**一字一句同一の**「Welcome back. Last time we were talking about "We decided on a matte kitchen finish to reduce glare, and th…" — happy to pick that back up, or start something new.」というSHELLYメッセージが**連続して2件**表示されているのを確認した(スクリーンショットで裏取り済み)。設計意図の「プロセスごとに最大1回」が守られているなら、Activityの再開(onCreateではなくonResume相当)を挟んでも2件目は生成されないはずだが、実機ではそうなっていない。
+
+**推定原因(コード未確認、実機観察のみ)**: in-memoryの「shown」フラグがプロセスグローバルではなく、AIPaneコンポーネントのマウント単位(またはより狭いスコープ)で保持されている可能性が高い。本セッションでは`am start`でActivityを何度か前面化させただけで新規プロセスの起動ではないため、真にプロセスライフサイクルにフラグが紐づいているなら再現しないはずである。再現条件の切り分け(ホーム→戻る程度の軽いバックグラウンド化で再現するか、force-stop相当の完全プロセス終了が必要か)は次回実機QAで要確認。
+
+**影響**: データ破損やクラッシュはないが、「一人の相棒」プレゼンテーション層が目指す自然な会話体験を損なう(同じ発話が機械的に繰り返される)UXバグ。会話履歴・companion journalへの digest 対象にも同一内容が複数回入り得る点は要確認(`isDigestEligible`が単純reply文言を除外する仕組みは無いはず)。
+
+**優先度**: P2(データ破損なし、頻繁な操作で目立つが実害は表示上の違和感のみ)。次回セッションで`lib/companion-greeting.ts`の実装を確認し、フラグの保持スコープをプロセス全体(モジュールトップレベル変数で、Reactコンポーネントのライフサイクルに紐付かない形)に修正すること。
+
+→ sync: README Status表の変更なし(内部UXバグ)。
+
+---
+
+### bug #170 — Settings画面のスクロールが「最初はスムーズだが途中で固まる」— `32a9c6a27`(SliderRow PanResponder修正)では未解消、Codexへ調査依頼中 (2026-08-29、ユーザー実機報告) (P1)
+
+**背景**: 2026-08-28にmainへマージされたsquad1-quality(`786cb5b00`)・squad2-proactive(`58e457429`)・squad3-packs(`eb5a9780a`/`b6fd0e595`等)の3ブランチが、DEFERRED.mdに一切記録されないままmainへ着地していた(プロジェクト運用ルール違反、本エントリで事後記録)。squad2は上記bug #169として個別記録。
+
+**Companion brain auto-routing(squad1、`786cb5b00`)**: Settings → AI Agents に「Companion brain」トグルが実装通り表示され、ONになっていることを実機で確認。説明文「Auto: uses your fastest configured cloud key (Cerebras → Groq → Gemini → OpenRouter) for the companion, falling back to on-device when none is configured or a cloud reply fails.」も表示通り。UIの到達性のみ確認、実際のクラウドキー未設定→ローカルフォールバックの動作までは未検証。
+
+**SliderRow PanResponder修正(`32a9c6a27`) — 実機で単発スワイプはPASSだが、ユーザーの通常操作では依然として症状再現**: 本セッション担当エージェント(Claude)がSettings画面のImage Opacityスライダーのつまみ真上から縦方向スワイプ(adb `input swipe`による単発の1ジェスチャー)を実行した際は、(1)スライダーの値(72%)は変化せず、(2)Settings画面全体が正しく下スクロールしPanel Opacity以降の項目が表示される、という修正意図通りの結果が得られた。**しかし直後にユーザー本人が実機を操作したところ「まだ動きが悪い。最初はスムーズに動くけど、途中で固まる」と報告**——`32a9c6a27`のコミットメッセージ自体も「Found via an independent Codex review after the minHeight:0 / removeClippedSubviews attempts (both harmless, kept) had no effect on the reproduced symptom.」と記しており、このバグには複数の試行錯誤の跡がある。単発の合成スワイプでは再現しない/しにくい問題(連続した指の動き、特定のスクロール位置で発生、等)である可能性が高い。
+
+**「途中で固まる」という症状から推測される追加の仮説(未検証)**: (a) 複数の`SliderRow`が縦に並んでいる(Image Opacity/Panel Opacity)ため、指を縦にドラッグ中に2つ目のスライダーの`sliderTrackWrap`領域へ侵入した瞬間、そのPanResponderが新規に`onMoveShouldSetPanResponder`判定をやり直しタッチスロップ分だけ引っかかる可能性、(b) `devScreenBody`のScrollViewに設定されている`removeClippedSubviews`(227行目)がメインの`styles.scroll`ScrollView(2322行目)にも波及/類似設定されており、スクロールに伴う子要素のクリップ・再マウントでジェスチャーが中断される既知のRN Android挙動、(c) Wallpaper画像・ぼかしエフェクトの再レンダリング負荷によるフレームドロップが「固まる」ように見えている可能性。
+
+**Codex調査結果(2026-08-29、`codex exec` 0.129.0、読み取り専用)**: 本命の原因は`onMoveShouldSetPanResponder`の捕獲条件の甘さと特定。`abs(gestureState.dx) > TOUCH_SLOP && abs(dx) > abs(dy)`という判定は「スライダー上で開始した純粋な縦ドラッグ」は塞ぐが、**縦スクロール開始直後に指の自然な震え等でわずかでも横方向のブレが縦方向より先に4pxのスロップを超えると、その時点でスライダー側がresponderを奪ってしまい、以後の縦移動は二度とScrollViewへ戻らない**——これが「最初はスムーズだが途中で固まる」という症状と一致する。合成された完璧な直線の単発スワイプ(adb `input swipe`)では横ブレが発生しないため再現しにくく、今回のエージェントの単発テストがPASSに見えた理由と辻褄が合う。
+
+副次的な確認事項: (1) 2つ目のSliderRow領域への侵入によるretargetの可能性は低い(RNのタッチレスポンダーはタッチ開始時のtargetが支配的)。(2) Settings本体のScrollView(`styles.scroll`)には`removeClippedSubviews`は設定されておらず(`flexShrink:1`/`minHeight:0`のみ)、これが残っているのは無関係な`devScreenBody`側のみなので主因ではない。(3) スライダー操作中に`setWallpaperOpacity`/`setPanelOpacity`が毎回Zustand更新+AsyncStorage永続化を走らせ関連購読箇所を再描画する点も副次的疑いとして残る。
+
+**修正方針(Codex提案、未実装)**: スライダー操作を「タッチ開始時点から明確に水平方向であることが分かる場合」のみに限定するか、専用のジェスチャーハンドラでScrollViewとの同時進行/失敗(fail)条件を明示的に設定する。次回セッションで`SliderRow`の`onMoveShouldSetPanResponder`ロジックを修正すること。
+
+**✅ 2026-08-29 修正実装完了**: ユーザーから「横スクロールなんて設定画面で使わないでしょ」という指摘を受け、dx/dyのヒューリスティック判定自体を廃止する方向で修正した。`onStartShouldSetPanResponder`/`onMoveShouldSetPanResponder`の方向判定をやめ、**当たり判定を`sliderTrackWrap`(トラック全体、140×20px)から`sliderThumb`(つまみ本体、10×10px、`hitSlop`で上下左右16px拡張)のみに限定**。トラックの絶対位置クリックによる値ジャンプは元々未実装(コメント通り相対ドラッグ設計)だったため機能的な後退はない。これにより、トラック上のどこを縦にドラッグしてもSliderRowのPanResponderは一切介入せず常にScrollViewが処理し、つまみそのもの(+hitSlop)を掴んだ場合のみ明確な意図としてスライダー操作になる。「途中で指の震えにより横ブレが先に確定してresponderを奪う」というCodex指摘の根本原因が構造的に発生しなくなった。
+
+**横展開調査(ユーザー指示、2026-08-29)**: コードベース全体で同種のバグ(カスタムタッチジェスチャー判定 + 縦スクロール可能な親領域との共存)がないか確認した。`PanResponder`使用箇所は`SettingsDropdown.tsx`のSliderRowのみ(今回修正)。`react-native-gesture-handler`の`Gesture.Pan`使用箇所は`components/multi-pane/Divider.tsx`(4ペイン分割リサイズハンドル)のみだが、こちらは16px幅の絶対配置された専用当たり判定ストリップに限定され、縦/横の方向も`isVertical` propで決め打ち(dx/dyのヒューリスティック比較なし)のため同種のバグには該当しない。他の`horizontal`使用箇所(`CommandKeyBar.tsx`のショートカットバー、`PaneCliTabs.tsx`のタブバー等、計23ファイル)は標準の`<ScrollView horizontal>`でカスタム判定ロジックを持たないため対象外。**同種のバグは他に発見されなかった。**
+
+**実機再検証は次回オンデバイスQA枠で必須**(本セッションはコード修正のみ、Windows環境での`tsc`確認は未実施)。
+
+→ sync: README Status表の変更なし(いずれも既存機能のcorrectness fix/内部UI)。
+
+---
+
+### ✅ `shelly install <pack>` オンデマンドツールパック — linker64ラッパー化の実機再検証(e)(f)完了・全PASS (2026-08-29、`info`ユーザーのセッション、versionCode 2327 / commit `f4281e9d8`、wireless adb)
 
 **背景**: 2026-08-25、Fable5の総合レビュー(新規性・需要・完成度)ロードマップ item #6。800MBのサイドロードAPKが新規ユーザーの最大の障壁との指摘を受け、`python3`/`sqlite3`/`vim`/`tmux`/`ripgrep`/`jq`/`make`/`gh`/`nano`/`unzip`/`less`の11ツールを常時同梱から外し、`shelly install <pack>`で必要時にオンデマンド取得する設計。配管実装(コミット`841ae2865`)→パック実ビルド・公開(コミット`d5b525bca`/`33b78196e`、`optional-packs-latest`リリースとして実在確認済み)まで進めた。
 
@@ -4026,6 +4151,24 @@ libbash.so: /data/user/0/dev.shelly.terminal/files/termux-libs/packs/dev-tools/p
 1. **実際のバンドルサイズ削減(本題)は未着手** — `LibExtractor.kt`の`LIBS`マップやCIの`jniLibs`パッケージングから11ツールを外す変更は一切行っていない。現行APKのデフォルト同梱物はバイト単位で同一。今回のPATH配線修正は意図的にこの削減を含まないスコープ。
 
 **実機QAで確認すべきこと(残り)**: ~~(a)到達性修正の成功~~ ✅、~~(b)DownloadManagerでの実配信~~ ✅、~~(c)Knox/SELinux下でのtar展開成功~~ ✅、~~(d)展開バイナリの実行確認~~ ✅(結果: **実行不可、要`linker64`ラッパー化**、2026-08-28実機確認)。残るは (e) 今回のコード修正が実機で実際に`shelly install dev-tools`後の`python3 --version`等を成功させるかの再検証、(f) 既に開いているタブでインストール直後にツールが使えるようになるかの実機確認。
+
+**✅ 2026-08-29 実機再検証(e)(f) 完了・全PASS**: Z Fold6(versionCode 2327、`f4281e9d8`時点のmain、ローカル`main`を222コミット分fast-forwardした直後)、既に開いていたターミナルタブ(このセッションの直前の操作で開いていたタブ、新規タブではない)で`shelly install dev-tools`を実行:
+```
+Installing pack 'dev-tools'…
+Installed pack 'dev-tools': python3, sqlite3, jq, make, gh
+Extracted to: /data/user/0/dev.shelly.terminal/files/termux-libs/packs/dev-tools
+Installed tools are available immediately — just type the command (existing tabs included).
+```
+直後に同じタブで5ツール全て実行、5/5成功:
+- `python3 --version` → `Python 3.13.12`
+- `sqlite3 --version` → `3.52.0 2026-03-06 ...`
+- `jq --version` → `jq-1.8.1`
+- `gh --version` → `gh version 2.98.0`
+- `make --version` → `GNU Make 4.4.1, Built for aarch64-unknown-linux-android`
+
+(e)の「新規シェル不要で呼び出し時解決」設計、(f)の「既存タブでインストール直後から使える」設計の両方を実機で確認。`b6fd0e595`のlinker64ラッパー化修正は実機で意図通り機能している。これにより本エントリの残タスクは全て解消。
+
+**副次的に実機で確認した既知のP3観察の再現**: `gh --version`と`make --version`の出力中のURL(`https://github.com/cli/cli/releases/tag/v2.98.0`、GNU GPLライセンスURL)が、タップ操作なしで自動的に別アプリ(GitHubアプリ)/Chrome Custom Tab(gnu.org)へ遷移した。これは`d5515f8c2`で記録済みの「URL open triggers on output detection (no tap needed) which may be aggressive UX」というP3観察と一致する挙動で、`--version`のような日常的なCLI操作でも頻繁に発火することを確認した(2回連続で発生)。積み重なるとターミナル操作のたびにアプリ切り替えが起きるため、P3のままで良いか次回検討の価値がある。
 
 **優先度**: P1のまま(コード修正は着地したが、この種のSELinux/linker64まわりは過去何度も「ローカルでは正しく見えたが実機で違った」実績があるため、実機QAで(e)(f)を確認するまではP1を維持する)
 
