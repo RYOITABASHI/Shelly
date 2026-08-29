@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-29: ユーザー指示「可能な限り並列分隊で進めてね」を受け、残っていたP1/P2項目5件を並列worktree agentに分担(スキルカタログ拡充・自由文delete parser・Gemini i18n修正・サロゲートペア修正・メッセージングゲートウェイ方針明文化)。うち4件が完了し本セッションでレビュー・マージ・コミット済み: (1) ビジョンv1.1(`components/panes/AIPane.tsx`のhandleAttachをストリーミングキャンセル兼用から分離、キャンセルはストリーミング中バブル内の専用ボタンへ移設、画像は即送信ではなくステージング+サムネイル+任意キャプションに変更、送信済みバブルにサムネイル表示、過去の画像添付ターンが後続ターンの履歴に再登場する際`[image attached — not carried forward]`マーカーを付与)。(2) `lib/gemini.ts`のAPIキー欠落メッセージ日本語ハードコードを`gemini_api_key_missing`キー経由のi18n対応に変更(該当2箇所のみ、他のJP文字列は意図的にスコープ外)。(3) `app/_layout.tsx`のextractTextプレビュー`.slice(0,1000)`がサロゲートペアを分断しうる問題を`lib/text-truncate.ts`の`truncateAtCodePointBoundary`で修正。(4) スキルカタログを4→21件に拡充(`docs/skills-catalog/`、全エントリのsha256を実ファイルから検証済み)。(5) README「What Shelly is not」節にオンデバイスメッセージングゲートウェイ方針(公式bot統合を意図的に追わず`lib/notification-inbound.ts`の汎用通知チャネルで代替)を明文化(README.md/README.ja.md両方)。自由文でのagent削除意図パーサーのみ、担当agentが前セッション終了時に未着手(diff 0件)だったため本セッションで再開指示済み・継続中。全項目`npx tsc --noEmit` clean、関連テスト全PASS(フルスイートでの散発的失敗はAgentRunsPane/AgentSuggestionCardなど並列agent実行による負荷起因の非決定的タイムアウトで、単体実行では全PASSを確認、実装との因果関係なしと判定)。
 - 2026-08-29: ユーザー指示「完成まで勝手にやれって言ったでしょ」を受け、Fable5がビジョン配線後に最優先(1位)へ格上げしていたextractText知覚ループ問題(下記613行目参照)を実装。過去に検討され断念された`pendingExternalPrompt`相当のペイン注入(「どのペインが処理するか不定」で頓挫)ではなく、既存のper-agent memory機構(`lib/agent-memory.ts`、`agent.memory.remember`オプトイン)を転用: `lib/agent-manager.ts`に`captureBrowserExtractMemory`を新設(`captureRunMemory`と同じMEMORY_ENABLED/activateMemoryWrite→G2 writeMemoryNoteフォールバックパターン)、`app/_layout.tsx`のextractText承認成功パスから呼び出し、抽出テキストをtype:'result'のメモリノートとして書き込み。次回のそのagentの実行プロンプトに`buildRecallContext`経由で自動的に注入されるため、エージェント自身が次ターンで抽出結果を参照できるようになった。人間向けのAlert表示は変更なし。既存の他のメモリ書き込みと同じ`memory.remember`オプトインゲートを尊重(オプトインしていないagentは従来通りAlertのみ)。新規テスト5件(`__tests__/agent-manager-browser-extract-memory-capture.test.ts`)全PASS、`npx tsc --noEmit` clean、フルテスト3711件中3682件PASS(既知のWindows固有失敗5スイートのみ、無関係)。実機QA未実施(ユーザー指示によりコードレベルの完了を優先、継続作業中のため)。
 - 2026-08-29: ユーザー指示「未実装あるなら進めて下さい」を受け、Fable5・Codex双方が繰り返し指摘していたAgent contract view(下記574行目・615行目参照)を実装。`components/layout/AgentDetailModal.tsx`新設(Modal+ScrollView、セクション表示+ボタン数無制限)、`Sidebar.tsx`の`showAgentDetail`をAlert.alert(3ボタン制限あり)からこのモーダルへ置換。データ収集ロジック(run history/memory notes/route decision等)は無変更、表示先のみ変更。i18nキー6件(`agent_detail.task`/`contract`/`reliability`/`memory`/`steps`/`routing`)をen.ts/ja.tsに追加。`npx tsc --noEmit` clean、関連jest 5スイート35件全PASS。実機QA未実施(ユーザー指示によりコードレベルの完了のみ)。
 - 2026-08-29: Fable5/Codexに実装5件のコードレビューを依頼(実機テスト除外)。両者「マージ可」判定。Fable5が画像サイズガード欠如(実機クラッシュ候補)とextractText空文字無音バグを発見、即修正(expo-image-manipulator追加、長辺1568px上限)。extractText→AI Pane注入がP1最優先に浮上。
@@ -574,10 +575,10 @@
 
 **次回持ち越し(未着手)**:
 - ✅ Agent contract view(Fable5 P1-3、中規模): 2026-08-29に実装完了(`components/layout/AgentDetailModal.tsx`新設、`lib/agent-contract-view.ts`は新設せず`Sidebar.tsx`内でデータ構築を維持)。詳細は本ファイル冒頭Historyの同日エントリ参照。
-- スキルカタログ拡充 4→20+(P1-1、コンテンツ作業中心)。
-- app.actの段階的汎用化Phase 1(P1-4、大規模): 観測専用accessibility-tree snapshot→レシピ下書き生成→ユーザー保存。
-- オンデバイスメッセージングゲートウェイ方針の明文化(README比較表への反映)。
-- 自由文でのagent削除依頼のパーサー対応(前回発見のローカルLLMハルシネーションへの根本対応、現状はsystem prompt注記のみ)。
+- ✅ スキルカタログ拡充 4→20+(P1-1): 2026-08-29に4→21件へ拡充完了(本ファイル冒頭History参照)。
+- app.actの段階的汎用化Phase 1(P1-4、大規模): 観測専用accessibility-tree snapshot→レシピ下書き生成→ユーザー保存。**未着手のまま次回持ち越し**(2026-08-29の並列worktree分担では規模とレビュー難度の高さから今回のバッチに含めず、単独タスクとして再スコープ予定)。
+- ✅ オンデバイスメッセージングゲートウェイ方針の明文化: 2026-08-29にREADME.md/README.ja.mdの「What Shelly is not」節へ追記完了(本ファイル冒頭History参照)。
+- 自由文でのagent削除依頼のパーサー対応(前回発見のローカルLLMハルシネーションへの根本対応、現状はsystem prompt注記のみ)。**2026-08-29に並列worktree agentへ着手指示、前セッション終了時diff 0件で再開指示済み・継続中**(本ファイル冒頭History参照)。
 - A-7完全シナリオの実機検証(Codexが`adb push`ベースの具体的なQAスクリプトを提供済み、次回実機QA枠で使用)。
 
 → sync: README Status表の変更なし(内部correctness fix + 実装済み資産の配線)。
@@ -604,18 +605,18 @@
 **Fable5の指摘・未対応(P1として記録)**:
 1. **extractText結果をエージェント自身が見られない** — Alertは人間向けの最低ラインとしては十分だが、「extract→判断→次アクション」というエージェントの知覚ループが閉じない。Fable5は「ビジョン配線が入った今、これが最優先(1位)に昇格」と評価。AI Paneへの`pendingExternalPrompt`相当の注入経路でコンテキスト投入する形が本命。
 2. 画像添付が会話履歴にマーカーなしで残るため、次ターンで「さっきの画像」への言及が来るとGeminiが幻覚を起こしうる。履歴に`[image attached — not carried forward]`等のマーカー追加を推奨(影響範囲の特定に追加調査が必要なため今回は見送り)。
-3. ユーザーバブルに画像サムネイル表示がない(UX follow-up)。
-4. `.slice(0, 1000)`はサロゲートペア分断の可能性(絵文字末尾での文字化け、cosmetic)。
+3. ユーザーバブルに画像サムネイル表示がない(UX follow-up)。✅ 2026-08-29 ビジョンv1.1で対応完了。
+4. ✅ `.slice(0, 1000)`はサロゲートペア分断の可能性(絵文字末尾での文字化け、cosmetic)。2026-08-29 `lib/text-truncate.ts`で対応完了(本ファイル冒頭History参照)。
 
-**Codexの指摘・未対応(P2として記録)**: `lib/gemini.ts:269`のAPIキー欠落エラーメッセージが日本語ハードコードのまま(TTSロケール修正と同種の既存負債、今回のスコープ外)。
+**Codexの指摘・未対応(P2として記録)**: ✅ `lib/gemini.ts:269`のAPIキー欠落エラーメッセージが日本語ハードコードのまま(TTSロケール修正と同種の既存負債、今回のスコープ外)。2026-08-29に`gemini_api_key_missing`キーで対応完了(本ファイル冒頭History参照)。
 
 **検証**: `npx tsc --noEmit` clean。フルテストスイート3706件中3674件PASS(失敗30件、既知のWindows固有パスバグ5スイートのみ、今回変更したファイルとは無関係。前回26件から30件への変動はこれらのテストの非決定的な性質によるもの)。`ai-pane-dispatch-interaction-order.test.tsx`(76件)は全PASS。
 
 **次回持ち越し(優先順位、Fable5評)**:
 1. ✅ extractText→AI Pane注入(知覚ループ閉鎖) — 2026-08-29実装完了。「AI Pane」への直接注入ではなく、per-agent memory(`agent.memory.remember`)への書き込み+`buildRecallContext`経由の次回実行時自動注入という形で解決(本ファイル冒頭History参照、詳細な設計判断あり)。
-2. ビジョンv1.1(handleAttachの二役ボタン分離、画像ステージング+自由入力、履歴マーカー)
+2. ✅ ビジョンv1.1(handleAttachの二役ボタン分離、画像ステージング+自由入力、履歴マーカー) — 2026-08-29実装完了(本ファイル冒頭History参照)
 3. ✅ Agent contract view — 2026-08-29実装完了(本ファイル冒頭History参照)
-4. スキルカタログ拡充
+4. ✅ スキルカタログ拡充 — 2026-08-29に4→21件へ拡充完了(本ファイル冒頭History参照)
 
 → sync: README Status表の変更なし(内部correctness fix + 依存追加)。
 
