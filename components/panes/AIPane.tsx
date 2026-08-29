@@ -39,6 +39,7 @@ import {
   markCompanionGreetingShown,
   pickGreetingNote,
   shouldShowCompanionGreeting,
+  tryClaimCompanionGreetingAttempt,
   WATCH_NOTE_PREFIX,
 } from '@/lib/companion-greeting';
 import { readCompanionMemoryNotes, readGlobalMemoryNotes } from '@/lib/agent-memory';
@@ -599,6 +600,13 @@ export default function AIPane() {
     if (onboardingEligible) return;
 
     void (async () => {
+      // bug #169 (2026-08-29, on-device): claim the one-shot attempt
+      // synchronously, before any await, so a second concurrent effect run
+      // (e.g. another pane mount racing this one) bails out here instead of
+      // also passing the not-yet-shown check below once its own disk reads
+      // resolve — that TOCTOU gap is what produced the identical greeting
+      // twice in a row. See lib/companion-greeting.ts's tryClaimCompanionGreetingAttempt doc.
+      if (!tryClaimCompanionGreetingAttempt()) return;
       let journalNotes: { text: string; created: string }[] = [];
       let watchNotes: { text: string; created: string }[] = [];
       try {
@@ -637,6 +645,18 @@ export default function AIPane() {
         role: 'assistant',
         content: buildCompanionGreetingText(picked.text, t, picked.isWatch),
         timestamp: Date.now(),
+        // Fable5 review (2026-08-29): flag as an app-driven turn, same as
+        // pendingGlobalMemory's confirmation-flow bubbles, so this template
+        // line never feeds companion-journal digests (lib/companion-journal.ts's
+        // isDigestEligible) or the local model's prompt history
+        // (store/ai-pane-store.ts's isPromptHistoryEligible) — otherwise a
+        // future journal note could summarize the greeting's own phrasing
+        // back to itself, or the local model could imitate "Welcome back..."
+        // as a hallucinated turn opener. Deliberately still eligible for
+        // carry-forward (isCarryForwardEligible does not check flowTurn) —
+        // the user actually saw this line, so it should stay visible after
+        // a thread switch.
+        flowTurn: true,
       });
       markCompanionGreetingShown();
     })();

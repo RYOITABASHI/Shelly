@@ -18,6 +18,7 @@ import {
   resetCompanionGreetingShownForTests,
   shouldShowCompanionGreeting,
   stripWatchPrefix,
+  tryClaimCompanionGreetingAttempt,
 } from '@/lib/companion-greeting';
 
 describe('shouldShowCompanionGreeting', () => {
@@ -62,6 +63,34 @@ describe('module-level "shown this process" flag', () => {
     expect(hasShownCompanionGreetingThisProcess()).toBe(false);
     markCompanionGreetingShown();
     expect(hasShownCompanionGreetingThisProcess()).toBe(true);
+  });
+});
+
+describe('tryClaimCompanionGreetingAttempt (bug #169 regression)', () => {
+  beforeEach(() => resetCompanionGreetingShownForTests());
+  afterEach(() => resetCompanionGreetingShownForTests());
+
+  it('the first caller in a process claims the attempt', () => {
+    expect(tryClaimCompanionGreetingAttempt()).toBe(true);
+  });
+
+  it('a second concurrent caller (e.g. a racing effect run) is rejected even before markCompanionGreetingShown is ever called — this is the exact race that produced the duplicate greeting on-device', () => {
+    expect(tryClaimCompanionGreetingAttempt()).toBe(true);
+    expect(tryClaimCompanionGreetingAttempt()).toBe(false);
+    expect(tryClaimCompanionGreetingAttempt()).toBe(false);
+  });
+
+  it('stays claimed even if the first caller ultimately shows nothing (no eligible note) — "at most once" beats "exactly once when eligible"', () => {
+    expect(tryClaimCompanionGreetingAttempt()).toBe(true);
+    // Caller decides not to show anything and never calls markCompanionGreetingShown.
+    expect(hasShownCompanionGreetingThisProcess()).toBe(false);
+    expect(tryClaimCompanionGreetingAttempt()).toBe(false);
+  });
+
+  it('resetCompanionGreetingShownForTests clears the claim flag too, simulating a fresh app process', () => {
+    expect(tryClaimCompanionGreetingAttempt()).toBe(true);
+    resetCompanionGreetingShownForTests();
+    expect(tryClaimCompanionGreetingAttempt()).toBe(true);
   });
 });
 

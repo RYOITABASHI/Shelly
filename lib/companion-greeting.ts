@@ -72,9 +72,35 @@ export function markCompanionGreetingShown(): void {
   shownThisProcess = true;
 }
 
-/** Test-only: reset the module-level flag between test cases. */
+// bug #169 (found 2026-08-29 on-device: the identical "Welcome back..." line
+// appeared twice in a row in the same app process). Root cause: the caller
+// (AIPane.tsx) checks hasShownCompanionGreetingThisProcess() before starting
+// async disk reads and again after they resolve, but nothing stopped two
+// concurrent invocations (e.g. two AIPane effect runs racing) from both
+// passing the "not shown yet" check before either had called
+// markCompanionGreetingShown(). This separate claim flag lets the caller
+// reserve the one-shot attempt atomically, synchronously, before any await —
+// so a second concurrent caller bails out before it ever touches disk.
+let attemptClaimed = false;
+
+/**
+ * Atomically claim this process's single greeting attempt. Must be called
+ * synchronously, before starting the async note reads that decide whether to
+ * actually show anything. Returns false for every caller after the first —
+ * including when the first caller ultimately shows nothing (no eligible
+ * note, pane unmounted, etc.). "At most once per process" is the invariant
+ * this exists to guarantee, not "exactly once when eligible".
+ */
+export function tryClaimCompanionGreetingAttempt(): boolean {
+  if (attemptClaimed) return false;
+  attemptClaimed = true;
+  return true;
+}
+
+/** Test-only: reset the module-level flags between test cases. */
 export function resetCompanionGreetingShownForTests(): void {
   shownThisProcess = false;
+  attemptClaimed = false;
 }
 
 /**
