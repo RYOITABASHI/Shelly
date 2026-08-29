@@ -11,11 +11,13 @@ import java.io.File
  * 2026-07-11-post-ui-automation-agent-architecture.md, 2026-07-12
  * implementation-detail plan) — recipe schema, storage, and loader.
  *
- * Recipes are bundled as plain JSON under APK assets
- * (`app-act-recipes/<id>.json`) and loaded on demand via
- * [Context.getAssets]. No `$HOME/.shelly/app-act-recipes/` mirror or
- * override layer exists — that's explicitly deferred Track 3 machinery
- * with no consumer yet.
+ * Bundled recipes ship as plain JSON under APK assets
+ * (`app-act-recipes/<id>.json`) and load on demand via [Context.getAssets].
+ * app.act Phase 1 (docs/superpowers/DEFERRED.md, 2026-08-29) added a second
+ * source: a `user.`-prefixed recipe id resolves instead from
+ * `$HOME/.shelly/app-act-recipes/<id>.json` — see [load]'s doc comment for
+ * the exact id-namespacing and path-safety contract. Bundled ids never
+ * carry that prefix, so their asset-based resolution is unchanged.
  *
  * The matcher schema deliberately has NO `textRegex` field: only exact
  * (case-insensitive) [Matcher.text] matching is supported, mirroring the
