@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-08-29: CIビルド成功後、実機(Z Fold6、versionCode 2334)にインストールしA-7中心に検証。3連続approval timeout(skipped)ではbreaker非発動という設計通りの実データを確認したが、意図したexitCode0+status:errorの完全シナリオ再現はterminal input経由のシェルスクリプト編集がAndroid input textの制約で困難と判明し断念。新規P3(自由文でのagent削除依頼がローカルLLMのハルシネーションを招く)を発見。
 - 2026-08-29: Fable5/Codexへの再評価依頼で「social-post修正は部分解消(NotificationDispatcher.ktのrequiresReview漏れ、one-tap Allow経路が残存)」「A-7にstale-log誤読の残存エッジ」を発見、5件追加実装(社会投稿review漏れ修正、api-call到達不能解消、A-7 run開始時刻照合、TS型同期、approval action type schema一元化+parityテスト新設)。全309テストPASS。
 - 2026-08-29: Codex単独コード監査で同じ問い(Fable5と独立)を再評価、同じ「条件付きYes(late beta)」判定。新規P1(social-post承認UIのnative/JS drift)を発見・同セッションで修正実装。A-7(circuit breaker soft-failure非対称)修正済み実装をCodexの指摘と突き合わせて再確認。
 - 2026-08-29: Fable5単独レビューで「Android版Hermes Agentと呼べるプロダクトになったか」を再評価、2026-08-10の「強い主張は支持できない」判定を覆し「条件付きYes(late beta)」と判定。ユーザー指摘を受けbug #170(Settingsスクロール固着)をSliderRowの当たり判定をつまみのみに限定する形で修正実装、コードベース横断で同種のPanResponder/GestureHandler競合が他に無いことも確認。
@@ -507,6 +508,31 @@
 - computer-use相当(app.act)の段階的汎用化、クロスOEM検証は引き続き未着手。
 
 → sync: README Status表の変更なし(既存機能のcorrectness fix + 内部テストインフラ追加)。
+
+---
+
+### 2026-08-29 実機QA(Z Fold6、versionCode 2334 = commit `fe315296f`)— CIビルド成功後インストール、部分検証完了
+
+**背景**: フォローアップ実装ラウンド(上記)を含む5コミットをpush、CIビルド成功(1回目はKotlinシグネチャ変更に追従していなかった既存source-assertionテストで失敗、`fix(test)`コミットで即修正・再ビルド成功)。versionCode 2334としてZ Fold6実機にインストールし、A-7を中心に実機検証を実施。
+
+**アプリ起動・基本動作**: PASS。バージョン更新確認、ターミナルセッション復元、Agent Runs/Memory Workbench等の既存ペインは正常動作。
+
+**A-7(circuit breaker soft-failure非対称)の実機検証**: AIペイン経由で「2分ごとにdateをファイルへ書き込む」テストエージェント(`agent-mte5ygxu`)を実際に登録し、実機のcronで3回連続実行させた。**実際に発生したのは意図した「exitCode 0 + status:error」のソフト失敗ではなく、「draft action approval timed out」による`status:skipped`が3回連続**(agentがdraft承認待ちのまま放置され毎回タイムアウトした)。この状態では、Agent Runs上で3回連続「スキップ」表示のままcircuit breakerは発動せず(`1件実行中`表示は継続)——これは`scheduledRunFailed`のコード自身が意図する「skipped/unavailableはエラーストリークを破る、status=errorのみカウント」という設計と一致する実データとして得られた。
+
+**完全な人工的ソフト失敗シナリオ(exitCode 0で終わりつつrun-logにstatus:"error"を書く)の再現は断念**: 該当エージェントの実行スクリプトをターミナル経由で直接書き換えてこのシナリオを人工的に作ろうと試みたが、Android `input text`経由のシェルコマンド入力でダブルクォート・heredoc・`date +%s`の`%s`(input textのスペース置換プレースホルダーと衝突)が繰り返し破壊され、安全に実行できないと判断し中止。テストエージェントは`sed`でダブルクォートを含まない`true,`→`false,`置換により`enabled: false`化してクリーンアップ済み、実行スクリプトはバックアップから復元済み。
+
+**その他の実機観察**:
+- bug #169(welcome-back挨拶重複): 過去(修正前)の重複データは会話ログに残存したままだが、今回のforce-stop再起動およびペイン切り替えでは新規の重複は発生しなかった。ただし挨拶表示条件(7日以内の新規journalノート)を満たしていない可能性もあり、修正が効いたことの確証には至っていない。
+- `delete the <agent> agent`という自由文(`@agent delete`構文ではない)をAIペインに送ると、ローカルLLM(Qwen3.5-2B)が「エージェントはシステムレベルのコンポーネントで手動削除できません」という**誤った回答(ハルシネーション)**を返した。決定論的パーサーは`@agent delete <name>`構文でのみ発動するため、自由文は通常チャットにフォールバックしローカルモデルが不正確な事実を答えてしまう。実際にはSidebarから削除可能。新規のP3級UX観察として記録(修正は未着手)。
+- UI言語をJAに切り替えて検証したところ、正しく日本語UIで動作(ターミナル/Agent Runs/Memory Workbench等のラベル)。
+
+**次回持ち越し(未着手のまま)**:
+- A-7の完全シナリオ検証(exitCode 0 + status:error 3連続→breaker発動確認)。人工的な再現には、ターミナル経由でのテキスト入力に頼らない方法(例: Android Studio/adb push でスクリプトファイルを直接転送する、またはWebViewやファイルマネージャ経由での編集)を検討すること。
+- social-post/api-callの承認UI実機検証(connector登録が必要、未実施)。
+- bug #169の確証(新規journalノートを意図的に用意した上での複数回force-stop再起動テスト)。
+- 新規P3: `delete the <agent> agent`のような自由文でのエージェント削除依頼が、決定論的パーサー未対応のためローカルLLMのハルシネーション回答を招く。
+
+→ sync: README Status表の変更なし(実機QA記録)。
 
 ---
 
