@@ -6,7 +6,7 @@
  * - API仕様: https://ai.google.dev/api/generate-content
  */
 
-import { getCurrentLocale } from '@/lib/i18n';
+import { getCurrentLocale, t } from '@/lib/i18n';
 
 export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -164,7 +164,7 @@ export async function geminiChatStream(
   if (!apiKey || apiKey.trim() === '') {
     return {
       success: false,
-      error: 'Gemini APIキーが設定されていません。設定画面で入力してください。',
+      error: t('gemini_api_key_missing'),
     };
   }
 
@@ -266,7 +266,7 @@ export async function geminiMultimodalStream(
   if (!apiKey || apiKey.trim() === '') {
     return {
       success: false,
-      error: 'Gemini APIキーが設定されていません。設定画面で入力してください。',
+      error: t('gemini_api_key_missing'),
     };
   }
 
