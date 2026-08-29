@@ -1080,6 +1080,22 @@ class TerminalEmulatorModule : Module() {
             mapOf("success" to result.success, "message" to result.message)
         }
 
+        // app.act Phase 1 (docs/superpowers/DEFERRED.md "段階的汎用化Phase
+        // 1"): observe-only structured snapshot of the current screen, for
+        // drafting a NEW recipe on the JS side (lib/app-act-recipe-draft.ts)
+        // — see ShellyAccessibilityService.captureScreenSnapshot's doc
+        // comment for the read-only/allowlist-bounded contract. Returns a
+        // JSON string (not a parsed map) since its shape is a nested
+        // array-of-objects the caller parses with JSON.parse — same
+        // convention as getScouterDebugInfo elsewhere in this file.
+        AsyncFunction("captureAppActScreenSnapshot") {
+            val service = ShellyAccessibilityService.activeInstance
+                ?: return@AsyncFunction JSONObject()
+                    .put("error", "Accessibility Service is not enabled/connected")
+                    .toString()
+            service.captureScreenSnapshot()
+        }
+
         // Testable native primitive for LockPromptActivity's lock-screen
         // bridge (docs/superpowers/specs/2026-07-11-app-act-design.md
         // §0.1). Deliberately not wired into any RN UI/debug button in this

@@ -1,10 +1,13 @@
 package expo.modules.terminalemulator
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Rect
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * UI-AUTOMATION-001 / app.act.
@@ -155,6 +158,90 @@ class ShellyAccessibilityService : AccessibilityService() {
     // pollForStableLineSearchResults was ported into AppActExecutor.kt as
     // the generic pollForCandidates (see that file's doc comment for the
     // exact "never treat an all-zero streak as stable" fix this preserves).
+
+    /**
+     * app.act Phase 1 (docs/superpowers/DEFERRED.md "段階的汎用化Phase 1"):
+     * observe-only structured snapshot of the current screen, for drafting a
+     * NEW recipe (see AppActRecipeStore's user-recipe loader + the JS-side
+     * draft heuristic in lib/app-act-recipe-draft.ts) — as opposed to
+     * [diagnoseCurrentScreen], which returns a short free-text summary meant
+     * only to enrich a failure message. Read-only: no [AccessibilityNodeInfo
+     * .performAction] call anywhere in this function, matching this file's
+     * "observe-only vs. narrow hardcoded action" split described in the
+     * class doc comment above.
+     *
+     * SECURITY: this service's `packageNames` allowlist
+     * (plugins/with-accessibility-service.js's accessibility_service_config
+     * .xml, currently LINE + X only) already bounds which app's window the
+     * OS will even let [rootInActiveWindow] resolve to — but this function
+     * re-checks the root's own package explicitly rather than trusting that
+     * OS-level bound alone, the same defense-in-depth [onAccessibilityEvent]
+     * above already applies. A non-allowlisted foreground app returns a
+     * `"error"` JSON field instead of a node dump — this must never become a
+     * general screen-reader for arbitrary apps.
+     *
+     * Bounded traversal (same safety shape as [summarizeClickableCandidates]):
+     * [maxDepth] limits recursion, [maxNodes] caps the total node count, so a
+     * deeply nested or unusually large screen can't produce an unbounded
+     * JSON payload or block the caller for long. Only nodes that are
+     * clickable, editable, or carry visible text/contentDescription/
+     * resourceId are included — purely structural wrapper nodes (the vast
+     * majority in a typical layout) are skipped since they can never be a
+     * useful step target for the recipe-draft heuristic that consumes this.
+     */
+    internal fun captureScreenSnapshot(maxDepth: Int = 14, maxNodes: Int = 120): String {
+        val root = rootInActiveWindow
+            ?: return JSONObject().put("error", "no active window right now").toString()
+        try {
+            val pkg = root.packageName?.toString() ?: ""
+            if (pkg != LINE_PACKAGE && pkg != X_PACKAGE) {
+                return JSONObject()
+                    .put("error", "foreground app is not in the app.act allowlist (pkg=$pkg)")
+                    .toString()
+            }
+            val nodes = JSONArray()
+            collectSnapshotNodes(root, maxDepth, maxNodes, nodes)
+            return JSONObject()
+                .put("pkg", pkg)
+                .put("nodes", nodes)
+                .toString()
+        } finally {
+            root.recycle()
+        }
+    }
+
+    private fun collectSnapshotNodes(node: AccessibilityNodeInfo, maxDepth: Int, maxNodes: Int, out: JSONArray) {
+        if (out.length() >= maxNodes) return
+        val resId = node.viewIdResourceName?.substringAfterLast('/') ?: ""
+        val desc = node.contentDescription?.toString()?.take(80) ?: ""
+        val text = node.text?.toString()?.take(80) ?: ""
+        val cls = node.className?.toString() ?: ""
+        // Skip pure structural wrappers — a node with none of these signals
+        // can never be a useful matcher target (AppActRecipeStore.Matcher
+        // only ever compares resourceId/contentDescription/text).
+        if (node.isClickable || node.isEditable || resId.isNotEmpty() || desc.isNotEmpty() || text.isNotEmpty()) {
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            out.put(
+                JSONObject()
+                    .put("className", cls)
+                    .put("resourceId", resId)
+                    .put("contentDescription", desc)
+                    .put("text", text)
+                    .put("clickable", node.isClickable)
+                    .put("editable", node.isEditable)
+                    .put("bounds", "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"),
+            )
+        }
+        if (maxDepth > 0) {
+            for (i in 0 until node.childCount) {
+                if (out.length() >= maxNodes) break
+                val child = node.getChild(i) ?: continue
+                collectSnapshotNodes(child, maxDepth - 1, maxNodes, out)
+                child.recycle()
+            }
+        }
+    }
 
     /** app.act Milestone 0's entire action surface: type [text] into LINE's
      *  message field and tap send, against whatever conversation is

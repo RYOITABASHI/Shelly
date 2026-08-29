@@ -41,6 +41,7 @@ import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/age
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { deleteProfileFact, loadUserProfile, resetUserProfile } from '@/lib/user-profile';
+import { AppActRecipeDraftModal } from '@/components/config/AppActRecipeDraftModal';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -217,6 +218,23 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'highContrastOutput',   label: 'High Contrast',     type: 'boolean', source: 'settings' },
       { key: 'notificationTriggerEnabled', label: 'Notification Triggers', type: 'boolean', source: 'custom', description: 'Let agents fire when a notification arrives from a chosen app. Requires OS notification access (see below).' },
       { key: 'notificationOsAccess', label: 'Notification Access (OS)', type: 'action', source: 'custom', actionLabel: 'Check / Grant' },
+    ],
+  },
+  {
+    title: 'Automation',
+    icon: 'auto-fix-high',
+    items: [
+      {
+        key: 'appActRecipeDraft',
+        label: 'App-Act Recipe Draft (Beta)',
+        labelKey: 'settings.app_act_recipe_draft_label',
+        type: 'action',
+        source: 'custom',
+        actionLabel: 'Capture',
+        actionLabelKey: 'settings.app_act_recipe_draft_action',
+        description: 'Capture the current screen (LINE or X only) and draft a new app.act recipe from it.',
+        descriptionKey: 'settings.app_act_recipe_draft_desc',
+      },
     ],
   },
   {
@@ -610,6 +628,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState(false);
   const [cloudSyncBusy, setCloudSyncBusy] = useState(false);
   const [profileFacts, setProfileFacts] = useState<string[] | null>(null);
+  const [appActRecipeDraftVisible, setAppActRecipeDraftVisible] = useState(false);
   const cloudSyncBusyRef = useRef(false);
   useEffect(() => {
     if (visible) {
@@ -889,6 +908,9 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           },
         ]);
         break;
+      case 'appActRecipeDraft':
+        setAppActRecipeDraftVisible(true);
+        break;
       case 'viewProfileFacts':
         loadUserProfile()
           .then((profile) => setProfileFacts([...profile.facts]))
@@ -1108,6 +1130,10 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           onClose={() => setProfileFacts(null)}
         />
       )}
+      <AppActRecipeDraftModal
+        visible={appActRecipeDraftVisible}
+        onClose={() => setAppActRecipeDraftVisible(false)}
+      />
     </Modal>
   );
 }

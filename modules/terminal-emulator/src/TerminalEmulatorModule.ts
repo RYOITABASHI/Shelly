@@ -308,6 +308,17 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     targetName: string,
     text: string
   ): Promise<{ success: boolean; message: string }>;
+  /** app.act Phase 1 (docs/superpowers/DEFERRED.md "段階的汎用化Phase 1"):
+   *  observe-only structured snapshot of the current foreground screen, for
+   *  drafting a NEW recipe (see lib/app-act-recipe-draft.ts) instead of
+   *  hand-writing recipe JSON from a logcat dump. Bounded to whatever the
+   *  Accessibility Service's own package allowlist (LINE/X) already covers
+   *  — see ShellyAccessibilityService.captureScreenSnapshot's doc comment.
+   *  Returns a JSON STRING (parse with JSON.parse), either
+   *  `{ pkg, nodes: [...] }` on success or `{ error }` when the service
+   *  isn't connected or the foreground app isn't allowlisted. Never
+   *  performs any action — read-only. */
+  captureAppActScreenSnapshot?(): Promise<string>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

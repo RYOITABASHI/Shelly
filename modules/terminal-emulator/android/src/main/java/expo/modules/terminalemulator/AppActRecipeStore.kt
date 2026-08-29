@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 /**
  * app.act Track 1/2 (docs/superpowers/specs/2026-07-11-app-act-design.md,
@@ -107,12 +108,40 @@ object AppActRecipeStore {
         val steps: List<RecipeStep>,
     )
 
-    /** Loads and parses `app-act-recipes/$recipeId.json` from APK assets.
-     *  Returns null (logging the reason) on any I/O or parse failure —
-     *  never throws past this boundary, matching this module's general
-     *  fail-closed-with-a-reason convention. */
-    fun load(context: Context, recipeId: String): Recipe? =
-        try {
+    /** app.act Phase 1 (docs/superpowers/DEFERRED.md "段階的汎用化Phase
+     *  1"): user-drafted-and-saved recipes (see lib/app-act-recipe-draft.ts)
+     *  live under `$HOME/.shelly/app-act-recipes/`, namespaced with this
+     *  prefix — never colliding with a bundled asset id, and letting [load]
+     *  route to the on-disk override WITHOUT changing lookup behavior for
+     *  any existing bundled recipe id (`line.send-message`, `x.post`) at
+     *  all — those never carry this prefix and always resolve from assets,
+     *  exactly as before this feature existed. */
+    private const val USER_RECIPE_ID_PREFIX = "user."
+    private val SAFE_USER_RECIPE_ID_RE = Regex("^user\\.[A-Za-z0-9_-]+$")
+
+    /** Loads and parses a recipe by id. A `user.`-prefixed id resolves from
+     *  `$HOME/.shelly/app-act-recipes/$recipeId.json` (Phase 1's user-saved
+     *  override layer); any other id resolves from
+     *  `app-act-recipes/$recipeId.json` in APK assets, exactly as before.
+     *  Returns null (logging the reason) on any I/O, parse, or unsafe-id
+     *  failure — never throws past this boundary, matching this module's
+     *  general fail-closed-with-a-reason convention. */
+    fun load(context: Context, recipeId: String): Recipe? {
+        if (recipeId.startsWith(USER_RECIPE_ID_PREFIX)) {
+            if (!SAFE_USER_RECIPE_ID_RE.matches(recipeId)) {
+                Log.e(TAG, "load($recipeId) refused: unsafe user recipe id")
+                return null
+            }
+            return try {
+                val file = File(HomeInitializer.getHomeDir(context), ".shelly/app-act-recipes/$recipeId.json")
+                val json = JSONObject(file.readText())
+                parseRecipe(json)
+            } catch (e: Exception) {
+                Log.e(TAG, "load($recipeId) [user] failed: ${e.message}", e)
+                null
+            }
+        }
+        return try {
             val json = context.assets.open("app-act-recipes/$recipeId.json").use { stream ->
                 JSONObject(stream.readBytes().decodeToString())
             }
@@ -121,6 +150,7 @@ object AppActRecipeStore {
             Log.e(TAG, "load($recipeId) failed: ${e.message}", e)
             null
         }
+    }
 
     private fun parseRecipe(o: JSONObject): Recipe {
         val paramsArray = o.optJSONArray("params") ?: JSONArray()
