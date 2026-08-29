@@ -225,6 +225,8 @@ Shelly is not a Termux skin, a WebView terminal, or a remote IDE client. It owns
 
 It is also not a cloud agent service. Scheduled agents run on the device, on your keys, with no server-side component and no subscription runner — if the phone is off, nothing pretends otherwise, and missed runs are surfaced instead of hidden.
 
+It is also not a messaging-platform bot operator. There's no Discord bot, no Slack app, no WhatsApp/Signal Business API integration, and none planned — that's the server-resident-bot model a service like Hermes runs, and it needs a server Shelly doesn't have. The substitute is on-device: the notification-triggered-agent channel (`lib/notification-inbound.ts`) reacts to any app's Android notification — package allowlist, exact sender-name match, tainted-input only, never treated as instructions — so it covers LINE, Discord, Slack, WhatsApp, Signal, or anything else that posts a notification, with no per-platform bot registration or approval process for any of them.
+
 No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 
 ---
