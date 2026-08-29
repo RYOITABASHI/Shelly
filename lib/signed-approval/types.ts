@@ -23,21 +23,17 @@
 // lockstep; a native/executor consumer that verifies these records mirrors it.
 export const SIGNED_APPROVAL_SCHEMA_VERSION = 2;
 
-// Mirrors store/types.ts AgentActionType (the gated action set; excludes the
-// synthetic __suppressed__/unsupported). app-act joined that set on
-// 2026-07-14 (store/types.ts:566) but this dormant parity restatement was
-// last touched before app-act existed and was never widened to match --
-// the same narrow-fix/sibling-call-site-untouched gap fixed in
-// app/_layout.tsx's handleAgentActionConfirm (fececf5a2). Nothing here is
-// wired into a production path yet (see module doc comment above), so this
-// is a type-only correction with no runtime behavior change today.
-// social-post joined the gated set on 2026-07-22 (store/types.ts) and is
-// widened here immediately to avoid repeating the app-act drift described
-// above. (api-call is still absent — it predates this edit and its approval
-// surface is PlanSpec-executor-only; widening it is out of scope here.)
-// browser-pane joined the gated set on 2026-08-04 (store/types.ts) and is
-// widened here immediately for the same reason.
-export type ApprovalActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'social-post' | 'browser-pane';
+// Codex review (2026-08-29, Hermes Agent parity audit): this dormant type
+// used to hand-restate the gated action set and had already drifted once
+// (api-call missing, its own comment admitted as much and called widening
+// "out of scope" -- exactly the kind of narrow-fix gap this project's own
+// action-type schema drift has repeatedly produced in the LIVE approval
+// path, see lib/agent-action-types.ts's doc comment for the history). Now
+// re-exported from that single source of truth instead of restated, so this
+// dormant type can never independently drift from the live schema again --
+// __tests__/agent-action-type-schema-parity.test.ts asserts the identity.
+import type { ApprovalActionType } from '@/lib/agent-action-types';
+export type { ApprovalActionType } from '@/lib/agent-action-types';
 
 export type ApprovalDecision = 'accept' | 'decline';
 

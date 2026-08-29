@@ -135,4 +135,12 @@ describe('agent action-type schema parity (lib/agent-action-types.ts vs. every d
     const scriptCopy = fs.readFileSync(path.join(root, 'scripts', 'shelly-plan-executor.js'), 'utf8');
     expect(planExecutorAsset).toBe(scriptCopy);
   });
+
+  it("lib/signed-approval/types.ts re-exports ApprovalActionType from this file instead of restating it (Codex review, 2026-08-29 — the dormant restatement had already drifted once, missing api-call)", () => {
+    const signedApprovalTypes = fs.readFileSync(path.join(root, 'lib/signed-approval/types.ts'), 'utf8');
+    expect(signedApprovalTypes).toContain("export type { ApprovalActionType } from '@/lib/agent-action-types';");
+    // Belt-and-braces: fail loudly, not silently, if a future edit reverts to
+    // a hand-restated union literal instead of the re-export.
+    expect(signedApprovalTypes).not.toMatch(/export type ApprovalActionType = '/);
+  });
 });
