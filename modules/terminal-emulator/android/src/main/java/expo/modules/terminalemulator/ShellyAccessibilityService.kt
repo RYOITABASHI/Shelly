@@ -222,16 +222,15 @@ class ShellyAccessibilityService : AccessibilityService() {
         if (node.isClickable || node.isEditable || resId.isNotEmpty() || desc.isNotEmpty() || text.isNotEmpty()) {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
-            out.put(
-                JSONObject()
-                    .put("className", cls)
-                    .put("resourceId", resId)
-                    .put("contentDescription", desc)
-                    .put("text", text)
-                    .put("clickable", node.isClickable)
-                    .put("editable", node.isEditable)
-                    .put("bounds", "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}"),
-            )
+            val nodeJson = JSONObject()
+                .put("className", cls)
+                .put("resourceId", resId)
+                .put("contentDescription", desc)
+                .put("text", text)
+                .put("clickable", node.isClickable)
+                .put("editable", node.isEditable)
+                .put("bounds", "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}")
+            out.put(nodeJson)
         }
         if (maxDepth > 0) {
             for (i in 0 until node.childCount) {
