@@ -9,6 +9,7 @@ import React, { useContext, useCallback, useRef, useEffect, useState } from 'rea
 import {
   View,
   Text,
+  Image,
   FlatList,
   StyleSheet,
   Animated,
@@ -138,6 +139,7 @@ type BubbleProps = {
   onConfirmAgentDraft?: (messageId: string, confirmed: ConfirmedAgentDraft) => void;
   onCancelAgentDraft?: (messageId: string) => void;
   onDismissScheduleReadiness?: (messageId: string) => void;
+  onCancelStreaming?: () => void;
 };
 
 const MessageBubble = React.memo(function MessageBubble({
@@ -147,6 +149,7 @@ const MessageBubble = React.memo(function MessageBubble({
   onConfirmAgentDraft,
   onCancelAgentDraft,
   onDismissScheduleReadiness,
+  onCancelStreaming,
 }: BubbleProps) {
   const { t } = useTranslation();
   const containerMaxWidth = maxWidth && maxWidth > 0 ? { maxWidth } : null;
@@ -222,6 +225,12 @@ const MessageBubble = React.memo(function MessageBubble({
         >
           YOU
         </Text>
+        {/* Vision v1.1 (Fable5, 2026-08-29): previously an attached image
+            vanished after send with no visual trace in the sent bubble —
+            the user had no confirmation of WHICH image they sent. */}
+        {message.imageThumbnailUri ? (
+          <Image source={{ uri: message.imageThumbnailUri }} style={bubbleStyles.userImageThumb} />
+        ) : null}
         <Text style={bubbleStyles.userText} selectable>{displayText}</Text>
       </View>
     );
@@ -258,7 +267,25 @@ const MessageBubble = React.memo(function MessageBubble({
             )
           )
         )}
-        {isLastStreaming && <StreamingDots color="#6B7280" />}
+        {isLastStreaming && (
+          <View style={bubbleStyles.streamingRow}>
+            <StreamingDots color="#6B7280" />
+            {/* Fable5 follow-up (2026-08-29): the attach button used to
+                double as a streaming-cancel control, which risked a
+                timing-based mix-up between "cancel" and "attach an image".
+                Cancel now lives here, inside the streaming bubble itself —
+                the attach button in the input bar is attach-only. */}
+            <TouchableOpacity
+              onPress={onCancelStreaming}
+              style={bubbleStyles.stopBtn}
+              hitSlop={8}
+              accessibilityLabel={t('ai_pane_stop_streaming')}
+              accessibilityRole="button"
+            >
+              <MaterialIcons name="stop" size={11} color={C.text2} />
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
       {!isLastStreaming && message.agentRollbackOffer && (
         <AgentUndoButton agentId={message.agentRollbackOffer.agentId} />
@@ -299,6 +326,13 @@ const bubbleStyles = StyleSheet.create({
     lineHeight: 14,
     color: C.text1,
   },
+  userImageThumb: {
+    width: 96,
+    height: 96,
+    borderRadius: 6,
+    marginBottom: 4,
+    backgroundColor: C.bgSurface,
+  },
   assistantContent: {
     backgroundColor: C.bgSurface,
     borderRadius: 6,
@@ -321,6 +355,20 @@ const bubbleStyles = StyleSheet.create({
     fontFamily: F.family,
     color: C.text2,
     fontStyle: 'italic',
+  },
+  streamingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  stopBtn: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: C.border,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
 
@@ -418,23 +466,16 @@ export default function AIPane() {
     setVoiceChatVisible(true);
   }, []);
 
-  // Fable5/Codex review (2026-08-29, Hermes Agent parity audit): this
-  // button used to do only the streaming-cancel half below — there was no
-  // image-attachment path anywhere in the live app (the only image-picker
-  // code, components/input/CommandInput.tsx, is confirmed dead per
-  // CLAUDE.md). While a response is streaming the icon keeps its existing
-  // cancel role (unchanged); otherwise it now opens the gallery picker and
-  // immediately sends a default "describe this image" turn with the
-  // picked image attached — geminiMultimodalStream (lib/gemini.ts) existed
-  // with zero callers before this wiring, see AIPaneDispatchOptions.images'
-  // doc comment in use-ai-pane-dispatch.ts. One image, not a queued
-  // multi-image compose flow, matching the simplicity of every other
-  // pane-input affordance here.
+  // Vision v1.1 (Fable5, 2026-08-29 follow-up): the original wiring reused
+  // this button for streaming-cancel too, which Fable5 flagged as a
+  // timing-risk mix-up between "cancel" and "attach". Cancel now lives on
+  // the streaming bubble itself (see MessageBubble's stop button above), so
+  // this button is attach-only regardless of streaming state — staging (not
+  // immediately sending) an image also means the user can add a caption
+  // instead of always getting the default "describe this image" prompt.
+  const [stagedImage, setStagedImage] = useState<{ uri: string; base64: string; mimeType: string } | null>(null);
+
   const handleAttach = useCallback(async () => {
-    if (dispatchStreaming) {
-      cancelStreaming();
-      return;
-    }
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
@@ -462,14 +503,35 @@ export default function AIPane() {
         compress: 0.7,
         format: SaveFormat.JPEG,
       });
-      if (!manipulated.base64) return;
-      handleSubmit(t('ai_pane_image_default_prompt'), {
-        images: [{ base64: manipulated.base64, mimeType: 'image/jpeg' }],
-      });
+      if (!manipulated.base64 || !manipulated.uri) return;
+      setStagedImage({ uri: manipulated.uri, base64: manipulated.base64, mimeType: 'image/jpeg' });
     } catch (err) {
       logError('AIPane', 'image picker failed', err);
     }
-  }, [dispatchStreaming, cancelStreaming, handleSubmit, t]);
+  }, []);
+
+  const handleRemoveStagedImage = useCallback(() => {
+    setStagedImage(null);
+  }, []);
+
+  // Composer submit wrapper: PaneInputBar only ever hands back typed text
+  // (it has no concept of a staged image), so the staged image — if any —
+  // is picked up from this component's own state and folded into the same
+  // dispatchOpts.images/imageThumbnailUri path the old immediate-send flow
+  // used, then cleared. An empty caption falls back to the same default
+  // prompt the old flow always used.
+  const handleComposerSubmit = useCallback((text: string) => {
+    const image = stagedImage;
+    if (image) {
+      setStagedImage(null);
+      handleSubmit(text.trim() || t('ai_pane_image_default_prompt'), {
+        images: [{ base64: image.base64, mimeType: image.mimeType }],
+        imageThumbnailUri: image.uri,
+      });
+      return;
+    }
+    handleSubmit(text);
+  }, [stagedImage, handleSubmit, t]);
 
   const conversation = useAIPaneStore((s) => {
     return s.conversations[resolveAiPaneStoreKey(paneId)] ?? null;
@@ -790,10 +852,11 @@ export default function AIPane() {
           onConfirmAgentDraft={confirmAgentDraft}
           onCancelAgentDraft={cancelAgentDraft}
           onDismissScheduleReadiness={dismissScheduleReadiness}
+          onCancelStreaming={cancelStreaming}
         />
       </TouchableOpacity>
     ),
-    [isStreaming, bubbleMaxWidth, confirmAgentDraft, cancelAgentDraft, dismissScheduleReadiness, confirmDeleteMessage],
+    [isStreaming, bubbleMaxWidth, confirmAgentDraft, cancelAgentDraft, dismissScheduleReadiness, confirmDeleteMessage, cancelStreaming],
   );
 
   const keyExtractor = useCallback((item: ChatMessage) => item.id, []);
@@ -868,13 +931,14 @@ export default function AIPane() {
           the same rounded pill rather than as separate large circles). */}
       <PaneInputBar
         placeholder={dispatchStreaming ? 'Responding...' : 'Ask anything...'}
-        onSubmit={handleSubmit}
+        onSubmit={handleComposerSubmit}
         onAttach={handleAttach}
         showMic
         isRecording={isRecording}
         onMicPress={handleMicPress}
         onMicLongPress={handleMicLongPress}
         paneId={paneId}
+        attachmentPreview={stagedImage ? { uri: stagedImage.uri, onRemove: handleRemoveStagedImage } : null}
       />
 
       <VoiceChat

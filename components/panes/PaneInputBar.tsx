@@ -15,6 +15,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Text,
+  Image,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
@@ -37,6 +38,13 @@ type Props = {
    *  broadcast lands in whichever AI/Browser/Markdown pane the user is
    *  actually looking at, not every mounted PaneInputBar at once. */
   paneId?: string;
+  /** Vision v1.1 (Fable5, 2026-08-29): a staged image (AIPane.tsx) shown as
+   *  a small thumbnail strip above the pill, with its own remove button.
+   *  When present, Send is enabled even with empty text (the caption is
+   *  optional — the caller falls back to a default prompt), and `onSubmit`
+   *  fires with whatever text is typed (possibly ''). Unused by
+   *  Browser/Markdown panes (they never pass this). */
+  attachmentPreview?: { uri: string; onRemove: () => void } | null;
 };
 
 export default function PaneInputBar({
@@ -48,6 +56,7 @@ export default function PaneInputBar({
   onMicPress,
   onMicLongPress,
   paneId,
+  attachmentPreview,
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
@@ -80,17 +89,32 @@ export default function PaneInputBar({
     return () => sub.remove();
   }, [paneId]);
 
+  const hasAttachment = Boolean(attachmentPreview);
   const handleSubmit = useCallback(() => {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed && !hasAttachment) return;
     onSubmit(trimmed);
     setText('');
-  }, [text, onSubmit]);
+  }, [text, onSubmit, hasAttachment]);
 
-  const hasText = text.trim().length > 0;
+  const canSend = text.trim().length > 0 || hasAttachment;
 
   return (
     <View style={[styles.container, { backgroundColor: containerBg }]}>
+      {attachmentPreview ? (
+        <View style={styles.attachmentStrip}>
+          <Image source={{ uri: attachmentPreview.uri }} style={styles.attachmentThumb} />
+          <TouchableOpacity
+            onPress={attachmentPreview.onRemove}
+            style={styles.attachmentRemoveBtn}
+            hitSlop={8}
+            accessibilityLabel="Remove attachment"
+            accessibilityRole="button"
+          >
+            <MaterialIcons name="close" size={12} color={C.text2} />
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <View style={[styles.pill, { backgroundColor: pillBg }]}>
         <Text style={styles.promptGlyph}>{'>'}</Text>
         <TextInput
@@ -139,8 +163,8 @@ export default function PaneInputBar({
         ) : null}
         <TouchableOpacity
           onPress={handleSubmit}
-          disabled={!hasText}
-          style={[styles.sendBtn, !hasText && styles.sendBtnDisabled, !hasText && { backgroundColor: disabledBg }]}
+          disabled={!canSend}
+          style={[styles.sendBtn, !canSend && styles.sendBtnDisabled, !canSend && { backgroundColor: disabledBg }]}
           hitSlop={6}
           accessibilityLabel="Send"
           accessibilityRole="button"
@@ -148,7 +172,7 @@ export default function PaneInputBar({
           <MaterialIcons
             name="arrow-upward"
             size={14}
-            color={hasText ? C.btnPrimaryText : C.text3}
+            color={canSend ? C.btnPrimaryText : C.text3}
           />
         </TouchableOpacity>
       </View>
@@ -209,5 +233,29 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   sendBtnDisabled: {
+  },
+  attachmentStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    paddingBottom: 6,
+  },
+  attachmentThumb: {
+    width: 40,
+    height: 40,
+    borderRadius: 6,
+    backgroundColor: C.bgSurface,
+  },
+  attachmentRemoveBtn: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    marginLeft: -10,
+    marginTop: -20,
+    backgroundColor: C.bgSidebar,
+    borderWidth: 1,
+    borderColor: C.border,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

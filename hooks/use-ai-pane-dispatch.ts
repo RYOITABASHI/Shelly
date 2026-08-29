@@ -229,6 +229,10 @@ function estimateTokens(text: string): number {
  * happen to be adjacent), and unconditionally correct for every provider
  * regardless of its alternation requirements, so applying it now needs no
  * feature flag. */
+/** See toOpenAIHistory's inline comment on why an image-attached past turn
+ *  gets this appended when it re-enters a later turn's history. */
+const IMAGE_HISTORY_MARKER = '[image attached — not carried forward into this context]';
+
 function toOpenAIHistory(
   messages: ChatMessage[],
   maxPairs = 8,
@@ -244,11 +248,21 @@ function toOpenAIHistory(
   for (const m of recent) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     if (!m.content) continue;
+    // Vision v1.1 (Fable5, 2026-08-29): only the CURRENT turn's
+    // dispatchOpts.images actually reach a provider — a past image-attached
+    // turn re-entering history here is text-only. Without this marker a
+    // later "what was in that image?" has no signal an image ever existed,
+    // and a model can confidently hallucinate a description instead of
+    // saying it cannot see it. IMAGE_HISTORY_MARKER is intentionally NOT
+    // i18n'd — it is model-facing context, never rendered to the user (the
+    // sent bubble shows imageThumbnailUri instead, see ChatMessage's doc
+    // comment).
+    const content = m.imageAttached ? `${m.content}\n${IMAGE_HISTORY_MARKER}` : m.content;
     const last = result[result.length - 1];
     if (last && last.role === m.role) {
-      last.content = `${last.content}\n${m.content}`;
+      last.content = `${last.content}\n${content}`;
     } else {
-      result.push({ role: m.role, content: m.content });
+      result.push({ role: m.role, content });
     }
   }
   return result;
@@ -517,6 +531,19 @@ export interface AIPaneDispatchOptions {
    * silently ignoring the attachment.
    */
   images?: Array<{ base64: string; mimeType: string }>;
+  /**
+   * Vision v1.1 (Fable5, 2026-08-29): a local file:// (or content://) URI for
+   * the FIRST entry of `images`, used only to render a thumbnail on the sent
+   * user bubble (ChatMessage.imageThumbnailUri) — never sent to any
+   * provider. Deliberately kept separate from the base64 payload above: the
+   * base64 already goes out over the network per API call and is never
+   * persisted, whereas ChatMessage IS persisted (ai-pane-store), so storing
+   * the same bytes again as a data: URI on every image turn would grow
+   * AsyncStorage without bound. A cache-dir file URI is already
+   * materialized on disk (expo-image-manipulator's output) and costs
+   * nothing extra to reference.
+   */
+  imageThumbnailUri?: string;
 }
 
 /**
@@ -2059,6 +2086,12 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         content: userText,
         timestamp: Date.now(),
         agent: agent as ChatMessage['agent'],
+        ...(dispatchOpts?.images && dispatchOpts.images.length > 0
+          ? {
+              imageAttached: true,
+              ...(dispatchOpts.imageThumbnailUri ? { imageThumbnailUri: dispatchOpts.imageThumbnailUri } : null),
+            }
+          : null),
       };
       store.addMessage(paneId, userMsg);
 

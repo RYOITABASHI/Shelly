@@ -1275,6 +1275,18 @@ export type ChatMessage = {
   streamingStartTime?: number;
   /** Perplexity citations */
   citations?: Array<{ url: string; title?: string }>;
+  /** Vision v1.1 (Fable5, 2026-08-29): set on a USER message that carried an
+   *  image attachment (AIPane.tsx's staged-image compose flow). Two uses:
+   *  (1) `imageThumbnailUri` renders a small thumbnail on the sent bubble
+   *  (previously the image vanished after send with no visual trace);
+   *  (2) `toOpenAIHistory` (hooks/use-ai-pane-dispatch.ts) appends a
+   *  `[image attached — not carried forward]` marker to this message's
+   *  `content` when it re-enters a LATER turn's history, since only the
+   *  CURRENT turn's dispatchOpts.images actually reach the model — without
+   *  the marker, a model asked about "that image" on a later turn has no
+   *  signal that an image was ever there and can hallucinate a description. */
+  imageAttached?: boolean;
+  imageThumbnailUri?: string;
   /** Error */
   error?: string;
   /** Safety warning level */

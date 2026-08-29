@@ -1183,6 +1183,7 @@ const en: Record<string, string> = {
 
   // ── AI Dispatch ─────────────────────────────────────────────────
   'dispatch.gemini_no_key': 'Gemini API key is not set. Add it in Settings → API Keys.',
+  'gemini_api_key_missing': 'Gemini API key is not set. Enter it in Settings.',
   'dispatch.perplexity_no_key': 'Perplexity API key is not set.\nGet one at https://www.perplexity.ai/settings/api',
   'dispatch.api_key_not_set': 'API key not set',
   'dispatch.delegated_to': 'Delegated to {{tool}}.\nReason: {{reason}}',
@@ -2398,6 +2399,7 @@ const en: Record<string, string> = {
   'tts_truncated_suffix': ' The rest is omitted.',
   'ai_pane_images_require_gemini': 'Image attachments need the Gemini provider — switch this pane to Gemini (or add a Gemini API key in Settings), then send again.',
   'ai_pane_image_default_prompt': 'Describe this image.',
+  'ai_pane_stop_streaming': 'Stop',
 };
 
 export default en;

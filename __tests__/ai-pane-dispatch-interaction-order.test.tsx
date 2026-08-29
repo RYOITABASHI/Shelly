@@ -3213,4 +3213,75 @@ describe('@gemini image attachment dispatch (2026-08-29, Fable5/Codex Hermes par
     expect(useAIPaneStore.getState().getOrCreate(PANE).messages.map((m) => m.content))
       .toEqual(['describe this image', 'ai_pane_images_require_gemini']);
   });
+
+  // Vision v1.1 (Fable5, 2026-08-29 follow-up): the sent user bubble used to
+  // show no trace of which image was attached once the turn completed.
+  // AIPane.tsx's staged-image compose flow now passes a local file:// URI
+  // (never the base64 payload — that would bloat the persisted store) via
+  // dispatchOpts.imageThumbnailUri, and dispatch() must store it on the
+  // ChatMessage as imageAttached/imageThumbnailUri for the bubble to render.
+  it('stores imageAttached + imageThumbnailUri on the sent user message when a thumbnail URI is provided', async () => {
+    mockGeminiMultimodalStream.mockImplementation(
+      async (
+        _apiKey: string,
+        _prompt: string,
+        _images: Array<{ base64: string; mimeType: string }>,
+        onChunk: (text: string, done: boolean) => void,
+      ) => {
+        onChunk('It is a cat.', false);
+        return { success: true, content: 'It is a cat.' };
+      },
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('describe this image', {
+        images: [{ base64: 'ZmFrZS1pbWFnZS1ieXRlcw==', mimeType: 'image/jpeg' }],
+        imageThumbnailUri: 'file:///cache/staged-image.jpg',
+      });
+    });
+
+    const userMsg = useAIPaneStore.getState().getOrCreate(PANE).messages[0];
+    expect(userMsg.imageAttached).toBe(true);
+    expect(userMsg.imageThumbnailUri).toBe('file:///cache/staged-image.jpg');
+  });
+
+  // Vision v1.1 (Fable5, 2026-08-29 follow-up): only the CURRENT turn's
+  // dispatchOpts.images ever reach a provider — an image-attached turn that
+  // later re-enters history (a subsequent text-only turn) must carry an
+  // explicit "not carried forward" marker so the model does not confidently
+  // hallucinate a description of an image it can no longer see.
+  it('marks a past image-attached turn when it re-enters a later turn\'s history', async () => {
+    mockGeminiMultimodalStream.mockImplementation(async (
+      _apiKey: string,
+      _prompt: string,
+      _images: Array<{ base64: string; mimeType: string }>,
+      onChunk: (text: string, done: boolean) => void,
+    ) => {
+      onChunk('It is a cat.', false);
+      return { success: true, content: 'It is a cat.' };
+    });
+    mockGeminiChatStream.mockImplementation(async (
+      _apiKey: string,
+      _prompt: string,
+      onChunk: (text: string, done: boolean) => void,
+    ) => {
+      onChunk('I cannot see it now.', false);
+      return { success: true, content: 'I cannot see it now.' };
+    });
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('describe this image', {
+        images: [{ base64: 'ZmFrZS1pbWFnZS1ieXRlcw==', mimeType: 'image/jpeg' }],
+      });
+    });
+    await act(async () => {
+      await result.current.dispatch('what was in that image?');
+    });
+
+    const geminiHistoryArg = mockGeminiChatStream.mock.calls[0][4] as Array<{ role: string; parts: Array<{ text: string }> }>;
+    const pastImageTurn = geminiHistoryArg.find((m) => m.role === 'user' && m.parts[0]?.text.startsWith('describe this image'));
+    expect(pastImageTurn?.parts[0]?.text).toContain('[image attached');
+  });
 });
