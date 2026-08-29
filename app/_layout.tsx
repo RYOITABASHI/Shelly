@@ -385,6 +385,22 @@ export default function RootLayout() {
         if (!isAcceptedBrowserPaneResult(browserPaneResult)) {
           throw new Error('Browser action did not succeed.');
         }
+        // Fable5 review (2026-08-29, Hermes Agent parity audit): extractText's
+        // whole point is to hand page content back to the human/agent, but
+        // this accept path only ever checked ok/error and discarded
+        // browserPaneResult.text -- an agent could successfully extract a
+        // page's text and the user would never see it (DEFERRED.md 2026-08
+        // finding). The executor process has already exited by this point
+        // (browser-pane's "fire-then-reply" design runs the DOM action only
+        // AFTER the executor wrote a fixed run-log success, so there is no
+        // run-log field left to backfill) -- an in-app alert is the only
+        // remaining place a human can actually see this text.
+        if (browserPaneResult.kind === 'extractText' && browserPaneResult.text) {
+          const preview = browserPaneResult.text.length > 1000
+            ? `${browserPaneResult.text.slice(0, 1000)}…`
+            : browserPaneResult.text;
+          Alert.alert(t('agent_action_confirm_browserpane_extracted_title'), preview);
+        }
       } catch (e) {
         // Mirrors resolvePendingAgentActionApproval's other catches: log only
         // the error class/type (a thrown message can echo page-derived

@@ -20,6 +20,7 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { PaneIdContext, MultiPaneContext } from '@/components/multi-pane/PaneSlot';
 import {
   addAiPaneThreadSwitchNotice,
@@ -412,11 +413,38 @@ export default function AIPane() {
     setVoiceChatVisible(true);
   }, []);
 
-  const handleAttach = useCallback(() => {
+  // Fable5/Codex review (2026-08-29, Hermes Agent parity audit): this
+  // button used to do only the streaming-cancel half below — there was no
+  // image-attachment path anywhere in the live app (the only image-picker
+  // code, components/input/CommandInput.tsx, is confirmed dead per
+  // CLAUDE.md). While a response is streaming the icon keeps its existing
+  // cancel role (unchanged); otherwise it now opens the gallery picker and
+  // immediately sends a default "describe this image" turn with the
+  // picked image attached — geminiMultimodalStream (lib/gemini.ts) existed
+  // with zero callers before this wiring, see AIPaneDispatchOptions.images'
+  // doc comment in use-ai-pane-dispatch.ts. One image, not a queued
+  // multi-image compose flow, matching the simplicity of every other
+  // pane-input affordance here.
+  const handleAttach = useCallback(async () => {
     if (dispatchStreaming) {
       cancelStreaming();
+      return;
     }
-  }, [dispatchStreaming, cancelStreaming]);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.7,
+        base64: true,
+      });
+      const asset = !result.canceled ? result.assets?.[0] : undefined;
+      if (!asset?.base64) return;
+      handleSubmit(t('ai_pane_image_default_prompt'), {
+        images: [{ base64: asset.base64, mimeType: asset.mimeType || 'image/jpeg' }],
+      });
+    } catch (err) {
+      logError('AIPane', 'image picker failed', err);
+    }
+  }, [dispatchStreaming, cancelStreaming, handleSubmit, t]);
 
   const conversation = useAIPaneStore((s) => {
     return s.conversations[resolveAiPaneStoreKey(paneId)] ?? null;

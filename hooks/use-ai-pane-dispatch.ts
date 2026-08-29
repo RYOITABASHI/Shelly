@@ -25,7 +25,7 @@ import type { ChatMessage } from '@/store/types';
 import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 import { detectPostFormatDirective } from '@/lib/post-format-directive';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
-import { geminiChatStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
+import { geminiChatStream, geminiMultimodalStream, GEMINI_DEFAULT_MODEL } from '@/lib/gemini';
 import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexity';
 import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
 import { openRouterChatStream, OPENROUTER_DEFAULT_MODEL } from '@/lib/openrouter';
@@ -506,6 +506,17 @@ export function createThrottledUpdate(updateFn: UpdateFn) {
  */
 export interface AIPaneDispatchOptions {
   source?: 'widget-ask';
+  /**
+   * Fable5/Codex review (2026-08-29, Hermes Agent parity audit): lib/gemini.ts's
+   * geminiMultimodalStream has existed since before this review with zero
+   * callers anywhere in the app -- there was no path from an image the user
+   * picks to that function. This wires it up: when present, the Gemini
+   * branch below calls geminiMultimodalStream instead of geminiChatStream.
+   * Other providers don't accept images (no equivalent call exists for them
+   * yet) and reply with a plain "images need Gemini" message instead of
+   * silently ignoring the attachment.
+   */
+  images?: Array<{ base64: string; mimeType: string }>;
 }
 
 /**
@@ -3070,7 +3081,18 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // (which keeps showing its own inline "X error: ..." bubble exactly
         // as before this feature existed).
         try {
-        if (effectiveProvider === 'local') {
+        if (dispatchOpts?.images && dispatchOpts.images.length > 0 && effectiveProvider !== 'gemini') {
+          // Fable5/Codex review (2026-08-29): only geminiMultimodalStream
+          // exists today — every other provider path below has no image
+          // parameter at all. Telling the user plainly beats silently
+          // dropping the attachment and answering the text alone as if
+          // nothing was wrong.
+          throttledUpdate(paneId, assistantId, {
+            content: t('ai_pane_images_require_gemini'),
+            isStreaming: false,
+            streamingText: undefined,
+          });
+        } else if (effectiveProvider === 'local') {
           await runLocalCompanionDispatch();
         } else if (effectiveProvider === 'cerebras') {
           // ── Cerebras Qwen3-235B (frontier-class, fastest, 1M tok/day) ──
@@ -3271,25 +3293,43 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             let accumulated = '';
             throttledUpdate(paneId, assistantId, { isStreaming: true, streamingText: '' });
 
-            const result = await geminiChatStream(
-              apiKey,
-              promptText,
-              (chunk, done) => {
-                if (signal.aborted) return;
-                if (!done && chunk) {
-                  accumulated += chunk;
-                  throttledUpdate(paneId, assistantId, {
-                    streamingText: accumulated,
-                    tokenCount: estimateTokens(accumulated),
-                    isStreaming: true,
-                  });
-                }
-              },
-              settings.geminiModel ?? GEMINI_DEFAULT_MODEL,
-              geminiHistory,
-              signal,
-              systemPrompt,
-            );
+            const images = dispatchOpts?.images;
+            const onGeminiChunk = (chunk: string, done: boolean) => {
+              if (signal.aborted) return;
+              if (!done && chunk) {
+                accumulated += chunk;
+                throttledUpdate(paneId, assistantId, {
+                  streamingText: accumulated,
+                  tokenCount: estimateTokens(accumulated),
+                  isStreaming: true,
+                });
+              }
+            };
+            // Fable5/Codex review (2026-08-29): geminiMultimodalStream takes
+            // no history/systemPrompt parameter (it was built and left
+            // uncalled before this review, see the AIPaneDispatchOptions doc
+            // comment) — an image turn is necessarily a single-shot
+            // prompt+image request, not a multi-turn continuation. This
+            // matches how the rest of the app treats an image attachment: an
+            // ad-hoc "look at this" turn, not woven into the ongoing history.
+            const result = images && images.length > 0
+              ? await geminiMultimodalStream(
+                  apiKey,
+                  promptText,
+                  images,
+                  onGeminiChunk,
+                  settings.geminiModel ?? GEMINI_DEFAULT_MODEL,
+                  signal,
+                )
+              : await geminiChatStream(
+                  apiKey,
+                  promptText,
+                  onGeminiChunk,
+                  settings.geminiModel ?? GEMINI_DEFAULT_MODEL,
+                  geminiHistory,
+                  signal,
+                  systemPrompt,
+                );
 
             if (!signal.aborted) {
               const finalContent = result.content ?? accumulated;

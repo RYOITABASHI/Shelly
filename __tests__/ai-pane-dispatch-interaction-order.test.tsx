@@ -88,6 +88,17 @@ jest.mock('@/lib/openrouter', () => ({
   openRouterChatStream: jest.fn(),
 }));
 
+// Fable5/Codex review (2026-08-29, Hermes Agent parity audit): mocked here
+// the same way as openrouter above, so the "@gemini image attachment
+// dispatch" describe block below can assert geminiMultimodalStream is the
+// one actually called for an image-attached turn, and geminiChatStream for
+// a plain text one — the real module makes a network request.
+jest.mock('@/lib/gemini', () => ({
+  GEMINI_DEFAULT_MODEL: 'gemini-2.0-flash',
+  geminiChatStream: jest.fn(),
+  geminiMultimodalStream: jest.fn(),
+}));
+
 // 2026-07-27 regression coverage (on-device finding: "@agent 手伝って" never
 // asked its task-clarity clarifying question): the two
 // extractAgentFieldsWithLlm call sites in hooks/use-ai-pane-dispatch.ts now
@@ -208,6 +219,9 @@ const { ensureLocalLlmServerRunning: mockEnsureLocalLlmServerRunning } =
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { openRouterChatStream: mockOpenRouterChatStream } =
   require('@/lib/openrouter') as { openRouterChatStream: jest.Mock };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { geminiChatStream: mockGeminiChatStream, geminiMultimodalStream: mockGeminiMultimodalStream } =
+  require('@/lib/gemini') as { geminiChatStream: jest.Mock; geminiMultimodalStream: jest.Mock };
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {
   buildRegistrationSystemPrompt: mockBuildRegistrationSystemPrompt,
@@ -3109,5 +3123,94 @@ describe('G1-P2 carry-forward through the real local-dispatch finalization path'
       { role: 'user', content: 'second question' },
       { role: 'assistant', content: 'second reply' },
     ]);
+  });
+});
+
+describe('@gemini image attachment dispatch (2026-08-29, Fable5/Codex Hermes parity audit)', () => {
+  // geminiMultimodalStream (lib/gemini.ts) existed with zero callers
+  // anywhere in the app before this wiring — see AIPaneDispatchOptions.images'
+  // doc comment in hooks/use-ai-pane-dispatch.ts. These pin: (a) an
+  // image-attached turn calls geminiMultimodalStream, never geminiChatStream;
+  // (b) a plain text turn on the same provider is unaffected and still calls
+  // geminiChatStream; (c) attaching an image on any OTHER provider replies
+  // with a plain explanatory message instead of silently dropping the image.
+  beforeEach(() => {
+    usePaneStore.setState({ paneAgents: { [PANE]: 'gemini' } } as any);
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, geminiApiKey: 'test-gemini-key' },
+    }));
+  });
+
+  it('an image-attached turn calls geminiMultimodalStream with the image, not geminiChatStream', async () => {
+    mockGeminiMultimodalStream.mockImplementation(
+      async (
+        _apiKey: string,
+        _prompt: string,
+        _images: Array<{ base64: string; mimeType: string }>,
+        onChunk: (text: string, done: boolean) => void,
+      ) => {
+        onChunk('It is a cat.', false);
+        return { success: true, content: 'It is a cat.' };
+      },
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('describe this image', {
+        images: [{ base64: 'ZmFrZS1pbWFnZS1ieXRlcw==', mimeType: 'image/jpeg' }],
+      });
+    });
+
+    expect(mockGeminiMultimodalStream).toHaveBeenCalledWith(
+      'test-gemini-key',
+      'describe this image',
+      [{ base64: 'ZmFrZS1pbWFnZS1ieXRlcw==', mimeType: 'image/jpeg' }],
+      expect.any(Function),
+      'gemini-2.0-flash',
+      expect.any(AbortSignal),
+    );
+    expect(mockGeminiChatStream).not.toHaveBeenCalled();
+    expect(useAIPaneStore.getState().getOrCreate(PANE).messages.map((m) => m.content))
+      .toEqual(['describe this image', 'It is a cat.']);
+  });
+
+  it('a plain text turn (no images) still calls geminiChatStream as before', async () => {
+    mockGeminiChatStream.mockImplementation(
+      async (
+        _apiKey: string,
+        _prompt: string,
+        onChunk: (text: string, done: boolean) => void,
+      ) => {
+        onChunk('hi there', false);
+        return { success: true, content: 'hi there' };
+      },
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('hello');
+    });
+
+    expect(mockGeminiChatStream).toHaveBeenCalled();
+    expect(mockGeminiMultimodalStream).not.toHaveBeenCalled();
+  });
+
+  it('attaching an image on a non-Gemini provider explains the limitation instead of silently dropping it', async () => {
+    usePaneStore.setState({ paneAgents: { [PANE]: 'openrouter' } } as any);
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, openrouterApiKey: 'sk-or-test' },
+    }));
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.dispatch('describe this image', {
+        images: [{ base64: 'ZmFrZS1pbWFnZS1ieXRlcw==', mimeType: 'image/jpeg' }],
+      });
+    });
+
+    expect(mockOpenRouterChatStream).not.toHaveBeenCalled();
+    expect(mockGeminiMultimodalStream).not.toHaveBeenCalled();
+    expect(useAIPaneStore.getState().getOrCreate(PANE).messages.map((m) => m.content))
+      .toEqual(['describe this image', 'ai_pane_images_require_gemini']);
   });
 });
