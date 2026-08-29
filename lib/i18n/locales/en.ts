@@ -2387,6 +2387,7 @@ const en: Record<string, string> = {
   // you — so the fix is a page the user has to take themselves.
   'agent_action_confirm_browserpane_failed_url_mismatch': "The Browser Pane's current page doesn't match this agent's allowed pages. This action never navigates for you — open the target page in the Browser Pane yourself, then try again.",
   'agent_action_confirm_browserpane_extracted_title': 'Extracted text',
+  'agent_action_confirm_browserpane_extracted_empty': '(The matched element had no text.)',
   'tts_code_block_omitted': 'Code block omitted.',
   'tts_truncated_suffix': ' The rest is omitted.',
   'ai_pane_images_require_gemini': 'Image attachments need the Gemini provider — switch this pane to Gemini (or add a Gemini API key in Settings), then send again.',

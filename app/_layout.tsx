@@ -395,11 +395,19 @@ export default function RootLayout() {
         // AFTER the executor wrote a fixed run-log success, so there is no
         // run-log field left to backfill) -- an in-app alert is the only
         // remaining place a human can actually see this text.
-        if (browserPaneResult.kind === 'extractText' && browserPaneResult.text) {
-          const preview = browserPaneResult.text.length > 1000
-            ? `${browserPaneResult.text.slice(0, 1000)}…`
-            : browserPaneResult.text;
-          Alert.alert(t('agent_action_confirm_browserpane_extracted_title'), preview);
+        if (browserPaneResult.kind === 'extractText') {
+          // Fable5 follow-up: `&& browserPaneResult.text` alone treats an
+          // empty-string extraction (a real, successful result — the
+          // selector matched an empty element) the same as "nothing to
+          // show", so the alert silently never appeared and a user had no
+          // way to tell "it extracted nothing" apart from "did this even
+          // run?". Show the empty-result copy explicitly instead.
+          const text = browserPaneResult.text ?? '';
+          const preview = text.length > 1000 ? `${text.slice(0, 1000)}…` : text;
+          Alert.alert(
+            t('agent_action_confirm_browserpane_extracted_title'),
+            preview || t('agent_action_confirm_browserpane_extracted_empty'),
+          );
         }
       } catch (e) {
         // Mirrors resolvePendingAgentActionApproval's other catches: log only

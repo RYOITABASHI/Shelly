@@ -2351,6 +2351,7 @@ const ja: Record<string, string> = {
   // ため、ユーザー自身にペインを該当ページへ移動してもらう必要がある。
   'agent_action_confirm_browserpane_failed_url_mismatch': 'ブラウザペインが今開いているページが、このエージェントの許可リストと一致しません。この操作は自動でページ遷移しません — 対象ページをブラウザペインで開いてから、もう一度お試しください。',
   'agent_action_confirm_browserpane_extracted_title': '抽出したテキスト',
+  'agent_action_confirm_browserpane_extracted_empty': '（一致した要素にテキストはありませんでした）',
   'tts_code_block_omitted': 'コードブロック省略。',
   'tts_truncated_suffix': '。以下省略。',
   'ai_pane_images_require_gemini': '画像の添付にはGeminiプロバイダが必要です — このペインをGeminiに切り替える（または設定でGemini APIキーを追加する）か、対応するペインで送信し直してください。',

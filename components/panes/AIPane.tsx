@@ -21,6 +21,11 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+
+// Fable5 review (2026-08-29): caps the longer edge of an AI Pane image
+// attachment before base64 encoding — see handleAttach below.
+const MAX_IMAGE_ATTACHMENT_EDGE = 1568;
 import { PaneIdContext, MultiPaneContext } from '@/components/multi-pane/PaneSlot';
 import {
   addAiPaneThreadSwitchNotice,
@@ -433,13 +438,33 @@ export default function AIPane() {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        quality: 0.7,
-        base64: true,
       });
       const asset = !result.canceled ? result.assets?.[0] : undefined;
-      if (!asset?.base64) return;
+      if (!asset?.uri) return;
+      // Fable5 review (2026-08-29, follow-up on the vision-wiring commit):
+      // the picker's own `quality` option only affects JPEG re-encoding, not
+      // pixel dimensions — a full-resolution phone photo could still exceed
+      // Gemini's inline_data size limit or bloat the RN bridge payload.
+      // Always round-trip through the manipulator (resizing only when the
+      // longer edge actually exceeds the cap, never upscaling a smaller
+      // image) so every attachment is bounded regardless of source
+      // resolution or format.
+      const longerEdge = Math.max(asset.width ?? 0, asset.height ?? 0);
+      const actions = longerEdge > MAX_IMAGE_ATTACHMENT_EDGE
+        ? [{
+            resize: (asset.width ?? 0) >= (asset.height ?? 0)
+              ? { width: MAX_IMAGE_ATTACHMENT_EDGE }
+              : { height: MAX_IMAGE_ATTACHMENT_EDGE },
+          }]
+        : [];
+      const manipulated = await manipulateAsync(asset.uri, actions, {
+        base64: true,
+        compress: 0.7,
+        format: SaveFormat.JPEG,
+      });
+      if (!manipulated.base64) return;
       handleSubmit(t('ai_pane_image_default_prompt'), {
-        images: [{ base64: asset.base64, mimeType: asset.mimeType || 'image/jpeg' }],
+        images: [{ base64: manipulated.base64, mimeType: 'image/jpeg' }],
       });
     } catch (err) {
       logError('AIPane', 'image picker failed', err);
