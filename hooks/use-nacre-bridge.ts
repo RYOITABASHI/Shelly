@@ -20,6 +20,7 @@ import { useEffect, useRef } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
+import type { TabSession } from '@/store/types';
 import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
 import {
@@ -75,6 +76,41 @@ async function resolveGitContext(
   }
 }
 
+/**
+ * Recent command strings for a session, most-recent-first.
+ *
+ * On-device testing (2026-08-30) found `session.commandHistory` never
+ * reflects real usage: it's only ever written by terminal-store's own
+ * `runCommand()`, which is the OLD block-terminal UI's (TerminalBlock.tsx /
+ * FirstMateOverlay.tsx) choke point. The actual terminal UI in the app today
+ * — NativeTerminalView, PTY-direct — writes typed input straight to the PTY
+ * fd and never calls `runCommand()` (see TerminalPane.tsx's `onBlockCompleted`
+ * handler, which instead appends to `session.entries` via `addEntryBlock()`
+ * and calls `learnFromCommand()` as ITS OWN separate choke point — the exact
+ * same architectural split lib/agent-suggestion-engine.ts already hit for
+ * profile learning). Reading `commandHistory` alone meant `terms` stayed
+ * permanently empty and never updated for anyone actually typing in the
+ * terminal, which is the common case. Read both: `entries` (real native
+ * usage) and `commandHistory` (legacy block-UI, kept for completeness).
+ */
+function recentCommands(session: TabSession | undefined): string[] {
+  if (!session) return [];
+  const fromEntries = session.entries
+    .filter((e): e is Extract<typeof e, { command: string }> => 'command' in e)
+    .slice(-MAX_RECENT_COMMANDS)
+    .reverse()
+    .map((e) => e.command);
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const cmd of [...fromEntries, ...session.commandHistory]) {
+    if (!cmd || seen.has(cmd)) continue;
+    seen.add(cmd);
+    merged.push(cmd);
+    if (merged.length >= MAX_RECENT_COMMANDS) break;
+  }
+  return merged;
+}
+
 export function useNacreBridge(): void {
   const enabled = useSettingsStore((s) => s.settings.nacreBridgeEnabled ?? true);
   const currentDir = useTerminalStore((s) => {
@@ -83,7 +119,7 @@ export function useNacreBridge(): void {
   });
   const commandHistoryKey = useTerminalStore((s) => {
     const session = s.sessions.find((item) => item.id === s.activeSessionId);
-    return session ? session.commandHistory.slice(0, MAX_RECENT_COMMANDS).join('\0') : '';
+    return recentCommands(session).join('\0');
   });
 
   const lastWriteAtRef = useRef(0);
@@ -112,7 +148,7 @@ export function useNacreBridge(): void {
       const session = state.sessions.find((s) => s.id === state.activeSessionId);
       const home = getHomePath();
       const cwd = session?.currentDir || home;
-      const recentCommands = (session?.commandHistory || []).slice(0, MAX_RECENT_COMMANDS);
+      const recent = recentCommands(session);
       lastWriteAtRef.current = Date.now();
       try {
         const { repo, branch } = await resolveGitContext(cwd, home);
@@ -123,7 +159,7 @@ export function useNacreBridge(): void {
         // recreate it, violating "only share while Shelly is foregrounded"
         // (Codex review, 2026-08-30).
         if (!isCurrent() || AppState.currentState !== 'active') return;
-        const context = buildNacreBridgeContext({ cwd, repo, branch, recentCommands });
+        const context = buildNacreBridgeContext({ cwd, repo, branch, recentCommands: recent });
         await writeNacreBridgeContext(context);
         logInfo(
           'NacreBridge',
