@@ -152,7 +152,7 @@ pnpm install && pnpm android
 **Requirements:**
 
 - Android device
-- Node.js 20+ (CI currently builds on Node 20)
+- Node.js 22+ (CI currently builds on Node 22)
 - pnpm
 - Android NDK 26.1.10909125 (or an Android SDK/Gradle setup that resolves that pinned NDK)
 
@@ -246,13 +246,15 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | **Agent browser automation** | An agent can click, fill, or extract text from the page already open in the Browser pane — a deliberately narrow action set (no navigation, no arbitrary script injection), gated to an explicit page-URL allowlist and a per-action approval tap; page-derived output is always treated as untrusted at the next capability boundary. |
 | **Cross-app UI automation (`app.act`)** | For apps with no public API — LINE messaging is the flagship case — an agent can drive the real app UI through Android's Accessibility Service (an explicit, package-allowlisted, one-time-granted recipe walker; on-device verified sending to LINE and posting to X). It goes through the same approval-gated agent action pipeline as every other action type, including a trusted-unattended auto-fire path — which is exactly the trap: Accessibility automation can't act while the phone is locked, so a scheduled `app.act` agent can silently do nothing at fire time. Where a real API exists (X's `x.post` recipe, when the utterance explicitly names the platform and a connector is registered) natural-language registration now prefers the API instead; LINE has no API alternative, so `line.send-message` isn't offered as an NL registration target for scheduled agents at all — reachable only for manually-triggered runs today. *A generic, platform-unnamed "post/tweet this" phrasing can still resolve to the older `app.act` path even for X — this narrower case is a known gap, not yet closed.* |
 | **Cross-pane intelligence** | Say "fix the error." AI reads your terminal, suggests a fix, one tap to run. Zero copy-paste. |
+| **AI → Terminal insert** | Any AI-chat reply's fenced ` ```bash ` block gets an **Insert** button next to Copy — tap it and the code lands in the focused Terminal pane's input line (no auto-Enter, review before running); opens a new terminal and queues the insert if none is open. *On-device verified 2026-08-31.* |
+| **Nacre Bridge** | While Shelly is foregrounded, it shares sanitized live terminal context (cwd, git branch, a handful of safe recent-command terms — never raw commands or secrets) with [Nacre](https://github.com/RYOITABASHI/Nacre), the author's own Android IME, so its kana-kanji conversion can lean toward what you're actually doing; the context file is deleted the moment Shelly leaves the foreground. On Nacre's own side, its Dev Mode detects focus inside Shelly specifically and suppresses auto-punctuation conversion, defaulting its symbol panel to a programming tab instead. Requires Nacre installed; toggle in Settings → Nacre Bridge (on by default). *On-device verified 2026-08-31.* |
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
 | **Codex apply_patch on-device** | Codex file edits land through the agent's native patch tool on Android, not a shell-only fallback. |
 | **Native PTY (JNI forkpty)** | Kotlin + C, direct PTY fd, no TCP/socket bridge — an embedded native terminal, not a WebView terminal. |
 | **Batteries included** | bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, make, ripgrep, jq ship inside the APK. Termux not required. |
 | **9 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, Ask, Agent Runs, and Memory Workbench. Split up to 4 live panes freely. |
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, OpenRouter, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
-| **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow, with Qwen3.5-2B as the daily-driver default, Qwen3 1.7B / Qwen3.5 0.8B as lighter fallbacks, and 4B+ models reserved for short quality checks. |
+| **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow. Qwen3.5-0.8B ships as the actual default (light enough to stay always-on for background/autonomous use); Qwen3.5-2B is the recommended step-up for on-demand use when you can spare the RAM/battery, Qwen3 1.7B sits between the two, and 4B+ models are reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A home-screen agent launcher and health list — up to 3 upcoming scheduled agents, each with a status glyph (last run's success/error/skipped) and next-fire time, without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK** can also register a brand-new agent — type or speak `@agent ...` and it routes through the same confirm flow as typing it in the AI Pane. |
 | **Color themes** | Blue / Red / Purple / Green palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
@@ -425,7 +427,7 @@ Chat pane (see below).
 - **Terminal context injection** — the AI always has access to the current terminal transcript without you pasting anything
 - **InlineDiff with per-hunk write-back** — see above
 - **Voice input** — long-press the mic in the terminal action bar to open VoiceChat; speech → Groq transcription → AI → TTS response
-- **Local LLM support** — use the built-in GGUF catalog and llama.cpp / llama-server controls, then route via `@local` for fully on-device inference. Qwen3.5-2B Q4_K_M is the default, Qwen3 1.7B and Qwen3.5 0.8B are lighter fallbacks, and 4B/9B models are intended for short quality checks.
+- **Local LLM support** — use the built-in GGUF catalog and llama.cpp / llama-server controls, then route via `@local` for fully on-device inference. Qwen3.5-0.8B Q4_K_M ships as the default (light enough for always-on/autonomous use), Qwen3.5-2B Q4_K_M is the recommended step-up for on-demand use, Qwen3 1.7B sits in between, and 4B/9B models are intended for short quality checks.
 
 </details>
 
@@ -600,6 +602,9 @@ Currently registered:
 | Cloud storage | 🚫 out of scope — use `rclone` from the terminal pane |
 | App icon | ✅ shipping |
 | Distribution channels (Play Store / F-Droid) | 🟡 GitHub Releases only for now; current Android release is the rolling `android-latest` build |
+| Nacre Bridge — cwd/branch/sanitized command-term sharing with the Nacre IME, and Nacre-side Dev Mode (auto-convert suppression + programming symbol tab) | ✅ on-device verified 2026-08-31 (context file write/read cycle and Nacre's own package-focus detection both confirmed via logcat) |
+| AI → Terminal insert (one-tap paste of a fenced ` ```bash ` reply block into the focused Terminal pane) | ✅ on-device verified 2026-08-31 |
+| Cross-app UI automation (`app.act`) — recipe-draft UI (Settings → Developer → Automation: capture the current LINE/X screen, draft a `launch`/`setText`/`click` recipe, save it) | 🔴 confirmed broken on-device 2026-08-31 — tapping **Capture** always fails, because the button lives in Shelly's own UI and tapping it hands Android's foreground-window focus to Shelly before the Accessibility Service can read LINE/X's screen; see [Known Limitations](#known-limitations) |
 
 Full validation checklist: [`docs/superpowers/specs/2026-04-13-validation-checklist.md`](docs/superpowers/specs/2026-04-13-validation-checklist.md)
 
@@ -937,7 +942,7 @@ GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo
 
 Shelly is pre-release Android software. Here's what we know isn't perfect yet.
 
-- **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline with the bundled catalog and llama.cpp / llama-server controls; Qwen3.5-2B Q4_K_M is the recommended on-device default, Qwen3 1.7B / Qwen3.5 0.8B are lighter options, and 4B/9B models are reserved for short quality checks.
+- **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline with the bundled catalog and llama.cpp / llama-server controls; Qwen3.5-0.8B Q4_K_M ships as the actual default, Qwen3.5-2B Q4_K_M is the recommended step-up for on-demand use, Qwen3 1.7B is a middle option, and 4B/9B models are reserved for short quality checks.
 - **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need `watch`, use the workaround `while true; do clear; <cmd>; sleep 1; done` (tracked as bug #34) or install Termux alongside Shelly; for anything else, open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
 - **`busybox` is not bundled** — `busybox httpd`, `busybox nc`, and other applets return `command not found`. Use the standalone equivalents where available (`curl`, `nc` from the bundle, `python3 -m http.server`), or bundle `busybox-static` yourself. Tracked as bug #35.
 - **`@team` routes to multiple APIs simultaneously** — this consumes credits on every provider at once, with no confirmation step before it runs. Use it deliberately.
@@ -949,6 +954,7 @@ Shelly is pre-release Android software. Here's what we know isn't perfect yet.
 - **Gemini is API-only** — Gemini is available as an API provider (AI Pane, `@gemini`, `@team`, background agents) with a configured key. There is no bundled Gemini CLI and no interactive `gemini` login flow in this release.
 - **Very large or binary pastes** — the paste path is a one-shot write into the PTY. Multi-megabyte clipboard payloads will take noticeable time and may stall the UI briefly; binary content (non-UTF-8 bytes, null characters) is not a supported transport mechanism and may corrupt the shell buffer. Use `curl -O` / `scp` / `/sdcard/Download/` drop-point for binary transfer.
 - **Fold/rotate/split-screen during an active CLI session** — Shelly survives layout changes, but terminal state is not always persisted across an Android Activity recreate. Save or commit work before aggressive multitasking (fold ↔ unfold rapidly, split-screen drag while a foreground job is running). AI CLI streams specifically are best completed or interrupted (Ctrl-C) before rotating.
+- **`app.act` recipe-draft capture doesn't work yet** — Settings → Developer → Automation's "capture a screen, draft a recipe" flow always fails: tapping its **Capture** button, which lives in Shelly's own UI, hands Android's foreground-window focus to Shelly before the Accessibility Service can read LINE/X's screen (confirmed on real hardware, including in a genuine split-screen layout). The two bundled recipes (`line.send-message`, `x.post`) aren't affected by this — they don't need the capture UI — but adding a *new* recipe beyond those two currently requires hand-writing the recipe JSON, same as before this UI shipped.
 
 ## Permissions
 
@@ -989,7 +995,7 @@ See [SECURITY.md](./SECURITY.md) for the threat model and private vulnerability 
 - **Companion brain routing** — the companion (default Shelly persona) thread's replies follow the SAME cloud-sending behavior as an explicitly selected provider whenever "Companion brain" (Settings → Agents) is left on its default Auto setting: if a Cerebras, Groq, Gemini, or OpenRouter key is configured, that provider generates the companion's replies (falling back to on-device on failure or when no key is configured); switch it to "On-device only" to keep the companion fully local regardless of configured keys (`lib/companion-brain.ts`).
 - **Persistent agent memory** — `MEMORY_ENABLED` is `true`: per-agent recall, writes, and lists use MEMORY-001 by default. Its JSON records are encrypted at rest with AES-256-GCM and a device SecureStore-backed key, then fall back to the older G2 markdown/Obsidian path if the new store fails; shared `_global` writes still go directly through G2. The project has not yet verified on a real device that no legacy plaintext files remain or that uninstall makes old records unrecoverable. The `touchesPii` classifier signal is produced but does not yet gate model eligibility, so do not assume non-secret sensitive prose is kept away from cloud routing.
 - **No telemetry** — Shelly does not phone home: no analytics, no crash reporting, no usage tracking. Network traffic comes only from things you initiate — your AI API calls, Codex auth, update checks/downloads, Browser Pane use, and any local/API endpoints you configure.
-- **Local LLM mode** — For fully private usage, configure a local GGUF model through llama.cpp. Qwen3.5-2B Q4_K_M is the recommended default, Qwen3 1.7B and Qwen3.5 0.8B are available for lower memory pressure, and 4B/9B models are available for short quality checks. All processing stays on-device.
+- **Local LLM mode** — For fully private usage, configure a local GGUF model through llama.cpp. Qwen3.5-0.8B Q4_K_M ships as the default; Qwen3.5-2B Q4_K_M is the recommended step-up when you can spare the memory, Qwen3 1.7B sits in between, and 4B/9B models are available for short quality checks. All processing stays on-device.
 
 ---
 

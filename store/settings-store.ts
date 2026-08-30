@@ -224,13 +224,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   companionBrainMode: 'auto',
   // Nacre Bridge (feature B) — default ON, opt-out. See AppSettings.nacreBridgeEnabled
   // for what this shares and lib/nacre-bridge-context.ts for the sanitization contract.
-  // 2026-08-30: defaulted OFF pending investigation of a reported settings-
-  // screen scroll freeze that appeared the same day this feature landed —
-  // not yet confirmed as the cause, but this background hook is new,
-  // experimental, and periodically spawns shell subprocesses (git commands)
-  // on the JS thread, so defaulting it off is the safer posture until ruled
-  // out. Users can still opt in via `shelly config`'s Context section.
-  nacreBridgeEnabled: false,
+  // 2026-08-30: briefly defaulted OFF while a reported settings-screen scroll
+  // freeze (that appeared the same day this feature landed) was still
+  // unexplained. Root-caused and fixed as an unrelated SettingsDropdown.tsx
+  // responder-negotiation bug (backdrop Pressable racing the ScrollView) —
+  // this hook was never involved. Restored to the intended default.
+  nacreBridgeEnabled: true,
 };
 
 const ACTIVE_TEAM_PRIORITY: AppSettings['teamFacilitatorPriority'] = ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'];
