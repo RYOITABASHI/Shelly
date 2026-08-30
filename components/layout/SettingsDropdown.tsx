@@ -801,36 +801,25 @@ function SliderRow({
   latestValue.current = value;
   const panResponder = useRef(
     PanResponder.create({
-      // 2026-08-29 (`32a9c6a27`): scoping the responder to touches starting on
-      // the thumb (not the whole track) fixed the original "scrolls fine at
-      // first, then freezes" bug, but claiming unconditionally on touch-DOWN
-      // (onStartShouldSetPanResponder: () => true) left a residual gap: the
-      // thumb's hitSlop is 16px in every direction around a 10px thumb, so
-      // its ~42x42px capture zone still overlaps ordinary vertical scroll
-      // gestures that happen to start near wherever the thumb currently sits
-      // (its x position moves with the opacity value). A vertical drag
-      // captured there barely moves dx, so the slider visibly doesn't change
-      // either — it just silently eats the scroll, which is exactly the
-      // "sometimes scrolling just doesn't work" report this screen kept
-      // getting even after the first fix (2026-08-30, on-device retest).
-      // Deferring the claim to onMoveShouldSetPanResponder and requiring a
-      // clearly horizontal first move (both a minimum absolute dx and a
-      // dx:dy ratio, per Codex review — a bare few-px threshold still let
-      // ordinary scroll-start jitter tip the direction check) closes that
-      // gap: a touch that starts in the thumb's zone but moves vertically
-      // now falls through to the Settings ScrollView, while a genuine
-      // horizontal drag still wins the responder race (RN polls this on
-      // every move, before the ScrollView locks in its own vertical drag —
-      // though on Android, once claimed, PanResponder's default
-      // onShouldBlockNativeResponder makes it hard to hand back mid-gesture,
-      // which is why the threshold below stays conservative rather than
-      // minimal).
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_e, gestureState) => {
-        const absDx = Math.abs(gestureState.dx);
-        const absDy = Math.abs(gestureState.dy);
-        return absDx > 6 && absDx > absDy * 1.2;
-      },
+      // 2026-08-30 revert (Codex + on-device re-confirm): a same-day attempt
+      // to fix a *different*, narrower complaint (this thumb's hitSlop zone
+      // can overlap an ordinary scroll-start point) by deferring the claim to
+      // onMoveShouldSetPanResponder with a dx/dy heuristic UNKNOWINGLY
+      // reintroduced bug #170 (`ac8a7c4b3`, 2026-08-29): any heuristic here
+      // lets a brief horizontal jitter at the very start of a vertical scroll
+      // win the threshold check and claim the responder permanently — this
+      // screen has no horizontal scrolling to disambiguate against, so once
+      // that happens the whole ScrollView freezes for the rest of the drag,
+      // which is exactly what on-device testing reproduced again today
+      // ("最初だけ動いて止まる" — moves briefly, then stops). `ac8a7c4b3`
+      // already root-caused and fixed this via Codex review; restoring that
+      // fix verbatim (claim unconditionally on touch-down, but scope the
+      // responder to the thumb itself, not the whole track) rather than
+      // re-deriving a "better" heuristic that has already been shown to
+      // regress this. The thumb-hitSlop-overlaps-scroll-start complaint is
+      // real but strictly less severe than a fully frozen ScrollView — do
+      // not reintroduce a move-time direction heuristic here again.
+      onStartShouldSetPanResponder: () => true,
       onPanResponderGrant: () => {
         valueAtGrant.current = latestValue.current;
       },
