@@ -315,7 +315,7 @@ Allow/Deny and numbered-choice pills that wrote straight to the foreground
 Codex PTY — that was deliberately removed in a 2026-07-18 redesign to keep the
 widget a launcher, not a second copy of the terminal; approvals and choices
 are still available through Codex notification channels and the in-app Agent
-Chat pane (see below).
+Chat pane (see [docs/FEATURES.md](docs/FEATURES.md)).
 
 See [docs/FEATURES.md](docs/FEATURES.md) for the full feature-by-feature breakdown (Scouter Widget internals, Layout System, Cross-Pane Intelligence, Agent Chat, AI Edit, Terminal Enhancements, AI Pane, Browser Pane, File Tree, Preview Pane, Sidebar, Command Palette, Theme & Fonts, Git Integration, Settings/API Keys/Background Agents).
 

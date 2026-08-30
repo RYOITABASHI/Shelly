@@ -55,7 +55,7 @@
 | アプリアイコン | ✅ 出荷済み |
 | 配布チャンネル（Play ストア / F-Droid） | 🟡 当面は GitHub Releases のみ。現行の Android リリースはローリングの `android-latest` ビルドです |
 | Nacre Bridge — cwd/ブランチ/安全な直近コマンド用語をNacre IMEと共有、Nacre側のDev Mode(自動変換抑制+プログラミング記号タブ) | ✅ 2026-08-31に実機検証済み(コンテキストファイルの書き込み/読み込みサイクル、Nacre側のパッケージフォーカス検出をlogcatで確認) |
-| AI→ターミナル挿入(```bash```フェンス付き返信ブロックをフォーカス中のTerminalペインにワンタップで貼り付け) | ✅ 2026-08-31に実機検証済み |
-| クロスアプリUI自動操作(`app.act`)のレシピ下書きUI(設定 → 開発者向け → Automation: 現在のLINE/X画面をキャプチャしてlaunch/setText/clickのレシピを下書き・保存) | 🔴 2026-08-31、実機で不具合を確認済み — **キャプチャ**ボタンをタップすると常に失敗します。原因はこのボタンがShelly自身のUI内にあり、タップした瞬間にAndroidのフォアグラウンドウィンドウのフォーカスがShellyに移り、Accessibility ServiceがLINE/Xの画面を読み取れなくなるためです。詳細は[既知の制限](../README.ja.md#既知の制限)を参照 |
+| AI→ターミナル挿入( ` ```bash ` フェンス付き返信ブロックをフォーカス中のTerminalペインにワンタップで貼り付け) | ✅ 2026-08-31に実機検証済み |
+| クロスアプリUI自動操作(`app.act`)のレシピ下書きUI(設定 → 開発者向け → Automation: 現在のLINE/X画面をキャプチャして`launch`/`setText`/`click`のレシピを下書き・保存) | 🔴 2026-08-31、実機で不具合を確認済み — **キャプチャ**ボタンをタップすると常に失敗します。原因はこのボタンがShelly自身のUI内にあり、タップした瞬間にAndroidのフォアグラウンドウィンドウのフォーカスがShellyに移り、Accessibility ServiceがLINE/Xの画面を読み取れなくなるためです。詳細は[既知の制限](../README.ja.md#既知の制限)を参照 |
 
 検証チェックリストの全体: [`docs/superpowers/specs/2026-04-13-validation-checklist.md`](superpowers/specs/2026-04-13-validation-checklist.md)
