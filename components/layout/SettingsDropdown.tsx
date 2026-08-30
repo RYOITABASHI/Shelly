@@ -139,20 +139,23 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        {/* 2026-08-30: this was a second Pressable (onPress={stopPropagation})
-            stacked directly above the ScrollView. On-device diagnostics
-            (DBG touch/scroll counters) showed touch-start events reaching
-            the panel reliably but the ScrollView's own onScroll firing only
-            intermittently on a real finger drag ("動いたり動かなかったり" /
-            "ほぼ動かない") despite a synthetic `adb shell input swipe` always
-            reproducing a clean scroll — the signature of a responder-
-            negotiation race, not a layout bug. A plain View never enters
-            that race (RN hit-tests to the deepest view under the touch
-            point, so touches landing inside `panel`'s bounds already never
-            reach `backdrop`'s Pressable — the stopPropagation was
-            redundant), removing the extra Touchable ancestor the ScrollView
-            had to out-race for every drag. */}
+      {/* 2026-08-30, take 3 (Codex review of takes 1-2): backdrop-as-ancestor
+          of the panel is the wrong shape no matter how the panel's own
+          touch/responder props are tuned — any tap landing on blank panel
+          space either needs to be "claimed" (take 2: `onStartShouldSet
+          Responder`, which works but is still a responder claim the
+          ScrollView has to negotiate around) or it bubbles to backdrop
+          and closes the panel (take 1's regression). ConfigTUI.tsx's own
+          Modal already avoids this entirely by making backdrop a SIBLING
+          of the panel, not an ancestor: a touch on the panel never reaches
+          the backdrop `Pressable` at all (they don't overlap in the tree),
+          so the panel and its ScrollView need zero responder-claiming
+          machinery of their own. `panelContainer` is `pointerEvents=
+          "box-none"` so it and its own empty space pass touches through
+          to the backdrop below, while the actual `panel` View still
+          receives touches normally. */}
+      <Pressable style={styles.backdrop} onPress={onClose} />
+      <View style={styles.panelContainer} pointerEvents="box-none">
         <View
           style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]}
           onTouchStart={handleDbgTouchStart}
@@ -207,7 +210,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <DeveloperSettingsRow onPress={handleOpenDev} />
           </ScrollView>
         </View>
-      </Pressable>
+      </View>
 
       <Modal
         visible={devOpen}
@@ -2537,6 +2540,22 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'transparent',
     zIndex: 300,
+    // Kept even though the main settings panel no longer nests inside this
+    // Pressable (see panelContainer below) — DoctorSection's separate result
+    // Modal (further down this file) still wraps its own panel directly
+    // inside this same shared `backdrop` style and relies on these two for
+    // top-right positioning (Fable5 review, 2026-08-30: caught this as a
+    // regression when they were briefly moved to panelContainer only).
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+  },
+  // Sibling of `backdrop`, not its child — see the 2026-08-30 "take 3"
+  // comment at the JSX call site. box-none on this container passes touches
+  // on its own empty space through to `backdrop` beneath it, while `panel`
+  // (an ordinary child, not box-none) still receives its own touches.
+  panelContainer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 301,
     justifyContent: 'flex-start',
     alignItems: 'flex-end',
   },
