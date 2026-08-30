@@ -140,9 +140,21 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
       statusBarTranslucent
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable
+        {/* 2026-08-30: this was a second Pressable (onPress={stopPropagation})
+            stacked directly above the ScrollView. On-device diagnostics
+            (DBG touch/scroll counters) showed touch-start events reaching
+            the panel reliably but the ScrollView's own onScroll firing only
+            intermittently on a real finger drag ("動いたり動かなかったり" /
+            "ほぼ動かない") despite a synthetic `adb shell input swipe` always
+            reproducing a clean scroll — the signature of a responder-
+            negotiation race, not a layout bug. A plain View never enters
+            that race (RN hit-tests to the deepest view under the touch
+            point, so touches landing inside `panel`'s bounds already never
+            reach `backdrop`'s Pressable — the stopPropagation was
+            redundant), removing the extra Touchable ancestor the ScrollView
+            had to out-race for every drag. */}
+        <View
           style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]}
-          onPress={(e) => e.stopPropagation()}
           onTouchStart={handleDbgTouchStart}
         >
           <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
@@ -194,7 +206,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <RecoverySection />
             <DeveloperSettingsRow onPress={handleOpenDev} />
           </ScrollView>
-        </Pressable>
+        </View>
       </Pressable>
 
       <Modal
