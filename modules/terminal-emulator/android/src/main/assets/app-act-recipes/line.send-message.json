@@ -17,8 +17,9 @@
     {
       "op": "click",
       "matcher": { "label": "検索" },
-      "intent": "Open LINE's search screen from whatever screen is currently showing. label (not contentDescription) because ホーム/トーク/ニュース tabs show \"検索\" as visible placeholder text, while VOOM/ミニアプリ expose it only via contentDescription — confirmed on-device 2026-07-12.",
-      "recoverOnZeroMatch": ["back", "back", "scrollToTop"]
+      "timeoutMs": 10000,
+      "intent": "Open LINE's search screen from whatever screen is currently showing. label (not contentDescription) because ホーム/トーク/ニュース tabs show \"検索\" as visible placeholder text, while VOOM/ミニアプリ expose it only via contentDescription — confirmed on-device 2026-07-12. timeoutMs raised from the 3000ms default and recoverOnZeroMatch trimmed to just scrollToTop (2026-08-31, on-device finding): a cold LINE launch (not already running) can take 5-6s to render past its splash/ad-banner before the 検索 bar exists, so the old 3000ms budget genuinely zero-matched — and the old [\"back\",\"back\",...] recovery then compounded that timing miss by backing all the way out of LINE's task entirely (LINE's トーク list is the root of its own back stack when freshly cold-started via FLAG_ACTIVITY_NEW_TASK from a Service context, so a second back pop falls through to whatever was underneath). scrollToTop alone still recovers a genuinely-scrolled-away screen without that destructive path.",
+      "recoverOnZeroMatch": ["scrollToTop"]
     },
     {
       "op": "setText",
