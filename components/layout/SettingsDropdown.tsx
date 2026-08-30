@@ -785,25 +785,54 @@ function SliderRow({
   // at gesture-start instead of absolute finger position, and divide by a
   // SENSITIVITY wider than the visible track — same physical drag distance
   // now covers less of the range, without needing a wider (layout-breaking)
-  // slider. valueAtGrant is a ref, not state, so onPanResponderMove reads
-  // the value as of touch-down rather than a stale closure from render time.
+  // slider. valueAtGrant is a ref (not state) so onPanResponderMove can read
+  // it without re-subscribing; see latestValue below for why grant itself
+  // still needs care to avoid a stale closure.
   const SENSITIVITY = trackWidth * 2.5;
   const valueAtGrant = useRef(value);
+  // PanResponder.create()'s callbacks are captured once by the outer
+  // useRef(...) on mount, so they close over that first render's `value` —
+  // NOT the current prop (Codex review, 2026-08-30: this predates today's
+  // fix but directly undermines it, since onPanResponderGrant reading a
+  // stale `value` means every drag after the first computes its delta from
+  // the wrong baseline). Mirror the current value into a ref on every
+  // render so the grant handler can read the live value instead.
+  const latestValue = useRef(value);
+  latestValue.current = value;
   const panResponder = useRef(
     PanResponder.create({
-      // 2026-08-29: `32a9c6a27`'s dx/dy heuristic (claim only once a move is
-      // clearly horizontal) still let an accidental horizontal jitter right
-      // at the start of a vertical scroll win the 4px slop check and claim
-      // the responder permanently — reported on-device as "scrolls fine at
-      // first, then freezes", root-caused via Codex review. This screen has
-      // no horizontal scrolling anywhere, so there's no direction to
-      // disambiguate: the responder is now scoped to touches starting on the
-      // thumb itself (see hitSlop below), not the whole track. A vertical
-      // drag starting anywhere else on the track always falls through to the
-      // Settings ScrollView untouched.
-      onStartShouldSetPanResponder: () => true,
+      // 2026-08-29 (`32a9c6a27`): scoping the responder to touches starting on
+      // the thumb (not the whole track) fixed the original "scrolls fine at
+      // first, then freezes" bug, but claiming unconditionally on touch-DOWN
+      // (onStartShouldSetPanResponder: () => true) left a residual gap: the
+      // thumb's hitSlop is 16px in every direction around a 10px thumb, so
+      // its ~42x42px capture zone still overlaps ordinary vertical scroll
+      // gestures that happen to start near wherever the thumb currently sits
+      // (its x position moves with the opacity value). A vertical drag
+      // captured there barely moves dx, so the slider visibly doesn't change
+      // either — it just silently eats the scroll, which is exactly the
+      // "sometimes scrolling just doesn't work" report this screen kept
+      // getting even after the first fix (2026-08-30, on-device retest).
+      // Deferring the claim to onMoveShouldSetPanResponder and requiring a
+      // clearly horizontal first move (both a minimum absolute dx and a
+      // dx:dy ratio, per Codex review — a bare few-px threshold still let
+      // ordinary scroll-start jitter tip the direction check) closes that
+      // gap: a touch that starts in the thumb's zone but moves vertically
+      // now falls through to the Settings ScrollView, while a genuine
+      // horizontal drag still wins the responder race (RN polls this on
+      // every move, before the ScrollView locks in its own vertical drag —
+      // though on Android, once claimed, PanResponder's default
+      // onShouldBlockNativeResponder makes it hard to hand back mid-gesture,
+      // which is why the threshold below stays conservative rather than
+      // minimal).
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_e, gestureState) => {
+        const absDx = Math.abs(gestureState.dx);
+        const absDy = Math.abs(gestureState.dy);
+        return absDx > 6 && absDx > absDy * 1.2;
+      },
       onPanResponderGrant: () => {
-        valueAtGrant.current = value;
+        valueAtGrant.current = latestValue.current;
       },
       onPanResponderMove: (_e, gestureState) => {
         const delta = (gestureState.dx / SENSITIVITY) * 100;
