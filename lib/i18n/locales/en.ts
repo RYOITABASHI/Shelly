@@ -2422,6 +2422,22 @@ const en: Record<string, string> = {
   'ai_pane_images_require_gemini': 'Image attachments need the Gemini provider — switch this pane to Gemini (or add a Gemini API key in Settings), then send again.',
   'ai_pane_image_default_prompt': 'Describe this image.',
   'ai_pane_stop_streaming': 'Stop',
+
+  // ── Code Block Actions (Nacre Bridge slice 1: AI Pane → Terminal insert) ──
+  'code_block.copy_label': 'COPY',
+  'code_block.insert_label': 'INSERT',
+  'code_block.apply_label': 'APPLY',
+  'code_block.copy_a11y': 'Copy code',
+  'code_block.insert_a11y': 'Insert into terminal',
+  'code_block.apply_a11y': 'Apply to staged file',
+  'code_block.copied_toast': 'Copied to clipboard',
+  'code_block.inserted_toast': 'Inserted into terminal',
+  // Shown when no Terminal pane was open/live, so a new one was opened and
+  // the text queued for it instead — see CodeBlockWithAction's handleInsert.
+  'code_block.inserted_new_pane_toast': 'Opened a new terminal and queued the insert',
+  'code_block.insert_failed_toast': 'Insert failed: {{error}}',
+  'code_block.wrote_file_toast': 'Wrote {{path}}',
+  'code_block.apply_failed_toast': 'Apply failed: {{error}}',
 };
 
 export default en;

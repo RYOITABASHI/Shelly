@@ -2386,6 +2386,20 @@ const ja: Record<string, string> = {
   'ai_pane_images_require_gemini': '画像の添付にはGeminiプロバイダが必要です — このペインをGeminiに切り替える（または設定でGemini APIキーを追加する）か、対応するペインで送信し直してください。',
   'ai_pane_image_default_prompt': 'この画像について説明してください。',
   'ai_pane_stop_streaming': '停止',
+
+  // ── Code Block Actions (Nacre Bridge 第一弾: AIペイン→ターミナル挿入) ──
+  'code_block.copy_label': 'コピー',
+  'code_block.insert_label': '挿入',
+  'code_block.apply_label': '適用',
+  'code_block.copy_a11y': 'コードをコピー',
+  'code_block.insert_a11y': 'ターミナルに挿入',
+  'code_block.apply_a11y': 'ステージ中のファイルに適用',
+  'code_block.copied_toast': 'クリップボードにコピーしました',
+  'code_block.inserted_toast': 'ターミナルに挿入しました',
+  'code_block.inserted_new_pane_toast': '新しいターミナルを開いて挿入を予約しました',
+  'code_block.insert_failed_toast': '挿入に失敗しました: {{error}}',
+  'code_block.wrote_file_toast': '{{path}} に書き込みました',
+  'code_block.apply_failed_toast': '適用に失敗しました: {{error}}',
 };
 
 export default ja;

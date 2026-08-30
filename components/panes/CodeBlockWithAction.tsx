@@ -3,9 +3,10 @@
  *
  * Fenced-code renderer for assistant messages. Adds a header row with
  * the language tag and two one-tap actions: Copy and Insert-to-Terminal.
- * Insert routes through TerminalEmulator.writeToSession so the code
- * lands in the active terminal as if the user had pasted + pressed
- * Enter at the prompt.
+ * Insert routes through TerminalEmulator.pasteToSession — the same single
+ * paste choke point (bug #81) every other paste path uses — so the code
+ * lands in the active terminal's input WITHOUT a trailing Enter. Running it
+ * is always the user's own explicit keypress, never automatic.
  */
 
 import React, { useCallback } from 'react';
@@ -14,10 +15,13 @@ import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { useAddPane } from '@/hooks/use-add-pane';
 import { getStagedEdit, applyStagedEdit } from '@/lib/ai-edit';
 import { playSound } from '@/lib/sounds';
 import { colors as C, fonts as F } from '@/theme.config';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import { useTranslation } from '@/lib/i18n';
 
 type Props = {
   lang?: string;
@@ -59,21 +63,47 @@ export function CodeBlockWithAction({ lang, code }: Props) {
   const trimmed = code.replace(/\s+$/, '');
   const rootBg = usePanelBackground(C.bgDeep);
   const headerBg = usePanelBackground(C.bgSidebar);
+  const { t } = useTranslation();
+  const addPane = useAddPane();
 
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(trimmed);
     try { playSound('copy'); } catch {}
     if (Platform.OS === 'android') {
-      ToastAndroid.show('Copied to clipboard', ToastAndroid.SHORT);
+      ToastAndroid.show(t('code_block.copied_toast'), ToastAndroid.SHORT);
     }
-  }, [trimmed]);
+  }, [trimmed, t]);
 
   const handleInsert = useCallback(async () => {
     const sessionId = useTerminalStore.getState().activeSessionId;
     const session = useTerminalStore.getState().sessions.find((candidate) => candidate.id === sessionId);
-    if (!session?.nativeSessionId) {
+    // createSession() always stamps a nativeSessionId (e.g. "shelly-1") up
+    // front, even for a session that's never actually been shown in a pane —
+    // so `!session?.nativeSessionId` alone can't detect "no live Terminal
+    // pane" (Codex review, 2026-08-30). The real signal is whether any
+    // Terminal-type slot currently exists in the pane layout at all.
+    const hasTerminalPane = useMultiPaneStore.getState().slots.some((slot) => slot?.tab === 'terminal');
+    if (!hasTerminalPane || !session?.nativeSessionId) {
+      // No live Terminal pane to target (e.g. the AI Pane is the only pane
+      // open, or the last-focused Terminal pane's native session hasn't
+      // spawned yet). Nacre Bridge slice 1: rather than silently dropping the
+      // insert, open a fresh Terminal pane via the same useAddPane() path
+      // QuickLaunchSection uses — it already shows the standard cap-reached
+      // Alert when the layout/terminal limits are hit, so we only need to
+      // handle the success case here.
+      const result = addPane('terminal');
+      if (result !== null) return; // useAddPane already alerted (cap reached)
+      const newSessionId = useTerminalStore.getState().activeSessionId;
+      // The freshly created pane's native session hasn't forked yet (async
+      // JNI createSubprocess), so pasteToSession would race it. insertCommand
+      // queues the text through the same pendingCommand mechanism
+      // QuickLaunchSection/ProfilesSection use, which itself resolves through
+      // TerminalEmulator.pasteToSession the moment the session goes 'alive' —
+      // same choke point, no trailing newline, so nothing auto-runs.
+      useTerminalStore.getState().insertCommand(trimmed, newSessionId);
+      try { playSound('send'); } catch {}
       if (Platform.OS === 'android') {
-        ToastAndroid.show('No active terminal', ToastAndroid.SHORT);
+        ToastAndroid.show(t('code_block.inserted_new_pane_toast'), ToastAndroid.SHORT);
       }
       return;
     }
@@ -85,17 +115,17 @@ export function CodeBlockWithAction({ lang, code }: Props) {
       await TerminalEmulator.pasteToSession(session.nativeSessionId, trimmed);
       try { playSound('send'); } catch {}
       if (Platform.OS === 'android') {
-        ToastAndroid.show('Inserted into terminal', ToastAndroid.SHORT);
+        ToastAndroid.show(t('code_block.inserted_toast'), ToastAndroid.SHORT);
       }
     } catch (err) {
       if (Platform.OS === 'android') {
         ToastAndroid.show(
-          'Insert failed: ' + (err instanceof Error ? err.message : String(err)),
+          t('code_block.insert_failed_toast', { error: err instanceof Error ? err.message : String(err) }),
           ToastAndroid.SHORT,
         );
       }
     }
-  }, [trimmed]);
+  }, [trimmed, t, addPane]);
 
   const canInsert = isShellLike(lang);
   // If the AI pane has a staged file whose extension matches this block's
@@ -113,11 +143,13 @@ export function CodeBlockWithAction({ lang, code }: Props) {
     try { playSound(err === null ? 'success' : 'error'); } catch {}
     if (Platform.OS === 'android') {
       ToastAndroid.show(
-        err === null ? `Wrote ${staged.path}` : `Apply failed: ${err}`,
+        err === null
+          ? t('code_block.wrote_file_toast', { path: staged.path })
+          : t('code_block.apply_failed_toast', { error: err }),
         ToastAndroid.SHORT,
       );
     }
-  }, [staged, trimmed]);
+  }, [staged, trimmed, t]);
 
   return (
     <View style={[styles.root, { backgroundColor: rootBg }]}>
@@ -127,20 +159,20 @@ export function CodeBlockWithAction({ lang, code }: Props) {
           {canApplyToFile && staged ? `  ·  ${staged.path.split('/').pop()}` : ''}
         </Text>
         <View style={styles.actions}>
-          <Pressable onPress={handleCopy} style={styles.btn} hitSlop={6} accessibilityLabel="Copy code">
+          <Pressable onPress={handleCopy} style={styles.btn} hitSlop={6} accessibilityLabel={t('code_block.copy_a11y')}>
             <MaterialIcons name="content-copy" size={12} color={C.text2} />
-            <Text style={styles.btnLabel}>COPY</Text>
+            <Text style={styles.btnLabel}>{t('code_block.copy_label')}</Text>
           </Pressable>
           {canInsert ? (
-            <Pressable onPress={handleInsert} style={[styles.btn, styles.btnPrimary]} hitSlop={6} accessibilityLabel="Insert into terminal">
+            <Pressable onPress={handleInsert} style={[styles.btn, styles.btnPrimary]} hitSlop={6} accessibilityLabel={t('code_block.insert_a11y')}>
               <MaterialIcons name="arrow-forward" size={12} color={C.btnPrimaryText} />
-              <Text style={[styles.btnLabel, styles.btnLabelPrimary]}>INSERT</Text>
+              <Text style={[styles.btnLabel, styles.btnLabelPrimary]}>{t('code_block.insert_label')}</Text>
             </Pressable>
           ) : null}
           {canApplyToFile ? (
-            <Pressable onPress={handleApplyToFile} style={[styles.btn, styles.btnPrimary]} hitSlop={6} accessibilityLabel="Apply to staged file">
+            <Pressable onPress={handleApplyToFile} style={[styles.btn, styles.btnPrimary]} hitSlop={6} accessibilityLabel={t('code_block.apply_a11y')}>
               <MaterialIcons name="save" size={12} color={C.btnPrimaryText} />
-              <Text style={[styles.btnLabel, styles.btnLabelPrimary]}>APPLY</Text>
+              <Text style={[styles.btnLabel, styles.btnLabelPrimary]}>{t('code_block.apply_label')}</Text>
             </Pressable>
           ) : null}
         </View>
