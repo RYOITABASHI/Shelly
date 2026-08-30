@@ -1219,11 +1219,6 @@ class TerminalEmulatorModule : Module() {
             // param count only, matching fireAgentIntent's "mode + lengths only"
             // convention above.
             Log.i("TerminalEmulator", "fireAgentAppAct: recipeId=$trimmedRecipeId success=${result.success} paramCount=${params.size}")
-            // TEMPORARY (2026-08-30 QA): also log result.message to diagnose why
-            // line.send-message keeps failing against the Keepメモ self-chat QA
-            // target — safe here since the QA target is our own self-chat, not
-            // a real contact. Remove before shipping.
-            Log.d("AppActQADiag", "message=${result.message}")
             if (!result.success) {
                 throw IllegalStateException("app-act recipe failed: $trimmedRecipeId")
             }

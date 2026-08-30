@@ -2307,28 +2307,6 @@ const DoctorSection = React.memo(function DoctorSection() {
   const okItems = React.useMemo(() => findings?.filter((f) => f.ok) ?? [], [findings]);
   const warnItems = React.useMemo(() => findings?.filter((f) => !f.ok) ?? [], [findings]);
 
-  // TEMPORARY (2026-08-30) on-device QA probe for the bundled line.send-message
-  // app.act recipe's raw execution path (AppActExecutor, bypassing the broken
-  // recipe-DRAFT capture UI and the full agent-registration/approval flow) —
-  // targets LINE's own "Keepメモ" self-chat so nothing goes to a real contact.
-  // Remove this button once the on-device verification is done.
-  const [appActQaBusy, setAppActQaBusy] = useState(false);
-  const runAppActQaProbe = React.useCallback(async () => {
-    if (appActQaBusy) return;
-    setAppActQaBusy(true);
-    try {
-      await TerminalEmulator.fireAgentAppAct?.('line.send-message', {
-        contact: 'Keepメモ',
-        message: 'Shelly app.act QA probe ' + Date.now(),
-      });
-      Alert.alert('app.act QA', 'fireAgentAppAct resolved OK');
-    } catch (e: any) {
-      Alert.alert('app.act QA failed', String(e?.message || e));
-    } finally {
-      setAppActQaBusy(false);
-    }
-  }, [appActQaBusy]);
-
   return (
     <Section title={t('doctor.title')}>
       <Pressable
@@ -2341,19 +2319,6 @@ const DoctorSection = React.memo(function DoctorSection() {
         <MaterialIcons name="favorite" size={13} color={C.text2} />
         <Text style={[styles.integrationLabel, { color: C.text1 }]}>
           {busy ? t('doctor.running') : t('doctor.run')}
-        </Text>
-        <View style={{ flex: 1 }} />
-        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
-      </Pressable>
-      <View style={styles.credentialGap} />
-      <Pressable
-        style={[styles.integrationRow, borderedChromeStyle(), appActQaBusy && styles.integrationRowDisabled]}
-        onPress={runAppActQaProbe}
-        disabled={appActQaBusy}
-      >
-        <MaterialIcons name="bug-report" size={13} color={C.text2} />
-        <Text style={[styles.integrationLabel, { color: C.text1 }]}>
-          {appActQaBusy ? 'Running app.act QA…' : 'QA: fire line.send-message → Keepメモ'}
         </Text>
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
