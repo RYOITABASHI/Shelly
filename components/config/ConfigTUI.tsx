@@ -24,6 +24,7 @@ import {
   Alert,
   Share,
   ToastAndroid,
+  Dimensions,
 } from 'react-native';
 import Animated, { SlideInDown, SlideOutDown } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -1141,6 +1142,15 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
+// 2026-08-30: see the identical constant + comment in SettingsDropdown.tsx.
+// `maxHeight: '85%'` is a Yoga percentage resolved against this modal's
+// flexbox-positioned container (not a plain `height` number), which is
+// exactly the class of layout this screen's ScrollView has repeatedly hit a
+// touch/scroll-offset desync bug on (see the `scroll` style's own bug #138
+// comment below). Computing an absolute pixel cap up front avoids the
+// percentage-resolution ambiguity entirely.
+const PANEL_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.85);
+
 const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -1154,7 +1164,7 @@ const styles = StyleSheet.create({
     backgroundColor: BG,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
-    maxHeight: '85%',
+    maxHeight: PANEL_MAX_HEIGHT,
     // Without this, panel's height is 'auto' (content-driven) inside a
     // justifyContent:'flex-end' parent, which makes the ScrollView below
     // (previously `flex: 1`) unable to resolve any space to grow into —

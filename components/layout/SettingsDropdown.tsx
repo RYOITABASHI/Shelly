@@ -17,6 +17,7 @@ import {
   Alert,
   Image,
   ToastAndroid,
+  Dimensions,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as ImagePicker from 'expo-image-picker';
@@ -2476,6 +2477,20 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 const PANEL_WIDTH = 260;
 
+// 2026-08-30: `maxHeight: '85%'` (a Yoga percentage) resolving against an
+// ancestor whose own height comes from `StyleSheet.absoluteFillObject` +
+// flexbox alignment (not a plain `height` number) is exactly the class of
+// layout this codebase has repeatedly hit a ScrollView-desync bug on (see
+// `scroll` style below — "bug #138", 2026-04-27 and 2026-08-28 fix attempts,
+// same symptom reported again 2026-08-30: a slow drag does nothing, only a
+// fast fling moves content). Computing an absolute pixel cap up front avoids
+// the percentage-resolution ambiguity entirely — Yoga only has to satisfy a
+// concrete number, not resolve a percentage against a flexbox-positioned
+// parent. Read once at module load (matches this component's existing
+// pattern of not re-measuring on rotation — the panel is torn down and
+// remounted each time it opens).
+const PANEL_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.85);
+
 const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -2486,7 +2501,7 @@ const styles = StyleSheet.create({
   },
   panel: {
     width: PANEL_WIDTH,
-    maxHeight: '85%',
+    maxHeight: PANEL_MAX_HEIGHT,
     marginTop: S.agentBarHeight + 4,
     marginRight: 8,
     backgroundColor: C.bgSurface,
