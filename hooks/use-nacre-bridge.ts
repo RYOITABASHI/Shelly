@@ -20,6 +20,8 @@ import { useEffect, useRef } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
+import { usePaneStore } from '@/store/pane-store';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import type { TabSession } from '@/store/types';
 import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
@@ -111,14 +113,78 @@ function recentCommands(session: TabSession | undefined): string[] {
   return merged;
 }
 
+/**
+ * Resolves the session that real terminal typing is actually landing in
+ * right now. terminal-store.ts's own `addEntryBlock` comment documents this
+ * exact split: a pane bound to a multi-pane slot (`useMultiPaneStore`'s
+ * per-slot `sessionId`) records its blocks to THAT session, which is not
+ * always terminal-store's global `activeSessionId` (e.g. after a cold start
+ * where the two stores hydrate independently, or after a pane rebinds via
+ * `setSlotSessionId` without touching the global active session). Reading
+ * only `activeSessionId` reproduced the same "Block History always empty"
+ * bug class here: on-device, `terms` stayed at 0 forever despite real
+ * commands running, because the write side (TerminalPane.tsx) and this
+ * read side were resolving two different sessions.
+ *
+ * Mirrors TerminalPane.tsx's own resolution (`paneSessionId ? sessions.find
+ * (paneSessionId) ?? globalActiveSession : globalActiveSession`) rather than
+ * trusting the slot's `sessionId` blindly — a stale persisted slot pointing
+ * at a since-removed session must fall back too, exactly like the pane
+ * itself does (Codex review, 2026-08-30). `focusedPaneId` also isn't always
+ * mirrored on cold start / multi-pane init, so fall back through
+ * `focusedSlot` (the multi-pane store's own index, which init always sets)
+ * before falling back to the global session, and require the resolved slot
+ * to actually be a 'terminal' tab — an AI/Browser/Markdown slot's leftover
+ * `sessionId` (if any) was never the thing recording terminal commands.
+ */
+function resolveTargetSessionIdFrom(
+  focusedPaneId: string | null | undefined,
+  slots: readonly ({ id: string; tab: string; sessionId?: string } | null)[],
+  focusedSlot: number,
+  sessions: readonly { id: string }[],
+  globalActiveSessionId: string,
+): string {
+  const slot =
+    slots.find((s) => s && s.id === focusedPaneId) ?? slots[focusedSlot] ?? null;
+  if (
+    slot &&
+    slot.tab === 'terminal' &&
+    slot.sessionId &&
+    sessions.some((s) => s.id === slot.sessionId)
+  ) {
+    return slot.sessionId;
+  }
+  return globalActiveSessionId;
+}
+
+function useTargetSessionId(): string {
+  const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
+  const sessions = useTerminalStore((s) => s.sessions);
+  const globalActiveSessionId = useTerminalStore((s) => s.activeSessionId);
+  return useMultiPaneStore((s) =>
+    resolveTargetSessionIdFrom(focusedPaneId, s.slots, s.focusedSlot, sessions, globalActiveSessionId),
+  );
+}
+
+/** Non-reactive counterpart of useTargetSessionId, for use inside the
+ *  debounced/throttled write callback below (which reads fresh store state
+ *  via `.getState()` rather than closing over a render-time value). */
+function resolveTargetSessionId(): string {
+  const { focusedPaneId } = usePaneStore.getState();
+  const { slots, focusedSlot } = useMultiPaneStore.getState();
+  const { sessions, activeSessionId } = useTerminalStore.getState();
+  return resolveTargetSessionIdFrom(focusedPaneId, slots, focusedSlot, sessions, activeSessionId);
+}
+
 export function useNacreBridge(): void {
   const enabled = useSettingsStore((s) => s.settings.nacreBridgeEnabled ?? true);
+  const targetSessionId = useTargetSessionId();
   const currentDir = useTerminalStore((s) => {
-    const session = s.sessions.find((item) => item.id === s.activeSessionId);
+    const session = s.sessions.find((item) => item.id === targetSessionId);
     return session?.currentDir;
   });
   const commandHistoryKey = useTerminalStore((s) => {
-    const session = s.sessions.find((item) => item.id === s.activeSessionId);
+    const session = s.sessions.find((item) => item.id === targetSessionId);
     return recentCommands(session).join('\0');
   });
 
@@ -145,7 +211,7 @@ export function useNacreBridge(): void {
       if (!isCurrent()) return;
       if (!enabled || AppState.currentState !== 'active') return;
       const state = useTerminalStore.getState();
-      const session = state.sessions.find((s) => s.id === state.activeSessionId);
+      const session = state.sessions.find((s) => s.id === resolveTargetSessionId());
       const home = getHomePath();
       const cwd = session?.currentDir || home;
       const recent = recentCommands(session);
@@ -210,5 +276,5 @@ export function useNacreBridge(): void {
       sub.remove();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, currentDir, commandHistoryKey]);
+  }, [enabled, currentDir, commandHistoryKey, targetSessionId]);
 }
