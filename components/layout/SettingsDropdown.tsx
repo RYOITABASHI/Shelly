@@ -115,6 +115,22 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
     onClose();
   }, [onClose]);
 
+  // TEMPORARY on-device diagnostic (2026-08-30) — remove once the settings-
+  // panel scroll-freeze bug is confirmed fixed by the user's real touch.
+  // Three prior code-reasoning-only fixes (PanResponder heuristic revert,
+  // percentage->pixel maxHeight) were each reported as NOT fixing it, so
+  // instead of guessing a 4th time, surface ground truth directly on
+  // screen: does ANY touch reach the panel at all (touchN), and does the
+  // ScrollView's own onScroll ever fire during a real drag (scrollY/scrollN)?
+  const [dbg, setDbg] = React.useState({ touchN: 0, scrollN: 0, scrollY: 0 });
+  const handleDbgTouchStart = React.useCallback(() => {
+    setDbg((d) => ({ ...d, touchN: d.touchN + 1 }));
+  }, []);
+  const handleDbgScroll = React.useCallback((e: any) => {
+    const y = Math.round(e.nativeEvent?.contentOffset?.y ?? 0);
+    setDbg((d) => ({ ...d, scrollN: d.scrollN + 1, scrollY: y }));
+  }, []);
+
   return (
     <Modal
       visible={visible}
@@ -124,7 +140,11 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
       statusBarTranslucent
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]} onPress={(e) => e.stopPropagation()}>
+        <Pressable
+          style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]}
+          onPress={(e) => e.stopPropagation()}
+          onTouchStart={handleDbgTouchStart}
+        >
           <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
             <MaterialIcons name="settings" size={13} color={C.accent} />
             <Text style={[styles.headerTitle, { color: C.text1 }]}>{t('settings.title')}</Text>
@@ -140,9 +160,18 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             </Pressable>
           </View>
 
+          {/* TEMPORARY diagnostic line — see dbg state above. Remove together. */}
+          <View style={{ paddingHorizontal: 8, paddingVertical: 3, backgroundColor: '#000' }}>
+            <Text style={{ color: '#0f0', fontSize: 10, fontFamily: 'monospace' }}>
+              {`DBG touch=${dbg.touchN} scroll=${dbg.scrollN} y=${dbg.scrollY}`}
+            </Text>
+          </View>
+
           <ScrollView
             style={styles.scroll}
             showsVerticalScrollIndicator={false}
+            onScroll={handleDbgScroll}
+            scrollEventThrottle={16}
             // removeClippedSubviews REMOVED 2026-08-28: reproduced on-device as
             // a slow/normal-speed drag doing nothing while only a fast repeated
             // flick moved content, and jumping erratically rather than tracking
