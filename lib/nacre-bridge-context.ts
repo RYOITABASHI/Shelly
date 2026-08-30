@@ -24,7 +24,7 @@
  * names as a defense against unexpected characters leaking through.
  */
 
-import * as FileSystem from 'expo-file-system/legacy';
+import { execCommand } from '@/hooks/use-native-exec';
 
 // ─── Contract constants ─────────────────────────────────────────────────────
 
@@ -264,8 +264,33 @@ export function buildNacreBridgeContext(input: NacreBridgeContextInput): NacreBr
 
 // ─── File I/O (device only) ─────────────────────────────────────────────────
 
-function toFileUri(path: string): string {
-  return path.startsWith('file://') ? path : `file://${path}`;
+/** Escape a string for safe use inside single quotes in shell commands
+ *  (matches lib/project-context.ts / lib/workflow-manager.ts's helper). */
+function shellEscape(s: string): string {
+  return s.replace(/'/g, "'\\''");
+}
+
+/**
+ * On-device testing (2026-08-30) found that `expo-file-system`'s
+ * `makeDirectoryAsync`/`writeAsStringAsync` REJECT `Android/media/...` with
+ * "isn't writable" even though this app holds `MANAGE_EXTERNAL_STORAGE` at
+ * the OS level — Expo's FileSystem module scopes writes to its own sandboxed
+ * roots regardless of that permission. Every other place in this codebase
+ * that writes to arbitrary shared-storage paths goes through the shell
+ * (`execCommand`) instead, which runs as the app's real Linux process and is
+ * unaffected by Expo's own path scoping (see lib/project-context.ts,
+ * lib/workflow-manager.ts). Content is piped through base64 to avoid shell
+ * escaping entirely — the JSON payload contains many quote characters.
+ */
+async function writeFileViaShell(path: string, content: string): Promise<void> {
+  const b64 = btoa(unescape(encodeURIComponent(content)));
+  const escapedPath = shellEscape(path);
+  const result = await execCommand(
+    `echo '${shellEscape(b64)}' | base64 -d > '${escapedPath}'`,
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`Failed to write ${path}: ${result.stderr || result.stdout}`);
+  }
 }
 
 /** Writes the context file, creating the shared-storage directory first if
@@ -274,12 +299,11 @@ function toFileUri(path: string): string {
  *  caller can log/ignore, matching the other fire-and-forget bridge writes
  *  in this codebase (e.g. saveSessionState). */
 export async function writeNacreBridgeContext(context: NacreBridgeContext): Promise<void> {
-  const dirUri = toFileUri(NACRE_BRIDGE_DIR);
-  const info = await FileSystem.getInfoAsync(dirUri);
-  if (!info.exists) {
-    await FileSystem.makeDirectoryAsync(dirUri, { intermediates: true });
+  const mkdirResult = await execCommand(`mkdir -p '${shellEscape(NACRE_BRIDGE_DIR)}'`);
+  if (mkdirResult.exitCode !== 0) {
+    throw new Error(`Failed to create ${NACRE_BRIDGE_DIR}: ${mkdirResult.stderr}`);
   }
-  await FileSystem.writeAsStringAsync(toFileUri(NACRE_BRIDGE_FILE_PATH), JSON.stringify(context));
+  await writeFileViaShell(NACRE_BRIDGE_FILE_PATH, JSON.stringify(context));
 }
 
 /** Invalidates the shared context when Shelly leaves the foreground.
@@ -289,7 +313,7 @@ export async function writeNacreBridgeContext(context: NacreBridgeContext): Prom
  *  TTL is the actual safety net if deletion fails for any reason. */
 export async function invalidateNacreBridgeContext(): Promise<void> {
   try {
-    await FileSystem.deleteAsync(toFileUri(NACRE_BRIDGE_FILE_PATH), { idempotent: true });
+    await execCommand(`rm -f '${shellEscape(NACRE_BRIDGE_FILE_PATH)}'`);
   } catch {
     // best-effort cleanup only
   }

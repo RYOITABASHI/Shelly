@@ -1,9 +1,17 @@
 // Nacre Bridge (Shelly → Nacre IME context sharing, feature B) — sanitization
 // pipeline tests. These target the PURE functions in lib/nacre-bridge-context.ts;
-// no expo-file-system I/O is exercised here (mocked out below since the module
-// imports it at top level, matching the pattern __tests__/memory/shadow.test.ts
-// uses for the same reason).
-jest.mock('expo-file-system/legacy', () => ({}));
+// no shell I/O is exercised here (mocked out below since the module imports
+// execCommand at top level, and use-native-exec.ts transitively imports the
+// native TerminalEmulatorModule, which isn't available under Jest — matching
+// the pattern __tests__/memory/shadow.test.ts uses for the same reason).
+//
+// 2026-08-30: writeNacreBridgeContext()/invalidateNacreBridgeContext() were
+// switched from expo-file-system to execCommand (shell) after on-device
+// testing found expo-file-system's makeDirectoryAsync/writeAsStringAsync
+// reject Android/media/... paths as "not writable" even with
+// MANAGE_EXTERNAL_STORAGE granted — Expo's FileSystem module scopes writes
+// to its own sandboxed roots regardless of that OS-level permission.
+jest.mock('@/hooks/use-native-exec', () => ({ execCommand: jest.fn() }));
 
 import {
   sanitizeTerms,
