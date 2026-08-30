@@ -211,10 +211,15 @@ export function useNacreBridge(): void {
       if (!isCurrent()) return;
       if (!enabled || AppState.currentState !== 'active') return;
       const state = useTerminalStore.getState();
-      const session = state.sessions.find((s) => s.id === resolveTargetSessionId());
+      const resolvedId = resolveTargetSessionId();
+      const session = state.sessions.find((s) => s.id === resolvedId);
       const home = getHomePath();
       const cwd = session?.currentDir || home;
       const recent = recentCommands(session);
+      logInfo(
+        'NacreBridge',
+        `DIAG resolvedId=${resolvedId} focusedPaneId=${usePaneStore.getState().focusedPaneId} focusedSlot=${useMultiPaneStore.getState().focusedSlot} slots=${JSON.stringify(useMultiPaneStore.getState().slots.map((s) => s && { id: s.id, tab: s.tab, sessionId: s.sessionId }))} entries=${session?.entries.length ?? -1} commandHistory=${session?.commandHistory.length ?? -1}`,
+      );
       lastWriteAtRef.current = Date.now();
       try {
         const { repo, branch } = await resolveGitContext(cwd, home);
