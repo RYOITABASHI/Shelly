@@ -1442,6 +1442,8 @@ const en: Record<string, string> = {
   'settings.reset_hints_done_toast': 'One-time hints will show again.',
   'settings.profile_learning_label': 'Profile Learning',
   'settings.profile_learning_desc': 'Learn command, project, and AI usage patterns locally for personalized suggestions and AI context.',
+  'settings.nacre_bridge_label': 'Nacre Bridge',
+  'settings.nacre_bridge_desc': 'While Shelly is in the foreground, share your current directory, git branch, and safe recent command terms (never raw commands or secrets) with the Nacre IME to improve its conversion suggestions. Default on.',
   'settings.app_act_recipe_draft_label': 'App-Act Recipe Draft (Beta)',
   'settings.app_act_recipe_draft_action': 'Capture',
   'settings.app_act_recipe_draft_desc': 'Capture the current screen (LINE or X only) and draft a new app.act recipe from it.',

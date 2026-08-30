@@ -402,6 +402,17 @@ export type AppSettings = {
    *  (lib/companion-journal.ts's digestConversationForJournal) always stays
    *  on-device regardless of this setting. */
   companionBrainMode?: 'auto' | 'local-only';
+  // ─── Nacre Bridge (Shelly → Nacre IME context sharing, feature B) ──────────
+  /** While Shelly is in the foreground, share a small sanitized slice of the
+   *  current terminal context (cwd path segments, repo/branch, "safe"
+   *  recent-command terms — never raw command text, never secrets) with the
+   *  Nacre IME (space.manus.nacre) via a shared-storage JSON file so its
+   *  conversion candidates can be biased toward the user's current work. See
+   *  lib/nacre-bridge-context.ts for the sanitization pipeline and the fixed
+   *  file-path/JSON-schema contract shared with the Nacre side. Default ON;
+   *  the file is only ever written while the app is foregrounded and is
+   *  deleted (or left to expire within 5 minutes) once it backgrounds. */
+  nacreBridgeEnabled?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:

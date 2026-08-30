@@ -222,6 +222,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // lib/companion-brain.ts's resolveCompanionBrain. 'local-only' opts back
   // out to byte-identical pre-Design-C behavior.
   companionBrainMode: 'auto',
+  // Nacre Bridge (feature B) — default ON, opt-out. See AppSettings.nacreBridgeEnabled
+  // for what this shares and lib/nacre-bridge-context.ts for the sanitization contract.
+  nacreBridgeEnabled: true,
 };
 
 const ACTIVE_TEAM_PRIORITY: AppSettings['teamFacilitatorPriority'] = ['gemini', 'cerebras', 'groq', 'codex', 'perplexity', 'local'];
