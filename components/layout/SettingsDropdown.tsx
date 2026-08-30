@@ -115,22 +115,6 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
     onClose();
   }, [onClose]);
 
-  // TEMPORARY on-device diagnostic (2026-08-30) — remove once the settings-
-  // panel scroll-freeze bug is confirmed fixed by the user's real touch.
-  // Three prior code-reasoning-only fixes (PanResponder heuristic revert,
-  // percentage->pixel maxHeight) were each reported as NOT fixing it, so
-  // instead of guessing a 4th time, surface ground truth directly on
-  // screen: does ANY touch reach the panel at all (touchN), and does the
-  // ScrollView's own onScroll ever fire during a real drag (scrollY/scrollN)?
-  const [dbg, setDbg] = React.useState({ touchN: 0, scrollN: 0, scrollY: 0 });
-  const handleDbgTouchStart = React.useCallback(() => {
-    setDbg((d) => ({ ...d, touchN: d.touchN + 1 }));
-  }, []);
-  const handleDbgScroll = React.useCallback((e: any) => {
-    const y = Math.round(e.nativeEvent?.contentOffset?.y ?? 0);
-    setDbg((d) => ({ ...d, scrollN: d.scrollN + 1, scrollY: y }));
-  }, []);
-
   return (
     <Modal
       visible={visible}
@@ -139,27 +123,20 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      {/* 2026-08-30, take 3 (Codex review of takes 1-2): backdrop-as-ancestor
-          of the panel is the wrong shape no matter how the panel's own
-          touch/responder props are tuned — any tap landing on blank panel
-          space either needs to be "claimed" (take 2: `onStartShouldSet
-          Responder`, which works but is still a responder claim the
-          ScrollView has to negotiate around) or it bubbles to backdrop
-          and closes the panel (take 1's regression). ConfigTUI.tsx's own
-          Modal already avoids this entirely by making backdrop a SIBLING
-          of the panel, not an ancestor: a touch on the panel never reaches
-          the backdrop `Pressable` at all (they don't overlap in the tree),
-          so the panel and its ScrollView need zero responder-claiming
-          machinery of their own. `panelContainer` is `pointerEvents=
-          "box-none"` so it and its own empty space pass touches through
-          to the backdrop below, while the actual `panel` View still
-          receives touches normally. */}
+      {/* 2026-08-30 (Codex + Fable5 reviewed): backdrop is a SIBLING of the
+          panel, not its ancestor — a touch on the panel never reaches the
+          backdrop `Pressable` (they don't overlap in the tree), so the
+          panel and its ScrollView need zero responder-claiming machinery
+          of their own. This is the same shape ConfigTUI.tsx's Modal already
+          uses. `panelContainer` is `pointerEvents="box-none"` so it and its
+          own empty space pass touches through to the backdrop below, while
+          `panel` itself still receives touches normally. Fixes a scroll
+          freeze that only reproduced on real touch (never via synthetic
+          `adb shell input swipe`) — an ancestor Touchable/responder-claiming
+          View above the ScrollView was racing its move-based takeover. */}
       <Pressable style={styles.backdrop} onPress={onClose} />
       <View style={styles.panelContainer} pointerEvents="box-none">
-        <View
-          style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]}
-          onTouchStart={handleDbgTouchStart}
-        >
+        <View style={[styles.panel, panelChromeStyle(), { backgroundColor: C.bgSurface }]}>
           <View style={[styles.header, { backgroundColor: C.bgSidebar, borderBottomColor: C.border }]}>
             <MaterialIcons name="settings" size={13} color={C.accent} />
             <Text style={[styles.headerTitle, { color: C.text1 }]}>{t('settings.title')}</Text>
@@ -175,18 +152,9 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             </Pressable>
           </View>
 
-          {/* TEMPORARY diagnostic line — see dbg state above. Remove together. */}
-          <View style={{ paddingHorizontal: 8, paddingVertical: 3, backgroundColor: '#000' }}>
-            <Text style={{ color: '#0f0', fontSize: 10, fontFamily: 'monospace' }}>
-              {`DBG touch=${dbg.touchN} scroll=${dbg.scrollN} y=${dbg.scrollY}`}
-            </Text>
-          </View>
-
           <ScrollView
             style={styles.scroll}
             showsVerticalScrollIndicator={false}
-            onScroll={handleDbgScroll}
-            scrollEventThrottle={16}
             // removeClippedSubviews REMOVED 2026-08-28: reproduced on-device as
             // a slow/normal-speed drag doing nothing while only a fast repeated
             // flick moved content, and jumping erratically rather than tracking
