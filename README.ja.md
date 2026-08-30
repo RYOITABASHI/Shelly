@@ -312,224 +312,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 2026-07-18 の再設計でウィジェットを「ランチャー」に絞るため意図的に削除されました。承認や選択は
 引き続き Codex の通知チャンネルとアプリ内の Agent Chat ペイン（後述）から行えます。
 
-<details>
-<summary><strong>表示される内容</strong></summary>
-
-- **ヘッダー** — ステータスドット（緑、または表示中のいずれかのエージェントが失敗していれば赤＋失敗件数バッジ）と「AGENTS」タイトル
-- **エージェント行（最大3件）** — 名前、前回実行のステータスグリフ（✓成功 / ✗失敗 / •スキップまたは一時的 / –未実行）、次回発火時刻（実行中はリアルタイムの経過秒数表示に切り替わる）
-- **行ごとの RUN** — スケジュールアラームの発火と同じ無人実行ゲートを通してそのエージェントを起動します
-- **ASK** — Codex へのプロンプト送信、または新規 `@agent` 登録のための軽量なダイアログを開きます
-- **装飾用ペット** — インポート済み/同梱の Codex ペット画像を表示します。2026-07-18 の再設計以降は表示のみ（タップでの切り替えは廃止）です
-
-</details>
-
-<details>
-<summary><strong>インタラクティブな操作</strong></summary>
-
-- **ASK** — ASK をタップするとプロンプトダイアログが開きます。入力すると Shelly がバインド中のフォアグラウンド Codex ターミナルに書き込み（行をクリアして貼り付け、Enter）、ランチャーに戻します
-- **ASK からの `@agent` 登録** — 普通のプロンプトの代わりに `@agent ...` を入力（または音声で発話）すると、Codex PTY に流れる代わりに、AI ペインに直接 `@agent` と打ったときと同じ `parseAgentCommand` / 確認カードのフローに合流します。オプトインの **Widget No-Confirm Register** 設定（デフォルト OFF）をオンにすると、ウィジェット発の `@agent` コマンドにかぎり確認カードを省略して即登録し、登録後に通知が届きます。AI ペインに直接打った場合はこの設定に関わらず常に確認します。
-- **ASK の音声入力** — ASK ダイアログのマイクボタンは Android 標準の音声認識を使います。認識結果はレビュー用にテキスト欄へ入るだけで、自動送信はされません。
-- **スケジュールエージェントの RUN** — アプリを開かずフォアグラウンドサービス経由で直接起動します。タップ時にディスク上のメタデータを再検証し、STOP-ALL を尊重し、無人時のアクション承認は fail-closed のままです。設計上、無人実行はデフォルトで OAuth / ローカルツールのみを使います。クラウド API キー（Gemini、Perplexity ほか）を無人で使うことになるエージェントは、オプトインの **Autonomous Cloud** 設定（デフォルト OFF）でクラウド呼び出しが許可されていない限り、Codex にフォールバックします。
-- **コールドスタート ASK** — 利用可能な Codex / Agent Chat セッションが無い場合、Shelly はウィジェットのプロンプトをキューに入れ、ターミナルを開き、PTY が生きるまで待ち、`codex` を起動し、Codex の入力面が出るのを待ってから、キューのプロンプトを届けます
-- **バインドが切れているときの再開** — バインド中のターミナルが終了していた場合、キュー済みの ASK プロンプトが Agent Chat を開いてセッションを再開し、キューのプロンプトを流し込みます
-- **承認と選択** — もうウィジェットのピルとしては出ません。Codex の通知チャンネルのワンタップ Allow / Deny・番号付きアクション、またはアプリ内 Agent Chat ペインの Approve / Deny バブル（いずれも後述）を使ってください
-- **操作の配送方法** — ASK はプロセス内のターミナルセッションレジストリ経由でライブ PTY に書き込みます。RUN はスケジュール発火と同じ、フォアグラウンドサービスへの直接 PendingIntent を使います。どちらのパスも `am start` を経由しません
-
-</details>
-
-<details>
-<summary><strong>レイアウトシステム</strong></summary>
-
-- **単一画面レイアウト** — AgentBar（上）+ Sidebar（左、折りたたみ可）+ PaneContainer（中央）+ ContextBar（下）
-- **9 種類のペイン** — Terminal（ネイティブ PTY）、Agent Chat（Codex セッションのコンパニオン）、AI（ストリーミング + コンテキスト注入）、Browser（WebView + ブックマーク + バックグラウンド再生）、Markdown（ビューア）、Preview（Code / Image / PDF / CSV / Markdown のレンダラ）、Ask（Shelly のヘルプ）、Agent Runs（エージェント別の実行履歴・ログ・ルーティング・ステップ/アクション詳細を閲覧）、Memory Workbench（エージェント自身のメモ、共有`_global`メモ、コンパニオン自身の`_companion`ジャーナルを検索・閲覧・編集・削除――登録済みエージェントがゼロでも Settings → Companion Memory から到達可能）
-- **プリセットのスロットレイアウト** — single / 2 カラム / 3 ペイン / 4 ペインのプリセットで最大 4 つのライブペイン。アクセントグリーンのグリップをドラッグしてリサイズ、ダブルタップで 50/50 に戻ります
-- **レイアウトプリセット** — Single Terminal / Terminal + AI / Terminal + Browser / 3-Way Triple。すべてコマンドパレットから呼べます
-- **ペインタイプのピル** — ヘッダー左に `[TERMINAL ▾]` / `[AI ▾]` などが出ます。タップするとその場でペインタイプを変更できます
-- **ターミナルペイン内の CLI タブストリップ** — 1 ペインに複数のシェルタブ。`[● SHELL][+]` で、最後の 1 つ以外は `×` で閉じられます
-- **空ペインからの復帰** — 最後の 1 ペインは閉じられません。万一ツリーが空になっても、3 ボタンの CTA（Terminal / AI / Browser）で戻せます
-- **ContextBar** — cwd、git ブランチ、接続状態を常時表示するフッター
-
-</details>
-
-<details>
-<summary><strong>ペインをまたぐ知能</strong></summary>
-
-- **「右側のエラーを直して」** — AI が現在のターミナルのトランスクリプトを読み、実行可能な修正で応答します
-- **ActionBlock** — AI の応答内のコードブロックに `[▶ Run]` ボタンが付き、アクティブなターミナルペインにディスパッチされます
-- **ペインを意識したターミナル選択** — 分割レイアウトでは、AI ペインは自分のすぐ左のターミナル、次にフォーカス中のターミナル、最後に最初のターミナル、の順で選びます
-- **リアルタイムなターミナル把握** — AI ペインはディスパッチ時点のターミナルトランスクリプトをスナップショットするので、モデルはあなたがいま見たものと同じものを見ます
-- **ターミナル安全なコンテキスト** — ANSI / OSC / 制御シーケンスと TUI の再描画ノイズは注入前に除去されます。ターミナル出力は指示ではなく、信頼できない証拠として扱われます
-- **ローカル LLM 向けの圧縮** — `@local` では重要なヘッダー / ステータス / エラー行と直近の末尾を残すので、小さな端末上モデルでも有用なターミナル状態を見られます
-- **Auto-savepoint** — すべての編集が隠し git インデックスに自動コミットされ、ワンタップで任意の時点に戻れます
-- **コミット前のシークレットスキャン** — API キー、秘密鍵、その他のシークレットは savepoint コミットに入る前にブロックされます
-
-</details>
-
-<details>
-<summary><strong>Agent Chat — バインド中の Codex ターミナルのチャット面</strong></summary>
-
-- **フォアグラウンド Codex の上でのチャット** — セッション JSONL と Scouter のスナップショットから解析した、バインド中の Codex セッションのタイムライン（ユーザーのプロンプト、Codex の返答、ツール実行、承認、エラー）をチャット風に映すペイン
-- **返信コンポーザ** — 返信を書いて送ると、隠れた API ワーカーではなく、バインド中のフォアグラウンド Codex PTY に書き込まれます。Shelly のコンプライアンス境界と一貫した設計です
-- **READY / LOCKED** — バインド中のターミナルが返信を受け付けられるかをピルで表示します。ロック中はコンポーザが理由を説明します（ターミナル終了、Codex がビジー、ターミナル側の選択待ち、まだバインドされていない）
-- **Approve / Deny** — 承認リクエストは Allow / Deny ボタン付きのバブルとして出て、判断をバインド中の Codex ターミナルに送ります。操作できるのは最新の保留中の承認だけです
-- **Interrupt** — 停止ボタンが、作業中のバインド Codex にターミナル割り込みを送ります
-- **Resume** — 再生ボタンが、選択中のセッションのバインド Codex ターミナルを開き直す / フォーカスして、返信用にバインドし直します
-- **セッションタブ** — 最近の Codex セッションがタブとして表示され（ワークスペース + モデルで重複排除）、それぞれにバインドドットが付きます。dismiss はディスク上の JSONL に触れずに Agent Chat から隠すだけです
-- **セッションストリップ** — 選択中のセッションのプロジェクト、ステータス、バインド、モデル、トークン数、最終更新時刻
-
-</details>
-
-<details>
-<summary><strong>AI Edit — Accept / Reject 付きのファイル編集</strong></summary>
-
-- **ファイルのステージ** — FileTree でファイルをタップすると Preview ペインの Code タブで開きます。ツールバーの `[✨ AI]` ボタンで、そのファイルを AI ペインのコンテキストにステージします。
-- **ディスパッチ** — 「最初の関数のコメントを日本語にして」（でも何でも）と書いて送ります。Shelly のシステムプロンプトが、モデルに unified diff で応答するよう求めます。
-- **InlineDiff** — アシスタントの返答から unified diff ブロックを走査し、各 hunk を `+` / `-` / コンテキストの色分けと Accept / Reject ボタン付きで描画します。
-- **hunk 単位の承認がディスクに書き込む** — 1 つの hunk を承認すると、単一 hunk の diff に再シリアライズしたうえで `acceptStagedDiff()` を呼び、ネイティブの `writeFileNative` ブリッジ経由でファイルを書き換え、Preview ペインが自動リロードします。
-- **ファジーな再アンカー** — `@@ -N` の行番号が古くなっている場合（先行する hunk がすでにディスク上のファイルを編集しているため）、適用側は hunk の先頭コンテキストブロックを前方検索するので、後続の hunk も着地します。
-- **Accept All** — 同じ書き戻しパスを使い、保留中のすべての hunk を一度に適用します。
-
-</details>
-
-<details>
-<summary><strong>ターミナルの拡張</strong></summary>
-
-- **Fig スタイルの補完** *(未実装 — `docs/superpowers/DEFERRED.md`参照)* — 補完エンジン(`lib/autocomplete-engine.ts`)とコマンドDBは存在し再利用可能ですが、ターミナル入力経路はネイティブPTYパススルー(`NativeTerminalView`)でJS側から入力バッファ/カーソルが見えないため、ポップアップの復活にはスコープを絞ったネイティブ(Kotlin)変更で入力中のコマンド行をJSへストリームする必要があります
-- **シンタックスハイライト** — ターミナル出力を内容の種類に応じて色分け
-- **タップできるパスとエラー** — ファイルパスやスタックトレース行をタップして飛べます
-- **コンテンツブロック** — コマンド出力中のJSON、Markdown、画像、テーブルは、ターミナルペインのFABから開く**Block History**パネル(オーバーレイ)の中で整形されたブロックとして描画されます。スクロールするPTY出力そのものに直接埋め込まれるわけではありません
-- **CLI 通知** — 長時間かかるコマンドは、完了時にシステム通知を出します
-- **Codex の通知チャンネル** — Scouter はカテゴリごとに Android 通知を出し、それぞれ別チャンネルなので重要度 / 音 / ミュートを Android の通知設定から個別に調整できます。承認・選択・エラーはヘッドアップ通知、レートリミットは既定の重要度、完了と長時間実行は静かに届きます。承認通知にはワンタップの **Allow / Deny** ボタンが付き、選択通知は先頭 3 つの番号付きアクションを出します。展開表示ではリクエストやメニューの全文が読め、解決済みのカードは重複排除とキャンセルが行われるので、積み上がったり残り続けたりしません(選択・承認ピルは2026-07-18のリデザインでウィジェット本体からは撤去済み——下記Scouterウィジェット節を参照。これらの通知チャンネルかアプリ内Agent Chatペインを使ってください)
-- **SmartKeyBar** — デフォルトでは文脈に合わせて切り替わる 4 つのキーセット（Default / Git / REPL / Navigate）。スワイプで切り替え。5つ目（Vim）は Settings → Terminal → "Show Vim key bar" で有効化できます（デフォルト OFF。Vim を使わないユーザーのバーが混雑しないようにするため）
-- **不死のセッション** — tmux がアプリのバックグラウンド中もシェルを生かし続け、任意のセッションを名前で再開できます
-- **ターミナルでの日本語入力** — ターミナルペイン内で CJK 文字を直接変換入力できます
-- **読めるターミナルのグリフ** — ネイティブ Kotlin のターミナルビューが PTY のグリッドを JetBrains Mono で描画するので、小文字・カラム・コード出力が判読できる状態を保ちます
-- **アトミックなペースト** — すべてのペースト経路が `TerminalEmulator.paste()` に集約されます。ゲストシェルが bracketed-paste モード（DECSET 2004）を有効にしている場合はペイロードをラップするので、複数行のコマンドが 1 イベントとして届き、readline は末尾の改行だけを実行します。それを通知しないシェル / TUI（vim、less、nano）には、改行を正規化するフォールバックを使います。IME の複数行入力や 16 文字以上のコミット、マウス中クリックのペースト、CommandKeyBar の **Paste** キーは、すべて同じ正規化処理に到達します。
-
-</details>
-
-<details>
-<summary><strong>AI ペイン</strong></summary>
-
-- **マルチエージェントのルーティング** — ルーターがタスクに最適な AI を選びます。`@mention` で上書きできます
-- **一つのコンパニオンスレッド、一つの声** — 既定のローカルShelly AIペインは`resolveAiPaneStoreKey`を通じて`COMPANION_CONVERSATION_KEY`へ解決されるため、ペインや分割をまたいで同じ会話が続きます。返信は常に**Shelly**として表示され――実際に応答したモデルが何であれ、バブルにプロバイダー名タグは付きません（プロバイダー名はパワーユーザー向けにペインヘッダーには表示されますが、メッセージごとには出ません）。外部プロバイダーを明示したバインド（`@gemini`など）は独立したペイン別履歴を保ちます。
-- **切り替え時のcarry-forward** — ペインをコンパニオンと明示的プロバイダーの間で切り替えると（ペインヘッダーのエージェントバッジ経由でも`@mention`経由でも、どちら向きの切り替えでも）、抜ける側のスレッドから直近の話題に沿ったメッセージ数件を、入る側のスレッドへコピーし、引き継ぎを説明する短いシステム通知を添えます。フルマージではなく継続性のための軽い橋渡しで、冪等です（行き来を繰り返してもメッセージが重複しません）。ペイン単位のコピーはアプリ再起動をまたいでは残りません（共有コンパニオンスレッドのみ残ります）。
-- **共有コンパニオンメモリ** — Shellyに「デプロイブランチはstagingだと覚えておいて」と伝えると、確認後に`_global`ノート（`GLOBAL_MEMORY_SCOPE`）へ書き込み、将来の会話とすべてのスケジュール済みエージェントが思い出します。コンパニオン経路は`detectCompanionMemoryWrite`、明示的な全エージェント向け命令は`detectGlobalMemoryWrite`を使います。
-- **コンパニオンジャーナル（自動、確認不要）** — 上記の明示的な「覚えておいて」フローとは別に、Shellyはペインがコンパニオンから切り替わるたびに、会話で分かったことをオンデバイスのローカルLLMで短いノートへ蒸留し、自分専用の`_companion`スコープへ保存します――コンパニオンだけが読み、バックグラウンドエージェントへは一切ファンアウトされません。以降のコンパニオンの返信は、いま尋ねていることに関連するノートだけを引き戻します(BM25 + 新しさスコアリング、最大5件までのキャップ)。これまで話した全てが際限なく積み上がるわけではありません。これらのノートは**Settings → Companion Memory**から閲覧・編集・削除でき、登録済みエージェントがゼロでも到達可能です。
-- **エージェント結果のチャット再登場** — 手動の **Run Now** の完了結果は、既存のOS通知に加えて`lib/agent-companion-notice.ts`から共有スレッドへ追加されることを実機確認済み。スケジュール実行（AlarmManager）も同じ仕組み・コード経路で出荷されていますが、実際に発火して再登場する場面はまだ個別に観測できていません。
-- **個別メッセージの削除** — AIペインの任意のメッセージを長押しし、削除を確認すると、`deleteMessage`が解決済みの会話からそのメッセージだけを削除します。
-- **@mention** — AI ペインの直接プロバイダは `@gemini`、`@cerebras`、`@perplexity`、`@openrouter`、`@local`。実際に機能するユーティリティ系ルートは `@team`(設定済み全プロバイダへ同時ファンアウト)と `@agent` / `@edit` / `@code`(自律エージェントの確認カードフローへルーティング)の2つのみです。`@git`、`@open` / `@browse`、`@plan`、`@arena` / `@battle` / `@compare`、`@actions` / `@ci` はパーサー上は認識される(シンタックスハイライト・オートコンプリート・ラベル表示)ものの、実際のディスパッチ処理は一切無く、これらを打っても残りのメッセージがそのペインに現在バインドされているプロバイダへ普通のチャットとして送られるだけです。`@plan`と`@arena`は2026-08-10に削除された`plan-store`/`arena-store`の残骸(呼び出し箇所ゼロ)、`@git`が意図していた「Git Guide」UI(`components/terminal/GitGuideBlock.tsx`)や`@open`/`@browse`/`@actions`/`@ci`もそもそもトリガーへ結線されたことがありません。`@claude` はありません――Claude Code は現在のプロバイダではないためです。Codex は `codex` によるフォアグラウンドのターミナル CLI として利用できます。（Groq はプロバイダとして設定できますが、`@groq` のメンションパターンにはまだ結線されていません。）
-- **ターミナルコンテキストの注入** — 何も貼り付けなくても、AI は常に現在のターミナルトランスクリプトにアクセスできます
-- **hunk 単位で書き戻す InlineDiff** — 上記参照
-- **音声入力** — ターミナルのアクションバーのマイクを長押しすると VoiceChat が開きます。音声 → Groq 文字起こし → AI → TTS 応答
-- **ローカル LLM サポート** — 内蔵の GGUF カタログと llama.cpp / llama-server のコントロールを使い、`@local` でルーティングすれば完全に端末上での推論になります。実際のデフォルトは Qwen3.5-0.8B Q4_K_M(常駐向けの軽さ)、オンデマンド用途への推奨アップグレードが Qwen3.5-2B Q4_K_M、Qwen3 1.7B はその中間、4B / 9B は短時間の品質確認用という位置づけです。
-
-</details>
-
-<details>
-<summary><strong>ブラウザペイン</strong></summary>
-
-- **フル WebView** — ペイン内で任意の URL を開けます。ターミナルの隣にドキュメントを出しっぱなしにできます
-- **ブックマーク** — URL の保存と整理。YouTube、X、GitHub、`localhost:*` にはプリセットアイコンが付きます
-- **バックグラウンド再生** — ペインを切り替えても音声は鳴り続けます
-- **発信専用の共有** — Shelly からプレーンテキスト（URL、ターミナル出力など）を標準の共有シートで他の Android アプリへ共有できます（受信側の共有ターゲットは未実装 — 他アプリの共有シートに Shelly は出てきません）
-- **デスクトップ UA トグル** — URL 行の `📱` / `🖥` ボタンで User-Agent を切り替え、デスクトップ専用サイトも正しく動くようにします
-- **動画の全画面** — 6 通りの検出パス（W3C / WebKit / video 要素 / モンキーパッチした API）で YouTube 的な全画面化を捕まえ、ペインを最大化してシステムナビゲーションバーを隠します
-
-</details>
-
-<details>
-<summary><strong>ファイルツリー</strong></summary>
-
-- **アクティブリポジトリのファイル一覧** — カレントディレクトリの `ls -1pa` 相当の一覧。拡張子ごとにアイコンを色分け（`.tsx` は空色、`.ts` は青、`.json` は琥珀、`README.md` は赤、など）
-- **検索** — カレントディレクトリに対するインクリメンタルフィルタ
-- **開くときの挙動** — Markdown ファイルをタップすると Markdown ペイン、それ以外は Preview ペインの Code タブで開きます
-- **作成 / リネーム / 削除** — 検索欄の横にある `+` ファイル / `+` フォルダボタン。行を長押しすると `Rename / Copy path / Delete`。モーダルはアクティブなアプリのパレットを使います
-- **パンくず** — `..` の行をタップで 1 階層上へ
-
-</details>
-
-<details>
-<summary><strong>プレビューペイン</strong></summary>
-
-- **Code タブ** — ファイルごとのシンタックスハイライト表示と行番号。`[✨ AI]` ボタンで現在のファイルを AI Edit 用にステージします
-- **Markdown レンダラ** — `react-native-markdown-display` に Shelly のパレットを適用
-- **画像 / PDF / CSV レンダラ** — よくある非コード添付のためのインラインビューア
-- **Git diff ビュー** — `git diff <file>` を Code タブでネオンの `+` / `-` 配色で表示
-- **最近のファイル** — Preview のヘッダー内クイックスイッチャ
-
-</details>
-
-<details>
-<summary><strong>サイドバー</strong></summary>
-
-- **既定でコンパニオン優先** — まっさらな新規インストールでは、TasksとSkillsが最初から展開表示され、それより下の開発者向けセクション（Repositories、File Tree、Device、Worktrees、Quick Launch、Codex Sessions）は**DEVELOPER**という区切りの下に折りたたまれた状態で始まります――ワンタップで開けますし、何も削除されるわけではなく、単に最初に目に入るものではなくなるだけです。既にインストール済みの環境では、ユーザー自身が選んだ開閉状態がこの既定値によって上書きされることはありません。
-- **リポジトリ** — バインド済みリポジトリのパス一覧。タップで切り替え、ファイルツリーのルートもそのリポジトリに変わります
-- **ファイルツリー** — 上記参照。セクションとして埋め込まれているので、サイドバーの高さに合わせて伸縮します
-- **タスク** — 直近のバックグラウンドエージェント実行と、その所要時間・ステータス
-- **デバイス** — クイックアクセス用フォルダ（`~`、`/sdcard/Download` など）。ワンタップでファイルツリーを付け替えます
-- **プロファイル** — 保存済みの SSH 接続。タップするとアクティブなターミナルペインに `ssh -i KEY user@host -p PORT` を挿入します。長押しで編集 / 削除、`Import from ~/.ssh/config` でホストを一括追加。鍵ファイル認証のみで、パスワードやパスフレーズは保存しません。
-
-> **クラウドストレージは？** Shelly はあえて Google Drive / Dropbox / OneDrive の UI を載せていません。ターミナルアプリなら、すでにこの問題を解いているツールに乗るべきです。Shelly 自身はパッケージマネージャを持ちませんが、[`rclone`](https://rclone.org) は単一の静的バイナリとして配布されています。`arm64` のリリースをダウンロードし、`PATH` の通ったディレクトリに置き（あるいは Termux を併用してインストールし）、`rclone config` を一度実行すれば、40 以上のクラウドバックエンドをターミナルペインからマウント / 同期できます。
-
-</details>
-
-<details>
-<summary><strong>コマンドパレット</strong></summary>
-
-上部バーの検索アイコン（または AgentBar の git バッジ）から開きます。登録済みのすべてのアクションをあいまい検索でき、直近 5 件の **Recent** リストも常に表示されます。
-
-現在登録されているもの:
-
-- **Settings** — ターミナル風の設定 TUI を開く
-- **Terminal** — Clear / New session / Restore tmux / Tmux attach
-- **Git** — Status / Diff / Log / Add all / Commit / Push / Pull --rebase *（アクティブなターミナルペインの `pendingCommand` チャンネル経由）*
-- **Panes** — Terminal / AI / Browser / Markdown / Preview の追加
-- **Layouts** — Single Terminal / Terminal + AI / Terminal + Browser / 3-Way Triple
-- **Theme presets** — Blue / Red / Purple / Green
-- **Font presets** — Silk / 8bit / Mono とレガシーのエディタパレット
-- **Voice** — 対話を開く（VoiceChat モーダル）
-- **Snippets** — スニペットストアの先頭 20 件。それぞれターミナルにディスパッチされます
-- **Package Manager** — 同梱ツールの状態
-
-</details>
-
-<details>
-<summary><strong>テーマとフォント</strong></summary>
-
-- **カラープリセット** — Blue がデフォルトのクールなパレット、Red は赤〜オレンジ系のクローム、Purple は紫にネオングリーンのアクセント。
-- **表に出ているプリセット** — 設定とコマンドパレットに出すのは 4 つのカラーテーマです。レガシーやエディタ系のパレット ID は古い保存設定のために受け付け続けますが、UI の主役ではありません。
-- **実行中の切り替え** — プリセットの切り替えは、ライブの `colors` オブジェクトを（同一性を保ったまま）その場で書き換え、シェルレイアウトを key-remount させる theme-version ストアを進めることで行います。PTY セッションは切り替えを生き延びます――開いている vim はそのままです。
-- **単一ファミリでの描画** — すべての Text は `fontWeight` に関係なく JetBrains Mono を通るので、UI とターミナルのタイポグラフィが揃います。
-- **Text.render のモンキーパッチ** — 子が独自の `style` を渡した場合、`Text.defaultProps.style` はマージではなく置換されます。そのままだと 100 箇所以上の呼び出し元がテーマフォントから外れてしまいます。パッチはすべての Text の style 配列の先頭に `{ fontFamily }` を挿し込むので、呼び出し元を触らずにプリセットのフォントが行き渡ります。
-- **ネオングロー** — 色ごとに 8 種類の `textShadow` スタイル（teal / blue / sky / purple / pink / green / red / amber）で、モックの「読めるターミナル」感を再現
-- **ハプティクスのトグル** — 操作ごとのフィードバックの ON / OFF
-
-</details>
-
-<details>
-<summary><strong>Git 連携</strong></summary>
-
-- **コマンドパレット** — 上に挙げた 7 つの git アクション
-- **Auto-savepoint** — git ベースのバックグラウンド保存システム（`lib/auto-savepoint.ts`）。コミット前に毎回シークレットのパターンスキャンを行います
-- **Git diff プレビュー** — Preview ペインの Code タブが `git diff <file>` をネオンの diff パレットで描画
-
-</details>
-
-<details>
-<summary><strong>設定・API キー・バックグラウンドエージェント</strong></summary>
-
-- **コンパニオン / 開発者の分離** — 歯車アイコンのSettingsシートは、既定ではコンパニオン関連のセクション（Display、Wallpaper、Language、Agents、API Keys、Companion Memory、Social Connectors、DM Pairing、Updates、Codex Login、Recovery）だけを表示します。Doctor、Integrations（MCP/llama.cpp）、Webhook Allowlist、Scouter、Resetはワンタップ先の単一の**Developer**行の裏にまとまっています――上記Sidebarの分離と同じ「そこにはあるが、最初の主役ではない」という考え方です。
-- **Companion Memory** — Shellyのコンパニオンジャーナルが会話から自動記録した内容と、共有の`_global`ノートを、閲覧・編集・削除できます――登録済みエージェントがゼロでも到達可能です。
-- **インライン API キーエディタ** — Gemini / Cerebras / Groq / Perplexity / OpenRouter とローカル / OpenAI 互換の API キーを、設定のドロップダウン内でマスク表示と行ごとの `EDIT / CLEAR / SAVE / CANCEL` で編集できます。キーは `expo-secure-store` に保存されます。
-- **設定 TUI** — 全設定はターミナル風のテキスト UI からも触れます
-- **コマンドの安全性** — 正規表現ベースの 5 段階リスク評価（ファイアウォールではなくシートベルトです。[セキュリティ](#セキュリティ)を参照）
-- **ワークスペース分離** — プロジェクトごとの cwd / env / AI コンテキスト
-- **バックグラウンドエージェント** — `@agent list`、`@agent status`、`@agent run <name>`、`@agent stop <name>`、`@agent history <name>`、または `@agent <自然言語>` で新規作成。スケジュール済みエージェントは設定に応じて AlarmManager 経由で動きます。
-- **管理された Codex ランタイム更新** — Updates UI が公開の `codex-runtime-latest/codex-runtime.json` マニフェストを読み、tarball をダウンロードし、SHA-256 を検証し、`codex_tui --version` と `codex_tui exec --help` でスモークテストしてから、`~/.shelly-runtime/codex/current` 以下にランタイムを昇格させます。新しいランタイムは新たに開いたターミナルタブから使われ、**Reset** で APK 同梱ランタイムに戻せます。
-- **`shelly-doctor`** — シェル / ネイティブバイナリの有無、同梱 Codex バイナリ、JS ディスパッチャ、ローカル LLM エンドポイント、`~/.codex/auth.json` の有無をチェックする診断コマンド。何かおかしいと感じたら実行してください
-
-</details>
+[docs/FEATURES.ja.md](docs/FEATURES.ja.md)に、機能ごとの詳細な内訳(Scouterウィジェット内部、レイアウトシステム、ペインをまたぐ知能、Agent Chat、AI Edit、ターミナルの拡張、AIペイン、ブラウザペイン、ファイルツリー、プレビューペイン、サイドバー、コマンドパレット、テーマとフォント、Git連携、設定/APIキー/バックグラウンドエージェント)をまとめています。
 
 ### Codex ランタイム
 
@@ -545,63 +328,17 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 
 ## ステータス
 
+日付・デバイス・証跡付きの全領域の検証ログ: **[docs/STATUS.ja.md](docs/STATUS.ja.md)**。コアターミナル・レイアウト・AI Edit・エージェント登録の各パスは広く出荷済みで、複数回にわたり実機で再検証されています。以下は、何かに依存する前に特に知っておく価値のある項目です。
+
 | 領域 | 状態 |
 |---|---|
-| ネイティブ PTY、セッション、tmux 復活 | ✅ 出荷済み |
-| マルチペインレイアウト（9 種類のペイン、分割、プリセット、ドラッグリサイズ、空状態の CTA） | ✅ 出荷済み |
-| アトミックペースト（ゲストが DECSET 2004 で申告したときの bracketed-paste ラップ、`TerminalEmulator.paste()` 単一チョークポイント、IME のチャンク分割の統合） | ✅ 出荷済み（bug #91、#94、#97、#106） |
-| `MANAGE_EXTERNAL_STORAGE` による `/sdcard` アクセス（初回起動時の許可フロー） | ✅ 出荷済み（bug #92） |
-| `bash -c "…"` と `bash script.sh`（`#!/usr/bin/env bash` shebang付きスクリプト含む）のための `$HOME/bin/bash` の bash ラッパー | ✅ 出荷済み（bug #93）。shebangスクリプトの直接実行（`./script.sh`）はKnoxの`binfmt_script`制限により依然失敗する — 必ず`bash script.sh`経由で実行すること |
-| `execSubprocess` の JNI 読み取りループ（EAGAIN と EOF の区別） | ✅ 出荷済み（bug #70） |
-| AI Edit のゴールデンパス（ステージ → diff → hunk 単位の承認 → ディスク書き戻し） | ✅ 出荷済み。後続 hunk のためのファジー再アンカー付き。2026-08-17に実機検証済み — Accept(diff通りにファイル内容とmtimeが変化)・Reject(ファイル無変更)を実際のmd5チェックサム比較で確認 |
-| FileTree の CRUD（作成 / リネーム / 削除 / パスのコピー） | ✅ 出荷済み |
-| コマンドパレット — settings、terminal、git、panes、layouts、theme、voice | ✅ 出荷済み |
-| ブラウザの全画面、デスクトップ UA トグル、リンク取り込み、ブックマーク | ✅ 出荷済み |
-| テーマプリセット — Blue / Red / Purple / Green（保存済み設定のためにレガシープリセット ID も受け付け。実行中の切り替え、Text のモンキーパッチ） | ✅ 出荷済み |
-| サイドバーの Add Repository の存在チェックとゴーストパス時の Alert | ✅ 2026-08-17に修正・実機検証済み(`tryAddRepo`は親ディレクトリの読み取りエラーでfail-openせず対象を直接probeするフォールバックに変更、`.git`エントリ——worktree/submoduleを考慮しdirectoryまたはfileどちらも——の存在確認を追加)。ユニットテスト7件+実機3ケース(親パスが存在しない→`not_found`で正しく拒否、既存の非gitフォルダ→`not_git`で正しく拒否、実在するgitリポジトリ→過剰拒否なく正常追加)を確認済み |
-| AI ペインのローカル LLM ルーティング（URL 駆動、有効化トグル不要） | ✅ 出荷済み（bug #68） |
-| 音声対話（VoiceChat + VoiceChain + TTS） | ✅ 音声入力（マイク → 文字起こし → ルーティングされた応答）は 2026-07-27 に実機で確認済み。専用のフルスクリーン VoiceChat モードと TTS 再生については、今回のパスでは独立に再検証していません |
-| 不死のセッション（tmux キープアライブ） | ✅ 2026-07-27 に実機で確認済み — `vim` セッションの対話状態（挿入モード、未保存のバッファ、カーソル位置）が、バックグラウンド / フォアグラウンドの往復を無傷で生き延びました。単なるトランスクリプトの再生ではありません |
-| llama.cpp による `@local` のローカル LLM（Settings · Integrations · Local LLM: カタログ、ダウンロード、開始 / 停止） | ✅ 出荷済み |
-| MCP サーバー（Settings · Integrations · MCP Servers） | ✅ サーバーのライフサイクル管理（インストール/起動/停止、Codex など MCP を利用するツール向けの設定生成）としては出荷済み。AI Pane 自体は MCP クライアントとしては動作しません（`listTools` / `callTool` なし） |
-| Codex CLI の起動 / 認証 | ✅ サポート済み。素の `codex` は、TUI 起動前に Shelly のデバイスコード認証を通してネイティブ PTY 上で動きます |
-| 管理された Codex ネイティブランタイム（`codex_tui` を `~/.shelly-runtime/codex/current` にステージ、`--version` と `exec --help` でスモークテスト、同梱ランタイムへの修復 / リセット） | ✅ 出荷済み。ある実機（2026-08-17）では `current/` が一度も昇格されておらず、バージョン付きステージングディレクトリ（〜0.134.1まで）のみが存在、実際に稼働していたのはより新しい APK 同梱ランタイム（0.147.0）へのフォールバックだった。「同梱より新しい場合のみ昇格する」意図的なゲートなのか、昇格処理自体が一度も発火していないのかは未特定。「管理された最新」は機構の設計意図であり、全端末で`current/`が必ず存在することの保証ではないと理解されたい |
-| AI ペイン / `@gemini` / `@team` / バックグラウンドエージェントでの Gemini API | ✅ Gemini API キーを設定していれば利用可 |
-| AI ペイン / `@openrouter` での OpenRouter（有人時のみ ―― 無人実行が OpenRouter を経由することはありません） | ✅ OpenRouter API キーを設定していれば利用可。実機ではライブのエンドポイントに到達するところまで確認済み（Settings の入力欄、メンションのルーティング、実際の HTTP 認証エラーが表示されること）―― 本物のキーでストリーミング応答を最後まで受け取るところまでは、まだ試せていません |
-| Shelly の相棒としての表示 — AI ペインの応答では生のプロバイダ名ではなく「Shelly」を既定の話者名として表示し、**メッセージごとのプロバイダータグは一切無し**（2026-08-25に削除。バインド中のプロバイダーはペインヘッダー側に表示）。登録 / 確認の文言も会話調 | ✅ 出荷済み。2026-08-25に実機確認済み |
-| 共有Shelly会話 — 既定のローカル人格のAIペインは`COMPANION_CONVERSATION_KEY` / `resolveAiPaneStoreKey`により一つのスレッドを共有。明示的な外部プロバイダーペインは独立したペイン別履歴を保ち、バインド変更時はシステム通知を表示。さらに、直近の話題に沿ったメッセージを遷移先スレッドへコピーする短い**carry-forward**付き（冪等――繰り返し切り替えても重複しない） | ✅ 出荷済み。carry-forwardは2026-08-25に実機確認済み――コンパニオンに伝えた事実が、プロバイダー切り替え後のGeminiの最初の返信で正しく想起された |
-| コンパニオン／グローバルメモリ — 確認した「覚えて」依頼は`detectCompanionMemoryWrite`を通じて`_global` / `GLOBAL_MEMORY_SCOPE`ノートへ書き込まれ、Shellyとすべてのバックグラウンドエージェントが思い出す。明示的な全エージェント向け表現は`detectGlobalMemoryWrite`で引き続き対応 | ✅ 出荷済み |
-| コンパニオンジャーナル — プロバイダー切り替えのたびに、各会話を`_companion`スコープのノートへ自動蒸留（オンデバイスのローカルLLM、確認ターン不要、コンパニオン限定の想起でバックグラウンドエージェントへは一切ファンアウトしない）。想起時に関連度スコアリング + 上限を設け、注入されるコンテキストが際限なく増えないようにしている。**Settings → Companion Memory**から閲覧・編集・削除でき、登録済みエージェントがゼロでも到達可能 | ✅ 出荷済み。2026-08-25に実機確認済み――ある事実がアプリの完全再起動と*コンパニオンスレッドのワイプ*の両方を生き延び、ジャーナルからのみ復元できた。編集と削除の両方が再読み込み後も保持されることを確認済み |
-| コンパニオン優先のSidebar/Settings既定値 — Sidebarは Tasks/Skills を展開した状態で開き、開発者向けセクション（Repos、File Tree、Device、Worktrees、Quick Launch、Codex Sessions）は**DEVELOPER**区切りの下に折りたたまれる。歯車アイコンのSettingsはコンパニオン関連セクションのみを表示し、単一の**Developer**行からDoctor/Integrations/Webhook Allowlist/Scouter/Resetへ進める。どちらも移行安全（既存インストールのユーザー自身の選択を上書きしない） | ✅ 出荷済み。2026-08-25に実機確認済み――開発者ドリルダウン内のMCP/llama.cppサブ画面もその上に正しく積み重なることを含めて確認 |
-| エージェント完了結果のチャット再登場 — スケジュール実行と **Run Now** の結果を、OS通知と実行履歴に加えて`lib/agent-companion-notice.ts`が共有コンパニオンスレッドへ追加 | ✅ **Run Now**は2026-08-17に実機確認済み。スケジュール実行（AlarmManager）側は同じ仕組み・コード経路で出荷されているが、実際の発火からの再登場はまだ個別に実機観測できていない |
-| AIペインの個別メッセージ削除 — メッセージを長押しして削除を確認すると、`deleteMessage`が解決済みの会話からそのメッセージだけを削除 | ✅ 出荷済み |
-| バックグラウンド / 自律エージェント — `@agent` での登録、AlarmManager による無人実行（getForegroundService）、実行 / 次回 / 前回 / 実行漏れの可視化 | ✅ 結線済み。無人での発火を Z Fold6 上で端から端まで 1 回観測（N=1、発火時点でアプリはキャッシュ済み）。メーカー横断の信頼性は、まだ広くはテストできていません |
-| エージェントの SNS 投稿コネクタ — Bluesky、Discord、Slack、Telegram、Mastodon、Misskey、WordPress | ✅ Bluesky はライブで端から端まで検証済み。残り 6 つは同じコードパスとテストカバレッジに乗っていますが、それぞれ実アカウントに対して発火させたわけではありません |
-| エージェントのタスク明確性検出 — リクエストが曖昧すぎるとき、スケジュールを聞く前に「実際に何をするのか」を尋ねる | ✅ 出荷済み。2026-07-27 に実機で確認済み |
-| LLM-Led Agent Registration（デフォルトON、設定 → Agents）— モデルが固定質問ではなく自分の言葉で多ターンの聞き返しを主導、クラウドプロバイダ優先→ローカルモデル→固定質問の順にフォールバック、webhook/CLIの提案は実際にタイプした文字列そのままの場合にしか採用されない | ✅ 出荷済み。2026-08-03に実機検証済み。デフォルトON化(フラグ操作なし)も実機でCerebrasが実際に成功しログにも記録され、フォールバック不要のまま動作することを確認 |
-| LLM-Led Agent Registration — 複数ステップチェーン化（`steps`）— 会話の結果、複数の手順に分かれると分かった依頼は1本のpromptに潰れず、決定論的登録と同じオーケストレーションエンジンで実際のチェーンとして登録される | ✅ 出荷済み。2026-08-03に実機検証済み(実際の3ステップ登録で「Multi-step (3 steps, each gated)」という正しい順序の確認画面を確認)。特定ステップにツール(Perplexity/ローカル/Codex/Gemini)を名指しするper-stepルーティングと、スケジュール無人発火時にその指定を反映する仕組みはこの検証より後に着地しており、ユニットテストのみで実機未検証 |
-| サブエージェントのファンアウト（`parallelGroup`）— 各ブランチはグループ開始前の分離されたコンテキストを受け取り、結果を宣言順に集約。無人 PlanSpec のブランチは 3 ブランチ上限のセマフォと共有 capability budget のロックを伴って並行ディスパッチされる | ✅ 2026-08-17(build 2237)、3回の実AlarmManager発火で実機確認済み。ブランチが実際に走りコンテキスト分離を維持(serialに切り離された対照ステップは3ブランチ全ての出力を正しく参照できたが、ブランチ同士は互いの出力を一切参照できなかった)、宣言4ブランチのうち4本目は3ブランチ上限で正しくserialへ切り離され、結果は完了順ではなく宣言順で集約、ブランチごとのAPI呼び出しタイムスタンプは互いに数十ms以内・総所要時間もブランチ時間の合計ではなく並列予測値と一致。共有capability budgetのロックのみは今回の実行ではbudget競合が発生しなかったため独立した実証はできていない(tsc/Jestレベルでは広範に検証済み、この1点だけ実機での直接確認が無い) |
-| スキル蒸留 — 成功した実行を再利用可能なグローバルスキルレシピとして保存し、類似タスクで想起・再利用。失敗した実行は次回の呼び出しに注意ヒントとして引き継がれ、検証済みの成功でクリアされる | ✅ 出荷済み |
-| 公式スキルカタログ — Sidebarから配布スキルレシピを閲覧し、検証後に隔離・レビュー経由で取り込む | ✅ 出荷済み。利用可否は公開済みの`skills-catalog-latest`リリースに依存 |
-| スキル自己改善 — 解消済みの「失敗 → 成功」サイクルを証拠として、注意点を決定論的にスキル本文へ昇格。有人実行では確認を求め、無人実行では自動適用して通知し、ワンタップで元に戻せる | ✅ Fable5 実機で複数ラウンド確認済み（versionCode 2179） |
-| 永続エージェントメモリ — 実行をまたいだ事実の書き込み・想起、機密情報を含むノートは強制的にローカル限定 | ✅ 出荷済み |
-| ユーザープロファイル学習 — コマンド/エージェント利用パターンをローカルで観測しAIペインのシステムプロンプトを個人化。端末外に出る内容は[プライバシー](#プライバシー)を参照 | ✅ 出荷済み。2026-08-17にFable5実機で確認済み(View/Edit Facts UI・個別fact削除) |
-| X(Twitter)連携 — OAuth 2.0 PKCE接続、通常ポスト、長文記事(draft→publish) | ✅ 実装・統合テスト済み。課金有効化済みの実アカウントでの発火はまだ未実施。通常ポストは2026-08-06時点で有人・無人(PlanSpecスケジュール)どちらの実行パスからも投稿可能。長文記事は有人のみ |
-| エージェントアクションの Undo — 効果の全体がワークスペースへのファイル書き込みに限られるアクション(現状は`draft`のみ)は、事前承認を待つ代わりに楽観的実行(auto-savepoint → 実行 → 結果にワンタップ Undo を提示)ができる。それ以外のアクション(ネットワーク送信・通知・クロスアプリ操作など)は通常どおり事前承認ゲートを維持する — 「たぶん元に戻せる」ではなく「実際に`git revert`で完全に効果が消える」ことが基準 | ✅ 出荷済み。2026-08-05に実機検証済み |
-| Scouter ウィジェットの RUN（ウィジェット起動のエージェント開始） | ✅ 出荷済み。スケジュールアラームの発火と同じ無人実行ゲートを通ります。クラウド API ベースのエージェントは、オプトインの **Autonomous Cloud** 設定（デフォルト OFF）がクラウド呼び出しを許可しない限り Codex にフォールバックします。これはバグではなく、意図どおりに動いている資格情報ポリシーです。2026-08-17に実機で一連の流れ(ウィジェットタップ→ランチャーuid由来の実PendingIntent→エージェント実行→draft書き出し)を確認済み。なおウィジェットは実行アーティファクト(生成済みの`.sh`かPlanSpecファイル)がディスク上に存在するエージェントしか一覧表示しないため、手置きしたばかりのagent JSONはアプリが一度materializeするまで表示されない点に注意 |
-| Scouter ウィジェットの `@agent` 登録（ASK からの新規エージェント登録、音声入力、オプトインの確認省略登録） | ✅ 出荷済み。2026-07-30 に実機で確認済み — ASK は `@agent` テキストを、直接入力したときと同じ AI ペインの確認フローへ流します。**Widget No-Confirm Register** が OFF なら通常どおり確認し、ON なら即登録して通知が届きます。音声入力はテキスト欄に入るだけで自動送信はされません |
-| サイドバーの SSH プロファイル（鍵ファイル認証、~/.ssh/config のインポート、タップで接続） | ✅ 出荷済み |
-| サイドバーの Quick Launch / Worktrees（ワンタップの CLI ショートカット） | ✅ Codex について出荷済み |
-| アプリ内の Android APK 更新（`android-latest/latest.json`、SHA-256 検証、Package Installer への引き渡し） | ✅ 出荷済み |
-| アプリ内の Codex ランタイム更新（`codex-runtime-latest/codex-runtime.json`、スモークテスト済みのランタイム昇格 / リセット） | ✅ 出荷済み |
-| クラウドストレージ | 🚫 スコープ外 — ターミナルペインから `rclone` を使ってください |
-| アプリアイコン | ✅ 出荷済み |
-| 配布チャンネル（Play ストア / F-Droid） | 🟡 当面は GitHub Releases のみ。現行の Android リリースはローリングの `android-latest` ビルドです |
-| Nacre Bridge — cwd/ブランチ/安全な直近コマンド用語をNacre IMEと共有、Nacre側のDev Mode(自動変換抑制+プログラミング記号タブ) | ✅ 2026-08-31に実機検証済み(コンテキストファイルの書き込み/読み込みサイクル、Nacre側のパッケージフォーカス検出をlogcatで確認) |
-| AI→ターミナル挿入(```bash```フェンス付き返信ブロックをフォーカス中のTerminalペインにワンタップで貼り付け) | ✅ 2026-08-31に実機検証済み |
-| クロスアプリUI自動操作(`app.act`)のレシピ下書きUI(設定 → 開発者向け → Automation: 現在のLINE/X画面をキャプチャしてlaunch/setText/clickのレシピを下書き・保存) | 🔴 2026-08-31、実機で不具合を確認済み — **キャプチャ**ボタンをタップすると常に失敗します。原因はこのボタンがShelly自身のUI内にあり、タップした瞬間にAndroidのフォアグラウンドウィンドウのフォーカスがShellyに移り、Accessibility ServiceがLINE/Xの画面を読み取れなくなるためです。詳細は[既知の制限](#既知の制限)を参照 |
-
-検証チェックリストの全体: [`docs/superpowers/specs/2026-04-13-validation-checklist.md`](docs/superpowers/specs/2026-04-13-validation-checklist.md)
+| コアターミナル — ネイティブPTY、マルチペインレイアウト、AI Editのゴールデンパス、FileTree/git、コマンドパレット | ✅ 出荷済み、広く実機検証済み |
+| バックグラウンド/自律エージェント — `@agent`登録 → AlarmManagerによる無人発火 → 通知 | ✅ 結線済み。無人発火はZ Fold6(N=1)で端から端まで実機確認済み。メーカー横断の信頼性はまだ広くテストできていません |
+| サブエージェントのファンアウト(`parallelGroup`) — 分離されたブランチコンテキスト、無人での並行ディスパッチ | ✅ 2026-08-17に実際の3ブランチ並行AlarmManager発火で実機検証済み |
+| Nacre Bridge — 著者自身のNacre IMEとのライブ端末コンテキスト共有、Nacre側のDev Mode | ✅ 2026-08-31に実機検証済み |
+| エージェントのSNS投稿コネクタ — Bluesky、Discord、Slack、Telegram、Mastodon、Misskey、WordPress、X | ✅ Blueskyはライブで端から端まで検証済み。Xは統合テスト済みだが課金有効化済みの実アカウントでの発火は未実施。残りは同じコードパスに乗っているがそれぞれ実アカウントに対して発火させていません |
+| `app.act`のレシピ下書きキャプチャUI(設定 → 開発者向け → Automation) | 🔴 2026-08-31、実機で不具合を確認済み — [既知の制限](#既知の制限)を参照 |
+| 配布 | 🟡 GitHub Releases(`android-latest`)のみ。Playストア/F-Droidへの掲載はまだありません |
 
 ---
 
@@ -734,25 +471,6 @@ Shelly の核は、普段は別々になっている 3 つのシステム――A
 更新の仕組みも 2 系統に分かれていて、APK リリースがアプリとネイティブのペイロードを更新する一方、
 Codex ランタイムのレーンは SHA-256 検証とスモークテストを経てより速く動けます。
 
-### 画面レイアウト
-
-```mermaid
-block-beta
-  columns 5
-  AB["Agent Bar — レイアウト / ペイン追加 / 検索 / 設定"]:5
-  SB["Sidebar\nリポジトリ, ファイルツリー\nタスク, デバイス"]:1 TP["Terminal Pane\n$ npm run build\nError: missing..."]:2 AP["AI Pane\n「エラーを直して →」\n[hunk を承認]"]:2
-  space:1 BP["Browser Pane\nlocalhost:3000\nYouTube / GitHub"]:2 MP["Preview Pane\nCode / MD / Image"]:2
-  CB["Context Bar — ~/Shelly  main  ↑2  Native"]:5
-
-  style AB fill:#1a1a1a,stroke:#00D4AA,color:#00D4AA
-  style SB fill:#111,stroke:#333,color:#ccc
-  style TP fill:#0a0a0a,stroke:#333,color:#0f0
-  style AP fill:#0a0a0a,stroke:#D4A574,color:#D4A574
-  style BP fill:#0a0a0a,stroke:#333,color:#61AFEF
-  style MP fill:#0a0a0a,stroke:#333,color:#ccc
-  style CB fill:#1a1a1a,stroke:#333,color:#666
-```
-
 ### ペインをまたぐ知能
 
 ```mermaid
@@ -774,56 +492,7 @@ flowchart LR
 
 AI がターミナルを読む。ターミナルが AI を実行する。ユーザーはただ話すだけ。
 
-### AI Edit のゴールデンパス
-
-```mermaid
-flowchart LR
-  FT["FileTree をタップ"] --> OF["openFile()"]
-  OF -->|*.md| MP["Markdown ペイン"]
-  OF -->|それ以外| CT["Preview → Code タブ"]
-  CT -->|AI ボタン| SE["stageAiEdit()"]
-  SE --> AIP["ファイルをコンテキストに入れた AI ペイン"]
-  AIP --> DIFF["アシスタントの unified diff"]
-  DIFF --> IND["InlineDiff — hunk 単位の Accept"]
-  IND --> ASD["acceptStagedDiff()（strict → fuzzy）"]
-  ASD --> WF["writeFileNative() でディスクに書き込み"]
-  WF --> RELOAD["Preview の Code タブが自動リロード"]
-```
-
-各ステップは実在のモジュールです: `lib/open-file.ts`、`lib/ai-edit.ts`、`components/panes/InlineDiff.tsx`、`hooks/use-native-exec.ts`。
-
-### ネイティブ PTY — JNI forkpty
-
-```mermaid
-flowchart TB
-  JS["React Native JS"] -- "Expo Module 呼び出し" --> KT["Kotlin NativeModule"]
-  KT -- "JNI" --> PTY["shelly-pty.c (forkpty)"]
-  KT -- "JNI" --> EXEC["shelly-exec.c (fork+exec+pipe)"]
-  PTY -- "ptmx / setsid" --> SH["シェルプロセス\nbash / zsh / sh"]
-  PTY -- "read/write fd" --> TV["ShellyTerminalView.kt\nKotlin レンダラ"]
-  TV --> VIEW["Android View\nCanvas パス / 任意の GLSurfaceView パス"]
-```
-
-用途の違う 2 つの JNI エントリポイントがあります。**`shelly-pty.c`** は対話シェルを担当し、`/dev/ptmx` を開き、`forkpty` 相当のロジック（`grantpt` + `unlockpt` + `setsid` + `/system/bin/linker64` 経由の `execve`）を実行して、マスター fd を Kotlin に返し、ターミナルビューがそれを読みます。**`shelly-exec.c`** はプログラム的な一発実行（`git status`、`ls`、ファイル I/O、AI ディスパッチのヘルパー）を担当し、素直な `fork` + `exec` + `pipe` を行って `{exitCode, stdout, stderr}` を同期的に返します。読み取りループは EAGAIN を認識して、select の空振りと本物の EOF を区別します（bug #70 の修正）。
-
-TCP なし。ソケットのターミナルサーバーなし。別立ての PTY ヘルパーデーモンなし。シェルは普通に fork された子プロセスとして動き、PTY のマスター fd はアプリが所有して、Kotlin から JNI 経由で直接読みます。
-
-### 実行中のテーマ切り替え
-
-```mermaid
-flowchart LR
-  U["Settings → Font: Shelly"] --> S["settings-store.uiFont"]
-  S --> E["RootLayout の effect"]
-  E --> AP["applyThemePreset()"]
-  AP --> M["Object.assign(colors, palette)"]
-  AP --> P["patchTextRenderOnce()"]
-  AP --> V["theme-version をインクリメント"]
-  V --> R["ShellLayout の key-remount"]
-  R --> UI["すべての Text が新しい fontFamily で再描画"]
-  PTY["ネイティブ PTY"] -. 影響を受けない .- R
-```
-
-`colors` オブジェクトはミュータブルで同一性を保つので、`import { colors as C }` しているすべての箇所がコードの変更なしに新しい値を見ます。フォントの変更は Text のモンキーパッチが担当します。theme-version の key-remount が、描画されるすべての Text をそのパッチに通します。PTY は JS の外にいるので、影響を受けません。
+画面レイアウト図、AI Editのゴールデンパス、ネイティブPTY(JNI forkpty)、実行中のテーマ切り替えの内部実装は[docs/ARCHITECTURE.ja.md](docs/ARCHITECTURE.ja.md)を参照してください。
 
 ---
 
