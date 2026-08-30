@@ -127,15 +127,25 @@ function recentCommands(session: TabSession | undefined): string[] {
  * read side were resolving two different sessions.
  *
  * Mirrors TerminalPane.tsx's own resolution (`paneSessionId ? sessions.find
- * (paneSessionId) ?? globalActiveSession : globalActiveSession`) rather than
- * trusting the slot's `sessionId` blindly — a stale persisted slot pointing
- * at a since-removed session must fall back too, exactly like the pane
- * itself does (Codex review, 2026-08-30). `focusedPaneId` also isn't always
+ * (paneSessionId) ?? globalActiveSession : globalActiveSession`, where
+ * `globalActiveSession` comes from `useActiveSession()`) rather than trusting
+ * the slot's `sessionId` blindly — a stale persisted slot pointing at a
+ * since-removed session must fall back too, exactly like the pane itself
+ * does (Codex review, 2026-08-30). `focusedPaneId` also isn't always
  * mirrored on cold start / multi-pane init, so fall back through
  * `focusedSlot` (the multi-pane store's own index, which init always sets)
  * before falling back to the global session, and require the resolved slot
  * to actually be a 'terminal' tab — an AI/Browser/Markdown slot's leftover
  * `sessionId` (if any) was never the thing recording terminal commands.
+ *
+ * On-device DIAG logging (2026-08-30) caught a second staleness this same
+ * fix needed to handle: terminal-store's `activeSessionId` starts as the
+ * hardcoded `'session-1'` and nothing in the multi-pane session-creation
+ * path ever touches it, so it never matches the real session either. The
+ * pane's own `useActiveSession()` selector already has exactly this
+ * fallback baked in (`sessions.find(...) ?? sessions[0]`) — mirror it here
+ * too, or a stale `activeSessionId` resolves to a real-but-wrong (empty)
+ * session instead of the one real terminal session actually in use.
  */
 function resolveTargetSessionIdFrom(
   focusedPaneId: string | null | undefined,
@@ -154,7 +164,10 @@ function resolveTargetSessionIdFrom(
   ) {
     return slot.sessionId;
   }
-  return globalActiveSessionId;
+  if (sessions.some((s) => s.id === globalActiveSessionId)) {
+    return globalActiveSessionId;
+  }
+  return sessions[0]?.id ?? globalActiveSessionId;
 }
 
 function useTargetSessionId(): string {
