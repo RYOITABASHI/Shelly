@@ -1410,6 +1410,8 @@ const ja: Record<string, string> = {
   'settings.reset_hints_done_toast': '一度きりのヒントが再び表示されるようになります。',
   'settings.profile_learning_label': 'プロファイル学習',
   'settings.profile_learning_desc': 'コマンド・プロジェクト・AI利用傾向を端末内で学習し、提案とAI文脈に使います。',
+  'settings.nacre_bridge_label': 'Nacre連携',
+  'settings.nacre_bridge_desc': 'Shellyが前面表示中、現在のディレクトリ・gitブランチ・安全な最近のコマンド用語(生のコマンドやシークレットは含みません)をNacre IMEと共有し、変換候補の精度を上げます。既定でオン。',
   'settings.app_act_recipe_draft_label': 'App-Actレシピ下書き(ベータ)',
   'settings.app_act_recipe_draft_action': 'キャプチャ',
   'settings.app_act_recipe_draft_desc': '現在の画面(LINEまたはXのみ)をキャプチャして新しいapp.actレシピを下書きします。',

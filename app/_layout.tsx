@@ -55,6 +55,7 @@ import {
 import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/codex-pty-detection';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
+import { useNacreBridge } from '@/hooks/use-nacre-bridge';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getOptionalPack } from '@/lib/optional-packs';
 import { installOptionalPack } from '@/lib/optional-pack-installer';
@@ -249,6 +250,10 @@ export default function RootLayout() {
   // Phase 3 inbound gateway: long-poll Telegram for the authorized chat (no-op
   // unless enabled + token + chat id are configured). Enqueues confirm cards only.
   useTelegramInbound();
+  // Nacre Bridge (feature B): while foregrounded, shares a sanitized slice of
+  // terminal context with the Nacre IME via shared storage. No-op when
+  // settings.nacreBridgeEnabled is off. See hooks/use-nacre-bridge.ts.
+  useNacreBridge();
   const [pendingAgentActionApproval, setPendingAgentActionApproval] =
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);

@@ -208,6 +208,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'customContext', label: 'Custom System Prompt', type: 'string', source: 'custom', description: 'Injected into AI context' },
       { key: 'llmInterpreterEnabled', label: 'LLM Interpreter', type: 'boolean', source: 'settings' },
       { key: 'realtimeTranslateEnabled', label: 'Realtime Translate', type: 'boolean', source: 'settings' },
+      { key: 'nacreBridgeEnabled', label: 'Nacre Bridge', labelKey: 'settings.nacre_bridge_label', type: 'boolean', source: 'settings', description: 'While Shelly is in the foreground, share your current directory, git branch, and safe recent command terms (never raw commands or secrets) with the Nacre IME to improve its conversion suggestions. Default on.', descriptionKey: 'settings.nacre_bridge_desc' },
     ],
   },
   {
