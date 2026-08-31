@@ -6,6 +6,120 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.0.0] - 2026-08-31
+
+### Added
+
+- **"Shelly" as a persistent companion.** The default local-persona AI Pane
+  now presents as one continuous companion named Shelly instead of a
+  provider-branded chat — no per-message provider tag on its replies (the
+  bound provider shows in the pane header instead). Its conversation follows
+  you across AI panes and provider switches, with a short carry-forward of
+  recent context into the destination thread on a switch, and companion-first
+  Sidebar/Settings defaults (Tasks/Skills expanded, developer sections
+  collapsed under one **Developer** row).
+- **Companion journal.** Every conversation auto-distills into a
+  `_companion`-scope memory note on each provider switch (on-device, no
+  confirm turn required), relevance-scored and capped at recall time,
+  browsable/editable/deletable from Settings → Companion Memory.
+- **Sub-agent fan-out (`parallelGroup`).** A multi-step agent can declare
+  branches that run in an isolated context from each other, aggregate in
+  declared order, and — for unattended PlanSpec runs — actually dispatch
+  concurrently (3-branch semaphore, locked shared capability budget),
+  mirroring Hermes's sub-agent delegation model.
+- **Skill self-improvement.** A resolved failure → success cycle
+  deterministically promotes the caution into the skill body; attended runs
+  ask for confirmation, unattended runs auto-apply with a one-tap revert.
+  Paired with a conservative skill curator (duplicate-merge proposals,
+  promotion, archival) and the skills catalog expanding from 4 to 21
+  importable recipes.
+- **Memory recall upgrades.** BM25 + recency-decay scoring for skill/memory
+  recall, plus an optional embedding-based re-rank end-to-end when a local
+  embedding-capable model is running.
+- **Agent action Undo.** A run whose only action is a `draft` write into the
+  local `agent-output` workspace can run optimistically (auto-savepoint →
+  execute → one-tap "元に戻す" on the result) instead of blocking on
+  pre-approval — narrowly scoped, opt-in, off by default.
+- **Browser-pane agent action.** An agent can click, fill, or extract text
+  from the page already open in a Browser pane — a closed operation set (no
+  navigation, no arbitrary script injection), gated to an explicit
+  page-URL allowlist and a per-action approval tap every time.
+- **Nacre Bridge.** While Shelly is foregrounded, it shares sanitized live
+  terminal context (cwd, git branch, a handful of safe recent-command terms)
+  with the author's own Nacre Android IME so its kana-kanji conversion can
+  lean toward what you're actually doing.
+- **AI → Terminal insert.** Any AI-chat reply's fenced ` ```bash ` block gets
+  an **Insert** button — tap it and the code lands in the focused Terminal
+  pane's input line (no auto-Enter), opening a new terminal and queuing the
+  insert if none is open.
+- **X (Twitter) social-post connector** and simultaneous multi-platform
+  posting from a single agent utterance ("post this to Bluesky and X").
+- **OpenRouter** wired into the agent executor (attended-only).
+- **Agent Runs pane and Memory Workbench pane.**
+- **Optional tool packs** — dormant, on-demand infrastructure for
+  downloading extra CLI tools after install instead of bundling everything
+  up front.
+- Widget agent registration gained voice input and an opt-in no-confirm
+  fast path (`Widget No-Confirm Register`, off by default).
+
+### Changed
+
+- The default per-run action-approval mode flipped to **manual** (a human
+  "Runtime Review" tap is now required by default for draft/notify/webhook/
+  cli/intent/dm-reply actions; opt back into auto-approve in Settings).
+- Settings split into companion-relevant and developer surfaces, with a
+  single **Developer** row leading to Doctor/Integrations/Webhook
+  Allowlist/Scouter/Reset.
+
+### Removed
+
+- **`app.act` (cross-app UI automation via Android Accessibility Service).**
+  Implemented as an experimental Phase 1 on 2026-08-29 (LINE messaging and X
+  posting, driven through a package-allowlisted recipe walker), it was
+  removed entirely two days later after on-device testing surfaced three
+  distinct structural bugs in one session — a cold-start timing miss, a
+  matcher that could ambiguously bind to multiple screen elements, and a
+  fundamentally unfixable focus-stealing bug in the recipe-capture UI
+  (tapping Shelly's own Capture button hands Android's foreground-window
+  focus to Shelly before the Accessibility Service can read the target
+  app's screen). Accessibility-driven UI automation proved structurally
+  fragile against any change in the target app's own screen, even scoped to
+  just two apps. `AGENT_SCRIPT_VERSION` / `CURRENT_SCRIPT_VERSION` bumped to
+  59 in lockstep so a stale on-disk script from a previously-registered
+  autonomous `app-act` agent fails loudly on its next run instead of hanging
+  on a silently-dropped approval request. Reviewed independently by Fable5
+  and Codex, no P0s found. Social-post connectors (including X) remain the
+  supported way to publish an agent's output to another platform.
+
+### Fixed
+
+Security and correctness fixes from this window's extensive on-device QA
+passes, among many smaller ones: unattended agents now fail closed on a
+rollback secret scan and on a secret-bearing skill body; command-safety
+scanning is quote-aware; boundary-policy lexical bypasses are closed;
+notification-triggered agents disclose an unset sender allowlist instead of
+silently accepting any sender; several Settings-panel scroll/gesture
+conflicts (opacity sliders and a percent-height ScrollView eating vertical
+scroll gestures) were root-caused and fixed across multiple rounds; the
+Sidebar's "+ Add Repository" self-heals after a focus race that could leave
+its modal window stuck invisible; `tryAddRepo` no longer fail-opens on a
+ghost/non-git path; and a new single-source-of-truth schema-parity test
+(`__tests__/agent-action-type-schema-parity.test.ts`) now catches any future
+drift between the TS, Kotlin, and bundled-JS copies of the agent
+action-type allowlist before it can silently ship again.
+
+### Note
+
+This is a "highlights" reconstruction, not an exhaustive log: 352 commits
+landed between the `v7.5.5` and `v8.0.0` tags, most of them as part of a
+parallel-squad, on-device-QA-driven development style (many small
+`fix`/`docs(deferred)` commits per feature) that this file didn't keep pace
+with in real time — the same gap `v7.0.0`'s entry above already
+acknowledges for its own release window. `docs/superpowers/DEFERRED.md` is
+the detailed, contemporaneous engineering log this project actually
+maintained throughout this period, including every Fable5/Codex review
+round and on-device verification result.
+
 ## [7.5.5] - 2026-08-03
 
 ### Added
