@@ -29,8 +29,8 @@
  *     string accepted) — it may only propose a natural-language time phrase,
  *     which is then re-validated through parseSchedule(), the SAME
  *     whitelisted-cron-shape gate the deterministic parser itself uses.
- *   - The LLM is NEVER trusted to author a webhook URL, a cli command, an
- *     app-act recipe, or a social-post connector id — those need structured
+ *   - The LLM is NEVER trusted to author a webhook URL, a cli command,
+ *     or a social-post connector id — those need structured
  *     fields (a URL, a shell command, a fixed recipe id, a connector id) an
  *     LLM guess could turn into a real security/privacy hazard. The only
  *     action types this module will ever accept DIRECTLY from the LLM are
@@ -159,7 +159,7 @@ function looksLikeUnresolvedPostIntent(draft: ParsedAgentDraft): boolean {
  *       found NEITHER a confident schedule NOR any explicit action signal —
  *       i.e. `draft.action` is nothing more than parseAgentNL's unconditional
  *       final default (`{ type: 'draft' }` when nothing matched at all). A
- *       single 'notify'/'webhook'/'cli'/'app-act'/'social-post' action.type is
+ *       single 'notify'/'webhook'/'cli'/'social-post' action.type is
  *       always treated as explicit — those can only ever come from
  *       detectAction()'s own keyword/URL branches, never its default. A
  *       'draft' action.type needs the extra keyword check, because 'draft' is
@@ -278,7 +278,7 @@ export function isCapabilityQuestionForAgentFlow(text: string | null | undefined
 // ── §3: LLM structured-field extraction ─────────────────────────────────
 
 /** Fields this module will accept from the LLM. Deliberately narrow — see
- *  this module's own doc comment for why webhook/cli/app-act/social-post are
+ *  this module's own doc comment for why webhook/cli/social-post are
  *  never LLM-authorable here. */
 export interface AgentLlmExtraction {
   /** Short display name for the agent. */
@@ -437,7 +437,7 @@ function readValidatedString(
  * output is never trusted blind" design. `actionType` in particular is
  * validated against a closed union (`'draft' | 'notify'`) — any other
  * string (a hallucinated type name, a real-but-dangerous type like
- * 'webhook'/'cli'/'app-act', garbage) is silently dropped rather than
+ * 'webhook'/'cli', garbage) is silently dropped rather than
  * merged, so a rogue/misbehaving model can never author a privileged action
  * type through this path. "taskClear" is validated as a strict boolean (any
  * other type — string "true", number, missing — leaves it unset, which
@@ -470,7 +470,7 @@ export function parseAgentLlmExtractionResponse(raw: string): AgentLlmExtraction
   if (actionTypeRaw === 'draft' || actionTypeRaw === 'notify') {
     out.actionType = actionTypeRaw;
   }
-  // Any other actionType value (webhook/cli/app-act/social-post/hallucinated
+  // Any other actionType value (webhook/cli/social-post/hallucinated
   // garbage) is intentionally left unset — see this function's own doc
   // comment. mergeLlmExtractionIntoDraft never changes draft.action when
   // out.actionType is undefined.

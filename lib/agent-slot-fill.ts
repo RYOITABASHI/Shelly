@@ -182,7 +182,7 @@ export function nextMissingSlot(
       question: strings['slot_fill.question_output_path'],
     };
   }
-  const autonomousActionTypes = new Set(['webhook', 'app-act', 'social-post', 'api-call', 'cli', 'dm-reply']);
+  const autonomousActionTypes = new Set(['webhook', 'social-post', 'api-call', 'cli', 'dm-reply']);
   if (
     autonomousActionTypes.has(draft.action.type) &&
     draft.scheduleConfident === true &&

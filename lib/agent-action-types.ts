@@ -42,7 +42,6 @@ export const ALL_APPROVAL_ACTION_TYPES = [
   'cli',
   'intent',
   'dm-reply',
-  'app-act',
   'api-call',
   'social-post',
   'browser-pane',
@@ -60,15 +59,14 @@ export type ApprovalActionType = (typeof ALL_APPROVAL_ACTION_TYPES)[number];
  * bucket): a one-tap Allow calls AgentActionApprovalBridge.writeHumanReply
  * directly with no RN round trip, so any action type whose accept path
  * needs to actually DO something beyond that (fire an intent, send a DM,
- * run an app-act recipe, click a browser element, or — social-post —
- * irreversibly publish content the user never saw resolved) must force the
- * human through the full review screen first.
+ * click a browser element, or — social-post — irreversibly publish content
+ * the user never saw resolved) must force the human through the full review
+ * screen first.
  */
 export const REVIEW_REQUIRED_ACTION_TYPES = [
   'cli',
   'intent',
   'dm-reply',
-  'app-act',
   'browser-pane',
   'social-post',
 ] as const;

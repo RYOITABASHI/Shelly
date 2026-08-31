@@ -59,12 +59,12 @@
     },
     {
       "name": "social-post-drafting",
-      "description": "Draft a platform-appropriate social/chat post before an agent's Social Post or App-Act action publishes it, instead of posting the raw run output.",
-      "version": "1.0.0",
+      "description": "Draft a platform-appropriate social/chat post before an agent's Social Post action publishes it, instead of posting the raw run output.",
+      "version": "1.0.1",
       "tags": ["agent", "social", "drafting"],
       "contentAssetName": "social-post-drafting.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/social-post-drafting.SKILL.md",
-      "sha256": "042b6c2b8363e1f1489e8a3ccf11a8cfe4e556fb8ed2212e310c013d9f790a04"
+      "sha256": "eb41a34b2a326216e51ed314d55b7343caff12324f1b5689e42b441acbe1f8c7"
     },
     {
       "name": "repo-maintenance-sweep",
@@ -87,11 +87,11 @@
     {
       "name": "browser-change-watch",
       "description": "Design a browser-pane page-change monitoring agent that alerts on a real change, not on every reload's incidental noise.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "tags": ["browser", "agent", "monitoring"],
       "contentAssetName": "browser-change-watch.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/browser-change-watch.SKILL.md",
-      "sha256": "33cc2a562d409e9564db9afc98e5fcc4c4dd1ebaf39a3ace93f9b681ab8ce335"
+      "sha256": "e592f80545029c6b8be8b1f2684365055d52285a6043e4fe2fe2dc9cfb6467f9"
     },
     {
       "name": "privacy-local-only-analysis",
@@ -101,15 +101,6 @@
       "contentAssetName": "privacy-local-only-analysis.SKILL.md",
       "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/privacy-local-only-analysis.SKILL.md",
       "sha256": "552df7faac6c0d78d91a7efb3c62c64264923b81ae895b4279d61b17a24727d8"
-    },
-    {
-      "name": "app-act-flow-design",
-      "description": "Design a safe, narrowly-scoped App-Act recipe (cross-app UI automation) before registering it for unattended use.",
-      "version": "1.0.0",
-      "tags": ["agent", "app-act", "safety"],
-      "contentAssetName": "app-act-flow-design.SKILL.md",
-      "contentUrl": "https://github.com/RYOITABASHI/Shelly/releases/download/skills-catalog-latest/app-act-flow-design.SKILL.md",
-      "sha256": "1d2172d5e5e3b7aa42ab0e85fd44b2932f52a44e80a37e85e4e92cd5781da14f"
     },
     {
       "name": "code-review-checklist",

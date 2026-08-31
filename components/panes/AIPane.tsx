@@ -173,7 +173,7 @@ const MessageBubble = React.memo(function MessageBubble({
   // replaces the bubble text; once confirmed/cancelled it falls through to the
   // normal assistant text render (which now holds the result line).
   if (message.agentDraft && message.agentCardState === 'pending') {
-    // Phase 7: app-act / tool-pinned-orchestration drafts render chat-native —
+    // Phase 7: social-post / tool-pinned-orchestration drafts render chat-native —
     // the plan is plain assistant text (message.content, set by
     // summarizeAgentDraftAsText at creation) with a trailing inline
     // Confirm/Cancel row, NOT a card. Everything else keeps AgentConfirmCard.

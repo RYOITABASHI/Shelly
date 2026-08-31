@@ -39,16 +39,14 @@ data class AgentActionApprovalRequest(
     val dmPairingId: String? = null,
     val dmPairingLabel: String? = null,
     val dmReplyText: String? = null,
-    val appActRecipeId: String? = null,
-    val appActParamsResolved: String? = null,
     /** browser-pane (2026-08-04): drives a LIVE, on-screen Browser Pane
      *  WebView via lib/browser-pane-automation.ts's closed click/fill/
      *  extractText set. browserPaneValue is the ALREADY {{result}}-resolved
      *  fill value (mirrors dmReplyText/intentShareText); browserPaneSelector
      *  is never resolved (it is a CSS selector, not content).
-     *  browserPaneUrlAllowlist carries a JSON-encoded string[], mirroring
-     *  appActParamsResolved's plain-string convention -- decoded on the RN
-     *  side by lib/agent-browser-pane-review.ts, never parsed natively. */
+     *  browserPaneUrlAllowlist carries a JSON-encoded string[] -- decoded on
+     *  the RN side by lib/agent-browser-pane-review.ts, never parsed
+     *  natively. */
     val browserPaneActionKind: String? = null,
     val browserPaneSelector: String? = null,
     val browserPaneValue: String? = null,
@@ -60,21 +58,8 @@ data class AgentActionApprovalRequest(
      *  intent/dm-reply — the only two types that still always reach this
      *  bridge regardless of mode (they can only ever fire via RN) — to
      *  resolve the approval itself with no human tap, instead of surfacing
-     *  the Review UI. Native does NOT act on this field; app-act's own
-     *  narrower [autoFireTrusted] is the only flag native consumes. */
-    val autoAccept: Boolean = false,
-    /** app-act's OWN narrower Tier-B trust flag (docs/superpowers/DEFERRED.md,
-     *  resolved 2026-07-14): true only when the executor's own
-     *  trustedNativeLowRiskAction check passed (agent.autonomous===true AND
-     *  tool.type==='local', the SAME registration-time consent draft/notify's
-     *  existing native fast-path already required). Deliberately NOT the
-     *  same signal as [autoAccept] — a wrong external post is not equivalent
-     *  in risk to a local draft/CLI call. Consumed ONLY by
-     *  AgentRuntime.kt's action-approval notifier for actionType=="app-act",
-     *  which then fires AppActExecutor directly and writes an auto reply via
-     *  [AgentActionApprovalBridge.writeAutoApprovedReply] — no human tap, no
-     *  RN round trip. */
-    val autoFireTrusted: Boolean = false
+     *  the Review UI. Native does not act on this field. */
+    val autoAccept: Boolean = false
 ) {
     val key: String get() = listOf(
         runId,
@@ -210,14 +195,11 @@ object AgentActionApprovalBridge {
         "dmPairingId" to request.dmPairingId,
         "dmPairingLabel" to request.dmPairingLabel,
         "dmReplyText" to request.dmReplyText,
-        "appActRecipeId" to request.appActRecipeId,
-        "appActParamsResolved" to request.appActParamsResolved,
         "browserPaneActionKind" to request.browserPaneActionKind,
         "browserPaneSelector" to request.browserPaneSelector,
         "browserPaneValue" to request.browserPaneValue,
         "browserPaneUrlAllowlist" to request.browserPaneUrlAllowlist,
         "autoAccept" to request.autoAccept,
-        "autoFireTrusted" to request.autoFireTrusted,
     )
 
     private fun fromJson(raw: JSONObject, requestSha256: String?): AgentActionApprovalRequest? {
@@ -236,7 +218,7 @@ object AgentActionApprovalBridge {
         // entirely under 'auto'); under Manual/per-action-approval mode this
         // was a permanent hang/timeout with no notification ever shown.
         val actionType = raw.optString("actionType").trim().takeIf {
-            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "app-act" || it == "social-post" || it == "browser-pane" || it == "api-call"
+            it == "draft" || it == "notify" || it == "webhook" || it == "cli" || it == "intent" || it == "dm-reply" || it == "social-post" || it == "browser-pane" || it == "api-call"
         } ?: return null
         return AgentActionApprovalRequest(
             runId = runId,
@@ -261,14 +243,11 @@ object AgentActionApprovalBridge {
             dmPairingId = raw.optString("dmPairingId").trim().takeIf { it.isNotBlank() },
             dmPairingLabel = raw.optString("dmPairingLabel").trim().takeIf { it.isNotBlank() },
             dmReplyText = raw.optString("dmReplyText").takeIf { it.isNotBlank() },
-            appActRecipeId = raw.optString("appActRecipeId").trim().takeIf { it.isNotBlank() },
-            appActParamsResolved = raw.optString("appActParamsResolved").takeIf { it.isNotBlank() },
             browserPaneActionKind = raw.optString("browserPaneActionKind").trim().takeIf { it.isNotBlank() },
             browserPaneSelector = raw.optString("browserPaneSelector").takeIf { it.isNotBlank() },
             browserPaneValue = raw.optString("browserPaneValue").takeIf { it.isNotBlank() },
             browserPaneUrlAllowlist = raw.optString("browserPaneUrlAllowlist").takeIf { it.isNotBlank() },
-            autoAccept = raw.optBoolean("autoAccept", false),
-            autoFireTrusted = raw.optBoolean("autoFireTrusted", false)
+            autoAccept = raw.optBoolean("autoAccept", false)
         )
     }
 
@@ -308,68 +287,6 @@ object AgentActionApprovalBridge {
             .put("runId", runId)
             .put("decision", decision)
             .put("by", "human")
-            .put("requestSha256", requestSha256)
-            .put("requestTs", requestTs)
-            .put("sigAlg", SIGNATURE_ALGORITHM)
-            .put("signature", signature)
-            .put("ts", Instant.now().toString())
-        tmp.writeText(payload.toString() + "\n")
-        if (!tmp.renameTo(reply)) {
-            tmp.delete()
-            error("failed to publish action approval reply")
-        }
-        return reply
-    }
-
-    /**
-     * app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md, resolved
-     * 2026-07-14). Writes an accept/decline reply for a request that was
-     * NEVER disclosed to a human — the request's own `autoFireTrusted` field
-     * (set by the executor from the SAME registration-time consent
-     * draft/notify's native fast-path already required — see
-     * trustedPlanLaunch/ACTION_APP_ACT_AUTO_FIRE_TRUSTED) is the trust
-     * decision, made by the app's own executor script/plan, not by this
-     * function. This intentionally bypasses the human-nonce dance
-     * [writeHumanReply] enforces (registerActionNonce / pendingActionNonces)
-     * — there is no PendingIntent/notification tap to bind a nonce to, and
-     * requiring one here would make an internal native decision indistinguishable
-     * from a spoofed human action. Still verifies the request is the CURRENT
-     * one on disk (matching requestSha256, not expired) so a stale/superseded
-     * request can never be auto-resolved. Caller (AgentRuntime.kt's
-     * action-approval notifier) MUST have already fired the recipe (on
-     * accept) before calling this, mirroring the RN accept handler's
-     * "fire-then-reply" invariant.
-     */
-    fun writeAutoApprovedReply(
-        context: Context,
-        runId: String,
-        decision: String,
-        expectedRequestSha256: String
-    ): File {
-        require(decision == "accept" || decision == "decline") { "invalid action decision" }
-        val request = requireCanonicalChild(requestFile(context, runId), requestDir(context))
-        require(request.isFile) { "action approval request is no longer pending" }
-        val bytes = request.readBytes()
-        val requestJson = JSONObject(bytes.toString(Charsets.UTF_8))
-        require(requestJson.optString("runId") == runId) { "action approval anchor mismatch" }
-        require(requestJson.optString("actionType") == "app-act") { "auto-fire reply is only valid for app-act" }
-        require(requestJson.optBoolean("autoFireTrusted", false)) { "request was not marked autoFireTrusted" }
-        val requestSha256 = sha256Hex(bytes)
-        require(requestSha256 == expectedRequestSha256) {
-            "action approval no longer matches the trusted request read"
-        }
-        val expiresAt = requestJson.optLong("expiresAt")
-        require(expiresAt <= 0L || System.currentTimeMillis() <= expiresAt) { "action approval expired" }
-        val requestTs = requestJson.optString("ts")
-        val signature = sign(signatureMessage(runId, decision, requestTs, requestSha256))
-
-        val reply = requireCanonicalChild(replyFile(context, runId), replyDir(context))
-        reply.parentFile?.mkdirs()
-        val tmp = File(reply.parentFile, ".${reply.name}.${android.os.Process.myPid()}.${System.nanoTime()}.tmp")
-        val payload = JSONObject()
-            .put("runId", runId)
-            .put("decision", decision)
-            .put("by", "auto")
             .put("requestSha256", requestSha256)
             .put("requestTs", requestTs)
             .put("sigAlg", SIGNATURE_ALGORITHM)

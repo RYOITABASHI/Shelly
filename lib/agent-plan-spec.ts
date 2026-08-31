@@ -44,7 +44,7 @@ export type PlanToolType =
   | 'groq'
   | 'unsupported';
 
-export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'api-call' | 'social-post' | 'browser-pane' | '__suppressed__' | 'unsupported';
+export type PlanActionType = 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'api-call' | 'social-post' | 'browser-pane' | '__suppressed__' | 'unsupported';
 
 export interface PlanAction {
   type: PlanActionType;
@@ -55,8 +55,6 @@ export interface PlanAction {
   intentShareText?: string;
   dmPairingId?: string;
   dmReplyText?: string;
-  appActRecipeId?: string;
-  appActParams?: Record<string, string>;
   apiCall?: AgentApiCallConfig;
   /** social-post (2026-07-22): platform/connectorId/text only — the
    *  connector's host/meta + secrets are resolved by the executor at run
@@ -66,7 +64,7 @@ export interface PlanAction {
    *  browserPaneUrlAllowlist verbatim — see store/types.ts's doc comment for
    *  the attended-only rationale. scripts/shelly-plan-executor.js's own
    *  unattendedPreflightFailure refuses this type unattended exactly like
-   *  intent/dm-reply, with NO app-act-style Tier-B allowance. */
+   *  intent/dm-reply, with NO Tier-B allowance. */
   browserPaneAction?:
     | { kind: 'click'; selector: string }
     | { kind: 'fill'; selector: string; value: string }
@@ -414,12 +412,6 @@ function toPlanAction(
         type: 'dm-reply',
         dmPairingId: action?.dmPairingId,
         dmReplyText: action?.dmReplyText,
-      };
-    case 'app-act':
-      return {
-        type: 'app-act',
-        appActRecipeId: action?.appActRecipeId,
-        appActParams: action?.appActParams,
       };
     case 'api-call':
       return { type: 'api-call', apiCall: action?.apiCall };

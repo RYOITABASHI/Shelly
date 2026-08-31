@@ -45,7 +45,6 @@ const IRREVERSIBLE: AgentActionType[] = [
   'cli',
   'intent',
   'dm-reply',
-  'app-act',
   'api-call',
   'social-post',
 ];

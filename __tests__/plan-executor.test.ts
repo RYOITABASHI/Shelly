@@ -371,10 +371,10 @@ describe('shelly-plan-executor host smoke', () => {
   // action types (trust flags were never part of .sh's request_and_wait_
   // approval logic for draft/notify/webhook/cli, only for the PlanSpec
   // executor's own narrower pre-fix gate). trustedNativeLowRiskAction still
-  // matters for app-act (see plan-executor-approval-default.test.ts's
-  // dedicated app-act trust coverage, including its own tool-tampering
-  // defense test) — it is simply no longer consulted for draft's own
-  // unattended check.
+  // still matters for draft/notify's own native fast-path trust gate (see
+  // plan-executor-approval-default.test.ts's dedicated coverage, including
+  // its own tool-tampering defense test) — it is simply no longer consulted
+  // for THIS unattended check.
   it('fails closed before model IO for unattended draft runs when approval is required (requireActionApproval:true, the makePlan default)', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);

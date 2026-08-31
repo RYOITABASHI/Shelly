@@ -444,7 +444,7 @@ describe('mergeConversationalExtractionIntoDraft', () => {
     expect(rejectedFields).toEqual(['actionType']);
   });
 
-  it.each(['cli', 'app-act', 'api-call', 'intent', 'dm-reply', 'publish', 'DRAFT', ''])(
+  it.each(['cli', 'api-call', 'intent', 'dm-reply', 'publish', 'DRAFT', ''])(
     'IGNORES the non-allowlisted actionType %p',
     (bad) => {
       const draft = baseDraft();
@@ -1153,7 +1153,7 @@ describe('mergeConversationalExtractionIntoDraft — Phase 4 high-risk actions',
   // ── (A) flag OFF: byte-identical to Phase 0-3 ──
   //
   // The pre-existing rejection tests above ('IGNORES actionType "webhook"' and
-  // the it.each over 'cli', 'app-act', ...) are deliberately left UNMODIFIED —
+  // the it.each over 'cli', 'api-call', ...) are deliberately left UNMODIFIED —
   // they call the 2-arg form and must keep passing untouched. These add the
   // case those cannot cover: a full high-risk proposal, payload and all,
   // arriving while the flag is off or explicitly false.
@@ -1404,8 +1404,8 @@ describe('mergeConversationalExtractionIntoDraft — Phase 4 high-risk actions',
     expect(rejectedFields).toEqual([]);
   });
 
-  it('still rejects app-act / api-call / intent / dm-reply even with the high-risk flag ON', () => {
-    for (const bad of ['app-act', 'api-call', 'intent', 'dm-reply', 'WEBHOOK', 'Cli']) {
+  it('still rejects api-call / intent / dm-reply even with the high-risk flag ON', () => {
+    for (const bad of ['api-call', 'intent', 'dm-reply', 'WEBHOOK', 'Cli']) {
       const draft = baseDraft();
       const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
         draft,
@@ -1686,7 +1686,7 @@ describe('mergeConversationalExtractionIntoDraft — Phase 6 steps', () => {
     const { draft: out, rejectedFields } = mergeConversationalExtractionIntoDraft(
       draft,
       {
-        actionType: 'app-act',
+        actionType: 'webhook',
         steps: ['調べる', 'webhookに送る', 'シェルコマンドを実行する'],
       },
       noConnectors,

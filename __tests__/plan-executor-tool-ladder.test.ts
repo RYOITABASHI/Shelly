@@ -440,8 +440,8 @@ describe('requestModelContentWithLadder — never mutates its plan argument (3rd
   // A successful ladder retry must NOT change what trustedNativeLowRiskAction
   // sees as `plan.tool.type` — that function compares it against native's own
   // `--trusted-tool-type` (fixed at launch time for the ORIGINAL primary tool
-  // native already vouched for) to decide whether an unattended app-act/
-  // draft/notify run may auto-fire without a fresh approval wait. Mutating
+  // native already vouched for) to decide whether an unattended draft/notify
+  // run may auto-fire without a fresh approval wait. Mutating
   // `plan.tool` to the retry candidate would make a run that succeeded via
   // the ladder silently fail that check — this was the actual bug an earlier
   // cut of this feature shipped (`plan = Object.assign({}, plan, { tool:
@@ -466,7 +466,7 @@ describe('requestModelContentWithLadder — never mutates its plan argument (3rd
     const plan = {
       agent: { id: 'agent-trust-check' },
       prompt: 'hi',
-      action: { type: 'app-act', appActRecipeId: 'x.post' },
+      action: { type: 'notify' },
       tool: originalToolObject,
       toolLadder: [{ type: 'perplexity', label: 'Perplexity', model: 'retry', authRef: 'perplexity' }],
       limits: { timeoutSeconds: 5 },
@@ -489,10 +489,9 @@ describe('requestModelContentWithLadder — never mutates its plan argument (3rd
 
     const trustedArgs = {
       'trusted-autonomous-agent-id': 'agent-trust-check',
-      'trusted-autonomous-action': 'app-act',
+      'trusted-autonomous-action': 'notify',
       'trusted-tool-type': 'gemini-api',
-      'trusted-app-act-recipe-id': 'x.post',
     };
-    expect(executorModule.trustedNativeLowRiskAction(trustedArgs, plan, 'app-act')).toBe(true);
+    expect(executorModule.trustedNativeLowRiskAction(trustedArgs, plan, 'notify')).toBe(true);
   });
 });

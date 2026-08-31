@@ -203,9 +203,9 @@ const en: Record<string, string> = {
   // per docs/superpowers/DEFERRED.md's 2026-07-29 entry, that sentence was to
   // be dropped in the SAME commit that wires the undo route, never before.
   'agents.optimistic_writes': 'Optimistic Writes',
-  'agents.optimistic_writes_hint': 'Draft saves into the local agent-output folder run immediately behind an automatic savepoint instead of waiting for an approval tap, with an "Undo" button on the result if you change your mind. cli / notify / webhook / social-post / dm-reply / app-act, and Obsidian or custom output, still require approval. Undo only works while the app stays running — it does not survive a restart.',
+  'agents.optimistic_writes_hint': 'Draft saves into the local agent-output folder run immediately behind an automatic savepoint instead of waiting for an approval tap, with an "Undo" button on the result if you change your mind. cli / notify / webhook / social-post / dm-reply, and Obsidian or custom output, still require approval. Undo only works while the app stays running — it does not survive a restart.',
   'agents.optimistic_writes_consent_title': 'Run workspace drafts without approval',
-  'agents.optimistic_writes_consent_body': 'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• The chat bubble for that run gets an "Undo" button that reverts the file write — available only for THIS app session (it does not survive a restart).\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n\nEnable?',
+  'agents.optimistic_writes_consent_body': 'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• The chat bubble for that run gets an "Undo" button that reverts the file write — available only for THIS app session (it does not survive a restart).\n• cli / notify / webhook / social-post / dm-reply — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n\nEnable?',
   'agents.optimistic_writes_consent_enable': 'Enable',
   // Rollback ("元に戻す") affordance itself — components/panes/
   // AgentUndoButton.tsx, rendered by AIPane.tsx's MessageBubble on an
@@ -225,7 +225,7 @@ const en: Record<string, string> = {
   'agents.widget_noconfirm': 'Widget No-Confirm Register',
   'agents.widget_noconfirm_hint': 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately, without the in-app confirmation step, and posts a notification saying what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms as usual. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.',
   'agents.widget_noconfirm_consent_title': 'Register widget agents without confirmation',
-  'agents.widget_noconfirm_consent_body': 'This covers ONE thing: an "@agent …" command entered in the home-screen widget\'s ASK dialog.\n\n• It registers immediately — the normal in-app confirmation bubble is skipped.\n• A notification reports each registration (name + schedule) right away.\n• "@agent" typed in the AI Pane is NOT affected and still confirms.\n• Commands with an unclear schedule, assumed values, or external-posting actions (social-post / app-act) still open the normal in-app flow.\n• Per-run action approval, command-safety and the secret scan are unchanged.\n\nEnable?',
+  'agents.widget_noconfirm_consent_body': 'This covers ONE thing: an "@agent …" command entered in the home-screen widget\'s ASK dialog.\n\n• It registers immediately — the normal in-app confirmation bubble is skipped.\n• A notification reports each registration (name + schedule) right away.\n• "@agent" typed in the AI Pane is NOT affected and still confirms.\n• Commands with an unclear schedule, assumed values, or external-posting actions (social-post) still open the normal in-app flow.\n• Per-run action approval, command-safety and the secret scan are unchanged.\n\nEnable?',
   'agents.widget_noconfirm_consent_enable': 'Enable',
   // Posted after a widget-originated registration completed without the
   // confirm step ("act immediately, notify after" — mirrors the unattended
@@ -277,9 +277,6 @@ const en: Record<string, string> = {
   'agentcard.action_cli': 'command',
   'agentcard.action_intent': 'App / Share',
   'agentcard.action_dm-reply': 'DM reply',
-  'agentcard.action_app-act': 'App action',
-  'agentcard.appact_x_warning': 'This will auto-post the run result to X (Twitter) every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
-  'agentcard.appact_generic_warning': 'This will drive another app automatically every time this agent runs — there is no separate approval prompt at run time, so review carefully before confirming.',
   // Social platform posting (Track B) — dispatch itself lives elsewhere;
   // this card only authors {connectorId, text} against a pre-registered
   // connector. See social_connectors.* for the Settings registration UI.
@@ -414,7 +411,7 @@ const en: Record<string, string> = {
   'schedulereadiness.samsung_action': 'Open battery settings',
   'schedulereadiness.dismiss': 'Got it',
 
-  // ── Chat-native agent confirmation (Phase 7) — used for app-act / tool-pinned
+  // ── Chat-native agent confirmation (Phase 7) — used for social-post / tool-pinned
   // orchestration instead of the card: this summary text plus a Confirm/Cancel pair.
   'agentplan.summary_name': "I'll call this: {{name}}",
   'agentplan.summary_schedule': 'Schedule: {{schedule}}',
@@ -433,7 +430,6 @@ const en: Record<string, string> = {
   'agentplan.action_label_cli': 'run a command',
   'agentplan.action_label_intent': 'open an app',
   'agentplan.action_label_dm-reply': 'send a DM reply',
-  'agentplan.action_label_app-act': 'take an app action',
   'agentplan.action_label_api-call': 'make an API call',
   // Computed but unused in practice (the browser-pane switch case in
   // actionText() always returns its own dedicated URL/selector line
@@ -444,9 +440,6 @@ const en: Record<string, string> = {
   'agentplan.memory_note': 'Will remember after running: {{fact}}',
   'agentplan.skill_note': 'Reuses the existing skill "{{name}}" ({{count}} prior successes).',
   'agentplan.schedule_restate_hint': '⚠ I could not pin down a firm schedule. Please restate it with an explicit time (e.g. "daily at 8am"). This cannot be registered until then.',
-  'agentplan.appact_x_target': 'Posting to X (Twitter)',
-  'agentplan.appact_line': '{{target}} (posts the run result as-is)',
-  'agentplan.appact_line_with_preview': '{{target}}: "{{preview}}"',
   'agentplan.socialpost_line': 'Post to {{platform}} ({{connector}}) (posts the run result as-is)',
   'agentplan.socialpost_line_with_preview': 'Post to {{platform}} ({{connector}}): "{{preview}}"',
   // 2026-07-28: multi-platform simultaneous posting (DEFERRED.md's "エージェ
@@ -454,9 +447,6 @@ const en: Record<string, string> = {
   // — shown as an extra line alongside the normal "Action:" line only when
   // lib/agent-nl-parser.ts's detectMultiSocialActions produced 2+ draft.actions.
   'agentplan.summary_multi_targets': 'Destinations: {{targets}}',
-  // Short list-item label for X (agentplan.appact_x_target is a full sentence,
-  // not reusable in a comma-joined list).
-  'agentplan.multi_target_x_label': 'X',
   'agentplan.draft_line_with_path': 'draft (saved to {{path}})',
   // browser-pane (2026-08-05) — the confirm bubble MUST spell out the exact
   // selector + URL the human is approving; see lib/agent-plan-summary.ts.
@@ -1444,21 +1434,6 @@ const en: Record<string, string> = {
   'settings.profile_learning_desc': 'Learn command, project, and AI usage patterns locally for personalized suggestions and AI context.',
   'settings.nacre_bridge_label': 'Nacre Bridge',
   'settings.nacre_bridge_desc': 'While Shelly is in the foreground, share your current directory, git branch, and safe recent command terms (never raw commands or secrets) with the Nacre IME to improve its conversion suggestions. Default on.',
-  'settings.app_act_recipe_draft_label': 'App-Act Recipe Draft (Beta)',
-  'settings.app_act_recipe_draft_action': 'Capture',
-  'settings.app_act_recipe_draft_desc': 'Capture the current screen (LINE or X only) and draft a new app.act recipe from it.',
-  'app_act_recipe.title': 'Draft an App-Act Recipe',
-  'app_act_recipe.allowlist_note': 'Capture only works while LINE or X is in the foreground — the Accessibility Service cannot see any other app.',
-  'app_act_recipe.name_label': 'Recipe name',
-  'app_act_recipe.name_placeholder': 'e.g. LINE quick reply',
-  'app_act_recipe.capture_button': 'Capture current screen',
-  'app_act_recipe.recapture_button': 'Capture again',
-  'app_act_recipe.save_button': 'Save recipe',
-  'app_act_recipe.steps_label': 'Drafted steps',
-  'app_act_recipe.saved_body': 'Saved as "{{id}}". You can run it with @agent or from a registered agent that references this recipe id.',
-  'app_act_recipe.capture_unavailable': 'Screen capture is not available on this build.',
-  'app_act_recipe.capture_failed': 'Could not capture or parse the current screen.',
-  'app_act_recipe.save_failed': 'Could not save the recipe. Check that Shelly has storage access and try again.',
   'settings.profile_facts_label': 'View/Edit Facts',
   'settings.profile_facts_desc': 'View learned facts and delete individual entries.',
   'settings.profile_facts_action': 'View',
@@ -2388,11 +2363,6 @@ const en: Record<string, string> = {
   'agent_action_confirm_intent_target': 'Target',
   'agent_action_confirm_intent_share_text': 'Share text',
   'agent_action_confirm_intent_failed': 'Failed to fire the app action. The request was declined.',
-  'agent_action_confirm_title_appact': 'Confirm app action',
-  'agent_action_confirm_body_appact': 'This autonomous agent is requesting to run an app action (e.g. post to another app). Review the exact content before allowing it.',
-  'agent_action_confirm_appact_recipe': 'App action',
-  'agent_action_confirm_appact_preview': 'Content preview',
-  'agent_action_confirm_appact_failed': 'Failed to run the app action. The request was declined.',
   'agent_action_confirm_webhook_host': 'Destination host',
   'agent_action_confirm_webhook_known_host': 'Known host — previously vetted in Settings. Approval is still required.',
   'agent_action_confirm_webhook_new_host': 'New host — not in your trusted-host list. Review carefully before approving.',

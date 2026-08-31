@@ -13,7 +13,7 @@
  *
  * The list is ONE entry on purpose. See lib/agent-action-reversibility.ts's
  * module doc comment for the per-type ruling and why every other action type
- * (notify / webhook / cli / intent / dm-reply / app-act / api-call /
+ * (notify / webhook / cli / intent / dm-reply / api-call /
  * social-post) is irreversible and must keep its pre-approval gate.
  */
 import type { AgentActionType } from '@/store/types';

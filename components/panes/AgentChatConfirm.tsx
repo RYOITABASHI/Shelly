@@ -2,7 +2,7 @@
  * components/panes/AgentChatConfirm.tsx
  *
  * Chat-native confirmation affordance for NL-self-registered agents whose draft
- * is app-act (e.g. X-posting) or a tool-pinned multi-step orchestration (Phase 7).
+ * is social-post (e.g. X-posting) or a tool-pinned multi-step orchestration (Phase 7).
  * The project owner rejected a structured card/modal for this: "カードも要らない
  * って。チャットで自然言語で確認すればいいじゃん。" (no card — confirm via natural
  * language in chat). The natural-language plan itself is rendered as ordinary
@@ -18,7 +18,7 @@
  * invariant for the no-editing chat-native flow; when it's false, only Cancel is
  * offered (the summary text already explains why, via schedule_restate_hint).
  *
- * Non-app-act / non-tool-pinned drafts are NOT routed here — they keep using
+ * Non-social-post / non-tool-pinned drafts are NOT routed here — they keep using
  * AgentConfirmCard unchanged (see components/panes/AIPane.tsx and
  * lib/agent-plan-summary.ts's `shouldUseChatConfirm`).
  */

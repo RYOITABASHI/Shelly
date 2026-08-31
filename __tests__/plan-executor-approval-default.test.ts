@@ -9,8 +9,7 @@
 // the old auto-approve behavior. Node PlanSpec executor counterpart to
 // __tests__/agent-executor-approval-default.test.ts (the .sh executor):
 // (1) default-ON, (2) opt-out via explicit falsy value, (3) hard safety
-// floor untouched, (4) app-act's Tier-B unattended path (registration-time
-// consent binding, unaffected by this flip).
+// floor untouched.
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
@@ -59,49 +58,9 @@ describe('requireActionApprovalTap (Node executor global/per-agent resolution)',
   });
 });
 
-describe('trustedNativeLowRiskAction / unattendedPreflightFailure — app-act Tier-B (project owner directive point 3)', () => {
-  const trustedArgs = (recipeId = 'x.post') => ({
-    'trusted-autonomous-agent-id': 'agent-approval-default',
-    'trusted-autonomous-action': 'app-act',
-    'trusted-tool-type': 'local',
-    'trusted-app-act-recipe-id': recipeId,
-  });
-
-  it('app-act is trusted ONLY when native supplied a matching trusted-autonomous-action + on-device tool + matching recipe id', () => {
-    const plan = basePlan({ action: { type: 'app-act', appActRecipeId: 'x.post' } });
-    expect(executor.trustedNativeLowRiskAction(trustedArgs(), plan, 'app-act')).toBe(true);
-  });
-
-  it('a mismatched recipe id refuses trust — defense-in-depth against the plan diverging from what native read', () => {
-    const plan = basePlan({ action: { type: 'app-act', appActRecipeId: 'x.post' } });
-    expect(executor.trustedNativeLowRiskAction(trustedArgs('line.send-message'), plan, 'app-act')).toBe(false);
-  });
-
-  it('a cloud tool IS trusted when trustedTool agrees with the plan (widened 2026-07-14: chat-confirmed autonomous consent is the gate, not tool backend)', () => {
-    const plan = basePlan({ tool: { type: 'gemini-api', label: 'Gemini' }, action: { type: 'app-act', appActRecipeId: 'x.post' } });
-    expect(executor.trustedNativeLowRiskAction({ ...trustedArgs(), 'trusted-tool-type': 'gemini-api' }, plan, 'app-act')).toBe(true);
-  });
-
-  it('a trustedTool that diverges from what the plan carries refuses — defense-in-depth against the plan tool diverging from what native read', () => {
-    const plan = basePlan({ tool: { type: 'gemini-api', label: 'Gemini' }, action: { type: 'app-act', appActRecipeId: 'x.post' } });
-    expect(executor.trustedNativeLowRiskAction(trustedArgs(), plan, 'app-act')).toBe(false);
-  });
-
-  it('no --trusted-* args at all (the default/no-consent state) refuses trust', () => {
-    const plan = basePlan({ action: { type: 'app-act', appActRecipeId: 'x.post' } });
-    expect(executor.trustedNativeLowRiskAction({}, plan, 'app-act')).toBe(false);
-  });
-
-  it('unattendedPreflightFailure allows app-act through ONLY when trusted, still hard-refuses intent/dm-reply unattended unconditionally', () => {
-    const trustedPlan = basePlan({ action: { type: 'app-act', appActRecipeId: 'x.post' } });
-    expect(executor.unattendedPreflightFailure({ unattended: '1', ...trustedArgs() }, trustedPlan)).toBe('');
-
-    const untrustedPlan = basePlan({ action: { type: 'app-act', appActRecipeId: 'x.post' } });
-    expect(executor.unattendedPreflightFailure({ unattended: '1' }, untrustedPlan)).not.toBe('');
-
-    // intent/dm-reply are always refused unattended, matching the legacy .sh
-    // executor's hard `return 1` for these two — no approval-mode or trust
-    // flag can unlock them (unlike cli/webhook below).
+describe('trustedNativeLowRiskAction / unattendedPreflightFailure — unattended dispatch gating', () => {
+  it('intent/dm-reply are always refused unattended, matching the legacy .sh executor\'s hard refusal for these two', () => {
+    // No approval-mode or trust flag can unlock them (unlike cli/webhook below).
     for (const actionType of ['intent', 'dm-reply']) {
       const plan = basePlan({ action: { type: actionType } });
       expect(executor.unattendedPreflightFailure({ unattended: '1' }, plan)).not.toBe('');
@@ -164,7 +123,7 @@ describe('trustedNativeLowRiskAction / unattendedPreflightFailure — app-act Ti
     }
   });
 
-  it('draft/notify remain trusted exactly as before (2026-07-14 only ADDED app-act, did not touch the existing gate)', () => {
+  it('draft/notify remain trusted exactly as before', () => {
     for (const actionType of ['draft', 'notify']) {
       const plan = basePlan({ action: { type: actionType } });
       const args = {

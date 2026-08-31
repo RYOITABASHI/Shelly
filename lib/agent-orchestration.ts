@@ -146,7 +146,7 @@ export function apiCallLabel(cfg: AgentApiCallConfig): string {
  * Resolve the literal "{{result}}" placeholder in an api-call template
  * (path or bodyTemplate) against the prior step's/prompt's result, via plain
  * string-replace — no template engine, same convention as
- * intentShareText/dmReplyText/appActParams. Callers URL-encode `lastResult`
+ * intentShareText/dmReplyText. Callers URL-encode `lastResult`
  * themselves before calling this for `path` (this function does no encoding
  * of its own, since `bodyTemplate` must NOT be URL-encoded).
  */

@@ -27,7 +27,7 @@
  *     that path's hard content gates therefore still apply even with the
  *     toggle ON: a draft with no fireable schedule, an ASSUMED value
  *     (hasDraftAssumptions — defaulted time / LLM-extracted field), or a
- *     high-risk action type (app-act / social-post / tool-pinned
+ *     high-risk action type (social-post / tool-pinned
  *     orchestration, via isAutoRegisterEligibleOnChatConfirm) still surfaces
  *     the normal in-app confirmation. "Never register an agent that will
  *     never fire" is a content classifier, not an approval-frequency knob —

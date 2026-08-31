@@ -308,7 +308,7 @@ const EXPLICIT_DRAFT_KEYWORD_RE = /ドラフト|下書き|\bdraft\b/i;
 
 /**
  * Try to detect an explicit action-type change ("通知でいいや" → notify,
- * "ファイル保存で" → draft, "Xに投稿して" → app-act, …) by reusing
+ * "ファイル保存で" → draft, "Webhookを呼んで" → webhook, …) by reusing
  * lib/agent-nl-parser.ts's own detectAction() — the exact same detector the
  * initial parse uses, so a patch can never disagree with what a fresh
  * utterance containing the same words would have produced.
@@ -319,8 +319,8 @@ const EXPLICIT_DRAFT_KEYWORD_RE = /ドラフト|下書き|\bdraft\b/i;
  * silently downgrade e.g. a `notify` action on every unrelated reply. Guard:
  * a 'draft' result is only trusted when the EXPLICIT draft keyword regex
  * above actually matched — every OTHER action type detectAction() can return
- * (webhook/cli/notify/app-act/social-post-adjacent) only ever comes from one
- * of its own explicit keyword/URL branches, never a silent default, so those
+ * (webhook/cli/notify) only ever comes from one of its own explicit
+ * keyword/URL branches, never a silent default, so those
  * are trusted unconditionally.
  */
 function tryPatchAction(draft: ParsedAgentDraft, text: string): ParsedAgentDraft['action'] | null {

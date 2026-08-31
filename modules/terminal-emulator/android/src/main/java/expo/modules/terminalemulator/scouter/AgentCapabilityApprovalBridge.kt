@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap
  *     http_post_json many times (one per backend call), so a cap-broker-host
  *     request needs a COMPOUND key — runId + a fresh nonce per call — or
  *     concurrent approvals within the same run would collide on one filename.
- *  2. Keeping the data model (host/path/method, no command/preview/appAct
+ *  2. Keeping the data model (host/path/method, no command/preview
  *     fields) and the "type" tag distinct at the CLASS level, not just a
  *     field, makes it structurally impossible for a native reader to conflate
  *     "approve this action" with "approve this NEW host" — exactly the

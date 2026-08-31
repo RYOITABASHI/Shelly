@@ -65,10 +65,10 @@ describe('isLowConfidenceAgentDraft', () => {
     expect(isLowConfidenceAgentDraft(baseDraft({ action: { type: 'notify' } }))).toBe(false);
   });
 
-  it('false when the action is app-act (explicit), even without a schedule', () => {
+  it('false when the action is dm-reply (explicit), even without a schedule', () => {
     expect(
       isLowConfidenceAgentDraft(
-        baseDraft({ action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } } }),
+        baseDraft({ action: { type: 'dm-reply', dmPairingId: 'pair-1', dmReplyText: '{{result}}' } }),
       ),
     ).toBe(false);
   });

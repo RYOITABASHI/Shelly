@@ -620,7 +620,7 @@ describe('parseAgentNL — action layer (capability boundary)', () => {
   });
 });
 
-describe('parseAgentNL — X-posting (Phase 6 app-act fallback, superseded 2026-08-01 by API-over-app-act priority)', () => {
+describe('parseAgentNL — X-posting (API-only, app.act UI-automation fallback removed entirely)', () => {
   // X-posting used to fall back to 'draft' + a caveat (Phase 0) because there was
   // no `app-act` action type to target. Phase 2 added the schema and made
   // X-posting resolve to app-act UNCONDITIONALLY. 2026-08-01 (project owner
@@ -630,11 +630,13 @@ describe('parseAgentNL — X-posting (Phase 6 app-act fallback, superseded 2026-
   // draft + a "register a connector" caveat instead of silently handing back
   // a UI-automation action that will just sit there the next time the phone
   // is asleep. See the next describe block for the connector-registered path,
-  // which resolves to a real `social-post` (API) action instead.
+  // which resolves to a real `social-post` (API) action instead. app-act
+  // itself was later removed from the product entirely, so this is now the
+  // ONLY fallback shape X-posting phrasing can ever resolve to.
   // LINE-posting still hits the OLD unconditional-fallback shape (no API
   // connector exists for it at all) — see the next-but-one describe block —
   // so these two phrasings must NOT be confused.
-  it('"Xに投稿して" with no connector registered resolves to draft + a register-a-connector caveat (not app-act)', () => {
+  it('"Xに投稿して" with no connector registered resolves to draft + a register-a-connector caveat', () => {
     const d = parseAgentNL('毎日8時にXに投稿して');
     expect(d.action.type).toBe('draft');
     expect(d.actionCaveat).toContain('Social Connectors');
@@ -646,16 +648,17 @@ describe('parseAgentNL — X-posting (Phase 6 app-act fallback, superseded 2026-
     expect(d.actionCaveat).toContain('Social Connectors');
   });
 
-  it('"tweet this" (no platform NAME mentioned) still hits the old app-act fallback unchanged', () => {
+  it('"tweet this" (no platform NAME mentioned) still resolves to draft + the register-a-connector caveat', () => {
     // "tweet this" carries a posting verb but never the literal word "X"/
     // "twitter" — detectSocialPost finds no platform at all, so needsSetup
-    // never fires and detectAction's unconditional X_POST_RE match (which
-    // this exact phrase is one of) still wins. Deliberately NOT changed by
-    // the 2026-08-01 decision — that only affects utterances that actually
-    // NAME the platform.
+    // never fires and detectAction falls through to the plain draft default;
+    // detectActionCaveat's own X_POST_RE match (which this exact phrase is
+    // one of) then attaches the same no-connector caveat as the named-platform
+    // case above, now that app-act (the action type this used to target) has
+    // been removed from the product entirely.
     const d = parseAgentNL('毎朝ニュースをまとめてtweet this');
-    expect(d.action.type).toBe('app-act');
-    if (d.action.type === 'app-act') expect(d.action.appActRecipeId).toBe('x.post');
+    expect(d.action.type).toBe('draft');
+    expect(d.actionCaveat).toContain('Social Connectors');
   });
 
   it('a たら-conditional, with no connector, still scopes detection to the delivery clause (draft + caveat, not a false match on the condition)', () => {
@@ -685,7 +688,7 @@ describe('parseAgentNL — X-posting resolves to the real API connector (social-
     };
   }
 
-  it('"Xに投稿して" with exactly one X connector resolves DIRECTLY to social-post — API wins over app-act unconditionally', () => {
+  it('"Xに投稿して" with exactly one X connector resolves DIRECTLY to social-post', () => {
     const d = parseAgentNL('毎日8時にXに投稿して', [xConnector()]);
     expect(d.action).toEqual({
       type: 'social-post',
@@ -715,12 +718,13 @@ describe('parseAgentNL — X-posting resolves to the real API connector (social-
   });
 
   it('2+ registered X connectors is ambiguous — surfaces as candidates for slot-fill to ask, without silently picking one', () => {
-    // 2+ candidates does NOT force draft (only needsSetup/zero-candidates
-    // does — see parseAgentNL's resolution order); action stays whatever
-    // detectAction resolved (app-act, unchanged) as a placeholder while
-    // socialPostCandidates carries the ambiguity for the UI to resolve.
+    // 2+ candidates does NOT force draft via needsSetup (that only fires on
+    // zero usable connectors — see parseAgentNL's resolution order); action
+    // stays whatever detectAction resolved (the plain draft default, now that
+    // app-act has been removed from the product entirely) as a placeholder
+    // while socialPostCandidates carries the ambiguity for the UI to resolve.
     const d = parseAgentNL('毎日8時にXに投稿して', [xConnector(), xConnector({ id: 'my-x-2', label: 'My X 2' })]);
-    expect(d.action.type).toBe('app-act');
+    expect(d.action.type).toBe('draft');
     expect(d.socialPostCandidates).toHaveLength(2);
   });
 
@@ -767,9 +771,9 @@ describe('parseAgentNL — X-posting resolves to the real API connector (social-
 
 describe('parseAgentNL — LINE-posting caveat (still not supported, unlike X)', () => {
   // LINE-posting deliberately keeps the OLD Phase-0-style fallback: `draft` +
-  // a user-facing caveat. Only X graduated to a real app-act action this phase
-  // (see the describe block above) — LINE NL detection/dispatch is out of scope
-  // here even though a `line.send-message` recipe is scaffolded natively.
+  // a user-facing caveat. X graduated to a real `social-post` (API) action
+  // when a connector is registered (see the describe block above); LINE has
+  // no API dispatch mechanism at all, so its NL detection stays draft+caveat.
   it('"LINEに投稿して" stays draft and sets a user-facing caveat', () => {
     const d = parseAgentNL('毎日8時にLINEに投稿して');
     expect(d.action.type).toBe('draft');
@@ -932,17 +936,30 @@ describe('parseAgentNL — multi-platform simultaneous post detection (2026-07-2
     };
   }
 
-  it('"毎朝ブルースカイとXに投稿して" resolves to a 2-entry actions array (social-post bluesky + app-act x.post)', () => {
-    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [connector()]);
+  // X posting is API-only (app-act, its old UI-automation fallback, has been
+  // removed from the product entirely) — detectMultiSocialActions now
+  // requires exactly one registered connector per named platform, X included,
+  // same "exactly one connector or abandon" rule as every other platform.
+  const xConnector = (overrides: Partial<SocialConnectorMeta> = {}): SocialConnectorMeta => ({
+    id: 'my-x',
+    platform: 'x',
+    label: 'My X',
+    host: 'api.x.com',
+    fields: ['refreshToken', 'clientId'],
+    createdAt: 0,
+    ...overrides,
+  });
+
+  it('"毎朝ブルースカイとXに投稿して" resolves to a 2-entry actions array (social-post bluesky + social-post x) when both connectors are registered', () => {
+    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [connector(), xConnector()]);
     expect(d.actions).toHaveLength(2);
     expect(d.actions?.[0]).toEqual({
       type: 'social-post',
       socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' },
     });
     expect(d.actions?.[1]).toEqual({
-      type: 'app-act',
-      appActRecipeId: 'x.post',
-      appActParams: { text: '{{result}}' },
+      type: 'social-post',
+      socialPost: { platform: 'x', connectorId: 'my-x', text: '{{result}}' },
     });
     // `action` stays in sync as actions[0] so any caller unaware of `actions`
     // keeps working exactly as before this feature existed.
@@ -950,9 +967,14 @@ describe('parseAgentNL — multi-platform simultaneous post detection (2026-07-2
   });
 
   it('EN "post this to bluesky and x" also resolves to the same 2-entry actions array', () => {
-    const d = parseAgentNL('every day at 8, post this to bluesky and x', [connector()]);
+    const d = parseAgentNL('every day at 8, post this to bluesky and x', [connector(), xConnector()]);
     expect(d.actions).toHaveLength(2);
-    expect(d.actions?.map((a) => a.type)).toEqual(['social-post', 'app-act']);
+    expect(d.actions?.map((a) => a.type)).toEqual(['social-post', 'social-post']);
+  });
+
+  it('"毎朝ブルースカイとXに投稿して" with no X connector registered abandons the multi-target read entirely (X now needs a connector like every other platform)', () => {
+    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [connector()]);
+    expect(d.actions).toBeUndefined();
   });
 
   it('two connector-backed platforms ("DiscordとSlackに投稿して") both resolve when each has exactly one connector', () => {
@@ -995,7 +1017,7 @@ describe('parseAgentNL — multi-platform simultaneous post detection (2026-07-2
   });
 
   it('a fully-resolved multi-target list carries NO caveat (explicit negative)', () => {
-    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [connector()]);
+    const d = parseAgentNL('毎朝ブルースカイとXに投稿して', [connector(), xConnector()]);
     expect(d.actions).toHaveLength(2);
     expect(d.actionCaveat).toBeUndefined();
   });
@@ -1126,13 +1148,14 @@ describe('parseAgentNL — name derivation does not eat 日/月/金 from non-wee
 });
 
 describe('parseAgentNL — autonomous intent (explicit unattended-execution phrasing)', () => {
-  // On-device finding 2026-07-15: a hand-authored multi-step app-act draft
-  // (Perplexity->local-LLM->Obsidian->X, correctly tool-pinned and
-  // scheduled) was silently registered non-autonomous because there was
+  // On-device finding 2026-07-15: a hand-authored multi-step tool-pinned
+  // draft (Perplexity->local-LLM->Obsidian->X, correctly tool-pinned and
+  // scheduled; X-posting resolved to the now-removed app-act action type at
+  // the time) was silently registered non-autonomous because there was
   // NO way to set draft.autonomous=true outside the G6 "パイプライン"
   // preset (a fixed-shape exception) -- AgentChatConfirm (used for
-  // app-act/tool-pinned drafts) has no toggle UI, so app-act's Tier-B
-  // trust gate could never unlock for a free-form instruction.
+  // tool-pinned drafts) has no toggle UI, so the action's Tier-B trust gate
+  // could never unlock for a free-form instruction.
   it('is false by default for an ordinary instruction with no autonomy phrasing', () => {
     expect(parseAgentNL('毎日8時にXの下書きを作って').autonomous).toBe(false);
   });
@@ -1222,7 +1245,7 @@ describe('parseAgentNL — memory (Phase 1)', () => {
   });
 });
 
-describe('parseAgentNL — Phase 6 target scenario: tool-pinned て-form chain → app-act', () => {
+describe('parseAgentNL — Phase 6 target scenario: tool-pinned て-form chain ending in an X-post', () => {
   // The literal Japanese utterance from the Phase 6 brief: a weekly schedule +
   // a plain て-form conjunctive chain naming Perplexity then the local LLM, that
   // ends in an X-post. No explicit sequence marker (まず/次に/…) appears anywhere,
@@ -1256,7 +1279,7 @@ describe('parseAgentNL — Phase 6 target scenario: tool-pinned て-form chain �
     }
   });
 
-  it('resolves action to draft + a register-a-connector caveat when no X connector is registered (2026-08-01: no longer app-act unconditionally)', () => {
+  it('resolves action to draft + a register-a-connector caveat when no X connector is registered', () => {
     const d = parseAgentNL(JP_UTTERANCE);
     expect(d.action.type).toBe('draft');
     expect(d.actionCaveat).toContain('Social Connectors');

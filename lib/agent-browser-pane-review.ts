@@ -1,12 +1,11 @@
 /**
  * lib/agent-browser-pane-review.ts — the RN-side "fire" step for the
- * `browser-pane` agent action, mirroring lib/agent-intent-review.ts and
- * lib/agent-app-act-review.ts's thin, testable wrapper pattern: the actual
- * side effect (injecting a closed click/fill/extractText script into a live
- * WebView) only ever happens from the human Review-accept path in
- * app/_layout.tsx, BEFORE the accept reply is written back to the waiting
- * executor — same "fire-then-reply" invariant every other RN-fired action
- * type (intent/dm-reply/app-act) already follows.
+ * `browser-pane` agent action, mirroring lib/agent-intent-review.ts's thin,
+ * testable wrapper pattern: the actual side effect (injecting a closed
+ * click/fill/extractText script into a live WebView) only ever happens from
+ * the human Review-accept path in app/_layout.tsx, BEFORE the accept reply
+ * is written back to the waiting executor — same "fire-then-reply" invariant
+ * every other RN-fired action type (intent/dm-reply) already follows.
  *
  * This module intentionally does NOT touch lib/browser-pane-automation.ts.
  * It only builds a BrowserPaneActionRequest from the approval request's own
@@ -28,8 +27,7 @@ export type ReviewedAgentBrowserPaneAction = {
   browserPaneActionKind?: 'click' | 'fill' | 'extractText' | null;
   browserPaneSelector?: string | null;
   browserPaneValue?: string | null;
-  /** JSON-encoded string[] — the wire shape the approval request carries
-   *  (mirrors appActParamsResolved's JSON-string convention). */
+  /** JSON-encoded string[] — the wire shape the approval request carries. */
   browserPaneUrlAllowlist?: string | null;
 };
 
@@ -94,7 +92,7 @@ function buildBrowserPaneAction(request: ReviewedAgentBrowserPaneAction): Browse
 
 /**
  * Fires the side effect only from the human Review accept path, mirroring
- * fireReviewedAgentIntent/fireReviewedAgentAppAct exactly. `paneId` must
+ * fireReviewedAgentIntent exactly. `paneId` must
  * already be resolved by the caller via resolveTargetBrowserPaneId — this
  * function never guesses one. `actionId` is the approval's own runId, reused
  * as browser-pane-automation.ts's per-request pending-action key (it is

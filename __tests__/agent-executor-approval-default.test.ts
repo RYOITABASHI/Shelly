@@ -8,11 +8,10 @@ jest.mock('@/lib/home-path', () => ({
 // on real-side-effect actions by default — the wrong failure mode for a
 // security gate. Reversed: default is now require-approval (manual); only
 // an explicit opt-out restores the old auto-approve behavior. Covers the
-// four things the task asked for — (1) default-ON behavior, (2) explicit
-// opt-out restores auto, (3) the hard safety floor (command-safety CRITICAL
-// / secret-scan / workspace-root) is untouched by the approval-frequency
-// default, and (4) app-act's Tier-B unattended path (registration-time
-// consent binding, not a blanket unattended-allow) is unaffected.
+// three things the task asked for — (1) default-ON behavior, (2) explicit
+// opt-out restores auto, and (3) the hard safety floor (command-safety
+// CRITICAL / secret-scan / workspace-root) is untouched by the
+// approval-frequency default.
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -37,10 +36,6 @@ const agent = (overrides: Partial<Agent> = {}): Agent => ({
   action: { type: 'draft' },
   ...overrides,
 });
-
-function extractAppActCase(s: string): string {
-  return s.slice(s.indexOf('\n    app-act)'), s.indexOf('\n    *)', s.indexOf('\n    app-act)')));
-}
 
 describe('runtime approval default (reversed 2026-08-25, Fable5 review)', () => {
   it('bakes ACTION_APPROVAL_MODE_OVERRIDE empty and an "auto" compile-time placeholder (overwritten by the live .env resolution below) when no per-agent override is set', () => {
@@ -88,7 +83,7 @@ describe('runtime approval default (reversed 2026-08-25, Fable5 review)', () => 
     expect(out).toBe('manual');
   });
 
-  it('draft/notify/webhook/cli skip the approval round trip ENTIRELY in auto mode; intent/dm-reply/app-act always request (bash proof of request_and_wait_approval)', () => {
+  it('draft/notify/webhook/cli skip the approval round trip ENTIRELY in auto mode; intent/dm-reply always request (bash proof of request_and_wait_approval)', () => {
     // Bash-level proof of the exact skip/always-request contract
     // request_and_wait_approval implements — mirrors the existing
     // "the gate skips the approval wait only when autonomous (bash)" test
@@ -102,7 +97,7 @@ describe('runtime approval default (reversed 2026-08-25, Fable5 review)', () => 
       '  approval_type="$1"',
       '  if [ "$ACTION_APPROVAL_MODE" != "manual" ]; then',
       '    case "$approval_type" in',
-      '      intent|dm-reply|app-act) ;;',
+      '      intent|dm-reply) ;;',
       '      *) return 0 ;;',
       '    esac',
       '  fi',
@@ -110,14 +105,14 @@ describe('runtime approval default (reversed 2026-08-25, Fable5 review)', () => 
       '  wait_action_approval "$approval_type"',
       '}',
       'ACTION_APPROVAL_MODE="auto"',
-      'for t in draft notify webhook cli intent dm-reply app-act; do',
+      'for t in draft notify webhook cli intent dm-reply; do',
       '  request_and_wait_approval "$t"',
       'done',
       'echo "$LOG"',
     ].join('\n');
     const out = execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim();
-    // auto mode: draft/notify/webhook/cli never write/wait; intent/dm-reply/app-act always do.
-    expect(out).toBe('WROTE:intent;WAITED:intent;WROTE:dm-reply;WAITED:dm-reply;WROTE:app-act;WAITED:app-act;');
+    // auto mode: draft/notify/webhook/cli never write/wait; intent/dm-reply always do.
+    expect(out).toBe('WROTE:intent;WAITED:intent;WROTE:dm-reply;WAITED:dm-reply;');
   });
 
   it('opt-in ON (manual mode) restores the full write+wait round trip for every action type (bash proof)', () => {
@@ -130,7 +125,7 @@ describe('runtime approval default (reversed 2026-08-25, Fable5 review)', () => 
       '  approval_type="$1"',
       '  if [ "$ACTION_APPROVAL_MODE" != "manual" ]; then',
       '    case "$approval_type" in',
-      '      intent|dm-reply|app-act) ;;',
+      '      intent|dm-reply) ;;',
       '      *) return 0 ;;',
       '    esac',
       '  fi',
@@ -338,60 +333,5 @@ echo "$LOG"
     expect(runRequestAndWaitApproval({ approvalMode: 'manual', approvalType: 'cli', safetyLevel: 'MEDIUM' })).toBe(
       'WROTE:cli;WAITED:cli;',
     );
-  });
-});
-
-describe('app-act Tier-B unattended-allow — registration-time consent binding, not a blanket unattended-allow (project owner directive point 3)', () => {
-  const appActAgent = (overrides: Partial<Agent> = {}) =>
-    agent({
-      action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
-      ...overrides,
-    });
-
-  it('is refused when unattended for a NON-autonomous agent (default state — no consent given)', () => {
-    const s = generateRunScript(appActAgent());
-    expect(s).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=0');
-    const appActCase = extractAppActCase(s);
-    expect(appActCase).toContain('App-action actions require an attended Review.');
-  });
-
-  it('is refused when unattended for an autonomous agent on a CLOUD tool WITHOUT autonomousCloudConsent (a stronger, earlier boundary than the Tier-B gate)', () => {
-    const s = generateRunScript(appActAgent({ autonomous: true, tool: { type: 'gemini-api' } }));
-    // Refused entirely at generation time (Spec A §4, no API keys in the
-    // autonomous path without separate cloud consent) — script generation
-    // never even reaches the app-act dispatch case.
-    expect(s).toContain('autonomous mode does not allow');
-    expect(s).not.toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
-  });
-
-  it('unlocks the unattended-allow for autonomous alone, on a LOCAL tool (the SAME consent draft/notify already required)', () => {
-    const s = generateRunScript(appActAgent({ autonomous: true }));
-    expect(s).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
-    const appActCase = extractAppActCase(s);
-    // Still requests approval even when trusted — the shell never skips the
-    // wait itself; native fires + auto-replies (see AgentRuntime.kt), so the
-    // wait_action_approval poll loop is unchanged for BOTH trust states.
-    expect(appActCase).toContain('request_and_wait_approval "app-act" "$preview" "$result_file" || return 1');
-  });
-
-  it('unlocks the unattended-allow for autonomous + a CLOUD tool too, once autonomousCloudConsent is separately granted (widened 2026-07-14: chat-confirmed consent is the gate, not tool backend)', () => {
-    // 'ニュースを集めて' triggers detectRouteSignals' needsWeb, which combined
-    // with autonomousCloudConsent satisfies the N1 exception (Spec A §4) and
-    // keeps the keyed web tool instead of refusing generation outright.
-    const s = generateRunScript(
-      appActAgent({ autonomous: true, tool: { type: 'gemini-api' }, prompt: 'ニュースを集めて' }),
-      { autonomousCloudConsent: true },
-    );
-    expect(s).not.toContain('autonomous mode does not allow');
-    expect(s).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=1');
-  });
-
-  it('the Tier-B gate is independent of ACTION_APPROVAL_MODE — flipping the blanket approval default alone never unlocks it', () => {
-    // A non-autonomous agent with the global "no approval tap" default (the
-    // task's own headline behavior) must NOT gain unattended app-act access —
-    // only the narrower autonomous+local gate does.
-    const s = generateRunScript(appActAgent({ requireActionApproval: false }));
-    expect(s).toContain("ACTION_APPROVAL_MODE_OVERRIDE='auto'");
-    expect(s).toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED=0');
   });
 });

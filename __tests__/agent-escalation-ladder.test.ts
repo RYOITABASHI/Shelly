@@ -730,11 +730,10 @@ describe('isDeterministicDispatchFailure — P3 UX fix (no pointless double appr
     ).toBe(false);
   });
 
-  it('is scoped ONLY to cli / intent / dm-reply — draft/notify/webhook/app-act never match, even with the same message shape', () => {
+  it('is scoped ONLY to cli / intent / dm-reply — draft/notify/webhook never match, even with the same message shape', () => {
     expect(isDeterministicDispatchFailure('draft', 'CLI action failed with exit 127.')).toBe(false);
     expect(isDeterministicDispatchFailure('notify', 'CLI action failed with exit 127.')).toBe(false);
     expect(isDeterministicDispatchFailure('webhook', 'Webhook dispatch failed with exit 1: connection refused')).toBe(false);
-    expect(isDeterministicDispatchFailure('app-act', 'CLI action failed with exit 127.')).toBe(false);
   });
 
   it('is false for a normal generic error message, null/undefined action type or message', () => {

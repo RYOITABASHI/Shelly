@@ -56,6 +56,5 @@ Every area of [Shelly](../README.md), with dates, devices, and what was actually
 | Distribution channels (Play Store / F-Droid) | 🟡 GitHub Releases only for now; current Android release is the rolling `android-latest` build |
 | Nacre Bridge — cwd/branch/sanitized command-term sharing with the Nacre IME, and Nacre-side Dev Mode (auto-convert suppression + programming symbol tab) | ✅ on-device verified 2026-08-31 (context file write/read cycle and Nacre's own package-focus detection both confirmed via logcat) |
 | AI → Terminal insert (one-tap paste of a fenced ` ```bash ` reply block into the focused Terminal pane) | ✅ on-device verified 2026-08-31 |
-| Cross-app UI automation (`app.act`) — recipe-draft UI (Settings → Developer → Automation: capture the current LINE/X screen, draft a `launch`/`setText`/`click` recipe, save it) | 🔴 confirmed broken on-device 2026-08-31 — tapping **Capture** always fails, because the button lives in Shelly's own UI and tapping it hands Android's foreground-window focus to Shelly before the Accessibility Service can read LINE/X's screen; see [Known Limitations](../README.md#known-limitations) |
 
 Full validation checklist: [`docs/superpowers/specs/2026-04-13-validation-checklist.md`](superpowers/specs/2026-04-13-validation-checklist.md)

@@ -5,15 +5,16 @@
  *
  * The project owner has repeatedly rejected a structured confirm card/modal for
  * NEW confirmation surfaces ("カードも要らないって。チャットで自然言語で確認すれば
- * いいじゃん。" — no card, confirm via natural-language chat). app-act registration
- * (X-posting etc.) and tool-pinned multi-step orchestration (Phase 6's
- * `detectToolPinnedSteps`) are the first surfaces built chat-native from the start
- * instead of retrofitting `AgentConfirmCard`.
+ * いいじゃん。" — no card, confirm via natural-language chat). social-post
+ * registration (X-posting etc.) and tool-pinned multi-step orchestration (Phase
+ * 6's `detectToolPinnedSteps`) are the first surfaces built chat-native from the
+ * start instead of retrofitting `AgentConfirmCard`.
  *
  * `summarizeAgentDraftAsText` is the NL equivalent of what AgentConfirmCard renders
  * as editable form fields: name, schedule, per-step instruction + pinned tool,
- * action-in-plain-language (app-act's recipe/target + resolved content preview when
- * available), and any caveats. It is a PURE function — no store reads, no RN — so it
+ * action-in-plain-language (social-post's connector/target + resolved content
+ * preview when available), and any caveats. It is a PURE function — no store
+ * reads, no RN — so it
  * is trivially unit-testable and reuses the exact schedule phrasing AgentConfirmCard
  * uses via `scheduleHuman` (lib/agent-card-cron.ts) and the exact tool labels via
  * `toolChoiceToLabel` (lib/agent-tool-router.ts). Do not duplicate either mapping.
@@ -92,7 +93,7 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
 /**
  * Project owner directive 2026-07-14 ("デフォは承認なしな。任意で確認" —
  * default is no-approval, confirmation optional): true when a draft that
- * still uses AgentConfirmCard (never called for the chat-native app-act/
+ * still uses AgentConfirmCard (never called for the chat-native social-post/
  * tool-pinned flow — see shouldUseChatConfirm, an entirely separate,
  * already-merged (#135) surface this function must not affect) should be
  * registered IMMEDIATELY with no human Confirm tap, because the global/
@@ -112,8 +113,8 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
  * dm-reply/api-call — where this is the only gate protecting an assumption-
  * bearing draft, and (b) as of the 2026-07-23 fix below, draft/notify too,
  * even though they use the chat-confirm UI surface — see
- * isAutoRegisterEligibleOnChatConfirm's doc comment for why app-act/social-
- * post/tool-pinned orchestration do NOT reach this function despite also
+ * isAutoRegisterEligibleOnChatConfirm's doc comment for why social-post/
+ * tool-pinned orchestration do NOT reach this function despite also
  * being chat-confirm.
  */
 export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistrationConfirm: boolean): boolean {
@@ -129,8 +130,8 @@ export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistra
  * Found via on-device testing (2026-07-23): Phase B extended
  * shouldUseChatConfirm() to draft/notify, but hooks/use-ai-pane-dispatch.ts's
  * presentDraftForConfirmation still gated its shouldAutoRegisterDraft() call
- * on `!useChatConfirm`, a condition written back when ONLY app-act/social-
- * post/tool-pinned orchestration (external-posting/multi-step, deliberately
+ * on `!useChatConfirm`, a condition written back when ONLY social-post/
+ * tool-pinned orchestration (external-posting/multi-step, deliberately
  * NEVER auto-registered) used chat confirm. That blanket gate silently made
  * every explicit, no-assumption draft/notify utterance ("毎日21時にバッテ
  * リー残量を通知して") require a confirm round-trip it never needed before
@@ -139,7 +140,7 @@ export function shouldAutoRegisterDraft(draft: ParsedAgentDraft, requireRegistra
  * case that should register in one message.
  *
  * draft/notify are purely local (T0 risk) — same tier they had before Phase
- * B, so they stay eligible here. app-act/social-post/tool-pinned
+ * B, so they stay eligible here. social-post/tool-pinned
  * orchestration are deliberately NOT included: shouldAutoRegisterDraft alone
  * has no action-type awareness, so callers must keep gating those on
  * `!useChatConfirm` (i.e. never call shouldAutoRegisterDraft for them at
@@ -151,13 +152,12 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
 
 /**
  * true when this draft should use the chat-native confirm affordance instead of
- * AgentConfirmCard: an app-act action (the explicit example the project owner
- * named), a social-post action (2026-07-22 — same "external post, chat-native
- * confirm" reasoning as app-act; AgentConfirmCard's picker UI is kept for the
- * card-eligible path this doesn't touch), or a multi-step orchestration where
- * at least one step pins a concrete tool (Phase 6's `detectToolPinnedSteps`, as
- * opposed to Phase 4's plain auto-routed step chain, which keeps using the card
- * unchanged this phase).
+ * AgentConfirmCard: a social-post action (2026-07-22 — the explicit "external
+ * post, chat-native confirm" example the project owner named; AgentConfirmCard's
+ * picker UI is kept for the card-eligible path this doesn't touch), or a
+ * multi-step orchestration where at least one step pins a concrete tool (Phase
+ * 6's `detectToolPinnedSteps`, as opposed to Phase 4's plain auto-routed step
+ * chain, which keeps using the card unchanged this phase).
  *
  * Note: a draft whose social-post connector is still AMBIGUOUS (see
  * ParsedAgentDraft.socialPostCandidates) has `action.type === 'draft'` at this
@@ -165,7 +165,7 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
  * lib/agent-slot-fill.ts's socialConnector slot-fill question runs first and
  * only calls this once the connector is resolved (or has been given up on).
  *
- * Phase B (2026-07-22): `draft` and `notify` join app-act/social-post/
+ * Phase B (2026-07-22): `draft` and `notify` join social-post/
  * tool-pinned-orchestration as chat-native — these two cover the large
  * majority of everyday single-step agents ("毎日ニュースをまとめて" /
  * "毎朝リマインドして"), so this is the change that makes chat-native confirm
@@ -174,7 +174,6 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
  * unchanged and still use AgentConfirmCard — out of scope for this phase.
  */
 export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
-  if (draft.action.type === 'app-act') return true;
   if (draft.action.type === 'social-post') return true;
   if (draft.action.type === 'draft') return true;
   if (draft.action.type === 'notify') return true;
@@ -238,9 +237,9 @@ function formatDateOnlyForSummary(d: Date): string {
   return formatDateTimeForSummary(d).slice(0, 10);
 }
 
-/** First app-act param value that isn't the raw `{{result}}` placeholder — a
+/** First param value that isn't the raw `{{result}}` placeholder — a
  *  literal, already-resolved preview of what will be posted, when one exists. */
-function appActContentPreview(params: Record<string, string> | undefined): string | undefined {
+function firstResolvedContentPreview(params: Record<string, string> | undefined): string | undefined {
   if (!params) return undefined;
   for (const value of Object.values(params)) {
     const trimmed = value.trim();
@@ -263,15 +262,6 @@ function appActContentPreview(params: Record<string, string> | undefined): strin
  */
 function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, locale: Locale): string {
   const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
-  if (action.type === 'app-act') {
-    const target = action.appActRecipeId === 'x.post'
-      ? tl('agentplan.appact_x_target')
-      : (action.appActRecipeId ?? tl('agentcard.action_app-act'));
-    const preview = appActContentPreview(action.appActParams);
-    return preview
-      ? tl('agentplan.appact_line_with_preview', { target, preview })
-      : tl('agentplan.appact_line', { target });
-  }
   if (action.type === 'social-post' && action.socialPost) {
     // No connector display-label is carried on AgentAction (only the
     // registration-time `connectorId` slug — see AgentSocialPostConfig's doc
@@ -279,7 +269,7 @@ function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, lo
     // store lookup, so the user-chosen id slug (usually descriptive, e.g.
     // "my-mastodon") stands in for a display label here.
     const platformLabel = tl(`social_connectors.platform_${action.socialPost.platform}`);
-    const preview = appActContentPreview({ text: action.socialPost.text ?? '{{result}}' });
+    const preview = firstResolvedContentPreview({ text: action.socialPost.text ?? '{{result}}' });
     return preview
       ? tl('agentplan.socialpost_line_with_preview', {
           platform: platformLabel,
@@ -340,9 +330,7 @@ function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, lo
  * joined list of destination labels for the "配信先: …" / "Destinations: …"
  * summary line. Each entry reuses the SAME platform display label
  * summarizeAgentDraftAsText already trusts elsewhere (`social_connectors.
- * platform_*`) for a social-post action, or a short 'X' label for the
- * app-act 'x.post' recipe (its usual `agentplan.appact_x_target` string is a
- * full sentence, not reusable in a list) — any other action type (not
+ * platform_*`) for a social-post action — any other action type (not
  * currently producible by the multi-target detector, but handled
  * defensively) falls back to the generic `agentcard.action_<type>` label.
  * Pure text formatting only — no store reads, mirrors this module's own
@@ -353,9 +341,6 @@ function multiActionsTargetsText(actions: AgentAction[], locale: Locale): string
   const labels = actions.map((a) => {
     if (a.type === 'social-post' && a.socialPost) {
       return tl(`social_connectors.platform_${a.socialPost.platform}`);
-    }
-    if (a.type === 'app-act' && a.appActRecipeId === 'x.post') {
-      return tl('agentplan.multi_target_x_label');
     }
     return tl(`agentcard.action_${a.type}`);
   });
@@ -383,7 +368,7 @@ function markLine(line: string, field: string, changedFields: ReadonlySet<string
 /**
  * Deterministic NL rendering of a ParsedAgentDraft — the chat-native equivalent
  * of AgentConfirmCard's form fields. Covers every field a draft can carry:
- * name, schedule, action (with app-act recipe/target + content preview),
+ * name, schedule, action (with social-post connector/target + content preview),
  * orchestration steps (instruction + pinned tool label per Phase 5/6), the
  * autonomous flag, memory intent, a matched reusable skill, and any actionCaveat
  * the parser attached. Ends with the schedule-restatement hint when the schedule

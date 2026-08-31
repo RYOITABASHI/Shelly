@@ -17,16 +17,16 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Lock-screen "wake, prompt, continue after genuine unlock" bridge for
- * `app.act` (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1).
+ * Lock-screen "wake, prompt, continue after genuine unlock" bridge
+ * (originally built for `app.act`, docs/superpowers/specs/
+ * 2026-07-11-app-act-design.md §0.1 — that feature has since been removed,
+ * but this primitive is a generic utility with no app.act-specific logic and
+ * was kept).
  *
- * §0.1 documents a hard OS wall: once the device locks,
- * `AccessibilityService.rootInActiveWindow` only ever returns the keyguard
- * window, never the target app's node tree — `app.act` cannot act at all
- * while locked, and Shelly cannot dismiss a secured (PIN/pattern/biometric)
- * lock screen from user code at any privilege level; that boundary is
- * hardware-security-backed, not a permission gap SHELL-001's shell-uid
- * access (or any other privilege Shelly holds) can close.
+ * Shelly cannot dismiss a secured (PIN/pattern/biometric) lock screen from
+ * user code at any privilege level; that boundary is hardware-security-backed,
+ * not a permission gap SHELL-001's shell-uid access (or any other privilege
+ * Shelly holds) can close.
  *
  * This class is explicitly NOT a bypass of that boundary. It is the
  * well-established "incoming call screen / alarm app" pattern:
@@ -40,11 +40,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * [ensureUnlocked] is the only public surface: a synchronous/blocking call
  * (deliberately `CountDownLatch`-based rather than a `suspend` function —
  * there is no existing coroutine-bridging precedent anywhere in this native
- * module) that callers such as `ShellyAccessibilityService.ensureForeground`
- * and a `TerminalEmulatorModule` `AsyncFunction` body can call directly from
- * a background thread, mirroring how `ShellyAccessibilityService.
- * debugSendLineMessage` already blocks its calling thread synchronously
- * today.
+ * module) that a `TerminalEmulatorModule` `AsyncFunction` body (e.g.
+ * `debugTestLockPrompt`) can call directly from a background thread.
  */
 class LockPromptActivity : Activity() {
 

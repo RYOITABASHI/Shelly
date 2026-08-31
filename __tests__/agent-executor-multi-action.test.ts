@@ -33,13 +33,13 @@ const agent = (overrides: Partial<Agent> = {}): Agent => ({
   ...overrides,
 });
 
-// Bluesky + X (app-act) — the exact "post to multiple destinations at once"
-// scenario docs/superpowers/DEFERRED.md's "multi-platform-simultaneous-post
-// gap" entry names. There is no 'x'/'twitter' SocialPlatform (X posting goes
-// through app-act's AccessibilityService route, not a social connector), so
-// this is the realistic two-action combination for this feature.
+// Bluesky (social-post) + a paired DM reply — the exact "post to multiple
+// destinations at once" scenario docs/superpowers/DEFERRED.md's
+// "multi-platform-simultaneous-post gap" entry names. Two structurally
+// different action types (different baked ACTION_MULTI_* fields) make this
+// the realistic two-action combination for this feature.
 const blueskyAction: AgentAction = { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bsky' } };
-const xAppActAction: AgentAction = { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } };
+const dmReplyAction: AgentAction = { type: 'dm-reply', dmPairingId: 'pair-1', dmReplyText: '{{result}}' };
 
 describe('generateRunScript — Agent.actions multi-destination fan-out (regression: byte-identical single-action output)', () => {
   it('agent.actions ABSENT produces the exact same script as before this field existed', () => {
@@ -65,7 +65,7 @@ describe('generateRunScript — Agent.actions multi-destination fan-out (regress
   it('a suppressed orchestration step (opts.suppressAction) ignores agent.actions even with >= 2 entries, byte-identical to the pre-existing suppressed output', () => {
     const suppressedWithoutActions = generateRunScript(agent({ action: { type: 'draft' } }), { suppressAction: true });
     const suppressedWithActions = generateRunScript(
-      agent({ action: { type: 'draft' }, actions: [blueskyAction, xAppActAction] }),
+      agent({ action: { type: 'draft' }, actions: [blueskyAction, dmReplyAction] }),
       { suppressAction: true },
     );
     expect(suppressedWithActions).toBe(suppressedWithoutActions);
@@ -73,23 +73,24 @@ describe('generateRunScript — Agent.actions multi-destination fan-out (regress
     expect(suppressedWithActions).not.toContain('ACTION_MULTI_');
   });
 
-  it('the SHELLY_AGENT_SCRIPT_VERSION bump (currently 58) applies uniformly, single- or multi-action', () => {
+  it('the SHELLY_AGENT_SCRIPT_VERSION bump (currently 59) applies uniformly, single- or multi-action', () => {
     const single = generateRunScript(agent({ action: { type: 'draft' } }));
-    const multi = generateRunScript(agent({ action: { type: 'draft' }, actions: [blueskyAction, xAppActAction] }));
-    expect(single).toContain('SHELLY_AGENT_SCRIPT_VERSION=58');
-    expect(multi).toContain('SHELLY_AGENT_SCRIPT_VERSION=58');
+    const multi = generateRunScript(agent({ action: { type: 'draft' }, actions: [blueskyAction, dmReplyAction] }));
+    expect(single).toContain('SHELLY_AGENT_SCRIPT_VERSION=59');
+    expect(multi).toContain('SHELLY_AGENT_SCRIPT_VERSION=59');
   });
 });
 
 describe('generateRunScript — Agent.actions multi-destination fan-out (>= 2 entries)', () => {
-  const s = generateRunScript(agent({ action: { type: 'draft' }, actions: [blueskyAction, xAppActAction] }));
+  const s = generateRunScript(agent({ action: { type: 'draft' }, actions: [blueskyAction, dmReplyAction] }));
 
   it('bakes one ACTION_MULTI_* bash array per baked field, indexed like Agent.actions', () => {
     expect(s).toContain('ACTION_MULTI_COUNT=2');
-    expect(s).toContain("ACTION_MULTI_TYPES=('social-post' 'app-act')");
+    expect(s).toContain("ACTION_MULTI_TYPES=('social-post' 'dm-reply')");
     expect(s).toContain("ACTION_MULTI_SOCIAL_PLATFORMS=('bluesky' '')");
     expect(s).toContain("ACTION_MULTI_SOCIAL_CONNECTOR_IDS=('my-bsky' '')");
-    expect(s).toContain("ACTION_MULTI_APP_ACT_RECIPE_IDS=('' 'x.post')");
+    expect(s).toContain("ACTION_MULTI_DM_PAIRING_IDS=('' 'pair-1')");
+    expect(s).toContain("ACTION_MULTI_DM_REPLY_TEXTS=('' '{{result}}')");
   });
 
   it('the top-level ACTION_TYPE constant (built from the unused legacy Agent.action) is overwritten from the array before every dispatch, never left at its placeholder value', () => {

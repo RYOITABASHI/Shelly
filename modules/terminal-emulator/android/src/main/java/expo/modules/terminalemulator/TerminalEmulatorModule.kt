@@ -1041,67 +1041,10 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
-        // app.act Milestone 0 (docs/superpowers/specs/2026-07-11-app-act-design.md
-        // §6): the ENTIRE action surface is "type text into LINE's message
-        // field and tap send, against whatever conversation is already
-        // foregrounded". Deliberately not wired into the agent/PlanSpec
-        // pipeline — only reachable from SettingsDropdown.tsx's debug
-        // button, a human tapping directly. Returns a specific failure
-        // reason rather than throwing (activeInstance being null just means
-        // the Accessibility Service OS toggle is off).
-        AsyncFunction("debugAppActSendLineMessage") { text: String ->
-            val service = ShellyAccessibilityService.activeInstance
-                ?: return@AsyncFunction mapOf("success" to false, "message" to "Accessibility Service is not enabled/connected")
-            val result = service.debugSendLineMessage(text)
-            Log.i("TerminalEmulator", "debugAppActSendLineMessage: success=${result.success} message=${result.message}")
-            mapOf("success" to result.success, "message" to result.message)
-        }
-
-        // app.act Milestone 0, X (Twitter) variant — same shape as
-        // debugAppActSendLineMessage above, see ShellyAccessibilityService.debugPostToX.
-        AsyncFunction("debugAppActPostToX") { text: String ->
-            val service = ShellyAccessibilityService.activeInstance
-                ?: return@AsyncFunction mapOf("success" to false, "message" to "Accessibility Service is not enabled/connected")
-            val result = service.debugPostToX(text)
-            Log.i("TerminalEmulator", "debugAppActPostToX: success=${result.success} message=${result.message}")
-            mapOf("success" to result.success, "message" to result.message)
-        }
-
-        // app.act Track 1 (navigation, docs/superpowers/specs/2026-07-11-app
-        // -act-design.md §2.1/§6) — same shape as debugAppActSendLineMessage
-        // above, but navigates to targetName's LINE conversation via search
-        // first instead of requiring it already open. See
-        // ShellyAccessibilityService.debugSendLineMessageToContact.
-        AsyncFunction("debugAppActSendLineMessageToContact") { targetName: String, text: String ->
-            val service = ShellyAccessibilityService.activeInstance
-                ?: return@AsyncFunction mapOf("success" to false, "message" to "Accessibility Service is not enabled/connected")
-            val result = service.debugSendLineMessageToContact(targetName, text)
-            Log.i("TerminalEmulator", "debugAppActSendLineMessageToContact: success=${result.success} message=${result.message}")
-            mapOf("success" to result.success, "message" to result.message)
-        }
-
-        // app.act Phase 1 (docs/superpowers/DEFERRED.md "段階的汎用化Phase
-        // 1"): observe-only structured snapshot of the current screen, for
-        // drafting a NEW recipe on the JS side (lib/app-act-recipe-draft.ts)
-        // — see ShellyAccessibilityService.captureScreenSnapshot's doc
-        // comment for the read-only/allowlist-bounded contract. Returns a
-        // JSON string (not a parsed map) since its shape is a nested
-        // array-of-objects the caller parses with JSON.parse — same
-        // convention as getScouterDebugInfo elsewhere in this file.
-        AsyncFunction("captureAppActScreenSnapshot") {
-            val service = ShellyAccessibilityService.activeInstance
-                ?: return@AsyncFunction JSONObject()
-                    .put("error", "Accessibility Service is not enabled/connected")
-                    .toString()
-            service.captureScreenSnapshot()
-        }
-
         // Testable native primitive for LockPromptActivity's lock-screen
-        // bridge (docs/superpowers/specs/2026-07-11-app-act-design.md
-        // §0.1). Deliberately not wired into any RN UI/debug button in this
+        // bridge. Deliberately not wired into any RN UI/debug button in this
         // pass — this exists so the ensureUnlocked() blocking path can be
-        // exercised on-device independent of the ensureForeground()
-        // production call site it also feeds.
+        // exercised on-device independent of any production call site.
         AsyncFunction("debugTestLockPrompt") {
             val context = appContext.reactContext ?: return@AsyncFunction false
             val result = LockPromptActivity.ensureUnlocked(context)
@@ -1189,43 +1132,6 @@ class TerminalEmulatorModule : Module() {
                 // target/shareText content" invariant above for this one error path.
                 Log.e("TerminalEmulator", "fireAgentIntent failed mode=$normalizedMode type=${e.javaClass.simpleName}")
                 throw e
-            }
-            null
-        }
-
-        // Agent action executor (Track D dependency, app-act phase): fires a
-        // registered app-action recipe on behalf of an approved agent action (see
-        // AgentAction.appActRecipeId/appActParams in store/types.ts). Never called
-        // with an un-reviewed request — the approval tier for "app-act" requires
-        // in-app Review before Accept (same shape as fireAgentIntent above),
-        // enforced upstream. Unlike the debugAppAct* wrappers above (fixed
-        // recipe/param names, reachable only from a dev-only debug button), this
-        // takes a recipe id + a generic param map so it can drive ANY registered
-        // recipe — the real dispatch path this phase wires up. Throws on any
-        // failure (service not connected, or the recipe run itself failing) so
-        // RN's accept handler can resolve the pending approval as 'decline'
-        // (fail-closed) instead of silently treating a failed post as accepted.
-        AsyncFunction("fireAgentAppAct") { recipeId: String, params: Map<String, String> ->
-            val trimmedRecipeId = recipeId.trim()
-            if (trimmedRecipeId.isEmpty()) {
-                throw IllegalArgumentException("app-act recipe id is empty")
-            }
-            val service = ShellyAccessibilityService.activeInstance
-                ?: throw IllegalStateException("Accessibility Service is not enabled/connected")
-            val result = AppActExecutor.execute(service, service.applicationContext, trimmedRecipeId, params)
-            // Never log param VALUES (agent/user free text — could be a post body,
-            // a contact name, message content) or the failure message (which may
-            // echo on-screen text via diagnoseCurrentScreen) — recipeId + success +
-            // param count only, matching fireAgentIntent's "mode + lengths only"
-            // convention above.
-            Log.i("TerminalEmulator", "fireAgentAppAct: recipeId=$trimmedRecipeId success=${result.success} paramCount=${params.size}")
-            // TEMPORARY (2026-08-31 re-verification): log result.message to see
-            // which step still fails after the cold-start timeout fix — safe
-            // here since the QA target is our own Keepメモ self-chat. Remove
-            // once confirmed.
-            Log.d("AppActQADiag", "message=${result.message}")
-            if (!result.success) {
-                throw IllegalStateException("app-act recipe failed: $trimmedRecipeId")
             }
             null
         }

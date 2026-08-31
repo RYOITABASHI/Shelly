@@ -114,23 +114,6 @@ function redact(text) {
   return out;
 }
 
-// app-act (Phase 4): resolves the literal "{{result}}" placeholder in every
-// value of `params` against `preview` (already redact()-ed by previewText),
-// then redact()s the resolved values a SECOND time as defense-in-depth --
-// mirrors lib/agent-executor.ts's resolve_app_act_params exactly. This is the
-// first agent action type that can publish content externally (a public X
-// post), so it gets an extra redaction pass beyond relying solely on preview
-// already being clean.
-function resolveAppActParams(params, preview) {
-  const out = {};
-  if (params && typeof params === 'object' && !Array.isArray(params)) {
-    for (const [k, v] of Object.entries(params)) {
-      out[k] = typeof v === 'string' ? redact(v.split('{{result}}').join(preview)) : '';
-    }
-  }
-  return out;
-}
-
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -295,7 +278,7 @@ function fullResultText(text) {
 // lib/agent-escalation-ladder.ts's own doc comments on each pattern set for
 // the full on-device repro history; ported verbatim here, not re-derived).
 // Checked BEFORE any action that publishes outside the run's own log
-// (webhook/dm-reply/app-act) in dispatchActionTrusted below, so a bad
+// (webhook/dm-reply) in dispatchActionTrusted below, so a bad
 // completion never reaches the human-facing approval card in the first
 // place. Runs against the whitespace-collapsed `preview` (see previewText
 // above), matching what the .sh path checks (clean_result_preview already
@@ -1667,13 +1650,10 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     dmPairingId: extra.dmPairingId || '',
     dmPairingLabel: extra.dmPairingLabel || '',
     dmReplyText: extra.dmReplyText || '',
-    appActRecipeId: extra.appActRecipeId || '',
-    appActParamsResolved: extra.appActParamsResolved || '',
-    // browser-pane (2026-08-04): mirrors appActParamsResolved's plain-string
-    // convention -- browserPaneUrlAllowlist carries a JSON-encoded string[]
-    // (decoded by lib/agent-browser-pane-review.ts on the RN side), never a
-    // nested array field, so this stays a flat string map like every other
-    // field here.
+    // browser-pane (2026-08-04): browserPaneUrlAllowlist carries a
+    // JSON-encoded string[] (decoded by lib/agent-browser-pane-review.ts on
+    // the RN side), never a nested array field, so this stays a flat string
+    // map like every other field here.
     browserPaneActionKind: extra.browserPaneActionKind || '',
     browserPaneSelector: extra.browserPaneSelector || '',
     browserPaneValue: extra.browserPaneValue || '',
@@ -1686,7 +1666,6 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     // (dormant SIGNED_APPROVAL_ENABLED path) — acceptable, these are
     // executor-computed trust hints, not human-reviewable content.
     autoAccept: extra.autoAccept === true,
-    autoFireTrusted: extra.autoFireTrusted === true,
     resultPath: resultFile,
     ts: new Date().toISOString(),
     expiresAt: Date.now() + Math.max(1, timeoutSeconds) * 1000,
@@ -1790,16 +1769,15 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
 // request file is ever written, mirroring lib/agent-executor.ts's
 // request_and_wait_approval (.sh executor) exactly, for the same reason: an
 // unattended scheduled run must not depend on JS/native being alive to reply.
-// intent/dm-reply/app-act are excluded from the skip — they only ever fire
+// intent/dm-reply are excluded from the skip — they only ever fire
 // via RN/native (see each case's own comment in dispatchActionTrusted) — and
 // always go through the full requestActionApproval; their own
-// autoAccept/autoFireTrusted request fields (set by the caller via `details`)
-// drive RN/native's auto-resolution instead.
+// autoAccept request field (set by the caller via `details`) drives
+// RN/native's auto-resolution instead.
 function maybeRequestActionApproval(paths, plan, actionType, preview, resultFile, config, details) {
   if (
     actionType !== 'intent' &&
     actionType !== 'dm-reply' &&
-    actionType !== 'app-act' &&
     actionType !== 'browser-pane' &&
     !requireActionApprovalTap(plan, config)
   ) {
@@ -2220,21 +2198,8 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
   const trustedAction = String(args['trusted-autonomous-action'] || '').trim();
   const trustedTool = String(args['trusted-tool-type'] || '').trim();
   if (trustedAgentId !== plan.agent.id) return false;
-  // app-act (2026-07-14, docs/superpowers/DEFERRED.md's "app-act Tier-B"
-  // entry, resolved): the SAME registration-time consent draft/notify's
-  // native fast-path already required (the Autonomous toggle itself) now
-  // ALSO covers app-act, with one extra check below: the recipe id native
-  // read from the freshly re-read persisted agent.json (--trusted-app-act-
-  // recipe-id) must still match what THIS plan carries — defense-in-depth
-  // against the plan diverging from the registered/consented recipe between
-  // native's read and this executor's own read moments later.
-  if (trustedAction !== 'draft' && trustedAction !== 'notify' && trustedAction !== 'app-act') return false;
+  if (trustedAction !== 'draft' && trustedAction !== 'notify') return false;
   if (trustedAction !== actionType) return false;
-  if (actionType === 'app-act') {
-    const trustedRecipeId = String(args['trusted-app-act-recipe-id'] || '').trim();
-    const planRecipeId = String((plan.action && plan.action.appActRecipeId) || '').trim();
-    if (!trustedRecipeId || trustedRecipeId !== planRecipeId) return false;
-  }
   // Widened 2026-07-14 (round 2) per project owner directive: chat-confirmed
   // agent.autonomous consent is the trust boundary, not the tool backend —
   // "たとえパープレだろうとCodexだろうと" (even Perplexity or Codex). Native
@@ -2250,8 +2215,8 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
 // North Star P0(c) fix (docs/superpowers/DEFERRED.md's "スケジュール実行が
 // 多段オーケストレーションを使わない問題"): AgentRuntime.kt now routes ANY
 // scheduled/unattended fire for an agent with orchestration.steps through
-// this executor (not just agent.autonomous ones taking the old draft/notify/
-// app-act native fast-path), so this gate's policy must match what the
+// this executor (not just agent.autonomous ones taking the old draft/notify
+// native fast-path), so this gate's policy must match what the
 // legacy .sh executor's request_and_wait_approval already does unattended
 // for the SAME action types — otherwise a real orchestrated agent that
 // today fires successfully (collapsed to one step) via .sh would newly be
@@ -2259,28 +2224,23 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
 // The .sh executor's policy (lib/agent-executor.ts's dispatch_agent_action):
 // draft/notify/webhook/cli fire unattended whenever ACTION_APPROVAL_MODE is
 // "auto" (the default), with NO dependency on agent.autonomous; intent/
-// dm-reply are always hard-refused unattended; app-act requires
-// AGENT_AUTONOMOUS=1. Mirror that exactly here — requireActionApprovalTap()
-// is this executor's equivalent of ACTION_APPROVAL_MODE != "manual", and
-// trustedNativeLowRiskAction() is what already gates the app-act
-// agent.autonomous requirement (via AgentRuntime.kt's trustedPlanLaunch).
+// dm-reply are always hard-refused unattended. Mirror that exactly here —
+// requireActionApprovalTap() is this executor's equivalent of
+// ACTION_APPROVAL_MODE != "manual", and trustedNativeLowRiskAction() is what
+// already gates the draft/notify agent.autonomous fast path (via
+// AgentRuntime.kt's trustedPlanLaunch).
 function unattendedPreflightFailure(args, plan, config = {}) {
   if (!argTruthy(args.unattended)) return '';
   const actionType = plan.action.type;
   if (actionType === '__suppressed__') return '';
   if (actionType === 'intent' || actionType === 'dm-reply' || actionType === 'browser-pane') {
     // browser-pane (2026-08-04): joins intent/dm-reply's hard unattended
-    // refusal, with NO app-act-style Tier-B exception -- there is no
-    // BrowserPane UI surface (nothing rendered, nothing on screen) during an
-    // unattended/alarm-fired PlanSpec run for trustedNativeLowRiskAction to
-    // even meaningfully vouch for. See store/types.ts's
-    // AgentAction.browserPaneAction doc comment for the full rationale.
+    // refusal -- there is no BrowserPane UI surface (nothing rendered,
+    // nothing on screen) during an unattended/alarm-fired PlanSpec run for
+    // trustedNativeLowRiskAction to even meaningfully vouch for. See
+    // store/types.ts's AgentAction.browserPaneAction doc comment for the
+    // full rationale.
     return `unsupported unattended PlanSpec action: ${actionType}`;
-  }
-  if (actionType === 'app-act') {
-    return trustedNativeLowRiskAction(args, plan, actionType)
-      ? ''
-      : `${actionType} action is not trusted for unattended PlanSpec execution`;
   }
   if (actionType === 'social-post') {
     // social-post's unattended gate is the host opt-in, not agent.autonomous:
@@ -2310,9 +2270,8 @@ function unattendedPreflightFailure(args, plan, config = {}) {
 
 // Resolves whether the mandatory "Runtime Review" approval TAP defaults on
 // or off for THIS plan/action — independent of trustedNativeLowRiskAction
-// (which governs whether the action may run unattended at all, and for
-// app-act specifically whether it may auto-fire with no reply-waiter at
-// all). plan.agent.requireActionApproval is the per-agent override baked at
+// (which governs whether the action may run unattended at all).
+// plan.agent.requireActionApproval is the per-agent override baked at
 // plan-build time (lib/agent-plan-spec.ts); config.SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL
 // is the global default, read live from .env (settings-store.ts syncs it on
 // every change) so toggling it applies to already-generated plans without
@@ -2358,11 +2317,11 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
     await writeDraftOutputs(paths, opts, plan, config, roots, true);
     return { status: 'success', preview };
   }
-  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'app-act' && actionType !== 'api-call' && actionType !== 'social-post' && actionType !== 'browser-pane') {
+  if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'api-call' && actionType !== 'social-post' && actionType !== 'browser-pane') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
   // draft/notify have no per-type validation branch below (unlike
-  // webhook/dm-reply/app-act), so the quality gate has to sit here instead —
+  // webhook/dm-reply), so the quality gate has to sit here instead —
   // before the trust shortcut AND before the approval-request fallback below,
   // so a bad completion is blocked no matter which path a run takes. Mirrors
   // the .sh executor's is_low_quality_completion call placed at the top of
@@ -2374,18 +2333,11 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
     writeNotification(paths, plan, 'error', message);
     return { status: 'error', preview: message, errorMessage: message };
   }
-  // app-act is deliberately EXCLUDED from this trust shortcut (unlike
-  // draft/notify): its own case below always runs so it can still validate +
-  // write an approval request carrying the resolved post content — trust
-  // there only ever skips the human/JS WAIT (via autoFireTrusted, resolved by
-  // native), never the request itself, because native still needs the
-  // resolved params to actually fire the recipe. Trusting the shortcut here
-  // the same way draft/notify do would silently report "success" without the
-  // recipe ever having been dispatched.
-  // social-post joins app-act in this exclusion for the same reason: its case
-  // below performs the ACTUAL dispatch — trusting the shortcut would report
-  // "success" without anything ever having been posted.
-  if (actionType !== 'app-act' && actionType !== 'social-post' && trustedNativeLowRiskAction(args, plan, actionType)) {
+  // social-post is deliberately EXCLUDED from this trust shortcut (unlike
+  // draft/notify): its case below performs the ACTUAL dispatch — trusting
+  // the shortcut would report "success" without anything ever having been
+  // posted.
+  if (actionType !== 'social-post' && trustedNativeLowRiskAction(args, plan, actionType)) {
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -2400,11 +2352,8 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
     // no dependency on JS/native being alive to reply (unattended scheduled
     // runs must not block on that). intent/dm-reply always request (they can
     // only ever fire via RN) but pass autoAccept so RN resolves them without
-    // a human tap. app-act always requests too, with its own narrower
-    // autoFireTrusted flag (NOT governed by requireActionApprovalTap — see
-    // that function's doc comment). maybeRequestActionApproval below
-    // encapsulates the skip decision so every case's validation code is
-    // unchanged either way.
+    // a human tap. maybeRequestActionApproval below encapsulates the skip
+    // decision so every case's validation code is unchanged either way.
     if (actionType === 'webhook') {
       const webhookUrl = String(plan.action.webhookUrl || '').trim();
       const host = webhookDestinationHost(webhookUrl);
@@ -2554,52 +2503,15 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
       });
       return { status: 'success', preview };
     }
-    if (actionType === 'app-act') {
-      // Unattended dispatch is refused upstream by unattendedPreflightFailure()
-      // unless trustedNativeLowRiskAction(args, plan, 'app-act') passes (see
-      // that function) -- this case still ALWAYS runs (app-act is excluded
-      // from the outer trust shortcut above) so it can validate + write the
-      // approval request carrying the resolved post content; autoFireTrusted
-      // below tells native it may fire+reply itself with no human/JS wait.
-      // Deliberately NOT governed by requireActionApprovalTap — see that
-      // function's doc comment for why a blanket "skip the tap" default must
-      // never alone unlock an external post.
-      const recipeId = String(plan.action.appActRecipeId || '').trim();
-      if (!recipeId) {
-        const message = 'App-action is missing a recipe.';
-        writeNotification(paths, plan, 'error', message);
-        return { status: 'error', preview: message, errorMessage: message };
-      }
-      const resolvedParams = resolveAppActParams(plan.action.appActParams, preview);
-      if (Object.keys(resolvedParams).length === 0) {
-        const message = 'App-action is missing its recipe parameters.';
-        writeNotification(paths, plan, 'error', message);
-        return { status: 'error', preview: message, errorMessage: message };
-      }
-      if (isLowQualityCompletion(preview)) {
-        const message = 'App-action content looks like a prompt echo or AI refusal, not real content — escalating.';
-        writeNotification(paths, plan, 'error', message);
-        return { status: 'error', preview: message, errorMessage: message };
-      }
-      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
-        appActRecipeId: recipeId,
-        appActParamsResolved: JSON.stringify(resolvedParams),
-        autoFireTrusted: trustedNativeLowRiskAction(args, plan, 'app-act'),
-      });
-      // Side effect already happened in RN before the accept reply appeared —
-      // no broker/native call here, unlike webhook/cli (mirrors intent/dm-reply).
-      return { status: 'success', preview };
-    }
     if (actionType === 'browser-pane') {
       // browser-pane (2026-08-04): drives a LIVE, on-screen Browser Pane
       // WebView through lib/browser-pane-automation.ts's closed
       // click/fill/extractText set. Unattended dispatch is refused upstream
-      // by unattendedPreflightFailure() unconditionally (no Tier-B exception
-      // exists for this type, unlike app-act) -- this case only ever runs on
-      // an attended fire. The actual side effect happens in RN
+      // by unattendedPreflightFailure() unconditionally -- this case only
+      // ever runs on an attended fire. The actual side effect happens in RN
       // (fireReviewedAgentBrowserPaneAction) at the moment the human taps
-      // Allow, BEFORE the accept reply appears -- mirrors intent/dm-reply/
-      // app-act's "fire-then-reply" invariant; no broker/native call here.
+      // Allow, BEFORE the accept reply appears -- mirrors intent/dm-reply's
+      // "fire-then-reply" invariant; no broker/native call here.
       const browserAction = plan.action.browserPaneAction;
       const kind = browserAction && String(browserAction.kind || '').trim();
       const selector = browserAction && String(browserAction.selector || '').trim();
@@ -3459,14 +3371,14 @@ async function run(args) {
   // 進まない」(3rd-pass Codex review finding): the tool that ACTUALLY produced
   // the run's content, tracked SEPARATELY from `plan.tool` — `plan.tool`
   // itself must never be mutated here. trustedNativeLowRiskAction() (called
-  // from inside dispatchActionsTrusted below, for app-act/draft/notify's
-  // unattended fast-path) compares `plan.tool.type` against native's own
+  // from inside dispatchActionsTrusted below, for draft/notify's unattended
+  // fast-path) compares `plan.tool.type` against native's own
   // `--trusted-tool-type`, fixed at launch time for the ORIGINAL primary
   // tool native already vouched for. Swapping `plan.tool` to a retry
   // candidate would make a successful ladder retry silently fail THAT check
-  // — an unattended app-act run that should auto-fire would instead fall
-  // through to a stalled/declined approval wait despite content generation
-  // having genuinely succeeded. `usedTool` is threaded into writeRunLog
+  // — an unattended draft/notify run that should auto-fire would instead
+  // fall through to a stalled/declined approval wait despite content
+  // generation having genuinely succeeded. `usedTool` is threaded into writeRunLog
   // explicitly below instead, for `toolUsed` reporting only.
   let usedTool;
   try {
@@ -3578,7 +3490,7 @@ module.exports = {
   unattendedPreflightFailure,
   requireActionApprovalTap,
   // 2026-07-15 quality gate (prompt-echo/refusal detection before
-  // webhook/dm-reply/app-act dispatch) — exported for host unit tests only,
+  // webhook/dm-reply dispatch) — exported for host unit tests only,
   // same convention as the exports above. See isLowQualityCompletion's doc
   // comment near previewText for the three-copy sync requirement.
   isLowQualityCompletion,

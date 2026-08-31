@@ -201,9 +201,9 @@ const ja: Record<string, string> = {
   // という従来の注記は削除した — docs/superpowers/DEFERRED.md の2026-07-29の
   // 記載どおり、undo導線を配線した同じコミットで削るべき一文だった。
   'agents.optimistic_writes': '楽観的な書き込み',
-  'agents.optimistic_writes_hint': 'ローカルの agent-output フォルダへの下書き保存だけ、承認タップを待たずに自動セーブポイント付きで即実行し、気が変わった場合は結果バブルの「元に戻す」ボタンで取り消せます。cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、従来どおり承認が必要です。「元に戻す」はアプリを起動したままの間だけ有効で、再起動後は使えません。',
+  'agents.optimistic_writes_hint': 'ローカルの agent-output フォルダへの下書き保存だけ、承認タップを待たずに自動セーブポイント付きで即実行し、気が変わった場合は結果バブルの「元に戻す」ボタンで取り消せます。cli / notify / webhook / SNS投稿 / DM返信、および Obsidian・カスタム出力先は対象外で、従来どおり承認が必要です。「元に戻す」はアプリを起動したままの間だけ有効で、再起動後は使えません。',
   'agents.optimistic_writes_consent_title': 'ワークスペース内の下書きを承認なしで実行',
-  'agents.optimistic_writes_consent_body': '対象は1つだけです: ローカルの agent-output フォルダへ下書きを保存するだけの実行。\n\n• 実行前に自動で git セーブポイントを取り、承認タップ無しで即実行します。\n• そのrunの結果バブルには、ファイルの書き込みを取り消せる「元に戻す」ボタンが付きます（このアプリセッション中のみ有効、再起動後は使えません）。\n• cli / notify / webhook / SNS投稿 / DM返信 / app-act、および Obsidian・カスタム出力先は対象外で、引き続き承認が必要です。\n• エージェント登録時の確認・command-safety・秘密情報スキャンは変わりません。\n\n有効にしますか？',
+  'agents.optimistic_writes_consent_body': '対象は1つだけです: ローカルの agent-output フォルダへ下書きを保存するだけの実行。\n\n• 実行前に自動で git セーブポイントを取り、承認タップ無しで即実行します。\n• そのrunの結果バブルには、ファイルの書き込みを取り消せる「元に戻す」ボタンが付きます（このアプリセッション中のみ有効、再起動後は使えません）。\n• cli / notify / webhook / SNS投稿 / DM返信、および Obsidian・カスタム出力先は対象外で、引き続き承認が必要です。\n• エージェント登録時の確認・command-safety・秘密情報スキャンは変わりません。\n\n有効にしますか？',
   'agents.optimistic_writes_consent_enable': '有効にする',
   // 「元に戻す」ボタン本体 — components/panes/AgentUndoButton.tsx。
   // AIPane.tsx の MessageBubble が対象runの完了バブルに描画する。適格性の判定は
@@ -222,7 +222,7 @@ const ja: Record<string, string> = {
   'agents.widget_noconfirm': 'ウィジェット登録の確認省略',
   'agents.widget_noconfirm_hint': 'ホーム画面ウィジェットの ASK に入力（または音声入力）した「@agent …」コマンドを、アプリ内の確認ステップなしで即登録し、登録内容を通知でお知らせします。対象はウィジェット ASK 経由のみ: AI ペインに直接入力した @agent は従来どおり確認が必要です。スケジュールが不明確・推測値を含む・外部投稿系のコマンドは従来どおりアプリ内フローが開きます。デフォルトはオフ。',
   'agents.widget_noconfirm_consent_title': 'ウィジェットからのエージェント登録を確認なしにする',
-  'agents.widget_noconfirm_consent_body': '対象は1つだけです: ホーム画面ウィジェットの ASK に入力した「@agent …」コマンド。\n\n• 通常のアプリ内確認をスキップして即登録します。\n• 登録のたびに通知（名前+スケジュール）ですぐお知らせします。\n• AI ペインに直接入力した @agent は対象外で、従来どおり確認が必要です。\n• スケジュールが不明確・推測値を含む・外部投稿系（SNS投稿 / app-act）のコマンドは従来どおりアプリ内フローが開きます。\n• 実行時のアクション承認・command-safety・秘密情報スキャンは変わりません。\n\n有効にしますか？',
+  'agents.widget_noconfirm_consent_body': '対象は1つだけです: ホーム画面ウィジェットの ASK に入力した「@agent …」コマンド。\n\n• 通常のアプリ内確認をスキップして即登録します。\n• 登録のたびに通知（名前+スケジュール）ですぐお知らせします。\n• AI ペインに直接入力した @agent は対象外で、従来どおり確認が必要です。\n• スケジュールが不明確・推測値を含む・外部投稿系（SNS投稿）のコマンドは従来どおりアプリ内フローが開きます。\n• 実行時のアクション承認・command-safety・秘密情報スキャンは変わりません。\n\n有効にしますか？',
   'agents.widget_noconfirm_consent_enable': '有効にする',
   // 確認省略で登録が完了した直後に出す通知（「即実行して、後から通知」——
   // unattended skill-save と同じ形）。
@@ -271,9 +271,6 @@ const ja: Record<string, string> = {
   'agentcard.action_cli': 'コマンド',
   'agentcard.action_intent': 'アプリ起動・共有',
   'agentcard.action_dm-reply': 'DM返信',
-  'agentcard.action_app-act': 'アプリ操作',
-  'agentcard.appact_x_warning': 'このエージェントは実行のたびに結果をXへ自動投稿します。実行時に個別の確認は挟まれないため、登録前によく確認してください。',
-  'agentcard.appact_generic_warning': 'このエージェントは実行のたびに他のアプリを自動操作します。実行時に個別の確認は挟まれないため、登録前によく確認してください。',
   // SNSプラットフォーム投稿（Track B）— 配信処理自体は別モジュールが担当。
   // このカードは事前登録済みコネクタに対する {connectorId, text} のみを作成する。
   // 登録UIは social_connectors.* を参照。
@@ -408,7 +405,7 @@ const ja: Record<string, string> = {
   'schedulereadiness.samsung_action': 'バッテリー設定を開く',
   'schedulereadiness.dismiss': 'わかりました',
 
-  // ── チャット内エージェント確認 (Phase 7) — app-act / ツール指定オーケストレーション向け。
+  // ── チャット内エージェント確認 (Phase 7) — SNS投稿 / ツール指定オーケストレーション向け。
   // カードを出さず、この要約テキスト + 確認/キャンセルの2ボタンのみで登録する。
   'agentplan.summary_name': '呼び方: {{name}}',
   'agentplan.summary_schedule': '実行タイミング: {{schedule}}',
@@ -424,7 +421,6 @@ const ja: Record<string, string> = {
   'agentplan.action_label_cli': 'コマンドを実行',
   'agentplan.action_label_intent': 'アプリを起動',
   'agentplan.action_label_dm-reply': 'DM返信を送信',
-  'agentplan.action_label_app-act': 'アプリ操作を実行',
   'agentplan.action_label_api-call': 'APIを呼び出し',
   // 実際には未使用(actionText()のbrowser-pane分岐は専用のURL/セレクタ行を
   // 常に返すため)。将来のリファクタでfallback参照される場合に備え念のため用意。
@@ -433,9 +429,6 @@ const ja: Record<string, string> = {
   'agentplan.memory_note': '実行後に記憶: {{fact}}',
   'agentplan.skill_note': '既存スキル「{{name}}」を再利用します（成功実績 {{count}}回）',
   'agentplan.schedule_restate_hint': '⚠ 実行タイミングを確定できませんでした。時刻を含めて言い直してください（例:「毎日8時に」）。確定するまで登録できません。',
-  'agentplan.appact_x_target': 'X（旧Twitter）への投稿',
-  'agentplan.appact_line': '{{target}}（実行結果をそのまま投稿）',
-  'agentplan.appact_line_with_preview': '{{target}}：「{{preview}}」',
   'agentplan.socialpost_line': '{{platform}}（{{connector}}）へ投稿（実行結果をそのまま投稿）',
   'agentplan.socialpost_line_with_preview': '{{platform}}（{{connector}}）へ投稿：「{{preview}}」',
   // 2026-07-28: 複数プラットフォームへの同時配信（DEFERRED.md「エージェント1件
@@ -443,8 +436,6 @@ const ja: Record<string, string> = {
   // アップ）— lib/agent-nl-parser.ts の detectMultiSocialActions が draft.actions
   // を2件以上生成したときだけ、通常の「実行内容:」行に加えてこの1行を追加表示する。
   'agentplan.summary_multi_targets': '配信先: {{targets}}',
-  // 一覧表示専用の短いXラベル（agentplan.appact_x_target は文章形式なので流用不可）。
-  'agentplan.multi_target_x_label': 'X',
   'agentplan.draft_line_with_path': '下書き（保存先: {{path}}）',
   // browser-pane (2026-08-05) — 確認バブルには承認対象のセレクタ+URLを
   // 一字一句そのまま表示する。lib/agent-plan-summary.ts 参照。
@@ -1412,21 +1403,6 @@ const ja: Record<string, string> = {
   'settings.profile_learning_desc': 'コマンド・プロジェクト・AI利用傾向を端末内で学習し、提案とAI文脈に使います。',
   'settings.nacre_bridge_label': 'Nacre連携',
   'settings.nacre_bridge_desc': 'Shellyが前面表示中、現在のディレクトリ・gitブランチ・安全な最近のコマンド用語(生のコマンドやシークレットは含みません)をNacre IMEと共有し、変換候補の精度を上げます。既定でオン。',
-  'settings.app_act_recipe_draft_label': 'App-Actレシピ下書き(ベータ)',
-  'settings.app_act_recipe_draft_action': 'キャプチャ',
-  'settings.app_act_recipe_draft_desc': '現在の画面(LINEまたはXのみ)をキャプチャして新しいapp.actレシピを下書きします。',
-  'app_act_recipe.title': 'App-Actレシピを下書きする',
-  'app_act_recipe.allowlist_note': 'キャプチャはLINEまたはXが前面にある間のみ動作します——Accessibility Serviceは他のアプリを見ることができません。',
-  'app_act_recipe.name_label': 'レシピ名',
-  'app_act_recipe.name_placeholder': '例: LINEクイック返信',
-  'app_act_recipe.capture_button': '現在の画面をキャプチャ',
-  'app_act_recipe.recapture_button': '再キャプチャ',
-  'app_act_recipe.save_button': 'レシピを保存',
-  'app_act_recipe.steps_label': '下書きされたステップ',
-  'app_act_recipe.saved_body': '「{{id}}」として保存しました。@agentから、またはこのレシピIDを参照する登録済みエージェントから実行できます。',
-  'app_act_recipe.capture_unavailable': 'このビルドでは画面キャプチャを利用できません。',
-  'app_act_recipe.capture_failed': '現在の画面をキャプチャまたは解析できませんでした。',
-  'app_act_recipe.save_failed': 'レシピを保存できませんでした。Shellyにストレージアクセス権限があるか確認して再試行してください。',
   'settings.profile_facts_label': 'ファクトを表示・削除',
   'settings.profile_facts_desc': '学習済みファクトを表示し、個別に削除します。',
   'settings.profile_facts_action': '表示',
@@ -2352,11 +2328,6 @@ const ja: Record<string, string> = {
   'agent_action_confirm_intent_target': '対象',
   'agent_action_confirm_intent_share_text': '共有テキスト',
   'agent_action_confirm_intent_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
-  'agent_action_confirm_title_appact': 'アプリ操作の確認',
-  'agent_action_confirm_body_appact': '自律エージェントがアプリ操作（例: 他アプリへの投稿）の実行を要求しています。許可する前に投稿内容プレビューを確認してください。',
-  'agent_action_confirm_appact_recipe': 'アプリ操作',
-  'agent_action_confirm_appact_preview': '投稿内容プレビュー',
-  'agent_action_confirm_appact_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
   'agent_action_confirm_webhook_host': '送信先ホスト',
   'agent_action_confirm_webhook_known_host': '既知のホスト — Settingsで確認済みです。今回の承認も引き続き必要です。',
   'agent_action_confirm_webhook_new_host': '新しいホスト — 信頼済みリストにありません。承認前に十分確認してください。',

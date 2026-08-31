@@ -25,7 +25,7 @@
  *     re-validated through parseSchedule()), never a connectorId/platform/host
  *     (only a destination NAME, resolved through resolvePlatformHintConnector()
  *     against connectors the user already registered), and — by default —
- *     never a privileged action type: webhook / cli / app-act / api-call /
+ *     never a privileged action type: webhook / cli / api-call /
  *     intent / dm-reply are all rejected, exactly as in
  *     lib/agent-llm-fallback.ts. Out of the box the only action types the model
  *     can CAUSE are `'draft'` and `'notify'`; `'social-post'` is tolerated as a
@@ -43,9 +43,7 @@
  *     unchanged by Phase 4: the runtime gates (SHELLY_WEBHOOK_HOST_ALLOWLIST,
  *     lib/command-safety.ts, the capability broker, the per-run approval tap)
  *     all still apply unconditionally to anything registered this way, exactly
- *     as they do to an action authored by hand in the UI. `'app-act'` stays out
- *     of scope entirely — its AgentAction.appActRecipeId is documented in
- *     store/types.ts as schema-only with no dispatch logic reading it yet.
+ *     as they do to an action authored by hand in the UI.
  *   - Every step fails closed: a disabled/unreachable LLM, a timeout, an empty
  *     response, a malformed fence, unparseable JSON, or a proposal where every
  *     field is rejected all leave the caller's draft byte-for-byte unchanged,
@@ -1056,7 +1054,7 @@ export function buildConversationTranscript(
 
 /** The closed set of action-type NAMES the model is allowed to utter without
  *  that being recorded as a rejection. Everything else — the privileged types
- *  (webhook / cli / app-act / api-call / intent / dm-reply) and any
+ *  (webhook / cli / api-call / intent / dm-reply) and any
  *  hallucinated name — is dropped and reported in rejectedFields.
  *
  *  'draft' and 'notify' are the two types the model can actually CAUSE (Phase
@@ -1442,7 +1440,7 @@ export function mergeConversationalExtractionIntoDraft(
 
   if (extraction.actionType !== undefined) {
     if (!allowedActionTypes.has(extraction.actionType)) {
-      // The security-critical branch: a model that proposes 'app-act' /
+      // The security-critical branch: a model that proposes
       // 'api-call' / 'intent' / 'dm-reply' (or invents a type name) gets it
       // dropped here, never merged — and so do 'webhook' / 'cli' unless the
       // caller explicitly opted in via ctx.allowHighRiskActions.

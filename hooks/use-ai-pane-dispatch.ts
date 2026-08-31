@@ -593,7 +593,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         agentLabel: ChatMessage['agent'] | undefined,
         draft: ParsedAgentDraft,
       ): Promise<void> => {
-        // Phase 7: app-act (e.g. X-posting) and tool-pinned orchestration
+        // Phase 7: social-post (e.g. X-posting) and tool-pinned orchestration
         // drafts (Phase 6's detectToolPinnedSteps) skip AgentConfirmCard
         // entirely — the project owner explicitly rejected a card/modal for
         // NEW confirmation surfaces and wants plain chat-native NL confirm
@@ -682,7 +682,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // (default is no-approval, confirmation optional) — the EXISTING
         // AgentConfirmCard's mandatory Confirm tap becomes skippable by
         // default. Scope: ONLY the non-chat-confirm (AgentConfirmCard-
-        // eligible) path — app-act/tool-pinned drafts (useChatConfirm) are
+        // eligible) path — social-post/tool-pinned drafts (useChatConfirm) are
         // a SEPARATE, already-merged (#135) chat-native flow this task
         // must not touch. The hard "never register an agent that will
         // never fire" requirement is NOT an approval-frequency knob (see
@@ -690,7 +690,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // needs a schedule restated always keeps the pending card
         // regardless of this setting. draftToConfirmedAgentDraft mirrors
         // AgentConfirmCard's own unedited-default Confirm exactly (same
-        // helper the chat-native flow already reuses for app-act/
+        // helper the chat-native flow already reuses for social-post/
         // tool-pinned), so auto-registering here can never disagree with
         // what tapping Confirm on the card would have produced.
         // 2026-07-29: the confirm requirement is now resolved through
@@ -713,8 +713,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // plan-summary.ts): auto-register eligibility is scored by
         // action-type risk tier, not by which UI surface renders the pending
         // confirmation. draft/notify may still auto-register on the
-        // chat-confirm surface; every other chat-confirm type (app-act/
-        // social-post/tool-pinned) keeps requiring `!useChatConfirm` exactly
+        // chat-confirm surface; every other chat-confirm type (social-post/
+        // tool-pinned) keeps requiring `!useChatConfirm` exactly
         // as before this fix.
         const autoRegisterEligible = !useChatConfirm || isAutoRegisterEligibleOnChatConfirm(draft.action.type);
         if (autoRegisterEligible && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
@@ -2054,7 +2054,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // branch uses (see presentDraftForConfirmation above), instead of
           // always falling back to the classic AgentConfirmCard the way this
           // resume branch originally did. A draft resolved via slot-fill is
-          // just as eligible for #135's chat-native confirm (e.g. an app-act
+          // just as eligible for #135's chat-native confirm (e.g. a social-post
           // draft that also happened to be missing a schedule) and tonight's
           // default-off auto-registration as one that never needed
           // slot-filling in the first place.

@@ -43,10 +43,10 @@ const agent = (action: Agent['action']): Agent => ({
 // The actual side effect (injecting the click/fill/extractText script into the
 // resolved WebView) happens in RN (fireReviewedAgentBrowserPaneAction) at the
 // moment the human taps Allow -- BEFORE the accept reply is written, mirroring
-// intent/dm-reply/app-act's "fire-then-reply" invariant. Unlike app-act, there
-// is NO Tier-B unattended-allow for this type at all -- see the hard-refusal
-// test below, which asserts the refusal fires unconditionally (no autonomous/
-// trusted carve-out).
+// intent/dm-reply's "fire-then-reply" invariant. There is NO Tier-B
+// unattended-allow for this type at all -- see the hard-refusal test below,
+// which asserts the refusal fires unconditionally (no autonomous/trusted
+// carve-out).
 describe('generateRunScript — browser-pane action', () => {
   const s = generateRunScript(agent({
     type: 'browser-pane',
@@ -74,12 +74,11 @@ describe('generateRunScript — browser-pane action', () => {
     // happens natively in RN before the accept reply is written.
     expect(browserPaneCase).not.toContain('cap_workspace_exec');
     expect(browserPaneCase).not.toContain('http_post_json');
-    // Unlike app-act, there is no autoFireTrusted-style flag consulted here —
-    // the hard refusal above has no exception clause at all.
-    expect(browserPaneCase).not.toContain('ACTION_APP_ACT_AUTO_FIRE_TRUSTED');
+    // There is no autoFireTrusted-style flag consulted here — the hard
+    // refusal above has no exception clause at all.
   });
 
-  it('an agent flagged autonomous is STILL refused unattended (no Tier-B carve-out, unlike app-act)', () => {
+  it('an agent flagged autonomous is STILL refused unattended (no Tier-B carve-out)', () => {
     const trusted = generateRunScript({
       ...agent({
         type: 'browser-pane',
@@ -141,7 +140,7 @@ describe('generateRunScript — browser-pane {{result}} substitution (fill value
 describe('generateRunScript — browser-pane is excluded from the auto-mode skip (always write+wait)', () => {
   it('adds browser-pane to request_and_wait_approval\'s always-request case list', () => {
     const s = generateRunScript(agent({ type: 'draft' }));
-    expect(s).toContain('intent|dm-reply|app-act|browser-pane) ;;');
+    expect(s).toContain('intent|dm-reply|browser-pane) ;;');
   });
 
   it('bakes auto_accept_flag as unconditionally false for browser-pane, unlike intent/dm-reply', () => {

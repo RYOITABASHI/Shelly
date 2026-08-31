@@ -88,7 +88,7 @@ describe('createAgent — actions param (multi-destination fan-out)', () => {
   it('threads actions through when provided', () => {
     const actions = [
       { type: 'social-post' as const, socialPost: { platform: 'bluesky' as const, connectorId: 'my-bluesky', text: '{{result}}' } },
-      { type: 'app-act' as const, appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+      { type: 'dm-reply' as const, dmPairingId: 'pair-1', dmReplyText: '{{result}}' },
     ];
     const agent = createAgent({ ...baseParams, actions });
     expect(agent.actions).toEqual(actions);

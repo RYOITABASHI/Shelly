@@ -1,6 +1,6 @@
 /**
  * lib/social-connectors.ts — pure helpers for social auto-post connectors
- * (2026-07-22, free-API alternative to the AccessibilityService app-act path).
+ * (2026-07-22).
  *
  * Deliberately dependency-free (types only) so it can be imported by
  * lib/agent-executor.ts (which must stay free of settings-store /

@@ -175,7 +175,7 @@ describe('nextMissingSlot', () => {
     expect(slot?.field).toBe('schedule');
   });
 
-  it.each(['webhook', 'app-act', 'social-post', 'api-call', 'cli', 'dm-reply'] as const)(
+  it.each(['webhook', 'social-post', 'api-call', 'cli', 'dm-reply'] as const)(
     'asks for autonomous last for scheduled real-world action %s',
     (type) => {
       const d = makeDraft({ action: { type } as ParsedAgentDraft['action'], autonomous: false, llmAutonomousIntent: undefined });

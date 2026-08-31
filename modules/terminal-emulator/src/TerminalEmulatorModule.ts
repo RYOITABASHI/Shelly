@@ -226,7 +226,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   readAgentActionApprovalRequest?(runId: string): Promise<{
     runId: string;
     agentId: string;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane' | 'social-post' | 'api-call';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'browser-pane' | 'social-post' | 'api-call';
     preview?: string | null;
     destinationHost?: string | null;
     destinationHostAllowlisted?: boolean;
@@ -244,14 +244,12 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     dmPairingId?: string | null;
     dmPairingLabel?: string | null;
     dmReplyText?: string | null;
-    appActRecipeId?: string | null;
-    appActParamsResolved?: string | null;
     actionNonce?: string | null;
   }>;
   notifyAgentActionApprovalNeeded?(request: {
     runId: string;
     agentId?: string | null;
-    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane' | 'social-post' | 'api-call';
+    actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'browser-pane' | 'social-post' | 'api-call';
     preview?: string | null;
     destinationHost?: string | null;
     destinationHostAllowlisted?: boolean;
@@ -268,8 +266,6 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     dmPairingId?: string | null;
     dmPairingLabel?: string | null;
     dmReplyText?: string | null;
-    appActRecipeId?: string | null;
-    appActParamsResolved?: string | null;
   }): Promise<void>;
   resolveAgentActionApproval?(
     runId: string,
@@ -279,46 +275,6 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   ): Promise<void>;
   cancelAgentActionApproval?(runId: string): Promise<void>;
   fireAgentIntent?(mode: 'launch' | 'share', target: string, shareText?: string | null): Promise<void>;
-  /** Agent action executor (app-act phase): fires a registered app-action
-   *  recipe (e.g. 'x.post', 'line.send-message') with `params` resolved
-   *  against the run result, via ShellyAccessibilityService/AppActExecutor.
-   *  Never called with an un-reviewed request -- the approval tier for
-   *  "app-act" requires in-app Review before Accept, same as
-   *  fireAgentIntent. Throws if the Accessibility Service isn't connected or
-   *  the recipe run fails, so the caller can resolve the pending approval as
-   *  'decline' on any throw (fail-closed). */
-  fireAgentAppAct?(recipeId: string, params: Record<string, string>): Promise<void>;
-  /** app.act Milestone 0 (dev-only debug scaffold, docs/superpowers/specs/
-   *  2026-07-11-app-act-design.md §6): types `text` into LINE's message
-   *  field and taps send, against whatever conversation is currently
-   *  foregrounded via ShellyAccessibilityService. `message` is always a
-   *  specific reason (success or the exact precondition that failed). */
-  debugAppActSendLineMessage?(text: string): Promise<{ success: boolean; message: string }>;
-  /** app.act Milestone 0, X (Twitter) variant — same shape as
-   *  debugAppActSendLineMessage, targets X's compose screen instead. */
-  debugAppActPostToX?(text: string): Promise<{ success: boolean; message: string }>;
-  /** app.act Track 1 (navigation, dev-only debug scaffold, docs/superpowers/
-   *  specs/2026-07-11-app-act-design.md §2.1/§6): navigates to `targetName`'s
-   *  LINE conversation via LINE's search screen (requiring an EXACT,
-   *  non-fuzzy single text match — fails closed on zero or multiple
-   *  matches), then types `text` into the message field and taps send.
-   *  Unlike debugAppActSendLineMessage, does NOT require the conversation
-   *  to already be open. */
-  debugAppActSendLineMessageToContact?(
-    targetName: string,
-    text: string
-  ): Promise<{ success: boolean; message: string }>;
-  /** app.act Phase 1 (docs/superpowers/DEFERRED.md "段階的汎用化Phase 1"):
-   *  observe-only structured snapshot of the current foreground screen, for
-   *  drafting a NEW recipe (see lib/app-act-recipe-draft.ts) instead of
-   *  hand-writing recipe JSON from a logcat dump. Bounded to whatever the
-   *  Accessibility Service's own package allowlist (LINE/X) already covers
-   *  — see ShellyAccessibilityService.captureScreenSnapshot's doc comment.
-   *  Returns a JSON STRING (parse with JSON.parse), either
-   *  `{ pkg, nodes: [...] }` on success or `{ error }` when the service
-   *  isn't connected or the foreground app isn't allowlisted. Never
-   *  performs any action — read-only. */
-  captureAppActScreenSnapshot?(): Promise<string>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

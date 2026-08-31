@@ -91,9 +91,6 @@
   <string name="scouter_notification_agent_action_cli_review_required">CLI actions require in-app command review.</string>
   <string name="scouter_notification_agent_action_intent_target">Target: %1$s</string>
   <string name="scouter_notification_agent_action_intent_review_required">Intent actions require in-app review.</string>
-  <string name="scouter_notification_agent_action_what_appact">Will run an app action (e.g. post to another app)</string>
-  <string name="scouter_notification_agent_action_appact_recipe">Recipe: %1$s</string>
-  <string name="scouter_notification_agent_action_appact_review_required">App actions require in-app review of the exact content before running.</string>
   <string name="scouter_notification_agent_action_what_api_call">Will call an external API</string>
   <string name="scouter_notification_agent_action_api_call_request">Request: %1$s</string>
   <string name="scouter_notification_agent_action_what_browser_pane">Will interact with the open Browser Pane page</string>

@@ -149,7 +149,6 @@ class NotificationDispatcher(private val context: Context) {
                 "cli" -> context.getString(R.string.scouter_notification_agent_action_what_cli)
                 "intent" -> context.getString(R.string.scouter_notification_agent_action_what_intent)
                 "dm-reply" -> context.getString(R.string.scouter_notification_agent_action_what_dm_reply)
-                "app-act" -> context.getString(R.string.scouter_notification_agent_action_what_appact)
                 "api-call" -> context.getString(R.string.scouter_notification_agent_action_what_api_call)
                 "browser-pane" -> context.getString(R.string.scouter_notification_agent_action_what_browser_pane)
                 else -> request.actionType
@@ -194,14 +193,6 @@ class NotificationDispatcher(private val context: Context) {
                     },
                     context.getString(R.string.scouter_notification_agent_action_dm_reply_review_required),
                 ).joinToString("\n")
-                "app-act" -> listOfNotNull(
-                    engineLine,
-                    actionPhrase,
-                    request.appActRecipeId?.takeIf { it.isNotBlank() }?.let {
-                        context.getString(R.string.scouter_notification_agent_action_appact_recipe, it)
-                    },
-                    context.getString(R.string.scouter_notification_agent_action_appact_review_required),
-                ).joinToString("\n")
                 // Track F (docs/superpowers/DEFERRED.md, api-call authoring surface
                 // v1 follow-up): mirrors webhook's host line above (same string,
                 // same field), but does NOT reuse webhook's known/new-host copy —
@@ -239,25 +230,22 @@ class NotificationDispatcher(private val context: Context) {
                 ).joinToString("\n")
             }
             val actionNonce = AgentActionApprovalBridge.registerActionNonce(request.runId)
-            // app-act MUST stay in this "Review" bucket (never one-tap Allow),
-            // same as cli/intent/dm-reply: the ALLOW pending intent below calls
-            // AgentActionApprovalBridge.writeHumanReply directly with no RN
-            // round trip (see ScouterWidgetPromptActivity.handleAgentActionApprovalAction),
-            // so it never invokes fireAgentAppAct -- a one-tap Allow here would
-            // resolve the approval as accepted while the recipe never actually
-            // ran, AND would let a real external post go out (or silently not
-            // go out) without the user ever seeing the resolved post text.
+            // cli/intent/dm-reply/browser-pane/social-post MUST stay in this
+            // "Review" bucket (never one-tap Allow): the ALLOW pending intent
+            // below calls AgentActionApprovalBridge.writeHumanReply directly
+            // with no RN round trip (see
+            // ScouterWidgetPromptActivity.handleAgentActionApprovalAction), so
+            // a one-tap Allow here would resolve the approval as accepted
+            // without the user ever reviewing the actual resolved content.
             //
-            // social-post (Codex review, 2026-08-29): same class of bug as
-            // app-act above and arguably worse -- the resolved post TEXT is
-            // never shown anywhere except app/_layout.tsx's review modal, and
-            // a published social post cannot be un-published. This action
+            // social-post (Codex review, 2026-08-29): the resolved post TEXT
+            // is never shown anywhere except app/_layout.tsx's review modal,
+            // and a published social post cannot be un-published. This action
             // type was added to app/_layout.tsx's review-required deep-link
             // bucket in the same 2026-08-29 fix, but was missed here, so a
             // one-tap Allow from the notification shade could accept the post
-            // sight-unseen -- exactly the failure mode this comment warns
-            // against for app-act.
-            val requiresReview = request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "app-act" || request.actionType == "browser-pane" || request.actionType == "social-post"
+            // sight-unseen.
+            val requiresReview = request.actionType == "cli" || request.actionType == "intent" || request.actionType == "dm-reply" || request.actionType == "browser-pane" || request.actionType == "social-post"
             val actions = if (requiresReview) {
                 listOf(
                     action(context.getString(R.string.scouter_notification_action_review), agentActionReviewPendingIntent(request, requestSha256)),

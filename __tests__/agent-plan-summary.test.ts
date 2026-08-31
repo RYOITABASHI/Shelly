@@ -190,7 +190,6 @@ describe('isAutoRegisterEligibleOnChatConfirm', () => {
   });
 
   it('false for every external-posting/multi-step type that must always require an explicit confirm', () => {
-    expect(isAutoRegisterEligibleOnChatConfirm('app-act')).toBe(false);
     expect(isAutoRegisterEligibleOnChatConfirm('social-post')).toBe(false);
     expect(isAutoRegisterEligibleOnChatConfirm('webhook')).toBe(false);
     expect(isAutoRegisterEligibleOnChatConfirm('cli')).toBe(false);
@@ -232,11 +231,7 @@ describe('presentDraftForConfirmation auto-register gate (hooks/use-ai-pane-disp
     expect(shouldAutoRegisterDraft(vague, false)).toBe(false); // …but the assumption gate still blocks it
   });
 
-  it('app-act/social-post remain confirm-only regardless of the no-approval-default setting (unchanged by this fix)', () => {
-    const appAct = baseDraft({ action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: 'hi' } } });
-    expect(shouldUseChatConfirm(appAct)).toBe(true);
-    expect(autoRegisterEligible(appAct)).toBe(false);
-
+  it('social-post remains confirm-only regardless of the no-approval-default setting (unchanged by this fix)', () => {
     const socialPost = baseDraft({
       action: { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'x', text: 'hi' } },
     });
@@ -282,14 +277,6 @@ describe('hasDraftAssumptions', () => {
 });
 
 describe('shouldUseChatConfirm', () => {
-  it('true for an app-act action', () => {
-    expect(
-      shouldUseChatConfirm(
-        baseDraft({ action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } } }),
-      ),
-    ).toBe(true);
-  });
-
   it('true when at least one orchestration step pins a tool', () => {
     const steps: Array<string | AgentOrchestrationStep> = [
       'search for news',
@@ -298,7 +285,7 @@ describe('shouldUseChatConfirm', () => {
     expect(shouldUseChatConfirm(baseDraft({ orchestrationSteps: steps }))).toBe(true);
   });
 
-  // Phase B (2026-07-22): draft/notify joined app-act/social-post/tool-pinned
+  // Phase B (2026-07-22): draft/notify joined social-post/tool-pinned
   // as chat-native — this is the change that makes chat-native confirm the
   // DEFAULT for the everyday single-step agent, not the exception. baseDraft()
   // defaults to action:{type:'draft'}, so plenty of the OTHER describe blocks
@@ -327,9 +314,8 @@ describe('shouldUseChatConfirm', () => {
     expect(shouldUseChatConfirm(baseDraft({ action: { type: 'dm-reply' } }))).toBe(false);
   });
 
-  // social-post (2026-07-22): same chat-native reasoning as app-act — an
-  // external post is not a local file save, so it gets the same "no card,
-  // plain chat confirm" treatment.
+  // social-post (2026-07-22): an external post is not a local file save, so
+  // it gets the same "no card, plain chat confirm" treatment as draft/notify.
   it('true for a social-post action', () => {
     expect(
       shouldUseChatConfirm(
@@ -360,29 +346,28 @@ describe('shouldUseChatConfirm', () => {
 });
 
 describe('summarizeAgentDraftAsText', () => {
-  it('single-step app-act (X-posting) with a confident daily schedule', () => {
+  it('single-step X-posting (social-post) with a confident daily schedule', () => {
     const draft = baseDraft({
-      action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+      action: { type: 'social-post', socialPost: { platform: 'x', connectorId: 'my-x', text: '{{result}}' } },
     });
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toContain('Daily X digest'); // name
     expect(text).toContain('08:00'); // schedule time round-tripped through decodeCron
-    expect(text).toContain('agentplan.appact_line|'); // no literal preview -> the no-preview variant
+    expect(text).toContain('agentplan.socialpost_line|'); // no literal preview -> the no-preview variant
     expect(text).not.toContain('agentplan.schedule_restate_hint');
     expect(text).toContain('agentplan.confirm_prompt');
   });
 
-  it('surfaces a literal content preview when an app-act param is not the {{result}} placeholder', () => {
+  it('surfaces a literal content preview when an X-posting (social-post) text is not the {{result}} placeholder', () => {
     const draft = baseDraft({
       action: {
-        type: 'app-act',
-        appActRecipeId: 'x.post',
-        appActParams: { text: 'Good morning from Shelly' },
+        type: 'social-post',
+        socialPost: { platform: 'x', connectorId: 'my-x', text: 'Good morning from Shelly' },
       },
     });
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toContain('Good morning from Shelly');
-    expect(text).toContain('agentplan.appact_line_with_preview|');
+    expect(text).toContain('agentplan.socialpost_line_with_preview|');
   });
 
   it('multi-step orchestration with MIXED pinned/unpinned steps lists each instruction and pinned-tool label', () => {
@@ -392,7 +377,7 @@ describe('summarizeAgentDraftAsText', () => {
       { instruction: 'post the digest to X', tool: { type: 'cli', cli: 'codex' } },
     ];
     const draft = baseDraft({
-      action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+      action: { type: 'social-post', socialPost: { platform: 'x', connectorId: 'my-x', text: '{{result}}' } },
       orchestrationSteps: steps,
     });
     const text = summarizeAgentDraftAsText(draft);
@@ -406,7 +391,7 @@ describe('summarizeAgentDraftAsText', () => {
       schedule: null,
       scheduleConfident: false,
       suggestedFrequency: 'daily',
-      action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+      action: { type: 'social-post', socialPost: { platform: 'x', connectorId: 'my-x', text: '{{result}}' } },
     });
     const text = summarizeAgentDraftAsText(draft);
     expect(text).toContain('agentplan.schedule_restate_hint');
@@ -443,13 +428,13 @@ describe('summarizeAgentDraftAsText', () => {
         action: { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' } },
         actions: [
           { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' } },
-          { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+          { type: 'social-post', socialPost: { platform: 'x', connectorId: 'my-x', text: '{{result}}' } },
         ],
       });
       const text = summarizeAgentDraftAsText(draft);
       expect(text).toContain('agentplan.summary_multi_targets|');
       expect(text).toContain('social_connectors.platform_bluesky');
-      expect(text).toContain('agentplan.multi_target_x_label');
+      expect(text).toContain('social_connectors.platform_x');
       // The ordinary single-action line is still rendered (byte-identical to
       // before this feature existed) — the multi-target line is additive.
       expect(text).toContain('agentplan.summary_action|');
@@ -794,7 +779,7 @@ describe('draftToConfirmedAgentDraft', () => {
   it('carries draft.actions (multi-destination fan-out) through verbatim when present', () => {
     const multi: ParsedAgentDraft['actions'] = [
       { type: 'social-post', socialPost: { platform: 'bluesky', connectorId: 'my-bluesky', text: '{{result}}' } },
-      { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+      { type: 'social-post', socialPost: { platform: 'x', connectorId: 'my-x', text: '{{result}}' } },
     ];
     const draft = baseDraft({ action: multi![0], actions: multi });
     const confirmed = draftToConfirmedAgentDraft(draft);

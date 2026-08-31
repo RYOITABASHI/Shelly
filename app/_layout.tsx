@@ -60,7 +60,6 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { getOptionalPack } from '@/lib/optional-packs';
 import { installOptionalPack } from '@/lib/optional-pack-installer';
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
-import { fireReviewedAgentAppAct, parseAppActParamsResolved } from '@/lib/agent-app-act-review';
 import {
   fireReviewedAgentBrowserPaneAction,
   resolveTargetBrowserPaneId,
@@ -150,7 +149,7 @@ type AgentActionApprovalRequest = {
   // as webhook), but the type/parser stay complete for consistency and so a
   // future review-required flag flip for it doesn't ALSO require rediscovering
   // this gap.
-  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'app-act' | 'browser-pane' | 'social-post' | 'api-call';
+  actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'browser-pane' | 'social-post' | 'api-call';
   preview?: string | null;
   destinationHost?: string | null;
   destinationHostAllowlisted?: boolean;
@@ -168,8 +167,6 @@ type AgentActionApprovalRequest = {
   dmPairingId?: string | null;
   dmPairingLabel?: string | null;
   dmReplyText?: string | null;
-  appActRecipeId?: string | null;
-  appActParamsResolved?: string | null;
   /** browser-pane: already-validated action kind + selector, and the
    *  ALREADY {{result}}-resolved fill value (mirrors dmReplyText). See
    *  lib/agent-browser-pane-review.ts's ReviewedAgentBrowserPaneAction. */
@@ -186,31 +183,11 @@ type AgentActionApprovalRequest = {
    *  always reach this bridge regardless of mode) — see
    *  autoResolveActionApproval below. */
   autoAccept?: boolean;
-  /** app-act's own narrower Tier-B trust flag — consumed exclusively by
-   *  native (AgentRuntime.kt); JS never acts on it, to keep exactly one
-   *  actor per action type. Present here only so the type mirrors the wire
-   *  shape; do not add JS-side handling for it. */
-  autoFireTrusted?: boolean;
 };
 
-/** Renders the FULLY resolved (post-{{result}}-substitution, post-redaction)
- *  app-act params for the Review card -- same bar as intentShareText. Prefers
- *  a `text` param (the shape every bundled recipe's primary content field
- *  uses, e.g. x.post) so the common case shows just the post body; falls back
- *  to a compact "key: value" listing for a multi-param recipe (e.g.
- *  line.send-message's contact + message) so nothing resolved is hidden from
- *  the user before they can Accept. */
-function appActParamsPreviewText(paramsResolved: string | null | undefined): string {
-  const params = parseAppActParamsResolved(paramsResolved);
-  const keys = Object.keys(params);
-  if (keys.length === 0) return '';
-  if (typeof params.text === 'string') return params.text;
-  return keys.map((key) => `${key}: ${params[key]}`).join('\n');
-}
-
-/** browser-pane's URL allowlist arrives as a JSON-encoded string[] (same
- *  convention as appActParamsResolved above) — render it one entry per line
- *  so the reviewer sees exactly which origins/paths this action may touch. */
+/** browser-pane's URL allowlist arrives as a JSON-encoded string[] — render
+ *  it one entry per line so the reviewer sees exactly which origins/paths
+ *  this action may touch. */
 function browserPaneUrlAllowlistPreviewText(allowlist: string | null | undefined): string {
   if (!allowlist) return '';
   try {
@@ -301,29 +278,6 @@ export default function RootLayout() {
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
         Alert.alert(t('agent_action_confirm_intent_failed'));
-        return;
-      }
-    }
-    if (decision === 'accept' && request.actionType === 'app-act') {
-      if (!TerminalEmulator.fireAgentAppAct) {
-        Alert.alert(t('agent_action_confirm_not_ready'));
-        setAgentActionResolving(false);
-        return;
-      }
-      try {
-        await fireReviewedAgentAppAct(request, TerminalEmulator.fireAgentAppAct);
-      } catch (e) {
-        // Mirrors fireAgentIntent's catch above: a native AppActExecutor
-        // failure message can echo on-screen UI text (diagnoseCurrentScreen)
-        // -- log only the error class/type, never e.message/e itself.
-        const errorKind = (e as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? 'UnknownError';
-        logError('AgentActionApproval', `fireAgentAppAct failed: ${errorKind}`);
-        // Fail closed: tell the waiting executor "declined" rather than
-        // leaving it to time out after a failed/partial post attempt.
-        await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
-        setPendingAgentActionApproval(null);
-        setAgentActionResolving(false);
-        Alert.alert(t('agent_action_confirm_appact_failed'));
         return;
       }
     }
@@ -1067,7 +1021,6 @@ export default function RootLayout() {
         actionType !== 'cli' &&
         actionType !== 'intent' &&
         actionType !== 'dm-reply' &&
-        actionType !== 'app-act' &&
         actionType !== 'browser-pane' &&
         actionType !== 'social-post' &&
         actionType !== 'api-call'
@@ -1108,8 +1061,6 @@ export default function RootLayout() {
         dmPairingId: str('dmPairingId') || null,
         dmPairingLabel: str('dmPairingLabel') || null,
         dmReplyText: typeof value.dmReplyText === 'string' ? value.dmReplyText : null,
-        appActRecipeId: str('appActRecipeId') || null,
-        appActParamsResolved: typeof value.appActParamsResolved === 'string' ? value.appActParamsResolved : null,
         browserPaneActionKind,
         browserPaneSelector: str('browserPaneSelector') || null,
         browserPaneValue: typeof value.browserPaneValue === 'string' ? value.browserPaneValue : null,
@@ -1125,7 +1076,6 @@ export default function RootLayout() {
         // never "1"/"0" (both executors were updated to avoid that shape
         // specifically so this parses identically either way).
         autoAccept: value.autoAccept === true || value.autoAccept === 'true',
-        autoFireTrusted: value.autoFireTrusted === true || value.autoFireTrusted === 'true',
       };
     };
 
@@ -1150,8 +1100,6 @@ export default function RootLayout() {
       dmPairingId: request.dmPairingId,
       dmPairingLabel: request.dmPairingLabel,
       dmReplyText: request.dmReplyText,
-      appActRecipeId: request.appActRecipeId,
-      appActParamsResolved: request.appActParamsResolved,
       browserPaneActionKind: request.browserPaneActionKind,
       browserPaneSelector: request.browserPaneSelector,
       browserPaneValue: request.browserPaneValue,
@@ -1190,20 +1138,11 @@ export default function RootLayout() {
       if (!runId) return;
       try {
         const request = await readActionApprovalRequest(runId);
-        // app-act joined the review-required bucket (never one-tap from the
-        // notification shade) alongside cli/intent/dm-reply back when it was
-        // added to dispatch_agent_action, but this allowlist -- the deep-link
-        // handler for the notification's own Confirm/Deny buttons -- was
-        // never updated to match: every app-act review notification tap hit
-        // "not ready" unconditionally, regardless of timing (found via
-        // on-device testing 2026-07-15, misdiagnosed at first as an approval
-        // timeout since the symptom looked identical).
         if (
           !request ||
           (request.actionType !== 'cli' &&
             request.actionType !== 'intent' &&
             request.actionType !== 'dm-reply' &&
-            request.actionType !== 'app-act' &&
             request.actionType !== 'browser-pane' &&
             request.actionType !== 'social-post')
         ) {
@@ -1952,23 +1891,18 @@ export default function RootLayout() {
     };
 
     // Project owner directive 2026-07-14: intent/dm-reply can ONLY ever fire
-    // via RN (fireAgentIntent/sendPairedDmReply — there is no native-only
-    // path, unlike app-act's Tier-B auto-fire in AgentRuntime.kt), and they
-    // stay attended-only (the .sh/.js executors' hard unattended refusal for
-    // both is UNCHANGED by this directive). So when the executor flags a
-    // request autoAccept (the global/per-agent runtime-approval default
-    // resolved to 'auto'), this resolves it itself — mints the same read-time
-    // nonce the human Review flow uses (readAgentActionApprovalRequest), fires
-    // natively, then accepts — instead of ever posting the Review
-    // notification. Deliberately a STANDALONE function (not a refactor of
-    // resolvePendingAgentActionApproval) to avoid any risk of regressing that
-    // already-hardened (nonce/requestSha256, PR #125) human-tap flow. Returns
-    // true iff it fully handled the request (whether by accepting or, on a
-    // fire failure, declining) — false means the caller should fall back to
-    // the normal Review notification. app-act is deliberately excluded here:
-    // its own narrower Tier-B trust gate (autoFireTrusted) is handled
-    // EXCLUSIVELY by native, so there is exactly one actor per action type,
-    // never a race between JS and native for the same request.
+    // via RN (fireAgentIntent/sendPairedDmReply), and they stay attended-only
+    // (the .sh/.js executors' hard unattended refusal for both is UNCHANGED
+    // by this directive). So when the executor flags a request autoAccept
+    // (the global/per-agent runtime-approval default resolved to 'auto'),
+    // this resolves it itself — mints the same read-time nonce the human
+    // Review flow uses (readAgentActionApprovalRequest), fires natively, then
+    // accepts — instead of ever posting the Review notification. Deliberately
+    // a STANDALONE function (not a refactor of resolvePendingAgentActionApproval)
+    // to avoid any risk of regressing that already-hardened (nonce/requestSha256,
+    // PR #125) human-tap flow. Returns true iff it fully handled the request
+    // (whether by accepting or, on a fire failure, declining) — false means
+    // the caller should fall back to the normal Review notification.
     const autoResolveActionApproval = async (parsed: AgentActionApprovalRequest): Promise<boolean> => {
       if (parsed.actionType !== 'intent' && parsed.actionType !== 'dm-reply') return false;
       if (!TerminalEmulator.resolveAgentActionApproval || !TerminalEmulator.readAgentActionApprovalRequest) return false;
@@ -2136,8 +2070,6 @@ export default function RootLayout() {
                   ? t('agent_action_confirm_title_intent')
                   : pendingAgentActionApproval.actionType === 'dm-reply'
                     ? t('agent_action_confirm_title_dmreply')
-                  : pendingAgentActionApproval.actionType === 'app-act'
-                    ? t('agent_action_confirm_title_appact')
                   : pendingAgentActionApproval.actionType === 'browser-pane'
                     ? t('agent_action_confirm_title_browserpane')
                   : pendingAgentActionApproval.actionType === 'social-post'
@@ -2149,8 +2081,6 @@ export default function RootLayout() {
                   ? t('agent_action_confirm_body_intent')
                   : pendingAgentActionApproval.actionType === 'dm-reply'
                     ? t('agent_action_confirm_body_dmreply')
-                  : pendingAgentActionApproval.actionType === 'app-act'
-                    ? t('agent_action_confirm_body_appact')
                   : pendingAgentActionApproval.actionType === 'browser-pane'
                     ? t('agent_action_confirm_body_browserpane')
                   : pendingAgentActionApproval.actionType === 'social-post'
@@ -2230,23 +2160,6 @@ export default function RootLayout() {
                   <ScrollView style={actionApprovalStyles.commandBox}>
                     <Text selectable style={actionApprovalStyles.commandText}>
                       {pendingAgentActionApproval.preview || ''}
-                    </Text>
-                  </ScrollView>
-                </>
-              ) : pendingAgentActionApproval.actionType === 'app-act' ? (
-                <>
-                  <Text style={actionApprovalStyles.label}>
-                    {t('agent_action_confirm_appact_recipe')}
-                  </Text>
-                  <Text style={actionApprovalStyles.meta}>
-                    {pendingAgentActionApproval.appActRecipeId || ''}
-                  </Text>
-                  <Text style={actionApprovalStyles.label}>
-                    {t('agent_action_confirm_appact_preview')}
-                  </Text>
-                  <ScrollView style={actionApprovalStyles.commandBox}>
-                    <Text selectable style={actionApprovalStyles.commandText}>
-                      {appActParamsPreviewText(pendingAgentActionApproval.appActParamsResolved)}
                     </Text>
                   </ScrollView>
                 </>

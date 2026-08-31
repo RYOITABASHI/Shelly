@@ -49,7 +49,7 @@ export interface ConfirmedAgentDraft {
    *  lib/agent-plan-summary.ts's draftToConfirmedAgentDraft (the chat-native
    *  confirm path); this card has no editor UI for it and always leaves it
    *  undefined — every draft that reaches `actions.length >= 2` resolves to
-   *  a 'social-post'/'app-act' action type, which shouldUseChatConfirm
+   *  a 'social-post' action type, which shouldUseChatConfirm
    *  already routes to the chat-native flow instead of this card. */
   actions?: AgentAction[];
   runOn: 'auto' | 'on-device' | 'cloud';
@@ -84,7 +84,7 @@ export interface ConfirmedAgentDraft {
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
 type RunOn = 'auto' | 'on-device' | 'cloud';
 
-const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'app-act', 'social-post'];
+const ACTION_TYPES: AgentActionType[] = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'social-post'];
 const RUN_ON: RunOn[] = ['auto', 'on-device', 'cloud'];
 
 function clampInt(raw: string, min: number, max: number): number {
@@ -450,16 +450,6 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         text: socialPostText.trim(),
       };
     }
-    // app-act has no dedicated editor UI yet (Phase 6 is NL-parser-only) — when
-    // the user leaves the card's action picker on 'app-act' unchanged, carry the
-    // recipe/params the parser already resolved through verbatim. Without this,
-    // rebuilding `action` from `{ type: actionType }` alone would silently drop
-    // appActRecipeId/appActParams, registering an app-act action with no recipe.
-    if (actionType === 'app-act' && draft.action.type === 'app-act') {
-      action.appActRecipeId = draft.action.appActRecipeId;
-      action.appActParams = draft.action.appActParams;
-      action.appActMethod = draft.action.appActMethod;
-    }
     if (actionType === 'api-call') {
       action.apiCall = {
         host: apiCallHost,
@@ -824,13 +814,6 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           />
           <Text style={[styles.warn, { color: colors.muted }]}>{t('agentcard.dmreply_text_hint')}</Text>
         </>
-      )}
-      {actionType === 'app-act' && (
-        <Text style={[styles.warn, { color: colors.warning }]}>
-          {draft.action.type === 'app-act' && draft.action.appActRecipeId === 'x.post'
-            ? t('agentcard.appact_x_warning')
-            : t('agentcard.appact_generic_warning')}
-        </Text>
       )}
       {actionType === 'social-post' && (
         <>

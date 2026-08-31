@@ -82,12 +82,11 @@ export interface ParsedAgentDraft {
   /** G6: hard character budget for the final orchestration output. */
   charLimit?: number;
   /** Set when the utterance asked for a delivery action that isn't backed by a
-   *  real `action.type` yet (currently: LINE-posting — "LINEに投稿して" has a
-   *  scaffolded `line.send-message` app-act recipe but no wired detection here
-   *  yet), so `action` stayed `draft` instead of reflecting what the user
-   *  actually asked for. X-posting used to hit this same fallback but is now a
-   *  real `app-act` action (Phase 6) — see X_POST_RE / detectAction. The confirm
-   *  card should surface this as a visible warning; absent = no caveat. */
+   *  real `action.type` (LINE-posting — "LINEに投稿して" has no wired dispatch
+   *  at all; X-posting without a registered connector — see
+   *  SOCIAL_POST_NO_CONNECTOR_CAVEAT), so `action` stayed `draft` instead of
+   *  reflecting what the user actually asked for. The confirm card should
+   *  surface this as a visible warning; absent = no caveat. */
   actionCaveat?: string;
   /** Package name(s) that should trigger this agent when a matching
    *  notification arrives (NOTIFY-001). Set by the pure parser when
@@ -874,9 +873,8 @@ const BROWSER_EXTRACT_VERB_JP_RE = new RegExp(
 // "the h1 text, scrape it"). Bounded (no `.*`) so it can't bridge sentences.
 const BROWSER_EXTRACT_VERB_EN_RE =
   /\b(?:extract|scrape|grab|fetch|read|pull|get)\b[^.。!?！？]{0,60}\b(?:text|title|heading|contents?)\b|\b(?:text|title|heading|contents?)\b[^.。!?！？]{0,30}\b(?:extract|scrape|grab)\b/i;
-// クリック / click only — deliberately NOT タップ/tap, which is this
-// project's app-act (AccessibilityService phone-UI automation) vocabulary,
-// not a WebView-page verb.
+// クリック / click only — deliberately NOT タップ/tap, which reads as
+// phone-UI automation vocabulary, not a WebView-page verb.
 const BROWSER_CLICK_VERB_RE = /クリック|\bclick(?:s|ed|ing)?\b/i;
 
 // Browser context cues. ブラウザ/browser is always a cue; ページ/サイト counts
@@ -1052,25 +1050,23 @@ function actionDetectionScope(text: string): string {
   return talaIndex >= 0 ? text.slice(talaIndex + 2) : text;
 }
 
-// X-posting phrasing ("Xに投稿して" / "post to X" / "tweet this"). Phase 0 kept
-// this as a `draft` fallback + caveat because there was no `app-act` action type
-// on `main` yet to target. Phase 2 added the `app-act` schema (appActRecipeId /
-// appActParams on AgentAction — see store/types.ts), so detectAction() below now
-// returns a REAL `{ type: 'app-act', appActRecipeId: 'x.post', … }` action for
-// this phrasing instead of falling through to draft. (Real on-device dispatch of
-// `app-act` is separate, in-progress work — this parser change is what lets NL
-// text reach that action type at all; the recipe/params are fixed and reviewed
-// once at registration time, per the AgentActionType doc comment.) Kept as its
-// own named const (not inlined) since it's still reused verbatim by the tests
-// and by the "no caveat when X-posting is absent" invariant.
+// X-posting phrasing ("Xに投稿して" / "post to X" / "tweet this"). X posting is
+// API-only now (social-post via a registered connector, see
+// SOCIAL_PLATFORM_ALIASES's `x` entry below) — the old app.act UI-automation
+// fallback this regex used to feed has been removed entirely. detectSocialPost's
+// platform-alias matching already catches the overwhelming majority of this
+// phrasing and resolves it to social-post (or a "register a connector first"
+// draft+caveat with no connector); this regex now only backstops
+// detectActionCaveat() for the narrow phrasings detectSocialPost's generic verb
+// list doesn't cover (e.g. "Xに上げて"), so those still surface an explanatory
+// caveat instead of silently becoming a plain, unexplained draft. Kept as its
+// own named const (not inlined) since it's still reused verbatim by the tests.
 const X_POST_RE = /Xに(?:自動)?投稿|Xに上げて|Xでポスト|Xにポスト|post(?:ing)?\s+to\s+x\b|tweet\s+this|\bxポスト/i;
 
-// LINE-posting phrasing ("LINEに投稿して" / "send this to LINE"). Phase 3
-// scaffolded a `line.send-message` app-act recipe on the native layer, but
-// wiring NL detection + dispatch for it is OUT OF SCOPE for this phase (only
-// X was asked for) — so, unlike X above, this still falls through to `draft`
-// with a caveat, exactly like X used to. Deliberately narrow (a literal
-// 投稿/送信 verb, or "send ... to line") so it never collides with
+// LINE-posting phrasing ("LINEに投稿して" / "send this to LINE"). LINE has no
+// dispatch mechanism at all, so this falls through to `draft` with a caveat.
+// Deliberately narrow (a literal 投稿/送信 verb, or "send ... to line") so it
+// never collides with
 // "LINEで知らせて/LINEで教えて", which already resolves to a real `notify`
 // action via the notify-keyword branch in detectAction below.
 const LINE_POST_RE = /LINEに(?:自動)?投稿|LINEに(?:メッセージを)?送(?:って|信)|send\s+(?:this|a\s+message)?\s*to\s+line\b|post(?:ing)?\s+to\s+line\b/i;
@@ -1093,11 +1089,11 @@ function hasArticlesPostMention(text: string): boolean {
 }
 
 /** Detect a delivery request for a not-yet-supported action (LINE-posting,
- *  X Articles — see the *_RE consts above; X's plain-post graduated to a
- *  real social-post/app-act action and no longer needs this fallback).
- *  Returns a user-facing warning string, or undefined when none applies.
- *  Callers should only surface this when `detectAction()` actually fell back
- *  to `draft` for the same text (see parseAgentNL). */
+ *  X Articles, or an X-posting phrasing detectSocialPost's generic verb list
+ *  didn't catch — see the *_RE consts above). Returns a user-facing warning
+ *  string, or undefined when none applies. Callers should only surface this
+ *  when `detectAction()` actually fell back to `draft` for the same text
+ *  (see parseAgentNL). */
 function detectActionCaveat(text: string): string | undefined {
   const actionScope = actionDetectionScope(text);
   if (LINE_POST_RE.test(actionScope)) {
@@ -1106,12 +1102,14 @@ function detectActionCaveat(text: string): string | undefined {
   if (hasArticlesPostMention(actionScope) && GENERIC_SOCIAL_POST_VERB_RE.test(actionScope)) {
     return 'X Articles（長文記事）への自動投稿にはまだ対応していないため、下書き（ファイル保存）として登録します';
   }
+  if (X_POST_RE.test(actionScope)) {
+    return SOCIAL_POST_NO_CONNECTOR_CAVEAT;
+  }
   return undefined;
 }
 
-// ── social-post detection (2026-07-22 — the free-API connector alternative to
-// app-act's AccessibilityService path; see AgentSocialPostConfig/SocialConnectorMeta
-// in store/types.ts) ──────────────────────────────────────────────────────────
+// ── social-post detection (2026-07-22 — see AgentSocialPostConfig/
+// SocialConnectorMeta in store/types.ts) ──────────────────────────────────
 //
 // The 7 supported platforms, matched by their common EN name plus a JP/katakana
 // transliteration. Deliberately name-based (not connector-label-based) so a
@@ -1125,20 +1123,12 @@ const SOCIAL_PLATFORM_ALIASES: Record<SocialPlatform, string[]> = {
   misskey: ['misskey', 'ミスキー'],
   wordpress: ['wordpress', 'ワードプレス'],
   bluesky: ['bluesky', 'ブルースカイ'],
-  // x: real aliases (2026-08-01 — API-over-app-act decision, project owner
-  // approved). "Xに投稿して" used to be owned unconditionally by
-  // X_POST_RE/detectAction, which always resolved it to the app-act
-  // ('x.post') UI-automation recipe — that path cannot run while the phone
-  // is locked, which defeats the entire point of a scheduled/autonomous
-  // agent. Now that a real X API connector exists (lib/social-connectors.ts),
-  // API takes priority unconditionally: with a registered connector,
-  // detectSocialPost resolves this directly to `social-post` (skipping
-  // detectAction/X_POST_RE entirely — see the resolution order in
-  // parseAgentNL). With NO connector registered, detectSocialPost's
-  // needsSetup branch now forces `draft` + a "register a connector first"
-  // caveat instead of silently falling back to app-act — fail loud rather
-  // than silently hand the user a UI-automation path that will just sit
-  // there doing nothing the next time the phone is asleep and locked.
+  // x: real aliases (2026-08-01 — project-owner-approved API-only decision).
+  // X posting is API-only: with a registered connector (lib/social-connectors.ts),
+  // detectSocialPost resolves this directly to `social-post`. With NO connector
+  // registered, detectSocialPost's needsSetup branch forces `draft` + a
+  // "register a connector first" caveat — fail loud rather than silently
+  // dropping the request.
   x: ['x', 'twitter', 'エックス', 'ツイッター'],
 };
 const SOCIAL_PLATFORMS = Object.keys(SOCIAL_PLATFORM_ALIASES) as SocialPlatform[];
@@ -1303,20 +1293,16 @@ const SOCIAL_POST_NO_CONNECTOR_CAVEAT =
 // "runs" regex already uses (see the `runs` match a few hundred lines up) —
 // keep it simple, no general multi-clause NLU. X-posting is included as a
 // target (it's the driving example in DEFERRED.md — "ブルースカイとXに同時投
-// 稿") even though it dispatches via a different mechanism (`app-act`
-// 'x.post', not a social connector) — see MultiPostTarget's own doc comment.
+// 稿") like every other platform — see MultiPostTarget's own doc comment.
 
-/** A single entry in a detected multi-target post list. 'x' is now a real
+/** A single entry in a detected multi-target post list. 'x' is a real
  *  SocialPlatform member (2026-08-01, the OAuth API connector), so this type
  *  alias is just SocialPlatform — kept as its own name because the doc
  *  comments throughout this section predate that. X-posting through THIS
- *  multi-target detector now mirrors the single-target path's 2026-08-01
- *  API-over-app-act decision (2026-08-03 fix — see detectMultiSocialActions
- *  below): with a registered X API connector it resolves to `social-post`
- *  like every other platform; with none, it falls back to the app-act
- *  'x.post' UI-automation recipe (unchanged from before this fix) rather than
- *  abandoning the whole multi-target list, since — unlike the other six
- *  platforms — X has always been postable with zero connectors configured. */
+ *  multi-target detector requires exactly ONE registered X connector to
+ *  resolve, same as every other platform (see detectMultiSocialActions) —
+ *  a named platform with zero or 2+ matching connectors abandons the whole
+ *  multi-target list rather than silently registering a partial one. */
 type MultiPostTarget = SocialPlatform;
 
 // MUST be SOCIAL_PLATFORMS itself, not [...SOCIAL_PLATFORMS, 'x'] — 'x' is
@@ -1324,7 +1310,7 @@ type MultiPostTarget = SocialPlatform;
 // old spread-plus-literal form (written before 'x' was a real SocialPlatform)
 // would double-count it: extractMultiPostTargets iterates this array and
 // tests multiPostAliasSource('x') twice, matching the same run text twice
-// and producing two 'x.post' app-act actions for one "…とXに投稿して" mention.
+// and producing two 'social-post' actions for one "…とXに投稿して" mention.
 const MULTI_POST_TARGETS: MultiPostTarget[] = SOCIAL_PLATFORMS;
 
 /** Regex alternation source (no anchors/flags) for one target's aliases.
@@ -1399,15 +1385,13 @@ function detectMultiPostTargets(text: string): MultiPostTarget[] {
 /**
  * Resolve a detected multi-target post list into a real `AgentAction[]` — one
  * entry per target, each independently gated exactly like a single-target
- * `social-post`/`app-act` action already is (see store/types.ts's
- * Agent.actions doc comment — this is purely an authoring-side fan-out, no
- * new dispatch/approval logic). X resolves unconditionally to the existing
- * app-act 'x.post' recipe (no connector needed, mirrors detectAction's own
- * X_POST_RE branch). Every OTHER target requires exactly ONE registered
- * connector for that platform to auto-resolve — if ANY named platform has
- * zero or 2+ matching connectors, the whole multi-target read is abandoned
- * (returns null) rather than silently registering a PARTIAL list the user
- * didn't ask for; the caller then falls back to the existing single-target
+ * `social-post` action already is (see store/types.ts's Agent.actions doc
+ * comment — this is purely an authoring-side fan-out, no new dispatch/approval
+ * logic). Every target (X included) requires exactly ONE registered connector
+ * for that platform to auto-resolve — if ANY named platform has zero or 2+
+ * matching connectors, the whole multi-target read is abandoned (returns
+ * null) rather than silently registering a PARTIAL list the user didn't ask
+ * for; the caller then falls back to the existing single-target
  * detectSocialPost() path unchanged (which itself may resolve, ask, or fall
  * back to draft+caveat for whatever single platform it can find — deliberately
  * NOT extended here to keep this addition narrowly scoped).
@@ -1419,24 +1403,6 @@ function detectMultiSocialActions(text: string, connectors: SocialConnectorMeta[
   const actions: AgentAction[] = [];
   for (const target of targets) {
     const matches = connectors.filter((c) => c.platform === target);
-    if (target === 'x') {
-      // 2026-08-03: mirror the single-target path's 2026-08-01 API-over-app-act
-      // decision — a registered X connector means reliable scheduled posting
-      // is possible, so prefer it exactly like every other platform. Only
-      // fall back to app-act (unchanged from before this fix) when there is
-      // NO connector to prefer; X, unlike the other six platforms, still
-      // never abandons the whole multi-target list over this since it was
-      // always postable with zero connectors configured.
-      if (matches.length === 1) {
-        actions.push({
-          type: 'social-post',
-          socialPost: { platform: 'x', connectorId: matches[0].id, text: '{{result}}' },
-        });
-      } else {
-        actions.push({ type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } });
-      }
-      continue;
-    }
     if (matches.length !== 1) return null;
     actions.push({
       type: 'social-post',
@@ -1551,16 +1517,6 @@ export function detectAction(text: string): AgentAction {
   // practice (needs two chained conditionals in one utterance); not fixed
   // here, no known simple fix without deeper clause parsing.
   const actionScope = actionDetectionScope(text);
-
-  // app-act: X-posting (Phase 6). Checked before the draft/notify keyword scans
-  // so "Xに自動投稿して" resolves to the real recipe even if the same clause
-  // happens to also contain a draft/notify word elsewhere. {{result}} is the
-  // agreed placeholder convention (same as intentShareText/dmReplyText) —
-  // string-replaced with the run's output preview at request-build time,
-  // BEFORE the approval request is written.
-  if (X_POST_RE.test(actionScope)) {
-    return { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } };
-  }
 
   if (/ドラフト|下書き|\bdraft\b/i.test(actionScope)) {
     return { type: 'draft' };
@@ -1904,15 +1860,13 @@ function detectPipelinePreset(text: string): PipelinePreset | null {
 // hardcoded autonomous by design, a fixed-shape exception). Without this,
 // there was no way to request autonomous execution for a hand-written
 // multi-step instruction through the free-form/chat-native confirm path at
-// all: AgentChatConfirm (used for app-act/tool-pinned drafts) has no toggle
-// UI, unlike the older AgentConfirmCard's explicit Autonomous switch, so
-// app-act's Tier-B trust gate (agent.autonomous===true) could never unlock
-// for anything but the rigid G6 preset shape — found via on-device testing
-// 2026-07-15 (a hand-authored Perplexity->local-LLM->Obsidian->X pipeline
-// correctly tool-pinned and scheduled, but silently registered non-
-// autonomous, so app-act still asked for a human tap every run). Curated
-// phrase list (not a loose regex on "自動"/"確認" alone) to avoid false
-// positives on unrelated uses of those characters.
+// all: AgentChatConfirm (used for social-post/tool-pinned drafts) has no
+// toggle UI, unlike the older AgentConfirmCard's explicit Autonomous switch —
+// found via on-device testing 2026-07-15 (a hand-authored Perplexity->
+// local-LLM->Obsidian pipeline correctly tool-pinned and scheduled, but
+// silently registered non-autonomous). Curated phrase list (not a loose
+// regex on "自動"/"確認" alone) to avoid false positives on unrelated uses of
+// those characters.
 const AUTONOMOUS_INTENT_RE =
   /自律(?:的に|で|実行)|完全無人|人の確認(?:は)?なし|確認(?:は)?なしで|承認(?:は)?なしで|勝手に(?:投稿|実行|やって)|autonomous(?:ly)?|unattended|without\s+(?:approval|confirmation|review)|fully\s+automat(?:ed|ically)/i;
 
@@ -2182,7 +2136,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // bind to whichever single platform happens to sit immediately before the
   // verb (see detectMultiSocialActions's doc comment). Only short-circuits
   // detectSocialPost when it actually resolves (2+ distinct targets, each
-  // with exactly one connector or being 'x') — any other utterance computes
+  // with exactly one connector) — any other utterance computes
   // socialPostDetection exactly as before this change, so ordinary
   // single-platform behavior stays byte-identical.
   const multiSocialActions = detectMultiSocialActions(rawText, connectors);
@@ -2223,8 +2177,8 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     }
     // Multi-target list named but not fully resolvable (see
     // detectUnresolvedMultiPostPlatforms): keep whatever action the fallback
-    // chain above resolved (e.g. X-only app-act) — the "exactly one connector
-    // or abandon" rule is deliberately untouched — but ALWAYS say which
+    // chain above resolved — the "exactly one connector or abandon" rule is
+    // deliberately untouched — but ALWAYS say which
     // platforms were dropped and why, mirroring the single-target path's
     // never-silently-dropped contract. An existing needsSetup caveat already
     // tells the user to register a connector, so it takes precedence.

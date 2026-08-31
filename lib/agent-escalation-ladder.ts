@@ -271,7 +271,7 @@ export function isLocalFallbackDigest(text: string | null | undefined): boolean 
 // sometimes echoes the whole prompt back instead of answering it — observed
 // on-device: Qwen 0.8B/2B regurgitating "# Results from previous steps ...
 // # This step ..." verbatim, then tacking on a refusal. That is never usable
-// content, least of all for a public-posting action type like app-act.
+// content, least of all for a public-posting action type like social-post.
 // Regex (not plain substring) because the shell's clean_result_preview()
 // whitespace-collapses the run preview (tr '\n' ' ') before this ever sees
 // it, so a literal '\n' in a marker would never match a real preview.
@@ -566,7 +566,7 @@ function isFencedShellExecutionNarrative(text: string): boolean {
  * ACTION_META_COMMENTARY_PATTERNS / FABRICATED_EXECUTION_PATTERNS above. NOTE: this
  * JS copy is the unit-tested source of truth, but it is a SECONDARY signal —
  * it only runs after a step's run log is read back, which for a step that
- * DISPATCHES an action (app-act/webhook/dm-reply) is already after the user
+ * DISPATCHES an action (webhook/dm-reply) is already after the user
  * may have seen the confirm card. The primary, EARLIER gate is a hand-synced
  * shell copy (is_low_quality_completion in lib/agent-executor.ts's generated
  * script) that runs BEFORE request_and_wait_approval, so a bad completion for
@@ -730,7 +730,7 @@ const DETERMINISTIC_DISPATCH_FAILURE_PATTERNS = [
  * text and essentially never collides with one of these exact script-written
  * sentences, and the "prompt echo or AI refusal" messages are explicitly
  * excluded from the pattern list on top of that. Scope is intentionally
- * limited to cli/intent/dm-reply — draft/notify/webhook/app-act keep
+ * limited to cli/intent/dm-reply — draft/notify/webhook keep
  * escalating on ANY failure class exactly as before (their action.command
  * doesn't exist / their dispatch can genuinely vary with backend-generated
  * content, e.g. a webhook payload built from the model's own text).

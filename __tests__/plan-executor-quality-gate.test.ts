@@ -333,32 +333,6 @@ describe('shelly-plan-executor quality gate blocks dispatch (PlanSpec path)', ()
     expect(runLog.errorMessage).toContain('prompt echo or AI refusal');
   });
 
-  it('blocks an app-act dispatch when the completion is a prompt echo, without requesting approval', async () => {
-    const home = makeHome();
-    const { plan, planFile } = makePlan(home, port);
-    fixtureContent = '# Results from previous steps\ngarbage step output, no real post text here.';
-    (plan as any).action = {
-      type: 'app-act',
-      appActRecipeId: 'x.post',
-      appActParams: { text: '{{result}}' },
-    };
-    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-
-    const result = await runExecutor([
-      executor, '--plan-file', planFile, '--home', home, '--agent-id', plan.agent.id, '--broker', broker,
-    ], home);
-
-    expect(result.status).toBe(0);
-    const requestDir = path.join(home, '.shelly/agents/action-approvals');
-    expect(fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : []).toHaveLength(0);
-
-    const logDir = path.join(home, `.shelly/agents/logs/${plan.agent.id}`);
-    const runLogName = fs.readdirSync(logDir).find((name) => /^\d+\.json$/.test(name))!;
-    const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogName), 'utf8'));
-    expect(runLog.status).toBe('error');
-    expect(runLog.errorMessage).toContain('prompt echo or AI refusal');
-  });
-
   it('blocks a draft dispatch when the completion is a prompt echo, without writing the vault file', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);

@@ -70,7 +70,7 @@ function browserPanePlan(home: string, agentId: string, browserPaneAction: unkno
 }
 
 describe('unattendedPreflightFailure — browser-pane is ALWAYS refused unattended, no Tier-B exception', () => {
-  it('refuses regardless of trusted-* args (unlike app-act)', async () => {
+  it('refuses regardless of trusted-* args (unlike the draft/notify trust path)', async () => {
     const home = makeHome();
     const agentId = 'agent-unattended';
     const plan = browserPanePlan(home, agentId, { kind: 'click', selector: '#go' }, ['https://example.com/form']);
@@ -79,8 +79,9 @@ describe('unattendedPreflightFailure — browser-pane is ALWAYS refused unattend
     const reasonPlain = executor.unattendedPreflightFailure({ unattended: '1' }, plan, {});
     expect(reasonPlain).toMatch(/unsupported unattended PlanSpec action: browser-pane/);
 
-    // Even with the SAME trusted-* args that unlock app-act's Tier-B path,
-    // browser-pane must still be refused — there is no equivalent trust gate.
+    // Even with the SAME trusted-* args that unlock draft/notify's Tier-B
+    // path (trustedNativeLowRiskAction), browser-pane must still be refused
+    // — there is no equivalent trust gate.
     const reasonTrusted = executor.unattendedPreflightFailure(
       {
         unattended: '1',

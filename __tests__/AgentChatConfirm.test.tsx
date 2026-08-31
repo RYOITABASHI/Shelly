@@ -38,7 +38,7 @@ const scheduledDraft: ParsedAgentDraft = {
   schedule: '0 8 * * *',
   scheduleConfident: true,
   scheduleLabel: 'Daily at 08:00',
-  action: { type: 'app-act', appActRecipeId: 'x.post', appActParams: { text: '{{result}}' } },
+  action: { type: 'social-post', socialPost: { platform: 'x', connectorId: 'my-x', text: '{{result}}' } },
   tool: { type: 'local' },
   toolLabel: 'Local LLM',
   rawText: 'Every day at 8, summarize today and post it to X',

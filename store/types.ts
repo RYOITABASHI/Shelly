@@ -508,7 +508,7 @@ export type AppSettings = {
   showVimKeyBar?: boolean;
   // ─── Approval defaults (project owner directive 2026-07-14) ─────────────────
   /** Registration confirm for NL-self-registered agents that still use
-   *  AgentConfirmCard (non-app-act, non-tool-pinned drafts — see
+   *  AgentConfirmCard (non-tool-pinned drafts — see
    *  lib/agent-plan-summary.ts's shouldUseChatConfirm for the chat-native
    *  drafts this does NOT apply to). Default false = auto-register the
    *  parsed draft immediately (no human tap) whenever it already has a
@@ -536,8 +536,8 @@ export type AppSettings = {
    *    agentRegistrationRequireConfirm behavior — this flag is never read for
    *    source 'ai-pane'.
    *  - Drafts with no fireable schedule, with assumed/LLM-extracted values
-   *    (hasDraftAssumptions), or of a high-risk action type (app-act/
-   *    social-post/tool-pinned — isAutoRegisterEligibleOnChatConfirm) still
+   *    (hasDraftAssumptions), or of a high-risk action type (social-post/
+   *    tool-pinned — isAutoRegisterEligibleOnChatConfirm) still
    *    surface the normal in-app confirmation.
    *  - Per-run action approval (defaultRequireActionApproval), command-safety
    *    and the secret scan are unchanged.
@@ -553,10 +553,6 @@ export type AppSettings = {
    *  Fable5 review — previously false) = mandatory-approval flow; false =
    *  auto-approve, no human tap required, opt-in only.
    *  Per-agent Agent.requireActionApproval overrides this when set.
-   *  Does NOT affect app-act, which has its own narrower Tier-B trust gate
-   *  (Agent.autonomous alone, see AgentActionType's doc comment) —
-   *  intentionally not unified with this blanket switch because a wrong
-   *  external post is not equivalent in risk to a local draft or CLI call.
    *  Does NOT relax command-safety CRITICAL / secret-scan / workspace-root
    *  gates, which are hard content/action classifiers independent of any
    *  approval-frequency setting. */
@@ -572,7 +568,7 @@ export type AppSettings = {
    *  deliberately narrower than it.
    *
    *  HARD BOUNDARY — this setting must never widen to irreversible actions.
-   *  webhook / social-post / intent / dm-reply / app-act / api-call leave the
+   *  webhook / social-post / intent / dm-reply / api-call leave the
    *  device, `cli` is an arbitrary shell command that cannot be proven to be a
    *  workspace-only file write, and `notify` has already been delivered. None
    *  of those can be undone by a git revert, so all of them keep the
@@ -580,8 +576,7 @@ export type AppSettings = {
    *  lib/agent-action-reversibility.ts for the per-type ruling + rationale.
    *
    *  Also unaffected: agent REGISTRATION confirm
-   *  (agentRegistrationRequireConfirm), command-safety CRITICAL blocks, the
-   *  secret-guard route forcing, and app-act's Tier-B gate. */
+   *  (agentRegistrationRequireConfirm) and command-safety CRITICAL blocks. */
   agentOptimisticWorkspaceWrites?: boolean;
   /** P1 scheduling-reliability audit (2026-07-15): true once the user has
    *  dismissed the one-time AgentScheduleReadinessCard (exact-alarm grant /
@@ -664,38 +659,11 @@ export type ToolChoice =
  * NOT a member — draft-only is a hard capability guarantee for the MVP.
  *
  * Approval tiering by blast radius (Phase 0 §2.6) is enforced at the approval layer,
- * keyed off `type`: draft/notify = one-tap; webhook = one-tap with host+payload shown;
- * cli/intent/dm-reply = never one-tap (in-app Review before Allow) — intent additionally shows
- * the resolved target app/URI/share-text so the user sees exactly what will fire.
- *
- * `app-act` is a DELIBERATE exception to that pattern: it is Tier-B and
- * unattended/autonomous-run-capable, unlike its `cli`/`intent`/`dm-reply` siblings
- * which either hard-refuse unattended execution or are refused when running
- * unattended. This is intentional, not an oversight a future reader should "fix"
- * by adding a matching hard-refusal — do not do that. The reason it's safe: unlike
- * `intent`/`dm-reply`, which can point at an arbitrary target resolved at run time
- * (a package/URI or a paired notification fingerprint chosen dynamically), an
- * `app-act` action's recipe + target + content-pipeline (`appActRecipeId` +
- * `appActParams`) is fixed and explicitly consented to once at registration time,
- * and remains visible in the Sidebar for the lifetime of the agent — there is no
- * run-time target resolution step that could diverge from what the user approved.
- *
- * Implemented gate (2026-07-14, see docs/superpowers/DEFERRED.md's now-resolved
- * "app-act Tier-B" entry, widened same day per project owner directive —
- * "たとえパープレだろうとCodexだろうと", chat-confirmed consent is the
- * boundary, not the tool backend): the unattended-allow ONLY fires when the
- * SAME registration-time consent already gates draft/notify's native fast-path
- * — `Agent.autonomous === true` alone (AgentRuntime.kt's trustedPlanLaunch /
- * lib/agent-executor.ts's ACTION_APP_ACT_AUTO_FIRE_TRUSTED). A cloud tool
- * still can't reach a runnable autonomous script at all unless
- * AppSettings.autonomousCloudConsent was separately granted (Spec A §4, N1
- * exception) — this gate only governs whether app-act may fire unattended
- * once a script exists. This is a NARROWER gate than
- * AppSettings.defaultRequireActionApproval/Agent.requireActionApproval
- * (which only ever affect draft/notify/webhook/cli/intent/dm-reply) — flipping
- * the global "no approval tap" default does NOT by itself unlock unattended
- * app-act; only the pre-existing autonomous consent does, because a wrong
- * external post is not equivalent in risk to a local draft or CLI call.
+ * keyed off `type`: draft/notify = one-tap; webhook/api-call = one-tap with host+payload
+ * shown; cli/intent/dm-reply/social-post/browser-pane = never one-tap (in-app Review
+ * before Allow) — intent additionally shows the resolved target app/URI/share-text so
+ * the user sees exactly what will fire. See each type's own field doc comment below
+ * for its specific tier rationale.
  */
 export type AgentActionType =
   | 'draft'
@@ -704,7 +672,6 @@ export type AgentActionType =
   | 'cli'
   | 'intent'
   | 'dm-reply'
-  | 'app-act'
   | 'api-call'
   | 'social-post'
   | 'browser-pane';
@@ -716,14 +683,12 @@ export type SocialPlatform = 'discord' | 'slack' | 'telegram' | 'mastodon' | 'mi
 /**
  * social-post: publish the run result to a user-registered social/publishing
  * connector (Discord/Slack webhook, Telegram bot, Mastodon/Misskey instance,
- * WordPress site, Bluesky PDS). The API alternative to the AccessibilityService
- * `app-act` path. Approval tier: a human approval tap EVERY time, UNLESS the
- * connector's host is opted into SHELLY_SOCIAL_HOST_ALLOWLIST (the same
- * env-var opt-in pattern SHELLY_WEBHOOK_HOST_ALLOWLIST uses for `webhook`) —
- * a non-allowlisted destination requires the tap even when the global
- * approval-mode default is 'auto', because these connectors carry
- * account-level credentials (same risk tier as an external post via app-act,
- * not a local draft).
+ * WordPress site, Bluesky PDS). Approval tier: a human approval tap EVERY
+ * time, UNLESS the connector's host is opted into SHELLY_SOCIAL_HOST_ALLOWLIST
+ * (the same env-var opt-in pattern SHELLY_WEBHOOK_HOST_ALLOWLIST uses for
+ * `webhook`) — a non-allowlisted destination requires the tap even when the
+ * global approval-mode default is 'auto', because these connectors carry
+ * account-level credentials, not a local draft.
  */
 export interface AgentSocialPostConfig {
   platform: SocialPlatform;
@@ -732,7 +697,7 @@ export interface AgentSocialPostConfig {
   connectorId: string;
   /** Post text/body. May contain the literal placeholder "{{result}}", string-replaced
    *  (no template engine) with the agent's run preview text — same convention as
-   *  intentShareText/dmReplyText/appActParams/api-call's bodyTemplate. Absent/empty
+   *  intentShareText/dmReplyText/api-call's bodyTemplate. Absent/empty
    *  means "{{result}}" (post the run result itself). */
   text?: string;
   /** X only (2026-08-02): publish a long-form Article (POST /2/articles/draft
@@ -817,7 +782,7 @@ export interface AgentApiCallConfig {
   authRef?: 'perplexity' | 'gemini' | 'cerebras' | 'groq';
   /** POST only. May contain the literal placeholder "{{result}}", string-
    *  replaced (no template engine, plain string-replace like
-   *  intentShareText/dmReplyText/appActParams) with the prior result. */
+   *  intentShareText/dmReplyText) with the prior result. */
   bodyTemplate?: string;
 }
 
@@ -846,22 +811,6 @@ export interface AgentAction {
   dmPairingId?: string;
   /** dm-reply: reply text template. A literal {{result}} is replaced with the run preview. */
   dmReplyText?: string;
-  /** app-act: which registered app-action recipe to invoke (e.g. 'x.post').
-   *  Schema only in this phase — no dispatch logic reads this yet. */
-  appActRecipeId?: string;
-  /** app-act: recipe parameters (e.g. { text: '{{result}}' } for 'x.post').
-   *  Values may contain the literal placeholder "{{result}}", string-replaced
-   *  (no template engine) with the agent's run preview text, following the same
-   *  convention as intentShareText/dmReplyText. Schema only in this phase. */
-  appActParams?: Record<string, string>;
-  /** app-act: delivery mechanism for the recipe. 'accessibility' = drive the
-   *  target app's UI via AccessibilityService (what Phase 3/4 implement first);
-   *  'api' = call the target service's own API (e.g. X API v2 OAuth 1.0a
-   *  user-context) as a forward-compatible alternative, not yet implemented.
-   *  Absent/undefined means 'accessibility' — kept optional so existing
-   *  app-act actions written before this field existed don't need a migration.
-   *  Schema only in this phase; no dispatch logic reads this yet. */
-  appActMethod?: 'accessibility' | 'api';
   /** api-call (v1): a structured HTTP call to an allowlisted host. Same
    *  approval tier as draft/notify/webhook/cli (see this interface's own
    *  doc comment above). UI-only authoring — lib/agent-nl-parser.ts never
@@ -879,8 +828,8 @@ export interface AgentAction {
    * with a real page loaded, not just an OS/app capability — there is no
    * BrowserPane component instance during an unattended/alarm-fired run (no
    * pane is rendered, nothing is on screen). ATTENDED-ONLY, same tier as
-   * cli/intent/dm-reply, and unlike app-act it has NO Tier-B unattended-allow
-   * — see lib/agent-executor.ts's dispatch_agent_action `browser-pane)` case
+   * cli/intent/dm-reply, with NO Tier-B unattended-allow — see
+   * lib/agent-executor.ts's dispatch_agent_action `browser-pane)` case
    * and lib/agent-browser-pane-review.ts's doc comment for why no evidence
    * supports a background-mounted WebView existing on this codebase's
    * architecture. It is additionally NEVER auto-accepted even when attended
@@ -888,9 +837,9 @@ export interface AgentAction {
    * requireActionApproval default) — a blind click/fill against a live page
    * (e.g. silently submitting a form) is a materially different risk than
    * launching a known app or replying to a known paired contact, so it
-   * always requires an explicit human Review tap, mirroring how app-act's
-   * autoFireTrusted and social-post's non-allowlisted-host case are each
-   * carved out of the blanket approval-frequency knob for their own reasons.
+   * always requires an explicit human Review tap, mirroring how social-post's
+   * non-allowlisted-host case is carved out of the blanket approval-frequency
+   * knob for its own reasons.
    * WHICH Browser Pane receives the action is resolved at fire time by
    * lib/agent-browser-pane-review.ts's resolveTargetBrowserPaneId — the SAME
    * focused-else-first-in-slot-order algorithm BrowserPane.tsx's own
@@ -990,7 +939,7 @@ export interface Agent {
   /** Per-agent override of AppSettings.defaultRequireActionApproval. Absent =
    *  inherit the global default (false = auto-approve). true = this agent's
    *  runtime actions always require the manual "Runtime Review" tap regardless
-   *  of the global default. Does not affect app-act's separate Tier-B gate. */
+   *  of the global default. */
   requireActionApproval?: boolean;
   /** autonomy level for autonomous runs: L1 read-only / L2 workspace / L3 full.
    *  Set by the human (ConfigTUI); absent = L2 default. The B2 driver builds the
@@ -1332,7 +1281,7 @@ export type ChatMessage = {
   agentCardState?: 'pending' | 'confirmed' | 'cancelled';
   /** Phase 7: true = render the chat-native AgentChatConfirm affordance (summary
    *  text already in `content` + inline Confirm/Cancel) instead of AgentConfirmCard
-   *  for this pending draft. Set for app-act / tool-pinned orchestration drafts —
+   *  for this pending draft. Set for tool-pinned orchestration drafts —
    *  see lib/agent-plan-summary.ts's shouldUseChatConfirm. Absent/false = the
    *  existing card path, unchanged. */
   agentChatConfirm?: boolean;

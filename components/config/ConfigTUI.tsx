@@ -42,7 +42,6 @@ import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/age
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { deleteProfileFact, loadUserProfile, resetUserProfile } from '@/lib/user-profile';
-import { AppActRecipeDraftModal } from '@/components/config/AppActRecipeDraftModal';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -134,7 +133,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // button on an eligible run's result bubble) — the previous "no Undo
       // button / no run takes this path today" caveat was dropped in the
       // SAME commit, per this comment's own original instruction.
-      { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap — the result bubble gets an "Undo" button. Nothing else changes: cli / notify / webhook / social-post / dm-reply / app-act, and any Obsidian or custom output, still require approval. Undo only lasts for the current app session (does not survive a restart). Default off.' },
+      { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap — the result bubble gets an "Undo" button. Nothing else changes: cli / notify / webhook / social-post / dm-reply, and any Obsidian or custom output, still require approval. Undo only lasts for the current app session (does not survive a restart). Default off.' },
       // Widget-ASK-only registration confirm bypass — scoped EXACTLY to what
       // lib/widget-agent-registration.ts implements (see that module's doc):
       // widget-ASK-originated `@agent` commands only; AI-Pane `@agent` and
@@ -220,23 +219,6 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       { key: 'highContrastOutput',   label: 'High Contrast',     type: 'boolean', source: 'settings' },
       { key: 'notificationTriggerEnabled', label: 'Notification Triggers', type: 'boolean', source: 'custom', description: 'Let agents fire when a notification arrives from a chosen app. Requires OS notification access (see below).' },
       { key: 'notificationOsAccess', label: 'Notification Access (OS)', type: 'action', source: 'custom', actionLabel: 'Check / Grant' },
-    ],
-  },
-  {
-    title: 'Automation',
-    icon: 'auto-fix-high',
-    items: [
-      {
-        key: 'appActRecipeDraft',
-        label: 'App-Act Recipe Draft (Beta)',
-        labelKey: 'settings.app_act_recipe_draft_label',
-        type: 'action',
-        source: 'custom',
-        actionLabel: 'Capture',
-        actionLabelKey: 'settings.app_act_recipe_draft_action',
-        description: 'Capture the current screen (LINE or X only) and draft a new app.act recipe from it.',
-        descriptionKey: 'settings.app_act_recipe_draft_desc',
-      },
     ],
   },
   {
@@ -630,7 +612,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
   const [notificationTriggerEnabled, setNotificationTriggerEnabled] = useState(false);
   const [cloudSyncBusy, setCloudSyncBusy] = useState(false);
   const [profileFacts, setProfileFacts] = useState<string[] | null>(null);
-  const [appActRecipeDraftVisible, setAppActRecipeDraftVisible] = useState(false);
   const cloudSyncBusyRef = useRef(false);
   useEffect(() => {
     if (visible) {
@@ -734,7 +715,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         const ok = await new Promise<boolean>((resolve) => {
           Alert.alert(
             'Run workspace drafts without approval',
-            'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• cli / notify / webhook / social-post / dm-reply / app-act — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n• The "Undo" affordance is not built yet, so no run actually takes this path today; this setting is here ahead of it.\n\nEnable?',
+            'This covers ONE thing: a run whose only action saves a draft into the local agent-output folder.\n\n• Shelly takes an automatic git savepoint first, then runs immediately with no approval tap.\n• cli / notify / webhook / social-post / dm-reply — and any Obsidian or custom output — are NOT covered and still require approval.\n• Agent registration confirm, command-safety and the secret scan are unchanged.\n• The "Undo" affordance is not built yet, so no run actually takes this path today; this setting is here ahead of it.\n\nEnable?',
             [
               { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
               { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },
@@ -754,7 +735,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         const ok = await new Promise<boolean>((resolve) => {
           Alert.alert(
             'Register widget agents without confirmation',
-            'This covers ONE thing: an "@agent …" command entered in the home-screen widget\'s ASK dialog.\n\n• It registers immediately — the normal in-app confirmation bubble is skipped.\n• A notification reports each registration (name + schedule) right away.\n• "@agent" typed in the AI Pane is NOT affected and still confirms.\n• Commands with an unclear schedule, assumed values, or external-posting actions (social-post / app-act) still open the normal in-app flow.\n• Per-run action approval, command-safety and the secret scan are unchanged.\n\nEnable?',
+            'This covers ONE thing: an "@agent …" command entered in the home-screen widget\'s ASK dialog.\n\n• It registers immediately — the normal in-app confirmation bubble is skipped.\n• A notification reports each registration (name + schedule) right away.\n• "@agent" typed in the AI Pane is NOT affected and still confirms.\n• Commands with an unclear schedule, assumed values, or external-posting actions (social-post) still open the normal in-app flow.\n• Per-run action approval, command-safety and the secret scan are unchanged.\n\nEnable?',
             [
               { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
               { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },
@@ -909,9 +890,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             },
           },
         ]);
-        break;
-      case 'appActRecipeDraft':
-        setAppActRecipeDraftVisible(true);
         break;
       case 'viewProfileFacts':
         loadUserProfile()
@@ -1132,10 +1110,6 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           onClose={() => setProfileFacts(null)}
         />
       )}
-      <AppActRecipeDraftModal
-        visible={appActRecipeDraftVisible}
-        onClose={() => setAppActRecipeDraftVisible(false)}
-      />
     </Modal>
   );
 }

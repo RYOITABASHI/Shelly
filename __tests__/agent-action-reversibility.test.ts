@@ -29,7 +29,6 @@ const ALL_ACTION_TYPES: AgentActionType[] = [
   'cli',
   'intent',
   'dm-reply',
-  'app-act',
   'api-call',
   'social-post',
   'browser-pane',
@@ -42,7 +41,6 @@ const IRREVERSIBLE_TYPES: AgentActionType[] = [
   'cli', // arbitrary shell command — unprovable
   'intent', // launches another app / OS share sheet
   'dm-reply', // a sent message cannot be unsent
-  'app-act', // drives another app's UI (e.g. publishes a post)
   'api-call', // outbound HTTP to an allowlisted host
   'social-post', // published publicly, with account credentials
   'browser-pane', // mutates a live web page's DOM/session state

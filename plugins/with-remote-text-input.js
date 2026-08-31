@@ -7,8 +7,8 @@
  * CJK KeyEvents; scrcpy's default Unicode injection mode doesn't reliably
  * reach RN TextInput's JS-side state either).
  *
- * Like TerminalSessionService/ShellyNotificationListener/
- * ShellyAccessibilityService, this MUST go through a config plugin — expo
+ * Like TerminalSessionService/ShellyNotificationListener, this MUST go
+ * through a config plugin — expo
  * prebuild regenerates android/ and silently drops hand-edited manifest
  * entries with no corresponding plugin (see with-terminal-service.js's doc
  * comment for the confirmed BootCompletedReceiver incident this pattern

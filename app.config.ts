@@ -131,7 +131,6 @@ const config: ExpoConfig & { android?: any } = {
     "./plugins/with-saved-instance-state",
     "./plugins/with-configuration-change-guard",
     "./plugins/with-agent-launch-queries",
-    "./plugins/with-accessibility-service",
     "./plugins/with-remote-text-input",
     [
       "expo-audio",

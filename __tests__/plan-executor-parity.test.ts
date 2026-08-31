@@ -206,35 +206,6 @@ describe('shelly-plan-executor.js parity', () => {
     expect(executorSrc).toContain("if (opts.tainted) args.push('--tainted', '1');");
   });
 
-  it('wires app-act into the PlanSpec executor path (Phase 4), not just the legacy .sh path', () => {
-    const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
-    // Native gate: AgentRuntime.kt must allow 'app-act' through
-    // PLAN_EXECUTOR_ACTIONS or every PlanSpec-routed app-act run is refused
-    // before the executor ever launches.
-    expect(agentRuntime).toContain('PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "app-act", "api-call", "social-post", "browser-pane", "__suppressed__")');
-    // Executor: dispatchActionTrusted must accept 'app-act' and resolve+redact
-    // its params (mirrors the legacy .sh's resolve_app_act_params) before they
-    // reach the approval-request preview shown to the human.
-    expect(executorSrc).toContain("actionType !== 'app-act'");
-    expect(executorSrc).toContain('function resolveAppActParams(params, preview)');
-    expect(executorSrc).toContain("v.split('{{result}}').join(preview)");
-    expect(executorSrc).toContain('appActRecipeId: extra.appActRecipeId');
-    expect(executorSrc).toContain('appActParamsResolved: extra.appActParamsResolved');
-    // 2026-07-14 (docs/superpowers/DEFERRED.md's "app-act Tier-B" entry,
-    // resolved): unattendedPreflightFailure allowlists app-act, but ONLY
-    // behind trustedNativeLowRiskAction's narrow registration-time consent
-    // gate (autonomous + on-device tool + matching recipe id) — the SAME
-    // gate draft/notify's native fast-path already required. North Star
-    // P0(c) fix (2026-07-16) widened draft/notify/webhook/cli to fire
-    // unattended whenever approval mode is auto (matching the .sh executor's
-    // own policy, independent of agent.autonomous), but app-act deliberately
-    // keeps the stricter trust gate — assert it stays that way, not folded
-    // into the blanket approval-mode check.
-    expect(executorSrc).toMatch(/if \(actionType === 'app-act'\) \{/);
-    expect(executorSrc).toContain('return trustedNativeLowRiskAction(args, plan, actionType)');
-    expect(executorSrc).toContain("trusted-app-act-recipe-id");
-  });
-
   describe('orchestration `steps` field (increment 1) does not trip the version-mismatch gate', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { validatePlan } = require(scriptCopy);

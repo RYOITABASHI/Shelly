@@ -22,7 +22,7 @@ what actually varies on the page versus what's the real signal:
    value and the new value in the notification/digest so the user doesn't
    have to reopen the page to find out what happened.
 5. **Escalate through Notify by default, not a higher-privilege action.**
-   Only wire a change straight into a CLI/Intent/App-Act action when the
+   Only wire a change straight into a CLI/Intent action when the
    response is truly mechanical and was explicitly reviewed for that
    specific page+condition at registration time — "the page changed" is a
    weak precondition for firing an unattended side-effecting action.

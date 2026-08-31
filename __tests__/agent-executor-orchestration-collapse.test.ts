@@ -177,29 +177,9 @@ describe('generateRunScript — orchestration-collapse note (bug #155(b), residu
     expect(noteInjectIdx).toBeLessThan(logWriteIdx);
   });
 
-  it('never reaches resolve_app_act_params\'s {{result}} substitution (the live external-post risk)', () => {
-    // app-act is "the first agent action type that reaches a real
-    // external-posting surface" (see the code comment at its ACTION_APP_ACT_PARAMS_JSON
-    // definition) — resolve_app_act_params substitutes {{result}} using the exact
-    // $preview value dispatch_agent_action was called with. Because the note is
-    // injected only after dispatch_agent_action returns (previous test), the
-    // function-call SITE that passes "$preview" into resolve_app_act_params must
-    // textually precede the note injection — i.e. it always sees the clean value.
-    const s = generateRunScript({
-      ...orchestratedCodexWithToolPin,
-      action: { type: 'app-act', appActRecipeId: 'x-post', appActParams: { text: '{{result}}' } },
-    } as Agent);
-    const resolveCallIdx = s.indexOf('resolve_app_act_params "$ACTION_APP_ACT_PARAMS_JSON" "$preview"');
-    const noteInjectIdx = s.indexOf('if [ -n "$ORCHESTRATION_COLLAPSED_NOTE" ]; then');
-    expect(resolveCallIdx).toBeGreaterThan(-1);
-    expect(noteInjectIdx).toBeGreaterThan(-1);
-    expect(resolveCallIdx).toBeLessThan(noteInjectIdx);
-    bashParses(s);
-  });
-
   it('bumps the script version in lockstep with the native gate (v21)', () => {
     const s = generateRunScript(orchestratedCodexWithUnsupportedToolPin);
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=58');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=59');
   });
 
   it('reflects the resolved tool label in the note (autonomous auto -> codex, unsupported-tool-pinned step residual case)', () => {

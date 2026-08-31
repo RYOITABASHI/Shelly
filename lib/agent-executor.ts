@@ -615,7 +615,19 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // instead of being asked to invent one. REAL BEHAVIOR CHANGE (the actual
 // prompt text sent to the model changes for this agent shape): bumped so a
 // stale pre-v57 on-disk script keeps sending the bare, contextless prompt.
-const AGENT_SCRIPT_VERSION = 58;
+// v59 (2026-08-31, app.act product removal — Fable5/Codex review finding):
+// the `app-act` action's dispatch case, resolve_app_act_params() helper, and
+// the appActRecipeId/appActParamsResolved/autoFireTrusted approval-request
+// fields were all removed from the generated script. REAL BEHAVIOR CHANGE:
+// AgentActionApprovalBridge.kt's fromJson now silently drops any
+// actionType:"app-act" request instead of surfacing it, so a stale pre-v59
+// on-disk script for an autonomous app-act agent would otherwise hang
+// waiting for an approval reply that will never come. Bumped so that script
+// is regenerated instead — after regeneration it fails loudly via the
+// generated dispatcher's `*)` "Unknown agent action" case, since `app-act`
+// is no longer a schema member at all. Kept in lockstep with
+// AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 59;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -693,9 +705,6 @@ const ACTION_OUTPUT_INSTRUCTIONS: Record<AgentActionType, string> = {
   cli: 'Produce exactly the content needed by the requested command or command workflow.',
   intent: 'Produce exactly the text or content needed for the requested app or share action.',
   'dm-reply': 'Write the reply message itself as a natural, short conversational response unless explicit user instructions request otherwise.',
-  // Phase 4: real dispatch path, see dispatch_agent_action's app-act) case
-  // below and agent-plan-spec.ts toPlanAction's 'app-act' case.
-  'app-act': 'Produce exactly the content needed for the requested app action.',
   // api-call (v1) is PlanSpec-executor-only (scripts/shelly-plan-executor.js) —
   // deliberately NOT wired into this legacy .sh executor's dispatch_agent_action
   // (see the plan/DEFERRED.md entry for this feature). This entry exists only
@@ -825,9 +834,9 @@ const SLUG_DROP_RE = /[^a-z0-9぀-ヿ㐀-鿿ｦ-ﾟ]+/g;
  *  before agent.name is ever set, but the confirm card's name field is
  *  user-editable (components/panes/AgentConfirmCard.tsx), so a name that
  *  never went through deriveName can still reach here. Mirrors the same
- *  belt-and-suspenders pattern resolve_app_act_params() uses in the generated
- *  shell script (redacting an already-redacted value is a cheap no-op; the
- *  protection only matters on the path that skipped the first pass). */
+ *  belt-and-suspenders pattern used elsewhere in the generated shell script
+ *  (redacting an already-redacted value is a cheap no-op; the protection
+ *  only matters on the path that skipped the first pass). */
 export function computeAgentSlug(name: string, fallback: string): string {
   const s = redactSecretsText(name || '')
     .toLowerCase()
@@ -918,8 +927,6 @@ type ActionBakedFields = {
   intentShareText: string;
   dmPairingId: string;
   dmReplyText: string;
-  appActRecipeId: string;
-  appActParamsJson: string;
   socialPlatform: string;
   socialConnectorId: string;
   socialEnvPrefix: string;
@@ -961,8 +968,6 @@ function bakeActionFields(action: AgentAction | undefined): ActionBakedFields {
   const intentShareText = type === 'intent' ? (action?.intentShareText ?? '') : '';
   const dmPairingId = type === 'dm-reply' ? action?.dmPairingId ?? '' : '';
   const dmReplyText = type === 'dm-reply' ? action?.dmReplyText ?? '' : '';
-  const appActRecipeId = type === 'app-act' ? (action?.appActRecipeId ?? '') : '';
-  const appActParamsJson = type === 'app-act' ? JSON.stringify(action?.appActParams ?? {}) : '{}';
   const socialPost = type === 'social-post' ? action?.socialPost : undefined;
   const socialPlatform = socialPost?.platform ?? '';
   const socialConnectorId =
@@ -981,8 +986,6 @@ function bakeActionFields(action: AgentAction | undefined): ActionBakedFields {
     intentShareText,
     dmPairingId,
     dmReplyText,
-    appActRecipeId,
-    appActParamsJson,
     socialPlatform,
     socialConnectorId,
     socialEnvPrefix,
@@ -1215,8 +1218,8 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
 
   // Deliberately kept OUT of the actual dispatched/posted content
   // (RESULT_CONTENT_FILE / the `preview` argument dispatch_agent_action passes
-  // to resolve_app_act_params's {{result}} substitution) so it can never leak
-  // into a live external post (webhook/cli/dm-reply/app-act) — see where
+  // for {{result}} substitution) so it can never leak
+  // into a live external post (webhook/cli/dm-reply) — see where
   // PREVIEW is amended, near the run-log write, for why that ordering matters.
   // Only fires for the RESIDUAL collapse cases now (see canRunOrchestrationChain
   // above) — a chain this function can actually run gets no note at all.
@@ -1249,15 +1252,6 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const actionIntentShareText = actionType === 'intent' ? (agent.action?.intentShareText ?? '') : '';
   const actionDmPairingId = actionType === 'dm-reply' ? agent.action?.dmPairingId ?? '' : '';
   const actionDmReplyText = actionType === 'dm-reply' ? agent.action?.dmReplyText ?? '' : '';
-  const actionAppActRecipeId = actionType === 'app-act' ? (agent.action?.appActRecipeId ?? '') : '';
-  // Baked as a JSON string constant (params may carry the literal "{{result}}"
-  // placeholder in any value, same convention as intentShareText/dmReplyText).
-  // Resolved against the redacted run preview, and redacted a second time as
-  // defense-in-depth, entirely at RUNTIME in the shell (resolve_app_act_params) —
-  // this is the first agent action type that reaches a real external-posting
-  // surface, so it gets an extra redaction pass beyond relying solely on the
-  // preview already being clean.
-  const actionAppActParamsJson = actionType === 'app-act' ? JSON.stringify(agent.action?.appActParams ?? {}) : '{}';
   // social-post (2026-07-22): only platform/connectorId/text are baked — the
   // connector's host/meta AND its secret fields are resolved at RUNTIME from
   // the sourced $ENV_FILE (SOCIAL_CONNECTOR_<ID>_HOST/_META/_<FIELD>, written
@@ -1361,7 +1355,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // What IS re-checked here, as defense in depth, is the half that is knowable
   // from the agent alone: the action type must be in the reversible allowlist
   // (today: `draft` only). A caller that mistakenly passed this flag for a
-  // webhook / social-post / cli / intent / dm-reply / app-act / api-call agent
+  // webhook / social-post / cli / intent / dm-reply / api-call agent
   // gets the override silently ignored and the normal pre-approval gate kept —
   // an irreversible external side effect must never be reachable by any single
   // mistake. See lib/agent-action-reversibility.ts for the full ruling.
@@ -1377,26 +1371,6 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     opts.optimisticWorkspaceWrites === true && optimisticActionTypesReversible
       ? 'auto'
       : baseActionApprovalModeOverride;
-  // app-act Tier-B unattended-allow (docs/superpowers/DEFERRED.md, resolved
-  // 2026-07-14, widened same day per project owner directive: "最終的に
-  // チャットで条件を示して、ユーザーが良しとしたものは実行で。たとえパープレ
-  // だろうとCodexだろうと" — chat-confirmed registration-time consent is the
-  // trust boundary, not the tool backend). Deliberately NOT governed by
-  // actionApprovalMode above — a wrong external post is not equivalent in
-  // risk to a local draft/CLI call, so it needs the SAME registration-time
-  // consent draft/notify's existing native fast-path already requires (the
-  // Autonomous toggle itself; see AgentRuntime.kt's trustedPlanLaunch and the
-  // AgentActionType doc comment in store/types.ts), not the blanket
-  // approval-frequency setting. A cloud tool still can't reach this point
-  // unless autonomousCloudConsent was separately granted (Spec A §4, N1
-  // exception, above) — that gate governs whether an autonomous script may
-  // use cloud API keys at all; this flag only governs whether app-act may
-  // fire unattended once a script exists. Baked as a constant here (not
-  // re-derived at run time) because this exact .sh file is regenerated only
-  // through the trusted authoring path (create/update agent) — a scheduled/
-  // unattended fire re-executes this file unchanged, so whatever was true
-  // when it was last written IS "unchanged since registration".
-  const actionAppActAutoFireTrusted = agent.autonomous === true;
 
   // North Star fix: a web-research / collection agent otherwise receives the bare
   // task utterance as a single user message with no output contract, so the backend
@@ -1639,8 +1613,6 @@ ACTION_INTENT_SHARE_TEXT=${shellQuote(actionIntentShareText)}
 ACTION_DM_PAIRING_ID=${shellQuote(actionDmPairingId)}
 ACTION_DM_REPLY_TEXT=${shellQuote(actionDmReplyText)}
 ACTION_DM_PAIRING_LABEL=""
-ACTION_APP_ACT_RECIPE_ID=${shellQuote(actionAppActRecipeId)}
-ACTION_APP_ACT_PARAMS_JSON=${shellQuote(actionAppActParamsJson)}
 ACTION_SOCIAL_PLATFORM=${shellQuote(actionSocialPlatform)}
 ACTION_SOCIAL_CONNECTOR_ID=${shellQuote(actionSocialConnectorId)}
 ACTION_SOCIAL_ENV_PREFIX=${shellQuote(actionSocialEnvPrefix)}
@@ -1652,7 +1624,6 @@ ACTION_COMMAND_SAFETY_REASON=${shellQuote(actionCommandSafety.reason)}
 ACTION_COMMAND_AUTO_APPROVABLE=${actionCommandSafety.autoApprovable ? '1' : '0'}
 ACTION_APPROVAL_MODE_OVERRIDE=${shellQuote(actionApprovalModeOverride)}
 ACTION_APPROVAL_MODE="auto"
-ACTION_APP_ACT_AUTO_FIRE_TRUSTED=${actionAppActAutoFireTrusted ? '1' : '0'}
 ACTION_BROWSER_PANE_KIND=${shellQuote(actionBrowserPaneKind)}
 ACTION_BROWSER_PANE_SELECTOR=${shellQuote(actionBrowserPaneSelector)}
 ACTION_BROWSER_PANE_VALUE=${shellQuote(actionBrowserPaneValue)}
@@ -1671,8 +1642,6 @@ ACTION_MULTI_INTENT_TARGETS=${bashArrayLiteral(multiActionFields.map((f) => f.in
 ACTION_MULTI_INTENT_SHARE_TEXTS=${bashArrayLiteral(multiActionFields.map((f) => f.intentShareText))}
 ACTION_MULTI_DM_PAIRING_IDS=${bashArrayLiteral(multiActionFields.map((f) => f.dmPairingId))}
 ACTION_MULTI_DM_REPLY_TEXTS=${bashArrayLiteral(multiActionFields.map((f) => f.dmReplyText))}
-ACTION_MULTI_APP_ACT_RECIPE_IDS=${bashArrayLiteral(multiActionFields.map((f) => f.appActRecipeId))}
-ACTION_MULTI_APP_ACT_PARAMS_JSONS=${bashArrayLiteral(multiActionFields.map((f) => f.appActParamsJson))}
 ACTION_MULTI_SOCIAL_PLATFORMS=${bashArrayLiteral(multiActionFields.map((f) => f.socialPlatform))}
 ACTION_MULTI_SOCIAL_CONNECTOR_IDS=${bashArrayLiteral(multiActionFields.map((f) => f.socialConnectorId))}
 ACTION_MULTI_SOCIAL_ENV_PREFIXES=${bashArrayLiteral(multiActionFields.map((f) => f.socialEnvPrefix))}
@@ -1995,48 +1964,6 @@ NODEEOF
     "$file" 2>/dev/null || cat "$file" 2>/dev/null || true
 }
 
-# app-act (Phase 4): resolves the literal "{{result}}" placeholder in every
-# value of $1 (a JSON object string, e.g. '{"text":"Check this: {{result}}"}')
-# against $2 (the already-redacted run preview — see clean_result_preview),
-# then runs redact_secrets_text over the resolved JSON a SECOND time as
-# defense-in-depth. $preview is already redacted by the time it reaches here,
-# so this second pass is a deliberate belt-and-suspenders for the first agent
-# action type that can publish content externally (a leaked secret in a
-# public X post is categorically worse than one in a private draft/notify) —
-# not evidence the first pass is believed to be insufficient. Falls back to
-# an empty object on any parse/exec failure (fail-closed: an app-act with no
-# resolvable params fails its own presence check in dispatch_agent_action
-# rather than firing with stale/unresolved "{{result}}" text).
-resolve_app_act_params() {
-  params_json="$1"
-  preview="$2"
-  tmp_in="$TMP_DIR/app-act-params-$AGENT_ID-$$.json"
-  tmp_resolved="$TMP_DIR/app-act-params-resolved-$AGENT_ID-$$.json"
-  printf '%s' "$params_json" > "$tmp_in"
-  : > "$tmp_resolved"
-  if node_usable; then
-    SHELLY_APP_ACT_PREVIEW="$preview" shelly_node - "$tmp_in" <<'NODEEOF' > "$tmp_resolved" 2>/dev/null
-const fs = require('fs');
-const file = process.argv[2];
-const preview = process.env.SHELLY_APP_ACT_PREVIEW || '';
-let params = {};
-try { params = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { params = {}; }
-const out = {};
-if (params && typeof params === 'object' && !Array.isArray(params)) {
-  for (const [k, v] of Object.entries(params)) {
-    out[k] = typeof v === 'string' ? v.split('{{result}}').join(preview) : '';
-  }
-}
-process.stdout.write(JSON.stringify(out));
-NODEEOF
-  fi
-  if [ ! -s "$tmp_resolved" ]; then
-    printf '{}' > "$tmp_resolved"
-  fi
-  redact_secrets_text "$tmp_resolved"
-  rm -f "$tmp_in" "$tmp_resolved"
-}
-
 # Detect a response that echoes the step-prompt scaffold back verbatim (see
 # buildStepPrompt, lib/agent-orchestration.ts), is refusal boilerplate, or is
 # empty/whitespace-only — rather than real content. The echo/refusal case is
@@ -2057,7 +1984,7 @@ NODEEOF
 # so a long, otherwise-substantive answer that merely mentions a similar
 # phrase in passing is not wrongly flagged — see dataUnavailablePatterns below.
 # Checked BEFORE any action that publishes outside the run's own log
-# (app-act/webhook/dm-reply/draft/notify) so a bad completion never reaches a
+# (webhook/dm-reply/draft/notify) so a bad completion never reaches a
 # human-facing surface in the first place — this is a stronger, EARLIER gate
 # than isLowQualityCompletion in lib/agent-escalation-ladder.ts (the JS copy
 # is the unit-tested source of truth; this shell copy exists only because
@@ -3061,24 +2988,11 @@ write_action_approval_request() {
   dm_pairing_id_json=$(json_escape_text "$ACTION_DM_PAIRING_ID")
   dm_pairing_label_json=$(json_escape_text "\${ACTION_DM_PAIRING_LABEL:-}")
   dm_reply_text_json=$(json_escape_text "$dm_reply_text_resolved")
-  # app-act (Phase 4): resolve_app_act_params substitutes {{result}} in every
-  # param value against $preview (already redacted) and redacts the resolved
-  # JSON a second time (defense-in-depth for the first agent action type that
-  # can publish externally). The resolved JSON is embedded as a plain STRING
-  # field (json_escape_text), same shape as intentShareText/dmReplyText, not
-  # a nested object — the approval-request record is a flat string map.
-  app_act_recipe_id_json=$(json_escape_text "$ACTION_APP_ACT_RECIPE_ID")
-  # ACTION_APP_ACT_PARAMS_JSON defaults to '{}' for every non-app-act action
-  # (see actionAppActParamsJson in generateRunScript), so resolving it
-  # unconditionally here is a harmless no-op for those calls -- no need to
-  # branch on $approval_type.
-  app_act_params_resolved=$(resolve_app_act_params "$ACTION_APP_ACT_PARAMS_JSON" "$preview")
-  app_act_params_resolved_json=$(json_escape_text "$app_act_params_resolved")
   # browser-pane (2026-08-04): the selector is never {{result}}-substituted
   # (it is a CSS selector, not content); only the fill kind's value is,
   # mirroring intentShareText/dmReplyText's convention. browserPaneUrlAllowlist
-  # is embedded as an escaped JSON-array STRING (same shape appActParamsResolved
-  # uses), decoded by lib/agent-browser-pane-review.ts on the RN side.
+  # is embedded as an escaped JSON-array STRING, decoded by
+  # lib/agent-browser-pane-review.ts on the RN side.
   browser_pane_kind_json=$(json_escape_text "$ACTION_BROWSER_PANE_KIND")
   browser_pane_selector_json=$(json_escape_text "$ACTION_BROWSER_PANE_SELECTOR")
   browser_pane_value_resolved="\${ACTION_BROWSER_PANE_VALUE//\{\{result\}\}/$preview}"
@@ -3097,16 +3011,9 @@ write_action_approval_request() {
   # blind click/fill against a live page is a higher risk tier than
   # intent/dm-reply's already-established one.
   auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && [ "$ACTION_APPROVAL_MODE" != "manual" ] && printf 'true' || printf 'false')
-  # auto_fire_trusted: app-act's OWN narrower Tier-B gate (see
-  # ACTION_APP_ACT_AUTO_FIRE_TRUSTED above) — deliberately independent of
-  # auto_accept_flag/ACTION_APPROVAL_MODE. Native's action-approval notifier
-  # (AgentRuntime.kt) only acts on this for actionType=="app-act". Emitted as
-  # a real JSON boolean literal (not a quoted string) so Kotlin's
-  # JSONObject.optBoolean parses both executors' requests identically.
-  auto_fire_trusted_flag=$([ "$ACTION_APP_ACT_AUTO_FIRE_TRUSTED" = "1" ] && printf 'true' || printf 'false')
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","destinationHostAllowlisted":$destination_host_allowlisted,"command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","appActRecipeId":"$app_act_recipe_id_json","appActParamsResolved":"$app_act_params_resolved_json","browserPaneActionKind":"$browser_pane_kind_json","browserPaneSelector":"$browser_pane_selector_json","browserPaneValue":"$browser_pane_value_json","browserPaneUrlAllowlist":"$browser_pane_url_allowlist_json","autoAccept":$auto_accept_flag,"autoFireTrusted":$auto_fire_trusted_flag,"ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","destinationHostAllowlisted":$destination_host_allowlisted,"command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","browserPaneActionKind":"$browser_pane_kind_json","browserPaneSelector":"$browser_pane_selector_json","browserPaneValue":"$browser_pane_value_json","browserPaneUrlAllowlist":"$browser_pane_url_allowlist_json","autoAccept":$auto_accept_flag,"ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -3117,14 +3024,14 @@ APPROVALEOF
 # ENTIRELY when the approval-mode default is 'auto' — no request file is ever
 # written, so there is nothing for a background/asleep JS bridge to wait on
 # (unattended scheduled runs must not depend on JS being alive to proceed).
-# intent/dm-reply/app-act are excluded from the skip (they only ever fire via
+# intent/dm-reply are excluded from the skip (they only ever fire via
 # RN/native — see dispatch_agent_action's own comments on each) and always go
 # through the full write+wait; auto-approval for THOSE happens via the
-# autoAccept/autoFireTrusted flags above instead, consumed by RN/native.
+# autoAccept flag above instead, consumed by RN/native.
 #
 # 2026-07-28 P0 security fix: cli is ALSO excluded from the auto-mode skip
 # when its command is independently classified CRITICAL — it now writes+waits
-# like intent/dm-reply/app-act, exactly as if manual mode were on. This is
+# like intent/dm-reply, exactly as if manual mode were on. This is
 # defense-in-depth alongside the unconditional CRITICAL hard-block just above
 # the "cli" case's request_and_wait_approval call in dispatch_agent_action
 # (that block already returns 1 before this function is ever reached for a
@@ -3143,7 +3050,7 @@ request_and_wait_approval() {
   destination_host_allowlisted="\${6:-false}"
   if [ "$ACTION_APPROVAL_MODE" != "manual" ]; then
     case "$approval_type" in
-      intent|dm-reply|app-act|browser-pane) ;;
+      intent|dm-reply|browser-pane) ;;
       cli)
         [ "$ACTION_COMMAND_SAFETY_LEVEL" = "CRITICAL" ] || return 0
         ;;
@@ -3663,65 +3570,8 @@ dispatch_agent_action() {
       ACTION_DISPATCH_MESSAGE="DM reply sent."
       return 0
       ;;
-    app-act)
-      # app-act is the first agent action that can publish content to an
-      # external, human-facing surface (e.g. a public X post) rather than a
-      # private draft/notification. store/types.ts documents app-act as
-      # Tier-B/unattended-capable (its recipe+target+params are fixed and
-      # consented to once at registration time, unlike intent/dm-reply's
-      # runtime-resolved targets) -- resolved 2026-07-14 per
-      # docs/superpowers/DEFERRED.md's design: the unattended-allow is gated
-      # SOLELY on ACTION_APP_ACT_AUTO_FIRE_TRUSTED (agent.autonomous===true,
-      # baked at script-generation time — see generateRunScript; widened
-      # 2026-07-14 to drop the tool.type==='local' restriction per project
-      # owner directive, chat-confirmed consent is the boundary regardless of
-      # tool backend), the SAME registration-time consent draft/notify's
-      # existing native fast-path already requires. It is NOT governed by
-      # ACTION_APPROVAL_MODE (the blanket approval-tap default) — a wrong
-      # external post is not equivalent in risk to a local draft/CLI call, so
-      # flipping the global "skip the tap" setting alone must never unlock
-      # this. When trusted, native (AgentRuntime.kt's action-approval
-      # notifier) fires AppActExecutor directly and writes an auto reply, so
-      # this still goes through the ordinary write+wait below — only WHO
-      # resolves the approval changes, not whether one is required.
-      if { [ "\${AGENT_AUTONOMOUS:-0}" = "1" ] || [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; } && [ "$ACTION_APP_ACT_AUTO_FIRE_TRUSTED" != "1" ]; then
-        ACTION_DISPATCH_STATUS="skipped"
-        ACTION_DISPATCH_MESSAGE="App-action actions require an attended Review."
-        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
-        return 1
-      fi
-      if [ -z "$ACTION_APP_ACT_RECIPE_ID" ]; then
-        ACTION_DISPATCH_STATUS="error"
-        ACTION_DISPATCH_MESSAGE="App-action is missing a recipe."
-        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
-        return 1
-      fi
-      app_act_params_check=$(resolve_app_act_params "$ACTION_APP_ACT_PARAMS_JSON" "$preview")
-      if [ -z "$app_act_params_check" ] || [ "$app_act_params_check" = "{}" ]; then
-        ACTION_DISPATCH_STATUS="error"
-        ACTION_DISPATCH_MESSAGE="App-action is missing its recipe parameters."
-        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
-        return 1
-      fi
-      if is_low_quality_completion "$preview"; then
-        ACTION_DISPATCH_STATUS="error"
-        ACTION_DISPATCH_MESSAGE="App-action content looks like a prompt echo or AI refusal, not real content — escalating."
-        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
-        return 1
-      fi
-      request_and_wait_approval "app-act" "$preview" "$result_file" || return 1
-      # No broker/native call here (mirrors intent/dm-reply): RN or, for a
-      # trusted unattended fire, native itself already fired the recipe
-      # (fireAgentAppAct / AgentActionApprovalBridge's auto-fire, driving
-      # ShellyAccessibilityService via AppActExecutor) BEFORE writing the
-      # accept reply that wait_action_approval just observed. Nothing left
-      # to execute.
-      ACTION_DISPATCH_MESSAGE="App action fired: $ACTION_APP_ACT_RECIPE_ID"
-      return 0
-      ;;
     social-post)
-      # social-post (2026-07-22): API auto-post via a registered connector —
-      # the free-API alternative to app-act's AccessibilityService route.
+      # social-post (2026-07-22): API auto-post via a registered connector.
       # Approval tier: a NON-allowlisted destination host requires a human
       # approval tap EVERY time, regardless of ACTION_APPROVAL_MODE (these
       # connectors carry account-level credentials — WordPress app passwords,
@@ -3779,7 +3629,7 @@ dispatch_agent_action() {
       # WebView through lib/browser-pane-automation.ts's deliberately closed
       # click/fill/extractText operation set (never raw JS/eval). ATTENDED-
       # ONLY, same hard-refusal shape as intent/dm-reply above — there is NO
-      # Tier-B unattended-allow for this type (unlike app-act): nothing in
+      # Tier-B unattended-allow for this type: nothing in
       # this codebase mounts a BrowserPane component instance during an
       # unattended/alarm-fired run (no pane is rendered, nothing is on
       # screen) — see AgentAction.browserPaneAction's doc comment in
@@ -3788,7 +3638,7 @@ dispatch_agent_action() {
       # injecting the action script into its WebView) happens in RN
       # (fireReviewedAgentBrowserPaneAction, lib/agent-browser-pane-review.ts)
       # at the moment the human taps Allow — BEFORE the accept reply is
-      # written, mirroring intent/dm-reply/app-act's "fire-then-reply"
+      # written, mirroring intent/dm-reply's "fire-then-reply"
       # invariant. This case only validates, requests approval, waits, and
       # reports; it must never call a broker/native function after approval.
       if [ "\${AGENT_AUTONOMOUS:-0}" = "1" ] || [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; then
@@ -3816,7 +3666,7 @@ dispatch_agent_action() {
         return 1
       fi
       request_and_wait_approval "browser-pane" "$preview" "$result_file" || return 1
-      # No broker/native call here (mirrors intent/dm-reply/app-act): RN
+      # No broker/native call here (mirrors intent/dm-reply): RN
       # already fired the browser action (or declined and reported failure)
       # BEFORE writing the accept reply that wait_action_approval just
       # observed. Nothing left to execute.
@@ -5500,7 +5350,7 @@ DURATION=$(( (END_TIME - START_TIME) * 1000 ))
 if [ -f "$RESULT_CONTENT_FILE" ] && [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
   # G6 char-limit guarantee (2026-07-15 P1 audit fix): clamp the raw result to
   # RESULT_CHAR_LIMIT (0 = no limit configured) BEFORE anything derives from
-  # it — preview, webhook body, app-act/{{result}} substitution, draft save —
+  # it — preview, webhook body, {{result}} substitution, draft save —
   # so a multi-step chain's final "re-summarize within N chars for X" step
   # actually enforces that budget here, not just as a soft prompt instruction.
   # Mirrors scripts/shelly-plan-executor.js's own ordering (enforcePlanCharLimit
@@ -5541,8 +5391,6 @@ ${useMultiActions ? `  # Multi-action fan-out (v24, Agent.actions): dispatch EVE
     ACTION_DM_PAIRING_ID="\${ACTION_MULTI_DM_PAIRING_IDS[$ACTION_MULTI_IDX]}"
     ACTION_DM_REPLY_TEXT="\${ACTION_MULTI_DM_REPLY_TEXTS[$ACTION_MULTI_IDX]}"
     ACTION_DM_PAIRING_LABEL=""
-    ACTION_APP_ACT_RECIPE_ID="\${ACTION_MULTI_APP_ACT_RECIPE_IDS[$ACTION_MULTI_IDX]}"
-    ACTION_APP_ACT_PARAMS_JSON="\${ACTION_MULTI_APP_ACT_PARAMS_JSONS[$ACTION_MULTI_IDX]}"
     ACTION_SOCIAL_PLATFORM="\${ACTION_MULTI_SOCIAL_PLATFORMS[$ACTION_MULTI_IDX]}"
     ACTION_SOCIAL_CONNECTOR_ID="\${ACTION_MULTI_SOCIAL_CONNECTOR_IDS[$ACTION_MULTI_IDX]}"
     ACTION_SOCIAL_ENV_PREFIX="\${ACTION_MULTI_SOCIAL_ENV_PREFIXES[$ACTION_MULTI_IDX]}"
@@ -5602,7 +5450,7 @@ ${useMultiActions ? `  # Multi-action fan-out (v24, Agent.actions): dispatch EVE
   # 'error'; the granular per-action detail lives in $ACTION_RESULTS_JSON,
   # recorded in the run log below). Zero successes with at least one hard
   # failure -> error. Zero successes and zero failures (every action was
-  # gated as "skipped", e.g. intent/dm-reply/app-act on an unattended fire)
+  # gated as "skipped", e.g. intent/dm-reply on an unattended fire)
   # -> skipped, never silently reported as success.
   if [ "$ACTION_MULTI_SUCCESS_COUNT" -gt 0 ]; then
     STATUS="success"
@@ -5665,10 +5513,10 @@ fi
 # approval-card preview, dispatch_agent_action's quality gate, the webhook
 # payload's "preview" field, and (success/notify only) the actual push
 # notification body via write_native_notification_request. Amending it here,
-# AFTER all of that has already run, means this note can NEVER reach
-# resolve_app_act_params's {{result}} substitution (app-act is the one action
-# type that splices $preview into a live external post) or any
-# already-dispatched notification/webhook content — it only reaches the
+# AFTER all of that has already run, means this note can NEVER reach any
+# {{result}} substitution that splices $preview into a live external post
+# (intent/dm-reply/social-post) or any already-dispatched notification/webhook
+# content — it only reaches the
 # run-log record below (Sidebar's agent detail popup renders outputPreview/
 # errorMessage from this same log; also readable directly from
 # ~/.shelly/agents/logs/$AGENT_ID/*.json). Prepended (not appended) so it
@@ -5685,8 +5533,8 @@ fi
 # ORCHESTRATION_COLLAPSED_NOTE just above — WEB_CODEX_FALLBACK_NOTE is only
 # ever set by the bakeWebCodexLadder block, AFTER the original web backend
 # (Gemini/Perplexity) failed and the in-shell Codex fallback was attempted.
-# Prepended here (log/errorMessage only, never the live notification/webhook/
-# app-act body already dispatched above) so the run-log always records WHICH
+# Prepended here (log/errorMessage only, never the live notification/webhook
+# body already dispatched above) so the run-log always records WHICH
 # backend actually produced this result and WHY the first one didn't, instead
 # of silently attributing a Codex-produced (or doubly-failed) result to the
 # tool that failed first.
@@ -6258,7 +6106,7 @@ done
 rm -f "$PROMPT_FILE" "$CODEX_ORCH_CARRY_FILE"
 
 # Only the TRUE FINAL step's completion may reach the configured action
-# (draft/notify/webhook/cli/dm-reply/app-act) — mirrors runAgentOrchestrated's
+# (draft/notify/webhook/cli/dm-reply) — mirrors runAgentOrchestrated's
 # "only the last step's completion becomes the actual action content". If the
 # resolved step-count cap or time budget stopped this chain before its true
 # final step (index CODEX_ORCH_STEP_TOTAL-1) ever ran, and it did not fail
@@ -6266,8 +6114,8 @@ rm -f "$PROMPT_FILE" "$CODEX_ORCH_CARRY_FILE"
 # check below — dispatch never fires for it either way), suppress the action
 # for whatever the last-ATTEMPTED step produced. dispatch_agent_action's own
 # __suppressed__ branch still saves the draft result to disk and returns
-# success — it just never requests approval or fires a notification/webhook/
-# app-act for a run that never reached its configured final step.
+# success — it just never requests approval or fires a notification/webhook
+# for a run that never reached its configured final step.
 if [ "$CODEX_ORCH_STEP_INDEX" -lt "$CODEX_ORCH_STEP_TOTAL" ] && [ "$CODEX_ORCH_FAILED" != "1" ]; then
   ACTION_TYPE="__suppressed__"
 fi`;

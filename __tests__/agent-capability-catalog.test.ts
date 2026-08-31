@@ -100,8 +100,8 @@ describe('AGENT_CAPABILITIES — sourced from FEATURE_CATALOG, covers all 8 acti
     expect(AGENT_CAPABILITIES.length).toBeGreaterThan(0);
   });
 
-  it('describes all 8 AgentActionType values', () => {
-    const actionTypes = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'app-act', 'api-call'];
+  it('describes all 7 AgentActionType values', () => {
+    const actionTypes = ['draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'api-call'];
     for (const type of actionTypes) {
       const found = AGENT_CAPABILITIES.some((f) => f.id === `agent-action-${type}`);
       expect(found).toBe(true);

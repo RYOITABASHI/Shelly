@@ -61,8 +61,6 @@
  *  - `intent`       → IRREVERSIBLE. Launches another app / fires an OS share
  *                     sheet. Off-device, off-app effect.
  *  - `dm-reply`     → IRREVERSIBLE. A sent message cannot be unsent.
- *  - `app-act`      → IRREVERSIBLE. Drives another app's UI via
- *                     AccessibilityService (e.g. publishing a post).
  *  - `api-call`     → IRREVERSIBLE. An outbound HTTP call to an allowlisted
  *                     host; the remote side's state is not ours to revert.
  *  - `browser-pane` → IRREVERSIBLE. Clicks/fills a live, on-screen web page
@@ -99,7 +97,6 @@
  * It does not relax, and must never be used to relax:
  *   - command-safety CRITICAL blocks,
  *   - the secret-guard route forcing,
- *   - the app-act Tier-B autonomous gate,
  *   - agent REGISTRATION confirmation (AppSettings.agentRegistrationRequireConfirm).
  * The 2026-07-14 → 2026-07-24 history is explicit that registration confirm is
  * NOT an approval-frequency knob; this feature loosens run-time workspace-write
@@ -188,7 +185,6 @@ export function classifyActionReversibility(
     case 'social-post':
     case 'intent':
     case 'dm-reply':
-    case 'app-act':
     case 'browser-pane':
       return irreversible(
         'irreversible-external-side-effect',
