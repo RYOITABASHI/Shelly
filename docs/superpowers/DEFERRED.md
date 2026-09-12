@@ -4300,6 +4300,23 @@ Installed tools are available immediately — just type the command (existing ta
 
 ## P2 — 2 リリース先 (v0.2.0 milestone)
 
+### "Case File" テーマ — 配色は着地、フォント/アイコン/実機検証は未着手 (P2)
+
+**背景**: ユーザーとの雑談から発展したテーマ検討。「レトロ日本PC風のUIモード」→史実（SX-WINDOW/Human68k/デモシーン）の指摘・修正を経て、ユーザー提示の参考画像（デスゲーム系ADVの「事件記録」データベースUI、紙質クリーム地+黒罫線+ドロップダウン密集）に方向性が収束。モックアップ（全履歴付き）: https://claude.ai/code/artifact/4e3e56a4-34ac-4ff6-a088-6f2be1203f9c
+
+**このセッション（リモート環境）で実施**: `lib/theme-engine.ts` の `BUILTIN_THEMES` に `case-file` テーマを追加（クリーム地`#E8E3D0`+黒罫線`#2A2416`の配色トークンをモックからそのまま転記、既存の`Theme`型に準拠、コンポーネント構造への影響なし）。このリモート環境には `node_modules` が無く `npx tsc --noEmit` を実走できないため、型チェックは目視確認のみ。
+
+**未着手（ローカル/実機セッション向け、詳細は `docs/superpowers/specs/2026-09-12-case-file-theme-handoff.md` 参照）**:
+1. フォント — モックは本文`BIZ UDGothic`/UIチャンク`DotGothic16`の出し分け。`store/cosmetic-store.ts`の`FontFamily`型拡張＋`.ttf`を`assets/fonts/`と`modules/terminal-view/android/src/main/assets/fonts/`の両方に配置＋`modules/terminal-view/.../FontManager.kt`の`getTypeface()`分岐に新規マッピング追加が必要。「本文/UIチャンク出し分け」を本当にやるかは要設計判断（過剰設計回避のため単一フォント追加から始める案もあり）。
+2. アイコン — モックは絵文字を全てモノクロ線画SVGに置換済みだが、Shelly本体側に同種の絵文字依存箇所が実在するかは未調査。
+3. 実機検証 — CLAUDE.mdの開発文化通り、テーマ切替後の実機スクショ証跡が必要（adb環境が無いためローカルセッション必須、ユーザーとの合意事項）。
+
+**優先度**: P2（配色トークン自体はコード上安全に着地しているが、フォント込みでモックの見た目を再現するにはネイティブ側の作業と実機検証が残っており、単独ではユーザーに見える形の機能として未完成）
+
+→ sync: なし（テーマ追加のみで既存機能への影響なし、README Status表への反映は本タスク完了後に検討）。
+
+---
+
 ### Fable5ロードマップ item #3/4/5/7 — 実装・単体/コンポーネントテスト完了、実機未検証 (P2)
 
 **背景**: 2026-08-25、Fable5の総合レビュー(コミット`9cd167064`)で以下4項目を並行実装・コード検証済み。tsc/jestは全てグリーンだが、いずれもUI/ストリーミング/ネイティブ監査ログ読み取りが絡むため、この session 標準の実機QA(スクリーンショット・logcat証跡)は未実施。
