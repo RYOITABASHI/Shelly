@@ -183,8 +183,8 @@ const MessageBubble = React.memo(function MessageBubble({
           <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
             {t('chat.companion_label')}
           </Text>
-          <View style={bubbleStyles.assistantContent}>
-            <Text style={bubbleStyles.assistantText} selectable>{message.content}</Text>
+          <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }]}>
+            <Text style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>{message.content}</Text>
           </View>
           <AgentChatConfirm
             draft={message.agentDraft}
@@ -208,7 +208,7 @@ const MessageBubble = React.memo(function MessageBubble({
   if (message.role === 'system') {
     return (
       <View accessible accessibilityLabel={`System: ${displayText}`} style={[bubbleStyles.systemRow, containerMaxWidth]}>
-        <Text style={bubbleStyles.systemText}>{displayText}</Text>
+        <Text style={[bubbleStyles.systemText, { color: C.text2 }]}>{displayText}</Text>
       </View>
     );
   }
@@ -228,9 +228,9 @@ const MessageBubble = React.memo(function MessageBubble({
             vanished after send with no visual trace in the sent bubble —
             the user had no confirmation of WHICH image they sent. */}
         {message.imageThumbnailUri ? (
-          <Image source={{ uri: message.imageThumbnailUri }} style={bubbleStyles.userImageThumb} />
+          <Image source={{ uri: message.imageThumbnailUri }} style={[bubbleStyles.userImageThumb, { backgroundColor: C.bgSurface }]} />
         ) : null}
-        <Text style={bubbleStyles.userText} selectable>{displayText}</Text>
+        <Text style={[bubbleStyles.userText, { color: C.text1 }]} selectable>{displayText}</Text>
       </View>
     );
   }
@@ -243,7 +243,7 @@ const MessageBubble = React.memo(function MessageBubble({
       <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
         {t('chat.companion_label')}
       </Text>
-      <View style={bubbleStyles.assistantContent}>
+      <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }]}>
         {containsDiff ? (
           <InlineDiff content={displayText} />
         ) : (
@@ -253,13 +253,13 @@ const MessageBubble = React.memo(function MessageBubble({
           // still streaming we skip the parse and show raw text — fenced
           // regex would fire on an unclosed ``` and hide content.
           isLastStreaming ? (
-            <Text style={bubbleStyles.assistantText} selectable>{displayText}</Text>
+            <Text style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>{displayText}</Text>
           ) : (
             splitFencedCode(displayText).map((seg, i) =>
               seg.kind === 'code' ? (
                 <CodeBlockWithAction key={i} lang={seg.lang} code={seg.content} />
               ) : (
-                <Text key={i} style={bubbleStyles.assistantText} selectable>
+                <Text key={i} style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>
                   {seg.content}
                 </Text>
               ),

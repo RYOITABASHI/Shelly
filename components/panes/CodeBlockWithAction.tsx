@@ -151,33 +151,43 @@ export function CodeBlockWithAction({ lang, code }: Props) {
     }
   }, [staged, trimmed, t]);
 
+  // 2026-09-16: styles.xxx.color/borderColor/backgroundColor below all read
+  // `C.xxx` at StyleSheet.create() time — a module-level call that runs
+  // ONCE when this file is first imported, so those values froze at
+  // whichever theme happened to be active at that moment (in practice the
+  // app's initial default) and never updated on a later theme switch. Every
+  // other preset before Case File used near-identical near-black
+  // backgrounds/dark text, so the staleness was invisible; Case File's
+  // cream flipped it into visibly wrong (black-on-black-ish) text. Inline
+  // overrides re-read the live `C` object every render, same fix pattern
+  // `rootBg`/`headerBg` already used above via usePanelBackground().
   return (
-    <View style={[styles.root, { backgroundColor: rootBg }]}>
-      <View style={[styles.header, { backgroundColor: headerBg }]}>
-        <Text style={styles.lang}>
+    <View style={[styles.root, { backgroundColor: rootBg, borderColor: C.border }]}>
+      <View style={[styles.header, { backgroundColor: headerBg, borderBottomColor: C.border }]}>
+        <Text style={[styles.lang, { color: C.text3 }]}>
           {lang ? lang.toLowerCase() : 'code'}
           {canApplyToFile && staged ? `  ·  ${staged.path.split('/').pop()}` : ''}
         </Text>
         <View style={styles.actions}>
-          <Pressable onPress={handleCopy} style={styles.btn} hitSlop={6} accessibilityLabel={t('code_block.copy_a11y')}>
+          <Pressable onPress={handleCopy} style={[styles.btn, { borderColor: C.border }]} hitSlop={6} accessibilityLabel={t('code_block.copy_a11y')}>
             <MaterialIcons name="content-copy" size={12} color={C.text2} />
-            <Text style={styles.btnLabel}>{t('code_block.copy_label')}</Text>
+            <Text style={[styles.btnLabel, { color: C.text2 }]}>{t('code_block.copy_label')}</Text>
           </Pressable>
           {canInsert ? (
-            <Pressable onPress={handleInsert} style={[styles.btn, styles.btnPrimary]} hitSlop={6} accessibilityLabel={t('code_block.insert_a11y')}>
+            <Pressable onPress={handleInsert} style={[styles.btn, { borderColor: C.border }, styles.btnPrimary, { backgroundColor: C.accent, borderColor: C.accent }]} hitSlop={6} accessibilityLabel={t('code_block.insert_a11y')}>
               <MaterialIcons name="arrow-forward" size={12} color={C.btnPrimaryText} />
-              <Text style={[styles.btnLabel, styles.btnLabelPrimary]}>{t('code_block.insert_label')}</Text>
+              <Text style={[styles.btnLabel, styles.btnLabelPrimary, { color: C.btnPrimaryText }]}>{t('code_block.insert_label')}</Text>
             </Pressable>
           ) : null}
           {canApplyToFile ? (
-            <Pressable onPress={handleApplyToFile} style={[styles.btn, styles.btnPrimary]} hitSlop={6} accessibilityLabel={t('code_block.apply_a11y')}>
+            <Pressable onPress={handleApplyToFile} style={[styles.btn, { borderColor: C.border }, styles.btnPrimary, { backgroundColor: C.accent, borderColor: C.accent }]} hitSlop={6} accessibilityLabel={t('code_block.apply_a11y')}>
               <MaterialIcons name="save" size={12} color={C.btnPrimaryText} />
-              <Text style={[styles.btnLabel, styles.btnLabelPrimary]}>{t('code_block.apply_label')}</Text>
+              <Text style={[styles.btnLabel, styles.btnLabelPrimary, { color: C.btnPrimaryText }]}>{t('code_block.apply_label')}</Text>
             </Pressable>
           ) : null}
         </View>
       </View>
-      <Text style={styles.code} selectable>
+      <Text style={[styles.code, { color: C.text1 }]} selectable>
         {trimmed}
       </Text>
     </View>
