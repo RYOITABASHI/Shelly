@@ -157,6 +157,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gpuRendering: false,
   terminalWallpaperTransparency: true,
   uiFont: 'blue',
+  appFontFamily: 'default',
   showVimKeyBar: false,
   profileLearningEnabled: true,
   // 2026-07-24 reversal of the 2026-07-14 directive, specifically for

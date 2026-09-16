@@ -109,6 +109,7 @@ export type ThemePresetId =
   | 'orange'
   | 'purple'
   | 'scouter-green'
+  | 'case-file'
   // Legacy persisted ids only. They are not exposed in the UI.
   | 'shelly'
   | 'blackline'
@@ -424,6 +425,64 @@ export const purplePalette: Palette = {
 
   diffAddBorder:    '#39FF14',
   diffRemoveBorder: '#FF3C5A',
+};
+
+// ── Case File — cream paper + black hairline "database UI" palette. ────────
+// Colors match lib/theme-engine.ts's `case-file` WezTerm-style theme (worked
+// out with the user via an Artifact mockup, docs/superpowers/specs/
+// 2026-09-12-case-file-theme-handoff.md), reapplied here to the app-chrome
+// Palette shape so Sidebar/AgentBar/tabs actually repaint — the theme-engine
+// entry alone only styles a handful of modal components (DiffViewerModal,
+// AskPane, etc.), never the visible app chrome.
+export const caseFilePalette: Palette = {
+  bgDeep:     '#E8E3D0',
+  bgSurface:  '#F2ECD6',
+  bgSidebar:  '#D9D0B0',
+  border:     '#2A2416',
+
+  accent:        '#2A2416',
+  accentGreen:   '#3F5C3F',
+  accentBlue:    '#2A3F5C',
+  accentSky:     '#2A5C5C',
+  accentPurple:  '#5C2A4A',
+  accentPink:    '#5C2A4A',
+  accentAmber:   '#8A6A20',
+  accentCode:    '#2A3F5C',
+  warning:       '#8A6A20',
+
+  text1:      '#201D16',
+  text2:      '#6F6A58',
+  text3:      '#8A836A',
+
+  errorText:  '#8A2020',
+  errorBg:    'rgba(138,32,32,0.12)',
+  addText:    '#3F5C3F',
+  addBg:      'rgba(63,92,63,0.12)',
+
+  btnPrimaryBg:     '#2A2416',
+  btnPrimaryText:   '#E8E3D0',
+  btnSecondaryBg:   '#D9D0B0',
+  btnSecondaryText: '#201D16',
+
+  badgeRunningBg:   'rgba(138,106,32,0.18)',
+  badgeRunningText: '#8A6A20',
+  badgeLinkedBg:    'rgba(63,92,63,0.18)',
+  badgeLinkedText:  '#3F5C3F',
+  badgeConnectBg:   '#D9D0B0',
+  badgeConnectText: '#6F6A58',
+
+  layoutActiveBg:     '#2A2416',
+  layoutActiveText:   '#E8E3D0',
+  layoutInactiveBg:   '#D9D0B0',
+  layoutInactiveText: '#6F6A58',
+
+  crtBadgeBg:   '#D9D0B0',
+  crtBadgeText: '#2A2416',
+
+  autoSaveBg: '#D9D0B0',
+
+  diffAddBorder:    '#3F5C3F',
+  diffRemoveBorder: '#8A2020',
 };
 
 // ── Silkscreen palette — the previous static theme.config.ts values,
@@ -889,6 +948,7 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
   orange:       { id: 'orange',       font: 'JetBrainsMono_400Regular', colors: orangePalette },
   purple:       { id: 'purple',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
   'scouter-green': { id: 'scouter-green', font: 'JetBrainsMono_400Regular', colors: scouterGreenPalette },
+  'case-file':  { id: 'case-file',    font: 'JetBrainsMono_400Regular', colors: caseFilePalette },
   shelly:       { id: 'shelly',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
   blackline:    { id: 'blackline',    font: 'JetBrainsMono_400Regular', colors: bluePalette },
   modal:        { id: 'modal',        font: 'JetBrainsMono_400Regular', colors: purplePalette },
@@ -948,6 +1008,21 @@ export function applyThemePreset(id: ThemePresetId) {
 
   // 4. Bump the theme version so ShellLayout forces a full re-render
   //    of the tree through its key={version} root <View>.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { useThemeVersionStore } = require('@/store/theme-version-store');
+  useThemeVersionStore.getState().bumpVersion();
+}
+
+// ── Runtime apply — font only ───────────────────────────────────────
+// Lets the app-chrome font be picked independently of the color preset
+// (settings.appFontFamily), instead of being hard-locked to whatever
+// `ThemePreset.font` the active preset declares. Callers apply the
+// preset first (colors + its own default font), then call this after
+// if the user has an explicit font override, so the override always wins.
+export function applyUiFont(fontFamily: string) {
+  patchTextRenderOnce();
+  currentFontFamily = fontFamily;
+
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { useThemeVersionStore } = require('@/store/theme-version-store');
   useThemeVersionStore.getState().bumpVersion();

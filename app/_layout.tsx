@@ -223,6 +223,10 @@ export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
     'JetBrainsMono_700Bold': JetBrainsMono_700Bold,
+    // Loaded from the same .ttf already bundled for the native terminal
+    // view (assets/fonts/, OFL-1.1) so the app-chrome font picker
+    // (settings.appFontFamily) has a real family name to apply.
+    'DotGothic16_400Regular': require('../assets/fonts/DotGothic16-Regular.ttf'),
   });
   // Phase 3 inbound gateway: long-poll Telegram for the authorized chat (no-op
   // unless enabled + token + chat id are configured). Enqueues confirm cards only.
@@ -235,6 +239,7 @@ export default function RootLayout() {
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
+  const appFontFamily = useSettingsStore((s) => s.settings.appFontFamily ?? 'default');
   const loadSettings = useTerminalStore((s) => s.loadSettings);
   const resolvePendingAgentActionApproval = useCallback(async (decision: 'accept' | 'decline') => {
     const request = pendingAgentActionApproval;
@@ -447,11 +452,17 @@ export default function RootLayout() {
   // JS styles re-compute.
   useEffect(() => {
     if (!fontsLoaded) return;
-    import('@/lib/theme-presets').then(({ applyThemePreset }) => {
+    import('@/lib/theme-presets').then(({ applyThemePreset, applyUiFont }) => {
       applyThemePreset(uiFont as any);
       logInfo('RootLayout', 'Theme preset applied: ' + uiFont);
+      // Font override applies AFTER the preset so it always wins over
+      // whichever font the preset itself declares — the two are picked
+      // independently (settings.appFontFamily vs settings.uiFont).
+      if (appFontFamily === 'dotgothic16') {
+        applyUiFont('DotGothic16_400Regular');
+      }
     });
-  }, [uiFont, fontsLoaded]);
+  }, [uiFont, appFontFamily, fontsLoaded]);
 
   useEffect(() => {
     logLifecycle('RootLayout', 'mounted');

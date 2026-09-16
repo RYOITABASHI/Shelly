@@ -636,7 +636,16 @@ export type AppSettings = {
     | 'rose-pine'
     | 'kanagawa'
     | 'everforest'
-    | 'one-dark';
+    | 'one-dark'
+    | 'case-file';
+  /**
+   * App-chrome UI font, independent of `uiFont` (the color preset). Themes
+   * used to hard-lock the chrome font to whatever `ThemePreset.font` said
+   * (always JetBrainsMono_400Regular in practice); this lets the font be
+   * picked separately so a preset's colors and its font can be mixed freely.
+   * 'default' follows the active preset's own font.
+   */
+  appFontFamily?: 'default' | 'dotgothic16';
 };
 
 // ─── Background Agents ──────────────────────────────────────────────────────
