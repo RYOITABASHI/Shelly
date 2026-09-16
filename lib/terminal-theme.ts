@@ -128,13 +128,23 @@ export const TERMINAL_THEMES: Record<string, TerminalTheme> = {
     // dark-ink-on-paper tones as theme-engine.ts's case-file entry would
     // be nearly invisible here. Lighter, warm "sepia paper on black"
     // tones keep the terminal legible while still evoking the theme.
+    // 2026-09-16: reported hard to read on-device. Two real bugs: `black`
+    // matched TERMINAL_SURFACE_BACKGROUND exactly (#000000), so any
+    // ANSI-black text vanished outright — every other theme here keeps
+    // black a hair off pure black for exactly this reason (e.g. 'blue'
+    // uses #050A0D). And the original tones were all fairly desaturated
+    // mid-lightness, closer to gray-beige than a crisp warm cream, which
+    // reads noticeably duller/lower-contrast next to the other themes'
+    // brighter pastels (e.g. 'blue' foreground #D6ECF7) even where raw
+    // luminance was in a similar ballpark. Brightened + warmed the whole
+    // set so it reads as crisp warm-cream-on-black, not washed-out beige.
     name: 'case-file', label: 'Case File',
-    background: '#E8E3D0', foreground: '#D9D0B0', cursor: '#E8E3D0',
-    black: '#000000', red: '#C46A4A', green: '#8FAF7A', yellow: '#C9A227',
-    blue: '#7A93AF', magenta: '#A97A93', cyan: '#7AA3A3', white: '#D9D0B0',
-    brightBlack: '#8A836A', brightRed: '#E08860', brightGreen: '#A8C990',
-    brightYellow: '#E0C050', brightBlue: '#9AB4D0', brightMagenta: '#C99AB4',
-    brightCyan: '#9AC4C4', brightWhite: '#F2ECD6',
+    background: '#E8E3D0', foreground: '#EDE4C8', cursor: '#EDE4C8',
+    black: '#2A2416', red: '#D47B5A', green: '#9DBF8A', yellow: '#D4AE35',
+    blue: '#8AA3BF', magenta: '#B98AA3', cyan: '#8AB3B3', white: '#EDE4C8',
+    brightBlack: '#A89F82', brightRed: '#E89870', brightGreen: '#B8D9A0',
+    brightYellow: '#E8CC60', brightBlue: '#AAC4E0', brightMagenta: '#D9AAC4',
+    brightCyan: '#AAD4D4', brightWhite: '#F7F2E0',
   },
   solarized: {
     name: 'solarized', label: 'Solarized Dark',
