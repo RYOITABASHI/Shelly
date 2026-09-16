@@ -351,6 +351,12 @@ describe('syncAgentRunLogsFromDisk — scheduled-run memory capture (the actual 
 
     await runAgentNow(agent.id, runCommand, { waitTimeoutMs: 2000, pollMs: 1 });
     expect(saveUnattendedSkillWithNotification).not.toHaveBeenCalled();
+    // runAgentNow itself posts (and then dismisses) a "running" notification
+    // for the run's own duration now — expected, and orthogonal to what this
+    // test actually checks below (that the LATER sync path doesn't post its
+    // own notification for an already-handled attended log). Clear the mock
+    // so that assertion isn't polluted by this earlier, unrelated call.
+    (Notifications.scheduleNotificationAsync as jest.Mock).mockClear();
 
     // runAgentNow has returned (and therefore removed inFlightAgentRuns). Even
     // much later, the same concrete agentId:timestamp log remains attended and
