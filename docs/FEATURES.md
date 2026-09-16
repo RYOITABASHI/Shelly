@@ -176,8 +176,8 @@ Currently registered:
 - **Git** — Status / Diff / Log / Add all / Commit / Push / Pull --rebase *(routed through the active terminal pane's `pendingCommand` channel)*
 - **Panes** — Add Terminal / AI / Browser / Markdown / Preview
 - **Layouts** — Single Terminal / Terminal + AI / Terminal + Browser / 3-Way Triple
-- **Theme presets** — Blue / Red / Purple / Green
-- **Font presets** — Silk / 8bit / Mono and legacy editor palettes
+- **Theme presets** — Blue / Red / Purple / Green / Case File
+- **Font presets** — Default / DotGothic16 (independent of the color preset), plus Silk / 8bit / Mono and legacy editor palettes
 - **Voice** — Open dialogue (VoiceChat modal)
 - **Snippets** — first 20 entries from your snippet store, each dispatches to the terminal
 - **Package Manager** — bundled tools status
@@ -187,12 +187,14 @@ Currently registered:
 <details>
 <summary><strong>Theme &amp; Fonts</strong></summary>
 
-- **Color presets** — Blue is the default cool palette, Red is red-orange chrome, and Purple is purple with neon green accents.
-- **Visible presets** — Settings and the Command Palette expose the four color themes. Legacy and editor palette IDs remain accepted for old saved settings but are no longer the primary UI surface.
-- **Runtime swap** — presets are swapped by mutating the live `colors` object in place (identity preserved) and bumping a theme-version store that key-remounts the shell layout. PTY sessions survive the switch — your vim stays open.
-- **Single-family rendering** — every Text is forced through JetBrains Mono regardless of its `fontWeight`, keeping UI and terminal typography consistent.
+- **Color presets** — Blue is the default cool palette, Red is red-orange chrome, Purple is purple with neon green accents, Green is the classic phosphor-terminal look, and **Case File** is a cream-paper/black-hairline "old database terminal" palette — contrast-checked against the light background (muted/warning/inactive tones and ANSI yellow/green/white were all darkened or corrected specifically because they're unreadable on a light theme the way they aren't on a dark one).
+- **Visible presets** — Settings (via `lib/theme-presets.ts` / `SettingsDropdown`'s `ThemeRow`) and the Command Palette expose all five color themes. Legacy and editor palette IDs (`lib/theme-engine.ts`'s older `BUILTIN_THEMES`, reachable via `shelly config`) remain accepted for old saved settings but are no longer the primary UI surface.
+- **Runtime swap** — presets are swapped by mutating the live `colors` object in place (identity preserved) and bumping a theme-version store that key-remounts the shell layout. PTY sessions survive the switch — your vim stays open. Switching *into* Case File also suspends any active wallpaper for the duration (restored on switching away) and, if enabled, flashes a brief pseudo-boot overlay.
+- **Independent font picker** — the app-chrome font (`SettingsDropdown`'s `FontRow`, `applyUiFont()`) is now decoupled from the color preset: **Default** (JetBrains Mono) or **DotGothic16**, a bitmap-style Japanese/Latin font, selectable regardless of which color theme is active. `appFontFamily` persists in `settings-store.ts`.
+- **Single-family rendering** — every Text is forced through the selected `fontFamily` regardless of its `fontWeight`, keeping UI and terminal typography consistent.
 - **Text.render monkey-patch** — `Text.defaultProps.style` is replaced (not merged) when a child passes its own `style`, which would otherwise let 100+ call sites escape the theme font. The patch prepends `{ fontFamily }` to every Text's style array so the preset font reaches every call site without touching them.
 - **Neon glow** — eight per-color `textShadow` styles (teal / blue / sky / purple / pink / green / red / amber) for the mock's "reading terminal" vibe
+- **Case File retro polish** — gated behind `isCaseFile` throughout the app rather than living in the theme palette alone: hard-shadow (offset, no blur) card borders in the AI pane, a blinking LED dot on the Save badge, a `SHELLY-CF98` fake model-number footer line in Settings, a breathing connection-status dot, char-by-char typewriter reveal for streaming AI replies (`TypewriterText.tsx`), and a distinct "stamp" confirm sound.
 - **Haptic toggle** — per-interaction feedback on/off
 
 </details>
@@ -218,5 +220,17 @@ Currently registered:
 - **Background agents** — `@agent list`, `@agent status`, `@agent run <name>`, `@agent stop <name>`, `@agent history <name>`, or `@agent <natural language>` to create one. Scheduled agents run through AlarmManager when configured.
 - **Managed Codex runtime updater** — the Updates UI reads the public `codex-runtime-latest/codex-runtime.json` manifest, downloads the tarball, verifies SHA-256, smoke-tests `codex_tui --version` and `codex_tui exec --help`, then promotes the runtime under `~/.shelly-runtime/codex/current`. The new runtime is used by newly opened terminal tabs; **Reset** falls back to the APK-bundled runtime.
 - **`shelly-doctor`** — diagnostic command that checks shell/native binary presence, bundled Codex binaries, JS dispatcher, local LLM endpoints, and whether `~/.codex/auth.json` is present; run it when something feels broken
+- **Persistent "running" notification** — a scheduled or manually-triggered agent posts a sticky notification (`agent-running-<id>`) for the duration of its run, dismissed once the run finishes, so a long-running agent is visible from the shade instead of only surfacing a result afterward.
+
+</details>
+
+<details>
+<summary><strong>Realtime Voice, A2A Server, MCP Server</strong></summary>
+
+All three are opt-in, off by default, implemented and CI-build-verified, but **not yet exercised on real hardware** — see [Status](../README.md#status).
+
+- **Realtime voice (Gemini Live)** — `Settings → Realtime Voice`. A separate full-duplex mode from the existing turn-based VoiceChat: continuous mic capture streams PCM16/16kHz to the Gemini Live API over a hand-rolled WebSocket client (`scripts/shelly-gemini-live-client.js`, Node built-ins only — the on-device Node runtime has no `node_modules`), spoken replies stream back as PCM16/24kHz with server-side interruption handling, and the native `VoiceBridge.kt` spawns/pipes the process via the same `linker64` trick used elsewhere to bypass Knox's direct-exec block. Requires a Gemini API key. Audio I/O is billed per-token on the Gemini Live API even on a free-tier key — text-only usage elsewhere in the app is unaffected.
+- **A2A server** — `Settings → A2A Server`. Starts a local HTTP server (port 8766, `A2ABridge.kt`) implementing the [Agent2Agent protocol](https://a2a-protocol.org/): an Agent Card at `/.well-known/agent-card.json` and JSON-RPC 2.0 at `/a2a/rpc` (`SendMessage` / `GetTask` / `ListTasks` / `CancelTask`), with one skill, `list_agents`, reading from `useAgentStore`. Read-only — no exec or write skills are exposed yet, pending a dedicated ingress-side capability gate (today's `lib/capability-envelope.ts` only gates outgoing agent actions, not incoming A2A/MCP requests).
+- **MCP server** — `Settings → MCP Server`. Starts a local bearer-token-authenticated [Model Context Protocol](https://modelcontextprotocol.io/) server (port 8767, `MCPBridge.kt`) targeting the older `initialize` + `Mcp-Session-Id` handshake (protocol version `2025-06-18`) that Claude Code's/Claude Desktop's default local MCP client expects. Four read-only tools: `read_terminal_output`, `git_status` (path must be one of your registered repos), `list_agents`, `list_repos`. The bearer token is generated on first use (`expo-crypto`-backed CSPRNG) and stored via `lib/secure-store.ts`; copy it to the clipboard from `Settings → MCP Server → Copy Token`, then point an external MCP client at `http://<phone-ip>:8767/mcp` with that token. Same read-only scope limitation as A2A above.
 
 </details>

@@ -256,8 +256,12 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow. Qwen3.5-0.8B ships as the actual default (light enough to stay always-on for background/autonomous use); Qwen3.5-2B is the recommended step-up for on-demand use when you can spare the RAM/battery, Qwen3 1.7B sits between the two, and 4B+ models are reserved for short quality checks. |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A home-screen agent launcher and health list — up to 3 upcoming scheduled agents, each with a status glyph (last run's success/error/skipped) and next-fire time, without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK** can also register a brand-new agent — type or speak `@agent ...` and it routes through the same confirm flow as typing it in the AI Pane. |
-| **Color themes** | Blue / Red / Purple / Green palettes run on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. |
+| **Color themes** | Blue / Red / Purple / Green / **Case File** (a cream-and-ink retro-terminal palette, with its own optional DotGothic16 bitmap font, typewriter-reveal AI replies, and boot-flash transition) — five presets on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. The app font is now a separate picker from the color preset, so any theme can run with either font. |
 | **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
+| **Realtime voice (Gemini Live)** | An opt-in full-duplex voice mode — talk and get spoken replies back with server-side interruption handling, instead of the turn-based record → transcribe → send loop. Separate toggle from ordinary voice input (Settings → Realtime Voice, off by default); note that unlike text, audio through the Gemini Live API is billed per-token even on a free-tier key. *Not yet exercised on real hardware — see [Status](#status).* |
+| **A2A server (Agent2Agent)** | An opt-in local HTTP server (Settings → A2A Server, off by default) exposing a standard [A2A protocol](https://a2a-protocol.org/) Agent Card and a `list_agents` skill, so another A2A-aware agent/tool on your network can see what Shelly has registered. Read-only today; no exec or write skills are exposed. *Not yet exercised on real hardware — see [Status](#status).* |
+| **MCP server** | An opt-in local [Model Context Protocol](https://modelcontextprotocol.io/) server (Settings → MCP Server, off by default, bearer-token authenticated) exposing four read-only tools — `read_terminal_output`, `git_status`, `list_agents`, `list_repos` — so a desktop MCP client such as Claude Code or Claude Desktop can look into what's running on the phone. *Not yet exercised on real hardware — see [Status](#status).* |
+| **Persistent run notification** | A scheduled or manually-triggered agent now posts a sticky "▶ running" notification for the duration of its run, not just a result notification afterward, so an in-progress run is visible from the notification shade instead of only showing up once it finishes. |
 
 ### Autonomous agents
 
@@ -341,6 +345,11 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | Sub-agent fan-out (`parallelGroup`) — isolated branch context, concurrent unattended dispatch | ✅ on-device verified 2026-08-17 via a real 3-branch concurrent AlarmManager fire |
 | Nacre Bridge — live terminal context shared with the author's own Nacre IME, plus Nacre-side Dev Mode | ✅ on-device verified 2026-08-31 |
 | Agent social-post connectors — Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress, X | ✅ Bluesky verified live end-to-end; X is integration-tested but not yet fired against a live billing-enabled account; the rest ship on the same path but haven't each been fired against a real account |
+| Case File theme, DotGothic16 font, typewriter reveal, boot-flash transition | 🟡 implemented, CI build green; not yet exercised on real hardware |
+| Persistent "running" agent notification | 🟡 implemented, unit-tested; not yet exercised on real hardware |
+| Realtime voice (Gemini Live) | 🟡 implemented, protocol client validated against a local test server; not yet exercised on real hardware |
+| A2A server (`list_agents` skill) | 🟡 implemented, CI build green; not yet exercised on real hardware |
+| MCP server (4 read-only tools) | 🟡 implemented, CI build green; not yet exercised on real hardware |
 | Distribution | 🟡 GitHub Releases only (`android-latest`); no Play Store / F-Droid listing yet |
 
 ---

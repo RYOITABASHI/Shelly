@@ -179,7 +179,24 @@ Something will eventually not work the way you expect. Here's the order to check
 
 ---
 
-## 9. Updating, security, and where the rest of the detail lives
+## 9. Retro theme, realtime voice, and reaching Shelly from your PC
+
+A few newer features are worth a short walkthrough of their own. All four are opt-in, off by default, and — as of this writing — verified in CI and by local script-level testing but **not yet exercised on real hardware**, so treat the exact steps below as the intended flow rather than a confirmed one.
+
+**Case File theme.** `Settings → Theme` now offers a fifth color preset, **Case File** — a cream-paper, black-hairline look modeled on old database-terminal UIs, distinct from the four neon presets. It pairs with an independent font picker (`Settings → Font`): **Default** or **DotGothic16**, a bitmap-style font, selectable no matter which color theme is active. Switching into Case File briefly flashes a pseudo-boot overlay and suspends any wallpaper you have set for as long as it's active.
+
+**Realtime voice.** `Settings → Realtime Voice` turns on a full-duplex voice mode, separate from the existing tap-to-record VoiceChat: once active, you can talk and get spoken replies back continuously, with the app handling interruptions the way a phone call would, instead of a strict record → transcribe → send → wait loop. It needs a Gemini API key configured (`Settings → API Keys`). One thing worth knowing before you turn it on: unlike Shelly's other Gemini usage, audio through this specific API is billed per token even on a free-tier key — text elsewhere in the app is unaffected.
+
+**Reaching Shelly from your PC (A2A / MCP).** Two more toggles, both under `Settings → Developer`, start a small local server on the phone that a tool on the same network can talk to:
+
+- **A2A Server** starts an [Agent2Agent protocol](https://a2a-protocol.org/) endpoint with one read-only skill, `list_agents` — useful if you're experimenting with other A2A-aware agent tooling and want them to see what Shelly has registered.
+- **MCP Server** starts a bearer-token-protected [Model Context Protocol](https://modelcontextprotocol.io/) endpoint with four read-only tools: `read_terminal_output`, `git_status`, `list_agents`, `list_repos`. This is the more immediately useful one if you develop Shelly itself from a PC — point Claude Code or Claude Desktop's MCP client at it and it can read your phone's terminal output and repo status directly. Turn the toggle on, then use `Settings → MCP Server → Copy Token` to get the bearer token, and configure your MCP client with `http://<phone-ip>:8767/mcp` plus that token.
+
+Both are deliberately read-only for now — neither exposes a way to execute a command or write a file from outside the phone. That gate is a known, intentional scope limit, not an oversight; see [`docs/superpowers/DEFERRED.md`](superpowers/DEFERRED.md) if you want the reasoning.
+
+---
+
+## 10. Updating, security, and where the rest of the detail lives
 
 **Updating** happens from inside the app — the cloud-download icon in the top bar, or **Settings → Updates**. It reads a public release manifest, checks the SHA-256 of the downloaded APK before handing it to Android's installer, and Android will still ask you to confirm the install because Shelly is distributed outside the Play Store. It's a normal in-place Android app upgrade — your data and settings are untouched.
 

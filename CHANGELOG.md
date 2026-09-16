@@ -6,6 +6,43 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.0.1] - 2026-09-17
+
+### Added
+
+- **Case File theme.** A fifth color preset — cream paper, black hairline
+  rules, modeled on old database-terminal UIs — alongside the existing
+  neon presets, plus an independent app-font picker (Default / DotGothic16)
+  decoupled from the color preset. Case File also gets its own retro
+  polish: a pseudo-boot flash on switching in, wallpaper suspended while
+  active, hard-shadow card borders, a blinking Save-badge LED, a breathing
+  connection-status dot, char-by-char typewriter reveal for streaming AI
+  replies, and a distinct confirm "stamp" sound.
+- **Japanese localization for the Settings TUI.** `shelly config`'s section
+  titles and field labels are now translated; longer descriptions are left
+  in English for now, by design.
+- **Persistent "running" agent notification.** A scheduled or manually
+  triggered agent now posts a sticky notification for the duration of its
+  run, dismissed when the run finishes, instead of only notifying once the
+  result is ready.
+- **Realtime voice (Gemini Live), opt-in.** A full-duplex voice mode,
+  separate from the existing turn-based VoiceChat — continuous mic capture,
+  spoken replies streamed back with server-side interruption handling.
+  Requires a Gemini API key; unlike text elsewhere in the app, audio
+  through the Gemini Live API is billed per-token even on a free-tier key.
+- **A2A server, opt-in.** A local [Agent2Agent protocol](https://a2a-protocol.org/)
+  endpoint (Agent Card + JSON-RPC) exposing a read-only `list_agents` skill.
+- **MCP server, opt-in.** A local, bearer-token-authenticated
+  [Model Context Protocol](https://modelcontextprotocol.io/) endpoint
+  exposing four read-only tools (`read_terminal_output`, `git_status`,
+  `list_agents`, `list_repos`) for a desktop MCP client such as Claude
+  Code or Claude Desktop.
+
+None of the four newest items above (Case File theme, realtime voice, A2A
+server, MCP server) have been exercised on real hardware yet — CI build and
+local script/unit-level verification only. See
+[docs/STATUS.md](docs/STATUS.md).
+
 ## [8.0.0] - 2026-08-31
 
 ### Added
