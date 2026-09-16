@@ -1,5 +1,5 @@
 import React, { useState, useMemo, createContext, useEffect, useRef, useCallback } from 'react';
-import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform, Animated, Easing } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
@@ -36,6 +36,24 @@ type Props = {
   canSplit: boolean;
 };
 
+// Case File only: a slow breathing pulse instead of the flat static dot —
+// reads like an old modem/instrument indicator light, even though the
+// underlying agent-connection state it represents hasn't changed at all.
+function PulsingDot({ color, style }: { color: string; style: object }) {
+  const pulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.35, duration: 900, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+  return <Animated.View style={[style, { backgroundColor: color, opacity: pulse }]} />;
+}
+
 /** Derive display title for pane header matching mock style. */
 function getPaneTitle(tab: PaneTab, translate: (key: string) => string): string {
   return resolvePaneTitle(tab, translate, 'header').toUpperCase();
@@ -43,6 +61,7 @@ function getPaneTitle(tab: PaneTab, translate: (key: string) => string): string 
 
 const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV, canSplit }: Props) => {
   const { t } = useTranslation();
+  const isCaseFile = useSettingsStore((s) => s.settings.uiFont === 'case-file');
   const [selectorVisible, setSelectorVisible] = useState(false);
   const [splitMenuVisible, setSplitMenuVisible] = useState(false);
   const [agentMenuVisible, setAgentMenuVisible] = useState(false);
@@ -255,7 +274,11 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             hitSlop={6}
             accessibilityLabel={t('pane.switch_agent_a11y')}
           >
-            <View style={[styles.agentBadgeDot, { backgroundColor: aiPaneAgentColor }]} />
+            {isCaseFile ? (
+              <PulsingDot color={aiPaneAgentColor} style={styles.agentBadgeDot} />
+            ) : (
+              <View style={[styles.agentBadgeDot, { backgroundColor: aiPaneAgentColor }]} />
+            )}
             <Text style={[styles.agentBadgeLabel, { color: C.text1 }]} numberOfLines={1}>
               {aiPaneAgent ? aiPaneAgentLabel.toUpperCase() : 'AGENT'}
             </Text>

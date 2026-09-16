@@ -4119,6 +4119,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       inFlightConfirmDrafts.set(messageId, turn);
       try {
         await turn;
+        // Case File only: a rubber-stamp "thunk" on the registration
+        // actually completing, covering every confirm path uniformly (this
+        // wrapper is the single choke point all of them go through) rather
+        // than chasing each internal branch's own success line.
+        if (useSettingsStore.getState().settings.uiFont === 'case-file') {
+          try { playSound('confirm_stamp'); } catch {}
+        }
       } finally {
         if (inFlightConfirmDrafts.get(messageId) === turn) {
           inFlightConfirmDrafts.delete(messageId);

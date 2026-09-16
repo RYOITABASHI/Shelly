@@ -1109,6 +1109,12 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             <Text style={styles.footer}>
               {'shelly config set <key> <value>  ·  shelly config get <key>'}
             </Text>
+            {settings.uiFont === 'case-file' && (
+              // Pure flavor text — no real model/hardware behind it, just
+              // the "wolf in sheep's clothing" bit leaning a little further
+              // into the fake-vintage-hardware disguise.
+              <Text style={styles.footer}>{'MODEL: SHELLY-CF98  ·  SER: 0001'}</Text>
+            )}
           </ScrollView>
         </Animated.View>
       </KeyboardAvoidingView>
