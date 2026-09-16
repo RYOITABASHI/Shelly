@@ -1010,6 +1010,8 @@ export function applyThemePreset(id: ThemePresetId) {
       const settingsState = useSettingsStore.getState();
       caseFileUxSnapshot.cursorShape = settingsState.settings.cursorShape;
       settingsState.updateSettings({ cursorShape: 'block' });
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('@/store/theme-version-store').useThemeVersionStore.getState().triggerCaseFileBootFlash();
     }
     cosmetic.setSoundProfile('retro');
   } else if (caseFileUxSnapshot !== null) {

@@ -55,6 +55,7 @@ import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/A
 import AgentScheduleReadinessCard from '@/components/panes/AgentScheduleReadinessCard';
 import AgentChatConfirm from '@/components/panes/AgentChatConfirm';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
+import { TypewriterText } from '@/components/panes/TypewriterText';
 import { useAIPaneDispatch, type AIPaneDispatchOptions } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
@@ -257,7 +258,12 @@ const MessageBubble = React.memo(function MessageBubble({
           // still streaming we skip the parse and show raw text — fenced
           // regex would fire on an unclosed ``` and hide content.
           isLastStreaming ? (
-            <Text style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>{displayText}</Text>
+            <TypewriterText
+              text={displayText}
+              active={isCaseFile}
+              cursorColor={C.accent}
+              style={[bubbleStyles.assistantText, { color: C.text1 }]}
+            />
           ) : (
             splitFencedCode(displayText).map((seg, i) =>
               seg.kind === 'code' ? (
