@@ -1293,7 +1293,13 @@ export const BUILTIN_THEMES: Theme[] = [
       ansiBlue: '#2A3F5C',
       ansiMagenta: '#5C2A4A',
       ansiCyan: '#2A5C5C',
-      ansiWhite: '#E8E3D0',
+      // ansiWhite/ansiBrightWhite previously matched background/surface
+      // exactly (#E8E3D0 / #F2ECD6) — copied from a dark-theme convention
+      // where "white" is the near-background highlight tone, but on this
+      // light theme that made white-colored text render invisible against
+      // its own background. Light themes need these inverted: a
+      // mid/dark ink tone that still contrasts against the cream bg.
+      ansiWhite: '#4A4636',
       ansiBrightBlack: '#4A4636',
       ansiBrightRed: '#A83030',
       ansiBrightGreen: '#3F5C3F',
@@ -1301,7 +1307,7 @@ export const BUILTIN_THEMES: Theme[] = [
       ansiBrightBlue: '#3A5580',
       ansiBrightMagenta: '#7A3A60',
       ansiBrightCyan: '#3A7A7A',
-      ansiBrightWhite: '#F2ECD6',
+      ansiBrightWhite: '#201D16',
     },
   },
 ];

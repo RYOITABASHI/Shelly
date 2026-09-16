@@ -939,47 +939,52 @@ function ThemeRow() {
     { value: 'scouter-green', label: t('theme.scouter_green'), swatch: themePresets['scouter-green'].colors.accent },
     { value: 'case-file', label: t('theme.case_file'), swatch: themePresets['case-file'].colors.accent },
   ];
+  // 2026-09-16: a horizontal ScrollView here first seemed like the fix for
+  // 5 presets (was 4) no longer fitting the shared `Row` layout's value
+  // column, but on-device testing showed swipes starting on it kept
+  // dismissing the whole dropdown instead of scrolling (the panel's own
+  // outside-tap-to-close handling was winning the gesture over such a
+  // narrow/short-throw ScrollView). Wrapping to a second line needs no
+  // gesture at all, so every preset is simply always visible.
   return (
-    <Row label={t('settings.theme')}>
-      {/* 2026-09-16: 5 presets (was 4) no longer fit PANEL_WIDTH's ~150px
-          value column at once — Case File's two-word label was the entry
-          that finally overflowed it. Horizontal scroll beats clipping. */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.themeScroll}>
-        <View style={[styles.segGroup, { borderColor: C.border }]}>
-          {options.map((opt) => {
-            const active = uiFont === opt.value;
-            return (
-              <Pressable
-                key={opt.value}
+    <View style={styles.themeRowWrap}>
+      <Text style={[styles.rowLabel, { color: C.text1, marginBottom: 6 }]}>
+        {t('settings.theme')}
+      </Text>
+      <View style={[styles.segGroup, styles.segGroupWrap, { borderColor: C.border }]}>
+        {options.map((opt) => {
+          const active = uiFont === opt.value;
+          return (
+            <Pressable
+              key={opt.value}
+              style={[
+                styles.segBtn,
+                active && { backgroundColor: withAlpha(C.accent, 0.15) },
+              ]}
+              onPress={() => {
+                // Apply synchronously to avoid the AsyncStorage race that
+                // caused bug #28/#54.
+                applyThemePreset(opt.value);
+                updateSettings({ uiFont: opt.value, terminalTheme: opt.value });
+              }}
+              hitSlop={4}
+            >
+              <View
                 style={[
-                  styles.segBtn,
-                  active && { backgroundColor: withAlpha(C.accent, 0.15) },
+                  styles.themeSwatch,
+                  { backgroundColor: opt.swatch },
+                  active && styles.themeSwatchActive,
+                  active && { shadowColor: opt.swatch, shadowOpacity: 0.45, shadowRadius: 5 },
                 ]}
-                onPress={() => {
-                  // Apply synchronously to avoid the AsyncStorage race that
-                  // caused bug #28/#54.
-                  applyThemePreset(opt.value);
-                  updateSettings({ uiFont: opt.value, terminalTheme: opt.value });
-                }}
-                hitSlop={4}
-              >
-                <View
-                  style={[
-                    styles.themeSwatch,
-                    { backgroundColor: opt.swatch },
-                    active && styles.themeSwatchActive,
-                    active && { shadowColor: opt.swatch, shadowOpacity: 0.45, shadowRadius: 5 },
-                  ]}
-                />
-                <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
-                  {opt.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </ScrollView>
-    </Row>
+              />
+              <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 
@@ -2826,10 +2831,16 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     overflow: 'hidden',
   },
-  // Caps the Theme row's option strip so it scrolls instead of overflowing
-  // PANEL_WIDTH once there are more presets than fit at once.
-  themeScroll: {
-    maxWidth: 150,
+  // Theme row renders as its own full-width block (label above, options
+  // below) instead of sharing the generic label|value `Row` split — that
+  // split only gives the value column ~150px, too narrow for 5 presets.
+  themeRowWrap: {
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  segGroupWrap: {
+    flexWrap: 'wrap',
+    alignSelf: 'flex-start',
   },
   segBtn: {
     flexDirection: 'row',

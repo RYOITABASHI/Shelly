@@ -117,6 +117,25 @@ export const TERMINAL_THEMES: Record<string, TerminalTheme> = {
     brightYellow: '#F9E2AF', brightBlue: '#89B4FA', brightMagenta: '#F5C2E7',
     brightCyan: '#94E2D5', brightWhite: '#A6ADC8',
   },
+  'case-file': {
+    // Note: TerminalPane.tsx renders the PTY surface itself at a hardcoded
+    // TERMINAL_SURFACE_BACKGROUND ('#000000') regardless of which terminal
+    // theme is active (a deliberate fail-closed decision after the
+    // build-1560/1565 wallpaper-flash regression — see CLAUDE.md's
+    // "Terminal pane background" note), so `background` here is
+    // documentation only. Every color below is picked to read against
+    // real black, not against Case File's cream chrome — using the same
+    // dark-ink-on-paper tones as theme-engine.ts's case-file entry would
+    // be nearly invisible here. Lighter, warm "sepia paper on black"
+    // tones keep the terminal legible while still evoking the theme.
+    name: 'case-file', label: 'Case File',
+    background: '#E8E3D0', foreground: '#D9D0B0', cursor: '#E8E3D0',
+    black: '#000000', red: '#C46A4A', green: '#8FAF7A', yellow: '#C9A227',
+    blue: '#7A93AF', magenta: '#A97A93', cyan: '#7AA3A3', white: '#D9D0B0',
+    brightBlack: '#8A836A', brightRed: '#E08860', brightGreen: '#A8C990',
+    brightYellow: '#E0C050', brightBlue: '#9AB4D0', brightMagenta: '#C99AB4',
+    brightCyan: '#9AC4C4', brightWhite: '#F2ECD6',
+  },
   solarized: {
     name: 'solarized', label: 'Solarized Dark',
     background: '#002B36', foreground: '#839496', cursor: '#839496',
