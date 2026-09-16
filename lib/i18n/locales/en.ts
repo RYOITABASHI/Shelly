@@ -312,6 +312,7 @@ const en: Record<string, string> = {
   // alarm was due but never recorded a run (Doze / OEM kill / FGS start
   // failure). The body variant used depends on whether the same repair pass's
   // re-arm attempt actually succeeded (never claim a re-arm that didn't happen).
+  'agents.run_in_progress_notification_body': 'Running…',
   'agents.missed_schedule_title': 'Missed schedule',
   'agents.missed_schedule_body': '"{{name}}" did not run at its scheduled time ({{when}}) — it may have been blocked (Doze / battery / OEM). Re-armed for the next occurrence.',
   'agents.missed_schedule_body_repair_failed': '"{{name}}" did not run at its scheduled time ({{when}}) — it may have been blocked (Doze / battery / OEM). The automatic re-arm attempt also failed; open the agent to check its schedule.',

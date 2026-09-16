@@ -307,6 +307,7 @@ const ja: Record<string, string> = {
   // P0-1: 予定されたスケジュール実行が記録されないまま起動時repairが検知した場合に
   // 表示（Doze / 電池最適化 / OEM 制限 / FGS 起動失敗の可能性）。同じrepairパスの
   // 再設定試行が実際に成功したかどうかで文言を切り替える（起きていない再設定を主張しない）。
+  'agents.run_in_progress_notification_body': '実行中…',
   'agents.missed_schedule_title': 'スケジュールが実行されませんでした',
   'agents.missed_schedule_body': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。次回の予定は再設定済みです。',
   'agents.missed_schedule_body_repair_failed': '「{{name}}」は予定時刻（{{when}}）に実行されませんでした — Doze / 電池最適化 / OEM 制限で止められた可能性があります。自動での再設定にも失敗しました。エージェントを開いてスケジュールを確認してください。',
