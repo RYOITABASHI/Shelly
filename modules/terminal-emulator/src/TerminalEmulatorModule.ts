@@ -300,6 +300,15 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    *  session is active. */
   stopVoiceSession(): Promise<void>;
   isVoiceSessionActive(): Promise<boolean>;
+  /**
+   * A2A (Agent2Agent) protocol server (A2ABridge.kt / scripts/shelly-a2a-server.js).
+   * Long-lived, not session-scoped like voice: starts on toggle-on and runs
+   * for as long as the app process is alive, listening on the LAN for A2A
+   * clients. Resolves true if the server is (now) running.
+   */
+  startA2AServer(): Promise<boolean>;
+  stopA2AServer(): Promise<void>;
+  isA2AServerRunning(): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

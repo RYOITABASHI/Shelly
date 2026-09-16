@@ -56,6 +56,7 @@ import { detectCodexApprovalPrompt, detectCodexInteractivePrompt } from '@/lib/c
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import { useNacreBridge } from '@/hooks/use-nacre-bridge';
+import { useA2ABridge } from '@/hooks/use-a2a-bridge';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getOptionalPack } from '@/lib/optional-packs';
 import { installOptionalPack } from '@/lib/optional-pack-installer';
@@ -235,6 +236,10 @@ export default function RootLayout() {
   // terminal context with the Nacre IME via shared storage. No-op when
   // settings.nacreBridgeEnabled is off. See hooks/use-nacre-bridge.ts.
   useNacreBridge();
+  // A2A (Agent2Agent) protocol server: exposes a read-only list_agents
+  // skill to LAN/VPN clients. No-op when settings.a2aServerEnabled is off
+  // (the default). See hooks/use-a2a-bridge.ts.
+  useA2ABridge();
   const [pendingAgentActionApproval, setPendingAgentActionApproval] =
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);

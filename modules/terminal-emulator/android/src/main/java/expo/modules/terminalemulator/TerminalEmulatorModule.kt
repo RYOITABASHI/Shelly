@@ -544,6 +544,21 @@ class TerminalEmulatorModule : Module() {
             VoiceBridge.isRunning()
         }
 
+        // A2A (Agent2Agent) protocol server — see A2ABridge.kt.
+        AsyncFunction("startA2AServer") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("no react context")
+            A2ABridge.start(context)
+        }
+
+        AsyncFunction("stopA2AServer") {
+            A2ABridge.stop()
+        }
+
+        AsyncFunction("isA2AServerRunning") {
+            A2ABridge.isRunning()
+        }
+
         AsyncFunction("createSession") { config: Map<String, Any?> ->
             val sessionId = config["sessionId"] as? String
                 ?: throw IllegalArgumentException("sessionId is required")

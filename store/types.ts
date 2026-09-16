@@ -419,6 +419,11 @@ export type AppSettings = {
    *  the file is only ever written while the app is foregrounded and is
    *  deleted (or left to expire within 5 minutes) once it backgrounds. */
   nacreBridgeEnabled?: boolean;
+  /** A2A (Agent2Agent) protocol server (hooks/use-a2a-bridge.ts,
+   *  A2ABridge.kt) — exposes a read-only `list_agents` skill to any A2A
+   *  client on the same network (LAN / VPN). Off by default: unlike
+   *  Nacre Bridge this opens a real HTTP listener. */
+  a2aServerEnabled?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:

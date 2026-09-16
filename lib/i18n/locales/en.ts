@@ -156,6 +156,8 @@ const en: Record<string, string> = {
   'settings.autonomous_cloud_exhaustion_label': 'On Quota Exhausted',
   'settings.optimistic_writes_label': 'Optimistic Workspace Writes',
   'settings.widget_no_confirm_label': 'Widget No-Confirm Register',
+  'settings.a2a_server_label': 'A2A Server',
+  'settings.a2a_server_desc': 'Exposes a read-only "list_agents" skill to A2A (Agent2Agent) protocol clients on the same network (Wi-Fi/VPN) — lets a PC-side agent ask what Shelly agents exist. Opens a real HTTP listener while the app is running. No run-triggering skill yet. Default off.',
   'settings.llm_led_registration_label': 'LLM-Led Agent Registration',
   'settings.llm_high_risk_label': 'LLM-Proposed Webhook/CLI (High Risk)',
   'settings.telegram_inbound_label': 'Enable Inbound',

@@ -156,6 +156,8 @@ const ja: Record<string, string> = {
   'settings.autonomous_cloud_exhaustion_label': 'クォータ超過時',
   'settings.optimistic_writes_label': '楽観的な書き込み',
   'settings.widget_no_confirm_label': 'ウィジェット登録の確認省略',
+  'settings.a2a_server_label': 'A2Aサーバー',
+  'settings.a2a_server_desc': '同一ネットワーク（Wi-Fi/VPN）内のA2A（Agent2Agent）プロトコルクライアントに、読み取り専用の「list_agents」スキルを公開します。PC側のエージェントからShellyのエージェント一覧を問い合わせられます。アプリ実行中は実際にHTTPリスナーが開きます。実行トリガー系のスキルはまだありません。既定はオフ。',
   'settings.llm_led_registration_label': 'LLM主導のエージェント登録',
   'settings.llm_high_risk_label': 'LLM提案のWebhook/CLI（高リスク）',
   'settings.telegram_inbound_label': '受信を有効化',

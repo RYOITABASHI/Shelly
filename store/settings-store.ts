@@ -156,6 +156,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalTheme: 'blue',
   gpuRendering: false,
   realtimeVoiceEnabled: false,
+  a2aServerEnabled: false,
   terminalWallpaperTransparency: true,
   uiFont: 'blue',
   appFontFamily: 'default',
