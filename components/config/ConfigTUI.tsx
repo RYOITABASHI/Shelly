@@ -94,7 +94,7 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     items: [
       { key: 'themeEngine',    label: 'Color Theme',      type: 'enum', options: ALL_THEMES, source: 'custom', description: 'WezTerm-style themes' },
       { key: 'terminalTheme',  label: 'Terminal Theme',   type: 'enum', options: TERMINAL_THEME_NAMES, source: 'settings' },
-      { key: 'fontFamily',     label: 'Font Family',      type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen'], source: 'cosmetic' },
+      { key: 'fontFamily',     label: 'Font Family',      type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen', 'dotgothic16'], source: 'cosmetic' },
       { key: 'gpuRendering',   label: 'GPU Rendering',    type: 'boolean', source: 'settings' },
     ],
   },

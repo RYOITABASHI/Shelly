@@ -4300,20 +4300,24 @@ Installed tools are available immediately — just type the command (existing ta
 
 ## P2 — 2 リリース先 (v0.2.0 milestone)
 
-### "Case File" テーマ — 配色は着地、フォント/アイコン/実機検証は未着手 (P2)
+### "Case File" テーマ — 配色+フォント着地、アイコン置換は別タスク切り出し、実機検証のみ残る (P2)
 
 **背景**: ユーザーとの雑談から発展したテーマ検討。「レトロ日本PC風のUIモード」→史実（SX-WINDOW/Human68k/デモシーン）の指摘・修正を経て、ユーザー提示の参考画像（デスゲーム系ADVの「事件記録」データベースUI、紙質クリーム地+黒罫線+ドロップダウン密集）に方向性が収束。モックアップ（全履歴付き）: https://claude.ai/code/artifact/4e3e56a4-34ac-4ff6-a088-6f2be1203f9c
 
-**このセッション（リモート環境）で実施**: `lib/theme-engine.ts` の `BUILTIN_THEMES` に `case-file` テーマを追加（クリーム地`#E8E3D0`+黒罫線`#2A2416`の配色トークンをモックからそのまま転記、既存の`Theme`型に準拠、コンポーネント構造への影響なし）。このリモート環境には `node_modules` が無く `npx tsc --noEmit` を実走できないため、型チェックは目視確認のみ。
+**リモートセッションで実施**: `lib/theme-engine.ts` の `BUILTIN_THEMES` に `case-file` テーマを追加（クリーム地`#E8E3D0`+黒罫線`#2A2416`の配色トークンをモックからそのまま転記、既存の`Theme`型に準拠、コンポーネント構造への影響なし）。`node_modules`が無いリモート環境のため型チェックは目視のみだった。
 
-**未着手（ローカル/実機セッション向け、詳細は `docs/superpowers/specs/2026-09-12-case-file-theme-handoff.md` 参照）**:
-1. フォント — モックは本文`BIZ UDGothic`/UIチャンク`DotGothic16`の出し分け。`store/cosmetic-store.ts`の`FontFamily`型拡張＋`.ttf`を`assets/fonts/`と`modules/terminal-view/android/src/main/assets/fonts/`の両方に配置＋`modules/terminal-view/.../FontManager.kt`の`getTypeface()`分岐に新規マッピング追加が必要。「本文/UIチャンク出し分け」を本当にやるかは要設計判断（過剰設計回避のため単一フォント追加から始める案もあり）。
-2. アイコン — モックは絵文字を全てモノクロ線画SVGに置換済みだが、Shelly本体側に同種の絵文字依存箇所が実在するかは未調査。
-3. 実機検証 — CLAUDE.mdの開発文化通り、テーマ切替後の実機スクショ証跡が必要（adb環境が無いためローカルセッション必須、ユーザーとの合意事項）。
+**ローカルセッション（2026-09-16、ブランチ `feat/case-file-theme-continue`、worktree分離で作業）で実施**:
+1. `pnpm install` + `npx tsc --noEmit` を実走し、Case Fileテーマ追加が型エラー無しであることを確認済み。
+2. フォント — モックの「本文`BIZ UDGothic`/UIチャンク`DotGothic16`出し分け」は過剰設計回避のため見送り、単一フォント`dotgothic16`（Google Fonts配布、OFL-1.1）を追加する方針を採用。`store/cosmetic-store.ts`の`FontFamily`型・`components/config/ConfigTUI.tsx`のenum選択肢に`dotgothic16`を追加し、`.ttf`を`assets/fonts/`と`modules/terminal-view/android/src/main/assets/fonts/`の両方に配置、後者に`DotGothic16-LICENSE.txt`（OFL全文）も同梱。ネイティブ側は`modules/terminal-view/.../FontManager.kt`の`getTypeface()`分岐に`"dotgothic16" -> "fonts/DotGothic16-Regular.ttf"`を追加。ConfigTUIの既存パターン（選択肢はkebab-case文字列をそのまま表示）を踏襲し、テーマとフォントは独立設定のまま（Case File選択時の自動フォント切替は行わない、他テーマとの一貫性のため）。
+3. アイコン — Sidebar.tsx / TerminalPane.tsx / IssueDraftAction.tsx / AskPane.tsx / AgentScheduleReadinessCard.tsx / AgentConfirmCard.tsx / AIPane.tsxに絵文字依存箇所を確認。全アプリ規模の置換になるため、Case Fileテーマ本体の実装とは別タスクとして切り出し済み（`task_557cb425`）。
 
-**優先度**: P2（配色トークン自体はコード上安全に着地しているが、フォント込みでモックの見た目を再現するにはネイティブ側の作業と実機検証が残っており、単独ではユーザーに見える形の機能として未完成）
+**未着手**:
+1. 実機検証 — CLAUDE.mdの開発文化通り、テーマ切替後の実機スクショ証跡が必要。2026-09-16時点でadb接続デバイス無し（`adb devices`が空リスト）。ローカルビルド→ユーザーの端末に配布→ConfigTUIから`Case File`テーマ+`dotgothic16`フォントに切替→スクショ、が残作業。
+2. アイコン置換（`task_557cb425`側で継続）。
 
-→ sync: なし（テーマ追加のみで既存機能への影響なし、README Status表への反映は本タスク完了後に検討）。
+**優先度**: P2（配色+フォントはコード上安全に着地・型チェック済みだが、実機での見た目確認とアイコン置換が残っており、単独ではユーザーに見える形の機能として未完成）
+
+→ sync: なし（テーマ/フォント追加のみで既存機能への影響なし、README Status表への反映は実機検証完了後に検討）。
 
 ---
 
