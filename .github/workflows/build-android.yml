@@ -683,6 +683,12 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Explicit packages to avoid the action's default `tools platform-tools`
+          # request: the legacy `tools` package was removed from Google's SDK
+          # repository, and Gradle's Android plugin resolves platform/build-tools
+          # itself via sdk.dir, so `tools` was never actually needed here.
+          packages: platform-tools
 
       - name: Free runner disk space before APK build
         run: |
