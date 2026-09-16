@@ -488,7 +488,12 @@ class TerminalEmulatorModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("TerminalEmulator")
 
-        Events("onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize", "onScouterEvent", "onRemoteTextInput")
+        Events(
+            "onSessionOutput", "onSessionExit", "onTitleChanged", "onBell", "onResize", "onScouterEvent", "onRemoteTextInput",
+            // VoiceBridge — full-duplex Gemini Live voice session, see VoiceBridge.kt.
+            "onVoiceReady", "onVoiceTurnComplete", "onVoiceInterrupted",
+            "onVoiceInputTranscript", "onVoiceOutputTranscript", "onVoiceError", "onVoiceExit",
+        )
 
         // Module (re-)instantiation: rewire emitEvent on any sessions that
         // outlived the previous Module instance. Without this, live sessions
@@ -519,6 +524,24 @@ class TerminalEmulatorModule : Module() {
                     .onFailure { Log.w("TerminalEmulator", "Scouter autostart skipped after startup failure", it) }
             }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
+        }
+
+        // VoiceBridge — full-duplex realtime voice via the Gemini Live API.
+        // See VoiceBridge.kt's own doc comment for why this needs a
+        // live-piped ProcessBuilder session instead of the batch
+        // ShellyJNI.execSubprocess path every other agent/command run uses.
+        AsyncFunction("startVoiceSession") { apiKey: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("no react context")
+            VoiceBridge.start(context, apiKey) { name, body -> emitEvent(name, body) }
+        }
+
+        AsyncFunction("stopVoiceSession") {
+            VoiceBridge.stop()
+        }
+
+        AsyncFunction("isVoiceSessionActive") {
+            VoiceBridge.isRunning()
         }
 
         AsyncFunction("createSession") { config: Map<String, Any?> ->

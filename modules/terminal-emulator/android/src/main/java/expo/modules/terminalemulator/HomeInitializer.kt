@@ -1312,6 +1312,20 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-capability-broker.js extract failed: ${e.message}")
         }
 
+        // Full-duplex voice: bridges mic/speaker PCM to the Gemini Live API over
+        // a hand-rolled WebSocket (no npm deps — see the script's own header for
+        // why). Spawned by AudioBridgeModule when the user starts realtime voice
+        // mode; only needs to be readable, matching the other node-invoked
+        // helpers above.
+        val geminiLiveClientScript = File(home, ".shelly-gemini-live-client.js")
+        try {
+            context.assets.open("shelly-gemini-live-client.js").use { input ->
+                geminiLiveClientScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-gemini-live-client.js extract failed: ${e.message}")
+        }
+
         // Phase 0 PlanSpec executor canary. Invoked via node from AgentRuntime
         // when SHELLY_PLAN_EXECUTOR=1 for a targeted agent.
         val planExecutorScript = File(home, ".shelly-plan-executor.js")

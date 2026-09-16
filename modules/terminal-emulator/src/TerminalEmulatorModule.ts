@@ -285,6 +285,21 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    *  pass — for on-device testing of the primitive itself. */
   debugTestLockPrompt?(): Promise<boolean>;
   returnToHome?(): Promise<void>;
+  /**
+   * Full-duplex realtime voice via the Gemini Live API (VoiceBridge.kt).
+   * Spawns a live-piped Node process (scripts/shelly-gemini-live-client.js)
+   * that speaks the Live API's WebSocket protocol directly, streams mic
+   * PCM in via AudioRecord and plays response PCM back via AudioTrack.
+   * Progress/transcript/error events arrive via the on* listeners below —
+   * this call resolves once the session is spawned, not once it's ready
+   * (wait for the "onVoiceReady" event for that).
+   */
+  startVoiceSession(apiKey: string): Promise<void>;
+  /** Ends the session (closes the process's stdin so the script closes the
+   *  WebSocket cleanly) and releases the mic/speaker. Safe to call when no
+   *  session is active. */
+  stopVoiceSession(): Promise<void>;
+  isVoiceSessionActive(): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

@@ -155,6 +155,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   externalKeyboardShortcuts: false,
   terminalTheme: 'blue',
   gpuRendering: false,
+  realtimeVoiceEnabled: false,
   terminalWallpaperTransparency: true,
   uiFont: 'blue',
   appFontFamily: 'default',

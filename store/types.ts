@@ -373,6 +373,12 @@ export type AppSettings = {
   geminiApiKey?: string;
   /** Geminiに使用するモデル (default: gemini-2.5-flash — 無料枠 + grounding) */
   geminiModel?: string;
+  /** Full-duplex realtime voice via the Gemini Live API (hooks/use-realtime-voice.ts,
+   *  VoiceBridge.kt) instead of the default turn-based record -> Whisper ->
+   *  LLM text -> expo-speech TTS flow. Off by default: audio in/out on the
+   *  Live API is billed per-token even on a free-tier key (text alone is
+   *  free), unlike the default path's free on-device TTS. */
+  realtimeVoiceEnabled?: boolean;
   // ─── Groq API ─────────────────────────────────────────────────────────────────
   /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
   groqApiKey?: string;

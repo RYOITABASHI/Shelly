@@ -98,6 +98,7 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       { key: 'terminalTheme',  label: 'Terminal Theme', labelKey: 'settings.terminal_theme_ansi_label',   type: 'enum', options: TERMINAL_THEME_NAMES, source: 'settings' },
       { key: 'fontFamily',     label: 'Font Family', labelKey: 'settings.font_family_label',      type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen', 'dotgothic16'], source: 'cosmetic' },
       { key: 'gpuRendering',   label: 'GPU Rendering', labelKey: 'settings.gpu_rendering_label',    type: 'boolean', source: 'settings' },
+      { key: 'realtimeVoiceEnabled', label: 'Realtime Voice (Gemini Live)', labelKey: 'settings.realtime_voice_label', type: 'boolean', source: 'settings', description: 'Full-duplex voice (you can talk over the model) via the Gemini Live API instead of the default record/transcribe/speak flow. Uses your Gemini API key. Audio is billed per-token even on a free-tier key (unlike the default free flow) — off by default.', descriptionKey: 'settings.realtime_voice_desc' },
     ],
   },
   {
