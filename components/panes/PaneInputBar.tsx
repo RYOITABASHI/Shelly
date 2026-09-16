@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { usePaneStore } from '@/store/pane-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -186,6 +187,11 @@ const styles = StyleSheet.create({
     borderTopColor: C.border,
     paddingHorizontal: 8,
     paddingVertical: 6,
+    // Matches Terminal pane's CommandKeyBar (lib/layout-constants.ts's
+    // KEY_BAR_HEIGHT) so side-by-side panes' bottom bars line up instead
+    // of sitting at two different heights.
+    minHeight: KEY_BAR_HEIGHT,
+    justifyContent: 'center',
   },
   pill: {
     flexDirection: 'row',
