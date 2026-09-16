@@ -75,43 +75,46 @@ interface SettingDef {
 
 const ALL_THEMES = getAllThemes().map((t) => t.id);
 
-const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
+const SECTIONS: { title: string; titleKey?: string; icon: string; items: SettingDef[] }[] = [
   {
     title: 'Terminal',
+    titleKey: 'settings.section_terminal',
     icon: 'terminal',
     items: [
-      { key: 'fontSize',       label: 'Font Size',        type: 'number', min: 8, max: 32, source: 'settings' },
-      { key: 'lineHeight',     label: 'Line Height',      type: 'number', min: 1.0, max: 2.5, source: 'settings', description: 'e.g. 1.4' },
-      { key: 'cursorShape',    label: 'Cursor Shape',     type: 'enum',   options: ['block', 'underline', 'bar'], source: 'settings' },
-      { key: 'autoScroll',     label: 'Auto Scroll',      type: 'boolean', source: 'settings' },
-      { key: 'syntaxHighlight',label: 'Syntax Highlight', type: 'boolean', source: 'settings' },
-      { key: 'externalKeyboardShortcuts', label: 'External Keyboard', type: 'boolean', source: 'settings', description: 'Physical keyboard shortcuts' },
+      { key: 'fontSize',       label: 'Font Size', labelKey: 'settings.font_size',        type: 'number', min: 8, max: 32, source: 'settings' },
+      { key: 'lineHeight',     label: 'Line Height', labelKey: 'settings.line_height',      type: 'number', min: 1.0, max: 2.5, source: 'settings', description: 'e.g. 1.4' },
+      { key: 'cursorShape',    label: 'Cursor Shape', labelKey: 'settings.cursor_shape',     type: 'enum',   options: ['block', 'underline', 'bar'], source: 'settings' },
+      { key: 'autoScroll',     label: 'Auto Scroll', labelKey: 'settings.auto_scroll',      type: 'boolean', source: 'settings' },
+      { key: 'syntaxHighlight',label: 'Syntax Highlight', labelKey: 'settings.syntax_highlight_label', type: 'boolean', source: 'settings' },
+      { key: 'externalKeyboardShortcuts', label: 'External Keyboard', labelKey: 'settings.external_keyboard_label', type: 'boolean', source: 'settings', description: 'Physical keyboard shortcuts' },
     ],
   },
   {
     title: 'Display',
+    titleKey: 'settings.section_display',
     icon: 'palette',
     items: [
-      { key: 'themeEngine',    label: 'Color Theme',      type: 'enum', options: ALL_THEMES, source: 'custom', description: 'WezTerm-style themes' },
-      { key: 'terminalTheme',  label: 'Terminal Theme',   type: 'enum', options: TERMINAL_THEME_NAMES, source: 'settings' },
-      { key: 'fontFamily',     label: 'Font Family',      type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen', 'dotgothic16'], source: 'cosmetic' },
-      { key: 'gpuRendering',   label: 'GPU Rendering',    type: 'boolean', source: 'settings' },
+      { key: 'themeEngine',    label: 'Color Theme', labelKey: 'settings.color_theme_label',      type: 'enum', options: ALL_THEMES, source: 'custom', description: 'WezTerm-style themes' },
+      { key: 'terminalTheme',  label: 'Terminal Theme', labelKey: 'settings.terminal_theme_ansi_label',   type: 'enum', options: TERMINAL_THEME_NAMES, source: 'settings' },
+      { key: 'fontFamily',     label: 'Font Family', labelKey: 'settings.font_family_label',      type: 'enum', options: ['jetbrains-mono', 'fira-code', 'source-code-pro', 'ibm-plex-mono', 'pixel-mplus', 'press-start-2p', 'silkscreen', 'dotgothic16'], source: 'cosmetic' },
+      { key: 'gpuRendering',   label: 'GPU Rendering', labelKey: 'settings.gpu_rendering_label',    type: 'boolean', source: 'settings' },
     ],
   },
   {
     title: 'AI / LLM',
+    titleKey: 'settings.section_ai_llm',
     icon: 'auto-awesome',
     items: [
-      { key: 'localLlmEnabled', label: 'Local LLM',       type: 'boolean', source: 'settings' },
-      { key: 'localLlmUrl',     label: 'Local LLM URL',   type: 'string',  source: 'settings', description: 'e.g. http://127.0.0.1:8080' },
-      { key: 'localLlmModel',   label: 'Local LLM Model', type: 'string',  source: 'settings' },
-      { key: 'groqApiKey',      label: 'Groq API Key',    type: 'secret',  source: 'settings' },
-      { key: 'groqModel',       label: 'Groq Model',      type: 'string',  source: 'settings', description: 'e.g. openai/gpt-oss-120b' },
-      { key: 'cerebrasApiKey',  label: 'Cerebras API Key', type: 'secret', source: 'settings' },
-      { key: 'openrouterApiKey', label: 'OpenRouter API Key', type: 'secret', source: 'settings' },
-      { key: 'perplexityApiKey',label: 'Perplexity API Key', type: 'secret', source: 'settings' },
-      { key: 'geminiApiKey',    label: 'Gemini API Key',   type: 'secret',  source: 'settings' },
-      { key: 'geminiModel',     label: 'Gemini Model',     type: 'string',  source: 'settings', description: 'default gemini-2.5-flash (free tier + grounding)' },
+      { key: 'localLlmEnabled', label: 'Local LLM', labelKey: 'settings.local_llm_label',       type: 'boolean', source: 'settings' },
+      { key: 'localLlmUrl',     label: 'Local LLM URL', labelKey: 'settings.local_llm_url_label',   type: 'string',  source: 'settings', description: 'e.g. http://127.0.0.1:8080' },
+      { key: 'localLlmModel',   label: 'Local LLM Model', labelKey: 'settings.local_llm_model_label', type: 'string',  source: 'settings' },
+      { key: 'groqApiKey',      label: 'Groq API Key', labelKey: 'settings.groq_api_key_label',    type: 'secret',  source: 'settings' },
+      { key: 'groqModel',       label: 'Groq Model', labelKey: 'settings.groq_model_label',      type: 'string',  source: 'settings', description: 'e.g. openai/gpt-oss-120b' },
+      { key: 'cerebrasApiKey',  label: 'Cerebras API Key', labelKey: 'settings.cerebras_key', type: 'secret', source: 'settings' },
+      { key: 'openrouterApiKey', label: 'OpenRouter API Key', labelKey: 'settings.openrouter_key', type: 'secret', source: 'settings' },
+      { key: 'perplexityApiKey',label: 'Perplexity API Key', labelKey: 'settings.perplexity_api_key_label', type: 'secret', source: 'settings' },
+      { key: 'geminiApiKey',    label: 'Gemini API Key', labelKey: 'settings.gemini_api_key_label',   type: 'secret',  source: 'settings' },
+      { key: 'geminiModel',     label: 'Gemini Model', labelKey: 'settings.gemini_model_label',     type: 'string',  source: 'settings', description: 'default gemini-2.5-flash (free tier + grounding)' },
     ],
   },
   {
@@ -122,10 +125,11 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
     // section is exclusively "how agents register/run", never a provider
     // setting; new agent-behavior toggles belong here, not in 'AI / LLM'.
     title: 'Agents',
+    titleKey: 'settings.section_agents',
     icon: 'smart-toy',
     items: [
-      { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
-      { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
+      { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', labelKey: 'settings.autonomous_cloud_label', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
+      { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', labelKey: 'settings.autonomous_cloud_exhaustion_label', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
       // Scoped EXACTLY to what lib/agent-action-reversibility.ts allows: a
       // `draft` write into the local $HOME/agent-output workspace. 2026-08-04:
       // the undo route is wired (hooks/use-ai-pane-dispatch.ts passes a
@@ -133,13 +137,13 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // button on an eligible run's result bubble) — the previous "no Undo
       // button / no run takes this path today" caveat was dropped in the
       // SAME commit, per this comment's own original instruction.
-      { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap — the result bubble gets an "Undo" button. Nothing else changes: cli / notify / webhook / social-post / dm-reply, and any Obsidian or custom output, still require approval. Undo only lasts for the current app session (does not survive a restart). Default off.' },
+      { key: 'agentOptimisticWorkspaceWrites', label: 'Optimistic Workspace Writes', labelKey: 'settings.optimistic_writes_label', type: 'boolean', source: 'settings', description: 'Runs whose only action saves a draft into the LOCAL agent-output folder execute immediately behind an automatic git savepoint, instead of waiting for an approval tap — the result bubble gets an "Undo" button. Nothing else changes: cli / notify / webhook / social-post / dm-reply, and any Obsidian or custom output, still require approval. Undo only lasts for the current app session (does not survive a restart). Default off.' },
       // Widget-ASK-only registration confirm bypass — scoped EXACTLY to what
       // lib/widget-agent-registration.ts implements (see that module's doc):
       // widget-ASK-originated `@agent` commands only; AI-Pane `@agent` and
       // every hard content gate (unclear schedule / assumed values /
       // external-posting action types) are unchanged.
-      { key: 'widgetAgentRegistrationNoConfirm', label: 'Widget No-Confirm Register', type: 'boolean', source: 'settings', description: 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately without the in-app confirmation step, and a notification reports what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.' },
+      { key: 'widgetAgentRegistrationNoConfirm', label: 'Widget No-Confirm Register', labelKey: 'settings.widget_no_confirm_label', type: 'boolean', source: 'settings', description: 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately without the in-app confirmation step, and a notification reports what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.' },
       // Tier 3 (2026-08-02, docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md):
       // when the deterministic parser is unsure, the LLM drives a multi-turn
       // clarification dialogue in its own words instead of Shelly's fixed
@@ -154,8 +158,8 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
       // confirm tap is unaffected either way. Default ON since 2026-08-03
       // (on-device-verified) — see AppSettings.agentConversationalRegistrationEnabled
       // in store/settings-store.ts for why the fallback isn't a regression.
-      { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let an LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Uses your configured Cerebras/Groq API key if present (faster, more capable), otherwise the Local LLM; falls back to the existing behavior if nothing is reachable. The final registration always still needs your confirmation. Default ON.' },
-      { key: 'agentConversationalHighRiskActionsEnabled', label: 'LLM-Proposed Webhook/CLI (High Risk)', type: 'boolean', source: 'settings', description: 'Only when LLM-led registration is enabled, allow the LLM to propose webhook/CLI actions using URLs or commands the user actually wrote verbatim in the conversation. URLs or commands the user did not provide are always rejected. Existing runtime host allowlists and command safety checks still apply unchanged. Default off.' },
+      { key: 'agentConversationalRegistrationEnabled', label: 'LLM-Led Agent Registration', labelKey: 'settings.llm_led_registration_label', type: 'boolean', source: 'settings', description: 'When an "@agent …" request is ambiguous, let an LLM ask its own follow-up questions across multiple turns (Hermes-style) instead of Shelly\'s fixed one-field-at-a-time prompts. Uses your configured Cerebras/Groq API key if present (faster, more capable), otherwise the Local LLM; falls back to the existing behavior if nothing is reachable. The final registration always still needs your confirmation. Default ON.' },
+      { key: 'agentConversationalHighRiskActionsEnabled', label: 'LLM-Proposed Webhook/CLI (High Risk)', labelKey: 'settings.llm_high_risk_label', type: 'boolean', source: 'settings', description: 'Only when LLM-led registration is enabled, allow the LLM to propose webhook/CLI actions using URLs or commands the user actually wrote verbatim in the conversation. URLs or commands the user did not provide are always rejected. Existing runtime host allowlists and command safety checks still apply unchanged. Default off.' },
       { key: 'profileLearningEnabled', label: 'Profile Learning', labelKey: 'settings.profile_learning_label', type: 'boolean', source: 'settings', description: 'Learn command, project, and AI usage patterns locally for personalization.', descriptionKey: 'settings.profile_learning_desc' },
       { key: 'viewProfileFacts', label: 'View/Edit Facts', labelKey: 'settings.profile_facts_label', type: 'action', source: 'custom', actionLabel: 'View', actionLabelKey: 'settings.profile_facts_action', description: 'View learned facts and delete individual entries.', descriptionKey: 'settings.profile_facts_desc' },
       { key: 'resetUserProfile', label: 'Reset Profile', labelKey: 'settings.profile_reset_label', type: 'action', source: 'custom', actionLabel: 'Reset', actionLabelKey: 'settings.profile_reset_action', description: 'Delete learned local profile facts and usage patterns.', descriptionKey: 'settings.profile_reset_desc', dangerAction: true },
@@ -163,80 +167,88 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
   },
   {
     title: 'Telegram Gateway',
+    titleKey: 'settings.section_telegram',
     icon: 'send',
     items: [
-      { key: 'telegramInboundEnabled',  label: 'Enable Inbound',   type: 'boolean', source: 'settings', description: 'Accept @agent messages from one authorized Telegram chat. Each message still opens a confirm card.' },
-      { key: 'telegramBotToken',        label: 'Bot Token',        type: 'secret',  source: 'settings', description: 'From @BotFather (stored encrypted)' },
-      { key: 'telegramAuthorizedChatId', label: 'Authorized Chat ID', type: 'string', source: 'settings', description: 'Single chat id; messages from any other chat are dropped' },
+      { key: 'telegramInboundEnabled',  label: 'Enable Inbound', labelKey: 'settings.telegram_inbound_label',   type: 'boolean', source: 'settings', description: 'Accept @agent messages from one authorized Telegram chat. Each message still opens a confirm card.' },
+      { key: 'telegramBotToken',        label: 'Bot Token', labelKey: 'settings.telegram_bot_token_label',        type: 'secret',  source: 'settings', description: 'From @BotFather (stored encrypted)' },
+      { key: 'telegramAuthorizedChatId', label: 'Authorized Chat ID', labelKey: 'settings.telegram_chat_id_label', type: 'string', source: 'settings', description: 'Single chat id; messages from any other chat are dropped' },
     ],
   },
   {
     title: 'Team',
+    titleKey: 'settings.section_team',
     icon: 'groups',
     items: [
-      { key: 'teamMembers.gemini',     label: 'Gemini API',   type: 'boolean', source: 'custom', description: 'Enable Gemini API in AI Pane' },
-      { key: 'teamMembers.cerebras',   label: 'Cerebras',     type: 'boolean', source: 'custom', description: 'Enable Cerebras in AI Pane' },
-      { key: 'teamMembers.groq',       label: 'Groq',         type: 'boolean', source: 'custom', description: 'Enable Groq in AI Pane' },
-      { key: 'teamMembers.perplexity', label: 'Perplexity',   type: 'boolean', source: 'custom', description: 'Enable Perplexity in AI Pane' },
-      { key: 'teamMembers.local',      label: 'Local LLM',    type: 'boolean', source: 'custom', description: 'Enable local LLM in AI Pane' },
-      { key: 'defaultAgent',           label: 'Default Agent', type: 'enum', options: ['codex'], source: 'settings' },
-      { key: 'experienceMode',         label: 'Experience Mode', type: 'enum', options: ['learning', 'standard', 'power'], source: 'settings' },
-      { key: 'autoApproveLevel',       label: 'CLI Approval Level', type: 'enum', options: ['safe', 'moderate', 'yolo'], source: 'settings', description: 'How much to auto-approve' },
+      { key: 'teamMembers.gemini',     label: 'Gemini API', labelKey: 'settings.team_gemini_label',   type: 'boolean', source: 'custom', description: 'Enable Gemini API in AI Pane' },
+      { key: 'teamMembers.cerebras',   label: 'Cerebras', labelKey: 'settings.team_cerebras_label',     type: 'boolean', source: 'custom', description: 'Enable Cerebras in AI Pane' },
+      { key: 'teamMembers.groq',       label: 'Groq', labelKey: 'settings.team_groq_label',         type: 'boolean', source: 'custom', description: 'Enable Groq in AI Pane' },
+      { key: 'teamMembers.perplexity', label: 'Perplexity', labelKey: 'settings.team_perplexity_label',   type: 'boolean', source: 'custom', description: 'Enable Perplexity in AI Pane' },
+      { key: 'teamMembers.local',      label: 'Local LLM', labelKey: 'settings.team_local_label',    type: 'boolean', source: 'custom', description: 'Enable local LLM in AI Pane' },
+      { key: 'defaultAgent',           label: 'Default Agent', labelKey: 'settings.default_agent_label', type: 'enum', options: ['codex'], source: 'settings' },
+      { key: 'experienceMode',         label: 'Experience Mode', labelKey: 'settings.experience_mode_label', type: 'enum', options: ['learning', 'standard', 'power'], source: 'settings' },
+      { key: 'autoApproveLevel',       label: 'CLI Approval Level', labelKey: 'settings.cli_approval_level_label', type: 'enum', options: ['safe', 'moderate', 'yolo'], source: 'settings', description: 'How much to auto-approve' },
     ],
   },
   {
     title: 'Sound',
+    titleKey: 'settings.section_sound',
     icon: 'volume-up',
     items: [
-      { key: 'soundEffects',  label: 'Sound Effects', type: 'boolean', source: 'settings' },
-      { key: 'soundVolume',   label: 'Volume',        type: 'number', min: 0, max: 1.0, source: 'settings', description: '0.0 – 1.0' },
-      { key: 'soundProfile',  label: 'Sound Profile', type: 'enum', options: ['modern', 'retro', 'silent'], source: 'cosmetic' },
-      { key: 'hapticFeedback', label: 'Haptic Feedback', type: 'boolean', source: 'settings' },
+      { key: 'soundEffects',  label: 'Sound Effects', labelKey: 'settings.sound_effects_label', type: 'boolean', source: 'settings' },
+      { key: 'soundVolume',   label: 'Volume', labelKey: 'settings.volume_label',        type: 'number', min: 0, max: 1.0, source: 'settings', description: '0.0 – 1.0' },
+      { key: 'soundProfile',  label: 'Sound Profile', labelKey: 'settings.sound_profile_label', type: 'enum', options: ['modern', 'retro', 'silent'], source: 'cosmetic' },
+      { key: 'hapticFeedback', label: 'Haptic Feedback', labelKey: 'settings.haptic', type: 'boolean', source: 'settings' },
     ],
   },
   {
     title: 'Language',
+    titleKey: 'settings.section_language',
     icon: 'language',
     items: [
-      { key: 'locale', label: 'Language', type: 'enum', options: AVAILABLE_LOCALES.map(l => l.code), source: 'custom', description: 'App language' },
+      { key: 'locale', label: 'Language', labelKey: 'settings.language', type: 'enum', options: AVAILABLE_LOCALES.map(l => l.code), source: 'custom', description: 'App language' },
     ],
   },
   {
     title: 'Context',
+    titleKey: 'settings.section_context',
     icon: 'psychology',
     items: [
-      { key: 'customContext', label: 'Custom System Prompt', type: 'string', source: 'custom', description: 'Injected into AI context' },
-      { key: 'llmInterpreterEnabled', label: 'LLM Interpreter', type: 'boolean', source: 'settings' },
-      { key: 'realtimeTranslateEnabled', label: 'Realtime Translate', type: 'boolean', source: 'settings' },
+      { key: 'customContext', label: 'Custom System Prompt', labelKey: 'settings.custom_context_label', type: 'string', source: 'custom', description: 'Injected into AI context' },
+      { key: 'llmInterpreterEnabled', label: 'LLM Interpreter', labelKey: 'settings.llm_interpreter_label', type: 'boolean', source: 'settings' },
+      { key: 'realtimeTranslateEnabled', label: 'Realtime Translate', labelKey: 'settings.realtime_translate_label', type: 'boolean', source: 'settings' },
       { key: 'nacreBridgeEnabled', label: 'Nacre Bridge', labelKey: 'settings.nacre_bridge_label', type: 'boolean', source: 'settings', description: 'While Shelly is in the foreground, share your current directory, git branch, and safe recent command terms (never raw commands or secrets) with the Nacre IME to improve its conversion suggestions. Default on.', descriptionKey: 'settings.nacre_bridge_desc' },
     ],
   },
   {
     title: 'Safety',
+    titleKey: 'settings.section_safety',
     icon: 'shield',
     items: [
-      { key: 'enableCommandSafety',  label: 'Command Safety',    type: 'boolean', source: 'settings' },
-      { key: 'highContrastOutput',   label: 'High Contrast',     type: 'boolean', source: 'settings' },
-      { key: 'notificationTriggerEnabled', label: 'Notification Triggers', type: 'boolean', source: 'custom', description: 'Let agents fire when a notification arrives from a chosen app. Requires OS notification access (see below).' },
-      { key: 'notificationOsAccess', label: 'Notification Access (OS)', type: 'action', source: 'custom', actionLabel: 'Check / Grant' },
+      { key: 'enableCommandSafety',  label: 'Command Safety', labelKey: 'settings.enable_safety',    type: 'boolean', source: 'settings' },
+      { key: 'highContrastOutput',   label: 'High Contrast', labelKey: 'settings.high_contrast',     type: 'boolean', source: 'settings' },
+      { key: 'notificationTriggerEnabled', label: 'Notification Triggers', labelKey: 'settings.notification_trigger_label', type: 'boolean', source: 'custom', description: 'Let agents fire when a notification arrives from a chosen app. Requires OS notification access (see below).' },
+      { key: 'notificationOsAccess', label: 'Notification Access (OS)', labelKey: 'settings.notification_os_access_label', type: 'action', source: 'custom', actionLabel: 'Check / Grant' },
     ],
   },
   {
     title: 'Scouter',
+    titleKey: 'settings.section_scouter',
     icon: 'radar',
     items: [
-      { key: 'scouterEnabled', label: 'Scouter Service', type: 'boolean', source: 'custom', description: 'Enables the local widget, hook server, and JSONL watcher.' },
-      { key: 'scouterDebugInfo', label: 'Scouter Debug Info', type: 'action', source: 'custom', actionLabel: 'Show' },
-      { key: 'scouterHookTemplate', label: 'Scouter Hook Template', type: 'action', source: 'custom', actionLabel: 'Show' },
+      { key: 'scouterEnabled', label: 'Scouter Service', labelKey: 'settings.scouter_enabled_label', type: 'boolean', source: 'custom', description: 'Enables the local widget, hook server, and JSONL watcher.' },
+      { key: 'scouterDebugInfo', label: 'Scouter Debug Info', labelKey: 'settings.scouter_debug_label', type: 'action', source: 'custom', actionLabel: 'Show' },
+      { key: 'scouterHookTemplate', label: 'Scouter Hook Template', labelKey: 'settings.scouter_hook_label', type: 'action', source: 'custom', actionLabel: 'Show' },
     ],
   },
   {
     title: 'Data',
+    titleKey: 'settings.section_data',
     icon: 'storage',
     items: [
-      { key: 'rerunSetup',       label: 'Re-run Setup Wizard', type: 'action', source: 'custom', actionLabel: 'Run', description: 'Run initial setup again' },
-      { key: 'exportLogs',        label: 'Export Logs',    type: 'action', source: 'custom', actionLabel: 'Share as text' },
-      { key: 'deleteHistory',     label: 'Delete All History', type: 'action', source: 'custom', actionLabel: 'Delete', dangerAction: true },
+      { key: 'rerunSetup',       label: 'Re-run Setup Wizard', labelKey: 'settings.rerun_setup_label', type: 'action', source: 'custom', actionLabel: 'Run', description: 'Run initial setup again' },
+      { key: 'exportLogs',        label: 'Export Logs', labelKey: 'settings.export_logs_label',    type: 'action', source: 'custom', actionLabel: 'Share as text' },
+      { key: 'deleteHistory',     label: 'Delete All History', labelKey: 'settings.delete_history_label', type: 'action', source: 'custom', actionLabel: 'Delete', dangerAction: true },
     ],
   },
   // bug recovery (2026-04-27): user-facing escape hatch for the
@@ -246,11 +258,12 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
   // wipes the persistent broken state so the next launch starts clean.
   {
     title: 'Recovery',
+    titleKey: 'settings.section_recovery',
     icon: 'healing',
     items: [
       {
         key: 'forceRecoverFromFrozenState',
-        label: 'Force-recover from frozen state',
+        label: 'Force-recover from frozen state', labelKey: 'settings.force_recover_label',
         type: 'action',
         source: 'custom',
         actionLabel: 'Recover',
@@ -261,12 +274,13 @@ const SECTIONS: { title: string; icon: string; items: SettingDef[] }[] = [
   },
   {
     title: 'Sync',
+    titleKey: 'settings.section_sync',
     icon: 'cloud',
     items: [
-      { key: 'dotfilesPat',  label: 'GitHub PAT',      type: 'secret', source: 'custom', description: 'For dotfiles gist sync' },
-      { key: 'includeAgentData', label: 'Include Agents/Skills/Memory', type: 'boolean', source: 'custom', description: 'Also back up agent definitions, skill recipes, and memory notes to the same Gist. Off by default — memory notes and agent prompts may contain personal facts.' },
-      { key: 'syncToGist',   label: 'Sync to Gist',    type: 'action', source: 'custom', actionLabel: 'Upload' },
-      { key: 'syncFromGist', label: 'Sync from Gist',  type: 'action', source: 'custom', actionLabel: 'Download' },
+      { key: 'dotfilesPat',  label: 'GitHub PAT', labelKey: 'settings.dotfiles_pat_label',      type: 'secret', source: 'custom', description: 'For dotfiles gist sync' },
+      { key: 'includeAgentData', label: 'Include Agents/Skills/Memory', labelKey: 'settings.include_agent_data_label', type: 'boolean', source: 'custom', description: 'Also back up agent definitions, skill recipes, and memory notes to the same Gist. Off by default — memory notes and agent prompts may contain personal facts.' },
+      { key: 'syncToGist',   label: 'Sync to Gist', labelKey: 'settings.sync_to_gist_label',    type: 'action', source: 'custom', actionLabel: 'Upload' },
+      { key: 'syncFromGist', label: 'Sync from Gist', labelKey: 'settings.sync_from_gist_label',  type: 'action', source: 'custom', actionLabel: 'Download' },
     ],
   },
 ];
@@ -418,6 +432,13 @@ interface SettingRowProps {
 // defeated by the onToggle/onStringEdit/onEnumOpen/onAction props changing
 // identity on every keystroke/store update elsewhere in the app.
 const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStringEdit, onEnumOpen, onAction, disabled = false }: SettingRowProps) {
+  // The parent already resolves labelKey/descriptionKey → t(...) before
+  // spreading `def` down here (see the `<SettingRow def={{...def, label:
+  // def.labelKey ? t(def.labelKey) : def.label, ...}}>` call site below),
+  // so `def.label`/`def.description` arrive already localized — no need
+  // to re-resolve them a second time here.
+  const label = def.label;
+  const description = def.description;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
 
@@ -447,8 +468,8 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
     return (
       <View style={styles.row}>
         <View style={styles.rowLeft}>
-          <Text style={styles.rowKey}>{def.label}</Text>
-          {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
+          <Text style={styles.rowKey}>{label}</Text>
+          {description && <Text style={styles.rowDesc}>{description}</Text>}
         </View>
         <Switch
           value={Boolean(value)}
@@ -465,8 +486,8 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
     return (
       <TouchableOpacity style={[styles.row, disabled && { opacity: 0.5 }]} onPress={() => onEnumOpen(def)} activeOpacity={0.7} disabled={disabled}>
         <View style={styles.rowLeft}>
-          <Text style={styles.rowKey}>{def.label}</Text>
-          {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
+          <Text style={styles.rowKey}>{label}</Text>
+          {description && <Text style={styles.rowDesc}>{description}</Text>}
         </View>
         <View style={styles.rowRight}>
           <Text style={styles.rowValue}>{displayValue}</Text>
@@ -481,8 +502,8 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
     return (
       <TouchableOpacity style={styles.row} onPress={() => onAction?.(def)} activeOpacity={0.7}>
         <View style={styles.rowLeft}>
-          <Text style={[styles.rowKey, def.dangerAction && { color: '#F87171' }]}>{def.label}</Text>
-          {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
+          <Text style={[styles.rowKey, def.dangerAction && { color: '#F87171' }]}>{label}</Text>
+          {description && <Text style={styles.rowDesc}>{description}</Text>}
         </View>
         <View style={styles.rowRight}>
           <Text style={[styles.rowValue, def.dangerAction && { color: '#F87171' }]}>{def.actionLabel ?? 'Run'}</Text>
@@ -497,7 +518,7 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
     if (editing) {
       return (
         <View style={styles.rowEditing}>
-          <Text style={styles.rowKey}>{def.label}</Text>
+          <Text style={styles.rowKey}>{label}</Text>
           <TextInput
             style={styles.rowInput}
             value={draft}
@@ -519,8 +540,8 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
     return (
       <TouchableOpacity style={styles.row} onPress={startEdit} activeOpacity={0.7}>
         <View style={styles.rowLeft}>
-          <Text style={styles.rowKey}>{def.label}</Text>
-          {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
+          <Text style={styles.rowKey}>{label}</Text>
+          {description && <Text style={styles.rowDesc}>{description}</Text>}
         </View>
         <View style={styles.rowRight}>
           <Text style={[styles.rowValue, !value && { color: MUTED }]}>{value ? '••••••••' : '(not set)'}</Text>
@@ -534,7 +555,7 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
   if (editing) {
     return (
       <View style={styles.rowEditing}>
-        <Text style={styles.rowKey}>{def.label}</Text>
+        <Text style={styles.rowKey}>{label}</Text>
         <TextInput
           style={styles.rowInput}
           value={draft}
@@ -554,8 +575,8 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
   return (
     <TouchableOpacity style={styles.row} onPress={startEdit} activeOpacity={0.7}>
       <View style={styles.rowLeft}>
-        <Text style={styles.rowKey}>{def.label}</Text>
-        {def.description && <Text style={styles.rowDesc}>{def.description}</Text>}
+        <Text style={styles.rowKey}>{label}</Text>
+        {description && <Text style={styles.rowDesc}>{description}</Text>}
       </View>
       <View style={styles.rowRight}>
         <Text style={styles.rowValue}>{displayValue}</Text>
@@ -1053,7 +1074,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
                 {/* Section header */}
                 <View style={styles.sectionHeader}>
                   <MaterialIcons name={section.icon as any} size={13} color={C.accent} />
-                  <Text style={styles.sectionTitle}>{section.title.toUpperCase()}</Text>
+                  <Text style={styles.sectionTitle}>{(section.titleKey ? t(section.titleKey) : section.title).toUpperCase()}</Text>
                 </View>
 
                 {/* Rows */}
