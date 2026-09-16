@@ -58,14 +58,18 @@ React Native component testing is intentionally out of scope for this first setu
 
 ### Project structure
 
+Tabs were removed a while back — `app/index.tsx` renders `ShellLayout` directly (AgentBar + Sidebar + multi-pane container + ContextBar), with Terminal/AI/Browser/Markdown as always-on panes rather than separate screens.
+
 ```
-app/          → Expo Router pages (4 tabs: Chat, Projects, Terminal, Settings)
-components/   → React Native components
+app/          → Expo Router entry points (index.tsx renders ShellLayout)
+components/   → React Native components (layout/, multi-pane/, panes/, terminal/, config/)
 lib/          → Core logic (input router, AI integrations, safety system)
 store/        → Zustand stores
 hooks/        → Custom React hooks
-modules/      → Native modules (Termux Bridge)
+modules/      → Native modules — terminal-emulator/ (JNI forkpty PTY, Kotlin + C) and terminal-view/ (native Canvas terminal rendering). No Termux dependency.
 ```
+
+See `CLAUDE.md` for the full directory map and architecture decisions log — it's kept current and is the best starting point before a PR that touches structure.
 
 ## Code style
 
