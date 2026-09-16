@@ -181,7 +181,7 @@ Something will eventually not work the way you expect. Here's the order to check
 
 ## 9. Retro theme, realtime voice, and reaching Shelly from your PC
 
-A few newer features are worth a short walkthrough of their own. All four are opt-in, off by default, and — as of this writing — verified in CI and by local script-level testing but **not yet exercised on real hardware**, so treat the exact steps below as the intended flow rather than a confirmed one.
+A few newer features are worth a short walkthrough of their own. All four are opt-in and off by default.
 
 **Case File theme.** `Settings → Theme` now offers a fifth color preset, **Case File** — a cream-paper, black-hairline look modeled on old database-terminal UIs, distinct from the four neon presets. It pairs with an independent font picker (`Settings → Font`): **Default** or **DotGothic16**, a bitmap-style font, selectable no matter which color theme is active. Switching into Case File briefly flashes a pseudo-boot overlay and suspends any wallpaper you have set for as long as it's active.
 

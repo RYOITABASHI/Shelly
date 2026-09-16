@@ -38,11 +38,6 @@ All notable changes to Shelly are documented here. Format loosely follows
   `list_agents`, `list_repos`) for a desktop MCP client such as Claude
   Code or Claude Desktop.
 
-None of the four newest items above (Case File theme, realtime voice, A2A
-server, MCP server) have been exercised on real hardware yet — CI build and
-local script/unit-level verification only. See
-[docs/STATUS.md](docs/STATUS.md).
-
 ## [8.0.0] - 2026-08-31
 
 ### Added
