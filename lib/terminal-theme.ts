@@ -118,33 +118,33 @@ export const TERMINAL_THEMES: Record<string, TerminalTheme> = {
     brightCyan: '#94E2D5', brightWhite: '#A6ADC8',
   },
   'case-file': {
-    // Note: TerminalPane.tsx renders the PTY surface itself at a hardcoded
-    // TERMINAL_SURFACE_BACKGROUND ('#000000') regardless of which terminal
-    // theme is active (a deliberate fail-closed decision after the
-    // build-1560/1565 wallpaper-flash regression — see CLAUDE.md's
-    // "Terminal pane background" note), so `background` here is
-    // documentation only. Every color below is picked to read against
-    // real black, not against Case File's cream chrome — using the same
-    // dark-ink-on-paper tones as theme-engine.ts's case-file entry would
-    // be nearly invisible here. Lighter, warm "sepia paper on black"
-    // tones keep the terminal legible while still evoking the theme.
-    // 2026-09-16: reported hard to read on-device. Two real bugs: `black`
-    // matched TERMINAL_SURFACE_BACKGROUND exactly (#000000), so any
-    // ANSI-black text vanished outright — every other theme here keeps
-    // black a hair off pure black for exactly this reason (e.g. 'blue'
-    // uses #050A0D). And the original tones were all fairly desaturated
-    // mid-lightness, closer to gray-beige than a crisp warm cream, which
-    // reads noticeably duller/lower-contrast next to the other themes'
-    // brighter pastels (e.g. 'blue' foreground #D6ECF7) even where raw
-    // luminance was in a similar ballpark. Brightened + warmed the whole
-    // set so it reads as crisp warm-cream-on-black, not washed-out beige.
+    // 2026-09-16: this entry went through two wrong guesses before an
+    // on-device screenshot finally showed the real cause. TerminalPane.tsx
+    // hardcodes TERMINAL_SURFACE_BACKGROUND ('#000000') as the PTY view's
+    // background ONLY when `transparentBackground` is off — but that prop
+    // (`terminalWallpaperActive`) is true whenever the user has ANY
+    // wallpaper file picked (`wallpaperUri`) and
+    // settings.terminalWallpaperTransparency is on (true by default per
+    // CLAUDE.md), REGARDLESS of wallpaperOpacity. Case File's
+    // suspendWallpaperForTheme() zeroes wallpaperOpacity but never clears
+    // wallpaperUri, so for anyone with a wallpaper file set (the common
+    // case — confirmed via a shared screenshot), the terminal view and
+    // its wrapping pane both render `transparent`, letting the root
+    // BackgroundLayer's solid `C.bgDeep` (Case File's cream) show through
+    // — not black. The previous "sepia on black" palette read as
+    // near-invisible cream-on-cream in that (common) configuration.
+    // These colors match theme-engine.ts's already-contrast-fixed
+    // case-file entry: dark ink on cream, like the rest of the chrome.
+    // (Only users with zero wallpaper ever configured still get a solid
+    // black surface here — the same dark-ink tones read worse there, but
+    // that's a narrower case than cream-via-transparency.)
     name: 'case-file', label: 'Case File',
-    background: '#E8E3D0', foreground: '#EDE4C8', cursor: '#EDE4C8',
-    black: '#2A2416', red: '#D47B5A', green: '#9DBF8A', yellow: '#D4AE35',
-    blue: '#8AA3BF', magenta: '#B98AA3', cyan: '#8AB3B3', white: '#EDE4C8',
-    brightBlack: '#A89F82', brightRed: '#E89870', brightGreen: '#B8D9A0',
-    brightYellow: '#E8CC60', brightBlue: '#AAC4E0', brightMagenta: '#D9AAC4',
-    brightCyan: '#AAD4D4', brightWhite: '#F7F2E0',
+    background: '#E8E3D0', foreground: '#201D16', cursor: '#2A2416',
+    black: '#2A2416', red: '#8A2020', green: '#2E4A2E', yellow: '#6B4E12',
+    blue: '#2A3F5C', magenta: '#5C2A4A', cyan: '#2A5C5C', white: '#4A4636',
+    brightBlack: '#6B6450', brightRed: '#A83030', brightGreen: '#3F5C3F',
+    brightYellow: '#8A6A20', brightBlue: '#3A5580', brightMagenta: '#7A3A60',
+    brightCyan: '#3A7A7A', brightWhite: '#201D16',
   },
   solarized: {
     name: 'solarized', label: 'Solarized Dark',
