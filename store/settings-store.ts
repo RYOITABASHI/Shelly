@@ -157,6 +157,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gpuRendering: false,
   realtimeVoiceEnabled: false,
   a2aServerEnabled: false,
+  mcpServerEnabled: false,
   terminalWallpaperTransparency: true,
   uiFont: 'blue',
   appFontFamily: 'default',

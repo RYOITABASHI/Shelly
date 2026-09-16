@@ -42,6 +42,8 @@ import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/age
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { deleteProfileFact, loadUserProfile, resetUserProfile } from '@/lib/user-profile';
+import * as Clipboard from 'expo-clipboard';
+import { getOrCreateMCPToken } from '@/hooks/use-mcp-server-bridge';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -146,6 +148,8 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       // external-posting action types) are unchanged.
       { key: 'widgetAgentRegistrationNoConfirm', label: 'Widget No-Confirm Register', labelKey: 'settings.widget_no_confirm_label', type: 'boolean', source: 'settings', description: 'An "@agent …" command typed (or dictated) into the home-screen widget\'s ASK dialog registers immediately without the in-app confirmation step, and a notification reports what got registered. ONLY the widget ASK path is affected: "@agent" typed in the AI Pane still confirms. Commands with an unclear schedule, assumed values, or external-posting actions still open the normal in-app flow. Default off.' },
       { key: 'a2aServerEnabled', label: 'A2A Server', labelKey: 'settings.a2a_server_label', type: 'boolean', source: 'settings', description: 'Exposes a read-only "list_agents" skill to A2A (Agent2Agent) protocol clients on the same network (Wi-Fi/VPN) — lets a PC-side agent ask what Shelly agents exist. Opens a real HTTP listener while the app is running. No run-triggering skill yet. Default off.', descriptionKey: 'settings.a2a_server_desc' },
+      { key: 'mcpServerEnabled', label: 'MCP Server', labelKey: 'settings.mcp_server_label', type: 'boolean', source: 'settings', description: 'Exposes read-only tools (terminal output, git status, agent list, repo list) to MCP clients (Claude Code, Claude Desktop) on the same network (Wi-Fi/VPN). Requires the bearer token below in the client\'s MCP config. No exec/write tools yet. Default off.', descriptionKey: 'settings.mcp_server_desc' },
+      { key: 'copyMcpToken', label: 'Copy MCP Token', labelKey: 'settings.mcp_token_copy_label', type: 'action', source: 'custom', actionLabel: 'Copy', actionLabelKey: 'settings.mcp_token_copy_action', description: 'Copies the bearer token an MCP client needs to authenticate — generates one on first use.', descriptionKey: 'settings.mcp_token_copy_desc' },
       // Tier 3 (2026-08-02, docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md):
       // when the deterministic parser is unsure, the LLM drives a multi-turn
       // clarification dialogue in its own words instead of Shelly's fixed
@@ -889,6 +893,13 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
       case 'exportLogs': {
         const text = buildRecentTerminalLogsText(500);
         Share.share({ message: text, title: 'Shelly Terminal Logs' });
+        break;
+      }
+      case 'copyMcpToken': {
+        getOrCreateMCPToken()
+          .then((token) => Clipboard.setStringAsync(token))
+          .then(() => ToastAndroid.show(t('settings.mcp_token_copied_toast'), ToastAndroid.SHORT))
+          .catch((e: unknown) => Alert.alert(t('settings.mcp_token_copy_failed_title'), String((e as any)?.message || e)));
         break;
       }
       case 'deleteHistory':

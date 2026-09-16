@@ -559,6 +559,21 @@ class TerminalEmulatorModule : Module() {
             A2ABridge.isRunning()
         }
 
+        // MCP (Model Context Protocol) server — see MCPBridge.kt.
+        AsyncFunction("startMCPServer") { token: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("no react context")
+            MCPBridge.start(context, token)
+        }
+
+        AsyncFunction("stopMCPServer") {
+            MCPBridge.stop()
+        }
+
+        AsyncFunction("isMCPServerRunning") {
+            MCPBridge.isRunning()
+        }
+
         AsyncFunction("createSession") { config: Map<String, Any?> ->
             val sessionId = config["sessionId"] as? String
                 ?: throw IllegalArgumentException("sessionId is required")

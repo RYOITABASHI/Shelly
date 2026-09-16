@@ -309,6 +309,18 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   startA2AServer(): Promise<boolean>;
   stopA2AServer(): Promise<void>;
   isA2AServerRunning(): Promise<boolean>;
+  /**
+   * MCP (Model Context Protocol) server (MCPBridge.kt /
+   * scripts/shelly-mcp-server.js). Read-only tools only (see the script's
+   * own header for why exec/write tools aren't exposed yet). Long-lived
+   * like the A2A server, not session-scoped like voice. `token` is the
+   * pre-shared bearer token the caller must send as `Authorization: Bearer
+   * <token>` — generate and persist it via lib/secure-store.ts, never pass
+   * a hardcoded value.
+   */
+  startMCPServer(token: string): Promise<boolean>;
+  stopMCPServer(): Promise<void>;
+  isMCPServerRunning(): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

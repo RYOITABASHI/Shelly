@@ -1338,6 +1338,18 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-a2a-server.js extract failed: ${e.message}")
         }
 
+        // MCP (Model Context Protocol) server — see MCPBridge.kt / the
+        // script's own header. Only needs to be readable, matching the
+        // other node-invoked helpers above.
+        val mcpServerScript = File(home, ".shelly-mcp-server.js")
+        try {
+            context.assets.open("shelly-mcp-server.js").use { input ->
+                mcpServerScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-mcp-server.js extract failed: ${e.message}")
+        }
+
         // Phase 0 PlanSpec executor canary. Invoked via node from AgentRuntime
         // when SHELLY_PLAN_EXECUTOR=1 for a targeted agent.
         val planExecutorScript = File(home, ".shelly-plan-executor.js")

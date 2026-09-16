@@ -424,6 +424,12 @@ export type AppSettings = {
    *  client on the same network (LAN / VPN). Off by default: unlike
    *  Nacre Bridge this opens a real HTTP listener. */
   a2aServerEnabled?: boolean;
+  /** MCP (Model Context Protocol) server (hooks/use-mcp-server-bridge.ts,
+   *  MCPBridge.kt) — exposes read-only tools (read_terminal_output,
+   *  git_status, list_agents, list_repos) to MCP clients (Claude Code,
+   *  Claude Desktop) on the same network. Off by default: opens a real
+   *  HTTP listener, same as the A2A server. */
+  mcpServerEnabled?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:

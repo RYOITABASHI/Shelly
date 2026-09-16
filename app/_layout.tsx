@@ -57,6 +57,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { useTelegramInbound } from '@/hooks/use-telegram-inbound';
 import { useNacreBridge } from '@/hooks/use-nacre-bridge';
 import { useA2ABridge } from '@/hooks/use-a2a-bridge';
+import { useMCPServerBridge } from '@/hooks/use-mcp-server-bridge';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getOptionalPack } from '@/lib/optional-packs';
 import { installOptionalPack } from '@/lib/optional-pack-installer';
@@ -240,6 +241,12 @@ export default function RootLayout() {
   // skill to LAN/VPN clients. No-op when settings.a2aServerEnabled is off
   // (the default). See hooks/use-a2a-bridge.ts.
   useA2ABridge();
+  // MCP (Model Context Protocol) server: exposes read-only tools
+  // (read_terminal_output, git_status, list_agents, list_repos) to MCP
+  // clients (Claude Code, Claude Desktop) on the same network. No-op when
+  // settings.mcpServerEnabled is off (the default). See
+  // hooks/use-mcp-server-bridge.ts.
+  useMCPServerBridge();
   const [pendingAgentActionApproval, setPendingAgentActionApproval] =
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);
