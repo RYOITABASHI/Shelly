@@ -37,6 +37,14 @@ interface CosmeticState {
   blurEnabled: boolean;
   blurIntensity: number;    // 0-100
 
+  // 2026-09-16: some color presets (e.g. Case File's flat "database UI"
+  // paper look) want wallpaper/blur transparency force-off for the whole
+  // time they're active, without discarding the user's actual wallpaper
+  // settings. Non-null while suspended; holds the pre-suspend values so
+  // switching to a different preset restores exactly what was there
+  // before, instead of leaving wallpaper/blur stuck off everywhere.
+  themeWallpaperSnapshot: { wallpaperOpacity: number; panelOpacity: number; blurEnabled: boolean } | null;
+
   setCrt: (enabled: boolean) => void;
   setCrtIntensity: (intensity: number) => void;
   setSoundProfile: (profile: SoundProfile) => void;
@@ -48,6 +56,8 @@ interface CosmeticState {
   setPanelOpacity: (n: number) => void;
   setBlurEnabled: (b: boolean) => void;
   setBlurIntensity: (n: number) => void;
+  suspendWallpaperForTheme: () => void;
+  restoreWallpaperForTheme: () => void;
   loadCosmetics: () => Promise<void>;
 }
 
@@ -71,6 +81,7 @@ export const useCosmeticStore = create<CosmeticState>((set, get) => ({
   panelOpacity: 82,
   blurEnabled: false,
   blurIntensity: 55,
+  themeWallpaperSnapshot: null,
 
   setCrt: (enabled) => { set({ crtEnabled: enabled }); persist(get()); },
   setCrtIntensity: (intensity) => { set({ crtIntensity: clamp(intensity) }); persist(get()); },
@@ -83,6 +94,31 @@ export const useCosmeticStore = create<CosmeticState>((set, get) => ({
   setPanelOpacity: (n) => { set({ panelOpacity: clamp(n) }); persist(get()); },
   setBlurEnabled: (b) => { set({ blurEnabled: b }); persist(get()); },
   setBlurIntensity: (n) => { set({ blurIntensity: clamp(n) }); persist(get()); },
+  suspendWallpaperForTheme: () => {
+    const { themeWallpaperSnapshot, wallpaperOpacity, panelOpacity, blurEnabled } = get();
+    // Guard against clobbering the real snapshot: this can be called again
+    // (e.g. app restart while Case File is still the active preset) before
+    // the snapshot has been restored.
+    if (themeWallpaperSnapshot) return;
+    set({
+      themeWallpaperSnapshot: { wallpaperOpacity, panelOpacity, blurEnabled },
+      wallpaperOpacity: 0,
+      panelOpacity: 100,
+      blurEnabled: false,
+    });
+    persist(get());
+  },
+  restoreWallpaperForTheme: () => {
+    const { themeWallpaperSnapshot } = get();
+    if (!themeWallpaperSnapshot) return;
+    set({
+      wallpaperOpacity: themeWallpaperSnapshot.wallpaperOpacity,
+      panelOpacity: themeWallpaperSnapshot.panelOpacity,
+      blurEnabled: themeWallpaperSnapshot.blurEnabled,
+      themeWallpaperSnapshot: null,
+    });
+    persist(get());
+  },
   loadCosmetics: async () => {
     try {
       const raw = await AsyncStorage.getItem('shelly_cosmetics');
@@ -97,7 +133,8 @@ function persist(s: CosmeticState) {
     isLoaded,
     setCrt, setCrtIntensity, setSoundProfile, setFontFamily, setCrtFont,
     setHapticEnabled, setWallpaper, setWallpaperOpacity, setPanelOpacity,
-    setBlurEnabled, setBlurIntensity, loadCosmetics,
+    setBlurEnabled, setBlurIntensity, suspendWallpaperForTheme,
+    restoreWallpaperForTheme, loadCosmetics,
     ...data
   } = s;
   AsyncStorage.setItem('shelly_cosmetics', JSON.stringify(data)).catch(() => {});

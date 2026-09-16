@@ -440,48 +440,54 @@ export const caseFilePalette: Palette = {
   bgSidebar:  '#D9D0B0',
   border:     '#2A2416',
 
+  // 2026-09-16: the mockup's own dim/secondary tones (#6F6A58, #8A836A,
+  // #8A6A20) read fine in a static preview image but landed under WCAG AA
+  // (~3-4.5:1) once applied as real small-text colors — badges, timestamps,
+  // inactive tabs — against the #E8E3D0/#F2ECD6 cream. Darkened every
+  // secondary/accent tone that sits on the light backgrounds so text stays
+  // legible; text1/error/border (already dark) are unchanged.
   accent:        '#2A2416',
-  accentGreen:   '#3F5C3F',
+  accentGreen:   '#2E4A2E',
   accentBlue:    '#2A3F5C',
   accentSky:     '#2A5C5C',
   accentPurple:  '#5C2A4A',
   accentPink:    '#5C2A4A',
-  accentAmber:   '#8A6A20',
+  accentAmber:   '#6B4E12',
   accentCode:    '#2A3F5C',
-  warning:       '#8A6A20',
+  warning:       '#6B4E12',
 
   text1:      '#201D16',
-  text2:      '#6F6A58',
-  text3:      '#8A836A',
+  text2:      '#4A4636',
+  text3:      '#6B6450',
 
   errorText:  '#8A2020',
   errorBg:    'rgba(138,32,32,0.12)',
-  addText:    '#3F5C3F',
-  addBg:      'rgba(63,92,63,0.12)',
+  addText:    '#2E4A2E',
+  addBg:      'rgba(46,74,46,0.12)',
 
   btnPrimaryBg:     '#2A2416',
   btnPrimaryText:   '#E8E3D0',
   btnSecondaryBg:   '#D9D0B0',
   btnSecondaryText: '#201D16',
 
-  badgeRunningBg:   'rgba(138,106,32,0.18)',
-  badgeRunningText: '#8A6A20',
-  badgeLinkedBg:    'rgba(63,92,63,0.18)',
-  badgeLinkedText:  '#3F5C3F',
+  badgeRunningBg:   'rgba(107,78,18,0.18)',
+  badgeRunningText: '#6B4E12',
+  badgeLinkedBg:    'rgba(46,74,46,0.18)',
+  badgeLinkedText:  '#2E4A2E',
   badgeConnectBg:   '#D9D0B0',
-  badgeConnectText: '#6F6A58',
+  badgeConnectText: '#4A4636',
 
   layoutActiveBg:     '#2A2416',
   layoutActiveText:   '#E8E3D0',
   layoutInactiveBg:   '#D9D0B0',
-  layoutInactiveText: '#6F6A58',
+  layoutInactiveText: '#4A4636',
 
   crtBadgeBg:   '#D9D0B0',
   crtBadgeText: '#2A2416',
 
   autoSaveBg: '#D9D0B0',
 
-  diffAddBorder:    '#3F5C3F',
+  diffAddBorder:    '#2E4A2E',
   diffRemoveBorder: '#8A2020',
 };
 
@@ -974,6 +980,19 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
 export function applyThemePreset(id: ThemePresetId) {
   const preset = themePresets[id];
   if (!preset) return;
+
+  // 0. Case File's flat "database UI" paper look wants wallpaper/blur
+  //    transparency force-off for as long as it's active, without
+  //    discarding the user's actual wallpaper settings — leaving this
+  //    preset restores exactly what was there before switching in.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { useCosmeticStore } = require('@/store/cosmetic-store');
+  const cosmetic = useCosmeticStore.getState();
+  if (id === 'case-file') {
+    cosmetic.suspendWallpaperForTheme();
+  } else if (cosmetic.themeWallpaperSnapshot) {
+    cosmetic.restoreWallpaperForTheme();
+  }
 
   // 1. Swap the live colors object fields in place.
   //    The object identity stays the same, so every

@@ -941,39 +941,44 @@ function ThemeRow() {
   ];
   return (
     <Row label={t('settings.theme')}>
-      <View style={[styles.segGroup, { borderColor: C.border }]}>
-        {options.map((opt) => {
-          const active = uiFont === opt.value;
-          return (
-            <Pressable
-              key={opt.value}
-              style={[
-                styles.segBtn,
-                active && { backgroundColor: withAlpha(C.accent, 0.15) },
-              ]}
-              onPress={() => {
-                // Apply synchronously to avoid the AsyncStorage race that
-                // caused bug #28/#54.
-                applyThemePreset(opt.value);
-                updateSettings({ uiFont: opt.value, terminalTheme: opt.value });
-              }}
-              hitSlop={4}
-            >
-              <View
+      {/* 2026-09-16: 5 presets (was 4) no longer fit PANEL_WIDTH's ~150px
+          value column at once — Case File's two-word label was the entry
+          that finally overflowed it. Horizontal scroll beats clipping. */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.themeScroll}>
+        <View style={[styles.segGroup, { borderColor: C.border }]}>
+          {options.map((opt) => {
+            const active = uiFont === opt.value;
+            return (
+              <Pressable
+                key={opt.value}
                 style={[
-                  styles.themeSwatch,
-                  { backgroundColor: opt.swatch },
-                  active && styles.themeSwatchActive,
-                  active && { shadowColor: opt.swatch, shadowOpacity: 0.45, shadowRadius: 5 },
+                  styles.segBtn,
+                  active && { backgroundColor: withAlpha(C.accent, 0.15) },
                 ]}
-              />
-              <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
-                {opt.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
+                onPress={() => {
+                  // Apply synchronously to avoid the AsyncStorage race that
+                  // caused bug #28/#54.
+                  applyThemePreset(opt.value);
+                  updateSettings({ uiFont: opt.value, terminalTheme: opt.value });
+                }}
+                hitSlop={4}
+              >
+                <View
+                  style={[
+                    styles.themeSwatch,
+                    { backgroundColor: opt.swatch },
+                    active && styles.themeSwatchActive,
+                    active && { shadowColor: opt.swatch, shadowOpacity: 0.45, shadowRadius: 5 },
+                  ]}
+                />
+                <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
+                  {opt.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </ScrollView>
     </Row>
   );
 }
@@ -2820,6 +2825,11 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     borderRadius: 4,
     overflow: 'hidden',
+  },
+  // Caps the Theme row's option strip so it scrolls instead of overflowing
+  // PANEL_WIDTH once there are more presets than fit at once.
+  themeScroll: {
+    maxWidth: 150,
   },
   segBtn: {
     flexDirection: 'row',
