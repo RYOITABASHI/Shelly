@@ -1980,7 +1980,12 @@ function makeStyles(colors: ThemeColorPalette) {
       alignItems: 'center',
       gap: 7,
       paddingHorizontal: 10,
-      paddingVertical: 8,
+      // 2026-09-16: was paddingVertical 8 (~29px with this row's icon+text).
+      // Stacked above replyBar (~50px), the combined footer ran noticeably
+      // taller than Terminal/AI panes' single-row ~52px bars, reading as
+      // misaligned when panes sit side by side. This hint row carries real
+      // information (not removable), so it's trimmed rather than dropped.
+      paddingVertical: 3,
       borderTopWidth: 1,
       borderTopColor: colors.border,
       backgroundColor: withAlpha(colors.surface, 0.76),

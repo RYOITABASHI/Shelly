@@ -61,7 +61,11 @@ export default function PaneInputBar({
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
-  const containerBg = usePanelBackground(C.bgSidebar);
+  // Matches CommandKeyBar's own background source (TerminalPane.tsx passes
+  // it `terminalPaneBg`, i.e. C.bgDeep) so the two panes' footer strips
+  // blend into their pane body the same way, instead of this one reading
+  // as a visibly darker band the other footer doesn't have.
+  const containerBg = usePanelBackground(C.bgDeep);
   const pillBg = usePanelBackground(C.bgSurface);
   const disabledBg = usePanelBackground(C.bgSidebar);
 
