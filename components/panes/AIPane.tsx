@@ -152,6 +152,10 @@ const MessageBubble = React.memo(function MessageBubble({
 }: BubbleProps) {
   const { t } = useTranslation();
   const containerMaxWidth = maxWidth && maxWidth > 0 ? { maxWidth } : null;
+  // Case File's mockup gives cards a hard, unblurred offset shadow instead
+  // of the soft glow other presets use — see CodeBlockWithAction.tsx's
+  // rootCaseFileShadow for why this is a border trick, not shadow*/elevation.
+  const isCaseFile = useSettingsStore((s) => s.settings.uiFont === 'case-file');
   const isUser = message.role === 'user';
   const isLastStreaming = isStreaming && message.isStreaming;
   const displayText = message.streamingText ?? message.content;
@@ -183,7 +187,7 @@ const MessageBubble = React.memo(function MessageBubble({
           <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
             {t('chat.companion_label')}
           </Text>
-          <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }]}>
+          <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }, isCaseFile && bubbleStyles.assistantContentCaseFileShadow, isCaseFile && { borderColor: C.border }]}>
             <Text style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>{message.content}</Text>
           </View>
           <AgentChatConfirm
@@ -243,7 +247,7 @@ const MessageBubble = React.memo(function MessageBubble({
       <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
         {t('chat.companion_label')}
       </Text>
-      <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }]}>
+      <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }, isCaseFile && bubbleStyles.assistantContentCaseFileShadow, isCaseFile && { borderColor: C.border }]}>
         {containsDiff ? (
           <InlineDiff content={displayText} />
         ) : (
@@ -337,6 +341,15 @@ const bubbleStyles = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 10,
     paddingVertical: 6,
+  },
+  // Same flat, unblurred-offset "card" look as CodeBlockWithAction.tsx's
+  // rootCaseFileShadow — Case File only, via a hard border since Android
+  // elevation can't render a shadow without blur.
+  assistantContentCaseFileShadow: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRightWidth: 3,
+    borderBottomWidth: 3,
   },
   assistantText: {
     fontSize: 8,

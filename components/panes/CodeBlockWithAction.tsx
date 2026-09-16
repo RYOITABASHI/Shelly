@@ -22,6 +22,7 @@ import { playSound } from '@/lib/sounds';
 import { colors as C, fonts as F } from '@/theme.config';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
+import { useSettingsStore } from '@/store/settings-store';
 
 type Props = {
   lang?: string;
@@ -65,6 +66,11 @@ export function CodeBlockWithAction({ lang, code }: Props) {
   const headerBg = usePanelBackground(C.bgSidebar);
   const { t } = useTranslation();
   const addPane = useAddPane();
+  // Case File's "database UI" mockup gives cards a hard, unblurred offset
+  // shadow (its own CSS: `box-shadow: 2px 2px 0 rgba(0,0,0,.15)`) instead
+  // of the soft glow the other (dark, neon-leaning) presets use elsewhere —
+  // conditional so it doesn't leak into themes that never asked for it.
+  const isCaseFile = useSettingsStore((s) => s.settings.uiFont === 'case-file');
 
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(trimmed);
@@ -162,7 +168,7 @@ export function CodeBlockWithAction({ lang, code }: Props) {
   // overrides re-read the live `C` object every render, same fix pattern
   // `rootBg`/`headerBg` already used above via usePanelBackground().
   return (
-    <View style={[styles.root, { backgroundColor: rootBg, borderColor: C.border }]}>
+    <View style={[styles.root, { backgroundColor: rootBg, borderColor: C.border }, isCaseFile && styles.rootCaseFileShadow]}>
       <View style={[styles.header, { backgroundColor: headerBg, borderBottomColor: C.border }]}>
         <Text style={[styles.lang, { color: C.text3 }]}>
           {lang ? lang.toLowerCase() : 'code'}
@@ -201,6 +207,15 @@ const styles = StyleSheet.create({
 	    borderRadius: 6,
 	    marginVertical: 6,
 	    overflow: 'hidden',
+  },
+  // Simulates the mockup's flat, unblurred offset shadow
+  // (`box-shadow: 2px 2px 0 rgba(0,0,0,.15)`) via a thicker hard-edge
+  // border instead of RN's shadow* / elevation APIs — Android's
+  // `elevation` renders a soft native shadow with no hard-edge option,
+  // so a border is the only way to get the mockup's actual flat look.
+  rootCaseFileShadow: {
+    borderRightWidth: 3,
+    borderBottomWidth: 3,
   },
   header: {
     flexDirection: 'row',

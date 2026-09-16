@@ -1,10 +1,12 @@
 /**
- * SaveBadge — Animated 💾 icon in ChatHeader.
+ * SaveBadge — animated save icon in ChatHeader.
  * Shows for 2 seconds after a savepoint is created, then fades out.
  */
 import React, { useEffect, useRef } from 'react';
-import { Animated, StyleSheet } from 'react-native';
+import { Animated } from 'react-native';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSavepointStore } from '@/store/savepoint-store';
+import { colors as C } from '@/theme.config';
 
 export function SaveBadge() {
   const showBadge = useSavepointStore((s) => s.showBadge);
@@ -21,15 +23,8 @@ export function SaveBadge() {
   }, [showBadge, opacity]);
 
   return (
-    <Animated.Text style={[styles.badge, { opacity }]}>
-      💾
-    </Animated.Text>
+    <Animated.View style={{ opacity, marginLeft: 6 }}>
+      <MaterialIcons name="save" size={14} color={C.text2} />
+    </Animated.View>
   );
 }
-
-const styles = StyleSheet.create({
-  badge: {
-    fontSize: 14,
-    marginLeft: 6,
-  },
-});

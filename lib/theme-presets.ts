@@ -977,6 +977,10 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
 // (which imports shellyPalette from this file to seed its initial
 // colors object).
 
+// Session-only (not persisted) pairing snapshot for Case File's sound/cursor
+// auto-switch — see applyThemePreset step 0b.
+let caseFileUxSnapshot: { soundProfile: 'modern' | 'retro' | 'silent'; cursorShape: 'block' | 'underline' | 'bar' | undefined } | null = null;
+
 export function applyThemePreset(id: ThemePresetId) {
   const preset = themePresets[id];
   if (!preset) return;
@@ -992,6 +996,28 @@ export function applyThemePreset(id: ThemePresetId) {
     cosmetic.suspendWallpaperForTheme();
   } else if (cosmetic.themeWallpaperSnapshot) {
     cosmetic.restoreWallpaperForTheme();
+  }
+
+  // 0b. Case File also pairs the "Retro" sound profile + block cursor for
+  //     the archival-record feel — session-only (not persisted) since,
+  //     unlike wallpaper, restoring these across an app restart isn't
+  //     something the user asked for; only restore within the same run.
+  if (id === 'case-file') {
+    if (caseFileUxSnapshot === null) {
+      caseFileUxSnapshot = { soundProfile: cosmetic.soundProfile, cursorShape: undefined };
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { useSettingsStore } = require('@/store/settings-store');
+      const settingsState = useSettingsStore.getState();
+      caseFileUxSnapshot.cursorShape = settingsState.settings.cursorShape;
+      settingsState.updateSettings({ cursorShape: 'block' });
+    }
+    cosmetic.setSoundProfile('retro');
+  } else if (caseFileUxSnapshot !== null) {
+    cosmetic.setSoundProfile(caseFileUxSnapshot.soundProfile);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { useSettingsStore } = require('@/store/settings-store');
+    useSettingsStore.getState().updateSettings({ cursorShape: caseFileUxSnapshot.cursorShape });
+    caseFileUxSnapshot = null;
   }
 
   // 1. Swap the live colors object fields in place.
