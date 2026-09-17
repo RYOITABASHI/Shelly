@@ -36,7 +36,18 @@ All notable changes to Shelly are documented here. Format loosely follows
   [Model Context Protocol](https://modelcontextprotocol.io/) endpoint
   exposing four read-only tools (`read_terminal_output`, `git_status`,
   `list_agents`, `list_repos`) for a desktop MCP client such as Claude
-  Code or Claude Desktop.
+  Code or Claude Desktop. Two more tools — `run_command` and
+  `write_file` — followed behind a separate **MCP: Allow exec/write**
+  setting (off by default): every call blocks on an in-app approval
+  modal (fail-closed, auto-denied after 90s if nobody answers), and a
+  CRITICAL-risk command is refused outright regardless of approval.
+  On-device end-to-end tested against a real Claude Code / Codex MCP
+  client, including finding and fixing three bugs the read-only tools
+  alone hadn't surfaced: a stale-session-id crash in
+  `read_terminal_output`, a `write_file` write failure (needed a
+  `file://` URI), and a serialization bug where one pending approval
+  blocked the entire request queue — including trivial read-only calls
+  — for up to 90 seconds.
 
 ## [8.0.0] - 2026-08-31
 
