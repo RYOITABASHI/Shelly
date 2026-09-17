@@ -62,12 +62,20 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<To
       return { ok: true, data: useSidebarStore.getState().repoPaths };
     }
     case 'read_terminal_output': {
-      const sessionId = typeof args.sessionId === 'string' && args.sessionId
-        ? args.sessionId
-        : useTerminalStore.getState().activeSessionId;
+      // `sessions[].id` is the JS-logical id (`session-1`, `shelly-1-...`);
+      // the native module keys transcripts by `nativeSessionId` instead
+      // (`session-<timestamp>`) — passing the logical id straight through
+      // throws "Session <native-id-from-some-other-session> not found" on
+      // the native side. On-device found 2026-09-17 via a live MCP call.
+      const { sessions, activeSessionId } = useTerminalStore.getState();
+      const requestedId = typeof args.sessionId === 'string' && args.sessionId ? args.sessionId : activeSessionId;
+      const session = sessions.find((s) => s.id === requestedId || s.nativeSessionId === requestedId);
+      if (!session) {
+        return { ok: false, error: `no such terminal session: ${requestedId}` };
+      }
       const maxLines = typeof args.maxLines === 'number' ? args.maxLines : 200;
       try {
-        const text = await TerminalEmulator.getTranscriptText(sessionId, maxLines);
+        const text = await TerminalEmulator.getTranscriptText(session.nativeSessionId, maxLines);
         return { ok: true, data: text };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
