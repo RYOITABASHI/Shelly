@@ -180,7 +180,10 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<To
       }
       const targetPath = typeof args.path === 'string' ? args.path : '';
       const content = typeof args.content === 'string' ? args.content : '';
-      const homeDir = `${FileSystem.documentDirectory}home`;
+      // repoPaths (from list_repos) are bare filesystem paths, never
+      // file:// URIs — compare against documentDirectory with the scheme
+      // stripped so the two match on the same footing.
+      const homeDir = `${FileSystem.documentDirectory}home`.replace(/^file:\/\//, '');
       const allowedRoots = [homeDir, ...useSidebarStore.getState().repoPaths];
       if (!targetPath || !allowedRoots.some((root) => targetPath === root || targetPath.startsWith(`${root}/`))) {
         return { ok: false, error: 'path must be under the home dir or a Shelly-configured repo (see list_repos)' };
@@ -195,7 +198,11 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<To
         return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
       }
       try {
-        await FileSystem.writeAsStringAsync(targetPath, content);
+        // On-device found 2026-09-17: writeAsStringAsync needs a file://
+        // URI — a bare path (what every MCP client naturally sends, and
+        // what list_repos/git_status use elsewhere) throws "isn't writable".
+        const fileUri = targetPath.startsWith('file://') ? targetPath : `file://${targetPath}`;
+        await FileSystem.writeAsStringAsync(fileUri, content);
         return { ok: true, data: { path: targetPath, bytes: content.length } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
