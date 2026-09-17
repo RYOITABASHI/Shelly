@@ -68,7 +68,16 @@ function requestApproval(request: {
       settled = true;
       resolve(approved);
     };
-    const timer = setTimeout(() => settle(false), APPROVAL_TIMEOUT_MS);
+    // On-device found 2026-09-17: a timeout used to only resolve this
+    // promise, never touching the store — so the modal stayed stuck on
+    // the timed-out request (still `current`) and every later call queued
+    // silently behind it, invisible, each ticking down its own timer
+    // instead of ever being shown. respond() here clears/advances the
+    // store the same way a real tap would, so the queue can't back up.
+    const timer = setTimeout(() => {
+      settle(false);
+      useMcpApprovalStore.getState().respond(id, false);
+    }, APPROVAL_TIMEOUT_MS);
     useMcpApprovalStore.getState().enqueue({
       ...request,
       id,
