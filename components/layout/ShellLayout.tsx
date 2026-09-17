@@ -24,6 +24,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { ConfigTUI } from '@/components/config/ConfigTUI';
 import { SaveBadge } from '@/components/SaveBadge';
 import { CaseFileBootOverlay } from '@/components/CaseFileBootOverlay';
+import { McpApprovalModal } from '@/components/McpApprovalModal';
 import { useFocusStore } from '@/store/focus-store';
 import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-actions';
 import { ScouterDetailModal } from '@/components/scouter/ScouterDetailModal';
@@ -398,6 +399,7 @@ export function ShellLayout() {
       </View>
 
       <CaseFileBootOverlay />
+      <McpApprovalModal />
 
     </View>
   );

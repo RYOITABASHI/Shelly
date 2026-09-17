@@ -430,6 +430,19 @@ export type AppSettings = {
    *  Claude Desktop) on the same network. Off by default: opens a real
    *  HTTP listener, same as the A2A server. */
   mcpServerEnabled?: boolean;
+  /** Extends the MCP server with two additional tools — `run_command`
+   *  (routes through execCommand()) and `write_file` (scoped to
+   *  Sidebar repo paths / the home dir) — each gated behind an in-app
+   *  approval modal (components/McpApprovalModal.tsx) shown while Shelly
+   *  is foregrounded; auto-denied if nobody answers within the timeout,
+   *  and CRITICAL-level commands (lib/command-safety.ts) are refused
+   *  outright regardless of approval. Off by default, and only takes
+   *  effect when mcpServerEnabled is also on — this is the ingress-side
+   *  capability gate previously missing (see scripts/shelly-mcp-server.js
+   *  header). Real remote-code-execution surface: only enable this when
+   *  you specifically want a PC-side MCP client (Claude Code, Codex) to
+   *  be able to run commands / write files on this device. */
+  mcpExecEnabled?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:

@@ -158,6 +158,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   realtimeVoiceEnabled: false,
   a2aServerEnabled: false,
   mcpServerEnabled: false,
+  mcpExecEnabled: false,
   terminalWallpaperTransparency: true,
   uiFont: 'blue',
   appFontFamily: 'default',

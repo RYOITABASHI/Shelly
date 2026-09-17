@@ -2,15 +2,19 @@
 /*
  * shelly-mcp-server.js — minimal MCP (Model Context Protocol) server.
  *
- * Exposes a SMALL set of READ-ONLY tools so an MCP client on the same
- * network (Claude Code, Claude Desktop) can inspect this Shelly instance —
- * terminal output, git status, registered agents, configured repos.
- * Deliberately no command-execution or write tool yet: the capability
- * broker (lib/capability-envelope.ts / scripts/shelly-capability-broker.js)
- * only gates OUTGOING requests today; letting an arbitrary network caller
- * trigger command execution needs a real INGRESS-side capability gate
- * (per-client grants, an execution allowlist) that doesn't exist yet and
- * deserves its own design pass rather than being bolted on here.
+ * Exposes tools so an MCP client on the same network (Claude Code, Claude
+ * Desktop) can inspect — and, opt-in, act on — this Shelly instance:
+ * read-only (always available once the server is on) — terminal output,
+ * git status, registered agents, configured repos; exec/write (gated
+ * behind settings.mcpExecEnabled, off by default, checked per-call in
+ * lib/mcp-server-bridge.ts) — run_command and write_file. This is the
+ * ingress-side capability gate this file's comment used to say didn't
+ * exist: every exec/write call blocks on an in-app approval tap
+ * (components/McpApprovalModal.tsx, fail-closed on timeout) and a
+ * CRITICAL-risk command (lib/command-safety.ts) is refused outright
+ * regardless of approval. The pre-existing capability broker
+ * (lib/capability-envelope.ts / scripts/shelly-capability-broker.js) still
+ * only gates OUTGOING agent requests — unrelated to this ingress path.
  *
  * Transport: Streamable HTTP, the well-established initialize +
  * Mcp-Session-Id session model (spec revisions 2025-03-26 / 2025-06-18 /
@@ -64,7 +68,10 @@ fs.mkdirSync(requestsDir, { recursive: true });
 fs.mkdirSync(resultsDir, { recursive: true });
 
 const RESULT_POLL_MS = 250;
-const RESULT_TIMEOUT_MS = 15000;
+// run_command / write_file wait on an in-app approval tap (up to 90s,
+// lib/mcp-server-bridge.ts's APPROVAL_TIMEOUT_MS) before answering — this
+// has to comfortably outlast that, not just the read-only tools' instant replies.
+const RESULT_TIMEOUT_MS = 100_000;
 const PROTOCOL_VERSION = '2025-06-18';
 
 function log(...args) {
@@ -137,6 +144,31 @@ const TOOLS = [
     name: 'list_repos',
     description: 'Lists the repository paths configured in Shelly\'s Sidebar.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'run_command',
+    description: 'Runs a shell command on the device. Disabled unless the user turned on Settings → Agents → "MCP: Allow exec/write", and every call still blocks on an in-app approval tap on the phone — expect this to be slow or to fail with "denied" if nobody is there to approve it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to run' },
+        cwd: { type: 'string', description: 'Working directory (optional — one of list_repos or the home dir)' },
+        timeoutMs: { type: 'number', description: 'Execution timeout in ms (default 30000)' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Writes a file on the device, scoped to the home dir or a repo from list_repos. Disabled unless the user turned on Settings → Agents → "MCP: Allow exec/write", and every call still blocks on an in-app approval tap.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path under the home dir or a configured repo' },
+        content: { type: 'string', description: 'File content to write (overwrites the existing file)' },
+      },
+      required: ['path', 'content'],
+    },
   },
 ];
 

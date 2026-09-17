@@ -19,9 +19,12 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { useAgentStore } from '@/store/agent-store';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
+import { useMcpApprovalStore } from '@/store/mcp-approval-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { execCommand } from '@/hooks/use-native-exec';
+import { checkCommandSafety } from '@/lib/command-safety';
 import { logError, logInfo } from '@/lib/debug-logger';
 
 const QUEUE_DIR = `${FileSystem.documentDirectory}home/.shelly-mcp-queue`;
@@ -45,6 +48,37 @@ function shellQuote(value: string): string {
 }
 
 type ToolResult = { ok: true; data: unknown } | { ok: false; error: string };
+
+const APPROVAL_TIMEOUT_MS = 90_000;
+
+/** Surfaces a McpApprovalModal request and waits for a tap or a timeout
+ *  (auto-denied — fail closed, matching every other unattended-action gate
+ *  in this codebase). See store/mcp-approval-store.ts for the queueing. */
+function requestApproval(request: {
+  kind: 'run_command' | 'write_file';
+  summary: string;
+  detail: string;
+  riskLevel?: string;
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let settled = false;
+    const settle = (approved: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(approved);
+    };
+    const timer = setTimeout(() => settle(false), APPROVAL_TIMEOUT_MS);
+    useMcpApprovalStore.getState().enqueue({
+      ...request,
+      id,
+      resolve: (approved) => {
+        clearTimeout(timer);
+        settle(approved);
+      },
+    });
+  });
+}
 
 async function callTool(tool: string, args: Record<string, unknown>): Promise<ToolResult> {
   switch (tool) {
@@ -96,6 +130,64 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<To
           return { ok: false, error: result.stderr || `git exited ${result.exitCode}` };
         }
         return { ok: true, data: result.stdout };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    case 'run_command': {
+      if (!useSettingsStore.getState().settings.mcpExecEnabled) {
+        return { ok: false, error: 'exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)' };
+      }
+      const command = typeof args.command === 'string' ? args.command : '';
+      if (!command.trim()) {
+        return { ok: false, error: 'command is required' };
+      }
+      const cwd = typeof args.cwd === 'string' && args.cwd ? args.cwd : undefined;
+      const safety = checkCommandSafety(command);
+      if (safety.level === 'CRITICAL') {
+        return { ok: false, error: `refused — CRITICAL risk command: ${safety.reason}` };
+      }
+      const approved = await requestApproval({
+        kind: 'run_command',
+        summary: `Run a command via MCP${cwd ? ` in ${cwd}` : ''}?`,
+        detail: command,
+        riskLevel: safety.level,
+      });
+      if (!approved) {
+        return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
+      }
+      try {
+        const full = cwd ? `cd ${shellQuote(cwd)} && ${command}` : command;
+        const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : 30_000;
+        const result = await execCommand(full, timeoutMs);
+        return { ok: true, data: { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode } };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    case 'write_file': {
+      if (!useSettingsStore.getState().settings.mcpExecEnabled) {
+        return { ok: false, error: 'exec/write tools are disabled (Settings → Agents → MCP: Allow exec/write)' };
+      }
+      const targetPath = typeof args.path === 'string' ? args.path : '';
+      const content = typeof args.content === 'string' ? args.content : '';
+      const homeDir = `${FileSystem.documentDirectory}home`;
+      const allowedRoots = [homeDir, ...useSidebarStore.getState().repoPaths];
+      if (!targetPath || !allowedRoots.some((root) => targetPath === root || targetPath.startsWith(`${root}/`))) {
+        return { ok: false, error: 'path must be under the home dir or a Shelly-configured repo (see list_repos)' };
+      }
+      const preview = content.length > 400 ? `${content.slice(0, 400)}\n… (${content.length} bytes total)` : content;
+      const approved = await requestApproval({
+        kind: 'write_file',
+        summary: `Write ${content.length} bytes to a file via MCP?`,
+        detail: `${targetPath}\n\n${preview}`,
+      });
+      if (!approved) {
+        return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
+      }
+      try {
+        await FileSystem.writeAsStringAsync(targetPath, content);
+        return { ok: true, data: { path: targetPath, bytes: content.length } };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
