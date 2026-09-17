@@ -216,32 +216,49 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<To
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let stopped = true;
 
+// Files currently being processed — see the note in drainOnce below for why
+// this exists. Cleared as soon as a file's own processing settles.
+const inFlightRequestFiles = new Set<string>();
+
+async function processRequestFile(name: string): Promise<void> {
+  const requestUri = `${REQUESTS_DIR}/${name}`;
+  try {
+    const raw = await FileSystem.readAsStringAsync(requestUri);
+    const parsed: unknown = JSON.parse(raw);
+    if (!isMCPToolRequest(parsed)) {
+      logError('MCPBridge', `rejected malformed request file ${name}`);
+      return;
+    }
+    const result = await callTool(parsed.tool, parsed.args ?? {});
+    const resultUri = `${RESULTS_DIR}/${parsed.callId}.json`;
+    await FileSystem.writeAsStringAsync(resultUri, JSON.stringify(result));
+    logInfo('MCPBridge', `answered call ${parsed.callId} (tool=${parsed.tool}, ok=${result.ok})`);
+  } catch (e) {
+    logError('MCPBridge', `failed to process request file ${name}`, e);
+  } finally {
+    await FileSystem.deleteAsync(requestUri, { idempotent: true });
+    inFlightRequestFiles.delete(name);
+  }
+}
+
 async function drainOnce(): Promise<void> {
   const names = await FileSystem.readDirectoryAsync(REQUESTS_DIR).catch(() => null);
   if (!names || names.length === 0) return;
 
   await FileSystem.makeDirectoryAsync(RESULTS_DIR, { intermediates: true }).catch(() => {});
 
+  // On-device found 2026-09-17: this used to `await callTool(...)` for each
+  // file in a plain for-loop, so a single run_command/write_file call
+  // sitting in its up-to-90s approval wait blocked the ENTIRE poll tick —
+  // including read-only tools like list_repos that arrived afterward and
+  // should have answered in milliseconds. Fire each file off without
+  // awaiting it here so drainOnce (and the pollLoop tick that calls it)
+  // stays fast; inFlightRequestFiles just stops a still-processing file
+  // from being picked up again by the next tick before it's done.
   for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    const requestUri = `${REQUESTS_DIR}/${name}`;
-    try {
-      const raw = await FileSystem.readAsStringAsync(requestUri);
-      const parsed: unknown = JSON.parse(raw);
-      if (!isMCPToolRequest(parsed)) {
-        logError('MCPBridge', `rejected malformed request file ${name}`);
-        await FileSystem.deleteAsync(requestUri, { idempotent: true });
-        continue;
-      }
-      const result = await callTool(parsed.tool, parsed.args ?? {});
-      const resultUri = `${RESULTS_DIR}/${parsed.callId}.json`;
-      await FileSystem.writeAsStringAsync(resultUri, JSON.stringify(result));
-      logInfo('MCPBridge', `answered call ${parsed.callId} (tool=${parsed.tool}, ok=${result.ok})`);
-    } catch (e) {
-      logError('MCPBridge', `failed to process request file ${name}`, e);
-    } finally {
-      await FileSystem.deleteAsync(requestUri, { idempotent: true });
-    }
+    if (!name.endsWith('.json') || inFlightRequestFiles.has(name)) continue;
+    inFlightRequestFiles.add(name);
+    void processRequestFile(name);
   }
 }
 
