@@ -621,6 +621,13 @@ const ja: Record<string, string> = {
   'globalmemory.saved':
     '✅ 共有メモリに保存しました。今後すべてのエージェントがこれを参照します。\n\n  「{{text}}」',
   'globalmemory.failed': '❌ 共有メモの保存に失敗しました',
+  // Grok Bot的な会話内プロバイダー連携(2026-09-20):
+  // lib/provider-connect-intent.tsのdetectProviderConnectRequest /
+  // hooks/use-ai-pane-dispatch.tsのpendingApiKeyProvider返信分岐。
+  'providerConnect.ask': '{{provider}}のAPIキーを教えてください。下に貼り付ければ保存して、二度と表示しません。',
+  'providerConnect.saved': '✅ {{provider}}のキーを保存しました。',
+  'providerConnect.cancelled': '了解です——{{provider}}には接続していません。',
+  'providerConnect.invalid': 'キーには見えません(空欄か、空白が含まれています)——{{provider}}のAPIキーだけを貼り付けるか、「キャンセル」と言ってください。',
   // Design 2-b（「気にかけておいて」コミットメント検出、2026-08-28）:
   // 監視系フレーズ（「気にかけておいて」等）由来の保存にのみ
   // globalmemory.saved の後ろに付け足す。このノートはあくまで受動的な
@@ -1167,6 +1174,11 @@ const ja: Record<string, string> = {
   // 見つけたときだけ、上の2キーの代わりに使われる。
   'chat.carried_forward_to_companion': 'ここまでの話を持ってきましたよ。この先は私が対応しますね。',
   'chat.carried_forward_to_pane': 'ここまでの話を持ってきました。今回は別のモデルで考えますね。',
+  // Grok Bot的な「名前付きチームメイト」スレッド(2026-09-20): 宛先が
+  // 背景エージェント自身のチャットスレッドのときは上の*_to_pane系の代わりに
+  // 使う——モデルの切替ではなく「そのエージェントに繋がった」と伝える。
+  'chat.switched_to_agent_thread': '{{agentName}}に繋がりました。',
+  'chat.carried_forward_to_agent_thread': 'ここまでの話を持ってきました。{{agentName}}に繋がりました。',
   'chat.empty_subtitle': '何でも聞いてください。ターミナルの出力も見えています。',
   // Fable5レビュー項目#7 (2026-08-25): 初回エージェント登録前の一度きりの
   // オンボーディング案内。モーダルやウィザードではなく、相棒からの普通の
@@ -1817,6 +1829,7 @@ const ja: Record<string, string> = {
   'sidebar.agent_route_why': '理由',
   'sidebar.agent_memory_title': 'メモリ（{{count}}件）',
   'sidebar.agent_memory_view': 'メモリ',
+  'sidebar.agent_chat': 'チャット',
   'sidebar.agent_view_runs': '実行履歴を見る',
   'sidebar.agent_view_runs_a11y': '{{name}} の実行履歴を表示',
   'sidebar.agent_memory_view_a11y': '{{name}} のメモリを表示',
@@ -1997,6 +2010,7 @@ const ja: Record<string, string> = {
   'pane.memory_workbench.refresh_a11y': 'メモを再読み込み',
   'pane.change_type_a11y': 'ペイン種別を変更',
   'pane.switch_agent_a11y': 'エージェントを切り替え',
+  'pane.agent_thread_a11y': 'エージェント',
   'pane.switch_agent': 'エージェント切り替え',
   'pane.split_a11y': 'ペインを分割',
   'pane.maximize_a11y': 'ペインを最大化',

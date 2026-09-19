@@ -12,15 +12,29 @@ import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import type { SlotField } from '@/lib/agent-slot-fill';
 import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 import { usePaneStore } from '@/store/pane-store';
+import { getThreadAgentId } from '@/lib/agent-thread-selection';
 
 export const COMPANION_CONVERSATION_KEY = '__companion__';
 
+/** Prefix for a background Agent's own persistent chat thread key
+ *  (`agent:<agentId>`), parallel to COMPANION_CONVERSATION_KEY but one per
+ *  agent instead of one fixed constant. See lib/agent-thread-selection.ts. */
+export const AGENT_THREAD_KEY_PREFIX = 'agent:';
+
+export function agentThreadKey(agentId: string): string {
+  return `${AGENT_THREAD_KEY_PREFIX}${agentId}`;
+}
+
 /**
- * Resolve the conversation key for a multi-pane slot. The default Shelly
- * persona shares one persistent thread; explicitly routed providers retain
- * the pane-local histories they have always used.
+ * Resolve the conversation key for a multi-pane slot. A pane pinned to a
+ * background agent's own thread (lib/agent-thread-selection.ts) gets that
+ * agent's dedicated key; otherwise the default Shelly persona shares one
+ * persistent thread, and explicitly routed providers retain the pane-local
+ * histories they have always used.
  */
 export function resolveAiPaneStoreKey(paneId: string): string {
+  const threadAgentId = getThreadAgentId(paneId);
+  if (threadAgentId) return agentThreadKey(threadAgentId);
   const bound = usePaneStore.getState().paneAgents[paneId];
   return bound == null || bound === 'local' ? COMPANION_CONVERSATION_KEY : paneId;
 }
@@ -48,7 +62,7 @@ function isCarryForwardEligible(m: ChatMessage): boolean {
   if (m.role !== 'user' && m.role !== 'assistant') return false;
   if (m.isStreaming) return false;
   if (m.agentDraft || m.agentCardState || m.agentChatConfirm || m.editingAgentId) return false;
-  if (m.pendingSlotFill || m.pendingGlobalMemory || m.pendingAgentDelete) return false;
+  if (m.pendingSlotFill || m.pendingGlobalMemory || m.pendingAgentDelete || m.pendingApiKeyProvider) return false;
   if (m.scheduleReadinessCard || m.agentRollbackOffer) return false;
   if (m.approvalData || m.wizardType || m.autoCheckState) return false;
   if (m.agentRunLogId) return false;
@@ -150,18 +164,26 @@ export function carryForwardOnThreadSwitch(sourceKey: string, destKey: string): 
 export function addAiPaneThreadSwitchNotice(
   previousKey: string,
   nextKey: string,
-  translate: (key: string) => string,
+  translate: (key: string, vars?: Record<string, string>) => string,
+  /** Display name of the agent this thread belongs to, when nextKey is an
+   *  `agent:<id>` thread — lets the notice say who you're now talking to
+   *  instead of the generic "different model" phrasing. */
+  agentDisplayName?: string,
 ): void {
   if (previousKey === nextKey) return;
   const carried = carryForwardOnThreadSwitch(previousKey, nextKey);
   const toCompanion = nextKey === COMPANION_CONVERSATION_KEY;
-  const noticeKey = carried
-    ? (toCompanion ? 'chat.carried_forward_to_companion' : 'chat.carried_forward_to_pane')
-    : (toCompanion ? 'chat.switched_to_companion_thread' : 'chat.switched_to_pane_thread');
+  const toAgentThread = nextKey.startsWith(AGENT_THREAD_KEY_PREFIX);
+  const vars = agentDisplayName ? { agentName: agentDisplayName } : undefined;
+  const noticeKey = toAgentThread
+    ? (carried ? 'chat.carried_forward_to_agent_thread' : 'chat.switched_to_agent_thread')
+    : carried
+      ? (toCompanion ? 'chat.carried_forward_to_companion' : 'chat.carried_forward_to_pane')
+      : (toCompanion ? 'chat.switched_to_companion_thread' : 'chat.switched_to_pane_thread');
   useAIPaneStore.getState().addMessage(nextKey, {
     id: `system-thread-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role: 'system',
-    content: translate(noticeKey),
+    content: translate(noticeKey, vars),
     timestamp: Date.now(),
   });
 }
@@ -457,8 +479,14 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
             // the same pane to the same provider after a restart silently
             // resurrected old context the user had no reason to expect
             // still existed. Only the companion thread has no such binding
-            // dependency, so only it survives a restart.
-            if (paneId !== COMPANION_CONVERSATION_KEY) {
+            // dependency, so only it survives a restart. A background
+            // agent's own thread (`agent:<id>`, see agent-thread-selection.ts)
+            // has the same property: it's content-addressed by the agent's
+            // own stable id rather than by an ephemeral pane binding, so
+            // re-opening "Chat" for that agent after a restart resolves to
+            // this same key again — it survives for the same reason the
+            // companion thread does, not despite it.
+            if (paneId !== COMPANION_CONVERSATION_KEY && !paneId.startsWith(AGENT_THREAD_KEY_PREFIX)) {
               droppedStale = true;
               continue;
             }

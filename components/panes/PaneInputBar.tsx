@@ -46,6 +46,12 @@ type Props = {
    *  fires with whatever text is typed (possibly ''). Unused by
    *  Browser/Markdown panes (they never pass this). */
   attachmentPreview?: { uri: string; onRemove: () => void } | null;
+  /** Conversational provider-connect flow (2026-09-20, see
+   *  lib/provider-connect-intent.ts): the caller sets this true while the
+   *  active conversation has a pendingApiKeyProvider, so the next thing
+   *  typed here — presumably a pasted API key — isn't shown on-screen
+   *  either, not just excluded from storage on the dispatch side. */
+  secureEntry?: boolean;
 };
 
 export default function PaneInputBar({
@@ -58,6 +64,7 @@ export default function PaneInputBar({
   onMicLongPress,
   paneId,
   attachmentPreview,
+  secureEntry,
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
@@ -137,6 +144,7 @@ export default function PaneInputBar({
           returnKeyType="send"
           autoCapitalize="none"
           autoCorrect={false}
+          secureTextEntry={secureEntry}
         />
         {onAttach ? (
           <TouchableOpacity

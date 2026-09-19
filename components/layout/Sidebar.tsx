@@ -87,6 +87,7 @@ import { useTranslation } from '@/lib/i18n';
 import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 import { selectRunAgent } from '@/lib/agent-runs-selection';
+import { selectThreadAgent, findLeafIdForAgent } from '@/lib/agent-thread-selection';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { postAgentRunStartedNotice, postLatestAgentRunToCompanion } from '@/lib/agent-companion-notice';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
@@ -972,6 +973,32 @@ export function Sidebar() {
     if (slot) usePaneStore.getState().setFocusedPane(slot.id);
   }, []);
 
+  // "Grok Bot"-style named-teammate threads (2026-09-20): open (or focus, if
+  // already open) an AI pane pinned to this agent's OWN persistent chat
+  // thread — distinct from the "edit" button's plain, unscoped 'ai' pane
+  // above, which is why this does NOT reuse "any ai pane" the way that one
+  // does. The agent id travels through lib/agent-thread-selection.ts (a
+  // per-leafId map, unlike agent-runs-selection.ts's single global
+  // selection, since more than one agent thread can be open at once), set
+  // BEFORE addPane so a pane that mounts immediately still reads the right
+  // agent — same ordering reasoning as openAgentRunsPane below.
+  const openAgentThread = React.useCallback((agent: Agent) => {
+    const existingLeafId = findLeafIdForAgent(agent.id);
+    const multiPane = useMultiPaneStore.getState();
+    if (existingLeafId) {
+      const slotIndex = multiPane.slots.findIndex((slot) => slot?.id === existingLeafId);
+      if (slotIndex >= 0) multiPane.focusSlot(slotIndex as SlotIndex);
+      usePaneStore.getState().setFocusedPane(existingLeafId);
+      return;
+    }
+    if (multiPane.addPane('ai') !== null) return;
+    const next = useMultiPaneStore.getState();
+    const newSlot = next.slots[next.focusedSlot];
+    if (!newSlot) return;
+    selectThreadAgent(newSlot.id, agent.id);
+    usePaneStore.getState().setFocusedPane(newSlot.id);
+  }, []);
+
   // Open the Agent Runs pane scoped to one agent. Mirrors the Edit button's
   // reuse-or-add-then-focus pattern below, but for the 'agent-runs' tab.
   // The agent id travels through lib/agent-runs-selection.ts rather than the
@@ -1204,6 +1231,7 @@ export function Sidebar() {
           messageId,
         });
       } },
+      { key: 'chat', labelKey: 'sidebar.agent_chat', onPress: () => openAgentThread(agent) },
       ...(runHistory.length
         ? [{ key: 'runs', labelKey: 'sidebar.agent_view_runs', onPress: () => openAgentRunsPane(agent.id) }]
         : []),
@@ -1215,7 +1243,7 @@ export function Sidebar() {
         : []),
     ];
     setAgentDetailData({ agentName: agent.name, sections, buttons });
-  }, [t, handleRunScheduledAgent, handleTogglePause, openMemoryWorkbench, agentApprovalLabel, openAgentRunsPane]);
+  }, [t, handleRunScheduledAgent, handleTogglePause, openMemoryWorkbench, agentApprovalLabel, openAgentRunsPane, openAgentThread]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };

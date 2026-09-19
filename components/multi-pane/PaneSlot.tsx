@@ -18,6 +18,8 @@ import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { getAiPaneAgentMeta, getEnabledAiPaneAgents, isAiPaneAgent } from '@/lib/ai-pane-agents';
 import { useTranslation } from '@/lib/i18n';
+import { getThreadAgentId, subscribeThreadAgent } from '@/lib/agent-thread-selection';
+import { useAgentStore } from '@/store/agent-store';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 /** Context to let child screens know their pane width/height */
@@ -78,6 +80,18 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
   const aiPaneAgentMeta = aiPaneAgent ? getAiPaneAgentMeta(aiPaneAgent) : null;
   const aiPaneAgentColor = aiPaneAgentMeta?.color ?? C.text2;
   const aiPaneAgentLabel = aiPaneAgentMeta?.label ?? 'Agent';
+  // "Grok Bot"-style named-teammate threads (2026-09-20): a pane pinned to a
+  // background Agent's own chat thread shows that agent's name instead of the
+  // provider switcher, and tapping the badge does nothing — this pane's
+  // identity is fixed, not a menu of interchangeable providers.
+  const [threadAgentId, setThreadAgentId] = useState<string | null>(() => getThreadAgentId(leafId));
+  useEffect(() => {
+    setThreadAgentId(getThreadAgentId(leafId));
+    return subscribeThreadAgent((id, agentId) => {
+      if (id === leafId) setThreadAgentId(agentId);
+    });
+  }, [leafId]);
+  const threadAgentName = useAgentStore((s) => (threadAgentId ? s.agents.find((a) => a.id === threadAgentId)?.name ?? null : null));
   const { bindAgent } = usePaneStore();
   const focusedPaneId = usePaneStore((s) => s.focusedPaneId);
   const { setFocusedPane } = usePaneStore();
@@ -266,6 +280,16 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
             <Pressable style={styles.navMiniBtn} hitSlop={4} onPress={() => useBrowserStore.getState().triggerNav('reload')}>
               <MaterialIcons name="refresh" size={12} color={C.text2} />
             </Pressable>
+          </View>
+        ) : tab === 'ai' && threadAgentId ? (
+          <View
+            style={[styles.agentBadge, { borderColor: C.accent + '66', backgroundColor: C.accent + '14' }]}
+            accessibilityLabel={threadAgentName ?? t('pane.agent_thread_a11y')}
+          >
+            <MaterialIcons name="smart-toy" size={12} color={C.accent} style={styles.agentBadgeDot} />
+            <Text style={[styles.agentBadgeLabel, { color: C.text1 }]} numberOfLines={1}>
+              {(threadAgentName ?? t('pane.agent_thread_a11y')).toUpperCase()}
+            </Text>
           </View>
         ) : tab === 'ai' ? (
           <Pressable

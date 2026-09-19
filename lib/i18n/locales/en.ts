@@ -642,6 +642,13 @@ const en: Record<string, string> = {
   'globalmemory.saved':
     '✅ Saved to shared memory — every agent will see this from now on:\n\n  "{{text}}"',
   'globalmemory.failed': '❌ Could not save the shared note',
+  // "Grok Bot"-style conversational provider connect (2026-09-20):
+  // lib/provider-connect-intent.ts's detectProviderConnectRequest / the
+  // pendingApiKeyProvider reply branch in hooks/use-ai-pane-dispatch.ts.
+  'providerConnect.ask': "What's your {{provider}} API key? Paste it below — I'll save it and never show it again.",
+  'providerConnect.saved': '✅ {{provider}} key saved.',
+  'providerConnect.cancelled': 'No problem — {{provider}} is not connected.',
+  'providerConnect.invalid': "That doesn't look like a key (empty, or has spaces in it) — paste just the {{provider}} API key, or say \"cancel\".",
   // Design 2-b ("keep an eye on X" commitment detection, 2026-08-28):
   // appended to globalmemory.saved only when the write came from a
   // watch-phrase ("keep an eye on…"), not an ordinary "remember this". This
@@ -1198,6 +1205,12 @@ const en: Record<string, string> = {
   // see store/ai-pane-store.ts's addAiPaneThreadSwitchNotice.
   'chat.carried_forward_to_companion': "I brought our conversation with me — I'll take it from here.",
   'chat.carried_forward_to_pane': "I brought our conversation along — I'll think this one through with a different model.",
+  // "Grok Bot"-style named-teammate threads (2026-09-20): used instead of
+  // the *_to_pane keys above when the destination is a background agent's
+  // own chat thread (store/ai-pane-store.ts's AGENT_THREAD_KEY_PREFIX) —
+  // named so it reads as "you're now talking to Research Bot", not a model swap.
+  'chat.switched_to_agent_thread': "You're now talking to {{agentName}}.",
+  'chat.carried_forward_to_agent_thread': "I brought our conversation along — you're now talking to {{agentName}}.",
   'chat.empty_subtitle': 'Ask anything. I can see your terminal output.',
   // Fable5 review item #7 (2026-08-25): one-time first-agent onboarding
   // nudge, shown as a plain companion chat message (never a modal/wizard —
@@ -1852,6 +1865,7 @@ const en: Record<string, string> = {
   'sidebar.agent_route_why': 'Why',
   'sidebar.agent_memory_title': 'Memory ({{count}} notes)',
   'sidebar.agent_memory_view': 'Memory',
+  'sidebar.agent_chat': 'Chat',
   'sidebar.agent_view_runs': 'View Run History',
   'sidebar.agent_view_runs_a11y': 'View run history for {{name}}',
   'sidebar.agent_memory_view_a11y': 'View memory for {{name}}',
@@ -2032,6 +2046,7 @@ const en: Record<string, string> = {
   'pane.memory_workbench.refresh_a11y': 'Reload notes',
   'pane.change_type_a11y': 'Change pane type',
   'pane.switch_agent_a11y': 'Switch agent',
+  'pane.agent_thread_a11y': 'Agent',
   'pane.switch_agent': 'Switch Agent',
   'pane.split_a11y': 'Split pane',
   'pane.maximize_a11y': 'Maximize pane',

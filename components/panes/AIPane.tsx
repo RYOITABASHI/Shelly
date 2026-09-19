@@ -28,8 +28,10 @@ import {
   addAiPaneThreadSwitchNotice,
   resolveAiPaneStoreKey,
   useAIPaneStore,
+  AGENT_THREAD_KEY_PREFIX,
 } from '@/store/ai-pane-store';
 import { digestConversationForJournal } from '@/lib/companion-journal';
+import { subscribeThreadAgent, getThreadAgentId } from '@/lib/agent-thread-selection';
 import { postCompanionJournalDormancyNotice } from '@/lib/agent-companion-notice';
 import { execCommand } from '@/hooks/use-native-exec';
 import { usePaneStore } from '@/store/pane-store';
@@ -395,6 +397,27 @@ const bubbleStyles = StyleSheet.create({
 export default function AIPane() {
   const { t } = useTranslation();
   const paneId = useContext(PaneIdContext);
+  // "Grok Bot"-style named-teammate threads (2026-09-20): a pane pinned via
+  // lib/agent-thread-selection.ts (Sidebar's agent "Chat" action) shows that
+  // agent's identity instead of the provider switcher, and resolveAiPaneStoreKey
+  // (store/ai-pane-store.ts) already routes its conversation key accordingly —
+  // this is purely the render-time reflection of that same selection.
+  const [threadAgentId, setThreadAgentId] = useState<string | null>(() => getThreadAgentId(paneId));
+  useEffect(() => {
+    setThreadAgentId(getThreadAgentId(paneId));
+    return subscribeThreadAgent((leafId, agentId) => {
+      if (leafId === paneId) setThreadAgentId(agentId);
+    });
+  }, [paneId]);
+  const threadAgent = useAgentStore((s) => (threadAgentId ? s.agents.find((a) => a.id === threadAgentId) ?? null : null));
+  // Conversational provider-connect (2026-09-20): mask the input while the
+  // conversation is mid-flow waiting for a pasted API key — see
+  // lib/provider-connect-intent.ts / PaneInputBar's secureEntry prop.
+  const hasPendingApiKeyPrompt = useAIPaneStore((s) => {
+    const conv = s.conversations[resolveAiPaneStoreKey(paneId)];
+    const last = conv?.messages.at(-1);
+    return Boolean(last?.role === 'assistant' && last.pendingApiKeyProvider);
+  });
   const paneBg = usePaneContentBackground(C.bgDeep);
   // Bug #56 — narrow grid layouts (2×2 or 1+2) drop pane width below
   // ~360dp. Shrink horizontal padding so bubble content does not get
@@ -613,7 +636,12 @@ export default function AIPane() {
   useEffect(() => {
     const prev = prevConversationKeyRef.current;
     prevConversationKeyRef.current = resolvedConversationKey;
-    addAiPaneThreadSwitchNotice(prev, resolvedConversationKey, t);
+    addAiPaneThreadSwitchNotice(
+      prev,
+      resolvedConversationKey,
+      t,
+      resolvedConversationKey.startsWith(AGENT_THREAD_KEY_PREFIX) ? (threadAgent?.name ?? undefined) : undefined,
+    );
     // Companion journal (G1-P2's sibling, "一人の相棒" Gap②): distill the
     // thread being LEFT into a note before it's forgotten. Same trigger
     // point as carry-forward (this is the sole switch-notice caller,
@@ -623,6 +651,11 @@ export default function AIPane() {
     if (prev !== resolvedConversationKey) {
       const settings = useSettingsStore.getState().settings;
       const sourceMessages = useAIPaneStore.getState().conversations[prev]?.messages ?? [];
+      // The thread being LEFT (`prev`), not the destination, decides which
+      // agent's memory scope (if any) this digest writes into.
+      const prevThreadAgentId = prev.startsWith(AGENT_THREAD_KEY_PREFIX)
+        ? prev.slice(AGENT_THREAD_KEY_PREFIX.length)
+        : undefined;
       void digestConversationForJournal(
         prev,
         sourceMessages,
@@ -646,9 +679,10 @@ export default function AIPane() {
             logError('AIPane', `failed to post companion journal dormancy notice: ${nudgeError instanceof Error ? nudgeError.message : String(nudgeError)}`);
           }
         },
+        prevThreadAgentId,
       );
     }
-  }, [resolvedConversationKey, t]);
+  }, [resolvedConversationKey, t, threadAgent?.name]);
 
   // Phase 3 inbound gateway: drain authorized Telegram utterances into the SAME
   // @agent confirm-card pipeline a local utterance uses. consume() pops atomically
@@ -957,6 +991,7 @@ export default function AIPane() {
         onMicLongPress={handleMicLongPress}
         paneId={paneId}
         attachmentPreview={stagedImage ? { uri: stagedImage.uri, onRemove: handleRemoveStagedImage } : null}
+        secureEntry={hasPendingApiKeyPrompt}
       />
 
       <VoiceChat

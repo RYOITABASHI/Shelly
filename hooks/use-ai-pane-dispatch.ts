@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
-import { COMPANION_CONVERSATION_KEY, carryForwardOnThreadSwitch, isPromptHistoryEligible, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
+import { COMPANION_CONVERSATION_KEY, AGENT_THREAD_KEY_PREFIX, carryForwardOnThreadSwitch, isPromptHistoryEligible, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
 import type { JustRegisteredAgentRef } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
@@ -21,7 +21,8 @@ import {
   describeTerminalContextForLog,
   getTerminalSnapshotForSession,
 } from '@/lib/ai-pane-context';
-import type { ChatMessage } from '@/store/types';
+import type { ChatMessage, AppSettings } from '@/store/types';
+import { detectProviderConnectRequest, providerDisplayName } from '@/lib/provider-connect-intent';
 import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 import { detectPostFormatDirective } from '@/lib/post-format-directive';
 import { groqChatStream, GROQ_DEFAULT_MODEL } from '@/lib/groq';
@@ -60,7 +61,7 @@ import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraf
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
-import { buildCompanionRecallContext, buildGlobalRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
+import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import {
@@ -993,6 +994,79 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               ...(pendingGlobal.kind ? { kind: pendingGlobal.kind } : {}),
             },
             flowTurn: true,
+          });
+          return;
+        }
+      }
+      // "Grok Bot"-style conversational provider connect (2026-09-20): the
+      // reply half of lib/provider-connect-intent.ts's detectProviderConnectRequest
+      // (the ask-for-key question is posted further below, near
+      // detectGlobalMemoryWrite). Deliberately simpler than the
+      // pendingGlobalMemory confirm/cancel dance above — there is no
+      // separate "confirm" step here because the NEXT message IS the
+      // answer (the key itself), not a yes/no. The one thing this shares
+      // with every other pending-reply block: an "@…" message is always a
+      // fresh command, never an answer, and clears the pending state
+      // instead of being swallowed as a key.
+      const pendingApiKeyMsg =
+        freshestMsgForPendingCheck?.role === 'assistant' &&
+        freshestMsgForPendingCheck.pendingApiKeyProvider &&
+        Date.now() - freshestMsgForPendingCheck.timestamp <= SLOT_FILL_STALE_MS
+          ? freshestMsgForPendingCheck
+          : null;
+      if (pendingApiKeyMsg && pendingApiKeyMsg.pendingApiKeyProvider) {
+        const provider = pendingApiKeyMsg.pendingApiKeyProvider;
+        const pkStrings = detectMessageLocale(pendingApiKeyMsg.content) === 'ja' ? ja : en;
+        const clearPendingKey = () =>
+          store.updateMessage(paneId, pendingApiKeyMsg.id, { pendingApiKeyProvider: undefined });
+
+        if (userText.trim().startsWith('@')) {
+          clearPendingKey();
+          // Fall through to normal routing for the fresh command.
+        } else {
+          const rawValue = userText.trim();
+          const displayName = providerDisplayName(provider);
+          // The raw key must never be written to AsyncStorage in plaintext —
+          // even fleetingly — so the STORED user-message content is a
+          // redacted placeholder from the moment it's created, never the
+          // real value. This is the one message in this whole file that
+          // does NOT store what the user actually typed.
+          const maskedContent = `<redacted: ${displayName} API key>`;
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: maskedContent, timestamp: Date.now(), flowTurn: true });
+
+          if (isCancelPhrase(rawValue)) {
+            clearPendingKey();
+            store.addMessage(paneId, {
+              id: generateId(), role: 'assistant',
+              content: pkStrings['providerConnect.cancelled'].replace('{{provider}}', displayName),
+              timestamp: Date.now(), flowTurn: true,
+            });
+            return;
+          }
+          if (!rawValue || /\s/.test(rawValue)) {
+            // Re-ask rather than save something that clearly isn't a key
+            // (empty, or contains whitespace — no real API key does).
+            // Pending state is left in place so the very next message gets
+            // another chance, same as a slot-fill re-ask.
+            store.addMessage(paneId, {
+              id: generateId(), role: 'assistant',
+              content: pkStrings['providerConnect.invalid'].replace('{{provider}}', displayName),
+              timestamp: Date.now(), flowTurn: true,
+              pendingApiKeyProvider: provider,
+            });
+            return;
+          }
+
+          clearPendingKey();
+          // Same call Settings' own row-commit makes (ConfigTUI.tsx →
+          // updateSettings), so saveApiKey + the .env mirror for headless
+          // agent execution both happen identically to the Settings path —
+          // no duplicated side-effect logic here.
+          useSettingsStore.getState().updateSettings({ [provider]: rawValue } as Partial<AppSettings>);
+          store.addMessage(paneId, {
+            id: generateId(), role: 'assistant',
+            content: pkStrings['providerConnect.saved'].replace('{{provider}}', displayName),
+            timestamp: Date.now(), flowTurn: true,
           });
           return;
         }
@@ -2116,6 +2190,28 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       void learnFromAgentUse(agent).catch(() => {});
       void learnFromUserInput(userText).catch(() => {});
 
+      // "Grok Bot"-style conversational provider connect (2026-09-20):
+      // checked unconditionally, before ANY LLM routing or agent-draft
+      // detection below — "connect me to Gemini" must never be misread as
+      // a scheduled-agent request or answered by a model that doesn't have
+      // the key yet. The reply half (treating the NEXT message as the raw
+      // key, never forwarded to any LLM) is the pendingApiKeyProvider block
+      // near the top of this function.
+      const connectProvider = detectProviderConnectRequest(promptText);
+      if (connectProvider) {
+        const pkStrings = detectMessageLocale(promptText) === 'ja' ? ja : en;
+        store.addMessage(paneId, {
+          id: generateId(),
+          role: 'assistant',
+          content: pkStrings['providerConnect.ask'].replace('{{provider}}', providerDisplayName(connectProvider)),
+          timestamp: Date.now(),
+          agent: agent as ChatMessage['agent'],
+          pendingApiKeyProvider: connectProvider,
+          flowTurn: true,
+        });
+        return;
+      }
+
       if (requestedAgent && !promptText) {
         store.addMessage(paneId, {
           id: generateId(),
@@ -2957,7 +3053,25 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         const companionJournalSummary = paneId === COMPANION_CONVERSATION_KEY
           ? buildCompanionRecallContext(recallMemoryNotes(await readCompanionMemoryNotes(), promptText))
           : '';
-        const globalMemorySummary = [buildGlobalRecallContext(globalMemoryNotesForPrompt), companionJournalSummary]
+        // "Grok Bot"-style named-teammate threads (2026-09-20): a pane
+        // pinned to a background agent's own thread (paneId here is already
+        // the RESOLVED conversation key, `agent:<id>` — see dispatch()'s
+        // resolveAiPaneStoreKey call above) recalls that agent's OWN memory
+        // instead of the companion's, via the exact same reader/scorer a
+        // scheduled run already uses (lib/agent-manager.ts), and gets an
+        // identity block so replies sound like that agent, not the companion.
+        let agentThreadSummary = '';
+        if (paneId.startsWith(AGENT_THREAD_KEY_PREFIX)) {
+          const threadAgentId = paneId.slice(AGENT_THREAD_KEY_PREFIX.length);
+          const threadAgent = useAgentStore.getState().agents.find((a) => a.id === threadAgentId);
+          const recall = buildRecallContext(recallMemoryNotes(await readMemoryNotes(threadAgentId), promptText));
+          const identity = threadAgent
+            ? `Identity: you are ${threadAgent.name}${threadAgent.description ? `, ${threadAgent.description}` : ''}.`
+              + (threadAgent.prompt ? ` Your usual task: ${threadAgent.prompt}` : '')
+            : '';
+          agentThreadSummary = [identity, recall].filter(Boolean).join('\n\n');
+        }
+        const globalMemorySummary = [buildGlobalRecallContext(globalMemoryNotesForPrompt), companionJournalSummary, agentThreadSummary]
           .filter(Boolean)
           .join('\n\n');
         const systemPrompt = (agent === 'local'

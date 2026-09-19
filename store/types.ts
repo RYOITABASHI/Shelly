@@ -1394,6 +1394,16 @@ export type ChatMessage = {
      *  agent registration as the actual active-monitoring mechanism. */
     kind?: 'watch';
   };
+  /** "Grok Bot"-style conversational provider connect (2026-09-20): set on
+   *  the assistant message that just asked "what's your Gemini key?" after
+   *  lib/provider-connect-intent.ts's detectProviderConnectRequest matched.
+   *  When present on the most recent assistant message,
+   *  hooks/use-ai-pane-dispatch.ts treats the user's NEXT message as the raw
+   *  key itself — never forwarded to any LLM, and its stored `content` is
+   *  replaced with a redacted placeholder BEFORE persistence so the
+   *  plaintext key never reaches AsyncStorage. See lib/secure-store.ts's
+   *  ApiKeyName for the fixed provider set this covers. */
+  pendingApiKeyProvider?: 'geminiApiKey' | 'cerebrasApiKey' | 'groqApiKey' | 'perplexityApiKey' | 'openrouterApiKey';
   /** G1-P2 (2026-08-25): present on a message that was copied into a
    *  DIFFERENT pane's conversation by store/ai-pane-store.ts's
    *  carryForwardOnThreadSwitch, when the user switches a pane's bound
