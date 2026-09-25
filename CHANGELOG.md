@@ -48,6 +48,21 @@ All notable changes to Shelly are documented here. Format loosely follows
   `file://` URI), and a serialization bug where one pending approval
   blocked the entire request queue — including trivial read-only calls
   — for up to 90 seconds.
+- **Per-agent chat threads.** Tap "Chat" on a registered agent's detail
+  popup to open a persistent AI Pane conversation scoped to that agent
+  specifically — its own conversation key, its own memory recall (the
+  same reader a scheduled run already uses), its own identity in the
+  system prompt, and its own thread-switch notice, all parallel to how
+  the Shelly companion persona already has one continuous shared thread.
+  On-device verified: opens a dedicated pane with a separate, empty
+  thread from the companion, and answers messages sent to it.
+- **Conversational API key setup.** Any AI Pane conversation — the
+  companion, an explicit-provider pane, or a per-agent thread — can now
+  connect a provider ("connect me to Gemini") without leaving the chat.
+  The key is asked for inline, masked in the stored conversation the
+  moment it's typed (never persisted in plaintext, never sent to any
+  LLM), and saved through the exact same path Settings' own API Keys
+  screen uses. On-device verified end-to-end.
 
 ## [8.0.0] - 2026-08-31
 
