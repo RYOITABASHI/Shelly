@@ -84,7 +84,7 @@ Full feature-by-feature breakdown for [Shelly](../README.md). The [README's High
 <details>
 <summary><strong>Terminal Enhancements</strong></summary>
 
-- **Fig-style autocomplete** *(not currently implemented — see `docs/superpowers/DEFERRED.md`)* — the completion engine (`lib/autocomplete-engine.ts`) and command database exist and are reusable, but the terminal input path is a native PTY passthrough (`NativeTerminalView`) with no JS-visible input buffer/cursor, so reviving the popup requires a scoped native (Kotlin) change to stream the in-progress command line to JS
+- **Fig-style autocomplete** *(not currently implemented — see `docs/superpowers/DEFERRED.md`)* — the old JS completion engine, command database, and UI were unreachable from the current app and have been removed. Terminal input passes directly through the native PTY (`NativeTerminalView`), which does not expose the in-progress input buffer or cursor to JS. Restoring autocomplete requires a native (Kotlin) input event and new JS integration.
 - **Syntax highlighting** — terminal output colorized by content type
 - **Clickable paths and errors** — tap a file path or stack trace line to jump to it
 - **Content blocks** — JSON, markdown, images, and tables from command output render as formatted blocks in the **Block History** panel, an overlay opened via the terminal pane's FAB, not literally inline in the scrolling PTY output

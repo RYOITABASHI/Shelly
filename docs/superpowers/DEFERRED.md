@@ -370,6 +370,8 @@
 
 ### Fig風オートコンプリート復活 — プロダクトオーナー指示で調査したが、現行ネイティブPTYアーキテクチャではJS側だけでの復活が技術的に不可能と判明。ネイティブ変更のスコープを特定して報告のみ、実装は見送り (P1)
 
+**2026-09-27 更新（issue #142 のクリーンアップ）**: 以下の調査結果は2026-08-10時点の記録です。現行アプリから到達不能な `lib/autocomplete-engine.ts`、`lib/completions.ts`、`components/input/CommandInput.tsx`、`components/input/AutocompleteDropdown.tsx` はこの変更で削除しました。将来補完を復活させる場合は、まず下記のネイティブ入力イベントが必要です。旧JSロジックはGit履歴から参照できます。以下で「現存する」「再利用可能」と記した箇所は調査当時の状態を示します。
+
 **背景**: 2026-08-10のFable5実機②レビュー（本ファイル前掲、2026-08-10エントリのD-1）が「Fig風オートコンプリートが消失（`components/terminal/AutocompletePopup.tsx`/`hooks/use-autocomplete.ts`が現mainに無い、`lib/autocomplete-engine.ts`は参照ゼロのデッドコード）」と発見し、直後のTrack M（`d7ade2e0d`）でConfigTUIの孤児化「Autocomplete」トグルを削除した。今回、プロダクトオーナーから明示的に「機能自体を復活させる方針」の指示があり、`cce05d705`（2026-04-16「chore: remove dead code pre-v0.1.0」）で削除された当時の実装を精査した上での復活可否を再調査した。
 
 **調査結果**:
