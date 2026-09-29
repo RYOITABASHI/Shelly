@@ -1219,35 +1219,6 @@ const ja: Record<string, string> = {
   'chat.thinking': '考え中...',
   'chat.sources': 'ソース:',
 
-  // ── Command Input ───────────────────────────────────────────────
-  'input.placeholder_stdin': '標準入力...',
-  'input.placeholder_ai': '何でも質問...',
-  'input.placeholder_shell': 'コマンドを入力...',
-  'input.recording': '録音中...',
-  'input.sensitive_title': '機密ファイルを検出',
-  'input.sensitive_message': '{{name}} には機密情報が含まれている可能性があります。\nAIに送信しますか？',
-  'input.sensitive_cancel': 'キャンセル',
-  'input.sensitive_attach': '添付する',
-  'input.gallery': 'ギャラリー',
-  'input.camera': 'カメラ',
-  'input.file': 'ファイル',
-  'input.paste': '貼り付け',
-  'input.voice': '音声',
-
-  // ── Mention Dropdown ────────────────────────────────────────────
-  'mention.local_desc': 'ローカルAIに聞く',
-  'mention.claude_desc': '削除済みの旧エージェント',
-  'mention.codex_desc': '高速コードアシスタント',
-  'mention.cerebras_desc': '高速チャット（Qwen3-235B）',
-  'mention.gemini_desc': 'Google Gemini API',
-  'mention.perplexity_desc': 'リアルタイムWeb検索',
-  'mention.git_desc': 'Git操作ガイド',
-  'mention.team_desc': '複数AI並列処理',
-  'mention.browser_desc': 'URLをブラウザで開く',
-  'mention.plan_desc': 'ステップ形式の計画',
-  'mention.arena_desc': 'AI同士の比較対決',
-  'mention.actions_desc': 'CI/CDを設定',
-
   // ── AI Dispatch ─────────────────────────────────────────────────
   'dispatch.gemini_no_key': 'Gemini APIキーが設定されていません。設定 → API Keys で追加してください。',
   'gemini_api_key_missing': 'Gemini APIキーが設定されていません。設定画面で入力してください。',

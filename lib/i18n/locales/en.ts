@@ -1252,35 +1252,6 @@ const en: Record<string, string> = {
   'chat.thinking': 'Thinking...',
   'chat.sources': 'Sources:',
 
-  // ── Command Input ───────────────────────────────────────────────
-  'input.placeholder_stdin': 'stdin...',
-  'input.placeholder_ai': 'Ask anything...',
-  'input.placeholder_shell': 'Enter command...',
-  'input.recording': 'Recording...',
-  'input.sensitive_title': 'Sensitive file detected',
-  'input.sensitive_message': '{{name}} may contain sensitive information.\nSend to AI anyway?',
-  'input.sensitive_cancel': 'Cancel',
-  'input.sensitive_attach': 'Attach',
-  'input.gallery': 'Gallery',
-  'input.camera': 'Camera',
-  'input.file': 'File',
-  'input.paste': 'Paste',
-  'input.voice': 'Voice',
-
-  // ── Mention Dropdown ────────────────────────────────────────────
-  'mention.local_desc': 'Ask local AI',
-  'mention.claude_desc': 'Legacy agent removed',
-  'mention.codex_desc': 'Fast code assistant',
-  'mention.cerebras_desc': 'Fast chat (Qwen3-235B)',
-  'mention.gemini_desc': 'Google Gemini API',
-  'mention.perplexity_desc': 'Real-time web search',
-  'mention.git_desc': 'Git operations guide',
-  'mention.team_desc': 'Multi-AI parallel',
-  'mention.browser_desc': 'Open URL in browser',
-  'mention.plan_desc': 'Step-by-step plan',
-  'mention.arena_desc': 'Blind AI comparison',
-  'mention.actions_desc': 'Set up CI/CD',
-
   // ── AI Dispatch ─────────────────────────────────────────────────
   'dispatch.gemini_no_key': 'Gemini API key is not set. Add it in Settings → API Keys.',
   'gemini_api_key_missing': 'Gemini API key is not set. Enter it in Settings.',
