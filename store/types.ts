@@ -510,8 +510,6 @@ export type AppSettings = {
   realtimeTranslateEnabled?: boolean;
   /** LLM出力通訳（学習モード）ON/OFF（デフォルト: false） */
   llmInterpreterEnabled?: boolean;
-  /** 外部キーボードのショートカット表示（デフォルト: false） */
-  externalKeyboardShortcuts?: boolean;
   // ─── Terminal Appearance ──────────────────────────────────────────────────
   /** Terminal ANSI color theme (default: 'shelly') */
   terminalTheme: string;

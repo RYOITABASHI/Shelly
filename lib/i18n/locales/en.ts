@@ -1409,8 +1409,6 @@ const en: Record<string, string> = {
   'settings.behavior_title': 'Behavior',
   'settings.llm_interpreter_label': 'Learning Mode (AI Interpreter)',
   'settings.llm_interpreter_desc': 'AI explains command results in natural language after execution',
-  'settings.external_keyboard_label': 'External Keyboard Shortcuts',
-  'settings.external_keyboard_desc': 'Show ShortcutBar in Terminal tab',
   'settings.sound_title': 'Sound & Effects',
   'settings.advanced_show': 'Show advanced settings',
   'settings.advanced_hide': 'Hide advanced settings',

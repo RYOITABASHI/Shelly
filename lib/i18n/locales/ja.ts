@@ -1377,8 +1377,6 @@ const ja: Record<string, string> = {
   'settings.behavior_title': '動作',
   'settings.llm_interpreter_label': '学習モード（AI通訳）',
   'settings.llm_interpreter_desc': 'コマンド実行後にAIが結果を日本語で解説します',
-  'settings.external_keyboard_label': '外部キーボードのショートカット',
-  'settings.external_keyboard_desc': 'TerminalタブにShortcutBarを表示します',
   'settings.sound_title': '音とエフェクト',
   'settings.advanced_show': '高度な設定を表示',
   'settings.advanced_hide': '高度な設定を非表示',
