@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-09-29: PR #147（ShortcutBar/MentionDropdown と input.*/mention.* i18n キーの削除）と PR #148（孤児化していた `externalKeyboardShortcuts` 設定トグルの削除）をマージ。Windows PC での検証中に、実 bash/fs 系 jest スイートが `origin/main` でも失敗することを確認し、下記に P3 として登録した。
 - 2026-08-31: ユーザー指示「無くしちゃおうぜ」を受け、app.act機能(LINE/X向けAndroid Accessibility Service経由のUI自動操作)を製品として完全に廃止した。**廃止理由**: 同日の実機検証で、cold-startタイムアウト修正(直前エントリ参照)の後もなお別の新規バグ(検索ボタンのマッチャーが画面上の複数ノードに一致し、安全装置`Ambiguous-multiple-match`が働いてレシピ実行が停止)を発見。これでこの1機能だけで①cold-startタイムアウト②今回のambiguous-match③レシピ作成UI自体のフォーカス競合(直前エントリで確認済み、修正困難と判定済み)の3件のバグが積み上がった。Android Accessibility Service経由のUI自動操作は対象アプリ側のUI変化(広告表示・レイアウト更新等)に対して構造的に脆く、LINE/Xの2アプリに絞ってさえ安定動作に至らなかったため、機能自体を削除する方が実装・運用コストに見合うと判断。**削除範囲**: Kotlin側(`AppActExecutor.kt`/`AppActRecipeStore.kt`/`ShellyAccessibilityService.kt`/バンドルレシピ2件/`plugins/with-accessibility-service.js`を丸ごと削除、`TerminalEmulatorModule.kt`の5個のAsyncFunction・`AgentRuntime.kt`の`fireTrustedAppActAndReply`/`TrustedPlanLaunch.appActRecipeId`・`AgentActionApprovalBridge.kt`の`writeAutoApprovedReply`(呼び出し元喪失によるデッドコード化)と許可リスト残存・`NotificationDispatcher.kt`のapp-act分岐を除去)、TypeScript側(`lib/app-act-recipe-draft.ts`/`components/config/AppActRecipeDraftModal.tsx`/`lib/agent-app-act-review.ts`を丸ごと削除、`store/types.ts`の`AgentActionType`から`'app-act'`削除+`appActRecipeId`/`appActParams`/`appActMethod`フィールド削除、`lib/agent-executor.ts`と`scripts/shelly-plan-executor.js`(+APKミラー)から生成bashスクリプトのapp-act dispatchロジック一式を除去、`lib/agent-nl-parser.ts`のX投稿フォールバックをapp-actからsocial-post/draft+caveatへ再設計、ConfigTUIの「Automation」セクション削除、SettingsDropdownの一時QAプローブ削除、i18nキー約25個削除)、テスト4ファイル丸ごと削除+20ファイル部分編集、ドキュメント(README.md/ja.md・docs/STATUS.md/ja.md・skills-catalogの`app-act-flow-design`スキル)からapp.act言及を除去。`npx tsc --noEmit` clean(エラー0件)。テスト側の最終検証は別セッションで継続中。
   → sync: README/STATUS Status表・Known Limitations・Highlights表からapp.act行を削除済み。skills-catalog.jsonから`app-act-flow-design`エントリを削除・フォルダ削除済みだが、**GitHub Releaseの`skills-catalog-latest`アセット自体は別途リリースを切るまで更新されない**点に注意(リポジトリのソースは修正済み)。
   **Fable5/Codex独立レビュー(同日)で発見・即修正した項目**: (1) `lib/agent-executor.ts`の`AGENT_SCRIPT_VERSION`と`AgentRuntime.kt`の`CURRENT_SCRIPT_VERSION`が58のまま未バンプだった件——app-actのdispatchロジック除去は生成スクリプトの実行時挙動変更にあたるため、両定数を59へ同時バンプ(v59履歴コメント追記)。バンプ前は、旧v58スクリプトを持つautonomous app-actエージェントが無人発火時に、新`AgentActionApprovalBridge.fromJson`がactionType許可リストから`app-act`を除外したことで承認リクエストを黙って破棄し、スクリプト側が永遠に承認待ちでハングする恐れがあった(バンプ後は「stale script、regenerate」で明示的に検知され、再生成後は`*)`「Unknown agent action」でクリーンに失敗する)。(2) `docs/skills-catalog/social-post-drafting/SKILL.md`と`docs/skills-catalog/browser-change-watch/SKILL.md`にも「Social Post or App-Act」「CLI/Intent/App-Act」という陳腐化した記述が残っていたため修正、両方ともcatalog内version(1.0.1)・sha256を更新。
@@ -103,6 +104,20 @@
 - **suggestion engineの能動的発話trigger拡張**: 実装機構は既存`addMessage()`を再利用できるが、発話タイミング・頻度はプロダクト判断と実機QAの反復が必要。
 
 → sync: README Status表の変更なし（Phase 1はpresentation-layerのみ。上記4項目は計画ファイル「今回スコープ外」を参照）。
+
+---
+
+### Windows ホストで実 bash / 実 fs 系 jest スイートが失敗する（2026-09-29、PR #147/#148 の検証中に発見、P3・ツーリング）
+
+**現象**: Windows 11 (Git Bash) 上で `pnpm test` を実行すると、`origin/main`（`b8c6f6c8f`）でも以下のスイートが失敗する: `capability-broker`・`plan-executor`・`plan-executor-tool-ladder`・`plan-executor-signed-approval`・`plan-executor-multi-action`・`plan-executor-orchestration`・`plan-executor-orchestration-chain`・`agent-manager-chain-lock`（約40件）。症状は `Exceeded timeout of 5000 ms`、`ENOENT ... scandir '...\Temp\cap-broker-*\approvals'`、`ENOENT ... chain.lock\token` など。いずれも実 bash の起動・`mkdir` ロック・シンボリックリンクを使うテストで、Linux（クラウドセッション）では全件通過している。また、jest を2本同時に走らせた高負荷時には `AgentRunsPane`/`AgentSuggestionCard` も5秒タイムアウトで落ちたが、単独実行では全件通過した（負荷由来でありコードの問題ではない）。
+
+**影響**: Windows PC でのローカル検証時に「変更と無関係な失敗」が毎回数十件出るため、本物の回帰を見落とすリスクがある。GitHub Actions のワークフローには `pull_request` トリガーが無いため、PR 上では CI による裏取りもされない。
+
+**Why not now**: PR #147/#148 のスコープ外（どちらも i18n キーと未使用コンポーネント/設定の削除のみ）。原因が bash の Windows パス変換・シンボリックリンク権限・プロセス起動の遅さのどれ（または複数）かは未切り分け。
+
+**対応案**: (a) 該当スイートに `process.platform === 'win32'` での `describe.skip` を付けて Linux 専用と明示する、(b) 実 bash 系テストのタイムアウトを延長する、(c) `pull_request` トリガー付きの軽量 CI（tsc + lint + jest）を追加し、PR ごとに Linux で裏取りする。(c) が最も効果が大きい。
+
+→ sync: README Status表の変更なし（開発ツーリングのみ）。
 
 ---
 
