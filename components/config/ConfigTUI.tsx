@@ -88,7 +88,6 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       { key: 'cursorShape',    label: 'Cursor Shape', labelKey: 'settings.cursor_shape',     type: 'enum',   options: ['block', 'underline', 'bar'], source: 'settings' },
       { key: 'autoScroll',     label: 'Auto Scroll', labelKey: 'settings.auto_scroll',      type: 'boolean', source: 'settings' },
       { key: 'syntaxHighlight',label: 'Syntax Highlight', labelKey: 'settings.syntax_highlight_label', type: 'boolean', source: 'settings' },
-      { key: 'externalKeyboardShortcuts', label: 'External Keyboard', labelKey: 'settings.external_keyboard_label', type: 'boolean', source: 'settings', description: 'Physical keyboard shortcuts' },
     ],
   },
   {

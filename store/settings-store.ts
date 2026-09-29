@@ -152,7 +152,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   agentCustomPath: '',
   realtimeTranslateEnabled: false,
   llmInterpreterEnabled: false,
-  externalKeyboardShortcuts: false,
   terminalTheme: 'blue',
   gpuRendering: false,
   realtimeVoiceEnabled: false,
