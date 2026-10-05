@@ -132,6 +132,11 @@ object LibExtractor {
         // ship a separate codex-exec binary.
         "lib/arm64-v8a/libcodex_tui.so" to "codex_tui",
         "lib/arm64-v8a/libcodex_cxx_shared.so" to "libc++_shared.so",
+        // Issue #149: Codex looks up its Code Mode host as a sibling of its
+        // own executable (dirname(current_exe)/codex-code-mode-host). This is
+        // codex-termux's bionic PIE build, so the exec wrapper's linker64
+        // routing handles it like codex_tui. Optional: older payloads lack it.
+        "lib/arm64-v8a/libcodex_code_mode_host.so" to "codex-code-mode-host",
         // exec wrapper: LD_PRELOAD library that redirects execve() through linker64
         // (required for targetSdk >= 29 where SELinux blocks direct exec from app_data_file)
         "lib/arm64-v8a/libexec_wrapper.so" to "libexec_wrapper.so",
@@ -167,6 +172,9 @@ object LibExtractor {
         "node",
         "codex_tui",
         "libc++_shared.so",
+        // Version-locked to codex_tui; a stale host would speak an older
+        // Code Mode protocol than the refreshed Codex binary.
+        "codex-code-mode-host",
         "shelly_shell",
         // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
         // scheme-validation tweaks ship without a versionCode bump.

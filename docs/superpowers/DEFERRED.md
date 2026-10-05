@@ -48,6 +48,20 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)
+
+**原因**: Codex は Code Mode host を `dirname(current_exe)/codex-code-mode-host` で解決する（upstream `codex-rs/install-context`）。Shelly 上の current_exe は exec-wrapper の `/proc/self/exe` shim により `$SHELLY_LIB_DIR/codex_tui`（runtime 更新時は `~/.shelly-runtime/codex/current/codex_tui`）だが、その隣に host が無かった。`DioNanos/codex-termux` の release tarball には bionic PIE 版 host（`interpreter /system/bin/linker64`, NEEDED は system lib のみ）が同梱されているのに、CI は `codex.bin` と `libc++_shared.so` しか拾っていなかった。報告者が見つけた `node_modules/@openai/codex/.../codex-linux-arm64/.../codex-code-mode-host` は upstream npm 依存の static musl ET_EXEC で、app_data_file から直接 exec できず（SELinux）、linker64 も ET_EXEC を拒否するため使えない。
+
+**修正**: `build-android.yml` で codex-termux tarball の `codex-code-mode-host` を `jniLibs/arm64-v8a/libcodex_code_mode_host.so` として同梱（無ければ warning、fatal にはしない）、payload cache path と Codex runtime 更新 tarball にも追加。`LibExtractor.kt` で `codex-code-mode-host` として `$SHELLY_LIB_DIR` に展開し、`codex_tui` とバージョンを揃えるため ALWAYS_REFRESH に追加。`shelly-runtime-update.js` は host があれば chmod 700（旧 tarball には無いので必須にしない）。push 前 Codex レビューの P1 指摘（修正前に昇格済みの `~/.shelly-runtime/codex/current` は host を持たず、bash launcher がそちらを優先するため直らない）を受け、`HomeInitializer.linkCodeModeHostIntoRuntime()` で起動時に runtime の `manifest.json` `codexVersion` と同梱 `@openai/codex` の version が一致する場合のみ bundled host を symlink する（不一致なら host プロトコル差の恐れがあるので触らない）。spawn 時は exec-wrapper の既存 ET_DYN→linker64 ルーティングがそのまま効く想定。APK は約 64MB（非圧縮）増える。
+
+**未検証**: 実機で `codex` 起動後に Code Mode が使えること（"Code Mode is unavailable" が出ないこと）、および runtime 更新経由（`current/codex-code-mode-host`）でも同様に動くこと。CI 後の初回 runtime publish までは、runtime 側の旧 tarball では Code Mode 不可のまま。
+
+→ sync: README Status表の変更なし（既存 Codex 機能の欠損修正）。
+
+### error-pattern-detector が相対パスの `file:line:col` を最後の `/` 以降に切り詰める (P2)
+
+**発見**: GitHub #144 のテスト追加中（2026-10-05）。`lib/error-pattern-detector.ts` の file:line:col パターンは `/` 始まりのパスしか想定しておらず、`src/app.ts:3:1` は `/app.ts`（line 3, col 1）として誤検出される。また Node.js スタックフレームは汎用パターンと Node パターンの両方にマッチして 2 件重複報告される。現状の挙動は `__tests__/error-pattern-detector.test.ts` で pin 済み。consumer は `components/terminal/TerminalBlock.tsx:686`（Block History 経由で到達可能）で、tsc/eslint が出す相対パスのエラー行が誤ったファイル `/app.ts` へのリンクになりうる。修正時は相対パス対応（ブロックの cwd で解決）と重複排除を合わせて行い、テストの pin を更新すること。
+
 ### ✅ bug #167 — `WidgetAgentRepository`が`dm-pairings.json`をagentメタデータとしてパース試行し、例外メッセージ経由で連絡先名がlogcatへ漏洩 — 修正済み・実機未検証 (P1)
 
 **バグ / 再現**: Scouterホームスクリーンウィジェットは約60秒ごとに`~/.shelly/agents/*.json`を列挙し、ファイル名が`SAFE_AGENT_ID`（`^[A-Za-z0-9_-]+$`、ハイフン許容）にマッチする全ファイルをagentメタデータとして`JSONObject(file.readText())`でパースしていた。DM/通知pairing状態を保持する`dm-pairings.json`（`store/dm-pairing-store.ts`が書き込む、トップレベルがJSON**配列**）のファイル名`dm-pairings`はこの正規表現にマッチするため除外されず、毎回パースが試みられていた。org.json の`JSONObject(String)`コンストラクタは入力がオブジェクトでない場合、`JSONTokener.syntaxError()`が例外メッセージに残りソース全体（`"at character N of <source>"`）を埋め込む。この`JSONException`がそのまま`Log.w(TAG, "Ignoring invalid agent metadata ...", error)`に渡されていたため、**dm-pairings.jsonの生内容（連絡先表示名・pairing IDなど）がポーリングのたびにlogcatへ平文で出力**されていた。bug #163で対処したのはrun-log側の同種例外スパム（機能影響のみ、PII露出なし）で、今回のagentメタデータ側の型不一致自体は未修正のまま残っていた。
