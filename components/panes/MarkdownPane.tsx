@@ -25,6 +25,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { usePaneLayout } from '@/hooks/use-pane-density';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 // ── Module-level state for imperative openMarkdownFile ────────────────────────
 
@@ -115,8 +116,8 @@ export default function MarkdownPane() {
 	    ToastAndroid.show('Search within document — coming soon', ToastAndroid.SHORT);
 	  }, []);
   const paneBg = usePaneContentBackground(C.bgDeep);
-	  const codeBg = usePanelBackground('#1A1A1A');
-	  const quoteBg = usePanelBackground('#111111');
+	  const codeBg = usePanelBackground(C.btnSecondaryBg);
+	  const quoteBg = usePanelBackground(C.bgSurface);
 
   // ── Markdown style rules keyed to current theme ──────────────────────────
   const markdownStyles = StyleSheet.create({
@@ -173,7 +174,7 @@ export default function MarkdownPane() {
       marginBottom: 2,
     },
     paragraph: {
-      color: '#ECEDEE',
+      color: C.text1,
       fontSize: sf(14),
       lineHeight: sf(22),
       marginVertical: 6,
@@ -195,7 +196,7 @@ export default function MarkdownPane() {
     },
 	    code_block: {
 	      backgroundColor: codeBg,
-      color: '#ECEDEE',
+      color: C.text1,
       fontSize: sf(13),
       lineHeight: sf(20),
       padding: 12,
@@ -215,7 +216,7 @@ export default function MarkdownPane() {
       marginVertical: 8,
     },
     list_item: {
-      color: '#ECEDEE',
+      color: C.text1,
       fontSize: sf(14),
       lineHeight: sf(22),
       maxWidth: proseMaxWidth,
@@ -244,17 +245,17 @@ export default function MarkdownPane() {
       padding: 8,
     },
     td: {
-      color: '#ECEDEE',
+      color: C.text1,
       padding: 8,
       borderTopWidth: 1,
       borderTopColor: theme.colors.border,
     },
     strong: {
-      color: '#FFFFFF',
+      color: C.text1,
       fontWeight: '700',
     },
     em: {
-      color: '#ECEDEE',
+      color: C.text1,
       fontStyle: 'italic',
     },
   });
@@ -309,10 +310,10 @@ export default function MarkdownPane() {
 
 // ── Static styles ─────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: C.bgSurface,
   },
   header: {
     flexDirection: 'row',
@@ -344,7 +345,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyText: {
-    color: '#555',
+    color: C.text3,
     fontSize: 14,
   },
   scrollView: {
@@ -354,4 +355,4 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingBottom: 32,
   },
-});
+}));

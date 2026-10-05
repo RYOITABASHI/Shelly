@@ -18,6 +18,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { SidebarSection } from './SidebarSection';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   isOpen: boolean;
@@ -276,7 +277,7 @@ function resumeFailureBodyKey(reason: 'terminal_busy' | 'terminal_cap' | 'layout
   }
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   list: {
     gap: 4,
     paddingHorizontal: P.sidebarItem.px,
@@ -420,4 +421,4 @@ const styles = StyleSheet.create({
   renameButtonPrimaryText: {
     color: C.text1,
   },
-});
+}));

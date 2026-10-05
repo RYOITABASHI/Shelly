@@ -15,6 +15,7 @@ import { ShellyModal } from '@/components/layout/ShellyModal';
 import { LayoutPicker } from './LayoutPicker';
 import { useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
 import { colors as C, sizes as S } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 /** Compat shim: old callers (ShellLayout fold-transition effect) pass
  *  string ids like `'1+2'` or `'single'`. Map them onto the new preset
@@ -65,7 +66,7 @@ export function LayoutPresetSheet({ visible, onClose }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -90,4 +91,4 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginBottom: 8,
   },
-});
+}));

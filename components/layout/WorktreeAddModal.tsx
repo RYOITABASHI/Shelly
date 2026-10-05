@@ -21,6 +21,7 @@ import { useWorktreeStore, type WorktreeAgent } from '@/store/worktree-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   visible: boolean;
@@ -146,7 +147,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'codex', on
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -275,4 +276,4 @@ const styles = StyleSheet.create({
     color: C.btnPrimaryText,
     letterSpacing: 0.3,
   },
-});
+}));

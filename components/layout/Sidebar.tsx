@@ -92,8 +92,11 @@ import { useAIPaneStore } from '@/store/ai-pane-store';
 import { postAgentRunStartedNotice, postLatestAgentRunToCompanion } from '@/lib/agent-companion-notice';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeCronSchedule } from '@/lib/agent-plan-summary';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
-const WIDTH_ICONS = 48;
+// Collapsed icon rail. 32dp fits the 18dp section icons plus a corner badge
+// (see SidebarSection's iconBtn/badge) while leaving more room for panes.
+const WIDTH_ICONS = 32;
 const WIDTH_HIDDEN = 0;
 const TIMING_MS = 200;
 const AGENT_RUNNING_POLL_START_DELAY_MS = 15_000;
@@ -2271,7 +2274,7 @@ export function Sidebar() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     flexDirection: 'column',
     borderRightWidth: S.borderWidth,
@@ -2748,4 +2751,4 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: '700',
   },
-});
+}));

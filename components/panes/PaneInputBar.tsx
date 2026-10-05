@@ -23,6 +23,7 @@ import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { usePaneStore } from '@/store/pane-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   placeholder?: string;
@@ -193,7 +194,7 @@ export default function PaneInputBar({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     borderTopWidth: S.borderWidth,
     borderTopColor: C.border,
@@ -276,4 +277,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));

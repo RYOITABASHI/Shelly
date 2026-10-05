@@ -11,6 +11,7 @@ import { openFile } from '@/lib/open-file';
 import { normalizePath } from '@/lib/normalize-path';
 import { colors as C, fonts as F, sizes as S, padding as P, icons as I } from '@/theme.config';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type FileEntry = {
   name: string;
@@ -324,7 +325,7 @@ export function FileTree() {
   );
 }
 
-const promptStyles = StyleSheet.create({
+const promptStyles = themedStyleSheet(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.7)',
@@ -384,9 +385,9 @@ const promptStyles = StyleSheet.create({
   btnPrimaryText: {
     color: C.bgDeep,
   },
-});
+}));
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     flex: 1,
     minHeight: 120,
@@ -446,4 +447,4 @@ const styles = StyleSheet.create({
     color: C.text1,
     flex: 1,
   },
-});
+}));

@@ -21,6 +21,7 @@ import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import type { SetupBlock as SetupBlockType } from '@/store/types';
 import { colors as C } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -316,7 +317,7 @@ export const SetupBlock = memo(SetupBlockComponent);
 
 // ── Styles ──────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     marginHorizontal: 8,
     marginVertical: 4,
@@ -474,4 +475,4 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
   },
-});
+}));

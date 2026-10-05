@@ -18,6 +18,7 @@ import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type QuickLaunchCommand = 'codex' | 'diag';
 
@@ -85,7 +86,7 @@ export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   row: {
     flexDirection: 'row',
     flexWrap: 'nowrap',
@@ -113,4 +114,4 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '600',
   },
-});
+}));

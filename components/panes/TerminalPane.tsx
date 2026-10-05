@@ -70,6 +70,7 @@ import {
 import { colors as C } from '@/theme.config';
 import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePaneContentBackground } from '@/hooks/use-panel-background';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 logInfo('Terminal', 'module loaded');
 
@@ -1768,7 +1769,7 @@ export default function TerminalScreen() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: { flex: 1, position: 'relative' },
   terminalBody: {
     flex: 1,
@@ -1836,4 +1837,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 15,
   },
-});
+}));

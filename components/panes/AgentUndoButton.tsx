@@ -33,6 +33,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { useTranslation } from '@/lib/i18n';
 import { colors as C, fonts as F } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 export function AgentUndoButton({ agentId }: { agentId: string }) {
   const { t } = useTranslation();
@@ -97,7 +98,7 @@ export function AgentUndoButton({ agentId }: { agentId: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   btn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -128,4 +129,4 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontStyle: 'italic',
   },
-});
+}));

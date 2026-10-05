@@ -14,6 +14,7 @@ import type { PaneTab } from '@/hooks/use-multi-pane';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 const ALL_TABS = Object.keys(PANE_REGISTRY) as PaneTab[];
 
@@ -90,7 +91,7 @@ export function PaneSelector({ visible, currentTab, onSelect, onClose }: Props) 
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -128,4 +129,4 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: F.family,
   },
-});
+}));

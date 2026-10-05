@@ -11,6 +11,7 @@ import { McpSection } from './McpSection';
 import { ModalHeader } from './ModalHeader';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   onClose: () => void;
@@ -42,7 +43,7 @@ export function McpSectionWrapper({ onClose }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   root: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -50,4 +51,4 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
   },
-});
+}));

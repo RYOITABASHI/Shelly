@@ -27,6 +27,7 @@ import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 const SHELLY_WORDMARK = 'Shelly';
 const COMPACT_PANE_LABELS: Record<PaneTab, string> = {
@@ -364,7 +365,7 @@ export function AgentBar() {
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   bar: {
     height: S.agentBarHeight,
     flexDirection: 'row',
@@ -511,4 +512,4 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.bgSidebar,
   },
-});
+}));

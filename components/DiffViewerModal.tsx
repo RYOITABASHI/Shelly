@@ -6,6 +6,7 @@ import React from 'react';
 import {
   View, Text, ScrollView, Pressable, StyleSheet,
 } from 'react-native';
+import { colors as C } from '@/theme.config';
 import { ShellyModal } from '@/components/layout/ShellyModal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -42,13 +43,13 @@ export function DiffViewerModal({ visible, diff, onClose }: Props) {
               let bg = 'transparent';
               let fg = colors.foreground;
               if (line.startsWith('+') && !line.startsWith('+++')) {
-                bg = '#00440020';
-                fg = '#4ADE80';
+                bg = C.addBg;
+                fg = C.accentGreen;
               } else if (line.startsWith('-') && !line.startsWith('---')) {
-                bg = '#44000020';
-                fg = '#F87171';
+                bg = C.errorBg;
+                fg = C.errorText;
               } else if (line.startsWith('@@')) {
-                fg = '#60A5FA';
+                fg = C.accentBlue;
               } else if (line.startsWith('diff ')) {
                 fg = colors.accent;
               }

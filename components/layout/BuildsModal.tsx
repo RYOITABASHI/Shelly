@@ -24,6 +24,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { colors as C, fonts as F, radii as R, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 const REPO = 'RYOITABASHI/Shelly';
 const WORKFLOW = 'build-android.yml';
@@ -139,9 +140,9 @@ function statusFromUpdate(update?: AndroidUpdateManifest | null, installed?: App
 
 export function buildStatusColor(status: BuildStatus): string {
   switch (status) {
-    case 'in_progress': return '#F59E0B';
-    case 'success': return '#22C55E';
-    case 'failure': return '#EF4444';
+    case 'in_progress': return C.warning;
+    case 'success': return C.accentGreen;
+    case 'failure': return C.errorText;
     default: return C.text3;
   }
 }
@@ -1656,7 +1657,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
                 <MaterialIcons
                   name={failed ? 'error-outline' : 'check-circle'}
                   size={12}
-                  color={failed ? '#FCA5A5' : C.accent}
+                  color={failed ? C.errorText : C.accent}
                 />
               )}
               <Text
@@ -1947,7 +1948,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   root: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -1994,12 +1995,12 @@ const styles = StyleSheet.create({
     margin: 12,
     padding: 10,
     borderWidth: 1,
-    borderColor: withAlpha('#EF4444', 0.5),
+    borderColor: withAlpha(C.errorText, 0.5),
     borderRadius: R.badge,
-    backgroundColor: withAlpha('#EF4444', 0.08),
+    backgroundColor: withAlpha(C.errorText, 0.08),
   },
   errorText: {
-    color: '#FCA5A5',
+    color: C.errorText,
     fontFamily: F.family,
     fontSize: F.badge.size,
   },
@@ -2126,7 +2127,7 @@ const styles = StyleSheet.create({
     color: C.text1,
   },
   downloadLogTextError: {
-    color: '#FCA5A5',
+    color: C.errorText,
   },
   advancedSection: {
     gap: 10,
@@ -2262,4 +2263,4 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 30,
   },
-});
+}));

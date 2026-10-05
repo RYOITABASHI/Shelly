@@ -9,6 +9,7 @@ import { getHomePath } from '@/lib/home-path';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 function truncatePath(path: string, maxLen = 30): string {
   if (path.length <= maxLen) return path;
@@ -117,7 +118,7 @@ export function ContextBar() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   bar: {
     height: S.contextBarHeight,
     flexDirection: 'row',
@@ -153,4 +154,4 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 2.5,
   },
-});
+}));

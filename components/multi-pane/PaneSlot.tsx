@@ -20,6 +20,7 @@ import { getAiPaneAgentMeta, getEnabledAiPaneAgents, isAiPaneAgent } from '@/lib
 import { useTranslation } from '@/lib/i18n';
 import { getThreadAgentId, subscribeThreadAgent } from '@/lib/agent-thread-selection';
 import { useAgentStore } from '@/store/agent-store';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 const ZERO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
 /** Context to let child screens know their pane width/height */
@@ -579,7 +580,7 @@ function AgentMenu({
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   pane: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -758,9 +759,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
   },
-});
+}));
 
-const menuStyles = StyleSheet.create({
+const menuStyles = themedStyleSheet(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -799,9 +800,9 @@ const menuStyles = StyleSheet.create({
     fontSize: 12,
     fontFamily: F.family,
   },
-});
+}));
 
-const agentStyles = StyleSheet.create({
+const agentStyles = themedStyleSheet(() => ({
   menu: {
     width: 180,
     backgroundColor: C.bgSurface,
@@ -828,4 +829,4 @@ const agentStyles = StyleSheet.create({
     fontSize: 11,
     fontFamily: F.family,
   },
-});
+}));

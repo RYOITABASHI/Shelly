@@ -2,6 +2,7 @@ import React, { memo } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { Image } from 'expo-image';
 import { colors as C } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   output: string;
@@ -84,7 +85,7 @@ const ImagePreviewBlock = memo(function ImagePreviewBlock({ output, cwd }: Props
   );
 });
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   wrapper: {
     backgroundColor: C.bgSidebar,
     marginVertical: 8,
@@ -115,7 +116,7 @@ const styles = StyleSheet.create({
     maxWidth: 240,
     textAlign: 'center',
   },
-});
+}));
 
 export { ImagePreviewBlock };
 export default ImagePreviewBlock;

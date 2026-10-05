@@ -16,6 +16,7 @@ import Animated, {
   Easing,
   cancelAnimation,
 } from 'react-native-reanimated';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -107,7 +108,7 @@ export default function VoiceWaveform({ active }: Props) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     height: 24,
     flexDirection: 'row',
@@ -120,4 +121,4 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: C.accent,
   },
-});
+}));

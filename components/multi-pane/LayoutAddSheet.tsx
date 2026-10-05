@@ -23,6 +23,7 @@ import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   visible: boolean;
@@ -235,7 +236,7 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -388,4 +389,4 @@ const styles = StyleSheet.create({
     color: C.text1,
     letterSpacing: 0.3,
   },
-});
+}));

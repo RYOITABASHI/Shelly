@@ -6,6 +6,23 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Case File is now the default theme** for new installs (existing installs
+  keep their chosen preset), and is listed first in the theme picker.
+- **Collapsed sidebar is narrower**: the icon rail shrinks from 48dp to 32dp.
+
+### Fixed
+
+- **Settings and other panels now follow the active theme.** Module-level
+  styles captured the seed (dark blue) palette before the saved preset was
+  applied, so light presets such as Case File left dark panels behind in the
+  settings dropdown, `shelly config`, the MCP / llama.cpp sections, the
+  command palette, sheets and sidebar rows. These styles are now rebuilt on
+  every theme change, hardcoded dark colors in those screens were replaced
+  with palette tokens, and the default WezTerm-style theme used by the diff
+  viewer, Ask pane and Markdown pane now tracks the active preset.
+
 ## [8.0.1] - 2026-09-17
 
 ### Added

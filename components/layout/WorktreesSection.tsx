@@ -22,6 +22,7 @@ import { WorktreeAddModal } from './WorktreeAddModal';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, sizes as S } from '@/theme.config';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 function agentColor(agent: WorktreeAgent): string {
   return agent === 'none' ? C.text3 : C.accent;
@@ -249,7 +250,7 @@ export function WorktreesSection({ isOpen, onToggle, iconsOnly }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   empty: {
     fontSize: F.sidebarItem.size,
     fontFamily: F.family,
@@ -318,4 +319,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.3,
   },
-});
+}));
