@@ -26,6 +26,7 @@ import {
 
 import { execCommand } from '@/hooks/use-native-exec';
 import { useSettingsStore } from '@/store/settings-store';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 // Scan every location where a user might reasonably keep .gguf files.
 // The old implementation only looked at $HOME/models which missed manual
@@ -292,7 +293,7 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   root: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -317,4 +318,4 @@ const styles = StyleSheet.create({
   body: {
     flex: 1,
   },
-});
+}));

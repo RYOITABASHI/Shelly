@@ -44,15 +44,11 @@ import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { deleteProfileFact, loadUserProfile, resetUserProfile } from '@/lib/user-profile';
 import * as Clipboard from 'expo-clipboard';
 import { getOrCreateMCPToken } from '@/hooks/use-mcp-server-bridge';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 
-const BG = '#0D0D0D';
-const SURFACE = '#1A1A1A';
-const BORDER = '#2A2A2A';
-const MUTED = '#6B7280';
-const TEXT = '#E5E7EB';
 
 // ─── Setting descriptor types ─────────────────────────────────────────────────
 
@@ -341,7 +337,7 @@ function EnumPickerSheet({ visible, label, options, current, onSelect, onClose }
         <View style={styles.pickerHeader}>
           <Text style={styles.pickerTitle}>{label}</Text>
           <TouchableOpacity onPress={onClose}>
-            <MaterialIcons name="close" size={20} color={MUTED} />
+            <MaterialIcons name="close" size={20} color={C.text2} />
           </TouchableOpacity>
         </View>
         {options.map((opt) => (
@@ -395,7 +391,7 @@ function ProfileFactsSheet({ facts, onDelete, onClose }: ProfileFactsSheetProps)
         <View style={styles.pickerHeader}>
           <Text style={styles.pickerTitle}>{t('settings.profile_facts_title')}</Text>
           <TouchableOpacity onPress={onClose}>
-            <MaterialIcons name="close" size={20} color={MUTED} />
+            <MaterialIcons name="close" size={20} color={C.text2} />
           </TouchableOpacity>
         </View>
         <ScrollView style={styles.factsScroll} contentContainerStyle={styles.factsContent}>
@@ -481,8 +477,8 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
           value={Boolean(value)}
           onValueChange={() => onToggle(def)}
           disabled={disabled}
-          trackColor={{ false: BORDER, true: C.accent + '66' }}
-          thumbColor={value ? C.accent : MUTED}
+          trackColor={{ false: C.border, true: C.accent + '66' }}
+          thumbColor={value ? C.accent : C.text2}
         />
       </View>
     );
@@ -497,7 +493,7 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
         </View>
         <View style={styles.rowRight}>
           <Text style={styles.rowValue}>{displayValue}</Text>
-          <MaterialIcons name="chevron-right" size={16} color={MUTED} />
+          <MaterialIcons name="chevron-right" size={16} color={C.text2} />
         </View>
       </TouchableOpacity>
     );
@@ -508,12 +504,12 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
     return (
       <TouchableOpacity style={styles.row} onPress={() => onAction?.(def)} activeOpacity={0.7}>
         <View style={styles.rowLeft}>
-          <Text style={[styles.rowKey, def.dangerAction && { color: '#F87171' }]}>{label}</Text>
+          <Text style={[styles.rowKey, def.dangerAction && { color: C.errorText }]}>{label}</Text>
           {description && <Text style={styles.rowDesc}>{description}</Text>}
         </View>
         <View style={styles.rowRight}>
-          <Text style={[styles.rowValue, def.dangerAction && { color: '#F87171' }]}>{def.actionLabel ?? 'Run'}</Text>
-          <MaterialIcons name="chevron-right" size={16} color={def.dangerAction ? '#F87171' : MUTED} />
+          <Text style={[styles.rowValue, def.dangerAction && { color: C.errorText }]}>{def.actionLabel ?? 'Run'}</Text>
+          <MaterialIcons name="chevron-right" size={16} color={def.dangerAction ? C.errorText : C.text2} />
         </View>
       </TouchableOpacity>
     );
@@ -537,7 +533,7 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
             autoCorrect={false}
             returnKeyType="done"
             selectionColor={C.accent}
-            placeholderTextColor={MUTED}
+            placeholderTextColor={C.text2}
             placeholder="Enter API key..."
           />
         </View>
@@ -550,8 +546,8 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
           {description && <Text style={styles.rowDesc}>{description}</Text>}
         </View>
         <View style={styles.rowRight}>
-          <Text style={[styles.rowValue, !value && { color: MUTED }]}>{value ? '••••••••' : '(not set)'}</Text>
-          <MaterialIcons name="edit" size={14} color={MUTED} />
+          <Text style={[styles.rowValue, !value && { color: C.text2 }]}>{value ? '••••••••' : '(not set)'}</Text>
+          <MaterialIcons name="edit" size={14} color={C.text2} />
         </View>
       </TouchableOpacity>
     );
@@ -572,7 +568,7 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
           keyboardType={def.type === 'number' ? 'numeric' : 'default'}
           returnKeyType="done"
           selectionColor={C.accent}
-          placeholderTextColor={MUTED}
+          placeholderTextColor={C.text2}
         />
       </View>
     );
@@ -586,7 +582,7 @@ const SettingRow = React.memo(function SettingRow({ def, value, onToggle, onStri
       </View>
       <View style={styles.rowRight}>
         <Text style={styles.rowValue}>{displayValue}</Text>
-        <MaterialIcons name="edit" size={14} color={MUTED} />
+        <MaterialIcons name="edit" size={14} color={C.text2} />
       </View>
     </TouchableOpacity>
   );
@@ -1072,7 +1068,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
               <Text style={styles.headerTitle}>shelly config</Text>
             </View>
             <TouchableOpacity onPress={onClose} hitSlop={8}>
-              <MaterialIcons name="close" size={20} color={MUTED} />
+              <MaterialIcons name="close" size={20} color={C.text2} />
             </TouchableOpacity>
           </View>
 
@@ -1165,7 +1161,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
 // percentage-resolution ambiguity entirely.
 const PANEL_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.85);
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -1175,7 +1171,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   panel: {
-    backgroundColor: BG,
+    backgroundColor: C.bgDeep,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     maxHeight: PANEL_MAX_HEIGHT,
@@ -1189,7 +1185,7 @@ const styles = StyleSheet.create({
     // maxHeight, which is what actually makes the cap take effect.
     flexShrink: 1,
     borderTopWidth: 1,
-    borderColor: BORDER,
+    borderColor: C.border,
   },
   header: {
     flexDirection: 'row',
@@ -1199,7 +1195,7 @@ const styles = StyleSheet.create({
     paddingTop: 14,
     paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: BORDER,
+    borderBottomColor: C.border,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -1207,7 +1203,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   headerTitle: {
-    color: TEXT,
+    color: C.text1,
     fontSize: 15,
     fontWeight: '600',
     fontFamily: 'JetBrainsMono_400Regular',
@@ -1244,15 +1240,15 @@ const styles = StyleSheet.create({
   },
   card: {
     marginHorizontal: 12,
-    backgroundColor: SURFACE,
+    backgroundColor: C.bgSurface,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: BORDER,
+    borderColor: C.border,
     overflow: 'hidden',
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: BORDER,
+    backgroundColor: C.border,
     marginLeft: 12,
   },
 
@@ -1271,11 +1267,11 @@ const styles = StyleSheet.create({
   },
   rowLeft: { flex: 1, marginRight: 8 },
   rowKey: {
-    color: TEXT,
+    color: C.text1,
     fontSize: 13,
   },
   rowDesc: {
-    color: MUTED,
+    color: C.text2,
     fontSize: 11,
     marginTop: 1,
   },
@@ -1309,11 +1305,11 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: SURFACE,
+    backgroundColor: C.bgSurface,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     borderTopWidth: 1,
-    borderColor: BORDER,
+    borderColor: C.border,
     paddingBottom: 28,
   },
   pickerHeader: {
@@ -1322,10 +1318,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
     borderBottomWidth: 1,
-    borderBottomColor: BORDER,
+    borderBottomColor: C.border,
   },
   pickerTitle: {
-    color: TEXT,
+    color: C.text1,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -1336,10 +1332,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 13,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: BORDER,
+    borderBottomColor: C.border,
   },
   pickerOptionText: {
-    color: MUTED,
+    color: C.text2,
     fontSize: 14,
     fontFamily: 'JetBrainsMono_400Regular',
   },
@@ -1352,11 +1348,11 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     maxHeight: '75%',
-    backgroundColor: SURFACE,
+    backgroundColor: C.bgSurface,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     borderTopWidth: 1,
-    borderColor: BORDER,
+    borderColor: C.border,
     paddingBottom: 20,
   },
   // Same flexShrink/minHeight fix as `scroll` above — this sheet's own
@@ -1367,21 +1363,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 13,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: BORDER,
+    borderBottomColor: C.border,
   },
   factText: {
-    color: TEXT,
+    color: C.text1,
     fontSize: 13,
     fontFamily: 'JetBrainsMono_400Regular',
   },
   factsEmpty: {
-    color: MUTED,
+    color: C.text2,
     fontSize: 13,
     textAlign: 'center',
     padding: 24,
   },
   factsHint: {
-    color: MUTED,
+    color: C.text2,
     fontSize: 10,
     textAlign: 'center',
     paddingTop: 10,
@@ -1389,10 +1385,10 @@ const styles = StyleSheet.create({
   },
 
   footer: {
-    color: MUTED,
+    color: C.text2,
     fontSize: 10,
     textAlign: 'center',
     marginTop: 20,
     fontFamily: 'JetBrainsMono_400Regular',
   },
-});
+}));

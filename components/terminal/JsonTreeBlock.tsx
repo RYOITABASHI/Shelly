@@ -1,6 +1,7 @@
 import React, { memo, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { colors as TC } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   json: string;
@@ -246,7 +247,7 @@ function JsonTreeBlock({ json }: Props) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     backgroundColor: C.bg,
     borderRadius: 6,
@@ -328,6 +329,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
-});
+}));
 
 export default memo(JsonTreeBlock);

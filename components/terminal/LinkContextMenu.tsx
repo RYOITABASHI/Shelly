@@ -18,6 +18,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import { colors as C } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 export type LinkInfo = {
   text: string;
@@ -148,7 +149,7 @@ export function LinkContextMenu({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
@@ -201,4 +202,4 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 14,
   },
-});
+}));

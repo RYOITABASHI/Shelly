@@ -43,6 +43,7 @@ import { SPRING_CONFIGS, TIMING_CONFIGS } from '@/hooks/use-motion';
 import { playSound } from '@/lib/sounds';
 import { parseAnsi, hasAnsiCodes } from '@/lib/ansi-parser';
 import { colors as C, fonts as F } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 export { getOutputColor };
 
@@ -854,7 +855,7 @@ export const TerminalBlock = memo(TerminalBlockComponent);
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   // ─── User command bubble (right-aligned) ───────────────────────────────────
   userBubbleRow: {
     flexDirection: 'row',
@@ -1187,7 +1188,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: F.family,
   },
-});
+}));
 
 const menuStyles = StyleSheet.create({
   overlay: {

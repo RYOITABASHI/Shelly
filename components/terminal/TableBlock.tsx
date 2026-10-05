@@ -1,6 +1,7 @@
 import React, { memo, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { colors as C } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   output: string;
@@ -154,7 +155,7 @@ const TableBlock = memo(function TableBlock({ output }: Props) {
   );
 });
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   scrollView: {
     marginVertical: 8,
     marginHorizontal: 8,
@@ -202,7 +203,7 @@ const styles = StyleSheet.create({
   numberCell: {
     textAlign: 'right',
   },
-});
+}));
 
 export { TableBlock };
 export default TableBlock;

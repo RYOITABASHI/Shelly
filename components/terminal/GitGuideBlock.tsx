@@ -10,6 +10,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import type { GitGuide, GitGuideStep } from '@/lib/git-assistant';
 import { useTranslation } from '@/lib/i18n';
 import { colors as C } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 
 type Props = {
@@ -104,7 +105,7 @@ function GitGuideBlockInner({ guide, onRunCommand, prereqOutput }: Props) {
 
 export const GitGuideBlock = memo(GitGuideBlockInner);
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     marginHorizontal: 8,
     marginVertical: 3,
@@ -235,4 +236,4 @@ const styles = StyleSheet.create({
     color: C.text3,
     fontSize: 10,
   },
-});
+}));

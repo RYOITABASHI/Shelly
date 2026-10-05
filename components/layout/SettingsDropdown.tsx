@@ -45,6 +45,7 @@ import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { useAgentStore } from '@/store/agent-store';
 import type { SocialConnectorMeta, SocialPlatform } from '@/store/types';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   visible: boolean;
@@ -926,18 +927,18 @@ type UiFontId =
 
 function ThemeRow() {
   const { t } = useTranslation();
-  const rawUiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
+  const rawUiFont = useSettingsStore((s) => s.settings.uiFont ?? 'case-file');
   const uiFont: UiFontId =
     rawUiFont === 'shelly' || rawUiFont === 'modal' ? 'purple'
       : rawUiFont === 'blackline' ? 'blue'
         : rawUiFont;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const options: { value: UiFontId; label: string; swatch: string }[] = [
+    { value: 'case-file', label: t('theme.case_file'), swatch: themePresets['case-file'].colors.accent },
     { value: 'blue',   label: t('theme.blue'), swatch: themePresets.blue.colors.accent },
     { value: 'orange', label: t('theme.red'), swatch: themePresets.orange.colors.accent },
     { value: 'purple', label: t('theme.purple'), swatch: themePresets.purple.colors.accent },
     { value: 'scouter-green', label: t('theme.scouter_green'), swatch: themePresets['scouter-green'].colors.accent },
-    { value: 'case-file', label: t('theme.case_file'), swatch: themePresets['case-file'].colors.accent },
   ];
   // 2026-09-16: a horizontal ScrollView here first seemed like the fix for
   // 5 presets (was 4) no longer fitting the shared `Row` layout's value
@@ -1020,7 +1021,7 @@ function FontRow() {
                   applyUiFont('DotGothic16_400Regular');
                 } else {
                   // Reapply the active preset to restore its own font.
-                  applyThemePreset(useSettingsStore.getState().settings.uiFont as any ?? 'blue');
+                  applyThemePreset(useSettingsStore.getState().settings.uiFont as any ?? 'case-file');
                 }
                 updateSettings({ appFontFamily: opt.value });
               }}
@@ -2565,7 +2566,7 @@ const PANEL_WIDTH = 260;
 // remounted each time it opens).
 const PANEL_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.85);
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'transparent',
@@ -3057,4 +3058,4 @@ const styles = StyleSheet.create({
   apiKeyBtnTextPrimary: {
     color: C.bgDeep,
   },
-});
+}));

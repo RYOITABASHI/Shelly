@@ -4,7 +4,7 @@ import "@/global.css";
 // surface while the app is in the foreground -- this module was never
 // imported anywhere, silently disabling that class of notification.
 import "@/lib/command-notifier";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { Stack, type ErrorBoundaryProps } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -220,9 +220,11 @@ function ensureBrowserPane(): void {
   } catch {}
 }
 
+const THEME_READY_TIMEOUT_MS = 3000;
+
 export default function RootLayout() {
   const { t } = useTranslation();
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     'JetBrainsMono_400Regular': JetBrainsMono_400Regular,
     'JetBrainsMono_700Bold': JetBrainsMono_700Bold,
     // Loaded from the same .ttf already bundled for the native terminal
@@ -250,8 +252,12 @@ export default function RootLayout() {
   const [pendingAgentActionApproval, setPendingAgentActionApproval] =
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);
-  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
+  const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'case-file');
   const appFontFamily = useSettingsStore((s) => s.settings.appFontFamily ?? 'default');
+  const isSettingsLoaded = useSettingsStore((s) => s.isSettingsLoaded);
+  // First theme application of this app run (boot) vs. a later switch.
+  const themeAppliedOnceRef = useRef(false);
+  const [themeReady, setThemeReady] = useState(false);
   const loadSettings = useTerminalStore((s) => s.loadSettings);
   const resolvePendingAgentActionApproval = useCallback(async (decision: 'accept' | 'decline') => {
     const request = pendingAgentActionApproval;
@@ -463,9 +469,19 @@ export default function RootLayout() {
   // with the fresh palette. PTY sessions are unaffected because only
   // JS styles re-compute.
   useEffect(() => {
-    if (!fontsLoaded) return;
+    // A font load failure must not block theming (and, via themeReady,
+    // the whole UI); the app falls back to system fonts in that case.
+    if (!fontsLoaded && !fontError) return;
+    // Wait for persisted settings. Before loadSettings() resolves, `uiFont`
+    // is the in-memory default ('case-file'), and applying it runs Case
+    // File's side effects — notably updateSettings({ cursorShape }), which
+    // persists the whole in-memory settings object and would overwrite an
+    // existing install's saved settings with defaults.
+    if (!isSettingsLoaded) return;
+    const initial = !themeAppliedOnceRef.current;
+    themeAppliedOnceRef.current = true;
     import('@/lib/theme-presets').then(({ applyThemePreset, applyUiFont }) => {
-      applyThemePreset(uiFont as any);
+      applyThemePreset(uiFont as any, { initial });
       logInfo('RootLayout', 'Theme preset applied: ' + uiFont);
       // Font override applies AFTER the preset so it always wins over
       // whichever font the preset itself declares — the two are picked
@@ -473,8 +489,23 @@ export default function RootLayout() {
       if (appFontFamily === 'dotgothic16') {
         applyUiFont('DotGothic16_400Regular');
       }
+      setThemeReady(true);
+    }).catch((e) => {
+      logError('RootLayout', 'Theme preset apply failed', e);
+      setThemeReady(true);
     });
-  }, [uiFont, appFontFamily, fontsLoaded]);
+  }, [uiFont, appFontFamily, fontsLoaded, fontError, isSettingsLoaded]);
+
+  // Hold the UI until the saved preset is applied. Module-level palette
+  // seeds are the blue preset, so rendering earlier painted a blue/dark
+  // first frame before switching to the user's (default: Case File) theme.
+  // The native splash background shows meanwhile. Safety valve: never hold
+  // longer than THEME_READY_TIMEOUT_MS, whatever happens to settings/fonts.
+  useEffect(() => {
+    if (themeReady) return;
+    const timer = setTimeout(() => setThemeReady(true), THEME_READY_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [themeReady]);
 
   useEffect(() => {
     logLifecycle('RootLayout', 'mounted');
@@ -2082,9 +2113,11 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <Stack key={locale} screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-        </Stack>
+        {themeReady ? (
+          <Stack key={locale} screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" />
+          </Stack>
+        ) : null}
         {pendingAgentActionApproval ? (
           <View style={actionApprovalStyles.backdrop}>
             <View style={actionApprovalStyles.panel}>

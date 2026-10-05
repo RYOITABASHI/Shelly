@@ -23,6 +23,7 @@ import { colors as C, fonts as F } from '@/theme.config';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
 import { useSettingsStore } from '@/store/settings-store';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   lang?: string;
@@ -200,7 +201,7 @@ export function CodeBlockWithAction({ lang, code }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
 	  root: {
 	    borderWidth: 1,
 	    borderColor: C.border,
@@ -269,7 +270,7 @@ const styles = StyleSheet.create({
     color: C.text1,
     padding: 8,
   },
-});
+}));
 
 /**
  * Split assistant text into alternating plain / code-block segments

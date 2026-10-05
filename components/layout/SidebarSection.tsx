@@ -3,6 +3,7 @@ import React from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   title: string;
@@ -73,7 +74,7 @@ export function SidebarSection({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   section: {
     borderBottomWidth: S.borderWidth,
     borderBottomColor: C.border,
@@ -119,8 +120,10 @@ const styles = StyleSheet.create({
   },
   badge: {
     position: 'absolute',
-    top: 6,
-    right: 8,
+    // Tucked into the corner of the 32dp collapsed rail (Sidebar WIDTH_ICONS)
+    // so it overlaps only the icon's top-right edge.
+    top: 3,
+    right: 1,
     width: 14,
     height: 14,
     borderRadius: 7,
@@ -134,4 +137,4 @@ const styles = StyleSheet.create({
     fontSize: F.badge.size,
     fontWeight: F.badge.weight,
   },
-});
+}));

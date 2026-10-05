@@ -981,7 +981,7 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
 // auto-switch — see applyThemePreset step 0b.
 let caseFileUxSnapshot: { soundProfile: 'modern' | 'retro' | 'silent'; cursorShape: 'block' | 'underline' | 'bar' | undefined } | null = null;
 
-export function applyThemePreset(id: ThemePresetId) {
+export function applyThemePreset(id: ThemePresetId, opts: { initial?: boolean } = {}) {
   const preset = themePresets[id];
   if (!preset) return;
 
@@ -1002,7 +1002,14 @@ export function applyThemePreset(id: ThemePresetId) {
   //     the archival-record feel — session-only (not persisted) since,
   //     unlike wallpaper, restoring these across an app restart isn't
   //     something the user asked for; only restore within the same run.
-  if (id === 'case-file') {
+  //     Skipped on the initial boot-time apply (`opts.initial`): this pairing
+  //     and the boot flash belong to the user's switch INTO Case File. Now
+  //     that Case File is the default preset, running them on every launch
+  //     would replay the flash each start and keep resetting a cursor/sound
+  //     the user changed while staying on Case File.
+  if (id === 'case-file' && opts.initial) {
+    // no-op: keep the user's persisted cursor/sound as-is
+  } else if (id === 'case-file') {
     if (caseFileUxSnapshot === null) {
       caseFileUxSnapshot = { soundProfile: cosmetic.soundProfile, cursorShape: undefined };
       // eslint-disable-next-line @typescript-eslint/no-require-imports

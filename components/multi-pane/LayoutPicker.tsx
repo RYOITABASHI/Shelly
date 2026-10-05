@@ -21,6 +21,7 @@ import {
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type PresetEntry = {
   id: PresetId;
@@ -211,7 +212,7 @@ function PresetThumbnail({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   root: {
     paddingHorizontal: 6,
     paddingVertical: 6,
@@ -263,4 +264,4 @@ const styles = StyleSheet.create({
   labelDisabled: {
     color: C.text3,
   },
-});
+}));

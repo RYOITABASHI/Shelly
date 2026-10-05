@@ -49,6 +49,18 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### ✅ Case File をデフォルトテーマ化 + 設定画面等のテーマ追従修正 + 折りたたみサイドバー 32dp 化 — 実装済み・実機未検証 (P2)
+
+**経緯 (2026-10-05)**: プロダクトオーナー指示「デフォルトテーマを Case File に。Case File を設定画面等にも反映させて統一感を。他テーマ時はそれに準じた設定画面に」「サイドバー折り畳み時の幅をもっと細く」。
+
+**根本原因**: `theme.config.ts` の `colors` は `applyThemePreset()` で in-place 書き換えされるが、モジュールレベルの `StyleSheet.create({ ... C.xxx ... })` は評価時点（＝保存済みプリセット適用前、seed の青パレット）の文字列をコピーしていた（Metro の `inlineRequires` は false、`app/_layout.tsx` にはプリセット適用前の描画ゲートも無い）。そのため ShellLayout の `key={version}` 再マウントでも直らず、Case File では設定ドロップダウン等に暗い島が残っていた。これまでは気付いた箇所だけインライン上書き（例: SettingsDropdown の `panelChromeStyle()`）で凌いでいた。加えて `lib/theme-engine.ts` の `shelly-default` はモジュール読み込み時の `TC` 値コピーで固定されており、それを使う DiffViewerModal / AskPane / MarkdownPane 等も常に青ダークだった。
+
+**修正**: `lib/themed-styles.ts` の `themedStyleSheet(factory)`（theme version ごとに再生成する Proxy、呼び出し側の `styles.x` は不変）を新設し、パレットを参照する 40+ ファイルのトップレベル StyleSheet を変換。MCP / llama.cpp / ConfigTUI / CommandPalette / BuildsModal / MarkdownPane / DiffViewerModal のハードコード暗色をパレットトークンへ置換。`shelly-default` の colors を getter 化して現プリセットに追従。デフォルト `uiFont` を `case-file` に（既存インストールの保存値は維持）。`Sidebar` の `WIDTH_ICONS` を 48→32、バッジ位置を調整。push 前 Codex レビュー指摘への対応: (1) デフォルトが `case-file` になったことで、保存設定ロード前に Case File の副作用 `updateSettings({ cursorShape })` が走り既存設定をデフォルトで上書きしうる → `app/_layout.tsx` のテーマ適用を `isSettingsLoaded` 後に限定。(2) Case File の切替演出（boot flash・cursor/sound pairing）が毎起動で走る → `applyThemePreset(id, { initial })` で起動時初回適用では省略。(3) ロード待ちで青い初回フレームが出る → テーマ適用完了まで `<Stack>` を描画せずネイティブ splash（黒）を見せる。フォント読み込み失敗時も進行し、3 秒で強制描画する安全弁付き。
+
+**未検証/残課題**: 実機スクショ未取得（各プリセット×設定ドロップダウン / `shelly config` / MCP・llama.cpp / CommandPalette / Markdown・Diff / 折りたたみサイドバーのバッジ重なり）。`components/` 配下にはまだハードコード暗色が残るファイルがある（InlineDiff, ScouterDetailModal, DiffViewer, GitGuideBlock, SetupBlock, StatusIndicator, ChatOnboarding など、件数は `grep "'#[0-9A-Fa-f]{6}'"` 参照）— 設定画面系ではないため今回は対象外。Reanimated worklet 内から `themedStyleSheet` の値を読まないこと（Proxy は UI スレッドへ渡せない）。
+
+→ sync: README Status表の Color themes 行は「Case File がデフォルト」へ更新済み。
+
 ### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)
 
 **原因**: Codex は Code Mode host を `dirname(current_exe)/codex-code-mode-host` で解決する（upstream `codex-rs/install-context`）。Shelly 上の current_exe は exec-wrapper の `/proc/self/exe` shim により `$SHELLY_LIB_DIR/codex_tui`（runtime 更新時は `~/.shelly-runtime/codex/current/codex_tui`）だが、その隣に host が無かった。`DioNanos/codex-termux` の release tarball には bionic PIE 版 host（`interpreter /system/bin/linker64`, NEEDED は system lib のみ）が同梱されているのに、CI は `codex.bin` と `libc++_shared.so` しか拾っていなかった。報告者が見つけた `node_modules/@openai/codex/.../codex-linux-arm64/.../codex-code-mode-host` は upstream npm 依存の static musl ET_EXEC で、app_data_file から直接 exec できず（SELinux）、linker64 も ET_EXEC を拒否するため使えない。

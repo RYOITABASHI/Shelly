@@ -159,7 +159,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   mcpServerEnabled: false,
   mcpExecEnabled: false,
   terminalWallpaperTransparency: true,
-  uiFont: 'blue',
+  uiFont: 'case-file',
   appFontFamily: 'default',
   showVimKeyBar: false,
   profileLearningEnabled: true,

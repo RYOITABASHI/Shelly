@@ -8,6 +8,7 @@ import { logError } from '@/lib/debug-logger';
 import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
 import { pairingConfidence, type DmPairing, useDmPairingStore } from '@/store/dm-pairing-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 const POLL_MS = 2_000;
 const WINDOW_MS = 300_000;
@@ -275,7 +276,7 @@ function Button({ label, onPress }: { label: string; onPress: () => void }) {
   return <Pressable style={styles.button} onPress={onPress}><Text style={styles.buttonText}>{label}</Text></Pressable>;
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   section: { borderBottomWidth: S.borderWidth, paddingVertical: 6 },
   sectionTitle: { color: C.text2, fontSize: F.badge.size, fontFamily: F.family, fontWeight: '700', letterSpacing: 1, paddingHorizontal: 10, paddingVertical: 4 },
   body: { paddingHorizontal: 8, gap: 6 },
@@ -294,4 +295,4 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 6 },
   button: { borderWidth: S.borderWidth, borderColor: C.border, paddingHorizontal: 8, paddingVertical: 5, alignSelf: 'flex-end' },
   buttonText: { color: C.accent, fontFamily: F.family, fontSize: F.badge.size, fontWeight: '700' },
-});
+}));

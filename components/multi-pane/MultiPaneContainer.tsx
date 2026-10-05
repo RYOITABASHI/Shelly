@@ -38,6 +38,7 @@ import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 /** Fallback used only if persist somehow restores an empty slots array.
  *  removePane refuses to delete the last slot, so this is defensive. */
@@ -81,7 +82,7 @@ function EmptyPresetSlot() {
   );
 }
 
-const emptyStyles = StyleSheet.create({
+const emptyStyles = themedStyleSheet(() => ({
   root: {
     flex: 1,
     alignItems: 'center',
@@ -126,7 +127,7 @@ const emptyStyles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
   },
-});
+}));
 
 export function MultiPaneContainer() {
   const containerBg = usePaneContentBackground(C.bgDeep);
@@ -375,7 +376,7 @@ export function MultiPaneContainer() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   root: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -389,4 +390,4 @@ const styles = StyleSheet.create({
     flex: 1,
     borderWidth: S.borderWidth,
   },
-});
+}));

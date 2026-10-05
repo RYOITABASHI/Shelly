@@ -74,6 +74,7 @@ import {
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
 import { useTranslation } from '@/lib/i18n';
 import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 const AUTO_FOLLOW_THRESHOLD_PX = 100;
 // Fable5 review (2026-08-29): caps the longer edge of an AI Pane image
@@ -305,7 +306,7 @@ const MessageBubble = React.memo(function MessageBubble({
   );
 });
 
-const bubbleStyles = StyleSheet.create({
+const bubbleStyles = themedStyleSheet(() => ({
   messageContainer: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -390,7 +391,7 @@ const bubbleStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));
 
 // ─── AIPane ──────────────────────────────────────────────────────────────────
 
@@ -1006,7 +1007,7 @@ export default function AIPane() {
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
-const paneStyles = StyleSheet.create({
+const paneStyles = themedStyleSheet(() => ({
   container: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -1090,4 +1091,4 @@ const paneStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));

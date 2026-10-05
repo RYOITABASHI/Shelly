@@ -1,6 +1,7 @@
 import React, { memo, useCallback } from 'react';
 import { View, Text, StyleSheet, Linking } from 'react-native';
 import { colors as C } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 type Props = {
   content: string;
@@ -225,7 +226,7 @@ function MarkdownBlock({ content }: Props) {
 const TEXT = '#ECEDEE';
 const CODE_BG = C.border;
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     gap: 2,
   },
@@ -295,6 +296,6 @@ const styles = StyleSheet.create({
   blank: {
     height: 6,
   },
-});
+}));
 
 export default memo(MarkdownBlock);

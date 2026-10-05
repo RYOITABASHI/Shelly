@@ -3,6 +3,7 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { parseDiff, type DiffLineType } from '@/lib/diff-parser';
 import { colors as C } from '@/theme.config';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 
 const LINE_COLORS: Record<DiffLineType, { bg: string; fg: string }> = {
@@ -104,7 +105,7 @@ function DiffViewerInner({ output, aiSummary }: Props) {
 
 export const DiffViewer = memo(DiffViewerInner);
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   container: {
     borderRadius: 6,
     overflow: 'hidden',
@@ -194,4 +195,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     flex: 1,
   },
-});
+}));

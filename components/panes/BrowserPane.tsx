@@ -24,6 +24,7 @@ import {
   BrowserPaneAutomationController,
   registerBrowserPaneAutomation,
 } from '@/lib/browser-pane-automation';
+import { themedStyleSheet } from '@/lib/themed-styles';
 
 // JS injected before the page loads so our fullscreen hooks are in place
 // before YouTube or any other video app tries to go fullscreen.
@@ -859,7 +860,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
 // Styles
 // ---------------------------------------------------------------------------
 
-const styles = StyleSheet.create({
+const styles = themedStyleSheet(() => ({
   root: {
     flex: 1,
   },
@@ -989,4 +990,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));
