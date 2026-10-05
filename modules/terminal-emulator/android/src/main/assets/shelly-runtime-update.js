@@ -256,6 +256,10 @@ function installFromEnvSync() {
     }
     const cxx = path.join(staging, 'libc++_shared.so');
     if (exists(cxx)) fs.chmodSync(cxx, 0o600);
+    // Issue #149: optional sibling that Codex spawns for Code Mode. Older
+    // runtime tarballs predate it; Codex then reports Code Mode unavailable.
+    const codeModeHost = path.join(staging, 'codex-code-mode-host');
+    if (exists(codeModeHost)) fs.chmodSync(codeModeHost, 0o700);
 
     const tui = runVersion(path.join(staging, 'codex_tui'), LIB, { wrap: true });
     if (!tui.ok) {

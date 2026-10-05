@@ -1197,6 +1197,7 @@ patchCodex(libDir);
 
 
         cleanupRemovedCliRuntime(home, libDir)
+        linkCodeModeHostIntoRuntime(home, libDir)
 
         // bug #93 v2: removed the shebang-based $HOME/bin/bash wrapper — SELinux
         // blocks #!/system/bin/sh from app_data_file context. bash is now a shell
@@ -3206,6 +3207,36 @@ patchCodex(libDir);
         return home
     }
 
+
+    /**
+     * Issue #149: Codex resolves its Code Mode host as
+     * dirname(current_exe)/codex-code-mode-host. Runtime installs promoted
+     * before the host was packaged (~/.shelly-runtime/codex/current) lack it,
+     * and the bash launcher prefers that runtime over bundled codex_tui, so
+     * Code Mode would stay broken even after the APK ships the host. Link the
+     * bundled host in, but only when the runtime is the same Codex version as
+     * the APK payload: the host speaks a version-specific protocol.
+     */
+    private fun linkCodeModeHostIntoRuntime(home: File, libDir: String) {
+        try {
+            val bundledHost = File(libDir, "codex-code-mode-host")
+            if (!bundledHost.isFile) return
+            val current = File(home, ".shelly-runtime/codex/current")
+            val manifest = File(current, "manifest.json")
+            if (!manifest.isFile) return
+            val runtimeHost = File(current, "codex-code-mode-host")
+            if (runtimeHost.exists() || java.nio.file.Files.isSymbolicLink(runtimeHost.toPath())) return
+            val runtimeVersion = org.json.JSONObject(manifest.readText()).optString("codexVersion")
+            val bundledPkg = File(libDir, "node_modules/@openai/codex/package.json")
+            if (!bundledPkg.isFile) return
+            val bundledVersion = org.json.JSONObject(bundledPkg.readText()).optString("version")
+            if (runtimeVersion.isEmpty() || runtimeVersion != bundledVersion) return
+            android.system.Os.symlink(bundledHost.absolutePath, runtimeHost.absolutePath)
+            android.util.Log.i("HomeInitializer", "linked bundled codex-code-mode-host into Codex runtime $runtimeVersion")
+        } catch (e: Exception) {
+            android.util.Log.w("HomeInitializer", "codex-code-mode-host runtime link failed: ${e.message}")
+        }
+    }
 
     private fun cleanupRemovedCliRuntime(home: File, libDir: String) {
         val bin = File(home, "bin")

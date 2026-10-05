@@ -119,6 +119,7 @@ jobs:
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libnpth.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_tui.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_cxx_shared.so
+            modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libcodex_code_mode_host.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_shell.so
             modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a/libshelly_xdg_open.so
             modules/terminal-emulator/android/src/main/assets/cli-tools.tar.gz
@@ -472,6 +473,7 @@ jobs:
           tar xzf /tmp/codex-termux.tar.gz -C /tmp/codex-termux-extract
           CODEX_TUI_BIN="$(find /tmp/codex-termux-extract -type f -name codex.bin | head -1)"
           CODEX_LIBCXX="$(find /tmp/codex-termux-extract -type f -name 'libc++_shared.so' | head -1)"
+          CODEX_CODE_MODE_HOST="$(find /tmp/codex-termux-extract -type f -name codex-code-mode-host | head -1)"
           # Verify the upstream tarball still ships the unified binary we depend on.
           # If DioNanos/codex-termux ever renames or drops this file,
           # the next green build would silently produce an APK with codex
@@ -489,9 +491,22 @@ jobs:
             cp "$CODEX_LIBCXX" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
             chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
           fi
+          # Issue #149: Codex resolves its Code Mode host as
+          # dirname(current_exe)/codex-code-mode-host. codex-termux ships an
+          # Android/bionic PIE build of it; bundle it so LibExtractor places it
+          # next to codex_tui. Without it Codex silently falls back to the
+          # musl host from the npm dispatcher tree, which Android cannot exec.
+          rm -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
+          if [ -n "$CODEX_CODE_MODE_HOST" ] && [ -f "$CODEX_CODE_MODE_HOST" ]; then
+            cp "$CODEX_CODE_MODE_HOST" "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
+            chmod 755 "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
+          else
+            echo "::warning::codex-termux tarball has no codex-code-mode-host; Codex Code Mode will be unavailable on-device"
+          fi
           rm -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_exec.so"
           ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_tui.so"
           [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_cxx_shared.so"
+          [ ! -f "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so" ] || ls -lh "${GITHUB_WORKSPACE}/${JNILIBS}/libcodex_code_mode_host.so"
 
       - name: Package Codex runtime update
         run: |
@@ -505,6 +520,10 @@ jobs:
           if [ -f "${JNILIBS}/libcodex_cxx_shared.so" ]; then
             cp "${JNILIBS}/libcodex_cxx_shared.so" "${runtime_dir}/libc++_shared.so"
             chmod 755 "${runtime_dir}/libc++_shared.so"
+          fi
+          if [ -f "${JNILIBS}/libcodex_code_mode_host.so" ]; then
+            cp "${JNILIBS}/libcodex_code_mode_host.so" "${runtime_dir}/codex-code-mode-host"
+            chmod 755 "${runtime_dir}/codex-code-mode-host"
           fi
           node -e '
             const fs = require("fs");
