@@ -702,6 +702,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default ("tools platform-tools") fails on runner
+          # images whose cmdline-tools no longer serve the obsolete `tools`
+          # package ("Failed to find package 'tools'", 2026-10-05).
+          packages: platform-tools
 
       - name: Free runner disk space before APK build
         run: |
