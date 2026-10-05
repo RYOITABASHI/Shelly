@@ -33,7 +33,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { McpSectionWrapper } from '@/components/settings/McpSectionWrapper';
 import { LlamaCppSectionWrapper } from '@/components/settings/LlamaCppSectionWrapper';
 import { ModalHeader } from '@/components/settings/ModalHeader';
-import { applyThemePreset, themePresets } from '@/lib/theme-presets';
+import { applyThemePreset, applyUiFont, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useAddPane } from '@/hooks/use-add-pane';
@@ -897,6 +897,7 @@ const DisplaySection = React.memo(function DisplaySection() {
 
       {/* UI visual preset */}
       <ThemeRow />
+      <FontRow />
     </Section>
   );
 });
@@ -906,6 +907,7 @@ type UiFontId =
   | 'orange'
   | 'purple'
   | 'scouter-green'
+  | 'case-file'
   | 'shelly'
   | 'blackline'
   | 'modal'
@@ -935,10 +937,21 @@ function ThemeRow() {
     { value: 'orange', label: t('theme.red'), swatch: themePresets.orange.colors.accent },
     { value: 'purple', label: t('theme.purple'), swatch: themePresets.purple.colors.accent },
     { value: 'scouter-green', label: t('theme.scouter_green'), swatch: themePresets['scouter-green'].colors.accent },
+    { value: 'case-file', label: t('theme.case_file'), swatch: themePresets['case-file'].colors.accent },
   ];
+  // 2026-09-16: a horizontal ScrollView here first seemed like the fix for
+  // 5 presets (was 4) no longer fitting the shared `Row` layout's value
+  // column, but on-device testing showed swipes starting on it kept
+  // dismissing the whole dropdown instead of scrolling (the panel's own
+  // outside-tap-to-close handling was winning the gesture over such a
+  // narrow/short-throw ScrollView). Wrapping to a second line needs no
+  // gesture at all, so every preset is simply always visible.
   return (
-    <Row label={t('settings.theme')}>
-      <View style={[styles.segGroup, { borderColor: C.border }]}>
+    <View style={styles.themeRowWrap}>
+      <Text style={[styles.rowLabel, { color: C.text1, marginBottom: 6 }]}>
+        {t('settings.theme')}
+      </Text>
+      <View style={[styles.segGroup, styles.segGroupWrap, { borderColor: C.border }]}>
         {options.map((opt) => {
           const active = uiFont === opt.value;
           return (
@@ -964,6 +977,55 @@ function ThemeRow() {
                   active && { shadowColor: opt.swatch, shadowOpacity: 0.45, shadowRadius: 5 },
                 ]}
               />
+              <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// App-chrome font, independent of the color preset above (`uiFont`). Every
+// preset used to hard-lock the font to whatever `ThemePreset.font` said
+// (always JetBrains Mono in practice); this row lets the two be mixed
+// freely — e.g. Case File's colors with Silkscreen kept, or any preset with
+// DotGothic16. 'default' means "whatever the active preset declares".
+type AppFontId = 'default' | 'dotgothic16';
+
+function FontRow() {
+  const { t } = useTranslation();
+  const appFontFamily = useSettingsStore((s) => s.settings.appFontFamily ?? 'default');
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const options: { value: AppFontId; label: string }[] = [
+    { value: 'default', label: t('settings.font_default') },
+    { value: 'dotgothic16', label: t('settings.font_dotgothic16') },
+  ];
+  return (
+    <Row label={t('settings.font')}>
+      <View style={[styles.segGroup, { borderColor: C.border }]}>
+        {options.map((opt) => {
+          const active = appFontFamily === opt.value;
+          return (
+            <Pressable
+              key={opt.value}
+              style={[
+                styles.segBtn,
+                active && { backgroundColor: withAlpha(C.accent, 0.15) },
+              ]}
+              onPress={() => {
+                if (opt.value === 'dotgothic16') {
+                  applyUiFont('DotGothic16_400Regular');
+                } else {
+                  // Reapply the active preset to restore its own font.
+                  applyThemePreset(useSettingsStore.getState().settings.uiFont as any ?? 'blue');
+                }
+                updateSettings({ appFontFamily: opt.value });
+              }}
+              hitSlop={4}
+            >
               <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
                 {opt.label}
               </Text>
@@ -2768,6 +2830,17 @@ const styles = StyleSheet.create({
     borderColor: C.border,
     borderRadius: 4,
     overflow: 'hidden',
+  },
+  // Theme row renders as its own full-width block (label above, options
+  // below) instead of sharing the generic label|value `Row` split — that
+  // split only gives the value column ~150px, too narrow for 5 presets.
+  themeRowWrap: {
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  segGroupWrap: {
+    flexWrap: 'wrap',
+    alignSelf: 'flex-start',
   },
   segBtn: {
     flexDirection: 'row',

@@ -27,6 +27,8 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useVoiceChat, type VoiceChatStatus } from '@/hooks/use-voice-chat';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
+import { useSettingsStore } from '@/store/settings-store';
+import { RealtimeVoiceChat } from '@/components/RealtimeVoiceChat';
 
 type Props = {
   visible: boolean;
@@ -60,6 +62,13 @@ const STATUS_ICONS: Record<VoiceChatStatus, keyof typeof MaterialIcons.glyphMap>
 export function VoiceChat({ visible, onClose, dispatch, paneId }: Props) {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  // Read unconditionally (Rules of Hooks) even though only one branch below
+  // ends up using useVoiceChat's result — settings.realtimeVoiceEnabled can
+  // change while this component stays mounted (it's the modal's `visible`
+  // prop that toggles, not this component's mount state), so the set of
+  // hooks called here must stay identical across renders regardless of the
+  // flag's value.
+  const realtimeVoiceEnabled = useSettingsStore((s) => s.settings.realtimeVoiceEnabled ?? false);
   const {
     state,
     startListening,
@@ -70,14 +79,16 @@ export function VoiceChat({ visible, onClose, dispatch, paneId }: Props) {
     awaitingManualConfirmRef,
   } = useVoiceChat({ dispatch, paneId });
 
-  // Activate on open, deactivate on close
+  // Activate on open, deactivate on close — skipped entirely in realtime
+  // mode, which drives its own session lifecycle (see RealtimeVoiceChat).
   useEffect(() => {
+    if (realtimeVoiceEnabled) return;
     if (visible) {
       activate();
     } else {
       deactivate();
     }
-  }, [visible, activate, deactivate]);
+  }, [visible, realtimeVoiceEnabled, activate, deactivate]);
 
   // Auto-start listening when idle and active with autoContinue.
   // Skipped when awaitingManualConfirmRef is set — an agent-creation confirm
@@ -138,6 +149,10 @@ export function VoiceChat({ visible, onClose, dispatch, paneId }: Props) {
   const isBusy = isProcessing || state.status === 'speaking';
 
   const micColor = isRecording ? '#FF4444' : isBusy ? colors.inactive : colors.accent;
+
+  if (realtimeVoiceEnabled) {
+    return <RealtimeVoiceChat visible={visible} onClose={onClose} />;
+  }
 
   return (
     <Modal

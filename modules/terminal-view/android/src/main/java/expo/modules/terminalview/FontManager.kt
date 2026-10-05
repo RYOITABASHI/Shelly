@@ -21,6 +21,7 @@ object FontManager {
                 }
                 "pixel-mplus" -> "fonts/PixelMplus12-Regular.ttf"
                 "silkscreen" -> "fonts/Silkscreen-Regular.ttf"
+                "dotgothic16" -> "fonts/DotGothic16-Regular.ttf"
                 else -> "fonts/JetBrainsMono-Regular.ttf"
             }
             try {

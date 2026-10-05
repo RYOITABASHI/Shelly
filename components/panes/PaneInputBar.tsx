@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { usePaneStore } from '@/store/pane-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -45,6 +46,12 @@ type Props = {
    *  fires with whatever text is typed (possibly ''). Unused by
    *  Browser/Markdown panes (they never pass this). */
   attachmentPreview?: { uri: string; onRemove: () => void } | null;
+  /** Conversational provider-connect flow (2026-09-20, see
+   *  lib/provider-connect-intent.ts): the caller sets this true while the
+   *  active conversation has a pendingApiKeyProvider, so the next thing
+   *  typed here — presumably a pasted API key — isn't shown on-screen
+   *  either, not just excluded from storage on the dispatch side. */
+  secureEntry?: boolean;
 };
 
 export default function PaneInputBar({
@@ -57,10 +64,15 @@ export default function PaneInputBar({
   onMicLongPress,
   paneId,
   attachmentPreview,
+  secureEntry,
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
-  const containerBg = usePanelBackground(C.bgSidebar);
+  // Matches CommandKeyBar's own background source (TerminalPane.tsx passes
+  // it `terminalPaneBg`, i.e. C.bgDeep) so the two panes' footer strips
+  // blend into their pane body the same way, instead of this one reading
+  // as a visibly darker band the other footer doesn't have.
+  const containerBg = usePanelBackground(C.bgDeep);
   const pillBg = usePanelBackground(C.bgSurface);
   const disabledBg = usePanelBackground(C.bgSidebar);
 
@@ -132,6 +144,7 @@ export default function PaneInputBar({
           returnKeyType="send"
           autoCapitalize="none"
           autoCorrect={false}
+          secureTextEntry={secureEntry}
         />
         {onAttach ? (
           <TouchableOpacity
@@ -186,6 +199,11 @@ const styles = StyleSheet.create({
     borderTopColor: C.border,
     paddingHorizontal: 8,
     paddingVertical: 6,
+    // Matches Terminal pane's CommandKeyBar (lib/layout-constants.ts's
+    // KEY_BAR_HEIGHT) so side-by-side panes' bottom bars line up instead
+    // of sitting at two different heights.
+    minHeight: KEY_BAR_HEIGHT,
+    justifyContent: 'center',
   },
   pill: {
     flexDirection: 'row',

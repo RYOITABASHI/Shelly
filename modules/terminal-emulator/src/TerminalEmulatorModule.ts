@@ -285,6 +285,42 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    *  pass — for on-device testing of the primitive itself. */
   debugTestLockPrompt?(): Promise<boolean>;
   returnToHome?(): Promise<void>;
+  /**
+   * Full-duplex realtime voice via the Gemini Live API (VoiceBridge.kt).
+   * Spawns a live-piped Node process (scripts/shelly-gemini-live-client.js)
+   * that speaks the Live API's WebSocket protocol directly, streams mic
+   * PCM in via AudioRecord and plays response PCM back via AudioTrack.
+   * Progress/transcript/error events arrive via the on* listeners below —
+   * this call resolves once the session is spawned, not once it's ready
+   * (wait for the "onVoiceReady" event for that).
+   */
+  startVoiceSession(apiKey: string): Promise<void>;
+  /** Ends the session (closes the process's stdin so the script closes the
+   *  WebSocket cleanly) and releases the mic/speaker. Safe to call when no
+   *  session is active. */
+  stopVoiceSession(): Promise<void>;
+  isVoiceSessionActive(): Promise<boolean>;
+  /**
+   * A2A (Agent2Agent) protocol server (A2ABridge.kt / scripts/shelly-a2a-server.js).
+   * Long-lived, not session-scoped like voice: starts on toggle-on and runs
+   * for as long as the app process is alive, listening on the LAN for A2A
+   * clients. Resolves true if the server is (now) running.
+   */
+  startA2AServer(): Promise<boolean>;
+  stopA2AServer(): Promise<void>;
+  isA2AServerRunning(): Promise<boolean>;
+  /**
+   * MCP (Model Context Protocol) server (MCPBridge.kt /
+   * scripts/shelly-mcp-server.js). Read-only tools only (see the script's
+   * own header for why exec/write tools aren't exposed yet). Long-lived
+   * like the A2A server, not session-scoped like voice. `token` is the
+   * pre-shared bearer token the caller must send as `Authorization: Bearer
+   * <token>` — generate and persist it via lib/secure-store.ts, never pass
+   * a hardcoded value.
+   */
+  startMCPServer(token: string): Promise<boolean>;
+  stopMCPServer(): Promise<void>;
+  isMCPServerRunning(): Promise<boolean>;
   addListener(eventName: string, listener: (event: any) => void): { remove(): void };
 }
 

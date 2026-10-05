@@ -1263,6 +1263,29 @@ export async function runAgentNow(
     logWarn('AgentRunConcurrency', `runAgentNow(${agentId}) called while a run is already in flight — joining it instead of starting a second one`);
     return existing;
   }
+  // Live progress notification: a persistent "running" notice for the
+  // duration of the run, dismissed here regardless of outcome — the
+  // existing success/error/missed-schedule notifications (wherever each
+  // fires from) are untouched and still post separately. This wrapper is
+  // the single choke point EVERY run (manual "run now" and scheduled
+  // alarm fires alike) already passes through for the in-flight guard
+  // above, so hooking here covers every path without having to trace
+  // each inner completion branch individually.
+  const runningNotificationId = `agent-running-${agentId}`;
+  const runningAgentName = useAgentStore.getState().agents.find((a) => a.id === agentId)?.name ?? agentId;
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: runningNotificationId,
+      content: {
+        title: `▶ ${runningAgentName}`,
+        body: t('agents.run_in_progress_notification_body'),
+        sticky: true,
+      },
+      trigger: null,
+    });
+  } catch {
+    // Best-effort — a failed "running" post must never block the run itself.
+  }
   const turn = runAgentNowInner(agentId, runCommand, options);
   inFlightAgentRuns.set(agentId, turn);
   try {
@@ -1272,6 +1295,11 @@ export async function runAgentNow(
     // though under the guard above no other writer can have replaced it.
     if (inFlightAgentRuns.get(agentId) === turn) {
       inFlightAgentRuns.delete(agentId);
+    }
+    try {
+      await Notifications.dismissNotificationAsync(runningNotificationId);
+    } catch {
+      // ignore
     }
   }
 }

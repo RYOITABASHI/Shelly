@@ -109,6 +109,7 @@ export type ThemePresetId =
   | 'orange'
   | 'purple'
   | 'scouter-green'
+  | 'case-file'
   // Legacy persisted ids only. They are not exposed in the UI.
   | 'shelly'
   | 'blackline'
@@ -424,6 +425,70 @@ export const purplePalette: Palette = {
 
   diffAddBorder:    '#39FF14',
   diffRemoveBorder: '#FF3C5A',
+};
+
+// ── Case File — cream paper + black hairline "database UI" palette. ────────
+// Colors match lib/theme-engine.ts's `case-file` WezTerm-style theme (worked
+// out with the user via an Artifact mockup, docs/superpowers/specs/
+// 2026-09-12-case-file-theme-handoff.md), reapplied here to the app-chrome
+// Palette shape so Sidebar/AgentBar/tabs actually repaint — the theme-engine
+// entry alone only styles a handful of modal components (DiffViewerModal,
+// AskPane, etc.), never the visible app chrome.
+export const caseFilePalette: Palette = {
+  bgDeep:     '#E8E3D0',
+  bgSurface:  '#F2ECD6',
+  bgSidebar:  '#D9D0B0',
+  border:     '#2A2416',
+
+  // 2026-09-16: the mockup's own dim/secondary tones (#6F6A58, #8A836A,
+  // #8A6A20) read fine in a static preview image but landed under WCAG AA
+  // (~3-4.5:1) once applied as real small-text colors — badges, timestamps,
+  // inactive tabs — against the #E8E3D0/#F2ECD6 cream. Darkened every
+  // secondary/accent tone that sits on the light backgrounds so text stays
+  // legible; text1/error/border (already dark) are unchanged.
+  accent:        '#2A2416',
+  accentGreen:   '#2E4A2E',
+  accentBlue:    '#2A3F5C',
+  accentSky:     '#2A5C5C',
+  accentPurple:  '#5C2A4A',
+  accentPink:    '#5C2A4A',
+  accentAmber:   '#6B4E12',
+  accentCode:    '#2A3F5C',
+  warning:       '#6B4E12',
+
+  text1:      '#201D16',
+  text2:      '#4A4636',
+  text3:      '#6B6450',
+
+  errorText:  '#8A2020',
+  errorBg:    'rgba(138,32,32,0.12)',
+  addText:    '#2E4A2E',
+  addBg:      'rgba(46,74,46,0.12)',
+
+  btnPrimaryBg:     '#2A2416',
+  btnPrimaryText:   '#E8E3D0',
+  btnSecondaryBg:   '#D9D0B0',
+  btnSecondaryText: '#201D16',
+
+  badgeRunningBg:   'rgba(107,78,18,0.18)',
+  badgeRunningText: '#6B4E12',
+  badgeLinkedBg:    'rgba(46,74,46,0.18)',
+  badgeLinkedText:  '#2E4A2E',
+  badgeConnectBg:   '#D9D0B0',
+  badgeConnectText: '#4A4636',
+
+  layoutActiveBg:     '#2A2416',
+  layoutActiveText:   '#E8E3D0',
+  layoutInactiveBg:   '#D9D0B0',
+  layoutInactiveText: '#4A4636',
+
+  crtBadgeBg:   '#D9D0B0',
+  crtBadgeText: '#2A2416',
+
+  autoSaveBg: '#D9D0B0',
+
+  diffAddBorder:    '#2E4A2E',
+  diffRemoveBorder: '#8A2020',
 };
 
 // ── Silkscreen palette — the previous static theme.config.ts values,
@@ -889,6 +954,7 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
   orange:       { id: 'orange',       font: 'JetBrainsMono_400Regular', colors: orangePalette },
   purple:       { id: 'purple',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
   'scouter-green': { id: 'scouter-green', font: 'JetBrainsMono_400Regular', colors: scouterGreenPalette },
+  'case-file':  { id: 'case-file',    font: 'JetBrainsMono_400Regular', colors: caseFilePalette },
   shelly:       { id: 'shelly',       font: 'JetBrainsMono_400Regular', colors: purplePalette },
   blackline:    { id: 'blackline',    font: 'JetBrainsMono_400Regular', colors: bluePalette },
   modal:        { id: 'modal',        font: 'JetBrainsMono_400Regular', colors: purplePalette },
@@ -911,9 +977,50 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
 // (which imports shellyPalette from this file to seed its initial
 // colors object).
 
+// Session-only (not persisted) pairing snapshot for Case File's sound/cursor
+// auto-switch — see applyThemePreset step 0b.
+let caseFileUxSnapshot: { soundProfile: 'modern' | 'retro' | 'silent'; cursorShape: 'block' | 'underline' | 'bar' | undefined } | null = null;
+
 export function applyThemePreset(id: ThemePresetId) {
   const preset = themePresets[id];
   if (!preset) return;
+
+  // 0. Case File's flat "database UI" paper look wants wallpaper/blur
+  //    transparency force-off for as long as it's active, without
+  //    discarding the user's actual wallpaper settings — leaving this
+  //    preset restores exactly what was there before switching in.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { useCosmeticStore } = require('@/store/cosmetic-store');
+  const cosmetic = useCosmeticStore.getState();
+  if (id === 'case-file') {
+    cosmetic.suspendWallpaperForTheme();
+  } else if (cosmetic.themeWallpaperSnapshot) {
+    cosmetic.restoreWallpaperForTheme();
+  }
+
+  // 0b. Case File also pairs the "Retro" sound profile + block cursor for
+  //     the archival-record feel — session-only (not persisted) since,
+  //     unlike wallpaper, restoring these across an app restart isn't
+  //     something the user asked for; only restore within the same run.
+  if (id === 'case-file') {
+    if (caseFileUxSnapshot === null) {
+      caseFileUxSnapshot = { soundProfile: cosmetic.soundProfile, cursorShape: undefined };
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { useSettingsStore } = require('@/store/settings-store');
+      const settingsState = useSettingsStore.getState();
+      caseFileUxSnapshot.cursorShape = settingsState.settings.cursorShape;
+      settingsState.updateSettings({ cursorShape: 'block' });
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('@/store/theme-version-store').useThemeVersionStore.getState().triggerCaseFileBootFlash();
+    }
+    cosmetic.setSoundProfile('retro');
+  } else if (caseFileUxSnapshot !== null) {
+    cosmetic.setSoundProfile(caseFileUxSnapshot.soundProfile);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { useSettingsStore } = require('@/store/settings-store');
+    useSettingsStore.getState().updateSettings({ cursorShape: caseFileUxSnapshot.cursorShape });
+    caseFileUxSnapshot = null;
+  }
 
   // 1. Swap the live colors object fields in place.
   //    The object identity stays the same, so every
@@ -948,6 +1055,21 @@ export function applyThemePreset(id: ThemePresetId) {
 
   // 4. Bump the theme version so ShellLayout forces a full re-render
   //    of the tree through its key={version} root <View>.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { useThemeVersionStore } = require('@/store/theme-version-store');
+  useThemeVersionStore.getState().bumpVersion();
+}
+
+// ── Runtime apply — font only ───────────────────────────────────────
+// Lets the app-chrome font be picked independently of the color preset
+// (settings.appFontFamily), instead of being hard-locked to whatever
+// `ThemePreset.font` the active preset declares. Callers apply the
+// preset first (colors + its own default font), then call this after
+// if the user has an explicit font override, so the override always wins.
+export function applyUiFont(fontFamily: string) {
+  patchTextRenderOnce();
+  currentFontFamily = fontFamily;
+
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { useThemeVersionStore } = require('@/store/theme-version-store');
   useThemeVersionStore.getState().bumpVersion();

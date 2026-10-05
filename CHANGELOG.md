@@ -6,6 +6,64 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.0.1] - 2026-09-17
+
+### Added
+
+- **Case File theme.** A fifth color preset — cream paper, black hairline
+  rules, modeled on old database-terminal UIs — alongside the existing
+  neon presets, plus an independent app-font picker (Default / DotGothic16)
+  decoupled from the color preset. Case File also gets its own retro
+  polish: a pseudo-boot flash on switching in, wallpaper suspended while
+  active, hard-shadow card borders, a blinking Save-badge LED, a breathing
+  connection-status dot, char-by-char typewriter reveal for streaming AI
+  replies, and a distinct confirm "stamp" sound.
+- **Japanese localization for the Settings TUI.** `shelly config`'s section
+  titles and field labels are now translated; longer descriptions are left
+  in English for now, by design.
+- **Persistent "running" agent notification.** A scheduled or manually
+  triggered agent now posts a sticky notification for the duration of its
+  run, dismissed when the run finishes, instead of only notifying once the
+  result is ready.
+- **Realtime voice (Gemini Live), opt-in.** A full-duplex voice mode,
+  separate from the existing turn-based VoiceChat — continuous mic capture,
+  spoken replies streamed back with server-side interruption handling.
+  Requires a Gemini API key; unlike text elsewhere in the app, audio
+  through the Gemini Live API is billed per-token even on a free-tier key.
+- **A2A server, opt-in.** A local [Agent2Agent protocol](https://a2a-protocol.org/)
+  endpoint (Agent Card + JSON-RPC) exposing a read-only `list_agents` skill.
+- **MCP server, opt-in.** A local, bearer-token-authenticated
+  [Model Context Protocol](https://modelcontextprotocol.io/) endpoint
+  exposing four read-only tools (`read_terminal_output`, `git_status`,
+  `list_agents`, `list_repos`) for a desktop MCP client such as Claude
+  Code or Claude Desktop. Two more tools — `run_command` and
+  `write_file` — followed behind a separate **MCP: Allow exec/write**
+  setting (off by default): every call blocks on an in-app approval
+  modal (fail-closed, auto-denied after 90s if nobody answers), and a
+  CRITICAL-risk command is refused outright regardless of approval.
+  On-device end-to-end tested against a real Claude Code / Codex MCP
+  client, including finding and fixing three bugs the read-only tools
+  alone hadn't surfaced: a stale-session-id crash in
+  `read_terminal_output`, a `write_file` write failure (needed a
+  `file://` URI), and a serialization bug where one pending approval
+  blocked the entire request queue — including trivial read-only calls
+  — for up to 90 seconds.
+- **Per-agent chat threads.** Tap "Chat" on a registered agent's detail
+  popup to open a persistent AI Pane conversation scoped to that agent
+  specifically — its own conversation key, its own memory recall (the
+  same reader a scheduled run already uses), its own identity in the
+  system prompt, and its own thread-switch notice, all parallel to how
+  the Shelly companion persona already has one continuous shared thread.
+  On-device verified: opens a dedicated pane with a separate, empty
+  thread from the companion, and answers messages sent to it.
+- **Conversational API key setup.** Any AI Pane conversation — the
+  companion, an explicit-provider pane, or a per-agent thread — can now
+  connect a provider ("connect me to Gemini") without leaving the chat.
+  The key is asked for inline, masked in the stored conversation the
+  moment it's typed (never persisted in plaintext, never sent to any
+  LLM), and saved through the exact same path Settings' own API Keys
+  screen uses. On-device verified end-to-end.
+
 ## [8.0.0] - 2026-08-31
 
 ### Added

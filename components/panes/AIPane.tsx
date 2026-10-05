@@ -28,8 +28,10 @@ import {
   addAiPaneThreadSwitchNotice,
   resolveAiPaneStoreKey,
   useAIPaneStore,
+  AGENT_THREAD_KEY_PREFIX,
 } from '@/store/ai-pane-store';
 import { digestConversationForJournal } from '@/lib/companion-journal';
+import { subscribeThreadAgent, getThreadAgentId } from '@/lib/agent-thread-selection';
 import { postCompanionJournalDormancyNotice } from '@/lib/agent-companion-notice';
 import { execCommand } from '@/hooks/use-native-exec';
 import { usePaneStore } from '@/store/pane-store';
@@ -55,6 +57,7 @@ import AgentConfirmCard, { type ConfirmedAgentDraft } from '@/components/panes/A
 import AgentScheduleReadinessCard from '@/components/panes/AgentScheduleReadinessCard';
 import AgentChatConfirm from '@/components/panes/AgentChatConfirm';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
+import { TypewriterText } from '@/components/panes/TypewriterText';
 import { useAIPaneDispatch, type AIPaneDispatchOptions } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
@@ -152,6 +155,10 @@ const MessageBubble = React.memo(function MessageBubble({
 }: BubbleProps) {
   const { t } = useTranslation();
   const containerMaxWidth = maxWidth && maxWidth > 0 ? { maxWidth } : null;
+  // Case File's mockup gives cards a hard, unblurred offset shadow instead
+  // of the soft glow other presets use — see CodeBlockWithAction.tsx's
+  // rootCaseFileShadow for why this is a border trick, not shadow*/elevation.
+  const isCaseFile = useSettingsStore((s) => s.settings.uiFont === 'case-file');
   const isUser = message.role === 'user';
   const isLastStreaming = isStreaming && message.isStreaming;
   const displayText = message.streamingText ?? message.content;
@@ -183,8 +190,8 @@ const MessageBubble = React.memo(function MessageBubble({
           <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
             {t('chat.companion_label')}
           </Text>
-          <View style={bubbleStyles.assistantContent}>
-            <Text style={bubbleStyles.assistantText} selectable>{message.content}</Text>
+          <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }, isCaseFile && bubbleStyles.assistantContentCaseFileShadow, isCaseFile && { borderColor: C.border }]}>
+            <Text style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>{message.content}</Text>
           </View>
           <AgentChatConfirm
             draft={message.agentDraft}
@@ -208,7 +215,7 @@ const MessageBubble = React.memo(function MessageBubble({
   if (message.role === 'system') {
     return (
       <View accessible accessibilityLabel={`System: ${displayText}`} style={[bubbleStyles.systemRow, containerMaxWidth]}>
-        <Text style={bubbleStyles.systemText}>{displayText}</Text>
+        <Text style={[bubbleStyles.systemText, { color: C.text2 }]}>{displayText}</Text>
       </View>
     );
   }
@@ -228,9 +235,9 @@ const MessageBubble = React.memo(function MessageBubble({
             vanished after send with no visual trace in the sent bubble —
             the user had no confirmation of WHICH image they sent. */}
         {message.imageThumbnailUri ? (
-          <Image source={{ uri: message.imageThumbnailUri }} style={bubbleStyles.userImageThumb} />
+          <Image source={{ uri: message.imageThumbnailUri }} style={[bubbleStyles.userImageThumb, { backgroundColor: C.bgSurface }]} />
         ) : null}
-        <Text style={bubbleStyles.userText} selectable>{displayText}</Text>
+        <Text style={[bubbleStyles.userText, { color: C.text1 }]} selectable>{displayText}</Text>
       </View>
     );
   }
@@ -243,7 +250,7 @@ const MessageBubble = React.memo(function MessageBubble({
       <Text style={[bubbleStyles.roleLabelAgent, { color: C.text2 }]}>
         {t('chat.companion_label')}
       </Text>
-      <View style={bubbleStyles.assistantContent}>
+      <View style={[bubbleStyles.assistantContent, { backgroundColor: C.bgSurface }, isCaseFile && bubbleStyles.assistantContentCaseFileShadow, isCaseFile && { borderColor: C.border }]}>
         {containsDiff ? (
           <InlineDiff content={displayText} />
         ) : (
@@ -253,13 +260,18 @@ const MessageBubble = React.memo(function MessageBubble({
           // still streaming we skip the parse and show raw text — fenced
           // regex would fire on an unclosed ``` and hide content.
           isLastStreaming ? (
-            <Text style={bubbleStyles.assistantText} selectable>{displayText}</Text>
+            <TypewriterText
+              text={displayText}
+              active={isCaseFile}
+              cursorColor={C.accent}
+              style={[bubbleStyles.assistantText, { color: C.text1 }]}
+            />
           ) : (
             splitFencedCode(displayText).map((seg, i) =>
               seg.kind === 'code' ? (
                 <CodeBlockWithAction key={i} lang={seg.lang} code={seg.content} />
               ) : (
-                <Text key={i} style={bubbleStyles.assistantText} selectable>
+                <Text key={i} style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>
                   {seg.content}
                 </Text>
               ),
@@ -338,6 +350,15 @@ const bubbleStyles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
+  // Same flat, unblurred-offset "card" look as CodeBlockWithAction.tsx's
+  // rootCaseFileShadow — Case File only, via a hard border since Android
+  // elevation can't render a shadow without blur.
+  assistantContentCaseFileShadow: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRightWidth: 3,
+    borderBottomWidth: 3,
+  },
   assistantText: {
     fontSize: 8,
     fontFamily: F.family,
@@ -376,6 +397,27 @@ const bubbleStyles = StyleSheet.create({
 export default function AIPane() {
   const { t } = useTranslation();
   const paneId = useContext(PaneIdContext);
+  // "Grok Bot"-style named-teammate threads (2026-09-20): a pane pinned via
+  // lib/agent-thread-selection.ts (Sidebar's agent "Chat" action) shows that
+  // agent's identity instead of the provider switcher, and resolveAiPaneStoreKey
+  // (store/ai-pane-store.ts) already routes its conversation key accordingly —
+  // this is purely the render-time reflection of that same selection.
+  const [threadAgentId, setThreadAgentId] = useState<string | null>(() => getThreadAgentId(paneId));
+  useEffect(() => {
+    setThreadAgentId(getThreadAgentId(paneId));
+    return subscribeThreadAgent((leafId, agentId) => {
+      if (leafId === paneId) setThreadAgentId(agentId);
+    });
+  }, [paneId]);
+  const threadAgent = useAgentStore((s) => (threadAgentId ? s.agents.find((a) => a.id === threadAgentId) ?? null : null));
+  // Conversational provider-connect (2026-09-20): mask the input while the
+  // conversation is mid-flow waiting for a pasted API key — see
+  // lib/provider-connect-intent.ts / PaneInputBar's secureEntry prop.
+  const hasPendingApiKeyPrompt = useAIPaneStore((s) => {
+    const conv = s.conversations[resolveAiPaneStoreKey(paneId)];
+    const last = conv?.messages.at(-1);
+    return Boolean(last?.role === 'assistant' && last.pendingApiKeyProvider);
+  });
   const paneBg = usePaneContentBackground(C.bgDeep);
   // Bug #56 — narrow grid layouts (2×2 or 1+2) drop pane width below
   // ~360dp. Shrink horizontal padding so bubble content does not get
@@ -594,7 +636,12 @@ export default function AIPane() {
   useEffect(() => {
     const prev = prevConversationKeyRef.current;
     prevConversationKeyRef.current = resolvedConversationKey;
-    addAiPaneThreadSwitchNotice(prev, resolvedConversationKey, t);
+    addAiPaneThreadSwitchNotice(
+      prev,
+      resolvedConversationKey,
+      t,
+      resolvedConversationKey.startsWith(AGENT_THREAD_KEY_PREFIX) ? (threadAgent?.name ?? undefined) : undefined,
+    );
     // Companion journal (G1-P2's sibling, "一人の相棒" Gap②): distill the
     // thread being LEFT into a note before it's forgotten. Same trigger
     // point as carry-forward (this is the sole switch-notice caller,
@@ -604,6 +651,11 @@ export default function AIPane() {
     if (prev !== resolvedConversationKey) {
       const settings = useSettingsStore.getState().settings;
       const sourceMessages = useAIPaneStore.getState().conversations[prev]?.messages ?? [];
+      // The thread being LEFT (`prev`), not the destination, decides which
+      // agent's memory scope (if any) this digest writes into.
+      const prevThreadAgentId = prev.startsWith(AGENT_THREAD_KEY_PREFIX)
+        ? prev.slice(AGENT_THREAD_KEY_PREFIX.length)
+        : undefined;
       void digestConversationForJournal(
         prev,
         sourceMessages,
@@ -627,9 +679,10 @@ export default function AIPane() {
             logError('AIPane', `failed to post companion journal dormancy notice: ${nudgeError instanceof Error ? nudgeError.message : String(nudgeError)}`);
           }
         },
+        prevThreadAgentId,
       );
     }
-  }, [resolvedConversationKey, t]);
+  }, [resolvedConversationKey, t, threadAgent?.name]);
 
   // Phase 3 inbound gateway: drain authorized Telegram utterances into the SAME
   // @agent confirm-card pipeline a local utterance uses. consume() pops atomically
@@ -938,6 +991,7 @@ export default function AIPane() {
         onMicLongPress={handleMicLongPress}
         paneId={paneId}
         attachmentPreview={stagedImage ? { uri: stagedImage.uri, onRemove: handleRemoveStagedImage } : null}
+        secureEntry={hasPendingApiKeyPrompt}
       />
 
       <VoiceChat

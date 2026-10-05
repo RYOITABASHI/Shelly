@@ -105,7 +105,14 @@ export async function digestConversationForJournal(
   config: LocalLlmConfig,
   runCommand: (cmd: string) => Promise<string>,
   onDormant?: () => void,
+  /** Per-agent chat threads (`agent:<id>`, see lib/agent-thread-selection.ts)
+   *  journal into that agent's own memory scope instead of `_companion` —
+   *  same write path, same eligibility/floor/dedup rules, different
+   *  agentId passed to makeMemoryNote/activateMemoryWrite below. Absent =
+   *  today's companion-only behavior, unchanged. */
+  targetAgentId?: string,
 ): Promise<void> {
+  const memoryScope = targetAgentId ?? COMPANION_MEMORY_SCOPE;
   const eligible = messages.filter(isDigestEligible);
   if (eligible.length < MIN_MESSAGES_TO_DIGEST) return;
 
@@ -150,7 +157,7 @@ export async function digestConversationForJournal(
       return;
     }
 
-    const note = makeMemoryNote({ agentId: COMPANION_MEMORY_SCOPE, type: 'fact', text });
+    const note = makeMemoryNote({ agentId: memoryScope, type: 'fact', text });
     // Gap B: MEMORY-001 v2-primary / G2-fallback write, mirroring
     // lib/agent-manager.ts's persistRememberFact exactly. activateMemoryWrite
     // reuses makeMemoryNote's own normalization internally and never throws
@@ -159,7 +166,7 @@ export async function digestConversationForJournal(
     // rather than silently losing the note. On v2 success the G2 write below
     // is skipped entirely, same as persistRememberFact's `if (ok) return`.
     const wroteViaV2 = MEMORY_ENABLED
-      ? await activateMemoryWrite({ agentId: COMPANION_MEMORY_SCOPE, type: 'fact', text })
+      ? await activateMemoryWrite({ agentId: memoryScope, type: 'fact', text })
       : false;
     if (!wroteViaV2) {
       await writeMemoryNote(runCommand, note);

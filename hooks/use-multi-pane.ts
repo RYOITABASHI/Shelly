@@ -21,9 +21,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import {
   COMPANION_CONVERSATION_KEY,
+  AGENT_THREAD_KEY_PREFIX,
   resolveAiPaneStoreKey,
   useAIPaneStore,
 } from '@/store/ai-pane-store';
+import { releaseThreadSlot } from '@/lib/agent-thread-selection';
 
 // ─── Core types ──────────────────────────────────────────────────────────────
 
@@ -554,8 +556,20 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
 
       const cleanupDroppedAiConversation = (slot: Slot): void => {
         if (!slot || slot.tab !== 'ai') return;
+        // Resolve BEFORE releasing the thread-selection pin below —
+        // resolveAiPaneStoreKey itself consults that same pin, so releasing
+        // first would make an agent-thread pane look unbound here.
         const conversationKey = resolveAiPaneStoreKey(slot.id);
-        if (conversationKey === COMPANION_CONVERSATION_KEY) return;
+        // "Grok Bot"-style named-teammate threads (2026-09-20): release this
+        // pane's pin in the per-pane selection channel regardless of outcome
+        // below, so a later pane that happens to reuse this same leafId
+        // never inherits a stale agent binding.
+        releaseThreadSlot(slot.id);
+        // A per-agent thread is content-addressed by the agent's own id, not
+        // by this pane — same "must outlive the pane" reasoning as the
+        // companion exemption right below it, just keyed dynamically instead
+        // of by one fixed constant.
+        if (conversationKey === COMPANION_CONVERSATION_KEY || conversationKey.startsWith(AGENT_THREAD_KEY_PREFIX)) return;
         useAIPaneStore.getState().clearConversation(slot.id);
       };
 

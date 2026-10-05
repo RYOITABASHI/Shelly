@@ -17,7 +17,8 @@ export type SoundId =
   | 'disconnect'
   | 'mode_switch'
   | 'quick_open'
-  | 'quick_close';
+  | 'quick_close'
+  | 'confirm_stamp';
 
 // ─── Sound metadata ─────────────────────────────────────────────────────────
 
@@ -36,6 +37,11 @@ const SOUND_META: Record<SoundId, { frequency: number; duration: number }> = {
   mode_switch:  { frequency: 698,  duration: 90  },
   quick_open:   { frequency: 740,  duration: 120 },
   quick_close:  { frequency: 494,  duration: 100 },
+  // Low, short, punchy — approximates a rubber-stamp "thunk" within this
+  // single-sine-tone synth (no sample playback here). Case File only, on
+  // agent-confirm completion — see confirmAgentDraft in
+  // hooks/use-ai-pane-dispatch.ts.
+  confirm_stamp: { frequency: 180, duration: 90 },
 };
 
 // ─── Sound Store (Zustand) ──────────────────────────────────────────────────

@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-09-29: PR #147（ShortcutBar/MentionDropdown と input.*/mention.* i18n キーの削除）と PR #148（孤児化していた `externalKeyboardShortcuts` 設定トグルの削除）をマージ。Windows PC での検証中に、実 bash/fs 系 jest スイートが `origin/main` でも失敗することを確認し、下記に P3 として登録した。
 - 2026-08-31: ユーザー指示「無くしちゃおうぜ」を受け、app.act機能(LINE/X向けAndroid Accessibility Service経由のUI自動操作)を製品として完全に廃止した。**廃止理由**: 同日の実機検証で、cold-startタイムアウト修正(直前エントリ参照)の後もなお別の新規バグ(検索ボタンのマッチャーが画面上の複数ノードに一致し、安全装置`Ambiguous-multiple-match`が働いてレシピ実行が停止)を発見。これでこの1機能だけで①cold-startタイムアウト②今回のambiguous-match③レシピ作成UI自体のフォーカス競合(直前エントリで確認済み、修正困難と判定済み)の3件のバグが積み上がった。Android Accessibility Service経由のUI自動操作は対象アプリ側のUI変化(広告表示・レイアウト更新等)に対して構造的に脆く、LINE/Xの2アプリに絞ってさえ安定動作に至らなかったため、機能自体を削除する方が実装・運用コストに見合うと判断。**削除範囲**: Kotlin側(`AppActExecutor.kt`/`AppActRecipeStore.kt`/`ShellyAccessibilityService.kt`/バンドルレシピ2件/`plugins/with-accessibility-service.js`を丸ごと削除、`TerminalEmulatorModule.kt`の5個のAsyncFunction・`AgentRuntime.kt`の`fireTrustedAppActAndReply`/`TrustedPlanLaunch.appActRecipeId`・`AgentActionApprovalBridge.kt`の`writeAutoApprovedReply`(呼び出し元喪失によるデッドコード化)と許可リスト残存・`NotificationDispatcher.kt`のapp-act分岐を除去)、TypeScript側(`lib/app-act-recipe-draft.ts`/`components/config/AppActRecipeDraftModal.tsx`/`lib/agent-app-act-review.ts`を丸ごと削除、`store/types.ts`の`AgentActionType`から`'app-act'`削除+`appActRecipeId`/`appActParams`/`appActMethod`フィールド削除、`lib/agent-executor.ts`と`scripts/shelly-plan-executor.js`(+APKミラー)から生成bashスクリプトのapp-act dispatchロジック一式を除去、`lib/agent-nl-parser.ts`のX投稿フォールバックをapp-actからsocial-post/draft+caveatへ再設計、ConfigTUIの「Automation」セクション削除、SettingsDropdownの一時QAプローブ削除、i18nキー約25個削除)、テスト4ファイル丸ごと削除+20ファイル部分編集、ドキュメント(README.md/ja.md・docs/STATUS.md/ja.md・skills-catalogの`app-act-flow-design`スキル)からapp.act言及を除去。`npx tsc --noEmit` clean(エラー0件)。テスト側の最終検証は別セッションで継続中。
   → sync: README/STATUS Status表・Known Limitations・Highlights表からapp.act行を削除済み。skills-catalog.jsonから`app-act-flow-design`エントリを削除・フォルダ削除済みだが、**GitHub Releaseの`skills-catalog-latest`アセット自体は別途リリースを切るまで更新されない**点に注意(リポジトリのソースは修正済み)。
   **Fable5/Codex独立レビュー(同日)で発見・即修正した項目**: (1) `lib/agent-executor.ts`の`AGENT_SCRIPT_VERSION`と`AgentRuntime.kt`の`CURRENT_SCRIPT_VERSION`が58のまま未バンプだった件——app-actのdispatchロジック除去は生成スクリプトの実行時挙動変更にあたるため、両定数を59へ同時バンプ(v59履歴コメント追記)。バンプ前は、旧v58スクリプトを持つautonomous app-actエージェントが無人発火時に、新`AgentActionApprovalBridge.fromJson`がactionType許可リストから`app-act`を除外したことで承認リクエストを黙って破棄し、スクリプト側が永遠に承認待ちでハングする恐れがあった(バンプ後は「stale script、regenerate」で明示的に検知され、再生成後は`*)`「Unknown agent action」でクリーンに失敗する)。(2) `docs/skills-catalog/social-post-drafting/SKILL.md`と`docs/skills-catalog/browser-change-watch/SKILL.md`にも「Social Post or App-Act」「CLI/Intent/App-Act」という陳腐化した記述が残っていたため修正、両方ともcatalog内version(1.0.1)・sha256を更新。
@@ -117,6 +118,20 @@
 - **suggestion engineの能動的発話trigger拡張**: 実装機構は既存`addMessage()`を再利用できるが、発話タイミング・頻度はプロダクト判断と実機QAの反復が必要。
 
 → sync: README Status表の変更なし（Phase 1はpresentation-layerのみ。上記4項目は計画ファイル「今回スコープ外」を参照）。
+
+---
+
+### Windows ホストで実 bash / 実 fs 系 jest スイートが失敗する（2026-09-29、PR #147/#148 の検証中に発見、P3・ツーリング）
+
+**現象**: Windows 11 (Git Bash) 上で `pnpm test` を実行すると、`origin/main`（`b8c6f6c8f`）でも以下のスイートが失敗する: `capability-broker`・`plan-executor`・`plan-executor-tool-ladder`・`plan-executor-signed-approval`・`plan-executor-multi-action`・`plan-executor-orchestration`・`plan-executor-orchestration-chain`・`agent-manager-chain-lock`（約40件）。症状は `Exceeded timeout of 5000 ms`、`ENOENT ... scandir '...\Temp\cap-broker-*\approvals'`、`ENOENT ... chain.lock\token` など。いずれも実 bash の起動・`mkdir` ロック・シンボリックリンクを使うテストで、Linux（クラウドセッション）では全件通過している。また、jest を2本同時に走らせた高負荷時には `AgentRunsPane`/`AgentSuggestionCard` も5秒タイムアウトで落ちたが、単独実行では全件通過した（負荷由来でありコードの問題ではない）。
+
+**影響**: Windows PC でのローカル検証時に「変更と無関係な失敗」が毎回数十件出るため、本物の回帰を見落とすリスクがある。GitHub Actions のワークフローには `pull_request` トリガーが無いため、PR 上では CI による裏取りもされない。
+
+**Why not now**: PR #147/#148 のスコープ外（どちらも i18n キーと未使用コンポーネント/設定の削除のみ）。原因が bash の Windows パス変換・シンボリックリンク権限・プロセス起動の遅さのどれ（または複数）かは未切り分け。
+
+**対応案**: (a) 該当スイートに `process.platform === 'win32'` での `describe.skip` を付けて Linux 専用と明示する、(b) 実 bash 系テストのタイムアウトを延長する、(c) `pull_request` トリガー付きの軽量 CI（tsc + lint + jest）を追加し、PR ごとに Linux で裏取りする。(c) が最も効果が大きい。
+
+→ sync: README Status表の変更なし（開発ツーリングのみ）。
 
 ---
 
@@ -383,6 +398,8 @@
 ---
 
 ### Fig風オートコンプリート復活 — プロダクトオーナー指示で調査したが、現行ネイティブPTYアーキテクチャではJS側だけでの復活が技術的に不可能と判明。ネイティブ変更のスコープを特定して報告のみ、実装は見送り (P1)
+
+**2026-09-27 更新（issue #142 のクリーンアップ）**: 以下の調査結果は2026-08-10時点の記録です。現行アプリから到達不能な `lib/autocomplete-engine.ts`、`lib/completions.ts`、`components/input/CommandInput.tsx`、`components/input/AutocompleteDropdown.tsx` はこの変更で削除しました。将来補完を復活させる場合は、まず下記のネイティブ入力イベントが必要です。旧JSロジックはGit履歴から参照できます。以下で「現存する」「再利用可能」と記した箇所は調査当時の状態を示します。
 
 **背景**: 2026-08-10のFable5実機②レビュー（本ファイル前掲、2026-08-10エントリのD-1）が「Fig風オートコンプリートが消失（`components/terminal/AutocompletePopup.tsx`/`hooks/use-autocomplete.ts`が現mainに無い、`lib/autocomplete-engine.ts`は参照ゼロのデッドコード）」と発見し、直後のTrack M（`d7ade2e0d`）でConfigTUIの孤児化「Autocomplete」トグルを削除した。今回、プロダクトオーナーから明示的に「機能自体を復活させる方針」の指示があり、`cce05d705`（2026-04-16「chore: remove dead code pre-v0.1.0」）で削除された当時の実装を精査した上での復活可否を再調査した。
 
@@ -4313,6 +4330,27 @@ Installed tools are available immediately — just type the command (existing ta
 ---
 
 ## P2 — 2 リリース先 (v0.2.0 milestone)
+
+### "Case File" テーマ — 配色+フォント着地、アイコン置換は別タスク切り出し、実機検証のみ残る (P2)
+
+**背景**: ユーザーとの雑談から発展したテーマ検討。「レトロ日本PC風のUIモード」→史実（SX-WINDOW/Human68k/デモシーン）の指摘・修正を経て、ユーザー提示の参考画像（デスゲーム系ADVの「事件記録」データベースUI、紙質クリーム地+黒罫線+ドロップダウン密集）に方向性が収束。モックアップ（全履歴付き）: https://claude.ai/code/artifact/4e3e56a4-34ac-4ff6-a088-6f2be1203f9c
+
+**リモートセッションで実施**: `lib/theme-engine.ts` の `BUILTIN_THEMES` に `case-file` テーマを追加（クリーム地`#E8E3D0`+黒罫線`#2A2416`の配色トークンをモックからそのまま転記、既存の`Theme`型に準拠、コンポーネント構造への影響なし）。`node_modules`が無いリモート環境のため型チェックは目視のみだった。
+
+**ローカルセッション（2026-09-16、ブランチ `feat/case-file-theme-continue`、worktree分離で作業）で実施**:
+1. `pnpm install` + `npx tsc --noEmit` を実走し、Case Fileテーマ追加が型エラー無しであることを確認済み。
+2. フォント — モックの「本文`BIZ UDGothic`/UIチャンク`DotGothic16`出し分け」は過剰設計回避のため見送り、単一フォント`dotgothic16`（Google Fonts配布、OFL-1.1）を追加する方針を採用。`store/cosmetic-store.ts`の`FontFamily`型・`components/config/ConfigTUI.tsx`のenum選択肢に`dotgothic16`を追加し、`.ttf`を`assets/fonts/`と`modules/terminal-view/android/src/main/assets/fonts/`の両方に配置、後者に`DotGothic16-LICENSE.txt`（OFL全文）も同梱。ネイティブ側は`modules/terminal-view/.../FontManager.kt`の`getTypeface()`分岐に`"dotgothic16" -> "fonts/DotGothic16-Regular.ttf"`を追加。ConfigTUIの既存パターン（選択肢はkebab-case文字列をそのまま表示）を踏襲し、テーマとフォントは独立設定のまま（Case File選択時の自動フォント切替は行わない、他テーマとの一貫性のため）。
+3. アイコン — Sidebar.tsx / TerminalPane.tsx / IssueDraftAction.tsx / AskPane.tsx / AgentScheduleReadinessCard.tsx / AgentConfirmCard.tsx / AIPane.tsxに絵文字依存箇所を確認。全アプリ規模の置換になるため、Case Fileテーマ本体の実装とは別タスクとして切り出し済み（`task_557cb425`）。
+
+**未着手**:
+1. 実機検証 — CLAUDE.mdの開発文化通り、テーマ切替後の実機スクショ証跡が必要。2026-09-16時点でadb接続デバイス無し（`adb devices`が空リスト）。ローカルビルド→ユーザーの端末に配布→ConfigTUIから`Case File`テーマ+`dotgothic16`フォントに切替→スクショ、が残作業。
+2. アイコン置換（`task_557cb425`側で継続）。
+
+**優先度**: P2（配色+フォントはコード上安全に着地・型チェック済みだが、実機での見た目確認とアイコン置換が残っており、単独ではユーザーに見える形の機能として未完成）
+
+→ sync: なし（テーマ/フォント追加のみで既存機能への影響なし、README Status表への反映は実機検証完了後に検討）。
+
+---
 
 ### Fable5ロードマップ item #3/4/5/7 — 実装・単体/コンポーネントテスト完了、実機未検証 (P2)
 

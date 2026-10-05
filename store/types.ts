@@ -373,6 +373,12 @@ export type AppSettings = {
   geminiApiKey?: string;
   /** Geminiに使用するモデル (default: gemini-2.5-flash — 無料枠 + grounding) */
   geminiModel?: string;
+  /** Full-duplex realtime voice via the Gemini Live API (hooks/use-realtime-voice.ts,
+   *  VoiceBridge.kt) instead of the default turn-based record -> Whisper ->
+   *  LLM text -> expo-speech TTS flow. Off by default: audio in/out on the
+   *  Live API is billed per-token even on a free-tier key (text alone is
+   *  free), unlike the default path's free on-device TTS. */
+  realtimeVoiceEnabled?: boolean;
   // ─── Groq API ─────────────────────────────────────────────────────────────────
   /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
   groqApiKey?: string;
@@ -413,6 +419,30 @@ export type AppSettings = {
    *  the file is only ever written while the app is foregrounded and is
    *  deleted (or left to expire within 5 minutes) once it backgrounds. */
   nacreBridgeEnabled?: boolean;
+  /** A2A (Agent2Agent) protocol server (hooks/use-a2a-bridge.ts,
+   *  A2ABridge.kt) — exposes a read-only `list_agents` skill to any A2A
+   *  client on the same network (LAN / VPN). Off by default: unlike
+   *  Nacre Bridge this opens a real HTTP listener. */
+  a2aServerEnabled?: boolean;
+  /** MCP (Model Context Protocol) server (hooks/use-mcp-server-bridge.ts,
+   *  MCPBridge.kt) — exposes read-only tools (read_terminal_output,
+   *  git_status, list_agents, list_repos) to MCP clients (Claude Code,
+   *  Claude Desktop) on the same network. Off by default: opens a real
+   *  HTTP listener, same as the A2A server. */
+  mcpServerEnabled?: boolean;
+  /** Extends the MCP server with two additional tools — `run_command`
+   *  (routes through execCommand()) and `write_file` (scoped to
+   *  Sidebar repo paths / the home dir) — each gated behind an in-app
+   *  approval modal (components/McpApprovalModal.tsx) shown while Shelly
+   *  is foregrounded; auto-denied if nobody answers within the timeout,
+   *  and CRITICAL-level commands (lib/command-safety.ts) are refused
+   *  outright regardless of approval. Off by default, and only takes
+   *  effect when mcpServerEnabled is also on — this is the ingress-side
+   *  capability gate previously missing (see scripts/shelly-mcp-server.js
+   *  header). Real remote-code-execution surface: only enable this when
+   *  you specifically want a PC-side MCP client (Claude Code, Codex) to
+   *  be able to run commands / write files on this device. */
+  mcpExecEnabled?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:
@@ -480,8 +510,6 @@ export type AppSettings = {
   realtimeTranslateEnabled?: boolean;
   /** LLM出力通訳（学習モード）ON/OFF（デフォルト: false） */
   llmInterpreterEnabled?: boolean;
-  /** 外部キーボードのショートカット表示（デフォルト: false） */
-  externalKeyboardShortcuts?: boolean;
   // ─── Terminal Appearance ──────────────────────────────────────────────────
   /** Terminal ANSI color theme (default: 'shelly') */
   terminalTheme: string;
@@ -636,7 +664,16 @@ export type AppSettings = {
     | 'rose-pine'
     | 'kanagawa'
     | 'everforest'
-    | 'one-dark';
+    | 'one-dark'
+    | 'case-file';
+  /**
+   * App-chrome UI font, independent of `uiFont` (the color preset). Themes
+   * used to hard-lock the chrome font to whatever `ThemePreset.font` said
+   * (always JetBrainsMono_400Regular in practice); this lets the font be
+   * picked separately so a preset's colors and its font can be mixed freely.
+   * 'default' follows the active preset's own font.
+   */
+  appFontFamily?: 'default' | 'dotgothic16';
 };
 
 // ─── Background Agents ──────────────────────────────────────────────────────
@@ -1355,6 +1392,16 @@ export type ChatMessage = {
      *  agent registration as the actual active-monitoring mechanism. */
     kind?: 'watch';
   };
+  /** "Grok Bot"-style conversational provider connect (2026-09-20): set on
+   *  the assistant message that just asked "what's your Gemini key?" after
+   *  lib/provider-connect-intent.ts's detectProviderConnectRequest matched.
+   *  When present on the most recent assistant message,
+   *  hooks/use-ai-pane-dispatch.ts treats the user's NEXT message as the raw
+   *  key itself — never forwarded to any LLM, and its stored `content` is
+   *  replaced with a redacted placeholder BEFORE persistence so the
+   *  plaintext key never reaches AsyncStorage. See lib/secure-store.ts's
+   *  ApiKeyName for the fixed provider set this covers. */
+  pendingApiKeyProvider?: 'geminiApiKey' | 'cerebrasApiKey' | 'groqApiKey' | 'perplexityApiKey' | 'openrouterApiKey';
   /** G1-P2 (2026-08-25): present on a message that was copied into a
    *  DIFFERENT pane's conversation by store/ai-pane-store.ts's
    *  carryForwardOnThreadSwitch, when the user switches a pane's bound
