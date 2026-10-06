@@ -21,6 +21,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePanelBackground } from '@/hooks/use-panel-background';
+import { useTheme } from '@/hooks/use-theme';
 import { usePaneStore } from '@/store/pane-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { insertQuoteIntoDraft } from '@/lib/quote-to-ai';
@@ -75,6 +76,12 @@ export default function PaneInputBar({
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
+  // Text colors MUST come from the live theme at render time, never from
+  // StyleSheet.create: that snapshot is taken once at module load with the
+  // seed palette, so after applyThemePreset() swapped the palette the typed /
+  // "Ask AI"-inserted composer text kept the stale seed text1 and read as
+  // faint as the placeholder on the new background (2026-10-06 on-device).
+  const { colors: themeColors } = useTheme();
   // Matches CommandKeyBar's own background source (TerminalPane.tsx passes
   // it `terminalPaneBg`, i.e. C.bgDeep) so the two panes' footer strips
   // blend into their pane body the same way, instead of this one reading
@@ -170,17 +177,17 @@ export default function PaneInputBar({
         </View>
       ) : null}
       <View style={[styles.pill, { backgroundColor: pillBg }]}>
-        <Text style={styles.promptGlyph}>{'>'}</Text>
+        <Text style={[styles.promptGlyph, { color: themeColors.accent }]}>{'>'}</Text>
         <TextInput
           ref={inputRef}
-          style={styles.input}
+          style={[styles.input, { color: themeColors.foreground }]}
           value={text}
           onChangeText={setText}
           onSelectionChange={(e) => {
             selectionRef.current = e.nativeEvent.selection;
           }}
           placeholder={placeholder ?? ''}
-          placeholderTextColor={C.text3}
+          placeholderTextColor={themeColors.hint}
           onSubmitEditing={handleSubmit}
           blurOnSubmit={false}
           returnKeyType="send"
@@ -268,7 +275,8 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: F.family,
     fontSize: 11,
-    color: C.text1,
+    // color is applied inline from useTheme() — see the comment in the
+    // component body.
     paddingVertical: 4,
     paddingHorizontal: 0,
   },
