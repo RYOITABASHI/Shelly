@@ -346,6 +346,10 @@ export type AppSettings = {
    * OFF: use theme-dependent colors (may be harder to read on some displays).
    */
   highContrastOutput: boolean;
+  /** `shelly teach`: allow sending recorded commands to cloud LLMs
+   *  (Cerebras/Groq) for cleanup when the local LLM is unavailable. Default
+   *  false — recordings stay on-device (local LLM or rule-based only). */
+  teachAllowCloudLlm?: boolean;
   // ─── Local LLM (Ollama) ───────────────────────────────────────────────────
   /** Enable local LLM for chat (Ollama-compatible API) */
   localLlmEnabled: boolean;
