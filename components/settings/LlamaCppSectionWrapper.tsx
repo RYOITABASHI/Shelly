@@ -240,6 +240,13 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
     [refreshInstalled],
   );
 
+  // Download-progress polling: short timeout, stdout only, and no
+  // refreshInstalled() (handleRun refreshes on every success).
+  const handleProbe = useCallback(async (command: string) => {
+    const r = await execCommand(command, 30_000);
+    return r.exitCode === 0 ? (r.stdout ?? '') : '';
+  }, []);
+
   const handleSelectModel = useCallback(
     (model: LlamaCppModel) => {
       setActiveModelId(model.id);
@@ -286,6 +293,7 @@ export function LlamaCppSectionWrapper({ onClose }: Props) {
           installedModelPaths={installedModelPaths}
           onSelectModel={handleSelectModel}
           onRunCommand={handleRun}
+          onProbeCommand={handleProbe}
           onUpdateLocalLlmUrl={handleUpdateLocalLlmUrl}
         />
       </ScrollView>

@@ -673,9 +673,12 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
     `MODEL_NAME=${name}`,
     `MODEL_DEST="${dest}"`,
     `if command -v curl >/dev/null 2>&1; then`,
-    `  curl -L --fail --retry 3 --retry-delay 2 -C - -o "$MODEL_DEST" "$MODEL_URL"`,
+    // Quiet (-sS / -q): progress is shown in the UI by polling the file size
+    // (buildModelDownloadedBytesCommand), and the meter only cluttered the
+    // tail of the output surfaced on failure.
+    `  curl -sS -L --fail --retry 3 --retry-delay 2 -C - -o "$MODEL_DEST" "$MODEL_URL"`,
     `elif command -v wget >/dev/null 2>&1; then`,
-    `  wget -c -O "$MODEL_DEST" "$MODEL_URL"`,
+    `  wget -q -c -O "$MODEL_DEST" "$MODEL_URL"`,
     `else`,
     `  echo "Download failed: curl or wget is required." >&2`,
     `  exit 1`,
@@ -683,6 +686,66 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
     `test -s "$MODEL_DEST"`,
     `echo "Download complete: ${dest}"`,
   ].join('\n');
+}
+
+// ─── Download progress ───────────────────────────────────────────────────────
+// buildDownloadCommand writes straight to the final path (curl -C - resumes
+// into it), so the bytes on disk ARE the progress. The UI polls these two
+// read-only probes while the download command is in flight.
+
+/** Prints the current byte size of the model file being downloaded (0 when
+ *  it doesn't exist yet). Uses stat, not wc -c, so a multi-GB file isn't
+ *  re-read on every poll. */
+export function buildModelDownloadedBytesCommand(model: LlamaCppModel): string {
+  const dest = `${MODELS_DIR}/${model.filename}`;
+  return `F="${dest}"; if [ -f "$F" ]; then stat -c %s "$F" 2>/dev/null || echo 0; else echo 0; fi`;
+}
+
+/** Prints the remote Content-Length (after redirects) for the model URL, or
+ *  nothing when the server doesn't report one. */
+export function buildModelContentLengthCommand(model: LlamaCppModel): string {
+  const url = shellQuote(model.downloadUrl);
+  return [
+    TLS_ENV_PRELUDE,
+    `if command -v curl >/dev/null 2>&1; then`,
+    `  curl -sIL --max-time 20 ${url} 2>/dev/null | tr -d '\\r' | grep -i '^content-length:' | tail -n 1 | sed 's/[^0-9]//g'`,
+    `fi`,
+  ].join('\n');
+}
+
+/** Parses a probe's stdout into a positive byte count, or null. */
+export function parseProbeBytes(output: string | undefined | null): number | null {
+  const m = /(\d+)\s*$/.exec((output ?? '').trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export interface ModelDownloadProgress {
+  downloadedMb: number;
+  totalMb: number;
+  /** 0–99 while running (100 only once the command itself succeeded). */
+  percent: number;
+  /** true when the total came from the catalog's sizeGb, not Content-Length. */
+  approximate: boolean;
+}
+
+/** Combines bytes-on-disk with the best known total (Content-Length, else
+ *  the catalog sizeGb as decimal GB). */
+export function computeModelDownloadProgress(
+  model: LlamaCppModel,
+  downloadedBytes: number,
+  contentLength: number | null,
+): ModelDownloadProgress {
+  const approximate = !contentLength;
+  const totalBytes = contentLength ?? Math.round(model.sizeGb * 1e9);
+  const ratio = totalBytes > 0 ? downloadedBytes / totalBytes : 0;
+  return {
+    downloadedMb: Math.round(downloadedBytes / 1e6),
+    totalMb: Math.round(totalBytes / 1e6),
+    percent: Math.max(0, Math.min(99, Math.floor(ratio * 100))),
+    approximate,
+  };
 }
 
 /**

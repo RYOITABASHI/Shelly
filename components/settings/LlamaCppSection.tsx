@@ -24,6 +24,11 @@ import {
   LlamaCppModel,
   buildSetupSteps,
   buildDownloadCommand,
+  buildModelDownloadedBytesCommand,
+  buildModelContentLengthCommand,
+  parseProbeBytes,
+  computeModelDownloadProgress,
+  type ModelDownloadProgress,
   buildDaemonStartScript,
   buildStopCommand,
   buildStatusCommand,
@@ -46,7 +51,13 @@ interface LlamaCppSectionProps {
   onSelectModel: (model: LlamaCppModel) => void;
   onRunCommand: (command: string, label: string) => Promise<{ success: boolean; output?: string }>;
   onUpdateLocalLlmUrl: (url: string) => void;
+  /** Lightweight read-only probe (no installed-list refresh, short timeout)
+   *  used to poll model download progress. Returns stdout, or '' on failure.
+   *  When omitted, the download button just shows a spinner. */
+  onProbeCommand?: (command: string) => Promise<string>;
 }
+
+const DOWNLOAD_PROGRESS_POLL_MS = 2000;
 
 type ServerStatus = 'unknown' | 'running' | 'starting' | 'stopped';
 
@@ -72,6 +83,7 @@ export function LlamaCppSection({
   onSelectModel,
   onRunCommand,
   onUpdateLocalLlmUrl,
+  onProbeCommand,
 }: LlamaCppSectionProps) {
   const { t } = useTranslation();
   const recommended = getRecommendedModel();
@@ -82,6 +94,7 @@ export function LlamaCppSection({
   const [isSettingUp, setIsSettingUp] = useState(false);
   const [setupLog, setSetupLog] = useState<string[]>([]);
   const [showSetupLog, setShowSetupLog] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const deleteGuardRef = useRef<{
     activeModelId: string | null;
     operationInProgress: boolean;
@@ -174,7 +187,37 @@ export function LlamaCppSection({
       return;
     }
     setLoadingModelId(model.id);
+    setDownloadProgress(null);
     const cmd = buildDownloadCommand(model);
+
+    // Progress: poll bytes-on-disk against Content-Length (fetched once;
+    // catalog sizeGb is used until/unless it arrives) while the download runs.
+    let stopped = false;
+    let contentLength: number | null = null;
+    let pollInFlight = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    if (onProbeCommand) {
+      onProbeCommand(buildModelContentLengthCommand(model))
+        .then((out) => { contentLength = parseProbeBytes(out); })
+        .catch(() => {});
+      const bytesCmd = buildModelDownloadedBytesCommand(model);
+      const poll = async () => {
+        if (pollInFlight || stopped) return;
+        pollInFlight = true;
+        try {
+          const bytes = parseProbeBytes(await onProbeCommand(bytesCmd));
+          if (!stopped && bytes !== null) {
+            setDownloadProgress(computeModelDownloadProgress(model, bytes, contentLength));
+          }
+        } catch {
+          // Progress is best-effort; the download command decides success.
+        } finally {
+          pollInFlight = false;
+        }
+      };
+      pollTimer = setInterval(poll, DOWNLOAD_PROGRESS_POLL_MS);
+    }
+
     let result: { success: boolean; output?: string };
     try {
       result = await onRunCommand(cmd, `${model.name} download`);
@@ -184,7 +227,10 @@ export function LlamaCppSection({
         output: error instanceof Error ? error.message : String(error),
       };
     } finally {
+      stopped = true;
+      if (pollTimer) clearInterval(pollTimer);
       setLoadingModelId(null);
+      setDownloadProgress(null);
     }
     if (result.success) {
       Alert.alert(t('common.done'), t('llama.download_complete', { name: model.name }));
@@ -192,7 +238,7 @@ export function LlamaCppSection({
       const details = (result.output ?? '').trim().slice(-800);
       Alert.alert(t('common.error'), `${t('llama.download_failed')}${details ? `\n\n${details}` : ''}`);
     }
-  }, [isConnected, onRunCommand, t]);
+  }, [isConnected, onRunCommand, onProbeCommand, t]);
 
   // ── サーバー起動/停止 ────────────────────────────────────────────────────
 
@@ -289,8 +335,13 @@ export function LlamaCppSection({
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  const installedModels = MODEL_CATALOG.filter((m) => installedModelIds.has(m.id));
-  const notInstalledModels = MODEL_CATALOG.filter((m) => !m.hidden && !installedModelIds.has(m.id));
+  // The download writes straight to the final .gguf path, so the wrapper's
+  // periodic disk scan sees the partial file as "installed" within seconds.
+  // Keep the model being downloaded in the catalog (with its progress) and
+  // out of the startable list until the download command finishes.
+  const isInstalled = (m: LlamaCppModel) => installedModelIds.has(m.id) && m.id !== loadingModelId;
+  const installedModels = MODEL_CATALOG.filter(isInstalled);
+  const notInstalledModels = MODEL_CATALOG.filter((m) => !m.hidden && !isInstalled(m));
 
   return (
     <View>
@@ -424,7 +475,20 @@ export function LlamaCppSection({
                     disabled={operationInProgress}
                   >
                     {isLoading
-                      ? <ActivityIndicator size="small" color={C.btnPrimaryText} />
+                      ? (
+                        <View style={styles.downloadProgressRow}>
+                          <ActivityIndicator size="small" color={C.btnPrimaryText} />
+                          {downloadProgress && (
+                            <Text style={styles.actionBtnPrimaryText}>
+                              {t(downloadProgress.approximate ? 'llama.download_progress_approx' : 'llama.download_progress', {
+                                percent: downloadProgress.percent,
+                                downloaded: downloadProgress.downloadedMb,
+                                total: downloadProgress.totalMb,
+                              })}
+                            </Text>
+                          )}
+                        </View>
+                      )
                       : <Text style={styles.actionBtnPrimaryText}>{t('llama.download', { size: model.sizeGb })}</Text>
                     }
                   </TouchableOpacity>
@@ -532,6 +596,7 @@ const styles = createThemedStyles(() => ({
   modelDetail: { paddingHorizontal: 12, paddingBottom: 12, borderTopWidth: 1, borderTopColor: C.border },
   modelDesc: { color: C.text2, fontSize: 12, fontFamily: 'JetBrainsMono_400Regular', lineHeight: 18, marginTop: 8, marginBottom: 10 },
   modelActions: { flexDirection: 'row', gap: 8 },
+  downloadProgressRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   actionBtn: { borderRadius: 6, paddingVertical: 7, paddingHorizontal: 14 },
   actionBtnDisabled: { opacity: 0.45 },
   actionBtnPrimary: { backgroundColor: C.accent },

@@ -2288,6 +2288,8 @@ const en: Record<string, string> = {
   'llama.model_catalog': 'Model Catalog',
   'llama.recommended': 'Recommended',
   'llama.download': 'Download ({{size}}GB)',
+  'llama.download_progress': '{{percent}}% · {{downloaded}} / {{total}} MB',
+  'llama.download_progress_approx': '~{{percent}}% · {{downloaded}} / ~{{total}} MB',
   'llama.model.minicpm5_2b.badge': 'Tool calling (eval)',
   'llama.model.minicpm5_2b.description':
     'Opt-in A/B candidate (OpenBMB, Apache 2.0). Strong at tool calling for sub-agents; officially tuned for English/Chinese, so check Japanese quality with the bundled eval before relying on it. Needs llama.cpp b9360+ to load (b9833+ for native tool-call parsing) — re-run llama.cpp Setup if the server fails to start.',
