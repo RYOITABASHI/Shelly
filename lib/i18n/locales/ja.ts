@@ -2492,6 +2492,9 @@ const ja: Record<string, string> = {
   'tts_code_block_omitted': 'コードブロック省略。',
   'tts_truncated_suffix': '。以下省略。',
   'ai_pane_images_require_gemini': '画像の添付にはGeminiプロバイダが必要です — このペインをGeminiに切り替える（または設定でGemini APIキーを追加する）か、対応するペインで送信し直してください。',
+  'ai_pane_local_reasoning_only': 'ローカルモデルが内部の推論（思考）だけを出力し、返答本文がありませんでした（思考中にトークン上限に達した可能性があります）。もう一度送信するか、設定 → ローカルLLM で思考モードのないモデルに切り替えてください。',
+  'ai_pane_local_empty_reply': 'ローカルLLMから空の返答が返されました。もう一度送信してください。繰り返し起きる場合は 設定 → ローカルLLM から llama.cpp を再起動してください。',
+  'ai_pane_empty_reply': '返答を受け取れませんでした。もう一度メッセージを送信してください。',
   'ai_pane_image_default_prompt': 'この画像について説明してください。',
   'ai_pane_stop_streaming': '停止',
 

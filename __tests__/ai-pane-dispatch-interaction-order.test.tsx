@@ -3420,3 +3420,107 @@ describe('pending API key prompt survives an interleaved out-of-band line (hand-
     expect(conv().messages.find((m) => m.id === 'ask-key')?.pendingApiKeyProvider).toBeUndefined();
   });
 });
+
+// 2026-10-06 on-device bug: the companion thread (LOCAL, Qwen3.5-0.8B on
+// llama.cpp b9371) showed a column of EMPTY assistant bubbles. Root causes
+// covered here: (1) a superseded dispatch's `finally` cleared the pane-level
+// streaming flag while the NEW dispatch was still in flight (its bubble then
+// rendered as a bare empty box, so the user re-sent, aborting again), and
+// its own aborted placeholder was left behind with content ''; (2) a
+// reasoning-only llama.cpp stream had no user-facing explanation.
+describe('local companion empty-reply guard', () => {
+  beforeEach(() => {
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, localLlmEnabled: true, localLlmUrl: 'http://127.0.0.1:8080', localLlmModel: 'some-alias' },
+    }));
+    mockEnsureLocalLlmServerRunning.mockResolvedValue({ ok: true, status: 'already_running' });
+  });
+
+  const assistantMessages = () => conv().messages.filter((m) => m.role === 'assistant');
+
+  it('always asks the local backend to run with thinking disabled', async () => {
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('hello', false);
+      return { success: true };
+    });
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('hi');
+    });
+    expect(mockOllamaChatStream.mock.calls[0][0]).toMatchObject({ enableThinking: false });
+    expect(assistantMessages().map((m) => m.content)).toEqual(['hello']);
+  });
+
+  it('shows an i18n fallback (never an empty bubble) for a reasoning-only local reply', async () => {
+    mockOllamaChatStream.mockResolvedValue({ success: false, error: 'reasoning only', reasoningOnlyChars: 812 });
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('hi');
+    });
+    expect(assistantMessages().map((m) => m.content)).toEqual(['ai_pane_local_reasoning_only']);
+    expect(assistantMessages()[0].isStreaming).toBe(false);
+  });
+
+  it('shows an i18n fallback when the local stream "succeeds" with no visible text', async () => {
+    mockOllamaChatStream.mockImplementation(async (_config, _messages, onChunk) => {
+      onChunk('  ', false);
+      return { success: true };
+    });
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('hi');
+    });
+    expect(assistantMessages().map((m) => m.content)).toEqual(['ai_pane_local_empty_reply']);
+  });
+
+  it('a superseded dispatch neither leaves an empty bubble nor clears the new dispatch streaming flag', async () => {
+    let releaseSecond: (() => void) | null = null;
+    mockOllamaChatStream
+      .mockImplementationOnce((_config, _messages, _onChunk, _timeout, signal: AbortSignal) =>
+        new Promise((resolve) => {
+          signal.addEventListener('abort', () => resolve({ success: false, error: 'Aborted' }), { once: true });
+        }))
+      .mockImplementationOnce((_config, _messages, onChunk) =>
+        new Promise((resolve) => {
+          releaseSecond = () => {
+            onChunk('second reply', false);
+            resolve({ success: true });
+          };
+        }));
+    const { result } = setup();
+
+    let first: Promise<void> = Promise.resolve();
+    await act(async () => {
+      first = result.current.dispatch('first message');
+      // let the first dispatch reach ollamaChatStream
+      for (let i = 0; i < 20 && mockOllamaChatStream.mock.calls.length < 1; i += 1) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    });
+    expect(mockOllamaChatStream).toHaveBeenCalledTimes(1);
+
+    let second: Promise<void> = Promise.resolve();
+    await act(async () => {
+      second = result.current.dispatch('second message');
+      await first;
+      for (let i = 0; i < 20 && mockOllamaChatStream.mock.calls.length < 2; i += 1) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    });
+    expect(mockOllamaChatStream).toHaveBeenCalledTimes(2);
+    // The aborted first dispatch must not have flipped the pane out of
+    // streaming while the second one is still in flight...
+    expect(conv().isStreaming).toBe(true);
+    // ...and must not have left its own empty placeholder behind.
+    expect(assistantMessages()).toHaveLength(1);
+
+    await act(async () => {
+      releaseSecond?.();
+      await second;
+    });
+    expect(conv().isStreaming).toBe(false);
+    expect(assistantMessages().map((m) => m.content)).toEqual(['second reply']);
+    expect(conv().messages.filter((m) => m.role === 'user').map((m) => m.content))
+      .toEqual(['first message', 'second message']);
+  });
+});

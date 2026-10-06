@@ -226,6 +226,104 @@ describe('local LLM request compatibility', () => {
     });
   });
 
+  it('disables thinking on llama.cpp OpenAI streams even when the model name does not look like Qwen/MiniCPM', async () => {
+    // 2026-10-06 on-device: the configured model string can be an alias /
+    // filename unrelated to the GGUF the server actually serves (Qwen3.5),
+    // so the request must not depend on a name heuristic.
+    const fetchMock = mockStreamFetch(
+      'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n',
+    );
+    await ollamaChatStream(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'my-custom-alias.gguf', enabled: true },
+      messages,
+      () => {},
+      1000,
+    );
+    expect(requestBody(fetchMock)).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
+  });
+
+  it('disables thinking on llama.cpp OpenAI non-stream requests regardless of model name', async () => {
+    const fetchMock = mockJsonFetch({
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    });
+    await ollamaChat({ baseUrl: 'http://127.0.0.1:8080', model: 'gemma-3-1b', enabled: true }, messages);
+    expect(requestBody(fetchMock)).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
+  });
+
+  it('keeps thinking enabled only when the caller explicitly opts in', async () => {
+    const fetchMock = mockStreamFetch(
+      'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n',
+    );
+    await ollamaChatStream(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'Qwen3.5-0.8B-Q4_K_M', enabled: true, enableThinking: true },
+      messages,
+      () => {},
+      1000,
+    );
+    expect(requestBody(fetchMock).chat_template_kwargs).toBeUndefined();
+  });
+
+  it('reports a reasoning-only OpenAI stream (no visible content) as a distinct failure', async () => {
+    mockStreamFetch(
+      [
+        'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}',
+        'data: {"choices":[{"index":0,"delta":{"reasoning_content":"Thinking about"},"finish_reason":null}]}',
+        'data: {"choices":[{"index":0,"delta":{"reasoning_content":" the answer"},"finish_reason":null}]}',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}',
+        'data: [DONE]',
+        '',
+      ].join('\n'),
+    );
+    const chunks: string[] = [];
+    const result = await ollamaChatStream(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'default', enabled: true },
+      messages,
+      (chunk) => chunks.push(chunk),
+      1000,
+    );
+    expect(result.success).toBe(false);
+    expect(result.reasoningOnlyChars).toBe('Thinking about the answer'.length);
+    expect(chunks.join('')).toBe('');
+  });
+
+  it('reports a reasoning-only RN XHR stream as a distinct failure', async () => {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { product: 'ReactNative' },
+    });
+    const body = [
+      'data: {"choices":[{"index":0,"delta":{"reasoning_content":"abc"},"finish_reason":null}]}',
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}',
+      '',
+    ].join('\n');
+    class FakeXHR {
+      status = 200;
+      responseText = '';
+      timeout = 0;
+      onprogress: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      ontimeout: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+      open() {}
+      setRequestHeader() {}
+      abort() {}
+      send() {
+        this.responseText = body;
+        setTimeout(() => this.onload?.(), 0);
+      }
+    }
+    globalThis.XMLHttpRequest = FakeXHR as unknown as typeof XMLHttpRequest;
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) }) as unknown as typeof fetch;
+    const result = await ollamaChatStream(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'default', enabled: true },
+      messages,
+      () => {},
+      1000,
+    );
+    expect(result).toMatchObject({ success: false, reasoningOnlyChars: 3 });
+  });
+
   it('ignores Ollama thinking chunks and keeps final content', async () => {
     const fetchMock = mockStreamFetch(
       [

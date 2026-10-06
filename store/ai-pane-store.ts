@@ -13,6 +13,7 @@ import type { SlotField } from '@/lib/agent-slot-fill';
 import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 import { usePaneStore } from '@/store/pane-store';
 import { getThreadAgentId } from '@/lib/agent-thread-selection';
+import { isEmptyPlainAssistantMessage } from '@/lib/ai-pane-empty-reply';
 
 export const COMPANION_CONVERSATION_KEY = '__companion__';
 
@@ -448,7 +449,10 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
             ...m,
             isStreaming: false,
             streamingText: undefined,
-          })),
+          // Never persist an empty text-only assistant bubble (an aborted /
+          // still-in-flight placeholder) — on reload it would render as a
+          // permanently blank reply (2026-10-06 on-device empty-bubble bug).
+          })).filter((m) => !isEmptyPlainAssistantMessage(m)),
         };
       }
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(serializable));
@@ -490,8 +494,16 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
               droppedStale = true;
               continue;
             }
+            // Also drop empty text-only assistant bubbles a pre-fix build
+            // already persisted (2026-10-06 on-device empty-bubble bug).
+            const loadedMessages = Array.isArray(conv.messages) ? conv.messages : [];
+            const messages = loadedMessages.filter(
+              (m) => !isEmptyPlainAssistantMessage({ ...m, isStreaming: false, streamingText: undefined }),
+            );
+            if (messages.length !== loadedMessages.length) droppedStale = true;
             conversations[paneId] = {
               ...conv,
+              messages,
               isStreaming: false,
               terminalContext: null,
             };

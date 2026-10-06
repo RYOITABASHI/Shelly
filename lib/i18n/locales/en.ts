@@ -2528,6 +2528,9 @@ const en: Record<string, string> = {
   'tts_code_block_omitted': 'Code block omitted.',
   'tts_truncated_suffix': ' The rest is omitted.',
   'ai_pane_images_require_gemini': 'Image attachments need the Gemini provider — switch this pane to Gemini (or add a Gemini API key in Settings), then send again.',
+  'ai_pane_local_reasoning_only': 'The local model only produced internal reasoning and no reply (it may have run out of its token budget while thinking). Please try again, or switch to a non-thinking local model in Settings → Local LLM.',
+  'ai_pane_local_empty_reply': 'The local LLM returned an empty reply. Please try again — if this keeps happening, restart llama.cpp from Settings → Local LLM.',
+  'ai_pane_empty_reply': 'No reply was received. Please try sending your message again.',
   'ai_pane_image_default_prompt': 'Describe this image.',
   'ai_pane_stop_streaming': 'Stop',
 

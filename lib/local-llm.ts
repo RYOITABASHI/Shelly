@@ -159,7 +159,23 @@ export interface LocalLlmConfig {
   baseUrl: string;   // e.g. "http://127.0.0.1:11434"
   model: string;     // e.g. "Qwen3.5-2B-Q4_K_M"
   enabled: boolean;
+  /** Explicit opt-in to the model's thinking/reasoning mode. Omitted/false =
+   *  thinking disabled. Only `true` keeps `enable_thinking` off the request. */
+  enableThinking?: boolean;
 }
+
+/** Result of a streaming chat call. `reasoningOnlyChars` is set when the
+ *  server streamed ONLY `reasoning_content` (llama.cpp `--reasoning-format
+ *  deepseek`) / Ollama `message.thinking` and zero visible content — e.g. a
+ *  thinking-mode Qwen3.x that burned its whole max_tokens budget thinking. */
+export interface LocalChatStreamResult {
+  success: boolean;
+  content?: string;
+  error?: string;
+  reasoningOnlyChars?: number;
+}
+
+export const LOCAL_LLM_REASONING_ONLY_ERROR = 'Local LLM returned only reasoning (thinking) output and no reply.';
 
 function shouldDisableThinking(model: string): boolean {
   const normalized = model.trim().toLowerCase();
@@ -173,8 +189,20 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function withOpenAIChatTemplateOptions(req: OpenAIChatRequest): OpenAIChatRequest {
-  if (!shouldDisableThinking(req.model)) return req;
+/**
+ * llama.cpp OpenAI-compatible endpoint: ALWAYS send enable_thinking=false
+ * unless the caller explicitly opted into thinking. This is deliberately NOT
+ * keyed on the model-name heuristic any more — the configured model string is
+ * frequently an alias/filename that doesn't name the family (the server serves
+ * whatever GGUF it was started with), and a reasoning-capable template with
+ * thinking left on streams everything into `reasoning_content`, leaving the
+ * visible reply empty (2026-10-06 on-device: Qwen3.5-0.8B → content:"" +
+ * finish_reason=length). Templates that don't reference enable_thinking simply
+ * ignore the extra jinja kwarg, so this is safe for non-thinking models.
+ * (Ollama keeps the name heuristic: it 400s `think` on non-thinking models.)
+ */
+function withOpenAIChatTemplateOptions(req: OpenAIChatRequest, enableThinking?: boolean): OpenAIChatRequest {
+  if (enableThinking === true) return req;
   return {
     ...req,
     chat_template_kwargs: {
@@ -184,8 +212,8 @@ function withOpenAIChatTemplateOptions(req: OpenAIChatRequest): OpenAIChatReques
   };
 }
 
-function withOllamaThinkingOptions(req: OllamaChatRequest): OllamaChatRequest {
-  if (!shouldDisableThinking(req.model)) return req;
+function withOllamaThinkingOptions(req: OllamaChatRequest, enableThinking?: boolean): OllamaChatRequest {
+  if (enableThinking === true || !shouldDisableThinking(req.model)) return req;
   return {
     ...req,
     think: false,
@@ -457,7 +485,7 @@ export async function ollamaChat(
               },
             }
           : {}),
-      });
+      }, config.enableThinking);
       body = JSON.stringify(req);
     } else {
       // Ollama: /api/chat
@@ -472,7 +500,7 @@ export async function ollamaChat(
           num_predict: maxTokens,
         },
         ...(jsonSchema ? { format: jsonSchema } : {}),
-      });
+      }, config.enableThinking);
       body = JSON.stringify(req);
     }
 
@@ -554,7 +582,7 @@ export async function ollamaChatStream(
   externalSignal?: AbortSignal,
   _retried = false,
   maxTokens = DEFAULT_LOCAL_MAX_TOKENS,
-): Promise<{ success: boolean; content?: string; error?: string }> {
+): Promise<LocalChatStreamResult> {
   const apiType = detectApiType(config.baseUrl);
   const isReactNative = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
 
@@ -569,7 +597,7 @@ export async function ollamaChatStream(
       stream: true,
       temperature: 0.4,
       max_tokens: maxTokens,
-    });
+    }, config.enableThinking);
     body = JSON.stringify(req);
   } else {
     url = `${config.baseUrl}/api/chat`;
@@ -582,7 +610,7 @@ export async function ollamaChatStream(
         num_ctx: DEFAULT_LOCAL_CONTEXT_TOKENS,
         num_predict: maxTokens,
       },
-    });
+    }, config.enableThinking);
     body = JSON.stringify(req);
   }
 
@@ -646,11 +674,13 @@ export async function ollamaChatStream(
     const MAX_BUFFER_SIZE = 102400;
     let emittedChunks = 0;
     let emittedDone = false;
+    let reasoningChars = 0;
     const handleChunk = (text: string, done: boolean) => {
       if (text) emittedChunks += 1;
       if (done) emittedDone = true;
       safeEmitChunk(onChunk, text, done);
     };
+    const handleReasoning = (chars: number) => { reasoningChars += chars; };
 
     try {
       while (true) {
@@ -666,17 +696,20 @@ export async function ollamaChatStream(
         buffer = lines.pop() ?? '';
 
         for (const line of lines) {
-          parseSSELine(line, apiType, handleChunk);
+          parseSSELine(line, apiType, handleChunk, handleReasoning);
         }
       }
       buffer += decoder.decode();
       if (buffer.trim()) {
-        parseSSELine(buffer, apiType, handleChunk);
+        parseSSELine(buffer, apiType, handleChunk, handleReasoning);
       }
     } finally {
       clearTimeout(timer);
     }
 
+    if (emittedChunks === 0 && reasoningChars > 0) {
+      return { success: false, error: LOCAL_LLM_REASONING_ONLY_ERROR, reasoningOnlyChars: reasoningChars };
+    }
     if (emittedChunks === 0) {
       return {
         success: false,
@@ -717,6 +750,7 @@ function parseSSELine(
   line: string,
   apiType: 'openai' | 'ollama',
   onChunk: (text: string, done: boolean) => void,
+  onReasoning?: (chars: number) => void,
 ): void {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -727,6 +761,8 @@ function parseSSELine(
     if (jsonStr === '[DONE]') { onChunk('', true); return; }
     try {
       const chunk = JSON.parse(jsonStr) as OpenAIStreamChunk;
+      const reasoning = chunk.choices?.[0]?.delta?.reasoning_content;
+      if (reasoning && onReasoning) onReasoning(reasoning.length);
       const content = chunk.choices?.[0]?.delta?.content ?? '';
       const isDone = chunk.choices?.[0]?.finish_reason === 'stop';
       if (content) onChunk(content, isDone);
@@ -735,6 +771,8 @@ function parseSSELine(
   } else {
     try {
       const chunk = JSON.parse(trimmed) as OllamaStreamChunk;
+      const thinking = chunk.message?.thinking;
+      if (thinking && onReasoning) onReasoning(thinking.length);
       const content = chunk.message?.content ?? '';
       const isDone = chunk.done === true;
       if (content) onChunk(content, isDone);
@@ -757,12 +795,14 @@ function xhrStream(
   baseUrl?: string,
   _retried = false,
   maxTokens = 1024,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<LocalChatStreamResult> {
   return new Promise((resolve) => {
     let lastIndex = 0;
     let lineBuffer = '';
     let settled = false;
     let emittedChunks = 0;
+    let reasoningChars = 0;
+    const handleReasoning = (chars: number) => { reasoningChars += chars; };
     let progressTimer: ReturnType<typeof setTimeout> | null = null;
     let abortHandler: (() => void) | null = null;
 
@@ -772,7 +812,7 @@ function xhrStream(
       safeEmitChunk(onChunk, text, done);
     };
 
-    const finish = (result: { success: boolean; error?: string }) => {
+    const finish = (result: LocalChatStreamResult) => {
       if (settled) return;
       if (progressTimer) {
         clearTimeout(progressTimer);
@@ -829,7 +869,7 @@ function xhrStream(
       const text = xhr.responseText;
       if (!text || text.length <= lastIndex) {
         if (flush && lineBuffer) {
-          parseSSELine(lineBuffer, apiType, handleChunk);
+          parseSSELine(lineBuffer, apiType, handleChunk, handleReasoning);
           lineBuffer = '';
         }
         return;
@@ -845,7 +885,7 @@ function xhrStream(
         lineBuffer = '';
       }
       for (const line of lines) {
-        parseSSELine(line, apiType, handleChunk);
+        parseSSELine(line, apiType, handleChunk, handleReasoning);
       }
     };
     const processNewDataSafely = (flush = false): boolean => {
@@ -890,6 +930,10 @@ function xhrStream(
       }
       // Process any remaining data
       if (!processNewDataSafely(true)) return;
+      if (emittedChunks === 0 && reasoningChars > 0) {
+        finish({ success: false, error: LOCAL_LLM_REASONING_ONLY_ERROR, reasoningOnlyChars: reasoningChars });
+        return;
+      }
       if (emittedChunks === 0) {
         finish({
           success: false,

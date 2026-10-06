@@ -105,6 +105,7 @@ import { isEphemeralOneShot } from '@/lib/notification-trigger';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
+import { isEmptyPlainAssistantMessage } from '@/lib/ai-pane-empty-reply';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -559,6 +560,13 @@ export interface AIPaneDispatchOptions {
 export function useAIPaneDispatch(paneIdRaw: string) {
   const { t } = useTranslation();
   const abortRef = useRef<AbortController | null>(null);
+  // Which dispatch currently "owns" each conversation's pane-level streaming
+  // flag. A superseded dispatch (aborted because the user sent another
+  // message) must NOT clear the flag in its `finally` -- that used to blank
+  // the NEW in-flight bubble's streaming indicator (no dots, no typewriter,
+  // so it looked like an empty reply), which made users re-send, which
+  // aborted again: the 2026-10-06 on-device empty-bubble cascade.
+  const streamingOwnerRef = useRef<Map<string, AbortSignal>>(new Map());
   const lastLocalStreamOkAtRef = useRef(0);
 
   const rawUpdateMessage = useAIPaneStore((s) => s.updateMessage);
@@ -3024,6 +3032,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       abortRef.current?.abort();
       abortRef.current = new AbortController();
       const signal = abortRef.current.signal;
+      const dispatchPaneId = paneId;
+      streamingOwnerRef.current.set(dispatchPaneId, signal);
 
       try {
         const promptTerminalCtx =
@@ -3188,6 +3198,12 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               baseUrl: settings.localLlmUrl,
               model: settings.localLlmModel ?? 'default',
               enabled: true,
+              // Companion chat never wants the model's thinking mode: on a
+              // llama.cpp OpenAI endpoint a thinking-on template streams the
+              // whole answer into reasoning_content and leaves the visible
+              // reply empty. lib/local-llm.ts sends enable_thinking=false
+              // unless this is explicitly true.
+              enableThinking: false,
             },
             messages,
             (chunk, _done) => {
@@ -3209,6 +3225,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           );
 
           if (signal.aborted) {
+            if (!accumulated.trim()) {
+              // Superseded/cancelled before any visible token: drop the
+              // placeholder entirely rather than leaving an empty bubble.
+              throttledUpdate(paneId, assistantId, { isStreaming: false, streamingText: undefined });
+              useAIPaneStore.getState().deleteMessage(paneId, assistantId);
+              return;
+            }
             const outputTokens = estimateTokens(accumulated);
             void postLocalLlmScouterEvent({
               phase: 'snapshot',
@@ -3230,6 +3253,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           } else if (result.success) {
             logInfo('AIPaneDispatch', 'Local LLM response complete');
             if (!accumulated.trim()) {
+              logWarn('AIPaneDispatch', `empty local reply (whitespace only, ${accumulated.length} chars)`);
               void postLocalLlmScouterEvent({
                 phase: 'error',
                 endpoint: settings.localLlmUrl,
@@ -3240,9 +3264,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 latencyMs: Date.now() - localStartedAt,
               });
               throttledUpdate(paneId, assistantId, {
-                content:
-                  `Local LLM returned an empty response from ${settings.localLlmUrl}. ` +
-                  `Restart llama.cpp and try again.`,
+                content: t('ai_pane_local_empty_reply'),
                 streamingText: undefined,
                 isStreaming: false,
               });
@@ -3268,6 +3290,22 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               streamingText: undefined,
               isStreaming: false,
               tokenCount: estimateTokens(accumulated),
+            });
+          } else if (result.reasoningOnlyChars && result.reasoningOnlyChars > 0) {
+            logWarn('AIPaneDispatch', `empty local reply (reasoning only, ${result.reasoningOnlyChars} chars)`);
+            void postLocalLlmScouterEvent({
+              phase: 'error',
+              endpoint: settings.localLlmUrl,
+              model: settings.localLlmModel ?? 'default',
+              message: `Local LLM returned reasoning only (${result.reasoningOnlyChars} chars)`,
+              cwd: localCwd,
+              inputTokens: localInputTokens,
+              latencyMs: Date.now() - localStartedAt,
+            });
+            throttledUpdate(paneId, assistantId, {
+              content: t('ai_pane_local_reasoning_only'),
+              streamingText: undefined,
+              isStreaming: false,
             });
           } else {
             logError('AIPaneDispatch', `Local LLM failed: ${result.error ?? 'unknown'}`);
@@ -3683,7 +3721,34 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           streamingText: undefined,
         });
       } finally {
-        store.setStreaming(paneId, false);
+        // Empty-bubble guard (2026-10-06): whatever path this dispatch took,
+        // never leave a text-only assistant placeholder with no visible text.
+        // A superseded/cancelled dispatch's empty placeholder is removed; a
+        // completed one gets an explicit "no reply" line instead of a blank
+        // bubble. Placeholders that became cards/drafts are untouched
+        // (isEmptyPlainAssistantMessage only matches text-only messages).
+        const finalAssistant = useAIPaneStore.getState().conversations[dispatchPaneId]?.messages
+          .find((m) => m.id === assistantId);
+        if (isEmptyPlainAssistantMessage(finalAssistant)) {
+          throttledUpdate(dispatchPaneId, assistantId, { isStreaming: false, streamingText: undefined });
+          if (signal.aborted) {
+            useAIPaneStore.getState().deleteMessage(dispatchPaneId, assistantId);
+          } else {
+            logWarn('AIPaneDispatch', 'empty assistant reply after dispatch; showing fallback');
+            throttledUpdate(dispatchPaneId, assistantId, {
+              content: t('ai_pane_empty_reply'),
+              isStreaming: false,
+              streamingText: undefined,
+            });
+          }
+        }
+        // Only the dispatch that still owns this conversation's streaming
+        // flag may clear it -- see streamingOwnerRef's comment.
+        const owner = streamingOwnerRef.current.get(dispatchPaneId);
+        if (!owner || owner === signal) {
+          streamingOwnerRef.current.delete(dispatchPaneId);
+          store.setStreaming(dispatchPaneId, false);
+        }
         // Agent-complete chime to match Superset.sh — user can be
         // looking at another pane and still know the response landed.
         try { playSound('ai_complete'); } catch {}
