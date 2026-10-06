@@ -164,7 +164,9 @@ export interface LocalLlmConfig {
 function shouldDisableThinking(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   if (!normalized || normalized === 'default' || normalized === 'local') return true;
-  return /qwen[\s._-]*3/i.test(normalized);
+  // MiniCPM5's embedded template also honors enable_thinking=false (it emits
+  // an empty <think></think> block), same contract as Qwen3/3.5.
+  return /qwen[\s._-]*3/i.test(normalized) || /minicpm[\s._-]*5/i.test(normalized);
 }
 
 function errorMessage(err: unknown): string {

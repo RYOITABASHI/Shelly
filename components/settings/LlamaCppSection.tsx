@@ -406,14 +406,14 @@ export function LlamaCppSection({
               <View style={styles.modelTitleRow}>
                 <Text style={styles.modelName}>{model.name}</Text>
                 {isRec && <View style={styles.recBadge}><Text style={styles.recBadgeText}>{t('llama.recommended')}</Text></View>}
-                {model.badge && <View style={styles.badge}><Text style={styles.badgeText}>{model.badge}</Text></View>}
+                {model.badge && <View style={styles.badge}><Text style={styles.badgeText}>{model.badgeKey ? t(model.badgeKey) : model.badge}</Text></View>}
               </View>
               <Text style={styles.modelMeta}>{model.sizeGb}GB · RAM {model.ramRequiredGb}GB · {model.quantization}</Text>
             </TouchableOpacity>
 
             {isExpanded && (
               <View style={styles.modelDetail}>
-                <Text style={styles.modelDesc}>{model.description}</Text>
+                <Text style={styles.modelDesc}>{model.descriptionKey ? t(model.descriptionKey) : model.description}</Text>
                 <View style={styles.modelActions}>
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.actionBtnPrimary]}
