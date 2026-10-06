@@ -9,32 +9,10 @@ import { getHomePath } from '@/lib/home-path';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { usePanelBackground } from '@/hooks/use-panel-background';
-
-function truncatePath(path: string, maxLen = 30): string {
-  if (path.length <= maxLen) return path;
-  const home = getHomePath();
-  const short = path.startsWith(home) ? '~' + path.slice(home.length) : path;
-  if (short.length <= maxLen) return short;
-  return '...' + short.slice(short.length - maxLen + 3);
-}
+import { canonicalizeAndroidDataPath, formatContextBarPath } from '@/lib/context-bar-path';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-/**
- * Android bind-mounts app-private storage under two path aliases for the
- * same directory: /data/data/<pkg> and /data/user/0/<pkg>. Different native
- * code paths in this app report cwd/home using different aliases (PTY-reported
- * cwd uses /data/data, TerminalEmulator.getHomeDir() uses /data/user/0), so a
- * plain string comparison between them can spuriously mismatch even when both
- * actually refer to the same directory. Normalize both known prefixes to a
- * common form before comparing.
- */
-function canonicalizeAndroidDataPath(path: string): string {
-  return path
-    .replace(/^\/data\/user\/0\/dev\.shelly\.terminal\//, '/__shelly_data__/')
-    .replace(/^\/data\/data\/dev\.shelly\.terminal\//, '/__shelly_data__/');
 }
 
 export function ContextBar() {
@@ -90,7 +68,7 @@ export function ContextBar() {
       <Pressable onPress={handleCopyPath} style={[styles.segment, styles.shrinkSegment]} hitSlop={4}>
         <MaterialIcons name="folder" size={10} color={C.text2} />
         <Text style={[styles.text, styles.shrinkText]} numberOfLines={1}>
-          {truncatePath(cwd)}
+          {formatContextBarPath(cwd, home)}
         </Text>
       </Pressable>
 
@@ -115,7 +93,9 @@ export function ContextBar() {
         <View style={[styles.dot, {
           backgroundColor: connectionMode === 'native' ? C.accent : C.errorText,
         }, connectionMode === 'native' && neonDotGlow]} />
-        <Text style={styles.text} numberOfLines={1}>
+        {/* No numberOfLines here on purpose: this is a fixed short label
+            that must never ellipsize — see styles.statusText. */}
+        <Text style={[styles.text, styles.statusText]}>
           {connectionMode === 'native' ? 'Native' : 'Off'}
         </Text>
       </View>
@@ -155,13 +135,25 @@ const styles = StyleSheet.create({
   text: {
     fontSize: F.contextBar.size,
     fontFamily: F.family,
-    fontWeight: F.contextBar.weight,
+    // No fontWeight: F.family is the single-weight JetBrainsMono_400Regular
+    // face, so weight 500 can't be honoured — Android instead resolves a
+    // synthetic/fallback face, and the measured run can come out narrower
+    // than the drawn glyphs. That measure/draw mismatch is the most likely
+    // source of the clipped "Nativ" that survived the letterSpacing removal
+    // and, with numberOfLines={1}, became "Nat…" (2026-10-06, build 2459).
     color: C.text2,
     // No letterSpacing: on Android, letterSpacing on this custom mono font
     // under-measures the run by roughly one glyph, which clipped the last
     // character ("Nativ") and forced the short cwd into a bare ellipsis.
     // A 1dp trailing pad absorbs any remaining sub-pixel rounding.
     paddingRight: 1,
+  },
+  statusText: {
+    flexShrink: 0,
+    // Belt-and-braces floor: 6 monospace cells ("Native") at ~0.6em each
+    // plus the 1dp trailing pad, so even a residual measuring error can't
+    // squeeze the label below its natural width.
+    minWidth: Math.ceil(6 * F.contextBar.size * 0.62) + 2,
   },
   tagline: {
     fontSize: F.badge.size,
