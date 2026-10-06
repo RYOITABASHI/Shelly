@@ -400,9 +400,19 @@ object AgentRuntime {
     // uses a pinned, sha256-verified llama.cpp build, because releases/latest
     // no longer carries android binaries. See lib/agent-executor.ts's
     // AGENT_SCRIPT_VERSION v60 comment.
-    private const val CURRENT_SCRIPT_VERSION = 60
+    // v61 (2026-10-06, POLICY-001 — proactive read-only / NL rules / trust
+    // ramp, flag-gated OFF via SHELLY_AGENT_POLICY): the generated script's
+    // request_and_wait_approval gained the policy gate and its approval
+    // requests now carry "origin" (from the SHELLY_RUN_ORIGIN this class
+    // exports). Bumped so a stale pre-v61 script — which would silently
+    // ignore the policy once the flag is turned on — is regenerated instead.
+    // CURRENT_EXECUTOR_VERSION 4: same feature in scripts/shelly-plan-executor.js.
+    // v63: plus SHELLY_AGENT_POLICY_EVER_SEALED (AgentPolicySeal Keystore marker).
+    // v62: the policy gate also verifies policy.json against the
+    // SHELLY_AGENT_POLICY_SEAL this class now exports (security review M1).
+    private const val CURRENT_SCRIPT_VERSION = 63
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private const val CURRENT_EXECUTOR_VERSION = 3
+    private const val CURRENT_EXECUTOR_VERSION = 4
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
@@ -426,8 +436,15 @@ object AgentRuntime {
          *  authorized-sender notification (ShellyNotificationListener) — always
          *  untrusted data; runs carrying it are always tainted. */
         notificationText: String? = null,
-        notificationPackage: String? = null
+        notificationPackage: String? = null,
+        /** POLICY-001 (lib/agent-action-policy.ts RunOrigin): where this run
+         *  came from — user | widget | schedule | notification | boot | event.
+         *  Exported to the run as SHELLY_RUN_ORIGIN. Normalized by
+         *  [normalizeRunOrigin]; anything unrecognized becomes "event", which
+         *  every consumer treats as PROACTIVE (fail-closed). */
+        origin: String = "event"
     ): AgentRunResult {
+        val runOrigin = normalizeRunOrigin(origin)
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)
         val homeDir = HomeInitializer.getHomeDir(appContext)
@@ -504,7 +521,7 @@ object AgentRuntime {
         val bashPath = LibExtractor.getBashPath(appContext)
 
         if (shouldRunPlanExecutor(homeDir, agentId)) {
-            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage)
+            return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin)
         }
 
         val scriptPath = File(homeDir, ".shelly/agents/run-agent-$agentId.sh").absolutePath
@@ -564,6 +581,12 @@ object AgentRuntime {
             append(" && export SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_FILE=")
             append(shellQuote(actionApprovalPublicKeyPath))
             append(" && readonly SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_FILE")
+            // POLICY-001 run origin (see runAgent's `origin` doc). readonly, same
+            // pattern as the pinned keys above.
+            append(" && export SHELLY_RUN_ORIGIN=")
+            append(shellQuote(runOrigin))
+            append(" && readonly SHELLY_RUN_ORIGIN")
+            append(policySealExports(appContext))
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }
@@ -678,7 +701,8 @@ object AgentRuntime {
         tainted: Boolean,
         unattended: Boolean,
         notificationText: String? = null,
-        notificationPackage: String? = null
+        notificationPackage: String? = null,
+        runOrigin: String = "event"
     ): AgentRunResult {
         val libPath = libDir.absolutePath
         val planPath = File(homeDir, ".shelly/agents/plans/plan-agent-$agentId.json").absolutePath
@@ -829,6 +853,12 @@ object AgentRuntime {
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }
+            // POLICY-001: readonly so nothing later in this shell can relabel
+            // a proactive run as user-initiated.
+            append(" && export SHELLY_RUN_ORIGIN=")
+            append(shellQuote(normalizeRunOrigin(runOrigin)))
+            append(" && readonly SHELLY_RUN_ORIGIN")
+            append(policySealExports(context))
             if (!notificationText.isNullOrBlank()) {
                 // NOTIFY-001 Increment 3: exported for parity with the legacy .sh
                 // path (scripts/shelly-plan-executor.js does not consume these
@@ -1459,6 +1489,31 @@ object AgentRuntime {
             "1", "true", "yes", "on" -> true
             else -> false
         }
+
+    /** POLICY-001: the policy.json seal written by RN — see AgentPolicySeal
+     *  (Keystore-backed ever-sealed marker + HMAC, security re-review M1). */
+    fun writeAgentPolicySeal(context: Context, seal: String) {
+        AgentPolicySeal.write(context, seal)
+    }
+
+    /** `export … && readonly …` for the VERIFIED seal + the ever-sealed marker. */
+    private fun policySealExports(context: Context): String {
+        val state = AgentPolicySeal.read(context)
+        return " && export SHELLY_AGENT_POLICY_SEAL=" + shellQuote(state.seal) +
+            " && readonly SHELLY_AGENT_POLICY_SEAL" +
+            " && export SHELLY_AGENT_POLICY_EVER_SEALED=" + shellQuote(if (state.everSealed) "1" else "0") +
+            " && readonly SHELLY_AGENT_POLICY_EVER_SEALED"
+    }
+
+    /** POLICY-001: mirror of lib/agent-action-policy.ts RUN_ORIGINS. Unknown ⇒
+     *  "event" (proactive), never "user". */
+    fun normalizeRunOrigin(origin: String?): String {
+        val normalized = origin?.trim()?.lowercase() ?: return "event"
+        return when (normalized) {
+            "user", "widget", "schedule", "notification", "boot", "event" -> normalized
+            else -> "event"
+        }
+    }
 
     private fun writeReceiverLog(homeDir: File, agentId: String, status: String, message: String) {
         try {

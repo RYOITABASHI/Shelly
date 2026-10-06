@@ -637,7 +637,25 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // auto-install path: bumped so a stale pre-v60 on-disk script, which can only
 // fail on a fresh install, is regenerated. Kept in lockstep with
 // AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 60;
+// v61 (2026-10-06, POLICY-001 — proactive read-only / NL custom rules / trust
+// ramp, flag-gated OFF via SHELLY_AGENT_POLICY): request_and_wait_approval
+// gained the shelly_policy_action_effect gate (compiled user rules from
+// ~/.shelly/agents/policy.json + the proactive read-only floor keyed on the
+// SHELLY_RUN_ORIGIN native now exports), approval requests carry "origin",
+// and the script exports SHELLY_AGENT_POLICY for the B2 driver. REAL
+// BEHAVIOR CHANGE once the flag is on: bumped so a stale pre-v61 script —
+// which would silently ignore the user's rules — is regenerated instead.
+// Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+// v62 (2026-10-06, POLICY-001 security review M1/L3/L5): the policy gate now
+// verifies policy.json against SHELLY_AGENT_POLICY_SEAL (native-exported),
+// rejects malformed compiled lines, and folds case with node when available
+// (ASCII-only fallback escalates unmatched non-ASCII keyword checks to ask).
+// Bumped so a pre-v62 script — which would accept a deleted / edited policy
+// file — is regenerated.
+// v63 (2026-10-06, POLICY-001 re-review M1): the gate also honours
+// SHELLY_AGENT_POLICY_EVER_SEALED (native Keystore marker) — an empty seal
+// after a seal was ever written is unavailable, not "first run".
+const AGENT_SCRIPT_VERSION = 63;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3020,10 +3038,13 @@ write_action_approval_request() {
   # see AgentAction.browserPaneAction's doc comment (store/types.ts) for why a
   # blind click/fill against a live page is a higher risk tier than
   # intent/dm-reply's already-established one.
-  auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && [ "$ACTION_APPROVAL_MODE" != "manual" ] && printf 'true' || printf 'false')
+  auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && [ "$ACTION_APPROVAL_MODE" != "manual" ] && [ "\${SHELLY_POLICY_FORCE_MANUAL:-0}" != "1" ] && printf 'true' || printf 'false')
+  # POLICY-001: run origin for the RN approval choke point (trust ramp /
+  # auto-accept refusal for proactive runs). Empty ⇒ treated as proactive.
+  origin_json=$(json_escape_text "\${SHELLY_RUN_ORIGIN:-}")
   tmp="$ACTION_APPROVAL_REQUEST_FILE.tmp"
   cat > "$tmp" << APPROVALEOF
-{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","destinationHostAllowlisted":$destination_host_allowlisted,"command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","browserPaneActionKind":"$browser_pane_kind_json","browserPaneSelector":"$browser_pane_selector_json","browserPaneValue":"$browser_pane_value_json","browserPaneUrlAllowlist":"$browser_pane_url_allowlist_json","autoAccept":$auto_accept_flag,"ts":"$(date -Iseconds)","expiresAt":$expires_at}
+{"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","destinationHostAllowlisted":$destination_host_allowlisted,"command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","browserPaneActionKind":"$browser_pane_kind_json","browserPaneSelector":"$browser_pane_selector_json","browserPaneValue":"$browser_pane_value_json","browserPaneUrlAllowlist":"$browser_pane_url_allowlist_json","autoAccept":$auto_accept_flag,"origin":"$origin_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
   ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
@@ -3051,6 +3072,152 @@ APPROVALEOF
 # immediately before every dispatch_agent_action call (single-action bake at
 # script-generation time, or per-iteration in the multi-action fan-out loop),
 # so it is always current for whichever action is in flight when this runs.
+# POLICY-001 (lib/agent-action-policy.ts is the reference implementation;
+# scripts/shelly-plan-executor.js policyActionEffect is the PlanSpec twin).
+# Flag-gated OFF: a no-op unless SHELLY_AGENT_POLICY=1 (.env). Sets
+# SHELLY_POLICY_EFFECT to deny|draft_only|ask|"" and SHELLY_POLICY_REASON.
+# Layers, strongest first: compiled user deny/draft_only rules > proactive
+# read-only floor (SHELLY_RUN_ORIGIN not user/widget, incl. missing) > user
+# ask rules > policy file unreadable (ask). Rules come from the
+# compiledActionRules block of ~/.shelly/agents/policy.json, written only by
+# the RN app at a fixed 4-space indent (lib/agent-user-policy-store.ts) so a
+# plain sed range can read it; keywords are validated free of quotes, |, $
+# and backticks at write time.
+# Security review M1/L3/L5: the file must match SHELLY_AGENT_POLICY_SEAL
+# (exported readonly by native; an empty seal accepts only a missing/empty
+# file), every compiled line must be well-formed, and case folding uses node
+# (full Unicode, same as the TS reference) when available — without node,
+# ASCII-only tr is used and a keyword rule that fails to match NON-ASCII text
+# escalates to ask instead of silently not matching.
+SHELLY_POLICY_FILE="$HOME/.shelly/agents/policy.json"
+SHELLY_POLICY_EFFECT=""
+SHELLY_POLICY_REASON=""
+shelly_policy_compiled_lines() {
+  [ -f "$SHELLY_POLICY_FILE" ] || return 0
+  sed -n '/^  "compiledActionRules": \\[$/,/^  \\]/p' "$SHELLY_POLICY_FILE" 2>/dev/null \\
+    | sed -n 's/^    "\\(.*\\)"[,]*$/\\1/p'
+}
+shelly_policy_sha256() {
+  { sha256sum "$1" 2>/dev/null || toybox sha256sum "$1" 2>/dev/null; } | cut -c1-64
+}
+shelly_policy_node_ok() {
+  declare -F node_usable >/dev/null 2>&1 && declare -F shelly_node >/dev/null 2>&1 && node_usable
+}
+shelly_policy_lower() {
+  if [ "$SHELLY_POLICY_FOLD_NODE" = "1" ]; then
+    printf '%s' "$1" | shelly_node -e 'let d="";process.stdin.setEncoding("utf8");process.stdin.on("data",(c)=>{d+=c;}).on("end",()=>process.stdout.write(d.toLowerCase()));' 2>/dev/null && return 0
+  fi
+  printf '%s' "$1" | tr 'A-Z' 'a-z'
+}
+shelly_policy_action_effect() {
+  pa_type="$1"
+  SHELLY_POLICY_EFFECT=""
+  SHELLY_POLICY_REASON=""
+  [ "\${SHELLY_AGENT_POLICY:-0}" = "1" ] || return 0
+  [ "$pa_type" = "__suppressed__" ] && return 0
+  SHELLY_POLICY_FOLD_NODE=0
+  shelly_policy_node_ok && SHELLY_POLICY_FOLD_NODE=1
+  pa_host="$(shelly_policy_lower "\${2:-}")"
+  pa_text="$(shelly_policy_lower "\${3:-}")"
+  pa_nonascii=0
+  if [ "$SHELLY_POLICY_FOLD_NODE" != "1" ] && [ -n "$(printf '%s' "$pa_text" | LC_ALL=C tr -d '\\000-\\177')" ]; then
+    pa_nonascii=1
+  fi
+  pa_best=""
+  pa_rank=0
+  pa_unavailable=0
+  pa_kw_uncertain=0
+  pa_seal="\${SHELLY_AGENT_POLICY_SEAL:-}"
+  if ! [[ "$pa_seal" =~ ^([0-9a-f]{64}(,[0-9a-f]{64})?)?$ ]]; then
+    pa_unavailable=1
+  fi
+  # Re-review M1: native's Keystore marker says a seal was EVER written, so an
+  # empty (deleted / HMAC-rejected) seal is not "first run".
+  if [ -z "$pa_seal" ] && [ "\${SHELLY_AGENT_POLICY_EVER_SEALED:-0}" = "1" ]; then
+    pa_unavailable=1
+  fi
+  if [ -e "$SHELLY_POLICY_FILE" ]; then
+    if [ -z "$pa_seal" ]; then
+      grep -q '[^[:space:]]' "$SHELLY_POLICY_FILE" 2>/dev/null && pa_unavailable=1
+    else
+      pa_hash="$(shelly_policy_sha256 "$SHELLY_POLICY_FILE")"
+      case ",$pa_seal," in
+        *",$pa_hash,"*) [ \${#pa_hash} -eq 64 ] || pa_unavailable=1 ;;
+        *) pa_unavailable=1 ;;
+      esac
+    fi
+  elif [ -n "$pa_seal" ]; then
+    pa_unavailable=1
+  fi
+  if [ -f "$SHELLY_POLICY_FILE" ]; then
+    if [ -s "$SHELLY_POLICY_FILE" ] && ! grep -q '"kind": "shelly.user-policy"' "$SHELLY_POLICY_FILE" 2>/dev/null; then
+      pa_unavailable=1
+    fi
+    pa_lines="$(shelly_policy_compiled_lines)"
+    while IFS= read -r pl_line; do
+      [ -n "$pl_line" ] || continue
+      if ! [[ "$pl_line" =~ ^(ask|deny|draft_only)\\|[a-z_-]+\\|[^|]*\\|[^|]*$ ]]; then
+        pa_unavailable=1
+        continue
+      fi
+      IFS='|' read -r pl_effect pl_type pl_domain pl_kw <<POLICYLINEEOF
+$pl_line
+POLICYLINEEOF
+      [ "$pl_type" = "$pa_type" ] || continue
+      case "$pl_effect" in
+        deny) pl_rank=3 ;;
+        draft_only) pl_rank=2 ;;
+        ask) pl_rank=1 ;;
+        *) continue ;;
+      esac
+      if [ -n "$pl_domain" ]; then
+        case "$pa_host" in "$pl_domain"|*".$pl_domain") ;; *) continue ;; esac
+      fi
+      if [ -n "$pl_kw" ]; then
+        case "$pa_text" in
+          *"$pl_kw"*) ;;
+          *) [ "$pa_nonascii" = "1" ] && pa_kw_uncertain=1; continue ;;
+        esac
+      fi
+      if [ "$pl_rank" -gt "$pa_rank" ]; then
+        pa_rank=$pl_rank
+        pa_best=$pl_effect
+      fi
+    done <<POLICYEOF
+$pa_lines
+POLICYEOF
+  elif [ -e "$SHELLY_POLICY_FILE" ]; then
+    pa_unavailable=1
+  fi
+  [ "$pa_kw_uncertain" = "1" ] && [ -z "$pa_best" ] && pa_best="ask"
+  case "$pa_type" in ""|draft|notify) pa_side=0 ;; *) pa_side=1 ;; esac
+  if [ "$pa_best" = "deny" ] || { [ "$pa_best" = "draft_only" ] && [ "$pa_side" = "1" ]; }; then
+    SHELLY_POLICY_EFFECT="$pa_best"
+    SHELLY_POLICY_REASON="$pa_type action blocked by a user policy rule ($pa_best)"
+    return 0
+  fi
+  if [ "$pa_side" = "1" ]; then
+    case "\${SHELLY_RUN_ORIGIN:-}" in
+      user|widget) ;;
+      *)
+        SHELLY_POLICY_EFFECT="ask"
+        SHELLY_POLICY_REASON="$pa_type action needs approval: proactive run (origin=\${SHELLY_RUN_ORIGIN:-unknown}) may only read/draft/notify"
+        return 0
+        ;;
+    esac
+  fi
+  if [ "$pa_best" = "ask" ]; then
+    SHELLY_POLICY_EFFECT="ask"
+    SHELLY_POLICY_REASON="$pa_type action needs approval: user policy rule"
+    return 0
+  fi
+  if [ "$pa_side" = "1" ] && [ "$pa_unavailable" = "1" ]; then
+    SHELLY_POLICY_EFFECT="ask"
+    SHELLY_POLICY_REASON="$pa_type action needs approval: user policy file is unreadable"
+  fi
+  return 0
+}
+
 request_and_wait_approval() {
   approval_type="$1"
   preview="$2"
@@ -3058,7 +3225,38 @@ request_and_wait_approval() {
   destination_host="\${4:-}"
   payload_path="\${5:-}"
   destination_host_allowlisted="\${6:-false}"
-  if [ "$ACTION_APPROVAL_MODE" != "manual" ]; then
+  # POLICY-001 gate (see shelly_policy_action_effect above). deny ⇒ skipped;
+  # draft_only ⇒ the result is saved as a draft and NOT dispatched; ask ⇒ the
+  # approval round trip is forced even in auto mode (and autoAccept is off),
+  # or the action is refused when the run is unattended (nobody to ask).
+  SHELLY_POLICY_FORCE_MANUAL=0
+  shelly_policy_action_effect "$approval_type" "$destination_host" "$preview
+\${ACTION_COMMAND:-}"
+  case "$SHELLY_POLICY_EFFECT" in
+    deny)
+      ACTION_DISPATCH_STATUS="skipped"
+      ACTION_DISPATCH_MESSAGE="$SHELLY_POLICY_REASON"
+      write_native_notification_request "skipped" "$ACTION_DISPATCH_MESSAGE" || true
+      return 1
+      ;;
+    draft_only)
+      save_draft_result "$result_file" 2>/dev/null || true
+      ACTION_DISPATCH_STATUS="skipped"
+      ACTION_DISPATCH_MESSAGE="$SHELLY_POLICY_REASON: kept as a draft, not dispatched"
+      write_native_notification_request "skipped" "$ACTION_DISPATCH_MESSAGE" || true
+      return 1
+      ;;
+    ask)
+      if [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; then
+        ACTION_DISPATCH_STATUS="skipped"
+        ACTION_DISPATCH_MESSAGE="$SHELLY_POLICY_REASON and cannot run unattended"
+        write_native_notification_request "skipped" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
+      SHELLY_POLICY_FORCE_MANUAL=1
+      ;;
+  esac
+  if [ "$ACTION_APPROVAL_MODE" != "manual" ] && [ "$SHELLY_POLICY_FORCE_MANUAL" != "1" ]; then
     case "$approval_type" in
       intent|dm-reply|browser-pane) ;;
       cli)
@@ -5157,6 +5355,10 @@ trap finish EXIT
 
 # Source environment
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"
+# POLICY-001: export the (default-OFF) policy flag so node children — the B2
+# codex driver in particular — see it; the driver derives the user rules and
+# SHELLY_RUN_ORIGIN (exported readonly by native) itself.
+export SHELLY_AGENT_POLICY="\${SHELLY_AGENT_POLICY:-0}"
 # Resolve the global runtime-approval default LIVE from the just-sourced .env
 # (settings-store syncs SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL on every
 # settings change) so toggling it applies to every agent's NEXT run without

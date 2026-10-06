@@ -37,6 +37,7 @@ import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { focusPaneByTab } from '@/lib/pane-focus';
 import { usePaneStore } from '@/store/pane-store';
 import { useAIPaneStore } from '@/store/ai-pane-store';
+import { COMPANION_CONVERSATION_KEY } from '@/store/ai-pane-store';
 import { useProfileStore } from '@/store/profile-store';
 import { useAgentChatStore, type AgentChatSession } from '@/store/agent-chat-store';
 import { useAgentStore } from '@/store/agent-store';
@@ -71,6 +72,18 @@ import {
 } from '@/lib/agent-browser-pane-review';
 import { executeBrowserPaneAction, BROWSER_PANE_URL_NOT_ALLOWLISTED_ERROR } from '@/lib/browser-pane-automation';
 import { truncateAtCodePointBoundary } from '@/lib/text-truncate';
+import {
+  ensureUserPolicyLoaded,
+  evaluateApprovalRequestPolicy,
+  recordHumanApprovalDecision,
+  trustedRequestOrigin,
+  type TrustOffer,
+} from '@/lib/agent-policy-approval';
+import { isProactiveOrigin } from '@/lib/agent-action-policy';
+import '@/lib/agent-policy-device';
+import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
+import enStrings from '@/lib/i18n/locales/en';
+import jaStrings from '@/lib/i18n/locales/ja';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -95,6 +108,30 @@ const ebStyles = StyleSheet.create({
 
 export const unstable_settings = {
   initialRouteName: "index",
+};
+
+// ─── POLICY-001 helpers (lib/agent-policy-approval.ts) ───────────────────────
+const policyShellRunner = async (cmd: string): Promise<string> => {
+  const result = await execCommand(cmd, 30_000);
+  if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`);
+  return result.stdout;
+};
+
+/** Post the trust-ramp proposal as a plain chat turn (never a card/modal). */
+const postTrustRampOffer = (offer: TrustOffer): void => {
+  const strings = useI18n.getState().locale === 'ja' ? jaStrings : enStrings;
+  const now = Date.now();
+  useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
+    id: `policy-trust-${now.toString(36)}`,
+    role: 'assistant',
+    content: strings['policy.trust_offer']
+      .split('{{agent}}').join(offer.agentName)
+      .split('{{command}}').join(offer.command)
+      .split('{{count}}').join(String(offer.count)),
+    timestamp: now,
+    pendingTrustRule: { key: offer.key, label: offer.label, command: offer.command, agentId: offer.agentId },
+    flowTurn: true,
+  });
 };
 
 const BACKGROUND_AGENT_LOG_START_DELAY_MS = 45_000;
@@ -154,6 +191,9 @@ type AgentActionApprovalRequest = {
   // future review-required flag flip for it doesn't ALSO require rediscovering
   // this gap.
   actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'browser-pane' | 'social-post' | 'api-call';
+  /** POLICY-001: executor-written, UNTRUSTED run origin (informational only;
+   *  policy uses trustedRequestOrigin() — lib/agent-policy-approval.ts, M2). */
+  origin?: string | null;
   preview?: string | null;
   destinationHost?: string | null;
   destinationHostAllowlisted?: boolean;
@@ -452,6 +492,15 @@ export default function RootLayout() {
         actionNonce,
       );
       setPendingAgentActionApproval(null);
+      // POLICY-001 (B): count this HUMAN decision for the trust ramp. Fire-
+      // and-forget: never delays or fails the approval itself.
+      if (useSettingsStore.getState().settings.agentPolicyEngine === true) {
+        void recordHumanApprovalDecision(request, decision, policyShellRunner, {
+          threshold: useSettingsStore.getState().settings.agentTrustRampThreshold,
+        }).then((offer) => {
+          if (offer) postTrustRampOffer(offer);
+        });
+      }
     } catch (e) {
       logError('AgentActionApproval', `resolve ${decision} failed`, e);
       Alert.alert(t('agent_action_confirm_not_ready'));
@@ -1110,6 +1159,9 @@ export default function RootLayout() {
         // never "1"/"0" (both executors were updated to avoid that shape
         // specifically so this parses identically either way).
         autoAccept: value.autoAccept === true || value.autoAccept === 'true',
+        // POLICY-001: informational only — the executor writes this file, so
+        // policy decisions use trustedRequestOrigin() instead (review M2).
+        origin: typeof value.origin === 'string' ? value.origin : null,
       };
     };
 
@@ -1985,6 +2037,29 @@ export default function RootLayout() {
       }
     };
 
+    // POLICY-001: resolve a request WITHOUT any side effect of its own (no
+    // intent fire / DM send) — used only for a policy decline, or a
+    // trust-ramp accept of a `cli` request, whose side effect the executor
+    // performs after reading the accept. Same mint-nonce-then-resolve
+    // sequence as autoResolveActionApproval. Returns false ⇒ fall back to
+    // the normal notification.
+    const policyResolveActionApproval = async (parsed: AgentActionApprovalRequest, decision: 'accept' | 'decline'): Promise<boolean> => {
+      if (!TerminalEmulator.resolveAgentActionApproval || !TerminalEmulator.readAgentActionApprovalRequest) return false;
+      try {
+        const minted = parseActionApprovalRequest(await TerminalEmulator.readAgentActionApprovalRequest(parsed.runId));
+        if (!minted || !minted.requestSha256 || !minted.actionNonce) return false;
+        if (minted.expiresAt && minted.expiresAt < Date.now()) return false;
+        // The minted copy is what native will bind the reply to — refuse if it
+        // no longer describes the request we evaluated.
+        if (minted.actionType !== parsed.actionType || (minted.command ?? '') !== (parsed.command ?? '')) return false;
+        await TerminalEmulator.resolveAgentActionApproval(minted.runId, decision, minted.requestSha256, minted.actionNonce);
+        return true;
+      } catch (e) {
+        logError('Policy', `policy ${decision} failed run=${parsed.runId}`, e);
+        return false;
+      }
+    };
+
     const drainAgentActionApprovalRequests = async () => {
       if (
         isDrainingActionApprovals ||
@@ -2032,7 +2107,30 @@ export default function RootLayout() {
           activeKeys.add(key);
           activeRunIds.add(parsed.runId);
           if (notifiedActionApprovals.has(key)) continue;
-          if (parsed.autoAccept && (await autoResolveActionApproval(parsed))) {
+          // POLICY-001 (lib/agent-policy-approval.ts): fine-grained user
+          // rules + proactive floor + trust-ramp allows, flag-gated OFF.
+          let policyBlocksAutoAccept = false;
+          if (useSettingsStore.getState().settings.agentPolicyEngine === true) {
+            await ensureUserPolicyLoaded(policyShellRunner).catch(() => undefined);
+            if (!getTrustAllowSeal()) await loadTrustAllowSeal();
+            const verdict = evaluateApprovalRequestPolicy(parsed, getTrustAllowSeal());
+            if (verdict.decision === 'deny' || verdict.decision === 'draft_only') {
+              logInfo('Policy', `auto-declined run=${parsed.runId} action=${parsed.actionType} layer=${verdict.layer}`);
+              if (await policyResolveActionApproval(parsed, 'decline')) {
+                rememberActionApproval(key, parsed);
+                continue;
+              }
+            } else if (verdict.decision === 'allow' && parsed.actionType === 'cli') {
+              logInfo('Policy', `trust-ramp auto-accepted run=${parsed.runId} rule=${verdict.ruleId ?? ''}`);
+              if (await policyResolveActionApproval(parsed, 'accept')) {
+                rememberActionApproval(key, parsed);
+                continue;
+              }
+            }
+            // M2: origin from RN's own run registry, never the request file.
+            policyBlocksAutoAccept = verdict.decision === 'ask' || isProactiveOrigin(trustedRequestOrigin(parsed));
+          }
+          if (parsed.autoAccept && !policyBlocksAutoAccept && (await autoResolveActionApproval(parsed))) {
             rememberActionApproval(key, parsed);
             continue;
           }

@@ -80,7 +80,7 @@ describe('Scouter widget registered-agent RUN security parity', () => {
     // params, and the native circuit breaker later added schedule params. All
     // are nullable/defaulted for widget runs — extended in lockstep.
     expect(service).toContain(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin)',
     );
   });
 
@@ -88,7 +88,7 @@ describe('Scouter widget registered-agent RUN security parity', () => {
     const haltCheck = service.indexOf('if (isGloballyHalted())');
     const manualRead = service.indexOf('getBooleanExtra(EXTRA_MANUAL, false)');
     const runtimeCall = service.indexOf(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin)',
     );
     expect(haltCheck).toBeGreaterThan(-1);
     expect(manualRead).toBeGreaterThan(haltCheck);

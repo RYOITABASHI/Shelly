@@ -216,6 +216,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // ACTION_APPROVAL_MODE resolution and scripts/shelly-plan-executor.js's
   // requireActionApprovalTap for the matching runtime-side flip.
   defaultRequireActionApproval: true,
+  // POLICY-001 strangler flag (lib/agent-action-policy.ts). Off = today's
+  // behaviour exactly.
+  agentPolicyEngine: false,
   // Opt-in. Off = today's behaviour exactly; see AppSettings' doc comment for
   // why this can only ever cover reversible workspace file writes.
   agentOptimisticWorkspaceWrites: false,
@@ -529,6 +532,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // direct access to the live Agent object and settings snapshot already.
       if ('defaultRequireActionApproval' in newSettings) {
         envUpdates.push(['SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL', newSettings.defaultRequireActionApproval ? '1' : '0']);
+      }
+      // POLICY-001: read live by the .sh / PlanSpec executors and the codex
+      // driver (lib/agent-action-policy.ts AGENT_POLICY_ENV_FLAG).
+      if ('agentPolicyEngine' in newSettings) {
+        envUpdates.push(['SHELLY_AGENT_POLICY', newSettings.agentPolicyEngine === true ? '1' : '0']);
       }
       if ('webhookHostAllowlist' in newSettings && Array.isArray(newSettings.webhookHostAllowlist)) {
         const normalizedHosts = normalizeWebhookHostAllowlist(newSettings.webhookHostAllowlist);

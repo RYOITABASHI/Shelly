@@ -145,7 +145,9 @@ describe('generateRunScript — browser-pane is excluded from the auto-mode skip
 
   it('bakes auto_accept_flag as unconditionally false for browser-pane, unlike intent/dm-reply', () => {
     const s = generateRunScript(agent({ type: 'draft' }));
-    expect(s).toContain('auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && [ "$ACTION_APPROVAL_MODE" != "manual" ] && printf \'true\' || printf \'false\')');
+    // POLICY-001 added a third conjunct (a policy-forced manual round trip
+    // also turns autoAccept off) — strictly tighter, browser-pane still false.
+    expect(s).toContain('auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && [ "$ACTION_APPROVAL_MODE" != "manual" ] && [ "${SHELLY_POLICY_FORCE_MANUAL:-0}" != "1" ] && printf \'true\' || printf \'false\')');
   });
 });
 

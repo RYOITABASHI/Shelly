@@ -82,6 +82,7 @@ function isDigestEligible(m: ChatMessage): boolean {
   if (m.isStreaming) return false;
   if (m.agentDraft || m.agentCardState || m.agentChatConfirm || m.editingAgentId) return false;
   if (m.pendingSlotFill || m.pendingGlobalMemory || m.pendingAgentDelete) return false;
+  if (m.pendingPolicyRule || m.pendingTrustRule || m.pendingPolicyRevoke || m.pendingPolicyReset) return false;
   if (m.scheduleReadinessCard || m.agentRollbackOffer) return false;
   if (m.approvalData || m.wizardType || m.autoCheckState) return false;
   if (m.agentRunLogId) return false;

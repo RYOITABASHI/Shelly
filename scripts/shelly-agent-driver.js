@@ -207,6 +207,57 @@ function readJsonArg(args) {
   return {};
 }
 
+// POLICY-001 (lib/agent-action-policy.ts): flag-gated OFF via
+// SHELLY_AGENT_POLICY=1 (exported by the generated .sh from .env). Returns
+// null when off. Fail-closed: a policy.json that exists but cannot be read or
+// parsed sets rulesUnavailable, which the gate turns into "escalate every
+// side effect"; only a genuinely missing file means "no user rules".
+// SHELLY_RUN_ORIGIN comes from native (AgentRuntime.kt); missing ⇒ the gate
+// treats the run as proactive.
+// Mirror of lib/agent-user-policy-store.ts isSealedPolicyState. `bytes` null
+// ⇒ the file does not exist. An empty seal accepts only a missing/empty file.
+function policySealAccepts(sealRaw, bytes, everSealed) {
+  const raw = String(sealRaw || '').trim();
+  const seal = raw ? raw.split(',') : [];
+  if (seal.some((h) => !/^[0-9a-f]{64}$/.test(h))) return false;
+  // Re-review M1: once native says a seal was EVER written (Keystore marker),
+  // an empty seal means it was deleted, not "first run".
+  if (seal.length === 0) return String(everSealed || '') !== '1' && (bytes === null || !bytes.toString('utf8').trim());
+  if (bytes === null) return false;
+  return seal.includes(crypto.createHash('sha256').update(bytes).digest('hex'));
+}
+
+function buildActionPolicyInput(env, home) {
+  if (!env || env.SHELLY_AGENT_POLICY !== '1') return null;
+  const out = { enabled: true, origin: String(env.SHELLY_RUN_ORIGIN || ''), rules: [], homeDir: home || '', rulesUnavailable: false };
+  if (!home) {
+    out.rulesUnavailable = true;
+    return out;
+  }
+  let bytes = null;
+  try {
+    bytes = fs.readFileSync(path.join(home, '.shelly/agents/policy.json'));
+  } catch (e) {
+    if (!e || e.code !== 'ENOENT') out.rulesUnavailable = true;
+  }
+  const text = bytes === null ? null : bytes.toString('utf8');
+  // Security review M1: the file must match the seal native exported
+  // (SHELLY_AGENT_POLICY_SEAL, written by RN with every policy write). A
+  // deleted / edited / unsealed file means the user's rules can't be trusted.
+  if (!policySealAccepts(env.SHELLY_AGENT_POLICY_SEAL, bytes, env.SHELLY_AGENT_POLICY_EVER_SEALED)) out.rulesUnavailable = true;
+  if (text !== null && text.trim()) {
+    try {
+      const parsed = JSON.parse(text);
+      const rules = parsed && parsed.userPolicy && parsed.userPolicy.rules;
+      if (Array.isArray(rules)) out.rules = rules;
+      else out.rulesUnavailable = true;
+    } catch (_) {
+      out.rulesUnavailable = true;
+    }
+  }
+  return out;
+}
+
 function readPrompt(args) {
   if (args.prompt && args.promptFile) {
     throw new Error('use only one of --prompt or --prompt-file');
@@ -241,6 +292,12 @@ function ensureConfig(args) {
   // Workspace root is realpathed here; per-argument symlink resolution remains a later hardening gap.
   policy.workspaceRoot = cwd;
   if (!policy.level) policy.level = 'L2';
+  // POLICY-001: the action-policy input is ALWAYS derived here from the live
+  // environment + policy.json, never trusted from the (baked) --policy-json —
+  // a stale or tampered script must not be able to smuggle its own rules in.
+  delete policy.actionPolicy;
+  const actionPolicy = buildActionPolicyInput(process.env, process.env.HOME || '');
+  if (actionPolicy) policy.actionPolicy = actionPolicy;
 
   return {
     ...args,
@@ -2054,4 +2111,6 @@ module.exports = {
   completedAgentMessageText,
   appendCompletedAgentMessage,
   writeAnswerFile,
+  buildActionPolicyInput,
+  policySealAccepts,
 };

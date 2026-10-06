@@ -48,9 +48,9 @@ describe('shelly-plan-executor.js parity', () => {
   it('keeps executor script version lockstep across JS and the native gate', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const executor = require(scriptCopy);
-    expect(executor.EXECUTOR_SCRIPT_VERSION).toBe(3);
-    expect(fs.readFileSync(scriptCopy, 'utf8')).toContain('SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=3');
-    expect(agentRuntime).toContain('private const val CURRENT_EXECUTOR_VERSION = 3');
+    expect(executor.EXECUTOR_SCRIPT_VERSION).toBe(4);
+    expect(fs.readFileSync(scriptCopy, 'utf8')).toContain('SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=4');
+    expect(agentRuntime).toContain('private const val CURRENT_EXECUTOR_VERSION = 4');
     expect(agentRuntime).toContain('executorVersion != CURRENT_EXECUTOR_VERSION');
   });
 
@@ -131,7 +131,7 @@ describe('shelly-plan-executor.js parity', () => {
     // NOTIFY-001 Increment 3 extended the call with notification text/package
     // params (null for widget/alarm runs) — extended in lockstep.
     expect(terminalSessionService).toContain(
-      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)',
+      'runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin)',
     );
     expect(terminalSessionService).toContain('tainted = tainted');
     expect(terminalSessionService).toContain('unattended = unattended');
@@ -190,7 +190,7 @@ describe('shelly-plan-executor.js parity', () => {
     const executorSrc = fs.readFileSync(scriptCopy, 'utf8');
     // NOTIFY-001 Increment 3 extended the call with notificationText/Package
     // (still tainted-first) — extended in lockstep.
-    expect(agentRuntime).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage)');
+    expect(agentRuntime).toContain('return runPlanAgent(appContext, homeDir, libDir, bashPath, agentId, tainted, unattended, notificationText, notificationPackage, runOrigin)');
     expect(agentRuntime).toMatch(/private fun runPlanAgent\(\s*context: Context,\s*homeDir: File,\s*libDir: File,\s*bashPath: String,\s*agentId: String,\s*tainted: Boolean,\s*unattended: Boolean/);
     // The env-var builder exports SHELLY_CAP_TAINTED=1 right after the other
     // CAP-001 flags (SHELLY_CAP_BROKER/FS/EXEC), guarded by the same `tainted`

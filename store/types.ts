@@ -594,6 +594,16 @@ export type AppSettings = {
    *  gates, which are hard content/action classifiers independent of any
    *  approval-frequency setting. */
   defaultRequireActionApproval?: boolean;
+  /** POLICY-001 (lib/agent-action-policy.ts): proactive runs read-only,
+   *  natural-language custom rules (tighten-only) and the trust ramp.
+   *  Default false/absent = today's behaviour, byte-identical. Synced to
+   *  ~/.shelly/agents/.env as SHELLY_AGENT_POLICY so every executor and the
+   *  codex gate see it. */
+  agentPolicyEngine?: boolean;
+  /** POLICY-001 (B): clean approvals of one action class before the trust
+   *  ramp proposes "run without asking". Absent ⇒ 3
+   *  (lib/agent-trust-ramp.ts TRUST_RAMP_THRESHOLD_DEFAULT). */
+  agentTrustRampThreshold?: number;
   /** Optimistic (rollback-type) execution for REVERSIBLE workspace file writes.
    *  Default false/absent = today's behaviour, byte-identical.
    *
@@ -1407,6 +1417,44 @@ export type ChatMessage = {
      *  saved note with "[watch] " and the save-acknowledgment can point at
      *  agent registration as the actual active-monitoring mechanism. */
     kind?: 'watch';
+  };
+  /** POLICY-001 (C): a natural-language custom rule awaiting an explicit
+   *  human confirm — set on the assistant message that echoed the parsed
+   *  interpretation. Only an exact confirm phrase stores it
+   *  (lib/agent-user-policy-store.ts); the rule is re-validated at commit. */
+  pendingPolicyRule?: {
+    effect: 'ask' | 'deny' | 'draft_only';
+    match: {
+      capability?: string;
+      domain?: string;
+      pathPrefix?: string;
+      outsidePath?: string;
+      keywords?: string[];
+    };
+    source: string;
+    attempts: number;
+  };
+  /** POLICY-001 (B): a trust-ramp proposal ("approved N times — run without
+   *  asking from now on?") awaiting a strict yes. Anything but an exact yes
+   *  adds nothing and suppresses re-asking for this class. */
+  pendingTrustRule?: {
+    key: string;
+    label: string;
+    /** The exact command the allow would cover; with agentId, re-derived
+     *  into the key at "yes" time (security review L2). */
+    command?: string;
+    agentId?: string;
+  };
+  /** POLICY-001 (security review L1): removing a custom rule LOOSENS policy,
+   *  so it is echoed back and needs an exact confirm phrase, like adding. */
+  pendingPolicyRevoke?: {
+    ruleId: string;
+    attempts: number;
+  };
+  /** POLICY-001 re-review M1: "reset my safety rules" awaiting an exact
+   *  confirm — the recovery path out of an unavailable (unsealed) policy. */
+  pendingPolicyReset?: {
+    attempts: number;
   };
   /** "Grok Bot"-style conversational provider connect (2026-09-20): set on
    *  the assistant message that just asked "what's your Gemini key?" after

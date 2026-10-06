@@ -15,6 +15,14 @@
 import type { Agent } from '@/store/types';
 import { redactSecrets } from '@/lib/redact-secrets';
 import {
+  PolicyRule,
+  PolicyVerdict,
+  describeCommandAction,
+  evaluateActionPolicy,
+  isProactiveOrigin,
+  parseStoredRules,
+} from '@/lib/agent-action-policy';
+import {
   AutonomyLevel,
   GateContext,
   GateVerdict,
@@ -45,6 +53,40 @@ export interface AutonomyPolicy {
    * attended escalate→approve→grant→scheduled-run loop keeps working.
    */
   unattended?: boolean;
+  /**
+   * POLICY-001 (lib/agent-action-policy.ts), flag-gated OFF. Injected by the
+   * B2 driver at run time — never baked into a script — from SHELLY_AGENT_POLICY,
+   * SHELLY_RUN_ORIGIN and ~/.shelly/agents/policy.json. Can only TIGHTEN the
+   * verdict below (allow→gray, anything→deny); absent ⇒ today's behaviour.
+   */
+  actionPolicy?: ActionPolicyInput;
+}
+
+export interface ActionPolicyInput {
+  enabled: boolean;
+  /** Raw SHELLY_RUN_ORIGIN; unknown/missing ⇒ proactive (fail-closed). */
+  origin: string;
+  rules: PolicyRule[];
+  homeDir: string;
+  /** policy.json present but unreadable ⇒ escalate every side effect. */
+  rulesUnavailable: boolean;
+}
+
+function parseActionPolicyInput(raw: unknown): ActionPolicyInput | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r.enabled !== true) return undefined;
+  const rules = parseStoredRules(r.rules);
+  return {
+    enabled: true,
+    origin: typeof r.origin === 'string' ? r.origin : '',
+    rules,
+    homeDir: typeof r.homeDir === 'string' ? r.homeDir : '',
+    // A rules field that is not an array, or one with ANY invalid entry
+    // (security review L5: dropping a rule silently loosens), is unreadable.
+    rulesUnavailable:
+      r.rulesUnavailable === true || !Array.isArray(r.rules) || rules.length !== (r.rules as unknown[]).length,
+  };
 }
 
 export const DEFAULT_POLICY: Omit<AutonomyPolicy, 'workspaceRoot'> = {
@@ -62,7 +104,9 @@ export function parseAutonomyPolicy(raw: unknown, workspaceRoot: string): Autono
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const strArr = (v: unknown, d: string[]): string[] =>
     Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : d;
+  const actionPolicy = parseActionPolicyInput(r.actionPolicy);
   return {
+    ...(actionPolicy ? { actionPolicy } : {}),
     level: LEVELS.includes(r.level as AutonomyLevel) ? (r.level as AutonomyLevel) : DEFAULT_POLICY.level,
     workspaceRoot,
     secretPaths: strArr(r.secretPaths, DEFAULT_POLICY.secretPaths),
@@ -101,6 +145,8 @@ export interface AuditEntry {
   signals: GateVerdict['signals'];
   reason: string;
   level: AutonomyLevel;
+  /** POLICY-001 layer that tightened this verdict, when one did. */
+  policyLayer?: PolicyVerdict['layer'];
 }
 
 export interface GateOutcome {
@@ -120,6 +166,8 @@ export function decideAutoAnswer(command: string, policy: AutonomyPolicy): GateO
     level: policy.level,
     secretPaths: policy.secretPaths,
     policyPath: policy.policyPath,
+    // Wide agents-dir hard-deny only when the POLICY-001 flag is on.
+    strictPolicyPaths: policy.actionPolicy?.enabled === true,
   };
   let verdict = classifyProposedCommand(command, ctx);
 
@@ -127,6 +175,43 @@ export function decideAutoAnswer(command: string, policy: AutonomyPolicy): GateO
     verdict = { ...verdict, decision: 'deny', reason: `operator deny-pattern · ${verdict.reason}` };
   } else if (verdict.decision === 'gray' && policy.allowPatterns.some((p) => safeRegex(p)?.test(command))) {
     verdict = { ...verdict, decision: 'allow', reason: `operator allow-pattern · ${verdict.reason}` };
+  }
+
+  // POLICY-001: user rules + proactive read-only floor, applied AFTER the
+  // operator patterns so neither an allowPattern nor any boundary 'allow' can
+  // outrank them. Tighten-only: deny stays deny, allow may become gray/deny.
+  let policyLayer: PolicyVerdict['layer'] | undefined;
+  if (policy.actionPolicy?.enabled && verdict.decision !== 'deny') {
+    const ap = policy.actionPolicy;
+    const desc = describeCommandAction({ command, origin: ap.origin, cwd: policy.workspaceRoot, scope: policy.workspaceRoot });
+    const policyState = {
+      enabled: true,
+      rules: ap.rules,
+      homeDir: ap.homeDir,
+      rulesUnavailable: ap.rulesUnavailable,
+    };
+    let pv = evaluateActionPolicy(desc, policyState);
+    // The boundary classifier is the authority on "is this a pure read";
+    // our lexical capabilities are a second opinion. Either one saying
+    // "side effect" is enough for the proactive floor (fail-closed).
+    const boundarySideEffect = verdict.signals.length > 0;
+    if (pv.layer === 'proactive' && !boundarySideEffect) {
+      // A boundary-certified pure read (no signals at all — the same test L1
+      // uses) is allowed in a proactive run even when the coarser lexical
+      // pass saw e.g. a read pipeline as "exec". Re-evaluate it AS a read so
+      // the user's own rules (keyword / path) still apply to it.
+      pv = evaluateActionPolicy({ ...desc, capabilities: ['read'] }, policyState);
+    }
+    if (pv.decision === 'deny' || pv.decision === 'draft_only') {
+      verdict = { ...verdict, decision: 'deny', reason: `${pv.reason} · ${verdict.reason}` };
+      policyLayer = pv.layer;
+    } else if (pv.decision === 'ask' && verdict.decision === 'allow') {
+      verdict = { ...verdict, decision: 'gray', reason: `${pv.reason} · ${verdict.reason}` };
+      policyLayer = pv.layer;
+    } else if (verdict.decision === 'allow' && boundarySideEffect && isProactiveOrigin(ap.origin)) {
+      verdict = { ...verdict, decision: 'gray', reason: `proactive run (origin=${desc.origin}) may only read · ${verdict.reason}` };
+      policyLayer = 'proactive';
+    }
   }
 
   const answer: AutoAnswer =
@@ -138,6 +223,7 @@ export function decideAutoAnswer(command: string, policy: AutonomyPolicy): GateO
     signals: verdict.signals,
     reason: verdict.reason,
     level: policy.level,
+    ...(policyLayer ? { policyLayer } : {}),
   };
   return { answer, verdict, audit };
 }

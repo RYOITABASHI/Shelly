@@ -57,6 +57,9 @@ class TerminalSessionService : Service() {
         const val EXTRA_NOTIFICATION_TEXT = "notification_text"
         const val EXTRA_NOTIFICATION_PACKAGE = "notification_package"
         const val EXTRA_NOTIFICATION_TRIGGER = "notification_trigger"
+        // POLICY-001: positive "a human pressed Run now in the app" marker, set
+        // ONLY by TerminalEmulatorModule.runAgent(). Absent ⇒ never "user".
+        const val EXTRA_RUN_ORIGIN = "run_origin"
         // Mirrors ShellyNotificationListener.MAX_INBOUND_NOTIFICATION_TEXT /
         // lib/telegram-inbound.ts MAX_INBOUND_TEXT — defensive re-bound at the
         // service boundary (the service is not exported, but bounding twice is
@@ -167,7 +170,28 @@ class TerminalSessionService : Service() {
                     )
                     ScouterWidgetProvider.updateAll(applicationContext, force = true)
                 }
-                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron)
+                // POLICY-001 run origin (lib/agent-action-policy.ts RunOrigin).
+                // Most-proactive signal wins: an inbound notification (trigger
+                // or text) beats a schedule, a schedule beats a widget tap, and
+                // only a run with NO automatic signal at all — the in-app "Run
+                // now" / @agent path through TerminalEmulatorModule.runAgent()
+                // — is "user". A tainted run with no other signal is some other
+                // inbound event. Boot re-arms alarms, so a post-boot fire
+                // arrives here as "schedule".
+                // "user" additionally requires the POSITIVE marker that only
+                // TerminalEmulatorModule.runAgent() sets — an alarm PendingIntent
+                // always carries EXTRA_INTERVAL_MS (even 0 for a one-shot), and
+                // any other/future caller without the marker falls through to
+                // "event" (proactive), never to "user" (fail-closed).
+                val origin = when {
+                    notificationTriggered || notificationText != null -> "notification"
+                    scheduled || intent.hasExtra(EXTRA_INTERVAL_MS) || intent.hasExtra(EXTRA_CRON) -> "schedule"
+                    manual -> "widget"
+                    tainted -> "event"
+                    intent.getStringExtra(EXTRA_RUN_ORIGIN) == "user" -> "user"
+                    else -> "event"
+                }
+                runAgentInBackground(agentId, tainted, unattended, manual, widgetAgent?.name, notificationText, notificationPackage, intervalMs, cron, origin)
                 return START_STICKY
             }
         }
@@ -304,7 +328,8 @@ class TerminalSessionService : Service() {
         notificationText: String? = null,
         notificationPackage: String? = null,
         intervalMs: Long = 0L,
-        cron: String? = null
+        cron: String? = null,
+        origin: String = "event"
     ) {
         activeAgentRuns.incrementAndGet()
         // Fable5 review (2026-08-29): recorded before the run starts so
@@ -330,7 +355,8 @@ class TerminalSessionService : Service() {
                     tainted = tainted,
                     unattended = unattended,
                     notificationText = notificationText,
-                    notificationPackage = notificationPackage
+                    notificationPackage = notificationPackage,
+                    origin = origin
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Agent $agentId crashed while running", e)

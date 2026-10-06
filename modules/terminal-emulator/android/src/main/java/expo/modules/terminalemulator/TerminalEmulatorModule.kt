@@ -887,6 +887,9 @@ class TerminalEmulatorModule : Module() {
             val intent = Intent(context, TerminalSessionService::class.java).apply {
                 action = TerminalSessionService.ACTION_RUN_AGENT
                 putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+                // POLICY-001: the only producer of origin "user" (in-app Run now /
+                // @agent chat runs). See TerminalSessionService's origin mapping.
+                putExtra(TerminalSessionService.EXTRA_RUN_ORIGIN, "user")
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -1687,6 +1690,26 @@ class TerminalEmulatorModule : Module() {
                 "requestDirUri" to AgentActionApprovalBridge.requestDirUri(context),
                 "replyDirPath" to replyDir.absolutePath,
             )
+        }
+
+        // POLICY-001 (lib/agent-policy-device.ts): native copy of the
+        // policy.json seal, exported to every agent run by AgentRuntime as the
+        // readonly SHELLY_AGENT_POLICY_SEAL. commit() (not apply()) so a run
+        // launched right after a policy write already sees the new seal.
+        AsyncFunction("setAgentPolicySeal") { seal: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            AgentRuntime.writeAgentPolicySeal(context, seal)
+            null
+        }
+
+        // POLICY-001 re-review M1: the Keystore-backed ever-sealed marker and
+        // the HMAC-verified native seal (never the raw prefs value).
+        AsyncFunction("getAgentPolicySealState") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val state = AgentPolicySeal.read(context)
+            mapOf("everSealed" to state.everSealed, "seal" to state.seal, "valid" to state.valid)
         }
 
         AsyncFunction("readAgentActionApprovalRequest") { runId: String ->

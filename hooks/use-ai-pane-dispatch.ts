@@ -31,7 +31,11 @@ import { perplexitySearchStream, PERPLEXITY_DEFAULT_MODEL } from '@/lib/perplexi
 import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
 import { openRouterChatStream, OPENROUTER_DEFAULT_MODEL } from '@/lib/openrouter';
 import { resolveCompanionBrain } from '@/lib/companion-brain';
-import { checkOllamaConnection, ollamaChatStream } from '@/lib/local-llm';
+import { checkOllamaConnection, ollamaChat, ollamaChatStream } from '@/lib/local-llm';
+import { handlePendingPolicyResetReply, handlePendingPolicyRevokeReply, handlePendingPolicyRuleReply, handlePendingTrustReply, handlePolicyIntent } from '@/lib/agent-policy-chat';
+import '@/lib/agent-policy-device';
+import type { PolicyChatFn } from '@/lib/agent-policy-rule-intent';
+import { trustAllowSeal } from '@/lib/agent-trust-allow-seal';
 import type { OllamaMessage } from '@/lib/local-llm';
 import { ensureLocalLlmServerRunning } from '@/lib/local-llm-autostart';
 import { parseInput } from '@/lib/input-router';
@@ -890,6 +894,74 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // → generateRunScript → resolveAgentRoute, so a secret inside a GLOBAL
       // note forces the run on-device exactly like a secret in an
       // agent-scoped one.
+      // ── POLICY-001: reply to a pending safety-rule confirmation or a
+      // trust-ramp proposal (lib/agent-policy-chat.ts). Same "the most
+      // recently asked question wins" placement as pendingGlobalMemory below;
+      // flag-gated (a stale pending field from before the flag was turned off
+      // is simply ignored). An "@…" message is a fresh command: it drops the
+      // pending question instead of answering it.
+      if (
+        settings.agentPolicyEngine === true &&
+        freshestMsgForPendingCheck?.role === 'assistant' &&
+        (freshestMsgForPendingCheck.pendingPolicyRule ||
+          freshestMsgForPendingCheck.pendingTrustRule ||
+          freshestMsgForPendingCheck.pendingPolicyRevoke ||
+          freshestMsgForPendingCheck.pendingPolicyReset) &&
+        Date.now() - freshestMsgForPendingCheck.timestamp <= SLOT_FILL_STALE_MS
+      ) {
+        const policyMsg = freshestMsgForPendingCheck;
+        const policyLocale = detectMessageLocale(policyMsg.content);
+        store.updateMessage(paneId, policyMsg.id, {
+          pendingPolicyRule: undefined,
+          pendingTrustRule: undefined,
+          pendingPolicyRevoke: undefined,
+          pendingPolicyReset: undefined,
+        });
+        if (!userText.trim().startsWith('@')) {
+          const policyIO = {
+            post: (content: string, extra?: Partial<ChatMessage>) =>
+              store.addMessage(paneId, {
+                id: generateId(),
+                role: 'assistant',
+                content,
+                timestamp: Date.now(),
+                agent: policyMsg.agent,
+                flowTurn: true,
+                ...(extra ?? {}),
+              }),
+            run: runAgentShellCommand,
+            seal: trustAllowSeal,
+          };
+          if (policyMsg.pendingPolicyRule) {
+            store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
+            await handlePendingPolicyRuleReply(policyMsg.pendingPolicyRule, userText, policyLocale, policyIO);
+            return;
+          }
+          if (policyMsg.pendingPolicyRevoke) {
+            store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
+            await handlePendingPolicyRevokeReply(policyMsg.pendingPolicyRevoke, userText, policyLocale, policyIO);
+            return;
+          }
+          if (policyMsg.pendingPolicyReset) {
+            store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
+            await handlePendingPolicyResetReply(policyMsg.pendingPolicyReset, userText, policyLocale, policyIO);
+            return;
+          }
+          if (policyMsg.pendingTrustRule) {
+            // An unclear reply is NOT consumed (returns false): it only
+            // suppresses the offer, and the message routes normally below.
+            const consumed = await handlePendingTrustReply(policyMsg.pendingTrustRule, userText, policyLocale, {
+              ...policyIO,
+              post: (content: string, extra?: Partial<ChatMessage>) => {
+                store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
+                policyIO.post(content, extra);
+              },
+            });
+            if (consumed) return;
+          }
+        }
+      }
+
       const pendingGlobalMemoryMsg =
         freshestMsgForPendingCheck?.role === 'assistant' &&
         freshestMsgForPendingCheck.pendingGlobalMemory &&
@@ -2219,6 +2291,43 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           flowTurn: true,
         });
         return;
+      }
+
+      // POLICY-001 (lib/agent-policy-chat.ts): NL safety rules / listing /
+      // revoking, flag-gated OFF. Checked before any LLM routing for the same
+      // reason as provider connect above — "お金が絡む操作は必ず聞いて" must be
+      // decided deterministically, never answered by a model that would claim
+      // to have "remembered" a rule nothing enforces. Every detector requires
+      // two independent markers and refuses questions, and nothing is stored
+      // without the echoed interpretation + an exact confirm turn.
+      if (settings.agentPolicyEngine === true && parsed.layer !== 'mention') {
+        const policyLocale = detectMessageLocale(promptText);
+        const llmSettings = useSettingsStore.getState().settings;
+        const handledPolicy = await handlePolicyIntent(promptText, policyLocale, {
+          post: (content: string, extra?: Partial<ChatMessage>) =>
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content,
+              timestamp: Date.now(),
+              agent: agent as ChatMessage['agent'],
+              flowTurn: true,
+              ...(extra ?? {}),
+            }),
+          run: runAgentShellCommand,
+          seal: trustAllowSeal,
+          llm: llmSettings.localLlmUrl
+            ? {
+                config: { baseUrl: llmSettings.localLlmUrl, model: llmSettings.localLlmModel, enabled: true },
+                enabled: true,
+                chat: async (...args: Parameters<PolicyChatFn>) => {
+                  await ensureLocalLlmServerRunning({ waitForReady: true, reason: 'policy-rule-parse' }).catch(() => {});
+                  return ollamaChat(...args);
+                },
+              }
+            : null,
+        });
+        if (handledPolicy) return;
       }
 
       if (requestedAgent && !promptText) {
