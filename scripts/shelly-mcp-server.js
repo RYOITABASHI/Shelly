@@ -41,18 +41,24 @@
  * deprecated or removed: we never sent Roots / Sampling / Logging or any
  * server-initiated request, and `ping` is answered for legacy sessions only.
  *
- * Approval waits under 2026-07-28 use Multi Round-Trip Requests (MRTR):
- * instead of holding one POST open for up to 90s while the phone shows its
- * approval modal, a modern run_command / write_file returns an
- * InputRequiredResult carrying only an HMAC-protected `requestState` (no
- * `inputRequests` — the decision belongs to the PHONE OWNER, never the
- * remote client, so it is deliberately NOT elicited from the client; that
+ * Approval waits: by DEFAULT, in both eras, a run_command / write_file call
+ * holds its single POST open until the phone's approval decision (or the
+ * bridge's fail-closed deadline) — a plain synchronous result every client
+ * understands. An opt-in Multi Round-Trip Requests (MRTR) path exists
+ * behind SHELLY_MCP_MRTR=1 (modern peers only): the call returns an
+ * InputRequiredResult carrying only an HMAC-protected `requestState` and
+ * NO `inputRequests` — the decision belongs to the PHONE OWNER, never the
+ * remote client, so it is deliberately NOT elicited from the client (that
  * would move the trust boundary onto the very peer this gate distrusts).
- * The client retries with the echoed state and the server long-polls the
- * SAME pending on-device call — a retry can never start a second
- * execution, and a tampered / expired / mismatched / already-consumed state
- * is rejected without touching the queue (fail-closed). Legacy peers keep
- * the blocking single-POST behavior.
+ * It is off by default because a requestState-only InputRequiredResult is
+ * the least-exercised corner of MRTR: a strict client that expects
+ * `inputRequests` may error out and drop the eventual approved result,
+ * whereas holding the POST is always correct. With MRTR on, the client
+ * retries with the echoed state and the server long-polls the SAME pending
+ * on-device call — a retry can never start a second execution, and a
+ * tampered / expired / mismatched / already-consumed state is rejected
+ * without touching the queue (fail-closed). At most MAX_PENDING_APPROVALS
+ * deferrals are held at once.
  *
  * Auth: a pre-shared bearer token (Authorization: Bearer <token>), checked
  * on every request in both eras. OAuth 2.1 is spec-OPTIONAL, and a static
@@ -116,6 +122,9 @@ const INTERNAL_ERROR = -32603;
 const LEGACY_SESSION_ERROR = -32000; // legacy implementation-defined sub-range (grandfathered)
 const HEADER_MISMATCH = -32020;
 const UNSUPPORTED_PROTOCOL_VERSION = -32022;
+// Application-defined, deliberately outside the JSON-RPC reserved range
+// (-32768..-32000) per the 2026-07-28 error code allocation policy.
+const TOO_MANY_PENDING_APPROVALS = -31001;
 
 const META_PROTOCOL_VERSION = 'io.modelcontextprotocol/protocolVersion';
 const META_CLIENT_CAPABILITIES = 'io.modelcontextprotocol/clientCapabilities';
@@ -141,6 +150,9 @@ const MRTR_RETRY_HOLD_MS = 20_000;
 const MRTR_STATE_TTL_MS = RESULT_TIMEOUT_MS + 60_000;
 // Tools whose call blocks on an on-device approval tap.
 const APPROVAL_TOOLS = new Set(['run_command', 'write_file']);
+// Bounds on server-side state a token holder can make us keep.
+const MAX_PENDING_APPROVALS = 8;
+const MAX_LEGACY_SESSIONS = 64;
 
 // Methods whose Mcp-Name header mirrors params.name / params.uri.
 const NAMED_METHODS = { 'tools/call': 'name', 'prompts/get': 'name', 'resources/read': 'uri' };
@@ -320,6 +332,8 @@ function settlesWithin(promise, ms) {
  *   opts.stateKey  — HMAC key for MRTR requestState (random per process by
  *                    default: a restart invalidates every outstanding state,
  *                    which fails closed)
+ *   opts.mrtr      — enable the opt-in MRTR approval deferral (main() sets
+ *                    it from SHELLY_MCP_MRTR=1; default off — see header)
  *   opts.initialHoldMs / opts.retryHoldMs — MRTR hold windows (tests)
  *   opts.log       — diagnostic sink
  * Returns handle({ method, url, headers, body }) → Promise<{ status, headers, body }>
@@ -330,13 +344,34 @@ function createMcpHandler(opts) {
   const callTool = opts.callTool;
   const now = opts.now || (() => Date.now());
   const stateKey = opts.stateKey || crypto.randomBytes(32);
+  const mrtrEnabled = opts.mrtr === true;
   const initialHoldMs = opts.initialHoldMs ?? MRTR_INITIAL_HOLD_MS;
   const retryHoldMs = opts.retryHoldMs ?? MRTR_RETRY_HOLD_MS;
   const log = opts.log || (() => {});
   if (!token || typeof callTool !== 'function') throw new Error('createMcpHandler: token and callTool are required');
 
   const principal = sha256Hex(`shelly-mcp-principal:${token}`).slice(0, 32);
+  // Constant-time bearer check: compare fixed-length digests so neither the
+  // content nor the length of the presented header leaks through timing.
+  const expectedAuthDigest = crypto.createHash('sha256').update(`Bearer ${token}`).digest();
+  function isAuthorized(value) {
+    if (typeof value !== 'string') return false;
+    const presented = crypto.createHash('sha256').update(value).digest();
+    return crypto.timingSafeEqual(presented, expectedAuthDigest);
+  }
+  // Insertion-ordered, so the first entry is the oldest; capped LRU-style.
   const legacySessions = new Set();
+  function addLegacySession(sessionId) {
+    legacySessions.add(sessionId);
+    while (legacySessions.size > MAX_LEGACY_SESSIONS) {
+      legacySessions.delete(legacySessions.values().next().value);
+    }
+  }
+  function touchLegacySession(sessionId) {
+    // Re-insert so an active session isn't the next one evicted.
+    legacySessions.delete(sessionId);
+    legacySessions.add(sessionId);
+  }
   // callId → { tool, digest, promise, settled, result, expiresAt }. The
   // on-device call lives here, server-side, so requestState is only a
   // signed pointer to it — never the authority for anything.
@@ -405,7 +440,7 @@ function createMcpHandler(opts) {
       // Legacy negotiation: echo a version we speak, else offer our newest legacy one.
       const negotiated = LEGACY_VERSIONS.includes(requested) ? requested : LEGACY_VERSIONS[0];
       const sessionId = crypto.randomUUID();
-      legacySessions.add(sessionId);
+      addLegacySession(sessionId);
       log(`legacy initialize (requested=${requested}, negotiated=${negotiated})`);
       return json(200, jsonRpcResult(id, {
         protocolVersion: negotiated,
@@ -418,6 +453,7 @@ function createMcpHandler(opts) {
     if (!sessionId || !legacySessions.has(sessionId)) {
       return json(400, jsonRpcError(id ?? null, LEGACY_SESSION_ERROR, 'missing or unknown Mcp-Session-Id — call initialize first'));
     }
+    touchLegacySession(sessionId);
 
     // Any notification (initialized, cancelled, …) is accepted with no body.
     if (isNotification) return json(202, null);
@@ -535,7 +571,17 @@ function createMcpHandler(opts) {
       return json(200, modernResult(id, toolResultBody(result)));
     }
 
-    sweepPending();
+    if (!mrtrEnabled) {
+      // Default: hold this POST until the on-device decision or the bridge's
+      // fail-closed deadline, exactly like legacy. We never issued a
+      // requestState in this mode, so one presented here is bogus.
+      if (params.requestState !== undefined) {
+        return json(400, jsonRpcError(id, INVALID_PARAMS, 'unexpected requestState'));
+      }
+      const result = await callTool(toolName, args);
+      return json(200, modernResult(id, toolResultBody(result)));
+    }
+
     const digest = sha256Hex(`${toolName}\u0000${canonicalJson(args)}`);
 
     // ── MRTR retry: resume the SAME pending on-device call, never a new one ──
@@ -565,6 +611,13 @@ function createMcpHandler(opts) {
     }
 
     // ── First call: hand to the bridge, hold briefly, else defer via MRTR ──
+    // Checked BEFORE the bridge is called, so a refusal never leaves an
+    // orphaned approval modal on the phone.
+    if (pendingApprovals.size >= MAX_PENDING_APPROVALS) {
+      log(`MRTR refused ${toolName}: ${pendingApprovals.size} approvals already pending`);
+      return json(200, jsonRpcError(id, TOO_MANY_PENDING_APPROVALS,
+        `too many exec/write calls already awaiting approval on the device (max ${MAX_PENDING_APPROVALS}) — finish or retry those first`));
+    }
     const callId = crypto.randomUUID();
     const entry = {
       tool: toolName,
@@ -604,6 +657,9 @@ function createMcpHandler(opts) {
 
   async function handle(req) {
     const headers = req.headers || {};
+    // Expired deferrals are dropped on every request, not only on
+    // exec/write calls, so abandoned MRTR state can't pile up.
+    sweepPending();
 
     const origin = headerValue(headers, 'origin');
     if (origin !== undefined && (typeof origin !== 'string' || !LOOPBACK_ORIGIN.test(origin))) {
@@ -611,7 +667,7 @@ function createMcpHandler(opts) {
     }
     if (req.url !== '/mcp') return json(404, { error: 'not found' });
 
-    if (headerValue(headers, 'authorization') !== `Bearer ${token}`) {
+    if (!isAuthorized(headerValue(headers, 'authorization'))) {
       return json(401, { error: 'unauthorized' });
     }
 
@@ -659,7 +715,8 @@ function main() {
   }
 
   const log = (...args) => process.stderr.write(`[shelly-mcp] ${args.join(' ')}\n`);
-  const handler = createMcpHandler({ token, callTool: createFileQueueCallTool(queueDir), log });
+  const mrtr = process.env.SHELLY_MCP_MRTR === '1';
+  const handler = createMcpHandler({ token, callTool: createFileQueueCallTool(queueDir), log, mrtr });
 
   const server = http.createServer((req, res) => {
     let body = '';
@@ -675,7 +732,7 @@ function main() {
   });
 
   server.listen(port, '0.0.0.0', () => {
-    log(`listening on 0.0.0.0:${port} (versions: ${SUPPORTED_VERSIONS.join(', ')})`);
+    log(`listening on 0.0.0.0:${port} (versions: ${SUPPORTED_VERSIONS.join(', ')}; mrtr=${mrtr ? 'on' : 'off'})`);
   });
 
   server.on('error', (err) => {
@@ -701,5 +758,8 @@ if (require.main === module) {
     UNSUPPORTED_PROTOCOL_VERSION,
     INVALID_PARAMS,
     METHOD_NOT_FOUND,
+    TOO_MANY_PENDING_APPROVALS,
+    MAX_PENDING_APPROVALS,
+    MAX_LEGACY_SESSIONS,
   };
 }

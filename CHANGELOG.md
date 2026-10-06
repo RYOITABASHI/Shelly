@@ -6,6 +6,20 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Changed
+
+- **MCP server speaks spec 2026-07-28 as well as the older revisions.**
+  Clients on 2025-03-26 / 2025-06-18 / 2025-11-25 keep the existing
+  `initialize` + session flow (now echoing the client's requested version,
+  answering `ping`, and ending sessions on DELETE); 2026-07-28 clients get
+  the stateless flow — no handshake, per-request version and capabilities,
+  validated `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers,
+  `server/discover`, and a cacheable `tools/list`. `run_command` /
+  `write_file` still wait on the in-app approval on a single request; an
+  experimental multi-round-trip mode (`SHELLY_MCP_MRTR=1`) is off by
+  default. Hardening: constant-time token check, non-loopback `Origin`
+  refused, and caps on pending approvals and legacy sessions.
+
 ## [8.0.1] - 2026-09-17
 
 ### Added
