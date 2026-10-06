@@ -309,7 +309,11 @@ function sanitizeRemovedAgents(settings: AppSettings): { settings: AppSettings; 
 
 interface SettingsState {
   settings: AppSettings;
+  /** True once SecureStore API keys are merged in (full hydration). */
   isSettingsLoaded: boolean;
+  /** True once the persisted non-secret AsyncStorage blob is applied (phase 1
+   *  of loadSettings) — enough for theme/UI decisions; keys may still be missing. */
+  isBaseSettingsLoaded: boolean;
   showConfigTUI: boolean;
   showVoiceMode: boolean;
   showScouterDetail: boolean;
@@ -351,6 +355,7 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   isSettingsLoaded: false,
+  isBaseSettingsLoaded: false,
   showConfigTUI: false,
   showVoiceMode: false,
   showScouterDetail: false,
@@ -358,10 +363,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   socialConnectors: [],
 
   loadSettings: async () => {
+    // 2026-10-06 (boot theme flash, lib/boot-theme-gate.ts): two-phase load.
+    // loadApiKeys() reads every API key from SecureStore sequentially and was
+    // measured on-device at ~14s during a cold start; awaiting it before
+    // publishing the plain AsyncStorage blob kept settings.uiFont at its
+    // default ('blue') that whole time, so the UI booted in the wrong theme.
+    // Phase 1 publishes the non-secret blob (isBaseSettingsLoaded); phase 2
+    // merges the SecureStore keys over the CURRENT state (so any update made
+    // in between, e.g. Case File's cursorShape pairing, survives) and only
+    // then flips isSettingsLoaded.
+    const secureKeysPromise: Promise<Partial<AppSettings>> = loadApiKeys().catch((err) => {
+      logError('Settings', 'Failed to load API keys from SecureStore', err);
+      return {};
+    });
     try {
-      const [settingsRaw, secureKeys, socialConnectorsRaw] = await Promise.all([
+      const [settingsRaw, socialConnectorsRaw] = await Promise.all([
         AsyncStorage.getItem('shelly_settings'),
-        loadApiKeys(),
         AsyncStorage.getItem(SOCIAL_CONNECTORS_STORAGE_KEY),
       ]);
       let socialConnectors: SocialConnectorMeta[] = [];
@@ -382,7 +399,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const settings = {
         ...DEFAULT_SETTINGS,
         ...(settingsRaw ? JSON.parse(settingsRaw) : {}),
-        ...secureKeys,
       };
       settings.webhookHostAllowlist = normalizeWebhookHostAllowlist(
         Array.isArray(settings.webhookHostAllowlist) ? settings.webhookHostAllowlist : [],
@@ -442,13 +458,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // Sync sound store on load
       useSoundStore.getState().setEnabled(sanitized.settings.soundEffects ?? true);
       useSoundStore.getState().setVolume(sanitized.settings.soundVolume ?? 0.6);
-      logInfo('Settings', 'Settings loaded');
-      set({ settings: sanitized.settings, isSettingsLoaded: true, socialConnectors });
+      logInfo('Settings', 'Base settings loaded');
+      set({ settings: sanitized.settings, isBaseSettingsLoaded: true, socialConnectors });
     } catch (err) {
       logError('Settings', 'Failed to load settings', err);
       console.error('[Settings] loadSettings failed, using defaults:', err);
-      set({ settings: DEFAULT_SETTINGS, isSettingsLoaded: true });
+      set({ settings: DEFAULT_SETTINGS, isBaseSettingsLoaded: true });
     }
+    const secureKeys = await secureKeysPromise;
+    set((state) => ({ settings: { ...state.settings, ...secureKeys }, isSettingsLoaded: true }));
+    logInfo('Settings', 'Settings loaded');
   },
 
   updateSettings: (newSettings: Partial<AppSettings>) => {

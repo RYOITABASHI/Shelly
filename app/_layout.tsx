@@ -6,7 +6,8 @@ import "@/global.css";
 import "@/lib/command-notifier";
 import React, { useCallback, useEffect, useState } from "react";
 import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
-import { Stack, type ErrorBoundaryProps } from "expo-router";
+import { Stack, SplashScreen, type ErrorBoundaryProps } from "expo-router";
+import { applyThemeFromSettings, startBootThemeGate } from '@/lib/boot-theme-gate';
 import { StatusBar } from "expo-status-bar";
 import { Alert, AppState, View, Text, Pressable, ScrollView, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -105,6 +106,13 @@ const ebStyles = StyleSheet.create({
   button: { backgroundColor: '#21262D', borderWidth: 1, borderColor: '#30363D', borderRadius: 8, paddingHorizontal: 24, paddingVertical: 12 },
   buttonText: { color: '#C9D1D9', fontSize: 14, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '600' },
 });
+
+// Boot theme gate (lib/boot-theme-gate.ts): keep the native splash up until
+// the persisted theme preset is applied, so the first painted frame is
+// already in the user's theme instead of the module-load default palette.
+// User-controlled hide means expo-router's own auto-hide is suppressed;
+// RootLayout hides it on gate ready (or the gate's safety timeout).
+SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 export const unstable_settings = {
   initialRouteName: "index",
@@ -272,6 +280,8 @@ export default function RootLayout() {
     // (settings.appFontFamily) has a real family name to apply.
     'DotGothic16_400Regular': require('../assets/fonts/DotGothic16-Regular.ttf'),
   });
+  const fontsLoadedRef = React.useRef(fontsLoaded);
+  fontsLoadedRef.current = fontsLoaded;
   // Phase 3 inbound gateway: long-poll Telegram for the authorized chat (no-op
   // unless enabled + token + chat id are configured). Enqueues confirm cards only.
   useTelegramInbound();
@@ -293,6 +303,10 @@ export default function RootLayout() {
     useState<AgentActionApprovalRequest | null>(null);
   const [agentActionResolving, setAgentActionResolving] = useState(false);
   const uiFont = useSettingsStore((s) => s.settings.uiFont ?? 'blue');
+  const baseSettingsLoaded = useSettingsStore((s) => s.isBaseSettingsLoaded);
+  const [bootThemeReady, setBootThemeReady] = useState(
+    () => useSettingsStore.getState().isBaseSettingsLoaded,
+  );
   const appFontFamily = useSettingsStore((s) => s.settings.appFontFamily ?? 'default');
   const loadSettings = useTerminalStore((s) => s.loadSettings);
   const resolvePendingAgentActionApproval = useCallback(async (decision: 'accept' | 'decline') => {
@@ -508,24 +522,44 @@ export default function RootLayout() {
       setAgentActionResolving(false);
     }
   }, [pendingAgentActionApproval]);
+  // Boot theme gate: apply the persisted preset as soon as the non-secret
+  // settings blob is hydrated (NOT waiting on fonts or SecureStore), then
+  // allow the tree to mount and hide the splash. See lib/boot-theme-gate.ts.
+  useEffect(() => {
+    const dispose = startBootThemeGate({
+      isBaseSettingsLoaded: () => useSettingsStore.getState().isBaseSettingsLoaded,
+      subscribe: (listener) => useSettingsStore.subscribe(listener),
+      applyPersistedTheme: () => {
+        const s = useSettingsStore.getState().settings;
+        applyThemeFromSettings(s.uiFont ?? 'blue', s.appFontFamily ?? 'default', fontsLoadedRef.current);
+        logInfo('RootLayout', 'Boot theme preset applied: ' + (s.uiFont ?? 'blue'));
+      },
+      onReady: (reason) => {
+        logInfo('RootLayout', 'Boot theme gate ready: ' + reason);
+        setBootThemeReady(true);
+      },
+    });
+    return dispose;
+  }, []);
+  useEffect(() => {
+    if (!bootThemeReady) return;
+    SplashScreen.hideAsync().catch(() => undefined);
+  }, [bootThemeReady]);
+
   // Runtime theme preset swap. applyThemePreset() rewrites the live
   // colors object in place, re-injects Text.defaultProps.style.fontFamily,
   // and bumps the theme-version store so ShellLayout's root re-mounts
   // with the fresh palette. PTY sessions are unaffected because only
-  // JS styles re-compute.
+  // JS styles re-compute. Gated on base-settings hydration (never applies
+  // the DEFAULT uiFont over a not-yet-loaded persisted one); re-runs when
+  // fonts finish loading so Text picks up the real face. De-duplicated
+  // against the boot gate's apply by applyThemeFromSettings.
   useEffect(() => {
-    if (!fontsLoaded) return;
-    import('@/lib/theme-presets').then(({ applyThemePreset, applyUiFont }) => {
-      applyThemePreset(uiFont as any);
+    if (!baseSettingsLoaded) return;
+    if (applyThemeFromSettings(uiFont, appFontFamily, fontsLoaded)) {
       logInfo('RootLayout', 'Theme preset applied: ' + uiFont);
-      // Font override applies AFTER the preset so it always wins over
-      // whichever font the preset itself declares — the two are picked
-      // independently (settings.appFontFamily vs settings.uiFont).
-      if (appFontFamily === 'dotgothic16') {
-        applyUiFont('DotGothic16_400Regular');
-      }
-    });
-  }, [uiFont, appFontFamily, fontsLoaded]);
+    }
+  }, [uiFont, appFontFamily, fontsLoaded, baseSettingsLoaded]);
 
   useEffect(() => {
     logLifecycle('RootLayout', 'mounted');
@@ -2196,9 +2230,14 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <Stack key={locale} screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-        </Stack>
+        {/* Boot theme gate: mount the tree only once the persisted preset is
+            applied (splash stays up meanwhile), so first paint is in the
+            user's theme — see lib/boot-theme-gate.ts. */}
+        {bootThemeReady ? (
+          <Stack key={locale} screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" />
+          </Stack>
+        ) : null}
         {pendingAgentActionApproval ? (
           <View style={actionApprovalStyles.backdrop}>
             <View style={actionApprovalStyles.panel}>
