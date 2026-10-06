@@ -76,13 +76,16 @@ function parseActionPolicyInput(raw: unknown): ActionPolicyInput | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const r = raw as Record<string, unknown>;
   if (r.enabled !== true) return undefined;
+  const rules = parseStoredRules(r.rules);
   return {
     enabled: true,
     origin: typeof r.origin === 'string' ? r.origin : '',
-    rules: parseStoredRules(r.rules),
+    rules,
     homeDir: typeof r.homeDir === 'string' ? r.homeDir : '',
-    // A rules field that is not even an array is as good as unreadable.
-    rulesUnavailable: r.rulesUnavailable === true || !Array.isArray(r.rules),
+    // A rules field that is not an array, or one with ANY invalid entry
+    // (security review L5: dropping a rule silently loosens), is unreadable.
+    rulesUnavailable:
+      r.rulesUnavailable === true || !Array.isArray(r.rules) || rules.length !== (r.rules as unknown[]).length,
   };
 }
 

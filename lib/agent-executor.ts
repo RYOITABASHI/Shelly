@@ -646,7 +646,13 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // BEHAVIOR CHANGE once the flag is on: bumped so a stale pre-v61 script —
 // which would silently ignore the user's rules — is regenerated instead.
 // Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 61;
+// v62 (2026-10-06, POLICY-001 security review M1/L3/L5): the policy gate now
+// verifies policy.json against SHELLY_AGENT_POLICY_SEAL (native-exported),
+// rejects malformed compiled lines, and folds case with node when available
+// (ASCII-only fallback escalates unmatched non-ASCII keyword checks to ask).
+// Bumped so a pre-v62 script — which would accept a deleted / edited policy
+// file — is regenerated.
+const AGENT_SCRIPT_VERSION = 62;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3074,6 +3080,12 @@ APPROVALEOF
 # the RN app at a fixed 4-space indent (lib/agent-user-policy-store.ts) so a
 # plain sed range can read it; keywords are validated free of quotes, |, $
 # and backticks at write time.
+# Security review M1/L3/L5: the file must match SHELLY_AGENT_POLICY_SEAL
+# (exported readonly by native; an empty seal accepts only a missing/empty
+# file), every compiled line must be well-formed, and case folding uses node
+# (full Unicode, same as the TS reference) when available — without node,
+# ASCII-only tr is used and a keyword rule that fails to match NON-ASCII text
+# escalates to ask instead of silently not matching.
 SHELLY_POLICY_FILE="$HOME/.shelly/agents/policy.json"
 SHELLY_POLICY_EFFECT=""
 SHELLY_POLICY_REASON=""
@@ -3082,23 +3094,67 @@ shelly_policy_compiled_lines() {
   sed -n '/^  "compiledActionRules": \\[$/,/^  \\]/p' "$SHELLY_POLICY_FILE" 2>/dev/null \\
     | sed -n 's/^    "\\(.*\\)"[,]*$/\\1/p'
 }
+shelly_policy_sha256() {
+  { sha256sum "$1" 2>/dev/null || toybox sha256sum "$1" 2>/dev/null; } | cut -c1-64
+}
+shelly_policy_node_ok() {
+  declare -F node_usable >/dev/null 2>&1 && declare -F shelly_node >/dev/null 2>&1 && node_usable
+}
+shelly_policy_lower() {
+  if [ "$SHELLY_POLICY_FOLD_NODE" = "1" ]; then
+    printf '%s' "$1" | shelly_node -e 'let d="";process.stdin.setEncoding("utf8");process.stdin.on("data",(c)=>{d+=c;}).on("end",()=>process.stdout.write(d.toLowerCase()));' 2>/dev/null && return 0
+  fi
+  printf '%s' "$1" | tr 'A-Z' 'a-z'
+}
 shelly_policy_action_effect() {
   pa_type="$1"
-  pa_host="$(printf '%s' "\${2:-}" | tr 'A-Z' 'a-z')"
-  pa_text="$(printf '%s' "\${3:-}" | tr 'A-Z' 'a-z')"
   SHELLY_POLICY_EFFECT=""
   SHELLY_POLICY_REASON=""
   [ "\${SHELLY_AGENT_POLICY:-0}" = "1" ] || return 0
   [ "$pa_type" = "__suppressed__" ] && return 0
+  SHELLY_POLICY_FOLD_NODE=0
+  shelly_policy_node_ok && SHELLY_POLICY_FOLD_NODE=1
+  pa_host="$(shelly_policy_lower "\${2:-}")"
+  pa_text="$(shelly_policy_lower "\${3:-}")"
+  pa_nonascii=0
+  if [ "$SHELLY_POLICY_FOLD_NODE" != "1" ] && [ -n "$(printf '%s' "$pa_text" | LC_ALL=C tr -d '\\000-\\177')" ]; then
+    pa_nonascii=1
+  fi
   pa_best=""
   pa_rank=0
   pa_unavailable=0
+  pa_kw_uncertain=0
+  pa_seal="\${SHELLY_AGENT_POLICY_SEAL:-}"
+  if ! [[ "$pa_seal" =~ ^([0-9a-f]{64}(,[0-9a-f]{64})?)?$ ]]; then
+    pa_unavailable=1
+  fi
+  if [ -e "$SHELLY_POLICY_FILE" ]; then
+    if [ -z "$pa_seal" ]; then
+      grep -q '[^[:space:]]' "$SHELLY_POLICY_FILE" 2>/dev/null && pa_unavailable=1
+    else
+      pa_hash="$(shelly_policy_sha256 "$SHELLY_POLICY_FILE")"
+      case ",$pa_seal," in
+        *",$pa_hash,"*) [ \${#pa_hash} -eq 64 ] || pa_unavailable=1 ;;
+        *) pa_unavailable=1 ;;
+      esac
+    fi
+  elif [ -n "$pa_seal" ]; then
+    pa_unavailable=1
+  fi
   if [ -f "$SHELLY_POLICY_FILE" ]; then
     if [ -s "$SHELLY_POLICY_FILE" ] && ! grep -q '"kind": "shelly.user-policy"' "$SHELLY_POLICY_FILE" 2>/dev/null; then
       pa_unavailable=1
     fi
     pa_lines="$(shelly_policy_compiled_lines)"
-    while IFS='|' read -r pl_effect pl_type pl_domain pl_kw; do
+    while IFS= read -r pl_line; do
+      [ -n "$pl_line" ] || continue
+      if ! [[ "$pl_line" =~ ^(ask|deny|draft_only)\\|[a-z_-]+\\|[^|]*\\|[^|]*$ ]]; then
+        pa_unavailable=1
+        continue
+      fi
+      IFS='|' read -r pl_effect pl_type pl_domain pl_kw <<POLICYLINEEOF
+$pl_line
+POLICYLINEEOF
       [ "$pl_type" = "$pa_type" ] || continue
       case "$pl_effect" in
         deny) pl_rank=3 ;;
@@ -3110,7 +3166,10 @@ shelly_policy_action_effect() {
         case "$pa_host" in "$pl_domain"|*".$pl_domain") ;; *) continue ;; esac
       fi
       if [ -n "$pl_kw" ]; then
-        case "$pa_text" in *"$pl_kw"*) ;; *) continue ;; esac
+        case "$pa_text" in
+          *"$pl_kw"*) ;;
+          *) [ "$pa_nonascii" = "1" ] && pa_kw_uncertain=1; continue ;;
+        esac
       fi
       if [ "$pl_rank" -gt "$pa_rank" ]; then
         pa_rank=$pl_rank
@@ -3122,6 +3181,7 @@ POLICYEOF
   elif [ -e "$SHELLY_POLICY_FILE" ]; then
     pa_unavailable=1
   fi
+  [ "$pa_kw_uncertain" = "1" ] && [ -z "$pa_best" ] && pa_best="ask"
   case "$pa_type" in ""|draft|notify) pa_side=0 ;; *) pa_side=1 ;; esac
   if [ "$pa_best" = "deny" ] || { [ "$pa_best" = "draft_only" ] && [ "$pa_side" = "1" ]; }; then
     SHELLY_POLICY_EFFECT="$pa_best"

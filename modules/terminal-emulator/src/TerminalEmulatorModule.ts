@@ -233,6 +233,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     requestDirUri: string;
     replyDirPath: string;
   }>;
+  /** POLICY-001: record the policy.json seal (comma-separated sha256 hex)
+   *  natively; AgentRuntime exports it as SHELLY_AGENT_POLICY_SEAL. */
+  setAgentPolicySeal?(seal: string): Promise<void>;
   readAgentActionApprovalRequest?(runId: string): Promise<{
     runId: string;
     agentId: string;

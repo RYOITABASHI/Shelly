@@ -76,10 +76,11 @@ import {
   ensureUserPolicyLoaded,
   evaluateApprovalRequestPolicy,
   recordHumanApprovalDecision,
-  rememberRequestOrigin,
+  trustedRequestOrigin,
   type TrustOffer,
 } from '@/lib/agent-policy-approval';
 import { isProactiveOrigin } from '@/lib/agent-action-policy';
+import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
 import enStrings from '@/lib/i18n/locales/en';
 import jaStrings from '@/lib/i18n/locales/ja';
@@ -123,9 +124,12 @@ const postTrustRampOffer = (offer: TrustOffer): void => {
   useAIPaneStore.getState().addMessage(COMPANION_CONVERSATION_KEY, {
     id: `policy-trust-${now.toString(36)}`,
     role: 'assistant',
-    content: strings['policy.trust_offer'].split('{{label}}').join(offer.label).split('{{count}}').join(String(offer.count)),
+    content: strings['policy.trust_offer']
+      .split('{{agent}}').join(offer.agentName)
+      .split('{{command}}').join(offer.command)
+      .split('{{count}}').join(String(offer.count)),
     timestamp: now,
-    pendingTrustRule: { key: offer.key, label: offer.label },
+    pendingTrustRule: { key: offer.key, label: offer.label, command: offer.command, agentId: offer.agentId },
     flowTurn: true,
   });
 };
@@ -187,8 +191,8 @@ type AgentActionApprovalRequest = {
   // future review-required flag flip for it doesn't ALSO require rediscovering
   // this gap.
   actionType: 'draft' | 'notify' | 'webhook' | 'cli' | 'intent' | 'dm-reply' | 'browser-pane' | 'social-post' | 'api-call';
-  /** POLICY-001 run origin from the raw request file (absent on the native
-   *  readAgentActionApprovalRequest round trip — see lib/agent-policy-approval.ts). */
+  /** POLICY-001: executor-written, UNTRUSTED run origin (informational only;
+   *  policy uses trustedRequestOrigin() — lib/agent-policy-approval.ts, M2). */
   origin?: string | null;
   preview?: string | null;
   destinationHost?: string | null;
@@ -1155,7 +1159,8 @@ export default function RootLayout() {
         // never "1"/"0" (both executors were updated to avoid that shape
         // specifically so this parses identically either way).
         autoAccept: value.autoAccept === true || value.autoAccept === 'true',
-        // POLICY-001: null (not '') when absent so originForRun() can fill it in.
+        // POLICY-001: informational only — the executor writes this file, so
+        // policy decisions use trustedRequestOrigin() instead (review M2).
         origin: typeof value.origin === 'string' ? value.origin : null,
       };
     };
@@ -2104,7 +2109,6 @@ export default function RootLayout() {
           if (notifiedActionApprovals.has(key)) continue;
           // POLICY-001 (lib/agent-policy-approval.ts): fine-grained user
           // rules + proactive floor + trust-ramp allows, flag-gated OFF.
-          rememberRequestOrigin(parsed.runId, parsed.origin);
           let policyBlocksAutoAccept = false;
           if (useSettingsStore.getState().settings.agentPolicyEngine === true) {
             await ensureUserPolicyLoaded(policyShellRunner).catch(() => undefined);
@@ -2123,7 +2127,8 @@ export default function RootLayout() {
                 continue;
               }
             }
-            policyBlocksAutoAccept = verdict.decision === 'ask' || isProactiveOrigin(parsed.origin);
+            // M2: origin from RN's own run registry, never the request file.
+            policyBlocksAutoAccept = verdict.decision === 'ask' || isProactiveOrigin(trustedRequestOrigin(parsed));
           }
           if (parsed.autoAccept && !policyBlocksAutoAccept && (await autoResolveActionApproval(parsed))) {
             rememberActionApproval(key, parsed);

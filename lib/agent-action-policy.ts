@@ -36,6 +36,7 @@
  * into the Node gate helper and to unit-test exhaustively.
  */
 import { checkCommandSafety, DangerLevel } from '@/lib/command-safety';
+import { sha256Hex } from '@/lib/sha256';
 
 /** .env key (synced from AppSettings.agentPolicyEngine) that turns the whole layer on. */
 export const AGENT_POLICY_ENV_FLAG = 'SHELLY_AGENT_POLICY';
@@ -294,10 +295,99 @@ export interface ActionDescriptor {
   /** Lowercased haystack for keyword rules (command + preview + destination). */
   text: string;
   dangerLevel: DangerLevel;
-  /** Normalised command class for the trust ramp ("git status", "npm test"). */
+  /** Normalised command class ("git status", "npm test") — display/audit
+   *  only. NEVER a trust key: a class groups `npm test` with
+   *  `npm test; python3 evil.py` (security review H1). */
   commandClass: string;
+  /** The exact command (cli / codex) or '' — what the trust ramp keys on. */
+  command: string;
   /** Workspace/agent scope for the trust ramp. */
   scope: string;
+}
+
+// ─── Trust-ramp eligibility + exact-command key (security review H1) ─────────
+
+/** Shell metacharacters that can chain, substitute or redirect. */
+const TRUST_FORBIDDEN_CHARS_RE = /[;&|`$()<>\r\n\\{}]/;
+/** Heads that run other code (interpreters / trampolines / wrappers). */
+const TRUST_TRAMPOLINE_HEADS = new Set([
+  'bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'ash',
+  'python', 'python2', 'python3', 'pypy', 'pypy3', 'node', 'nodejs', 'deno', 'bun', 'npx', 'bunx',
+  'make', 'gmake', 'env', 'eval', 'exec', 'xargs', 'su', 'sudo', 'doas', 'busybox', 'toybox',
+  'perl', 'ruby', 'php', 'lua', 'luajit', 'tclsh', 'awk', 'gawk', 'mawk', 'nawk', 'sed',
+  'nohup', 'timeout', 'nice', 'ionice', 'time', 'command', 'builtin', 'source', '.', 'watch',
+  'ssh', 'script', 'expect', 'linker64', 'run-as', 'am', 'pm', 'cmd', 'sh.exe',
+  'osascript', 'powershell', 'pwsh', 'chroot', 'unshare', 'nsenter', 'setsid', 'stdbuf', 'strace',
+]);
+/** Sub-commands that are themselves trampolines ("pnpm dlx", "npm exec"). */
+const TRUST_TRAMPOLINE_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  npm: ['exec', 'x', 'explore'],
+  pnpm: ['dlx', 'exec', 'x'],
+  yarn: ['dlx', 'exec'],
+  git: ['-c', '--config-env', '--exec-path', 'config', 'submodule', 'filter-branch', 'bisect'],
+});
+
+/** Whitespace-normalised command (the exact thing a trust key is a hash of). */
+export function normalizeTrustCommand(command: string): string {
+  return String(command || '').trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * True when an exact command may EVER be trust-ramped: no chaining /
+ * substitution / redirection characters, no leading env assignment, and its
+ * head is not an interpreter or trampoline (incl. `sed -i`, `find -exec`,
+ * `git -c`, `pnpm dlx`). Conservative on purpose: false negatives only cost
+ * the user one more approval tap.
+ */
+export function isTrustEligibleCommand(command: string): boolean {
+  const c = normalizeTrustCommand(command);
+  if (!c || c.length > 200) return false;
+  if (TRUST_FORBIDDEN_CHARS_RE.test(command)) return false;
+  const words = c.split(' ');
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return false;
+  const head = (words[0].split('/').pop() || '').toLowerCase();
+  if (!head || words[0].includes('/')) return false; // a path-qualified binary could be anything
+  if (TRUST_TRAMPOLINE_HEADS.has(head) || /^python\d/.test(head)) return false;
+  const subs = TRUST_TRAMPOLINE_SUBCOMMANDS[head];
+  // Flags compare case-sensitively (`git -C dir` is fine, `git -c k=v` is a
+  // trampoline); sub-command words case-insensitively.
+  const isSub = (w: string) =>
+    w.startsWith('-')
+      ? subs!.some((s) => s.startsWith('-') && (w === s || w.startsWith(`${s}=`) || (s.length === 2 && w.startsWith(s) && w.length > 2)))
+      : subs!.includes(w.toLowerCase());
+  if (subs && words.slice(1).some(isSub)) return false;
+  if (head === 'find' && words.some((w) => /^-(?:exec|execdir|ok|okdir|delete|fprint)/.test(w))) return false;
+  return true;
+}
+
+/** Capabilities the trust ramp must never auto-allow, whatever the count. */
+export const TRUST_RAMP_EXCLUDED_CAPABILITIES: readonly PolicyCapability[] = Object.freeze([
+  'payment',
+  'secret',
+  'post',
+  'message',
+  'network',
+  'git-push',
+]);
+
+const TRUST_SCOPE_RE = /^[A-Za-z0-9_.-]{1,200}$/;
+
+/**
+ * The trust key for a descriptor — `cli|<sha256(agentId,cli,exactCommand)>|agentId`
+ * — or null when it may never be trust-ramped. Single source of truth used
+ * at COUNT time (lib/agent-trust-ramp.ts) and re-checked at USE time inside
+ * evaluateActionPolicy.
+ */
+export function trustKeyForDescriptor(desc: ActionDescriptor): string | null {
+  if (desc.kind !== 'cli') return null;
+  if (isProactiveOrigin(desc.origin)) return null;
+  if (desc.dangerLevel === 'CRITICAL' || desc.dangerLevel === 'HIGH') return null;
+  if (!hasSideEffect(desc.capabilities)) return null;
+  if (desc.capabilities.some((c) => TRUST_RAMP_EXCLUDED_CAPABILITIES.includes(c))) return null;
+  if (!isTrustEligibleCommand(desc.command)) return null;
+  if (!TRUST_SCOPE_RE.test(desc.scope || '')) return null;
+  const hash = sha256Hex(`${desc.scope}\n${desc.kind}\n${normalizeTrustCommand(desc.command)}`);
+  return `${desc.kind}|${hash}|${desc.scope}`;
 }
 
 const PAYMENT_HINT_RE = /(?:\b(?:pay|payment|purchase|checkout|invoice|stripe|paypal|billing|transfer|wire)\b|支払|決済|購入|送金|振込|振り込|課金|お金|代金|請求)/i;
@@ -401,6 +491,7 @@ export function describeCommandAction(opts: {
     text: lowerHaystack(command),
     dangerLevel: checkCommandSafety(command).level,
     commandClass: commandClassOf(command),
+    command,
     scope: opts.scope || opts.cwd || '',
   };
 }
@@ -455,7 +546,9 @@ export function describeApprovalRequest(req: ApprovalRequestLike): ActionDescrip
   const command = req.command || '';
   const caps = actionTypeCapabilities(req.actionType, { command, intentMode: req.intentMode });
   const text = lowerHaystack(req.preview, command, req.destinationHost, req.intentTarget, req.intentShareText, req.dmReplyText);
-  if (PAYMENT_HINT_RE.test(text) && !caps.includes('payment')) caps.push('payment');
+  // A draft / notification that merely MENTIONS money is still read-only
+  // (it moves nothing); only a side-effecting action gains `payment`.
+  if (PAYMENT_HINT_RE.test(text) && !caps.includes('payment') && hasSideEffect(caps)) caps.push('payment');
   const hosts = extractHosts(lowerHaystack(command, req.intentTarget));
   const dest = (req.destinationHost || '').trim().toLowerCase();
   if (dest && !hosts.includes(dest)) hosts.unshift(dest);
@@ -472,6 +565,7 @@ export function describeApprovalRequest(req: ApprovalRequestLike): ActionDescrip
     text,
     dangerLevel,
     commandClass: req.actionType === 'cli' ? commandClassOf(command) : req.actionType === 'intent' ? `intent ${req.intentMode || ''}`.trim() : req.actionType,
+    command: req.actionType === 'cli' ? command : '',
     scope: req.agentId || '',
   };
 }
@@ -563,8 +657,6 @@ export interface PolicyState {
    * is escalated (ask) and no trust allow is honoured.
    */
   rulesUnavailable?: boolean;
-  /** Supplied by the trust ramp: the class key for a descriptor. */
-  trustKeyOf?: (desc: ActionDescriptor) => string | null;
 }
 
 /**
@@ -609,14 +701,15 @@ export function evaluateActionPolicy(desc: ActionDescriptor, state: PolicyState)
       : { decision: 'default', layer: 'default', reason: 'read-only action' };
   }
 
-  // 4. trust-ramp allows (never for CRITICAL/HIGH, re-checked here at USE time).
-  if (sideEffect && state.trustAllows && state.trustAllows.length && state.trustKeyOf) {
-    if (desc.dangerLevel !== 'CRITICAL' && desc.dangerLevel !== 'HIGH') {
-      const key = state.trustKeyOf(desc);
-      if (key) {
-        const hit = state.trustAllows.find((a) => a.key === key);
-        if (hit) return { decision: 'allow', layer: 'trust-allow', reason: `trust-ramp allow ${hit.id}`, ruleId: hit.id };
-      }
+  // 4. trust-ramp allows. Eligibility (origin, danger level, excluded
+  // capabilities, no chaining / trampoline) AND the exact-command hash are
+  // all recomputed HERE from the live descriptor at use time — a stored key
+  // is only a lookup, never a grant on its own.
+  if (sideEffect && state.trustAllows && state.trustAllows.length) {
+    const key = trustKeyForDescriptor(desc);
+    if (key) {
+      const hit = state.trustAllows.find((a) => a.key === key);
+      if (hit) return { decision: 'allow', layer: 'trust-allow', reason: `trust-ramp allow ${hit.id}`, ruleId: hit.id };
     }
   }
 
@@ -635,6 +728,8 @@ export const SIDE_EFFECT_ACTION_TYPES: readonly string[] = Object.freeze([
   'social-post',
   'browser-pane',
 ]);
+
+const ALL_POLICY_ACTION_TYPES: readonly string[] = Object.freeze(['draft', 'notify', ...SIDE_EFFECT_ACTION_TYPES]);
 
 const CAPABILITY_ACTION_TYPES: Readonly<Record<PolicyCapability, readonly string[]>> = Object.freeze({
   read: [],
@@ -674,7 +769,11 @@ export function compilePolicyRuleLines(rules: readonly PolicyRule[]): string[] {
     const m = rule.match;
     const pathScoped = !!(m.pathPrefix || m.outsidePath);
     const effect: PolicyEffect = pathScoped ? 'ask' : rule.effect;
-    let types: readonly string[] = m.capability ? CAPABILITY_ACTION_TYPES[m.capability] : SIDE_EFFECT_ACTION_TYPES;
+    // A rule with no capability ("anything mentioning X") applies to every
+    // action type, drafts included — exactly like the TS evaluator (L4: the
+    // executors must never be looser than the reference). draft_only still
+    // exempts read-only types at evaluation time.
+    let types: readonly string[] = m.capability ? CAPABILITY_ACTION_TYPES[m.capability] : ALL_POLICY_ACTION_TYPES;
     if (pathScoped) types = ['cli'];
     let keywords: readonly string[] = m.keywords && m.keywords.length ? m.keywords : [''];
     if (m.capability === 'payment' && !(m.keywords && m.keywords.length)) keywords = PAYMENT_KEYWORDS;

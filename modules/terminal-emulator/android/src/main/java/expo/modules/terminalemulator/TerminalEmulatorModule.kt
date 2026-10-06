@@ -1692,6 +1692,17 @@ class TerminalEmulatorModule : Module() {
             )
         }
 
+        // POLICY-001 (lib/agent-policy-device.ts): native copy of the
+        // policy.json seal, exported to every agent run by AgentRuntime as the
+        // readonly SHELLY_AGENT_POLICY_SEAL. commit() (not apply()) so a run
+        // launched right after a policy write already sees the new seal.
+        AsyncFunction("setAgentPolicySeal") { seal: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            AgentRuntime.writeAgentPolicySeal(context, seal)
+            null
+        }
+
         AsyncFunction("readAgentActionApprovalRequest") { runId: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")

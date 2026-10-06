@@ -324,6 +324,133 @@ function getRecoverySuggestion(command) {
   return void 0;
 }
 
+// lib/sha256.ts
+var K = new Uint32Array([
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+]);
+function utf8Bytes(text) {
+  const out = [];
+  for (const ch of text) {
+    let cp = ch.codePointAt(0);
+    if (cp >= 55296 && cp <= 57343) cp = 65533;
+    if (cp < 128) out.push(cp);
+    else if (cp < 2048) out.push(192 | cp >> 6, 128 | cp & 63);
+    else if (cp < 65536) out.push(224 | cp >> 12, 128 | cp >> 6 & 63, 128 | cp & 63);
+    else out.push(240 | cp >> 18, 128 | cp >> 12 & 63, 128 | cp >> 6 & 63, 128 | cp & 63);
+  }
+  return Uint8Array.from(out);
+}
+var rotr = (x, n) => x >>> n | x << 32 - n;
+function sha256Hex(text) {
+  const msg = utf8Bytes(text);
+  const bitLen = msg.length * 8;
+  const padded = new Uint8Array(msg.length + 9 + 63 >> 6 << 6);
+  padded.set(msg);
+  padded[msg.length] = 128;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor(bitLen / 4294967296));
+  view.setUint32(padded.length - 4, bitLen >>> 0);
+  const h = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]);
+  const w = new Uint32Array(64);
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i += 1) w[i] = view.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i += 1) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ w[i - 15] >>> 3;
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ w[i - 2] >>> 10;
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+    }
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let i = 0; i < 64; i += 1) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = e & f ^ ~e & g;
+      const t1 = hh + S1 + ch + K[i] + w[i] >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = a & b ^ a & c ^ b & c;
+      const t2 = S0 + maj >>> 0;
+      hh = g;
+      g = f;
+      f = e;
+      e = d + t1 >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = t1 + t2 >>> 0;
+    }
+    h[0] = h[0] + a >>> 0;
+    h[1] = h[1] + b >>> 0;
+    h[2] = h[2] + c >>> 0;
+    h[3] = h[3] + d >>> 0;
+    h[4] = h[4] + e >>> 0;
+    h[5] = h[5] + f >>> 0;
+    h[6] = h[6] + g >>> 0;
+    h[7] = h[7] + hh >>> 0;
+  }
+  return Array.from(h, (x) => x.toString(16).padStart(8, "0")).join("");
+}
+
 // lib/agent-action-policy.ts
 var RUN_ORIGINS = Object.freeze([
   "user",
@@ -463,6 +590,126 @@ function parseStoredRules(raw2) {
   }
   return out;
 }
+var TRUST_FORBIDDEN_CHARS_RE = /[;&|`$()<>\r\n\\{}]/;
+var TRUST_TRAMPOLINE_HEADS = /* @__PURE__ */ new Set([
+  "bash",
+  "sh",
+  "zsh",
+  "dash",
+  "ksh",
+  "mksh",
+  "fish",
+  "csh",
+  "tcsh",
+  "ash",
+  "python",
+  "python2",
+  "python3",
+  "pypy",
+  "pypy3",
+  "node",
+  "nodejs",
+  "deno",
+  "bun",
+  "npx",
+  "bunx",
+  "make",
+  "gmake",
+  "env",
+  "eval",
+  "exec",
+  "xargs",
+  "su",
+  "sudo",
+  "doas",
+  "busybox",
+  "toybox",
+  "perl",
+  "ruby",
+  "php",
+  "lua",
+  "luajit",
+  "tclsh",
+  "awk",
+  "gawk",
+  "mawk",
+  "nawk",
+  "sed",
+  "nohup",
+  "timeout",
+  "nice",
+  "ionice",
+  "time",
+  "command",
+  "builtin",
+  "source",
+  ".",
+  "watch",
+  "ssh",
+  "script",
+  "expect",
+  "linker64",
+  "run-as",
+  "am",
+  "pm",
+  "cmd",
+  "sh.exe",
+  "osascript",
+  "powershell",
+  "pwsh",
+  "chroot",
+  "unshare",
+  "nsenter",
+  "setsid",
+  "stdbuf",
+  "strace"
+]);
+var TRUST_TRAMPOLINE_SUBCOMMANDS = Object.freeze({
+  npm: ["exec", "x", "explore"],
+  pnpm: ["dlx", "exec", "x"],
+  yarn: ["dlx", "exec"],
+  git: ["-c", "--config-env", "--exec-path", "config", "submodule", "filter-branch", "bisect"]
+});
+function normalizeTrustCommand(command) {
+  return String(command || "").trim().replace(/\s+/g, " ");
+}
+function isTrustEligibleCommand(command) {
+  const c = normalizeTrustCommand(command);
+  if (!c || c.length > 200) return false;
+  if (TRUST_FORBIDDEN_CHARS_RE.test(command)) return false;
+  const words = c.split(" ");
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return false;
+  const head = (words[0].split("/").pop() || "").toLowerCase();
+  if (!head || words[0].includes("/")) return false;
+  if (TRUST_TRAMPOLINE_HEADS.has(head) || /^python\d/.test(head)) return false;
+  const subs = TRUST_TRAMPOLINE_SUBCOMMANDS[head];
+  const isSub = (w) => w.startsWith("-") ? subs.some((s) => s.startsWith("-") && (w === s || w.startsWith(`${s}=`) || s.length === 2 && w.startsWith(s) && w.length > 2)) : subs.includes(w.toLowerCase());
+  if (subs && words.slice(1).some(isSub)) return false;
+  if (head === "find" && words.some((w) => /^-(?:exec|execdir|ok|okdir|delete|fprint)/.test(w))) return false;
+  return true;
+}
+var TRUST_RAMP_EXCLUDED_CAPABILITIES = Object.freeze([
+  "payment",
+  "secret",
+  "post",
+  "message",
+  "network",
+  "git-push"
+]);
+var TRUST_SCOPE_RE = /^[A-Za-z0-9_.-]{1,200}$/;
+function trustKeyForDescriptor(desc) {
+  if (desc.kind !== "cli") return null;
+  if (isProactiveOrigin(desc.origin)) return null;
+  if (desc.dangerLevel === "CRITICAL" || desc.dangerLevel === "HIGH") return null;
+  if (!hasSideEffect(desc.capabilities)) return null;
+  if (desc.capabilities.some((c) => TRUST_RAMP_EXCLUDED_CAPABILITIES.includes(c))) return null;
+  if (!isTrustEligibleCommand(desc.command)) return null;
+  if (!TRUST_SCOPE_RE.test(desc.scope || "")) return null;
+  const hash = sha256Hex(`${desc.scope}
+${desc.kind}
+${normalizeTrustCommand(desc.command)}`);
+  return `${desc.kind}|${hash}|${desc.scope}`;
+}
 var PAYMENT_HINT_RE = /(?:\b(?:pay|payment|purchase|checkout|invoice|stripe|paypal|billing|transfer|wire)\b|支払|決済|購入|送金|振込|振り込|課金|お金|代金|請求)/i;
 var SECRET_HINT_RE = /(?:\.env\b|auth\.json|\.ssh\/|id_rsa|keystore|\b(?:api[_-]?key|token|secret|password|passwd)\b|パスワード|秘密鍵|トークン)/i;
 var GIT_PUSH_RE = /\bgit\s+(?:-[^\s]+\s+)*push\b/;
@@ -543,6 +790,7 @@ function describeCommandAction(opts) {
     text: lowerHaystack(command),
     dangerLevel: checkCommandSafety(command).level,
     commandClass: commandClassOf(command),
+    command,
     scope: opts.scope || opts.cwd || ""
   };
 }
@@ -616,13 +864,11 @@ function evaluateActionPolicy(desc, state) {
   if (state.rulesUnavailable) {
     return sideEffect ? { decision: "ask", layer: "ask-rule", reason: "user policy file unreadable \u2014 escalating (fail-closed)" } : { decision: "default", layer: "default", reason: "read-only action" };
   }
-  if (sideEffect && state.trustAllows && state.trustAllows.length && state.trustKeyOf) {
-    if (desc.dangerLevel !== "CRITICAL" && desc.dangerLevel !== "HIGH") {
-      const key = state.trustKeyOf(desc);
-      if (key) {
-        const hit = state.trustAllows.find((a) => a.key === key);
-        if (hit) return { decision: "allow", layer: "trust-allow", reason: `trust-ramp allow ${hit.id}`, ruleId: hit.id };
-      }
+  if (sideEffect && state.trustAllows && state.trustAllows.length) {
+    const key = trustKeyForDescriptor(desc);
+    if (key) {
+      const hit = state.trustAllows.find((a) => a.key === key);
+      if (hit) return { decision: "allow", layer: "trust-allow", reason: `trust-ramp allow ${hit.id}`, ruleId: hit.id };
     }
   }
   return { decision: "default", layer: "default", reason: "no policy opinion" };
@@ -636,6 +882,7 @@ var SIDE_EFFECT_ACTION_TYPES = Object.freeze([
   "social-post",
   "browser-pane"
 ]);
+var ALL_POLICY_ACTION_TYPES = Object.freeze(["draft", "notify", ...SIDE_EFFECT_ACTION_TYPES]);
 var CAPABILITY_ACTION_TYPES = Object.freeze({
   read: [],
   draft: ["draft"],
@@ -786,6 +1033,9 @@ function classifyProposedCommand(command, ctx) {
   if (ctx.policyPath && new RegExp(`>\\s*\\S*${escapeRe(ctx.policyPath)}|\\b(tee|cp|mv)\\b[^|]*${escapeRe(ctx.policyPath)}`).test(command)) {
     return { decision: "deny", signals: ["policy-write"], reason: "agent attempted to write the policy/autonomy file", dangerLevel: safety.level };
   }
+  if (ctx.policyPath && touchesAgentsConfigDir(command)) {
+    return { decision: "deny", signals: ["policy-write"], reason: "agent attempted to modify the agents config dir (policy file)", dangerLevel: safety.level };
+  }
   if (safety.level === "CRITICAL") {
     return { decision: "deny", signals: ["destructive"], reason: safety.reason, dangerLevel: safety.level };
   }
@@ -829,6 +1079,15 @@ function classifyProposedCommand(command, ctx) {
     }
   }
 }
+var AGENTS_DIR_MUTATOR_RE = /(?:>|\b(?:rm|rmdir|unlink|mv|cp|tee|truncate|dd|ln|chmod|chown|install|shred|touch|rsync|tar|unzip|zip|python\d*|node|nodejs|deno|bun|perl|ruby|php|lua|awk|gawk|find|xargs|bash|sh|zsh|dash|busybox|toybox|git|patch|ed|ex|vi|vim|nano)\b|\bsed\b[^|;&]*\s-(?:[a-zA-Z]*i|-in-place))/;
+function touchesAgentsConfigDir(command) {
+  const c = String(command || "");
+  if (!AGENTS_DIR_MUTATOR_RE.test(c)) return false;
+  if (/\.shelly\/+agents\b/.test(c)) return true;
+  if (/\.shelly\b/.test(c) && /\bagents\b/.test(c)) return true;
+  if (/(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
+  return false;
+}
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -838,13 +1097,15 @@ function parseActionPolicyInput(raw2) {
   if (!raw2 || typeof raw2 !== "object" || Array.isArray(raw2)) return void 0;
   const r = raw2;
   if (r.enabled !== true) return void 0;
+  const rules = parseStoredRules(r.rules);
   return {
     enabled: true,
     origin: typeof r.origin === "string" ? r.origin : "",
-    rules: parseStoredRules(r.rules),
+    rules,
     homeDir: typeof r.homeDir === "string" ? r.homeDir : "",
-    // A rules field that is not even an array is as good as unreadable.
-    rulesUnavailable: r.rulesUnavailable === true || !Array.isArray(r.rules)
+    // A rules field that is not an array, or one with ANY invalid entry
+    // (security review L5: dropping a rule silently loosens), is unreadable.
+    rulesUnavailable: r.rulesUnavailable === true || !Array.isArray(r.rules) || rules.length !== r.rules.length
   };
 }
 var DEFAULT_POLICY = {

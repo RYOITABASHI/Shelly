@@ -10,6 +10,7 @@ import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logInfo, logWarn } from './debug-logger';
+import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-registry';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
@@ -1912,14 +1913,22 @@ async function runLadderAttempts(
       // generateRunScript re-checks the action type before honouring it.
       optimisticWorkspaceWrites: materializeOpts.optimisticWorkspaceWrites,
     });
-    await TerminalEmulator.runAgent(agentId);
-    await waitForAgentRunCompletion(runCommand, agentId, {
-      runStartedAtMs: i === 0 ? runStartedAtMs : Date.now() - 5_000,
-      previousRunCount: before.length,
-      previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
-      timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
-      pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
-    });
+    // POLICY-001 (security review M2): RN's own record that this agent is
+    // running on a human's behalf — the RN approval choke point trusts this,
+    // never the executor-written request file's origin.
+    markUserRunStarted(agentId);
+    try {
+      await TerminalEmulator.runAgent(agentId);
+      await waitForAgentRunCompletion(runCommand, agentId, {
+        runStartedAtMs: i === 0 ? runStartedAtMs : Date.now() - 5_000,
+        previousRunCount: before.length,
+        previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
+        timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
+        pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
+      });
+    } finally {
+      markUserRunFinished(agentId);
+    }
     // DEFERRED.md エージェント二重実行レース (chain-lock follow-up): disarm
     // BEFORE any other work in this iteration — this attempt's run is done,
     // so its now-stale on-disk script must stop matching the live chain lock

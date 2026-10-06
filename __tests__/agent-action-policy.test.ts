@@ -17,6 +17,8 @@ import {
   validatePolicyRule,
 } from '@/lib/agent-action-policy';
 import { trustKeyOf } from '@/lib/agent-trust-ramp';
+import { isTrustEligibleCommand, trustKeyForDescriptor } from '@/lib/agent-action-policy';
+import { sha256Hex } from '@/lib/sha256';
 
 const rule = (effect: PolicyRule['effect'], match: PolicyRule['match'], id = `r-${effect}`): PolicyRule => ({
   id,
@@ -30,7 +32,6 @@ const state = (rules: PolicyRule[], extra: Partial<PolicyState> = {}): PolicySta
   enabled: true,
   rules,
   homeDir: '/home/u',
-  trustKeyOf,
   ...extra,
 });
 
@@ -271,5 +272,100 @@ describe('compiled executor lines', () => {
     expect(evaluateCompiledLines(lines, 'webhook', 'api.x.com', 'the SECRETWORD')).toBe('deny');
     expect(evaluateCompiledLines(lines, 'cli', 'api.x.com', 'secretword')).toBe('');
     expect(evaluateCompiledLines(['allow|cli||', 'grant|cli||'], 'cli', '', '')).toBe('');
+  });
+});
+
+describe('security review H1 — trust allows are exact-command, never class', () => {
+  const cliReq = (command: string, agentId = 'a1', origin = 'user') =>
+    describeApprovalRequest({ actionType: 'cli', command, agentId, origin });
+  const allowFor = (command: string, agentId = 'a1') => {
+    const key = trustKeyForDescriptor(cliReq(command, agentId));
+    if (!key) throw new Error(`not eligible: ${command}`);
+    return { id: 'x', key };
+  };
+  const verdictFor = (allowCmd: string, runCmd: string) =>
+    evaluateActionPolicy(cliReq(runCmd), state([], { trustAllows: [allowFor(allowCmd)] })).decision;
+
+  it('the key is a sha256 of the exact command, scoped to agent and kind', () => {
+    const key = trustKeyForDescriptor(cliReq('npm test'))!;
+    expect(key).toMatch(/^cli\|[0-9a-f]{64}\|a1$/);
+    expect(trustKeyForDescriptor(cliReq('npm  test  '))).toBe(key); // whitespace-normalised
+    expect(trustKeyForDescriptor(cliReq('npm test', 'a2'))).not.toBe(key);
+    expect(trustKeyForDescriptor(cliReq('npm test --watch'))).not.toBe(key);
+  });
+
+  it('allows ONLY the identical command', () => {
+    expect(verdictFor('npm test', 'npm test')).toBe('allow');
+    expect(verdictFor('npm test', 'npm   test')).toBe('allow');
+    expect(verdictFor('npm test', 'npm test --bail')).toBe('default');
+    expect(verdictFor('npm test', 'npm run test')).toBe('default');
+  });
+
+  it.each([
+    'npm test; python3 -c "import os"',
+    'npm test | sh',
+    'npm test; base64 -d x | bash',
+    'npm test; cat /sdcard/x > /sdcard/y',
+    'npm test && rm -rf build',
+    'npm test `id`',
+    'npm test $(id)',
+    'npm test > /sdcard/out',
+    'npm test\npython3 evil.py',
+  ])('drifted/compound command %j is never allowed by an allow for "npm test"', (cmd) => {
+    expect(verdictFor('npm test', cmd)).toBe('default');
+    expect(trustKeyForDescriptor(cliReq(cmd))).toBeNull();
+  });
+
+  it.each([
+    'bash build.sh',
+    'bash -c id',
+    'sh build.sh',
+    'python3 evil.py',
+    'node x.js',
+    'npx something',
+    'pnpm dlx create-x',
+    'npm exec foo',
+    'make all',
+    'env FOO=1 npm test',
+    'FOO=1 npm test',
+    'xargs rm',
+    'sudo npm test',
+    'busybox rm x',
+    'toybox rm x',
+    'perl -e 1',
+    'awk 1 f',
+    'sed -i s/a/b/ f',
+    'find . -exec rm',
+    'git -c core.pager=sh log',
+    'git -ccore.sshCommand=x fetch',
+    'git config alias.x !sh',
+    'timeout 5 npm test',
+    './build.sh',
+    '/system/bin/sh x',
+    'echo hi > /sdcard/a',
+  ])('interpreter/trampoline/redirect %j is ineligible', (cmd) => {
+    expect(isTrustEligibleCommand(cmd)).toBe(false);
+    expect(trustKeyForDescriptor(cliReq(cmd))).toBeNull();
+  });
+
+  it('ordinary exact commands stay eligible', () => {
+    for (const cmd of ['npm test', 'git -C repo status', 'cargo build --release', 'touch notes.txt', 'mkdir -p out']) {
+      expect(isTrustEligibleCommand(cmd)).toBe(true);
+    }
+  });
+
+  it('a forged allow key for a drifted command is still refused at use time (eligibility re-checked)', () => {
+    const drifted = 'npm test; python3 evil.py';
+    const forged = { id: 'f', key: `cli|${sha256Hex(`a1\ncli\n${drifted}`)}|a1` };
+    expect(evaluateActionPolicy(cliReq(drifted), state([], { trustAllows: [forged] })).decision).toBe('default');
+  });
+
+  it('proactive origin, non-cli kinds and excluded capabilities never match', () => {
+    const allow = allowFor('npm test');
+    expect(evaluateActionPolicy(cliReq('npm test', 'a1', 'schedule'), state([], { trustAllows: [allow] })).layer).toBe('proactive');
+    expect(evaluateActionPolicy(cliReq('npm test', 'a1', 'widget'), state([], { trustAllows: [allow] })).decision).toBe('allow');
+    expect(trustKeyForDescriptor(describeApprovalRequest({ actionType: 'intent', intentMode: 'launch', intentTarget: 'npm test', agentId: 'a1', origin: 'user' }))).toBeNull();
+    expect(trustKeyForDescriptor(cliReq('git push'))).toBeNull();
+    expect(trustKeyForDescriptor(cliReq('curl https://x.com'))).toBeNull();
   });
 });

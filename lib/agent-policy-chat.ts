@@ -26,7 +26,7 @@ import {
   extractPolicyRule,
   type PolicyChatFn,
 } from '@/lib/agent-policy-rule-intent';
-import { grantTrustAllow, revokeTrustAllow, suppressTrustOffer } from '@/lib/agent-trust-ramp';
+import { grantTrustAllow, revokeTrustAllow, suppressTrustOffer, verifyTrustProposal } from '@/lib/agent-trust-ramp';
 import { ShellRunner, loadUserPolicy, mutateUserPolicy, newPolicyId } from '@/lib/agent-user-policy-store';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isCancelPhrase } from '@/lib/agent-slot-fill';
@@ -119,30 +119,45 @@ async function revokeFromChat(
   io: PolicyChatIO,
 ): Promise<void> {
   const s = strings(locale);
+  const loaded = await loadUserPolicy(io.run);
+  if (loaded.unavailable) {
+    io.post(s['policy.unavailable']);
+    return;
+  }
+  // Same numbering as the listing: rules first, then trust allows.
+  const items: ListedItem[] = [
+    ...loaded.data.rules.map((rule) => ({ kind: 'rule' as const, rule, at: rule.createdAt })),
+    ...loaded.data.trust.allows.map((a) => ({ kind: 'allow' as const, id: a.id, key: a.key, label: a.label, at: a.createdAt })),
+  ];
+  let pick: ListedItem | undefined;
+  if (typeof req.target === 'number') {
+    pick = items[req.target - 1];
+  } else {
+    const pool = items.filter((i) => req.scope === 'any' || i.kind === req.scope);
+    pick = pool.sort((a, b) => b.at - a.at)[0];
+  }
+  if (!pick) {
+    io.post(s['policy.revoke_none']);
+    return;
+  }
+  if (pick.kind === 'rule') {
+    // Security review L1: removing a rule LOOSENS policy — echo it and wait
+    // for an exact confirm phrase (handlePendingPolicyRevokeReply).
+    io.post(fill(s['policy.revoke_rule_confirm'], { rule: describePolicyRule(pick.rule, locale) }), {
+      pendingPolicyRevoke: { ruleId: pick.rule.id, attempts: 0 },
+    });
+    return;
+  }
+  // Revoking a trust allow only TIGHTENS — done immediately.
+  const allowId = pick.id;
   let removed: ListedItem | null = null;
   try {
     await mutateUserPolicy(
       io.run,
       (data) => {
-        // Same numbering as the listing: rules first, then trust allows.
-        const items: ListedItem[] = [
-          ...data.rules.map((rule) => ({ kind: 'rule' as const, rule, at: rule.createdAt })),
-          ...data.trust.allows.map((a) => ({ kind: 'allow' as const, id: a.id, key: a.key, label: a.label, at: a.createdAt })),
-        ];
-        let pick: ListedItem | undefined;
-        if (typeof req.target === 'number') {
-          pick = items[req.target - 1];
-        } else {
-          const pool = items.filter((i) => req.scope === 'any' || i.kind === req.scope);
-          pick = pool.sort((a, b) => b.at - a.at)[0];
-        }
-        if (!pick) return data;
-        removed = pick;
-        if (pick.kind === 'rule') {
-          const id = pick.rule.id;
-          return { ...data, rules: data.rules.filter((r) => r.id !== id) };
-        }
-        return { ...data, trust: revokeTrustAllow(data.trust, pick.id).state };
+        const out = revokeTrustAllow(data.trust, allowId);
+        if (out.removed) removed = { kind: 'allow', id: out.removed.id, key: out.removed.key, label: out.removed.label, at: out.removed.createdAt };
+        return { ...data, trust: out.state };
       },
       io.now ? io.now() : Date.now(),
     );
@@ -214,6 +229,54 @@ export async function handlePendingPolicyRuleReply(
 }
 
 /**
+ * Reply to a pending rule-removal confirmation (security review L1). Only an
+ * exact confirm phrase removes the rule; anything else keeps it (re-asks once).
+ */
+export async function handlePendingPolicyRevokeReply(
+  pending: NonNullable<ChatMessage['pendingPolicyRevoke']>,
+  userText: string,
+  locale: PolicyLocale,
+  io: PolicyChatIO,
+): Promise<boolean> {
+  const s = strings(locale);
+  if (isCancelPhrase(userText) || classifyYesNo(userText) === 'no') {
+    io.post(s['policy.revoke_rule_kept']);
+    return true;
+  }
+  if (isConfirmPhrase(userText) || classifyYesNo(userText) === 'yes') {
+    let removed: PolicyRule | null = null;
+    try {
+      await mutateUserPolicy(
+        io.run,
+        (data) => {
+          removed = data.rules.find((r) => r.id === pending.ruleId) ?? null;
+          return removed ? { ...data, rules: data.rules.filter((r) => r.id !== pending.ruleId) } : data;
+        },
+        io.now ? io.now() : Date.now(),
+      );
+    } catch (e) {
+      logWarn('Policy', 'rule revoke failed', e);
+      io.post(`${s['policy.revoke_failed']}: ${e instanceof Error ? e.message : String(e)}`);
+      return true;
+    }
+    const gone = removed as PolicyRule | null;
+    if (!gone) {
+      io.post(s['policy.revoke_none']);
+      return true;
+    }
+    logInfo('Policy', `revoked rule id=${gone.id}`);
+    io.post(fill(s['policy.revoked_rule'], { rule: describePolicyRule(gone, locale) }));
+    return true;
+  }
+  if (pending.attempts >= 1) {
+    io.post(s['policy.revoke_rule_kept']);
+    return true;
+  }
+  io.post(s['policy.revoke_rule_confirm_unclear'], { pendingPolicyRevoke: { ...pending, attempts: pending.attempts + 1 } });
+  return true;
+}
+
+/**
  * Reply to a pending trust-ramp proposal. A strict yes grants; a clear no
  * suppresses and is consumed. Anything unclear ALSO suppresses (it adds
  * nothing) but is NOT consumed — returns false so the message is routed
@@ -230,6 +293,13 @@ export async function handlePendingTrustReply(
   const now = io.now ? io.now() : Date.now();
   try {
     if (answer === 'yes') {
+      // Security review L2: the stored key must re-derive from the stored
+      // exact command + agent, and that command must still be eligible.
+      if (!verifyTrustProposal(pending)) {
+        logWarn('Policy', 'trust proposal failed re-verification — nothing granted');
+        io.post(s['policy.trust_failed']);
+        return true;
+      }
       await mutateUserPolicy(io.run, (data) => ({ ...data, trust: grantTrustAllow(data.trust, pending.key, pending.label, now, newPolicyId('a')) }), now);
       // The seal is what makes the allow effective (see agent-trust-allow-seal.ts).
       await io.seal?.add(pending.key);

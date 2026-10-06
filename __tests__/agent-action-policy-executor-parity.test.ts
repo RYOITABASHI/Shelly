@@ -9,10 +9,11 @@ jest.mock('@/lib/home-path', () => ({
  * proactive read-only floor fail-closed.
  */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { PolicyRule, compilePolicyRuleLines, evaluateCompiledLines } from '@/lib/agent-action-policy';
+import { PolicyRule, compilePolicyRuleLines, describeApprovalRequest, evaluateActionPolicy, evaluateCompiledLines } from '@/lib/agent-action-policy';
 import { serializeUserPolicyFile } from '@/lib/agent-user-policy-store';
 import { generateRunScript } from '@/lib/agent-executor';
 import type { Agent, ToolChoice } from '@/store/types';
@@ -37,13 +38,20 @@ const TEXTS = ['', 'hello', 'Pay the invoice', '支払いを実行', 'the SECRET
 let home: string;
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-exec-policy-'));
+  delete process.env.SHELLY_AGENT_POLICY_SEAL;
 });
-afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
+afterEach(() => {
+  delete process.env.SHELLY_AGENT_POLICY_SEAL;
+  fs.rmSync(home, { recursive: true, force: true });
+});
 
+/** Writes policy.json AND seals it (as native would export it), like RN does. */
 function writePolicy(r: PolicyRule[] = rules) {
   const dir = path.join(home, '.shelly/agents');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'policy.json'), serializeUserPolicyFile({ rules: r, trust: { counters: {}, allows: [] } }, 1));
+  const text = serializeUserPolicyFile({ rules: r, trust: { counters: {}, allows: [] } }, 1);
+  fs.writeFileSync(path.join(dir, 'policy.json'), text);
+  process.env.SHELLY_AGENT_POLICY_SEAL = createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex');
 }
 
 /** Reference: what both executors must return for (type, host, text, origin). */
@@ -222,5 +230,100 @@ echo "$LOG|rc=$rc|\${ACTION_DISPATCH_STATUS:-}"`;
   it('read-only actions are untouched by the proactive floor', () => {
     writePolicy([]);
     expect(runRequest('notify', { SHELLY_AGENT_POLICY: '1', SHELLY_RUN_ORIGIN: 'schedule', SHELLY_RUN_UNATTENDED: '1' })).toBe('|rc=0|');
+  });
+
+  // ── security review M1 / L3 / L4 / L5 ─────────────────────────────────────
+  const effectOf = (env: Record<string, string>, t = 'webhook', h = '', x = '') =>
+    bash(`shelly_policy_action_effect '${t}' '${h}' '${x}'; echo "[$SHELLY_POLICY_EFFECT]"`, { SHELLY_AGENT_POLICY: '1', SHELLY_RUN_ORIGIN: 'user', ...env });
+
+  it('M1: deleted / edited / unsealed policy.json escalates side effects in bash and JS', () => {
+    writePolicy();
+    const sealed = process.env.SHELLY_AGENT_POLICY_SEAL!;
+    expect(effectOf({})).toBe('[]');
+    // edited (valid JSON with the deny rule removed)
+    fs.writeFileSync(path.join(home, '.shelly/agents/policy.json'), serializeUserPolicyFile({ rules: [], trust: { counters: {}, allows: [] } }, 2));
+    expect(effectOf({})).toBe('[ask]');
+    process.env.SHELLY_RUN_ORIGIN = 'user';
+    expect(executor.policyActionEffect({ home }, { agent: { id: 'a' }, action: { type: 'cli' } }, { SHELLY_AGENT_POLICY: '1' }, 'cli', '').effect).toBe('ask');
+    // deleted while sealed
+    fs.rmSync(path.join(home, '.shelly/agents/policy.json'));
+    expect(effectOf({})).toBe('[ask]');
+    expect(executor.policyActionEffect({ home }, { agent: { id: 'a' }, action: { type: 'cli' } }, { SHELLY_AGENT_POLICY: '1' }, 'cli', '').effect).toBe('ask');
+    // never sealed, file present
+    writePolicy();
+    expect(effectOf({ SHELLY_AGENT_POLICY_SEAL: '' })).toBe('[ask]');
+    // malformed seal
+    expect(effectOf({ SHELLY_AGENT_POLICY_SEAL: 'zz' })).toBe('[ask]');
+    // [new, old] transition seal accepted
+    expect(effectOf({ SHELLY_AGENT_POLICY_SEAL: `${'a'.repeat(64)},${process.env.SHELLY_AGENT_POLICY_SEAL}` })).toBe('[]');
+    expect(sealed).toMatch(/^[0-9a-f]{64}$/);
+    // read-only actions are never escalated by an unavailable policy
+    expect(effectOf({ SHELLY_AGENT_POLICY_SEAL: '' }, 'notify')).toBe('[]');
+    delete process.env.SHELLY_RUN_ORIGIN;
+  });
+
+  it('L5: a malformed compiled line makes the policy unavailable (bash + JS)', () => {
+    const dir = path.join(home, '.shelly/agents');
+    fs.mkdirSync(dir, { recursive: true });
+    const text = serializeUserPolicyFile({ rules: [], trust: { counters: {}, allows: [] } }, 1)
+      .replace('"compiledActionRules": []', '"compiledActionRules": [\n    "allow|cli||"\n  ]');
+    fs.writeFileSync(path.join(dir, 'policy.json'), text);
+    process.env.SHELLY_AGENT_POLICY_SEAL = createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex');
+    expect(effectOf({})).toBe('[ask]');
+    process.env.SHELLY_RUN_ORIGIN = 'user';
+    expect(executor.policyActionEffect({ home }, { agent: { id: 'a' }, action: { type: 'cli' } }, { SHELLY_AGENT_POLICY: '1' }, 'cli', '').effect).toBe('ask');
+    delete process.env.SHELLY_RUN_ORIGIN;
+  });
+
+  it('L3: non-ASCII case folding — node fold matches TS; ASCII-only fallback fails closed to ask', () => {
+    const umlaut: PolicyRule[] = [{ id: 'u', effect: 'deny', match: { keywords: ['ärger'] }, source: 'k', createdAt: 1 }];
+    writePolicy(umlaut);
+    const nodeBin = process.execPath.replace(/\\/g, '/');
+    const withNode = `node_usable() { return 0; }\nshelly_node() { "${nodeBin}" "$@"; }\n`;
+    const run = (prefix: string, x: string) =>
+      bash(`${prefix}shelly_policy_action_effect webhook '' '${x}'; echo "[$SHELLY_POLICY_EFFECT]"`, { SHELLY_AGENT_POLICY: '1', SHELLY_RUN_ORIGIN: 'user' });
+    // TS reference: deny for "ÄRGER" (Unicode lowercase), nothing for unrelated text.
+    expect(evaluateCompiledLines(compilePolicyRuleLines(umlaut), 'webhook', '', 'ÄRGER'.toLowerCase())).toBe('deny');
+    expect(run(withNode, 'großer ÄRGER')).toBe('[deny]');
+    expect(run(withNode, 'weather')).toBe('[]');
+    // Without node: cannot fold Ä, so an unmatched keyword on non-ASCII text ⇒ ask (never silently "").
+    expect(run('', 'großer ÄRGER')).toBe('[ask]');
+    expect(run('', 'weather')).toBe('[]');
+  });
+
+  it('L4: TS evaluateActionPolicy is the floor — JS and bash are never LESS strict', () => {
+    const matrixRules: PolicyRule[] = [
+      ...rules,
+      { id: 'u', effect: 'ask', match: { keywords: ['ärger'] }, source: 'k', createdAt: 5 },
+    ];
+    writePolicy(matrixRules);
+    const rank = (e: string) => (e === 'deny' ? 3 : e === 'draft_only' ? 2 : e === 'ask' ? 1 : 0);
+    const origins = ['user', 'widget', 'USER', 'Widget', 'schedule', 'notification', ''];
+    const cmds = ['npm test', 'npm test; python3 x', 'bash -c id', 'git push'];
+    const texts = ['hello', 'Pay the invoice', 'großer ÄRGER', 'the SECRETWORD'];
+    const cases: Array<{ origin: string; t: string; x: string; cmd: string; ts: number }> = [];
+    for (const origin of origins) for (const t of TYPES) for (const x of texts) {
+      const cmd = t === 'cli' ? cmds[(x.length + origin.length) % cmds.length] : '';
+      const desc = describeApprovalRequest({ actionType: t, preview: x, command: cmd, origin, agentId: 'a1' });
+      const v = evaluateActionPolicy(desc, { enabled: true, rules: matrixRules, homeDir: home });
+      cases.push({ origin, t, x, cmd, ts: rank(v.decision) });
+    }
+    // JS twin.
+    for (const c of cases) {
+      if (c.origin) process.env.SHELLY_RUN_ORIGIN = c.origin;
+      else delete process.env.SHELLY_RUN_ORIGIN;
+      const js = executor.policyActionEffect({ home }, { agent: { id: 'a1' }, action: { type: c.t, command: c.cmd } }, { SHELLY_AGENT_POLICY: '1' }, c.t, c.x).effect;
+      expect([c.origin, c.t, c.x, rank(js) >= c.ts]).toEqual([c.origin, c.t, c.x, true]);
+    }
+    delete process.env.SHELLY_RUN_ORIGIN;
+    // bash twin (one process, ASCII-only fold — the stricter fallback).
+    const body = cases
+      .map((c, i) => `${c.origin ? `SHELLY_RUN_ORIGIN='${c.origin}'` : 'unset SHELLY_RUN_ORIGIN'}; ACTION_COMMAND='${c.cmd}'; shelly_policy_action_effect '${c.t}' '' '${c.x}\n${c.cmd}'; echo "${i}=$SHELLY_POLICY_EFFECT"`)
+      .join('\n');
+    const out = bash(body, { SHELLY_AGENT_POLICY: '1' }).split('\n');
+    cases.forEach((c, i) => {
+      const got = (out[i] || '').split('=')[1] ?? '';
+      expect([c.origin, c.t, c.x, rank(got) >= c.ts]).toEqual([c.origin, c.t, c.x, true]);
+    });
   });
 });

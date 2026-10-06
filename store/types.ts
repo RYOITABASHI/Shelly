@@ -1440,6 +1440,16 @@ export type ChatMessage = {
   pendingTrustRule?: {
     key: string;
     label: string;
+    /** The exact command the allow would cover; with agentId, re-derived
+     *  into the key at "yes" time (security review L2). */
+    command?: string;
+    agentId?: string;
+  };
+  /** POLICY-001 (security review L1): removing a custom rule LOOSENS policy,
+   *  so it is echoed back and needs an exact confirm phrase, like adding. */
+  pendingPolicyRevoke?: {
+    ruleId: string;
+    attempts: number;
   };
   /** "Grok Bot"-style conversational provider connect (2026-09-20): set on
    *  the assistant message that just asked "what's your Gemini key?" after

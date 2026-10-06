@@ -2262,21 +2262,43 @@ function isProactiveRunOrigin(origin) {
   return o !== 'user' && o !== 'widget';
 }
 
+// Mirror of lib/agent-user-policy-store.ts isSealedPolicyState (security
+// review M1): `bytes` null ⇒ no file. SHELLY_AGENT_POLICY_SEAL is exported
+// readonly by native (AgentRuntime.kt) from the seal RN writes with every
+// policy write; an empty seal accepts only a missing/empty file.
+function policySealAccepts(sealRaw, bytes) {
+  const raw = String(sealRaw || '').trim();
+  const seal = raw ? raw.split(',') : [];
+  if (seal.some((h) => !/^[0-9a-f]{64}$/.test(h))) return false;
+  if (seal.length === 0) return bytes === null || !bytes.toString('utf8').trim();
+  if (bytes === null) return false;
+  return seal.includes(crypto.createHash('sha256').update(bytes).digest('hex'));
+}
+
+const POLICY_LINE_RE = /^(?:ask|deny|draft_only)\|[a-z_-]+\|[^|]*\|[^|]*$/;
+
 function readCompiledPolicyLines(paths) {
   const home = (paths && paths.home) || process.env.HOME || '';
   if (!home) return { lines: [], unavailable: true };
-  let text;
+  let bytes = null;
+  let unavailable = false;
   try {
-    text = fs.readFileSync(path.join(home, '.shelly/agents/policy.json'), 'utf8');
+    bytes = fs.readFileSync(path.join(home, '.shelly/agents/policy.json'));
   } catch (e) {
-    return { lines: [], unavailable: !(e && e.code === 'ENOENT') };
+    if (!(e && e.code === 'ENOENT')) unavailable = true;
   }
-  if (!text.trim()) return { lines: [], unavailable: false };
+  if (!policySealAccepts(process.env.SHELLY_AGENT_POLICY_SEAL, bytes)) unavailable = true;
+  const text = bytes === null ? '' : bytes.toString('utf8');
+  if (!text.trim()) return { lines: [], unavailable };
   try {
     const parsed = JSON.parse(text);
     const lines = parsed && parsed.compiledActionRules;
     if (!Array.isArray(lines)) return { lines: [], unavailable: true };
-    return { lines: lines.filter((l) => typeof l === 'string'), unavailable: false };
+    // L5: one malformed line ⇒ the whole block is untrusted (never silently skipped).
+    if (lines.some((l) => typeof l !== 'string' || !POLICY_LINE_RE.test(l))) {
+      return { lines: lines.filter((l) => typeof l === 'string' && POLICY_LINE_RE.test(l)), unavailable: true };
+    }
+    return { lines, unavailable };
   } catch (_) {
     return { lines: [], unavailable: true };
   }
@@ -3632,6 +3654,7 @@ module.exports = {
   // POLICY-001 — exported for host unit tests only.
   compiledPolicyEffect,
   policyActionEffect,
+  policySealAccepts,
   isProactiveRunOrigin,
   // 2026-07-15 quality gate (prompt-echo/refusal detection before
   // webhook/dm-reply dispatch) — exported for host unit tests only,

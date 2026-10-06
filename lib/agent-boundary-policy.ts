@@ -400,6 +400,14 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   if (ctx.policyPath && new RegExp(`>\\s*\\S*${escapeRe(ctx.policyPath)}|\\b(tee|cp|mv)\\b[^|]*${escapeRe(ctx.policyPath)}`).test(command)) {
     return { decision: 'deny', signals: ['policy-write'], reason: 'agent attempted to write the policy/autonomy file', dangerLevel: safety.level };
   }
+  // POLICY-001 security review M1: deleting or rewriting the user policy is a
+  // LOOSENING (a deny rule disappears), so any mutating / file-capable command
+  // that names the agents config dir — directly, via `cd`, as `.shelly` +
+  // `agents`, or the policy.json basename next to `.shelly` — is hard-denied
+  // too, not just the literal `> path` / tee / cp / mv forms above.
+  if (ctx.policyPath && touchesAgentsConfigDir(command)) {
+    return { decision: 'deny', signals: ['policy-write'], reason: 'agent attempted to modify the agents config dir (policy file)', dangerLevel: safety.level };
+  }
 
   // 2. Hard-deny: CRITICAL destructive — denied at EVERY level (the §2 invariant:
   //    L3 relaxes prompt frequency, never command-safety hard-denies).
@@ -465,6 +473,18 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
       return { decision: 'allow', signals, reason: 'L3 in-workspace', dangerLevel: safety.level };
     }
   }
+}
+
+const AGENTS_DIR_MUTATOR_RE = /(?:>|\b(?:rm|rmdir|unlink|mv|cp|tee|truncate|dd|ln|chmod|chown|install|shred|touch|rsync|tar|unzip|zip|python\d*|node|nodejs|deno|bun|perl|ruby|php|lua|awk|gawk|find|xargs|bash|sh|zsh|dash|busybox|toybox|git|patch|ed|ex|vi|vim|nano)\b|\bsed\b[^|;&]*\s-(?:[a-zA-Z]*i|-in-place))/;
+
+/** True when a mutating / file-capable command targets ~/.shelly/agents or its policy.json. */
+export function touchesAgentsConfigDir(command: string): boolean {
+  const c = String(command || '');
+  if (!AGENTS_DIR_MUTATOR_RE.test(c)) return false;
+  if (/\.shelly\/+agents\b/.test(c)) return true;
+  if (/\.shelly\b/.test(c) && /\bagents\b/.test(c)) return true;
+  if (/(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
+  return false;
 }
 
 function escapeRe(s: string): string {

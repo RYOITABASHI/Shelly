@@ -214,6 +214,17 @@ function readJsonArg(args) {
 // side effect"; only a genuinely missing file means "no user rules".
 // SHELLY_RUN_ORIGIN comes from native (AgentRuntime.kt); missing ⇒ the gate
 // treats the run as proactive.
+// Mirror of lib/agent-user-policy-store.ts isSealedPolicyState. `bytes` null
+// ⇒ the file does not exist. An empty seal accepts only a missing/empty file.
+function policySealAccepts(sealRaw, bytes) {
+  const raw = String(sealRaw || '').trim();
+  const seal = raw ? raw.split(',') : [];
+  if (seal.some((h) => !/^[0-9a-f]{64}$/.test(h))) return false;
+  if (seal.length === 0) return bytes === null || !bytes.toString('utf8').trim();
+  if (bytes === null) return false;
+  return seal.includes(crypto.createHash('sha256').update(bytes).digest('hex'));
+}
+
 function buildActionPolicyInput(env, home) {
   if (!env || env.SHELLY_AGENT_POLICY !== '1') return null;
   const out = { enabled: true, origin: String(env.SHELLY_RUN_ORIGIN || ''), rules: [], homeDir: home || '', rulesUnavailable: false };
@@ -221,12 +232,17 @@ function buildActionPolicyInput(env, home) {
     out.rulesUnavailable = true;
     return out;
   }
-  let text = null;
+  let bytes = null;
   try {
-    text = fs.readFileSync(path.join(home, '.shelly/agents/policy.json'), 'utf8');
+    bytes = fs.readFileSync(path.join(home, '.shelly/agents/policy.json'));
   } catch (e) {
     if (!e || e.code !== 'ENOENT') out.rulesUnavailable = true;
   }
+  const text = bytes === null ? null : bytes.toString('utf8');
+  // Security review M1: the file must match the seal native exported
+  // (SHELLY_AGENT_POLICY_SEAL, written by RN with every policy write). A
+  // deleted / edited / unsealed file means the user's rules can't be trusted.
+  if (!policySealAccepts(env.SHELLY_AGENT_POLICY_SEAL, bytes)) out.rulesUnavailable = true;
   if (text !== null && text.trim()) {
     try {
       const parsed = JSON.parse(text);
@@ -2094,4 +2110,5 @@ module.exports = {
   appendCompletedAgentMessage,
   writeAnswerFile,
   buildActionPolicyInput,
+  policySealAccepts,
 };

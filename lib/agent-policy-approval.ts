@@ -11,10 +11,10 @@
  *     ONLY place a trust allow is ever honoured (executors never see allows).
  * And it is where human decisions are COUNTED for the trust ramp (B).
  *
- * Origin travels in the raw request file ("origin", written by the executor
- * from native's SHELLY_RUN_ORIGIN). The native readAgentActionApprovalRequest
- * bridge drops unknown fields, so the drain loop remembers origin per runId
- * here; a request whose origin we never saw is proactive (fail-closed).
+ * Origin (security review M2): NEVER the request file's own `origin` field —
+ * the executor writes that file, so the agent's uid could forge it. The
+ * origin is lib/agent-run-origin-registry.ts's record of which agents RN is
+ * itself running for a human right now; everything else is proactive.
  */
 import {
   ApprovalRequestLike,
@@ -22,22 +22,14 @@ import {
   describeApprovalRequest,
   evaluateActionPolicy,
 } from '@/lib/agent-action-policy';
-import { TRUST_RAMP_THRESHOLD_DEFAULT, recordApprovalOutcome, trustKeyOf, trustLabelOf } from '@/lib/agent-trust-ramp';
+import { TRUST_RAMP_THRESHOLD_DEFAULT, recordApprovalOutcome, trustCommandOf, trustKeyOf, trustLabelOf } from '@/lib/agent-trust-ramp';
+import { registeredRunOrigin } from '@/lib/agent-run-origin-registry';
 import { ShellRunner, getCachedUserPolicy, loadUserPolicy, mutateUserPolicy } from '@/lib/agent-user-policy-store';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 
-const originByRunId = new Map<string, { origin: string; seenAt: number }>();
-const ORIGIN_TTL_MS = 30 * 60_000;
-
-/** Called by the drain loop with the RAW request file's origin field. */
-export function rememberRequestOrigin(runId: string, origin: unknown): void {
-  const now = Date.now();
-  originByRunId.set(runId, { origin: typeof origin === 'string' ? origin : '', seenAt: now });
-  for (const [k, v] of originByRunId) if (now - v.seenAt > ORIGIN_TTL_MS) originByRunId.delete(k);
-}
-
-export function originForRun(runId: string): string {
-  return originByRunId.get(runId)?.origin ?? '';
+/** The trusted origin for a request: RN's own run registry, never the file. */
+export function trustedRequestOrigin(req: { agentId?: string | null }): 'user' | 'event' {
+  return registeredRunOrigin(req.agentId);
 }
 
 /** Make sure the policy cache is warm (cheap no-op once loaded). */
@@ -58,7 +50,7 @@ export function evaluateApprovalRequestPolicy(
   homeDir = '',
 ): PolicyVerdict {
   const cached = getCachedUserPolicy();
-  const desc = describeApprovalRequest({ ...req, origin: req.origin ?? originForRun(req.runId) });
+  const desc = describeApprovalRequest({ ...req, origin: trustedRequestOrigin(req) });
   const allows = (cached?.data.trust.allows ?? []).filter((a) => !!sealedAllowKeys && sealedAllowKeys.has(a.key));
   return evaluateActionPolicy(desc, {
     enabled: true,
@@ -66,19 +58,24 @@ export function evaluateApprovalRequestPolicy(
     trustAllows: allows,
     homeDir,
     rulesUnavailable: !cached || cached.unavailable,
-    trustKeyOf,
   });
 }
 
 export interface TrustOffer {
   key: string;
+  /** Listing label (exact command + agent name). */
   label: string;
+  /** The exact command the allow would cover — shown verbatim in the prompt. */
+  command: string;
+  agentId: string;
+  agentName: string;
   count: number;
 }
 
 /**
  * Count one HUMAN decision for the trust ramp. Returns an offer to post in
- * chat when the class just reached the threshold, else null. Never throws.
+ * chat when the exact command just reached the threshold, else null. Never
+ * throws.
  */
 export async function recordHumanApprovalDecision(
   req: ApprovalRequestLike & { runId: string; agentName?: string | null },
@@ -86,9 +83,9 @@ export async function recordHumanApprovalDecision(
   run: ShellRunner,
   opts: { threshold?: number; homeDir?: string } = {},
 ): Promise<TrustOffer | null> {
-  const desc = describeApprovalRequest({ ...req, origin: req.origin ?? originForRun(req.runId) });
-  // Excluded classes (proactive, CRITICAL/HIGH, secrets, payments, outbound
-  // posting/messaging…) never touch the file at all.
+  const desc = describeApprovalRequest({ ...req, origin: trustedRequestOrigin(req) });
+  // Ineligible actions (proactive, CRITICAL/HIGH, secrets, payments, outbound
+  // posting/messaging, chained / trampoline commands…) never touch the file.
   if (!trustKeyOf(desc)) return null;
   const threshold = Math.max(1, Math.floor(opts.threshold ?? TRUST_RAMP_THRESHOLD_DEFAULT));
   const label = trustLabelOf(desc, req.agentName);
@@ -101,7 +98,16 @@ export async function recordHumanApprovalDecision(
         homeDir: opts.homeDir,
         label,
       });
-      if (out.offer && out.key) offer = { key: out.key, label, count: out.state.counters[out.key]?.approvals ?? threshold };
+      if (out.offer && out.key) {
+        offer = {
+          key: out.key,
+          label,
+          command: trustCommandOf(desc),
+          agentId: req.agentId || '',
+          agentName: req.agentName || req.agentId || '',
+          count: out.state.counters[out.key]?.approvals ?? threshold,
+        };
+      }
       return { ...data, trust: out.state };
     });
   } catch (e) {

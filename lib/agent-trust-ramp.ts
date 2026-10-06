@@ -1,36 +1,38 @@
 /**
  * lib/agent-trust-ramp.ts — POLICY-001 (B) trust ramp, pure core.
  *
- * After the human has approved the SAME normalised action class N times
- * (default 3) with no denial in between, Shelly asks — in plain chat text,
- * never a card/modal (project rule) — whether that class may run without
+ * After the human has approved the SAME exact command N times (default 3)
+ * with no denial in between, Shelly asks — in plain chat text, never a
+ * card/modal (project rule) — whether exactly that command may run without
  * confirmation from now on. Only an explicit yes adds a scoped allow; a no or
- * an ambiguous reply adds nothing and suppresses re-asking for that class for
+ * an ambiguous reply adds nothing and suppresses re-asking for
  * TRUST_RAMP_SUPPRESS_MS.
  *
- * Class key = `${kind}|${commandClass}|${scope}` — e.g.
- * "cli|git status|<agentId>". Scope is the agent id for action approvals, so
- * an allow granted for one agent never leaks to another.
+ * Key = `cli|<sha256(agentId, cli, exact normalised command)>|<agentId>`
+ * (lib/agent-action-policy.ts trustKeyForDescriptor). Security review H1: the
+ * key used to be the command CLASS, so an allow for `npm test` also matched
+ * `npm test; python3 evil.py`. Now only the whitespace-normalised identical
+ * command, from the same agent, can ever match.
  *
- * Never eligible (trustKeyOf returns null — no counting, no offer, no allow):
- *   - proactive-origin runs (schedule/notification/boot/event/unknown)
- *   - CRITICAL/HIGH command-safety level
- *   - anything touching secrets or payments
- *   - outbound posting / messaging / network sends / git push
- *   - read-only actions (nothing to approve)
- * The evaluator (agent-action-policy.ts) re-checks danger level at USE time,
- * and puts trust allows BELOW deny rules, the proactive floor and ask rules.
+ * Never eligible (no counting, no offer, no allow): non-cli actions,
+ * proactive-origin runs, CRITICAL/HIGH, secrets, payments, posting /
+ * messaging / network / git push, read-only actions, and any command with
+ * chaining / substitution / redirection characters or an interpreter /
+ * trampoline head. The evaluator re-runs the SAME check at use time.
  *
  * Pure and IO-free; persistence lives in lib/agent-user-policy-store.ts.
  */
 import {
   ActionDescriptor,
-  PolicyCapability,
   PolicyRule,
-  hasSideEffect,
-  isProactiveOrigin,
+  TRUST_RAMP_EXCLUDED_CAPABILITIES,
+  describeApprovalRequest,
+  normalizeTrustCommand,
   ruleMatches,
+  trustKeyForDescriptor,
 } from '@/lib/agent-action-policy';
+
+export { TRUST_RAMP_EXCLUDED_CAPABILITIES };
 
 export const TRUST_RAMP_THRESHOLD_DEFAULT = 3;
 /** How long a declined/ambiguous offer silences re-asking for that class. */
@@ -39,16 +41,6 @@ export const TRUST_RAMP_SUPPRESS_MS = 7 * 24 * 60 * 60 * 1000;
 export const TRUST_RAMP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_TRUST_ALLOWS = 50;
 const MAX_COUNTERS = 200;
-
-/** Capabilities the trust ramp must never auto-allow, whatever the count. */
-export const TRUST_RAMP_EXCLUDED_CAPABILITIES: readonly PolicyCapability[] = Object.freeze([
-  'payment',
-  'secret',
-  'post',
-  'message',
-  'network',
-  'git-push',
-]);
 
 export interface TrustCounter {
   key: string;
@@ -73,23 +65,40 @@ export interface TrustState {
 
 export const EMPTY_TRUST_STATE: TrustState = Object.freeze({ counters: {}, allows: [] }) as TrustState;
 
-const KEY_RE = /^[a-z0-9_-]{1,32}\|[^|\n\r]{1,120}\|[A-Za-z0-9_./-]{0,200}$/;
+const KEY_RE = /^cli\|[0-9a-f]{64}\|[A-Za-z0-9_.-]{1,200}$/;
 
-/** The normalised class key, or null when this action may never be trust-ramped. */
-export function trustKeyOf(desc: ActionDescriptor): string | null {
-  if (isProactiveOrigin(desc.origin)) return null;
-  if (desc.dangerLevel === 'CRITICAL' || desc.dangerLevel === 'HIGH') return null;
-  if (!hasSideEffect(desc.capabilities)) return null;
-  if (desc.capabilities.some((c) => TRUST_RAMP_EXCLUDED_CAPABILITIES.includes(c))) return null;
-  const cls = (desc.commandClass || '').trim();
-  if (!cls) return null;
-  const key = `${desc.kind}|${cls}|${desc.scope || ''}`;
-  return KEY_RE.test(key) ? key : null;
+/** True for a syntactically valid exact-command trust key. */
+export function isTrustKey(key: string): boolean {
+  return KEY_RE.test(key);
 }
 
-/** Human-readable label used in the chat proposal and the allow listing. */
+/** The exact-command trust key, or null when this action may never be trust-ramped. */
+export function trustKeyOf(desc: ActionDescriptor): string | null {
+  return trustKeyForDescriptor(desc);
+}
+
+/** The exact command shown to the human (chat proposal + allow listing). */
+export function trustCommandOf(desc: ActionDescriptor): string {
+  const c = normalizeTrustCommand(desc.command);
+  return c.length > 200 ? `${c.slice(0, 200)}…` : c;
+}
+
+/**
+ * Security review L2: before a "yes" turns a pending proposal into an allow,
+ * recompute the key from the proposal's own command + agent (as a user-origin
+ * cli action) and require it to equal the stored key. A pending payload that
+ * was tampered with in AsyncStorage, or whose command is no longer eligible,
+ * grants nothing.
+ */
+export function verifyTrustProposal(pending: { key: string; command?: string; agentId?: string }): boolean {
+  if (!isTrustKey(pending.key) || !pending.command || !pending.agentId) return false;
+  const desc = describeApprovalRequest({ actionType: 'cli', command: pending.command, agentId: pending.agentId, origin: 'user' });
+  return trustKeyForDescriptor(desc) === pending.key;
+}
+
+/** Label for the allow listing: the exact command plus the agent name. */
 export function trustLabelOf(desc: ActionDescriptor, agentName?: string | null): string {
-  const what = desc.kind === 'cli' || desc.kind === 'command' ? `\`${desc.commandClass}\`` : desc.commandClass;
+  const what = `\`${trustCommandOf(desc)}\``;
   return agentName ? `${what} (${agentName})` : what;
 }
 
@@ -125,9 +134,8 @@ export function parseTrustState(raw: unknown): TrustState {
       const a = v as Record<string, unknown>;
       if (typeof a.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(a.id)) continue;
       if (typeof a.key !== 'string' || !KEY_RE.test(a.key)) continue;
-      // Defence in depth: a hand-edited allow for an excluded kind is dropped.
-      const kind = a.key.split('|')[0];
-      if (['social-post', 'dm-reply', 'webhook', 'api-call', 'browser-pane'].includes(kind)) continue;
+      // KEY_RE above only admits exact-command cli keys; old class-based keys
+      // (pre security review H1) and any other kind are dropped here.
       if (out.allows.some((x) => x.key === a.key)) continue;
       out.allows.push({
         id: a.id,
