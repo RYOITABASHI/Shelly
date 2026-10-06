@@ -33,18 +33,32 @@ interface PaneState {
   /** "Quote to AI": a quote waiting for a specific composer pane to claim it
    *  into its draft (never auto-sent). Runtime-only, never persisted. */
   pendingComposerInsert: PendingComposerInsert | null;
+  /** Composer panes that must NOT receive a quote right now (AI pane in
+   *  masked API-key entry, Agent Chat without an active session). */
+  composerQuoteBlocked: Record<string, true>;
+  /** id of the last insert a composer actually claimed (drives the toast). */
+  lastClaimedInsertId: number | null;
 
   setFocusedPane: (id: string) => void;
   setMaximizedPane: (id: string | null) => void;
   bindAgent: (paneId: string, agentName: string) => void;
   unbindAgent: (paneId: string) => void;
-  queueComposerInsert: (insert: Omit<PendingComposerInsert, 'createdAt'>) => void;
+  /** Queues (replacing any previous entry, expired or not) and returns its id. */
+  queueComposerInsert: (insert: Omit<PendingComposerInsert, 'createdAt' | 'id'>) => number;
   /** Claim-and-clear: returns the pending insert only when it targets this
-   *  pane+tab and hasn't expired; otherwise null and the entry stays put. */
+   *  pane+tab, hasn't expired and the pane isn't blocked; otherwise null and
+   *  the entry stays put (expired entries are dropped). */
   takeComposerInsert: (paneId: string, tab: PendingComposerInsert['tab']) => PendingComposerInsert | null;
+  /** Drop the pending insert if it is still `id` (claim timed out). */
+  cancelComposerInsert: (id: number) => void;
+  setComposerQuoteBlocked: (paneId: string, blocked: boolean) => void;
+  /** Composer pane unmounted (closed / tab switched): forget its block flag
+   *  and drop a quote still waiting for it. */
+  releaseComposerPane: (paneId: string) => void;
 }
 
 export interface PendingComposerInsert {
+  id: number;
   paneId: string;
   tab: 'ai' | 'agent-chat';
   text: string;
@@ -54,6 +68,7 @@ export interface PendingComposerInsert {
 const FOCUS_HISTORY_MAX = 8;
 /** A quote nobody claimed (pane closed mid-flight) shouldn't surface later. */
 export const COMPOSER_INSERT_TTL_MS = 60_000;
+let nextComposerInsertId = 1;
 
 // bug #50: persist focusedPaneId / maximizedPaneId across lmkd kills.
 // paneAgents is excluded — it maps to native session bindings which must
@@ -66,6 +81,8 @@ export const usePaneStore = create<PaneState>()(
       paneAgents: {},
       focusHistory: [],
       pendingComposerInsert: null,
+      composerQuoteBlocked: {},
+      lastClaimedInsertId: null,
 
       setFocusedPane: (id) =>
         set((s) => ({
@@ -73,7 +90,34 @@ export const usePaneStore = create<PaneState>()(
           focusHistory: [id, ...s.focusHistory.filter((x) => x !== id)].slice(0, FOCUS_HISTORY_MAX),
         })),
 
-      queueComposerInsert: (insert) => set({ pendingComposerInsert: { ...insert, createdAt: Date.now() } }),
+      queueComposerInsert: (insert) => {
+        const id = nextComposerInsertId++;
+        set({ pendingComposerInsert: { ...insert, id, createdAt: Date.now() } });
+        return id;
+      },
+
+      cancelComposerInsert: (id) => {
+        if (get().pendingComposerInsert?.id === id) set({ pendingComposerInsert: null });
+      },
+
+      setComposerQuoteBlocked: (paneId, blocked) =>
+        set((s) => {
+          if (Boolean(s.composerQuoteBlocked[paneId]) === blocked) return s;
+          const next = { ...s.composerQuoteBlocked };
+          if (blocked) next[paneId] = true;
+          else delete next[paneId];
+          return { composerQuoteBlocked: next };
+        }),
+
+      releaseComposerPane: (paneId) =>
+        set((s) => {
+          const next = { ...s.composerQuoteBlocked };
+          delete next[paneId];
+          return {
+            composerQuoteBlocked: next,
+            pendingComposerInsert: s.pendingComposerInsert?.paneId === paneId ? null : s.pendingComposerInsert,
+          };
+        }),
 
       takeComposerInsert: (paneId, tab) => {
         const pending = get().pendingComposerInsert;
@@ -83,7 +127,8 @@ export const usePaneStore = create<PaneState>()(
           return null;
         }
         if (pending.paneId !== paneId || pending.tab !== tab) return null;
-        set({ pendingComposerInsert: null });
+        if (get().composerQuoteBlocked[paneId]) return null;
+        set({ pendingComposerInsert: null, lastClaimedInsertId: pending.id });
         return pending;
       },
       setMaximizedPane: (id) => set({ maximizedPaneId: id }),

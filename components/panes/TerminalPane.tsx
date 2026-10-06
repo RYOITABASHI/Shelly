@@ -1493,8 +1493,10 @@ export default function TerminalScreen() {
             // "Quote to AI": extra item in the native selection menu. The
             // quote lands in an AI / Agent Chat composer draft — never sent.
             quoteActionLabel={t('quote_to_ai.menu_label')}
-            onQuoteSelection={(e) => {
-              const target = quoteTerminalSelectionToAI(e.nativeEvent.text ?? '');
+            onQuoteSelection={async (e) => {
+              // Resolves only after the composer actually claimed the quote
+              // (or null on failure/timeout), so the toast never lies.
+              const target = await quoteTerminalSelectionToAI(e.nativeEvent.text ?? '');
               if (Platform.OS !== 'android') return;
               ToastAndroid.show(
                 t(target === 'agent-chat'

@@ -3,8 +3,14 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   setItem: jest.fn(),
   removeItem: jest.fn(),
 }));
+// quote-to-ai-dispatch pulls in the multi-pane store / pane focus / i18n;
+// only waitForComposerClaim (pure pane-store wiring) is exercised here.
+jest.mock('@/hooks/use-multi-pane', () => ({ PRESET_CAPACITY: {}, useMultiPaneStore: { getState: jest.fn() } }));
+jest.mock('@/lib/pane-focus', () => ({ focusPaneByTab: jest.fn() }));
+jest.mock('@/lib/i18n', () => ({ t: (key: string) => key }));
 
 import {
+  QUOTE_CLAIM_TIMEOUT_MS,
   QUOTE_MAX_CHARS,
   chooseQuoteTarget,
   formatQuoteBlock,
@@ -12,7 +18,9 @@ import {
   normalizeSelection,
   routeQuoteToAI,
   visibleSlotsOf,
+  type RouteQuoteDeps,
 } from '@/lib/quote-to-ai';
+import { waitForComposerClaim } from '@/lib/quote-to-ai-dispatch';
 import { COMPOSER_INSERT_TTL_MS, usePaneStore } from '@/store/pane-store';
 
 describe('normalizeSelection', () => {
@@ -82,6 +90,20 @@ describe('insertQuoteIntoDraft', () => {
     expect(mid.text.slice(mid.cursor)).toBe('tail');
   });
 
+  it.each([
+    ['trail "\\n\\n" (after has no newline)', 'tail', '> q\n\ntail'],
+    ['trail "\\n" (after starts with one newline)', '\ntail', '> q\n\ntail'],
+    ['trail "" (after starts with a blank line)', '\n\ntail', '> q\n\ntail'],
+    ['after starts with three newlines', '\n\n\ntail', '> q\n\n\ntail'],
+  ])('puts the cursor right past the blank-line separator: %s', (_label, after, expected) => {
+    const r = insertQuoteIntoDraft(after, '> q', { start: 0, end: 0 });
+    expect(r.text).toBe(expected);
+    // Cursor = quote end + exactly two newlines, regardless of how many of
+    // them came from `trail` vs. the existing text after the cursor.
+    expect(r.text.slice(0, r.cursor)).toBe('> q\n\n');
+    expect(r.cursor).toBeLessThanOrEqual(r.text.length);
+  });
+
   it('clamps out-of-range selections', () => {
     expect(insertQuoteIntoDraft('ab', '> q', { start: 99, end: -3 }).text).toBe('ab\n\n> q\n\n');
   });
@@ -105,6 +127,14 @@ describe('chooseQuoteTarget / visibleSlotsOf', () => {
     expect(chooseQuoteTarget([slots[0]], ['t1'])).toBeNull();
   });
 
+  it('skips blocked panes (secure API-key entry / Agent Chat without a session)', () => {
+    // Agent Chat was focused last but has no session → AI pane instead.
+    expect(chooseQuoteTarget(slots, ['c1'], (id) => id === 'c1')).toEqual({ paneId: 'a1', tab: 'ai' });
+    // AI pane is in masked API-key entry → Agent Chat.
+    expect(chooseQuoteTarget(slots, ['a1'], (id) => id === 'a1')).toEqual({ paneId: 'c1', tab: 'agent-chat' });
+    expect(chooseQuoteTarget(slots, [], () => true)).toBeNull();
+  });
+
   it('respects preset capacity and a maximized slot', () => {
     expect(visibleSlotsOf(slots, 2, null)).toEqual([slots[0], slots[1]]);
     expect(visibleSlotsOf(slots, 4, 0)).toEqual([slots[0]]);
@@ -113,7 +143,13 @@ describe('chooseQuoteTarget / visibleSlotsOf', () => {
 
 describe('pane-store composer insert', () => {
   beforeEach(() => {
-    usePaneStore.setState({ focusedPaneId: null, focusHistory: [], pendingComposerInsert: null });
+    usePaneStore.setState({
+      focusedPaneId: null,
+      focusHistory: [],
+      pendingComposerInsert: null,
+      composerQuoteBlocked: {},
+      lastClaimedInsertId: null,
+    });
   });
 
   it('tracks focus history newest-first without duplicates', () => {
@@ -124,53 +160,138 @@ describe('pane-store composer insert', () => {
     expect(usePaneStore.getState().focusHistory).toEqual(['a', 'b']);
   });
 
-  it('only the targeted pane+tab can claim, exactly once', () => {
-    usePaneStore.getState().queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '> q' });
+  it('only the targeted pane+tab can claim, exactly once, and records the claim', () => {
+    const id = usePaneStore.getState().queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '> q' });
     expect(usePaneStore.getState().takeComposerInsert('other', 'ai')).toBeNull();
     expect(usePaneStore.getState().takeComposerInsert('a1', 'agent-chat')).toBeNull();
+    expect(usePaneStore.getState().lastClaimedInsertId).toBeNull();
     expect(usePaneStore.getState().takeComposerInsert('a1', 'ai')?.text).toBe('> q');
+    expect(usePaneStore.getState().lastClaimedInsertId).toBe(id);
     expect(usePaneStore.getState().takeComposerInsert('a1', 'ai')).toBeNull();
+  });
+
+  it('a blocked pane (secure entry / no session) cannot claim', () => {
+    const s = usePaneStore.getState();
+    s.setComposerQuoteBlocked('a1', true);
+    s.queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '> secret?' });
+    expect(usePaneStore.getState().takeComposerInsert('a1', 'ai')).toBeNull();
+    expect(usePaneStore.getState().pendingComposerInsert).not.toBeNull();
+    usePaneStore.getState().setComposerQuoteBlocked('a1', false);
+    expect(usePaneStore.getState().composerQuoteBlocked).toEqual({});
+    expect(usePaneStore.getState().takeComposerInsert('a1', 'ai')?.text).toBe('> secret?');
   });
 
   it('drops an expired insert', () => {
     usePaneStore.setState({
-      pendingComposerInsert: { paneId: 'a1', tab: 'ai', text: '> q', createdAt: Date.now() - COMPOSER_INSERT_TTL_MS - 1 },
+      pendingComposerInsert: { id: 99, paneId: 'a1', tab: 'ai', text: '> q', createdAt: Date.now() - COMPOSER_INSERT_TTL_MS - 1 },
     });
     expect(usePaneStore.getState().takeComposerInsert('a1', 'ai')).toBeNull();
     expect(usePaneStore.getState().pendingComposerInsert).toBeNull();
   });
+
+  it('queueing replaces a stale/expired entry with a fresh one', () => {
+    usePaneStore.setState({
+      pendingComposerInsert: { id: 99, paneId: 'gone', tab: 'ai', text: 'old', createdAt: 0 },
+    });
+    const id = usePaneStore.getState().queueComposerInsert({ paneId: 'a1', tab: 'ai', text: 'new' });
+    const pending = usePaneStore.getState().pendingComposerInsert!;
+    expect(pending.id).toBe(id);
+    expect(pending.text).toBe('new');
+    expect(Date.now() - pending.createdAt).toBeLessThan(1000);
+  });
+
+  it('releasing (closing) the target pane drops its pending quote and block flag', () => {
+    const s = usePaneStore.getState();
+    s.setComposerQuoteBlocked('c1', true);
+    s.queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '> q' });
+    usePaneStore.getState().releaseComposerPane('c1');
+    expect(usePaneStore.getState().pendingComposerInsert).not.toBeNull(); // other pane: kept
+    expect(usePaneStore.getState().composerQuoteBlocked).toEqual({});
+    usePaneStore.getState().releaseComposerPane('a1');
+    expect(usePaneStore.getState().pendingComposerInsert).toBeNull();
+  });
+
+  it('cancelComposerInsert only drops the matching id', () => {
+    const first = usePaneStore.getState().queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '1' });
+    const second = usePaneStore.getState().queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '2' });
+    usePaneStore.getState().cancelComposerInsert(first);
+    expect(usePaneStore.getState().pendingComposerInsert?.id).toBe(second);
+    usePaneStore.getState().cancelComposerInsert(second);
+    expect(usePaneStore.getState().pendingComposerInsert).toBeNull();
+  });
+
+  it('waitForComposerClaim resolves true on claim and false on timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const id = usePaneStore.getState().queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '> q' });
+      const claimed = waitForComposerClaim(id, 500);
+      usePaneStore.getState().takeComposerInsert('a1', 'ai');
+      await expect(claimed).resolves.toBe(true);
+
+      const id2 = usePaneStore.getState().queueComposerInsert({ paneId: 'a1', tab: 'ai', text: '> q2' });
+      const timedOut = waitForComposerClaim(id2, 500);
+      jest.advanceTimersByTime(501);
+      await expect(timedOut).resolves.toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('routeQuoteToAI', () => {
-  const makeDeps = (overrides: Partial<Parameters<typeof routeQuoteToAI>[1]> = {}) => ({
-    getVisibleSlots: () => [{ id: 't1', tab: 'terminal' }, { id: 'a1', tab: 'ai' }],
-    getFocusHistory: () => ['t1'],
-    focusPane: jest.fn(),
-    openAiPane: jest.fn(() => 'new-ai'),
-    queue: jest.fn(),
-    ...overrides,
-  });
+  const makeDeps = (overrides: Partial<RouteQuoteDeps> = {}) => {
+    const deps = {
+      getVisibleSlots: () => [{ id: 't1', tab: 'terminal' }, { id: 'a1', tab: 'ai' }],
+      getFocusHistory: () => ['t1'],
+      isBlocked: () => false,
+      focusPane: jest.fn(),
+      openAiPane: jest.fn((): string | null => 'new-ai'),
+      queue: jest.fn(() => 7),
+      waitForClaim: jest.fn(async () => true),
+      cancel: jest.fn(),
+      ...overrides,
+    };
+    return deps;
+  };
 
-  it('queues the formatted quote for the visible AI pane without opening a new one', () => {
+  it('queues the formatted quote for the visible AI pane and resolves after the claim', async () => {
     const deps = makeDeps();
-    expect(routeQuoteToAI('boom', deps)).toBe('ai');
+    await expect(routeQuoteToAI('boom', deps)).resolves.toBe('ai');
     expect(deps.focusPane).toHaveBeenCalledWith('a1');
     expect(deps.openAiPane).not.toHaveBeenCalled();
     expect(deps.queue).toHaveBeenCalledWith({ paneId: 'a1', tab: 'ai', text: '> boom' });
+    expect(deps.waitForClaim).toHaveBeenCalledWith(7, QUOTE_CLAIM_TIMEOUT_MS);
+    expect(deps.cancel).not.toHaveBeenCalled();
   });
 
-  it('opens an AI pane when no composer is visible', () => {
+  it('opens an AI pane when no composer is visible', async () => {
     const deps = makeDeps({ getVisibleSlots: () => [{ id: 't1', tab: 'terminal' }] });
-    expect(routeQuoteToAI('boom', deps)).toBe('ai');
+    await expect(routeQuoteToAI('boom', deps)).resolves.toBe('ai');
     expect(deps.queue).toHaveBeenCalledWith({ paneId: 'new-ai', tab: 'ai', text: '> boom' });
   });
 
-  it('queues nothing for an empty selection or when no pane can be opened', () => {
+  it('never queues into a blocked AI pane (masked API-key entry)', async () => {
+    const deps = makeDeps({
+      getVisibleSlots: () => [{ id: 'a1', tab: 'ai' }],
+      isBlocked: (id) => id === 'a1',
+      openAiPane: jest.fn(() => 'a1'), // focusPaneByTab returns the same blocked pane
+    });
+    await expect(routeQuoteToAI('boom', deps)).resolves.toBeNull();
+    expect(deps.queue).not.toHaveBeenCalled();
+  });
+
+  it('reports failure and drops the entry when the composer never claims', async () => {
+    const deps = makeDeps({ waitForClaim: jest.fn(async () => false) });
+    await expect(routeQuoteToAI('boom', deps)).resolves.toBeNull();
+    expect(deps.cancel).toHaveBeenCalledWith(7);
+  });
+
+  it('queues nothing for an empty selection or when no pane can be opened', async () => {
     const empty = makeDeps();
-    expect(routeQuoteToAI('  \n', empty)).toBeNull();
+    await expect(routeQuoteToAI('  \n', empty)).resolves.toBeNull();
     expect(empty.queue).not.toHaveBeenCalled();
     const full = makeDeps({ getVisibleSlots: () => [], openAiPane: jest.fn(() => null) });
-    expect(routeQuoteToAI('boom', full)).toBeNull();
+    await expect(routeQuoteToAI('boom', full)).resolves.toBeNull();
     expect(full.queue).not.toHaveBeenCalled();
   });
 });

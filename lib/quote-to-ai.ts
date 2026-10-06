@@ -97,11 +97,14 @@ export function insertQuoteIntoDraft(
   // Always end with a blank line: it terminates a `>` blockquote and gives
   // the cursor its own line under a fenced block.
   const trail = after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
-  const inserted = lead + quote + trail;
-  const text = before + inserted + after;
-  // Cursor sits on the empty line right after the quote.
-  const cursor = before.length + lead.length + quote.length + 2;
-  return { text, cursor: Math.min(cursor, text.length) };
+  const text = before + lead + quote + trail + after;
+  // Cursor goes past the blank-line separator that follows the quote. The
+  // separator is made of `trail` plus however many newlines `after` already
+  // started with, so count the actual run instead of assuming trail's length.
+  const quoteEnd = before.length + lead.length + quote.length;
+  const newlineRun = /^\n*/.exec(trail + after)![0].length;
+  const cursor = quoteEnd + Math.min(newlineRun, 2);
+  return { text, cursor };
 }
 
 export type QuoteSlot = { id: string; tab: string } | null;
@@ -109,15 +112,19 @@ export type QuoteSlot = { id: string; tab: string } | null;
 /**
  * Pick the composer pane a quote should go to among the currently visible
  * slots: the most-recently-focused AI / Agent Chat pane wins, then the first
- * visible AI pane, then the first visible Agent Chat pane. Returns null when
- * none is visible (the caller then opens/focuses an AI pane).
+ * visible AI pane, then the first visible Agent Chat pane. Panes for which
+ * `isBlocked` is true (AI pane in masked API-key entry, Agent Chat with no
+ * active session) are skipped. Returns null when none qualifies (the caller
+ * then opens/focuses an AI pane).
  */
 export function chooseQuoteTarget(
   visibleSlots: readonly QuoteSlot[],
   focusHistory: readonly string[],
+  isBlocked: (paneId: string) => boolean = () => false,
 ): { paneId: string; tab: QuoteTargetTab } | null {
   const composers = visibleSlots.filter(
-    (s): s is { id: string; tab: QuoteTargetTab } => !!s && (s.tab === 'ai' || s.tab === 'agent-chat'),
+    (s): s is { id: string; tab: QuoteTargetTab } =>
+      !!s && (s.tab === 'ai' || s.tab === 'agent-chat') && !isBlocked(s.id),
   );
   if (composers.length === 0) return null;
   for (const id of focusHistory) {
@@ -138,41 +145,58 @@ export function visibleSlotsOf(
   return slots.slice(0, capacity);
 }
 
+/** How long a queued quote may wait for its composer (incl. a freshly
+ *  opened pane mounting) before the attempt is reported as failed. */
+export const QUOTE_CLAIM_TIMEOUT_MS = 2000;
+
+export type RouteQuoteDeps = {
+  getVisibleSlots: () => QuoteSlot[];
+  getFocusHistory: () => readonly string[];
+  isBlocked: (paneId: string) => boolean;
+  focusPane: (paneId: string) => void;
+  /** Opens/focuses an AI pane; returns its id or null on failure. */
+  openAiPane: () => string | null;
+  /** Queues the insert and returns its id. */
+  queue: (insert: { paneId: string; tab: QuoteTargetTab; text: string }) => number;
+  /** Resolves true once the composer claimed insert `id`, false on timeout. */
+  waitForClaim: (id: number, timeoutMs: number) => Promise<boolean>;
+  /** Drops insert `id` if it is still pending. */
+  cancel: (id: number) => void;
+  truncationNote?: (omittedChars: number) => string;
+};
+
 /**
  * Side-effectful entry point used by TerminalPane's onQuoteSelection: formats
- * the selection, picks/focuses the target composer pane, and queues the quote
- * on pane-store for that pane's composer to claim. Returns the target tab, or
- * null when nothing was queued (empty selection / no pane could be opened).
+ * the selection, picks/focuses the target composer pane, queues the quote on
+ * pane-store and waits for that pane's composer to claim it. Resolves to the
+ * tab that actually received the quote, or null (empty selection, no eligible
+ * pane, or the claim timed out — the stale entry is then dropped).
  */
-export function routeQuoteToAI(
-  raw: string,
-  deps: {
-    getVisibleSlots: () => QuoteSlot[];
-    getFocusHistory: () => readonly string[];
-    focusPane: (paneId: string) => void;
-    /** Opens/focuses an AI pane; returns its id or null on failure. */
-    openAiPane: () => string | null;
-    queue: (insert: { paneId: string; tab: QuoteTargetTab; text: string }) => void;
-    truncationNote?: (omittedChars: number) => string;
-  },
-): QuoteTargetTab | null {
+export async function routeQuoteToAI(raw: string, deps: RouteQuoteDeps): Promise<QuoteTargetTab | null> {
   const quote = formatQuoteBlock(raw, { truncationNote: deps.truncationNote });
   if (!quote) {
     logInfo('QuoteToAI', 'empty selection — nothing quoted');
     return null;
   }
-  let target = chooseQuoteTarget(deps.getVisibleSlots(), deps.getFocusHistory());
+  let target = chooseQuoteTarget(deps.getVisibleSlots(), deps.getFocusHistory(), deps.isBlocked);
   if (target) {
     deps.focusPane(target.paneId);
   } else {
     const paneId = deps.openAiPane();
-    if (!paneId) {
-      logInfo('QuoteToAI', 'no AI pane available — quote dropped');
+    if (!paneId || deps.isBlocked(paneId)) {
+      logInfo('QuoteToAI', `no eligible AI pane (${paneId ? 'blocked' : 'unavailable'}) — quote dropped`);
       return null;
     }
     target = { paneId, tab: 'ai' };
   }
-  deps.queue({ paneId: target.paneId, tab: target.tab, text: quote });
-  logInfo('QuoteToAI', `queued ${quote.length} chars → ${target.tab}:${target.paneId}`);
+  const id = deps.queue({ paneId: target.paneId, tab: target.tab, text: quote });
+  logInfo('QuoteToAI', `queued #${id} ${quote.length} chars → ${target.tab}:${target.paneId}`);
+  const claimed = await deps.waitForClaim(id, QUOTE_CLAIM_TIMEOUT_MS);
+  if (!claimed) {
+    deps.cancel(id);
+    logInfo('QuoteToAI', `#${id} not claimed within ${QUOTE_CLAIM_TIMEOUT_MS}ms — dropped`);
+    return null;
+  }
   return target.tab;
 }
+

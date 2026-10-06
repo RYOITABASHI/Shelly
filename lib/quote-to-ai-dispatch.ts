@@ -11,13 +11,36 @@ import { routeQuoteToAI, visibleSlotsOf, type QuoteTargetTab } from '@/lib/quote
 import { t } from '@/lib/i18n';
 import { usePaneStore } from '@/store/pane-store';
 
-export function quoteTerminalSelectionToAI(selectedText: string): QuoteTargetTab | null {
+/** Resolves true once pane-store records `id` as claimed, false on timeout. */
+export function waitForComposerClaim(id: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (usePaneStore.getState().lastClaimedInsertId === id) {
+      resolve(true);
+      return;
+    }
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(ok);
+    };
+    const unsubscribe = usePaneStore.subscribe((s) => {
+      if (s.lastClaimedInsertId === id) finish(true);
+    });
+    const timer = setTimeout(() => finish(usePaneStore.getState().lastClaimedInsertId === id), timeoutMs);
+  });
+}
+
+export function quoteTerminalSelectionToAI(selectedText: string): Promise<QuoteTargetTab | null> {
   return routeQuoteToAI(selectedText, {
     getVisibleSlots: () => {
       const mp = useMultiPaneStore.getState();
       return visibleSlotsOf(mp.slots, PRESET_CAPACITY[mp.preset] ?? 1, mp.maximizedSlot);
     },
     getFocusHistory: () => usePaneStore.getState().focusHistory,
+    isBlocked: (paneId) => Boolean(usePaneStore.getState().composerQuoteBlocked[paneId]),
     focusPane: (paneId) => {
       const mp = useMultiPaneStore.getState();
       const index = mp.slots.findIndex((s) => s?.id === paneId);
@@ -32,6 +55,8 @@ export function quoteTerminalSelectionToAI(selectedText: string): QuoteTargetTab
       return slot.id;
     },
     queue: (insert) => usePaneStore.getState().queueComposerInsert(insert),
+    waitForClaim: waitForComposerClaim,
+    cancel: (id) => usePaneStore.getState().cancelComposerInsert(id),
     truncationNote: (omitted) => t('quote_to_ai.truncated_note', { count: omitted }),
   });
 }

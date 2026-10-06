@@ -109,18 +109,39 @@ export default function PaneInputBar({
   }, [paneId]);
 
   // "Quote to AI": claim a terminal selection queued for this pane. Runs on
-  // mount too, so a pane opened by the quote itself picks it up.
+  // mount too, so a pane opened by the quote itself picks it up. While the
+  // field is in masked API-key entry (secureEntry) the pane is marked blocked
+  // so the router skips it, and we never claim — a quote typed invisibly into
+  // a secret field would be stored as the key on Send.
   const pendingInsert = usePaneStore((s) => s.pendingComposerInsert);
+  const pendingCursorRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!paneId || !quoteTab || !pendingInsert) return;
+    if (!paneId || !quoteTab) return;
+    usePaneStore.getState().setComposerQuoteBlocked(paneId, Boolean(secureEntry));
+  }, [paneId, quoteTab, secureEntry]);
+  useEffect(() => {
+    if (!paneId || !quoteTab) return;
+    return () => usePaneStore.getState().releaseComposerPane(paneId);
+  }, [paneId, quoteTab]);
+  useEffect(() => {
+    if (!paneId || !quoteTab || !pendingInsert || secureEntry) return;
     const taken = usePaneStore.getState().takeComposerInsert(paneId, quoteTab);
     if (!taken) return;
     const { text: next, cursor } = insertQuoteIntoDraft(textRef.current, taken.text, selectionRef.current);
     selectionRef.current = { start: cursor, end: cursor };
+    pendingCursorRef.current = cursor;
     setText(next);
     logInfo('PaneInputBar', `quote inserted into draft (${taken.text.length} chars)`);
     inputRef.current?.focus();
-  }, [paneId, quoteTab, pendingInsert]);
+  }, [paneId, quoteTab, pendingInsert, secureEntry]);
+  // Move the native caret once the inserted text has been committed, so it
+  // matches selectionRef (the `selection` prop itself stays uncontrolled).
+  useEffect(() => {
+    const cursor = pendingCursorRef.current;
+    if (cursor === null) return;
+    pendingCursorRef.current = null;
+    inputRef.current?.setSelection(cursor, cursor);
+  }, [text]);
 
   const hasAttachment = Boolean(attachmentPreview);
   const handleSubmit = useCallback(() => {
