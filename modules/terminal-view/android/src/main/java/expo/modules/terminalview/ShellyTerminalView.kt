@@ -503,6 +503,22 @@ class ShellyTerminalView(
         setTerminalCursorBlinkerRate(if (enabled) 500 else 0)
     }
 
+    /**
+     * "Quote to AI": JS passes the i18n'd menu label; blank/null removes the
+     * selection-menu item. The tap emits onQuoteSelection with the selected
+     * text and JS routes it into an AI composer draft (never auto-sent).
+     */
+    fun setQuoteActionLabel(label: String?) {
+        if (label.isNullOrBlank()) {
+            terminalView.setSelectionQuoteAction(null, null)
+            return
+        }
+        terminalView.setSelectionQuoteAction(label) { text ->
+            Log.i(TAG, "quoteSelection chars=${text.length}")
+            onQuoteSelection(mapOf("text" to text))
+        }
+    }
+
     fun setTransparentBackground(enabled: Boolean) {
         transparentBackground = enabled
         applyTerminalSurface()
@@ -945,6 +961,8 @@ class ShellyTerminalView(
     // per-pane focus. This event lets JS learn a pane was tapped and run
     // the same 4-store handoff regardless of which region was touched.
     private val onFocusRequested by EventDispatcher()
+    // "Quote to AI" selection-menu action (see setQuoteActionLabel).
+    private val onQuoteSelection by EventDispatcher()
 
     /**
      * Called by TerminalView when the emulator is (re)set after updateSize().

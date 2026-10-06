@@ -396,14 +396,18 @@ object AgentRuntime {
     // that's now silently discarded and hang forever waiting for a reply.
     // Bumped so that script is regenerated instead, where it now fails
     // loudly via the `*)` "Unknown agent action" case.
-    // v60 (2026-10-06, POLICY-001 — proactive read-only / NL rules / trust
+    // v60 (2026-10-06): the generated script's llama-server auto-install now
+    // uses a pinned, sha256-verified llama.cpp build, because releases/latest
+    // no longer carries android binaries. See lib/agent-executor.ts's
+    // AGENT_SCRIPT_VERSION v60 comment.
+    // v61 (2026-10-06, POLICY-001 — proactive read-only / NL rules / trust
     // ramp, flag-gated OFF via SHELLY_AGENT_POLICY): the generated script's
     // request_and_wait_approval gained the policy gate and its approval
     // requests now carry "origin" (from the SHELLY_RUN_ORIGIN this class
-    // exports). Bumped so a stale pre-v60 script — which would silently
+    // exports). Bumped so a stale pre-v61 script — which would silently
     // ignore the policy once the flag is turned on — is regenerated instead.
     // CURRENT_EXECUTOR_VERSION 4: same feature in scripts/shelly-plan-executor.js.
-    private const val CURRENT_SCRIPT_VERSION = 60
+    private const val CURRENT_SCRIPT_VERSION = 61
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private const val CURRENT_EXECUTOR_VERSION = 4
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")

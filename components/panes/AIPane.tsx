@@ -74,6 +74,7 @@ import {
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
 import { useTranslation } from '@/lib/i18n';
 import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
+import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
 
 const AUTO_FOLLOW_THRESHOLD_PX = 100;
 // Fable5 review (2026-08-29): caps the longer edge of an AI Pane image
@@ -415,7 +416,7 @@ export default function AIPane() {
   // lib/provider-connect-intent.ts / PaneInputBar's secureEntry prop.
   const hasPendingApiKeyPrompt = useAIPaneStore((s) => {
     const conv = s.conversations[resolveAiPaneStoreKey(paneId)];
-    const last = conv?.messages.at(-1);
+    const last = lastPromptAnchorMessage(conv?.messages);
     return Boolean(last?.role === 'assistant' && last.pendingApiKeyProvider);
   });
   const paneBg = usePaneContentBackground(C.bgDeep);
@@ -491,7 +492,7 @@ export default function AIPane() {
     }
   }, [pendingExternalPrompt, handleSubmit]);
 
-  const { startRecording, stopRecording, isRecording, isTranscribing } =
+  const { startRecording, stopRecording, isRecording, isTranscribing, partialText: voicePartialText } =
     usePaneVoice(handleSubmit);
 
   const handleMicPress = useCallback(() => {
@@ -968,8 +969,8 @@ export default function AIPane() {
       {(isRecording || isTranscribing) && (
         <View style={[paneStyles.voiceBar, { backgroundColor: voiceBarBg }]}>
           <VoiceWaveform active={isRecording} />
-          <Text style={paneStyles.voiceLabel}>
-            {isTranscribing ? 'Transcribing...' : 'Listening...'}
+          <Text style={paneStyles.voiceLabel} numberOfLines={1} ellipsizeMode="head">
+            {isTranscribing ? 'Transcribing...' : (voicePartialText || 'Listening...')}
           </Text>
           {isRecording && (
             <TouchableOpacity onPress={stopRecording} style={paneStyles.voiceStopButton}>
@@ -990,6 +991,7 @@ export default function AIPane() {
         onMicPress={handleMicPress}
         onMicLongPress={handleMicLongPress}
         paneId={paneId}
+        quoteTab="ai"
         attachmentPreview={stagedImage ? { uri: stagedImage.uri, onRemove: handleRemoveStagedImage } : null}
         secureEntry={hasPendingApiKeyPrompt}
       />

@@ -33,6 +33,8 @@ import { AgentSuggestionCard } from '@/components/suggestions/AgentSuggestionCar
 const LAST_UNFOLDED_PRESET_KEY = 'shelly:lastUnfoldedPreset';
 const COVER_PRESET_ACTIVE_KEY = 'shelly:coverPresetActive';
 const FALLBACK_UNFOLDED_PRESET: PresetId = 'p3l';
+/** Outer gutter around the pane grid on wide layouts (dp). */
+export const PANE_GUTTER = 3;
 
 function isPresetId(value: string | null): value is PresetId {
   return !!value && Object.prototype.hasOwnProperty.call(PRESET_CAPACITY, value);
@@ -353,7 +355,19 @@ export function ShellLayout() {
   return (
     <View
       key={`theme-${themeVersion}`}
-      style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+      style={[
+        styles.root,
+        {
+          paddingTop: insets.top,
+          paddingBottom: insets.bottom,
+          // Display cutout / landscape nav-bar insets. Zero on the Fold6
+          // inner display in portrait, but in landscape (or with a side
+          // cutout) ignoring them let the pane frame and ContextBar run
+          // underneath the system chrome on the right edge.
+          paddingLeft: insets.left,
+          paddingRight: insets.right,
+        },
+      ]}
       onLayout={handleRootLayout}
     >
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
@@ -373,7 +387,17 @@ export function ShellLayout() {
       <GestureDetector gesture={composed}>
         <View style={styles.main}>
           <Sidebar />
-          <MultiPaneContainer />
+          {/* Pane area gutter (wide layouts only). The left edge of the
+              grid is framed by the sidebar rail border and the top by the
+              AgentBar border, but the right/bottom edges previously ran
+              flush into the screen edge / ContextBar, which read as
+              clipped on Fold6. A uniform PANE_GUTTER on every side gives
+              the grid a consistent outer frame. MultiPaneContainer measures
+              its own onLayout, so the native terminal re-measures columns
+              once from the already-inset size (no extra resize pass). */}
+          <View style={[styles.paneArea, layout.isWide && styles.paneAreaWide]}>
+            <MultiPaneContainer />
+          </View>
         </View>
       </GestureDetector>
 
@@ -412,6 +436,13 @@ const styles = StyleSheet.create({
   main: {
     flex: 1,
     flexDirection: 'row',
+  },
+  paneArea: {
+    flex: 1,
+    minWidth: 0,
+  },
+  paneAreaWide: {
+    padding: PANE_GUTTER,
   },
   saveBadgeSlot: {
     position: 'absolute',

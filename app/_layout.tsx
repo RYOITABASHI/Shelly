@@ -44,6 +44,7 @@ import { useAgentStore } from '@/store/agent-store';
 import {
   AgentRunLogNoticeTracker,
   postAgentCompanionNotice,
+  postAgentHandoffDigest,
 } from '@/lib/agent-companion-notice';
 import { resumeCodexSession, coldStartCodexAndDeliverWidgetPrompt } from '@/lib/codex-session-resume';
 import {
@@ -62,6 +63,7 @@ import { useMCPServerBridge } from '@/hooks/use-mcp-server-bridge';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getOptionalPack } from '@/lib/optional-packs';
 import { installOptionalPack } from '@/lib/optional-pack-installer';
+import { handleTeachQueueLine, sweepOrphanedTeachLog } from '@/lib/teach-controller';
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 import {
   fireReviewedAgentBrowserPaneAction,
@@ -626,6 +628,15 @@ export default function RootLayout() {
         for (const log of agentRunLogNoticeTracker.completeSync(agentState.runHistory)) {
           const agentName = agentState.agents.find((agent) => agent.id === log.agentId)?.name ?? log.agentId;
           postAgentCompanionNotice(log, agentName, t('agentplan.run_now_done'));
+          // Unattended multi-step runs: replay the log's per-step records as
+          // one hand-off digest in the agent's own thread (lib/agent-handoff.ts).
+          // Own try/catch: a narration failure must never skip the remaining
+          // companion notices in this batch.
+          try {
+            postAgentHandoffDigest(log, agentName, t);
+          } catch (handoffError: any) {
+            logError('Handoff', 'digest post failed', handoffError);
+          }
         }
       } catch (e: any) {
         logError('RootLayout', 'syncAgentRunLogsFromDisk failed', e);
@@ -1722,6 +1733,10 @@ export default function RootLayout() {
             } else {
               logError('CommandQueue', `malformed install command queue line: ${line.slice(0, 64)}`);
             }
+          } else if (line.startsWith('teach:')) {
+            // `shelly teach <start|stop|cancel|status>` — same round-trip
+            // shape as install above; see lib/teach-controller.ts.
+            void handleTeachQueueLine(line);
           } else {
             logError('CommandQueue', `unrecognized command queue line: ${line.slice(0, 64)}`);
           }
@@ -1733,6 +1748,7 @@ export default function RootLayout() {
       }
     };
     const commandQueueInterval = setInterval(drainCommandQueue, 250);
+    void sweepOrphanedTeachLog().catch(() => {});
 
     // X OAuth pending-token-update drain: dispatch_social_post's x) case
     // (lib/agent-executor.ts) rotates the refresh token on every dispatch and

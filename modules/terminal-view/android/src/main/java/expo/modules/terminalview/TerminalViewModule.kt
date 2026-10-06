@@ -36,7 +36,8 @@ class TerminalViewModule : Module() {
                 "onTitleChanged",
                 "onResize",
                 "onScrollStateChanged",
-                "onFocusRequested"
+                "onFocusRequested",
+                "onQuoteSelection"
             )
 
             // --- Props ---
@@ -89,6 +90,10 @@ class TerminalViewModule : Module() {
 
             Prop("transparentBackground") { view: ShellyTerminalView, enabled: Boolean? ->
                 view.setTransparentBackground(enabled ?: false)
+            }
+
+            Prop("quoteActionLabel") { view: ShellyTerminalView, label: String? ->
+                view.setQuoteActionLabel(label)
             }
 
             OnViewDestroys { view: ShellyTerminalView ->

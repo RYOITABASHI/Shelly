@@ -601,7 +601,7 @@ describe('generateRunScript — orchestration suppressAction (Phase 4)', () => {
 describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', () => {
   it('resolves autonomous auto → codex (OAuth), key-free env', () => {
     const s = generateRunScript(agent({ type: 'auto' }, true));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=60');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=61');
     expect(s).toContain('.shelly-agent-driver.js'); // resolved to cli/codex via the approval driver
     expect(s).toContain('--prompt-file "$PROMPT_FILE"');
     expect(s).toContain('if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then');
@@ -650,7 +650,8 @@ describe('generateRunScript — autonomous tool resolution (Spec A §4/§5)', ()
     expect(s).toContain('shelly_node - "$url" "$body_file"');
     expect(s).toContain('HTTP_TIMEOUT_SECONDS="$timeout_seconds" shelly_node - "$url"');
     expect(s).toContain('shelly_node - "$url" "$out_file"');
-    expect(s).toContain('shelly_node - > "$TMP_DIR/llama-server-url-$AGENT_ID.txt"');
+    expect(s).toContain('shelly_node - "$sha_file" > "$TMP_DIR/llama-server-url-$AGENT_ID.txt"');
+    expect(s).toContain('shelly_node -e "const c=require(\'crypto\')');
     expect(s).toContain('if shelly_node - "$file"');
     expect(s).toContain('local_llm_start_idle_watcher');
     expect(s).toContain('SHELLY_AGENT_LOCAL_MODEL:-Qwen3.5-0.8B-Q4_K_M');

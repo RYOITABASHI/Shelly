@@ -38,6 +38,15 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 }));
 jest.mock('expo-notifications', () => ({}));
 jest.mock('expo-file-system/legacy', () => ({}));
+// Orchestrated runs narrate hand-off lines into the agent's chat thread
+// (lib/agent-companion-notice.ts -> store/ai-pane-store.ts), which arms a 2s
+// debounced AsyncStorage persist. With the real (web) AsyncStorage that timer
+// fires after this file's environment is torn down, logs "persist failed" into
+// the frozen console, and jest-runner sets process.exitCode = 1 for the whole
+// --runInBand run even though every test passed. Use the in-memory mock.
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
 
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';

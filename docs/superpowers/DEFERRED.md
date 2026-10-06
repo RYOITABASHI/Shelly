@@ -17,6 +17,7 @@
 ## History
 
 - 2026-10-06: 並列squad（ポリシー担当）がPOLICY-001（自動起動runの読み取り専用化・自然文カスタムルール・trust ramp）を `SHELLY_AGENT_POLICY`（既定OFF）配下に実装。未実装・未検証の残りを下記 P1 エントリに登録。
+- 2026-10-06: `shelly teach`（Teach mode: 記録→ワークフロー保存）を実装。残課題を下記「`shelly teach` の残課題」に登録。
 - 2026-09-29: PR #147（ShortcutBar/MentionDropdown と input.*/mention.* i18n キーの削除）と PR #148（孤児化していた `externalKeyboardShortcuts` 設定トグルの削除）をマージ。Windows PC での検証中に、実 bash/fs 系 jest スイートが `origin/main` でも失敗することを確認し、下記に P3 として登録した。
 - 2026-08-31: ユーザー指示「無くしちゃおうぜ」を受け、app.act機能(LINE/X向けAndroid Accessibility Service経由のUI自動操作)を製品として完全に廃止した。**廃止理由**: 同日の実機検証で、cold-startタイムアウト修正(直前エントリ参照)の後もなお別の新規バグ(検索ボタンのマッチャーが画面上の複数ノードに一致し、安全装置`Ambiguous-multiple-match`が働いてレシピ実行が停止)を発見。これでこの1機能だけで①cold-startタイムアウト②今回のambiguous-match③レシピ作成UI自体のフォーカス競合(直前エントリで確認済み、修正困難と判定済み)の3件のバグが積み上がった。Android Accessibility Service経由のUI自動操作は対象アプリ側のUI変化(広告表示・レイアウト更新等)に対して構造的に脆く、LINE/Xの2アプリに絞ってさえ安定動作に至らなかったため、機能自体を削除する方が実装・運用コストに見合うと判断。**削除範囲**: Kotlin側(`AppActExecutor.kt`/`AppActRecipeStore.kt`/`ShellyAccessibilityService.kt`/バンドルレシピ2件/`plugins/with-accessibility-service.js`を丸ごと削除、`TerminalEmulatorModule.kt`の5個のAsyncFunction・`AgentRuntime.kt`の`fireTrustedAppActAndReply`/`TrustedPlanLaunch.appActRecipeId`・`AgentActionApprovalBridge.kt`の`writeAutoApprovedReply`(呼び出し元喪失によるデッドコード化)と許可リスト残存・`NotificationDispatcher.kt`のapp-act分岐を除去)、TypeScript側(`lib/app-act-recipe-draft.ts`/`components/config/AppActRecipeDraftModal.tsx`/`lib/agent-app-act-review.ts`を丸ごと削除、`store/types.ts`の`AgentActionType`から`'app-act'`削除+`appActRecipeId`/`appActParams`/`appActMethod`フィールド削除、`lib/agent-executor.ts`と`scripts/shelly-plan-executor.js`(+APKミラー)から生成bashスクリプトのapp-act dispatchロジック一式を除去、`lib/agent-nl-parser.ts`のX投稿フォールバックをapp-actからsocial-post/draft+caveatへ再設計、ConfigTUIの「Automation」セクション削除、SettingsDropdownの一時QAプローブ削除、i18nキー約25個削除)、テスト4ファイル丸ごと削除+20ファイル部分編集、ドキュメント(README.md/ja.md・docs/STATUS.md/ja.md・skills-catalogの`app-act-flow-design`スキル)からapp.act言及を除去。`npx tsc --noEmit` clean(エラー0件)。テスト側の最終検証は別セッションで継続中。
   → sync: README/STATUS Status表・Known Limitations・Highlights表からapp.act行を削除済み。skills-catalog.jsonから`app-act-flow-design`エントリを削除・フォルダ削除済みだが、**GitHub Releaseの`skills-catalog-latest`アセット自体は別途リリースを切るまで更新されない**点に注意(リポジトリのソースは修正済み)。
@@ -52,7 +53,7 @@
 
 ### POLICY-001 — 自動起動runの読み取り専用化 / 自然文カスタムルール / trust ramp — 実装済み・フラグ既定OFF・実機未検証 (P1)
 
-**実装**: `lib/agent-action-policy.ts`（run origin・閉じたルールスキーマ・優先順位評価器。deny/draft_onlyルール > 自動起動runの読み取り専用 > askルール > trust-ramp許可 > 既存既定）、`lib/agent-trust-ramp.ts`、`lib/agent-policy-rule-intent.ts`（決定論パーサー＋ローカルLLMフォールバック、tighten-onlyで再検証）、`lib/agent-user-policy-store.ts`（既存 `~/.shelly/agents/policy.json` に保存、新規フォルダなし）、`lib/agent-policy-chat.ts` / `lib/agent-policy-approval.ts`。強制点は4つ: codex境界ゲート（`decideAutoAnswer`、gate bundle再生成済み）、RN承認チョークポイント（`app/_layout.tsx` drain loop、trust許可が効くのはここだけ）、PlanSpec executor、生成 .sh の `request_and_wait_approval`。native は `SHELLY_RUN_ORIGIN`（user/widget/schedule/notification/boot/event）を readonly export、"user" は `TerminalEmulatorModule.runAgent()` の明示マーカー経由のみ（それ以外は proactive、fail-closed）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION` 59→60、`EXECUTOR_SCRIPT_VERSION`/`CURRENT_EXECUTOR_VERSION` 3→4（並列squadとのマージ時は番号衝突に注意）。ConfigTUI「Agent Safety Rules (beta)」でON。
+**実装**: `lib/agent-action-policy.ts`（run origin・閉じたルールスキーマ・優先順位評価器。deny/draft_onlyルール > 自動起動runの読み取り専用 > askルール > trust-ramp許可 > 既存既定）、`lib/agent-trust-ramp.ts`、`lib/agent-policy-rule-intent.ts`（決定論パーサー＋ローカルLLMフォールバック、tighten-onlyで再検証）、`lib/agent-user-policy-store.ts`（既存 `~/.shelly/agents/policy.json` に保存、新規フォルダなし）、`lib/agent-policy-chat.ts` / `lib/agent-policy-approval.ts`。強制点は4つ: codex境界ゲート（`decideAutoAnswer`、gate bundle再生成済み）、RN承認チョークポイント（`app/_layout.tsx` drain loop、trust許可が効くのはここだけ）、PlanSpec executor、生成 .sh の `request_and_wait_approval`。native は `SHELLY_RUN_ORIGIN`（user/widget/schedule/notification/boot/event）を readonly export、"user" は `TerminalEmulatorModule.runAgent()` の明示マーカー経由のみ（それ以外は proactive、fail-closed）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION` 59→61（llama.cpp pin の v60 と合流）、`EXECUTOR_SCRIPT_VERSION`/`CURRENT_EXECUTOR_VERSION` 3→4（並列squadとのマージ時は番号衝突に注意）。ConfigTUI「Agent Safety Rules (beta)」でON。
 
 **未実装・意図的な割り切り（Why not now）**:
 - 通知シェードからの one-tap Allow（native が RN を経由せず直接 reply）は trust ramp の承認回数に数えない。対象の `cli` は review-required で必ず RN を通るため実害なし。
@@ -65,6 +66,30 @@
 **未検証**: 実機での一連（フラグON → 通知トリガーrunの webhook/cli が承認要求 or 拒否になる、「お金が絡む操作は必ず聞いて」→OK→保存、同じ cli を3回承認→「次から確認なしで実行していい？」→はい→4回目が自動承認、「さっきの許可を取り消して」）。Kotlin 変更（AgentRuntime/TerminalSessionService/TerminalEmulatorModule）は CI コンパイル未確認。
 
 → sync: README Status 表は未反映（フラグ既定OFFのベータのため）。ON を既定にする時に README/STATUS を同期すること。
+### エージェント hand-off 可視化（group thread）— 実装済み・実機未検証、明示的な「Xの結果をYに渡して」は見送り (P2)
+
+**実装 (2026-10-06)**: 多段/fan-out オーケストレーション実行の各ステップ境界で、エージェント自身のチャットスレッド（`agent:<id>`）へ「🔁 調査役 → 執筆役: 3件の項目を渡しました —「…」」形式の plain system 行を投稿する（`lib/agent-handoff.ts` の純粋な `HandoffNarrator`）。attended（`agent-manager.ts` `runAgentOrchestratedBody`）は境界ごとにライブ投稿、unattended（`shelly-plan-executor.js`）は executor 無変更で、既存 run log の `steps[]` を RN 側ログ同期（`app/_layout.tsx` `syncAgentLogs` → `postAgentHandoffDigest`）で1件のダイジェストに再生する。fan-out の各分岐は最後の分岐完了時に1行へ集約、1 run あたり非終端行は最大8行。役割ラベルは instruction のキーワード推定（`AgentOrchestrationStep` に `role` フィールドは追加していない）。
+
+**残課題**:
+- **明示的なエージェント間受け渡し（「Xの結果をYに渡して」）は見送り**: エージェント間メッセージングの既存フックが無い（`lib/team-roundtable.ts` は provider fan-out、`scripts/shelly-a2a-server.js` は read-only `list_agents` のみ）。実装するなら NL intent → X の最新 run log `outputPreview` を Y の `runAgentNow` プロンプト先頭へ注入する経路が最小だが、境界ポリシー/taint（他エージェント出力を信頼済みコンテキストとして扱うか）の設計判断が要る。
+- **アプリ kill 中に完了した unattended run はダイジェストされない**: `AgentRunLogNoticeTracker` が初回同期で既存履歴を seed する（companion 完了通知と同じ挙動）。必要なら thread 内の最新 `handoff.runId` をウォーターマークにする。
+- **ステップ単位の役割ラベルの明示指定**（NL/確認カードで `role` を持たせる）は未対応。
+- **スレッド肥大化**: `agent:<id>` スレッドは 200 件上限の FIFO。新しい run の初回行で旧 run の hand-off 行を終端行1件に畳む（`collapseOlderHandoffRuns`）ので run あたり約1件まで抑えたが、高頻度スケジュールでは長期的にユーザー会話を押し出し得る。**エージェント削除時に `agent:<id>` スレッドは掃除されない**（AsyncStorage に残る）— deleteAgent 経路で `clearConversation` + キー削除を入れるのが follow-up。
+- **redaction の注記**: hand-off 行は `redactSecretsText` を切り詰め**前**に適用するが、パターンベースなので未知形式のシークレットは素通りする（既存の companion 完了通知・run log の `outputPreview` と同等の保証レベル）。
+- **レビュー修正 (2026-10-06)**: 保留中の返信判定（API キー貼り付けのマスク/横取り、pendingGlobalMemory、slot-fill、pendingAgentDelete、AIPane の secureTextEntry）が「文字通りの最後のメッセージ」を見ていたため、プロンプトと返信の間に hand-off/system/実行完了通知が挟まると無効化されキーが平文で LLM に送られ得た。`lib/chat-pending-anchor.ts` `lastPromptAnchorMessage` で out-of-band 行を飛ばすよう修正。
+- 実機確認: 多段エージェントを Sidebar から Run → Chat で hand-off 行が出ること、スケジュール実行後のフォアグラウンド復帰でダイジェストが1回だけ出ること。
+
+### `shelly teach` の残課題（2026-10-06、実装時に意図的に見送り、P2）
+
+**実装済み**: ネイティブ PTY の `shelly teach start [name] / stop / cancel / status`。bash の PROMPT_COMMAND フック（`__shelly_teach_capture`、BASHRC_VERSION 242）が `$HOME/.shelly-teach.jsonl` 存在中だけ `{n,cmd,ec,cwd,ts}` を追記し、`shelly` ヘルパー（SHELLY_HELPER_SHIM v4）が `.shelly-command-queue` 経由で `lib/teach-controller.ts` と往復。stop 時に local LLM → Cerebras → Groq の順で整理（記録に無いプログラム名を含む回答は棄却）、不可なら決定論フォールバック。`~/.shelly/workflows/<name>.sh` に保存し、何も実行しない。変換は既定でローカル LLM のみ（クラウドは `settings.teachAllowCloudLlm` が true の時だけ）、stop 出力に使用した変換器（ローカル LLM / クラウド / ルールベース）を表示。2026-10-06 追記: `shelly workflow list|show|run|delete` もネイティブ PTY で動作するようにした（SHELLY_HELPER_SHIM v5 + `shelly()` bash 関数、BASHRC_VERSION 243。run は手順を表示してから現在の PTY で `bash` 実行、delete は y/N 確認）。2026-10-06 レビュー対応（BASHRC_VERSION 244 / SHIM v6）: フックを `set -e`/`set -u` 安全化、`#TEACH <$$> <reqId>` ヘッダ + `$HISTCMD` ベースラインで開始シェルのみ・開始後のコマンドのみ記録、LLM 出力は記録コマンドと完全一致（丸ごとの値トークンを `$N` に置換する場合のみ許可）を必須化、teach 保存のワークフローは `set -euo pipefail` + `${N:?missing arg N}` ガード付き、シークレット検出パターン追加、古い start 要求（15 秒超）は無視し起動時に残存 result を掃除。**実機未検証。**
+
+**見送り（Why not now）**:
+- **AI チャットの NL 入口（「今から覚えて」「覚えて終わり」）**: 安価な既存 intent フックが無く、`lib/agent-nl-parser.ts` の MEMORY_JP_RE（覚えておいて/覚えてて/記憶して）と衝突するため。追加するなら memory intent より前に判定し、記録はターミナル側で行われる旨を返す形にする。
+- **クラウド LLM 許可の UI トグル未実装**: `settings.teachAllowCloudLlm`（既定 false）は型・既定値のみ追加。ConfigTUI に項目が無いため現状は常にローカル LLM / ルールベースのみ。クラウドを使いたい要望が出たら Settings にトグルを追加する。
+- **legacy block-terminal（`lib/pseudo-shell.ts`）には未配線**: そちらはプロンプトフックを通らないため捕捉手段が無い。
+- **既知の捕捉制限**: `HISTCONTROL=ignorespace`/`ignoredups` 等で履歴に残らないコマンドは記録されない（`$HISTCMD` が進まないため）/ アプリ強制終了時は次回起動の sweep で記録ログと残存 result ファイルを破棄（記録は失われる）/ 記録は `shelly teach start` を実行したシェル（`$$`）のみ。
+- **LLM がフラグ（`--force` 等）を `$N` に置換し得る（再レビュー指摘、意図的に許容）**: フラグも「メタ文字を含まない丸ごとの値トークン」なので置換可能。実行時に利用者が渡す引数で挙動が変わるだけで新しいコマンドは注入できず、`${N:?missing arg N}` ガードと stop 時の全文プレビューで可視。問題になれば `-` 始まりトークンの置換を禁止する。LLM はその他、失敗・ノイズ・直前重複以外のステップ（成功した `cd` を含む）を落とせず、`#` 以降のトークンも置換不可。
+- **`__shelly_prompt_command` で `$?` を復元しない（レビュー LOW 指摘を意図的に不採用）**: `return $__shelly_ec` にすると `set -e` ユーザーのシェルが失敗コマンドのたびに PROMPT_COMMAND 経由で終了するため。チェーンした PROMPT_COMMAND が `$?` を必要とする要望が出たら、errexit を一時退避する形で再検討。
 
 ### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)
 

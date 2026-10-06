@@ -346,6 +346,10 @@ export type AppSettings = {
    * OFF: use theme-dependent colors (may be harder to read on some displays).
    */
   highContrastOutput: boolean;
+  /** `shelly teach`: allow sending recorded commands to cloud LLMs
+   *  (Cerebras/Groq) for cleanup when the local LLM is unavailable. Default
+   *  false — recordings stay on-device (local LLM or rule-based only). */
+  teachAllowCloudLlm?: boolean;
   // ─── Local LLM (Ollama) ───────────────────────────────────────────────────
   /** Enable local LLM for chat (Ollama-compatible API) */
   localLlmEnabled: boolean;
@@ -379,6 +383,11 @@ export type AppSettings = {
    *  Live API is billed per-token even on a free-tier key (text alone is
    *  free), unlike the default path's free on-device TTS. */
   realtimeVoiceEnabled?: boolean;
+  /** Speech-to-text route for the turn-based voice input (lib/stt-provider.ts).
+   *  'auto' (default): Groq Whisper when a Groq key is set, otherwise the
+   *  keyless on-device recognizer (SpeechRecognizerBridge.kt) when available.
+   *  'groq' / 'ondevice' force one route. */
+  sttProvider?: 'auto' | 'groq' | 'ondevice';
   // ─── Groq API ─────────────────────────────────────────────────────────────────
   /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
   groqApiKey?: string;
@@ -1271,6 +1280,13 @@ export type ChatMessage = {
   timestamp: number;
   /** Stable identity for a proactive background-agent completion notice. */
   agentRunLogId?: string;
+  /** Agent hand-off narration (2026-10-06, lib/agent-handoff.ts): set on a
+   *  plain-text system line posted into an agent's own `agent:<id>` thread
+   *  at an orchestrated run's step boundary. `runId` is the dedupe identity
+   *  (`<agentId>:<timestamp>` for an unattended digest replayed from the run
+   *  log, `<agentId>:live:<startMs>` for attended live lines); `seq` orders
+   *  the lines of one run. Informational only — never rendered as a card. */
+  handoff?: { runId: string; seq: number };
   /** コマンド実行結果の埋め込み */
   executions?: CommandExecution[];
   /** AI agent that handled this message */

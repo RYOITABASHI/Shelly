@@ -27,6 +27,9 @@ export interface LlamaCppModel {
   recommended?: boolean;
   badge?: string;
   hidden?: boolean;
+  /** Optional i18n keys; when set, the UI prefers them over the inline JA text. */
+  descriptionKey?: string;
+  badgeKey?: string;
 }
 
 export interface LlamaCppSetupStep {
@@ -113,6 +116,33 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
       'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf',
     recommended: true,
     badge: '推奨',
+  },
+  {
+    // Opt-in A/B candidate vs Qwen3.5-2B (see scripts/eval/local-llm-ab-eval.js).
+    // GGUF metadata (verified 2026-10-06 from the HF file header):
+    // general.architecture=llama (mainline LlamaForCausalLM, 42 layers, 2.6B
+    // params), tokenizer.ggml.pre=minicpm5 — that pre-tokenizer landed in
+    // llama.cpp 9777256c3 (#23384, release <= b9360), so older installs fail to
+    // load it. The specialized MiniCPM5 XML tool-call parser landed in
+    // c818263f2 (#24889, b9833). Chat template is embedded ChatML with
+    // <think>; llama-server applies it via --jinja (default on since well
+    // before b9360) and honors chat_template_kwargs.enable_thinking=false.
+    id: 'minicpm5-2b-q4',
+    name: 'MiniCPM5-2B Q4_K_M',
+    description:
+      'オプトインのA/B比較候補。ツール呼び出しに強い。日本語品質は評価スクリプトで確認。llama.cpp b9360以降が必要。',
+    descriptionKey: 'llama.model.minicpm5_2b.description',
+    sizeGb: 1.6,
+    ramRequiredGb: 3.6,
+    language: 'multilingual',
+    useCase: 'balanced',
+    quantization: 'Q4_K_M',
+    huggingFaceRepo: 'openbmb/MiniCPM5-2B-GGUF',
+    filename: 'MiniCPM5-2B-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf',
+    badge: 'ツール呼出(評価中)',
+    badgeKey: 'llama.model.minicpm5_2b.badge',
   },
   {
     id: 'qwen3.5-4b-q4',
@@ -340,12 +370,41 @@ const TLS_ENV_PRELUDE = [
   'fi',
 ].join('\n');
 
+/**
+ * Pinned llama.cpp Android build (2026-10-06). ggml-org/llama.cpp's
+ * releases/latest now resolves to a "v0.6.0" tag whose only asset is
+ * nightly-tag.txt, and the b<N> build tags are marked prerelease. The old
+ * latest-release lookup failed every fresh install and every Repair with
+ * "android arm64 llama.cpp asset not found". We install this exact asset and
+ * check its sha256. A scan of recent releases (exact asset name plus a
+ * GitHub-published sha256 digest required) runs only when this download
+ * fails. b11433 includes the MiniCPM5 pre-tokenizer (9777256c3) and its
+ * tool-call parser (c818263f2). We take the plain -bin-android-arm64 asset
+ * rather than -snapdragon, which has not been verified under linker64 on
+ * SM8650.
+ * Keep the same values in scripts/shelly-local-llm-ensure.sh (+ asset mirror)
+ * and in lib/agent-executor.ts's inline copy
+ * (__tests__/llamacpp-pinned-release.test.ts checks this).
+ */
+export const LLAMA_CPP_PINNED_RELEASE = {
+  tag: 'b11433',
+  asset: 'llama-b11433-bin-android-arm64.tar.gz',
+  sha256: '85ae0670db1c32145f1b17349600479aabe476737eba43a3259562d21f7697f2',
+} as const;
+
+// NOTE: this install script always uses LLAMA_CPP_PINNED_RELEASE (then the
+// verified release-scan fallback). It deliberately ignores the
+// LLAMA_SERVER_DOWNLOAD_URL / LLAMA_SERVER_DOWNLOAD_SHA256 overrides that
+// scripts/shelly-local-llm-ensure.sh honours.
 const INSTALL_LLAMA_SERVER_CMD = `set -e
 INSTALL_DIR="$HOME/.local/llama.cpp"
 TMP_ROOT="$HOME/.cache/shelly/llama-server-install"
 TMP_INSTALL_DIR="$HOME/.local/llama.cpp.tmp"
 OUT_DIR="$HOME/.local/bin"
-RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+PINNED_TAG="${LLAMA_CPP_PINNED_RELEASE.tag}"
+PINNED_ASSET="${LLAMA_CPP_PINNED_RELEASE.asset}"
+PINNED_SHA256="${LLAMA_CPP_PINNED_RELEASE.sha256}"
+PINNED_URL="https://github.com/ggml-org/llama.cpp/releases/download/$PINNED_TAG/$PINNED_ASSET"
 INSTALL_MARKER="$INSTALL_DIR/.shelly-install-ok"
 
 mkdir -p "$TMP_ROOT" "$OUT_DIR"
@@ -362,20 +421,61 @@ fetch_text() {
   fi
 }
 
+# Called under "if ! download_file ...", where set -e is suspended inside the
+# function: every step must propagate its own failure, or a curl/wget error
+# after a partial .part write would fall through to mv, return 0, skip the
+# fallback and surface as a misleading sha256 mismatch.
 download_file() {
   url="$1"
   out_file="$2"
   tmp_file="$out_file.part"
   rm -f "$tmp_file"
   if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url"
+    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$tmp_file" "$url"
+    wget -O "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   else
     echo "curl or wget is required to install llama.cpp" >&2
     return 127
   fi
-  mv "$tmp_file" "$out_file"
+  mv "$tmp_file" "$out_file" || { rm -f "$tmp_file"; return 1; }
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | { read -r h _; printf '%s\\n' "$h"; }
+  elif [ -x /system/bin/toybox ]; then
+    /system/bin/toybox sha256sum "$1" | { read -r h _; printf '%s\\n' "$h"; }
+  elif command -v node >/dev/null 2>&1; then
+    node -e "const c=require('crypto');const f=require('fs');process.stdout.write(c.createHash('sha256').update(f.readFileSync(process.argv[1])).digest('hex')+'\\n');" "$1"
+  else
+    echo "no sha256 tool available (sha256sum / toybox / node)" >&2
+    return 127
+  fi
+}
+
+# Fallback only (pinned download failed): newest b<N> release among the 30
+# most recent (prereleases included) with an exactly named android arm64
+# asset and a GitHub-published sha256 digest. Prints "<url> <sha256>".
+scan_release_fallback() {
+  command -v node >/dev/null 2>&1 || { echo "node is required for the llama.cpp release-scan fallback" >&2; return 127; }
+  fetch_text "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30" > "$TMP_ROOT/releases.json" || return 1
+  node -e "
+const rels = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+if (!Array.isArray(rels)) process.exit(1);
+const prefix = 'https://github.com/ggml-org/llama.cpp/releases/download/';
+for (const r of rels) {
+  if (!r || r.draft || typeof r.tag_name !== 'string' || !/^b[0-9]+\$/.test(r.tag_name)) continue;
+  const want = 'llama-' + r.tag_name + '-bin-android-arm64.tar.gz';
+  const a = (Array.isArray(r.assets) ? r.assets : []).find((x) => x && x.name === want);
+  if (!a || a.browser_download_url !== prefix + r.tag_name + '/' + want) continue;
+  const m = /^sha256:([0-9a-f]{64})\$/.exec(String(a.digest || ''));
+  if (!m) continue;
+  process.stdout.write(a.browser_download_url + ' ' + m[1] + '\\n');
+  process.exit(0);
+}
+process.exit(1);
+" "$TMP_ROOT/releases.json"
 }
 
 find_llama_server() {
@@ -450,23 +550,42 @@ elif [ -n "$EXISTING_BINARY" ]; then
   fi
 fi
 
-RELEASE_JSON="$TMP_ROOT/release.json"
-fetch_text "$RELEASE_API" > "$RELEASE_JSON"
-ASSET_URL="$(grep -o 'https://[^"]*bin-android-arm64[^"]*' "$RELEASE_JSON" | grep -E '\\.(tar\\.gz|tgz|zip)$' | head -n 1)"
-if [ -z "$ASSET_URL" ]; then
-  echo "android arm64 llama.cpp asset not found in latest release" >&2
-  grep -o '"name":[^,]*' "$RELEASE_JSON" | head -n 20 >&2 || true
-  exit 1
-fi
-
+ASSET_URL="$PINNED_URL"
+EXPECTED_SHA256="$PINNED_SHA256"
 ASSET_NAME="$(basename "$ASSET_URL")"
 ARCHIVE="$TMP_ROOT/$ASSET_NAME"
 EXTRACT_DIR="$TMP_ROOT/extract"
 rm -rf "$EXTRACT_DIR" "$TMP_INSTALL_DIR" "$ARCHIVE" "$ARCHIVE.part"
 mkdir -p "$EXTRACT_DIR" "$TMP_INSTALL_DIR"
 
-echo "Downloading $ASSET_NAME"
-download_file "$ASSET_URL" "$ARCHIVE"
+echo "Downloading $ASSET_NAME (pinned llama.cpp $PINNED_TAG)"
+if ! download_file "$ASSET_URL" "$ARCHIVE"; then
+  rm -f "$ARCHIVE.part"
+  echo "Pinned llama.cpp download failed; scanning recent releases for a verified fallback..." >&2
+  FALLBACK="$(scan_release_fallback || true)"
+  rm -f "$TMP_ROOT/releases.json"
+  if [ -z "$FALLBACK" ]; then
+    echo "android arm64 llama.cpp asset unavailable: pinned $PINNED_ASSET failed to download and no verified fallback release was found" >&2
+    exit 1
+  fi
+  ASSET_URL="\${FALLBACK%% *}"
+  EXPECTED_SHA256="\${FALLBACK##* }"
+  ASSET_NAME="$(basename "$ASSET_URL")"
+  ARCHIVE="$TMP_ROOT/$ASSET_NAME"
+  echo "Downloading $ASSET_NAME (fallback)"
+  if ! download_file "$ASSET_URL" "$ARCHIVE"; then
+    rm -f "$ARCHIVE" "$ARCHIVE.part"
+    echo "fallback llama.cpp download failed: $ASSET_NAME" >&2
+    exit 1
+  fi
+fi
+ACTUAL_SHA256="$(sha256_of "$ARCHIVE" || true)"
+if [ -z "$ACTUAL_SHA256" ] || [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+  rm -f "$ARCHIVE"
+  echo "sha256 mismatch for $ASSET_NAME (expected $EXPECTED_SHA256, got \${ACTUAL_SHA256:-unavailable}); refusing to install" >&2
+  exit 1
+fi
+echo "sha256 verified: $ASSET_NAME"
 
 case "$ARCHIVE" in
   *.zip)
@@ -584,7 +703,7 @@ export function buildServerStartCommand(config: LlamaCppServerConfig): string {
     // --embedding: /v1/embeddings rejects the pooling type 'none' that
     // causal chat models default to. Chat completion is unaffected —
     // pooling only applies to the embedding-output path, and current
-    // llama.cpp (this setup always installs releases/latest) serves both
+    // llama.cpp (this setup installs a pinned recent build) serves both
     // workloads from one server. Keep in lockstep with the agent-side
     // launch lines in scripts/shelly-local-llm-ensure.sh (+ asset mirror)
     // and lib/agent-executor.ts.

@@ -27,6 +27,13 @@ export interface SelectionChangedEvent {
   };
 }
 
+/** "Quote to AI" tap in the native text-selection menu. */
+export interface QuoteSelectionEvent {
+  nativeEvent: {
+    text: string;
+  };
+}
+
 export interface UrlDetectedEvent {
   nativeEvent: {
     url: string;
@@ -82,6 +89,10 @@ export interface NativeTerminalViewProps extends ViewProps {
   onResize?: (event: ResizeEvent) => void;
   onScrollStateChanged?: (event: ScrollStateChangedEvent) => void;
   onFocusRequested?: (event: FocusRequestedEvent) => void;
+  /** Label for the extra "Quote to AI" item in the selection menu (i18n'd on
+   *  the JS side). Omit/empty to hide the item. */
+  quoteActionLabel?: string;
+  onQuoteSelection?: (event: QuoteSelectionEvent) => void;
 }
 
 export const NativeTerminalView =
