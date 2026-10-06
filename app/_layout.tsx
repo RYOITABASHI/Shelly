@@ -61,6 +61,7 @@ import { useMCPServerBridge } from '@/hooks/use-mcp-server-bridge';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getOptionalPack } from '@/lib/optional-packs';
 import { installOptionalPack } from '@/lib/optional-pack-installer';
+import { handleTeachQueueLine, sweepOrphanedTeachLog } from '@/lib/teach-controller';
 import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
 import {
   fireReviewedAgentBrowserPaneAction,
@@ -1675,6 +1676,10 @@ export default function RootLayout() {
             } else {
               logError('CommandQueue', `malformed install command queue line: ${line.slice(0, 64)}`);
             }
+          } else if (line.startsWith('teach:')) {
+            // `shelly teach <start|stop|cancel|status>` — same round-trip
+            // shape as install above; see lib/teach-controller.ts.
+            void handleTeachQueueLine(line);
           } else {
             logError('CommandQueue', `unrecognized command queue line: ${line.slice(0, 64)}`);
           }
@@ -1686,6 +1691,7 @@ export default function RootLayout() {
       }
     };
     const commandQueueInterval = setInterval(drainCommandQueue, 250);
+    void sweepOrphanedTeachLog().catch(() => {});
 
     // X OAuth pending-token-update drain: dispatch_social_post's x) case
     // (lib/agent-executor.ts) rotates the refresh token on every dispatch and
