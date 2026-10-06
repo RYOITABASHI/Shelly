@@ -6,7 +6,7 @@
 // CLI tabs moved into each TerminalPane header as a per-pane tab bar
 // (Superset-style), so this bar no longer carries CLI tabs at all.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Pressable, StyleSheet, Text, ScrollView } from 'react-native';
+import { View, Pressable, Text, ScrollView } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useCommandPaletteStore } from '@/hooks/use-command-palette';
@@ -25,6 +25,7 @@ import { PRESET_CAPACITY, useMultiPaneStore, type PaneTab, type SlotIndex } from
 import { PANE_REGISTRY, resolvePaneTitle } from '@/components/multi-pane/pane-registry';
 import { colors as C, fonts as F, sizes as S, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
 
@@ -364,7 +365,7 @@ export function AgentBar() {
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   bar: {
     height: S.agentBarHeight,
     flexDirection: 'row',
@@ -511,4 +512,4 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.bgSidebar,
   },
-});
+}));

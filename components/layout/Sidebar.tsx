@@ -6,7 +6,6 @@ import {
   Text,
   Pressable,
   ScrollView,
-  StyleSheet,
   TextInput,
   Modal,
   Alert,
@@ -82,6 +81,7 @@ import { AgentDetailModal, type AgentDetailData } from './AgentDetailModal';
 import { CodexSessionsSection } from './CodexSessionsSection';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
 import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
@@ -2277,7 +2277,7 @@ export function Sidebar() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     flexDirection: 'column',
     borderRightWidth: S.borderWidth,
@@ -2755,4 +2755,4 @@ const styles = StyleSheet.create({
     fontFamily: F.family,
     fontWeight: '700',
   },
-});
+}));
