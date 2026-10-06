@@ -370,12 +370,37 @@ const TLS_ENV_PRELUDE = [
   'fi',
 ].join('\n');
 
+/**
+ * Pinned llama.cpp Android build (2026-10-06). ggml-org/llama.cpp's
+ * releases/latest now resolves to a "v0.6.0" tag whose only asset is
+ * nightly-tag.txt, and the b<N> build tags are marked prerelease. The old
+ * latest-release lookup failed every fresh install and every Repair with
+ * "android arm64 llama.cpp asset not found". We install this exact asset and
+ * check its sha256. A scan of recent releases (exact asset name plus a
+ * GitHub-published sha256 digest required) runs only when this download
+ * fails. b11433 includes the MiniCPM5 pre-tokenizer (9777256c3) and its
+ * tool-call parser (c818263f2). We take the plain -bin-android-arm64 asset
+ * rather than -snapdragon, which has not been verified under linker64 on
+ * SM8650.
+ * Keep the same values in scripts/shelly-local-llm-ensure.sh (+ asset mirror)
+ * and in lib/agent-executor.ts's inline copy
+ * (__tests__/llamacpp-pinned-release.test.ts checks this).
+ */
+export const LLAMA_CPP_PINNED_RELEASE = {
+  tag: 'b11433',
+  asset: 'llama-b11433-bin-android-arm64.tar.gz',
+  sha256: '85ae0670db1c32145f1b17349600479aabe476737eba43a3259562d21f7697f2',
+} as const;
+
 const INSTALL_LLAMA_SERVER_CMD = `set -e
 INSTALL_DIR="$HOME/.local/llama.cpp"
 TMP_ROOT="$HOME/.cache/shelly/llama-server-install"
 TMP_INSTALL_DIR="$HOME/.local/llama.cpp.tmp"
 OUT_DIR="$HOME/.local/bin"
-RELEASE_API="https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+PINNED_TAG="${LLAMA_CPP_PINNED_RELEASE.tag}"
+PINNED_ASSET="${LLAMA_CPP_PINNED_RELEASE.asset}"
+PINNED_SHA256="${LLAMA_CPP_PINNED_RELEASE.sha256}"
+PINNED_URL="https://github.com/ggml-org/llama.cpp/releases/download/$PINNED_TAG/$PINNED_ASSET"
 INSTALL_MARKER="$INSTALL_DIR/.shelly-install-ok"
 
 mkdir -p "$TMP_ROOT" "$OUT_DIR"
@@ -406,6 +431,43 @@ download_file() {
     return 127
   fi
   mv "$tmp_file" "$out_file"
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | { read -r h _; printf '%s\\n' "$h"; }
+  elif [ -x /system/bin/toybox ]; then
+    /system/bin/toybox sha256sum "$1" | { read -r h _; printf '%s\\n' "$h"; }
+  elif command -v node >/dev/null 2>&1; then
+    node -e "const c=require('crypto');const f=require('fs');process.stdout.write(c.createHash('sha256').update(f.readFileSync(process.argv[1])).digest('hex')+'\\n');" "$1"
+  else
+    echo "no sha256 tool available (sha256sum / toybox / node)" >&2
+    return 127
+  fi
+}
+
+# Fallback only (pinned download failed): newest b<N> release among the 30
+# most recent (prereleases included) with an exactly named android arm64
+# asset and a GitHub-published sha256 digest. Prints "<url> <sha256>".
+scan_release_fallback() {
+  command -v node >/dev/null 2>&1 || { echo "node is required for the llama.cpp release-scan fallback" >&2; return 127; }
+  fetch_text "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30" > "$TMP_ROOT/releases.json" || return 1
+  node -e "
+const rels = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+if (!Array.isArray(rels)) process.exit(1);
+const prefix = 'https://github.com/ggml-org/llama.cpp/releases/download/';
+for (const r of rels) {
+  if (!r || r.draft || typeof r.tag_name !== 'string' || !/^b[0-9]+\$/.test(r.tag_name)) continue;
+  const want = 'llama-' + r.tag_name + '-bin-android-arm64.tar.gz';
+  const a = (Array.isArray(r.assets) ? r.assets : []).find((x) => x && x.name === want);
+  if (!a || a.browser_download_url !== prefix + r.tag_name + '/' + want) continue;
+  const m = /^sha256:([0-9a-f]{64})\$/.exec(String(a.digest || ''));
+  if (!m) continue;
+  process.stdout.write(a.browser_download_url + ' ' + m[1] + '\\n');
+  process.exit(0);
+}
+process.exit(1);
+" "$TMP_ROOT/releases.json"
 }
 
 find_llama_server() {
@@ -480,23 +542,37 @@ elif [ -n "$EXISTING_BINARY" ]; then
   fi
 fi
 
-RELEASE_JSON="$TMP_ROOT/release.json"
-fetch_text "$RELEASE_API" > "$RELEASE_JSON"
-ASSET_URL="$(grep -o 'https://[^"]*bin-android-arm64[^"]*' "$RELEASE_JSON" | grep -E '\\.(tar\\.gz|tgz|zip)$' | head -n 1)"
-if [ -z "$ASSET_URL" ]; then
-  echo "android arm64 llama.cpp asset not found in latest release" >&2
-  grep -o '"name":[^,]*' "$RELEASE_JSON" | head -n 20 >&2 || true
-  exit 1
-fi
-
+ASSET_URL="$PINNED_URL"
+EXPECTED_SHA256="$PINNED_SHA256"
 ASSET_NAME="$(basename "$ASSET_URL")"
 ARCHIVE="$TMP_ROOT/$ASSET_NAME"
 EXTRACT_DIR="$TMP_ROOT/extract"
 rm -rf "$EXTRACT_DIR" "$TMP_INSTALL_DIR" "$ARCHIVE" "$ARCHIVE.part"
 mkdir -p "$EXTRACT_DIR" "$TMP_INSTALL_DIR"
 
-echo "Downloading $ASSET_NAME"
-download_file "$ASSET_URL" "$ARCHIVE"
+echo "Downloading $ASSET_NAME (pinned llama.cpp $PINNED_TAG)"
+if ! download_file "$ASSET_URL" "$ARCHIVE"; then
+  rm -f "$ARCHIVE.part"
+  echo "Pinned llama.cpp download failed; scanning recent releases for a verified fallback..." >&2
+  FALLBACK="$(scan_release_fallback || true)"
+  if [ -z "$FALLBACK" ]; then
+    echo "android arm64 llama.cpp asset unavailable: pinned $PINNED_ASSET failed to download and no verified fallback release was found" >&2
+    exit 1
+  fi
+  ASSET_URL="\${FALLBACK%% *}"
+  EXPECTED_SHA256="\${FALLBACK##* }"
+  ASSET_NAME="$(basename "$ASSET_URL")"
+  ARCHIVE="$TMP_ROOT/$ASSET_NAME"
+  echo "Downloading $ASSET_NAME (fallback)"
+  download_file "$ASSET_URL" "$ARCHIVE"
+fi
+ACTUAL_SHA256="$(sha256_of "$ARCHIVE" || true)"
+if [ -z "$ACTUAL_SHA256" ] || [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+  rm -f "$ARCHIVE"
+  echo "sha256 mismatch for $ASSET_NAME (expected $EXPECTED_SHA256, got \${ACTUAL_SHA256:-unavailable}); refusing to install" >&2
+  exit 1
+fi
+echo "sha256 verified: $ASSET_NAME"
 
 case "$ARCHIVE" in
   *.zip)
@@ -614,7 +690,7 @@ export function buildServerStartCommand(config: LlamaCppServerConfig): string {
     // --embedding: /v1/embeddings rejects the pooling type 'none' that
     // causal chat models default to. Chat completion is unaffected —
     // pooling only applies to the embedding-output path, and current
-    // llama.cpp (this setup always installs releases/latest) serves both
+    // llama.cpp (this setup installs a pinned recent build) serves both
     // workloads from one server. Keep in lockstep with the agent-side
     // launch lines in scripts/shelly-local-llm-ensure.sh (+ asset mirror)
     // and lib/agent-executor.ts.

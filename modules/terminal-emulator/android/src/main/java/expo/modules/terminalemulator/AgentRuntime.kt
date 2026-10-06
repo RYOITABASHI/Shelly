@@ -396,7 +396,11 @@ object AgentRuntime {
     // that's now silently discarded and hang forever waiting for a reply.
     // Bumped so that script is regenerated instead, where it now fails
     // loudly via the `*)` "Unknown agent action" case.
-    private const val CURRENT_SCRIPT_VERSION = 59
+    // v60 (2026-10-06): the generated script's llama-server auto-install now
+    // uses a pinned, sha256-verified llama.cpp build, because releases/latest
+    // no longer carries android binaries. See lib/agent-executor.ts's
+    // AGENT_SCRIPT_VERSION v60 comment.
+    private const val CURRENT_SCRIPT_VERSION = 60
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private const val CURRENT_EXECUTOR_VERSION = 3
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
