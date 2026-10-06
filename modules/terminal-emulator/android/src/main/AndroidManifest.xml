@@ -12,6 +12,11 @@
     <intent>
       <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
     </intent>
+    <!-- SpeechRecognizerBridge (keyless on-device STT): lets the app see /
+         bind the platform RecognitionService on Android 11+. -->
+    <intent>
+      <action android:name="android.speech.RecognitionService" />
+    </intent>
   </queries>
   <application>
     <!-- 2026-07-29: android:noHistory REMOVED (was "true") for the voice-input

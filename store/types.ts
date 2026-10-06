@@ -379,6 +379,11 @@ export type AppSettings = {
    *  Live API is billed per-token even on a free-tier key (text alone is
    *  free), unlike the default path's free on-device TTS. */
   realtimeVoiceEnabled?: boolean;
+  /** Speech-to-text route for the turn-based voice input (lib/stt-provider.ts).
+   *  'auto' (default): Groq Whisper when a Groq key is set, otherwise the
+   *  keyless on-device recognizer (SpeechRecognizerBridge.kt) when available.
+   *  'groq' / 'ondevice' force one route. */
+  sttProvider?: 'auto' | 'groq' | 'ondevice';
   // ─── Groq API ─────────────────────────────────────────────────────────────────
   /** Groq API キー — Whisper音声文字起こし用 (https://console.groq.com) */
   groqApiKey?: string;

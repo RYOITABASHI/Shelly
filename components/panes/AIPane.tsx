@@ -491,7 +491,7 @@ export default function AIPane() {
     }
   }, [pendingExternalPrompt, handleSubmit]);
 
-  const { startRecording, stopRecording, isRecording, isTranscribing } =
+  const { startRecording, stopRecording, isRecording, isTranscribing, partialText: voicePartialText } =
     usePaneVoice(handleSubmit);
 
   const handleMicPress = useCallback(() => {
@@ -968,8 +968,8 @@ export default function AIPane() {
       {(isRecording || isTranscribing) && (
         <View style={[paneStyles.voiceBar, { backgroundColor: voiceBarBg }]}>
           <VoiceWaveform active={isRecording} />
-          <Text style={paneStyles.voiceLabel}>
-            {isTranscribing ? 'Transcribing...' : 'Listening...'}
+          <Text style={paneStyles.voiceLabel} numberOfLines={1} ellipsizeMode="head">
+            {isTranscribing ? 'Transcribing...' : (voicePartialText || 'Listening...')}
           </Text>
           {isRecording && (
             <TouchableOpacity onPress={stopRecording} style={paneStyles.voiceStopButton}>

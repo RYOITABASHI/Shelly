@@ -18,6 +18,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.terminalemulator.scouter.AgentActionApprovalBridge
@@ -493,6 +494,8 @@ class TerminalEmulatorModule : Module() {
             // VoiceBridge — full-duplex Gemini Live voice session, see VoiceBridge.kt.
             "onVoiceReady", "onVoiceTurnComplete", "onVoiceInterrupted",
             "onVoiceInputTranscript", "onVoiceOutputTranscript", "onVoiceError", "onVoiceExit",
+            // SpeechRecognizerBridge — keyless on-device STT, see SpeechRecognizerBridge.kt.
+            "onSttPartial", "onSttFinal", "onSttError",
         )
 
         // Module (re-)instantiation: rewire emitEvent on any sessions that
@@ -542,6 +545,38 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("isVoiceSessionActive") {
             VoiceBridge.isRunning()
+        }
+
+        // SpeechRecognizerBridge — keyless, free, on-device speech-to-text
+        // (SpeechRecognizer.createOnDeviceSpeechRecognizer, API 31+ behind
+        // runtime SDK guards). Events: onSttPartial / onSttFinal / onSttError,
+        // each tagged with the JS-supplied sessionId.
+        AsyncFunction("getOnDeviceSttStatus") { language: String, promise: Promise ->
+            val context = appContext.reactContext
+            if (context == null) {
+                promise.resolve(mapOf("available" to false, "reason" to "no_context", "languageStatus" to "unknown"))
+                return@AsyncFunction
+            }
+            SpeechRecognizerBridge.getStatus(context, language) { promise.resolve(it) }
+        }
+
+        AsyncFunction("triggerOnDeviceSttModelDownload") { language: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction false
+            SpeechRecognizerBridge.triggerModelDownload(context, language)
+        }
+
+        AsyncFunction("startOnDeviceStt") { sessionId: String, language: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("no react context")
+            SpeechRecognizerBridge.start(context, sessionId, language) { name, body -> emitEvent(name, body) }
+        }
+
+        AsyncFunction("stopOnDeviceStt") { sessionId: String ->
+            SpeechRecognizerBridge.stop(sessionId)
+        }
+
+        AsyncFunction("cancelOnDeviceStt") { sessionId: String? ->
+            SpeechRecognizerBridge.cancel(sessionId)
         }
 
         // A2A (Agent2Agent) protocol server — see A2ABridge.kt.

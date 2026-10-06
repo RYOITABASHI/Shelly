@@ -4,7 +4,7 @@
 // Consolidates Display (Font/Theme), Language, AI Agents, and API Keys
 // that were previously scattered across the top bar.
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -45,6 +45,17 @@ import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { useAgentStore } from '@/store/agent-store';
 import type { SocialConnectorMeta, SocialPlatform } from '@/store/types';
+import {
+  normalizeSttSetting,
+  resolveSttProvider,
+  sttLanguageForLocale,
+  type SttProviderSetting,
+} from '@/lib/stt-provider';
+import {
+  getOnDeviceSttStatus,
+  triggerOnDeviceSttModelDownload,
+  type OnDeviceSttStatus,
+} from '@/lib/ondevice-stt';
 
 type Props = {
   visible: boolean;
@@ -167,6 +178,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <DisplaySection />
             <WallpaperSection />
             <LanguageSection />
+            <VoiceInputSection />
             <AgentsSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
             <ApiKeysSection />
@@ -1075,6 +1087,132 @@ const LanguageSection = React.memo(function LanguageSection() {
           />
           <Text style={[styles.langLabel, { color: locale === 'ja' ? C.text1 : C.text2 }]}>JA</Text>
         </Pressable>
+      </View>
+    </Section>
+  );
+});
+
+// ─── Voice input (STT route) ─────────────────────────────────────────────────
+//
+// settings.sttProvider selector + live on-device recognizer status. See
+// lib/stt-provider.ts for the routing rules and SpeechRecognizerBridge.kt for
+// the native side. The panel is remounted on each open, so the status check
+// on mount is always fresh.
+
+const STT_OPTIONS: { value: SttProviderSetting; labelKey: string }[] = [
+  { value: 'auto', labelKey: 'settings.stt_auto' },
+  { value: 'groq', labelKey: 'settings.stt_groq' },
+  { value: 'ondevice', labelKey: 'settings.stt_ondevice' },
+];
+
+function sttStatusLine(
+  t: (key: string, params?: Record<string, string | number>) => string,
+  status: OnDeviceSttStatus | null,
+  lang: string,
+): string {
+  if (!status) return t('settings.stt_status_checking');
+  if (!status.available) return t('settings.stt_status_unavailable');
+  switch (status.languageStatus) {
+    case 'installed': return t('settings.stt_status_installed', { lang });
+    case 'pending': return t('settings.stt_status_pending', { lang });
+    case 'downloadable': return t('settings.stt_status_downloadable', { lang });
+    case 'unsupported': return t('settings.stt_status_unsupported', { lang });
+    default: return t('settings.stt_status_unknown');
+  }
+}
+
+const VoiceInputSection = React.memo(function VoiceInputSection() {
+  const { t } = useTranslation();
+  const locale = useI18n((s) => s.locale);
+  const sttProvider = useSettingsStore((s) => normalizeSttSetting(s.settings.sttProvider));
+  const groqApiKey = useSettingsStore((s) => s.settings.groqApiKey);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const language = sttLanguageForLocale(locale);
+  const [status, setStatus] = useState<OnDeviceSttStatus | null>(null);
+  const mountedRef = useRef(true);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const refresh = useCallback(async () => {
+    const next = await getOnDeviceSttStatus(language, { force: true });
+    if (mountedRef.current) setStatus(next);
+  }, [language]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void refresh();
+    return () => {
+      mountedRef.current = false;
+      timersRef.current.forEach(clearTimeout);
+      timersRef.current = [];
+    };
+  }, [refresh]);
+
+  const handleDownload = useCallback(async () => {
+    const ok = await triggerOnDeviceSttModelDownload(language);
+    try {
+      ToastAndroid.show(
+        t(ok ? 'settings.stt_download_requested' : 'settings.stt_download_failed'),
+        ToastAndroid.SHORT,
+      );
+    } catch { /* non-Android */ }
+    // Re-poll so the line flips to "downloading…" / "ready" on its own.
+    timersRef.current.push(setTimeout(() => void refresh(), 3_000));
+    timersRef.current.push(setTimeout(() => void refresh(), 15_000));
+  }, [language, refresh, t]);
+
+  const route = resolveSttProvider({ sttProvider, groqApiKey }, status);
+  const routeKnown = status !== null || route === 'groq';
+  const showDownload = !!status?.available && status.languageStatus === 'downloadable';
+
+  return (
+    <Section title={t('settings.stt_section')}>
+      <Row label={t('settings.stt_provider_label')}>
+        <View style={[styles.segGroup, { borderColor: C.border }]}>
+          {STT_OPTIONS.map((opt) => {
+            const active = sttProvider === opt.value;
+            return (
+              <Pressable
+                key={opt.value}
+                style={[styles.segBtn, active && { backgroundColor: withAlpha(C.accent, 0.16) }]}
+                onPress={() => updateSettings({ sttProvider: opt.value })}
+                hitSlop={4}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+              >
+                <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
+                  {t(opt.labelKey)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </Row>
+      <View style={styles.sttStatusRow}>
+        <Text style={[styles.credentialHint, styles.sttStatusText, { color: C.text2 }]}>
+          {sttStatusLine(t, status, language)}
+          {routeKnown
+            ? `\n${t('settings.stt_route', { route: t(`settings.stt_route_${route}`) })}`
+            : ''}
+        </Text>
+        {showDownload ? (
+          <Pressable
+            onPress={handleDownload}
+            style={[styles.apiKeyBtn, { borderColor: C.accent }]}
+            hitSlop={6}
+            accessibilityRole="button"
+          >
+            <Text style={[styles.apiKeyBtnText, { color: C.accent }]}>{t('settings.stt_download')}</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            onPress={() => void refresh()}
+            style={[styles.apiKeyBtn, { borderColor: C.border }]}
+            hitSlop={6}
+            accessibilityRole="button"
+          >
+            <Text style={styles.apiKeyBtnText}>{t('settings.stt_refresh')}</Text>
+          </Pressable>
+        )}
       </View>
     </Section>
   );
@@ -2919,6 +3057,16 @@ const styles = StyleSheet.create({
   },
   credentialGap: {
     height: 6,
+  },
+  sttStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    marginTop: 4,
+  },
+  sttStatusText: {
+    flex: 1,
+    paddingBottom: 0,
   },
   // Language
   langRow: {

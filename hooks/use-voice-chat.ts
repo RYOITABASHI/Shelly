@@ -15,7 +15,15 @@ import { groqTranscribe } from '@/lib/groq';
 import { parseInput } from '@/lib/input-router';
 import { summarizeForSpeech } from '@/lib/voice-chain-helpers';
 import { releaseRecorder } from '@/hooks/use-speech-input';
-import { useTranslation } from '@/lib/i18n';
+import { useI18n, useTranslation } from '@/lib/i18n';
+import { sttUnavailableMessageKey } from '@/lib/stt-provider';
+import {
+  OnDeviceSttError,
+  onDeviceSttErrorKey,
+  resolveSttRouteNow,
+  startOnDeviceSttSession,
+  type OnDeviceSttSession,
+} from '@/lib/ondevice-stt';
 
 export type VoiceChatStatus =
   | 'idle'
@@ -68,6 +76,11 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
   });
 
   const recordingRef = useRef<any>(null);
+  // On-device STT route (lib/stt-provider.ts): when set, no expo-audio
+  // recorder exists — the platform recognizer owns the mic.
+  const sttSessionRef = useRef<OnDeviceSttSession | null>(null);
+  const startingRef = useRef(false);
+  const processRecordingRef = useRef<() => Promise<void>>(async () => {});
   const conversationRef = useRef<VoiceChatMessage[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   // Safety invariant (shared across the codebase): voice must never
@@ -78,6 +91,61 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
   const awaitingManualConfirmRef = useRef(false);
 
   const startListening = useCallback(async () => {
+    if (startingRef.current || recordingRef.current || sttSessionRef.current) return;
+    startingRef.current = true;
+    try {
+      const settings = useSettingsStore.getState().settings;
+      const route = await resolveSttRouteNow(settings, useI18n.getState().locale);
+      if (route.provider === 'none') {
+        setState((s) => ({ ...s, status: 'idle', error: t(sttUnavailableMessageKey(settings)) }));
+        return;
+      }
+      if (route.provider === 'ondevice') {
+        const { AudioModule } = await import('expo-audio');
+        // Permission prompt only — no AudioRecorder on this route.
+        const perm = await AudioModule.requestRecordingPermissionsAsync();
+        if (!perm.granted) {
+          setState((s) => ({ ...s, status: 'idle', error: t('speech.mic_permission') }));
+          return;
+        }
+        const session = startOnDeviceSttSession({
+          language: route.language,
+          onPartial: (text) => {
+            if (sttSessionRef.current !== session) return;
+            setState((s) => (s.status === 'listening' ? { ...s, transcript: text } : s));
+          },
+          onAutoFinal: () => {
+            if (sttSessionRef.current === session) void processRecordingRef.current();
+          },
+          onError: (err) => {
+            if (sttSessionRef.current !== session) return;
+            sttSessionRef.current = null;
+            setState((s) => ({
+              ...s,
+              status: 'idle',
+              error: t(onDeviceSttErrorKey(err.code), { error: err.code }),
+            }));
+          },
+        });
+        sttSessionRef.current = session;
+        setState((s) => ({ ...s, status: 'listening', transcript: '', error: undefined }));
+        return;
+      }
+      await startGroqListening();
+    } catch (err) {
+      sttSessionRef.current?.cancel();
+      sttSessionRef.current = null;
+      setState((s) => ({
+        ...s,
+        status: 'idle',
+        error: `Recording error: ${err instanceof Error ? err.message : String(err)}`,
+      }));
+    } finally {
+      startingRef.current = false;
+    }
+  }, [t]);
+
+  const startGroqListening = async () => {
     try {
       const { AudioModule, RecordingPresets } = await import('expo-audio');
       const status = await AudioModule.requestRecordingPermissionsAsync();
@@ -122,11 +190,12 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
         error: `Recording error: ${err instanceof Error ? err.message : String(err)}`,
       }));
     }
-  }, []);
+  };
 
   const processRecording = useCallback(async () => {
+    const session = sttSessionRef.current;
     const recording = recordingRef.current;
-    if (!recording) return;
+    if (!session && !recording) return;
 
     setState((s) => ({ ...s, status: 'transcribing' }));
 
@@ -134,44 +203,63 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
     const ensureReleased = async () => {
       if (released) return;
       released = true;
+      if (!recording) return;
       recordingRef.current = null;
       await releaseRecorder(recording);
     };
 
     try {
-      // Stop recording
-      let uri: string;
-      if (typeof recording.stop === 'function') {
-        await recording.stop();
-        uri = recording.uri || recording.getURI?.() || '';
-      } else if (typeof recording.stopAndUnloadAsync === 'function') {
-        await recording.stopAndUnloadAsync();
-        uri = recording.getURI?.() || '';
-      } else {
-        throw new Error('Unknown recording API');
-      }
-
-      if (!uri) {
-        setState((s) => ({ ...s, status: 'idle', error: 'Recording file not found' }));
-        return;
-      }
-
       const settings = useSettingsStore.getState().settings;
       const groqKey = settings.groqApiKey;
 
       // ── Step 1: Transcribe ──────────────────────────────────────────────────
       let transcript = '';
 
-      if (groqKey && groqKey.trim().length >= 10) {
-        const result = await groqTranscribe(groqKey, uri);
-        if (!result.success) {
-          setState((s) => ({ ...s, status: 'idle', error: result.error }));
+      if (session) {
+        // On-device route: the recognizer already has the text.
+        try {
+          transcript = await session.stop();
+        } catch (err) {
+          if (sttSessionRef.current === session) sttSessionRef.current = null;
+          const code = err instanceof OnDeviceSttError ? err.code : 'error';
+          setState((s) => ({
+            ...s,
+            status: 'idle',
+            error: code === 'cancelled' ? undefined : t(onDeviceSttErrorKey(code), { error: code }),
+          }));
           return;
         }
-        transcript = result.content ?? '';
+        if (sttSessionRef.current !== session) return; // deactivated meanwhile
+        sttSessionRef.current = null;
       } else {
-        setState((s) => ({ ...s, status: 'idle', error: 'Groq API key required for transcription' }));
-        return;
+        // Stop recording
+        let uri: string;
+        if (typeof recording.stop === 'function') {
+          await recording.stop();
+          uri = recording.uri || recording.getURI?.() || '';
+        } else if (typeof recording.stopAndUnloadAsync === 'function') {
+          await recording.stopAndUnloadAsync();
+          uri = recording.getURI?.() || '';
+        } else {
+          throw new Error('Unknown recording API');
+        }
+
+        if (!uri) {
+          setState((s) => ({ ...s, status: 'idle', error: 'Recording file not found' }));
+          return;
+        }
+
+        if (groqKey && groqKey.trim().length >= 10) {
+          const result = await groqTranscribe(groqKey, uri);
+          if (!result.success) {
+            setState((s) => ({ ...s, status: 'idle', error: result.error }));
+            return;
+          }
+          transcript = result.content ?? '';
+        } else {
+          setState((s) => ({ ...s, status: 'idle', error: t(sttUnavailableMessageKey(settings)) }));
+          return;
+        }
       }
 
       if (!transcript) {
@@ -333,7 +421,8 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
       // bug #46: 成功・失敗・Abort 問わず必ず release する
       await ensureReleased();
     }
-  }, []);
+  }, [t]);
+  processRecordingRef.current = processRecording;
 
   const activate = useCallback(() => {
     conversationRef.current = [];
@@ -350,6 +439,9 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
   const deactivate = useCallback(async () => {
     stopSpeaking();
     abortRef.current?.abort();
+    const session = sttSessionRef.current;
+    sttSessionRef.current = null;
+    session?.cancel();
     const recording = recordingRef.current;
     recordingRef.current = null;
     if (recording) {
@@ -373,6 +465,9 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
       if (recording) {
         void releaseRecorder(recording);
       }
+      const session = sttSessionRef.current;
+      sttSessionRef.current = null;
+      session?.cancel();
     };
   }, []);
 
@@ -380,6 +475,16 @@ export function useVoiceChat(options?: UseVoiceChatOptions) {
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === 'background' || nextState === 'inactive') {
+        const session = sttSessionRef.current;
+        if (session) {
+          sttSessionRef.current = null;
+          session.cancel();
+          setState((s) =>
+            s.status === 'listening' || s.status === 'transcribing'
+              ? { ...s, status: 'idle' }
+              : s,
+          );
+        }
         const recording = recordingRef.current;
         if (recording) {
           recordingRef.current = null;

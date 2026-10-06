@@ -155,6 +155,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalTheme: 'blue',
   gpuRendering: false,
   realtimeVoiceEnabled: false,
+  sttProvider: 'auto' as const,
   a2aServerEnabled: false,
   mcpServerEnabled: false,
   mcpExecEnabled: false,

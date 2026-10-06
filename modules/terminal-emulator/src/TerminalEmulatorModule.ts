@@ -7,6 +7,16 @@ export interface SessionConfig {
   cols?: number;
 }
 
+export interface OnDeviceSttNativeStatus {
+  available: boolean;
+  /** installed | pending | downloadable | unsupported | unknown */
+  languageStatus: string;
+  reason?: string;
+  sdkInt?: number;
+  language?: string;
+  micPermission?: boolean;
+}
+
 declare class TerminalEmulatorModuleType extends NativeModule {
   createSession(config: SessionConfig): Promise<{ sessionId: string; resumed: boolean }>;
   destroySession(sessionId: string): Promise<void>;
@@ -300,6 +310,21 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    *  session is active. */
   stopVoiceSession(): Promise<void>;
   isVoiceSessionActive(): Promise<boolean>;
+  /**
+   * Keyless on-device speech-to-text (SpeechRecognizerBridge.kt,
+   * SpeechRecognizer.createOnDeviceSpeechRecognizer — Android 12+, runtime
+   * SDK guarded). Optional: older native builds don't have it.
+   * Events: onSttPartial {sessionId,text} / onSttFinal {sessionId,text} /
+   * onSttError {sessionId,code,message}.
+   */
+  getOnDeviceSttStatus?(language: string): Promise<OnDeviceSttNativeStatus>;
+  /** API 33+: asks the on-device service to download the language model. */
+  triggerOnDeviceSttModelDownload?(language: string): Promise<boolean>;
+  startOnDeviceStt?(sessionId: string, language: string): Promise<void>;
+  /** Ends listening; the accumulated text arrives as onSttFinal. */
+  stopOnDeviceStt?(sessionId: string): Promise<void>;
+  /** Tears the session down without emitting a final result. */
+  cancelOnDeviceStt?(sessionId: string | null): Promise<void>;
   /**
    * A2A (Agent2Agent) protocol server (A2ABridge.kt / scripts/shelly-a2a-server.js).
    * Long-lived, not session-scoped like voice: starts on toggle-on and runs
