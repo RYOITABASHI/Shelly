@@ -12,6 +12,8 @@ import { create } from 'zustand';
 export type TeachRecording = {
   name?: string;
   startedAt: number;
+  /** $$ of the shell being recorded. */
+  pid: number;
 };
 
 type TeachState = {

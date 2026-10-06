@@ -52,14 +52,14 @@
 
 ### `shelly teach` の残課題（2026-10-06、実装時に意図的に見送り、P2）
 
-**実装済み**: ネイティブ PTY の `shelly teach start [name] / stop / cancel / status`。bash の PROMPT_COMMAND フック（`__shelly_teach_capture`、BASHRC_VERSION 242）が `$HOME/.shelly-teach.jsonl` 存在中だけ `{n,cmd,ec,cwd,ts}` を追記し、`shelly` ヘルパー（SHELLY_HELPER_SHIM v4）が `.shelly-command-queue` 経由で `lib/teach-controller.ts` と往復。stop 時に local LLM → Cerebras → Groq の順で整理（記録に無いプログラム名を含む回答は棄却）、不可なら決定論フォールバック。`~/.shelly/workflows/<name>.sh` に保存し、何も実行しない。変換は既定でローカル LLM のみ（クラウドは `settings.teachAllowCloudLlm` が true の時だけ）、stop 出力に使用した変換器（ローカル LLM / クラウド / ルールベース）を表示。2026-10-06 追記: `shelly workflow list|show|run|delete` もネイティブ PTY で動作するようにした（SHELLY_HELPER_SHIM v5 + `shelly()` bash 関数、BASHRC_VERSION 243。run は手順を表示してから現在の PTY で `bash` 実行、delete は y/N 確認）。**実機未検証。**
+**実装済み**: ネイティブ PTY の `shelly teach start [name] / stop / cancel / status`。bash の PROMPT_COMMAND フック（`__shelly_teach_capture`、BASHRC_VERSION 242）が `$HOME/.shelly-teach.jsonl` 存在中だけ `{n,cmd,ec,cwd,ts}` を追記し、`shelly` ヘルパー（SHELLY_HELPER_SHIM v4）が `.shelly-command-queue` 経由で `lib/teach-controller.ts` と往復。stop 時に local LLM → Cerebras → Groq の順で整理（記録に無いプログラム名を含む回答は棄却）、不可なら決定論フォールバック。`~/.shelly/workflows/<name>.sh` に保存し、何も実行しない。変換は既定でローカル LLM のみ（クラウドは `settings.teachAllowCloudLlm` が true の時だけ）、stop 出力に使用した変換器（ローカル LLM / クラウド / ルールベース）を表示。2026-10-06 追記: `shelly workflow list|show|run|delete` もネイティブ PTY で動作するようにした（SHELLY_HELPER_SHIM v5 + `shelly()` bash 関数、BASHRC_VERSION 243。run は手順を表示してから現在の PTY で `bash` 実行、delete は y/N 確認）。2026-10-06 レビュー対応（BASHRC_VERSION 244 / SHIM v6）: フックを `set -e`/`set -u` 安全化、`#TEACH <$$> <reqId>` ヘッダ + `$HISTCMD` ベースラインで開始シェルのみ・開始後のコマンドのみ記録、LLM 出力は記録コマンドと完全一致（丸ごとの値トークンを `$N` に置換する場合のみ許可）を必須化、teach 保存のワークフローは `set -euo pipefail` + `${N:?missing arg N}` ガード付き、シークレット検出パターン追加、古い start 要求（15 秒超）は無視し起動時に残存 result を掃除。**実機未検証。**
 
 **見送り（Why not now）**:
 - **AI チャットの NL 入口（「今から覚えて」「覚えて終わり」）**: 安価な既存 intent フックが無く、`lib/agent-nl-parser.ts` の MEMORY_JP_RE（覚えておいて/覚えてて/記憶して）と衝突するため。追加するなら memory intent より前に判定し、記録はターミナル側で行われる旨を返す形にする。
 - **クラウド LLM 許可の UI トグル未実装**: `settings.teachAllowCloudLlm`（既定 false）は型・既定値のみ追加。ConfigTUI に項目が無いため現状は常にローカル LLM / ルールベースのみ。クラウドを使いたい要望が出たら Settings にトグルを追加する。
-- **記録は全ターミナルタブ共通**: フラグがグローバルな `$HOME` のファイルなので、記録中に別タブで打ったコマンドも混ざる。タブ単位にするには PTY セッション ID を bash 環境に渡す必要あり。
 - **legacy block-terminal（`lib/pseudo-shell.ts`）には未配線**: そちらはプロンプトフックを通らないため捕捉手段が無い。
-- **既知の捕捉制限**: 連続同一コマンドは `history` 番号が増えない場合スキップされ得る / `HISTCONTROL=ignorespace` 等をユーザーが設定すると先頭スペース付きコマンドは記録されない / アプリ強制終了時は次回起動の sweep で記録ログを破棄（記録は失われる）。
+- **既知の捕捉制限**: `HISTCONTROL=ignorespace`/`ignoredups` 等で履歴に残らないコマンドは記録されない（`$HISTCMD` が進まないため）/ アプリ強制終了時は次回起動の sweep で記録ログと残存 result ファイルを破棄（記録は失われる）/ 記録は `shelly teach start` を実行したシェル（`$$`）のみ。
+- **`__shelly_prompt_command` で `$?` を復元しない（レビュー LOW 指摘を意図的に不採用）**: `return $__shelly_ec` にすると `set -e` ユーザーのシェルが失敗コマンドのたびに PROMPT_COMMAND 経由で終了するため。チェーンした PROMPT_COMMAND が `$?` を必要とする要望が出たら、errexit を一時退避する形で再検討。
 
 ### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)
 

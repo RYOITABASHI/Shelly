@@ -49,6 +49,8 @@ export type TeachIO = {
   read: (uri: string) => Promise<string | null>;
   write: (uri: string, content: string) => Promise<void>;
   remove: (uri: string) => Promise<void>;
+  /** Entry names directly inside a directory ([] on any failure). */
+  list: (dirUri: string) => Promise<string[]>;
 };
 
 export const defaultTeachIO: TeachIO = {
@@ -64,6 +66,13 @@ export const defaultTeachIO: TeachIO = {
   },
   write: (uri, content) => FileSystem.writeAsStringAsync(uri, content),
   remove: (uri) => FileSystem.deleteAsync(uri, { idempotent: true }),
+  list: async (dirUri) => {
+    try {
+      return await FileSystem.readDirectoryAsync(dirUri);
+    } catch {
+      return [];
+    }
+  },
 };
 
 export type TeachConverter = (steps: TeachStep[], requestedName?: string) => Promise<TeachWorkflowDraft>;
@@ -77,6 +86,30 @@ export type TeachDeps = {
 };
 
 const logUri = (io: TeachIO) => `${io.homeUri()}/.shelly-teach.jsonl`;
+const RESULT_FILE_RE = /^\.shelly-teach-result-[0-9]+-[0-9a-f]{1,16}\.json$/;
+/** Kept below the helper shim's 20 s `start` deadline (HomeInitializer.kt). A
+ *  start request older than this was already reported to the user as timed
+ *  out, so honoring it would silently begin recording. */
+export const TEACH_START_MAX_AGE_MS = 15_000;
+
+/** First line of the capture log: `#TEACH <shell pid> <request id>`. The
+ *  bash hook only records in the shell whose $$ matches, and resets its
+ *  baseline whenever the line (i.e. the recording) changes. */
+export function teachLogHeader(pid: number, reqId: string): string {
+  return `#TEACH ${pid} ${reqId}\n`;
+}
+
+/** One-shot notice for the recording shell: `#NOTICE <pid> <text>`. */
+export function teachNotice(pid: number, text: string): string {
+  return `${TEACH_NOTICE_PREFIX}${pid} ${text.replace(/[\r\n]+/g, ' ')}\n`;
+}
+
+export type TeachRequestContext = {
+  /** $$ of the shell that ran `shelly teach <action>`. */
+  pid?: number;
+  /** Request id from the helper shim (unique per invocation). */
+  reqId?: string;
+};
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 /** Remembered so a `shelly teach stop` typed after an auto-stop explains
@@ -91,7 +124,7 @@ function stopPolling() {
 async function readSteps(io: TeachIO): Promise<TeachStep[]> {
   const content = await io.read(logUri(io));
   if (!content || content.startsWith(TEACH_NOTICE_PREFIX)) return [];
-  return parseTeachLog(content);
+  return parseTeachLog(content, useTeachStore.getState().recording?.pid);
 }
 
 async function uniqueName(base: string, exists: (n: string) => Promise<boolean>): Promise<string> {
@@ -154,7 +187,7 @@ async function finishRecording(deps: TeachDeps): Promise<TeachResult> {
 async function autoStopTick(deps: TeachDeps): Promise<void> {
   const rec = useTeachStore.getState().recording;
   if (!rec || useTeachStore.getState().finishing) return;
-  const steps = (await readSteps(deps.io)).filter((s) => !/^\s*shelly\s+teach(\s|$)/.test(s.cmd));
+  const { steps } = sanitizeSteps(await readSteps(deps.io));
   const reason = shouldAutoStop(rec.startedAt, steps.length, deps.now());
   if (!reason) return;
   logInfo(LOG, `auto-stop (${reason}) after ${steps.length} step(s)`);
@@ -168,24 +201,35 @@ async function autoStopTick(deps: TeachDeps): Promise<void> {
   // The bash hook prints a TEACH_NOTICE_PREFIX line once on the next prompt
   // and deletes the file — the only way to surface this in the PTY.
   const notice = `${reasonText} ${result.ok ? (savedLine ?? t('teach.nothing_recorded')).trim() : result.error ?? ''}`;
-  await deps.io.write(logUri(deps.io), `${TEACH_NOTICE_PREFIX}${notice.replace(/[\r\n]+/g, ' ')}\n`).catch(() => {});
+  await deps.io.write(logUri(deps.io), teachNotice(rec.pid, notice)).catch(() => {});
 }
 
 export async function runTeachCommand(
   action: string,
   name: string | undefined,
   deps: TeachDeps = defaultTeachDeps,
+  ctx: TeachRequestContext = {},
 ): Promise<TeachResult> {
   const store = useTeachStore.getState();
   switch (action) {
     case 'start': {
-      if (store.recording) {
+      if (store.recording || store.finishing) {
         return { ok: false, lines: [], error: t('teach.already_recording') };
       }
+      if (!ctx.pid || !Number.isInteger(ctx.pid) || ctx.pid <= 0) {
+        return { ok: false, lines: [], error: t('teach.shell_outdated') };
+      }
+      const pid = ctx.pid;
       const clean = sanitizeWorkflowName(name);
-      // Empty log = recording on; the bash hook keys off its existence.
-      await deps.io.write(logUri(deps.io), '');
-      store.setRecording({ name: clean || undefined, startedAt: deps.now() });
+      // Claim the recording synchronously (before any await) so two
+      // overlapping start requests cannot both succeed.
+      store.setRecording({ name: clean || undefined, startedAt: deps.now(), pid });
+      try {
+        await deps.io.write(logUri(deps.io), teachLogHeader(pid, ctx.reqId || String(deps.now())));
+      } catch (e: any) {
+        store.setRecording(null);
+        return { ok: false, lines: [], error: t('teach.save_failed', { error: e?.message || String(e) }) };
+      }
       lastAutoSaved = null;
       stopPolling();
       pollTimer = setInterval(() => {
@@ -325,7 +369,9 @@ export const convertWithLlm: TeachConverter = async (steps, requestedName) => {
 export const defaultTeachDeps: TeachDeps = {
   io: defaultTeachIO,
   convert: convertWithLlm,
-  save: (d) => saveWorkflow(d.name, d.commands, d.description),
+  // Teach workflows run with `set -euo pipefail`: a recorded routine should
+  // stop at the first failing step instead of carrying on blindly.
+  save: (d) => saveWorkflow(d.name, d.commands, d.description, { strict: true }),
   exists: async (name) => (await loadWorkflow(name)) !== null,
   now: () => Date.now(),
 };
@@ -335,22 +381,35 @@ export const defaultTeachDeps: TeachDeps = {
 const REQ_ID_RE = /^[0-9]+-[0-9a-f]{1,16}$/;
 
 /**
- * Handle one `teach:<reqId>:<action>[:<name>]` queue line and write the
- * result file the helper shim is blocking on. Fire-and-forget from the
- * queue loop (stop may wait on an LLM).
+ * Handle one `teach:<reqId>:<action>:<ts>:<pid>[:<name>]` queue line and
+ * write the result file the helper shim is blocking on. Fire-and-forget
+ * from the queue loop (stop may wait on an LLM).
  */
-export async function handleTeachQueueLine(line: string, io: TeachIO = defaultTeachIO): Promise<void> {
+export async function handleTeachQueueLine(
+  line: string,
+  io: TeachIO = defaultTeachIO,
+  deps: TeachDeps = defaultTeachDeps,
+): Promise<void> {
   const parts = line.split(':');
   const reqId = parts[1] ?? '';
   const action = parts[2] ?? '';
-  const name = parts.slice(3).join(':') || undefined;
-  if (!REQ_ID_RE.test(reqId)) {
+  const ts = Number(parts[3]);
+  const pid = Number(parts[4]);
+  const name = parts.slice(5).join(':') || undefined;
+  if (!REQ_ID_RE.test(reqId) || !Number.isFinite(ts)) {
     logError(LOG, `malformed teach queue line: ${line.slice(0, 64)}`);
+    return;
+  }
+  if (action === 'start' && deps.now() - ts > TEACH_START_MAX_AGE_MS) {
+    // The shim already told the user this start timed out — starting now
+    // would record without them knowing. Drop it (no result file: nobody
+    // is waiting for one).
+    logInfo(LOG, `ignored stale start request ${reqId} (${deps.now() - ts}ms old)`);
     return;
   }
   let result: TeachResult;
   try {
-    result = await runTeachCommand(action, name);
+    result = await runTeachCommand(action, name, deps, { pid: Number.isInteger(pid) ? pid : undefined, reqId });
   } catch (e: any) {
     result = { ok: false, lines: [], error: e?.message || String(e) };
   }
@@ -361,14 +420,19 @@ export async function handleTeachQueueLine(line: string, io: TeachIO = defaultTe
   }
 }
 
-/** App-start sweep: a log left behind by a killed app process would make
- *  bash append forever with no recorder listening. */
+/** App-start sweep. Nothing is recording in a fresh JS process, so any
+ *  capture log (or pending notice) is left over from a killed session and
+ *  would make bash append forever; result files whose shim has long since
+ *  given up are removed too. */
 export async function sweepOrphanedTeachLog(io: TeachIO = defaultTeachIO): Promise<void> {
   if (useTeachStore.getState().recording) return;
-  const content = await io.read(logUri(io));
-  if (content === null || content.startsWith(TEACH_NOTICE_PREFIX)) return;
-  await io.remove(logUri(io)).catch(() => {});
-  logInfo(LOG, 'removed orphaned teach log from a previous app session');
+  if ((await io.read(logUri(io))) !== null) {
+    await io.remove(logUri(io)).catch(() => {});
+    logInfo(LOG, 'removed orphaned teach log from a previous app session');
+  }
+  for (const entry of await io.list(io.homeUri())) {
+    if (RESULT_FILE_RE.test(entry)) await io.remove(`${io.homeUri()}/${entry}`).catch(() => {});
+  }
 }
 
 /** Test-only reset of module-level timers/state. */

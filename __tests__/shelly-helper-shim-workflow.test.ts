@@ -2,7 +2,7 @@
  * __tests__/shelly-helper-shim-workflow.test.ts
  *
  * Behavioral test for the generated `$HOME/bin/shelly` helper's node body
- * (HomeInitializer.kt, SHELLY_HELPER_SHIM v5): the `sb.appendLine("...")`
+ * (HomeInitializer.kt, SHELLY_HELPER_SHIM v6): the `sb.appendLine("...")`
  * literals are extracted from the real .kt source, Kotlin-unescaped, and
  * the resulting script is run with this Node against a temp $HOME. Covers
  * `shelly workflow list|show|__prepare-run|__prepare-delete|delete` and the
@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 
 const ktPath = path.resolve(
   __dirname,
@@ -89,10 +89,10 @@ beforeEach(() => {
 });
 
 describe('generated shelly helper shim', () => {
-  it('is bumped to v5 alongside BASHRC_VERSION 243', () => {
+  it('is bumped to v6 alongside BASHRC_VERSION 244', () => {
     const src = fs.readFileSync(ktPath, 'utf8');
-    expect(src).toContain('# SHELLY_HELPER_SHIM v5');
-    expect(src).toMatch(/private const val BASHRC_VERSION = 243\b/);
+    expect(src).toContain('# SHELLY_HELPER_SHIM v6');
+    expect(src).toMatch(/private const val BASHRC_VERSION = 244\b/);
   });
 
   it('parses as valid JavaScript', () => {
@@ -175,6 +175,46 @@ describe('generated shelly helper shim', () => {
     const r = shelly('workflow', 'run', 'deploy');
     expect(r.code).toBe(2);
     expect(r.out).toContain('bash ');
+  });
+
+  it('workflow list/__prepare-run skip the strict-mode prologue teach workflows carry', () => {
+    const dir = path.join(home, '.shelly', 'workflows');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'strict.sh'),
+      '#!/bin/bash\n# Shelly Workflow: strict\n# Desc\n# Created: x\nset -euo pipefail\nmake\n',
+    );
+    expect(shelly('workflow', 'list').out).toMatch(/^strict\s+1\s+Desc$/m);
+    const r = shelly('workflow', '__prepare-run', 'strict');
+    expect(r.out).toContain(' 1. make');
+    expect(r.out).not.toContain('pipefail');
+  });
+
+  it('teach start queues reqId, timestamp and the caller shell pid, then prints the app result', async () => {
+    const child = spawn(process.execPath, [shimPath, 'teach', 'start', 'My', 'Deploy'], {
+      env: { ...process.env, HOME: home, SHELLY_CALLER_PID: '31337' },
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    const queue = path.join(home, '.shelly-command-queue');
+    const before = Date.now();
+    const line = await new Promise<string>((resolve, reject) => {
+      const deadline = Date.now() + 10_000;
+      const tick = () => {
+        if (fs.existsSync(queue)) return resolve(fs.readFileSync(queue, 'utf8').trim());
+        if (Date.now() > deadline) return reject(new Error('no queue line'));
+        setTimeout(tick, 25);
+      };
+      tick();
+    });
+    const m = /^teach:([0-9]+-[0-9a-f]{8}):start:([0-9]+):31337:My-Deploy$/.exec(line);
+    expect(m).not.toBeNull();
+    expect(Number(m![2])).toBeGreaterThanOrEqual(before - 5_000);
+    fs.writeFileSync(path.join(home, `.shelly-teach-result-${m![1]}.json`), JSON.stringify({ ok: true, lines: ['recording'] }));
+    const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
+    expect(code).toBe(0);
+    expect(out).toContain('recording');
+    expect(fs.readdirSync(home).filter((f) => f.startsWith('.shelly-teach-result-'))).toEqual([]);
   });
 
   it('teach without an action prints usage without queueing anything', () => {

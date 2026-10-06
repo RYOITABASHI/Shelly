@@ -16,13 +16,23 @@ export async function ensureWorkflowsDir() {
   await execCommand(`mkdir -p "${getWorkflowsDir()}"`);
 }
 
-export async function saveWorkflow(name: string, commands: string[], description?: string): Promise<void> {
+/** Strict-mode prologue added to `shelly teach` workflows. Excluded from
+ *  the command list on load (and by the native shim's list/show parser). */
+export const WORKFLOW_STRICT_LINE = 'set -euo pipefail';
+
+export async function saveWorkflow(
+  name: string,
+  commands: string[],
+  description?: string,
+  options: { strict?: boolean } = {},
+): Promise<void> {
   await ensureWorkflowsDir();
   const content = [
     '#!/bin/bash',
     `# Shelly Workflow: ${name}`,
     description ? `# ${description}` : '',
     `# Created: ${new Date().toISOString()}`,
+    options.strict ? WORKFLOW_STRICT_LINE : '',
     '',
     ...commands,
   ].filter(Boolean).join('\n');
@@ -35,7 +45,7 @@ export async function loadWorkflow(name: string): Promise<Workflow | null> {
   const result = await execCommand(`cat "${getWorkflowsDir()}/${name}.sh" 2>/dev/null`);
   if (result.exitCode !== 0) return null;
   const lines = result.stdout.split('\n');
-  const commands = lines.filter(l => !l.startsWith('#') && !l.startsWith('!') && l.trim());
+  const commands = lines.filter(l => !l.startsWith('#') && !l.startsWith('!') && l.trim() && l.trim() !== WORKFLOW_STRICT_LINE);
   const descLine = lines.find(l => l.startsWith('# ') && !l.includes('Shelly Workflow') && !l.includes('Created'));
   return { name, commands, description: descLine?.replace(/^#\s*/, ''), createdAt: Date.now() };
 }

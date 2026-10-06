@@ -2476,6 +2476,7 @@ const ja: Record<string, string> = {
   'teach.usage_start': '  start [名前]  このターミナルで実行するコマンドの記録を開始',
   'teach.usage_stop': '  stop          記録を停止してワークフローとして保存（実行はしません）',
   'teach.usage_cancel': '  cancel        記録を停止して破棄',
+  'teach.shell_outdated': 'ティーチモードには更新後のシェルが必要です。新しいターミナルタブを開いてから再実行してください。',
   'teach.usage_status': '  status        記録中かどうかを表示',
 };
 

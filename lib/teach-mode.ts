@@ -29,6 +29,9 @@ export type TeachStep = {
    *  previous entry's value; parseTeachLog() returns the raw hook value. */
   cwd: string;
   ts: number;
+  /** $$ of the shell that ran the command (the hook only records the shell
+   *  that ran `shelly teach start`; this is a second, JS-side filter). */
+  pid?: number;
 };
 
 export type TeachConverterSource = 'local' | 'cloud' | 'fallback';
@@ -43,7 +46,7 @@ export type TeachWorkflowDraft = {
 
 /** Parse the hook's JSONL log. Malformed lines (half-written append, odd
  *  escaping from an exotic command) are skipped, never fatal. */
-export function parseTeachLog(content: string): TeachStep[] {
+export function parseTeachLog(content: string, onlyPid?: number): TeachStep[] {
   const steps: TeachStep[] = [];
   const seen = new Set<number>();
   for (const raw of content.split('\n')) {
@@ -56,6 +59,8 @@ export function parseTeachLog(content: string): TeachStep[] {
       continue;
     }
     if (!obj || typeof obj.cmd !== 'string') continue;
+    const pid = Number(obj.pid);
+    if (onlyPid !== undefined && Number.isFinite(pid) && pid !== onlyPid) continue;
     const n = Number(obj.n);
     if (Number.isFinite(n) && seen.has(n)) continue;
     if (Number.isFinite(n)) seen.add(n);
@@ -66,6 +71,7 @@ export function parseTeachLog(content: string): TeachStep[] {
       exitCode: Number.isInteger(ec) && ec >= 0 && ec <= 255 ? ec : null,
       cwd: typeof obj.cwd === 'string' ? obj.cwd : '',
       ts: Number(obj.ts) || 0,
+      ...(Number.isFinite(pid) ? { pid } : {}),
     });
   }
   return steps;
@@ -91,6 +97,12 @@ const TEACH_EXTRA_SECRET_PATTERNS: RegExp[] = [
   /\bAuthorization:\s*\S+/i,
   /\b(?:mysql|psql)\b.*\s-p\S+/,
   /:\/\/[^\s/:@]+:[^\s/@]+@/, // user:pass@host URLs
+  // Short env-style assignments the shared lists' length floors miss
+  // (`export GITHUB_TOKEN=ghp_abc`, `PASSWORD=abc ./run`).
+  /\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|API_?KEY|KEY)=\S+/,
+  /-H\s*['"]?[A-Za-z-]*(?:Key|Token|Authorization)\s*:/i,
+  /\baws_secret_access_key\b/i,
+  /\bsudo\s+(?:-\S+\s+)*-S\b/,
 ];
 
 /**
@@ -208,7 +220,8 @@ export const TEACH_LLM_SYSTEM_PROMPT =
   'Input: numbered steps with exit code and working directory. ' +
   'Rules: drop typos, failed attempts that were later retried, and pure navigation ' +
   '(ls, clear, pwd) unless the routine needs it. Keep `cd` when later steps depend on it. ' +
-  'Never invent commands that were not recorded. You may replace an obviously variable ' +
+  'Copy kept commands EXACTLY as recorded, in the same order; never edit, merge or invent ' +
+  'commands. The only allowed change: replace one whole word that is an obviously variable ' +
   'value (a file name, branch, message) with $1, $2, ... in order of first use. ' +
   'Reply with ONLY a JSON object: {"name": "short-kebab-name", "description": "one sentence", ' +
   '"commands": ["cmd", ...], "params": ["what $1 means", ...]}';
@@ -219,15 +232,97 @@ export function buildTeachLlmUserPrompt(steps: TeachStep[]): string {
     .join('\n');
 }
 
-function firstToken(cmd: string): string {
-  return cmd.trim().split(/\s+/)[0] ?? '';
+/**
+ * Split a command into shell-ish words, keeping quotes and backslash
+ * escapes inside the token (`-m "fix typo"` -> [`-m`, `"fix typo"`]). Only
+ * used to compare an LLM answer against the recording token-by-token, so
+ * it does not need full shell grammar — just stable, identical splitting
+ * of both sides.
+ */
+export function tokenizeCommand(cmd: string): string[] {
+  return tokenizeWithSpans(cmd).map((t) => t.text);
+}
+
+type Token = { text: string; start: number; end: number };
+
+function tokenizeWithSpans(cmd: string): Token[] {
+  const tokens: Token[] = [];
+  let cur = '';
+  let start = 0;
+  let inTok = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (quote) {
+      cur += ch;
+      if (ch === '\\' && quote === '"' && i + 1 < cmd.length) cur += cmd[++i];
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (inTok) tokens.push({ text: cur, start, end: i });
+      cur = '';
+      inTok = false;
+      continue;
+    }
+    if (!inTok) start = i;
+    inTok = true;
+    cur += ch;
+    if (ch === '\\' && i + 1 < cmd.length) cur += cmd[++i];
+    else if (ch === '"' || ch === "'") quote = ch;
+  }
+  if (inTok) tokens.push({ text: cur, start, end: cmd.length });
+  return tokens;
+}
+
+/** `$1`, `"$1"`, `${1}`, `"${1}"` — the only placeholder shapes accepted. */
+const PLACEHOLDER_RE = /^("?)\$(?:([1-9])|\{([1-9])\})\1$/;
+/** A recorded token may only be parameterized if it is a plain value. */
+const SHELL_META_RE = /[;&|`$<>(){}\\*?![\]]/;
+
+function placeholderIndex(tok: string): number | null {
+  const m = PLACEHOLDER_RE.exec(tok);
+  return m ? Number(m[2] ?? m[3]) : null;
 }
 
 /**
- * Parse + validate an LLM answer. Returns null (→ deterministic fallback)
- * unless every command is grounded in the recording: its program name must
- * be one that was actually run, and it must not contain a redaction marker.
- * This keeps a small local model from hallucinating new commands into a
+ * Match one LLM-proposed command against one recorded command. Tokens must
+ * be identical except where the LLM put a `$N` placeholder, which may only
+ * replace a plain-value recorded token (never the program name, never a
+ * token containing shell metacharacters). Because every other token must be
+ * byte-identical, the LLM cannot introduce `;`, `&&`, `|`, `$(`, backticks,
+ * redirections or globs that were not already in the recorded command.
+ * Returns the placeholder -> recorded value bindings, or null.
+ */
+function matchAgainstRecorded(out: string[], rec: string[]): Map<number, string> | null {
+  if (out.length !== rec.length || out.length === 0) return null;
+  const bindings = new Map<number, string>();
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] === rec[i]) continue;
+    const idx = placeholderIndex(out[i]);
+    if (idx === null || i === 0) return null;
+    const value = rec[i].replace(/^(['"])([\s\S]*)\1$/, '$2');
+    if (!value || SHELL_META_RE.test(value) || /['"]/.test(value)) return null;
+    if (bindings.has(idx) && bindings.get(idx) !== value) return null;
+    bindings.set(idx, value);
+  }
+  return bindings;
+}
+
+/** `$1` -> `"${1:?missing arg 1}"` so a workflow run without its argument
+ *  stops with a clear message instead of running with an empty value. */
+export function guardPlaceholderToken(tok: string): string {
+  const idx = placeholderIndex(tok);
+  return idx === null ? tok : `"\${${idx}:?missing arg ${idx}}"`;
+}
+
+/**
+ * Parse + validate an LLM answer. Returns null (-> deterministic fallback)
+ * unless the commands are an in-order subsequence of the recording, each
+ * matching its recorded command exactly apart from whole-token `$N`
+ * placeholders (see matchAgainstRecorded). Every `$N` must bind to the same
+ * recorded value everywhere, and placeholders must be numbered 1..k with no
+ * gaps. This keeps a small local model from smuggling new commands into a
  * routine the user will later run.
  */
 export function parseTeachLlmResponse(
@@ -249,22 +344,45 @@ export function parseTeachLlmResponse(
     return null;
   }
   if (!obj || !Array.isArray(obj.commands)) return null;
-  const recordedPrograms = new Set(steps.map((s) => firstToken(s.cmd)));
+  const recordedSpans = steps.map((s) => tokenizeWithSpans(s.cmd));
+  const recorded = recordedSpans.map((toks) => toks.map((t) => t.text));
+  const bindings = new Map<number, string>();
   const commands: string[] = [];
+  let cursor = 0;
   for (const c of obj.commands) {
     if (typeof c !== 'string') return null;
-    const cmd = c.replace(/[\r\n]+/g, ' ').trim();
-    if (!cmd) continue;
-    if (!recordedPrograms.has(firstToken(cmd))) return null;
-    if (/<redacted/i.test(cmd) || looksLikeSecret(cmd)) return null;
-    commands.push(cmd);
+    if (!c.trim()) continue;
+    if (/<redacted/i.test(c) || looksLikeSecret(c)) return null;
+    const outTokens = tokenizeCommand(c.trim());
+    let matched: Map<number, string> | null = null;
+    while (cursor < recorded.length && !(matched = matchAgainstRecorded(outTokens, recorded[cursor]))) cursor++;
+    if (!matched) return null;
+    cursor++;
+    for (const [k, v] of matched) {
+      if (bindings.has(k) && bindings.get(k) !== v) return null;
+      bindings.set(k, v);
+    }
+    // Rebuild from the RECORDED text so its exact whitespace (newlines in a
+    // multi-line loop, alignment) survives; only placeholder spans change.
+    const recCmd = steps[cursor - 1].cmd;
+    const spans = recordedSpans[cursor - 1];
+    let rebuilt = recCmd;
+    for (let i = outTokens.length - 1; i >= 0; i--) {
+      if (outTokens[i] === spans[i].text) continue;
+      rebuilt = rebuilt.slice(0, spans[i].start) + guardPlaceholderToken(outTokens[i]) + rebuilt.slice(spans[i].end);
+    }
+    commands.push(rebuilt);
   }
-  if (commands.length === 0 || commands.length > steps.length) return null;
+  if (commands.length === 0) return null;
+  const used = [...bindings.keys()].sort((a, b) => a - b);
+  if (used.some((k, i) => k !== i + 1)) return null;
   const params: string[] = Array.isArray(obj.params)
-    ? obj.params.filter((p: unknown): p is string => typeof p === 'string').slice(0, 9)
+    ? obj.params.filter((p: unknown): p is string => typeof p === 'string').slice(0, used.length)
     : [];
   const baseDesc = typeof obj.description === 'string' ? obj.description.replace(/[\r\n]+/g, ' ').trim().slice(0, 160) : '';
-  const paramDesc = params.length ? ` Params: ${params.map((p, i) => `$${i + 1}=${p.replace(/[\r\n]+/g, ' ')}`).join(', ')}` : '';
+  const paramDesc = used.length
+    ? ` Params: ${used.map((k) => `$${k}=${(params[k - 1] ?? `e.g. ${bindings.get(k)}`).replace(/[\r\n]+/g, ' ')}`).join(', ')}`
+    : '';
   const name =
     sanitizeWorkflowName(requestedName) ||
     sanitizeWorkflowName(typeof obj.name === 'string' ? obj.name : '') ||

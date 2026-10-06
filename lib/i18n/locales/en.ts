@@ -2514,6 +2514,7 @@ const en: Record<string, string> = {
   'teach.usage_start': '  start [name]  Start recording the commands you run in this terminal',
   'teach.usage_stop': '  stop          Stop and save the recording as a workflow (nothing is run)',
   'teach.usage_cancel': '  cancel        Stop and discard the recording',
+  'teach.shell_outdated': 'Teach mode needs the updated Shelly shell. Open a new terminal tab and try again.',
   'teach.usage_status': '  status        Show whether a recording is active',
 };
 
