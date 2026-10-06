@@ -29,6 +29,9 @@ import {
   buildMcpStopCommand,
   buildMcpStatusCommand,
 } from '@/lib/mcp-manager';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
+import { withAlpha } from '@/lib/theme-utils';
+import { colors as C } from '@/theme.config';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -139,7 +142,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
   if (!isLoaded) {
     return (
       <View style={styles.loading}>
-        <ActivityIndicator size="small" color="#60A5FA" />
+        <ActivityIndicator size="small" color={C.accentBlue} />
       </View>
     );
   }
@@ -160,10 +163,10 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
           disabled={isApplying || enabledCount === 0}
         >
           {isApplying ? (
-            <ActivityIndicator size="small" color="#0A0A0A" />
+            <ActivityIndicator size="small" color={C.btnPrimaryText} />
           ) : (
             <>
-              <MaterialIcons name="sync" size={14} color={enabledCount > 0 ? '#0A0A0A' : '#4B5563'} />
+              <MaterialIcons name="sync" size={14} color={enabledCount > 0 ? C.btnPrimaryText : C.text3} />
               <Text style={[styles.applyBtnText, enabledCount === 0 && styles.applyBtnTextDisabled]}>
                 {t('mcp.copy_btn')}
               </Text>
@@ -190,7 +193,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
                 <MaterialIcons
                   name={server.icon as any}
                   size={20}
-                  color={state.enabled ? server.iconColor : '#4B5563'}
+                  color={state.enabled ? server.iconColor : C.text3}
                 />
                 <View style={styles.cardInfo}>
                   <View style={styles.cardTitleRow}>
@@ -226,7 +229,7 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
               <View style={styles.cardDetail}>
                 {/* Shellyとの相性 */}
                 <View style={styles.noteBox}>
-                  <MaterialIcons name="lightbulb" size={14} color="#FBBF24" />
+                  <MaterialIcons name="lightbulb" size={14} color={C.warning} />
                   <Text style={styles.noteText}>{server.shellyNote}</Text>
                 </View>
 
@@ -249,10 +252,10 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
                         disabled={isBusy || !isConnected}
                       >
                         {isBusy ? (
-                          <ActivityIndicator size="small" color="#0A0A0A" />
+                          <ActivityIndicator size="small" color={C.btnPrimaryText} />
                         ) : (
                           <>
-                            <MaterialIcons name="play-arrow" size={14} color="#0A0A0A" />
+                            <MaterialIcons name="play-arrow" size={14} color={C.btnPrimaryText} />
                             <Text style={styles.actionBtnText}>{t('mcp.start')}</Text>
                           </>
                         )}
@@ -263,8 +266,8 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
                         onPress={() => handleStop(server)}
                         disabled={isBusy}
                       >
-                        <MaterialIcons name="stop" size={14} color="#F87171" />
-                        <Text style={[styles.actionBtnText, { color: '#F87171' }]}>{t('mcp.stop')}</Text>
+                        <MaterialIcons name="stop" size={14} color={C.errorText} />
+                        <Text style={[styles.actionBtnText, { color: C.errorText }]}>{t('mcp.stop')}</Text>
                       </TouchableOpacity>
                     )}
                     <TouchableOpacity
@@ -317,9 +320,9 @@ export function McpSection({ isConnected, onRunCommand }: McpSectionProps) {
 function TypeBadge({ type }: { type: McpServerDef['type'] }) {
   const { t } = useTranslation();
   const config = {
-    local: { label: t('mcp.type_local'), color: '#34D399', bg: '#34D39920' },
-    remote: { label: t('mcp.type_remote'), color: '#818CF8', bg: '#818CF820' },
-    npx: { label: 'npx', color: '#60A5FA', bg: '#60A5FA20' },
+    local: { label: t('mcp.type_local'), color: C.addText, bg: withAlpha(C.addText, 0.13) },
+    remote: { label: t('mcp.type_remote'), color: C.accentPurple, bg: withAlpha(C.accentPurple, 0.13) },
+    npx: { label: 'npx', color: C.accentBlue, bg: withAlpha(C.accentBlue, 0.13) },
   };
   const c = config[type];
   return (
@@ -331,15 +334,15 @@ function TypeBadge({ type }: { type: McpServerDef['type'] }) {
 
 function StatusDot({ status }: { status: string }) {
   const color =
-    status === 'running' ? '#4ADE80' :
-    status === 'starting' ? '#FBBF24' :
-    status === 'error' ? '#F87171' : '#4B5563';
+    status === 'running' ? C.addText :
+    status === 'starting' ? C.warning :
+    status === 'error' ? C.errorText : C.text3;
   return <View style={[styles.statusDot, { backgroundColor: color }]} />;
 }
 
 // ─── Styles ────────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   loading: {
     padding: 20,
     alignItems: 'center',
@@ -359,42 +362,42 @@ const styles = StyleSheet.create({
   enabledCount: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#60A5FA',
+    color: C.accentBlue,
   },
   enabledLabel: {
     fontSize: 12,
-    color: '#6B7280',
+    color: C.text3,
   },
   applyBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#60A5FA',
+    backgroundColor: C.accentBlue,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 6,
   },
   applyBtnDisabled: {
-    backgroundColor: '#1F2937',
+    backgroundColor: C.btnSecondaryBg,
   },
   applyBtnText: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#0A0A0A',
+    color: C.btnPrimaryText,
   },
   applyBtnTextDisabled: {
-    color: '#4B5563',
+    color: C.text3,
   },
   card: {
-    backgroundColor: '#111318',
+    backgroundColor: C.bgSurface,
     borderRadius: 8,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#1F2937',
+    borderColor: C.btnSecondaryBg,
     overflow: 'hidden',
   },
   cardEnabled: {
-    borderColor: '#60A5FA40',
+    borderColor: withAlpha(C.accentBlue, 0.25),
   },
   cardHeader: {
     flexDirection: 'row',
@@ -420,18 +423,18 @@ const styles = StyleSheet.create({
   cardName: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#6B7280',
+    color: C.text3,
   },
   cardNameEnabled: {
-    color: '#E5E7EB',
+    color: C.text1,
   },
   cardDesc: {
     fontSize: 11,
-    color: '#6B7280',
+    color: C.text3,
     marginTop: 2,
   },
   recBadge: {
-    backgroundColor: '#FBBF2420',
+    backgroundColor: withAlpha(C.warning, 0.13),
     paddingHorizontal: 6,
     paddingVertical: 1,
     borderRadius: 4,
@@ -439,7 +442,7 @@ const styles = StyleSheet.create({
   recBadgeText: {
     fontSize: 9,
     fontWeight: '700',
-    color: '#FBBF24',
+    color: C.warning,
   },
   typeBadge: {
     paddingHorizontal: 5,
@@ -454,19 +457,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 4,
-    backgroundColor: '#1F2937',
+    backgroundColor: C.btnSecondaryBg,
     marginLeft: 8,
   },
   toggleBtnOn: {
-    backgroundColor: '#60A5FA',
+    backgroundColor: C.accentBlue,
   },
   toggleText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#4B5563',
+    color: C.text3,
   },
   toggleTextOn: {
-    color: '#0A0A0A',
+    color: C.btnPrimaryText,
   },
   cardDetail: {
     paddingHorizontal: 12,
@@ -477,13 +480,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 6,
-    backgroundColor: '#FBBF2410',
+    backgroundColor: withAlpha(C.warning, 0.06),
     padding: 8,
     borderRadius: 6,
   },
   noteText: {
     fontSize: 11,
-    color: '#D1D5DB',
+    color: C.text1,
     flex: 1,
   },
   tagRow: {
@@ -492,14 +495,14 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   tag: {
-    backgroundColor: '#1F2937',
+    backgroundColor: C.btnSecondaryBg,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 3,
   },
   tagText: {
     fontSize: 10,
-    color: '#9CA3AF',
+    color: C.text2,
   },
   actionRow: {
     flexDirection: 'row',
@@ -515,24 +518,24 @@ const styles = StyleSheet.create({
     borderRadius: 5,
   },
   actionBtnStart: {
-    backgroundColor: '#34D399',
+    backgroundColor: C.addText,
   },
   actionBtnStop: {
-    backgroundColor: '#1F2937',
+    backgroundColor: C.btnSecondaryBg,
     borderWidth: 1,
-    borderColor: '#F8717140',
+    borderColor: withAlpha(C.errorText, 0.25),
   },
   actionBtnStatus: {
-    backgroundColor: '#1F2937',
+    backgroundColor: C.btnSecondaryBg,
   },
   actionBtnText: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#0A0A0A',
+    color: C.btnPrimaryText,
   },
   actionBtnStatusText: {
     fontSize: 11,
-    color: '#9CA3AF',
+    color: C.text2,
   },
   remoteStatus: {
     flexDirection: 'row',
@@ -542,7 +545,7 @@ const styles = StyleSheet.create({
   },
   remoteStatusText: {
     fontSize: 11,
-    color: '#6B7280',
+    color: C.text3,
   },
   statusDot: {
     width: 8,
@@ -550,19 +553,19 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   errorBox: {
-    backgroundColor: '#F8717115',
+    backgroundColor: withAlpha(C.errorText, 0.08),
     padding: 8,
     borderRadius: 6,
   },
   errorText: {
     fontSize: 10,
-    color: '#F87171',
+    color: C.errorText,
   },
   footer: {
     fontSize: 11,
-    color: '#4B5563',
+    color: C.text3,
     textAlign: 'center',
     marginTop: 8,
     lineHeight: 16,
   },
-});
+}));

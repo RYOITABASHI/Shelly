@@ -10,6 +10,14 @@
  * @example withAlpha('#FF0000', 0.5) → 'rgba(255,0,0,0.5)'
  */
 export function withAlpha(hex: string, alpha: number): string {
+  // Runtime palettes are swapped in place (applyThemePreset), so callers now
+  // pass live tokens like C.accent. Expand #RGB and fall back to the color
+  // unchanged for anything that is not #RGB/#RRGGBB(AA) (e.g. an rgba()
+  // token) instead of emitting rgba(NaN,...).
+  if (/^#[0-9a-f]{3}$/i.test(hex)) {
+    hex = '#' + hex.slice(1).split('').map((c) => c + c).join('');
+  }
+  if (!/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(hex)) return hex;
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);

@@ -17,6 +17,7 @@ import { withAlpha } from '@/lib/theme-utils';
 import { getDeviceProfile } from '@/lib/process-guard';
 import { useTranslation } from '@/lib/i18n';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   visible: boolean;
@@ -66,7 +67,7 @@ export const ProcessGuardModal = memo(function ProcessGuardModal({ visible, onCl
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           {/* Header */}
           <View style={styles.header}>
-            <MaterialIcons name="shield" size={24} color="#FF6B6B" />
+            <MaterialIcons name="shield" size={24} color={C.errorText} />
             <Text style={[styles.title, { color: colors.foreground }]}>
               {t('guard.title')}
             </Text>
@@ -77,8 +78,8 @@ export const ProcessGuardModal = memo(function ProcessGuardModal({ visible, onCl
 
           {/* Problem explanation */}
           {currentStep === 0 && (
-            <View style={[styles.alertBox, { backgroundColor: withAlpha('#FF6B6B', 0.1) }]}>
-              <Text style={[styles.alertText, { color: '#FF8A8A' }]}>
+            <View style={[styles.alertBox, { backgroundColor: withAlpha(C.errorText, 0.1) }]}>
+              <Text style={[styles.alertText, { color: C.errorText }]}>
                 {t('guard.problem')}
               </Text>
             </View>
@@ -172,10 +173,10 @@ export const ProcessGuardModal = memo(function ProcessGuardModal({ visible, onCl
   );
 });
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   overlay: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   card: { width: '100%', maxWidth: 420, borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 16, borderBottomWidth: 1, borderBottomColor: '#222' },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 16, borderBottomWidth: 1, borderBottomColor: C.border },
   title: { flex: 1, fontFamily: 'JetBrainsMono_400Regular', fontSize: 16, fontWeight: '700' },
   alertBox: { marginHorizontal: 16, marginTop: 12, padding: 12, borderRadius: 8 },
   alertText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, lineHeight: 18 },
@@ -187,13 +188,13 @@ const styles = StyleSheet.create({
   stepTitle: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 15, fontWeight: '700' },
   stepDesc: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 13, lineHeight: 20 },
   codeBox: { padding: 12, borderRadius: 8, borderWidth: 1 },
-  codeText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, color: '#E8E8E8', lineHeight: 16 },
+  codeText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, color: C.text1, lineHeight: 16 },
   copyBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-end', marginTop: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
   copyText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, fontWeight: '600' },
   settingsBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, alignSelf: 'flex-start' },
   settingsBtnText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 13, fontWeight: '600' },
-  footer: { flexDirection: 'row', alignItems: 'center', padding: 16, borderTopWidth: 1, borderTopColor: '#222' },
+  footer: { flexDirection: 'row', alignItems: 'center', padding: 16, borderTopWidth: 1, borderTopColor: C.border },
   navText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 13 },
   nextBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
   nextText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 13, fontWeight: '700' },
-});
+}));

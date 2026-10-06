@@ -23,6 +23,7 @@ import { buildTmuxListCommand } from '@/lib/session-restore';
 import { useTranslation } from '@/lib/i18n';
 import { suggestFeatures } from '@/lib/feature-catalog';
 import { applyThemePreset, type ThemePresetId } from '@/lib/theme-presets';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 // ---------------------------------------------------------------------------
 // Recent actions — module-level so they persist across palette open/close
@@ -302,7 +303,7 @@ export function CommandPalette() {
       accessibilityLabel={item.label}
       accessibilityHint={item.hint}
     >
-      <MaterialIcons name={item.icon as any} size={18} color="#9BA1A6" />
+      <MaterialIcons name={item.icon as any} size={18} color={C.text2} />
       <View style={styles.itemText}>
         <Text style={styles.itemLabel} numberOfLines={1}>{item.label}</Text>
         {item.hint && (
@@ -327,11 +328,11 @@ export function CommandPalette() {
         <View style={styles.palette}>
           {/* Search input */}
           <View style={styles.inputRow}>
-            <MaterialIcons name="search" size={20} color="#6B7280" />
+            <MaterialIcons name="search" size={20} color={C.text3} />
             <TextInput
               style={styles.input}
               placeholder={t('palette.search')}
-              placeholderTextColor="#4B5563"
+              placeholderTextColor={C.text3}
               value={query}
               onChangeText={setQuery}
               autoFocus
@@ -344,7 +345,7 @@ export function CommandPalette() {
               accessibilityRole="button"
               accessibilityLabel="Close command palette"
             >
-              <MaterialIcons name="close" size={18} color="#6B7280" />
+              <MaterialIcons name="close" size={18} color={C.text3} />
             </Pressable>
           </View>
 
@@ -409,7 +410,7 @@ export function CommandPalette() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.7)',
@@ -421,10 +422,10 @@ const styles = StyleSheet.create({
     width: '90%',
     maxWidth: 500,
     maxHeight: '60%',
-    backgroundColor: '#141414',
+    backgroundColor: C.bgSurface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#2A2A2A',
+    borderColor: C.border,
     overflow: 'hidden',
   },
   inputRow: {
@@ -433,12 +434,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#2A2A2A',
+    borderBottomColor: C.border,
     gap: 10,
   },
   input: {
     flex: 1,
-    color: '#ECEDEE',
+    color: C.text1,
     fontFamily: F.family,
     fontSize: 15,
     paddingVertical: 4,
@@ -453,18 +454,18 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
+    borderBottomColor: C.bgSurface,
   },
   itemText: {
     flex: 1,
   },
   itemLabel: {
-    color: '#ECEDEE',
+    color: C.text1,
     fontFamily: F.family,
     fontSize: 14,
   },
   itemHint: {
-    color: '#4B5563',
+    color: C.text3,
     fontFamily: F.family,
     fontSize: 11,
     marginTop: 2,
@@ -473,19 +474,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 3,
-    backgroundColor: '#1E1E1E',
+    backgroundColor: C.btnSecondaryBg,
     borderWidth: 1,
-    borderColor: '#2A2A2A',
+    borderColor: C.border,
   },
   categoryText: {
-    color: '#6B7280',
+    color: C.text3,
     fontFamily: F.family,
     fontSize: 9,
     fontWeight: '600',
     letterSpacing: 0.5,
   },
   emptyText: {
-    color: '#4B5563',
+    color: C.text3,
     fontFamily: F.family,
     fontSize: 13,
     textAlign: 'center',
@@ -494,10 +495,10 @@ const styles = StyleSheet.create({
   sectionHeader: {
     paddingHorizontal: 14,
     paddingVertical: 8,
-    backgroundColor: '#0E0E0E',
+    backgroundColor: C.bgDeep,
   },
   sectionHeaderText: {
-    color: '#374151',
+    color: C.text3,
     fontFamily: F.family,
     fontSize: 9,
     fontWeight: '700',
@@ -505,13 +506,13 @@ const styles = StyleSheet.create({
   },
   footer: {
     borderTopWidth: 1,
-    borderTopColor: '#2A2A2A',
+    borderTopColor: C.border,
     paddingVertical: 8,
     alignItems: 'center',
   },
   footerText: {
-    color: '#333',
+    color: C.text3,
     fontFamily: F.family,
     fontSize: 10,
   },
-});
+}));

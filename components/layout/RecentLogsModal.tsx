@@ -19,6 +19,7 @@ import { useTerminalStore } from '@/store/terminal-store';
 import { colors as C, fonts as F, radii as R } from '@/theme.config';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   visible: boolean;
@@ -122,7 +123,7 @@ export function RecentLogsModal({ visible, onClose }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.72)',
@@ -186,7 +187,7 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
-    backgroundColor: '#090909',
+    backgroundColor: C.bgDeep,
   },
   scroll: {
     flex: 1,
@@ -203,4 +204,4 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     letterSpacing: 0,
   },
-});
+}));

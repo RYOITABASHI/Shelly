@@ -32,6 +32,9 @@ import {
   estimateTotalSetupTime,
 } from '@/lib/llamacpp-setup';
 import { useTranslation } from '@/lib/i18n';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
+import { withAlpha } from '@/lib/theme-utils';
+import { colors as C } from '@/theme.config';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -299,8 +302,8 @@ export function LlamaCppSection({
           disabled={operationInProgress}
         >
           {isSettingUp
-            ? <ActivityIndicator size="small" color="#00D4AA" />
-            : <MaterialIcons name="build" size={16} color={isConnected ? '#00D4AA' : '#4B5563'} />
+            ? <ActivityIndicator size="small" color={C.accent} />
+            : <MaterialIcons name="build" size={16} color={isConnected ? C.accent : C.text3} />
           }
           <Text style={[styles.setupBtnText, !isConnected && styles.setupBtnTextDisabled]}>
             {isSettingUp ? t('llama.setting_up') : t('llama.setup_button')}
@@ -337,7 +340,7 @@ export function LlamaCppSection({
       {/* サーバー停止ボタン */}
       {(serverStatus === 'running' || serverStatus === 'starting') && (
         <TouchableOpacity style={styles.stopBtn} onPress={handleStopServer}>
-          <MaterialIcons name="stop" size={16} color="#F87171" />
+          <MaterialIcons name="stop" size={16} color={C.errorText} />
           <Text style={styles.stopBtnText}>{t('llama.stop_server')}</Text>
         </TouchableOpacity>
       )}
@@ -377,7 +380,7 @@ export function LlamaCppSection({
                       onPress={() => handleDeleteModel(model)}
                       disabled={!canDelete}
                     >
-                      <MaterialIcons name="delete-outline" size={14} color="#F87171" />
+                      <MaterialIcons name="delete-outline" size={14} color={C.errorText} />
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -421,7 +424,7 @@ export function LlamaCppSection({
                     disabled={operationInProgress}
                   >
                     {isLoading
-                      ? <ActivityIndicator size="small" color="#0A0A0A" />
+                      ? <ActivityIndicator size="small" color={C.btnPrimaryText} />
                       : <Text style={styles.actionBtnPrimaryText}>{t('llama.download', { size: model.sizeGb })}</Text>
                     }
                   </TouchableOpacity>
@@ -437,7 +440,7 @@ export function LlamaCppSection({
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   setupRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -449,57 +452,57 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.bgSurface,
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: '#00D4AA44',
+    borderColor: withAlpha(C.accent, 0.27),
   },
-  setupBtnDisabled: { borderColor: '#2D2D2D' },
-  setupBtnText: { color: '#00D4AA', fontSize: 13, fontFamily: 'JetBrainsMono_400Regular' },
-  setupBtnTextDisabled: { color: '#4B5563' },
+  setupBtnDisabled: { borderColor: C.border },
+  setupBtnText: { color: C.accent, fontSize: 13, fontFamily: 'JetBrainsMono_400Regular' },
+  setupBtnTextDisabled: { color: C.text3 },
   statusBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.bgSurface,
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: '#2D2D2D',
+    borderColor: C.border,
   },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusDotGreen: { backgroundColor: '#4ADE80' },
-  statusDotYellow: { backgroundColor: '#FACC15' },
-  statusDotRed: { backgroundColor: '#F87171' },
-  statusDotGray: { backgroundColor: '#4B5563' },
-  statusBtnText: { color: '#9CA3AF', fontSize: 12, fontFamily: 'JetBrainsMono_400Regular' },
+  statusDotGreen: { backgroundColor: C.addText },
+  statusDotYellow: { backgroundColor: C.warning },
+  statusDotRed: { backgroundColor: C.errorText },
+  statusDotGray: { backgroundColor: C.text3 },
+  statusBtnText: { color: C.text2, fontSize: 12, fontFamily: 'JetBrainsMono_400Regular' },
   logBox: {
-    backgroundColor: '#0D0D0D',
+    backgroundColor: C.bgDeep,
     borderRadius: 6,
     padding: 8,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#1A1A1A',
+    borderColor: C.bgSurface,
   },
-  logLine: { color: '#6B7280', fontSize: 10, fontFamily: 'JetBrainsMono_400Regular', lineHeight: 16 },
+  logLine: { color: C.text3, fontSize: 10, fontFamily: 'JetBrainsMono_400Regular', lineHeight: 16 },
   stopBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#1A0A0A',
+    backgroundColor: C.errorBg,
     borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 12,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#F8717144',
+    borderColor: withAlpha(C.errorText, 0.27),
   },
-  stopBtnText: { color: '#F87171', fontSize: 13, fontFamily: 'JetBrainsMono_400Regular' },
+  stopBtnText: { color: C.errorText, fontSize: 13, fontFamily: 'JetBrainsMono_400Regular' },
   catalogLabel: {
-    color: '#00D4AA',
+    color: C.accent,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1,
@@ -508,33 +511,33 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   modelCard: {
-    backgroundColor: '#1A1A1A',
+    backgroundColor: C.bgSurface,
     borderRadius: 8,
     marginBottom: 6,
     borderWidth: 1,
-    borderColor: '#2D2D2D',
+    borderColor: C.border,
     overflow: 'hidden',
   },
-  modelCardActive: { borderColor: '#00D4AA' },
+  modelCardActive: { borderColor: C.accent },
   modelHeader: { padding: 12 },
   modelTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  modelName: { color: '#E8E8E8', fontSize: 13, fontWeight: '600', fontFamily: 'JetBrainsMono_400Regular' },
-  recBadge: { backgroundColor: '#00D4AA22', borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: '#00D4AA' },
-  recBadgeText: { color: '#00D4AA', fontSize: 9, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '700' },
-  badge: { backgroundColor: '#1E1B4B', borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1 },
-  badgeText: { color: '#818CF8', fontSize: 9, fontFamily: 'JetBrainsMono_400Regular' },
-  activeBadge: { backgroundColor: '#052E16', borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: '#166534' },
-  activeBadgeText: { color: '#4ADE80', fontSize: 9, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '700' },
-  modelMeta: { color: '#6B7280', fontSize: 11, fontFamily: 'JetBrainsMono_400Regular', marginTop: 3 },
-  modelDetail: { paddingHorizontal: 12, paddingBottom: 12, borderTopWidth: 1, borderTopColor: '#2D2D2D' },
-  modelDesc: { color: '#9CA3AF', fontSize: 12, fontFamily: 'JetBrainsMono_400Regular', lineHeight: 18, marginTop: 8, marginBottom: 10 },
+  modelName: { color: C.text1, fontSize: 13, fontWeight: '600', fontFamily: 'JetBrainsMono_400Regular' },
+  recBadge: { backgroundColor: withAlpha(C.accent, 0.13), borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: C.accent },
+  recBadgeText: { color: C.accent, fontSize: 9, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '700' },
+  badge: { backgroundColor: withAlpha(C.accentPurple, 0.15), borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1 },
+  badgeText: { color: C.accentPurple, fontSize: 9, fontFamily: 'JetBrainsMono_400Regular' },
+  activeBadge: { backgroundColor: C.addBg, borderRadius: 3, paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: C.addText },
+  activeBadgeText: { color: C.addText, fontSize: 9, fontFamily: 'JetBrainsMono_400Regular', fontWeight: '700' },
+  modelMeta: { color: C.text3, fontSize: 11, fontFamily: 'JetBrainsMono_400Regular', marginTop: 3 },
+  modelDetail: { paddingHorizontal: 12, paddingBottom: 12, borderTopWidth: 1, borderTopColor: C.border },
+  modelDesc: { color: C.text2, fontSize: 12, fontFamily: 'JetBrainsMono_400Regular', lineHeight: 18, marginTop: 8, marginBottom: 10 },
   modelActions: { flexDirection: 'row', gap: 8 },
   actionBtn: { borderRadius: 6, paddingVertical: 7, paddingHorizontal: 14 },
   actionBtnDisabled: { opacity: 0.45 },
-  actionBtnPrimary: { backgroundColor: '#00D4AA' },
-  actionBtnPrimaryText: { color: '#0A0A0A', fontSize: 12, fontWeight: '700', fontFamily: 'JetBrainsMono_400Regular' },
-  actionBtnDanger: { backgroundColor: '#1A0A0A', borderWidth: 1, borderColor: '#F87171' },
-  actionBtnDangerText: { color: '#F87171', fontSize: 12, fontFamily: 'JetBrainsMono_400Regular' },
+  actionBtnPrimary: { backgroundColor: C.accent },
+  actionBtnPrimaryText: { color: C.btnPrimaryText, fontSize: 12, fontWeight: '700', fontFamily: 'JetBrainsMono_400Regular' },
+  actionBtnDanger: { backgroundColor: C.errorBg, borderWidth: 1, borderColor: C.errorText },
+  actionBtnDangerText: { color: C.errorText, fontSize: 12, fontFamily: 'JetBrainsMono_400Regular' },
   installedRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -544,10 +547,10 @@ const styles = StyleSheet.create({
   installedInfo: { flex: 1 },
   installedActions: { flexDirection: 'row', gap: 6, alignItems: 'center' },
   storageSummary: {
-    color: '#6B7280',
+    color: C.text3,
     fontSize: 10,
     textAlign: 'right',
     marginBottom: 12,
     marginTop: 2,
   },
-});
+}));

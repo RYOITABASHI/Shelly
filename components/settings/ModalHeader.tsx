@@ -13,6 +13,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors as C, fonts as F } from '@/theme.config';
 import { useTranslation } from '@/lib/i18n';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   title: string;
@@ -57,7 +58,7 @@ export function ModalHeader({ title, onClose, subtitle }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -108,4 +109,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 2,
   },
-});
+}));

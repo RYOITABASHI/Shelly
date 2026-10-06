@@ -56,6 +56,7 @@ import {
   triggerOnDeviceSttModelDownload,
   type OnDeviceSttStatus,
 } from '@/lib/ondevice-stt';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   visible: boolean;
@@ -2703,7 +2704,7 @@ const PANEL_WIDTH = 260;
 // remounted each time it opens).
 const PANEL_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.85);
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'transparent',
@@ -3205,4 +3206,4 @@ const styles = StyleSheet.create({
   apiKeyBtnTextPrimary: {
     color: C.bgDeep,
   },
-});
+}));
