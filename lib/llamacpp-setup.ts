@@ -392,6 +392,10 @@ export const LLAMA_CPP_PINNED_RELEASE = {
   sha256: '85ae0670db1c32145f1b17349600479aabe476737eba43a3259562d21f7697f2',
 } as const;
 
+// NOTE: this install script always uses LLAMA_CPP_PINNED_RELEASE (then the
+// verified release-scan fallback). It deliberately ignores the
+// LLAMA_SERVER_DOWNLOAD_URL / LLAMA_SERVER_DOWNLOAD_SHA256 overrides that
+// scripts/shelly-local-llm-ensure.sh honours.
 const INSTALL_LLAMA_SERVER_CMD = `set -e
 INSTALL_DIR="$HOME/.local/llama.cpp"
 TMP_ROOT="$HOME/.cache/shelly/llama-server-install"
@@ -417,20 +421,24 @@ fetch_text() {
   fi
 }
 
+# Called under "if ! download_file ...", where set -e is suspended inside the
+# function: every step must propagate its own failure, or a curl/wget error
+# after a partial .part write would fall through to mv, return 0, skip the
+# fallback and surface as a misleading sha256 mismatch.
 download_file() {
   url="$1"
   out_file="$2"
   tmp_file="$out_file.part"
   rm -f "$tmp_file"
   if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url"
+    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$tmp_file" "$url"
+    wget -O "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   else
     echo "curl or wget is required to install llama.cpp" >&2
     return 127
   fi
-  mv "$tmp_file" "$out_file"
+  mv "$tmp_file" "$out_file" || { rm -f "$tmp_file"; return 1; }
 }
 
 sha256_of() {
@@ -555,6 +563,7 @@ if ! download_file "$ASSET_URL" "$ARCHIVE"; then
   rm -f "$ARCHIVE.part"
   echo "Pinned llama.cpp download failed; scanning recent releases for a verified fallback..." >&2
   FALLBACK="$(scan_release_fallback || true)"
+  rm -f "$TMP_ROOT/releases.json"
   if [ -z "$FALLBACK" ]; then
     echo "android arm64 llama.cpp asset unavailable: pinned $PINNED_ASSET failed to download and no verified fallback release was found" >&2
     exit 1
@@ -564,7 +573,11 @@ if ! download_file "$ASSET_URL" "$ARCHIVE"; then
   ASSET_NAME="$(basename "$ASSET_URL")"
   ARCHIVE="$TMP_ROOT/$ASSET_NAME"
   echo "Downloading $ASSET_NAME (fallback)"
-  download_file "$ASSET_URL" "$ARCHIVE"
+  if ! download_file "$ASSET_URL" "$ARCHIVE"; then
+    rm -f "$ARCHIVE" "$ARCHIVE.part"
+    echo "fallback llama.cpp download failed: $ASSET_NAME" >&2
+    exit 1
+  fi
 fi
 ACTUAL_SHA256="$(sha256_of "$ARCHIVE" || true)"
 if [ -z "$ACTUAL_SHA256" ] || [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then

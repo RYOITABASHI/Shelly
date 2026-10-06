@@ -49,7 +49,10 @@ stop_server() {
     server_pid=""
   fi
 }
-trap stop_server EXIT INT TERM
+trap stop_server EXIT
+# A bare INT/TERM trap would run stop_server and then resume the loop (POSIX
+# sh does not exit after a handled signal), so stop and exit 130 explicitly.
+trap 'stop_server; exit 130' INT TERM
 
 start_server() {
   model_path="$1"
