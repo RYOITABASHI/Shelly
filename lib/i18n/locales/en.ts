@@ -2290,9 +2290,9 @@ const en: Record<string, string> = {
   'llama.download': 'Download ({{size}}GB)',
   'llama.download_progress': '{{percent}}% · {{downloaded}} / {{total}} MB',
   'llama.download_progress_approx': '~{{percent}}% · {{downloaded}} / ~{{total}} MB',
-  'llama.model.minicpm5_2b.badge': 'Tool calling (eval)',
+  'llama.model.minicpm5_2b.badge': 'Experimental',
   'llama.model.minicpm5_2b.description':
-    'Opt-in A/B candidate (OpenBMB, Apache 2.0). Strong at tool calling for sub-agents; officially tuned for English/Chinese, so check Japanese quality with the bundled eval before relying on it. Needs llama.cpp b9360+ to load (b9833+ for native tool-call parsing) — re-run llama.cpp Setup if the server fails to start.',
+    'Kept as an opt-in for experimentation (OpenBMB, Apache 2.0). On-device eval (Galaxy Z Fold6, 2026-10-06) vs Qwen3.5-2B: routing 83% vs 100%, JSON tools 50% vs 75%, native tool calls 50% vs 88%, Japanese summary 80% vs 80%, and ~20-40% slower — Qwen3.5-2B is recommended for everyday use. Needs llama.cpp b9360+ to load (b9833+ for native tool-call parsing) — re-run llama.cpp Setup if the server fails to start.',
   'file_tree.directory': 'Directory',
   'file_tree.file': 'File',
   'file_tree.rename': 'Rename',

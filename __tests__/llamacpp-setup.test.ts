@@ -90,6 +90,10 @@ describe('llama.cpp local server tuning', () => {
     });
     expect(model.recommended).toBeFalsy();
     expect(model.hidden).toBeFalsy();
+    // 2026-10-06 on-device eval: not adopted, kept as an experimental opt-in.
+    expect((en as Record<string, string>)['llama.model.minicpm5_2b.badge']).toBe('Experimental');
+    expect((en as Record<string, string>)['llama.model.minicpm5_2b.description']).toContain('Qwen3.5-2B is recommended');
+    expect((ja as Record<string, string>)['llama.model.minicpm5_2b.badge']).toBe('実験的');
     expect(getRecommendedModel().id).toBe('qwen3.5-0.8b-q4');
     // Same small-tier runtime profile as Qwen3.5-2B.
     expect(getModelRuntimeProfile(model)).toEqual(

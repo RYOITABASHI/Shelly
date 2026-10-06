@@ -129,8 +129,13 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     // before b9360) and honors chat_template_kwargs.enable_thinking=false.
     id: 'minicpm5-2b-q4',
     name: 'MiniCPM5-2B Q4_K_M',
+    // On-device eval 2026-10-06 (Galaxy Z Fold6, llama.cpp b11433, greedy,
+    // thinking off; scripts/eval/run-local-llm-ab.sh) vs Qwen3.5-2B: router
+    // 83% vs 100%, tools(JSON) 50% vs 75%, native tool calls 50% vs 88%,
+    // JA summary 80% vs 80%, ~20-40% slower → not adopted; kept opt-in.
+    // See docs/superpowers/DEFERRED.md.
     description:
-      'オプトインのA/B比較候補。ツール呼び出しに強い。日本語品質は評価スクリプトで確認。llama.cpp b9360以降が必要。',
+      '実験用のオプトイン。実機評価（2026-10-06）ではQwen3.5-2Bに対しルーティング/ツール呼び出しで劣り、20〜40%遅かったため常用はQwen3.5-2B推奨。llama.cpp b9360以降が必要。',
     descriptionKey: 'llama.model.minicpm5_2b.description',
     sizeGb: 1.6,
     ramRequiredGb: 3.6,
@@ -141,7 +146,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'MiniCPM5-2B-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf',
-    badge: 'ツール呼出(評価中)',
+    badge: '実験的',
     badgeKey: 'llama.model.minicpm5_2b.badge',
   },
   {

@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-06: MiniCPM5-2B（OpenBMB）を Qwen3.5-2B と実機 A/B 評価（Galaxy Z Fold6、llama.cpp b11433）。全項目で同等以下かつ 20〜40% 遅いため常用候補として不採用、カタログには「実験的」バッジのオプトインとして残置。下記 P3 エントリに評価表と再評価条件を登録。
 - 2026-10-06: 並列squad（ポリシー担当）がPOLICY-001（自動起動runの読み取り専用化・自然文カスタムルール・trust ramp）を `SHELLY_AGENT_POLICY`（既定OFF）配下に実装。未実装・未検証の残りを下記 P1 エントリに登録。
 - 2026-10-06: `shelly teach`（Teach mode: 記録→ワークフロー保存）を実装。残課題を下記「`shelly teach` の残課題」に登録。
 - 2026-09-29: PR #147（ShortcutBar/MentionDropdown と input.*/mention.* i18n キーの削除）と PR #148（孤児化していた `externalKeyboardShortcuts` 設定トグルの削除）をマージ。Windows PC での検証中に、実 bash/fs 系 jest スイートが `origin/main` でも失敗することを確認し、下記に P3 として登録した。
@@ -50,6 +51,26 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### MiniCPM5-2B をローカル LLM の常用候補として採用するか — 実機 A/B 評価の結果「不採用」、オプトインの実験枠として残置 (P3)
+
+**評価 (2026-10-06)**: Galaxy Z Fold6 実機、llama.cpp `b11433`（pinned release）、`scripts/eval/run-local-llm-ab.sh`（`scripts/eval/local-llm-ab-eval.js` を両モデルで実行）。greedy デコード、thinking off（`chat_template_kwargs.enable_thinking=false`）、量子化はどちらも Q4_K_M。
+
+| 項目 | MiniCPM5-2B | Qwen3.5-2B |
+|------|-------------|------------|
+| router（ルーティング分類） | 83% | 100% |
+| tools（JSON 出力でのツール指定） | 50% | 75% |
+| native tool calls（llama-server のツール呼び出し解析） | 50% | 88% |
+| 日本語要約 | 80% | 80% |
+| 速度 | 約 20〜40% 遅い | 基準 |
+
+**判定**: 不採用。日本語要約が同点なだけで、ルーティング・ツール呼び出しは明確に劣り、しかも遅い。常用推奨は引き続き Qwen3.5-2B（CLAUDE.md「Local LLM」節と一致）。カタログの MiniCPM5-2B エントリは削除せず、バッジ「Experimental / 実験的」・説明文に評価結果と「Qwen3.5-2B 推奨」を明記したオプトインとして残した（`lib/llamacpp-setup.ts` の `minicpm5-2b-q4`、i18n `llama.model.minicpm5_2b.*`）。
+
+**Why not now（削除もしない理由）**: 公開 GGUF・Apache 2.0 で取得コストが低く、評価スクリプトでいつでも再比較できるため、実験用に選べる状態を残す方が再評価が安い。
+
+**再評価条件**: (1) MiniCPM の新リリース（MiniCPM5.x 以降、特にツール呼び出し改善をうたうもの）が出たとき、(2) 日本語チューニング済みの派生モデル（コミュニティ版含む）が出たとき、(3) llama.cpp 側の MiniCPM5 ツール呼び出しパーサーに大きな修正が入ったとき。いずれも同じスクリプト・同じ条件（greedy、thinking off、Z Fold6 実機）で再測定し、router / native tool calls が Qwen3.5-2B と同等以上、かつ速度差が 10% 以内なら常用候補として再検討する。
+
+→ sync: README の変更なし（オプトインのカタログ項目のため）。
 
 ### POLICY-001 — 自動起動runの読み取り専用化 / 自然文カスタムルール / trust ramp — 実装済み・フラグ既定OFF・実機未検証 (P1)
 
