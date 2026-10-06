@@ -18,6 +18,7 @@ import {
 import { agentThreadKey, useAIPaneStore } from '@/store/ai-pane-store';
 import { tFor } from '@/lib/i18n';
 import { parseStepsFromText } from '@/lib/agent-orchestration';
+import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
 import type { AgentRunLog, AgentRunStep } from '@/store/types';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
@@ -101,7 +102,7 @@ describe('HandoffNarrator', () => {
     ]);
     const done = n.stepFinished(rec(1, 'final post'));
     expect(done).toHaveLength(1);
-    expect(done[0]).toContain('🏁 執筆役が完了（2ステップ）');
+    expect(done[0]).toBe('🏁 執筆役が完了（2ステップ）: final post');
   });
 
   it('coalesces a 3-branch fan-out into a single aggregated line', () => {
@@ -262,5 +263,43 @@ describe('i18n + wiring', () => {
   it('root log sync replays unattended runs as digests', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'app', '_layout.tsx'), 'utf8');
     expect(src).toContain('postAgentHandoffDigest(log, agentName, t)');
+  });
+});
+
+describe('lastPromptAnchorMessage', () => {
+  const base = { content: '', timestamp: 1 };
+  it('skips trailing system, hand-off and run-notice lines', () => {
+    const ask = { ...base, id: 'ask', role: 'assistant' as const, pendingApiKeyProvider: 'geminiApiKey' as const };
+    const anchor = lastPromptAnchorMessage([
+      ask,
+      { ...base, id: 'h', role: 'system' as const, handoff: { runId: 'r', seq: 0 } },
+      { ...base, id: 'n', role: 'assistant' as const, agentRunLogId: 'a:1' },
+      { ...base, id: 'agent-run-started-a-1', role: 'assistant' as const },
+    ]);
+    expect(anchor?.id).toBe('ask');
+  });
+  it('a real user reply is the anchor', () => {
+    expect(lastPromptAnchorMessage([
+      { ...base, id: 'ask', role: 'assistant' },
+      { ...base, id: 'u', role: 'user' },
+      { ...base, id: 's', role: 'system' },
+    ])?.id).toBe('u');
+    expect(lastPromptAnchorMessage([])).toBeUndefined();
+  });
+});
+
+describe('older-run collapse', () => {
+  beforeEach(() => {
+    __resetHandoffDedupeForTests();
+    useAIPaneStore.setState({ conversations: {}, isLoaded: true });
+  });
+  it('keeps only the terminal line of older runs when a new run starts', () => {
+    postAgentHandoffLine('z', 'z:live:1', 0, 'r1 a');
+    postAgentHandoffLine('z', 'z:live:1', 1, 'r1 end');
+    useAIPaneStore.getState().addMessage(agentThreadKey('z'), { id: 'user-1', role: 'user', content: 'hi', timestamp: 2 });
+    postAgentHandoffLine('z', 'z:live:2', 0, 'r2 a');
+    postAgentHandoffLine('z', 'z:live:2', 1, 'r2 b');
+    const contents = useAIPaneStore.getState().conversations[agentThreadKey('z')].messages.map((m) => m.content);
+    expect(contents).toEqual(['r1 end', 'hi', 'r2 a', 'r2 b']);
   });
 });

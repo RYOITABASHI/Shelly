@@ -122,6 +122,7 @@ export function markAgentHandoffRunNarrated(log: Pick<AgentRunLog, 'agentId' | '
  *  system text (excluded from LLM history and thread carry-forward by role). */
 export function postAgentHandoffLine(agentId: string, runId: string, seq: number, text: string): void {
   const now = Date.now();
+  if (seq === 0) collapseOlderHandoffRuns(agentThreadKey(agentId), runId);
   useAIPaneStore.getState().addMessage(agentThreadKey(agentId), {
     id: `handoff-${runId}-${seq}-${now.toString(36)}`,
     role: 'system',
@@ -130,6 +131,26 @@ export function postAgentHandoffLine(agentId: string, runId: string, seq: number
     handoff: { runId, seq },
   });
   logInfo('Handoff', `posted line ${seq} for ${runId}`);
+}
+
+/**
+ * Growth bound for the 200-message per-thread cap: when a NEW run starts
+ * narrating, every OLDER run keeps only its last (terminal) hand-off line,
+ * so a frequently scheduled agent costs ~1 message per past run instead of
+ * up to 9 and never evicts the user's real conversation early.
+ */
+function collapseOlderHandoffRuns(threadKey: string, currentRunId: string): void {
+  const store = useAIPaneStore.getState();
+  const messages = store.conversations[threadKey]?.messages ?? [];
+  const lastIdByRun = new Map<string, string>();
+  for (const m of messages) {
+    if (m.handoff && m.handoff.runId !== currentRunId) lastIdByRun.set(m.handoff.runId, m.id);
+  }
+  for (const m of messages) {
+    if (m.handoff && lastIdByRun.has(m.handoff.runId) && lastIdByRun.get(m.handoff.runId) !== m.id) {
+      store.deleteMessage(threadKey, m.id);
+    }
+  }
 }
 
 /**

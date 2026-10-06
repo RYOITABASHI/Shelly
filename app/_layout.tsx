@@ -584,7 +584,13 @@ export default function RootLayout() {
           postAgentCompanionNotice(log, agentName, t('agentplan.run_now_done'));
           // Unattended multi-step runs: replay the log's per-step records as
           // one hand-off digest in the agent's own thread (lib/agent-handoff.ts).
-          postAgentHandoffDigest(log, agentName, t);
+          // Own try/catch: a narration failure must never skip the remaining
+          // companion notices in this batch.
+          try {
+            postAgentHandoffDigest(log, agentName, t);
+          } catch (handoffError: any) {
+            logError('Handoff', 'digest post failed', handoffError);
+          }
         }
       } catch (e: any) {
         logError('RootLayout', 'syncAgentRunLogsFromDisk failed', e);

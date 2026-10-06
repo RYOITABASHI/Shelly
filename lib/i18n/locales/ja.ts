@@ -1192,7 +1192,7 @@ const ja: Record<string, string> = {
   'handoff.group_done': '🔗 {{count}}件の分岐結果を集約 → {{to}}',
   'handoff.group_done_final': '🔗 {{count}}件の分岐結果を集約',
   'handoff.pass': '🔁 {{from}} → {{to}}: {{summary}}',
-  'handoff.finished': '🏁 {{role}}が完了（{{steps}}ステップ）: {{summary}}',
+  'handoff.finished': '🏁 {{role}}が完了（{{steps}}ステップ）: {{result}}',
   'handoff.stopped': '⚠️ {{role}}で停止: {{summary}}',
   'handoff.halted': '⏸️ 予算上限（ステップ数/時間）でチェーンを途中終了しました',
   'handoff.summary_items': '{{count}}件の項目を渡しました —「{{snippet}}」',

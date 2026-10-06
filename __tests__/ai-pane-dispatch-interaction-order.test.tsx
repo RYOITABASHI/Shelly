@@ -3392,3 +3392,31 @@ describe('@gemini image attachment dispatch (2026-08-29, Fable5/Codex Hermes par
     expect(pastImageTurn?.parts[0]?.text).toContain('[image attached');
   });
 });
+
+describe('pending API key prompt survives an interleaved out-of-band line (hand-off review fix)', () => {
+  it('still intercepts and masks the pasted key when a hand-off line and a run notice arrived after the prompt', async () => {
+    const key = conversationKey();
+    const now = Date.now();
+    useAIPaneStore.getState().addMessage(key, {
+      id: 'ask-key', role: 'assistant', content: 'Paste your Gemini API key', timestamp: now,
+      pendingApiKeyProvider: 'geminiApiKey',
+    });
+    useAIPaneStore.getState().addMessage(key, {
+      id: 'handoff-line', role: 'system', content: '🔁 Researcher → Writer: "x"', timestamp: now + 1,
+      handoff: { runId: 'a:live:1', seq: 0 },
+    });
+    useAIPaneStore.getState().addMessage(key, {
+      id: 'agent-run-x', role: 'assistant', content: 'Bot: ✅ done', timestamp: now + 2, agentRunLogId: 'a:1',
+    });
+    const rawKey = `AIza${'Q'.repeat(35)}`;
+    const { result } = renderHook(() => useAIPaneDispatch(PANE));
+    await act(async () => {
+      await result.current.dispatch(rawKey);
+    });
+    const contents = conv().messages.map((m) => m.content);
+    expect(contents.some((c) => c.includes(rawKey))).toBe(false);
+    expect(contents.some((c) => c.startsWith('<redacted:') && c.includes('API key'))).toBe(true);
+    expect(useSettingsStore.getState().settings.geminiApiKey).toBe(rawKey);
+    expect(conv().messages.find((m) => m.id === 'ask-key')?.pendingApiKeyProvider).toBeUndefined();
+  });
+});

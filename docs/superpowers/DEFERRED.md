@@ -57,6 +57,9 @@
 - **明示的なエージェント間受け渡し（「Xの結果をYに渡して」）は見送り**: エージェント間メッセージングの既存フックが無い（`lib/team-roundtable.ts` は provider fan-out、`scripts/shelly-a2a-server.js` は read-only `list_agents` のみ）。実装するなら NL intent → X の最新 run log `outputPreview` を Y の `runAgentNow` プロンプト先頭へ注入する経路が最小だが、境界ポリシー/taint（他エージェント出力を信頼済みコンテキストとして扱うか）の設計判断が要る。
 - **アプリ kill 中に完了した unattended run はダイジェストされない**: `AgentRunLogNoticeTracker` が初回同期で既存履歴を seed する（companion 完了通知と同じ挙動）。必要なら thread 内の最新 `handoff.runId` をウォーターマークにする。
 - **ステップ単位の役割ラベルの明示指定**（NL/確認カードで `role` を持たせる）は未対応。
+- **スレッド肥大化**: `agent:<id>` スレッドは 200 件上限の FIFO。新しい run の初回行で旧 run の hand-off 行を終端行1件に畳む（`collapseOlderHandoffRuns`）ので run あたり約1件まで抑えたが、高頻度スケジュールでは長期的にユーザー会話を押し出し得る。**エージェント削除時に `agent:<id>` スレッドは掃除されない**（AsyncStorage に残る）— deleteAgent 経路で `clearConversation` + キー削除を入れるのが follow-up。
+- **redaction の注記**: hand-off 行は `redactSecretsText` を切り詰め**前**に適用するが、パターンベースなので未知形式のシークレットは素通りする（既存の companion 完了通知・run log の `outputPreview` と同等の保証レベル）。
+- **レビュー修正 (2026-10-06)**: 保留中の返信判定（API キー貼り付けのマスク/横取り、pendingGlobalMemory、slot-fill、pendingAgentDelete、AIPane の secureTextEntry）が「文字通りの最後のメッセージ」を見ていたため、プロンプトと返信の間に hand-off/system/実行完了通知が挟まると無効化されキーが平文で LLM に送られ得た。`lib/chat-pending-anchor.ts` `lastPromptAnchorMessage` で out-of-band 行を飛ばすよう修正。
 - 実機確認: 多段エージェントを Sidebar から Run → Chat で hand-off 行が出ること、スケジュール実行後のフォアグラウンド復帰でダイジェストが1回だけ出ること。
 
 ### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)

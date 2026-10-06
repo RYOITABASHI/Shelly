@@ -265,7 +265,9 @@ export class HandoffNarrator {
       lines.push(this.tr('handoff.finished', {
         role: this.labelOf(i),
         steps: this.steps.length,
-        summary: summarizeHandoffPayload(record.outputPreview, this.tr),
+        // Neutral result snippet: the final step hands nothing on, so the
+        // "N件の項目を渡しました" phrasing would misdescribe it.
+        result: snippetForHandoff(record.outputPreview) || this.tr('handoff.no_output'),
       }));
       return lines;
     }

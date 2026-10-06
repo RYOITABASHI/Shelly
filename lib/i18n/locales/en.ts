@@ -1224,7 +1224,7 @@ const en: Record<string, string> = {
   'handoff.group_done': '🔗 Merged {{count}} branch results → {{to}}',
   'handoff.group_done_final': '🔗 Merged {{count}} branch results',
   'handoff.pass': '🔁 {{from}} → {{to}}: {{summary}}',
-  'handoff.finished': '🏁 {{role}} finished ({{steps}} steps): {{summary}}',
+  'handoff.finished': '🏁 {{role}} finished ({{steps}} steps): {{result}}',
   'handoff.stopped': '⚠️ Stopped at {{role}}: {{summary}}',
   'handoff.halted': '⏸️ Chain stopped early (step/time budget reached)',
   'handoff.summary_items': 'handed over {{count}} items — "{{snippet}}"',
