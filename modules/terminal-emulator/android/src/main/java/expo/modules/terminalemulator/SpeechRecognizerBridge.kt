@@ -194,23 +194,17 @@ object SpeechRecognizerBridge {
                 buildIntent(context, lang),
                 mainExecutor,
                 object : RecognitionSupportCallback {
-                    @Suppress("DEPRECATION")
                     override fun onSupportResult(support: RecognitionSupport) {
-                        // API 34 renamed the lists (*OnDeviceLanguages); the
-                        // API 33 getters are deprecated but still the only
-                        // ones that exist on Android 13.
-                        val installed: List<String>
-                        val pending: List<String>
-                        val supported: List<String>
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                            installed = support.installedOnDeviceLanguages
-                            pending = support.pendingOnDeviceLanguages
-                            supported = support.supportedOnDeviceLanguages
-                        } else {
-                            installed = support.installedLanguages
-                            pending = support.pendingLanguages
-                            supported = support.supportedLanguages
+                        // The API 33 getters (installedLanguages etc.) are
+                        // absent from the compileSdk 36 stubs, so Android 13
+                        // reports "unknown" instead of reading them.
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                            finish("unknown")
+                            return
                         }
+                        val installed: List<String> = support.installedOnDeviceLanguages
+                        val pending: List<String> = support.pendingOnDeviceLanguages
+                        val supported: List<String> = support.supportedOnDeviceLanguages
                         val status = when {
                             languageMatches(installed, lang) -> "installed"
                             languageMatches(pending, lang) -> "pending"
