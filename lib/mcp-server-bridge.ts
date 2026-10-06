@@ -9,11 +9,19 @@
  * rationale; this is a near-duplicate poller, just dispatching to MCP
  * tools instead of A2A skills).
  *
- * Every tool here is deliberately READ-ONLY and scoped to data the user
- * already exposed through Shelly's own UI (registered agents, Sidebar
- * repo paths, terminal session transcripts) — see
- * scripts/shelly-mcp-server.js's header for why exec/write tools aren't
- * implemented yet.
+ * The read-only tools are scoped to data the user already exposed through
+ * Shelly's own UI (registered agents, Sidebar repo paths, terminal session
+ * transcripts). run_command / write_file are gated by mcpExecEnabled, the
+ * CRITICAL-risk refusal and an on-device approval tap (requestApproval
+ * below) — always decided HERE, never by the MCP peer.
+ *
+ * Protocol-era agnostic: this side only sees one request file per tool
+ * call. Whether the peer is a legacy (initialize/session) client holding
+ * one POST open, or a 2026-07-28 client that the server defers via MRTR
+ * (InputRequiredResult + requestState retries), is handled entirely in
+ * scripts/shelly-mcp-server.js — an MRTR retry re-attaches to the same
+ * pending call and never writes a second request file, so the approval
+ * modal can't be shown (or a command run) twice for one logical call.
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
