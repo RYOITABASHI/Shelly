@@ -6,7 +6,7 @@
  * Auto-detect badge suggests relevant set (never auto-switches).
  */
 
-import React, { useCallback, useState, useRef, useMemo } from 'react';
+import React, { useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import { View, Text, Pressable, StyleSheet, ScrollView, type NativeSyntheticEvent, type NativeScrollEvent, Dimensions, type LayoutChangeEvent } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -261,7 +261,13 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
     }
   }, [sendKey, sendText, sendPaste, pasteFromClipboard, settings.hapticFeedback, altActive]);
 
-  // Track container width for paging
+  // Track the key-set SCROLLER viewport width for paging. Each page must be
+  // exactly as wide as the horizontal ScrollView's viewport: pagingEnabled
+  // snaps by viewport width, and the keys inside a page use flex:1. This was
+  // previously measured on the whole bar container (which also holds the
+  // attach/mic buttons and the dots column), so every page was ~70dp wider
+  // than the viewport and the last key of each set was cut off at the right
+  // edge (2026-10-06 Fold6 on-device feedback).
   const [barWidth, setBarWidth] = useState(Dimensions.get('window').width);
 
   const switchSet = useCallback((id: KeySetId) => {
@@ -272,9 +278,22 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
   }, [settings.hapticFeedback, barWidth, SET_ORDER]);
-  const onBarLayout = useCallback((e: LayoutChangeEvent) => {
-    setBarWidth(e.nativeEvent.layout.width);
+  const onScrollerLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = e.nativeEvent.layout.width;
+    // Ignore sub-pixel jitter so a resize doesn't re-render every page twice.
+    setBarWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
   }, []);
+
+  // Re-snap to the active page whenever the viewport width changes (fold /
+  // unfold, sidebar expand/collapse, split resize); otherwise the old pixel
+  // offset leaves the scroller parked between two pages.
+  const activeSetRef = useRef(activeSet);
+  activeSetRef.current = activeSet;
+  useEffect(() => {
+    const idx = SET_ORDER.indexOf(activeSetRef.current);
+    if (idx < 0) return;
+    scrollRef.current?.scrollTo({ x: idx * barWidth, animated: false });
+  }, [barWidth, SET_ORDER]);
 
   const handleScrollEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const page = Math.round(e.nativeEvent.contentOffset.x / e.nativeEvent.layoutMeasurement.width);
@@ -323,7 +342,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
   }, [barWidth, accent, altActive, isCompact, handleKeyPress, keyChrome]);
 
   return (
-    <View style={[styles.container, { backgroundColor: barBg, borderTopColor: border }]} onLayout={onBarLayout}>
+    <View style={[styles.container, { backgroundColor: barBg, borderTopColor: border }]}>
       {/* Single row: attach/voice + swipeable keys + dots */}
       <View style={styles.singleRow}>
         {/* Attach + Voice mini buttons */}
@@ -348,7 +367,7 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
         )}
 
         {/* Swipeable key sets */}
-        <View style={{ flex: 1 }}>
+        <View style={styles.scroller} onLayout={onScrollerLayout}>
           <ScrollView
             ref={scrollRef}
             horizontal
@@ -423,8 +442,16 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 2.5,
   },
+  scroller: {
+    flex: 1,
+    minWidth: 0,
+    // Contain the paging scroller so a page can never paint past the pane's
+    // right border while it is mid-swipe.
+    overflow: 'hidden',
+  },
   dotsCol: {
-    paddingRight: 6,
+    paddingLeft: 4,
+    paddingRight: 8,
     justifyContent: 'center',
   },
   dotsGroup: {

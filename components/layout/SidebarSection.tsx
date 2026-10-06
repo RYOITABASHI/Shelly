@@ -4,6 +4,11 @@ import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
 
+/** Glyph size inside the collapsed icon rail (rail is 38dp wide, see Sidebar WIDTH_ICONS). */
+const ICON_RAIL_GLYPH = 20;
+/** Minimum rail button height — keeps the Android touch target >= 36dp even though the rail is narrow. */
+const ICON_RAIL_MIN_HEIGHT = 40;
+
 type Props = {
   title: string;
   icon: string;
@@ -32,10 +37,16 @@ export function SidebarSection({
 
   if (iconsOnly) {
     return (
-      <Pressable style={styles.iconBtn} onPress={onToggle} hitSlop={4}>
+      <Pressable
+        style={styles.iconBtn}
+        onPress={onToggle}
+        hitSlop={{ top: 2, bottom: 2, left: 4, right: 4 }}
+        accessibilityRole="button"
+        accessibilityLabel={title}
+      >
         <MaterialIcons
           name={icon as any}
-          size={18}
+          size={ICON_RAIL_GLYPH}
           color={isOpen ? iconActiveColor : C.text2}
         />
         {badge != null && badge > 0 && (
@@ -114,13 +125,16 @@ const styles = StyleSheet.create({
   iconBtn: {
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: ICON_RAIL_MIN_HEIGHT,
     paddingVertical: 10,
     position: 'relative',
   },
   badge: {
     position: 'absolute',
-    top: 6,
-    right: 8,
+    // Anchored to the glyph's top-right corner within the 38dp rail
+    // (glyph spans x≈9..29); right:3 overlaps its corner without clipping.
+    top: 5,
+    right: 3,
     width: 14,
     height: 14,
     borderRadius: 7,

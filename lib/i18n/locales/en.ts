@@ -1922,6 +1922,7 @@ const en: Record<string, string> = {
   'sidebar.ports': 'PORTS',
   'sidebar.profiles': 'PROFILES',
   'sidebar.collapse': 'Collapse',
+  'sidebar.expand': 'Expand sidebar',
   'sidebar.directory_not_found_title': 'Directory not found',
   'sidebar.directory_not_found_body': 'The path "{{path}}" does not exist on this device. Double-check the spelling or pick an existing folder.',
   'sidebar.directory_not_git_title': 'Not a git repository',

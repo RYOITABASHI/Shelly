@@ -1886,6 +1886,7 @@ const ja: Record<string, string> = {
   'sidebar.ports': 'ポート',
   'sidebar.profiles': 'プロファイル',
   'sidebar.collapse': '折りたたむ',
+  'sidebar.expand': 'サイドバーを展開',
   'sidebar.directory_not_found_title': 'ディレクトリが見つかりません',
   'sidebar.directory_not_found_body': 'パス "{{path}}" はこのデバイスに存在しません。スペルを確認するか、存在するフォルダを選んでください。',
   'sidebar.directory_not_git_title': 'Gitリポジトリではありません',

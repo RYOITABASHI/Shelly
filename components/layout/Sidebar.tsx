@@ -93,7 +93,11 @@ import { postAgentRunStartedNotice, postLatestAgentRunToCompanion } from '@/lib/
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 
-const WIDTH_ICONS = 48;
+// Collapsed icon-rail width. 2026-10-06 Fold6 feedback: 48dp read as too
+// wide next to the pane grid; 38dp still fits a 20dp icon with ~9dp side
+// clearance, and each rail button stays >= 40dp tall (see SidebarSection
+// iconBtn) so the Android 36dp+ touch target is preserved vertically.
+export const WIDTH_ICONS = 38;
 const WIDTH_HIDDEN = 0;
 const TIMING_MS = 200;
 const AGENT_RUNNING_POLL_START_DELAY_MS = 15_000;
@@ -2257,6 +2261,8 @@ export function Sidebar() {
         style={[styles.toggleBtn, { borderTopColor: C.border }]}
         onPress={handleToggle}
         hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={mode === 'expanded' ? t('sidebar.collapse') : t('sidebar.expand')}
       >
         <MaterialIcons
           name={mode === 'expanded' ? 'chevron-left' : 'chevron-right'}
@@ -2618,7 +2624,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 6,
+    minHeight: 36,
+    paddingVertical: 8,
     borderTopWidth: S.borderWidth,
     gap: 4,
   },
