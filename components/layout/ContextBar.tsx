@@ -87,29 +87,35 @@ export function ContextBar() {
   return (
     <View style={[styles.bar, { backgroundColor: barBg }]}>
       {/* CWD */}
-      <Pressable onPress={handleCopyPath} style={styles.segment} hitSlop={4}>
+      <Pressable onPress={handleCopyPath} style={[styles.segment, styles.shrinkSegment]} hitSlop={4}>
         <MaterialIcons name="folder" size={10} color={C.text2} />
-        <Text style={styles.text} numberOfLines={1}>
+        <Text style={[styles.text, styles.shrinkText]} numberOfLines={1}>
           {truncatePath(cwd)}
         </Text>
       </Pressable>
 
       {/* Git branch */}
       {gitBranch && (
-        <View style={[styles.segment, { marginLeft: 8 }]}>
+        <View style={[styles.segment, styles.shrinkSegment, { marginLeft: 8 }]}>
           <MaterialIcons name="call-split" size={10} color={C.accent} />
-          <Text style={[styles.text, { color: C.accent, ...neonTextGlow }]}>{gitBranch}</Text>
+          <Text
+            style={[styles.text, styles.shrinkText, { color: C.accent, ...neonTextGlow }]}
+            numberOfLines={1}
+          >
+            {gitBranch}
+          </Text>
         </View>
       )}
 
       <View style={styles.spacer} />
 
-      {/* Connection status */}
-      <View style={styles.segment}>
+      {/* Connection status — never shrinks; the cwd/branch segments give
+          way first so the status label is always fully visible. */}
+      <View style={[styles.segment, styles.fixedSegment]}>
         <View style={[styles.dot, {
           backgroundColor: connectionMode === 'native' ? C.accent : C.errorText,
         }, connectionMode === 'native' && neonDotGlow]} />
-        <Text style={styles.text}>
+        <Text style={styles.text} numberOfLines={1}>
           {connectionMode === 'native' ? 'Native' : 'Off'}
         </Text>
       </View>
@@ -122,7 +128,9 @@ const styles = StyleSheet.create({
     height: S.contextBarHeight,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
+    // 12dp keeps the right-hand status clear of the Fold6 inner display's
+    // rounded bottom-right corner.
+    paddingHorizontal: 12,
     borderTopWidth: S.borderWidth,
     borderTopColor: C.border,
     backgroundColor: C.bgSidebar,
@@ -132,13 +140,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
+  shrinkSegment: {
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  shrinkText: {
+    flexShrink: 1,
+  },
+  fixedSegment: {
+    flexShrink: 0,
+    marginLeft: 8,
+  },
   spacer: { flex: 1 },
   text: {
     fontSize: F.contextBar.size,
     fontFamily: F.family,
     fontWeight: F.contextBar.weight,
     color: C.text2,
-    letterSpacing: 0.3,
+    // No letterSpacing: on Android, letterSpacing on this custom mono font
+    // under-measures the run by roughly one glyph, which clipped the last
+    // character ("Nativ") and forced the short cwd into a bare ellipsis.
+    // A 1dp trailing pad absorbs any remaining sub-pixel rounding.
+    paddingRight: 1,
   },
   tagline: {
     fontSize: F.badge.size,
