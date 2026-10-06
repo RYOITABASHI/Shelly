@@ -99,7 +99,10 @@ const TEACH_EXTRA_SECRET_PATTERNS: RegExp[] = [
   /:\/\/[^\s/:@]+:[^\s/@]+@/, // user:pass@host URLs
   // Short env-style assignments the shared lists' length floors miss
   // (`export GITHUB_TOKEN=ghp_abc`, `PASSWORD=abc ./run`).
-  /\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|API_?KEY|KEY)=\S+/,
+  // The keyword must start the name or follow `_` (no `MONKEY=`), and the
+  // generic KEY / PASS only count with a prefix segment (`SSH_KEY=`,
+  // `DB_PASS=`) so prose like `-m "KEY=value docs"` is not flagged.
+  /(?:^|[^A-Za-z0-9_])(?:(?:[A-Z0-9]+_)*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)|(?:[A-Z0-9]+_)+(?:KEY|PASS))=\S+/,
   /-H\s*['"]?[A-Za-z-]*(?:Key|Token|Authorization)\s*:/i,
   /\baws_secret_access_key\b/i,
   /\bsudo\s+(?:-\S+\s+)*-S\b/,
@@ -278,7 +281,7 @@ function tokenizeWithSpans(cmd: string): Token[] {
 /** `$1`, `"$1"`, `${1}`, `"${1}"` — the only placeholder shapes accepted. */
 const PLACEHOLDER_RE = /^("?)\$(?:([1-9])|\{([1-9])\})\1$/;
 /** A recorded token may only be parameterized if it is a plain value. */
-const SHELL_META_RE = /[;&|`$<>(){}\\*?![\]]/;
+const SHELL_META_RE = /[;&|`$<>(){}\\*?![\]#]/;
 
 function placeholderIndex(tok: string): number | null {
   const m = PLACEHOLDER_RE.exec(tok);
@@ -301,6 +304,8 @@ function matchAgainstRecorded(out: string[], rec: string[]): Map<number, string>
     if (out[i] === rec[i]) continue;
     const idx = placeholderIndex(out[i]);
     if (idx === null || i === 0) return null;
+    // Nothing after an unquoted comment token is real shell input.
+    if (rec.slice(0, i).some((t) => t.startsWith('#'))) return null;
     const value = rec[i].replace(/^(['"])([\s\S]*)\1$/, '$2');
     if (!value || SHELL_META_RE.test(value) || /['"]/.test(value)) return null;
     if (bindings.has(idx) && bindings.get(idx) !== value) return null;
@@ -318,7 +323,8 @@ export function guardPlaceholderToken(tok: string): string {
 
 /**
  * Parse + validate an LLM answer. Returns null (-> deterministic fallback)
- * unless the commands are an in-order subsequence of the recording, each
+ * unless the commands are an in-order subsequence of the recording that
+ * only omits droppable steps (failed / noise / immediate repeats), each
  * matching its recorded command exactly apart from whole-token `$N`
  * placeholders (see matchAgainstRecorded). Every `$N` must bind to the same
  * recorded value everywhere, and placeholders must be numbered 1..k with no
@@ -348,6 +354,15 @@ export function parseTeachLlmResponse(
   const recorded = recordedSpans.map((toks) => toks.map((t) => t.text));
   const bindings = new Map<number, string>();
   const commands: string[] = [];
+  // The LLM may only drop what the deterministic filter would also drop:
+  // failed steps, pure navigation noise, and immediate repeats. Dropping a
+  // successful `cd` (or anything else) could make a later step run in the
+  // wrong directory — e.g. `cd /p`, `cd build`, `rm -rf *` must never
+  // become `cd /p`, `rm -rf *`.
+  const droppable = (i: number): boolean =>
+    (steps[i].exitCode !== null && steps[i].exitCode !== 0) ||
+    isNoiseCommand(steps[i].cmd) ||
+    (i > 0 && steps[i - 1].cmd === steps[i].cmd);
   let cursor = 0;
   for (const c of obj.commands) {
     if (typeof c !== 'string') return null;
@@ -355,7 +370,10 @@ export function parseTeachLlmResponse(
     if (/<redacted/i.test(c) || looksLikeSecret(c)) return null;
     const outTokens = tokenizeCommand(c.trim());
     let matched: Map<number, string> | null = null;
-    while (cursor < recorded.length && !(matched = matchAgainstRecorded(outTokens, recorded[cursor]))) cursor++;
+    while (cursor < recorded.length && !(matched = matchAgainstRecorded(outTokens, recorded[cursor]))) {
+      if (!droppable(cursor)) return null;
+      cursor++;
+    }
     if (!matched) return null;
     cursor++;
     for (const [k, v] of matched) {
@@ -373,7 +391,11 @@ export function parseTeachLlmResponse(
     }
     commands.push(rebuilt);
   }
+  for (; cursor < steps.length; cursor++) if (!droppable(cursor)) return null;
   if (commands.length === 0) return null;
+  // Same start-directory anchoring as fallbackConvert().
+  const startCwd = steps[0]?.cwd;
+  if (startCwd && !isAbsoluteCd(commands[0])) commands.unshift(`cd ${shellQuote(startCwd)}`);
   const used = [...bindings.keys()].sort((a, b) => a - b);
   if (used.some((k, i) => k !== i + 1)) return null;
   const params: string[] = Array.isArray(obj.params)

@@ -59,6 +59,7 @@
 - **クラウド LLM 許可の UI トグル未実装**: `settings.teachAllowCloudLlm`（既定 false）は型・既定値のみ追加。ConfigTUI に項目が無いため現状は常にローカル LLM / ルールベースのみ。クラウドを使いたい要望が出たら Settings にトグルを追加する。
 - **legacy block-terminal（`lib/pseudo-shell.ts`）には未配線**: そちらはプロンプトフックを通らないため捕捉手段が無い。
 - **既知の捕捉制限**: `HISTCONTROL=ignorespace`/`ignoredups` 等で履歴に残らないコマンドは記録されない（`$HISTCMD` が進まないため）/ アプリ強制終了時は次回起動の sweep で記録ログと残存 result ファイルを破棄（記録は失われる）/ 記録は `shelly teach start` を実行したシェル（`$$`）のみ。
+- **LLM がフラグ（`--force` 等）を `$N` に置換し得る（再レビュー指摘、意図的に許容）**: フラグも「メタ文字を含まない丸ごとの値トークン」なので置換可能。実行時に利用者が渡す引数で挙動が変わるだけで新しいコマンドは注入できず、`${N:?missing arg N}` ガードと stop 時の全文プレビューで可視。問題になれば `-` 始まりトークンの置換を禁止する。LLM はその他、失敗・ノイズ・直前重複以外のステップ（成功した `cd` を含む）を落とせず、`#` 以降のトークンも置換不可。
 - **`__shelly_prompt_command` で `$?` を復元しない（レビュー LOW 指摘を意図的に不採用）**: `return $__shelly_ec` にすると `set -e` ユーザーのシェルが失敗コマンドのたびに PROMPT_COMMAND 経由で終了するため。チェーンした PROMPT_COMMAND が `$?` を必要とする要望が出たら、errexit を一時退避する形で再検討。
 
 ### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)
