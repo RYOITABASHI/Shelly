@@ -52,11 +52,11 @@
 
 ### `shelly teach` の残課題（2026-10-06、実装時に意図的に見送り、P2）
 
-**実装済み**: ネイティブ PTY の `shelly teach start [name] / stop / cancel / status`。bash の PROMPT_COMMAND フック（`__shelly_teach_capture`、BASHRC_VERSION 242）が `$HOME/.shelly-teach.jsonl` 存在中だけ `{n,cmd,ec,cwd,ts}` を追記し、`shelly` ヘルパー（SHELLY_HELPER_SHIM v4）が `.shelly-command-queue` 経由で `lib/teach-controller.ts` と往復。stop 時に local LLM → Cerebras → Groq の順で整理（記録に無いプログラム名を含む回答は棄却）、不可なら決定論フォールバック。`~/.shelly/workflows/<name>.sh` に保存し、何も実行しない。**実機未検証。**
+**実装済み**: ネイティブ PTY の `shelly teach start [name] / stop / cancel / status`。bash の PROMPT_COMMAND フック（`__shelly_teach_capture`、BASHRC_VERSION 242）が `$HOME/.shelly-teach.jsonl` 存在中だけ `{n,cmd,ec,cwd,ts}` を追記し、`shelly` ヘルパー（SHELLY_HELPER_SHIM v4）が `.shelly-command-queue` 経由で `lib/teach-controller.ts` と往復。stop 時に local LLM → Cerebras → Groq の順で整理（記録に無いプログラム名を含む回答は棄却）、不可なら決定論フォールバック。`~/.shelly/workflows/<name>.sh` に保存し、何も実行しない。変換は既定でローカル LLM のみ（クラウドは `settings.teachAllowCloudLlm` が true の時だけ）、stop 出力に使用した変換器（ローカル LLM / クラウド / ルールベース）を表示。2026-10-06 追記: `shelly workflow list|show|run|delete` もネイティブ PTY で動作するようにした（SHELLY_HELPER_SHIM v5 + `shelly()` bash 関数、BASHRC_VERSION 243。run は手順を表示してから現在の PTY で `bash` 実行、delete は y/N 確認）。**実機未検証。**
 
 **見送り（Why not now）**:
 - **AI チャットの NL 入口（「今から覚えて」「覚えて終わり」）**: 安価な既存 intent フックが無く、`lib/agent-nl-parser.ts` の MEMORY_JP_RE（覚えておいて/覚えてて/記憶して）と衝突するため。追加するなら memory intent より前に判定し、記録はターミナル側で行われる旨を返す形にする。
-- **`shelly workflow list/run/edit` がネイティブ PTY から到達不能**（既存問題、v238 コメント参照）: teach の保存結果は `bash ~/.shelly/workflows/<name>.sh` / `cat` で使える旨を表示して回避。shim に `workflow` 分岐を足すのが次の一手。
+- **クラウド LLM 許可の UI トグル未実装**: `settings.teachAllowCloudLlm`（既定 false）は型・既定値のみ追加。ConfigTUI に項目が無いため現状は常にローカル LLM / ルールベースのみ。クラウドを使いたい要望が出たら Settings にトグルを追加する。
 - **記録は全ターミナルタブ共通**: フラグがグローバルな `$HOME` のファイルなので、記録中に別タブで打ったコマンドも混ざる。タブ単位にするには PTY セッション ID を bash 環境に渡す必要あり。
 - **legacy block-terminal（`lib/pseudo-shell.ts`）には未配線**: そちらはプロンプトフックを通らないため捕捉手段が無い。
 - **既知の捕捉制限**: 連続同一コマンドは `history` 番号が増えない場合スキップされ得る / `HISTCONTROL=ignorespace` 等をユーザーが設定すると先頭スペース付きコマンドは記録されない / アプリ強制終了時は次回起動の sweep で記録ログを破棄（記録は失われる）。

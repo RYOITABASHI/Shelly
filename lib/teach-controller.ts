@@ -31,6 +31,7 @@ import {
   sanitizeSteps,
   sanitizeWorkflowName,
   shouldAutoStop,
+  teachConverterOrder,
   type TeachStep,
   type TeachWorkflowDraft,
 } from '@/lib/teach-mode';
@@ -137,8 +138,8 @@ async function finishRecording(deps: TeachDeps): Promise<TeachResult> {
         title: t('teach.preview_title', { name: draft.name }),
         saved: t('teach.saved_to', { path }),
       }),
-      t(draft.source === 'llm' ? 'teach.source_llm' : 'teach.source_fallback'),
-      t('teach.run_hint', { path }),
+      t(`teach.source_${draft.source}`),
+      t('teach.run_hint', { name: draft.name, path }),
       t('teach.nothing_ran'),
     );
     return { ok: true, lines };
@@ -251,82 +252,71 @@ export function usageLines(): string[] {
 
 type ChatTurn = { role: 'system' | 'user'; content: string };
 
-/** Ask the available models in on-device-first order: local LLM, then
- *  Cerebras/Groq if keys exist. Steps are already secret-filtered. Any
- *  failure or ungrounded answer falls back to fallbackConvert(). */
+/** Ask the converters teachConverterOrder() allows: the local LLM by
+ *  default, cloud Cerebras/Groq only with settings.teachAllowCloudLlm.
+ *  Steps are already secret-filtered. Any failure or ungrounded answer
+ *  falls back to the rule-based fallbackConvert(). */
 export const convertWithLlm: TeachConverter = async (steps, requestedName) => {
   const userPrompt = buildTeachLlmUserPrompt(steps);
   const s = useSettingsStore.getState().settings;
-  const attempts: Array<{ label: string; run: () => Promise<string | null> }> = [];
-  if (s.localLlmEnabled && s.localLlmUrl && s.localLlmModel) {
-    attempts.push({
-      label: 'local',
-      run: async () => {
-        const { ollamaChat } = await import('./local-llm');
-        const messages: ChatTurn[] = [
-          { role: 'system', content: TEACH_LLM_SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ];
-        const r = await ollamaChat(
-          { baseUrl: s.localLlmUrl, model: s.localLlmModel, enabled: true },
-          messages,
-          LLM_TIMEOUT_MS,
-          undefined,
-          1024,
-        );
-        return r.success ? r.content : null;
-      },
-    });
-  }
-  if (s.cerebrasApiKey) {
-    attempts.push({
-      label: 'cerebras',
-      run: async () => {
-        const { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } = await import('./cerebras');
-        let acc = '';
-        const r = await cerebrasChatStream(
-          s.cerebrasApiKey,
-          userPrompt,
-          (text) => { if (text) acc += text; },
-          s.cerebrasModel ?? CEREBRAS_DEFAULT_MODEL,
-          [],
-          undefined,
-          TEACH_LLM_SYSTEM_PROMPT,
-        );
-        return r.success ? acc : null;
-      },
-    });
-  }
-  if (s.groqApiKey) {
-    attempts.push({
-      label: 'groq',
-      run: async () => {
-        const { groqChatStream, GROQ_DEFAULT_MODEL } = await import('./groq');
-        let acc = '';
-        const r = await groqChatStream(
-          s.groqApiKey,
-          userPrompt,
-          (text) => { if (text) acc += text; },
-          s.groqModel ?? GROQ_DEFAULT_MODEL,
-          [],
-          undefined,
-          TEACH_LLM_SYSTEM_PROMPT,
-        );
-        return r.success ? acc : null;
-      },
-    });
-  }
-  for (const attempt of attempts) {
+  const runners: Record<'local' | 'cerebras' | 'groq', () => Promise<string | null>> = {
+    local: async () => {
+      const { ollamaChat } = await import('./local-llm');
+      const messages: ChatTurn[] = [
+        { role: 'system', content: TEACH_LLM_SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt },
+      ];
+      const r = await ollamaChat(
+        { baseUrl: s.localLlmUrl, model: s.localLlmModel, enabled: true },
+        messages,
+        LLM_TIMEOUT_MS,
+        undefined,
+        1024,
+      );
+      return r.success ? r.content : null;
+    },
+    cerebras: async () => {
+      const { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } = await import('./cerebras');
+      let acc = '';
+      const r = await cerebrasChatStream(
+        s.cerebrasApiKey ?? '',
+        userPrompt,
+        (text) => { if (text) acc += text; },
+        s.cerebrasModel ?? CEREBRAS_DEFAULT_MODEL,
+        [],
+        undefined,
+        TEACH_LLM_SYSTEM_PROMPT,
+      );
+      return r.success ? acc : null;
+    },
+    groq: async () => {
+      const { groqChatStream, GROQ_DEFAULT_MODEL } = await import('./groq');
+      let acc = '';
+      const r = await groqChatStream(
+        s.groqApiKey ?? '',
+        userPrompt,
+        (text) => { if (text) acc += text; },
+        s.groqModel ?? GROQ_DEFAULT_MODEL,
+        [],
+        undefined,
+        TEACH_LLM_SYSTEM_PROMPT,
+      );
+      return r.success ? acc : null;
+    },
+  };
+  for (const label of teachConverterOrder(s)) {
     try {
-      const raw = await attempt.run();
-      const draft = raw ? parseTeachLlmResponse(raw, steps, requestedName) : null;
+      const raw = await runners[label]();
+      const draft = raw
+        ? parseTeachLlmResponse(raw, steps, requestedName, Date.now(), label === 'local' ? 'local' : 'cloud')
+        : null;
       if (draft) {
-        logInfo(LOG, `converted via ${attempt.label}`);
+        logInfo(LOG, `converted via ${label}`);
         return draft;
       }
-      logInfo(LOG, `${attempt.label} answer unusable, trying next`);
+      logInfo(LOG, `${label} answer unusable, trying next`);
     } catch (e: any) {
-      logInfo(LOG, `${attempt.label} failed (${e?.message || String(e)}), trying next`);
+      logInfo(LOG, `${label} failed (${e?.message || String(e)}), trying next`);
     }
   }
   return fallbackConvert(steps, requestedName);

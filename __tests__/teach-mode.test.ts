@@ -27,6 +27,7 @@ import {
   sanitizeSteps,
   sanitizeWorkflowName,
   shouldAutoStop,
+  teachConverterOrder,
   type TeachStep,
 } from '@/lib/teach-mode';
 import {
@@ -188,7 +189,8 @@ describe('parseTeachLlmResponse', () => {
     expect(draft.name).toBe('commit-and-push');
     expect(draft.commands[2]).toBe('git commit -m "$1"');
     expect(draft.description).toContain('$1=commit message');
-    expect(draft.source).toBe('llm');
+    expect(draft.source).toBe('local');
+    expect(parseTeachLlmResponse(raw, steps, undefined, 0, 'cloud')!.source).toBe('cloud');
   });
 
   it('prefers the user-requested name', () => {
@@ -204,6 +206,27 @@ describe('parseTeachLlmResponse', () => {
     ['empty commands', '{"name":"x","commands":[]}'],
   ])('rejects %s', (_label, raw) => {
     expect(parseTeachLlmResponse(raw, steps)).toBeNull();
+  });
+});
+
+describe('teachConverterOrder (privacy)', () => {
+  const local = { localLlmEnabled: true, localLlmUrl: 'http://127.0.0.1:8080', localLlmModel: 'q' };
+  const keys = { cerebrasApiKey: 'csk-x', groqApiKey: 'gsk-x' };
+
+  it('never uses cloud providers by default, even with API keys set', () => {
+    expect(teachConverterOrder({ ...local, ...keys })).toEqual(['local']);
+    expect(teachConverterOrder({ ...keys })).toEqual([]);
+    expect(teachConverterOrder({ ...keys, teachAllowCloudLlm: false })).toEqual([]);
+  });
+
+  it('adds cloud providers after the local LLM only when explicitly allowed', () => {
+    expect(teachConverterOrder({ ...local, ...keys, teachAllowCloudLlm: true })).toEqual(['local', 'cerebras', 'groq']);
+    expect(teachConverterOrder({ groqApiKey: 'gsk-x', teachAllowCloudLlm: true })).toEqual(['groq']);
+  });
+
+  it('skips a local LLM that is not fully configured', () => {
+    expect(teachConverterOrder({ ...local, localLlmEnabled: false })).toEqual([]);
+    expect(teachConverterOrder({ ...local, localLlmModel: '' })).toEqual([]);
   });
 });
 

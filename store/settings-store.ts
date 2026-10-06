@@ -115,6 +115,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   snippetRunMode: 'insertAndRun',
   snippetAutoReturn: true,
   highContrastOutput: true,
+  teachAllowCloudLlm: false,
   localLlmEnabled: false,
   localLlmUrl: 'http://127.0.0.1:8080',
   localLlmModel: DEFAULT_LOCAL_LLM_MODEL,

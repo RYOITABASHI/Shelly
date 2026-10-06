@@ -31,11 +31,14 @@ export type TeachStep = {
   ts: number;
 };
 
+export type TeachConverterSource = 'local' | 'cloud' | 'fallback';
+
 export type TeachWorkflowDraft = {
   name: string;
   description: string;
   commands: string[];
-  source: 'llm' | 'fallback';
+  /** Which converter produced this draft (shown to the user on stop). */
+  source: TeachConverterSource;
 };
 
 /** Parse the hook's JSONL log. Malformed lines (half-written append, odd
@@ -232,6 +235,7 @@ export function parseTeachLlmResponse(
   steps: TeachStep[],
   requestedName?: string,
   now = Date.now(),
+  source: 'local' | 'cloud' = 'local',
 ): TeachWorkflowDraft | null {
   if (!raw) return null;
   const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '');
@@ -269,8 +273,33 @@ export function parseTeachLlmResponse(
     name,
     description: (baseDesc || 'Recorded with shelly teach') + paramDesc,
     commands,
-    source: 'llm',
+    source,
   };
+}
+
+export type TeachLlmSettings = {
+  localLlmEnabled?: boolean;
+  localLlmUrl?: string;
+  localLlmModel?: string;
+  cerebrasApiKey?: string;
+  groqApiKey?: string;
+  teachAllowCloudLlm?: boolean;
+};
+
+/**
+ * Converters to try, in order. Recorded commands can reveal paths, hosts
+ * and project names even after secret filtering, so they stay on-device by
+ * default: cloud providers are only added when the user explicitly opted in
+ * via settings.teachAllowCloudLlm. An empty list means rule-based only.
+ */
+export function teachConverterOrder(s: TeachLlmSettings): Array<'local' | 'cerebras' | 'groq'> {
+  const order: Array<'local' | 'cerebras' | 'groq'> = [];
+  if (s.localLlmEnabled && s.localLlmUrl && s.localLlmModel) order.push('local');
+  if (s.teachAllowCloudLlm === true) {
+    if (s.cerebrasApiKey) order.push('cerebras');
+    if (s.groqApiKey) order.push('groq');
+  }
+  return order;
 }
 
 /** Plain-text preview printed in the terminal after stop. */
