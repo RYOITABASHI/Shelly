@@ -1,6 +1,8 @@
-import { COMPANION_CONVERSATION_KEY, useAIPaneStore } from '@/store/ai-pane-store';
+import { COMPANION_CONVERSATION_KEY, agentThreadKey, useAIPaneStore } from '@/store/ai-pane-store';
 import { useAgentStore } from '@/store/agent-store';
 import type { AgentRunLog, ChatMessage } from '@/store/types';
+import { buildHandoffDigest, type HandoffTranslate } from '@/lib/agent-handoff';
+import { logInfo } from '@/lib/debug-logger';
 
 export type AgentRunHistory = Record<string, AgentRunLog[]>;
 
@@ -99,6 +101,64 @@ export function postCompanionJournalDormancyNotice(noticeText: string): boolean 
     timestamp: Date.now(),
   });
   return true;
+}
+
+// ─── Agent hand-off narration (lib/agent-handoff.ts) ─────────────────────────
+
+/**
+ * Process-lifetime set of run identities (`<agentId>:<timestamp>`) whose
+ * hand-off lines were already posted LIVE by the attended chain, so the
+ * periodic disk sync never replays the same run a second time as a digest.
+ * The persisted-thread check in postAgentHandoffDigest covers restarts.
+ */
+const narratedHandoffRuns = new Set<string>();
+
+/** Attended path: mark the aggregate run log as already narrated live. */
+export function markAgentHandoffRunNarrated(log: Pick<AgentRunLog, 'agentId' | 'timestamp'>): void {
+  narratedHandoffRuns.add(agentRunLogIdentity(log));
+}
+
+/** Append ONE hand-off line to the agent's own `agent:<id>` thread. Plain
+ *  system text (excluded from LLM history and thread carry-forward by role). */
+export function postAgentHandoffLine(agentId: string, runId: string, seq: number, text: string): void {
+  const now = Date.now();
+  useAIPaneStore.getState().addMessage(agentThreadKey(agentId), {
+    id: `handoff-${runId}-${seq}-${now.toString(36)}`,
+    role: 'system',
+    content: text,
+    timestamp: now,
+    handoff: { runId, seq },
+  });
+  logInfo('Handoff', `posted line ${seq} for ${runId}`);
+}
+
+/**
+ * Unattended path: replay an already-written multi-step run log's per-step
+ * records into ONE coalesced digest line in the agent's thread. Returns true
+ * when posted. Skips single-step runs, runs the attended chain already
+ * narrated live, and runs whose digest is already in the (persisted) thread.
+ */
+export function postAgentHandoffDigest(
+  log: AgentRunLog,
+  agentName: string,
+  translate: HandoffTranslate,
+): boolean {
+  if (!log.steps || log.steps.length < 2) return false;
+  const runId = agentRunLogIdentity(log);
+  if (narratedHandoffRuns.has(runId)) return false;
+  const store = useAIPaneStore.getState();
+  const messages = store.conversations[agentThreadKey(log.agentId)]?.messages ?? [];
+  if (messages.some((m) => m.handoff?.runId === runId)) return false;
+  const digest = buildHandoffDigest(agentName, log.steps, translate);
+  if (!digest) return false;
+  narratedHandoffRuns.add(runId);
+  postAgentHandoffLine(log.agentId, runId, 0, digest);
+  return true;
+}
+
+/** Test-only: reset the process-lifetime dedupe set. */
+export function __resetHandoffDedupeForTests(): void {
+  narratedHandoffRuns.clear();
 }
 
 /**

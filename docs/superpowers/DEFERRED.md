@@ -49,6 +49,16 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### エージェント hand-off 可視化（group thread）— 実装済み・実機未検証、明示的な「Xの結果をYに渡して」は見送り (P2)
+
+**実装 (2026-10-06)**: 多段/fan-out オーケストレーション実行の各ステップ境界で、エージェント自身のチャットスレッド（`agent:<id>`）へ「🔁 調査役 → 執筆役: 3件の項目を渡しました —「…」」形式の plain system 行を投稿する（`lib/agent-handoff.ts` の純粋な `HandoffNarrator`）。attended（`agent-manager.ts` `runAgentOrchestratedBody`）は境界ごとにライブ投稿、unattended（`shelly-plan-executor.js`）は executor 無変更で、既存 run log の `steps[]` を RN 側ログ同期（`app/_layout.tsx` `syncAgentLogs` → `postAgentHandoffDigest`）で1件のダイジェストに再生する。fan-out の各分岐は最後の分岐完了時に1行へ集約、1 run あたり非終端行は最大8行。役割ラベルは instruction のキーワード推定（`AgentOrchestrationStep` に `role` フィールドは追加していない）。
+
+**残課題**:
+- **明示的なエージェント間受け渡し（「Xの結果をYに渡して」）は見送り**: エージェント間メッセージングの既存フックが無い（`lib/team-roundtable.ts` は provider fan-out、`scripts/shelly-a2a-server.js` は read-only `list_agents` のみ）。実装するなら NL intent → X の最新 run log `outputPreview` を Y の `runAgentNow` プロンプト先頭へ注入する経路が最小だが、境界ポリシー/taint（他エージェント出力を信頼済みコンテキストとして扱うか）の設計判断が要る。
+- **アプリ kill 中に完了した unattended run はダイジェストされない**: `AgentRunLogNoticeTracker` が初回同期で既存履歴を seed する（companion 完了通知と同じ挙動）。必要なら thread 内の最新 `handoff.runId` をウォーターマークにする。
+- **ステップ単位の役割ラベルの明示指定**（NL/確認カードで `role` を持たせる）は未対応。
+- 実機確認: 多段エージェントを Sidebar から Run → Chat で hand-off 行が出ること、スケジュール実行後のフォアグラウンド復帰でダイジェストが1回だけ出ること。
+
 ### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)
 
 **原因**: Codex は Code Mode host を `dirname(current_exe)/codex-code-mode-host` で解決する（upstream `codex-rs/install-context`）。Shelly 上の current_exe は exec-wrapper の `/proc/self/exe` shim により `$SHELLY_LIB_DIR/codex_tui`（runtime 更新時は `~/.shelly-runtime/codex/current/codex_tui`）だが、その隣に host が無かった。`DioNanos/codex-termux` の release tarball には bionic PIE 版 host（`interpreter /system/bin/linker64`, NEEDED は system lib のみ）が同梱されているのに、CI は `codex.bin` と `libc++_shared.so` しか拾っていなかった。報告者が見つけた `node_modules/@openai/codex/.../codex-linux-arm64/.../codex-code-mode-host` は upstream npm 依存の static musl ET_EXEC で、app_data_file から直接 exec できず（SELinux）、linker64 も ET_EXEC を拒否するため使えない。
