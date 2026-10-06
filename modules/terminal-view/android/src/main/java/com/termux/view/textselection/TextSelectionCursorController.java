@@ -50,6 +50,7 @@ public class TextSelectionCursorController implements CursorController {
     public final int ACTION_COPY = 1;
     public final int ACTION_PASTE = 2;
     public final int ACTION_MORE = 3;
+    public final int ACTION_QUOTE_AI = 4;
 
     public TextSelectionCursorController(TerminalView terminalView) {
         this.terminalView = terminalView;
@@ -133,6 +134,11 @@ public class TextSelectionCursorController implements CursorController {
                 ClipboardManager clipboard = (ClipboardManager) terminalView.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
                 menu.add(Menu.NONE, ACTION_COPY, Menu.NONE, R.string.copy_text).setShowAsAction(show);
                 menu.add(Menu.NONE, ACTION_PASTE, Menu.NONE, R.string.paste_text).setEnabled(clipboard != null && clipboard.hasPrimaryClip()).setShowAsAction(show);
+                // Shelly: "Quote to AI" sits right after Copy/Paste when JS supplied a label.
+                String quoteLabel = terminalView.getSelectionQuoteLabel();
+                if (quoteLabel != null) {
+                    menu.add(Menu.NONE, ACTION_QUOTE_AI, Menu.NONE, quoteLabel).setShowAsAction(show);
+                }
                 menu.add(Menu.NONE, ACTION_MORE, Menu.NONE, R.string.text_selection_more);
                 return true;
             }
@@ -159,6 +165,13 @@ public class TextSelectionCursorController implements CursorController {
                         terminalView.stopTextSelectionMode();
                         terminalView.mTermSession.onPasteTextFromClipboard();
                         break;
+                    case ACTION_QUOTE_AI: {
+                        String quoteText = getSelectedText();
+                        TerminalView.SelectionQuoteListener listener = terminalView.getSelectionQuoteListener();
+                        terminalView.stopTextSelectionMode();
+                        if (listener != null && quoteText != null) listener.onQuoteSelection(quoteText);
+                        break;
+                    }
                     case ACTION_MORE:
                         // We first store the selected text in case TerminalViewClient needs the
                         // selected text before MORE button was pressed since we are going to

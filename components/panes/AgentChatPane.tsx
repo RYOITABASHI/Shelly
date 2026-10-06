@@ -15,7 +15,10 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { MultiPaneContext } from '@/components/multi-pane/PaneSlot';
+import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
+import { usePaneStore } from '@/store/pane-store';
+import { insertQuoteIntoDraft } from '@/lib/quote-to-ai';
+import { logInfo } from '@/lib/debug-logger';
 import { useAddPane } from '@/hooks/use-add-pane';
 import {
   useAgentChatStore,
@@ -144,6 +147,8 @@ export default function AgentChatPane() {
   );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const paneId = useContext(PaneIdContext);
+  const pendingInsert = usePaneStore((s) => s.pendingComposerInsert);
   const [replyReadiness, setReplyReadiness] = useState<CodexReplyReadiness | null>(null);
   const [approvalReadiness, setApprovalReadiness] = useState<CodexReplyReadiness | null>(null);
   const [replyChecking, setReplyChecking] = useState(false);
@@ -203,6 +208,28 @@ export default function AgentChatPane() {
     [latestSessionId, selectedSessionId, sessions],
   );
   activeSessionIdRef.current = activeSession?.codexSessionId ?? null;
+
+  // "Quote to AI" (lib/quote-to-ai.ts): claim a terminal selection queued for
+  // this pane into the reply draft (appended, never auto-sent). Without an
+  // active session Send is disabled, so the pane is marked blocked and the
+  // router falls back to the AI pane instead.
+  const hasActiveSession = Boolean(activeSession);
+  useEffect(() => {
+    if (!paneId) return;
+    usePaneStore.getState().setComposerQuoteBlocked(paneId, !hasActiveSession);
+  }, [paneId, hasActiveSession]);
+  useEffect(() => {
+    if (!paneId) return;
+    return () => usePaneStore.getState().releaseComposerPane(paneId);
+  }, [paneId]);
+  useEffect(() => {
+    if (!paneId || !pendingInsert || !hasActiveSession) return;
+    const taken = usePaneStore.getState().takeComposerInsert(paneId, 'agent-chat');
+    if (!taken) return;
+    setDraft((prev) => insertQuoteIntoDraft(prev, taken.text).text);
+    logInfo('AgentChatPane', `quote inserted into reply draft (${taken.text.length} chars)`);
+    useAgentChatStore.getState().requestComposeFocus();
+  }, [paneId, pendingInsert, hasActiveSession]);
 
   const visibleEvents = useMemo(() => {
     const sessionId = activeSession?.codexSessionId;

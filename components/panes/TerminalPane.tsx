@@ -14,6 +14,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  ToastAndroid,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -53,6 +54,7 @@ import { parseInput } from '@/lib/input-router';
 import { parseAgentCommand, runAgentNow, stopAgent } from '@/lib/agent-manager';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { focusPaneByTab } from '@/lib/pane-focus';
+import { quoteTerminalSelectionToAI } from '@/lib/quote-to-ai-dispatch';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { logInfo, logLifecycle } from '@/lib/debug-logger';
 import {
@@ -1487,6 +1489,23 @@ export default function TerminalScreen() {
                 }
               }
               useFocusStore.getState().requestTerminalRefocus();
+            }}
+            // "Quote to AI": extra item in the native selection menu. The
+            // quote lands in an AI / Agent Chat composer draft — never sent.
+            quoteActionLabel={t('quote_to_ai.menu_label')}
+            onQuoteSelection={async (e) => {
+              // Resolves only after the composer actually claimed the quote
+              // (or null on failure/timeout), so the toast never lies.
+              const target = await quoteTerminalSelectionToAI(e.nativeEvent.text ?? '');
+              if (Platform.OS !== 'android') return;
+              ToastAndroid.show(
+                t(target === 'agent-chat'
+                  ? 'quote_to_ai.toast_agent_chat'
+                  : target === 'ai'
+                    ? 'quote_to_ai.toast_ai'
+                    : 'quote_to_ai.toast_failed'),
+                ToastAndroid.SHORT,
+              );
             }}
             onOutput={() => {}}
             onBlockCompleted={async (e) => {

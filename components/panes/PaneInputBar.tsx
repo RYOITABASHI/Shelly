@@ -23,6 +23,8 @@ import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { usePaneStore } from '@/store/pane-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
+import { insertQuoteIntoDraft } from '@/lib/quote-to-ai';
+import { logInfo } from '@/lib/debug-logger';
 
 type Props = {
   placeholder?: string;
@@ -52,6 +54,10 @@ type Props = {
    *  typed here — presumably a pasted API key — isn't shown on-screen
    *  either, not just excluded from storage on the dispatch side. */
   secureEntry?: boolean;
+  /** "Quote to AI" (lib/quote-to-ai.ts): when set together with `paneId`,
+   *  a quote queued on pane-store for this pane+tab is claimed into the
+   *  draft at the cursor (never auto-sent). Only AIPane passes this. */
+  quoteTab?: 'ai';
 };
 
 export default function PaneInputBar({
@@ -65,6 +71,7 @@ export default function PaneInputBar({
   paneId,
   attachmentPreview,
   secureEntry,
+  quoteTab,
 }: Props) {
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
@@ -100,6 +107,41 @@ export default function PaneInputBar({
     });
     return () => sub.remove();
   }, [paneId]);
+
+  // "Quote to AI": claim a terminal selection queued for this pane. Runs on
+  // mount too, so a pane opened by the quote itself picks it up. While the
+  // field is in masked API-key entry (secureEntry) the pane is marked blocked
+  // so the router skips it, and we never claim — a quote typed invisibly into
+  // a secret field would be stored as the key on Send.
+  const pendingInsert = usePaneStore((s) => s.pendingComposerInsert);
+  const pendingCursorRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!paneId || !quoteTab) return;
+    usePaneStore.getState().setComposerQuoteBlocked(paneId, Boolean(secureEntry));
+  }, [paneId, quoteTab, secureEntry]);
+  useEffect(() => {
+    if (!paneId || !quoteTab) return;
+    return () => usePaneStore.getState().releaseComposerPane(paneId);
+  }, [paneId, quoteTab]);
+  useEffect(() => {
+    if (!paneId || !quoteTab || !pendingInsert || secureEntry) return;
+    const taken = usePaneStore.getState().takeComposerInsert(paneId, quoteTab);
+    if (!taken) return;
+    const { text: next, cursor } = insertQuoteIntoDraft(textRef.current, taken.text, selectionRef.current);
+    selectionRef.current = { start: cursor, end: cursor };
+    pendingCursorRef.current = cursor;
+    setText(next);
+    logInfo('PaneInputBar', `quote inserted into draft (${taken.text.length} chars)`);
+    inputRef.current?.focus();
+  }, [paneId, quoteTab, pendingInsert, secureEntry]);
+  // Move the native caret once the inserted text has been committed, so it
+  // matches selectionRef (the `selection` prop itself stays uncontrolled).
+  useEffect(() => {
+    const cursor = pendingCursorRef.current;
+    if (cursor === null) return;
+    pendingCursorRef.current = null;
+    inputRef.current?.setSelection(cursor, cursor);
+  }, [text]);
 
   const hasAttachment = Boolean(attachmentPreview);
   const handleSubmit = useCallback(() => {
