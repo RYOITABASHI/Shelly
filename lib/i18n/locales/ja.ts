@@ -111,6 +111,13 @@ const ja: Record<string, string> = {
   'terminal.confirm_cancel': 'キャンセル',
   'terminal.confirm_run': '実行する',
 
+  // ── Quote to AI (terminal selection → AI composer draft) ─────────
+  'quote_to_ai.menu_label': 'AIに引用',
+  'quote_to_ai.toast_ai': 'AI入力欄に引用しました。質問を書き足して送信してください',
+  'quote_to_ai.toast_agent_chat': 'Agent Chatの返信欄に引用しました。メッセージを書き足して送信してください',
+  'quote_to_ai.toast_failed': '引用するテキストが無いか、AIペインを開けませんでした',
+  'quote_to_ai.truncated_note': '[… 先頭の{{count}}文字を省略]',
+
   // ── Common UI ───────────────────────────────────────────────────
   'common.cancel': 'キャンセル',
   'common.close': '閉じる',

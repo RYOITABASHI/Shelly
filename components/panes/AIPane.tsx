@@ -990,6 +990,7 @@ export default function AIPane() {
         onMicPress={handleMicPress}
         onMicLongPress={handleMicLongPress}
         paneId={paneId}
+        quoteTab="ai"
         attachmentPreview={stagedImage ? { uri: stagedImage.uri, onRemove: handleRemoveStagedImage } : null}
         secureEntry={hasPendingApiKeyPrompt}
       />

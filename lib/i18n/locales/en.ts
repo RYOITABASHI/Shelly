@@ -111,6 +111,13 @@ const en: Record<string, string> = {
   'terminal.confirm_cancel': 'Cancel',
   'terminal.confirm_run': 'Run',
 
+  // ── Quote to AI (terminal selection → AI composer draft) ─────────
+  'quote_to_ai.menu_label': 'Ask AI',
+  'quote_to_ai.toast_ai': 'Quoted into the AI input — add your question and send',
+  'quote_to_ai.toast_agent_chat': 'Quoted into the Agent Chat reply — add your message and send',
+  'quote_to_ai.toast_failed': 'Nothing to quote, or no AI pane could be opened',
+  'quote_to_ai.truncated_note': '[… {{count}} earlier characters omitted]',
+
   // ── Common UI ───────────────────────────────────────────────────
   'common.cancel': 'Cancel',
   'common.close': 'Close',

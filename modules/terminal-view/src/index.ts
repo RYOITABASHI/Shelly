@@ -10,4 +10,5 @@ export {
   type UrlDetectedEvent,
   type TitleChangedEvent,
   type ScrollStateChangedEvent,
+  type QuoteSelectionEvent,
 } from './NativeTerminalView';

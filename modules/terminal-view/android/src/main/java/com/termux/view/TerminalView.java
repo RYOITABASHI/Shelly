@@ -2104,6 +2104,34 @@ public class TerminalView extends View {
             return null;
     }
 
+    /**
+     * Shelly "Quote to AI": optional extra action in the text-selection menu.
+     * The label comes from JS (app-level i18n); a blank label or null listener
+     * hides the item, so the vendored Termux behavior is unchanged by default.
+     */
+    public interface SelectionQuoteListener {
+        void onQuoteSelection(String text);
+    }
+
+    @Nullable private String mSelectionQuoteLabel;
+    @Nullable private SelectionQuoteListener mSelectionQuoteListener;
+
+    public void setSelectionQuoteAction(@Nullable String label, @Nullable SelectionQuoteListener listener) {
+        mSelectionQuoteLabel = label;
+        mSelectionQuoteListener = listener;
+    }
+
+    @Nullable
+    public String getSelectionQuoteLabel() {
+        return mSelectionQuoteListener == null || mSelectionQuoteLabel == null || mSelectionQuoteLabel.trim().isEmpty()
+            ? null : mSelectionQuoteLabel;
+    }
+
+    @Nullable
+    public SelectionQuoteListener getSelectionQuoteListener() {
+        return mSelectionQuoteListener;
+    }
+
     /** Get the selected text stored before "MORE" button was pressed on the context menu. */
     @Nullable
     public String getStoredSelectedText() {
