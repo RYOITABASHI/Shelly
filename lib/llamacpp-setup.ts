@@ -129,8 +129,13 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     // before b9360) and honors chat_template_kwargs.enable_thinking=false.
     id: 'minicpm5-2b-q4',
     name: 'MiniCPM5-2B Q4_K_M',
+    // On-device eval 2026-10-06 (Galaxy Z Fold6, llama.cpp b11433, greedy,
+    // thinking off; scripts/eval/run-local-llm-ab.sh) vs Qwen3.5-2B: router
+    // 83% vs 100%, tools(JSON) 50% vs 75%, native tool calls 50% vs 88%,
+    // JA summary 80% vs 80%, ~20-40% slower → not adopted; kept opt-in.
+    // See docs/superpowers/DEFERRED.md.
     description:
-      'オプトインのA/B比較候補。ツール呼び出しに強い。日本語品質は評価スクリプトで確認。llama.cpp b9360以降が必要。',
+      '実験用のオプトイン。実機評価（2026-10-06）ではQwen3.5-2Bに対しルーティング/ツール呼び出しで劣り、20〜40%遅かったため常用はQwen3.5-2B推奨。llama.cpp b9360以降が必要。',
     descriptionKey: 'llama.model.minicpm5_2b.description',
     sizeGb: 1.6,
     ramRequiredGb: 3.6,
@@ -141,7 +146,7 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
     filename: 'MiniCPM5-2B-Q4_K_M.gguf',
     downloadUrl:
       'https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf',
-    badge: 'ツール呼出(評価中)',
+    badge: '実験的',
     badgeKey: 'llama.model.minicpm5_2b.badge',
   },
   {
@@ -425,15 +430,18 @@ fetch_text() {
 # function: every step must propagate its own failure, or a curl/wget error
 # after a partial .part write would fall through to mv, return 0, skip the
 # fallback and surface as a misleading sha256 mismatch.
+# -sS / -q: the Setup log shows the raw command output, and curl's progress
+# meter table ("% Total % Received ...") was pure noise there; errors still
+# print (-S) and the surrounding echo lines report each step.
 download_file() {
   url="$1"
   out_file="$2"
   tmp_file="$out_file.part"
   rm -f "$tmp_file"
   if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
+    curl -sS -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
+    wget -q -O "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   else
     echo "curl or wget is required to install llama.cpp" >&2
     return 127
@@ -670,9 +678,12 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
     `MODEL_NAME=${name}`,
     `MODEL_DEST="${dest}"`,
     `if command -v curl >/dev/null 2>&1; then`,
-    `  curl -L --fail --retry 3 --retry-delay 2 -C - -o "$MODEL_DEST" "$MODEL_URL"`,
+    // Quiet (-sS / -q): progress is shown in the UI by polling the file size
+    // (buildModelDownloadedBytesCommand), and the meter only cluttered the
+    // tail of the output surfaced on failure.
+    `  curl -sS -L --fail --retry 3 --retry-delay 2 -C - -o "$MODEL_DEST" "$MODEL_URL"`,
     `elif command -v wget >/dev/null 2>&1; then`,
-    `  wget -c -O "$MODEL_DEST" "$MODEL_URL"`,
+    `  wget -q -c -O "$MODEL_DEST" "$MODEL_URL"`,
     `else`,
     `  echo "Download failed: curl or wget is required." >&2`,
     `  exit 1`,
@@ -680,6 +691,66 @@ export function buildDownloadCommand(model: LlamaCppModel): string {
     `test -s "$MODEL_DEST"`,
     `echo "Download complete: ${dest}"`,
   ].join('\n');
+}
+
+// ─── Download progress ───────────────────────────────────────────────────────
+// buildDownloadCommand writes straight to the final path (curl -C - resumes
+// into it), so the bytes on disk ARE the progress. The UI polls these two
+// read-only probes while the download command is in flight.
+
+/** Prints the current byte size of the model file being downloaded (0 when
+ *  it doesn't exist yet). Uses stat, not wc -c, so a multi-GB file isn't
+ *  re-read on every poll. */
+export function buildModelDownloadedBytesCommand(model: LlamaCppModel): string {
+  const dest = `${MODELS_DIR}/${model.filename}`;
+  return `F="${dest}"; if [ -f "$F" ]; then stat -c %s "$F" 2>/dev/null || echo 0; else echo 0; fi`;
+}
+
+/** Prints the remote Content-Length (after redirects) for the model URL, or
+ *  nothing when the server doesn't report one. */
+export function buildModelContentLengthCommand(model: LlamaCppModel): string {
+  const url = shellQuote(model.downloadUrl);
+  return [
+    TLS_ENV_PRELUDE,
+    `if command -v curl >/dev/null 2>&1; then`,
+    `  curl -sIL --max-time 20 ${url} 2>/dev/null | tr -d '\\r' | grep -i '^content-length:' | tail -n 1 | sed 's/[^0-9]//g'`,
+    `fi`,
+  ].join('\n');
+}
+
+/** Parses a probe's stdout into a positive byte count, or null. */
+export function parseProbeBytes(output: string | undefined | null): number | null {
+  const m = /(\d+)\s*$/.exec((output ?? '').trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export interface ModelDownloadProgress {
+  downloadedMb: number;
+  totalMb: number;
+  /** 0–99 while running (100 only once the command itself succeeded). */
+  percent: number;
+  /** true when the total came from the catalog's sizeGb, not Content-Length. */
+  approximate: boolean;
+}
+
+/** Combines bytes-on-disk with the best known total (Content-Length, else
+ *  the catalog sizeGb as decimal GB). */
+export function computeModelDownloadProgress(
+  model: LlamaCppModel,
+  downloadedBytes: number,
+  contentLength: number | null,
+): ModelDownloadProgress {
+  const approximate = !contentLength;
+  const totalBytes = contentLength ?? Math.round(model.sizeGb * 1e9);
+  const ratio = totalBytes > 0 ? downloadedBytes / totalBytes : 0;
+  return {
+    downloadedMb: Math.round(downloadedBytes / 1e6),
+    totalMb: Math.round(totalBytes / 1e6),
+    percent: Math.max(0, Math.min(99, Math.floor(ratio * 100))),
+    approximate,
+  };
 }
 
 /**

@@ -34,3 +34,23 @@ describe('PaneInputBar composer text color', () => {
     expect(input.props.placeholderTextColor).toBe('#999999');
   });
 });
+
+describe('PaneInputBar multiline composer', () => {
+  it('wraps/auto-grows when multiline, while Enter still submits', () => {
+    const screen = render(<PaneInputBar multiline onSubmit={() => {}} />);
+    const input = screen.UNSAFE_getByType(TextInput);
+    expect(input.props.multiline).toBe(true);
+    expect(input.props.submitBehavior).toBe('submit');
+    expect(StyleSheet.flatten(input.props.style).maxHeight).toBeGreaterThan(0);
+  });
+
+  it('stays single-line for masked API-key entry', () => {
+    const screen = render(<PaneInputBar multiline secureEntry onSubmit={() => {}} />);
+    expect(screen.UNSAFE_getByType(TextInput).props.multiline).toBe(false);
+  });
+
+  it('defaults to single-line for other panes', () => {
+    const screen = render(<PaneInputBar onSubmit={() => {}} />);
+    expect(screen.UNSAFE_getByType(TextInput).props.multiline).toBe(false);
+  });
+});

@@ -59,7 +59,20 @@ type Props = {
    *  a quote queued on pane-store for this pane+tab is claimed into the
    *  draft at the cursor (never auto-sent). Only AIPane passes this. */
   quoteTab?: 'ai';
+  /** AI pane: let the composer wrap and auto-grow (up to
+   *  COMPOSER_MAX_LINES, then scroll) so a multi-line "Ask AI" quote stays
+   *  readable instead of collapsing into one scrolling line. The Enter key
+   *  still SENDS (submitBehavior="submit"), exactly like the single-line
+   *  composer; newlines arrive via paste / quote insertion. Ignored while
+   *  `secureEntry` is on (Android password fields must be single-line). */
+  multiline?: boolean;
 };
+
+const COMPOSER_FONT_SIZE = 11;
+const COMPOSER_LINE_HEIGHT = 15;
+const COMPOSER_MAX_LINES = 6;
+const COMPOSER_VERTICAL_PADDING = 4;
+const COMPOSER_MAX_HEIGHT = COMPOSER_LINE_HEIGHT * COMPOSER_MAX_LINES + COMPOSER_VERTICAL_PADDING * 2;
 
 export default function PaneInputBar({
   placeholder,
@@ -73,7 +86,9 @@ export default function PaneInputBar({
   attachmentPreview,
   secureEntry,
   quoteTab,
+  multiline,
 }: Props) {
+  const isMultiline = Boolean(multiline) && !secureEntry;
   const [text, setText] = useState('');
   const inputRef = useRef<TextInput>(null);
   // Text colors MUST come from the live theme at render time, never from
@@ -180,7 +195,7 @@ export default function PaneInputBar({
         <Text style={[styles.promptGlyph, { color: themeColors.accent }]}>{'>'}</Text>
         <TextInput
           ref={inputRef}
-          style={[styles.input, { color: themeColors.foreground }]}
+          style={[styles.input, isMultiline && styles.inputMultiline, { color: themeColors.foreground }]}
           value={text}
           onChangeText={setText}
           onSelectionChange={(e) => {
@@ -189,7 +204,11 @@ export default function PaneInputBar({
           placeholder={placeholder ?? ''}
           placeholderTextColor={themeColors.hint}
           onSubmitEditing={handleSubmit}
-          blurOnSubmit={false}
+          // Enter sends and keeps focus, in both single- and multi-line mode
+          // (the multiline default would insert a newline instead).
+          submitBehavior="submit"
+          multiline={isMultiline}
+          scrollEnabled
           returnKeyType="send"
           autoCapitalize="none"
           autoCorrect={false}
@@ -274,11 +293,16 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     fontFamily: F.family,
-    fontSize: 11,
+    fontSize: COMPOSER_FONT_SIZE,
     // color is applied inline from useTheme() — see the comment in the
     // component body.
-    paddingVertical: 4,
+    paddingVertical: COMPOSER_VERTICAL_PADDING,
     paddingHorizontal: 0,
+  },
+  inputMultiline: {
+    lineHeight: COMPOSER_LINE_HEIGHT,
+    maxHeight: COMPOSER_MAX_HEIGHT,
+    textAlignVertical: 'center',
   },
   iconBtn: {
     width: 24,

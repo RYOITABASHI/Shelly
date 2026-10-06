@@ -1,7 +1,13 @@
 import {
   buildDaemonStartScript,
   buildDeleteModelCommand,
+  buildDownloadCommand,
+  buildModelContentLengthCommand,
+  buildModelDownloadedBytesCommand,
   buildRecommendedStartCommand,
+  buildSetupSteps,
+  computeModelDownloadProgress,
+  parseProbeBytes,
   getModelById,
   getModelRuntimeProfile,
   getRecommendedModel,
@@ -84,6 +90,10 @@ describe('llama.cpp local server tuning', () => {
     });
     expect(model.recommended).toBeFalsy();
     expect(model.hidden).toBeFalsy();
+    // 2026-10-06 on-device eval: not adopted, kept as an experimental opt-in.
+    expect((en as Record<string, string>)['llama.model.minicpm5_2b.badge']).toBe('Experimental');
+    expect((en as Record<string, string>)['llama.model.minicpm5_2b.description']).toContain('Qwen3.5-2B is recommended');
+    expect((ja as Record<string, string>)['llama.model.minicpm5_2b.badge']).toBe('実験的');
     expect(getRecommendedModel().id).toBe('qwen3.5-0.8b-q4');
     // Same small-tier runtime profile as Qwen3.5-2B.
     expect(getModelRuntimeProfile(model)).toEqual(
@@ -132,5 +142,56 @@ describe('llama.cpp local server tuning', () => {
 
     expect(command).toContain('target="$HOME/models/Qwen3.5-2B-Q4_K_M.gguf"');
     expect(command).not.toContain('/sdcard/Download/ShellyModels/Qwen3.5-2B-Q5_K_M.gguf');
+  });
+});
+
+describe('model download progress', () => {
+  const model = getModelById('qwen3.5-2b-q4')!;
+
+  it('download command is quiet and probes read the same destination', () => {
+    const cmd = buildDownloadCommand(model);
+    expect(cmd).toContain('curl -sS -L --fail --retry 3 --retry-delay 2 -C - -o "$MODEL_DEST"');
+    expect(cmd).toContain('wget -q -c -O "$MODEL_DEST"');
+    const probe = buildModelDownloadedBytesCommand(model);
+    expect(probe).toContain(`F="$HOME/models/${model.filename}"`);
+    expect(probe).toContain('stat -c %s');
+    // Not matched by the wrapper's long-timeout download heuristic.
+    expect(probe).not.toContain('MODEL_URL=');
+    expect(buildModelContentLengthCommand(model)).toContain('curl -sIL');
+  });
+
+  it('parses probe output and computes clamped progress', () => {
+    expect(parseProbeBytes('12345\n')).toBe(12345);
+    expect(parseProbeBytes('0')).toBeNull();
+    expect(parseProbeBytes('')).toBeNull();
+    expect(computeModelDownloadProgress(model, 500e6, 1000e6)).toEqual({
+      downloadedMb: 500,
+      totalMb: 1000,
+      percent: 50,
+      approximate: false,
+    });
+    const approx = computeModelDownloadProgress(model, 10e9, null);
+    expect(approx.approximate).toBe(true);
+    expect(approx.totalMb).toBe(Math.round(model.sizeGb * 1000));
+    expect(approx.percent).toBe(99);
+  });
+
+  it('has en/ja strings for both progress variants', () => {
+    for (const key of ['llama.download_progress', 'llama.download_progress_approx'] as const) {
+      expect((en as Record<string, string>)[key]).toContain('{{percent}}');
+      expect((ja as Record<string, string>)[key]).toContain('{{downloaded}}');
+    }
+  });
+});
+
+describe('llama.cpp install script output', () => {
+  it('keeps curl/wget quiet so the Setup log has no progress-meter table', () => {
+    const install = buildSetupSteps().find((s) => s.id === 'install_llamacpp')!.command;
+    expect(install).toContain('curl -sS -L --fail --retry 3 --retry-delay 2 -o "$tmp_file"');
+    expect(install).toContain('wget -q -O "$tmp_file"');
+    expect(install).not.toMatch(/curl -L --fail/);
+    // Fail-closed sha256 + fallback logic stays intact.
+    expect(install).toContain('refusing to install');
+    expect(install).toContain('scan_release_fallback');
   });
 });

@@ -2252,9 +2252,11 @@ const ja: Record<string, string> = {
   'llama.model_catalog': 'モデルカタログ',
   'llama.recommended': '推奨',
   'llama.download': 'ダウンロード ({{size}}GB)',
-  'llama.model.minicpm5_2b.badge': 'ツール呼出(評価中)',
+  'llama.download_progress': '{{percent}}% · {{downloaded}} / {{total}} MB',
+  'llama.download_progress_approx': '約{{percent}}% · {{downloaded}} / 約{{total}} MB',
+  'llama.model.minicpm5_2b.badge': '実験的',
   'llama.model.minicpm5_2b.description':
-    'オプトインのA/B比較候補（OpenBMB、Apache 2.0）。サブエージェント向けのツール呼び出しに強い。公式の対応言語は英語/中国語のため、日本語品質は同梱の評価スクリプトで確認してから使うこと。読み込みには llama.cpp b9360 以降（ネイティブのツール呼び出し解析は b9833 以降）が必要 — サーバーが起動しない場合は llama.cpp Setup を再実行。',
+    '実験用のオプトインとして残しているモデル（OpenBMB、Apache 2.0）。実機評価（Galaxy Z Fold6、2026-10-06）では Qwen3.5-2B 比でルーティング 83% 対 100%、ツール(JSON) 50% 対 75%、ネイティブのツール呼び出し 50% 対 88%、日本語要約 80% 対 80%、速度は約20〜40%遅い — 常用には Qwen3.5-2B を推奨。読み込みには llama.cpp b9360 以降（ネイティブのツール呼び出し解析は b9833 以降）が必要 — サーバーが起動しない場合は llama.cpp Setup を再実行。',
   'file_tree.directory': 'ディレクトリ',
   'file_tree.file': 'ファイル',
   'file_tree.rename': '名前変更',
