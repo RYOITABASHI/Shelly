@@ -2193,6 +2193,9 @@ const ja: Record<string, string> = {
   'llama.model_catalog': 'モデルカタログ',
   'llama.recommended': '推奨',
   'llama.download': 'ダウンロード ({{size}}GB)',
+  'llama.model.minicpm5_2b.badge': 'ツール呼出(評価中)',
+  'llama.model.minicpm5_2b.description':
+    'オプトインのA/B比較候補（OpenBMB、Apache 2.0）。サブエージェント向けのツール呼び出しに強い。公式の対応言語は英語/中国語のため、日本語品質は同梱の評価スクリプトで確認してから使うこと。読み込みには llama.cpp b9360 以降（ネイティブのツール呼び出し解析は b9833 以降）が必要 — サーバーが起動しない場合は llama.cpp Setup を再実行。',
   'file_tree.directory': 'ディレクトリ',
   'file_tree.file': 'ファイル',
   'file_tree.rename': '名前変更',

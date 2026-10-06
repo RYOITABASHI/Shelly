@@ -74,6 +74,21 @@ describe('local LLM request compatibility', () => {
     });
   });
 
+  it('disables MiniCPM5 thinking for llama.cpp OpenAI-compatible requests', async () => {
+    const fetchMock = mockJsonFetch({
+      choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    });
+
+    await ollamaChat(
+      { baseUrl: 'http://127.0.0.1:8080', model: 'MiniCPM5-2B-Q4_K_M', enabled: true },
+      messages,
+    );
+
+    expect(requestBody(fetchMock)).toMatchObject({
+      chat_template_kwargs: { enable_thinking: false },
+    });
+  });
+
   it('disables thinking for generic Ollama aliases used by Shelly local setup', async () => {
     const fetchMock = mockJsonFetch({
       model: 'default',

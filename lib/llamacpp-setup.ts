@@ -27,6 +27,9 @@ export interface LlamaCppModel {
   recommended?: boolean;
   badge?: string;
   hidden?: boolean;
+  /** Optional i18n keys; when set, the UI prefers them over the inline JA text. */
+  descriptionKey?: string;
+  badgeKey?: string;
 }
 
 export interface LlamaCppSetupStep {
@@ -113,6 +116,33 @@ export const MODEL_CATALOG: LlamaCppModel[] = [
       'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf',
     recommended: true,
     badge: '推奨',
+  },
+  {
+    // Opt-in A/B candidate vs Qwen3.5-2B (see scripts/eval/local-llm-ab-eval.js).
+    // GGUF metadata (verified 2026-10-06 from the HF file header):
+    // general.architecture=llama (mainline LlamaForCausalLM, 42 layers, 2.6B
+    // params), tokenizer.ggml.pre=minicpm5 — that pre-tokenizer landed in
+    // llama.cpp 9777256c3 (#23384, release <= b9360), so older installs fail to
+    // load it. The specialized MiniCPM5 XML tool-call parser landed in
+    // c818263f2 (#24889, b9833). Chat template is embedded ChatML with
+    // <think>; llama-server applies it via --jinja (default on since well
+    // before b9360) and honors chat_template_kwargs.enable_thinking=false.
+    id: 'minicpm5-2b-q4',
+    name: 'MiniCPM5-2B Q4_K_M',
+    description:
+      'オプトインのA/B比較候補。ツール呼び出しに強い。日本語品質は評価スクリプトで確認。llama.cpp b9360以降が必要。',
+    descriptionKey: 'llama.model.minicpm5_2b.description',
+    sizeGb: 1.6,
+    ramRequiredGb: 3.6,
+    language: 'multilingual',
+    useCase: 'balanced',
+    quantization: 'Q4_K_M',
+    huggingFaceRepo: 'openbmb/MiniCPM5-2B-GGUF',
+    filename: 'MiniCPM5-2B-Q4_K_M.gguf',
+    downloadUrl:
+      'https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf',
+    badge: 'ツール呼出(評価中)',
+    badgeKey: 'llama.model.minicpm5_2b.badge',
   },
   {
     id: 'qwen3.5-4b-q4',

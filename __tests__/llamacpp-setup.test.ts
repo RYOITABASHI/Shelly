@@ -7,6 +7,8 @@ import {
   getRecommendedModel,
   MODEL_CATALOG,
 } from '@/lib/llamacpp-setup';
+import en from '@/lib/i18n/locales/en';
+import ja from '@/lib/i18n/locales/ja';
 
 describe('llama.cpp local server tuning', () => {
   it('uses the light autonomous profile as the recommended default', () => {
@@ -64,8 +66,41 @@ describe('llama.cpp local server tuning', () => {
     expect(visibleIds).toEqual([
       'qwen3.5-2b-q4',
       'qwen3.5-0.8b-q4',
+      'minicpm5-2b-q4',
       'qwen3.5-4b-q4',
     ]);
+  });
+
+  it('lists MiniCPM5-2B as an opt-in (never default) candidate with i18n keys', () => {
+    const model = getModelById('minicpm5-2b-q4')!;
+    expect(model).toMatchObject({
+      huggingFaceRepo: 'openbmb/MiniCPM5-2B-GGUF',
+      filename: 'MiniCPM5-2B-Q4_K_M.gguf',
+      downloadUrl:
+        'https://huggingface.co/openbmb/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf',
+      quantization: 'Q4_K_M',
+      descriptionKey: 'llama.model.minicpm5_2b.description',
+      badgeKey: 'llama.model.minicpm5_2b.badge',
+    });
+    expect(model.recommended).toBeFalsy();
+    expect(model.hidden).toBeFalsy();
+    expect(getRecommendedModel().id).toBe('qwen3.5-0.8b-q4');
+    // Same small-tier runtime profile as Qwen3.5-2B.
+    expect(getModelRuntimeProfile(model)).toEqual(
+      getModelRuntimeProfile(getModelById('qwen3.5-2b-q4')!),
+    );
+  });
+
+  it('has en and ja strings for every catalog i18n key', () => {
+    const enMap: Record<string, string> = en;
+    const jaMap: Record<string, string> = ja;
+    for (const model of MODEL_CATALOG) {
+      for (const key of [model.descriptionKey, model.badgeKey]) {
+        if (!key) continue;
+        expect(typeof enMap[key]).toBe('string');
+        expect(typeof jaMap[key]).toBe('string');
+      }
+    }
   });
 
   it('deletes the detected installed model path', () => {
