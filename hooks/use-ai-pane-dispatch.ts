@@ -104,6 +104,7 @@ import { tFor, useTranslation } from '@/lib/i18n';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
+import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -849,7 +850,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // completely untouched here, so it's still there to confirm/cancel
       // once its own turn comes back around — this only reorders WHICH
       // pending mechanism a reply resolves against, per-turn.
-      const freshestMsgForPendingCheck = store.getOrCreate(paneId).messages.slice(-1)[0];
+      const freshestMsgForPendingCheck = lastPromptAnchorMessage(store.getOrCreate(paneId).messages);
       const hasFresherOwnSlotFillQuestion = hasFresherPendingSlotFillQuestion(
         freshestMsgForPendingCheck,
         Date.now(),
@@ -1787,7 +1788,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // treating it as a fresh command / LLM prompt. Must run BEFORE
       // parseInput so a slot answer never gets misparsed as an @mention.
       const slotFillConv = store.getOrCreate(paneId);
-      const lastSlotFillMsg = slotFillConv.messages[slotFillConv.messages.length - 1];
+      const lastSlotFillMsg = lastPromptAnchorMessage(slotFillConv.messages);
       // Guard against a stale/abandoned pendingSlotFill hijacking an unrelated
       // fresh command. ai-pane-store's persist() does NOT strip pendingSlotFill,
       // so an unanswered question can survive an app restart and sit for days.

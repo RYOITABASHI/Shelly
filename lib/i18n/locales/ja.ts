@@ -1186,6 +1186,26 @@ const ja: Record<string, string> = {
   // 使う——モデルの切替ではなく「そのエージェントに繋がった」と伝える。
   'chat.switched_to_agent_thread': '{{agentName}}に繋がりました。',
   'chat.carried_forward_to_agent_thread': 'ここまでの話を持ってきました。{{agentName}}に繋がりました。',
+  // Agent hand-off narration (lib/agent-handoff.ts)
+  'handoff.role.researcher': '調査役',
+  'handoff.role.summarizer': '要約役',
+  'handoff.role.writer': '執筆役',
+  'handoff.role.reviewer': '確認役',
+  'handoff.role.translator': '翻訳役',
+  'handoff.role.publisher': '投稿役',
+  'handoff.role.step': 'ステップ{{n}}',
+  'handoff.branches_label': '{{count}}つの分岐（{{roles}}）',
+  'handoff.group_start': '🔀 {{count}}つに分岐: {{roles}}',
+  'handoff.group_done': '🔗 {{count}}件の分岐結果を集約 → {{to}}',
+  'handoff.group_done_final': '🔗 {{count}}件の分岐結果を集約',
+  'handoff.pass': '🔁 {{from}} → {{to}}: {{summary}}',
+  'handoff.finished': '🏁 {{role}}が完了（{{steps}}ステップ）: {{result}}',
+  'handoff.stopped': '⚠️ {{role}}で停止: {{summary}}',
+  'handoff.halted': '⏸️ 予算上限（ステップ数/時間）でチェーンを途中終了しました',
+  'handoff.summary_items': '{{count}}件の項目を渡しました —「{{snippet}}」',
+  'handoff.summary_text': '「{{snippet}}」',
+  'handoff.no_output': '（出力なし）',
+  'handoff.digest_header': '📋 {{agentName}} — バックグラウンド実行の引き継ぎ:',
   'chat.empty_subtitle': '何でも聞いてください。ターミナルの出力も見えています。',
   // Fable5レビュー項目#7 (2026-08-25): 初回エージェント登録前の一度きりの
   // オンボーディング案内。モーダルやウィザードではなく、相棒からの普通の

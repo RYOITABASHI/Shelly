@@ -1261,6 +1261,13 @@ export type ChatMessage = {
   timestamp: number;
   /** Stable identity for a proactive background-agent completion notice. */
   agentRunLogId?: string;
+  /** Agent hand-off narration (2026-10-06, lib/agent-handoff.ts): set on a
+   *  plain-text system line posted into an agent's own `agent:<id>` thread
+   *  at an orchestrated run's step boundary. `runId` is the dedupe identity
+   *  (`<agentId>:<timestamp>` for an unattended digest replayed from the run
+   *  log, `<agentId>:live:<startMs>` for attended live lines); `seq` orders
+   *  the lines of one run. Informational only — never rendered as a card. */
+  handoff?: { runId: string; seq: number };
   /** コマンド実行結果の埋め込み */
   executions?: CommandExecution[];
   /** AI agent that handled this message */

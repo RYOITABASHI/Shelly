@@ -42,7 +42,12 @@ import {
   writeSkillRecipe,
 } from './agent-skills';
 import { saveUnattendedSkillWithNotification } from './unattended-skill-save';
-import { agentRunLogIdentity } from './agent-companion-notice';
+import {
+  agentRunLogIdentity,
+  markAgentHandoffRunNarrated,
+  postAgentHandoffLine,
+} from './agent-companion-notice';
+import { HandoffNarrator } from './agent-handoff';
 import {
   applyUnattendedSkillImprovement,
   clearSkillImprovementProposal,
@@ -2023,10 +2028,42 @@ async function runAgentOrchestratedBody(
   // writes and replace them with ONE aggregate (so the circuit breaker counts a
   // failed chain as one run, and the per-step detail survives a reload).
   const beforeFiles = await listAgentLogFiles(runCommand, agentId);
+  // Agent hand-off narration (lib/agent-handoff.ts): plain-text lines in the
+  // agent's own chat thread at each step boundary. Purely observational —
+  // fed the SAME effective group plan the context flow uses, never consulted
+  // for control flow, and every call is guarded so a narration bug cannot
+  // fail (or reorder) the serial chain.
+  const handoffRunId = `${agentId}:live:${startedAtMs}`;
+  let handoffSeq = 0;
+  let handoffNarrator: HandoffNarrator | null = null;
+  try {
+    handoffNarrator = new HandoffNarrator(
+      steps.map((s, idx) => ({ instruction: s.instruction, parallelGroup: parallelPlan.group[idx] })),
+      t,
+    );
+  } catch (error) {
+    logWarn('Handoff', 'narrator init failed', error);
+  }
+  const narrate = (produce: (n: HandoffNarrator) => string[]): void => {
+    if (!handoffNarrator) return;
+    try {
+      for (const line of produce(handoffNarrator)) {
+        postAgentHandoffLine(agentId, handoffRunId, handoffSeq++, line);
+      }
+    } catch (error) {
+      logWarn('Handoff', 'narration failed', error);
+    }
+  };
 
   for (let i = 0; i < steps.length; i++) {
     const gate = nextStepGate({ stepIndex: i, budget, startedAtMs, now: Date.now(), priorFailed });
-    if (!gate.proceed) break;
+    if (!gate.proceed) {
+      // Budget refusal after a SUCCESS (a failure already narrated its own
+      // terminal line): say the chain was cut short instead of going silent.
+      if (!priorFailed) narrate((n) => n.chainHalted());
+      break;
+    }
+    narrate((n) => n.stepStarting(i));
 
     // Each step is a normal single run with a step-specific prompt; orchestration
     // is cleared so the step itself doesn't recurse. Phase 5: a step may pin a
@@ -2109,6 +2146,7 @@ async function runAgentOrchestratedBody(
         outputPreview: error instanceof Error ? error.message.slice(0, 200) : 'step failed',
         ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
       });
+      narrate((n) => n.stepFinished(records[records.length - 1]));
       priorFailed = true;
       continue;
     }
@@ -2126,6 +2164,7 @@ async function runAgentOrchestratedBody(
       routeDecision: log?.routeDecision,
       ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
     });
+    narrate((n) => n.stepFinished(records[records.length - 1]));
     // A transient step carries no usable result downstream, so it stops the chain
     // just like an error — only success feeds the next step's context.
     if (status === 'success') priorResults.push(log?.outputPreview ?? '');
@@ -2156,6 +2195,9 @@ async function runAgentOrchestratedBody(
     steps: records,
   };
   markAttendedAgentRunLog(aggregate);
+  // Lines were already posted live above — keep the periodic disk sync from
+  // replaying this same run as an unattended digest.
+  if (handoffSeq > 0) markAgentHandoffRunNarrated(aggregate);
   try {
     const afterFiles = await listAgentLogFiles(runCommand, agentId);
     const newFiles = afterFiles.filter((f) => !beforeFiles.includes(f));

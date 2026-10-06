@@ -1218,6 +1218,26 @@ const en: Record<string, string> = {
   // named so it reads as "you're now talking to Research Bot", not a model swap.
   'chat.switched_to_agent_thread': "You're now talking to {{agentName}}.",
   'chat.carried_forward_to_agent_thread': "I brought our conversation along — you're now talking to {{agentName}}.",
+  // Agent hand-off narration (lib/agent-handoff.ts)
+  'handoff.role.researcher': 'Researcher',
+  'handoff.role.summarizer': 'Summarizer',
+  'handoff.role.writer': 'Writer',
+  'handoff.role.reviewer': 'Reviewer',
+  'handoff.role.translator': 'Translator',
+  'handoff.role.publisher': 'Publisher',
+  'handoff.role.step': 'Step {{n}}',
+  'handoff.branches_label': '{{count}} branches ({{roles}})',
+  'handoff.group_start': '🔀 Split into {{count}} branches: {{roles}}',
+  'handoff.group_done': '🔗 Merged {{count}} branch results → {{to}}',
+  'handoff.group_done_final': '🔗 Merged {{count}} branch results',
+  'handoff.pass': '🔁 {{from}} → {{to}}: {{summary}}',
+  'handoff.finished': '🏁 {{role}} finished ({{steps}} steps): {{result}}',
+  'handoff.stopped': '⚠️ Stopped at {{role}}: {{summary}}',
+  'handoff.halted': '⏸️ Chain stopped early (step/time budget reached)',
+  'handoff.summary_items': 'handed over {{count}} items — "{{snippet}}"',
+  'handoff.summary_text': '"{{snippet}}"',
+  'handoff.no_output': '(no output)',
+  'handoff.digest_header': '📋 {{agentName}} — background run hand-offs:',
   'chat.empty_subtitle': 'Ask anything. I can see your terminal output.',
   // Fable5 review item #7 (2026-08-25): one-time first-agent onboarding
   // nudge, shown as a plain companion chat message (never a modal/wizard —
