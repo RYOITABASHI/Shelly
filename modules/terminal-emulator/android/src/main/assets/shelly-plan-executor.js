@@ -15,8 +15,8 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=3
-const EXECUTOR_SCRIPT_VERSION = 3;
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=4
+const EXECUTOR_SCRIPT_VERSION = 4;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
 // 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 (lib/signed-approval/wiring.ts).
@@ -67,6 +67,9 @@ const CONFIG_ENV_KEYS = new Set([
   // social-post (2026-07-22): the user's silent-unattended-dispatch opt-in
   // list, the social twin of SHELLY_WEBHOOK_HOST_ALLOWLIST above.
   'SHELLY_SOCIAL_HOST_ALLOWLIST',
+  // POLICY-001 (lib/agent-action-policy.ts): user rules + proactive
+  // read-only floor. Flag-gated OFF; see policyActionEffect() below.
+  'SHELLY_AGENT_POLICY',
 ]);
 
 // social-post (2026-07-22): dynamic per-connector config keys — ONLY the
@@ -1666,6 +1669,10 @@ function requestActionApproval(paths, plan, actionType, preview, resultFile, con
     // (dormant SIGNED_APPROVAL_ENABLED path) — acceptable, these are
     // executor-computed trust hints, not human-reviewable content.
     autoAccept: extra.autoAccept === true,
+    // POLICY-001: run origin (native SHELLY_RUN_ORIGIN) so the RN approval
+    // choke point can refuse auto-accept / trust-ramp for proactive runs.
+    // Empty ⇒ RN treats it as proactive (fail-closed).
+    origin: String(process.env.SHELLY_RUN_ORIGIN || '').slice(0, 32),
     resultPath: resultFile,
     ts: new Date().toISOString(),
     expiresAt: Date.now() + Math.max(1, timeoutSeconds) * 1000,
@@ -2229,10 +2236,111 @@ function trustedNativeLowRiskAction(args, plan, actionType) {
 // ACTION_APPROVAL_MODE != "manual", and trustedNativeLowRiskAction() is what
 // already gates the draft/notify agent.autonomous fast path (via
 // AgentRuntime.kt's trustedPlanLaunch).
-function unattendedPreflightFailure(args, plan, config = {}) {
+// ─── POLICY-001 (lib/agent-action-policy.ts is the reference) ───────────────
+// Flag-gated OFF via SHELLY_AGENT_POLICY=1 (.env, synced from
+// AppSettings.agentPolicyEngine). Two coarse layers enforced here; the
+// fine-grained evaluator runs in the codex gate and at the RN approval choke
+// point:
+//   1. compiled user rules — `effect|actionType|domain|keyword` lines from
+//      ~/.shelly/agents/policy.json's compiledActionRules (written ONLY by
+//      the RN app; the codex gate hard-denies agent writes to that path);
+//   2. proactive read-only floor — a run whose SHELLY_RUN_ORIGIN is not a
+//      positively identified user/widget origin may only draft/notify; every
+//      side-effecting action needs a human approval (attended) or is refused
+//      (unattended). Missing origin ⇒ proactive (fail-closed).
+// Precedence mirrors evaluateActionPolicy: deny/draft_only rules > proactive >
+// ask rules > (trust allows: RN only) > existing defaults. A policy.json that
+// exists but is unreadable escalates every side effect.
+const POLICY_READ_ONLY_ACTION_TYPES = new Set(['draft', 'notify', '__suppressed__']);
+
+function agentPolicyEnabled(config) {
+  return String((config && config.SHELLY_AGENT_POLICY) || process.env.SHELLY_AGENT_POLICY || '').trim() === '1';
+}
+
+function isProactiveRunOrigin(origin) {
+  const o = String(origin || '').trim().toLowerCase();
+  return o !== 'user' && o !== 'widget';
+}
+
+function readCompiledPolicyLines(paths) {
+  const home = (paths && paths.home) || process.env.HOME || '';
+  if (!home) return { lines: [], unavailable: true };
+  let text;
+  try {
+    text = fs.readFileSync(path.join(home, '.shelly/agents/policy.json'), 'utf8');
+  } catch (e) {
+    return { lines: [], unavailable: !(e && e.code === 'ENOENT') };
+  }
+  if (!text.trim()) return { lines: [], unavailable: false };
+  try {
+    const parsed = JSON.parse(text);
+    const lines = parsed && parsed.compiledActionRules;
+    if (!Array.isArray(lines)) return { lines: [], unavailable: true };
+    return { lines: lines.filter((l) => typeof l === 'string'), unavailable: false };
+  } catch (_) {
+    return { lines: [], unavailable: true };
+  }
+}
+
+// Twin of lib/agent-action-policy.ts's evaluateCompiledLines (kept in
+// lock-step by __tests__/agent-action-policy-executor-parity.test.ts).
+function compiledPolicyEffect(lines, actionType, host, text) {
+  const h = String(host || '').toLowerCase();
+  const hay = String(text || '').toLowerCase();
+  const rank = (e) => (e === 'deny' ? 3 : e === 'draft_only' ? 2 : e === 'ask' ? 1 : 0);
+  let best = '';
+  for (const line of lines) {
+    const [effect, type, domain, kw] = String(line).split('|');
+    if (!rank(effect) || type !== actionType) continue;
+    if (domain && !(h === domain || h.endsWith('.' + domain))) continue;
+    if (kw && !hay.includes(kw)) continue;
+    if (rank(effect) > rank(best)) best = effect;
+  }
+  return best;
+}
+
+// Destination host for an action, best-effort, for domain-scoped rules.
+function policyActionHost(plan, config, actionType) {
+  const action = plan.action || {};
+  if (actionType === 'webhook') return webhookDestinationHost(String(action.webhookUrl || '').trim()) || '';
+  if (actionType === 'api-call') return String((action.apiCall && action.apiCall.host) || '').trim().toLowerCase();
+  if (actionType === 'social-post') {
+    const social = action.socialPost || {};
+    return String(config[socialConnectorEnvPrefix(social.connectorId) + '_HOST'] || '').trim().toLowerCase();
+  }
+  return '';
+}
+
+// Returns { effect: ''|'ask'|'deny'|'draft_only', reason }.
+function policyActionEffect(paths, plan, config, actionType, text) {
+  if (!agentPolicyEnabled(config) || actionType === '__suppressed__') return { effect: '', reason: '' };
+  const { lines, unavailable } = readCompiledPolicyLines(paths);
+  const host = policyActionHost(plan, config, actionType);
+  const ruleEffect = compiledPolicyEffect(lines, actionType, host, [text || '', String((plan.action && plan.action.command) || ''), host].join('\n'));
+  const sideEffect = !POLICY_READ_ONLY_ACTION_TYPES.has(actionType);
+  // draft_only only constrains actions that would leave the draft stage.
+  if (ruleEffect === 'deny' || (ruleEffect === 'draft_only' && sideEffect)) {
+    return { effect: ruleEffect, reason: `${actionType} action blocked by a user policy rule (${ruleEffect})` };
+  }
+  if (sideEffect && isProactiveRunOrigin(process.env.SHELLY_RUN_ORIGIN)) {
+    return { effect: 'ask', reason: `${actionType} action needs approval: proactive run (origin=${process.env.SHELLY_RUN_ORIGIN || 'unknown'}) may only read/draft/notify` };
+  }
+  if (ruleEffect === 'ask') return { effect: 'ask', reason: `${actionType} action needs approval: user policy rule` };
+  if (sideEffect && unavailable) return { effect: 'ask', reason: `${actionType} action needs approval: user policy file is unreadable` };
+  return { effect: '', reason: '' };
+}
+
+function unattendedPreflightFailure(args, plan, config = {}, paths = null) {
   if (!argTruthy(args.unattended)) return '';
   const actionType = plan.action.type;
   if (actionType === '__suppressed__') return '';
+  // POLICY-001: no approver is present on an unattended run, so an action the
+  // policy wants a human to approve is refused BEFORE any model IO. deny /
+  // draft_only are enforced at dispatch (dispatchActionTrusted), where
+  // draft_only can still save the draft. Keyword rules need the generated
+  // text and are re-checked there too.
+  const policy = policyActionEffect(paths, plan, config, actionType, '');
+  if (policy.effect === 'ask') return `${policy.reason} and cannot run unattended`;
   if (actionType === 'intent' || actionType === 'dm-reply' || actionType === 'browser-pane') {
     // browser-pane (2026-08-04): joins intent/dm-reply's hard unattended
     // refusal -- there is no BrowserPane UI surface (nothing rendered,
@@ -2320,6 +2428,38 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'intent' && actionType !== 'dm-reply' && actionType !== 'api-call' && actionType !== 'social-post' && actionType !== 'browser-pane') {
     throw new PlanFailure(`unsupported PlanSpec action: ${actionType}`, { exitCode: EXIT.TOOL_DENY });
   }
+  // POLICY-001 dispatch-time gate (see policyActionEffect). Runs with the
+  // generated text available so keyword rules apply. deny ⇒ skipped;
+  // draft_only ⇒ the result is saved as a draft and NOT dispatched; ask ⇒ a
+  // human approval tap is forced (plan.agent.requireActionApproval=true also
+  // turns off intent/dm-reply autoAccept), or the action is refused when
+  // nobody is there to approve it.
+  const policy = policyActionEffect(paths, plan, config, actionType, preview);
+  let policyForcedApproval = false;
+  if (policy.effect) {
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'policy_gate',
+      agentId: plan.agent.id,
+      actionType,
+      effect: policy.effect,
+      origin: process.env.SHELLY_RUN_ORIGIN || '',
+      reason: redact(policy.reason),
+    });
+  }
+  if (policy.effect === 'deny') {
+    throw new ActionSkipped(policy.reason);
+  }
+  if (policy.effect === 'draft_only') {
+    await writeDraftOutputs(paths, opts, plan, config, roots, true);
+    throw new ActionSkipped(`${policy.reason}: kept as a draft, not dispatched`);
+  }
+  if (policy.effect === 'ask') {
+    if (argTruthy(args && args.unattended)) throw new ActionSkipped(`${policy.reason} and cannot run unattended`);
+    plan = Object.assign({}, plan, { agent: Object.assign({}, plan.agent, { requireActionApproval: true }) });
+    policyForcedApproval = true;
+  }
   // draft/notify have no per-type validation branch below (unlike
   // webhook/dm-reply), so the quality gate has to sit here instead —
   // before the trust shortcut AND before the approval-request fallback below,
@@ -2337,7 +2477,7 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
   // draft/notify): its case below performs the ACTUAL dispatch — trusting
   // the shortcut would report "success" without anything ever having been
   // posted.
-  if (actionType !== 'social-post' && trustedNativeLowRiskAction(args, plan, actionType)) {
+  if (actionType !== 'social-post' && !policyForcedApproval && trustedNativeLowRiskAction(args, plan, actionType)) {
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -2746,7 +2886,7 @@ async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultTe
     // for unattended dispatch (e.g. intent/dm-reply, or a social-post host
     // not opted into SHELLY_SOCIAL_HOST_ALLOWLIST) is recorded as its own
     // 'skipped' outcome without blocking the others.
-    const gateFailure = unattendedPreflightFailure(args, subPlan, config);
+    const gateFailure = unattendedPreflightFailure(args, subPlan, config, paths);
     if (gateFailure) {
       outcome = { status: 'skipped', preview: redact(gateFailure), errorMessage: redact(gateFailure) };
     } else {
@@ -3333,7 +3473,7 @@ async function run(args) {
   // inside dispatchActionsTrusted, so one ineligible action is recorded as
   // its own 'skipped' outcome without blocking the others.
   const isMultiActionPlan = Array.isArray(plan.actions) && plan.actions.length >= 2;
-  const unattendedFailure = isMultiActionPlan ? '' : unattendedPreflightFailure(args, plan, config);
+  const unattendedFailure = isMultiActionPlan ? '' : unattendedPreflightFailure(args, plan, config, paths);
   if (unattendedFailure) {
     return finishSkipped(paths, plan, startedAt, redact(unattendedFailure));
   }
@@ -3489,6 +3629,10 @@ module.exports = {
   trustedNativeLowRiskAction,
   unattendedPreflightFailure,
   requireActionApprovalTap,
+  // POLICY-001 — exported for host unit tests only.
+  compiledPolicyEffect,
+  policyActionEffect,
+  isProactiveRunOrigin,
   // 2026-07-15 quality gate (prompt-echo/refusal detection before
   // webhook/dm-reply dispatch) — exported for host unit tests only,
   // same convention as the exports above. See isLowQualityCompletion's doc

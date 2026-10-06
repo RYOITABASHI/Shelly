@@ -852,6 +852,9 @@ class TerminalEmulatorModule : Module() {
             val intent = Intent(context, TerminalSessionService::class.java).apply {
                 action = TerminalSessionService.ACTION_RUN_AGENT
                 putExtra(TerminalSessionService.EXTRA_AGENT_ID, agentId)
+                // POLICY-001: the only producer of origin "user" (in-app Run now /
+                // @agent chat runs). See TerminalSessionService's origin mapping.
+                putExtra(TerminalSessionService.EXTRA_RUN_ORIGIN, "user")
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

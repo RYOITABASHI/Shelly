@@ -156,6 +156,8 @@ const en: Record<string, string> = {
   'settings.autonomous_cloud_exhaustion_label': 'On Quota Exhausted',
   'settings.optimistic_writes_label': 'Optimistic Workspace Writes',
   'settings.widget_no_confirm_label': 'Widget No-Confirm Register',
+  'settings.agent_policy_label': 'Agent Safety Rules (beta)',
+  'settings.agent_policy_desc': 'Automatic runs (schedule / notification / boot) may only read, summarize, draft and notify — anything else needs your approval or is refused. Lets you add your own rules in chat ("always ask before anything involving money"), and offers in chat to stop asking for an action you have approved 3 times. Rules can only make agents MORE careful. Default off.',
   'settings.a2a_server_label': 'A2A Server',
   'settings.a2a_server_desc': 'Exposes a read-only "list_agents" skill to A2A (Agent2Agent) protocol clients on the same network (Wi-Fi/VPN) — lets a PC-side agent ask what Shelly agents exist. Opens a real HTTP listener while the app is running. No run-triggering skill yet. Default off.',
   'settings.mcp_server_label': 'MCP Server',
@@ -657,6 +659,28 @@ const en: Record<string, string> = {
   // acknowledgment must never let that be assumed. Points at agent
   // registration, which IS the active-monitoring mechanism.
   'globalmemory.watch_hint': "Just so you know, this is a passive note — I'll only bring it up again if it comes up in conversation. If you need it actively checked on a schedule, you can register an agent for that instead.",
+  // POLICY-001 (lib/agent-policy-chat.ts) — plain chat turns, never a card.
+  'policy.rule_confirm': 'I understood this as a safety rule: "{{rule}}". Save it? Reply "OK" to save or "cancel" to discard.',
+  'policy.rule_confirm_unclear': 'Reply "OK" to save this rule, or "cancel" to discard it: "{{rule}}"',
+  'policy.rule_discarded_unclear': "I didn't save the rule. Say it again any time.",
+  'policy.rule_cancelled': "OK — I didn't save that rule.",
+  'policy.rule_saved': 'Saved. From now on: {{rule}}.',
+  'policy.rule_failed': "❌ Couldn't save the rule",
+  'policy.rule_parse_failed': "I couldn't turn that into a rule I can enforce, so nothing was saved. Try something like \"always ask before anything involving money\", \"posts to X stop at a draft\" or \"never write outside ~/work\".",
+  'policy.unavailable': "Your policy file couldn't be read, so I didn't change anything.",
+  'policy.list_header': 'Your safety rules and trusted actions:',
+  'policy.list_rule_item': '{{n}}. Rule — {{rule}}',
+  'policy.list_allow_item': '{{n}}. Runs without asking — {{label}}',
+  'policy.list_empty': "You don't have any custom safety rules or trusted actions yet.",
+  'policy.list_footer': 'To remove one, say e.g. "revoke rule 2" or "revoke the last permission".',
+  'policy.revoked_rule': 'Removed the rule: {{rule}}.',
+  'policy.revoked_allow': "Removed the permission — I'll ask you again before {{label}}.",
+  'policy.revoke_none': 'There was nothing matching to remove.',
+  'policy.revoke_failed': "❌ Couldn't remove it",
+  'policy.trust_offer': 'You have approved {{label}} {{count}} times in a row. Should I run it without asking from now on? (yes / no)',
+  'policy.trust_granted': 'Got it — {{label}} will run without asking. Say "revoke the last permission" any time to undo that.',
+  'policy.trust_declined': "OK, I'll keep asking every time.",
+  'policy.trust_failed': "❌ Couldn't save the permission",
   // ── Agent deletion confirmation ────────────────────────────────────────────────
   'agentdelete.confirm_prompt':
     'I found "{{name}}". I can delete it, including its plan and schedule. Say "OK" and I\'ll delete it, or "cancel" to keep it.',

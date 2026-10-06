@@ -324,6 +324,348 @@ function getRecoverySuggestion(command) {
   return void 0;
 }
 
+// lib/agent-action-policy.ts
+var RUN_ORIGINS = Object.freeze([
+  "user",
+  "widget",
+  "schedule",
+  "notification",
+  "boot",
+  "event"
+]);
+var USER_INITIATED_ORIGINS = Object.freeze(["user", "widget"]);
+function normalizeRunOrigin(raw2) {
+  if (typeof raw2 !== "string") return "unknown";
+  const v = raw2.trim().toLowerCase();
+  return RUN_ORIGINS.includes(v) ? v : "unknown";
+}
+function isProactiveOrigin(raw2) {
+  const origin = normalizeRunOrigin(raw2);
+  return !USER_INITIATED_ORIGINS.includes(origin);
+}
+var POLICY_CAPABILITIES = Object.freeze([
+  "read",
+  "draft",
+  "notify",
+  "exec",
+  "fs-write",
+  "network",
+  "post",
+  "message",
+  "git-push",
+  "payment",
+  "secret"
+]);
+var READ_ONLY_CAPABILITIES = Object.freeze(["read", "draft", "notify"]);
+var NETWORK_SUBCAPS = Object.freeze(["post", "message", "git-push"]);
+function hasSideEffect(caps) {
+  return caps.some((c) => !READ_ONLY_CAPABILITIES.includes(c));
+}
+var POLICY_EFFECTS = Object.freeze(["ask", "deny", "draft_only"]);
+var MAX_RULE_KEYWORDS = 12;
+var MAX_KEYWORD_LEN = 40;
+var MAX_RULE_SOURCE_LEN = 300;
+var MATCH_KEYS = ["capability", "domain", "pathPrefix", "outsidePath", "keywords"];
+var DOMAIN_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+var KEYWORD_FORBIDDEN_RE = /[\u0000-\u001f\u007f"\\|`$]/;
+function normalizeDomain(raw2) {
+  let v = String(raw2 || "").trim().toLowerCase();
+  if (!v) return null;
+  v = v.replace(/^[a-z][a-z0-9+.-]*:\/\//, "");
+  v = v.split(/[/?#:]/)[0] || "";
+  v = v.replace(/^www\./, "").replace(/\.$/, "");
+  return DOMAIN_RE.test(v) ? v : null;
+}
+function normalizeRulePath(raw2) {
+  let v = String(raw2 || "").trim();
+  if (!v || v.includes("\0") || KEYWORD_FORBIDDEN_RE.test(v)) return null;
+  if (v !== "~" && !v.startsWith("~/") && !v.startsWith("/")) return null;
+  if (v.split("/").some((seg) => seg === "..")) return null;
+  v = v.replace(/\/{2,}/g, "/");
+  if (v.length > 1) v = v.replace(/\/+$/, "");
+  return v || null;
+}
+function validatePolicyRule(raw2) {
+  if (!raw2 || typeof raw2 !== "object" || Array.isArray(raw2)) return { ok: false, reason: "rule is not an object" };
+  const rec = raw2;
+  for (const key of Object.keys(rec)) {
+    if (key !== "effect" && key !== "match") return { ok: false, reason: `unknown rule field "${key}"` };
+  }
+  const effect = rec.effect;
+  if (typeof effect !== "string" || !POLICY_EFFECTS.includes(effect)) {
+    return { ok: false, reason: `effect must be one of ${POLICY_EFFECTS.join("/")} (rules can only tighten)` };
+  }
+  const m = rec.match;
+  if (!m || typeof m !== "object" || Array.isArray(m)) return { ok: false, reason: "match is not an object" };
+  const mrec = m;
+  for (const key of Object.keys(mrec)) {
+    if (!MATCH_KEYS.includes(key)) return { ok: false, reason: `unknown match field "${key}"` };
+  }
+  const match = {};
+  if (mrec.capability !== void 0 && mrec.capability !== null) {
+    if (typeof mrec.capability !== "string" || !POLICY_CAPABILITIES.includes(mrec.capability)) {
+      return { ok: false, reason: "unknown capability" };
+    }
+    match.capability = mrec.capability;
+  }
+  if (mrec.domain !== void 0 && mrec.domain !== null && mrec.domain !== "") {
+    if (typeof mrec.domain !== "string") return { ok: false, reason: "domain must be a string" };
+    const d = normalizeDomain(mrec.domain);
+    if (!d) return { ok: false, reason: "domain is not a valid hostname" };
+    match.domain = d;
+  }
+  for (const key of ["pathPrefix", "outsidePath"]) {
+    const v = mrec[key];
+    if (v === void 0 || v === null || v === "") continue;
+    if (typeof v !== "string") return { ok: false, reason: `${key} must be a string` };
+    const p = normalizeRulePath(v);
+    if (!p) return { ok: false, reason: `${key} must be an absolute or ~/ path without ".."` };
+    match[key] = p;
+  }
+  if (match.pathPrefix && match.outsidePath) return { ok: false, reason: "pathPrefix and outsidePath are mutually exclusive" };
+  if (mrec.keywords !== void 0 && mrec.keywords !== null) {
+    if (!Array.isArray(mrec.keywords)) return { ok: false, reason: "keywords must be an array" };
+    const kws = [];
+    for (const kw of mrec.keywords) {
+      if (typeof kw !== "string") return { ok: false, reason: "keyword must be a string" };
+      const k = kw.trim().toLowerCase();
+      if (!k) continue;
+      if (k.length > MAX_KEYWORD_LEN || KEYWORD_FORBIDDEN_RE.test(k)) return { ok: false, reason: "keyword is too long or has forbidden characters" };
+      if (!kws.includes(k)) kws.push(k);
+    }
+    if (kws.length > MAX_RULE_KEYWORDS) return { ok: false, reason: `at most ${MAX_RULE_KEYWORDS} keywords` };
+    if (kws.length) match.keywords = kws;
+  }
+  if (!match.capability && !match.domain && !match.pathPrefix && !match.outsidePath && !match.keywords) {
+    return { ok: false, reason: "rule matches nothing" };
+  }
+  if ((match.pathPrefix || match.outsidePath) && match.capability && !["fs-write", "exec", "read"].includes(match.capability)) {
+    return { ok: false, reason: "path scopes only apply to fs-write/exec/read" };
+  }
+  return { ok: true, rule: { effect, match } };
+}
+function parseStoredRules(raw2) {
+  if (!Array.isArray(raw2)) return [];
+  const out = [];
+  for (const entry of raw2) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry;
+    const v = validatePolicyRule({ effect: e.effect, match: e.match });
+    if (!v.ok) continue;
+    if (typeof e.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(e.id)) continue;
+    out.push({
+      id: e.id,
+      effect: v.rule.effect,
+      match: v.rule.match,
+      source: typeof e.source === "string" ? e.source.slice(0, MAX_RULE_SOURCE_LEN) : "",
+      createdAt: typeof e.createdAt === "number" && Number.isFinite(e.createdAt) ? e.createdAt : 0
+    });
+  }
+  return out;
+}
+var PAYMENT_HINT_RE = /(?:\b(?:pay|payment|purchase|checkout|invoice|stripe|paypal|billing|transfer|wire)\b|支払|決済|購入|送金|振込|振り込|課金|お金|代金|請求)/i;
+var SECRET_HINT_RE = /(?:\.env\b|auth\.json|\.ssh\/|id_rsa|keystore|\b(?:api[_-]?key|token|secret|password|passwd)\b|パスワード|秘密鍵|トークン)/i;
+var GIT_PUSH_RE = /\bgit\s+(?:-[^\s]+\s+)*push\b/;
+var NETWORK_CMD_RE = /\b(?:curl|wget|nc|ncat|ssh|scp|sftp|rsync|ftp|telnet)\b/;
+var NETWORK_SEND_FLAG_RE = /(?:\s-X\s*(?:POST|PUT|PATCH|DELETE)\b|\s--data(?:-[a-z]+)?\b|\s-d\s|\s-F\s|\s--form\b|\s-T\s|\s--upload-file\b)/i;
+var FS_WRITE_RE = /(?:>>?|\s-(?:delete|exec|execdir|ok)\b|\b(?:rm|rmdir|mv|cp|mkdir|touch|tee|ln|chmod|chown|truncate|dd|install|unzip|tar)\b|\bsed\s+(?:-[a-zA-Z]*i|--in-place)|\bgit\s+(?:commit|checkout|reset|merge|rebase|clean|stash|add|rm|mv|apply|pull|clone)\b|\b(?:npm|pnpm|yarn)\s+(?:install|i|add|remove|uninstall|update|ci)\b|\bpip3?\s+install\b)/;
+var PURE_READ_RE = /^\s*(?:cat|ls|pwd|echo|printf|head|tail|wc|grep|rg|find|stat|file|du|df|which|type|env|printenv|date|whoami|uname|tree|less|more|sort|uniq|cut|jq|git\s+(?:status|log|diff|show|branch|remote|rev-parse|ls-files|blame)|true|false)\b/;
+var URL_HOST_RE = /\bhttps?:\/\/(\[[0-9a-fA-F:]+\]|[^/\s:'"`]+)/gi;
+var PATH_TOKEN_RE = /(?:^|[\s='"(])((?:~|\/)[^\s'"`;|&<>()]*)/g;
+var MULTI_WORD_TOOLS = /* @__PURE__ */ new Set(["git", "npm", "pnpm", "yarn", "npx", "docker", "kubectl", "gh", "cargo", "go", "pip", "pip3", "python", "python3", "node", "make", "shelly"]);
+function extractHosts(text) {
+  const out = [];
+  for (const m of text.matchAll(URL_HOST_RE)) {
+    const h = m[1].toLowerCase().replace(/^\[|\]$/g, "");
+    if (h && !out.includes(h)) out.push(h);
+  }
+  return out;
+}
+function extractPathTokens(command) {
+  const out = [];
+  for (const m of command.matchAll(PATH_TOKEN_RE)) {
+    const p = m[1];
+    if (!p || p.startsWith("//")) continue;
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
+function commandClassOf(command) {
+  const words = String(command || "").trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]) || words[i] === "sudo" || words[i] === "env" || words[i] === "command")) i += 1;
+  if (i >= words.length) return "";
+  const head = (words[i].split("/").pop() || "").toLowerCase();
+  if (!MULTI_WORD_TOOLS.has(head)) return head;
+  for (let j = i + 1; j < words.length; j += 1) {
+    const w = words[j];
+    if (w.startsWith("-")) {
+      if (head === "git" && (w === "-C" || w === "-c") || w === "--prefix") j += 1;
+      continue;
+    }
+    return `${head} ${w.toLowerCase().replace(/[^a-z0-9:_.-]/g, "")}`.trim();
+  }
+  return head;
+}
+function commandCapabilities(command) {
+  const c = String(command || "");
+  const caps = [];
+  const add = (cap) => {
+    if (!caps.includes(cap)) caps.push(cap);
+  };
+  if (!c.trim()) return ["read"];
+  if (GIT_PUSH_RE.test(c)) add("git-push");
+  if (NETWORK_CMD_RE.test(c)) {
+    add("network");
+    if (NETWORK_SEND_FLAG_RE.test(c)) add("post");
+  }
+  if (PAYMENT_HINT_RE.test(c)) add("payment");
+  if (SECRET_HINT_RE.test(c)) add("secret");
+  if (FS_WRITE_RE.test(c)) add("fs-write");
+  const compound = /[;&|`]|\$\(/.test(c);
+  if (!caps.length && PURE_READ_RE.test(c) && !compound) return ["read"];
+  add("exec");
+  return caps;
+}
+function lowerHaystack(...parts) {
+  return parts.filter((p) => typeof p === "string" && p).join("\n").toLowerCase();
+}
+function describeCommandAction(opts) {
+  const command = String(opts.command || "");
+  const paths = extractPathTokens(command);
+  if (!paths.length && opts.cwd) paths.push(opts.cwd);
+  return {
+    kind: "command",
+    capabilities: commandCapabilities(command),
+    origin: normalizeRunOrigin(opts.origin),
+    hosts: extractHosts(command),
+    paths,
+    text: lowerHaystack(command),
+    dangerLevel: checkCommandSafety(command).level,
+    commandClass: commandClassOf(command),
+    scope: opts.scope || opts.cwd || ""
+  };
+}
+function expandHome(p, homeDir) {
+  if (!homeDir) return p;
+  if (p === "~") return homeDir;
+  if (p.startsWith("~/")) return `${homeDir.replace(/\/+$/, "")}/${p.slice(2)}`;
+  return p;
+}
+function lexicalNormalize(p) {
+  const abs = p.startsWith("/");
+  const out = [];
+  for (const seg of p.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (out.length) out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return (abs ? "/" : "") + out.join("/");
+}
+function isUnder(target, prefix, homeDir) {
+  const t = lexicalNormalize(expandHome(target, homeDir));
+  const p = lexicalNormalize(expandHome(prefix, homeDir));
+  if (!p || p === "/") return t.startsWith("/") || t === p;
+  return t === p || t.startsWith(`${p}/`);
+}
+function capabilityMatches(ruleCap, caps) {
+  if (caps.includes(ruleCap)) return true;
+  if (ruleCap === "network") return caps.some((c) => NETWORK_SUBCAPS.includes(c));
+  return false;
+}
+function hostMatches(domain, hosts) {
+  return hosts.some((h) => h === domain || h.endsWith(`.${domain}`));
+}
+function ruleMatches(rule, desc, homeDir = "") {
+  const m = rule.match;
+  if (m.capability && !capabilityMatches(m.capability, desc.capabilities)) return false;
+  if (m.domain && !hostMatches(m.domain, desc.hosts)) return false;
+  if (m.pathPrefix && !desc.paths.some((p) => isUnder(p, m.pathPrefix, homeDir))) return false;
+  if (m.outsidePath) {
+    if (!hasSideEffect(desc.capabilities)) return false;
+    if (desc.paths.length && desc.paths.every((p) => isUnder(p, m.outsidePath, homeDir))) return false;
+  }
+  if (m.keywords && !m.keywords.some((k) => desc.text.includes(k))) return false;
+  return true;
+}
+function evaluateActionPolicy(desc, state) {
+  if (!state.enabled) return { decision: "default", layer: "disabled", reason: "policy engine disabled" };
+  const homeDir = state.homeDir || "";
+  const sideEffect = hasSideEffect(desc.capabilities);
+  let draftOnly = null;
+  for (const rule of state.rules) {
+    if (rule.effect !== "deny" && rule.effect !== "draft_only") continue;
+    if (!ruleMatches(rule, desc, homeDir)) continue;
+    if (rule.effect === "deny") return { decision: "deny", layer: "deny-rule", reason: `user rule: ${rule.source || rule.id}`, ruleId: rule.id };
+    if (!draftOnly) draftOnly = rule;
+  }
+  if (draftOnly && sideEffect) {
+    return { decision: "draft_only", layer: "deny-rule", reason: `user rule (draft only): ${draftOnly.source || draftOnly.id}`, ruleId: draftOnly.id };
+  }
+  if (sideEffect && isProactiveOrigin(desc.origin)) {
+    return { decision: "ask", layer: "proactive", reason: `proactive run (origin=${desc.origin}) may only read/draft/notify` };
+  }
+  for (const rule of state.rules) {
+    if (rule.effect !== "ask") continue;
+    if (!ruleMatches(rule, desc, homeDir)) continue;
+    return { decision: "ask", layer: "ask-rule", reason: `user rule: ${rule.source || rule.id}`, ruleId: rule.id };
+  }
+  if (state.rulesUnavailable) {
+    return sideEffect ? { decision: "ask", layer: "ask-rule", reason: "user policy file unreadable \u2014 escalating (fail-closed)" } : { decision: "default", layer: "default", reason: "read-only action" };
+  }
+  if (sideEffect && state.trustAllows && state.trustAllows.length && state.trustKeyOf) {
+    if (desc.dangerLevel !== "CRITICAL" && desc.dangerLevel !== "HIGH") {
+      const key = state.trustKeyOf(desc);
+      if (key) {
+        const hit = state.trustAllows.find((a) => a.key === key);
+        if (hit) return { decision: "allow", layer: "trust-allow", reason: `trust-ramp allow ${hit.id}`, ruleId: hit.id };
+      }
+    }
+  }
+  return { decision: "default", layer: "default", reason: "no policy opinion" };
+}
+var SIDE_EFFECT_ACTION_TYPES = Object.freeze([
+  "webhook",
+  "cli",
+  "intent",
+  "dm-reply",
+  "api-call",
+  "social-post",
+  "browser-pane"
+]);
+var CAPABILITY_ACTION_TYPES = Object.freeze({
+  read: [],
+  draft: ["draft"],
+  notify: ["notify"],
+  exec: ["cli", "intent"],
+  "fs-write": ["cli"],
+  network: ["webhook", "api-call", "social-post", "dm-reply", "browser-pane", "intent"],
+  post: ["webhook", "api-call", "social-post", "browser-pane"],
+  message: ["dm-reply", "intent"],
+  "git-push": ["cli"],
+  payment: SIDE_EFFECT_ACTION_TYPES,
+  secret: ["cli"]
+});
+var PAYMENT_KEYWORDS = Object.freeze([
+  "pay",
+  "payment",
+  "purchase",
+  "checkout",
+  "invoice",
+  "stripe",
+  "paypal",
+  "billing",
+  "\u652F\u6255",
+  "\u6C7A\u6E08",
+  "\u8CFC\u5165",
+  "\u9001\u91D1",
+  "\u632F\u8FBC",
+  "\u8AB2\u91D1"
+]);
+
 // lib/agent-boundary-policy.ts
 var DEFAULT_SECRET_PATHS = [".codex/auth.json", ".shelly/agents/.env"];
 function normalizePath(p) {
@@ -492,6 +834,19 @@ function escapeRe(s) {
 }
 
 // lib/agent-policy.ts
+function parseActionPolicyInput(raw2) {
+  if (!raw2 || typeof raw2 !== "object" || Array.isArray(raw2)) return void 0;
+  const r = raw2;
+  if (r.enabled !== true) return void 0;
+  return {
+    enabled: true,
+    origin: typeof r.origin === "string" ? r.origin : "",
+    rules: parseStoredRules(r.rules),
+    homeDir: typeof r.homeDir === "string" ? r.homeDir : "",
+    // A rules field that is not even an array is as good as unreadable.
+    rulesUnavailable: r.rulesUnavailable === true || !Array.isArray(r.rules)
+  };
+}
 var DEFAULT_POLICY = {
   level: "L2",
   secretPaths: [".codex/auth.json", ".shelly/agents/.env"],
@@ -503,7 +858,9 @@ var LEVELS = ["L1", "L2", "L3"];
 function parseAutonomyPolicy(raw2, workspaceRoot) {
   const r = raw2 && typeof raw2 === "object" ? raw2 : {};
   const strArr = (v, d) => Array.isArray(v) && v.every((x) => typeof x === "string") ? v : d;
+  const actionPolicy = parseActionPolicyInput(r.actionPolicy);
   return {
+    ...actionPolicy ? { actionPolicy } : {},
     level: LEVELS.includes(r.level) ? r.level : DEFAULT_POLICY.level,
     workspaceRoot,
     secretPaths: strArr(r.secretPaths, DEFAULT_POLICY.secretPaths),
@@ -529,6 +886,32 @@ function decideAutoAnswer(command, policy) {
   } else if (verdict.decision === "gray" && policy.allowPatterns.some((p) => safeRegex(p)?.test(command))) {
     verdict = { ...verdict, decision: "allow", reason: `operator allow-pattern \xB7 ${verdict.reason}` };
   }
+  let policyLayer;
+  if (policy.actionPolicy?.enabled && verdict.decision !== "deny") {
+    const ap = policy.actionPolicy;
+    const desc = describeCommandAction({ command, origin: ap.origin, cwd: policy.workspaceRoot, scope: policy.workspaceRoot });
+    const policyState = {
+      enabled: true,
+      rules: ap.rules,
+      homeDir: ap.homeDir,
+      rulesUnavailable: ap.rulesUnavailable
+    };
+    let pv = evaluateActionPolicy(desc, policyState);
+    const boundarySideEffect = verdict.signals.length > 0;
+    if (pv.layer === "proactive" && !boundarySideEffect) {
+      pv = evaluateActionPolicy({ ...desc, capabilities: ["read"] }, policyState);
+    }
+    if (pv.decision === "deny" || pv.decision === "draft_only") {
+      verdict = { ...verdict, decision: "deny", reason: `${pv.reason} \xB7 ${verdict.reason}` };
+      policyLayer = pv.layer;
+    } else if (pv.decision === "ask" && verdict.decision === "allow") {
+      verdict = { ...verdict, decision: "gray", reason: `${pv.reason} \xB7 ${verdict.reason}` };
+      policyLayer = pv.layer;
+    } else if (verdict.decision === "allow" && boundarySideEffect && isProactiveOrigin(ap.origin)) {
+      verdict = { ...verdict, decision: "gray", reason: `proactive run (origin=${desc.origin}) may only read \xB7 ${verdict.reason}` };
+      policyLayer = "proactive";
+    }
+  }
   const answer = verdict.decision === "allow" ? "y" : verdict.decision === "deny" ? "n" : "escalate";
   const audit = {
     command: String(redactSecrets(command)),
@@ -536,7 +919,8 @@ function decideAutoAnswer(command, policy) {
     answer,
     signals: verdict.signals,
     reason: verdict.reason,
-    level: policy.level
+    level: policy.level,
+    ...policyLayer ? { policyLayer } : {}
   };
   return { answer, verdict, audit };
 }

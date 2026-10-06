@@ -303,6 +303,9 @@ exit $rc
 LOG=""
 write_action_approval_request() { LOG="\${LOG}WROTE:$1;"; }
 wait_action_approval() { LOG="\${LOG}WAITED:$1;"; return 0; }
+# POLICY-001 gate stub: flag OFF ⇒ no opinion (its own behaviour is covered by
+# __tests__/agent-action-policy-shell.test.ts).
+shelly_policy_action_effect() { SHELLY_POLICY_EFFECT=""; SHELLY_POLICY_REASON=""; }
 ${fn}
 ACTION_APPROVAL_MODE=${JSON.stringify(opts.approvalMode)}
 ACTION_COMMAND_SAFETY_LEVEL=${JSON.stringify(opts.safetyLevel ?? '')}

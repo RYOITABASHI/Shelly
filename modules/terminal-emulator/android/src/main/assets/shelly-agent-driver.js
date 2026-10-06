@@ -207,6 +207,39 @@ function readJsonArg(args) {
   return {};
 }
 
+// POLICY-001 (lib/agent-action-policy.ts): flag-gated OFF via
+// SHELLY_AGENT_POLICY=1 (exported by the generated .sh from .env). Returns
+// null when off. Fail-closed: a policy.json that exists but cannot be read or
+// parsed sets rulesUnavailable, which the gate turns into "escalate every
+// side effect"; only a genuinely missing file means "no user rules".
+// SHELLY_RUN_ORIGIN comes from native (AgentRuntime.kt); missing ⇒ the gate
+// treats the run as proactive.
+function buildActionPolicyInput(env, home) {
+  if (!env || env.SHELLY_AGENT_POLICY !== '1') return null;
+  const out = { enabled: true, origin: String(env.SHELLY_RUN_ORIGIN || ''), rules: [], homeDir: home || '', rulesUnavailable: false };
+  if (!home) {
+    out.rulesUnavailable = true;
+    return out;
+  }
+  let text = null;
+  try {
+    text = fs.readFileSync(path.join(home, '.shelly/agents/policy.json'), 'utf8');
+  } catch (e) {
+    if (!e || e.code !== 'ENOENT') out.rulesUnavailable = true;
+  }
+  if (text !== null && text.trim()) {
+    try {
+      const parsed = JSON.parse(text);
+      const rules = parsed && parsed.userPolicy && parsed.userPolicy.rules;
+      if (Array.isArray(rules)) out.rules = rules;
+      else out.rulesUnavailable = true;
+    } catch (_) {
+      out.rulesUnavailable = true;
+    }
+  }
+  return out;
+}
+
 function readPrompt(args) {
   if (args.prompt && args.promptFile) {
     throw new Error('use only one of --prompt or --prompt-file');
@@ -241,6 +274,12 @@ function ensureConfig(args) {
   // Workspace root is realpathed here; per-argument symlink resolution remains a later hardening gap.
   policy.workspaceRoot = cwd;
   if (!policy.level) policy.level = 'L2';
+  // POLICY-001: the action-policy input is ALWAYS derived here from the live
+  // environment + policy.json, never trusted from the (baked) --policy-json —
+  // a stale or tampered script must not be able to smuggle its own rules in.
+  delete policy.actionPolicy;
+  const actionPolicy = buildActionPolicyInput(process.env, process.env.HOME || '');
+  if (actionPolicy) policy.actionPolicy = actionPolicy;
 
   return {
     ...args,
@@ -2054,4 +2093,5 @@ module.exports = {
   completedAgentMessageText,
   appendCompletedAgentMessage,
   writeAnswerFile,
+  buildActionPolicyInput,
 };

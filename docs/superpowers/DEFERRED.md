@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-06: 並列squad（ポリシー担当）がPOLICY-001（自動起動runの読み取り専用化・自然文カスタムルール・trust ramp）を `SHELLY_AGENT_POLICY`（既定OFF）配下に実装。未実装・未検証の残りを下記 P1 エントリに登録。
 - 2026-09-29: PR #147（ShortcutBar/MentionDropdown と input.*/mention.* i18n キーの削除）と PR #148（孤児化していた `externalKeyboardShortcuts` 設定トグルの削除）をマージ。Windows PC での検証中に、実 bash/fs 系 jest スイートが `origin/main` でも失敗することを確認し、下記に P3 として登録した。
 - 2026-08-31: ユーザー指示「無くしちゃおうぜ」を受け、app.act機能(LINE/X向けAndroid Accessibility Service経由のUI自動操作)を製品として完全に廃止した。**廃止理由**: 同日の実機検証で、cold-startタイムアウト修正(直前エントリ参照)の後もなお別の新規バグ(検索ボタンのマッチャーが画面上の複数ノードに一致し、安全装置`Ambiguous-multiple-match`が働いてレシピ実行が停止)を発見。これでこの1機能だけで①cold-startタイムアウト②今回のambiguous-match③レシピ作成UI自体のフォーカス競合(直前エントリで確認済み、修正困難と判定済み)の3件のバグが積み上がった。Android Accessibility Service経由のUI自動操作は対象アプリ側のUI変化(広告表示・レイアウト更新等)に対して構造的に脆く、LINE/Xの2アプリに絞ってさえ安定動作に至らなかったため、機能自体を削除する方が実装・運用コストに見合うと判断。**削除範囲**: Kotlin側(`AppActExecutor.kt`/`AppActRecipeStore.kt`/`ShellyAccessibilityService.kt`/バンドルレシピ2件/`plugins/with-accessibility-service.js`を丸ごと削除、`TerminalEmulatorModule.kt`の5個のAsyncFunction・`AgentRuntime.kt`の`fireTrustedAppActAndReply`/`TrustedPlanLaunch.appActRecipeId`・`AgentActionApprovalBridge.kt`の`writeAutoApprovedReply`(呼び出し元喪失によるデッドコード化)と許可リスト残存・`NotificationDispatcher.kt`のapp-act分岐を除去)、TypeScript側(`lib/app-act-recipe-draft.ts`/`components/config/AppActRecipeDraftModal.tsx`/`lib/agent-app-act-review.ts`を丸ごと削除、`store/types.ts`の`AgentActionType`から`'app-act'`削除+`appActRecipeId`/`appActParams`/`appActMethod`フィールド削除、`lib/agent-executor.ts`と`scripts/shelly-plan-executor.js`(+APKミラー)から生成bashスクリプトのapp-act dispatchロジック一式を除去、`lib/agent-nl-parser.ts`のX投稿フォールバックをapp-actからsocial-post/draft+caveatへ再設計、ConfigTUIの「Automation」セクション削除、SettingsDropdownの一時QAプローブ削除、i18nキー約25個削除)、テスト4ファイル丸ごと削除+20ファイル部分編集、ドキュメント(README.md/ja.md・docs/STATUS.md/ja.md・skills-catalogの`app-act-flow-design`スキル)からapp.act言及を除去。`npx tsc --noEmit` clean(エラー0件)。テスト側の最終検証は別セッションで継続中。
   → sync: README/STATUS Status表・Known Limitations・Highlights表からapp.act行を削除済み。skills-catalog.jsonから`app-act-flow-design`エントリを削除・フォルダ削除済みだが、**GitHub Releaseの`skills-catalog-latest`アセット自体は別途リリースを切るまで更新されない**点に注意(リポジトリのソースは修正済み)。
@@ -48,6 +49,22 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### POLICY-001 — 自動起動runの読み取り専用化 / 自然文カスタムルール / trust ramp — 実装済み・フラグ既定OFF・実機未検証 (P1)
+
+**実装**: `lib/agent-action-policy.ts`（run origin・閉じたルールスキーマ・優先順位評価器。deny/draft_onlyルール > 自動起動runの読み取り専用 > askルール > trust-ramp許可 > 既存既定）、`lib/agent-trust-ramp.ts`、`lib/agent-policy-rule-intent.ts`（決定論パーサー＋ローカルLLMフォールバック、tighten-onlyで再検証）、`lib/agent-user-policy-store.ts`（既存 `~/.shelly/agents/policy.json` に保存、新規フォルダなし）、`lib/agent-policy-chat.ts` / `lib/agent-policy-approval.ts`。強制点は4つ: codex境界ゲート（`decideAutoAnswer`、gate bundle再生成済み）、RN承認チョークポイント（`app/_layout.tsx` drain loop、trust許可が効くのはここだけ）、PlanSpec executor、生成 .sh の `request_and_wait_approval`。native は `SHELLY_RUN_ORIGIN`（user/widget/schedule/notification/boot/event）を readonly export、"user" は `TerminalEmulatorModule.runAgent()` の明示マーカー経由のみ（それ以外は proactive、fail-closed）。`AGENT_SCRIPT_VERSION`/`CURRENT_SCRIPT_VERSION` 59→60、`EXECUTOR_SCRIPT_VERSION`/`CURRENT_EXECUTOR_VERSION` 3→4（並列squadとのマージ時は番号衝突に注意）。ConfigTUI「Agent Safety Rules (beta)」でON。
+
+**未実装・意図的な割り切り（Why not now）**:
+- 通知シェードからの one-tap Allow（native が RN を経由せず直接 reply）は trust ramp の承認回数に数えない。対象の `cli` は review-required で必ず RN を通るため実害なし。
+- trust-ramp 許可は RN が生きている間だけ自動承認される（FGS の native observer 経由の通知は従来どおり人間に聞く＝安全側）。
+- パス系ルール（`~/work以外には書き込まないで`）は executor レベルでは精密評価できないため `ask:cli` に粗化。精密な deny は codex ゲートのみ。draft の出力先パスには適用しない（draft は下書き領域扱い）。
+- `draft_only` は PlanSpec では下書きを保存して dispatch をスキップ、.sh では `save_draft_result` 後にスキップ（run は skipped 表示）。
+- 承認回数カウントは action approval（surface 1）のみ。codex の escalation 承認（surface 2）は対象外。
+- `shelly policy` 等の CLI 面は未実装（NL の一覧/取り消しのみ）。
+
+**未検証**: 実機での一連（フラグON → 通知トリガーrunの webhook/cli が承認要求 or 拒否になる、「お金が絡む操作は必ず聞いて」→OK→保存、同じ cli を3回承認→「次から確認なしで実行していい？」→はい→4回目が自動承認、「さっきの許可を取り消して」）。Kotlin 変更（AgentRuntime/TerminalSessionService/TerminalEmulatorModule）は CI コンパイル未確認。
+
+→ sync: README Status 表は未反映（フラグ既定OFFのベータのため）。ON を既定にする時に README/STATUS を同期すること。
 
 ### ✅ GitHub #149 — Codex Code Mode が `codex-code-mode-host` を spawn できない — 修正済み・実機未検証 (P1)
 

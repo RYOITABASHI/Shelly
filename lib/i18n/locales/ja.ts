@@ -156,6 +156,8 @@ const ja: Record<string, string> = {
   'settings.autonomous_cloud_exhaustion_label': 'クォータ超過時',
   'settings.optimistic_writes_label': '楽観的な書き込み',
   'settings.widget_no_confirm_label': 'ウィジェット登録の確認省略',
+  'settings.agent_policy_label': 'エージェント安全ルール（ベータ）',
+  'settings.agent_policy_desc': '自動実行（スケジュール／通知／起動時）は読み取り・要約・下書き・通知だけに制限し、それ以外はあなたの承認が必要か拒否します。チャットで独自ルール（「お金が絡む操作は必ず聞いて」など）を追加でき、3回承認した操作は「次から確認なしでいい？」とチャットで提案します。ルールはエージェントをより慎重にする方向にしか働きません。既定はオフ。',
   'settings.a2a_server_label': 'A2Aサーバー',
   'settings.a2a_server_desc': '同一ネットワーク（Wi-Fi/VPN）内のA2A（Agent2Agent）プロトコルクライアントに、読み取り専用の「list_agents」スキルを公開します。PC側のエージェントからShellyのエージェント一覧を問い合わせられます。アプリ実行中は実際にHTTPリスナーが開きます。実行トリガー系のスキルはまだありません。既定はオフ。',
   'settings.mcp_server_label': 'MCPサーバー',
@@ -636,6 +638,28 @@ const ja: Record<string, string> = {
   // 文言にすること。常時監視が必要な場合の実際の手段（エージェント登録）
   // へ誘導する。
   'globalmemory.watch_hint': 'なお、これは受動的なメモなので、会話でまた話題に出たときに思い出す形になります。常時監視が必要な場合は、エージェント登録もできます。',
+  // POLICY-001 (lib/agent-policy-chat.ts) — カードではなく普通のチャット文。
+  'policy.rule_confirm': '安全ルールとしてこう理解しました：「{{rule}}」。このルールで登録していい？（「OK」で保存、「キャンセル」で破棄）',
+  'policy.rule_confirm_unclear': 'このルールを保存するなら「OK」、やめるなら「キャンセル」と返信してください：「{{rule}}」',
+  'policy.rule_discarded_unclear': 'ルールは保存しませんでした。いつでもまた言ってください。',
+  'policy.rule_cancelled': '了解、そのルールは保存しませんでした。',
+  'policy.rule_saved': '保存しました。これからは：{{rule}}。',
+  'policy.rule_failed': '❌ ルールを保存できませんでした',
+  'policy.rule_parse_failed': 'それを守れるルールの形に変換できなかったので、何も保存していません。「お金が絡む操作は必ず聞いて」「Xへの投稿は下書きまで」「~/work以外には書き込まないで」のように言ってみてください。',
+  'policy.unavailable': 'ポリシーファイルを読み込めなかったので、何も変更していません。',
+  'policy.list_header': '安全ルールと確認なしで実行する操作：',
+  'policy.list_rule_item': '{{n}}. ルール — {{rule}}',
+  'policy.list_allow_item': '{{n}}. 確認なしで実行 — {{label}}',
+  'policy.list_empty': 'カスタムの安全ルールも、確認なしで実行する操作もまだありません。',
+  'policy.list_footer': '取り消すときは「2番目のルールを取り消して」「さっきの許可を取り消して」のように言ってください。',
+  'policy.revoked_rule': 'ルールを削除しました：{{rule}}。',
+  'policy.revoked_allow': '許可を取り消しました。次から {{label}} の前にまた確認します。',
+  'policy.revoke_none': '取り消せるものが見つかりませんでした。',
+  'policy.revoke_failed': '❌ 取り消せませんでした',
+  'policy.trust_offer': 'この操作（{{label}}）は{{count}}回続けて承認されています。次から確認なしで実行していい？（はい／いいえ）',
+  'policy.trust_granted': '了解、{{label}} は次から確認なしで実行します。元に戻すときは「さっきの許可を取り消して」と言ってください。',
+  'policy.trust_declined': '了解、これまで通り毎回確認します。',
+  'policy.trust_failed': '❌ 許可を保存できませんでした',
   // ── エージェント削除の確認 ──────────────────────────────────────────────
   'agentdelete.confirm_prompt':
     '「{{name}}」を見つけました。計画とスケジュールも含めて削除できます。よければ「はい」、残すなら「キャンセル」と教えてください。',
