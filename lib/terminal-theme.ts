@@ -138,13 +138,22 @@ export const TERMINAL_THEMES: Record<string, TerminalTheme> = {
     // (Only users with zero wallpaper ever configured still get a solid
     // black surface here — the same dark-ink tones read worse there, but
     // that's a narrower case than cream-via-transparency.)
+    //
+    // 2026-10-06 retro-PC retune (product owner: "レトロPC風に"): printed-
+    // manual ink on beige paper — near-black sepia ink for default text and
+    // cursor, muted print-like hues (ink red, forest green, ochre instead of
+    // yellow, navy, plum, teal), bright variants a touch more saturated but
+    // never neon, and ANSI white/bright-white mapped to dark grey/ink so
+    // `\e[37m`/`\e[97m` text stays visible. Every color is >= 4.5:1 against
+    // both #E8E3D0 (bgDeep) and #F2ECD6 (bgSurface) — enforced by
+    // __tests__/case-file-terminal-palette.test.ts.
     name: 'case-file', label: 'Case File',
-    background: '#E8E3D0', foreground: '#201D16', cursor: '#2A2416',
-    black: '#2A2416', red: '#8A2020', green: '#2E4A2E', yellow: '#6B4E12',
-    blue: '#2A3F5C', magenta: '#5C2A4A', cyan: '#2A5C5C', white: '#4A4636',
-    brightBlack: '#6B6450', brightRed: '#A83030', brightGreen: '#3F5C3F',
-    brightYellow: '#8A6A20', brightBlue: '#3A5580', brightMagenta: '#7A3A60',
-    brightCyan: '#3A7A7A', brightWhite: '#201D16',
+    background: '#E8E3D0', foreground: '#1E1A12', cursor: '#1E1A12',
+    black: '#1E1A12', red: '#9A1F1A', green: '#2F5A2A', yellow: '#7A5410',
+    blue: '#23407A', magenta: '#6E2A5E', cyan: '#1F5E62', white: '#4A4538',
+    brightBlack: '#5E5746', brightRed: '#A8261C', brightGreen: '#2E6B2A',
+    brightYellow: '#825800', brightBlue: '#2B4FA0', brightMagenta: '#84306F',
+    brightCyan: '#1A6A6C', brightWhite: '#2A2416',
   },
   solarized: {
     name: 'solarized', label: 'Solarized Dark',

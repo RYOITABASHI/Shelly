@@ -53,6 +53,27 @@ class ShellyTerminalView(
         private const val DEFAULT_FONT_SIZE = 14
         private const val OPAQUE_TERMINAL_BACKGROUND = -0x1000000
         private const val RESIZE_DEBOUNCE_MS = 150L
+
+        // Terminal palette generation tracking (2026-10-06 Case File
+        // white-on-beige regression). TerminalColors.COLOR_SCHEME is
+        // process-global, but each TerminalEmulator snapshots it into its own
+        // mCurrentColors ONLY at construction (TerminalColors()) and on an
+        // explicit reset(). ShellyTerminalSession builds its emulator at PTY
+        // creation (initializeWithStreams), which on cold start runs BEFORE
+        // any ShellyTerminalView has received its colorScheme prop — and
+        // applyThemeColors() can only reset() the emulator of a session that
+        // is already attached. Previously the persisted theme happened to
+        // arrive as a later prop CHANGE (default palette first, real palette
+        // ~14s later while attached), masking this; once the boot theme gate
+        // made the very first prop the persisted palette, the emulator kept
+        // the stock dark scheme forever. Every distinct applied palette bumps
+        // the generation; attach resets any emulator whose snapshot predates
+        // it. Same-palette re-applies (view remounts) do not bump, so
+        // program-set OSC 4 colors survive ordinary pane re-attaches.
+        private var themeColorsGeneration = 0
+        private var lastAppliedThemeColors: Map<String, String>? = null
+        private val emulatorThemeGeneration =
+            Collections.synchronizedMap(WeakHashMap<com.termux.terminal.TerminalEmulator, Int>())
         // bug #116 follow-up 5: a single tap on a pane body fires
         // showKeyboardWhenServed three times within the same frame —
         // onSingleTapUp (native), PaneSlot.handleFocusPane (RN touch
@@ -378,6 +399,8 @@ class ShellyTerminalView(
             }
         }
 
+        syncEmulatorThemeColors(shellySession)
+
         // Post updateSize to ensure layout is complete.
         //
         // Fix for the "new-session prompt invisible until I switch away and
@@ -433,6 +456,21 @@ class ShellyTerminalView(
                 })
             }
         }
+    }
+
+    /**
+     * Re-snapshot the active palette into an emulator whose colors predate
+     * the latest applied theme (see themeColorsGeneration). No-op until a
+     * colorScheme prop has been applied in this process.
+     */
+    private fun syncEmulatorThemeColors(shellySession: ShellyTerminalSession) {
+        if (lastAppliedThemeColors == null) return
+        val emulator = shellySession.terminalSession.emulator ?: return
+        if (emulatorThemeGeneration[emulator] == themeColorsGeneration) return
+        emulator.mColors.reset()
+        emulatorThemeGeneration[emulator] = themeColorsGeneration
+        applyTerminalSurface()
+        Log.i(TAG, "attachSession: refreshed stale emulator palette (gen=$themeColorsGeneration)")
     }
 
     /**
@@ -616,6 +654,10 @@ class ShellyTerminalView(
                     props.setProperty(key, "rgb:$r/$g/$b")
                 }
             }
+            if (colors != lastAppliedThemeColors) {
+                lastAppliedThemeColors = HashMap(colors)
+                themeColorsGeneration++
+            }
             TerminalColors.COLOR_SCHEME.updateWith(props)
             // Force the background slots back to the opaque-black policy
             // regardless of what the theme map carried. This runs on every
@@ -629,9 +671,12 @@ class ShellyTerminalView(
             TerminalColors.COLOR_SCHEME.mDefaultColors[0] = OPAQUE_TERMINAL_BACKGROUND
             TerminalColors.COLOR_SCHEME.mDefaultColors[TextStyle.COLOR_INDEX_BACKGROUND] = OPAQUE_TERMINAL_BACKGROUND
             // Reset current session colors to apply the new scheme
-            terminalView.mEmulator?.mColors?.reset()
+            terminalView.mEmulator?.let { emulator ->
+                emulator.mColors.reset()
+                emulatorThemeGeneration[emulator] = themeColorsGeneration
+            }
             applyTerminalSurface()
-            Log.i(TAG, "applyThemeColors: applied ${colors.size} colors")
+            Log.i(TAG, "applyThemeColors: applied ${colors.size} colors (gen=$themeColorsGeneration)")
         } catch (e: Exception) {
             Log.w(TAG, "applyThemeColors failed", e)
         }
