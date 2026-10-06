@@ -18,6 +18,14 @@
 
 set -u
 
+# `bash script.sh` does not load .bashrc, so the linker64 wrappers that make the
+# bundled curl/node runnable in the interactive shell are missing here and a
+# bare `curl` is denied by Knox. Recreate them from the exported lib dir.
+if [ -n "${SHELLY_LIB_DIR:-}" ] && [ -x /system/bin/linker64 ]; then
+  curl() { LD_LIBRARY_PATH="${SHELLY_LD_LIBRARY_PATH:-$SHELLY_LIB_DIR}" /system/bin/linker64 "$SHELLY_LIB_DIR/curl" "$@"; }
+  node() { LD_LIBRARY_PATH="${SHELLY_LD_LIBRARY_PATH:-$SHELLY_LIB_DIR}" /system/bin/linker64 "$SHELLY_LIB_DIR/node" "$@"; }
+fi
+
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 eval_js="$script_dir/local-llm-ab-eval.js"
 port="${EVAL_PORT:-8091}"
