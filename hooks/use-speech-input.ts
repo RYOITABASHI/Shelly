@@ -1,16 +1,38 @@
 /**
- * use-speech-input.ts — 録音 + Groq Whisper 文字起こしフック
+ * use-speech-input.ts — 音声入力フック (Groq Whisper / on-device)
  *
- * - expo-audio で音声録音
- * - Groq Whisper API に audio/m4a として送信
- * - 書き起こしテキストを返す
+ * Route is picked per tap by lib/stt-provider.ts (settings.sttProvider):
+ * - 'groq':     expo-audio で m4a 録音 → Groq Whisper に送信
+ * - 'ondevice': キー不要・無料の端末内 SpeechRecognizer
+ *               (SpeechRecognizerBridge.kt)。expo-audio 録音は開始しない
+ *               (マイク/AudioFocus の取り合いを避けるため)。
+ * Public API / state machine (idle → recording → transcribing → idle) is the
+ * same for both routes.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useSettingsStore } from '@/store/settings-store';
 import { groqTranscribe } from '@/lib/groq';
-import { useTranslation } from '@/lib/i18n';
+import { useI18n, useTranslation } from '@/lib/i18n';
+import { sttUnavailableMessageKey } from '@/lib/stt-provider';
+import {
+  OnDeviceSttError,
+  onDeviceSttErrorKey,
+  resolveSttRouteNow,
+  startOnDeviceSttSession,
+  type OnDeviceSttSession,
+} from '@/lib/ondevice-stt';
+import { logInfo } from '@/lib/debug-logger';
+
+/**
+ * Lazy expo-audio load (first mic use only, same as the previous inline
+ * `await import()`), via require so Jest's CommonJS runtime can load it too.
+ */
+async function loadExpoAudio(): Promise<typeof import('expo-audio')> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('expo-audio');
+}
 
 /**
  * Tear down an expo-audio AudioRecorder completely.
@@ -49,7 +71,7 @@ export async function releaseRecorder(recording: any): Promise<void> {
     console.warn('[SpeechInput] recorder.release failed:', e);
   }
   try {
-    const { AudioModule } = await import('expo-audio');
+    const { AudioModule } = await loadExpoAudio();
     // AudioFocus を明示的に abandon (bug #45)
     if (typeof AudioModule.setIsAudioActiveAsync === 'function') {
       await AudioModule.setIsAudioActiveAsync(false);
@@ -67,10 +89,18 @@ export async function releaseRecorder(recording: any): Promise<void> {
   }
 }
 
-type SpeechState = {
+export type SpeechState = {
   status: 'idle' | 'recording' | 'transcribing';
   transcribedText: string;
   error?: string;
+  /** Live transcript while recording (on-device route only). */
+  partialText?: string;
+  /** Increments on every delivered transcription result, so consumers can
+   *  detect a new result even if React batches the transcribing -> idle
+   *  transition into a single render. */
+  resultSeq?: number;
+  /** Which route produced / is producing the current result. */
+  provider?: 'groq' | 'ondevice';
 };
 
 export function useSpeechInput() {
@@ -80,10 +110,76 @@ export function useSpeechInput() {
     transcribedText: '',
   });
   const recordingRef = useRef<any>(null);
+  const sttSessionRef = useRef<OnDeviceSttSession | null>(null);
+  const resultSeqRef = useRef(0);
+  const startingRef = useRef(false);
+  const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
+
+  const startOnDevice = useCallback(async (language: string) => {
+    const { AudioModule } = await loadExpoAudio();
+    // Permission prompt only — no AudioRecorder is created on this route.
+    const perm = await AudioModule.requestRecordingPermissionsAsync();
+    if (!perm.granted) {
+      setState((s) => ({ ...s, status: 'idle', error: t('speech.mic_permission') }));
+      return;
+    }
+    sttSessionRef.current?.cancel();
+    const session = startOnDeviceSttSession({
+      language,
+      onPartial: (text) => {
+        if (sttSessionRef.current !== session) return;
+        setState((s) => (s.status === 'recording' ? { ...s, partialText: text } : s));
+      },
+      onAutoFinal: () => {
+        // Native hit its max duration — run the normal stop path, whose
+        // session.stop() resolves immediately with the delivered text.
+        if (sttSessionRef.current === session) void stopRecordingRef.current();
+      },
+      onError: (err) => {
+        if (sttSessionRef.current !== session) return;
+        sttSessionRef.current = null;
+        setState({
+          status: 'idle',
+          transcribedText: '',
+          error: t(onDeviceSttErrorKey(err.code), { error: err.code }),
+        });
+      },
+    });
+    sttSessionRef.current = session;
+    setState({ status: 'recording', transcribedText: '', partialText: '', provider: 'ondevice' });
+  }, [t]);
 
   const startRecording = useCallback(async () => {
+    if (startingRef.current || recordingRef.current || sttSessionRef.current) return;
+    startingRef.current = true;
     try {
-      const { useAudioRecorder, AudioModule, RecordingPresets } = await import('expo-audio');
+      const settings = useSettingsStore.getState().settings;
+      const route = await resolveSttRouteNow(settings, useI18n.getState().locale);
+      if (route.provider === 'none') {
+        setState((s) => ({ ...s, status: 'idle', error: t(sttUnavailableMessageKey(settings)) }));
+        return;
+      }
+      if (route.provider === 'ondevice') {
+        await startOnDevice(route.language);
+        return;
+      }
+      await startGroqRecording();
+    } catch (err) {
+      sttSessionRef.current?.cancel();
+      sttSessionRef.current = null;
+      setState({
+        status: 'idle',
+        transcribedText: '',
+        error: t('speech.recording_error', { error: String(err instanceof Error ? err.message : err) }),
+      });
+    } finally {
+      startingRef.current = false;
+    }
+  }, [startOnDevice, t]);
+
+  const startGroqRecording = async () => {
+    try {
+      const { AudioModule, RecordingPresets } = await loadExpoAudio();
       // We can't use hooks dynamically, so use AudioModule directly
       const status = await AudioModule.requestRecordingPermissionsAsync();
       if (!status.granted) {
@@ -110,7 +206,7 @@ export function useSpeechInput() {
       await recording.prepareToRecordAsync();
       await recording.record();
       recordingRef.current = recording;
-      setState({ status: 'recording', transcribedText: '' });
+      setState({ status: 'recording', transcribedText: '', provider: 'groq' });
     } catch (err) {
       console.warn('[SpeechInput] Recording failed:', err);
       // 失敗時も必ず release してマイクを解放
@@ -121,7 +217,7 @@ export function useSpeechInput() {
       } else {
         // recorder 生成前に失敗した場合でも AudioFocus を戻す
         try {
-          const { AudioModule } = await import('expo-audio');
+          const { AudioModule } = await loadExpoAudio();
           if (typeof AudioModule.setIsAudioActiveAsync === 'function') {
             await AudioModule.setIsAudioActiveAsync(false);
           }
@@ -133,9 +229,44 @@ export function useSpeechInput() {
         error: t('speech.recording_error', { error: String(err instanceof Error ? err.message : err) }),
       });
     }
-  }, []);
+  };
+
+  const stopOnDevice = useCallback(async (session: OnDeviceSttSession) => {
+    setState((s) => ({ ...s, status: 'transcribing' }));
+    try {
+      const text = await session.stop();
+      if (sttSessionRef.current !== session) return; // cancelled meanwhile
+      sttSessionRef.current = null;
+      resultSeqRef.current += 1;
+      logInfo('STT', 'ondevice result', { length: text.length });
+      setState({
+        status: 'idle',
+        transcribedText: text,
+        resultSeq: resultSeqRef.current,
+        provider: 'ondevice',
+      });
+    } catch (err) {
+      if (sttSessionRef.current !== session) return;
+      sttSessionRef.current = null;
+      const code = err instanceof OnDeviceSttError ? err.code : 'error';
+      if (code === 'cancelled') {
+        setState({ status: 'idle', transcribedText: '' });
+        return;
+      }
+      setState({
+        status: 'idle',
+        transcribedText: '',
+        error: t(onDeviceSttErrorKey(code), { error: code }),
+      });
+    }
+  }, [t]);
 
   const stopRecording = useCallback(async () => {
+    const session = sttSessionRef.current;
+    if (session) {
+      await stopOnDevice(session);
+      return;
+    }
     const recording = recordingRef.current;
     if (!recording) return;
 
@@ -181,17 +312,21 @@ export function useSpeechInput() {
         }
         text = result.content ?? '';
       } else {
+        // Groq route was chosen at start but the key vanished meanwhile.
         setState({
           status: 'idle',
           transcribedText: '',
-          error: t('speech.api_key_required'),
+          error: t(sttUnavailableMessageKey(settings)),
         });
         return;
       }
 
+      resultSeqRef.current += 1;
       setState({
         status: 'idle',
         transcribedText: text,
+        resultSeq: resultSeqRef.current,
+        provider: 'groq',
       });
     } catch (err) {
       setState({
@@ -203,7 +338,8 @@ export function useSpeechInput() {
       // bug #46: 成功・失敗問わず必ず release する
       await ensureReleased();
     }
-  }, []);
+  }, [stopOnDevice, t]);
+  stopRecordingRef.current = stopRecording;
 
   // Cleanup: stop recording on unmount to prevent background audio leak
   useEffect(() => {
@@ -214,6 +350,9 @@ export function useSpeechInput() {
         // unmount 時に await はできないので fire-and-forget
         void releaseRecorder(recording);
       }
+      const session = sttSessionRef.current;
+      sttSessionRef.current = null;
+      session?.cancel();
     };
   }, []);
 
@@ -223,6 +362,16 @@ export function useSpeechInput() {
   useEffect(() => {
     const handleAppStateChange = (nextState: AppStateStatus) => {
       if (nextState === 'background' || nextState === 'inactive') {
+        const session = sttSessionRef.current;
+        if (session) {
+          sttSessionRef.current = null;
+          session.cancel();
+          setState((s) =>
+            s.status === 'recording' || s.status === 'transcribing'
+              ? { status: 'idle', transcribedText: '' }
+              : s,
+          );
+        }
         const recording = recordingRef.current;
         if (recording) {
           recordingRef.current = null;
