@@ -58,6 +58,7 @@ import AgentScheduleReadinessCard from '@/components/panes/AgentScheduleReadines
 import AgentChatConfirm from '@/components/panes/AgentChatConfirm';
 import { CodeBlockWithAction, splitFencedCode } from '@/components/panes/CodeBlockWithAction';
 import { TypewriterText } from '@/components/panes/TypewriterText';
+import { ChatMarkdownText } from '@/components/panes/ChatMarkdownText';
 import { useAIPaneDispatch, type AIPaneDispatchOptions } from '@/hooks/use-ai-pane-dispatch';
 import VoiceWaveform from '@/components/panes/VoiceWaveform';
 import { usePaneVoice } from '@/hooks/use-pane-voice';
@@ -272,9 +273,11 @@ const MessageBubble = React.memo(function MessageBubble({
               seg.kind === 'code' ? (
                 <CodeBlockWithAction key={i} lang={seg.lang} code={seg.content} />
               ) : (
-                <Text key={i} style={[bubbleStyles.assistantText, { color: C.text1 }]} selectable>
-                  {seg.content}
-                </Text>
+                <ChatMarkdownText
+                  key={i}
+                  text={seg.content}
+                  style={[bubbleStyles.assistantText, { color: C.text1 }]}
+                />
               ),
             )
           )
