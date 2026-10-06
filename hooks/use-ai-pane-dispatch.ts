@@ -32,7 +32,7 @@ import { cerebrasChatStream, CEREBRAS_DEFAULT_MODEL } from '@/lib/cerebras';
 import { openRouterChatStream, OPENROUTER_DEFAULT_MODEL } from '@/lib/openrouter';
 import { resolveCompanionBrain } from '@/lib/companion-brain';
 import { checkOllamaConnection, ollamaChat, ollamaChatStream } from '@/lib/local-llm';
-import { handlePendingPolicyRevokeReply, handlePendingPolicyRuleReply, handlePendingTrustReply, handlePolicyIntent } from '@/lib/agent-policy-chat';
+import { handlePendingPolicyResetReply, handlePendingPolicyRevokeReply, handlePendingPolicyRuleReply, handlePendingTrustReply, handlePolicyIntent } from '@/lib/agent-policy-chat';
 import '@/lib/agent-policy-device';
 import type { PolicyChatFn } from '@/lib/agent-policy-rule-intent';
 import { trustAllowSeal } from '@/lib/agent-trust-allow-seal';
@@ -897,12 +897,18 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         freshestMsgForPendingCheck?.role === 'assistant' &&
         (freshestMsgForPendingCheck.pendingPolicyRule ||
           freshestMsgForPendingCheck.pendingTrustRule ||
-          freshestMsgForPendingCheck.pendingPolicyRevoke) &&
+          freshestMsgForPendingCheck.pendingPolicyRevoke ||
+          freshestMsgForPendingCheck.pendingPolicyReset) &&
         Date.now() - freshestMsgForPendingCheck.timestamp <= SLOT_FILL_STALE_MS
       ) {
         const policyMsg = freshestMsgForPendingCheck;
         const policyLocale = detectMessageLocale(policyMsg.content);
-        store.updateMessage(paneId, policyMsg.id, { pendingPolicyRule: undefined, pendingTrustRule: undefined, pendingPolicyRevoke: undefined });
+        store.updateMessage(paneId, policyMsg.id, {
+          pendingPolicyRule: undefined,
+          pendingTrustRule: undefined,
+          pendingPolicyRevoke: undefined,
+          pendingPolicyReset: undefined,
+        });
         if (!userText.trim().startsWith('@')) {
           const policyIO = {
             post: (content: string, extra?: Partial<ChatMessage>) =>
@@ -926,6 +932,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           if (policyMsg.pendingPolicyRevoke) {
             store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
             await handlePendingPolicyRevokeReply(policyMsg.pendingPolicyRevoke, userText, policyLocale, policyIO);
+            return;
+          }
+          if (policyMsg.pendingPolicyReset) {
+            store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now(), flowTurn: true });
+            await handlePendingPolicyResetReply(policyMsg.pendingPolicyReset, userText, policyLocale, policyIO);
             return;
           }
           if (policyMsg.pendingTrustRule) {

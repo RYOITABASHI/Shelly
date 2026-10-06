@@ -2266,11 +2266,13 @@ function isProactiveRunOrigin(origin) {
 // review M1): `bytes` null ⇒ no file. SHELLY_AGENT_POLICY_SEAL is exported
 // readonly by native (AgentRuntime.kt) from the seal RN writes with every
 // policy write; an empty seal accepts only a missing/empty file.
-function policySealAccepts(sealRaw, bytes) {
+function policySealAccepts(sealRaw, bytes, everSealed) {
   const raw = String(sealRaw || '').trim();
   const seal = raw ? raw.split(',') : [];
   if (seal.some((h) => !/^[0-9a-f]{64}$/.test(h))) return false;
-  if (seal.length === 0) return bytes === null || !bytes.toString('utf8').trim();
+  // Re-review M1: once native says a seal was EVER written (Keystore marker),
+  // an empty seal means it was deleted, not "first run".
+  if (seal.length === 0) return String(everSealed || '') !== '1' && (bytes === null || !bytes.toString('utf8').trim());
   if (bytes === null) return false;
   return seal.includes(crypto.createHash('sha256').update(bytes).digest('hex'));
 }
@@ -2287,7 +2289,7 @@ function readCompiledPolicyLines(paths) {
   } catch (e) {
     if (!(e && e.code === 'ENOENT')) unavailable = true;
   }
-  if (!policySealAccepts(process.env.SHELLY_AGENT_POLICY_SEAL, bytes)) unavailable = true;
+  if (!policySealAccepts(process.env.SHELLY_AGENT_POLICY_SEAL, bytes, process.env.SHELLY_AGENT_POLICY_EVER_SEALED)) unavailable = true;
   const text = bytes === null ? '' : bytes.toString('utf8');
   if (!text.trim()) return { lines: [], unavailable };
   try {

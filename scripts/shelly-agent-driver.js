@@ -216,11 +216,13 @@ function readJsonArg(args) {
 // treats the run as proactive.
 // Mirror of lib/agent-user-policy-store.ts isSealedPolicyState. `bytes` null
 // ⇒ the file does not exist. An empty seal accepts only a missing/empty file.
-function policySealAccepts(sealRaw, bytes) {
+function policySealAccepts(sealRaw, bytes, everSealed) {
   const raw = String(sealRaw || '').trim();
   const seal = raw ? raw.split(',') : [];
   if (seal.some((h) => !/^[0-9a-f]{64}$/.test(h))) return false;
-  if (seal.length === 0) return bytes === null || !bytes.toString('utf8').trim();
+  // Re-review M1: once native says a seal was EVER written (Keystore marker),
+  // an empty seal means it was deleted, not "first run".
+  if (seal.length === 0) return String(everSealed || '') !== '1' && (bytes === null || !bytes.toString('utf8').trim());
   if (bytes === null) return false;
   return seal.includes(crypto.createHash('sha256').update(bytes).digest('hex'));
 }
@@ -242,7 +244,7 @@ function buildActionPolicyInput(env, home) {
   // Security review M1: the file must match the seal native exported
   // (SHELLY_AGENT_POLICY_SEAL, written by RN with every policy write). A
   // deleted / edited / unsealed file means the user's rules can't be trusted.
-  if (!policySealAccepts(env.SHELLY_AGENT_POLICY_SEAL, bytes)) out.rulesUnavailable = true;
+  if (!policySealAccepts(env.SHELLY_AGENT_POLICY_SEAL, bytes, env.SHELLY_AGENT_POLICY_EVER_SEALED)) out.rulesUnavailable = true;
   if (text !== null && text.trim()) {
     try {
       const parsed = JSON.parse(text);

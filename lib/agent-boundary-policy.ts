@@ -57,6 +57,8 @@ export interface GateContext {
   secretPaths?: string[];
   /** the policy/autonomy config path the agent must never write (hard-deny) */
   policyPath?: string;
+  /** POLICY-001: SHELLY_AGENT_POLICY=1 — use the wide agents-dir hard-deny. */
+  strictPolicyPaths?: boolean;
 }
 
 const DEFAULT_SECRET_PATHS = ['.codex/auth.json', '.shelly/agents/.env'];
@@ -401,11 +403,14 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
     return { decision: 'deny', signals: ['policy-write'], reason: 'agent attempted to write the policy/autonomy file', dangerLevel: safety.level };
   }
   // POLICY-001 security review M1: deleting or rewriting the user policy is a
-  // LOOSENING (a deny rule disappears), so any mutating / file-capable command
-  // that names the agents config dir — directly, via `cd`, as `.shelly` +
-  // `agents`, or the policy.json basename next to `.shelly` — is hard-denied
-  // too, not just the literal `> path` / tee / cp / mv forms above.
-  if (ctx.policyPath && touchesAgentsConfigDir(command)) {
+  // LOOSENING (a deny rule disappears). Always (flag OFF too): the NARROW form
+  // — mutations of policy.json, the top-level agent definitions
+  // (~/.shelly/agents/<id>.json) and the policy seal prefs. Only with
+  // SHELLY_AGENT_POLICY=1 (ctx.strictPolicyPaths) the WIDE form: any
+  // mutating / file-capable command naming the agents dir or shared_prefs,
+  // including via `cd`. The wide form is kept off by default because it also
+  // catches legitimate commands (logs, per-agent output dirs).
+  if (ctx.policyPath && (ctx.strictPolicyPaths ? touchesAgentsConfigDir(command) : touchesProtectedPolicyFiles(command))) {
     return { decision: 'deny', signals: ['policy-write'], reason: 'agent attempted to modify the agents config dir (policy file)', dangerLevel: safety.level };
   }
 
@@ -477,13 +482,47 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
 
 const AGENTS_DIR_MUTATOR_RE = /(?:>|\b(?:rm|rmdir|unlink|mv|cp|tee|truncate|dd|ln|chmod|chown|install|shred|touch|rsync|tar|unzip|zip|python\d*|node|nodejs|deno|bun|perl|ruby|php|lua|awk|gawk|find|xargs|bash|sh|zsh|dash|busybox|toybox|git|patch|ed|ex|vi|vim|nano)\b|\bsed\b[^|;&]*\s-(?:[a-zA-Z]*i|-in-place))/;
 
-/** True when a mutating / file-capable command targets ~/.shelly/agents or its policy.json. */
+/**
+ * WIDE form (SHELLY_AGENT_POLICY=1 only): a mutating / file-capable command
+ * that names ~/.shelly/agents (directly, via `cd`, as `.shelly` + `agents`),
+ * its policy.json, or any app shared_prefs (the policy seal lives there).
+ */
 export function touchesAgentsConfigDir(command: string): boolean {
   const c = String(command || '');
+  if (touchesProtectedPolicyFiles(c)) return true;
   if (!AGENTS_DIR_MUTATOR_RE.test(c)) return false;
   if (/\.shelly\/+agents\b/.test(c)) return true;
   if (/\.shelly\b/.test(c) && /\bagents\b/.test(c)) return true;
   if (/(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
+  if (/\bshared_prefs\b/.test(c)) return true;
+  return false;
+}
+
+/** Top-level agent definitions, policy.json and the seal prefs files. */
+const PROTECTED_POLICY_FILE_RE = /(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json\b|shared_prefs\/+(?:shelly_agent_policy|SecureStore)\b|\bshelly_agent_policy\.xml\b)/;
+const NARROW_MUTATOR_RE = /\b(?:rm|rmdir|unlink|mv|cp|tee|truncate|dd|ln|chmod|chown|install|shred|touch|rsync|patch)\b|\bsed\b[^|;&]*\s-(?:[a-zA-Z]*i|-in-place)|\bfind\b[^|;&]*\s-delete\b/;
+const NARROW_INTERPRETER_RE = /\b(?:python\d*|node|nodejs|deno|bun|perl|ruby|php)\b/;
+const REDIRECT_TO_PROTECTED_RE = />{1,2}\s*['"]?[^\s'"]*(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json|shelly_agent_policy)/;
+const REDIRECT_TO_POLICY_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?policy\.json\b/;
+
+/**
+ * NARROW form (always on, flag OFF too): only mutations aimed at the files
+ * whose loss loosens policy — policy.json, top-level agent definitions
+ * (~/.shelly/agents/<id>.json) and the seal prefs. Reading or writing
+ * anything else under ~/.shelly/agents (logs, per-agent output dirs) and a
+ * redirect whose TARGET is elsewhere stay unaffected.
+ */
+export function touchesProtectedPolicyFiles(command: string): boolean {
+  const c = String(command || '');
+  if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
+  const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  const prefsSeal = /\bshelly_agent_policy\b/.test(c);
+  // `cd ~/.shelly/agents && echo {} > policy.json`
+  if (policyBasename && REDIRECT_TO_POLICY_BASENAME_RE.test(c)) return true;
+  if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;
+  // Interpreters only for the policy file / seal themselves (reading an agent
+  // definition with `node -e` is a common legitimate diagnostic).
+  if (NARROW_INTERPRETER_RE.test(c) && (policyBasename || prefsSeal)) return true;
   return false;
 }
 

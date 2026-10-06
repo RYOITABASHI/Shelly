@@ -652,7 +652,10 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // (ASCII-only fallback escalates unmatched non-ASCII keyword checks to ask).
 // Bumped so a pre-v62 script — which would accept a deleted / edited policy
 // file — is regenerated.
-const AGENT_SCRIPT_VERSION = 62;
+// v63 (2026-10-06, POLICY-001 re-review M1): the gate also honours
+// SHELLY_AGENT_POLICY_EVER_SEALED (native Keystore marker) — an empty seal
+// after a seal was ever written is unavailable, not "first run".
+const AGENT_SCRIPT_VERSION = 63;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3126,6 +3129,11 @@ shelly_policy_action_effect() {
   pa_kw_uncertain=0
   pa_seal="\${SHELLY_AGENT_POLICY_SEAL:-}"
   if ! [[ "$pa_seal" =~ ^([0-9a-f]{64}(,[0-9a-f]{64})?)?$ ]]; then
+    pa_unavailable=1
+  fi
+  # Re-review M1: native's Keystore marker says a seal was EVER written, so an
+  # empty (deleted / HMAC-rejected) seal is not "first run".
+  if [ -z "$pa_seal" ] && [ "\${SHELLY_AGENT_POLICY_EVER_SEALED:-0}" = "1" ]; then
     pa_unavailable=1
   fi
   if [ -e "$SHELLY_POLICY_FILE" ]; then

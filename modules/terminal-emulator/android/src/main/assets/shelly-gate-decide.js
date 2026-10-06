@@ -590,7 +590,8 @@ function parseStoredRules(raw2) {
   }
   return out;
 }
-var TRUST_FORBIDDEN_CHARS_RE = /[;&|`$()<>\r\n\\{}]/;
+var TRUST_FORBIDDEN_CHARS_RE = /[;&|`$()<>\r\n\\{}*?[\]~!]/;
+var TRUST_NON_PLAIN_RE = /[^\x20-\x7e\t]/;
 var TRUST_TRAMPOLINE_HEADS = /* @__PURE__ */ new Set([
   "bash",
   "sh",
@@ -662,21 +663,55 @@ var TRUST_TRAMPOLINE_HEADS = /* @__PURE__ */ new Set([
   "nsenter",
   "setsid",
   "stdbuf",
-  "strace"
+  "strace",
+  // Review R3: build tools whose every invocation runs project-defined code
+  // (build scripts, plugins) that can change between approvals.
+  "gradle",
+  "gradlew",
+  "mvn",
+  "mvnw",
+  "ant",
+  "sbt",
+  "bazel",
+  "rake",
+  "just",
+  "task"
 ]);
 var TRUST_TRAMPOLINE_SUBCOMMANDS = Object.freeze({
-  npm: ["exec", "x", "explore"],
-  pnpm: ["dlx", "exec", "x"],
-  yarn: ["dlx", "exec"],
-  git: ["-c", "--config-env", "--exec-path", "config", "submodule", "filter-branch", "bisect"]
+  npm: ["exec", "x", "explore", "test", "t", "run", "run-script", "start", "restart", "stop", "install-test", "it"],
+  pnpm: ["dlx", "exec", "x", "test", "t", "run", "start"],
+  yarn: ["dlx", "exec", "test", "run", "start", "node"],
+  cargo: ["run", "test", "bench", "r", "t"],
+  go: ["run", "test", "generate"],
+  git: [
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "config",
+    "submodule",
+    "filter-branch",
+    "bisect",
+    "commit",
+    "merge",
+    "rebase",
+    "pull",
+    "am",
+    "cherry-pick",
+    "revert",
+    "push",
+    "checkout",
+    "switch",
+    "worktree",
+    "gc"
+  ]
 });
 function normalizeTrustCommand(command) {
-  return String(command || "").trim().replace(/\s+/g, " ");
+  return String(command || "").replace(/^[ \t]+|[ \t]+$/g, "").replace(/[ \t]+/g, " ");
 }
 function isTrustEligibleCommand(command) {
   const c = normalizeTrustCommand(command);
   if (!c || c.length > 200) return false;
-  if (TRUST_FORBIDDEN_CHARS_RE.test(command)) return false;
+  if (TRUST_NON_PLAIN_RE.test(command) || TRUST_FORBIDDEN_CHARS_RE.test(command)) return false;
   const words = c.split(" ");
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return false;
   const head = (words[0].split("/").pop() || "").toLowerCase();
@@ -1033,7 +1068,7 @@ function classifyProposedCommand(command, ctx) {
   if (ctx.policyPath && new RegExp(`>\\s*\\S*${escapeRe(ctx.policyPath)}|\\b(tee|cp|mv)\\b[^|]*${escapeRe(ctx.policyPath)}`).test(command)) {
     return { decision: "deny", signals: ["policy-write"], reason: "agent attempted to write the policy/autonomy file", dangerLevel: safety.level };
   }
-  if (ctx.policyPath && touchesAgentsConfigDir(command)) {
+  if (ctx.policyPath && (ctx.strictPolicyPaths ? touchesAgentsConfigDir(command) : touchesProtectedPolicyFiles(command))) {
     return { decision: "deny", signals: ["policy-write"], reason: "agent attempted to modify the agents config dir (policy file)", dangerLevel: safety.level };
   }
   if (safety.level === "CRITICAL") {
@@ -1082,10 +1117,27 @@ function classifyProposedCommand(command, ctx) {
 var AGENTS_DIR_MUTATOR_RE = /(?:>|\b(?:rm|rmdir|unlink|mv|cp|tee|truncate|dd|ln|chmod|chown|install|shred|touch|rsync|tar|unzip|zip|python\d*|node|nodejs|deno|bun|perl|ruby|php|lua|awk|gawk|find|xargs|bash|sh|zsh|dash|busybox|toybox|git|patch|ed|ex|vi|vim|nano)\b|\bsed\b[^|;&]*\s-(?:[a-zA-Z]*i|-in-place))/;
 function touchesAgentsConfigDir(command) {
   const c = String(command || "");
+  if (touchesProtectedPolicyFiles(c)) return true;
   if (!AGENTS_DIR_MUTATOR_RE.test(c)) return false;
   if (/\.shelly\/+agents\b/.test(c)) return true;
   if (/\.shelly\b/.test(c) && /\bagents\b/.test(c)) return true;
   if (/(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c)) return true;
+  if (/\bshared_prefs\b/.test(c)) return true;
+  return false;
+}
+var PROTECTED_POLICY_FILE_RE = /(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json\b|shared_prefs\/+(?:shelly_agent_policy|SecureStore)\b|\bshelly_agent_policy\.xml\b)/;
+var NARROW_MUTATOR_RE = /\b(?:rm|rmdir|unlink|mv|cp|tee|truncate|dd|ln|chmod|chown|install|shred|touch|rsync|patch)\b|\bsed\b[^|;&]*\s-(?:[a-zA-Z]*i|-in-place)|\bfind\b[^|;&]*\s-delete\b/;
+var NARROW_INTERPRETER_RE = /\b(?:python\d*|node|nodejs|deno|bun|perl|ruby|php)\b/;
+var REDIRECT_TO_PROTECTED_RE = />{1,2}\s*['"]?[^\s'"]*(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json|shelly_agent_policy)/;
+var REDIRECT_TO_POLICY_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?policy\.json\b/;
+function touchesProtectedPolicyFiles(command) {
+  const c = String(command || "");
+  if (REDIRECT_TO_PROTECTED_RE.test(c)) return true;
+  const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
+  const prefsSeal = /\bshelly_agent_policy\b/.test(c);
+  if (policyBasename && REDIRECT_TO_POLICY_BASENAME_RE.test(c)) return true;
+  if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;
+  if (NARROW_INTERPRETER_RE.test(c) && (policyBasename || prefsSeal)) return true;
   return false;
 }
 function escapeRe(s) {
@@ -1139,7 +1191,9 @@ function decideAutoAnswer(command, policy) {
     workspaceRoot: policy.workspaceRoot,
     level: policy.level,
     secretPaths: policy.secretPaths,
-    policyPath: policy.policyPath
+    policyPath: policy.policyPath,
+    // Wide agents-dir hard-deny only when the POLICY-001 flag is on.
+    strictPolicyPaths: policy.actionPolicy?.enabled === true
   };
   let verdict = classifyProposedCommand(command, ctx);
   if (policy.denyPatterns.some((p) => safeRegex(p)?.test(command))) {

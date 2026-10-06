@@ -139,6 +139,10 @@ describe('B2 driver buildActionPolicyInput', () => {
     fs.rmSync(path.join(dir, 'policy.json'));
     expect(driver.buildActionPolicyInput(env(hash), home).rulesUnavailable).toBe(true);
     expect(driver.policySealAccepts('', null)).toBe(true);
+    // re-review M1: file + seal both deleted, but native's Keystore marker says ever sealed
+    expect(driver.policySealAccepts('', null, '1')).toBe(false);
+    expect(driver.buildActionPolicyInput({ ...env(''), SHELLY_AGENT_POLICY_EVER_SEALED: '1' }, home).rulesUnavailable).toBe(true);
+    expect(driver.buildActionPolicyInput({ ...env(''), SHELLY_AGENT_POLICY_EVER_SEALED: '0' }, home).rulesUnavailable).toBe(false);
   });
 
   it('L5: one invalid rule in the stored list ⇒ unavailable at the gate', () => {

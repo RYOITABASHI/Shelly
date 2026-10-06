@@ -307,8 +307,13 @@ export interface ActionDescriptor {
 
 // ─── Trust-ramp eligibility + exact-command key (security review H1) ─────────
 
-/** Shell metacharacters that can chain, substitute or redirect. */
-const TRUST_FORBIDDEN_CHARS_RE = /[;&|`$()<>\r\n\\{}]/;
+/** Shell metacharacters that can chain, substitute, redirect, glob or expand
+ *  (`* ? [ ] ~ !` too — review R2: a glob or `~`/history expansion means the
+ *  executed argv is not the literal string that was approved). */
+const TRUST_FORBIDDEN_CHARS_RE = /[;&|`$()<>\r\n\\{}*?[\]~!]/;
+/** Only printable ASCII plus space/tab (review R1): any other whitespace or a
+ *  non-ASCII lookalike could make two different commands normalise alike. */
+const TRUST_NON_PLAIN_RE = /[^\x20-\x7e\t]/;
 /** Heads that run other code (interpreters / trampolines / wrappers). */
 const TRUST_TRAMPOLINE_HEADS = new Set([
   'bash', 'sh', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'csh', 'tcsh', 'ash',
@@ -318,18 +323,28 @@ const TRUST_TRAMPOLINE_HEADS = new Set([
   'nohup', 'timeout', 'nice', 'ionice', 'time', 'command', 'builtin', 'source', '.', 'watch',
   'ssh', 'script', 'expect', 'linker64', 'run-as', 'am', 'pm', 'cmd', 'sh.exe',
   'osascript', 'powershell', 'pwsh', 'chroot', 'unshare', 'nsenter', 'setsid', 'stdbuf', 'strace',
+  // Review R3: build tools whose every invocation runs project-defined code
+  // (build scripts, plugins) that can change between approvals.
+  'gradle', 'gradlew', 'mvn', 'mvnw', 'ant', 'sbt', 'bazel', 'rake', 'just', 'task',
 ]);
-/** Sub-commands that are themselves trampolines ("pnpm dlx", "npm exec"). */
+/** Sub-commands that are themselves trampolines or run project-defined code
+ *  ("pnpm dlx", "npm test" → package.json scripts, "git commit" → hooks). */
 const TRUST_TRAMPOLINE_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  npm: ['exec', 'x', 'explore'],
-  pnpm: ['dlx', 'exec', 'x'],
-  yarn: ['dlx', 'exec'],
-  git: ['-c', '--config-env', '--exec-path', 'config', 'submodule', 'filter-branch', 'bisect'],
+  npm: ['exec', 'x', 'explore', 'test', 't', 'run', 'run-script', 'start', 'restart', 'stop', 'install-test', 'it'],
+  pnpm: ['dlx', 'exec', 'x', 'test', 't', 'run', 'start'],
+  yarn: ['dlx', 'exec', 'test', 'run', 'start', 'node'],
+  cargo: ['run', 'test', 'bench', 'r', 't'],
+  go: ['run', 'test', 'generate'],
+  git: [
+    '-c', '--config-env', '--exec-path', 'config', 'submodule', 'filter-branch', 'bisect',
+    'commit', 'merge', 'rebase', 'pull', 'am', 'cherry-pick', 'revert', 'push', 'checkout', 'switch', 'worktree', 'gc',
+  ],
 });
 
-/** Whitespace-normalised command (the exact thing a trust key is a hash of). */
+/** Normalised command (the exact thing a trust key is a hash of): only runs
+ *  of plain space/tab collapse (review R1). */
 export function normalizeTrustCommand(command: string): string {
-  return String(command || '').trim().replace(/\s+/g, ' ');
+  return String(command || '').replace(/^[ \t]+|[ \t]+$/g, '').replace(/[ \t]+/g, ' ');
 }
 
 /**
@@ -342,7 +357,7 @@ export function normalizeTrustCommand(command: string): string {
 export function isTrustEligibleCommand(command: string): boolean {
   const c = normalizeTrustCommand(command);
   if (!c || c.length > 200) return false;
-  if (TRUST_FORBIDDEN_CHARS_RE.test(command)) return false;
+  if (TRUST_NON_PLAIN_RE.test(command) || TRUST_FORBIDDEN_CHARS_RE.test(command)) return false;
   const words = c.split(' ');
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return false;
   const head = (words[0].split('/').pop() || '').toLowerCase();

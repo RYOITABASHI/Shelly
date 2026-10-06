@@ -407,9 +407,10 @@ object AgentRuntime {
     // exports). Bumped so a stale pre-v61 script — which would silently
     // ignore the policy once the flag is turned on — is regenerated instead.
     // CURRENT_EXECUTOR_VERSION 4: same feature in scripts/shelly-plan-executor.js.
+    // v63: plus SHELLY_AGENT_POLICY_EVER_SEALED (AgentPolicySeal Keystore marker).
     // v62: the policy gate also verifies policy.json against the
     // SHELLY_AGENT_POLICY_SEAL this class now exports (security review M1).
-    private const val CURRENT_SCRIPT_VERSION = 62
+    private const val CURRENT_SCRIPT_VERSION = 63
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     private const val CURRENT_EXECUTOR_VERSION = 4
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
@@ -585,9 +586,7 @@ object AgentRuntime {
             append(" && export SHELLY_RUN_ORIGIN=")
             append(shellQuote(runOrigin))
             append(" && readonly SHELLY_RUN_ORIGIN")
-            append(" && export SHELLY_AGENT_POLICY_SEAL=")
-            append(shellQuote(readAgentPolicySeal(appContext)))
-            append(" && readonly SHELLY_AGENT_POLICY_SEAL")
+            append(policySealExports(appContext))
             if (tainted) {
                 append(" && export SHELLY_CAP_TAINTED=1")
             }
@@ -859,9 +858,7 @@ object AgentRuntime {
             append(" && export SHELLY_RUN_ORIGIN=")
             append(shellQuote(normalizeRunOrigin(runOrigin)))
             append(" && readonly SHELLY_RUN_ORIGIN")
-            append(" && export SHELLY_AGENT_POLICY_SEAL=")
-            append(shellQuote(readAgentPolicySeal(context)))
-            append(" && readonly SHELLY_AGENT_POLICY_SEAL")
+            append(policySealExports(context))
             if (!notificationText.isNullOrBlank()) {
                 // NOTIFY-001 Increment 3: exported for parity with the legacy .sh
                 // path (scripts/shelly-plan-executor.js does not consume these
@@ -1493,26 +1490,19 @@ object AgentRuntime {
             else -> false
         }
 
-    private const val POLICY_PREFS = "shelly_agent_policy"
-    private const val POLICY_SEAL_KEY = "file_seal"
-    private val POLICY_SEAL_RE = Regex("^[0-9a-f]{64}(,[0-9a-f]{64})?$")
-
-    /** POLICY-001 (security review M1): store the policy.json seal written by
-     *  RN. Anything malformed is stored as "" — which makes every executor
-     *  treat a non-empty policy.json as unavailable (fail-closed). */
+    /** POLICY-001: the policy.json seal written by RN — see AgentPolicySeal
+     *  (Keystore-backed ever-sealed marker + HMAC, security re-review M1). */
     fun writeAgentPolicySeal(context: Context, seal: String) {
-        val value = if (POLICY_SEAL_RE.matches(seal)) seal else ""
-        context.getSharedPreferences(POLICY_PREFS, Context.MODE_PRIVATE)
-            .edit().putString(POLICY_SEAL_KEY, value).commit()
+        AgentPolicySeal.write(context, seal)
     }
 
-    private fun readAgentPolicySeal(context: Context): String {
-        val value = try {
-            context.getSharedPreferences(POLICY_PREFS, Context.MODE_PRIVATE).getString(POLICY_SEAL_KEY, "") ?: ""
-        } catch (e: Exception) {
-            ""
-        }
-        return if (POLICY_SEAL_RE.matches(value)) value else ""
+    /** `export … && readonly …` for the VERIFIED seal + the ever-sealed marker. */
+    private fun policySealExports(context: Context): String {
+        val state = AgentPolicySeal.read(context)
+        return " && export SHELLY_AGENT_POLICY_SEAL=" + shellQuote(state.seal) +
+            " && readonly SHELLY_AGENT_POLICY_SEAL" +
+            " && export SHELLY_AGENT_POLICY_EVER_SEALED=" + shellQuote(if (state.everSealed) "1" else "0") +
+            " && readonly SHELLY_AGENT_POLICY_EVER_SEALED"
     }
 
     /** POLICY-001: mirror of lib/agent-action-policy.ts RUN_ORIGINS. Unknown ⇒

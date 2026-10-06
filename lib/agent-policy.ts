@@ -166,6 +166,8 @@ export function decideAutoAnswer(command: string, policy: AutonomyPolicy): GateO
     level: policy.level,
     secretPaths: policy.secretPaths,
     policyPath: policy.policyPath,
+    // Wide agents-dir hard-deny only when the POLICY-001 flag is on.
+    strictPolicyPaths: policy.actionPolicy?.enabled === true,
   };
   let verdict = classifyProposedCommand(command, ctx);
 

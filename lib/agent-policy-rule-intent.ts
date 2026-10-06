@@ -64,7 +64,7 @@ export function detectPolicyRuleRequest(raw: string): PolicyRuleRequest | null {
   if (!text || text.startsWith('@') || text.length > 300) return null;
   if (QUESTION_RE.test(text)) return null;
   if (NON_POLICY_RE.test(text)) return null;
-  if (detectPolicyListRequest(text) || detectPolicyRevokeRequest(text)) return null;
+  if (detectPolicyResetRequest(text) || detectPolicyListRequest(text) || detectPolicyRevokeRequest(text)) return null;
   const hasEffect =
     EFFECT_ASK_RE.test(text) || EFFECT_DRAFT_RE.test(text) || (EFFECT_DENY_RE.test(text) && STANDING_RE.test(text));
   if (!hasEffect) return null;
@@ -80,6 +80,21 @@ export function detectPolicyListRequest(raw: string): boolean {
   return LIST_RE.test(text);
 }
 
+const RESET_JA_RE = /(?:安全ルール|ルール|ポリシー|権限|許可)(?:を|は)?(?:全部|すべて|全て|ぜんぶ)?(?:リセット|初期化|全部消して|すべて消して|全て消して|全削除)/;
+const RESET_EN_RE = /\breset\s+(?:all\s+)?(?:my\s+|the\s+)?(?:safety\s+|agent\s+)?(?:rules|policy|policies|permissions)\b/i;
+
+/**
+ * "Reset my safety rules" (re-review M1 recovery path). Removing EVERY rule is
+ * the strongest loosening there is, so the caller only ever posts an echoed
+ * confirmation for it — nothing is reset on detection.
+ */
+export function detectPolicyResetRequest(raw: string): boolean {
+  const text = (raw ?? '').trim();
+  if (!text || text.startsWith('@') || text.length > 120) return false;
+  if (/[?？]\s*$/.test(text)) return false;
+  return RESET_JA_RE.test(text) || RESET_EN_RE.test(text);
+}
+
 export interface PolicyRevokeRequest {
   /** 'latest' = the most recently added allow/rule; a number = 1-based index from the listing. */
   target: 'latest' | number;
@@ -93,6 +108,7 @@ const LATEST_RE = /さっき|今の|直前|最後|最新|\b(?:last|latest|previo
 export function detectPolicyRevokeRequest(raw: string): PolicyRevokeRequest | null {
   const text = (raw ?? '').trim();
   if (!text || text.startsWith('@') || text.length > 120) return null;
+  if (detectPolicyResetRequest(text)) return null;
   if (!REVOKE_VERB_RE.test(text) || !REVOKE_OBJECT_RE.test(text)) return null;
   const scope: PolicyRevokeRequest['scope'] = /許可|権限|\b(?:permission|permissions|allow|allows)\b/i.test(text)
     ? 'allow'

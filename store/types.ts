@@ -1451,6 +1451,11 @@ export type ChatMessage = {
     ruleId: string;
     attempts: number;
   };
+  /** POLICY-001 re-review M1: "reset my safety rules" awaiting an exact
+   *  confirm — the recovery path out of an unavailable (unsealed) policy. */
+  pendingPolicyReset?: {
+    attempts: number;
+  };
   /** "Grok Bot"-style conversational provider connect (2026-09-20): set on
    *  the assistant message that just asked "what's your Gemini key?" after
    *  lib/provider-connect-intent.ts's detectProviderConnectRequest matched.

@@ -60,6 +60,13 @@ export interface LoadedUserPolicy {
 export interface UserPolicySealPort {
   read: () => Promise<string[] | null>;
   write: (hashes: string[]) => Promise<void>;
+  /**
+   * Re-review M1: true once ANY seal was ever written (device: an
+   * AndroidKeyStore key a shell cannot delete). With it, an empty seal is
+   * no longer "first run" — deleting both the file and the seal stores just
+   * makes the policy unavailable instead of silently removing every rule.
+   */
+  everSealed?: () => Promise<boolean>;
 }
 
 export const MAX_USER_RULES = 50;
@@ -193,6 +200,8 @@ export async function loadUserPolicy(run: ShellRunner): Promise<LoadedUserPolicy
   let seal: string[] | null = null;
   try {
     seal = sealPort ? await sealPort.read() : null;
+    // An empty seal after a seal was ever written = the seal was deleted.
+    if (seal && seal.length === 0 && sealPort?.everSealed && (await sealPort.everSealed())) seal = null;
   } catch {
     seal = null;
   }
@@ -236,6 +245,32 @@ export function mutateUserPolicy(
     cache = { data: bounded, unavailable: false };
     logInfo('Policy', `policy.json written rules=${bounded.rules.length} allows=${bounded.trust.allows.length}`);
     return bounded;
+  });
+  chain = next.catch(() => undefined);
+  return next;
+}
+
+/**
+ * The explicit recovery path (re-review M1): replace whatever is on disk —
+ * even an unavailable / unsealed file — with an EMPTY policy and seal it.
+ * This LOOSENS everything back to defaults, so it is reachable only from the
+ * user's own chat after an echoed confirm (lib/agent-policy-chat.ts); no agent
+ * or executor path calls it.
+ */
+export function resetUserPolicy(run: ShellRunner, now: number = Date.now()): Promise<UserPolicyData> {
+  const next = chain.then(async () => {
+    if (!sealPort) throw new Error('policy seal is not configured; refusing to write');
+    const data = emptyUserPolicy();
+    const content = serializeUserPolicyFile(data, now);
+    const predicted = sha256Hex(content);
+    await sealPort.write([predicted]);
+    const written = (await run(writeCommand(content))).trim().toLowerCase();
+    const actual = SEAL_HASH_RE.test(written) ? written : predicted;
+    await sealPort.write([actual]);
+    lastFileHash = actual;
+    cache = { data, unavailable: false };
+    logInfo('Policy', 'policy.json reset to an empty, freshly sealed policy (user-confirmed)');
+    return data;
   });
   chain = next.catch(() => undefined);
   return next;

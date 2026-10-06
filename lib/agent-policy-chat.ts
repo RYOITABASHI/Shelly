@@ -21,13 +21,14 @@ import {
   classifyYesNo,
   describePolicyRule,
   detectPolicyListRequest,
+  detectPolicyResetRequest,
   detectPolicyRevokeRequest,
   detectPolicyRuleRequest,
   extractPolicyRule,
   type PolicyChatFn,
 } from '@/lib/agent-policy-rule-intent';
 import { grantTrustAllow, revokeTrustAllow, suppressTrustOffer, verifyTrustProposal } from '@/lib/agent-trust-ramp';
-import { ShellRunner, loadUserPolicy, mutateUserPolicy, newPolicyId } from '@/lib/agent-user-policy-store';
+import { ShellRunner, loadUserPolicy, mutateUserPolicy, newPolicyId, resetUserPolicy } from '@/lib/agent-user-policy-store';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isCancelPhrase } from '@/lib/agent-slot-fill';
 import type { LocalLlmConfig } from '@/lib/local-llm';
@@ -67,6 +68,11 @@ function fill(template: string, params: Record<string, string | number>): string
  */
 export async function handlePolicyIntent(text: string, locale: PolicyLocale, io: PolicyChatIO): Promise<boolean> {
   const s = strings(locale);
+  if (detectPolicyResetRequest(text)) {
+    // Re-review M1 recovery path: echo + exact confirm, never immediate.
+    io.post(s['policy.reset_confirm'], { pendingPolicyReset: { attempts: 0 } });
+    return true;
+  }
   if (detectPolicyListRequest(text)) {
     await postPolicyListing(locale, io);
     return true;
@@ -225,6 +231,41 @@ export async function handlePendingPolicyRuleReply(
   io.post(fill(s['policy.rule_confirm_unclear'], { rule: describePolicyRule(pending as Pick<PolicyRule, 'effect' | 'match'>, locale) }), {
     pendingPolicyRule: { ...pending, attempts: pending.attempts + 1 },
   });
+  return true;
+}
+
+/**
+ * Reply to a pending "reset my safety rules" confirmation. Only an exact
+ * confirm phrase resets (to an empty, freshly sealed policy — the way out of
+ * an unavailable / unsealed state); anything else keeps everything.
+ */
+export async function handlePendingPolicyResetReply(
+  pending: NonNullable<ChatMessage['pendingPolicyReset']>,
+  userText: string,
+  locale: PolicyLocale,
+  io: PolicyChatIO,
+): Promise<boolean> {
+  const s = strings(locale);
+  if (isCancelPhrase(userText) || classifyYesNo(userText) === 'no') {
+    io.post(s['policy.reset_kept']);
+    return true;
+  }
+  if (isConfirmPhrase(userText) || classifyYesNo(userText) === 'yes') {
+    try {
+      await resetUserPolicy(io.run, io.now ? io.now() : Date.now());
+    } catch (e) {
+      logWarn('Policy', 'policy reset failed', e);
+      io.post(`${s['policy.reset_failed']}: ${e instanceof Error ? e.message : String(e)}`);
+      return true;
+    }
+    io.post(s['policy.reset_done']);
+    return true;
+  }
+  if (pending.attempts >= 1) {
+    io.post(s['policy.reset_kept']);
+    return true;
+  }
+  io.post(s['policy.reset_confirm'], { pendingPolicyReset: { attempts: pending.attempts + 1 } });
   return true;
 }
 

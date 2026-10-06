@@ -1703,6 +1703,15 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // POLICY-001 re-review M1: the Keystore-backed ever-sealed marker and
+        // the HMAC-verified native seal (never the raw prefs value).
+        AsyncFunction("getAgentPolicySealState") {
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val state = AgentPolicySeal.read(context)
+            mapOf("everSealed" to state.everSealed, "seal" to state.seal, "valid" to state.valid)
+        }
+
         AsyncFunction("readAgentActionApprovalRequest") { runId: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")

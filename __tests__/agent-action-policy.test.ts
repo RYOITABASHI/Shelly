@@ -17,7 +17,7 @@ import {
   validatePolicyRule,
 } from '@/lib/agent-action-policy';
 import { trustKeyOf } from '@/lib/agent-trust-ramp';
-import { isTrustEligibleCommand, trustKeyForDescriptor } from '@/lib/agent-action-policy';
+import { isTrustEligibleCommand, normalizeTrustCommand, trustKeyForDescriptor } from '@/lib/agent-action-policy';
 import { sha256Hex } from '@/lib/sha256';
 
 const rule = (effect: PolicyRule['effect'], match: PolicyRule['match'], id = `r-${effect}`): PolicyRule => ({
@@ -185,9 +185,9 @@ describe('rule matching', () => {
 });
 
 describe('precedence matrix: deny > proactive > ask > trust allow > default', () => {
-  const cliReq = (origin: string, command = 'npm test') =>
+  const cliReq = (origin: string, command = 'mkdir -p build') =>
     describeApprovalRequest({ actionType: 'cli', command, agentId: 'agent1', origin });
-  const allowFor = (origin = 'user', command = 'npm test') => ({ id: 'a1', key: trustKeyOf(cliReq(origin, command)) || 'none' });
+  const allowFor = (origin = 'user', command = 'mkdir -p build') => ({ id: 'a1', key: trustKeyOf(cliReq(origin, command)) || 'none' });
 
   const denyExec = rule('deny', { capability: 'exec' }, 'deny1');
   const draftExec = rule('draft_only', { capability: 'exec' }, 'draft1');
@@ -287,32 +287,32 @@ describe('security review H1 — trust allows are exact-command, never class', (
     evaluateActionPolicy(cliReq(runCmd), state([], { trustAllows: [allowFor(allowCmd)] })).decision;
 
   it('the key is a sha256 of the exact command, scoped to agent and kind', () => {
-    const key = trustKeyForDescriptor(cliReq('npm test'))!;
+    const key = trustKeyForDescriptor(cliReq('mkdir -p build'))!;
     expect(key).toMatch(/^cli\|[0-9a-f]{64}\|a1$/);
-    expect(trustKeyForDescriptor(cliReq('npm  test  '))).toBe(key); // whitespace-normalised
-    expect(trustKeyForDescriptor(cliReq('npm test', 'a2'))).not.toBe(key);
-    expect(trustKeyForDescriptor(cliReq('npm test --watch'))).not.toBe(key);
+    expect(trustKeyForDescriptor(cliReq('mkdir  -p  build  '))).toBe(key); // whitespace-normalised
+    expect(trustKeyForDescriptor(cliReq('mkdir -p build', 'a2'))).not.toBe(key);
+    expect(trustKeyForDescriptor(cliReq('mkdir -p build --watch'))).not.toBe(key);
   });
 
   it('allows ONLY the identical command', () => {
-    expect(verdictFor('npm test', 'npm test')).toBe('allow');
-    expect(verdictFor('npm test', 'npm   test')).toBe('allow');
-    expect(verdictFor('npm test', 'npm test --bail')).toBe('default');
-    expect(verdictFor('npm test', 'npm run test')).toBe('default');
+    expect(verdictFor('mkdir -p build', 'mkdir -p build')).toBe('allow');
+    expect(verdictFor('mkdir -p build', 'mkdir   -p build')).toBe('allow');
+    expect(verdictFor('mkdir -p build', 'mkdir -p build --bail')).toBe('default');
+    expect(verdictFor('mkdir -p build', 'npm run test')).toBe('default');
   });
 
   it.each([
-    'npm test; python3 -c "import os"',
-    'npm test | sh',
-    'npm test; base64 -d x | bash',
-    'npm test; cat /sdcard/x > /sdcard/y',
-    'npm test && rm -rf build',
-    'npm test `id`',
-    'npm test $(id)',
-    'npm test > /sdcard/out',
-    'npm test\npython3 evil.py',
-  ])('drifted/compound command %j is never allowed by an allow for "npm test"', (cmd) => {
-    expect(verdictFor('npm test', cmd)).toBe('default');
+    'mkdir -p build; python3 -c "import os"',
+    'mkdir -p build | sh',
+    'mkdir -p build; base64 -d x | bash',
+    'mkdir -p build; cat /sdcard/x > /sdcard/y',
+    'mkdir -p build && rm -rf build',
+    'mkdir -p build `id`',
+    'mkdir -p build $(id)',
+    'mkdir -p build > /sdcard/out',
+    'mkdir -p build\npython3 evil.py',
+  ])('drifted/compound command %j is never allowed by an allow for "mkdir -p build"', (cmd) => {
+    expect(verdictFor('mkdir -p build', cmd)).toBe('default');
     expect(trustKeyForDescriptor(cliReq(cmd))).toBeNull();
   });
 
@@ -326,10 +326,10 @@ describe('security review H1 — trust allows are exact-command, never class', (
     'pnpm dlx create-x',
     'npm exec foo',
     'make all',
-    'env FOO=1 npm test',
-    'FOO=1 npm test',
+    'env FOO=1 mkdir -p build',
+    'FOO=1 mkdir -p build',
     'xargs rm',
-    'sudo npm test',
+    'sudo mkdir -p build',
     'busybox rm x',
     'toybox rm x',
     'perl -e 1',
@@ -339,7 +339,7 @@ describe('security review H1 — trust allows are exact-command, never class', (
     'git -c core.pager=sh log',
     'git -ccore.sshCommand=x fetch',
     'git config alias.x !sh',
-    'timeout 5 npm test',
+    'timeout 5 mkdir -p build',
     './build.sh',
     '/system/bin/sh x',
     'echo hi > /sdcard/a',
@@ -348,23 +348,64 @@ describe('security review H1 — trust allows are exact-command, never class', (
     expect(trustKeyForDescriptor(cliReq(cmd))).toBeNull();
   });
 
+  it.each([
+    // R1: non-space/tab whitespace and non-ASCII
+    'mkdir\u000b-p build',
+    'mkdir -p build',
+    'mkdir -p bui​ld',
+    'mkdir -p ｂｕｉｌｄ',
+    // R2: globs / ~ / history expansion
+    'rm build/*',
+    'touch a?.txt',
+    'touch [ab].txt',
+    'touch ~/x',
+    'touch !!',
+    // R3: project-defined code runners
+    'npm test',
+    'npm run build',
+    'npm start',
+    'pnpm test',
+    'yarn run x',
+    'bun test',
+    'cargo run',
+    'cargo test',
+    'go run .',
+    'go test ./...',
+    'git commit -m msg',
+    'git merge main',
+    'git rebase main',
+    'git pull',
+    'git am x.patch',
+    'git cherry-pick abc',
+    'gradle build',
+    'gradlew build',
+    'mvn package',
+  ])('review R1–R3: %j is ineligible', (cmd) => {
+    expect(isTrustEligibleCommand(cmd)).toBe(false);
+  });
+
+  it('R1: only plain space/tab collapse in the normalised form', () => {
+    expect(normalizeTrustCommand('  mkdir \t -p   build ')).toBe('mkdir -p build');
+    expect(normalizeTrustCommand('mkdir\n-p build')).toBe('mkdir\n-p build');
+  });
+
   it('ordinary exact commands stay eligible', () => {
-    for (const cmd of ['npm test', 'git -C repo status', 'cargo build --release', 'touch notes.txt', 'mkdir -p out']) {
+    for (const cmd of ['mkdir -p build', 'git -C repo status', 'cargo build --release', 'touch notes.txt', 'mkdir -p out']) {
       expect(isTrustEligibleCommand(cmd)).toBe(true);
     }
   });
 
   it('a forged allow key for a drifted command is still refused at use time (eligibility re-checked)', () => {
-    const drifted = 'npm test; python3 evil.py';
+    const drifted = 'mkdir -p build; python3 evil.py';
     const forged = { id: 'f', key: `cli|${sha256Hex(`a1\ncli\n${drifted}`)}|a1` };
     expect(evaluateActionPolicy(cliReq(drifted), state([], { trustAllows: [forged] })).decision).toBe('default');
   });
 
   it('proactive origin, non-cli kinds and excluded capabilities never match', () => {
-    const allow = allowFor('npm test');
-    expect(evaluateActionPolicy(cliReq('npm test', 'a1', 'schedule'), state([], { trustAllows: [allow] })).layer).toBe('proactive');
-    expect(evaluateActionPolicy(cliReq('npm test', 'a1', 'widget'), state([], { trustAllows: [allow] })).decision).toBe('allow');
-    expect(trustKeyForDescriptor(describeApprovalRequest({ actionType: 'intent', intentMode: 'launch', intentTarget: 'npm test', agentId: 'a1', origin: 'user' }))).toBeNull();
+    const allow = allowFor('mkdir -p build');
+    expect(evaluateActionPolicy(cliReq('mkdir -p build', 'a1', 'schedule'), state([], { trustAllows: [allow] })).layer).toBe('proactive');
+    expect(evaluateActionPolicy(cliReq('mkdir -p build', 'a1', 'widget'), state([], { trustAllows: [allow] })).decision).toBe('allow');
+    expect(trustKeyForDescriptor(describeApprovalRequest({ actionType: 'intent', intentMode: 'launch', intentTarget: 'mkdir -p build', agentId: 'a1', origin: 'user' }))).toBeNull();
     expect(trustKeyForDescriptor(cliReq('git push'))).toBeNull();
     expect(trustKeyForDescriptor(cliReq('curl https://x.com'))).toBeNull();
   });

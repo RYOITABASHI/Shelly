@@ -11,25 +11,35 @@
  *     ONLY place a trust allow is ever honoured (executors never see allows).
  * And it is where human decisions are COUNTED for the trust ramp (B).
  *
- * Origin (security review M2): NEVER the request file's own `origin` field —
- * the executor writes that file, so the agent's uid could forge it. The
- * origin is lib/agent-run-origin-registry.ts's record of which agents RN is
- * itself running for a human right now; everything else is proactive.
+ * Origin (security review M2): never the request file's `origin` ALONE — the
+ * executor writes that file, so the agent's uid could forge it. A request is
+ * "user" only when lib/agent-run-origin-registry.ts (RN's own record of
+ * agents it is running for a human) AND the file both say so; everything
+ * else is proactive.
  */
 import {
   ApprovalRequestLike,
   PolicyVerdict,
   describeApprovalRequest,
   evaluateActionPolicy,
+  normalizeRunOrigin,
 } from '@/lib/agent-action-policy';
 import { TRUST_RAMP_THRESHOLD_DEFAULT, recordApprovalOutcome, trustCommandOf, trustKeyOf, trustLabelOf } from '@/lib/agent-trust-ramp';
 import { registeredRunOrigin } from '@/lib/agent-run-origin-registry';
 import { ShellRunner, getCachedUserPolicy, loadUserPolicy, mutateUserPolicy } from '@/lib/agent-user-policy-store';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 
-/** The trusted origin for a request: RN's own run registry, never the file. */
-export function trustedRequestOrigin(req: { agentId?: string | null }): 'user' | 'event' {
-  return registeredRunOrigin(req.agentId);
+/**
+ * The trusted origin for a request — the TIGHTER of two independent signals
+ * (re-review M2): RN's own run registry must say "user" (the file alone can be
+ * forged by the agent's uid) AND the executor-written file must say "user"
+ * (native's SHELLY_RUN_ORIGIN — closes the window where a proactive fire of
+ * the same agent lands while RN's mark is still set). The registry is keyed
+ * by agentId: RN cannot know the executor-minted runId at runAgent() time.
+ */
+export function trustedRequestOrigin(req: { agentId?: string | null; origin?: string | null }): 'user' | 'event' {
+  if (registeredRunOrigin(req.agentId) !== 'user') return 'event';
+  return normalizeRunOrigin(req.origin) === 'user' ? 'user' : 'event';
 }
 
 /** Make sure the policy cache is warm (cheap no-op once loaded). */

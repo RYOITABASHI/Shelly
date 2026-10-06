@@ -262,6 +262,24 @@ echo "$LOG|rc=$rc|\${ACTION_DISPATCH_STATUS:-}"`;
     delete process.env.SHELLY_RUN_ORIGIN;
   });
 
+  it('re-review M1: file AND seal deleted after a seal was ever written ⇒ unavailable (bash + JS)', () => {
+    // No file, no seal: first run ⇒ nothing.
+    expect(effectOf({ SHELLY_AGENT_POLICY_SEAL: '' })).toBe('[]');
+    // Same, but native's Keystore marker exists ⇒ the seal was deleted.
+    expect(effectOf({ SHELLY_AGENT_POLICY_SEAL: '', SHELLY_AGENT_POLICY_EVER_SEALED: '1' })).toBe('[ask]');
+    expect(effectOf({ SHELLY_AGENT_POLICY_SEAL: '', SHELLY_AGENT_POLICY_EVER_SEALED: '1' }, 'notify')).toBe('[]');
+    process.env.SHELLY_RUN_ORIGIN = 'user';
+    process.env.SHELLY_AGENT_POLICY_EVER_SEALED = '1';
+    try {
+      expect(executor.policyActionEffect({ home }, { agent: { id: 'a' }, action: { type: 'webhook' } }, { SHELLY_AGENT_POLICY: '1' }, 'webhook', '').effect).toBe('ask');
+      expect(executor.policySealAccepts('', null, '1')).toBe(false);
+      expect(executor.policySealAccepts('', null, '0')).toBe(true);
+    } finally {
+      delete process.env.SHELLY_RUN_ORIGIN;
+      delete process.env.SHELLY_AGENT_POLICY_EVER_SEALED;
+    }
+  });
+
   it('L5: a malformed compiled line makes the policy unavailable (bash + JS)', () => {
     const dir = path.join(home, '.shelly/agents');
     fs.mkdirSync(dir, { recursive: true });

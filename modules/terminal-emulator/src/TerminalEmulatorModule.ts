@@ -236,6 +236,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   /** POLICY-001: record the policy.json seal (comma-separated sha256 hex)
    *  natively; AgentRuntime exports it as SHELLY_AGENT_POLICY_SEAL. */
   setAgentPolicySeal?(seal: string): Promise<void>;
+  /** POLICY-001: Keystore ever-sealed marker + HMAC-verified native seal. */
+  getAgentPolicySealState?(): Promise<{ everSealed: boolean; seal: string; valid: boolean }>;
   readAgentActionApprovalRequest?(runId: string): Promise<{
     runId: string;
     agentId: string;
