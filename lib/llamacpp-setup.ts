@@ -425,15 +425,18 @@ fetch_text() {
 # function: every step must propagate its own failure, or a curl/wget error
 # after a partial .part write would fall through to mv, return 0, skip the
 # fallback and surface as a misleading sha256 mismatch.
+# -sS / -q: the Setup log shows the raw command output, and curl's progress
+# meter table ("% Total % Received ...") was pure noise there; errors still
+# print (-S) and the surrounding echo lines report each step.
 download_file() {
   url="$1"
   out_file="$2"
   tmp_file="$out_file.part"
   rm -f "$tmp_file"
   if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
+    curl -sS -L --fail --retry 3 --retry-delay 2 -o "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
+    wget -q -O "$tmp_file" "$url" || { rm -f "$tmp_file"; return 1; }
   else
     echo "curl or wget is required to install llama.cpp" >&2
     return 127

@@ -2,6 +2,7 @@ import {
   buildDaemonStartScript,
   buildDeleteModelCommand,
   buildRecommendedStartCommand,
+  buildSetupSteps,
   getModelById,
   getModelRuntimeProfile,
   getRecommendedModel,
@@ -132,5 +133,17 @@ describe('llama.cpp local server tuning', () => {
 
     expect(command).toContain('target="$HOME/models/Qwen3.5-2B-Q4_K_M.gguf"');
     expect(command).not.toContain('/sdcard/Download/ShellyModels/Qwen3.5-2B-Q5_K_M.gguf');
+  });
+});
+
+describe('llama.cpp install script output', () => {
+  it('keeps curl/wget quiet so the Setup log has no progress-meter table', () => {
+    const install = buildSetupSteps().find((s) => s.id === 'install_llamacpp')!.command;
+    expect(install).toContain('curl -sS -L --fail --retry 3 --retry-delay 2 -o "$tmp_file"');
+    expect(install).toContain('wget -q -O "$tmp_file"');
+    expect(install).not.toMatch(/curl -L --fail/);
+    // Fail-closed sha256 + fallback logic stays intact.
+    expect(install).toContain('refusing to install');
+    expect(install).toContain('scan_release_fallback');
   });
 });
