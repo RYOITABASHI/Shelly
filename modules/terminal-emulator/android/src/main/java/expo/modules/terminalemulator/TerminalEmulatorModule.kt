@@ -162,7 +162,7 @@ class TerminalEmulatorModule : Module() {
         // SecurityException on targetSdk>=29 (legacy WRITE_EXTERNAL_STORAGE is
         // ineffective and DownloadManager does NOT honor MANAGE_EXTERNAL_STORAGE),
         // so enqueue() created zero download rows and the updater hung. Must stay
-        // string-identical to BuildsModal.releaseApkDir().
+        // resolved by JS via getApkDownloadDir() (BuildsModal.releaseApkDir()).
         val downloadsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             ?: throw IllegalStateException("External files dir unavailable")
         val target = java.io.File(downloadsRoot, fileName).canonicalFile
@@ -1225,6 +1225,18 @@ class TerminalEmulatorModule : Module() {
                 throw e
             }
             null
+        }
+
+        // Authoritative APK download dir (== the DownloadManager destination).
+        // JS must NOT hardcode /storage/emulated/0/...: under a Samsung Dual
+        // Messenger / work-profile clone the app runs as a non-zero Android
+        // user (e.g. 95) and this resolves to /storage/emulated/95/...
+        AsyncFunction("getApkDownloadDir") {
+            val context = requireReactContext()
+            val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: throw IllegalStateException("External files dir unavailable")
+            dir.mkdirs()
+            dir.absolutePath
         }
 
         AsyncFunction("enqueueApkDownload") { url: String, downloadSubdir: String, fileName: String ->

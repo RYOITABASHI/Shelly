@@ -25,6 +25,13 @@ import { colors as C, fonts as F, radii as R, sizes as S } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
+import {
+  ensureDirectory,
+  fromFileUri,
+  joinApkPath,
+  resolveReleaseApkDir,
+  toFileUri,
+} from '@/lib/release-apk-path';
 
 const REPO = 'RYOITABASHI/Shelly';
 const WORKFLOW = 'build-android.yml';
@@ -615,7 +622,7 @@ async function downloadReleaseApk(
   update: AndroidUpdateManifest,
   onProgress?: (progress: DownloadApkProgress) => void,
 ): Promise<string> {
-  const apkPath = releaseApkPath(update);
+  let apkPath = await releaseApkPath(update);
 
   onProgress?.({ step: 'prepare' });
   const pendingDownload = await readPendingApkDownload();
@@ -666,6 +673,15 @@ async function downloadReleaseApk(
     downloadId = Number(started.downloadId);
     if (!Number.isFinite(downloadId) || downloadId < 1) {
       throw new Error('Could not start APK download.');
+    }
+    // The native destination is authoritative. If it disagrees with the
+    // JS-resolved path (e.g. native accessor unavailable and the derived
+    // user id was wrong), adopt the native path so verify/install look where
+    // DownloadManager actually writes.
+    if (typeof started.path === 'string' && started.path && started.path !== apkPath) {
+      apkPath = fromFileUri(started.path);
+      const nativeDir = apkPath.slice(0, apkPath.lastIndexOf('/'));
+      cachedReleaseApkDir = nativeDir;
     }
     try {
       await writePendingApkDownload({
@@ -788,12 +804,20 @@ async function downloadReleaseApkDirect(
   update: AndroidUpdateManifest,
   onProgress?: (progress: DownloadApkProgress) => void,
 ): Promise<string> {
-  const apkPath = releaseApkPath(update);
-  const dirUri = 'file://' + releaseApkDir();
-  const fileUri = 'file://' + apkPath;
+  const apkPath = await releaseApkPath(update);
+  const fileUri = toFileUri(apkPath);
 
   onProgress?.({ step: 'prepare' });
-  await FileSystemLegacy.makeDirectoryAsync(dirUri, { intermediates: true }).catch(() => undefined);
+  // If the DownloadManager attempt actually completed before failing over
+  // (e.g. its verify step raced), reuse that file instead of re-downloading.
+  if (await verifyReleaseApkFile(update, apkPath).catch(() => false)) {
+    onProgress?.({ step: 'ready' });
+    return apkPath;
+  }
+  // Same normalized file:// URI for mkdir + existence check; throws with the
+  // real reason instead of letting downloadResumableStartAsync report a
+  // misleading "Directory ... doesn't exist".
+  await ensureDirectory(FileSystemLegacy, await releaseApkDir());
   // Drop any partial file a prior DownloadManager attempt may have left at
   // this same path before starting a fresh direct download into it.
   await FileSystemLegacy.deleteAsync(fileUri, { idempotent: true }).catch(() => undefined);
@@ -900,20 +924,30 @@ function downloadManagerFailureMessage(status: string, reason?: number): string 
   return `Android DownloadManager ${status}: ${reasonText}`;
 }
 
-function releaseApkDir(): string {
-  // App-specific external files dir — must stay string-identical to the native
-  // enqueueApkDownload destination (getExternalFilesDir(DIRECTORY_DOWNLOADS)), so
-  // the post-download verify/install path comparison matches. The public
-  // /sdcard/Download throws SecurityException in DownloadManager on targetSdk>=29.
-  return '/storage/emulated/0/Android/data/dev.shelly.terminal/files/Download';
+let cachedReleaseApkDir: string | null = null;
+
+async function releaseApkDir(): Promise<string> {
+  // App-specific external files dir — must match the native enqueueApkDownload
+  // destination (getExternalFilesDir(DIRECTORY_DOWNLOADS)) so the post-download
+  // verify/install path comparison matches. The public /sdcard/Download throws
+  // SecurityException in DownloadManager on targetSdk>=29.
+  // NEVER hardcode /storage/emulated/0: a Dual Messenger clone runs as Android
+  // user 95 and its dir is /storage/emulated/95/... (see lib/release-apk-path.ts).
+  if (cachedReleaseApkDir) return cachedReleaseApkDir;
+  const nativeDir = await TerminalEmulator.getApkDownloadDir?.().catch(() => null);
+  cachedReleaseApkDir = resolveReleaseApkDir({
+    nativeDir,
+    appDataDir: FileSystemLegacy.documentDirectory,
+  });
+  return cachedReleaseApkDir;
 }
 
-function releaseApkPath(update: AndroidUpdateManifest): string {
-  return `${releaseApkDir()}/${update.apkAssetName}`;
+async function releaseApkPath(update: AndroidUpdateManifest): Promise<string> {
+  return joinApkPath(await releaseApkDir(), update.apkAssetName);
 }
 
 async function verifyReleaseApkFile(update: AndroidUpdateManifest, apkPath: string): Promise<boolean> {
-  if (apkPath !== releaseApkPath(update)) return false;
+  if (apkPath !== (await releaseApkPath(update))) return false;
   const verify = await TerminalEmulator.verifyApkFile(apkPath, update.sha256, Math.trunc(update.apkSizeBytes ?? -1));
   return verify.ok;
 }
