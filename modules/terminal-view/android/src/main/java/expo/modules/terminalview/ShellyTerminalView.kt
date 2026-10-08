@@ -246,6 +246,16 @@ class ShellyTerminalView(
         terminalView.setScrollStateListener { isScrolledUp ->
             onScrollStateChanged(mapOf("isScrolledUp" to isScrolledUp))
         }
+        // Throttled scroll-activity ping (500ms) so JS can wake the Block
+        // History FAB while the user reads scrollback without flooding the
+        // bridge on every onScroll frame.
+        terminalView.setScrollActivityListener {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastScrollActivityEmitMs >= 500L) {
+                lastScrollActivityEmitMs = now
+                onScrollActivity(mapOf<String, Any>())
+            }
+        }
 
         // Add TerminalView as direct child with MATCH_PARENT
         addView(terminalView, LinearLayout.LayoutParams(
@@ -958,6 +968,12 @@ class ShellyTerminalView(
         terminalView.hasFocus() || TerminalImeHostView.isActiveTerminal(terminalView)
 
     override fun copyModeChanged(copyMode: Boolean) {
+        // Lets JS hide overlays (Block History FAB) while the native
+        // long-press selection handles / action menu are up.
+        if (copyMode != selectionModeActive) {
+            selectionModeActive = copyMode
+            onSelectionModeChanged(mapOf("active" to copyMode))
+        }
         if (copyMode) {
             terminalView.getSelectedText()?.let { onSelectionChangedEvent?.invoke(it) }
         }
@@ -991,6 +1007,10 @@ class ShellyTerminalView(
     // Expo EventDispatchers — emit to JS
     private val onResize by EventDispatcher()
     private val onScrollStateChanged by EventDispatcher()
+    private val onScrollActivity by EventDispatcher()
+    private val onSelectionModeChanged by EventDispatcher()
+    private var lastScrollActivityEmitMs = 0L
+    private var selectionModeActive = false
     private val onBlockLongPress by EventDispatcher()
     private val onBlockCompleted by EventDispatcher()
     // 2026-08-09 on-device QA finding (docs/superpowers/DEFERRED.md): the

@@ -49,6 +49,7 @@ import { getTerminalTheme } from '@/lib/terminal-theme';
 import type { TabSession, SessionStatus } from '@/store/types';
 import { generateId } from '@/lib/id';
 import { BlockList } from '@/components/terminal/BlockList';
+import { BlockHistoryFab } from '@/components/terminal/BlockHistoryFab';
 import { execCommand } from '@/hooks/use-native-exec';
 import { parseInput } from '@/lib/input-router';
 import { parseAgentCommand, runAgentNow, stopAgent } from '@/lib/agent-manager';
@@ -466,6 +467,16 @@ export default function TerminalScreen() {
 
   // Block History panel toggle
   const [showBlockHistory, setShowBlockHistory] = useState(false);
+  // Block History FAB visibility: bumped on scrollback scroll / terminal taps
+  // to wake the (normally faded) FAB; hidden entirely during native selection.
+  const [blockHistoryFabWake, setBlockHistoryFabWake] = useState(0);
+  const wakeBlockHistoryFab = useCallback(() => setBlockHistoryFabWake((n) => n + 1), []);
+  const [terminalSelectionActive, setTerminalSelectionActive] = useState(false);
+  // A session swap detaches the native selection without necessarily
+  // emitting copyModeChanged(false); never leave the FAB stuck hidden.
+  useEffect(() => {
+    setTerminalSelectionActive(false);
+  }, [activeSessionRecordId]);
 
   const showSetupOverlay = false; // Setup now runs directly on PTY, no overlay needed
 
@@ -1468,13 +1479,19 @@ export default function TerminalScreen() {
                 backgroundColor: terminalWallpaperActive ? 'transparent' : terminalColorScheme.background,
               },
             ]}
-            onScrollStateChanged={(e) => setIsScrolledUp(e.nativeEvent.isScrolledUp)}
+            onScrollStateChanged={(e) => {
+              setIsScrolledUp(e.nativeEvent.isScrolledUp);
+              wakeBlockHistoryFab();
+            }}
+            onScrollActivity={wakeBlockHistoryFab}
+            onSelectionModeChanged={(e) => setTerminalSelectionActive(!!e.nativeEvent.active)}
             onFocusRequested={(e) => {
               // Native bridge for bug #116 follow-up. Body taps inside the
               // terminal don't reach PaneSlot.onTouchStart because the
               // Termux TerminalView calls requestDisallowInterceptTouchEvent.
               // We mirror handleFocusPane here so every tap — header, tab,
               // or body — drives the same 4-store focus handoff.
+              wakeBlockHistoryFab();
               if (!paneId) return;
               const evSessId = e.nativeEvent.sessionId || '';
               console.log('[Shelly][Pane] onFocusRequested paneId=' + paneId + ' sessId=' + evSessId);
@@ -1735,14 +1752,12 @@ export default function TerminalScreen() {
           point to inline content renderers (JSON tree / Markdown / image /
           table blocks, see components/terminal/BlockList.tsx). */}
       {isConnected && !showBlockHistory && activeSession && (
-        <TouchableOpacity
-          style={[styles.blockHistoryFab, { bottom: 160 + terminalKeyboardInset, backgroundColor: 'rgba(0,0,0,0.7)', borderColor: C.accent + '44' }]}
+        <BlockHistoryFab
+          style={{ bottom: 160 + terminalKeyboardInset }}
+          wakeKey={blockHistoryFabWake}
+          hidden={terminalSelectionActive}
           onPress={() => setShowBlockHistory(true)}
-          activeOpacity={0.7}
-          accessibilityLabel="Block History"
-        >
-          <MaterialIcons name="history" size={18} color="#fff" />
-        </TouchableOpacity>
+        />
       )}
 
       {/* Voice Dialog Mode */}
@@ -1842,17 +1857,4 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
 
-  // Block History FAB
-  blockHistoryFab: {
-    position: 'absolute',
-    right: 12,
-    bottom: 160,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 15,
-  },
 });

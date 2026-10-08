@@ -11,4 +11,5 @@ export {
   type TitleChangedEvent,
   type ScrollStateChangedEvent,
   type QuoteSelectionEvent,
+  type SelectionModeChangedEvent,
 } from './NativeTerminalView';

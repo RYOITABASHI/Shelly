@@ -220,6 +220,7 @@ public class TerminalView extends View {
                     sendMouseEventCode(e, TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED, true);
                 } else {
                     scrolledWithFinger = true;
+                    notifyScrollActivity();
                     distanceY += mScrollRemainder;
                     int deltaRows = (int) (distanceY / mRenderer.mFontLineSpacing);
                     mScrollRemainder = distanceY - deltaRows * mRenderer.mFontLineSpacing;
@@ -241,6 +242,7 @@ public class TerminalView extends View {
                 if (mEmulator == null) return true;
                 // Do not start scrolling until last fling has been taken care of:
                 if (!mScroller.isFinished()) return true;
+                notifyScrollActivity();
 
                 final boolean mouseTrackingAtStartOfFling = mEmulator.isMouseTrackingActive();
                 float SCALE = 0.25f;
@@ -928,6 +930,26 @@ public class TerminalView extends View {
 
     public void setScrollStateListener(ScrollStateListener listener) {
         mScrollStateListener = listener;
+    }
+
+    /**
+     * Fired on every finger scroll / fling of the scrollback (not mouse-tracking
+     * apps). Unthrottled; consumers must throttle. Used by the JS layer to wake
+     * the Block History FAB while the user is reading scrollback.
+     */
+    public interface ScrollActivityListener {
+        void onScrollActivity();
+    }
+    private ScrollActivityListener mScrollActivityListener;
+
+    public void setScrollActivityListener(ScrollActivityListener listener) {
+        mScrollActivityListener = listener;
+    }
+
+    private void notifyScrollActivity() {
+        if (mScrollActivityListener != null) {
+            mScrollActivityListener.onScrollActivity();
+        }
     }
 
     private void setUserScrolledUp(boolean scrolledUp) {

@@ -36,6 +36,8 @@ class TerminalViewModule : Module() {
                 "onTitleChanged",
                 "onResize",
                 "onScrollStateChanged",
+                "onScrollActivity",
+                "onSelectionModeChanged",
                 "onFocusRequested",
                 "onQuoteSelection"
             )

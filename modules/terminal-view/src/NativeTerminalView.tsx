@@ -60,6 +60,13 @@ export interface ScrollStateChangedEvent {
   };
 }
 
+export interface SelectionModeChangedEvent {
+  nativeEvent: {
+    /** true while the native long-press text selection (handles + action menu) is up. */
+    active: boolean;
+  };
+}
+
 export interface FocusRequestedEvent {
   nativeEvent: {
     sessionId: string;
@@ -88,6 +95,9 @@ export interface NativeTerminalViewProps extends ViewProps {
   onTitleChanged?: (event: TitleChangedEvent) => void;
   onResize?: (event: ResizeEvent) => void;
   onScrollStateChanged?: (event: ScrollStateChangedEvent) => void;
+  /** Throttled (~500ms) ping while the user finger-scrolls / flings scrollback. */
+  onScrollActivity?: () => void;
+  onSelectionModeChanged?: (event: SelectionModeChangedEvent) => void;
   onFocusRequested?: (event: FocusRequestedEvent) => void;
   /** Label for the extra "Quote to AI" item in the selection menu (i18n'd on
    *  the JS side). Omit/empty to hide the item. */
