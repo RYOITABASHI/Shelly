@@ -15,6 +15,7 @@ import { generateRunScript, generateStopCommand, generateInstallCommands, getScr
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
 import { t } from '@/lib/i18n';
+import { isOneShotSchedule, oneShotAtMs, reconcileOneShotAgent, resolveOneShotSchedule } from './agent-oneshot';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
 import {
   buildGlobalRecallContext,
@@ -439,7 +440,11 @@ export function createAgent(params: {
     name: safeName,
     description: params.description,
     prompt: params.prompt,
-    schedule: params.schedule,
+    // A draft-stage one-shot ('@in 300000' = "in 5 minutes") is resolved to
+    // its absolute '@once <epochMs>' HERE, at the write boundary every
+    // registration path goes through — so a relative delay counts from the
+    // moment the user confirmed, never from when the sentence was parsed.
+    schedule: resolveOneShotSchedule(params.schedule, Date.now()),
     notificationTrigger: params.notificationTrigger ?? null,
     tool: params.tool,
     autonomous: params.autonomous || undefined,
@@ -508,6 +513,21 @@ export async function updateAgent(
   // own comment above) — a rename must go through the identical shell-safe
   // filter, not just the CREATE path.
   const safePartial: Partial<Agent> = { ...partial };
+  // One-shot re-arm ("actually make it in 10 minutes"): resolve the draft
+  // sentinel against NOW, and a schedule change always starts a fresh
+  // lifecycle — a retired (done/missed) one-shot given a new time becomes
+  // pending and enabled again; switching to a recurring cron drops the
+  // one-shot bookkeeping entirely.
+  if (safePartial.schedule !== undefined) {
+    safePartial.schedule = resolveOneShotSchedule(safePartial.schedule, Date.now());
+    if (safePartial.schedule !== current.schedule) {
+      safePartial.oneShotStatus = null;
+      safePartial.oneShotResolvedAt = null;
+      if (isOneShotSchedule(safePartial.schedule) && current.oneShotStatus && safePartial.enabled === undefined) {
+        safePartial.enabled = true;
+      }
+    }
+  }
   if (typeof safePartial.name === 'string') {
     safePartial.name = sanitizeAgentName(safePartial.name, current.name);
   }
@@ -2780,6 +2800,21 @@ function formatMissedWhen(expectedAtMs: number): string {
  * didn't happen. Best-effort: a failure to post must not block the repair
  * pass itself.
  */
+async function notifyMissedOneShot(agent: Agent, dueAtMs: number): Promise<void> {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `⚠ ${t('agents.missed_schedule_title')}`,
+        body: t('agents.missed_oneshot_body', { name: agent.name, when: formatMissedWhen(dueAtMs) }),
+        data: { agentId: agent.id, missedAt: dueAtMs, repaired: false },
+      },
+      trigger: null,
+    });
+  } catch (error) {
+    logWarn('AgentStartupRepair', `failed to post missed one-shot notification for ${agent.id}`, error);
+  }
+}
+
 async function notifyMissedSchedule(agent: Agent, expectedAtMs: number, repaired: boolean): Promise<void> {
   try {
     await Notifications.scheduleNotificationAsync({
@@ -2932,8 +2967,38 @@ function scheduleAgentStartupRepair(
         // startup-repair delay, so `agent.lastRun` can be stale by the time
         // this runs and would otherwise report an already-completed run as
         // missed.
+        // One-shot (lib/agent-oneshot.ts): never "re-arm for the next
+        // occurrence" — there is none. A fire that already ran is retired as
+        // done; one past the grace window without a run is retired as MISSED
+        // (stale runs never fire late) with one notification; a future one —
+        // or one still inside the grace window — falls through to the normal
+        // materialize below, where installSchedule arms it (catch-up if late).
+        if (oneShotAtMs(agent.schedule) !== null) {
+          const oneShotPatch = reconcileOneShotAgent(storeAgent, Date.now());
+          if (oneShotPatch) {
+            const retired: Agent = { ...storeAgent, ...oneShotPatch };
+            useAgentStore.getState().updateAgent(agent.id, oneShotPatch);
+            try {
+              await uninstallSchedule(agent.id);
+            } catch {
+              // best-effort
+            }
+            try {
+              await runCommand(
+                `set -e
+${writeFileCommand(`${agentsDir()}/${agent.id}.json`, JSON.stringify(retired, null, 2))}`
+              );
+            } catch (error) {
+              console.warn('Failed to persist one-shot terminal state during startup repair', agent.id, error);
+            }
+            if (oneShotPatch.oneShotStatus === 'missed') {
+              await notifyMissedOneShot(retired, oneShotAtMs(agent.schedule)!);
+            }
+            continue;
+          }
+        }
         let pendingMissedNotify: number | null = null;
-        if (agent.schedule) {
+        if (agent.schedule && oneShotAtMs(agent.schedule) === null) {
           const { missed, expectedAt } = isScheduleMissed(agent.schedule, storeAgent.lastRun, agent.createdAt, Date.now(), MISSED_RUN_GRACE_MS, agent.startNotBefore);
           if (missed && expectedAt != null && storeAgent.lastMissedNotifiedAt !== expectedAt) {
             useAgentStore.getState().updateAgent(agent.id, { lastMissedNotifiedAt: expectedAt });
@@ -3062,6 +3127,8 @@ export async function syncAgentRunLogsFromDisk(
 
   // Agents auto-disabled by the circuit breaker this sync — side effects fire below.
   const tripped: Agent[] = [];
+  // One-shot agents whose single fire just showed up in the logs.
+  const retiredOneShots: Agent[] = [];
   const agents = store.agents.map((agent) => {
     const logs = mergedHistory[agent.id];
     const latest = logs?.at(-1);
@@ -3085,6 +3152,19 @@ export async function syncAgentRunLogsFromDisk(
     const circuitBreakerLogs = resetAt
       ? logs?.filter((log) => log.timestamp > resetAt)
       : logs;
+    // One-shot: once a run at/after its instant is on disk, it is DONE —
+    // retire it (enabled=false + 'done') so a stale in-memory copy can never
+    // be re-materialized as pending. The native fire path already wrote the
+    // same fields to disk; this keeps the store (and any later JS write of
+    // this agent's JSON) consistent with it.
+    if (next.enabled && oneShotAtMs(next.schedule) !== null) {
+      const patch = reconcileOneShotAgent(next, Date.now());
+      if (patch?.oneShotStatus === 'done') {
+        next = { ...next, ...patch };
+        retiredOneShots.push(next);
+        return next;
+      }
+    }
     if (next.enabled && shouldTripCircuitBreaker(circuitBreakerLogs)) {
       next = { ...next, enabled: false };
       tripped.push(next);
@@ -3105,6 +3185,22 @@ export async function syncAgentRunLogsFromDisk(
   // Self-improvement: the production-live periodic/foreground-resume sync is
   // the hook unattended (alarm-fired) runs of a skill-reusing agent get.
   void improveReusedSkillsFromSyncedLogs(agents, mergedHistory, runCommand);
+
+  for (const a of retiredOneShots) {
+    try {
+      await uninstallSchedule(a.id);
+    } catch {
+      // best-effort — the native fire path already cancelled it
+    }
+    try {
+      await runCommand(
+        `set -e
+${writeFileCommand(`${agentsDir()}/${a.id}.json`, JSON.stringify(a, null, 2))}`
+      );
+    } catch {
+      // ignore — native already persisted the same terminal state
+    }
+  }
 
   for (const a of tripped) {
     if (a.schedule) {

@@ -610,7 +610,10 @@ export function mergeLlmExtractionIntoDraft(
 
   if (extraction.scheduleText) {
     const sched = parseSchedule(extraction.scheduleText);
-    if (sched.confident) {
+    // Same rule as lib/agent-conversational-registration.ts: an LLM-extracted
+    // BARE time is not trusted as an implicit one-shot (the extractor may have
+    // dropped the recurrence word); explicit one-shot phrasing still applies.
+    if (sched.confident && !sched.oneShotImplicit) {
       const m = next();
       m.schedule = sched.schedule;
       m.scheduleConfident = true;

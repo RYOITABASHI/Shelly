@@ -966,7 +966,11 @@ export interface Agent {
   name: string;
   description: string;
   prompt: string;
-  schedule: string | null;     // cron expression, null = manual only
+  /** Cron expression; null = manual only. May instead hold a resolved one-shot
+   *  sentinel '@once <epochMs>' = run exactly once at that instant (see
+   *  lib/agent-oneshot.ts — never a valid cron, so every cron-only consumer
+   *  rejects it fail-safe). Draft-only shapes '@in' / '@at' never persist. */
+  schedule: string | null;
   /** Packages whose notifications trigger an immediate one-shot run of this agent.
    *  Coarse allowlist, no per-package sub-config. Dormant until Increment 2 adds a
    *  UI to configure it.
@@ -1074,6 +1078,16 @@ export interface Agent {
    *  real time passes this value it is a permanent no-op, so it needs no
    *  explicit clearing after the first fire. */
   startNotBefore?: number | null;
+  /** One-shot lifecycle ('@once' schedule only): 'done' once its single fire
+   *  ran (success or failure — it never re-fires), 'missed' when the fire
+   *  time passed beyond the grace window without a run (never fired late).
+   *  Both terminal states also set enabled=false; the agent and its run log
+   *  stay visible until the user deletes or re-schedules it. Written natively
+   *  by TerminalSessionService (post-fire) / AgentAlarmScheduler (boot) and
+   *  mirrored by JS (lib/agent-manager.ts). Absent/null = pending. */
+  oneShotStatus?: 'done' | 'missed' | null;
+  /** Epoch ms when oneShotStatus became terminal. */
+  oneShotResolvedAt?: number | null;
 }
 
 export interface AgentRunLog {

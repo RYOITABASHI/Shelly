@@ -270,3 +270,60 @@ describe('scheduleAgentStartupRepair — missed-schedule detection (P0-1)', () =
     expect(call.content.body).not.toMatch(/re-armed|次回の予定は再設定済み/i);
   });
 });
+
+describe('scheduleAgentStartupRepair — one-shot schedules (lib/agent-oneshot.ts)', () => {
+  const NOW = new Date(2026, 6, 15, 9, 0, 0, 0).getTime();
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['queueMicrotask'] });
+    jest.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    useAgentStore.getState().setAgents([]);
+    useAgentStore.getState().setRunHistory({});
+    jest.clearAllMocks();
+  });
+
+  async function repair(agent: Agent) {
+    useAgentStore.getState().setAgents([agent]);
+    const runCommand = buildRunCommand(agent);
+    await loadAgentsFromDisk(runCommand, { syncLogs: false, repairSchedules: true, repairDelayMs: 0, shouldRepair: () => true });
+    await jest.advanceTimersByTimeAsync(1000);
+    await settleMicrotasks();
+    return runCommand;
+  }
+
+  it('a future one-shot is (re-)armed at its instant with no interval', async () => {
+    const schedule = `@once ${NOW + 30 * 60_000}`;
+    await repair(makeAgent({ schedule, createdAt: NOW - 60_000 }));
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledWith('sched-agent', 0, NOW + 30 * 60_000, schedule);
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+
+  it('a one-shot past the grace window with no run is retired as missed (one notification, never fired late)', async () => {
+    const due = NOW - 60 * 60_000;
+    const runCommand = await repair(makeAgent({ schedule: `@once ${due}`, createdAt: due - 5 * 60_000 }));
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    const stored = useAgentStore.getState().agents.find((a) => a.id === 'sched-agent');
+    expect(stored).toMatchObject({ enabled: false, oneShotStatus: 'missed' });
+    expect(scheduleNotificationAsync).toHaveBeenCalledTimes(1);
+    expect(scheduleNotificationAsync.mock.calls[0]![0].content.data).toMatchObject({ agentId: 'sched-agent', missedAt: due });
+    const persisted = runCommand.mock.calls.map((c) => c[0] as string).find((c) => c.includes('"oneShotStatus": "missed"'));
+    expect(persisted).toBeDefined();
+  });
+
+  it('a one-shot that already ran is retired as done (no re-arm, no notification)', async () => {
+    const due = NOW - 60 * 60_000;
+    await repair(makeAgent({ schedule: `@once ${due}`, lastRun: due + 3000, createdAt: due - 5 * 60_000 }));
+    expect(terminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+    expect(useAgentStore.getState().agents.find((a) => a.id === 'sched-agent')).toMatchObject({ enabled: false, oneShotStatus: 'done' });
+  });
+
+  it('a one-shot just inside the grace window gets a catch-up fire', async () => {
+    const due = NOW - 3 * 60_000;
+    await repair(makeAgent({ schedule: `@once ${due}`, createdAt: due - 5 * 60_000 }));
+    expect(terminalEmulator.scheduleAgent).toHaveBeenCalledWith('sched-agent', 0, NOW + 5000, `@once ${due}`);
+    expect(scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
+});

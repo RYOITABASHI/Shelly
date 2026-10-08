@@ -15,6 +15,27 @@
 // such a cron never enters the store, so the two agree on real data.)
 
 import { cronToIntervalMs, nextTriggerMs } from '@/lib/agent-scheduler';
+import { ONE_SHOT_CATCHUP_DELAY_MS, ONE_SHOT_GRACE_MS, oneShotAtMs } from '@/lib/agent-oneshot';
+
+export type BootOneShotDecision =
+  | { action: 'arm'; triggerAt: number }
+  | { action: 'catch-up'; triggerAt: number }
+  | { action: 'missed' };
+
+/**
+ * One-shot ('@once <epochMs>') boot decision — reference for the native
+ * AgentAlarmScheduler.rearmAllFromPersistedSchedules one-shot branch:
+ * future → re-arm at its instant; past but within ONE_SHOT_GRACE_MS → a
+ * catch-up fire ONE_SHOT_CATCHUP_DELAY_MS out; older → missed (retired,
+ * never fired late). null = not a one-shot record.
+ */
+export function planBootOneShot(cron: string, now: number): BootOneShotDecision | null {
+  const at = oneShotAtMs(cron);
+  if (at === null) return null;
+  if (at > now) return { action: 'arm', triggerAt: at };
+  if (now - at <= ONE_SHOT_GRACE_MS) return { action: 'catch-up', triggerAt: now + ONE_SHOT_CATCHUP_DELAY_MS };
+  return { action: 'missed' };
+}
 
 // One persisted agent schedule the native side records so a boot can re-arm it
 // without RN running.
@@ -43,6 +64,14 @@ export function planBootRearm(records: BootScheduleRecord[], now: number): BootR
   const plan: BootRearmEntry[] = [];
   for (const record of records) {
     if (!record.agentId) continue;
+    const oneShot = planBootOneShot(record.cron, now);
+    if (oneShot) {
+      // A missed one-shot is retired natively, never re-armed.
+      if (oneShot.action !== 'missed') {
+        plan.push({ agentId: record.agentId, triggerAt: oneShot.triggerAt, cron: record.cron, intervalMs: 0 });
+      }
+      continue;
+    }
     const hasCron = record.cron ? cronToIntervalMs(record.cron) !== null : false;
     if (hasCron) {
       plan.push({

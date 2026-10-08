@@ -50,6 +50,7 @@ import {
   JP_DOW_LABEL,
 } from './agent-nl-parser';
 import { decodeCron } from './agent-card-cron';
+import { encodeAtOneShot, parseOneShotSchedule } from './agent-oneshot';
 import { toolChoiceToLabel } from './agent-tool-router';
 import type { Agent } from '@/store/types';
 // Type-only: erased at compile time — same "no RN in this pure module"
@@ -150,7 +151,7 @@ function isBareTimeChangeUtterance(text: string): boolean {
  *  new ones. */
 type SchedulePatchFields = Pick<
   ParsedAgentDraft,
-  'schedule' | 'scheduleConfident' | 'scheduleLabel' | 'suggestedTime' | 'suggestedFrequency' | 'suggestedDowList' | 'scheduleAssumed'
+  'schedule' | 'scheduleConfident' | 'scheduleLabel' | 'suggestedTime' | 'suggestedFrequency' | 'suggestedDowList' | 'scheduleAssumed' | 'oneShotImplicit'
 >;
 
 /**
@@ -175,7 +176,35 @@ type SchedulePatchFields = Pick<
 function tryPatchSchedule(draft: ParsedAgentDraft, utterance: string): SchedulePatchFields | null {
   const parsed = parseSchedule(utterance);
 
-  if (parsed.confident) {
+  // A bare clock time ("9時にして" / "make it 9") now parses as an IMPLICIT
+  // one-shot (lib/agent-oneshot.ts). Against a draft that already carries a
+  // recurring cron, the user is changing the TIME of that recurrence, not
+  // asking for a one-time run — keep the merge path (b) below for that. And
+  // against a draft that is already a one-shot on a specific day ("tomorrow
+  // at 8" → "make it 9"), keep that day.
+  // An implicit one-shot from anything but a bare "change the time" reply is
+  // a time mentioned inside content ("9時のニュースをまとめて") — never a
+  // schedule change (the exact false positive isBareTimeChangeUtterance guards).
+  if (parsed.oneShotImplicit && !isBareTimeChangeUtterance(utterance)) return null;
+  const draftSpec = parseOneShotSchedule(draft.schedule);
+  const draftIsRecurring = !!draft.schedule && draft.schedule !== 'once' && !draftSpec;
+  const preferRecurringMerge = !!parsed.oneShotImplicit && draftIsRecurring && isBareTimeChangeUtterance(utterance);
+  if (parsed.confident && parsed.oneShotImplicit && draftSpec?.kind === 'at' && draftSpec.dayOffset !== null && parsed.suggestedTime) {
+    const t = parsed.suggestedTime;
+    const schedule = encodeAtOneShot(t.hour, t.minute, draftSpec.dayOffset);
+    return {
+      schedule,
+      scheduleConfident: true,
+      scheduleLabel: schedule,
+      suggestedTime: t,
+      suggestedFrequency: undefined,
+      suggestedDowList: undefined,
+      scheduleAssumed: undefined,
+      oneShotImplicit: undefined,
+    };
+  }
+
+  if (parsed.confident && !preferRecurringMerge) {
     return {
       schedule: parsed.schedule,
       scheduleConfident: true,
@@ -184,14 +213,14 @@ function tryPatchSchedule(draft: ParsedAgentDraft, utterance: string): ScheduleP
       suggestedFrequency: parsed.suggestedFrequency,
       suggestedDowList: parsed.suggestedDowList,
       scheduleAssumed: parsed.assumedTimeOfDay || undefined,
+      oneShotImplicit: parsed.oneShotImplicit || undefined,
     };
   }
 
   if (
     parsed.suggestedTime &&
     isBareTimeChangeUtterance(utterance) &&
-    draft.schedule &&
-    draft.schedule !== 'once'
+    draftIsRecurring
   ) {
     const decoded = decodeCron(draft.schedule);
     const t = parsed.suggestedTime;
@@ -204,6 +233,7 @@ function tryPatchSchedule(draft: ParsedAgentDraft, utterance: string): ScheduleP
         suggestedFrequency: undefined,
         suggestedDowList: undefined,
         scheduleAssumed: undefined,
+        oneShotImplicit: undefined,
       };
     }
     if (decoded.frequency === 'weekly' || decoded.frequency === 'custom') {
@@ -220,6 +250,7 @@ function tryPatchSchedule(draft: ParsedAgentDraft, utterance: string): ScheduleP
         suggestedFrequency: undefined,
         suggestedDowList: undefined,
         scheduleAssumed: undefined,
+        oneShotImplicit: undefined,
       };
     }
     // interval / hourly / daily-multi: no single well-defined "just the
