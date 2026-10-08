@@ -20,16 +20,52 @@ const BOOT_LINES = [
 ];
 
 const FLASH_DURATION_MS = 1100;
+const FADE_DURATION_MS = 180;
+// Hard ceiling, independent of any Animated completion callback: the overlay
+// is ALWAYS gone this long after it appears, even if the fade's callback
+// never fires (native-driver animation torn down by a remount / app
+// backgrounding) or the store flag flips underneath it.
+export const CASE_FILE_BOOT_FLASH_MAX_MS = FLASH_DURATION_MS + FADE_DURATION_MS + 300;
 
 export function CaseFileBootOverlay() {
   const active = useThemeVersionStore((s) => s.caseFileBootFlash);
-  const clear = useThemeVersionStore((s) => s.clearCaseFileBootFlash);
   const [visible, setVisible] = useState(false);
   const opacity = useRef(new Animated.Value(0)).current;
   const progress = useRef(new Animated.Value(0)).current;
+  const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hardTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+
+  // Timers live in refs and are torn down ONLY on unmount. They must not be
+  // tied to the `active` effect: 2026-10-08 build 2478 regression — the
+  // flag being cleared (by a previous ShellLayout instance's fade callback
+  // after a theme-version remount) re-ran the old effect, whose cleanup
+  // killed the hide timer while `visible` stayed true, so the overlay stuck
+  // on screen indefinitely.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (fadeTimer.current) clearTimeout(fadeTimer.current);
+      if (hardTimer.current) clearTimeout(hardTimer.current);
+      fadeTimer.current = null;
+      hardTimer.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!active) return;
+    // Consume the one-shot flag immediately so a remount (theme-version key
+    // bump) or a duplicate trigger never replays / re-arms the flash.
+    useThemeVersionStore.getState().clearCaseFileBootFlash();
+    if (fadeTimer.current || hardTimer.current) return; // already flashing
+    const hide = () => {
+      if (fadeTimer.current) clearTimeout(fadeTimer.current);
+      if (hardTimer.current) clearTimeout(hardTimer.current);
+      fadeTimer.current = null;
+      hardTimer.current = null;
+      if (mounted.current) setVisible(false);
+    };
     setVisible(true);
     progress.setValue(0);
     opacity.setValue(1);
@@ -39,14 +75,12 @@ export function CaseFileBootOverlay() {
       easing: Easing.linear,
       useNativeDriver: false, // drives a width %, not transform/opacity
     }).start();
-    const timer = setTimeout(() => {
-      Animated.timing(opacity, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => {
-        setVisible(false);
-        clear();
-      });
+    fadeTimer.current = setTimeout(() => {
+      fadeTimer.current = null;
+      Animated.timing(opacity, { toValue: 0, duration: FADE_DURATION_MS, useNativeDriver: true }).start(hide);
     }, FLASH_DURATION_MS);
-    return () => clearTimeout(timer);
-  }, [active, opacity, progress, clear]);
+    hardTimer.current = setTimeout(hide, CASE_FILE_BOOT_FLASH_MAX_MS);
+  }, [active, opacity, progress]);
 
   if (!visible) return null;
 

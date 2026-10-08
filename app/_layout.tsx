@@ -25,6 +25,7 @@ import { useA11yStore } from '@/lib/accessibility';
 import { usePluginStore } from '@/lib/plugin-api';
 import { useCosmeticStore } from '@/store/cosmetic-store';
 import { useSettingsStore } from '@/store/settings-store';
+import { useThemeVersionStore } from '@/store/theme-version-store';
 import { useDmPairingStore } from '@/store/dm-pairing-store';
 import { useDotfilesStore } from '@/lib/dotfiles-sync';
 import { completeXOAuthCallback, isXOAuthSuccess, type XOAuthCallbackResult } from '@/lib/x-oauth-connect';
@@ -532,6 +533,12 @@ export default function RootLayout() {
       applyPersistedTheme: () => {
         const s = useSettingsStore.getState().settings;
         applyThemeFromSettings(s.uiFont ?? 'blue', s.appFontFamily ?? 'default', fontsLoadedRef.current);
+        // The Case File pseudo-boot flash is meant for an actual visible
+        // transition INTO Case File (e903916bb). Here the persisted preset is
+        // applied behind the native splash before the tree mounts, so there
+        // is no transition to disguise — drop the one-shot flag so a cold
+        // start never shows it (2026-10-08 build 2478 stuck-overlay report).
+        useThemeVersionStore.getState().clearCaseFileBootFlash();
         logInfo('RootLayout', 'Boot theme preset applied: ' + (s.uiFont ?? 'blue'));
       },
       onReady: (reason) => {
