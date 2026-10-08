@@ -3,6 +3,7 @@ import { useAgentStore } from '@/store/agent-store';
 import type { AgentRunLog, ChatMessage } from '@/store/types';
 import { buildHandoffDigest, type HandoffTranslate } from '@/lib/agent-handoff';
 import { logInfo } from '@/lib/debug-logger';
+import { agentRunOpenPath } from '@/lib/agent-run-output';
 
 export type AgentRunHistory = Record<string, AgentRunLog[]>;
 
@@ -20,12 +21,16 @@ export function buildAgentCompanionNotice(
   const resultLine = preview ? `${icon} ${preview}` : `${icon} ${fallbackText}`;
   const runIdentity = agentRunLogIdentity(log);
   const now = Date.now();
+  // Saved draft (attended single-step, attended orchestrated aggregate, or
+  // unattended PlanSpec run log) -> inline Open link under the notice.
+  const openPath = agentRunOpenPath(log);
   return {
     id: `agent-run-${runIdentity}-${now.toString(36)}`,
     role: 'assistant',
     content: `${agentName}: ${resultLine}`,
     timestamp: now,
     agentRunLogId: runIdentity,
+    ...(openPath ? { openFileOffer: { path: openPath } } : {}),
   };
 }
 
@@ -119,8 +124,17 @@ export function markAgentHandoffRunNarrated(log: Pick<AgentRunLog, 'agentId' | '
 }
 
 /** Append ONE hand-off line to the agent's own `agent:<id>` thread. Plain
- *  system text (excluded from LLM history and thread carry-forward by role). */
-export function postAgentHandoffLine(agentId: string, runId: string, seq: number, text: string): void {
+ *  system text (excluded from LLM history and thread carry-forward by role).
+ *  `openPath` (optional): the run's saved output file — rendered as an
+ *  inline Open link under the line (lib/open-file.ts routes .md to the
+ *  Markdown pane). */
+export function postAgentHandoffLine(
+  agentId: string,
+  runId: string,
+  seq: number,
+  text: string,
+  openPath?: string,
+): void {
   const now = Date.now();
   if (seq === 0) collapseOlderHandoffRuns(agentThreadKey(agentId), runId);
   useAIPaneStore.getState().addMessage(agentThreadKey(agentId), {
@@ -129,6 +143,7 @@ export function postAgentHandoffLine(agentId: string, runId: string, seq: number
     content: text,
     timestamp: now,
     handoff: { runId, seq },
+    ...(openPath ? { openFileOffer: { path: openPath } } : {}),
   });
   logInfo('Handoff', `posted line ${seq} for ${runId}`);
 }
@@ -173,7 +188,7 @@ export function postAgentHandoffDigest(
   const digest = buildHandoffDigest(agentName, log.steps, translate);
   if (!digest) return false;
   narratedHandoffRuns.add(runId);
-  postAgentHandoffLine(log.agentId, runId, 0, digest);
+  postAgentHandoffLine(log.agentId, runId, 0, digest, agentRunOpenPath(log));
   return true;
 }
 

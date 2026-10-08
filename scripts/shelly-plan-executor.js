@@ -1391,6 +1391,11 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, ste
     errorMessage: errorMessage ? previewText(errorMessage) : '',
     routeDecision: plan.routeDecision,
     executor: 'planspec',
+    // Where the draft was saved (set by writeDraftOutputs on a successful
+    // write) — mirrors the .sh run log's savedPath/savedPathMirror fields so
+    // the Sidebar "Open" button and completion notices can offer the file.
+    ...(paths.savedOutput && paths.savedOutput.savedPath ? { savedPath: paths.savedOutput.savedPath } : {}),
+    ...(paths.savedOutput && paths.savedOutput.savedPathMirror ? { savedPathMirror: paths.savedOutput.savedPathMirror } : {}),
     ...(steps ? { steps } : {}),
     ...(actionResults ? { actionResults } : {}),
   };
@@ -1811,10 +1816,21 @@ function sha256Hex(value) {
 // Mirrors the .sh save_draft_result destination logic (lib/agent-executor.ts).
 // Returns { dest, rel, useGlobalOutput }: `rel` is the content-studio relative
 // filename reused by the Obsidian mirror; it is empty for the global-output path.
-function resolveDraftDestination(paths, plan, config) {
-  const now = new Date();
-  const date = now.toISOString().slice(0, 10);
-  const time = now.toISOString().slice(11, 19).replace(/:/g, '');
+// Local-time (device timezone) date/time stamps, matching the .sh's
+// `date +%Y-%m-%d` / `date +%H%M%S` (which honor TZ). The previous
+// toISOString() form used UTC, so an unattended run near local midnight
+// (e.g. 08:30 JST = 23:30 UTC the previous day) filed its draft under the
+// WRONG day's folder, while the attended .sh path filed the same agent's
+// output under the correct local day.
+function localDateTimeStamps(now) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return { date, time };
+}
+
+function resolveDraftDestination(paths, plan, config, nowOverride) {
+  const { date, time } = localDateTimeStamps(nowOverride instanceof Date ? nowOverride : new Date());
   if (plan.output && plan.output.useGlobalOutput) {
     let base = path.join(paths.home, 'agent-output');
     const target = config.SHELLY_AGENT_OUTPUT_TARGET || 'local';
@@ -1878,6 +1894,16 @@ async function writeDraftOutputs(paths, opts, plan, config, roots, bestEffort) {
   // aborts before the mirror). The terminal draft path lets the failure propagate.
   try {
     for (const target of targets) await brokerFsWrite(paths, opts, roots, target, paths.resultFile);
+    // Record where the draft landed so writeRunLog can carry it into the run
+    // log as savedPath/savedPathMirror — parity with the .sh's
+    // SAVED_PATH_FIELDS. Without it the Sidebar agent detail's "Open" button
+    // (keyed off lastLog.savedPath) never appeared for an unattended run.
+    // Set only after every write succeeded (a swallowed bestEffort failure
+    // must not advertise a file that may not exist).
+    paths.savedOutput = {
+      savedPath: path.resolve(dest),
+      ...(targets.length > 1 ? { savedPathMirror: path.resolve(targets[1]) } : {}),
+    };
     // save_draft_result appends source URLs to the shared dedup registry AFTER the
     // write, inside set -e — a failed write aborts before it. Keep it inside the try
     // so a swallowed bestEffort write failure also skips the registry (parity).
@@ -3634,6 +3660,11 @@ module.exports = {
   PLAN_SPEC_KIND,
   validatePlan,
   runtimePaths,
+  // Draft destination + run-log write — exported for host unit tests only
+  // (__tests__/plan-executor-saved-path.test.ts).
+  resolveDraftDestination,
+  localDateTimeStamps,
+  writeRunLog,
   parseConfigEnv,
   isLoopbackUrl,
   // 署名付き承認 (SIGNED-APPROVAL) Migration step 2 — exported for host unit tests

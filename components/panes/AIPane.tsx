@@ -74,6 +74,7 @@ import {
 } from '@/lib/ai-pane-agents';
 import { kickLocalLlmAutoStart } from '@/lib/local-llm-autostart';
 import { useTranslation } from '@/lib/i18n';
+import { openFile } from '@/lib/open-file';
 import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
 import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
 
@@ -145,6 +146,29 @@ type BubbleProps = {
   onDismissScheduleReadiness?: (messageId: string) => void;
   onCancelStreaming?: () => void;
 };
+
+/** Inline "Open <file>" text link for a message carrying `openFileOffer`
+ *  (an agent run's saved draft). Plain text affordance, not a card — routes
+ *  through lib/open-file.ts (.md -> Markdown pane). */
+function OpenFileLink({ path, align }: { path: string; align?: 'center' }) {
+  const { t } = useTranslation();
+  const name = path.split('/').filter(Boolean).pop() || path;
+  return (
+    <TouchableOpacity
+      onPress={() => {
+        openFile(path).catch((e) => logError('AIPane', 'open saved file failed', e));
+      }}
+      hitSlop={6}
+      accessibilityRole="link"
+      accessibilityLabel={t('chat.open_saved_file', { name })}
+      style={[bubbleStyles.openFileLink, align === 'center' && { alignSelf: 'center' }]}
+    >
+      <Text style={[bubbleStyles.openFileLinkText, { color: C.accent }]} numberOfLines={1}>
+        {`↗ ${t('chat.open_saved_file', { name })}`}
+      </Text>
+    </TouchableOpacity>
+  );
+}
 
 const MessageBubble = React.memo(function MessageBubble({
   message,
@@ -218,6 +242,7 @@ const MessageBubble = React.memo(function MessageBubble({
     return (
       <View accessible accessibilityLabel={`System: ${displayText}`} style={[bubbleStyles.systemRow, containerMaxWidth]}>
         <Text style={[bubbleStyles.systemText, { color: C.text2 }]}>{displayText}</Text>
+        {message.openFileOffer ? <OpenFileLink path={message.openFileOffer.path} align="center" /> : null}
       </View>
     );
   }
@@ -302,6 +327,7 @@ const MessageBubble = React.memo(function MessageBubble({
           </View>
         )}
       </View>
+      {!isLastStreaming && message.openFileOffer ? <OpenFileLink path={message.openFileOffer.path} /> : null}
       {!isLastStreaming && message.agentRollbackOffer && (
         <AgentUndoButton agentId={message.agentRollbackOffer.agentId} />
       )}
@@ -379,6 +405,17 @@ const bubbleStyles = StyleSheet.create({
     fontFamily: F.family,
     color: C.text2,
     fontStyle: 'italic',
+  },
+  openFileLink: {
+    alignSelf: 'flex-start',
+    marginTop: 3,
+    paddingVertical: 2,
+  },
+  openFileLinkText: {
+    fontSize: 7,
+    fontFamily: F.family,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
   },
   streamingRow: {
     flexDirection: 'row',

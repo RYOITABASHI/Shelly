@@ -1199,6 +1199,7 @@ const ja: Record<string, string> = {
   // ── Chat Message List ───────────────────────────────────────────
   'chat.empty_title': 'Shelly',
   'chat.companion_label': 'Shelly',
+  'chat.open_saved_file': '{{name}} を開く',
   // 2026-08-24(Fable5設計コンサル、「一人の相棒」Phase 3): 内部用語「スレッド」
   // を撤去。ユーザーは「スレッド」が何かを説明されたことがなく、実装内部の
   // 露出にしか読めなかったため。同じ人格が道具を持ち替える表現に変更、

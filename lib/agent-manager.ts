@@ -4,6 +4,7 @@
  */
 import { useAgentStore } from '@/store/agent-store';
 import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
+import { pickFinalStepOutput, type AgentRunOutputFields } from '@/lib/agent-run-output';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { validateWorkspaceRoot } from './agent-boundary-policy';
@@ -2033,6 +2034,12 @@ async function runAgentOrchestratedBody(
   const priorResults: string[] = [];
   const records: AgentRunStep[] = [];
   let priorFailed = false;
+  // Final step's saved-output fields (draft action) — carried into the
+  // aggregate log below so the Sidebar "Open" button (keyed off
+  // lastLog.savedPath) and the completion notices can offer the file. The
+  // per-step logs that held them are deleted when the aggregate replaces
+  // them, so without this the path was lost for every multi-step run.
+  let finalOutput: AgentRunOutputFields = {};
   // Snapshot existing log files so we can remove the per-step logs this chain
   // writes and replace them with ONE aggregate (so the circuit breaker counts a
   // failed chain as one run, and the per-step detail survives a reload).
@@ -2053,12 +2060,22 @@ async function runAgentOrchestratedBody(
   } catch (error) {
     logWarn('Handoff', 'narrator init failed', error);
   }
-  const narrate = (produce: (n: HandoffNarrator) => string[]): void => {
+  // `openPath` (optional): attached to the LAST line this call produces, so
+  // the chain's terminal "finished" line carries an inline Open affordance
+  // for the saved draft (lib/open-file.ts) — plain text + link, no card.
+  const narrate = (produce: (n: HandoffNarrator) => string[], openPath?: string): void => {
     if (!handoffNarrator) return;
     try {
-      for (const line of produce(handoffNarrator)) {
-        postAgentHandoffLine(agentId, handoffRunId, handoffSeq++, line);
-      }
+      const lines = produce(handoffNarrator);
+      lines.forEach((line, idx) => {
+        postAgentHandoffLine(
+          agentId,
+          handoffRunId,
+          handoffSeq++,
+          line,
+          idx === lines.length - 1 ? openPath : undefined,
+        );
+      });
     } catch (error) {
       logWarn('Handoff', 'narration failed', error);
     }
@@ -2173,7 +2190,8 @@ async function runAgentOrchestratedBody(
       routeDecision: log?.routeDecision,
       ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
     });
-    narrate((n) => n.stepFinished(records[records.length - 1]));
+    if (isFinalStep && log) finalOutput = pickFinalStepOutput(log);
+    narrate((n) => n.stepFinished(records[records.length - 1]), finalOutput.savedPath);
     // A transient step carries no usable result downstream, so it stops the chain
     // just like an error — only success feeds the next step's context.
     if (status === 'success') priorResults.push(log?.outputPreview ?? '');
@@ -2201,6 +2219,7 @@ async function runAgentOrchestratedBody(
     durationMs: Date.now() - startedAtMs,
     toolUsed: records.at(-1)?.routeDecision?.toolLabel ?? 'orchestration',
     routeDecision: records.at(-1)?.routeDecision,
+    ...finalOutput,
     steps: records,
   };
   markAttendedAgentRunLog(aggregate);

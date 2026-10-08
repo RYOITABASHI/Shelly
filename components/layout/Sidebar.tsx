@@ -34,6 +34,7 @@ import { readMemoryNotes, type MemoryNote } from '@/lib/agent-memory';
 import { MEMORY_ENABLED } from '@/lib/memory/wiring';
 import { activateMemoryList } from '@/lib/memory/shadow';
 import { openFile } from '@/lib/open-file';
+import { agentRunOpenPath } from '@/lib/agent-run-output';
 import {
   formatElapsedMs,
   runningDisplayElapsedMs,
@@ -1133,7 +1134,9 @@ export function Sidebar() {
     // Task C: hoisted out of the `if (lastLog)` block below so the buttons
     // array (which closes over it, outside that block's narrowing) gets a
     // plain `string | undefined` instead of re-deriving it unsafely.
-    const savedPath: string | undefined = lastLog?.savedPath;
+    // agentRunOpenPath: shared with the completion notices; for a multi-step
+    // run the aggregate log now carries the final step's savedPath too.
+    const savedPath: string | undefined = agentRunOpenPath(lastLog);
     if (agent.schedule && agent.enabled) {
       relLines.push(`${t('sidebar.agent_next_run')}: ${formatWhen(nextTriggerMs(agent.schedule, agent.startNotBefore))}`);
     }
