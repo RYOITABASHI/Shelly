@@ -1,4 +1,4 @@
-import { computeKeyboardOverlap, KEYBOARD_SAFETY_MARGIN } from '@/lib/keyboard-inset';
+import { computeKeyboardOverlap, IME_POLL_BURST_MS, KEYBOARD_SAFETY_MARGIN, shouldPollImeInsets } from '@/lib/keyboard-inset';
 
 // Real build-2482/2485 values from the unfolded Z Fold6
 // (1856x2160 px @ density 464 => 640x744.83 dp root, nav inset 44px = 15.17 dp,
@@ -128,5 +128,20 @@ describe('computeKeyboardOverlap', () => {
         computeKeyboardOverlap({ keyboardHeight: FOLD_INNER.keyboardHeight, imeFootprint: null, bottomInset: NAV, rootHeight: ROOT_H, containerBottom: FOLD_INNER.containerBottom }),
       ).toBeCloseTo(computeKeyboardOverlap(FOLD_INNER), 6);
     });
+  });
+});
+
+describe('shouldPollImeInsets', () => {
+  it('polls while the IME is visible', () => {
+    expect(shouldPollImeInsets(true, 10_000, 0)).toBe(true);
+  });
+  it('polls during the burst window after a keyboard signal, then stops', () => {
+    const start = 1_000;
+    const until = start + IME_POLL_BURST_MS;
+    expect(shouldPollImeInsets(false, start + 500, until)).toBe(true);
+    expect(shouldPollImeInsets(false, until, until)).toBe(false);
+  });
+  it('does not poll with the keyboard hidden and no recent signal', () => {
+    expect(shouldPollImeInsets(false, 50_000, 0)).toBe(false);
   });
 });

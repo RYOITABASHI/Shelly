@@ -15,6 +15,7 @@ import {
   StyleSheet,
   Keyboard,
   Platform,
+  AppState,
   type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaFrame, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -29,7 +30,7 @@ import {
   type SlotIndex,
 } from '@/hooks/use-multi-pane';
 import { logInfo } from '@/lib/debug-logger';
-import { computeKeyboardOverlap } from '@/lib/keyboard-inset';
+import { computeKeyboardOverlap, IME_POLL_BURST_MS, shouldPollImeInsets } from '@/lib/keyboard-inset';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
@@ -251,29 +252,71 @@ export function MultiPaneContainer() {
     }
     if (!native || typeof native.watchImeInsets !== 'function') return;
     let cancelled = false;
+    let installed = false;
+    let imeVisible = false;
+    let burstUntil = 0;
+    let interval: ReturnType<typeof setInterval> | null = null;
     const applyNative = (snap: any, reason: string) => {
       if (cancelled || !snap || snap.available !== true) return;
       const density = Number(snap.density);
       const px = Number(snap.imeBottomPx);
       if (!Number.isFinite(density) || density <= 0 || !Number.isFinite(px)) return;
       const next = { visible: snap.visible === true, bottom: Math.max(0, px) / density };
+      imeVisible = next.visible;
       setNativeIme((prev) => {
         if (prev && prev.visible === next.visible && Math.abs(prev.bottom - next.bottom) <= 0.5) return prev;
         logInfo('Keyboard', 'nativeIme', { reason, ...next, imeBottomPx: px, navBottomPx: snap.navBottomPx, density });
         return next;
       });
-      if (next.visible) requestAnimationFrame(measureContainer);
+      if (next.visible) {
+        requestAnimationFrame(measureContainer);
+        ensurePolling();
+      }
     };
-    const sub = native.addListener?.('onImeInsets', (snap: any) => applyNative(snap, 'event'));
-    native.watchImeInsets().then((snap: any) => applyNative(snap, 'watch')).catch(() => {});
-    // Polling fallback in case an inset change is not dispatched to the probe.
-    const interval = setInterval(() => {
-      native.getImeInsets?.().then((snap: any) => applyNative(snap, 'poll')).catch(() => {});
-    }, 250);
+    // Polling is only a safety net for inset changes the probe misses: it
+    // runs while the IME is visible plus a short burst after any keyboard
+    // signal, and stops otherwise (no bridge traffic with the keyboard hidden).
+    const ensurePolling = () => {
+      if (interval || cancelled) return;
+      interval = setInterval(() => {
+        if (!shouldPollImeInsets(imeVisible, Date.now(), burstUntil)) {
+          if (interval) clearInterval(interval);
+          interval = null;
+          return;
+        }
+        native.getImeInsets?.().then((snap: any) => applyNative(snap, 'poll')).catch(() => {});
+      }, 250);
+    };
+    const burst = () => {
+      burstUntil = Date.now() + IME_POLL_BURST_MS;
+      ensurePolling();
+    };
+    // The probe needs an Activity; if there was none yet (available:false),
+    // retry on the next keyboard signal or when the app becomes active.
+    const watch = (reason: string) => {
+      if (installed || cancelled) return;
+      native.watchImeInsets().then((snap: any) => {
+        if (snap?.available === true) installed = true;
+        applyNative(snap, reason);
+      }).catch(() => {});
+    };
+    const sub = native.addListener?.('onImeInsets', (snap: any) => {
+      applyNative(snap, 'event');
+      burst();
+    });
+    const kbShow = Keyboard.addListener('keyboardDidShow', () => { watch('watch-didShow'); burst(); });
+    const kbHide = Keyboard.addListener('keyboardDidHide', () => { burst(); });
+    const appSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') watch('watch-active');
+    });
+    watch('watch');
     return () => {
       cancelled = true;
       sub?.remove?.();
-      clearInterval(interval);
+      kbShow.remove();
+      kbHide.remove();
+      appSub.remove();
+      if (interval) clearInterval(interval);
     };
   }, [measureContainer]);
 

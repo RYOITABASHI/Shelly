@@ -99,3 +99,15 @@ export function computeKeyboardOverlap(input: KeyboardOverlapInput): number {
   }
   return Math.min(footprint, Math.max(0, height - shrink) + margin);
 }
+
+/** How long the native ime-inset poll keeps running after a keyboard signal. */
+export const IME_POLL_BURST_MS = 2000;
+
+/**
+ * Whether the native ime-inset polling fallback should keep running: only
+ * while the IME is visible, or within the short burst window after a
+ * keyboardDidShow/keyboardDidHide/onImeInsets signal.
+ */
+export function shouldPollImeInsets(imeVisible: boolean, now: number, burstUntil: number): boolean {
+  return imeVisible || now < burstUntil;
+}
