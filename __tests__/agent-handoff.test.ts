@@ -256,7 +256,10 @@ describe('i18n + wiring', () => {
   it('attended chain narrates at step boundaries and marks the aggregate', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'agent-manager.ts'), 'utf8');
     expect(src).toContain('narrate((n) => n.stepStarting(i))');
-    expect(src.match(/narrate\(\(n\) => n\.stepFinished\(records\[records\.length - 1\]\)\)/g)).toHaveLength(2);
+    // One plain call (the step threw) + one carrying the final step's saved
+    // output path (the terminal line's inline Open link).
+    expect(src.match(/narrate\(\(n\) => n\.stepFinished\(records\[records\.length - 1\]\)\)/g)).toHaveLength(1);
+    expect(src).toContain('narrate((n) => n.stepFinished(records[records.length - 1]), finalOutput.savedPath)');
     expect(src).toContain('markAgentHandoffRunNarrated(aggregate)');
   });
 

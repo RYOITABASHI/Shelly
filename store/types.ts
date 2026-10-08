@@ -1287,6 +1287,10 @@ export type ChatMessage = {
    *  log, `<agentId>:live:<startMs>` for attended live lines); `seq` orders
    *  the lines of one run. Informational only — never rendered as a card. */
   handoff?: { runId: string; seq: number };
+  /** A file the message refers to (an agent run's saved draft, from the run
+   *  log's savedPath) — rendered as a plain inline "Open" link under the
+   *  message text that routes through lib/open-file.ts. Never a card. */
+  openFileOffer?: { path: string };
   /** コマンド実行結果の埋め込み */
   executions?: CommandExecution[];
   /** AI agent that handled this message */

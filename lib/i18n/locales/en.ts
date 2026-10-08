@@ -1226,6 +1226,7 @@ const en: Record<string, string> = {
   // ── Chat Message List ───────────────────────────────────────────
   'chat.empty_title': 'Shelly',
   'chat.companion_label': 'Shelly',
+  'chat.open_saved_file': 'Open {{name}}',
   // 2026-08-24 (Fable5 design consult, "一人の相棒" Phase 3): dropped the
   // internal "thread" vocabulary — a user was never told what a "thread"
   // is, so both variants read as an app-internals leak rather than

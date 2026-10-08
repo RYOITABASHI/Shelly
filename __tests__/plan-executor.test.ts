@@ -230,6 +230,9 @@ describe('shelly-plan-executor host smoke', () => {
     expect(runLogs).toHaveLength(1);
     const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
     expect(runLog).toMatchObject({ status: 'success', executor: 'planspec', toolUsed: 'Local LLM' });
+    // The saved draft path is recorded (parity with the .sh SAVED_PATH_FIELDS)
+    // so the Sidebar "Open" button appears for unattended runs too.
+    expect(runLog.savedPath).toBe(path.resolve(outputFiles[0]));
 
     const brokerAudit = fs.readFileSync(path.join(logDir, 'agent-driver-audit.jsonl'), 'utf8');
     expect(brokerAudit).toContain('"kind":"http.request"');
