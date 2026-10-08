@@ -17,7 +17,7 @@ import {
   Platform,
   type LayoutChangeEvent,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaFrame, useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import {
   useMultiPaneStore,
@@ -155,26 +155,42 @@ export function MultiPaneContainer() {
   // reserve the space once at the container level so every child pane
   // renders at its natural size.
   //
-  // The reserved inset is the *overlap* between this container and the IME
-  // (container bottom in window coords minus keyboard top), not a raw
-  // keyboard height. targetSdk 36 forces edge-to-edge, so adjustResize does
-  // not shrink the root and the IME overlays the window; the old code
-  // estimated the height as `Dimensions.get('screen').height - screenY`,
-  // and on the unfolded Fold6 'screen' still reported the cover panel's
-  // 2376px (819dp) instead of the inner 2160px (745dp), so it reserved
-  // ~448dp for a ~346dp overlap and left an empty band above the keyboard.
-  // See lib/keyboard-inset.ts.
+  // The reserved inset is the *overlap* between this container and the IME,
+  // not a raw keyboard height. targetSdk 36 forces edge-to-edge, so
+  // adjustResize does not shrink the root and the IME overlays the window.
+  // Everything is measured as distance from the React root's bottom
+  // (measure() pageY + SafeAreaProvider frame) so no screen/window/visible-
+  // frame coordinate spaces get mixed — see lib/keyboard-inset.ts for the two
+  // Fold6 bugs that mixing caused (95dp gap, then a 32dp overshoot).
   const insets = useSafeAreaInsets();
+  const rootFrame = useSafeAreaFrame();
+  const rootHeight = rootFrame.height > 0 ? rootFrame.y + rootFrame.height : null;
   const rootRef = useRef<View>(null);
   const [containerBottom, setContainerBottom] = useState<number | null>(null);
   const [keyboard, setKeyboard] = useState<{ top: number; height: number } | null>(null);
+  const lastLoggedOverlapRef = useRef<number | null>(null);
+  // Root size while no IME is shown. If the OS ever resizes the root for the
+  // IME (adjustResize honoured), the ime inset is still relative to the window
+  // bottom, so the overlap math needs to know how much the root shrank.
+  const keyboardFreeRootRef = useRef<{ width: number; height: number } | null>(null);
+  if (!keyboard && rootHeight !== null) {
+    keyboardFreeRootRef.current = { width: rootFrame.width, height: rootHeight };
+  }
+  const freeRoot = keyboardFreeRootRef.current;
+  const rootShrink = keyboard && freeRoot && rootHeight !== null &&
+    Math.abs(freeRoot.width - rootFrame.width) <= 1
+    ? Math.max(0, freeRoot.height - rootHeight)
+    : 0;
 
   const measureContainer = useCallback(() => {
     const node = rootRef.current;
-    if (!node || typeof node.measureInWindow !== 'function') return;
-    node.measureInWindow((_x, y, _w, h) => {
-      if (!Number.isFinite(y) || !Number.isFinite(h) || h <= 0) return;
-      const bottom = y + h;
+    if (!node || typeof node.measure !== 'function') return;
+    // measure() pageY is relative to the React root (no viewport offset),
+    // unlike measureInWindow(), which is relative to the visible display
+    // frame top (below the status bar).
+    node.measure((_x, _y, _w, h, _pageX, pageY) => {
+      if (!Number.isFinite(pageY) || !Number.isFinite(h) || h <= 0) return;
+      const bottom = pageY + h;
       setContainerBottom((prev) => (prev !== null && Math.abs(prev - bottom) <= 0.5 ? prev : bottom));
     });
   }, []);
@@ -242,10 +258,23 @@ export function MultiPaneContainer() {
 
   const effectiveKeyboardHeight = computeKeyboardOverlap({
     containerBottom,
-    keyboardTop: keyboard?.top,
+    rootHeight,
+    rootShrink,
     keyboardHeight: keyboard?.height,
     bottomInset: insets.bottom,
   });
+  if (keyboard && lastLoggedOverlapRef.current !== Math.round(effectiveKeyboardHeight)) {
+    lastLoggedOverlapRef.current = Math.round(effectiveKeyboardHeight);
+    logInfo('Keyboard', 'overlap', {
+      overlap: effectiveKeyboardHeight,
+      containerBottom,
+      rootHeight,
+      rootShrink,
+      keyboardTop: keyboard.top,
+      keyboardHeight: keyboard.height,
+      insetsBottom: insets.bottom,
+    });
+  }
   const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
 
   // Maximized path — render the maximized slot full-screen.
