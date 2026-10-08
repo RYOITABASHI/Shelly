@@ -632,6 +632,11 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     borderWidth: 1,
     marginLeft: 6,
+    // Long agent / thread names must ellipsize instead of pushing the
+    // maximize/close actions past the pane's right edge on narrow panes
+    // (Z Fold6 cover: ~293dp pane).
+    flexShrink: 1,
+    minWidth: 0,
   },
   agentBadgeDot: {
     width: 6,
@@ -639,6 +644,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   agentBadgeLabel: {
+    flexShrink: 1,
     color: C.text1,
     fontSize: F.badge.size,
     fontFamily: F.family,
@@ -706,6 +712,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerActions: {
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,

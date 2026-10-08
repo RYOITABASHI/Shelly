@@ -171,7 +171,7 @@ function OpenPaneTabs() {
 // nothing when the count is 0, so it never causes layout shift. Tapping it
 // bumps sidebar-store's focusRunningAgentsRequestId, a signal a future
 // Sidebar-side effect can consume to scroll to / highlight the running rows.
-function RunningAgentsChip() {
+function RunningAgentsChip({ countOnly = false }: { countOnly?: boolean }) {
   const { t } = useTranslation();
   const runningCount = useAgentStore((s) => s.runningAgentIds.length);
   const { reduceMotion, pulse } = useMotion();
@@ -208,7 +208,7 @@ function RunningAgentsChip() {
         style={[styles.runningChipDot, { backgroundColor: C.badgeRunningText }, dotStyle]}
       />
       <Text style={[styles.runningChipText, { color: C.badgeRunningText }]} numberOfLines={1}>
-        {label}
+        {countOnly ? String(runningCount) : label}
       </Text>
     </Pressable>
   );
@@ -216,6 +216,10 @@ function RunningAgentsChip() {
 
 export function AgentBar() {
   const { t } = useTranslation();
+  // Compact (< 380dp, e.g. Z Fold6 cover ≈ 333dp): every fixed-width item in
+  // this row has flexShrink 0, so trim margins / gaps and the running-agents
+  // label to keep the fixed chrome well inside the screen width.
+  const { isCompact } = useDeviceLayout();
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -271,7 +275,7 @@ export function AgentBar() {
 
   return (
     <View style={[styles.bar, { backgroundColor: barBg, borderBottomColor: C.border }]}>
-      <View style={styles.logoMark} pointerEvents="none">
+      <View style={[styles.logoMark, isCompact && styles.logoMarkCompact]} pointerEvents="none">
         <Text style={[styles.wordmark, { color: C.accent }]} numberOfLines={1}>
           {SHELLY_WORDMARK}
         </Text>
@@ -283,6 +287,7 @@ export function AgentBar() {
       <Pressable
         style={[
           styles.addBtn,
+          isCompact && styles.addBtnCompact,
           {
             borderColor: withAlpha(C.accent, 0.35),
             backgroundColor: withAlpha(C.accent, 0.08),
@@ -297,7 +302,7 @@ export function AgentBar() {
 
       <OpenPaneTabs />
 
-      <RunningAgentsChip />
+      <RunningAgentsChip countOnly={isCompact} />
 
       {/* Right-side: search + settings.
           The git-dirty badge was removed 2026-04-21 — it was counting
@@ -309,7 +314,7 @@ export function AgentBar() {
           this UI. If a per-repo dirty count returns later it should read
           from a repo-scoped source (e.g. the active repo row in the
           REPOSITORIES sidebar, not the global active session). */}
-      <View style={styles.rightBtns}>
+      <View style={[styles.rightBtns, isCompact && styles.rightBtnsCompact]}>
         <Pressable
           style={styles.iconBtn}
           onPress={() => setBuildsOpen(true)}
@@ -402,6 +407,16 @@ const styles = createThemedStyles(() => ({
     borderColor: withAlpha(C.accent, 0.35),
     backgroundColor: withAlpha(C.accent, 0.08),
   },
+  logoMarkCompact: {
+    marginLeft: 2,
+    marginRight: 0,
+    minWidth: 0,
+    paddingHorizontal: 4,
+  },
+  addBtnCompact: {
+    width: 28,
+    marginLeft: 2,
+  },
   addBtnText: {
     color: C.accent,
     fontSize: 16,
@@ -414,6 +429,10 @@ const styles = createThemedStyles(() => ({
     alignItems: 'center',
     paddingRight: 8,
     gap: 6,
+  },
+  rightBtnsCompact: {
+    paddingRight: 4,
+    gap: 0,
   },
   runningChip: {
     flexDirection: 'row',

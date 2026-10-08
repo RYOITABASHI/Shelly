@@ -122,6 +122,25 @@ const KEY_SETS: Record<KeySetId, { label: string; icon: string; keys: KeyConfig[
   },
 };
 
+/** Natural key metrics (dp) — used to detect when a page can't fit them. */
+const KEY_MIN_WIDTH = 36;
+const KEY_GAP = 3;
+const KEYS_ROW_PAD_X = 2;
+const KEYS_PER_SET = 7;
+/**
+ * Narrowest viewport (dp) that fits a full key set at its natural minimum
+ * key width: 7 × 36 + 6 × 3 gaps + 2 × 2 padding = 274dp.
+ *
+ * On the Z Fold6 cover display (968px @ 464dpi ≈ 333dp) the pane is
+ * 333 − 38 (sidebar rail) − 2 (pane border) = 293dp wide, leaving the scroller
+ * 293 − 2 × 28 (attach/mic) − 19 (dots column) = 218dp. The old fixed
+ * minWidth:36 forced every page to 274dp inside that 218dp viewport, so the
+ * last ~56dp (the "Alt"/"↵" keys) were clipped at the right edge. Below this
+ * threshold the row switches to a tight layout whose keys may shrink.
+ */
+export const KEY_PAGE_NATURAL_MIN_WIDTH =
+  KEYS_PER_SET * KEY_MIN_WIDTH + (KEYS_PER_SET - 1) * KEY_GAP + 2 * KEYS_ROW_PAD_X;
+
 const SET_ORDER_FULL: KeySetId[] = ['default', 'vim', 'git', 'repl', 'navigate'];
 const SET_ORDER_NO_VIM: KeySetId[] = ['default', 'git', 'repl', 'navigate'];
 
@@ -306,15 +325,20 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
   }, [activeSet, settings.hapticFeedback, SET_ORDER]);
 
   // Render a single key set page
+  // Tight mode only kicks in when the measured viewport can't hold the keys
+  // at their natural minimum width, so standard/wide layouts render exactly
+  // as before.
+  const tight = barWidth < KEY_PAGE_NATURAL_MIN_WIDTH;
   const renderKeySet = useCallback((setId: KeySetId) => {
     const keySet = KEY_SETS[setId];
     return (
-      <View key={setId} style={[styles.keysRow, { width: barWidth }]}>
+      <View key={setId} style={[styles.keysRow, tight && styles.keysRowTight, { width: barWidth }]}>
         {keySet.keys.map((key, i) => (
           <Pressable
             key={`${setId}-${i}`}
             style={[
               styles.key,
+              tight && styles.keyTight,
               keyChrome.key,
               key.action === 'alt-toggle' && altActive && {
                 backgroundColor: withAlpha(accent, 0.2),
@@ -328,18 +352,24 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
             {key.icon ? (
               <MaterialIcons name={key.icon} size={14} color={keyChrome.iconColor} />
             ) : (
-              <Text style={[
-                styles.keyText,
-                { color: key.action === 'alt-toggle' && altActive ? accent : keyChrome.textColor },
-              ]}>
-                {isCompact ? key.compactLabel : key.label}
+              <Text
+                style={[
+                  styles.keyText,
+                  tight && styles.keyTextTight,
+                  { color: key.action === 'alt-toggle' && altActive ? accent : keyChrome.textColor },
+                ]}
+                numberOfLines={1}
+                adjustsFontSizeToFit={tight}
+                minimumFontScale={0.6}
+              >
+                {isCompact || tight ? key.compactLabel : key.label}
               </Text>
             )}
           </Pressable>
         ))}
       </View>
     );
-  }, [barWidth, accent, altActive, isCompact, handleKeyPress, keyChrome]);
+  }, [barWidth, tight, accent, altActive, isCompact, handleKeyPress, keyChrome]);
 
   return (
     <View style={[styles.container, { backgroundColor: barBg, borderTopColor: border }]}>
@@ -478,9 +508,13 @@ const styles = StyleSheet.create({
   keysRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 2,
+    paddingHorizontal: KEYS_ROW_PAD_X,
     paddingVertical: 4,
-    gap: 3,
+    gap: KEY_GAP,
+  },
+  keysRowTight: {
+    paddingHorizontal: 1,
+    gap: 2,
   },
   key: {
     flex: 1,
@@ -489,11 +523,22 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 36,
+    minWidth: KEY_MIN_WIDTH,
+  },
+  keyTight: {
+    // Equal-share keys that may shrink below KEY_MIN_WIDTH so the whole set
+    // always fits inside the page (never paints past the right edge).
+    flexBasis: 0,
+    flexShrink: 1,
+    minWidth: 0,
+    paddingHorizontal: 1,
   },
   keyText: {
     fontFamily: F.family,
     fontSize: 11,
     fontWeight: '600',
+  },
+  keyTextTight: {
+    fontSize: 10,
   },
 });

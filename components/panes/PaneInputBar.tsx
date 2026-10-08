@@ -292,6 +292,8 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
+    // A long single-line draft must never widen the pill past the pane edge.
+    minWidth: 0,
     fontFamily: F.family,
     fontSize: COMPOSER_FONT_SIZE,
     // color is applied inline from useTheme() — see the comment in the

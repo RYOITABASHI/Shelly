@@ -2643,6 +2643,7 @@ const styles = createThemedStyles(() => ({
   },
   modalContent: {
     width: 280,
+    maxWidth: '92%',
     backgroundColor: C.bgSurface,
     borderRadius: 10,
     padding: 16,
@@ -2708,6 +2709,8 @@ const styles = createThemedStyles(() => ({
   // (280) since each row needs room for a name + two-line description.
   catalogModalContent: {
     width: 320,
+    // Z Fold6 cover is ~333dp wide; keep a visible margin on both sides.
+    maxWidth: '92%',
     maxHeight: '80%',
     backgroundColor: C.bgSurface,
     borderRadius: 10,
