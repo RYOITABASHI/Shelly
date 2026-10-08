@@ -351,6 +351,9 @@ export function CommandKeyBar({ sendKey, sendText, sendPaste, pasteFromClipboard
           >
             {key.icon ? (
               <MaterialIcons name={key.icon} size={14} color={keyChrome.iconColor} />
+            ) : (isCompact || tight) && key.compactLabel === '↵' ? (
+              // The mono font has no ↵ glyph, so the fallback renders it tiny.
+              <MaterialIcons name="keyboard-return" size={16} color={keyChrome.textColor} />
             ) : (
               <Text
                 style={[
