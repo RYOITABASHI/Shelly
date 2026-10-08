@@ -16,7 +16,7 @@
  * This is presentational + local edit state only. The caller wires Confirm to
  * createAgent + installAgent, and Cancel to discard.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
@@ -338,6 +338,24 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // instant at confirm (confirmAgentDraft). Picking another chip switches to
   // that frequency's own cron as usual.
   const draftIsOneShot = isOneShotSchedule(draft.schedule);
+  // The selector state is seeded on mount; a chat patch that changes the
+  // draft's schedule while this card is mounted (e.g. one-shot → "毎日9時")
+  // must re-seed it, or a stale 'oneshot' chip would have no sentinel left
+  // to round-trip.
+  const seededScheduleRef = useRef(draft.schedule);
+  useEffect(() => {
+    if (seededScheduleRef.current === draft.schedule) return;
+    seededScheduleRef.current = draft.schedule;
+    const next = decodeCron(draft.schedule);
+    setFrequency(
+      resolveInitialFrequency(draft.scheduleConfident, next.frequency, draft.suggestedFrequency, draft.suggestedDowList),
+    );
+    setHour(draft.suggestedTime?.hour ?? next.hour);
+    setMinute(draft.suggestedTime?.minute ?? next.minute);
+    setWeekday(next.weekday);
+    if (next.dowList) setCustomDow(next.dowList);
+    setInterval(next.interval);
+  }, [draft.schedule, draft.scheduleConfident, draft.suggestedFrequency, draft.suggestedDowList, draft.suggestedTime]);
   const cron = useMemo(
     () =>
       frequency === 'oneshot'
@@ -434,6 +452,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
 
   const handleConfirm = () => {
     if (!canConfirm) return;
+    // Never let the timed one-shot branch emit schedule:null — null means
+    // "run now and discard" (isEphemeralOneShot).
+    if (frequency === 'oneshot' && !cron) return;
     const action: AgentAction = { type: actionType };
     if (actionType === 'webhook') action.webhookUrl = webhookUrl.trim();
     if (actionType === 'cli') action.command = command.trim();

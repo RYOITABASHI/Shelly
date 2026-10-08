@@ -22,7 +22,7 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 jest.mock('expo-notifications', () => ({}));
 jest.mock('expo-file-system/legacy', () => ({}));
 
-import { createAgent, updateAgent } from '@/lib/agent-manager';
+import { createAgent, setAgentEnabled, updateAgent } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
 import { encodeOnceOneShot } from '@/lib/agent-oneshot';
 
@@ -79,5 +79,61 @@ describe('one-shot write boundary', () => {
     useAgentStore.getState().updateAgent(agent.id, { enabled: false });
     const updated = await updateAgent(agent.id, { schedule: '@in 600000' }, jest.fn(async () => ''));
     expect(updated?.enabled).toBe(false);
+  });
+});
+
+describe('H1 — a stale RN snapshot never resurrects a fired/retired one-shot', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+    mockTerminalEmulator.scheduleAgent.mockClear();
+    mockTerminalEmulator.cancelAgent.mockClear();
+    useAgentStore.getState().setAgents([]);
+  });
+  afterEach(() => jest.useRealTimers());
+
+  /** runCommand whose `cat <agent>.json` returns `disk`; records every write. */
+  function diskRunCommand(disk: Record<string, unknown>) {
+    return jest.fn(async (cmd: string) => (cmd.startsWith('cat ') ? JSON.stringify(disk) : ''));
+  }
+
+  it('setAgentEnabled(true) on a one-shot native already retired keeps it disabled and never arms it', async () => {
+    const schedule = encodeOnceOneShot(NOW - 2 * MIN);
+    const agent = create('@in 300000');
+    useAgentStore.getState().updateAgent(agent.id, { schedule, enabled: false });
+    const runCommand = diskRunCommand({ id: agent.id, schedule, enabled: false, oneShotStatus: 'done', oneShotResolvedAt: NOW - MIN });
+    await setAgentEnabled(agent.id, true, runCommand);
+    const stored = useAgentStore.getState().agents.find((a) => a.id === agent.id);
+    expect(stored).toMatchObject({ enabled: false, oneShotStatus: 'done' });
+    expect(mockTerminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    const write = runCommand.mock.calls.map((c) => c[0] as string).find((c) => c.includes('"oneShotStatus"'));
+    expect(write).toContain('"enabled": false');
+  });
+
+  it('a re-materialize (rename / startup repair) of a stale enabled snapshot adopts the disk start marker: no catch-up, marker preserved', async () => {
+    const schedule = encodeOnceOneShot(NOW - 2 * MIN);
+    const agent = create('@in 300000');
+    useAgentStore.getState().updateAgent(agent.id, { schedule });
+    const runCommand = diskRunCommand({ id: agent.id, schedule, enabled: true, oneShotFiredAt: NOW - 2 * MIN });
+    await updateAgent(agent.id, { name: 'Renamed' }, runCommand);
+    expect(mockTerminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+    const metadataWrite = runCommand.mock.calls.map((c) => c[0] as string).find((c) => c.includes('"name": "Renamed"'));
+    expect(metadataWrite).toContain(`"oneShotFiredAt": ${NOW - 2 * MIN}`);
+  });
+
+  it('an explicit re-schedule is NOT blocked by the old terminal state on disk', async () => {
+    const old = encodeOnceOneShot(NOW - 2 * MIN);
+    const agent = create('@in 300000');
+    useAgentStore.getState().updateAgent(agent.id, { schedule: old, enabled: false, oneShotStatus: 'done', oneShotFiredAt: NOW - 2 * MIN });
+    const runCommand = diskRunCommand({ id: agent.id, schedule: old, enabled: false, oneShotStatus: 'done' });
+    const updated = await updateAgent(agent.id, { schedule: '@in 600000' }, runCommand);
+    expect(updated).toMatchObject({ enabled: true, oneShotStatus: null, oneShotFiredAt: null });
+    expect(mockTerminalEmulator.scheduleAgent).toHaveBeenCalledWith(agent.id, 0, NOW + 10 * MIN, encodeOnceOneShot(NOW + 10 * MIN));
+  });
+
+  it('M1 follow-through: clearing a one-shot schedule (→ null) disarms the old alarm', async () => {
+    const agent = create('@in 300000');
+    await updateAgent(agent.id, { schedule: null }, jest.fn(async () => ''));
+    expect(mockTerminalEmulator.cancelAgent).toHaveBeenCalledWith(agent.id);
   });
 });

@@ -20,18 +20,23 @@ import { ONE_SHOT_CATCHUP_DELAY_MS, ONE_SHOT_GRACE_MS, oneShotAtMs } from '@/lib
 export type BootOneShotDecision =
   | { action: 'arm'; triggerAt: number }
   | { action: 'catch-up'; triggerAt: number }
-  | { action: 'missed' };
+  | { action: 'missed' }
+  | { action: 'done' };
 
 /**
  * One-shot ('@once <epochMs>') boot decision — reference for the native
  * AgentAlarmScheduler.rearmAllFromPersistedSchedules one-shot branch:
  * future → re-arm at its instant; past but within ONE_SHOT_GRACE_MS → a
  * catch-up fire ONE_SHOT_CATCHUP_DELAY_MS out; older → missed (retired,
- * never fired late). null = not a one-shot record.
+ * never fired late). `alreadyFired` = the native disk evidence
+ * (AgentAlarmScheduler.oneShotAlreadyFired: terminal status, the pre-run
+ * oneShotFiredAt marker, or a run log at/after the instant) — a reboot
+ * mid-run retires it as done instead of re-firing. null = not a one-shot.
  */
-export function planBootOneShot(cron: string, now: number): BootOneShotDecision | null {
+export function planBootOneShot(cron: string, now: number, alreadyFired = false): BootOneShotDecision | null {
   const at = oneShotAtMs(cron);
   if (at === null) return null;
+  if (alreadyFired) return { action: 'done' };
   if (at > now) return { action: 'arm', triggerAt: at };
   if (now - at <= ONE_SHOT_GRACE_MS) return { action: 'catch-up', triggerAt: now + ONE_SHOT_CATCHUP_DELAY_MS };
   return { action: 'missed' };
@@ -66,8 +71,8 @@ export function planBootRearm(records: BootScheduleRecord[], now: number): BootR
     if (!record.agentId) continue;
     const oneShot = planBootOneShot(record.cron, now);
     if (oneShot) {
-      // A missed one-shot is retired natively, never re-armed.
-      if (oneShot.action !== 'missed') {
+      // A missed / already-fired one-shot is retired natively, never re-armed.
+      if (oneShot.action === 'arm' || oneShot.action === 'catch-up') {
         plan.push({ agentId: record.agentId, triggerAt: oneShot.triggerAt, cron: record.cron, intervalMs: 0 });
       }
       continue;

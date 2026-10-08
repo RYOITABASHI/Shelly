@@ -50,7 +50,7 @@ import {
   JP_DOW_LABEL,
 } from './agent-nl-parser';
 import { decodeCron } from './agent-card-cron';
-import { encodeAtOneShot, parseOneShotSchedule } from './agent-oneshot';
+import { encodeAtOneShot, isOneShotSchedule, parseOneShotSchedule } from './agent-oneshot';
 import { toolChoiceToLabel } from './agent-tool-router';
 import type { Agent } from '@/store/types';
 // Type-only: erased at compile time — same "no RN in this pure module"
@@ -539,7 +539,11 @@ export function applyPatchToPendingSession(
     result.changedFields.includes('schedule') &&
     result.patchedDraft.schedule === 'once' &&
     !!session.draft.schedule &&
-    session.draft.schedule !== 'once';
+    session.draft.schedule !== 'once' &&
+    // A pending ONE-SHOT ("5分後に…") is not a recurrence to protect: "今すぐ"
+    // replaces it with run-now. Keeping it AND flagging runOnceOnConfirm would
+    // run the agent twice (now, and again at the one-shot instant).
+    !isOneShotSchedule(session.draft.schedule);
 
   const patchedDraft: ParsedAgentDraft = scheduleWouldWipeRecurring
     ? {
@@ -684,7 +688,14 @@ export function applyCorrectionToJustRegisteredAgent(
     result.changedFields.includes('schedule') &&
     result.patchedDraft.schedule === 'once' &&
     !!draftSnapshot.schedule &&
-    draftSnapshot.schedule !== 'once';
+    draftSnapshot.schedule !== 'once' &&
+    !isOneShotSchedule(draftSnapshot.schedule);
+  // A registered ONE-SHOT answered with "今すぐ": cancel the pending one-shot
+  // (schedule → null below) and run now instead — never both.
+  const onceReplacesOneShot =
+    result.changedFields.includes('schedule') &&
+    result.patchedDraft.schedule === 'once' &&
+    isOneShotSchedule(draftSnapshot.schedule);
 
   const patchedDraft: ParsedAgentDraft = scheduleWouldWipeRecurring
     ? {
@@ -727,6 +738,6 @@ export function applyCorrectionToJustRegisteredAgent(
     changedFields,
     agentPartial,
     autonomousTurnedOn: changedFields.includes('autonomous'),
-    runNowRequested: scheduleWouldWipeRecurring,
+    runNowRequested: scheduleWouldWipeRecurring || onceReplacesOneShot,
   };
 }
