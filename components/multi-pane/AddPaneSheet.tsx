@@ -10,6 +10,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import type { PaneTab } from '@/hooks/use-multi-pane';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
 import { useTranslation } from '@/lib/i18n';
@@ -40,12 +41,13 @@ const OPTIONS: SheetOption[] = [
 
 export function AddPaneSheet({ visible, onClose }: Props) {
   const { t } = useTranslation();
+  const isWideLayout = useDeviceLayout().isWide;
   const addPane = useAddPane();
   const handleSelect = (opt: SheetOption) => {
     if (opt.kind === 'sidebar') {
       // Open the sidebar expanded; the File Tree section is open by default.
       const store = useSidebarStore.getState();
-      store.setMode('expanded');
+      store.showSidebar(isWideLayout);
       if (!store.openSections.files) {
         store.toggleSection('files');
       }

@@ -2,17 +2,22 @@
  * Z Fold6 cover-screen right-edge clipping (2026-10-08).
  *
  * Cover display: 968px @ density 464dpi -> 968 / 2.9 ~= 333dp wide, i.e. the
- * "compact" layout. With the 38dp sidebar rail and the 1dp pane borders the
- * terminal pane is ~293dp, so the CommandKeyBar's paging viewport is
- * 293 - 2*28 (attach/mic) - 19 (dots) = 218dp. These tests pin that nothing
- * in the compact chrome demands more horizontal space than that.
+ * "compact" layout. Non-wide layouts no longer dock the 38dp sidebar rail
+ * (it is an overlay drawer), so the terminal pane is 333 - 2 (pane borders)
+ * = 331dp and the CommandKeyBar's paging viewport is
+ * 331 - 2*28 (attach/mic) - 19 (dots) = 256dp, still below the keys' natural
+ * 274dp. (With the old rail it was 218dp; with the drawer-less expanded
+ * sidebar even less.) These tests pin that nothing in the compact chrome
+ * demands more horizontal space than the screen provides.
  */
 import React from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { render, fireEvent, screen } from '@testing-library/react-native';
 
 const COVER_WIDTH = 333;
-const COVER_KEYBAR_VIEWPORT = 218;
+const COVER_PANE_WIDTH = COVER_WIDTH - 2; // no docked rail on compact
+const COVER_KEYBAR_VIEWPORT = COVER_PANE_WIDTH - 2 * 28 - 19; // 256
+const OLD_RAIL_KEYBAR_VIEWPORT = 218;
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -122,12 +127,13 @@ function minRowWidth(page: any, keyHosts: any[]): number {
 }
 
 describe('CommandKeyBar on the Fold6 cover screen', () => {
-  it('natural key set needs 274dp, wider than the 218dp cover viewport', () => {
+  it('natural key set needs 274dp, wider than the 256dp cover viewport', () => {
+    expect(COVER_KEYBAR_VIEWPORT).toBe(256);
     expect(KEY_PAGE_NATURAL_MIN_WIDTH).toBe(274);
     expect(KEY_PAGE_NATURAL_MIN_WIDTH).toBeGreaterThan(COVER_KEYBAR_VIEWPORT);
   });
 
-  it.each([COVER_KEYBAR_VIEWPORT, 200, 180])('fits every key inside a %idp viewport', (vp) => {
+  it.each([COVER_KEYBAR_VIEWPORT, OLD_RAIL_KEYBAR_VIEWPORT, 200, 180])('fits every key inside a %idp viewport', (vp) => {
     const { page, keyHosts } = renderKeyBarAt(vp);
     expect(flat(page.props.style).width).toBe(vp);
     expect(keyHosts).toHaveLength(7);
@@ -143,7 +149,7 @@ describe('CommandKeyBar on the Fold6 cover screen', () => {
 describe('PaneInputBar at cover width', () => {
   it('lets the composer input shrink (minWidth 0) so attach/mic/send stay on screen', () => {
     render(
-      <View style={{ width: COVER_WIDTH }}>
+      <View style={{ width: COVER_PANE_WIDTH }}>
         <PaneInputBar onSubmit={() => {}} onAttach={() => {}} />
       </View>,
     );
@@ -212,5 +218,42 @@ describe('AgentBar fixed chrome in compact mode', () => {
     // tabs/chip even on a 300dp screen.
     expect(fixed).toBeLessThanOrEqual(210);
     expect(300 - fixed).toBeGreaterThanOrEqual(90);
+  });
+});
+
+describe('Sidebar on non-wide layouts (CLAUDE.md: hidden + swipe)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { useSidebarStore, resolveEffectiveSidebarMode } = require('@/store/sidebar-store');
+
+  beforeEach(() => {
+    useSidebarStore.setState({ mode: 'icons', drawerOpen: false });
+  });
+
+  it('resolves to hidden (no docked rail) unless the drawer is open', () => {
+    for (const persisted of ['icons', 'expanded', 'hidden'] as const) {
+      expect(resolveEffectiveSidebarMode(persisted, false, false)).toBe('hidden');
+      expect(resolveEffectiveSidebarMode(persisted, false, true)).toBe('expanded');
+      // Wide layouts keep honouring the persisted preference.
+      expect(resolveEffectiveSidebarMode(persisted, true, false)).toBe(persisted);
+      expect(resolveEffectiveSidebarMode(persisted, true, true)).toBe(persisted);
+    }
+  });
+
+  it('showSidebar opens the drawer on non-wide without rewriting the wide preference', () => {
+    useSidebarStore.getState().showSidebar(false);
+    expect(useSidebarStore.getState().drawerOpen).toBe(true);
+    expect(useSidebarStore.getState().mode).toBe('icons');
+    useSidebarStore.getState().showSidebar(true);
+    expect(useSidebarStore.getState().mode).toBe('expanded');
+  });
+
+  it('AgentBar compact shows a menu button that opens the drawer', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { AgentBar } = require('@/components/layout/AgentBar');
+    render(<AgentBar />);
+    expect(screen.queryByText('Shelly')).toBeNull(); // wordmark yields its slot
+    fireEvent.press(screen.getByTestId('agentbar-open-sidebar'));
+    expect(useSidebarStore.getState().drawerOpen).toBe(true);
+    expect(useSidebarStore.getState().mode).toBe('icons');
   });
 });

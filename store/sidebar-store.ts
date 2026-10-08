@@ -35,8 +35,17 @@ interface SidebarState {
    *  currently-running agent rows. Emitted today by the AgentBar
    *  running-count chip (components/layout/AgentBar.tsx) on tap. */
   focusRunningAgentsRequestId: number;
+  /** Non-wide layouts (< 600dp: Fold6 cover, phones) never show the docked
+   *  rail; the sidebar is an overlay drawer instead. This is its transient
+   *  open flag — deliberately NOT persisted and never written into `mode`,
+   *  so the user's wide-layout rail/expanded preference survives a fold. */
+  drawerOpen: boolean;
 
   setMode: (mode: SidebarMode) => void;
+  setDrawerOpen: (open: boolean) => void;
+  /** Layout-aware "show the sidebar": expands the docked sidebar on wide
+   *  layouts, opens the overlay drawer otherwise. */
+  showSidebar: (isWide: boolean) => void;
   toggleSection: (section: SidebarSection) => void;
   setActiveRepo: (path: string) => void;
   addRepo: (path: string) => void;
@@ -45,6 +54,23 @@ interface SidebarState {
   /** Force-opens the TASKS section and bumps focusRunningAgentsRequestId so
    *  a future Sidebar effect can scroll to / flash the running-agent list. */
   requestFocusRunningAgents: () => void;
+}
+
+/**
+ * The sidebar mode actually rendered for the current layout.
+ *
+ * Wide (>= 600dp) honours the persisted `mode`. Compact / standard (< 600dp)
+ * follow CLAUDE.md ("sidebar hidden, swipe to switch"): no docked rail —
+ * the 38dp rail cost 11% of the ~333dp Fold6 cover screen — and the sidebar
+ * appears only as an expanded overlay drawer while `drawerOpen` is set.
+ */
+export function resolveEffectiveSidebarMode(
+  mode: SidebarMode,
+  isWide: boolean,
+  drawerOpen: boolean,
+): SidebarMode {
+  if (isWide) return mode;
+  return drawerOpen ? 'expanded' : 'hidden';
 }
 
 // bug #50: persist sidebar mode / open sections / repo list across lmkd kills
@@ -56,8 +82,14 @@ export const useSidebarStore = create<SidebarState>()(
       activeRepoPath: null,
       repoPaths: [],
       focusRunningAgentsRequestId: 0,
+      drawerOpen: false,
 
       setMode: (mode) => set({ mode }),
+      setDrawerOpen: (open) => set((s) => (s.drawerOpen === open ? s : { drawerOpen: open })),
+      showSidebar: (isWide) => {
+        if (isWide) set({ mode: 'expanded' });
+        else set({ drawerOpen: true });
+      },
 
       toggleSection: (section) =>
         set((s) => ({

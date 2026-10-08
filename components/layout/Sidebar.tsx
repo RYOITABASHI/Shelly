@@ -11,10 +11,14 @@ import {
   Alert,
   AppState,
   ToastAndroid,
+  BackHandler,
+  StyleSheet,
 } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming, withSequence, Easing } from 'react-native-reanimated';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { useSidebarStore } from '@/store/sidebar-store';
+import { useSidebarStore, resolveEffectiveSidebarMode } from '@/store/sidebar-store';
+import { useDeviceLayout } from '@/hooks/use-device-layout';
+import { useTerminalStore } from '@/store/terminal-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
@@ -234,8 +238,18 @@ export function buildAgentOverflowMenuActions(params: {
 
 export function Sidebar() {
   const { t, locale } = useTranslation();
-  const { mode, openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo, removeRepo } =
-    useSidebarStore();
+  const {
+    mode: storedMode, drawerOpen, setDrawerOpen,
+    openSections, toggleSection, activeRepoPath, repoPaths, setActiveRepo, setMode, addRepo, removeRepo,
+  } = useSidebarStore();
+  // Non-wide layouts (< 600dp) have no docked rail: the sidebar is an
+  // overlay drawer driven by the transient drawerOpen flag. The persisted
+  // `storedMode` is only the wide-layout preference and is never mutated
+  // here on non-wide layouts.
+  const deviceLayout = useDeviceLayout();
+  const isWideLayout = deviceLayout.isWide;
+  const isDrawer = !isWideLayout;
+  const mode = resolveEffectiveSidebarMode(storedMode, isWideLayout, drawerOpen);
   const agents = useAgentStore((s) => s.agents);
   const agentsHalted = useAgentStore((s) => s.halted);
   // Read only to decide whether an agent row gets the "run history" affordance —
@@ -1433,8 +1447,12 @@ export function Sidebar() {
     return { id, agent, currentStep, displayElapsedMs, stalled };
   });
 
-  const targetWidth =
-    mode === 'expanded' ? S.sidebarWidth : mode === 'icons' ? WIDTH_ICONS : WIDTH_HIDDEN;
+  // Drawer is a bit wider than the docked 156dp column (it overlays the
+  // panes instead of squeezing them), capped to leave a tap-outside strip.
+  const drawerWidth = Math.round(Math.max(S.sidebarWidth, Math.min(260, deviceLayout.width * 0.78)));
+  const targetWidth = isDrawer
+    ? (mode === 'expanded' ? drawerWidth : WIDTH_HIDDEN)
+    : mode === 'expanded' ? S.sidebarWidth : mode === 'icons' ? WIDTH_ICONS : WIDTH_HIDDEN;
 
   const animatedStyle = useAnimatedStyle(() => ({
     width: withTiming(targetWidth, { duration: TIMING_MS }),
@@ -1444,9 +1462,54 @@ export function Sidebar() {
   const iconsOnly = mode === 'icons';
 
   function handleToggle() {
+    if (isDrawer) {
+      setDrawerOpen(false);
+      return;
+    }
     if (mode === 'expanded') setMode('icons');
     else setMode('expanded');
   }
+
+  const drawerVisible = isDrawer && drawerOpen;
+
+  // Leaving the non-wide layout (unfold) drops any open drawer so it can't
+  // resurrect the next time the device folds.
+  useEffect(() => {
+    if (!isDrawer && drawerOpen) setDrawerOpen(false);
+  }, [isDrawer, drawerOpen, setDrawerOpen]);
+
+  // Drawer: hardware back closes it.
+  useEffect(() => {
+    if (!drawerVisible) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setDrawerOpen(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [drawerVisible, setDrawerOpen]);
+
+  // Drawer: close once the user has picked something — a pane switch /
+  // add / file open (multi-pane slots or focus), a session switch, or a
+  // repository selection. Accordion toggles don't touch these, so browsing
+  // the drawer keeps it open.
+  useEffect(() => {
+    if (!drawerVisible) return;
+    const close = () => useSidebarStore.getState().setDrawerOpen(false);
+    const unsubPanes = useMultiPaneStore.subscribe((s, prev) => {
+      if (s.slots !== prev.slots || s.focusedSlot !== prev.focusedSlot || s.maximizedSlot !== prev.maximizedSlot) close();
+    });
+    const unsubTerm = useTerminalStore.subscribe((s, prev) => {
+      if (s.activeSessionId !== prev.activeSessionId) close();
+    });
+    const unsubRepo = useSidebarStore.subscribe((s, prev) => {
+      if (s.activeRepoPath !== prev.activeRepoPath) close();
+    });
+    return () => {
+      unsubPanes();
+      unsubTerm();
+      unsubRepo();
+    };
+  }, [drawerVisible]);
 
   // usePanelBackground MUST be called before any early return to satisfy
   // Rules of Hooks. It picks up wallpaper state from cosmetic-store and
@@ -1456,8 +1519,15 @@ export function Sidebar() {
 
   if (mode === 'hidden') return null;
 
-  return (
-    <Animated.View style={[styles.container, animatedStyle, { backgroundColor: sidebarBg, borderRightColor: C.border }]}>
+  const panel = (
+    <Animated.View
+      style={[
+        styles.container,
+        animatedStyle,
+        drawerVisible && styles.drawerPanel,
+        { backgroundColor: drawerVisible ? C.bgSidebar : sidebarBg, borderRightColor: C.border },
+      ]}
+    >
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -2275,12 +2345,43 @@ export function Sidebar() {
       </Pressable>
     </Animated.View>
   );
+
+  if (!drawerVisible) return panel;
+
+  // Overlay drawer (non-wide layouts): floats above the panes without
+  // taking row width; tapping the scrim closes it.
+  return (
+    <View style={styles.drawerRoot} testID="sidebar-drawer">
+      {panel}
+      <Pressable
+        style={styles.drawerScrim}
+        onPress={() => setDrawerOpen(false)}
+        accessibilityRole="button"
+        accessibilityLabel={t('sidebar.collapse')}
+        testID="sidebar-drawer-scrim"
+      />
+    </View>
+  );
 }
 
 const styles = createThemedStyles(() => ({
   container: {
     flexDirection: 'column',
     borderRightWidth: S.borderWidth,
+  },
+  drawerRoot: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: 'row',
+    // Above pane headers (elevation 10) and the pane content.
+    zIndex: 200,
+    elevation: 24,
+  },
+  drawerPanel: {
+    height: '100%',
+  },
+  drawerScrim: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
   },
   scroll: {
     flex: 1,

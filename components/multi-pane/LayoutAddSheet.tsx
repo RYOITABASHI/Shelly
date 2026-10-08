@@ -18,6 +18,7 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { useFocusStore } from '@/store/focus-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSidebarStore } from '@/store/sidebar-store';
+import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useTerminalStore } from '@/store/terminal-store';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
@@ -51,6 +52,7 @@ const ADD_OPTIONS: AddOption[] = [
 export function LayoutAddSheet({ visible, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('add');
   const { t } = useTranslation();
+  const isWideLayout = useDeviceLayout().isWide;
   const addPane = useAddPane();
   const slots = useMultiPaneStore((s) => s.slots);
   const focusedSlot = useMultiPaneStore((s) => s.focusedSlot);
@@ -91,7 +93,7 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
   const handleAdd = (opt: AddOption) => {
     if (opt.kind === 'sidebar') {
       const store = useSidebarStore.getState();
-      store.setMode('expanded');
+      store.showSidebar(isWideLayout);
       if (!store.openSections.files) store.toggleSection('files');
       onClose();
       return;

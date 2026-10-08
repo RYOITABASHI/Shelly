@@ -290,11 +290,17 @@ export function ShellLayout() {
         break;
       case 'multi_pane_toggle': {
         const sidebar = useSidebarStore.getState();
-        sidebar.setMode(sidebar.mode === 'expanded' ? 'icons' : 'expanded');
+        if (!layout.isWide) {
+          // Non-wide: toggle the overlay drawer; never touch the persisted
+          // wide-layout mode.
+          sidebar.setDrawerOpen(!sidebar.drawerOpen);
+        } else {
+          sidebar.setMode(sidebar.mode === 'expanded' ? 'icons' : 'expanded');
+        }
         break;
       }
     }
-  }, []);
+  }, [layout.isWide]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -312,14 +318,20 @@ export function ShellLayout() {
   // Swipe gestures for sidebar on phone. Gesture.Pan().onEnd runs on the UI
   // (worklet) thread, so Zustand store access must be hopped back to JS via
   // runOnJS — otherwise the worklet crashes with "undefined is not a function".
+  // Compact / standard (< 600dp): the sidebar is an overlay drawer
+  // (CLAUDE.md: "sidebar hidden, swipe to switch"); swipes open/close the
+  // transient drawer and never rewrite the persisted wide-layout mode.
   const openSidebar = useCallback(() => {
-    if (useSidebarStore.getState().mode === 'hidden') {
-      useSidebarStore.getState().setMode('expanded');
+    const sidebar = useSidebarStore.getState();
+    if (!layout.isWide) {
+      sidebar.setDrawerOpen(true);
+    } else if (sidebar.mode === 'hidden') {
+      sidebar.setMode('expanded');
     }
-  }, []);
+  }, [layout.isWide]);
   const closeSidebar = useCallback(() => {
     if (!layout.isWide) {
-      useSidebarStore.getState().setMode('icons');
+      useSidebarStore.getState().setDrawerOpen(false);
     }
   }, [layout.isWide]);
 

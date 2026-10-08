@@ -219,7 +219,7 @@ export function AgentBar() {
   // Compact (< 380dp, e.g. Z Fold6 cover ≈ 333dp): every fixed-width item in
   // this row has flexShrink 0, so trim margins / gaps and the running-agents
   // label to keep the fixed chrome well inside the screen width.
-  const { isCompact } = useDeviceLayout();
+  const { isCompact, isWide } = useDeviceLayout();
   const [sheetVisible, setSheetVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -275,11 +275,29 @@ export function AgentBar() {
 
   return (
     <View style={[styles.bar, { backgroundColor: barBg, borderBottomColor: C.border }]}>
-      <View style={[styles.logoMark, isCompact && styles.logoMarkCompact]} pointerEvents="none">
-        <Text style={[styles.wordmark, { color: C.accent }]} numberOfLines={1}>
-          {SHELLY_WORDMARK}
-        </Text>
-      </View>
+      {/* Non-wide layouts (< 600dp) have no docked sidebar rail; this button
+          is the visible way into the overlay drawer (swipe-right also works). */}
+      {!isWide ? (
+        <Pressable
+          style={styles.menuBtn}
+          hitSlop={6}
+          onPress={() => useSidebarStore.getState().setDrawerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={t('agentbar.open_sidebar_a11y')}
+          testID="agentbar-open-sidebar"
+        >
+          <MaterialIcons name="menu" size={18} color={C.text2} />
+        </Pressable>
+      ) : null}
+      {/* On the compact cover screen the menu button takes the wordmark's
+          slot to stay inside the fixed-width budget. */}
+      {!isCompact ? (
+        <View style={styles.logoMark} pointerEvents="none">
+          <Text style={[styles.wordmark, { color: C.accent }]} numberOfLines={1}>
+            {SHELLY_WORDMARK}
+          </Text>
+        </View>
+      ) : null}
 
       {/* Unified "+" — opens LayoutAddSheet with ADD / LAYOUT tabs inside.
           Replaces the previous split into two adjacent buttons (dashboard
@@ -407,11 +425,13 @@ const styles = createThemedStyles(() => ({
     borderColor: withAlpha(C.accent, 0.35),
     backgroundColor: withAlpha(C.accent, 0.08),
   },
-  logoMarkCompact: {
-    marginLeft: 2,
-    marginRight: 0,
-    minWidth: 0,
-    paddingHorizontal: 4,
+  menuBtn: {
+    width: 28,
+    height: 28,
+    marginLeft: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: R.agentTab,
   },
   addBtnCompact: {
     width: 28,
