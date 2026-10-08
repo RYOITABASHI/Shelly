@@ -15,7 +15,6 @@ import {
   StyleSheet,
   Keyboard,
   Platform,
-  Dimensions,
   type LayoutChangeEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -30,6 +29,7 @@ import {
   type SlotIndex,
 } from '@/hooks/use-multi-pane';
 import { logInfo } from '@/lib/debug-logger';
+import { computeKeyboardOverlap } from '@/lib/keyboard-inset';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
@@ -147,8 +147,6 @@ export function MultiPaneContainer() {
   const resetRatio   = useMultiPaneStore((s) => s.resetRatio);
 
   const [size, setSize] = useState({ W: 0, H: 0 });
-  const [keyboardFreeHeight, setKeyboardFreeHeight] = useState(0);
-  const keyboardFreeWidthRef = useRef(0);
 
   // Single source of truth for keyboard avoidance across the whole pane
   // grid. Each individual pane used to add its own paddingBottom =
@@ -156,104 +154,81 @@ export function MultiPaneContainer() {
   // collapsed terminal content to zero height (bug: post-v0.1.0). Now we
   // reserve the space once at the container level so every child pane
   // renders at its natural size.
+  //
+  // The reserved inset is the *overlap* between this container and the IME
+  // (container bottom in window coords minus keyboard top), not a raw
+  // keyboard height. targetSdk 36 forces edge-to-edge, so adjustResize does
+  // not shrink the root and the IME overlays the window; the old code
+  // estimated the height as `Dimensions.get('screen').height - screenY`,
+  // and on the unfolded Fold6 'screen' still reported the cover panel's
+  // 2376px (819dp) instead of the inner 2160px (745dp), so it reserved
+  // ~448dp for a ~346dp overlap and left an empty band above the keyboard.
+  // See lib/keyboard-inset.ts.
   const insets = useSafeAreaInsets();
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const keyboardHeightRef = useRef(keyboardHeight);
-  useEffect(() => { keyboardHeightRef.current = keyboardHeight; }, [keyboardHeight]);
+  const rootRef = useRef<View>(null);
+  const [containerBottom, setContainerBottom] = useState<number | null>(null);
+  const [keyboard, setKeyboard] = useState<{ top: number; height: number } | null>(null);
+
+  const measureContainer = useCallback(() => {
+    const node = rootRef.current;
+    if (!node || typeof node.measureInWindow !== 'function') return;
+    node.measureInWindow((_x, y, _w, h) => {
+      if (!Number.isFinite(y) || !Number.isFinite(h) || h <= 0) return;
+      const bottom = y + h;
+      setContainerBottom((prev) => (prev !== null && Math.abs(prev - bottom) <= 0.5 ? prev : bottom));
+    });
+  }, []);
+
   useEffect(() => {
     if (Platform.OS !== 'android') return;
-    const syncKeyboardMetrics = (reason: string) => {
-      const metrics = (Keyboard as any).metrics?.();
-      const screenHeight = Dimensions.get('screen').height;
-      const inferredFromY =
-        typeof metrics?.screenY === 'number'
-          ? Math.max(0, screenHeight - metrics.screenY)
-          : 0;
-      const raw = Math.max(metrics?.height ?? 0, inferredFromY);
-      const adjusted = Math.max(0, raw - insets.bottom);
-      setKeyboardHeight((prev) => {
-        if (Math.abs(prev - adjusted) <= 2) return prev;
-        logInfo('Keyboard', 'syncMetrics', {
-          reason,
-          raw,
-          inferredFromY,
-          insetsBottom: insets.bottom,
-          adjusted,
-          metrics,
-        });
-        return adjusted;
+    const apply = (coords: { screenY?: number; height?: number } | undefined | null, reason: string) => {
+      const height = coords?.height ?? 0;
+      const top = coords?.screenY ?? 0;
+      setKeyboard((prev) => {
+        const next = height > 0 ? { top, height } : null;
+        if (prev === next) return prev;
+        if (prev && next && Math.abs(prev.top - next.top) <= 0.5 && Math.abs(prev.height - next.height) <= 0.5) {
+          return prev;
+        }
+        logInfo('Keyboard', 'metrics', { reason, top, height, insetsBottom: insets.bottom });
+        return next;
       });
     };
 
-    // bug #104 diagnostic: edge-to-edge + adjustResize is not resizing the window
-    // on Android 15+. Log raw endCoordinates so we can verify whether
-    // keyboardDidShow fires at all and what height is reported.
-    logInfo('Keyboard', 'listener attached', { insetsBottom: insets.bottom });
     const show = Keyboard.addListener('keyboardDidShow', (e) => {
-      const raw = e.endCoordinates.height;
-      const adjusted = Math.max(0, raw - insets.bottom);
-      logInfo('Keyboard', 'didShow', {
-        raw,
-        insetsBottom: insets.bottom,
-        adjusted,
-        endCoordinates: e.endCoordinates,
-      });
-      setKeyboardHeight(adjusted);
-      requestAnimationFrame(() => syncKeyboardMetrics('didShow-frame'));
+      apply(e.endCoordinates, 'didShow');
+      // Re-measure in case the OS did resize the window for the IME.
+      requestAnimationFrame(measureContainer);
     });
     const hide = Keyboard.addListener('keyboardDidHide', () => {
-      logInfo('Keyboard', 'didHide');
-      setKeyboardHeight(0);
+      apply(null, 'didHide');
     });
     // Some Android 15 / OEM keyboard combinations show the IME while
     // React Native never emits keyboardDidShow for the current served view.
     // Poll the platform metrics lightly while the pane grid is mounted so
     // the terminal key bar stays above the keyboard instead of disappearing
-    // behind it.
-    const interval = setInterval(() => syncKeyboardMetrics('interval'), 250);
-    requestAnimationFrame(() => syncKeyboardMetrics('mount-frame'));
+    // behind it. Keyboard.metrics() is undefined while the IME is hidden.
+    const sync = (reason: string) => apply((Keyboard as any).metrics?.(), reason);
+    const interval = setInterval(() => sync('interval'), 250);
+    requestAnimationFrame(() => sync('mount-frame'));
     return () => {
       show.remove();
       hide.remove();
       clearInterval(interval);
     };
-  }, [insets.bottom]);
+  }, [insets.bottom, measureContainer]);
 
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
-    const kb = keyboardHeightRef.current;
-    setKeyboardFreeHeight((prev) => {
-      const widthChanged = keyboardFreeWidthRef.current > 0 &&
-        Math.abs(width - keyboardFreeWidthRef.current) > 2;
-      // Reset keyboard tracking on fold transition (width change > 200px)
-      const foldTransition = widthChanged && Math.abs(width - keyboardFreeWidthRef.current) > 200;
-      if (foldTransition) {
-        keyboardFreeWidthRef.current = width;
-        setKeyboardHeight(0);
-        return height;
-      }
-      if (prev <= 0 || height > prev || (kb <= 0 && widthChanged)) {
-        keyboardFreeWidthRef.current = width;
-        return height;
-      }
-      // If adjustResize fires before keyboardDidShow/metrics, the first
-      // reduced layout can arrive while keyboardHeight is still 0. Keep the
-      // previous taller baseline so the later keyboard height is not
-      // subtracted a second time.
-      if (kb <= 0 && height >= prev - 48) {
-        keyboardFreeWidthRef.current = width;
-        return height;
-      }
-      return prev;
-    });
     setSize((prev) => {
       if (prev.W === width && prev.H === height) return prev;
       return { W: width, H: height };
     });
-  }, []); // stable: uses refs for dynamic values
+    measureContainer();
+  }, [measureContainer]);
 
   if (!hasHydrated) {
-    return <View style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout} />;
+    return <View ref={rootRef} style={[styles.root, { backgroundColor: containerBg }]} onLayout={onContainerLayout} />;
   }
 
   const usedCount = slots.filter((s) => s !== null).length;
@@ -265,14 +240,12 @@ export function MultiPaneContainer() {
     );
   }
 
-  // Shrink the usable height by the keyboard size only when the Android
-  // window did not already resize. On One UI with adjustResize, the root
-  // layout height is already reduced; subtracting keyboardHeight again
-  // leaves the panes crushed into the top half with a large empty gap.
-  const alreadyResizedForIme = keyboardHeight > 0 && size.H > 0 &&
-    keyboardFreeHeight > 0 &&
-    keyboardFreeHeight - size.H > Math.max(80, keyboardHeight * 0.35);
-  const effectiveKeyboardHeight = alreadyResizedForIme ? 0 : keyboardHeight;
+  const effectiveKeyboardHeight = computeKeyboardOverlap({
+    containerBottom,
+    keyboardTop: keyboard?.top,
+    keyboardHeight: keyboard?.height,
+    bottomInset: insets.bottom,
+  });
   const gridHeight = size.H > 0 ? Math.max(0, size.H - effectiveKeyboardHeight) : 0;
 
   // Maximized path — render the maximized slot full-screen.
@@ -280,6 +253,7 @@ export function MultiPaneContainer() {
     const slot = slots[maximized]!;
     return (
       <View
+        ref={rootRef}
         style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
         onLayout={onContainerLayout}
       >
@@ -305,6 +279,7 @@ export function MultiPaneContainer() {
   const singlePaneSlot = renderPreset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
   return (
     <View
+      ref={rootRef}
       style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
       onLayout={onContainerLayout}
     >
