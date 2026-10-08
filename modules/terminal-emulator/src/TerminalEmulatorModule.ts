@@ -17,7 +17,20 @@ export interface OnDeviceSttNativeStatus {
   micPermission?: boolean;
 }
 
+/** Real IME window inset snapshot (px, relative to the window bottom). */
+export interface ImeInsetsSnapshot {
+  available: boolean;
+  visible?: boolean;
+  imeBottomPx?: number;
+  navBottomPx?: number;
+  density?: number;
+}
+
 declare class TerminalEmulatorModuleType extends NativeModule {
+  /** Starts forwarding ime WindowInsets changes as `onImeInsets` events; resolves with the current snapshot. */
+  watchImeInsets(): Promise<ImeInsetsSnapshot>;
+  /** Current ime WindowInsets snapshot (polling fallback). */
+  getImeInsets(): Promise<ImeInsetsSnapshot>;
   createSession(config: SessionConfig): Promise<{ sessionId: string; resumed: boolean }>;
   destroySession(sessionId: string): Promise<void>;
   writeToSession(sessionId: string, data: string): Promise<void>;

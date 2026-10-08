@@ -89,4 +89,44 @@ describe('computeKeyboardOverlap', () => {
       computeKeyboardOverlap({ keyboardHeight: 373.4, bottomInset: NAV, rootHeight: null, containerBottom: null }),
     ).toBeCloseTo(373.4 + KEYBOARD_SAFETY_MARGIN, 5);
   });
+
+  describe('native IME inset (ImeInsetsWatcher)', () => {
+    // build 2487: RN reported height 317.59 (top 412.07) — stale, sampled
+    // before the IME toolbar rows were added — while the real ime inset
+    // was 1127px = 388.62dp (InsetsSource ime frame top 1033px = 356.2dp).
+    const REAL_IME = 1127 / 2.9;
+
+    it('uses the real ime inset over the stale RN keyboard height', () => {
+      const overlap = computeKeyboardOverlap({
+        keyboardHeight: 317.586181640625,
+        imeFootprint: REAL_IME,
+        bottomInset: NAV,
+        rootHeight: 744.8275756835938,
+        containerBottom: 708.6206665039062,
+      });
+      // ~708.6 - 356.2 + 2 = ~354.4 dp
+      expect(overlap).toBeCloseTo(708.6206665039062 - (744.8275756835938 - REAL_IME) + KEYBOARD_SAFETY_MARGIN, 3);
+      expect(744.8275756835938 - REAL_IME).toBeCloseTo(356.21, 1);
+      // The stale RN height alone would have under-reserved (the 2487 bug).
+      const stale = computeKeyboardOverlap({
+        keyboardHeight: 317.586181640625,
+        bottomInset: NAV,
+        rootHeight: 744.8275756835938,
+        containerBottom: 708.6206665039062,
+      });
+      expect(overlap - stale).toBeGreaterThan(50);
+    });
+
+    it('returns 0 when the native watcher says the IME is hidden, even if RN is stale', () => {
+      expect(
+        computeKeyboardOverlap({ keyboardHeight: 317.6, imeFootprint: 0, bottomInset: NAV, rootHeight: ROOT_H, containerBottom: 708.6 }),
+      ).toBe(0);
+    });
+
+    it('falls back to RN keyboardHeight when the native value is null', () => {
+      expect(
+        computeKeyboardOverlap({ keyboardHeight: FOLD_INNER.keyboardHeight, imeFootprint: null, bottomInset: NAV, rootHeight: ROOT_H, containerBottom: FOLD_INNER.containerBottom }),
+      ).toBeCloseTo(computeKeyboardOverlap(FOLD_INNER), 6);
+    });
+  });
 });

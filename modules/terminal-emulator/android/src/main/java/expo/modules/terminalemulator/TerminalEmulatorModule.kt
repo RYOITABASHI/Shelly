@@ -496,6 +496,8 @@ class TerminalEmulatorModule : Module() {
             "onVoiceInputTranscript", "onVoiceOutputTranscript", "onVoiceError", "onVoiceExit",
             // SpeechRecognizerBridge — keyless on-device STT, see SpeechRecognizerBridge.kt.
             "onSttPartial", "onSttFinal", "onSttError",
+            // ImeInsetsWatcher — real IME window inset (px), see ImeInsetsWatcher.kt.
+            "onImeInsets",
         )
 
         // Module (re-)instantiation: rewire emitEvent on any sessions that
@@ -537,6 +539,40 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("no react context")
             VoiceBridge.start(context, apiKey) { name, body -> emitEvent(name, body) }
+        }
+
+        // ImeInsetsWatcher: installs a zero-size probe view that forwards every
+        // ime WindowInsets change as onImeInsets {available, visible,
+        // imeBottomPx, navBottomPx, density}; resolves with the current snapshot.
+        AsyncFunction("watchImeInsets") { promise: Promise ->
+            val activity = appContext.currentActivity
+            if (activity == null) {
+                promise.resolve(mapOf("available" to false))
+                return@AsyncFunction
+            }
+            activity.runOnUiThread {
+                try {
+                    promise.resolve(ImeInsetsWatcher.install(activity) { emitEvent("onImeInsets", it) })
+                } catch (e: Exception) {
+                    Log.w("TerminalEmulator", "watchImeInsets failed", e)
+                    promise.resolve(mapOf("available" to false))
+                }
+            }
+        }
+
+        AsyncFunction("getImeInsets") { promise: Promise ->
+            val activity = appContext.currentActivity
+            if (activity == null) {
+                promise.resolve(mapOf("available" to false))
+                return@AsyncFunction
+            }
+            activity.runOnUiThread {
+                try {
+                    promise.resolve(ImeInsetsWatcher.snapshot(activity))
+                } catch (e: Exception) {
+                    promise.resolve(mapOf("available" to false))
+                }
+            }
         }
 
         AsyncFunction("stopVoiceSession") {

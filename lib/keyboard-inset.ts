@@ -38,6 +38,15 @@ export const KEYBOARD_SAFETY_MARGIN = 2;
 export interface KeyboardOverlapInput {
   /** Keyboard height (dp) as reported by RN: ime.bottom - systemBars.bottom. */
   keyboardHeight: number | null | undefined;
+  /**
+   * Real IME window inset from the window bottom (dp) — WindowInsets ime
+   * bottom from the native ImeInsetsWatcher, which already includes the
+   * navigation-bar area. When given (non-null) it takes precedence over
+   * keyboardHeight + bottomInset, because RN's Keyboard height is only
+   * sampled when IME visibility flips and goes stale when the IME grows its
+   * inset afterwards (an IME toolbar row added after showing: 317.6dp reported vs 388.6dp real).
+   */
+  imeFootprint?: number | null;
   /** Bottom system-bar / safe-area inset (dp). */
   bottomInset?: number;
   /** Container bottom edge relative to the React root (dp): measure() pageY + height. */
@@ -66,13 +75,19 @@ const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFi
  *   navigation bar from it) plus the margin.
  */
 export function computeKeyboardOverlap(input: KeyboardOverlapInput): number {
-  const height = finite(input.keyboardHeight) ? Math.max(0, input.keyboardHeight) : 0;
-  if (height <= 0) return 0;
   const bottomInset = finite(input.bottomInset) ? Math.max(0, input.bottomInset) : 0;
+  const useNative = finite(input.imeFootprint);
+  const height = useNative
+    ? Math.max(0, (input.imeFootprint as number) - bottomInset)
+    : finite(input.keyboardHeight) ? Math.max(0, input.keyboardHeight) : 0;
+  const rawFootprint = useNative
+    ? Math.max(0, input.imeFootprint as number)
+    : height + bottomInset;
+  if (rawFootprint <= 0 || (!useNative && height <= 0)) return 0;
   const margin = finite(input.margin) ? Math.max(0, input.margin) : KEYBOARD_SAFETY_MARGIN;
   const shrink = finite(input.rootShrink) ? Math.max(0, input.rootShrink) : 0;
   // IME top's distance from the window bottom, re-based onto the root bottom.
-  const footprint = Math.max(0, height + bottomInset - shrink);
+  const footprint = Math.max(0, rawFootprint - shrink);
   if (footprint <= 0) return 0;
 
   const { containerBottom, rootHeight } = input;

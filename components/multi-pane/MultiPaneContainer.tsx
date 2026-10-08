@@ -169,15 +169,22 @@ export function MultiPaneContainer() {
   const [containerBottom, setContainerBottom] = useState<number | null>(null);
   const [keyboard, setKeyboard] = useState<{ top: number; height: number } | null>(null);
   const lastLoggedOverlapRef = useRef<number | null>(null);
+  // Real IME window inset from the native ImeInsetsWatcher (dp from the window
+  // bottom, nav-bar area included). null = native watcher unavailable, so the
+  // RN Keyboard height above is used instead. RN only samples the height when
+  // IME visibility flips, which goes stale for IMEs that grow their inset
+  // after showing (build 2487: 317.6dp reported vs 388.6dp real).
+  const [nativeIme, setNativeIme] = useState<{ visible: boolean; bottom: number } | null>(null);
+  const imeShown = nativeIme ? nativeIme.visible && nativeIme.bottom > 0 : keyboard !== null;
   // Root size while no IME is shown. If the OS ever resizes the root for the
   // IME (adjustResize honoured), the ime inset is still relative to the window
   // bottom, so the overlap math needs to know how much the root shrank.
   const keyboardFreeRootRef = useRef<{ width: number; height: number } | null>(null);
-  if (!keyboard && rootHeight !== null) {
+  if (!imeShown && rootHeight !== null) {
     keyboardFreeRootRef.current = { width: rootFrame.width, height: rootHeight };
   }
   const freeRoot = keyboardFreeRootRef.current;
-  const rootShrink = keyboard && freeRoot && rootHeight !== null &&
+  const rootShrink = imeShown && freeRoot && rootHeight !== null &&
     Math.abs(freeRoot.width - rootFrame.width) <= 1
     ? Math.max(0, freeRoot.height - rootHeight)
     : 0;
@@ -234,6 +241,42 @@ export function MultiPaneContainer() {
     };
   }, [insets.bottom, measureContainer]);
 
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let native: any = null;
+    try {
+      native = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
+    } catch {
+      native = null;
+    }
+    if (!native || typeof native.watchImeInsets !== 'function') return;
+    let cancelled = false;
+    const applyNative = (snap: any, reason: string) => {
+      if (cancelled || !snap || snap.available !== true) return;
+      const density = Number(snap.density);
+      const px = Number(snap.imeBottomPx);
+      if (!Number.isFinite(density) || density <= 0 || !Number.isFinite(px)) return;
+      const next = { visible: snap.visible === true, bottom: Math.max(0, px) / density };
+      setNativeIme((prev) => {
+        if (prev && prev.visible === next.visible && Math.abs(prev.bottom - next.bottom) <= 0.5) return prev;
+        logInfo('Keyboard', 'nativeIme', { reason, ...next, imeBottomPx: px, navBottomPx: snap.navBottomPx, density });
+        return next;
+      });
+      if (next.visible) requestAnimationFrame(measureContainer);
+    };
+    const sub = native.addListener?.('onImeInsets', (snap: any) => applyNative(snap, 'event'));
+    native.watchImeInsets().then((snap: any) => applyNative(snap, 'watch')).catch(() => {});
+    // Polling fallback in case an inset change is not dispatched to the probe.
+    const interval = setInterval(() => {
+      native.getImeInsets?.().then((snap: any) => applyNative(snap, 'poll')).catch(() => {});
+    }, 250);
+    return () => {
+      cancelled = true;
+      sub?.remove?.();
+      clearInterval(interval);
+    };
+  }, [measureContainer]);
+
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
     setSize((prev) => {
@@ -261,17 +304,20 @@ export function MultiPaneContainer() {
     rootHeight,
     rootShrink,
     keyboardHeight: keyboard?.height,
+    imeFootprint: nativeIme ? (imeShown ? nativeIme.bottom : 0) : null,
     bottomInset: insets.bottom,
   });
-  if (keyboard && lastLoggedOverlapRef.current !== Math.round(effectiveKeyboardHeight)) {
+  if (!imeShown) lastLoggedOverlapRef.current = null;
+  if (imeShown && lastLoggedOverlapRef.current !== Math.round(effectiveKeyboardHeight)) {
     lastLoggedOverlapRef.current = Math.round(effectiveKeyboardHeight);
     logInfo('Keyboard', 'overlap', {
       overlap: effectiveKeyboardHeight,
       containerBottom,
       rootHeight,
       rootShrink,
-      keyboardTop: keyboard.top,
-      keyboardHeight: keyboard.height,
+      keyboardTop: keyboard?.top,
+      keyboardHeight: keyboard?.height,
+      nativeImeBottom: nativeIme?.bottom,
       insetsBottom: insets.bottom,
     });
   }
