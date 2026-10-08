@@ -1088,6 +1088,10 @@ export interface Agent {
   oneShotStatus?: 'done' | 'missed' | null;
   /** Epoch ms when oneShotStatus became terminal. */
   oneShotResolvedAt?: number | null;
+  /** Epoch ms the native fire path STARTED this one-shot's run (written before
+   *  the run, so a kill/reboot mid-run can never re-fire it). Cleared on an
+   *  explicit re-schedule. */
+  oneShotFiredAt?: number | null;
 }
 
 export interface AgentRunLog {

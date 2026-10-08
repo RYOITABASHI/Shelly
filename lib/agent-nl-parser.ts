@@ -571,6 +571,31 @@ interface SpanMatch {
   end: number;
 }
 
+// Words that, right before "in 5 minutes", make the delay part of the task's
+// content ("meetings that START in 5 minutes", "tasks DUE in an hour").
+const EN_EMBEDDED_DELAY_PREV_WORD_RE =
+  /\b(?:that|which|who|when|starts?|starting|started|begins?|beginning|due|expires?|expiring|ends?|ending|happens?|happening|occurs?|occurring|arrives?|arriving|leaves?|leaving|closes?|closing|opens?|opening|finish(?:es)?|finishing|scheduled|ready|available|coming|upcoming)\s*$/i;
+const CLAUSE_LEAD_RE = /(?:^|[,.;:!?、。])\s*(?:(?:please|then|and|ok(?:ay)?|hey|so)\s*,?\s*)?$/i;
+const CLAUSE_TAIL_RE = /^\s*(?:$|[,.;:!?、。])/;
+
+/**
+ * true when a relative delay match reads as part of the task's CONTENT rather
+ * than when to run it. EN: a content verb / relative pronoun right before it
+ * ("that start in 5 minutes"), or a mid-sentence position (neither leading
+ * its clause nor ending the sentence). JA: attached to a noun with の
+ * ("会議の5分後に") — an adverbial "ニュースを5分後にまとめて" stays explicit.
+ */
+function isEmbeddedRelativeDelay(text: string, rel: SpanMatch): boolean {
+  const before = text.slice(0, rel.start);
+  const after = text.slice(rel.end);
+  const matched = text.slice(rel.start, rel.end);
+  if (/[぀-ヿ一-鿿]/.test(matched)) {
+    return /の\s*$/.test(before);
+  }
+  if (EN_EMBEDDED_DELAY_PREV_WORD_RE.test(before)) return true;
+  return !CLAUSE_LEAD_RE.test(before) && !CLAUSE_TAIL_RE.test(after);
+}
+
 /** Longest-standing max for a relative one-shot — anything further out is
  *  almost certainly not a "run once later" request, so stay fail-closed. */
 const ONE_SHOT_MAX_RELATIVE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -686,6 +711,13 @@ export function detectOneShotSchedule(text: string): OneShotDetection | null {
   const rel = matchRelativeDelay(text);
   if (rel) {
     if (rel.ms <= 0 || rel.ms > ONE_SHOT_MAX_RELATIVE_MS) return null;
+    // An EMBEDDED delay ("meetings that start in 5 minutes" / "会議の5分後に")
+    // describes the task's content, not when to run it: keep it in the
+    // prompt, and only treat it as a one-shot interpretation that needs a
+    // human confirm.
+    if (isEmbeddedRelativeDelay(text, rel)) {
+      return { schedule: encodeRelativeOneShot(rel.ms), implicit: true, strip };
+    }
     strip.push([rel.start, rel.end]);
     return { schedule: encodeRelativeOneShot(rel.ms), implicit: false, strip };
   }
@@ -731,6 +763,8 @@ function removeSpans(text: string, spans: Array<[number, number]>): string {
   out += text.slice(cursor);
   return out
     .replace(/[ \t]{2,}/g, ' ')
+    // A removed span between two Japanese characters leaves no gap ("ニュースを まとめて").
+    .replace(/([぀-ヿ一-鿿])[ \t]+(?=[぀-ヿ一-鿿])/g, '$1')
     .replace(/\s+([,.!?、。])/g, '$1')
     .replace(/([,、])\s*[,、]+/g, '$1')
     .replace(/^[\s,、。.]*(?:には|に|で)?[\s,、]*/, '')

@@ -18,6 +18,7 @@ import {
   ONE_SHOT_GRACE_MS,
   encodeOnceOneShot,
   formatOneShotLabel,
+  mergeOneShotDiskState,
   oneShotState,
   parseOneShotSchedule,
   planOneShotArm,
@@ -33,7 +34,7 @@ import {
   humanizeCronSchedule,
   summarizeAgentDraftAsText,
 } from '@/lib/agent-plan-summary';
-import { applyDraftPatch } from '@/lib/agent-draft-patch';
+import { applyCorrectionToJustRegisteredAgent, applyDraftPatch, applyPatchToPendingSession } from '@/lib/agent-draft-patch';
 import { decodeCron, buildCron } from '@/lib/agent-card-cron';
 import type { Agent } from '@/store/types';
 
@@ -328,7 +329,7 @@ describe('boot re-arm (reference planner) + native parity', () => {
     expect(scheduler).toContain('const val ONE_SHOT_CATCHUP_DELAY_MS = 5 * 1000L');
     expect(ONE_SHOT_GRACE_MS).toBe(10 * 60 * 1000);
     expect(ONE_SHOT_CATCHUP_DELAY_MS).toBe(5 * 1000);
-    expect(scheduler).toContain('completeOneShot(context, agentId, ONE_SHOT_STATUS_MISSED)');
+    expect(scheduler).toContain('completeOneShot(context, agentId, ONE_SHOT_STATUS_MISSED, cron)');
     expect(scheduler).toContain('json.put("oneShotStatus", status)');
     expect(scheduler).toContain('json.put("enabled", false)');
   });
@@ -339,7 +340,7 @@ describe('boot re-arm (reference planner) + native parity', () => {
     const rearmIdx = service.indexOf('} else if (intervalMs > 0 || !cron.isNullOrBlank())');
     expect(oneShotIdx).toBeGreaterThan(-1);
     expect(rearmIdx).toBeGreaterThan(oneShotIdx);
-    expect(service).toContain('AgentAlarmScheduler.completeOneShot(applicationContext, agentId, AgentAlarmScheduler.ONE_SHOT_STATUS_DONE)');
+    expect(service).toContain('AgentAlarmScheduler.completeOneShot(applicationContext, agentId, status, cron)');
   });
 });
 
@@ -427,5 +428,177 @@ describe('draft patch — "actually make it in 10 minutes"', () => {
   it('a one-shot correction can turn a recurring draft into a one-shot', () => {
     const d = parseAgentNL('毎日8時に株価をまとめて');
     expect(applyDraftPatch(d, '5分後にして')?.patchedDraft.schedule).toBe(`@in ${5 * MIN}`);
+  });
+});
+
+// ── Review fixes (H1 / H2 / M1 / M3 / M4) ──────────────────────────────────
+
+describe('H2 — a start marker (written before the run) counts as fired', () => {
+  it('planOneShotArm / oneShotState: firedAt at/after the instant → done, never re-armed', async () => {
+    const started = oneShotAgent({ schedule: encodeOnceOneShot(NOW - 2 * MIN), oneShotFiredAt: NOW - 2 * MIN + 500 });
+    expect(planOneShotArm(started, NOW)).toEqual({ action: 'done' });
+    expect(oneShotState(started, NOW)).toBe('done');
+    await installSchedule(started, NOW);
+    expect(mockScheduleAgent).not.toHaveBeenCalled();
+  });
+
+  it('reconcile does not pre-empt an in-progress run (marker, no log yet) but retires it once the run window has passed', () => {
+    const inProgress = oneShotAgent({ schedule: encodeOnceOneShot(NOW - 2 * MIN), oneShotFiredAt: NOW - 2 * MIN });
+    expect(reconcileOneShotAgent(inProgress, NOW)).toBeNull();
+    expect(reconcileOneShotAgent(inProgress, NOW + 45 * MIN)?.oneShotStatus).toBe('done');
+  });
+
+  it('boot reference: already-fired evidence → done (not re-armed, not caught up)', () => {
+    expect(planBootOneShot(encodeOnceOneShot(NOW - 2 * MIN), NOW, true)).toEqual({ action: 'done' });
+    expect(planBootOneShot(encodeOnceOneShot(NOW + HOUR), NOW, true)).toEqual({ action: 'done' });
+  });
+});
+
+describe('H1 — mergeOneShotDiskState (stale snapshot never resurrects a fired one-shot)', () => {
+  const schedule = encodeOnceOneShot(NOW - 2 * MIN);
+
+  it('adopts a terminal status from disk for the same schedule (enabled → false)', () => {
+    const stale = oneShotAgent({ schedule, enabled: true });
+    const merged = mergeOneShotDiskState(stale, { schedule, enabled: false, oneShotStatus: 'done', oneShotResolvedAt: NOW - MIN });
+    expect(merged).toMatchObject({ enabled: false, oneShotStatus: 'done', oneShotResolvedAt: NOW - MIN });
+  });
+
+  it('adopts the start marker so planOneShotArm sees it as fired', () => {
+    const stale = oneShotAgent({ schedule, enabled: true });
+    const merged = mergeOneShotDiskState(stale, { schedule, enabled: true, oneShotFiredAt: NOW - 2 * MIN });
+    expect(merged.oneShotFiredAt).toBe(NOW - 2 * MIN);
+    expect(planOneShotArm(merged, NOW)).toEqual({ action: 'done' });
+  });
+
+  it('an explicit re-schedule (different schedule on disk) is left alone', () => {
+    const rearmed = oneShotAgent({ schedule: encodeOnceOneShot(NOW + 10 * MIN), enabled: true });
+    expect(mergeOneShotDiskState(rearmed, { schedule, oneShotStatus: 'done' })).toBe(rearmed);
+  });
+
+  it('no disk evidence / not a one-shot → unchanged object', () => {
+    const agent = oneShotAgent();
+    expect(mergeOneShotDiskState(agent, { schedule: agent.schedule })).toBe(agent);
+    expect(mergeOneShotDiskState(agent, null)).toBe(agent);
+    const cron = oneShotAgent({ schedule: '0 9 * * *' });
+    expect(mergeOneShotDiskState(cron, { schedule: '0 9 * * *', oneShotStatus: 'done' })).toBe(cron);
+  });
+});
+
+describe('M3 — an embedded delay is task content, not the run time', () => {
+  it('EN: "meetings that start in 5 minutes" → implicit (needs confirm), phrase kept in the prompt', () => {
+    const d = parseAgentNL('Summarize meetings that start in 5 minutes');
+    expect(d.schedule).toBe(`@in ${5 * MIN}`);
+    expect(d.oneShotImplicit).toBe(true);
+    expect(hasDraftAssumptions(d)).toBe(true);
+    expect(d.prompt).toBe('Summarize meetings that start in 5 minutes');
+  });
+
+  it('EN: a mid-sentence delay is implicit and not stripped', () => {
+    const d = parseAgentNL('send me in 5 minutes a list of open PRs');
+    expect(d.oneShotImplicit).toBe(true);
+    expect(d.prompt).toContain('in 5 minutes');
+  });
+
+  it('EN: clause-leading / sentence-final delays stay explicit and are stripped', () => {
+    const lead = parseAgentNL('In 5 minutes, remind me to stretch');
+    expect(lead.oneShotImplicit).toBeUndefined();
+    expect(lead.prompt).toBe('remind me to stretch');
+    const tail = parseAgentNL('Remind me to stretch in 5 minutes');
+    expect(tail.oneShotImplicit).toBeUndefined();
+    expect(tail.prompt).toBe('Remind me to stretch');
+    const due = parseAgentNL('List the tasks due in an hour');
+    expect(due.oneShotImplicit).toBe(true);
+    expect(due.prompt).toContain('due in an hour');
+  });
+
+  it('JA: "会議の5分後に" (attached to a noun) is implicit and kept; adverbial "ニュースを5分後に" stays explicit', () => {
+    const embedded = parseAgentNL('会議の5分後にリマインドして');
+    expect(embedded.oneShotImplicit).toBe(true);
+    expect(embedded.prompt).toContain('会議の5分後に');
+    const adverbial = parseAgentNL('ニュースを5分後にまとめて');
+    expect(adverbial.oneShotImplicit).toBeUndefined();
+    expect(adverbial.prompt).toBe('ニュースをまとめて');
+  });
+});
+
+describe('M1 — "今すぐ" against a pending / registered one-shot never runs twice', () => {
+  const oneShotDraft = () => parseAgentNL('5分後にバッテリー残量を通知して');
+
+  it('pending draft: "今すぐ" REPLACES the one-shot with run-now (no runOnceOnConfirm)', () => {
+    const result = applyPatchToPendingSession(
+      { draft: oneShotDraft(), phase: 'await-confirm', messageId: 'm1', createdAt: NOW } as any,
+      '今すぐ',
+    );
+    expect(result?.session.draft.schedule).toBe('once');
+    expect(result?.session.draft.runOnceOnConfirm).toBeUndefined();
+    expect(result?.runNowRequested).toBe(false);
+  });
+
+  it('pending recurring draft keeps the existing protect-and-run-once behaviour', () => {
+    const result = applyPatchToPendingSession(
+      { draft: parseAgentNL('毎日8時に株価をまとめて'), phase: 'await-confirm', messageId: 'm1', createdAt: NOW } as any,
+      '今すぐ',
+    );
+    expect(result?.session.draft.schedule).toBe('0 8 * * *');
+    expect(result?.session.draft.runOnceOnConfirm).toBe(true);
+  });
+
+  it('registered one-shot: "今すぐ" clears its schedule AND requests the run now (cancel + run, never both later)', () => {
+    const result = applyCorrectionToJustRegisteredAgent(oneShotDraft(), '今すぐ', NOW, 10 * MIN, NOW + MIN);
+    expect(result?.agentPartial.schedule).toBeNull();
+    expect(result?.runNowRequested).toBe(true);
+  });
+});
+
+describe('H1 / H2 / M4 — native fire gate + outcome parity', () => {
+  const root = path.resolve(__dirname, '..');
+  const kt = (f: string) =>
+    fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator', f), 'utf8');
+
+  it('the service gates a one-shot fire BEFORE running it (dedupe + start marker), skipping manual widget runs', () => {
+    const service = kt('TerminalSessionService.kt');
+    const gateIdx = service.indexOf('AgentAlarmScheduler.gateOneShotFire(applicationContext, agentId, cron) == AgentAlarmScheduler.OneShotFireGate.SKIP');
+    const runIdx = service.indexOf('runAgentInBackground(agentId, tainted, unattended');
+    expect(gateIdx).toBeGreaterThan(-1);
+    expect(runIdx).toBeGreaterThan(gateIdx);
+    expect(service).toContain('if (!manual && AgentAlarmScheduler.isOneShotCron(cron) &&');
+  });
+
+  it('the gate checks disk evidence (status / marker / run log), stale alarms, the grace window, and writes the marker + drops the boot entry before RUN', () => {
+    const scheduler = kt('AgentAlarmScheduler.kt');
+    const gate = scheduler.slice(scheduler.indexOf('fun gateOneShotFire('), scheduler.indexOf('fun oneShotOutcomeStatus('));
+    expect(gate.indexOf('oneShotAlreadyFired(context, agentId, atMs)')).toBeGreaterThan(-1);
+    expect(gate).toContain('now - atMs > ONE_SHOT_GRACE_MS');
+    const markerIdx = gate.indexOf('json.put("oneShotFiredAt", now)');
+    const forgetIdx = gate.indexOf('forgetScheduleForBoot(context, agentId)');
+    expect(markerIdx).toBeGreaterThan(-1);
+    expect(forgetIdx).toBeGreaterThan(markerIdx);
+    expect(gate.lastIndexOf('return OneShotFireGate.RUN')).toBeGreaterThan(forgetIdx);
+    const fired = scheduler.slice(scheduler.indexOf('fun oneShotAlreadyFired('), scheduler.indexOf('enum class OneShotFireGate'));
+    expect(fired).toContain('"oneShotFiredAt"');
+    expect(fired).toContain('latestRunLogAt(context, agentId)');
+  });
+
+  it('boot re-arm checks already-fired evidence first', () => {
+    const scheduler = kt('AgentAlarmScheduler.kt');
+    const boot = scheduler.slice(scheduler.indexOf('val oneShotAt = oneShotAtMs(cron)'), scheduler.indexOf('if (scheduleNext(context, agentId, intervalMs, cron)) count++'));
+    expect(boot.indexOf('oneShotAlreadyFired(context, agentId, oneShotAt)')).toBeLessThan(boot.indexOf('oneShotAt > now'));
+  });
+
+  it('M4: post-run status comes from the run outcome (refused 129/130 or crash → missed + notification)', () => {
+    const scheduler = kt('AgentAlarmScheduler.kt');
+    expect(scheduler).toContain('private val ONE_SHOT_NOT_RUN_EXIT_CODES = setOf(129, 130)');
+    expect(scheduler).toContain('if (result == null || result.exitCode in ONE_SHOT_NOT_RUN_EXIT_CODES) ONE_SHOT_STATUS_MISSED');
+    const service = kt('TerminalSessionService.kt');
+    expect(service).toContain('val status = AgentAlarmScheduler.oneShotOutcomeStatus(runResult)');
+    expect(service).toContain('if (wrote && status == AgentAlarmScheduler.ONE_SHOT_STATUS_MISSED)');
+    expect(service).toContain('AgentAlarmScheduler.notifyOneShotNotRun(applicationContext, agentId, reason)');
+  });
+
+  it('completion only touches the agent while its disk schedule is still the fired one-shot, first terminal status wins', () => {
+    const scheduler = kt('AgentAlarmScheduler.kt');
+    const complete = scheduler.slice(scheduler.indexOf('fun completeOneShot('));
+    expect(complete).toContain('oneShotAtMs(json.optString("schedule")) != expectedAt');
+    expect(complete).toContain('if (!alreadyTerminal) {');
   });
 });

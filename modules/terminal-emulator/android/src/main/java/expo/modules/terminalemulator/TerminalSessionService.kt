@@ -139,6 +139,21 @@ class TerminalSessionService : Service() {
                 val intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 0L)
                 val cron = intent.getStringExtra(EXTRA_CRON)
                 val manual = intent.getBooleanExtra(EXTRA_MANUAL, false)
+                // One-shot (lib/agent-oneshot.ts): dedupe + start marker BEFORE
+                // the run (see AgentAlarmScheduler.gateOneShotFire) so a stale
+                // RN re-arm or a reboot mid-run can never produce a second run.
+                if (!manual && AgentAlarmScheduler.isOneShotCron(cron) &&
+                    AgentAlarmScheduler.gateOneShotFire(applicationContext, agentId, cron) == AgentAlarmScheduler.OneShotFireGate.SKIP
+                ) {
+                    if (!hasProtectedWork()) {
+                        startForegroundWithNotification(null)
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                        return START_NOT_STICKY
+                    }
+                    startForegroundWithNotification(null)
+                    return START_STICKY
+                }
                 val scheduled = intervalMs > 0 || !cron.isNullOrBlank()
                 val notificationTriggered = intent.getBooleanExtra(EXTRA_NOTIFICATION_TRIGGER, false)
                 val widgetAgent = if (manual) WidgetAgentRepository.scheduledById(applicationContext, agentId) else null
@@ -372,12 +387,20 @@ class TerminalSessionService : Service() {
             // the third consecutive failure disables metadata and cancels both
             // live and boot-restored schedules before another alarm can be armed.
             if (AgentAlarmScheduler.isOneShotCron(cron)) {
-                // One-shot (lib/agent-oneshot.ts): it ran its single fire —
-                // success or failure — so retire it (enabled=false, "done")
-                // and never re-arm. No circuit-breaker bookkeeping: there is
-                // no next run for a failure streak to protect.
+                // One-shot (lib/agent-oneshot.ts): its single fire is spent —
+                // retire it and never re-arm. "done" when the run started
+                // (success or failure); "missed" + one notification when it
+                // was refused before starting (disabled / backoff / previous
+                // run still active) or crashed before returning. No
+                // circuit-breaker bookkeeping: there is no next run.
                 try {
-                    AgentAlarmScheduler.completeOneShot(applicationContext, agentId, AgentAlarmScheduler.ONE_SHOT_STATUS_DONE)
+                    val status = AgentAlarmScheduler.oneShotOutcomeStatus(runResult)
+                    val wrote = AgentAlarmScheduler.completeOneShot(applicationContext, agentId, status, cron)
+                    if (wrote && status == AgentAlarmScheduler.ONE_SHOT_STATUS_MISSED) {
+                        val reason = runResult?.stderr?.takeIf { it.isNotBlank() }?.take(160)
+                            ?: "runtime ${crashType ?: "unavailable"}"
+                        AgentAlarmScheduler.notifyOneShotNotRun(applicationContext, agentId, reason)
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to retire one-shot $agentId", e)
                 }

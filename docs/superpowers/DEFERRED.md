@@ -59,6 +59,10 @@
 
 **実機で確認すること（未実施）**: (1) "In 5 minutes, …" で登録 → 5 分後に無人実行され、Sidebar 行が「Done · ran once (…)」になり二度と発火しない（`dumpsys alarm | grep dev.shelly.terminal` で alarm 0 件）。(2) 発火前に再起動 → ブート後に同時刻で再 arm。(3) 発火時刻をまたいで電源 OFF（>10 分）→ 起動後に実行されず「Missed」表示 + 通知 1 件。(4) Doze 中の exact alarm 精度。
 
+**レビュー指摘対応（同日、追補コミット）**: (H1) RN の古いスナップショットが完了済み one-shot を `enabled:true` で書き戻して catch-up 二重実行 → JS の全書き込み/arm 前にディスク JSON の `oneShotStatus`/`oneShotFiredAt` を取り込む（スケジュールが変わった明示的再設定のみ例外）+ ネイティブ発火ゲートでディスク状態・実行ログを見て重複発火を抑止。(H2) 実行中の再起動/kill で再発火 → 実行**前**に `oneShotFiredAt` マーカーを書き boot エントリを削除、boot/JS とも「マーカー or 実行ログ ≥ at」を done 扱い。(M4) 結果に応じて done / missed（129/130 拒否・クラッシュは missed + 通知1件）。(M1) 保留中 one-shot への「今すぐ」は one-shot を置き換え（二重実行しない）。(M2) 確認カードがマウント中のスケジュール変更で再シード。(M3) "meetings that start in 5 minutes" / 「会議の5分後に」のような文中の相対時間は implicit（確認必須）扱いでプロンプトから削除しない。
+
+**仕様上の注意**: one-shot はホーム画面ウィジェットに表示されない（`WidgetAgentRepository` が `AgentAlarmScheduler.nextTriggerAt` で cron を要求するため。誤タップで単発予定を前倒し実行させないため現状維持）。
+
 **意図的に見送り（P2）**: 「月曜の9時に1回だけ」のような曜日指定の one-shot（現状は曜日があれば毎週扱い）、"in a few minutes" のような曖昧量、Sidebar からの one-shot 再 arm UI（現状はチャットで「10分後にして」等の補正 or 再登録）。`setAgentEnabled(true)` で完了済み one-shot を再有効化しても再発火はしない（時刻の再指定が必要）。
 
 ### MiniCPM5-2B をローカル LLM の常用候補として採用するか — 実機 A/B 評価の結果「不採用」、オプトインの実験枠として残置 (P3)

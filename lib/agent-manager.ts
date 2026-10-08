@@ -16,7 +16,14 @@ import { generateRunScript, generateStopCommand, generateInstallCommands, getScr
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
 import { t } from '@/lib/i18n';
-import { isOneShotSchedule, oneShotAtMs, reconcileOneShotAgent, resolveOneShotSchedule } from './agent-oneshot';
+import {
+  isOneShotSchedule,
+  mergeOneShotDiskState,
+  oneShotAtMs,
+  reconcileOneShotAgent,
+  resolveOneShotSchedule,
+  type OneShotDiskState,
+} from './agent-oneshot';
 import { shouldTripCircuitBreaker, DEFAULT_CIRCUIT_BREAKER_THRESHOLD } from './agent-circuit-breaker';
 import {
   buildGlobalRecallContext,
@@ -524,6 +531,7 @@ export async function updateAgent(
     if (safePartial.schedule !== current.schedule) {
       safePartial.oneShotStatus = null;
       safePartial.oneShotResolvedAt = null;
+      safePartial.oneShotFiredAt = null;
       if (isOneShotSchedule(safePartial.schedule) && current.oneShotStatus && safePartial.enabled === undefined) {
         safePartial.enabled = true;
       }
@@ -551,8 +559,18 @@ export async function updateAgent(
       : safePartial;
 
   store.updateAgent(agentId, finalPartial);
+  // installSchedule is a no-op for a null schedule, so a correction that
+  // removes the schedule (e.g. a one-shot answered with "今すぐ") must
+  // disarm the old alarm explicitly.
+  if (current.schedule && !updated.schedule) {
+    try {
+      await uninstallSchedule(agentId);
+    } catch {
+      // best-effort — the native fire gate also drops a stale one-shot alarm
+    }
+  }
   await installAgent(updated, runCommand);
-  return updated;
+  return useAgentStore.getState().agents.find((a) => a.id === agentId) ?? updated;
 }
 
 function isAutonomousCreateCommand(word: string): boolean {
@@ -774,6 +792,48 @@ function materializeAgent(
   return turn;
 }
 
+/** Read an agent's metadata JSON straight from disk (null when absent /
+ *  unparseable). Used only for one-shot agents — see withOneShotDiskState. */
+async function readAgentDiskState(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<OneShotDiskState | null> {
+  try {
+    const out = (await runCommand(`cat ${shellQuote(`${agentsDir()}/${agentId}.json`)} 2>/dev/null || true`)).trim();
+    if (!out.startsWith('{')) return null;
+    const parsed: unknown = JSON.parse(out);
+    return parsed && typeof parsed === 'object' ? (parsed as OneShotDiskState) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One-shot stale-write guard (lib/agent-oneshot.ts mergeOneShotDiskState):
+ * native writes the start marker / terminal status to the agent JSON while
+ * the RN store may still hold the pre-fire snapshot. EVERY JS write of a
+ * one-shot agent's JSON (and every JS arm) goes through this first, so a
+ * stale enabled:true can never resurrect a fired/retired one-shot. A changed
+ * schedule (explicit re-arm) is left alone. Mirrors the merged fields into
+ * the store. Non-one-shot agents are returned untouched with no disk read.
+ */
+async function withOneShotDiskState(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<Agent> {
+  if (oneShotAtMs(agent.schedule) === null) return agent;
+  const merged = mergeOneShotDiskState(agent, await readAgentDiskState(agent.id, runCommand));
+  if (merged !== agent) {
+    useAgentStore.getState().updateAgent(agent.id, {
+      enabled: merged.enabled,
+      oneShotStatus: merged.oneShotStatus,
+      oneShotFiredAt: merged.oneShotFiredAt,
+      oneShotResolvedAt: merged.oneShotResolvedAt,
+    });
+  }
+  return merged;
+}
+
 async function materializeAgentBody(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
@@ -784,6 +844,9 @@ async function materializeAgentBody(
   persistFacts = true,
   runOpts: MaterializeRunOpts = {}
 ): Promise<void> {
+  // One-shot: adopt the native start marker / terminal status from disk
+  // before this write + arm (see withOneShotDiskState).
+  agent = await withOneShotDiskState(agent, runCommand);
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
   // recipe (Phase 2a) into the run prompt.
@@ -2707,14 +2770,15 @@ export async function setAgentEnabled(
   const changes: Partial<Agent> = enabled
     ? { enabled, circuitBreakerResetAt: Date.now() }
     : { enabled };
-  const updated: Agent = { ...agent, ...changes };
   store.updateAgent(agentId, changes);
+  // One-shot: never write enabled:true over a fired/retired one-shot.
+  const updated: Agent = await withOneShotDiskState({ ...agent, ...changes }, runCommand);
   // Persist the flag so a restart doesn't silently re-enable a paused agent.
   await runCommand(
     `set -e\n${writeFileCommand(`${agentsDir()}/${agentId}.json`, JSON.stringify(updated, null, 2))}`
   );
   if (!agent.schedule) return; // manual-only: nothing to (un)install
-  if (enabled && !store.halted) {
+  if (updated.enabled && !store.halted) {
     await installSchedule(updated);
   } else {
     await uninstallSchedule(agentId);
@@ -2765,9 +2829,11 @@ export async function resumeAllAgents(
   } catch {
     // ignore
   }
-  for (const a of store.agents) {
-    if (a.enabled && a.schedule) {
+  for (const storeAgent of store.agents) {
+    if (storeAgent.enabled && storeAgent.schedule) {
       try {
+        const a = await withOneShotDiskState(storeAgent, runCommand);
+        if (!a.enabled) continue;
         await installSchedule(a);
       } catch {
         // best-effort
@@ -2993,9 +3059,19 @@ function scheduleAgentStartupRepair(
         // or one still inside the grace window — falls through to the normal
         // materialize below, where installSchedule arms it (catch-up if late).
         if (oneShotAtMs(agent.schedule) !== null) {
-          const oneShotPatch = reconcileOneShotAgent(storeAgent, Date.now());
+          const diskAgent = await withOneShotDiskState(storeAgent, runCommand);
+          if (!diskAgent.enabled) {
+            // Native already retired it (done / missed) — nothing to do.
+            try {
+              await uninstallSchedule(agent.id);
+            } catch {
+              // best-effort
+            }
+            continue;
+          }
+          const oneShotPatch = reconcileOneShotAgent(diskAgent, Date.now());
           if (oneShotPatch) {
-            const retired: Agent = { ...storeAgent, ...oneShotPatch };
+            const retired: Agent = { ...diskAgent, ...oneShotPatch };
             useAgentStore.getState().updateAgent(agent.id, oneShotPatch);
             try {
               await uninstallSchedule(agent.id);
@@ -3004,8 +3080,7 @@ function scheduleAgentStartupRepair(
             }
             try {
               await runCommand(
-                `set -e
-${writeFileCommand(`${agentsDir()}/${agent.id}.json`, JSON.stringify(retired, null, 2))}`
+                `set -e\n${writeFileCommand(`${agentsDir()}/${agent.id}.json`, JSON.stringify(retired, null, 2))}`
               );
             } catch (error) {
               console.warn('Failed to persist one-shot terminal state during startup repair', agent.id, error);
@@ -3179,7 +3254,9 @@ export async function syncAgentRunLogsFromDisk(
     if (next.enabled && oneShotAtMs(next.schedule) !== null) {
       const patch = reconcileOneShotAgent(next, Date.now());
       if (patch?.oneShotStatus === 'done') {
-        next = { ...next, ...patch };
+        // A fire refused before starting writes a 'skipped' log — that is
+        // a MISSED one-shot (native records the same), not a done one.
+        next = { ...next, ...patch, ...(latest?.status === 'skipped' ? { oneShotStatus: 'missed' as const } : {}) };
         retiredOneShots.push(next);
         return next;
       }
@@ -3205,7 +3282,20 @@ export async function syncAgentRunLogsFromDisk(
   // the hook unattended (alarm-fired) runs of a skill-reusing agent get.
   void improveReusedSkillsFromSyncedLogs(agents, mergedHistory, runCommand);
 
-  for (const a of retiredOneShots) {
+  for (const retiredAgent of retiredOneShots) {
+    // Native's own terminal status on disk (written first) wins over the
+    // status derived here from the logs.
+    const disk = await readAgentDiskState(retiredAgent.id, runCommand);
+    const diskStatus =
+      disk && disk.schedule === retiredAgent.schedule && (disk.oneShotStatus === 'done' || disk.oneShotStatus === 'missed')
+        ? disk.oneShotStatus
+        : null;
+    const a: Agent = diskStatus
+      ? { ...retiredAgent, oneShotStatus: diskStatus, oneShotResolvedAt: disk?.oneShotResolvedAt ?? retiredAgent.oneShotResolvedAt }
+      : retiredAgent;
+    if (diskStatus && diskStatus !== retiredAgent.oneShotStatus) {
+      useAgentStore.getState().updateAgent(a.id, { oneShotStatus: a.oneShotStatus, oneShotResolvedAt: a.oneShotResolvedAt });
+    }
     try {
       await uninstallSchedule(a.id);
     } catch {
@@ -3213,8 +3303,7 @@ export async function syncAgentRunLogsFromDisk(
     }
     try {
       await runCommand(
-        `set -e
-${writeFileCommand(`${agentsDir()}/${a.id}.json`, JSON.stringify(a, null, 2))}`
+        `set -e\n${writeFileCommand(`${agentsDir()}/${a.id}.json`, JSON.stringify(a, null, 2))}`
       );
     } catch {
       // ignore — native already persisted the same terminal state

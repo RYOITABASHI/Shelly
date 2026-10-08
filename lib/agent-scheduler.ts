@@ -5,7 +5,7 @@
  */
 import { Agent } from '@/store/types';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
-import { logInfo } from './debug-logger';
+import { logInfo, logWarn } from './debug-logger';
 import { ONE_SHOT_GRACE_MS, oneShotAtMs, planOneShotArm, resolveOneShotAt } from './agent-oneshot';
 
 // A day-of-week field of a single day OR a comma list (e.g. "1,5" = Mon & Fri).
@@ -363,6 +363,13 @@ export async function installSchedule(agent: Agent, now: number = Date.now()): P
     }
     logInfo('AgentScheduler', `installSchedule: arming one-shot ${agent.id} at ${plan.triggerAt}${plan.catchUp ? ' (catch-up)' : ''}`);
     await TerminalEmulator.scheduleAgent(agent.id, 0, plan.triggerAt, agent.schedule);
+    return;
+  }
+  // A draft-stage one-shot ('@in' / '@at') must have been resolved at the
+  // createAgent/updateAgent write boundary; reaching here means a caller
+  // bypassed it. Never arm it (it is not cron either) — make it visible.
+  if (agent.schedule.trim().startsWith('@')) {
+    logWarn('AgentScheduler', `installSchedule: unresolved one-shot sentinel for ${agent.id} (${agent.schedule}); not armed`);
     return;
   }
 

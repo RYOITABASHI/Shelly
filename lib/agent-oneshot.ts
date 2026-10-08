@@ -41,6 +41,8 @@ export const ONE_SHOT_CATCHUP_DELAY_MS = 5 * 1000;
 /** A run log this close BEFORE the scheduled instant still counts as the
  *  one-shot's own fire (inexact-alarm fallback can deliver slightly early). */
 const FIRED_EARLY_TOLERANCE_MS = 60 * 1000;
+/** Upper bound of one unattended run (the native wake lock is 35 min). */
+const ONE_SHOT_RUN_IN_PROGRESS_MS = 40 * 60 * 1000;
 
 export type OneShotSpec =
   | { kind: 'in'; offsetMs: number }
@@ -139,12 +141,20 @@ export interface OneShotAgentLike {
   enabled: boolean;
   lastRun: number | null;
   oneShotStatus?: 'done' | 'missed' | null;
+  /** Native "fire started" marker (TerminalSessionService writes it BEFORE the
+   *  run), so a kill/reboot mid-run can never re-fire it. */
+  oneShotFiredAt?: number | null;
 }
 
 /** Did a run at/after the scheduled instant (minus a small early tolerance)
  *  happen? */
-export function oneShotHasFired(at: number, lastRun: number | null | undefined): boolean {
-  return lastRun != null && lastRun >= at - FIRED_EARLY_TOLERANCE_MS;
+export function oneShotHasFired(
+  at: number,
+  lastRun: number | null | undefined,
+  firedAt?: number | null,
+): boolean {
+  const min = at - FIRED_EARLY_TOLERANCE_MS;
+  return (lastRun != null && lastRun >= min) || (firedAt != null && firedAt >= min);
 }
 
 /** Effective lifecycle state of a one-shot agent (null when not a one-shot).
@@ -155,7 +165,7 @@ export function oneShotState(agent: OneShotAgentLike, now: number): OneShotStatu
   const at = oneShotAtMs(agent.schedule);
   if (at === null) return null;
   if (agent.oneShotStatus === 'done' || agent.oneShotStatus === 'missed') return agent.oneShotStatus;
-  if (oneShotHasFired(at, agent.lastRun)) return 'done';
+  if (oneShotHasFired(at, agent.lastRun, agent.oneShotFiredAt)) return 'done';
   if (now - at > ONE_SHOT_GRACE_MS) return 'missed';
   return 'pending';
 }
@@ -180,7 +190,7 @@ export function planOneShotArm(agent: OneShotAgentLike, now: number): OneShotArm
   if (at === null) return { action: 'skip' };
   if (agent.oneShotStatus === 'done') return { action: 'done' };
   if (agent.oneShotStatus === 'missed') return { action: 'missed', at };
-  if (oneShotHasFired(at, agent.lastRun)) return { action: 'done' };
+  if (oneShotHasFired(at, agent.lastRun, agent.oneShotFiredAt)) return { action: 'done' };
   if (at > now) return { action: 'arm', triggerAt: at, catchUp: false };
   if (now - at <= ONE_SHOT_GRACE_MS) {
     return { action: 'arm', triggerAt: now + ONE_SHOT_CATCHUP_DELAY_MS, catchUp: true };
@@ -206,9 +216,64 @@ export interface OneShotTerminalPatch {
 export function reconcileOneShotAgent(agent: OneShotAgentLike, now: number): OneShotTerminalPatch | null {
   const plan = planOneShotArm(agent, now);
   if (plan.action !== 'done' && plan.action !== 'missed') return null;
+  // Fired (native start marker) but no run log yet and still within a run's
+  // lifetime: the run is in progress — native decides done vs missed from its
+  // outcome when it returns. Retiring it here would pre-empt that.
+  const at = oneShotAtMs(agent.schedule)!;
+  if (
+    plan.action === 'done' &&
+    !agent.oneShotStatus &&
+    !(agent.lastRun != null && agent.lastRun >= at - FIRED_EARLY_TOLERANCE_MS) &&
+    agent.oneShotFiredAt != null &&
+    now - agent.oneShotFiredAt < ONE_SHOT_RUN_IN_PROGRESS_MS
+  ) {
+    return null;
+  }
   const status = plan.action;
   if (agent.oneShotStatus === status && !agent.enabled) return null;
   return { enabled: false, oneShotStatus: status, oneShotResolvedAt: now };
+}
+
+/** The one-shot fields of an agent JSON as last written to DISK (native may
+ *  have retired / started it while the JS store slept). */
+export interface OneShotDiskState {
+  schedule?: string | null;
+  enabled?: boolean;
+  oneShotStatus?: 'done' | 'missed' | null;
+  oneShotFiredAt?: number | null;
+  oneShotResolvedAt?: number | null;
+}
+
+/**
+ * Never let a stale in-memory snapshot resurrect a one-shot native already
+ * started or retired: when the disk JSON carries the SAME one-shot schedule
+ * and a terminal status or a fire marker, adopt those fields (terminal ⇒
+ * enabled=false). A different schedule on disk means the in-memory value is
+ * an explicit re-schedule (updateAgent cleared the bookkeeping) — keep it.
+ * Returns the same object when nothing changes.
+ */
+export function mergeOneShotDiskState<T extends OneShotAgentLike & { oneShotResolvedAt?: number | null }>(
+  agent: T,
+  disk: OneShotDiskState | null | undefined,
+): T {
+  if (!disk || oneShotAtMs(agent.schedule) === null || disk.schedule !== agent.schedule) return agent;
+  const diskTerminal = disk.oneShotStatus === 'done' || disk.oneShotStatus === 'missed' ? disk.oneShotStatus : null;
+  const diskFired = typeof disk.oneShotFiredAt === 'number' ? disk.oneShotFiredAt : null;
+  if (!diskTerminal && diskFired === null) return agent;
+  const next: T = { ...agent };
+  if (diskFired !== null && (agent.oneShotFiredAt == null || agent.oneShotFiredAt < diskFired)) {
+    next.oneShotFiredAt = diskFired;
+  }
+  if (diskTerminal && !agent.oneShotStatus) {
+    next.oneShotStatus = diskTerminal;
+    next.oneShotResolvedAt = disk.oneShotResolvedAt ?? agent.oneShotResolvedAt ?? null;
+  }
+  if (next.oneShotStatus) next.enabled = false;
+  const changed =
+    next.oneShotFiredAt !== agent.oneShotFiredAt ||
+    next.oneShotStatus !== agent.oneShotStatus ||
+    next.enabled !== agent.enabled;
+  return changed ? next : agent;
 }
 
 // ── Labels ─────────────────────────────────────────────────────────────────
