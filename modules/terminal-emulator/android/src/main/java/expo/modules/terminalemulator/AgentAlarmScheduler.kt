@@ -93,6 +93,34 @@ object AgentAlarmScheduler {
             val parts = raw.split(BOOT_FIELD_SEP)
             val intervalMs = parts.getOrNull(0)?.toLongOrNull() ?: 0L
             val cron = parts.getOrNull(1)?.ifBlank { null }
+            // One-shot ('@once <epochMs>', lib/agent-oneshot.ts planOneShotArm):
+            // future -> re-arm at its instant; past but within the grace
+            // window -> a catch-up fire a few seconds out; older -> retire as
+            // MISSED and never fire a stale run on boot.
+            val oneShotAt = oneShotAtMs(cron)
+            if (oneShotAt != null) {
+                val now = System.currentTimeMillis()
+                try {
+                    when {
+                        oneShotAt > now -> {
+                            schedule(context, agentId, 0L, oneShotAt, cron)
+                            count++
+                        }
+                        now - oneShotAt <= ONE_SHOT_GRACE_MS -> {
+                            schedule(context, agentId, 0L, now + ONE_SHOT_CATCHUP_DELAY_MS, cron)
+                            count++
+                            Log.i(TAG, "Boot re-arm: one-shot $agentId was due ${now - oneShotAt}ms ago; catch-up fire armed")
+                        }
+                        else -> {
+                            completeOneShot(context, agentId, ONE_SHOT_STATUS_MISSED)
+                            Log.i(TAG, "Boot re-arm: one-shot $agentId missed (due ${now - oneShotAt}ms ago, past grace); not fired")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Boot re-arm failed for one-shot $agentId", e)
+                }
+                continue
+            }
             try {
                 if (scheduleNext(context, agentId, intervalMs, cron)) count++
             } catch (e: Exception) {
@@ -101,6 +129,59 @@ object AgentAlarmScheduler {
         }
         Log.i(TAG, "Boot re-armed $count scheduled agent(s)")
         return count
+    }
+
+    // ── One-shot schedules (lib/agent-oneshot.ts) ────────────────────────────
+    // A one-shot agent stores schedule = "@once <epochMs>" and is armed with
+    // intervalMs=0 and that sentinel as its cron extra. It is never a valid
+    // cron, so nextTriggerAt() returns null and scheduleNext() can never re-arm
+    // it; TerminalSessionService retires it after its single fire.
+    private const val ONE_SHOT_PREFIX = "@once "
+    /** Mirrors lib/agent-oneshot.ts ONE_SHOT_GRACE_MS. */
+    const val ONE_SHOT_GRACE_MS = 10 * 60 * 1000L
+    /** Mirrors lib/agent-oneshot.ts ONE_SHOT_CATCHUP_DELAY_MS. */
+    const val ONE_SHOT_CATCHUP_DELAY_MS = 5 * 1000L
+    const val ONE_SHOT_STATUS_DONE = "done"
+    const val ONE_SHOT_STATUS_MISSED = "missed"
+
+    /** The fire instant of a one-shot sentinel, or null for anything else. */
+    fun oneShotAtMs(cron: String?): Long? {
+        val trimmed = cron?.trim() ?: return null
+        if (!trimmed.startsWith(ONE_SHOT_PREFIX)) return null
+        return trimmed.removePrefix(ONE_SHOT_PREFIX).trim().toLongOrNull()
+    }
+
+    fun isOneShotCron(cron: String?): Boolean = oneShotAtMs(cron) != null
+
+    /**
+     * Retire a one-shot agent: cancel its alarm + boot entry, then persist
+     * enabled=false and the terminal oneShotStatus ("done" after its fire,
+     * "missed" when boot found it past the grace window). The agent JSON and
+     * its run logs stay — the user deletes or re-schedules it. Same
+     * id-checked read-modify-write as the circuit breaker's disable.
+     */
+    fun completeOneShot(context: Context, agentId: String, status: String) {
+        try {
+            cancel(context, agentId)
+        } catch (e: Exception) {
+            Log.e(TAG, "One-shot completion failed to cancel alarm for $agentId", e)
+        }
+        try {
+            val agentFile = File(HomeInitializer.getHomeDir(context), ".shelly/agents/$agentId.json")
+            if (!agentFile.isFile) return
+            val json = JSONObject(agentFile.readText())
+            if (json.optString("id") != agentId) {
+                Log.e(TAG, "One-shot completion refused metadata update for $agentId: id mismatch")
+                return
+            }
+            json.put("enabled", false)
+            json.put("oneShotStatus", status)
+            json.put("oneShotResolvedAt", System.currentTimeMillis())
+            agentFile.writeText(json.toString(2))
+            Log.i(TAG, "One-shot $agentId retired ($status)")
+        } catch (e: Exception) {
+            Log.e(TAG, "One-shot completion failed to persist state for $agentId", e)
+        }
     }
 
     /**

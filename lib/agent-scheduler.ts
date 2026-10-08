@@ -6,6 +6,7 @@
 import { Agent } from '@/store/types';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { logInfo } from './debug-logger';
+import { ONE_SHOT_GRACE_MS, oneShotAtMs, planOneShotArm, resolveOneShotAt } from './agent-oneshot';
 
 // A day-of-week field of a single day OR a comma list (e.g. "1,5" = Mon & Fri).
 const DOW_LIST_RE = /^\d+(,\d+)*$/;
@@ -88,6 +89,10 @@ export function cronToIntervalMs(cron: string): number | null {
  * no explicit clearing once the date passes.
  */
 export function nextTriggerMs(cron: string, notBefore?: number | null): number {
+  // One-shot (lib/agent-oneshot.ts): its single fire instant — there is no
+  // "next" occurrence after it.
+  const oneShot = resolveOneShotAt(cron, Date.now());
+  if (oneShot) return oneShot.at;
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return Date.now() + 60000;
 
@@ -200,6 +205,10 @@ export function nextTriggerMs(cron: string, notBefore?: number | null): number {
  *  Mirrors nextTriggerMs but going BACKWARD — used to detect a missed run (a fire
  *  that was due but never produced a run log). Display/health only, not scheduling. */
 export function lastTriggerMs(cron: string): number | null {
+  // One-shot: its instant once that has passed, otherwise nothing was due yet.
+  const oneShotAt = oneShotAtMs(cron);
+  if (oneShotAt !== null) return oneShotAt <= Date.now() ? oneShotAt : null;
+  if (cron.trim().startsWith('@')) return null;
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return null;
 
@@ -322,14 +331,40 @@ export function isScheduleMissed(
   notBefore?: number | null
 ): MissedScheduleCheck {
   if (notBefore && now < notBefore) return { missed: false, expectedAt: null };
+  // One-shot: missed once its instant is past the ONE-SHOT grace window (the
+  // window inside which boot/startup repair still runs it late) with no run
+  // at/after it. createdAt is irrelevant here — a relative "in 5 minutes"
+  // one-shot is created only minutes before its fire, which the cron rule's
+  // "expectedAt > createdAt + grace" check would never flag.
+  const oneShotAt = oneShotAtMs(schedule);
+  if (oneShotAt !== null) {
+    const plan = planOneShotArm({ schedule, enabled: true, lastRun: lastRunAt }, now);
+    return { missed: plan.action === 'missed' && now - oneShotAt > ONE_SHOT_GRACE_MS, expectedAt: oneShotAt };
+  }
   const expectedAt = lastTriggerMs(schedule);
   const lastActual = lastRunAt ?? createdAt;
   const missed = expectedAt != null && expectedAt < now - graceMs && expectedAt > lastActual + graceMs;
   return { missed, expectedAt };
 }
 
-export async function installSchedule(agent: Agent): Promise<void> {
+export async function installSchedule(agent: Agent, now: number = Date.now()): Promise<void> {
   if (!agent.schedule) return;
+
+  // One-shot ('@once <epochMs>', lib/agent-oneshot.ts): a single exact alarm,
+  // no interval (intervalMs=0) and the sentinel as the cron extra — the native
+  // side recognises it (AgentAlarmScheduler.oneShotAtMs), never re-arms it after
+  // the fire, and marks the agent done. planOneShotArm decides arm-at-instant /
+  // catch-up within the grace window / nothing (already fired or missed).
+  if (oneShotAtMs(agent.schedule) !== null) {
+    const plan = planOneShotArm(agent, now);
+    if (plan.action !== 'arm') {
+      logInfo('AgentScheduler', `installSchedule: one-shot ${agent.id} not armed (${plan.action})`);
+      return;
+    }
+    logInfo('AgentScheduler', `installSchedule: arming one-shot ${agent.id} at ${plan.triggerAt}${plan.catchUp ? ' (catch-up)' : ''}`);
+    await TerminalEmulator.scheduleAgent(agent.id, 0, plan.triggerAt, agent.schedule);
+    return;
+  }
 
   const intervalMs = cronToIntervalMs(agent.schedule);
 

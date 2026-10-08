@@ -1346,7 +1346,14 @@ export function mergeConversationalExtractionIntoDraft(
 
   if (extraction.scheduleText) {
     const sched = parseSchedule(extraction.scheduleText);
-    if (sched.confident) {
+    // Bare time + a recurrence the draft already knows → complete the
+    // recurrence instead of registering an implicit one-shot (same rule as
+    // lib/agent-slot-fill.ts's applySlotAnswer).
+    // An LLM-extracted BARE time is never taken as an implicit one-shot here:
+    // the extractor may have dropped the recurrence word, so once-vs-daily
+    // stays ambiguous (combined with a known recurrence below, or rejected).
+    // Explicit one-shots ("in 5 minutes" / "明日8時" / "一回だけ") still apply.
+    if (sched.confident && !sched.oneShotImplicit) {
       const m = next();
       m.schedule = sched.schedule;
       m.scheduleConfident = true;

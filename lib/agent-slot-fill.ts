@@ -300,7 +300,11 @@ export function applySlotAnswer(
   }
   if (field === 'schedule') {
     const result = parseSchedule(answerText);
-    if (result.confident) {
+    // A bare time answer ("9時") is an IMPLICIT one-shot on its own, but when
+    // the original utterance already established a recurrence ("毎日…" with
+    // no time) the answer completes THAT recurrence — combine first.
+    const implicitCombined = result.oneShotImplicit ? combinePartialScheduleWithDraft(draft, result) : null;
+    if (result.confident && !implicitCombined) {
       return {
         draft: {
           ...draft,

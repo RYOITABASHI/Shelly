@@ -371,7 +371,17 @@ class TerminalSessionService : Service() {
             // log sync. The counter is native-persistent across process death;
             // the third consecutive failure disables metadata and cancels both
             // live and boot-restored schedules before another alarm can be armed.
-            if (intervalMs > 0 || !cron.isNullOrBlank()) {
+            if (AgentAlarmScheduler.isOneShotCron(cron)) {
+                // One-shot (lib/agent-oneshot.ts): it ran its single fire —
+                // success or failure — so retire it (enabled=false, "done")
+                // and never re-arm. No circuit-breaker bookkeeping: there is
+                // no next run for a failure streak to protect.
+                try {
+                    AgentAlarmScheduler.completeOneShot(applicationContext, agentId, AgentAlarmScheduler.ONE_SHOT_STATUS_DONE)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to retire one-shot $agentId", e)
+                }
+            } else if (intervalMs > 0 || !cron.isNullOrBlank()) {
                 val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))
                 if (shouldRearm) {
                     try {

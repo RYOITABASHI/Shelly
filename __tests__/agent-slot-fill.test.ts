@@ -317,10 +317,21 @@ describe('applySlotAnswer — schedule', () => {
     expect(draft.scheduleLabel).toBe('毎日 09:00');
   });
 
-  it('the merge path does NOT fire when the draft has no prior recurrence hint (falls through to the existing not-resolved/ask-again path)', () => {
+  // 2026-10-08 (one-shot schedules): with no prior recurrence hint, a bare
+  // "9時" answer to "when should this run?" is a ONE-TIME run at 9:00 (an
+  // implicit one-shot), not an unresolved answer.
+  it('with no prior recurrence hint a bare time answer resolves to an implicit one-shot (the recurrence merge does not fire)', () => {
     const d = makeDraft({ scheduleConfident: false, schedule: null, suggestedFrequency: undefined, suggestedDowList: undefined });
-    const { resolved } = applySlotAnswer('schedule', d, '9時', 0);
-    expect(resolved).toBe(false);
+    const { draft, resolved } = applySlotAnswer('schedule', d, '9時', 0);
+    expect(resolved).toBe(true);
+    expect(draft.schedule).toBe('@at 9:00');
+  });
+
+  it('a bare time answer still COMPLETES a known daily recurrence instead of becoming a one-shot', () => {
+    const d = makeDraft({ scheduleConfident: false, schedule: null, suggestedFrequency: 'daily', suggestedDowList: undefined });
+    const { draft, resolved } = applySlotAnswer('schedule', d, '9時', 0);
+    expect(resolved).toBe(true);
+    expect(draft.schedule).toBe('0 9 * * *');
   });
 
   it('a fully self-contained answer ("月・金の9時に") still resolves via the normal confident path, without needing the merge fallback', () => {

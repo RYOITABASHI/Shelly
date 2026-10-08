@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-08: CC（feat/oneshot-schedule）が NL 登録エージェントの「1回だけ・時刻指定」スケジュール（"in 5 minutes" / "5分後" / "at 14:55" / "明日8時" / "一回だけ"）を実装。ネイティブ（AgentAlarmScheduler / TerminalSessionService）変更を含むため実機検証待ち — 下記 P1 エントリ参照。
 - 2026-10-06: MiniCPM5-2B（OpenBMB）を Qwen3.5-2B と実機 A/B 評価（Galaxy Z Fold6、llama.cpp b11433）。全項目で同等以下かつ 20〜40% 遅いため常用候補として不採用、カタログには「実験的」バッジのオプトインとして残置。下記 P3 エントリに評価表と再評価条件を登録。
 - 2026-10-06: 並列squad（ポリシー担当）がPOLICY-001（自動起動runの読み取り専用化・自然文カスタムルール・trust ramp）を `SHELLY_AGENT_POLICY`（既定OFF）配下に実装。未実装・未検証の残りを下記 P1 エントリに登録。
 - 2026-10-06: `shelly teach`（Teach mode: 記録→ワークフロー保存）を実装。残課題を下記「`shelly teach` の残課題」に登録。
@@ -51,6 +52,14 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### One-shot（1回だけ・時刻指定）エージェントスケジュール — 実装済み・実機未検証 (P1)
+
+`lib/agent-oneshot.ts`。`Agent.schedule` に `@once <epochMs>` センチネルを保存（ドラフト段階は `@in <ms>` / `@at H:MM[ +N]`、登録確定時に絶対時刻へ解決）。AlarmManager は interval=0 + センチネルを cron extra として 1 回だけ arm、発火後は `TerminalSessionService` が `enabled=false` + `oneShotStatus:"done"` に退役（再 arm しない）。ブート時は未来→再 arm、10 分以内の遅延→catch-up 発火、それ以上→`missed` として退役（遅れて実行しない）。
+
+**実機で確認すること（未実施）**: (1) "In 5 minutes, …" で登録 → 5 分後に無人実行され、Sidebar 行が「Done · ran once (…)」になり二度と発火しない（`dumpsys alarm | grep dev.shelly.terminal` で alarm 0 件）。(2) 発火前に再起動 → ブート後に同時刻で再 arm。(3) 発火時刻をまたいで電源 OFF（>10 分）→ 起動後に実行されず「Missed」表示 + 通知 1 件。(4) Doze 中の exact alarm 精度。
+
+**意図的に見送り（P2）**: 「月曜の9時に1回だけ」のような曜日指定の one-shot（現状は曜日があれば毎週扱い）、"in a few minutes" のような曖昧量、Sidebar からの one-shot 再 arm UI（現状はチャットで「10分後にして」等の補正 or 再登録）。`setAgentEnabled(true)` で完了済み one-shot を再有効化しても再発火はしない（時刻の再指定が必要）。
 
 ### MiniCPM5-2B をローカル LLM の常用候補として採用するか — 実機 A/B 評価の結果「不採用」、オプトインの実験枠として残置 (P3)
 

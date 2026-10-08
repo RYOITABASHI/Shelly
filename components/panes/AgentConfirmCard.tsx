@@ -28,6 +28,7 @@ import { computeAgentSlug, resolveAgentOutputPathPreview } from '@/lib/agent-exe
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, scheduleHuman, WEEKDAY_LABELS, type Frequency } from '@/lib/agent-card-cron';
 import { parseNotificationTriggerPackages } from '@/lib/notification-trigger';
+import { formatOneShotLabel, isOneShotSchedule } from '@/lib/agent-oneshot';
 import { parseAuthorizedSenders } from '@/lib/notification-inbound';
 import { pairingConfidence, useDmPairingStore } from '@/store/dm-pairing-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -116,7 +117,7 @@ interface Props {
 
 export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) {
   const { colors } = useTheme();
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
 
   const decoded = useMemo(() => decodeCron(draft.schedule), [draft.schedule]);
 
@@ -332,9 +333,17 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     [hour, extraHours],
   );
   const hourListArg = frequency === 'daily-multi' ? dailyMultiHours.join(',') : '';
+  // A timed one-shot ('oneshot', lib/agent-oneshot.ts) has no selector state:
+  // the parsed sentinel is round-tripped verbatim and resolved to an absolute
+  // instant at confirm (confirmAgentDraft). Picking another chip switches to
+  // that frequency's own cron as usual.
+  const draftIsOneShot = isOneShotSchedule(draft.schedule);
   const cron = useMemo(
-    () => buildCron(frequency, hour, minute, weekday, interval, customDow, hourListArg),
-    [frequency, hour, minute, weekday, interval, customDow, hourListArg],
+    () =>
+      frequency === 'oneshot'
+        ? (draftIsOneShot ? draft.schedule : null)
+        : buildCron(frequency, hour, minute, weekday, interval, customDow, hourListArg),
+    [frequency, hour, minute, weekday, interval, customDow, hourListArg, draftIsOneShot, draft.schedule],
   );
 
   // "+ Add another time" (daily-multi). Reuses the current shared `minute` — no
@@ -503,7 +512,9 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     ? hasNotificationTrigger
       ? t('agentcard.sched_notification_trigger')
       : t('agentcard.sched_once')
-    : cron
+    : frequency === 'oneshot' && cron
+      ? formatOneShotLabel(cron, locale, Date.now()) ?? cron
+      : cron
       ? scheduleHuman(frequency, hour, minute, weekday, interval, t, customDow, dailyMultiHours)
       : t('agentcard.schedule_unset');
   const routeLabel = autonomous
@@ -553,6 +564,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       <Segmented
         options={[
           { key: 'once', label: t('agentcard.freq_once') },
+          ...(draftIsOneShot ? [{ key: 'oneshot', label: t('agentcard.freq_oneshot') }] : []),
           { key: 'daily', label: t('agentcard.freq_daily') },
           { key: 'weekly', label: t('agentcard.freq_weekly') },
           { key: 'interval', label: t('agentcard.freq_interval') },
@@ -573,7 +585,11 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         onChange={(k) => setFrequency(k as Frequency)}
         colors={colors}
       />
-      {isOnce ? (
+      {frequency === 'oneshot' ? (
+        <Text style={[styles.warn, { color: colors.muted }]}>
+          {formatOneShotLabel(draft.schedule, locale, Date.now()) ?? ''}
+        </Text>
+      ) : isOnce ? (
         <Text style={[styles.warn, { color: colors.muted }]}>
           {t(
             hasNotificationTrigger

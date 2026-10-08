@@ -530,11 +530,17 @@ describe('parseAgentNL — cross-model (Codex) review fixes', () => {
 });
 
 describe('parseAgentNL — ambiguous / unparseable (never silently register)', () => {
-  it('bare time, no frequency → null + suggestedTime pre-fill', () => {
+  // 2026-10-08 (one-shot schedules): a bare time with no frequency word is
+  // now a ONE-TIME run at that time (today, or tomorrow when already past) —
+  // flagged oneShotImplicit so it always gets one human confirm and the
+  // summary declares the once-vs-daily interpretation.
+  it('bare time, no frequency → implicit one-shot + suggestedTime pre-fill', () => {
     const d = parseAgentNL('8時にメールをチェックして');
-    expect(d.schedule).toBeNull();
-    expect(d.scheduleConfident).toBe(false);
+    expect(d.schedule).toBe('@at 8:00');
+    expect(d.scheduleConfident).toBe(true);
+    expect(d.oneShotImplicit).toBe(true);
     expect(d.suggestedTime).toEqual({ hour: 8, minute: 0 });
+    expect(d.prompt).toBe('メールをチェックして');
   });
 
   it('no time, no frequency → null, not confident', () => {

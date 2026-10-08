@@ -11,7 +11,9 @@
  * e.g. "0 8,21 * * *" = 8am and 9pm daily. NOTE: 'daily-multi' combined with a
  * multi-weekday ('custom') list is NOT supported (out of scope, not a bug).
  */
-export type Frequency = 'once' | 'daily' | 'weekly' | 'interval' | 'hourly' | 'custom' | 'daily-multi';
+import { isOneShotSchedule } from './agent-oneshot';
+
+export type Frequency = 'once' | 'daily' | 'weekly' | 'interval' | 'hourly' | 'custom' | 'daily-multi' | 'oneshot';
 
 /** Cron dow (0=Sun..6=Sat) → display char. Deliberately JP kanji regardless of
  *  locale — pre-existing convention inherited from AgentConfirmCard (the weekday
@@ -51,6 +53,10 @@ export function decodeCron(cron: string | null): DecodedCron {
   // everywhere else in this codebase, which would re-trigger the schedule
   // slot-fill question forever instead of landing on the Once frequency).
   if (cron === 'once') return { ...FALLBACK, frequency: 'once' };
+  // One-shot at a future time ('@in' / '@at' / '@once' sentinel, see
+  // lib/agent-oneshot.ts) — not a cron and has no selector state of its own;
+  // the card round-trips the sentinel verbatim (see AgentConfirmCard).
+  if (isOneShotSchedule(cron)) return { ...FALLBACK, frequency: 'oneshot' };
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return { ...FALLBACK };
   const [min, hour, , , dow] = parts;
@@ -113,6 +119,7 @@ export function buildCron(
   hourList: string = '',
 ): string | null {
   if (f === 'once') return null; // one-shot: no schedule
+  if (f === 'oneshot') return null; // timed one-shot: the caller keeps its sentinel verbatim
   if (f === 'interval') {
     if (!Number.isInteger(interval) || interval < 1 || interval > 59) return null;
     return `*/${interval} * * * *`;
@@ -165,6 +172,16 @@ export function scheduleHuman(
   dailyMultiHours: number[] = [],
 ): string {
   const hhmm = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  // Weekday names go through i18n (agentcard.dow_N) so the EN summary reads
+  // "every Mon at 08:00" instead of a kanji day; falls back to the legacy
+  // kanji table when the injected translator has no such key.
+  const dayName = (d: number): string => {
+    const key = `agentcard.dow_${d}`;
+    const v = t(key);
+    return v && v !== key ? v : WEEKDAY_LABELS[d] ?? String(d);
+  };
+  const joinDays = (names: string[]): string =>
+    names.join(names.every((n) => /^[A-Za-z0-9 .]*$/.test(n)) ? ', ' : '・');
   if (f === 'interval') return t('agentcard.sched_interval', { n: interval });
   if (f === 'hourly') return t('agentcard.sched_hourly', { n: interval });
   if (f === 'daily-multi') {
@@ -173,10 +190,10 @@ export function scheduleHuman(
     return t('agentcard.sched_daily_multi', { times });
   }
   if (f === 'custom') {
-    const days = customDow.split(',').map((d) => WEEKDAY_LABELS[+d] ?? d).join('・');
+    const days = joinDays(customDow.split(',').map((d) => dayName(+d)));
     return t('agentcard.sched_weekly', { day: days, time: hhmm });
   }
-  if (f === 'weekly') return t('agentcard.sched_weekly', { day: WEEKDAY_LABELS[weekday], time: hhmm });
+  if (f === 'weekly') return t('agentcard.sched_weekly', { day: dayName(weekday), time: hhmm });
   return t('agentcard.sched_daily', { time: hhmm });
 }
 
@@ -196,7 +213,12 @@ export function scheduleHuman(
  * null) rather than guessed at.
  */
 export function nextFireDate(decoded: DecodedCron, now: Date = new Date()): Date | null {
-  if (decoded.frequency === 'once' || decoded.frequency === 'interval' || decoded.frequency === 'hourly') {
+  if (
+    decoded.frequency === 'once' ||
+    decoded.frequency === 'oneshot' ||
+    decoded.frequency === 'interval' ||
+    decoded.frequency === 'hourly'
+  ) {
     return null;
   }
 

@@ -21,6 +21,7 @@ import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
+import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -216,6 +217,13 @@ export interface ParsedAgentDraft {
    *  draft's "今" reply needs when there is NO real schedule yet to protect,
    *  which resolves `schedule` to 'once' exactly as before this fix). */
   runOnceOnConfirm?: boolean;
+  /** True when `schedule` is a one-shot ('@at' sentinel, lib/agent-oneshot.ts)
+   *  read from a BARE clock time — no once-marker ("一回だけ" / "just once")
+   *  and no day word (今日 / tomorrow) — so "once, not daily" is an
+   *  interpretation. Treated like scheduleAssumed by hasDraftAssumptions:
+   *  never auto-registered without one human confirm, and the summary says
+   *  how it was read. */
+  oneShotImplicit?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -446,6 +454,292 @@ export interface ScheduleResult {
    *  caller. Absent/false = every part of this result came from an explicit
    *  parse (existing behavior). */
   assumedTimeOfDay?: boolean;
+  /** One-shot (run once at a future time — '@in' / '@at' sentinel, see
+   *  lib/agent-oneshot.ts) produced from a BARE clock time with no once-marker
+   *  and no day word ("14:55に…" / "at 2:55pm …"). It is still confident, but
+   *  the once-vs-recurring reading is an interpretation: callers that already
+   *  know a recurrence (slot-fill / draft patch) must prefer combining the
+   *  time with it, and the summary declares the interpretation. */
+  oneShotImplicit?: boolean;
+  /** [start, end) spans of `text` that stated the one-shot timing (time,
+   *  day word, "in 5 minutes", "一回だけ" …), removed from the derived prompt. */
+  oneShotStrip?: Array<[number, number]>;
+}
+
+// ── One-shot ("in 5 minutes" / "5分後" / "at 14:55" / "明日8時に") ──────────
+// Deterministic detection of a run-ONCE-at-a-future-time request. Produces a
+// DRAFT-stage sentinel ('@in <ms>' relative / '@at H:MM[ +N]' wall clock — see
+// lib/agent-oneshot.ts), resolved to an absolute '@once <epochMs>' only when
+// the user confirms registration, so a relative delay counts from the OK.
+// Never fires when the utterance carries any recurrence cue (毎日 / every /
+// ごと / a weekday / "starting tomorrow" …): those keep their existing
+// recurring parse, and "every day at 14:55" stays a daily cron.
+
+const RECURRENCE_CUE_RE =
+  /毎|ごと|おき|間隔|日次|週次|月次|隔週|隔月|定期|[日月火水木金土]曜|平日|週末|[1１一]\s*日\s*に?\s*[1１一]\s*[回度]|(?:分|時間|日|週|月|年)\s*に\s*[1１一]\s*[回度]|\bevery\b|\beach\s+(?:day|week|month|morning|evening|night|hour|minute)\b|\b(?:daily|weekly|hourly|monthly|nightly)\b|\bweekdays?\b|\bweekends?\b|\bonce\s+(?:a|an|per|every|each)\b|\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?\b|\brepeat(?:edly|ing)?\b|\bregularly\b/i;
+
+// Cadences the weekly branch / non-expressible-cadence guard handle (or
+// refuse) without any of the cue words above: a bare weekday run leading into
+// a time ("火・金の朝8時" — same adjacency rule as parseSchedule's weekly
+// branch), "週3回", "第2週", "biweekly".
+const RECURRENCE_CADENCE_RE =
+  /[日月火水木金土]曜?日?(?:\s*[・、，,と＆&]\s*[日月火水木金土]曜?日?)+(?=\s*(?:の|は|、|,)?\s*(?:朝|昼|夜|晩|夕|午前|午後)?\s*\d{1,2}\s*[:時])|週\s*[0-9０-９一二三四五六七]+\s*[回度]|第\s*[0-9０-９一二三四五六七八九十]+\s*(?:週|[日月火水木金土]曜)|biweekly|fortnightly/i;
+
+const EN_NUMBER_WORDS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+  ten: 10, eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, 'forty five': 45,
+  'forty-five': 45, forty: 40, fifty: 50, sixty: 60, ninety: 90,
+};
+const EN_REL_NUM_SRC =
+  '(\\d+(?:\\.\\d+)?|a\\s+couple(?:\\s+of)?|couple\\s+of|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty[- ]five|forty|fifty|sixty|ninety)';
+const EN_REL_UNIT_SRC = '(seconds?|secs?|minutes?|mins?|m|hours?|hrs?|hr|h)';
+const EN_REL_PATTERNS: RegExp[] = [
+  // "in 5 minutes" / "in an hour" / "after 10 min" / "in 2 hours and a half" / "in 5m"
+  new RegExp(
+    `\\b(?:in|after)\\s+(?:about\\s+|around\\s+|roughly\\s+|approximately\\s+|exactly\\s+|just\\s+|another\\s+)?${EN_REL_NUM_SRC}\\s*(?:more\\s+)?${EN_REL_UNIT_SRC}(\\s+and\\s+a\\s+half)?\\b(?:\\s+from\\s+now)?`,
+    'i',
+  ),
+  // "10 minutes from now" / "an hour later"
+  new RegExp(`\\b${EN_REL_NUM_SRC}\\s*${EN_REL_UNIT_SRC}(\\s+and\\s+a\\s+half)?\\s+(?:from\\s+now|later)\\b`, 'i'),
+];
+const EN_HALF_HOUR_RE = /\b(?:in|after)\s+(?:about\s+)?half\s+an?\s+hour\b(?:\s+from\s+now)?|\bhalf\s+an?\s+hour\s+(?:from\s+now|later)\b/i;
+const EN_QUARTER_HOUR_RE = /\b(?:in|after)\s+(?:a\s+)?quarter\s+(?:of\s+an?\s+)?hour\b/i;
+
+// JP numerals: ASCII / fullwidth digits or simple kanji (五 / 十 / 三十 / 四十五).
+const JP_NUM_SRC = '([0-9０-９]+|[一二三四五六七八九十]+)';
+const JP_REL_LEAD = '(?:あと|今から|いまから|これから)?\\s*';
+const JP_REL_TAIL = '\\s*(?:ほど|くらい|ぐらい)?\\s*(?:後|経ったら|たったら|したら|経って)(?:には|に|で)?';
+const JP_REL_HOURS_RE = new RegExp(`${JP_REL_LEAD}${JP_NUM_SRC}\\s*時間\\s*(?:${JP_NUM_SRC}\\s*分|(半))?${JP_REL_TAIL}`);
+const JP_REL_MINUTES_RE = new RegExp(`${JP_REL_LEAD}${JP_NUM_SRC}\\s*分${JP_REL_TAIL}`);
+const JP_REL_SECONDS_RE = new RegExp(`${JP_REL_LEAD}${JP_NUM_SRC}\\s*秒${JP_REL_TAIL}`);
+// "あと10分で" / "あと1時間半で"
+const JP_REL_ATO_RE = new RegExp(`あと\\s*${JP_NUM_SRC}\\s*(分|時間)(半)?\\s*(?:ほど|くらい|ぐらい)?\\s*(?:で|したら)(?:に)?`);
+
+const ONCE_MARKER_RES: RegExp[] = [
+  /\b(?:just|only)\s+once\b|\bonce\s+only\b|\b(?:just\s+)?one\s+time(?:\s+only)?\b|\ba\s+single\s+time\b|\bone-?(?:off|shot)\b/gi,
+  // Bare "once" only where it reads as a frequency adverb (clause end / before
+  // a time phrase) — never the conjunction "once you finish …", never "at once".
+  /\bonce\b(?=\s*(?:$|[,.!?]|at\b|in\b|today\b|tomorrow\b|tonight\b))/gi,
+  /[一1１]\s*[回度]\s*(?:だけ|きり|限り|のみ)|今回(?:だけ|限り)|単発で?|ワンショットで?|[一1１]\s*回(?:実行)?/g,
+];
+
+const EN_DAY_PATTERNS: Array<[RegExp, number | null]> = [
+  [/\b(?:the\s+)?day\s+after\s+tomorrow(?:\s+(?:morning|afternoon|evening|night))?\b/i, 2],
+  [/\btomorrow(?:\s+(?:morning|afternoon|evening|night))?\b/i, 1],
+  [/\b(?:later\s+)?today\b|\btonight\b|\bthis\s+(?:morning|afternoon|evening)\b/i, null],
+];
+const JP_DAY_PATTERNS: Array<[RegExp, number | null]> = [
+  [/(?:明後日|あさって)の?/, 2],
+  [/(?:明日|あした|あす)(?!\s*から)の?|明朝の?/, 1],
+  [/(?:今日|きょう|本日|今夜|今晩|今朝)の?/, null],
+];
+const PM_CONTEXT_RE = /\b(?:tonight|evening|afternoon|night)\b|今夜|今晩/i;
+
+function parseJpNumber(raw: string): number | null {
+  const ascii = raw.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+  if (/^\d+$/.test(ascii)) return parseInt(ascii, 10);
+  const digits: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (!/^[一二三四五六七八九十]+$/.test(raw)) return null;
+  const tenIdx = raw.indexOf('十');
+  if (tenIdx === -1) return raw.length === 1 ? digits[raw] : null;
+  const tensPart = raw.slice(0, tenIdx);
+  const onesPart = raw.slice(tenIdx + 1);
+  if (tensPart.length > 1 || onesPart.length > 1) return null;
+  const tens = tensPart ? digits[tensPart] : 1;
+  const ones = onesPart ? digits[onesPart] : 0;
+  if (tens === undefined || ones === undefined) return null;
+  return tens * 10 + ones;
+}
+
+function parseEnNumber(raw: string): number | null {
+  const s = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (/^\d/.test(s)) return parseFloat(s);
+  if (s.startsWith('a couple') || s.startsWith('couple')) return 2;
+  return EN_NUMBER_WORDS[s] ?? null;
+}
+
+function enUnitMs(unit: string): number {
+  const u = unit.toLowerCase();
+  if (u.startsWith('s')) return 1000;
+  if (u.startsWith('m')) return 60_000;
+  return 3_600_000;
+}
+
+interface SpanMatch {
+  ms: number;
+  start: number;
+  end: number;
+}
+
+/** Longest-standing max for a relative one-shot — anything further out is
+ *  almost certainly not a "run once later" request, so stay fail-closed. */
+const ONE_SHOT_MAX_RELATIVE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function matchRelativeDelay(text: string): SpanMatch | null {
+  const span = (m: RegExpMatchArray, ms: number): SpanMatch => ({
+    ms,
+    start: m.index ?? 0,
+    end: (m.index ?? 0) + m[0].length,
+  });
+  const half = text.match(EN_HALF_HOUR_RE);
+  if (half) return span(half, 30 * 60_000);
+  const quarter = text.match(EN_QUARTER_HOUR_RE);
+  if (quarter) return span(quarter, 15 * 60_000);
+  for (const re of EN_REL_PATTERNS) {
+    const m = text.match(re);
+    if (!m) continue;
+    const n = parseEnNumber(m[1]);
+    if (n === null || !(n > 0)) continue;
+    const unitMs = enUnitMs(m[2]);
+    // "in a second" is an idiom, not a schedule — seconds need a digit.
+    if (unitMs === 1000 && !/^\d/.test(m[1])) continue;
+    const extra = m[3] ? 0.5 : 0;
+    return span(m, Math.round((n + extra) * unitMs));
+  }
+  const jpHours = text.match(JP_REL_HOURS_RE);
+  if (jpHours) {
+    const h = parseJpNumber(jpHours[1]);
+    const mins = jpHours[2] ? parseJpNumber(jpHours[2]) : jpHours[3] ? 30 : 0;
+    if (h !== null && mins !== null && h + mins > 0) return span(jpHours, h * 3_600_000 + mins * 60_000);
+  }
+  const jpMinutes = text.match(JP_REL_MINUTES_RE);
+  if (jpMinutes) {
+    const n = parseJpNumber(jpMinutes[1]);
+    if (n !== null && n > 0) return span(jpMinutes, n * 60_000);
+  }
+  const jpSeconds = text.match(JP_REL_SECONDS_RE);
+  if (jpSeconds) {
+    const n = parseJpNumber(jpSeconds[1]);
+    if (n !== null && n > 0) return span(jpSeconds, n * 1000);
+  }
+  const ato = text.match(JP_REL_ATO_RE);
+  if (ato) {
+    const n = parseJpNumber(ato[1]);
+    if (n !== null && n > 0) {
+      const ms = ato[2] === '時間' ? n * 3_600_000 + (ato[3] ? 30 * 60_000 : 0) : n * 60_000;
+      return span(ato, ms);
+    }
+  }
+  return null;
+}
+
+interface TimeSpanMatch {
+  time: ParsedTime;
+  start: number;
+  end: number;
+  explicitMeridiem: boolean;
+}
+
+/** extractTime() with the matched span — same precedence (JP, EN "at", colon,
+ *  bare meridiem) and the same interpreters, so the two can never disagree
+ *  about what time a phrase means. The span also swallows a trailing JP
+ *  particle (に / には / で) so stripping it leaves no dangling に. */
+function findTimeMatch(text: string): TimeSpanMatch | null {
+  const withSpan = (m: RegExpMatchArray, time: ParsedTime | null, explicitMeridiem: boolean): TimeSpanMatch | null => {
+    if (!time) return null;
+    const start = m.index ?? 0;
+    let end = start + m[0].length;
+    const tail = text.slice(end).match(/^\s*(?:には|に|で)/);
+    if (tail) end += tail[0].length;
+    return { time, start, end, explicitMeridiem };
+  };
+  const jp = text.match(/(午前|午後|朝|夜|夕方|晩|深夜|昼)?\s*(\d{1,2})\s*時\s*(半|(\d{1,2})\s*分)?/);
+  if (jp) {
+    const r = withSpan(jp, interpretJpMatch(jp), !!jp[1]);
+    if (r) return r;
+  }
+  const at = text.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  const colon = at ? null : text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
+  const m = at || colon;
+  if (m) return withSpan(m, interpretEnHourMinuteMatch(m), !!m[3]);
+  const meridiemOnly = text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
+  if (meridiemOnly) return withSpan(meridiemOnly, interpretEnMeridiemOnlyMatch(meridiemOnly), true);
+  return null;
+}
+
+export interface OneShotDetection {
+  /** Draft-stage sentinel: '@in <ms>' or '@at H:MM[ +N]'. */
+  schedule: string;
+  suggestedTime?: ParsedTime;
+  /** Bare clock time with no once-marker / day word (see ScheduleResult.oneShotImplicit). */
+  implicit: boolean;
+  strip: Array<[number, number]>;
+}
+
+/** Detect a one-shot request (see the section comment above). Pure; null when
+ *  the utterance carries no one-shot timing or any recurrence cue. */
+export function detectOneShotSchedule(text: string): OneShotDetection | null {
+  if (RECURRENCE_CUE_RE.test(text) || RECURRENCE_CADENCE_RE.test(text)) return null;
+  // "明日から8時に" / "starting tomorrow at 8" = a START anchor for a recurring
+  // schedule, never a one-time run.
+  if (START_NOT_BEFORE_PATTERNS.some(([re]) => re.test(text))) return null;
+
+  const strip: Array<[number, number]> = [];
+  let hasOnceMarker = false;
+  for (const re of ONCE_MARKER_RES) {
+    for (const m of text.matchAll(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`))) {
+      hasOnceMarker = true;
+      strip.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+    }
+  }
+
+  const rel = matchRelativeDelay(text);
+  if (rel) {
+    if (rel.ms <= 0 || rel.ms > ONE_SHOT_MAX_RELATIVE_MS) return null;
+    strip.push([rel.start, rel.end]);
+    return { schedule: encodeRelativeOneShot(rel.ms), implicit: false, strip };
+  }
+
+  const tm = findTimeMatch(text);
+  if (!tm) return null;
+  strip.push([tm.start, tm.end]);
+
+  let dayOffset: number | null = null;
+  let hasDayWord = false;
+  for (const [re, offset] of [...EN_DAY_PATTERNS, ...JP_DAY_PATTERNS]) {
+    const m = text.match(re);
+    if (!m) continue;
+    hasDayWord = true;
+    strip.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+    if (offset !== null && (dayOffset === null || offset > dayOffset)) dayOffset = offset;
+  }
+
+  let { hour } = tm.time;
+  const { minute } = tm.time;
+  if (!tm.explicitMeridiem && hour < 12 && PM_CONTEXT_RE.test(text)) hour += 12;
+
+  return {
+    schedule: encodeAtOneShot(hour, minute, dayOffset),
+    suggestedTime: { hour, minute },
+    implicit: !hasOnceMarker && !hasDayWord,
+    strip,
+  };
+}
+
+/** Remove the [start,end) spans (overlaps merged) and tidy the leftover
+ *  punctuation/particles so "In 5 minutes, first …" → "first …" and
+ *  "今日の14時55分にニュースをまとめて" → "ニュースをまとめて". */
+function removeSpans(text: string, spans: Array<[number, number]>): string {
+  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of sorted) {
+    if (end <= cursor) continue;
+    out += text.slice(cursor, Math.max(cursor, start)) + ' ';
+    cursor = Math.max(cursor, end);
+  }
+  out += text.slice(cursor);
+  return out
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\s+([,.!?、。])/g, '$1')
+    .replace(/([,、])\s*[,、]+/g, '$1')
+    .replace(/^[\s,、。.]*(?:には|に|で)?[\s,、]*/, '')
+    .replace(/[\s,、]+$/, '')
+    .trim();
+}
+
+function oneShotLocale(text: string): 'en' | 'ja' {
+  return /[぀-ヿ一-鿿]/.test(text) ? 'ja' : 'en';
 }
 
 /** Parse the schedule, constrained to the whitelisted cron shapes. */
@@ -520,6 +814,22 @@ export function parseSchedule(text: string): ScheduleResult {
     /\s(?:right\s+now|right\s+away|immediately|asap)\s*[.!?]?\s*$/i.test(text)
   ) {
     return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
+  }
+
+  // ── 0d. One-shot at a future time ("in 5 minutes" / "5分後に" / "at 14:55" /
+  // "明日の朝8時" / "一回だけ14時に") — see detectOneShotSchedule. Skipped
+  // whenever the utterance carries ANY recurrence cue, so every recurring
+  // branch below is reached exactly as before for those. ──
+  const oneShot = detectOneShotSchedule(text);
+  if (oneShot) {
+    return {
+      schedule: oneShot.schedule,
+      confident: true,
+      label: formatOneShotLabel(oneShot.schedule, oneShotLocale(text), Date.now()) ?? oneShot.schedule,
+      suggestedTime: oneShot.suggestedTime,
+      oneShotImplicit: oneShot.implicit || undefined,
+      oneShotStrip: oneShot.strip,
+    };
   }
 
   // ── 1. Every-N-minutes interval → `*/N * * * *` (N must be 1..59) ──
@@ -1688,6 +1998,15 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
   // Keep it simple and faithful: strip a leading schedule clause when we recognised
   // one, otherwise pass the utterance through. Codex/LLM handles the rest.
   let s = text.trim();
+  // One-shot timing ("In 5 minutes, …" / "…を5分後に" / "today at 14:55") was
+  // located precisely by detectOneShotSchedule on this same trimmed text, so
+  // remove exactly those spans (anywhere in the sentence) — a leading delay
+  // clause would otherwise be read as a preamble and swallow step 1 of an
+  // explicit "first … then … finally" chain.
+  if (schedule.confident && schedule.oneShotStrip && schedule.oneShotStrip.length > 0) {
+    const stripped = removeSpans(s, schedule.oneShotStrip);
+    if (stripped) s = stripped;
+  }
   if (schedule.confident) {
     s = s
       // Start-date-anchor clause ("来週あたりから" / "来月から" / "25日から" /
@@ -2102,6 +2421,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       memory: detectMemory(rawText),
       actionCaveat: presetActionCaveat,
       scheduleAssumed: presetSched.assumedTimeOfDay || undefined,
+      oneShotImplicit: (presetSched.confident && presetSched.oneShotImplicit) || undefined,
       // 2026-07-24 fuzz-sweep gap 3: 'once' (run-now sentinel, see
       // parseSchedule's branch 0/0b doc comment) has no future "don't fire
       // before" concept at all — an immediate run fires immediately,
@@ -2114,7 +2434,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       // line on a schedule that has no next-fire date to compute. Clearing
       // it is a narrowing-only change: every other schedule shape is
       // completely unaffected.
-      startNotBefore: schedule === 'once' ? undefined : startNotBefore || undefined,
+      startNotBefore: schedule === 'once' || isOneShotSchedule(schedule) ? undefined : startNotBefore || undefined,
       rawText,
     };
   }
@@ -2253,7 +2573,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   const orchestrationSteps = detectedSteps ? detectApiCallSteps(detectedSteps) : undefined;
 
   return {
-    name: deriveName(rawText),
+    name: deriveName(sched.oneShotStrip ? removeSpans(rawText, sched.oneShotStrip) || rawText : rawText),
     prompt,
     orchestrationSteps,
     schedule: sched.schedule,
@@ -2265,6 +2585,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     suggestedFrequency: sched.suggestedFrequency,
     suggestedDowList: sched.suggestedDowList,
     scheduleAssumed: sched.assumedTimeOfDay || undefined,
+    oneShotImplicit: sched.oneShotImplicit || undefined,
     action,
     actions,
     tool: suggestion.tool,
@@ -2278,7 +2599,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     // concept, and leaving startNotBefore populated risks a nonsensical
     // next-fire-line in lib/agent-plan-summary.ts (decodeCron('once') isn't a
     // real cron shape). Narrowing-only: every other schedule shape unaffected.
-    startNotBefore: sched.schedule === 'once' ? undefined : startNotBefore || undefined,
+    startNotBefore: sched.schedule === 'once' || isOneShotSchedule(sched.schedule) ? undefined : startNotBefore || undefined,
     rawText,
   };
 }

@@ -106,6 +106,7 @@ import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { tFor, useTranslation } from '@/lib/i18n';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
+import { formatOneShotCountdown, formatOneShotWhen, oneShotAtMs, resolveOneShotSchedule } from '@/lib/agent-oneshot';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
@@ -751,7 +752,16 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (confirmedMsg?.agentCardState === 'confirmed') {
               const noticeLocale = detectMessageLocale(draft.rawText ?? draft.prompt);
               notifyWidgetAgentRegistered(
-                { name: draft.name, scheduleLabel: draft.scheduleLabel },
+                {
+                  name: draft.name,
+                  // Localize from the schedule itself — draft.scheduleLabel is
+                  // the parser's legacy JP-only label ("毎日 14:55"), which
+                  // leaked into EN notifications.
+                  scheduleLabel:
+                    draft.schedule && draft.schedule !== 'once'
+                      ? humanizeCronSchedule(draft.schedule, noticeLocale)
+                      : draft.scheduleLabel,
+                },
                 noticeLocale,
               ).catch((notifyErr) => {
                 logWarn('AIPaneDispatch', `widget registration notification failed: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
@@ -3884,7 +3894,15 @@ export function useAIPaneDispatch(paneIdRaw: string) {
   // instead of starting an independent duplicate registration. See
   // inFlightConfirmDrafts's doc comment above for the on-device evidence.
   const confirmAgentDraftInner = useCallback(
-    async (messageId: string, confirmed: ConfirmedAgentDraft) => {
+    async (messageId: string, confirmedInput: ConfirmedAgentDraft) => {
+      // One-shot ("in 5 minutes" / "at 14:55", lib/agent-oneshot.ts): resolve
+      // the draft-stage sentinel to its absolute '@once <epochMs>' NOW — the
+      // moment the user confirmed — so the relative delay counts from the OK
+      // and the registered notice shows the same instant that gets armed.
+      const confirmed: ConfirmedAgentDraft = {
+        ...confirmedInput,
+        schedule: resolveOneShotSchedule(confirmedInput.schedule, Date.now()),
+      };
       const paneId = resolveAiPaneStoreKey(paneIdRaw);
       const store = useAIPaneStore.getState();
       // 2026-07-23 (justRegisteredAgent correction window): snapshot the
@@ -4297,16 +4315,27 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // whether this call is even reached and whether the store call
           // itself throws (an exception here would otherwise vanish into the
           // outer catch with no trace of having gotten this far).
-          const registeredContent = tFor(
-            noticeLocale,
-            'agentplan.registered_notice',
-            {
-              name: created.name,
-              scheduleDescription,
-              autonomousSuffix: confirmed.autonomous ? ' · autonomous' : '',
-              correctionHint,
-            },
-          );
+          // One-shot: "will run once, today 12:05 (in 5 min)" — the absolute
+          // instant that was just armed, never a recurring-style phrasing.
+          const createdOneShotAt = oneShotAtMs(created.schedule);
+          const registeredContent = createdOneShotAt !== null
+            ? tFor(noticeLocale, 'agentplan.registered_notice_oneshot', {
+                name: created.name,
+                when: formatOneShotWhen(createdOneShotAt, Date.now(), noticeLocale),
+                countdown: formatOneShotCountdown(createdOneShotAt, Date.now(), noticeLocale),
+                autonomousSuffix: confirmed.autonomous ? ' · autonomous' : '',
+                correctionHint,
+              })
+            : tFor(
+                noticeLocale,
+                'agentplan.registered_notice',
+                {
+                  name: created.name,
+                  scheduleDescription,
+                  autonomousSuffix: confirmed.autonomous ? ' · autonomous' : '',
+                  correctionHint,
+                },
+              );
           logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron calling updateMessage(content) for ${created.id} / message ${messageId}`);
           const registeredMessageId = updateOrFallback({
             agentCardState: 'confirmed',

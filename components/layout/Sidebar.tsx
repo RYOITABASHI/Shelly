@@ -96,7 +96,8 @@ import { selectThreadAgent, findLeafIdForAgent } from '@/lib/agent-thread-select
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { postAgentRunStartedNotice, postLatestAgentRunToCompanion } from '@/lib/agent-companion-notice';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
-import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeCronSchedule } from '@/lib/agent-plan-summary';
+import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeAgentSchedule } from '@/lib/agent-plan-summary';
+import { oneShotState } from '@/lib/agent-oneshot';
 
 // Collapsed icon-rail width. 2026-10-06 Fold6 feedback: 48dp read as too
 // wide next to the pane grid; 38dp still fits a 20dp icon with ~9dp side
@@ -1094,12 +1095,17 @@ export function Sidebar() {
     } catch {
       memoryNotes = [];
     }
+    // One-shot lifecycle (lib/agent-oneshot.ts): pending / done / missed.
+    // Done & missed one-shots are retired (enabled=false), so the "next run"
+    // and "missed run" lines below naturally skip them; a still-pending one
+    // shows its single fire time as "next run".
+    const oneShot = oneShotState(agent, Date.now());
     const meta = [
-      agent.schedule || t('sidebar.agent_manual'),
+      humanizeAgentSchedule(agent, locale) ?? t('sidebar.agent_manual'),
       agent.action?.type ?? 'draft',
       toolChoiceToLabel(agent.tool),
       agent.autonomous ? t('sidebar.agent_autonomous') : null,
-      agent.enabled ? null : t('sidebar.agent_paused'),
+      agent.enabled || oneShot === 'done' || oneShot === 'missed' ? null : t('sidebar.agent_paused'),
       agentApprovalLabel(agent),
     ].filter(Boolean).join(' · ');
     // Phase 4: when the agent is multi-step, show the planned chain; and if the
@@ -1137,7 +1143,7 @@ export function Sidebar() {
     // agentRunOpenPath: shared with the completion notices; for a multi-step
     // run the aggregate log now carries the final step's savedPath too.
     const savedPath: string | undefined = agentRunOpenPath(lastLog);
-    if (agent.schedule && agent.enabled) {
+    if (agent.schedule && agent.enabled && (oneShot === null || oneShot === 'pending')) {
       relLines.push(`${t('sidebar.agent_next_run')}: ${formatWhen(nextTriggerMs(agent.schedule, agent.startNotBefore))}`);
     }
     if (lastLog) {
@@ -1264,7 +1270,7 @@ export function Sidebar() {
         : []),
     ];
     setAgentDetailData({ agentName: agent.name, sections, buttons });
-  }, [t, handleRunScheduledAgent, handleTogglePause, openMemoryWorkbench, agentApprovalLabel, openAgentRunsPane, openAgentThread]);
+  }, [t, locale, handleRunScheduledAgent, handleTogglePause, openMemoryWorkbench, agentApprovalLabel, openAgentRunsPane, openAgentThread]);
 
   const persistAgentUpdate = React.useCallback(async (agent: Agent, partial: Partial<Agent>) => {
     const updated = { ...agent, ...partial };
@@ -1678,7 +1684,7 @@ export function Sidebar() {
                       {agent.name || ''}
                     </Text>
                     <Text style={styles.taskMeta} numberOfLines={1}>
-                      {agent.autonomous ? '⛓ ' : ''}{agent.schedule ? humanizeCronSchedule(agent.schedule, locale) : t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'} · {agentApprovalLabel(agent)}
+                      {agent.autonomous ? '⛓ ' : ''}{humanizeAgentSchedule(agent, locale) ?? t('sidebar.agent_manual')} · {agent.action?.type ?? 'draft'} · {agentApprovalLabel(agent)}
                     </Text>
                   </Pressable>
                   {/* 2026-08-10 bug-2 fix (docs/superpowers/DEFERRED.md, code-audit

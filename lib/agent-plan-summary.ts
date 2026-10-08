@@ -35,6 +35,13 @@ import { toolChoiceToLabel } from './agent-tool-router';
 import { normalizeStep, planParallelGroups } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
 import { t, tFor, type Locale } from './i18n';
+import {
+  formatOneShotLabel,
+  oneShotState,
+  parseOneShotSchedule,
+  resolveOneShotAt,
+  type OneShotAgentLike,
+} from './agent-oneshot';
 import { detectMessageLocale } from './agent-slot-fill';
 // Type-only: erased at compile time, so importing from the .tsx component this
 // pure module otherwise has nothing to do with never pulls React/RN into its
@@ -87,7 +94,15 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
   // (lib/widget-agent-registration.ts) never checked actionCaveat at all, so
   // a caveat-bearing draft could register with zero interactive confirmation
   // AND zero mention of the caveat in the post-hoc notification.
-  return draft.scheduleAssumed === true || draft.llmExtracted === true || !!draft.actionCaveat;
+  // oneShotImplicit (2026-10-08): a bare clock time ("14:55に…") read as a
+  // ONE-TIME run rather than daily is an interpretation of the same class as
+  // scheduleAssumed — the user must see it once before it registers.
+  return (
+    draft.scheduleAssumed === true ||
+    draft.llmExtracted === true ||
+    !!draft.actionCaveat ||
+    draft.oneShotImplicit === true
+  );
 }
 
 /**
@@ -191,7 +206,11 @@ export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
 }
 
 /** Humanize a persisted cron using the exact phrasing shared with the confirm card. */
-export function humanizeCronSchedule(schedule: string, locale: Locale): string {
+export function humanizeCronSchedule(schedule: string, locale: Locale, now: number = Date.now()): string {
+  // One-shot ('@in' / '@at' / '@once' sentinel, lib/agent-oneshot.ts):
+  // "Once · today 14:55 (in 5 min)" / "1回 · 今日 14:55（5分後）".
+  const oneShotLabel = formatOneShotLabel(schedule, locale, now);
+  if (oneShotLabel !== null) return oneShotLabel;
   const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
   const decoded = decodeCron(schedule);
   return scheduleHuman(
@@ -206,6 +225,23 @@ export function humanizeCronSchedule(schedule: string, locale: Locale): string {
       ? decoded.hourList.split(',').map((h) => parseInt(h, 10)).filter((n) => !Number.isNaN(n))
       : [],
   );
+}
+
+/**
+ * Schedule label for a REGISTERED agent: like humanizeCronSchedule, but a
+ * one-shot reflects its lifecycle ("Done · ran once (today 14:55)" /
+ * "Missed · was due …") instead of a stale countdown. Used by the Sidebar row
+ * and the agent detail popup.
+ */
+export function humanizeAgentSchedule(
+  agent: OneShotAgentLike,
+  locale: Locale,
+  now: number = Date.now(),
+): string | null {
+  if (!agent.schedule) return null;
+  const state = oneShotState(agent, now);
+  if (state !== null) return formatOneShotLabel(agent.schedule, locale, now, state);
+  return humanizeCronSchedule(agent.schedule, locale, now);
 }
 
 function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
@@ -399,6 +435,24 @@ export function summarizeAgentDraftAsText(
   const lines: string[] = [];
   lines.push(markLine(tl('agentplan.summary_name', { name: draft.name }), 'name', changedFields));
   lines.push(markLine(tl('agentplan.summary_schedule', { schedule: scheduleText(draft, locale) }), 'schedule', changedFields));
+
+  // One-shot ('@in' / '@at', lib/agent-oneshot.ts): the schedule line above
+  // already shows the absolute time + countdown; add only what the user could
+  // otherwise misread — a relative delay counts from the confirm, an
+  // already-past clock time moved to tomorrow, and a bare time read as
+  // one-time instead of daily.
+  const oneShotSpec = parseOneShotSchedule(draft.schedule);
+  if (oneShotSpec && oneShotSpec.kind !== 'once') {
+    if (oneShotSpec.kind === 'in') {
+      lines.push(tl('agentplan.oneshot_relative_note'));
+    } else {
+      const resolved = resolveOneShotAt(draft.schedule, Date.now());
+      if (resolved?.rolledToTomorrow) {
+        lines.push(tl('agentplan.oneshot_rolled_note', { time: fmtTime({ hour: oneShotSpec.hour, minute: oneShotSpec.minute }) }));
+      }
+    }
+    if (draft.oneShotImplicit) lines.push(tl('agentplan.oneshot_implicit_note'));
+  }
 
   // Deferred-start ("来週あたりから毎朝…"): declare the "don't fire before"
   // anchor right next to the schedule line it modifies, whenever it's still
