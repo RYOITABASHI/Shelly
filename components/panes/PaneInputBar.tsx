@@ -72,6 +72,8 @@ const COMPOSER_FONT_SIZE = 11;
 const COMPOSER_LINE_HEIGHT = 15;
 const COMPOSER_MAX_LINES = 6;
 const COMPOSER_VERTICAL_PADDING = 4;
+const SUBMIT_DEDUPE_MS = 500;
+const NEWLINE = '\n';
 const COMPOSER_MAX_HEIGHT = COMPOSER_LINE_HEIGHT * COMPOSER_MAX_LINES + COMPOSER_VERTICAL_PADDING * 2;
 
 export default function PaneInputBar({
@@ -166,12 +168,70 @@ export default function PaneInputBar({
   }, [text]);
 
   const hasAttachment = Boolean(attachmentPreview);
+  // Single-flight submit. On Android a MULTILINE EditText with
+  // submitBehavior="submit" runs RN's OnEditorActionListener twice for one
+  // Enter press: TextView.doKeyDown calls it on ENTER key-down (IME_NULL)
+  // and, because that returned true (enterDown=true), TextView.onKeyUp calls
+  // it again on key-up. ReactEditText.onKeyUp only swallows the key-up for
+  // single-line fields, so the multiline composer (1b05b965e) got two
+  // onSubmitEditing events ~7ms apart (build 2495, logcat: two
+  // "Dispatching to agent" lines) — both before the setText('') re-render,
+  // so the stale `text` closure submitted the same message twice and the
+  // second dispatch aborted the first. Read the draft from textRef, clear it
+  // synchronously, and drop a repeat of the same (or empty) submit inside
+  // SUBMIT_DEDUPE_MS so an attachment-only send can't double either.
+  const lastSubmitRef = useRef<{ text: string; at: number } | null>(null);
   const handleSubmit = useCallback(() => {
-    const trimmed = text.trim();
+    const trimmed = textRef.current.trim();
+    const now = Date.now();
+    const last = lastSubmitRef.current;
+    if (last && now - last.at < SUBMIT_DEDUPE_MS && (!trimmed || trimmed === last.text)) {
+      logInfo('PaneInputBar', 'duplicate submit suppressed');
+      return;
+    }
     if (!trimmed && !hasAttachment) return;
-    onSubmit(trimmed);
+    lastSubmitRef.current = { text: trimmed, at: now };
+    textRef.current = '';
     setText('');
-  }, [text, onSubmit, hasAttachment]);
+    onSubmit(trimmed);
+  }, [onSubmit, hasAttachment]);
+
+  // Some IMEs deliver Enter in a multiline field as a committed newline instead
+  // of an editor action. A change that is exactly one newline inserted into
+  // the previous draft is treated as Enter (send, no stray newline); pasted
+  // or quoted multi-line text arrives as a larger change and stays as-is.
+  const handleChangeText = useCallback((next: string) => {
+    const prev = textRef.current;
+    // A late native echo of the just-sent draft (+ the Enter newline) that
+    // lands after we cleared it must not resurrect the message.
+    const last = lastSubmitRef.current;
+    if (
+      !prev &&
+      last &&
+      last.text &&
+      Date.now() - last.at < SUBMIT_DEDUPE_MS &&
+      next.trim() === last.text
+    ) {
+      textRef.current = '';
+      setText('');
+      return;
+    }
+    if (isMultiline && next.length === prev.length + 1) {
+      const sel = selectionRef.current;
+      const at = Math.min(Math.max(sel.start, 0), prev.length);
+      const candidates = [at, prev.length];
+      for (const i of candidates) {
+        if (next[i] === NEWLINE && next.slice(0, i) + next.slice(i + 1) === prev) {
+          textRef.current = prev;
+          setText(prev);
+          handleSubmit();
+          return;
+        }
+      }
+    }
+    textRef.current = next;
+    setText(next);
+  }, [isMultiline, handleSubmit]);
 
   const canSend = text.trim().length > 0 || hasAttachment;
 
@@ -197,7 +257,7 @@ export default function PaneInputBar({
           ref={inputRef}
           style={[styles.input, isMultiline && styles.inputMultiline, { color: themeColors.foreground }]}
           value={text}
-          onChangeText={setText}
+          onChangeText={handleChangeText}
           onSelectionChange={(e) => {
             selectionRef.current = e.nativeEvent.selection;
           }}

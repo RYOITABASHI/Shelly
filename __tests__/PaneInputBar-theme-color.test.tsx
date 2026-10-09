@@ -54,3 +54,56 @@ describe('PaneInputBar multiline composer', () => {
     expect(screen.UNSAFE_getByType(TextInput).props.multiline).toBe(false);
   });
 });
+
+describe('PaneInputBar single-flight submit (Enter double-fire, build 2495)', () => {
+  const { fireEvent, act } = require('@testing-library/react-native');
+
+  it('submits once when Enter fires submitEditing twice + keyPress + a trailing newline', () => {
+    const onSubmit = jest.fn();
+    const screen = render(<PaneInputBar multiline onSubmit={onSubmit} />);
+    const input = () => screen.UNSAFE_getByType(TextInput);
+    fireEvent.changeText(input(), 'OK');
+    // Android multiline: OnEditorActionListener runs on ENTER key-down AND
+    // key-up, before React re-renders with the cleared draft.
+    act(() => {
+      input().props.onSubmitEditing({ nativeEvent: { text: 'OK' } });
+      input().props.onSubmitEditing({ nativeEvent: { text: 'OK' } });
+    });
+    fireEvent(input(), 'keyPress', { nativeEvent: { key: 'Enter' } });
+    fireEvent.changeText(input(), 'OK\n');
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith('OK');
+    expect(input().props.value).toBe('');
+  });
+
+  it('treats a single committed newline as Enter: sends without leaving a stray newline', () => {
+    const onSubmit = jest.fn();
+    const screen = render(<PaneInputBar multiline onSubmit={onSubmit} />);
+    const input = () => screen.UNSAFE_getByType(TextInput);
+    fireEvent.changeText(input(), 'hello');
+    fireEvent.changeText(input(), 'hello\n');
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith('hello');
+    expect(input().props.value).toBe('');
+  });
+
+  it('keeps pasted multi-line content multi-line (no submit)', () => {
+    const onSubmit = jest.fn();
+    const screen = render(<PaneInputBar multiline onSubmit={onSubmit} />);
+    const input = () => screen.UNSAFE_getByType(TextInput);
+    fireEvent.changeText(input(), '> line one\n> line two\n');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(input().props.value).toBe('> line one\n> line two\n');
+  });
+
+  it('still allows a different message right after a send', () => {
+    const onSubmit = jest.fn();
+    const screen = render(<PaneInputBar multiline onSubmit={onSubmit} />);
+    const input = () => screen.UNSAFE_getByType(TextInput);
+    fireEvent.changeText(input(), 'first');
+    act(() => input().props.onSubmitEditing());
+    fireEvent.changeText(input(), 'second');
+    act(() => input().props.onSubmitEditing());
+    expect(onSubmit.mock.calls).toEqual([['first'], ['second']]);
+  });
+});
