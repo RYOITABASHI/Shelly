@@ -53,6 +53,14 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### 出典付きブリーフィング（sourced briefings）— 3経路とも実装済み・実機未検証、意図的な残り2件 (P1/P2)
+
+2026-10-09 実機インシデント（build 2498、Perplexity→ローカルLLM要約→Markdownブリーフィングの3ステップでURLゼロ・捏造見出しのドラフトが保存された）の修正。`lib/agent-sources.ts` が共通コアで、attended TSチェーン（`lib/agent-manager.ts`）、unattended PlanSpec executor（`scripts/shelly-plan-executor.js`、生成ポート＋APKミラー、executor v6）、Codex bashチェーン（`codexOrchestrationChainCommand`、executorの `--sourcing-op` CLI経由）の3経路すべてに適用。生成スクリプトは v65。
+
+- **(P1) 実機未検証**: 再現発話「First, search the web with Perplexity for the top 3 on-device AI news stories. Then summarize them with the local LLM. Finally, write a markdown briefing.」（action=draft）を attended / スケジュール発火の両方で確認すること。期待: 3件以下の番号付き項目が各 `[n]` で終わり、末尾にプログラム生成の `## Sources`（リンク＋日付）。研究ステップがソースゼロなら「No verifiable sources」で失敗し何も保存しない。
+- **(P2) 意図的に見送り — 漢字の固有名詞チェック**: 要約の主張チェック（数値・ラテン文字の固有名詞・カタカナ連続）は、引用元テキストが日本語のときも漢字連続は照合しない（ノイズが多すぎて正しい言い換えまで書き換えてしまうため）。引用の妥当性＋同一文字種のトークン重なりで代替している。
+- **(P2) 既存挙動（今回は未修正）— attended 非ソースチェーンの最終ステップは常に `draft` で dispatch される**: `generateRunScript` の `actionType` は `isOrchestratedStep` のとき `'draft'` 固定（2026-08-04 の「notify の簡潔指示がステップ指示と衝突する」対策がシステムプロンプトと dispatch 種別を兼用しているため）。ソース付きチェーンは今回、モデル呼び出しなしの dispatch 実行（`isOrchestratedStep:false`）でエージェント本来の action を実行するよう修正済みだが、通常の attended チェーンで notify/webhook 等を設定しても最終ステップが draft 保存になる問題は残っている。システムプロンプト用の種別と dispatch 種別を分離して直すこと。
+
 ### One-shot（1回だけ・時刻指定）エージェントスケジュール — 実装済み・実機未検証 (P1)
 
 `lib/agent-oneshot.ts`。`Agent.schedule` に `@once <epochMs>` センチネルを保存（ドラフト段階は `@in <ms>` / `@at H:MM[ +N]`、登録確定時に絶対時刻へ解決）。AlarmManager は interval=0 + センチネルを cron extra として 1 回だけ arm、発火後は `TerminalSessionService` が `enabled=false` + `oneShotStatus:"done"` に退役（再 arm しない）。ブート時は未来→再 arm、10 分以内の遅延→catch-up 発火、それ以上→`missed` として退役（遅れて実行しない）。

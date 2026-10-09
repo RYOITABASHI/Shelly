@@ -371,4 +371,82 @@ describe('shelly-plan-executor.js — sourced 3-step briefing chain', () => {
     expect(requests[1].temperature).toBeUndefined();
     expect(readRunLog(home).status).toBe('success');
   }, 30000);
+
+  it('local chains with recency words are NOT sourced (review H2)', async () => {
+    handler = (_body, n) => ({ json: content(`RESULT#${n}`) });
+    const home = makeHome();
+    const planFile = writePlan(home, port);
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    plan.prompt = 'Collect the latest git commits, summarize them, write a changelog';
+    plan.steps.list = [{ instruction: 'Collect the latest git commits in my repo' }, { instruction: 'summarize them' }, { instruction: 'write a changelog' }];
+    fs.writeFileSync(planFile, JSON.stringify(plan));
+    const rc = await runExecutor(planFile, home);
+    expect(rc).toBe(0);
+    expect(requests).toHaveLength(3);
+    expect(requests[0].messages[0].content).not.toContain(TS.RESEARCH_REQUIREMENTS_MARKER);
+    expect(readRunLog(home).status).toBe('success');
+  }, 30000);
+
+  it('post-processes BEFORE any final action, not only draft/notify (review M1: webhook)', async () => {
+    handler = (_body, n) => {
+      if (n === 1) return { json: PERPLEXITY_RESPONSE };
+      if (n === 2) return { json: content('- **Google releases Gemma 3n for on-device AI** — model [1]') };
+      return { json: content(FABRICATED_FINAL) };
+    };
+    const home = makeHome();
+    const planFile = writePlan(home, port, 'webhook');
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    plan.action = { type: 'webhook', webhookUrl: 'https://hooks.example.invalid/x' };
+    fs.writeFileSync(planFile, JSON.stringify(plan));
+    await runExecutor(planFile, home);
+    const resultText = readResultFile(home);
+    expect(resultText).not.toMatch(/Neural LLM/);
+    expect(resultText).toContain('## Sources');
+    const audit = fs.readFileSync(path.join(home, `.shelly/agents/logs/${AGENT_ID}/plan-executor-audit.jsonl`), 'utf8');
+    expect(audit).toContain('"event":"sourcing_postprocess"');
+  }, 30000);
+});
+
+describe('--sourcing-op CLI (used by the Codex bash chain)', () => {
+  function tmp(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'sourcing-cli-'));
+  }
+  const RESEARCH_TEXT = [
+    '1. **Google releases Gemma 3n for on-device AI** — Google released Gemma 3n for phones. [1]',
+    '',
+    '## Sources',
+    '[1] Announcing Gemma 3n — https://blog.google/technology/developers/gemma-3n/ (2026-09-30)',
+  ].join('\n');
+
+  it('absorb → gate → evidence → enforce → finalize round-trip', () => {
+    const dir = tmp();
+    const state = path.join(dir, 'state.json');
+    const inFile = path.join(dir, 'in.md');
+    const out = path.join(dir, 'out.md');
+    expect(executor.runSourcingCli(['--sourcing-op', 'gate', '--state', state])).toBe(0);
+    fs.writeFileSync(inFile, RESEARCH_TEXT);
+    expect(executor.runSourcingCli(['--sourcing-op', 'absorb', '--state', state, '--in', inFile, '--out', out])).toBe(0);
+    expect(fs.readFileSync(out, 'utf8')).not.toContain('## Sources');
+    expect(executor.runSourcingCli(['--sourcing-op', 'gate', '--state', state])).toBe(0);
+    expect(executor.runSourcingCli(['--sourcing-op', 'evidence', '--state', state, '--mode', 'synthesis', '--out', out])).toBe(0);
+    expect(fs.readFileSync(out, 'utf8')).toContain('[1] Announcing Gemma 3n');
+    fs.writeFileSync(inFile, 'An uncited essay.');
+    expect(executor.runSourcingCli(['--sourcing-op', 'enforce', '--state', state, '--in', inFile])).toBe(0);
+    expect(fs.readFileSync(inFile, 'utf8')).toContain('**Google releases Gemma 3n for on-device AI**');
+    fs.writeFileSync(inFile, '- **Google releases Gemma 3n for on-device AI** — Google released Gemma 3n for phones. [1]');
+    expect(executor.runSourcingCli(['--sourcing-op', 'finalize', '--state', state, '--in', inFile])).toBe(0);
+    expect(fs.readFileSync(inFile, 'utf8')).toContain('## Sources');
+  });
+
+  it('gate reports no-sources (3) and finalize/fallback refuse without sources (4)', () => {
+    const dir = tmp();
+    const state = path.join(dir, 'state.json');
+    const inFile = path.join(dir, 'in.md');
+    fs.writeFileSync(inFile, 'no urls here');
+    executor.runSourcingCli(['--sourcing-op', 'absorb', '--state', state, '--in', inFile, '--out', path.join(dir, 'o')]);
+    expect(executor.runSourcingCli(['--sourcing-op', 'gate', '--state', state])).toBe(executor.SOURCING_CLI_EXIT.NO_SOURCES);
+    expect(executor.runSourcingCli(['--sourcing-op', 'finalize', '--state', state, '--in', inFile])).toBe(executor.SOURCING_CLI_EXIT.UNVERIFIABLE);
+    expect(executor.runSourcingCli(['--sourcing-op', 'fallback', '--state', state, '--out', path.join(dir, 'f')])).toBe(executor.SOURCING_CLI_EXIT.UNVERIFIABLE);
+    expect(executor.runSourcingCli(['--sourcing-op', 'bogus', '--state', state])).toBe(executor.SOURCING_CLI_EXIT.USAGE);
+  });
 });

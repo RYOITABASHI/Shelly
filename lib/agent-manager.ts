@@ -77,7 +77,9 @@ import {
 } from './agent-orchestration';
 import {
   NO_SOURCES_MESSAGE,
+  SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE,
   absorbResearchStep,
+  buildFallbackBriefing,
   createChainEvidence,
   detectRecency,
   enforceSourcedIntermediate,
@@ -86,7 +88,6 @@ import {
   localIsoDate,
   postProcessSourcedOutput,
   requestedItemCount,
-  requiresWebFacts,
   type StepEvidence,
 } from './agent-sources';
 import type { AgentRunStep } from '@/store/types';
@@ -716,6 +717,16 @@ type MaterializeRunOpts = {
   // is a no-op there) so generateRunScript can use generic 'draft'-style
   // content-generation guidance instead. Never set by any single-run caller.
   isOrchestratedStep?: boolean;
+  // Sourced briefings (2026-10-09): see generateRunScript's presetResultText /
+  // skipSuppressedDraftSave / stepResultToken doc comments. Set ONLY by
+  // runAgentOrchestratedBody (via runLadderAttempts) for a sourced chain.
+  presetResultText?: string;
+  skipSuppressedDraftSave?: boolean;
+  stepResultToken?: string;
+  // Sourced briefings (2026-10-09): see generateRunScript's
+  // sourcedFallbackText doc comment. runLadderAttempts forwards it to the
+  // LAST ladder attempt only, so the ladder still escalates first.
+  sourcedFallbackText?: string;
   // 2026-08-04 on-device finding, second half of the same incident:
   // runLadderAttempts already has a `routeTextOverride` (2026-08-03) that
   // makes resolveEscalationLadder judge TOOL ROUTING by a step's own
@@ -1925,12 +1936,31 @@ async function runLadderAttempts(
     /** See MaterializeRunOpts.isOrchestratedStep's doc comment. Set ONLY by
      *  runAgentOrchestratedBody, for every step (final and non-final alike). */
     isOrchestratedStep?: boolean;
+    /** See MaterializeRunOpts.presetResultText's doc comment. */
+    presetResultText?: string;
+    /** See MaterializeRunOpts.skipSuppressedDraftSave's doc comment. */
+    skipSuppressedDraftSave?: boolean;
+    /** See MaterializeRunOpts.stepResultToken's doc comment. */
+    stepResultToken?: string;
+    /** Sourced briefings (review M3): a summarize/write step of a sourced
+     *  chain restates untrusted web text, so it must never reach an
+     *  exec-capable tool. Drops cli (Codex) / auto candidates from the ladder
+     *  (falling back to the local LLM) and pins each attempt's tool. */
+    textOnly?: boolean;
+    /** Exactly one attempt, no escalation (the sourced dispatch run). */
+    singleAttempt?: boolean;
+    /** See MaterializeRunOpts.sourcedFallbackText's doc comment (last attempt only). */
+    sourcedFallbackText?: string;
     /** See MaterializeRunOpts.priorStepContent's doc comment. */
     priorStepContent?: string;
   } = {},
 ): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
-  const ladder = resolveEscalationLadder(runAgent, env, materializeOpts.routeTextOverride);
+  let ladder = resolveEscalationLadder(runAgent, env, materializeOpts.routeTextOverride);
+  if (materializeOpts.textOnly) {
+    const textTools = ladder.tools.filter((tool) => tool.type !== 'cli' && tool.type !== 'auto');
+    ladder = { ...ladder, noEscalation: false, tools: textTools.length ? textTools : [{ type: 'local' }] };
+  }
   let finalLog: AgentRunLog | undefined;
 
   for (let i = 0; i < ladder.tools.length; i++) {
@@ -1955,6 +1985,10 @@ async function runLadderAttempts(
       suppressAction: materializeOpts.suppressAction,
       routeTextOverride: materializeOpts.routeTextOverride,
       isOrchestratedStep: materializeOpts.isOrchestratedStep,
+      presetResultText: materializeOpts.presetResultText,
+      skipSuppressedDraftSave: materializeOpts.skipSuppressedDraftSave,
+      stepResultToken: materializeOpts.stepResultToken,
+      ...(isLast && materializeOpts.sourcedFallbackText ? { sourcedFallbackText: materializeOpts.sourcedFallbackText } : {}),
       priorStepContent: materializeOpts.priorStepContent,
       // round 2 TOCTOU fix: deliberately do NOT pass env.autonomousCloudConsent
       // (read once, before this loop started) as the BAKED script value. A
@@ -2039,7 +2073,7 @@ async function runLadderAttempts(
     const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
     finalLog = after.at(-1);
 
-    if (ladder.noEscalation || isLast) break;
+    if (ladder.noEscalation || isLast || materializeOpts.singleAttempt) break;
     // Stop on a real success OR a 'skipped' run: a skip means a concurrent run of
     // THIS agent holds the per-agent lock, so climbing to another tool would just
     // skip again — let the concurrent run produce the result. Only a genuine
@@ -2148,17 +2182,21 @@ async function runAgentOrchestratedBody(
   // final saved draft is post-processed (uncited/ungrounded/duplicate items
   // dropped, programmatic "## Sources"); zero sources stops the chain.
   const chainRequestText = [agent.prompt, ...steps.map((s) => s.instruction)].join('\n');
-  const sourcingActive = requiresWebFacts(chainRequestText);
+  // Scope (review H2): sourced only when a non-final step is WEB research
+  // (Perplexity-pinned, or an explicit un-vetoed web cue) — never on recency
+  // words alone ("latest git commits", 「最新のメモ」 stay local chains).
+  const researchFlags = steps.map(
+    (s, idx) => idx !== steps.length - 1 && !s.apiCall && isResearchStep(s.instruction, (s.tool ?? agent.tool)?.type),
+  );
+  const sourcingActive = researchFlags.some(Boolean);
   const sourcingToday = localIsoDate(new Date());
   const sourcingRecency = detectRecency(chainRequestText);
   const sourcingCount = requestedItemCount(chainRequestText);
   const evidence = createChainEvidence();
   let researchStepsDone = 0;
-  const stepIsResearch = (idx: number): boolean => {
-    if (!sourcingActive || idx === steps.length - 1 || steps[idx].apiCall) return false;
-    return isResearchStep(steps[idx].instruction, (steps[idx].tool ?? agent.tool)?.type);
-  };
-  if (sourcingActive) await readChainStepResult(runCommand, agentId); // discard a stale copy
+  const stepIsResearch = (idx: number): boolean => researchFlags[idx] === true;
+  // Per-chain-run nonce for the full step-result copy (review L).
+  const stepResultToken = Math.random().toString(36).slice(2, 12).replace(/[^a-z0-9]/g, '') || 'run';
   // Snapshot existing log files so we can remove the per-step logs this chain
   // writes and replace them with ONE aggregate (so the circuit breaker counts a
   // failed chain as one run, and the per-step detail survives a reload).
@@ -2239,6 +2277,11 @@ async function runAgentOrchestratedBody(
     const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
     const research = stepIsResearch(i);
     const synthesis = sourcingActive && !research && !step.apiCall && evidence.sources.length > 0;
+    // Sourced briefings (review M1): the FINAL step of a sourced chain
+    // generates with its action SUPPRESSED; the text is post-processed here
+    // and only then dispatched (draft save, notification, webhook, social
+    // post, …) by a model-free dispatch run carrying the verified text.
+    const deferFinalAction = isFinalStep && synthesis;
     const stepEvidence: StepEvidence | undefined = research
       ? { mode: 'research', today: sourcingToday, recency: sourcingRecency, count: sourcingCount }
       : synthesis
@@ -2281,7 +2324,7 @@ async function runAgentOrchestratedBody(
         { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
         stepStart - 5_000,
         {
-          suppressAction: !isFinalStep,
+          suppressAction: !isFinalStep || deferFinalAction,
           chainLockSeed,
           routeTextOverride: step.instruction,
           isOrchestratedStep: true,
@@ -2299,6 +2342,19 @@ async function runAgentOrchestratedBody(
           // the prior step's cited items, so the duplicate check is skipped
           // there (the prompt-echo/refusal checks still run).
           priorStepContent: synthesis ? undefined : contextResults.at(-1),
+          // Sourced briefings: no step of a sourced chain saves unverified
+          // text to the draft destination; each keeps its full result for
+          // this function to read back; a summarize/write step runs
+          // text-only (never Codex/CLI exec — its prompt quotes untrusted web
+          // text) and its last ladder attempt falls back to the
+          // deterministic sourced briefing instead of failing outright.
+          ...(sourcingActive ? { skipSuppressedDraftSave: true, stepResultToken } : {}),
+          ...(synthesis
+            ? {
+                textOnly: true,
+                sourcedFallbackText: buildFallbackBriefing(evidence, { maxItems: sourcingCount, title: `# Briefing — ${sourcingToday}` }),
+              }
+            : {}),
         },
       ));
     } catch (error) {
@@ -2319,7 +2375,7 @@ async function runAgentOrchestratedBody(
     // folds it to an 'unavailable' run that the circuit breaker EXCLUDES — so a
     // multi-step agent isn't auto-disabled by a transient web outage either.
     const status: AgentRunStep['status'] = log?.status ?? 'error';
-    records.push({
+    const record: AgentRunStep = {
       index: i,
       instruction: step.instruction,
       status,
@@ -2327,33 +2383,69 @@ async function runAgentOrchestratedBody(
       outputPreview: log?.outputPreview ?? '',
       routeDecision: log?.routeDecision,
       ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
-    });
-    if (isFinalStep && log) finalOutput = pickFinalStepOutput(log);
+    };
+    records.push(record);
+    if (isFinalStep && log && !deferFinalAction) finalOutput = pickFinalStepOutput(log);
     let carry = log?.outputPreview ?? '';
     if (status === 'success' && sourcingActive) {
       try {
-        carry = await applySourcing({
+        const outcome = await applySourcing({
           runCommand,
           agentId,
           evidence,
           research,
           synthesis,
-          isFinalStep,
+          deferFinalAction,
           preview: carry,
           count: sourcingCount,
           today: sourcingToday,
-          finalOutput,
-          record: records[records.length - 1],
+          stepResultToken,
+          dispatch: (presetResultText: string) =>
+            runLadderAttempts(
+              { ...stepAgent, tool: { type: 'local' } },
+              agentId,
+              runCommand,
+              { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
+              Date.now() - 5_000,
+              {
+                suppressAction: false,
+                chainLockSeed,
+                routeTextOverride: step.instruction,
+                // NOT an orchestrated content step: isOrchestratedStep would
+                // force the generic 'draft' dispatch type — the dispatch run
+                // must perform the agent's REAL action(s) with the verified text.
+                isOrchestratedStep: false,
+                presetResultText,
+                skipSuppressedDraftSave: true,
+                stepResultToken,
+                textOnly: true,
+                singleAttempt: true,
+              },
+            ).then((r) => r.finalLog),
         });
+        carry = outcome.carry;
         if (research) researchStepsDone += 1;
+        if (outcome.dispatchLog !== undefined) {
+          const dlog = outcome.dispatchLog;
+          finalOutput = pickFinalStepOutput(dlog);
+          record.status = dlog?.status ?? 'error';
+          record.outputPreview = dlog?.outputPreview ?? outcome.carry.replace(/\s+/g, ' ').trim().slice(0, 500);
+          record.durationMs = Date.now() - stepStart;
+        }
       } catch (error) {
-        logWarn('Sourcing', 'sourced-briefing post-processing failed', error);
+        // Fail closed (review H3): never leave an unverified briefing on disk
+        // or report success for it.
+        logWarn('Sourcing', 'sourced-briefing processing failed', error);
+        await removeSavedOutputs(runCommand, finalOutput);
+        finalOutput = {};
+        record.status = 'error';
+        record.outputPreview = `${SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE} (${error instanceof Error ? error.message.slice(0, 160) : 'processing failed'})`;
       }
     }
     narrate((n) => n.stepFinished(records[records.length - 1]), finalOutput.savedPath);
     // A transient step carries no usable result downstream, so it stops the chain
     // just like an error — only success feeds the next step's context.
-    if (status === 'success') priorResults.push(carry);
+    if (record.status === 'success') priorResults.push(carry);
     else priorFailed = true;
   }
 
@@ -2409,13 +2501,18 @@ async function runAgentOrchestratedBody(
 
 /** Path the per-step script copies its full (redacted) result to — see the
  *  isOrchestratedStep cleanup block in lib/agent-executor.ts's generateRunScript. */
-function chainStepResultPath(agentId: string): string {
-  return `${getHomePath()}/.shelly/tmp/agent-step-result-${agentId}.md`;
+function chainStepResultPath(agentId: string, token?: string): string {
+  const suffix = token && /^[a-z0-9]{1,32}$/.test(token) ? `-${token}` : '';
+  return `${getHomePath()}/.shelly/tmp/agent-step-result-${agentId}${suffix}.md`;
 }
 
 /** Read (and delete) the last chain step's full result; '' when absent. */
-async function readChainStepResult(runCommand: (cmd: string) => Promise<string>, agentId: string): Promise<string> {
-  const file = shellQuote(chainStepResultPath(agentId));
+async function readChainStepResult(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId: string,
+  token?: string,
+): Promise<string> {
+  const file = shellQuote(chainStepResultPath(agentId, token));
   try {
     const out = await runCommand(`cat ${file} 2>/dev/null; rm -f ${file}`);
     return typeof out === 'string' ? out : '';
@@ -2424,17 +2521,31 @@ async function readChainStepResult(runCommand: (cmd: string) => Promise<string>,
   }
 }
 
+/** Delete a saved draft (and its mirror) — fail-closed cleanup. Best-effort. */
+async function removeSavedOutputs(runCommand: (cmd: string) => Promise<string>, out: AgentRunOutputFields): Promise<void> {
+  const targets = [out.savedPath, out.savedPathMirror].filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+  if (!targets.length) return;
+  try {
+    await runCommand(targets.map((t) => `rm -f ${shellQuote(t)}`).join('\n'));
+  } catch {
+    // best-effort
+  }
+}
+
 /**
- * Sourced briefings, attended chain (2026-10-09): fold one successful step
- * into the chain evidence and return the text to carry to the next step.
- *  - research: sources parsed from the step's full result (extract_ai_content
- *    appends Perplexity's citations/search_results as "## Sources"), markers
- *    remapped onto chain ids, Sources block stripped from the carry;
- *  - intermediate summarize: uncited output replaced by the research-item
+ * Sourced briefings, attended chain (2026-10-09): fold one successful step of
+ * a sourced chain into the chain evidence and return what to carry forward.
+ *  - research: sources parsed from the step's FULL result (read back from the
+ *    per-run step-result copy — extract_ai_content appends Perplexity's
+ *    citations as "## Sources" in citations order), markers remapped onto
+ *    chain ids, Sources block stripped from the carry;
+ *  - intermediate summarize: unusable output replaced by the research-item
  *    template;
- *  - final step with a saved draft: the saved file (and its Obsidian mirror)
- *    is rewritten with the post-processed briefing — uncited / ungrounded /
- *    duplicate items dropped, citations renumbered, programmatic "## Sources".
+ *  - final step (its action was suppressed): post-process — drop uncited /
+ *    ungrounded / duplicate items, rewrite unsupported claims, renumber,
+ *    programmatic "## Sources" — then hand the verified text to `dispatch`,
+ *    which runs the agent's real action with it (no model call). An empty
+ *    result throws (the caller fails the step closed; nothing is saved).
  * Exported for unit tests only.
  */
 export async function applySourcing(args: {
@@ -2443,40 +2554,34 @@ export async function applySourcing(args: {
   evidence: ReturnType<typeof createChainEvidence>;
   research: boolean;
   synthesis: boolean;
-  isFinalStep: boolean;
+  deferFinalAction: boolean;
   preview: string;
   count?: number;
   today: string;
-  finalOutput: AgentRunOutputFields;
-  record?: AgentRunStep;
-}): Promise<string> {
-  const full = await readChainStepResult(args.runCommand, args.agentId);
+  stepResultToken?: string;
+  dispatch: (presetResultText: string) => Promise<AgentRunLog | undefined>;
+}): Promise<{ carry: string; dispatchLog?: AgentRunLog | undefined }> {
+  const full = await readChainStepResult(args.runCommand, args.agentId, args.stepResultToken);
   const text = full.trim() ? full : args.preview;
   if (args.research) {
-    return absorbResearchStep(args.evidence, text, extractSourcesFromText(text));
+    return { carry: absorbResearchStep(args.evidence, text, extractSourcesFromText(text)) };
   }
-  if (!args.synthesis) return text;
-  if (!args.isFinalStep) {
-    return enforceSourcedIntermediate(text, args.evidence, args.count) || text;
+  if (!args.synthesis) return { carry: text };
+  if (!args.deferFinalAction) {
+    return { carry: enforceSourcedIntermediate(text, args.evidence, args.count) || text };
   }
   const processed = postProcessSourcedOutput(text, args.evidence, {
     finalize: true,
     maxItems: args.count,
     fallbackTitle: `# Briefing — ${args.today}`,
   });
-  if (!processed.text) return text;
-  const targets = [args.finalOutput.savedPath, args.finalOutput.savedPathMirror].filter(
-    (p): p is string => typeof p === 'string' && p.trim().length > 0,
-  );
-  if (targets.length) {
-    await args.runCommand(`set -e\n${targets.map((p) => writeFileCommand(p, `${processed.text}\n`)).join('\n')}`);
-    if (args.record) args.record.outputPreview = processed.text.replace(/\s+/g, ' ').trim().slice(0, 500);
-  }
+  if (!processed.text.trim()) throw new Error('no verifiable items');
   logInfo(
     'Sourcing',
-    `final briefing: kept=${processed.keptItems} dropped=${processed.droppedItems} fallback=${processed.usedFallback} sources=${args.evidence.sources.length}`,
+    `final briefing: kept=${processed.keptItems} dropped=${processed.droppedItems} rewritten=${processed.rewrittenItems} fallback=${processed.usedFallback} sources=${args.evidence.sources.length}`,
   );
-  return processed.text;
+  const dispatchLog = await args.dispatch(processed.text);
+  return { carry: processed.text, dispatchLog };
 }
 
 /** List the agent's run-log file paths on disk (best-effort). */
