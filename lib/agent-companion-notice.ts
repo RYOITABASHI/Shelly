@@ -4,6 +4,7 @@ import type { AgentRunLog, ChatMessage } from '@/store/types';
 import { buildHandoffDigest, type HandoffTranslate } from '@/lib/agent-handoff';
 import { logInfo } from '@/lib/debug-logger';
 import { agentRunOpenPath } from '@/lib/agent-run-output';
+import { markdownToPlainPreview } from '@/lib/markdown-plain';
 
 export type AgentRunHistory = Record<string, AgentRunLog[]>;
 
@@ -16,7 +17,9 @@ export function buildAgentCompanionNotice(
   agentName: string,
   fallbackText: string,
 ): ChatMessage {
-  const preview = (log.outputPreview || '').trim();
+  // Run outputs are usually markdown documents; the notice bubble renders
+  // plain text, so flatten '#'/'###'/'**' etc. into one readable line.
+  const preview = markdownToPlainPreview(log.outputPreview || '');
   const icon = log.status === 'error' ? '❌' : log.status === 'skipped' ? '⏭️' : '✅';
   const resultLine = preview ? `${icon} ${preview}` : `${icon} ${fallbackText}`;
   const runIdentity = agentRunLogIdentity(log);

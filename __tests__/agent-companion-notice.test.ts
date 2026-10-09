@@ -145,3 +145,23 @@ describe('companion journal dormancy notice', () => {
     expect(messages[0].content).toBe('first call');
   });
 });
+
+describe('agent completion notice preview strips markdown', () => {
+  it('flattens headings/emphasis/bullets into one readable line', () => {
+    const { buildAgentCompanionNotice } = require('@/lib/agent-companion-notice');
+    const msg = buildAgentCompanionNotice(
+      {
+        agentId: 'news',
+        timestamp: 1,
+        status: 'success',
+        outputPreview: '# On-Device AI News Briefing\n\n### 1. **Gemma** ships\n- *fast* `code` [link](https://x.y)\n',
+        durationMs: 1,
+        toolUsed: 'test',
+      },
+      'News',
+      'Done.',
+    );
+    expect(msg.content).toBe('News: ✅ On-Device AI News Briefing 1. Gemma ships fast code link');
+    expect(msg.content).not.toMatch(/[#*`]/);
+  });
+});

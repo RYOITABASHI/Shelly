@@ -1,6 +1,7 @@
 import React, { memo, useCallback } from 'react';
-import { View, Text, StyleSheet, Linking } from 'react-native';
+import { View, Text, Linking } from 'react-native';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   content: string;
@@ -222,10 +223,12 @@ function MarkdownBlock({ content }: Props) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const TEXT = '#ECEDEE';
-const CODE_BG = C.border;
-
-const styles = StyleSheet.create({
+// Live-palette styles: rebuilt on every theme preset swap (the old
+// module-level '#ECEDEE' body ink was unreadable on light presets).
+const styles = createThemedStyles(() => {
+  const TEXT = C.text1;
+  const CODE_BG = C.bgSurface;
+  return {
   container: {
     gap: 2,
   },
@@ -283,6 +286,8 @@ const styles = StyleSheet.create({
   },
   codeBlock: {
     backgroundColor: CODE_BG,
+    borderWidth: 1,
+    borderColor: C.border,
     borderRadius: 6,
     padding: 10,
     marginVertical: 4,
@@ -295,6 +300,7 @@ const styles = StyleSheet.create({
   blank: {
     height: 6,
   },
+  } as const;
 });
 
 export default memo(MarkdownBlock);
