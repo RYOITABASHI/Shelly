@@ -3,15 +3,17 @@ import { View, Text, Pressable, StyleSheet, ScrollView } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { parseDiff, type DiffLineType } from '@/lib/diff-parser';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
+import { withAlpha } from '@/lib/theme-utils';
 
 
-const LINE_COLORS: Record<DiffLineType, { bg: string; fg: string }> = {
-  added:   { bg: '#4ADE8010', fg: '#86EFAC' },
-  removed: { bg: '#F8717110', fg: '#FCA5A5' },
-  context: { bg: 'transparent', fg: '#9BA1A6' },
-  header:  { bg: '#1E1E1E', fg: '#60A5FA' },
-  hunk:    { bg: '#1A1A2E', fg: '#A78BFA' },
-};
+const getLineColors = (): Record<DiffLineType, { bg: string; fg: string }> => ({
+  added:   { bg: withAlpha(C.accentGreen, 0.06), fg: C.addText },
+  removed: { bg: withAlpha(C.errorText, 0.06), fg: C.errorText },
+  context: { bg: 'transparent', fg: C.text2 },
+  header:  { bg: C.bgSurface, fg: C.accentBlue },
+  hunk:    { bg: withAlpha(C.accentPurple, 0.08), fg: C.accentPurple },
+});
 
 type Props = {
   output: string;
@@ -64,13 +66,13 @@ function DiffViewerInner({ output, aiSummary }: Props) {
             <MaterialIcons
               name={expandedFiles.has(fi) ? 'expand-more' : 'chevron-right'}
               size={16}
-              color="#6B7280"
+              color={C.text2}
             />
             <Text style={styles.filename} numberOfLines={1}>{file.filename}</Text>
             <Text style={styles.fileStats}>
-              <Text style={{ color: '#86EFAC' }}>+{file.additions}</Text>
+              <Text style={{ color: C.addText }}>+{file.additions}</Text>
               {' '}
-              <Text style={{ color: '#FCA5A5' }}>-{file.deletions}</Text>
+              <Text style={{ color: C.errorText }}>-{file.deletions}</Text>
             </Text>
           </Pressable>
 
@@ -79,7 +81,7 @@ function DiffViewerInner({ output, aiSummary }: Props) {
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               <View style={styles.diffLines}>
                 {file.lines.map((line, li) => {
-                  const colors = LINE_COLORS[line.type];
+                  const colors = getLineColors()[line.type];
                   return (
                     <View key={`${li}-${line.type}`} style={[styles.diffLine, { backgroundColor: colors.bg }]}>
                       <Text style={styles.lineMarker}>
@@ -104,12 +106,12 @@ function DiffViewerInner({ output, aiSummary }: Props) {
 
 export const DiffViewer = memo(DiffViewerInner);
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     borderRadius: 6,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#2A2A2A',
+    borderColor: C.border,
     marginTop: 4,
   },
   summaryBar: {
@@ -118,47 +120,47 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    backgroundColor: '#111',
+    backgroundColor: C.bgSurface,
     borderBottomWidth: 1,
-    borderBottomColor: '#1E1E1E',
+    borderBottomColor: C.bgSurface,
   },
   summaryText: {
-    color: '#9BA1A6',
+    color: C.text2,
     fontSize: 11,
     flex: 1,
   },
   addCount: {
-    color: '#86EFAC',
+    color: C.addText,
     fontSize: 11,
     fontWeight: '600',
   },
   delCount: {
-    color: '#FCA5A5',
+    color: C.errorText,
     fontSize: 11,
     fontWeight: '600',
   },
   aiSummary: {
     paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: '#1A1A2E',
+    backgroundColor: withAlpha(C.accentPurple, 0.08),
     borderBottomWidth: 1,
-    borderBottomColor: '#A78BFA22',
+    borderBottomColor: withAlpha(C.accentPurple, 0.13),
   },
   aiLabel: {
-    color: '#A78BFA',
+    color: C.accentPurple,
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.5,
     marginBottom: 4,
   },
   aiText: {
-    color: '#C4B5FD',
+    color: C.accentPurple,
     fontSize: 11,
     lineHeight: 16,
   },
   fileBlock: {
     borderBottomWidth: 1,
-    borderBottomColor: '#1E1E1E',
+    borderBottomColor: C.bgSurface,
   },
   fileHeader: {
     flexDirection: 'row',
@@ -166,10 +168,10 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 8,
     paddingVertical: 6,
-    backgroundColor: '#141414',
+    backgroundColor: C.bgSurface,
   },
   filename: {
-    color: '#60A5FA',
+    color: C.accentBlue,
     fontSize: 12,
     flex: 1,
   },
@@ -194,4 +196,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     flex: 1,
   },
-});
+}));

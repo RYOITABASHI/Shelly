@@ -820,7 +820,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
                       setActiveBookmarkIdx(0);
                     }}
                   >
-                    <MaterialIcons name="close" size={10} color="#6B7280" />
+                    <MaterialIcons name="close" size={10} color={C.text2} />
                   </TouchableOpacity>
                 )}
               </TouchableOpacity>

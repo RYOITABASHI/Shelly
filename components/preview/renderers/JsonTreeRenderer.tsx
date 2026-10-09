@@ -2,6 +2,7 @@ import React, { memo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { usePaneContentBackground } from '@/hooks/use-panel-background';
+import { colors as C } from '@/theme.config';
 
 type Props = { content: string };
 
@@ -9,10 +10,10 @@ const JsonNode = memo(function JsonNode({ keyName, value, depth }: { keyName?: s
   const { colors } = useTheme();
   const [expanded, setExpanded] = useState(depth < 2);
 
-  if (value === null) return <JsonLeaf keyName={keyName} value="null" color="#D946EF" />;
-  if (typeof value === 'boolean') return <JsonLeaf keyName={keyName} value={String(value)} color="#D946EF" />;
-  if (typeof value === 'number') return <JsonLeaf keyName={keyName} value={String(value)} color="#D946EF" />;
-  if (typeof value === 'string') return <JsonLeaf keyName={keyName} value={`"${value}"`} color="#F59E0B" />;
+  if (value === null) return <JsonLeaf keyName={keyName} value="null" color={C.accentPurple} />;
+  if (typeof value === 'boolean') return <JsonLeaf keyName={keyName} value={String(value)} color={C.accentPurple} />;
+  if (typeof value === 'number') return <JsonLeaf keyName={keyName} value={String(value)} color={C.accentPurple} />;
+  if (typeof value === 'string') return <JsonLeaf keyName={keyName} value={`"${value}"`} color={C.accentAmber} />;
 
   const isArray = Array.isArray(value);
   const entries = isArray ? value.map((v: any, i: number) => [String(i), v]) : Object.entries(value);
@@ -22,7 +23,7 @@ const JsonNode = memo(function JsonNode({ keyName, value, depth }: { keyName?: s
     <View style={{ paddingLeft: depth > 0 ? 16 : 0 }}>
       <TouchableOpacity onPress={() => setExpanded(!expanded)} activeOpacity={0.7}>
         <Text style={[styles.nodeText, { color: colors.foreground }]}>
-          {keyName ? <Text style={{ color: '#3B82F6' }}>{`"${keyName}": `}</Text> : null}
+          {keyName ? <Text style={{ color: C.accentBlue }}>{`"${keyName}": `}</Text> : null}
           <Text style={{ color: colors.muted }}>{expanded ? bracket[0] : `${bracket[0]}...${bracket[1]} (${entries.length})`}</Text>
         </Text>
       </TouchableOpacity>
@@ -37,7 +38,7 @@ const JsonNode = memo(function JsonNode({ keyName, value, depth }: { keyName?: s
 function JsonLeaf({ keyName, value, color }: { keyName?: string; value: string; color: string }) {
   return (
     <Text style={styles.nodeText}>
-      {keyName ? <Text style={{ color: '#3B82F6' }}>{`"${keyName}": `}</Text> : null}
+      {keyName ? <Text style={{ color: C.accentBlue }}>{`"${keyName}": `}</Text> : null}
       <Text style={{ color }}>{value}</Text>
     </Text>
   );
@@ -45,7 +46,7 @@ function JsonLeaf({ keyName, value, color }: { keyName?: string; value: string; 
 
 export const JsonTreeRenderer = memo(function JsonTreeRenderer({ content }: Props) {
   const { colors } = useTheme();
-  const bg = usePaneContentBackground('#0D0D0D');
+  const bg = usePaneContentBackground(C.bgSurface);
   let parsed: any;
   try {
     parsed = JSON.parse(content);

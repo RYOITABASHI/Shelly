@@ -21,6 +21,9 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { getStagedEdit, acceptStagedDiff } from '@/lib/ai-edit';
 import { playSound } from '@/lib/sounds';
+import { colors as C } from '@/theme.config';
+import { withAlpha } from '@/lib/theme-utils';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -163,26 +166,27 @@ function hunkToDiffBlock(hunk: DiffHunk): string {
 
 // Mock-faithful diff palette — matches the green / red glow the AI pane's
 // code proposals use in the design mock.
-const LINE_COLORS: Record<DiffLine['type'], { bg: string; fg: string }> = {
-  add:     { bg: 'rgba(34,197,94,0.12)',  fg: '#4ADE80' }, // green neon
-  remove:  { bg: 'rgba(239,68,68,0.12)',  fg: '#F87171' }, // red neon
-  header:  { bg: 'rgba(96,165,250,0.10)', fg: '#60A5FA' }, // blue header
-  context: { bg: '#111111',                fg: '#9CA3AF' }, // muted context
-};
+// Read at render time (live preset palette), not at module load.
+const getLineColors = (): Record<DiffLine['type'], { bg: string; fg: string }> => ({
+  add:     { bg: C.addBg,                          fg: C.addText }, // green neon
+  remove:  { bg: C.errorBg,                        fg: C.errorText }, // red neon
+  header:  { bg: withAlpha(C.accentBlue, 0.1),     fg: C.accentBlue }, // blue header
+  context: { bg: C.bgSurface,                      fg: C.text2 }, // muted context
+});
 
 // ─── DiffLineRow ──────────────────────────────────────────────────────────────
 
 // Per-type text glow so + / - lines read as neon in the mock.
-const LINE_GLOWS: Record<DiffLine['type'], { textShadowColor: string; textShadowRadius: number }> = {
-  add:     { textShadowColor: 'rgba(74,222,128,0.55)', textShadowRadius: 5 },
-  remove:  { textShadowColor: 'rgba(248,113,113,0.55)', textShadowRadius: 5 },
-  header:  { textShadowColor: 'rgba(96,165,250,0.5)',  textShadowRadius: 4 },
-  context: { textShadowColor: 'transparent',            textShadowRadius: 0 },
-};
+const getLineGlows = (): Record<DiffLine['type'], { textShadowColor: string; textShadowRadius: number }> => ({
+  add:     { textShadowColor: withAlpha(C.addText, 0.55),    textShadowRadius: 5 },
+  remove:  { textShadowColor: withAlpha(C.errorText, 0.55),  textShadowRadius: 5 },
+  header:  { textShadowColor: withAlpha(C.accentBlue, 0.5),  textShadowRadius: 4 },
+  context: { textShadowColor: 'transparent',                 textShadowRadius: 0 },
+});
 
 const DiffLineRow = React.memo(function DiffLineRow({ line }: { line: DiffLine }) {
-  const { bg, fg } = LINE_COLORS[line.type];
-  const glow = LINE_GLOWS[line.type];
+  const { bg, fg } = getLineColors()[line.type];
+  const glow = getLineGlows()[line.type];
   const gutterNum = line.lineNum != null ? String(line.lineNum).padStart(3, ' ') : '   ';
 
   return (
@@ -208,7 +212,7 @@ const DiffLineRow = React.memo(function DiffLineRow({ line }: { line: DiffLine }
   );
 });
 
-const rowStyles = StyleSheet.create({
+const rowStyles = createThemedStyles(() => ({
   row: {
     flexDirection: 'row',
     paddingVertical: 1,
@@ -217,7 +221,7 @@ const rowStyles = StyleSheet.create({
   gutter: {
     width: 30,
     fontSize: 11,
-    color: '#555',
+    color: C.text3,
     marginRight: 6,
     textAlign: 'right',
   },
@@ -226,7 +230,7 @@ const rowStyles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
   },
-});
+}));
 
 // ─── HunkBlock ────────────────────────────────────────────────────────────────
 
@@ -258,8 +262,8 @@ const HunkBlock = React.memo(function HunkBlock({
     <View style={hunkStyles.container}>
       {/* Header line */}
       {hunk.header ? (
-        <View style={[hunkStyles.headerRow, { backgroundColor: LINE_COLORS.header.bg }]}>
-          <Text style={[hunkStyles.headerText, { color: LINE_COLORS.header.fg }]} selectable>
+        <View style={[hunkStyles.headerRow, { backgroundColor: getLineColors().header.bg }]}>
+          <Text style={[hunkStyles.headerText, { color: getLineColors().header.fg }]} selectable>
             {hunk.header}
           </Text>
         </View>
@@ -301,13 +305,13 @@ const HunkBlock = React.memo(function HunkBlock({
   );
 });
 
-const hunkStyles = StyleSheet.create({
+const hunkStyles = createThemedStyles(() => ({
   container: {
     marginVertical: 4,
     borderRadius: 6,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#333',
+    borderColor: C.border,
   },
   headerRow: {
     paddingVertical: 3,
@@ -322,7 +326,7 @@ const hunkStyles = StyleSheet.create({
     justifyContent: 'flex-end',
     gap: 6,
     padding: 6,
-    backgroundColor: '#181818',
+    backgroundColor: C.bgSurface,
   },
   pill: {
     borderRadius: 12,
@@ -335,42 +339,42 @@ const hunkStyles = StyleSheet.create({
     fontWeight: '700',
   },
   acceptPill: {
-    backgroundColor: '#1a3a1a',
-    borderColor: '#4a8a4a',
+    backgroundColor: C.addBg,
+    borderColor: C.diffAddBorder,
   },
   acceptPillText: {
-    color: '#7ec87e',
+    color: C.addText,
   },
   rejectPill: {
-    backgroundColor: '#2a1a1a',
-    borderColor: '#6a3a3a',
+    backgroundColor: C.errorBg,
+    borderColor: C.diffRemoveBorder,
   },
   rejectPillText: {
-    color: '#e07070',
+    color: C.errorText,
   },
   acceptedPill: {
-    backgroundColor: '#1a3a1a',
-    borderColor: '#4a8a4a',
+    backgroundColor: C.addBg,
+    borderColor: C.diffAddBorder,
   },
   acceptedPillText: {
-    color: '#7ec87e',
+    color: C.addText,
   },
   rejectedContainer: {
     marginVertical: 2,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    backgroundColor: '#1e1e1e',
+    backgroundColor: C.bgSurface,
     borderRadius: 4,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#333',
+    borderColor: C.border,
     alignSelf: 'flex-start',
   },
   rejectedBadge: {
     fontSize: 10,
-    color: '#666',
+    color: C.text3,
     letterSpacing: 0.5,
   },
-});
+}));
 
 // ─── DiffBlock ────────────────────────────────────────────────────────────────
 
@@ -503,7 +507,7 @@ function DiffBlock({ initialHunks, rawBlock }: DiffBlockProps) {
   );
 }
 
-const diffBlockStyles = StyleSheet.create({
+const diffBlockStyles = createThemedStyles(() => ({
   container: {
     marginVertical: 4,
   },
@@ -511,37 +515,37 @@ const diffBlockStyles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#1c1c1c',
+    backgroundColor: C.bgSurface,
     borderRadius: 6,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#333',
+    borderColor: C.border,
     paddingHorizontal: 10,
     paddingVertical: 5,
     marginBottom: 4,
   },
   stickyLabel: {
     fontSize: 11,
-    color: '#888',
+    color: C.text2,
   },
   stickyActions: {
     flexDirection: 'row',
     gap: 6,
   },
   acceptAllPill: {
-    backgroundColor: '#1a3a1a',
-    borderColor: '#4a8a4a',
+    backgroundColor: C.addBg,
+    borderColor: C.diffAddBorder,
   },
   acceptAllText: {
-    color: '#7ec87e',
+    color: C.addText,
   },
   rejectAllPill: {
-    backgroundColor: '#2a1a1a',
-    borderColor: '#6a3a3a',
+    backgroundColor: C.errorBg,
+    borderColor: C.diffRemoveBorder,
   },
   rejectAllText: {
-    color: '#e07070',
+    color: C.errorText,
   },
-});
+}));
 
 // ─── InlineDiff (public API) ───────────────────────────────────────────────────
 
@@ -579,16 +583,16 @@ export default function InlineDiff({ content }: InlineDiffProps) {
   );
 }
 
-const inlineStyles = StyleSheet.create({
+const inlineStyles = createThemedStyles(() => ({
   root: {
     flex: 1,
   },
   plainText: {
     fontSize: 13,
-    color: '#cccccc',
+    color: C.text1,
     lineHeight: 18,
   },
-});
+}));
 
 // ─── Utility export ──────────────────────────────────────────────────────────
 

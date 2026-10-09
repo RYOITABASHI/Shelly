@@ -8,6 +8,8 @@ import { useNativeExec } from '@/hooks/use-native-exec';
 import { CodeRenderer } from '@/components/preview/renderers/CodeRenderer';
 import { detectLanguage, shellEscape, MAX_PREVIEW_SIZE } from '@/lib/preview-file-detector';
 import { stageAiEdit } from '@/lib/ai-edit';
+import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 export const CodeTab = memo(function CodeTab() {
   const { colors } = useTheme();
@@ -168,16 +170,16 @@ export const CodeTab = memo(function CodeTab() {
   );
 });
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: { flex: 1 },
   toolbar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderBottomWidth: 1, gap: 8 },
   fileChip: { flex: 1, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
   filePath: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 11 },
   toggleBtn: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4 },
   toggleText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, fontWeight: '600' },
-  fileList: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#222' },
+  fileList: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: C.border },
   fileTab: { paddingHorizontal: 10, paddingVertical: 6 },
   fileTabText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 10 },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 8 },
   emptyText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 13 },
-});
+}));

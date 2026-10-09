@@ -262,7 +262,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       borderRadius: 14,
       borderWidth: 1,
       borderColor: c.success,
-      backgroundColor: (c.success ?? '#22c55e') + '14',
+      backgroundColor: (c.success) + '14',
     },
     createdText: {
       color: c.foreground,

@@ -14,6 +14,7 @@ import * as Haptics from 'expo-haptics';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { AiBlock as AiBlockType } from '@/store/types';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { getTargetColor } from '@/lib/input-router';
 import { speakText, stopSpeaking } from '@/lib/tts';
 import { GitGuideBlock } from './GitGuideBlock';
@@ -267,7 +268,7 @@ export const AiBlock = memo(function AiBlock({ block, onSelectTool, onRunCommand
                 style={[
                   styles.actionBtn,
                   { backgroundColor: colors.surface, borderColor: colors.border },
-                  isSpeaking && { borderColor: '#FF6B6B', backgroundColor: withAlpha(colors.error, 0.1) },
+                  isSpeaking && { borderColor: C.errorText, backgroundColor: withAlpha(colors.error, 0.1) },
                 ]}
                 onPress={handleSpeak}
                 activeOpacity={0.7}
@@ -275,9 +276,9 @@ export const AiBlock = memo(function AiBlock({ block, onSelectTool, onRunCommand
                 <MaterialIcons
                   name={isSpeaking ? 'stop' : 'volume-up'}
                   size={14}
-                  color={isSpeaking ? '#FF6B6B' : colors.muted}
+                  color={isSpeaking ? C.errorText : colors.muted}
                 />
-                <Text style={[styles.actionBtnText, { color: colors.muted }, isSpeaking && { color: '#FF6B6B' }]}>
+                <Text style={[styles.actionBtnText, { color: colors.muted }, isSpeaking && { color: C.errorText }]}>
                   {isSpeaking ? t('ai.stop') : t('ai.speak')}
                 </Text>
               </TouchableOpacity>
@@ -289,28 +290,28 @@ export const AiBlock = memo(function AiBlock({ block, onSelectTool, onRunCommand
         {block.error && !block.isStreaming && (
           <View style={[styles.errorBox, { borderTopColor: colors.surface }]}>
             <View style={styles.errorRow}>
-              <MaterialIcons name="error-outline" size={14} color="#F87171" />
+              <MaterialIcons name="error-outline" size={14} color={C.errorText} />
               <Text style={styles.errorText} numberOfLines={2}>{block.error}</Text>
             </View>
             <View style={styles.errorActions}>
               {onRetry && (
                 <TouchableOpacity
-                  style={[styles.errorBtn, { borderColor: '#FBBF2440' }]}
+                  style={[styles.errorBtn, { borderColor: withAlpha(C.accentAmber, 0.25) }]}
                   onPress={() => onRetry(block.input)}
                   activeOpacity={0.7}
                 >
-                  <MaterialIcons name="refresh" size={14} color="#FBBF24" />
+                  <MaterialIcons name="refresh" size={14} color={C.accentAmber} />
                   <Text style={[styles.errorBtnText, { color: C.warning }]}>{t('ai.retry') || 'Retry'}</Text>
                 </TouchableOpacity>
               )}
               {onAskOther && (
                 <TouchableOpacity
-                  style={[styles.errorBtn, { borderColor: '#60A5FA40' }]}
+                  style={[styles.errorBtn, { borderColor: withAlpha(C.accentBlue, 0.25) }]}
                   onPress={() => onAskOther(block.input)}
                   activeOpacity={0.7}
                 >
-                  <MaterialIcons name="swap-horiz" size={14} color="#60A5FA" />
-                  <Text style={[styles.errorBtnText, { color: '#60A5FA' }]}>{t('ai.ask_other') || 'Ask another AI'}</Text>
+                  <MaterialIcons name="swap-horiz" size={14} color={C.accentBlue} />
+                  <Text style={[styles.errorBtnText, { color: C.accentBlue }]}>{t('ai.ask_other') || 'Ask another AI'}</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -326,7 +327,7 @@ export const AiBlock = memo(function AiBlock({ block, onSelectTool, onRunCommand
   );
 });
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   bubbleRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -488,7 +489,7 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 11,
-    color: '#F87171',
+    color: C.errorText,
     flex: 1,
   },
   errorActions: {
@@ -514,4 +515,4 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
     paddingTop: 2,
   },
-});
+}));

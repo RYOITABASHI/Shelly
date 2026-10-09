@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native'
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
+import { colors as C } from '@/theme.config';
 
 type Props = { filePath: string };
 
@@ -11,7 +12,7 @@ export const PdfRenderer = memo(function PdfRenderer({ filePath }: Props) {
 
   return (
     <View style={styles.container}>
-      <MaterialIcons name="picture-as-pdf" size={48} color="#EF4444" />
+      <MaterialIcons name="picture-as-pdf" size={48} color={C.errorText} />
       <Text style={[styles.text, { color: colors.foreground }]}>PDF Preview</Text>
       <Text style={[styles.subtext, { color: colors.muted }]}>{filePath.split('/').pop()}</Text>
       <TouchableOpacity

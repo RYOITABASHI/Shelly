@@ -3,6 +3,7 @@ import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { tokenizeLine, TOKEN_COLORS } from '@/lib/syntax-highlight';
 import { usePaneContentBackground } from '@/hooks/use-panel-background';
+import { colors as C } from '@/theme.config';
 
 type Props = {
   content: string;
@@ -12,7 +13,7 @@ type Props = {
 
 export const CodeRenderer = memo(function CodeRenderer({ content, language, maxLines }: Props) {
   const { colors } = useTheme();
-  const bg = usePaneContentBackground('#0D0D0D');
+  const bg = usePaneContentBackground(C.bgSurface);
   const lines = content.split('\n');
   const displayLines = maxLines ? lines.slice(0, maxLines) : lines;
   const truncated = maxLines && lines.length > maxLines;

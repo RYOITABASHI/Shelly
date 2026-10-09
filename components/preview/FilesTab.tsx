@@ -19,6 +19,8 @@ import { CsvTableRenderer } from '@/components/preview/renderers/CsvTableRendere
 import { PdfRenderer } from '@/components/preview/renderers/PdfRenderer';
 import { PlainTextRenderer } from '@/components/preview/renderers/PlainTextRenderer';
 import { HtmlRenderer } from '@/components/preview/renderers/HtmlRenderer';
+import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 export const FilesTab = memo(function FilesTab() {
   const { colors } = useTheme();
@@ -163,7 +165,7 @@ export const FilesTab = memo(function FilesTab() {
               <MaterialIcons
                 name={item.isDirectory ? 'folder' : 'insert-drive-file'}
                 size={16}
-                color={item.isDirectory ? '#F59E0B' : colors.muted}
+                color={item.isDirectory ? C.accentAmber : colors.muted}
               />
               <Text style={[styles.fileName, { color: colors.foreground }]} numberOfLines={1}>{item.name}</Text>
               {!item.isDirectory && (
@@ -192,16 +194,16 @@ function renderFileContent(file: FileEntry, content: string, colors: any) {
   }
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  backRow: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderBottomWidth: 1, borderBottomColor: '#222' },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderBottomWidth: 1, borderBottomColor: C.border },
   // Use JetBrainsMono for any path / filename display: Silkscreen only ships
   // uppercase glyphs, so POSIX paths render as /DATA/DATA/... even though
   // the filesystem is lowercase (bug #52).
   backText: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, fontWeight: '600' },
   breadcrumb: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 10, flex: 1 },
-  fileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#111' },
+  fileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.border },
   fileName: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, flex: 1 },
   fileSize: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 10 },
-});
+}));

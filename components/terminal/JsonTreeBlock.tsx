@@ -1,6 +1,7 @@
 import React, { memo, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { colors as TC } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   json: string;
@@ -8,18 +9,19 @@ type Props = {
 
 // ─── Colors ───────────────────────────────────────────────────────────────────
 
+// Live palette getters (read at style-build time, rebuilt per theme version).
 const C = {
-  key: '#56B6C2',
-  string: '#E5C07B',
-  number: TC.accent,
-  boolean: '#C678DD',
-  null: '#666666',
-  bracket: '#ABB2BF',
-  comma: '#ABB2BF',
-  colon: '#ABB2BF',
-  plain: '#ECEDEE',
-  bg: '#0E0E0F',
-  toggleBg: TC.border,
+  get key() { return TC.accentBlue; },
+  get string() { return TC.accentAmber; },
+  get number() { return TC.accent; },
+  get boolean() { return TC.accentPurple; },
+  get null() { return TC.text3; },
+  get bracket() { return TC.text2; },
+  get comma() { return TC.text2; },
+  get colon() { return TC.text2; },
+  get plain() { return TC.text1; },
+  get bg() { return TC.bgSurface; },
+  get toggleBg() { return TC.border; },
 };
 
 const INDENT_PX = 12;
@@ -246,7 +248,7 @@ function JsonTreeBlock({ json }: Props) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     backgroundColor: C.bg,
     borderRadius: 6,
@@ -328,6 +330,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
-});
+}));
 
 export default memo(JsonTreeBlock);

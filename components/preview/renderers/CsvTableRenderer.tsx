@@ -2,6 +2,8 @@ import React, { memo } from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
+import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = { content: string; delimiter?: string };
 
@@ -35,9 +37,9 @@ export const CsvTableRenderer = memo(function CsvTableRenderer({ content, delimi
   );
 });
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: { flex: 1 },
-  row: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#222' },
+  row: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: C.border },
   cell: { fontFamily: 'JetBrainsMono_400Regular', fontSize: 11, padding: 6, minWidth: 80, maxWidth: 200 },
   headerCell: { fontWeight: '600', fontSize: 11 },
-});
+}));

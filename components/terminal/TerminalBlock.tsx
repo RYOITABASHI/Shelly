@@ -43,6 +43,7 @@ import { SPRING_CONFIGS, TIMING_CONFIGS } from '@/hooks/use-motion';
 import { playSound } from '@/lib/sounds';
 import { parseAnsi, hasAnsiCodes } from '@/lib/ansi-parser';
 import { colors as C, fonts as F } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 export { getOutputColor };
 
@@ -548,7 +549,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
 
           <View style={[
             styles.outputBubble,
-            { backgroundColor: '#0F1318', borderColor: withAlpha(colors.command, 0.12) },
+            { backgroundColor: C.bgSurface, borderColor: withAlpha(colors.command, 0.12) },
           ]}>
             {/* Output header bar */}
             <View style={[styles.outputHeader, { borderBottomColor: withAlpha(colors.command, 0.08) }]}>
@@ -812,7 +813,7 @@ function TerminalBlockComponent({ block, fontSize, lineHeight, onRerun, onCancel
           <View style={[styles.interpretAvatar, { backgroundColor: withAlpha(colors.interpretPurple, 0.12), borderColor: withAlpha(colors.interpretPurple, 0.25) }]}>
             <Text style={[styles.interpretAvatarText, { color: colors.interpretPurple }]}>AI</Text>
           </View>
-          <View style={[styles.interpretContainer, { borderColor: withAlpha(colors.interpretPurple, 0.2), backgroundColor: '#1A1A2E' }]}>
+          <View style={[styles.interpretContainer, { borderColor: withAlpha(colors.interpretPurple, 0.2), backgroundColor: withAlpha(C.accentPurple, 0.08) }]}>
             <View style={[styles.interpretHeader, { borderBottomColor: withAlpha(colors.interpretPurple, 0.13), backgroundColor: withAlpha(colors.interpretPurple, 0.06) }]}>
               <Text style={[styles.interpretLabel, { color: colors.interpretPurple }]}>
                 {block.isInterpreting ? '\u25CE AI\u901A\u8A33\u4E2D...' : (block.interpretType === 'error' ? '\u2717 \u30A8\u30E9\u30FC\u89E3\u6790' : '\u2713 \u89E3\u8AAC')}
@@ -854,7 +855,7 @@ export const TerminalBlock = memo(TerminalBlockComponent);
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   // ─── User command bubble (right-aligned) ───────────────────────────────────
   userBubbleRow: {
     flexDirection: 'row',
@@ -1183,11 +1184,11 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   suggestCommand: {
-    color: '#86EFAC',
+    color: C.addText,
     fontSize: 12,
     fontFamily: F.family,
   },
-});
+}));
 
 const menuStyles = StyleSheet.create({
   overlay: {

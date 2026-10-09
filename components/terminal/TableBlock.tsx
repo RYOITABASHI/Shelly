@@ -1,6 +1,7 @@
 import React, { memo, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   output: string;
@@ -154,7 +155,7 @@ const TableBlock = memo(function TableBlock({ output }: Props) {
   );
 });
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   scrollView: {
     marginVertical: 8,
     marginHorizontal: 8,
@@ -164,7 +165,7 @@ const styles = StyleSheet.create({
   },
   table: {
     borderWidth: 1,
-    borderColor: '#2A2A2A',
+    borderColor: C.border,
     borderRadius: 6,
     overflow: 'hidden',
   },
@@ -172,7 +173,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     backgroundColor: C.border,
     borderBottomWidth: 1,
-    borderBottomColor: '#2A2A2A',
+    borderBottomColor: C.border,
   },
   dataRow: {
     flexDirection: 'row',
@@ -188,11 +189,11 @@ const styles = StyleSheet.create({
   },
   cellBorderRight: {
     borderRightWidth: 1,
-    borderRightColor: '#2A2A2A',
+    borderRightColor: C.border,
   },
   cellText: {
     fontSize: 12,
-    color: '#BBBBBB',
+    color: C.text1,
     textAlign: 'left',
   },
   headerText: {
@@ -202,7 +203,7 @@ const styles = StyleSheet.create({
   numberCell: {
     textAlign: 'right',
   },
-});
+}));
 
 export { TableBlock };
 export default TableBlock;

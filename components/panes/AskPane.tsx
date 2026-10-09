@@ -63,10 +63,10 @@ function statusLabel(status: AskStatus): string {
 
 function statusColor(status: AskStatus, theme: ReturnType<typeof useTheme>): string {
   switch (status) {
-    case 'AVAILABLE': return theme.colors.success ?? '#22c55e';
-    case 'PLANNED': return theme.colors.warning ?? '#facc15';
-    case 'NOT_AVAILABLE': return theme.colors.error ?? '#ef4444';
-    default: return theme.colors.muted ?? '#666';
+    case 'AVAILABLE': return theme.colors.success;
+    case 'PLANNED': return theme.colors.warning;
+    case 'NOT_AVAILABLE': return theme.colors.error;
+    default: return theme.colors.muted;
   }
 }
 
@@ -161,7 +161,7 @@ export default function AskPane() {
     >
       <View style={[styles.root, { backgroundColor: paneBg }]}>
         <View style={styles.header}>
-          <MaterialIcons name="help-outline" size={16} color={theme.colors.accent ?? '#a78bfa'} />
+          <MaterialIcons name="help-outline" size={16} color={theme.colors.accent} />
           <Text style={styles.headerTitle}>Ask Shelly</Text>
           <Text style={styles.headerHint}>  ·  Shelly の機能について何でも聞いてください</Text>
         </View>
@@ -197,7 +197,7 @@ export default function AskPane() {
               </View>
               {t.error ? (
                 <View style={styles.errorBox}>
-                  <MaterialIcons name="error-outline" size={14} color={theme.colors.error ?? '#ef4444'} />
+                  <MaterialIcons name="error-outline" size={14} color={theme.colors.error} />
                   <Text style={styles.errorText}>{t.error}</Text>
                 </View>
               ) : (
@@ -248,8 +248,8 @@ export default function AskPane() {
             ]}
           >
             {busy
-              ? <ActivityIndicator size="small" color={theme.colors.accent ?? '#a78bfa'} />
-              : <MaterialIcons name="send" size={18} color={theme.colors.accent ?? '#a78bfa'} />
+              ? <ActivityIndicator size="small" color={theme.colors.accent} />
+              : <MaterialIcons name="send" size={18} color={theme.colors.accent} />
             }
           </TouchableOpacity>
         </View>
@@ -263,7 +263,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
   return StyleSheet.create({
     root: {
       flex: 1,
-      backgroundColor: c.background ?? '#0a0a0a',
+      backgroundColor: c.background,
     },
     header: {
       flexDirection: 'row',
@@ -271,16 +271,16 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       paddingHorizontal: 12,
       paddingVertical: 8,
       borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: c.border ?? '#1f1f1f',
+      borderBottomColor: c.border,
     },
     headerTitle: {
-      color: c.foreground ?? '#eee',
+      color: c.foreground,
       fontFamily: 'JetBrainsMono_700Bold',
       fontSize: 12,
       marginLeft: 6,
     },
     headerHint: {
-      color: c.muted ?? '#666',
+      color: c.muted,
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 10,
     },
@@ -294,13 +294,13 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       paddingHorizontal: 8,
     },
     emptyTitle: {
-      color: c.foreground ?? '#eee',
+      color: c.foreground,
       fontFamily: 'JetBrainsMono_700Bold',
       fontSize: 14,
       marginBottom: 8,
     },
     emptyBody: {
-      color: c.muted ?? '#888',
+      color: c.muted,
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 11,
       lineHeight: 16,
@@ -316,13 +316,13 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     },
     questionText: {
       flex: 1,
-      color: c.foreground ?? '#eee',
+      color: c.foreground,
       fontFamily: 'JetBrainsMono_700Bold',
       fontSize: 12,
       lineHeight: 16,
     },
     answerText: {
-      color: c.foreground ?? '#ddd',
+      color: c.foreground,
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 11,
       lineHeight: 16,
@@ -349,7 +349,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       gap: 4,
     },
     stagedActionText: {
-      color: c.muted ?? '#666',
+      color: c.muted,
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 9,
       fontStyle: 'italic',
@@ -362,7 +362,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
     },
     errorText: {
       flex: 1,
-      color: c.error ?? '#ef4444',
+      color: c.error,
       fontFamily: 'JetBrainsMono_400Regular',
       fontSize: 10,
     },
@@ -370,14 +370,14 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       flexDirection: 'row',
       alignItems: 'center',
       borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: c.border ?? '#1f1f1f',
+      borderTopColor: c.border,
       paddingHorizontal: 12,
       paddingVertical: 8,
       gap: 8,
     },
     input: {
       flex: 1,
-      color: c.foreground ?? '#eee',
+      color: c.foreground,
       borderRadius: 8,
       paddingHorizontal: 12,
       paddingVertical: 8,
@@ -391,7 +391,7 @@ function makeStyles(theme: ReturnType<typeof useTheme>) {
       justifyContent: 'center',
       alignItems: 'center',
       borderWidth: 1,
-      borderColor: c.border ?? '#2a2a2a',
+      borderColor: c.border,
     },
   });
 }
