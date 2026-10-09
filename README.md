@@ -361,7 +361,7 @@ See [docs/FEATURES.md](docs/FEATURES.md) for the full feature-by-feature breakdo
 ### Codex Runtime
 
 <p align="center">
-  <img src="docs/images/codex-terminal.png" alt="OpenAI Codex CLI running natively in Shelly's terminal pane on Android, creating hello.py and running it" width="700">
+  <img src="docs/images/codex-terminal.png" alt="OpenAI Codex CLI running natively in Shelly's terminal pane on Android, creating hello.js and running it with Node.js" width="700">
 </p>
 
 - **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle the pinned Android-native unified `codex_tui` binary from `.ci-versions/`, and runtime updates install the same shape under `~/.shelly-runtime/codex/current`.

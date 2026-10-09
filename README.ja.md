@@ -356,7 +356,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 ### Codex ランタイム
 
 <p align="center">
-  <img src="docs/images/codex-terminal.png" alt="Android上のShellyのターミナルペインでネイティブに動くOpenAI Codex CLIが、hello.pyを作成して実行している" width="700">
+  <img src="docs/images/codex-terminal.png" alt="Android上のShellyのターミナルペインでネイティブに動くOpenAI Codex CLIが、hello.jsを作成してNode.jsで実行している" width="700">
 </p>
 
 - **ネイティブランタイム** — npm の `@openai/codex` パッケージは JS ディスパッチャ側の話の一部にすぎません。リリース APK には `.ci-versions/` の固定された Android ネイティブの統合 `codex_tui` バイナリが同梱され、ランタイム更新も同じ形のものを `~/.shelly-runtime/codex/current` にインストールします。
