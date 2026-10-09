@@ -29,22 +29,51 @@ type SetContentFn = (content: string, filePath: string | null) => void;
 let _setContent: SetContentFn | null = null;
 
 /**
- * Opens a markdown file by path, reads it via execCommand, and renders it.
- * Can be called from outside React (e.g. file tree tap handlers).
+ * Path requested while no MarkdownPane was mounted (e.g. openFile() just
+ * added the pane and it hasn't rendered yet). The next MarkdownPane to mount
+ * consumes it. Before this queue existed, openMarkdownFile returned silently
+ * whenever no pane was mounted, so "Open <file>.md" links did nothing.
  */
-export async function openMarkdownFile(path: string): Promise<void> {
-  if (!_setContent) return;
+let _pendingPath: string | null = null;
+
+async function loadInto(setContent: SetContentFn, path: string): Promise<void> {
   try {
     const result = await execCommand(`cat '${path.replace(/'/g, "'\\''")}'`, 30_000);
     if (result.exitCode === 0) {
-      _setContent(result.stdout ?? '', path);
+      setContent(result.stdout ?? '', path);
     } else {
-      _setContent(`*Error reading file:* \`${result.stderr ?? 'unknown error'}\``, path);
+      setContent(`*Error reading file:* \`${result.stderr ?? 'unknown error'}\``, path);
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    _setContent(`*Failed to read file:* \`${msg}\``, path);
+    setContent(`*Failed to read file:* \`${msg}\``, path);
   }
+}
+
+/**
+ * Opens a markdown file by path, reads it via execCommand, and renders it.
+ * Can be called from outside React (e.g. file tree tap handlers). If no
+ * MarkdownPane is mounted yet, the path is queued and loaded on mount —
+ * callers that need the pane to become visible should go through
+ * lib/open-file.ts openFile(), which also adds/focuses the pane.
+ */
+export async function openMarkdownFile(path: string): Promise<void> {
+  if (!_setContent) {
+    _pendingPath = path;
+    return;
+  }
+  _pendingPath = null;
+  await loadInto(_setContent, path);
+}
+
+/** True when a MarkdownPane is currently mounted and able to render. */
+export function isMarkdownPaneMounted(): boolean {
+  return _setContent !== null;
+}
+
+/** Test/diagnostic accessor for the queued path. */
+export function getPendingMarkdownPath(): string | null {
+  return _pendingPath;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -91,6 +120,12 @@ export default function MarkdownPane() {
 
   React.useEffect(() => {
     _setContent = stableSetContent;
+    if (_pendingPath) {
+      const path = _pendingPath;
+      _pendingPath = null;
+      setLoading(true);
+      void loadInto(stableSetContent, path);
+    }
     return () => {
       if (_setContent === stableSetContent) _setContent = null;
     };

@@ -2067,6 +2067,7 @@ const en: Record<string, string> = {
   'pane.browser.title': 'Browser',
   'pane.markdown.title': 'Markdown',
   'pane.preview.title': 'Preview',
+  'open_file.no_pane': 'Could not open {{name}} — no pane is available to show it.',
   'pane.ask.title': 'Ask Shelly',
   'pane.agent_runs.title': 'Agent Runs',
   'pane.terminal.header': 'Terminal',

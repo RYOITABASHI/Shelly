@@ -27,23 +27,34 @@ function visiblePresetForSlot(currentPreset: PresetId, slotIndex: number): Prese
   return 'p4';
 }
 
+type FocusableTab = 'agent-chat' | 'ai' | 'markdown' | 'preview';
+
+function focusExistingSlot(index: number): void {
+  const multiPane = useMultiPaneStore.getState();
+  const slot = multiPane.slots[index];
+  multiPane.maximizeSlot(null);
+  const visiblePreset = visiblePresetForSlot(multiPane.preset, index);
+  if (visiblePreset !== multiPane.preset) {
+    multiPane.setPreset(visiblePreset);
+  }
+  // setPreset compacts slots, so re-resolve the index by id afterwards.
+  const after = useMultiPaneStore.getState();
+  const finalIndex = slot ? after.slots.findIndex((s) => s?.id === slot.id) : index;
+  const target = finalIndex >= 0 ? finalIndex : index;
+  after.focusSlot(target as 0 | 1 | 2 | 3);
+  if (slot) usePaneStore.getState().setFocusedPane(slot.id);
+}
+
 /**
  * Focus the existing pane for `tab`, or add one if none exists yet.
  * Returns true once a pane for `tab` is focused (pre-existing or newly
  * added), false if adding a new pane failed (layout at capacity).
  */
-export function focusPaneByTab(tab: 'agent-chat' | 'ai'): boolean {
+export function focusPaneByTab(tab: FocusableTab): boolean {
   const multiPane = useMultiPaneStore.getState();
   const existingIndex = multiPane.slots.findIndex((slot) => slot?.tab === tab);
   if (existingIndex >= 0) {
-    const slot = multiPane.slots[existingIndex];
-    multiPane.maximizeSlot(null);
-    const visiblePreset = visiblePresetForSlot(multiPane.preset, existingIndex);
-    if (visiblePreset !== multiPane.preset) {
-      multiPane.setPreset(visiblePreset);
-    }
-    multiPane.focusSlot(existingIndex as 0 | 1 | 2 | 3);
-    if (slot) usePaneStore.getState().setFocusedPane(slot.id);
+    focusExistingSlot(existingIndex);
     return true;
   }
 
@@ -52,5 +63,34 @@ export function focusPaneByTab(tab: 'agent-chat' | 'ai'): boolean {
     logInfo('PaneFocus', `could not add ${tab} pane: ${result}`);
     return false;
   }
+  return true;
+}
+
+/** Tabs we'd rather not evict when the 4-slot grid is full. */
+const PRESERVE_ON_REPLACE = new Set<string>(['terminal', 'ai', 'agent-chat']);
+
+/**
+ * Like focusPaneByTab, but when the layout is full (4 panes) it repurposes
+ * an existing non-terminal slot instead of failing. Preference order: a
+ * non-focused slot whose tab isn't a terminal/chat, then any non-focused
+ * non-terminal slot, then the focused non-terminal slot. Terminal slots are
+ * never repurposed (they own a live PTY session). Returns false only when
+ * no pane could be made visible at all.
+ */
+export function ensurePaneByTab(tab: FocusableTab): boolean {
+  if (focusPaneByTab(tab)) return true;
+  const { slots, focusedSlot, setSlotTab } = useMultiPaneStore.getState();
+  const indices = [0, 1, 2, 3].filter((i) => slots[i] && slots[i]!.tab !== 'terminal');
+  const pick =
+    indices.find((i) => i !== focusedSlot && !PRESERVE_ON_REPLACE.has(slots[i]!.tab)) ??
+    indices.find((i) => i !== focusedSlot) ??
+    indices.find((i) => i === focusedSlot);
+  if (pick === undefined) {
+    logInfo('PaneFocus', `no replaceable slot for ${tab}`);
+    return false;
+  }
+  logInfo('PaneFocus', `layout full — repurposing slot ${pick} (${slots[pick]!.tab}) as ${tab}`);
+  setSlotTab(pick as 0 | 1 | 2 | 3, tab);
+  focusExistingSlot(pick);
   return true;
 }

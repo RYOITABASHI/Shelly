@@ -2031,6 +2031,7 @@ const ja: Record<string, string> = {
   'pane.browser.title': 'ブラウザ',
   'pane.markdown.title': 'Markdown',
   'pane.preview.title': 'Preview',
+  'open_file.no_pane': '{{name}} を開けませんでした — 表示できるペインがありません。',
   'pane.ask.title': 'Ask Shelly',
   'pane.agent_runs.title': '実行履歴',
   'pane.terminal.header': 'ターミナル',
