@@ -86,6 +86,8 @@ import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
 import enStrings from '@/lib/i18n/locales/en';
 import jaStrings from '@/lib/i18n/locales/ja';
+import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   logError('ErrorBoundary', 'Uncaught error', error);
@@ -2422,7 +2424,7 @@ export default function RootLayout() {
   );
 }
 
-const actionApprovalStyles = StyleSheet.create({
+const actionApprovalStyles = createThemedStyles(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 5000,
@@ -2436,30 +2438,30 @@ const actionApprovalStyles = StyleSheet.create({
     maxWidth: 680,
     maxHeight: '86%',
     borderWidth: 1,
-    borderColor: '#00FF66',
-    backgroundColor: '#050805',
+    borderColor: C.accent,
+    backgroundColor: C.bgSurface,
     padding: 18,
     gap: 12,
   },
   eyebrow: {
-    color: '#00FF66',
+    color: C.accent,
     fontFamily: 'JetBrainsMono_700Bold',
     fontSize: 16,
   },
   body: {
-    color: '#BDE8C6',
+    color: C.text1,
     fontFamily: 'JetBrainsMono_400Regular',
     fontSize: 13,
     lineHeight: 20,
   },
   label: {
-    color: '#7AF59C',
+    color: C.accent,
     fontFamily: 'JetBrainsMono_700Bold',
     fontSize: 12,
     textTransform: 'uppercase',
   },
   meta: {
-    color: '#D7FCE0',
+    color: C.text2,
     fontFamily: 'JetBrainsMono_400Regular',
     fontSize: 12,
     lineHeight: 18,
@@ -2467,12 +2469,12 @@ const actionApprovalStyles = StyleSheet.create({
   commandBox: {
     maxHeight: 260,
     borderWidth: 1,
-    borderColor: '#1D7F42',
-    backgroundColor: '#000',
+    borderColor: C.border,
+    backgroundColor: C.bgDeep,
     padding: 12,
   },
   commandText: {
-    color: '#E8FFF0',
+    color: C.text1,
     fontFamily: 'JetBrainsMono_400Regular',
     fontSize: 12,
     lineHeight: 18,
@@ -2490,16 +2492,16 @@ const actionApprovalStyles = StyleSheet.create({
     alignItems: 'center',
   },
   declineButton: {
-    borderColor: '#FF6B73',
-    backgroundColor: '#170508',
+    borderColor: C.errorText,
+    backgroundColor: C.errorBg,
   },
   allowButton: {
-    borderColor: '#00FF66',
-    backgroundColor: '#063516',
+    borderColor: C.accentGreen,
+    backgroundColor: C.addBg,
   },
   buttonText: {
-    color: '#F5FFF8',
+    color: C.text1,
     fontFamily: 'JetBrainsMono_700Bold',
     fontSize: 13,
   },
-});
+}));

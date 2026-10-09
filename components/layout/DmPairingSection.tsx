@@ -3,6 +3,7 @@ import { Alert, Pressable, StyleSheet, Text, TextInput, ToastAndroid, View } fro
 import * as Clipboard from 'expo-clipboard';
 import { useTranslation } from '@/lib/i18n';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { logError } from '@/lib/debug-logger';
 import { flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
@@ -275,7 +276,7 @@ function Button({ label, onPress }: { label: string; onPress: () => void }) {
   return <Pressable style={styles.button} onPress={onPress}><Text style={styles.buttonText}>{label}</Text></Pressable>;
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   section: { borderBottomWidth: S.borderWidth, paddingVertical: 6 },
   sectionTitle: { color: C.text2, fontSize: F.badge.size, fontFamily: F.family, fontWeight: '700', letterSpacing: 1, paddingHorizontal: 10, paddingVertical: 4 },
   body: { paddingHorizontal: 8, gap: 6 },
@@ -294,4 +295,4 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 6 },
   button: { borderWidth: S.borderWidth, borderColor: C.border, paddingHorizontal: 8, paddingVertical: 5, alignSelf: 'flex-end' },
   buttonText: { color: C.accent, fontFamily: F.family, fontSize: F.badge.size, fontWeight: '700' },
-});
+}));

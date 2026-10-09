@@ -71,6 +71,7 @@ import {
   releaseNativeSessionId,
 } from '@/lib/terminal-native-session-reservations';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePaneContentBackground } from '@/hooks/use-panel-background';
 
@@ -1791,7 +1792,7 @@ export default function TerminalScreen() {
             The terminal session has exited or failed to start.
           </Text>
           <Pressable style={[styles.retryBtn, { backgroundColor: c.accent }]} onPress={handleReload}>
-            <MaterialIcons name="refresh" size={20} color="#0A0A0A" />
+            <MaterialIcons name="refresh" size={20} color={C.btnPrimaryText} />
             <Text style={styles.retryBtnText}>{t('terminal.reload')}</Text>
           </Pressable>
         </View>
@@ -1802,7 +1803,7 @@ export default function TerminalScreen() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: { flex: 1, position: 'relative' },
   terminalBody: {
     flex: 1,
@@ -1839,7 +1840,7 @@ const styles = StyleSheet.create({
 
   // Retry button
   retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
-  retryBtnText: { color: '#0A0A0A', fontSize: 14, fontWeight: '700', fontFamily: 'JetBrainsMono_400Regular' },
+  retryBtnText: { color: C.btnPrimaryText, fontSize: 14, fontWeight: '700', fontFamily: 'JetBrainsMono_400Regular' },
 
   // Scroll FAB (kept for potential future use)
   scrollToBottomFab: {
@@ -1857,4 +1858,4 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
 
-});
+}));

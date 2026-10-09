@@ -65,6 +65,7 @@ import { usePaneVoice } from '@/hooks/use-pane-voice';
 import { useSettingsStore } from '@/store/settings-store';
 import { VoiceChat } from '@/components/VoiceChat';
 import { colors as C, fonts as F } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { logError } from '@/lib/debug-logger';
@@ -309,7 +310,7 @@ const MessageBubble = React.memo(function MessageBubble({
         )}
         {isLastStreaming && (
           <View style={bubbleStyles.streamingRow}>
-            <StreamingDots color="#6B7280" />
+            <StreamingDots color={C.text2} />
             {/* Fable5 follow-up (2026-08-29): the attach button used to
                 double as a streaming-cancel control, which risked a
                 timing-based mix-up between "cancel" and "attach an image".
@@ -335,7 +336,7 @@ const MessageBubble = React.memo(function MessageBubble({
   );
 });
 
-const bubbleStyles = StyleSheet.create({
+const bubbleStyles = createThemedStyles(() => ({
   messageContainer: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -431,7 +432,7 @@ const bubbleStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));
 
 // ─── AIPane ──────────────────────────────────────────────────────────────────
 
@@ -1049,7 +1050,7 @@ export default function AIPane() {
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
-const paneStyles = StyleSheet.create({
+const paneStyles = createThemedStyles(() => ({
   container: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -1133,4 +1134,4 @@ const paneStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));

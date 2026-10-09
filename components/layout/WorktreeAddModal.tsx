@@ -19,6 +19,7 @@ import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useWorktreeStore, type WorktreeAgent } from '@/store/worktree-store';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
 
@@ -146,7 +147,7 @@ export function WorktreeAddModal({ visible, repoPath, initialAgent = 'codex', on
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -275,4 +276,4 @@ const styles = StyleSheet.create({
     color: C.btnPrimaryText,
     letterSpacing: 0.3,
   },
-});
+}));

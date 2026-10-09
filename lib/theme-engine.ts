@@ -6,7 +6,9 @@
  */
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useMemo } from 'react';
 import { colors as TC } from '@/theme.config';
+import { useThemeVersionStore } from '@/store/theme-version-store';
 
 // ── Theme Definition ─────────────────────────────────────────────────────────
 
@@ -86,26 +88,37 @@ const DEFAULT_ANSI = {
   ansiBrightWhite: '#FFFFFF',
 };
 
+/** Shelly Default engine colors derived from the CURRENT app preset
+ *  (theme.config `colors`, mutated in place by applyThemePreset()). */
+export function liveShellyDefaultColors(): ThemeColors {
+  return {
+    background: TC.bgDeep,
+    surface: TC.bgSurface,
+    surfaceAlt: TC.border,
+    foreground: TC.text1,
+    muted: TC.text2,
+    accent: TC.accent,
+    border: TC.border,
+    success: TC.accentGreen,
+    warning: TC.warning,
+    error: TC.errorText,
+    prompt: TC.accent,
+    command: TC.accentCode,
+    inactive: TC.text3,
+    ...DEFAULT_ANSI,
+  };
+}
+
 export const BUILTIN_THEMES: Theme[] = [
   {
     id: 'shelly-default',
     name: 'Shelly Default',
     type: 'dark',
-    colors: {
-      background: TC.bgDeep,
-      surface: TC.bgSurface,
-      surfaceAlt: TC.border,
-      foreground: TC.text1,
-      muted: TC.text2,
-      accent: TC.accent,
-      border: TC.border,
-      success: TC.accentGreen,
-      warning: TC.warning,
-      error: TC.errorText,
-      prompt: TC.accent,
-      command: '#93C5FD',
-      inactive: TC.text3,
-      ...DEFAULT_ANSI,
+    // LIVE (2026-10-09): a getter over theme.config's preset-mutated
+    // colors, not a module-load copy of the dark seed, so the default
+    // engine theme follows applyThemePreset() (incl. light Case File).
+    get colors() {
+      return liveShellyDefaultColors();
     },
   },
   {
@@ -1386,25 +1399,35 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
 
 // ── Helper: Get current theme ────────────────────────────────────────────────
 
-export function getCurrentTheme(): Theme {
-  const { currentThemeId, customThemes } = useThemeStore.getState();
-  return (
+function resolveTheme(currentThemeId: string, customThemes: Theme[]): Theme {
+  const found =
     BUILTIN_THEMES.find((t) => t.id === currentThemeId) ??
     customThemes.find((t) => t.id === currentThemeId) ??
-    BUILTIN_THEMES[0]
-  );
+    BUILTIN_THEMES[0];
+  // Snapshot so the returned theme (and its colors) gets a fresh identity
+  // per resolve — Shelly Default's colors are a live getter over the app
+  // preset, and memoized consumers key on the theme object.
+  return { ...found, colors: { ...found.colors } };
+}
+
+export function getCurrentTheme(): Theme {
+  const { currentThemeId, customThemes } = useThemeStore.getState();
+  return resolveTheme(currentThemeId, customThemes);
 }
 
 /**
- * React hook — re-renders when theme changes.
+ * React hook — re-renders when the engine theme changes AND when the app
+ * preset changes (theme-version-store bump from applyThemePreset()), since
+ * the default engine theme mirrors the live app preset palette.
  */
 export function useTheme(): Theme {
   const currentThemeId = useThemeStore((s) => s.currentThemeId);
   const customThemes = useThemeStore((s) => s.customThemes);
-  return (
-    BUILTIN_THEMES.find((t) => t.id === currentThemeId) ??
-    customThemes.find((t) => t.id === currentThemeId) ??
-    BUILTIN_THEMES[0]
+  const version = useThemeVersionStore((s) => s.version);
+  return useMemo(
+    () => resolveTheme(currentThemeId, customThemes),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentThemeId, customThemes, version],
   );
 }
 

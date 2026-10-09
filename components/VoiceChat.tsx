@@ -29,6 +29,8 @@ import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { useSettingsStore } from '@/store/settings-store';
 import { RealtimeVoiceChat } from '@/components/RealtimeVoiceChat';
+import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 type Props = {
   visible: boolean;
@@ -148,7 +150,7 @@ export function VoiceChat({ visible, onClose, dispatch, paneId }: Props) {
   const isProcessing = state.status === 'transcribing' || state.status === 'thinking' || state.status === 'executing';
   const isBusy = isProcessing || state.status === 'speaking';
 
-  const micColor = isRecording ? '#FF4444' : isBusy ? colors.inactive : colors.accent;
+  const micColor = isRecording ? C.errorText : isBusy ? colors.inactive : colors.accent;
 
   if (realtimeVoiceEnabled) {
     return <RealtimeVoiceChat visible={visible} onClose={onClose} />;
@@ -190,8 +192,8 @@ export function VoiceChat({ visible, onClose, dispatch, paneId }: Props) {
 
           {state.executedCommand ? (
             <View style={styles.textBlock}>
-              <Text style={[styles.label, { color: '#22C55E' }]}>$</Text>
-              <Text style={[styles.commandText, { color: '#22C55E' }]}>
+              <Text style={[styles.label, { color: C.accentGreen }]}>$</Text>
+              <Text style={[styles.commandText, { color: C.accentGreen }]}>
                 {state.executedCommand}
               </Text>
             </View>
@@ -284,7 +286,7 @@ export function VoiceChat({ visible, onClose, dispatch, paneId }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   overlay: {
     flex: 1,
     alignItems: 'center',
@@ -340,7 +342,7 @@ const styles = StyleSheet.create({
   },
   error: {
     fontSize: 12,
-    color: '#F87171',
+    color: C.errorText,
   },
   statusText: {
     fontSize: 12,
@@ -379,4 +381,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-});
+}));

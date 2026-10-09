@@ -21,23 +21,25 @@ import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
 import type { SetupBlock as SetupBlockType } from '@/store/types';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
+import { withAlpha } from '@/lib/theme-utils';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 
 // ── Step icons ──────────────────────────────────────────────────────────────
 
-const STEP_ICONS: Record<string, { icon: string; color: string }> = {
+const getStepIcons = (): Record<string, { icon: string; color: string }> => ({
   'welcome': { icon: 'terminal', color: C.accent },
-  'cli-select': { icon: 'smart-toy', color: '#8B5CF6' },
+  'cli-select': { icon: 'smart-toy', color: C.accentPurple },
   'cli-install': { icon: 'download', color: C.warning },
-  'cli-auth': { icon: 'vpn-key', color: '#60A5FA' },
-  'git-config': { icon: 'source', color: '#F97316' },
-  'git-input': { icon: 'source', color: '#F97316' },
-  'git-ssh': { icon: 'key', color: '#F97316' },
-  'project-scan': { icon: 'folder-open', color: '#A78BFA' },
-  'done': { icon: 'check-circle', color: '#4ADE80' },
-};
+  'cli-auth': { icon: 'vpn-key', color: C.accentBlue },
+  'git-config': { icon: 'source', color: C.accentAmber },
+  'git-input': { icon: 'source', color: C.accentAmber },
+  'git-ssh': { icon: 'key', color: C.accentAmber },
+  'project-scan': { icon: 'folder-open', color: C.accentPurple },
+  'done': { icon: 'check-circle', color: C.accentGreen },
+});
 
 // ── Props ───────────────────────────────────────────────────────────────────
 
@@ -61,7 +63,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
     return initial;
   });
 
-  const stepConfig = STEP_ICONS[block.stepId] || { icon: 'settings', color: C.text2 };
+  const stepConfig = getStepIcons()[block.stepId] || { icon: 'settings', color: C.text2 };
   const isActive = block.status === 'active';
   const isCompleted = block.status === 'completed';
   const isSkipped = block.status === 'skipped';
@@ -129,7 +131,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
   // ── Status indicator ──────────────────────────────────────────────────
 
   const statusIcon = isCompleted ? 'check-circle' : isSkipped ? 'skip-next' : isError ? 'error' : undefined;
-  const statusColor = isCompleted ? '#4ADE80' : isSkipped ? C.text2 : isError ? '#F87171' : undefined;
+  const statusColor = isCompleted ? C.accentGreen : isSkipped ? C.text2 : isError ? C.errorText : undefined;
 
   // ── Render ────────────────────────────────────────────────────────────
 
@@ -180,7 +182,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
                       styles.checkbox,
                       opt.selected && { borderColor: opt.color || C.accent, backgroundColor: opt.color || C.accent },
                     ]}>
-                      {opt.selected && <MaterialIcons name="check" size={14} color="#000" />}
+                      {opt.selected && <MaterialIcons name="check" size={14} color={C.btnPrimaryText} />}
                     </View>
                   )}
                   <View style={{ flex: 1 }}>
@@ -241,9 +243,9 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
                     styles.logLine,
                     {
                       color: line.startsWith('→ FAIL') || line.startsWith('ERROR') || line.startsWith('→ ERROR')
-                        ? '#F87171'
+                        ? C.errorText
                         : line.startsWith('✓') || line.startsWith('→ installed') || line.includes('already installed')
-                          ? '#4ADE80'
+                          ? C.accentGreen
                           : line.startsWith('$')
                             ? colors.accent
                             : colors.muted,
@@ -265,7 +267,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
           {/* Error message */}
           {block.errorMessage && (
             <View style={styles.errorBox}>
-              <MaterialIcons name="error-outline" size={14} color="#F87171" />
+              <MaterialIcons name="error-outline" size={14} color={C.errorText} />
               <Text style={styles.errorText}>{t(block.errorMessage) || block.errorMessage}</Text>
             </View>
           )}
@@ -291,7 +293,7 @@ function SetupBlockComponent({ block, onOptionToggle, onInputSubmit, onSkip, onB
                 onPress={handlePrimaryAction}
               >
                 <Text style={styles.primaryBtnText}>{t(block.actionLabel) || block.actionLabel}</Text>
-                <MaterialIcons name="arrow-forward" size={14} color="#000" />
+                <MaterialIcons name="arrow-forward" size={14} color={C.btnPrimaryText} />
               </Pressable>
             )}
           </View>
@@ -316,7 +318,7 @@ export const SetupBlock = memo(SetupBlockComponent);
 
 // ── Styles ──────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     marginHorizontal: 8,
     marginVertical: 4,
@@ -384,13 +386,13 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   badge: {
-    backgroundColor: '#4ADE8030',
+    backgroundColor: withAlpha(C.accentGreen, 0.19),
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 3,
   },
   badgeText: {
-    color: '#4ADE80',
+    color: C.accentGreen,
     fontSize: 8,
     fontWeight: '700',
   },
@@ -430,12 +432,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#F8717110',
+    backgroundColor: withAlpha(C.errorText, 0.06),
     borderRadius: 8,
     padding: 10,
   },
   errorText: {
-    color: '#F87171',
+    color: C.errorText,
     fontSize: 12,
     flex: 1,
   },
@@ -470,8 +472,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   primaryBtnText: {
-    color: '#000',
+    color: C.btnPrimaryText,
     fontSize: 14,
     fontWeight: '800',
   },
-});
+}));

@@ -20,6 +20,7 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { getStagedEdit, applyStagedEdit } from '@/lib/ai-edit';
 import { playSound } from '@/lib/sounds';
 import { colors as C, fonts as F } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
 import { useSettingsStore } from '@/store/settings-store';
@@ -200,7 +201,7 @@ export function CodeBlockWithAction({ lang, code }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
 	  root: {
 	    borderWidth: 1,
 	    borderColor: C.border,
@@ -269,7 +270,7 @@ const styles = StyleSheet.create({
     color: C.text1,
     padding: 8,
   },
-});
+}));
 
 /**
  * Split assistant text into alternating plain / code-block segments

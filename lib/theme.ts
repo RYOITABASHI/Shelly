@@ -1,65 +1,17 @@
 import { Platform } from "react-native";
 
-import { themeColors } from "@/theme.config";
+import { colors as liveColors, themeColors } from "@/theme.config";
 
 export type ColorScheme = "light" | "dark";
 
+/** Legacy light/dark token table from theme.config (consumed by tailwind). */
 export const ThemeColors = themeColors;
 
-type ThemeColorTokens = typeof ThemeColors;
-type ThemeColorName = keyof ThemeColorTokens;
-type SchemePalette = Record<ColorScheme, Record<ThemeColorName, string>>;
-type SchemePaletteItem = SchemePalette[ColorScheme];
-
-function buildSchemePalette(colors: ThemeColorTokens): SchemePalette {
-  const palette: SchemePalette = {
-    light: {} as SchemePalette["light"],
-    dark: {} as SchemePalette["dark"],
-  };
-
-  (Object.keys(colors) as ThemeColorName[]).forEach((name) => {
-    const swatch = colors[name];
-    palette.light[name] = swatch.light;
-    palette.dark[name] = swatch.dark;
-  });
-
-  return palette;
-}
-
-export const SchemeColors = buildSchemePalette(ThemeColors);
-
-type RuntimePalette = SchemePaletteItem & {
-  text: string;
-  background: string;
-  tint: string;
-  icon: string;
-  tabIconDefault: string;
-  tabIconSelected: string;
-  border: string;
-};
-
-function buildRuntimePalette(scheme: ColorScheme): RuntimePalette {
-  const base = SchemeColors[scheme];
-  return {
-    ...base,
-    text: base.foreground,
-    background: base.background,
-    tint: base.primary,
-    icon: base.muted,
-    tabIconDefault: base.muted,
-    tabIconSelected: base.primary,
-    border: base.border,
-  };
-}
-
-export const Colors = {
-  light: buildRuntimePalette("light"),
-  dark: buildRuntimePalette("dark"),
-} satisfies Record<ColorScheme, RuntimePalette>;
-
-export type ThemeColorPalette = (typeof Colors)[ColorScheme];
-
-type RuntimeThemeSource = {
+/**
+ * The subset of theme.config's `colors` (the live, preset-mutated palette)
+ * the runtime palette is derived from.
+ */
+export type RuntimeThemeSource = {
   bgDeep: string;
   bgSurface: string;
   bgSidebar: string;
@@ -77,7 +29,19 @@ type RuntimeThemeSource = {
   errorText: string;
 };
 
-export function refreshRuntimeThemeColors(palette: RuntimeThemeSource) {
+/**
+ * Single mapping from preset tokens (theme.config `colors`: bgDeep / text1 /
+ * accent / ...) to the useTheme() palette keys (background / foreground /
+ * muted / ...). Used both for the initial palette and for every
+ * applyThemePreset() refresh, so the default (pre-preset) palette and every
+ * preset — including the light Case File one — resolve through the same
+ * key mapping. (Before 2026-10-09 the initial palette came from
+ * theme.config's legacy `themeColors` table, which hardcoded several keys —
+ * command #93C5FD, link #60A5FA, aiPurple #8B5CF6, keyLabel #B0B8C1,
+ * borderHeavy #333333 ... — so the default and the refreshed palettes
+ * disagreed on those keys.)
+ */
+export function mapPaletteToRuntime(palette: RuntimeThemeSource) {
   const base = {
     primary: palette.accent,
     background: palette.bgDeep,
@@ -107,19 +71,43 @@ export function refreshRuntimeThemeColors(palette: RuntimeThemeSource) {
     keyLabel: palette.text2,
     infoText: palette.text2,
   };
-
-  const runtime = {
+  return {
     ...base,
     text: base.foreground,
-    background: base.background,
-    tint: base.primary,
     icon: base.muted,
     tabIconDefault: base.muted,
     tabIconSelected: base.primary,
   };
+}
 
+export type ThemeColorPalette = ReturnType<typeof mapPaletteToRuntime>;
+
+/**
+ * Mutable runtime palette objects. Kept in sync with theme.config's live
+ * `colors` by refreshRuntimeThemeColors() (called from applyThemePreset()).
+ * Prefer the useTheme() hook (hooks/use-theme) in components: it returns a
+ * fresh snapshot whenever theme-version-store bumps, so memoized consumers
+ * (useMemo / makeStyles(colors)) recompute on a preset swap.
+ */
+export const Colors: Record<ColorScheme, ThemeColorPalette> = {
+  light: mapPaletteToRuntime(liveColors),
+  dark: mapPaletteToRuntime(liveColors),
+};
+
+export function refreshRuntimeThemeColors(palette: RuntimeThemeSource) {
+  const runtime = mapPaletteToRuntime(palette);
   Object.assign(Colors.light, runtime);
   Object.assign(Colors.dark, runtime);
+}
+
+/**
+ * Snapshot of the CURRENT palette (new object identity per call), derived
+ * straight from theme.config's live `colors` — the single source of truth
+ * that applyThemePreset() mutates in place — so it can never lag behind
+ * the legacy `Colors` objects above.
+ */
+export function getLiveThemeColors(): ThemeColorPalette {
+  return mapPaletteToRuntime(liveColors);
 }
 
 export const Fonts = Platform.select({

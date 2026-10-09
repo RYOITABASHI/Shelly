@@ -10,6 +10,7 @@ import { readDirEntries } from '@/lib/fs-native';
 import { openFile } from '@/lib/open-file';
 import { normalizePath } from '@/lib/normalize-path';
 import { colors as C, fonts as F, sizes as S, padding as P, icons as I } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { useTranslation } from '@/lib/i18n';
 
 type FileEntry = {
@@ -324,7 +325,7 @@ export function FileTree() {
   );
 }
 
-const promptStyles = StyleSheet.create({
+const promptStyles = createThemedStyles(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.7)',
@@ -384,9 +385,9 @@ const promptStyles = StyleSheet.create({
   btnPrimaryText: {
     color: C.bgDeep,
   },
-});
+}));
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     flex: 1,
     minHeight: 120,
@@ -446,4 +447,4 @@ const styles = StyleSheet.create({
     color: C.text1,
     flex: 1,
   },
-});
+}));

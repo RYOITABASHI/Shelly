@@ -25,6 +25,7 @@ import Animated, {
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { TIMING_CONFIGS } from '@/hooks/use-motion';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 export const BLOCK_HISTORY_FAB_IDLE_OPACITY = 0.25;
 export const BLOCK_HISTORY_FAB_IDLE_DELAY_MS = 3000;
@@ -115,7 +116,7 @@ export function BlockHistoryFab({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   // Position/size preserved from the original TerminalPane FAB.
   fab: {
     position: 'absolute',
@@ -138,4 +139,4 @@ const styles = StyleSheet.create({
     elevation: 0,
     shadowOpacity: 0,
   },
-});
+}));

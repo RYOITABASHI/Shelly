@@ -13,7 +13,7 @@ import { ShellyModal } from '@/components/layout/ShellyModal';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/lib/theme-engine';
-import { fonts as F } from '@/theme.config';
+import { colors as C, fonts as F } from '@/theme.config';
 import { useProfileStore, SSHProfile } from '@/store/profile-store';
 import { useTerminalStore } from '@/store/terminal-store';
 import { useTranslation } from '@/lib/i18n';
@@ -125,7 +125,7 @@ function EditModal({ visible, initial, onSave, onClose }: EditModalProps) {
               <Text style={{ color: c.muted, fontSize: 13 }}>{t('common.cancel')}</Text>
             </Pressable>
             <Pressable style={[styles.btn, { backgroundColor: c.foreground, borderColor: c.foreground }]} onPress={handleSave}>
-              <Text style={{ color: '#000', fontSize: 13, fontWeight: '700' }}>{t('common.save')}</Text>
+              <Text style={{ color: C.btnPrimaryText, fontSize: 13, fontWeight: '700' }}>{t('common.save')}</Text>
             </Pressable>
           </View>
         </View>

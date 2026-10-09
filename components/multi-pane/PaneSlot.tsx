@@ -14,6 +14,7 @@ import { onCommandComplete } from '@/lib/cli-notification';
 import { useSidebarStore } from '@/store/sidebar-store';
 import { useBrowserStore } from '@/store/browser-store';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { getAiPaneAgentMeta, getEnabledAiPaneAgents, isAiPaneAgent } from '@/lib/ai-pane-agents';
@@ -579,7 +580,7 @@ function AgentMenu({
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   pane: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -765,9 +766,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
   },
-});
+}));
 
-const menuStyles = StyleSheet.create({
+const menuStyles = createThemedStyles(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -806,9 +807,9 @@ const menuStyles = StyleSheet.create({
     fontSize: 12,
     fontFamily: F.family,
   },
-});
+}));
 
-const agentStyles = StyleSheet.create({
+const agentStyles = createThemedStyles(() => ({
   menu: {
     width: 180,
     backgroundColor: C.bgSurface,
@@ -835,4 +836,4 @@ const agentStyles = StyleSheet.create({
     fontSize: 11,
     fontFamily: F.family,
   },
-});
+}));

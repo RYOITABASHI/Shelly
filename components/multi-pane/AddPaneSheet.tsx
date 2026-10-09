@@ -13,6 +13,7 @@ import { useSidebarStore } from '@/store/sidebar-store';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { useTranslation } from '@/lib/i18n';
 
 type Props = {
@@ -94,7 +95,7 @@ export function AddPaneSheet({ visible, onClose }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -149,4 +150,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
   },
-});
+}));

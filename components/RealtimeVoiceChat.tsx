@@ -24,6 +24,7 @@ import { useRealtimeVoice, type RealtimeVoiceStatus } from '@/hooks/use-realtime
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
+import { colors as C } from '@/theme.config';
 
 type Props = {
   visible: boolean;
@@ -72,9 +73,9 @@ export function RealtimeVoiceChat({ visible, onClose }: Props) {
   const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulseScale.value }] }));
 
   const micColor =
-    state.status === 'listening' ? '#FF4444'
+    state.status === 'listening' ? C.errorText
       : state.status === 'speaking' ? colors.accent
-        : state.status === 'error' ? '#F87171'
+        : state.status === 'error' ? C.errorText
           : colors.inactive;
 
   const handleClose = () => {

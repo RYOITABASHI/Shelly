@@ -7,6 +7,7 @@
 
 import React, { useEffect } from 'react';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { View, StyleSheet } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -107,7 +108,7 @@ export default function VoiceWaveform({ active }: Props) {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     height: 24,
     flexDirection: 'row',
@@ -120,4 +121,4 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: C.accent,
   },
-});
+}));

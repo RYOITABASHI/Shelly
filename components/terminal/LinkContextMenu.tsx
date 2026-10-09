@@ -18,6 +18,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as Linking from 'expo-linking';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 export type LinkInfo = {
   text: string;
@@ -94,7 +95,7 @@ export function LinkContextMenu({
                 <MaterialIcons
                   name={isUrl ? 'link' : 'insert-drive-file'}
                   size={13}
-                  color="#888"
+                  color={C.text2}
                   style={styles.headerIcon}
                 />
                 <Text style={styles.headerText} numberOfLines={2}>
@@ -108,7 +109,7 @@ export function LinkContextMenu({
 
               {/* Copy action */}
               <TouchableOpacity style={styles.row} onPress={handleCopy}>
-                <MaterialIcons name="content-copy" size={16} color="#AAA" />
+                <MaterialIcons name="content-copy" size={16} color={C.text2} />
                 <Text style={styles.rowLabel}>
                   {isUrl ? 'Copy URL' : 'Copy Path'}
                 </Text>
@@ -117,7 +118,7 @@ export function LinkContextMenu({
               {/* Open in Sidebar — file paths only */}
               {isFile && (
                 <TouchableOpacity style={styles.row} onPress={handleOpenInSidebar}>
-                  <MaterialIcons name="open-in-new" size={16} color="#00D4AA" />
+                  <MaterialIcons name="open-in-new" size={16} color={C.accent} />
                   <Text style={[styles.rowLabel, { color: C.accent }]}>
                     Open in Sidebar
                     {link.line != null ? ` (line ${link.line})` : ''}
@@ -128,8 +129,8 @@ export function LinkContextMenu({
               {/* Open in Browser — URLs only */}
               {isUrl && (
                 <TouchableOpacity style={styles.row} onPress={handleOpenInBrowser}>
-                  <MaterialIcons name="open-in-browser" size={16} color="#4EA8DE" />
-                  <Text style={[styles.rowLabel, { color: '#4EA8DE' }]}>
+                  <MaterialIcons name="open-in-browser" size={16} color={C.accentBlue} />
+                  <Text style={[styles.rowLabel, { color: C.accentBlue }]}>
                     Open in Browser
                   </Text>
                 </TouchableOpacity>
@@ -148,7 +149,7 @@ export function LinkContextMenu({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
@@ -157,7 +158,7 @@ const styles = StyleSheet.create({
   },
   menu: {
     backgroundColor: C.border,
-    borderColor: '#333',
+    borderColor: C.border,
     borderWidth: 1,
     borderRadius: 12,
     width: 280,
@@ -175,12 +176,12 @@ const styles = StyleSheet.create({
   },
   headerText: {
     flex: 1,
-    color: '#888',
+    color: C.text2,
     fontSize: 11,
   },
   divider: {
     height: 1,
-    backgroundColor: '#333',
+    backgroundColor: C.border,
   },
   row: {
     flexDirection: 'row',
@@ -190,7 +191,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   rowLabel: {
-    color: '#DDD',
+    color: C.text1,
     fontSize: 14,
   },
   cancelRow: {
@@ -198,7 +199,7 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
   },
   cancelText: {
-    color: '#888',
+    color: C.text2,
     fontSize: 14,
   },
-});
+}));

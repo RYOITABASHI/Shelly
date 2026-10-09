@@ -3,6 +3,7 @@ import React from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { colors as C, fonts as F, sizes as S, padding as P, radii as R } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 /** Glyph size inside the collapsed icon rail (rail is 38dp wide, see Sidebar WIDTH_ICONS). */
 const ICON_RAIL_GLYPH = 20;
@@ -84,7 +85,7 @@ export function SidebarSection({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   section: {
     borderBottomWidth: S.borderWidth,
     borderBottomColor: C.border,
@@ -148,4 +149,4 @@ const styles = StyleSheet.create({
     fontSize: F.badge.size,
     fontWeight: F.badge.weight,
   },
-});
+}));

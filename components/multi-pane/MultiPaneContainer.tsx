@@ -36,6 +36,7 @@ import { PaneSlot } from './PaneSlot';
 import { Divider } from './Divider';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
 import { useTranslation } from '@/lib/i18n';
@@ -82,7 +83,7 @@ function EmptyPresetSlot() {
   );
 }
 
-const emptyStyles = StyleSheet.create({
+const emptyStyles = createThemedStyles(() => ({
   root: {
     flex: 1,
     alignItems: 'center',
@@ -127,7 +128,7 @@ const emptyStyles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 0.5,
   },
-});
+}));
 
 export function MultiPaneContainer() {
   const containerBg = usePaneContentBackground(C.bgDeep);
@@ -468,7 +469,7 @@ export function MultiPaneContainer() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   root: {
     flex: 1,
     backgroundColor: C.bgDeep,
@@ -482,4 +483,4 @@ const styles = StyleSheet.create({
     flex: 1,
     borderWidth: S.borderWidth,
   },
-});
+}));

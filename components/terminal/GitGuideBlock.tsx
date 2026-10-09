@@ -10,6 +10,8 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import type { GitGuide, GitGuideStep } from '@/lib/git-assistant';
 import { useTranslation } from '@/lib/i18n';
 import { colors as C } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
+import { withAlpha } from '@/lib/theme-utils';
 
 
 type Props = {
@@ -20,12 +22,12 @@ type Props = {
   prereqOutput?: string;
 };
 
-const STEP_ICONS: Record<GitGuideStep['type'], { icon: string; color: string; bg: string }> = {
-  info:    { icon: 'info-outline',    color: '#60A5FA', bg: '#60A5FA10' },
-  command: { icon: 'terminal',        color: C.accent,    bg: '#00D4AA10' },
-  warning: { icon: 'warning-amber',   color: C.warning, bg: '#FBBF2410' },
-  tip:     { icon: 'lightbulb-outline', color: '#A78BFA', bg: '#A78BFA10' },
-};
+const getStepIcons = (): Record<GitGuideStep['type'], { icon: string; color: string; bg: string }> => ({
+  info:    { icon: 'info-outline',    color: C.accentBlue, bg: withAlpha(C.accentBlue, 0.06) },
+  command: { icon: 'terminal',        color: C.accent,    bg: withAlpha(C.accent, 0.06) },
+  warning: { icon: 'warning-amber',   color: C.warning, bg: withAlpha(C.accentAmber, 0.06) },
+  tip:     { icon: 'lightbulb-outline', color: C.accentPurple, bg: withAlpha(C.accentPurple, 0.06) },
+});
 
 function GitGuideBlockInner({ guide, onRunCommand, prereqOutput }: Props) {
   const { t } = useTranslation();
@@ -52,7 +54,7 @@ function GitGuideBlockInner({ guide, onRunCommand, prereqOutput }: Props) {
       {/* Steps */}
       <ScrollView style={styles.stepsArea} nestedScrollEnabled>
         {guide.steps.map((step, i) => {
-          const visual = STEP_ICONS[step.type];
+          const visual = getStepIcons()[step.type];
           return (
             <View key={i} style={[styles.stepCard, { backgroundColor: visual.bg }]}>
               {/* Step header */}
@@ -81,7 +83,7 @@ function GitGuideBlockInner({ guide, onRunCommand, prereqOutput }: Props) {
                     </Text>
                   </View>
                   <View style={styles.runBtn}>
-                    <MaterialIcons name="play-arrow" size={16} color="#FFF" />
+                    <MaterialIcons name="play-arrow" size={16} color={C.btnPrimaryText} />
                     <Text style={styles.runBtnText}>{t('git.run')}</Text>
                   </View>
                 </Pressable>
@@ -93,7 +95,7 @@ function GitGuideBlockInner({ guide, onRunCommand, prereqOutput }: Props) {
 
       {/* Footer hint */}
       <View style={styles.footer}>
-        <MaterialIcons name="help-outline" size={12} color="#4B5563" />
+        <MaterialIcons name="help-outline" size={12} color={C.text3} />
         <Text style={styles.footerText}>
           {t('git.guide_footer')}
         </Text>
@@ -104,14 +106,14 @@ function GitGuideBlockInner({ guide, onRunCommand, prereqOutput }: Props) {
 
 export const GitGuideBlock = memo(GitGuideBlockInner);
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     marginHorizontal: 8,
     marginVertical: 3,
     borderRadius: 10,
-    backgroundColor: '#0F1210',
+    backgroundColor: C.bgSurface,
     borderWidth: 1,
-    borderColor: '#00D4AA30',
+    borderColor: withAlpha(C.accent, 0.19),
     overflow: 'hidden',
   },
   header: {
@@ -120,12 +122,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     gap: 8,
-    backgroundColor: '#00D4AA08',
+    backgroundColor: withAlpha(C.accent, 0.03),
     borderBottomWidth: 1,
-    borderBottomColor: '#00D4AA15',
+    borderBottomColor: withAlpha(C.accent, 0.08),
   },
   headerTitle: {
-    color: '#ECEDEE',
+    color: C.text1,
     fontSize: 15,
     fontWeight: '700',
     flex: 1,
@@ -134,9 +136,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 4,
-    backgroundColor: '#00D4AA20',
+    backgroundColor: withAlpha(C.accent, 0.13),
     borderWidth: 1,
-    borderColor: '#00D4AA40',
+    borderColor: withAlpha(C.accent, 0.25),
   },
   gitBadgeText: {
     color: C.accent,
@@ -150,7 +152,7 @@ const styles = StyleSheet.create({
     borderBottomColor: C.border,
   },
   overviewText: {
-    color: '#C8D0D8',
+    color: C.text1,
     fontSize: 13,
     lineHeight: 20,
   },
@@ -163,7 +165,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 10,
     borderWidth: 1,
-    borderColor: '#1E1E1E',
+    borderColor: C.bgSurface,
   },
   stepHeader: {
     flexDirection: 'row',
@@ -178,7 +180,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   stepExplanation: {
-    color: '#B0B8C0',
+    color: C.text2,
     fontSize: 12,
     lineHeight: 18,
     marginBottom: 4,
@@ -189,7 +191,7 @@ const styles = StyleSheet.create({
     backgroundColor: C.bgDeep,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#00D4AA30',
+    borderColor: withAlpha(C.accent, 0.19),
     marginTop: 6,
     overflow: 'hidden',
   },
@@ -205,7 +207,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   commandText: {
-    color: '#ECEDEE',
+    color: C.text1,
     fontSize: 12,
     flex: 1,
   },
@@ -218,7 +220,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   runBtnText: {
-    color: '#FFF',
+    color: C.btnPrimaryText,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -235,4 +237,4 @@ const styles = StyleSheet.create({
     color: C.text3,
     fontSize: 10,
   },
-});
+}));

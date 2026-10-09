@@ -2575,13 +2575,13 @@ const styles = createThemedStyles(() => ({
     paddingHorizontal: 4,
     paddingVertical: 1,
     borderRadius: R.badge,
-    backgroundColor: withAlpha('#F87171', 0.18),
+    backgroundColor: withAlpha(C.errorText, 0.18),
   },
   taskLogBadgeText: {
     fontSize: F.badge.size,
     fontFamily: F.family,
     fontWeight: F.badge.weight,
-    color: '#F87171',
+    color: C.errorText,
     letterSpacing: 0.5,
   },
   taskName: {

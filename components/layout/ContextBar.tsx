@@ -8,6 +8,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { getHomePath } from '@/lib/home-path';
 import { neonTextGlow, neonDotGlow } from '@/lib/neon-glow';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { canonicalizeAndroidDataPath, formatContextBarPath } from '@/lib/context-bar-path';
 
@@ -103,7 +104,7 @@ export function ContextBar() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   bar: {
     height: S.contextBarHeight,
     flexDirection: 'row',
@@ -168,4 +169,4 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 2.5,
   },
-});
+}));

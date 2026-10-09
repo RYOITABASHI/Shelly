@@ -16,9 +16,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
-import { colors as C } from '@/theme.config';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
-import { useTheme } from '@/lib/theme-engine';
+import { useTheme } from '@/hooks/use-theme';
 import { execCommand } from '@/hooks/use-native-exec';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
@@ -51,7 +50,8 @@ export async function openMarkdownFile(path: string): Promise<void> {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MarkdownPane() {
-  const theme = useTheme();
+  // Live preset palette (useTheme() re-renders on preset swaps).
+  const { colors: ink } = useTheme();
   const paneId = useContext(PaneIdContext);
   const [content, setContent] = useState<string | null>(null);
   const [filePath, setFilePath] = useState<string | null>(null);
@@ -101,91 +101,96 @@ export default function MarkdownPane() {
   }, []);
 
 	  const handleSearch = useCallback((_text: string) => {
-	    // Future: search within document
-	    ToastAndroid.show('Search within document — coming soon', ToastAndroid.SHORT);
+    // Future: search within document
+    ToastAndroid.show('Search within document — coming soon', ToastAndroid.SHORT);
 	  }, []);
-  const paneBg = usePaneContentBackground(C.bgDeep);
-	  const codeBg = usePanelBackground('#1A1A1A');
-	  const quoteBg = usePanelBackground('#111111');
+  const paneBg = usePaneContentBackground(ink.background);
+  const codeBg = usePanelBackground(ink.surface);
+  const quoteBg = usePanelBackground(ink.surface);
 
   // ── Markdown style rules keyed to current theme ──────────────────────────
   const markdownStyles = StyleSheet.create({
     body: {
       backgroundColor: 'transparent',
-      color: theme.colors.foreground,
+      color: ink.foreground,
       fontSize: sf(14),
       lineHeight: sf(22),
       maxWidth: proseMaxWidth,
     },
     heading1: {
-      color: theme.colors.accent,
+      color: ink.accent,
       fontSize: sf(24),
       fontWeight: '700',
       marginTop: 16,
       marginBottom: 8,
       borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
+      borderBottomColor: ink.border,
       paddingBottom: 4,
     },
     heading2: {
-      color: theme.colors.accent,
+      color: ink.accent,
       fontSize: sf(20),
       fontWeight: '700',
       marginTop: 14,
       marginBottom: 6,
     },
     heading3: {
-      color: theme.colors.accent,
+      color: ink.accent,
       fontSize: sf(17),
       fontWeight: '600',
       marginTop: 12,
       marginBottom: 4,
     },
     heading4: {
-      color: theme.colors.accent,
+      color: ink.accent,
       fontSize: sf(15),
       fontWeight: '600',
       marginTop: 10,
       marginBottom: 4,
     },
     heading5: {
-      color: theme.colors.accent,
+      color: ink.accent,
       fontSize: sf(14),
       fontWeight: '600',
       marginTop: 8,
       marginBottom: 2,
     },
     heading6: {
-      color: theme.colors.accent,
+      color: ink.accent,
       fontSize: sf(13),
       fontWeight: '600',
       marginTop: 8,
       marginBottom: 2,
     },
     paragraph: {
-      color: '#ECEDEE',
+      color: ink.foreground,
       fontSize: sf(14),
       lineHeight: sf(22),
       marginVertical: 6,
       maxWidth: proseMaxWidth,
     },
-	    code_inline: {
-	      backgroundColor: codeBg,
-	      color: theme.colors.ansiCyan,
+    code_inline: {
+      backgroundColor: codeBg,
+      color: ink.foreground,
       fontSize: sf(13),
       paddingHorizontal: 4,
       paddingVertical: 1,
       borderRadius: 3,
     },
-	    fence: {
-	      backgroundColor: codeBg,
+    fence: {
+      backgroundColor: codeBg,
+      color: ink.foreground,
+      borderWidth: 1,
+      borderColor: ink.border,
       borderRadius: 6,
       padding: 12,
       marginVertical: 8,
     },
-	    code_block: {
-	      backgroundColor: codeBg,
-      color: '#ECEDEE',
+    code_block: {
+      backgroundColor: codeBg,
+      borderWidth: 1,
+      borderColor: ink.border,
+      color: ink.foreground,
       fontSize: sf(13),
       lineHeight: sf(20),
       padding: 12,
@@ -193,58 +198,58 @@ export default function MarkdownPane() {
       marginVertical: 8,
     },
     link: {
-      color: theme.colors.accent,
+      color: ink.accent,
       textDecorationLine: 'underline',
     },
-	    blockquote: {
-	      backgroundColor: quoteBg,
+    blockquote: {
+      backgroundColor: quoteBg,
       borderLeftWidth: 3,
-      borderLeftColor: theme.colors.accent,
+      borderLeftColor: ink.accent,
       paddingLeft: 12,
       paddingVertical: 4,
       marginVertical: 8,
     },
     list_item: {
-      color: '#ECEDEE',
+      color: ink.foreground,
       fontSize: sf(14),
       lineHeight: sf(22),
       maxWidth: proseMaxWidth,
       paddingLeft: listIndent,
     },
     bullet_list_icon: {
-      color: theme.colors.accent,
+      color: ink.accent,
     },
     ordered_list_icon: {
-      color: theme.colors.accent,
+      color: ink.accent,
     },
     hr: {
-      backgroundColor: theme.colors.border,
+      backgroundColor: ink.border,
       height: 1,
       marginVertical: 12,
     },
     table: {
       borderWidth: 1,
-      borderColor: theme.colors.border,
+      borderColor: ink.border,
       marginVertical: 8,
     },
-	    th: {
-	      backgroundColor: codeBg,
-      color: theme.colors.accent,
+    th: {
+      backgroundColor: codeBg,
+      color: ink.accent,
       fontWeight: '700',
       padding: 8,
     },
     td: {
-      color: '#ECEDEE',
+      color: ink.foreground,
       padding: 8,
       borderTopWidth: 1,
-      borderTopColor: theme.colors.border,
+      borderTopColor: ink.border,
     },
     strong: {
-      color: '#FFFFFF',
+      color: ink.foreground,
       fontWeight: '700',
     },
     em: {
-      color: '#ECEDEE',
+      color: ink.foreground,
       fontStyle: 'italic',
     },
   });
@@ -253,17 +258,17 @@ export default function MarkdownPane() {
   return (
     <View style={[styles.container, { backgroundColor: paneBg }]}>
       {/* Header bar */}
-      <View style={[styles.header, { borderBottomColor: theme.colors.border }]}>
-        <Text style={[styles.headerTitle, { color: theme.colors.muted }]} numberOfLines={1}>
+      <View style={[styles.header, { borderBottomColor: ink.border }]}>
+        <Text style={[styles.headerTitle, { color: ink.muted }]} numberOfLines={1}>
           {filePath ? filePath.split('/').pop() : 'Markdown'}
         </Text>
         {content !== null && (
           <TouchableOpacity
             onPress={handleEdit}
-            style={[styles.editButton, { borderColor: theme.colors.border }]}
+            style={[styles.editButton, { borderColor: ink.border }]}
             accessibilityLabel="Edit file"
           >
-            <Text style={[styles.editButtonText, { color: theme.colors.accent }]}>Edit</Text>
+            <Text style={[styles.editButtonText, { color: ink.accent }]}>Edit</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -271,11 +276,11 @@ export default function MarkdownPane() {
       {/* Content area */}
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={ink.accent} />
         </View>
       ) : content === null ? (
         <View style={styles.centered}>
-          <Text style={styles.emptyText}>Open a .md file from the sidebar</Text>
+          <Text style={[styles.emptyText, { color: ink.muted }]}>Open a .md file from the sidebar</Text>
         </View>
       ) : (
         <ScrollView
@@ -302,7 +307,6 @@ export default function MarkdownPane() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
   },
   header: {
     flexDirection: 'row',
@@ -334,7 +338,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyText: {
-    color: '#555',
     fontSize: 14,
   },
   scrollView: {

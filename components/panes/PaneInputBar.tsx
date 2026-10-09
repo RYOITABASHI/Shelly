@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { KEY_BAR_HEIGHT } from '@/lib/layout-constants';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 import { useTheme } from '@/hooks/use-theme';
@@ -298,7 +299,7 @@ export default function PaneInputBar({
             <MaterialIcons
               name={isRecording ? 'mic' : 'mic-none'}
               size={14}
-              color={isRecording ? '#000' : C.text2}
+              color={isRecording ? C.btnPrimaryText : C.text2}
             />
           </TouchableOpacity>
         ) : null}
@@ -321,7 +322,7 @@ export default function PaneInputBar({
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   container: {
     borderTopWidth: S.borderWidth,
     borderTopColor: C.border,
@@ -412,4 +413,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));

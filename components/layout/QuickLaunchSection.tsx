@@ -16,6 +16,7 @@ import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { SidebarSection } from './SidebarSection';
 import { colors as C, fonts as F, padding as P, radii as R } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
 
@@ -85,7 +86,7 @@ export function QuickLaunchSection({ isOpen, onToggle, iconsOnly }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   row: {
     flexDirection: 'row',
     flexWrap: 'nowrap',
@@ -113,4 +114,4 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '600',
   },
-});
+}));
