@@ -41,6 +41,7 @@ import {
   RESEARCH_REQUIREMENTS_MARKER,
   SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE,
   SOURCING_CONTRACT_MARKER,
+  DISPATCH_PENDING_MESSAGE,
   absorbResearchStep,
   createChainEvidence,
   extractSourcesFromText,
@@ -101,7 +102,7 @@ const FINAL_FABRICATED = [
 /** Each `# run-agent-` materialize is one script run: research, summarize,
  *  final (suppressed), then the dispatch run. `fullTexts[i]` is what the i-th
  *  run left in its step-result copy. */
-function makeRunCommand(allCommands: string[], fullTexts: string[], opts: { failDispatch?: boolean } = {}) {
+function makeRunCommand(allCommands: string[], fullTexts: string[], opts: { failDispatch?: boolean; hangDispatch?: boolean } = {}) {
   const logs: Array<Record<string, unknown>> = [];
   let stepRuns = 0;
   return jest.fn(async (cmd: string) => {
@@ -109,6 +110,8 @@ function makeRunCommand(allCommands: string[], fullTexts: string[], opts: { fail
     if (cmd.includes(`# run-agent-${AGENT_ID}`) && cmd.includes('RESULT_FILE=')) {
       const isDispatch = cmd.includes('SHELLY_PRESET_RESULT_EOF');
       if (isDispatch && opts.failDispatch) throw new Error('dispatch exploded');
+      // Still running in the background: no run log yet.
+      if (isDispatch && opts.hangDispatch) return '';
       logs.push({
         agentId: AGENT_ID,
         timestamp: Date.now() + logs.length,
@@ -264,6 +267,44 @@ describe('attended chain — sourced briefing', () => {
     expect(scripts.some((s) => s.includes(RESEARCH_REQUIREMENTS_MARKER))).toBe(false);
     expect(scripts.some((s) => s.includes('SHELLY_PRESET_RESULT_EOF'))).toBe(false);
     expect(findAggregate(allCommands).status).toBe('success');
+  });
+});
+
+describe('attended chain — dispatch timeout and character limits', () => {
+  beforeEach(() => {
+    mockTerminalEmulator.execCommand.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    mockTerminalEmulator.runAgent.mockResolvedValue(undefined);
+    useAgentStore.getState().setRunHistory({});
+    useAIPaneStore.setState({ conversations: {}, isLoaded: true });
+  });
+
+  it('an action-only run that outlives the wait is recorded as pending, not error', async () => {
+    useAgentStore.getState().setAgents([makeAgent()]);
+    const allCommands: string[] = [];
+    await runAgentNow(AGENT_ID, makeRunCommand(allCommands, [RESEARCH_FULL, 'x', FINAL_FABRICATED, ''], { hangDispatch: true }), {
+      waitTimeoutMs: 300,
+      pollMs: 1,
+    });
+    const aggregate = findAggregate(allCommands);
+    expect(aggregate.status).toBe('pending');
+    expect(aggregate.steps![2].status).toBe('pending');
+    expect(aggregate.steps![2].outputPreview).toBe(DISPATCH_PENDING_MESSAGE);
+    expect(aggregate.outputPreview).toMatch(/Step 3\/3 still running/);
+    // The background run's own log is never deleted, so it reconciles the
+    // real outcome when it lands (only files present at aggregate time go).
+  });
+
+  it('a character-limited final action gets the compact one-line-per-item form', async () => {
+    const agent = makeAgent({ type: 'local' }, { type: 'notify' });
+    agent.orchestration = { ...agent.orchestration!, charLimit: 280 };
+    useAgentStore.getState().setAgents([agent]);
+    const allCommands: string[] = [];
+    await runAgentNow(AGENT_ID, makeRunCommand(allCommands, [RESEARCH_FULL, 'x', FINAL_FABRICATED, '']), { waitTimeoutMs: 2000, pollMs: 1 });
+    const dispatch = allCommands.find((c) => c.includes('SHELLY_PRESET_RESULT_EOF') && c.includes(`# run-agent-${AGENT_ID}`))!;
+    const preset = dispatch.split("<<'SHELLY_PRESET_RESULT_EOF'")[1].split('\nSHELLY_PRESET_RESULT_EOF')[0].trim();
+    expect(preset).not.toContain('## Sources');
+    expect(preset).not.toMatch(/Neural LLM/);
+    for (const line of preset.split('\n')) expect(line).toMatch(/^• .+ https?:\/\/\S+$/);
   });
 });
 

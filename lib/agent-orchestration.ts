@@ -325,10 +325,13 @@ export function buildStepPrompt(
  */
 export function reduceStatus(
   steps: Pick<AgentRunStep, 'status'>[],
-): 'success' | 'error' | 'skipped' | 'unavailable' {
+): 'success' | 'error' | 'skipped' | 'unavailable' | 'pending' {
   if (steps.length === 0) return 'skipped';
   if (steps.some((s) => s.status === 'error')) return 'error';
   if (steps.some((s) => s.status === 'unavailable')) return 'unavailable';
+  // 'pending' (2026-10-09): the final action is still running in the
+  // background; never an error, never counted by the circuit breaker.
+  if (steps.some((s) => s.status === 'pending')) return 'pending';
   if (steps.every((s) => s.status === 'skipped')) return 'skipped';
   return 'success';
 }
@@ -355,6 +358,10 @@ export function combineFinalPreview(steps: AgentRunStep[], totalSteps?: number):
       0,
       MAX_PREVIEW_CHARS,
     );
+  }
+  const pending = steps.find((s) => s.status === 'pending');
+  if (pending) {
+    return `Step ${pending.index + 1}/${total} still running: ${pending.outputPreview}`.slice(0, MAX_PREVIEW_CHARS);
   }
   const last = [...steps].reverse().find((s) => s.status === 'success');
   const head = `Completed ${steps.length} step(s). `;

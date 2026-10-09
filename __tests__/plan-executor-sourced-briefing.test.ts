@@ -407,6 +407,49 @@ describe('shelly-plan-executor.js — sourced 3-step briefing chain', () => {
   }, 30000);
 });
 
+describe('shelly-plan-executor.js — character-limited final action (compact form)', () => {
+  let server: http.Server;
+  let port = 0;
+  let n = 0;
+  beforeEach((done) => {
+    n = 0;
+    server = http.createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        n += 1;
+        const body = n === 1
+          ? PERPLEXITY_RESPONSE
+          : { choices: [{ message: { content: n === 2 ? '- **Google releases Gemma 3n for on-device AI** — model [1]' : FABRICATED_FINAL } }] };
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(body));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      port = (server.address() as any).port;
+      done();
+    });
+  });
+  afterEach((done) => {
+    server.close(done);
+  });
+
+  it('renders one line per item with its URL inside the limit, never a truncated Sources section', async () => {
+    const home = makeHome();
+    const planFile = writePlan(home, port);
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    plan.limits.charLimit = 280;
+    fs.writeFileSync(planFile, JSON.stringify(plan));
+    await runExecutor(planFile, home);
+    const out = readResultFile(home).trim();
+    expect(out).not.toContain('## Sources');
+    expect(out).not.toMatch(/Neural LLM/);
+    const lines = out.split('\n');
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    for (const line of lines) expect(line).toMatch(/^• .+ https?:\/\/\S+$/);
+    expect(readRunLog(home).status).toBe('success');
+  }, 30000);
+});
+
 describe('--sourcing-op CLI (used by the Codex bash chain)', () => {
   function tmp(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'sourcing-cli-'));

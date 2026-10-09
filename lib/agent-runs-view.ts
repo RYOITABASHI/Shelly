@@ -70,6 +70,10 @@ export function runStatusTone(status: AgentRunLog['status']): RunStatusTone {
     // (it never trips the circuit breaker), so it must not read like one.
     case 'unavailable':
       return 'warning';
+    // 'pending' = the final action is still running in the background; its
+    // own run log will carry the real outcome.
+    case 'pending':
+      return 'warning';
     case 'skipped':
     default:
       return 'muted';
@@ -85,6 +89,8 @@ export function runStatusIcon(status: AgentRunLog['status']): string {
       return 'error';
     case 'unavailable':
       return 'cloud-off';
+    case 'pending':
+      return 'schedule';
     case 'skipped':
     default:
       return 'remove-circle-outline';

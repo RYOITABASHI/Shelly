@@ -58,7 +58,7 @@
 2026-10-09 実機インシデント（build 2498、Perplexity→ローカルLLM要約→Markdownブリーフィングの3ステップでURLゼロ・捏造見出しのドラフトが保存された）の修正。`lib/agent-sources.ts` が共通コアで、attended TSチェーン（`lib/agent-manager.ts`）、unattended PlanSpec executor（`scripts/shelly-plan-executor.js`、生成ポート＋APKミラー、executor v6）、Codex bashチェーン（`codexOrchestrationChainCommand`、executorの `--sourcing-op` CLI経由）の3経路すべてに適用。生成スクリプトは v65。
 
 - **(P1) 実機未検証**: 再現発話「First, search the web with Perplexity for the top 3 on-device AI news stories. Then summarize them with the local LLM. Finally, write a markdown briefing.」（action=draft）を attended / スケジュール発火の両方で確認すること。期待: 3件以下の番号付き項目が各 `[n]` で終わり、末尾にプログラム生成の `## Sources`（リンク＋日付）。研究ステップがソースゼロなら「No verifiable sources」で失敗し何も保存しない。
-- **(P2) 意図的に見送り — 漢字の固有名詞チェック**: 要約の主張チェック（数値・ラテン文字の固有名詞・カタカナ連続）は、引用元テキストが日本語のときも漢字連続は照合しない（ノイズが多すぎて正しい言い換えまで書き換えてしまうため）。引用の妥当性＋同一文字種のトークン重なりで代替している。
+- **(P2) 意図的に見送り — 漢字の固有名詞チェック**: 要約の主張チェック（数値・ラテン文字の固有名詞・カタカナ連続）は、引用元テキストが日本語のときも漢字連続は照合しない（ノイズが多すぎて正しい言い換えまで書き換えてしまうため）。引用の妥当性＋同一文字種のトークン重なりで代替している。英語ソースを引く日本語項目は、ソースと共有するアンカー（数値・ラテン文字の固有名詞）が1つも無ければソース自身の要約に書き換える（2026-10-09 追加）。「倍」「半分」「twice」等の数量表現も数値主張として照合済み。
 
 ### One-shot（1回だけ・時刻指定）エージェントスケジュール — 実装済み・実機未検証 (P1)
 
