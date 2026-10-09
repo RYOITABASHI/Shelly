@@ -94,6 +94,17 @@ class TerminalViewModule : Module() {
                 view.setTransparentBackground(enabled ?: false)
             }
 
+            // Minimum-contrast safeguard (lib/terminal-contrast.ts resolves the
+            // user setting; <= 1 disables). contrastBackground is the '#RRGGBB'
+            // surface visible behind transparent cells.
+            Prop("minimumContrastRatio") { view: ShellyTerminalView, ratio: Double? ->
+                view.setMinimumContrastRatio(ratio ?: 1.0)
+            }
+
+            Prop("contrastBackground") { view: ShellyTerminalView, hex: String? ->
+                view.setContrastBackground(hex)
+            }
+
             Prop("quoteActionLabel") { view: ShellyTerminalView, label: String? ->
                 view.setQuoteActionLabel(label)
             }

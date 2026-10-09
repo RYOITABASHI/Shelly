@@ -69,6 +69,60 @@ public final class TerminalRenderer {
             }
         };
 
+    // ── Minimum-contrast safeguard (Shelly) ─────────────────────────────────
+    // See MinimumContrast.java / lib/terminal-contrast.ts. mMinContrast <= 1
+    // disables the floor and the gray-ramp remap, restoring the legacy
+    // (pre-safeguard) dim + color resolution. mContrastBackground is
+    // independent of the floor: in transparent mode it is what default-bg
+    // cells resolve to for reverse video / selection (0 keeps legacy black).
+    private float mMinContrast = 1f;
+    /** Opaque ARGB of what shows behind unpainted (transparent) cells, 0 = unknown. */
+    private int mContrastBackground = 0;
+    /** Per-frame: color visible behind default-background cells. */
+    private int mFrameDefaultBackground = OPAQUE_TERMINAL_BACKGROUND;
+    /** Per-frame: remap the xterm gray ramp (232..255) for a light default background. */
+    private boolean mFrameRemapGrayRamp = false;
+    private static final int MAX_CONTRAST_CACHE_ENTRIES = 1024;
+    private final LinkedHashMap<Long, Integer> mContrastCache =
+        new LinkedHashMap<Long, Integer>(256, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Long, Integer> eldest) {
+                return size() > MAX_CONTRAST_CACHE_ENTRIES;
+            }
+        };
+
+    /**
+     * @param minContrast WCAG ratio floor for text; <= 1 disables.
+     * @param contrastBackground opaque ARGB color visible behind transparent
+     *                           terminal cells (the RN surface), 0 if unknown.
+     */
+    public void setContrastPolicy(float minContrast, int contrastBackground) {
+        if (minContrast != mMinContrast || contrastBackground != mContrastBackground) {
+            mMinContrast = minContrast;
+            mContrastBackground = contrastBackground;
+            mContrastCache.clear();
+        }
+    }
+
+    private int applyMinimumContrast(int fore, int back, boolean dim) {
+        final long key = ((long) ((fore & 0xffffff) | (dim ? 0x1000000 : 0)) << 32) | (back & 0xffffffffL);
+        Integer cached = mContrastCache.get(key);
+        if (cached != null) return cached;
+        final double target = dim ? MinimumContrast.dimMinimumContrast(mMinContrast) : mMinContrast;
+        final int adjusted = MinimumContrast.ensureMinimumContrast(fore, back, target);
+        mContrastCache.put(key, adjusted);
+        return adjusted;
+    }
+
+    private int remapGrayRampIfDefault(int colorIndex, int[] palette) {
+        if (mFrameRemapGrayRamp && colorIndex >= 232 && colorIndex <= 255
+            && (palette[colorIndex] & 0xffffff) == MinimumContrast.xtermDefaultColor(colorIndex)) {
+            return MinimumContrast.remapGrayRampForLightTheme(
+                colorIndex, palette[TextStyle.COLOR_INDEX_FOREGROUND], mFrameDefaultBackground);
+        }
+        return palette[colorIndex];
+    }
+
     public TerminalRenderer(int textSize, Typeface typeface) {
         mTextSize = textSize;
         mTypeface = typeface;
@@ -111,6 +165,14 @@ public final class TerminalRenderer {
         final TerminalBuffer screen = mEmulator.getScreen();
         final int[] palette = mEmulator.mColors.mCurrentColors;
         final int cursorShape = mEmulator.getCursorStyle();
+
+        // What is visible behind default-background cells this frame: the
+        // painted opaque black, or — when transparent — the RN surface color
+        // supplied via setContrastPolicy (falls back to black if unknown, the
+        // legacy behaviour).
+        mFrameDefaultBackground = (transparentBackground && mContrastBackground != 0)
+            ? (0xff000000 | mContrastBackground) : OPAQUE_TERMINAL_BACKGROUND;
+        mFrameRemapGrayRamp = mMinContrast > 1f && MinimumContrast.isLightBackground(mFrameDefaultBackground);
 
         if (reverseVideo)
             canvas.drawColor(palette[TextStyle.COLOR_INDEX_FOREGROUND], PorterDuff.Mode.SRC);
@@ -244,14 +306,19 @@ public final class TerminalRenderer {
         if ((foreColor & 0xff000000) != 0xff000000) {
             // Let bold have bright colors if applicable (one of the first 8):
             if (bold && foreColor >= 0 && foreColor < 8) foreColor += 8;
-            foreColor = palette[foreColor];
+            foreColor = remapGrayRampIfDefault(foreColor, palette);
         }
 
         if ((backColor & 0xff000000) != 0xff000000) {
-            backColor = palette[backColor];
+            backColor = remapGrayRampIfDefault(backColor, palette);
         }
         if (usesDefaultBackground) {
-            backColor = OPAQUE_TERMINAL_BACKGROUND;
+            // Opaque mode: the literal opaque black that gets painted.
+            // Transparent mode: the surface showing through (only consulted
+            // for reverse video / selection / contrast — never painted unless
+            // reversed), so inverse default text reads as paper-on-ink instead
+            // of black-on-ink on light themes.
+            backColor = mFrameDefaultBackground;
         }
 
         // Reverse video here if _one and only one_ of the reverse flags are set:
@@ -290,7 +357,14 @@ public final class TerminalRenderer {
         }
 
         if ((effect & TextStyle.CHARACTER_ATTRIBUTE_INVISIBLE) == 0) {
-            if (dim) {
+            if (mMinContrast > 1f) {
+                // The glyph sits on the block cursor when there is one,
+                // otherwise on this run's (possibly unpainted) background.
+                final int contrastBack = (cursor != 0 && cursorStyle == TerminalEmulator.TERMINAL_CURSOR_STYLE_BLOCK)
+                    ? cursor : backColor;
+                if (dim) foreColor = MinimumContrast.dimToward(foreColor, contrastBack);
+                foreColor = applyMinimumContrast(foreColor, contrastBack, dim);
+            } else if (dim) {
                 int red = (0xFF & (foreColor >> 16));
                 int green = (0xFF & (foreColor >> 8));
                 int blue = (0xFF & foreColor);

@@ -483,6 +483,7 @@ export async function executeCommand(
             llmInterpreterEnabled:   settings.llmInterpreterEnabled,
             realtimeTranslateEnabled:settings.realtimeTranslateEnabled,
             gpuRendering:            settings.gpuRendering,
+            terminalMinimumContrast: settings.terminalMinimumContrast ?? 'auto',
           };
           try {
             const TerminalEmulator = require('@/modules/terminal-emulator/src/TerminalEmulatorModule').default;
@@ -553,6 +554,19 @@ export async function executeCommand(
             const boolVal = rawVal === 'true' || rawVal === '1' || rawVal === 'on';
             useSettingsStore.getState().updateSettings({ [key]: boolVal });
             return { lines: out(`${key} = ${boolVal}`), newState: {} };
+          }
+
+          // Terminal minimum-contrast floor: 'auto' | ratio (<= 1 = off)
+          if (key === 'terminalMinimumContrast') {
+            if (rawVal === 'auto') {
+              useSettingsStore.getState().updateSettings({ terminalMinimumContrast: 'auto' });
+              return { lines: out('terminalMinimumContrast = auto'), newState: {} };
+            }
+            const ratio = rawVal === 'off' ? 1 : parseFloat(rawVal);
+            if (isNaN(ratio)) return { lines: err(`config: '${rawVal}' is not 'auto', 'off' or a number`), newState: {} };
+            const clamped = Math.min(21, Math.max(1, ratio));
+            useSettingsStore.getState().updateSettings({ terminalMinimumContrast: clamped });
+            return { lines: out(`terminalMinimumContrast = ${clamped}`), newState: {} };
           }
 
           // Number settings

@@ -46,6 +46,19 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
             field = value
         }
 
+    // Minimum-contrast floor (com.termux.view.MinimumContrast; <= 1 disables).
+    // The GL path is always opaque, so default-background cells resolve to
+    // the painted opaque black for contrast purposes.
+    var minimumContrast = 1f
+        set(value) {
+            if (field != value) {
+                field = value
+                contrastCache.clear()
+                markAllDirty()
+            }
+        }
+    private val contrastCache = HashMap<Long, Int>()
+
     fun init() {
         totalCells = cols * rows
         val vertexCount = totalCells * QUADS_PER_CELL * VERTICES_PER_QUAD
@@ -149,8 +162,8 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
                 val highlightFg = if (highlights != null && col < highlights.size) highlights[col] else -1
 
                 val effectiveFg = if (highlightFg >= 0) highlightFg else fg
-                val fgColor = resolveColor(effectiveFg)
                 val bgColor = resolveBackgroundColor(bg)
+                val fgColor = applyMinimumContrast(resolveColor(effectiveFg), bgColor)
 
                 val x = col * cellW
                 val y = row * cellH
@@ -271,6 +284,17 @@ class CellBatcher(private var cols: Int, private var rows: Int, private val atla
         vertexData.put(x); vertexData.put(y + h)
         vertexData.put(u0); vertexData.put(v1)
         vertexData.put(r); vertexData.put(g); vertexData.put(b); vertexData.put(a)
+    }
+
+    private fun applyMinimumContrast(fg: Int, bg: Int): Int {
+        if (minimumContrast <= 1f) return fg
+        val back = if ((bg ushr 24) == 0) OPAQUE_TERMINAL_BACKGROUND else bg
+        val key = ((fg.toLong() and 0xFFFFFFL) shl 32) or (back.toLong() and 0xFFFFFFFFL)
+        contrastCache[key]?.let { return it }
+        val adjusted = com.termux.view.MinimumContrast.ensureMinimumContrast(fg, back, minimumContrast.toDouble())
+        if (contrastCache.size >= 1024) contrastCache.clear()
+        contrastCache[key] = adjusted
+        return adjusted
     }
 
     private fun resolveColor(colorIndex: Int): Int {

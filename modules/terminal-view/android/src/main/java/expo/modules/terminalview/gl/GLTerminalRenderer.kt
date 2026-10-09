@@ -110,6 +110,15 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         highlightWorker.highlightRows(emulator.screen, topRow, topRow + rows)
     }
 
+    // Minimum-contrast floor (<= 1 disables); survives cellBatcher re-init.
+    private var minimumContrast = 1f
+
+    fun setMinimumContrast(ratio: Float) {
+        minimumContrast = ratio
+        if (!::cellBatcher.isInitialized) return
+        cellBatcher.minimumContrast = ratio
+    }
+
     fun updateAnsiColors(colors: IntArray) {
         if (!::cellBatcher.isInitialized) return
         cellBatcher.updateAnsiColors(colors)
@@ -159,6 +168,7 @@ class GLTerminalRenderer(private val context: Context) : GLSurfaceView.Renderer 
         // Init batcher
         cellBatcher = CellBatcher(cols, rows, atlas)
         cellBatcher.transparentBackground = transparentBackground
+        cellBatcher.minimumContrast = minimumContrast
         cellBatcher.init()
 
         // Init highlight worker

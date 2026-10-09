@@ -536,6 +536,13 @@ export type AppSettings = {
    */
   terminalWallpaperTransparency?: boolean;
   /**
+   * Minimum text contrast floor for the terminal (lib/terminal-contrast.ts).
+   * 'auto' (default): 3:1 on light terminal surfaces (e.g. Case File beige),
+   * off on dark ones so user dark schemes render exactly as authored. A
+   * number is an explicit WCAG ratio; <= 1 turns the safeguard off.
+   */
+  terminalMinimumContrast?: 'auto' | number;
+  /**
    * bug #48: Show the Vim-specific key set in the terminal CommandKeyBar.
    * When false (default), the Vim page is hidden so `Esc / :w / :q / :wq / dd`
    * don't clutter the key bar for users who never open vim. Users who live

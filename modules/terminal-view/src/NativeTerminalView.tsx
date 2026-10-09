@@ -87,6 +87,14 @@ export interface NativeTerminalViewProps extends ViewProps {
    * expose panel or wallpaper layers behind empty terminal cells.
    */
   transparentBackground?: boolean;
+  /**
+   * Minimum WCAG contrast ratio enforced for text (<= 1 disables). Resolve
+   * the user setting with lib/terminal-contrast.ts
+   * resolveTerminalMinimumContrast() before passing it.
+   */
+  minimumContrastRatio?: number;
+  /** '#RRGGBB' of the surface visible behind transparent terminal cells. */
+  contrastBackground?: string;
   onOutput?: (event: OutputEvent) => void;
   onBlockCompleted?: (event: BlockCompletedEvent) => void;
   onSelectionChanged?: (event: SelectionChangedEvent) => void;

@@ -911,6 +911,7 @@ const DisplaySection = React.memo(function DisplaySection() {
       {/* UI visual preset */}
       <ThemeRow />
       <FontRow />
+      <TerminalContrastRow />
     </Section>
   );
 });
@@ -1047,6 +1048,58 @@ function FontRow() {
         })}
       </View>
     </Row>
+  );
+}
+
+// Terminal minimum text contrast (lib/terminal-contrast.ts). 'auto' = 3:1 on
+// light terminal surfaces (Case File), off on dark ones. Rendered as a
+// full-width wrapped block like ThemeRow: four options overflow `Row`'s
+// narrow value column.
+type TerminalContrastOption = 'auto' | 'off' | 3 | 4.5;
+
+function TerminalContrastRow() {
+  const { t } = useTranslation();
+  const setting = useSettingsStore((s) => s.settings.terminalMinimumContrast ?? 'auto');
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const current: TerminalContrastOption =
+    setting === 'auto' ? 'auto' : typeof setting === 'number' && setting <= 1 ? 'off' : (setting as number) >= 4.5 ? 4.5 : 3;
+  const options: { value: TerminalContrastOption; label: string }[] = [
+    { value: 'auto', label: t('settings.terminal_contrast_auto') },
+    { value: 'off', label: t('settings.terminal_contrast_off') },
+    { value: 3, label: '3:1' },
+    { value: 4.5, label: '4.5:1' },
+  ];
+  return (
+    <View style={styles.themeRowWrap}>
+      <Text style={[styles.rowLabel, { color: C.text1, marginBottom: 6 }]}>
+        {t('settings.terminal_contrast')}
+      </Text>
+      <View style={[styles.segGroup, styles.segGroupWrap, { borderColor: C.border }]}>
+        {options.map((opt) => {
+          const active = current === opt.value;
+          return (
+            <Pressable
+              key={String(opt.value)}
+              style={[
+                styles.segBtn,
+                active && { backgroundColor: withAlpha(C.accent, 0.15) },
+              ]}
+              onPress={() => updateSettings({
+                terminalMinimumContrast: opt.value === 'off' ? 1 : opt.value,
+              })}
+              hitSlop={4}
+            >
+              <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={[styles.credentialHint, { color: C.text3 }]}>
+        {t('settings.terminal_contrast_hint')}
+      </Text>
+    </View>
   );
 }
 

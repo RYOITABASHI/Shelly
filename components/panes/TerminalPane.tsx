@@ -46,6 +46,7 @@ import { ProcessGuardModal } from '@/components/terminal/ProcessGuardModal';
 import { FirstMateOverlay } from '@/components/terminal/FirstMateOverlay';
 import { isProcessKill } from '@/lib/process-guard';
 import { getTerminalTheme } from '@/lib/terminal-theme';
+import { parseHexColor, resolveTerminalMinimumContrast } from '@/lib/terminal-contrast';
 import type { TabSession, SessionStatus } from '@/store/types';
 import { generateId } from '@/lib/id';
 import { BlockList } from '@/components/terminal/BlockList';
@@ -1271,6 +1272,17 @@ export default function TerminalScreen() {
   const paneContentBg = usePaneContentBackground(C.bgDeep);
   const terminalWallpaperActive = terminalWallpaperOptIn && !!wallpaperUriForTerminal;
   const terminalPaneBg = terminalWallpaperActive ? paneContentBg : C.bgDeep;
+  // Minimum-contrast safeguard (lib/terminal-contrast.ts). The native view
+  // only knows what it paints itself; when transparent, the surface behind
+  // the cells is the app's bgDeep (wallpaper image layers on top of it are
+  // not modelled — bgDeep is the best single-color estimate, and Case File
+  // suspends the wallpaper opacity entirely). Opaque mode paints black.
+  const terminalContrastBackground =
+    terminalWallpaperActive && parseHexColor(C.bgDeep) !== null ? C.bgDeep : TERMINAL_SURFACE_BACKGROUND;
+  const terminalMinimumContrast = resolveTerminalMinimumContrast(
+    settings.terminalMinimumContrast,
+    terminalContrastBackground,
+  );
 
   // Terminal font size honors the user's Settings → Display → Font Size
   // choice. Since the terminal now uses JetBrains Mono (not Silkscreen),
@@ -1473,6 +1485,8 @@ export default function TerminalScreen() {
             // wallpaper is actually set — see terminalPaneBg's comment above
             // for why this is a reversible opt-in rather than unconditional.
             transparentBackground={terminalWallpaperActive}
+            minimumContrastRatio={terminalMinimumContrast}
+            contrastBackground={terminalContrastBackground}
             style={[
               styles.terminalView,
               {

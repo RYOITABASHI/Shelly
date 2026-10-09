@@ -53,6 +53,13 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### ターミナル最小コントラスト保証（minimum contrast ratio）— 実装済み・実機未検証 (P2)
+
+2026-10-09: Case File（ベージュ #E8E3D0）でCodex CLI等のTUIが出す256色/truecolorの淡色（薄緑・灰・水色、SGR 2 dim）が判読不能だった問題。`lib/terminal-contrast.ts`（参照実装＋jest）とJava逐行移植`modules/terminal-view/.../com/termux/view/MinimumContrast.java`をCanvas `TerminalRenderer`とGL `CellBatcher`に適用。設定`terminalMinimumContrast`（既定`auto`=明るい面で3:1、暗い面はオフ）。グレーランプ232-255は明るい面でテーマ背景→前景の補間に再マップ。透過モードの既定背景セルは反転/選択時にベージュを使う（従来は黒→墨地に黒文字で不可視）。
+
+- **(P2) 実機未検証**: Case File＋壁紙透過ONでCodex CLIを起動し、ファイル名・コマンド引数・フッタ状態行が読めること、選択反転とブロックカーソル上の文字が読めること、`shelly config set terminalMinimumContrast off`で従来表示に戻ること、暗いテーマ（Blue等）で見た目が変わらないことを確認。Kotlin/JavaはCIでのみコンパイル。
+- **(P3) 既知の近似**: 壁紙画像が見えているテーマでは実際の背景（画像）ではなく`C.bgDeep`単色でコントラストを判定する。
+
 ### 出典付きブリーフィング（sourced briefings）— 3経路とも実装済み・実機未検証、意図的な残り1件 (P1/P2)
 
 2026-10-09 実機インシデント（build 2498、Perplexity→ローカルLLM要約→Markdownブリーフィングの3ステップでURLゼロ・捏造見出しのドラフトが保存された）の修正。`lib/agent-sources.ts` が共通コアで、attended TSチェーン（`lib/agent-manager.ts`）、unattended PlanSpec executor（`scripts/shelly-plan-executor.js`、生成ポート＋APKミラー、executor v6）、Codex bashチェーン（`codexOrchestrationChainCommand`、executorの `--sourcing-op` CLI経由）の3経路すべてに適用。生成スクリプトは v65。

@@ -572,6 +572,39 @@ class ShellyTerminalView(
         applyTerminalSurface()
     }
 
+    // ===== Minimum-contrast safeguard =====
+    // See lib/terminal-contrast.ts (reference math) and
+    // com.termux.view.MinimumContrast (Java port used by both renderers).
+    private var minimumContrastRatio = 1f
+    private var contrastBackground = 0
+
+    fun setMinimumContrastRatio(ratio: Double) {
+        minimumContrastRatio = if (ratio.isFinite() && ratio > 1.0) ratio.coerceAtMost(21.0).toFloat() else 1f
+        applyContrastPolicy()
+    }
+
+    fun setContrastBackground(hex: String?) {
+        val digits = hex?.trim()?.removePrefix("#")
+        contrastBackground = if (digits != null && digits.length == 6) {
+            try {
+                (0xFF000000.toInt()) or digits.toInt(16)
+            } catch (_: NumberFormatException) {
+                0
+            }
+        } else {
+            0
+        }
+        applyContrastPolicy()
+    }
+
+    private fun applyContrastPolicy() {
+        terminalView.setContrastPolicy(minimumContrastRatio, contrastBackground)
+        val ratio = minimumContrastRatio
+        glTerminalView?.let { glView ->
+            glView.queueEvent { glView.renderer.setMinimumContrast(ratio) }
+        }
+    }
+
     private fun applyTerminalSurface() {
         if (!transparentBackground) {
             applyOpaqueTerminalSurface()
@@ -753,6 +786,7 @@ class ShellyTerminalView(
                     )
                 }
                 addView(glTerminalView)
+                applyContrastPolicy()
             }
             terminalView.visibility = View.GONE
             glTerminalView?.visibility = View.VISIBLE

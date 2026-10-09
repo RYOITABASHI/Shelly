@@ -95,6 +95,24 @@ public class TerminalView extends View {
         invalidate();
     }
 
+    // Minimum-contrast policy (Shelly). Kept here rather than only on the
+    // renderer because setTextSize/setTypeface recreate mRenderer; it is
+    // re-pushed every frame (setContrastPolicy is a no-op when unchanged).
+    private float mMinimumContrast = 1f;
+    private int mContrastBackground = 0;
+
+    /**
+     * @param minContrast WCAG ratio floor for text (<= 1 disables).
+     * @param contrastBackground opaque ARGB of the surface visible behind
+     *                           transparent cells, or 0 if unknown.
+     */
+    public void setContrastPolicy(float minContrast, int contrastBackground) {
+        if (minContrast == mMinimumContrast && contrastBackground == mContrastBackground) return;
+        mMinimumContrast = minContrast;
+        mContrastBackground = contrastBackground;
+        invalidate();
+    }
+
     /** The top row of text to display. Ranges from -activeTranscriptRows to 0. */
     int mTopRow;
     int[] mDefaultSelectors = new int[]{-1,-1,-1,-1};
@@ -1690,6 +1708,7 @@ public class TerminalView extends View {
                 mTextSelectionCursorController.getSelectors(sel);
             }
 
+            mRenderer.setContrastPolicy(mMinimumContrast, mContrastBackground);
             mRenderer.render(mEmulator, canvas, mTopRow, sel[0], sel[1], sel[2], sel[3], mTransparentBackground);
 
             // Draw composing (pre-edit) text overlay at cursor position
