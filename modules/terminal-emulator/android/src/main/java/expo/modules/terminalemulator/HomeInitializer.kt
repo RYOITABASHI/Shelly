@@ -1181,7 +1181,20 @@ patchCodex(libDir);
     //      Shelly already pins to danger-full-access), drops roots for an
     //      explicit read-only sandbox, and dedupes roots (minus Codex's cwd).
     //      Sandbox defaults are unchanged.
-    private const val BASHRC_VERSION = 245
+    // v246: python3 inside Codex-executed commands. Codex runs tool commands
+    //      through its own shell, so the bash python3() function (which sets
+    //      PYTHONHOME/PYTHONPATH) is bypassed and the bare binary — exec'd via
+    //      libexec_wrapper.so -> linker64, so /proc/self/exe is linker64 and
+    //      CPython can't derive its prefix — dies with "Failed to import
+    //      encodings module". The codex() function, the $HOME/bin/codex shim
+    //      and shelly-agent-driver.js now export PYTHONHOME/PYTHONPATH (resolved
+    //      bundled-first, then the dev-tools pack, same as __shelly_tool_path)
+    //      into Codex's environment unless the caller already set PYTHONHOME.
+    //      Also exports TZ from persist.sys.timezone (when TZ is unset) so
+    //      child processes that don't read the Android property themselves
+    //      (Codex's footer clock showed UTC) use the device time zone.
+    //      Sandbox/approval policies are unchanged.
+    private const val BASHRC_VERSION = 246
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1582,6 +1595,15 @@ patchCodex(libDir);
             sb.appendLine("export TERMINFO=\"$libDir/terminfo\"")
             sb.appendLine("export COLORTERM=truecolor")
             sb.appendLine("export LANG=en_US.UTF-8")
+            // v246: bionic reads persist.sys.timezone itself, but Rust/ICU
+            // children (Codex footer clock) fall back to UTC without TZ.
+            // Resolved at shell start (not baked) so a device time-zone
+            // change applies to the next shell; never overrides a user TZ.
+            sb.appendLine("if [ -z \"\${TZ:-}\" ]; then")
+            sb.appendLine("  __shelly_tz=\$(/system/bin/getprop persist.sys.timezone 2>/dev/null)")
+            sb.appendLine("  [ -n \"\$__shelly_tz\" ] && export TZ=\"\$__shelly_tz\"")
+            sb.appendLine("  unset __shelly_tz")
+            sb.appendLine("fi")
             sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
             // v53: point $SHELL at the LibExtractor-extracted shelly_shell
             // binary in $libDir. Using nativeLibraryDir (v49) doesn't work on
@@ -1985,6 +2007,23 @@ patchCodex(libDir);
             sb.appendLine("__shelly_cat > \"\$HOME/bin/codex\" <<'SHELLY_CODEX_SHIM_EOF'")
             sb.appendLine("if [ -z \"\${SHELLY_LIB_DIR:-}\" ]; then")
             sb.appendLine("  SHELLY_LIB_DIR=\"$libDir\"")
+            sb.appendLine("fi")
+            // v246: same python env as codex() below (see BASHRC_VERSION 246).
+            sb.appendLine("if [ -z \"\${PYTHONHOME:-}\" ]; then")
+            sb.appendLine("  for __shelly_py in \"\$SHELLY_LIB_DIR/python3\" \"\$SHELLY_LIB_DIR/packs/dev-tools/python3\"; do")
+            sb.appendLine("    if [ -x \"\$__shelly_py\" ]; then")
+            sb.appendLine("      PYTHONPATH=\"\${__shelly_py%/*}/python3.13\${PYTHONPATH:+:\$PYTHONPATH}\"")
+            sb.appendLine("      PYTHONHOME=\"\${__shelly_py%/*}/python3.13\"")
+            sb.appendLine("      export PYTHONHOME PYTHONPATH")
+            sb.appendLine("      break")
+            sb.appendLine("    fi")
+            sb.appendLine("  done")
+            sb.appendLine("  unset __shelly_py")
+            sb.appendLine("fi")
+            sb.appendLine("if [ -z \"\${TZ:-}\" ]; then")
+            sb.appendLine("  __shelly_tz=\$(/system/bin/getprop persist.sys.timezone 2>/dev/null)")
+            sb.appendLine("  [ -n \"\$__shelly_tz\" ] && export TZ=\"\$__shelly_tz\"")
+            sb.appendLine("  unset __shelly_tz")
             sb.appendLine("fi")
             sb.appendLine("__shelly_linker64() {")
             sb.appendLine("  LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \"\$@\"")
@@ -2735,6 +2774,15 @@ patchCodex(libDir);
             sb.appendLine("      return 1")
             sb.appendLine("    fi")
             sb.appendLine("    echo '[shelly] Codex login OK; starting Codex.'")
+            sb.appendLine("  fi")
+            // v246: Codex runs tool commands through its own shell, bypassing the
+            // python3() function above; export the same PYTHONHOME/PYTHONPATH
+            // into Codex's env (function-scoped via local -x, so the
+            // interactive shell itself is unchanged after codex returns).
+            sb.appendLine("  local __shelly_py=''")
+            sb.appendLine("  if [ -z \"\${PYTHONHOME:-}\" ] && __shelly_py=\$(__shelly_tool_path python3 dev-tools); then")
+            sb.appendLine("    local -x PYTHONPATH=\"\${__shelly_py%/*}/python3.13\${PYTHONPATH:+:\$PYTHONPATH}\"")
+            sb.appendLine("    local -x PYTHONHOME=\"\${__shelly_py%/*}/python3.13\"")
             sb.appendLine("  fi")
             sb.appendLine("  local -a __codex_args=()")
             sb.appendLine("  __shelly_codex_alias_for_path() {")

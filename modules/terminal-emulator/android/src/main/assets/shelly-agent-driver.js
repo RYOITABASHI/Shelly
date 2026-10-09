@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -409,6 +409,46 @@ function androidBaseEnv(libDir) {
   };
 }
 
+// Codex runs tool commands through its own shell, so the interactive bash
+// python3() wrapper (which sets PYTHONHOME/PYTHONPATH) is bypassed. Exec'd via
+// libexec_wrapper.so -> linker64, CPython can't derive its prefix from
+// /proc/self/exe and dies with "Failed to import encodings module". Mirror
+// HomeInitializer.kt (BASHRC_VERSION 246): bundled python3 first, then the
+// dev-tools pack; never override a caller-provided PYTHONHOME. Also carry the
+// device time zone (persist.sys.timezone) as TZ when unset, so Codex's clock
+// isn't UTC.
+function androidToolEnv(libDir, input = process.env, readTimezone = readAndroidTimezone) {
+  const extra = {};
+  if (!input.PYTHONHOME) {
+    for (const candidate of [path.join(libDir, 'python3'), path.join(libDir, 'packs/dev-tools/python3')]) {
+      if (existingPath(candidate)) {
+        const pyHome = path.join(path.dirname(candidate), 'python3.13');
+        extra.PYTHONHOME = pyHome;
+        extra.PYTHONPATH = input.PYTHONPATH ? `${pyHome}:${input.PYTHONPATH}` : pyHome;
+        break;
+      }
+    }
+  }
+  if (!input.TZ) {
+    const tz = readTimezone();
+    if (tz) extra.TZ = tz;
+  }
+  return extra;
+}
+
+function readAndroidTimezone() {
+  try {
+    const tz = execFileSync('/system/bin/getprop', ['persist.sys.timezone'], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return /^[A-Za-z0-9_+\-/]+$/.test(tz) ? tz : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 function codexChildEnv(input) {
   const env = { ...input };
   delete env.SHELLY_AGENT_ESCALATION_DIR;
@@ -429,6 +469,7 @@ function codexAppServerSpawnSpec(config) {
     const codexDir = path.dirname(codexTui);
     const env = codexChildEnv({
       ...androidBaseEnv(android.libDir),
+      ...androidToolEnv(android.libDir),
       // Keep this recipe in sync with HomeInitializer.kt __shelly_codex_run_tui.
       // The shell wrapper's native-crash fallback is not duplicated here; this
       // selector health-gates app-data runtime before bundled codex_tui fallback.
@@ -2113,4 +2154,5 @@ module.exports = {
   writeAnswerFile,
   buildActionPolicyInput,
   policySealAccepts,
+  androidToolEnv,
 };
