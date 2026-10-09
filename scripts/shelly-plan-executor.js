@@ -15,8 +15,13 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=4
-const EXECUTOR_SCRIPT_VERSION = 4;
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=5
+// v5 (2026-10-09, owner decision option A): unattended local-only actions
+// (draft/notify) no longer need the manual approval tap — see
+// isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
+// skips every scheduled draft/notify run under the default manual mode) is
+// refreshed rather than kept.
+const EXECUTOR_SCRIPT_VERSION = 5;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 
 // 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 (lib/signed-approval/wiring.ts).
@@ -2420,10 +2425,34 @@ function unattendedPreflightFailure(args, plan, config = {}, paths = null) {
   if (actionType !== 'draft' && actionType !== 'notify' && actionType !== 'webhook' && actionType !== 'cli' && actionType !== 'api-call') {
     return `unsupported unattended PlanSpec action: ${actionType}`;
   }
+  // Owner decision 2026-10-09 (option A): local-only actions skip the manual
+  // approval tap on an unattended run — nobody is there to tap, and the
+  // effect never leaves the device. POLICY-001 (`ask` above) still wins.
+  if (isUnattendedLocalOnlyAction(actionType)) return '';
   if (requireActionApprovalTap(plan, config)) {
     return `${actionType} action requires manual approval and cannot run unattended`;
   }
   return '';
+}
+
+// Owner decision 2026-10-09 (option A, after an on-device one-shot "AI
+// Briefing" draft agent was skipped on schedule with "draft action requires
+// manual approval and cannot run unattended"): the per-run approval tap
+// (requireActionApprovalTap) does NOT apply to these action types on an
+// UNATTENDED run, because their effect is local-only:
+//   - draft: a file write confined to the scoped output roots (the broker's
+//     fs.write root jail — see writeDraftOutputs / scopedRoots);
+//   - notify: a local Android notification.
+// Everything else (webhook, cli, api-call, social-post, intent, dm-reply,
+// browser-pane) keeps its existing unattended behavior exactly. POLICY-001
+// (policyActionEffect: deny / draft_only / ask, incl. policy-unavailable) is
+// evaluated BEFORE this and still blocks. Attended runs are unchanged: the
+// tap still applies there. Mirrors lib/agent-action-types.ts's
+// UNATTENDED_LOCAL_ONLY_ACTION_TYPES and the generated .sh executor's
+// request_and_wait_approval (lib/agent-executor.ts) — keep all three in sync
+// (__tests__/unattended-local-only-approval-parity.test.ts enforces it).
+function isUnattendedLocalOnlyAction(actionType) {
+  return actionType === 'draft' || actionType === 'notify';
 }
 
 // Resolves whether the mandatory "Runtime Review" approval TAP defaults on
@@ -2892,7 +2921,20 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
       writeNotification(paths, plan, 'success', `Posted to ${platform} (${host}): ${preview}`);
       return { status: 'success', preview };
     }
-    maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
+    if (argTruthy(args && args.unattended) && isUnattendedLocalOnlyAction(actionType) && !policyForcedApproval) {
+      // Unattended local-only action: no approval tap (none can arrive), see
+      // isUnattendedLocalOnlyAction. Audit it so the skip is visible.
+      appendJsonl(paths.planAuditFile, {
+        ts: new Date().toISOString(),
+        kind: 'plan.executor',
+        event: 'action_unattended_local_allow',
+        agentId: plan.agent.id,
+        actionType,
+        toolType: plan.tool.type,
+      });
+    } else {
+      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config);
+    }
   }
   if (actionType === 'draft') {
     // Terminal draft: primary + (content-studio) Obsidian mirror, fatal on failure
@@ -3684,6 +3726,7 @@ module.exports = {
   trustedNativeLowRiskAction,
   unattendedPreflightFailure,
   requireActionApprovalTap,
+  isUnattendedLocalOnlyAction,
   // POLICY-001 — exported for host unit tests only.
   compiledPolicyEffect,
   policyActionEffect,

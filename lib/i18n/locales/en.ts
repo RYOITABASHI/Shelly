@@ -1898,6 +1898,7 @@ const en: Record<string, string> = {
   // off. Clarified in-label rather than adding new UI.
   'sidebar.agent_approval_auto': 'runs automatically (dispatch only)',
   'sidebar.agent_approval_manual': 'approval required',
+  'sidebar.agent_approval_manual_local_unattended': 'approval required for manual runs · scheduled runs save/notify automatically',
   'sidebar.agent_last': 'Last',
   'sidebar.agent_next_run': 'Next run',
   'sidebar.agent_last_run': 'Last run',

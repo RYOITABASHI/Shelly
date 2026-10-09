@@ -296,7 +296,7 @@ exit $rc
     return script.slice(fnStart, fnEnd + 2);
   }
 
-  function runRequestAndWaitApproval(opts: { approvalMode: 'auto' | 'manual'; approvalType: string; safetyLevel?: string }): string {
+  function runRequestAndWaitApproval(opts: { approvalMode: 'auto' | 'manual'; approvalType: string; safetyLevel?: string; unattended?: boolean }): string {
     const s = generateRunScript(agent({ action: { type: 'draft' } }));
     const fn = extractRequestAndWaitApproval(s);
     const script = `set -euo pipefail
@@ -309,6 +309,7 @@ shelly_policy_action_effect() { SHELLY_POLICY_EFFECT=""; SHELLY_POLICY_REASON=""
 ${fn}
 ACTION_APPROVAL_MODE=${JSON.stringify(opts.approvalMode)}
 ACTION_COMMAND_SAFETY_LEVEL=${JSON.stringify(opts.safetyLevel ?? '')}
+SHELLY_RUN_UNATTENDED=${opts.unattended ? '1' : '0'}
 request_and_wait_approval ${JSON.stringify(opts.approvalType)} x x
 echo "$LOG"
 `;
@@ -329,6 +330,16 @@ echo "$LOG"
   it('[real-function proof] the CRITICAL carve-out is specific to "cli" — draft/notify/webhook are still skipped in auto mode regardless of ACTION_COMMAND_SAFETY_LEVEL (which they never set anyway)', () => {
     for (const t of ['draft', 'notify', 'webhook']) {
       expect(runRequestAndWaitApproval({ approvalMode: 'auto', approvalType: t, safetyLevel: 'CRITICAL' })).toBe('');
+    }
+  });
+
+  it('[real-function proof] owner decision 2026-10-09: unattended + manual skips the round trip for draft/notify only', () => {
+    for (const t of ['draft', 'notify']) {
+      expect(runRequestAndWaitApproval({ approvalMode: 'manual', approvalType: t, unattended: true })).toBe('');
+      expect(runRequestAndWaitApproval({ approvalMode: 'manual', approvalType: t })).toBe(`WROTE:${t};WAITED:${t};`);
+    }
+    for (const t of ['webhook', 'cli']) {
+      expect(runRequestAndWaitApproval({ approvalMode: 'manual', approvalType: t, unattended: true })).toBe(`WROTE:${t};WAITED:${t};`);
     }
   });
 

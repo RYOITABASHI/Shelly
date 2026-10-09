@@ -86,3 +86,44 @@ export const UNATTENDED_SAFE_ACTION_TYPES = [
   'cli',
   'api-call',
 ] as const;
+
+/**
+ * Owner decision 2026-10-09 (option A): local-only action types that do NOT
+ * need the per-run manual approval tap (AppSettings.defaultRequireActionApproval
+ * / Agent.requireActionApproval) on an UNATTENDED run — a scheduled /
+ * notification / boot fire where nobody is there to tap. Their effect never
+ * leaves the device:
+ *   - draft: a file write confined to the scoped output roots
+ *     (agent-output / content-studio / configured vault / custom path);
+ *   - notify: a local Android notification.
+ * Every other action type keeps its existing unattended behavior. POLICY-001
+ * (deny / draft_only / ask rules, flag SHELLY_AGENT_POLICY) is evaluated
+ * first and still wins. Attended runs are unaffected — the tap still applies.
+ *
+ * Mirrors scripts/shelly-plan-executor.js's isUnattendedLocalOnlyAction and
+ * the generated .sh executor's request_and_wait_approval (lib/agent-executor.ts);
+ * __tests__/unattended-local-only-approval-parity.test.ts keeps all three in sync.
+ */
+export const UNATTENDED_LOCAL_ONLY_ACTION_TYPES = ['draft', 'notify'] as const;
+
+export function isUnattendedLocalOnlyActionType(actionType: string): boolean {
+  return (UNATTENDED_LOCAL_ONLY_ACTION_TYPES as readonly string[]).includes(actionType);
+}
+
+/**
+ * Whether a run of this action type would wait on the per-run manual approval
+ * tap. `requireApprovalTap` is the resolved approval mode (see
+ * lib/agent-action-reversibility.ts's runWouldRequireApprovalTap). This only
+ * covers the approval-MODE dimension; hard refusals (intent / dm-reply /
+ * browser-pane unattended, social-post host opt-in) and POLICY-001 are
+ * separate gates.
+ */
+export function runWaitsOnApprovalTap(
+  actionType: string,
+  requireApprovalTap: boolean,
+  unattended: boolean,
+): boolean {
+  if (!requireApprovalTap) return false;
+  if (unattended && isUnattendedLocalOnlyActionType(actionType)) return false;
+  return true;
+}

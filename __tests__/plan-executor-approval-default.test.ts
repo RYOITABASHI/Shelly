@@ -123,6 +123,21 @@ describe('trustedNativeLowRiskAction / unattendedPreflightFailure — unattended
     }
   });
 
+  // Owner decision 2026-10-09 (option A): draft/notify are local-only, so the
+  // bare manual default no longer blocks them unattended (cli/webhook above
+  // still need the explicit opt-out). Full TS/JS/bash matrix:
+  // __tests__/unattended-local-only-approval-parity.test.ts.
+  it('draft/notify run unattended under the bare manual default (local-only exemption)', () => {
+    for (const actionType of ['draft', 'notify']) {
+      expect(executor.unattendedPreflightFailure({ unattended: '1' }, basePlan({ action: { type: actionType } }))).toBe('');
+      expect(executor.unattendedPreflightFailure(
+        { unattended: '1' },
+        basePlan({ agent: { ...basePlan().agent, requireActionApproval: true }, action: { type: actionType } }),
+        { SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL: '1' },
+      )).toBe('');
+    }
+  });
+
   it('draft/notify remain trusted exactly as before', () => {
     for (const actionType of ['draft', 'notify']) {
       const plan = basePlan({ action: { type: actionType } });

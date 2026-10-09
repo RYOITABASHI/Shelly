@@ -410,9 +410,15 @@ object AgentRuntime {
     // v63: plus SHELLY_AGENT_POLICY_EVER_SEALED (AgentPolicySeal Keystore marker).
     // v62: the policy gate also verifies policy.json against the
     // SHELLY_AGENT_POLICY_SEAL this class now exports (security review M1).
-    private const val CURRENT_SCRIPT_VERSION = 63
+    // v64 / CURRENT_EXECUTOR_VERSION 5 (2026-10-09, owner decision option A):
+    // unattended draft/notify skip the manual approval tap in both executors
+    // (see lib/agent-executor.ts's AGENT_SCRIPT_VERSION v64 comment and
+    // scripts/shelly-plan-executor.js's isUnattendedLocalOnlyAction). Bumped so
+    // stale on-device copies — which skip every scheduled draft/notify run
+    // under the default manual mode — are refreshed. No native logic change.
+    private const val CURRENT_SCRIPT_VERSION = 64
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private const val CURRENT_EXECUTOR_VERSION = 4
+    private const val CURRENT_EXECUTOR_VERSION = 5
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

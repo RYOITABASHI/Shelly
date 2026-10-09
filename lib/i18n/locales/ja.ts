@@ -1863,6 +1863,7 @@ const ja: Record<string, string> = {
   // は別レイヤーで、これがOFFでも別途プロンプトが出ることがある。
   'sidebar.agent_approval_auto': '自動で実行（配信のみ）',
   'sidebar.agent_approval_manual': '承認必須',
+  'sidebar.agent_approval_manual_local_unattended': '手動実行は承認必須・スケジュール実行は自動で保存/通知',
   'sidebar.agent_last': '直近',
   'sidebar.agent_next_run': '次回実行',
   'sidebar.agent_last_run': '前回実行',

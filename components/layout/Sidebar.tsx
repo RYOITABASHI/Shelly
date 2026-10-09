@@ -24,6 +24,7 @@ import { normalizePath } from '@/lib/normalize-path';
 import { readDirEntries } from '@/lib/fs-native';
 import { validateRepoPath } from '@/lib/repo-path-validation';
 import { logInfo } from '@/lib/debug-logger';
+import { isUnattendedLocalOnlyActionType } from '@/lib/agent-action-types';
 import { nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from '@/lib/agent-scheduler';
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent, ToolChoice } from '@/store/types';
@@ -268,10 +269,20 @@ export function Sidebar() {
   // agentApprovalLabel() row/detail-popup usage below.
   const defaultRequireActionApproval = useSettingsStore((s) => s.settings.defaultRequireActionApproval === true);
   const agentApprovalLabel = React.useCallback(
-    (agent: Agent) =>
-      t((agent.requireActionApproval ?? defaultRequireActionApproval)
-        ? 'sidebar.agent_approval_manual'
-        : 'sidebar.agent_approval_auto'),
+    (agent: Agent) => {
+      if (!(agent.requireActionApproval ?? defaultRequireActionApproval)) return t('sidebar.agent_approval_auto');
+      // Owner decision 2026-10-09 (option A): unattended (scheduled /
+      // notification-triggered) draft/notify runs skip the manual tap — say so
+      // instead of implying the scheduled run will wait for approval.
+      const actionTypes = agent.actions && agent.actions.length >= 2
+        ? agent.actions.map((a) => a.type)
+        : [agent.action?.type ?? 'draft'];
+      const firesUnattended = !!agent.schedule || (agent.notificationTrigger?.packageNames?.length ?? 0) > 0;
+      if (firesUnattended && actionTypes.every((type) => isUnattendedLocalOnlyActionType(type))) {
+        return t('sidebar.agent_approval_manual_local_unattended');
+      }
+      return t('sidebar.agent_approval_manual');
+    },
     [t, defaultRequireActionApproval],
   );
   const deviceFolders = React.useMemo(() => {

@@ -378,7 +378,13 @@ describe('shelly-plan-executor host smoke', () => {
   // plan-executor-approval-default.test.ts's dedicated coverage, including
   // its own tool-tampering defense test) — it is simply no longer consulted
   // for THIS unattended check.
-  it('fails closed before model IO for unattended draft runs when approval is required (requireActionApproval:true, the makePlan default)', async () => {
+  // Owner decision 2026-10-09 (option A): draft/notify are local-only, so an
+  // unattended run no longer needs the manual approval tap for them — this
+  // used to assert a fail-closed skip ("draft action requires manual approval
+  // and cannot run unattended"), which is exactly what dropped a scheduled
+  // on-device "AI Briefing" draft agent. Other action types keep the refusal
+  // (see the cli test further below and the webhook test right after this).
+  it('runs an unattended draft WITHOUT an approval request even when approval is required (requireActionApproval:true, the makePlan default)', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
 
@@ -392,8 +398,10 @@ describe('shelly-plan-executor host smoke', () => {
     ], home);
 
     expect(result.status).toBe(0);
-    expect(requestCount).toBe(0);
-    expect(listMarkdownFiles(path.join(home, 'agent-output'))).toHaveLength(0);
+    expect(requestCount).toBe(1);
+    const outputFiles = listMarkdownFiles(path.join(home, 'agent-output'));
+    expect(outputFiles).toHaveLength(1);
+    expect(fs.readFileSync(outputFiles[0], 'utf8')).toContain('fixture result: say hello');
     const requestDir = path.join(home, '.shelly/agents/action-approvals');
     const approvalRequests = fs.existsSync(requestDir) ? fs.readdirSync(requestDir) : [];
     expect(approvalRequests).toHaveLength(0);
@@ -402,8 +410,7 @@ describe('shelly-plan-executor host smoke', () => {
     const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
     expect(runLogs).toHaveLength(1);
     const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
-    expect(runLog.status).toBe('skipped');
-    expect(runLog.errorMessage).toContain('draft action requires manual approval and cannot run unattended');
+    expect(runLog.status).toBe('success');
   });
 
   it('allows unattended local draft when approval mode is auto — trust flags, if supplied, are irrelevant to draft/notify/webhook/cli', async () => {
@@ -439,10 +446,11 @@ describe('shelly-plan-executor host smoke', () => {
     expect(approvalRequests).toHaveLength(0);
   });
 
-  it('a mismatched/tampered --trusted-* arg set does not bypass the requireActionApproval:true refusal for draft', async () => {
+  it('a mismatched/tampered --trusted-* arg set does not bypass the requireActionApproval:true refusal for a non-local action (webhook)', async () => {
     const home = makeHome();
     const { plan, planFile } = makePlan(home, port);
     (plan as any).tool = { type: 'gemini-api', label: 'Gemini', model: 'gemini-2.5-flash', authRef: 'gemini' };
+    (plan as any).action = { type: 'webhook', webhookUrl: 'https://example.com/hook' };
     fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
 
     const result = await runExecutor([
@@ -451,10 +459,8 @@ describe('shelly-plan-executor host smoke', () => {
       '--home', home,
       '--agent-id', plan.agent.id,
       '--unattended', '1',
-      // Mismatched tool-type trust args — irrelevant to draft's gate now
-      // (only requireActionApprovalTap matters), but confirms garbage
-      // --trusted-* input can't accidentally bypass the manual-approval
-      // requirement either.
+      // Mismatched trust args can't accidentally bypass the manual-approval
+      // requirement for an action that leaves the device.
       '--trusted-autonomous-agent-id', plan.agent.id,
       '--trusted-autonomous-action', 'draft',
       '--trusted-tool-type', 'local',
@@ -468,7 +474,7 @@ describe('shelly-plan-executor host smoke', () => {
     const runLogs = fs.readdirSync(logDir).filter((name) => /^\d+\.json$/.test(name));
     const runLog = JSON.parse(fs.readFileSync(path.join(logDir, runLogs[0]), 'utf8'));
     expect(runLog.status).toBe('skipped');
-    expect(runLog.errorMessage).toContain('draft action requires manual approval and cannot run unattended');
+    expect(runLog.errorMessage).toContain('webhook action requires manual approval and cannot run unattended');
   });
 
   it('redacts secret-like model text from action approval request previews', async () => {
