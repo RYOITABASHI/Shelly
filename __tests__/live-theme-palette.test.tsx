@@ -12,6 +12,9 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
   default: { addListener: jest.fn(() => ({ remove: jest.fn() })) },
 }));
 
+jest.mock('@/lib/ai-edit', () => ({ getStagedEdit: jest.fn(), acceptStagedDiff: jest.fn() }));
+jest.mock('@/lib/sounds', () => ({ playSound: jest.fn() }));
+
 import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { act, render } from '@testing-library/react-native';
@@ -102,6 +105,28 @@ describe('live theme palette', () => {
     expect(colorOf(screen, 'themed')).toBe(themePresets.blue.colors.text1);
     act(() => applyThemePreset('case-file'));
     expect(colorOf(screen, 'themed')).toBe(caseFilePalette.text1);
+  });
+
+  it('InlineDiff (formerly hardcoded dark hex) follows a runtime switch to Case File', () => {
+    const InlineDiff = require('@/components/panes/InlineDiff').default;
+    const content = 'Intro text\n```diff\n@@ -1,1 +1,1 @@\n-old line\n+new line\n```';
+    // Mirrors ShellLayout's key={`theme-${version}`} root remount, which is
+    // how in-tree createThemedStyles consumers pick up a preset swap.
+    const { useThemeVersionStore } = require('@/store/theme-version-store');
+    function Host() {
+      const v = useThemeVersionStore((s: { version: number }) => s.version);
+      return <View key={`theme-${v}`}><InlineDiff content={content} /></View>;
+    }
+    act(() => applyThemePreset('blue'));
+    const screen = render(<Host />);
+    const colorFor = (t: string) =>
+      StyleSheet.flatten(screen.getByText(t, { exact: false }).props.style)?.color;
+    expect(colorFor('Intro text')).toBe(themePresets.blue.colors.text1);
+    expect(colorFor('new line')).toBe(themePresets.blue.colors.addText);
+    act(() => applyThemePreset('case-file'));
+    expect(colorFor('Intro text')).toBe(caseFilePalette.text1);
+    expect(colorFor('new line')).toBe(caseFilePalette.addText);
+    expect(colorFor('old line')).toBe(caseFilePalette.errorText);
   });
 
   it('MarkdownRenderer body ink follows a runtime switch to Case File', () => {
