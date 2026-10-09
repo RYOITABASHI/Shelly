@@ -1209,7 +1209,20 @@ patchCodex(libDir);
     //      tzdata only via $ANDROID_ROOT/usr/share/zoneinfo/tzdata or
     //      $ANDROID_DATA/misc/zoneinfo/tzdata — without them both TZ and the
     //      persist.sys.timezone fallback resolve to UTC.
-    private const val BASHRC_VERSION = 247
+    // v248: v247 still left python3 broken inside Codex on device: the PATH
+    //      python3 is $libDir/python3 while the only stdlib present is
+    //      $libDir/packs/dev-tools/python3.13, and v246/v247 resolved the
+    //      stdlib from the binary found by __shelly_tool_path (an `-x` test —
+    //      app-data files run via linker64 need no exec bit), so nothing was
+    //      exported and the PYTHON* `-c ...set` args were never emitted. New
+    //      __shelly_python_stdlib()/__shelly_python_path() locate the stdlib
+    //      by its encodings/__init__.py landmark (binary dir, bundled, then
+    //      dev-tools pack) and add lib-dynload when present; python3(),
+    //      codex() and the shim (and shelly-agent-driver) all use it.
+    //      PYTHONHOME stays = stdlib dir (what python3() always set), which
+    //      also silences the "platform libraries" warnings. Under SHELLY_DEBUG
+    //      a failed resolution and the final codex argv go to stderr.
+    private const val BASHRC_VERSION = 248
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2026,17 +2039,23 @@ patchCodex(libDir);
             sb.appendLine("if [ -z \"\${SHELLY_LIB_DIR:-}\" ]; then")
             sb.appendLine("  SHELLY_LIB_DIR=\"$libDir\"")
             sb.appendLine("fi")
-            // v246: same python env as codex() below (see BASHRC_VERSION 246).
+            // v246/v248: same python env as codex() below (see BASHRC_VERSION
+            // 248): locate the stdlib by its encodings/__init__.py landmark.
             sb.appendLine("if [ -z \"\${PYTHONHOME:-}\" ]; then")
-            sb.appendLine("  for __shelly_py in \"\$SHELLY_LIB_DIR/python3\" \"\$SHELLY_LIB_DIR/packs/dev-tools/python3\"; do")
-            sb.appendLine("    if [ -x \"\$__shelly_py\" ]; then")
-            sb.appendLine("      PYTHONPATH=\"\${__shelly_py%/*}/python3.13\${PYTHONPATH:+:\$PYTHONPATH}\"")
-            sb.appendLine("      PYTHONHOME=\"\${__shelly_py%/*}/python3.13\"")
-            sb.appendLine("      export PYTHONHOME PYTHONPATH")
-            sb.appendLine("      break")
-            sb.appendLine("    fi")
+            sb.appendLine("  __shelly_pystd=''")
+            sb.appendLine("  for __shelly_py in \"\$SHELLY_LIB_DIR/python3.13\" \"\$SHELLY_LIB_DIR/packs/dev-tools/python3.13\"; do")
+            sb.appendLine("    if [ -f \"\$__shelly_py/encodings/__init__.py\" ]; then __shelly_pystd=\"\$__shelly_py\"; break; fi")
             sb.appendLine("  done")
-            sb.appendLine("  unset __shelly_py")
+            sb.appendLine("  if [ -n \"\$__shelly_pystd\" ]; then")
+            sb.appendLine("    __shelly_py=\"\$__shelly_pystd\"")
+            sb.appendLine("    [ -d \"\$__shelly_pystd/lib-dynload\" ] && __shelly_py=\"\$__shelly_py:\$__shelly_pystd/lib-dynload\"")
+            sb.appendLine("    PYTHONPATH=\"\$__shelly_py\${PYTHONPATH:+:\$PYTHONPATH}\"")
+            sb.appendLine("    PYTHONHOME=\"\$__shelly_pystd\"")
+            sb.appendLine("    export PYTHONHOME PYTHONPATH")
+            sb.appendLine("  elif [ -n \"\${SHELLY_DEBUG:-}\" ]; then")
+            sb.appendLine("    echo \"[shelly] codex: python stdlib (encodings/__init__.py) not found under \$SHELLY_LIB_DIR; python3 inside Codex will fail\" >&2")
+            sb.appendLine("  fi")
+            sb.appendLine("  unset __shelly_py __shelly_pystd")
             sb.appendLine("fi")
             sb.appendLine("if [ -z \"\${TZ:-}\" ]; then")
             sb.appendLine("  __shelly_tz=\$(/system/bin/getprop persist.sys.timezone 2>/dev/null)")
@@ -2454,6 +2473,24 @@ patchCodex(libDir);
             sb.appendLine("  return 127")
             sb.appendLine("}")
             sb.appendLine("export -f __shelly_tool_path __shelly_pack_hint")
+            // v248: python stdlib resolution shared by python3() and codex().
+            // The stdlib is found by its encodings/__init__.py landmark: next to
+            // the given binary first, then the bundled $SHELLY_LIB_DIR/python3.13,
+            // then the dev-tools pack copy. PYTHONHOME=<stdlib dir> (as python3()
+            // has always set it) suppresses CPython's prefix search and its
+            // "Could not find platform ... libraries" warnings; PYTHONPATH adds
+            // the stdlib (+ lib-dynload when present) so `encodings` imports.
+            sb.appendLine("__shelly_python_stdlib() {  # [\$1=python binary] -> prints stdlib dir")
+            sb.appendLine("  local __d")
+            sb.appendLine("  for __d in \"\${1:+\${1%/*}/python3.13}\" \"\$SHELLY_LIB_DIR/python3.13\" \"\$SHELLY_LIB_DIR/packs/dev-tools/python3.13\"; do")
+            sb.appendLine("    [ -n \"\$__d\" ] && [ -f \"\$__d/encodings/__init__.py\" ] && { printf '%s' \"\$__d\"; return 0; }")
+            sb.appendLine("  done")
+            sb.appendLine("  return 1")
+            sb.appendLine("}")
+            sb.appendLine("__shelly_python_path() {  # \$1=stdlib dir -> prints PYTHONPATH entries")
+            sb.appendLine("  if [ -d \"\$1/lib-dynload\" ]; then printf '%s:%s' \"\$1\" \"\$1/lib-dynload\"; else printf '%s' \"\$1\"; fi")
+            sb.appendLine("}")
+            sb.appendLine("export -f __shelly_python_stdlib __shelly_python_path")
             sb.appendLine("__shelly_run_node_clean() {")
             sb.appendLine("  local __shelly_tmp=\"\${TMPDIR:-\$HOME/.tmp}\"")
             sb.appendLine("  __shelly_mkdir -p \"\$__shelly_tmp\" \"\$HOME/.config\" \"\$HOME/.cache\" \"\$HOME/.local/share\" 2>/dev/null || true")
@@ -2637,8 +2674,10 @@ patchCodex(libDir);
             // exactly this reason).
             sb.appendLine("python3() {")
             sb.appendLine("  local __t; __t=\$(__shelly_tool_path python3 dev-tools) || { __shelly_pack_hint python3 dev-tools; return 127; }")
-            sb.appendLine("  local __pyhome=\"\${__t%/*}/python3.13\"")
-            sb.appendLine("  PYTHONHOME=\"\$__pyhome\" PYTHONPATH=\"\$__pyhome\" _run \"\$__t\" \"\$@\"")
+            // v248: stdlib located by landmark (binary's own dir first), falling
+            // back to the previous `${__t%/*}/python3.13` guess.
+            sb.appendLine("  local __pyhome; __pyhome=\$(__shelly_python_stdlib \"\$__t\") || __pyhome=\"\${__t%/*}/python3.13\"")
+            sb.appendLine("  PYTHONHOME=\"\$__pyhome\" PYTHONPATH=\"\$(__shelly_python_path \"\$__pyhome\")\" _run \"\$__t\" \"\$@\"")
             sb.appendLine("}")
             sb.appendLine("python() { python3 \"\$@\"; }")
             sb.appendLine("pip() { python3 -m pip \"\$@\"; }")
@@ -2804,10 +2843,18 @@ patchCodex(libDir);
             // python3() function above; export the same PYTHONHOME/PYTHONPATH
             // into Codex's env (function-scoped via local -x, so the
             // interactive shell itself is unchanged after codex returns).
+            // v248: resolve the stdlib by landmark (__shelly_python_stdlib), not
+            // by the binary's -x bit — linker64 execs app-data files without it,
+            // and on device the PATH python3 ($libDir/python3) sits apart from
+            // the stdlib that exists (packs/dev-tools/python3.13).
             sb.appendLine("  local __shelly_py=''")
-            sb.appendLine("  if [ -z \"\${PYTHONHOME:-}\" ] && __shelly_py=\$(__shelly_tool_path python3 dev-tools); then")
-            sb.appendLine("    local -x PYTHONPATH=\"\${__shelly_py%/*}/python3.13\${PYTHONPATH:+:\$PYTHONPATH}\"")
-            sb.appendLine("    local -x PYTHONHOME=\"\${__shelly_py%/*}/python3.13\"")
+            sb.appendLine("  if [ -z \"\${PYTHONHOME:-}\" ]; then")
+            sb.appendLine("    if __shelly_py=\$(__shelly_python_stdlib); then")
+            sb.appendLine("      local -x PYTHONPATH=\"\$(__shelly_python_path \"\$__shelly_py\")\${PYTHONPATH:+:\$PYTHONPATH}\"")
+            sb.appendLine("      local -x PYTHONHOME=\"\$__shelly_py\"")
+            sb.appendLine("    elif [ -n \"\${SHELLY_DEBUG:-}\" ]; then")
+            sb.appendLine("      echo \"[shelly] codex: python stdlib (encodings/__init__.py) not found under \$SHELLY_LIB_DIR; python3 inside Codex will fail\" >&2")
+            sb.appendLine("    fi")
             sb.appendLine("  fi")
             sb.appendLine("  local -a __codex_args=()")
             sb.appendLine("  __shelly_codex_alias_for_path() {")
@@ -2959,6 +3006,7 @@ patchCodex(libDir);
             sb.appendLine("      case \"\$__shelly_cfg_v\" in *'\"'*|*'\\'*) continue ;; esac")
             sb.appendLine("      set -- -c \"shell_environment_policy.set.\$__shelly_cfg_k=\\\"\$__shelly_cfg_v\\\"\" \"\$@\"")
             sb.appendLine("    done")
+            sb.appendLine("    [ -n \"\${SHELLY_DEBUG:-}\" ] && printf '[shelly] codex argv: %s\\n' \"\$*\" >&2")
             sb.appendLine("    local __start=\"\$(/system/bin/toybox date +%s 2>/dev/null || echo 0)\"")
             sb.appendLine("    __shelly_paste_tui_begin")
             sb.appendLine("    local __chosen_tui_dir=\"\${__primary%/*}\"")

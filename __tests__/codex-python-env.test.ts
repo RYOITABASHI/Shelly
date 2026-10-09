@@ -70,14 +70,34 @@ function posix(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
-function makeLibDir(layout: 'bundled' | 'pack' | 'none'): string {
+/**
+ * Fake $SHELLY_LIB_DIR layouts. The stdlib is detected by its
+ * encodings/__init__.py landmark, never by the binary's exec bit.
+ *  - bundled: $lib/python3 + $lib/python3.13/
+ *  - pack:    $lib/packs/dev-tools/python3 + $lib/packs/dev-tools/python3.13/
+ *  - device:  the real on-device layout from build 2518/2519 — the PATH binary
+ *             is $lib/python3 (no exec bit; linker64 runs it anyway) but the
+ *             only stdlib present is $lib/packs/dev-tools/python3.13/ (with
+ *             lib-dynload/)
+ *  - none:    nothing
+ */
+function makeLibDir(layout: 'bundled' | 'pack' | 'device' | 'none'): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-pyenv-'));
-  const target =
-    layout === 'bundled' ? path.join(dir, 'python3') : layout === 'pack' ? path.join(dir, 'packs/dev-tools/python3') : null;
-  if (target) {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    // A #! header makes MSYS bash treat the file as executable on Windows.
-    fs.writeFileSync(target, '#!/bin/sh\n', { mode: 0o755 });
+  const put = (rel: string, body = '') => {
+    const f = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, body, { mode: 0o644 });
+  };
+  if (layout === 'bundled') {
+    put('python3');
+    put('python3.13/encodings/__init__.py');
+  } else if (layout === 'pack') {
+    put('packs/dev-tools/python3');
+    put('packs/dev-tools/python3.13/encodings/__init__.py');
+  } else if (layout === 'device') {
+    put('python3');
+    put('packs/dev-tools/python3.13/encodings/__init__.py');
+    fs.mkdirSync(path.join(dir, 'packs/dev-tools/python3.13/lib-dynload'), { recursive: true });
   }
   return posix(dir);
 }
@@ -108,14 +128,14 @@ function runBash(script: string, env: Record<string, string> = {}): Record<strin
 const ENV_DUMP = 'for v in PYTHONHOME PYTHONPATH TZ; do bash -c "[ -n \\"\\${$v+x}\\" ] && echo $v=\\${$v}"; done; true';
 
 describe('BASHRC_VERSION', () => {
-  it('is bumped to >= 247 for the Codex python/TZ env + policy.set args', () => {
+  it('is bumped to >= 248 for the Codex python/TZ env + policy.set args', () => {
     const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);
-    expect(Number(m?.[1])).toBeGreaterThanOrEqual(247);
+    expect(Number(m?.[1])).toBeGreaterThanOrEqual(248);
   });
 });
 
 maybe('codex() function exports python env to Codex (child processes)', () => {
-  const toolPath = extract('__shelly_tool_path() {  # $1=tool $2=packId', '__shelly_pack_hint() {  # $1=tool $2=packId');
+  const toolPath = extract('__shelly_python_stdlib() {  # [$1=python binary] -> prints stdlib dir', 'export -f __shelly_python_stdlib __shelly_python_path');
   const block = extract("  local __shelly_py=''", '  local -a __codex_args=()');
   const harness = (extra = '') =>
     `${toolPath}\nfakecodex() {\n${block}${extra}\n  ${ENV_DUMP}\n}\nfakecodex\necho AFTER; ${ENV_DUMP}\n`;
@@ -230,7 +250,7 @@ function argvLines(stdout: string): string[] {
 }
 
 maybe('codex() run_tui passes shell_environment_policy.set overrides', () => {
-  const toolPath = extract('__shelly_tool_path() {  # $1=tool $2=packId', '__shelly_pack_hint() {  # $1=tool $2=packId');
+  const toolPath = extract('__shelly_python_stdlib() {  # [$1=python binary] -> prints stdlib dir', 'export -f __shelly_python_stdlib __shelly_python_path');
   const pyBlock = extract("  local __shelly_py=''", '  local -a __codex_args=()');
   const runTui = extract('  __shelly_codex_native_crash_rc() {', "  local __prev=''").replace(
     /\/system\/bin\/toybox date \+%s/g,
@@ -312,5 +332,78 @@ describe('shelly-agent-driver codexPolicyEnvArgs (codex app-server)', () => {
     expect(env.ANDROID_ROOT).toBe('/system');
     expect(env.ANDROID_DATA).toBe('/data');
     expect(androidToolEnv(makeLibDir('none'), { ANDROID_ROOT: '/r', ANDROID_DATA: '/d' }, () => '')).toEqual({});
+  });
+});
+
+// v248: the real on-device layout (build 2518/2519) — PATH python3 is
+// $lib/python3 but the only stdlib is $lib/packs/dev-tools/python3.13.
+maybe('device layout: binary in $lib, stdlib only in packs/dev-tools (v248)', () => {
+  const helpers = extract(
+    '__shelly_python_stdlib() {  # [$1=python binary] -> prints stdlib dir',
+    'export -f __shelly_python_stdlib __shelly_python_path',
+  );
+  const pyBlock = extract("  local __shelly_py=''", '  local -a __codex_args=()');
+  const runTui = extract('  __shelly_codex_native_crash_rc() {', "  local __prev=''").replace(
+    /\/system\/bin\/toybox date \+%s/g,
+    'echo 0',
+  );
+  const python3Fn = extract('python3() {', 'python() { python3 "$@"; }');
+
+  it('codex() exports PYTHONHOME/PYTHONPATH (with lib-dynload) and emits the PYTHON* set args', () => {
+    const lib = makeLibDir('device');
+    const std = `${lib}/packs/dev-tools/python3.13`;
+    const script =
+      `${helpers}\n_run() { for a in "$@"; do printf 'ARG:%s\n' "$a"; done; }\n` +
+      `__shelly_paste_tui_begin() { :; }\n__shelly_paste_tui_end() { :; }\n` +
+      `fakecodex() {\n  local __tui=/x/codex_tui\n${pyBlock}${runTui}  ${ENV_DUMP}\n  __shelly_codex_run_tui /x/codex_tui hi\n}\nfakecodex\n`;
+    const stdout = runBashRaw(script, { SHELLY_LIB_DIR: lib });
+    const env = parseEnv(stdout);
+    expect(env.PYTHONHOME).toBe(std);
+    expect(env.PYTHONPATH).toBe(`${std}:${std}/lib-dynload`);
+    const set = policyArgs(argvLines(stdout));
+    expect(set.PYTHONHOME).toBe(std);
+    expect(set.PYTHONPATH).toBe(`${std}:${std}/lib-dynload`);
+  });
+
+  it('logs the failed resolution only under SHELLY_DEBUG', () => {
+    const lib = makeLibDir('none');
+    const script = `${helpers}\nfakecodex() {\n${pyBlock}}\nfakecodex 2>&1\n`;
+    expect(runBashRaw(script, { SHELLY_LIB_DIR: lib })).toBe('');
+    expect(runBashRaw(script, { SHELLY_LIB_DIR: lib, SHELLY_DEBUG: '1' })).toContain('python stdlib (encodings/__init__.py) not found');
+  });
+
+  it('interactive python3() uses the same resolution', () => {
+    const lib = makeLibDir('device');
+    const std = `${lib}/packs/dev-tools/python3.13`;
+    const script =
+      `${helpers}\n__shelly_tool_path() { printf '%s' "$SHELLY_LIB_DIR/python3"; }\n` +
+      `_run() { echo "PYTHONHOME=$PYTHONHOME"; echo "PYTHONPATH=$PYTHONPATH"; }\n${python3Fn}python3 hello.py\n`;
+    const env = runBash(script, { SHELLY_LIB_DIR: lib });
+    expect(env.PYTHONHOME).toBe(std);
+    expect(env.PYTHONPATH).toBe(`${std}:${std}/lib-dynload`);
+  });
+
+  it('$HOME/bin/codex shim resolves the pack stdlib', () => {
+    const shimStart = ktSrc.indexOf("<<'SHELLY_CODEX_SHIM_EOF'");
+    const startLine = ktSrc.slice(0, shimStart).split(/\r?\n/).length - 1;
+    const block = extract('if [ -z "${PYTHONHOME:-}" ]; then', '__shelly_linker64() {', startLine).replace(
+      /\/system\/bin\/getprop persist\.sys\.timezone/g,
+      'echo Asia/Tokyo',
+    );
+    const lib = makeLibDir('device');
+    const std = `${lib}/packs/dev-tools/python3.13`;
+    const env = runBash(`${block}${ENV_DUMP}\n`, { SHELLY_LIB_DIR: lib });
+    expect(env.PYTHONHOME).toBe(std);
+    expect(env.PYTHONPATH).toBe(`${std}:${std}/lib-dynload`);
+  });
+
+  it('shelly-agent-driver androidToolEnv resolves the pack stdlib', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { androidToolEnv: toolEnv } = require('../scripts/shelly-agent-driver.js');
+    const lib = makeLibDir('device');
+    const std = `${lib}/packs/dev-tools/python3.13`;
+    const env = toolEnv(lib, {}, () => '');
+    expect(posix(env.PYTHONHOME)).toBe(std);
+    expect(posix(env.PYTHONPATH)).toBe(`${std}:${std}/lib-dynload`);
   });
 });

@@ -413,20 +413,28 @@ function androidBaseEnv(libDir) {
 // python3() wrapper (which sets PYTHONHOME/PYTHONPATH) is bypassed. Exec'd via
 // libexec_wrapper.so -> linker64, CPython can't derive its prefix from
 // /proc/self/exe and dies with "Failed to import encodings module". Mirror
-// HomeInitializer.kt (BASHRC_VERSION 246): bundled python3 first, then the
-// dev-tools pack; never override a caller-provided PYTHONHOME. Also carry the
-// device time zone (persist.sys.timezone) as TZ when unset, so Codex's clock
-// isn't UTC.
+// HomeInitializer.kt __shelly_python_stdlib (BASHRC_VERSION 248): find the
+// stdlib by its encodings/__init__.py landmark (bundled, then dev-tools pack —
+// on device the PATH python3 is $libDir/python3 while the stdlib may only exist
+// under packs/dev-tools/python3.13); never override a caller-provided
+// PYTHONHOME. Also carry the device time zone (persist.sys.timezone) as TZ
+// when unset, so Codex's clock isn't UTC.
+function resolvePythonStdlib(libDir) {
+  for (const dir of [path.join(libDir, 'python3.13'), path.join(libDir, 'packs/dev-tools/python3.13')]) {
+    if (existingPath(path.join(dir, 'encodings/__init__.py'))) return dir;
+  }
+  return '';
+}
+
 function androidToolEnv(libDir, input = process.env, readTimezone = readAndroidTimezone) {
   const extra = {};
   if (!input.PYTHONHOME) {
-    for (const candidate of [path.join(libDir, 'python3'), path.join(libDir, 'packs/dev-tools/python3')]) {
-      if (existingPath(candidate)) {
-        const pyHome = path.join(path.dirname(candidate), 'python3.13');
-        extra.PYTHONHOME = pyHome;
-        extra.PYTHONPATH = input.PYTHONPATH ? `${pyHome}:${input.PYTHONPATH}` : pyHome;
-        break;
-      }
+    const stdlib = resolvePythonStdlib(libDir);
+    if (stdlib) {
+      const dynload = path.join(stdlib, 'lib-dynload');
+      const entries = existingPath(dynload) ? `${stdlib}:${dynload}` : stdlib;
+      extra.PYTHONHOME = stdlib;
+      extra.PYTHONPATH = input.PYTHONPATH ? `${entries}:${input.PYTHONPATH}` : entries;
     }
   }
   if (!input.TZ) {
