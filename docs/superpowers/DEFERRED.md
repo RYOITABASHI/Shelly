@@ -53,13 +53,16 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
-### Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない（python3 が "Failed to import encodings module"）— 修正 v249 実装済み・実機未検証 (P1)
+### Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない（python3 が "Failed to import encodings module"）— 修正 v250 実装済み・実機未検証 (P1)
 
 - **症状（build 2514〜2520、Codex CLI 0.156.1）**: 対話 Codex の中で `python3 hello.py` を実行すると、`Could not find platform independent libraries` → `Fatal Python error: Failed to import encodings module` で落ちる。Codex 内の `printenv PYTHONHOME PYTHONPATH` は空。`!env ...` のようなユーザーシェルコマンドは `error: unable to open file "/proc/self/fd/100"` で失敗する。Shelly 自身の bash では python3 は動く（`python3()` 関数が PYTHONHOME/PYTHONPATH を設定するため）。
 - **これまでの対処**: v246 では Codex に渡る env に export、v247 では `-c shell_environment_policy.set.*`、v248 では標準ライブラリを `encodings/__init__.py` で探す方式に変更。v248 で argv の値は正しくなった（build 2520 で SHELLY_DEBUG により確認）が、それでもツールコマンドには届かなかった。TZ/ANDROID_ROOT/ANDROID_DATA の対処（v247）は実機 OK。
 - **原因の仮説（v249）**: Codex の shell snapshot（`features.shell_snapshot`、Stable・既定 ON）は、env をクリアした状態でログインシェルを採取し、各 `-lc` コマンドをその snapshot を source してから実行する形に書き換える（rust-v0.156.1 の `core/src/tools/runtimes/mod.rs` `maybe_wrap_shell_lc_with_snapshot`）。Android の linker64/libexec_wrapper の exec 連鎖ではこれが機能せず、`/proc/self/fd/N` のエラーも出していると考えている。
 - **v249 の修正**: すべての Codex 起動経路（`codex()`、`$HOME/bin/codex` shim、shelly-agent-driver の app-server）で `-c features.shell_snapshot=false` を渡す。`SHELLY_CODEX_SHELL_SNAPSHOT=1` で元に戻せる。sandbox/approval は変更なし。
-- **残作業**: 実機で、Codex 内の `!env | grep PYTHON` と `python3 hello.py` が通ることを確認する。snapshot を無効にしても env が届かない場合は、codex-termux fork 側の env 構築（shell_environment_policy を無視していないか）を調べる。また、snapshot 無効化で `-lc` が毎回 `~/.profile` → `.bashrc` を読むようになるため、コマンドの起動遅延も計測すること（重ければ、Codex 用の軽量な profile を検討）。
+- **v250 で根本原因が判明**: build 2522 で `!env` の結果が `/bin/sh: ~/.bashrc[640]: export: -f: unknown option` になった。upstream の Codex は、コマンドを実行するシェルを `$SHELL` ではなく `getpwuid()->pw_shell` から決める（`shell-command/src/shell_detect.rs`）。Android ではこれが `/bin/sh`（mksh）。`!` コマンドは常にログインシェル（`core/src/tasks/user_shell.rs`）で、モデルのコマンドも既定は `-lc`。そのため mksh が `~/.profile` を読み、`~/.profile` が `~/.bashrc` を無条件に source し、bash 専用の構文の途中で失敗していた。
+  - **v250 の修正**: `~/.bashrc` の先頭に BASH_VERSION ガード（bash 以外では return/exit 0）を入れた。`~/.profile` は bash のときだけ `~/.bashrc` を読むようにした（旧デフォルトの内容のときだけ書き換え、ユーザーが編集したファイルは触らない）。実機の mksh で、source した場合も実行した場合も何も出力されず rc=0 で終わることを確認済み。
+  - Codex が使うシェルを bash にする設定は upstream に存在しない（`zsh_path` は zsh-fork 機能専用）。そのため mksh のまま、Codex が組み立てた env（引き継ぎ＋`set`）で実行させる方針にした。
+- **残作業**: 実機で、Codex 内の `!echo $SHELL; env | grep -E 'PYTHON|^TZ'` と `python3 hello.py` が通ることを確認する。`/proc/self/fd/100`（linker64 の "unable to open file"）がまだ出る場合は、Codex の `!` 経路が memfd/`/proc/self/fd` 経由で何かを exec していないか、libexec_wrapper による書き換えの影響を調べる。snapshot を無効にしても env が届かない場合は、codex-termux fork 側の env 構築（shell_environment_policy を無視していないか）を調べる。また、snapshot 無効化で `-lc` が毎回 `~/.profile` → `.bashrc` を読むようになるため、コマンドの起動遅延も計測すること（重ければ、Codex 用の軽量な profile を検討）。
 
 ### ターミナル最小コントラスト保証（minimum contrast ratio）— 実装済み・実機未検証 (P2)
 

@@ -1235,7 +1235,29 @@ patchCodex(libDir);
     //      now passes `-c features.shell_snapshot=false`, so commands run as
     //      plain `$SHELL -lc` with the policy env (inherited + `set`).
     //      SHELLY_CODEX_SHELL_SNAPSHOT=1 opts back in. No sandbox/approval change.
-    private const val BASHRC_VERSION = 249
+    // v250: real root cause of v246–v249 not reaching Codex tool commands.
+    //      Upstream Codex picks the command shell from getpwuid()->pw_shell
+    //      (shell-command/src/shell_detect.rs default_user_shell; $SHELL is
+    //      NOT consulted, and the only shell-path config is zsh_path for the
+    //      zsh-fork feature), which on Android is /bin/sh (mksh). Model
+    //      commands default to `-lc` and `!` user-shell commands are ALWAYS
+    //      login (core/src/tasks/user_shell.rs use_login_shell = true), so mksh
+    //      read ~/.profile, which unconditionally sourced ~/.bashrc, and mksh
+    //      failed on bash-only syntax (`.bashrc[640]: export: -f: unknown
+    //      option`) partway through Shelly's init. Now ~/.bashrc starts with a
+    //      BASH_VERSION guard (return/exit 0 for any other shell) and ~/.profile
+    //      only sources ~/.bashrc under bash (legacy default rewritten; user-
+    //      edited files left alone). mksh commands then run with exactly the
+    //      env Codex builds (inherited + shell_environment_policy.set).
+    //      shell_snapshot stays disabled (v249): with -lc commands it would
+    //      wrap them in a snapshot captured from a cleared-env login shell,
+    //      and the `/proc/self/fd/100` failure seen with it is unexplained.
+    private const val BASHRC_VERSION = 250
+
+    // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
+    internal const val SHELLY_PROFILE =
+        "# Shelly: only bash may source ~/.bashrc (Codex runs /bin/sh -l here).\n" +
+            "if [ -n \"\${BASH_VERSION:-}\" ] && [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n"
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1620,6 +1642,13 @@ patchCodex(libDir);
             try { File(home, ".shelly_last_update").delete() } catch (_: Exception) {}
 
             val sb = StringBuilder()
+
+            // v250: bash-only file. Codex runs commands with the passwd shell
+            // (/bin/sh = mksh on Android) as a login shell, which reads
+            // ~/.profile -> ~/.bashrc; mksh then trips over bash syntax
+            // (`export -f`, `< <(...)`, arrays) mid-file. Bail out silently for
+            // any non-bash shell, whether sourced (return) or executed (exit).
+            sb.appendLine("[ -n \"\${BASH_VERSION:-}\" ] || return 0 2>/dev/null || exit 0")
 
             // Environment — keep Shelly's private loader path out of the
             // global shell. Android system binaries can segfault if they
@@ -3641,9 +3670,19 @@ patchCodex(libDir);
         }
 
         // Create .profile
+        // v250: only bash may source ~/.bashrc. Codex runs commands (and `!`
+        // user-shell commands, always as a login shell) through /bin/sh (mksh),
+        // which reads ~/.profile; the legacy unconditional `. ~/.bashrc` made
+        // mksh execute bash-only syntax. Rewrite the file only when it is still
+        // exactly the legacy Shelly default, so user edits are never clobbered.
         val profile = File(home, ".profile")
-        if (!profile.exists()) {
-            profile.writeText("[ -f ~/.bashrc ] && . ~/.bashrc\n")
+        try {
+            val legacyProfile = "[ -f ~/.bashrc ] && . ~/.bashrc\n"
+            if (!profile.exists() || profile.readText() == legacyProfile) {
+                profile.writeText(SHELLY_PROFILE)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", ".profile seed failed: ${e.message}")
         }
 
         // Create .vimrc — bug #151 related issue A. The bundled Termux vim
