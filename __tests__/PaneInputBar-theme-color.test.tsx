@@ -10,7 +10,6 @@ import React from 'react';
 import { StyleSheet, TextInput } from 'react-native';
 import { render } from '@testing-library/react-native';
 import PaneInputBar from '@/components/panes/PaneInputBar';
-import { refreshRuntimeThemeColors } from '@/lib/theme';
 import { colors as C } from '@/theme.config';
 
 describe('PaneInputBar composer text color', () => {
@@ -18,8 +17,10 @@ describe('PaneInputBar composer text color', () => {
     const seedText1 = C.text1;
     // Simulate applyThemePreset() swapping to a light palette after the
     // component module (and its StyleSheet) was already evaluated.
-    refreshRuntimeThemeColors({
-      ...C,
+    // (applyThemePreset mutates theme.config colors in place, which is
+    // what useTheme() derives from.)
+    const seed = { ...C };
+    Object.assign(C, {
       bgDeep: '#F4EFE6',
       bgSurface: '#FFFFFF',
       text1: '#1A1A1A',
@@ -27,6 +28,7 @@ describe('PaneInputBar composer text color', () => {
       text3: '#999999',
     });
     const screen = render(<PaneInputBar placeholder="Ask" onSubmit={() => {}} />);
+    Object.assign(C, seed);
     const input = screen.UNSAFE_getByType(TextInput);
     const flat = StyleSheet.flatten(input.props.style);
     expect(flat.color).toBe('#1A1A1A');

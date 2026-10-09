@@ -14,6 +14,7 @@ import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import type { SelectedElement } from '@/lib/click-to-edit';
+import { colors as C } from '@/theme.config';
 
 // ─── Presets ────────────────────────────────────────────────────────────────
 
@@ -117,7 +118,7 @@ export const EditSheet = memo(function EditSheet({ visible, element, onSubmit, o
           activeOpacity={0.7}
           disabled={!instruction.trim()}
         >
-          <MaterialIcons name="send" size={16} color="#000" />
+          <MaterialIcons name="send" size={16} color={C.btnPrimaryText} />
         </TouchableOpacity>
       </View>
     </Animated.View>

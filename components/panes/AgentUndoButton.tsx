@@ -32,6 +32,7 @@ import { peekAgentRollbackHandle, rollbackAgentRun } from '@/lib/agent-manager';
 import { execCommand } from '@/hooks/use-native-exec';
 import { useTranslation } from '@/lib/i18n';
 import { colors as C, fonts as F } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 
 export function AgentUndoButton({ agentId }: { agentId: string }) {
@@ -97,7 +98,7 @@ export function AgentUndoButton({ agentId }: { agentId: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   btn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -128,4 +129,4 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontStyle: 'italic',
   },
-});
+}));

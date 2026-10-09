@@ -22,6 +22,7 @@ import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useTerminalStore } from '@/store/terminal-store';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { colors as C, fonts as F, sizes as S } from '@/theme.config';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
 
@@ -237,7 +238,7 @@ export function LayoutAddSheet({ visible, onClose }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles(() => ({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -390,4 +391,4 @@ const styles = StyleSheet.create({
     color: C.text1,
     letterSpacing: 0.3,
   },
-});
+}));

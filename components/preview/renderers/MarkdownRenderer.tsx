@@ -1,17 +1,15 @@
 import React, { memo } from 'react';
 import { ScrollView, StyleSheet } from 'react-native';
 import Markdown from 'react-native-markdown-display';
-import { getMarkdownInk } from '@/lib/markdown-theme';
-import { useThemeVersion } from '@/lib/themed-stylesheet';
+import { useTheme } from '@/hooks/use-theme';
 import { withAlpha } from '@/lib/theme-utils';
 import { usePanelBackground } from '@/hooks/use-panel-background';
 
 type Props = { content: string };
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: Props) {
-  // Live preset palette (hooks/use-theme is frozen to the dark seed).
-  useThemeVersion();
-  const colors = getMarkdownInk();
+  // Live preset palette (useTheme() re-renders on preset swaps).
+  const { colors } = useTheme();
   const codeBg = usePanelBackground(colors.surface);
   const mdStyles = {
     body: { color: colors.foreground, fontSize: 14, fontFamily: 'JetBrainsMono_400Regular', lineHeight: 20 },
