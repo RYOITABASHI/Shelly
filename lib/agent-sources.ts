@@ -85,6 +85,8 @@ export const RESEARCH_REQUIREMENTS_MARKER = '# Research requirements';
 export const SOURCING_CONTRACT_MARKER = '# Sourcing contract';
 export const NO_SOURCES_MESSAGE =
   'No verifiable sources: the research step returned no source URLs, so no briefing was written (unsourced content is never saved).';
+export const DISPATCH_PENDING_MESSAGE =
+  'Briefing verified; the final action is still running in the background — its result will appear when it finishes.';
 export const SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE =
   'Sourced briefing could not be verified against the research sources, so nothing was saved or sent.';
 
@@ -264,14 +266,21 @@ function cleanUrl(raw: unknown): string | null {
   return s;
 }
 
-/** Dedupe key: scheme-less, lower-cased host, no fragment, no trailing slash. */
+/** Dedupe key: scheme-less, lower-cased host (no www.), no fragment, no
+ *  utm_* / fbclid / gclid tracking params, no trailing slash. The generated
+ *  bash extract_ai_content applies the same rule (keep in sync). */
 export function urlKey(url: string): string {
   const s = String(url || '').trim().replace(/#.*$/, '');
-  const m = /^https?:\/\/([^/?#]+)(.*)$/i.exec(s);
+  const m = /^https?:\/\/([^/?#]+)([^?]*)(\?.*)?$/i.exec(s);
   if (!m) return s.toLowerCase();
   const host = m[1].toLowerCase().replace(/^www\./, '');
-  const rest = m[2].replace(/\/+$/, '').replace(/\/(?=\?)/, '');
-  return `${host}${rest}`;
+  const pathPart = m[2].replace(/\/+$/, '');
+  const query = (m[3] || '')
+    .replace(/^\?/, '')
+    .split('&')
+    .filter((kv) => kv && !/^(?:utm_[^=]*|fbclid|gclid|mc_cid|mc_eid)(?:=|$)/i.test(kv))
+    .join('&');
+  return `${host}${pathPart}${query ? `?${query}` : ''}`;
 }
 
 function hostOf(url: string): string {
@@ -402,6 +411,7 @@ export function extractSourcesFromText(text: string): ParsedSources {
   const lines = nfkc(text).split(/\r?\n/);
   const numbered: Array<{ n: number; entry: RawSourceEntry }> = [];
   const loose: RawSourceEntry[] = [];
+  const aliases: Array<{ n: number; target: number }> = [];
   let inSources = false;
   for (const line of lines) {
     if (SOURCES_HEADING_RE.test(line)) {
@@ -409,6 +419,13 @@ export function extractSourcesFromText(text: string): ParsedSources {
       continue;
     }
     if (/^\s*#{1,6}\s/.test(line)) inSources = false;
+    // "[3] = [1]": the bash extractor's alias for a repeated citation — the
+    // marker maps to the first number's source (never left dangling).
+    const alias = inSources ? /^\s*(?:[-*]\s*)?\[(\d{1,3})\]\s*=\s*\[(\d{1,3})\]\s*$/.exec(line) : null;
+    if (alias) {
+      aliases.push({ n: parseInt(alias[1], 10), target: parseInt(alias[2], 10) });
+      continue;
+    }
     const numberedMatch = inSources ? /^\s*(?:[-*]\s*)?\[?(\d{1,3})[\].)]\s*(.*)$/.exec(line) : null;
     if (numberedMatch) {
       const rest = numberedMatch[2];
@@ -440,6 +457,10 @@ export function extractSourcesFromText(text: string): ParsedSources {
     while ((m = bareRe.exec(line))) {
       if (consumed.indexOf(m[1]) === -1) loose.push({ url: m[1] });
     }
+  }
+  for (const a of aliases) {
+    const target = numbered.find((x) => x.n === a.target);
+    if (target && !numbered.some((x) => x.n === a.n)) numbered.push({ n: a.n, entry: target.entry });
   }
   numbered.sort((a, b) => a.n - b.n);
   const maxN = numbered.length ? numbered[numbered.length - 1].n : 0;
@@ -602,14 +623,34 @@ function claimTerms(text: string, srcScript: 'cjk' | 'latin' | 'none'): { number
   return { numbers, words };
 }
 
-/** Are all claim terms of `itemText` present in `sourceText` (loose, NFKC)? */
+// Spelled-out quantities are numeric claims too (review follow-up M2):
+// "twice as fast" / 三倍 must be backed by the same quantity in the source.
+const QUANTITY_CLASSES: RegExp[] = [
+  /\b(?:twice|double[sd]?|doubling|two\s+times|2\s*(?:x|times))\b|2倍|二倍|倍増/i,
+  /\b(?:thrice|triple[sd]?|tripling|three\s+times|3\s*(?:x|times))\b|3倍|三倍/i,
+  /\b(?:four\s+times|quadruple[sd]?|4\s*(?:x|times))\b|4倍|四倍/i,
+  /\b(?:ten\s*fold|ten\s+times|10\s*(?:x|times))\b|10倍|十倍/i,
+  /\b(?:half|halved|halving)\b|半分|半減/i,
+];
+
+/** Are all claim terms of `itemText` present in `sourceText` (loose, NFKC)?
+ *  Also: a CJK item citing a non-CJK source must share at least one anchor
+ *  (number / Latin term) with it — otherwise nothing in the item can be
+ *  traced to the source at all (「アップルが倒産を発表」 citing an English
+ *  article about something else). */
 function claimsSupported(itemText: string, sourceText: string): boolean {
   const src = nfkc(sourceText);
   const srcLower = src.toLowerCase();
   const srcDigits = src.replace(/,/g, '');
-  const { numbers, words } = claimTerms(itemText, dominantScript(src));
+  const item = nfkc(itemText);
+  const srcScript = dominantScript(src);
+  const { numbers, words } = claimTerms(item, srcScript);
   for (const n of numbers) if (srcDigits.indexOf(n) === -1) return false;
   for (const w of words) if (srcLower.indexOf(w.toLowerCase()) === -1) return false;
+  for (const cls of QUANTITY_CLASSES) {
+    if (cls.test(item) && !cls.test(src)) return false;
+  }
+  if (dominantScript(item) === 'cjk' && srcScript === 'latin' && numbers.length + words.length === 0) return false;
   return true;
 }
 
@@ -1207,6 +1248,42 @@ export function postProcessSourcedOutput(
     out = `${out}\n\n## Sources\n\n${lines.join('\n')}\n`;
   }
   return { text: out, keptItems: kept, droppedItems: dropped, usedFallback: false, rewrittenItems: rewritten };
+}
+
+/**
+ * Compact plain-text briefing for CHARACTER-LIMITED final actions (social
+ * posts, notifications with a char limit). A markdown body + "## Sources"
+ * section would be cut by the limit — usually removing every URL. Instead
+ * each kept item becomes one line "• <title> <source url>" and whole items are
+ * dropped from the end until the text fits `limit` under `measure` (the
+ * channel's own length function, e.g. X-weighted). Returns '' when not even
+ * one item with its URL fits — callers fail closed.
+ */
+export function compactSourcedText(
+  rawText: string,
+  evidence: ChainEvidence,
+  limit: number,
+  measure: (s: string) => number = (x) => Array.from(x).length,
+  maxItems?: number,
+): string {
+  // Same verification as the markdown path (chain-wide ids, fallback when
+  // nothing survives), just rendered compactly.
+  const verified = postProcessSourcedOutput(rawText, evidence, { finalize: false, maxItems });
+  const lines: string[] = [];
+  for (const unit of parseUnits(verified.text)) {
+    if (unit.kind === 'heading') continue;
+    const ids = citationIds(unit.lines.join('\n'));
+    const src = evidence.sources.find((x) => ids.indexOf(x.id) !== -1);
+    const title = sanitizeUntrusted(unitTitle(unit), MAX_ITEM_TITLE_CHARS);
+    if (!src || !title) continue;
+    lines.push(`• ${title} ${src.url}`);
+  }
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (measure([...kept, line].join('\n')) > limit) break;
+    kept.push(line);
+  }
+  return kept.join('\n');
 }
 
 /** Intermediate summarize step: keep the model's cited, grounded items

@@ -1113,7 +1113,11 @@ export interface AgentRunLog {
   // fire) -> 'skipped'. A single-action run (Agent.action, or `actions` with
   // < 2 entries) is completely unaffected — this reduction only ever runs
   // when `actionResults` would be populated.
-  status: 'success' | 'error' | 'skipped' | 'unavailable';
+  // 'pending' (2026-10-09): an attended chain's action-only final run
+  // outlived the wait timeout and is still running in the background; its
+  // own run log (written when it finishes) carries the real outcome. Never
+  // counted by the circuit breaker.
+  status: 'success' | 'error' | 'skipped' | 'unavailable' | 'pending';
   outputPreview: string;       // first 500 chars
   savedPath?: string;
   savedPathMirror?: string;
@@ -1151,7 +1155,8 @@ export interface AgentRunStep {
   // 'unavailable' mirrors AgentRunLog: a step whose only failure was a transient
   // web outage. reduceStatus folds it to an 'unavailable' run (not 'error') so a
   // multi-step agent is NOT auto-disabled by a transient outage either.
-  status: 'success' | 'error' | 'skipped' | 'unavailable';
+  // 'pending': see AgentRunLog.status.
+  status: 'success' | 'error' | 'skipped' | 'unavailable' | 'pending';
   durationMs: number;
   outputPreview: string;
   routeDecision?: AgentRouteDecision;

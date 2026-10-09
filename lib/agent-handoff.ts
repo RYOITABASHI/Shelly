@@ -49,7 +49,7 @@ export interface HandoffStepInput {
 /** Minimal per-step result shape — satisfied by AgentRunStep. */
 export interface HandoffRecordInput {
   index: number;
-  status: 'success' | 'error' | 'skipped' | 'unavailable';
+  status: 'success' | 'error' | 'skipped' | 'unavailable' | 'pending';
   outputPreview: string;
 }
 

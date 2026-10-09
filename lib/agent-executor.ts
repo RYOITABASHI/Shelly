@@ -1345,11 +1345,13 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // instruction ("ローカルLLMで要約して") and produced a shallow, near-content-free
   // output instead of a real summary. A genuinely single-shot (non-chain)
   // agent is unaffected — isOrchestratedStep is never set for that path.
-  const actionType = opts.suppressAction
-    ? '__suppressed__'
-    : opts.isOrchestratedStep
-      ? 'draft'
-      : (agent.action?.type ?? 'draft');
+  // 2026-10-09 fix: that 'draft' override belongs ONLY to the model's system
+  // prompt (ToolCommandOptions.actionType below already applies it there).
+  // It used to be applied to the DISPATCHED action too, so every attended
+  // chain's final step did a draft save even when the agent was configured to
+  // notify / webhook / post — the configured action never ran. The final
+  // step now dispatches the agent's real action, exactly once.
+  const actionType = opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
   const actionIntentMode = actionType === 'intent' ? (agent.action?.intentMode ?? '') : '';
@@ -5314,35 +5316,54 @@ try {
   const cites = Array.isArray(data && data.citations) ? data.citations : [];
   const cleanOf = (u) => String(u || '').trim().replace(/[).,;]+$/, '');
   const isHttp = (u) => u.slice(0, 7) === 'http://' || u.slice(0, 8) === 'https://';
+  // Same normalization as lib/agent-sources.ts urlKey: scheme-less, lower-case
+  // host without www., no fragment, no utm_*/fbclid/gclid params, no trailing
+  // slash — so a citation and its search_result match despite cosmetic drift.
+  const keyOf = (u) => {
+    const s = String(u || '').trim().replace(/#.*$/, '');
+    const m = /^https?:\\/\\/([^/?#]+)([^?]*)(\\?.*)?$/i.exec(s);
+    if (!m) return s.toLowerCase();
+    const q = (m[3] || '').replace(/^\\?/, '').split('&')
+      .filter((kv) => kv && !/^(?:utm_[^=]*|fbclid|gclid|mc_cid|mc_eid)(?:=|$)/i.test(kv)).join('&');
+    return m[1].toLowerCase().replace(/^www\\./, '') + m[2].replace(/\\/+$/, '') + (q ? '?' + q : '');
+  };
   const meta = {};
   for (const r of sr) {
-    const u = cleanOf(r && r.url);
-    if (u && !meta[u]) meta[u] = r;
+    const k = keyOf(cleanOf(r && r.url));
+    if (k && !meta[k]) meta[k] = r;
   }
-  const lineFor = (n, clean) => {
-    const m = meta[clean] || {};
+  // own = the citation object itself (some responses carry {url,title,date})
+  // — used when no search_result matches.
+  const lineFor = (n, clean, own) => {
+    const m = meta[keyOf(clean)] || (own && typeof own === 'object' ? own : {});
     const title = typeof m.title === 'string' && m.title.trim() ? m.title.trim() : clean;
     const d = String(m.date || m.last_updated || '').slice(0, 10);
     return '[' + n + '] ' + title + ' — ' + clean + (/^\\d{4}-\\d{2}-\\d{2}$/.test(d) ? ' (' + d + ')' : '');
   };
-  const ordered = cites.length ? cites.map((c) => (typeof c === 'string' ? c : c && c.url)) : sr.map((r) => r && r.url);
+  const ordered = cites.length ? cites : sr;
   const lines = [];
   const listed = {};
-  ordered.forEach((u, i) => {
+  ordered.forEach((c, i) => {
     if (i >= 20) return;
-    const clean = cleanOf(u);
-    if (!isHttp(clean) || listed[clean]) return;
-    listed[clean] = 1;
-    lines.push(lineFor(i + 1, clean));
+    const clean = cleanOf(typeof c === 'string' ? c : c && c.url);
+    if (!isHttp(clean)) return;
+    const k = keyOf(clean);
+    if (listed[k]) {
+      // A repeated citation maps to its first slot — never a dangling [n].
+      lines.push('[' + (i + 1) + '] = [' + listed[k] + ']');
+      return;
+    }
+    listed[k] = i + 1;
+    lines.push(lineFor(i + 1, clean, c));
   });
   let next = ordered.length;
   for (const r of sr) {
     const clean = cleanOf(r && r.url);
-    if (!isHttp(clean) || listed[clean]) continue;
+    if (!isHttp(clean) || listed[keyOf(clean)]) continue;
     next += 1;
     if (next > 20) break;
-    listed[clean] = 1;
-    lines.push(lineFor(next, clean));
+    listed[keyOf(clean)] = next;
+    lines.push(lineFor(next, clean, r));
   }
   if (lines.length) sourcesBlock = '\\n\\n## Sources\\n' + lines.join('\\n');
 } catch (_) {}
@@ -5426,50 +5447,70 @@ if not content:
 sources_block = ""
 try:
     # v65: citations order (Perplexity's [n] markers), titles/dates from
-    # search_results by URL — mirrors the node branch above.
+    # search_results matched by normalized URL (lib/agent-sources.ts urlKey
+    # rule), a citation object's own title as fallback, and a repeated
+    # citation aliased to its first slot — mirrors the node branch above.
     sr = data.get("search_results") if isinstance(data.get("search_results"), list) else []
     cites = data.get("citations") if isinstance(data.get("citations"), list) else []
     def _clean(u):
         return str(u or "").strip().rstrip(").,;")
     def _http(u):
         return u.startswith("http://") or u.startswith("https://")
+    def _key(u):
+        s = str(u or "").strip().split("#", 1)[0]
+        low = s.lower()
+        if not (low.startswith("http://") or low.startswith("https://")):
+            return low
+        rest = s.split("://", 1)[1]
+        query = ""
+        if "?" in rest:
+            rest, query = rest.split("?", 1)
+        host, _, path = rest.partition("/")
+        host = host.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = ("/" + path if path else "").rstrip("/")
+        drop = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid")
+        kept = [kv for kv in query.split("&") if kv and not kv.lower().startswith(drop)]
+        return host + path + ("?" + "&".join(kept) if kept else "")
     meta = {}
     for r in sr:
         if isinstance(r, dict):
-            u = _clean(r.get("url"))
-            if u and u not in meta:
-                meta[u] = r
-    def _line(n, clean):
-        m = meta.get(clean) or {}
+            k = _key(_clean(r.get("url")))
+            if k and k not in meta:
+                meta[k] = r
+    def _line(n, clean, own):
+        m = meta.get(_key(clean)) or (own if isinstance(own, dict) else {})
         t = m.get("title")
         label = t.strip() if isinstance(t, str) and t.strip() else clean
         d = str(m.get("date") or m.get("last_updated") or "")[:10]
         ok = len(d) == 10 and d[4] == "-" and d[7] == "-" and d[:4].isdigit()
         return "[" + str(n) + "] " + label + " — " + clean + (" (" + d + ")" if ok else "")
-    if cites:
-        ordered = [c if isinstance(c, str) else (c.get("url") if isinstance(c, dict) else "") for c in cites]
-    else:
-        ordered = [r.get("url") if isinstance(r, dict) else "" for r in sr]
+    ordered = cites if cites else sr
     lines = []
-    listed = set()
-    for i, u in enumerate(ordered):
+    listed = {}
+    for i, c in enumerate(ordered):
         if i >= 20:
             break
-        clean = _clean(u)
-        if not _http(clean) or clean in listed:
+        clean = _clean(c if isinstance(c, str) else (c.get("url") if isinstance(c, dict) else ""))
+        if not _http(clean):
             continue
-        listed.add(clean)
-        lines.append(_line(i + 1, clean))
+        k = _key(clean)
+        if k in listed:
+            lines.append("[" + str(i + 1) + "] = [" + str(listed[k]) + "]")
+            continue
+        listed[k] = i + 1
+        lines.append(_line(i + 1, clean, c))
     nxt = len(ordered)
     for r in sr:
         clean = _clean(r.get("url") if isinstance(r, dict) else "")
-        if not _http(clean) or clean in listed:
+        if not _http(clean) or _key(clean) in listed:
             continue
         nxt += 1
         if nxt > 20:
             break
-        listed.add(clean)
-        lines.append(_line(nxt, clean))
+        listed[_key(clean)] = nxt
+        lines.append(_line(nxt, clean, r))
     if lines:
         sources_block = "\\n\\n## Sources\\n" + "\\n".join(lines)
 except Exception:
@@ -6558,9 +6599,9 @@ function codexOrchestrationSourcingPreamble(sourcing: NonNullable<OrchestrationC
 CODEX_ORCH_RESEARCH=( ${flags} )
 CODEX_ORCH_SRC_RECENCY=${shellQuote(sourcing.recency ?? '')}
 CODEX_ORCH_SRC_COUNT=${shellQuote(sourcing.count ? String(sourcing.count) : '')}
-CODEX_ORCH_SRC_STATE="$TMP_DIR/agent-orch-evidence-$AGENT_ID-$.json"
-CODEX_ORCH_EVIDENCE_FILE="$TMP_DIR/agent-orch-evidence-block-$AGENT_ID-$.txt"
-CODEX_ORCH_CARRY_SOURCE_FILE="$TMP_DIR/agent-orch-carry-source-$AGENT_ID-$.txt"
+CODEX_ORCH_SRC_STATE="$TMP_DIR/agent-orch-evidence-$AGENT_ID-$$.json"
+CODEX_ORCH_EVIDENCE_FILE="$TMP_DIR/agent-orch-evidence-block-$AGENT_ID-$$.txt"
+CODEX_ORCH_CARRY_SOURCE_FILE="$TMP_DIR/agent-orch-carry-source-$AGENT_ID-$$.txt"
 CODEX_ORCH_CARRY_SOURCE=""
 rm -f "$CODEX_ORCH_SRC_STATE" "$CODEX_ORCH_EVIDENCE_FILE" "$CODEX_ORCH_CARRY_SOURCE_FILE"
 codex_orch_sourcing() {
@@ -6795,7 +6836,11 @@ ${chain.sourcing ? 'rm -f "$CODEX_ORCH_SRC_STATE" "$CODEX_ORCH_EVIDENCE_FILE" "$
 # for a run that never reached its configured final step.
 if [ "$CODEX_ORCH_STEP_INDEX" -lt "$CODEX_ORCH_STEP_TOTAL" ] && [ "$CODEX_ORCH_FAILED" != "1" ]; then
   ACTION_TYPE="__suppressed__"
-fi`;
+${chain.sourcing ? `  # Sourced chain cut short by the step/time budget: the last result was never
+  # post-processed (no verified citations / Sources), so it must not be
+  # saved as a draft either.
+  SKIP_SUPPRESSED_DRAFT_SAVE=1
+` : ''}fi`;
 }
 
 /**

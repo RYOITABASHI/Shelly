@@ -78,6 +78,8 @@ import {
 import {
   NO_SOURCES_MESSAGE,
   SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE,
+  DISPATCH_PENDING_MESSAGE,
+  compactSourcedText,
   absorbResearchStep,
   buildFallbackBriefing,
   createChainEvidence,
@@ -91,6 +93,7 @@ import {
   type StepEvidence,
 } from './agent-sources';
 import type { AgentRunStep } from '@/store/types';
+import { clampCharLimit, xWeightedLength } from './agent-pipeline-presets';
 import { getHomePath } from '@/lib/home-path';
 import {
   agentRollbackWorkspaceRoot,
@@ -2348,7 +2351,12 @@ async function runAgentOrchestratedBody(
           // text-only (never Codex/CLI exec — its prompt quotes untrusted web
           // text) and its last ladder attempt falls back to the
           // deterministic sourced briefing instead of failing outright.
-          ...(sourcingActive ? { skipSuppressedDraftSave: true, stepResultToken } : {}),
+          // Intermediate (__suppressed__) steps never save to the draft
+          // destination — this attended chain carries results in memory, and
+          // a notify/webhook agent must not leave a draft file behind; only
+          // the final step's real action writes anything (2026-10-09).
+          skipSuppressedDraftSave: true,
+          ...(sourcingActive ? { stepResultToken } : {}),
           ...(synthesis
             ? {
                 textOnly: true,
@@ -2421,16 +2429,31 @@ async function runAgentOrchestratedBody(
                 textOnly: true,
                 singleAttempt: true,
               },
-            ).then((r) => r.finalLog),
+            )
+              .then((r) => r.finalLog)
+              .catch((error: unknown) => {
+                // The action-only run outlived waitTimeoutMs: it is still
+                // running in the background and will write its own run log
+                // (the real outcome) when it finishes — report 'pending',
+                // never a false error (review follow-up 6).
+                if (error instanceof Error && /Timed out waiting/.test(error.message)) return 'pending' as const;
+                throw error;
+              }),
+          charLimit: isFinalStep ? agent.orchestration?.charLimit : undefined,
         });
         carry = outcome.carry;
         if (research) researchStepsDone += 1;
-        if (outcome.dispatchLog !== undefined) {
+        if (outcome.dispatched) {
           const dlog = outcome.dispatchLog;
-          finalOutput = pickFinalStepOutput(dlog);
-          record.status = dlog?.status ?? 'error';
-          record.outputPreview = dlog?.outputPreview ?? outcome.carry.replace(/\s+/g, ' ').trim().slice(0, 500);
           record.durationMs = Date.now() - stepStart;
+          if (dlog === 'pending') {
+            record.status = 'pending';
+            record.outputPreview = DISPATCH_PENDING_MESSAGE;
+          } else {
+            finalOutput = pickFinalStepOutput(dlog);
+            record.status = dlog?.status ?? 'error';
+            record.outputPreview = dlog?.outputPreview ?? 'dispatch run produced no run log';
+          }
         }
       } catch (error) {
         // Fail closed (review H3): never leave an unverified briefing on disk
@@ -2559,8 +2582,12 @@ export async function applySourcing(args: {
   count?: number;
   today: string;
   stepResultToken?: string;
-  dispatch: (presetResultText: string) => Promise<AgentRunLog | undefined>;
-}): Promise<{ carry: string; dispatchLog?: AgentRunLog | undefined }> {
+  dispatch: (presetResultText: string) => Promise<AgentRunLog | undefined | 'pending'>;
+  /** Final step's character limit (orchestration.charLimit) — when set the
+   *  briefing is rendered in the compact one-line-per-item form with inline
+   *  source URLs (compactSourcedText) instead of markdown + "## Sources". */
+  charLimit?: number;
+}): Promise<{ carry: string; dispatched?: boolean; dispatchLog?: AgentRunLog | undefined | 'pending' }> {
   const full = await readChainStepResult(args.runCommand, args.agentId, args.stepResultToken);
   const text = full.trim() ? full : args.preview;
   if (args.research) {
@@ -2569,6 +2596,12 @@ export async function applySourcing(args: {
   if (!args.synthesis) return { carry: text };
   if (!args.deferFinalAction) {
     return { carry: enforceSourcedIntermediate(text, args.evidence, args.count) || text };
+  }
+  if (args.charLimit && Number.isFinite(args.charLimit) && args.charLimit > 0) {
+    const compact = compactSourcedText(text, args.evidence, clampCharLimit(args.charLimit), xWeightedLength, args.count);
+    if (!compact) throw new Error('not even one sourced item fits the character limit');
+    const dispatchLog = await args.dispatch(compact);
+    return { carry: compact, dispatched: true, dispatchLog };
   }
   const processed = postProcessSourcedOutput(text, args.evidence, {
     finalize: true,
@@ -2581,7 +2614,7 @@ export async function applySourcing(args: {
     `final briefing: kept=${processed.keptItems} dropped=${processed.droppedItems} rewritten=${processed.rewrittenItems} fallback=${processed.usedFallback} sources=${args.evidence.sources.length}`,
   );
   const dispatchLog = await args.dispatch(processed.text);
-  return { carry: processed.text, dispatchLog };
+  return { carry: processed.text, dispatched: true, dispatchLog };
 }
 
 /** List the agent's run-log file paths on disk (best-effort). */
