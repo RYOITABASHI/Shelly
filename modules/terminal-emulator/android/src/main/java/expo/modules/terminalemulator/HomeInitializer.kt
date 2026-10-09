@@ -1194,7 +1194,22 @@ patchCodex(libDir);
     //      child processes that don't read the Android property themselves
     //      (Codex's footer clock showed UTC) use the device time zone.
     //      Sandbox/approval policies are unchanged.
-    private const val BASHRC_VERSION = 246
+    // v247: v246 was not enough on device (Codex 0.156.1): Codex-run commands
+    //      still saw no PYTHONHOME/PYTHONPATH, and the footer clock stayed UTC.
+    //      (1) Every Codex launch (codex() and the $HOME/bin/codex shim's
+    //      __shelly_codex_run_tui, plus shelly-agent-driver's app-server) now
+    //      also passes `-c shell_environment_policy.set.<VAR>="<value>"` for
+    //      PYTHONHOME/PYTHONPATH/TZ/ANDROID_ROOT/ANDROID_DATA. Codex applies
+    //      `set` after inherit/excludes and on top of its login-shell snapshot,
+    //      so the values reach tool commands regardless of how the launch env
+    //      was shaped. Values containing `"` or `\` are skipped (no TOML
+    //      escaping needed). Only `set` is used — `inherit`/excludes untouched.
+    //      (2) Export ANDROID_ROOT=/system and ANDROID_DATA=/data when unset.
+    //      The PTY clearenv()s, and chrono (Codex's clock) on Android locates
+    //      tzdata only via $ANDROID_ROOT/usr/share/zoneinfo/tzdata or
+    //      $ANDROID_DATA/misc/zoneinfo/tzdata — without them both TZ and the
+    //      persist.sys.timezone fallback resolve to UTC.
+    private const val BASHRC_VERSION = 247
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -1604,6 +1619,9 @@ patchCodex(libDir);
             sb.appendLine("  [ -n \"\$__shelly_tz\" ] && export TZ=\"\$__shelly_tz\"")
             sb.appendLine("  unset __shelly_tz")
             sb.appendLine("fi")
+            // v247: chrono (Codex clock) finds Android tzdata only via these.
+            sb.appendLine("export ANDROID_ROOT=\"\${ANDROID_ROOT:-/system}\"")
+            sb.appendLine("export ANDROID_DATA=\"\${ANDROID_DATA:-/data}\"")
             sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
             // v53: point $SHELL at the LibExtractor-extracted shelly_shell
             // binary in $libDir. Using nativeLibraryDir (v49) doesn't work on
@@ -2185,6 +2203,13 @@ patchCodex(libDir);
             sb.appendLine("__shelly_codex_run_tui() {")
             sb.appendLine("  __primary=\"\$1\"")
             sb.appendLine("  shift || true")
+            // v247: hand the tool-command env to Codex explicitly (see BASHRC_VERSION 247).
+            sb.appendLine("  for __shelly_cfg_k in ANDROID_DATA ANDROID_ROOT TZ PYTHONPATH PYTHONHOME; do")
+            sb.appendLine("    eval \"__shelly_cfg_v=\\\${\$__shelly_cfg_k:-}\"")
+            sb.appendLine("    [ -n \"\$__shelly_cfg_v\" ] || continue")
+            sb.appendLine("    case \"\$__shelly_cfg_v\" in *'\"'*|*'\\'*) continue ;; esac")
+            sb.appendLine("    set -- -c \"shell_environment_policy.set.\$__shelly_cfg_k=\\\"\$__shelly_cfg_v\\\"\" \"\$@\"")
+            sb.appendLine("  done")
             sb.appendLine("  __start=\$(/system/bin/toybox date +%s 2>/dev/null || echo 0)")
             sb.appendLine("  __codex_bin_dir=\"\${__primary%/*}\"")
             sb.appendLine("  SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__primary\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$__codex_bin_dir:\$SHELLY_LIB_DIR\" /system/bin/linker64 \"\$__primary\" \"\$@\"")
@@ -2926,6 +2951,14 @@ patchCodex(libDir);
             sb.appendLine("  __shelly_codex_run_tui() {")
             sb.appendLine("    local __primary=\"\$1\"")
             sb.appendLine("    shift || true")
+            // v247: hand the tool-command env to Codex explicitly (see BASHRC_VERSION 247).
+            sb.appendLine("    local __shelly_cfg_k __shelly_cfg_v")
+            sb.appendLine("    for __shelly_cfg_k in ANDROID_DATA ANDROID_ROOT TZ PYTHONPATH PYTHONHOME; do")
+            sb.appendLine("      __shelly_cfg_v=\"\${!__shelly_cfg_k:-}\"")
+            sb.appendLine("      [ -n \"\$__shelly_cfg_v\" ] || continue")
+            sb.appendLine("      case \"\$__shelly_cfg_v\" in *'\"'*|*'\\'*) continue ;; esac")
+            sb.appendLine("      set -- -c \"shell_environment_policy.set.\$__shelly_cfg_k=\\\"\$__shelly_cfg_v\\\"\" \"\$@\"")
+            sb.appendLine("    done")
             sb.appendLine("    local __start=\"\$(/system/bin/toybox date +%s 2>/dev/null || echo 0)\"")
             sb.appendLine("    __shelly_paste_tui_begin")
             sb.appendLine("    local __chosen_tui_dir=\"\${__primary%/*}\"")

@@ -12,6 +12,11 @@
  * shelly-agent-driver.js (app-server). It also exports TZ from
  * persist.sys.timezone when unset (Codex's footer clock showed UTC).
  *
+ * v247 (on-device: v246 still failed): every Codex launch also passes
+ * `-c shell_environment_policy.set.<VAR>="<value>"` for PYTHONHOME/PYTHONPATH/
+ * TZ/ANDROID_ROOT/ANDROID_DATA, and .bashrc exports ANDROID_ROOT/ANDROID_DATA
+ * (chrono needs them to find Android tzdata).
+ *
  * The generated bash is extracted from the real HomeInitializer.kt
  * `sb.appendLine("...")` literals and executed with Android-only bits stubbed.
  */
@@ -103,9 +108,9 @@ function runBash(script: string, env: Record<string, string> = {}): Record<strin
 const ENV_DUMP = 'for v in PYTHONHOME PYTHONPATH TZ; do bash -c "[ -n \\"\\${$v+x}\\" ] && echo $v=\\${$v}"; done; true';
 
 describe('BASHRC_VERSION', () => {
-  it('is bumped to >= 246 for the Codex python/TZ env', () => {
+  it('is bumped to >= 247 for the Codex python/TZ env + policy.set args', () => {
     const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);
-    expect(Number(m?.[1])).toBeGreaterThanOrEqual(246);
+    expect(Number(m?.[1])).toBeGreaterThanOrEqual(247);
   });
 });
 
@@ -201,9 +206,111 @@ describe('shelly-agent-driver androidToolEnv (codex app-server)', () => {
 
   it('respects caller PYTHONHOME/TZ and prepends PYTHONPATH', () => {
     const lib = makeLibDir('bundled');
-    expect(androidToolEnv(lib, { PYTHONHOME: '/x', TZ: 'UTC' }, () => 'Asia/Tokyo')).toEqual({});
+    expect(androidToolEnv(lib, { PYTHONHOME: '/x', TZ: 'UTC', ANDROID_ROOT: '/r', ANDROID_DATA: '/d' }, () => 'Asia/Tokyo')).toEqual({});
     const env = androidToolEnv(lib, { PYTHONPATH: '/site' }, () => '');
     expect(posix(env.PYTHONPATH)).toBe(`${lib}/python3.13:/site`);
     expect(env.TZ).toBeUndefined();
+  });
+});
+
+const POLICY_KEYS = ['PYTHONHOME', 'PYTHONPATH', 'TZ', 'ANDROID_ROOT', 'ANDROID_DATA'];
+
+function policyArgs(argv: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '-c') continue;
+    const m = argv[i + 1]?.match(/^shell_environment_policy\.set\.([A-Z_]+)="(.*)"$/);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+
+function argvLines(stdout: string): string[] {
+  return stdout.split(/\r?\n/).filter((l) => l.startsWith('ARG:')).map((l) => l.slice(4));
+}
+
+maybe('codex() run_tui passes shell_environment_policy.set overrides', () => {
+  const toolPath = extract('__shelly_tool_path() {  # $1=tool $2=packId', '__shelly_pack_hint() {  # $1=tool $2=packId');
+  const pyBlock = extract("  local __shelly_py=''", '  local -a __codex_args=()');
+  const runTui = extract('  __shelly_codex_native_crash_rc() {', "  local __prev=''").replace(
+    /\/system\/bin\/toybox date \+%s/g,
+    'echo 0',
+  );
+  const harness = (args: string) =>
+    `${toolPath}\n_run() { for a in "$@"; do printf 'ARG:%s\n' "$a"; done; }\n` +
+    `__shelly_paste_tui_begin() { :; }\n__shelly_paste_tui_end() { :; }\n` +
+    `fakecodex() {\n  local __tui=/x/codex_tui\n${pyBlock}${runTui}  __shelly_codex_run_tui /x/codex_tui ${args}\n}\nfakecodex\n`;
+
+  it('prepends -c set args for the python env, TZ and ANDROID_* before the user args', () => {
+    const lib = makeLibDir('pack');
+    const argv = argvLines(
+      runBashRaw(harness('exec --cd /w hi'), {
+        SHELLY_LIB_DIR: lib,
+        TZ: 'Asia/Tokyo',
+        ANDROID_ROOT: '/system',
+        ANDROID_DATA: '/data',
+      }),
+    );
+    expect(argv[0]).toBe('/x/codex_tui');
+    expect(argv.slice(-4)).toEqual(['exec', '--cd', '/w', 'hi']);
+    expect(policyArgs(argv)).toEqual({
+      PYTHONHOME: `${lib}/packs/dev-tools/python3.13`,
+      PYTHONPATH: `${lib}/packs/dev-tools/python3.13`,
+      TZ: 'Asia/Tokyo',
+      ANDROID_ROOT: '/system',
+      ANDROID_DATA: '/data',
+    });
+    // every -c is followed by a set override and nothing else is injected
+    expect(argv.length).toBe(1 + 2 * POLICY_KEYS.length + 4);
+  });
+
+  it('skips values that would need TOML escaping and unset values', () => {
+    const lib = makeLibDir('none');
+    const argv = argvLines(runBashRaw(harness('hi'), { SHELLY_LIB_DIR: lib, TZ: 'bad"tz', ANDROID_ROOT: 'a\\b' }));
+    expect(policyArgs(argv)).toEqual({});
+    expect(argv).toEqual(['/x/codex_tui', 'hi']);
+  });
+});
+
+maybe('$HOME/bin/codex shim run_tui passes shell_environment_policy.set overrides', () => {
+  const shimRunTui = extract('__shelly_codex_run_tui() {', '__dispatch="${1:-}"')
+    .replace(/\/system\/bin\/toybox date \+%s/g, 'echo 0')
+    .replace(/\/system\/bin\/linker64/g, '__fake_linker');
+
+  it('prepends -c set args (POSIX eval path)', () => {
+    const script =
+      `__fake_linker() { for a in "$@"; do printf 'ARG:%s\n' "$a"; done; }\n` +
+      `__shelly_codex_native_crash_rc() { return 1; }\n${shimRunTui}__shelly_codex_run_tui /x/codex_tui --cd /w\n`;
+    const argv = argvLines(
+      runBashRaw(script, { SHELLY_LIB_DIR: '/lib', PYTHONHOME: '/py/python3.13', PYTHONPATH: '/py/python3.13', TZ: 'Asia/Tokyo' }),
+    );
+    expect(argv[0]).toBe('/x/codex_tui');
+    expect(argv.slice(-2)).toEqual(['--cd', '/w']);
+    expect(policyArgs(argv)).toEqual({ PYTHONHOME: '/py/python3.13', PYTHONPATH: '/py/python3.13', TZ: 'Asia/Tokyo' });
+  });
+});
+
+describe('.bashrc ANDROID_ROOT/ANDROID_DATA (chrono tzdata lookup)', () => {
+  it('exports defaults when unset', () => {
+    expect(ktSrc).toContain('sb.appendLine("export ANDROID_ROOT=\\"\\${ANDROID_ROOT:-/system}\\"")');
+    expect(ktSrc).toContain('sb.appendLine("export ANDROID_DATA=\\"\\${ANDROID_DATA:-/data}\\"")');
+  });
+});
+
+describe('shelly-agent-driver codexPolicyEnvArgs (codex app-server)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { codexPolicyEnvArgs, androidToolEnv } = require('../scripts/shelly-agent-driver.js');
+
+  it('emits TOML-quoted set overrides and skips unsafe values', () => {
+    expect(
+      codexPolicyEnvArgs({ PYTHONHOME: '/p/python3.13', PYTHONPATH: 'a"b', TZ: 'Asia/Tokyo', ANDROID_ROOT: 'x\\y' }),
+    ).toEqual(['-c', 'shell_environment_policy.set.PYTHONHOME="/p/python3.13"', '-c', 'shell_environment_policy.set.TZ="Asia/Tokyo"']);
+  });
+
+  it('androidToolEnv defaults ANDROID_ROOT/ANDROID_DATA', () => {
+    const env = androidToolEnv(makeLibDir('none'), {}, () => '');
+    expect(env.ANDROID_ROOT).toBe('/system');
+    expect(env.ANDROID_DATA).toBe('/data');
+    expect(androidToolEnv(makeLibDir('none'), { ANDROID_ROOT: '/r', ANDROID_DATA: '/d' }, () => '')).toEqual({});
   });
 });

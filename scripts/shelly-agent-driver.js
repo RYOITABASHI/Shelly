@@ -433,7 +433,26 @@ function androidToolEnv(libDir, input = process.env, readTimezone = readAndroidT
     const tz = readTimezone();
     if (tz) extra.TZ = tz;
   }
+  // chrono (Codex's clock) finds Android tzdata only via these (BASHRC_VERSION 247).
+  if (!input.ANDROID_ROOT) extra.ANDROID_ROOT = '/system';
+  if (!input.ANDROID_DATA) extra.ANDROID_DATA = '/data';
   return extra;
+}
+
+const CODEX_POLICY_ENV_KEYS = ['PYTHONHOME', 'PYTHONPATH', 'TZ', 'ANDROID_ROOT', 'ANDROID_DATA'];
+
+// Codex builds tool-command env from its shell_environment_policy (and a
+// login-shell snapshot); `set` entries are applied last, so pass these
+// explicitly as `-c shell_environment_policy.set.<VAR>="<value>"`. Values that
+// would need TOML escaping (`"`, `\`, control chars) are skipped.
+function codexPolicyEnvArgs(env) {
+  const args = [];
+  for (const key of CODEX_POLICY_ENV_KEYS) {
+    const value = env[key];
+    if (!value || /["\\\u0000-\u001f\u007f]/.test(value)) continue;
+    args.push('-c', `shell_environment_policy.set.${key}="${value}"`);
+  }
+  return args;
 }
 
 function readAndroidTimezone() {
@@ -479,7 +498,7 @@ function codexAppServerSpawnSpec(config) {
       LD_PRELOAD: path.join(android.libDir, 'libexec_wrapper.so'),
       LD_LIBRARY_PATH: `${codexDir}:${android.libDir}`,
     });
-    const args = [codexTui, 'app-server', '--listen', 'stdio://'];
+    const args = [codexTui, ...codexPolicyEnvArgs(env), 'app-server', '--listen', 'stdio://'];
     return {
       mode: 'android-linker64-codex_tui',
       command: ANDROID_LINKER64,
@@ -2155,4 +2174,5 @@ module.exports = {
   buildActionPolicyInput,
   policySealAccepts,
   androidToolEnv,
+  codexPolicyEnvArgs,
 };
