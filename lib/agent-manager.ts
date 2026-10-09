@@ -75,6 +75,20 @@ import {
   reduceStatus,
   resolveBudget,
 } from './agent-orchestration';
+import {
+  NO_SOURCES_MESSAGE,
+  absorbResearchStep,
+  createChainEvidence,
+  detectRecency,
+  enforceSourcedIntermediate,
+  extractSourcesFromText,
+  isResearchStep,
+  localIsoDate,
+  postProcessSourcedOutput,
+  requestedItemCount,
+  requiresWebFacts,
+  type StepEvidence,
+} from './agent-sources';
 import type { AgentRunStep } from '@/store/types';
 import { getHomePath } from '@/lib/home-path';
 import {
@@ -2123,6 +2137,28 @@ async function runAgentOrchestratedBody(
   // per-step logs that held them are deleted when the aggregate replaces
   // them, so without this the path was lost for every multi-step run.
   let finalOutput: AgentRunOutputFields = {};
+  // Sourced briefings (2026-10-09, lib/agent-sources.ts — mirrored in the
+  // unattended scripts/shelly-plan-executor.js runOrchestrationChain). Only a
+  // chain whose request depends on real-world/current facts is affected:
+  // research steps get the dated/recency/structured-list directive and their
+  // Perplexity sources (the "## Sources" block extract_ai_content appends,
+  // read back from the step's full result file) are carried structurally;
+  // later steps get the numbered Sources + sourcing contract; an uncited
+  // intermediate summary is replaced by the research-item template; the
+  // final saved draft is post-processed (uncited/ungrounded/duplicate items
+  // dropped, programmatic "## Sources"); zero sources stops the chain.
+  const chainRequestText = [agent.prompt, ...steps.map((s) => s.instruction)].join('\n');
+  const sourcingActive = requiresWebFacts(chainRequestText);
+  const sourcingToday = localIsoDate(new Date());
+  const sourcingRecency = detectRecency(chainRequestText);
+  const sourcingCount = requestedItemCount(chainRequestText);
+  const evidence = createChainEvidence();
+  let researchStepsDone = 0;
+  const stepIsResearch = (idx: number): boolean => {
+    if (!sourcingActive || idx === steps.length - 1 || steps[idx].apiCall) return false;
+    return isResearchStep(steps[idx].instruction, (steps[idx].tool ?? agent.tool)?.type);
+  };
+  if (sourcingActive) await readChainStepResult(runCommand, agentId); // discard a stale copy
   // Snapshot existing log files so we can remove the per-step logs this chain
   // writes and replace them with ONE aggregate (so the circuit breaker counts a
   // failed chain as one run, and the per-step detail survives a reload).
@@ -2172,6 +2208,15 @@ async function runAgentOrchestratedBody(
       if (!priorFailed) narrate((n) => n.chainHalted());
       break;
     }
+    // Sourced briefings: research ran but found nothing citable — stop before
+    // any summarize/write step can invent content.
+    if (sourcingActive && researchStepsDone > 0 && evidence.sources.length === 0 && !stepIsResearch(i)) {
+      const noSourcesRecord: AgentRunStep = { index: i, instruction: steps[i].instruction, status: 'error', durationMs: 0, outputPreview: NO_SOURCES_MESSAGE };
+      records.push(noSourcesRecord);
+      narrate((n) => n.stepFinished(noSourcesRecord));
+      priorFailed = true;
+      continue;
+    }
     narrate((n) => n.stepStarting(i));
 
     // Each step is a normal single run with a step-specific prompt; orchestration
@@ -2192,9 +2237,16 @@ async function runAgentOrchestratedBody(
     // the fail-fast invariant — every earlier step succeeded or we never got
     // here). See the parallelPlan comment above.
     const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
+    const research = stepIsResearch(i);
+    const synthesis = sourcingActive && !research && !step.apiCall && evidence.sources.length > 0;
+    const stepEvidence: StepEvidence | undefined = research
+      ? { mode: 'research', today: sourcingToday, recency: sourcingRecency, count: sourcingCount }
+      : synthesis
+        ? { mode: 'synthesis', sources: evidence.sources.slice(), items: evidence.items.slice(), count: sourcingCount }
+        : undefined;
     const stepAgent: Agent = {
       ...agent,
-      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults),
+      prompt: buildStepPrompt(agent.prompt, step.instruction, contextResults, stepEvidence),
       // Orchestration is otherwise cleared so a step's own script generation
       // doesn't recurse into runAgentOrchestrated again — isOrchestrated()
       // only keys off .steps.length >= 2 (via normalizeSteps), so an object
@@ -2243,7 +2295,10 @@ async function runAgentOrchestratedBody(
           // last PRE-group result) — a sibling comparison would false-positive
           // the duplicate detector on exactly the similar-parallel-research
           // outputs fan-out exists to produce.
-          priorStepContent: contextResults.at(-1),
+          // Sourced briefings: a summarize/write step is SUPPOSED to restate
+          // the prior step's cited items, so the duplicate check is skipped
+          // there (the prompt-echo/refusal checks still run).
+          priorStepContent: synthesis ? undefined : contextResults.at(-1),
         },
       ));
     } catch (error) {
@@ -2274,10 +2329,31 @@ async function runAgentOrchestratedBody(
       ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
     });
     if (isFinalStep && log) finalOutput = pickFinalStepOutput(log);
+    let carry = log?.outputPreview ?? '';
+    if (status === 'success' && sourcingActive) {
+      try {
+        carry = await applySourcing({
+          runCommand,
+          agentId,
+          evidence,
+          research,
+          synthesis,
+          isFinalStep,
+          preview: carry,
+          count: sourcingCount,
+          today: sourcingToday,
+          finalOutput,
+          record: records[records.length - 1],
+        });
+        if (research) researchStepsDone += 1;
+      } catch (error) {
+        logWarn('Sourcing', 'sourced-briefing post-processing failed', error);
+      }
+    }
     narrate((n) => n.stepFinished(records[records.length - 1]), finalOutput.savedPath);
     // A transient step carries no usable result downstream, so it stops the chain
     // just like an error — only success feeds the next step's context.
-    if (status === 'success') priorResults.push(log?.outputPreview ?? '');
+    if (status === 'success') priorResults.push(carry);
     else priorFailed = true;
   }
 
@@ -2329,6 +2405,78 @@ async function runAgentOrchestratedBody(
   await syncAgentRunLogsFromDisk(runCommand, agentId);
   await captureRunMemory(agentId, runCommand);
   await updateReusedSkillFromRun(agentId, runCommand);
+}
+
+/** Path the per-step script copies its full (redacted) result to — see the
+ *  isOrchestratedStep cleanup block in lib/agent-executor.ts's generateRunScript. */
+function chainStepResultPath(agentId: string): string {
+  return `${getHomePath()}/.shelly/tmp/agent-step-result-${agentId}.md`;
+}
+
+/** Read (and delete) the last chain step's full result; '' when absent. */
+async function readChainStepResult(runCommand: (cmd: string) => Promise<string>, agentId: string): Promise<string> {
+  const file = shellQuote(chainStepResultPath(agentId));
+  try {
+    const out = await runCommand(`cat ${file} 2>/dev/null; rm -f ${file}`);
+    return typeof out === 'string' ? out : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Sourced briefings, attended chain (2026-10-09): fold one successful step
+ * into the chain evidence and return the text to carry to the next step.
+ *  - research: sources parsed from the step's full result (extract_ai_content
+ *    appends Perplexity's citations/search_results as "## Sources"), markers
+ *    remapped onto chain ids, Sources block stripped from the carry;
+ *  - intermediate summarize: uncited output replaced by the research-item
+ *    template;
+ *  - final step with a saved draft: the saved file (and its Obsidian mirror)
+ *    is rewritten with the post-processed briefing — uncited / ungrounded /
+ *    duplicate items dropped, citations renumbered, programmatic "## Sources".
+ * Exported for unit tests only.
+ */
+export async function applySourcing(args: {
+  runCommand: (cmd: string) => Promise<string>;
+  agentId: string;
+  evidence: ReturnType<typeof createChainEvidence>;
+  research: boolean;
+  synthesis: boolean;
+  isFinalStep: boolean;
+  preview: string;
+  count?: number;
+  today: string;
+  finalOutput: AgentRunOutputFields;
+  record?: AgentRunStep;
+}): Promise<string> {
+  const full = await readChainStepResult(args.runCommand, args.agentId);
+  const text = full.trim() ? full : args.preview;
+  if (args.research) {
+    return absorbResearchStep(args.evidence, text, extractSourcesFromText(text));
+  }
+  if (!args.synthesis) return text;
+  if (!args.isFinalStep) {
+    return enforceSourcedIntermediate(text, args.evidence, args.count) || text;
+  }
+  const processed = postProcessSourcedOutput(text, args.evidence, {
+    finalize: true,
+    maxItems: args.count,
+    fallbackTitle: `# Briefing — ${args.today}`,
+  });
+  if (!processed.text) return text;
+  const targets = [args.finalOutput.savedPath, args.finalOutput.savedPathMirror].filter(
+    (p): p is string => typeof p === 'string' && p.trim().length > 0,
+  );
+  if (targets.length) {
+    await args.runCommand(`set -e\n${targets.map((p) => writeFileCommand(p, `${processed.text}\n`)).join('\n')}`);
+    if (args.record) args.record.outputPreview = processed.text.replace(/\s+/g, ' ').trim().slice(0, 500);
+  }
+  logInfo(
+    'Sourcing',
+    `final briefing: kept=${processed.keptItems} dropped=${processed.droppedItems} fallback=${processed.usedFallback} sources=${args.evidence.sources.length}`,
+  );
+  return processed.text;
 }
 
 /** List the agent's run-log file paths on disk (best-effort). */

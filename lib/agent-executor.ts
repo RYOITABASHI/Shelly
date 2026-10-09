@@ -22,6 +22,13 @@ import {
   resolveBudget,
 } from './agent-orchestration';
 import { clampCharLimit } from './agent-pipeline-presets';
+import {
+  RESEARCH_REQUIREMENTS_MARKER,
+  SOURCING_CONTRACT_MARKER,
+  choosePerplexityModel,
+  detectRecency,
+  withoutResearchDirective,
+} from './agent-sources';
 import { isSafeConnectorId, socialConnectorEnvPrefix } from './social-connectors';
 import { redactSecretsText } from './redact-secrets';
 import { isReversibleActionType } from './agent-reversible-action-types';
@@ -5946,7 +5953,14 @@ LOGEOF
 # Prune old logs (keep last 30)
 ls -t "$LOG_DIR"/*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 
-# Cleanup temp
+${opts.isOrchestratedStep ? `# Sourced briefings (2026-10-09): keep this chain step's FULL (redacted)
+# result — including the "## Sources" block extract_ai_content appends from
+# Perplexity's citations/search_results — for lib/agent-manager.ts to read
+# back (and delete) once the step finishes. The run log only carries a
+# ${MAX_RESULT_CARRY_CHARS}-byte preview, which cut the sources off. Emitted only for an
+# orchestrated step's ephemeral per-step script, never a stored script.
+clean_result_full "$RESULT_FILE" "$TMP_DIR/agent-step-result-$AGENT_ID.md" 2>/dev/null || true
+` : ''}# Cleanup temp
 rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE" "$RESULT_FILE.response.json.diag"
 finish 0
 `;
@@ -6011,6 +6025,14 @@ function generateToolCommand(
       // skipPromptCompose (Phase 7): see openAiCompatApiCommand's doc comment.
       // The local case does its own two-step (raw-write-then-truncate)
       // compose, so the skip has to cover both lines, not just one printf.
+      // Sourced briefings (2026-10-09): a chain summarize/write step under the
+      // sourcing contract (marker only ever present in a buildStepPrompt
+      // synthesis prompt) restates cited facts — run it cooler and shorter.
+      // Every other local script keeps the exact max_tokens 2048 body.
+      // Mirrors scripts/shelly-plan-executor.js's applySourcingRequestOptions.
+      const localSamplingJson = rawPrompt.includes(SOURCING_CONTRACT_MARKER)
+        ? '\\"max_tokens\\":1024,\\"temperature\\":0.2,'
+        : '\\"max_tokens\\":2048,';
       const localPromptCompose = options.stepSkipPromptCompose
         ? ''
         : `\t{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"\n\thead -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"\n\trm -f "$PROMPT_FILE.full"\n`;
@@ -6042,7 +6064,7 @@ function generateToolCommand(
 ${localPromptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}],${localSamplingJson}\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}
@@ -6065,7 +6087,19 @@ ${localPromptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
     case 'perplexity': {
-      const perplexityModel = tool.model || 'sonar';
+      // Sourced briefings (2026-10-09): a chain RESEARCH step (its prompt was
+      // built by buildStepPrompt with the research directive — the marker is
+      // never present otherwise, so every other Perplexity script is
+      // byte-identical) gets the list-appropriate model (sonar-pro unless the
+      // user explicitly asked for deep research — choosePerplexityModel) and
+      // Perplexity's search_recency_filter when the request implies recency.
+      // Mirrors scripts/shelly-plan-executor.js's applySourcingRequestOptions.
+      const isChainResearchStep = rawPrompt.includes(RESEARCH_REQUIREMENTS_MARKER);
+      const perplexityModel = isChainResearchStep
+        ? choosePerplexityModel(tool.model || 'sonar', withoutResearchDirective(rawPrompt))
+        : tool.model || 'sonar';
+      const recencyFilter = isChainResearchStep ? detectRecency(withoutResearchDirective(rawPrompt)) : undefined;
+      const recencyJson = recencyFilter ? `,\\"search_recency_filter\\":\\"${recencyFilter}\\"` : '';
       // skipPromptCompose (Phase 7): see openAiCompatApiCommand's doc comment.
       const perplexityPromptCompose = options.stepSkipPromptCompose
         ? ''
@@ -6079,7 +6113,7 @@ ${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		  echo 'Perplexity API key is not set. Add PERPLEXITY_API_KEY to ~/.shelly/agents/.env.' > ${resultVar}
 		  touch "$BACKEND_ERROR_FILE"
 		else
-		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
+		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}]${recencyJson}}' "$MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
 		set +e
 		if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
 			  SHELLY_CAP_AUTH_REF=perplexity HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"

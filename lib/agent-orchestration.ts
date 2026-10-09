@@ -19,6 +19,7 @@ import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentOrchestrationSt
 import { GEMINI_WEB, PERPLEXITY_WEB } from './agent-router-scoring';
 import { AUTH_REFS } from './capability-envelope';
 import { GROQ_DEFAULT_MODEL } from './groq';
+import { MAX_EVIDENCE_CHARS, renderStepEvidence, type StepEvidence } from './agent-sources';
 
 /** Sensible default; the hard cap protects the phantom-process ceiling. */
 export const DEFAULT_MAX_STEPS = 6;
@@ -292,17 +293,24 @@ export function nextStepGate(opts: {
 export function buildStepPrompt(
   basePrompt: string,
   instruction: string,
-  priorResults: string[]
+  priorResults: string[],
+  evidence?: StepEvidence,
 ): string {
   const tail = `# This step\n${instruction.trim()}`.slice(0, MAX_PROMPT_CHARS);
-  const headBudget = Math.max(0, MAX_PROMPT_CHARS - tail.length);
+  // Sourced briefings (2026-10-09, lib/agent-sources.ts): the research
+  // directive / numbered Sources + sourcing contract is reserved BEFORE the
+  // head+carried prefix is truncated, exactly like the tail — so neither the
+  // 1500-char text carry nor a long base prompt can push the sources or the
+  // contract out of the prompt. Absent evidence = byte-identical to before.
+  const evidenceBlock = evidence ? renderStepEvidence(evidence).slice(0, MAX_EVIDENCE_CHARS) : '';
+  const headBudget = Math.max(0, MAX_PROMPT_CHARS - tail.length - evidenceBlock.length);
   const head = basePrompt.trim() ? `${basePrompt.trim()}\n\n` : '';
   const carried = priorResults.length
     ? `# Results from previous steps\n${priorResults
         .map((r, i) => `## Step ${i + 1}\n${r.replace(/\s+/g, ' ').trim().slice(0, MAX_RESULT_CARRY_CHARS)}`)
         .join('\n\n')}\n\n---\n\n`
     : '';
-  return `${`${head}${carried}`.slice(0, headBudget)}${tail}`;
+  return `${`${head}${carried}`.slice(0, headBudget)}${evidenceBlock}${tail}`;
 }
 
 /**
