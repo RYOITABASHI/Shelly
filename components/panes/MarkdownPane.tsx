@@ -17,8 +17,7 @@ import {
 } from 'react-native';
 import Markdown from 'react-native-markdown-display';
 import { usePaneContentBackground, usePanelBackground } from '@/hooks/use-panel-background';
-import { getMarkdownInk } from '@/lib/markdown-theme';
-import { useThemeVersion } from '@/lib/themed-stylesheet';
+import { useTheme } from '@/hooks/use-theme';
 import { execCommand } from '@/hooks/use-native-exec';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
@@ -51,9 +50,8 @@ export async function openMarkdownFile(path: string): Promise<void> {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MarkdownPane() {
-  // Re-render on preset swaps; ink is read from the live palette below.
-  useThemeVersion();
-  const ink = getMarkdownInk();
+  // Live preset palette (useTheme() re-renders on preset swaps).
+  const { colors: ink } = useTheme();
   const paneId = useContext(PaneIdContext);
   const [content, setContent] = useState<string | null>(null);
   const [filePath, setFilePath] = useState<string | null>(null);
