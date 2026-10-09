@@ -1239,6 +1239,9 @@ const ja: Record<string, string> = {
   // 見つけたときだけ、上の2キーの代わりに使われる。
   'chat.carried_forward_to_companion': 'ここまでの話を持ってきましたよ。この先は私が対応しますね。',
   'chat.carried_forward_to_pane': 'ここまでの話を持ってきました。今回は別のモデルで考えますね。',
+  // 2026-10-09: 宛先プロバイダが分かるときは上の汎用キーより優先(短く、必ず切替先を明示)。
+  'chat.switched_to_provider': '{{provider}}に切り替えました。',
+  'chat.carried_forward_to_provider': '{{provider}}に切り替えました。ここまでの話も持ってきました。',
   // Grok Bot的な「名前付きチームメイト」スレッド(2026-09-20): 宛先が
   // 背景エージェント自身のチャットスレッドのときは上の*_to_pane系の代わりに
   // 使う——モデルの切替ではなく「そのエージェントに繋がった」と伝える。

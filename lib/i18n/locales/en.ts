@@ -1270,6 +1270,11 @@ const en: Record<string, string> = {
   // see store/ai-pane-store.ts's addAiPaneThreadSwitchNotice.
   'chat.carried_forward_to_companion': "I brought our conversation with me — I'll take it from here.",
   'chat.carried_forward_to_pane': "I brought our conversation along — I'll think this one through with a different model.",
+  // 2026-10-09: preferred over the four generic keys above whenever the
+  // destination provider is known (store/ai-pane-store.ts threadProviderLabel)
+  // -- short, and always names where you landed.
+  'chat.switched_to_provider': 'Switched to {{provider}}.',
+  'chat.carried_forward_to_provider': 'Switched to {{provider}} — I brought our conversation along.',
   // "Grok Bot"-style named-teammate threads (2026-09-20): used instead of
   // the *_to_pane keys above when the destination is a background agent's
   // own chat thread (store/ai-pane-store.ts's AGENT_THREAD_KEY_PREFIX) —

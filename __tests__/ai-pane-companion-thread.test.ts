@@ -88,7 +88,7 @@ it('switches a rebound pane to its private thread and posts the switch notice th
   expect(usePaneStore.getState().paneAgents[paneId]).toBe('gemini');
   expect(providerKey).toBe(paneId);
   expect(useAIPaneStore.getState().getOrCreate(providerKey).messages).toEqual([
-    expect.objectContaining({ role: 'system', content: 'chat.switched_to_pane_thread' }),
+    expect.objectContaining({ role: 'system', content: 'chat.switched_to_provider' }),
   ]);
   expect(useAIPaneStore.getState().conversations[COMPANION_CONVERSATION_KEY]).toBeUndefined();
 });
@@ -308,7 +308,7 @@ describe('G1-P2: carry-forward on thread switch', () => {
     addAiPaneThreadSwitchNotice(companionKey, geminiKey, (k) => k);
     const messages = useAIPaneStore.getState().getOrCreate(geminiKey).messages;
     expect(messages).toHaveLength(1);
-    expect(messages[0].content).toBe('chat.switched_to_pane_thread');
+    expect(messages[0].content).toBe('chat.switched_to_provider');
   });
 
   it('calling carryForwardOnThreadSwitch twice for the same switch (dispatch + effect double-fire) does not duplicate', () => {
@@ -329,6 +329,6 @@ describe('G1-P2: carry-forward on thread switch', () => {
     expect(messages.filter((m) => m.content === 'q')).toHaveLength(1);
     const systemMessages = messages.filter((m) => m.role === 'system');
     expect(systemMessages).toHaveLength(1);
-    expect(systemMessages[0].content).toBe('chat.carried_forward_to_pane');
+    expect(systemMessages[0].content).toBe('chat.carried_forward_to_provider');
   });
 });

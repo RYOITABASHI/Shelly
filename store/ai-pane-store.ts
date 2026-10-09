@@ -14,6 +14,7 @@ import { logInfo, logWarn, logError } from '@/lib/debug-logger';
 import { usePaneStore } from '@/store/pane-store';
 import { getThreadAgentId } from '@/lib/agent-thread-selection';
 import { isEmptyPlainAssistantMessage } from '@/lib/ai-pane-empty-reply';
+import { getAiPaneAgentMeta, isAiPaneAgent } from '@/lib/ai-pane-agents';
 
 export const COMPANION_CONVERSATION_KEY = '__companion__';
 
@@ -137,12 +138,19 @@ export function carryForwardOnThreadSwitch(sourceKey: string, destKey: string): 
 
   const destConv = state.conversations[destKey];
   const destOriginIds = new Set((destConv?.messages ?? []).map(carryForwardOriginId));
+  // 2026-10-09 on-device finding: clearing a thread (AI pane trash icon) and
+  // then switching providers silently copied the just-deleted exchange back
+  // in -- from the other thread's original (or its own carried copy, which
+  // keeps the original timestamp). Anything at or before the destination's
+  // last clear is something the user explicitly threw away there.
+  const destClearedAt = destConv?.clearedAt ?? 0;
 
   const fresh: ChatMessage[] = [];
   let sawEligible = false;
   for (let i = sourceConv.messages.length - 1; i >= 0 && fresh.length < CARRY_FORWARD_MAX_MESSAGES; i--) {
     const m = sourceConv.messages[i];
     if (!isCarryForwardEligible(m)) continue;
+    if (destClearedAt > 0 && (m.timestamp ?? 0) <= destClearedAt) continue;
     sawEligible = true;
     const originId = carryForwardOriginId(m);
     if (destOriginIds.has(originId)) continue; // already carried previously — keep walking back for fresh content
@@ -163,6 +171,12 @@ export function carryForwardOnThreadSwitch(sourceKey: string, destKey: string): 
   return true;
 }
 
+function threadProviderLabel(key: string, toCompanion: boolean): string | undefined {
+  if (toCompanion) return getAiPaneAgentMeta('local').label;
+  const bound = usePaneStore.getState().paneAgents[key];
+  return isAiPaneAgent(bound) ? getAiPaneAgentMeta(bound).label : undefined;
+}
+
 export function addAiPaneThreadSwitchNotice(
   previousKey: string,
   nextKey: string,
@@ -176,12 +190,22 @@ export function addAiPaneThreadSwitchNotice(
   const carried = carryForwardOnThreadSwitch(previousKey, nextKey);
   const toCompanion = nextKey === COMPANION_CONVERSATION_KEY;
   const toAgentThread = nextKey.startsWith(AGENT_THREAD_KEY_PREFIX);
-  const vars = agentDisplayName ? { agentName: agentDisplayName } : undefined;
+  // 2026-10-09: name the destination provider in the notice ("Switched to
+  // Groq -- ..."). The old generic "a different model" wording was long
+  // enough to get clipped on device, and the useful part was what got cut.
+  // A pane-scoped thread's key IS the pane id, so its binding names the
+  // provider; the companion thread is always the local model.
+  const providerName = toAgentThread ? undefined : threadProviderLabel(nextKey, toCompanion);
+  const vars: Record<string, string> | undefined = agentDisplayName
+    ? { agentName: agentDisplayName }
+    : providerName ? { provider: providerName } : undefined;
   const noticeKey = toAgentThread
     ? (carried ? 'chat.carried_forward_to_agent_thread' : 'chat.switched_to_agent_thread')
-    : carried
-      ? (toCompanion ? 'chat.carried_forward_to_companion' : 'chat.carried_forward_to_pane')
-      : (toCompanion ? 'chat.switched_to_companion_thread' : 'chat.switched_to_pane_thread');
+    : providerName
+      ? (carried ? 'chat.carried_forward_to_provider' : 'chat.switched_to_provider')
+      : carried
+        ? (toCompanion ? 'chat.carried_forward_to_companion' : 'chat.carried_forward_to_pane')
+        : (toCompanion ? 'chat.switched_to_companion_thread' : 'chat.switched_to_pane_thread');
   useAIPaneStore.getState().addMessage(nextKey, {
     id: `system-thread-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role: 'system',
@@ -354,6 +378,9 @@ export type AIPaneConversation = {
   terminalContext: string | null;
   pendingAgentSession?: PendingAgentSession | null;
   justRegisteredAgent?: JustRegisteredAgentRef | null;
+  /** Epoch ms of the last explicit clear (AI pane trash icon). Carry-forward
+   *  never re-imports a message timestamped at or before this. */
+  clearedAt?: number;
 };
 
 type AIPaneState = {
@@ -430,6 +457,14 @@ function debouncedSave(saveFn: () => Promise<void>) {
     _saveTimer = null;
     saveFn();
   }, DEBOUNCE_MS);
+}
+
+function flushSave(saveFn: () => Promise<void>) {
+  if (_saveTimer !== null) {
+    clearTimeout(_saveTimer);
+    _saveTimer = null;
+  }
+  void saveFn();
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -757,11 +792,20 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
             // snapshot of what's visible right now, not tied to any specific
             // message) — only the two fields that reference a specific
             // messageId need to go with the messages they point at.
-            [paneId]: { ...conv, messages: [], pendingAgentSession: null, justRegisteredAgent: null },
+            [paneId]: {
+              ...conv,
+              messages: [],
+              pendingAgentSession: null,
+              justRegisteredAgent: null,
+              clearedAt: Date.now(),
+            },
           },
         };
       });
-      debouncedSave(persist);
+      // A destructive, user-confirmed action: write it through now instead
+      // of riding the 2s debounce, so an app kill right after the confirm
+      // can't resurrect the deleted thread on next launch.
+      flushSave(persist);
     },
   };
 });

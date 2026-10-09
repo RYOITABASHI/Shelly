@@ -396,16 +396,26 @@ const bubbleStyles = createThemedStyles(() => ({
     lineHeight: 14,
     color: C.text1,
   },
+  // 2026-10-09 on-device (Case File): the switch notice rendered as ONE
+  // clipped line. The row shrink-wrapped the Text (alignItems:'center') and
+  // the bundled pixel font has no italic face, so Android measured upright
+  // glyphs but drew wider synthetic-italic ones, wrapping into a second line
+  // inside a box sized for one. Stretch the text to the row width, center it
+  // with textAlign, give it an explicit lineHeight and drop the synthetic
+  // italic so measure == draw. Never set numberOfLines here.
   systemRow: {
-    alignItems: 'center',
+    alignSelf: 'stretch',
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
   systemText: {
+    alignSelf: 'stretch',
+    flexShrink: 1,
+    textAlign: 'center',
     fontSize: 7,
+    lineHeight: 12,
     fontFamily: F.family,
     color: C.text2,
-    fontStyle: 'italic',
   },
   openFileLink: {
     alignSelf: 'flex-start',
@@ -671,8 +681,8 @@ export default function AIPane() {
   // once, switching produced two stacked system lines every time. Only
   // the conversation-key-based notice remains — see its own i18n key
   // comments (chat.switched_to_companion_thread/chat.switched_to_pane_thread
-  // in lib/i18n/locales) for why the provider name itself was dropped
-  // from the wording (shown in the pane header instead).
+  // in lib/i18n/locales). Since 2026-10-09 the notice names the target
+  // provider again via chat.switched_to_provider / carried_forward_to_provider.
   const resolvedConversationKey = resolveAiPaneStoreKey(paneId);
   const prevConversationKeyRef = useRef(resolvedConversationKey);
   useEffect(() => {
