@@ -2348,7 +2348,12 @@ async function runAgentOrchestratedBody(
           // text-only (never Codex/CLI exec — its prompt quotes untrusted web
           // text) and its last ladder attempt falls back to the
           // deterministic sourced briefing instead of failing outright.
-          ...(sourcingActive ? { skipSuppressedDraftSave: true, stepResultToken } : {}),
+          // Intermediate (__suppressed__) steps never save to the draft
+          // destination — this attended chain carries results in memory, and
+          // a notify/webhook agent must not leave a draft file behind; only
+          // the final step's real action writes anything (2026-10-09).
+          skipSuppressedDraftSave: true,
+          ...(sourcingActive ? { stepResultToken } : {}),
           ...(synthesis
             ? {
                 textOnly: true,

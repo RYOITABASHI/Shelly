@@ -1345,11 +1345,13 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // instruction ("ローカルLLMで要約して") and produced a shallow, near-content-free
   // output instead of a real summary. A genuinely single-shot (non-chain)
   // agent is unaffected — isOrchestratedStep is never set for that path.
-  const actionType = opts.suppressAction
-    ? '__suppressed__'
-    : opts.isOrchestratedStep
-      ? 'draft'
-      : (agent.action?.type ?? 'draft');
+  // 2026-10-09 fix: that 'draft' override belongs ONLY to the model's system
+  // prompt (ToolCommandOptions.actionType below already applies it there).
+  // It used to be applied to the DISPATCHED action too, so every attended
+  // chain's final step did a draft save even when the agent was configured to
+  // notify / webhook / post — the configured action never ran. The final
+  // step now dispatches the agent's real action, exactly once.
+  const actionType = opts.suppressAction ? '__suppressed__' : (agent.action?.type ?? 'draft');
   const actionWebhookUrl = actionType === 'webhook' ? agent.action?.webhookUrl ?? '' : '';
   const actionCommand = actionType === 'cli' ? agent.action?.command ?? '' : '';
   const actionIntentMode = actionType === 'intent' ? (agent.action?.intentMode ?? '') : '';
