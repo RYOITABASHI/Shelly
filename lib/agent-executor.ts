@@ -22,6 +22,17 @@ import {
   resolveBudget,
 } from './agent-orchestration';
 import { clampCharLimit } from './agent-pipeline-presets';
+import {
+  RESEARCH_REQUIREMENTS_MARKER,
+  SOURCING_CONTRACT_MARKER,
+  choosePerplexityModel,
+  detectRecency,
+  withoutResearchDirective,
+  isResearchStep,
+  requestedItemCount,
+  NO_SOURCES_MESSAGE,
+  SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE,
+} from './agent-sources';
 import { isSafeConnectorId, socialConnectorEnvPrefix } from './social-connectors';
 import { redactSecretsText } from './redact-secrets';
 import { isReversibleActionType } from './agent-reversible-action-types';
@@ -664,7 +675,19 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // output roots (cap_dest_within_roots; the broker path already enforces them). REAL BEHAVIOR CHANGE: bumped so a stale pre-v64
 // script is regenerated. Kept in lockstep with AgentRuntime.kt's
 // CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 64;
+// v65 (2026-10-09, sourced briefings): extract_ai_content numbers the appended
+// Perplexity "## Sources" block in CITATIONS order (the order the content's own
+// [n] markers index into), attaching titles/dates from search_results by URL;
+// v64 numbered by search_results order and renumbered after skipped entries,
+// so [n] could name the wrong source. (The other sourced-briefing script
+// changes — the per-step full-result copy, deferred final notification,
+// sourced fallback, recency filter / list model / cooler local sampling — are
+// emitted only into ephemeral attended chain-step scripts via generateRunScript
+// opts or chain-only prompt markers, never a stored script.) REAL BEHAVIOR
+// CHANGE for every Perplexity agent: bumped so a
+// stale v64 script is regenerated. Kept in lockstep with AgentRuntime.kt's
+// CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 65;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -690,6 +713,24 @@ export interface OrchestrationChainOptions {
    *  agent.autonomous already is, since a chain only ever exists on one
    *  agent. */
   autonomous: boolean;
+  /** Sourced briefings (2026-10-09, coordinator item 4): present only when
+   *  the chain is sourced (a non-final step is WEB research — see
+   *  lib/agent-sources.ts isResearchStep). Index-aligned with `steps`. */
+  sourcing?: { research: boolean[]; recency?: string; count?: number };
+}
+
+/** Sourced-chain descriptor for codexOrchestrationChainCommand, or undefined
+ *  for an ordinary chain (whose script stays byte-identical). A step's tool
+ *  defaults to the chain's Codex driver ('cli'). */
+export function chainSourcingFor(basePrompt: string, steps: NormalizedStep[]): OrchestrationChainOptions['sourcing'] {
+  const research = steps.map(
+    (step, idx) => idx !== steps.length - 1 && !step.apiCall && isResearchStep(step.instruction, step.tool?.type ?? 'cli'),
+  );
+  if (!research.some(Boolean)) return undefined;
+  const text = [basePrompt, ...steps.map((st) => st.instruction)].join('\n');
+  const recency = detectRecency(text);
+  const count = requestedItemCount(text);
+  return { research, ...(recency ? { recency } : {}), ...(count ? { count } : {}) };
 }
 
 /** Tool types codexOrchestrationChainCommand's per-step dispatch (Phase 7,
@@ -1058,6 +1099,33 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
    *  delivery-format instruction (e.g. notify's brevity constraint), which
    *  fought the step's own instruction and degraded its output. */
   isOrchestratedStep?: boolean;
+  /** Sourced briefings (2026-10-09, review M1): the attended chain's
+   *  DISPATCH run for a sourced chain's final step. The model is NOT called:
+   *  this already post-processed, verified briefing is written to the result
+   *  file and the agent's real action (draft save, notification, webhook,
+   *  social post, …) dispatches it through the unchanged action path — so
+   *  every channel, the saved file, the Open link and the completion
+   *  notification all carry the processed text. Never set for a stored
+   *  script. */
+  presetResultText?: string;
+  /** Sourced briefings (2026-10-09, review H3): a sourced chain's
+   *  intermediate (__suppressed__) steps must not save their unverified text
+   *  to the draft destination — only the final dispatch run writes it. */
+  skipSuppressedDraftSave?: boolean;
+  /** Sourced briefings (2026-10-09, review L): per-chain-run nonce for the
+   *  full step-result copy ($TMP_DIR/agent-step-result-$AGENT_ID-<token>.md),
+   *  so an overlapping scheduled run cannot clobber an attended chain's
+   *  copy. [a-z0-9] only. */
+  stepResultToken?: string;
+  /** Sourced briefings (2026-10-09): the deterministic research-item
+   *  briefing (lib/agent-sources.ts buildFallbackBriefing) for a summarize/
+   *  write step of a sourced attended chain — baked ONLY into that step's LAST
+   *  ladder attempt. When the backend fails outright (backend error, empty or
+   *  prompt-echo/refusal output) the script substitutes this sourced text and
+   *  carries on (draft save, notification), mirroring the unattended
+   *  executor's model-failure fallback, instead of failing a chain whose
+   *  research already succeeded. Never set for a stored script. */
+  sourcedFallbackText?: string;
   /** 2026-08-04 on-device finding, second half of the same incident: the text
    *  detectRouteSignals below should judge THIS step's own nature by — mirrors
    *  lib/agent-manager.ts's routeTextOverride (2026-08-03), which already made
@@ -1480,6 +1548,10 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
           maxSteps: orchestrationBudget.maxSteps,
           totalTimeoutMs: orchestrationBudget.totalTimeoutMs,
           autonomous: agent.autonomous === true,
+          ...(() => {
+            const sourcing = chainSourcingFor(agent.prompt, attemptableOrchestrationSteps);
+            return sourcing ? { sourcing } : {};
+          })(),
         }
       : undefined,
   });
@@ -1728,6 +1800,7 @@ LOCAL_LLM_HEARTBEAT_PID=""
 LOCAL_LLM_ACTIVE_MARKER=""
 FINISH_RAN=0
 SUPPRESS_ERROR_NOTIFICATION=${opts.suppressErrorNotification ? '1' : '0'}
+SKIP_SUPPRESSED_DRAFT_SAVE=${opts.skipSuppressedDraftSave ? '1' : '0'}
 STUDIO_CONTEXT=${injectStudioContext ? '1' : '0'}
 DEVICE_STATUS_RELEVANT=${injectDeviceStatusContext ? '1' : '0'}
 # General collection agents (non content-studio) honour the global output-target
@@ -3580,7 +3653,11 @@ dispatch_agent_action() {
     __suppressed__)
       # Orchestration non-final step: still save the draft result for the next
       # step to read, but DO NOT request approval or fire a notification.
-      save_draft_result "$result_file" 2>/dev/null || true
+      # v65: a sourced chain's steps skip the save — their text is unverified
+      # until the final post-processed dispatch run writes the draft.
+      if [ "\${SKIP_SUPPRESSED_DRAFT_SAVE:-0}" != "1" ]; then
+        save_draft_result "$result_file" 2>/dev/null || true
+      fi
       return 0
       ;;
     ""|draft)
@@ -5223,22 +5300,49 @@ if (!content) {
 // "## Sources" list so the result actually carries the primary-source URLs (the
 // collection goal) AND the no-URL guard doesn't false-fire and escalate to Codex.
 // Data-driven: other backends lack these keys, so this is a no-op for them.
+// v65 (2026-10-09, sourced briefings): numbered in CITATIONS order — the
+// order Perplexity's own [n] markers in message.content index into — with
+// titles/dates attached from search_results by URL. v64 and earlier numbered
+// by search_results order (and renumbered after skipping a duplicate/invalid
+// URL), so [n] in the text could point at the wrong source. Numbers are never
+// renumbered: an unusable or repeated citation leaves its slot empty (a
+// URL is listed once, under its first number); search_results
+// not cited are appended after the citation numbers.
 let sourcesBlock = '';
 try {
-  const sr = Array.isArray(data && data.search_results) && data.search_results.length ? data.search_results : null;
-  const cites = !sr && Array.isArray(data && data.citations) && data.citations.length ? data.citations : null;
-  const entries = sr || cites || [];
-  const seen = {};
+  const sr = Array.isArray(data && data.search_results) ? data.search_results : [];
+  const cites = Array.isArray(data && data.citations) ? data.citations : [];
+  const cleanOf = (u) => String(u || '').trim().replace(/[).,;]+$/, '');
+  const isHttp = (u) => u.slice(0, 7) === 'http://' || u.slice(0, 8) === 'https://';
+  const meta = {};
+  for (const r of sr) {
+    const u = cleanOf(r && r.url);
+    if (u && !meta[u]) meta[u] = r;
+  }
+  const lineFor = (n, clean) => {
+    const m = meta[clean] || {};
+    const title = typeof m.title === 'string' && m.title.trim() ? m.title.trim() : clean;
+    const d = String(m.date || m.last_updated || '').slice(0, 10);
+    return '[' + n + '] ' + title + ' — ' + clean + (/^\\d{4}-\\d{2}-\\d{2}$/.test(d) ? ' (' + d + ')' : '');
+  };
+  const ordered = cites.length ? cites.map((c) => (typeof c === 'string' ? c : c && c.url)) : sr.map((r) => r && r.url);
   const lines = [];
-  for (const e of entries) {
-    if (lines.length >= 20) break;
-    const url = typeof e === 'string' ? e : (e && typeof e.url === 'string' ? e.url : '');
-    const clean = url.trim().replace(/[).,;]+$/, '');
-    const isUrl = clean.slice(0, 7) === 'http://' || clean.slice(0, 8) === 'https://';
-    if (!isUrl || seen[clean]) continue;
-    seen[clean] = 1;
-    const title = (e && typeof e === 'object' && typeof e.title === 'string' && e.title.trim()) ? e.title.trim() : clean;
-    lines.push('[' + (lines.length + 1) + '] ' + title + ' — ' + clean);
+  const listed = {};
+  ordered.forEach((u, i) => {
+    if (i >= 20) return;
+    const clean = cleanOf(u);
+    if (!isHttp(clean) || listed[clean]) return;
+    listed[clean] = 1;
+    lines.push(lineFor(i + 1, clean));
+  });
+  let next = ordered.length;
+  for (const r of sr) {
+    const clean = cleanOf(r && r.url);
+    if (!isHttp(clean) || listed[clean]) continue;
+    next += 1;
+    if (next > 20) break;
+    listed[clean] = 1;
+    lines.push(lineFor(next, clean));
   }
   if (lines.length) sourcesBlock = '\\n\\n## Sources\\n' + lines.join('\\n');
 } catch (_) {}
@@ -5321,34 +5425,53 @@ if not content:
 # inline in content — mirror the node branch and append them as "## Sources".
 sources_block = ""
 try:
-    entries = None
-    sr = data.get("search_results")
-    if isinstance(sr, list) and sr:
-        entries = sr
+    # v65: citations order (Perplexity's [n] markers), titles/dates from
+    # search_results by URL — mirrors the node branch above.
+    sr = data.get("search_results") if isinstance(data.get("search_results"), list) else []
+    cites = data.get("citations") if isinstance(data.get("citations"), list) else []
+    def _clean(u):
+        return str(u or "").strip().rstrip(").,;")
+    def _http(u):
+        return u.startswith("http://") or u.startswith("https://")
+    meta = {}
+    for r in sr:
+        if isinstance(r, dict):
+            u = _clean(r.get("url"))
+            if u and u not in meta:
+                meta[u] = r
+    def _line(n, clean):
+        m = meta.get(clean) or {}
+        t = m.get("title")
+        label = t.strip() if isinstance(t, str) and t.strip() else clean
+        d = str(m.get("date") or m.get("last_updated") or "")[:10]
+        ok = len(d) == 10 and d[4] == "-" and d[7] == "-" and d[:4].isdigit()
+        return "[" + str(n) + "] " + label + " — " + clean + (" (" + d + ")" if ok else "")
+    if cites:
+        ordered = [c if isinstance(c, str) else (c.get("url") if isinstance(c, dict) else "") for c in cites]
     else:
-        cites = data.get("citations")
-        if isinstance(cites, list) and cites:
-            entries = cites
-    if entries:
-        seen = set()
-        lines = []
-        for e in entries:
-            if len(lines) >= 20:
-                break
-            if isinstance(e, str):
-                url, title = e, None
-            elif isinstance(e, dict):
-                url, title = e.get("url") or "", e.get("title")
-            else:
-                continue
-            clean = url.strip().rstrip(").,;")
-            if not (clean.startswith("http://") or clean.startswith("https://")) or clean in seen:
-                continue
-            seen.add(clean)
-            label = title.strip() if isinstance(title, str) and title.strip() else clean
-            lines.append("[" + str(len(lines) + 1) + "] " + label + " — " + clean)
-        if lines:
-            sources_block = "\\n\\n## Sources\\n" + "\\n".join(lines)
+        ordered = [r.get("url") if isinstance(r, dict) else "" for r in sr]
+    lines = []
+    listed = set()
+    for i, u in enumerate(ordered):
+        if i >= 20:
+            break
+        clean = _clean(u)
+        if not _http(clean) or clean in listed:
+            continue
+        listed.add(clean)
+        lines.append(_line(i + 1, clean))
+    nxt = len(ordered)
+    for r in sr:
+        clean = _clean(r.get("url") if isinstance(r, dict) else "")
+        if not _http(clean) or clean in listed:
+            continue
+        nxt += 1
+        if nxt > 20:
+            break
+        listed.add(clean)
+        lines.append(_line(nxt, clean))
+    if lines:
+        sources_block = "\\n\\n## Sources\\n" + "\\n".join(lines)
 except Exception:
     sources_block = ""
 
@@ -5719,8 +5842,24 @@ rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
 rm -f "$RESULT_FILE.response.json.diag"
 # CAP-001: each run opens a fresh egress budget envelope (drop any stale counter).
 rm -f "$TMP_DIR/cap-budget-$AGENT_ID.json"
-${toolCommand}
-
+${opts.presetResultText !== undefined ? `# Sourced briefings (2026-10-09, review M1): dispatch run — the verified,
+# post-processed briefing below is the result; no model is called.
+cat > "$RESULT_FILE" <<'SHELLY_PRESET_RESULT_EOF'
+${opts.presetResultText.replace(/^SHELLY_PRESET_RESULT_EOF$/gm, '')}
+SHELLY_PRESET_RESULT_EOF
+RESULT_CONTENT_FILE="$RESULT_FILE"` : toolCommand}
+${opts.presetResultText === undefined && opts.sourcedFallbackText ? `# Sourced briefings (2026-10-09): last ladder attempt of a summarize/write
+# step in a sourced chain — a failed or low-quality model call falls back to
+# the deterministic, fully cited research-item briefing baked below.
+SOURCED_FALLBACK_PREVIEW=$(result_preview "$RESULT_FILE" 2>/dev/null || true)
+if [ ! -s "$RESULT_CONTENT_FILE" ] || [ -f "$BACKEND_ERROR_FILE" ] || is_low_quality_completion "$SOURCED_FALLBACK_PREVIEW"; then
+  cat > "$RESULT_CONTENT_FILE" <<'SHELLY_SOURCED_FALLBACK_EOF'
+${opts.sourcedFallbackText.replace(/^SHELLY_SOURCED_FALLBACK_EOF$/gm, '')}
+SHELLY_SOURCED_FALLBACK_EOF
+  rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
+  echo "[sourced-fallback] model output unusable; saved the deterministic sourced briefing" >&2
+fi
+` : ''}
 # Check result
 END_TIME=$(date +%s)
 DURATION=$(( (END_TIME - START_TIME) * 1000 ))
@@ -5946,7 +6085,14 @@ LOGEOF
 # Prune old logs (keep last 30)
 ls -t "$LOG_DIR"/*.json 2>/dev/null | tail -n +31 | xargs rm -f 2>/dev/null || true
 
-# Cleanup temp
+${opts.isOrchestratedStep ? `# Sourced briefings (2026-10-09): keep this chain step's FULL (redacted)
+# result — including the "## Sources" block extract_ai_content appends from
+# Perplexity's citations/search_results — for lib/agent-manager.ts to read
+# back (and delete) once the step finishes. The run log only carries a
+# ${MAX_RESULT_CARRY_CHARS}-byte preview, which cut the sources off. Emitted only for an
+# orchestrated step's ephemeral per-step script, never a stored script.
+clean_result_full "$RESULT_FILE" "$TMP_DIR/agent-step-result-$AGENT_ID${opts.stepResultToken && /^[a-z0-9]{1,32}$/.test(opts.stepResultToken) ? `-${opts.stepResultToken}` : ''}.md" 2>/dev/null || true
+` : ''}# Cleanup temp
 rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE" "$RESULT_FILE.response.json.diag"
 finish 0
 `;
@@ -6011,6 +6157,14 @@ function generateToolCommand(
       // skipPromptCompose (Phase 7): see openAiCompatApiCommand's doc comment.
       // The local case does its own two-step (raw-write-then-truncate)
       // compose, so the skip has to cover both lines, not just one printf.
+      // Sourced briefings (2026-10-09): a chain summarize/write step under the
+      // sourcing contract (marker only ever present in a buildStepPrompt
+      // synthesis prompt) restates cited facts — run it cooler and shorter.
+      // Every other local script keeps the exact max_tokens 2048 body.
+      // Mirrors scripts/shelly-plan-executor.js's applySourcingRequestOptions.
+      const localSamplingJson = rawPrompt.includes(SOURCING_CONTRACT_MARKER)
+        ? '\\"max_tokens\\":1024,\\"temperature\\":0.2,'
+        : '\\"max_tokens\\":2048,';
       const localPromptCompose = options.stepSkipPromptCompose
         ? ''
         : `\t{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"\n\thead -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"\n\trm -f "$PROMPT_FILE.full"\n`;
@@ -6042,7 +6196,7 @@ function generateToolCommand(
 ${localPromptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 	SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
 	LOCAL_URL="\${LOCAL_LLM_URL:-http://127.0.0.1:8080}"
-	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}],\\"max_tokens\\":2048,\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
+	printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}],${localSamplingJson}\\"chat_template_kwargs\\":{\\"enable_thinking\\":false}}' "$LOCAL_MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
 		if ! ensure_local_llm_server "$LOCAL_URL" "$LOCAL_MODEL"; then
 		  START_REASON=$(head -c 800 "$TMP_DIR/local-llm-start-$AGENT_ID.reason" 2>/dev/null | tr '\\n' ' ')
 		  local_context_fallback "local llm start failed: $START_REASON" > ${resultVar}
@@ -6065,7 +6219,19 @@ ${localPromptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		rm -f "$PROMPT_FILE" "$REQUEST_FILE"`;
     case 'perplexity': {
-      const perplexityModel = tool.model || 'sonar';
+      // Sourced briefings (2026-10-09): a chain RESEARCH step (its prompt was
+      // built by buildStepPrompt with the research directive — the marker is
+      // never present otherwise, so every other Perplexity script is
+      // byte-identical) gets the list-appropriate model (sonar-pro unless the
+      // user explicitly asked for deep research — choosePerplexityModel) and
+      // Perplexity's search_recency_filter when the request implies recency.
+      // Mirrors scripts/shelly-plan-executor.js's applySourcingRequestOptions.
+      const isChainResearchStep = rawPrompt.includes(RESEARCH_REQUIREMENTS_MARKER);
+      const perplexityModel = isChainResearchStep
+        ? choosePerplexityModel(tool.model || 'sonar', withoutResearchDirective(rawPrompt))
+        : tool.model || 'sonar';
+      const recencyFilter = isChainResearchStep ? detectRecency(withoutResearchDirective(rawPrompt)) : undefined;
+      const recencyJson = recencyFilter ? `,\\"search_recency_filter\\":\\"${recencyFilter}\\"` : '';
       // skipPromptCompose (Phase 7): see openAiCompatApiCommand's doc comment.
       const perplexityPromptCompose = options.stepSkipPromptCompose
         ? ''
@@ -6074,12 +6240,15 @@ ${localPromptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 ${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		SYSTEM_PROMPT_JSON=${shellQuote(systemPromptJson)}
-		MODEL='${perplexityModel.replace(/'/g, "'\\''")}'
+		# v65: a user PERPLEXITY_MODEL (~/.shelly/agents/.env) wins over the
+		# per-agent / chain-chosen model — the same precedence the PlanSpec
+		# executor applies (config.PERPLEXITY_MODEL || plan.tool.model).
+		MODEL="\${PERPLEXITY_MODEL:-${perplexityModel.replace(/[^A-Za-z0-9._-]/g, '')}}"
 		if [ -z "\${PERPLEXITY_API_KEY:-}" ]; then
 		  echo 'Perplexity API key is not set. Add PERPLEXITY_API_KEY to ~/.shelly/agents/.env.' > ${resultVar}
 		  touch "$BACKEND_ERROR_FILE"
 		else
-		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}]}' "$MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
+		printf '{\\"model\\":\\"%s\\",\\"messages\\":[{\\"role\\":\\"system\\",\\"content\\":%s},{\\"role\\":\\"user\\",\\"content\\":%s}]${recencyJson}}' "$MODEL" "$SYSTEM_PROMPT_JSON" "$PROMPT_JSON" > "$REQUEST_FILE"
 		set +e
 		if [ "\${SHELLY_CAP_BROKER:-0}" = "1" ]; then
 			  SHELLY_CAP_AUTH_REF=perplexity HTTP_TIMEOUT_SECONDS="$TIMEOUT" http_post_json_retry "https://api.perplexity.ai/chat/completions" "$REQUEST_FILE" "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
@@ -6280,8 +6449,24 @@ rm -f "$PROMPT_FILE"`;
 function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions): string {
   const arms: string[] = [];
   chain.steps.forEach((step, index) => {
-    if (!step.tool || !STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(step.tool.type)) return;
-    const snippet = generateToolCommand(step.tool, '', step.instruction, {
+    const pinned = !!step.tool && STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(step.tool.type);
+    const sourcedResearch = !!chain.sourcing && chain.sourcing.research[index] === true;
+    // Sourced briefings (review M3): a summarize/write step of a sourced
+    // chain quotes untrusted web text, so it never runs on the exec-capable
+    // Codex driver — an unpinned (or cli-pinned) one is dispatched to the
+    // local LLM instead (text-only, cooler sampling via the contract marker).
+    const sourcedSynthesisToLocal = !!chain.sourcing && !sourcedResearch && !pinned;
+    if (!pinned && !sourcedSynthesisToLocal) return;
+    const stepTool: ToolChoice = pinned ? (step.tool as ToolChoice) : { type: 'local' };
+    // The marker lets generateToolCommand apply the same research (list
+    // model / recency filter) or synthesis (cooler local sampling) shaping
+    // the attended chain gets from its composed prompt.
+    const rawPrompt = !chain.sourcing
+      ? step.instruction
+      : sourcedResearch
+        ? `${chain.basePrompt}\n${RESEARCH_REQUIREMENTS_MARKER}\n# This step\n${step.instruction}`
+        : `${SOURCING_CONTRACT_MARKER}\n${step.instruction}`;
+    const snippet = generateToolCommand(stepTool, '', rawPrompt, {
       autonomous: chain.autonomous,
       actionType: 'draft',
       stepSkipPromptCompose: true,
@@ -6352,6 +6537,112 @@ ${codexDriverBlock}
   esac`;
 }
 
+/**
+ * Sourced briefings for the bash Codex-driver chain (2026-10-09, coordinator
+ * item 4). This path (an orchestrated agent whose tool resolves to the Codex
+ * CLI, run unattended by native) has no JS runtime of its own, so every
+ * sourcing decision is delegated to the SAME core the PlanSpec executor
+ * carries, through its narrow file-in/file-out CLI
+ * (`node ~/.shelly-plan-executor.js --sourcing-op …`, runSourcingCli there).
+ * Behaviour mirrors the other two executors: research directive / numbered
+ * Sources + contract in each prompt, structured carry, no-sources stop,
+ * deterministic fallback on a failed summarize/write step, and the FINAL
+ * step's text post-processed (fail closed when unverifiable) before the
+ * action dispatch that follows this block. If node or the executor file is
+ * unavailable the chain FAILS CLOSED rather than publish unverified text.
+ * Only emitted for a sourced chain; every other chain script is unchanged.
+ */
+function codexOrchestrationSourcingPreamble(sourcing: NonNullable<OrchestrationChainOptions['sourcing']>): string {
+  const flags = sourcing.research.map((r) => (r ? '1' : '0')).join(' ');
+  return `CODEX_ORCH_SOURCING=1
+CODEX_ORCH_RESEARCH=( ${flags} )
+CODEX_ORCH_SRC_RECENCY=${shellQuote(sourcing.recency ?? '')}
+CODEX_ORCH_SRC_COUNT=${shellQuote(sourcing.count ? String(sourcing.count) : '')}
+CODEX_ORCH_SRC_STATE="$TMP_DIR/agent-orch-evidence-$AGENT_ID-$.json"
+CODEX_ORCH_EVIDENCE_FILE="$TMP_DIR/agent-orch-evidence-block-$AGENT_ID-$.txt"
+CODEX_ORCH_CARRY_SOURCE_FILE="$TMP_DIR/agent-orch-carry-source-$AGENT_ID-$.txt"
+CODEX_ORCH_CARRY_SOURCE=""
+rm -f "$CODEX_ORCH_SRC_STATE" "$CODEX_ORCH_EVIDENCE_FILE" "$CODEX_ORCH_CARRY_SOURCE_FILE"
+codex_orch_sourcing() {
+  if node_usable && [ -f "$HOME/.shelly-plan-executor.js" ]; then
+    shelly_node "$HOME/.shelly-plan-executor.js" --sourcing-op "$1" --state "$CODEX_ORCH_SRC_STATE" --today "$(date +%Y-%m-%d)" --recency "$CODEX_ORCH_SRC_RECENCY" --count "$CODEX_ORCH_SRC_COUNT" "\${@:2}"
+  else
+    return 9
+  fi
+}
+codex_orch_sourcing_fail() {
+  printf '%s\\n' "$1" > "$RESULT_FILE"
+  RESULT_CONTENT_FILE="$RESULT_FILE"
+  RESULT_CONTENT_IS_DRIVER_ANSWER=0
+  touch "$BACKEND_ERROR_FILE"
+  CODEX_ORCH_FAILED=1
+}
+`;
+}
+
+function codexOrchestrationSourcingPreStep(): string {
+  return `  CODEX_ORCH_IS_RESEARCH="\${CODEX_ORCH_RESEARCH[$CODEX_ORCH_STEP_INDEX]:-0}"
+  if [ "$CODEX_ORCH_IS_RESEARCH" != "1" ]; then
+    set +e
+    codex_orch_sourcing gate
+    CODEX_ORCH_SRC_RC=$?
+    set -e
+    if [ "$CODEX_ORCH_SRC_RC" -eq 3 ]; then
+      codex_orch_sourcing_fail ${shellQuote(NO_SOURCES_MESSAGE)}
+      break
+    elif [ "$CODEX_ORCH_SRC_RC" -ne 0 ]; then
+      codex_orch_sourcing_fail ${shellQuote(`${SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE} (sourcing helper unavailable)`)}
+      break
+    fi
+  fi
+  set +e
+  if [ "$CODEX_ORCH_IS_RESEARCH" = "1" ]; then
+    codex_orch_sourcing evidence --mode research --out "$CODEX_ORCH_EVIDENCE_FILE"
+  else
+    codex_orch_sourcing evidence --mode synthesis --out "$CODEX_ORCH_EVIDENCE_FILE"
+  fi
+  CODEX_ORCH_SRC_RC=$?
+  set -e
+  if [ "$CODEX_ORCH_SRC_RC" -ne 0 ]; then
+    codex_orch_sourcing_fail ${shellQuote(`${SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE} (sourcing helper unavailable)`)}
+    break
+  fi
+`;
+}
+
+function codexOrchestrationSourcingPostStep(): string {
+  return `  CODEX_ORCH_CARRY_SOURCE="$RESULT_CONTENT_FILE"
+  if [ "$CODEX_ORCH_IS_RESEARCH" != "1" ] && { [ ! -s "$RESULT_CONTENT_FILE" ] || [ -f "$BACKEND_ERROR_FILE" ]; }; then
+    # A failed summarize/write step still has sourced research to restate.
+    if codex_orch_sourcing fallback --out "$RESULT_FILE.sourced-fallback"; then
+      mv "$RESULT_FILE.sourced-fallback" "$RESULT_FILE"
+      RESULT_CONTENT_FILE="$RESULT_FILE"
+      RESULT_CONTENT_IS_DRIVER_ANSWER=0
+      CODEX_ORCH_CARRY_SOURCE="$RESULT_FILE"
+      rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE"
+    fi
+  fi
+  if [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
+    set +e
+    if [ "$CODEX_ORCH_IS_RESEARCH" = "1" ]; then
+      codex_orch_sourcing absorb --in "$RESULT_CONTENT_FILE" --out "$CODEX_ORCH_CARRY_SOURCE_FILE"
+      CODEX_ORCH_SRC_RC=$?
+      CODEX_ORCH_CARRY_SOURCE="$CODEX_ORCH_CARRY_SOURCE_FILE"
+    elif [ "$CODEX_ORCH_STEP_NUM" -lt "$CODEX_ORCH_STEP_TOTAL" ]; then
+      codex_orch_sourcing enforce --in "$RESULT_CONTENT_FILE"
+      CODEX_ORCH_SRC_RC=$?
+    else
+      codex_orch_sourcing finalize --in "$RESULT_CONTENT_FILE"
+      CODEX_ORCH_SRC_RC=$?
+    fi
+    set -e
+    if [ "$CODEX_ORCH_SRC_RC" -ne 0 ]; then
+      codex_orch_sourcing_fail ${shellQuote(SOURCED_OUTPUT_UNVERIFIABLE_MESSAGE)}
+    fi
+  fi
+`;
+}
+
 function codexOrchestrationChainCommand(
   chain: OrchestrationChainOptions,
   resultVar: string,
@@ -6374,7 +6665,7 @@ CODEX_ORCH_CARRY_FILE="$TMP_DIR/agent-orch-carry-$AGENT_ID.txt"
 : > "$CODEX_ORCH_CARRY_FILE"
 CODEX_ORCH_FAILED=0
 CODEX_ORCH_STEP_INDEX=0
-
+${chain.sourcing ? codexOrchestrationSourcingPreamble(chain.sourcing) : ''}
 # Mirrors buildStepPrompt's \`r.replace(/\\s+/g, ' ').trim().slice(0, N)\` —
 # collapse every whitespace run to a single space, trim, then truncate to N
 # BYTES (head -c; same acknowledged bytes-vs-JS-UTF16-chars gap
@@ -6427,7 +6718,14 @@ codex_orch_build_prompt() {
   mv "$PROMPT_FILE.orch-tail.capped" "$PROMPT_FILE.orch-tail"
   CODEX_ORCH_TAIL_LEN=$(wc -c < "$PROMPT_FILE.orch-tail" | tr -d ' ')
   CODEX_ORCH_HEAD_BUDGET=$((CODEX_ORCH_MAX_PROMPT_CHARS - CODEX_ORCH_TAIL_LEN))
-  [ "$CODEX_ORCH_HEAD_BUDGET" -lt 0 ] && CODEX_ORCH_HEAD_BUDGET=0
+${chain.sourcing ? `  # Sourced briefings: reserve the evidence block (research directive or
+  # numbered Sources + sourcing contract) like the tail.
+  CODEX_ORCH_EVIDENCE_LEN=0
+  if [ -s "$CODEX_ORCH_EVIDENCE_FILE" ]; then
+    CODEX_ORCH_EVIDENCE_LEN=$(wc -c < "$CODEX_ORCH_EVIDENCE_FILE" | tr -d ' ')
+  fi
+  CODEX_ORCH_HEAD_BUDGET=$((CODEX_ORCH_HEAD_BUDGET - CODEX_ORCH_EVIDENCE_LEN))
+` : ''}  [ "$CODEX_ORCH_HEAD_BUDGET" -lt 0 ] && CODEX_ORCH_HEAD_BUDGET=0
   {
     printf '%s\\n%s\\n%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}"
     if [ -n "$CODEX_ORCH_BASE_PROMPT" ]; then
@@ -6440,7 +6738,8 @@ codex_orch_build_prompt() {
     fi
   } > "$PROMPT_FILE.orch-head"
   head -c "$CODEX_ORCH_HEAD_BUDGET" "$PROMPT_FILE.orch-head" > "$PROMPT_FILE"
-  cat "$PROMPT_FILE.orch-tail" >> "$PROMPT_FILE"
+${chain.sourcing ? `  [ -s "$CODEX_ORCH_EVIDENCE_FILE" ] && cat "$CODEX_ORCH_EVIDENCE_FILE" >> "$PROMPT_FILE"
+` : ''}  cat "$PROMPT_FILE.orch-tail" >> "$PROMPT_FILE"
   rm -f "$PROMPT_FILE.orch-head" "$PROMPT_FILE.orch-tail"
 }
 
@@ -6463,16 +6762,16 @@ while [ "$CODEX_ORCH_STEP_INDEX" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; do
     break
   fi
 
-  codex_orch_build_prompt "\${CODEX_ORCH_INSTRUCTIONS[$CODEX_ORCH_STEP_INDEX]}"
+${chain.sourcing ? codexOrchestrationSourcingPreStep() : ''}  codex_orch_build_prompt "\${CODEX_ORCH_INSTRUCTIONS[$CODEX_ORCH_STEP_INDEX]}"
   rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE" "$RESULT_FILE.answer"
 ${codexOrchestrationStepBody(stepDispatchArms, resultVar, policyJson)}
 
   CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
-  if [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
+${chain.sourcing ? codexOrchestrationSourcingPostStep() : ''}  if [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then
     # Only carry a result forward when a LATER attempted step will actually
     # consume it — the final attempted step's carry entry would never be read.
     if [ "$CODEX_ORCH_STEP_NUM" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; then
-      CODEX_ORCH_CARRY_ENTRY=$(codex_orch_collapse_and_truncate "$RESULT_CONTENT_FILE" "$CODEX_ORCH_MAX_RESULT_CARRY_CHARS")
+      CODEX_ORCH_CARRY_ENTRY=$(codex_orch_collapse_and_truncate "${chain.sourcing ? '$CODEX_ORCH_CARRY_SOURCE' : '$RESULT_CONTENT_FILE'}" "$CODEX_ORCH_MAX_RESULT_CARRY_CHARS")
       [ -s "$CODEX_ORCH_CARRY_FILE" ] && printf '\\n\\n' >> "$CODEX_ORCH_CARRY_FILE"
       printf '## Step %s\\n%s' "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_CARRY_ENTRY" >> "$CODEX_ORCH_CARRY_FILE"
     fi
@@ -6482,7 +6781,7 @@ ${codexOrchestrationStepBody(stepDispatchArms, resultVar, policyJson)}
   CODEX_ORCH_STEP_INDEX=$CODEX_ORCH_STEP_NUM
 done
 rm -f "$PROMPT_FILE" "$CODEX_ORCH_CARRY_FILE"
-
+${chain.sourcing ? 'rm -f "$CODEX_ORCH_SRC_STATE" "$CODEX_ORCH_EVIDENCE_FILE" "$CODEX_ORCH_CARRY_SOURCE_FILE"\n' : ''}
 # Only the TRUE FINAL step's completion may reach the configured action
 # (draft/notify/webhook/cli/dm-reply) — mirrors runAgentOrchestrated's
 # "only the last step's completion becomes the actual action content". If the

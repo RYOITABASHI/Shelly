@@ -69,7 +69,7 @@ const BASE_PROMPT = 'パープレキシティで最新のAIニュースを集め
 const COLLECT_STEP = '最新のAIニュースを集めて';
 const SUMMARIZE_STEP = 'ローカルLLMで要約して';
 const COLLECTED_NEWS_PREVIEW =
-  'OpenAI、Google DeepMind、Anthropicなど主要企業が2026年8月に最新のAI研究成果を発表した。';
+  'OpenAI、Google DeepMind、Anthropicなど主要企業が2026年8月に最新のAI研究成果を発表した。 [1]\n\n## Sources\n[1] AI research roundup — https://example.com/ai-research';
 
 const notifyAgent: Agent = {
   id: AGENT_ID,

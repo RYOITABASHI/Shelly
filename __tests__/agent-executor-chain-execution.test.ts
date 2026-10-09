@@ -146,7 +146,7 @@ done
 describe('generateRunScript — real bash-side chain execution (bug #155(b) follow-up)', () => {
   const threeStepAgent = baseAgent({ type: 'auto' }, {
     steps: [
-      'collect the latest news with sources',
+      'collect the open issues with links',
       "summarize the findings, don't editorialize",
       'post a digest to X',
     ],
@@ -155,7 +155,7 @@ describe('generateRunScript — real bash-side chain execution (bug #155(b) foll
   it('emits exactly one CODEX_ORCH_INSTRUCTIONS array baking all N step instructions (a runtime loop, not N unrolled driver blocks)', () => {
     const s = generateRunScript(threeStepAgent);
     expect(s).toContain('CODEX_ORCH_INSTRUCTIONS=(');
-    expect(s).toContain("'collect the latest news with sources'");
+    expect(s).toContain("'collect the open issues with links'");
     // shellQuote escapes the embedded apostrophe as '\'' — assert the escaped form.
     expect(s).toContain("'summarize the findings, don'\\''t editorialize'");
     expect(s).toContain("'post a digest to X'");
@@ -182,7 +182,7 @@ describe('generateRunScript — real bash-side chain execution (bug #155(b) foll
     // Step 1: no prior results yet.
     expect(result.prompts[0]).not.toContain('Results from previous steps');
     expect(result.prompts[0]).toContain('# This step');
-    expect(result.prompts[0]).toContain('collect the latest news with sources');
+    expect(result.prompts[0]).toContain('collect the open issues with links');
     // Step 2: carries step 1's answer.
     expect(result.prompts[1]).toContain('# Results from previous steps');
     expect(result.prompts[1]).toContain('## Step 1');
@@ -233,7 +233,7 @@ describe('generateRunScript — real bash-side chain execution (bug #155(b) foll
   it("never drops the current step's own instruction from the composed prompt, even with several near-budget carried results", () => {
     const manyStepAgent = baseAgent({ type: 'auto' }, {
       steps: [
-        'collect the latest AI news with sources',
+        'collect the open AI issues with links',
         'summarize the findings for a general audience',
         '通知して',
       ],
@@ -249,7 +249,7 @@ describe('generateRunScript — real bash-side chain execution (bug #155(b) foll
     // Every step's composed prompt (as actually written to $PROMPT_FILE and
     // read by the driver) ends with its own "# This step" + instruction —
     // never silently truncated away by a long carried-results prefix.
-    expect(result.prompts[0].endsWith('# This step\ncollect the latest AI news with sources')).toBe(true);
+    expect(result.prompts[0].endsWith('# This step\ncollect the open AI issues with links')).toBe(true);
     expect(result.prompts[1].endsWith('# This step\nsummarize the findings for a general audience')).toBe(true);
     expect(result.prompts[2].endsWith('# This step\n通知して')).toBe(true);
     for (const prompt of result.prompts) {

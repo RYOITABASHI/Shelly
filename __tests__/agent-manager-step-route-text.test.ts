@@ -62,7 +62,7 @@ const SUMMARIZE_STEP = 'ニュースを要約して';
 // research-flavored text like the real Perplexity/Gemini news output that
 // drove the misroute (研究 → academic webDomain → Perplexity).
 const COLLECTED_NEWS_PREVIEW =
-  'Perplexityは2026年8月に最新の研究成果を発表し、AIニュース各社が新型推論モデルの動向を報道した。';
+  'Perplexityは2026年8月に最新の研究成果を発表し、AIニュース各社が新型推論モデルの動向を報道した。 [1]\n\n## Sources\n[1] AI news — https://example.com/ai-news';
 
 const baseAgent: Agent = {
   id: AGENT_ID,

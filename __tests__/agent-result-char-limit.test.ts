@@ -231,7 +231,7 @@ describe('runAgentOrchestrated — charLimit only carried onto the FINAL step (a
           status: 'success',
           durationMs: 5,
           toolUsed: 'Local LLM',
-          outputPreview: `ok step ${logs.length + 1}`,
+          outputPreview: `ok step ${logs.length + 1} https://example.com/source-${logs.length + 1}`,
         });
         return '';
       }

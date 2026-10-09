@@ -54,7 +54,7 @@ const makeAgent = (): Agent => ({
   version: 1,
   action: { type: 'draft' },
   orchestration: {
-    steps: ['collect the news', 'write the digest'],
+    steps: ['collect the meeting notes', 'write the digest'],
   },
 });
 

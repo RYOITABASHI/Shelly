@@ -416,9 +416,17 @@ object AgentRuntime {
     // scripts/shelly-plan-executor.js's isUnattendedLocalOnlyAction). Bumped so
     // stale on-device copies — which skip every scheduled draft/notify run
     // under the default manual mode — are refreshed. No native logic change.
-    private const val CURRENT_SCRIPT_VERSION = 64
+    // CURRENT_EXECUTOR_VERSION 6 (2026-10-09, sourced briefings): the PlanSpec
+    // executor captures Perplexity citations as structured sources, enforces
+    // a sourcing contract, post-processes the final draft (programmatic
+    // "## Sources") and refuses to save an unsourced briefing. Bumped so a
+    // stale v5 executor copy is refused and refreshed. No native logic change.
+    // v65 (2026-10-09, sourced briefings): Perplexity "## Sources" block now
+    // numbered in citations order (matches the [n] markers in the text). See
+    // lib/agent-executor.ts's AGENT_SCRIPT_VERSION v65 comment. No native logic change.
+    private const val CURRENT_SCRIPT_VERSION = 65
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private const val CURRENT_EXECUTOR_VERSION = 5
+    private const val CURRENT_EXECUTOR_VERSION = 6
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
