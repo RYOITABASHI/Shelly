@@ -53,6 +53,14 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない（python3 が "Failed to import encodings module"）— 修正 v249 実装済み・実機未検証 (P1)
+
+- **症状（build 2514〜2520、Codex CLI 0.156.1）**: 対話 Codex の中で `python3 hello.py` を実行すると、`Could not find platform independent libraries` → `Fatal Python error: Failed to import encodings module` で落ちる。Codex 内の `printenv PYTHONHOME PYTHONPATH` は空。`!env ...` のようなユーザーシェルコマンドは `error: unable to open file "/proc/self/fd/100"` で失敗する。Shelly 自身の bash では python3 は動く（`python3()` 関数が PYTHONHOME/PYTHONPATH を設定するため）。
+- **これまでの対処**: v246 では Codex に渡る env に export、v247 では `-c shell_environment_policy.set.*`、v248 では標準ライブラリを `encodings/__init__.py` で探す方式に変更。v248 で argv の値は正しくなった（build 2520 で SHELLY_DEBUG により確認）が、それでもツールコマンドには届かなかった。TZ/ANDROID_ROOT/ANDROID_DATA の対処（v247）は実機 OK。
+- **原因の仮説（v249）**: Codex の shell snapshot（`features.shell_snapshot`、Stable・既定 ON）は、env をクリアした状態でログインシェルを採取し、各 `-lc` コマンドをその snapshot を source してから実行する形に書き換える（rust-v0.156.1 の `core/src/tools/runtimes/mod.rs` `maybe_wrap_shell_lc_with_snapshot`）。Android の linker64/libexec_wrapper の exec 連鎖ではこれが機能せず、`/proc/self/fd/N` のエラーも出していると考えている。
+- **v249 の修正**: すべての Codex 起動経路（`codex()`、`$HOME/bin/codex` shim、shelly-agent-driver の app-server）で `-c features.shell_snapshot=false` を渡す。`SHELLY_CODEX_SHELL_SNAPSHOT=1` で元に戻せる。sandbox/approval は変更なし。
+- **残作業**: 実機で、Codex 内の `!env | grep PYTHON` と `python3 hello.py` が通ることを確認する。snapshot を無効にしても env が届かない場合は、codex-termux fork 側の env 構築（shell_environment_policy を無視していないか）を調べる。また、snapshot 無効化で `-lc` が毎回 `~/.profile` → `.bashrc` を読むようになるため、コマンドの起動遅延も計測すること（重ければ、Codex 用の軽量な profile を検討）。
+
 ### ターミナル最小コントラスト保証（minimum contrast ratio）— 実装済み・実機未検証 (P2)
 
 2026-10-09: Case File（ベージュ #E8E3D0）でCodex CLI等のTUIが出す256色/truecolorの淡色（薄緑・灰・水色、SGR 2 dim）が判読不能だった問題。`lib/terminal-contrast.ts`（参照実装＋jest）とJava逐行移植`modules/terminal-view/.../com/termux/view/MinimumContrast.java`をCanvas `TerminalRenderer`とGL `CellBatcher`に適用。設定`terminalMinimumContrast`（既定`auto`=明るい面で3:1、暗い面はオフ）。グレーランプ232-255は明るい面でテーマ背景→前景の補間に再マップ。透過モードの既定背景セルは反転/選択時にベージュを使う（従来は黒→墨地に黒文字で不可視）。

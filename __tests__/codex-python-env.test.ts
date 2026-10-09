@@ -128,9 +128,9 @@ function runBash(script: string, env: Record<string, string> = {}): Record<strin
 const ENV_DUMP = 'for v in PYTHONHOME PYTHONPATH TZ; do bash -c "[ -n \\"\\${$v+x}\\" ] && echo $v=\\${$v}"; done; true';
 
 describe('BASHRC_VERSION', () => {
-  it('is bumped to >= 248 for the Codex python/TZ env + policy.set args', () => {
+  it('is bumped to >= 249 for the Codex python/TZ env + policy.set args', () => {
     const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);
-    expect(Number(m?.[1])).toBeGreaterThanOrEqual(248);
+    expect(Number(m?.[1])).toBeGreaterThanOrEqual(249);
   });
 });
 
@@ -281,14 +281,14 @@ maybe('codex() run_tui passes shell_environment_policy.set overrides', () => {
       ANDROID_DATA: '/data',
     });
     // every -c is followed by a set override and nothing else is injected
-    expect(argv.length).toBe(1 + 2 * POLICY_KEYS.length + 4);
+    expect(argv.length).toBe(1 + 2 * POLICY_KEYS.length + 2 + 4); // +2 = features.shell_snapshot=false;
   });
 
   it('skips values that would need TOML escaping and unset values', () => {
     const lib = makeLibDir('none');
     const argv = argvLines(runBashRaw(harness('hi'), { SHELLY_LIB_DIR: lib, TZ: 'bad"tz', ANDROID_ROOT: 'a\\b' }));
     expect(policyArgs(argv)).toEqual({});
-    expect(argv).toEqual(['/x/codex_tui', 'hi']);
+    expect(argv).toEqual(['/x/codex_tui', '-c', 'features.shell_snapshot=false', 'hi']);
   });
 });
 
@@ -324,7 +324,7 @@ describe('shelly-agent-driver codexPolicyEnvArgs (codex app-server)', () => {
   it('emits TOML-quoted set overrides and skips unsafe values', () => {
     expect(
       codexPolicyEnvArgs({ PYTHONHOME: '/p/python3.13', PYTHONPATH: 'a"b', TZ: 'Asia/Tokyo', ANDROID_ROOT: 'x\\y' }),
-    ).toEqual(['-c', 'shell_environment_policy.set.PYTHONHOME="/p/python3.13"', '-c', 'shell_environment_policy.set.TZ="Asia/Tokyo"']);
+    ).toEqual(['-c', 'shell_environment_policy.set.PYTHONHOME="/p/python3.13"', '-c', 'shell_environment_policy.set.TZ="Asia/Tokyo"', '-c', 'features.shell_snapshot=false']);
   });
 
   it('androidToolEnv defaults ANDROID_ROOT/ANDROID_DATA', () => {
@@ -405,5 +405,51 @@ maybe('device layout: binary in $lib, stdlib only in packs/dev-tools (v248)', ()
     const env = toolEnv(lib, {}, () => '');
     expect(posix(env.PYTHONHOME)).toBe(std);
     expect(posix(env.PYTHONPATH)).toBe(`${std}:${std}/lib-dynload`);
+  });
+});
+
+// v249: Codex's shell snapshot (features.shell_snapshot) drops the policy env
+// on Android and breaks `!` commands (/proc/self/fd/N); every launch disables it.
+maybe('features.shell_snapshot=false on every Codex launch (v249)', () => {
+  const runTui = extract('  __shelly_codex_native_crash_rc() {', "  local __prev=''").replace(
+    /\/system\/bin\/toybox date \+%s/g,
+    'echo 0',
+  );
+  const shimRunTui = extract('__shelly_codex_run_tui() {', '__dispatch="${1:-}"')
+    .replace(/\/system\/bin\/toybox date \+%s/g, 'echo 0')
+    .replace(/\/system\/bin\/linker64/g, '__fake_linker');
+  const fnScript =
+    `_run() { for a in "$@"; do printf 'ARG:%s\n' "$a"; done; }\n` +
+    `__shelly_paste_tui_begin() { :; }\n__shelly_paste_tui_end() { :; }\n` +
+    `fakecodex() {\n  local __tui=/x/codex_tui\n${runTui}  __shelly_codex_run_tui /x/codex_tui exec hi\n}\nfakecodex\n`;
+  const shimScript =
+    `__fake_linker() { for a in "$@"; do printf 'ARG:%s\n' "$a"; done; }\n` +
+    `__shelly_codex_native_crash_rc() { return 1; }\n${shimRunTui}__shelly_codex_run_tui /x/codex_tui exec hi\n`;
+
+  it.each([
+    ['codex()', fnScript],
+    ['$HOME/bin/codex shim', shimScript],
+  ])('%s passes -c features.shell_snapshot=false before the subcommand', (_name, script) => {
+    const argv = argvLines(runBashRaw(script, { SHELLY_LIB_DIR: '/lib', TZ: 'Asia/Tokyo' }));
+    const i = argv.indexOf('features.shell_snapshot=false');
+    expect(i).toBeGreaterThan(0);
+    expect(argv[i - 1]).toBe('-c');
+    expect(i).toBeLessThan(argv.indexOf('exec'));
+    expect(policyArgs(argv).TZ).toBe('Asia/Tokyo');
+  });
+
+  it.each([
+    ['codex()', fnScript],
+    ['$HOME/bin/codex shim', shimScript],
+  ])('%s honours SHELLY_CODEX_SHELL_SNAPSHOT=1 opt-out', (_name, script) => {
+    const argv = argvLines(runBashRaw(script, { SHELLY_LIB_DIR: '/lib', SHELLY_CODEX_SHELL_SNAPSHOT: '1' }));
+    expect(argv).not.toContain('features.shell_snapshot=false');
+  });
+
+  it('shelly-agent-driver app-server args disable it too', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { codexPolicyEnvArgs: policyEnvArgs } = require('../scripts/shelly-agent-driver.js');
+    expect(policyEnvArgs({})).toEqual(['-c', 'features.shell_snapshot=false']);
+    expect(policyEnvArgs({ SHELLY_CODEX_SHELL_SNAPSHOT: '1' })).toEqual([]);
   });
 });

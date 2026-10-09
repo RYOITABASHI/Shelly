@@ -460,6 +460,10 @@ function codexPolicyEnvArgs(env) {
     if (!value || /["\\\u0000-\u001f\u007f]/.test(value)) continue;
     args.push('-c', `shell_environment_policy.set.${key}="${value}"`);
   }
+  // Codex's shell snapshot (features.shell_snapshot, default on) does not work
+  // under the linker64/libexec_wrapper exec chain on Android and drops the
+  // policy env from tool commands (HomeInitializer.kt BASHRC_VERSION 249).
+  if (env.SHELLY_CODEX_SHELL_SNAPSHOT !== '1') args.push('-c', 'features.shell_snapshot=false');
   return args;
 }
 

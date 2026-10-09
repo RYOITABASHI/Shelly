@@ -1222,7 +1222,20 @@ patchCodex(libDir);
     //      PYTHONHOME stays = stdlib dir (what python3() always set), which
     //      also silences the "platform libraries" warnings. Under SHELLY_DEBUG
     //      a failed resolution and the final codex argv go to stderr.
-    private const val BASHRC_VERSION = 248
+    // v249: even with correct values (build 2520 SHELLY_DEBUG argv showed the
+    //      right `-c shell_environment_policy.set.PYTHON*`), Codex tool
+    //      commands still lacked them, and a `!` user-shell command failed with
+    //      `unable to open file "/proc/self/fd/100"`. Codex 0.156.1's shell
+    //      snapshot (features.shell_snapshot, Stage::Stable, default on) captures
+    //      a login shell with a cleared env and rewrites every `-lc` command to
+    //      source that snapshot first (core/src/tools/runtimes/mod.rs
+    //      maybe_wrap_shell_lc_with_snapshot); that path does not work under the
+    //      linker64/libexec_wrapper exec chain on Android. Every Codex launch
+    //      (codex(), the $HOME/bin/codex shim, shelly-agent-driver app-server)
+    //      now passes `-c features.shell_snapshot=false`, so commands run as
+    //      plain `$SHELL -lc` with the policy env (inherited + `set`).
+    //      SHELLY_CODEX_SHELL_SNAPSHOT=1 opts back in. No sandbox/approval change.
+    private const val BASHRC_VERSION = 249
 
     fun getHomeDir(context: Context): File =
         File(context.filesDir, "home").also { it.mkdirs() }
@@ -2229,6 +2242,8 @@ patchCodex(libDir);
             sb.appendLine("    case \"\$__shelly_cfg_v\" in *'\"'*|*'\\'*) continue ;; esac")
             sb.appendLine("    set -- -c \"shell_environment_policy.set.\$__shelly_cfg_k=\\\"\$__shelly_cfg_v\\\"\" \"\$@\"")
             sb.appendLine("  done")
+            // v249: Codex's shell snapshot is broken on Android (see BASHRC_VERSION 249).
+            sb.appendLine("  [ \"\${SHELLY_CODEX_SHELL_SNAPSHOT:-0}\" = \"1\" ] || set -- -c features.shell_snapshot=false \"\$@\"")
             sb.appendLine("  __start=\$(/system/bin/toybox date +%s 2>/dev/null || echo 0)")
             sb.appendLine("  __codex_bin_dir=\"\${__primary%/*}\"")
             sb.appendLine("  SHELLY_LIB_DIR=\"\$SHELLY_LIB_DIR\" SHELLY_CODEX_EXEC_PATH=\"\$__primary\" SHELLY_CODEX_PROC_EXE_SHIM=1 SHELLY_CODEX_PROC_EXE_OPEN_SHIM=1 LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" LD_LIBRARY_PATH=\"\$__codex_bin_dir:\$SHELLY_LIB_DIR\" /system/bin/linker64 \"\$__primary\" \"\$@\"")
@@ -3006,6 +3021,8 @@ patchCodex(libDir);
             sb.appendLine("      case \"\$__shelly_cfg_v\" in *'\"'*|*'\\'*) continue ;; esac")
             sb.appendLine("      set -- -c \"shell_environment_policy.set.\$__shelly_cfg_k=\\\"\$__shelly_cfg_v\\\"\" \"\$@\"")
             sb.appendLine("    done")
+            // v249: Codex's shell snapshot is broken on Android (see BASHRC_VERSION 249).
+            sb.appendLine("    [ \"\${SHELLY_CODEX_SHELL_SNAPSHOT:-0}\" = \"1\" ] || set -- -c features.shell_snapshot=false \"\$@\"")
             sb.appendLine("    [ -n \"\${SHELLY_DEBUG:-}\" ] && printf '[shelly] codex argv: %s\\n' \"\$*\" >&2")
             sb.appendLine("    local __start=\"\$(/system/bin/toybox date +%s 2>/dev/null || echo 0)\"")
             sb.appendLine("    __shelly_paste_tui_begin")
