@@ -27,6 +27,10 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
       mockAsyncStorageValues.set(key, value);
       return Promise.resolve();
     },
+    removeItem: (key: string) => {
+      mockAsyncStorageValues.delete(key);
+      return Promise.resolve();
+    },
     clear: () => {
       mockAsyncStorageValues.clear();
       return Promise.resolve();
@@ -73,6 +77,29 @@ describe('browser-store lastOpenedUrl', () => {
   });
 
   it('loadLastOpenedUrl leaves state null when nothing was ever persisted', async () => {
+    await useBrowserStore.getState().loadLastOpenedUrl();
+    expect(useBrowserStore.getState().lastOpenedUrl).toBeNull();
+  });
+
+  // 2026-10-09 on-device finding (build 2495): a malformed URL (a local
+  // markdown path glued onto a host) was persisted and restored on every
+  // cold start, wedging the pane on net::ERR_NAME_NOT_RESOLVED.
+  it('recordVisitedUrl refuses a malformed host (local file path mangled into a URL)', () => {
+    useBrowserStore.getState().recordVisitedUrl('https://example.com/ok');
+    useBrowserStore.getState().recordVisitedUrl('https://notes.md%20~/hw/ry_md_test.md/?locale=ja');
+    useBrowserStore.getState().recordVisitedUrl('https://ry_md_test.md/?locale=ja');
+    expect(useBrowserStore.getState().lastOpenedUrl).toBe('https://example.com/ok');
+  });
+
+  it('loadLastOpenedUrl drops (and deletes) a malformed persisted URL instead of restoring it', async () => {
+    mockAsyncStorageValues.set('shelly_browser_last_url', 'https://ry_md_test.md/?locale=ja');
+    await useBrowserStore.getState().loadLastOpenedUrl();
+    expect(useBrowserStore.getState().lastOpenedUrl).toBeNull();
+    expect(mockAsyncStorageValues.has('shelly_browser_last_url')).toBe(false);
+  });
+
+  it('loadLastOpenedUrl drops a persisted non-http(s) URL', async () => {
+    mockAsyncStorageValues.set('shelly_browser_last_url', 'file:///sdcard/notes.md');
     await useBrowserStore.getState().loadLastOpenedUrl();
     expect(useBrowserStore.getState().lastOpenedUrl).toBeNull();
   });

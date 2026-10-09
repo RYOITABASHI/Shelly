@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isRestorableBrowserUrl } from '@/lib/browser-url';
 
 export type Bookmark = {
   label: string;
@@ -85,7 +86,10 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
   },
 
   recordVisitedUrl: (url) => {
-    if (!/^https?:\/\//i.test(url)) return;
+    // 2026-10-09: http(s) prefix alone let a malformed host (a local
+    // markdown path glued onto a host → ERR_NAME_NOT_RESOLVED) persist and
+    // wedge every later cold start. Require a plausible, loadable URL.
+    if (!isRestorableBrowserUrl(url)) return;
     set({ lastOpenedUrl: url });
     AsyncStorage.setItem(LAST_URL_STORAGE_KEY, url).catch(() => {});
   },
@@ -93,7 +97,14 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
   loadLastOpenedUrl: async () => {
     try {
       const raw = await AsyncStorage.getItem(LAST_URL_STORAGE_KEY);
-      if (raw) set({ lastOpenedUrl: raw });
+      if (!raw) return;
+      if (isRestorableBrowserUrl(raw)) {
+        set({ lastOpenedUrl: raw });
+      } else {
+        // Sanitize a bad value persisted by an older build: drop it so the
+        // pane falls back to its blank start page instead of a dead URL.
+        AsyncStorage.removeItem(LAST_URL_STORAGE_KEY).catch(() => {});
+      }
     } catch {}
   },
 }));

@@ -18,12 +18,14 @@ describe('BrowserPane.tsx last-URL-recovery wiring', () => {
   );
 
   it('falls back to the persisted lastOpenedUrl when initialUrl is still the default and no openSignal is pending', () => {
-    expect(source).toContain('if (s.lastOpenedUrl) {');
+    expect(source).toContain('if (s.lastOpenedUrl && isRestorableBrowserUrl(s.lastOpenedUrl)) {');
     expect(source).toContain('return s.lastOpenedUrl;');
   });
 
-  it('records every real navigation via recordVisitedUrl, so a later cold start has something to fall back to', () => {
-    expect(source).toMatch(/handleNavigationStateChange[\s\S]{0,400}recordVisitedUrl\(state\.url\)/);
+  it('records every successfully loaded page via recordVisitedUrl (onLoad, not onNavigationStateChange — a failed load must never become the cold-start fallback)', () => {
+    expect(source).toMatch(/handleLoad = useCallback[\s\S]{0,200}recordVisitedUrl\(url\)/);
+    expect(source).toContain('onLoad={handleLoad}');
+    expect(source).not.toMatch(/handleNavigationStateChange[\s\S]{0,400}recordVisitedUrl/);
   });
 
   it('subscribes to lastOpenedUrl and applies it via shouldApplyLastOpenedUrlFallback (2026-08-06 Codex review finding round 2: the synchronous initialResolvedUrl fallback alone races app/_layout.tsx\'s async loadLastOpenedUrl() and usually loses on a genuine cold start)', () => {
@@ -50,8 +52,8 @@ describe('BrowserPane.tsx last-URL-recovery wiring', () => {
     );
     expect(explicitInitialUrlBranch).toContain('resolvedAtMount = true;');
     const syncFallbackBranch = source.slice(
-      source.indexOf('if (s.lastOpenedUrl) {'),
-      source.indexOf('if (s.lastOpenedUrl) {') + 120,
+      source.indexOf('if (s.lastOpenedUrl && isRestorableBrowserUrl(s.lastOpenedUrl)) {'),
+      source.indexOf('if (s.lastOpenedUrl && isRestorableBrowserUrl(s.lastOpenedUrl)) {') + 120,
     );
     expect(syncFallbackBranch).toContain('resolvedAtMount = true;');
   });

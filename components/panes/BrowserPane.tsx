@@ -1,18 +1,20 @@
-import React, { useRef, useState, useCallback, useEffect, useContext } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useContext, useMemo } from 'react';
 import {
   View,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
   Text,
   ScrollView,
   Keyboard,
   Platform,
 } from 'react-native';
 import WebView, { WebViewNavigation, WebViewMessageEvent } from 'react-native-webview';
+import type { WebViewNavigationEvent } from 'react-native-webview/lib/WebViewTypes';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useBrowserStore, PRESET_BOOKMARKS } from '@/store/browser-store';
 import { shouldApplyLastOpenedUrlFallback } from '@/lib/browser-pane-last-url-fallback';
+import { isRestorableBrowserUrl, normalizeBrowserInput } from '@/lib/browser-url';
+import { createThemedStyles } from '@/lib/themed-stylesheet';
 import PaneInputBar from '@/components/panes/PaneInputBar';
 import { MultiPaneContext, PaneIdContext } from '@/components/multi-pane/PaneSlot';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
@@ -197,13 +199,8 @@ true;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function normalizeUrl(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return 'about:blank';
-  if (/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed)) return trimmed;
-  if (!trimmed.includes(' ') && trimmed.includes('.')) return `https://${trimmed}`;
-  return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
-}
+// URL-bar normalization lives in lib/browser-url.ts (unit-tested there).
+const normalizeUrl = normalizeBrowserInput;
 
 // ---------------------------------------------------------------------------
 // BrowserPane
@@ -465,7 +462,10 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     // store/browser-store.ts's recordVisitedUrl) instead of a hardcoded
     // `initialUrl` closes that gap without touching the approval/allowlist
     // logic itself.
-    if (s.lastOpenedUrl) {
+    // 2026-10-09: only restore a loadable http(s) URL - a malformed
+    // persisted value used to wedge the pane on an ERR_NAME_NOT_RESOLVED
+    // error page on every cold start.
+    if (s.lastOpenedUrl && isRestorableBrowserUrl(s.lastOpenedUrl)) {
       resolvedAtMount = true;
       return s.lastOpenedUrl;
     }
@@ -474,15 +474,40 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const [inputUrl, setInputUrl] = useState(
     initialResolvedUrl === 'about:blank' ? '' : initialResolvedUrl,
   );
-  const [currentUrl, setCurrentUrl] = useState(initialResolvedUrl);
+  // 2026-10-09 (build 2495 flicker / "Enter doesn't navigate"): the
+  // WebView `source` is driven ONLY by explicit navigations (URL bar
+  // submit, bottom bar, bookmark, openSignal, cold-start fallback). Page-
+  // driven navigation (links, redirects, error pages) is tracked in
+  // currentUrlRef but never written back into `source` - previously
+  // onNavigationStateChange did setCurrentUrl(state.url), so every page
+  // event re-rendered the WebView with a new source.
+  const [nav, setNav] = useState({ url: initialResolvedUrl, seq: 0 });
+  const currentUrl = nav.url;
+  const navUrlRef = useRef(initialResolvedUrl);
+  // The page the WebView is actually showing (what automation reads).
   const currentUrlRef = useRef(initialResolvedUrl);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const [activeBookmarkIdx, setActiveBookmarkIdx] = useState(0);
 
-  useEffect(() => {
-    currentUrlRef.current = currentUrl;
-  }, [currentUrl]);
+  const navigateTo = useCallback((url: string) => {
+    const wv = webviewRef.current;
+    if (wv && url !== 'about:blank' && url === navUrlRef.current) {
+      // Same `source` uri -> react-native-webview would not reload (the
+      // prop diff is a no-op, and Android setSource also skips a uri equal
+      // to view.url). Drive the WebView directly instead.
+      if (url === currentUrlRef.current) {
+        wv.reload();
+      } else {
+        wv.injectJavaScript(`window.location.assign(${JSON.stringify(url)}); true;`);
+      }
+      currentUrlRef.current = url;
+      return;
+    }
+    navUrlRef.current = url;
+    currentUrlRef.current = url;
+    setNav((prev) => ({ url, seq: prev.seq + 1 }));
+  }, []);
 
   // 2026-08-06 Codex review finding (round 2): initialResolvedUrl's
   // lastOpenedUrl fallback above only helps if the persisted value has
@@ -509,9 +534,10 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
       return;
     }
     appliedLastOpenedUrlRef.current = true;
-    setCurrentUrl(lastOpenedUrl as string);
-    setInputUrl(lastOpenedUrl as string);
-  }, [lastOpenedUrl, initialUrl]);
+    if (!isRestorableBrowserUrl(lastOpenedUrl)) return;
+    navigateTo(lastOpenedUrl);
+    setInputUrl(lastOpenedUrl);
+  }, [lastOpenedUrl, initialUrl, navigateTo]);
 
   const automationControllerRef = useRef<BrowserPaneAutomationController | null>(null);
   if (!automationControllerRef.current) {
@@ -556,13 +582,20 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     if (!openSignal.url) return;
     if (!isOpenSignalTargetPane(paneId)) return;
     setInputUrl(openSignal.url);
-    setCurrentUrl(openSignal.url);
-  }, [openSignal.seq, openSignal.url, paneId]);
+    navigateTo(openSignal.url);
+  }, [openSignal.seq, openSignal.url, paneId, navigateTo]);
 
-  const handleSubmit = useCallback(() => {
-    const url = normalizeUrl(inputUrl);
-    setCurrentUrl(url);
-  }, [inputUrl]);
+  // Read the submitted text from the native event when present (the
+  // controlled `inputUrl` can lag a commit by one render on Android IMEs),
+  // falling back to state.
+  const inputUrlRef = useRef(inputUrl);
+  inputUrlRef.current = inputUrl;
+  const handleSubmit = useCallback((e?: { nativeEvent?: { text?: string } }) => {
+    const text = e?.nativeEvent?.text ?? inputUrlRef.current;
+    const url = normalizeUrl(text);
+    setInputUrl(url === 'about:blank' ? '' : url);
+    navigateTo(url);
+  }, [navigateTo]);
 
   // Track URL bar focus so background navigation events (redirects, OAuth
   // bounces, YouTube prefetch frames, etc.) don't trample the URL the user
@@ -597,8 +630,28 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
     if (state.url && state.url !== 'about:blank' && !urlFocusedRef.current) {
       setInputUrl(state.url);
     }
-    setCurrentUrl(state.url ?? 'about:blank');
-    if (state.url) useBrowserStore.getState().recordVisitedUrl(state.url);
+    // Track the live page only - never feed it back into `source`.
+    if (state.url) currentUrlRef.current = state.url;
+  }, []);
+
+  // onLoad fires only for loads that did NOT fail (react-native-webview's
+  // Android client suppresses it after onReceivedError), so a DNS-failed
+  // URL can no longer be persisted as the cold-start fallback.
+  const handleLoad = useCallback((e: WebViewNavigationEvent) => {
+    const url = e.nativeEvent.url;
+    if (url) useBrowserStore.getState().recordVisitedUrl(url);
+  }, []);
+
+  // Render-process crash recovery. The old onError->reload actually fired
+  // for every ordinary load error and reloaded a DNS failure every ~500ms
+  // forever (the build 2495 flicker, also racing/cancelling any URL the
+  // user then submitted). Now: one throttled reload per renderer crash.
+  const lastCrashReloadRef = useRef(0);
+  const handleRenderProcessGone = useCallback(() => {
+    const now = Date.now();
+    if (now - lastCrashReloadRef.current < 5000) return;
+    lastCrashReloadRef.current = now;
+    setTimeout(() => webviewRef.current?.reload(), 500);
   }, []);
 
   const handleBack = useCallback(() => { webviewRef.current?.goBack(); }, []);
@@ -622,14 +675,19 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
   const handleBookmarkTap = useCallback((url: string, index: number) => {
     setActiveBookmarkIdx(index);
     setInputUrl(url);
-    setCurrentUrl(url);
-  }, []);
+    navigateTo(url);
+  }, [navigateTo]);
 
   const handleBottomBarSubmit = useCallback((text: string) => {
     const url = normalizeUrl(text);
-    setInputUrl(url);
-    setCurrentUrl(url);
-  }, []);
+    setInputUrl(url === 'about:blank' ? '' : url);
+    navigateTo(url);
+  }, [navigateTo]);
+
+  // Stable source object: changes only when an explicit navigation bumps
+  // `nav`, so re-renders (store updates, focus, resize) never hand the
+  // WebView a fresh `source`.
+  const webviewSource = useMemo(() => ({ uri: nav.url }), [nav]);
   const paneBg = usePaneContentBackground(C.bgDeep);
   const toolbarBg = usePanelBackground(C.bgSurface);
   const bookmarksBg = usePanelBackground(C.bgSidebar);
@@ -665,7 +723,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           onFocus={() => setUrlFocused(true)}
           onBlur={() => setUrlFocused(false)}
           placeholder="Enter a URL"
-          placeholderTextColor={C.text2}
+          placeholderTextColor={C.text3}
           // Explicit selectionColor / cursorColor so the caret + text-
           // selection highlight remain visible against the dark URL bar
           // background regardless of the active theme preset. Some Android
@@ -783,7 +841,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           // caches the UA per instance.
           key={desktopMode ? 'desktop' : 'mobile'}
           ref={webviewRef}
-          source={{ uri: currentUrl }}
+          source={webviewSource}
           style={styles.webview}
           // textZoom kept at 90% in compact panes as a legibility safety
           // net. The viewport-meta injection handles pages that lack a
@@ -805,6 +863,7 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           // accelerated for video. Revisit only if profiling shows
           // the default path is genuinely too slow.
           onNavigationStateChange={handleNavigationStateChange}
+          onLoad={handleLoad}
           onMessage={handleMessage}
           // RESPONSIVE_BRIDGE_JS must run BEFORE first paint so the
           // injected viewport meta and userAgentData mask are in
@@ -829,11 +888,9 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
           // are HTTPS end-to-end); it's just bringing WebView in line
           // with system browser behaviour.
           mixedContentMode="compatibility"
-          onError={() => {
-            // Reload on render-process crash so YouTube recovers instead
-            // of showing a blank white screen until manual refresh.
-            setTimeout(() => webviewRef.current?.reload(), 500);
-          }}
+          // Load errors (DNS, offline, TLS) just show the error view - no
+          // auto-retry. Only a renderer crash triggers a (throttled) reload.
+          onRenderProcessGone={handleRenderProcessGone}
           startInLoadingState
           renderLoading={() => (
             <View style={[styles.loadingOverlay, { backgroundColor: paneBg }]}>
@@ -859,7 +916,11 @@ export default function BrowserPane({ initialUrl = 'about:blank' }: BrowserPaneP
 // Styles
 // ---------------------------------------------------------------------------
 
-const styles = StyleSheet.create({
+// createThemedStyles: rebuilt on every theme preset swap. A module-level
+// StyleSheet.create froze the seed palette, and the URL field's background
+// was C.border - which on light presets (Case File: #2A2416) is near-black
+// ink, giving dark-on-black, unreadable address text (build 2495).
+const styles = createThemedStyles(() => ({
   root: {
     flex: 1,
   },
@@ -896,7 +957,9 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 32,
     borderRadius: 4,
-    backgroundColor: C.border,
+    backgroundColor: C.bgDeep,
+    borderWidth: 1,
+    borderColor: withAlpha(C.border, 0.35),
     paddingHorizontal: 8,
     paddingVertical: 0,
     fontFamily: F.family,
@@ -949,9 +1012,9 @@ const styles = StyleSheet.create({
     gap: 0,
   },
   bookmarkTabActive: {
-    backgroundColor: C.border,
+    backgroundColor: withAlpha(C.accent, 0.12),
     borderWidth: 1,
-    borderColor: C.border,
+    borderColor: withAlpha(C.border, 0.35),
   },
   bookmarkLabel: {
     fontFamily: F.family,
@@ -989,4 +1052,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-});
+}));
