@@ -27,7 +27,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/widget-register-agent-en.jpg" alt="Registering a new autonomous agent straight from the Scouter home-screen widget's ASK box, no app open" width="500">
+  <img src="docs/images/hero-agent-briefing.png" alt="Shelly unfolded on a Galaxy Z Fold6 in the Case File theme, 2x2 panes: the terminal shows an agent briefing's Sources section with three dated links, the AI pane shows the agent's completion notice with an Open link to the saved markdown file, the Browser pane shows the Shelly GitHub page, and the Markdown pane renders the briefing with [1][2][3] citations" width="800">
+</p>
+
+<p align="center">
+  <sub>A scheduled agent's on-device briefing: Perplexity research → local LLM summary → a markdown file whose every item cites its source.</sub>
 </p>
 
 <p align="center">
@@ -50,6 +54,23 @@
 
 ## See it run
 
+**An agent that works while you do**
+
+<p align="center">
+  <img src="docs/images/demo-agent-ask-teach.gif" alt="Captioned screen recording on a Galaxy Z Fold6: an agent is scheduled in plain language to run in 3 minutes; meanwhile a Python JSONDecodeError in the terminal is selected and sent to the on-device AI with Ask AI; the fix is recorded with shelly teach start/stop as a reusable workflow; then the agent fires on its own (Perplexity, then the local LLM, then a markdown briefing, shown at 16x) and the sourced briefing is opened" width="860">
+</p>
+
+1. Schedule an agent in plain language: *"In 3 minutes, first search the web with Perplexity for the top 3 on-device AI news stories. Then summarize them with the local LLM. Finally, write a markdown briefing."*
+2. Meanwhile, a Python `JSONDecodeError` in the terminal: long-press it → **Ask AI** quotes it into the AI pane, and the on-device model (Qwen3.5-2B) explains the fix.
+3. `shelly teach start` → fix it by hand → `shelly teach stop` saves those steps as a reusable workflow (`shelly workflow run <name>`).
+4. The agent fires on its own — Perplexity → local LLM → markdown (sped up 16x in the clip) — and narrates each hand-off in its chat thread.
+5. Open the briefing: every item carries a citation, and a `## Sources` list is appended.
+
+<sub>The GIF is captioned and partly sped up. A full-resolution MP4 is available on request and will be attached here.</sub>
+<!-- TODO: replace with user-attachments MP4 -->
+
+<br>
+
 **Registering an autonomous agent from the home-screen widget — no need to open the app**
 
 https://github.com/user-attachments/assets/fbda309f-ad12-4a6d-a5b8-96b6ee4d4e57
@@ -64,11 +85,13 @@ https://github.com/user-attachments/assets/c87ea206-12f8-4b21-9089-0a373b0e8a2a
 
 No Termux. No proot. No remote dev server. OpenAI Codex — a real, full-featured coding CLI — invokes directly through Shelly's own JNI PTY, the same native terminal you can open and drive by hand.
 
-**Unfolded: sidebar, terminal, AI, browser, and preview, all live at once — the same session, not four separate apps**
+**Ask AI: long-press an error, quote it into the on-device AI**
 
 <p align="center">
-  <img src="docs/images/unfolded-4-pane.jpg" alt="Shelly unfolded on a Galaxy Z Fold6, showing a 2x2 grid of Terminal, AI, Browser, and Preview panes plus the sidebar" width="800">
+  <img src="docs/images/ask-ai.png" alt="Shelly unfolded: a Python JSONDecodeError traceback in the terminal on the left; on the right the AI pane shows the quoted error and the on-device model's answer, with the broken and the fixed JSON side by side" width="800">
 </p>
+
+Select terminal output, tap **Ask AI** in the selection menu, and the text is quoted into the AI pane's composer as a draft — nothing is sent until you add your question and hit send. With a local model running, the error never leaves the phone.
 
 ---
 
@@ -189,6 +212,8 @@ Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you 
 | `shelly-codex-diagnose` | Run deeper Codex smoke/canary/edit/patch diagnostics. |
 | `shelly-update-clis codex --check-only` | Probe the active Codex runtime. Runtime installs are normally driven by the Updates UI. |
 | `shelly-cs` / `cs` | GitHub Codespaces helper commands. |
+| `shelly teach start [name]` / `stop` / `cancel` / `status` | Record the commands you run into a reusable workflow (see [Learning loop](#learning-loop)). |
+| `shelly workflow list` / `show <name>` / `run <name>` / `delete <name>` | List, print, replay in the current terminal, or delete saved workflows. |
 
 **First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every day at 8am, collect the latest STEAM×AI education papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
 
@@ -239,12 +264,15 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 
 | | |
 |---|---|
+| **Sourced multi-step briefings** | A research → summarize → write agent carries Perplexity's citations through every step: claims not backed by a cited source are dropped, each item keeps its `[n]` marker, and a `## Sources` list is appended to the saved markdown. Each step hand-off is narrated as a short line in the agent's own chat thread. *On-device verified (Galaxy Z Fold6, N=1).* |
 | **On-device autonomous agent** | Say it in plain language → a scheduled agent runs on the phone *by itself* (screen off), on your own keys and tools, and tells you when it ran. It works where a cloud agent can't reach — your files, terminal, local LLM, the device itself. *N=1 verified so far — see [Status](#status).* ([details](#autonomous-agents)) |
 | **Shelly companion** | The default local-persona AI Pane is one persistent companion named **Shelly**, not a provider-branded form — no provider tag on any reply. Its conversation follows you across AI panes and splits, auto-distills what you talked about into its own memory whenever you switch providers (browsable/editable in Settings), remembers confirmed preferences for itself and every background agent, and adds completed agent results to the same thread automatically. Explicit provider routes keep their own per-pane histories, with a short carry-forward of recent context when you switch into or out of them. |
 | **Multi-platform delivery** | An agent's output isn't limited to a notification or an Obsidian draft — it can post directly to Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress, or X, or call a webhook. Store each platform's key once, then point an agent at it in plain language. *Bluesky is verified live end-to-end.* |
 | **Notification-triggered agents** | An agent can also fire when another app posts a matching notification — LINE, Discord, Slack, whatever you allowlist — instead of only on a schedule. Package allowlist gates first, an exact sender-name match narrows it further (fail-closed if unset), and the triggering text is always injected as tainted, untrusted data, never instructions. Separately, the opt-in **Telegram inbound gateway** (off by default) accepts `@agent` messages from one authorized chat and queues a confirmation card; its authorization/sanitization core is tested, but the real bot-token long-poll → confirm flow has not been live-tested. |
 | **Agent browser automation** | An agent can click, fill, or extract text from the page already open in the Browser pane — a deliberately narrow action set (no navigation, no arbitrary script injection), gated to an explicit page-URL allowlist and a per-action approval tap; page-derived output is always treated as untrusted at the next capability boundary. |
 | **Cross-pane intelligence** | Say "fix the error." AI reads your terminal, suggests a fix, one tap to run. Zero copy-paste. |
+| **Ask AI (quote to AI)** | Long-press terminal output → **Ask AI** in the selection menu quotes it into the AI pane's composer (single line as a blockquote, multi-line as a fenced block). It is only a draft — nothing is sent until you do — and it is never quoted into a masked/secret input. *On-device verified (Galaxy Z Fold6, N=1).* |
+| **Teach mode** | `shelly teach start <name>` records the commands you run in the terminal; `shelly teach stop` turns them into a saved workflow (`~/.shelly/workflows/<name>.sh`), dropping failed commands and secret-looking lines, without running anything. Conversion uses the on-device LLM by default (cloud only if you opt in), with a rule-based fallback. Replay with `shelly workflow run <name>`. *On-device verified (Galaxy Z Fold6, N=1).* |
 | **AI → Terminal insert** | Any AI-chat reply's fenced ` ```bash ` block gets an **Insert** button next to Copy — tap it and the code lands in the focused Terminal pane's input line (no auto-Enter, review before running); opens a new terminal and queues the insert if none is open. *On-device verified 2026-08-31.* |
 | **Nacre Bridge** | While Shelly is foregrounded, it shares sanitized live terminal context (cwd, git branch, a handful of safe recent-command terms — never raw commands or secrets) with [Nacre](https://github.com/RYOITABASHI/Nacre), the author's own Android IME, so its kana-kanji conversion can lean toward what you're actually doing; the context file is deleted the moment Shelly leaves the foreground. On Nacre's own side, its Dev Mode detects focus inside Shelly specifically and suppresses auto-punctuation conversion, defaulting its symbol panel to a programming tab instead. Requires Nacre installed; toggle in Settings → Nacre Bridge (on by default). *On-device verified 2026-08-31.* |
 | **AI Edit golden path** | Tap a file in the sidebar → preview it → hit `[✨ AI]` → describe the change → accept per hunk → the file is rewritten on disk, the preview reloads automatically. |
@@ -253,14 +281,15 @@ No Termux install. No proot. No ttyd. No remote bridge. No cloud runner.
 | **Batteries included** | bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, make, ripgrep, jq ship inside the APK. Termux not required. |
 | **9 pane types** | Terminal, Agent Chat, AI, Browser (+ background audio), Markdown, Preview, Ask, Agent Runs, and Memory Workbench. Split up to 4 live panes freely. |
 | **Multi-agent AI** | API-backed Gemini, Cerebras, Groq, Perplexity, OpenRouter, Local LLM, plus the foreground Codex terminal CLI. Auto-routed or `@mention` where supported. |
-| **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow. Qwen3.5-0.8B ships as the actual default (light enough to stay always-on for background/autonomous use); Qwen3.5-2B is the recommended step-up for on-demand use when you can spare the RAM/battery, Qwen3 1.7B sits between the two, and 4B+ models are reserved for short quality checks. |
+| **Local LLM (on-device, llama.cpp)** | Qwen3.5 models run on-device through the bundled llama.cpp / llama-server flow. Qwen3.5-0.8B ships as the actual default (light enough to stay always-on for background/autonomous use); Qwen3.5-2B is the recommended step-up for on-demand use when you can spare the RAM/battery, Qwen3 1.7B sits between the two, and 4B+ models are reserved for short quality checks. The llama.cpp download is pinned to release b11433 and checked against a sha256. MiniCPM5-2B is listed as **Experimental** only — evaluated on the Fold6 and not adopted (see [Status](#status)). |
 | **Codex on Android** | Shelly keeps Codex on a managed-latest path without trusting upstream blindly: each APK bundles a pinned runtime, the Updates UI can promote verified runtime releases, and Reset falls back to the bundled runtime. Codex runs over the native PTY with a Shelly-owned device-code login wrapper. No proot, no root. |
 | **Scouter home widget** | A home-screen agent launcher and health list — up to 3 upcoming scheduled agents, each with a status glyph (last run's success/error/skipped) and next-fire time, without opening the app. It is interactive: **RUN** starts that already-registered agent through the unattended execution gates; **ASK** can also register a brand-new agent — type or speak `@agent ...` and it routes through the same confirm flow as typing it in the AI Pane. |
-| **Color themes** | Blue / Red / Purple / Green / **Case File** (a cream-and-ink retro-terminal palette, with its own optional DotGothic16 bitmap font, typewriter-reveal AI replies, and boot-flash transition) — five presets on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. The app font is now a separate picker from the color preset, so any theme can run with either font. |
-| **Voice input** | Speak your commands or AI prompts. Groq Whisper handles transcription, then VoiceChain routes the text through the same input router the keyboard uses. |
+| **Color themes** | Blue / Red / Purple / Green / **Case File** (a cream-and-ink retro-terminal palette, with its own optional DotGothic16 bitmap font, typewriter-reveal AI replies, and boot-flash transition) — five presets on the existing preset IDs, so runtime swaps keep your shell alive without settings migration. Switching is live: panes, settings, modals, the sidebar and the terminal's own ANSI palette all follow the new preset without a restart. The app font is now a separate picker from the color preset, so any theme can run with either font. The screenshots in this README use Case File. |
+| **Voice input** | Speak your commands or AI prompts. With a Groq key, Groq Whisper handles transcription; without one, Shelly falls back to Android's on-device speech recognizer (keyless, API 31+; force it in Settings → Voice Input to keep audio off the network). VoiceChain then routes the text through the same input router the keyboard uses. *The on-device route is implemented but not yet verified on device.* |
 | **Realtime voice (Gemini Live)** | An opt-in full-duplex voice mode — talk and get spoken replies back with server-side interruption handling, instead of the turn-based record → transcribe → send loop. Separate toggle from ordinary voice input (Settings → Realtime Voice, off by default); note that unlike text, audio through the Gemini Live API is billed per-token even on a free-tier key. |
 | **A2A server (Agent2Agent)** | An opt-in local HTTP server (Settings → A2A Server, off by default) exposing a standard [A2A protocol](https://a2a-protocol.org/) Agent Card and a `list_agents` skill, so another A2A-aware agent/tool on your network can see what Shelly has registered. Read-only today; no exec or write skills are exposed. |
-| **MCP server** | An opt-in local [Model Context Protocol](https://modelcontextprotocol.io/) server (Settings → MCP Server, off by default, bearer-token authenticated) exposing four read-only tools — `read_terminal_output`, `git_status`, `list_agents`, `list_repos` — so a desktop MCP client such as Claude Code or Claude Desktop can look into what's running on the phone. |
+| **MCP server** | An opt-in local [Model Context Protocol](https://modelcontextprotocol.io/) server (Settings → MCP Server, off by default, bearer-token authenticated) exposing four read-only tools — `read_terminal_output`, `git_status`, `list_agents`, `list_repos` — so a desktop MCP client such as Claude Code or Claude Desktop can look into what's running on the phone. It speaks both the older spec revisions (session handshake) and the stateless 2026-07-28 revision; *the 2026-07-28 path is implemented and tested but not yet verified on device.* |
+| **Agent safety rules (beta, off by default)** | POLICY-001: tell Shelly rules in plain language ("always ask before anything involving money", "X posts stop at a draft") — echoed back and stored only after you confirm, listable and revocable the same way. Runs not started by you (schedule, widget, notification, boot) are limited to read / draft / notify, and after repeated clean approvals of one action class Shelly can offer to stop asking for it (never for payments, posting, network sends or high-risk commands). Off by default (Settings → Agent Safety Rules (beta)); *implemented, not yet verified on device.* |
 | **Persistent run notification** | A scheduled or manually-triggered agent now posts a sticky "▶ running" notification for the duration of its run, not just a result notification afterward, so an in-progress run is visible from the notification shade instead of only showing up once it finishes. |
 
 ### Autonomous agents
@@ -280,6 +309,12 @@ The schedule above registers an agent that, when it fires, wakes the phone, rese
 
 Scheduling also understands a relative *start*, not just a recurrence — "starting next week, check the news every morning" registers the agent now but holds its first fire until the resolved date, instead of running tomorrow by mistake. (Confirmed on-device for the registration/confirm-card path.)
 
+Schedules can also be **one-shot**: "in 5 minutes", "at 14:55", "tomorrow morning at 8am", 「5分後に」, 「今日の14時55分」 register an agent that fires once on an exact alarm and is then retired (it stays listed with its run log). A relative delay counts from your confirm tap, and a bare time with no recurrence word is always shown back to you as a one-time interpretation before it's registered. After a reboot, a missed one-shot is caught up within a 10-minute grace window or marked missed — never fired late. (Verified on-device for "in 5 minutes", "at 14:55" and 「5分後に」.)
+
+**Sourced briefings.** When a multi-step chain includes web research (a Perplexity step, or an explicit web/news cue), the citations Perplexity returned are carried through the later summarize/write steps. Before the agent's action runs, each item must cite a source, and numbers, names and entities in it must appear in that source's text — otherwise the item is rewritten to the research's own wording or dropped; uncited intro/outro prose is dropped, and a `## Sources` list (title, link, date) is appended. Fetched source text is fenced as untrusted data. If nothing verifiable is left, the run fails closed instead of saving an unsourced briefing. Step hand-offs ("researcher → summarizer: passed 3 items…") are posted as short lines into the agent's own chat thread, so you can follow the run without opening the log.
+
+Unattended runs whose action is only a local `draft` file (inside the scoped output folders) or a `notify` no longer wait for the manual approval tap — both stay on the device. Every other action type (webhook, CLI, social post, …) still needs it, and the safety rules above take precedence when enabled.
+
 If the request itself is too vague to act on — "help me out" with no object or domain — Shelly asks what you actually want done *before* it asks when to run it, instead of scheduling an agent with an empty task.
 
 **Honest caveat:** unattended firing depends on Android's background limits, which vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers). Shelly uses Android's highest-priority alarm path (named above) and surfaces missed runs, but it can't *guarantee* a fire on every device — grant the battery-optimization exemption and check the agent's run view.
@@ -291,17 +326,18 @@ Registering an agent isn't a fixed form. When what you asked for is ambiguous, a
 Agents also get better with use, on-device, without a server:
 
 - **Skill distillation** — after a successful run, Shelly can distill it into a reusable "skill recipe" (a markdown file, GLOBAL across agents, not tied to the one that created it) and offers to save it; a later task that matches gets the recipe recalled and reused instead of solving the same problem from scratch. Nothing saves silently — you always see what would be kept.
+- **Teach mode** — `shelly teach start fix-config`, do the task by hand in the terminal, `shelly teach stop`: Shelly turns what you ran into a saved workflow script, keeping successful commands and `cd`s, dropping failed attempts and secret-looking lines, and grounding any LLM rewrite in the programs you actually ran. Conversion stays on the on-device LLM unless you allow cloud providers. `shelly workflow run fix-config` replays it in the current terminal, with every step visible.
 - **Skills catalog** — the Sidebar's **Browse Catalog** action fetches Shelly's first-party catalog of importable skill recipes, verifies each download, and places it in the same quarantine/review flow as a local skill import; catalog availability follows the published `skills-catalog-latest` release.
 - **Persistent memory** — agents can write and recall small facts across runs ("remember that…"). Per-agent writes now use the encrypted MEMORY-001 store by default, with the older markdown/Obsidian path retained as a fallback; shared `_global` writes still use that older path. See [Privacy](#privacy) for the current storage and verification limits.
 
 ### The Companion
 
 <p align="center">
-  <img src="docs/images/companion-memory.jpg" alt="Shelly's Companion Memory screen — session digests the companion journaled on its own, plus notes you asked it to remember, all viewable, editable, and deletable" width="420">
-  <img src="docs/images/carry-forward.jpg" alt="A companion conversation switched to Gemini mid-thread — a carry-forward notice explains the hand-off, and Gemini's next reply is already grounded in what was said before the switch" width="420">
+  <img src="docs/images/memory-workbench.png" alt="Shelly's Memory Workbench pane in the Case File theme — the companion's journal entries it wrote on its own, plus notes shared with all agents, each with edit and delete buttons" width="420">
+  <img src="docs/images/carry-forward.png" alt="A companion conversation switched to Groq mid-thread — the notice reads &quot;Switched to Groq — I brought our conversation along.&quot;, and Groq's next reply is already grounded in what was said before the switch" width="420">
 </p>
 
-Shelly keeps its own journal. Whenever a pane switches away from it, it writes a digest of that conversation for itself; anything you ask it to remember is recalled by the companion and every background agent — and you can read, edit, or delete all of it from **Settings → Companion Memory**, reachable even before you've registered a single agent. Switch a pane to an explicit provider mid-conversation and Shelly carries the last few messages along with it, so the new provider already has the thread's context on its very first reply — same companion, different brain.
+Shelly keeps its own journal. Whenever a pane switches away from it, it writes a digest of that conversation for itself; anything you ask it to remember is recalled by the companion and every background agent — and you can read, edit, or delete all of it from **Settings → Companion Memory** or the **Memory Workbench** pane, reachable even before you've registered a single agent. Switch a pane to an explicit provider mid-conversation and Shelly carries the last few messages along with it, so the new provider already has the thread's context on its very first reply — same companion, different brain.
 
 ### Scouter Widget
 
@@ -325,7 +361,7 @@ See [docs/FEATURES.md](docs/FEATURES.md) for the full feature-by-feature breakdo
 ### Codex Runtime
 
 <p align="center">
-  <img src="docs/images/agent-chat-codex.jpg" alt="OpenAI Codex CLI running natively in Shelly's terminal pane on Android, with the AI pane reading its output alongside it" width="700">
+  <img src="docs/images/codex-terminal.png" alt="OpenAI Codex CLI running natively in Shelly's terminal pane on Android, creating hello.py and running it" width="700">
 </p>
 
 - **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle the pinned Android-native unified `codex_tui` binary from `.ci-versions/`, and runtime updates install the same shape under `~/.shelly-runtime/codex/current`.
@@ -345,6 +381,18 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | Sub-agent fan-out (`parallelGroup`) — isolated branch context, concurrent unattended dispatch | ✅ on-device verified 2026-08-17 via a real 3-branch concurrent AlarmManager fire |
 | Nacre Bridge — live terminal context shared with the author's own Nacre IME, plus Nacre-side Dev Mode | ✅ on-device verified 2026-08-31 |
 | Agent social-post connectors — Bluesky, Discord, Slack, Telegram, Mastodon, Misskey, WordPress, X | ✅ Bluesky verified live end-to-end; X is integration-tested but not yet fired against a live billing-enabled account; the rest ship on the same path but haven't each been fired against a real account |
+| Ask AI — quote a terminal selection into the AI pane composer | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| Teach mode — `shelly teach start/stop` → saved workflow → `shelly workflow run` | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| Multi-step agent with a sourced briefing — Perplexity citations carried through, uncited claims dropped, `## Sources` appended | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| One-shot schedules — "in 5 minutes", "at 14:55", 「5分後に」 | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| Hand-off narration lines in the agent's chat thread | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| Keyboard/IME-aware pane layout — panes reserve only the real IME overlap | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| Live theme switching — Case File and the other presets applied without restart, terminal palette included | ✅ verified on device (Galaxy Z Fold6, N=1) |
+| Agent safety rules (POLICY-001) — NL rules, read-only floor for runs you didn't start, trust ramp | 🟡 implemented, not yet verified on device; flag OFF by default |
+| MCP server, spec 2026-07-28 (stateless) alongside the older revisions | 🟡 implemented, not yet verified on device |
+| On-device speech-to-text (keyless, Android SpeechRecognizer) | 🟡 implemented, not yet verified on device |
+| MiniCPM5-2B local model | 🟡 experimental, evaluated and not adopted: on the Fold6 it scored 83% vs Qwen3.5-2B's 100% on routing and 50% vs 88% on native tool calls |
+| llama.cpp pinned to b11433 with sha256 verification | 🟡 implemented, not yet verified on device |
 | Distribution | 🟡 GitHub Releases only (`android-latest`); no Play Store / F-Droid listing yet |
 
 ---

@@ -6,7 +6,50 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+
+- **Ask AI.** An "Ask AI" item in the terminal's text-selection menu quotes
+  the selection into the most recently focused AI / Agent Chat pane's
+  composer as a draft (never auto-sent, never into a masked input).
+- **Teach mode and native `shelly workflow` commands.** `shelly teach
+  start/stop/cancel/status` records the commands run in the PTY and turns
+  them into `~/.shelly/workflows/<name>.sh` (failed and secret-looking
+  commands dropped; on-device LLM conversion by default, cloud opt-in,
+  rule-based fallback). `shelly workflow list/show/run/delete` replays or
+  manages them in the current terminal.
+- **Sourced briefings.** Multi-step chains with a web-research step carry
+  Perplexity citations through every step in all three executors; uncited
+  or unsupported claims are rewritten or dropped, a `## Sources` list is
+  appended, and the run fails closed if nothing verifiable is left.
+- **One-shot schedules** from natural language ("in 5 minutes", "at
+  14:55", "tomorrow morning at 8am", 「5分後に」), on a single exact alarm,
+  retired after firing, with reboot catch-up inside a 10-minute grace
+  window and double-fire hardening.
+- **Hand-off narration.** Multi-step runs post short step-to-step lines
+  into the agent's own chat thread.
+- **On-device speech-to-text** (keyless, Android `SpeechRecognizer`) as the
+  `auto` fallback when no Groq key is set.
+- **POLICY-001 agent safety rules** (flag OFF by default): natural-language
+  ask/deny/draft-only rules, a read-only floor for runs the user didn't
+  start, and a sealed trust ramp.
+- **MiniCPM5-2B Q4_K_M** as an opt-in, Experimental local model, with a
+  reproducible A/B eval; not adopted (router 83% vs 100%, native tool calls
+  50% vs 88% against Qwen3.5-2B on a Z Fold6).
+
 ### Changed
+
+- Unattended runs whose action is only a local `draft` or `notify` no
+  longer wait for the manual approval tap; every other action type still
+  does, and POLICY-001 rules take precedence.
+- llama.cpp downloads are pinned to release b11433 with sha256
+  verification (upstream `releases/latest` stopped shipping Android
+  assets, breaking new installs and Repair).
+- Theme switching is live across the app: `useTheme()` returns the active
+  preset's palette, frozen module-level styles and hard-coded dark colors
+  were converted, the terminal re-syncs its palette on attach, and first
+  paint waits for the persisted preset (no boot flash).
+- Pane layout reserves only the keyboard's real IME overlap; compact and
+  standard widths use an overlay sidebar drawer.
 
 - **MCP server speaks spec 2026-07-28 as well as the older revisions.**
   Clients on 2025-03-26 / 2025-06-18 / 2025-11-25 keep the existing
