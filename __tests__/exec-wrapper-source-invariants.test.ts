@@ -196,12 +196,14 @@ describe('exec-wrapper stack budget (forked-child SIGSEGV fix)', () => {
     // ambiguous between "ended exactly at the cap" and "was truncated", so the
     // guard has to peek at source[i] itself. All four copy loops need it.
     const guards = src.match(/if \(i == MAX_ENVP && source\[i\] != NULL\) return -1;/g) ?? [];
-    expect(guards.length).toBe(4);
+    // v221 added a fifth copy loop (scrub_system_helper_envp).
+    expect(guards.length).toBe(5);
     for (const fn of [
       'scrub_system_envp',
       'scrub_codex_child_envp',
       'add_app_loader_envp',
       'add_codex_helper_envp',
+      'scrub_system_helper_envp',
     ]) {
       expect(functionBody(fn)).toMatch(/if \(i == MAX_ENVP && source\[i\] != NULL\) return -1;/);
     }
@@ -229,9 +231,22 @@ describe('v220: execvp() preserves the spawner environment', () => {
     // .github/workflows/build-android.yml), so the pointer must come from
     // dlsym — never from an `extern char **environ` declaration.
     expect(code).not.toMatch(/extern\s+char\s*\*\*\s*environ/);
-    expect(functionBody('shelly_resolve_real_impls')).toMatch(
-      /g_environ_ptr = \(char \*\*\*\)dlsym\(RTLD_NEXT, "environ"\);/,
-    );
+    const ctor = functionBody('shelly_resolve_real_impls');
+    // RTLD_DEFAULT first (a copy-relocated executable `environ` is the one the
+    // program writes to), RTLD_NEXT as the fallback.
+    expect(ctor).toMatch(/g_environ_ptr = \(char \*\*\*\)dlsym\(RTLD_DEFAULT, "environ"\);/);
+    expect(ctor).toMatch(/if \(!g_environ_ptr\) g_environ_ptr = \(char \*\*\*\)dlsym\(RTLD_NEXT, "environ"\);/);
+  });
+
+  it('only execvp() reads environ; no entry point merges parent values into a supplied envp', () => {
+    // 2b5204037 removed env_value_parent_fallback() because a scrubbed Codex
+    // child env was being re-polluted from the parent. caller_environ() must
+    // stay confined to execvp(), whose POSIX definition IS "execve with environ".
+    expect(code).not.toMatch(/env_value_parent_fallback/);
+    const uses = code.match(/caller_environ\(\)/g) ?? [];
+    expect(uses.length).toBe(1);
+    const execvpStart = code.indexOf('int execvp(const char *file, char *const argv[])');
+    expect(code.indexOf('caller_environ()')).toBeGreaterThan(execvpStart);
   });
 
   it('execvp() hands shelly_execve_internal the live environ, not NULL', () => {
@@ -295,5 +310,55 @@ describe('v220: system-image targets are never exec\'d through /proc/self/fd/N',
 
   it('keeps the v220 build marker CI checks for', () => {
     expect(src).toContain('"shelly-exec-wrapper:v220:execvp-environ+system-target-direct"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v221 — /system exec-a-child helpers keep the wrapper (build 2524 finding:
+// `!env python3 -c ...` → `coreutils: 'python3': Permission denied`)
+// ---------------------------------------------------------------------------
+describe('v221: toybox env/nice/nohup/setsid/time/timeout/xargs keep LD_PRELOAD', () => {
+  it('lists exactly the helpers that exist on device and exec a child', () => {
+    const body = functionBody('should_keep_wrapper_for_helper_path');
+    expect(body).toMatch(/trusted_shell_path\(path\)/);
+    for (const name of ['env', 'nice', 'nohup', 'setsid', 'time', 'timeout', 'xargs']) {
+      expect(body).toContain(`streq(base, "${name}")`);
+    }
+    // not a generic allow-list: nothing that merely reads files
+    expect(body).not.toMatch(/"(cat|grep|sh|bash)"/);
+  });
+
+  it('scrub_system_helper_envp() drops LD_LIBRARY_PATH but guarantees LD_PRELOAD', () => {
+    const body = functionBody('scrub_system_helper_envp');
+    expect(body).toMatch(/if \(starts_with\(source\[i\], "LD_LIBRARY_PATH="\)\) continue;/);
+    expect(body).toMatch(/if \(!has_ld_preload\) out\[n\+\+\] = default_ld_preload_env;/);
+    // NULL envp falls back to the wrapper-carrying minimal env, not minimal_envp
+    expect(body).toMatch(/source = envp \? envp : minimal_wrapper_envp;/);
+  });
+
+  it('both entry points route helpers through the helper scrub before the generic /system scrub', () => {
+    for (const fn of ['shelly_execve_internal', 'shelly_posix_spawn_common']) {
+      const body = functionBody(fn);
+      expect(body).toMatch(/keep_wrapper_for_helper = should_keep_wrapper_for_helper_path\(rewritten\);/);
+      // codex-mode scrub keeps the wrapper for helpers too
+      expect(body).toMatch(/keep_wrapper_for_shell \|\| keep_wrapper_for_helper\) == 0\)/);
+      const helperIdx = body.indexOf('scrub_system_helper_envp(envp, scrubbed_env)');
+      const genericIdx = body.indexOf('scrub_system_envp(envp, scrubbed_env)');
+      expect(helperIdx).toBeGreaterThan(0);
+      expect(genericIdx).toBeGreaterThan(helperIdx);
+    }
+  });
+
+  it('system_image_path() also covers /system_ext, /product and /odm, and should_scrub_system_env reuses it', () => {
+    const body = functionBody('system_image_path');
+    for (const prefix of ['/system_ext/', '/product/', '/odm/']) {
+      expect(body).toContain(`"${prefix}"`);
+    }
+    expect(functionBody('should_scrub_system_env')).toMatch(/system_image_path\(pathname\)/);
+  });
+
+  it('keeps the v221 build marker CI checks for', () => {
+    expect(src).toContain('"shelly-exec-wrapper:v221:system-helpers-keep-wrapper"');
+    expect(src).toMatch(/"shelly-exec-wrapper:v221:fd-pinned-linker-exec"/);
   });
 });

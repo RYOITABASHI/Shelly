@@ -38,7 +38,19 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v220:fd-pinned-linker-exec";
+    "shelly-exec-wrapper:v221:fd-pinned-linker-exec";
+
+/* v221 (2026-10-13, build 2524 follow-up): with v220 `$HOME/bin/env` resolved
+ * to /system/bin/env and was exec'd with the /system env scrub, so toybox env
+ * lost LD_PRELOAD and its own child exec of an app-data ELF (python3, node)
+ * was denied by Knox: `coreutils: 'python3': Permission denied`. /system
+ * "exec-a-child" helpers (env, nice, nohup, setsid, time, timeout, xargs) now
+ * keep LD_PRELOAD like shells do (LD_LIBRARY_PATH is still dropped for them;
+ * the wrapper re-adds it when the helper execs an app-data ELF). Also widened
+ * the system-image prefix list to /system_ext, /product and /odm. */
+__attribute__((used, retain))
+static const char shelly_exec_wrapper_v221_marker[] =
+    "shelly-exec-wrapper:v221:system-helpers-keep-wrapper";
 
 /* v220 (2026-10-13): two on-device-verified exec regressions under Codex
  * (see docs/superpowers/DEFERRED.md "Codex shell commands / python3 env"):
@@ -120,9 +132,11 @@ static char default_bash_env[] = "BASH=" DEFAULT_BASH;
 static char default_shelly_lib_dir_env[] = "SHELLY_LIB_DIR=" DEFAULT_LIB_DIR;
 static char default_ld_library_path_env[] = "LD_LIBRARY_PATH=" DEFAULT_LIB_DIR;
 static char default_ld_preload_env[] = "LD_PRELOAD=" DEFAULT_EXEC_WRAPPER;
-/* bug #151 (2026-07-16): execvp() below intentionally passes NULL envp
- * (not the real inherited environ) into shelly_execve_internal. Two
- * fallthrough paths land on these arrays when envp is NULL:
+/* bug #151 (2026-07-16): until v220, execvp() below passed NULL envp (not
+ * the caller's environ) into shelly_execve_internal; since v220 it passes the
+ * live environ and these arrays are only reached when a caller really hands
+ * us a NULL envp (execvpe/posix_spawn with NULL, or dlsym("environ") having
+ * failed). Two fallthrough paths land on these arrays when envp is NULL:
  * add_app_loader_envp()'s `source = envp ? envp : minimal_envp` (used for
  * the linker64/ELF-rewrite exec path, which is how bundled Termux ELF
  * binaries like less/nano/vim/tmux actually launch), and
@@ -613,6 +627,51 @@ static int should_keep_wrapper_for_shell_path(const char *path) {
             streq(base, "sh"));
 }
 
+/* v221: /system (toybox) helpers whose whole job is to exec a child command.
+ * Without the wrapper preloaded, their execve() of an app-data ELF (python3,
+ * node, anything in $HOME/bin or termux-libs) is denied by Knox:
+ * `env python3 ...`, `#!/usr/bin/env python3`, `timeout 10 node ...`.
+ * Keep LD_PRELOAD for them (LD_LIBRARY_PATH is still dropped; the wrapper
+ * re-adds it on the child's linker64 exec via add_app_loader_envp). The
+ * list is deliberately short and only matches trusted /system or app-data
+ * paths (rewrite_path/system-target resolution already mapped
+ * `env`, `/usr/bin/env` and `$HOME/bin/env` to /system/bin/env). */
+static int should_keep_wrapper_for_helper_path(const char *path) {
+    const char *base = base_name(path);
+    return trusted_shell_path(path) &&
+           (streq(base, "env") ||
+            streq(base, "nice") ||
+            streq(base, "nohup") ||
+            streq(base, "setsid") ||
+            streq(base, "time") ||
+            streq(base, "timeout") ||
+            streq(base, "xargs"));
+}
+
+/* v221: env for a /system exec-a-child helper: drop LD_LIBRARY_PATH (system
+ * binaries must not resolve DSOs from the app-private lib dir) but make sure
+ * the wrapper stays preloaded so the helper's own exec is laundered. */
+static int scrub_system_helper_envp(char *const envp[], char **out) {
+    char *const *source = envp ? envp : minimal_wrapper_envp;
+    int n = 0;
+    int has_ld_preload = 0;
+    int i = 0;
+    for (; i < MAX_ENVP && source[i]; i++) {
+        if (starts_with(source[i], "LD_LIBRARY_PATH=")) continue;
+        if (starts_with(source[i], "LD_PRELOAD=")) has_ld_preload = 1;
+        if (n >= MAX_ENVP - 2) return -1;
+        out[n++] = source[i];
+    }
+    // i == MAX_ENVP after the loop happens both when source had exactly
+    // MAX_ENVP entries (not truncated) and when it had more (truncated) --
+    // the loop condition can't tell them apart. Peek at source[i] itself:
+    // NULL means the array legitimately ended right at the cap.
+    if (i == MAX_ENVP && source[i] != NULL) return -1;
+    if (!has_ld_preload) out[n++] = default_ld_preload_env;
+    out[n] = NULL;
+    return 0;
+}
+
 /* bug #119 (TOCTOU): the old is_elf() checked the ELF magic by path and the
  * exec then re-resolved the same path, so the target could be swapped between
  * check and use. Instead, keep the fd the magic was verified on and exec
@@ -734,7 +793,10 @@ static int system_image_path(const char *path) {
     return path &&
            (starts_with(path, "/system/") ||
             starts_with(path, "/vendor/") ||
-            starts_with(path, "/apex/"));
+            starts_with(path, "/apex/") ||
+            starts_with(path, "/system_ext/") ||
+            starts_with(path, "/product/") ||
+            starts_with(path, "/odm/"));
 }
 
 /* v220: resolve the open file description behind `fd` (readlink of
@@ -790,9 +852,7 @@ static int linker_exec_elf_fd(const char *pathname, char *system_target, size_t 
 static int should_scrub_system_env(const char *pathname) {
     return pathname &&
            !streq(pathname, LINKER64) &&
-           (starts_with(pathname, "/system/") ||
-            starts_with(pathname, "/vendor/") ||
-            starts_with(pathname, "/apex/"));
+           system_image_path(pathname);
 }
 
 static int scrub_system_envp(char *const envp[], char **out) {
@@ -1125,6 +1185,7 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
     int elf_fd;
     int linker_exec;
     int keep_wrapper_for_shell;
+    int keep_wrapper_for_helper;
     if (!rewritten) {
         if (envp) trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
         return -1;
@@ -1170,12 +1231,22 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
             return raw_execve_call(LINKER64, codex_argv, envp);
         }
     }
+    keep_wrapper_for_helper = should_keep_wrapper_for_helper_path(rewritten);
     if (codex_mode_enabled(envp) &&
-        scrub_codex_child_envp(envp, codex_child_env, keep_wrapper_for_shell) == 0) {
+        scrub_codex_child_envp(envp, codex_child_env,
+                               keep_wrapper_for_shell || keep_wrapper_for_helper) == 0) {
         envp = codex_child_env;
     }
     if (!linker_exec) {
         char *scrubbed_env[MAX_ENVP];
+        if (keep_wrapper_for_helper && should_scrub_system_env(rewritten)) {
+            /* v221: toybox env/nice/timeout/... must keep the wrapper so the
+             * command they exec (python3, node, ...) is laundered too. */
+            if (scrub_system_helper_envp(envp, scrubbed_env) == 0) {
+                if (envp) trace_exec_event("system-helper-keep-wrapper", pathname, rewritten, argv, envp, 0);
+                return raw_execve_call(rewritten, argv, scrubbed_env);
+            }
+        }
         if (!envp && keep_wrapper_for_shell) {
             return raw_execve_call(rewritten, argv, minimal_wrapper_envp);
         }
@@ -1222,12 +1293,24 @@ typedef int (*posix_spawn_impl_t)(pid_t *, const char *,
 
 static posix_spawn_impl_t g_posix_spawn_fn;
 static posix_spawn_impl_t g_posix_spawnp_fn;
-/* v220: libc's `environ` variable, resolved by name so this library carries no
- * R_AARCH64_GLOB_DAT relocation against it (the CI audit forbids one; an
- * earlier `extern char **environ` was removed in 2b5204037). execvp() has to
- * read it LIVE because Rust std (Command with pre_exec -- Codex) and libuv
- * (node) implement spawn as `environ = child_env; execvp(file, argv)` in the
- * forked child: the child env exists only in that variable. */
+/* v220: the process's `environ` variable, resolved by name so this library
+ * carries no R_AARCH64_GLOB_DAT relocation against it (the CI audit forbids
+ * one; an earlier `extern char **environ` was removed in 2b5204037).
+ *
+ * Contract: ONLY execvp() may read this, because execvp(3) is defined as
+ * "execve with environ". Every other entry point receives an explicit envp
+ * and must use exactly that -- never merge parent environ values into a
+ * supplied envp (2b5204037 removed env_value_parent_fallback for that reason:
+ * a scrubbed Codex child env was being re-polluted from the parent).
+ * execvp() has to read it LIVE because Rust std (Command with pre_exec --
+ * Codex) and libuv (node) implement spawn as `environ = child_env;
+ * execvp(file, argv)` in the forked child: the child env exists only in that
+ * variable.
+ *
+ * Lookup order: RTLD_DEFAULT first so a main executable that carries its own
+ * copy-relocated `environ` (the one its code actually writes to) wins over
+ * libc's; RTLD_NEXT as the fallback. For PIE binaries both resolve to libc's
+ * object. */
 static char ***g_environ_ptr;
 
 __attribute__((constructor))
@@ -1237,7 +1320,8 @@ static void shelly_resolve_real_impls(void) {
     /* bionic's errno TLS accessor; used by publish_syscall_errno so the
      * raw-syscall interposers report failures through errno like libc. */
     g_errno_slot_fn = (errno_slot_fn_t)dlsym(RTLD_NEXT, "__errno");
-    g_environ_ptr = (char ***)dlsym(RTLD_NEXT, "environ");
+    g_environ_ptr = (char ***)dlsym(RTLD_DEFAULT, "environ");
+    if (!g_environ_ptr) g_environ_ptr = (char ***)dlsym(RTLD_NEXT, "environ");
 }
 
 /* The caller's current environment as execvp(3) would pass it to execve(2),
@@ -1281,6 +1365,7 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
     int elf_fd;
     int linker_exec;
     int keep_wrapper_for_shell;
+    int keep_wrapper_for_helper;
 
     if (search_path && resolve_path_search(path, envp, resolved_buf, sizeof(resolved_buf),
                                            file_actions != NULL) == 0) {
@@ -1343,15 +1428,24 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
         }
     }
 
+    keep_wrapper_for_helper = should_keep_wrapper_for_helper_path(rewritten);
     if (codex_mode_enabled(envp)) {
         char *codex_child_env[MAX_ENVP];
-        if (scrub_codex_child_envp(envp, codex_child_env, keep_wrapper_for_shell) == 0) {
+        if (scrub_codex_child_envp(envp, codex_child_env,
+                                   keep_wrapper_for_shell || keep_wrapper_for_helper) == 0) {
             envp = codex_child_env;
         }
     }
 
     if (!linker_exec) {
         char *scrubbed_env[MAX_ENVP];
+        if (keep_wrapper_for_helper && should_scrub_system_env(rewritten)) {
+            /* v221: see shelly_execve_internal -- exec-a-child helper. */
+            if (scrub_system_helper_envp(envp, scrubbed_env) == 0) {
+                trace_exec_event("system-helper-keep-wrapper", spawn_path, rewritten, argv, envp, 0);
+                return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, scrubbed_env);
+            }
+        }
         if (!envp && keep_wrapper_for_shell) {
             return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, minimal_wrapper_envp);
         }

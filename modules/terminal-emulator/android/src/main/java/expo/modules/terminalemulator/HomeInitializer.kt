@@ -1264,6 +1264,8 @@ patchCodex(libDir);
     //      `-lc` runs under $SHELL (bash, via ~/.profile -> ~/.bashrc) with the
     //      full env. shell_snapshot stays off (redundant, opt-in via
     //      SHELLY_CODEX_SHELL_SNAPSHOT=1). See DEFERRED.md for the evidence.
+    //      v221 (build 2524 follow-up): /system/bin/env (toybox) and the other
+    //      exec-a-child helpers keep LD_PRELOAD so `env python3 ...` works.
     private const val BASHRC_VERSION = 250
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
