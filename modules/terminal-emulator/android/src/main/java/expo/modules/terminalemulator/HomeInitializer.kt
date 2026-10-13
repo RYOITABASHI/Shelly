@@ -1265,13 +1265,23 @@ patchCodex(libDir);
     //      full env. shell_snapshot stays off (redundant, opt-in via
     //      SHELLY_CODEX_SHELL_SNAPSHOT=1). See DEFERRED.md for the evidence.
     //      v221 (build 2524 follow-up): /system/bin/env (toybox) and the other
-    //      exec-a-child helpers keep LD_PRELOAD so `env python3 ...` works.
-    //      v222 (build 2525 follow-up): Codex's `bash -lc` sources this file,
-    //      whose `unset LD_PRELOAD` (v180, for the PTY shell) emptied the env
-    //      its children were exec'd with. The wrapper now re-propagates
-    //      LD_PRELOAD itself to app-data ELF / shell / helper children, so the
-    //      unset below stays (the PTY shell must never export it).
-    private const val BASHRC_VERSION = 250
+    //      exec-a-child helpers keep an LD_PRELOAD that is already in their
+    //      env, so `env python3 ...` from a wrapper-loaded shell works.
+    // v251: build 2525 (exec-wrapper v221) still failed `!env python3`,
+    //      `timeout 5 python3`, nested `bash script.sh` from Codex: the shell
+    //      Codex spawns IS exec'd with LD_PRELOAD and maps the wrapper
+    //      (traced via /proc/$PPID/{cmdline,environ,maps}), but as a login
+    //      shell it sources ~/.profile -> ~/.bashrc, and this file's
+    //      unconditional `unset LD_PRELOAD` (v180) stripped it from the env
+    //      every child was exec'd with. The unset is now interactive-only
+    //      (`case "$-" in *i*)`): the PTY shell still never exports it; a
+    //      non-interactive login shell keeps what it inherited. An
+    //      exec-wrapper change that re-injected LD_PRELOAD into every child
+    //      (v222) was reverted in review because it overrode the explicit
+    //      opt-outs (llama-server, capability broker, gate node, doctor)
+    //      and v202/v207's apply_patch isolation -- exec-wrapper v223 pins
+    //      "never add LD_PRELOAD to a supplied envp".
+    private const val BASHRC_VERSION = 251
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -1712,7 +1722,20 @@ patchCodex(libDir);
             sb.appendLine("export PATH=\"${home.absolutePath}/bin:\${PATH:-$libDir}:/system/bin:/vendor/bin\"")
             sb.appendLine("export SHELLY_LD_LIBRARY_PATH=\"$libDir\"")
             sb.appendLine("unset LD_LIBRARY_PATH")
-            sb.appendLine("unset LD_PRELOAD")
+            // v251: only the INTERACTIVE PTY shell drops the wrapper preload
+            // (v180 rationale: a crashing interposer must not segfault every
+            // new tab, and tmux/vim/gh/make spawned from the terminal must not
+            // inherit it). A non-interactive login shell -- Codex's `bash -lc`
+            // and `!` user shell, exec'd WITH LD_PRELOAD by the wrapper-loaded
+            // Codex process -- keeps what it inherited, so its app-data /
+            // toybox-helper children (python3, env node, timeout ...) are
+            // laundered through linker64. Build 2525 traced the loss to this
+            // unset (/proc/$PPID/environ had LD_PRELOAD, the shell's env did
+            // not). Launch paths that must run WITHOUT the wrapper keep their
+            // own explicit opt-outs (lib/agent-executor.ts llama-server
+            // `unset LD_PRELOAD`, lib/llamacpp-setup.ts, shelly-plan-executor.js
+            // / shelly-agent-driver.js / shelly-doctor.js `delete env.LD_PRELOAD`).
+            sb.appendLine("case \"\$-\" in *i*) unset LD_PRELOAD ;; esac")
             sb.appendLine("__shelly_toybox() { /system/bin/toybox \"\$@\"; }")
             sb.appendLine("__shelly_cat() { __shelly_toybox cat \"\$@\"; }")
             sb.appendLine("__shelly_chmod() { __shelly_toybox chmod \"\$@\"; }")
