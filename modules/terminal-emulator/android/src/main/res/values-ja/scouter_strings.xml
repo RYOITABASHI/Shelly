@@ -78,6 +78,7 @@
   <string name="scouter_notification_agent_action_reason">理由: %1$s</string>
   <string name="scouter_notification_agent_action_cli_review_required">CLI アクションはアプリ内でコマンド全文の確認が必要です。</string>
   <string name="scouter_notification_agent_action_intent_target">対象: %1$s</string>
+  <string name="scouter_notification_agent_action_intent_closepaw">ClosePaw に引き継ぎ: %1$s</string>
   <string name="scouter_notification_agent_action_intent_review_required">Intent アクションはアプリ内での確認が必要です。</string>
   <string name="scouter_notification_agent_action_what_api_call">外部APIを呼び出します</string>
   <string name="scouter_notification_agent_action_api_call_request">リクエスト: %1$s</string>

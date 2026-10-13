@@ -268,7 +268,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
     expiresAt?: number | null;
     requestSha256?: string | null;
-    intentMode?: 'launch' | 'share' | null;
+    intentMode?: 'launch' | 'share' | 'closepaw' | null;
     intentTarget?: string | null;
     intentShareText?: string | null;
     dmPairingId?: string | null;
@@ -290,7 +290,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     resultPath?: string | null;
     ts?: string | null;
     expiresAt?: number | null;
-    intentMode?: 'launch' | 'share' | null;
+    intentMode?: 'launch' | 'share' | 'closepaw' | null;
     intentTarget?: string | null;
     intentShareText?: string | null;
     dmPairingId?: string | null;
@@ -304,7 +304,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     actionNonce: string
   ): Promise<void>;
   cancelAgentActionApproval?(runId: string): Promise<void>;
-  fireAgentIntent?(mode: 'launch' | 'share', target: string, shareText?: string | null): Promise<void>;
+  fireAgentIntent?(mode: 'launch' | 'share' | 'closepaw', target: string, shareText?: string | null): Promise<void>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

@@ -313,6 +313,8 @@ Schedules can also be **one-shot**: "in 5 minutes", "at 14:55", "tomorrow mornin
 
 Unattended runs whose action is only a local `draft` file (inside the scoped output folders) or a `notify` no longer wait for the manual approval tap — both stay on the device. Every other action type (webhook, CLI, social post, …) still needs it, and the safety rules above take precedence when enabled.
 
+**ClosePaw hand-off (Experimental).** An agent can hand a phone task off to [ClosePaw](https://github.com/imoonkey/closepaw), an open-source (Apache-2.0) Android phone-use agent: say "have ClosePaw open Chrome and search the weather in Tokyo" (or 「ClosePawでChromeを開いて東京の天気を検索して」). Each run asks you in Review first ("Hand off to ClosePaw: <goal>"), never auto-approved; ClosePaw then shows its own "External Goal" confirmation before it runs. ClosePaw sends no result back, so the run ends as **handed off to ClosePaw**, not as a result. Install ClosePaw yourself from its GitHub releases and set it up with an API key / OpenAI-compatible endpoint — Shelly's small on-device model is not able to drive it. From any Shelly terminal — including a Codex session running inside it — `shelly closepaw "Open Chrome and search for Tokyo weather"` hands a goal off directly (ClosePaw's own Run confirmation is the consent step; at most one hand-off per 5 seconds, requests older than 30 s are dropped). *Not yet verified on device.*
+
 If the request itself is too vague to act on — "help me out" with no object or domain — Shelly asks what you actually want done *before* it asks when to run it, instead of scheduling an agent with an empty task.
 
 **Honest caveat:** unattended firing depends on Android's background limits, which vary by manufacturer (Samsung / Xiaomi / Oppo / OnePlus battery-freezers). Shelly uses Android's highest-priority alarm path (named above) and surfaces missed runs, but it can't *guarantee* a fire on every device — grant the battery-optimization exemption and check the agent's run view.
@@ -392,6 +394,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | On-device speech-to-text (keyless, Android SpeechRecognizer) | 🟡 implemented, not yet verified on device |
 | Codex remote control host — `shelly codex pair` runs the official `codex remote-control --no-daemon` so the ChatGPT app's Codex can drive this device (ChatGPT sign-in required) | 🟡 Experimental, implemented, not yet verified on device |
 | MiniCPM5-2B local model | 🟡 experimental, evaluated and not adopted: on the Fold6 it scored 83% vs Qwen3.5-2B's 100% on routing and 50% vs 88% on native tool calls |
+| ClosePaw hand-off — agent action that passes a goal to the ClosePaw phone-use app (explicit intent, per-run Review, ends "handed off") | 🟡 experimental, implemented, not yet verified on device; ClosePaw returns no result yet (Phase 2 needs upstream changes) |
 | llama.cpp pinned to b11433 with sha256 verification | 🟡 implemented, not yet verified on device |
 | Distribution | 🟡 GitHub Releases only (`android-latest`); no Play Store / F-Droid listing yet |
 

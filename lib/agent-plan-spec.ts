@@ -11,6 +11,7 @@ import {
   selectAutonomousLocalModel,
 } from './agent-executor';
 import { evaluateAgentActionCommand } from './agent-action-safety';
+import { isAgentIntentMode, sanitizeClosePawGoal } from './agent-intent-review';
 import { buildAgentPolicy } from './agent-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
 import { isOrchestrated, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
@@ -50,7 +51,7 @@ export interface PlanAction {
   type: PlanActionType;
   webhookUrl?: string;
   command?: string;
-  intentMode?: 'launch' | 'share';
+  intentMode?: 'launch' | 'share' | 'closepaw';
   intentTarget?: string;
   intentShareText?: string;
   dmPairingId?: string;
@@ -470,6 +471,19 @@ function buildExecutorPrompt(prompt: string): string {
   ].join('\n');
 }
 
+/** Structural check of an intent action (mirrors both executors' own runtime
+ *  refusals). Returns a failure reason, or null when valid. A missing
+ *  intentMode is tolerated here (legacy plans; the executors refuse it). */
+export function validatePlanIntentAction(action: Pick<PlanAction, 'intentMode' | 'intentTarget' | 'intentShareText'>): string | null {
+  const mode = action.intentMode as unknown;
+  if (mode === undefined || mode === null || mode === '') return null;
+  if (!isAgentIntentMode(mode)) return 'plan intent mode is invalid';
+  if (mode === 'closepaw' && !sanitizeClosePawGoal(action.intentShareText)) {
+    return 'plan ClosePaw goal is empty';
+  }
+  return null;
+}
+
 export function validateAgentPlanSpec(value: unknown): { ok: true; spec: AgentPlanSpecV1 } | { ok: false; reason: string } {
   if (!value || typeof value !== 'object') return { ok: false, reason: 'plan is not an object' };
   const spec = value as Partial<AgentPlanSpecV1>;
@@ -481,6 +495,10 @@ export function validateAgentPlanSpec(value: unknown): { ok: true; spec: AgentPl
   if (typeof spec.prompt !== 'string') return { ok: false, reason: 'plan prompt is invalid' };
   if (!spec.tool || typeof spec.tool.type !== 'string') return { ok: false, reason: 'plan tool is invalid' };
   if (!spec.action || typeof spec.action.type !== 'string') return { ok: false, reason: 'plan action is invalid' };
+  if (spec.action.type === 'intent') {
+    const intentFailure = validatePlanIntentAction(spec.action);
+    if (intentFailure) return { ok: false, reason: intentFailure };
+  }
   if (!spec.paths || typeof spec.paths.home !== 'string') return { ok: false, reason: 'plan paths are invalid' };
   if (
     spec.limits &&

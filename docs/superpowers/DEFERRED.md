@@ -17,6 +17,8 @@
 ## History
 
 - 2026-10-13: CC（feat/codex-remote-control）が ChatGPT アプリの「Codex リモートコントロール」のホスト化を実装。Codex runtime を v0.162.1-termux.1 へ更新（bump ワークフローが `-termux.N` 付きタグを全件スキップして 0.156.1 で凍結していた問題も修正）、libexec_wrapper v224 で codex-termux がハードコードする `/data/data/com.termux` ソケットルートをアプリ領域へリダイレクト、`shelly codex pair|code` を追加。Experimental・実機未検証 — 下記 P1 エントリ参照。
+- 2026-10-13: CC（feat/closepaw-handoff）が ClosePaw 引き継ぎ Phase 1（intent モード `closepaw`）を実装。Phase 2（結果の受け取り）と実機検証を下記「ClosePaw 引き継ぎ」に登録。
+  → sync: README.md / README.ja.md の Status 表と Autonomous agents 節に Experimental・実機未検証として追記済み。
 - 2026-10-08: CC（feat/oneshot-schedule）が NL 登録エージェントの「1回だけ・時刻指定」スケジュール（"in 5 minutes" / "5分後" / "at 14:55" / "明日8時" / "一回だけ"）を実装。ネイティブ（AgentAlarmScheduler / TerminalSessionService）変更を含むため実機検証待ち — 下記 P1 エントリ参照。
 - 2026-10-06: MiniCPM5-2B（OpenBMB）を Qwen3.5-2B と実機 A/B 評価（Galaxy Z Fold6、llama.cpp b11433）。全項目で同等以下かつ 20〜40% 遅いため常用候補として不採用、カタログには「実験的」バッジのオプトインとして残置。下記 P3 エントリに評価表と再評価条件を登録。
 - 2026-10-06: 並列squad（ポリシー担当）がPOLICY-001（自動起動runの読み取り専用化・自然文カスタムルール・trust ramp）を `SHELLY_AGENT_POLICY`（既定OFF）配下に実装。未実装・未検証の残りを下記 P1 エントリに登録。
@@ -69,6 +71,18 @@
   - Shelly のタブを閉じる/アプリが kill されるとホストも止まる（常駐化は未対応、P2）。
 - **再開手順**: CI 成功ビルドを実機に入れ、`shelly codex pair` を実行。失敗時は `SHELLY_DEBUG=1 shelly codex pair` と `ls -la /data/user/0/dev.shelly.terminal/cdx $TMPDIR/codex-rc-*` の結果を記録。
 - → sync: README Status 表 / Codex Runtime 節 / Bundled Shelly commands 表（Experimental・実機未検証として記載済み）
+### ClosePaw 引き継ぎ（hand-off）— Phase 1 実装済み・実機未検証、Phase 2（結果受け取り）は上流 PR 待ち (P2)
+
+**Phase 1（実装済み、ブランチ `feat/closepaw-handoff`）**: 新 intent モード `closepaw`。`TerminalEmulatorModule.kt` の `fireAgentIntent` が明示コンポーネント `ai.closepaw/ai.closepaw.app.MainActivity` に String extra `goal`（制御文字→空白・2000 コードポイント上限、`lib/agent-intent-review.ts` の `sanitizeClosePawGoal` とバイト同一の Kotlin 版）を `FLAG_ACTIVITY_NEW_TASK` で送る。未インストールなら `resolveActivity` で検知し `CLOSEPAW_NOT_INSTALLED` → RN で専用メッセージ。パッケージ可視性は `plugins/with-agent-launch-queries.js` に `<package android:name="ai.closepaw"/>` を追加。ゴールは既存 `intentShareText` に載せるため、署名付き承認の canonical（`lib/signed-approval/canonical.ts`）が mode + goal を既にカバー（テストで goal 改変 → 承認無効を確認）。`.sh`/PlanSpec 両 executor とも closepaw は **autoAccept 強制 false**、RN の `autoResolveActionApproval` も closepaw を拒否 → 必ず人間の Review（「Hand off to ClosePaw: <goal>」）を通る。ClosePaw は release ビルドで自前の「External Goal」ダイアログを出し、Run タップでのみ実行する（二重の人間ゲート）。結果は返らないので run は `status:'success'` + run-log `handoff:'closepaw'` + プレビュー「Handed off to ClosePaw (no result is returned): …」で終わり、Agent Runs ペインは「Handed off to ClosePaw」と表示（スキル保存提案も出さない）。NL 登録は ClosePaw を**名指しした場合のみ**（「have ClosePaw …」「ClosePawで…」）`detectClosePawAction` で intent/closepaw に変換（LLM 抽出経路は従来どおり intent を許可しない）。AGENT_SCRIPT_VERSION 66 / CURRENT_EXECUTOR_VERSION 7。
+
+**ターミナルコマンド `shelly closepaw "<goal>"`（同ブランチ、BASHRC_VERSION 252 / SHELLY_HELPER_SHIM v7）**: Knox が `am start` を拒否するため、`$HOME/bin/shelly` シムが `closepaw:<reqId>:<tsMs>:<encodeURIComponent(goal)>` を `.shelly-command-queue` に追記 → `app/_layout.tsx` の drainCommandQueue が `lib/closepaw-queue.ts` の `processClosePawQueueLine` で検証（reqId 形式、30 秒超の古いエントリは破棄、5 秒に 1 回のレート制限、goal は同じ sanitizer・2000 上限、extra は goal のみ）→ 同じネイティブ `fireAgentIntent('closepaw')` → `$HOME/.shelly-closepaw-result-<reqId>.json` にシムが表示する結果（"Handed off to ClosePaw — confirm Run in ClosePaw" / "ClosePaw is not installed"）を書く。この経路は Shelly 側 Review を出さない（コマンド入力自体が意思表示、ClosePaw 側の External Goal / Run ダイアログが同意ゲート）。Codex の非対話 `bash -lc` は ~/.profile→~/.bashrc を読むので `shelly()` 関数（_run/linker64 経由）がそのまま使える。**実機未検証の確認点**: (5) PTY から `shelly closepaw` の表示、(6) Codex 経由で同じコマンドを実行できるか、(7) Shelly がバックグラウンドの時は Android の background activity start 制限で起動できない可能性（その場合 RN 側が `failed` を返す）。feat/codex-remote-control も HomeInitializer.kt（codex wrapper 部分）と BASHRC_VERSION を触るため、マージ時は BASHRC_VERSION を両方より大きい値にする自明なコンフリクトが出る想定。
+
+**実機未検証 (P1 相当の確認事項)**: (1) ClosePaw 未インストール時のメッセージ、(2) インストール済みで Review → Allow → ClosePaw の External Goal ダイアログ表示、(3) run-log が「引き継ぎ済み」表示になること、(4) Android 11+ のパッケージ可視性（manifest の `<queries><package>` が expo prebuild 後も残るか）。
+
+**Phase 2（上流 ClosePaw への PR が前提、Why not now: ClosePaw 側に結果返却の口が無い）**:
+- (a) ClosePaw に `ACTION_SEND` `text/plain` の受け口（share target）を追加する上流 PR — Shelly の既存 `share` モードからも渡せるようにする。
+- (b) 権限保護された submit（signature/custom permission 付き exported Activity または Service）+ `request_id` 付きの結果ブロードキャストを上流に追加 → Shelly 側はネイティブ BroadcastReceiver（`plugins/*.js` で manifest 登録、手書き manifest 編集は expo prebuild に消される）で受信 → 既存 file-queue（`am start` 不可のため）に追記 → executor が `request_id` で待機中の run を再開し、結果を `{{result}}` として後続ステップへ渡す。これが入るまで run は「handed off」で終わる。
+- 注意: ClosePaw の「Sign in with ChatGPT/Codex」OAuth は Codex CLI の client id を流用しており ToS リスクがあるため、ドキュメント・UI では一切推奨しない。API キー / OpenAI 互換エンドポイントでの設定のみ案内する。Shelly の 2B ローカルモデルでは ClosePaw を駆動できない。
 
 ### Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない（python3 が "Failed to import encodings module"）— 真因確定 (libexec_wrapper v220 で修正、CI ビルド待ち・実機未検証) (P1)
 

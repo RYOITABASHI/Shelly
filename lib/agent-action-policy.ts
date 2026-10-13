@@ -542,7 +542,9 @@ export function actionTypeCapabilities(actionType: string, details: { command?: 
     case 'dm-reply':
       return ['network', 'message'];
     case 'intent':
-      return details.intentMode === 'launch' ? ['exec'] : ['message'];
+      // closepaw hands a goal to a phone-operating agent: classified as exec
+      // (it can act on any app), the stricter of the two existing buckets.
+      return details.intentMode === 'launch' || details.intentMode === 'closepaw' ? ['exec'] : ['message'];
     case 'browser-pane':
       return ['network', 'post'];
     case 'cli': {

@@ -860,12 +860,19 @@ export interface AgentAction {
   // never in the plan/request/preview/log — see SECRET-001. Not needed for v1.
   /** intent: 'launch' opens another app (by package name or a URI the OS resolves
    *  via ACTION_VIEW); 'share' hands text to the OS share sheet (ACTION_SEND).
-   *  Never one-tap — always routes through in-app Review (same tier as cli). */
-  intentMode?: 'launch' | 'share';
+   *  Never one-tap — always routes through in-app Review (same tier as cli).
+   *  'closepaw' (Phase 1, 2026-10-13) hands a natural-language goal to the
+   *  ClosePaw phone-use agent (explicit component ai.closepaw/.app.MainActivity,
+   *  String extra "goal"); the goal lives in `intentShareText`. ClosePaw returns
+   *  no result, so the run ends "handed off" (AgentRunLog.handoff). Never
+   *  auto-accepted, even under the 'auto' runtime-approval default. */
+  intentMode?: 'launch' | 'share' | 'closepaw';
   /** intent/launch: a package name OR a URI (geo:, https:, market:, custom scheme).
    *  intent/share: unused in v1 (no preferred-package hint — plain OS chooser). */
   intentTarget?: string;
-  /** intent/share: ACTION_SEND EXTRA_TEXT content. May contain the literal
+  /** intent/share: ACTION_SEND EXTRA_TEXT content. intent/closepaw: the goal
+   *  handed to ClosePaw (sanitized + capped at 2000 code points before firing,
+   *  see lib/agent-intent-review.ts sanitizeClosePawGoal). May contain the literal
    *  placeholder "{{result}}", string-replaced (no template engine) with the
    *  agent's run preview text at request-build time, BEFORE the approval request
    *  is written — so native/RN code only ever sees the final resolved string. */
@@ -1140,6 +1147,12 @@ export interface AgentRunLog {
    *  Absent for every ordinary single-action run — existing single-action
    *  run logs are completely unaffected by this field's addition. */
   actionResults?: AgentActionResult[];
+  /** Present when the run's action handed the task off to an external agent
+   *  that returns no result (ClosePaw hand-off, intent mode 'closepaw'). The
+   *  run's `status` stays 'success' (the hand-off itself was delivered and the
+   *  circuit breaker must not trip), but UIs must render it as "handed off",
+   *  never as a success-with-result. Absent on every other run (additive). */
+  handoff?: 'closepaw';
 }
 
 /** Multi-action fan-out (Agent.actions): one entry's outcome, mirroring

@@ -90,6 +90,7 @@
   <string name="scouter_notification_agent_action_reason">Reason: %1$s</string>
   <string name="scouter_notification_agent_action_cli_review_required">CLI actions require in-app command review.</string>
   <string name="scouter_notification_agent_action_intent_target">Target: %1$s</string>
+  <string name="scouter_notification_agent_action_intent_closepaw">Hand off to ClosePaw: %1$s</string>
   <string name="scouter_notification_agent_action_intent_review_required">Intent actions require in-app review.</string>
   <string name="scouter_notification_agent_action_what_api_call">Will call an external API</string>
   <string name="scouter_notification_agent_action_api_call_request">Request: %1$s</string>

@@ -76,8 +76,8 @@ describe('generateRunScript — Agent.actions multi-destination fan-out (regress
   it('the SHELLY_AGENT_SCRIPT_VERSION bump (currently 65) applies uniformly, single- or multi-action', () => {
     const single = generateRunScript(agent({ action: { type: 'draft' } }));
     const multi = generateRunScript(agent({ action: { type: 'draft' }, actions: [blueskyAction, dmReplyAction] }));
-    expect(single).toContain('SHELLY_AGENT_SCRIPT_VERSION=65');
-    expect(multi).toContain('SHELLY_AGENT_SCRIPT_VERSION=65');
+    expect(single).toContain('SHELLY_AGENT_SCRIPT_VERSION=66');
+    expect(multi).toContain('SHELLY_AGENT_SCRIPT_VERSION=66');
   });
 });
 
@@ -127,7 +127,7 @@ describe('generateRunScript — Agent.actions multi-destination fan-out (>= 2 en
     expect(s).toContain('ACTION_RESULT_PART="{\\"index\\":$ACTION_MULTI_IDX,\\"actionType\\":\\"$ACTION_TYPE_RESULT_JSON\\",\\"status\\":\\"$ACTION_RESULT_STATUS_JSON\\",\\"message\\":\\"$ACTION_RESULT_MESSAGE_JSON\\"}"');
     expect(s).toContain('ACTION_RESULTS_JSON="[$ACTION_RESULTS_PARTS]"');
     expect(s).toContain('ACTION_RESULTS_FIELDS=",\\"actionResults\\":$ACTION_RESULTS_JSON"');
-    expect(s).toContain('$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS$ACTION_RESULTS_FIELDS}');
+    expect(s).toContain('$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS$HANDOFF_FIELDS$ACTION_RESULTS_FIELDS}');
   });
 
   it('reduces the run STATUS from N independent outcomes without inventing a new status value: any success -> success, else any error -> error, else skipped', () => {

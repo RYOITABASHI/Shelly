@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.app.DownloadManager
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.Intent
@@ -57,6 +58,28 @@ class TerminalEmulatorModule : Module() {
         // dotted segments) is resolved via getLaunchIntentForPackage; anything
         // else (a URI with a scheme) falls through to ACTION_VIEW.
         private val PACKAGE_NAME_RE = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
+
+        // ClosePaw hand-off (intent mode "closepaw"). Mirrors
+        // lib/agent-intent-review.ts's CLOSEPAW_* constants + sanitizeClosePawGoal.
+        private const val CLOSEPAW_PACKAGE = "ai.closepaw"
+        private const val CLOSEPAW_ACTIVITY = "ai.closepaw.app.MainActivity"
+        private const val CLOSEPAW_GOAL_MAX_CODE_POINTS = 2000
+        private val CLOSEPAW_CONTROL_RE = Regex("[\\u0000-\\u001F\\u007F-\\u009F]")
+        private val CLOSEPAW_SPACE_RUN_RE = Regex(" {2,}")
+        private val CLOSEPAW_EDGE_SPACE_RE = Regex("^ +| +$")
+        private val CLOSEPAW_TRAILING_SPACE_RE = Regex(" +$")
+
+        /** Byte-identical port of lib/agent-intent-review.ts sanitizeClosePawGoal. */
+        internal fun sanitizeClosePawGoal(raw: String?): String {
+            val collapsed = (raw ?: "")
+                .replace(CLOSEPAW_CONTROL_RE, " ")
+                .replace(CLOSEPAW_SPACE_RUN_RE, " ")
+                .replace(CLOSEPAW_EDGE_SPACE_RE, "")
+            val count = collapsed.codePointCount(0, collapsed.length)
+            if (count <= CLOSEPAW_GOAL_MAX_CODE_POINTS) return collapsed
+            val end = collapsed.offsetByCodePoints(0, CLOSEPAW_GOAL_MAX_CODE_POINTS)
+            return collapsed.substring(0, end).replace(CLOSEPAW_TRAILING_SPACE_RE, "")
+        }
 
         // REMOTE-INPUT-001: RemoteTextInputReceiver is a manifest-registered
         // BroadcastReceiver, not itself a live Module instance — it has no
@@ -1231,6 +1254,9 @@ class TerminalEmulatorModule : Module() {
                 "share" -> if (trimmedShareText.isEmpty()) {
                     throw IllegalArgumentException("intent share text is empty")
                 }
+                "closepaw" -> if (sanitizeClosePawGoal(shareText).isEmpty()) {
+                    throw IllegalArgumentException("closepaw goal is empty")
+                }
                 else -> throw IllegalArgumentException("unknown intent mode: $normalizedMode")
             }
             try {
@@ -1241,6 +1267,20 @@ class TerminalEmulatorModule : Module() {
                         type = "text/plain"
                         putExtra(Intent.EXTRA_TEXT, shareText)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    // ClosePaw hand-off, Phase 1: explicit component, String
+                    // extra "goal". ClosePaw (release builds) shows its own
+                    // "External Goal" confirmation dialog and returns no result.
+                    // Package visibility for ai.closepaw is declared by
+                    // plugins/with-agent-launch-queries.js.
+                    "closepaw" -> Intent().apply {
+                        component = ComponentName(CLOSEPAW_PACKAGE, CLOSEPAW_ACTIVITY)
+                        putExtra("goal", sanitizeClosePawGoal(shareText))
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }.also {
+                        if (it.resolveActivity(context.packageManager) == null) {
+                            throw ActivityNotFoundException("CLOSEPAW_NOT_INSTALLED")
+                        }
                     }
                     else -> error("validated intent mode became unreachable")
                 }

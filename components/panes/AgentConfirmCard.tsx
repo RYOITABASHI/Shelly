@@ -171,7 +171,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const [actionType, setActionType] = useState<AgentActionType>(draft.action.type);
   const [webhookUrl, setWebhookUrl] = useState(draft.action.webhookUrl ?? '');
   const [command, setCommand] = useState(draft.action.command ?? '');
-  const [intentMode, setIntentMode] = useState<'launch' | 'share'>(draft.action.intentMode ?? 'launch');
+  const [intentMode, setIntentMode] = useState<'launch' | 'share' | 'closepaw'>(draft.action.intentMode ?? 'launch');
   const [intentTarget, setIntentTarget] = useState(draft.action.intentTarget ?? '');
   const [intentShareText, setIntentShareText] = useState(draft.action.intentShareText ?? '');
   const [dmPairingId, setDmPairingId] = useState(draft.action.dmPairingId ?? '');
@@ -467,7 +467,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       // to share would show a misleading "Target: ..." line at approval
       // time. Only persist it when it's actually meaningful.
       if (intentMode === 'launch') action.intentTarget = intentTarget.trim();
-      if (intentMode === 'share') action.intentShareText = intentShareText.trim();
+      if (intentMode === 'share' || intentMode === 'closepaw') action.intentShareText = intentShareText.trim();
     }
     if (actionType === 'dm-reply') {
       action.dmPairingId = dmPairingId;
@@ -781,9 +781,10 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             options={[
               { key: 'launch', label: t('agentcard.intent_mode_launch') },
               { key: 'share', label: t('agentcard.intent_mode_share') },
+              { key: 'closepaw', label: t('agentcard.intent_mode_closepaw') },
             ]}
             value={intentMode}
-            onChange={(k) => setIntentMode(k as 'launch' | 'share')}
+            onChange={(k) => setIntentMode(k as 'launch' | 'share' | 'closepaw')}
             colors={colors}
           />
           {intentMode === 'launch' && (
@@ -796,12 +797,12 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
               style={[styles.input, fieldBg, !intentValid && { borderColor: colors.error }]}
             />
           )}
-          {intentMode === 'share' && (
+          {(intentMode === 'share' || intentMode === 'closepaw') && (
             <TextInput
               value={intentShareText}
               onChangeText={setIntentShareText}
               multiline
-              placeholder={t('agentcard.intent_share_text_placeholder')}
+              placeholder={t(intentMode === 'closepaw' ? 'agentcard.intent_closepaw_goal_placeholder' : 'agentcard.intent_share_text_placeholder')}
               placeholderTextColor={colors.inactive}
               style={[styles.input, fieldBg]}
             />

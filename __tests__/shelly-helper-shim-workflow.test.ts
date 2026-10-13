@@ -89,9 +89,9 @@ beforeEach(() => {
 });
 
 describe('generated shelly helper shim', () => {
-  it('is bumped to v7 alongside BASHRC_VERSION >= 252', () => {
+  it('is bumped to v8 alongside BASHRC_VERSION >= 253', () => {
     const src = fs.readFileSync(ktPath, 'utf8');
-    expect(src).toContain('# SHELLY_HELPER_SHIM v7');
+    expect(src).toContain('# SHELLY_HELPER_SHIM v8');
     const m = src.match(/private const val BASHRC_VERSION = (\d+)\b/);
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBeGreaterThanOrEqual(252);

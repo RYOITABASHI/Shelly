@@ -147,7 +147,9 @@ describe('generateRunScript — browser-pane is excluded from the auto-mode skip
     const s = generateRunScript(agent({ type: 'draft' }));
     // POLICY-001 added a third conjunct (a policy-forced manual round trip
     // also turns autoAccept off) — strictly tighter, browser-pane still false.
-    expect(s).toContain('auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && [ "$ACTION_APPROVAL_MODE" != "manual" ] && [ "${SHELLY_POLICY_FORCE_MANUAL:-0}" != "1" ] && printf \'true\' || printf \'false\')');
+    // ClosePaw hand-off (2026-10-13) added a fourth conjunct (intent/closepaw
+    // is never auto-accepted either) — strictly tighter again.
+    expect(s).toContain('auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && { [ "$approval_type" != "intent" ] || [ "$ACTION_INTENT_MODE" != "closepaw" ]; } && [ "$ACTION_APPROVAL_MODE" != "manual" ] && [ "${SHELLY_POLICY_FORCE_MANUAL:-0}" != "1" ] && printf \'true\' || printf \'false\')');
   });
 });
 
