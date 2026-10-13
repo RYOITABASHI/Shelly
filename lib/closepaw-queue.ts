@@ -3,13 +3,17 @@
  *
  * A shell process (the user's PTY shell, or Codex's non-interactive
  * `bash -lc` inside it) cannot `am start` an Activity under Knox, so the
- * native `$HOME/bin/shelly` helper shim (HomeInitializer.kt,
- * SHELLY_HELPER_SHIM v9) appends ONE line to `$HOME/.shelly-closepaw-queue`:
+ * `shelly` helper (HomeInitializer.kt, SHELLY_HELPER_SHIM v11+) writes ONE
+ * request file per hand-off, `$HOME/.shelly-closepaw-req-<reqId>` (tmp +
+ * rename, so it is always complete), holding one newline-terminated line:
  *
  *   closepaw:<reqId>:<tsMs>:<encodeURIComponent(goal)>
  *
+ * (Shim v9/v10 appended the same line to `$HOME/.shelly-closepaw-queue`; that
+ * file is still drained, complete lines only.)
+ *
  * OWNER: native ClosePawHandoff.kt (fix/closepaw-background, 2026-10-13). It
- * drains that file from a FileObserver + 1s poll started by
+ * drains those files from a FileObserver + fallback poll started by
  * TerminalSessionService and the Expo Module, so the hand-off works while
  * Shelly is backgrounded and the RN JS poll is not running (e.g. the ChatGPT
  * app driving Codex via `codex remote-control` hosted in a Shelly tab). It
@@ -51,8 +55,11 @@ export const CLOSEPAW_QUEUE_MAX_ENCODED_CHARS = 24_000;
 const REQ_ID_RE = /^[0-9]{10,16}-[0-9a-f]{8}$/;
 const TS_RE = /^[0-9]{10,16}$/;
 
-/** The native-owned queue file (relative to $HOME). */
+/** The legacy (shim v9/v10) native-owned shared queue file (relative to
+ *  $HOME). Still drained natively for compatibility. */
 export const CLOSEPAW_NATIVE_QUEUE_FILE = '.shelly-closepaw-queue';
+/** Shim v11+ (BASHRC 256): one file per request, `<prefix><reqId>`. */
+export const CLOSEPAW_REQUEST_FILE_PREFIX = '.shelly-closepaw-req-';
 
 export const CLOSEPAW_MSG_HANDED_OFF = 'Handed off to ClosePaw — confirm Run in ClosePaw';
 export const CLOSEPAW_MSG_NOTIFIED = 'Shelly is in the background — tap the ClosePaw notification to continue';
@@ -131,6 +138,13 @@ export async function forwardLegacyClosePawLine(
   const code = await handOff(line);
   log?.(`closepaw: legacy line forwarded to native -> ${code ?? 'unanswered'}`);
   return code;
+}
+
+/** Per-request file name (relative to $HOME) written by shim v11+: one
+ *  newline-terminated record, written to `<name>.tmp` then renamed. */
+export function closePawRequestFileName(reqId: string): string {
+  if (!REQ_ID_RE.test(reqId)) throw new Error('invalid closepaw reqId');
+  return `${CLOSEPAW_REQUEST_FILE_PREFIX}${reqId}`;
 }
 
 /** Result file name for a validated reqId (relative to $HOME). */

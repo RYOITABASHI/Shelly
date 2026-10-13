@@ -1,11 +1,11 @@
 /*
  * shelly-cmd.c
  *
- * PATH-visible `shelly` command (BASHRC_VERSION 254). HomeInitializer.kt
+ * PATH-visible `shelly` command (BASHRC_VERSION 255). HomeInitializer.kt
  * symlinks `$HOME/bin/shelly` -> `$SHELLY_LIB_DIR/shelly_cmd` (this binary,
  * shipped as jniLibs libshelly_cmd.so and extracted by LibExtractor).
  *
- * Why a native binary: until v253 `$HOME/bin/shelly` was a generated
+ * Why a native binary: until v254 `$HOME/bin/shelly` was a generated
  * `#!/system/bin/sh` script. Only the interactive bash `shelly()` function
  * could use it (it reads the file as a bash script argument through
  * linker64). Every other caller -- `bash script.sh` / `bash -c` launched
@@ -171,7 +171,7 @@ int main(int argc, char **argv, char **envp) {
     if (!have_home) env[j++] = make_kv("HOME", home);
     if (!have_tmpdir) {
         char tmp[PATH_MAX];
-        snprintf(tmp, sizeof(tmp), "%s/tmp", home);
+        snprintf(tmp, sizeof(tmp), "%s/.tmp", home);
         mkdir(tmp, 0700);
         env[j++] = make_kv("TMPDIR", tmp);
     }

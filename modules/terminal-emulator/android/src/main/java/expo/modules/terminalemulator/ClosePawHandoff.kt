@@ -27,10 +27,17 @@ import org.json.JSONObject
 /**
  * ClosePaw hand-off, native owner (2026-10-13, fix/closepaw-background).
  *
- * `shelly closepaw "<goal>"` (SHELLY_HELPER_SHIM v9, HomeInitializer.kt)
- * appends ONE line to `$HOME/.shelly-closepaw-queue`:
+ * `shelly closepaw "<goal>"` (SHELLY_HELPER_SHIM v11+, HomeInitializer.kt)
+ * writes ONE request file per hand-off, `$HOME/.shelly-closepaw-req-<reqId>`
+ * (written to `<name>.tmp`, then renamed into place, so the drain only ever
+ * sees a complete record), containing exactly one newline-terminated line:
  *
  *   closepaw:<reqId>:<tsMs>:<encodeURIComponent(goal)>
+ *
+ * Shim v9/v10 appended that line to the shared `$HOME/.shelly-closepaw-queue`
+ * instead; that legacy file is still drained (complete lines only) for
+ * compatibility, but an append racing the claim-rename could be lost there,
+ * which is why v11 moved to per-request files.
  *
  * Before this fix the line rode the shared `.shelly-command-queue`, which only
  * the RN JS thread drains (app/_layout.tsx, 250ms poll). With Shelly in the
@@ -39,9 +46,10 @@ import org.json.JSONObject
  * with "the Shelly app did not respond". This object is now the SINGLE owner
  * of ClosePaw queue lines: it is started from both TerminalSessionService
  * (alive whenever a terminal session exists) and the Expo Module, watches the
- * file with a FileObserver plus a 1s fallback poll, claims the file with an
- * atomic rename (so a concurrent append lands in a fresh file and is never
- * lost or processed twice), validates exactly like lib/closepaw-queue.ts's
+ * directory with a FileObserver plus a fallback poll (1s only if the observer
+ * could not start, else 5s), claims each request file by reading and deleting
+ * it (a request is processed at most once: per-reqId dedupe below), validates
+ * exactly like lib/closepaw-queue.ts's
  * parseClosePawQueueLine, and writes `$HOME/.shelly-closepaw-result-<reqId>.json`
  * for the shim. A legacy line that still reaches RN's command queue is
  * forwarded here via TerminalEmulatorModule.handOffClosePawQueueLine, never
@@ -50,8 +58,9 @@ import org.json.JSONObject
  * Background activity launch (BAL): a foreground service does NOT grant BAL
  * on Android 10+, and a blocked startActivity() fails SILENTLY (no exception),
  * so we cannot "try and detect". We start ClosePaw directly only when it is
- * provably allowed — Shelly has a visible window (process importance
- * FOREGROUND/VISIBLE) or holds SYSTEM_ALERT_WINDOW — and otherwise post a
+ * provably allowed — Shelly is the foreground app (process importance
+ * FOREGROUND; merely VISIBLE, e.g. behind a dialog or in a non-focused
+ * window, is not treated as safe) or holds SYSTEM_ALERT_WINDOW — and otherwise post a
  * high-importance notification whose content PendingIntent launches ClosePaw
  * with the goal. That PendingIntent is sent by SystemUI on the user's tap,
  * and the notification-tap launch is allowed by the SENDER's privileges; we
@@ -72,8 +81,15 @@ object ClosePawHandoff {
     const val NOT_INSTALLED_MARKER = "CLOSEPAW_NOT_INSTALLED"
     const val BACKGROUND_BLOCKED_MARKER = "CLOSEPAW_BACKGROUND_BLOCKED"
 
+    /** Legacy (shim v9/v10) shared append queue; still drained. */
     const val QUEUE_FILE = ".shelly-closepaw-queue"
     private const val CLAIMED_SUFFIX = ".draining"
+    /** Shim v11+: one complete request per file, `<prefix><reqId>`. */
+    const val REQUEST_FILE_PREFIX = ".shelly-closepaw-req-"
+    private const val TMP_SUFFIX = ".tmp"
+    private val REQUEST_FILE_RE = Regex("^\\.shelly-closepaw-req-[0-9]{10,16}-[0-9a-f]{8}$")
+    /** A shim that died between write and rename leaves `<name>.tmp`. */
+    private const val STALE_TMP_MS = 60_000L
     const val QUEUE_PREFIX = "closepaw:"
     const val QUEUE_MAX_AGE_MS = 30_000L
     const val QUEUE_MAX_FUTURE_MS = 5_000L
@@ -104,7 +120,10 @@ object ClosePawHandoff {
     const val NOTIFICATION_ID = 0x37C1A000
     private const val REQUEST_CODE = 0x37C1A001
     private const val NOTIFICATION_TIMEOUT_MS = 10L * 60L * 1000L
+    /** Fallback poll when the FileObserver could not be started. */
     private const val FALLBACK_POLL_MS = 1_000L
+    /** Safety-net poll when the FileObserver is running (missed events only). */
+    private const val OBSERVED_POLL_MS = 5_000L
 
     /** Byte-identical port of lib/agent-intent-review.ts sanitizeClosePawGoal. */
     fun sanitizeGoal(raw: String?): String {
@@ -158,14 +177,17 @@ object ClosePawHandoff {
     }
 
     /** True only when Android provably lets this process start an activity
-     *  right now: a visible window, or the overlay (SYSTEM_ALERT_WINDOW)
-     *  grant. A foreground service alone (importance 125) is NOT enough. */
+     *  right now: Shelly is the foreground (top, focused) app, or holds the
+     *  overlay (SYSTEM_ALERT_WINDOW) grant. IMPORTANCE_VISIBLE alone (a
+     *  window shown but not on top, e.g. split screen / behind another
+     *  activity) is NOT trusted — such a start can be silently blocked, and
+     *  the shim would then falsely print "Handed off"; it takes the
+     *  notification route instead. A foreground service alone (importance
+     *  125) is NOT enough either. */
     internal fun canStartActivityNow(context: Context): Boolean {
         val state = ActivityManager.RunningAppProcessInfo()
         ActivityManager.getMyMemoryState(state)
-        val visible = state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND ||
-            state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
-        if (visible) return true
+        if (state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) return true
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
     }
@@ -201,7 +223,21 @@ object ClosePawHandoff {
                 @Suppress("DEPRECATION")
                 Notification.Builder(context).setPriority(Notification.PRIORITY_HIGH)
             }
+            // Lock screen: only the title, never the goal text (free text may
+            // be sensitive). The full version stays VISIBILITY_PRIVATE.
+            val publicBuilder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(context, CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(context)
+            }
+            val publicVersion = publicBuilder
+                .setContentTitle(context.getString(R.string.closepaw_notification_title))
+                .setSmallIcon(android.R.drawable.ic_menu_send)
+                .build()
             builder
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .setPublicVersion(publicVersion)
                 .setContentTitle(context.getString(R.string.closepaw_notification_title))
                 .setContentText(shown)
                 .setStyle(
@@ -300,7 +336,10 @@ object ClosePawHandoff {
             Log.w(TAG, "rejected malformed queue line")
             return null
         }
-        // Exactly-once per request id even if a line were ever delivered twice.
+        // At most once per request id (within the last 64), even if a record
+        // were ever delivered twice. Delivery itself is not guaranteed: a
+        // legacy shared-queue line can be lost (see drain), and the shim then
+        // times out and reports that Shelly did not respond.
         if (!recentReqIds.add(reqId)) return null
         while (recentReqIds.size > 64) recentReqIds.remove(recentReqIds.first())
         val result = when (parsed) {
@@ -355,11 +394,66 @@ object ClosePawHandoff {
         }
     }
 
-    /** Claim the whole queue file atomically (rename), then process it. An
-     *  append racing the rename lands in a fresh queue file → next drain. */
+    /** Newline-terminated records only: a trailing fragment without '\n' is
+     *  an incomplete write and is dropped, never handled. */
+    internal fun completeLines(content: String): List<String> {
+        val end = content.lastIndexOf('\n')
+        if (end < 0) return emptyList()
+        return content.substring(0, end).split('\n').filter { it.isNotBlank() }
+    }
+
+    private fun handleAll(context: Context, lines: List<String>) {
+        for (line in lines) {
+            try {
+                handleLine(context, line)
+            } catch (e: Exception) {
+                Log.w(TAG, "closepaw line handler failed type=${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private fun readAndDelete(file: File): String = try {
+        if (file.length() > QUEUE_MAX_FILE_BYTES) "" else file.readText()
+    } catch (e: Exception) {
+        ""
+    } finally {
+        file.delete()
+    }
+
+    internal fun isRequestFileName(name: String?): Boolean = name != null && REQUEST_FILE_RE.matches(name)
+
+    private fun hasPending(home: File): Boolean =
+        File(home, QUEUE_FILE).exists() ||
+            File(home, QUEUE_FILE + CLAIMED_SUFFIX).exists() ||
+            (home.list()?.any { isRequestFileName(it) } ?: false)
+
+    /** Process every complete per-request file (shim v11+), then the legacy
+     *  shared queue (shim v9/v10). Each request file is complete by
+     *  construction (tmp + rename) and holds exactly one record; it is read
+     *  and deleted before handling, and handleLine dedupes by reqId, so a
+     *  request fires at most once. */
     @Synchronized
     fun drain(context: Context) {
         val home = try { HomeInitializer.getHomeDir(context) } catch (e: Exception) { return }
+        val now = System.currentTimeMillis()
+        val names = home.list()?.sorted() ?: emptyList()
+        for (name in names) {
+            if (isRequestFileName(name)) {
+                val lines = completeLines(readAndDelete(File(home, name)))
+                // One record per file; anything else is malformed.
+                if (lines.size == 1) handleAll(context, lines)
+                else Log.w(TAG, "rejected closepaw request file with ${lines.size} records")
+            } else if (name.startsWith(REQUEST_FILE_PREFIX) && name.endsWith(TMP_SUFFIX)) {
+                val tmp = File(home, name)
+                if (now - tmp.lastModified() > STALE_TMP_MS) tmp.delete()
+            }
+        }
+
+        // Legacy shared queue. Claim it with an atomic rename. NOTE: an
+        // append whose open() preceded the rename but whose write() follows
+        // it lands in the claimed (then deleted) file and is lost -- the
+        // reason shim v11 moved to per-request files. Only complete lines
+        // are handled.
         val queue = File(home, QUEUE_FILE)
         val claimed = File(home, QUEUE_FILE + CLAIMED_SUFFIX)
         // A claim left by a crash mid-drain is processed first (the 30s
@@ -368,21 +462,7 @@ object ClosePawHandoff {
             if (!queue.exists()) return
             if (!queue.renameTo(claimed)) return
         }
-        val content = try {
-            if (claimed.length() > QUEUE_MAX_FILE_BYTES) "" else claimed.readText()
-        } catch (e: Exception) {
-            ""
-        } finally {
-            claimed.delete()
-        }
-        for (line in content.split('\n')) {
-            if (line.isBlank()) continue
-            try {
-                handleLine(context, line)
-            } catch (e: Exception) {
-                Log.w(TAG, "closepaw line handler failed type=${e.javaClass.simpleName}")
-            }
-        }
+        handleAll(context, completeLines(readAndDelete(claimed)))
     }
 
     // ── Watcher lifecycle (process-wide singleton) ──────────────────────
@@ -404,17 +484,20 @@ object ClosePawHandoff {
         try {
             val home = HomeInitializer.getHomeDir(app).also { it.mkdirs() }
             val mask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO
+            // MOVED_TO = a v11 request file renamed into place; CLOSE_WRITE =
+            // a legacy v9/v10 append.
+            fun relevant(path: String?) = path == QUEUE_FILE || isRequestFileName(path)
             val obs = if (Build.VERSION.SDK_INT >= 29) {
                 object : FileObserver(home, mask) {
                     override fun onEvent(event: Int, path: String?) {
-                        if (path == QUEUE_FILE) exec.execute { drain(app) }
+                        if (relevant(path)) exec.execute { drain(app) }
                     }
                 }
             } else {
                 @Suppress("DEPRECATION")
                 object : FileObserver(home.absolutePath, mask) {
                     override fun onEvent(event: Int, path: String?) {
-                        if (path == QUEUE_FILE) exec.execute { drain(app) }
+                        if (relevant(path)) exec.execute { drain(app) }
                     }
                 }
             }
@@ -423,16 +506,18 @@ object ClosePawHandoff {
         } catch (e: Exception) {
             Log.w(TAG, "closepaw FileObserver unavailable; relying on the fallback poll", e)
         }
-        // Fallback: a cheap existence check in case an inotify event is
-        // missed (e.g. $HOME recreated). Not a wakelock — it only runs while
-        // the CPU is awake anyway.
+        // Fallback: a cheap pending check in case an inotify event is missed
+        // (e.g. $HOME recreated). 1s only when the observer failed to start;
+        // otherwise a 5s safety net. Not a wakelock — it only runs while the
+        // CPU is awake anyway.
+        val pollMs = if (observer == null) FALLBACK_POLL_MS else OBSERVED_POLL_MS
         exec.scheduleWithFixedDelay({
             try {
-                if (File(HomeInitializer.getHomeDir(app), QUEUE_FILE).exists()) drain(app)
+                if (hasPending(HomeInitializer.getHomeDir(app))) drain(app)
             } catch (e: Exception) {
                 Log.w(TAG, "closepaw fallback poll failed type=${e.javaClass.simpleName}")
             }
-        }, 0L, FALLBACK_POLL_MS, TimeUnit.MILLISECONDS)
+        }, 0L, pollMs, TimeUnit.MILLISECONDS)
         Log.i(TAG, "closepaw queue watcher started")
     }
 }

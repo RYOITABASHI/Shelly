@@ -768,8 +768,8 @@ jobs:
           ls -lh "${OUT}"
           file "${OUT}"
 
-      - name: Build Shelly `shelly` command native shim (BASHRC v254)
-        # $HOME/bin/shelly -> $SHELLY_LIB_DIR/shelly_cmd. Replaces the v139-v253
+      - name: Build Shelly `shelly` command native shim (BASHRC v255)
+        # $HOME/bin/shelly -> $SHELLY_LIB_DIR/shelly_cmd. Replaces the v139-v254
         # `#!/system/bin/sh` script, which Knox refuses to exec from any caller
         # that is not the interactive shelly() bash function ("bad
         # interpreter: Permission denied"). Same toolchain as above.

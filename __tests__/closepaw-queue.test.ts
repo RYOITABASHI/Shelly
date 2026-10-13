@@ -1,11 +1,11 @@
 /**
- * `shelly closepaw "<goal>"` — queue writer (generated $HOME/bin/shelly shim,
- * HomeInitializer.kt SHELLY_HELPER_SHIM v9), the reference validation spec
+ * `shelly closepaw "<goal>"` — request writer (generated shelly helper,
+ * HomeInitializer.kt SHELLY_HELPER_SHIM v11), the reference validation spec
  * (lib/closepaw-queue.ts parseClosePawQueueLine, ported to native
  * ClosePawHandoff.kt) and RN's legacy forwarder. The shim's node body is
  * extracted from the real .kt source exactly like
  * __tests__/shelly-helper-shim-workflow.test.ts does, and run against a temp
- * $HOME with a simulated NATIVE owner draining .shelly-closepaw-queue.
+ * $HOME with a simulated NATIVE owner draining the per-request files.
  */
 import * as fs from 'fs';
 import * as os from 'os';
@@ -18,6 +18,8 @@ import {
   CLOSEPAW_MSG_NOT_INSTALLED,
   CLOSEPAW_NATIVE_QUEUE_FILE,
   CLOSEPAW_QUEUE_MAX_AGE_MS,
+  CLOSEPAW_REQUEST_FILE_PREFIX,
+  closePawRequestFileName,
   closePawResultFileName,
   encodeClosePawQueueLine,
   forwardLegacyClosePawLine,
@@ -150,7 +152,20 @@ function makeNativeOwner(home: string, outcome: () => Outcome) {
     }
     fs.writeFileSync(path.join(home, closePawResultFileName(parsed.reqId)), JSON.stringify(result));
   };
+  // Complete (newline-terminated) records only, like ClosePawHandoff.completeLines.
+  const completeLines = (content: string) => {
+    const end = content.lastIndexOf('\n');
+    return end < 0 ? [] : content.slice(0, end).split('\n').filter((l) => l.trim());
+  };
   const drain = () => {
+    for (const name of fs.readdirSync(home).sort()) {
+      if (!/^\.shelly-closepaw-req-[0-9]{10,16}-[0-9a-f]{8}$/.test(name)) continue;
+      const f = path.join(home, name);
+      const content = fs.readFileSync(f, 'utf8');
+      fs.unlinkSync(f);
+      const lines = completeLines(content);
+      if (lines.length === 1) handle(lines[0]);
+    }
     const q = path.join(home, CLOSEPAW_NATIVE_QUEUE_FILE);
     const claimed = q + '.draining';
     try {
@@ -160,7 +175,7 @@ function makeNativeOwner(home: string, outcome: () => Outcome) {
     }
     const content = fs.readFileSync(claimed, 'utf8');
     fs.unlinkSync(claimed);
-    for (const line of content.split('\n').filter(Boolean)) handle(line);
+    for (const line of completeLines(content)) handle(line);
   };
   return { drain, launches };
 }
@@ -207,6 +222,36 @@ describe('generated shim: shelly closepaw', () => {
     expect(owner.launches).toEqual(['Open Chrome and search for Tokyo weather']);
     expect(fs.existsSync(path.join(home, '.shelly-command-queue'))).toBe(false);
     expect(fs.existsSync(path.join(home, CLOSEPAW_NATIVE_QUEUE_FILE))).toBe(false);
+    // The per-request file (and its .tmp) were consumed.
+    expect(fs.readdirSync(home).filter((n) => n.startsWith(CLOSEPAW_REQUEST_FILE_PREFIX))).toEqual([]);
+  }, 20_000);
+
+  it('writes one complete newline-terminated record per request file, via .tmp + rename', async () => {
+    // No owner: inspect what the shim leaves behind, then let it time out.
+    const child = spawn(process.execPath, [shimPath, 'closepaw', 'hello'], { env: { ...process.env, HOME: home } });
+    let name: string | undefined;
+    for (let i = 0; i < 100 && !name; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      name = fs.readdirSync(home).find((n) => n.startsWith(CLOSEPAW_REQUEST_FILE_PREFIX));
+    }
+    child.kill();
+    expect(name).toBeDefined();
+    expect(name!.endsWith('.tmp')).toBe(false);
+    const reqId = name!.slice(CLOSEPAW_REQUEST_FILE_PREFIX.length);
+    expect(name).toBe(closePawRequestFileName(reqId));
+    const content = fs.readFileSync(path.join(home, name!), 'utf8');
+    expect(content.endsWith('\n')).toBe(true);
+    expect(content.trimEnd().split('\n')).toHaveLength(1);
+    expect(content.startsWith(`closepaw:${reqId}:`)).toBe(true);
+  }, 20_000);
+
+  it('caps a long CJK goal by code points so the record still validates', async () => {
+    const owner = makeNativeOwner(home, () => 'launched');
+    const goal = '東'.repeat(5000);
+    const r = await run(['closepaw', goal], owner);
+    expect(r.out.trim()).toBe(CLOSEPAW_MSG_HANDED_OFF);
+    expect(owner.launches).toHaveLength(1);
+    expect(Array.from(owner.launches[0])).toHaveLength(2000);
   }, 20_000);
 
   it('prints the tap-the-notification message (exit 0) when Shelly is backgrounded', async () => {

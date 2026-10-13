@@ -3,7 +3,7 @@
  * (ClosePawHandoff.kt, fix/closepaw-background). The Kotlin cannot run under
  * Jest, so this pins (1) parity of every validation constant / message with
  * the TS reference spec in lib/closepaw-queue.ts + lib/agent-intent-review.ts,
- * (2) the single-owner / exactly-once wiring, and (3) the background
+ * (2) the single-owner / at-most-once wiring, and (3) the background
  * activity-start (BAL) handling: direct start only when provably allowed,
  * else a tap-to-continue notification with an immutable one-shot
  * PendingIntent and no creator-side BAL opt-in.
@@ -28,6 +28,7 @@ import {
   CLOSEPAW_QUEUE_MAX_FUTURE_MS,
   CLOSEPAW_QUEUE_MIN_INTERVAL_MS,
   CLOSEPAW_QUEUE_PREFIX,
+  CLOSEPAW_REQUEST_FILE_PREFIX,
 } from '@/lib/closepaw-queue';
 
 const root = path.resolve(__dirname, '..');
@@ -90,10 +91,11 @@ describe('ClosePawHandoff.kt parity with the TS reference spec', () => {
   });
 });
 
-describe('single owner, exactly once', () => {
+describe('single owner, at most once', () => {
   it('claims the queue file with an atomic rename before reading it', () => {
     expect(handoff).toMatch(/queue\.renameTo\(claimed\)/);
-    expect(handoff).toMatch(/claimed\.delete\(\)/);
+    expect(handoff).toContain('readAndDelete(claimed)');
+    expect(handoff).toMatch(/\} finally \{\s*file\.delete\(\)/);
   });
 
   it('dedupes request ids and serializes handling', () => {
@@ -106,10 +108,32 @@ describe('single owner, exactly once', () => {
     expect(moduleKt).toContain('ClosePawHandoff.ensureWatching(context)');
   });
 
-  it('the shim writes the native-owned file, never the RN command queue, for closepaw', () => {
-    expect(homeKt).toContain("fs.appendFileSync(path.join(home, '.shelly-closepaw-queue'), 'closepaw:'");
-    expect(homeKt).not.toContain("fs.appendFileSync(path.join(home, '.shelly-command-queue'), 'closepaw:'");
-    expect(homeKt).toMatch(/# SHELLY_HELPER_SHIM v(9|1[0-9]) /);
+  it('the shim writes one complete request file per hand-off (tmp + rename), never a shared queue', () => {
+    expect(homeKt).toContain("const reqFile = path.join(home, '.shelly-closepaw-req-' + reqId);");
+    expect(homeKt).toContain("fs.writeFileSync(reqFile + '.tmp', 'closepaw:'");
+    expect(homeKt).toContain("fs.renameSync(reqFile + '.tmp', reqFile);");
+    expect(homeKt).not.toMatch(/fs\.appendFileSync\(path\.join\(home, '\.shelly-(closepaw|command)-queue'\), 'closepaw:'/);
+    expect(homeKt).toMatch(/# SHELLY_HELPER_SHIM v(1[1-9]) /);
+    expect(ktString('REQUEST_FILE_PREFIX')).toBe(CLOSEPAW_REQUEST_FILE_PREFIX);
+  });
+
+  it('caps the goal by code points before encoding (fits QUEUE_MAX_ENCODED_CHARS)', () => {
+    expect(homeKt).toContain('encodeURIComponent(Array.from(goal).slice(0, 2000).join(\'\'))');
+    expect(homeKt).not.toContain('goal.slice(0, 8000)');
+    expect(CLOSEPAW_GOAL_MAX_CHARS * 12).toBeLessThanOrEqual(CLOSEPAW_QUEUE_MAX_ENCODED_CHARS);
+  });
+
+  it('drains per-request files and only complete (newline-terminated) records', () => {
+    expect(handoff).toContain('val end = content.lastIndexOf(\'\\n\')');
+    expect(handoff).toMatch(/if \(lines\.size == 1\) handleAll\(context, lines\)/);
+    expect(handoff).toContain('handleAll(context, completeLines(readAndDelete(claimed)))');
+    expect(handoff).toMatch(/fun relevant\(path: String\?\) = path == QUEUE_FILE \|\| isRequestFileName\(path\)/);
+  });
+
+  it('polls every 1s only when the FileObserver failed, else every 5s', () => {
+    expect(ktNumber('FALLBACK_POLL_MS')).toBe(1000);
+    expect(ktNumber('OBSERVED_POLL_MS')).toBe(5000);
+    expect(handoff).toContain('val pollMs = if (observer == null) FALLBACK_POLL_MS else OBSERVED_POLL_MS');
   });
 
   it('RN never fires a queue line itself — it forwards to native', () => {
@@ -129,9 +153,9 @@ describe('single owner, exactly once', () => {
 describe('background activity start handling', () => {
   const canStart = handoff.slice(handoff.indexOf('fun canStartActivityNow'), handoff.indexOf('private fun postHandoffNotification'));
 
-  it('starts directly only with a visible window or the overlay grant', () => {
-    expect(canStart).toContain('IMPORTANCE_FOREGROUND ||');
-    expect(canStart).toContain('IMPORTANCE_VISIBLE');
+  it('starts directly only as the foreground app or with the overlay grant (VISIBLE is not trusted)', () => {
+    expect(canStart).toContain('if (state.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) return true');
+    expect(canStart).not.toMatch(/importance == ActivityManager\.RunningAppProcessInfo\.IMPORTANCE_VISIBLE/);
     expect(canStart).toContain('Settings.canDrawOverlays(context)');
     // A foreground service alone does NOT grant BAL.
     expect(canStart).not.toContain('IMPORTANCE_FOREGROUND_SERVICE');
@@ -152,6 +176,13 @@ describe('background activity start handling', () => {
     expect(handoff).not.toMatch(/setPendingIntentCreatorBackgroundActivityStartMode\(/);
     expect(handoff).not.toContain('MODE_BACKGROUND_ACTIVITY_START_ALLOWED');
     expect(handoff).toContain('NotificationManager.IMPORTANCE_HIGH');
+  });
+
+  it('keeps the goal text off the lock screen', () => {
+    expect(handoff).toContain('.setVisibility(Notification.VISIBILITY_PRIVATE)');
+    expect(handoff).toContain('.setPublicVersion(publicVersion)');
+    const pub = handoff.slice(handoff.indexOf('val publicVersion = publicBuilder'), handoff.indexOf('.build()', handoff.indexOf('val publicVersion = publicBuilder')));
+    expect(pub).not.toMatch(/shown|goal|setContentText|BigTextStyle/);
   });
 
   it('never logs the goal text', () => {

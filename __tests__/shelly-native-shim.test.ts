@@ -112,11 +112,46 @@ describe('generated .bashrc (BASHRC_VERSION >= 255)', () => {
     expect(generated).toContain('  __shelly_ln -s "$SHELLY_LIB_DIR/shelly_cmd" "$HOME/bin/shelly" 2>/dev/null || true');
   });
 
-  it('bash()/sh() preload the exec wrapper only for script / -c runs', () => {
+  it('bash()/sh() preload the exec wrapper only from an interactive caller with args', () => {
     const bashFn = generated.find((l) => l.startsWith('bash() {'))!;
     const shFn = generated.find((l) => l.startsWith('sh() {'))!;
-    expect(bashFn).toMatch(/if \[ "\$#" -gt 0 \]; then LD_PRELOAD="[^"]*\/libexec_wrapper\.so" _run [^ ]*\/libbash\.so "\$@"; else _run [^ ]*\/libbash\.so; fi;/);
-    expect(shFn).toMatch(/if \[ "\$#" -gt 0 \]; then LD_PRELOAD="[^"]*\/libexec_wrapper\.so" \/system\/bin\/sh "\$@"; else \/system\/bin\/sh; fi;/);
+    expect(bashFn).toMatch(/^bash\(\) \{ case "\$-" in \*i\*\) if \[ "\$#" -gt 0 \]; then LD_PRELOAD="[^"]*\/libexec_wrapper\.so" _run [^ ]*\/libbash\.so "\$@"; return; fi ;; esac; _run [^ ]*\/libbash\.so "\$@"; \}$/);
+    expect(shFn).toMatch(/^sh\(\) \{ case "\$-" in \*i\*\) if \[ "\$#" -gt 0 \]; then LD_PRELOAD="[^"]*\/libexec_wrapper\.so" \/system\/bin\/sh "\$@"; return; fi ;; esac; \/system\/bin\/sh "\$@"; \}$/);
+  });
+});
+
+// ---- behavioral: bash()/sh() never override a non-interactive opt-out -------
+const hasBash = spawnSync('bash', ['-c', 'exit 0']).status === 0;
+(hasBash ? describe : describe.skip)('bash()/sh() LD_PRELOAD scoping (bash)', () => {
+  // Stubs: _run / the system sh just report the LD_PRELOAD they were given.
+  const fns = () =>
+    [
+      'libDir=/lib',
+      '_run() { printf "%s|%s\\n" "${LD_PRELOAD-NONE}" "$*"; }',
+      '__sys_sh() { printf "%s|%s\\n" "${LD_PRELOAD-NONE}" "$*"; }',
+      generated.find((l) => l.startsWith('bash() {'))!,
+      generated.find((l) => l.startsWith('sh() {'))!.split('/system/bin/sh').join('__sys_sh'),
+    ].join('\n');
+  const run = (flags: string[], body: string, env: Record<string, string | undefined> = {}) => {
+    const e: Record<string, string | undefined> = { ...process.env, ...env };
+    for (const k of Object.keys(env)) if (env[k] === undefined) delete e[k];
+    const r = spawnSync('bash', [...flags, '-c', `${fns()}\n${body}`], { encoding: 'utf8', env: e as NodeJS.ProcessEnv });
+    return r.stdout.trim().split('\n').pop()!;
+  };
+
+  it('non-interactive caller with LD_PRELOAD unset: child gets NO LD_PRELOAD', () => {
+    expect(run([], 'unset LD_PRELOAD; bash x.sh')).toBe('NONE|/lib/libbash.so x.sh');
+    expect(run([], 'unset LD_PRELOAD; sh -c true')).toBe('NONE|-c true');
+  });
+
+  it('non-interactive caller keeps an inherited LD_PRELOAD unchanged', () => {
+    expect(run([], 'export LD_PRELOAD=/inherited.so; bash x.sh')).toBe('/inherited.so|/lib/libbash.so x.sh');
+  });
+
+  it('interactive caller with args gets the wrapper; a bare interactive bash does not', () => {
+    expect(run(['--norc', '--noprofile', '-i'], 'unset LD_PRELOAD; bash x.sh')).toBe('/lib/libexec_wrapper.so|/lib/libbash.so x.sh');
+    expect(run(['--norc', '--noprofile', '-i'], 'unset LD_PRELOAD; sh -c true')).toBe('/lib/libexec_wrapper.so|-c true');
+    expect(run(['--norc', '--noprofile', '-i'], 'unset LD_PRELOAD; bash')).toBe('NONE|/lib/libbash.so');
   });
 });
 
