@@ -196,14 +196,14 @@ describe('exec-wrapper stack budget (forked-child SIGSEGV fix)', () => {
     // ambiguous between "ended exactly at the cap" and "was truncated", so the
     // guard has to peek at source[i] itself. All four copy loops need it.
     const guards = src.match(/if \(i == MAX_ENVP && source\[i\] != NULL\) return -1;/g) ?? [];
-    // v221 added a fifth copy loop (scrub_system_helper_envp).
+    // v221/v222 added a fifth copy loop (ensure_wrapper_envp).
     expect(guards.length).toBe(5);
     for (const fn of [
       'scrub_system_envp',
       'scrub_codex_child_envp',
       'add_app_loader_envp',
       'add_codex_helper_envp',
-      'scrub_system_helper_envp',
+      'ensure_wrapper_envp',
     ]) {
       expect(functionBody(fn)).toMatch(/if \(i == MAX_ENVP && source\[i\] != NULL\) return -1;/);
     }
@@ -328,9 +328,9 @@ describe('v221: toybox env/nice/nohup/setsid/time/timeout/xargs keep LD_PRELOAD'
     expect(body).not.toMatch(/"(cat|grep|sh|bash)"/);
   });
 
-  it('scrub_system_helper_envp() drops LD_LIBRARY_PATH but guarantees LD_PRELOAD', () => {
-    const body = functionBody('scrub_system_helper_envp');
-    expect(body).toMatch(/if \(starts_with\(source\[i\], "LD_LIBRARY_PATH="\)\) continue;/);
+  it('ensure_wrapper_envp(..., 1) drops LD_LIBRARY_PATH but guarantees LD_PRELOAD', () => {
+    const body = functionBody('ensure_wrapper_envp');
+    expect(body).toMatch(/if \(drop_ld_library_path && starts_with\(source\[i\], "LD_LIBRARY_PATH="\)\) continue;/);
     expect(body).toMatch(/if \(!has_ld_preload\) out\[n\+\+\] = default_ld_preload_env;/);
     // NULL envp falls back to the wrapper-carrying minimal env, not minimal_envp
     expect(body).toMatch(/source = envp \? envp : minimal_wrapper_envp;/);
@@ -342,7 +342,7 @@ describe('v221: toybox env/nice/nohup/setsid/time/timeout/xargs keep LD_PRELOAD'
       expect(body).toMatch(/keep_wrapper_for_helper = should_keep_wrapper_for_helper_path\(rewritten\);/);
       // codex-mode scrub keeps the wrapper for helpers too
       expect(body).toMatch(/keep_wrapper_for_shell \|\| keep_wrapper_for_helper\) == 0\)/);
-      const helperIdx = body.indexOf('scrub_system_helper_envp(envp, scrubbed_env)');
+      const helperIdx = body.indexOf('ensure_wrapper_envp(envp, scrubbed_env, 1)');
       const genericIdx = body.indexOf('scrub_system_envp(envp, scrubbed_env)');
       expect(helperIdx).toBeGreaterThan(0);
       expect(genericIdx).toBeGreaterThan(helperIdx);
@@ -359,6 +359,52 @@ describe('v221: toybox env/nice/nohup/setsid/time/timeout/xargs keep LD_PRELOAD'
 
   it('keeps the v221 build marker CI checks for', () => {
     expect(src).toContain('"shelly-exec-wrapper:v221:system-helpers-keep-wrapper"');
-    expect(src).toMatch(/"shelly-exec-wrapper:v221:fd-pinned-linker-exec"/);
+    expect(src).toMatch(/"shelly-exec-wrapper:v222:fd-pinned-linker-exec"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v222 — wrapper self-propagation (build 2525: Codex's `bash -lc` sources
+// ~/.bashrc, which `unset LD_PRELOAD`; its children then exec'd un-laundered)
+// ---------------------------------------------------------------------------
+describe('v222: a wrapper-loaded process re-propagates LD_PRELOAD to laundered children', () => {
+  it('add_app_loader_envp() takes separate include_ld / include_wrapper flags', () => {
+    const body = functionBody('add_app_loader_envp');
+    expect(src).toMatch(/static int add_app_loader_envp\(char \*const envp\[\], char \*\*out, char \*ld_buf, size_t ld_buf_size,\s*\n\s*int include_ld, int include_wrapper\)/);
+    expect(body).toMatch(/if \(include_ld\) out\[n\+\+\] = ld_buf;/);
+    expect(body).toMatch(/if \(include_wrapper\) \{/);
+  });
+
+  it('the fd-pinned linker exec adds LD_PRELOAD whenever the envp lacks it, in both entry points', () => {
+    for (const fn of ['shelly_execve_internal', 'shelly_posix_spawn_common']) {
+      const body = functionBody(fn);
+      expect(body).toMatch(/int need_wrapper = !env_value\(envp, "LD_PRELOAD="\);/);
+      expect(body).toMatch(/add_app_loader_envp\(envp, app_env, ld_buf, sizeof\(ld_buf\),\s*\n\s*need_ld, need_wrapper\)/);
+      // the old "only when envp is NULL" gate is gone
+      expect(body).not.toMatch(/!envp && keep_wrapper_for_shell\) == 0\)/);
+    }
+  });
+
+  it('explicit `linker64 <app-data ELF>` execs (bashrc _run) and /system shells also get the wrapper', () => {
+    const pred = functionBody('explicit_linker_app_elf_exec');
+    expect(pred).toMatch(/streq\(pathname, LINKER64\)/);
+    expect(pred).toMatch(/trusted_codex_path\(argv\[1\]\)/);
+    for (const fn of ['shelly_execve_internal', 'shelly_posix_spawn_common']) {
+      const body = functionBody(fn);
+      expect(body).toMatch(/explicit_linker_app_elf_exec\(rewritten, argv\) && !env_value\(envp, "LD_PRELOAD="\) &&\s*\n\s*ensure_wrapper_envp\(envp, scrubbed_env, 0\) == 0/);
+      expect(body).toMatch(/keep_wrapper_for_shell && should_scrub_system_env\(rewritten\)\) \{[\s\S]*?ensure_wrapper_envp\(envp, scrubbed_env, 0\) == 0/);
+    }
+  });
+
+  it('non-helper /system binaries are still scrubbed (LD_* removed)', () => {
+    for (const fn of ['shelly_execve_internal', 'shelly_posix_spawn_common']) {
+      expect(functionBody(fn)).toMatch(/should_scrub_system_env\(rewritten\) &&\s*\n\s*scrub_system_envp\(envp, scrubbed_env\) == 0/);
+    }
+    const scrub = functionBody('scrub_system_envp');
+    expect(scrub).toMatch(/starts_with\(source\[i\], "LD_PRELOAD="\)\) \{\s*\n\s*continue;/);
+  });
+
+  it('keeps the v222 build marker CI checks for', () => {
+    expect(src).toContain('"shelly-exec-wrapper:v222:wrapper-self-propagation"');
   });
 });

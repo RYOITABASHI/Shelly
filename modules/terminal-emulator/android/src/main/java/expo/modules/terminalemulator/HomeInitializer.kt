@@ -1266,6 +1266,11 @@ patchCodex(libDir);
     //      SHELLY_CODEX_SHELL_SNAPSHOT=1). See DEFERRED.md for the evidence.
     //      v221 (build 2524 follow-up): /system/bin/env (toybox) and the other
     //      exec-a-child helpers keep LD_PRELOAD so `env python3 ...` works.
+    //      v222 (build 2525 follow-up): Codex's `bash -lc` sources this file,
+    //      whose `unset LD_PRELOAD` (v180, for the PTY shell) emptied the env
+    //      its children were exec'd with. The wrapper now re-propagates
+    //      LD_PRELOAD itself to app-data ELF / shell / helper children, so the
+    //      unset below stays (the PTY shell must never export it).
     private const val BASHRC_VERSION = 250
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.

@@ -38,7 +38,16 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v221:fd-pinned-linker-exec";
+    "shelly-exec-wrapper:v222:fd-pinned-linker-exec";
+
+/* v222 (2026-10-13, build 2525 follow-up): a wrapper-loaded process now
+ * re-propagates LD_PRELOAD to every child that is an app-data ELF (fd-pinned
+ * linker exec or explicit `linker64 <app ELF>`), a /system shell or a /system
+ * exec-a-child helper, even when the caller's env lost LD_PRELOAD (Codex's
+ * `bash -lc` sources ~/.bashrc, which unsets it). See ensure_wrapper_envp. */
+__attribute__((used, retain))
+static const char shelly_exec_wrapper_v222_marker[] =
+    "shelly-exec-wrapper:v222:wrapper-self-propagation";
 
 /* v221 (2026-10-13, build 2524 follow-up): with v220 `$HOME/bin/env` resolved
  * to /system/bin/env and was exec'd with the /system env scrub, so toybox env
@@ -610,6 +619,7 @@ static int copy_path_join(char *out, size_t out_size, const char *dir_start, siz
 }
 
 static int codex_mode_enabled(char *const envp[]);
+static int trusted_codex_path(const char *path);
 
 static int trusted_shell_path(const char *path) {
     return path && path[0] == '/' &&
@@ -648,16 +658,31 @@ static int should_keep_wrapper_for_helper_path(const char *path) {
             streq(base, "xargs"));
 }
 
-/* v221: env for a /system exec-a-child helper: drop LD_LIBRARY_PATH (system
- * binaries must not resolve DSOs from the app-private lib dir) but make sure
- * the wrapper stays preloaded so the helper's own exec is laundered. */
-static int scrub_system_helper_envp(char *const envp[], char **out) {
+/* v221/v222: envp for a child that must inherit the wrapper. Copies envp
+ * (or the wrapper-carrying minimal env when NULL) and appends the default
+ * LD_PRELOAD when the caller's env lacks it. With drop_ld_library_path the
+ * LD_LIBRARY_PATH entry is removed (for /system exec-a-child helpers: system
+ * binaries must not resolve DSOs from the app-private lib dir; the wrapper
+ * re-adds it on the helper's own linker64 exec of an app-data ELF).
+ *
+ * v222 (build 2525): Codex's `bash -lc` child IS exec'd with LD_PRELOAD and
+ * loads the wrapper, but ~/.bashrc then `unset LD_PRELOAD` (v180, so the
+ * interactive PTY shell never exports it). Every exec from that shell -- a
+ * nested `bash script.sh`, `env python3`, `timeout 5 node` -- therefore
+ * carried an envp without LD_PRELOAD, and the wrapper only re-injected it
+ * on the legacy NULL-envp path, so the grandchildren ran un-laundered and
+ * Knox denied their app-data execs ("env: exec python3: Permission denied").
+ * Rule now: a wrapper-loaded process re-propagates LD_PRELOAD to every child
+ * that is an app-data ELF (fd-pinned linker exec, or an explicit
+ * `linker64 <app-data ELF>` as _run does), a /system shell, or a /system
+ * exec-a-child helper. Other /system binaries stay scrubbed. */
+static int ensure_wrapper_envp(char *const envp[], char **out, int drop_ld_library_path) {
     char *const *source = envp ? envp : minimal_wrapper_envp;
     int n = 0;
     int has_ld_preload = 0;
     int i = 0;
     for (; i < MAX_ENVP && source[i]; i++) {
-        if (starts_with(source[i], "LD_LIBRARY_PATH=")) continue;
+        if (drop_ld_library_path && starts_with(source[i], "LD_LIBRARY_PATH=")) continue;
         if (starts_with(source[i], "LD_PRELOAD=")) has_ld_preload = 1;
         if (n >= MAX_ENVP - 2) return -1;
         out[n++] = source[i];
@@ -670,6 +695,18 @@ static int scrub_system_helper_envp(char *const envp[], char **out) {
     if (!has_ld_preload) out[n++] = default_ld_preload_env;
     out[n] = NULL;
     return 0;
+}
+
+/* v222: `execve("/system/bin/linker64", {linker64, <app-data ELF>, ...})` as
+ * emitted by the bashrc `_run` helper. linker64 itself is passed through
+ * untouched (see linker_exec_elf_fd), so this is the one app-data exec shape
+ * the fd-pinned path never sees; the wrapper must still propagate itself
+ * into that child. Codex fs-helper relaunches are matched earlier and never
+ * reach this check. */
+static int explicit_linker_app_elf_exec(const char *pathname, char *const argv[]) {
+    return streq(pathname, LINKER64) &&
+           argv && argv[0] && argv[1] &&
+           trusted_codex_path(argv[1]);
 }
 
 /* bug #119 (TOCTOU): the old is_elf() checked the ELF magic by path and the
@@ -1043,14 +1080,18 @@ static int is_codex_fs_helper_self_exec(const char *pathname, char *const argv[]
            codex_fs_helper_marker_index(argv) >= 1;
 }
 
+/* Build the env for an app-data ELF exec'd through linker64: the caller's
+ * envp (or minimal_envp) plus LD_LIBRARY_PATH=<lib dir> when include_ld, plus
+ * the default LD_PRELOAD when include_wrapper (v222: every app-data ELF child
+ * of a wrapper-loaded process gets the wrapper, not only the NULL-envp case). */
 static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, size_t ld_buf_size,
-                               int include_wrapper) {
+                               int include_ld, int include_wrapper) {
     char *const *source = envp ? envp : minimal_envp;
     const char *lib_dir = envp ? env_value(envp, "SHELLY_LIB_DIR=") : DEFAULT_LIB_DIR;
     size_t nbuf = 0;
     int n = 0;
 
-    if (!lib_dir || !lib_dir[0]) return -1;
+    if (!lib_dir || !lib_dir[0]) lib_dir = DEFAULT_LIB_DIR;
     if (append_str(ld_buf, ld_buf_size, &nbuf, "LD_LIBRARY_PATH=") != 0) return -1;
     if (append_str(ld_buf, ld_buf_size, &nbuf, lib_dir) != 0) return -1;
 
@@ -1066,7 +1107,7 @@ static int add_app_loader_envp(char *const envp[], char **out, char *ld_buf, siz
     // NULL means the array legitimately ended right at the cap.
     if (i == MAX_ENVP && source[i] != NULL) return -1;
     }
-    out[n++] = ld_buf;
+    if (include_ld) out[n++] = ld_buf;
     if (include_wrapper) {
         if (n >= MAX_ENVP - 1) return -1;
         out[n++] = default_ld_preload_env;
@@ -1242,7 +1283,7 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
         if (keep_wrapper_for_helper && should_scrub_system_env(rewritten)) {
             /* v221: toybox env/nice/timeout/... must keep the wrapper so the
              * command they exec (python3, node, ...) is laundered too. */
-            if (scrub_system_helper_envp(envp, scrubbed_env) == 0) {
+            if (ensure_wrapper_envp(envp, scrubbed_env, 1) == 0) {
                 if (envp) trace_exec_event("system-helper-keep-wrapper", pathname, rewritten, argv, envp, 0);
                 return raw_execve_call(rewritten, argv, scrubbed_env);
             }
@@ -1251,7 +1292,20 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
             return raw_execve_call(rewritten, argv, minimal_wrapper_envp);
         }
         if (keep_wrapper_for_shell && should_scrub_system_env(rewritten)) {
+            /* v222: /system/bin/sh (mksh) child of a wrapper-loaded process
+             * keeps the wrapper even when the caller's env lost LD_PRELOAD. */
+            if (!env_value(envp, "LD_PRELOAD=") && ensure_wrapper_envp(envp, scrubbed_env, 0) == 0) {
+                if (envp) trace_exec_event("system-shell-ensure-wrapper", pathname, rewritten, argv, envp, 0);
+                return raw_execve_call(rewritten, argv, scrubbed_env);
+            }
             return raw_execve_call(rewritten, argv, envp);
+        }
+        if (explicit_linker_app_elf_exec(rewritten, argv) && !env_value(envp, "LD_PRELOAD=") &&
+            ensure_wrapper_envp(envp, scrubbed_env, 0) == 0) {
+            /* v222: `linker64 <app-data ELF> ...` (bashrc _run) from a
+             * wrapper-loaded shell whose env lost LD_PRELOAD. */
+            if (envp) trace_exec_event("linker64-app-elf-ensure-wrapper", pathname, rewritten, argv, envp, 0);
+            return raw_execve_call(rewritten, argv, scrubbed_env);
         }
         if (should_scrub_system_env(rewritten) &&
             scrub_system_envp(envp, scrubbed_env) == 0) {
@@ -1267,14 +1321,20 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
         close_elf_fd(elf_fd);
         return raw_execve_call(rewritten, argv, envp);
     }
-    if (!env_value(envp, "LD_LIBRARY_PATH=")) {
-        char *app_env[MAX_ENVP];
-        char ld_buf[PATH_BUF_SIZE + 32];
-        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
-                                !envp && keep_wrapper_for_shell) == 0) {
-            int exec_ret = raw_execve_call(LINKER64, new_argv, app_env);
-            close_elf_fd(elf_fd);
-            return exec_ret;
+    {
+        int need_ld = !env_value(envp, "LD_LIBRARY_PATH=");
+        /* v222: app-data ELF children always inherit the wrapper. */
+        int need_wrapper = !env_value(envp, "LD_PRELOAD=");
+        if (need_ld || need_wrapper) {
+            char *app_env[MAX_ENVP];
+            char ld_buf[PATH_BUF_SIZE + 32];
+            if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
+                                    need_ld, need_wrapper) == 0) {
+                if (envp && need_wrapper) trace_exec_event("app-elf-ensure-wrapper", pathname, rewritten, argv, envp, 1);
+                int exec_ret = raw_execve_call(LINKER64, new_argv, app_env);
+                close_elf_fd(elf_fd);
+                return exec_ret;
+            }
         }
     }
     int exec_ret = raw_execve_call(LINKER64, new_argv, envp);
@@ -1441,7 +1501,7 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
         char *scrubbed_env[MAX_ENVP];
         if (keep_wrapper_for_helper && should_scrub_system_env(rewritten)) {
             /* v221: see shelly_execve_internal -- exec-a-child helper. */
-            if (scrub_system_helper_envp(envp, scrubbed_env) == 0) {
+            if (ensure_wrapper_envp(envp, scrubbed_env, 1) == 0) {
                 trace_exec_event("system-helper-keep-wrapper", spawn_path, rewritten, argv, envp, 0);
                 return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, scrubbed_env);
             }
@@ -1450,7 +1510,18 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
             return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, minimal_wrapper_envp);
         }
         if (keep_wrapper_for_shell && should_scrub_system_env(rewritten)) {
+            /* v222: see shelly_execve_internal -- /system shell keeps wrapper. */
+            if (!env_value(envp, "LD_PRELOAD=") && ensure_wrapper_envp(envp, scrubbed_env, 0) == 0) {
+                trace_exec_event("system-shell-ensure-wrapper", spawn_path, rewritten, argv, envp, 0);
+                return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, scrubbed_env);
+            }
             return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, envp);
+        }
+        if (explicit_linker_app_elf_exec(rewritten, argv) && !env_value(envp, "LD_PRELOAD=") &&
+            ensure_wrapper_envp(envp, scrubbed_env, 0) == 0) {
+            /* v222: see shelly_execve_internal -- explicit linker64 app ELF. */
+            trace_exec_event("linker64-app-elf-ensure-wrapper", spawn_path, rewritten, argv, envp, 0);
+            return call_real_posix_spawn(search_path, pid, rewritten, file_actions, attrp, argv, scrubbed_env);
         }
         if (should_scrub_system_env(rewritten) &&
             scrub_system_envp(envp, scrubbed_env) == 0) {
@@ -1470,14 +1541,20 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
      * closed once the spawn call returns (bionic posix_spawn has vfork-style
      * semantics, so the child has already exec'd or died by then; with plain
      * fork semantics the child holds its own fd-table copy either way). */
-    if (!env_value(envp, "LD_LIBRARY_PATH=")) {
-        char *app_env[MAX_ENVP];
-        char ld_buf[PATH_BUF_SIZE + 32];
-        if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
-                                !envp && keep_wrapper_for_shell) == 0) {
-            int spawn_ret = call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, app_env);
-            close_elf_fd(elf_fd);
-            return spawn_ret;
+    {
+        int need_ld = !env_value(envp, "LD_LIBRARY_PATH=");
+        /* v222: app-data ELF children always inherit the wrapper. */
+        int need_wrapper = !env_value(envp, "LD_PRELOAD=");
+        if (need_ld || need_wrapper) {
+            char *app_env[MAX_ENVP];
+            char ld_buf[PATH_BUF_SIZE + 32];
+            if (add_app_loader_envp(envp, app_env, ld_buf, sizeof(ld_buf),
+                                    need_ld, need_wrapper) == 0) {
+                if (need_wrapper) trace_exec_event("app-elf-ensure-wrapper", spawn_path, rewritten, argv, envp, 1);
+                int spawn_ret = call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, app_env);
+                close_elf_fd(elf_fd);
+                return spawn_ret;
+            }
         }
     }
     int spawn_ret = call_real_posix_spawn(0, pid, LINKER64, file_actions, attrp, new_argv, envp);
