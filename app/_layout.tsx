@@ -66,7 +66,13 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { getOptionalPack } from '@/lib/optional-packs';
 import { installOptionalPack } from '@/lib/optional-pack-installer';
 import { handleTeachQueueLine, sweepOrphanedTeachLog } from '@/lib/teach-controller';
-import { fireReviewedAgentIntent } from '@/lib/agent-intent-review';
+import {
+  closePawReviewLine,
+  fireReviewedAgentIntent,
+  intentRequiresHumanReview,
+  isAgentIntentMode,
+  isClosePawNotInstalledError,
+} from '@/lib/agent-intent-review';
 import {
   fireReviewedAgentBrowserPaneAction,
   resolveTargetBrowserPaneId,
@@ -216,7 +222,7 @@ type AgentActionApprovalRequest = {
   ts?: string | null;
   expiresAt?: number | null;
   requestSha256?: string | null;
-  intentMode?: 'launch' | 'share' | null;
+  intentMode?: 'launch' | 'share' | 'closepaw' | null;
   intentTarget?: string | null;
   intentShareText?: string | null;
   dmPairingId?: string | null;
@@ -353,7 +359,11 @@ export default function RootLayout() {
         await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
-        Alert.alert(t('agent_action_confirm_intent_failed'));
+        Alert.alert(
+          request.intentMode === 'closepaw' && isClosePawNotInstalledError(e)
+            ? t('agent_action_confirm_closepaw_not_installed')
+            : t('agent_action_confirm_intent_failed'),
+        );
         return;
       }
     }
@@ -1158,7 +1168,7 @@ export default function RootLayout() {
         ? expiresAtRaw
         : null;
       const intentModeRaw = str('intentMode');
-      const intentMode = intentModeRaw === 'launch' || intentModeRaw === 'share' ? intentModeRaw : null;
+      const intentMode = isAgentIntentMode(intentModeRaw) ? intentModeRaw : null;
       const browserPaneActionKindRaw = str('browserPaneActionKind');
       const browserPaneActionKind =
         browserPaneActionKindRaw === 'click' || browserPaneActionKindRaw === 'fill' || browserPaneActionKindRaw === 'extractText'
@@ -2039,6 +2049,8 @@ export default function RootLayout() {
     // the caller should fall back to the normal Review notification.
     const autoResolveActionApproval = async (parsed: AgentActionApprovalRequest): Promise<boolean> => {
       if (parsed.actionType !== 'intent' && parsed.actionType !== 'dm-reply') return false;
+      // ClosePaw hand-off: never auto-accepted, always the human Review.
+      if (parsed.actionType === 'intent' && intentRequiresHumanReview(parsed)) return false;
       if (!TerminalEmulator.resolveAgentActionApproval || !TerminalEmulator.readAgentActionApprovalRequest) return false;
       try {
         const minted = parseActionApprovalRequest(await TerminalEmulator.readAgentActionApprovalRequest(parsed.runId));
@@ -2048,6 +2060,7 @@ export default function RootLayout() {
         if (minted.expiresAt && minted.expiresAt < Date.now()) return false;
         if (minted.actionType === 'intent') {
           if (!TerminalEmulator.fireAgentIntent) return false;
+          if (intentRequiresHumanReview(minted)) return false;
           try {
             await fireReviewedAgentIntent(minted, TerminalEmulator.fireAgentIntent);
           } catch (e) {
@@ -2263,7 +2276,9 @@ export default function RootLayout() {
               </Text>
               <Text style={actionApprovalStyles.body}>
                 {pendingAgentActionApproval.actionType === 'intent'
-                  ? t('agent_action_confirm_body_intent')
+                  ? (pendingAgentActionApproval.intentMode === 'closepaw'
+                    ? t('agent_action_confirm_body_closepaw')
+                    : t('agent_action_confirm_body_intent'))
                   : pendingAgentActionApproval.actionType === 'dm-reply'
                     ? t('agent_action_confirm_body_dmreply')
                   : pendingAgentActionApproval.actionType === 'browser-pane'
@@ -2272,7 +2287,19 @@ export default function RootLayout() {
                     ? t('agent_action_confirm_body_socialpost')
                   : t('agent_action_confirm_body')}
               </Text>
-              {pendingAgentActionApproval.actionType === 'intent' ? (
+              {pendingAgentActionApproval.actionType === 'intent' && pendingAgentActionApproval.intentMode === 'closepaw' ? (
+                <>
+                  {/* ClosePaw hand-off: one plain line, exactly the goal that
+                      will be fired (closePawReviewLine renders the same
+                      sanitizer fireReviewedAgentIntent fires). */}
+                  <ScrollView style={actionApprovalStyles.commandBox}>
+                    <Text selectable style={actionApprovalStyles.commandText}>
+                      {closePawReviewLine(pendingAgentActionApproval, t)}
+                    </Text>
+                  </ScrollView>
+                  <Text style={actionApprovalStyles.meta}>{t('agent_action_confirm_closepaw_note')}</Text>
+                </>
+              ) : pendingAgentActionApproval.actionType === 'intent' ? (
                 <>
                   <Text style={actionApprovalStyles.label}>
                     {t('agent_action_confirm_intent_mode')}

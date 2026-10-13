@@ -32,6 +32,7 @@
 import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime } from './agent-nl-parser';
 import { AgentAction } from '@/store/types';
 import { toolChoiceToLabel } from './agent-tool-router';
+import { sanitizeClosePawGoal } from './agent-intent-review';
 import { normalizeStep, planParallelGroups } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
 import { t, tFor, type Locale } from './i18n';
@@ -330,6 +331,9 @@ function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, lo
     case 'cli':
       return action.command ? `${label}: ${action.command}` : label;
     case 'intent':
+      if (action.intentMode === 'closepaw') {
+        return tl('agentplan.intent_closepaw_line', { goal: sanitizeClosePawGoal(action.intentShareText) });
+      }
       return action.intentMode === 'launch' && action.intentTarget
         ? `${label} → ${action.intentTarget}`
         : label;

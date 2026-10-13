@@ -182,7 +182,14 @@ class NotificationDispatcher(private val context: Context) {
                 "intent" -> listOfNotNull(
                     engineLine,
                     actionPhrase,
-                    request.intentMode?.let { context.getString(R.string.scouter_notification_agent_action_intent_target, "$it: ${request.intentTarget.orEmpty()}".redactForScouter()) },
+                    request.intentMode?.let {
+                        if (it == "closepaw") {
+                            // ClosePaw hand-off: show the goal (truncated), not the empty target.
+                            context.getString(R.string.scouter_notification_agent_action_intent_closepaw, request.intentShareText.orEmpty().take(200).redactForScouter())
+                        } else {
+                            context.getString(R.string.scouter_notification_agent_action_intent_target, "$it: ${request.intentTarget.orEmpty()}".redactForScouter())
+                        }
+                    },
                     context.getString(R.string.scouter_notification_agent_action_intent_review_required),
                 ).joinToString("\n")
                 "dm-reply" -> listOfNotNull(

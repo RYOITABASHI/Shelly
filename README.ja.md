@@ -310,6 +310,8 @@ and write the primary-source links + a short summary to my Obsidian vault
 
 無人実行のうち、アクションがローカルの `draft` ファイル（スコープされた出力フォルダ内）か `notify` だけのものは、手動承認のタップを待たなくなりました――どちらも端末の外に出ないからです。それ以外のアクション（webhook、CLI、SNS 投稿など）は引き続き承認が必要で、安全ルールを有効にしている場合はそちらが優先されます。
 
+**ClosePaw への引き継ぎ（Experimental）。** エージェントから、オープンソース（Apache-2.0）の Android スマホ操作エージェント [ClosePaw](https://github.com/imoonkey/closepaw) にタスクを引き継げます。「ClosePawでChromeを開いて東京の天気を検索して」（"have ClosePaw open Chrome and search the weather in Tokyo"）のように言うだけです。実行のたびにまず Shelly の Review で「ClosePaw に引き継ぎ: <ゴール>」を確認し（自動承認はされません）、さらに ClosePaw 側でも「External Goal」の確認が出てから動きます。ClosePaw は結果を返さないため、実行は結果つきの成功ではなく **「ClosePaw に引き継ぎ済み」** で終わります。ClosePaw は GitHub のリリースから各自でインストールし、API キー / OpenAI 互換エンドポイントで設定してください（Shelly の小型オンデバイスモデルでは ClosePaw を動かせません）。*実機未検証です。*
+
 そもそもリクエストが曖昧すぎて動きようがない場合――目的語もドメインもない「なんか手伝って」のような場合――Shelly は空のタスクでエージェントを登録したりせず、いつ動かすかを聞く*前に*、実際に何をしてほしいのかを尋ねます。
 
 **正直な注意点:** 無人での発火は Android のバックグラウンド制限に依存し、これはメーカーによって差があります（Samsung / Xiaomi / Oppo / OnePlus のバッテリー凍結機能）。Shelly は上に挙げた Android の最優先アラームパスを使い、実行漏れも表に出しますが、あらゆる端末での発火を*保証*することはできません。バッテリー最適化の除外を許可したうえで、エージェントの実行ビューを確認してください。
@@ -384,6 +386,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | MCP サーバーの仕様 2026-07-28（ステートレス）対応、旧リビジョンと併存 | 🟡 実装済み、実機では未検証 |
 | 端末内音声認識（キー不要、Android SpeechRecognizer） | 🟡 実装済み、実機では未検証 |
 | ローカルモデル MiniCPM5-2B | 🟡 Experimental。評価したうえで不採用: Fold6 でルーティングは Qwen3.5-2B の 100% に対し 83%、ネイティブのツール呼び出しは 88% に対し 50% |
+| ClosePaw への引き継ぎ — ゴールを ClosePaw（スマホ操作アプリ）へ渡すエージェントアクション（明示 Intent、実行ごとの Review、「引き継ぎ済み」で終了） | 🟡 Experimental。実装済み・実機未検証。ClosePaw からの結果受け取りは未対応（Phase 2 は上流の変更が必要） |
 | llama.cpp を b11433 に固定し sha256 で検証 | 🟡 実装済み、実機では未検証 |
 | 配布 | 🟡 GitHub Releases(`android-latest`)のみ。Playストア/F-Droidへの掲載はまだありません |
 

@@ -313,12 +313,16 @@ export default function AgentRunsPane() {
                 {group.runs.map((run) => {
                   const key = runKey(run);
                   const expanded = expandedKey === key;
-                  const tone = toneColor(runStatusTone(run.status));
+                  // ClosePaw hand-off: delivered but no result comes back —
+                  // render as "handed off", never as a success-with-result.
+                  const handedOff = run.status === 'success' && run.handoff === 'closepaw';
+                  const tone = handedOff ? colors.muted : toneColor(runStatusTone(run.status));
                   const age = describeRunAge(run.timestamp, Date.now());
                   const duration = formatRunDuration(run.durationMs);
                   const routeRows = buildRouteDecisionRows(run.routeDecision);
                   const canSaveSkill =
                     Boolean(agent) &&
+                    !handedOff &&
                     shouldOfferSkillSave({ status: run.status, alreadySkillId: agent?.skillId });
                   const gateEntries = gateLogByAgent[group.agentId];
                   const gateLoading = gateLogLoading[group.agentId] ?? false;
@@ -335,13 +339,13 @@ export default function AgentRunsPane() {
                         accessibilityLabel={t('agent_runs.toggle_detail_a11y')}
                       >
                         <MaterialIcons
-                          name={runStatusIcon(run.status) as never}
+                          name={(handedOff ? 'call-made' : runStatusIcon(run.status)) as never}
                           size={16}
                           color={tone}
                         />
                         <View style={styles.rowMain}>
                           <Text style={[styles.rowStatus, { color: tone }]} numberOfLines={1}>
-                            {t(`agent_runs.status_${run.status}`)}
+                            {handedOff ? t('agent_runs.status_handed_off') : t(`agent_runs.status_${run.status}`)}
                           </Text>
                           <Text style={[styles.rowMeta, { color: colors.muted }]} numberOfLines={1}>
                             {[

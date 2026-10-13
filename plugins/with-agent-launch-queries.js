@@ -13,6 +13,11 @@
  * A <queries> block matching MAIN/LAUNCHER is the standard, unprivileged
  * way to see "any app with a launcher icon" — it does not require the
  * QUERY_ALL_PACKAGES permission.
+ *
+ * ClosePaw hand-off (intent mode "closepaw", 2026-10-13): an explicit
+ * <package android:name="ai.closepaw"/> entry so fireAgentIntent's
+ * resolveActivity() check can see ClosePaw's exported MainActivity and fail
+ * with a clear "not installed" message instead of a generic error.
  */
 const { withAndroidManifest } = require("expo/config-plugins");
 
@@ -26,6 +31,10 @@ function withAgentLaunchQueries(config) {
       action: [{ $: { "android:name": "android.intent.action.MAIN" } }],
       category: [{ $: { "android:name": "android.intent.category.LAUNCHER" } }],
     });
+    if (!queries.package) queries.package = [];
+    if (!queries.package.some((p) => p && p.$ && p.$["android:name"] === "ai.closepaw")) {
+      queries.package.push({ $: { "android:name": "ai.closepaw" } });
+    }
     return config;
   });
 }

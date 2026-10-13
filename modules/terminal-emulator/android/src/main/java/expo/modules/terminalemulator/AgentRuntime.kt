@@ -424,9 +424,13 @@ object AgentRuntime {
     // v65 (2026-10-09, sourced briefings): Perplexity "## Sources" block now
     // numbered in citations order (matches the [n] markers in the text). See
     // lib/agent-executor.ts's AGENT_SCRIPT_VERSION v65 comment. No native logic change.
-    private const val CURRENT_SCRIPT_VERSION = 65
+    // v66 / CURRENT_EXECUTOR_VERSION 7 (2026-10-13, ClosePaw hand-off Phase 1):
+    // intent actions accept the 'closepaw' mode (never auto-accepted) and the
+    // run log records handoff:"closepaw". Bumped so stale copies (which refuse
+    // the mode as invalid) are refreshed. No native logic change here.
+    private const val CURRENT_SCRIPT_VERSION = 66
     private const val CURRENT_PLAN_SPEC_VERSION = 1
-    private const val CURRENT_EXECUTOR_VERSION = 6
+    private const val CURRENT_EXECUTOR_VERSION = 7
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

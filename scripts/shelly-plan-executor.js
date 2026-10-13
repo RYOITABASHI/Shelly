@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=6
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=7
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -28,8 +28,23 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // fail with NO_SOURCES_MESSAGE instead of saving an unsourced briefing.
 // Bumped so a stale v5 copy (which saves the unsourced/fabricated briefing)
 // is refused and refreshed.
-const EXECUTOR_SCRIPT_VERSION = 6;
+// v7 (2026-10-13, ClosePaw hand-off Phase 1): intent actions accept the
+// 'closepaw' mode (goal in intentShareText, never auto-accepted) and the run
+// log records handoff:'closepaw'. Bumped so a stale v6 copy (which refuses
+// the mode as invalid) is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 7;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
+// ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
+// lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
+// collapse space runs, trim spaces, cap 2000 code points).
+const CLOSEPAW_GOAL_MAX_CHARS = 2000;
+function sanitizeClosePawGoal(raw) {
+  // eslint-disable-next-line no-control-regex
+  const collapsed = String(raw == null ? '' : raw).replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/ {2,}/g, ' ').replace(/^ +| +$/g, '');
+  const codePoints = Array.from(collapsed);
+  if (codePoints.length <= CLOSEPAW_GOAL_MAX_CHARS) return collapsed;
+  return codePoints.slice(0, CLOSEPAW_GOAL_MAX_CHARS).join('').replace(/ +$/g, '');
+}
 
 // 署名付き承認 (SIGNED-APPROVAL) — Migration step 2 (lib/signed-approval/wiring.ts).
 // Master dormancy switch for the EXECUTOR half. Mirrors, byte-for-byte in intent,
@@ -2646,6 +2661,7 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, ste
     ...(paths.savedOutput && paths.savedOutput.savedPathMirror ? { savedPathMirror: paths.savedOutput.savedPathMirror } : {}),
     ...(steps ? { steps } : {}),
     ...(actionResults ? { actionResults } : {}),
+    ...(paths.handoff ? { handoff: paths.handoff } : {}),
   };
   writeAtomic(path.join(paths.logDir, `${Math.floor(ts / 1000)}.json`), JSON.stringify(log) + '\n');
 }
@@ -3892,7 +3908,7 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
     if (actionType === 'intent') {
       const intentMode = String(plan.action.intentMode || '').trim();
       const intentTarget = String(plan.action.intentTarget || '').trim();
-      if (intentMode !== 'launch' && intentMode !== 'share') {
+      if (intentMode !== 'launch' && intentMode !== 'share' && intentMode !== 'closepaw') {
         const message = 'Intent action has an invalid mode.';
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
@@ -3908,16 +3924,31 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
+      // ClosePaw hand-off (Phase 1): the goal rides in intentShareText; RN
+      // sanitizes + caps it identically for display and for the fire.
+      const closePawGoal = intentMode === 'closepaw' ? sanitizeClosePawGoal(resolvedShareText) : '';
+      if (intentMode === 'closepaw' && !closePawGoal) {
+        const message = 'ClosePaw hand-off is missing a goal.';
+        writeNotification(paths, plan, 'error', message);
+        return { status: 'error', preview: message, errorMessage: message };
+      }
       maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
-        intentMode, intentTarget, intentShareText: resolvedShareText,
+        intentMode, intentTarget: intentMode === 'closepaw' ? '' : intentTarget, intentShareText: resolvedShareText,
         // Attended-only (see unattendedPreflightFailure — intent is never
         // reached here when unattended). RN is always alive by construction,
         // so autoAccept just decides whether it shows the UI card or
-        // resolves silently.
-        autoAccept: !requireActionApprovalTap(plan, config),
+        // resolves silently. A ClosePaw hand-off is NEVER auto-accepted: the
+        // user must see "Hand off to ClosePaw: <goal>" first.
+        autoAccept: intentMode !== 'closepaw' && !requireActionApprovalTap(plan, config),
       });
       // Side effect already happened in RN before the accept reply appeared —
       // no broker/native call here, unlike webhook/cli.
+      if (intentMode === 'closepaw') {
+        // ClosePaw returns no result to Shelly: end as "handed off", never
+        // as a success-with-result (run log gets handoff:'closepaw').
+        paths.handoff = 'closepaw';
+        return { status: 'success', preview: `Handed off to ClosePaw (no result is returned): ${closePawGoal}` };
+      }
       return { status: 'success', preview };
     }
     if (actionType === 'dm-reply') {
@@ -5213,6 +5244,7 @@ module.exports = {
   resolveDraftDestination,
   localDateTimeStamps,
   writeRunLog,
+  sanitizeClosePawGoal,
   parseConfigEnv,
   isLoopbackUrl,
   // 署名付き承認 (SIGNED-APPROVAL) Migration step 2 — exported for host unit tests

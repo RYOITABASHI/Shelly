@@ -687,7 +687,15 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // CHANGE for every Perplexity agent: bumped so a
 // stale v64 script is regenerated. Kept in lockstep with AgentRuntime.kt's
 // CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 65;
+// v66 (2026-10-13, ClosePaw hand-off Phase 1): dispatch_agent_action's intent
+// branch accepts the 'closepaw' mode (goal carried in ACTION_INTENT_SHARE_TEXT,
+// never auto-accepted — request_and_wait_approval forces autoAccept=false for
+// it) and a delivered hand-off ends the run as "handed off" (run-log
+// handoff:"closepaw" + an explicit no-result preview) rather than a
+// success-with-result. A stale v65 script refuses the mode as invalid, so this
+// is bumped to regenerate. Kept in lockstep with AgentRuntime.kt's
+// CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 66;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1791,6 +1799,7 @@ ACTION_APPROVAL_PUBLIC_KEY_SHA256="\${SHELLY_AGENT_ACTION_APPROVAL_PUBLIC_KEY_SH
 ACTION_APPROVAL_TIMEOUT_SECONDS="\${SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS:-300}"
 ACTION_DISPATCH_STATUS=""
 ACTION_DISPATCH_MESSAGE=""
+ACTION_DISPATCH_HANDOFF=""
 REGISTRY_LOCK=""
 REGISTRY_LOCK_ACQUIRED=0
 BACKEND_ERROR_FILE="$RESULT_FILE.backend-error"
@@ -3164,7 +3173,9 @@ write_action_approval_request() {
   # see AgentAction.browserPaneAction's doc comment (store/types.ts) for why a
   # blind click/fill against a live page is a higher risk tier than
   # intent/dm-reply's already-established one.
-  auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && [ "$ACTION_APPROVAL_MODE" != "manual" ] && [ "\${SHELLY_POLICY_FORCE_MANUAL:-0}" != "1" ] && printf 'true' || printf 'false')
+  # ClosePaw hand-off (intent mode 'closepaw') is likewise NEVER auto-accepted:
+  # the user must see "Hand off to ClosePaw: <goal>" in Review first.
+  auto_accept_flag=$([ "$approval_type" != "browser-pane" ] && { [ "$approval_type" != "intent" ] || [ "$ACTION_INTENT_MODE" != "closepaw" ]; } && [ "$ACTION_APPROVAL_MODE" != "manual" ] && [ "\${SHELLY_POLICY_FORCE_MANUAL:-0}" != "1" ] && printf 'true' || printf 'false')
   # POLICY-001: run origin for the RN approval choke point (trust ramp /
   # auto-accept refusal for proactive runs). Empty ⇒ treated as proactive.
   origin_json=$(json_escape_text "\${SHELLY_RUN_ORIGIN:-}")
@@ -3852,7 +3863,7 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
-      if [ -z "$ACTION_INTENT_MODE" ] || { [ "$ACTION_INTENT_MODE" != "launch" ] && [ "$ACTION_INTENT_MODE" != "share" ]; }; then
+      if [ -z "$ACTION_INTENT_MODE" ] || { [ "$ACTION_INTENT_MODE" != "launch" ] && [ "$ACTION_INTENT_MODE" != "share" ] && [ "$ACTION_INTENT_MODE" != "closepaw" ]; }; then
         ACTION_DISPATCH_STATUS="error"
         ACTION_DISPATCH_MESSAGE="Intent action has an invalid mode."
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
@@ -3870,10 +3881,36 @@ dispatch_agent_action() {
         write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
         return 1
       fi
+      if [ "$ACTION_INTENT_MODE" = "closepaw" ]; then
+        # Same {{result}} substitution request_and_wait_approval applies to
+        # the approval request's intentShareText, then the same control-char
+        # -> space / collapse / trim normalization RN's sanitizeClosePawGoal
+        # applies before display + fire (2000-code-point cap is RN/native).
+        closepaw_goal="\${ACTION_INTENT_SHARE_TEXT//\\{\\{result\\}\\}/$preview}"
+        # Pure bash (no tr/sed dependency under set -euo pipefail).
+        closepaw_goal="\${closepaw_goal//[[:cntrl:]]/ }"
+        while [[ "$closepaw_goal" == *"  "* ]]; do closepaw_goal="\${closepaw_goal//  / }"; done
+        closepaw_goal="\${closepaw_goal# }"
+        closepaw_goal="\${closepaw_goal% }"
+        if [ -z "$closepaw_goal" ]; then
+          ACTION_DISPATCH_STATUS="error"
+          ACTION_DISPATCH_MESSAGE="ClosePaw hand-off is missing a goal."
+          write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+          return 1
+        fi
+        ACTION_INTENT_TARGET=""
+      fi
       request_and_wait_approval "intent" "$preview" "$result_file" || return 1
       # No broker/native call here (unlike webhook/cli): RN already fired the
       # intent NATIVELY (fireAgentIntent) BEFORE writing the accept reply that
       # wait_action_approval just observed. Nothing left to execute.
+      if [ "$ACTION_INTENT_MODE" = "closepaw" ]; then
+        # ClosePaw returns no result to Shelly: the run ends "handed off"
+        # (run-log handoff:"closepaw"), never a success-with-result.
+        ACTION_DISPATCH_HANDOFF="closepaw"
+        ACTION_DISPATCH_MESSAGE="Handed off to ClosePaw (no result is returned): \${closepaw_goal:0:2000}"
+        return 0
+      fi
       ACTION_DISPATCH_MESSAGE="Intent fired: $ACTION_INTENT_MODE $ACTION_INTENT_TARGET"
       return 0
       ;;
@@ -6039,6 +6076,10 @@ ${useMultiActions ? `  # Multi-action fan-out (v24, Agent.actions): dispatch EVE
     STATUS="\${ACTION_DISPATCH_STATUS:-error}"
     ERROR_MESSAGE="\${ACTION_DISPATCH_MESSAGE:-agent action dispatch failed}"
     PREVIEW="$ERROR_MESSAGE"
+  elif [ -n "\${ACTION_DISPATCH_HANDOFF:-}" ]; then
+    # ClosePaw hand-off: the run's visible outcome is the hand-off itself,
+    # not the model output (no result ever comes back from ClosePaw).
+    PREVIEW="$ACTION_DISPATCH_MESSAGE"
   fi
 `}else
   if [ "$CODEX_RESULT_ACTIVE" = "1" ]; then
@@ -6119,8 +6160,12 @@ ${hasDraftAction ? `
     SAVED_PATH_FIELDS=""
   fi
 ` : 'SAVED_PATH_FIELDS=""'}
+HANDOFF_FIELDS=""
+if [ "$STATUS" = "success" ] && [ "\${ACTION_DISPATCH_HANDOFF:-}" = "closepaw" ]; then
+  HANDOFF_FIELDS=",\\"handoff\\":\\"closepaw\\""
+fi
 ${useMultiActions ? 'ACTION_RESULTS_FIELDS=",\\"actionResults\\":$ACTION_RESULTS_JSON"\n' : ''}cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS${useMultiActions ? '$ACTION_RESULTS_FIELDS' : ''}}
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS$HANDOFF_FIELDS${useMultiActions ? '$ACTION_RESULTS_FIELDS' : ''}}
 LOGEOF
 
 # Prune old logs (keep last 30)

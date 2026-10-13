@@ -1791,7 +1791,55 @@ function multiSocialUnresolvedCaveat(platforms: SocialPlatform[]): string {
  *  await-confirm — see that module's tryPatchAction for the "was this an
  *  explicit signal, not just the silent draft default" gating it layers on
  *  top of this function's own default-to-draft fallback. */
+// ── ClosePaw hand-off (Phase 1, 2026-10-13) ─────────────────────────────
+// Only an EXPLICIT mention of ClosePaw by name ever produces this action (a
+// privilege-escalation guard in the same spirit as the cli branch below: a
+// phone-operating agent is never inferred from generic task text). The
+// result is still an ordinary intent action, so it goes through the confirm
+// step at registration and the per-run human Review (never auto-accepted)
+// before anything is fired.
+const CLOSEPAW_NAME_RE = /close\s?paw|クローズポー/i;
+const CLOSEPAW_EN_GOAL_RES: RegExp[] = [
+  /\bhand(?:\s|-)?(?:it\s+)?off\s+to\s+close\s?paw\b\s*(?:[:：,]\s*)?(?:to\s+)?(.*)$/i,
+  /\b(?:have|ask|let|tell|get|use)\s+close\s?paw\b\s*(?:to\s+)?(.*)$/i,
+  /\bclose\s?paw\s*[:：]\s*(.*)$/i,
+];
+const CLOSEPAW_JA_GOAL_RE = /(?:close\s?paw|クローズポー)\s*(?:に頼んで|に依頼して|を使って|に任せて|で|に|へ)\s*[、,]?\s*(.*)$/i;
+
+function trimClosePawGoal(raw: string): string {
+  return raw
+    .replace(/^[\s、,:：]+/, '')
+    .replace(/[\s。．.!！]+$/, '')
+    .trim();
+}
+
+/** Returns the ClosePaw goal when the utterance explicitly asks ClosePaw to
+ *  do something, '' when ClosePaw is named without a usable goal, or null
+ *  when ClosePaw is not mentioned at all. */
+export function detectClosePawGoal(text: string): string | null {
+  if (!CLOSEPAW_NAME_RE.test(text)) return null;
+  for (const re of CLOSEPAW_EN_GOAL_RES) {
+    const m = text.match(re);
+    if (m) return trimClosePawGoal(m[1] ?? '');
+  }
+  const ja = text.match(CLOSEPAW_JA_GOAL_RE);
+  if (ja) return trimClosePawGoal(ja[1] ?? '');
+  return '';
+}
+
+/** The intent action for an explicit ClosePaw hand-off, or null. When the
+ *  utterance names ClosePaw but no goal could be split off, the run result
+ *  ({{result}}) becomes the goal — still shown verbatim at Review time. */
+export function detectClosePawAction(text: string): AgentAction | null {
+  const goal = detectClosePawGoal(text);
+  if (goal === null) return null;
+  return { type: 'intent', intentMode: 'closepaw', intentShareText: goal || '{{result}}' };
+}
+
 export function detectAction(text: string): AgentAction {
+  const closePaw = detectClosePawAction(text);
+  if (closePaw) return closePaw;
+
   // browser-pane (2026-08-05) — checked BEFORE the webhook branch on purpose:
   // an utterance like "https://example.com を開いてh1のテキストを取得して"
   // carries a URL (webhook's own strongest signal) but the page-operation
@@ -2493,15 +2541,21 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // with exactly one connector) — any other utterance computes
   // socialPostDetection exactly as before this change, so ordinary
   // single-platform behavior stays byte-identical.
-  const multiSocialActions = detectMultiSocialActions(rawText, connectors);
-  const socialPostDetection = multiSocialActions
+  // ClosePaw hand-off: an explicit "have ClosePaw …" / 「ClosePawで…」 wins over
+  // social-post detection (the goal may itself mention posting somewhere —
+  // that is ClosePaw's job to carry out on the phone, not a connector's).
+  const closePawAction = detectClosePawAction(rawText);
+  const multiSocialActions = closePawAction ? null : detectMultiSocialActions(rawText, connectors);
+  const socialPostDetection = closePawAction || multiSocialActions
     ? null
     : detectArticlePost(rawText, connectors) ?? detectSocialPost(rawText, connectors);
   let action: AgentAction;
   let actions: AgentAction[] | undefined;
   let actionCaveat: string | undefined;
   let socialPostCandidates: SocialConnectorMeta[] | undefined;
-  if (multiSocialActions) {
+  if (closePawAction) {
+    action = closePawAction;
+  } else if (multiSocialActions) {
     action = multiSocialActions[0];
     actions = multiSocialActions;
   } else if (socialPostDetection?.connectorId && socialPostDetection.platform) {
