@@ -39,10 +39,16 @@ jobs:
           latest_integrity=""
           latest_format=""
           for candidate in $(gh release list --repo DioNanos/codex-termux --limit 5 --json tagName --jq '.[].tagName'); do
+            # Tags are either upstream-shaped (v0.156.1) or carry the fork
+            # suffix (v0.162.1-termux.1, since 0.160.0). The npm-pack asset and
+            # @mmmbuto/codex-cli-termux use the full suffixed version; the
+            # binary and @openai/codex use the upstream one. Before this split
+            # every suffixed release was skipped and the pin froze at 0.156.1.
             npm_version="${candidate#v}"
-            npm_codex="$(npm view "@openai/codex@${npm_version}" version 2>/dev/null || true)"
-            if [ "$npm_codex" != "$npm_version" ]; then
-              echo "Skipping codex-termux ${candidate}: @openai/codex@${npm_version} is not published yet" >&2
+            upstream_version="${npm_version%%-termux.*}"
+            npm_codex="$(npm view "@openai/codex@${upstream_version}" version 2>/dev/null || true)"
+            if [ "$npm_codex" != "$upstream_version" ]; then
+              echo "Skipping codex-termux ${candidate}: @openai/codex@${upstream_version} is not published yet" >&2
               continue
             fi
 
@@ -72,6 +78,7 @@ jobs:
             exit 1
           fi
           latest_codex="${latest_termux#v}"
+          latest_codex="${latest_codex%%-termux.*}"
 
           echo "current codex=${current_codex} codex-termux=${current_termux}"
           echo "latest codex=${latest_codex} codex-termux=${latest_termux} (${latest_format})"

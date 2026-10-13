@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-13: CC（feat/codex-remote-control）が ChatGPT アプリの「Codex リモートコントロール」のホスト化を実装。Codex runtime を v0.162.1-termux.1 へ更新（bump ワークフローが `-termux.N` 付きタグを全件スキップして 0.156.1 で凍結していた問題も修正）、libexec_wrapper v224 で codex-termux がハードコードする `/data/data/com.termux` ソケットルートをアプリ領域へリダイレクト、`shelly codex pair|code` を追加。Experimental・実機未検証 — 下記 P1 エントリ参照。
 - 2026-10-08: CC（feat/oneshot-schedule）が NL 登録エージェントの「1回だけ・時刻指定」スケジュール（"in 5 minutes" / "5分後" / "at 14:55" / "明日8時" / "一回だけ"）を実装。ネイティブ（AgentAlarmScheduler / TerminalSessionService）変更を含むため実機検証待ち — 下記 P1 エントリ参照。
 - 2026-10-06: MiniCPM5-2B（OpenBMB）を Qwen3.5-2B と実機 A/B 評価（Galaxy Z Fold6、llama.cpp b11433）。全項目で同等以下かつ 20〜40% 遅いため常用候補として不採用、カタログには「実験的」バッジのオプトインとして残置。下記 P3 エントリに評価表と再評価条件を登録。
 - 2026-10-06: 並列squad（ポリシー担当）がPOLICY-001（自動起動runの読み取り専用化・自然文カスタムルール・trust ramp）を `SHELLY_AGENT_POLICY`（既定OFF）配下に実装。未実装・未検証の残りを下記 P1 エントリに登録。
@@ -52,6 +53,22 @@
 - 2026-08-15: AI Pane scrollback was forcibly snapped to the bottom while streaming or re-rendering. Fixed with 100 px near-bottom tracking, gated auto-scroll, and local-send reset; a jump-to-latest affordance remains a possible future enhancement.
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
+
+### Codex リモートコントロール（ChatGPT アプリから Shelly 上の Codex を操作）— Experimental・実装済み・実機未検証 (P1)
+
+- **何を入れたか（feat/codex-remote-control、未マージ）**:
+  1. Codex runtime を `v0.162.1-termux.1` に更新（`.ci-versions/`）。codex-termux は 0.160.0 から `vX.Y.Z-termux.N` 形式のタグに変わったが、`bump-codex-runtime.yml` は `@openai/codex@X.Y.Z-termux.N`（存在しない）を照会して全件スキップしていたため 0.156.1（`codex remote-control` が EACCES で壊れている版、codex-termux #28）で凍結していた。bump ワークフロー・`build-android.yml` の版一致チェック・runtime マニフェスト版（`codex_tui --version` は upstream 版 `0.162.1` を返す）を suffix 対応に修正。
+  2. `libexec_wrapper.so` v224: codex-termux の `codex-rs/uds/src/daemon_directory.rs` は Android のソケットルートを `/data/data/com.termux/cdx-termux-<euid>` に**ハードコード**（HOME/TMPDIR/CODEX_HOME 非依存、env 上書きなし）しており、`--no-daemon` のフォアグラウンドホストも含む全 app-server UDS リスナがここを使う。Shelly（dev.shelly.terminal）からは解決も書込みもできないため、preload で当該ディレクトリだけを `<app data dir>/cdx` に写像（realpath は恒等、mkdir/stat/lstat/chmod/unlink/open/symlink と AF_UNIX bind/connect は写像、readlink は逆写像）。上流への恒久修正案は [specs/2026-10-13-codex-remote-control-socket-root.md](./specs/2026-10-13-codex-remote-control-socket-root.md)。
+  3. `shelly codex pair` / `shelly codex code`（BASHRC_VERSION 252、SHELLY_HELPER_SHIM v7）: 公式 `codex remote-control --no-daemon` をそのタブで起動し、ホストの rendezvous ソケット（`$TMPDIR/codex-rc-*/rc.sock`）を `codex remote-control pair` が見る `$CODEX_HOME/app-server-control-termux/app-server-control.sock` に**その呼び出しの間だけ**リンクしてペアリングコードを表示。リンクを残すと素の `codex` TUI がそのソケットへ自動接続してしまうため常に即時削除。
+- **検証済み**: `npx tsc --noEmit`、jest（`shelly-codex-remote` 新設、`shelly-helper-shim-workflow`、`exec-wrapper-source-invariants` v224 ブロック）。codex-termux 0.162.1-termux.1 のソース（remote_control_cmd.rs / unix_socket.rs / daemon_directory.rs）とバイナリのインポート表を読んで、フック対象の libc 関数を決定。
+- **未検証（Why not now: 実機が無い環境での実装）**:
+  - exec-wrapper v224 は CI の NDK ビルドが初回コンパイル。実機で `shelly codex pair` → コード表示 → ChatGPT アプリでペアリング → アプリからスレッド開始・コマンド実行、の通しが未確認。
+  - ペアリング無しでも同一アカウントなら環境一覧に出るのか（コードが必須なのか）は未確認。
+  - daemon モード（`codex remote-control start`）は Shelly では使わない（デーモン子プロセスの exec 経路・LD_PRELOAD 継承が未検証）。`shelly codex` はフォアグラウンドのみ。
+  - v224 は wrapper を preload した全プロセスで stat/mkdir/connect 等を interpose する（対象パス以外は dlsym した libc にそのまま委譲）。Codex 以外（node/git/python）で回帰が無いかの実機確認。
+  - Shelly のタブを閉じる/アプリが kill されるとホストも止まる（常駐化は未対応、P2）。
+- **再開手順**: CI 成功ビルドを実機に入れ、`shelly codex pair` を実行。失敗時は `SHELLY_DEBUG=1 shelly codex pair` と `ls -la /data/user/0/dev.shelly.terminal/cdx $TMPDIR/codex-rc-*` の結果を記録。
+- → sync: README Status 表 / Codex Runtime 節 / Bundled Shelly commands 表（Experimental・実機未検証として記載済み）
 
 ### Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない（python3 が "Failed to import encodings module"）— 真因確定 (libexec_wrapper v220 で修正、CI ビルド待ち・実機未検証) (P1)
 

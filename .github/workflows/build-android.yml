@@ -89,7 +89,12 @@ jobs:
           test -s .ci-versions/codex-termux.integrity || { echo "FATAL: .ci-versions/codex-termux.integrity is missing" >&2; exit 1; }
           CODEX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex.txt)"
           CODEX_TERMUX_VERSION="$(tr -d '[:space:]' < .ci-versions/codex-termux.txt)"
-          if [ "${CODEX_VERSION}" != "${CODEX_TERMUX_VERSION#v}" ]; then
+          # codex-termux tags either mirror upstream (v0.156.1) or carry a fork
+          # suffix (v0.162.1-termux.1); the binary and @openai/codex report the
+          # upstream version either way.
+          CODEX_TERMUX_UPSTREAM="${CODEX_TERMUX_VERSION#v}"
+          CODEX_TERMUX_UPSTREAM="${CODEX_TERMUX_UPSTREAM%%-termux.*}"
+          if [ "${CODEX_VERSION}" != "${CODEX_TERMUX_UPSTREAM}" ]; then
             echo "FATAL: @openai/codex ${CODEX_VERSION} must match codex-termux ${CODEX_TERMUX_VERSION}" >&2
             exit 1
           fi
@@ -837,6 +842,7 @@ jobs:
           check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v220:execvp-environ+system-target-direct'
           check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v221:system-helpers-keep-wrapper'
           check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v223:no-blanket-wrapper-reinjection'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v224:termux-socket-root-redirect'
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
@@ -972,7 +978,11 @@ jobs:
             codex_runtime_sha256="$(sha256sum "${codex_runtime_asset}" | awk '{print $1}')"
             codex_runtime_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_RUNTIME_TAG}/${codex_runtime_asset_name}"
 
-          CODEX_RUNTIME_VERSION="${codex_termux_version#v}" \
+          # The runtime manifest version must equal what `codex_tui --version`
+          # prints (the in-app installer refuses a mismatch). codex-termux
+          # binaries report the upstream version, without the fork's
+          # -termux.N tag suffix, which is exactly .ci-versions/codex.txt.
+          CODEX_RUNTIME_VERSION="${codex_version}" \
           CODEX_VERSION="${codex_version}" \
           CODEX_TERMUX_VERSION="${codex_termux_version}" \
           CODEX_RUNTIME_SHA256="${codex_runtime_sha256}" \

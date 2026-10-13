@@ -427,3 +427,87 @@ describe('v223: explicit "launch without wrapper" opt-outs stay intact', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// v224 — Termux socket-root redirect (codex remote-control)
+// ---------------------------------------------------------------------------
+describe('v224: /data/data/com.termux socket root is redirected into the app data dir', () => {
+  it('keeps the v224 build marker CI checks for', () => {
+    expect(src).toContain('"shelly-exec-wrapper:v224:termux-socket-root-redirect"');
+  });
+
+  it("only maps codex-termux's per-euid socket dir, and only on a path-component boundary", () => {
+    expect(src).toMatch(/#define TERMUX_SOCKET_ROOT "\/data\/data\/com\.termux"/);
+    expect(src).toMatch(/#define TERMUX_SOCKET_DIR_PREFIX TERMUX_SOCKET_ROOT "\/cdx-termux-"/);
+    expect(functionBody('termux_socket_virtual_dir')).toMatch(/raw_syscall1\(__NR_geteuid, 0\)/);
+    expect(functionBody('termux_socket_virtual_match')).toMatch(
+      /if \(path\[n\] != '\\0' && path\[n\] != '\/'\) return 0;/,
+    );
+  });
+
+  it('derives the real dir from HOME via /proc/self/environ, never the live environ', () => {
+    const body = functionBody('shelly_socket_real_dir');
+    expect(body).toMatch(/proc_environ_value_copy\("HOME=", home, sizeof\(home\)\)/);
+    expect(body).not.toMatch(/caller_environ|g_environ_ptr/);
+    expect(body).toMatch(/SHELLY_FILES_HOME_SUFFIX/);
+    // Short on purpose: <dir>/<64-hex sha256> must fit sockaddr_un.sun_path.
+    expect(src).toMatch(/#define SHELLY_SOCKET_DIR_NAME "\/cdx"/);
+  });
+
+  it('rejects a mapped AF_UNIX path that does not fit sun_path instead of truncating it', () => {
+    const body = functionBody('map_unix_sockaddr');
+    expect(body).toMatch(
+      /if \(mapped_len >= SHELLY_SUN_PATH_SIZE\) \{\s*publish_syscall_errno\(-SHELLY_ENAMETOOLONG\);\s*return -1;/,
+    );
+    expect(body).toMatch(/in->sun_family != SHELLY_AF_UNIX \|\| in->sun_path\[0\] != '\/'/);
+  });
+
+  it('maps symlink targets (kernel-resolved rendezvous) and unmaps readlink results', () => {
+    expect(code).toMatch(
+      /int symlink\(const char \*target, const char \*linkpath\) \{[\s\S]*?socket_root_path_arg\(target,[\s\S]*?socket_root_path_arg\(linkpath,/,
+    );
+    expect(code).toMatch(
+      /int symlinkat\(const char \*target, int dirfd, const char \*linkpath\) \{[\s\S]*?socket_root_path_arg\(target,/,
+    );
+    for (const fn of ['readlink', 'readlinkat']) {
+      expect(code).toMatch(
+        new RegExp(
+          `ssize_t ${fn}\\([^)]*\\) \\{[\\s\\S]*?if \\(n > 0 && !starts_with\\(path, "/proc/"\\)\\) n = unmap_termux_socket_link\\(buf, bufsiz, n\\);`,
+        ),
+      );
+    }
+    // A buffer-filling (possibly truncated) result is never rewritten.
+    expect(functionBody('unmap_termux_socket_link')).toMatch(/\(size_t\)len >= bufsiz/);
+  });
+
+  it('realpath(): bare root answered as-is, virtual paths resolved for real, the rest to libc', () => {
+    expect(code).toMatch(
+      /char \*realpath\(const char \*path, char \*resolved\) \{[\s\S]*?if \(path && streq\(path, TERMUX_SOCKET_ROOT\)\) \{[\s\S]*?return realpath_result\(path, resolved\);[\s\S]*?if \(path && termux_socket_virtual_match\(path\)\) return realpath_virtual\(path, resolved, fn\);[\s\S]*?return fn\(path, resolved\);/,
+    );
+    const virt = functionBody('realpath_virtual');
+    expect(virt).toMatch(/if \(!fn\(mapped, canon\)\) return NULL;/);
+    // Allocated results come from the allocator the caller's free() uses.
+    expect(functionBody('realpath_result')).toMatch(/dlsym\(RTLD_DEFAULT, "malloc"\)/);
+  });
+
+  it('openat64 shares the openat implementation (codex-termux imports both)', () => {
+    expect(code).toMatch(/int openat64\(int dirfd, const char \*path, int flags, \.\.\.\) \{[\s\S]*?return shelly_openat_impl\(dirfd, path, flags, mode\);/);
+    expect(functionBody('shelly_openat_impl')).toMatch(/socket_root_path_arg\(path, socket_buf, sizeof\(socket_buf\)\)/);
+  });
+
+  it('every interposer hands calls to the dlsym-resolved libc function (no PLT slot)', () => {
+    for (const sym of [
+      'stat', 'lstat', 'stat64', 'lstat64', 'fstatat', 'fstatat64', 'mkdir', 'mkdirat', 'unlink', 'unlinkat',
+      'rmdir', 'chmod', 'fchmodat', 'symlink', 'symlinkat', 'bind', 'connect',
+    ]) {
+      expect(code).toMatch(new RegExp(`\\bint ${sym}\\([^)]*\\) \\{[\\s\\S]*?real_sym\\(&g_real_${sym}_fn, "${sym}"\\)`));
+    }
+    // bind/connect must reach libc's (netd-aware) implementation for every
+    // address, including the unmapped ones.
+    expect(code).toMatch(/int connect\(int fd, const void \*addr, int len\) \{[\s\S]*?return fn\(fd, addr, len\);/);
+  });
+
+  it('the constructor pre-resolves the libc implementations', () => {
+    expect(functionBody('shelly_resolve_real_impls')).toMatch(/resolve_socket_root_impls\(\);/);
+  });
+});

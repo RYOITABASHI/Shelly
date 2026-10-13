@@ -250,7 +250,14 @@ static errno_slot_fn_t g_errno_slot_fn;
 static void publish_syscall_errno(long ret) {
     errno_slot_fn_t fn = g_errno_slot_fn;
     int *slot;
-    if (ret >= 0 || !fn) return;
+    if (ret >= 0) return;
+    /* v224: an interposer can run before our constructor (another library's
+     * initializer); resolve lazily so its errno is not dropped. */
+    if (!fn) {
+        fn = (errno_slot_fn_t)dlsym(RTLD_NEXT, "__errno");
+        g_errno_slot_fn = fn;
+    }
+    if (!fn) return;
     slot = fn();
     if (slot) *slot = (int)-ret;
 }
@@ -1311,6 +1318,281 @@ int execve(const char *pathname, char *const argv[], char *const envp[]) {
     return shelly_execve_internal(pathname, argv, envp);
 }
 
+/* v224 (2026-10-13): Termux socket-root redirect for `codex remote-control`.
+ *
+ * codex-termux (DioNanos/codex-termux, codex-rs/uds/src/daemon_directory.rs)
+ * hardcodes the app-server socket rendezvous root on Android as
+ * /data/data/com.termux/cdx-termux-<euid>, deliberately independent of HOME,
+ * TMPDIR and CODEX_HOME. Every app-server unix-socket listener -- including
+ * the `codex remote-control --no-daemon` foreground host -- calls
+ * fs::canonicalize("/data/data/com.termux") and creates its physical socket
+ * there. Shelly runs as dev.shelly.terminal and can never write (or, without
+ * Termux installed, even resolve) that path, so remote control fails before
+ * it reaches the network.
+ *
+ * Fix without patching the binary: this preload maps exactly that virtual
+ * directory onto an app-private one, <app data dir>/cdx (HOME with its
+ * trailing /files/home stripped -> /data/user/0/dev.shelly.terminal/cdx).
+ * The real directory is kept short on purpose: a physical socket is
+ * <dir>/<64-hex sha256>, and sockaddr_un.sun_path holds 107 bytes.
+ *   - realpath() of the root (or anything under the virtual dir) returns the
+ *     path unchanged, so canonicalize() succeeds and Codex keeps working in
+ *     virtual paths;
+ *   - the filesystem calls Codex makes on those paths (mkdir, stat/lstat,
+ *     chmod, unlink, open of the startup lock, symlink) and AF_UNIX
+ *     bind()/connect() get the mapped path;
+ *   - symlink() targets are mapped too: Codex publishes the socket as a
+ *     rendezvous symlink pointing INTO the virtual dir, and clients connect
+ *     through it, which the kernel resolves without us -- so the stored
+ *     target must be real. readlink() maps it back so Codex's own
+ *     "is this my alias?" comparison still matches.
+ * Only paths under /data/data/com.termux/cdx-termux-<this process's euid>
+ * (plus the bare root in realpath) are touched; every other call is handed
+ * to libc unchanged. Upstream proposal:
+ * docs/superpowers/specs/2026-10-13-codex-remote-control-socket-root.md. */
+__attribute__((used, retain))
+static const char shelly_exec_wrapper_v224_marker[] =
+    "shelly-exec-wrapper:v224:termux-socket-root-redirect";
+
+#define TERMUX_SOCKET_ROOT "/data/data/com.termux"
+#define TERMUX_SOCKET_DIR_PREFIX TERMUX_SOCKET_ROOT "/cdx-termux-"
+#define SHELLY_SOCKET_DIR_NAME "/cdx"
+#define SHELLY_FILES_HOME_SUFFIX "/files/home"
+#define SOCKET_MAP_BUF_SIZE 512
+#define SHELLY_SUN_PATH_SIZE 108
+#define SHELLY_AF_UNIX 1
+#define SHELLY_ENOMEM 12
+#define SHELLY_ENAMETOOLONG 36
+#define SHELLY_REALPATH_MAX 4096
+#ifndef __NR_geteuid
+#define __NR_geteuid 175
+#endif
+
+struct shelly_sockaddr_un {
+    unsigned short sun_family;
+    char sun_path[SHELLY_SUN_PATH_SIZE];
+};
+
+/* libc implementations of the interposed calls, resolved eagerly in the
+ * constructor and lazily on first use (a hook can run before our constructor,
+ * e.g. from another library's initializer). */
+static void *g_real_realpath_fn;
+static void *g_real_malloc_fn;
+static void *g_real_stat_fn;
+static void *g_real_lstat_fn;
+static void *g_real_stat64_fn;
+static void *g_real_lstat64_fn;
+static void *g_real_fstatat_fn;
+static void *g_real_fstatat64_fn;
+static void *g_real_mkdir_fn;
+static void *g_real_mkdirat_fn;
+static void *g_real_unlink_fn;
+static void *g_real_unlinkat_fn;
+static void *g_real_rmdir_fn;
+static void *g_real_chmod_fn;
+static void *g_real_fchmodat_fn;
+static void *g_real_symlink_fn;
+static void *g_real_symlinkat_fn;
+static void *g_real_bind_fn;
+static void *g_real_connect_fn;
+
+static void *real_sym(void **slot, const char *name) {
+    void *fn = *slot;
+    if (!fn) {
+        fn = dlsym(RTLD_NEXT, name);
+        *slot = fn;
+    }
+    return fn;
+}
+
+static void resolve_socket_root_impls(void) {
+    real_sym(&g_real_realpath_fn, "realpath");
+    /* RTLD_DEFAULT: realpath(NULL buffer) results are freed by the caller's
+     * free(), which binds through the global scope, not RTLD_NEXT. */
+    if (!g_real_malloc_fn) g_real_malloc_fn = dlsym(RTLD_DEFAULT, "malloc");
+    real_sym(&g_real_stat64_fn, "stat64");
+    real_sym(&g_real_lstat64_fn, "lstat64");
+    real_sym(&g_real_stat_fn, "stat");
+    real_sym(&g_real_lstat_fn, "lstat");
+    real_sym(&g_real_fstatat_fn, "fstatat");
+    real_sym(&g_real_fstatat64_fn, "fstatat64");
+    real_sym(&g_real_mkdir_fn, "mkdir");
+    real_sym(&g_real_mkdirat_fn, "mkdirat");
+    real_sym(&g_real_unlink_fn, "unlink");
+    real_sym(&g_real_unlinkat_fn, "unlinkat");
+    real_sym(&g_real_rmdir_fn, "rmdir");
+    real_sym(&g_real_chmod_fn, "chmod");
+    real_sym(&g_real_fchmodat_fn, "fchmodat");
+    real_sym(&g_real_symlink_fn, "symlink");
+    real_sym(&g_real_symlinkat_fn, "symlinkat");
+    real_sym(&g_real_bind_fn, "bind");
+    real_sym(&g_real_connect_fn, "connect");
+}
+
+/* Writes /data/data/com.termux/cdx-termux-<euid> into out; returns its length
+ * or -1. */
+static int termux_socket_virtual_dir(char *out, size_t out_size) {
+    size_t n = 0;
+    long uid = raw_syscall1(__NR_geteuid, 0);
+    if (uid < 0 || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    if (append_str(out, out_size, &n, TERMUX_SOCKET_DIR_PREFIX) != 0 ||
+        append_uint(out, out_size, &n, (unsigned int)uid) != 0) {
+        return -1;
+    }
+    return (int)n;
+}
+
+/* Length of the virtual directory prefix when `path` is that directory or
+ * lies inside it; 0 otherwise. */
+static size_t termux_socket_virtual_match(const char *path) {
+    char vdir[64];
+    int n;
+    if (!path || !starts_with(path, TERMUX_SOCKET_DIR_PREFIX)) return 0;
+    n = termux_socket_virtual_dir(vdir, sizeof(vdir));
+    if (n <= 0 || !starts_with(path, vdir)) return 0;
+    if (path[n] != '\0' && path[n] != '/') return 0;
+    return (size_t)n;
+}
+
+/* Writes the real, app-private socket directory into out; returns its length
+ * or -1. HOME comes from /proc/self/environ (this file never reads the live
+ * environ outside execvp). Server and client processes must agree on this
+ * directory, so only a HOME of the app's own shape (<app dir>/files/home)
+ * is honoured; anything else (a user-overridden HOME, a scrubbed env)
+ * falls back to the DEFAULT_HOME-derived app dir. */
+static int shelly_socket_real_dir(char *out, size_t out_size) {
+    char home[SOCKET_MAP_BUF_SIZE];
+    size_t len;
+    size_t n = 0;
+    const size_t suffix_len = sizeof(SHELLY_FILES_HOME_SUFFIX) - 1;
+    if (!out || out_size == 0) return -1;
+    if (proc_environ_value_copy("HOME=", home, sizeof(home)) != 0 || home[0] != '/' ||
+        str_len(home) + 1 >= sizeof(home)) {
+        home[0] = '\0';
+    }
+    len = str_len(home);
+    while (len > 1 && home[len - 1] == '/') home[--len] = '\0';
+    if (!(len > suffix_len && streq(home + len - suffix_len, SHELLY_FILES_HOME_SUFFIX))) {
+        n = 0;
+        home[0] = '\0';
+        if (append_str(home, sizeof(home), &n, DEFAULT_HOME) != 0) return -1;
+        len = n;
+    }
+    home[len - suffix_len] = '\0';
+    n = 0;
+    out[0] = '\0';
+    if (append_str(out, out_size, &n, home) != 0 ||
+        append_str(out, out_size, &n, SHELLY_SOCKET_DIR_NAME) != 0) {
+        return -1;
+    }
+    return (int)n;
+}
+
+/* 1: `path` is a virtual Termux socket path and `out` holds the real one;
+ * 0: unrelated path; -1: virtual but cannot be mapped. */
+static int map_termux_socket_path(const char *path, char *out, size_t out_size) {
+    size_t vlen = termux_socket_virtual_match(path);
+    size_t pos;
+    int n;
+    if (!vlen) return 0;
+    n = shelly_socket_real_dir(out, out_size);
+    if (n < 0) return -1;
+    pos = (size_t)n;
+    if (append_str(out, out_size, &pos, path + vlen) != 0) return -1;
+    return 1;
+}
+
+/* The path a filesystem hook hands to libc: `path` itself, `buf` holding its
+ * mapping, or NULL (errno published) when a virtual path cannot be mapped. */
+static const char *socket_root_path_arg(const char *path, char *buf, size_t buf_size) {
+    int m;
+    if (!path || !starts_with(path, TERMUX_SOCKET_DIR_PREFIX)) return path;
+    m = map_termux_socket_path(path, buf, buf_size);
+    if (m == 0) return path;
+    if (m < 0) {
+        publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+        return NULL;
+    }
+    return buf;
+}
+
+/* Cheap precheck for readlink results: does the buffer contain a "/cdx"
+ * component (end of string or followed by '/')? */
+static int link_mentions_socket_dir(const char *buf, long len) {
+    const char *name = SHELLY_SOCKET_DIR_NAME;
+    const long name_len = (long)(sizeof(SHELLY_SOCKET_DIR_NAME) - 1);
+    for (long i = 0; i + name_len <= len; i++) {
+        long j = 0;
+        while (j < name_len && buf[i + j] == name[j]) j++;
+        if (j == name_len && (i + name_len == len || buf[i + name_len] == '/')) return 1;
+    }
+    return 0;
+}
+
+/* readlink() post-processing: a link target inside the real socket directory
+ * is reported as its virtual path. Returns the (possibly new) length. */
+static long unmap_termux_socket_link(char *buf, size_t bufsiz, long len) {
+    char real_dir[SOCKET_MAP_BUF_SIZE];
+    char virt[SOCKET_MAP_BUF_SIZE];
+    size_t n = 0;
+    int rlen;
+    int vlen;
+    long i;
+    /* A result that filled the whole buffer may be truncated; leave it. */
+    if (!buf || len <= 0 || (size_t)len >= bufsiz || (size_t)len >= sizeof(virt)) return len;
+    if (buf[0] != '/' || !link_mentions_socket_dir(buf, len)) return len;
+    rlen = shelly_socket_real_dir(real_dir, sizeof(real_dir));
+    if (rlen <= 0 || len < rlen) return len;
+    for (i = 0; i < rlen; i++) {
+        if (buf[i] != real_dir[i]) return len;
+    }
+    if (len > rlen && buf[rlen] != '/') return len;
+    vlen = termux_socket_virtual_dir(virt, sizeof(virt));
+    if (vlen <= 0) return len;
+    n = (size_t)vlen;
+    for (i = rlen; i < len; i++) {
+        if (append_char(virt, sizeof(virt), &n, buf[i]) != 0) return len;
+    }
+    for (i = 0; (size_t)i < n && (size_t)i < bufsiz; i++) buf[i] = virt[i];
+    return i;
+}
+
+/* AF_UNIX bind()/connect() address rewrite. 1: `out` holds the mapped
+ * address; 0: unrelated address; -1: virtual but unmappable (errno set). */
+static int map_unix_sockaddr(const void *addr, int len, struct shelly_sockaddr_un *out, int *out_len) {
+    const struct shelly_sockaddr_un *in = (const struct shelly_sockaddr_un *)addr;
+    char path[SHELLY_SUN_PATH_SIZE + 1];
+    char mapped[SOCKET_MAP_BUF_SIZE];
+    long path_len;
+    size_t mapped_len;
+    int m;
+    if (!addr || len <= (int)sizeof(unsigned short) || len > (int)sizeof(struct shelly_sockaddr_un)) return 0;
+    if (in->sun_family != SHELLY_AF_UNIX || in->sun_path[0] != '/') return 0;
+    path_len = len - (long)sizeof(unsigned short);
+    for (long i = 0; i < path_len; i++) {
+        path[i] = in->sun_path[i];
+        if (!path[i]) break;
+    }
+    path[path_len] = '\0';
+    if (!starts_with(path, TERMUX_SOCKET_DIR_PREFIX)) return 0;
+    m = map_termux_socket_path(path, mapped, sizeof(mapped));
+    if (m <= 0) {
+        if (m < 0) publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+        return m;
+    }
+    mapped_len = str_len(mapped);
+    if (mapped_len >= SHELLY_SUN_PATH_SIZE) {
+        publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+        return -1;
+    }
+    out->sun_family = SHELLY_AF_UNIX;
+    for (size_t i = 0; i < SHELLY_SUN_PATH_SIZE; i++) out->sun_path[i] = '\0';
+    for (size_t i = 0; i < mapped_len; i++) out->sun_path[i] = mapped[i];
+    *out_len = (int)(sizeof(unsigned short) + mapped_len + 1);
+    return 1;
+}
+
 typedef int (*posix_spawn_impl_t)(pid_t *, const char *,
                                   const posix_spawn_file_actions_t *,
                                   const posix_spawnattr_t *,
@@ -1347,6 +1629,7 @@ static void shelly_resolve_real_impls(void) {
     g_errno_slot_fn = (errno_slot_fn_t)dlsym(RTLD_NEXT, "__errno");
     g_environ_ptr = (char ***)dlsym(RTLD_DEFAULT, "environ");
     if (!g_environ_ptr) g_environ_ptr = (char ***)dlsym(RTLD_NEXT, "environ");
+    resolve_socket_root_impls();
 }
 
 /* The caller's current environment as execvp(3) would pass it to execve(2),
@@ -1547,8 +1830,14 @@ int execvpe(const char *file, char *const argv[], char *const envp[]) {
 
 int open(const char *path, int flags, ...) {
     char target_buf[PATH_BUF_SIZE];
+    char socket_buf[SOCKET_MAP_BUF_SIZE];
     const char *target = codex_proc_exe_open_target(path, flags, target_buf, sizeof(target_buf));
     mode_t mode = 0;
+    if (!target) {
+        target = socket_root_path_arg(path, socket_buf, sizeof(socket_buf));
+        if (path && !target) return -1;
+        if (target == path) target = NULL;
+    }
     if (flags & O_CREAT) {
         va_list ap;
         va_start(ap, flags);
@@ -1558,30 +1847,339 @@ int open(const char *path, int flags, ...) {
     return finish_syscall(raw_syscall4(__NR_openat, AT_FDCWD, (long)(target ? target : path), flags, mode));
 }
 
-int openat(int dirfd, const char *path, int flags, ...) {
+static int shelly_openat_impl(int dirfd, const char *path, int flags, mode_t mode) {
     char target_buf[PATH_BUF_SIZE];
+    char socket_buf[SOCKET_MAP_BUF_SIZE];
     const char *target = codex_proc_exe_open_target(path, flags, target_buf, sizeof(target_buf));
-    mode_t mode = 0;
+    if (!target) {
+        target = socket_root_path_arg(path, socket_buf, sizeof(socket_buf));
+        if (path && !target) return -1;
+        if (target == path) target = NULL;
+    }
     if (target) dirfd = AT_FDCWD;
+    return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, mode));
+}
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    mode_t mode = 0;
     if (flags & O_CREAT) {
         va_list ap;
         va_start(ap, flags);
         mode = (mode_t)va_arg(ap, int);
         va_end(ap);
     }
-    return finish_syscall(raw_syscall4(__NR_openat, dirfd, (long)(target ? target : path), flags, mode));
+    return shelly_openat_impl(dirfd, path, flags, mode);
+}
+
+/* v224: codex-termux imports openat64 as well as openat (bionic aliases them;
+ * arm64 has no separate large-file flag), so the socket-root mapping must see
+ * both names. */
+int openat64(int dirfd, const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    return shelly_openat_impl(dirfd, path, flags, mode);
 }
 
 ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
+    char socket_buf[SOCKET_MAP_BUF_SIZE];
+    const char *p;
+    long n;
     ssize_t codex = readlink_codex_self(path, buf, bufsiz);
     if (codex != -2) return codex;
-    return finish_syscall_ssize(raw_readlinkat_call(AT_FDCWD, path, buf, bufsiz));
+    p = socket_root_path_arg(path, socket_buf, sizeof(socket_buf));
+    if (path && !p) return -1;
+    n = raw_readlinkat_call(AT_FDCWD, p, buf, bufsiz);
+    if (n > 0 && !starts_with(path, "/proc/")) n = unmap_termux_socket_link(buf, bufsiz, n);
+    return finish_syscall_ssize(n);
 }
 
 ssize_t readlinkat(int dirfd, const char *path, char *buf, size_t bufsiz) {
+    char socket_buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = path;
+    long n;
     if (path && path[0] == '/') {
         ssize_t codex = readlink_codex_self(path, buf, bufsiz);
         if (codex != -2) return codex;
+        p = socket_root_path_arg(path, socket_buf, sizeof(socket_buf));
+        if (!p) return -1;
     }
-    return finish_syscall_ssize(raw_readlinkat_call(dirfd, path, buf, bufsiz));
+    n = raw_readlinkat_call(dirfd, p, buf, bufsiz);
+    if (n > 0 && !starts_with(path, "/proc/")) n = unmap_termux_socket_link(buf, bufsiz, n);
+    return finish_syscall_ssize(n);
+}
+
+/* ---- v224 Termux socket-root redirect: libc interposers (see above) ----
+ * The stat-buffer / sockaddr parameters are declared `void *` on purpose:
+ * this file does not include <sys/stat.h>, <sys/socket.h>, <fcntl.h> or
+ * <stdlib.h>, so there is no header prototype to match. Adding one of those
+ * includes later will make these definitions conflict; keep them out. */
+
+typedef char *(*realpath_fn_t)(const char *, char *);
+typedef void *(*malloc_fn_t)(size_t);
+typedef int (*path_buf_fn_t)(const char *, void *);
+typedef int (*dirfd_path_buf_flags_fn_t)(int, const char *, void *, int);
+typedef int (*path_mode_fn_t)(const char *, mode_t);
+typedef int (*dirfd_path_mode_fn_t)(int, const char *, mode_t);
+typedef int (*dirfd_path_mode_flags_fn_t)(int, const char *, mode_t, int);
+typedef int (*path_fn_t)(const char *);
+typedef int (*dirfd_path_flags_fn_t)(int, const char *, int);
+typedef int (*path_path_fn_t)(const char *, const char *);
+typedef int (*path_dirfd_path_fn_t)(const char *, int, const char *);
+typedef int (*sock_addr_fn_t)(int, const void *, int);
+
+/* Copies a realpath() answer into the caller's buffer, or into memory from
+ * the allocator the caller's free() binds to (RTLD_DEFAULT, so a main
+ * executable that exports its own malloc/free gets its own allocator). */
+static char *realpath_result(const char *s, char *resolved) {
+    size_t n = str_len(s);
+    char *out = resolved;
+    if (n + 1 > SHELLY_REALPATH_MAX) {
+        publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+        return NULL;
+    }
+    if (!out) {
+        malloc_fn_t alloc = (malloc_fn_t)g_real_malloc_fn;
+        if (!alloc) {
+            alloc = (malloc_fn_t)dlsym(RTLD_DEFAULT, "malloc");
+            g_real_malloc_fn = (void *)alloc;
+        }
+        out = alloc ? (char *)alloc(n + 1) : NULL;
+        if (!out) {
+            publish_syscall_errno(-SHELLY_ENOMEM);
+            return NULL;
+        }
+    }
+    for (size_t i = 0; i <= n; i++) out[i] = s[i];
+    return out;
+}
+
+/* Under the virtual dir: resolve the mapped path for real (existence and
+ * symlink semantics preserved), then report it virtually. Kept out of
+ * realpath() itself so the ~13 KB of buffers only land on the stack for
+ * the rare virtual path. */
+__attribute__((noinline))
+static char *realpath_virtual(const char *path, char *resolved, realpath_fn_t fn) {
+    {
+        char mapped[SOCKET_MAP_BUF_SIZE];
+        char real_dir[SOCKET_MAP_BUF_SIZE];
+        char canon_dir[SHELLY_REALPATH_MAX];
+        char canon[SHELLY_REALPATH_MAX];
+        char virt[SHELLY_REALPATH_MAX];
+        size_t dlen;
+        size_t n = 0;
+        int vlen;
+        if (map_termux_socket_path(path, mapped, sizeof(mapped)) <= 0 ||
+            shelly_socket_real_dir(real_dir, sizeof(real_dir)) <= 0) {
+            publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+            return NULL;
+        }
+        if (!fn) {
+            publish_syscall_errno(-SHELLY_ENOSYS);
+            return NULL;
+        }
+        if (!fn(mapped, canon)) return NULL;
+        if (!fn(real_dir, canon_dir)) return NULL;
+        dlen = str_len(canon_dir);
+        if (!starts_with(canon, canon_dir) || (canon[dlen] != '\0' && canon[dlen] != '/')) {
+            /* Resolved outside the socket dir (a symlink pointing away). */
+            return realpath_result(canon, resolved);
+        }
+        vlen = termux_socket_virtual_dir(virt, sizeof(virt));
+        if (vlen <= 0) {
+            publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+            return NULL;
+        }
+        n = (size_t)vlen;
+        if (append_str(virt, sizeof(virt), &n, canon + dlen) != 0) {
+            publish_syscall_errno(-SHELLY_ENAMETOOLONG);
+            return NULL;
+        }
+        return realpath_result(virt, resolved);
+    }
+}
+
+char *realpath(const char *path, char *resolved) {
+    realpath_fn_t fn = (realpath_fn_t)real_sym(&g_real_realpath_fn, "realpath");
+    if (path && streq(path, TERMUX_SOCKET_ROOT)) {
+        /* The bare root: answered as-is so fs::canonicalize() succeeds and
+         * Codex keeps building virtual paths under it. */
+        return realpath_result(path, resolved);
+    }
+    if (path && termux_socket_virtual_match(path)) return realpath_virtual(path, resolved, fn);
+    if (!fn) {
+        publish_syscall_errno(-SHELLY_ENOSYS);
+        return NULL;
+    }
+    return fn(path, resolved);
+}
+
+int stat(const char *path, void *st) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_buf_fn_t fn = (path_buf_fn_t)real_sym(&g_real_stat_fn, "stat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p, st);
+}
+
+int lstat(const char *path, void *st) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_buf_fn_t fn = (path_buf_fn_t)real_sym(&g_real_lstat_fn, "lstat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p, st);
+}
+
+int fstatat(int dirfd, const char *path, void *st, int flags) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    dirfd_path_buf_flags_fn_t fn = (dirfd_path_buf_flags_fn_t)real_sym(&g_real_fstatat_fn, "fstatat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(dirfd, p, st, flags);
+}
+
+/* stat64/lstat64: bionic exports these as separate alias symbols; codex-termux
+ * 0.162.1 imports the plain names, but other Rust/NDK builds use these. */
+int stat64(const char *path, void *st) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_buf_fn_t fn = (path_buf_fn_t)real_sym(&g_real_stat64_fn, "stat64");
+    if (!fn) fn = (path_buf_fn_t)real_sym(&g_real_stat_fn, "stat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p, st);
+}
+
+int lstat64(const char *path, void *st) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_buf_fn_t fn = (path_buf_fn_t)real_sym(&g_real_lstat64_fn, "lstat64");
+    if (!fn) fn = (path_buf_fn_t)real_sym(&g_real_lstat_fn, "lstat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p, st);
+}
+
+int fstatat64(int dirfd, const char *path, void *st, int flags) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    dirfd_path_buf_flags_fn_t fn = (dirfd_path_buf_flags_fn_t)real_sym(&g_real_fstatat64_fn, "fstatat64");
+    if (!fn) fn = (dirfd_path_buf_flags_fn_t)real_sym(&g_real_fstatat_fn, "fstatat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(dirfd, p, st, flags);
+}
+
+int mkdir(const char *path, mode_t mode) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_mode_fn_t fn = (path_mode_fn_t)real_sym(&g_real_mkdir_fn, "mkdir");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p, mode);
+}
+
+int mkdirat(int dirfd, const char *path, mode_t mode) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    dirfd_path_mode_fn_t fn = (dirfd_path_mode_fn_t)real_sym(&g_real_mkdirat_fn, "mkdirat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(dirfd, p, mode);
+}
+
+int unlink(const char *path) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_fn_t fn = (path_fn_t)real_sym(&g_real_unlink_fn, "unlink");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p);
+}
+
+int unlinkat(int dirfd, const char *path, int flags) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    dirfd_path_flags_fn_t fn = (dirfd_path_flags_fn_t)real_sym(&g_real_unlinkat_fn, "unlinkat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(dirfd, p, flags);
+}
+
+int rmdir(const char *path) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_fn_t fn = (path_fn_t)real_sym(&g_real_rmdir_fn, "rmdir");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p);
+}
+
+int chmod(const char *path, mode_t mode) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    path_mode_fn_t fn = (path_mode_fn_t)real_sym(&g_real_chmod_fn, "chmod");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(p, mode);
+}
+
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
+    char buf[SOCKET_MAP_BUF_SIZE];
+    const char *p = socket_root_path_arg(path, buf, sizeof(buf));
+    dirfd_path_mode_flags_fn_t fn = (dirfd_path_mode_flags_fn_t)real_sym(&g_real_fchmodat_fn, "fchmodat");
+    if (path && !p) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(dirfd, p, mode, flags);
+}
+
+int symlink(const char *target, const char *linkpath) {
+    char target_buf[SOCKET_MAP_BUF_SIZE];
+    char link_buf[SOCKET_MAP_BUF_SIZE];
+    const char *t = socket_root_path_arg(target, target_buf, sizeof(target_buf));
+    const char *l = socket_root_path_arg(linkpath, link_buf, sizeof(link_buf));
+    path_path_fn_t fn = (path_path_fn_t)real_sym(&g_real_symlink_fn, "symlink");
+    if ((target && !t) || (linkpath && !l)) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(t, l);
+}
+
+int symlinkat(const char *target, int dirfd, const char *linkpath) {
+    char target_buf[SOCKET_MAP_BUF_SIZE];
+    char link_buf[SOCKET_MAP_BUF_SIZE];
+    const char *t = socket_root_path_arg(target, target_buf, sizeof(target_buf));
+    const char *l = socket_root_path_arg(linkpath, link_buf, sizeof(link_buf));
+    path_dirfd_path_fn_t fn = (path_dirfd_path_fn_t)real_sym(&g_real_symlinkat_fn, "symlinkat");
+    if ((target && !t) || (linkpath && !l)) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(t, dirfd, l);
+}
+
+int bind(int fd, const void *addr, int len) {
+    struct shelly_sockaddr_un mapped;
+    int mapped_len = 0;
+    sock_addr_fn_t fn = (sock_addr_fn_t)real_sym(&g_real_bind_fn, "bind");
+    int m = map_unix_sockaddr(addr, len, &mapped, &mapped_len);
+    if (m < 0) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    if (m > 0) return fn(fd, &mapped, mapped_len);
+    return fn(fd, addr, len);
+}
+
+int connect(int fd, const void *addr, int len) {
+    struct shelly_sockaddr_un mapped;
+    int mapped_len = 0;
+    sock_addr_fn_t fn = (sock_addr_fn_t)real_sym(&g_real_connect_fn, "connect");
+    int m = map_unix_sockaddr(addr, len, &mapped, &mapped_len);
+    if (m < 0) return -1;
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    if (m > 0) return fn(fd, &mapped, mapped_len);
+    return fn(fd, addr, len);
 }

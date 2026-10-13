@@ -2,7 +2,7 @@
  * __tests__/shelly-helper-shim-workflow.test.ts
  *
  * Behavioral test for the generated `$HOME/bin/shelly` helper's node body
- * (HomeInitializer.kt, SHELLY_HELPER_SHIM v6): the `sb.appendLine("...")`
+ * (HomeInitializer.kt, SHELLY_HELPER_SHIM v7): the `sb.appendLine("...")`
  * literals are extracted from the real .kt source, Kotlin-unescaped, and
  * the resulting script is run with this Node against a temp $HOME. Covers
  * `shelly workflow list|show|__prepare-run|__prepare-delete|delete` and the
@@ -89,12 +89,12 @@ beforeEach(() => {
 });
 
 describe('generated shelly helper shim', () => {
-  it('is bumped to v6 alongside BASHRC_VERSION >= 244', () => {
+  it('is bumped to v7 alongside BASHRC_VERSION >= 252', () => {
     const src = fs.readFileSync(ktPath, 'utf8');
-    expect(src).toContain('# SHELLY_HELPER_SHIM v6');
+    expect(src).toContain('# SHELLY_HELPER_SHIM v7');
     const m = src.match(/private const val BASHRC_VERSION = (\d+)\b/);
     expect(m).not.toBeNull();
-    expect(Number(m![1])).toBeGreaterThanOrEqual(244);
+    expect(Number(m![1])).toBeGreaterThanOrEqual(252);
   });
 
   it('parses as valid JavaScript', () => {
@@ -108,6 +108,13 @@ describe('generated shelly helper shim', () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain('shelly workflow');
     expect(r.out).toContain('shelly teach');
+  });
+
+  it('top-level usage lists codex, and the node body refuses `codex` (bash function only)', () => {
+    expect(shelly().out).toContain('shelly codex <pair|code>');
+    const r = shelly('codex', 'pair');
+    expect(r.code).toBe(2);
+    expect(r.out).toContain('interactive Shelly terminal');
   });
 
   it('workflow list handles an empty / missing directory', () => {
