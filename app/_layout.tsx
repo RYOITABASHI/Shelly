@@ -74,6 +74,12 @@ import {
   isClosePawNotInstalledError,
 } from '@/lib/agent-intent-review';
 import {
+  CLOSEPAW_QUEUE_PREFIX,
+  closePawResultFileName,
+  createClosePawRateLimiter,
+  processClosePawQueueLine,
+} from '@/lib/closepaw-queue';
+import {
   fireReviewedAgentBrowserPaneAction,
   resolveTargetBrowserPaneId,
   isAcceptedBrowserPaneResult,
@@ -1764,6 +1770,7 @@ export default function RootLayout() {
     };
 
     const commandQueuePath = `${FileSystem.documentDirectory}home/.shelly-command-queue`;
+    const closePawRateLimiter = createClosePawRateLimiter();
     let isDrainingCommandQueue = false;
     const drainCommandQueue = async () => {
       if (isDrainingCommandQueue) return;
@@ -1795,6 +1802,30 @@ export default function RootLayout() {
             // `shelly teach <start|stop|cancel|status>` — same round-trip
             // shape as install above; see lib/teach-controller.ts.
             void handleTeachQueueLine(line);
+          } else if (line.startsWith(CLOSEPAW_QUEUE_PREFIX)) {
+            // `shelly closepaw "<goal>"` — validated (age <= 30s, 1 per 5s,
+            // goal sanitized/capped, no other extras) in lib/closepaw-queue.ts,
+            // then the same native fireAgentIntent('closepaw') path agent
+            // hand-offs use. ClosePaw's own "External Goal" dialog is the
+            // consent gate.
+            void processClosePawQueueLine(line, {
+              now: Date.now,
+              limiter: closePawRateLimiter,
+              fire: TerminalEmulator.fireAgentIntent
+                ? (mode, target, goal) => TerminalEmulator.fireAgentIntent!(mode, target, goal)
+                : null,
+              writeResult: async (reqId, result) => {
+                try {
+                  await FileSystem.writeAsStringAsync(
+                    `${FileSystem.documentDirectory}home/${closePawResultFileName(reqId)}`,
+                    JSON.stringify(result),
+                  );
+                } catch (e) {
+                  logError('CommandQueue', 'closepaw: failed to write result', e);
+                }
+              },
+              log: (m) => logInfo('CommandQueue', m),
+            }).catch((e) => logError('CommandQueue', 'closepaw: handler failed', e));
           } else {
             logError('CommandQueue', `unrecognized command queue line: ${line.slice(0, 64)}`);
           }
