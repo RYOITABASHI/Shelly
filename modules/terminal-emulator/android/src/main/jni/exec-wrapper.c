@@ -2197,10 +2197,11 @@ int connect(int fd, const void *addr, int len) {
  * `shelly codex pair` exports SHELLY_CODEX_HOST_NAME (e.g. "Shelly (SM-F956Q)")
  * for the remote-control launch only. When that variable is present in the
  * process's exec-time environment (/proc/self/environ -- never the live
- * environ) and is 1..63 printable bytes, gethostname() returns it; otherwise,
- * or when it does not fit the caller's buffer, the call goes to libc
- * unchanged. Nothing else in Shelly sets the variable, so every other process
- * keeps the real host name. codex-termux 0.162.1 imports gethostname from
+ * environ) and is 1..63 printable bytes, AND the process is the Codex binary
+ * itself (self_is_codex), gethostname() returns it; otherwise, or when it does
+ * not fit the caller's buffer, the call goes to libc unchanged. The tool
+ * commands Codex runs (bash, git, node, ssh) inherit the variable but are not
+ * Codex, so they keep the real host name. codex-termux 0.162.1 imports gethostname from
  * libc.so (checked against the release binary's dynamic symbol table). */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_v225_marker[] =
@@ -2227,10 +2228,56 @@ static int codex_host_name_override(char *out, size_t out_size) {
     return 1;
 }
 
+static const char *path_basename(const char *p) {
+    const char *b = p;
+    for (; *p; p++) {
+        if (*p == '/') b = p + 1;
+    }
+    return b;
+}
+
+/* 1 only in the Codex process itself, never in the bash/git/node/ssh
+ * children it runs (which inherit SHELLY_CODEX_HOST_NAME too and must keep
+ * the real host name: git's gc.pid host check, user@host fallback email...).
+ * The program is argv[0], or argv[1] when argv[0] is the linker (`linker64
+ * <app-data ELF>`, how Shelly launches everything); it is Codex when it is
+ * SHELLY_CODEX_EXEC_PATH or named codex_tui. Reads /proc/self/cmdline and
+ * /proc/self/environ with raw syscalls only. */
+static int self_is_codex(void) {
+    char cmd[1024];
+    char exec_path[SOCKET_MAP_BUF_SIZE];
+    const char *prog;
+    const char *base;
+    long n = 0;
+    long r;
+    int fd = raw_open_readonly("/proc/self/cmdline");
+    if (fd < 0) return 0;
+    while (n < (long)sizeof(cmd) - 1) {
+        r = raw_read_call(fd, cmd + n, sizeof(cmd) - 1 - (size_t)n);
+        if (r == -SHELLY_EINTR) continue;
+        if (r <= 0) break;
+        n += r;
+    }
+    raw_close_call(fd);
+    if (n <= 0) return 0;
+    cmd[n] = '\0';
+    prog = cmd;
+    base = path_basename(prog);
+    if (streq(base, "linker64") || streq(base, "linker")) {
+        long first = (long)str_len(cmd) + 1;
+        if (first >= n) return 0;
+        prog = cmd + first;
+        base = path_basename(prog);
+    }
+    if (streq(base, "codex_tui")) return 1;
+    return proc_environ_value_copy("SHELLY_CODEX_EXEC_PATH=", exec_path, sizeof(exec_path)) == 0 &&
+           exec_path[0] == '/' && streq(prog, exec_path);
+}
+
 int gethostname(char *name, size_t len) {
     char override[SHELLY_CODEX_HOST_NAME_MAX + 1];
     gethostname_fn_t fn = (gethostname_fn_t)real_sym(&g_real_gethostname_fn, "gethostname");
-    if (name && codex_host_name_override(override, sizeof(override))) {
+    if (name && codex_host_name_override(override, sizeof(override)) && self_is_codex()) {
         size_t n = str_len(override);
         if (n < len) {
             for (size_t i = 0; i <= n; i++) name[i] = override[i];

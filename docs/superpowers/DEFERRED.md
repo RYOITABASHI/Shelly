@@ -91,7 +91,21 @@
   2. **アプリでホスト名が「localhost」と表示される**: `codex-rs/app-server-transport/.../remote_control/controller.rs` が `gethostname()` の値をそのまま使っている（enroll 時と、接続のたびに送る `x-codex-name` ヘッダ）。env や config で上書きする手段は無く、アプリは `sethostname` できない。そこで exec-wrapper v225 で `gethostname()` を interpose し、exec 時の env（`/proc/self/environ`）に `SHELLY_CODEX_HOST_NAME`（1〜63 バイト、制御文字なし）がある場合だけその値を返すようにした。`shelly codex pair` は remote-control の起動時にだけ、この変数に `Shelly (<getprop ro.product.marketname / vendor.marketname / model>)` を設定する。codex-termux 0.162.1 のリリースバイナリが `gethostname` を libc.so から import していることは動的シンボル表で確認済み。**実機確認点**: 再接続後にアプリ上の名前が変わるか。既存の enrollment もサーバ側の表示名が更新されるか（ヘッダは毎回送っているが、サーバ側の挙動は未確認）。ホストが実行するシェルコマンドにも env が継承されるため、wrapper を preload した子プロセスで `hostname` を実行すると同じ名前が返る（実害なしと判断）。
   3. **タブを閉じるとホストが止まる**: `pair --background` を追加した（オプトイン、既定はこれまでどおりフォアグラウンド）。`( … & )` の二重 fork でホストを PTY bash の子孫から外すため、shelly-pty.c のセッション終了時のツリー kill（ppid をたどる）が届かない。HUP は trap で無視し、stdin は /dev/null、出力は `$TMPDIR/shelly-codex-remote.log` に書く。状態ファイル `$TMPDIR/shelly-codex-remote.host` には pid と /proc の starttime を記録し、pid が再利用されていても誤って kill しない。`shelly codex stop` はプロセスツリーに TERM を送り、それでも残れば KILL して rc ディレクトリを掃除する。`status` で状態を確認できる。新しい永続ディレクトリは作らない。**限界**: ホストはアプリの cgroup 内にいるため、Shelly が kill されると一緒に止まる。Android 12+ の phantom process 制限にもかかる。全タブを閉じると TerminalSessionService の FGS が止まり、バックグラウンドでアプリが kill されうる。アプリの生存期間を超えて常駐させるには、別の FGS が必要（P2、未着手。codex daemon モード `remote-control start` は daemon 子プロセスの exec と LD_PRELOAD の継承が未検証のため、引き続き使わない）。
   4. **コードの有効期限**: `codex remote-control pair --json` の `expiresAt` を読んで、「Expires at HH:MM (in about N min)」、次の手順、期限切れ時は `shelly codex code` で再発行できる旨を表示する。JSON でない出力の場合は従来の生出力にフォールバックする。
-  - **未対応**: shim（`$HOME/.shelly/shelly-helper.sh`）のトップレベル usage は `shelly codex <pair|code>` のまま（fix/shelly-native-shim と衝突しないよう、shim 版は上げていない）。次に shim を触るときに `trust|status|stop` を追記すること。
+  - **レビュー指摘対応（BASHRC_VERSION 258 / SHELLY_HELPER_SHIM v12、同ブランチ）**:
+    - **ホスト名の適用範囲**: `gethostname()` の上書きは Codex プロセス自身だけに限定した（`self_is_codex`）。判定には `/proc/self/cmdline` のプログラム名を使い、`linker64 <elf>` の場合は argv[1] を見る。それが `SHELLY_CODEX_EXEC_PATH` と一致するか、名前が `codex_tui` のときだけ上書きする。Codex が実行する bash / git / node / ssh は env を継承しても実ホスト名のままになる（git の gc.pid のホスト判定や、user@host のメールアドレス補完への影響を避けるため）。
+      - `shell_environment_policy` で子プロセスから env を外す案は採らなかった。`-c shell_environment_policy.exclude=[...]` はユーザー config の exclude を上書きしてしまううえ、exe 判定だけで十分なため。
+      - 既定名は UTF-8 の文字境界で 63 バイトに切る。
+    - **`trust` の強化**:
+      - 読み取りと書き込みで同じ TOML 行パーサを使う（CRLF、インデント、`[projects . "x"]` の空白、行末コメントに対応）ので、重複テーブルを作らない。
+      - 書き換えるのは対象テーブル自身の `trust_level =` 行だけ。配列要素の中にある同じ文字列や、他のテーブルには触れない。テーブルに `trust_level` が無ければヘッダ直下に挿入する。
+      - config.toml が symlink なら、リンク先の実体（readlink -f）に一時ファイル＋mv で書き、パーミッションも維持する。新規作成時は 600。
+      - パス制限: 制御文字（C ロケール）、不正な UTF-8、引用符、バックスラッシュを含むパスは拒否する（日本語名は許可）。`$HOME` 自体も拒否し、サブフォルダを指定するよう案内する。共有ストレージ（`/storage`、`/sdcard`、`/mnt` 配下）は `--yes` が必要。HOME の祖先チェックは `/data/data` の綴りに正規化して比較する。
+    - **`pair --background` の強化**:
+      - 追跡中のバックグラウンドホストが生きている間は、`pair` を実行しても2台目を起動しない。コードを出すか、`code` / `stop` を案内する。
+      - バックグラウンドホスト専用の TMPDIR（`$TMPDIR/shelly-codex-bg`）を使う。codex は `/tmp` が使えないと `$TMPDIR` に `codex-rc-*` を作るため、ペアリング待ちを Ctrl-C で中断した場合でも、`stop` が確実に掃除できる。
+      - ログは起動のたびに空にする。
+      - `setsid` は採用しなかった。bash 関数は setsid できず、`linker64 libbash.so -c` 経由で bashrc を読み直す必要があるため、リスクの割に得るものが少ない。現状でもツリー kill 対象から外れ、HUP も無視している。
+    - **shim v12**: トップレベル usage に `shelly codex <pair|code|trust|status|stop>` を表示する。
 - **再開手順**: CI 成功ビルドを実機に入れ、`shelly codex pair` を実行。失敗時は `SHELLY_DEBUG=1 shelly codex pair` と `ls -la /data/user/0/dev.shelly.terminal/cdx $TMPDIR/codex-rc-*` の結果を記録。
 - → sync: README Status 表 / Codex Runtime 節 / Bundled Shelly commands 表（Experimental・実機未検証として記載済み）
 ### ClosePaw 引き継ぎ（hand-off）— Phase 1 実装済み・実機未検証、Phase 2（結果受け取り）は上流 PR 待ち (P2)

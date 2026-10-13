@@ -418,13 +418,20 @@ maybe('shelly codex v257 (bash)', () => {
     const state = fs.readFileSync(path.join(home, 'tmp', 'shelly-codex-remote.host'), 'utf8').trim().split(' ');
     const pid = Number(state[0]);
     expect(pid).toBeGreaterThan(1);
-    expect(fs.readFileSync(path.join(home, 'tmp', 'shelly-codex-remote.host.sock'), 'utf8')).toContain('codex-rc-new/rc.sock');
+    // The background host gets its own TMPDIR, so stop can always find its rc dir.
+    expect(fs.readFileSync(path.join(home, 'tmp', 'shelly-codex-remote.host.sock'), 'utf8')).toContain(
+      'shelly-codex-bg/codex-rc-new/rc.sock',
+    );
     expect(run('shelly codex status').out).toContain(`running (pid ${pid}`);
+    // A second pair never starts another host while the tracked one is alive.
+    const again = run('shelly codex pair --background', { STUB_HOST_STAY: '1' });
+    expect(again.out).toContain('already running');
+    expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8').match(/--no-daemon/g)!.length).toBe(1);
     const stop = run('shelly codex stop');
     expect(stop.code).toBe(0);
     expect(stop.out).toContain('Stopped');
     expect(run(`kill -0 ${pid} 2>/dev/null && echo alive || echo gone`).out.trim()).toBe('gone');
-    expect(fs.existsSync(path.join(home, 'tmp', 'codex-rc-new'))).toBe(false);
+    expect(fs.existsSync(path.join(home, 'tmp', 'shelly-codex-bg', 'codex-rc-new'))).toBe(false);
     expect(run('shelly codex stop').code).toBe(1);
   });
 
@@ -434,5 +441,126 @@ maybe('shelly codex v257 (bash)', () => {
     const r = run(`printf '%s 999999999\\n' "$$" > "$TMPDIR/shelly-codex-remote.host"; shelly codex stop; echo "rc=$? survived"`);
     expect(r.out).toContain('No background');
     expect(r.out).toContain('rc=1 survived');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v258: review follow-ups
+// ---------------------------------------------------------------------------
+maybe('shelly codex v258 (bash)', () => {
+  function cfgPath() {
+    return path.join(home, '.codex', 'config.toml');
+  }
+  function canon(rel: string): string {
+    return run(`cd "$HOME/${rel}" && pwd -P`).out.trim();
+  }
+  function writeCfg(s: string) {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(cfgPath(), s);
+  }
+
+  it('cuts the default host name to 63 bytes on a UTF-8 boundary', () => {
+    const out = run('__shelly_codex_remote_host_name', { SHELLY_CODEX_HOST_NAME: `Shelly ${'あ'.repeat(30)}` }).out;
+    expect(Buffer.byteLength(out, 'utf8')).toBe(7 + 18 * 3);
+    expect(out).not.toContain('�');
+    expect(out).toBe(`Shelly ${'あ'.repeat(18)}`);
+  });
+
+  it('validates UTF-8 (Japanese allowed, truncated or stray bytes refused)', () => {
+    const r = run(
+      `for s in 'myアプリ' $'\\xff' $'\\xe3\\x81' $'a\\x80'; do __shelly_codex_remote_utf8_ok "$s" && echo ok || echo bad; done`,
+    );
+    expect(r.out.trim().split('\n')).toEqual(['ok', 'bad', 'bad', 'bad']);
+  });
+
+  it('trusts a Japanese-named folder', () => {
+    fs.mkdirSync(path.join(home, 'アプリ'));
+    const r = run('shelly codex trust "$HOME/アプリ"');
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toContain(`[projects."${canon('アプリ')}"]`);
+  });
+
+  it('refuses $HOME itself with a hint to trust a subfolder', () => {
+    const r = run('shelly codex trust "$HOME"');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('Trust the project folder instead');
+    expect(fs.existsSync(cfgPath())).toBe(false);
+  });
+
+  it('shared storage needs --yes', () => {
+    fs.mkdirSync(path.join(home, 'sd'));
+    const fake = `__shelly_codex_remote_canon() { case "$1" in *sd) printf /storage/emulated/0/proj ;; *) (cd "$1" && pwd -P) ;; esac; }`;
+    const no = run(`${fake}; shelly codex trust "$HOME/sd"`);
+    expect(no.code).toBe(1);
+    expect(no.out).toContain('shelly codex trust --yes');
+    expect(fs.existsSync(cfgPath())).toBe(false);
+    const yes = run(`${fake}; shelly codex trust --yes "$HOME/sd"`);
+    expect(yes.code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toContain('[projects."/storage/emulated/0/proj"]');
+  });
+
+  it('the HOME-ancestor check compares /data/data and /data/user/0 spellings', () => {
+    fs.mkdirSync(path.join(home, 'up'));
+    const fake = `__shelly_codex_remote_canon() { case "$1" in *up) printf /data/data/dev.shelly.terminal/files ;; *) printf /data/user/0/dev.shelly.terminal/files/home ;; esac; }`;
+    const r = run(`${fake}; shelly codex trust "$HOME/up"`);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('contains the Shelly home directory');
+  });
+
+  it('finds an existing table despite CRLF, indentation, spacing and comments, and flips only its key line', () => {
+    fs.mkdirSync(path.join(home, 'crlf'));
+    const c = canon('crlf');
+    writeCfg(`model = "x"\r\n  [ projects . "${c}" ]  # mine\r\n  trust_level = 'untrusted' # was\r\n\r\n[tui]\r\nx = 1\r\n`);
+    const r = run('shelly codex trust "$HOME/crlf"');
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(
+      `model = "x"\r\n  [ projects . "${c}" ]  # mine\r\ntrust_level = "trusted"\r\n\r\n[tui]\r\nx = 1\r\n`,
+    );
+    // Reader agrees, so a second run is a no-op (no duplicate table).
+    expect(run('shelly codex trust "$HOME/crlf"').out).toContain('Already trusted');
+  });
+
+  it('leaves look-alike lines (array items, other tables) alone', () => {
+    fs.mkdirSync(path.join(home, 'arr'));
+    const c = canon('arr');
+    const before =
+      `[projects."/other"]\ntrust_level = "untrusted"\n\n` +
+      `[projects."${c}"]\nnotes = [\n  "trust_level = \\"x\\"",\n]\ntrust_level = "untrusted"\n`;
+    writeCfg(before);
+    expect(run('shelly codex trust "$HOME/arr"').code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(before.replace(/trust_level = "untrusted"\n$/, 'trust_level = "trusted"\n'));
+  });
+
+  it('adds trust_level right under an existing table that has none', () => {
+    fs.mkdirSync(path.join(home, 'bare'));
+    const c = canon('bare');
+    writeCfg(`[projects."${c}"]\nother = 1\n`);
+    expect(run('shelly codex trust "$HOME/bare"').code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(`[projects."${c}"]\ntrust_level = "trusted"\nother = 1\n`);
+  });
+
+  itPosix('writes through a symlinked config.toml and keeps its mode', () => {
+    fs.mkdirSync(path.join(home, 'lnk'));
+    const c = canon('lnk');
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const real = path.join(home, 'real-config.toml');
+    fs.writeFileSync(real, `[projects."${c}"]\ntrust_level = "untrusted"\n`);
+    fs.chmodSync(real, 0o640);
+    fs.symlinkSync(real, cfgPath());
+    expect(run('shelly codex trust "$HOME/lnk"').code).toBe(0);
+    expect(fs.lstatSync(cfgPath()).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(real, 'utf8')).toBe(`[projects."${c}"]\ntrust_level = "trusted"\n`);
+    if (process.platform !== 'win32') expect(fs.statSync(real).mode & 0o777).toBe(0o640);
+  });
+});
+
+describe('v258 generator invariants', () => {
+  it('bumps BASHRC_VERSION to >= 258', () => {
+    const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);
+    expect(Number(m![1])).toBeGreaterThanOrEqual(258);
+  });
+
+  it('runs the background host with its own TMPDIR', () => {
+    expect(remoteFns).toContain('TMPDIR="$__bgtmp" SHELLY_CODEX_HOST_NAME="$__name" codex remote-control --no-daemon');
   });
 });

@@ -535,4 +535,17 @@ describe('v225: gethostname() answers SHELLY_CODEX_HOST_NAME only when it is set
     );
     expect(functionBody('resolve_socket_root_impls')).toMatch(/real_sym\(&g_real_gethostname_fn, "gethostname"\);/);
   });
+
+  it('applies the override only inside the Codex process, not its tool children', () => {
+    expect(code).toMatch(
+      /int gethostname\(char \*name, size_t len\) \{[\s\S]*?codex_host_name_override\(override, sizeof\(override\)\) && self_is_codex\(\)/,
+    );
+    const body = functionBody('self_is_codex');
+    expect(body).toMatch(/raw_open_readonly\("\/proc\/self\/cmdline"\)/);
+    // `linker64 <elf>`: the program is argv[1].
+    expect(body).toMatch(/streq\(base, "linker64"\) \|\| streq\(base, "linker"\)/);
+    expect(body).toMatch(/streq\(base, "codex_tui"\)/);
+    expect(body).toMatch(/proc_environ_value_copy\("SHELLY_CODEX_EXEC_PATH=", exec_path, sizeof\(exec_path\)\)/);
+    expect(body).not.toMatch(/caller_environ|g_environ_ptr/);
+  });
 });
