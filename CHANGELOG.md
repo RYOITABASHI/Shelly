@@ -6,6 +6,8 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.0.2] - 2026-10-13
+
 ### Added
 
 - **Ask AI.** An "Ask AI" item in the terminal's text-selection menu quotes
@@ -50,7 +52,10 @@ All notable changes to Shelly are documented here. Format loosely follows
   paint waits for the persisted preset (no boot flash).
 - Pane layout reserves only the keyboard's real IME overlap; compact and
   standard widths use an overlay sidebar drawer.
-
+- **Case File is the default theme** (color preset and app font) for new
+  installs; existing installs keep their chosen preset.
+- The block-history button no longer sits on top of terminal output: it
+  idles faded, wakes on scroll or tap, and hides during text selection.
 - **MCP server speaks spec 2026-07-28 as well as the older revisions.**
   Clients on 2025-03-26 / 2025-06-18 / 2025-11-25 keep the existing
   `initialize` + session flow (now echoing the client's requested version,
@@ -62,6 +67,28 @@ All notable changes to Shelly are documented here. Format loosely follows
   experimental multi-round-trip mode (`SHELLY_MCP_MRTR=1`) is off by
   default. Hardening: constant-time token check, non-loopback `Origin`
   refused, and caps on pending approvals and legacy sessions.
+
+### Fixed
+
+- **python3 / node inside Codex.** Commands Codex runs now reach Shelly's
+  bundled interpreters however they are launched — directly, through
+  `env` / `timeout` / `nohup` / `xargs`, in pipes, or from a script —
+  with `PYTHONHOME` / `PYTHONPATH` / `TZ` passed through. The exec wrapper
+  forwards the caller's real environment, execs `/system` symlink shims
+  directly, and `~/.bashrc` now drops `LD_PRELOAD` only in interactive
+  shells (launches that must run without the wrapper still opt out
+  locally).
+- Codex starts in directories it does not trust yet (`--add-dir` is only
+  passed with a writable sandbox), and `.bashrc` / `.profile` no longer
+  break non-bash shells.
+- Empty AI replies after an aborted stream, double submits on Enter in a
+  multi-line composer, and cleared chat threads coming back.
+- Browser pane: unreadable black address bar and a reload loop.
+- "Open" on a saved agent output now opens a Markdown pane if none exists.
+- The Case File boot flash could stick on screen after a theme remount.
+- Z Fold6 cover screen: the right edge was clipped.
+- In-app updater: downloads failed for a secondary Android user profile.
+- Terminal text keeps a minimum contrast against the active theme.
 
 ## [8.0.1] - 2026-09-17
 
