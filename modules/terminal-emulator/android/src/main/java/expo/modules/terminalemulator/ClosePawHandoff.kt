@@ -137,9 +137,35 @@ object ClosePawHandoff {
         return collapsed.substring(0, end).replace(TRAILING_SPACE_RE, "")
     }
 
+    /**
+     * Constant instruction prepended to every goal handed to ClosePaw
+     * (mirrored by lib/agent-intent-review.ts CLOSEPAW_GOAL_PREFIX). In
+     * ClosePaw's Virtual Display mode the VD "home" is Samsung DeX's
+     * launcher, and its LLM tapped launcher icons instead of calling its
+     * open_app tool, wandering into Samsung Finder / the Google app and
+     * failing; with this prefix it used open_app (2/2 on-device). It is a
+     * fixed string, never user-controlled; the user-reviewed/approved goal is
+     * the text after "Task: ".
+     */
+    const val GOAL_PREFIX = "Use the open_app tool to open apps (do not tap launcher icons). Task: "
+
+    /** The exact extra sent to ClosePaw: [GOAL_PREFIX] + the sanitized goal,
+     *  the goal trimmed so the whole string stays within
+     *  [GOAL_MAX_CODE_POINTS]. Applied AFTER sanitization. */
+    fun wireGoal(goal: String?): String {
+        val clean = sanitizeGoal(goal)
+        val budget = GOAL_MAX_CODE_POINTS - GOAL_PREFIX.codePointCount(0, GOAL_PREFIX.length)
+        val fitted = if (clean.codePointCount(0, clean.length) <= budget) {
+            clean
+        } else {
+            clean.substring(0, clean.offsetByCodePoints(0, budget)).replace(TRAILING_SPACE_RE, "")
+        }
+        return GOAL_PREFIX + fitted
+    }
+
     fun buildIntent(goal: String): Intent = Intent().apply {
         component = ComponentName(PACKAGE, ACTIVITY)
-        putExtra(EXTRA_GOAL, sanitizeGoal(goal))
+        putExtra(EXTRA_GOAL, wireGoal(goal))
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 

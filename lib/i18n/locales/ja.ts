@@ -2538,7 +2538,7 @@ const ja: Record<string, string> = {
   'agent_action_confirm_intent_share_text': '共有テキスト',
   'agent_action_confirm_intent_failed': 'アプリ操作の実行に失敗しました。リクエストは拒否されました。',
   'agent_action_confirm_body_closepaw': 'このエージェントはスマホを操作する ClosePaw にタスクを引き継ごうとしています。許可する前にゴールを確認してください。',
-  'agent_action_confirm_closepaw_handoff': 'ClosePaw に引き継ぎ: {{goal}}',
+  'agent_action_confirm_closepaw_handoff': 'ClosePaw に引き継ぎ: {{goal}}（アプリは open_app ツールで開くよう固定の指示を Shelly が付加します）',
   'agent_action_confirm_closepaw_note': 'ClosePaw 側でもう一度確認（「External Goal」）が表示されてから実行されます。Shelly には結果が返らないため、この実行は「引き継ぎ済み」で終わります。',
   'agent_action_confirm_closepaw_not_installed': 'ClosePaw（パッケージ ai.closepaw）がインストールされていません。GitHub のリリースページからインストールしてから、もう一度エージェントを実行してください。リクエストは拒否されました。',
   'agent_action_confirm_webhook_host': '送信先ホスト',

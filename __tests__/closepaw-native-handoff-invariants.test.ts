@@ -16,6 +16,11 @@ import {
   CLOSEPAW_GOAL_MAX_CHARS,
   CLOSEPAW_NOT_INSTALLED_MARKER,
   CLOSEPAW_PACKAGE,
+  CLOSEPAW_GOAL_PREFIX,
+  closePawReviewLine,
+  closePawTaskText,
+  closePawWireGoal,
+  fireReviewedAgentIntent,
 } from '@/lib/agent-intent-review';
 import {
   CLOSEPAW_MSG_BACKGROUND_BLOCKED,
@@ -83,6 +88,36 @@ describe('ClosePawHandoff.kt parity with the TS reference spec', () => {
     expect(CLOSEPAW_MSG_HANDED_OFF).toBe('Handed off to ClosePaw — confirm Run in ClosePaw');
     expect(CLOSEPAW_MSG_NOTIFIED).toBe('Shelly is in the background — tap the ClosePaw notification to continue');
     expect(CLOSEPAW_MSG_NOT_INSTALLED).toBe('ClosePaw is not installed');
+  });
+
+  it('prepends the same constant open_app instruction, after sanitization, within the cap', () => {
+    expect(ktString('GOAL_PREFIX')).toBe(CLOSEPAW_GOAL_PREFIX);
+    expect(CLOSEPAW_GOAL_PREFIX).toBe('Use the open_app tool to open apps (do not tap launcher icons). Task: ');
+    expect(handoff).toContain('putExtra(EXTRA_GOAL, wireGoal(goal))');
+    const wire = handoff.slice(handoff.indexOf('fun wireGoal('), handoff.indexOf('fun buildIntent('));
+    expect(wire).toContain('val clean = sanitizeGoal(goal)');
+    expect(wire).toContain('GOAL_MAX_CODE_POINTS - GOAL_PREFIX.codePointCount(0, GOAL_PREFIX.length)');
+    expect(wire).toContain('return GOAL_PREFIX + fitted');
+  });
+
+  it('TS reference: wire goal = prefix + task text, capped at CLOSEPAW_GOAL_MAX_CHARS code points', () => {
+    expect(closePawWireGoal('  open\tChrome  ')).toBe(`${CLOSEPAW_GOAL_PREFIX}open Chrome`);
+    const long = '東'.repeat(3000);
+    const wire = closePawWireGoal(long);
+    expect(Array.from(wire)).toHaveLength(CLOSEPAW_GOAL_MAX_CHARS);
+    expect(wire.startsWith(CLOSEPAW_GOAL_PREFIX)).toBe(true);
+    expect(closePawTaskText(closePawTaskText(long))).toBe(closePawTaskText(long));
+    expect(wire).toBe(CLOSEPAW_GOAL_PREFIX + closePawTaskText(long));
+  });
+
+  it('the review line and the fired text are the exact task text that is sent', async () => {
+    const long = 'a'.repeat(1990) + ' tail';
+    const t = (_k: string, p?: Record<string, string | number>) => String(p?.goal);
+    expect(closePawReviewLine({ intentMode: 'closepaw', intentShareText: long }, t)).toBe(closePawTaskText(long));
+    const fired: unknown[] = [];
+    await fireReviewedAgentIntent({ intentMode: 'closepaw', intentShareText: long }, async (...a) => fired.push(a));
+    expect(fired).toEqual([['closepaw', '', closePawTaskText(long)]]);
+    expect(CLOSEPAW_GOAL_PREFIX + fired.map((a) => (a as string[])[2])[0]).toBe(closePawWireGoal(long));
   });
 
   it('decodes percent-escapes strictly (no "+" → space, invalid UTF-8 rejected)', () => {

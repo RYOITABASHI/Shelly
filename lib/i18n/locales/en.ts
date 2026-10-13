@@ -2576,7 +2576,7 @@ const en: Record<string, string> = {
   'agent_action_confirm_intent_share_text': 'Share text',
   'agent_action_confirm_intent_failed': 'Failed to fire the app action. The request was declined.',
   'agent_action_confirm_body_closepaw': 'This agent wants to hand a task off to ClosePaw, which will operate your phone. Review the goal before allowing it.',
-  'agent_action_confirm_closepaw_handoff': 'Hand off to ClosePaw: {{goal}}',
+  'agent_action_confirm_closepaw_handoff': 'Hand off to ClosePaw: {{goal}} (Shelly adds a fixed instruction telling ClosePaw to open apps with its open_app tool)',
   'agent_action_confirm_closepaw_note': 'ClosePaw will ask you once more ("External Goal") before it runs. It returns no result to Shelly, so this run ends as "handed off".',
   'agent_action_confirm_closepaw_not_installed': 'ClosePaw is not installed (package ai.closepaw). Install it from its GitHub releases page, then run the agent again. The request was declined.',
   'agent_action_confirm_webhook_host': 'Destination host',

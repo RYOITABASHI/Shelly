@@ -47,6 +47,34 @@ export function sanitizeClosePawGoal(raw: string | null | undefined): string {
   return codePoints.slice(0, CLOSEPAW_GOAL_MAX_CHARS).join('').replace(/ +$/g, '');
 }
 
+/**
+ * Fixed instruction the native side (ClosePawHandoff.kt GOAL_PREFIX, kept
+ * byte-identical) prepends to EVERY goal it hands to ClosePaw, for both the
+ * shell `shelly closepaw` path and fireAgentIntent('closepaw'). In ClosePaw's
+ * Virtual Display mode the VD home is Samsung DeX's launcher and its LLM
+ * tapped launcher icons instead of using its open_app tool (wandering into
+ * Samsung Finder / the Google app); this prefix fixed it 2/2 on-device. It is
+ * a constant, never user-controlled. The review line shows the task text
+ * exactly as sent (closePawTaskText) and states that this instruction is added.
+ */
+export const CLOSEPAW_GOAL_PREFIX = 'Use the open_app tool to open apps (do not tap launcher icons). Task: ';
+
+/** The task portion actually sent after CLOSEPAW_GOAL_PREFIX: the sanitized
+ *  goal, trimmed so prefix + task stays within CLOSEPAW_GOAL_MAX_CHARS code
+ *  points. Idempotent. Mirrors the trim in ClosePawHandoff.wireGoal. */
+export function closePawTaskText(raw: string | null | undefined): string {
+  const clean = sanitizeClosePawGoal(raw);
+  const budget = CLOSEPAW_GOAL_MAX_CHARS - Array.from(CLOSEPAW_GOAL_PREFIX).length;
+  const cps = Array.from(clean);
+  if (cps.length <= budget) return clean;
+  return cps.slice(0, budget).join('').replace(/ +$/g, '');
+}
+
+/** The exact `goal` extra ClosePaw receives (reference for ClosePawHandoff.wireGoal). */
+export function closePawWireGoal(raw: string | null | undefined): string {
+  return CLOSEPAW_GOAL_PREFIX + closePawTaskText(raw);
+}
+
 /** Error-message marker the native fireAgentIntent throws when ClosePaw is
  *  not installed (or not visible to Shelly). */
 export const CLOSEPAW_NOT_INSTALLED_MARKER = 'CLOSEPAW_NOT_INSTALLED';
@@ -81,9 +109,10 @@ export async function fireReviewedAgentIntent(
 ): Promise<void> {
   const mode = request.intentMode ?? 'launch';
   if (mode === 'closepaw') {
-    // Fire exactly the text the reviewer saw (closePawReviewLine renders the
-    // same sanitizer). Target is meaningless for this mode.
-    await fireAgentIntent('closepaw', '', sanitizeClosePawGoal(request.intentShareText));
+    // Fire exactly the task text the reviewer saw (closePawReviewLine renders
+    // closePawTaskText too); native prepends only the constant
+    // CLOSEPAW_GOAL_PREFIX. Target is meaningless for this mode.
+    await fireAgentIntent('closepaw', '', closePawTaskText(request.intentShareText));
     return;
   }
   await fireAgentIntent(
@@ -103,7 +132,7 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 
 /** The single review line shown for a ClosePaw hand-off request. */
 export function closePawReviewLine(request: ReviewedAgentIntent, t: Translate): string {
-  return t('agent_action_confirm_closepaw_handoff', { goal: sanitizeClosePawGoal(request.intentShareText) });
+  return t('agent_action_confirm_closepaw_handoff', { goal: closePawTaskText(request.intentShareText) });
 }
 
 /** Plain-text run-log / chat line for a completed hand-off. */

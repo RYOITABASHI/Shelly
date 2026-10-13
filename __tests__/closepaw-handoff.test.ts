@@ -100,10 +100,10 @@ describe('ClosePaw intent mode helpers', () => {
   it('renders the review line "Hand off to ClosePaw: <goal>" in en and ja', () => {
     const req = { intentMode: 'closepaw' as const, intentShareText: 'open Chrome\nand search the weather in Tokyo' };
     expect(closePawReviewLine(req, (k, p) => tFor('en', k, p))).toBe(
-      'Hand off to ClosePaw: open Chrome and search the weather in Tokyo',
+      'Hand off to ClosePaw: open Chrome and search the weather in Tokyo (Shelly adds a fixed instruction telling ClosePaw to open apps with its open_app tool)',
     );
     expect(closePawReviewLine(req, (k, p) => tFor('ja', k, p))).toBe(
-      'ClosePaw に引き継ぎ: open Chrome and search the weather in Tokyo',
+      'ClosePaw に引き継ぎ: open Chrome and search the weather in Tokyo（アプリは open_app ツールで開くよう固定の指示を Shelly が付加します）',
     );
   });
 
