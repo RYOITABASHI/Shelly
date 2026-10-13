@@ -89,12 +89,12 @@ beforeEach(() => {
 });
 
 describe('generated shelly helper shim', () => {
-  it('is bumped to v8 alongside BASHRC_VERSION >= 253', () => {
+  it('is bumped to v9 alongside BASHRC_VERSION >= 254', () => {
     const src = fs.readFileSync(ktPath, 'utf8');
-    expect(src).toContain('# SHELLY_HELPER_SHIM v8');
+    expect(src).toContain('# SHELLY_HELPER_SHIM v9');
     const m = src.match(/private const val BASHRC_VERSION = (\d+)\b/);
     expect(m).not.toBeNull();
-    expect(Number(m![1])).toBeGreaterThanOrEqual(252);
+    expect(Number(m![1])).toBeGreaterThanOrEqual(254);
   });
 
   it('parses as valid JavaScript', () => {

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="closepaw_channel_name">ClosePaw への引き継ぎ</string>
+  <string name="closepaw_channel_description">Shelly がバックグラウンドのときに ClosePaw へ引き継いだタスクをタップで続行します</string>
+  <string name="closepaw_notification_title">ClosePaw に引き継ぎ</string>
+  <string name="closepaw_notification_body">%1$s\n\nタップすると ClosePaw が開きます。実行前に ClosePaw で Run の確認があります。</string>
+</resources>

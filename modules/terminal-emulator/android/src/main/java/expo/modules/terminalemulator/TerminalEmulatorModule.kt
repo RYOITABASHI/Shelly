@@ -4,7 +4,6 @@ import android.app.AlarmManager
 import android.app.DownloadManager
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
-import android.content.ComponentName
 import android.content.Context
 import android.content.ClipboardManager
 import android.content.Intent
@@ -59,27 +58,10 @@ class TerminalEmulatorModule : Module() {
         // else (a URI with a scheme) falls through to ACTION_VIEW.
         private val PACKAGE_NAME_RE = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+$")
 
-        // ClosePaw hand-off (intent mode "closepaw"). Mirrors
-        // lib/agent-intent-review.ts's CLOSEPAW_* constants + sanitizeClosePawGoal.
-        private const val CLOSEPAW_PACKAGE = "ai.closepaw"
-        private const val CLOSEPAW_ACTIVITY = "ai.closepaw.app.MainActivity"
-        private const val CLOSEPAW_GOAL_MAX_CODE_POINTS = 2000
-        private val CLOSEPAW_CONTROL_RE = Regex("[\\u0000-\\u001F\\u007F-\\u009F]")
-        private val CLOSEPAW_SPACE_RUN_RE = Regex(" {2,}")
-        private val CLOSEPAW_EDGE_SPACE_RE = Regex("^ +| +$")
-        private val CLOSEPAW_TRAILING_SPACE_RE = Regex(" +$")
-
-        /** Byte-identical port of lib/agent-intent-review.ts sanitizeClosePawGoal. */
-        internal fun sanitizeClosePawGoal(raw: String?): String {
-            val collapsed = (raw ?: "")
-                .replace(CLOSEPAW_CONTROL_RE, " ")
-                .replace(CLOSEPAW_SPACE_RUN_RE, " ")
-                .replace(CLOSEPAW_EDGE_SPACE_RE, "")
-            val count = collapsed.codePointCount(0, collapsed.length)
-            if (count <= CLOSEPAW_GOAL_MAX_CODE_POINTS) return collapsed
-            val end = collapsed.offsetByCodePoints(0, CLOSEPAW_GOAL_MAX_CODE_POINTS)
-            return collapsed.substring(0, end).replace(CLOSEPAW_TRAILING_SPACE_RE, "")
-        }
+        // ClosePaw hand-off (intent mode "closepaw"): constants, sanitizer and
+        // the background-safe launcher live in ClosePawHandoff.kt (shared with
+        // the native `shelly closepaw` queue owner).
+        internal fun sanitizeClosePawGoal(raw: String?): String = ClosePawHandoff.sanitizeGoal(raw)
 
         // REMOTE-INPUT-001: RemoteTextInputReceiver is a manifest-registered
         // BroadcastReceiver, not itself a live Module instance — it has no
@@ -550,6 +532,12 @@ class TerminalEmulatorModule : Module() {
                 }
                 runCatching { scouter.ensureStartedIfEnabled() }
                     .onFailure { Log.w("TerminalEmulator", "Scouter autostart skipped after startup failure", it) }
+            }
+            // fix/closepaw-background: the native owner of `shelly closepaw`
+            // queue lines (also started by TerminalSessionService.onCreate).
+            appContext.reactContext?.let { context ->
+                runCatching { ClosePawHandoff.ensureWatching(context) }
+                    .onFailure { Log.w("TerminalEmulator", "ClosePaw queue watcher failed to start", it) }
             }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
         }
@@ -1259,6 +1247,22 @@ class TerminalEmulatorModule : Module() {
                 }
                 else -> throw IllegalArgumentException("unknown intent mode: $normalizedMode")
             }
+            if (normalizedMode == "closepaw") {
+                // ClosePaw hand-off (Phase 1 + fix/closepaw-background): one
+                // native launcher for both the agent Review path and the
+                // `shelly closepaw` queue. Starts ClosePaw directly only when
+                // Shelly may start activities (visible window / overlay grant),
+                // otherwise posts a tap-to-continue notification (Android 10+
+                // background-activity-start limits). Resolves "launched" or
+                // "notified"; throws CLOSEPAW_NOT_INSTALLED /
+                // CLOSEPAW_BACKGROUND_BLOCKED. Never logs the goal.
+                return@AsyncFunction try {
+                    ClosePawHandoff.launch(context, shareText.orEmpty()).wire
+                } catch (e: Exception) {
+                    Log.e("TerminalEmulator", "fireAgentIntent failed mode=closepaw type=${e.javaClass.simpleName}")
+                    throw e
+                }
+            }
             try {
                 val intent = when (normalizedMode) {
                     "launch" -> buildLaunchIntent(context, trimmedTarget)
@@ -1267,20 +1271,6 @@ class TerminalEmulatorModule : Module() {
                         type = "text/plain"
                         putExtra(Intent.EXTRA_TEXT, shareText)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    // ClosePaw hand-off, Phase 1: explicit component, String
-                    // extra "goal". ClosePaw (release builds) shows its own
-                    // "External Goal" confirmation dialog and returns no result.
-                    // Package visibility for ai.closepaw is declared by
-                    // plugins/with-agent-launch-queries.js.
-                    "closepaw" -> Intent().apply {
-                        component = ComponentName(CLOSEPAW_PACKAGE, CLOSEPAW_ACTIVITY)
-                        putExtra("goal", sanitizeClosePawGoal(shareText))
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }.also {
-                        if (it.resolveActivity(context.packageManager) == null) {
-                            throw ActivityNotFoundException("CLOSEPAW_NOT_INSTALLED")
-                        }
                     }
                     else -> error("validated intent mode became unreachable")
                 }
@@ -1301,6 +1291,16 @@ class TerminalEmulatorModule : Module() {
                 throw e
             }
             null
+        }
+
+        // Legacy forwarder: a `closepaw:` line that still reaches RN's shared
+        // .shelly-command-queue (shim v8 from before the BASHRC v254 rewrite)
+        // is handed to the native owner instead of being fired by RN, so the
+        // hand-off has exactly one owner (validation, rate limit, dedupe,
+        // result file). Returns the result code, or null when unanswerable.
+        AsyncFunction("handOffClosePawQueueLine") { line: String ->
+            val context = requireReactContext()
+            ClosePawHandoff.handleLine(context, line)?.code
         }
 
         // Authoritative APK download dir (== the DownloadManager destination).

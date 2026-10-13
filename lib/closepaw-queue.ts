@@ -1,18 +1,29 @@
 /**
- * lib/closepaw-queue.ts — `shelly closepaw "<goal>"` shell → RN bridge.
+ * lib/closepaw-queue.ts — `shelly closepaw "<goal>"` shell → native bridge.
  *
  * A shell process (the user's PTY shell, or Codex's non-interactive
  * `bash -lc` inside it) cannot `am start` an Activity under Knox, so the
  * native `$HOME/bin/shelly` helper shim (HomeInitializer.kt,
- * SHELLY_HELPER_SHIM v7) appends ONE line to `$HOME/.shelly-command-queue`:
+ * SHELLY_HELPER_SHIM v9) appends ONE line to `$HOME/.shelly-closepaw-queue`:
  *
  *   closepaw:<reqId>:<tsMs>:<encodeURIComponent(goal)>
  *
- * app/_layout.tsx's drainCommandQueue hands it to processClosePawQueueLine()
- * below, which validates it, fires the SAME native
- * fireAgentIntent('closepaw', '', goal) path agent hand-offs use (same
- * sanitizer, same 2000-code-point cap, only the "goal" extra), and writes
- * `$HOME/.shelly-closepaw-result-<reqId>.json` for the shim to print.
+ * OWNER: native ClosePawHandoff.kt (fix/closepaw-background, 2026-10-13). It
+ * drains that file from a FileObserver + 1s poll started by
+ * TerminalSessionService and the Expo Module, so the hand-off works while
+ * Shelly is backgrounded and the RN JS poll is not running (e.g. the ChatGPT
+ * app driving Codex via `codex remote-control` hosted in a Shelly tab). It
+ * validates exactly like parseClosePawQueueLine below (this file is the
+ * reference spec — the Kotlin port is pinned to it by
+ * __tests__/closepaw-native-handoff-invariants.test.ts), rate-limits to one
+ * hand-off per CLOSEPAW_QUEUE_MIN_INTERVAL_MS, starts ClosePaw directly when
+ * Android allows it or posts a tap-to-continue notification otherwise, and
+ * writes `$HOME/.shelly-closepaw-result-<reqId>.json` for the shim to print.
+ *
+ * RN never fires a ClosePaw queue line itself: a legacy `closepaw:` line that
+ * still arrives on the shared `.shelly-command-queue` (shim v8, before the
+ * BASHRC v254 rewrite) is forwarded to the native owner by
+ * forwardLegacyClosePawLine() — one owner, so no double fire.
  *
  * Consent: this path does not show Shelly's own Review — the user (or the
  * Codex session they are driving) typed the command, and ClosePaw's
@@ -23,8 +34,8 @@
  * fires per CLOSEPAW_QUEUE_MIN_INTERVAL_MS.
  */
 import {
+  CLOSEPAW_BACKGROUND_BLOCKED_MARKER,
   CLOSEPAW_NOT_INSTALLED_MARKER,
-  isClosePawNotInstalledError,
   sanitizeClosePawGoal,
 } from './agent-intent-review';
 
@@ -40,8 +51,31 @@ export const CLOSEPAW_QUEUE_MAX_ENCODED_CHARS = 24_000;
 const REQ_ID_RE = /^[0-9]{10,16}-[0-9a-f]{8}$/;
 const TS_RE = /^[0-9]{10,16}$/;
 
+/** The native-owned queue file (relative to $HOME). */
+export const CLOSEPAW_NATIVE_QUEUE_FILE = '.shelly-closepaw-queue';
+
 export const CLOSEPAW_MSG_HANDED_OFF = 'Handed off to ClosePaw — confirm Run in ClosePaw';
+export const CLOSEPAW_MSG_NOTIFIED = 'Shelly is in the background — tap the ClosePaw notification to continue';
 export const CLOSEPAW_MSG_NOT_INSTALLED = 'ClosePaw is not installed';
+export const CLOSEPAW_MSG_BACKGROUND_BLOCKED =
+  'shelly closepaw: Shelly is in the background and its notifications are off — open Shelly and run the command again';
+
+/** Result codes the native owner writes into the result file. */
+export type ClosePawResultCode =
+  | 'handed-off'
+  | 'notified'
+  | 'not-installed'
+  | 'background-blocked'
+  | 'rate-limited'
+  | 'stale'
+  | 'invalid'
+  | 'failed';
+
+export type ClosePawQueueResult = {
+  ok: boolean;
+  code: ClosePawResultCode;
+  message: string;
+};
 
 export type ClosePawQueueParse =
   | { ok: true; reqId: string; goal: string }
@@ -78,74 +112,25 @@ export function parseClosePawQueueLine(line: string, nowMs: number): ClosePawQue
   return { ok: true, reqId, goal };
 }
 
-/** One hand-off per `intervalMs` across the whole app process. */
-export function createClosePawRateLimiter(intervalMs: number = CLOSEPAW_QUEUE_MIN_INTERVAL_MS) {
-  let lastFireAt = -Infinity;
-  return {
-    tryAcquire(nowMs: number): boolean {
-      if (nowMs - lastFireAt < intervalMs) return false;
-      lastFireAt = nowMs;
-      return true;
-    },
-  };
-}
-
-export type ClosePawQueueResult = {
-  ok: boolean;
-  code: 'handed-off' | 'not-installed' | 'rate-limited' | 'stale' | 'invalid' | 'unsupported' | 'failed';
-  message: string;
-};
-
-export interface ClosePawQueueDeps {
-  now: () => number;
-  limiter: { tryAcquire(nowMs: number): boolean };
-  /** Native fireAgentIntent, or null when this build lacks it. */
-  fire: ((mode: 'closepaw', target: string, goal: string) => Promise<void>) | null;
-  writeResult: (reqId: string, result: ClosePawQueueResult) => Promise<void>;
-  log?: (message: string) => void;
-}
-
-/** Validate + rate-limit + fire one queue line, then report back to the shim.
- *  Returns the result (null when the line is too malformed to answer). */
-export async function processClosePawQueueLine(
+/**
+ * RN side of the single-owner rule: a `closepaw:` line found on the shared
+ * command queue is handed to the native owner (which validates, rate-limits,
+ * dedupes, launches/notifies and answers the shim). RN never fires it.
+ * Returns the native result code, or null when nothing could be done.
+ */
+export async function forwardLegacyClosePawLine(
   line: string,
-  deps: ClosePawQueueDeps,
-): Promise<ClosePawQueueResult | null> {
-  const parsed = parseClosePawQueueLine(line, deps.now());
-  let result: ClosePawQueueResult;
-  if (parsed.ok === false) {
-    const reason = (parsed as Extract<ClosePawQueueParse, { ok: false }>).reason;
-    if (!parsed.reqId) {
-      deps.log?.(`closepaw: rejected malformed queue line`);
-      return null;
-    }
-    result =
-      reason === 'stale'
-        ? { ok: false, code: 'stale', message: 'ClosePaw hand-off request expired (older than 30s); nothing was sent' }
-        : reason === 'empty-goal'
-          ? { ok: false, code: 'invalid', message: 'shelly closepaw: the goal is empty' }
-          : { ok: false, code: 'invalid', message: 'shelly closepaw: malformed request' };
-  } else if (!deps.fire) {
-    result = { ok: false, code: 'unsupported', message: 'shelly closepaw: this build of Shelly cannot launch ClosePaw' };
-  } else if (!deps.limiter.tryAcquire(deps.now())) {
-    result = {
-      ok: false,
-      code: 'rate-limited',
-      message: 'shelly closepaw: rate-limited (at most one hand-off every 5 seconds); try again shortly',
-    };
-  } else {
-    try {
-      await deps.fire('closepaw', '', (parsed as Extract<ClosePawQueueParse, { ok: true }>).goal);
-      result = { ok: true, code: 'handed-off', message: CLOSEPAW_MSG_HANDED_OFF };
-    } catch (e) {
-      result = isClosePawNotInstalledError(e)
-        ? { ok: false, code: 'not-installed', message: CLOSEPAW_MSG_NOT_INSTALLED }
-        : { ok: false, code: 'failed', message: 'shelly closepaw: failed to launch ClosePaw' };
-    }
+  handOff: ((line: string) => Promise<string | null>) | null | undefined,
+  log?: (message: string) => void,
+): Promise<string | null> {
+  if (!line.startsWith(CLOSEPAW_QUEUE_PREFIX)) return null;
+  if (!handOff) {
+    log?.('closepaw: native hand-off unavailable in this build; legacy line dropped');
+    return null;
   }
-  deps.log?.(`closepaw: ${parsed.reqId ?? '?'} -> ${result.code}`);
-  await deps.writeResult(parsed.reqId as string, result);
-  return result;
+  const code = await handOff(line);
+  log?.(`closepaw: legacy line forwarded to native -> ${code ?? 'unanswered'}`);
+  return code;
 }
 
 /** Result file name for a validated reqId (relative to $HOME). */
@@ -154,5 +139,5 @@ export function closePawResultFileName(reqId: string): string {
   return `.shelly-closepaw-result-${reqId}.json`;
 }
 
-// Re-exported so the drainer and tests share one marker constant.
-export { CLOSEPAW_NOT_INSTALLED_MARKER };
+// Re-exported so the native invariants test and callers share one marker.
+export { CLOSEPAW_BACKGROUND_BLOCKED_MARKER, CLOSEPAW_NOT_INSTALLED_MARKER };

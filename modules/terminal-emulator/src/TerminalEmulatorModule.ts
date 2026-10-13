@@ -304,7 +304,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     actionNonce: string
   ): Promise<void>;
   cancelAgentActionApproval?(runId: string): Promise<void>;
-  fireAgentIntent?(mode: 'launch' | 'share' | 'closepaw', target: string, shareText?: string | null): Promise<void>;
+  /** Resolves null for launch/share; for closepaw resolves 'launched' (direct
+   *  start) or 'notified' (Shelly was backgrounded, so a tap-to-continue
+   *  notification was posted). See ClosePawHandoff.kt. */
+  fireAgentIntent?(mode: 'launch' | 'share' | 'closepaw', target: string, shareText?: string | null): Promise<'launched' | 'notified' | null>;
+  /** fix/closepaw-background: hand a legacy `closepaw:` command-queue line to
+   *  the native single owner (ClosePawHandoff.handleLine). Resolves the result
+   *  code it wrote for the shim, or null when the line was unanswerable. */
+  handOffClosePawQueueLine?(line: string): Promise<string | null>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

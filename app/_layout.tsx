@@ -75,9 +75,7 @@ import {
 } from '@/lib/agent-intent-review';
 import {
   CLOSEPAW_QUEUE_PREFIX,
-  closePawResultFileName,
-  createClosePawRateLimiter,
-  processClosePawQueueLine,
+  forwardLegacyClosePawLine,
 } from '@/lib/closepaw-queue';
 import {
   fireReviewedAgentBrowserPaneAction,
@@ -1770,7 +1768,6 @@ export default function RootLayout() {
     };
 
     const commandQueuePath = `${FileSystem.documentDirectory}home/.shelly-command-queue`;
-    const closePawRateLimiter = createClosePawRateLimiter();
     let isDrainingCommandQueue = false;
     const drainCommandQueue = async () => {
       if (isDrainingCommandQueue) return;
@@ -1803,29 +1800,18 @@ export default function RootLayout() {
             // shape as install above; see lib/teach-controller.ts.
             void handleTeachQueueLine(line);
           } else if (line.startsWith(CLOSEPAW_QUEUE_PREFIX)) {
-            // `shelly closepaw "<goal>"` — validated (age <= 30s, 1 per 5s,
-            // goal sanitized/capped, no other extras) in lib/closepaw-queue.ts,
-            // then the same native fireAgentIntent('closepaw') path agent
-            // hand-offs use. ClosePaw's own "External Goal" dialog is the
-            // consent gate.
-            void processClosePawQueueLine(line, {
-              now: Date.now,
-              limiter: closePawRateLimiter,
-              fire: TerminalEmulator.fireAgentIntent
-                ? (mode, target, goal) => TerminalEmulator.fireAgentIntent!(mode, target, goal)
+            // `shelly closepaw "<goal>"` is owned by NATIVE ClosePawHandoff.kt
+            // (shim v9 writes $HOME/.shelly-closepaw-queue, drained even when
+            // this JS poll is not running). A legacy line from a pre-v254 shim
+            // that still lands here is forwarded to that single owner — RN
+            // never fires it, so there is no double hand-off.
+            void forwardLegacyClosePawLine(
+              line,
+              TerminalEmulator.handOffClosePawQueueLine
+                ? (l) => TerminalEmulator.handOffClosePawQueueLine!(l)
                 : null,
-              writeResult: async (reqId, result) => {
-                try {
-                  await FileSystem.writeAsStringAsync(
-                    `${FileSystem.documentDirectory}home/${closePawResultFileName(reqId)}`,
-                    JSON.stringify(result),
-                  );
-                } catch (e) {
-                  logError('CommandQueue', 'closepaw: failed to write result', e);
-                }
-              },
-              log: (m) => logInfo('CommandQueue', m),
-            }).catch((e) => logError('CommandQueue', 'closepaw: handler failed', e));
+              (m) => logInfo('CommandQueue', m),
+            ).catch((e) => logError('CommandQueue', 'closepaw: legacy forward failed', e));
           } else {
             logError('CommandQueue', `unrecognized command queue line: ${line.slice(0, 64)}`);
           }

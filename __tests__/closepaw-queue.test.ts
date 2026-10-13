@@ -1,23 +1,27 @@
 /**
  * `shelly closepaw "<goal>"` — queue writer (generated $HOME/bin/shelly shim,
- * HomeInitializer.kt SHELLY_HELPER_SHIM v7) and RN drainer validation
- * (lib/closepaw-queue.ts). The shim's node body is extracted from the real
- * .kt source exactly like __tests__/shelly-helper-shim-workflow.test.ts does,
- * and run against a temp $HOME with a simulated RN drainer.
+ * HomeInitializer.kt SHELLY_HELPER_SHIM v9), the reference validation spec
+ * (lib/closepaw-queue.ts parseClosePawQueueLine, ported to native
+ * ClosePawHandoff.kt) and RN's legacy forwarder. The shim's node body is
+ * extracted from the real .kt source exactly like
+ * __tests__/shelly-helper-shim-workflow.test.ts does, and run against a temp
+ * $HOME with a simulated NATIVE owner draining .shelly-closepaw-queue.
  */
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import {
+  CLOSEPAW_MSG_BACKGROUND_BLOCKED,
   CLOSEPAW_MSG_HANDED_OFF,
+  CLOSEPAW_MSG_NOTIFIED,
   CLOSEPAW_MSG_NOT_INSTALLED,
+  CLOSEPAW_NATIVE_QUEUE_FILE,
   CLOSEPAW_QUEUE_MAX_AGE_MS,
   closePawResultFileName,
-  createClosePawRateLimiter,
   encodeClosePawQueueLine,
+  forwardLegacyClosePawLine,
   parseClosePawQueueLine,
-  processClosePawQueueLine,
   type ClosePawQueueResult,
 } from '@/lib/closepaw-queue';
 
@@ -94,66 +98,72 @@ describe('parseClosePawQueueLine', () => {
   });
 });
 
-describe('processClosePawQueueLine', () => {
-  function deps(over: Partial<Parameters<typeof processClosePawQueueLine>[1]> = {}) {
-    const results: Array<[string, ClosePawQueueResult]> = [];
-    const fire = jest.fn().mockResolvedValue(undefined);
-    let now = NOW;
-    const d = {
-      now: () => now,
-      limiter: createClosePawRateLimiter(5000),
-      fire,
-      writeResult: async (id: string, r: ClosePawQueueResult) => {
-        results.push([id, r]);
-      },
-      ...over,
-    };
-    return { d, results, fire, advance: (ms: number) => (now += ms) };
-  }
-
-  it('fires only the sanitized goal through the closepaw intent mode', async () => {
-    const { d, results, fire } = deps();
-    const r = await processClosePawQueueLine(encodeClosePawQueueLine(REQ, NOW, 'Open Chrome\nand search'), d);
-    expect(fire).toHaveBeenCalledWith('closepaw', '', 'Open Chrome and search');
-    expect(r).toEqual({ ok: true, code: 'handed-off', message: CLOSEPAW_MSG_HANDED_OFF });
-    expect(results).toEqual([[REQ, r]]);
+describe('forwardLegacyClosePawLine (RN never fires; native is the single owner)', () => {
+  it('hands a closepaw line to the native owner and returns its code', async () => {
+    const handOff = jest.fn().mockResolvedValue('notified');
+    const line = encodeClosePawQueueLine(REQ, NOW, 'x');
+    await expect(forwardLegacyClosePawLine(line, handOff)).resolves.toBe('notified');
+    expect(handOff).toHaveBeenCalledTimes(1);
+    expect(handOff).toHaveBeenCalledWith(line);
   });
 
-  it('rate-limits to one hand-off per 5 seconds', async () => {
-    const { d, fire, advance } = deps();
-    const id2 = `${NOW}-0123abce`;
-    const id3 = `${NOW}-0123abcf`;
-    await processClosePawQueueLine(encodeClosePawQueueLine(REQ, NOW, 'a'), d);
-    const second = await processClosePawQueueLine(encodeClosePawQueueLine(id2, NOW, 'b'), d);
-    expect(second?.code).toBe('rate-limited');
-    advance(5001);
-    const third = await processClosePawQueueLine(encodeClosePawQueueLine(id3, NOW + 5001, 'c'), d);
-    expect(third?.code).toBe('handed-off');
-    expect(fire).toHaveBeenCalledTimes(2);
-  });
-
-  it('never fires a stale entry, and reports it', async () => {
-    const { d, fire, results, advance } = deps();
-    advance(CLOSEPAW_QUEUE_MAX_AGE_MS + 1);
-    const r = await processClosePawQueueLine(encodeClosePawQueueLine(REQ, NOW, 'a'), d);
-    expect(fire).not.toHaveBeenCalled();
-    expect(r?.code).toBe('stale');
-    expect(results).toHaveLength(1);
-  });
-
-  it('maps the native not-installed error to "ClosePaw is not installed"', async () => {
-    const { d } = deps({ fire: jest.fn().mockRejectedValue(new Error('CLOSEPAW_NOT_INSTALLED')) });
-    const r = await processClosePawQueueLine(encodeClosePawQueueLine(REQ, NOW, 'a'), d);
-    expect(r).toEqual({ ok: false, code: 'not-installed', message: CLOSEPAW_MSG_NOT_INSTALLED });
-  });
-
-  it('does not answer (or fire) a line without a valid request id', async () => {
-    const { d, fire, results } = deps();
-    expect(await processClosePawQueueLine('closepaw:bad:1:a', d)).toBeNull();
-    expect(fire).not.toHaveBeenCalled();
-    expect(results).toHaveLength(0);
+  it('ignores non-closepaw lines and builds without the native hook', async () => {
+    const handOff = jest.fn();
+    await expect(forwardLegacyClosePawLine('teach:x', handOff)).resolves.toBeNull();
+    expect(handOff).not.toHaveBeenCalled();
+    await expect(forwardLegacyClosePawLine(encodeClosePawQueueLine(REQ, NOW, 'x'), null)).resolves.toBeNull();
   });
 });
+
+type Outcome = 'launched' | 'notified' | 'not-installed' | 'background-blocked';
+
+/**
+ * Reference model of native ClosePawHandoff.handleLine/drain (validation spec
+ * = parseClosePawQueueLine; 5s rate limit; per-reqId dedupe; atomic-rename
+ * claim; launch outcome injected).
+ */
+function makeNativeOwner(home: string, outcome: () => Outcome) {
+  let lastFireAt = -Infinity;
+  const seen = new Set<string>();
+  const launches: string[] = [];
+  const handle = (line: string) => {
+    const parsed = parseClosePawQueueLine(line, Date.now());
+    if (!parsed.reqId || seen.has(parsed.reqId)) return;
+    seen.add(parsed.reqId);
+    let result: ClosePawQueueResult;
+    if (parsed.ok === false) {
+      result = { ok: false, code: parsed.reason === 'stale' ? 'stale' : 'invalid', message: 'rejected' };
+    } else if (Date.now() - lastFireAt < 5000) {
+      result = { ok: false, code: 'rate-limited', message: 'rate-limited' };
+    } else {
+      lastFireAt = Date.now();
+      const o = outcome();
+      if (o === 'launched' || o === 'notified') launches.push(parsed.goal);
+      result =
+        o === 'launched'
+          ? { ok: true, code: 'handed-off', message: CLOSEPAW_MSG_HANDED_OFF }
+          : o === 'notified'
+            ? { ok: true, code: 'notified', message: CLOSEPAW_MSG_NOTIFIED }
+            : o === 'not-installed'
+              ? { ok: false, code: 'not-installed', message: CLOSEPAW_MSG_NOT_INSTALLED }
+              : { ok: false, code: 'background-blocked', message: CLOSEPAW_MSG_BACKGROUND_BLOCKED };
+    }
+    fs.writeFileSync(path.join(home, closePawResultFileName(parsed.reqId)), JSON.stringify(result));
+  };
+  const drain = () => {
+    const q = path.join(home, CLOSEPAW_NATIVE_QUEUE_FILE);
+    const claimed = q + '.draining';
+    try {
+      fs.renameSync(q, claimed);
+    } catch {
+      return;
+    }
+    const content = fs.readFileSync(claimed, 'utf8');
+    fs.unlinkSync(claimed);
+    for (const line of content.split('\n').filter(Boolean)) handle(line);
+  };
+  return { drain, launches };
+}
 
 describe('generated shim: shelly closepaw', () => {
   let tmp: string;
@@ -169,21 +179,13 @@ describe('generated shim: shelly closepaw', () => {
     home = fs.mkdtempSync(path.join(tmp, 'home-'));
   });
 
-  function run(args: string[], drain?: (line: string) => Promise<void>) {
+  function run(args: string[], owner?: { drain: () => void }) {
     return new Promise<{ code: number | null; out: string }>((resolve) => {
       const child = spawn(process.execPath, [shimPath, ...args], { env: { ...process.env, HOME: home } });
       let out = '';
       child.stdout.on('data', (b) => (out += b));
       child.stderr.on('data', (b) => (out += b));
-      const queue = path.join(home, '.shelly-command-queue');
-      const timer = drain
-        ? setInterval(() => {
-            if (!fs.existsSync(queue)) return;
-            const content = fs.readFileSync(queue, 'utf8');
-            fs.unlinkSync(queue);
-            for (const line of content.split('\n').filter(Boolean)) void drain(line);
-          }, 50)
-        : null;
+      const timer = owner ? setInterval(() => owner.drain(), 50) : null;
       child.on('close', (code) => {
         if (timer) clearInterval(timer);
         resolve({ code, out });
@@ -191,41 +193,44 @@ describe('generated shim: shelly closepaw', () => {
     });
   }
 
-  const rnDrainer = (fire: jest.Mock) => (line: string) =>
-    processClosePawQueueLine(line, {
-      now: Date.now,
-      limiter: createClosePawRateLimiter(),
-      fire,
-      writeResult: async (reqId, result) => {
-        fs.writeFileSync(path.join(home, closePawResultFileName(reqId)), JSON.stringify(result));
-      },
-    }).then(() => undefined);
-
   it('prints usage without a goal', async () => {
     const r = await run(['closepaw']);
     expect(r.code).toBe(0);
     expect(r.out).toContain('Usage: shelly closepaw "<goal>"');
   });
 
-  it('queues the goal, and prints the hand-off message once RN fires it', async () => {
-    const fire = jest.fn().mockResolvedValue(undefined);
-    const r = await run(['closepaw', 'Open Chrome and search for Tokyo weather'], rnDrainer(fire));
+  it('queues to the native-owned file (never the RN command queue) and prints the direct hand-off', async () => {
+    const owner = makeNativeOwner(home, () => 'launched');
+    const r = await run(['closepaw', 'Open Chrome and search for Tokyo weather'], owner);
     expect(r.out.trim()).toBe(CLOSEPAW_MSG_HANDED_OFF);
     expect(r.code).toBe(0);
-    expect(fire).toHaveBeenCalledWith('closepaw', '', 'Open Chrome and search for Tokyo weather');
+    expect(owner.launches).toEqual(['Open Chrome and search for Tokyo weather']);
     expect(fs.existsSync(path.join(home, '.shelly-command-queue'))).toBe(false);
+    expect(fs.existsSync(path.join(home, CLOSEPAW_NATIVE_QUEUE_FILE))).toBe(false);
+  }, 20_000);
+
+  it('prints the tap-the-notification message (exit 0) when Shelly is backgrounded', async () => {
+    const owner = makeNativeOwner(home, () => 'notified');
+    const r = await run(['closepaw', 'Open Chrome and search for Tokyo weather'], owner);
+    expect(r.out.trim()).toBe(CLOSEPAW_MSG_NOTIFIED);
+    expect(r.code).toBe(0);
   }, 20_000);
 
   it('prints "ClosePaw is not installed" and exits 1 when the intent cannot resolve', async () => {
-    const fire = jest.fn().mockRejectedValue(new Error('CLOSEPAW_NOT_INSTALLED'));
-    const r = await run(['closepaw', 'x'], rnDrainer(fire));
+    const r = await run(['closepaw', 'x'], makeNativeOwner(home, () => 'not-installed'));
     expect(r.out.trim()).toBe(CLOSEPAW_MSG_NOT_INSTALLED);
     expect(r.code).toBe(1);
   }, 20_000);
 
+  it('exits 1 with the notifications-off message when no route exists', async () => {
+    const r = await run(['closepaw', 'x'], makeNativeOwner(home, () => 'background-blocked'));
+    expect(r.out.trim()).toBe(CLOSEPAW_MSG_BACKGROUND_BLOCKED);
+    expect(r.code).toBe(1);
+  }, 20_000);
+
   it('joins multiple unquoted words into one goal', async () => {
-    const fire = jest.fn().mockResolvedValue(undefined);
-    await run(['closepaw', 'open', 'the', 'clock', 'app'], rnDrainer(fire));
-    expect(fire).toHaveBeenCalledWith('closepaw', '', 'open the clock app');
+    const owner = makeNativeOwner(home, () => 'launched');
+    await run(['closepaw', 'open', 'the', 'clock', 'app'], owner);
+    expect(owner.launches).toEqual(['open the clock app']);
   }, 20_000);
 });

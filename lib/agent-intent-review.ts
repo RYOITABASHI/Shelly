@@ -50,6 +50,9 @@ export function sanitizeClosePawGoal(raw: string | null | undefined): string {
 /** Error-message marker the native fireAgentIntent throws when ClosePaw is
  *  not installed (or not visible to Shelly). */
 export const CLOSEPAW_NOT_INSTALLED_MARKER = 'CLOSEPAW_NOT_INSTALLED';
+/** Native ClosePawHandoff.launch: Shelly is backgrounded (no activity start
+ *  allowed) AND its notifications are off, so there is no route to ClosePaw. */
+export const CLOSEPAW_BACKGROUND_BLOCKED_MARKER = 'CLOSEPAW_BACKGROUND_BLOCKED';
 
 export function isClosePawNotInstalledError(e: unknown): boolean {
   const message = (e as { message?: unknown } | null | undefined)?.message;
@@ -66,7 +69,10 @@ export type FireAgentIntent = (
   mode: AgentIntentMode,
   target: string,
   shareText?: string | null,
-) => Promise<void>;
+  // Native resolves null for launch/share and 'launched' | 'notified' for
+  // closepaw (notified = posted a tap-to-continue notification because
+  // Shelly could not start an activity from the background).
+) => Promise<unknown>;
 
 /** Fires the native side effect only from the human Review accept path. */
 export async function fireReviewedAgentIntent(

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="closepaw_channel_name">ClosePaw hand-off</string>
+  <string name="closepaw_channel_description">Tap to continue a task handed to ClosePaw while Shelly was in the background</string>
+  <string name="closepaw_notification_title">Hand off to ClosePaw</string>
+  <string name="closepaw_notification_body">%1$s\n\nTap to open ClosePaw. ClosePaw asks you to confirm Run before it does anything.</string>
+</resources>

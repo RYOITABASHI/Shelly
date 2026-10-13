@@ -88,6 +88,14 @@ class TerminalSessionService : Service() {
         super.onCreate()
         Log.i(TAG, "Service created sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         createNotificationChannel()
+        // fix/closepaw-background: drain `shelly closepaw` hand-offs natively
+        // while a terminal session keeps this service (and the process) alive,
+        // even when the RN JS thread is not running (app backgrounded).
+        try {
+            ClosePawHandoff.ensureWatching(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "ClosePaw queue watcher failed to start", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
