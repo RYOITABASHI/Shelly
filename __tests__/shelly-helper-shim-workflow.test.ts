@@ -1,7 +1,7 @@
 /**
  * __tests__/shelly-helper-shim-workflow.test.ts
  *
- * Behavioral test for the generated `$HOME/bin/shelly` helper's node body
+ * Behavioral test for the generated `$HOME/.shelly/shelly-helper.sh` helper's node body
  * (HomeInitializer.kt, SHELLY_HELPER_SHIM v7): the `sb.appendLine("...")`
  * literals are extracted from the real .kt source, Kotlin-unescaped, and
  * the resulting script is run with this Node against a temp $HOME. Covers
@@ -89,12 +89,12 @@ beforeEach(() => {
 });
 
 describe('generated shelly helper shim', () => {
-  it('is bumped to v9 alongside BASHRC_VERSION >= 254', () => {
+  it('is bumped to v10 alongside BASHRC_VERSION >= 255', () => {
     const src = fs.readFileSync(ktPath, 'utf8');
-    expect(src).toContain('# SHELLY_HELPER_SHIM v9');
+    expect(src).toContain('# SHELLY_HELPER_SHIM v10');
     const m = src.match(/private const val BASHRC_VERSION = (\d+)\b/);
     expect(m).not.toBeNull();
-    expect(Number(m![1])).toBeGreaterThanOrEqual(254);
+    expect(Number(m![1])).toBeGreaterThanOrEqual(255);
   });
 
   it('parses as valid JavaScript', () => {

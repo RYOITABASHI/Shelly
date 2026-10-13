@@ -109,7 +109,7 @@ describe('single owner, exactly once', () => {
   it('the shim writes the native-owned file, never the RN command queue, for closepaw', () => {
     expect(homeKt).toContain("fs.appendFileSync(path.join(home, '.shelly-closepaw-queue'), 'closepaw:'");
     expect(homeKt).not.toContain("fs.appendFileSync(path.join(home, '.shelly-command-queue'), 'closepaw:'");
-    expect(homeKt).toContain('# SHELLY_HELPER_SHIM v9');
+    expect(homeKt).toMatch(/# SHELLY_HELPER_SHIM v(9|1[0-9]) /);
   });
 
   it('RN never fires a queue line itself — it forwards to native', () => {

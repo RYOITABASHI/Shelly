@@ -151,7 +151,12 @@ object LibExtractor {
         // sepolicy denies — that's why every shebang shim attempt
         // v78/v79/v80 returned "bad interpreter: Success"). HomeInitializer
         // symlinks $HOME/bin/xdg-open → $libDir/shelly_xdg_open.
-        "lib/arm64-v8a/libshelly_xdg_open.so" to "shelly_xdg_open"
+        "lib/arm64-v8a/libshelly_xdg_open.so" to "shelly_xdg_open",
+        // BASHRC_VERSION 254: native `shelly` command (jni/shelly-cmd.c).
+        // HomeInitializer symlinks $HOME/bin/shelly -> $libDir/shelly_cmd,
+        // replacing the generated #!/system/bin/sh script Knox refused to
+        // exec outside the interactive shelly() bash function.
+        "lib/arm64-v8a/libshelly_cmd.so" to "shelly_cmd"
     )
 
     // Files that must be re-extracted on every launch even when the version
@@ -179,6 +184,8 @@ object LibExtractor {
         // bug #102 / #115 phase 1: ALWAYS_REFRESH so URL-encoding /
         // scheme-validation tweaks ship without a versionCode bump.
         "shelly_xdg_open",
+        // BASHRC_VERSION 254: same reasoning for the native `shelly` shim.
+        "shelly_cmd",
         // git + its transport/credential helpers: force-refresh so the HTTPS
         // helper exec fix (git() now preloads libexec_wrapper.so) is validated
         // against fresh binaries — a stale helper from a prior broken state must

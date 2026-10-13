@@ -57,6 +57,16 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### `shelly` が bash 関数の無い文脈で "bad interpreter: Permission denied" — ネイティブ shim 化（BASHRC_VERSION 255）実装済み・実機未検証 (P1)
+
+- **症状（build 2534 / BASHRC 253 で実機確認）**: PTY から `bash script.sh` / `bash -c` / `sh -c`、node child_process など `shelly()` 関数を持たない文脈で `shelly ...` を打つと `.../home/bin/shelly: /system/bin/sh: bad interpreter: Permission denied`。`$HOME/bin/shelly` が `#!/system/bin/sh` スクリプトで、Knox が app_data_file の exec を拒否するため。
+- **修正（branch `fix/shelly-native-shim`、`fix/closepaw-background` の上に積む）**:
+  1. 生成ヘルパー（SHELLY_HELPER_SHIM v10、中身は v9 と同一）を PATH 外の `$HOME/.shelly/shelly-helper.sh` へ移動（tmp→rename、`! -s` || marker の再生成ガード維持）。`shelly()` 関数の3箇所もこのパスを `_run linker64 libbash.so` で読む。
+  2. `$HOME/bin/shelly` → `$SHELLY_LIB_DIR/shelly_cmd`（新規 `jni/shelly-cmd.c`、`libshelly_cmd.so`、LibExtractor LIBS + ALWAYS_REFRESH、CI ビルド/キャッシュ/`check_marker shelly-cmd:v1:native-path-shim`）。旧 marker 付き通常ファイル・空ファイルは rm→symlink、`*/shelly_cmd` の古い symlink は張り直し、marker 無しのユーザー独自ファイルと無関係な symlink は放置。launcher は raw `execve` syscall で `linker64 libbash.so <helper> "$@"` を起動し、LD_PRELOAD を env から落とす（対話経路と同じ）。wrapper 経由起動では argv[0] が `/proc/self/fd/N` になるため名前ディスパッチはしない。
+  3. **重要な前提**: app-data の ELF も libexec_wrapper.so 無しでは exec できない（v237 の `$HOME/bin/bash` 拒否と同じ）。そのため `bash()` / `sh()` 関数を「引数あり（script / -c）のときだけ LD_PRELOAD=libexec_wrapper.so」に変更（git()/make()/vim() と同じ per-command スコープ。引数なしの対話 `bash`/`sh` は従来通り非 wrap）。副作用: PTY から `bash script.sh` したスクリプト内の node/python3 等の子 exec も linker64 経由になる（従来は EACCES）。
+- **未対応（意図的）**: wrapper を持たない親（PTY の `node()` 関数で起動した node の child_process、`/system/bin/sh` をフルパスで直接叩く場合など）からの `shelly` は依然 exec 不可。`node()` への preload 追加は npm/llama-server 等への影響が大きいので見送り。
+- **未検証**: CI の NDK 初回コンパイル（-Werror）、実機で `bash -c 'shelly closepaw "Open Chrome and search for Tokyo weather"'` / `sh -c 'shelly --help'` / `shelly workflow list` / Codex 内 `shelly closepaw ...` / 旧 BASHRC 253 端末からの移行（`ls -l ~/bin/shelly` が symlink、`~/.shelly/shelly-helper.sh` が存在）。
+
 ### Codex リモートコントロール（ChatGPT アプリから Shelly 上の Codex を操作）— Experimental・実装済み・実機未検証 (P1)
 
 - **何を入れたか（feat/codex-remote-control、未マージ）**:
