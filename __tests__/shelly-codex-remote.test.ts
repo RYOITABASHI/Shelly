@@ -1,7 +1,7 @@
 /**
  * __tests__/shelly-codex-remote.test.ts
  *
- * `shelly codex pair|code` (BASHRC_VERSION 252): hosts the official
+ * `shelly codex pair|code|trust|status|stop` (BASHRC_VERSION 252, 257): hosts the official
  * `codex remote-control --no-daemon` for the ChatGPT app's Codex remote
  * control, links the host's private rendezvous socket where
  * `codex remote-control pair` looks for a daemon, and prints the manual
@@ -90,12 +90,18 @@ sleep() { command sleep 0.05; }
 codex() {
   echo "codex $*" >> "$HOME/calls.log"
   if [ "$1 $2" = "remote-control --no-daemon" ]; then
+    printf 'host-name=%s\\n' "$(printenv SHELLY_CODEX_HOST_NAME)" >> "$HOME/calls.log"
     mkdir -p "$TMPDIR/codex-rc-new"
     : > "$TMPDIR/codex-rc-new/rc.sock"
     : > "$TMPDIR/codex-rc-new/alive"
     echo "This machine is available for remote control as test-host."
     local i=0
     while [ ! -f "$HOME/paired" ] && [ "$i" -lt 200 ]; do command sleep 0.05; i=$((i + 1)); done
+    if [ "\${STUB_HOST_STAY:-0}" = 1 ]; then
+      while :; do command sleep 0.1; done
+    fi
+    # A real host keeps running; give the pairer time to finish printing.
+    command sleep 1
     return 0
   fi
   if [ "$1 $2" = "remote-control pair" ]; then
@@ -105,7 +111,11 @@ codex() {
     # A host "answers" only while its dir carries the alive marker.
     if [ -e "$link" ] && [ -e "\${target%/*}/alive" ]; then
       printf '%s\\n' "$target" > "$HOME/link-target"
-      echo "Pairing code: ABCD-1234"
+      if [ "\${3:-}" = --json ] && [ "\${STUB_PAIR_JSON:-1}" = 1 ]; then
+        printf '{"pairingCode":"pc","manualPairingCode":"ABCD-1234","environmentId":"env","expiresAt":%s}\\n' "$(( $(date +%s) + 600 ))"
+      else
+        echo "Pairing code: ABCD-1234"
+      fi
       : > "$HOME/paired"
       return 0
     fi
@@ -118,7 +128,11 @@ codex() {
 
 function run(script: string, env: Record<string, string> = {}) {
   const full = `${remoteFns}\n${shellyFn}\n${STUBS}\n${script}`;
-  const r = spawnSync('bash', ['-c', full], {
+  // Run from a file, not `bash -c`: Windows argv quoting mangles the
+  // backslash/quote mixes in the generated bash.
+  const scriptFile = path.join(home, `run-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`);
+  fs.writeFileSync(scriptFile, full);
+  const r = spawnSync('bash', [posix(scriptFile)], {
     encoding: 'utf8',
     env: { ...(process.env as Record<string, string>), MSYS: 'winsymlinks:nativestrict', HOME: posix(home), TMPDIR: `${posix(home)}/tmp`, ...env } as unknown as NodeJS.ProcessEnv,
     timeout: 30000,
@@ -157,7 +171,7 @@ maybe('shelly codex (bash)', () => {
   it('help prints usage and exits 0; unknown subcommands exit 2', () => {
     const help = run('shelly codex help');
     expect(help.code).toBe(0);
-    expect(help.out).toContain('Usage: shelly codex <pair|code|help>');
+    expect(help.out).toContain('Usage: shelly codex <pair|code|trust|status|stop|help>');
     const bad = run('shelly codex frobnicate');
     expect(bad.code).toBe(2);
   });
@@ -254,5 +268,171 @@ maybe('shelly codex (bash)', () => {
     expect(r.out).not.toContain('already running');
     expect(r.out).toContain('Pairing code: ABCD-1234');
     expect(linkLeft()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v257: trust / host name / expiry / background host
+// ---------------------------------------------------------------------------
+describe('shelly codex v257 generator invariants', () => {
+  it('bumps BASHRC_VERSION to >= 257', () => {
+    const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);
+    expect(Number(m![1])).toBeGreaterThanOrEqual(257);
+  });
+
+  it('asks Codex for the pairing code as JSON so the expiry can be shown', () => {
+    expect(remoteFns).toContain('codex remote-control pair --json');
+    expect(remoteFns).toContain('"expiresAt"');
+  });
+
+  it('passes the host name only to the remote-control launches', () => {
+    const launches = remoteFns.match(/SHELLY_CODEX_HOST_NAME="\$__name" codex remote-control --no-daemon/g) || [];
+    expect(launches.length).toBe(2); // foreground + --background
+    expect(remoteFns).toContain('/system/bin/getprop "$__k"');
+  });
+
+  it('writes trust entries only for a resolved directory, in the Codex trust-prompt format', () => {
+    expect(remoteFns).toContain('__canon="$(__shelly_codex_remote_canon "$__dir")"');
+    expect(remoteFns).toContain(`printf '\\n[projects."%s"]\\ntrust_level = "trusted"\\n' "$__k"`);
+  });
+});
+
+maybe('shelly codex v257 (bash)', () => {
+  function cfgPath() {
+    return path.join(home, '.codex', 'config.toml');
+  }
+  function canon(rel: string): string {
+    return run(`cd "$HOME/${rel}" && pwd -P`).out.trim();
+  }
+
+  it('pair prints the code, its expiry and the next step; host name defaults to "Shelly"', () => {
+    const r = run('shelly codex pair');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Pairing code: ABCD-1234');
+    expect(r.out).toMatch(/Expires( at \d\d:\d\d)? \(in about (9|10|11) min\)/);
+    expect(r.out).toContain('shelly codex code');
+    expect(r.out).toContain('as "Shelly');
+    expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toContain('codex remote-control pair --json');
+  });
+
+  it('SHELLY_CODEX_HOST_NAME overrides the name and reaches the host process env', () => {
+    const r = run('shelly codex pair', { SHELLY_CODEX_HOST_NAME: 'My Fold' });
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toContain('host-name=My Fold');
+  });
+
+  it('host name is capped to 63 bytes and loses control characters', () => {
+    const r = run(
+      `__shelly_codex_remote_host_name | wc -c; echo; SHELLY_CODEX_HOST_NAME=$'a\\tb' __shelly_codex_remote_host_name`,
+      { SHELLY_CODEX_HOST_NAME: 'x'.repeat(100) },
+    );
+    expect(r.out.split('\n')[0].trim()).toBe('63');
+    expect(r.out.trim().endsWith('ab')).toBe(true);
+  });
+
+  itPosix('falls back to the raw pair output when Codex does not return JSON', () => {
+    const r = run('shelly codex pair', { STUB_PAIR_JSON: '0' });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Pairing code: ABCD-1234');
+    expect(r.out).not.toContain('Expires');
+  });
+
+  it('pair lists trusted projects (home as ~) and hints at `shelly codex trust`', () => {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const h = canon('.');
+    fs.writeFileSync(
+      cfgPath(),
+      `model = "x"\n\n[projects."${h}"]\ntrust_level = "trusted"\n\n[projects."/elsewhere"]\ntrust_level = "untrusted"\n`,
+    );
+    const r = run('shelly codex pair');
+    expect(r.out).toContain('Trusted Codex projects');
+    expect(r.out).toMatch(/\n {2}- ~\n/);
+    expect(r.out).not.toContain('/elsewhere');
+    expect(r.out).toContain('shelly codex trust <dir>');
+  });
+
+  it('status without any trusted project says so', () => {
+    const r = run('shelly codex status');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Background host: not running');
+    expect(r.out).toContain('(none yet)');
+  });
+
+  it('trust writes the Codex trust-prompt entry for the realpath, idempotently', () => {
+    fs.mkdirSync(path.join(home, 'myapp'));
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(cfgPath(), 'model = "gpt"'); // no trailing newline
+    const r = run('shelly codex trust "$HOME/myapp"');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Trusted for Codex');
+    const c = canon('myapp');
+    const cfg = fs.readFileSync(cfgPath(), 'utf8');
+    expect(cfg).toBe(`model = "gpt"\n\n[projects."${c}"]\ntrust_level = "trusted"\n`);
+    const again = run('shelly codex trust "$HOME/myapp/"');
+    expect(again.code).toBe(0);
+    expect(again.out).toContain('Already trusted');
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(cfg);
+    expect(run('shelly codex status').out).toMatch(/\n {2}- ~\/myapp\n/);
+  });
+
+  it('trust flips an explicit untrusted entry in place', () => {
+    fs.mkdirSync(path.join(home, 'proj'));
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const c = canon('proj');
+    fs.writeFileSync(cfgPath(), `[projects."${c}"]\ntrust_level = "untrusted"\n\n[tui]\nx = 1\n`);
+    const r = run('shelly codex trust "$HOME/proj"');
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(`[projects."${c}"]\ntrust_level = "trusted"\n\n[tui]\nx = 1\n`);
+  });
+
+  it('trust refuses /, missing dirs, ancestors of HOME and inline project tables', () => {
+    expect(run('shelly codex trust /').code).toBe(1);
+    expect(run('shelly codex trust "$HOME/nope"').out).toContain('Not a directory');
+    const parent = run('shelly codex trust "$HOME/.."');
+    expect(parent.code).toBe(1);
+    expect(parent.out).toContain('contains the Shelly home directory');
+    expect(run('shelly codex trust').code).toBe(2);
+    fs.mkdirSync(path.join(home, 'p2'));
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(cfgPath(), 'projects = { "/x" = { trust_level = "trusted" } }\n');
+    const inline = run('shelly codex trust "$HOME/p2"');
+    expect(inline.code).toBe(1);
+    expect(inline.out).toContain('inline table');
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe('projects = { "/x" = { trust_level = "trusted" } }\n');
+  });
+
+  it('maps /data/user/0 and /data/data spellings onto each other', () => {
+    const r = run(
+      '__shelly_codex_remote_alias /data/user/0/dev.shelly.terminal/files/home/a; echo; __shelly_codex_remote_alias /data/data/p/x; echo; __shelly_codex_remote_alias /sdcard/x; echo end',
+    );
+    expect(r.out).toBe('/data/data/dev.shelly.terminal/files/home/a\n/data/user/0/p/x\nend\n');
+  });
+
+  // Needs /proc/<pid>/stat (Linux; Git Bash's /proc works too).
+  const itProc = process.platform === 'linux' || process.platform === 'win32' ? it : it.skip;
+  itProc('pair --background detaches the host; status and stop manage it', () => {
+    const r = run('shelly codex pair --background; echo "rc=$?"', { STUB_HOST_STAY: '1' });
+    expect(r.out).toContain('Pairing code: ABCD-1234');
+    expect(r.out).toContain('rc=0');
+    expect(r.out).toContain('shelly codex stop');
+    const state = fs.readFileSync(path.join(home, 'tmp', 'shelly-codex-remote.host'), 'utf8').trim().split(' ');
+    const pid = Number(state[0]);
+    expect(pid).toBeGreaterThan(1);
+    expect(fs.readFileSync(path.join(home, 'tmp', 'shelly-codex-remote.host.sock'), 'utf8')).toContain('codex-rc-new/rc.sock');
+    expect(run('shelly codex status').out).toContain(`running (pid ${pid}`);
+    const stop = run('shelly codex stop');
+    expect(stop.code).toBe(0);
+    expect(stop.out).toContain('Stopped');
+    expect(run(`kill -0 ${pid} 2>/dev/null && echo alive || echo gone`).out.trim()).toBe('gone');
+    expect(fs.existsSync(path.join(home, 'tmp', 'codex-rc-new'))).toBe(false);
+    expect(run('shelly codex stop').code).toBe(1);
+  });
+
+  itProc('stop never signals a pid whose start time does not match', () => {
+    fs.mkdirSync(path.join(home, 'tmp'), { recursive: true });
+    // The state file names this very shell, with a wrong start time.
+    const r = run(`printf '%s 999999999\\n' "$$" > "$TMPDIR/shelly-codex-remote.host"; shelly codex stop; echo "rc=$? survived"`);
+    expect(r.out).toContain('No background');
+    expect(r.out).toContain('rc=1 survived');
   });
 });

@@ -211,7 +211,7 @@ Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you 
 | `shelly-cs` / `cs` | GitHub Codespaces helper commands. |
 | `shelly teach start [name]` / `stop` / `cancel` / `status` | Record the commands you run into a reusable workflow (see [Learning loop](#learning-loop)). |
 | `shelly workflow list` / `show <name>` / `run <name>` / `delete <name>` | List, print, replay in the current terminal, or delete saved workflows. |
-| `shelly codex pair` / `code` | **Experimental.** Host Codex remote control (`codex remote-control --no-daemon`) in this tab and print a pairing code for the ChatGPT app's Codex; `code` prints a fresh code from another tab. Needs a ChatGPT sign-in. |
+| `shelly codex pair` / `code` / `trust` / `status` / `stop` | **Experimental.** Host Codex remote control (`codex remote-control --no-daemon`) in this tab (or detached with `pair --background`) and print a pairing code with its expiry for the ChatGPT app's Codex; `code` prints a fresh code; `trust <dir>` marks a folder as a trusted Codex project so the app can open it; `status` / `stop` manage the background host. Needs a ChatGPT sign-in. |
 
 **First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every day at 8am, collect the latest STEAM×AI education papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
 
@@ -367,7 +367,10 @@ See [docs/FEATURES.md](docs/FEATURES.md) for the full feature-by-feature breakdo
 - **Native runtime** — the npm `@openai/codex` package is only part of the JS dispatcher story. Release APKs bundle the pinned Android-native unified `codex_tui` binary from `.ci-versions/`, and runtime updates install the same shape under `~/.shelly-runtime/codex/current`.
 - **Managed promotion** — a new runtime candidate is promoted only after download, SHA-256 verification, extraction, executable checks, and `codex_tui --version` / `codex_tui exec --help` smoke checks.
 - **Repair / reset path** — if the app-data runtime is broken or unwanted, the Updates UI can repair it from the latest runtime release or reset to the APK-bundled Codex runtime.
-- **Remote control (Experimental)** — `shelly codex pair` hosts Codex's official `codex remote-control` in a terminal tab and prints a short-lived pairing code to enter in the ChatGPT app's Codex; `shelly codex code` prints a new one. Requires a ChatGPT sign-in (API keys are not supported). Not yet verified on device.
+- **Remote control (Experimental)** — `shelly codex pair` hosts Codex's official `codex remote-control` in a terminal tab and prints a short-lived pairing code to enter in the ChatGPT app's Codex; `shelly codex code` prints a new one. Requires a ChatGPT sign-in (API keys are not supported). Pairing and running commands from the app have been verified on device; the additions below have not yet.
+  - **Projects** — the ChatGPT app only opens folders Codex trusts (otherwise it reports that it cannot verify the project's trust setting). `shelly codex pair` lists the trusted projects; `shelly codex trust <dir>` adds one, writing the same `[projects."<realpath>"] trust_level = "trusted"` entry that Codex's own trust prompt writes (running `codex` once inside the folder and accepting the prompt does the same). It refuses `/`, storage roots, and parents of the Shelly home.
+  - **Host name** — the app lists the device as `Shelly (<model>)` instead of `localhost`. Set `SHELLY_CODEX_HOST_NAME` to choose another name (up to 63 bytes). Codex has no setting for this name, so Shelly's exec wrapper supplies it through `gethostname()`, and only for the remote-control process.
+  - **Background** — `shelly codex pair --background` keeps the host running after its tab closes. It still stops when Shelly is closed or killed. Use `shelly codex status` to check it and `shelly codex stop` to stop it.
 
 ---
 
@@ -392,7 +395,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | Agent safety rules (POLICY-001) — NL rules, read-only floor for runs you didn't start, trust ramp | 🟡 implemented, not yet verified on device; flag OFF by default |
 | MCP server, spec 2026-07-28 (stateless) alongside the older revisions | 🟡 implemented, not yet verified on device |
 | On-device speech-to-text (keyless, Android SpeechRecognizer) | 🟡 implemented, not yet verified on device |
-| Codex remote control host — `shelly codex pair` runs the official `codex remote-control --no-daemon` so the ChatGPT app's Codex can drive this device (ChatGPT sign-in required) | 🟡 Experimental, implemented, not yet verified on device |
+| Codex remote control host — `shelly codex pair` runs the official `codex remote-control --no-daemon` so the ChatGPT app's Codex can drive this device (ChatGPT sign-in required); `trust` / host name / `--background` | 🟡 Experimental — pairing and command execution verified on device; trust / host name / background not yet |
 | MiniCPM5-2B local model | 🟡 experimental, evaluated and not adopted: on the Fold6 it scored 83% vs Qwen3.5-2B's 100% on routing and 50% vs 88% on native tool calls |
 | ClosePaw hand-off — agent action that passes a goal to the ClosePaw phone-use app (explicit intent, per-run Review, ends "handed off") | 🟡 experimental, implemented, not yet verified on device; ClosePaw returns no result yet (Phase 2 needs upstream changes) |
 | llama.cpp pinned to b11433 with sha256 verification | 🟡 implemented, not yet verified on device |

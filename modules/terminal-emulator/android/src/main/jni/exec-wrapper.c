@@ -1395,6 +1395,7 @@ static void *g_real_symlink_fn;
 static void *g_real_symlinkat_fn;
 static void *g_real_bind_fn;
 static void *g_real_connect_fn;
+static void *g_real_gethostname_fn; /* v225 */
 
 static void *real_sym(void **slot, const char *name) {
     void *fn = *slot;
@@ -1427,6 +1428,7 @@ static void resolve_socket_root_impls(void) {
     real_sym(&g_real_symlinkat_fn, "symlinkat");
     real_sym(&g_real_bind_fn, "bind");
     real_sym(&g_real_connect_fn, "connect");
+    real_sym(&g_real_gethostname_fn, "gethostname");
 }
 
 /* Writes /data/data/com.termux/cdx-termux-<euid> into out; returns its length
@@ -2182,4 +2184,59 @@ int connect(int fd, const void *addr, int len) {
     if (!fn) return finish_syscall(-SHELLY_ENOSYS);
     if (m > 0) return fn(fd, &mapped, mapped_len);
     return fn(fd, addr, len);
+}
+
+/* v225 (2026-10-13): a readable host name for `codex remote-control`.
+ *
+ * The ChatGPT app lists a remote-control host under the name Codex enrolls it
+ * with, and Codex has no option for it: codex-rs/app-server-transport
+ * (remote_control/controller.rs) uses gethostname() verbatim, sends it at
+ * enrollment and again (base64, x-codex-name) on every websocket connect.
+ * Android's kernel hostname is "localhost", and an app cannot sethostname().
+ *
+ * `shelly codex pair` exports SHELLY_CODEX_HOST_NAME (e.g. "Shelly (SM-F956Q)")
+ * for the remote-control launch only. When that variable is present in the
+ * process's exec-time environment (/proc/self/environ -- never the live
+ * environ) and is 1..63 printable bytes, gethostname() returns it; otherwise,
+ * or when it does not fit the caller's buffer, the call goes to libc
+ * unchanged. Nothing else in Shelly sets the variable, so every other process
+ * keeps the real host name. codex-termux 0.162.1 imports gethostname from
+ * libc.so (checked against the release binary's dynamic symbol table). */
+__attribute__((used, retain))
+static const char shelly_exec_wrapper_v225_marker[] =
+    "shelly-exec-wrapper:v225:codex-remote-host-name";
+
+#define SHELLY_CODEX_HOST_NAME_ENV "SHELLY_CODEX_HOST_NAME="
+#define SHELLY_CODEX_HOST_NAME_MAX 64
+
+typedef int (*gethostname_fn_t)(char *, size_t);
+
+/* 1: a usable override is in out; 0: none (absent, empty, too long, or
+ * containing control bytes). */
+static int codex_host_name_override(char *out, size_t out_size) {
+    size_t n;
+    if (proc_environ_value_copy(SHELLY_CODEX_HOST_NAME_ENV, out, out_size) != 0) return 0;
+    n = str_len(out);
+    /* proc_environ_value_copy truncates to out_size - 1; a value that long
+     * is treated as too long rather than silently cut. */
+    if (n == 0 || n >= SHELLY_CODEX_HOST_NAME_MAX || n + 1 >= out_size) return 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)out[i];
+        if (c < 0x20 || c == 0x7f) return 0;
+    }
+    return 1;
+}
+
+int gethostname(char *name, size_t len) {
+    char override[SHELLY_CODEX_HOST_NAME_MAX + 1];
+    gethostname_fn_t fn = (gethostname_fn_t)real_sym(&g_real_gethostname_fn, "gethostname");
+    if (name && codex_host_name_override(override, sizeof(override))) {
+        size_t n = str_len(override);
+        if (n < len) {
+            for (size_t i = 0; i <= n; i++) name[i] = override[i];
+            return 0;
+        }
+    }
+    if (!fn) return finish_syscall(-SHELLY_ENOSYS);
+    return fn(name, len);
 }

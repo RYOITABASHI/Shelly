@@ -511,3 +511,28 @@ describe('v224: /data/data/com.termux socket root is redirected into the app dat
     expect(functionBody('shelly_resolve_real_impls')).toMatch(/resolve_socket_root_impls\(\);/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v225 — remote-control host name (gethostname override)
+// ---------------------------------------------------------------------------
+describe('v225: gethostname() answers SHELLY_CODEX_HOST_NAME only when it is set', () => {
+  it('keeps the v225 build marker CI checks for', () => {
+    expect(src).toContain('"shelly-exec-wrapper:v225:codex-remote-host-name"');
+  });
+
+  it('reads the override from the exec-time env (/proc/self/environ), never the live environ', () => {
+    const body = functionBody('codex_host_name_override');
+    expect(body).toMatch(/proc_environ_value_copy\(SHELLY_CODEX_HOST_NAME_ENV, out, out_size\)/);
+    expect(body).not.toMatch(/caller_environ|g_environ_ptr/);
+    // Empty, overlong (incl. truncated) or control-byte values are ignored.
+    expect(body).toMatch(/n == 0 \|\| n >= SHELLY_CODEX_HOST_NAME_MAX \|\| n \+ 1 >= out_size/);
+    expect(body).toMatch(/c < 0x20 \|\| c == 0x7f/);
+  });
+
+  it('falls through to the dlsym-resolved libc gethostname otherwise, and never fails a fitting call', () => {
+    expect(code).toMatch(
+      /int gethostname\(char \*name, size_t len\) \{[\s\S]*?real_sym\(&g_real_gethostname_fn, "gethostname"\)[\s\S]*?if \(n < len\) \{[\s\S]*?return 0;[\s\S]*?return fn\(name, len\);/,
+    );
+    expect(functionBody('resolve_socket_root_impls')).toMatch(/real_sym\(&g_real_gethostname_fn, "gethostname"\);/);
+  });
+});

@@ -862,6 +862,8 @@ jobs:
           check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v221:system-helpers-keep-wrapper'
           check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v223:no-blanket-wrapper-reinjection'
           check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v224:termux-socket-root-redirect'
+          check_marker /tmp/libexec_wrapper.so 'shelly-exec-wrapper:v225:codex-remote-host-name'
+          readelf -Ws /tmp/libexec_wrapper.so | awk '$8=="gethostname"{found=1} END{exit found ? 0 : 1}' || { echo "FATAL: gethostname interposer missing from libexec_wrapper.so"; exit 1; }
 
           unzip -p "${apk}" lib/arm64-v8a/libshelly-pty.so > /tmp/libshelly-pty.so
           check_marker /tmp/libshelly-pty.so 'shelly-pty:v184:scoped-loader-env'
