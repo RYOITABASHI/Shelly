@@ -1252,6 +1252,18 @@ patchCodex(libDir);
     //      shell_snapshot stays disabled (v249): with -lc commands it would
     //      wrap them in a snapshot captured from a cleared-env login shell,
     //      and the `/proc/self/fd/100` failure seen with it is unexplained.
+    // 2026-10-13 (no bashrc change, exec-wrapper v220): the real root cause of
+    //      v246-v250 was in libexec_wrapper.so, not here. (1) Its execvp()
+    //      interposer passed envp=NULL, and Codex spawns every tool command
+    //      via Rust std's fork+`environ=env; execvp()` path (pre_exec), so the
+    //      whole Codex-built env -- policy `set` values AND the
+    //      SHELLY_CODEX_* markers that route /bin/sh to $SHELL -- was dropped
+    //      and mksh ran with minimal_wrapper_envp. (2) $HOME/bin/env (symlink
+    //      to /system/bin/env) was exec'd as `linker64 /proc/self/fd/N`, which
+    //      linker64 cannot open for /system-backed fds. With v220, Codex's
+    //      `-lc` runs under $SHELL (bash, via ~/.profile -> ~/.bashrc) with the
+    //      full env. shell_snapshot stays off (redundant, opt-in via
+    //      SHELLY_CODEX_SHELL_SNAPSHOT=1). See DEFERRED.md for the evidence.
     private const val BASHRC_VERSION = 250
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.

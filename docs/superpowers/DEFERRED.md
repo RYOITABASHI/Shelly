@@ -53,7 +53,17 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
-### Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない（python3 が "Failed to import encodings module"）— 修正 v250 実装済み・実機未検証 (P1)
+### Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない（python3 が "Failed to import encodings module"）— 真因確定 (libexec_wrapper v220 で修正、CI ビルド待ち・実機未検証) (P1)
+
+- **2026-10-13 真因確定（実機 build 2523、Codex 0.156.1、exec-wrapper v219）**: v246〜v250 は全て症状の周辺（bashrc / Codex 設定）を触っていたが、真因は `libexec_wrapper.so` 側の 2 つのバグで、Codex なしでも node（libuv）で 100% 再現した（`diag1.sh`: wrapper を preload した node から `spawnSync('/bin/sh',['-lc',...])` / `spawnSync('env')`）。
+  1. **`execvp()` interposer が envp=NULL で `shelly_execve_internal` を呼んでいた** → 子は `minimal_envp`（PATH/HOME/TMPDIR/SHELL/BASH/SHELLY_LIB_DIR/TERM/TERMINFO）だけで起動。upstream Codex は `spawn_child_async` で `cmd.pre_exec(...)`（setpgid / PR_SET_PDEATHSIG）を使うため Rust std は posix_spawn ではなく **fork + `environ = child_env; execvp()`** 経路になる（libuv/node も同じ）。つまり Codex が組み立てた env（inherit + `shell_environment_policy.set.PYTHON*`、SHELLY_CODEX_EXEC_PATH、LD_PRELOAD…）は wrapper の中で丸ごと捨てられていた。`-c shell_environment_policy.set.*`（v247）が argv に正しく載っているのに届かなかったのはこれ。副作用として `SHELLY_CODEX_EXEC_PATH` も落ちるので `rewrite_path("/bin/sh")` の codex-mode 分岐（`$SHELL`=bash へ振り替え）も効かず、mksh（/system/bin/sh、しかも `minimal_wrapper_envp` で LD_PRELOAD 付き）で `-lc` が走っていた（v250 で観測した「mksh が .bashrc を読む」はこの結果）。実機証跡: node から spawn した `env` の出力が 6 変数のみ。
+  2. **`$HOME/bin/env -> /system/bin/env` のような system image への symlink shim を `linker64 /proc/self/fd/N` で exec していた**。open+ELF magic 検証（bug #119 の fd-pinned exec）は path が app-data なので通るが、linker64 は /system 配下を指す fd を開けず `error: unable to open file "/proc/self/fd/102"` で死ぬ（同じ mksh 子プロセスから `$libDir/python3`（app-data ELF）は fd 経由で正常に exec できたので、mksh や fd 番号の問題ではなく /system ターゲット固有）。`env | grep ...` 系が全滅したのはこれ。従来 Shelly の対話 bash で `env` が動いていたのは、PTY 起動の bash 自身には wrapper がロードされておらず（LD_PRELOAD は export されているだけ）、kernel が symlink を直接 exec していたから。
+  - v249 の「snapshot 無効化で退行」は、snapshot 有無に関係なく (1)(2) が常に起きていたものが、snapshot ON のときは model コマンドが（たまたま）動く形に見えていただけ。
+- **修正（exec-wrapper v220、`modules/terminal-emulator/android/src/main/jni/exec-wrapper.c`）**: (1) コンストラクタで `dlsym(RTLD_NEXT,"environ")` した `g_environ_ptr` を `execvp()` が読み、PATH 探索と `shelly_execve_internal` に実 env を渡す（`extern environ` の GLOB_DAT 再導入は CI 監査で禁止のため dlsym 経由）。(2) `linker_exec_elf_fd()` が検証済み fd を `readlinkat("/proc/self/fd/N")` で解決し、/system|/vendor|/apex 配下なら fd を閉じて解決済み path を直接 exec（env scrub も /system バイナリ扱い）。マーカー `shelly-exec-wrapper:v220:execvp-environ+system-target-direct` を CI `check_marker` に追加。`__tests__/exec-wrapper-source-invariants.test.ts` に v220 の構造テスト追加。トレース: `SHELLY_EXEC_WRAPPER_TRACE=1`（+`_RAW=1`）で `$HOME/.shelly-exec-wrapper.log` に `stage=execvp` / `stage=system-target-direct` が出る。
+- **期待される実機挙動（要確認）**: Codex の `/bin/sh -lc` は codex-mode で `$SHELL`（`$HOME/bin/bash` → libbash.so、wrapper 維持）に振り替わり、`bash -lc` → `~/.profile` → `~/.bashrc`（BASH_VERSION ガード通過）で起動する。`shell_environment_policy.set.PYTHON*/TZ` も届く。`features.shell_snapshot=false`（v249）は**維持**（bash -l が .bashrc を読む + `set` ポリシーで env は揃うので snapshot は冗長。`SHELLY_CODEX_SHELL_SNAPSHOT=1` で opt-in 可。実機で問題なければ外す判断を後日）。
+- **実機再確認手順（CI ビルド後）**: `cd ~/myapp && codex` 内で (a) `!env | grep -E 'PYTHON|^TZ|^SHELL'`（PYTHONHOME/PYTHONPATH/TZ が出て、エラーなし）、(b) `!echo pipe-ok | cat`、(c) モデルに `python3 hello.py` を実行させる（PYTHONPATH の手動付与なしで動く）、(d) `!env | head -3` が `/proc/self/fd/N` エラーを出さない。失敗時は `SHELLY_EXEC_WRAPPER_TRACE=1 SHELLY_EXEC_WRAPPER_TRACE_RAW=1 codex` で起動し `~/.shelly-exec-wrapper.log` を見る。Codex なしの再現/確認は `/sdcard/Download/diag1.sh`（node + wrapper）でも可。
+
+<details><summary>v246〜v250 の経緯（参考）</summary>
 
 - **症状（build 2514〜2520、Codex CLI 0.156.1）**: 対話 Codex の中で `python3 hello.py` を実行すると、`Could not find platform independent libraries` → `Fatal Python error: Failed to import encodings module` で落ちる。Codex 内の `printenv PYTHONHOME PYTHONPATH` は空。`!env ...` のようなユーザーシェルコマンドは `error: unable to open file "/proc/self/fd/100"` で失敗する。Shelly 自身の bash では python3 は動く（`python3()` 関数が PYTHONHOME/PYTHONPATH を設定するため）。
 - **これまでの対処**: v246 では Codex に渡る env に export、v247 では `-c shell_environment_policy.set.*`、v248 では標準ライブラリを `encodings/__init__.py` で探す方式に変更。v248 で argv の値は正しくなった（build 2520 で SHELLY_DEBUG により確認）が、それでもツールコマンドには届かなかった。TZ/ANDROID_ROOT/ANDROID_DATA の対処（v247）は実機 OK。
@@ -63,6 +73,8 @@
   - **v250 の修正**: `~/.bashrc` の先頭に BASH_VERSION ガード（bash 以外では return/exit 0）を入れた。`~/.profile` は bash のときだけ `~/.bashrc` を読むようにした（旧デフォルトの内容のときだけ書き換え、ユーザーが編集したファイルは触らない）。実機の mksh で、source した場合も実行した場合も何も出力されず rc=0 で終わることを確認済み。
   - Codex が使うシェルを bash にする設定は upstream に存在しない（`zsh_path` は zsh-fork 機能専用）。そのため mksh のまま、Codex が組み立てた env（引き継ぎ＋`set`）で実行させる方針にした。
 - **残作業**: 実機で、Codex 内の `!echo $SHELL; env | grep -E 'PYTHON|^TZ'` と `python3 hello.py` が通ることを確認する。`/proc/self/fd/100`（linker64 の "unable to open file"）がまだ出る場合は、Codex の `!` 経路が memfd/`/proc/self/fd` 経由で何かを exec していないか、libexec_wrapper による書き換えの影響を調べる。snapshot を無効にしても env が届かない場合は、codex-termux fork 側の env 構築（shell_environment_policy を無視していないか）を調べる。また、snapshot 無効化で `-lc` が毎回 `~/.profile` → `.bashrc` を読むようになるため、コマンドの起動遅延も計測すること（重ければ、Codex 用の軽量な profile を検討）。
+
+</details>
 
 ### ターミナル最小コントラスト保証（minimum contrast ratio）— 実装済み・実機未検証 (P2)
 

@@ -38,7 +38,23 @@
  * linker --gc-sections; `used` alone does not bind the linker. */
 __attribute__((used, retain))
 static const char shelly_exec_wrapper_build_marker[] =
-    "shelly-exec-wrapper:v219:fd-pinned-linker-exec";
+    "shelly-exec-wrapper:v220:fd-pinned-linker-exec";
+
+/* v220 (2026-10-13): two on-device-verified exec regressions under Codex
+ * (see docs/superpowers/DEFERRED.md "Codex shell commands / python3 env"):
+ *  1. execvp() handed shelly_execve_internal() a NULL envp, so every
+ *     `environ = env; execvp(...)` spawner (Rust std with pre_exec -- Codex;
+ *     libuv/node) lost its environment and children ran with minimal_envp.
+ *     execvp() now reads the caller's live `environ` through a dlsym'd
+ *     pointer (no GLOB_DAT relocation; the CI audit forbids one).
+ *  2. A symlink shim into the system image ($HOME/bin/env -> /system/bin/env)
+ *     was exec'd as `linker64 /proc/self/fd/N`; linker64 cannot open an fd
+ *     whose target lives in /system on this device ("unable to open file").
+ *     The verified fd is now readlink'd and system-image targets are exec'd
+ *     directly by their resolved path, like any other /system binary. */
+__attribute__((used, retain))
+static const char shelly_exec_wrapper_v220_marker[] =
+    "shelly-exec-wrapper:v220:execvp-environ+system-target-direct";
 
 __attribute__((used, retain))
 static const char shelly_codex_proc_exe_open_gate_marker[] =
@@ -714,18 +730,61 @@ static int resolve_path_search(const char *file, char *const envp[], char *out, 
     return -1;
 }
 
+static int system_image_path(const char *path) {
+    return path &&
+           (starts_with(path, "/system/") ||
+            starts_with(path, "/vendor/") ||
+            starts_with(path, "/apex/"));
+}
+
+/* v220: resolve the open file description behind `fd` (readlink of
+ * /proc/self/fd/N -- the same magic link the exec would hand linker64) and
+ * report whether it lives in the system image. Symlink shims such as
+ * $HOME/bin/env -> /system/bin/env pass the ELF-magic check by path, but
+ * `linker64 /proc/self/fd/N` fails to open a /system-backed fd on device
+ * (bug: `error: unable to open file "/proc/self/fd/102"` from every mksh/bash
+ * child of a wrapper-loaded process that ran `env`), while the kernel execs
+ * the resolved /system path fine. On success `resolved` holds the target. */
+static int fd_targets_system_image(int fd, char *resolved, size_t resolved_size) {
+    char proc_path[PROC_FD_PATH_SIZE];
+    long n;
+    if (!resolved || resolved_size == 0) return 0;
+    resolved[0] = '\0';
+    if (format_proc_fd_path(proc_path, sizeof(proc_path), fd) != 0) return 0;
+    do {
+        n = raw_readlinkat_call(AT_FDCWD, proc_path, resolved, resolved_size - 1);
+    } while (n == -SHELLY_EINTR);
+    if (n <= 0 || (size_t)n >= resolved_size - 1) {
+        resolved[0] = '\0';
+        return 0;
+    }
+    resolved[n] = '\0';
+    if (system_image_path(resolved)) return 1;
+    resolved[0] = '\0';
+    return 0;
+}
+
 /* Returns a verified ELF fd (>= 0) when pathname should be exec'd through
  * linker64, or -1 for direct exec. The caller owns the fd and must close it
- * on every path that does not exec through it (see close_elf_fd). */
-static int linker_exec_elf_fd(const char *pathname) {
+ * on every path that does not exec through it (see close_elf_fd).
+ * When the verified fd turns out to be backed by the system image, the fd is
+ * closed, -1 is returned and `system_target` (if given) receives the resolved
+ * /system path the caller should exec directly instead of `pathname`. */
+static int linker_exec_elf_fd(const char *pathname, char *system_target, size_t system_target_size) {
+    int fd;
+    if (system_target && system_target_size) system_target[0] = '\0';
     if (!pathname ||
         streq(pathname, LINKER64) ||
-        starts_with(pathname, "/system/") ||
-        starts_with(pathname, "/vendor/") ||
-        starts_with(pathname, "/apex/")) {
+        system_image_path(pathname)) {
         return -1;
     }
-    return open_verified_elf_fd(pathname);
+    fd = open_verified_elf_fd(pathname);
+    if (fd < 0) return -1;
+    if (system_target && fd_targets_system_image(fd, system_target, system_target_size)) {
+        raw_close_call(fd);
+        return -1;
+    }
+    return fd;
 }
 
 static int should_scrub_system_env(const char *pathname) {
@@ -1062,6 +1121,7 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
     const char *codex_self = codex_exec_path_value(envp, codex_self_buf, sizeof(codex_self_buf));
     char *codex_child_env[MAX_ENVP];
     char elf_fd_path[PROC_FD_PATH_SIZE];
+    char system_target[PATH_BUF_SIZE];
     int elf_fd;
     int linker_exec;
     int keep_wrapper_for_shell;
@@ -1069,7 +1129,13 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
         if (envp) trace_exec_event("rewrite-null", pathname, NULL, argv, envp, 0);
         return -1;
     }
-    elf_fd = linker_exec_elf_fd(rewritten);
+    elf_fd = linker_exec_elf_fd(rewritten, system_target, sizeof(system_target));
+    if (elf_fd < 0 && system_target[0]) {
+        /* v220: symlink shim into the system image -- exec the resolved
+         * /system path directly (kernel-resolved, no linker64/fd detour). */
+        if (envp) trace_exec_event("system-target-direct", pathname, system_target, argv, envp, 0);
+        rewritten = system_target;
+    }
     linker_exec = elf_fd >= 0;
     keep_wrapper_for_shell = should_keep_wrapper_for_shell_path(rewritten);
     if (envp) trace_exec_event("execve", pathname, rewritten, argv, envp, linker_exec);
@@ -1156,6 +1222,13 @@ typedef int (*posix_spawn_impl_t)(pid_t *, const char *,
 
 static posix_spawn_impl_t g_posix_spawn_fn;
 static posix_spawn_impl_t g_posix_spawnp_fn;
+/* v220: libc's `environ` variable, resolved by name so this library carries no
+ * R_AARCH64_GLOB_DAT relocation against it (the CI audit forbids one; an
+ * earlier `extern char **environ` was removed in 2b5204037). execvp() has to
+ * read it LIVE because Rust std (Command with pre_exec -- Codex) and libuv
+ * (node) implement spawn as `environ = child_env; execvp(file, argv)` in the
+ * forked child: the child env exists only in that variable. */
+static char ***g_environ_ptr;
 
 __attribute__((constructor))
 static void shelly_resolve_real_impls(void) {
@@ -1164,6 +1237,16 @@ static void shelly_resolve_real_impls(void) {
     /* bionic's errno TLS accessor; used by publish_syscall_errno so the
      * raw-syscall interposers report failures through errno like libc. */
     g_errno_slot_fn = (errno_slot_fn_t)dlsym(RTLD_NEXT, "__errno");
+    g_environ_ptr = (char ***)dlsym(RTLD_NEXT, "environ");
+}
+
+/* The caller's current environment as execvp(3) would pass it to execve(2),
+ * or NULL when libc's environ could not be resolved (legacy minimal_envp
+ * behaviour). An empty environment is still returned as-is: callers that
+ * deliberately cleared the env must not get the defaults re-injected. */
+static char *const *caller_environ(void) {
+    if (!g_environ_ptr) return NULL;
+    return (char *const *)*g_environ_ptr;
 }
 
 static posix_spawn_impl_t real_posix_spawn_impl(void) {
@@ -1194,6 +1277,7 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
     char codex_self_buf[PATH_BUF_SIZE];
     const char *codex_self;
     char elf_fd_path[PROC_FD_PATH_SIZE];
+    char system_target[PATH_BUF_SIZE];
     int elf_fd;
     int linker_exec;
     int keep_wrapper_for_shell;
@@ -1217,7 +1301,12 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
                          spawn_path, NULL, argv, envp, 0);
         return SHELLY_ENOENT;
     }
-    elf_fd = linker_exec_elf_fd(rewritten);
+    elf_fd = linker_exec_elf_fd(rewritten, system_target, sizeof(system_target));
+    if (elf_fd < 0 && system_target[0]) {
+        /* v220: see shelly_execve_internal -- system-image symlink shim. */
+        trace_exec_event("system-target-direct", spawn_path, system_target, argv, envp, 0);
+        rewritten = system_target;
+    }
     linker_exec = elf_fd >= 0;
     keep_wrapper_for_shell = should_keep_wrapper_for_shell_path(rewritten);
     trace_exec_event(search_path ? "posix_spawnp" : "posix_spawn",
@@ -1319,10 +1408,18 @@ int posix_spawnp(pid_t *pid, const char *file,
 int execvp(const char *file, char *const argv[]) {
     char resolved_buf[PATH_BUF_SIZE];
     const char *path = file;
-    if (resolve_path_search(file, NULL, resolved_buf, sizeof(resolved_buf), 1) == 0) {
+    /* v220: execvp(3) semantics -- the child runs with the caller's CURRENT
+     * environ (which Rust std / libuv have just pointed at the child env),
+     * and PATH lookup uses that environ's PATH. Passing NULL here made every
+     * execvp spawn fall through to minimal_envp / minimal_wrapper_envp, which
+     * is how Codex-exec'd python3 lost PYTHONHOME/PYTHONPATH (and TZ, and the
+     * SHELLY_CODEX_* markers that route /bin/sh to $SHELL). */
+    char *const *envp = caller_environ();
+    if (resolve_path_search(file, envp, resolved_buf, sizeof(resolved_buf), 1) == 0) {
         path = resolved_buf;
     }
-    return shelly_execve_internal(path, argv, NULL);
+    if (envp) trace_exec_event("execvp", file, path, argv, envp, 0);
+    return shelly_execve_internal(path, argv, envp);
 }
 
 int execvpe(const char *file, char *const argv[], char *const envp[]) {

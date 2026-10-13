@@ -217,3 +217,83 @@ describe('exec-wrapper stack budget (forked-child SIGSEGV fix)', () => {
     expect((src.match(/\[MAX_ARGC \+ 2\]/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v220 — execvp() must pass the caller's live environ; /system-backed fds must
+// not be handed to linker64 (on-device evidence: docs/superpowers/DEFERRED.md
+// "Codex 内で実行したコマンドに PYTHONHOME/PYTHONPATH が渡らない")
+// ---------------------------------------------------------------------------
+describe('v220: execvp() preserves the spawner environment', () => {
+  it('resolves libc environ by name in the constructor (no GLOB_DAT relocation)', () => {
+    // CI rejects any R_AARCH64_GLOB_DAT against `environ` (see
+    // .github/workflows/build-android.yml), so the pointer must come from
+    // dlsym — never from an `extern char **environ` declaration.
+    expect(code).not.toMatch(/extern\s+char\s*\*\*\s*environ/);
+    expect(functionBody('shelly_resolve_real_impls')).toMatch(
+      /g_environ_ptr = \(char \*\*\*\)dlsym\(RTLD_NEXT, "environ"\);/,
+    );
+  });
+
+  it('execvp() hands shelly_execve_internal the live environ, not NULL', () => {
+    const start = src.indexOf('int execvp(const char *file, char *const argv[])');
+    expect(start).toBeGreaterThan(0);
+    const endRel = src.slice(start).search(/\r?\n\}\r?\n/);
+    expect(endRel).toBeGreaterThan(0);
+    const body = src.slice(start, start + endRel + 2);
+    // Rust std (Command + pre_exec → fork/execvp, which is how Codex spawns
+    // every tool command) and libuv set `environ = child_env` right before
+    // execvp(); a NULL here silently substituted minimal_envp and dropped
+    // PYTHONHOME/PYTHONPATH/TZ/SHELLY_CODEX_* for the child.
+    expect(body).toMatch(/char \*const \*envp = caller_environ\(\);/);
+    expect(body).toMatch(/resolve_path_search\(file, envp, resolved_buf/);
+    expect(body).toMatch(/return shelly_execve_internal\(path, argv, envp\);/);
+    expect(body).not.toMatch(/shelly_execve_internal\(path, argv, NULL\)/);
+  });
+
+  it('caller_environ() degrades to NULL (legacy behaviour) only when dlsym failed', () => {
+    const body = functionBody('caller_environ');
+    expect(body).toMatch(/if \(!g_environ_ptr\) return NULL;/);
+    expect(body).toMatch(/return \(char \*const \*\)\*g_environ_ptr;/);
+  });
+});
+
+describe('v220: system-image targets are never exec\'d through /proc/self/fd/N', () => {
+  it('fd_targets_system_image() readlinks the pinned fd itself, not the pathname', () => {
+    // The check has to look at the open file description (the same magic
+    // link linker64 would be given), so it stays TOCTOU-free like bug #119.
+    const body = functionBody('fd_targets_system_image');
+    expect(body).toMatch(/format_proc_fd_path\(proc_path, sizeof\(proc_path\), fd\)/);
+    expect(body).toMatch(/raw_readlinkat_call\(AT_FDCWD, proc_path, resolved, resolved_size - 1\)/);
+    expect(body).toMatch(/while \(n == -SHELLY_EINTR\)/);
+    expect(body).toMatch(/system_image_path\(resolved\)/);
+  });
+
+  it('system_image_path() covers /system, /vendor and /apex', () => {
+    const body = functionBody('system_image_path');
+    for (const prefix of ['/system/', '/vendor/', '/apex/']) {
+      expect(body).toContain(`"${prefix}"`);
+    }
+  });
+
+  it('linker_exec_elf_fd() closes the fd and reports the resolved target for system images', () => {
+    const body = functionBody('linker_exec_elf_fd');
+    expect(body).toMatch(/fd = open_verified_elf_fd\(pathname\);/);
+    expect(body).toMatch(
+      /if \(system_target && fd_targets_system_image\(fd, system_target, system_target_size\)\) \{\s*\n\s*raw_close_call\(fd\);\s*\n\s*return -1;/,
+    );
+  });
+
+  it('both exec entry points exec the resolved /system path directly in that case', () => {
+    for (const fn of ['shelly_execve_internal', 'shelly_posix_spawn_common']) {
+      const body = functionBody(fn);
+      expect(body).toMatch(/linker_exec_elf_fd\(rewritten, system_target, sizeof\(system_target\)\)/);
+      expect(body).toMatch(/if \(elf_fd < 0 && system_target\[0\]\) \{[\s\S]*?rewritten = system_target;/);
+      // and the direct-exec branches below still key off `rewritten`
+      expect(body).toMatch(/should_scrub_system_env\(rewritten\)/);
+    }
+  });
+
+  it('keeps the v220 build marker CI checks for', () => {
+    expect(src).toContain('"shelly-exec-wrapper:v220:execvp-environ+system-target-direct"');
+  });
+});
