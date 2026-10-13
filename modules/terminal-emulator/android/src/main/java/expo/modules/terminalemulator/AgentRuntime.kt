@@ -628,6 +628,11 @@ object AgentRuntime {
                 append(shellQuote((notificationPackage ?: "unknown").take(256)))
             }
             append(" && { [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\" || true; }")
+            // .bashrc v251 only unsets LD_PRELOAD for interactive shells (so
+            // Codex's `bash -lc` keeps the exec wrapper). This legacy agent
+            // script is non-interactive but was verified on-device without the
+            // wrapper (node/curl via shelly_run_app_binary), so restore that.
+            append(" && unset LD_PRELOAD")
             append(" && . ")
             append(shellQuote(scriptPath))
         }

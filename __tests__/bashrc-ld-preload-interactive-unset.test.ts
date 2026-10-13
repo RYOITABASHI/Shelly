@@ -96,3 +96,13 @@ describe('~/.bashrc LD_PRELOAD unset is interactive-only', () => {
     });
   });
 });
+
+describe('legacy agent script launch keeps running un-wrapped', () => {
+  it('AgentRuntime unsets LD_PRELOAD right after sourcing .bashrc', () => {
+    const src = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt'),
+      'utf8',
+    );
+    expect(src).toMatch(/\.bashrc\\" \|\| true; \}"\)\s*(\/\/[^\n]*\n\s*)*append\(" && unset LD_PRELOAD"\)/);
+  });
+});
