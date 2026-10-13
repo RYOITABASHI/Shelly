@@ -56,9 +56,7 @@
 
 **An agent that works while you do**
 
-<p align="center">
-  <img src="docs/images/demo-agent-ask-teach.gif" alt="Captioned screen recording on a Galaxy Z Fold6: an agent is scheduled in plain language to run in 3 minutes; meanwhile a Python JSONDecodeError in the terminal is selected and sent to the on-device AI with Ask AI; the fix is recorded with shelly teach start/stop as a reusable workflow; then the agent fires on its own (Perplexity, then the local LLM, then a markdown briefing, shown at 16x) and the sourced briefing is opened" width="860">
-</p>
+https://github.com/user-attachments/assets/ac89f1a9-fecc-4e58-bb37-b33421e862d2
 
 1. Schedule an agent in plain language: *"In 3 minutes, first search the web with Perplexity for the top 3 on-device AI news stories. Then summarize them with the local LLM. Finally, write a markdown briefing."*
 2. Meanwhile, a Python `JSONDecodeError` in the terminal: long-press it → **Ask AI** quotes it into the AI pane, and the on-device model (Qwen3.5-2B) explains the fix.
@@ -66,8 +64,7 @@
 4. The agent fires on its own — Perplexity → local LLM → markdown (sped up 16x in the clip) — and narrates each hand-off in its chat thread.
 5. Open the briefing: every item carries a citation, and a `## Sources` list is appended.
 
-<sub>The GIF is captioned and partly sped up. A full-resolution MP4 is available on request and will be attached here.</sub>
-<!-- TODO: replace with user-attachments MP4 -->
+<sub>Captioned and partly sped up (the agent run is shown at 16x).</sub>
 
 <br>
 

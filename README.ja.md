@@ -56,9 +56,7 @@
 
 **あなたが作業している間に働くエージェント**
 
-<p align="center">
-  <img src="docs/images/demo-agent-ask-teach.gif" alt="Galaxy Z Fold6 上のキャプション付き画面録画: 3 分後に動くエージェントを普通の言葉でスケジュールし、その間にターミナルの Python JSONDecodeError を選択して Ask AI で端末上の AI に引用し、修正を shelly teach start/stop で再利用可能なワークフローとして記録する。そのあとエージェントが自分で発火し（Perplexity → ローカル LLM → markdown のブリーフィング、16 倍速で表示）、出典付きのブリーフィングを開く" width="860">
-</p>
+https://github.com/user-attachments/assets/ac89f1a9-fecc-4e58-bb37-b33421e862d2
 
 1. 普通の言葉でエージェントをスケジュール: *「In 3 minutes, first search the web with Perplexity for the top 3 on-device AI news stories. Then summarize them with the local LLM. Finally, write a markdown briefing.」*
 2. その間に、ターミナルで Python の `JSONDecodeError`。長押し → **Ask AI** で AI ペインに引用し、端末上のモデル（Qwen3.5-2B）が直し方を説明します。
@@ -66,8 +64,7 @@
 4. エージェントが自分で発火 ―― Perplexity → ローカル LLM → markdown（クリップでは 16 倍速）―― し、各ステップの受け渡しを自分のチャットスレッドに書き込みます。
 5. ブリーフィングを開く: すべての項目に出典が付き、末尾に `## Sources` の一覧が追加されています。
 
-<sub>GIF はキャプション付きで、一部を早送りしています。フル解像度の MP4 はご要望があればお渡しでき、ここにも添付する予定です。</sub>
-<!-- TODO: replace with user-attachments MP4 -->
+<sub>キャプション付きで、一部を早送りしています（エージェントの実行部分は 16 倍速）。</sub>
 
 <br>
 
