@@ -43,6 +43,7 @@
     "@expo-google-fonts/silkscreen": "^0.4.2",
     "@expo/vector-icons": "^15.0.3",
     "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^2.0.1",
     "@openai/codex": "^0.119.0",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.5",
