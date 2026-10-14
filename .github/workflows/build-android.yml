@@ -978,6 +978,10 @@ jobs:
           test -x "${apksigner}" || { echo "FATAL: apksigner not found under ${build_tools}" >&2; exit 1; }
           # Per-line hex digests of signer CERTIFICATES (not public keys), one per line.
           digests() { awk -F': ' '/certificate SHA-256 digest:/ {print tolower($NF)}' | tr -d ': \r' | sort -u | paste -sd ' '; }
+          # Informational: permissions the APK declares/uses. Declared
+          # signature permissions matter for the rotation lineage (the old
+          # debug signer keeps the PERMISSION capability; see DEFERRED.md).
+          "${build_tools}/aapt2" dump permissions "${apk}" || true
           "${apksigner}" verify -v --print-certs "${apk}" | tee "${RUNNER_TEMP}/apk-certs.txt" | grep -E '^(Verified using|Signer|Number of signers)' || true
           if [ "${SHELLY_SIGNING_MODE}" = "rotation" ]; then
             grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true' "${RUNNER_TEMP}/apk-certs.txt" \

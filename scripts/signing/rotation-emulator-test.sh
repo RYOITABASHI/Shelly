@@ -83,12 +83,10 @@ adb uninstall "${pkg}" >/dev/null 2>&1 || true
 expect_install "${work}/v1-debug.apk" success
 expect_install "${work}/v2-rotation.apk" success
 adb shell dumpsys package "${pkg}" | grep -iE 'versionCode|signatures|signingDetails|pastSigningCertificates' || true
-expect_install "${work}/v3-debug.apk" INSTALL_FAILED_UPDATE_INCOMPATIBLE
-expect_install "${work}/v4-release.apk" success
-
 # Informational (documents the PERMISSION-capability trade-off, never fails):
 # does a different app signed only with the public debug key get the
-# rotated package's signature permission granted?
+# rotated package's signature permission granted? (run while v2, the
+# rotated build with the debug -> release lineage, is installed)
 other="${pkg}.other"
 cat > "${work}/AndroidManifest.xml" <<EOF
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="${other}">
@@ -105,5 +103,9 @@ expect_install "${work}/other-debug.apk" success
 echo "TRADE-OFF: debug-signed ${other} -> ${pkg}.SIGNATURE_TEST:"
 adb shell dumpsys package "${other}" | grep -F "${pkg}.SIGNATURE_TEST" || echo "  (not listed)"
 adb uninstall "${other}" >/dev/null 2>&1 || true
+
+expect_install "${work}/v3-debug.apk" INSTALL_FAILED_UPDATE_INCOMPATIBLE
+expect_install "${work}/v4-release.apk" success
+
 adb uninstall "${pkg}" >/dev/null 2>&1 || true
 echo "ROTATION CHECK PASSED: debug->rotated update kept in place; debug-only APK rejected over the rotated app; release-only APK accepted."
