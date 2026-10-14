@@ -30,8 +30,10 @@
  * or a ClosePaw hand-off (explicit user decision: ClosePaw is approvable from
  * the notification / ChatGPT like any other plan, and that approval also
  * pre-approves its runs — lib/agent-closepaw-preapproval.ts), that are NOT
- * autonomous, have no notification trigger, no explicit API-call step, and
- * have a fireable schedule may be approved remotely. Everything else —
+ * autonomous, have no notification trigger, no explicit API-call step, no
+ * CLI/Codex engine, no per-step tool pin, no custom output path, no reused
+ * skill recipe (review fix 2026-10-14), and have a fireable schedule may be
+ * approved remotely. Everything else —
  * social-post, webhook, api-call, cli, other intent modes (launch/share),
  * dm-reply, browser-pane, unknown types, autonomous/unattended mode,
  * notification-triggered runs — is review-in-Shelly only. Per-run action
@@ -110,6 +112,9 @@ export type AgentAddDraftLike = {
   notificationTrigger?: { packageNames?: string[] } | null;
   orchestrationSteps?: Array<string | { instruction?: string; apiCall?: unknown; tool?: unknown }> | null;
   closePawRouting?: { clause: string; app: string; routed: boolean } | null;
+  tool?: { type?: string; [key: string]: unknown } | null;
+  outputPath?: string;
+  matchedSkill?: unknown;
 };
 
 /** Reasons a draft is review-in-Shelly only. Empty = remotely approvable
@@ -133,6 +138,16 @@ export function assessAgentDraftRisk(draft: AgentAddDraftLike): string[] {
   if (Array.isArray(draft.orchestrationSteps) && draft.orchestrationSteps.some((s) => !!s && typeof s === 'object' && 'apiCall' in s && !!s.apiCall)) {
     reasons.push('api-call-step');
   }
+  // Review fix: anything that widens what a run can touch stays in-app only —
+  // a CLI/Codex engine (incl. the A/B article evaluator, which runs a Codex
+  // command), per-step tool pins, a custom output path, a reused skill recipe.
+  const toolType = draft.tool && typeof draft.tool === 'object' ? draft.tool.type : undefined;
+  if (toolType === 'cli' || toolType === 'ab-article-eval') reasons.push('tool:cli');
+  if (Array.isArray(draft.orchestrationSteps) && draft.orchestrationSteps.some((s) => !!s && typeof s === 'object' && 'tool' in s && !!s.tool)) {
+    reasons.push('step-tool');
+  }
+  if (typeof draft.outputPath === 'string' && draft.outputPath.trim()) reasons.push('output-path');
+  if (draft.matchedSkill) reasons.push('skill');
   return reasons;
 }
 
@@ -168,7 +183,19 @@ export function draftHashPrefix(binding: Pick<AgentAddBinding, 'draftHash'>): st
   return binding.draftHash.slice(0, AGENT_ADD_HASH_PREFIX_LENGTH);
 }
 
-/** Create (or replace) the binding for a request. */
+function reqIdTimestamp(reqId: string): number {
+  return /^[0-9]{10,16}-[0-9a-f]{8}$/.test(reqId) ? Number(reqId.split('-')[0]) : 0;
+}
+
+/**
+ * Create the binding for a request, or refresh it when the SAME request's
+ * draft is re-presented (e.g. after a slot-fill answer). Returns null — and
+ * never resurrects anything — when the request was already decided
+ * (consumed), when its 10-minute window (counted from the request's own
+ * timestamp, not from now) is over, or when `isFinalized(reqId)` says the
+ * outcome was already recorded. A refresh keeps the attempt counter and the
+ * original expiry.
+ */
 export async function createAgentAddBinding(params: {
   reqId: string;
   conversationKey: string;
@@ -176,8 +203,16 @@ export async function createAgentAddBinding(params: {
   draft: AgentAddDraftLike;
   fireable: boolean;
   now?: number;
-}): Promise<AgentAddBinding> {
+  isFinalized?: (reqId: string) => boolean;
+}): Promise<AgentAddBinding | null> {
   const now = params.now ?? Date.now();
+  const issuedAt = reqIdTimestamp(params.reqId);
+  if (!issuedAt) return null;
+  const expiresAt = issuedAt + AGENT_ADD_APPROVAL_TTL_MS;
+  if (now > expiresAt) return null;
+  if (params.isFinalized?.(params.reqId)) return null;
+  const previous = bindings.get(params.reqId);
+  if (previous?.consumed) return null;
   const crypto = getCrypto();
   const riskReasons = assessAgentDraftRisk(params.draft);
   const approvable = riskReasons.length === 0 && params.fireable === true;
@@ -187,12 +222,12 @@ export async function createAgentAddBinding(params: {
     messageId: params.messageId,
     draftHash: await hashAgentDraft(params.draft),
     createdAt: now,
-    expiresAt: now + AGENT_ADD_APPROVAL_TTL_MS,
+    expiresAt,
     approvable,
     riskReasons,
     fireable: params.fireable === true,
-    confirmAttempts: 0,
-    lastConfirmAttemptAt: Number.NEGATIVE_INFINITY,
+    confirmAttempts: previous?.confirmAttempts ?? 0,
+    lastConfirmAttemptAt: previous?.lastConfirmAttemptAt ?? Number.NEGATIVE_INFINITY,
     approveNonce: approvable ? toHex(crypto.randomBytes(16)) : null,
     rejectNonce: toHex(crypto.randomBytes(16)),
     consumed: false,
@@ -285,6 +320,7 @@ export function verifyAgentAddNotificationDecision(
   decision: 'approve' | 'reject',
   nonce: string,
   now: number = Date.now(),
+  opts: { consume?: boolean } = {},
 ): AgentAddNonceCheck {
   const b = bindings.get(reqId);
   if (!b) return { ok: false, reason: 'unknown' };
@@ -296,7 +332,9 @@ export function verifyAgentAddNotificationDecision(
   } else if (!safeEqual(String(nonce ?? ''), b.rejectNonce)) {
     return { ok: false, reason: 'bad-nonce' };
   }
-  consumeAgentAddBinding(reqId);
+  // consume:false = verify only (the caller consumes once the pane handler
+  // and the pending draft are actually there, e.g. on a cold start).
+  if (opts.consume !== false) consumeAgentAddBinding(reqId);
   return { ok: true, binding: b };
 }
 
@@ -321,6 +359,8 @@ export type AgentAddSummary = {
   actions: string[];
   /** The part ClosePaw will do by operating the phone, if any. */
   closePaw: string | null;
+  /** Disclosure shown with `closePaw` (untrusted content, standing approval). */
+  closePawNote: string | null;
   highRisk: string[];
   approvableFromChat: boolean;
   expiresAt: number;
@@ -376,6 +416,9 @@ export function buildAgentAddSummary(
     steps,
     actions,
     closePaw: closePawText ? clip(closePawText, 300) : null,
+    closePawNote: closePawText
+      ? "ClosePaw operates the phone for this step. What it is given is built from this agent's own results (can include untrusted web text). Approving the agent also approves this step for its future runs until the agent is edited."
+      : null,
     highRisk: [...binding.riskReasons],
     approvableFromChat: binding.approvable && status === 'parsed',
     expiresAt: binding.expiresAt,

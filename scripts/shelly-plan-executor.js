@@ -38,6 +38,15 @@ const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
 // collapse space runs, trim spaces, cap 2000 code points).
 const CLOSEPAW_GOAL_MAX_CHARS = 2000;
+// Mirrors lib/agent-closepaw-preapproval.ts CLOSEPAW_RESULT_SLOT_MAX_CHARS.
+const CLOSEPAW_RESULT_SLOT_MAX_CHARS = 1200;
+function capClosePawResultSlot(raw) {
+  // eslint-disable-next-line no-control-regex
+  const cleaned = String(raw == null ? '' : raw).replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/ {2,}/g, ' ').trim();
+  const cps = Array.from(cleaned);
+  return cps.length <= CLOSEPAW_RESULT_SLOT_MAX_CHARS ? cleaned : cps.slice(0, CLOSEPAW_RESULT_SLOT_MAX_CHARS).join('').replace(/ +$/g, '');
+}
+
 function sanitizeClosePawGoal(raw) {
   // eslint-disable-next-line no-control-regex
   const collapsed = String(raw == null ? '' : raw).replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/ {2,}/g, ' ').replace(/^ +| +$/g, '');
@@ -3927,7 +3936,12 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
-      const resolvedShareText = String(plan.action.intentShareText || '').split('{{result}}').join(preview);
+      // `shelly agent add` review fix: the {{result}} slot of a ClosePaw goal
+      // is the agent's own (possibly web-derived, untrusted) output — cap it
+      // and strip control chars BEFORE it is wired into the goal ClosePaw acts
+      // on (RN's pre-approval check rejects a longer slot anyway).
+      const intentSlot = intentMode === 'closepaw' ? capClosePawResultSlot(preview) : preview;
+      const resolvedShareText = String(plan.action.intentShareText || '').split('{{result}}').join(intentSlot);
       if (intentMode === 'share' && !resolvedShareText.trim()) {
         const message = 'Intent action is missing share text.';
         writeNotification(paths, plan, 'error', message);

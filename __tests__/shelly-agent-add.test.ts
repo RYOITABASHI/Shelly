@@ -35,7 +35,6 @@ import {
   createAgentAddDrainState,
   drainAgentAddRequests,
   encodeAgentAddLine,
-  getActiveTerminalAgentRequestId,
   isTerminalAgentRequestActive,
   markTerminalAgentRequest,
   parseAgentAddLine,
@@ -144,18 +143,28 @@ describe('terminal requests are always confirm-gated', () => {
     ).toBe(true);
   });
 
-  it('keeps follow-up turns gated for the confirm window and tracks the request id', () => {
-    expect(isTerminalAgentRequestActive(NOW)).toBe(false);
-    markTerminalAgentRequest(REQ, NOW);
-    expect(isTerminalAgentRequestActive(NOW + 60_000)).toBe(true);
-    expect(getActiveTerminalAgentRequestId(NOW + 60_000)).toBe(REQ);
-    expect(isTerminalAgentRequestActive(NOW + 31 * 60_000)).toBe(false);
+  it('confirm-gates follow-up turns per conversation only (no global window)', () => {
+    expect(isTerminalAgentRequestActive('pane-1', NOW)).toBe(false);
+    markTerminalAgentRequest('pane-1', NOW);
+    expect(isTerminalAgentRequestActive('pane-1', NOW + 60_000)).toBe(true);
+    expect(isTerminalAgentRequestActive('pane-2', NOW + 60_000)).toBe(false);
+    expect(isTerminalAgentRequestActive('pane-1', NOW + 31 * 60_000)).toBe(false);
   });
 
-  it('dispatch maps a terminal request (and its follow-ups) to the terminal-request source', () => {
+  it('binding/summary follow the draft\'s OWN request id, never a global "last request" (hijack fix)', () => {
     const src = read('hooks/use-ai-pane-dispatch.ts');
-    expect(src).toMatch(/dispatchOpts\?\.source === 'terminal-request' \|\| isTerminalAgentRequestActive\(\)/);
-    expect(src).toContain('onTerminalDraftPresented(');
+    // The window only tightens confirm-gating…
+    expect(src).toMatch(/terminalRequestId \|\| dispatchOpts\?\.source === 'terminal-request' \|\| isTerminalAgentRequestActive\(paneId\)/);
+    // …binding happens only for a draft stamped with its own id…
+    expect(src).toMatch(/\} else if \(terminalRequestId\) \{/);
+    expect(src).toContain('reqId: terminalRequestId,');
+    // …and only a terminal-sourced dispatch stamps the id.
+    expect(src).toMatch(/if \(dispatchOpts\?\.source === 'terminal-request' && isAgentAddRequestId\(dispatchOpts\.requestId\)\) \{\s*draft\.terminalRequestId = dispatchOpts\.requestId;/);
+    const flow = read('lib/agent-add-flow.ts');
+    expect(flow).toContain('params.draft.terminalRequestId !== reqId) return;');
+    expect(flow).not.toContain('getActiveTerminalAgentRequestId');
+    expect(flow).not.toContain('finalized.delete(');
+    expect(read('lib/agent-add-queue.ts')).not.toMatch(/let lastTerminalAgentRequest/);
   });
 });
 
@@ -288,8 +297,61 @@ const closePawDraft = {
 };
 
 async function bind(draft: Record<string, unknown> = lowRisk, fireable = true, now = NOW) {
-  return createAgentAddBinding({ reqId: REQ, conversationKey: 'pane-1', messageId: 'm1', draft, fireable, now });
+  const b = await createAgentAddBinding({ reqId: REQ, conversationKey: 'pane-1', messageId: 'm1', draft, fireable, now });
+  if (!b) throw new Error('binding refused');
+  return b;
 }
+
+describe('rebinding / hijack protection', () => {
+  it('never rebinds a decided request (no revival of consumed bindings)', async () => {
+    const b = await bind();
+    expect(verifyAgentAddTextConfirm(REQ, draftHashPrefix(b), { allowed: true, now: NOW + 1000 })).toMatchObject({ ok: true });
+    await expect(
+      createAgentAddBinding({ reqId: REQ, conversationKey: 'pane-1', messageId: 'm2', draft: { ...lowRisk, name: 'user private' }, fireable: true, now: NOW + 2000 }),
+    ).resolves.toBeNull();
+    expect(verifyAgentAddTextConfirm(REQ, draftHashPrefix(b), { allowed: true, now: NOW + 9000 })).toMatchObject({ reason: 'used' });
+  });
+
+  it('expiry counts from the request timestamp, not from (re)binding', async () => {
+    await expect(
+      createAgentAddBinding({ reqId: REQ, conversationKey: 'pane-1', messageId: 'm1', draft: lowRisk, fireable: true, now: NOW + AGENT_ADD_APPROVAL_TTL_MS + 1 }),
+    ).resolves.toBeNull();
+    const b = await bind(lowRisk, true, NOW + 9 * 60_000);
+    expect(b.expiresAt).toBe(NOW + AGENT_ADD_APPROVAL_TTL_MS);
+  });
+
+  it('refuses a finalized request and keeps the attempt counter on refresh', async () => {
+    await expect(
+      createAgentAddBinding({ reqId: REQ, conversationKey: 'pane-1', messageId: 'm1', draft: lowRisk, fireable: true, now: NOW, isFinalized: () => true }),
+    ).resolves.toBeNull();
+    const b = await bind();
+    verifyAgentAddTextConfirm(REQ, '00000000' === draftHashPrefix(b) ? '11111111' : '00000000', { allowed: true, now: NOW + 3000 });
+    const refreshed = await bind({ ...lowRisk, schedule: '0 9 * * *' }, true, NOW + 4000);
+    expect(refreshed.confirmAttempts).toBe(1);
+  });
+});
+
+describe('cold-start notification approve', () => {
+  it('can verify without consuming, then consume once', async () => {
+    const b = await bind();
+    expect(verifyAgentAddNotificationDecision(REQ, 'approve', b.approveNonce!, NOW + 1, { consume: false })).toMatchObject({ ok: true });
+    expect(verifyAgentAddNotificationDecision(REQ, 'approve', b.approveNonce!, NOW + 2, { consume: false })).toMatchObject({ ok: true });
+    expect(verifyAgentAddNotificationDecision(REQ, 'approve', b.approveNonce!, NOW + 3)).toMatchObject({ ok: true });
+    expect(verifyAgentAddNotificationDecision(REQ, 'approve', b.approveNonce!, NOW + 4)).toMatchObject({ reason: 'used' });
+  });
+
+  it('the deep-link handler waits for the pane + pending draft before consuming', () => {
+    const flow = read('lib/agent-add-flow.ts');
+    const i = flow.indexOf('export async function handleAgentAddDecisionDeepLink');
+    const body = flow.slice(i, flow.indexOf('export async function handleAgentAddDisableDeepLink'));
+    const peek = body.indexOf('{ consume: false }');
+    const wait = body.indexOf('await waitFor(');
+    const consume = body.indexOf('const final = verifyAgentAddNotificationDecision(reqId, decision, nonce);');
+    expect(peek).toBeGreaterThan(0);
+    expect(wait).toBeGreaterThan(peek);
+    expect(consume).toBeGreaterThan(wait);
+  });
+});
 
 describe('risk tier', () => {
   it('draft/notify and ClosePaw hand-offs are remotely approvable; everything else is review-in-Shelly', () => {
@@ -305,6 +367,12 @@ describe('risk tier', () => {
     expect(assessAgentDraftRisk({ ...lowRisk, autonomous: true })).toEqual(['autonomous']);
     expect(assessAgentDraftRisk({ ...lowRisk, notificationTrigger: { packageNames: ['com.x'] } })).toEqual(['notification-trigger']);
     expect(assessAgentDraftRisk({ ...lowRisk, orchestrationSteps: ['a', { instruction: 'b', apiCall: { m: 1 } }] })).toEqual(['api-call-step']);
+    expect(assessAgentDraftRisk({ ...lowRisk, tool: { type: 'cli', cli: 'codex' } })).toEqual(['tool:cli']);
+    expect(assessAgentDraftRisk({ ...lowRisk, tool: { type: 'ab-article-eval' } })).toEqual(['tool:cli']);
+    expect(assessAgentDraftRisk({ ...lowRisk, tool: { type: 'perplexity' } })).toEqual([]);
+    expect(assessAgentDraftRisk({ ...lowRisk, orchestrationSteps: ['a', { instruction: 'b', tool: { type: 'local' } }] })).toEqual(['step-tool']);
+    expect(assessAgentDraftRisk({ ...lowRisk, outputPath: '/sdcard/x' })).toEqual(['output-path']);
+    expect(assessAgentDraftRisk({ ...lowRisk, matchedSkill: { id: 's' } })).toEqual(['skill']);
   });
 });
 

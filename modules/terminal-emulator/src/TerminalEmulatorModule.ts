@@ -329,6 +329,10 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   postAgentAddAuditNotification?(agentId: string, title: string, body: string, disableNonce: string): Promise<boolean>;
   /** True when ClosePaw (ai.closepaw) is installed and resolvable. */
   isClosePawInstalled?(): Promise<boolean>;
+  /** Start time (ms) of the agent run this process's AgentRuntime is
+   *  executing for agentId, or null. Process memory only — a same-uid process
+   *  cannot fake it (unlike files under $HOME). */
+  getActiveAgentRunStartedAt?(agentId: string): Promise<number | null>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

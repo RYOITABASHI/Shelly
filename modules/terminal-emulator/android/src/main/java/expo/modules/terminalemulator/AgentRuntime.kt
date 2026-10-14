@@ -466,6 +466,26 @@ object AgentRuntime {
          *  every consumer treats as PROACTIVE (fail-closed). */
         origin: String = "event"
     ): AgentRunResult {
+        // `shelly agent add` review fix: remember (in process memory only)
+        // that THIS process is running the agent, so RN can tell a real
+        // run's ClosePaw approval request from a forged request file.
+        val runToken = NativeAgentRunRegistry.begin(agentId)
+        try {
+            return runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin)
+        } finally {
+            NativeAgentRunRegistry.end(agentId, runToken)
+        }
+    }
+
+    private fun runAgentInner(
+        context: Context,
+        agentId: String,
+        tainted: Boolean,
+        unattended: Boolean,
+        notificationText: String?,
+        notificationPackage: String?,
+        origin: String
+    ): AgentRunResult {
         val runOrigin = normalizeRunOrigin(origin)
         val appContext = context.applicationContext
         HomeInitializer.initialize(appContext)

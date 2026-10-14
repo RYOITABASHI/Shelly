@@ -14,7 +14,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import {
+  CLOSEPAW_RESULT_SLOT_MAX_CHARS,
   __setClosePawSealStorageForTests,
+  agentMatchesApprovedDraft,
+  closePawRunProvenanceOk,
   goalMatchesTemplate,
   isClosePawPreapproved,
   revokeClosePawPreapproval,
@@ -146,7 +149,7 @@ describe('applyClosePawAutoRouting', () => {
     const summary = read('lib/agent-plan-summary.ts');
     expect(summary).toContain("tl('agentplan.closepaw_auto_routed_line', { step: draft.closePawRouting.clause })");
     expect(summary).toContain('if (draft.closePawRouting?.routed) return true;');
-    expect(read('lib/i18n/locales/ja.ts')).toContain("'agentplan.closepaw_auto_routed_line': 'この部分は ClosePaw がスマホを操作して実行します: {{step}}'");
+    expect(read('lib/i18n/locales/ja.ts')).toContain("'agentplan.closepaw_auto_routed_line': 'この部分は ClosePaw がスマホを操作して実行します: {{step}}（");
   });
 });
 
@@ -210,6 +213,17 @@ describe('ClosePaw pre-approval seal', () => {
     ).resolves.toBe(false);
   });
 
+  it('schedule / autonomy / trigger / engine changes also invalidate it', async () => {
+    const a = { ...agent, schedule: '0 8 * * *', tool: { type: 'local' } };
+    await sealClosePawPreapproval(a, 'chat');
+    const r = request('LINEで自分に送って（内容: x）');
+    await expect(isClosePawPreapproved(r, a)).resolves.toBe(true);
+    await expect(isClosePawPreapproved(r, { ...a, schedule: '*/5 * * * *' })).resolves.toBe(false);
+    await expect(isClosePawPreapproved(r, { ...a, autonomous: true })).resolves.toBe(false);
+    await expect(isClosePawPreapproved(r, { ...a, notificationTrigger: { packageNames: ['jp.naver.line.android'] } })).resolves.toBe(false);
+    await expect(isClosePawPreapproved(r, { ...a, tool: { type: 'cli', cli: 'codex' } })).resolves.toBe(false);
+  });
+
   it('a seal is bound to its agent definition hash and can be revoked', async () => {
     await sealClosePawPreapproval(agent, 'chat');
     expect(JSON.parse(stored!)[0]).toMatchObject({ agentId: 'agent-1', stepIndex: -1, mode: 'closepaw', goalTemplate: 'LINEで自分に送って（内容: {{result}}）' });
@@ -221,12 +235,66 @@ describe('ClosePaw pre-approval seal', () => {
     await expect(sealClosePawPreapproval({ id: 'a', action: { type: 'draft' } }, 'chat')).resolves.toBe(false);
   });
 
+  it('the {{result}} slot is capped; a goal cut at the wire budget fails (truncation boundary)', () => {
+    const tpl = 'LINEで自分に送って（内容: {{result}}）';
+    const ok = 'あ'.repeat(CLOSEPAW_RESULT_SLOT_MAX_CHARS);
+    expect(goalMatchesTemplate(`LINEで自分に送って（内容: ${ok}）`, tpl)).toBe(true);
+    expect(goalMatchesTemplate(`LINEで自分に送って（内容: ${ok}い）`, tpl)).toBe(false);
+    // Longer than the wire budget (2000 - prefix): the tail literal is cut → no match.
+    expect(goalMatchesTemplate(`LINEで自分に送って（内容: ${'あ'.repeat(3000)}）`, tpl)).toBe(false);
+  });
+
   it('goalMatchesTemplate: literal parts must match exactly', () => {
     expect(goalMatchesTemplate('Chromeで天気予報を表示して', 'Chromeで天気予報を表示して')).toBe(true);
     expect(goalMatchesTemplate('Chromeで別のページを表示して', 'Chromeで天気予報を表示して')).toBe(false);
     expect(goalMatchesTemplate('送って: abc 末尾', '送って: {{result}} 末尾')).toBe(true);
     expect(goalMatchesTemplate('送って: abc', '送って: {{result}} 末尾')).toBe(false);
     expect(goalMatchesTemplate('', '{{result}}')).toBe(false);
+  });
+
+  it('forged action-approval files: only a run the app itself is executing, once per run', () => {
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: null, lastFiredRunStartedAt: undefined })).toBe(false);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: undefined, lastFiredRunStartedAt: undefined })).toBe(false);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: 1000, lastFiredRunStartedAt: undefined })).toBe(true);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: 1000, lastFiredRunStartedAt: 1000 })).toBe(false);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: 2000, lastFiredRunStartedAt: 1000 })).toBe(true);
+    const layout = read('app/_layout.tsx');
+    expect(layout).toContain('TerminalEmulator.getActiveAgentRunStartedAt?.(request.agentId)');
+    expect(layout).toContain('await markClosePawFiredForRun(minted.agentId);');
+    const runtime = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt');
+    expect(runtime).toMatch(/val runToken = NativeAgentRunRegistry\.begin\(agentId\)\s*try \{\s*return runAgentInner\(/);
+    expect(runtime).toContain('NativeAgentRunRegistry.end(agentId, runToken)');
+    const registry = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/NativeAgentRunRegistry.kt');
+    expect(registry).toContain('ConcurrentHashMap');
+    const registryCode = registry.split(/\r?\n/).filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+    expect(registryCode).not.toMatch(/SharedPreferences|File\(/);
+  });
+
+  it('seals only the exact agent the confirm created, and only if it matches the approved draft (wrong-agent fix)', () => {
+    const approved = { prompt: agent.prompt, action: agent.action };
+    expect(agentMatchesApprovedDraft(agent, approved)).toBe(true);
+    expect(agentMatchesApprovedDraft({ ...agent, prompt: 'edited' }, approved)).toBe(false);
+    expect(agentMatchesApprovedDraft({ ...agent, action: { ...agent.action, intentShareText: 'Gmailで送って' } }, approved)).toBe(false);
+    expect(agentMatchesApprovedDraft({ ...agent, orchestration: { steps: ['a', 'b'] } }, approved)).toBe(false);
+    expect(agentMatchesApprovedDraft({ id: 'other', action: { type: 'draft' } }, approved)).toBe(false);
+    const dispatch = read('hooks/use-ai-pane-dispatch.ts');
+    expect(dispatch).toContain('createdAgentId = created.length === 1 ? created[0].id : null;');
+    expect(dispatch).toContain('onAgentDraftResolved(resolveAiPaneStoreKey(paneIdRaw), messageId, createdAgentId);');
+    const flow = read('lib/agent-add-flow.ts');
+    expect(flow).not.toContain('findRegisteredAgent');
+    expect(flow).toContain('if (agent && agentMatchesApprovedDraft(agent, draft)) {');
+  });
+
+  it('executor caps the {{result}} slot before wiring a ClosePaw goal', () => {
+    const exec = read('scripts/shelly-plan-executor.js');
+    expect(exec).toContain('const CLOSEPAW_RESULT_SLOT_MAX_CHARS = 1200;');
+    expect(exec).toContain("const intentSlot = intentMode === 'closepaw' ? capClosePawResultSlot(preview) : preview;");
+    expect(read('modules/terminal-emulator/android/src/main/assets/shelly-plan-executor.js')).toBe(exec);
+  });
+
+  it('confirmation text discloses untrusted result content and the standing approval', () => {
+    expect(read('lib/i18n/locales/ja.ts')).toContain('Web 由来の信頼できない文章を含むことがあります');
+    expect(read('lib/agent-add-approval.ts')).toContain('closePawNote: closePawText');
   });
 
   it('RN choke point honours the seal only via the minted, re-verified request; executor waits instead of refusing', () => {

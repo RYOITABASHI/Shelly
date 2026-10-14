@@ -560,14 +560,19 @@ export default function AIPane() {
         // ChatGPT app). Say so plainly before the request enters the normal
         // `@agent` flow, and keep every registration confirm-gated while it
         // may still be in its follow-up turns.
-        markTerminalAgentRequest(taken.requestId ?? null);
+        const conversationKey = resolveAiPaneStoreKey(paneId);
+        markTerminalAgentRequest(conversationKey);
         const store = useAIPaneStore.getState();
-        store.addMessage(resolveAiPaneStoreKey(paneId), {
+        store.addMessage(conversationKey, {
           id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           role: 'assistant',
           content: t('agents.terminal_request_origin'),
           timestamp: Date.now(),
         });
+        // The request id rides on THIS dispatch (→ the parsed draft's
+        // terminalRequestId), never on global state.
+        handleSubmit(taken.text, { source: 'terminal-request', ...(taken.requestId ? { requestId: taken.requestId } : {}) });
+        return;
       }
       handleSubmit(taken.text, taken.source ? { source: taken.source } : undefined);
     }

@@ -64,7 +64,7 @@ import {
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
-import { isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
+import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -534,6 +534,10 @@ export interface AIPaneDispatchOptions {
   /** 'terminal-request' (2026-10-14): a `shelly agent add` request from the
    *  terminal (lib/agent-add-queue.ts) — always confirm-gated. */
   source?: 'widget-ask' | 'terminal-request';
+  /** 'terminal-request' only: the `shelly agent add` request id. Stamped on
+   *  the parsed draft (ParsedAgentDraft.terminalRequestId) so the binding and
+   *  the shell-readable summary only ever cover THIS request's draft. */
+  requestId?: string;
   /**
    * Fable5/Codex review (2026-08-29, Hermes Agent parity audit): lib/gemini.ts's
    * geminiMultimodalStream has existed since before this review with zero
@@ -726,11 +730,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // fireable-schedule/assumption checks, isAutoRegisterEligibleOnChatConfirm's
         // risk tiering) still applies to it unchanged.
         // `shelly agent add` (lib/agent-add-queue.ts): a terminal-originated
-        // request — and every registration while one may still be in its
-        // slot-fill follow-up turns (isTerminalAgentRequestActive, global and
-        // fail-closed) — always takes the interactive confirmation.
+        // draft (its own terminalRequestId), a terminal-sourced dispatch, and
+        // — confirm-gating ONLY — any registration in a conversation that got
+        // a terminal request in the last 30 min always take the interactive
+        // confirmation. Binding/summary below require the draft's OWN id.
+        const terminalRequestId = isAgentAddRequestId(draft.terminalRequestId) ? draft.terminalRequestId : null;
         const registrationSource =
-          dispatchOpts?.source === 'terminal-request' || isTerminalAgentRequestActive()
+          terminalRequestId || dispatchOpts?.source === 'terminal-request' || isTerminalAgentRequestActive(paneId)
             ? 'terminal-request'
             : dispatchOpts?.source === 'widget-ask'
               ? 'widget-ask'
@@ -783,12 +789,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               });
             }
           }
-        } else if (registrationSource === 'terminal-request') {
+        } else if (terminalRequestId) {
           // `shelly agent add`: bind the parsed draft to its request (hash,
           // nonces, optional one-time code), post the plain-text approval line,
           // the shell-readable summary and the approval notification. The
           // in-chat confirmation above stays the primary path.
           void onTerminalDraftPresented({
+            reqId: terminalRequestId,
             conversationKey: paneId,
             messageId: draftMessageId,
             draft,
@@ -2616,6 +2623,12 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (draft.autonomous && agentResult.data?.suggestion?.tool) {
               draft.tool = agentResult.data.suggestion.tool;
               draft.toolLabel = agentResult.data.suggestion.label ?? draft.toolLabel;
+            }
+            // `shelly agent add`: stamp the request id on THIS draft only (it
+            // survives slot-fill/patch because those copy the draft), so the
+            // binding + shell-readable summary can never cover another draft.
+            if (dispatchOpts?.source === 'terminal-request' && isAgentAddRequestId(dispatchOpts.requestId)) {
+              draft.terminalRequestId = dispatchOpts.requestId;
             }
             // Automatic ClosePaw routing (lib/agent-closepaw-routing.ts): only
             // a detected UI-operation step becomes the ClosePaw hand-off, only
@@ -4457,7 +4470,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
   // scratch (which — for a fresh, non-edit registration — would create a
   // second, independent duplicate agent).
   const confirmAgentDraft = useCallback(
-    async (messageId: string, confirmed: ConfirmedAgentDraft) => {
+    async (messageId: string, confirmed: ConfirmedAgentDraft): Promise<void> => {
       const existing = inFlightConfirmDrafts.get(messageId);
       if (existing) {
         logWarn(
@@ -4466,10 +4479,17 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         );
         return existing;
       }
+      // `shelly agent add` review fix: identify EXACTLY the agent this confirm
+      // created (store diff around the turn; ambiguous ⇒ null ⇒ no seal),
+      // instead of guessing "the newest agent".
+      const agentIdsBefore = new Set(useAgentStore.getState().agents.map((a) => a.id));
+      let createdAgentId: string | null = null;
       const turn = confirmAgentDraftInner(messageId, confirmed);
       inFlightConfirmDrafts.set(messageId, turn);
       try {
         await turn;
+        const created = useAgentStore.getState().agents.filter((a) => !agentIdsBefore.has(a.id));
+        createdAgentId = created.length === 1 ? created[0].id : null;
         // Case File only: a rubber-stamp "thunk" on the registration
         // actually completing, covering every confirm path uniformly (this
         // wrapper is the single choke point all of them go through) rather
@@ -4481,8 +4501,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         if (inFlightConfirmDrafts.get(messageId) === turn) {
           inFlightConfirmDrafts.delete(messageId);
         }
-        // `shelly agent add` binding (if any): consume + record the outcome.
-        onAgentDraftResolved(resolveAiPaneStoreKey(paneIdRaw), messageId);
+        // `shelly agent add` binding (if any): consume + record the outcome;
+        // seal a ClosePaw pre-approval only for the exact created agent.
+        onAgentDraftResolved(resolveAiPaneStoreKey(paneIdRaw), messageId, createdAgentId);
       }
     },
     [confirmAgentDraftInner, paneIdRaw],

@@ -235,31 +235,39 @@ export function agentAddRejectMessage(reason: 'malformed' | 'stale' | 'empty' | 
 
 // ── Confirm-gate marker (runtime only, never persisted) ────────────────────
 
-let lastTerminalAgentRequestAt = 0;
-let lastTerminalAgentRequestId: string | null = null;
+// Review fix (2026-10-14): this marker ONLY tightens confirm-gating, per
+// conversation. It never decides which request a draft belongs to — that is
+// carried on the draft itself (ParsedAgentDraft.terminalRequestId, set only
+// for a dispatch whose source is 'terminal-request'), so a user's own
+// `@agent` draft can never be bound to (or summarized for) a terminal request.
+const terminalRequestAtByConversation = new Map<string, number>();
 
-/** Called when a terminal request is handed to an AI pane. */
-export function markTerminalAgentRequest(reqId: string | null = null, nowMs: number = Date.now()): void {
-  lastTerminalAgentRequestAt = nowMs;
-  lastTerminalAgentRequestId = reqId && REQ_ID_RE.test(reqId) ? reqId : null;
+/** Called when a terminal request is handed to an AI pane conversation. */
+export function markTerminalAgentRequest(conversationKey: string, nowMs: number = Date.now()): void {
+  terminalRequestAtByConversation.set(conversationKey, nowMs);
 }
 
-/** The request id the next presented draft belongs to (most recent request
- *  still inside its confirm window), or null. */
-export function getActiveTerminalAgentRequestId(nowMs: number = Date.now()): string | null {
-  return isTerminalAgentRequestActive(nowMs) ? lastTerminalAgentRequestId : null;
+/** True while a terminal-originated request handed to THIS conversation may
+ *  still be in its slot-fill / confirmation turns. Callers force the
+ *  interactive confirmation then (fail-closed; never relaxes anything). */
+export function isTerminalAgentRequestActive(conversationKey: string, nowMs: number = Date.now()): boolean {
+  const at = terminalRequestAtByConversation.get(conversationKey);
+  return at !== undefined && nowMs - at <= TERMINAL_AGENT_REQUEST_CONFIRM_WINDOW_MS;
 }
 
-/** True while a terminal-originated request may still be in its slot-fill /
- *  confirmation turns. Callers force the interactive confirmation then. */
-export function isTerminalAgentRequestActive(nowMs: number = Date.now()): boolean {
-  return lastTerminalAgentRequestAt > 0 && nowMs - lastTerminalAgentRequestAt <= TERMINAL_AGENT_REQUEST_CONFIRM_WINDOW_MS;
+/** Valid request id shape (for ids carried on drafts / dispatch options). */
+export function isAgentAddRequestId(value: unknown): value is string {
+  return typeof value === 'string' && REQ_ID_RE.test(value);
+}
+
+/** Epoch ms encoded in a request id (its creation time on the shell side). */
+export function agentAddRequestTimestamp(reqId: string): number {
+  return REQ_ID_RE.test(reqId) ? Number(reqId.split('-')[0]) : 0;
 }
 
 /** Test hook. */
 export function __resetTerminalAgentRequestMarkerForTests(): void {
-  lastTerminalAgentRequestAt = 0;
-  lastTerminalAgentRequestId = null;
+  terminalRequestAtByConversation.clear();
 }
 
 // ── RN drain (app/_layout.tsx) ─────────────────────────────────────────────

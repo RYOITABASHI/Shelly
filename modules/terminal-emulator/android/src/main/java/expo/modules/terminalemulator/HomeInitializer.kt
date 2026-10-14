@@ -2156,6 +2156,7 @@ patchCodex(libDir);
             sb.appendLine("    (Array.isArray(s.steps) ? s.steps : []).forEach(function (st, i) { console.log('Step ' + (i + 1) + ': ' + agentClean(st)); });")
             sb.appendLine("    console.log('Delivers via: ' + agentClean((Array.isArray(s.actions) ? s.actions : []).join(', ')));")
             sb.appendLine("    if (s.closePaw) console.log('ClosePaw (operates the phone): ' + agentClean(s.closePaw));")
+            sb.appendLine("    if (s.closePawNote) console.log('  Note: ' + agentClean(s.closePawNote));")
             sb.appendLine("    if (Array.isArray(s.highRisk) && s.highRisk.length) console.log('High-risk: ' + agentClean(s.highRisk.join(', ')));")
             sb.appendLine("    console.log('Status: ' + agentClean(s.code));")
             sb.appendLine("    console.log(agentClean(s.message));")

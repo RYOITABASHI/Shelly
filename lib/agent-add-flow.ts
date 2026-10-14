@@ -50,7 +50,7 @@ import { setAgentEnabled } from '@/lib/agent-manager';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import {
   agentAddSummaryFileName,
-  getActiveTerminalAgentRequestId,
+  isAgentAddRequestId,
   type AgentAddResult,
   type AgentCtlRequest,
 } from '@/lib/agent-add-queue';
@@ -69,7 +69,7 @@ import {
   type AgentAddBinding,
   type AgentAddSummary,
 } from '@/lib/agent-add-approval';
-import { revokeClosePawPreapproval, sealClosePawPreapproval } from '@/lib/agent-closepaw-preapproval';
+import { agentMatchesApprovedDraft, revokeClosePawPreapproval, sealClosePawPreapproval } from '@/lib/agent-closepaw-preapproval';
 
 export type AgentAddPaneHandlers = {
   confirm: (messageId: string, draft: ParsedAgentDraft) => Promise<void>;
@@ -93,6 +93,17 @@ export function registerAgentAddPaneHandlers(conversationKey: string, h: AgentAd
   return () => {
     if (handlers.get(conversationKey) === h) handlers.delete(conversationKey);
   };
+}
+
+const DECISION_READY_TIMEOUT_MS = 8_000;
+
+async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) return false;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return true;
 }
 
 function homeDir(): string {
@@ -166,23 +177,30 @@ function cancelNotification(): void {
  * confirmation works regardless).
  */
 export async function onTerminalDraftPresented(params: {
+  /** The draft's OWN terminalRequestId (never a global "last request"). */
+  reqId: string;
   conversationKey: string;
   messageId: string;
   draft: ParsedAgentDraft;
   fireable: boolean;
 }): Promise<void> {
   try {
-    const reqId = getActiveTerminalAgentRequestId();
-    if (!reqId) return;
+    const reqId = params.reqId;
+    if (!isAgentAddRequestId(reqId) || params.draft.terminalRequestId !== reqId) return;
     sweepAgentAddBindings();
+    // Never rebinds a decided / finalized / expired request (returns null).
     const binding = await createAgentAddBinding({
       reqId,
       conversationKey: params.conversationKey,
       messageId: params.messageId,
       draft: params.draft,
       fireable: params.fireable,
+      isFinalized: (id) => finalized.has(id),
     });
-    finalized.delete(reqId);
+    if (!binding) {
+      logInfo('AgentAddFlow', `request ${reqId} is decided or expired; draft not bound`);
+      return;
+    }
     const locale = draftLocale(params.draft);
     const schedule = scheduleText(params.draft, locale);
     const risks = binding.riskReasons.map((r) => riskLabel(r, locale));
@@ -254,20 +272,18 @@ async function finalizeSummary(binding: AgentAddBinding, status: 'registered' | 
   }
 }
 
-/** The agent a just-confirmed draft became: the newest agent created in the
- *  last 2 minutes, preferring an exact name match. */
-function findRegisteredAgent(draft: ParsedAgentDraft | null, now: number = Date.now()): Agent | null {
-  const recent = useAgentStore
-    .getState()
-    .agents.filter((a) => typeof a.createdAt === 'number' && now - a.createdAt <= 2 * 60_000)
-    .sort((a, b) => b.createdAt - a.createdAt);
-  if (recent.length === 0) return null;
-  return (draft && recent.find((a) => a.name === draft.name)) || recent[0];
+/** messageId → the agent id that confirm EXACTLY created (store diff in
+ *  hooks/use-ai-pane-dispatch.ts's confirmAgentDraft; never a guess). */
+const createdAgentByMessage = new Map<string, string>();
+
+function createdAgentFor(messageId: string): Agent | null {
+  const id = createdAgentByMessage.get(messageId);
+  return id ? useAgentStore.getState().agents.find((a) => a.id === id) ?? null : null;
 }
 
-async function postChatGptAudit(conversationKey: string, draft: ParsedAgentDraft): Promise<void> {
+async function postChatGptAudit(conversationKey: string, messageId: string, draft: ParsedAgentDraft): Promise<void> {
   const locale = draftLocale(draft);
-  const agent = findRegisteredAgent(draft);
+  const agent = createdAgentFor(messageId);
   postNote(conversationKey, tFor(locale, 'agents.terminal_request_chatgpt_audit_chat', { name: agent?.name ?? draft.name }));
   if (!agent) return;
   const nonce = randomHex(16);
@@ -314,7 +330,7 @@ export async function applyAgentAddDecision(
       .messages.find((m) => m.id === binding.messageId);
     if (after?.agentCardState === 'confirmed') {
       await finalizeSummary(binding, 'registered', draft);
-      if (via === 'chatgpt') await postChatGptAudit(binding.conversationKey, draft);
+      if (via === 'chatgpt') await postChatGptAudit(binding.conversationKey, binding.messageId, draft);
       return { ok: true, code: 'sent', message: `Registered "${draft.name}" in Shelly. The user was notified and can disable it with one tap.` };
     }
     return { ok: false, code: 'failed', message: "shelly agent: registration did not complete; check Shelly's chat" };
@@ -374,14 +390,29 @@ export async function handleAgentAddDecisionDeepLink(params: {
   const decision = params.decision === 'approve' ? 'approve' : params.decision === 'reject' ? 'reject' : null;
   const nonce = typeof params.nonce === 'string' ? params.nonce : '';
   if (!reqId || !decision) return;
-  const check = verifyAgentAddNotificationDecision(reqId, decision, nonce);
+  // Verify WITHOUT consuming first: on a cold start / while the AI pane is
+  // still mounting, the pane handler or the pending draft may not exist yet,
+  // and consuming then would burn the user's single-use tap for nothing.
+  const check = verifyAgentAddNotificationDecision(reqId, decision, nonce, Date.now(), { consume: false });
   if ('reason' in check) {
     logWarn('AgentAddFlow', `notification ${decision} for ${reqId} refused (${check.reason})`);
     const b = getAgentAddBinding(reqId);
     if (b) postNote(b.conversationKey, tFor('en', 'agents.terminal_request_link_refused'));
     return;
   }
-  const result = await applyAgentAddDecision(check.binding, decision, 'notification');
+  const binding = check.binding;
+  const ready = await waitFor(() => handlers.has(binding.conversationKey) && !!findPendingDraftMessage(binding), DECISION_READY_TIMEOUT_MS);
+  if (!ready) {
+    logWarn('AgentAddFlow', `notification ${decision} for ${reqId}: pane/draft not ready; not consumed`);
+    return;
+  }
+  // Re-verify and consume atomically now that the target exists.
+  const final = verifyAgentAddNotificationDecision(reqId, decision, nonce);
+  if ('reason' in final) {
+    logWarn('AgentAddFlow', `notification ${decision} for ${reqId} refused on consume (${final.reason})`);
+    return;
+  }
+  const result = await applyAgentAddDecision(final.binding, decision, 'notification');
   logInfo('AgentAddFlow', `notification ${decision} for ${reqId}: ${result.ok ? 'done' : result.message}`);
 }
 
@@ -414,16 +445,20 @@ export async function handleAgentAddDisableDeepLink(params: { agentId: unknown; 
  * terminal request is consumed, its notification removed and the summary
  * records the outcome.
  */
-export function onAgentDraftResolved(conversationKey: string, messageId: string): void {
+export function onAgentDraftResolved(conversationKey: string, messageId: string, createdAgentId: string | null = null): void {
   const msg = useAIPaneStore
     .getState()
     .getOrCreate(conversationKey)
     .messages.find((m) => m.id === messageId);
   const state = msg?.agentCardState;
   const draft = (msg?.agentDraft as ParsedAgentDraft) ?? null;
-  if (state === 'confirmed' && draft && closePawStepText(draft as never)) {
-    const agent = findRegisteredAgent(draft);
-    if (agent) {
+  if (state === 'confirmed' && createdAgentId) createdAgentByMessage.set(messageId, createdAgentId);
+  if (state === 'confirmed' && draft && closePawStepText(draft as never) && createdAgentId) {
+    const agent = useAgentStore.getState().agents.find((a) => a.id === createdAgentId) ?? null;
+    // Seal only the EXACT agent this confirm created, and only when its
+    // ClosePaw goal / prompt / steps are the ones the user approved (an
+    // edited card registers without a seal → per-run Review stays).
+    if (agent && agentMatchesApprovedDraft(agent, draft)) {
       const via = approvalVia.get(messageId) ?? 'chat';
       void sealClosePawPreapproval(agent, via)
         .then((sealed) => {

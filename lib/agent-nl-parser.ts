@@ -32,6 +32,11 @@ export interface ParsedAgentDraft {
    *  the step that could not be automated (`routed: false`, caveat set).
    *  Every confirmation surface states it explicitly. Absent = no routing. */
   closePawRouting?: { clause: string; app: string; routed: boolean };
+  /** `shelly agent add` request this draft was parsed from (set by
+   *  hooks/use-ai-pane-dispatch.ts only for a 'terminal-request' dispatch).
+   *  The approval binding and the shell-readable summary exist only for a
+   *  draft carrying it. Absent = an ordinary user draft. */
+  terminalRequestId?: string;
   /** The actionable instruction fed to the agent (schedule phrase stripped). */
   prompt: string;
   /** Cron in one of the 3 whitelisted shapes, or null when it could not be parsed. */

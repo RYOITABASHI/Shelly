@@ -26,10 +26,16 @@
  * surface states which part ClosePaw will do by operating the phone (chat
  * summary — lib/agent-plan-summary.ts, the approval notification and the
  * `shelly agent add` stdout summary — lib/agent-add-approval.ts). A routed
- * draft is always confirmed in chat (shouldUseChatConfirm) and is HIGH-RISK
- * for remote approval (lib/agent-add-approval.ts assessAgentDraftRisk:
- * 'closepaw' → in-app review only). The per-run ClosePaw Review is unchanged
- * (never auto-accepted). Without ClosePaw installed nothing is routed and the
+ * draft is always confirmed in chat (shouldUseChatConfirm). Per the user's
+ * 2026-10-14 decision a ClosePaw hand-off is remotely approvable like any
+ * other low-risk plan (notification Approve / ChatGPT confirm —
+ * lib/agent-add-approval.ts), and the registration approval also
+ * pre-approves that step for future runs (lib/agent-closepaw-preapproval.ts:
+ * bound to the exact definition, honoured only for a run the app itself is
+ * executing, once per run, {{result}} slot capped). Without a matching seal
+ * the per-run ClosePaw Review still applies. The confirmation text discloses
+ * that ClosePaw's input is built from the agent's (possibly untrusted, web-
+ * derived) results. Without ClosePaw installed nothing is routed and the
  * draft gets a caveat saying that step cannot be automated.
  */
 import type { ParsedAgentDraft } from './agent-nl-parser';

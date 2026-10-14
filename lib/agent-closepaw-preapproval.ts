@@ -24,11 +24,23 @@
  * and it re-checks the minted request against the CURRENT agent definition
  * from the agent store plus the sealed template.
  *
+ * Review fixes (2026-10-14): the request FILE is forgeable by any same-uid
+ * process, so a seal is honoured only while the app's own AgentRuntime is
+ * executing that agent (NativeAgentRunRegistry — process memory) and at most
+ * once per such run (closePawRunProvenanceOk); the definition hash also
+ * covers schedule / autonomous / notificationTrigger / tool; the seal lands
+ * only on the exact agent the confirm created and only when it equals the
+ * approved draft (agentMatchesApprovedDraft); the resolved goal is capped at
+ * the wire budget and its {{result}} slot at CLOSEPAW_RESULT_SLOT_MAX_CHARS.
+ * Residual: a forged request racing a real run of the same sealed agent can
+ * still take that run's single hand-off — its goal must match the sealed
+ * template, only the capped {{result}} slot differs.
+ *
  * Step index: today a ClosePaw hand-off is always the agent's final delivery
  * action (index CLOSEPAW_ACTION_STEP_INDEX); orchestration steps never carry
  * an intent. The field is kept so a future per-step hand-off binds the same way.
  */
-import { sanitizeClosePawGoal } from './agent-intent-review';
+import { closePawTaskText, sanitizeClosePawGoal } from './agent-intent-review';
 import { stableStringify, agentAddSha256Hex } from './agent-add-approval';
 
 export const CLOSEPAW_ACTION_STEP_INDEX = -1;
@@ -53,7 +65,16 @@ export type ClosePawAgentLike = {
   action?: { type?: string; intentMode?: string; intentShareText?: string } | null;
   actions?: Array<{ type?: string; intentMode?: string; intentShareText?: string } | null> | null;
   orchestration?: unknown;
+  schedule?: string | null;
+  autonomous?: boolean;
+  notificationTrigger?: unknown;
+  tool?: unknown;
 };
+
+/** Max code points of the {{result}} slot a pre-approved goal may carry
+ *  (mirrored by scripts/shelly-plan-executor.js capClosePawResultSlot). The
+ *  slot is the agent's own output — possibly web-derived, untrusted text. */
+export const CLOSEPAW_RESULT_SLOT_MAX_CHARS = 1200;
 
 export type SealStorage = {
   get: () => Promise<string | null>;
@@ -112,12 +133,18 @@ function closePawAction(agent: ClosePawAgentLike) {
 /** Hash of everything that decides what the agent does. */
 export async function closePawDefinitionHash(agent: ClosePawAgentLike): Promise<string> {
   return agentAddSha256Hex(
-    `shelly-closepaw-preapproval-v1\n${stableStringify({
+    `shelly-closepaw-preapproval-v2\n${stableStringify({
       id: agent.id,
       prompt: agent.prompt ?? '',
       action: agent.action ?? null,
       actions: agent.actions ?? null,
       orchestration: agent.orchestration ?? null,
+      // Review fix: when / how autonomously / on what trigger / with which
+      // engine it runs are part of what the user approved too.
+      schedule: agent.schedule ?? null,
+      autonomous: agent.autonomous === true,
+      notificationTrigger: agent.notificationTrigger ?? null,
+      tool: agent.tool ?? null,
     })}`,
   );
 }
@@ -149,18 +176,24 @@ export async function revokeClosePawPreapproval(agentId: string): Promise<void> 
 }
 
 /** Does a resolved goal (with {{result}} substituted at run time) come from
- *  the sealed template? Literal parts must match exactly (after the same
- *  sanitization the executor and native apply). */
+ *  the sealed template? It is first capped exactly like the wire goal
+ *  (closePawTaskText: CLOSEPAW_GOAL_MAX_CHARS minus the fixed prefix), so
+ *  what is matched is what ClosePaw would receive; a cap that cuts the
+ *  template's tail therefore fails (→ per-run Review). Literal parts must
+ *  match exactly and the {{result}} slot may carry at most
+ *  CLOSEPAW_RESULT_SLOT_MAX_CHARS code points. */
 export function goalMatchesTemplate(resolvedGoal: string, template: string): boolean {
-  const resolved = sanitizeClosePawGoal(resolvedGoal);
+  const resolved = closePawTaskText(resolvedGoal);
   if (!resolved) return false;
   const parts = template.split('{{result}}');
-  if (parts.length === 1) return resolved === sanitizeClosePawGoal(template);
+  if (parts.length === 1) return resolved === closePawTaskText(template);
   const head = sanitizeClosePawGoal(parts[0]).trimEnd();
   const tail = sanitizeClosePawGoal(parts[parts.length - 1]).trimStart();
   if (!resolved.startsWith(head)) return false;
   if (!resolved.endsWith(tail)) return false;
   if (resolved.length < head.length + tail.length) return false;
+  const slot = resolved.slice(head.length, resolved.length - tail.length);
+  if (Array.from(slot.trim()).length > CLOSEPAW_RESULT_SLOT_MAX_CHARS) return false;
   // Middle literal parts (rare: more than one placeholder) must appear in order.
   let cursor = head.length;
   for (const mid of parts.slice(1, -1).map((p) => sanitizeClosePawGoal(p).trim()).filter(Boolean)) {
@@ -190,4 +223,50 @@ export async function isClosePawPreapproved(
   if (sanitizeClosePawGoal(action.intentShareText) !== seal.goalTemplate) return false;
   if ((await closePawDefinitionHash(agent)) !== seal.definitionHash) return false;
   return goalMatchesTemplate(request.intentShareText ?? '', seal.goalTemplate);
+}
+
+function stepTexts(steps: unknown): string[] {
+  if (!Array.isArray(steps)) return [];
+  return steps.map((s) => (typeof s === 'string' ? s : s && typeof s === 'object' ? String((s as { instruction?: unknown }).instruction ?? '') : ''));
+}
+
+/**
+ * Review fix: before sealing, the created agent must be exactly what the
+ * user approved — same sanitized ClosePaw goal, same prompt, same steps.
+ * (An edited confirm card that changed any of them registers WITHOUT a seal,
+ * so the per-run ClosePaw Review stays.)
+ */
+export function agentMatchesApprovedDraft(
+  agent: ClosePawAgentLike,
+  draft: {
+    prompt?: string;
+    action?: { type?: string; intentMode?: string; intentShareText?: string } | null;
+    actions?: Array<{ type?: string; intentMode?: string; intentShareText?: string } | null> | null;
+    orchestrationSteps?: unknown;
+  },
+): boolean {
+  const agentAction = closePawAction(agent);
+  const draftAction = closePawAction({ id: '', action: draft.action ?? null, actions: draft.actions ?? null });
+  if (!agentAction || !draftAction) return false;
+  if (sanitizeClosePawGoal(agentAction.intentShareText) !== sanitizeClosePawGoal(draftAction.intentShareText)) return false;
+  if ((agent.prompt ?? '') !== (draft.prompt ?? '')) return false;
+  const agentSteps = stepTexts((agent.orchestration as { steps?: unknown } | null | undefined)?.steps);
+  const draftSteps = stepTexts(draft.orchestrationSteps);
+  if (agentSteps.length !== draftSteps.length) return false;
+  return agentSteps.every((t, i) => t === draftSteps[i]);
+}
+
+/**
+ * Review fix: the seal is honoured only for a run that the app's own
+ * AgentRuntime is executing right now for this agent (process memory —
+ * NativeAgentRunRegistry — never a file a same-uid process could forge), and
+ * at most once per such run (one hand-off per schedule slot).
+ */
+export function closePawRunProvenanceOk(params: {
+  activeRunStartedAt: number | null | undefined;
+  lastFiredRunStartedAt: number | null | undefined;
+}): boolean {
+  const started = params.activeRunStartedAt;
+  if (typeof started !== 'number' || !Number.isFinite(started) || started <= 0) return false;
+  return params.lastFiredRunStartedAt !== started;
 }

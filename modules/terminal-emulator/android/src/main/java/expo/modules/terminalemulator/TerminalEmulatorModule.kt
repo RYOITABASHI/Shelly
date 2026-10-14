@@ -1327,6 +1327,12 @@ class TerminalEmulatorModule : Module() {
             runCatching { ClosePawHandoff.buildIntent("probe").resolveActivity(context.packageManager) != null }.getOrDefault(false)
         }
 
+        // Start time (ms) of the run AgentRuntime is executing for agentId in
+        // this process, or null (NativeAgentRunRegistry — process memory only).
+        AsyncFunction("getActiveAgentRunStartedAt") { agentId: String ->
+            NativeAgentRunRegistry.activeRunStartedAt(agentId)?.toDouble()
+        }
+
         AsyncFunction("cancelAgentAddNotification") {
             val context = requireReactContext()
             AgentAddHandoff.cancelNotification(context)
