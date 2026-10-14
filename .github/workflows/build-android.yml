@@ -8,6 +8,25 @@ on:
       - '*.md'
       - '**/*.md'
   workflow_dispatch:
+    inputs:
+      signing:
+        description: >-
+          APK signing key. "default" follows SHELLY_DEFAULT_SIGNING_MODE below.
+          "rotation" = APK Signature Scheme v3 key rotation (legacy debug key ->
+          private release key, lineage in signing/); API 28+ installs update in
+          place. "release" = private release key only (no lineage).
+          "legacy-debug" = old public debug key only (pre-rotation builds).
+        type: choice
+        default: default
+        options:
+          - default
+          - rotation
+          - release
+          - legacy-debug
+      publish:
+        description: Publish the APK to the update channel (android-dev for non-main refs)
+        type: boolean
+        default: true
 
 concurrency:
   group: android-apk-${{ github.ref }}
@@ -53,6 +72,19 @@ jobs:
     permissions:
       actions: read
       contents: write
+    env:
+      # Signing-key migration (2026-10, see docs/superpowers/DEFERRED.md P0
+      # "Release signing key migration"). Main stays on the legacy public
+      # debug key until the owner approves the switch; then flip this to
+      # `rotation` (v3 key rotation: existing API 28+ installs update in place
+      # and are moved to the private key). Do NOT publish rotation-signed
+      # builds to a channel while main is still legacy-debug: a rotated
+      # install refuses later debug-only APKs.
+      SHELLY_DEFAULT_SIGNING_MODE: legacy-debug
+      # SHA-256 of the private Shelly release certificate (CN=Shelly, O=RYOITABASHI).
+      SHELLY_RELEASE_CERT_SHA256: 1476d9520a49bf8da7a767cb413918ccd5c5fcd7f62603766af6521f30de212d
+      # SHA-256 of the public RN/Expo debug.keystore certificate (legacy).
+      SHELLY_LEGACY_DEBUG_CERT_SHA256: fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c
     steps:
       - uses: actions/checkout@v4
         with:
@@ -786,6 +818,61 @@ jobs:
           ls -lh "${OUT}"
           file "${OUT}"
 
+      - name: Resolve APK signing key
+        env:
+          SIGNING_INPUT: ${{ inputs.signing }}
+          SHELLY_RELEASE_KEYSTORE_B64: ${{ secrets.SHELLY_RELEASE_KEYSTORE_B64 }}
+          SHELLY_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          SHELLY_RELEASE_KEY_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
+          SHELLY_RELEASE_KEY_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mode="${SIGNING_INPUT:-default}"
+          if [ "${mode}" = "default" ]; then
+            mode="${SHELLY_DEFAULT_SIGNING_MODE}"
+          fi
+          cert_sha() { keytool -exportcert -rfc "$@" | openssl x509 -outform der | sha256sum | awk '{print $1}'; }
+          case "${mode}" in
+            release|rotation)
+              if [ -z "${SHELLY_RELEASE_KEYSTORE_B64}" ] || [ -z "${SHELLY_RELEASE_KEYSTORE_PASSWORD}" ] \
+                || [ -z "${SHELLY_RELEASE_KEY_ALIAS}" ] || [ -z "${SHELLY_RELEASE_KEY_PASSWORD}" ]; then
+                echo "FATAL: release signing secrets are missing (SHELLY_RELEASE_KEYSTORE_B64 / _KEYSTORE_PASSWORD / _KEY_ALIAS / _KEY_PASSWORD); refusing to ship a debug-signed APK" >&2
+                exit 1
+              fi
+              keystore="${RUNNER_TEMP}/shelly-release.p12"
+              umask 077
+              printf '%s' "${SHELLY_RELEASE_KEYSTORE_B64}" | base64 -d > "${keystore}"
+              test -s "${keystore}" || { echo "FATAL: decoded release keystore is empty" >&2; exit 1; }
+              keystore_cert="$(cert_sha -keystore "${keystore}" -storetype pkcs12 \
+                -storepass:env SHELLY_RELEASE_KEYSTORE_PASSWORD -alias "${SHELLY_RELEASE_KEY_ALIAS}")"
+              if [ "${keystore_cert}" != "${SHELLY_RELEASE_CERT_SHA256}" ]; then
+                echo "FATAL: release keystore certificate ${keystore_cert} does not match pinned ${SHELLY_RELEASE_CERT_SHA256}" >&2
+                exit 1
+              fi
+              if [ "${mode}" = "rotation" ]; then
+                legacy_cert="$(cert_sha -keystore signing/legacy-debug.keystore -storepass android -alias androiddebugkey)"
+                if [ "${legacy_cert}" != "${SHELLY_LEGACY_DEBUG_CERT_SHA256}" ]; then
+                  echo "FATAL: signing/legacy-debug.keystore certificate ${legacy_cert} does not match ${SHELLY_LEGACY_DEBUG_CERT_SHA256}" >&2
+                  exit 1
+                fi
+                test -s signing/shelly-signing-lineage.bin || { echo "FATAL: signing/shelly-signing-lineage.bin missing (run signing-rotation-check.yml with generate_lineage=true)" >&2; exit 1; }
+              fi
+              echo "SHELLY_RELEASE_STORE_FILE=${keystore}" >> "${GITHUB_ENV}"
+              expected="${SHELLY_RELEASE_CERT_SHA256}"
+              ;;
+            legacy-debug)
+              echo "::warning::Signing with the legacy PUBLIC debug key only (pre-rotation build)."
+              expected="${SHELLY_LEGACY_DEBUG_CERT_SHA256}"
+              ;;
+            *)
+              echo "FATAL: unknown signing mode '${mode}'" >&2
+              exit 1
+              ;;
+          esac
+          echo "SHELLY_SIGNING_MODE=${mode}" >> "${GITHUB_ENV}"
+          echo "SHELLY_EXPECTED_CERT_SHA256=${expected}" >> "${GITHUB_ENV}"
+          echo "Signing mode: ${mode} (expected current signer SHA-256 ${expected})"
+
       - name: Build APK
         run: |
           cd android
@@ -793,6 +880,85 @@ jobs:
           ./gradlew :terminal-emulator:externalNativeBuildRelease assembleRelease -x lintVitalAnalyzeRelease --build-cache
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
+          # Consumed by plugins/with-release-signing.js's generated Gradle
+          # block only when SHELLY_SIGNING_MODE=release (rotation mode builds
+          # an unsigned APK and signs it in the next step). Never echoed.
+          SHELLY_RELEASE_STORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          SHELLY_RELEASE_KEY_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
+          SHELLY_RELEASE_KEY_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEY_PASSWORD }}
+
+      - name: Sign APK with v3 key rotation
+        # APK Signature Scheme v3 proof-of-rotation: v2 (API 24-27) stays signed
+        # by the legacy debug key, v3 (API 28+) is signed by the release key
+        # with the lineage debug -> release. API 28+ installs signed by the
+        # debug key update in place (data kept) and from then on only accept
+        # the release key: the lineage revokes the debug key's rollback
+        # capability (verified on an emulator by signing-rotation-check.yml).
+        if: ${{ env.SHELLY_SIGNING_MODE == 'rotation' }}
+        env:
+          SHELLY_RELEASE_STORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          SHELLY_RELEASE_KEY_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          out_dir=android/app/build/outputs/apk/release
+          unsigned="$(ls "${out_dir}"/*-unsigned.apk | head -1)"
+          test -n "${unsigned}" || { echo "FATAL: unsigned release APK not found" >&2; ls -l "${out_dir}"; exit 1; }
+          build_tools="$(ls -d "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"/build-tools/* | sort -V | tail -1)"
+          aligned="${RUNNER_TEMP}/shelly-aligned.apk"
+          if "${build_tools}/zipalign" -c -P 16 4 "${unsigned}" >/dev/null; then
+            cp "${unsigned}" "${aligned}"
+          else
+            "${build_tools}/zipalign" -P 16 -f 4 "${unsigned}" "${aligned}"
+          fi
+          "${build_tools}/apksigner" sign \
+            --ks signing/legacy-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
+            --next-signer --ks "${SHELLY_RELEASE_STORE_FILE}" --ks-type pkcs12 --ks-key-alias "${SHELLY_RELEASE_KEY_ALIAS}" \
+            --ks-pass env:SHELLY_RELEASE_STORE_PASSWORD --key-pass env:SHELLY_RELEASE_STORE_PASSWORD \
+            --lineage signing/shelly-signing-lineage.bin --rotation-min-sdk-version 28 \
+            --out "${out_dir}/app-release.apk" "${aligned}"
+          rm -f "${unsigned}" "${aligned}" "${out_dir}/app-release.apk.idsig"
+          ls -l "${out_dir}"
+
+      - name: Verify APK signing certificate
+        run: |
+          set -euo pipefail
+          rm -f "${RUNNER_TEMP}/shelly-release.p12"
+          apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
+          test -n "${apk}" || { echo "FATAL: release APK not found" >&2; exit 1; }
+          case "${apk}" in *-unsigned.apk) echo "FATAL: release APK is unsigned" >&2; exit 1 ;; esac
+          build_tools="$(ls -d "${ANDROID_HOME:-${ANDROID_SDK_ROOT}}"/build-tools/* | sort -V | tail -1)"
+          apksigner="${build_tools}/apksigner"
+          test -x "${apksigner}" || { echo "FATAL: apksigner not found under ${build_tools}" >&2; exit 1; }
+          digests() { awk -F': ' '/certificate SHA-256 digest:/ {print $NF}' | tr -d ':[:space:]' | tr 'A-F' 'a-f' | sort -u | paste -sd ' '; }
+          "${apksigner}" verify -v --print-certs "${apk}" | tee "${RUNNER_TEMP}/apk-certs.txt" | grep -E '^(Verified using|Signer|Number of signers)' || true
+          if [ "${SHELLY_SIGNING_MODE}" = "rotation" ]; then
+            grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true' "${RUNNER_TEMP}/apk-certs.txt" \
+              || { echo "FATAL: rotated APK is not verified with APK Signature Scheme v3" >&2; exit 1; }
+            v3_signer="$("${apksigner}" verify --print-certs --min-sdk-version 28 "${apk}" | digests)"
+            legacy_signer="$("${apksigner}" verify --print-certs --max-sdk-version 27 "${apk}" | digests)"
+            lineage="$("${apksigner}" lineage --in "${apk}" --print-certs | awk -F': ' '/SHA-256 digest/ {print $NF}' | tr -d ':[:space:]' | tr 'A-F' 'a-f' | paste -sd ' ')"
+            echo "API 28+ signer: ${v3_signer}"
+            echo "API 24-27 signer: ${legacy_signer}"
+            echo "v3 lineage: ${lineage}"
+            test "${v3_signer}" = "${SHELLY_RELEASE_CERT_SHA256}" || { echo "FATAL: APK signer ${v3_signer} (API 28+) does not match expected ${SHELLY_RELEASE_CERT_SHA256}" >&2; exit 1; }
+            test "${legacy_signer}" = "${SHELLY_LEGACY_DEBUG_CERT_SHA256}" || { echo "FATAL: APK signer ${legacy_signer} (API 24-27) does not match expected legacy ${SHELLY_LEGACY_DEBUG_CERT_SHA256}" >&2; exit 1; }
+            test "${lineage}" = "${SHELLY_LEGACY_DEBUG_CERT_SHA256} ${SHELLY_RELEASE_CERT_SHA256}" || { echo "FATAL: APK v3 lineage '${lineage}' is not debug -> release" >&2; exit 1; }
+            actual="${v3_signer}"
+          else
+            actual="$(digests < "${RUNNER_TEMP}/apk-certs.txt")"
+            case "${actual}" in *" "*) echo "FATAL: expected exactly one APK signer, got: ${actual}" >&2; exit 1 ;; esac
+            if [ "${actual}" != "${SHELLY_EXPECTED_CERT_SHA256}" ]; then
+              echo "FATAL: APK signer ${actual} does not match expected ${SHELLY_EXPECTED_CERT_SHA256} for mode ${SHELLY_SIGNING_MODE}" >&2
+              exit 1
+            fi
+          fi
+          if [ "${SHELLY_SIGNING_MODE}" != "legacy-debug" ] && [ "${actual}" = "${SHELLY_LEGACY_DEBUG_CERT_SHA256}" ]; then
+            echo "FATAL: ${SHELLY_SIGNING_MODE}-mode APK is signed with the public debug key" >&2
+            exit 1
+          fi
+          echo "APK current signer SHA-256: ${actual} (mode ${SHELLY_SIGNING_MODE})"
+          echo "SIGNING_CERT_SHA256=${actual}" >> "${GITHUB_ENV}"
+          echo "### APK signing: \`${SHELLY_SIGNING_MODE}\` — current signer SHA-256 \`${actual}\`" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Validate bionic exec wrapper in APK
         run: |
@@ -878,7 +1044,7 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
 
       - name: Publish Android update release
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
         env:
           GH_TOKEN: ${{ github.token }}
           STABLE_UPDATE_TAG: android-latest
@@ -961,6 +1127,7 @@ jobs:
           APK_URL="${apk_url}" \
           APK_ASSET_NAME="${update_apk_name}" \
           CREATED_AT="${created_at}" \
+          SIGNING_MODE="${SHELLY_SIGNING_MODE}" \
           node <<'NODE' > "${UPDATE_MANIFEST_NAME}"
           const manifest = {
             schemaVersion: 1,
@@ -977,6 +1144,8 @@ jobs:
             apkUrl: process.env.APK_URL,
             apkSizeBytes: Number(process.env.APK_SIZE_BYTES),
             sha256: process.env.SHA256,
+            signingMode: process.env.SIGNING_MODE,
+            signingCertSha256: process.env.SIGNING_CERT_SHA256,
           };
           process.stdout.write(JSON.stringify(manifest, null, 2) + "\n");
           NODE
@@ -993,6 +1162,7 @@ jobs:
           - commit: ${GITHUB_SHA}
           - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           - sha256: ${sha256}
+          - signing: ${SHELLY_SIGNING_MODE} (cert SHA-256 ${SIGNING_CERT_SHA256})
           EOF
 
           if [ "${publish_codex_runtime}" = "1" ]; then
@@ -1147,7 +1317,7 @@ jobs:
         # docs-only pushes) — catalog-only edits need a workflow_dispatch
         # run (or to ride along with a non-docs commit, as this change does
         # by also touching this workflow file) to actually publish.
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
         env:
           GH_TOKEN: ${{ github.token }}
           SKILLS_CATALOG_TAG: skills-catalog-latest

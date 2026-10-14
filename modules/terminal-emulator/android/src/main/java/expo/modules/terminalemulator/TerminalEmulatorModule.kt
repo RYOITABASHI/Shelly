@@ -1231,6 +1231,69 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
+        // Signing-key migration (2026-10): compare the signer of a downloaded
+        // update APK with the signer of the installed app so the updater can
+        // explain a key change (Android refuses in-place updates across
+        // signers) instead of failing with a generic installer error. Returns
+        // lowercase hex SHA-256 digests of the DER-encoded certificates.
+        AsyncFunction("getApkSignerInfo") { apkPath: String ->
+            val context = requireReactContext()
+            val apk = java.io.File(apkPath).canonicalFile
+            if (!apk.exists() || !apk.isFile || !apk.name.endsWith(".apk", ignoreCase = true)) {
+                throw IllegalArgumentException("APK not found: $apkPath")
+            }
+            val pm = context.packageManager
+            val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNATURES)
+            }
+            val installedInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+            }
+            fun digest(sig: android.content.pm.Signature): String =
+                java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(sig.toByteArray())
+                    .joinToString("") { "%02x".format(it) }
+            // Current signer(s). For a v3-rotated APK the signing-certificate
+            // history is ordered oldest -> current, so the last entry is the
+            // current signer.
+            fun currentSigners(info: android.content.pm.PackageInfo?): List<String> {
+                if (info == null) return emptyList()
+                val sigs: Array<android.content.pm.Signature>? =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        val signingInfo = info.signingInfo ?: return emptyList()
+                        if (signingInfo.hasMultipleSigners()) signingInfo.apkContentsSigners
+                        else signingInfo.signingCertificateHistory?.let { history ->
+                            if (history.isEmpty()) null else arrayOf(history.last())
+                        }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        info.signatures
+                    }
+                return sigs.orEmpty().map(::digest).distinct().sorted()
+            }
+            // Full proof-of-rotation lineage (oldest first), empty when the
+            // package has multiple signers or the platform predates API 28.
+            fun signerHistory(info: android.content.pm.PackageInfo?): List<String> {
+                if (info == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return emptyList()
+                val signingInfo = info.signingInfo ?: return emptyList()
+                if (signingInfo.hasMultipleSigners()) return emptyList()
+                return signingInfo.signingCertificateHistory.orEmpty().map(::digest)
+            }
+            mapOf(
+                "apkPackageName" to (archiveInfo?.packageName ?: ""),
+                "apkSigners" to currentSigners(archiveInfo),
+                "apkSignerHistory" to signerHistory(archiveInfo),
+                "installedSigners" to currentSigners(installedInfo),
+                "installedSignerHistory" to signerHistory(installedInfo),
+            )
+        }
+
         // Agent action executor (Track D dependency): fires an Android Intent on
         // behalf of an approved agent action (see AgentAction.intentMode in
         // store/types.ts). Never called with an un-reviewed request — the

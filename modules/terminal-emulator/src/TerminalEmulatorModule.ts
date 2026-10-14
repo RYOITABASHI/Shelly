@@ -92,6 +92,20 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   getHomeDir(): Promise<string>;
   getAppVersionInfo(): Promise<{ packageName: string; versionName: string; versionCode: number }>;
   installApk(apkPath: string): Promise<void>;
+  /**
+   * Signer certificates (lowercase hex SHA-256 of the DER cert) of a
+   * downloaded APK and of the installed app. Used by the updater to detect a
+   * signing-key change (see lib/apk-signer-check.ts). Optional: older native
+   * builds lack it.
+   */
+  getApkSignerInfo?(apkPath: string): Promise<{
+    apkPackageName: string;
+    apkSigners: string[];
+    /** v3 proof-of-rotation lineage of the APK, oldest first (API 28+, single signer). */
+    apkSignerHistory?: string[];
+    installedSigners: string[];
+    installedSignerHistory?: string[];
+  }>;
   /** getExternalFilesDir(DIRECTORY_DOWNLOADS) absolute path; user-aware (e.g. /storage/emulated/95/... for a Dual Messenger clone). */
   getApkDownloadDir?(): Promise<string>;
   enqueueApkDownload(url: string, downloadSubdir: string, fileName: string): Promise<{ downloadId: number; path: string }>;

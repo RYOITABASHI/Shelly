@@ -1,0 +1,149 @@
+name: Signing rotation check
+
+# Generates (optionally) and functionally verifies Shelly's APK Signature
+# Scheme v3 key-rotation lineage: legacy public RN/Expo debug key -> private
+# Shelly release key. The emulator job proves on a real API 34 system that
+#   - a debug-signed install accepts the rotated APK in place, and
+#   - an APK signed ONLY with the debug key is rejected afterwards
+#     (the old signer's rollback capability is revoked in the lineage).
+# See scripts/signing/rotation-emulator-test.sh and DEFERRED.md P0
+# "Release signing key migration".
+
+on:
+  workflow_dispatch:
+    inputs:
+      generate_lineage:
+        description: Generate a fresh lineage from the two keys (upload as artifact) instead of testing signing/shelly-signing-lineage.bin
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'signing/**'
+      - 'scripts/signing/**'
+      - '.github/workflows/signing-rotation-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signing-rotation-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rotation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BUILD_TOOLS: '35.0.0'
+      SHELLY_RELEASE_CERT_SHA256: 1476d9520a49bf8da7a767cb413918ccd5c5fcd7f62603766af6521f30de212d
+      SHELLY_LEGACY_DEBUG_CERT_SHA256: fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools build-tools;35.0.0 platforms;android-34
+
+      - name: Prepare keys
+        env:
+          SHELLY_RELEASE_KEYSTORE_B64: ${{ secrets.SHELLY_RELEASE_KEYSTORE_B64 }}
+          SHELLY_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          SHELLY_RELEASE_KEY_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "${SHELLY_RELEASE_KEYSTORE_B64}" || { echo "FATAL: release keystore secret missing" >&2; exit 1; }
+          umask 077
+          printf '%s' "${SHELLY_RELEASE_KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/shelly-release.p12"
+          cert_sha() { keytool -exportcert -rfc "$@" | openssl x509 -outform der | sha256sum | awk '{print $1}'; }
+          rel="$(cert_sha -keystore "${RUNNER_TEMP}/shelly-release.p12" -storetype pkcs12 -storepass:env SHELLY_RELEASE_KEYSTORE_PASSWORD -alias "${SHELLY_RELEASE_KEY_ALIAS}")"
+          dbg="$(cert_sha -keystore signing/legacy-debug.keystore -storepass android -alias androiddebugkey)"
+          test "${rel}" = "${SHELLY_RELEASE_CERT_SHA256}" || { echo "FATAL: release cert ${rel} != pinned" >&2; exit 1; }
+          test "${dbg}" = "${SHELLY_LEGACY_DEBUG_CERT_SHA256}" || { echo "FATAL: legacy debug cert ${dbg} != pinned" >&2; exit 1; }
+          echo "APKSIGNER=${ANDROID_HOME}/build-tools/${BUILD_TOOLS}/apksigner" >> "${GITHUB_ENV}"
+
+      - name: Decide lineage source
+        env:
+          GENERATE_INPUT: ${{ inputs.generate_lineage }}
+        run: |
+          # Generate when asked, or when no lineage is committed yet (push runs
+          # on a branch cannot be dispatched before the workflow is on main).
+          if [ "${GENERATE_INPUT}" = "true" ] || [ ! -s signing/shelly-signing-lineage.bin ]; then
+            echo "GENERATE_LINEAGE=1" >> "${GITHUB_ENV}"
+          else
+            echo "GENERATE_LINEAGE=0" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Generate lineage (debug -> release, old signer capabilities revoked except installed-data)
+        if: ${{ env.GENERATE_LINEAGE == '1' }}
+        env:
+          REL_PASS: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          REL_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/lineage-out"
+          mkdir -p "${out}"
+          "${APKSIGNER}" rotate --out "${RUNNER_TEMP}/lineage-raw.bin" \
+            --old-signer --ks signing/legacy-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
+            --new-signer --ks "${RUNNER_TEMP}/shelly-release.p12" --ks-key-alias "${REL_ALIAS}" --ks-pass env:REL_PASS --key-pass env:REL_PASS
+          # installed-data MUST stay true: it is what lets the rotated APK
+          # update a debug-signed install in place. Everything else the old,
+          # public key could vouch for is revoked; rollback=false means an APK
+          # signed only with the debug key can no longer update a rotated app.
+          "${APKSIGNER}" lineage --in "${RUNNER_TEMP}/lineage-raw.bin" --out "${out}/shelly-signing-lineage.bin" \
+            --signer --ks signing/legacy-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
+            --set-installed-data true --set-shared-uid false --set-permission false --set-rollback false --set-auth false
+          echo "LINEAGE=${out}/shelly-signing-lineage.bin" >> "${GITHUB_ENV}"
+
+      - name: Use committed lineage
+        if: ${{ env.GENERATE_LINEAGE != '1' }}
+        run: |
+          test -s signing/shelly-signing-lineage.bin || { echo "FATAL: signing/shelly-signing-lineage.bin missing; run with generate_lineage=true" >&2; exit 1; }
+          echo "LINEAGE=${GITHUB_WORKSPACE}/signing/shelly-signing-lineage.bin" >> "${GITHUB_ENV}"
+
+      - name: Inspect lineage
+        run: |
+          set -euo pipefail
+          "${APKSIGNER}" lineage --in "${LINEAGE}" --print-certs -v | tee "${RUNNER_TEMP}/lineage.txt"
+          digests="$(grep -i 'SHA-256 digest' "${RUNNER_TEMP}/lineage.txt" | awk -F': ' '{print $NF}' | tr -d ':[:space:]' | tr 'A-F' 'a-f' | paste -sd ' ')"
+          test "${digests}" = "${SHELLY_LEGACY_DEBUG_CERT_SHA256} ${SHELLY_RELEASE_CERT_SHA256}" \
+            || { echo "FATAL: lineage digests '${digests}' != 'debug release'" >&2; exit 1; }
+          echo "lineage OK: debug -> release"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ env.GENERATE_LINEAGE == '1' }}
+        with:
+          name: shelly-signing-lineage
+          path: ${{ env.LINEAGE }}
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Emulator install-sequence check (API 34)
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          AAPT2: ${{ env.ANDROID_HOME }}/build-tools/35.0.0/aapt2
+          ZIPALIGN: ${{ env.ANDROID_HOME }}/build-tools/35.0.0/zipalign
+          ANDROID_JAR: ${{ env.ANDROID_HOME }}/platforms/android-34/android.jar
+          DEBUG_KS: ${{ github.workspace }}/signing/legacy-debug.keystore
+          REL_KS: ${{ runner.temp }}/shelly-release.p12
+          REL_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
+          REL_PASS: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: bash scripts/signing/rotation-emulator-test.sh
+
+      - name: Remove keys
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/shelly-release.p12"
