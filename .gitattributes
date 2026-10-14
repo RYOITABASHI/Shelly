@@ -7,3 +7,5 @@
 # same on every OS.
 docs/skills-catalog/**/SKILL.md text eol=lf
 docs/skills-catalog/skills-catalog.json text eol=lf
+signing/*.bin binary
+signing/*.keystore binary
