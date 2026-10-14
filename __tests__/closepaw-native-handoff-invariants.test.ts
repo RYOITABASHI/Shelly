@@ -199,7 +199,7 @@ describe('background activity start handling', () => {
   it('falls back to a notification, and reports background-blocked when that is impossible', () => {
     const launch = handoff.slice(handoff.indexOf('fun launch('), handoff.indexOf('internal fun canStartActivityNow'));
     expect(launch).toMatch(/if \(canStartActivityNow\(context\)\)/);
-    expect(launch).toContain('postHandoffNotification(context, clean, intent)');
+    expect(launch).toContain('postHandoffNotification(context, clean, tapIntent)');
     expect(launch).toContain('throw IllegalStateException(BACKGROUND_BLOCKED_MARKER)');
     expect(launch).toContain('throw ActivityNotFoundException(NOT_INSTALLED_MARKER)');
     expect(handoff).toContain('areNotificationsEnabled()');

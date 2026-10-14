@@ -10,52 +10,23 @@
  * app, so it never fires directly; it fires only after:
  *   - the notification [Approve] (device unlock; shelly:///closepaw-decision,
  *     handled here before any URL logging — the nonce is single use),
- *   - an in-app chat "OK": pending requests are posted into the Shelly chat
- *     as plain text (syncClosePawShellApprovalsToChat) and a typed confirm
- *     phrase resolves it (hooks/use-ai-pane-dispatch.ts),
- *   - `shelly closepaw confirm <reqId> <hash8>` from ChatGPT — refused when
- *     AppSettings.agentApproveFromChatGpt is OFF; followed by an audit
- *     notification and a chat record.
+ *   - an in-app dedicated chat reply naming the request ("approve <hash8>" /
+ *     "承認 <hash8>"): pending requests are posted into the Shelly chat as
+ *     plain text (syncClosePawShellApprovalsToChat); a bare "OK" never counts
+ *     (findClosePawChatReplyTarget, hooks/use-ai-pane-dispatch.ts).
+ * `shelly closepaw confirm` from ChatGPT / the terminal is REFUSED for
+ * approve (user decision 2026-10-14, option 3); `shelly closepaw reject` works.
  * With the official ClosePaw nothing here runs (its own dialog stays the gate).
  */
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { useAIPaneStore, COMPANION_CONVERSATION_KEY } from '@/store/ai-pane-store';
-import { useSettingsStore } from '@/store/settings-store';
 import { tFor, type Locale } from '@/lib/i18n';
 import { detectMessageLocale } from '@/lib/agent-slot-fill';
-import { sanitizeClosePawGoal } from '@/lib/agent-intent-review';
-import { agentAddSha256Hex } from '@/lib/agent-add-approval';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import type { AgentAddResult } from '@/lib/agent-add-queue';
-
-export type ClosePawShellPending = { reqId: string; goal: string; hash8: string; expiresAt: number };
-
+import { parseClosePawShellPendingList } from '@/lib/closepaw-shell-reply';
 const REQ_ID_RE = /^[0-9]{10,16}-[0-9a-f]{8}$/;
-const HASH8_RE = /^[0-9a-f]{8}$/;
-
-/** Mirrors ClosePawShellApprovals.hash8 (native): first 8 hex of
- *  sha256("shelly-closepaw-shell-v1\n" + sanitized goal). */
-export async function closePawShellHash8(goal: string): Promise<string> {
-  return (await agentAddSha256Hex(`shelly-closepaw-shell-v1\n${sanitizeClosePawGoal(goal)}`)).slice(0, 8);
-}
-
-export function parseClosePawShellPendingList(raw: unknown): ClosePawShellPending[] {
-  let parsed: unknown;
-  try {
-    parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  return parsed.filter(
-    (p): p is ClosePawShellPending =>
-      !!p &&
-      typeof p === 'object' &&
-      REQ_ID_RE.test(String((p as ClosePawShellPending).reqId)) &&
-      HASH8_RE.test(String((p as ClosePawShellPending).hash8)) &&
-      typeof (p as ClosePawShellPending).goal === 'string',
-  );
-}
+export * from '@/lib/closepaw-shell-reply';
 
 function parseOutcome(raw: unknown): AgentAddResult {
   try {
@@ -124,33 +95,26 @@ export async function handleClosePawDecisionDeepLink(params: { reqId: unknown; d
   note(r.ok ? tFor('en', decision === 'approve' ? 'closepaw.shell_approved_notification' : 'closepaw.shell_rejected_notification') : r.message);
 }
 
+/** Shown when ChatGPT / the terminal tries to approve something that, with
+ *  the trusted ClosePaw variant, must be approved on the phone. */
+export const CLOSEPAW_DEVICE_APPROVAL_REQUIRED_MESSAGE =
+  "shelly closepaw: this needs approval on the phone - ask the user to approve it in the Shelly notification (device unlock required) or by replying \"approve <hash>\" in Shelly's chat; it cannot be approved from ChatGPT or the terminal";
+
 /** `shelly closepaw confirm <reqId> <hash8>` / `shelly closepaw reject <reqId>`
- *  relayed through the agent ctl queue. */
+ *  relayed through the agent ctl queue. User decision (2026-10-14, option 3):
+ *  approve is ALWAYS refused here (only the notification Approve with device
+ *  unlock or the in-app dedicated reply may approve); reject is allowed. */
 export async function handleClosePawShellCtl(op: 'approve' | 'reject', reqId: string, hash8: string): Promise<AgentAddResult> {
+  if (op === 'approve') {
+    void hash8;
+    return { ok: false, code: 'invalid', message: CLOSEPAW_DEVICE_APPROVAL_REQUIRED_MESSAGE };
+  }
   if (!TerminalEmulator.resolveClosePawShellApproval) {
-    return { ok: false, code: 'failed', message: 'shelly closepaw: this build of Shelly cannot approve ClosePaw requests' };
+    return { ok: false, code: 'failed', message: 'shelly closepaw: this build of Shelly cannot resolve ClosePaw requests' };
   }
-  if (op === 'approve' && useSettingsStore.getState().settings.agentApproveFromChatGpt === false) {
-    return {
-      ok: false,
-      code: 'invalid',
-      message:
-        'shelly closepaw confirm: approving from ChatGPT is turned off in Shelly (Settings → Approve Agents from ChatGPT). Ask the user to approve it in Shelly or from its notification.',
-    };
-  }
-  const r = parseOutcome(await TerminalEmulator.resolveClosePawShellApproval(reqId, op, 'chatgpt', hash8).catch(() => null));
+  const r = parseOutcome(await TerminalEmulator.resolveClosePawShellApproval(reqId, 'reject', 'chatgpt', '').catch(() => null));
   if (r.ok) {
-    note(tFor('en', op === 'approve' ? 'closepaw.shell_approved_chatgpt' : 'closepaw.shell_rejected_chatgpt'));
-    if (op === 'approve') {
-      // The AI on the other side could have run the command itself: always
-      // announce it (no Disable — a one-shot hand-off cannot be undone).
-      await TerminalEmulator.postAgentAddAuditNotification?.(
-        '',
-        tFor('en', 'closepaw.shell_audit_title'),
-        tFor('en', 'closepaw.shell_audit_body'),
-        '',
-      ).catch(() => false);
-    }
+    note(tFor('en', 'closepaw.shell_rejected_chatgpt'));
   } else {
     logWarn('ClosePawShell', `chatgpt ${op} ${reqId} refused`);
   }

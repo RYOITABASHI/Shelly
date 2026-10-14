@@ -28,12 +28,13 @@ import org.json.JSONObject
  *   - the notification [Approve] (setAuthenticationRequired on API 31+, i.e.
  *     device unlock; opens shelly:///closepaw-decision, RN calls back with the
  *     single-use 128-bit nonce),
- *   - an in-app chat "OK" (RN posts the request as plain text in the chat),
- *   - `shelly closepaw confirm <reqId> <hash8>` from the ChatGPT conversation
- *     (RN checks AppSettings.agentApproveFromChatGpt first, then calls here;
- *     hash8 = first 8 hex of sha256 of the goal — a binding to the goal that
- *     was shown, not a secret; attempt cap + interval; RN posts an audit
- *     notification).
+ *   - an in-app dedicated chat reply naming the request ("approve <hash8>";
+ *     RN posts the request as plain text in the chat; hash8 = first 8 hex of
+ *     sha256 of the goal — a binding, not a secret).
+ * `shelly closepaw confirm` (ChatGPT / terminal text) is REFUSED for approve
+ * (user decision 2026-10-14, option 3: with the variant there is no ClosePaw
+ * dialog, so approval must happen on the phone). `shelly closepaw reject`
+ * still works. One approval per request — never reused.
  * Pending requests live in process memory only (nothing a same-uid process
  * could forge), expire after [TTL_MS], and are single use. The goal itself is
  * never logged.
@@ -100,10 +101,14 @@ object ClosePawShellApprovals {
         return p
     }
 
+    const val MSG_DEVICE_APPROVAL_REQUIRED =
+        "shelly closepaw: this needs approval on the phone - approve in the Shelly notification (device unlock required) or reply in Shelly's chat; it cannot be approved from ChatGPT or the terminal"
+
     fun approvalRequiredMessage(p: Pending): String =
         "Shelly approval required: the Shelly-trusted ClosePaw build is installed, so ClosePaw will not ask again. " +
-            "Request ${p.reqId}, goal hash ${p.hash8}. Approve it in Shelly (notification or chat), or — only after the user " +
-            "approves this goal — run: shelly closepaw confirm ${p.reqId} ${p.hash8} (reject: shelly closepaw reject ${p.reqId}). Expires in 10 minutes."
+            "Request ${p.reqId}, goal hash ${p.hash8}. Ask the user to approve it in the Shelly notification (device unlock required) " +
+            "or by replying \"approve ${p.hash8}\" in Shelly's chat. It cannot be approved from ChatGPT or the terminal " +
+            "(reject: shelly closepaw reject ${p.reqId}). Expires in 10 minutes."
 
     /** Pending requests for RN (chat posting). No nonces. */
     fun listJson(now: Long = System.currentTimeMillis()): String {
@@ -137,16 +142,13 @@ object ClosePawShellApprovals {
             "notification" -> NONCE_RE.matches(secret) &&
                 constantTimeEquals(secret, if (decision == "approve") p.approveNonce else p.rejectNonce)
             "chatgpt" -> {
-                if (decision == "reject") {
-                    true
-                } else {
-                    if (p.attempts >= MAX_ATTEMPTS) return Outcome(false, "locked", "shelly closepaw confirm: too many mismatched attempts; approve or reject it in Shelly itself")
-                    if (now - p.lastAttemptAt < MIN_ATTEMPT_INTERVAL_MS) return Outcome(false, "rate-limited", "shelly closepaw confirm: wait a few seconds before trying again")
-                    p.lastAttemptAt = now
-                    val match = HASH8_RE.matches(secret) && constantTimeEquals(secret, p.hash8)
-                    if (!match) p.attempts += 1
-                    match
-                }
+                // User decision (2026-10-14, option 3): with the trusted
+                // variant (no ClosePaw dialog), text approval from the
+                // terminal / ChatGPT is never enough — only the notification
+                // Approve (device unlock) or the in-app dedicated reply.
+                // Rejecting stays allowed.
+                if (decision == "approve") return Outcome(false, "device-approval-required", MSG_DEVICE_APPROVAL_REQUIRED)
+                true
             }
             "chat" -> HASH8_RE.matches(secret) && constantTimeEquals(secret, p.hash8)
             else -> false

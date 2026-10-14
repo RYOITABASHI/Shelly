@@ -315,7 +315,7 @@ describe('ClosePaw pre-approval seal', () => {
     expect(dispatch).toContain('onAgentDraftResolved(resolveAiPaneStoreKey(paneIdRaw), messageId, createdAgentId);');
     const flow = read('lib/agent-add-flow.ts');
     expect(flow).not.toContain('findRegisteredAgent');
-    expect(flow).toContain('if (agent && agentMatchesApprovedDraft(agent, draft)) {');
+    expect(flow).toContain("if (agent && via !== 'chatgpt' && agentMatchesApprovedDraft(agent, draft)) {");
   });
 
   it('executor caps the {{result}} slot before wiring a ClosePaw goal', () => {

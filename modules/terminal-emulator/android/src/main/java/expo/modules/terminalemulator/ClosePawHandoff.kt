@@ -244,11 +244,50 @@ object ClosePawHandoff {
                 Log.w(TAG, "direct start failed type=${e.javaClass.simpleName}; falling back to notification")
             }
         }
-        if (!postHandoffNotification(context, clean, intent)) {
+        // Security-review fix: never park the caller token inside a
+        // notification for a later tap — the package behind ai.closepaw could
+        // change between post and tap. For the trusted variant the tap opens
+        // Shelly (shelly:///closepaw-launch?nonce=…), which re-runs launch()
+        // and therefore re-checks the certificate at tap time.
+        val tapIntent = if (intent.hasExtra(EXTRA_CALLER_TOKEN)) {
+            val nonce = registerDeferredLaunch(clean)
+            Intent(Intent.ACTION_VIEW, android.net.Uri.parse("shelly:///closepaw-launch?nonce=$nonce"))
+                .setPackage(context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            intent
+        }
+        if (!postHandoffNotification(context, clean, tapIntent)) {
             throw IllegalStateException(BACKGROUND_BLOCKED_MARKER)
         }
         Log.i(TAG, "posted ClosePaw hand-off notification goalLen=${clean.length}")
         return Outcome.NOTIFIED
+    }
+
+    // ── Deferred (tap-to-continue) launches for the trusted variant ──────
+    private class DeferredLaunch(val goal: String, val expiresAt: Long)
+    private val deferredLaunches = java.util.concurrent.ConcurrentHashMap<String, DeferredLaunch>()
+    private val nonceRandom = java.security.SecureRandom()
+
+    private fun registerDeferredLaunch(goal: String): String {
+        val now = System.currentTimeMillis()
+        deferredLaunches.entries.removeIf { it.value.expiresAt < now }
+        val nonce = ByteArray(16).also { nonceRandom.nextBytes(it) }.joinToString("") { "%02x".format(it) }
+        deferredLaunches[nonce] = DeferredLaunch(goal, now + NOTIFICATION_TIMEOUT_MS)
+        return nonce
+    }
+
+    /** Tap on a deferred hand-off notification (RN deep link). Single use;
+     *  re-runs launch(), which re-checks the variant certificate NOW. */
+    fun launchDeferred(context: Context, nonce: String): String {
+        if (!Regex("^[0-9a-f]{32}$").matches(nonce)) return "invalid"
+        val d = deferredLaunches.remove(nonce) ?: return "unknown"
+        if (d.expiresAt < System.currentTimeMillis()) return "expired"
+        return try {
+            launch(context.applicationContext, d.goal).wire
+        } catch (e: Exception) {
+            "failed"
+        }
     }
 
     /** True only when Android provably lets this process start an activity

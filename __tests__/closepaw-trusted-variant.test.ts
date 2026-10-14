@@ -15,7 +15,13 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { parseAgentCtlLine, agentCtlResultFileName } from '@/lib/agent-add-queue';
 import { __setAgentAddCryptoForTests } from '@/lib/agent-add-approval';
-import { closePawShellHash8, parseClosePawShellPendingList } from '@/lib/closepaw-shell-approval';
+import {
+  CLOSEPAW_CHAT_REPLY_MIN_AGE_MS,
+  closePawShellHash8,
+  findClosePawChatReplyTarget,
+  parseClosePawChatReply,
+  parseClosePawShellPendingList,
+} from '@/lib/closepaw-shell-reply';
 
 const root = path.resolve(__dirname, '..');
 const read = (p: string) => fs.readFileSync(path.join(root, p), 'utf8');
@@ -93,7 +99,7 @@ describe('`shelly closepaw` needs a Shelly approval when the variant is installe
     expect(approvals).not.toMatch(/SharedPreferences|writeText\(|File\(/);
     const resolve = fn(approvals, 'fun resolve(');
     const launchAt = resolve.indexOf('ClosePawHandoff.launch(');
-    for (const guard of ['if (p.consumed)', 'if (now > p.expiresAt)', 'constantTimeEquals(secret, if (decision == "approve") p.approveNonce else p.rejectNonce)', 'if (p.attempts >= MAX_ATTEMPTS)', 'MIN_ATTEMPT_INTERVAL_MS', 'p.consumed = true']) {
+    for (const guard of ['if (p.consumed)', 'if (now > p.expiresAt)', 'constantTimeEquals(secret, if (decision == "approve") p.approveNonce else p.rejectNonce)', 'if (decision == "approve") return Outcome(false, "device-approval-required", MSG_DEVICE_APPROVAL_REQUIRED)', 'p.consumed = true']) {
       const at = resolve.indexOf(guard);
       expect(at).toBeGreaterThan(-1);
       expect(at).toBeLessThan(launchAt);
@@ -116,25 +122,70 @@ describe('`shelly closepaw` needs a Shelly approval when the variant is installe
     expect(approvals).toContain('"shelly-closepaw-shell-v1\\n" + ClosePawHandoff.sanitizeGoal(goal)');
   });
 
-  it('ChatGPT confirm: ctl ops parse strictly, the setting gates approve, an audit notification follows', () => {
+  it('ChatGPT / terminal text can never approve a `shelly closepaw` request (option 3); reject still works', () => {
     const ctl = `${NOW}-89abcdef`;
     expect(parseAgentCtlLine(`agentctl:${ctl}:${NOW}:closepaw-confirm:${REQ}:0a1b2c3d`, NOW)).toEqual({ ctlId: ctl, op: 'closepaw-confirm', reqId: REQ, hashPrefix: '0a1b2c3d' });
     expect(parseAgentCtlLine(`agentctl:${ctl}:${NOW}:closepaw-reject:${REQ}`, NOW)).toEqual({ ctlId: ctl, op: 'closepaw-reject', reqId: REQ });
     expect(parseAgentCtlLine(`agentctl:${ctl}:${NOW}:closepaw-confirm:${REQ}`, NOW)).toBeNull();
     const lib = read('lib/closepaw-shell-approval.ts');
     const ctlFn = fn(lib, 'export async function handleClosePawShellCtl(');
-    const gate = ctlFn.indexOf("useSettingsStore.getState().settings.agentApproveFromChatGpt === false");
-    const call = ctlFn.indexOf("resolveClosePawShellApproval(reqId, op, 'chatgpt', hash8)");
-    expect(gate).toBeGreaterThan(0);
-    expect(call).toBeGreaterThan(gate);
-    expect(ctlFn).toContain('postAgentAddAuditNotification');
+    expect(ctlFn).toMatch(/if \(op === 'approve'\) \{\s*void hash8;\s*return \{ ok: false, code: 'invalid', message: CLOSEPAW_DEVICE_APPROVAL_REQUIRED_MESSAGE \};/);
+    expect(ctlFn).toContain("resolveClosePawShellApproval(reqId, 'reject', 'chatgpt', '')");
+    expect(ctlFn).not.toContain("'approve', 'chatgpt'");
+    expect(lib).toContain('device unlock required');
+    // Native refuses a ChatGPT approve too (defense in depth).
+    expect(approvals).toContain('MSG_DEVICE_APPROVAL_REQUIRED');
+    expect(approvals).not.toMatch(/approvalRequiredMessage[\s\S]{0,400}run: shelly closepaw confirm/);
     expect(read('lib/agent-add-flow.ts')).toContain("if (ctl.op === 'closepaw-confirm') return handleClosePawShellCtl('approve', ctl.reqId, ctl.hashPrefix);");
   });
 
-  it('in-app chat OK and the notification deep link (handled before URL logging)', () => {
+  it('in-app chat approval: a bare OK never approves; the reply must name the request hash (hijack fix)', () => {
+    expect(parseClosePawChatReply('OK')).toBeNull();
+    expect(parseClosePawChatReply('はい')).toBeNull();
+    expect(parseClosePawChatReply('登録して')).toBeNull();
+    expect(parseClosePawChatReply('承認')).toBeNull();
+    expect(parseClosePawChatReply('承認 0a1b2c3d')).toEqual({ decision: 'approve', hash8: '0a1b2c3d' });
+    expect(parseClosePawChatReply('ClosePaw OK 0A1B2C3D。')).toEqual({ decision: 'approve', hash8: '0a1b2c3d' });
+    expect(parseClosePawChatReply('approve: 0a1b2c3d')).toEqual({ decision: 'approve', hash8: '0a1b2c3d' });
+    expect(parseClosePawChatReply('却下 0a1b2c3d')).toEqual({ decision: 'reject', hash8: '0a1b2c3d' });
+    expect(parseClosePawChatReply('reject 0a1b2c3d please')).toBeNull();
+
+    const line = { id: 'm1', role: 'assistant', pendingClosePawShell: { reqId: REQ, hash8: '0a1b2c3d', createdAt: NOW } };
+    const base = { messages: [line], now: NOW + 60_000, otherPromptOpen: false };
+    expect(findClosePawChatReplyTarget({ ...base, text: '承認 0a1b2c3d' })).toEqual({ messageId: 'm1', reqId: REQ, hash8: '0a1b2c3d', decision: 'approve' });
+    // A bare OK (e.g. meant for an agent draft) is never taken.
+    expect(findClosePawChatReplyTarget({ ...base, text: 'OK' })).toBeNull();
+    // Wrong hash, an open agent-draft/slot-fill prompt, or a line that just arrived: no.
+    expect(findClosePawChatReplyTarget({ ...base, text: '承認 ffffffff' })).toBeNull();
+    expect(findClosePawChatReplyTarget({ ...base, text: '承認 0a1b2c3d', otherPromptOpen: true })).toBeNull();
+    expect(findClosePawChatReplyTarget({ ...base, text: '承認 0a1b2c3d', now: NOW + CLOSEPAW_CHAT_REPLY_MIN_AGE_MS - 1 })).toBeNull();
+    expect(findClosePawChatReplyTarget({ ...base, text: '承認 0a1b2c3d', now: NOW + 11 * 60_000 })).toBeNull();
+    // Works even when other messages came after the ClosePaw line.
+    expect(
+      findClosePawChatReplyTarget({ ...base, text: '却下 0a1b2c3d', messages: [line, { id: 'm2', role: 'user' }, { id: 'm3', role: 'assistant' }] }),
+    ).toMatchObject({ messageId: 'm1', decision: 'reject' });
+
     const dispatch = read('hooks/use-ai-pane-dispatch.ts');
-    expect(dispatch).toContain("isConfirmPhrase(userText) ? 'approve' : 'reject'");
-    expect(dispatch).toContain('const pendingShell = last?.role === \'assistant\' ? last.pendingClosePawShell : undefined;');
+    expect(dispatch).not.toContain("isConfirmPhrase(userText) ? 'approve' : 'reject'");
+    expect(dispatch).toContain('otherPromptOpen: sessionOpen || hasFresherOwnSlotFillQuestion || otherQuestionOpen,');
+    // The ClosePaw block runs before the agent-draft confirm routing but can no longer steal it.
+    expect(dispatch.indexOf('findClosePawChatReplyTarget({')).toBeLessThan(dispatch.indexOf("pendingAgentSession.phase === 'await-confirm'"));
+  });
+
+  it('deferred hand-off notifications for the variant go through Shelly (cert re-checked at tap time)', () => {
+    const launchFn = fn(handoff, 'fun launch(context: Context, goal: String)');
+    expect(launchFn).toMatch(/val tapIntent = if \(intent\.hasExtra\(EXTRA_CALLER_TOKEN\)\) \{\s*val nonce = registerDeferredLaunch\(clean\)/);
+    expect(launchFn).toContain('shelly:///closepaw-launch?nonce=$nonce');
+    expect(launchFn).toContain('postHandoffNotification(context, clean, tapIntent)');
+    const deferred = fn(handoff, 'fun launchDeferred(');
+    expect(deferred).toContain('deferredLaunches.remove(nonce)');
+    expect(deferred).toContain('launch(context.applicationContext, d.goal)');
+    expect(read('app/_layout.tsx')).toContain('TerminalEmulator.launchDeferredClosePaw(nonce)');
+    expect(fs.existsSync(path.join(root, 'app/closepaw-launch.tsx'))).toBe(true);
+    expect(Number(read(`${KT}/HomeInitializer.kt`).match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(261);
+  });
+
+  it('the notification deep link is handled before URL logging', () => {
     const layout = read('app/_layout.tsx');
     expect(layout.indexOf("target === 'closepaw-decision'")).toBeGreaterThan(0);
     expect(layout.indexOf("target === 'closepaw-decision'")).toBeLessThan(layout.indexOf('`received: ${url}'));

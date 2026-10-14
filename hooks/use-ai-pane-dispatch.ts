@@ -67,7 +67,7 @@ import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
-import { resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
+import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
@@ -914,25 +914,37 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       );
 
       // `shelly closepaw` awaiting a Shelly approval (Shelly-trusted ClosePaw
-      // variant — lib/closepaw-shell-approval.ts): when the latest message is
-      // that plain-text request, a typed confirm / cancel phrase resolves it
-      // (the in-app "chat OK" path). Anything else leaves it pending and is
-      // handled normally; an "@…" message is always a fresh command.
+      // variant — lib/closepaw-shell-approval.ts), the in-app "chat OK" path.
+      // Security-review fix: a bare "OK"/"はい" is NEVER taken as approval (it
+      // may answer an agent draft). Only a dedicated reply naming the request
+      // by its goal hash ("承認 <hash8>" / "ClosePaw OK <hash8>" / "却下 <hash8>")
+      // resolves it, never while an agent draft confirm / slot-fill / other
+      // pending question is open, and never within 10s of the line arriving.
       {
-        const msgs = store.getOrCreate(paneId).messages;
-        const last = msgs[msgs.length - 1];
-        const pendingShell = last?.role === 'assistant' ? last.pendingClosePawShell : undefined;
-        if (
-          pendingShell &&
-          Date.now() - pendingShell.createdAt <= 10 * 60_000 &&
-          !userText.trim().startsWith('@') &&
-          (isConfirmPhrase(userText) || isCancelPhrase(userText))
-        ) {
-          store.updateMessage(paneId, last.id, { pendingClosePawShell: undefined });
+        const conv = store.getOrCreate(paneId);
+        const sessionOpen =
+          !!conv.pendingAgentSession && Date.now() - conv.pendingAgentSession.createdAt <= SLOT_FILL_STALE_MS;
+        const freshest = freshestMsgForPendingCheck as (ChatMessage & Record<string, unknown>) | undefined;
+        const otherQuestionOpen =
+          !!freshest &&
+          freshest.role === 'assistant' &&
+          ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset'].some(
+            (k) => !!freshest[k],
+          );
+        const target = userText.trim().startsWith('@')
+          ? null
+          : findClosePawChatReplyTarget({
+              text: userText,
+              messages: conv.messages,
+              now: Date.now(),
+              otherPromptOpen: sessionOpen || hasFresherOwnSlotFillQuestion || otherQuestionOpen,
+            });
+        if (target) {
+          store.updateMessage(paneId, target.messageId, { pendingClosePawShell: undefined });
           store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
           const reply = await resolveClosePawShellFromChat(
-            pendingShell,
-            isConfirmPhrase(userText) ? 'approve' : 'reject',
+            { reqId: target.reqId, hash8: target.hash8 },
+            target.decision,
             detectMessageLocale(userText),
           );
           store.addMessage(paneId, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() });

@@ -378,7 +378,11 @@ export function buildAgentAddSummary(
   draft: AgentAddDraftLike & { scheduleLabel?: string },
   scheduleText: string,
   status: AgentAddSummary['code'] = 'parsed',
+  /** false: a ClosePaw step with the Shelly-trusted variant installed —
+   *  ChatGPT/terminal text cannot approve it (user decision, option 3). */
+  opts: { textConfirmAllowed?: boolean } = {},
 ): AgentAddSummary {
+  const textConfirmAllowed = opts.textConfirmAllowed !== false;
   const steps: string[] = [];
   if (Array.isArray(draft.orchestrationSteps) && draft.orchestrationSteps.length > 0) {
     for (const s of draft.orchestrationSteps.slice(0, 12)) {
@@ -397,7 +401,11 @@ export function buildAgentAddSummary(
   let message: string;
   if (status === 'registered') message = 'Registered — the user approved this agent.';
   else if (status === 'rejected') message = 'Rejected — nothing was registered.';
-  else if (binding.approvable) {
+  else if (binding.approvable && !textConfirmAllowed) {
+    message =
+      "This agent includes a ClosePaw step and the Shelly-trusted ClosePaw build is installed, so it can't be approved from here. " +
+      `Ask the user to tap Approve in the Shelly notification (device unlock required) or reply OK to the draft in Shelly's chat (reject with: shelly agent reject ${binding.reqId}).`;
+  } else if (binding.approvable) {
     message =
       `Show this summary to the user. Only if they approve it, run: shelly agent confirm ${binding.reqId} ${hash8}` +
       ` (or they can approve / reject it in Shelly's notification or chat; reject with: shelly agent reject ${binding.reqId})`;
@@ -420,7 +428,7 @@ export function buildAgentAddSummary(
       ? "ClosePaw operates the phone for this step. What it is given is built from this agent's own results (can include untrusted web text). Approving the agent also approves this step for its future runs until the agent is edited."
       : null,
     highRisk: [...binding.riskReasons],
-    approvableFromChat: binding.approvable && status === 'parsed',
+    approvableFromChat: binding.approvable && textConfirmAllowed && status === 'parsed',
     expiresAt: binding.expiresAt,
     message,
   };

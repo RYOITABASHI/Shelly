@@ -1345,6 +1345,16 @@ export default function RootLayout() {
           });
           return;
         }
+        if (target === 'closepaw-launch') {
+          const q = parsed.queryParams ?? {};
+          const nonce = Array.isArray(q.nonce) ? q.nonce[0] : q.nonce;
+          logInfo('DeepLink', 'received: closepaw-launch');
+          if (typeof nonce === 'string' && TerminalEmulator.launchDeferredClosePaw) {
+            const outcome = await TerminalEmulator.launchDeferredClosePaw(nonce).catch(() => 'failed');
+            logInfo('DeepLink', `closepaw-launch -> ${outcome}`);
+          }
+          return;
+        }
         if (target === 'closepaw-decision') {
           await waitForMultiPaneHydration();
           const q = parsed.queryParams ?? {};

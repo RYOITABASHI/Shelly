@@ -343,6 +343,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   isClosePawTrustedVariantInstalled?(): Promise<boolean>;
   /** JSON array of pending `shelly closepaw` approvals: {reqId, goal, hash8, expiresAt}. */
   listClosePawShellApprovals?(): Promise<string>;
+  /** Tap on a deferred ClosePaw hand-off notification (trusted variant).
+   *  Single-use nonce; re-checks the variant certificate at tap time. */
+  launchDeferredClosePaw?(nonce: string): Promise<string>;
   /** Resolve one (via 'notification' + nonce | 'chatgpt' + hash8 | 'chat' +
    *  hash8). Returns JSON {ok, code, message}. Approve launches ClosePaw. */
   resolveClosePawShellApproval?(reqId: string, decision: 'approve' | 'reject', via: 'notification' | 'chatgpt' | 'chat', secret: string): Promise<string>;

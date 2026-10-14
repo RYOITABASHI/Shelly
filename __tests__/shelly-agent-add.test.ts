@@ -503,6 +503,32 @@ describe('shell-facing summary', () => {
     expect(summary.message).toContain('Only if they approve');
   });
 
+  it('ClosePaw step + trusted variant: not approvable from ChatGPT, summary says approve on the phone', async () => {
+    const b = await bind(closePawDraft);
+    const summary = buildAgentAddSummary(b, closePawDraft, '毎日 08:00', 'parsed', { textConfirmAllowed: false });
+    expect(summary.approvableFromChat).toBe(false);
+    expect(summary.message).toContain('Approve in the Shelly notification'.replace('Approve in', 'tap Approve in'));
+    expect(summary.message).toContain('device unlock required');
+    expect(summary.message).not.toContain('shelly agent confirm');
+    // Non-ClosePaw drafts keep the ChatGPT text approval.
+    const plain = buildAgentAddSummary(b, lowRisk, 'x', 'parsed', { textConfirmAllowed: true });
+    expect(plain.approvableFromChat).toBe(true);
+    const flow = read('lib/agent-add-flow.ts');
+    const ctl = flow.slice(flow.indexOf('export async function handleAgentCtl'), flow.indexOf('export async function handleAgentAddDecisionDeepLink'));
+    const refuse = ctl.indexOf('AGENT_CLOSEPAW_DEVICE_APPROVAL_MESSAGE');
+    const verify = ctl.indexOf('verifyAgentAddTextConfirm(');
+    expect(refuse).toBeGreaterThan(0);
+    expect(refuse).toBeLessThan(verify); // refused before any attempt is counted or the request consumed
+    expect(ctl).toContain('closePawStepText(pendingDraft as never) && (await closePawNeedsDeviceApproval())');
+    // Fail-closed when the variant check is unavailable.
+    expect(flow).toContain('if (!TerminalEmulator.isClosePawTrustedVariantInstalled) return true;');
+  });
+
+  it('a ChatGPT approval never seals a ClosePaw pre-approval', () => {
+    const flow = read('lib/agent-add-flow.ts');
+    expect(flow).toContain("if (agent && via !== 'chatgpt' && agentMatchesApprovedDraft(agent, draft)) {");
+  });
+
   it('names the ClosePaw step explicitly', async () => {
     const b = await bind(closePawDraft);
     const summary = buildAgentAddSummary(b, closePawDraft, '毎日 08:00');

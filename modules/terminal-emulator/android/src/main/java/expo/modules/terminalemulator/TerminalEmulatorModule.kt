@@ -1350,6 +1350,13 @@ class TerminalEmulatorModule : Module() {
             ClosePawHandoff.isTrustedVariantInstalled(context)
         }
 
+        // Tap on a deferred ClosePaw hand-off notification (trusted variant):
+        // shelly:///closepaw-launch?nonce=… → re-launch with a fresh cert check.
+        AsyncFunction("launchDeferredClosePaw") { nonce: String ->
+            val context = requireReactContext()
+            ClosePawHandoff.launchDeferred(context, nonce)
+        }
+
         AsyncFunction("listClosePawShellApprovals") {
             ClosePawShellApprovals.listJson()
         }

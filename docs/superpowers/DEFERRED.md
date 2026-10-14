@@ -68,6 +68,10 @@
 - 変種インストール時は Shelly の承認が唯一のゲートになるため、ClosePaw を起動する全経路で Shelly 承認を必須化: エージェント実行（Review または封印済み事前承認）／**`shelly closepaw "<goal>"` は即起動せず `ClosePawShellApprovals`（プロセスメモリ、10分、単回）に登録**し、通知の［承認］（API 31+ でロック解除必須）・チャットで「OK」・ChatGPT から `shelly closepaw confirm <reqId> <hash8>`（設定「ChatGPT からのエージェント承認」OFF で拒否、試行上限、監査通知）のいずれかで初めて起動。`shelly closepaw reject <reqId>` で却下。公式 ClosePaw の場合は従来どおり。
 - **実機未検証**: 変種インストール時の (1) エージェント実行でダイアログが出ない (2) `shelly closepaw` が承認待ちになり、通知/チャット/ChatGPT confirm で起動 (3) 公式 ClosePaw ではトークンなし・ダイアログあり。
 - 変種を入れるには公式 ClosePaw のアンインストールが必要（署名が異なるため上書き不可）。
+- **セキュリティレビュー修正（同ブランチ）**: チャット承認の横取りを修正 — 単なる「OK」「はい」は ClosePaw の承認にならない。「承認 <hash8>」「ClosePaw OK <hash8>」「却下 <hash8>」のように依頼をハッシュで名指しした専用返信だけが有効で、エージェント下書きの確認・スロット質問・その他の保留中の質問が開いている間、および依頼行の到着から10秒以内は無効（`findClosePawChatReplyTarget`）。BASHRC 261 に上げてシムを再生成。
+- **既知の限界（文書化）**: `setAuthenticationRequired(true)` は SystemUI がタップ時に強制するもので、通知リスナー権限を持つアプリは通知の PendingIntent を直接 `send()` でき、ロック解除要求を回避し得る（通知の［承認］／［却下］／［無効化］すべて）。Shelly 側の nonce・期限・単回使用・承認済み定義の束縛は有効だが、ロック解除だけを根拠にしないこと。将来の対策案: 承認時に Shelly 側で KeyguardManager.isDeviceLocked を確認する、またはアプリ内の生体認証プロンプトを挟む（P2）。
+- **通知の投稿とタップの間の TOCTOU（対応済み）**: 変種の証明書チェックは通知投稿時ではなくタップ時に再確認する。`shelly closepaw` の承認・`agent add` の承認はいずれも Shelly を経由して `launch()` を呼ぶので起動時点で再判定される。バックグラウンド時の「ClosePaw に引き継ぎ」通知は、変種の場合は caller token を PendingIntent に入れず `shelly:///closepaw-launch?nonce=…`（単回・10分）で Shelly を開き、`launchDeferred` が再判定してから起動する。公式 ClosePaw では従来どおり直接起動（トークンなし）。
+- **ユーザー決定（option 3、同コミットで実装）**: 変種インストール時（トークンが付く場合）、ClosePaw が関わる承認に ChatGPT／ターミナルのテキスト承認は使えない。(a) `shelly closepaw confirm` の承認は常に拒否（RN とネイティブの両方、却下は可）、1依頼ごとに通知の［承認］（ロック解除）またはチャットの専用返信「承認 <hash8>」が必要で再利用なし。(b) ClosePaw ステップを含む下書きの `shelly agent confirm` は、変種インストール時（判定不能時も安全側で）拒否し、要約にも「スマホで承認」と表示。(c) `via='chatgpt'` の承認からは ClosePaw の事前承認を一切作らない。ClosePaw を含まない下書きは従来どおり ChatGPT から承認可能。公式 ClosePaw（トークンなし）は ClosePaw 自身のダイアログが端末上のゲートなので従来どおり。
 
 ### `shelly agent add` — ChatGPT（Codex リモート）からのエージェント登録・通知/ChatGPT 承認・ClosePaw 自動ルーティング — 実装済み・実機未検証 (P1)
 

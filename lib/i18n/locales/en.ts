@@ -327,7 +327,7 @@ const en: Record<string, string> = {
   // `shelly agent add` (lib/agent-add-queue.ts): origin line shown in the AI
   // pane before a terminal-originated `@agent` request enters the normal flow.
   // `shelly closepaw` with the Shelly-trusted ClosePaw variant (lib/closepaw-shell-approval.ts)
-  'closepaw.shell_approval_chat': 'ClosePaw task requested from the terminal (e.g. Codex / ChatGPT): "{{goal}}". Your Shelly-trusted ClosePaw build will run it on the phone without asking again. Reply OK to run it or cancel to reject (or use the notification). Goal hash {{hash}}; expires in 10 minutes.',
+  'closepaw.shell_approval_chat': 'ClosePaw task requested from the terminal (e.g. Codex / ChatGPT): "{{goal}}". Your Shelly-trusted ClosePaw build will run it on the phone without asking again. To run it, reply exactly "approve {{hash}}"; to reject, reply "reject {{hash}}" (or use the notification). A plain "OK" does not approve it. Expires in 10 minutes.',
   'closepaw.shell_approval_unavailable': 'This build of Shelly cannot approve ClosePaw requests.',
   'closepaw.shell_approved_chat': 'Approved in the chat — handed off to ClosePaw.',
   'closepaw.shell_rejected_chat': 'Rejected — nothing was sent to ClosePaw.',
@@ -339,6 +339,7 @@ const en: Record<string, string> = {
   'closepaw.shell_audit_body': 'Approved from the ChatGPT conversation (Codex) with shelly closepaw confirm. If this was not you, turn off Settings → Approve Agents from ChatGPT.',
   'agents.terminal_request_origin': 'Requested from the terminal (e.g. Codex / ChatGPT) — not typed by you. Shelly will draft the agent below; nothing is registered unless you confirm it here.',
   'agents.terminal_request_approvable_note': 'You can approve this here (reply OK), from the notification (device unlock required), or ChatGPT can confirm it for you with definition {{hash}}. Every ChatGPT approval is announced with a notification that can disable the agent in one tap.',
+  'agents.terminal_request_approvable_note_device': 'This agent includes a ClosePaw step and your Shelly-trusted ClosePaw build runs it without asking again, so it can only be approved on this phone: reply OK here, or tap Approve on the notification (device unlock required). It cannot be approved from ChatGPT. Approving it also approves that ClosePaw step for its future runs until you edit the agent.',
   'agents.terminal_request_closepaw_line': 'This part will be done by ClosePaw operating the phone: {{step}} (what ClosePaw is given is built from this agent\'s own results, which can include untrusted text from the web)',
   'agents.terminal_request_notif_hash': 'Definition: {{hash}}',
   'agents.terminal_request_chatgpt_audit_chat': 'Agent "{{name}}" was approved from ChatGPT. If that was not you, disable it from the notification or the agent list.',

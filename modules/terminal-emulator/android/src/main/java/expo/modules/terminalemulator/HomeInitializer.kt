@@ -1355,7 +1355,10 @@ patchCodex(libDir);
     //      list` (register agents by asking ChatGPT via Codex remote control;
     //      the user always approves on the device -- see lib/agent-add-queue.ts
     //      and lib/agent-add-approval.ts). Shim-only change.
-    private const val BASHRC_VERSION = 260
+    // v261: same branch, shim text changed after v260 (`shelly agent` summary
+    //      ClosePaw note, `shelly closepaw confirm|reject`); bumped so devices
+    //      that already ran a v260 build regenerate the helper.
+    private const val BASHRC_VERSION = 261
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -2113,7 +2116,7 @@ patchCodex(libDir);
             sb.appendLine("    console.log(\"with Run before it does anything; no result is returned to Shelly.\");")
             sb.appendLine("    console.log('');")
             sb.appendLine("    console.log('With the Shelly-trusted ClosePaw build installed, Shelly approves first instead:');")
-            sb.appendLine("    console.log('  shelly closepaw confirm <requestId> <hash>   (only after the user approved the goal)');")
+            sb.appendLine("    console.log('  approve it in the Shelly notification (device unlock required) or reply \"approve <hash>\" in Shelly chat');")
             sb.appendLine("    console.log('  shelly closepaw reject <requestId>');")
             sb.appendLine("    process.exit(args.length > 1 ? 1 : 0);")
             sb.appendLine("  }")

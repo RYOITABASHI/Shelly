@@ -98,6 +98,16 @@ export function registerAgentAddPaneHandlers(conversationKey: string, h: AgentAd
 
 const DECISION_READY_TIMEOUT_MS = 8_000;
 
+export const AGENT_CLOSEPAW_DEVICE_APPROVAL_MESSAGE =
+  "shelly agent confirm: this agent includes a ClosePaw step and the Shelly-trusted ClosePaw build is installed, so it must be approved on the phone - ask the user to tap Approve in the Shelly notification (device unlock required) or reply OK to the draft in Shelly's chat";
+
+/** True when a ClosePaw step needs an on-phone approval: the Shelly-trusted
+ *  variant is installed (no ClosePaw dialog). Fail-closed: unknown ⇒ true. */
+async function closePawNeedsDeviceApproval(): Promise<boolean> {
+  if (!TerminalEmulator.isClosePawTrustedVariantInstalled) return true;
+  return (await TerminalEmulator.isClosePawTrustedVariantInstalled().catch(() => true)) !== false;
+}
+
 async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (!cond()) {
@@ -214,16 +224,18 @@ export async function onTerminalDraftPresented(params: {
     if (closePaw && !params.draft.closePawRouting?.routed) {
       lines.push(tFor(locale, 'agents.terminal_request_closepaw_line', { step: closePaw }));
     }
+    // ClosePaw step + Shelly-trusted variant: on-phone approval only.
+    const textConfirmAllowed = !(closePaw && (await closePawNeedsDeviceApproval()));
     lines.push(
       binding.approvable
-        ? tFor(locale, 'agents.terminal_request_approvable_note', { hash: hash8 })
+        ? tFor(locale, textConfirmAllowed ? 'agents.terminal_request_approvable_note' : 'agents.terminal_request_approvable_note_device', { hash: hash8 })
         : risks.length > 0
           ? tFor(locale, 'agents.terminal_request_review_only', { reasons: risks.join(', ') })
           : tFor(locale, 'agents.terminal_request_review_only_schedule'),
     );
     postNote(params.conversationKey, lines.join('\n\n'));
 
-    await writeSummary(buildAgentAddSummary(binding, params.draft, schedule, 'parsed'));
+    await writeSummary(buildAgentAddSummary(binding, params.draft, schedule, 'parsed', { textConfirmAllowed }));
 
     // Notification (VISIBILITY_PRIVATE; public version is title-only).
     const body = [
@@ -371,6 +383,18 @@ export async function handleAgentCtl(ctl: AgentCtlRequest): Promise<AgentAddResu
     consumeAgentAddBinding(ctl.reqId);
     return applyAgentAddDecision(b, 'reject', 'chatgpt');
   }
+  // User decision (2026-10-14, option 3): a draft with a ClosePaw step can't
+  // be approved by ChatGPT/terminal text while the Shelly-trusted ClosePaw
+  // variant (no ClosePaw dialog) is installed — checked BEFORE verification
+  // so the refusal neither consumes the request nor counts as an attempt.
+  {
+    const pendingBinding = getAgentAddBinding(ctl.reqId);
+    const pendingMsg = pendingBinding ? findPendingDraftMessage(pendingBinding) : null;
+    const pendingDraft = (pendingMsg?.agentDraft as ParsedAgentDraft | undefined) ?? null;
+    if (pendingDraft && closePawStepText(pendingDraft as never) && (await closePawNeedsDeviceApproval())) {
+      return { ok: false, code: 'invalid', message: AGENT_CLOSEPAW_DEVICE_APPROVAL_MESSAGE };
+    }
+  }
   const allowed = useSettingsStore.getState().settings.agentApproveFromChatGpt !== false;
   const check = verifyAgentAddTextConfirm(ctl.reqId, ctl.hashPrefix, { allowed });
   if ('reason' in check) {
@@ -480,8 +504,10 @@ export function onAgentDraftResolved(conversationKey: string, messageId: string,
     // Seal only the EXACT agent this confirm created, and only when its
     // ClosePaw goal / prompt / steps are the ones the user approved (an
     // edited card registers without a seal → per-run Review stays).
-    if (agent && agentMatchesApprovedDraft(agent, draft)) {
-      const via = approvalVia.get(messageId) ?? 'chat';
+    const via = approvalVia.get(messageId) ?? 'chat';
+    // User decision (2026-10-14, option 3): a ChatGPT/terminal text approval
+    // never pre-approves a ClosePaw step (only an on-phone approval does).
+    if (agent && via !== 'chatgpt' && agentMatchesApprovedDraft(agent, draft)) {
       void sealClosePawPreapproval(agent, via)
         .then((sealed) => {
           if (sealed) logInfo('AgentAddFlow', `ClosePaw hand-off pre-approved for ${agent.id} (via ${via})`);
