@@ -359,6 +359,8 @@ export interface JustRegisteredAgentRef {
  * mirroring the native record's own 2-minute expiry — the user retypes, and
  * nothing half-registered survives.
  */
+export type PendingExternalPromptSource = 'widget-ask' | 'terminal-request';
+
 export interface PendingExternalPrompt {
   text: string;
   createdAt: number;
@@ -366,8 +368,14 @@ export interface PendingExternalPrompt {
    *  ASK-dialog handoff so dispatch() can apply the widget-scoped
    *  registration-confirm policy (AppSettings.widgetAgentRegistrationNoConfirm
    *  — see lib/widget-agent-registration.ts). Absent = treated exactly like a
-   *  typed AI-Pane submission; the widget opt-in is never applied. */
-  source?: 'widget-ask';
+   *  typed AI-Pane submission; the widget opt-in is never applied.
+   *  'terminal-request' (2026-10-14) marks a `shelly agent add` request from
+   *  the terminal (lib/agent-add-queue.ts): AIPane shows an origin line and
+   *  dispatch() always requires the interactive confirmation. */
+  source?: PendingExternalPromptSource;
+  /** 'terminal-request' only: the `shelly agent add` request id, so the
+   *  parsed draft can be bound to it (lib/agent-add-flow.ts). */
+  requestId?: string;
 }
 
 export type AIPaneConversation = {
@@ -416,7 +424,7 @@ type AIPaneState = {
   setJustRegisteredAgent: (paneId: string, ref: JustRegisteredAgentRef | null) => void;
   /** Queue a prompt originating outside any AI Pane (widget ASK handoff).
    *  `source` tags the origin — see PendingExternalPrompt.source. */
-  setPendingExternalPrompt: (text: string, source?: 'widget-ask') => void;
+  setPendingExternalPrompt: (text: string, source?: PendingExternalPromptSource, requestId?: string) => void;
   /** Atomically claim-and-clear the pending external prompt. Returns null when
    *  nothing is pending or the entry is stale (EXTERNAL_PROMPT_STALE_MS —
    *  mirrors the native widget record's 2-minute expiry window). Synchronous,
@@ -752,11 +760,11 @@ export const useAIPaneStore = create<AIPaneState>((set, get) => {
       // patching the agent, same as if the window had simply expired.
     },
 
-    setPendingExternalPrompt: (text, source) => {
+    setPendingExternalPrompt: (text, source, requestId) => {
       const trimmed = text.trim();
       if (!trimmed) return;
       logInfo('AIPaneStore', `pendingExternalPrompt set (${trimmed.length} chars${source ? `, source=${source}` : ''})`);
-      set({ pendingExternalPrompt: { text: trimmed, createdAt: Date.now(), source } });
+      set({ pendingExternalPrompt: { text: trimmed, createdAt: Date.now(), source, ...(requestId ? { requestId } : null) } });
     },
 
     takePendingExternalPrompt: () => {

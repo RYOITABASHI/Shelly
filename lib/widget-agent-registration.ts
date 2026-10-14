@@ -44,7 +44,7 @@ import { tFor, type Locale } from '@/lib/i18n';
 import type { AppSettings } from '@/store/types';
 
 /** Where a dispatched `@agent …` utterance physically came from. */
-export type AgentRegistrationSource = 'ai-pane' | 'widget-ask';
+export type AgentRegistrationSource = 'ai-pane' | 'widget-ask' | 'terminal-request';
 
 /**
  * Single decision point for "does THIS registration need the interactive
@@ -65,6 +65,11 @@ export function resolveRegistrationConfirmRequirement(
   settings: Pick<AppSettings, 'agentRegistrationRequireConfirm' | 'widgetAgentRegistrationNoConfirm'>,
   source: AgentRegistrationSource,
 ): boolean {
+  // `shelly agent add` (lib/agent-add-queue.ts): the request text came from
+  // the terminal (e.g. Codex driven by the ChatGPT app), never from the
+  // user's own hands, so it ALWAYS needs the interactive confirmation —
+  // no setting can turn that off.
+  if (source === 'terminal-request') return true;
   if (source === 'widget-ask' && settings.widgetAgentRegistrationNoConfirm === true) {
     return false;
   }

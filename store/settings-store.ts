@@ -196,6 +196,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 2026-07-24 confirm-by-default reversal above stays the default
   // everywhere). See AppSettings.widgetAgentRegistrationNoConfirm.
   widgetAgentRegistrationNoConfirm: false,
+  // `shelly agent confirm` from ChatGPT/Codex — default ON (user decision
+  // 2026-10-14); see AppSettings.agentApproveFromChatGpt.
+  agentApproveFromChatGpt: true,
   // LLM-led multi-turn agent registration (Tier 3) — default ON since
   // 2026-08-03. Fail-closed to Tier 2 fixed-template questions whenever no
   // LLM (cloud or local) is reachable; see the AppSettings doc comment above

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="agent_add_channel_name">Agent requests from the terminal</string>
+  <string name="agent_add_channel_description">A new-agent request from the terminal (e.g. Codex / ChatGPT) is waiting for your review in Shelly</string>
+  <string name="agent_add_notification_title">New agent request from Codex — tap to review</string>
+  <string name="agent_add_notification_body">%1$s\n\nRequested from the terminal. Tap to open Shelly and review it — nothing is registered until you approve it. Expires in 10 minutes.</string>
+  <string name="agent_add_action_approve">Approve</string>
+  <string name="agent_add_action_review">Review in Shelly</string>
+  <string name="agent_add_action_reject">Reject</string>
+  <string name="agent_add_action_disable">Disable</string>
+  <string name="agent_add_audit_public_title">Shelly: an agent was approved from ChatGPT</string>
+</resources>

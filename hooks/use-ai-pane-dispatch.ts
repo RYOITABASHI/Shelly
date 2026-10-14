@@ -64,6 +64,10 @@ import {
 import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
+import { isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
+import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
+import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
 import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
@@ -527,7 +531,9 @@ export function createThrottledUpdate(updateFn: UpdateFn) {
  * specified command can never ride the widget bypass).
  */
 export interface AIPaneDispatchOptions {
-  source?: 'widget-ask';
+  /** 'terminal-request' (2026-10-14): a `shelly agent add` request from the
+   *  terminal (lib/agent-add-queue.ts) — always confirm-gated. */
+  source?: 'widget-ask' | 'terminal-request';
   /**
    * Fable5/Codex review (2026-08-29, Hermes Agent parity audit): lib/gemini.ts's
    * geminiMultimodalStream has existed since before this review with zero
@@ -719,7 +725,16 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // no-confirm, and every hard gate below (shouldAutoRegisterDraft's
         // fireable-schedule/assumption checks, isAutoRegisterEligibleOnChatConfirm's
         // risk tiering) still applies to it unchanged.
-        const registrationSource = dispatchOpts?.source === 'widget-ask' ? 'widget-ask' : 'ai-pane';
+        // `shelly agent add` (lib/agent-add-queue.ts): a terminal-originated
+        // request — and every registration while one may still be in its
+        // slot-fill follow-up turns (isTerminalAgentRequestActive, global and
+        // fail-closed) — always takes the interactive confirmation.
+        const registrationSource =
+          dispatchOpts?.source === 'terminal-request' || isTerminalAgentRequestActive()
+            ? 'terminal-request'
+            : dispatchOpts?.source === 'widget-ask'
+              ? 'widget-ask'
+              : 'ai-pane';
         const requireRegistrationConfirm = resolveRegistrationConfirmRequirement(
           useSettingsStore.getState().settings,
           registrationSource,
@@ -768,6 +783,17 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               });
             }
           }
+        } else if (registrationSource === 'terminal-request') {
+          // `shelly agent add`: bind the parsed draft to its request (hash,
+          // nonces, optional one-time code), post the plain-text approval line,
+          // the shell-readable summary and the approval notification. The
+          // in-chat confirmation above stays the primary path.
+          void onTerminalDraftPresented({
+            conversationKey: paneId,
+            messageId: draftMessageId,
+            draft,
+            fireable: hasFireableSchedule(draft),
+          });
         }
       };
 
@@ -2590,6 +2616,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (draft.autonomous && agentResult.data?.suggestion?.tool) {
               draft.tool = agentResult.data.suggestion.tool;
               draft.toolLabel = agentResult.data.suggestion.label ?? draft.toolLabel;
+            }
+            // Automatic ClosePaw routing (lib/agent-closepaw-routing.ts): only
+            // a detected UI-operation step becomes the ClosePaw hand-off, only
+            // when ClosePaw is installed, and the summary always says so.
+            if (detectUiOperationClause(promptText)) {
+              const closePawInstalled = await (TerminalEmulator.isClosePawInstalled?.() ?? Promise.resolve(false)).catch(() => false);
+              draft = applyClosePawAutoRouting(draft, promptText, { closePawInstalled: closePawInstalled === true });
             }
             // Phase 2a: surface a matching reusable skill so the confirm card can
             // offer gated reuse ("use skill X?"). Best-effort; never blocks the card.
@@ -4448,9 +4481,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         if (inFlightConfirmDrafts.get(messageId) === turn) {
           inFlightConfirmDrafts.delete(messageId);
         }
+        // `shelly agent add` binding (if any): consume + record the outcome.
+        onAgentDraftResolved(resolveAiPaneStoreKey(paneIdRaw), messageId);
       }
     },
-    [confirmAgentDraftInner],
+    [confirmAgentDraftInner, paneIdRaw],
   );
 
   const cancelAgentDraft = useCallback(
@@ -4485,6 +4520,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           timestamp: Date.now(),
         });
       }
+      onAgentDraftResolved(paneId, messageId);
     },
     [paneIdRaw],
   );

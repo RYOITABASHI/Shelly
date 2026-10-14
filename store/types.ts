@@ -591,6 +591,13 @@ export type AppSettings = {
    *  flag deliberately does NOT touch that default — it is an additional,
    *  explicitly-enabled fast path for the widget surface only. */
   widgetAgentRegistrationNoConfirm?: boolean;
+  /** `shelly agent confirm <requestId> <hash8>` (2026-10-14): allow an agent
+   *  drafted from a terminal request to be approved from the ChatGPT /
+   *  Codex conversation by text. Default ON (user decision). Every such
+   *  approval posts an audit notification with a one-tap Disable and is
+   *  recorded in the chat; OFF = confirm is refused (approve in Shelly or
+   *  from the notification instead). See lib/agent-add-approval.ts. */
+  agentApproveFromChatGpt?: boolean;
   /** Runtime per-action "Runtime Review" approval tap (draft/notify/webhook/
    *  cli/intent/dm-reply — see wait_action_approval in lib/agent-executor.ts
    *  and scripts/shelly-plan-executor.js). Default true (since 2026-08-25,

@@ -57,6 +57,17 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### `shelly agent add` — ChatGPT（Codex リモート）からのエージェント登録・通知/ChatGPT 承認・ClosePaw 自動ルーティング — 実装済み・実機未検証 (P1)
+
+2026-10-14、ブランチ `feat/shelly-agent-add`（BASHRC_VERSION 260 / SHELLY_HELPER_SHIM v13 / PlanSpec executor v8）。
+
+- **仕組み**: `shelly agent add "<NL>"` は `$HOME/.shelly-agent-req-<reqId>`（tmp+rename、`closepaw` と同じ file-queue）を書くだけ。本文を読むのは RN（`app/_layout.tsx` → AI ペインの通常 `@agent` フロー、`source:'terminal-request'`、出自行「ターミナルからの依頼」を表示）のみ。バックグラウンド時はネイティブ `AgentAddHandoff.kt` が `.shelly-agent-pending-<reqId>` に退避し「Codex から新しいエージェントの依頼 — タップして確認」を通知。10分で失効。シェルは `~/.shelly/agents` を一切書かない（`list` は読み取りのみ）。
+- **承認経路**（ユーザー決定 2026-10-14）: ①チャットの OK（従来通り）②通知の [承認]（API 31+ で `setAuthenticationRequired(true)`＝ロック解除必須、それ未満は [Shelly で確認] のみ）③ChatGPT から `shelly agent confirm <requestId> <hash8>`（テキスト承認・秘密コードなし。hash8 は要約に表示した定義ハッシュ先頭8桁で「束縛」であって秘密ではない）。すべて pending 中の下書きを再ハッシュして一致時のみ、チャット OK と同じ `confirmAgentDraft` を通る。
+- **ChatGPT 承認の残存リスク（明記）**: プロンプトインジェクションされた Codex は `shelly agent add` の出力から hash8 を読めるため、**ユーザーが読んでいない定義を自己承認できる**。緩和策: Settings「ChatGPT からのエージェント承認」（既定 ON、OFF で confirm 拒否）、10分窓・2秒間隔・5回で lock、承認ごとに監査通知（ワンタップ [無効化]、ロック解除必須）とチャットへの平文記録、送信/投稿/webhook/cli/API/ブラウザ操作/自律/通知トリガーを含む計画は Shelly 内でのみ承認可。
+- **ClosePaw**: UI 操作ステップ（固定アプリ一覧＋明示的な画面操作動詞のみ、「調べて」「リマインド」等は非対象）を ClosePaw がインストール済みのときだけ ClosePaw ステップに置換し、確認文・通知・`shelly agent add` 出力に「この部分は ClosePaw がスマホを操作して実行します」を必ず表示。未インストール時はルーティングせず「自動化できません」と caveat。**登録承認＝その ClosePaw ステップの事前承認**（ユーザー決定）: `(agentId, stepIndex, mode, 正規化済み goal テンプレート, 定義ハッシュ)` を Keystore 由来 SecureStore に封印（`lib/agent-closepaw-preapproval.ts`、`agent-trust-allow-seal.ts` と同パターン）し、RN の承認チョークポイントが現行定義と minted リクエストで再検証したときだけ per-run Review を省略。定義（goal/手順/prompt）の編集で失効。PlanSpec executor v8 は unattended の ClosePaw を事前拒否せず承認リクエストで待機（封印が無ければ従来どおり Review／タイムアウトで fail-closed）。
+- **実機未検証**。オンデバイス確認項目: (1) ChatGPT→Codex で `shelly agent add` → Shelly チャットに出自行＋要約、stdout に要約・requestId・hash8 (2) 通知の [承認] がロック解除を要求し登録される (3) `shelly agent confirm` → 登録＋監査通知 [無効化] で無効化できる (4) 設定 OFF で confirm 拒否 (5) Shelly バックグラウンド時の「タップして確認」通知→前面化で下書き表示 (6) 「LINEで自分に送って」を含む依頼が ClosePaw ステップになり、承認後の実行で Review が出ない／定義編集後は出る (7) ClosePaw 未インストール時の caveat (8) `shelly agent list`。
+- **既知の未対応 (P2)**: legacy `.sh` executor 経路の unattended ClosePaw は従来どおり拒否（PlanSpec 経路のみ対応）／LLM 主導の会話型登録 (Tier 3) で生成された下書きには ClosePaw 自動ルーティングを未適用／ターミナル依頼の処理中に別の `@agent` を打つと 30 分間すべての登録が確認必須になる（fail-closed の仕様）／ユーザーが Shelly 自身のパッケージを notificationTrigger＋authorizedSenders に設定した場合、承認通知の本文がエージェント入力になり得る（明示設定が必要な極端なケース）。
+
 ### `shelly` が bash 関数の無い文脈で "bad interpreter: Permission denied" — ネイティブ shim 化（BASHRC_VERSION 255）実装済み・実機未検証 (P1)
 
 - **症状（build 2534 / BASHRC 253 で実機確認）**: PTY から `bash script.sh` / `bash -c` / `sh -c`、node child_process など `shelly()` 関数を持たない文脈で `shelly ...` を打つと `.../home/bin/shelly: /system/bin/sh: bad interpreter: Permission denied`。`$HOME/bin/shelly` が `#!/system/bin/sh` スクリプトで、Knox が app_data_file の exec を拒否するため。

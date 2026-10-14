@@ -26,6 +26,12 @@ import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSc
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
   name: string;
+  /** Automatic ClosePaw routing of a UI-operation step (2026-10-14, see
+   *  lib/agent-closepaw-routing.ts): `clause` is the step ClosePaw will do by
+   *  operating the phone (`routed`), or — when ClosePaw is not installed —
+   *  the step that could not be automated (`routed: false`, caveat set).
+   *  Every confirmation surface states it explicitly. Absent = no routing. */
+  closePawRouting?: { clause: string; app: string; routed: boolean };
   /** The actionable instruction fed to the agent (schedule phrase stripped). */
   prompt: string;
   /** Cron in one of the 3 whitelisted shapes, or null when it could not be parsed. */

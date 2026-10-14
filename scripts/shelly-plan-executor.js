@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=7
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=8
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -32,7 +32,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // 'closepaw' mode (goal in intentShareText, never auto-accepted) and the run
 // log records handoff:'closepaw'. Bumped so a stale v6 copy (which refuses
 // the mode as invalid) is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 7;
+const EXECUTOR_SCRIPT_VERSION = 8;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
 // lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
@@ -3655,7 +3655,16 @@ function unattendedPreflightFailure(args, plan, config = {}, paths = null) {
   // text and are re-checked there too.
   const policy = policyActionEffect(paths, plan, config, actionType, '');
   if (policy.effect === 'ask') return `${policy.reason} and cannot run unattended`;
-  if (actionType === 'intent' || actionType === 'dm-reply' || actionType === 'browser-pane') {
+  // v8 (2026-10-14, `shelly agent add` one-approval rule): a ClosePaw
+  // hand-off is no longer refused up front. The run still files an action
+  // approval request and waits; RN's approval choke point (app/_layout.tsx)
+  // resolves it ONLY when the user's registration approval sealed a
+  // pre-approval for exactly this agent definition + goal
+  // (lib/agent-closepaw-preapproval.ts, Keystore-backed SecureStore — not
+  // forgeable from this process). Anything else falls back to the human
+  // Review / times out fail-closed. Other intent modes stay refused.
+  const closePawHandoff = actionType === 'intent' && plan.action && plan.action.intentMode === 'closepaw';
+  if (!closePawHandoff && (actionType === 'intent' || actionType === 'dm-reply' || actionType === 'browser-pane')) {
     // browser-pane (2026-08-04): joins intent/dm-reply's hard unattended
     // refusal -- there is no BrowserPane UI surface (nothing rendered,
     // nothing on screen) during an unattended/alarm-fired PlanSpec run for

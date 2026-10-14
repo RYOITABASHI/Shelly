@@ -312,6 +312,23 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    *  the native single owner (ClosePawHandoff.handleLine). Resolves the result
    *  code it wrote for the shim, or null when the line was unanswerable. */
   handOffClosePawQueueLine?(line: string): Promise<string | null>;
+  /** `shelly agent add` (lib/agent-add-flow.ts): replace the "tap to review"
+   *  notification with the parsed summary + [Approve] (approvable && API 31+,
+   *  device unlock required) [Review in Shelly] [Reject]. Nonces are 32 hex. */
+  postAgentAddApprovalNotification?(
+    reqId: string,
+    title: string,
+    body: string,
+    approvable: boolean,
+    approveNonce: string,
+    rejectNonce: string,
+  ): Promise<boolean>;
+  cancelAgentAddNotification?(): Promise<void>;
+  /** Audit notification after a ChatGPT (`shelly agent confirm`) approval,
+   *  with a one-tap Disable (device unlock required on API 31+). */
+  postAgentAddAuditNotification?(agentId: string, title: string, body: string, disableNonce: string): Promise<boolean>;
+  /** True when ClosePaw (ai.closepaw) is installed and resolvable. */
+  isClosePawInstalled?(): Promise<boolean>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

@@ -190,6 +190,9 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
  * unchanged and still use AgentConfirmCard — out of scope for this phase.
  */
 export function shouldUseChatConfirm(draft: ParsedAgentDraft): boolean {
+  // Automatic ClosePaw routing (lib/agent-closepaw-routing.ts): the plain-text
+  // summary must say which part ClosePaw does on the phone — chat-native.
+  if (draft.closePawRouting?.routed) return true;
   if (draft.action.type === 'social-post') return true;
   if (draft.action.type === 'draft') return true;
   if (draft.action.type === 'notify') return true;
@@ -469,6 +472,11 @@ export function summarizeAgentDraftAsText(
   }
 
   lines.push(markLine(tl('agentplan.summary_action', { action: actionText(draft.action, draft, locale) }), 'action', changedFields));
+  // Automatic ClosePaw routing: never silent — name the step ClosePaw will do
+  // by operating the phone (lib/agent-closepaw-routing.ts).
+  if (draft.closePawRouting?.routed) {
+    lines.push(tl('agentplan.closepaw_auto_routed_line', { step: draft.closePawRouting.clause }));
+  }
 
   // 2026-07-28: multi-destination fan-out (see multiActionsTargetsText's doc
   // comment above) — additive only, the "実行内容:"/"Action:" line above is

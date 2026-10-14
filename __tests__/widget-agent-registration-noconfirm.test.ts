@@ -191,7 +191,8 @@ describe('no-confirm opt-in wiring stays coupled across files', () => {
 
   it('the widget source tag flows deep-link → store → AIPane → dispatch', () => {
     expect(layout).toContain("setPendingExternalPrompt(command, 'widget-ask')");
-    expect(aiPaneStore).toContain("source?: 'widget-ask';");
+    expect(aiPaneStore).toContain("export type PendingExternalPromptSource = 'widget-ask' | 'terminal-request';");
+    expect(aiPaneStore).toContain('source?: PendingExternalPromptSource;');
     expect(aiPane).toContain('handleSubmit(taken.text, taken.source ? { source: taken.source } : undefined)');
   });
 

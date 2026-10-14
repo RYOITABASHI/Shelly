@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="agent_add_channel_name">ターミナルからのエージェント依頼</string>
+  <string name="agent_add_channel_description">ターミナル（Codex / ChatGPT など）からの新規エージェント依頼が Shelly での確認待ちです</string>
+  <string name="agent_add_notification_title">Codex から新しいエージェントの依頼 — タップして確認</string>
+  <string name="agent_add_notification_body">%1$s\n\nターミナルからの依頼です。タップすると Shelly が開きます。承認するまで登録されません。10分で期限切れになります。</string>
+  <string name="agent_add_action_approve">承認</string>
+  <string name="agent_add_action_review">Shelly で確認</string>
+  <string name="agent_add_action_reject">却下</string>
+  <string name="agent_add_action_disable">無効化</string>
+  <string name="agent_add_audit_public_title">Shelly: ChatGPT からエージェントが承認されました</string>
+</resources>

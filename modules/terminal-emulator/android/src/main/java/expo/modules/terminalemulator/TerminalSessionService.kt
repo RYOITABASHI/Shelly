@@ -96,6 +96,13 @@ class TerminalSessionService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "ClosePaw queue watcher failed to start", e)
         }
+        // `shelly agent add` while backgrounded: post the confirm notification
+        // (lib/agent-add-queue.ts / AgentAddHandoff.kt).
+        try {
+            AgentAddHandoff.ensureWatching(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "agent-add queue watcher failed to start", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

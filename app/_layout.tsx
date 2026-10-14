@@ -78,6 +78,14 @@ import {
   forwardLegacyClosePawLine,
 } from '@/lib/closepaw-queue';
 import {
+  createAgentAddDrainState,
+  drainAgentAddRequests,
+  agentAddResultFileName,
+  agentCtlResultFileName,
+} from '@/lib/agent-add-queue';
+import { handleAgentCtl, handleAgentAddDecisionDeepLink, handleAgentAddDisableDeepLink } from '@/lib/agent-add-flow';
+import { isClosePawPreapproved } from '@/lib/agent-closepaw-preapproval';
+import {
   fireReviewedAgentBrowserPaneAction,
   resolveTargetBrowserPaneId,
   isAcceptedBrowserPaneResult,
@@ -1321,6 +1329,29 @@ export default function RootLayout() {
       try {
         const parsed = Linking.parse(url);
         const target = normalizeDeepLinkTarget(parsed);
+        // `shelly agent add` notification Approve/Reject: handled BEFORE the
+        // generic "received:" log line below, which would otherwise write the
+        // single-use nonce to logcat (readable by the shell's uid).
+        if (target === 'agent-add-decision') {
+          await waitForMultiPaneHydration();
+          const q = parsed.queryParams ?? {};
+          const first = (v: unknown) => (Array.isArray(v) ? v[0] : v);
+          logInfo('DeepLink', 'received: agent-add-decision');
+          await handleAgentAddDecisionDeepLink({
+            reqId: first(q.reqId),
+            decision: first(q.decision),
+            nonce: first(q.nonce),
+          });
+          return;
+        }
+        if (target === 'agent-add-disable') {
+          await waitForMultiPaneHydration();
+          const q = parsed.queryParams ?? {};
+          const first = (v: unknown) => (Array.isArray(v) ? v[0] : v);
+          logInfo('DeepLink', 'received: agent-add-disable');
+          await handleAgentAddDisableDeepLink({ agentId: first(q.agentId), nonce: first(q.nonce) });
+          return;
+        }
         logInfo(
           'DeepLink',
           `received: ${url} → target=${target || '(none)'} host=${parsed.hostname ?? '(null)'} path=${parsed.path ?? '(null)'} params=${JSON.stringify(parsed.queryParams)}`,
@@ -1823,6 +1854,83 @@ export default function RootLayout() {
       }
     };
     const commandQueueInterval = setInterval(drainCommandQueue, 250);
+
+    // `shelly agent add "<NL>"` (lib/agent-add-queue.ts): the shim writes one
+    // request file per request ($HOME/.shelly-agent-req-<reqId>); native
+    // AgentAddHandoff.kt renames it to .shelly-agent-pending-<reqId> and posts
+    // a "confirm new agent" notification when Shelly is in the background.
+    // Either way the text only ever enters the app HERE, while Shelly is
+    // active, as an `@agent <text>` seed for the normal AI-pane flow (origin
+    // line + mandatory chat confirmation, see AIPane's claim effect).
+    const homeDir = `${FileSystem.documentDirectory}home`;
+    const agentAddState = createAgentAddDrainState();
+    let isDrainingAgentAdd = false;
+    const drainAgentAdd = async () => {
+      if (isDrainingAgentAdd) return;
+      isDrainingAgentAdd = true;
+      try {
+        await drainAgentAddRequests(
+          {
+            isActive: () => AppState.currentState === 'active' && useMultiPaneStore.getState()._hasHydrated === true,
+            canAcceptPrompt: () => useAIPaneStore.getState().pendingExternalPrompt == null,
+            listHome: () => FileSystem.readDirectoryAsync(homeDir),
+            move: async (from, to) => {
+              try {
+                await FileSystem.moveAsync({ from: `${homeDir}/${from}`, to: `${homeDir}/${to}` });
+                return true;
+              } catch {
+                return false;
+              }
+            },
+            read: async (name) => {
+              try {
+                const info = await FileSystem.getInfoAsync(`${homeDir}/${name}`);
+                if (!info.exists || (typeof info.size === 'number' && info.size > 64 * 1024)) return null;
+                return await FileSystem.readAsStringAsync(`${homeDir}/${name}`);
+              } catch {
+                return null;
+              }
+            },
+            remove: (name) => FileSystem.deleteAsync(`${homeDir}/${name}`, { idempotent: true }).catch(() => {}),
+            writeResult: async (reqId, result) => {
+              const target = `${homeDir}/${agentAddResultFileName(reqId)}`;
+              try {
+                await FileSystem.writeAsStringAsync(`${target}.tmp`, JSON.stringify(result));
+                await FileSystem.moveAsync({ from: `${target}.tmp`, to: target });
+              } catch (e) {
+                logError('AgentAddQueue', `failed to write result for ${reqId}`, e);
+              }
+            },
+            handOff: (prompt, reqId) => {
+              const opened = focusPaneByTab('ai');
+              useAIPaneStore.getState().setPendingExternalPrompt(prompt, 'terminal-request', reqId);
+              return opened;
+            },
+            handleCtl: (ctl) => handleAgentCtl(ctl),
+            writeCtlResult: async (ctlId, result) => {
+              const target = `${homeDir}/${agentCtlResultFileName(ctlId)}`;
+              try {
+                await FileSystem.writeAsStringAsync(`${target}.tmp`, JSON.stringify(result));
+                await FileSystem.moveAsync({ from: `${target}.tmp`, to: target });
+              } catch (e) {
+                logError('AgentAddQueue', `failed to write ctl result for ${ctlId}`, e);
+              }
+            },
+            now: () => Date.now(),
+            log: (m) => logInfo('AgentAddQueue', m),
+          },
+          agentAddState,
+        );
+      } catch (e) {
+        logError('AgentAddQueue', 'poll iteration failed', e);
+      } finally {
+        isDrainingAgentAdd = false;
+      }
+    };
+    const agentAddInterval = setInterval(drainAgentAdd, 1000);
+    const agentAddAppStateSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void drainAgentAdd();
+    });
     void sweepOrphanedTeachLog().catch(() => {});
 
     // X OAuth pending-token-update drain: dispatch_social_post's x) case
@@ -2064,10 +2172,26 @@ export default function RootLayout() {
     // PR #125) human-tap flow. Returns true iff it fully handled the request
     // (whether by accepting or, on a fire failure, declining) — false means
     // the caller should fall back to the normal Review notification.
-    const autoResolveActionApproval = async (parsed: AgentActionApprovalRequest): Promise<boolean> => {
+    // `shelly agent add` one-approval rule (lib/agent-closepaw-preapproval.ts):
+    // a ClosePaw hand-off resolves without the per-run Review ONLY when the
+    // registration approval sealed a pre-approval (Keystore-backed
+    // SecureStore) for this exact agent definition + goal, re-checked against
+    // the CURRENT agent definition on both the drained and the minted copy.
+    const closePawPreapprovedFor = async (request: AgentActionApprovalRequest): Promise<boolean> => {
+      if (request.actionType !== 'intent' || request.intentMode !== 'closepaw') return false;
+      const agent = useAgentStore.getState().agents.find((a) => a.id === request.agentId);
+      return isClosePawPreapproved(request, agent ?? null).catch(() => false);
+    };
+
+    const autoResolveActionApproval = async (
+      parsed: AgentActionApprovalRequest,
+      opts?: { closePawPreapproved?: boolean },
+    ): Promise<boolean> => {
       if (parsed.actionType !== 'intent' && parsed.actionType !== 'dm-reply') return false;
-      // ClosePaw hand-off: never auto-accepted, always the human Review.
-      if (parsed.actionType === 'intent' && intentRequiresHumanReview(parsed)) return false;
+      // ClosePaw hand-off: never auto-accepted, always the human Review —
+      // unless sealed by the registration approval (re-verified below on the
+      // minted copy).
+      if (parsed.actionType === 'intent' && intentRequiresHumanReview(parsed) && !opts?.closePawPreapproved) return false;
       if (!TerminalEmulator.resolveAgentActionApproval || !TerminalEmulator.readAgentActionApprovalRequest) return false;
       try {
         const minted = parseActionApprovalRequest(await TerminalEmulator.readAgentActionApprovalRequest(parsed.runId));
@@ -2077,7 +2201,9 @@ export default function RootLayout() {
         if (minted.expiresAt && minted.expiresAt < Date.now()) return false;
         if (minted.actionType === 'intent') {
           if (!TerminalEmulator.fireAgentIntent) return false;
-          if (intentRequiresHumanReview(minted)) return false;
+          if (intentRequiresHumanReview(minted)) {
+            if (!opts?.closePawPreapproved || minted.agentId !== parsed.agentId || !(await closePawPreapprovedFor(minted))) return false;
+          }
           try {
             await fireReviewedAgentIntent(minted, TerminalEmulator.fireAgentIntent);
           } catch (e) {
@@ -2207,6 +2333,15 @@ export default function RootLayout() {
             rememberActionApproval(key, parsed);
             continue;
           }
+          if (
+            !policyBlocksAutoAccept &&
+            (await closePawPreapprovedFor(parsed)) &&
+            (await autoResolveActionApproval(parsed, { closePawPreapproved: true }))
+          ) {
+            rememberActionApproval(key, parsed);
+            logInfo('AgentActionApproval', `ClosePaw hand-off resolved by registration pre-approval run=${parsed.runId}`);
+            continue;
+          }
           await TerminalEmulator.notifyAgentActionApprovalNeeded(parsed);
           rememberActionApproval(key, parsed);
           logInfo('AgentActionApproval', `approval notification posted run=${parsed.runId} action=${parsed.actionType}`);
@@ -2248,6 +2383,8 @@ export default function RootLayout() {
       clearTimeout(agentLogStartTimer);
       clearInterval(queueInterval);
       clearInterval(commandQueueInterval);
+      clearInterval(agentAddInterval);
+      agentAddAppStateSub.remove();
       clearInterval(connectorSecretUpdateInterval);
       clearInterval(escalationInterval);
       clearInterval(actionApprovalInterval);

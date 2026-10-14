@@ -538,6 +538,11 @@ class TerminalEmulatorModule : Module() {
             appContext.reactContext?.let { context ->
                 runCatching { ClosePawHandoff.ensureWatching(context) }
                     .onFailure { Log.w("TerminalEmulator", "ClosePaw queue watcher failed to start", it) }
+                // `shelly agent add`: background notification half (the
+                // request text itself is only consumed by RN; see
+                // lib/agent-add-queue.ts).
+                runCatching { AgentAddHandoff.ensureWatching(context) }
+                    .onFailure { Log.w("TerminalEmulator", "agent-add queue watcher failed to start", it) }
             }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
         }
@@ -1301,6 +1306,30 @@ class TerminalEmulatorModule : Module() {
         AsyncFunction("handOffClosePawQueueLine") { line: String ->
             val context = requireReactContext()
             ClosePawHandoff.handleLine(context, line)?.code
+        }
+
+        // `shelly agent add` (lib/agent-add-flow.ts): post / cancel the parsed
+        // agent-draft approval notification (AgentAddHandoff.postParsedNotification).
+        AsyncFunction("postAgentAddApprovalNotification") { reqId: String, title: String, body: String, approvable: Boolean, approveNonce: String, rejectNonce: String ->
+            val context = requireReactContext()
+            AgentAddHandoff.postParsedNotification(context, reqId, title, body, approvable, approveNonce, rejectNonce)
+        }
+
+        AsyncFunction("postAgentAddAuditNotification") { agentId: String, title: String, body: String, disableNonce: String ->
+            val context = requireReactContext()
+            AgentAddHandoff.postAuditNotification(context, agentId, title, body, disableNonce)
+        }
+
+        // Automatic ClosePaw routing (lib/agent-closepaw-routing.ts) only
+        // routes a UI step when ClosePaw is actually installed.
+        AsyncFunction("isClosePawInstalled") {
+            val context = requireReactContext()
+            runCatching { ClosePawHandoff.buildIntent("probe").resolveActivity(context.packageManager) != null }.getOrDefault(false)
+        }
+
+        AsyncFunction("cancelAgentAddNotification") {
+            val context = requireReactContext()
+            AgentAddHandoff.cancelNotification(context)
         }
 
         // Authoritative APK download dir (== the DownloadManager destination).
