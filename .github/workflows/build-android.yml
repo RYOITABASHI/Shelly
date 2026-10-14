@@ -36,7 +36,41 @@ permissions:
   contents: read
   actions: read
 
+env:
+  # Signing-key migration (2026-10, see docs/superpowers/DEFERRED.md P0
+  # "Release signing key migration"). Effective mode for push builds and
+  # `signing=default` dispatches. `rotation` = APK Signature Scheme v3 key
+  # rotation (existing API 28+ installs update in place and move to the
+  # private key). Do NOT publish rotation-signed builds to a channel while
+  # main is still legacy-debug: a rotated install refuses later debug-only
+  # APKs.
+  SHELLY_DEFAULT_SIGNING_MODE: legacy-debug
+
 jobs:
+  signing_mode:
+    # Resolves the effective signing mode once, so the build job can choose
+    # its GitHub Environment from it (the `env` context is not available in
+    # `jobs.<id>.environment`, but `needs` is).
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.resolve.outputs.mode }}
+    steps:
+      - id: resolve
+        env:
+          SIGNING_INPUT: ${{ inputs.signing }}
+        run: |
+          set -euo pipefail
+          mode="${SIGNING_INPUT:-default}"
+          if [ "${mode}" = "default" ]; then
+            mode="${SHELLY_DEFAULT_SIGNING_MODE}"
+          fi
+          case "${mode}" in
+            rotation|release|legacy-debug) ;;
+            *) echo "FATAL: unknown signing mode '${mode}'" >&2; exit 1 ;;
+          esac
+          echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
+          echo "Effective signing mode: ${mode} (event ${GITHUB_EVENT_NAME}, ref ${GITHUB_REF})"
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -67,28 +101,19 @@ jobs:
         run: pnpm test -- --runInBand
 
   build:
-    needs: quality
+    needs: [quality, signing_mode]
     runs-on: ubuntu-latest
     # The release signing secrets live in the `release-signing` GitHub
     # Environment, whose deployment branches are restricted (main +
-    # fix/release-signing). Only jobs that need the key enter it. The `env`
-    # context is not available here, so this mirrors the signing-mode logic:
-    # when SHELLY_DEFAULT_SIGNING_MODE below is switched to `rotation`, change
-    # this to `inputs.signing != 'legacy-debug' && 'release-signing' || ''`
-    # (asserted by __tests__/release-signing-plugin.test.ts).
-    environment: ${{ (inputs.signing == 'rotation' || inputs.signing == 'release') && 'release-signing' || '' }}
+    # fix/release-signing). Only builds whose effective mode needs the key
+    # (rotation / release — including push builds once the default is
+    # `rotation`) enter it.
+    environment: ${{ needs.signing_mode.outputs.mode != 'legacy-debug' && 'release-signing' || '' }}
     permissions:
       actions: read
       contents: write
     env:
-      # Signing-key migration (2026-10, see docs/superpowers/DEFERRED.md P0
-      # "Release signing key migration"). Main stays on the legacy public
-      # debug key until the owner approves the switch; then flip this to
-      # `rotation` (v3 key rotation: existing API 28+ installs update in place
-      # and are moved to the private key). Do NOT publish rotation-signed
-      # builds to a channel while main is still legacy-debug: a rotated
-      # install refuses later debug-only APKs.
-      SHELLY_DEFAULT_SIGNING_MODE: legacy-debug
+      SHELLY_SIGNING_MODE_RESOLVED: ${{ needs.signing_mode.outputs.mode }}
       # SHA-256 of the private Shelly release certificate (CN=Shelly, O=RYOITABASHI).
       SHELLY_RELEASE_CERT_SHA256: 1476d9520a49bf8da7a767cb413918ccd5c5fcd7f62603766af6521f30de212d
       # SHA-256 of the public RN/Expo debug.keystore certificate (legacy).
@@ -828,17 +853,13 @@ jobs:
 
       - name: Resolve APK signing key
         env:
-          SIGNING_INPUT: ${{ inputs.signing }}
           SHELLY_RELEASE_KEYSTORE_B64: ${{ secrets.SHELLY_RELEASE_KEYSTORE_B64 }}
           SHELLY_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
           SHELLY_RELEASE_KEY_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
           SHELLY_RELEASE_KEY_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          mode="${SIGNING_INPUT:-default}"
-          if [ "${mode}" = "default" ]; then
-            mode="${SHELLY_DEFAULT_SIGNING_MODE}"
-          fi
+          mode="${SHELLY_SIGNING_MODE_RESOLVED}"
           cert_sha() { keytool -exportcert -rfc "$@" | openssl x509 -outform der | sha256sum | awk '{print $1}'; }
           case "${mode}" in
             release|rotation)

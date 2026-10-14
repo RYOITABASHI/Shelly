@@ -244,12 +244,12 @@ describe('backup', () => {
     const { w } = seeded;
     expect(result.bundlePath).toBe('/sdcard/Download/shelly-backup-20261014-090507.shellybak');
     expect(result.tarPath).toBe('/sdcard/Download/shelly-backup-20261014-090507.tar');
-    expect(result.credentialFiles.sort()).toEqual(['.codex/auth.json', '.ssh/id_ed25519', 'projects/app/.env', 'projects/app/.git/config']);
+    expect(result.credentialFiles.sort()).toEqual(['.codex/auth.json', '.codex/config.toml', '.ssh/id_ed25519', 'projects/app/.env', 'projects/app/.git/config']);
     expect(result.stateFiles).toBe(4);
     expect(result.counts.agents).toBe(1);
 
     const tarNames = w.sdcard.get(result.tarPath!)!.toString('utf8').split('\n').map((l) => l.split('\0')[0]).sort();
-    expect(tarNames).toEqual(['./.codex/config.toml', './projects/app/.git/HEAD', './projects/app/src/main.ts']);
+    expect(tarNames).toEqual(['./projects/app/.git/HEAD', './projects/app/src/main.ts']);
 
     assertNoSecrets('console', con.calls.map((c) => c.map(String).join(' ')));
     assertNoSecrets('exec', w.commands);
@@ -350,7 +350,7 @@ describe('restore', () => {
     const chmodded = fresh.chmodLists.flat();
     expect(chmodded).toEqual(expect.arrayContaining(['./.codex/auth.json', './.ssh/id_ed25519', './.shelly/agents/policy.json', './projects/app/src/main.ts']));
     expect(fresh.chmods.some((c) => c.includes(`chmod 700 "$HOME"/'.ssh'`))).toBe(true);
-    expect(summary.homeFilesRestored).toBe(3);
+    expect(summary.homeFilesRestored).toBe(2);
     expect(fresh.tmp.size).toBe(0);
   });
 
@@ -412,7 +412,7 @@ describe('restore', () => {
       passphrase: PASS,
     });
     expect(fresh.home.has('.gitconfig')).toBe(false);
-    expect(fresh.extracted.sort()).toEqual(['.codex/config.toml', 'projects/app/.git/HEAD', 'projects/app/src/main.ts']);
+    expect(fresh.extracted.sort()).toEqual(['projects/app/.git/HEAD', 'projects/app/src/main.ts']);
   });
 
   it('refuses a tampered tar (hash mismatch) and never extracts it', async () => {

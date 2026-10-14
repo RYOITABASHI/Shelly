@@ -175,14 +175,19 @@ describe('build-android.yml signing gates', () => {
   });
 
   it('enters the release-signing environment consistently with the default signing mode', () => {
-    const defaultMode = /SHELLY_DEFAULT_SIGNING_MODE: (\S+)/.exec(workflow)?.[1];
-    const envLine = /\n    environment: (.*)\n/.exec(workflow)?.[1] ?? '';
-    if (defaultMode === 'legacy-debug') {
-      expect(envLine).toBe("${{ (inputs.signing == 'rotation' || inputs.signing == 'release') && 'release-signing' || '' }}");
-    } else {
-      // a key-needing default must enter the environment for push / default runs
-      expect(envLine).toBe("${{ inputs.signing != 'legacy-debug' && 'release-signing' || '' }}");
-    }
+    // The environment follows the EFFECTIVE mode (dispatch input, else the
+    // workflow default — i.e. push builds on main), resolved by one job.
+    expect(workflow).toMatch(/\nenv:\n(?:\s*#.*\n)*\s*SHELLY_DEFAULT_SIGNING_MODE: (legacy-debug|rotation)\n/);
+    expect(workflow).toContain('mode="${SIGNING_INPUT:-default}"');
+    expect(workflow).toContain('mode="${SHELLY_DEFAULT_SIGNING_MODE}"');
+    expect(workflow).toContain('    needs: [quality, signing_mode]\n');
+    expect(workflow).toContain(
+      "    environment: ${{ needs.signing_mode.outputs.mode != 'legacy-debug' && 'release-signing' || '' }}\n",
+    );
+    expect(workflow).toContain('SHELLY_SIGNING_MODE_RESOLVED: ${{ needs.signing_mode.outputs.mode }}');
+    expect(workflow).toContain('mode="${SHELLY_SIGNING_MODE_RESOLVED}"');
+    // the default is defined exactly once (workflow level)
+    expect(workflow.match(/SHELLY_DEFAULT_SIGNING_MODE: /g)).toHaveLength(1);
     const check = fs.readFileSync(path.join(ROOT, '.github/workflows/signing-rotation-check.yml'), 'utf8');
     expect(check).toContain('    environment: release-signing\n');
   });

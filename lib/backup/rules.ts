@@ -94,6 +94,16 @@ export const EXCLUDED_HOME_PATHS: readonly string[] = Object.freeze([
   '.gemini/tmp',
   '.kube/cache',
   '.kube/http-cache',
+  // AI CLI session transcripts / prompt logs: they routinely contain pasted
+  // keys and private code, are large, and are worthless on a new install.
+  '.claude/projects',
+  '.claude/todos',
+  '.claude/shell-snapshots',
+  '.claude/statsig',
+  '.claude/ide',
+  '.codex/sessions',
+  '.codex/archived_sessions',
+  '.gemini/history',
 ]);
 
 /** Exact files excluded (Shelly-generated or install-specific). */
@@ -117,7 +127,8 @@ export const HISTORY_BASENAMES: readonly string[] = Object.freeze([
 ]);
 // .bash_history, .python_history, .node_repl_history, .psql_history,
 // .sqlite_history, .mysql_history, .zsh_history, .rediscli_history …
-const HISTORY_RE = /^\..*history$|_history$/i;
+// + AI CLI prompt histories: .claude/history.jsonl, .codex/history.jsonl, …
+const HISTORY_RE = /^\..*history$|_history$|(^|[._-])history\.jsonl?$/i;
 
 /** Directory names excluded wherever they appear (also pruned by find). */
 export const EXCLUDED_DIR_NAMES: readonly string[] = Object.freeze([
@@ -155,6 +166,13 @@ export const SECRET_HOME_FILES: readonly string[] = Object.freeze([
 
 /** Credential directories → every file below goes to the encrypted bundle. */
 export const SECRET_HOME_DIRS: readonly string[] = Object.freeze([
+  // AI / cloud CLI homes are encrypted as a whole (config + auth + caches
+  // of tokens); their transcript/history subpaths are excluded above.
+  '.claude',
+  '.codex',
+  '.gemini',
+  '.docker',
+  '.kube',
   '.ssh',
   '.gnupg',
   '.aws',
@@ -213,9 +231,10 @@ function isHistoryPath(rel: string): boolean {
 export function classifyHomePath(relPath: string, sizeBytes: number, opts: ClassifyOptions = {}): HomePathClass {
   const rel = normalizeHomeRelPath(relPath);
   if (rel === null) return 'exclude';
-  // 1. credentials first: must never fall through to 'include'.
-  if (isCredentialPath(rel)) return 'secret';
-  // 2. exclusions
+  // 1. exclusions first. Excluded paths are not saved anywhere, so checking
+  //    them before credentials can never leak a secret into the plain tar;
+  //    it lets history/transcript files inside credential dirs (.codex,
+  //    .claude, …) be dropped instead of filling the encrypted bundle.
   if (isHistoryPath(rel)) return 'exclude';
   if (EXCLUDED_HOME_PATHS.some((d) => under(rel, d))) return 'exclude';
   if (EXCLUDED_HOME_FILES.includes(rel)) return 'exclude';
@@ -227,6 +246,8 @@ export function classifyHomePath(relPath: string, sizeBytes: number, opts: Class
   if (segs.length === 1 && rel.startsWith('.shelly-deep-link-queue')) return 'exclude';
   const lower = rel.toLowerCase();
   if (EXCLUDED_EXTENSIONS.some((ext) => lower.endsWith(ext))) return 'exclude';
+  // 2. credentials: must never fall through to 'include'.
+  if (isCredentialPath(rel)) return 'secret';
   // 3. all remaining ~/.shelly content → encrypted bundle
   if (under(rel, STATE_DIR)) return 'secret';
   // 4. include

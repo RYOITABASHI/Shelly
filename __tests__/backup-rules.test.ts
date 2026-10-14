@@ -69,8 +69,8 @@ describe('classifyHomePath', () => {
     ['.local/share/fish/fish_history', 'exclude'],
     ['projects/app/.python_history', 'exclude'],
     // plain includes
-    ['.codex/config.toml', 'include'],
-    ['.codex/AGENTS.md', 'include'],
+    ['.codex/config.toml', 'secret'],
+    ['.codex/AGENTS.md', 'secret'],
     ['projects/app/src/index.ts', 'include'],
     ['projects/app/.git/HEAD', 'include'],
     ['projects/app/docs/history', 'include'],
@@ -119,7 +119,7 @@ describe('classifyHomePath', () => {
   });
 
   it('accepts ./ prefixes and rejects unsafe paths', () => {
-    expect(classifyHomePath('./.codex/config.toml', 1)).toBe('include');
+    expect(classifyHomePath('./projects/x/README.md', 1)).toBe('include');
     expect(normalizeHomeRelPath('./a/b')).toBe('a/b');
     expect(normalizeHomeRelPath('../x')).toBeNull();
     expect(normalizeHomeRelPath('/etc/x')).toBeNull();
@@ -166,8 +166,8 @@ describe('shell builders stay consistent with the JS predicate', () => {
 
 describe('validateTarEntries', () => {
   it('accepts a normal backup tar (files + include-area directories)', () => {
-    const r = validateTarEntries(['./projects/', './projects/x/README.md', './.codex/config.toml'], ['drwx------ u/u 0 2026-10-14 12:00 ./projects/', '-rw------- u/u 1 2026-10-14 12:00 ./projects/x/README.md']);
-    expect(r).toEqual({ ok: true, entries: ['projects', 'projects/x/README.md', '.codex/config.toml'], files: ['projects/x/README.md', '.codex/config.toml'] });
+    const r = validateTarEntries(['./projects/', './projects/x/README.md', './notes.md'], ['drwx------ u/u 0 2026-10-14 12:00 ./projects/', '-rw------- u/u 1 2026-10-14 12:00 ./projects/x/README.md']);
+    expect(r).toEqual({ ok: true, entries: ['projects', 'projects/x/README.md', 'notes.md'], files: ['projects/x/README.md', 'notes.md'] });
   });
   it.each([
     ['../x'],
@@ -272,5 +272,46 @@ describe('backup i18n', () => {
     ]) used.add(`backup.skip_reason.${r}`);
     expect(used.size).toBeGreaterThan(50);
     for (const k of used) expect(enKeys).toContain(k);
+  });
+});
+
+describe('AI CLI homes, histories and transcripts (re-review)', () => {
+  it.each([
+    ['.claude/history.jsonl', 'exclude'],
+    ['.codex/history.jsonl', 'exclude'],
+    ['.gemini/history.jsonl', 'exclude'],
+    ['projects/app/history.jsonl', 'exclude'],
+    ['.claude/projects/-home/abc.jsonl', 'exclude'],
+    ['.claude/todos/t.json', 'exclude'],
+    ['.claude/shell-snapshots/s.sh', 'exclude'],
+    ['.codex/sessions/2026/10/14/rollout.jsonl', 'exclude'],
+    ['.codex/archived_sessions/x.jsonl', 'exclude'],
+    ['.codex/config.toml', 'secret'],
+    ['.codex/auth.json', 'secret'],
+    ['.claude/settings.json', 'secret'],
+    ['.claude/.credentials.json', 'secret'],
+    ['.gemini/settings.json', 'secret'],
+    ['.gemini/oauth_creds.json', 'secret'],
+    ['.docker/config.json', 'secret'],
+    ['.docker/contexts/meta/x/meta.json', 'secret'],
+    ['.kube/config', 'secret'],
+    ['.kube/other-cluster.yaml', 'secret'],
+  ] as const)('%s → %s', (p, want) => {
+    expect(classifyHomePath(p, 10)).toBe(want);
+    expect(classifyHomePath(p, 10, { includeLarge: true })).toBe(want);
+  });
+
+  it('never classifies anything under an AI/cloud CLI home as plain-tar content', () => {
+    for (const dir of ['.claude', '.codex', '.gemini', '.docker', '.kube', '.aws']) {
+      for (const leaf of ['a.json', 'sub/b.txt', 'history.jsonl', 'x.toml']) {
+        expect(classifyHomePath(`${dir}/${leaf}`, 1)).not.toBe('include');
+      }
+    }
+  });
+
+  it('rejects AI CLI files and transcripts inside a backup tar', () => {
+    for (const bad of ['./.codex/config.toml', './.claude/history.jsonl', './.codex/sessions/a.jsonl', './.claude/']) {
+      expect(validateTarEntries([bad]).ok).toBe(false);
+    }
   });
 });
