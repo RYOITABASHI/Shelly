@@ -69,6 +69,7 @@ import {
   type AgentAddBinding,
   type AgentAddSummary,
 } from '@/lib/agent-add-approval';
+import { handleClosePawShellCtl } from '@/lib/closepaw-shell-approval';
 import { agentMatchesApprovedDraft, revokeClosePawPreapproval, sealClosePawPreapproval } from '@/lib/agent-closepaw-preapproval';
 
 export type AgentAddPaneHandlers = {
@@ -354,6 +355,8 @@ export async function applyAgentAddDecision(
 
 /** `shelly agent confirm <reqId> <hash8>` / `shelly agent reject <reqId>`. */
 export async function handleAgentCtl(ctl: AgentCtlRequest): Promise<AgentAddResult> {
+  if (ctl.op === 'closepaw-confirm') return handleClosePawShellCtl('approve', ctl.reqId, ctl.hashPrefix);
+  if (ctl.op === 'closepaw-reject') return handleClosePawShellCtl('reject', ctl.reqId, '');
   if (ctl.op === 'reject') {
     const b = getAgentAddBinding(ctl.reqId);
     if (!b || b.consumed) return { ok: false, code: 'invalid', message: 'shelly agent reject: no pending request with that id' };

@@ -57,6 +57,18 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### 🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)
+
+2026-10-14 記録（このコミットでは署名は変更しない）。Shelly のリリース APK は公開済みの Expo/React Native debug keystore（証明書 SHA-256 `FA:C6:17:45:…:3B:9C`）で署名されている。誰でも同じ鍵で `dev.shelly.terminal` を名乗る APK を作れるため、署名に依存する信頼（ClosePaw 変種の caller token が `creatorPackage == dev.shelly.terminal` を信頼する点を含む）は、端末上の Shelly を偽 APK で置き換えられた場合に崩れる（上書きインストールには同じ署名が要るので、既存インストールの差し替え自体は可能）。対応: 専用リリース鍵の作成・CI シークレット化・既存ユーザーの移行手順（署名変更は再インストールが必要）。ClosePaw 変種側の pin も Shelly の新しい証明書に合わせる必要がある。
+
+### Shelly 用 ClosePaw ビルド（caller token）と `shelly closepaw` の Shelly 承認 — 実装済み・実機未検証 (P1)
+
+2026-10-14、`feat/shelly-agent-add`。ユーザー自作の ClosePaw 変種（fork `RYOITABASHI/closepaw`、ブランチ `shelly-trusted-caller`、APK: https://github.com/RYOITABASHI/closepaw/releases/tag/shelly-v0.1.0-2）は、起動 intent に `shelly_caller_token`（creatorPackage が `dev.shelly.terminal` の PendingIntent）が付いていると External Goal ダイアログを出さない。
+- `ClosePawHandoff.buildIntent/launch`: インストール済み `ai.closepaw` が変種証明書（SHA-256 `D5:F4:39:23:…:72:58`）で署名されている場合のみ（API 28+ `hasSigningCertificate(CERT_INPUT_SHA256)`）トークンを付与。公式 ClosePaw には絶対に渡さない（従来どおりダイアログが出る）。
+- 変種インストール時は Shelly の承認が唯一のゲートになるため、ClosePaw を起動する全経路で Shelly 承認を必須化: エージェント実行（Review または封印済み事前承認）／**`shelly closepaw "<goal>"` は即起動せず `ClosePawShellApprovals`（プロセスメモリ、10分、単回）に登録**し、通知の［承認］（API 31+ でロック解除必須）・チャットで「OK」・ChatGPT から `shelly closepaw confirm <reqId> <hash8>`（設定「ChatGPT からのエージェント承認」OFF で拒否、試行上限、監査通知）のいずれかで初めて起動。`shelly closepaw reject <reqId>` で却下。公式 ClosePaw の場合は従来どおり。
+- **実機未検証**: 変種インストール時の (1) エージェント実行でダイアログが出ない (2) `shelly closepaw` が承認待ちになり、通知/チャット/ChatGPT confirm で起動 (3) 公式 ClosePaw ではトークンなし・ダイアログあり。
+- 変種を入れるには公式 ClosePaw のアンインストールが必要（署名が異なるため上書き不可）。
+
 ### `shelly agent add` — ChatGPT（Codex リモート）からのエージェント登録・通知/ChatGPT 承認・ClosePaw 自動ルーティング — 実装済み・実機未検証 (P1)
 
 2026-10-14、ブランチ `feat/shelly-agent-add`（BASHRC_VERSION 260 / SHELLY_HELPER_SHIM v13 / PlanSpec executor v8）。

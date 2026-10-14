@@ -171,7 +171,11 @@ export type AgentCtlRequest =
   /** hashPrefix: first 8 hex of the definition hash printed in the summary
    *  (a binding, not a secret — lib/agent-add-approval.ts). */
   | { ctlId: string; op: 'confirm'; reqId: string; hashPrefix: string }
-  | { ctlId: string; op: 'reject'; reqId: string };
+  | { ctlId: string; op: 'reject'; reqId: string }
+  /** `shelly closepaw confirm <reqId> <hash8>` / `reject <reqId>` (Shelly-
+   *  trusted ClosePaw variant — lib/closepaw-shell-approval.ts). */
+  | { ctlId: string; op: 'closepaw-confirm'; reqId: string; hashPrefix: string }
+  | { ctlId: string; op: 'closepaw-reject'; reqId: string };
 
 /** `agentctl:<ctlId>:<tsMs>:<confirm|reject>:<reqId>[:<hash8>]`. Never throws. */
 export function parseAgentCtlLine(line: string, nowMs: number): AgentCtlRequest | null {
@@ -184,6 +188,8 @@ export function parseAgentCtlLine(line: string, nowMs: number): AgentCtlRequest 
   if (nowMs - ts > AGENT_CTL_MAX_AGE_MS || ts - nowMs > AGENT_ADD_MAX_FUTURE_MS) return null;
   if (op === 'confirm' && parts.length === 5 && CTL_HASH_PREFIX_RE.test(hashPrefix)) return { ctlId, op, reqId, hashPrefix };
   if (op === 'reject' && parts.length === 4) return { ctlId, op, reqId };
+  if (op === 'closepaw-confirm' && parts.length === 5 && CTL_HASH_PREFIX_RE.test(hashPrefix)) return { ctlId, op, reqId, hashPrefix };
+  if (op === 'closepaw-reject' && parts.length === 4) return { ctlId, op, reqId };
   return null;
 }
 

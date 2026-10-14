@@ -67,6 +67,7 @@ import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
+import { resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
@@ -911,6 +912,33 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         Date.now(),
         SLOT_FILL_STALE_MS,
       );
+
+      // `shelly closepaw` awaiting a Shelly approval (Shelly-trusted ClosePaw
+      // variant — lib/closepaw-shell-approval.ts): when the latest message is
+      // that plain-text request, a typed confirm / cancel phrase resolves it
+      // (the in-app "chat OK" path). Anything else leaves it pending and is
+      // handled normally; an "@…" message is always a fresh command.
+      {
+        const msgs = store.getOrCreate(paneId).messages;
+        const last = msgs[msgs.length - 1];
+        const pendingShell = last?.role === 'assistant' ? last.pendingClosePawShell : undefined;
+        if (
+          pendingShell &&
+          Date.now() - pendingShell.createdAt <= 10 * 60_000 &&
+          !userText.trim().startsWith('@') &&
+          (isConfirmPhrase(userText) || isCancelPhrase(userText))
+        ) {
+          store.updateMessage(paneId, last.id, { pendingClosePawShell: undefined });
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          const reply = await resolveClosePawShellFromChat(
+            pendingShell,
+            isConfirmPhrase(userText) ? 'approve' : 'reject',
+            detectMessageLocale(userText),
+          );
+          store.addMessage(paneId, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() });
+          return;
+        }
+      }
 
       // ── Reply to a pending "save this for EVERY agent?" confirmation
       // (2026-07-29, roadmap item 3 part 2) ────────────────────────────────

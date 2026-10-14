@@ -1328,6 +1328,10 @@ export type ChatMessage = {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  /** `shelly closepaw` awaiting a Shelly approval (Shelly-trusted ClosePaw
+   *  variant installed — lib/closepaw-shell-approval.ts). A typed confirm /
+   *  cancel reply to this plain-text line resolves it. */
+  pendingClosePawShell?: { reqId: string; hash8: string; createdAt: number };
   /** Stable identity for a proactive background-agent completion notice. */
   agentRunLogId?: string;
   /** Agent hand-off narration (2026-10-06, lib/agent-handoff.ts): set on a

@@ -338,6 +338,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   isClosePawHandoffAvailable?(agentId: string): Promise<boolean>;
   /** Atomically claim that hand-off; true exactly once per run. */
   claimClosePawHandoffForRun?(agentId: string): Promise<boolean>;
+  /** True when the installed ai.closepaw is the Shelly-trusted variant
+   *  (signed by the pinned certificate) — it then skips its own dialog. */
+  isClosePawTrustedVariantInstalled?(): Promise<boolean>;
+  /** JSON array of pending `shelly closepaw` approvals: {reqId, goal, hash8, expiresAt}. */
+  listClosePawShellApprovals?(): Promise<string>;
+  /** Resolve one (via 'notification' + nonce | 'chatgpt' + hash8 | 'chat' +
+   *  hash8). Returns JSON {ok, code, message}. Approve launches ClosePaw. */
+  resolveClosePawShellApproval?(reqId: string, decision: 'approve' | 'reject', via: 'notification' | 'chatgpt' | 'chat', secret: string): Promise<string>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

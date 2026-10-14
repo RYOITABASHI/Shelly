@@ -4,4 +4,6 @@
   <string name="closepaw_channel_description">Tap to continue a task handed to ClosePaw while Shelly was in the background</string>
   <string name="closepaw_notification_title">Hand off to ClosePaw</string>
   <string name="closepaw_notification_body">%1$s\n\nTap to open ClosePaw. ClosePaw asks you to confirm Run before it does anything.</string>
+  <string name="closepaw_approval_title">Shelly: approve a ClosePaw task from the terminal</string>
+  <string name="closepaw_approval_body">%1$s\n\nRequested from the terminal (e.g. Codex / ChatGPT). Your Shelly-trusted ClosePaw build will run it without asking again, so approve only if you want this. Goal hash %2$s. Expires in 10 minutes.</string>
 </resources>

@@ -85,6 +85,7 @@ import {
 } from '@/lib/agent-add-queue';
 import { handleAgentCtl, handleAgentAddDecisionDeepLink, handleAgentAddDisableDeepLink } from '@/lib/agent-add-flow';
 import { closePawRunProvenanceOk, isClosePawPreapproved } from '@/lib/agent-closepaw-preapproval';
+import { handleClosePawDecisionDeepLink, syncClosePawShellApprovalsToChat } from '@/lib/closepaw-shell-approval';
 import {
   fireReviewedAgentBrowserPaneAction,
   resolveTargetBrowserPaneId,
@@ -1344,6 +1345,14 @@ export default function RootLayout() {
           });
           return;
         }
+        if (target === 'closepaw-decision') {
+          await waitForMultiPaneHydration();
+          const q = parsed.queryParams ?? {};
+          const first = (v: unknown) => (Array.isArray(v) ? v[0] : v);
+          logInfo('DeepLink', 'received: closepaw-decision');
+          await handleClosePawDecisionDeepLink({ reqId: first(q.reqId), decision: first(q.decision), nonce: first(q.nonce) });
+          return;
+        }
         if (target === 'agent-add-disable') {
           await waitForMultiPaneHydration();
           const q = parsed.queryParams ?? {};
@@ -1869,6 +1878,11 @@ export default function RootLayout() {
       if (isDrainingAgentAdd) return;
       isDrainingAgentAdd = true;
       try {
+        // `shelly closepaw` awaiting a Shelly approval (trusted ClosePaw
+        // variant): post each pending request once into the chat.
+        if (AppState.currentState === 'active' && useMultiPaneStore.getState()._hasHydrated === true) {
+          await syncClosePawShellApprovalsToChat().catch((e) => logError('ClosePawShell', 'chat sync failed', e));
+        }
         await drainAgentAddRequests(
           {
             isActive: () => AppState.currentState === 'active' && useMultiPaneStore.getState()._hasHydrated === true,

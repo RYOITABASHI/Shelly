@@ -326,6 +326,17 @@ const en: Record<string, string> = {
   'agents.widget_registered_body': '"{{name}}" — {{schedule}}. Registered without the confirmation step (widget no-confirm setting). Manage it with @agent list.',
   // `shelly agent add` (lib/agent-add-queue.ts): origin line shown in the AI
   // pane before a terminal-originated `@agent` request enters the normal flow.
+  // `shelly closepaw` with the Shelly-trusted ClosePaw variant (lib/closepaw-shell-approval.ts)
+  'closepaw.shell_approval_chat': 'ClosePaw task requested from the terminal (e.g. Codex / ChatGPT): "{{goal}}". Your Shelly-trusted ClosePaw build will run it on the phone without asking again. Reply OK to run it or cancel to reject (or use the notification). Goal hash {{hash}}; expires in 10 minutes.',
+  'closepaw.shell_approval_unavailable': 'This build of Shelly cannot approve ClosePaw requests.',
+  'closepaw.shell_approved_chat': 'Approved in the chat — handed off to ClosePaw.',
+  'closepaw.shell_rejected_chat': 'Rejected — nothing was sent to ClosePaw.',
+  'closepaw.shell_approved_notification': 'ClosePaw task approved from the notification — handed off to ClosePaw.',
+  'closepaw.shell_rejected_notification': 'ClosePaw task rejected from the notification.',
+  'closepaw.shell_approved_chatgpt': 'ClosePaw task approved from ChatGPT (shelly closepaw confirm) — handed off to ClosePaw.',
+  'closepaw.shell_rejected_chatgpt': 'ClosePaw task rejected from ChatGPT.',
+  'closepaw.shell_audit_title': 'A ClosePaw task was approved from ChatGPT',
+  'closepaw.shell_audit_body': 'Approved from the ChatGPT conversation (Codex) with shelly closepaw confirm. If this was not you, turn off Settings → Approve Agents from ChatGPT.',
   'agents.terminal_request_origin': 'Requested from the terminal (e.g. Codex / ChatGPT) — not typed by you. Shelly will draft the agent below; nothing is registered unless you confirm it here.',
   'agents.terminal_request_approvable_note': 'You can approve this here (reply OK), from the notification (device unlock required), or ChatGPT can confirm it for you with definition {{hash}}. Every ChatGPT approval is announced with a notification that can disable the agent in one tap.',
   'agents.terminal_request_closepaw_line': 'This part will be done by ClosePaw operating the phone: {{step}} (what ClosePaw is given is built from this agent\'s own results, which can include untrusted text from the web)',

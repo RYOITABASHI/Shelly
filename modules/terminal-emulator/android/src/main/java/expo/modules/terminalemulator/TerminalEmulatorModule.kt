@@ -1343,6 +1343,22 @@ class TerminalEmulatorModule : Module() {
             NativeAgentRunRegistry.claimClosePawHandoff(agentId)
         }
 
+        // `shelly closepaw` with the Shelly-trusted ClosePaw variant installed:
+        // pending Shelly approvals (ClosePawShellApprovals, process memory).
+        AsyncFunction("isClosePawTrustedVariantInstalled") {
+            val context = requireReactContext()
+            ClosePawHandoff.isTrustedVariantInstalled(context)
+        }
+
+        AsyncFunction("listClosePawShellApprovals") {
+            ClosePawShellApprovals.listJson()
+        }
+
+        AsyncFunction("resolveClosePawShellApproval") { reqId: String, decision: String, via: String, secret: String ->
+            val context = requireReactContext()
+            ClosePawShellApprovals.resolve(context, reqId, decision, via, secret).toJson()
+        }
+
         AsyncFunction("cancelAgentAddNotification") {
             val context = requireReactContext()
             AgentAddHandoff.cancelNotification(context)

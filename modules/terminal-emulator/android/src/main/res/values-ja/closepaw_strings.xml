@@ -4,4 +4,6 @@
   <string name="closepaw_channel_description">Shelly がバックグラウンドのときに ClosePaw へ引き継いだタスクをタップで続行します</string>
   <string name="closepaw_notification_title">ClosePaw に引き継ぎ</string>
   <string name="closepaw_notification_body">%1$s\n\nタップすると ClosePaw が開きます。実行前に ClosePaw で Run の確認があります。</string>
+  <string name="closepaw_approval_title">Shelly: ターミナルからの ClosePaw 作業を承認</string>
+  <string name="closepaw_approval_body">%1$s\n\nターミナル（Codex / ChatGPT など）からの依頼です。Shelly 用 ClosePaw ビルドは再確認せずに実行するため、実行してよい場合だけ承認してください。目標ハッシュ %2$s。10分で期限切れになります。</string>
 </resources>

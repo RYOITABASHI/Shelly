@@ -163,10 +163,56 @@ object ClosePawHandoff {
         return GOAL_PREFIX + fitted
     }
 
-    fun buildIntent(goal: String): Intent = Intent().apply {
+    // ── Shelly-trusted ClosePaw variant (2026-10-14) ──────────────────────
+    // The user's own ClosePaw build (fork RYOITABASHI/closepaw, branch
+    // shelly-trusted-caller) skips ClosePaw's "External Goal" dialog when the
+    // launch intent carries EXTRA_CALLER_TOKEN: a PendingIntent whose
+    // creatorPackage is dev.shelly.terminal (Android vouches for the creator,
+    // so the extra cannot be forged by another app). Shelly attaches it ONLY
+    // when the installed ai.closepaw is signed by the variant's pinned
+    // certificate — the official ClosePaw never receives the token and keeps
+    // its own dialog. With the variant, Shelly's approval is the only gate,
+    // so every path that fires it must have passed one: agent runs (Review or
+    // a sealed registration pre-approval) and `shelly closepaw` (see
+    // ClosePawShellApprovals — approval required before launch).
+    const val EXTRA_CALLER_TOKEN = "shelly_caller_token"
+    const val CALLER_TOKEN_ACTION = "dev.shelly.terminal.CLOSEPAW_TOKEN"
+    /** SHA-256 of the variant's signing certificate (pinned). */
+    const val VARIANT_CERT_SHA256 = "D5:F4:39:23:A8:F6:0E:D3:41:82:02:DB:8D:77:47:11:0B:F6:91:47:99:54:DB:9B:31:E1:AC:FC:F2:74:72:58"
+
+    internal fun hexColonToBytes(hex: String): ByteArray =
+        hex.split(':').map { it.toInt(16).toByte() }.toByteArray()
+
+    /** True only when the installed ai.closepaw is signed by the pinned
+     *  variant certificate (API 28+; older releases never get the token). */
+    fun isTrustedVariantInstalled(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
+        return runCatching {
+            context.packageManager.hasSigningCertificate(
+                PACKAGE,
+                hexColonToBytes(VARIANT_CERT_SHA256),
+                android.content.pm.PackageManager.CERT_INPUT_SHA256,
+            )
+        }.getOrDefault(false)
+    }
+
+    private fun callerToken(context: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            0,
+            Intent(CALLER_TOKEN_ACTION).setPackage(context.packageName),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /** Explicit-component intent to ai.closepaw. With a [context] and the
+     *  pinned variant installed, it also carries the caller token. */
+    fun buildIntent(goal: String, context: Context? = null): Intent = Intent().apply {
         component = ComponentName(PACKAGE, ACTIVITY)
         putExtra(EXTRA_GOAL, wireGoal(goal))
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (context != null && isTrustedVariantInstalled(context)) {
+            putExtra(EXTRA_CALLER_TOKEN, callerToken(context.applicationContext))
+        }
     }
 
     enum class Outcome(val wire: String) { LAUNCHED("launched"), NOTIFIED("notified") }
@@ -181,7 +227,10 @@ object ClosePawHandoff {
     fun launch(context: Context, goal: String): Outcome {
         val clean = sanitizeGoal(goal)
         require(clean.isNotEmpty()) { "closepaw goal is empty" }
-        val intent = buildIntent(clean)
+        // Every caller of launch() has passed a Shelly approval (agent run
+        // Review / sealed pre-approval, or ClosePawShellApprovals for the
+        // shell command), so the caller token may ride along for the variant.
+        val intent = buildIntent(clean, context)
         if (intent.resolveActivity(context.packageManager) == null) {
             throw ActivityNotFoundException(NOT_INSTALLED_MARKER)
         }
@@ -376,6 +425,14 @@ object ClosePawHandoff {
             }
             is Parsed.Ok -> if (nowMs - lastFireAtMs < QUEUE_MIN_INTERVAL_MS) {
                 Result(false, "rate-limited", "shelly closepaw: rate-limited (at most one hand-off every 5 seconds); try again shortly")
+            } else if (isTrustedVariantInstalled(context.applicationContext)) {
+                // The Shelly-trusted variant skips ClosePaw's own dialog, so
+                // the shell command (typed by the user OR by Codex driven from
+                // ChatGPT) must get a Shelly approval first — nothing fires
+                // here. See ClosePawShellApprovals.
+                lastFireAtMs = nowMs
+                val pending = ClosePawShellApprovals.create(context.applicationContext, parsed.reqId, parsed.goal, nowMs)
+                Result(true, "approval-required", ClosePawShellApprovals.approvalRequiredMessage(pending))
             } else {
                 lastFireAtMs = nowMs
                 try {

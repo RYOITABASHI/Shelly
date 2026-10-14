@@ -321,6 +321,17 @@ const ja: Record<string, string> = {
   'agents.widget_registered_title': 'ウィジェットからエージェントを登録しました',
   'agents.widget_registered_body': '「{{name}}」— {{schedule}}。確認ステップなしで登録されました（ウィジェット確認省略設定）。管理は @agent list から。',
   // `shelly agent add` (lib/agent-add-queue.ts)
+  // `shelly closepaw`（Shelly 用 ClosePaw ビルド）
+  'closepaw.shell_approval_chat': 'ターミナル（Codex / ChatGPT など）から ClosePaw への作業依頼:「{{goal}}」。Shelly 用 ClosePaw ビルドは再確認せずにスマホを操作して実行します。実行するなら「OK」、やめるなら「キャンセル」と返信してください（通知からも可）。目標ハッシュ {{hash}}、10分で期限切れ。',
+  'closepaw.shell_approval_unavailable': 'このビルドの Shelly では ClosePaw の依頼を承認できません。',
+  'closepaw.shell_approved_chat': 'チャットで承認しました — ClosePaw に引き継ぎました。',
+  'closepaw.shell_rejected_chat': '却下しました — ClosePaw には何も送っていません。',
+  'closepaw.shell_approved_notification': '通知から ClosePaw の作業が承認され、ClosePaw に引き継ぎました。',
+  'closepaw.shell_rejected_notification': '通知から ClosePaw の作業が却下されました。',
+  'closepaw.shell_approved_chatgpt': 'ChatGPT から（shelly closepaw confirm）ClosePaw の作業が承認され、ClosePaw に引き継ぎました。',
+  'closepaw.shell_rejected_chatgpt': 'ChatGPT から ClosePaw の作業が却下されました。',
+  'closepaw.shell_audit_title': 'ChatGPT から ClosePaw の作業が承認されました',
+  'closepaw.shell_audit_body': 'ChatGPT（Codex）の会話から shelly closepaw confirm で承認されました。心当たりがなければ 設定 → ChatGPT からのエージェント承認 をオフにしてください。',
   'agents.terminal_request_origin': 'ターミナル（Codex / ChatGPT など）からの依頼です。あなたが入力したものではありません。下にエージェント案を作成します。ここであなたが確認しない限り登録されません。',
   'agents.terminal_request_approvable_note': 'ここで「OK」と返信するか、通知から（端末のロック解除が必要）承認できます。ChatGPT からも定義 {{hash}} を指定して承認できます。ChatGPT から承認された場合は、ワンタップで無効化できる通知が必ず届きます。',
   'agents.terminal_request_closepaw_line': 'この部分は ClosePaw がスマホを操作して実行します: {{step}}（ClosePaw に渡す内容はこのエージェントの実行結果から作られ、Web 由来の信頼できない文章を含むことがあります）',
