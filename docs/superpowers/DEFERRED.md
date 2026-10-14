@@ -106,6 +106,18 @@
       - ログは起動のたびに空にする。
       - `setsid` は採用しなかった。bash 関数は setsid できず、`linker64 libbash.so -c` 経由で bashrc を読み直す必要があるため、リスクの割に得るものが少ない。現状でもツリー kill 対象から外れ、HUP も無視している。
     - **shim v12**: トップレベル usage に `shelly codex <pair|code|trust|status|stop>` を表示する。
+  - **build 2540 実機確認（BASHRC 258）**: native shim、`shelly codex trust` / `status`、ホスト名「Shelly (SM-F956Q)」を確認済み。
+  - **python の stdlib が見つからない問題（BASHRC_VERSION 259）**
+    - **症状**: PTY から `bash /sdcard/Download/t.sh` を実行し、中で `python3 -c ...` を呼ぶと、「Could not find platform independent libraries … Failed to import encodings module」で失敗した。
+    - **原因**: PYTHONHOME / PYTHONPATH を設定していたのは、対話シェルの python3() 関数と Codex の起動経路だけだった。子スクリプトは PATH 上の python3 を直接実行するため、どちらも設定されていなかった。
+    - **対策**: ~/.bashrc がセッション全体で PYTHONHOME / PYTHONPATH を export するようにした。
+      - 同梱 stdlib を優先し、無ければ dev-tools パックの stdlib を使う。
+      - PYTHONHOME が既に設定されている場合（ユーザー設定、または親の Shelly シェルから継承した値）は何もしない。
+      - ユーザーの PYTHONPATH は stdlib の後ろに残す。
+    - **影響**: python3() と codex() が計算する値は同じなので、両者の挙動は変わらない。venv の activate は自分で PYTHONHOME を unset するので、venv にも影響しない。
+    - **実機確認点**:
+      - `bash t.sh`（中で `python3 -c "print(1)"`）が成功すること。
+      - `pip --version` と、Codex 内の `python3 hello.py` が引き続き動くこと。
 - **再開手順**: CI 成功ビルドを実機に入れ、`shelly codex pair` を実行。失敗時は `SHELLY_DEBUG=1 shelly codex pair` と `ls -la /data/user/0/dev.shelly.terminal/cdx $TMPDIR/codex-rc-*` の結果を記録。
 - → sync: README Status 表 / Codex Runtime 節 / Bundled Shelly commands 表（Experimental・実機未検証として記載済み）
 ### ClosePaw 引き継ぎ（hand-off）— Phase 1 実装済み・実機未検証、Phase 2（結果受け取り）は上流 PR 待ち (P2)

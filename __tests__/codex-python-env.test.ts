@@ -408,6 +408,55 @@ maybe('device layout: binary in $lib, stdlib only in packs/dev-tools (v248)', ()
   });
 });
 
+// v259: on device (build 2540) `bash t.sh` running `python3 -c ...` from the
+// PTY execs the PATH python3 without PYTHONHOME/PYTHONPATH ("Failed to import
+// encodings module"); ~/.bashrc now exports them for the session.
+maybe('.bashrc session python env for child scripts (v259)', () => {
+  const block = extract(
+    '__shelly_python_stdlib() {  # [$1=python binary] -> prints stdlib dir',
+    '__shelly_run_node_clean() {',
+  );
+  // A child script (not a function call) must see the env.
+  const child = `${block}bash -c 'echo PYTHONHOME=$PYTHONHOME; echo PYTHONPATH=$PYTHONPATH'\n`;
+
+  it('BASHRC_VERSION >= 259', () => {
+    const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);
+    expect(Number(m?.[1])).toBeGreaterThanOrEqual(259);
+  });
+
+  it('exports the pack stdlib (with lib-dynload) to child processes', () => {
+    const lib = makeLibDir('device');
+    const std = `${lib}/packs/dev-tools/python3.13`;
+    const env = runBash(child, { SHELLY_LIB_DIR: lib });
+    expect(env.PYTHONHOME).toBe(std);
+    expect(env.PYTHONPATH).toBe(`${std}:${std}/lib-dynload`);
+  });
+
+  it('prefers the bundled stdlib and keeps a user PYTHONPATH after it', () => {
+    const lib = makeLibDir('bundled');
+    const env = runBash(child, { SHELLY_LIB_DIR: lib, PYTHONPATH: '/user/site' });
+    expect(env.PYTHONHOME).toBe(`${lib}/python3.13`);
+    expect(env.PYTHONPATH).toBe(`${lib}/python3.13:/user/site`);
+  });
+
+  it('never overrides a user/inherited PYTHONHOME and is idempotent across nested shells', () => {
+    const lib = makeLibDir('bundled');
+    expect(runBash(child, { SHELLY_LIB_DIR: lib, PYTHONHOME: '/custom', PYTHONPATH: '/p' })).toEqual({
+      PYTHONHOME: '/custom',
+      PYTHONPATH: '/p',
+    });
+    // Sourcing the block twice (nested interactive shell) does not stack PYTHONPATH.
+    const env = runBash(`${block}${child}`, { SHELLY_LIB_DIR: lib });
+    expect(env.PYTHONPATH).toBe(`${lib}/python3.13`);
+  });
+
+  it('exports nothing when no stdlib is installed', () => {
+    const env = runBash(child, { SHELLY_LIB_DIR: makeLibDir('none') });
+    expect(env.PYTHONHOME).toBe('');
+    expect(env.PYTHONPATH).toBe('');
+  });
+});
+
 // v249: Codex's shell snapshot (features.shell_snapshot) drops the policy env
 // on Android and breaks `!` commands (/proc/self/fd/N); every launch disables it.
 maybe('features.shell_snapshot=false on every Codex launch (v249)', () => {

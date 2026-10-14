@@ -1346,7 +1346,12 @@ patchCodex(libDir);
     //      dir; the log is truncated per start; the default host name is cut
     //      to 63 bytes on a UTF-8 boundary. exec-wrapper v225 now applies the
     //      host name only inside the Codex process itself.
-    private const val BASHRC_VERSION = 258
+    // v259: ~/.bashrc exports PYTHONHOME/PYTHONPATH for the session (bundled
+    //      or dev-tools pack stdlib, only when PYTHONHOME is unset) so child
+    //      scripts that run the PATH python3 (`bash t.sh` -> `python3 -c`)
+    //      find `encodings`; previously only the python3() function and the
+    //      Codex launch paths set them.
+    private const val BASHRC_VERSION = 259
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -2743,6 +2748,21 @@ patchCodex(libDir);
             sb.appendLine("  if [ -d \"\$1/lib-dynload\" ]; then printf '%s:%s' \"\$1\" \"\$1/lib-dynload\"; else printf '%s' \"\$1\"; fi")
             sb.appendLine("}")
             sb.appendLine("export -f __shelly_python_stdlib __shelly_python_path")
+            // v259: export the same python env for the whole session. The
+            // python3() function below only covers python3 typed at the prompt;
+            // a child script (`bash t.sh` running `python3 -c ...`) resolves the
+            // PATH binary and died with "Could not find platform independent
+            // libraries ... Failed to import encodings module". Only when the
+            // bundled/pack stdlib exists and PYTHONHOME is not already set (a
+            // user value, or one inherited from a parent Shelly shell, wins);
+            // a user PYTHONPATH is kept after the stdlib. python3()/codex()
+            // compute the identical values, so their behaviour is unchanged;
+            // venv's activate unsets PYTHONHOME itself.
+            sb.appendLine("if [ -z \"\${PYTHONHOME:-}\" ] && __shelly_pystd=\$(__shelly_python_stdlib); then")
+            sb.appendLine("  export PYTHONHOME=\"\$__shelly_pystd\"")
+            sb.appendLine("  export PYTHONPATH=\"\$(__shelly_python_path \"\$__shelly_pystd\")\${PYTHONPATH:+:\$PYTHONPATH}\"")
+            sb.appendLine("fi")
+            sb.appendLine("unset __shelly_pystd")
             sb.appendLine("__shelly_run_node_clean() {")
             sb.appendLine("  local __shelly_tmp=\"\${TMPDIR:-\$HOME/.tmp}\"")
             sb.appendLine("  __shelly_mkdir -p \"\$__shelly_tmp\" \"\$HOME/.config\" \"\$HOME/.cache\" \"\$HOME/.local/share\" 2>/dev/null || true")
