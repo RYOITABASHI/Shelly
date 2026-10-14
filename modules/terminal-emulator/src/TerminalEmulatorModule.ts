@@ -322,8 +322,12 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   cancelAgentActionApproval?(runId: string): Promise<void>;
   /** Resolves null for launch/share; for closepaw resolves 'launched' (direct
    *  start) or 'notified' (Shelly was backgrounded, so a tap-to-continue
-   *  notification was posted). See ClosePawHandoff.kt. */
-  fireAgentIntent?(mode: 'launch' | 'share' | 'closepaw', target: string, shareText?: string | null): Promise<'launched' | 'notified' | null>;
+   *  notification was posted). With the Shelly-trusted ClosePaw variant
+   *  v0.1.0-4+ it resolves 'background' (running on ClosePaw's virtual
+   *  display) or 'main-display', and rejects with CLOSEPAW_REFUSED:<reason>
+   *  for ClosePaw's refusal codes 10-16 (lib/closepaw-background.ts). See
+   *  ClosePawHandoff.kt. */
+  fireAgentIntent?(mode: 'launch' | 'share' | 'closepaw', target: string, shareText?: string | null): Promise<'launched' | 'notified' | 'background' | 'main-display' | null>;
   /** fix/closepaw-background: hand a legacy `closepaw:` command-queue line to
    *  the native single owner (ClosePawHandoff.handleLine). Resolves the result
    *  code it wrote for the shim, or null when the line was unanswerable. */

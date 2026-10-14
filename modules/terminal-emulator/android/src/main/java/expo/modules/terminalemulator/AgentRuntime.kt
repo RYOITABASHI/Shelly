@@ -428,13 +428,18 @@ object AgentRuntime {
     // intent actions accept the 'closepaw' mode (never auto-accepted) and the
     // run log records handoff:"closepaw". Bumped so stale copies (which refuse
     // the mode as invalid) are refreshed. No native logic change here.
-    private const val CURRENT_SCRIPT_VERSION = 66
+    // v67 / CURRENT_EXECUTOR_VERSION 9 (2026-10-14, ClosePaw variant
+    // background entry): after a ClosePaw hand-off's Review reply both
+    // executors read $HOME/.shelly-closepaw-outcome.json (written by
+    // ClosePawHandoff.launch) to report background / main-display / the
+    // variant's refusal reason. Bumped so stale copies are refreshed.
+    private const val CURRENT_SCRIPT_VERSION = 67
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
     // (resolved by RN only against a registration pre-approval sealed in
     // SecureStore — lib/agent-closepaw-preapproval.ts). No native logic change.
-    private const val CURRENT_EXECUTOR_VERSION = 8
+    private const val CURRENT_EXECUTOR_VERSION = 9
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

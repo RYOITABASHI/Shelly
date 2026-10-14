@@ -86,6 +86,7 @@ import {
 } from '@/lib/agent-add-queue';
 import { handleAgentCtl, handleAgentAddDecisionDeepLink, handleAgentAddDisableDeepLink } from '@/lib/agent-add-flow';
 import { closePawRunProvenanceOk, isClosePawPreapproved } from '@/lib/agent-closepaw-preapproval';
+import { closePawOutcomeKey, closePawRefusalFromError, closePawRefusalKey, postClosePawChatLine } from '@/lib/closepaw-background';
 import { handleClosePawDecisionDeepLink, syncClosePawShellApprovalsToChat } from '@/lib/closepaw-shell-approval';
 import {
   fireReviewedAgentBrowserPaneAction,
@@ -358,7 +359,13 @@ export default function RootLayout() {
         return;
       }
       try {
-        await fireReviewedAgentIntent(request, TerminalEmulator.fireAgentIntent);
+        const outcome = await fireReviewedAgentIntent(request, TerminalEmulator.fireAgentIntent);
+        if (request.intentMode === 'closepaw') {
+          // Variant v0.1.0-4+: 'background' / 'main-display' (broadcast
+          // entry); else the activity path's 'launched' / 'notified'.
+          const key = closePawOutcomeKey(outcome);
+          if (key) postClosePawChatLine(t(key));
+        }
       } catch (e) {
         // Platform intent-dispatch exceptions (e.g. ActivityNotFoundException)
         // embed the raw Intent.toString() -- including the deep-link URI or
@@ -373,6 +380,14 @@ export default function RootLayout() {
         await TerminalEmulator.resolveAgentActionApproval?.(request.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
         setPendingAgentActionApproval(null);
         setAgentActionResolving(false);
+        const refusal = request.intentMode === 'closepaw' ? closePawRefusalFromError(e) : null;
+        if (refusal) {
+          // ClosePaw (trusted variant) refused for a fixable reason: say
+          // exactly what to fix, in the chat and the alert.
+          postClosePawChatLine(t(closePawRefusalKey(refusal)));
+          Alert.alert(t(closePawRefusalKey(refusal)));
+          return;
+        }
         Alert.alert(
           request.intentMode === 'closepaw' && isClosePawNotInstalledError(e)
             ? t('agent_action_confirm_closepaw_not_installed')
@@ -1354,6 +1369,8 @@ export default function RootLayout() {
           if (typeof nonce === 'string' && TerminalEmulator.launchDeferredClosePaw) {
             const outcome = await TerminalEmulator.launchDeferredClosePaw(nonce).catch(() => 'failed');
             logInfo('DeepLink', `closepaw-launch -> ${outcome}`);
+            const key = closePawOutcomeKey(outcome);
+            if (key) postClosePawChatLine(t(key));
           }
           return;
         }
@@ -2254,13 +2271,19 @@ export default function RootLayout() {
             if (!(await claimClosePawHandoffForRun(minted.agentId))) return false;
           }
           try {
-            await fireReviewedAgentIntent(minted, TerminalEmulator.fireAgentIntent);
+            const outcome = await fireReviewedAgentIntent(minted, TerminalEmulator.fireAgentIntent);
+            if (minted.intentMode === 'closepaw') {
+              const key = closePawOutcomeKey(outcome);
+              if (key) postClosePawChatLine(t(key));
+            }
           } catch (e) {
             // Mirrors resolvePendingAgentActionApproval's own catch: log only
             // the error class/type (message may embed intent content), fail
             // closed (decline) rather than leaving the executor to time out.
             const errorKind = (e as { constructor?: { name?: string } } | undefined)?.constructor?.name ?? 'UnknownError';
             logError('AgentActionApproval', `auto-accept fireAgentIntent failed: ${errorKind}`);
+            const refusal = minted.intentMode === 'closepaw' ? closePawRefusalFromError(e) : null;
+            if (refusal) postClosePawChatLine(t(closePawRefusalKey(refusal)));
             await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'decline', requestSha256, actionNonce).catch(() => undefined);
             return true;
           }

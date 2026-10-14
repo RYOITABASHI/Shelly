@@ -171,7 +171,14 @@ object ClosePawShellApprovals {
             when (ClosePawHandoff.launch(context.applicationContext, p.goal)) {
                 ClosePawHandoff.Outcome.LAUNCHED -> Outcome(true, "handed-off", "Approved ($via) — handed off to ClosePaw")
                 ClosePawHandoff.Outcome.NOTIFIED -> Outcome(true, "notified", "Approved ($via) — tap the ClosePaw notification to continue")
+                // Variant v0.1.0-4+ background entry (ClosePawHandoff.sendVariantBroadcast).
+                ClosePawHandoff.Outcome.BACKGROUND -> Outcome(true, "background", "Approved ($via) — " + ClosePawHandoff.MSG_BACKGROUND)
+                ClosePawHandoff.Outcome.MAIN_DISPLAY -> Outcome(true, "main-display", "Approved ($via) — " + ClosePawHandoff.MSG_MAIN_DISPLAY)
             }.also { Log.i(TAG, "closepaw request $reqId approved via $via -> ${it.code}") }
+        } catch (e: ClosePawHandoff.ClosePawRefusedException) {
+            // The approval is consumed (single use); ClosePaw refused for a
+            // fixable reason — tell the user what to fix, then they re-run.
+            Outcome(false, e.refusal.wire, "shelly closepaw: approved, but " + e.refusal.message)
         } catch (e: Exception) {
             Outcome(false, "failed", "shelly closepaw: approved, but launching ClosePaw failed")
         }

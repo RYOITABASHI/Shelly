@@ -695,7 +695,14 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // success-with-result. A stale v65 script refuses the mode as invalid, so this
 // is bumped to regenerate. Kept in lockstep with AgentRuntime.kt's
 // CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 66;
+// v67 (2026-10-14, ClosePaw variant background entry): the intent branch
+// reads $HOME/.shelly-closepaw-outcome.json (closepaw_read_outcome, written by
+// native ClosePawHandoff.launch) after the Review reply, so a hand-off run
+// says "working in the background" / "controlling the screen", and a
+// trusted-variant refusal (accessibility off, Shizuku not running, busy, ...)
+// ends the run as an error with the actionable reason instead of a bare
+// "declined". Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 67;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3107,6 +3114,29 @@ NODEEOF
   sed -nE "s/.*\\\"$field\\\"[[:space:]]*:[[:space:]]*\\\"([^\\\"]*)\\\".*/\\1/p" "$file" 2>/dev/null | head -n 1
 }
 
+# v67 (ClosePaw variant background entry): native ClosePawHandoff.launch()
+# records the hand-off outcome in $HOME/.shelly-closepaw-outcome.json
+# ({code, message, tsSec}, no goal text) right before RN writes the Review
+# accept / decline reply. Read it (only if written within the last 60s) so the
+# run result says what actually happened. Never fails the run.
+closepaw_read_outcome() {
+  CLOSEPAW_OUTCOME_CODE=""
+  CLOSEPAW_OUTCOME_MESSAGE=""
+  closepaw_outcome_file="$HOME/.shelly-closepaw-outcome.json"
+  [ -f "$closepaw_outcome_file" ] || return 0
+  closepaw_outcome_ts="$(json_field_file "$closepaw_outcome_file" "tsSec" || true)"
+  closepaw_now="$(date +%s 2>/dev/null || printf '0')"
+  case "$closepaw_outcome_ts" in ''|*[!0-9]*) return 0 ;; esac
+  case "$closepaw_now" in ''|*[!0-9]*) return 0 ;; esac
+  closepaw_age=$((closepaw_now - closepaw_outcome_ts))
+  if [ "$closepaw_age" -le 60 ] && [ "$closepaw_age" -ge -5 ]; then
+    CLOSEPAW_OUTCOME_CODE="$(json_field_file "$closepaw_outcome_file" "code" || true)"
+    CLOSEPAW_OUTCOME_MESSAGE="$(json_field_file "$closepaw_outcome_file" "message" || true)"
+    rm -f "$closepaw_outcome_file" 2>/dev/null || true
+  fi
+  return 0
+}
+
 dm_pairing_lookup() {
   file="$1"
   pairing_id="$2"
@@ -3900,7 +3930,20 @@ dispatch_agent_action() {
         fi
         ACTION_INTENT_TARGET=""
       fi
-      request_and_wait_approval "intent" "$preview" "$result_file" || return 1
+      if ! request_and_wait_approval "intent" "$preview" "$result_file"; then
+        if [ "$ACTION_INTENT_MODE" = "closepaw" ]; then
+          # A trusted-variant refusal (ClosePaw codes 10-16) reaches the
+          # script as a decline from RN; say why instead of a bare "declined".
+          closepaw_read_outcome
+          case "$CLOSEPAW_OUTCOME_CODE" in
+            untrusted|accessibility-off|onboarding-incomplete|overlay-missing|no-credentials|busy|vd-unavailable)
+              ACTION_DISPATCH_STATUS="error"
+              ACTION_DISPATCH_MESSAGE="ClosePaw did not start the task: $CLOSEPAW_OUTCOME_MESSAGE"
+              ;;
+          esac
+        fi
+        return 1
+      fi
       # No broker/native call here (unlike webhook/cli): RN already fired the
       # intent NATIVELY (fireAgentIntent) BEFORE writing the accept reply that
       # wait_action_approval just observed. Nothing left to execute.
@@ -3909,6 +3952,13 @@ dispatch_agent_action() {
         # (run-log handoff:"closepaw"), never a success-with-result.
         ACTION_DISPATCH_HANDOFF="closepaw"
         ACTION_DISPATCH_MESSAGE="Handed off to ClosePaw (no result is returned): \${closepaw_goal:0:2000}"
+        closepaw_read_outcome
+        case "$CLOSEPAW_OUTCOME_CODE" in
+          background|main-display)
+            # Trusted variant v0.1.0-4+ background entry.
+            ACTION_DISPATCH_MESSAGE="$CLOSEPAW_OUTCOME_MESSAGE (no result is returned): \${closepaw_goal:0:2000}"
+            ;;
+        esac
         return 0
       fi
       ACTION_DISPATCH_MESSAGE="Intent fired: $ACTION_INTENT_MODE $ACTION_INTENT_TARGET"

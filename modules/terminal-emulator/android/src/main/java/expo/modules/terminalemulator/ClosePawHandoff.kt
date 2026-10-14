@@ -1,16 +1,21 @@
 package expo.modules.terminalemulator
 
 import android.app.ActivityManager
+import android.app.BroadcastOptions
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.FileObserver
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import expo.modules.terminalemulator.scouter.redactForScouter
@@ -19,9 +24,11 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
 /**
@@ -215,7 +222,137 @@ object ClosePawHandoff {
         }
     }
 
-    enum class Outcome(val wire: String) { LAUNCHED("launched"), NOTIFIED("notified") }
+    // ── Background entry of the Shelly-trusted variant (v0.1.0-4+) ────────
+    // The variant (fork RYOITABASHI/closepaw, release shelly-v0.1.0-4) exports
+    // a non-UI receiver: an explicit ORDERED broadcast carrying the goal and
+    // the caller token makes ClosePaw run the task on its Shizuku virtual
+    // display WITHOUT bringing its activity to the front. A broadcast to an
+    // explicit manifest component is allowed from the background, so no BAL
+    // notification is needed on this path. ClosePaw answers with a result
+    // code; 0 (the initial code, untouched) means no receiver answered (an
+    // older ClosePaw / variant) and we fall back to the activity launch.
+    const val VARIANT_GOAL_ACTION = "ai.closepaw.action.SHELLY_RUN_GOAL"
+    const val VARIANT_GOAL_RECEIVER = "ai.closepaw.app.ShellyGoalReceiver"
+    /** Contract extra (default false). Shelly NEVER sends it: a hand-off must
+     *  not take over the user's screen unexpectedly (ClosePaw also ignores it
+     *  unless a ClosePaw-side setting allows it). */
+    const val EXTRA_ALLOW_MAIN_DISPLAY = "allow_main_display"
+    const val VARIANT_BROADCAST_TIMEOUT_MS = 5_000L
+    const val REFUSED_MARKER_PREFIX = "CLOSEPAW_REFUSED:"
+
+    /** Result codes ClosePaw's ShellyGoalReceiver sets. */
+    const val RC_NO_RESPONSE = 0
+    const val RC_STARTED_VIRTUAL_DISPLAY = 1
+    const val RC_STARTED_MAIN_DISPLAY = 2
+
+    /** Refusals (codes 10-16). Messages are the user-facing English text for
+     *  the shim / agent run result; RN localizes by [wire]
+     *  (lib/closepaw-background.ts, kept in lockstep). */
+    enum class Refusal(val resultCode: Int, val wire: String, val message: String) {
+        UNTRUSTED(10, "untrusted", "ClosePaw did not accept Shelly's request (untrusted or invalid) - update ClosePaw and Shelly, then retry"),
+        ACCESSIBILITY_OFF(11, "accessibility-off", "ClosePaw's accessibility service is off - turn it on in Android Settings > Accessibility > ClosePaw, then retry"),
+        ONBOARDING_INCOMPLETE(12, "onboarding-incomplete", "ClosePaw's setup is not finished - open ClosePaw once and complete it, then retry"),
+        OVERLAY_MISSING(13, "overlay-missing", "ClosePaw needs the \"Display over other apps\" permission - grant it in ClosePaw, then retry"),
+        NO_CREDENTIALS(14, "no-credentials", "ClosePaw has no AI credentials - sign in or add an API key in ClosePaw, then retry"),
+        BUSY(15, "busy", "ClosePaw is busy with another task - wait for it to finish, then retry"),
+        VD_UNAVAILABLE(16, "vd-unavailable", "ClosePaw's virtual display is unavailable - start Shizuku, then retry");
+
+        companion object {
+            fun fromCode(code: Int): Refusal? = values().firstOrNull { it.resultCode == code }
+        }
+    }
+
+    class ClosePawRefusedException(val refusal: Refusal) : IllegalStateException(REFUSED_MARKER_PREFIX + refusal.wire)
+
+    sealed class VariantResult {
+        data class Started(val outcome: Outcome) : VariantResult()
+        data class Refused(val refusal: Refusal) : VariantResult()
+        /** 0 / unknown code / timeout: fall back to the activity launch. */
+        object NoResponse : VariantResult()
+    }
+
+    /** Pure mapping of ClosePaw's result code (unit-tested by source). */
+    fun mapVariantResultCode(code: Int): VariantResult = when (code) {
+        RC_STARTED_VIRTUAL_DISPLAY -> VariantResult.Started(Outcome.BACKGROUND)
+        RC_STARTED_MAIN_DISPLAY -> VariantResult.Started(Outcome.MAIN_DISPLAY)
+        else -> Refusal.fromCode(code)?.let { VariantResult.Refused(it) } ?: VariantResult.NoResponse
+    }
+
+    /** The goal broadcast. Never carries [EXTRA_ALLOW_MAIN_DISPLAY]. */
+    internal fun buildVariantBroadcast(context: Context, goal: String): Intent =
+        Intent(VARIANT_GOAL_ACTION).apply {
+            component = ComponentName(PACKAGE, VARIANT_GOAL_RECEIVER)
+            putExtra(EXTRA_GOAL, wireGoal(goal))
+            putExtra(EXTRA_CALLER_TOKEN, callerToken(context.applicationContext))
+            // Deliver promptly (foreground broadcast queue) and even if
+            // ClosePaw has not been launched since install / force-stop.
+            addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+        }
+
+    private val resultThread: HandlerThread by lazy {
+        HandlerThread("ShellyClosePawResult").apply { start() }
+    }
+
+    /**
+     * Send the goal broadcast to the variant and wait (≤ [VARIANT_BROADCAST_TIMEOUT_MS])
+     * for its result. The result receiver runs on a dedicated HandlerThread,
+     * so this blocks only the caller (never called on the main thread — see
+     * launch()). On API 34+ the broadcast shares Shelly's identity
+     * (BroadcastOptions.setShareIdentityEnabled) — the variant's receiver
+     * requires the sender identity there.
+     */
+    private fun sendVariantBroadcast(context: Context, goal: String): VariantResult {
+        val intent = buildVariantBroadcast(context, goal)
+        val latch = CountDownLatch(1)
+        val timedOut = AtomicBoolean(false)
+        var code = RC_NO_RESPONSE
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) {
+                val rc = resultCode
+                if (timedOut.get()) {
+                    // Arrived after we already fell back to the activity
+                    // launch; ClosePaw's own single-task guard (code 15)
+                    // is what prevents a second run.
+                    Log.w(TAG, "late ClosePaw broadcast result rc=$rc (after timeout)")
+                    return
+                }
+                code = rc
+                latch.countDown()
+            }
+        }
+        val scheduler = Handler(resultThread.looper)
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                val opts = BroadcastOptions.makeBasic().apply { setShareIdentityEnabled(true) }.toBundle()
+                context.sendOrderedBroadcast(intent, null, opts, receiver, scheduler, RC_NO_RESPONSE, null, null)
+            } else {
+                context.sendOrderedBroadcast(intent, null, receiver, scheduler, RC_NO_RESPONSE, null, null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "ClosePaw goal broadcast failed type=${e.javaClass.simpleName}; falling back to activity launch")
+            return VariantResult.NoResponse
+        }
+        val answered = latch.await(VARIANT_BROADCAST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!answered) {
+            timedOut.set(true)
+            Log.w(TAG, "ClosePaw goal broadcast: no result within ${VARIANT_BROADCAST_TIMEOUT_MS}ms; falling back to activity launch")
+            return VariantResult.NoResponse
+        }
+        Log.i(TAG, "ClosePaw goal broadcast rc=$code goalLen=${goal.length}")
+        return mapVariantResultCode(code)
+    }
+
+    enum class Outcome(val wire: String) {
+        LAUNCHED("launched"),
+        NOTIFIED("notified"),
+        /** Variant broadcast rc=1: running on ClosePaw's virtual display. */
+        BACKGROUND("background"),
+        /** Variant broadcast rc=2: ClosePaw is driving the main display. */
+        MAIN_DISPLAY("main-display"),
+    }
+
+    const val MSG_BACKGROUND = "Handed off - ClosePaw is working in the background; you can keep using your phone (avoid the app it's using)"
+    const val MSG_MAIN_DISPLAY = "Handed off - ClosePaw is controlling the screen"
 
     /**
      * Hand [goal] to ClosePaw: direct start when BAL is provably allowed,
@@ -227,6 +364,23 @@ object ClosePawHandoff {
     fun launch(context: Context, goal: String): Outcome {
         val clean = sanitizeGoal(goal)
         require(clean.isNotEmpty()) { "closepaw goal is empty" }
+        // Shelly-trusted variant v0.1.0-4+: background entry first (no
+        // activity start, so no BAL rules / notification fallback). Waiting
+        // for the ordered result blocks, so never on the main thread (every
+        // current caller is off it: Expo AsyncFunction queue, queue executor).
+        if (isTrustedVariantInstalled(context) && Looper.myLooper() != Looper.getMainLooper()) {
+            when (val r = sendVariantBroadcast(context, clean)) {
+                is VariantResult.Started -> {
+                    recordOutcome(context, r.outcome.wire, if (r.outcome == Outcome.MAIN_DISPLAY) MSG_MAIN_DISPLAY else MSG_BACKGROUND)
+                    return r.outcome
+                }
+                is VariantResult.Refused -> {
+                    recordOutcome(context, r.refusal.wire, r.refusal.message)
+                    throw ClosePawRefusedException(r.refusal)
+                }
+                VariantResult.NoResponse -> Unit // older ClosePaw: activity path below
+            }
+        }
         // Every caller of launch() has passed a Shelly approval (agent run
         // Review / sealed pre-approval, or ClosePawShellApprovals for the
         // shell command), so the caller token may ride along for the variant.
@@ -239,6 +393,7 @@ object ClosePawHandoff {
                 context.startActivity(intent)
                 // Never log the goal itself (free text) — length only.
                 Log.i(TAG, "launched ClosePaw directly goalLen=${clean.length}")
+                recordOutcome(context, Outcome.LAUNCHED.wire, MSG_HANDED_OFF)
                 return Outcome.LAUNCHED
             } catch (e: Exception) {
                 Log.w(TAG, "direct start failed type=${e.javaClass.simpleName}; falling back to notification")
@@ -261,7 +416,37 @@ object ClosePawHandoff {
             throw IllegalStateException(BACKGROUND_BLOCKED_MARKER)
         }
         Log.i(TAG, "posted ClosePaw hand-off notification goalLen=${clean.length}")
+        recordOutcome(context, Outcome.NOTIFIED.wire, MSG_NOTIFIED)
         return Outcome.NOTIFIED
+    }
+
+    /** Last hand-off outcome, `$HOME/.shelly-closepaw-outcome.json`
+     *  ({code, message, tsSec}). The agent run script / PlanSpec executor read
+     *  it (if fresh) right after RN's Review accept so the run result says
+     *  what actually happened (background / main display / refusal) instead
+     *  of a generic "handed off". Contains no goal text. */
+    const val OUTCOME_FILE = ".shelly-closepaw-outcome.json"
+
+    internal fun recordOutcome(context: Context, code: String, message: String) {
+        try {
+            val home = HomeInitializer.getHomeDir(context)
+            val tmp = File(home, "$OUTCOME_FILE.tmp")
+            tmp.writeText(
+                JSONObject()
+                    .put("code", code)
+                    .put("message", message)
+                    // String: the run script's json_field_file reads strings only.
+                    .put("tsSec", (System.currentTimeMillis() / 1000L).toString())
+                    .toString()
+            )
+            val target = File(home, OUTCOME_FILE)
+            if (!tmp.renameTo(target)) {
+                target.writeText(tmp.readText())
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to record closepaw outcome type=${e.javaClass.simpleName}")
+        }
     }
 
     // ── Deferred (tap-to-continue) launches for the trusted variant ──────
@@ -434,6 +619,14 @@ object ClosePawHandoff {
 
     data class Result(val ok: Boolean, val code: String, val message: String)
 
+    /** Shim / CLI answer for a successful [launch]. */
+    fun resultFor(outcome: Outcome): Result = when (outcome) {
+        Outcome.LAUNCHED -> Result(true, "handed-off", MSG_HANDED_OFF)
+        Outcome.NOTIFIED -> Result(true, "notified", MSG_NOTIFIED)
+        Outcome.BACKGROUND -> Result(true, "background", MSG_BACKGROUND)
+        Outcome.MAIN_DISPLAY -> Result(true, "main-display", MSG_MAIN_DISPLAY)
+    }
+
     @Volatile private var lastFireAtMs = Long.MIN_VALUE / 2
     private val recentReqIds = LinkedHashSet<String>()
 
@@ -475,10 +668,9 @@ object ClosePawHandoff {
             } else {
                 lastFireAtMs = nowMs
                 try {
-                    when (launch(context.applicationContext, parsed.goal)) {
-                        Outcome.LAUNCHED -> Result(true, "handed-off", MSG_HANDED_OFF)
-                        Outcome.NOTIFIED -> Result(true, "notified", MSG_NOTIFIED)
-                    }
+                    resultFor(launch(context.applicationContext, parsed.goal))
+                } catch (e: ClosePawRefusedException) {
+                    Result(false, e.refusal.wire, "shelly closepaw: " + e.refusal.message)
                 } catch (e: ActivityNotFoundException) {
                     if (e.message == NOT_INSTALLED_MARKER) Result(false, "not-installed", MSG_NOT_INSTALLED)
                     else Result(false, "failed", "shelly closepaw: failed to launch ClosePaw")

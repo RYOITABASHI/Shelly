@@ -1353,7 +1353,9 @@ class TerminalEmulatorModule : Module() {
                 // Shelly may start activities (visible window / overlay grant),
                 // otherwise posts a tap-to-continue notification (Android 10+
                 // background-activity-start limits). Resolves "launched" or
-                // "notified"; throws CLOSEPAW_NOT_INSTALLED /
+                // "notified" (or, for the trusted variant v0.1.0-4+ background
+                // entry, "background" / "main-display"; CLOSEPAW_REFUSED:<reason>
+                // for its refusal codes); throws CLOSEPAW_NOT_INSTALLED /
                 // CLOSEPAW_BACKGROUND_BLOCKED. Never logs the goal.
                 return@AsyncFunction try {
                     ClosePawHandoff.launch(context, shareText.orEmpty()).wire

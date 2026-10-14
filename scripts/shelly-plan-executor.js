@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=8
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=9
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -32,7 +32,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // 'closepaw' mode (goal in intentShareText, never auto-accepted) and the run
 // log records handoff:'closepaw'. Bumped so a stale v6 copy (which refuses
 // the mode as invalid) is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 8;
+// v9 (2026-10-14, ClosePaw variant background entry): after a ClosePaw
+// hand-off's Review reply, read $HOME/.shelly-closepaw-outcome.json (native
+// ClosePawHandoff.launch) so the run says background / main-display, or ends
+// as an error with the trusted variant's refusal reason. Bumped so a stale v8
+// copy is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 9;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
 // lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
@@ -45,6 +50,25 @@ function capClosePawResultSlot(raw) {
   const cleaned = String(raw == null ? '' : raw).replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ').replace(/ {2,}/g, ' ').trim();
   const cps = Array.from(cleaned);
   return cps.length <= CLOSEPAW_RESULT_SLOT_MAX_CHARS ? cleaned : cps.slice(0, CLOSEPAW_RESULT_SLOT_MAX_CHARS).join('').replace(/ +$/g, '');
+}
+
+const CLOSEPAW_OUTCOME_MAX_AGE_SEC = 60;
+const CLOSEPAW_REFUSAL_CODES = new Set(['untrusted', 'accessibility-off', 'onboarding-incomplete', 'overlay-missing', 'no-credentials', 'busy', 'vd-unavailable']);
+// Mirrors the run script's closepaw_read_outcome: the outcome native
+// ClosePawHandoff.launch recorded right before RN's Review reply, if fresh.
+// Consumed (deleted) when read. Never throws.
+function readClosePawOutcome(home) {
+  const file = path.join(home || process.env.HOME || '', '.shelly-closepaw-outcome.json');
+  try {
+    const o = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const ts = Number(o && o.tsSec);
+    const age = Math.floor(Date.now() / 1000) - ts;
+    if (!Number.isFinite(ts) || age > CLOSEPAW_OUTCOME_MAX_AGE_SEC || age < -5) return null;
+    try { fs.unlinkSync(file); } catch (_) { /* ignore */ }
+    return typeof o.code === 'string' && typeof o.message === 'string' ? { code: o.code, message: o.message } : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function sanitizeClosePawGoal(raw) {
@@ -3955,21 +3979,40 @@ async function dispatchActionTrusted(paths, opts, plan, config, roots, resultTex
         writeNotification(paths, plan, 'error', message);
         return { status: 'error', preview: message, errorMessage: message };
       }
-      maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
-        intentMode, intentTarget: intentMode === 'closepaw' ? '' : intentTarget, intentShareText: resolvedShareText,
-        // Attended-only (see unattendedPreflightFailure — intent is never
-        // reached here when unattended). RN is always alive by construction,
-        // so autoAccept just decides whether it shows the UI card or
-        // resolves silently. A ClosePaw hand-off is NEVER auto-accepted: the
-        // user must see "Hand off to ClosePaw: <goal>" first.
-        autoAccept: intentMode !== 'closepaw' && !requireActionApprovalTap(plan, config),
-      });
+      try {
+        maybeRequestActionApproval(paths, plan, actionType, preview, paths.resultFile, config, {
+          intentMode, intentTarget: intentMode === 'closepaw' ? '' : intentTarget, intentShareText: resolvedShareText,
+          // Attended-only (see unattendedPreflightFailure — intent is never
+          // reached here when unattended). RN is always alive by construction,
+          // so autoAccept just decides whether it shows the UI card or
+          // resolves silently. A ClosePaw hand-off is NEVER auto-accepted: the
+          // user must see "Hand off to ClosePaw: <goal>" first.
+          autoAccept: intentMode !== 'closepaw' && !requireActionApprovalTap(plan, config),
+        });
+      } catch (e) {
+        // v9: a trusted-variant refusal (ClosePaw codes 10-16) reaches us as
+        // a decline from RN; end as an error with the actionable reason.
+        if (intentMode === 'closepaw' && e instanceof ActionSkipped) {
+          const outcome = readClosePawOutcome(paths.home);
+          if (outcome && CLOSEPAW_REFUSAL_CODES.has(outcome.code)) {
+            const message = `ClosePaw did not start the task: ${outcome.message}`;
+            writeNotification(paths, plan, 'error', message);
+            return { status: 'error', preview: message, errorMessage: message };
+          }
+        }
+        throw e;
+      }
       // Side effect already happened in RN before the accept reply appeared —
       // no broker/native call here, unlike webhook/cli.
       if (intentMode === 'closepaw') {
         // ClosePaw returns no result to Shelly: end as "handed off", never
         // as a success-with-result (run log gets handoff:'closepaw').
         paths.handoff = 'closepaw';
+        const outcome = readClosePawOutcome(paths.home);
+        if (outcome && (outcome.code === 'background' || outcome.code === 'main-display')) {
+          // Trusted variant v0.1.0-4+ background entry.
+          return { status: 'success', preview: `${outcome.message} (no result is returned): ${closePawGoal}` };
+        }
         return { status: 'success', preview: `Handed off to ClosePaw (no result is returned): ${closePawGoal}` };
       }
       return { status: 'success', preview };

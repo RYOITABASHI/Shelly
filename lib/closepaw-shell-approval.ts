@@ -25,6 +25,7 @@ import { detectMessageLocale } from '@/lib/agent-slot-fill';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import type { AgentAddResult } from '@/lib/agent-add-queue';
 import { parseClosePawShellPendingList } from '@/lib/closepaw-shell-reply';
+import { asClosePawRefusal, closePawOutcomeKey, closePawRefusalKey } from '@/lib/closepaw-background';
 const REQ_ID_RE = /^[0-9]{10,16}-[0-9a-f]{8}$/;
 export * from '@/lib/closepaw-shell-reply';
 
@@ -37,6 +38,30 @@ function parseOutcome(raw: unknown): AgentAddResult {
     }
   } catch {}
   return { ok: false, code: 'failed', message: 'shelly closepaw: Shelly could not resolve the request' };
+}
+
+/** Native resolve() code ('background' / 'main-display' / a refusal wire / …). */
+function nativeCode(raw: unknown): string | null {
+  try {
+    const o = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const code = o && typeof o === 'object' ? (o as { code?: unknown }).code : null;
+    return typeof code === 'string' ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Localized line for a variant background-entry outcome or refusal
+ *  (ClosePawHandoff.sendVariantBroadcast), else null (keep the old text). */
+export function closePawApprovalOutcomeLine(raw: unknown, locale: Locale): string | null {
+  const code = nativeCode(raw);
+  const refusal = asClosePawRefusal(code);
+  if (refusal) return tFor(locale, closePawRefusalKey(refusal));
+  if (code === 'background' || code === 'main-display') {
+    const key = closePawOutcomeKey(code);
+    return key ? tFor(locale, key) : null;
+  }
+  return null;
 }
 
 function note(content: string, extra: Record<string, unknown> = {}): void {
@@ -76,8 +101,11 @@ export async function resolveClosePawShellFromChat(
   locale: Locale,
 ): Promise<string> {
   if (!TerminalEmulator.resolveClosePawShellApproval) return tFor(locale, 'closepaw.shell_approval_unavailable');
-  const r = parseOutcome(await TerminalEmulator.resolveClosePawShellApproval(pending.reqId, decision, 'chat', pending.hash8).catch(() => null));
+  const raw = await TerminalEmulator.resolveClosePawShellApproval(pending.reqId, decision, 'chat', pending.hash8).catch(() => null);
+  const r = parseOutcome(raw);
   logInfo('ClosePawShell', `chat ${decision} ${pending.reqId}: ${r.ok ? 'ok' : 'refused'}`);
+  const outcomeLine = decision === 'approve' ? closePawApprovalOutcomeLine(raw, locale) : null;
+  if (outcomeLine) return outcomeLine;
   return r.ok
     ? tFor(locale, decision === 'approve' ? 'closepaw.shell_approved_chat' : 'closepaw.shell_rejected_chat')
     : r.message;
@@ -89,10 +117,12 @@ export async function handleClosePawDecisionDeepLink(params: { reqId: unknown; d
   const decision = params.decision === 'approve' ? 'approve' : params.decision === 'reject' ? 'reject' : null;
   const nonce = typeof params.nonce === 'string' ? params.nonce : '';
   if (!REQ_ID_RE.test(reqId) || !decision || !TerminalEmulator.resolveClosePawShellApproval) return;
-  const r = parseOutcome(await TerminalEmulator.resolveClosePawShellApproval(reqId, decision, 'notification', nonce).catch(() => null));
+  const raw = await TerminalEmulator.resolveClosePawShellApproval(reqId, decision, 'notification', nonce).catch(() => null);
+  const r = parseOutcome(raw);
   // Never log the nonce.
   logInfo('ClosePawShell', `notification ${decision} ${reqId}: ${r.ok ? 'ok' : 'refused'}`);
-  note(r.ok ? tFor('en', decision === 'approve' ? 'closepaw.shell_approved_notification' : 'closepaw.shell_rejected_notification') : r.message);
+  const outcomeLine = decision === 'approve' ? closePawApprovalOutcomeLine(raw, 'en') : null;
+  note(outcomeLine ?? (r.ok ? tFor('en', decision === 'approve' ? 'closepaw.shell_approved_notification' : 'closepaw.shell_rejected_notification') : r.message));
 }
 
 /** Shown when ChatGPT / the terminal tries to approve something that, with

@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-14: CC（feat/closepaw-background-entry）が Shelly 用 ClosePaw 変種 v0.1.0-4 のバックグラウンド入口（順序付き明示ブロードキャスト `ai.closepaw.action.SHELLY_RUN_GOAL` → `ShellyGoalReceiver`）に対応。変種なら activity 起動の代わりにブロードキャストし、ClosePaw は Shizuku 仮想ディスプレイで作業（前面に出ない）。結果コードをシム/エージェント実行結果/チャットに反映、0・5 秒無応答は従来の activity 起動へフォールバック。実機未検証 — 下記 P1 エントリ参照。
 - 2026-10-14: CC（fix/release-signing）がリリース APK が公開 RN/Expo debug.keystore で署名されていることを受け、非公開リリース鍵（APK Signature Scheme v3 鍵ローテーション、API 28+ はその場更新）・CI 署名検証・暗号化バックアップ/復元・アップデーターの署名判定を実装。main の切り替えはオーナー承認待ち — 下記 P0 エントリ参照。
 - 2026-10-13: CC（feat/codex-remote-control）が ChatGPT アプリの「Codex リモートコントロール」のホスト化を実装。Codex runtime を v0.162.1-termux.1 へ更新（bump ワークフローが `-termux.N` 付きタグを全件スキップして 0.156.1 で凍結していた問題も修正）、libexec_wrapper v224 で codex-termux がハードコードする `/data/data/com.termux` ソケットルートをアプリ領域へリダイレクト、`shelly codex pair|code` を追加。Experimental・実機未検証 — 下記 P1 エントリ参照。
 - 2026-10-13: CC（fix/closepaw-background）が `shelly closepaw` のバックグラウンド動作を修正（build 2534 実機で Shelly がバックグラウンドだと RN の 250ms ポーリングが止まり "the Shelly app did not respond" でタイムアウトしていた）。キューをネイティブ専有の `$HOME/.shelly-closepaw-queue` に分離し `ClosePawHandoff.kt` が FileObserver + 1 秒ポーリングで処理、直接起動できないときはタップで続行する通知にフォールバック。実機未検証 — 下記「ClosePaw 引き継ぎ」参照。
@@ -76,6 +77,15 @@
 
 → sync: README「Install → Signing-key rotation」「Release Integrity」節に記載済み。
 （旧エントリ「🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)」を本エントリに統合。）
+
+### Shelly 用 ClosePaw 変種 v0.1.0-4 のバックグラウンド入口（Shizuku 仮想ディスプレイ）— 実装済み・実機未検証 (P1)
+
+2026-10-14、ブランチ `feat/closepaw-background-entry`（未マージ）。変種リリース `shelly-v0.1.0-4`（fork `RYOITABASHI/closepaw`）が非 UI の入口を追加: 明示コンポーネント `ai.closepaw/.app.ShellyGoalReceiver` への順序付きブロードキャスト（action `ai.closepaw.action.SHELLY_RUN_GOAL`、extras `goal` / `shelly_caller_token` / 任意 `allow_main_display`）で、ClosePaw の activity を前面に出さず Shizuku 仮想ディスプレイ上で実行する。
+- `ClosePawHandoff.launch()`: インストール済み `ai.closepaw` がピン留め証明書の変種（既存の `isTrustedVariantInstalled`）のときだけ、activity 起動より先に `sendOrderedBroadcast`（initialCode 0、結果受信は専用 HandlerThread、最大 5 秒待機、`FLAG_RECEIVER_FOREGROUND | FLAG_INCLUDE_STOPPED_PACKAGES`）。API 34+ は `BroadcastOptions.setShareIdentityEnabled(true)` 付きの options オーバーロード（ClosePaw 側のセキュリティレビューで送信元 identity を要求）。`allow_main_display` は**一切送らない**（ユーザーの画面を勝手に奪わない、ClosePaw 側も設定 ON でない限り無視）。メインスレッドからは呼ばれない前提で、メインスレッド上なら従来経路。
+- 結果コード: 1 → `background`「ClosePaw がバックグラウンドで作業中、スマホはそのまま使える（操作中のアプリは避ける）」/ 2 → `main-display`「ClosePaw が画面を操作中」/ 10–16 → `ClosePawRefusedException`（`CLOSEPAW_REFUSED:<wire>`、16「Shizuku を起動して再試行」、15「ClosePaw は実行中」等）/ 0・未知コード・5 秒タイムアウト・送信例外 → 従来の activity 起動（BAL 判定・通知フォールバック含む、既存動作のまま）。ブロードキャスト経路では BAL 通知フォールバックは不要（明示コンポーネントへのブロードキャストはバックグラウンドから許可）。
+- 反映先: シム（`handleLine` → `resultFor`、公式 ClosePaw では変種経路に入らないので現状は主に承認後の `resolve()` 経由）、`ClosePawShellApprovals.resolve()` の Outcome（チャット/通知承認のチャット行に `closepaw.outcome_*` / `closepaw.refused_*` を表示）、Review 承認（`app/_layout.tsx`、成功はチャット行、拒否はチャット行＋アラート）、エージェント実行結果（ネイティブが `$HOME/.shelly-closepaw-outcome.json` に {code,message,tsSec} を記録 → run script v67 `closepaw_read_outcome` / PlanSpec executor v9 `readClosePawOutcome` が 60 秒以内のものだけ読んで「バックグラウンドで作業中」または拒否理由つき error に）。
+- **既知の制約**: (a) 5 秒タイムアウト後に遅れて結果 1 が返った場合、フォールバックの activity 起動と二重になり得る（ClosePaw 側の単一タスク制御＝コード 15 頼み、遅延結果はログのみ）。(b) `shelly closepaw` は変種インストール時は承認待ちで即終了するため、承認後のバックグラウンド実行結果はシム出力ではなくチャット行に出る（シムに結果を返すには `shelly closepaw status <reqId>` 等が別途必要、P2）。(c) outcome ファイルは単一（同時に複数 hand-off は ClosePaw 側で 15 になる前提）。
+- **実機未検証**（Fold6 / API 36、変種 v0.1.0-4 + Shizuku）: (1) エージェント Review 承認 → ClosePaw が前面に出ず仮想ディスプレイで実行、チャットに「バックグラウンドで作業中」、実行結果も同文 (2) `shelly closepaw` → 通知［承認］/「承認 <hash8>」→ 同上 (3) Shizuku 停止で 16 → 「Shizuku を起動」表示・実行結果 error (4) 実行中に再依頼で 15 (5) 変種 v0.1.0-2/3（レシーバ無し）で 0 → 従来の activity 起動 (6) API 34+ で share-identity 付き送信が ClosePaw 側で受理される（rotation 署名の Shelly で確認すること）。
 
 ### Shelly 用 ClosePaw ビルド（caller token）と `shelly closepaw` の Shelly 承認 — 実装済み・実機未検証 (P1)
 

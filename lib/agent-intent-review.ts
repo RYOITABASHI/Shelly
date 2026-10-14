@@ -97,29 +97,33 @@ export type FireAgentIntent = (
   mode: AgentIntentMode,
   target: string,
   shareText?: string | null,
-  // Native resolves null for launch/share and 'launched' | 'notified' for
-  // closepaw (notified = posted a tap-to-continue notification because
-  // Shelly could not start an activity from the background).
+  // Native resolves null for launch/share and 'launched' | 'notified' |
+  // 'background' | 'main-display' for closepaw (notified = posted a
+  // tap-to-continue notification because Shelly could not start an activity
+  // from the background; background / main-display = the trusted variant's
+  // broadcast entry started the task, lib/closepaw-background.ts).
 ) => Promise<unknown>;
 
-/** Fires the native side effect only from the human Review accept path. */
+/** Fires the native side effect only from the human Review accept path.
+ *  Resolves the native outcome for closepaw ('launched' | 'notified' |
+ *  'background' | 'main-display', see lib/closepaw-background.ts), else null. */
 export async function fireReviewedAgentIntent(
   request: ReviewedAgentIntent,
   fireAgentIntent: FireAgentIntent,
-): Promise<void> {
+): Promise<unknown> {
   const mode = request.intentMode ?? 'launch';
   if (mode === 'closepaw') {
     // Fire exactly the task text the reviewer saw (closePawReviewLine renders
     // closePawTaskText too); native prepends only the constant
     // CLOSEPAW_GOAL_PREFIX. Target is meaningless for this mode.
-    await fireAgentIntent('closepaw', '', closePawTaskText(request.intentShareText));
-    return;
+    return fireAgentIntent('closepaw', '', closePawTaskText(request.intentShareText));
   }
   await fireAgentIntent(
     mode,
     request.intentTarget ?? '',
     request.intentShareText ?? null,
   );
+  return null;
 }
 
 /** ClosePaw hand-offs are never auto-accepted, even when the runtime approval
