@@ -44,7 +44,7 @@ env:
   # private key). Do NOT publish rotation-signed builds to a channel while
   # main is still legacy-debug: a rotated install refuses later debug-only
   # APKs.
-  SHELLY_DEFAULT_SIGNING_MODE: legacy-debug
+  SHELLY_DEFAULT_SIGNING_MODE: rotation
 
 jobs:
   signing_mode:
