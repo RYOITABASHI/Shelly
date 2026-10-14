@@ -333,6 +333,11 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    *  executing for agentId, or null. Process memory only — a same-uid process
    *  cannot fake it (unlike files under $HOME). */
   getActiveAgentRunStartedAt?(agentId: string): Promise<number | null>;
+  /** True while agentId has a native run whose single pre-approved ClosePaw
+   *  hand-off is unclaimed (NativeAgentRunRegistry). */
+  isClosePawHandoffAvailable?(agentId: string): Promise<boolean>;
+  /** Atomically claim that hand-off; true exactly once per run. */
+  claimClosePawHandoffForRun?(agentId: string): Promise<boolean>;
   /** Native primitive for LockPromptActivity's lock-screen bridge
    *  (docs/superpowers/specs/2026-07-11-app-act-design.md §0.1): if the
    *  device is already unlocked, resolves true immediately with no UI. If

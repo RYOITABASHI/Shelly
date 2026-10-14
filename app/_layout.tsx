@@ -2181,20 +2181,20 @@ export default function RootLayout() {
     // seal is honoured only while this process's AgentRuntime is actually
     // running that agent (NativeAgentRunRegistry, process memory) and at
     // most once per such run.
-    const closePawFiredForRun = new Map<string, number>();
+    // The once-per-run flag lives natively (NativeAgentRunRegistry) so a JS
+    // reload cannot reset it.
     const closePawPreapprovedFor = async (request: AgentActionApprovalRequest): Promise<boolean> => {
       if (request.actionType !== 'intent' || request.intentMode !== 'closepaw') return false;
       const activeRunStartedAt = await TerminalEmulator.getActiveAgentRunStartedAt?.(request.agentId).catch(() => null);
-      if (!closePawRunProvenanceOk({ activeRunStartedAt, lastFiredRunStartedAt: closePawFiredForRun.get(request.agentId) })) {
+      const handoffAvailable = await TerminalEmulator.isClosePawHandoffAvailable?.(request.agentId).catch(() => false);
+      if (!closePawRunProvenanceOk({ activeRunStartedAt, handoffAvailable: handoffAvailable === true })) {
         return false;
       }
       const agent = useAgentStore.getState().agents.find((a) => a.id === request.agentId);
       return isClosePawPreapproved(request, agent ?? null).catch(() => false);
     };
-    const markClosePawFiredForRun = async (agentId: string) => {
-      const startedAt = await TerminalEmulator.getActiveAgentRunStartedAt?.(agentId).catch(() => null);
-      if (typeof startedAt === 'number') closePawFiredForRun.set(agentId, startedAt);
-    };
+    const claimClosePawHandoffForRun = async (agentId: string): Promise<boolean> =>
+      (await TerminalEmulator.claimClosePawHandoffForRun?.(agentId).catch(() => false)) === true;
 
     const autoResolveActionApproval = async (
       parsed: AgentActionApprovalRequest,
@@ -2216,8 +2216,8 @@ export default function RootLayout() {
           if (!TerminalEmulator.fireAgentIntent) return false;
           if (intentRequiresHumanReview(minted)) {
             if (!opts?.closePawPreapproved || minted.agentId !== parsed.agentId || !(await closePawPreapprovedFor(minted))) return false;
-            // One hand-off per native run: mark BEFORE firing.
-            await markClosePawFiredForRun(minted.agentId);
+            // One hand-off per native run: claim (atomically, natively) BEFORE firing.
+            if (!(await claimClosePawHandoffForRun(minted.agentId))) return false;
           }
           try {
             await fireReviewedAgentIntent(minted, TerminalEmulator.fireAgentIntent);

@@ -285,7 +285,18 @@ async function postChatGptAudit(conversationKey: string, messageId: string, draf
   const locale = draftLocale(draft);
   const agent = createdAgentFor(messageId);
   postNote(conversationKey, tFor(locale, 'agents.terminal_request_chatgpt_audit_chat', { name: agent?.name ?? draft.name }));
-  if (!agent) return;
+  if (!agent) {
+    // Never skip the audit: when the created agent could not be identified
+    // exactly, still announce it (no Disable action — it would need an exact
+    // agent id); the tap opens the agent list.
+    await TerminalEmulator.postAgentAddAuditNotification?.(
+      '',
+      tFor(locale, 'agents.terminal_request_audit_title', { name: draft.name }),
+      tFor(locale, 'agents.terminal_request_audit_body_no_disable', { name: draft.name }),
+      '',
+    ).catch(() => false);
+    return;
+  }
   const nonce = randomHex(16);
   disableNonces.set(agent.id, { nonce, expiresAt: Date.now() + DISABLE_NONCE_TTL_MS });
   await TerminalEmulator.postAgentAddAuditNotification?.(
@@ -346,6 +357,14 @@ export async function handleAgentCtl(ctl: AgentCtlRequest): Promise<AgentAddResu
   if (ctl.op === 'reject') {
     const b = getAgentAddBinding(ctl.reqId);
     if (!b || b.consumed) return { ok: false, code: 'invalid', message: 'shelly agent reject: no pending request with that id' };
+    // Same cold-start rule as the notification decision: only consume once
+    // the pane handler and the pending draft are there, so a reject sent
+    // while Shelly is still starting can simply be retried.
+    const ready = await waitFor(() => handlers.has(b.conversationKey) && !!findPendingDraftMessage(b), DECISION_READY_TIMEOUT_MS);
+    if (!ready) {
+      return { ok: false, code: 'failed', message: "shelly agent reject: Shelly's AI pane is not ready yet; run the command again in a few seconds" };
+    }
+    if (b.consumed) return { ok: false, code: 'invalid', message: 'shelly agent reject: this request was already decided' };
     consumeAgentAddBinding(ctl.reqId);
     return applyAgentAddDecision(b, 'reject', 'chatgpt');
   }

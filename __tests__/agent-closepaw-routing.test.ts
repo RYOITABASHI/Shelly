@@ -224,6 +224,35 @@ describe('ClosePaw pre-approval seal', () => {
     await expect(isClosePawPreapproved(r, { ...a, tool: { type: 'cli', cli: 'codex' } })).resolves.toBe(false);
   });
 
+  it('a sealed agent rebuilt from its on-disk JSON (app restart) still matches', async () => {
+    const created = {
+      ...agent,
+      schedule: '0 8 * * *',
+      autonomous: undefined,
+      tool: { type: 'perplexity', model: undefined },
+      orchestration: { steps: ['AIニュースを集めて', { instruction: '要約して', tool: undefined }], maxSteps: undefined },
+      notificationTrigger: undefined,
+      actions: undefined,
+    };
+    await sealClosePawPreapproval(created, 'chatgpt');
+    // What the store rebuilds from ~/.shelly/agents/<id>.json after a restart:
+    // JSON round-trip plus disk/runtime-only fields the seal does not cover.
+    const fromDisk = {
+      ...JSON.parse(JSON.stringify(created)),
+      enabled: true,
+      lastRun: 1760000000000,
+      lastResult: 'success',
+      nextExpectedAt: 1760086400000,
+      orchestration: { ...JSON.parse(JSON.stringify(created.orchestration)), maxSteps: 4 },
+      actions: [],
+    };
+    const r = request('LINEで自分に送って（内容: 今日のニュース）');
+    await expect(isClosePawPreapproved(r, fromDisk)).resolves.toBe(true);
+    // …but a real edit on disk still invalidates it.
+    await expect(isClosePawPreapproved(r, { ...fromDisk, prompt: 'edited on disk' })).resolves.toBe(false);
+    await expect(isClosePawPreapproved(r, { ...fromDisk, orchestration: { steps: ['AIニュースを集めて'] } })).resolves.toBe(false);
+  });
+
   it('a seal is bound to its agent definition hash and can be revoked', async () => {
     await sealClosePawPreapproval(agent, 'chat');
     expect(JSON.parse(stored!)[0]).toMatchObject({ agentId: 'agent-1', stepIndex: -1, mode: 'closepaw', goalTemplate: 'LINEで自分に送って（内容: {{result}}）' });
@@ -253,14 +282,18 @@ describe('ClosePaw pre-approval seal', () => {
   });
 
   it('forged action-approval files: only a run the app itself is executing, once per run', () => {
-    expect(closePawRunProvenanceOk({ activeRunStartedAt: null, lastFiredRunStartedAt: undefined })).toBe(false);
-    expect(closePawRunProvenanceOk({ activeRunStartedAt: undefined, lastFiredRunStartedAt: undefined })).toBe(false);
-    expect(closePawRunProvenanceOk({ activeRunStartedAt: 1000, lastFiredRunStartedAt: undefined })).toBe(true);
-    expect(closePawRunProvenanceOk({ activeRunStartedAt: 1000, lastFiredRunStartedAt: 1000 })).toBe(false);
-    expect(closePawRunProvenanceOk({ activeRunStartedAt: 2000, lastFiredRunStartedAt: 1000 })).toBe(true);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: null, handoffAvailable: true })).toBe(false);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: undefined, handoffAvailable: true })).toBe(false);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: 1000, handoffAvailable: true })).toBe(true);
+    expect(closePawRunProvenanceOk({ activeRunStartedAt: 1000, handoffAvailable: false })).toBe(false);
     const layout = read('app/_layout.tsx');
     expect(layout).toContain('TerminalEmulator.getActiveAgentRunStartedAt?.(request.agentId)');
-    expect(layout).toContain('await markClosePawFiredForRun(minted.agentId);');
+    expect(layout).toContain('TerminalEmulator.isClosePawHandoffAvailable?.(request.agentId)');
+    expect(layout).toContain('if (!(await claimClosePawHandoffForRun(minted.agentId))) return false;');
+    // The once-per-run flag lives natively (survives a JS reload), claimed atomically.
+    expect(layout).not.toContain('new Map<string, number>();\n    const closePawPreapprovedFor');
+    const registryNative = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/NativeAgentRunRegistry.kt');
+    expect(registryNative).toContain('closePawHandoffClaimed?.compareAndSet(false, true) == true');
     const runtime = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentRuntime.kt');
     expect(runtime).toMatch(/val runToken = NativeAgentRunRegistry\.begin\(agentId\)\s*try \{\s*return runAgentInner\(/);
     expect(runtime).toContain('NativeAgentRunRegistry.end(agentId, runToken)');

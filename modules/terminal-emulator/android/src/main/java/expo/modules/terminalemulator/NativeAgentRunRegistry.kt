@@ -1,6 +1,7 @@
 package expo.modules.terminalemulator
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Process-memory record of the agent runs AgentRuntime itself is executing
@@ -15,21 +16,38 @@ import java.util.concurrent.ConcurrentHashMap
  * on disk (SharedPreferences / $HOME are writable by the same uid): it is a
  * plain in-memory map, populated around AgentRuntime.runAgent, and gone with
  * the process — which can only make the check stricter.
+ *
+ * It also owns the "at most one pre-approved ClosePaw hand-off per run" flag
+ * (claimClosePawHandoff), so a JS reload cannot reset it.
  */
 object NativeAgentRunRegistry {
-    /** agentId -> start time (ms) of the run in progress. */
-    private val active = ConcurrentHashMap<String, Long>()
+    private class ActiveRun(val startedAt: Long) {
+        val closePawHandoffClaimed = AtomicBoolean(false)
+    }
+
+    /** agentId -> the run in progress. */
+    private val active = ConcurrentHashMap<String, ActiveRun>()
 
     fun begin(agentId: String): Long {
         val now = System.currentTimeMillis()
-        active[agentId] = now
+        active[agentId] = ActiveRun(now)
         return now
     }
 
     fun end(agentId: String, startedAt: Long) {
-        active.remove(agentId, startedAt)
+        active.computeIfPresent(agentId) { _, run -> if (run.startedAt == startedAt) null else run }
     }
 
-    /** Start time of the run AgentRuntime is executing for [agentId], or null. */
-    fun activeRunStartedAt(agentId: String): Long? = active[agentId]
+    /** Start time (ms) of the run AgentRuntime is executing for [agentId], or null. */
+    fun activeRunStartedAt(agentId: String): Long? = active[agentId]?.startedAt
+
+    /** True while [agentId] has a run in progress whose single pre-approved
+     *  ClosePaw hand-off has not been claimed yet. */
+    fun closePawHandoffAvailable(agentId: String): Boolean =
+        active[agentId]?.closePawHandoffClaimed?.get() == false
+
+    /** Atomically claim the run's single pre-approved ClosePaw hand-off.
+     *  True exactly once per run; false with no run in progress. */
+    fun claimClosePawHandoff(agentId: String): Boolean =
+        active[agentId]?.closePawHandoffClaimed?.compareAndSet(false, true) == true
 }

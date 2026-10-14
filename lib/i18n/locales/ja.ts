@@ -328,6 +328,7 @@ const ja: Record<string, string> = {
   'agents.terminal_request_chatgpt_audit_chat': 'エージェント「{{name}}」が ChatGPT から承認されました。心当たりがなければ、通知かエージェント一覧から無効化してください。',
   'agents.terminal_request_audit_title': 'エージェント「{{name}}」が ChatGPT から承認されました',
   'agents.terminal_request_audit_body': 'ChatGPT（Codex）の会話から承認されました。タップで確認、意図しない場合は「無効化」を押してください。',
+  'agents.terminal_request_audit_body_no_disable': 'ChatGPT（Codex）の会話から承認されました。タップでエージェント一覧を開き、意図しない場合は「{{name}}」を確認・停止してください。',
   'agents.terminal_request_disabled': 'エージェント「{{name}}」を通知から無効化しました。',
   'agentplan.closepaw_auto_routed_line': 'この部分は ClosePaw がスマホを操作して実行します: {{step}}（ClosePaw に渡す内容はこのエージェントの実行結果から作られ、Web 由来の信頼できない文章を含むことがあります。このエージェントを承認すると、編集するまで以後の実行でもこのステップは承認済みになります）',
   'agents.terminal_request_review_only': 'このエージェントには高リスクな処理（{{reasons}}）が含まれるため、通知や ChatGPT からは承認できません。Shelly のこの画面で確認してください。',

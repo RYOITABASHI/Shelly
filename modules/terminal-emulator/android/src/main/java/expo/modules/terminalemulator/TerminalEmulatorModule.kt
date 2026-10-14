@@ -1333,6 +1333,16 @@ class TerminalEmulatorModule : Module() {
             NativeAgentRunRegistry.activeRunStartedAt(agentId)?.toDouble()
         }
 
+        // Once-per-run pre-approved ClosePaw hand-off, owned natively so a JS
+        // reload cannot reset it (NativeAgentRunRegistry).
+        AsyncFunction("isClosePawHandoffAvailable") { agentId: String ->
+            NativeAgentRunRegistry.closePawHandoffAvailable(agentId)
+        }
+
+        AsyncFunction("claimClosePawHandoffForRun") { agentId: String ->
+            NativeAgentRunRegistry.claimClosePawHandoff(agentId)
+        }
+
         AsyncFunction("cancelAgentAddNotification") {
             val context = requireReactContext()
             AgentAddHandoff.cancelNotification(context)

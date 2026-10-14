@@ -131,22 +131,47 @@ function closePawAction(agent: ClosePawAgentLike) {
 }
 
 /** Hash of everything that decides what the agent does. */
+/** JSON round-trip: exactly what survives being written to and read back from
+ *  ~/.shelly/agents/<id>.json (undefined dropped, -0 → 0, etc.). */
+function asPersisted(value: unknown): unknown {
+  if (value === undefined || value === null) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The canonical, persistence-stable form of everything the seal covers. The
+ * SAME normalization runs at seal time (the in-memory agent just created)
+ * and at check time (the agent the store rebuilt from its on-disk JSON after
+ * an app restart), so a reload never invalidates a seal while any real edit
+ * does. Only the orchestration STEPS are covered (not runtime knobs the app
+ * may clamp/add later); empty/absent collections normalize to null.
+ */
+export function normalizeClosePawDefinition(agent: ClosePawAgentLike): Record<string, unknown> {
+  const actions = asPersisted(agent.actions);
+  const orchestration = agent.orchestration && typeof agent.orchestration === 'object'
+    ? asPersisted((agent.orchestration as { steps?: unknown }).steps)
+    : null;
+  return {
+    id: agent.id,
+    prompt: agent.prompt ?? '',
+    action: asPersisted(agent.action),
+    actions: Array.isArray(actions) && actions.length > 0 ? actions : null,
+    orchestrationSteps: Array.isArray(orchestration) && orchestration.length > 0 ? orchestration : null,
+    // Review fix: when / how autonomously / on what trigger / with which
+    // engine it runs are part of what the user approved too.
+    schedule: agent.schedule ?? null,
+    autonomous: agent.autonomous === true,
+    notificationTrigger: asPersisted(agent.notificationTrigger),
+    tool: asPersisted(agent.tool),
+  };
+}
+
 export async function closePawDefinitionHash(agent: ClosePawAgentLike): Promise<string> {
-  return agentAddSha256Hex(
-    `shelly-closepaw-preapproval-v2\n${stableStringify({
-      id: agent.id,
-      prompt: agent.prompt ?? '',
-      action: agent.action ?? null,
-      actions: agent.actions ?? null,
-      orchestration: agent.orchestration ?? null,
-      // Review fix: when / how autonomously / on what trigger / with which
-      // engine it runs are part of what the user approved too.
-      schedule: agent.schedule ?? null,
-      autonomous: agent.autonomous === true,
-      notificationTrigger: agent.notificationTrigger ?? null,
-      tool: agent.tool ?? null,
-    })}`,
-  );
+  return agentAddSha256Hex(`shelly-closepaw-preapproval-v3\n${stableStringify(normalizeClosePawDefinition(agent))}`);
 }
 
 /** Seal the pre-approval for a just-registered agent. No-op unless the agent
@@ -264,9 +289,12 @@ export function agentMatchesApprovedDraft(
  */
 export function closePawRunProvenanceOk(params: {
   activeRunStartedAt: number | null | undefined;
-  lastFiredRunStartedAt: number | null | undefined;
+  /** NativeAgentRunRegistry.closePawHandoffAvailable — the once-per-run flag
+   *  is owned natively so a JS reload cannot reset it; the actual fire is
+   *  preceded by an atomic native claim. */
+  handoffAvailable: boolean;
 }): boolean {
   const started = params.activeRunStartedAt;
   if (typeof started !== 'number' || !Number.isFinite(started) || started <= 0) return false;
-  return params.lastFiredRunStartedAt !== started;
+  return params.handoffAvailable === true;
 }

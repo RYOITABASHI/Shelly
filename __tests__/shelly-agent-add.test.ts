@@ -423,6 +423,29 @@ describe('ChatGPT text confirm (`shelly agent confirm <requestId> <hash8>`)', ()
     expect(verifyAgentAddTextConfirm(REQ, '0a1b2c3d', { allowed: true, now: NOW })).toMatchObject({ reason: 'unknown' });
   });
 
+  it('the ChatGPT-approval audit is never skipped (no exact agent id → notification without Disable)', () => {
+    const flow = read('lib/agent-add-flow.ts');
+    const i = flow.indexOf('async function postChatGptAudit');
+    const body = flow.slice(i, flow.indexOf('export async function applyAgentAddDecision'));
+    expect(body).toMatch(/if \(!agent\) \{\s*\/\/[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*await TerminalEmulator\.postAgentAddAuditNotification\?\.\(\s*'',/);
+    expect(body).toContain("'agents.terminal_request_audit_body_no_disable'");
+    const kt = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/AgentAddHandoff.kt');
+    expect(kt).toContain('val withDisable = agentId.isNotEmpty() || disableNonce.isNotEmpty()');
+    expect(kt).toContain('if (withDisable) "shelly:///ai" else "shelly:///agent-chat"');
+    expect(kt).toContain('if (disableAction != null) builder.addAction(disableAction)');
+  });
+
+  it('`shelly agent reject` only consumes once the pane + pending draft are ready (cold start retry)', () => {
+    const flow = read('lib/agent-add-flow.ts');
+    const i = flow.indexOf("if (ctl.op === 'reject') {");
+    const body = flow.slice(i, flow.indexOf('const allowed = useSettingsStore'));
+    const wait = body.indexOf('await waitFor(');
+    const consume = body.indexOf('consumeAgentAddBinding(ctl.reqId);');
+    expect(wait).toBeGreaterThan(0);
+    expect(consume).toBeGreaterThan(wait);
+    expect(body).toContain('run the command again in a few seconds');
+  });
+
   it('flow: setting gate, audit notification with Disable, plain chat record', () => {
     const flow = read('lib/agent-add-flow.ts');
     expect(flow).toContain("useSettingsStore.getState().settings.agentApproveFromChatGpt !== false");

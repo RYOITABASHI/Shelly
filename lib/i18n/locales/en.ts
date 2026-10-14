@@ -333,6 +333,7 @@ const en: Record<string, string> = {
   'agents.terminal_request_chatgpt_audit_chat': 'Agent "{{name}}" was approved from ChatGPT. If that was not you, disable it from the notification or the agent list.',
   'agents.terminal_request_audit_title': 'Agent "{{name}}" was approved from ChatGPT',
   'agents.terminal_request_audit_body': 'Approved from the ChatGPT conversation (Codex). Tap to review, or Disable it if you did not want this.',
+  'agents.terminal_request_audit_body_no_disable': 'Approved from the ChatGPT conversation (Codex). Tap to open the agent list and review or pause "{{name}}" if you did not want this.',
   'agents.terminal_request_disabled': 'Agent "{{name}}" was disabled from the notification.',
   'agentplan.closepaw_auto_routed_line': 'This part will be done by ClosePaw operating the phone: {{step}} (what ClosePaw is given is built from this agent\'s own results, which can include untrusted text from the web; approving this agent also approves this step for its future runs until you edit it)',
   'agents.terminal_request_review_only': 'This agent includes high-risk steps ({{reasons}}), so it can only be approved here in Shelly — not from the notification or ChatGPT.',

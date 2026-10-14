@@ -467,7 +467,11 @@ object AgentAddHandoff {
      * shelly:///agent-add-disable?agentId&nonce (single-use nonce, RN memory).
      */
     fun postAuditNotification(context: Context, agentId: String, title: String, body: String, disableNonce: String): Boolean {
-        if (!Regex("^[A-Za-z0-9_-]{1,128}$").matches(agentId) || !HEX_NONCE_RE.matches(disableNonce)) return false
+        // agentId + nonce empty = the created agent could not be identified
+        // exactly: still announce the approval (never skipped), without a
+        // Disable action; the tap opens the agent list.
+        val withDisable = agentId.isNotEmpty() || disableNonce.isNotEmpty()
+        if (withDisable && (!Regex("^[A-Za-z0-9_-]{1,128}$").matches(agentId) || !HEX_NONCE_RE.matches(disableNonce))) return false
         return try {
             val nm = context.getSystemService(NotificationManager::class.java) ?: return false
             if (!nm.areNotificationsEnabled()) return false
@@ -486,12 +490,17 @@ object AgentAddHandoff {
                 Intent(Intent.ACTION_VIEW, android.net.Uri.parse(uri)).setPackage(context.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            val disable = viewIntent("shelly:///agent-add-disable?agentId=$agentId&nonce=$disableNonce", REQUEST_CODE_DISABLE)
-            val review = viewIntent("shelly:///ai", REQUEST_CODE_REVIEW)
+            // Without an exact agent id the tap opens the agent list instead.
+            val review = viewIntent(if (withDisable) "shelly:///ai" else "shelly:///agent-chat", REQUEST_CODE_REVIEW)
             @Suppress("DEPRECATION")
-            val disableAction = Notification.Action.Builder(null as android.graphics.drawable.Icon?, context.getString(R.string.agent_add_action_disable), disable)
-                .also { if (Build.VERSION.SDK_INT >= 31) it.setAuthenticationRequired(true) }
-                .build()
+            val disableAction = if (withDisable) {
+                val disable = viewIntent("shelly:///agent-add-disable?agentId=$agentId&nonce=$disableNonce", REQUEST_CODE_DISABLE)
+                Notification.Action.Builder(null as android.graphics.drawable.Icon?, context.getString(R.string.agent_add_action_disable), disable)
+                    .also { if (Build.VERSION.SDK_INT >= 31) it.setAuthenticationRequired(true) }
+                    .build()
+            } else {
+                null
+            }
             val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 Notification.Builder(context, CHANNEL_ID)
             } else {
@@ -517,7 +526,7 @@ object AgentAddHandoff {
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentIntent(review)
                 .setAutoCancel(true)
-                .addAction(disableAction)
+            if (disableAction != null) builder.addAction(disableAction)
             nm.notify(AUDIT_NOTIFICATION_ID, builder.build())
             Log.i(TAG, "agent add: ChatGPT-approval audit notification posted for $agentId")
             true
