@@ -136,15 +136,18 @@ describe('build-android.yml signing gates', () => {
     expect(workflow).toContain('FATAL: release APK is unsigned');
   });
 
-  it('rotation check workflow revokes every old-signer capability except installed-data', () => {
+  it('rotation check keeps installed-data + permission for the old signer and revokes the rest', () => {
     const check = fs.readFileSync(path.join(ROOT, '.github/workflows/signing-rotation-check.yml'), 'utf8');
     expect(check).toContain(
-      '--set-installed-data true --set-shared-uid false --set-permission false --set-rollback false --set-auth false',
+      '--set-installed-data true --set-shared-uid false --set-permission true --set-rollback false --set-auth false',
     );
     expect(check).toContain('bash scripts/signing/rotation-emulator-test.sh');
     const script = fs.readFileSync(path.join(ROOT, 'scripts/signing/rotation-emulator-test.sh'), 'utf8');
     expect(script).toContain('expect_install "${work}/v3-debug.apk" INSTALL_FAILED_UPDATE_INCOMPATIBLE');
     expect(script).toContain('expect_install "${work}/v2-rotation.apk" success');
+    // the throwaway package must declare signature permissions like Shelly
+    expect(script).toContain('android:protectionLevel="signature"');
+    expect(script).toContain('DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION');
   });
 
   it('pins both the new release and the legacy debug certificate fingerprints', () => {

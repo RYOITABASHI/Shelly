@@ -19,7 +19,7 @@ on:
   push:
     # Only branches allowed by the `release-signing` environment's deployment
     # branch policy can read the signing secrets.
-    branches: [main, fix/release-signing]
+    branches: [main, fix/release-signing, fix/rotation-permission-capability]
     paths:
       - 'signing/**'
       - 'scripts/signing/**'
@@ -82,7 +82,7 @@ jobs:
             echo "GENERATE_LINEAGE=0" >> "${GITHUB_ENV}"
           fi
 
-      - name: Generate lineage (debug -> release, old signer capabilities revoked except installed-data)
+      - name: Generate lineage (debug -> release; old signer keeps installed-data + permission only)
         if: ${{ env.GENERATE_LINEAGE == '1' }}
         env:
           REL_PASS: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
@@ -96,12 +96,17 @@ jobs:
             --old-signer --ks signing/legacy-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
             --new-signer --ks "${RUNNER_TEMP}/shelly-release.p12" --ks-key-alias "${REL_ALIAS}" --ks-pass env:REL_PASS --key-pass env:REL_KEY_PASS
           # installed-data MUST stay true: it is what lets the rotated APK
-          # update a debug-signed install in place. Everything else the old,
-          # public key could vouch for is revoked; rollback=false means an APK
-          # signed only with the debug key can no longer update a rotated app.
+          # update a debug-signed install in place. permission MUST also stay
+          # true: without it the platform refuses the update with
+          # INSTALL_FAILED_DUPLICATE_PERMISSION because the rotated package
+          # re-declares its own signature permissions (e.g. androidx's
+          # DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION) that are owned by the
+          # debug-signed install (found on device, build 2554). shared-uid,
+          # rollback and auth are revoked; rollback=false means an APK signed
+          # only with the debug key can no longer update a rotated app.
           "${APKSIGNER}" lineage --in "${RUNNER_TEMP}/lineage-raw.bin" --out "${out}/shelly-signing-lineage.bin" \
             --signer --ks signing/legacy-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
-            --set-installed-data true --set-shared-uid false --set-permission false --set-rollback false --set-auth false
+            --set-installed-data true --set-shared-uid false --set-permission true --set-rollback false --set-auth false
           echo "LINEAGE=${out}/shelly-signing-lineage.bin" >> "${GITHUB_ENV}"
 
       - name: Use committed lineage
@@ -115,10 +120,10 @@ jobs:
           set -euo pipefail
           "${APKSIGNER}" lineage --in "${LINEAGE}" --print-certs -v | tee "${RUNNER_TEMP}/lineage.txt"
           digests="$(awk -F': ' '/certificate SHA-256 digest:/ {print tolower($NF)}' "${RUNNER_TEMP}/lineage.txt" | tr -d ': \r' | paste -sd ' ')"
-          # Old signer must keep ONLY installed-data (in-place update); the
-          # rest, notably rollback, is revoked for the public debug key.
+          # Old signer keeps installed-data + permission (both required for an
+          # in-place update); shared-uid, rollback and auth are revoked.
           awk '/^Signer #1 in lineage/{s=1} /^Signer #2 in lineage/{s=0} s && /capability/' "${RUNNER_TEMP}/lineage.txt" > "${RUNNER_TEMP}/old-caps.txt"
-          for cap in 'installed data capability: true' 'shared UID capability *: false' 'permission capability *: false' 'rollback capability *: false' 'auth capability *: false'; do
+          for cap in 'installed data capability: true' 'shared UID capability *: false' 'permission capability *: true' 'rollback capability *: false' 'auth capability *: false'; do
             grep -qE "Has ${cap}" "${RUNNER_TEMP}/old-caps.txt" || { echo "FATAL: old signer capability mismatch: ${cap}" >&2; cat "${RUNNER_TEMP}/old-caps.txt"; exit 1; }
           done
           test "${digests}" = "${SHELLY_LEGACY_DEBUG_CERT_SHA256} ${SHELLY_RELEASE_CERT_SHA256}" \

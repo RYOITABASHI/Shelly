@@ -3,6 +3,8 @@
 # a real Android (API 28+) emulator, using a tiny code-less throwaway package
 # (dev.shelly.rotationtest) instead of the 800 MB Shelly APK:
 #
+# The package declares signature-protection permissions like Shelly does.
+#
 #   1. v1 signed ONLY with the legacy public debug key        -> installs
 #   2. v2 signed with rotation (debug -> release, lineage)    -> in-place update succeeds (data kept)
 #   3. v3 signed ONLY with the legacy debug key               -> REJECTED (old key has no rollback capability)
@@ -19,6 +21,13 @@ build_unsigned() {
   local vc="$1"
   cat > "${work}/AndroidManifest.xml" <<EOF
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="${pkg}">
+  <!-- Mirror Shelly: the package declares signature-protected permissions
+       (androidx adds <pkg>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION). Without
+       the old signer's PERMISSION capability in the lineage, the rotated
+       update fails with INSTALL_FAILED_DUPLICATE_PERMISSION. -->
+  <permission android:name="${pkg}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" android:protectionLevel="signature" />
+  <permission android:name="${pkg}.SIGNATURE_TEST" android:protectionLevel="signature" />
+  <uses-permission android:name="${pkg}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
   <application android:hasCode="false" android:label="rotationtest" />
 </manifest>
 EOF
@@ -76,5 +85,25 @@ expect_install "${work}/v2-rotation.apk" success
 adb shell dumpsys package "${pkg}" | grep -iE 'versionCode|signatures|signingDetails|pastSigningCertificates' || true
 expect_install "${work}/v3-debug.apk" INSTALL_FAILED_UPDATE_INCOMPATIBLE
 expect_install "${work}/v4-release.apk" success
+
+# Informational (documents the PERMISSION-capability trade-off, never fails):
+# does a different app signed only with the public debug key get the
+# rotated package's signature permission granted?
+other="${pkg}.other"
+cat > "${work}/AndroidManifest.xml" <<EOF
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="${other}">
+  <uses-permission android:name="${pkg}.SIGNATURE_TEST" />
+  <application android:hasCode="false" android:label="other" />
+</manifest>
+EOF
+"${AAPT2}" link --manifest "${work}/AndroidManifest.xml" -I "${ANDROID_JAR}" \
+  --version-code 1 --version-name 1 --min-sdk-version 24 --target-sdk-version 34 -o "${work}/uo.apk"
+"${ZIPALIGN}" -f 4 "${work}/uo.apk" "${work}/ao.apk"
+sign_debug "${work}/ao.apk" "${work}/other-debug.apk"
+adb uninstall "${other}" >/dev/null 2>&1 || true
+expect_install "${work}/other-debug.apk" success
+echo "TRADE-OFF: debug-signed ${other} -> ${pkg}.SIGNATURE_TEST:"
+adb shell dumpsys package "${other}" | grep -F "${pkg}.SIGNATURE_TEST" || echo "  (not listed)"
+adb uninstall "${other}" >/dev/null 2>&1 || true
 adb uninstall "${pkg}" >/dev/null 2>&1 || true
 echo "ROTATION CHECK PASSED: debug->rotated update kept in place; debug-only APK rejected over the rotated app; release-only APK accepted."
