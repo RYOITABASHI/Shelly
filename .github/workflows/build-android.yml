@@ -1449,7 +1449,7 @@ jobs:
         # correctly. Until that follow-up lands, `shelly install <pack>`
         # keeps refusing with PackNotPublishedError regardless of what this
         # step publishes, so a bad run here cannot affect any user.
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
         env:
           GH_TOKEN: ${{ github.token }}
           OPTIONAL_PACKS_TAG: optional-packs-latest
