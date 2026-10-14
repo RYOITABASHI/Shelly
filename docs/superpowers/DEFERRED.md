@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-14: CC（fix/release-signing）がリリース APK が公開 RN/Expo debug.keystore で署名されていることを受け、非公開リリース鍵（APK Signature Scheme v3 鍵ローテーション、API 28+ はその場更新）・CI 署名検証・暗号化バックアップ/復元・アップデーターの署名判定を実装。main の切り替えはオーナー承認待ち — 下記 P0 エントリ参照。
 - 2026-10-13: CC（feat/codex-remote-control）が ChatGPT アプリの「Codex リモートコントロール」のホスト化を実装。Codex runtime を v0.162.1-termux.1 へ更新（bump ワークフローが `-termux.N` 付きタグを全件スキップして 0.156.1 で凍結していた問題も修正）、libexec_wrapper v224 で codex-termux がハードコードする `/data/data/com.termux` ソケットルートをアプリ領域へリダイレクト、`shelly codex pair|code` を追加。Experimental・実機未検証 — 下記 P1 エントリ参照。
 - 2026-10-13: CC（fix/closepaw-background）が `shelly closepaw` のバックグラウンド動作を修正（build 2534 実機で Shelly がバックグラウンドだと RN の 250ms ポーリングが止まり "the Shelly app did not respond" でタイムアウトしていた）。キューをネイティブ専有の `$HOME/.shelly-closepaw-queue` に分離し `ClosePawHandoff.kt` が FileObserver + 1 秒ポーリングで処理、直接起動できないときはタップで続行する通知にフォールバック。実機未検証 — 下記「ClosePaw 引き継ぎ」参照。
 - 2026-10-13: CC（feat/closepaw-handoff）が ClosePaw 引き継ぎ Phase 1（intent モード `closepaw`）を実装。Phase 2（結果の受け取り）と実機検証を下記「ClosePaw 引き継ぎ」に登録。
@@ -57,9 +58,19 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
-### 🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)
+### リリース署名鍵の移行（公開 debug.keystore → 非公開リリース鍵、APK Signature Scheme v3 鍵ローテーション）— main 切り替え待ち (P0)
 
-2026-10-14 記録（このコミットでは署名は変更しない）。Shelly のリリース APK は公開済みの Expo/React Native debug keystore（証明書 SHA-256 `FA:C6:17:45:…:3B:9C`）で署名されている。誰でも同じ鍵で `dev.shelly.terminal` を名乗る APK を作れるため、署名に依存する信頼（ClosePaw 変種の caller token が `creatorPackage == dev.shelly.terminal` を信頼する点を含む）は、端末上の Shelly を偽 APK で置き換えられた場合に崩れる（上書きインストールには同じ署名が要るので、既存インストールの差し替え自体は可能）。対応: 専用リリース鍵の作成・CI シークレット化・既存ユーザーの移行手順（署名変更は再インストールが必要）。ClosePaw 変種側の pin も Shelly の新しい証明書に合わせる必要がある。
+2026-10-14、ブランチ `fix/release-signing`。v8.0.2（versionCode ~2540）までのリリース APK は React Native / Expo テンプレート同梱の**公開** debug.keystore（cert SHA-256 `FA:C6:17:45:…:3B:9C`）で署名されており、誰でも「Shelly の更新」に見える APK を作れた（上書き更新でアプリデータ・SecureStore・ClosePaw の trusted-caller ピンをそのまま奪える）。新しい非公開鍵 `CN=Shelly, O=RYOITABASHI`（RSA 4096、PKCS12、30年）の cert SHA-256 は `14:76:D9:52:0A:49:BF:8D:A7:A7:67:CB:41:39:18:CC:D5:C5:FC:D7:F6:26:03:76:6A:F6:52:1F:30:DE:21:2D`。
+
+- **方式（2026-10-14 設計変更）**: アンインストール/再インストールを強いない **v3 鍵ローテーション**。`signing/shelly-signing-lineage.bin`（debug → release、旧鍵の能力は installed-data のみ true、shared-uid / permission / rollback / auth は false）で `apksigner sign --ks <debug> --next-signer --ks <release> --lineage … --rotation-min-sdk-version 28`。API 28+ の既存インストールはその場で更新されデータ保持、以後は新鍵のみ信頼（rollback=false のため debug 鍵のみの APK は更新不可）。API 24–27 は v2（debug 鍵）署名を検証するので上書き更新はできるが公開鍵レベルの信頼のまま（仕様として明記）。lineage は秘密ではないので repo に置き、公開 debug.keystore も `signing/legacy-debug.keystore` として同梱（指紋を CI で照合）。
+- **CI**: `plugins/with-release-signing.js` が `SHELLY_SIGNING_MODE`（`rotation` / `release` / `legacy-debug`）で signingConfig を注入（`rotation` は未署名 APK を出し CI で apksigner 署名、`release` は鍵不足でビルド失敗、CI でモード未指定もビルド失敗）。`build-android.yml` は `signing` / `publish` 入力、secrets `SHELLY_RELEASE_KEYSTORE_B64` / `_KEYSTORE_PASSWORD` / `_KEY_ALIAS` / `_KEY_PASSWORD`、署名後に API 28+ signer＝新鍵・API 24–27 signer＝旧鍵・APK 内 lineage＝debug→release を apksigner で検証し manifest に `signingMode` / `signingCertSha256` を記録。`signing-rotation-check.yml` が lineage の能力を検証し、API 34 エミュレータで「debug 署名→rotation 版は上書き成功／その後の debug のみ APK は INSTALL_FAILED_UPDATE_INCOMPATIBLE／release のみ APK は成功」を実証。
+- **アプリ側**: アップデーターは `getApkSignerInfo`（signer と lineage）で判定。lineage にインストール済み signer を含む新鍵 APK は通常インストール、lineage 無しの新鍵 APK だけ移行ガイド（バックアップ → インストーラーを `/sdcard/Download/Shelly-<versionCode>-new-signing-key.apk` に保存 → アンインストール → 復元）、それ以外の signer 変更は拒否。セーフティネットとして 設定 → バックアップと復元（暗号化 `.shellybak` ＋ 非秘密 `.tar`、deep link `shelly://backup` / `shelly://restore`）。
+- **移行用ビルドは不要と判断**: rotation 版は API 28+ でその場更新・データ保持のため、旧鍵のままの段階1ビルドを挟む必要がない。バックアップ機能は rotation 版と同じビルドに入る（万一のための保険）。
+- **P0 として残る作業**: (1) オーナー承認後に `.github/workflows/build-android.yml` の `SHELLY_DEFAULT_SIGNING_MODE` を `legacy-debug` → `rotation` に切り替え（**忘れると main は公開鍵署名のまま**）。それまで rotation 署名ビルドをどのチャンネルにも publish しない（一度 rotation 版を入れた端末は以後の debug 署名ビルドを受け付けない）。 (2) 実機（Fold6, API 36）で rotation 版へのアプリ内更新→データ保持を確認。 (3) ClosePaw Shelly 版（`RYOITABASHI/closepaw@shelly-trusted-caller`）は新鍵のみピン留め済みのビルドを、Shelly が rotation 済みになった後に入れる（未 rotation の Shelly からの hand-off は確認ダイアログ付きの通常経路に戻る）。 (4) 鍵の原本とパスワードをオフライン保管へ（CI secrets だけでは鍵を失うと二度と更新できない）。
+- **未対応（仕様）**: `xdg-open shelly://backup` は `shelly-xdg-open.c` が http/https しかキューしないため不可（設定画面から起動）。Codex リモートコントロールのペアリングは再インストール時のみ再ペアが必要。
+
+→ sync: README「Install → Signing-key rotation」「Release Integrity」節に記載済み。
+（旧エントリ「🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)」を本エントリに統合。）
 
 ### Shelly 用 ClosePaw ビルド（caller token）と `shelly closepaw` の Shelly 承認 — 実装済み・実機未検証 (P1)
 

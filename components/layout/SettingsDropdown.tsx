@@ -44,6 +44,7 @@ import { DmPairingSection } from '@/components/layout/DmPairingSection';
 import { normalizeWebhookHost } from '@/lib/webhook-host-allowlist';
 import { resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { useAgentStore } from '@/store/agent-store';
+import { useBackupModalStore } from '@/store/backup-modal-store';
 import type { SocialConnectorMeta, SocialPlatform } from '@/store/types';
 import {
   normalizeSttSetting,
@@ -186,6 +187,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <SocialConnectorsSection />
             <DmPairingSection />
             <UpdatesSection onOpenBuilds={handleOpenBuilds} />
+            <BackupRestoreSection onClose={onClose} />
             <CodexLoginSection onClose={onClose} />
             <RecoverySection />
             <DeveloperSettingsRow onPress={handleOpenDev} />
@@ -586,6 +588,45 @@ const CompanionMemorySection = React.memo(function CompanionMemorySection({ onCl
 // the comprehensive ConfigTUI (which is gated behind the Command
 // Palette and harder to find). Original Recovery entry stays in
 // ConfigTUI; this is the discoverable mirror.
+// Backup & restore (signing-key migration). Closes Settings first so the
+// globally-mounted BackupRestoreModal (ShellLayout) is not stacked behind
+// this Modal.
+const BackupRestoreSection = React.memo(function BackupRestoreSection({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const open = React.useCallback((mode: 'backup' | 'restore') => {
+    onClose();
+    useBackupModalStore.getState().open(mode);
+  }, [onClose]);
+  return (
+    <Section title={t('backup.title')}>
+      <Pressable
+        style={[styles.integrationRow, borderedChromeStyle()]}
+        onPress={() => open('backup')}
+        accessibilityRole="button"
+        accessibilityLabel={t('backup.open_a11y')}
+      >
+        <MaterialIcons name="settings-backup-restore" size={13} color={C.text2} />
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('backup.tab_backup')}</Text>
+          <Text style={[styles.developerRowSubtitle, { color: C.text3 }]}>{t('backup.settings_row')}</Text>
+        </View>
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+      <Pressable
+        style={[styles.integrationRow, borderedChromeStyle()]}
+        onPress={() => open('restore')}
+        accessibilityRole="button"
+        accessibilityLabel={t('backup.tab_restore')}
+      >
+        <MaterialIcons name="restore" size={13} color={C.text2} />
+        <Text style={[styles.integrationLabel, { color: C.text1 }]}>{t('backup.tab_restore')}</Text>
+        <View style={{ flex: 1 }} />
+        <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+      </Pressable>
+    </Section>
+  );
+});
+
 const RecoverySection = React.memo(function RecoverySection() {
   const { t } = useTranslation();
   const handleRecover = React.useCallback(() => {

@@ -34,7 +34,8 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
-import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
+import { resolveInAppQueueLine, resolveQueueLine } from '@/lib/deep-link-queue-policy';
+import { useBackupModalStore } from '@/store/backup-modal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { focusPaneByTab } from '@/lib/pane-focus';
 import { usePaneStore } from '@/store/pane-store';
@@ -805,6 +806,7 @@ export default function RootLayout() {
     //   shelly://browser?url=<encoded>  — navigate the Browser Pane to a URL.
     //                                     Adds a browser pane if none exists.
     //   shelly://scouter                 — open Scouter detail.
+    //   shelly://backup | shelly://restore — open the encrypted backup / restore modal.
     //   shelly:///agent-chat?compose=1   — open Agent Chat and focus input.
     //   shelly://agent-chat?compose=1    — legacy form, still accepted.
     //
@@ -1408,6 +1410,11 @@ export default function RootLayout() {
         } else if (target === 'scouter') {
           useSettingsStore.getState().setShowScouterDetail(true);
           logInfo('DeepLink', 'Scouter detail opened');
+        } else if (target === 'backup' || target === 'restore') {
+          // shelly://backup | shelly://restore — open the in-app encrypted
+          // backup / restore flow (passphrase is only ever typed in-app).
+          useBackupModalStore.getState().open(target);
+          logInfo('DeepLink', `backup modal opened (${target})`);
         } else if (target === 'agent-action-confirm') {
           const runId = queryValue(parsed.queryParams?.runId);
           if (typeof runId === 'string') {
@@ -1726,6 +1733,12 @@ export default function RootLayout() {
           // known-broken path. Only the two OAuth hosts are upgraded (NOT
           // *.google.com) so pasted YouTube / Drive / Maps URLs still open
           // in-app.
+          const inAppTarget = resolveInAppQueueLine(line);
+          if (inAppTarget) {
+            useBackupModalStore.getState().open(inAppTarget);
+            logInfo('DeepLinkQueue', `opened in-app ${inAppTarget} modal`);
+            continue;
+          }
           const resolved = resolveQueueLine(line);
           if (!resolved.entry) {
             logError('DeepLinkQueue', `rejected line (${resolved.reason}): ${line.slice(0, 96)}`);

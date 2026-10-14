@@ -25,6 +25,8 @@ import { colors as C, fonts as F, radii as R, sizes as S } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
+import { classifyApkSigner, migrationApkCopyPath } from '@/lib/apk-signer-check';
+import { BackupRestoreModal } from '@/components/settings/BackupRestoreModal';
 import {
   ensureDirectory,
   fromFileUri,
@@ -75,7 +77,12 @@ type AndroidUpdateManifest = {
   apkUrl: string;
   apkSizeBytes?: number;
   sha256: string;
+  /** Signing-key migration (2026-10): CI-recorded signer of this APK. Informational only. */
+  signingMode?: string;
+  signingCertSha256?: string;
 };
+
+const SIGNING_MIGRATION_EXPLAINED_KEY = 'shelly.signingMigration.explained.v1';
 
 type AppVersionInfo = {
   packageName: string;
@@ -1073,6 +1080,7 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   const [installingCodexRuntime, setInstallingCodexRuntime] = useState(false);
   const [resettingCodexRuntime, setResettingCodexRuntime] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [migrationBackupOpen, setMigrationBackupOpen] = useState(false);
   const [logLoadingId, setLogLoadingId] = useState<number | null>(null);
   const [logTitle, setLogTitle] = useState<string | null>(null);
   const [logText, setLogText] = useState<string>('');
@@ -1246,6 +1254,42 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
     setDownloadLog((prev) => prev.filter((entry) => entry.id !== 'ready'));
   }, []);
 
+  // Signing-key migration: the downloaded APK is signed by the pinned Shelly
+  // release key but the installed app is not, so Android will refuse the
+  // in-place update. Explain once (long form), then offer to save a copy of
+  // the installer outside app storage (uninstalling wipes the app's own
+  // download dir) and to open the encrypted backup flow.
+  const showSigningMigrationGuide = useCallback(async (update: AndroidUpdateManifest, apkPath: string) => {
+    const explained = await AsyncStorage.getItem(SIGNING_MIGRATION_EXPLAINED_KEY).catch(() => null);
+    const body = explained
+      ? t('updates.signing_migration_body_short')
+      : t('updates.signing_migration_body', { versionCode: update.versionCode });
+    await AsyncStorage.setItem(SIGNING_MIGRATION_EXPLAINED_KEY, '1').catch(() => undefined);
+    const saveInstallerAndBackUp = async () => {
+      const target = migrationApkCopyPath(update.versionCode);
+      try {
+        await FileSystemLegacy.deleteAsync(`file://${target}`, { idempotent: true }).catch(() => undefined);
+        await FileSystemLegacy.copyAsync({ from: `file://${apkPath}`, to: `file://${target}` });
+        Alert.alert(
+          t('updates.signing_migration_saved_title'),
+          t('updates.signing_migration_saved_body', { path: target }),
+          [{ text: t('updates.signing_migration_backup_now'), onPress: () => setMigrationBackupOpen(true) }],
+        );
+      } catch (e: any) {
+        Alert.alert(
+          t('updates.signing_migration_save_failed_title'),
+          t('updates.signing_migration_save_failed_body', { error: String(e?.message || e) }),
+          [{ text: t('updates.signing_migration_backup_now'), onPress: () => setMigrationBackupOpen(true) }],
+        );
+      }
+    };
+    Alert.alert(t('updates.signing_migration_title'), body, [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('updates.signing_migration_backup_now'), onPress: () => setMigrationBackupOpen(true) },
+      { text: t('updates.signing_migration_save_and_backup'), onPress: () => { void saveInstallerAndBackUp(); } },
+    ]);
+  }, [t]);
+
   const openVerifiedApkInstaller = useCallback(async (update: AndroidUpdateManifest, apkPath: string) => {
     setPreparingUpdateInstall(true);
     try {
@@ -1255,11 +1299,26 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
         Alert.alert(t('updates.download_missing_title'), t('updates.download_missing_body'));
         return;
       }
+      const signerInfo = await TerminalEmulator.getApkSignerInfo?.(apkPath).catch(() => null);
+      const verdict = classifyApkSigner(signerInfo);
+      if (verdict === 'untrusted-signer') {
+        clearDownloadedApk();
+        Alert.alert(t('updates.signer_untrusted_title'), t('updates.signer_untrusted_body'));
+        return;
+      }
+      if (verdict === 'migration-to-release-key') {
+        await showSigningMigrationGuide(update, apkPath);
+        return;
+      }
+      // 'same-signer', 'rotation-update' (v3 key rotation: Android updates a
+      // debug-signed install in place) and 'unknown' (old native build) keep
+      // the normal path;
+      // Android's package installer still enforces the signature itself.
       openApkInstaller(apkPath);
     } finally {
       setPreparingUpdateInstall(false);
     }
-  }, [clearDownloadedApk, openApkInstaller, t]);
+  }, [clearDownloadedApk, openApkInstaller, showSigningMigrationGuide, t]);
 
   const installAndroidUpdate = useCallback(async (
     update: AndroidUpdateManifest | null,
@@ -1978,6 +2037,12 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
           </ScrollView>
         </View>
       </Modal>
+      <BackupRestoreModal
+        visible={migrationBackupOpen}
+        onClose={() => setMigrationBackupOpen(false)}
+        initialMode="backup"
+        reason="signing-migration"
+      />
     </>
   );
 }

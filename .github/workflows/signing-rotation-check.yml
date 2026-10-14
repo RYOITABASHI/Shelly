@@ -109,7 +109,13 @@ jobs:
         run: |
           set -euo pipefail
           "${APKSIGNER}" lineage --in "${LINEAGE}" --print-certs -v | tee "${RUNNER_TEMP}/lineage.txt"
-          digests="$(grep -i 'SHA-256 digest' "${RUNNER_TEMP}/lineage.txt" | awk -F': ' '{print $NF}' | tr -d ':[:space:]' | tr 'A-F' 'a-f' | paste -sd ' ')"
+          digests="$(awk -F': ' '/certificate SHA-256 digest:/ {print tolower($NF)}' "${RUNNER_TEMP}/lineage.txt" | tr -d ': \r' | paste -sd ' ')"
+          # Old signer must keep ONLY installed-data (in-place update); the
+          # rest, notably rollback, is revoked for the public debug key.
+          awk '/^Signer #1 in lineage/{s=1} /^Signer #2 in lineage/{s=0} s && /capability/' "${RUNNER_TEMP}/lineage.txt" > "${RUNNER_TEMP}/old-caps.txt"
+          for cap in 'installed data capability: true' 'shared UID capability *: false' 'permission capability *: false' 'rollback capability *: false' 'auth capability *: false'; do
+            grep -qE "Has ${cap}" "${RUNNER_TEMP}/old-caps.txt" || { echo "FATAL: old signer capability mismatch: ${cap}" >&2; cat "${RUNNER_TEMP}/old-caps.txt"; exit 1; }
+          done
           test "${digests}" = "${SHELLY_LEGACY_DEBUG_CERT_SHA256} ${SHELLY_RELEASE_CERT_SHA256}" \
             || { echo "FATAL: lineage digests '${digests}' != 'debug release'" >&2; exit 1; }
           echo "lineage OK: debug -> release"

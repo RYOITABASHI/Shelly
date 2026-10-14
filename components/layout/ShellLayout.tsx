@@ -28,6 +28,7 @@ import { McpApprovalModal } from '@/components/McpApprovalModal';
 import { useFocusStore } from '@/store/focus-store';
 import { createTerminalSessionForFocusedPane } from '@/lib/terminal-session-actions';
 import { ScouterDetailModal } from '@/components/scouter/ScouterDetailModal';
+import { BackupRestoreModalHost } from '@/components/settings/BackupRestoreModal';
 import { AgentSuggestionCard } from '@/components/suggestions/AgentSuggestionCard';
 
 const LAST_UNFOLDED_PRESET_KEY = 'shelly:lastUnfoldedPreset';
@@ -427,6 +428,7 @@ export function ShellLayout() {
 
       {/* Scouter detail overlay */}
       <ScouterDetailModal visible={showScouterDetail} onClose={closeScouterDetail} />
+      <BackupRestoreModalHost />
 
       {/* Savepoint badge — floating top-right indicator, fires when
           auto-savepoint writes a commit (see savepoint bridge in _layout.tsx) */}

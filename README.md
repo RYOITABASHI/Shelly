@@ -162,6 +162,15 @@ After the first install, Shelly can update itself from inside the app: open the 
 
 Expo OTA is disabled for release APKs. JS, native, and bundled-tool changes ship together through a new APK so the installed binary and app code stay in sync.
 
+#### Signing-key rotation (2026-10)
+
+Shelly builds up to v8.0.x were signed with the public React Native / Expo debug key, which anyone can use. Newer builds are signed with Shelly's private release key (certificate SHA-256 `14:76:D9:52:0A:49:BF:8D:A7:A7:67:CB:41:39:18:CC:D5:C5:FC:D7:F6:26:03:76:6A:F6:52:1F:30:DE:21:2D`) using **APK Signature Scheme v3 key rotation**: the APK carries a proof-of-rotation lineage from the old key to the new key.
+
+- **Android 9 (API 28) and newer — nothing to do.** Update with the in-app updater (or install the APK from [GitHub Releases](https://github.com/RYOITABASHI/Shelly/releases)) as usual. Android verifies the lineage, updates Shelly in place (all data, API keys and logins are kept) and from then on trusts only the new key. The lineage revokes the old key's rollback capability, so an APK signed only with the public debug key can no longer update a rotated install.
+- **Android 7–8 (API 24–27)** do not understand key rotation. They keep verifying the old-key signature, so updates still install in place, but those devices remain on the old, public key's level of trust.
+- **Safety net: Settings → Backup & restore.** Before a big update you can export `shelly-backup-<timestamp>.tar` (agents, workflows, memory, `~/.codex/config.toml`, projects — no secrets) and `shelly-backup-<timestamp>.shellybak` (settings, API keys and other SecureStore secrets, optionally your Codex login, encrypted with AES-256-GCM under a scrypt-derived key from your passphrase) to `/sdcard/Download/`. Write the passphrase down — it cannot be recovered. Files in `/sdcard/Download` are readable by other apps with storage permission; only the encrypted file contains secrets. If you ever have to reinstall (for example an APK signed with the new key but without the lineage), install, then Restore, enter the passphrase and restart Shelly; re-pair Codex remote control from the ChatGPT app afterwards (`shelly codex pair`), because that enrollment is tied to the old install.
+- The updater refuses an APK whose signer is neither the installed key nor the pinned release key. The ClosePaw Shelly variant trusts only the new key; update it after Shelly has rotated.
+
 ### Build from source
 
 ```bash
@@ -577,6 +586,7 @@ drift out of sync with this page:
 | APK size | ~800 MB | bundles bash / Node.js / Python 3 / git / ripgrep / … plus the Codex runtime as real binaries, not shims |
 | Codex runtime | shipped + managed on its own lane (~160 MB) | promoted separately so it can move faster than the APK |
 | Release verification | SHA-256 checked before the installer handoff | the updater refuses an APK whose hash doesn't match the manifest |
+| Release signing | private release key via APK Signature Scheme v3 key rotation, checked by `apksigner` in CI | CI fails unless the API 28+ signer is the pinned certificate (`14:76:D9:52:…:21:2D`) with a debug → release lineage; the updater refuses unknown signers |
 | Runtime verification | SHA-256 + `codex_tui --version` / `codex_tui exec --help` smoke tests | a runtime candidate is only promoted after it actually runs |
 | CI per release | lint · typecheck · unit tests · native release build · signed APK + manifest publish | every release artifact is built and verified by GitHub Actions |
 
