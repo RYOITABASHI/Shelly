@@ -9,7 +9,7 @@
 #   4. v4 signed ONLY with the release key (no lineage)       -> in-place update succeeds
 #
 # Required env: APKSIGNER AAPT2 ZIPALIGN ANDROID_JAR DEBUG_KS REL_KS REL_ALIAS
-#               REL_PASS LINEAGE
+#               REL_PASS REL_KEY_PASS LINEAGE
 set -euo pipefail
 
 pkg=dev.shelly.rotationtest
@@ -35,14 +35,14 @@ sign_debug() {
 
 sign_release() {
   "${APKSIGNER}" sign --ks "${REL_KS}" --ks-key-alias "${REL_ALIAS}" \
-    --ks-pass env:REL_PASS --key-pass env:REL_PASS --out "$2" "$1"
+    --ks-pass env:REL_PASS --key-pass env:REL_KEY_PASS --out "$2" "$1"
 }
 
 sign_rotation() {
   "${APKSIGNER}" sign --ks "${DEBUG_KS}" --ks-key-alias androiddebugkey \
     --ks-pass pass:android --key-pass pass:android \
     --next-signer --ks "${REL_KS}" --ks-key-alias "${REL_ALIAS}" \
-    --ks-pass env:REL_PASS --key-pass env:REL_PASS \
+    --ks-pass env:REL_PASS --key-pass env:REL_KEY_PASS \
     --lineage "${LINEAGE}" --rotation-min-sdk-version 28 --out "$2" "$1"
 }
 

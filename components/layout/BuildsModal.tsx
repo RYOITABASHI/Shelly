@@ -25,7 +25,12 @@ import { colors as C, fonts as F, radii as R, sizes as S } from '@/theme.config'
 import { withAlpha } from '@/lib/theme-utils';
 import { useTranslation } from '@/lib/i18n';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
-import { classifyApkSigner, migrationApkCopyPath } from '@/lib/apk-signer-check';
+import {
+  classifyApkSigner,
+  formatCertDigest,
+  migrationApkCopyPath,
+  SHELLY_RELEASE_CERT_SHA256,
+} from '@/lib/apk-signer-check';
 import { BackupRestoreModal } from '@/components/settings/BackupRestoreModal';
 import {
   ensureDirectory,
@@ -1261,9 +1266,16 @@ export function BuildsModal({ visible, onClose, onStatusChange }: Props) {
   // download dir) and to open the encrypted backup flow.
   const showSigningMigrationGuide = useCallback(async (update: AndroidUpdateManifest, apkPath: string) => {
     const explained = await AsyncStorage.getItem(SIGNING_MIGRATION_EXPLAINED_KEY).catch(() => null);
-    const body = explained
+    // Let the user cross-check what they are about to install against the
+    // GitHub release page before uninstalling anything.
+    const verify = t('updates.signing_migration_verify', {
+      cert: formatCertDigest(SHELLY_RELEASE_CERT_SHA256),
+      sha256: update.sha256,
+      url: 'https://github.com/RYOITABASHI/Shelly/releases',
+    });
+    const body = `${explained
       ? t('updates.signing_migration_body_short')
-      : t('updates.signing_migration_body', { versionCode: update.versionCode });
+      : t('updates.signing_migration_body', { versionCode: update.versionCode })}\n\n${verify}`;
     await AsyncStorage.setItem(SIGNING_MIGRATION_EXPLAINED_KEY, '1').catch(() => undefined);
     const saveInstallerAndBackUp = async () => {
       const target = migrationApkCopyPath(update.versionCode);

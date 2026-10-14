@@ -6,6 +6,8 @@ import {
   BackupFormatError,
   DEFAULT_SCRYPT_PARAMS,
   GENERATED_PASSPHRASE_BITS,
+  KDF_BOUNDS,
+  validateKdfParams,
   PASSPHRASE_ALPHABET,
   assessPassphrase,
   canonicalizePassphrase,
@@ -49,10 +51,15 @@ describe('backup crypto container', () => {
     expect(header).toMatchObject({ v: 1, cipher: 'aes-256-gcm', appVersion: '9.9.9', kdf: { alg: 'scrypt', N: 16, r: 1, p: 1 } });
   });
 
-  it('production KDF default is at least scrypt N=2^16, r=8, p=1', () => {
+  it('production KDF default is at least scrypt N=2^16, r=8, p=1 and within the 256 MiB decrypt cap', () => {
     expect(DEFAULT_SCRYPT_PARAMS.N).toBeGreaterThanOrEqual(2 ** 16);
     expect(DEFAULT_SCRYPT_PARAMS.r).toBe(8);
     expect(DEFAULT_SCRYPT_PARAMS.p).toBe(1);
+    expect(KDF_BOUNDS.maxMemBytes).toBe(256 * 1024 * 1024);
+    expect(128 * DEFAULT_SCRYPT_PARAMS.r * DEFAULT_SCRYPT_PARAMS.N).toBeLessThanOrEqual(KDF_BOUNDS.maxMemBytes);
+    expect(() => validateKdfParams(DEFAULT_SCRYPT_PARAMS)).not.toThrow();
+    expect(() => validateKdfParams({ N: 2 ** 18, r: 8, p: 1 })).not.toThrow(); // exactly 256 MiB
+    expect(() => validateKdfParams({ N: 2 ** 19, r: 8, p: 1 })).toThrow(BackupFormatError);
   });
 
   it('default decrypt bounds reject the weak test KDF (minN guard is opt-in)', async () => {
@@ -100,6 +107,8 @@ describe('backup crypto container', () => {
     ['r zero', (h: any) => { h.kdf.r = 0; }],
     ['p too large', (h: any) => { h.kdf.p = 1000; }],
     ['memory too large', (h: any) => { h.kdf.N = 2 ** 20; h.kdf.r = 16; }],
+    ['memory over 256 MiB (N=2^19, r=8 = 512 MiB)', (h: any) => { h.kdf.N = 2 ** 19; h.kdf.r = 8; }],
+    ['memory over 256 MiB (N=2^20, r=4)', (h: any) => { h.kdf.N = 2 ** 20; h.kdf.r = 4; }],
     ['bad salt length', (h: any) => { h.kdf.salt = Buffer.alloc(8).toString('base64'); }],
   ])('rejects %s before running scrypt', async (_name, edit) => {
     const out = await enc();

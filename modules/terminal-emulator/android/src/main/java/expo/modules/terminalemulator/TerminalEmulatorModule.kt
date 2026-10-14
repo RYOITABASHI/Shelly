@@ -576,6 +576,29 @@ class TerminalEmulatorModule : Module() {
             }
         }
 
+        // FLAG_SECURE toggle for screens that show secrets (backup passphrase):
+        // blocks screenshots, screen recording and the recents thumbnail.
+        AsyncFunction("setWindowSecure") { secure: Boolean, promise: Promise ->
+            val activity = appContext.currentActivity
+            if (activity == null) {
+                promise.resolve(false)
+                return@AsyncFunction
+            }
+            activity.runOnUiThread {
+                try {
+                    if (secure) {
+                        activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    } else {
+                        activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    }
+                    promise.resolve(true)
+                } catch (e: Exception) {
+                    Log.w("TerminalEmulator", "setWindowSecure failed", e)
+                    promise.resolve(false)
+                }
+            }
+        }
+
         AsyncFunction("getImeInsets") { promise: Promise ->
             val activity = appContext.currentActivity
             if (activity == null) {
@@ -1236,6 +1259,14 @@ class TerminalEmulatorModule : Module() {
         // explain a key change (Android refuses in-place updates across
         // signers) instead of failing with a generic installer error. Returns
         // lowercase hex SHA-256 digests of the DER-encoded certificates.
+        // getPackageArchiveInfo(GET_SIGNING_CERTIFICATES) collects
+        // certificates through ApkSignatureVerifier with verification ON
+        // (ParsingPackageUtils.getSigningDetails(skipVerify=false) on
+        // API 30+, PackageParser.collectCertificates on 28-29): an APK whose
+        // v2/v3 signature or lineage does not verify yields no signingInfo,
+        // which the JS side treats as 'unknown' (normal installer path, where
+        // the package installer verifies again). The verdict is advisory
+        // only — it never grants trust, it only decides which guidance to show.
         AsyncFunction("getApkSignerInfo") { apkPath: String ->
             val context = requireReactContext()
             val apk = java.io.File(apkPath).canonicalFile

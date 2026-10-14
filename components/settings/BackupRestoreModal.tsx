@@ -6,6 +6,14 @@
 //
 // The passphrase only ever lives in this component's state. It is cleared on
 // close, on unmount, and as soon as a run finishes. Never log it.
+// While a passphrase is shown or typed, the window is FLAG_SECURE (no
+// screenshots / screen recording / recents thumbnail), the passphrase text is
+// not selectable, inputs hide the copy/paste context menu and opt out of
+// autofill, and there is deliberately no copy-to-clipboard affordance.
+//
+// Restore is two-phase: decrypt → review (shows what would be re-trusted;
+// approvals opt-in defaults OFF) → apply. The decrypted payload lives only in
+// a ref and is dropped on close / unmount / completion.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -27,14 +35,18 @@ import { useTranslation } from '@/lib/i18n';
 import { assessPassphrase, BackupDecryptError, generatePassphrase } from '@/lib/backup/crypto';
 import {
   listBackupCandidates,
+  applyRestore,
+  openBackup,
   runBackup,
-  runRestore,
   siblingTarPath,
   type BackupCandidate,
   type BackupPhase,
   type BackupResult,
+  type OpenedBackup,
+  type RestorePreview,
   type RestoreSummary,
 } from '@/lib/backup/service';
+import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { createDeviceBackupDeps, reloadAppAfterRestore } from '@/lib/backup/device';
 import { useBackupModalStore } from '@/store/backup-modal-store';
 
@@ -46,7 +58,7 @@ export type BackupRestoreModalProps = {
 };
 
 type Mode = 'backup' | 'restore';
-type Step = 'intro' | 'passphrase' | 'running' | 'done' | 'error';
+type Step = 'intro' | 'passphrase' | 'running' | 'review' | 'done' | 'error';
 
 export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', reason }: BackupRestoreModalProps) {
   const { t } = useTranslation();
@@ -77,6 +89,10 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
   const [restoreSummary, setRestoreSummary] = useState<RestoreSummary | null>(null);
   const [errorText, setErrorText] = useState('');
   const [restartFailed, setRestartFailed] = useState(false);
+  // restore review (names only — no secret values)
+  const [preview, setPreview] = useState<RestorePreview | null>(null);
+  const [restoreApprovals, setRestoreApprovals] = useState(false);
+  const openedRef = useRef<OpenedBackup | null>(null);
   const mounted = useRef(true);
 
   const clearSecrets = useCallback(() => {
@@ -85,6 +101,7 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
     setOwnConfirm('');
     setRestorePass('');
     setWrittenDown(false);
+    openedRef.current = null;
   }, []);
 
   const resetAll = useCallback((m: Mode) => {
@@ -100,14 +117,27 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
     setRestartFailed(false);
     setSelected(null);
     setManualPath('');
+    setPreview(null);
+    setRestoreApprovals(false);
   }, [clearSecrets]);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      openedRef.current = null;
     };
   }, []);
+
+  // FLAG_SECURE while a passphrase is on screen (shown or being typed).
+  const secureWindow = visible && step === 'passphrase';
+  useEffect(() => {
+    if (!secureWindow) return undefined;
+    TerminalEmulator.setWindowSecure?.(true)?.catch?.(() => undefined);
+    return () => {
+      TerminalEmulator.setWindowSecure?.(false)?.catch?.(() => undefined);
+    };
+  }, [secureWindow]);
 
   // Reset whenever the modal opens; wipe secrets whenever it closes.
   useEffect(() => {
@@ -190,15 +220,41 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
     }
   }, [backupPassphrase, includeCodexAuth, includeLarge, onProgress, clearSecrets]);
 
+  // Phase 1: decrypt + build the review (nothing is written yet).
   const startRestore = useCallback(async () => {
     const pass = restorePass;
+    setRestorePass('');
     setStep('running');
     setPhase('reading');
     try {
-      const summary = await runRestore(createDeviceBackupDeps(), {
+      const opened = await openBackup(createDeviceBackupDeps(), {
         bundlePath: restoreBundlePath,
-        tarPath: restoreTarPath,
         passphrase: pass,
+        onProgress,
+      });
+      if (!mounted.current) return;
+      openedRef.current = opened;
+      setPreview(opened.preview);
+      setRestoreApprovals(false);
+      setStep('review');
+    } catch (e) {
+      if (!mounted.current) return;
+      clearSecrets();
+      setErrorText(e instanceof BackupDecryptError ? t('backup.wrong_passphrase') : e instanceof Error ? e.message : String(e));
+      setStep('error');
+    }
+  }, [restorePass, restoreBundlePath, onProgress, clearSecrets, t]);
+
+  // Phase 2: apply.
+  const confirmRestore = useCallback(async () => {
+    const opened = openedRef.current;
+    if (!opened) return;
+    setStep('running');
+    setPhase('restoring');
+    try {
+      const summary = await applyRestore(createDeviceBackupDeps(), opened, {
+        tarPath: restoreTarPath,
+        restoreApprovals,
         onProgress,
       });
       if (!mounted.current) return;
@@ -208,10 +264,10 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
     } catch (e) {
       if (!mounted.current) return;
       clearSecrets();
-      setErrorText(e instanceof BackupDecryptError ? t('backup.wrong_passphrase') : e instanceof Error ? e.message : String(e));
+      setErrorText(e instanceof Error ? e.message : String(e));
       setStep('error');
     }
-  }, [restorePass, restoreBundlePath, restoreTarPath, onProgress, clearSecrets, t]);
+  }, [restoreTarPath, restoreApprovals, onProgress, clearSecrets]);
 
   const handleRestart = useCallback(async () => {
     const ok = await reloadAppAfterRestore();
@@ -273,7 +329,7 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
       {!useOwn ? (
         <>
           <Text style={s.hint}>{t('backup.generated_label')}</Text>
-          <Text selectable style={s.passphrase} accessibilityLabel={t('backup.generated_label')}>
+          <Text selectable={false} style={s.passphrase} accessibilityLabel={t('backup.generated_label')}>
             {generated}
           </Text>
           <View style={s.dangerBox}>
@@ -300,6 +356,7 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
             value={own}
             onChangeText={setOwn}
             secureTextEntry
+            contextMenuHidden
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="off"
@@ -312,6 +369,7 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
             value={ownConfirm}
             onChangeText={setOwnConfirm}
             secureTextEntry
+            contextMenuHidden
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="off"
@@ -404,6 +462,7 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
         value={restorePass}
         onChangeText={setRestorePass}
         secureTextEntry
+        contextMenuHidden
         autoCapitalize="none"
         autoCorrect={false}
         autoComplete="off"
@@ -417,6 +476,61 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
       </View>
     </>
   );
+
+  const renderReview = (p: RestorePreview) => (
+    <>
+      <Text style={s.sectionTitle}>{t('backup.review_title')}</Text>
+      <Text style={s.body}>{t('backup.done_counts', p.counts)}</Text>
+      {!p.hasTar || !restoreTarPath ? <Text style={[s.hint, { color: colors.warning }]}>{t('backup.tar_missing')}</Text> : null}
+      <View style={s.warnBox}>
+        <MaterialIcons name="gpp-maybe" size={14} color={colors.warning} />
+        <View style={{ flex: 1, gap: 4 }}>
+          <Text style={[s.body, { fontWeight: '700' }]}>{t('backup.approvals_title')}</Text>
+          <Text style={s.hint}>{t('backup.approvals_body')}</Text>
+          {p.approvals.closePawAgents.length > 0 && (
+            <Text style={s.hint}>{t('backup.approvals_closepaw', { list: p.approvals.closePawAgents.join(', ') })}</Text>
+          )}
+          {p.approvals.trustAllows.length > 0 && (
+            <Text style={s.hint}>{t('backup.approvals_trust', { list: p.approvals.trustAllows.join(', ') })}</Text>
+          )}
+          {p.approvals.dmPairings > 0 && <Text style={s.hint}>{t('backup.approvals_dm', { count: p.approvals.dmPairings })}</Text>}
+          {p.approvals.policyRuleCount > 0 && (
+            <Text style={s.hint}>{t('backup.approvals_rules', { count: p.approvals.policyRuleCount, list: p.approvals.policyRules.join(' / ') })}</Text>
+          )}
+          {!p.approvals.hasAny && <Text style={s.hint}>{t('backup.approvals_none')}</Text>}
+        </View>
+      </View>
+      {p.approvals.hasAny && (
+        <ToggleRow
+          label={t('backup.approvals_toggle')}
+          hint={t('backup.approvals_toggle_hint')}
+          value={restoreApprovals}
+          onChange={setRestoreApprovals}
+        />
+      )}
+      <View style={s.warnBox}>
+        <MaterialIcons name="warning" size={14} color={colors.warning} />
+        <Text style={[s.body, { flex: 1 }]}>{t('backup.restore_warning')}</Text>
+      </View>
+      <View style={s.actions}>
+        <Btn label={t('backup.close')} onPress={handleClose} />
+        <Btn label={t('backup.start_restore')} onPress={() => void confirmRestore()} primary />
+      </View>
+    </>
+  );
+
+  const policyNote = (r: RestoreSummary): string | null => {
+    switch (r.policy.state) {
+      case 'rules_only':
+        return t('backup.policy_rules_only', { count: r.policy.ruleCount });
+      case 'with_approvals':
+        return t('backup.policy_with_approvals', { count: r.policy.ruleCount });
+      case 'skipped':
+        return t('backup.policy_skipped');
+      default:
+        return null;
+    }
+  };
 
   const renderRunning = () => (
     <View style={s.center}>
@@ -438,6 +552,7 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
       <Text style={s.body}>{t('backup.done_counts', r.counts)}</Text>
       <Text style={s.body}>{t('backup.done_keys', { count: r.secureKeys.length })}</Text>
       <Text style={s.body}>{t('backup.done_credfiles', { count: r.credentialFiles.length })}</Text>
+      <Text style={s.body}>{t('backup.done_statefiles', { count: r.stateFiles })}</Text>
       {r.skippedLargeFiles > 0 ? <Text style={s.hint}>{t('backup.done_skipped_large', { count: r.skippedLargeFiles })}</Text> : null}
       {r.skippedSecretFiles.map((f) => (
         <Text key={f.path} style={s.hint}>{`${t('backup.summary_skipped')}: ${f.path} (${reasonLabel(f.reason)})`}</Text>
@@ -462,14 +577,19 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
       <Text style={s.body}>{t('backup.summary_files')}</Text>
       <Text style={s.hint}>{r.credentialFiles.join(', ') || t('backup.none')}</Text>
       <Text style={s.body}>{t('backup.summary_home', { count: r.homeFilesRestored })}</Text>
+      <Text style={s.body}>{t('backup.summary_state', { count: r.stateFiles })}</Text>
       <Text style={s.body}>{t('backup.done_counts', r.counts)}</Text>
+      {policyNote(r) ? <Text style={s.hint}>{policyNote(r)}</Text> : null}
+      {r.approvalsAvailable && !r.approvalsRestored ? (
+        <Text style={[s.hint, { color: colors.warning }]}>{t('backup.reapprove_note')}</Text>
+      ) : null}
       {r.tarSkippedReason ? <Text style={[s.hint, { color: colors.warning }]}>{t('backup.summary_tar_skipped')}</Text> : null}
       {(r.skippedSecureKeys.length > 0 || r.skippedFiles.length > 0 || r.skippedSettingsKeys.length > 0) && (
         <>
           <Text style={s.body}>{t('backup.summary_skipped')}</Text>
           {r.skippedSecureKeys.map((k) => <Text key={`k-${k.name}`} style={s.hint}>{`${k.name} (${reasonLabel(k.reason)})`}</Text>)}
           {r.skippedFiles.map((f) => <Text key={`f-${f.path}`} style={s.hint}>{`${f.path} (${reasonLabel(f.reason)})`}</Text>)}
-          {r.skippedSettingsKeys.map((k) => <Text key={`s-${k}`} style={s.hint}>{`${k} (${reasonLabel('install_specific')})`}</Text>)}
+          {r.skippedSettingsKeys.map((k) => <Text key={`s-${k.key}`} style={s.hint}>{`${k.key} (${reasonLabel(k.reason)})`}</Text>)}
         </>
       )}
       <View style={s.warnBox}>
@@ -498,11 +618,12 @@ export function BackupRestoreModal({ visible, onClose, initialMode = 'backup', r
   let content: React.ReactNode;
   if (step === 'running') content = renderRunning();
   else if (step === 'error') content = renderError();
+  else if (step === 'review') content = preview ? renderReview(preview) : null;
   else if (step === 'done') content = mode === 'backup' && backupResult ? renderBackupDone(backupResult) : restoreSummary ? renderRestoreDone(restoreSummary) : null;
   else if (mode === 'backup') content = step === 'intro' ? renderBackupIntro() : renderBackupPassphrase();
   else content = step === 'intro' ? renderRestoreIntro() : renderRestorePassphrase();
 
-  const tabsLocked = step === 'running' || step === 'done';
+  const tabsLocked = step === 'running' || step === 'done' || step === 'review';
 
   return (
     <Modal visible={visible} animationType={reduceMotion ? 'none' : 'slide'} onRequestClose={handleClose}>

@@ -129,7 +129,7 @@ describe('build-android.yml signing gates', () => {
 
   it('rotation mode signs with apksigner v3 lineage (debug -> release, API 28+) and verifies it', () => {
     expect(workflow).toContain("if: ${{ env.SHELLY_SIGNING_MODE == 'rotation' }}");
-    expect(workflow).toContain('--next-signer --ks "${SHELLY_RELEASE_STORE_FILE}"');
+    expect(workflow).toContain('--next-signer --ks "${keystore}" --ks-type pkcs12');
     expect(workflow).toContain('--lineage signing/shelly-signing-lineage.bin --rotation-min-sdk-version 28');
     expect(workflow).toContain('Verified using v3 scheme (APK Signature Scheme v3): true');
     expect(workflow).toMatch(/FATAL: APK v3 lineage .* is not debug -> release/);
@@ -160,6 +160,35 @@ describe('build-android.yml signing gates', () => {
   it('verifies the built APK signer with apksigner against the expected fingerprint', () => {
     expect(workflow).toContain('"${apksigner}" verify -v --print-certs');
     expect(workflow).toMatch(/FATAL: APK signer .* does not match expected/);
+  });
+
+  it('keeps the keystore out of the Gradle build in rotation mode and cleans it up', () => {
+    // passwords reach Gradle only in release-only mode
+    expect(workflow).toContain(
+      "SHELLY_RELEASE_STORE_PASSWORD: ${{ env.SHELLY_SIGNING_MODE == 'release' && secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD || '' }}",
+    );
+    expect(workflow).toContain('--key-pass env:SHELLY_RELEASE_KEY_PASSWORD');
+    expect(workflow).toMatch(/- name: Remove release keystore\n\s*if: always\(\)/);
+    // rotation decodes the keystore inside the post-build signing step only
+    const resolve = workflow.slice(workflow.indexOf('- name: Resolve APK signing key'), workflow.indexOf('- name: Build APK'));
+    expect(resolve).toMatch(/if \[ "\$\{mode\}" = "rotation" \]; then[\s\S]*?else[\s\S]*?base64 -d/);
+  });
+
+  it('enters the release-signing environment consistently with the default signing mode', () => {
+    const defaultMode = /SHELLY_DEFAULT_SIGNING_MODE: (\S+)/.exec(workflow)?.[1];
+    const envLine = /\n    environment: (.*)\n/.exec(workflow)?.[1] ?? '';
+    if (defaultMode === 'legacy-debug') {
+      expect(envLine).toBe("${{ (inputs.signing == 'rotation' || inputs.signing == 'release') && 'release-signing' || '' }}");
+    } else {
+      // a key-needing default must enter the environment for push / default runs
+      expect(envLine).toBe("${{ inputs.signing != 'legacy-debug' && 'release-signing' || '' }}");
+    }
+    const check = fs.readFileSync(path.join(ROOT, '.github/workflows/signing-rotation-check.yml'), 'utf8');
+    expect(check).toContain('    environment: release-signing\n');
+  });
+
+  it('never publishes a release-only (no lineage) APK to an update channel', () => {
+    expect(workflow).toContain('FATAL: refusing to publish a release-only (no lineage) APK to an update channel');
   });
 
   it('records the signing certificate in the update manifest', () => {

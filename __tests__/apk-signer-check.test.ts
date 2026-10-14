@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   classifyApkSigner,
+  formatCertDigest,
   LEGACY_DEBUG_CERT_SHA256,
   migrationApkCopyPath,
   normalizeCertDigest,
@@ -112,6 +113,12 @@ describe('classifyApkSigner', () => {
   it('unknown when the native module cannot report signers', () => {
     expect(classifyApkSigner(null)).toBe('unknown');
     expect(classifyApkSigner({ ...base, apkSigners: [], installedSigners: [LEGACY_DEBUG_CERT_SHA256] })).toBe('unknown');
+  });
+
+  it('formats the pinned cert like keytool for the migration guide', () => {
+    expect(formatCertDigest(SHELLY_RELEASE_CERT_SHA256)).toBe(
+      '14:76:D9:52:0A:49:BF:8D:A7:A7:67:CB:41:39:18:CC:D5:C5:FC:D7:F6:26:03:76:6A:F6:52:1F:30:DE:21:2D',
+    );
   });
 
   it('saves the migration APK outside app-private storage', () => {

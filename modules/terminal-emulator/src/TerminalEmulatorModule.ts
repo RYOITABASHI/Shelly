@@ -92,6 +92,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   getHomeDir(): Promise<string>;
   getAppVersionInfo(): Promise<{ packageName: string; versionName: string; versionCode: number }>;
   installApk(apkPath: string): Promise<void>;
+  /** Toggle FLAG_SECURE on the activity window (no screenshots / recents thumbnail). Optional: older native builds lack it. */
+  setWindowSecure?(secure: boolean): Promise<boolean>;
   /**
    * Signer certificates (lowercase hex SHA-256 of the DER cert) of a
    * downloaded APK and of the installed app. Used by the updater to detect a

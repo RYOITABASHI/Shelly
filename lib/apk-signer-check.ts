@@ -84,6 +84,11 @@ export function classifyApkSigner(
   return 'migration-to-release-key';
 }
 
+/** `AA:BB:…` uppercase colon form, as shown by keytool / apksigner. */
+export function formatCertDigest(digest: string): string {
+  return (normalizeCertDigest(digest).toUpperCase().match(/../g) ?? []).join(':');
+}
+
 /** Where the migration flow saves a copy of the new APK so it survives uninstalling Shelly. */
 export function migrationApkCopyPath(versionCode: number, downloadDir = '/sdcard/Download'): string {
   return `${downloadDir}/Shelly-${Math.max(0, Math.floor(versionCode))}-new-signing-key.apk`;

@@ -17,6 +17,9 @@ on:
         type: boolean
         default: false
   push:
+    # Only branches allowed by the `release-signing` environment's deployment
+    # branch policy can read the signing secrets.
+    branches: [main, fix/release-signing]
     paths:
       - 'signing/**'
       - 'scripts/signing/**'
@@ -32,6 +35,7 @@ concurrency:
 jobs:
   rotation:
     runs-on: ubuntu-latest
+    environment: release-signing
     timeout-minutes: 45
     env:
       BUILD_TOOLS: '35.0.0'
@@ -82,6 +86,7 @@ jobs:
         if: ${{ env.GENERATE_LINEAGE == '1' }}
         env:
           REL_PASS: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          REL_KEY_PASS: ${{ secrets.SHELLY_RELEASE_KEY_PASSWORD }}
           REL_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
         run: |
           set -euo pipefail
@@ -89,7 +94,7 @@ jobs:
           mkdir -p "${out}"
           "${APKSIGNER}" rotate --out "${RUNNER_TEMP}/lineage-raw.bin" \
             --old-signer --ks signing/legacy-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
-            --new-signer --ks "${RUNNER_TEMP}/shelly-release.p12" --ks-key-alias "${REL_ALIAS}" --ks-pass env:REL_PASS --key-pass env:REL_PASS
+            --new-signer --ks "${RUNNER_TEMP}/shelly-release.p12" --ks-key-alias "${REL_ALIAS}" --ks-pass env:REL_PASS --key-pass env:REL_KEY_PASS
           # installed-data MUST stay true: it is what lets the rotated APK
           # update a debug-signed install in place. Everything else the old,
           # public key could vouch for is revoked; rollback=false means an APK
@@ -142,6 +147,7 @@ jobs:
           REL_KS: ${{ runner.temp }}/shelly-release.p12
           REL_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
           REL_PASS: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          REL_KEY_PASS: ${{ secrets.SHELLY_RELEASE_KEY_PASSWORD }}
         with:
           api-level: 34
           arch: x86_64

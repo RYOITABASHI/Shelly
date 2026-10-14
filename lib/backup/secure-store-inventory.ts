@@ -14,24 +14,20 @@
  *    new install may already have generated; records written by the new
  *    install before restore become unreadable — acceptable on a fresh install,
  *    and the app is restarted right after so no stale in-memory DEK is used.
- *  - `shelly_policy_trust_allow_keys` (agent-trust-allow-seal.ts) and
- *    `shelly_closepaw_preapprovals_v1` (agent-closepaw-preapproval.ts): sets of
- *    human-granted allow keys / pre-approval bindings (agentId + definition
- *    hash). They are NOT bound to device or install identity, the matching
- *    policy.json / agent JSON come back through the tar, and the bundle that
- *    carries them is passphrase-authenticated → restored, so the user does not
- *    have to re-grant every trust allow.
- *  - `shelly_policy_file_seal` (agent-policy-device.ts): a list of policy.json
- *    hashes. The RN copy alone is not device-bound, but its native mirror is
- *    HMAC'd with an AndroidKeyStore key that does NOT survive reinstall. We
- *    restore it through the same write path as the app (SecureStore AND
- *    TerminalEmulator.setAgentPolicySeal, which re-HMACs with the NEW
- *    install's Keystore key) — see restorePolicySeal in service.ts. If the
- *    native bridge is missing, it is skipped (device-bound) and executors fail
- *    closed on a non-empty policy.json until the user re-saves the policy.
- *
- * Nothing here is skipped unconditionally today; DEVICE_BOUND_KEYS lists keys
- * whose restore needs the native re-seal path.
+ *  - APPROVAL keys — `shelly_closepaw_preapprovals_v1`
+ *    (agent-closepaw-preapproval.ts), `shelly_policy_trust_allow_keys`
+ *    (agent-trust-allow-seal.ts) and `shelly_policy_file_seal`
+ *    (agent-policy-device.ts). Restoring them verbatim from a bundle would
+ *    LAUNDER approvals (re-trust grants without the user re-confirming on the
+ *    new install; the policy seal would even be re-HMAC'd with the new
+ *    Keystore key). They are backed up, but restored ONLY when the user opts
+ *    in on the restore review step, which lists what would be re-trusted.
+ *    Without opt-in, service.ts rebuilds policy.json from its RULES only
+ *    (ask / deny / draft_only — rules can only tighten) with trust allows and
+ *    counters reset, and seals that rebuilt file; ClosePaw hand-offs fall back
+ *    to the normal per-run review. The original policy seal value is never
+ *    written back verbatim: when opted in it is recomputed from the restored
+ *    file bytes.
  */
 import { API_KEY_NAMES } from '@/lib/secure-store';
 import { SOCIAL_ALL_FIELDS, SOCIAL_PLATFORM_FIELDS, isSafeConnectorField, isSafeConnectorId } from '@/lib/social-connectors';
@@ -55,9 +51,15 @@ export const FIXED_SECURE_KEYS: Readonly<Record<string, string>> = Object.freeze
   shelly_memory_v2_dek: 'lib/memory/encryption-key.ts',
 });
 
-/** Restored only via the native re-seal path (see module doc). */
 export const POLICY_SEAL_KEY = 'shelly_policy_file_seal';
-export const DEVICE_BOUND_KEYS: readonly string[] = Object.freeze([POLICY_SEAL_KEY]);
+export const CLOSEPAW_PREAPPROVAL_KEY = 'shelly_closepaw_preapprovals_v1';
+export const TRUST_ALLOW_SEAL_KEY = 'shelly_policy_trust_allow_keys';
+/** Never restored by the generic SecureStore loop (see module doc). */
+export const APPROVAL_SECURE_KEYS: readonly string[] = Object.freeze([
+  CLOSEPAW_PREAPPROVAL_KEY,
+  TRUST_ALLOW_SEAL_KEY,
+  POLICY_SEAL_KEY,
+]);
 
 /** Fixed connector ids that are not user-registered social connectors. */
 export const SYSTEM_CONNECTOR_SECRETS: ReadonlyArray<{ id: string; field: string; owner: string }> = Object.freeze([

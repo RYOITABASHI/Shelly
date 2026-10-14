@@ -69,6 +69,14 @@ jobs:
   build:
     needs: quality
     runs-on: ubuntu-latest
+    # The release signing secrets live in the `release-signing` GitHub
+    # Environment, whose deployment branches are restricted (main +
+    # fix/release-signing). Only jobs that need the key enter it. The `env`
+    # context is not available here, so this mirrors the signing-mode logic:
+    # when SHELLY_DEFAULT_SIGNING_MODE below is switched to `rotation`, change
+    # this to `inputs.signing != 'legacy-debug' && 'release-signing' || ''`
+    # (asserted by __tests__/release-signing-plugin.test.ts).
+    environment: ${{ (inputs.signing == 'rotation' || inputs.signing == 'release') && 'release-signing' || '' }}
     permissions:
       actions: read
       contents: write
@@ -836,17 +844,7 @@ jobs:
             release|rotation)
               if [ -z "${SHELLY_RELEASE_KEYSTORE_B64}" ] || [ -z "${SHELLY_RELEASE_KEYSTORE_PASSWORD}" ] \
                 || [ -z "${SHELLY_RELEASE_KEY_ALIAS}" ] || [ -z "${SHELLY_RELEASE_KEY_PASSWORD}" ]; then
-                echo "FATAL: release signing secrets are missing (SHELLY_RELEASE_KEYSTORE_B64 / _KEYSTORE_PASSWORD / _KEY_ALIAS / _KEY_PASSWORD); refusing to ship a debug-signed APK" >&2
-                exit 1
-              fi
-              keystore="${RUNNER_TEMP}/shelly-release.p12"
-              umask 077
-              printf '%s' "${SHELLY_RELEASE_KEYSTORE_B64}" | base64 -d > "${keystore}"
-              test -s "${keystore}" || { echo "FATAL: decoded release keystore is empty" >&2; exit 1; }
-              keystore_cert="$(cert_sha -keystore "${keystore}" -storetype pkcs12 \
-                -storepass:env SHELLY_RELEASE_KEYSTORE_PASSWORD -alias "${SHELLY_RELEASE_KEY_ALIAS}")"
-              if [ "${keystore_cert}" != "${SHELLY_RELEASE_CERT_SHA256}" ]; then
-                echo "FATAL: release keystore certificate ${keystore_cert} does not match pinned ${SHELLY_RELEASE_CERT_SHA256}" >&2
+                echo "FATAL: release signing secrets are missing (environment release-signing: SHELLY_RELEASE_KEYSTORE_B64 / _KEYSTORE_PASSWORD / _KEY_ALIAS / _KEY_PASSWORD); refusing to ship a debug-signed APK" >&2
                 exit 1
               fi
               if [ "${mode}" = "rotation" ]; then
@@ -856,8 +854,21 @@ jobs:
                   exit 1
                 fi
                 test -s signing/shelly-signing-lineage.bin || { echo "FATAL: signing/shelly-signing-lineage.bin missing (run signing-rotation-check.yml with generate_lineage=true)" >&2; exit 1; }
+              else
+                # release-only mode: Gradle signs, so the keystore must exist
+                # before the build. (rotation decodes it only after the build,
+                # in the apksigner step, so it never sits on disk during it.)
+                keystore="${RUNNER_TEMP}/shelly-release.p12"
+                umask 077
+                printf '%s' "${SHELLY_RELEASE_KEYSTORE_B64}" | base64 -d > "${keystore}"
+                keystore_cert="$(cert_sha -keystore "${keystore}" -storetype pkcs12 \
+                  -storepass:env SHELLY_RELEASE_KEYSTORE_PASSWORD -alias "${SHELLY_RELEASE_KEY_ALIAS}")"
+                if [ "${keystore_cert}" != "${SHELLY_RELEASE_CERT_SHA256}" ]; then
+                  echo "FATAL: release keystore certificate ${keystore_cert} does not match pinned ${SHELLY_RELEASE_CERT_SHA256}" >&2
+                  exit 1
+                fi
+                echo "SHELLY_RELEASE_STORE_FILE=${keystore}" >> "${GITHUB_ENV}"
               fi
-              echo "SHELLY_RELEASE_STORE_FILE=${keystore}" >> "${GITHUB_ENV}"
               expected="${SHELLY_RELEASE_CERT_SHA256}"
               ;;
             legacy-debug)
@@ -880,12 +891,11 @@ jobs:
           ./gradlew :terminal-emulator:externalNativeBuildRelease assembleRelease -x lintVitalAnalyzeRelease --build-cache
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"'
-          # Consumed by plugins/with-release-signing.js's generated Gradle
-          # block only when SHELLY_SIGNING_MODE=release (rotation mode builds
-          # an unsigned APK and signs it in the next step). Never echoed.
-          SHELLY_RELEASE_STORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
-          SHELLY_RELEASE_KEY_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
-          SHELLY_RELEASE_KEY_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEY_PASSWORD }}
+          # Only release-only mode signs inside Gradle; every other mode gets
+          # empty values so the passwords never reach the Gradle daemon.
+          SHELLY_RELEASE_STORE_PASSWORD: ${{ env.SHELLY_SIGNING_MODE == 'release' && secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD || '' }}
+          SHELLY_RELEASE_KEY_ALIAS: ${{ env.SHELLY_SIGNING_MODE == 'release' && secrets.SHELLY_RELEASE_KEY_ALIAS || '' }}
+          SHELLY_RELEASE_KEY_PASSWORD: ${{ env.SHELLY_SIGNING_MODE == 'release' && secrets.SHELLY_RELEASE_KEY_PASSWORD || '' }}
 
       - name: Sign APK with v3 key rotation
         # APK Signature Scheme v3 proof-of-rotation: v2 (API 24-27) stays signed
@@ -896,10 +906,23 @@ jobs:
         # capability (verified on an emulator by signing-rotation-check.yml).
         if: ${{ env.SHELLY_SIGNING_MODE == 'rotation' }}
         env:
-          SHELLY_RELEASE_STORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
+          SHELLY_RELEASE_KEYSTORE_B64: ${{ secrets.SHELLY_RELEASE_KEYSTORE_B64 }}
+          SHELLY_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEYSTORE_PASSWORD }}
           SHELLY_RELEASE_KEY_ALIAS: ${{ secrets.SHELLY_RELEASE_KEY_ALIAS }}
+          SHELLY_RELEASE_KEY_PASSWORD: ${{ secrets.SHELLY_RELEASE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          keystore="${RUNNER_TEMP}/shelly-release.p12"
+          trap 'rm -f "${keystore}"' EXIT
+          umask 077
+          printf '%s' "${SHELLY_RELEASE_KEYSTORE_B64}" | base64 -d > "${keystore}"
+          keystore_cert="$(keytool -exportcert -rfc -keystore "${keystore}" -storetype pkcs12 \
+            -storepass:env SHELLY_RELEASE_KEYSTORE_PASSWORD -alias "${SHELLY_RELEASE_KEY_ALIAS}" \
+            | openssl x509 -outform der | sha256sum | awk '{print $1}')"
+          if [ "${keystore_cert}" != "${SHELLY_RELEASE_CERT_SHA256}" ]; then
+            echo "FATAL: release keystore certificate ${keystore_cert} does not match pinned ${SHELLY_RELEASE_CERT_SHA256}" >&2
+            exit 1
+          fi
           out_dir=android/app/build/outputs/apk/release
           unsigned="$(ls "${out_dir}"/*-unsigned.apk | head -1)"
           test -n "${unsigned}" || { echo "FATAL: unsigned release APK not found" >&2; ls -l "${out_dir}"; exit 1; }
@@ -912,17 +935,20 @@ jobs:
           fi
           "${build_tools}/apksigner" sign \
             --ks signing/legacy-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
-            --next-signer --ks "${SHELLY_RELEASE_STORE_FILE}" --ks-type pkcs12 --ks-key-alias "${SHELLY_RELEASE_KEY_ALIAS}" \
-            --ks-pass env:SHELLY_RELEASE_STORE_PASSWORD --key-pass env:SHELLY_RELEASE_STORE_PASSWORD \
+            --next-signer --ks "${keystore}" --ks-type pkcs12 --ks-key-alias "${SHELLY_RELEASE_KEY_ALIAS}" \
+            --ks-pass env:SHELLY_RELEASE_KEYSTORE_PASSWORD --key-pass env:SHELLY_RELEASE_KEY_PASSWORD \
             --lineage signing/shelly-signing-lineage.bin --rotation-min-sdk-version 28 \
             --out "${out_dir}/app-release.apk" "${aligned}"
           rm -f "${unsigned}" "${aligned}" "${out_dir}/app-release.apk.idsig"
           ls -l "${out_dir}"
 
+      - name: Remove release keystore
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/shelly-release.p12" "${RUNNER_TEMP}/shelly-aligned.apk"
+
       - name: Verify APK signing certificate
         run: |
           set -euo pipefail
-          rm -f "${RUNNER_TEMP}/shelly-release.p12"
           apk="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
           test -n "${apk}" || { echo "FATAL: release APK not found" >&2; exit 1; }
           case "${apk}" in *-unsigned.apk) echo "FATAL: release APK is unsigned" >&2; exit 1 ;; esac
@@ -1055,6 +1081,13 @@ jobs:
           CODEX_RUNTIME_MANIFEST_NAME: codex-runtime.json
         run: |
           set -euo pipefail
+          if [ "${SHELLY_SIGNING_MODE}" = "release" ]; then
+            # A release-key APK without the v3 lineage cannot update existing
+            # (debug-signed) installs in place; users would be pushed into the
+            # uninstall/reinstall path. Never offer it on an update channel.
+            echo "FATAL: refusing to publish a release-only (no lineage) APK to an update channel; use signing=rotation" >&2
+            exit 1
+          fi
           # Gate stable-vs-dev on the ref being built, not on how the run was
           # triggered. Before this fix, every workflow_dispatch run — including
           # ones explicitly dispatched with --ref main (the daily Bump Codex

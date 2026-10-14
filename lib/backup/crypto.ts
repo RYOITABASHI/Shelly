@@ -54,8 +54,9 @@ export const KDF_BOUNDS = Object.freeze({
   maxR: 32,
   minP: 1,
   maxP: 16,
-  /** 128*r*N upper bound (bytes) — 1 GiB. */
-  maxMemBytes: 1024 * 1024 * 1024,
+  /** 128*r*N upper bound (bytes) — 256 MiB, so a crafted header cannot make
+   *  the phone allocate more than that (production default uses 64 MiB). */
+  maxMemBytes: 256 * 1024 * 1024,
 });
 
 // ─── Types ──────────────────────────────────────────────────────────────────

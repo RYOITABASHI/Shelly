@@ -149,23 +149,3 @@ export function resolveQueueLine(rawLine: string): DeepLinkQueueResolution {
     entry: { url, provider, authMode: declaredExternal ? 'external-browser' : 'in-app', host },
   };
 }
-
-/**
- * In-app `shelly://` targets accepted from the queue file (2026-10-14, backup
- * & restore). Exact-match only, no query string: opening one of these merely
- * shows a modal (the passphrase is always typed in-app, never in the
- * terminal), so a same-uid writer gains nothing beyond popping it up. Every
- * other `shelly://` line is still rejected by resolveQueueLine's http(s)
- * allowlist. Note: the native `xdg-open` shim itself only queues http(s), so
- * from the terminal use
- *   echo shelly://backup >> ~/.shelly-deep-link-queue
- * (or `am start -d shelly://backup` from adb, which goes through Linking).
- */
-export type InAppQueueTarget = 'backup' | 'restore';
-
-export function resolveInAppQueueLine(rawLine: string): InAppQueueTarget | null {
-  const line = rawLine.trim();
-  if (line === 'shelly://backup' || line === 'shelly:///backup') return 'backup';
-  if (line === 'shelly://restore' || line === 'shelly:///restore') return 'restore';
-  return null;
-}

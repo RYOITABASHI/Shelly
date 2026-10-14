@@ -5,36 +5,79 @@ import {
   SECRET_HOME_DIRS,
   SECRET_HOME_FILES,
   backupBaseName,
+  buildChmodFromListCommand,
   buildHomeListScript,
   buildPruneExpression,
   buildTarCreateCommand,
   buildTarExtractCommand,
+  buildTarListCommand,
   classifyHomePath,
   countHomeData,
   normalizeHomeRelPath,
+  secretKind,
   shQuote,
+  statePriority,
   validateTarEntries,
 } from '@/lib/backup/rules';
-import { resolveInAppQueueLine, resolveQueueLine } from '@/lib/deep-link-queue-policy';
+import * as queuePolicy from '@/lib/deep-link-queue-policy';
 
 jest.mock('expo-secure-store', () => ({}));
 import { pairBackupCandidates, siblingTarPath } from '@/lib/backup/service';
 
 describe('classifyHomePath', () => {
   it.each([
+    // credentials → encrypted bundle
     ['.codex/auth.json', 'secret'],
-    ['.codex/config.toml', 'include'],
-    ['.codex/AGENTS.md', 'include'],
-    ['.shelly/agents/daily-digest.json', 'include'],
-    ['.shelly/agents/.env', 'secret'],
-    ['.shelly/workflows/deploy.json', 'include'],
     ['.ssh/id_ed25519', 'secret'],
     ['.ssh/config', 'secret'],
     ['.git-credentials', 'secret'],
+    ['projects/app/.git-credentials', 'secret'],
     ['.config/gh/hosts.yml', 'secret'],
     ['.shelly-cs/token', 'secret'],
+    ['.claude/.credentials.json', 'secret'],
+    ['.claude.json', 'secret'],
+    ['.gemini/oauth_creds.json', 'secret'],
+    ['.gemini/settings.json', 'secret'],
+    ['.docker/config.json', 'secret'],
+    ['.aws/credentials', 'secret'],
+    ['.aws/config', 'secret'],
+    ['.kube/config', 'secret'],
+    ['.config/rclone/rclone.conf', 'secret'],
+    ['.config/gcloud/application_default_credentials.json', 'secret'],
+    ['projects/app/.env', 'secret'],
+    ['projects/app/.env.local', 'secret'],
+    ['.env', 'secret'],
+    ['projects/app/.git/config', 'secret'],
+    ['.shelly/agents/.env', 'secret'],
     ['.shelly/pending-connector-secret-updates/x-refreshToken-1.json', 'secret'],
+    // ~/.shelly state → encrypted bundle
+    ['.shelly/agents/daily-digest.json', 'secret'],
+    ['.shelly/agents/policy.json', 'secret'],
+    ['.shelly/agents/dm-pairings.json', 'secret'],
+    ['.shelly/workflows/deploy.json', 'secret'],
+    ['.shelly/agents/memory/n.md', 'secret'],
+    // histories → excluded
+    ['.bash_history', 'exclude'],
+    ['.python_history', 'exclude'],
+    ['.node_repl_history', 'exclude'],
+    ['.sqlite_history', 'exclude'],
+    ['.psql_history', 'exclude'],
+    ['.mysql_history', 'exclude'],
+    ['.zsh_history', 'exclude'],
+    ['.viminfo', 'exclude'],
+    ['.lesshst', 'exclude'],
+    ['.local/share/fish/fish_history', 'exclude'],
+    ['projects/app/.python_history', 'exclude'],
+    // plain includes
+    ['.codex/config.toml', 'include'],
+    ['.codex/AGENTS.md', 'include'],
     ['projects/app/src/index.ts', 'include'],
+    ['projects/app/.git/HEAD', 'include'],
+    ['projects/app/docs/history', 'include'],
+    ['projects/app/.env-example.md', 'include'],
+    ['.vimrc', 'include'],
+    ['notes.md', 'include'],
+    // excludes
     ['projects/app/node_modules/react/index.js', 'exclude'],
     ['node_modules/x/y.js', 'exclude'],
     ['projects/py/__pycache__/m.pyc', 'exclude'],
@@ -49,22 +92,30 @@ describe('classifyHomePath', () => {
     ['.profile', 'exclude'],
     ['.cache/pip/x', 'exclude'],
     ['.npm/_cacache/x', 'exclude'],
+    ['.shelly/tmp/x', 'exclude'],
     ['.shelly-deep-link-queue', 'exclude'],
     ['.shelly-deep-link-queue.123.abc.spool', 'exclude'],
     ['.shelly-backup-tmp/all.txt', 'exclude'],
-    ['.vimrc', 'include'],
-    ['notes.md', 'include'],
   ])('%s → %s', (p, cls) => {
     expect(classifyHomePath(p, 10)).toBe(cls);
   });
 
-  it('excludes >100MB files unless includeLarge', () => {
+  it('excludes >100MB files unless includeLarge, but never re-admits models/secrets', () => {
     expect(classifyHomePath('projects/big.bin', LARGE_FILE_BYTES + 1)).toBe('exclude');
     expect(classifyHomePath('projects/big.bin', LARGE_FILE_BYTES + 1, { includeLarge: true })).toBe('include');
     expect(classifyHomePath('projects/big.bin', LARGE_FILE_BYTES)).toBe('include');
-    // includeLarge never re-admits models, runtimes or secrets
     expect(classifyHomePath('models/m.gguf', LARGE_FILE_BYTES + 1, { includeLarge: true })).toBe('exclude');
     expect(classifyHomePath('.codex/auth.json', LARGE_FILE_BYTES + 1, { includeLarge: true })).toBe('secret');
+    expect(classifyHomePath('.shelly/agents/a.json', LARGE_FILE_BYTES + 1, { includeLarge: true })).toBe('secret');
+  });
+
+  it('secretKind / statePriority', () => {
+    expect(secretKind('.codex/auth.json')).toBe('credential');
+    expect(secretKind('.shelly/agents/.env')).toBe('credential');
+    expect(secretKind('.shelly/agents/a.json')).toBe('state');
+    expect(statePriority('.shelly/agents/a.json')).toBe(0);
+    expect(statePriority('.shelly/agents/memory/x.md')).toBe(1);
+    expect(statePriority('.shelly/agents/logs/run.log')).toBe(2);
   });
 
   it('accepts ./ prefixes and rejects unsafe paths', () => {
@@ -80,10 +131,10 @@ describe('classifyHomePath', () => {
 describe('shell builders stay consistent with the JS predicate', () => {
   const script = buildHomeListScript('.shelly-backup-tmp');
 
-  it('every pruned subtree is classified exclude by the JS predicate', () => {
+  it('every pruned subtree is never classified include by the JS predicate', () => {
     for (const p of EXCLUDED_HOME_PATHS) {
       expect(script).toContain(`-path '${'./' + p}'`);
-      expect(classifyHomePath(`${p}/some/file`, 1)).toBe('exclude');
+      expect(classifyHomePath(`${p}/some/file`, 1)).not.toBe('include');
     }
     for (const n of EXCLUDED_DIR_NAMES) {
       expect(script).toContain(`-name '${n}'`);
@@ -91,8 +142,8 @@ describe('shell builders stay consistent with the JS predicate', () => {
     }
   });
 
-  it('secret dirs are NOT pruned (they must be listed so they reach the bundle)', () => {
-    for (const d of [...SECRET_HOME_DIRS, ...SECRET_HOME_FILES]) {
+  it('secret dirs and ~/.shelly are NOT pruned (they must be listed so they reach the bundle)', () => {
+    for (const d of [...SECRET_HOME_DIRS, ...SECRET_HOME_FILES, '.shelly', '.shelly/agents']) {
       expect(buildPruneExpression()).not.toContain(`'./${d}'`);
     }
   });
@@ -104,19 +155,41 @@ describe('shell builders stay consistent with the JS predicate', () => {
     expect(script).not.toMatch(/-type l/);
   });
 
-  it('shell-quotes paths', () => {
+  it('shell-quotes paths; restore commands only touch $HOME-relative private paths', () => {
     expect(shQuote("it's")).toBe(`'it'\\''s'`);
     expect(buildTarCreateCommand("/sdcard/Download/a b'c.tar", 'l.txt')).toContain(`'/sdcard/Download/a b'\\''c.tar'`);
-    expect(buildTarExtractCommand('/sdcard/x;rm -rf ~.tar')).toContain(`'/sdcard/x;rm -rf ~.tar'`);
+    expect(buildTarExtractCommand('.shelly-backup-tmp/in.tar')).toBe(`cd "$HOME" && /system/bin/tar -xo -f "$HOME"/'.shelly-backup-tmp/in.tar' -C "$HOME"`);
+    expect(buildTarListCommand('.shelly-backup-tmp/in.tar', true)).toBe(`/system/bin/tar -tvf "$HOME"/'.shelly-backup-tmp/in.tar'`);
+    expect(buildChmodFromListCommand('.shelly-backup-tmp/r.txt')).toContain('xargs -0 /system/bin/chmod u+rwX,go-rwx');
   });
 });
 
 describe('validateTarEntries', () => {
-  it('accepts a normal backup tar', () => {
-    const r = validateTarEntries(['./.shelly/agents/a.json', './projects/x/README.md'], ['-rw------- u/u 1 2026-10-14 12:00 ./.shelly/agents/a.json']);
-    expect(r).toEqual({ ok: true, entries: ['.shelly/agents/a.json', 'projects/x/README.md'] });
+  it('accepts a normal backup tar (files + include-area directories)', () => {
+    const r = validateTarEntries(['./projects/', './projects/x/README.md', './.codex/config.toml'], ['drwx------ u/u 0 2026-10-14 12:00 ./projects/', '-rw------- u/u 1 2026-10-14 12:00 ./projects/x/README.md']);
+    expect(r).toEqual({ ok: true, entries: ['projects', 'projects/x/README.md', '.codex/config.toml'], files: ['projects/x/README.md', '.codex/config.toml'] });
   });
-  it.each([['../x'], ['/etc/x'], ['a/../../x'], ['./.codex/auth.json'], ['bin/evil'], ['./.bashrc'], ['.ssh/authorized_keys']])('rejects %s', (n) => {
+  it.each([
+    ['../x'],
+    ['/etc/x'],
+    ['a/../../x'],
+    ['./'],
+    ['.'],
+    ['./.codex/auth.json'],
+    ['./.shelly/agents/a.json'],
+    ['bin/evil'],
+    ['./.bashrc'],
+    ['.ssh/authorized_keys'],
+    ['./.bash_history'],
+    ['projects/app/.git/config'],
+    // directories in excluded / secret areas
+    ['./.shelly/'],
+    ['./.shelly/agents/'],
+    ['./.ssh/'],
+    ['./bin/'],
+    ['projects/node_modules/'],
+    ['./.aws/'],
+  ])('rejects %s', (n) => {
     expect(validateTarEntries([n]).ok).toBe(false);
   });
   it('rejects symlinks and hardlinks', () => {
@@ -156,13 +229,19 @@ describe('misc helpers', () => {
     expect(siblingTarPath('/sdcard/x/foo.shellybak')).toBeNull();
   });
 
-  it('queue accepts exactly shelly://backup and shelly://restore', () => {
-    expect(resolveInAppQueueLine('shelly://backup')).toBe('backup');
-    expect(resolveInAppQueueLine(' shelly://restore \n')).toBe('restore');
-    expect(resolveInAppQueueLine('shelly://backup?x=1')).toBeNull();
-    expect(resolveInAppQueueLine('shelly://browser?url=x')).toBeNull();
-    // the http(s) policy still rejects other shelly:// lines
-    expect(resolveQueueLine('shelly://backup').entry).toBeNull();
+  it('the shell file-queue cannot open the backup / restore flows', () => {
+    expect((queuePolicy as Record<string, unknown>).resolveInAppQueueLine).toBeUndefined();
+    for (const l of ['shelly://backup', 'shelly://restore', 'shelly:///restore', '{"url":"shelly://restore"}']) {
+      expect(queuePolicy.resolveQueueLine(l).entry).toBeNull();
+    }
+    // app/_layout.tsx's drain must not special-case them either
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const src = (require('fs') as typeof import('fs')).readFileSync(
+      (require('path') as typeof import('path')).resolve(__dirname, '..', 'app/_layout.tsx'),
+      'utf8',
+    );
+    const drain = src.slice(src.indexOf('const drainQueue = async'), src.indexOf('const drainQueue = async') + 6000);
+    expect(drain).not.toMatch(/useBackupModalStore|shelly:\/\/(backup|restore)/);
   });
 });
 
@@ -187,8 +266,11 @@ describe('backup i18n', () => {
     for (const m of src.matchAll(/t\('(backup\.[a-z_.]+)'/g)) used.add(m[1]);
     for (const r of ['too_short', 'all_same', 'sequential', 'repeated_pattern', 'common_pattern', 'low_entropy']) used.add(`backup.weak.${r}`);
     for (const p of ['listing', 'tar', 'hashing', 'collecting', 'kdf', 'writing', 'reading', 'verifying', 'extracting', 'restoring']) used.add(`backup.phase.${p}`);
-    for (const r of ['device_bound', 'unknown_key', 'codex_login_not_selected', 'too_large', 'not_a_credential_path', 'install_specific']) used.add(`backup.skip_reason.${r}`);
-    expect(used.size).toBeGreaterThan(40);
+    for (const r of [
+      'unknown_key', 'codex_login_not_selected', 'too_large', 'install_specific', 'approval_not_selected', 'bundle_full',
+      'not_a_bundle_path', 'policy_invalid', 'policy_seal_unavailable', 'policy_write_failed', 'policy_not_restored',
+    ]) used.add(`backup.skip_reason.${r}`);
+    expect(used.size).toBeGreaterThan(50);
     for (const k of used) expect(enKeys).toContain(k);
   });
 });

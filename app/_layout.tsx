@@ -34,7 +34,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
-import { resolveInAppQueueLine, resolveQueueLine } from '@/lib/deep-link-queue-policy';
+import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
 import { useBackupModalStore } from '@/store/backup-modal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { focusPaneByTab } from '@/lib/pane-focus';
@@ -1412,7 +1412,10 @@ export default function RootLayout() {
           logInfo('DeepLink', 'Scouter detail opened');
         } else if (target === 'backup' || target === 'restore') {
           // shelly://backup | shelly://restore — open the in-app encrypted
-          // backup / restore flow (passphrase is only ever typed in-app).
+          // backup / restore flow. No query parameter is honoured (no
+          // prefilled paths), and the shell file-queue deliberately does NOT
+          // accept these (lib/deep-link-queue-policy.ts rejects non-http(s)),
+          // so a process in the app sandbox cannot drive the flow.
           useBackupModalStore.getState().open(target);
           logInfo('DeepLink', `backup modal opened (${target})`);
         } else if (target === 'agent-action-confirm') {
@@ -1733,12 +1736,6 @@ export default function RootLayout() {
           // known-broken path. Only the two OAuth hosts are upgraded (NOT
           // *.google.com) so pasted YouTube / Drive / Maps URLs still open
           // in-app.
-          const inAppTarget = resolveInAppQueueLine(line);
-          if (inAppTarget) {
-            useBackupModalStore.getState().open(inAppTarget);
-            logInfo('DeepLinkQueue', `opened in-app ${inAppTarget} modal`);
-            continue;
-          }
           const resolved = resolveQueueLine(line);
           if (!resolved.entry) {
             logError('DeepLinkQueue', `rejected line (${resolved.reason}): ${line.slice(0, 96)}`);

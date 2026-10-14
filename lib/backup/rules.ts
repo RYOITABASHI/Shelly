@@ -4,16 +4,27 @@
  *
  * Three classes:
  *   'include' — non-secret user data → plaintext tar on /sdcard/Download
- *   'secret'  — credential files → ONLY the encrypted .shellybak (never tar)
+ *   'secret'  — ONLY the encrypted .shellybak (never the tar). Two kinds
+ *               (secretKind): 'credential' (auth files, keys, tokens, .env,
+ *               .git/config …) and 'state' (ALL of ~/.shelly: agent
+ *               definitions, policy.json, memory, dm-pairings, skills …,
+ *               which can hold personal data and approval state).
  *   'exclude' — Shelly-generated runtimes/wrappers, caches, models, transient
- *               queues, and large files (unless includeLarge)
+ *               queues, shell/REPL histories, and large files (unless
+ *               includeLarge).
+ *
+ * Ordering invariant: credential rules run FIRST, then exclusions, then the
+ * ~/.shelly state rule, and only then the 'include' fall-through — a secret
+ * can never fall through to 'include'.
+ *
+ * Histories (.bash_history, .python_history, .node_repl_history, .viminfo,
+ * .lesshst, fish_history …) are EXCLUDED rather than bundled: they routinely
+ * contain pasted API keys and have no value worth putting at risk.
  *
  * The on-device listing is produced by `buildHomeListScript()` (find with
  * prune rules for whole excluded subtrees — a speed optimisation only), and
  * then EVERY listed path is re-classified with `classifyHomePath()` in JS. The
- * JS predicate is therefore the single authority; the shell prune list is a
- * strict subset of its 'exclude' rules (asserted by tests), so the two can
- * never disagree in a way that leaks a file into the tar.
+ * JS predicate is the single authority.
  *
  * Home layout reference: modules/terminal-emulator/.../HomeInitializer.kt.
  * Shelly-generated / re-created on every launch (excluded):
@@ -26,6 +37,7 @@
  */
 
 export type HomePathClass = 'include' | 'exclude' | 'secret';
+export type SecretKind = 'credential' | 'state';
 
 export type ClassifyOptions = {
   /** Include files larger than LARGE_FILE_BYTES. Default false. */
@@ -33,8 +45,16 @@ export type ClassifyOptions = {
 };
 
 export const LARGE_FILE_BYTES = 100 * 1024 * 1024;
-/** A credential file larger than this is skipped (never tarred). */
-export const SECRET_FILE_MAX_BYTES = 1024 * 1024;
+
+/** Encrypted-bundle caps (the bundle is built in memory: payload JSON +
+ *  ciphertext + base64 copies coexist, so the totals are kept modest).
+ *  Anything over a cap is SKIPPED and reported — never put in the tar. */
+export const CREDENTIAL_FILE_MAX_BYTES = 1024 * 1024;
+export const CREDENTIAL_TOTAL_MAX_BYTES = 16 * 1024 * 1024;
+export const STATE_FILE_MAX_BYTES = 8 * 1024 * 1024;
+export const STATE_TOTAL_MAX_BYTES = 32 * 1024 * 1024;
+/** @deprecated alias kept for callers of the first version */
+export const SECRET_FILE_MAX_BYTES = CREDENTIAL_FILE_MAX_BYTES;
 
 /** Top-level (home-relative) paths excluded with their whole subtree.
  *  Every entry is pruned by the shell `find` too. */
@@ -67,13 +87,16 @@ export const EXCLUDED_HOME_PATHS: readonly string[] = Object.freeze([
   '.m2',
   '.node-gyp',
   '.local/share/Trash',
+  '.local/share/fish', // fish_history
   '.codex/log',
   '.codex/tmp',
   '.codex/.tmp',
+  '.gemini/tmp',
+  '.kube/cache',
+  '.kube/http-cache',
 ]);
 
-/** Exact files excluded (Shelly-generated or install-specific). Not pruned
- *  by the shell (they are files) — filtered in JS. */
+/** Exact files excluded (Shelly-generated or install-specific). */
 export const EXCLUDED_HOME_FILES: readonly string[] = Object.freeze([
   '.bashrc',
   '.bashrc_version',
@@ -83,6 +106,18 @@ export const EXCLUDED_HOME_FILES: readonly string[] = Object.freeze([
   '.shelly-deep-link-queue',
   '.shelly-command-queue',
 ]);
+
+/** Shell / REPL history basenames — excluded anywhere (they hold pasted keys). */
+export const HISTORY_BASENAMES: readonly string[] = Object.freeze([
+  '.viminfo',
+  '.lesshst',
+  '.histfile',
+  '.zhistory',
+  'fish_history',
+]);
+// .bash_history, .python_history, .node_repl_history, .psql_history,
+// .sqlite_history, .mysql_history, .zsh_history, .rediscli_history …
+const HISTORY_RE = /^\..*history$|_history$/i;
 
 /** Directory names excluded wherever they appear (also pruned by find). */
 export const EXCLUDED_DIR_NAMES: readonly string[] = Object.freeze([
@@ -103,27 +138,34 @@ export const EXCLUDED_EXTENSIONS: readonly string[] = Object.freeze([
   '.shellybak',
 ]);
 
-/** Credential files → encrypted bundle only. */
+/** Credential files (exact home-relative paths) → encrypted bundle only. */
 export const SECRET_HOME_FILES: readonly string[] = Object.freeze([
   '.codex/auth.json',
-  '.shelly/agents/.env',
   '.shelly-cs/token',
-  '.git-credentials',
   '.netrc',
   '.npmrc',
   '.pypirc',
   '.config/gh/hosts.yml',
+  '.claude/.credentials.json',
+  '.claude.json',
+  '.docker/config.json',
+  '.kube/config',
+  '.config/rclone/rclone.conf',
 ]);
 
 /** Credential directories → every file below goes to the encrypted bundle. */
 export const SECRET_HOME_DIRS: readonly string[] = Object.freeze([
   '.ssh',
   '.gnupg',
+  '.aws',
+  '.config/gcloud',
   '.config/codex',
   '.config/openai',
   '.openai',
-  '.shelly/pending-connector-secret-updates',
 ]);
+
+/** ~/.shelly is bundled (encrypted) as a whole — see module doc. */
+export const STATE_DIR = '.shelly';
 
 export const CODEX_AUTH_PATH = '.codex/auth.json';
 
@@ -149,28 +191,62 @@ export function normalizeHomeRelPath(raw: string): string | null {
   return p;
 }
 
+/** Credential match on a normalised path (anywhere-patterns included). */
+function isCredentialPath(rel: string): boolean {
+  if (SECRET_HOME_FILES.includes(rel)) return true;
+  if (SECRET_HOME_DIRS.some((d) => under(rel, d))) return true;
+  const segs = rel.split('/');
+  const base = segs[segs.length - 1];
+  if (base === '.env' || base.startsWith('.env.')) return true; // **/.env*
+  if (base === '.git-credentials') return true; // anywhere
+  if (base === 'config' && segs.length >= 2 && segs[segs.length - 2] === '.git') return true; // **/.git/config (token remotes)
+  if (segs.length === 2 && segs[0] === '.gemini' && base.endsWith('.json')) return true; // .gemini/oauth_creds.json etc.
+  if (segs.length >= 2 && segs[0] === '.shelly' && segs[1] === 'pending-connector-secret-updates') return true;
+  return false;
+}
+
+function isHistoryPath(rel: string): boolean {
+  const base = rel.slice(rel.lastIndexOf('/') + 1);
+  return HISTORY_BASENAMES.includes(base) || HISTORY_RE.test(base);
+}
+
 export function classifyHomePath(relPath: string, sizeBytes: number, opts: ClassifyOptions = {}): HomePathClass {
   const rel = normalizeHomeRelPath(relPath);
   if (rel === null) return 'exclude';
-  // Secrets first: a credential must never fall through to 'include', even
-  // if some other rule would also have matched.
-  if (SECRET_HOME_FILES.includes(rel)) return 'secret';
-  if (SECRET_HOME_DIRS.some((d) => under(rel, d))) return 'secret';
-
+  // 1. credentials first: must never fall through to 'include'.
+  if (isCredentialPath(rel)) return 'secret';
+  // 2. exclusions
+  if (isHistoryPath(rel)) return 'exclude';
   if (EXCLUDED_HOME_PATHS.some((d) => under(rel, d))) return 'exclude';
   if (EXCLUDED_HOME_FILES.includes(rel)) return 'exclude';
   const segs = rel.split('/');
-  if (segs.slice(0, -1).some((s) => EXCLUDED_DIR_NAMES.includes(s)) || EXCLUDED_DIR_NAMES.includes(segs[segs.length - 1])) {
-    return 'exclude';
-  }
-  // Top-level Shelly helper scripts (.shelly-agent-driver.js, …) and
-  // queue spool files are regenerated on launch.
+  if (segs.some((s) => EXCLUDED_DIR_NAMES.includes(s))) return 'exclude';
+  // Top-level Shelly helper scripts (.shelly-agent-driver.js, …) and queue
+  // spool files are regenerated on launch.
   if (segs.length === 1 && /^\.shelly-.*\.(js|sh|cjs|mjs)$/.test(rel)) return 'exclude';
   if (segs.length === 1 && rel.startsWith('.shelly-deep-link-queue')) return 'exclude';
   const lower = rel.toLowerCase();
   if (EXCLUDED_EXTENSIONS.some((ext) => lower.endsWith(ext))) return 'exclude';
+  // 3. all remaining ~/.shelly content → encrypted bundle
+  if (under(rel, STATE_DIR)) return 'secret';
+  // 4. include
   if (!opts.includeLarge && sizeBytes > LARGE_FILE_BYTES) return 'exclude';
   return 'include';
+}
+
+/** For a path classified 'secret': which cap bucket it belongs to. */
+export function secretKind(relPath: string): SecretKind {
+  const rel = normalizeHomeRelPath(relPath) ?? relPath;
+  return !isCredentialPath(rel) && under(rel, STATE_DIR) ? 'state' : 'credential';
+}
+
+/** Restore/backup priority inside the state bucket (lower = kept first when
+ *  the total cap is hit): agent definitions + policy/pairing JSON, then
+ *  memory + skills + workflows, then everything else (run logs …). */
+export function statePriority(rel: string): number {
+  if (/^\.shelly\/agents\/[^/]+\.json$/.test(rel) || /^\.shelly\/[^/]+$/.test(rel)) return 0;
+  if (/^\.shelly\/(agents\/)?(memory|skills|workflows)\//.test(rel) || rel.startsWith('.shelly/workflows/')) return 1;
+  return 2;
 }
 
 // ─── Shell side ─────────────────────────────────────────────────────────────
@@ -178,6 +254,11 @@ export function classifyHomePath(relPath: string, sizeBytes: number, opts: Class
 /** POSIX single-quote. */
 export function shQuote(s: string): string {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+/** `"$HOME"/'rel'` — a $HOME-relative path as a shell word. */
+export function homeWord(rel: string): string {
+  return `"$HOME"/${shQuote(rel)}`;
 }
 
 export const TOYBOX_FIND = '/system/bin/find';
@@ -217,42 +298,60 @@ export function buildTarCreateCommand(tarPath: string, listPath: string): string
   return `cd "$HOME" && ${TOYBOX_TAR} -cf ${shQuote(tarPath)} -T ${shQuote(listPath)}`;
 }
 
-export function buildTarListCommand(tarPath: string, verbose: boolean): string {
-  return `${TOYBOX_TAR} -t${verbose ? 'v' : ''}f ${shQuote(tarPath)}`;
+/** List a tar that lives at a $HOME-relative (app-private) path. */
+export function buildTarListCommand(tarRel: string, verbose: boolean): string {
+  return `${TOYBOX_TAR} -t${verbose ? 'v' : ''}f ${homeWord(tarRel)}`;
 }
 
-export function buildTarExtractCommand(tarPath: string): string {
-  return `cd "$HOME" && ${TOYBOX_TAR} -xf ${shQuote(tarPath)} -C "$HOME"`;
+/**
+ * Extract an app-private tar (a $HOME-relative path) into $HOME.
+ * toybox tar: `-o` = don't restore user:group; without `-p` toybox does not
+ * restore the archived permission bits as-is for a non-root caller (umask
+ * applies). Modes are then normalised explicitly by buildChmodFromListCommand.
+ */
+export function buildTarExtractCommand(tarRel: string): string {
+  return `cd "$HOME" && ${TOYBOX_TAR} -xo -f ${homeWord(tarRel)} -C "$HOME"`;
 }
 
-export function buildSha256Command(path: string): string {
-  return `${TOYBOX_SHA256} ${shQuote(path)} && /system/bin/stat -c %s ${shQuote(path)}`;
+/** chmod u+rwX,go-rwx every path named (one per line) in a $HOME-relative list. */
+export function buildChmodFromListCommand(listRel: string): string {
+  return `cd "$HOME" && /system/bin/tr '\\n' '\\0' < ${homeWord(listRel)} | /system/bin/xargs -0 /system/bin/chmod u+rwX,go-rwx`;
+}
+
+export function buildSha256Command(fileWord: string): string {
+  return `${TOYBOX_SHA256} ${fileWord} && /system/bin/stat -c %s ${fileWord}`;
 }
 
 // ─── Tar entry validation (restore) ─────────────────────────────────────────
 
-export type TarValidation = { ok: true; entries: string[] } | { ok: false; reason: string; entry?: string };
+export type TarValidation = { ok: true; entries: string[]; files: string[] } | { ok: false; reason: string; entry?: string };
 
 /**
- * Validate `tar -tf` names (and optionally `tar -tvf` lines for entry types).
- * Rejects absolute paths, `..` segments, control characters, symlinks /
- * hardlinks / devices, and any entry this module would not itself have put in
- * a backup tar (secrets, Shelly runtimes/wrappers, .bashrc …) — the tar sits
- * in world-readable /sdcard/Download and is only trusted after its SHA-256
- * matched the authenticated bundle, but this keeps a second line of defence.
+ * Validate `tar -tf` names (and `tar -tvf` lines for entry types).
+ * Rejects: absolute paths, `..`, control characters, the root entry (`.`/`./`),
+ * symlinks / hardlinks / devices, any FILE this module would not itself have
+ * put in a backup tar (secrets, ~/.shelly state, runtimes/wrappers, .bashrc,
+ * histories …) and any DIRECTORY whose contents would land in an excluded or
+ * secret area (a probe child of the directory must classify 'include').
  */
 export function validateTarEntries(names: string[], verboseLines?: string[]): TarValidation {
   const entries: string[] = [];
+  const files: string[] = [];
   for (const raw of names) {
-    if (raw === '' ) continue;
-    if (raw === '.' || raw === './') continue;
+    if (raw === '') continue;
+    if (raw === '.' || raw === './' || raw === '/') return { ok: false, reason: 'root entry', entry: raw };
     if (raw.startsWith('/')) return { ok: false, reason: 'absolute path', entry: raw };
     const norm = normalizeHomeRelPath(raw);
     if (norm === null) return { ok: false, reason: 'unsafe path', entry: raw };
     const isDir = raw.endsWith('/');
-    if (!isDir) {
+    if (isDir) {
+      if (isCredentialPath(norm)) return { ok: false, reason: 'directory in a credential area', entry: raw };
+      const probe = classifyHomePath(`${norm}/__shelly_probe__`, 0, { includeLarge: true });
+      if (probe !== 'include') return { ok: false, reason: `directory not allowed in a backup tar (${probe})`, entry: raw };
+    } else {
       const cls = classifyHomePath(norm, 0, { includeLarge: true });
       if (cls !== 'include') return { ok: false, reason: `entry not allowed in a backup tar (${cls})`, entry: raw };
+      files.push(norm);
     }
     entries.push(norm);
   }
@@ -263,7 +362,7 @@ export function validateTarEntries(names: string[], verboseLines?: string[]): Ta
       if (type !== '-' && type !== 'd') return { ok: false, reason: 'non-regular entry (link/device)', entry: line };
     }
   }
-  return { ok: true, entries };
+  return { ok: true, entries, files };
 }
 
 // ─── Summary helpers ────────────────────────────────────────────────────────
