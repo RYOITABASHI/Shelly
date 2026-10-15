@@ -6,6 +6,7 @@ jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
 
+import { INJECTED_CONTEXT_SEPARATOR } from '@/lib/agent-output-language';
 import { generateRunScript } from '@/lib/agent-executor';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { resolveEscalationLadder } from '@/lib/agent-escalation-ladder';
@@ -19,7 +20,7 @@ const agent = (over: Partial<Agent> = {}): Agent => ({
   id: 'fr',
   name: 'fr',
   description: '',
-  prompt: `${MEMORY}\n\n---\n\n${TASK}`,
+  prompt: `${MEMORY}${INJECTED_CONTEXT_SEPARATOR}${TASK}`,
   schedule: '0 8 * * *',
   tool: PPLX,
   autonomous: true,
@@ -89,7 +90,7 @@ describe('H2: a chain whose AGENT-level tool is Perplexity isolates every step t
   });
 
   it('web-mandatory consent keeps the full plan prompt (pre-branch behaviour)', () => {
-    const spec = buildAgentPlanSpec(agent({ prompt: `${MEMORY}\n\n---\n\nパープレで最新のAIニュースを集めて` }), { autonomousCloudConsent: true });
+    const spec = buildAgentPlanSpec(agent({ prompt: `${MEMORY}${INJECTED_CONTEXT_SEPARATOR}パープレで最新のAIニュースを集めて` }), { autonomousCloudConsent: true });
     expect(spec.prompt).toContain('private note');
   });
 });
@@ -106,7 +107,7 @@ describe('L1: no per-step research-intent extension for notification-triggered a
 });
 
 describe('L2: memory recall cannot supply the research intent', () => {
-  const memResearch = `# Memory\n- the user likes research papers and 論文\n\n---\n\nパープレでこの文章を整えて`;
+  const memResearch = `# Memory\n- the user likes research papers and 論文${INJECTED_CONTEXT_SEPARATOR}パープレでこの文章を整えて`;
   it('.sh, PlanSpec and ladder judge consent on the task text only', () => {
     expect(generateRunScript(agent({ prompt: memResearch }), { autonomousCloudConsent: true })).toContain('[REFUSED]');
     expect(buildAgentPlanSpec(agent({ prompt: memResearch }), { autonomousCloudConsent: true }).tool.type).toBe('unsupported');

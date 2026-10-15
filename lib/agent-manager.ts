@@ -11,6 +11,7 @@ import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logInfo, logWarn } from './debug-logger';
+import { INJECTED_CONTEXT_SEPARATOR } from './agent-output-language';
 import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-registry';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
@@ -1093,7 +1094,7 @@ async function applyMemoryAndSkills(
       // already shaped `.orchestration` for exactly this one step/candidate.
       if (opts.rehydrateSkillPlan !== false) agent = applyExecutableSkillPlan(agent, recipe);
       const skillContext = buildSkillInjectionContext(recipe, agent.prompt);
-      if (skillContext) prompt = `${skillContext}\n\n---\n\n${prompt}`;
+      if (skillContext) prompt = `${skillContext}${INJECTED_CONTEXT_SEPARATOR}${prompt}`;
     } catch {
       // Skill injection is best-effort; never block a run on a read failure.
     }
@@ -1137,7 +1138,7 @@ async function applyMemoryAndSkills(
         recallContext = '';
       }
     }
-    if (recallContext) prompt = `${recallContext}\n\n---\n\n${prompt}`;
+    if (recallContext) prompt = `${recallContext}${INJECTED_CONTEXT_SEPARATOR}${prompt}`;
   } catch {
     // best-effort
   }

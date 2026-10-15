@@ -13,6 +13,7 @@ jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
 
+import { INJECTED_CONTEXT_SEPARATOR } from '@/lib/agent-output-language';
 import { generateRunScript } from '@/lib/agent-executor';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { resolveEscalationLadder } from '@/lib/agent-escalation-ladder';
@@ -28,7 +29,7 @@ const agent = (over: Partial<Agent> = {}): Agent => ({
   id: 'p1',
   name: 'p1',
   description: '',
-  prompt: `${MEMORY}\n\n---\n\n${TASK}`,
+  prompt: `${MEMORY}${INJECTED_CONTEXT_SEPARATOR}${TASK}`,
   schedule: '0 8 * * *',
   tool: PPLX,
   autonomous: true,
@@ -103,7 +104,7 @@ describe('research-intent single runs send an isolated prompt', () => {
   });
 
   it('device status only when the task itself asks for it (not because memory mentions it)', () => {
-    const memBattery = generateRunScript(agent({ prompt: `# Memory\n- battery was low\n\n---\n\n${TASK}` }), { autonomousCloudConsent: true });
+    const memBattery = generateRunScript(agent({ prompt: `# Memory\n- battery was low${INJECTED_CONTEXT_SEPARATOR}${TASK}` }), { autonomousCloudConsent: true });
     expect(memBattery).toContain('DEVICE_STATUS_RELEVANT=0');
     const taskBattery = generateRunScript(agent({ prompt: 'パープレでバッテリー技術の論文を調べて' }), { autonomousCloudConsent: true });
     expect(taskBattery).toContain('DEVICE_STATUS_RELEVANT=1');

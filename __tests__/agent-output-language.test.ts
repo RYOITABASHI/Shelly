@@ -7,6 +7,7 @@ jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
 
+import { INJECTED_CONTEXT_SEPARATOR } from '@/lib/agent-output-language';
 import { detectTaskLanguage, outputLanguageDirective, taskTextForLanguage } from '@/lib/agent-output-language';
 import { generateRunScript } from '@/lib/agent-executor';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
@@ -14,7 +15,7 @@ import type { Agent } from '@/store/types';
 
 const JA_MEMORY = '# 記憶\n- ユーザーは日本語話者で、要約は短めが好み。';
 const EN_TASK = 'Collect the latest AI research papers and summarize 3 notable ones. Write the summaries in English.';
-const composite = `${JA_MEMORY}\n\n---\n\n${EN_TASK}`;
+const composite = `${JA_MEMORY}${INJECTED_CONTEXT_SEPARATOR}${EN_TASK}`;
 
 const agent = (prompt: string, over: Partial<Agent> = {}): Agent => ({
   id: 'lang',
@@ -37,6 +38,12 @@ describe('output language is the TASK language, never the injected context', () 
   it('taskTextForLanguage strips prepended memory/skill context', () => {
     expect(taskTextForLanguage(composite)).toBe(EN_TASK);
     expect(taskTextForLanguage(EN_TASK)).toBe(EN_TASK);
+  });
+
+  it('post-merge review L4: only the dedicated sentinel splits, never a generic "---" rule in the task or carry', () => {
+    const task = 'Summarize the notes below.\n\n---\n\nPart two of the task.';
+    expect(taskTextForLanguage(task)).toBe(task);
+    expect(taskTextForLanguage(`${JA_MEMORY}${INJECTED_CONTEXT_SEPARATOR}${task}`)).toBe(task);
   });
 
   it('detects ja / en / other', () => {

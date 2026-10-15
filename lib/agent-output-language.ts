@@ -8,7 +8,7 @@
  *     the backend followed the strongest language signal in the prompt.
  *  2. The language was judged on the FULL prompt — which, by the time it
  *     reaches the executors, is applyMemoryAndSkills' composite
- *     (`<memory recall>\n\n---\n\n<skill recipe>\n\n---\n\n<task>`). Japanese
+ *     (`<memory recall><SEP><skill recipe><SEP><task>`, SEP = INJECTED_CONTEXT_SEPARATOR). Japanese
  *     memory / profile notes therefore made an English task "Japanese", and
  *     the injected context steered the answer.
  *
@@ -17,8 +17,14 @@
  * language of any context, memory or profile notes that follow it.
  */
 
-/** applyMemoryAndSkills' separator between injected context and the task. */
-const INJECTED_CONTEXT_SEPARATOR = '\n\n---\n\n';
+/**
+ * The separator lib/agent-manager.ts's applyMemoryAndSkills puts between
+ * injected context (memory recall / skill recipe) and the user's task.
+ * Post-merge review L4: a dedicated sentinel, not the generic "---" rule,
+ * which also appears in buildStepPrompt's carried results and in ordinary
+ * user/markdown text — splitting on that picked the wrong "task" segment.
+ */
+export const INJECTED_CONTEXT_SEPARATOR = '\n\n---\n<!-- shelly:end-of-injected-context -->\n\n';
 
 /** The user's own task text, without prepended memory / skill context. */
 export function taskTextForLanguage(prompt: string): string {

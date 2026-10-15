@@ -9,6 +9,7 @@ jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
 
+import { INJECTED_CONTEXT_SEPARATOR } from '@/lib/agent-output-language';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,7 +27,7 @@ const chainAgent = (steps: Agent['orchestration'] extends infer O ? O extends { 
   id: 'iso',
   name: 'iso',
   description: '',
-  prompt: `${MEMORY}\n\n---\n\n${TASK}`,
+  prompt: `${MEMORY}${INJECTED_CONTEXT_SEPARATOR}${TASK}`,
   schedule: '0 8 * * *',
   tool: { type: 'cli', cli: 'codex' },
   autonomous: true,
