@@ -113,6 +113,8 @@ export type AgentAddDraftLike = {
   orchestrationSteps?: Array<string | { instruction?: string; apiCall?: unknown; tool?: unknown }> | null;
   closePawRouting?: { clause: string; app: string; routed: boolean } | null;
   tool?: { type?: string; [key: string]: unknown } | null;
+  /** The user named the tool (ParsedAgentDraft.toolExplicit). */
+  toolExplicit?: boolean;
   outputPath?: string;
   matchedSkill?: unknown;
 };
@@ -365,6 +367,12 @@ export type AgentAddSummary = {
   approvableFromChat: boolean;
   expiresAt: number;
   message: string;
+  /** Engine the agent will be stored with (review L2), e.g. "Perplexity API". */
+  tool: string;
+  /** true when the user named that engine in the request. */
+  toolPinned: boolean;
+  /** Disclosure shown with `tool` (e.g. a substituted engine), or null. */
+  toolNote: string | null;
 };
 
 function clip(s: string, max: number): string {
@@ -380,7 +388,9 @@ export function buildAgentAddSummary(
   status: AgentAddSummary['code'] = 'parsed',
   /** false: a ClosePaw step with the Shelly-trusted variant installed —
    *  ChatGPT/terminal text cannot approve it (user decision, option 3). */
-  opts: { textConfirmAllowed?: boolean } = {},
+  /** `tool`: the engine disclosure (lib/agent-tool-router.ts
+   *  describeDraftTool, computed by the caller so this module stays pure). */
+  opts: { textConfirmAllowed?: boolean; tool?: { label: string; pinned: boolean; note: string | null } } = {},
 ): AgentAddSummary {
   const textConfirmAllowed = opts.textConfirmAllowed !== false;
   const steps: string[] = [];
@@ -431,5 +441,8 @@ export function buildAgentAddSummary(
     approvableFromChat: binding.approvable && textConfirmAllowed && status === 'parsed',
     expiresAt: binding.expiresAt,
     message,
+    tool: clip(opts.tool?.label ?? 'Auto', 120),
+    toolPinned: opts.tool?.pinned === true,
+    toolNote: opts.tool?.note ? clip(opts.tool.note, 400) : null,
   };
 }

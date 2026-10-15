@@ -631,7 +631,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         store.addMessage(paneId, {
           id: draftMessageId,
           role: 'assistant',
-          content: useChatConfirm ? summarizeAgentDraftAsText(draft) : '',
+          content: useChatConfirm ? summarizeAgentDraftAsText(draft, undefined, false, { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false }) : '',
           timestamp: Date.now(),
           agent: agentLabel,
           agentDraft: draft,
@@ -1382,7 +1382,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             // instead of the one just agreed on here.
             store.updateMessage(paneId, pendingAgentSession.messageId, {
               agentDraft: patchedDraft,
-              content: summarizeAgentDraftAsText(patchedDraft, undefined, isEditingSession),
+              content: summarizeAgentDraftAsText(patchedDraft, undefined, isEditingSession, { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false }),
             });
             const patchStrings = detectMessageLocale(patchedDraft.rawText) === 'ja' ? ja : en;
             // 2026-07-23: this patch is NOT yet committed (a separate
@@ -1408,6 +1408,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 patchedDraft,
                 new Set(patchResult.changedFields),
                 isEditingSession,
+                { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false },
               )}${runOnceNote}`,
               timestamp: Date.now(),
               agent: pendingAgentSession.agentLabel,
@@ -1448,7 +1449,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           store.addMessage(paneId, {
             id: generateId(),
             role: 'assistant',
-            content: `${unclearStrings[unclearIsEditing ? 'agentplan.confirm_unclear_hint_edit' : 'agentplan.confirm_unclear_hint']}\n\n${summarizeAgentDraftAsText(pendingAgentSession.draft, undefined, unclearIsEditing)}`,
+            content: `${unclearStrings[unclearIsEditing ? 'agentplan.confirm_unclear_hint_edit' : 'agentplan.confirm_unclear_hint']}\n\n${summarizeAgentDraftAsText(pendingAgentSession.draft, undefined, unclearIsEditing, { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false })}`,
             timestamp: Date.now(),
             agent: pendingAgentSession.agentLabel,
           });
@@ -1854,6 +1855,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               ? `${correctionStrings['agentplan.patch_updated_header']}\n${summarizeAgentDraftAsText(
                   patchedDraft,
                   new Set(correction.changedFields),
+                  false,
+                  { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false },
                 )}`
               : null;
 

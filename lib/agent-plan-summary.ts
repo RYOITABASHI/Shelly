@@ -31,7 +31,7 @@
  */
 import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime } from './agent-nl-parser';
 import { AgentAction } from '@/store/types';
-import { toolChoiceToLabel } from './agent-tool-router';
+import { describeDraftTool, toolChoiceToLabel } from './agent-tool-router';
 import { closePawTaskText } from './agent-intent-review';
 import { normalizeStep, planParallelGroups } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
@@ -430,6 +430,10 @@ export function summarizeAgentDraftAsText(
   draft: ParsedAgentDraft,
   changedFields: ReadonlySet<string> = new Set(),
   isEditing: boolean = false,
+  /** Live Autonomous Cloud consent, for the engine disclosure lines
+   *  (describeDraftTool). Absent = unknown: lines that depend on it are
+   *  omitted rather than guessed. */
+  opts: { cloudConsent?: boolean } = {},
 ): string {
   // 2026-07-27 on-device finding: this whole card was rendering in English
   // for a Japanese `@agent` request, because every line went through the
@@ -524,6 +528,13 @@ export function summarizeAgentDraftAsText(
     if (next) {
       lines.push(tl('agentplan.next_fire_note', { datetime: formatDateTimeForSummary(next) }));
     }
+  }
+
+  // 2026-10-15 (review L2): a tool the user NAMED is shown, so they can see the
+  // request was understood ("パープレで…" → Perplexity API).
+  const toolDisclosure = describeDraftTool(draft, opts.cloudConsent === true);
+  if (toolDisclosure.pinned && !toolDisclosure.substitution && (opts.cloudConsent !== undefined || !draft.autonomous)) {
+    lines.push(tl('agentplan.summary_tool_pinned', { tool: toolDisclosure.label }));
   }
 
   if (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2) {

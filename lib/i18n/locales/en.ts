@@ -562,6 +562,7 @@ const en: Record<string, string> = {
   'agentcard.autonomous_route_web': 'Autonomous {{engine}}',
   'agentcard.autonomous_route_local': 'Autonomous on-device',
   'agentcard.autonomous_hint': 'Run multi-step via the gated agent (asks you to approve risky steps).',
+  'agentcard.tool_pinned': 'Engine: {{tool}} (named in your request)',
   'agentcard.autonomous_route_hint': 'Autonomous chat runs through the gated Codex driver. API-key cloud backends are not used here.',
   'agentcard.autonomous_route_hint_web': 'Cloud consent on: collects unattended on {{engine}} (grounded); escalates to Codex only on failure.',
   'agentcard.autonomous_route_hint_local': 'Runs unattended on the on-device local LLM (nothing leaves the device).',
@@ -614,6 +615,7 @@ const en: Record<string, string> = {
   // instead) — present anyway so a future refactor that starts relying on
   // this fallback doesn't silently render the raw i18n key string.
   'agentplan.action_label_browser-pane': 'act in the browser',
+  'agentplan.summary_tool_pinned': 'Engine: {{tool}} (named in your request)',
   'agentplan.autonomous_note': 'Runs autonomously (no per-run human approval).',
   'agentplan.memory_note': 'Will remember after running: {{fact}}',
   'agentplan.skill_note': 'Reuses the existing skill "{{name}}" ({{count}} prior successes).',

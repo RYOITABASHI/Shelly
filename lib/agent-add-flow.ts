@@ -45,6 +45,7 @@ import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { tFor, type Locale } from '@/lib/i18n';
 import { detectMessageLocale } from '@/lib/agent-slot-fill';
 import { humanizeCronSchedule } from '@/lib/agent-plan-summary';
+import { describeDraftTool } from '@/lib/agent-tool-router';
 import { execCommand } from '@/hooks/use-native-exec';
 import { setAgentEnabled } from '@/lib/agent-manager';
 import { logInfo, logWarn } from '@/lib/debug-logger';
@@ -152,6 +153,17 @@ function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
   return draft.scheduleLabel || (locale === 'ja' ? '未設定' : 'not set');
 }
 
+/** Live Autonomous Cloud consent (engine disclosure in the summary file). */
+function liveCloudConsent(): boolean {
+  return useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
+}
+
+/** Engine disclosure for the `shelly agent add` summary (review L2). */
+function toolSummary(draft: ParsedAgentDraft, _locale: Locale): { label: string; pinned: boolean; note: string | null } {
+  const d = describeDraftTool(draft, liveCloudConsent());
+  return { label: d.label, pinned: d.pinned, note: null };
+}
+
 function riskLabel(reason: string, locale: Locale): string {
   const key = `agents.terminal_request_risk.${reason.replace(/^action:.*/, 'action')}`;
   const type = reason.startsWith('action:') ? reason.slice('action:'.length) : '';
@@ -235,7 +247,7 @@ export async function onTerminalDraftPresented(params: {
     );
     postNote(params.conversationKey, lines.join('\n\n'));
 
-    await writeSummary(buildAgentAddSummary(binding, params.draft, schedule, 'parsed', { textConfirmAllowed }));
+    await writeSummary(buildAgentAddSummary(binding, params.draft, schedule, 'parsed', { textConfirmAllowed, tool: toolSummary(params.draft, locale) }));
 
     // Notification (VISIBILITY_PRIVATE; public version is title-only).
     const body = [
@@ -281,7 +293,7 @@ async function finalizeSummary(binding: AgentAddBinding, status: 'registered' | 
   cancelNotification();
   if (draft) {
     const locale = draftLocale(draft);
-    await writeSummary(buildAgentAddSummary(binding, draft, scheduleText(draft, locale), status));
+    await writeSummary(buildAgentAddSummary(binding, draft, scheduleText(draft, locale), status, { tool: toolSummary(draft, locale) }));
   }
 }
 

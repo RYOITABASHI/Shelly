@@ -96,7 +96,7 @@ export function AgentSuggestionCard() {
     store.addMessage(paneId, {
       id: messageId,
       role: 'assistant',
-      content: summarizeAgentDraftAsText(suggestion.draft),
+      content: summarizeAgentDraftAsText(suggestion.draft, undefined, false, { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false }),
       timestamp: now,
       agent: undefined,
       agentDraft: suggestion.draft,

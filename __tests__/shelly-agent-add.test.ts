@@ -649,7 +649,7 @@ describe('generated shim: shelly agent', () => {
 
   it('is shim v14+ with BASHRC_VERSION >= 260 and lists `agent` in the usage', () => {
     const kt = fs.readFileSync(ktPath, 'utf8');
-    expect(kt).toContain('# SHELLY_HELPER_SHIM v14');
+    expect(kt).toContain('# SHELLY_HELPER_SHIM v15');
     expect(Number(kt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(260);
     expect(shim).toContain("console.log('  shelly agent <add|show|confirm|reject|list>');");
   });

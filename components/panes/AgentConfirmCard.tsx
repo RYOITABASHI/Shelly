@@ -990,6 +990,14 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         </>
       )}
 
+      {/* Review L2 (2026-10-15): a tool the user NAMED ("パープレで…") is shown,
+          so the card confirms the request was understood. */}
+      {draft.toolExplicit && (!autonomous || autonomousTool.type === draft.tool.type) && (
+        <Text style={[styles.warn, { color: colors.muted }]}>
+          {t('agentcard.tool_pinned', { tool: toolChoiceToLabel(draft.tool) })}
+        </Text>
+      )}
+
       {/* Run on */}
       {autonomous ? (
         <>

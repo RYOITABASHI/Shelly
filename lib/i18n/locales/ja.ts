@@ -555,6 +555,7 @@ const ja: Record<string, string> = {
   'agentcard.autonomous_route_web': '自律 {{engine}}',
   'agentcard.autonomous_route_local': '自律 端末内',
   'agentcard.autonomous_hint': 'ゲート経由で多段実行（危険な手順は承認を求めます）。',
+  'agentcard.tool_pinned': 'エンジン: {{tool}}（リクエストで指定）',
   'agentcard.autonomous_route_hint': '自律チャットはゲート付き Codex driver 経由で実行します。APIキー型クラウド backend は使いません。',
   'agentcard.autonomous_route_hint_web': 'クラウド同意済み: {{engine}}（grounding）で無人収集し、失敗時のみ Codex に昇格します。',
   'agentcard.autonomous_route_hint_local': '端末内のローカル LLM で無人実行します（クラウドには出ません）。',
@@ -602,6 +603,7 @@ const ja: Record<string, string> = {
   // 実際には未使用(actionText()のbrowser-pane分岐は専用のURL/セレクタ行を
   // 常に返すため)。将来のリファクタでfallback参照される場合に備え念のため用意。
   'agentplan.action_label_browser-pane': 'ブラウザで操作',
+  'agentplan.summary_tool_pinned': 'エンジン: {{tool}}（リクエストで指定）',
   'agentplan.autonomous_note': '自律実行（実行のたびに人の承認は挟まれません）',
   'agentplan.memory_note': '実行後に記憶: {{fact}}',
   'agentplan.skill_note': '既存スキル「{{name}}」を再利用します（成功実績 {{count}}回）',

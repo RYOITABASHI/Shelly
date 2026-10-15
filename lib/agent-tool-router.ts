@@ -8,6 +8,7 @@ import { scanForSecrets } from './secret-guard';
 import { detectExplicitToolUsage } from './agent-tool-mentions';
 import {
   scoreRoutes,
+  detectRouteSignals,
   hasAny,
   CODE_KW as CODE_KEYWORDS,
   // NARROW set — matches what the Layer-2 scorer treats as academic-domain, NOT
@@ -464,4 +465,60 @@ export function resolveConfirmedToolAndRunOn(opts: {
     ? { type: 'auto' }
     : opts.tool;
   return { tool, runOn: opts.runOn };
+}
+
+/**
+ * What a draft's engine will actually be once it is STORED (the same
+ * resolveConfirmedToolAndRunOn / resolveAutonomousFinalTool derivation the
+ * confirm boundary uses), for every confirmation surface — the chat summary,
+ * the in-app card and the `shelly agent add` summary file.
+ *
+ * - `label`: the stored engine's label (`Auto` for a keyword-routed,
+ *   non-autonomous RUN ON=Auto draft, which re-scores each run).
+ * - `pinned`: the user named the tool (draft.toolExplicit).
+ * - `substitution`: an autonomous draft whose named / suggested API-key backend
+ *   (Perplexity, Gemini, …) will NOT be kept and is stored as the Codex driver
+ *   instead — with the reason — so the user is never surprised by a silent
+ *   provider swap. `reason` is 'no-consent' (Autonomous Cloud consent is off)
+ *   or 'scope' (consent is on but covers that backend only for web/research
+ *   tasks).
+ */
+export interface DraftToolDisclosure {
+  storedTool: ToolChoice;
+  label: string;
+  pinned: boolean;
+  substitution?: { from: string; to: string; reason: 'no-consent' | 'scope' };
+}
+
+export function describeDraftTool(
+  draft: { tool: ToolChoice; toolExplicit?: boolean; autonomous?: boolean; prompt?: string },
+  cloudConsent: boolean,
+): DraftToolDisclosure {
+  const sig = detectRouteSignals(draft.prompt ?? '');
+  const { tool: storedTool } = resolveConfirmedToolAndRunOn({
+    autonomous: draft.autonomous === true,
+    runOn: 'auto',
+    tool: draft.tool,
+    cloudConsent,
+    needsWeb: sig.needsWeb,
+    needsSearch: sig.needsSearch || sig.collects === true,
+    toolExplicit: draft.toolExplicit,
+  });
+  const out: DraftToolDisclosure = {
+    storedTool,
+    label: toolChoiceToLabel(storedTool),
+    pinned: draft.toolExplicit === true,
+  };
+  if (
+    draft.autonomous === true &&
+    credentialClass(draft.tool) === 'api-key' &&
+    storedTool.type !== draft.tool.type
+  ) {
+    out.substitution = {
+      from: toolChoiceToLabel(draft.tool),
+      to: toolChoiceToLabel(storedTool),
+      reason: cloudConsent ? 'scope' : 'no-consent',
+    };
+  }
+  return out;
 }

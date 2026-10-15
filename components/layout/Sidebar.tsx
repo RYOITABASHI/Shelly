@@ -1247,7 +1247,7 @@ export function Sidebar() {
         chatStore.addMessage(aiSlot.id, {
           id: messageId,
           role: 'assistant',
-          content: summarizeAgentDraftAsText(draft, undefined, true),
+          content: summarizeAgentDraftAsText(draft, undefined, true, { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false }),
           timestamp: now,
           agentDraft: draft,
           agentChatConfirm: true,
