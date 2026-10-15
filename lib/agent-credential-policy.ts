@@ -146,3 +146,19 @@ export function autonomousPinRefusalReason(tool: ToolChoice, consent: boolean | 
     ? `${name} is not used unattended for this task: Autonomous Cloud consent covers ${name} only for web/research tasks (news, papers, "research …"), and this task text is neither.`
     : `${name} is not used unattended: enable Autonomous Cloud consent to let autonomous runs use a named ${name} backend for web/research tasks.`;
 }
+
+/**
+ * Decision (2026-10-15, P1 follow-up): the research-intent extension of the
+ * consent scope (needsSearch / collects) is NOT available to an agent with a
+ * notification trigger — its run input is attacker-controllable notification
+ * text, so it keeps the pre-branch rule (web-mandatory by route only) and
+ * otherwise fails closed. Returns the signals autonomousWebConsentCovers may
+ * use for this agent.
+ */
+export function consentSignalsFor(
+  agent: { notificationTrigger?: { packageNames?: string[] } | null },
+  signals: { needsWeb: boolean; needsSearch?: boolean; collects?: boolean },
+): { needsWeb: boolean; needsSearch?: boolean; collects?: boolean } {
+  const notificationTriggered = (agent.notificationTrigger?.packageNames?.length ?? 0) > 0;
+  return notificationTriggered ? { needsWeb: signals.needsWeb } : signals;
+}

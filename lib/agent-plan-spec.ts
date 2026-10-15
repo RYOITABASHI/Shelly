@@ -3,7 +3,7 @@ import { getHomePath } from '@/lib/home-path';
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { detectRouteSignals } from './agent-router-scoring';
 import { outputLanguageDirective, taskTextForLanguage } from './agent-output-language';
-import { autonomousPinRefusalReason, autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
+import { autonomousPinRefusalReason, autonomousWebConsentCovers, consentSignalsFor, resolveForAutonomous } from './agent-credential-policy';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import {
   agentUsesStudioContext,
@@ -246,7 +246,7 @@ export function buildAgentPlanSpec(
   // 2026-10-15: shared predicate (a Perplexity tool counts as web on its own —
   // see autonomousWebConsentCovers) so this matches generateRunScript and the
   // escalation ladder exactly.
-  const consentWebTool = autonomousWebConsentCovers(tool, promptSignals, opts.autonomousCloudConsent);
+  const consentWebTool = autonomousWebConsentCovers(tool, consentSignalsFor(agent, promptSignals), opts.autonomousCloudConsent);
 
   if (agent.autonomous) {
     if (!consentWebTool) {

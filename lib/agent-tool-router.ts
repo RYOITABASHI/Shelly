@@ -3,7 +3,7 @@
  * When tool.type === 'auto', analyzes the prompt keywords and suggests.
  */
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
-import { autonomousWebConsentCovers, credentialClass } from './agent-credential-policy';
+import { autonomousWebConsentCovers, consentSignalsFor, credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
 import { detectExplicitToolUsage } from './agent-tool-mentions';
 import {
@@ -491,10 +491,10 @@ export interface DraftToolDisclosure {
 }
 
 export function describeDraftTool(
-  draft: { tool: ToolChoice; toolExplicit?: boolean; autonomous?: boolean; prompt?: string },
+  draft: { tool: ToolChoice; toolExplicit?: boolean; autonomous?: boolean; prompt?: string; notificationTrigger?: { packageNames?: string[] } | null },
   cloudConsent: boolean,
 ): DraftToolDisclosure {
-  const sig = detectRouteSignals(draft.prompt ?? '');
+  const sig = consentSignalsFor(draft, detectRouteSignals(draft.prompt ?? ''));
   const { tool: storedTool } = resolveConfirmedToolAndRunOn({
     autonomous: draft.autonomous === true,
     runOn: 'auto',

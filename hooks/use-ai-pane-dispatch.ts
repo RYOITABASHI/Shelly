@@ -54,6 +54,7 @@ import {
 import { useAgentStore } from '@/store/agent-store';
 import type { Agent } from '@/store/types';
 import { resolveConfirmedToolAndRunOn, suggestTool } from '@/lib/agent-tool-router';
+import { consentSignalsFor } from '@/lib/agent-credential-policy';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL, detectFreeTextAgentDeleteIntent } from '@/lib/agent-nl-parser';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
@@ -1813,7 +1814,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
             const patchedSignals = detectRouteSignals(patchedDraft.prompt);
             const needsWeb = patchedSignals.needsWeb;
-            const needsSearch = patchedSignals.needsSearch || patchedSignals.collects === true;
+            const needsSearch = consentSignalsFor(patchedDraft, patchedSignals).needsSearch === true || consentSignalsFor(patchedDraft, patchedSignals).collects === true;
             // Same single-source-of-truth derivation as confirmAgentDraft's
             // persist boundary below — see resolveConfirmedToolAndRunOn's doc
             // comment (lib/agent-tool-router.ts) for the 2026-08-03 bug this
@@ -4131,7 +4132,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
       const confirmedSignals = detectRouteSignals(confirmed.prompt);
       const needsWeb = confirmedSignals.needsWeb;
-      const needsSearch = confirmedSignals.needsSearch || confirmedSignals.collects === true;
+      const needsSearch = consentSignalsFor(confirmed, confirmedSignals).needsSearch === true || consentSignalsFor(confirmed, confirmedSignals).collects === true;
       // 2026-08-03 bug fix: runOn is persisted exactly as the confirm surface
       // handed it over — the old `tool.type === 'local' → runOn 'on-device'`
       // auto-derivation forged a manual-strength pin the user never made,

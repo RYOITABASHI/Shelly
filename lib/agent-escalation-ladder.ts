@@ -22,7 +22,7 @@
  */
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { resolveAgentRoute } from './agent-tool-router';
-import { autonomousPinRefusalReason, autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
+import { autonomousPinRefusalReason, autonomousWebConsentCovers, consentSignalsFor, resolveForAutonomous } from './agent-credential-policy';
 import { detectRouteSignals } from './agent-router-scoring';
 
 export interface LadderEnv {
@@ -186,7 +186,7 @@ export function resolveEscalationLadder(
       // Review M1: consent covers the backend only for a web/research task —
       // an explicit Perplexity pin on a task with neither signal (e.g.
       // 「パープレで要約して」) fails closed to Codex with the reason below.
-      const consentCovers = autonomousWebConsentCovers(chosenWeb, web, env.autonomousCloudConsent);
+      const consentCovers = autonomousWebConsentCovers(chosenWeb, consentSignalsFor(agent, web), env.autonomousCloudConsent);
       if (consentCovers) {
         const consented = chosenWeb;
         // Key preflight: consent without the backend's key cannot work — fall

@@ -289,7 +289,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
   const routeSignals = useMemo(() => detectRouteSignals(draft.prompt), [draft.prompt]);
   const needsWeb = routeSignals.needsWeb;
-  const needsSearch = routeSignals.needsSearch || routeSignals.collects === true;
+  // P1 decision: no research-intent consent extension for a notification-triggered agent.
+  const needsSearchRaw = routeSignals.needsSearch || routeSignals.collects === true;
   // Agent-output settings (Settings → AI Agents → Output to). Read live so the
   // preview line below always matches whatever is currently configured there.
   const agentOutputTarget = useSettingsStore((s) => s.settings.agentOutputTarget ?? 'local');
@@ -320,7 +321,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // The tool this agent will actually be STORED with — same resolver the submit
   // handler and runtime use — so the preview never lies about the engine (web
   // with consent, on-device local, or the gated Codex driver).
-  const autonomousTool = resolveAutonomousFinalTool(true, draft.tool, cloudConsent, needsWeb, needsSearch);
+  const autonomousTool = resolveAutonomousFinalTool(true, draft.tool, cloudConsent, needsWeb, needsSearchRaw && parseNotificationTriggerPackages(notificationPackagesRaw).valid.length === 0);
   const keepWebTool = autonomous && (autonomousTool.type === 'gemini-api' || autonomousTool.type === 'perplexity');
   const keepLocal = autonomous && autonomousTool.type === 'local';
   const webEngineLabel = autonomousTool.type === 'perplexity' ? 'Perplexity' : 'Gemini';
@@ -500,7 +501,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
     }
     // Autonomous keeps the scored web tool when consent allows (P1 Gemini path);
     // otherwise the gated Codex driver. Non-autonomous keeps the scored tool.
-    const finalTool = resolveAutonomousFinalTool(autonomous, draft.tool, cloudConsent, needsWeb, needsSearch);
+    const finalTool = resolveAutonomousFinalTool(autonomous, draft.tool, cloudConsent, needsWeb, needsSearchRaw && !hasNotificationTrigger);
     const { valid: notificationPackages } = parseNotificationTriggerPackages(notificationPackagesRaw);
     // NOTIFY-001 Increment 3: sender allowlist only ever narrows a package
     // match — without a package it is meaningless (and a bare sender name
