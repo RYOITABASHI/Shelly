@@ -2117,12 +2117,12 @@ patchCodex(libDir);
             // is decided and, for the Shelly-trusted ClosePaw variant's background run,
             // until ClosePaw reports its final state (see ClosePawRunResults.kt:
             // native writes $HOME/.shelly-closepaw-run-<reqId>.json, the shim polls it
-            // every 500ms). Exit: 0 completed, 1 failed/cancelled/timeout/unknown,
+            // every 500ms). Exit: 0 completed, 1 failed/cancelled/timeout/lost/unknown,
             // 2 rejected/expired, 3 handed off without a result callback, 124 the wait
             // itself timed out (re-run wait to continue). Waiting never approves:
             // approval still happens only on the phone.
             sb.appendLine("  const cpReqRe = /^[0-9]{10,16}-[0-9a-f]{8}\$/;")
-            sb.appendLine("  const cpClean = (v) => String(v == null ? '' : v).replace(/[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]/g, ' ');")
+            sb.appendLine("  const cpClean = (v) => String(v == null ? '' : v).replace(/[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff]/g, ' ');")
             sb.appendLine("  const cpTimeout = (v) => {")
             sb.appendLine("    if (!/^[0-9]{1,4}\$/.test(String(v || '')) || Number(v) < 1 || Number(v) > 3600) {")
             sb.appendLine("      console.error('shelly closepaw: --timeout takes 1-3600 seconds');")
@@ -2146,9 +2146,9 @@ patchCodex(libDir);
             sb.appendLine("          status = 'expired';")
             sb.appendLine("          message = 'shelly closepaw: the request expired before it was approved; run shelly closepaw again';")
             sb.appendLine("        }")
-            sb.appendLine("        if (status === 'pending-approval' || status === 'running') {")
+            sb.appendLine("        if (status === 'pending-approval' || status === 'approved' || status === 'running') {")
             sb.appendLine("          if (status !== last) {")
-            sb.appendLine("            console.error(status === 'running' ? 'shelly closepaw: approved - ClosePaw is working on it; waiting for the result...' : 'shelly closepaw: waiting for the user to approve on the phone...');")
+            sb.appendLine("            console.error(status === 'pending-approval' ? 'shelly closepaw: waiting for the user to approve on the phone...' : 'shelly closepaw: approved - ClosePaw is working on it; waiting for the result...');")
             sb.appendLine("            last = status;")
             sb.appendLine("          }")
             sb.appendLine("        } else {")

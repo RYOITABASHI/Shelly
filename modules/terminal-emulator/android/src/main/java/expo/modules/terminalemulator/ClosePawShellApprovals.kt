@@ -90,6 +90,7 @@ object ClosePawShellApprovals {
         pending.entries.removeIf { (_, p) -> p.consumed || now > p.expiresAt }
     }
 
+    @Synchronized
     fun create(context: Context, reqId: String, goal: String, now: Long = System.currentTimeMillis()): Pending {
         sweep(now)
         while (pending.size >= MAX_PENDING) {
@@ -176,7 +177,12 @@ object ClosePawShellApprovals {
         }
         p.consumed = true
         pending.remove(reqId)
-        runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID) }
+        // Only this request's own notification: a newer pending approval may
+        // have replaced it under the shared id.
+        if (shownReqId == reqId) {
+            runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID) }
+            shownReqId = null
+        }
         if (decision == "reject") {
             Log.i(TAG, "closepaw request $reqId rejected via $via")
             ClosePawRunResults.writeState(
@@ -184,6 +190,9 @@ object ClosePawShellApprovals {
             )
             return Outcome(true, "rejected", "Rejected — nothing was sent to ClosePaw.")
         }
+        // Before launch() (which can block up to 5s): a wait that sees this
+        // never mistakes a late approval for an expired request.
+        ClosePawRunResults.writeState(context, reqId, ClosePawRunResults.STATUS_APPROVED, "Approved; handing off to ClosePaw")
         val outcome = try {
             // reqId: the variant's background entry reports the run's final
             // state back (ClosePawRunResults / ClosePawResultReceiver).
@@ -205,7 +214,8 @@ object ClosePawShellApprovals {
         // launch / notification hand-off has no result callback.
         val runStatus = when {
             !outcome.ok -> ClosePawRunResults.STATUS_FAILED
-            outcome.code == "background" || outcome.code == "main-display" -> ClosePawRunResults.STATUS_RUNNING
+            (outcome.code == "background" || outcome.code == "main-display") && ClosePawRunResults.isExpected(reqId) ->
+                ClosePawRunResults.STATUS_RUNNING
             else -> ClosePawRunResults.STATUS_UNTRACKED
         }
         ClosePawRunResults.writeAfterLaunch(context, reqId, runStatus, outcome.message)
@@ -217,7 +227,8 @@ object ClosePawShellApprovals {
      * the approval notification with the outcome, without opening Shelly.
      * No actions; times out after a minute. Never contains the goal.
      */
-    fun postDecisionNotification(context: Context, decision: String, outcome: Outcome) {
+    @Synchronized
+    fun postDecisionNotification(context: Context, reqId: String, decision: String, outcome: Outcome) {
         try {
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
             if (!nm.areNotificationsEnabled()) return
@@ -243,13 +254,46 @@ object ClosePawShellApprovals {
                 .setSmallIcon(android.R.drawable.ic_menu_send)
                 .setOnlyAlertOnce(true)
                 .setAutoCancel(true)
-            nm.notify(NOTIFICATION_ID, builder.build())
+            nm.notify(decisionNotificationId(reqId), builder.build())
         } catch (e: Exception) {
             Log.w(TAG, "closepaw decision notification failed type=${e.javaClass.simpleName}")
         }
     }
 
     private const val DECISION_NOTICE_TIMEOUT_MS = 60_000L
+
+    /** Request whose approval notification currently holds [NOTIFICATION_ID]. */
+    @Volatile private var shownReqId: String? = null
+
+    /** Decision / outcome notices use their own per-request id, so they never
+     *  replace a newer pending approval (which owns [NOTIFICATION_ID]).
+     *  0x37C1B000..0x37C1BFFF: outside every other Shelly notification range. */
+    fun decisionNotificationId(reqId: String): Int = DECISION_NOTIFICATION_ID_BASE + (reqId.hashCode() and 0xFFF)
+    const val DECISION_NOTIFICATION_ID_BASE = 0x37C1B000
+
+    /** Shown when Approve is tapped while the device is (still) locked. */
+    @Synchronized
+    fun postLockedNotice(context: Context, reqId: String) {
+        try {
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            if (!nm.areNotificationsEnabled()) return
+            val text = context.getString(R.string.closepaw_decision_locked)
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(context, ClosePawHandoff.CHANNEL_ID).setTimeoutAfter(DECISION_NOTICE_TIMEOUT_MS)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(context)
+            }
+            builder
+                .setContentTitle(context.getString(R.string.closepaw_decision_title))
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_menu_send)
+                .setAutoCancel(true)
+            nm.notify(decisionNotificationId(reqId), builder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "closepaw locked notice failed type=${e.javaClass.simpleName}")
+        }
+    }
 
     private fun postNotification(context: Context, p: Pending) {
         try {
@@ -325,6 +369,7 @@ object ClosePawShellApprovals {
                 action(context.getString(R.string.agent_add_action_reject), decisionIntent("reject", p.rejectNonce, REQUEST_CODE_REJECT), true)
             )
             nm.notify(NOTIFICATION_ID, builder.build())
+            shownReqId = p.reqId
         } catch (e: Exception) {
             Log.w(TAG, "closepaw approval notification failed type=${e.javaClass.simpleName}")
         }

@@ -1,5 +1,6 @@
 package expo.modules.terminalemulator
 
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -30,6 +31,13 @@ class ClosePawDecisionReceiver : BroadcastReceiver() {
         val reqId = intent.getStringExtra(EXTRA_REQ_ID).orEmpty()
         val decision = intent.getStringExtra(EXTRA_DECISION).orEmpty()
         val nonce = intent.getStringExtra(EXTRA_NONCE).orEmpty()
+        // Defense in depth on top of setAuthenticationRequired: never approve
+        // while the device is locked (e.g. an action fired some other way).
+        if (decision == "approve" && !isUnlocked(app)) {
+            Log.w(TAG, "notification approve $reqId refused: device locked")
+            ClosePawShellApprovals.postLockedNotice(app, reqId)
+            return
+        }
         // resolve() may block up to ClosePawHandoff.VARIANT_BROADCAST_TIMEOUT_MS
         // waiting for ClosePaw's ordered result, and the background entry is
         // only used off the main thread: hand off to a worker.
@@ -39,7 +47,7 @@ class ClosePawDecisionReceiver : BroadcastReceiver() {
                 val outcome = ClosePawShellApprovals.resolve(app, reqId, decision, "notification", nonce)
                 // Never log the nonce.
                 Log.i(TAG, "notification $decision $reqId -> ${outcome.code}")
-                ClosePawShellApprovals.postDecisionNotification(app, decision, outcome)
+                ClosePawShellApprovals.postDecisionNotification(app, reqId, decision, outcome)
             } catch (e: Exception) {
                 Log.w(TAG, "closepaw decision failed type=${e.javaClass.simpleName}")
             } finally {
@@ -54,6 +62,14 @@ class ClosePawDecisionReceiver : BroadcastReceiver() {
         const val EXTRA_REQ_ID = "reqId"
         const val EXTRA_DECISION = "decision"
         const val EXTRA_NONCE = "nonce"
+        /** Keyguard not showing AND the device not locked. Fails closed. */
+        fun isUnlocked(context: Context): Boolean = try {
+            val km = context.getSystemService(KeyguardManager::class.java)
+            km != null && !km.isKeyguardLocked && !km.isDeviceLocked
+        } catch (e: Exception) {
+            false
+        }
+
         private val WORKER: ExecutorService = Executors.newSingleThreadExecutor { r ->
             Thread(r, "ShellyClosePawDecision").apply { isDaemon = true }
         }

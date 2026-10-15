@@ -244,6 +244,103 @@ describe('native result callback invariants', () => {
   });
 });
 
+describe('review follow-ups (M1 / M2 / M3 / L2-L6)', () => {
+  let tmp: string;
+  let shimPath: string;
+  let home: string;
+  beforeAll(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'shelly-cpwait2-'));
+    shimPath = path.join(tmp, 'shim.js');
+    fs.writeFileSync(shimPath, extractShimJs());
+  });
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(tmp, 'home-'));
+  });
+  const run = (args: string[]) =>
+    new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+      const child = spawn(process.execPath, [shimPath, ...args], { env: { ...process.env, HOME: home } });
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (b) => (out += b));
+      child.stderr.on('data', (b) => (err += b));
+      child.on('close', (code) => resolve({ code, out, err }));
+    });
+
+  it('M1: a variant without the result_callback capability is untracked, never running forever', () => {
+    expect(handoffKt).toContain('const val RESULT_EXTRA_RESULT_CALLBACK = "result_callback"');
+    expect(handoffKt).toContain('getResultExtras(false)?.getInt(RESULT_EXTRA_RESULT_CALLBACK, 0) == 1');
+    expect(handoffKt).toContain('if (reqId != null && !r.resultCallback) ClosePawRunResults.forget(reqId)');
+    expect(approvalsKt).toMatch(/\(outcome\.code == "background" \|\| outcome\.code == "main-display"\) && ClosePawRunResults\.isExpected\(reqId\) ->\s*ClosePawRunResults\.STATUS_RUNNING/);
+  });
+
+  it('M1: in-flight runs become lost after a process restart and timeout after 15 minutes', () => {
+    expect(resultsKt).toContain('const val MAX_RUN_MS = 15L * 60L * 1000L');
+    expect(resultsKt).toContain('status != STATUS_RUNNING && status != STATUS_APPROVED -> null');
+    expect(resultsKt).toContain('afterRestart && !expectedHere -> STATUS_LOST');
+    expect(resultsKt).toContain('now - updatedAtMs > MAX_RUN_MS -> STATUS_TIMEOUT');
+    // Queued before the FileObserver can queue a drain that creates a new pending request.
+    const watch = handoffKt.slice(handoffKt.indexOf('fun ensureWatching('));
+    expect(watch.indexOf('ClosePawRunResults.reconcileAfterProcessStart(app)')).toBeGreaterThan(-1);
+    expect(watch.indexOf('ClosePawRunResults.reconcileAfterProcessStart(app)')).toBeLessThan(watch.indexOf('obs.startWatching()'));
+    expect(handoffKt).toContain('ClosePawRunResults.expireOverdue(app)');
+  });
+
+  it('M1/L2: approved is waited on; lost exits 1', async () => {
+    writeRun(home, { status: 'approved', message: 'Approved' });
+    const w = await run(['closepaw', 'wait', REQ, '--timeout', '1']);
+    expect(w.code).toBe(124);
+    expect(w.err).toContain('ClosePaw is working on it');
+    writeRun(home, { status: 'lost', message: 'the result was lost - check ClosePaw on the phone' });
+    const l = await run(['closepaw', 'wait', REQ]);
+    expect(l.code).toBe(1);
+    expect(l.out).toContain('ClosePaw result: lost');
+  });
+
+  it('L2: the approved state is written before launch()', () => {
+    const i = approvalsKt.indexOf('ClosePawRunResults.STATUS_APPROVED');
+    expect(i).toBeGreaterThan(-1);
+    expect(i).toBeLessThan(approvalsKt.indexOf('ClosePawHandoff.launch(context.applicationContext, p.goal, p.reqId)'));
+  });
+
+  it('M2: decision notices use a per-request id; only the shown approval is cancelled; posting is serialized', () => {
+    const post = approvalsKt.slice(approvalsKt.indexOf('fun postDecisionNotification('), approvalsKt.indexOf('private const val DECISION_NOTICE_TIMEOUT_MS'));
+    expect(post).toContain('nm.notify(decisionNotificationId(reqId), builder.build())');
+    expect(post).not.toContain('nm.notify(NOTIFICATION_ID');
+    expect(approvalsKt).toMatch(/@Synchronized\s+fun create\(/);
+    expect(approvalsKt).toMatch(/@Synchronized\s+fun postDecisionNotification\(/);
+    expect(approvalsKt).toMatch(/@Synchronized\s+fun resolve\(/);
+    expect(approvalsKt).toContain('if (shownReqId == reqId) {');
+    expect(approvalsKt).toContain('fun decisionNotificationId(reqId: String): Int = DECISION_NOTIFICATION_ID_BASE + (reqId.hashCode() and 0xFFF)');
+  });
+
+  it('M3: approve is refused natively while the device is locked', () => {
+    const decisionKt = read(path.join(ktDir, 'ClosePawDecisionReceiver.kt'));
+    expect(decisionKt).toContain('km != null && !km.isKeyguardLocked && !km.isDeviceLocked');
+    expect(decisionKt.indexOf('if (decision == "approve" && !isUnlocked(app)) {')).toBeLessThan(decisionKt.indexOf('ClosePawShellApprovals.resolve(app, '));
+  });
+
+  it('L3: the private atomic write never follows a symlink', () => {
+    expect(resultsKt).toContain('if (!tmp.createNewFile()) throw java.io.IOException("tmp exists")');
+    expect(resultsKt).not.toContain('target.writeText(');
+  });
+
+  it('L4: the typed getParcelableExtra is used only on API 34+', () => {
+    expect(receiverKt).toContain('val token: PendingIntent? = if (Build.VERSION.SDK_INT >= 34) {');
+  });
+
+  it('L6: bidi / zero-width / line-separator characters are stripped (shim + native)', async () => {
+    const ch = (...cps: number[]) => String.fromCharCode(...cps);
+    const evil = 'Done' + ch(0x202e) + 'evil' + ch(0x2066) + 'x' + ch(0x2069, 0x200b) + 'z' + ch(0xfeff, 0x2028) + 'y' + ch(0x2029) + 'w';
+    writeRun(home, { status: 'completed', message: 'ok', summary: evil });
+    const r = await run(['closepaw', 'wait', REQ]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Done evil x  z  y w');
+    expect(r.out).not.toMatch(new RegExp('[\\u200B-\\u200F\\u2028-\\u202E\\u2066-\\u2069\\uFEFF]'));
+    expect(resultsKt).toContain('\\\\u200B-\\\\u200F\\\\u2028-\\\\u202E\\\\u2066-\\\\u2069\\\\uFEFF]');
+  });
+});
+
 describe('notification Approve / Reject stay in the background', () => {
   const decisionKt = read(path.join(ktDir, 'ClosePawDecisionReceiver.kt'));
   const resDir = path.join(root, 'modules/terminal-emulator/android/src/main/res');
@@ -264,7 +361,7 @@ describe('notification Approve / Reject stay in the background', () => {
     expect(decisionKt).toContain('val pending = goAsync()');
     expect(decisionKt).toContain('WORKER.execute {');
     expect(decisionKt).toContain('if (intent.action != ACTION_DECISION) return');
-    expect(decisionKt).toContain('ClosePawShellApprovals.postDecisionNotification(app, decision, outcome)');
+    expect(decisionKt).toContain('ClosePawShellApprovals.postDecisionNotification(app, reqId, decision, outcome)');
   });
 
   it('the outcome notification is localized (en + ja) and never shows the goal', () => {

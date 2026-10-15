@@ -56,6 +56,11 @@ object ClosePawRunResults {
     private const val SWEEP_INTERVAL_MS = 10L * 60L * 1000L
 
     const val STATUS_PENDING_APPROVAL = "pending-approval"
+    /** Approved, launch() in progress (written before the up-to-5s wait). */
+    const val STATUS_APPROVED = "approved"
+    /** Shelly's process restarted while the run was in flight: the
+     *  expectation (nonce) is gone, so a result can no longer be matched. */
+    const val STATUS_LOST = "lost"
     const val STATUS_RUNNING = "running"
     const val STATUS_UNTRACKED = "untracked"
     const val STATUS_REJECTED = "rejected"
@@ -70,8 +75,11 @@ object ClosePawRunResults {
     const val SUMMARY_MAX_CODE_POINTS = 2000
     private val REQ_ID_RE = Regex("^[0-9]{10,16}-[0-9a-f]{8}$")
     private val NONCE_RE = Regex("^[0-9a-f]{32}$")
-    // Keep \n and \t (multi-line answers); drop every other C0/C1 control (ANSI escapes etc.).
-    private val SUMMARY_CONTROL_RE = Regex("[\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F]")
+    // Keep \n and \t (multi-line answers); drop every other C0/C1 control (ANSI escapes etc.),
+    // zero-width chars (U+200B-200F, U+FEFF), bidi controls (U+202A-202E, U+2066-2069) and
+    // the line/paragraph separators U+2028/2029. Mirrored by the shim's cpClean.
+    private val SUMMARY_CONTROL_RE =
+        Regex("[\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u2028-\\u202E\\u2066-\\u2069\\uFEFF]")
 
     // ── Expected runs (process memory only) ──
     private class Expected(val nonce: String, val registeredAt: Long)
@@ -97,6 +105,9 @@ object ClosePawRunResults {
     fun forget(reqId: String?) {
         if (reqId != null) expected.remove(reqId)
     }
+
+    /** True while a result callback for [reqId] can still be accepted. */
+    fun isExpected(reqId: String): Boolean = expected.containsKey(reqId)
 
     // Requests whose final result already arrived. A start failure can be reported by ClosePaw
     // before Shelly's launch() call even returns; the "running" write that follows must not
@@ -172,6 +183,7 @@ object ClosePawRunResults {
         STATUS_COMPLETED -> "ClosePaw finished the task"
         STATUS_CANCELLED -> "ClosePaw's task was stopped before it finished"
         STATUS_TIMEOUT -> "ClosePaw's task timed out"
+        STATUS_LOST -> "The result was lost - check ClosePaw on the phone"
         else -> "ClosePaw could not finish the task"
     }
 
@@ -205,7 +217,8 @@ object ClosePawRunResults {
     internal fun writePrivateAtomic(target: File, text: String) {
         val tmp = File(target.path + ".tmp")
         tmp.delete()
-        tmp.createNewFile()
+        // O_CREAT|O_EXCL: never follows a symlink planted at the tmp path.
+        if (!tmp.createNewFile()) throw java.io.IOException("tmp exists")
         // Owner-only before any content lands (the app umask is already 077; belt and braces).
         tmp.setReadable(false, false)
         tmp.setReadable(true, true)
@@ -213,9 +226,85 @@ object ClosePawRunResults {
         tmp.setWritable(true, true)
         tmp.setExecutable(false, false)
         tmp.writeText(text)
+        // rename(2) replaces the target entry itself (a symlink there is not
+        // followed). No write-through fallback: that would follow one.
         if (!tmp.renameTo(target)) {
-            target.writeText(text)
             tmp.delete()
+            throw java.io.IOException("rename failed")
+        }
+    }
+
+    /** Longest a run may stay approved/running before it is reported as timed out. */
+    const val MAX_RUN_MS = 15L * 60L * 1000L
+    private const val OVERDUE_CHECK_INTERVAL_MS = 30_000L
+    @Volatile private var lastOverdueCheckAt = 0L
+
+    private fun readState(file: File): JSONObject? = try {
+        if (file.length() > 64L * 1024L) null else JSONObject(file.readText())
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun runFiles(home: File): List<File> =
+        home.listFiles { f -> RUN_FILE_RE.matches(f.name) && !f.name.endsWith(".tmp") }?.toList() ?: emptyList()
+
+    /**
+     * Pure decision for one run-state entry (unit-tested by source): what an
+     * in-flight entry becomes, or null to leave it. [afterRestart]: this
+     * process did not start the run (its expectation is gone).
+     */
+    fun reconcileStatus(status: String, updatedAtMs: Long, expectedHere: Boolean, afterRestart: Boolean, now: Long): String? = when {
+        status != STATUS_RUNNING && status != STATUS_APPROVED -> null
+        afterRestart && !expectedHere -> STATUS_LOST
+        now - updatedAtMs > MAX_RUN_MS -> STATUS_TIMEOUT
+        else -> null
+    }
+
+    private fun reconcile(context: Context, afterRestart: Boolean, now: Long) {
+        val home = try { HomeInitializer.getHomeDir(context) } catch (e: Exception) { return }
+        for (f in runFiles(home)) {
+            val st = readState(f) ?: continue
+            val reqId = st.optString("reqId")
+            if (!isReqId(reqId) || f.name != RUN_FILE_PREFIX + reqId + RUN_FILE_SUFFIX) continue
+            val pendingApproval = st.optString("status") == STATUS_PENDING_APPROVAL
+            synchronized(this) {
+                if (reqId in finals) return@synchronized
+                if (afterRestart && pendingApproval) {
+                    // Pending approvals live in memory too: they are gone.
+                    writeState(context, reqId, STATUS_EXPIRED, "shelly closepaw: Shelly restarted before the request was approved; run shelly closepaw again")
+                    return@synchronized
+                }
+                val next = reconcileStatus(st.optString("status"), st.optLong("updatedAtMs", 0L), isExpected(reqId), afterRestart, now)
+                    ?: return@synchronized
+                forget(reqId)
+                rememberFinal(reqId)
+                val msg = if (next == STATUS_LOST) {
+                    "shelly closepaw: Shelly restarted while ClosePaw was working, so the result was lost - check ClosePaw on the phone"
+                } else {
+                    "shelly closepaw: no result from ClosePaw within ${MAX_RUN_MS / 60_000L} minutes - check ClosePaw on the phone"
+                }
+                writeState(context, reqId, next, msg)
+            }
+        }
+    }
+
+    /** Once per process start (ClosePawHandoff.ensureWatching). */
+    fun reconcileAfterProcessStart(context: Context) {
+        try {
+            reconcile(context, afterRestart = true, now = System.currentTimeMillis())
+        } catch (e: Exception) {
+            Log.w(TAG, "closepaw run-state reconcile failed type=${e.javaClass.simpleName}")
+        }
+    }
+
+    /** Throttled (every 30s) from the watcher poll: approved/running past [MAX_RUN_MS] -> timeout. */
+    fun expireOverdue(context: Context, now: Long = System.currentTimeMillis()) {
+        if (now - lastOverdueCheckAt < OVERDUE_CHECK_INTERVAL_MS) return
+        lastOverdueCheckAt = now
+        try {
+            reconcile(context, afterRestart = false, now = now)
+        } catch (e: Exception) {
+            Log.w(TAG, "closepaw overdue check failed type=${e.javaClass.simpleName}")
         }
     }
 

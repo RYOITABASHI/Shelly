@@ -243,6 +243,9 @@ object ClosePawHandoff {
      *  `shelly closepaw` request; see ClosePawRunResults. */
     const val EXTRA_SHELLY_REQ_ID = ClosePawRunResults.EXTRA_REQ_ID
     const val EXTRA_SHELLY_RESULT_NONCE = ClosePawRunResults.EXTRA_RESULT_NONCE
+    /** Ordered-result extra (Int 1) of a variant that will send the result
+     *  callback for this run; absent on variants older than the callback. */
+    const val RESULT_EXTRA_RESULT_CALLBACK = "result_callback"
     const val REFUSED_MARKER_PREFIX = "CLOSEPAW_REFUSED:"
 
     /** Result codes ClosePaw's ShellyGoalReceiver sets. */
@@ -270,7 +273,9 @@ object ClosePawHandoff {
     class ClosePawRefusedException(val refusal: Refusal) : IllegalStateException(REFUSED_MARKER_PREFIX + refusal.wire)
 
     sealed class VariantResult {
-        data class Started(val outcome: Outcome) : VariantResult()
+        /** [resultCallback]: the variant declared (result_callback=1 in the
+         *  ordered result extras) that it will report this run's final state. */
+        data class Started(val outcome: Outcome, val resultCallback: Boolean = false) : VariantResult()
         data class Refused(val refusal: Refusal) : VariantResult()
         /** 0 / unknown code / timeout: fall back to the activity launch. */
         object NoResponse : VariantResult()
@@ -326,9 +331,15 @@ object ClosePawHandoff {
         val latch = CountDownLatch(1)
         val timedOut = AtomicBoolean(false)
         var code = RC_NO_RESPONSE
+        var resultCallback = false
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, i: Intent?) {
                 val rc = resultCode
+                val cb = try {
+                    getResultExtras(false)?.getInt(RESULT_EXTRA_RESULT_CALLBACK, 0) == 1
+                } catch (e: Exception) {
+                    false
+                }
                 if (timedOut.get()) {
                     // Arrived after we already fell back to the activity
                     // launch; ClosePaw's own single-task guard (code 15)
@@ -337,6 +348,7 @@ object ClosePawHandoff {
                     return
                 }
                 code = rc
+                resultCallback = cb
                 latch.countDown()
             }
         }
@@ -358,8 +370,9 @@ object ClosePawHandoff {
             Log.w(TAG, "ClosePaw goal broadcast: no result within ${VARIANT_BROADCAST_TIMEOUT_MS}ms; falling back to activity launch")
             return VariantResult.NoResponse
         }
-        Log.i(TAG, "ClosePaw goal broadcast rc=$code goalLen=${goal.length}")
-        return mapVariantResultCode(code)
+        Log.i(TAG, "ClosePaw goal broadcast rc=$code resultCallback=$resultCallback goalLen=${goal.length}")
+        val mapped = mapVariantResultCode(code)
+        return if (mapped is VariantResult.Started) mapped.copy(resultCallback = resultCallback) else mapped
     }
 
     enum class Outcome(val wire: String) {
@@ -399,6 +412,10 @@ object ClosePawHandoff {
             val nonce = reqId?.let { ClosePawRunResults.register(it) }
             when (val r = sendVariantBroadcast(context, clean, reqId, nonce)) {
                 is VariantResult.Started -> {
+                    // A variant older than the result callback never reports
+                    // back: drop the expectation so the run is "untracked"
+                    // (shim exit 3) instead of "running" forever.
+                    if (reqId != null && !r.resultCallback) ClosePawRunResults.forget(reqId)
                     recordOutcome(context, r.outcome.wire, if (r.outcome == Outcome.MAIN_DISPLAY) MSG_MAIN_DISPLAY else MSG_BACKGROUND)
                     return r.outcome
                 }
@@ -839,6 +856,10 @@ object ClosePawHandoff {
             Thread(r, "ShellyClosePawQueue").apply { isDaemon = true }
         }
         executor = exec
+        // Once per process, queued FIRST (before the observer can queue a
+        // drain): in-flight runs from a previous process can no longer be
+        // matched (expectations and pending approvals are in memory only).
+        exec.execute { ClosePawRunResults.reconcileAfterProcessStart(app) }
         try {
             val home = HomeInitializer.getHomeDir(app).also { it.mkdirs() }
             val mask = FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO
@@ -873,6 +894,7 @@ object ClosePawHandoff {
             try {
                 val home = HomeInitializer.getHomeDir(app)
                 ClosePawRunResults.sweepOldFiles(home)
+                ClosePawRunResults.expireOverdue(app)
                 if (hasPending(home)) drain(app)
             } catch (e: Exception) {
                 Log.w(TAG, "closepaw fallback poll failed type=${e.javaClass.simpleName}")

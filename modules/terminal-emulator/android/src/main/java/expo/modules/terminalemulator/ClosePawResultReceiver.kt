@@ -30,7 +30,8 @@ class ClosePawResultReceiver : BroadcastReceiver() {
             if (intent.action != ClosePawRunResults.ACTION_RESULT) return
             val variant = ClosePawHandoff.isTrustedVariantInstalled(app)
             val tokenCreator = try {
-                val token: PendingIntent? = if (Build.VERSION.SDK_INT >= 33) {
+                // Typed overload only on 34+ (the API 33 one is unreliable).
+                val token: PendingIntent? = if (Build.VERSION.SDK_INT >= 34) {
                     intent.getParcelableExtra(ClosePawRunResults.EXTRA_CALLER_TOKEN, PendingIntent::class.java)
                 } else {
                     @Suppress("DEPRECATION")
