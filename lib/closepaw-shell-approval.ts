@@ -8,8 +8,10 @@
  * carry Shelly's caller token, so Shelly's approval is the only gate. The
  * shell command is typed by the user or by Codex driven from the ChatGPT
  * app, so it never fires directly; it fires only after:
- *   - the notification [Approve] (device unlock; shelly:///closepaw-decision,
- *     handled here before any URL logging — the nonce is single use),
+ *   - the notification [Approve] (device unlock; since 2026-10-15 applied
+ *     natively by ClosePawDecisionReceiver without opening Shelly — the
+ *     shelly:///closepaw-decision handler below only serves notifications
+ *     posted by older builds; the nonce is single use either way),
  *   - an in-app dedicated chat reply naming the request ("approve <hash8>" /
  *     "承認 <hash8>"): pending requests are posted into the Shelly chat as
  *     plain text (syncClosePawShellApprovalsToChat); a bare "OK" never counts

@@ -243,3 +243,46 @@ describe('native result callback invariants', () => {
     expect(homeKt).toMatch(/private const val BASHRC_VERSION = 26[2-9]/);
   });
 });
+
+describe('notification Approve / Reject stay in the background', () => {
+  const decisionKt = read(path.join(ktDir, 'ClosePawDecisionReceiver.kt'));
+  const resDir = path.join(root, 'modules/terminal-emulator/android/src/main/res');
+
+  it('the actions are immutable broadcasts to the non-exported decision receiver, never an activity', () => {
+    expect(manifest).toMatch(/<receiver\s+android:name="\.ClosePawDecisionReceiver"\s+android:exported="false"\s*\/>/);
+    expect(approvalsKt).toMatch(/fun decisionIntent\(decision: String, nonce: String, requestCode: Int\): PendingIntent = PendingIntent\.getBroadcast\(/);
+    expect(approvalsKt).toContain('ClosePawDecisionReceiver.intent(context, p.reqId, decision, nonce)');
+    expect(approvalsKt).not.toContain('shelly:///closepaw-decision?');
+    expect(decisionKt).toContain('.setComponent(ComponentName(context, ClosePawDecisionReceiver::class.java))');
+    expect(decisionKt).toContain('.setPackage(context.packageName)');
+    const decisionFn = approvalsKt.slice(approvalsKt.indexOf('fun decisionIntent('), approvalsKt.indexOf('val review = viewIntent('));
+    expect(decisionFn).toContain('PendingIntent.FLAG_IMMUTABLE');
+  });
+
+  it('the nonce is verified natively by resolve(via = "notification") off the main thread', () => {
+    expect(decisionKt).toContain('ClosePawShellApprovals.resolve(app, reqId, decision, "notification", nonce)');
+    expect(decisionKt).toContain('val pending = goAsync()');
+    expect(decisionKt).toContain('WORKER.execute {');
+    expect(decisionKt).toContain('if (intent.action != ACTION_DECISION) return');
+    expect(decisionKt).toContain('ClosePawShellApprovals.postDecisionNotification(app, decision, outcome)');
+  });
+
+  it('the outcome notification is localized (en + ja) and never shows the goal', () => {
+    const post = approvalsKt.slice(approvalsKt.indexOf('fun postDecisionNotification('), approvalsKt.indexOf('private fun postNotification('));
+    expect(post).not.toContain('goal');
+    for (const dir of ['values', 'values-ja']) {
+      const xml = fs.readFileSync(path.join(resDir, dir, 'closepaw_strings.xml'), 'utf8');
+      for (const key of [
+        'closepaw_decision_title',
+        'closepaw_decision_approved_background',
+        'closepaw_decision_approved_main_display',
+        'closepaw_decision_approved',
+        'closepaw_decision_rejected',
+        'closepaw_decision_stale',
+        'closepaw_decision_failed',
+      ]) {
+        expect(xml).toContain(`<string name="${key}">`);
+      }
+    }
+  });
+});

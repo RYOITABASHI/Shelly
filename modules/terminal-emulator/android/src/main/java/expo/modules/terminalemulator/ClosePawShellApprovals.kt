@@ -26,8 +26,10 @@ import org.json.JSONObject
  * must not fire it directly. ClosePawHandoff.handleLine instead registers the
  * request here and fires ONLY after one of:
  *   - the notification [Approve] (setAuthenticationRequired on API 31+, i.e.
- *     device unlock; opens shelly:///closepaw-decision, RN calls back with the
- *     single-use 128-bit nonce),
+ *     device unlock; an explicit broadcast to the non-exported
+ *     ClosePawDecisionReceiver carrying the single-use 128-bit nonce, applied
+ *     natively so Shelly is NOT brought to the foreground — 2026-10-15; it
+ *     used to open shelly:///closepaw-decision and relay through RN),
  *   - an in-app dedicated chat reply naming the request ("approve <hash8>";
  *     RN posts the request as plain text in the chat; hash8 = first 8 hex of
  *     sha256 of the goal — a binding, not a secret).
@@ -210,6 +212,45 @@ object ClosePawShellApprovals {
         return outcome
     }
 
+    /**
+     * After a notification Approve / Reject (ClosePawDecisionReceiver): replace
+     * the approval notification with the outcome, without opening Shelly.
+     * No actions; times out after a minute. Never contains the goal.
+     */
+    fun postDecisionNotification(context: Context, decision: String, outcome: Outcome) {
+        try {
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            if (!nm.areNotificationsEnabled()) return
+            val text = when {
+                !outcome.ok && outcome.code in setOf("unknown", "used", "expired", "invalid") ->
+                    context.getString(R.string.closepaw_decision_stale)
+                !outcome.ok -> context.getString(R.string.closepaw_decision_failed, outcome.message)
+                decision == "reject" -> context.getString(R.string.closepaw_decision_rejected)
+                outcome.code == "background" -> context.getString(R.string.closepaw_decision_approved_background)
+                outcome.code == "main-display" -> context.getString(R.string.closepaw_decision_approved_main_display)
+                else -> context.getString(R.string.closepaw_decision_approved)
+            }
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(context, ClosePawHandoff.CHANNEL_ID).setTimeoutAfter(DECISION_NOTICE_TIMEOUT_MS)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(context)
+            }
+            builder
+                .setContentTitle(context.getString(R.string.closepaw_decision_title))
+                .setContentText(text)
+                .setStyle(Notification.BigTextStyle().bigText(text))
+                .setSmallIcon(android.R.drawable.ic_menu_send)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true)
+            nm.notify(NOTIFICATION_ID, builder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "closepaw decision notification failed type=${e.javaClass.simpleName}")
+        }
+    }
+
+    private const val DECISION_NOTICE_TIMEOUT_MS = 60_000L
+
     private fun postNotification(context: Context, p: Pending) {
         try {
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
@@ -229,7 +270,15 @@ object ClosePawShellApprovals {
                 Intent(Intent.ACTION_VIEW, android.net.Uri.parse(uri)).setPackage(context.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            val base = "shelly:///closepaw-decision?reqId=${p.reqId}"
+            // Approve / Reject: broadcast to the non-exported decision receiver
+            // (never an activity), so deciding does not pull Shelly out of a
+            // split screen. Immutable; explicit component + package.
+            fun decisionIntent(decision: String, nonce: String, requestCode: Int): PendingIntent = PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                ClosePawDecisionReceiver.intent(context, p.reqId, decision, nonce),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
             val review = viewIntent("shelly:///ai", REQUEST_CODE_REVIEW)
             @Suppress("DEPRECATION")
             fun action(label: String, pi: PendingIntent, requireAuth: Boolean): Notification.Action {
@@ -268,12 +317,12 @@ object ClosePawShellApprovals {
             // older releases approve in the app (chat OK) instead.
             if (Build.VERSION.SDK_INT >= 31) {
                 builder.addAction(
-                    action(context.getString(R.string.agent_add_action_approve), viewIntent("$base&decision=approve&nonce=${p.approveNonce}", REQUEST_CODE_APPROVE), true)
+                    action(context.getString(R.string.agent_add_action_approve), decisionIntent("approve", p.approveNonce, REQUEST_CODE_APPROVE), true)
                 )
             }
             builder.addAction(action(context.getString(R.string.agent_add_action_review), review, false))
             builder.addAction(
-                action(context.getString(R.string.agent_add_action_reject), viewIntent("$base&decision=reject&nonce=${p.rejectNonce}", REQUEST_CODE_REJECT), true)
+                action(context.getString(R.string.agent_add_action_reject), decisionIntent("reject", p.rejectNonce, REQUEST_CODE_REJECT), true)
             )
             nm.notify(NOTIFICATION_ID, builder.build())
         } catch (e: Exception) {

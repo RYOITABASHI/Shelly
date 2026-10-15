@@ -65,6 +65,14 @@
       android:name=".ClosePawResultReceiver"
       android:exported="true" />
 
+    <!-- Approve / Reject actions of the `shelly closepaw` approval
+         notification, applied natively without bringing Shelly to the
+         foreground. NOT exported: only Shelly's own immutable notification
+         PendingIntents reach it (ClosePawShellApprovals). -->
+    <receiver
+      android:name=".ClosePawDecisionReceiver"
+      android:exported="false" />
+
     <receiver
       android:name=".scouter.ScouterWidgetProvider"
       android:exported="false">

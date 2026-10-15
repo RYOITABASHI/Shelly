@@ -110,7 +110,8 @@ describe('`shelly closepaw` needs a Shelly approval when the variant is installe
   it('notification: Approve needs device unlock (API 31+ only), private with a title-only public version', () => {
     const post = fn(approvals, 'private fun postNotification(');
     expect(post).toContain('if (requireAuth && Build.VERSION.SDK_INT >= 31) b.setAuthenticationRequired(true)');
-    expect(post).toMatch(/if \(Build\.VERSION\.SDK_INT >= 31\) \{\s*builder\.addAction\(\s*action\(context\.getString\(R\.string\.agent_add_action_approve\), viewIntent\("\$base&decision=approve&nonce=\$\{p\.approveNonce\}", REQUEST_CODE_APPROVE\), true\)/);
+    expect(post).toMatch(/if \(Build\.VERSION\.SDK_INT >= 31\) \{\s*builder\.addAction\(\s*action\(context\.getString\(R\.string\.agent_add_action_approve\), decisionIntent\("approve", p\.approveNonce, REQUEST_CODE_APPROVE\), true\)/);
+    expect(post).toContain('action(context.getString(R.string.agent_add_action_reject), decisionIntent("reject", p.rejectNonce, REQUEST_CODE_REJECT), true)');
     expect(post).toContain('.setVisibility(Notification.VISIBILITY_PRIVATE)');
     expect(post).toContain('.setPublicVersion(publicVersion)');
   });
