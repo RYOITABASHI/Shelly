@@ -1239,9 +1239,15 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     // autonomousWebConsentCovers), so a consented scheduled fire honors it
     // like an attended run; anything else fails closed with the reason.
     consentWebTool = autonomousWebConsentCovers(tool, consentSignalsFor(agent, sig), opts.autonomousCloudConsent);
-    // Not for an attended per-step materialize: its prompt is the chain's
-    // composite (base + carry + this step) and a human is present.
-    isolateResearchSingleRun = consentWebTool && !sig.needsWeb && !isOrchestrated(agent.orchestration) && opts.attended !== true;
+    // Post-merge review M1/M2: excluded ONLY for an attended per-step
+    // orchestration materialize (its prompt is the chain's composite —
+    // base + carry + this step — and a human is present). An attended
+    // single "Run now" of an autonomous research-consent agent stays isolated
+    // (pre-branch it failed closed), and so does the collapse-to-single .sh
+    // fallback of an orchestrated agent (PlanSpec missing/broken); the codex
+    // chain can't be reached here because consentWebTool implies a
+    // Perplexity/Gemini agent-level tool.
+    isolateResearchSingleRun = consentWebTool && !sig.needsWeb && opts.isOrchestratedStep !== true;
     if (!consentWebTool) {
       const resolved = resolveForAutonomous(tool);
       if (!resolved) {

@@ -70,6 +70,25 @@ describe('notification-triggered agents keep the pre-branch consent rule', () =>
   });
 });
 
+describe('post-merge review M1/M2: which runs are isolated', () => {
+  it('M1: an attended single "Run now" stays isolated; only an attended per-step materialize is exempt', () => {
+    const attendedSingle = generateRunScript(agent(), { autonomousCloudConsent: true, attended: true });
+    expect(attendedSingle).toContain('ISOLATE_RESEARCH_PROMPT=1');
+    expect(attendedSingle).not.toContain('private note');
+    const attendedStep = generateRunScript(agent(), { autonomousCloudConsent: true, attended: true, isOrchestratedStep: true });
+    expect(attendedStep).toContain('ISOLATE_RESEARCH_PROMPT=0');
+  });
+
+  it('M2: the collapse-to-single .sh fallback of an orchestrated agent is isolated too', () => {
+    const s = generateRunScript(
+      agent({ orchestration: { steps: ['パープレで量子計算の論文を集めて', 'まとめて'] } }),
+      { autonomousCloudConsent: true },
+    );
+    expect(s).toContain('ISOLATE_RESEARCH_PROMPT=1');
+    expect(s).not.toContain('private note');
+  });
+});
+
 describe('research-intent single runs send an isolated prompt', () => {
   const s = generateRunScript(agent(), { autonomousCloudConsent: true });
 
