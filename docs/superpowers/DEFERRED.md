@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-15: CC（fix/agent-named-tool-scheduled、再レビュー対応）が H-A（自律 API キー系ステップのプロンプト隔離）・M-B（スキル実行プランの TOCTOU）・M-C（言語指示）・Low 2件を修正し、M-A により起動時の名指しツール自動移行を撤回（P2 として DEFERRED に残置）。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled、後続）がレビュー指摘 H1/M1/M2/L2/L3 と当日の実機発見（出力言語・スキル再利用・通知承認の無言失敗・時刻経過後の確認・下書きへの JSON-RPC ログ混入）および既存エージェントの名指しツール移行・差し替え明示を修正。下記 2 エントリ参照（すべて実機未検証）。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled）が「パープレで…」等の**名指しツール**を単一節リクエストでも agent-level tool として固定・永続化し、スケジュール（無人）実行でも attended と同じく尊重するよう修正。下記「✅ 名指しツール（…）が単一節リクエスト・スケジュール実行で無視される」参照。
 - 2026-10-15: CC（feat/closepaw-result-wait + fork feat/shelly-result-callback）が `shelly closepaw` の実行結果を呼び出し元へ返す経路を実装（ClosePaw 変種 → Shelly の結果ブロードキャスト、`shelly closepaw wait <reqId>` / `--wait`）。実機未検証 — 下記「ClosePaw 引き継ぎ」Phase 2 (b) 参照。
@@ -1367,8 +1368,13 @@
 - ✅ **L2** `03706fc6e`: 名指しエンジンをチャット要約・確認カード・`shelly agent add` サマリ（`tool`/`toolPinned`/`toolNote`、CLI の "Engine:" 行、SHELLY_HELPER_SHIM v15 / BASHRC_VERSION 263）に表示。
 - **L1**（単一節の判定は正規表現ヒューリスティックで、すべての言い回しを網羅しない）: レビュー判断どおり現状維持。誤検知側は M2 で潰し、見逃し側は従来のキーワードルーティングに落ちるだけ（安全側）。
 - ✅ **L3**（`CURRENT_PLAN_SPEC_VERSION` を上げるべきか）: 確認の結果、上げない。PlanSpec はスクリプトと同じ `materializeAgent` のバッチで毎回書き直され、起動時の startup repair が有効な全スケジュール済みエージェントを再 materialize するため、AGENT_SCRIPT_VERSION 68 への更新時に PlanSpec も必ず再生成される。PlanSpec のスキーマ（形）は変えていないので、ネイティブの schema 版チェックの対象外。
-- ✅ **後続1（既存エージェントの移行）** `4c2fe5198`: `migrateAgentToolPin` を startup repair の再 materialize 直前に適用。非自律の `tool:'auto'` → 名指しツール、自律の Codex → 名指しツール（確認時と同じ同意ルールでカバーされる場合のみ）。チェーン・手動 RUN ON・比較/話題言及は対象外。冪等（ピン済みは条件に合わない）で、移行は必ずログ出力。
+- ⏸ **後続1（既存エージェントの名指しツール移行）— 再レビュー M-A で撤回**（`4c2fe5198` を `e779e0dae` で revert）: 起動時に無言で tool を書き換えるのは危険（ClosePaw 事前承認シール済みのエージェントは tool が definitionHash に含まれる／以前 on-device だったエージェントがユーザー確認なしにクラウドへ移る）。**P2 として残置**: 既存の `tool:'auto'`（または自律で Codex）のエージェントのうち、プロンプトがツールを名指ししているものについて、チャットで「このエージェントは Perplexity 指定のようです。切り替えますか？」と提案し、ユーザーが確認した場合だけ適用する。シール済み・以前の route が on-device のものには提案しない。
 - ✅ **後続2（差し替えの明示）** `b4a34cd90`: 自律エージェントで名指しのクラウドエンジンが Codex で保存される場合（同意 OFF、または同意の対象外タスク）、チャット要約・確認カード・`shelly agent add` サマリ（toolNote）・承認通知に理由付きで明記（en/ja）。
+- ✅ **再レビュー H-A（必須）** `958c81397`: H1 で鍵が届くようになった結果、自律チェーンの API キー系ステップ（同意済み Perplexity/Gemini ピン）が DEVICE_STATUS_CONTEXT・NOTIFICATION_CONTEXT・記憶・前ステップの結果（Codex が読んだローカルファイル等）を含む合成プロンプトをそのまま送っていた（新しい外部送信経路）。自律実行では API キー系ステップに専用プロンプト（言語指示＋ユーザーのタスク文＋そのステップの指示のみ）を渡し、前ステップの結果は「そのステップが前の結果を参照し、かつ前ステップがすべて隔離済み API ステップ」のときだけ添付、それ以外で前の結果が必要なら明確なメッセージで fail closed（API 呼び出しなし）。.sh の codex チェーンと PlanSpec（`steps.isolation`、executor 側対応＋ `CURRENT_EXECUTOR_VERSION` 9→10、asset ミラー同期）の両方に適用。attended チェーンは従来どおり。
+- ✅ **再レビュー M-B** `d2cd47adf`: スキル再利用の TOCTOU。登録時に見せたスキルの実行プランの fingerprint（プロンプトのみなら null）をエージェントに保存し、実行時はレシピの現在の fingerprint が一致する場合だけ実行プランを適用。フィールドの無い既存エージェントは従来どおり。
+- ✅ **再レビュー M-C** `3d1d2fbfb`: 言語指示に「タスクが別の出力言語を明示している場合はタスクに従う」を追加。英語判定は ASCII 文字のみ（アクセント付きラテン文字・他の文字体系は「タスクと同じ言語」指示）。スマートクォート等の記号は判定に影響しない。
+- ✅ **再レビュー Low** `b4361db68` / `6b494622c`: `is_transport_log_file` を構造＋比率判定に変更（JSON 行 3 以上・非空行の 60% 以上・その半数以上が transport/audit キー）。古い通知の「却下」には承認用ではない専用文言を表示。
+- **残（P1、既存仕様）**: 自律エージェントの agent-level ツール自体が同意済み Perplexity/Gemini の単発実行（チェーンでない）では、プロンプトに DEVICE_STATUS_CONTEXT / NOTIFICATION_CONTEXT / 記憶が含まれたまま送られる。これは今回の変更以前からの agent-level 同意の仕様だが、M1 で同意の対象をリサーチ意図まで広げたため、通知トリガーの単発エージェントでは通知本文が送られうる。H-A と同じ隔離を単発の API キー系実行にも適用するかを要判断。
 - 実機検証未実施: 「毎朝8時にパープレで最新のLLM論文をリサーチして要約して」を登録 → `~/.shelly/agents/<id>.json` の `tool.type` が `perplexity`、スケジュール発火のログ `toolUsed` が Perplexity API であることを確認する。codex チェーン（「パープレで集めて、Codexでまとめて保存して」）のスケジュール発火で Perplexity ステップが成功することも確認する。
 
 ### ✅ 2026-10-15 実機発見の後続修正（CC、ブランチ `fix/agent-named-tool-scheduled`）— 実機未検証
