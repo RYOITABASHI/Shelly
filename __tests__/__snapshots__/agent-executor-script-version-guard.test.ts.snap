@@ -1876,18 +1876,21 @@ resolve_saved_path() {
 # (50_Drafts/Substack/…-codex-article-draft.md) contained the Codex driver's raw
 # JSON-RPC / audit log instead of an article — the A/B article path copied the
 # driver's stdout/stderr into its "answer" when no answer was produced. A draft
-# must never be a transport log: returns 0 when the file is one (two or more
-# JSON-RPC lines, or JSON-object lines carrying transport/audit keys making up
-# at least half of its non-empty lines).
+# must never be a transport log. Structural + ratio test (review Low): the
+# file is one when it has at least 3 whole-line JSON objects, those make up at
+# least 60% of its non-empty lines, and at least half of them carry a
+# transport/audit key. An article that merely quotes a JSON-RPC example (in a
+# code block among prose) never meets the ratio.
 is_transport_log_file() {
   tl_file="$1"
   [ -s "$tl_file" ] || return 1
-  tl_jsonrpc=$(grep -c '"jsonrpc"[[:space:]]*:' "$tl_file" 2>/dev/null || true)
-  [ "\${tl_jsonrpc:-0}" -ge 2 ] && return 0
   tl_total=$(grep -cv '^[[:space:]]*$' "$tl_file" 2>/dev/null || true)
   [ "\${tl_total:-0}" -gt 0 ] || return 1
-  tl_rpc=$(grep -cE '^[[:space:]]*\\{.*"(jsonrpc|method|threadId|turnId|callId|requestId|direction|event|params)"[[:space:]]*:' "$tl_file" 2>/dev/null || true)
-  [ "\${tl_rpc:-0}" -ge 3 ] && [ $((tl_rpc * 2)) -ge "$tl_total" ]
+  tl_json=$(grep -cE '^[[:space:]]*\\{.*\\}[[:space:]]*$' "$tl_file" 2>/dev/null || true)
+  [ "\${tl_json:-0}" -ge 3 ] || return 1
+  [ $((tl_json * 10)) -ge $((tl_total * 6)) ] || return 1
+  tl_rpc=$(grep -cE '^[[:space:]]*\\{.*"(jsonrpc|method|threadId|turnId|callId|requestId|direction|event|params)"[[:space:]]*:.*\\}[[:space:]]*$' "$tl_file" 2>/dev/null || true)
+  [ $((tl_rpc * 2)) -ge "$tl_json" ]
 }
 
 TRANSPORT_LOG_DRAFT_ERROR="Refused to save the draft: the backend returned a raw agent transport/audit log (JSON-RPC), not content. No answer was produced; check the run log and retry."

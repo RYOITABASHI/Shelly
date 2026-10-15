@@ -54,7 +54,7 @@ describe('a transport/audit log is never saved as a draft', () => {
   };
 
   it('detects a JSON-RPC transport log and an audit jsonl', () => {
-    expect(run('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":1,"result":{}}\n')).toBe(true);
+    expect(run('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":1,"result":{}}\n{"jsonrpc":"2.0","method":"turn/started","params":{}}\n')).toBe(true);
     expect(run([
       '{"ts":1,"direction":"out","event":"turn/start","threadId":"t1"}',
       '{"ts":2,"direction":"in","event":"item/started","threadId":"t1"}',
@@ -66,6 +66,10 @@ describe('a transport/audit log is never saved as a draft', () => {
   it('keeps real article content, even with a JSON code sample in it', () => {
     expect(run('# AI-era STEAM\n\nFoundational academic ability matters.\n\n```json\n{"method":"x"}\n```\n\nMore prose here.\n')).toBe(false);
     expect(run('Plain one-line draft.')).toBe(false);
+    // Review Low: two JSON-RPC example lines inside an article are not a log.
+    expect(run('# How MCP works\n\nThe client sends:\n\n{"jsonrpc":"2.0","id":1,"method":"initialize"}\n\nand the server replies:\n\n{"jsonrpc":"2.0","id":1,"result":{}}\n\nThat is the whole handshake.\nIt is simple.\n')).toBe(false);
+    // Mostly JSON lines but none of them transport/audit shaped (e.g. a data dump).
+    expect(run('{"title":"a","score":1}\n{"title":"b","score":2}\n{"title":"c","score":3}\n')).toBe(false);
   });
 
   it('the draft action and save_draft_result both refuse it with a clear error', () => {
