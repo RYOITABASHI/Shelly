@@ -658,6 +658,7 @@ const ja: Record<string, string> = {
   // 開始遅延（「来週あたりから…」）のアンカー行 — startNotBefore が未来の
   // 日時に設定されているときだけ、スケジュール行の直後に表示する。
   'agentplan.start_not_before_note': '{{date}}から開始します。',
+  'agentplan.first_run_passed_note': '{{time}} はすでに過ぎているため、初回の実行は {{next}} です。今すぐ1回実行するには「今すぐ実行して」と返信してください。',
   'agentplan.next_fire_note': '次回実行: {{datetime}}',
   // 2026-07-23: 上記の一部の項目がハイブリッドLLM抽出フォールバック
   // （lib/agent-llm-fallback.ts）によるものである場合に表示する注記

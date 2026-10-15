@@ -270,6 +270,51 @@ function formatDateTimeForSummary(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** How far back a skipped first occurrence is still reported at confirm. */
+const FIRST_RUN_PASSED_MAX_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Follow-up item 7 (2026-10-15, on-device): a draft for "every day at 16:20"
+ * was confirmed at 16:21, and the agent silently started TOMORROW. When the
+ * schedule's first occurrence after the draft was presented has already
+ * passed by the time the user confirms, returns that missed occurrence and
+ * the real next one, so the confirm result can say so and offer a one-off
+ * run. Null otherwise (nothing skipped, non-cron / one-shot / interval
+ * schedules, or a draft older than a day). Pure.
+ */
+export function missedFirstRunAtConfirm(
+  schedule: string | null | undefined,
+  draftPresentedAt: number,
+  confirmedAt: number,
+  startNotBefore?: number | null,
+): { missedAt: Date; nextAt: Date } | null {
+  if (!schedule || !Number.isFinite(draftPresentedAt) || confirmedAt - draftPresentedAt > FIRST_RUN_PASSED_MAX_LOOKBACK_MS) return null;
+  const decoded = decodeCron(schedule);
+  const from = new Date(Math.max(draftPresentedAt, startNotBefore ?? 0));
+  const missedAt = nextFireDate(decoded, from);
+  if (!missedAt || missedAt.getTime() > confirmedAt) return null;
+  const nextAt = nextFireDate(decoded, new Date(confirmedAt));
+  if (!nextAt) return null;
+  return { missedAt, nextAt };
+}
+
+/** Localized confirm-result note for missedFirstRunAtConfirm, or ''. */
+export function firstRunPassedNote(
+  schedule: string | null | undefined,
+  draftPresentedAt: number,
+  confirmedAt: number,
+  locale: Locale,
+  startNotBefore?: number | null,
+): string {
+  const missed = missedFirstRunAtConfirm(schedule, draftPresentedAt, confirmedAt, startNotBefore);
+  if (!missed) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return tFor(locale, 'agentplan.first_run_passed_note', {
+    time: `${pad(missed.missedAt.getHours())}:${pad(missed.missedAt.getMinutes())}`,
+    next: formatDateTimeForSummary(missed.nextAt),
+  });
+}
+
 /** Date-only ("YYYY-MM-DD") trim of formatDateTimeForSummary, for the
  *  start_not_before_note line — the deferred-start anchor is a day-level
  *  concept ("来週あたりから"), so no HH:MM is shown. */

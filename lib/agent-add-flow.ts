@@ -44,7 +44,7 @@ import type { Agent, ChatMessage } from '@/store/types';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { tFor, type Locale } from '@/lib/i18n';
 import { detectMessageLocale } from '@/lib/agent-slot-fill';
-import { humanizeCronSchedule, toolSubstitutionKey } from '@/lib/agent-plan-summary';
+import { firstRunPassedNote, humanizeCronSchedule, toolSubstitutionKey } from '@/lib/agent-plan-summary';
 import { describeDraftTool } from '@/lib/agent-tool-router';
 import { execCommand } from '@/hooks/use-native-exec';
 import { setAgentEnabled } from '@/lib/agent-manager';
@@ -377,7 +377,18 @@ export async function applyAgentAddDecision(
     if (after?.agentCardState === 'confirmed') {
       await finalizeSummary(binding, 'registered', draft);
       if (via === 'chatgpt') await postChatGptAudit(binding.conversationKey, binding.messageId, draft);
-      return { ok: true, code: 'sent', message: `Registered "${draft.name}" in Shelly. The user was notified and can disable it with one tap.` };
+      // Follow-up item 7: tell the caller when the requested time already
+      // passed before approval, so the first run is the NEXT occurrence.
+      const created = createdAgentFor(binding.messageId);
+      const timing = created && msg.timestamp
+        ? firstRunPassedNote(created.schedule, msg.timestamp, Date.now(), 'en', created.startNotBefore)
+            .replace(/Reply "now"[^.]*\./, 'To run it once right away, ask the user to reply "now" to the registration message in Shelly\'s chat.')
+        : '';
+      return {
+        ok: true,
+        code: 'sent',
+        message: `Registered "${draft.name}" in Shelly. The user was notified and can disable it with one tap.${timing ? ` ${timing}` : ''}`,
+      };
     }
     return { ok: false, code: 'failed', message: "shelly agent: registration did not complete; check Shelly's chat" };
   }

@@ -61,7 +61,7 @@ import {
   resolveRegistrationConfirmRequirement,
   notifyWidgetAgentRegistered,
 } from '@/lib/widget-agent-registration';
-import { shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
+import { firstRunPassedNote, shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
@@ -4442,10 +4442,18 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                   correctionHint,
                 },
               );
+          // Follow-up item 7 (2026-10-15): confirming after the requested
+          // time-of-day silently started the agent tomorrow — say so, with
+          // the real first run and how to run it once now. Measured from when
+          // the draft was presented (the originating message's timestamp).
+          const firstRunNote = createdOneShotAt === null && originatingMessage?.timestamp
+            ? firstRunPassedNote(created.schedule, originatingMessage.timestamp, Date.now(), noticeLocale, created.startNotBefore)
+            : '';
+          const registeredContentWithTiming = firstRunNote ? `${registeredContent}\n\n${firstRunNote}` : registeredContent;
           logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron calling updateMessage(content) for ${created.id} / message ${messageId}`);
           const registeredMessageId = updateOrFallback({
             agentCardState: 'confirmed',
-            content: registeredContent,
+            content: registeredContentWithTiming,
           });
           logInfo('AgentDraftConfirm', `confirmAgentDraft: registered-cron updateMessage(content) returned for ${created.id} / message ${messageId}`);
           if (correctionEligible) {

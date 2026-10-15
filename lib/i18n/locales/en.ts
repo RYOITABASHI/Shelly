@@ -675,6 +675,7 @@ const en: Record<string, string> = {
   // Deferred-start ("来週あたりから…") anchor line — shown next to the
   // schedule line whenever startNotBefore is set and still in the future.
   'agentplan.start_not_before_note': 'Starts from: {{date}}.',
+  'agentplan.first_run_passed_note': '{{time}} has already passed, so the first run is {{next}}. Reply "now" to run it once right away.',
   'agentplan.next_fire_note': 'Next run: {{datetime}}',
   // 2026-07-23: shown when one or more fields above were filled in by the
   // hybrid LLM-extraction fallback (lib/agent-llm-fallback.ts) instead of
