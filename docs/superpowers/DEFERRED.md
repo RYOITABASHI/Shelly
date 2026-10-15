@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-15: CC（fix/agent-named-tool-scheduled、後続）がレビュー指摘 H1/M1/M2/L2/L3 と当日の実機発見（出力言語・スキル再利用・通知承認の無言失敗・時刻経過後の確認・下書きへの JSON-RPC ログ混入）および既存エージェントの名指しツール移行・差し替え明示を修正。下記 2 エントリ参照（すべて実機未検証）。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled）が「パープレで…」等の**名指しツール**を単一節リクエストでも agent-level tool として固定・永続化し、スケジュール（無人）実行でも attended と同じく尊重するよう修正。下記「✅ 名指しツール（…）が単一節リクエスト・スケジュール実行で無視される」参照。
 - 2026-10-15: CC（feat/closepaw-result-wait + fork feat/shelly-result-callback）が `shelly closepaw` の実行結果を呼び出し元へ返す経路を実装（ClosePaw 変種 → Shelly の結果ブロードキャスト、`shelly closepaw wait <reqId>` / `--wait`）。実機未検証 — 下記「ClosePaw 引き継ぎ」Phase 2 (b) 参照。
 - 2026-10-14: CC（feat/closepaw-background-entry）が Shelly 用 ClosePaw 変種 v0.1.0-4 のバックグラウンド入口（順序付き明示ブロードキャスト `ai.closepaw.action.SHELLY_RUN_GOAL` → `ShellyGoalReceiver`）に対応。変種なら activity 起動の代わりにブロードキャストし、ClosePaw は Shizuku 仮想ディスプレイで作業（前面に出ない）。結果コードをシム/エージェント実行結果/チャットに反映、0・5 秒無応答は従来の activity 起動へフォールバック。実機未検証 — 下記 P1 エントリ参照。
@@ -1355,15 +1356,29 @@
 **修正**:
 - `lib/agent-tool-mentions.ts`（新規）: `TOOL_MENTIONS` / `matchToolMention` を移設（循環 import 回避）し、単一節用に「道具としての使用」文脈（JA「<tool>で / を使って / 経由で / に聞いて」、EN "with/using/via/through/use/ask <tool>"）を要求する `detectExplicitToolUsage` を追加（「Geminiの最新ニュース」等の話題言及は除外）。
 - `lib/agent-tool-router.ts` `suggestToolForDraft`: 単一節（非オーケストレーション）で名指しがあればキーワード判定より優先し `explicit:true` を返す（A/B 比較語がある場合は ab-article-eval を維持）。parser / slot-fill / LLM fallback / Tier3 会話登録の全経路で使用、`rawText` も検査。`ParsedAgentDraft.toolExplicit` → `ConfirmedAgentDraft.toolExplicit` → `resolveConfirmedToolAndRunOn({toolExplicit})` で具体ツールのまま永続化。
-- `lib/agent-credential-policy.ts` `autonomousWebConsentCovers`: 同意スコープの単一述語。Perplexity は検索バックエンドなので needsWeb 無しでも同意でカバー、Gemini は従来通り needsWeb 必須、同意無しは従来通り fail-closed。`generateRunScript` / `buildAgentPlanSpec`（agent-level と**ステップ毎**、ステップは自身の instruction で判定）/ `resolveAutonomousFinalTool` で共有。
+- `lib/agent-credential-policy.ts` `autonomousWebConsentCovers`: 同意スコープの単一述語。**レビュー M1 で厳格化**: Perplexity はそのタスク文自体が Web 必須（needsWeb）か**リサーチ意図**（needsSearch: 調べ/論文/research・鮮度語、または collects: 集めて/検索/collect/search）を持つ場合のみ同意でカバー。「パープレで要約して」のような非リサーチのステップピンは同意があってもカバーせず（前ステップの出力・ローカル文脈を無人でクラウドへ送らないため）、理由を routeDecision.why / REFUSED メッセージに明記。Gemini は従来通り needsWeb 必須、同意無しは従来通り fail-closed。ステップピンは自身の instruction のみで判定（agent-level の同意で一括カバーしない）。`generateRunScript` / `buildAgentPlanSpec` / `resolveAutonomousFinalTool` / ラダーで共有。
 - `lib/agent-escalation-ladder.ts`: 明示 Perplexity ピンは needsWeb が無くても Web 分岐へ（非Web系の幻覚フォールバックを除外）。キー未設定時はピンを先頭に残し why に記録（ピン経由のみ、従来の needsWeb タスクは Codex 直行のまま）。自律・非Web分岐で API キー系の設定ツールを落とす場合も why に明記。
 - `.sh` の REFUSED メッセージに「Autonomous Cloud consent を有効化」のヒントを追加。`AGENT_SCRIPT_VERSION` / `CURRENT_SCRIPT_VERSION` 67→68（executor JS は無変更のため `CURRENT_EXECUTOR_VERSION` は据え置き）。
 
-**残課題**:
-- **P2**: 既存登録済みエージェントは `tool:'auto'` 等のまま（再登録 or 編集で名指しし直すまで新挙動にならない）。マイグレーションは未実装。
-- **P2**: 自律＋同意無しで名指し Perplexity を登録すると confirm 時点で Codex に解決され保存される（従来ポリシー踏襲）。確認文にツール差し替えの明示は無い。
-- **P3**: 単一節の「使用」文脈判定は正規表現ヒューリスティック（例: "compare Gemini with Codex" は Codex ピン）。
-- 実機検証未実施: 「毎朝8時にパープレで最新のLLM論文をリサーチして要約して」を登録 → `~/.shelly/agents/<id>.json` の `tool.type` が `perplexity`、スケジュール発火のログ `toolUsed` が Perplexity API であることを確認する。
+**レビュー指摘と後続修正（同ブランチ、2026-10-15）**:
+- ✅ **H1（ブロッカー）** `e3adbb5af`: codex チェーンの .sh で、agent-level tool が cli のため全体の API キー scrub が PERPLEXITY_API_KEY 等を unset し、Perplexity/Gemini ピンのステップが必ず「key is not set」で失敗していた（非自律スケジュールの codex チェーンでも既存の同じ失敗）。scrub は維持し、API キー系ステップの arm だけが `$ENV_FILE` から自分のキーをサブシェルで読み、未 export のシェル変数として HTTP 呼び出しの env 前置にだけ使い、arm 直後に unset。Codex driver や他の子プロセスにはキーが渡らないことを挙動テストで確認。
+- ✅ **M1** `2df3100b3`: 上記の同意スコープ厳格化。
+- ✅ **M2 / 後続3（正規表現の誤検知）** `0b6025f59`: 「Codexでの評判」(での/では/でも)、"how developers use Codex"、"compare X with Gemini"、"X vs Y"、「比較」「比べ」「違い」、第三者の利用（"developers are using …"）ではピンしない。EN の use は "use <tool> to …" のみ。
+- ✅ **L2** `03706fc6e`: 名指しエンジンをチャット要約・確認カード・`shelly agent add` サマリ（`tool`/`toolPinned`/`toolNote`、CLI の "Engine:" 行、SHELLY_HELPER_SHIM v15 / BASHRC_VERSION 263）に表示。
+- **L1**（単一節の判定は正規表現ヒューリスティックで、すべての言い回しを網羅しない）: レビュー判断どおり現状維持。誤検知側は M2 で潰し、見逃し側は従来のキーワードルーティングに落ちるだけ（安全側）。
+- ✅ **L3**（`CURRENT_PLAN_SPEC_VERSION` を上げるべきか）: 確認の結果、上げない。PlanSpec はスクリプトと同じ `materializeAgent` のバッチで毎回書き直され、起動時の startup repair が有効な全スケジュール済みエージェントを再 materialize するため、AGENT_SCRIPT_VERSION 68 への更新時に PlanSpec も必ず再生成される。PlanSpec のスキーマ（形）は変えていないので、ネイティブの schema 版チェックの対象外。
+- ✅ **後続1（既存エージェントの移行）** `4c2fe5198`: `migrateAgentToolPin` を startup repair の再 materialize 直前に適用。非自律の `tool:'auto'` → 名指しツール、自律の Codex → 名指しツール（確認時と同じ同意ルールでカバーされる場合のみ）。チェーン・手動 RUN ON・比較/話題言及は対象外。冪等（ピン済みは条件に合わない）で、移行は必ずログ出力。
+- ✅ **後続2（差し替えの明示）** `b4a34cd90`: 自律エージェントで名指しのクラウドエンジンが Codex で保存される場合（同意 OFF、または同意の対象外タスク）、チャット要約・確認カード・`shelly agent add` サマリ（toolNote）・承認通知に理由付きで明記（en/ja）。
+- 実機検証未実施: 「毎朝8時にパープレで最新のLLM論文をリサーチして要約して」を登録 → `~/.shelly/agents/<id>.json` の `tool.type` が `perplexity`、スケジュール発火のログ `toolUsed` が Perplexity API であることを確認する。codex チェーン（「パープレで集めて、Codexでまとめて保存して」）のスケジュール発火で Perplexity ステップが成功することも確認する。
+
+### ✅ 2026-10-15 実機発見の後続修正（CC、ブランチ `fix/agent-named-tool-scheduled`）— 実機未検証
+
+- ✅ **出力言語**（英語のプロンプトなのに日本語の要約が返る） `d61e2ac19`: 言語判定を注入済み文脈（記憶・スキル）を除いたタスク文だけで行い、日本語→日本語 / 英語→英語 / その他→タスクと同じ言語の指示を、Web タスクに限らず全プロンプトの先頭に付与。「プロンプト内のどの文脈・記憶・プロフィールの言語よりも優先」と明記。.sh（単発と codex チェーンの base）と PlanSpec の prompt（無人 executor のステップ base）に適用。`shelly-plan-executor.js` は plan.prompt を base に使うため変更不要（`CURRENT_EXECUTOR_VERSION` 据え置き）。
+- ✅ **スキル再利用で新しい指示が落ちる / 高リスク扱い** `b360957dd`: 新しい依頼にあってスキルに無い文（例 "Write the summaries in English."）を、再利用する実行プランの最終ステップと注入文脈に必ず引き継ぐ。依頼の大半がスキルに無い場合は再利用しない。保存済みスキル（ユーザー承認済み）の再利用は、実行プラン（ステップを置き換える）を持つ場合だけ「Shelly 内での確認が必要」とし、サマリにその理由と「Shelly で確認して」を明記。プロンプトのみのスキルはリモート承認を妨げない（フラグの無い古い下書きは安全側で従来どおり）。
+- ✅ **通知の Approve が無言で失敗し 16:20 のスケジュールを逃した** `5733df116`: 通知からの承認を反映できない全ケース（Shelly 内専用の下書き・期限切れ/使用済みリンク・AI ペイン未準備・登録未完了）で、下書きへのチャット注記と「まだ登録されていません。Shelly を開いて確認してください」の通知を出す。Shelly 内専用の下書きの承認通知には Approve を出さず（ネイティブ既存仕様）、本文に「Shelly を開いて確認」と明記。ChatGPT 向けサマリも同様。
+- ✅ **時刻を過ぎてから確認すると無言で翌日開始** `2c94bbc2d`: 下書き提示後の最初の発火時刻が確認時点で過ぎていた場合、登録メッセージ（チャット）と `shelly agent confirm` の結果に「16:20 はすでに過ぎているため初回は翌日 16:20。今すぐ1回実行するには『今すぐ実行して』／"now" と返信」を表示。
+- ✅ **Obsidian の Substack 下書きに JSON-RPC 監査ログが保存された** `c51df03e7`: A/B 記事評価の経路が driver の stdout/stderr（JSON-RPC ログ）を記事として codex.md にコピーしていたのを廃止。さらに `is_transport_log_file` で下書きアクションと `save_draft_result` の両方がトランスポート/監査ログを拒否し、明確なエラーでステップを失敗させる。
+- 残: 上記はすべて実機未検証。とくに「通知の Approve が出ていた」原因は端末ログ無しでは特定できていない（ネイティブは非承認可能な下書きに Approve を出さない実装のため、同じ request の下書きが承認可能→不可に変わった際の古い通知が残った可能性）。今回の修正で、どの経路でも無言にはならない。
 
 ### ✅ Web必須タスクのエスカレーションラダーが、明示的なPerplexity/Geminiピンを無視してwebDomain分類で機械的にツールを再選択（2026-08-03、実機発見「なんでパープレじゃなくてこれ？」、Fable5実装）— 未コミット・実機未検証
 
