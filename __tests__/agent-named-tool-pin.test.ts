@@ -71,6 +71,8 @@ describe('detectExplicitToolUsage — instrumental mentions only', () => {
     ['use Gemini to draft a weekly report', 'gemini-api'],
     ['ローカルLLMで日記を要約して', 'local'],
     ['Codexでリポジトリのテストを直して', 'cli'],
+    ['use Codex to fix the failing tests', 'cli'],
+    ['ask Perplexity for the latest LLM papers', 'perplexity'],
   ])('%s → %s', (text, type) => {
     expect(detectExplicitToolUsage(text)?.type).toBe(type);
   });
@@ -80,6 +82,16 @@ describe('detectExplicitToolUsage — instrumental mentions only', () => {
     "summarize Perplexity's new features",
     'ローカルファイルを整理して',
     '最新のLLM論文をリサーチして要約して',
+    // review M2 / follow-up item 3: the tool is the subject, not the instrument
+    'Codexでの評判を調べて',
+    'Geminiではどう答えるか調べて',
+    'research how developers use Codex in production',
+    'find out why teams are using Perplexity',
+    'compare Gemini with Codex for code review',
+    'Gemini vs Codex: which is better at refactoring',
+    'Gemini versus Perplexity for research',
+    'GeminiとCodexを比較してまとめて',
+    'GeminiとPerplexityで書き比べて',
   ])('topic-only / no mention: %s → undefined', (text) => {
     expect(detectExplicitToolUsage(text)).toBeUndefined();
   });
@@ -127,6 +139,11 @@ describe('single-clause parse pins the named tool (JA + EN)', () => {
     const steps = normalizeSteps({ steps: d.orchestrationSteps as Array<string | AgentOrchestrationStep> });
     expect(steps[0].tool?.type).toBe('perplexity');
     expect(steps[1].tool?.type).toBe('local');
+    expect(d.toolExplicit).toBeUndefined();
+  });
+
+  it('a comparison request never pins (parser level)', () => {
+    const d = parseAgentNL('毎日9時にGeminiとCodexの違いを比較してまとめて');
     expect(d.toolExplicit).toBeUndefined();
   });
 

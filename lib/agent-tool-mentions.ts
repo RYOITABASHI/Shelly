@@ -47,26 +47,39 @@ export function matchToolMention(clause: string): ToolChoice | undefined {
 
 // A single-clause request can also merely be ABOUT a tool ("Geminiの最新
 // ニュースを集めて", "summarize Perplexity's new features"), so the
-// agent-level pin additionally requires instrumental usage context around the
-// SAME TOOL_MENTIONS token: JA 「<tool>で / <tool>を使って / <tool>経由で /
-// <tool>に聞いて…」 (optionally "<tool>(の)API…"), EN "with / using / via /
-// through / use / ask <tool>".
-const JA_USAGE_SUFFIX =
-  '(?:\\s*の?\\s*api)?\\s*(?:で|を\\s*(?:使|用い|利用|経由)|経由|に\\s*(?:聞|訊|尋|調べ|頼|依頼|リサーチ|検索|まとめ|要約))';
-const EN_USAGE_PREFIX = '\\b(?:with|using|via|through|use|ask)\\s+(?:the\\s+)?';
+// agent-level pin additionally requires the tool to be the INSTRUMENT of the
+// request, around the SAME TOOL_MENTIONS token:
+//   JA 「<tool>で / <tool>を使って / <tool>経由で / <tool>に聞いて…」 (optionally
+//      "<tool>(の)API…"); 「で」 must not continue into での/では/でも
+//      (「Codexでの評判を調べて」 is about Codex, not done with it).
+//   EN "with / using / via / through / ask <tool>", and "use <tool> to …"
+//      only (bare "how developers use Codex" is a topic).
+// Review M2 (2026-10-15).
+const JA_USAGE_SUFFIX = String.raw`(?:\s*の?\s*api)?\s*(?:で(?!の|は|も)|を\s*(?:使|用い|利用|経由)|経由|に\s*(?:聞|訊|尋|調べ|頼|依頼|リサーチ|検索|まとめ|要約))`;
+const EN_USAGE_PREFIX = String.raw`\b(?:with|using|via|through|ask)\s+(?:the\s+)?`;
+const EN_USE_TO = (src: string) => String.raw`\buse\s+(?:the\s+)?(?:` + src + String.raw`)(?:\s+api)?\s+to\b`;
 
 const EXPLICIT_TOOL_USAGE: ReadonlyArray<{ re: RegExp; tool: ToolChoice }> = TOOL_MENTIONS.map(({ re, tool }) => ({
-  re: new RegExp(`(?:${re.source})${JA_USAGE_SUFFIX}|${EN_USAGE_PREFIX}(?:${re.source})`, 'i'),
+  re: new RegExp(`(?:${re.source})${JA_USAGE_SUFFIX}|${EN_USAGE_PREFIX}(?:${re.source})|${EN_USE_TO(re.source)}`, 'i'),
   tool,
 }));
+
+// A comparison of tools ("compare Gemini with Codex", "Gemini vs Codex",
+// 「GeminiとCodexを比較して」) names tools as the SUBJECT of the task — never a pin.
+const COMPARISON_RE = /\bcompar(?:e|es|ed|ing|ison)\b|\bvs\.?(?=\s|$)|\bversus\b|比較|比べ|対決|どっち|どちら|違い/i;
+// "developers are using Codex" / "people who use Gemini" — the tool is what
+// someone else uses, i.e. the topic.
+const THIRD_PARTY_USE_RE = /\b(?:are|is|was|were|be|been|people|developers|users|who|they|teams?)\s+(?:using|use|used)\b/i;
 
 /**
  * The tool the user EXPLICITLY said to use in a single-clause request, or
  * undefined. Same TOOL_MENTIONS table (and the same first-match-wins order)
- * as matchToolMention, narrowed by the usage context above.
+ * as matchToolMention, narrowed by the instrument context above and never
+ * for a comparison or a third-party-usage topic.
  */
 export function detectExplicitToolUsage(text: string | undefined): ToolChoice | undefined {
   if (!text) return undefined;
+  if (COMPARISON_RE.test(text) || THIRD_PARTY_USE_RE.test(text)) return undefined;
   for (const { re, tool } of EXPLICIT_TOOL_USAGE) {
     if (re.test(text)) return { ...tool } as ToolChoice;
   }
