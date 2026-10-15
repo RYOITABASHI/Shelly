@@ -56,7 +56,7 @@
 
 **Drive your phone from ChatGPT — Shelly is the bridge**
 
-https://github.com/user-attachments/assets/267944c7-79db-42a0-80f5-f9382ed554d9
+https://github.com/user-attachments/assets/2fe4de3b-1c8f-4171-b61e-a88ddf8664b6
 
 1. In the ChatGPT app (Codex, connected to Shelly with `shelly codex pair`), ask: *save the top-rated vintage clothing stores near Shimokitazawa to a new Google Maps list.* ChatGPT runs `shelly closepaw --wait "<goal>"` on the phone.
 2. Shelly asks **you** to approve — once, on the phone (notification or Shelly chat). ChatGPT itself can never approve a phone action.
@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/267944c7-79db-42a0-80f5-f9382ed554d9
 
 **Register a daily agent from ChatGPT — it runs on the phone by itself**
 
-https://github.com/user-attachments/assets/97d52c62-f015-487e-976b-06dc21c9797a
+https://github.com/user-attachments/assets/bceec161-e5e3-46f1-bc28-35819f09961a
 
 1. From ChatGPT: `shelly agent add "Every day at 16:27, collect the latest AI research papers from arXiv and Hugging Face, pick 3 notable ones and summarize them. Write the summaries in English."`
 2. You confirm once in Shelly.

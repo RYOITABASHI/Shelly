@@ -56,7 +56,7 @@
 
 **ChatGPT からスマホを動かす ―― Shelly がその橋渡し**
 
-https://github.com/user-attachments/assets/267944c7-79db-42a0-80f5-f9382ed554d9
+https://github.com/user-attachments/assets/2fe4de3b-1c8f-4171-b61e-a88ddf8664b6
 
 1. ChatGPT アプリ（Codex。`shelly codex pair` で Shelly に接続）で「下北沢の評価の高い古着屋を、Google マップの新しいリストに保存して」と頼むと、ChatGPT がスマホ上で `shelly closepaw --wait "<goal>"` を実行します。
 2. Shelly が**あなたに**承認を求めます ―― スマホで 1 回だけ（通知か Shelly のチャット）。ChatGPT 自身がスマホ操作を承認することはできません。
@@ -69,7 +69,7 @@ https://github.com/user-attachments/assets/267944c7-79db-42a0-80f5-f9382ed554d9
 
 **ChatGPT から毎日動くエージェントを登録 ―― あとはスマホが勝手に働く**
 
-https://github.com/user-attachments/assets/97d52c62-f015-487e-976b-06dc21c9797a
+https://github.com/user-attachments/assets/bceec161-e5e3-46f1-bc28-35819f09961a
 
 1. ChatGPT から: `shelly agent add "Every day at 16:27, collect the latest AI research papers from arXiv and Hugging Face, pick 3 notable ones and summarize them. Write the summaries in English."`
 2. Shelly で 1 回確認するだけ。
