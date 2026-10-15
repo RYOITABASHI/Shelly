@@ -4197,6 +4197,13 @@ if [ "\${STUDIO_CONTEXT:-0}" = "1" ]; then
     SOURCE_CONTEXT="$SOURCE_CONTEXT\\n\\n$(head -c 20000 "$LOCAL_CONTEXT_FILE")"
   fi
 fi
+# Final review H1: an isolated research single run never sends the studio
+# context (AI_CONTEXT.md, recent vault/draft bodies, git status, source
+# registry) to the cloud backend. The draft destination (USE_GLOBAL_OUTPUT)
+# is unaffected.
+if [ "\${ISOLATE_RESEARCH_PROMPT:-0}" = "1" ]; then
+  SOURCE_CONTEXT=""
+fi
 
 # Global concurrency check. NOTE: must NOT use find -exec sh -c with a {} inside
 # the sh -c string — Android toybox find does not substitute {} there, so it ran

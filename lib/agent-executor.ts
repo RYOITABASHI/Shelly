@@ -1230,14 +1230,18 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // (consentSignalsFor), so it keeps the pre-branch rule.
   let isolateResearchSingleRun = false;
   if (agent.autonomous) {
-    const sig = detectRouteSignals(agent.prompt);
+    // Final review L2: consent is judged on the TASK text, not on prepended
+    // memory recall / skill context.
+    const sig = detectRouteSignals(taskTextForLanguage(agent.prompt));
     // 2026-10-15: shared with the ladder / PlanSpec builder — a Perplexity
     // tool (in practice an explicit 「パープレで…」 pin) is covered when the
     // task is web-mandatory OR has research intent (see
     // autonomousWebConsentCovers), so a consented scheduled fire honors it
     // like an attended run; anything else fails closed with the reason.
     consentWebTool = autonomousWebConsentCovers(tool, consentSignalsFor(agent, sig), opts.autonomousCloudConsent);
-    isolateResearchSingleRun = consentWebTool && !sig.needsWeb && !isOrchestrated(agent.orchestration);
+    // Not for an attended per-step materialize: its prompt is the chain's
+    // composite (base + carry + this step) and a human is present.
+    isolateResearchSingleRun = consentWebTool && !sig.needsWeb && !isOrchestrated(agent.orchestration) && opts.attended !== true;
     if (!consentWebTool) {
       const resolved = resolveForAutonomous(tool);
       if (!resolved) {
@@ -1344,7 +1348,9 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     // 「パープレで集めて」 pin) nor a web-ish agent prompt may cover a
     // non-research step like 「パープレで要約して」, whose prompt carries prior
     // step output / local context to the cloud.
-    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction), opts.autonomousCloudConsent)) {
+    // Final review L1: no per-step research-intent extension for a
+    // notification-triggered agent.
+    if (autonomousWebConsentCovers(step.tool, consentSignalsFor(agent, detectRouteSignals(step.instruction)), opts.autonomousCloudConsent)) {
       return step;
     }
     const resolved = resolveForAutonomous(step.tool);
@@ -5958,6 +5964,13 @@ if [ "\${STUDIO_CONTEXT:-0}" = "1" ]; then
   if [ -s "$LOCAL_CONTEXT_FILE" ]; then
     SOURCE_CONTEXT="$SOURCE_CONTEXT\\n\\n$(head -c 20000 "$LOCAL_CONTEXT_FILE")"
   fi
+fi
+# Final review H1: an isolated research single run never sends the studio
+# context (AI_CONTEXT.md, recent vault/draft bodies, git status, source
+# registry) to the cloud backend. The draft destination (USE_GLOBAL_OUTPUT)
+# is unaffected.
+if [ "\${ISOLATE_RESEARCH_PROMPT:-0}" = "1" ]; then
+  SOURCE_CONTEXT=""
 fi
 
 # Global concurrency check. NOTE: must NOT use find -exec sh -c with a {} inside

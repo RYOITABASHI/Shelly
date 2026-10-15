@@ -225,6 +225,10 @@ function planPaths(home: string, agentId: string) {
   };
 }
 
+/** Mirrors shelly-plan-executor.js STEP_TOOL_DISPATCHABLE_TYPES: a step pinned
+ *  to anything else runs on the plan's agent-level tool. */
+const PLAN_EXECUTOR_STEP_TOOL_TYPES: ReadonlySet<string> = new Set(['local', 'gemini-api', 'perplexity', 'cerebras', 'groq']);
+
 export function getPlanSpecPath(agentId: string): string {
   return `${planPaths(getHomePath(), agentId).plansDir}/plan-agent-${agentId}.json`;
 }
@@ -237,6 +241,11 @@ export function buildAgentPlanSpec(
   const paths = planPaths(home, agent.id);
   const routeResolution = resolveAgentRoute(agent);
   const promptSignals = detectRouteSignals(agent.prompt);
+  // Final review L2: the consent scope is judged on the user's TASK text, never
+  // on prepended memory recall / skill context (which could otherwise supply
+  // research words the user never wrote).
+  const taskText = taskTextForLanguage(agent.prompt);
+  const consentSignals = consentSignalsFor(agent, detectRouteSignals(taskText));
   let tool: ToolChoice = routeResolution.tool;
   let unsupportedToolReason: string | undefined;
   // Scoped above the `if (agent.autonomous)` block below so the per-step
@@ -246,7 +255,11 @@ export function buildAgentPlanSpec(
   // 2026-10-15: shared predicate (a Perplexity tool counts as web on its own —
   // see autonomousWebConsentCovers) so this matches generateRunScript and the
   // escalation ladder exactly.
-  const consentWebTool = autonomousWebConsentCovers(tool, consentSignalsFor(agent, promptSignals), opts.autonomousCloudConsent);
+  const consentWebTool = autonomousWebConsentCovers(tool, consentSignals, opts.autonomousCloudConsent);
+  // Final review H2: consent that holds ONLY through the research-intent
+  // extension (no web-mandatory signal) never carries memory/skill context:
+  // the plan prompt is built from the task text alone.
+  const researchOnlyConsent = agent.autonomous === true && consentWebTool && !consentSignals.needsWeb;
 
   if (agent.autonomous) {
     if (!consentWebTool) {
@@ -340,7 +353,9 @@ export function buildAgentPlanSpec(
     // ローカルLLMで要約して"), which used to strip a consented Perplexity step
     // pin, and a web-ish agent prompt must not cover a non-research step like
     // 「パープレで要約して」 (its prompt carries prior output / local context).
-    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction), opts.autonomousCloudConsent)) {
+    // Final review L1: a notification-triggered agent gets no research-intent
+    // extension per step either.
+    if (autonomousWebConsentCovers(step.tool, consentSignalsFor(agent, detectRouteSignals(step.instruction)), opts.autonomousCloudConsent)) {
       return step;
     }
     const resolved = resolveForAutonomous(step.tool);
@@ -355,10 +370,17 @@ export function buildAgentPlanSpec(
   // Review H-A: an autonomous plan's API-key steps get an isolated prompt
   // (or fail closed) — see AgentPlanSpecV1.steps.isolation.
   const isolationBase = outputLanguageDirective(agent.prompt) + taskTextForLanguage(agent.prompt);
+  // Final review H2: judge isolation on each step's EFFECTIVE tool — the
+  // executor runs an unpinned (or non-dispatchable-pinned) step on the
+  // agent-level tool (shelly-plan-executor.js effectiveStepTool), so a chain
+  // whose agent-level tool is Perplexity sends EVERY such step to it.
+  const effectiveSteps: NormalizedStep[] = resolvedStepList.map((step) =>
+    step.tool && PLAN_EXECUTOR_STEP_TOOL_TYPES.has(step.tool.type) ? step : { ...step, tool },
+  );
   const isolation = agent.autonomous
-    ? resolvedStepList.map((step, index) => {
+    ? effectiveSteps.map((step, index) => {
         if (!isApiKeyStep(step)) return null;
-        const policy = isolatedApiStepPolicy(resolvedStepList, index);
+        const policy = isolatedApiStepPolicy(effectiveSteps, index);
         return 'blocked' in policy ? { blocked: policy.blocked } : { base: isolationBase, carry: policy.carry };
       })
     : [];
@@ -381,7 +403,7 @@ export function buildAgentPlanSpec(
       autonomyLevel: agent.autonomyLevel ?? 'L2',
       requireActionApproval: agent.requireActionApproval,
     },
-    prompt: buildExecutorPrompt(agent.prompt),
+    prompt: buildExecutorPrompt(researchOnlyConsent ? taskText : agent.prompt),
     tool: toolSpec,
     toolLadder,
     ...(toolLadderExhaustedNote ? { toolLadderExhaustedNote } : {}),
