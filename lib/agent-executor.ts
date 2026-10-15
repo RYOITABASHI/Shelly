@@ -6,7 +6,7 @@ import { Agent, AgentAction, AgentActionType, AgentRouteDecision, ToolChoice } f
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
-import { outputLanguageDirective } from './agent-output-language';
+import { outputLanguageDirective, taskTextForLanguage } from './agent-output-language';
 import { autonomousPinRefusalReason, autonomousWebConsentCovers, requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
@@ -19,6 +19,7 @@ import {
   MAX_RESULT_CARRY_CHARS,
   NormalizedStep,
   isOrchestrated,
+  isolatedApiStepPolicy,
   normalizeSteps,
   resolveBudget,
 } from './agent-orchestration';
@@ -740,6 +741,10 @@ export interface OrchestrationChainOptions {
    *  the chain is sourced (a non-final step is WEB research — see
    *  lib/agent-sources.ts isResearchStep). Index-aligned with `steps`. */
   sourcing?: { research: boolean[]; recency?: string; count?: number };
+  /** Review H-A: the isolated base prompt (output-language directive + the
+   *  user's task text, WITHOUT memory/skill context) an autonomous chain's
+   *  API-key step is prompted with. */
+  apiStepBasePrompt?: string;
 }
 
 /** Sourced-chain descriptor for codexOrchestrationChainCommand, or undefined
@@ -1586,6 +1591,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     orchestrationChain: canRunOrchestrationChain
       ? {
           basePrompt: languageDirective + agent.prompt,
+          apiStepBasePrompt: languageDirective + taskTextForLanguage(agent.prompt),
           steps: attemptableOrchestrationSteps,
           totalStepCount: fullOrchestrationSteps.length,
           maxSteps: orchestrationBudget.maxSteps,
@@ -6704,6 +6710,33 @@ function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions): s
       stepSkipPromptCompose: true,
     });
     const keyVar = STEP_TOOL_KEY_VAR[stepTool.type];
+    // Review H-A: an AUTONOMOUS chain's API-key step never sends the composed
+    // $PROMPT_FILE (device status / notification context / memory / prior
+    // carry). It gets its own isolated prompt, or fails closed when it needs
+    // earlier output that may hold local data.
+    if (chain.autonomous && keyVar && pinned) {
+      const policy = isolatedApiStepPolicy(chain.steps, index);
+      if ('blocked' in policy) {
+        arms.push(`  ${index})\n    printf '%s\\n' ${shellQuote(policy.blocked)} > "$RESULT_FILE"\n    touch "$BACKEND_ERROR_FILE"\n    RESULT_CONTENT_FILE="$RESULT_FILE"\n    RESULT_CONTENT_IS_DRIVER_ANSWER=0\n    ;;`);
+        return;
+      }
+      const base = chain.apiStepBasePrompt ?? taskTextForLanguage(chain.basePrompt);
+      const isolated = [
+        '    {',
+        `      printf '%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}"`,
+        `      printf '%s\\n\\n' ${shellQuote(base.trim())}`,
+        ...(policy.carry
+          ? [`      if [ -s "$CODEX_ORCH_CARRY_FILE" ]; then printf '# Results from previous steps\\n'; cat "$CODEX_ORCH_CARRY_FILE"; printf '\\n\\n---\\n\\n'; fi`]
+          : []),
+        ...(chain.sourcing && (sourcedResearch || policy.carry)
+          ? [`      if [ -s "$CODEX_ORCH_EVIDENCE_FILE" ]; then cat "$CODEX_ORCH_EVIDENCE_FILE"; fi`]
+          : []),
+        `      printf '# This step\\n%s' ${shellQuote(step.instruction)}`,
+        '    } > "$PROMPT_FILE"',
+      ].join('\n');
+      arms.push(`  ${index})\n${isolated}\n${stepScopedKeyPrelude(keyVar)}\n${snippet}\n${stepScopedKeyPostlude(keyVar)}\n    RESULT_CONTENT_FILE="$RESULT_FILE"\n    RESULT_CONTENT_IS_DRIVER_ANSWER=0\n    ;;`);
+      return;
+    }
     const prelude = keyVar ? `${stepScopedKeyPrelude(keyVar)}\n` : '';
     const postlude = keyVar ? `\n${stepScopedKeyPostlude(keyVar)}` : '';
     arms.push(`  ${index})\n${prelude}${snippet}${postlude}\n    RESULT_CONTENT_FILE="$RESULT_FILE"\n    RESULT_CONTENT_IS_DRIVER_ANSWER=0\n    ;;`);

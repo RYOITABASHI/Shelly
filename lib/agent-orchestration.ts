@@ -741,3 +741,55 @@ export function tagStepsWithToolMentions(steps: string[]): Array<string | Normal
     return tool ? { instruction, tool } : instruction;
   });
 }
+
+
+/**
+ * Review H-A (2026-10-15): which unattended chain steps send their prompt to
+ * an API-KEY cloud backend. In an autonomous run these steps get an ISOLATED
+ * prompt — the user's task text + the step's own instruction only — never the
+ * device status / notification context / memory recall / prior-step carry the
+ * other steps see, because that carry can hold local data (files a Codex step
+ * read, notification text, device status). Before the named-tool fix such a
+ * step pin was stripped unattended, so this egress never existed.
+ */
+export const API_KEY_STEP_TOOL_TYPES: ReadonlySet<string> = new Set(['perplexity', 'gemini-api', 'cerebras', 'groq', 'openrouter']);
+
+export function isApiKeyStep(step: Pick<NormalizedStep, 'tool' | 'apiCall'>): boolean {
+  return !step.apiCall && !!step.tool && API_KEY_STEP_TOOL_TYPES.has(step.tool.type);
+}
+
+// The step builds on what earlier steps produced ("それを要約して",
+// "summarize the results above"). Deliberately broad — a false positive only
+// makes an isolated step fail closed or receive web-only carry.
+const PRIOR_OUTPUT_REFERENCE_RE =
+  /それ|その|これら|これを|これらを|上記|前の|前述|先ほど|結果|収集した|集めた|取得した|調べた|読んだ|\b(?:it|them|those|these|that|results?|above|previous|prior|earlier|collected|gathered|retrieved)\b/i;
+
+export function stepReferencesPriorOutput(instruction: string): boolean {
+  return PRIOR_OUTPUT_REFERENCE_RE.test(instruction);
+}
+
+/**
+ * Prompt policy for an API-key step at `index` of an AUTONOMOUS chain:
+ *  - `{ carry: false }` — task text + own instruction only;
+ *  - `{ carry: true }`  — also the prior results, allowed only when every
+ *    earlier step is itself an isolated API-key step (its output came from a
+ *    clean prompt + the web, so it holds no local data);
+ *  - `{ blocked }`      — the step needs earlier output that may contain local
+ *    data: fail closed with this message instead of sending it.
+ */
+export function isolatedApiStepPolicy(
+  steps: ReadonlyArray<Pick<NormalizedStep, 'tool' | 'apiCall' | 'instruction'>>,
+  index: number,
+): { carry: boolean } | { blocked: string } {
+  const step = steps[index];
+  if (index === 0 || !stepReferencesPriorOutput(step.instruction)) return { carry: false };
+  const priorIsolated = steps.slice(0, index).every((s) => isApiKeyStep(s));
+  if (priorIsolated) return { carry: true };
+  const name = step.tool?.type === 'perplexity' ? 'Perplexity' : step.tool?.type === 'gemini-api' ? 'Gemini' : (step.tool?.type ?? 'a cloud API');
+  return {
+    blocked:
+      `Step ${index + 1} would send earlier steps' results to ${name} unattended, but those results may contain local data ` +
+      '(files, notifications, device status, memory). Shelly does not send that to a cloud API without you. ' +
+      'Run this agent with Run now, or make every earlier step a web-only step.',
+  };
+}

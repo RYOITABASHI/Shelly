@@ -444,7 +444,11 @@ object AgentRuntime {
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
     // (resolved by RN only against a registration pre-approval sealed in
     // SecureStore — lib/agent-closepaw-preapproval.ts). No native logic change.
-    private const val CURRENT_EXECUTOR_VERSION = 9
+    // CURRENT_EXECUTOR_VERSION 10 (2026-10-15, review H-A): an autonomous
+    // plan's API-key steps run on the isolated prompt in plan.steps.isolation
+    // (or fail closed when blocked). Bumped so a stale executor, which would
+    // ignore the field and send the composed prompt, is refreshed first.
+    private const val CURRENT_EXECUTOR_VERSION = 10
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

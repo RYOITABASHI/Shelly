@@ -2,7 +2,7 @@ import type { Agent, AgentApiCallConfig, AgentRouteDecision, AgentSocialPostConf
 import { getHomePath } from '@/lib/home-path';
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { detectRouteSignals } from './agent-router-scoring';
-import { outputLanguageDirective } from './agent-output-language';
+import { outputLanguageDirective, taskTextForLanguage } from './agent-output-language';
 import { autonomousPinRefusalReason, autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import {
@@ -15,7 +15,7 @@ import { evaluateAgentActionCommand } from './agent-action-safety';
 import { isAgentIntentMode, sanitizeClosePawGoal } from './agent-intent-review';
 import { buildAgentPolicy } from './agent-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
-import { isOrchestrated, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
+import { isApiKeyStep, isOrchestrated, isolatedApiStepPolicy, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
 import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
 
 // NOT bumped for the `steps` field added below (orchestration schema-plumbing
@@ -177,6 +177,16 @@ export interface AgentPlanSpecV1 {
   steps?: {
     list: NormalizedStep[];
     budget: ResolvedBudget;
+    /** Review H-A (2026-10-15), autonomous plans only: index-aligned with
+     *  `list`. For an API-key step (Perplexity / Gemini / Cerebras / Groq /
+     *  OpenRouter pin), the executor builds its prompt from `base` (language
+     *  directive + the user's task text — no memory recall) + the step's own
+     *  instruction, with prior results only when `carry`; `blocked` fails the
+     *  step with that message instead (it would need earlier output that may
+     *  contain local data). null = the ordinary composed prompt. Additive: an
+     *  executor older than CURRENT_EXECUTOR_VERSION 10 is refreshed natively
+     *  before it can run such a plan. */
+    isolation?: Array<{ base: string; carry: boolean } | { blocked: string } | null>;
   };
 }
 
@@ -339,10 +349,24 @@ export function buildAgentPlanSpec(
     const { tool: _dropped, ...rest } = step;
     return rest;
   };
+  const resolvedStepList = isOrchestrated(agent.orchestration)
+    ? normalizeSteps(agent.orchestration).map(resolveStepToolForPlan)
+    : [];
+  // Review H-A: an autonomous plan's API-key steps get an isolated prompt
+  // (or fail closed) — see AgentPlanSpecV1.steps.isolation.
+  const isolationBase = outputLanguageDirective(agent.prompt) + taskTextForLanguage(agent.prompt);
+  const isolation = agent.autonomous
+    ? resolvedStepList.map((step, index) => {
+        if (!isApiKeyStep(step)) return null;
+        const policy = isolatedApiStepPolicy(resolvedStepList, index);
+        return 'blocked' in policy ? { blocked: policy.blocked } : { base: isolationBase, carry: policy.carry };
+      })
+    : [];
   const orchestrationSteps = isOrchestrated(agent.orchestration)
     ? {
-        list: normalizeSteps(agent.orchestration).map(resolveStepToolForPlan),
+        list: resolvedStepList,
         budget: resolveBudget(agent.orchestration),
+        ...(isolation.some((x) => x !== null) ? { isolation } : {}),
       }
     : undefined;
 

@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=9
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=10
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -37,7 +37,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // ClosePawHandoff.launch) so the run says background / main-display, or ends
 // as an error with the trusted variant's refusal reason. Bumped so a stale v8
 // copy is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 9;
+const EXECUTOR_SCRIPT_VERSION = 10;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
 // lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
@@ -4666,7 +4666,21 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       : synthesis
         ? { mode: 'synthesis', sources: evidence.sources.slice(), items: evidence.items.slice(), count: sourcingCount }
         : undefined;
-    const stepPrompt = buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence);
+    // Review H-A (2026-10-15): an autonomous plan's API-key step (Perplexity /
+    // Gemini / … pin) never receives the composed prompt (memory recall and
+    // prior-step carry can hold local data). lib/agent-plan-spec.ts decides
+    // per step: an isolated prompt from `base` (+ prior results only when
+    // every earlier step was itself isolated), or `blocked` = fail closed.
+    const isolation = Array.isArray(plan.steps.isolation) ? plan.steps.isolation[i] : null;
+    if (isolation && typeof isolation.blocked === 'string') {
+      return {
+        record: { index: i, instruction: step.instruction, status: 'error', durationMs: 0, outputPreview: previewText(isolation.blocked), ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
+        failed: true,
+      };
+    }
+    const stepPrompt = isolation && typeof isolation.base === 'string'
+      ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined)
+      : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
     const stepTool = effectiveStepTool(step);
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction, tool: stepTool });
