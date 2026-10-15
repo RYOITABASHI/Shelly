@@ -82,7 +82,10 @@ export interface ParsedAgentDraft {
   memory?: AgentMemoryConfig;
   /** Phase 2a: a matching reusable skill surfaced for gated reuse in the confirm
    *  card. Set by the dispatcher (async skill match), not the pure parser. */
-  matchedSkill?: { id: string; name: string; successCount: number };
+  /** `executablePlan`: reusing the skill replaces the agent's steps with the
+   *  recipe's stored plan (lib/agent-skills.ts skillHasExecutablePlan) — the
+   *  only kind of reuse that keeps a `shelly agent add` draft in-app-only. */
+  matchedSkill?: { id: string; name: string; successCount: number; executablePlan?: boolean };
   /** Phase 4: ordered step instructions when the utterance is multi-step
    *  ("まず…次に…最後に" / numbered), OR (Phase 6) a plain て-form/comma-delimited
    *  chain naming a tool per clause ("パープレで集めて、ローカルLLMで要約して…") —

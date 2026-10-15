@@ -85,7 +85,7 @@ import {
 import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
-import { matchSkillRecipesHybrid, readSkillRecipes } from '@/lib/agent-skills';
+import { matchSkillRecipesHybrid, readSkillRecipes, skillDiffersMaterially, skillHasExecutablePlan } from '@/lib/agent-skills';
 import { LlamaEmbeddingPort, llamaEmbeddingEndpointFromBaseUrl } from '@/lib/memory/embedding-llama';
 import { MEMORY_EMBEDDING_ENABLED } from '@/lib/memory/wiring';
 import {
@@ -2711,8 +2711,17 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                   { limit: 1, embeddingPort },
                 )
               )[0];
-              if (matched) {
-                draft.matchedSkill = { id: matched.id, name: matched.name, successCount: matched.successCount };
+              // Follow-up item 5: a request that differs MATERIALLY from the
+              // skill (most of its instructions are not in the recipe) is not
+              // a reuse candidate; one that only adds instructions reuses it
+              // and carries them along (see uncoveredRequestInstructions).
+              if (matched && !skillDiffersMaterially(matched, promptText)) {
+                draft.matchedSkill = {
+                  id: matched.id,
+                  name: matched.name,
+                  successCount: matched.successCount,
+                  executablePlan: skillHasExecutablePlan(matched),
+                };
               }
             } catch {
               // skill match is best-effort

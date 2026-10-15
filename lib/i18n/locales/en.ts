@@ -368,7 +368,7 @@ const en: Record<string, string> = {
   'agents.terminal_request_risk.tool:cli': 'runs on Codex / a command-line engine',
   'agents.terminal_request_risk.step-tool': 'per-step tool choice',
   'agents.terminal_request_risk.output-path': 'custom output location',
-  'agents.terminal_request_risk.skill': 'reuses a saved skill',
+  'agents.terminal_request_risk.skill': 'reuses a saved skill whose stored step plan replaces the steps shown',
   'agents.terminal_request_notif_title': 'Shelly: confirm new agent (requested from Codex)',
   'agents.terminal_request_notif_name': 'Name: {{name}}',
   'agents.terminal_request_notif_schedule': 'Schedule: {{schedule}}',

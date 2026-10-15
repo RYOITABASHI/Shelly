@@ -1090,7 +1090,7 @@ async function applyMemoryAndSkills(
       // (see MaterializeRunOpts.skipSkillPlanRehydration) — the caller has
       // already shaped `.orchestration` for exactly this one step/candidate.
       if (opts.rehydrateSkillPlan !== false) agent = applyExecutableSkillPlan(agent, recipe);
-      const skillContext = buildSkillInjectionContext(recipe);
+      const skillContext = buildSkillInjectionContext(recipe, agent.prompt);
       if (skillContext) prompt = `${skillContext}\n\n---\n\n${prompt}`;
     } catch {
       // Skill injection is best-effort; never block a run on a read failure.

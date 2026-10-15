@@ -363,7 +363,7 @@ const ja: Record<string, string> = {
   'agents.terminal_request_risk.tool:cli': 'Codex / コマンドラインで実行',
   'agents.terminal_request_risk.step-tool': 'ステップごとのツール指定',
   'agents.terminal_request_risk.output-path': '保存先の指定',
-  'agents.terminal_request_risk.skill': '保存済みスキルの再利用',
+  'agents.terminal_request_risk.skill': '保存済みスキルの再利用（保存された手順が表示中のステップを置き換えます）',
   'agents.terminal_request_notif_title': 'Shelly: 新しいエージェントの確認（Codex からの依頼）',
   'agents.terminal_request_notif_name': '名前: {{name}}',
   'agents.terminal_request_notif_schedule': 'スケジュール: {{schedule}}',

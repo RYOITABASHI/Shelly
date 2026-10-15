@@ -149,7 +149,15 @@ export function assessAgentDraftRisk(draft: AgentAddDraftLike): string[] {
     reasons.push('step-tool');
   }
   if (typeof draft.outputPath === 'string' && draft.outputPath.trim()) reasons.push('output-path');
-  if (draft.matchedSkill) reasons.push('skill');
+  // Follow-up item 5: reusing a saved skill the user already approved is only
+  // a review-in-Shelly reason when the skill carries an EXECUTABLE plan — that
+  // replaces the steps shown in this summary with the recipe's, so remote text
+  // approval would not cover what actually runs. A prompt-only recipe just
+  // adds context to the same steps. Unknown (older draft) fails closed.
+  if (draft.matchedSkill) {
+    const executable = (draft.matchedSkill as { executablePlan?: unknown }).executablePlan;
+    if (executable !== false) reasons.push('skill');
+  }
   return reasons;
 }
 
@@ -420,7 +428,13 @@ export function buildAgentAddSummary(
       `Show this summary to the user. Only if they approve it, run: shelly agent confirm ${binding.reqId} ${hash8}` +
       ` (or they can approve / reject it in Shelly's notification or chat; reject with: shelly agent reject ${binding.reqId})`;
   } else if (binding.riskReasons.length > 0) {
-    message = `This agent includes steps that need review in Shelly itself (${binding.riskReasons.join(', ')}); it cannot be approved from here.`;
+    const skillName = draft.matchedSkill && typeof (draft.matchedSkill as { name?: unknown }).name === 'string'
+      ? (draft.matchedSkill as { name: string }).name
+      : '';
+    const why = binding.riskReasons.includes('skill')
+      ? ` It reuses the saved skill${skillName ? ` "${clip(skillName, 80)}"` : ''}, whose stored step plan replaces the steps shown here, so it must be reviewed in Shelly.`
+      : '';
+    message = `This agent includes steps that need review in Shelly itself (${binding.riskReasons.join(', ')}); it cannot be approved from here.${why} Ask the user to open Shelly and confirm it there.`;
   } else {
     message = 'This agent has no confirmed schedule yet; finish and approve it in Shelly itself.';
   }

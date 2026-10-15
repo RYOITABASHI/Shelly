@@ -122,10 +122,12 @@ describe('executable PlanSpec reuse', () => {
     expect(reused.prompt).toBe(agent.prompt);
     expect(reused.action).toEqual({ type: 'notify' });
     expect(reused.tool).toEqual({ type: 'groq', model: 'llama-3.3-70b-versatile' });
+    // Follow-up item 5 (2026-10-15): the new task's own instructions that the
+    // recipe does not cover are appended to the FINAL step, never dropped.
     expect(reused.orchestration).toEqual({
       steps: [
         { instruction: 'collect sources' },
-        { instruction: 'write summary' },
+        { instruction: 'write summary\n\nAlso follow these instructions from the request: Summarize this new topic' },
       ],
       maxSteps: 2,
       totalTimeoutMs: 120_000,

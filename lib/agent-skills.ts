@@ -607,15 +607,73 @@ export async function matchSkillRecipesHybrid(
   }
 }
 
+/** Tokens that carry no instruction content for coverage purposes. */
+function isCoverageNoise(token: string): boolean {
+  return isSkillStopword(token) || /^\d+$/.test(token);
+}
+
+/**
+ * Follow-up item 5 (2026-10-15, on-device): `shelly agent add "… collect the
+ * latest AI research papers … Write the summaries in English."` matched a
+ * saved skill for the same collection task, and the extra instruction
+ * ("Write the summaries in English.") risked being lost — a reused executable
+ * skill plan REPLACES the steps, so an instruction that only lived in the new
+ * request never reached a step of its own. Returns the sentences of
+ * `requestText` the recipe does not already cover (fewer than half of their
+ * content tokens appear in the recipe's prompt/trigger), in order. Pure.
+ */
+export function uncoveredRequestInstructions(
+  recipe: Pick<SkillRecipe, 'prompt' | 'trigger'>,
+  requestText: string,
+): string[] {
+  const covered = tokenizeForMatch(`${recipe.prompt}\n${recipe.trigger}`);
+  const sentences = requestText
+    .split(/[.!?。！？]+\s*|\n+/)
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+  const out: string[] = [];
+  for (const sentence of sentences) {
+    const tokens = [...tokenizeForMatch(sentence)].filter((t) => !isCoverageNoise(t));
+    if (tokens.length < 2) continue;
+    const hit = tokens.filter((t) => covered.has(t)).length;
+    if (hit / tokens.length < 0.5) out.push(sentence);
+  }
+  return out;
+}
+
+/**
+ * A request differs MATERIALLY from a skill when most of its instruction
+ * sentences are not covered by the recipe — reusing the skill would then
+ * substitute a different procedure for what the user asked. Callers skip the
+ * match in that case; a request that merely ADDS an instruction or two reuses
+ * the skill and carries those instructions along (applyExecutableSkillPlan /
+ * buildSkillInjectionContext), never dropping them.
+ */
+export function skillDiffersMaterially(recipe: Pick<SkillRecipe, 'prompt' | 'trigger'>, requestText: string): boolean {
+  const sentences = requestText.split(/[.!?。！？]+\s*|\n+/).map((x) => x.trim())
+    .filter((x) => [...tokenizeForMatch(x)].filter((t) => !isCoverageNoise(t)).length >= 2);
+  if (sentences.length === 0) return false;
+  return uncoveredRequestInstructions(recipe, requestText).length * 2 > sentences.length;
+}
+
+/** True when reusing this recipe replaces the agent's steps (executable plan). */
+export function skillHasExecutablePlan(recipe: Pick<SkillRecipe, 'planSpec'> | null | undefined): boolean {
+  return !!recipe?.planSpec?.steps && recipe.planSpec.steps.list.length >= 2;
+}
+
 /** Build the recipe block prepended to a run prompt. '' when no recipe. */
-export function buildSkillInjectionContext(recipe: SkillRecipe | null): string {
+export function buildSkillInjectionContext(recipe: SkillRecipe | null, requestText?: string): string {
   if (!recipe) return '';
   const prompt = recipe.prompt.replace(/\s+/g, ' ').slice(0, MAX_INJECTION_CHARS);
   const lines = [
     `# Reusable skill: ${recipe.name} (${recipe.successCount}× successful, on-device)`,
-    'A recipe that worked before for a similar task. Adapt it if helpful.',
+    'A recipe that worked before for a similar task. Adapt it if helpful. The task below is authoritative: follow ALL of its instructions, including any this recipe does not mention.',
     prompt,
   ];
+  const extras = requestText ? uncoveredRequestInstructions(recipe, requestText) : [];
+  if (extras.length > 0) {
+    lines.push(`Instructions in the task that this recipe does not cover (they MUST be followed): ${extras.join(' / ')}`);
+  }
   // Self-improvement: verified learnings (failures that a later verified
   // success resolved) ride along as standing cautions. Bounded to the most
   // recent few; each note is already hard-capped at write time. This block is
@@ -695,12 +753,20 @@ export function applyExecutableSkillPlan(agent: Agent, recipe: SkillRecipe | nul
   const spec = recipe?.planSpec;
   if (!spec?.steps || spec.steps.list.length < 2) return agent;
   const tool = planToolChoice(spec);
+  // Follow-up item 5: instructions only the NEW request carries (e.g. "Write
+  // the summaries in English.") are appended to the final step — the step
+  // that produces the delivered output — so replacing the steps with the
+  // recipe's never drops them.
+  const extras = uncoveredRequestInstructions(recipe!, agent.prompt ?? '');
+  const lastIndex = spec.steps.list.length - 1;
   return {
     ...agent,
     ...(tool ? { tool } : {}),
     orchestration: {
-      steps: spec.steps.list.map((step) => ({
-        instruction: step.instruction,
+      steps: spec.steps.list.map((step, i) => ({
+        instruction: i === lastIndex && extras.length > 0
+          ? `${step.instruction}\n\nAlso follow these instructions from the request: ${extras.join(' / ')}`
+          : step.instruction,
         ...(step.tool ? { tool: step.tool } : {}),
         ...(step.apiCall ? { apiCall: step.apiCall } : {}),
       })),
