@@ -514,14 +514,17 @@ async function surfaceDecisionProblem(
   const msg = b ? findPendingDraftMessage(b) : null;
   const draft = (msg?.agentDraft as ParsedAgentDraft | undefined) ?? null;
   const locale: Locale = draft ? draftLocale(draft) : 'en';
-  const key = `agents.terminal_request_decision_${kind}`;
+  // Review Low: a stale / failed REJECT must not claim "not registered yet,
+  // confirm in Shelly" — the user wanted to discard it.
+  const key = decision === 'reject' ? 'agents.terminal_request_decision_reject_failed' : `agents.terminal_request_decision_${kind}`;
+  const titleKey = decision === 'reject' ? 'agents.terminal_request_decision_reject_title' : 'agents.terminal_request_decision_title';
   const name = draft?.name ?? '';
   if (b) postNote(b.conversationKey, tFor(locale, key, { name }));
   try {
     const Notifications = await import('expo-notifications');
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: tFor(locale, 'agents.terminal_request_decision_title'),
+        title: tFor(locale, titleKey),
         body: tFor(locale, key, { name }),
         data: { agentAddReqId: reqId, decision },
       },

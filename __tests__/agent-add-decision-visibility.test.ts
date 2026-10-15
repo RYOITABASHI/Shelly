@@ -29,6 +29,12 @@ describe('in-app-only drafts never fail silently', () => {
     expect(handler).toContain("if (!result.ok) await surfaceDecisionProblem(reqId, decision, 'failed');");
   });
 
+  it('a stale reject gets reject wording, never "not registered yet, confirm in Shelly"', () => {
+    const fn = flow.slice(flow.indexOf('async function surfaceDecisionProblem'));
+    expect(fn).toContain("decision === 'reject' ? 'agents.terminal_request_decision_reject_failed'");
+    expect(fn).toContain("decision === 'reject' ? 'agents.terminal_request_decision_reject_title'");
+  });
+
   it('the problem is posted as a chat note AND a visible notification', () => {
     const fn = flow.slice(flow.indexOf('async function surfaceDecisionProblem'));
     expect(fn).toContain('postNote(b.conversationKey');
@@ -52,6 +58,8 @@ describe('in-app-only drafts never fail silently', () => {
         'agents.terminal_request_decision_refused',
         'agents.terminal_request_decision_not_ready',
         'agents.terminal_request_decision_failed',
+        'agents.terminal_request_decision_reject_title',
+        'agents.terminal_request_decision_reject_failed',
       ]) {
         expect(src).toContain(`'${key}':`);
       }

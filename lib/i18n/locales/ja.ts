@@ -381,6 +381,8 @@ const ja: Record<string, string> = {
   'agents.terminal_request_decision_refused': 'この承認リンクは無効です（期限切れ・使用済み・差し替え済み）。Shelly を開いて AI ペインの案を確認してください。',
   'agents.terminal_request_decision_not_ready': 'Shelly の準備が整っておらず承認を反映できなかったため、まだ登録されていません。Shelly を開いて AI ペインの案を確認してください。',
   'agents.terminal_request_decision_failed': 'エージェントの登録が完了しませんでした。Shelly を開いて AI ペインの案を確認してください。',
+  'agents.terminal_request_decision_reject_title': '却下は反映されていません',
+  'agents.terminal_request_decision_reject_failed': 'この却下リンクは無効です（期限切れ・使用済み・差し替え済み）。案がまだ残っている場合は、Shelly の AI ペインで却下してください。',
   'agents.terminal_request_link_refused': 'この依頼の通知からの承認は拒否されました（期限切れ・使用済み・許可されていない操作）。ここで案を確認してください。',
   'agents.notification_trigger': '通知トリガー',
   'agents.notification_trigger_enabled': '通知トリガーを有効にしました',

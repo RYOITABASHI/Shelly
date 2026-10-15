@@ -386,6 +386,8 @@ const en: Record<string, string> = {
   'agents.terminal_request_decision_refused': 'That approval link is no longer valid (expired, already used, or replaced). Open Shelly and confirm the draft in the AI pane.',
   'agents.terminal_request_decision_not_ready': "Shelly wasn't ready to apply your approval, so nothing was registered. Open Shelly and confirm the draft in the AI pane.",
   'agents.terminal_request_decision_failed': 'Registering the agent did not complete. Open Shelly and confirm the draft in the AI pane.',
+  'agents.terminal_request_decision_reject_title': 'Rejection not applied',
+  'agents.terminal_request_decision_reject_failed': 'That rejection link is no longer valid (expired, already used, or replaced). If the draft is still pending, open Shelly and reject it in the AI pane.',
   'agents.terminal_request_link_refused': 'A notification approval for this request was refused (expired, already used, or not allowed). Review the draft here.',
   'agents.notification_trigger': 'Notification Triggers',
   'agents.notification_trigger_enabled': 'Notification triggers enabled',
