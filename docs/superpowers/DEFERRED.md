@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-15: CC（fix/agent-named-tool-scheduled）が最終レビュー H1/H2/L1/L2 を修正（研究意図の同意拡張による残りの外部送信経路を封鎖）。L3/L4 は記録のみ。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled）が P1 の決定（通知トリガー付きには同意拡張を適用しない／リサーチ意図の単発実行は通知文脈と記憶を送らない）を実装。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled、再レビュー対応）が H-A（自律 API キー系ステップのプロンプト隔離）・M-B（スキル実行プランの TOCTOU）・M-C（言語指示）・Low 2件を修正し、M-A により起動時の名指しツール自動移行を撤回（P2 として DEFERRED に残置）。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled、後続）がレビュー指摘 H1/M1/M2/L2/L3 と当日の実機発見（出力言語・スキル再利用・通知承認の無言失敗・時刻経過後の確認・下書きへの JSON-RPC ログ混入）および既存エージェントの名指しツール移行・差し替え明示を修正。下記 2 エントリ参照（すべて実機未検証）。
@@ -1376,6 +1377,8 @@
 - ✅ **再レビュー M-C** `3d1d2fbfb`: 言語指示に「タスクが別の出力言語を明示している場合はタスクに従う」を追加。英語判定は ASCII 文字のみ（アクセント付きラテン文字・他の文字体系は「タスクと同じ言語」指示）。スマートクォート等の記号は判定に影響しない。
 - ✅ **再レビュー Low** `b4361db68` / `6b494622c`: `is_transport_log_file` を構造＋比率判定に変更（JSON 行 3 以上・非空行の 60% 以上・その半数以上が transport/audit キー）。古い通知の「却下」には承認用ではない専用文言を表示。
 - ✅ **P1（単発実行の露出拡大）— 決定に従い修正**（コミットは本エントリと同じ）: 通知トリガー付きエージェントにはリサーチ意図による同意拡張を適用しない（通知本文は攻撃者が制御しうる入力）。従来ルール（route の needsWeb のみ）に戻し、満たさなければ既存の REFUSED メッセージで停止（`consentSignalsFor`、.sh / ラダー / PlanSpec / 確認時の解決 / 表示で共通）。通知トリガー無しでリサーチ意図の拡張だけで同意が成立した自律単発実行は、言語指示＋タスク文のみを送り、NOTIFICATION_CONTEXT と記憶・スキル文脈を除外、端末状態はタスク文自体が求める場合のみ。Web 必須（needsWeb）の単発実行と attended 実行は従来どおり。
+- ✅ **最終レビュー H1/H2/L1/L2** `62f4db274`: (H1) 隔離リサーチ単発実行で Obsidian/content-studio/drafts 出力の場合に SOURCE_CONTEXT（AI_CONTEXT.md・最近の Vault/下書き本文・git status・ソース登録）が送られていた → ISOLATE_RESEARCH_PROMPT=1 で SOURCE_CONTEXT を空に（保存先は不変）。(H2) agent-level ツールが Perplexity のチェーンで、ツール指定の無いステップが記憶・前ステップ結果付きで Perplexity に送られていた → PlanSpec の isolation をステップの実効ツール（executor の effectiveStepTool と同じ）で判定し、リサーチ意図のみで同意が成立した場合は plan.prompt をタスク文だけで構築（単発の PlanSpec 強制経路も含む）。executor JS は無変更。(L1) ステップ指定にも consentSignalsFor を適用（通知トリガー付きはステップ単位でもリサーチ拡張なし）。(L2) 同意判定は記憶・スキル文脈を除いたタスク文で行う（.sh / PlanSpec / ラダー）。attended のステップ単位実行は隔離単発扱いにしない。
+- **最終レビュー L3/L4**: レビュー判断により DEFERRED 記録のみ（コード変更なし）。指摘本文はレビュー記録を参照。
 - 実機検証未実施: 「毎朝8時にパープレで最新のLLM論文をリサーチして要約して」を登録 → `~/.shelly/agents/<id>.json` の `tool.type` が `perplexity`、スケジュール発火のログ `toolUsed` が Perplexity API であることを確認する。codex チェーン（「パープレで集めて、Codexでまとめて保存して」）のスケジュール発火で Perplexity ステップが成功することも確認する。
 
 ### ✅ 2026-10-15 実機発見の後続修正（CC、ブランチ `fix/agent-named-tool-scheduled`）— 実機未検証
