@@ -1064,6 +1064,13 @@ export interface Agent {
    *  creation after a user-gated "use skill X?" confirm. Its recipe is injected
    *  into the run prompt and its success-count bumps on a successful run. */
   skillId?: string;
+  /** Review M-B (2026-10-15): fingerprint of the reused skill's executable
+   *  plan AS SHOWN at registration (lib/agent-skills.ts skillPlanFingerprint);
+   *  null = the skill had no executable plan then. applyExecutableSkillPlan
+   *  applies a plan only when the recipe's CURRENT fingerprint still matches,
+   *  so a recipe that gained / changed a plan after approval can never swap
+   *  this agent's steps. Absent = registered before this field (legacy). */
+  skillPlanFingerprint?: string | null;
   /** Phase 4: multi-step orchestration. Absent/<2 steps = single-run. Each step
    *  runs through the SAME gated single-run path, so chaining adds no privilege. */
   orchestration?: AgentOrchestrationConfig;

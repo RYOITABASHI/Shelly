@@ -724,6 +724,7 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     autonomous: draft.autonomous ?? false,
     memory: draft.memory,
     skillId: draft.matchedSkill?.id,
+    skillPlanFingerprint: draft.matchedSkill ? (draft.matchedSkill.planFingerprint ?? null) : undefined,
     orchestrationSteps: draft.orchestrationSteps,
     notificationTrigger: draft.notificationTrigger ?? null,
     startNotBefore: draft.startNotBefore ?? null,

@@ -64,6 +64,9 @@ export interface ConfirmedAgentDraft {
   memory?: AgentMemoryConfig;
   /** Phase 2a: id of a reused skill recipe the user kept on in the card. */
   skillId?: string;
+  /** Review M-B: fingerprint of that skill's executable plan as shown (null =
+   *  prompt-only) — persisted so a later recipe change can't swap steps. */
+  skillPlanFingerprint?: string | null;
   /** Phase 4/6: ordered step instructions for a multi-step (orchestrated) agent.
    *  Each entry is either a plain string (auto-routed) or a { instruction, tool }
    *  object pinning a concrete tool for that step (Phase 6). */
@@ -517,6 +520,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       memory: draft.memory,
       // Phase 2a: attach the reused skill only when the user kept it on.
       skillId: useSkill ? draft.matchedSkill?.id : undefined,
+      skillPlanFingerprint: useSkill && draft.matchedSkill ? (draft.matchedSkill.planFingerprint ?? null) : undefined,
       // Phase 4: carry the (possibly locally-edited, Track D api-call v1)
       // multi-step instructions through to createAgent.
       orchestrationSteps,

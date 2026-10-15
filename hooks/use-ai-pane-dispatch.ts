@@ -85,7 +85,7 @@ import {
 import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
-import { matchSkillRecipesHybrid, readSkillRecipes, skillDiffersMaterially, skillHasExecutablePlan } from '@/lib/agent-skills';
+import { matchSkillRecipesHybrid, readSkillRecipes, skillDiffersMaterially, skillHasExecutablePlan, skillPlanFingerprint } from '@/lib/agent-skills';
 import { LlamaEmbeddingPort, llamaEmbeddingEndpointFromBaseUrl } from '@/lib/memory/embedding-llama';
 import { MEMORY_EMBEDDING_ENABLED } from '@/lib/memory/wiring';
 import {
@@ -2721,6 +2721,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                   name: matched.name,
                   successCount: matched.successCount,
                   executablePlan: skillHasExecutablePlan(matched),
+                  planFingerprint: skillPlanFingerprint(matched),
                 };
               }
             } catch {
@@ -4176,6 +4177,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           autonomous: confirmed.autonomous || undefined,
           memory: confirmed.memory,
           skillId: confirmed.skillId,
+          ...(confirmed.skillId ? { skillPlanFingerprint: confirmed.skillPlanFingerprint ?? null } : {}),
           // Phase 4: a multi-step utterance becomes an orchestrated agent.
           orchestration:
             confirmed.orchestrationSteps && confirmed.orchestrationSteps.length >= 2

@@ -14,6 +14,7 @@ import {
   buildSkillInjectionContext,
   skillDiffersMaterially,
   skillHasExecutablePlan,
+  skillPlanFingerprint,
   uncoveredRequestInstructions,
   type SkillRecipe,
 } from '@/lib/agent-skills';
@@ -70,6 +71,37 @@ describe('uncovered instructions are carried, never dropped', () => {
     expect(steps[0].instruction).toBe('collect papers');
     expect(steps[1].instruction).toContain('pick 3 and summarize');
     expect(steps[1].instruction).toContain('Write the summaries in English');
+  });
+});
+
+describe('review M-B: the plan approved at registration is the only plan that runs', () => {
+  const executable = {
+    ...recipe,
+    planSpec: {
+      steps: { list: [{ instruction: 'collect papers' }, { instruction: 'pick 3' }], budget: { maxSteps: 2, totalTimeoutMs: 60_000 } },
+      tool: { type: 'perplexity', model: 'sonar' },
+      limits: {},
+    },
+  } as unknown as SkillRecipe;
+  const base = { id: 'a', name: 'a', prompt: 'collect the latest AI research papers', tool: { type: 'auto' } } as unknown as Agent;
+
+  it('registered against a prompt-only recipe (null) → a plan added later is NOT applied', () => {
+    const out = applyExecutableSkillPlan({ ...base, skillPlanFingerprint: null }, executable);
+    expect(out.orchestration).toBeUndefined();
+  });
+
+  it('registered against this exact plan → applied; changed plan → not applied', () => {
+    const fp = skillPlanFingerprint(executable);
+    expect(fp).toMatch(/^[0-9a-f]{16}$/);
+    expect(applyExecutableSkillPlan({ ...base, skillPlanFingerprint: fp }, executable).orchestration).toBeDefined();
+    const changed = { ...executable, planSpec: { ...executable.planSpec!, tool: { type: 'gemini-api' } } } as unknown as SkillRecipe;
+    expect(skillPlanFingerprint(changed)).not.toBe(fp);
+    expect(applyExecutableSkillPlan({ ...base, skillPlanFingerprint: fp }, changed).orchestration).toBeUndefined();
+  });
+
+  it('legacy agents without the field keep the previous behaviour', () => {
+    expect(applyExecutableSkillPlan(base, executable).orchestration).toBeDefined();
+    expect(skillPlanFingerprint(recipe)).toBeNull();
   });
 });
 

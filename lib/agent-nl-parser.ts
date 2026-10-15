@@ -85,7 +85,7 @@ export interface ParsedAgentDraft {
   /** `executablePlan`: reusing the skill replaces the agent's steps with the
    *  recipe's stored plan (lib/agent-skills.ts skillHasExecutablePlan) — the
    *  only kind of reuse that keeps a `shelly agent add` draft in-app-only. */
-  matchedSkill?: { id: string; name: string; successCount: number; executablePlan?: boolean };
+  matchedSkill?: { id: string; name: string; successCount: number; executablePlan?: boolean; planFingerprint?: string | null };
   /** Phase 4: ordered step instructions when the utterance is multi-step
    *  ("まず…次に…最後に" / numbered), OR (Phase 6) a plain て-form/comma-delimited
    *  chain naming a tool per clause ("パープレで集めて、ローカルLLMで要約して…") —

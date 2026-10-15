@@ -723,6 +723,10 @@ describe('draftToConfirmedAgentDraft', () => {
       autonomous: false,
       memory: draft.memory,
       skillId: 'skill-1',
+      // Review M-B: the matched skill's plan fingerprint as shown (null =
+      // prompt-only recipe) rides along so a later recipe change can't swap
+      // the registered agent's steps.
+      skillPlanFingerprint: null,
       orchestrationSteps: draft.orchestrationSteps,
       notificationTrigger: null,
       startNotBefore: null,

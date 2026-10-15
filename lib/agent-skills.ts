@@ -656,6 +656,22 @@ export function skillDiffersMaterially(recipe: Pick<SkillRecipe, 'prompt' | 'tri
   return uncoveredRequestInstructions(recipe, requestText).length * 2 > sentences.length;
 }
 
+/** Stable fingerprint of a recipe's executable plan (steps + provider +
+ *  budgets), or null when it has none. Review M-B. */
+export function skillPlanFingerprint(recipe: Pick<SkillRecipe, 'planSpec'> | null | undefined): string | null {
+  const spec = recipe?.planSpec;
+  if (!spec?.steps || spec.steps.list.length < 2) return null;
+  const text = JSON.stringify({ steps: spec.steps, tool: spec.tool, limits: spec.limits ?? null });
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + c, 0x5bd1e995) >>> 0;
+  }
+  return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+}
+
 /** True when reusing this recipe replaces the agent's steps (executable plan). */
 export function skillHasExecutablePlan(recipe: Pick<SkillRecipe, 'planSpec'> | null | undefined): boolean {
   return !!recipe?.planSpec?.steps && recipe.planSpec.steps.list.length >= 2;
@@ -752,6 +768,12 @@ function planToolChoice(spec: AgentPlanSpecV1): ToolChoice | null {
 export function applyExecutableSkillPlan(agent: Agent, recipe: SkillRecipe | null): Agent {
   const spec = recipe?.planSpec;
   if (!spec?.steps || spec.steps.list.length < 2) return agent;
+  // Review M-B (TOCTOU): only the plan the user approved at registration may
+  // run. An agent registered against a prompt-only recipe (null) or a
+  // different plan never gets this recipe's current steps swapped in.
+  if (agent.skillPlanFingerprint !== undefined && agent.skillPlanFingerprint !== skillPlanFingerprint(recipe)) {
+    return agent;
+  }
   const tool = planToolChoice(spec);
   // Follow-up item 5: instructions only the NEW request carries (e.g. "Write
   // the summaries in English.") are appended to the final step — the step

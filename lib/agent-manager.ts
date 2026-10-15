@@ -454,6 +454,7 @@ export function createAgent(params: {
   runOn?: Agent['runOn'];
   memory?: Agent['memory'];
   skillId?: Agent['skillId'];
+  skillPlanFingerprint?: Agent['skillPlanFingerprint'];
   orchestration?: Agent['orchestration'];
   startNotBefore?: Agent['startNotBefore'];
 }): Agent {
@@ -483,6 +484,7 @@ export function createAgent(params: {
     runOn: params.runOn,
     memory: params.memory,
     skillId: params.skillId,
+    ...(params.skillId && params.skillPlanFingerprint !== undefined ? { skillPlanFingerprint: params.skillPlanFingerprint } : {}),
     orchestration: params.orchestration,
     startNotBefore: params.startNotBefore ?? null,
     enabled: true,
