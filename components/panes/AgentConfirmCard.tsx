@@ -24,6 +24,7 @@ import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { AgentAction, AgentActionType, AgentApiCallConfig, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, ToolChoice } from '@/store/types';
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
+import { credentialClass } from '@/lib/agent-credential-policy';
 import { computeAgentSlug, resolveAgentOutputPathPreview } from '@/lib/agent-executor';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { decodeCron, buildCron, resolveInitialFrequency, scheduleHuman, WEEKDAY_LABELS, type Frequency } from '@/lib/agent-card-cron';
@@ -995,6 +996,16 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       {draft.toolExplicit && (!autonomous || autonomousTool.type === draft.tool.type) && (
         <Text style={[styles.warn, { color: colors.muted }]}>
           {t('agentcard.tool_pinned', { tool: toolChoiceToLabel(draft.tool) })}
+        </Text>
+      )}
+      {/* Follow-up item 2: a NAMED cloud backend that an autonomous
+          agent will NOT use (stored as Codex) is disclosed, with the reason. */}
+      {autonomous && draft.toolExplicit && credentialClass(draft.tool) === 'api-key' && autonomousTool.type !== draft.tool.type && (
+        <Text style={[styles.warn, { color: colors.warning }]}>
+          {t(cloudConsent ? 'agentplan.tool_substituted_scope' : 'agentplan.tool_substituted_no_consent', {
+            from: toolChoiceToLabel(draft.tool),
+            to: toolChoiceToLabel(autonomousTool),
+          })}
         </Text>
       )}
 

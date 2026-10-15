@@ -43,6 +43,32 @@ describe('pinned engine is shown (review L2)', () => {
     expect(s.toolNote).toBeNull();
   });
 
+  it('follow-up item 2: an autonomous named Perplexity without consent discloses the Codex substitution (ja/en, chat + summary file)', () => {
+    const ja = { ...parseAgentNL('毎朝8時にパープレで量子計算について調べて'), autonomous: true };
+    const jaText = summarizeAgentDraftAsText(ja, undefined, false, { cloudConsent: false });
+    expect(jaText).toContain('Perplexity API');
+    expect(jaText).toContain('Codex CLI');
+    expect(jaText).toContain('自律クラウド同意が OFF');
+    const en = { ...parseAgentNL('Every day at 9am research quantum computing with Perplexity'), autonomous: true };
+    const enText = summarizeAgentDraftAsText(en, undefined, false, { cloudConsent: false });
+    expect(enText).toContain('will run on Codex CLI instead');
+    expect(enText).toContain('Autonomous Cloud consent is off');
+    const d = describeDraftTool(ja, false);
+    expect(d.substitution).toEqual({ from: 'Perplexity API (sonar-deep-research)', to: 'Codex CLI', reason: 'no-consent' });
+  });
+
+  it('with consent but a non-research task the reason is the consent scope', () => {
+    const d = describeDraftTool({ ...parseAgentNL('毎朝8時にパープレでこの文章を要約して'), autonomous: true }, true);
+    expect(d.substitution?.reason).toBe('scope');
+  });
+
+  it('no substitution note with consent on a research task, nor for a merely suggested (unnamed) backend', () => {
+    expect(describeDraftTool({ ...parseAgentNL('毎朝8時にパープレで量子計算について調べて'), autonomous: true }, true).substitution).toBeUndefined();
+    const unnamed = { ...parseAgentNL('毎日9時に今日の予定を整理して'), autonomous: true };
+    expect(describeDraftTool(unnamed, false).substitution).toBeUndefined();
+    expect(summarizeAgentDraftAsText(unnamed, undefined, false, { cloudConsent: false })).not.toContain('Autonomous Cloud');
+  });
+
   it('defaults to Auto when the caller passes no engine', () => {
     const d = parseAgentNL('毎日9時に今日のニュースをまとめて通知して');
     const s = buildAgentAddSummary(binding, d, '毎日 9:00');

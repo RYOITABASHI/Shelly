@@ -44,7 +44,7 @@ import type { Agent, ChatMessage } from '@/store/types';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { tFor, type Locale } from '@/lib/i18n';
 import { detectMessageLocale } from '@/lib/agent-slot-fill';
-import { humanizeCronSchedule } from '@/lib/agent-plan-summary';
+import { humanizeCronSchedule, toolSubstitutionKey } from '@/lib/agent-plan-summary';
 import { describeDraftTool } from '@/lib/agent-tool-router';
 import { execCommand } from '@/hooks/use-native-exec';
 import { setAgentEnabled } from '@/lib/agent-manager';
@@ -159,9 +159,12 @@ function liveCloudConsent(): boolean {
 }
 
 /** Engine disclosure for the `shelly agent add` summary (review L2). */
-function toolSummary(draft: ParsedAgentDraft, _locale: Locale): { label: string; pinned: boolean; note: string | null } {
+function toolSummary(draft: ParsedAgentDraft, locale: Locale): { label: string; pinned: boolean; note: string | null } {
   const d = describeDraftTool(draft, liveCloudConsent());
-  return { label: d.label, pinned: d.pinned, note: null };
+  const note = d.substitution
+    ? tFor(locale, toolSubstitutionKey(d.substitution.reason), { from: d.substitution.from, to: d.substitution.to })
+    : null;
+  return { label: d.label, pinned: d.pinned, note };
 }
 
 function riskLabel(reason: string, locale: Locale): string {
@@ -261,6 +264,8 @@ export async function onTerminalDraftPresented(params: {
       }),
     ];
     if (closePaw) body.push(tFor(locale, 'agents.terminal_request_closepaw_line', { step: closePaw.slice(0, 200) }));
+    const engineNote = toolSummary(params.draft, locale).note;
+    if (engineNote) body.push(engineNote);
     if (risks.length > 0) body.push(tFor(locale, 'agents.terminal_request_notif_risky', { reasons: risks.join(', ') }));
     body.push(tFor(locale, 'agents.terminal_request_notif_hash', { hash: hash8 }));
     await TerminalEmulator.postAgentAddApprovalNotification?.(

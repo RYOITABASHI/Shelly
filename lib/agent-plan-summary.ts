@@ -426,6 +426,11 @@ function markLine(line: string, field: string, changedFields: ReadonlySet<string
  *   full summaries by eye. Optional; the default (empty set) reproduces the
  *   exact pre-Phase-C output for every existing call site.
  */
+/** i18n key for a DraftToolDisclosure substitution reason. */
+export function toolSubstitutionKey(reason: 'no-consent' | 'scope'): string {
+  return reason === 'no-consent' ? 'agentplan.tool_substituted_no_consent' : 'agentplan.tool_substituted_scope';
+}
+
 export function summarizeAgentDraftAsText(
   draft: ParsedAgentDraft,
   changedFields: ReadonlySet<string> = new Set(),
@@ -535,6 +540,15 @@ export function summarizeAgentDraftAsText(
   const toolDisclosure = describeDraftTool(draft, opts.cloudConsent === true);
   if (toolDisclosure.pinned && !toolDisclosure.substitution && (opts.cloudConsent !== undefined || !draft.autonomous)) {
     lines.push(tl('agentplan.summary_tool_pinned', { tool: toolDisclosure.label }));
+  }
+  // Follow-up item 2 (2026-10-15): never swap a named / suggested cloud
+  // backend for Codex silently — say so, and why (consent off vs. outside the
+  // consent's web/research scope). Only when the live consent is known.
+  if (toolDisclosure.substitution && opts.cloudConsent !== undefined) {
+    lines.push(tl(toolSubstitutionKey(toolDisclosure.substitution.reason), {
+      from: toolDisclosure.substitution.from,
+      to: toolDisclosure.substitution.to,
+    }));
   }
 
   if (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2) {

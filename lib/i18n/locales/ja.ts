@@ -604,6 +604,8 @@ const ja: Record<string, string> = {
   // 常に返すため)。将来のリファクタでfallback参照される場合に備え念のため用意。
   'agentplan.action_label_browser-pane': 'ブラウザで操作',
   'agentplan.summary_tool_pinned': 'エンジン: {{tool}}（リクエストで指定）',
+  'agentplan.tool_substituted_no_consent': '注意: {{from}} を指定しましたが、この自律エージェントは {{to}} で実行されます — 自律クラウド同意が OFF のため、無人実行では API キー型バックエンドを使いません。{{from}} を使うには設定（自律エージェント）で同意を ON にしてください。',
+  'agentplan.tool_substituted_scope': '注意: {{from}} を指定しましたが、この自律エージェントは {{to}} で実行されます — 自律クラウド同意が {{from}} を許可するのは Web/リサーチ系タスク（ニュース・論文・「〜を調べて」など）だけです。',
   'agentplan.autonomous_note': '自律実行（実行のたびに人の承認は挟まれません）',
   'agentplan.memory_note': '実行後に記憶: {{fact}}',
   'agentplan.skill_note': '既存スキル「{{name}}」を再利用します（成功実績 {{count}}回）',

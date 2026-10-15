@@ -616,6 +616,8 @@ const en: Record<string, string> = {
   // this fallback doesn't silently render the raw i18n key string.
   'agentplan.action_label_browser-pane': 'act in the browser',
   'agentplan.summary_tool_pinned': 'Engine: {{tool}} (named in your request)',
+  'agentplan.tool_substituted_no_consent': 'Note: you named {{from}}, but this autonomous agent will run on {{to}} instead — Autonomous Cloud consent is off, so API-key backends are not used unattended. Turn it on in Settings (Autonomous agents) to keep {{from}}.',
+  'agentplan.tool_substituted_scope': 'Note: you named {{from}}, but this autonomous agent will run on {{to}} instead — Autonomous Cloud consent covers {{from}} only for web/research tasks (news, papers, "research …").',
   'agentplan.autonomous_note': 'Runs autonomously (no per-run human approval).',
   'agentplan.memory_note': 'Will remember after running: {{fact}}',
   'agentplan.skill_note': 'Reuses the existing skill "{{name}}" ({{count}} prior successes).',

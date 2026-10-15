@@ -476,7 +476,7 @@ export function resolveConfirmedToolAndRunOn(opts: {
  * - `label`: the stored engine's label (`Auto` for a keyword-routed,
  *   non-autonomous RUN ON=Auto draft, which re-scores each run).
  * - `pinned`: the user named the tool (draft.toolExplicit).
- * - `substitution`: an autonomous draft whose named / suggested API-key backend
+ * - `substitution`: an autonomous draft whose NAMED API-key backend
  *   (Perplexity, Gemini, …) will NOT be kept and is stored as the Codex driver
  *   instead — with the reason — so the user is never surprised by a silent
  *   provider swap. `reason` is 'no-consent' (Autonomous Cloud consent is off)
@@ -542,6 +542,7 @@ export function describeDraftTool(
   };
   if (
     draft.autonomous === true &&
+    draft.toolExplicit === true &&
     credentialClass(draft.tool) === 'api-key' &&
     storedTool.type !== draft.tool.type
   ) {
