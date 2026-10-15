@@ -6,6 +6,51 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.1.0] - 2026-10-15
+
+### Added
+
+- **Drive your phone from ChatGPT.** `shelly codex pair [--background]`
+  hosts Codex remote control so the ChatGPT app can run commands in
+  Shelly (Experimental; trust prompt, host name, pairing-code expiry,
+  background host).
+- **ClosePaw hand-off.** `shelly closepaw "<goal>"` hands a phone task to
+  ClosePaw. With the Shelly-trusted ClosePaw build (signature-pinned to
+  Shelly) it runs on a background virtual display without opening
+  ClosePaw. Every hand-off needs one approval on the phone (notification
+  with device unlock, or `approve <hash8>` in Shelly chat); ChatGPT/the
+  terminal can never approve it.
+- **Results come back.** `shelly closepaw --wait "<goal>"` and
+  `shelly closepaw wait <reqId>` block until the user approves and
+  ClosePaw finishes, then print ClosePaw's result (signature-, sender- and
+  nonce-checked; result text is treated as data).
+- **Register agents from ChatGPT.** `shelly agent add "<request>"` drafts
+  an agent from natural language; confirm once in Shelly, from the
+  notification, or (for low-risk drafts) from ChatGPT with
+  `shelly agent confirm <id> <hash8>`. A single approval can also cover
+  the agent's ClosePaw steps.
+- **Named tools stick.** "パープレで…" / "with Perplexity" pins that tool
+  for single-clause agents and on scheduled runs, within the existing
+  autonomous-cloud consent rules.
+- **Encrypted backup & restore** (`.shellybak`, AES-256-GCM + scrypt) in
+  Settings.
+
+### Changed
+
+- **Release signing.** Release APKs are now signed with a private key via
+  APK Signature Scheme v3 rotation from the old debug key; Android 9+
+  updates in place and keeps app data. See README → Signing-key rotation.
+- Approving a ClosePaw hand-off from the notification no longer brings
+  Shelly to the foreground (split screen stays intact).
+- English agent requests now produce English output regardless of
+  profile/memory language.
+
+### Fixed
+
+- Bundled Python env exported for child scripts (Codex `python3`).
+- `shelly` works outside the bash function via a native PATH shim.
+- See the commit log for the full list of agent and ClosePaw fixes.
+
 ## [8.0.2] - 2026-10-13
 
 ### Added
