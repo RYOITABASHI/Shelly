@@ -23,15 +23,20 @@ All notable changes to Shelly are documented here. Format loosely follows
 - **Results come back.** `shelly closepaw --wait "<goal>"` and
   `shelly closepaw wait <reqId>` block until the user approves and
   ClosePaw finishes, then print ClosePaw's result (signature-, sender- and
-  nonce-checked; result text is treated as data).
+  nonce-checked; result text is treated as data). Results return only when
+  the Shelly-trusted ClosePaw build runs the task in the background;
+  otherwise `--wait` exits 3 (hand-off only, no result).
 - **Register agents from ChatGPT.** `shelly agent add "<request>"` drafts
   an agent from natural language; confirm once in Shelly, from the
   notification, or (for low-risk drafts) from ChatGPT with
   `shelly agent confirm <id> <hash8>`. A single approval can also cover
   the agent's ClosePaw steps.
 - **Named tools stick.** "パープレで…" / "with Perplexity" pins that tool
-  for single-clause agents and on scheduled runs, within the existing
-  autonomous-cloud consent rules.
+  for single-clause agents and on scheduled runs. Autonomous-cloud consent
+  now also covers Perplexity for research/collect-intent tasks (not only
+  web-mandatory ones); such runs send an isolated prompt (the task text
+  only — no memory, notifications or local context). Notification-triggered
+  agents are excluded from this extension.
 - **Encrypted backup & restore** (`.shellybak`, AES-256-GCM + scrypt) in
   Settings.
 
@@ -42,8 +47,8 @@ All notable changes to Shelly are documented here. Format loosely follows
   updates in place and keeps app data. See README → Signing-key rotation.
 - Approving a ClosePaw hand-off from the notification no longer brings
   Shelly to the foreground (split screen stays intact).
-- English agent requests now produce English output regardless of
-  profile/memory language.
+- Agent output now follows the task's own language (or the output language
+  the task explicitly asks for), regardless of profile/memory language.
 
 ### Fixed
 
