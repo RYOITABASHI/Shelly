@@ -3619,10 +3619,34 @@ resolve_saved_path() {
   esac
 }
 
+# Follow-up item 8 (2026-10-15, on-device): an Obsidian draft
+# (50_Drafts/Substack/…-codex-article-draft.md) contained the Codex driver's raw
+# JSON-RPC / audit log instead of an article — the A/B article path copied the
+# driver's stdout/stderr into its "answer" when no answer was produced. A draft
+# must never be a transport log: returns 0 when the file is one (two or more
+# JSON-RPC lines, or JSON-object lines carrying transport/audit keys making up
+# at least half of its non-empty lines).
+is_transport_log_file() {
+  tl_file="$1"
+  [ -s "$tl_file" ] || return 1
+  tl_jsonrpc=$(grep -c '"jsonrpc"[[:space:]]*:' "$tl_file" 2>/dev/null || true)
+  [ "\${tl_jsonrpc:-0}" -ge 2 ] && return 0
+  tl_total=$(grep -cv '^[[:space:]]*$' "$tl_file" 2>/dev/null || true)
+  [ "\${tl_total:-0}" -gt 0 ] || return 1
+  tl_rpc=$(grep -cE '^[[:space:]]*\\{.*"(jsonrpc|method|threadId|turnId|callId|requestId|direction|event|params)"[[:space:]]*:' "$tl_file" 2>/dev/null || true)
+  [ "\${tl_rpc:-0}" -ge 3 ] && [ $((tl_rpc * 2)) -ge "$tl_total" ]
+}
+
+TRANSPORT_LOG_DRAFT_ERROR="Refused to save the draft: the backend returned a raw agent transport/audit log (JSON-RPC), not content. No answer was produced; check the run log and retry."
+
 save_draft_result() {
   result_file="$1"
   SAVED_PATH=""
   SAVED_PATH_MIRROR=""
+  if is_transport_log_file "$result_file"; then
+    echo "[shelly] $TRANSPORT_LOG_DRAFT_ERROR" >&2
+    return 1
+  fi
   DATE=$(date +%Y-%m-%d)
   TIME=$(date +%H%M%S)
 
@@ -3730,6 +3754,13 @@ dispatch_agent_action() {
       return 0
       ;;
     ""|draft)
+      if is_transport_log_file "$result_file"; then
+        ACTION_DISPATCH_STATUS="error"
+        ACTION_DISPATCH_MESSAGE="$TRANSPORT_LOG_DRAFT_ERROR"
+        touch "$BACKEND_ERROR_FILE" 2>/dev/null || true
+        write_native_notification_request "error" "$ACTION_DISPATCH_MESSAGE" || true
+        return 1
+      fi
       if is_low_quality_completion "$preview"; then
         ACTION_DISPATCH_STATUS="error"
         ACTION_DISPATCH_MESSAGE="Draft content looks like a prompt echo or AI refusal, not real content — escalating."
@@ -7167,8 +7198,12 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   CODEX_EXIT=$?
   mirror_driver_audit_to_app_private || true
   mirror_driver_audit_to_sdcard || true
+  # Follow-up item 8: never promote the driver's stdout/stderr (its JSON-RPC
+  # transport / audit log) to the article — that is how a raw log ended up as
+  # an Obsidian Substack draft. State the failure instead; the log stays in
+  # codex.stderr.log for debugging.
   if [ ! -s "$RUN_DIR/codex.md" ]; then
-    cp "$RUN_DIR/codex.stderr.log" "$RUN_DIR/codex.md" 2>/dev/null || echo "Codex driver produced no answer (exit $CODEX_EXIT)" > "$RUN_DIR/codex.md"
+    echo "Codex driver produced no answer (exit $CODEX_EXIT). Driver log: $RUN_DIR/codex.stderr.log" > "$RUN_DIR/codex.md"
   fi
 else
   echo 'Shelly agent driver or bundled node is unavailable. Update Shelly runtime, then retry.' > "$RUN_DIR/codex.md"
