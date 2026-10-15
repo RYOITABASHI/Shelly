@@ -39,6 +39,7 @@ export function AgentSuggestionCard() {
   const agents = useAgentStore((s) => s.agents);
   const settingsLoaded = useSettingsStore((s) => s.isSettingsLoaded);
   const profileLearningEnabled = useSettingsStore((s) => s.settings.profileLearningEnabled ?? true);
+  const cloudConsent = useSettingsStore((s) => s.settings.autonomousCloudConsent ?? false);
   const [suggestion, setSuggestion] = useState<AgentSuggestion | null>(null);
 
   useEffect(() => {
@@ -96,7 +97,7 @@ export function AgentSuggestionCard() {
     store.addMessage(paneId, {
       id: messageId,
       role: 'assistant',
-      content: summarizeAgentDraftAsText(suggestion.draft, undefined, false, { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false }),
+      content: summarizeAgentDraftAsText(suggestion.draft, undefined, false, { cloudConsent }),
       timestamp: now,
       agent: undefined,
       agentDraft: suggestion.draft,
@@ -120,7 +121,7 @@ export function AgentSuggestionCard() {
     // shouldShowSuggestion already keeps it from reappearing immediately
     // while the chat confirm is still pending.
     setSuggestion(null);
-  }, [suggestion]);
+  }, [suggestion, cloudConsent]);
 
   if (!suggestion) return null;
 
