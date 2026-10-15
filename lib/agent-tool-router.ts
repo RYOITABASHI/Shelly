@@ -483,6 +483,37 @@ export function resolveConfirmedToolAndRunOn(opts: {
  *   or 'scope' (consent is on but covers that backend only for web/research
  *   tasks).
  */
+/**
+ * One-time-style migration for agents registered BEFORE the 2026-10-15
+ * named-tool fix: such an agent whose own prompt names the tool to use
+ * (「パープレで…」) was stored with `tool:'auto'` (non-autonomous RUN ON=Auto)
+ * or the Codex driver (autonomous), so the named tool never ran. Returns the
+ * tool to pin, or null when nothing should change. Pure and idempotent: once
+ * pinned, the agent no longer matches the `auto` / Codex precondition, so a
+ * second pass is a no-op. Consent rules are the confirm boundary's own
+ * (resolveAutonomousFinalTool), so an autonomous agent is only moved off Codex
+ * when its Autonomous Cloud consent actually covers the named backend.
+ * Skipped: multi-step chains (they pin per step), a manual RUN ON pin, and
+ * comparison / topic-only mentions (suggestToolForDraft's own rules).
+ */
+export function migrateAgentToolPin(agent: Agent, cloudConsent: boolean): { tool: ToolChoice; from: string; to: string } | null {
+  if ((agent.orchestration?.steps?.length ?? 0) >= 2) return null;
+  if (agent.runOn && agent.runOn !== 'auto') return null;
+  const suggestion = suggestToolForDraft(agent.prompt ?? '');
+  if (!suggestion.explicit) return null;
+  let target: ToolChoice;
+  if (!agent.autonomous) {
+    if (agent.tool.type !== 'auto') return null;
+    target = suggestion.tool;
+  } else {
+    if (agent.tool.type !== 'cli') return null;
+    const sig = detectRouteSignals(agent.prompt ?? '');
+    target = resolveAutonomousFinalTool(true, suggestion.tool, cloudConsent, sig.needsWeb, sig.needsSearch || sig.collects === true);
+  }
+  if (target.type === agent.tool.type) return null;
+  return { tool: target, from: toolChoiceToLabel(agent.tool), to: toolChoiceToLabel(target) };
+}
+
 export interface DraftToolDisclosure {
   storedTool: ToolChoice;
   label: string;

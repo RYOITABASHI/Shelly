@@ -5,7 +5,7 @@
 import { useAgentStore } from '@/store/agent-store';
 import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { pickFinalStepOutput, type AgentRunOutputFields } from '@/lib/agent-run-output';
-import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { migrateAgentToolPin, suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
 import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { resolveForAutonomous } from './agent-credential-policy';
@@ -3393,13 +3393,36 @@ function scheduleAgentStartupRepair(
             pendingMissedNotify = expectedAt;
           }
         }
+        // 2026-10-15 named-tool migration (lib/agent-tool-router.ts
+        // migrateAgentToolPin): an agent registered before the fix whose prompt
+        // names its tool (「パープレで…」) was stored as `auto` / Codex. Pin it now,
+        // under the same consent rules as a fresh confirm, before the
+        // re-materialize below rewrites its script + PlanSpec. Idempotent (a
+        // pinned agent no longer matches) and always logged.
+        let agentToMaterialize = storeAgent;
+        try {
+          // Read consent from disk only when it can change the outcome (an
+          // autonomous agent that WOULD migrate with consent) — no extra I/O
+          // on the common path.
+          const candidate = migrateAgentToolPin(storeAgent, true);
+          const migration = candidate && storeAgent.autonomous
+            ? migrateAgentToolPin(storeAgent, (await ladderEnvFromDisk(runCommand)).autonomousCloudConsent === true)
+            : candidate;
+          if (migration) {
+            useAgentStore.getState().updateAgent(agent.id, { tool: migration.tool });
+            agentToMaterialize = { ...storeAgent, tool: migration.tool };
+            logInfo('AgentManager', `named-tool migration ${agent.id}: ${migration.from} → ${migration.to} (tool named in the agent prompt)`);
+          }
+        } catch (error) {
+          logWarn('AgentManager', `named-tool migration skipped for ${agent.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
         let repaired = false;
         try {
           // Re-arm regardless of whether a miss was just detected — this IS the
           // repair: every enabled scheduled agent gets a fresh native alarm for
           // its next legitimate occurrence on every app launch, independent of
           // whatever state AlarmManager silently ended up in.
-          await materializeAgent(storeAgent, runCommand, true, false);
+          await materializeAgent(agentToMaterialize, runCommand, true, false);
           repaired = true;
           await new Promise((resolve) => setTimeout(resolve, 250));
         } catch (error) {
