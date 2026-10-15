@@ -2,7 +2,7 @@ import type { Agent, AgentApiCallConfig, AgentRouteDecision, AgentSocialPostConf
 import { getHomePath } from '@/lib/home-path';
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { detectRouteSignals } from './agent-router-scoring';
-import { autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
+import { autonomousPinRefusalReason, autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import {
   agentUsesStudioContext,
@@ -235,7 +235,7 @@ export function buildAgentPlanSpec(
   // 2026-10-15: shared predicate (a Perplexity tool counts as web on its own —
   // see autonomousWebConsentCovers) so this matches generateRunScript and the
   // escalation ladder exactly.
-  const consentWebTool = autonomousWebConsentCovers(tool, promptSignals.needsWeb, opts.autonomousCloudConsent);
+  const consentWebTool = autonomousWebConsentCovers(tool, promptSignals, opts.autonomousCloudConsent);
 
   if (agent.autonomous) {
     if (!consentWebTool) {
@@ -243,7 +243,9 @@ export function buildAgentPlanSpec(
       if (resolved) {
         tool = resolved;
       } else {
-        unsupportedToolReason = `autonomous mode does not allow ${tool.type}`;
+        unsupportedToolReason = tool.type === 'perplexity' || tool.type === 'gemini-api'
+          ? autonomousPinRefusalReason(tool, opts.autonomousCloudConsent)
+          : `autonomous mode does not allow ${tool.type}`;
       }
     }
   }
@@ -318,18 +320,21 @@ export function buildAgentPlanSpec(
   // does NOT block the chain or drop the step — it just falls back to the
   // step running with the agent-level `tool` instead, identical to how it
   // behaved before this pin existed.
+  const droppedStepPinNotes: string[] = [];
   const resolveStepToolForPlan = (step: NormalizedStep): NormalizedStep => {
     if (!step.tool || !agent.autonomous) return step;
-    if (consentWebTool && (step.tool.type === 'gemini-api' || step.tool.type === 'perplexity')) return step;
-    // 2026-10-15: a step's own pin is judged by its own instruction — the
-    // agent-level consentWebTool is false whenever the agent-level tool isn't a
-    // web backend (e.g. local for "パープレで集めて、ローカルLLMで要約して"),
-    // which used to strip a consented Perplexity step pin on every scheduled fire.
-    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction).needsWeb, opts.autonomousCloudConsent)) {
+    // 2026-10-15: a step's own pin is judged by its OWN instruction only
+    // (review M1) — the agent-level consentWebTool is false whenever the
+    // agent-level tool isn't a web backend (e.g. local for "パープレで集めて、
+    // ローカルLLMで要約して"), which used to strip a consented Perplexity step
+    // pin, and a web-ish agent prompt must not cover a non-research step like
+    // 「パープレで要約して」 (its prompt carries prior output / local context).
+    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction), opts.autonomousCloudConsent)) {
       return step;
     }
     const resolved = resolveForAutonomous(step.tool);
     if (resolved) return { ...step, tool: resolved };
+    droppedStepPinNotes.push(autonomousPinRefusalReason(step.tool, opts.autonomousCloudConsent) + ' It runs on the agent-level tool instead.');
     const { tool: _dropped, ...rest } = step;
     return rest;
   };
@@ -386,7 +391,10 @@ export function buildAgentPlanSpec(
       ...(charLimit !== undefined ? { charLimit } : {}),
     },
     policy: buildAgentPolicy(agent, agent.workspaceRoot || home),
-    routeDecision,
+    // Review M1: a step pin dropped by the consent gate is never silent.
+    routeDecision: droppedStepPinNotes.length > 0
+      ? { ...routeDecision, why: `${routeDecision.why} ${droppedStepPinNotes.join(' ')}`.trim() }
+      : routeDecision,
     ...(orchestrationSteps ? { steps: orchestrationSteps } : {}),
   };
 }

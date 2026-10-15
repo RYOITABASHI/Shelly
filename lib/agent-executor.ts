@@ -6,7 +6,7 @@ import { Agent, AgentAction, AgentActionType, AgentRouteDecision, ToolChoice } f
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
-import { autonomousWebConsentCovers, requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
+import { autonomousPinRefusalReason, autonomousWebConsentCovers, requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
@@ -1218,13 +1218,18 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   if (agent.autonomous) {
     const sig = detectRouteSignals(agent.prompt);
     // 2026-10-15: shared with the ladder / PlanSpec builder — a Perplexity
-    // tool (in practice an explicit 「パープレで…」 pin) counts as web on its
-    // own, so a consented scheduled fire honors it like an attended run.
-    consentWebTool = autonomousWebConsentCovers(tool, sig.needsWeb, opts.autonomousCloudConsent);
+    // tool (in practice an explicit 「パープレで…」 pin) is covered when the
+    // task is web-mandatory OR has research intent (see
+    // autonomousWebConsentCovers), so a consented scheduled fire honors it
+    // like an attended run; anything else fails closed with the reason.
+    consentWebTool = autonomousWebConsentCovers(tool, sig, opts.autonomousCloudConsent);
     if (!consentWebTool) {
       const resolved = resolveForAutonomous(tool);
       if (!resolved) {
-        return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type);
+        const reason = tool.type === 'perplexity' || tool.type === 'gemini-api'
+          ? autonomousPinRefusalReason(tool, opts.autonomousCloudConsent)
+          : undefined;
+        return refusalScript(agentId, resultFile, logDir, routeResolution.decision, tool.type, reason);
       }
       tool = resolved;
     } else {
@@ -1246,7 +1251,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     toolLabel,
     route: tool.type === 'local' ? 'on-device' : tool.type === 'ab-article-eval' ? 'hybrid' : 'cloud',
   };
-  const routeDecisionJson = JSON.stringify(routeDecision);
+  let routeDecisionJson = JSON.stringify(routeDecision);
   const apiKeyEnvScrub = requiresApiKeyEnv(tool)
     ? ''
     : 'unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY OPENROUTER_API_KEY\n';
@@ -1315,22 +1320,30 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // step — its pin is just stripped, so it falls back to running with the
   // agent-level `tool` (codex) instead, identical to how an unpinned step
   // already behaves.
+  const droppedStepPinNotes: string[] = [];
   const resolveStepToolForChainScript = (step: NormalizedStep): NormalizedStep => {
     if (!step.tool || !agent.autonomous) return step;
-    if (consentWebTool && (step.tool.type === 'gemini-api' || step.tool.type === 'perplexity')) return step;
-    // 2026-10-15: judge a step's OWN pin by its OWN instruction — the
-    // agent-level consentWebTool above is false whenever the agent-level tool
-    // isn't itself a web backend (e.g. this codex-resolved chain), which used
-    // to strip a consented 「パープレで集めて」 step pin on every scheduled fire.
-    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction).needsWeb, opts.autonomousCloudConsent)) {
+    // 2026-10-15: judge a step's OWN pin by its OWN instruction only (review
+    // M1) — neither the agent-level consentWebTool (false whenever the
+    // agent-level tool isn't a web backend, which used to strip a consented
+    // 「パープレで集めて」 pin) nor a web-ish agent prompt may cover a
+    // non-research step like 「パープレで要約して」, whose prompt carries prior
+    // step output / local context to the cloud.
+    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction), opts.autonomousCloudConsent)) {
       return step;
     }
     const resolved = resolveForAutonomous(step.tool);
     if (resolved) return { ...step, tool: resolved };
+    droppedStepPinNotes.push(`step ${attemptableOrchestrationStepsRaw.indexOf(step) + 1}: ${autonomousPinRefusalReason(step.tool, opts.autonomousCloudConsent)} It runs on the agent-level tool instead.`);
     const { tool: _dropped, ...rest } = step;
     return rest;
   };
   const attemptableOrchestrationSteps = attemptableOrchestrationStepsRaw.map(resolveStepToolForChainScript);
+  // Review M1: a dropped step pin is never silent — the reason rides the run
+  // log's routeDecision.why (ROUTE_DECISION_JSON below).
+  if (droppedStepPinNotes.length > 0) {
+    routeDecisionJson = JSON.stringify({ ...routeDecision, why: `${routeDecision.why} ${droppedStepPinNotes.join(' ')}`.trim() });
+  }
   // Fan-out subtasks (2026-08-13): a step's `parallelGroup` marker is
   // deliberately IGNORED by this bash chain — the chain runs with today's
   // exact serial carry-forward (each step's prompt carries the immediately
@@ -6259,10 +6272,9 @@ function refusalScript(
   logDir: string,
   decision: AgentRouteDecision,
   toolType: string,
+  reason?: string,
 ): string {
-  const webHint = toolType === 'perplexity' || toolType === 'gemini-api'
-    ? ' To let unattended runs use a named Perplexity/Gemini web backend, enable Autonomous Cloud consent.'
-    : '';
+  const webHint = reason ? ` ${reason}` : '';
   const msg = `autonomous mode does not allow the '${toolType}' backend — no API keys in the autonomous agent path (Spec A). Use OAuth-Codex/local, or route via the credential broker.${webHint}`;
   const toolLabel = toolChoiceToLabel({ type: toolType as ToolChoice['type'] } as ToolChoice);
   const routeDecisionJson = JSON.stringify({ ...decision, toolType, toolLabel });

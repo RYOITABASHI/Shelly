@@ -112,27 +112,37 @@ export function resolveForAutonomous(tool: ToolChoice): ToolChoice | null {
  * web-mandatory task — the key authenticates a stateless completion and never
  * reaches a model/shell. secret-guard still wins upstream.
  *
- * 2026-10-15: Perplexity is a search-backed web backend by nature, so a tool
- * (or step) that resolved to Perplexity — in practice only ever because the
- * user explicitly named it (「パープレで…」) or the academic-web heuristic
- * picked it — is treated as web-mandatory on its own, instead of being
- * stripped whenever detectRouteSignals' topic heuristic happened not to fire
- * (which left a named-Perplexity scheduled agent refused/degraded while the
- * same agent run attended used Perplexity). Gemini is a general-purpose
- * backend, so it still needs the task's own needsWeb signal. Without consent
- * this returns false and every caller keeps failing closed exactly as before.
+ * 2026-10-15: a Perplexity tool or step pin is covered when its OWN task text
+ * is web-mandatory OR has research intent (`needsSearch`: research words such
+ * as 調べ/論文/research, or a freshness cue; `collects`: 集めて/検索/collect/search) — so 「パープレで量子計算に
+ * ついて調べて」 runs unattended on Perplexity even when the stricter needsWeb
+ * heuristic doesn't fire. A pin with neither (e.g. a step 「パープレで要約して」,
+ * whose prompt would carry prior step output, local file contents or
+ * NOTIFICATION_CONTEXT/DEVICE_STATUS_CONTEXT) is NOT covered: the consent text
+ * promises cloud use for web tasks (news/research) only, so such a pin fails
+ * closed (review M1). Gemini is general-purpose and still needs needsWeb.
+ * Without consent this returns false and every caller fails closed.
  *
  * Single source for lib/agent-escalation-ladder.ts, lib/agent-executor.ts's
- * generateRunScript and lib/agent-plan-spec.ts's buildAgentPlanSpec (agent
- * level AND per-step `.tool` pins) so the attended and unattended paths
- * cannot drift.
+ * generateRunScript, lib/agent-plan-spec.ts's buildAgentPlanSpec (agent level
+ * AND per-step `.tool` pins, each judged on its own instruction) and
+ * lib/agent-tool-router.ts's resolveAutonomousFinalTool, so the attended and
+ * unattended paths cannot drift.
  */
 export function autonomousWebConsentCovers(
   tool: ToolChoice | undefined,
-  needsWeb: boolean,
+  signals: { needsWeb: boolean; needsSearch?: boolean; collects?: boolean },
   consent: boolean | undefined,
 ): boolean {
   if (consent !== true || !tool) return false;
-  if (tool.type === 'perplexity') return true;
-  return tool.type === 'gemini-api' && needsWeb;
+  if (tool.type === 'perplexity') return signals.needsWeb || signals.needsSearch === true || signals.collects === true;
+  return tool.type === 'gemini-api' && signals.needsWeb;
+}
+
+/** Human-readable reason an api-key tool/step pin is not used unattended. */
+export function autonomousPinRefusalReason(tool: ToolChoice, consent: boolean | undefined): string {
+  const name = tool.type === 'perplexity' ? 'Perplexity' : tool.type === 'gemini-api' ? 'Gemini' : tool.type;
+  return consent === true
+    ? `${name} is not used unattended for this task: Autonomous Cloud consent covers ${name} only for web/research tasks (news, papers, "research …"), and this task text is neither.`
+    : `${name} is not used unattended: enable Autonomous Cloud consent to let autonomous runs use a named ${name} backend for web/research tasks.`;
 }

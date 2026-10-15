@@ -1810,7 +1810,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           const partial: Partial<Agent> = { ...correction.agentPartial };
           if (correction.autonomousTurnedOn) {
             const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
-            const needsWeb = detectRouteSignals(patchedDraft.prompt).needsWeb;
+            const patchedSignals = detectRouteSignals(patchedDraft.prompt);
+            const needsWeb = patchedSignals.needsWeb;
+            const needsSearch = patchedSignals.needsSearch || patchedSignals.collects === true;
             // Same single-source-of-truth derivation as confirmAgentDraft's
             // persist boundary below — see resolveConfirmedToolAndRunOn's doc
             // comment (lib/agent-tool-router.ts) for the 2026-08-03 bug this
@@ -1822,6 +1824,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               tool: patchedDraft.tool,
               cloudConsent,
               needsWeb,
+              needsSearch,
               toolExplicit: patchedDraft.toolExplicit,
             });
             partial.autonomous = true;
@@ -4113,7 +4116,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // route at run time (and re-scores each run). The NL parser's keyword guess
       // (draft.tool) would otherwise pin a concrete tool and bypass the scorer.
       const cloudConsent = useSettingsStore.getState().settings.autonomousCloudConsent ?? false;
-      const needsWeb = detectRouteSignals(confirmed.prompt).needsWeb;
+      const confirmedSignals = detectRouteSignals(confirmed.prompt);
+      const needsWeb = confirmedSignals.needsWeb;
+      const needsSearch = confirmedSignals.needsSearch || confirmedSignals.collects === true;
       // 2026-08-03 bug fix: runOn is persisted exactly as the confirm surface
       // handed it over — the old `tool.type === 'local' → runOn 'on-device'`
       // auto-derivation forged a manual-strength pin the user never made,
@@ -4127,6 +4132,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         tool: confirmed.tool,
         cloudConsent,
         needsWeb,
+        needsSearch,
         toolExplicit: confirmed.toolExplicit,
       });
       try {

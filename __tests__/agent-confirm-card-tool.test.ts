@@ -30,8 +30,9 @@ describe('resolveAutonomousFinalTool — single source of truth for the autonomo
     expect(resolveAutonomousFinalTool(true, gemini, true, false)).toEqual(codex);
   });
 
-  it('2026-10-15: autonomous PERPLEXITY with consent is kept even without needsWeb (search-backed by nature; runtime gates agree — autonomousWebConsentCovers)', () => {
-    expect(resolveAutonomousFinalTool(true, perplexity, true, false)).toEqual(perplexity);
+  it('2026-10-15: autonomous PERPLEXITY with consent is kept on a research task without needsWeb, but not on a non-research one (review M1)', () => {
+    expect(resolveAutonomousFinalTool(true, perplexity, true, false, true)).toEqual(perplexity);
+    expect(resolveAutonomousFinalTool(true, perplexity, true, false, false)).toEqual(codex);
   });
 
   it('autonomous LOCAL is preserved (on-device transform is a valid autonomous path)', () => {

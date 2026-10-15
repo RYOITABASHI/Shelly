@@ -22,7 +22,7 @@
  */
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { resolveAgentRoute } from './agent-tool-router';
-import { resolveForAutonomous } from './agent-credential-policy';
+import { autonomousPinRefusalReason, autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
 import { detectRouteSignals } from './agent-router-scoring';
 
 export interface LadderEnv {
@@ -183,7 +183,11 @@ export function resolveEscalationLadder(
       // authenticates the request and never reaches the model. On quota
       // exhaustion (429) the ladder climbs to Codex unless 'stop' is set, which
       // halts at the free tier rather than burning Codex/paid quota.
-      if (env.autonomousCloudConsent) {
+      // Review M1: consent covers the backend only for a web/research task —
+      // an explicit Perplexity pin on a task with neither signal (e.g.
+      // 「パープレで要約して」) fails closed to Codex with the reason below.
+      const consentCovers = autonomousWebConsentCovers(chosenWeb, web, env.autonomousCloudConsent);
+      if (consentCovers) {
         const consented = chosenWeb;
         // Key preflight: consent without the backend's key cannot work — fall
         // through to the fail-closed no-consent path (Codex/OAuth only) instead
@@ -203,7 +207,9 @@ export function resolveEscalationLadder(
       // No consent (fail-closed): api-key web backends are excluded, so the only
       // web-capable option is Codex (OAuth shell). Distinguish the keyless
       // consented case in the why — "enable cloud opt-in" would misdiagnose it.
-      const why = env.autonomousCloudConsent
+      const why = env.autonomousCloudConsent && !consentCovers
+        ? `${shortTaskLabel}; ${autonomousPinRefusalReason(chosenWeb, true)} → Codex only.`
+        : env.autonomousCloudConsent
         ? `${shortTaskLabel}; cloud opt-in is on but the ${chosenWebName} key is not configured → Codex only.`
         : `${shortTaskLabel}; autonomous policy → Codex only (enable cloud opt-in for Gemini/Perplexity)${explicitWebToolPin ? `; configured ${chosenWebName} not used` : ''}.`;
       return { tools: [CODEX], noEscalation: false, guard: decision.guard, why };

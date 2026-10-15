@@ -396,12 +396,16 @@ export function resolveAutonomousFinalTool(
   scoredTool: ToolChoice,
   cloudConsent: boolean,
   needsWeb: boolean,
+  /** Research intent: detectRouteSignals(prompt).needsSearch || .collects. Lets a
+   *  consented Perplexity pin on a research task without a hard web signal
+   *  (「パープレで量子計算について調べて」) be kept (review M1). */
+  needsSearch = false,
 ): ToolChoice {
   if (!autonomous) return scoredTool;
   if (scoredTool.type === 'local') return scoredTool;
   // Same consent predicate as generateRunScript / buildAgentPlanSpec / the
-  // escalation ladder (2026-10-15): Perplexity counts as web on its own.
-  return autonomousWebConsentCovers(scoredTool, needsWeb, cloudConsent) ? scoredTool : { type: 'cli', cli: 'codex' };
+  // escalation ladder (2026-10-15).
+  return autonomousWebConsentCovers(scoredTool, { needsWeb, needsSearch }, cloudConsent) ? scoredTool : { type: 'cli', cli: 'codex' };
 }
 
 /**
@@ -444,6 +448,9 @@ export function resolveConfirmedToolAndRunOn(opts: {
   tool: ToolChoice;
   cloudConsent: boolean;
   needsWeb: boolean;
+  /** Research intent (detectRouteSignals(prompt) needsSearch or collects), see
+   *  resolveAutonomousFinalTool. Absent = false (Perplexity needs needsWeb). */
+  needsSearch?: boolean;
   /** 2026-10-15: the draft's tool was EXPLICITLY named by the user
    *  (ParsedAgentDraft.toolExplicit — e.g. 「パープレで…」). A non-autonomous
    *  RUN ON = Auto agent then keeps that concrete tool instead of being stored
@@ -452,7 +459,7 @@ export function resolveConfirmedToolAndRunOn(opts: {
   toolExplicit?: boolean;
 }): { tool: ToolChoice; runOn: 'auto' | 'on-device' | 'cloud' } {
   const tool: ToolChoice = opts.autonomous
-    ? resolveAutonomousFinalTool(true, opts.tool, opts.cloudConsent, opts.needsWeb)
+    ? resolveAutonomousFinalTool(true, opts.tool, opts.cloudConsent, opts.needsWeb, opts.needsSearch === true)
     : opts.runOn === 'auto' && !(opts.toolExplicit && opts.tool.type !== 'auto')
     ? { type: 'auto' }
     : opts.tool;

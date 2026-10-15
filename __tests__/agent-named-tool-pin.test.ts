@@ -21,6 +21,7 @@ import { resolveEscalationLadder, type LadderEnv } from '@/lib/agent-escalation-
 import { generateRunScript } from '@/lib/agent-executor';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { normalizeSteps } from '@/lib/agent-orchestration';
+import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import type { Agent, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 
 const PPLX: ToolChoice = { type: 'perplexity', model: 'sonar-deep-research' };
@@ -46,12 +47,14 @@ const baseAgent = (over: Partial<Agent> = {}): Agent => ({
 function persistTool(utterance: string, opts: { autonomous?: boolean; cloudConsent?: boolean; needsWeb?: boolean } = {}) {
   const draft = parseAgentNL(utterance);
   const confirmed = draftToConfirmedAgentDraft(draft);
+  const sig = detectRouteSignals(confirmed.prompt);
   return resolveConfirmedToolAndRunOn({
     autonomous: opts.autonomous ?? false,
     runOn: confirmed.runOn,
     tool: confirmed.tool,
     cloudConsent: opts.cloudConsent ?? false,
-    needsWeb: opts.needsWeb ?? false,
+    needsWeb: opts.needsWeb ?? sig.needsWeb,
+    needsSearch: sig.needsSearch || sig.collects === true,
     toolExplicit: confirmed.toolExplicit,
   });
 }
@@ -150,7 +153,7 @@ describe('persistence at the confirm boundary', () => {
     expect(persistTool('毎日9時に今日のニュースをまとめて通知して').tool.type).toBe('auto');
   });
 
-  it('autonomous + cloud consent keeps the named Perplexity even without a web topic signal', () => {
+  it('autonomous + cloud consent keeps the named Perplexity on a research task without a web topic signal', () => {
     expect(persistTool('毎朝8時にパープレで量子計算について調べて', { autonomous: true, cloudConsent: true }).tool.type).toBe('perplexity');
   });
 
@@ -230,5 +233,45 @@ describe('scheduled/unattended execution honors the pin like attended runs', () 
     expect(withConsent).toContain('https://api.perplexity.ai/chat/completions');
     const noConsent = generateRunScript(agent);
     expect(noConsent).not.toContain('https://api.perplexity.ai/chat/completions');
+  });
+});
+
+describe('review M1: consent covers a Perplexity pin only for web/research text', () => {
+  it('a non-research step pin (「パープレで要約して」) is stripped even with consent, and the reason is logged', () => {
+    const agent = baseAgent({
+      prompt: '最新のAIニュースを集めて要約して',
+      autonomous: true,
+      tool: { type: 'local' },
+      orchestration: {
+        steps: [
+          { instruction: 'パープレで最新のAIニュースを集めて', tool: PPLX },
+          { instruction: 'パープレで要約して', tool: PPLX },
+        ],
+      },
+    });
+    const spec = buildAgentPlanSpec(agent, { autonomousCloudConsent: true });
+    expect(spec.steps!.list[0].tool?.type).toBe('perplexity');
+    expect(spec.steps!.list[1].tool).toBeUndefined();
+    expect(spec.routeDecision.why).toContain('only for web/research tasks');
+  });
+
+  it('agent-level non-research Perplexity pin refuses unattended with the consent-scope reason', () => {
+    const s = generateRunScript(baseAgent({ prompt: 'パープレで次の文章を要約して', autonomous: true }), { autonomousCloudConsent: true });
+    expect(s).toContain('[REFUSED]');
+    expect(s).toContain('only for web/research tasks');
+  });
+
+  it('ladder: autonomous consent + non-research Perplexity pin → Codex only, with the reason', () => {
+    const l = resolveEscalationLadder(
+      baseAgent({ prompt: 'この文章を要約して', autonomous: true }),
+      { hasCerebrasKey: true, hasGroqKey: true, autonomousCloudConsent: true },
+    );
+    expect(l.tools.map((t) => t.type)).toEqual(['cli']);
+    expect(l.why).toContain('only for web/research tasks');
+  });
+
+  it('collect/search verbs count as research intent', () => {
+    const s = generateRunScript(baseAgent({ prompt: 'search for quantum computing sources', autonomous: true }), { autonomousCloudConsent: true });
+    expect(s).not.toContain('[REFUSED]');
   });
 });

@@ -34,6 +34,10 @@ export interface RouteSignals {
   webDomain: 'academic' | 'general';
   /** the keyword that drove the category, if any (for the reason log). */
   keyword?: string;
+  /** true when the task uses an explicit collection/search verb (集めて /
+   *  検索 / collect / search …). Research intent for the autonomous consent
+   *  scope (autonomousWebConsentCovers), independent of freshness. */
+  collects?: boolean;
 }
 
 export interface RouteCandidate {
@@ -255,7 +259,7 @@ export function detectRouteSignals(prompt: string): RouteSignals {
   const academicWeb = hasAny(lower, ACADEMIC_WEB_KW) !== undefined;
   const webDomain: 'academic' | 'general' = academicWeb ? 'academic' : 'general';
 
-  return { category, reasoningWeight, needsSearch, needsWeb, webDomain, keyword };
+  return { category, reasoningWeight, needsSearch, needsWeb, webDomain, keyword, collects };
 }
 
 function scoreTool(profile: ToolProfile, signals: RouteSignals): number {
