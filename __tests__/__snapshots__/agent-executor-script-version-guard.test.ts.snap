@@ -3980,7 +3980,9 @@ else
   ACTION_APPROVAL_MODE="manual"
 fi
 unset PERPLEXITY_API_KEY GEMINI_API_KEY CEREBRAS_API_KEY GROQ_API_KEY OPENROUTER_API_KEY
-
+shelly_read_env_key() {
+  ( [ -f "$ENV_FILE" ] && . "$ENV_FILE" >/dev/null 2>&1; printf '%s' "\${!1:-}" ) 2>/dev/null || true
+}
 
 PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
 SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-registry.tsv}"

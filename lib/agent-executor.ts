@@ -5714,7 +5714,7 @@ elif [ "\${SHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL:-1}" = "0" ]; then
 else
   ACTION_APPROVAL_MODE="manual"
 fi
-${apiKeyEnvScrub}
+${apiKeyEnvScrub}${SHELLY_READ_ENV_KEY_FN}
 
 PROJECT_DIR="\${SHELLY_CONTENT_PROJECT:-$HOME/projects/shelly-content-studio}"
 SOURCE_REGISTRY_FILE="\${SOURCE_REGISTRY_FILE:-$PROJECT_DIR/sources/source-registry.tsv}"
@@ -6599,6 +6599,43 @@ rm -f "$PROMPT_FILE"`;
  * (base prompt + prior-step carry + this instruction) only exists once
  * codex_orch_build_prompt composes it during the actual run.
  */
+/** API-key env var each api-key-class step tool reads (codex-chain step arms). */
+const STEP_TOOL_KEY_VAR: Partial<Record<ToolChoice['type'], string>> = {
+  'gemini-api': 'GEMINI_API_KEY',
+  perplexity: 'PERPLEXITY_API_KEY',
+  cerebras: 'CEREBRAS_API_KEY',
+  groq: 'GROQ_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+};
+
+/**
+ * 2026-10-15 review H1: the codex chain's agent-level tool is `cli`, so the
+ * script's global apiKeyEnvScrub unsets every provider key (the Codex driver
+ * must never see them). A step arm pinned to Perplexity/Gemini/… then always
+ * failed "key is not set" → CODEX_ORCH_FAILED. The scrub stays; instead the
+ * arm reads ONLY its own key from $ENV_FILE in a subshell (the subshell's
+ * `source` cannot touch this shell) into an UNEXPORTED shell variable, used
+ * solely by that arm's http_post_json_retry env prefix, and unset right after
+ * the arm — so the key never reaches the Codex driver or any other child.
+ * Exported for the behavioral test (__tests__/agent-named-tool-pin.test.ts).
+ */
+export const SHELLY_READ_ENV_KEY_FN = `shelly_read_env_key() {
+  ( [ -f "$ENV_FILE" ] && . "$ENV_FILE" >/dev/null 2>&1; printf '%s' "\${!1:-}" ) 2>/dev/null || true
+}`;
+
+export function stepScopedKeyPrelude(keyVar: string): string {
+  return `    STEP_SCOPED_KEY_LOADED=0
+    if [ -z "\${${keyVar}:-}" ]; then
+      ${keyVar}="$(shelly_read_env_key ${keyVar})"
+      export -n ${keyVar} 2>/dev/null || true
+      STEP_SCOPED_KEY_LOADED=1
+    fi`;
+}
+
+export function stepScopedKeyPostlude(keyVar: string): string {
+  return `    if [ "$STEP_SCOPED_KEY_LOADED" = "1" ]; then unset ${keyVar}; fi`;
+}
+
 function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions): string {
   const arms: string[] = [];
   chain.steps.forEach((step, index) => {
@@ -6624,7 +6661,10 @@ function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions): s
       actionType: 'draft',
       stepSkipPromptCompose: true,
     });
-    arms.push(`  ${index})\n${snippet}\n    RESULT_CONTENT_FILE="$RESULT_FILE"\n    RESULT_CONTENT_IS_DRIVER_ANSWER=0\n    ;;`);
+    const keyVar = STEP_TOOL_KEY_VAR[stepTool.type];
+    const prelude = keyVar ? `${stepScopedKeyPrelude(keyVar)}\n` : '';
+    const postlude = keyVar ? `\n${stepScopedKeyPostlude(keyVar)}` : '';
+    arms.push(`  ${index})\n${prelude}${snippet}${postlude}\n    RESULT_CONTENT_FILE="$RESULT_FILE"\n    RESULT_CONTENT_IS_DRIVER_ANSWER=0\n    ;;`);
   });
   return arms.join('\n');
 }
