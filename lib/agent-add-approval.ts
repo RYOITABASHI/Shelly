@@ -436,7 +436,7 @@ export function buildAgentAddSummary(
       : '';
     message = `This agent includes steps that need review in Shelly itself (${binding.riskReasons.join(', ')}); it cannot be approved from here.${why} Ask the user to open Shelly and confirm it there.`;
   } else {
-    message = 'This agent has no confirmed schedule yet; finish and approve it in Shelly itself.';
+    message = 'This agent has no confirmed schedule yet; it cannot be approved from here. Ask the user to open Shelly and confirm it there.';
   }
   return {
     ok: true,

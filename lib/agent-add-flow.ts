@@ -267,6 +267,11 @@ export async function onTerminalDraftPresented(params: {
     const engineNote = toolSummary(params.draft, locale).note;
     if (engineNote) body.push(engineNote);
     if (risks.length > 0) body.push(tFor(locale, 'agents.terminal_request_notif_risky', { reasons: risks.join(', ') }));
+    // Follow-up item 6 (2026-10-15): an in-app-only draft has NO Approve
+    // action (native posts Review/Reject only); the body says plainly that
+    // the user must open Shelly — tapping the notification opens the AI pane
+    // with the draft.
+    if (!binding.approvable) body.push(tFor(locale, 'agents.terminal_request_notif_confirm_in_shelly'));
     body.push(tFor(locale, 'agents.terminal_request_notif_hash', { hash: hash8 }));
     await TerminalEmulator.postAgentAddApprovalNotification?.(
       reqId,
@@ -459,24 +464,61 @@ export async function handleAgentAddDecisionDeepLink(params: {
   const check = verifyAgentAddNotificationDecision(reqId, decision, nonce, Date.now(), { consume: false });
   if ('reason' in check) {
     logWarn('AgentAddFlow', `notification ${decision} for ${reqId} refused (${check.reason})`);
-    const b = getAgentAddBinding(reqId);
-    if (b) postNote(b.conversationKey, tFor('en', 'agents.terminal_request_link_refused'));
+    await surfaceDecisionProblem(reqId, decision, check.reason === 'not-approvable' ? 'review_only' : 'refused');
     return;
   }
   const binding = check.binding;
   const ready = await waitFor(() => handlers.has(binding.conversationKey) && !!findPendingDraftMessage(binding), DECISION_READY_TIMEOUT_MS);
   if (!ready) {
     logWarn('AgentAddFlow', `notification ${decision} for ${reqId}: pane/draft not ready; not consumed`);
+    await surfaceDecisionProblem(reqId, decision, 'not_ready');
     return;
   }
   // Re-verify and consume atomically now that the target exists.
   const final = verifyAgentAddNotificationDecision(reqId, decision, nonce);
   if ('reason' in final) {
     logWarn('AgentAddFlow', `notification ${decision} for ${reqId} refused on consume (${final.reason})`);
+    await surfaceDecisionProblem(reqId, decision, 'refused');
     return;
   }
   const result = await applyAgentAddDecision(final.binding, decision, 'notification');
   logInfo('AgentAddFlow', `notification ${decision} for ${reqId}: ${result.ok ? 'done' : result.message}`);
+  if (!result.ok) await surfaceDecisionProblem(reqId, decision, 'failed');
+}
+
+/**
+ * Follow-up item 6 (2026-10-15, on-device): a notification Approve that could
+ * not be applied (in-app-only draft, stale nonce, AI pane not ready,
+ * registration failed) used to be logged only — the user tapped Approve,
+ * nothing visible happened, and the scheduled time passed unregistered. Every
+ * such outcome now posts a localized chat note on the draft AND a visible
+ * notification telling the user to open Shelly and confirm the draft there.
+ */
+async function surfaceDecisionProblem(
+  reqId: string,
+  decision: 'approve' | 'reject',
+  kind: 'review_only' | 'refused' | 'not_ready' | 'failed',
+): Promise<void> {
+  const b = getAgentAddBinding(reqId);
+  const msg = b ? findPendingDraftMessage(b) : null;
+  const draft = (msg?.agentDraft as ParsedAgentDraft | undefined) ?? null;
+  const locale: Locale = draft ? draftLocale(draft) : 'en';
+  const key = `agents.terminal_request_decision_${kind}`;
+  const name = draft?.name ?? '';
+  if (b) postNote(b.conversationKey, tFor(locale, key, { name }));
+  try {
+    const Notifications = await import('expo-notifications');
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: tFor(locale, 'agents.terminal_request_decision_title'),
+        body: tFor(locale, key, { name }),
+        data: { agentAddReqId: reqId, decision },
+      },
+      trigger: null,
+    });
+  } catch (e) {
+    logWarn('AgentAddFlow', `decision-problem notification failed for ${reqId}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** Audit notification's Disable: shelly:///agent-add-disable?agentId&nonce. */
