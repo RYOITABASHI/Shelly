@@ -46,11 +46,11 @@ function fn(src: string, signature: string): string {
 }
 
 describe('variant -> broadcast path', () => {
-  const launch = fn(handoff, 'fun launch(context: Context, goal: String)');
+  const launch = fn(handoff, 'fun launch(context: Context, goal: String');
 
   it('launch() tries the broadcast first, only for the pinned variant and off the main thread', () => {
     const guard = launch.indexOf('if (isTrustedVariantInstalled(context) && Looper.myLooper() != Looper.getMainLooper()) {');
-    const send = launch.indexOf('sendVariantBroadcast(context, clean)');
+    const send = launch.indexOf('sendVariantBroadcast(context, clean, reqId, nonce)');
     const activity = launch.indexOf('val intent = buildIntent(clean, context)');
     expect(guard).toBeGreaterThan(-1);
     expect(send).toBeGreaterThan(guard);
@@ -78,10 +78,10 @@ describe('variant -> broadcast path', () => {
   });
 
   it('the token-bearing broadcast is only built from the variant-guarded launch branch', () => {
-    const uses = handoff.split('buildVariantBroadcast(context, goal)').length - 1;
+    const uses = handoff.split('buildVariantBroadcast(context, goal, reqId, resultNonce)').length - 1;
     expect(uses).toBe(1);
-    expect(fn(handoff, 'private fun sendVariantBroadcast(')).toContain('buildVariantBroadcast(context, goal)');
-    expect(handoff.split('sendVariantBroadcast(context, clean)').length - 1).toBe(1);
+    expect(fn(handoff, 'private fun sendVariantBroadcast(')).toContain('buildVariantBroadcast(context, goal, reqId, resultNonce)');
+    expect(handoff.split('sendVariantBroadcast(context, clean, reqId, nonce)').length - 1).toBe(1);
     // Non-variant: the activity intent still carries no token.
     expect(fn(handoff, 'fun buildIntent(goal: String, context: Context? = null)')).toMatch(
       /if \(context != null && isTrustedVariantInstalled\(context\)\) \{\s*putExtra\(EXTRA_CALLER_TOKEN/,
@@ -171,7 +171,7 @@ describe('result-code mapping', () => {
 
 describe('0 / no answer -> existing activity path', () => {
   it('NoResponse falls through to the unchanged activity launch (BAL check + notification fallback kept)', () => {
-    const launch = fn(handoff, 'fun launch(context: Context, goal: String)');
+    const launch = fn(handoff, 'fun launch(context: Context, goal: String');
     const after = launch.slice(launch.indexOf('VariantResult.NoResponse -> Unit'));
     expect(after).toContain('if (canStartActivityNow(context)) {');
     expect(after).toContain('context.startActivity(intent)');
@@ -211,7 +211,7 @@ describe('outcome plumbing', () => {
 
   it('agent run result: both executors read the recorded outcome', () => {
     expect(handoff).toContain('const val OUTCOME_FILE = ".shelly-closepaw-outcome.json"');
-    const launch = fn(handoff, 'fun launch(context: Context, goal: String)');
+    const launch = fn(handoff, 'fun launch(context: Context, goal: String');
     expect(launch).toContain('recordOutcome(context, r.refusal.wire, r.refusal.message)');
     const script = read('lib/agent-executor.ts');
     expect(script).toContain('closepaw_read_outcome() {');

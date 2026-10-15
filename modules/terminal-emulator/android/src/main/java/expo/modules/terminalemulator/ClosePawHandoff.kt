@@ -238,6 +238,11 @@ object ClosePawHandoff {
      *  unless a ClosePaw-side setting allows it). */
     const val EXTRA_ALLOW_MAIN_DISPLAY = "allow_main_display"
     const val VARIANT_BROADCAST_TIMEOUT_MS = 5_000L
+    /** Result-callback correlation (feat/closepaw-result-wait): Shelly's request id and a
+     *  per-run nonce ClosePaw echoes back to ClosePawResultReceiver. Only sent for a
+     *  `shelly closepaw` request; see ClosePawRunResults. */
+    const val EXTRA_SHELLY_REQ_ID = ClosePawRunResults.EXTRA_REQ_ID
+    const val EXTRA_SHELLY_RESULT_NONCE = ClosePawRunResults.EXTRA_RESULT_NONCE
     const val REFUSED_MARKER_PREFIX = "CLOSEPAW_REFUSED:"
 
     /** Result codes ClosePaw's ShellyGoalReceiver sets. */
@@ -278,12 +283,22 @@ object ClosePawHandoff {
         else -> Refusal.fromCode(code)?.let { VariantResult.Refused(it) } ?: VariantResult.NoResponse
     }
 
-    /** The goal broadcast. Never carries [EXTRA_ALLOW_MAIN_DISPLAY]. */
-    internal fun buildVariantBroadcast(context: Context, goal: String): Intent =
+    /** The goal broadcast. Never carries [EXTRA_ALLOW_MAIN_DISPLAY]. With a
+     *  [reqId] + [resultNonce] the variant reports the run's final state back. */
+    internal fun buildVariantBroadcast(
+        context: Context,
+        goal: String,
+        reqId: String? = null,
+        resultNonce: String? = null,
+    ): Intent =
         Intent(VARIANT_GOAL_ACTION).apply {
             component = ComponentName(PACKAGE, VARIANT_GOAL_RECEIVER)
             putExtra(EXTRA_GOAL, wireGoal(goal))
             putExtra(EXTRA_CALLER_TOKEN, callerToken(context.applicationContext))
+            if (reqId != null && resultNonce != null) {
+                putExtra(EXTRA_SHELLY_REQ_ID, reqId)
+                putExtra(EXTRA_SHELLY_RESULT_NONCE, resultNonce)
+            }
             // Deliver promptly (foreground broadcast queue) and even if
             // ClosePaw has not been launched since install / force-stop.
             addFlags(Intent.FLAG_RECEIVER_FOREGROUND or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
@@ -301,8 +316,13 @@ object ClosePawHandoff {
      * (BroadcastOptions.setShareIdentityEnabled) — the variant's receiver
      * requires the sender identity there.
      */
-    private fun sendVariantBroadcast(context: Context, goal: String): VariantResult {
-        val intent = buildVariantBroadcast(context, goal)
+    private fun sendVariantBroadcast(
+        context: Context,
+        goal: String,
+        reqId: String? = null,
+        resultNonce: String? = null,
+    ): VariantResult {
+        val intent = buildVariantBroadcast(context, goal, reqId, resultNonce)
         val latch = CountDownLatch(1)
         val timedOut = AtomicBoolean(false)
         var code = RC_NO_RESPONSE
@@ -360,8 +380,13 @@ object ClosePawHandoff {
      * (message [NOT_INSTALLED_MARKER]) when ClosePaw is missing and
      * IllegalStateException ([BACKGROUND_BLOCKED_MARKER]) when neither route
      * is available. Shared by the shell queue and fireAgentIntent('closepaw').
+     *
+     * [shellyReqId] (a `shelly closepaw` request id, approved by the user)
+     * asks the variant for a result callback: a nonce is registered with
+     * ClosePawRunResults and sent along with the id. Only the background
+     * entry carries it; an activity launch never reports a result.
      */
-    fun launch(context: Context, goal: String): Outcome {
+    fun launch(context: Context, goal: String, shellyReqId: String? = null): Outcome {
         val clean = sanitizeGoal(goal)
         require(clean.isNotEmpty()) { "closepaw goal is empty" }
         // Shelly-trusted variant v0.1.0-4+: background entry first (no
@@ -369,16 +394,23 @@ object ClosePawHandoff {
         // for the ordered result blocks, so never on the main thread (every
         // current caller is off it: Expo AsyncFunction queue, queue executor).
         if (isTrustedVariantInstalled(context) && Looper.myLooper() != Looper.getMainLooper()) {
-            when (val r = sendVariantBroadcast(context, clean)) {
+            val reqId = shellyReqId?.takeIf { ClosePawRunResults.isReqId(it) }
+            // Registered BEFORE sending, so even a very fast result is matched.
+            val nonce = reqId?.let { ClosePawRunResults.register(it) }
+            when (val r = sendVariantBroadcast(context, clean, reqId, nonce)) {
                 is VariantResult.Started -> {
                     recordOutcome(context, r.outcome.wire, if (r.outcome == Outcome.MAIN_DISPLAY) MSG_MAIN_DISPLAY else MSG_BACKGROUND)
                     return r.outcome
                 }
                 is VariantResult.Refused -> {
+                    ClosePawRunResults.forget(reqId)
                     recordOutcome(context, r.refusal.wire, r.refusal.message)
                     throw ClosePawRefusedException(r.refusal)
                 }
-                VariantResult.NoResponse -> Unit // older ClosePaw: activity path below
+                // Older ClosePaw: activity path below. The nonce stays
+                // registered (it expires on its own): a variant whose ordered
+                // result merely arrived late may still report the run.
+                VariantResult.NoResponse -> Unit
             }
         }
         // Every caller of launch() has passed a Shelly approval (agent run
@@ -683,6 +715,18 @@ object ClosePawHandoff {
             }
         }
         Log.i(TAG, "closepaw: $reqId -> ${result.code}")
+        // Lifecycle for `shelly closepaw wait` (ClosePawRunResults). The
+        // approval path wrote pending-approval in ClosePawShellApprovals.create;
+        // every other answer is final here: a direct hand-off (official
+        // ClosePaw / no variant) has no result callback.
+        if (result.code != "approval-required") {
+            ClosePawRunResults.writeState(
+                context,
+                reqId,
+                if (result.ok) ClosePawRunResults.STATUS_UNTRACKED else ClosePawRunResults.STATUS_FAILED,
+                result.message,
+            )
+        }
         writeResult(context, reqId, result)
         return result
     }
@@ -827,7 +871,9 @@ object ClosePawHandoff {
         val pollMs = if (observer == null) FALLBACK_POLL_MS else OBSERVED_POLL_MS
         exec.scheduleWithFixedDelay({
             try {
-                if (hasPending(HomeInitializer.getHomeDir(app))) drain(app)
+                val home = HomeInitializer.getHomeDir(app)
+                ClosePawRunResults.sweepOldFiles(home)
+                if (hasPending(home)) drain(app)
             } catch (e: Exception) {
                 Log.w(TAG, "closepaw fallback poll failed type=${e.javaClass.simpleName}")
             }

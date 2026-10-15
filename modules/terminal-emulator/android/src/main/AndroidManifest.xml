@@ -54,6 +54,17 @@
       android:taskAffinity=""
       android:theme="@style/ShellyLockPromptTheme" />
 
+    <!-- Run result from the Shelly-trusted ClosePaw variant (`shelly closepaw
+         wait`). Exported so ai.closepaw can reach it by explicit component;
+         ClosePawResultReceiver ignores everything except a pinned-cert
+         ClosePaw sender with a reqId + nonce Shelly registered (see
+         ClosePawRunResults). No intent-filter: explicit component only.
+         Module manifest, not the generated android/ one (expo prebuild
+         wipes manual edits there). -->
+    <receiver
+      android:name=".ClosePawResultReceiver"
+      android:exported="true" />
+
     <receiver
       android:name=".scouter.ScouterWidgetProvider"
       android:exported="false">

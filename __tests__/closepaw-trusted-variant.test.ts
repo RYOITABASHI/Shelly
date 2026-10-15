@@ -73,7 +73,7 @@ describe('caller token: only for the pinned variant', () => {
     expect(token).toContain('PendingIntent.FLAG_IMMUTABLE');
     expect(handoff).toContain('const val CALLER_TOKEN_ACTION = "dev.shelly.terminal.CLOSEPAW_TOKEN"');
     // Every launch builds with the context (token for the variant only).
-    expect(fn(handoff, 'fun launch(context: Context, goal: String)')).toContain('val intent = buildIntent(clean, context)');
+    expect(fn(handoff, 'fun launch(context: Context, goal: String')).toContain('val intent = buildIntent(clean, context)');
   });
 
   it('the installed-probe never builds a token', () => {
@@ -173,7 +173,7 @@ describe('`shelly closepaw` needs a Shelly approval when the variant is installe
   });
 
   it('deferred hand-off notifications for the variant go through Shelly (cert re-checked at tap time)', () => {
-    const launchFn = fn(handoff, 'fun launch(context: Context, goal: String)');
+    const launchFn = fn(handoff, 'fun launch(context: Context, goal: String');
     expect(launchFn).toMatch(/val tapIntent = if \(intent\.hasExtra\(EXTRA_CALLER_TOKEN\)\) \{\s*val nonce = registerDeferredLaunch\(clean\)/);
     expect(launchFn).toContain('shelly:///closepaw-launch?nonce=$nonce');
     expect(launchFn).toContain('postHandoffNotification(context, clean, tapIntent)');

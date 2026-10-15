@@ -211,7 +211,7 @@ describe('generated shim: shelly closepaw', () => {
   it('prints usage without a goal', async () => {
     const r = await run(['closepaw']);
     expect(r.code).toBe(0);
-    expect(r.out).toContain('Usage: shelly closepaw "<goal>"');
+    expect(r.out).toContain('Usage: shelly closepaw [--wait [--timeout SEC]] "<goal>"');
   });
 
   it('queues to the native-owned file (never the RN command queue) and prints the direct hand-off', async () => {

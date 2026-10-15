@@ -91,11 +91,21 @@ object ClosePawShellApprovals {
     fun create(context: Context, reqId: String, goal: String, now: Long = System.currentTimeMillis()): Pending {
         sweep(now)
         while (pending.size >= MAX_PENDING) {
-            pending.values.minByOrNull { it.createdAt }?.let { pending.remove(it.reqId) } ?: break
+            val oldest = pending.values.minByOrNull { it.createdAt } ?: break
+            pending.remove(oldest.reqId)
+            ClosePawRunResults.writeState(
+                context, oldest.reqId, ClosePawRunResults.STATUS_EXPIRED,
+                "shelly closepaw: the request was dropped (too many pending requests); run shelly closepaw again",
+            )
         }
         val clean = ClosePawHandoff.sanitizeGoal(goal)
         val p = Pending(reqId, clean, hash8(clean), now, now + TTL_MS, randomHex(16), randomHex(16))
         pending[reqId] = p
+        // Lifecycle for `shelly closepaw wait` (ClosePawRunResults).
+        ClosePawRunResults.writeState(
+            context, reqId, ClosePawRunResults.STATUS_PENDING_APPROVAL,
+            "Waiting for the user to approve on the phone", expiresAtMs = p.expiresAt,
+        )
         postNotification(context, p)
         Log.i(TAG, "closepaw approval required: $reqId goalLen=${clean.length}")
         return p
@@ -135,7 +145,9 @@ object ClosePawShellApprovals {
         if (p.consumed) return Outcome(false, "used", "shelly closepaw: this request was already decided")
         if (now > p.expiresAt) {
             pending.remove(reqId)
-            return Outcome(false, "expired", "shelly closepaw: the request expired (10 minutes); run shelly closepaw again")
+            val msg = "shelly closepaw: the request expired (10 minutes); run shelly closepaw again"
+            ClosePawRunResults.writeState(context, reqId, ClosePawRunResults.STATUS_EXPIRED, msg)
+            return Outcome(false, "expired", msg)
         }
         if (decision != "approve" && decision != "reject") return Outcome(false, "invalid", "shelly closepaw: invalid decision")
         val ok = when (via) {
@@ -165,10 +177,15 @@ object ClosePawShellApprovals {
         runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID) }
         if (decision == "reject") {
             Log.i(TAG, "closepaw request $reqId rejected via $via")
+            ClosePawRunResults.writeState(
+                context, reqId, ClosePawRunResults.STATUS_REJECTED, "The user rejected the request; nothing was sent to ClosePaw",
+            )
             return Outcome(true, "rejected", "Rejected — nothing was sent to ClosePaw.")
         }
-        return try {
-            when (ClosePawHandoff.launch(context.applicationContext, p.goal)) {
+        val outcome = try {
+            // reqId: the variant's background entry reports the run's final
+            // state back (ClosePawRunResults / ClosePawResultReceiver).
+            when (ClosePawHandoff.launch(context.applicationContext, p.goal, p.reqId)) {
                 ClosePawHandoff.Outcome.LAUNCHED -> Outcome(true, "handed-off", "Approved ($via) — handed off to ClosePaw")
                 ClosePawHandoff.Outcome.NOTIFIED -> Outcome(true, "notified", "Approved ($via) — tap the ClosePaw notification to continue")
                 // Variant v0.1.0-4+ background entry (ClosePawHandoff.sendVariantBroadcast).
@@ -182,6 +199,15 @@ object ClosePawShellApprovals {
         } catch (e: Exception) {
             Outcome(false, "failed", "shelly closepaw: approved, but launching ClosePaw failed")
         }
+        // Lifecycle: background / main-display runs report back; an activity
+        // launch / notification hand-off has no result callback.
+        val runStatus = when {
+            !outcome.ok -> ClosePawRunResults.STATUS_FAILED
+            outcome.code == "background" || outcome.code == "main-display" -> ClosePawRunResults.STATUS_RUNNING
+            else -> ClosePawRunResults.STATUS_UNTRACKED
+        }
+        ClosePawRunResults.writeAfterLaunch(context, reqId, runStatus, outcome.message)
+        return outcome
     }
 
     private fun postNotification(context: Context, p: Pending) {
