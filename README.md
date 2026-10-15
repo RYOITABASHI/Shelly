@@ -54,6 +54,31 @@
 
 ## See it run
 
+**Drive your phone from ChatGPT — Shelly is the bridge**
+
+https://github.com/user-attachments/assets/267944c7-79db-42a0-80f5-f9382ed554d9
+
+1. In the ChatGPT app (Codex, connected to Shelly with `shelly codex pair`), ask: *save the top-rated vintage clothing stores near Shimokitazawa to a new Google Maps list.* ChatGPT runs `shelly closepaw --wait "<goal>"` on the phone.
+2. Shelly asks **you** to approve — once, on the phone (notification or Shelly chat). ChatGPT itself can never approve a phone action.
+3. Shelly hands the task to [ClosePaw](https://github.com/RYOITABASHI/closepaw/releases), which drives Google Maps on a background virtual display. The front of the phone stays yours (ClosePaw's viewer shows the live run; sped up 4x in the clip).
+4. Shelly brings ClosePaw's result back to ChatGPT, and the list is really there in Google Maps.
+
+<sub>Uses the Shelly-trusted ClosePaw build (signature-pinned to Shelly). Captioned and partly sped up.</sub>
+
+<br>
+
+**Register a daily agent from ChatGPT — it runs on the phone by itself**
+
+https://github.com/user-attachments/assets/97d52c62-f015-487e-976b-06dc21c9797a
+
+1. From ChatGPT: `shelly agent add "Every day at 16:27, collect the latest AI research papers from arXiv and Hugging Face, pick 3 notable ones and summarize them. Write the summaries in English."`
+2. You confirm once in Shelly.
+3. At 16:27 — no ChatGPT, no tap — Shelly wakes up, researches with Perplexity, and saves a sourced note into Obsidian (`20_Literature/AI_Papers/<date>/`). Every day after that, too.
+
+<sub>The wait between registering and the scheduled time is cut ("3 minutes later"); the on-screen clock is the real time.</sub>
+
+<br>
+
 **An agent that works while you do**
 
 https://github.com/user-attachments/assets/ac89f1a9-fecc-4e58-bb37-b33421e862d2

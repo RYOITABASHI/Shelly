@@ -54,6 +54,31 @@
 
 ## 動作デモ
 
+**ChatGPT からスマホを動かす ―― Shelly がその橋渡し**
+
+https://github.com/user-attachments/assets/267944c7-79db-42a0-80f5-f9382ed554d9
+
+1. ChatGPT アプリ（Codex。`shelly codex pair` で Shelly に接続）で「下北沢の評価の高い古着屋を、Google マップの新しいリストに保存して」と頼むと、ChatGPT がスマホ上で `shelly closepaw --wait "<goal>"` を実行します。
+2. Shelly が**あなたに**承認を求めます ―― スマホで 1 回だけ（通知か Shelly のチャット）。ChatGPT 自身がスマホ操作を承認することはできません。
+3. Shelly がタスクを [ClosePaw](https://github.com/RYOITABASHI/closepaw/releases) に渡し、ClosePaw が裏の仮想ディスプレイで Google マップを操作します。スマホの前面はあなたのまま（ClosePaw のビューアに実行の様子が映ります。クリップでは 4 倍速）。
+4. Shelly が ClosePaw の結果を ChatGPT に返し、Google マップにも本当にリストができています。
+
+<sub>Shelly 用 ClosePaw 変種（Shelly の署名にピン留め）を使用。キャプション付きで、一部を早送りしています。</sub>
+
+<br>
+
+**ChatGPT から毎日動くエージェントを登録 ―― あとはスマホが勝手に働く**
+
+https://github.com/user-attachments/assets/97d52c62-f015-487e-976b-06dc21c9797a
+
+1. ChatGPT から: `shelly agent add "Every day at 16:27, collect the latest AI research papers from arXiv and Hugging Face, pick 3 notable ones and summarize them. Write the summaries in English."`
+2. Shelly で 1 回確認するだけ。
+3. 16:27 になると ―― ChatGPT もタップも無しで ―― Shelly が起動し、Perplexity で調べ、出典付きのノートを Obsidian（`20_Literature/AI_Papers/<日付>/`）に保存します。翌日以降も毎日。
+
+<sub>登録から予約時刻までの待ち時間はカットしています（「3 minutes later」）。画面右上の時計は実時刻です。</sub>
+
+<br>
+
 **あなたが作業している間に働くエージェント**
 
 https://github.com/user-attachments/assets/ac89f1a9-fecc-4e58-bb37-b33421e862d2
