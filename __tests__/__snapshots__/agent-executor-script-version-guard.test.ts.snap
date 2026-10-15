@@ -4308,7 +4308,7 @@ PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	# closes the pipe early (large context > pipe buffer) → exit 141 → under
 	# 'set -euo pipefail' the whole run aborts BEFORE the fallback. Reading a
 	# regular file with head has no producer to signal, so it is abort-safe.
-	{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' 'OUTPUT LANGUAGE (REQUIRED): Write the ENTIRE response in English. Any non-English source material MUST be translated into natural English and summarised in English. Source URLs stay verbatim. This overrides the language of any context, memory, profile notes or source material anywhere in this prompt.
+	{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' 'OUTPUT LANGUAGE (REQUIRED): Write the ENTIRE response in English. Any non-English source material MUST be translated into natural English and summarised in English. Source URLs stay verbatim. This overrides the language of any context, memory, profile notes or source material anywhere in this prompt — unless the Task explicitly requests another output language, in which case follow the Task.
 
 Say hello in one sentence.'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"
 	head -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"

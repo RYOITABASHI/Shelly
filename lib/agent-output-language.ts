@@ -30,14 +30,19 @@ export type TaskLanguage = 'ja' | 'en' | 'other';
 
 export function detectTaskLanguage(taskText: string): TaskLanguage {
   if (/[ぁ-んァ-ヶ一-龥]/.test(taskText)) return 'ja';
-  // Any letter outside Latin (Hangul, Cyrillic, Arabic, …) → mirror the task.
-  if (/[^\u0000-ɏ\s\d\p{P}\p{S}]/u.test(taskText)) return 'other';
+  // Review M-C: only ASCII letters count as English. Any other letter —
+  // accented Latin (French, German, Vietnamese, …) or another script — mirrors
+  // the task. Typographic punctuation/symbols (’ “ — … ×) are not letters and
+  // do not change the verdict.
+  if (/(?![A-Za-z])\p{L}/u.test(taskText)) return 'other';
   if (/[A-Za-z]/.test(taskText)) return 'en';
   return 'other';
 }
 
+// Review M-C: the task's OWN explicit output-language request ("… in
+// Japanese", 「英語で書いて」) always wins over the inferred language.
 const OVERRIDE_NOTE =
-  ' This overrides the language of any context, memory, profile notes or source material anywhere in this prompt.';
+  ' This overrides the language of any context, memory, profile notes or source material anywhere in this prompt — unless the Task explicitly requests another output language, in which case follow the Task.';
 
 /**
  * The directive to prepend to the model prompt ('' when the task text carries

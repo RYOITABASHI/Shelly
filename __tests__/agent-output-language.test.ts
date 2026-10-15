@@ -45,6 +45,19 @@ describe('output language is the TASK language, never the injected context', () 
     expect(detectTaskLanguage('최신 논문을 모아줘')).toBe('other');
   });
 
+  it('review M-C: only ASCII letters are English; accented Latin mirrors the task; smart quotes do not matter', () => {
+    expect(detectTaskLanguage('Résume les derniers articles sur l’IA')).toBe('other');
+    expect(detectTaskLanguage('Fasse die neuesten Artikel über KI zusammen')).toBe('other');
+    expect(detectTaskLanguage('Summarize this week’s “AI” news — STEAM×AI')).toBe('en');
+    expect(outputLanguageDirective('Résume les derniers articles')).toContain('same language as the Task text');
+  });
+
+  it('review M-C: an explicit output language in the task wins over the inferred one', () => {
+    expect(outputLanguageDirective('Collect the latest AI papers and summarize them in Japanese.'))
+      .toContain('unless the Task explicitly requests another output language');
+    expect(outputLanguageDirective('最新論文を集めて英語で要約して')).toContain('unless the Task explicitly requests another output language');
+  });
+
   it('English task + Japanese memory → English directive that overrides context', () => {
     const d = outputLanguageDirective(composite);
     expect(d).toContain('Write the ENTIRE response in English');
