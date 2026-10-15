@@ -711,7 +711,13 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // chain are judged by their own instruction. Bumped so on-disk scripts
 // generated under the old gate (refusal script / stripped step pin) are
 // regenerated. Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 68;
+// v69 (2026-10-15, v8.1.0 post-merge review): the v68 number was also used by
+// mid-branch builds whose scripts lack the later research-consent isolation
+// (isolated prompt, NOTIFICATION_CONTEXT / SOURCE_CONTEXT clearing, API-key
+// step isolation, injected-context sentinel). Bumped so every device that
+// ran a mid-branch v68 script regenerates it. Kept in lockstep with
+// AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 69;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
