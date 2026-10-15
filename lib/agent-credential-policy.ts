@@ -105,3 +105,34 @@ export function resolveForAutonomous(tool: ToolChoice): ToolChoice | null {
   }
   return isAutonomousAllowed(tool) ? tool : null;
 }
+
+/**
+ * N1 consent scope. The user's informed Autonomous Cloud consent lets an
+ * UNATTENDED run keep a keyed WEB backend (Gemini grounded / Perplexity) on a
+ * web-mandatory task — the key authenticates a stateless completion and never
+ * reaches a model/shell. secret-guard still wins upstream.
+ *
+ * 2026-10-15: Perplexity is a search-backed web backend by nature, so a tool
+ * (or step) that resolved to Perplexity — in practice only ever because the
+ * user explicitly named it (「パープレで…」) or the academic-web heuristic
+ * picked it — is treated as web-mandatory on its own, instead of being
+ * stripped whenever detectRouteSignals' topic heuristic happened not to fire
+ * (which left a named-Perplexity scheduled agent refused/degraded while the
+ * same agent run attended used Perplexity). Gemini is a general-purpose
+ * backend, so it still needs the task's own needsWeb signal. Without consent
+ * this returns false and every caller keeps failing closed exactly as before.
+ *
+ * Single source for lib/agent-escalation-ladder.ts, lib/agent-executor.ts's
+ * generateRunScript and lib/agent-plan-spec.ts's buildAgentPlanSpec (agent
+ * level AND per-step `.tool` pins) so the attended and unattended paths
+ * cannot drift.
+ */
+export function autonomousWebConsentCovers(
+  tool: ToolChoice | undefined,
+  needsWeb: boolean,
+  consent: boolean | undefined,
+): boolean {
+  if (consent !== true || !tool) return false;
+  if (tool.type === 'perplexity') return true;
+  return tool.type === 'gemini-api' && needsWeb;
+}

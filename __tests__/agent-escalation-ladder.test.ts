@@ -62,9 +62,14 @@ describe('resolveEscalationLadder — autonomous is local → Codex ONLY', () =>
     expect(types(l)).toEqual(['local', 'cli:codex']);
   });
 
-  it('autonomous with a configured api-key tool still drops it → [local, codex]', () => {
+  it('autonomous with a configured api-key tool still drops it without consent → [codex]', () => {
+    // 2026-10-15: an explicit Perplexity pin is a web-search request by
+    // nature, so it takes the web-mandatory branch (non-web local excluded);
+    // without Autonomous Cloud consent that branch is Codex-only, and the why
+    // says the configured backend wasn't used.
     const l = resolveEscalationLadder(mk({ autonomous: true, tool: { type: 'perplexity' } }), KEYED);
-    expect(types(l)).toEqual(['local', 'cli:codex']);
+    expect(types(l)).toEqual(['cli:codex']);
+    expect(l.why).toContain('configured Perplexity not used');
     expect(types(l)).not.toContain('perplexity');
     expect(types(l)).not.toContain('cerebras');
     expect(types(l)).not.toContain('groq');

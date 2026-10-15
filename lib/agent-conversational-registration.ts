@@ -71,7 +71,7 @@ import type { ParsedAgentDraft } from './agent-nl-parser';
 // normalization is deterministic code's job).
 import { normalizeBrowserPaneUrl, parseSchedule } from './agent-nl-parser';
 import type { AgentAction, SocialConnectorMeta } from '@/store/types';
-import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 // Reused verbatim, NOT re-implemented: this is the one deterministic
 // destination resolver in the codebase, and a mirrored copy here would
 // silently drift from detectSocialPost()'s own matching rules the first time
@@ -1568,10 +1568,19 @@ export function mergeConversationalExtractionIntoDraft(
 
   if (extraction.prompt) {
     const m = next();
-    const suggestion = suggestTool(extraction.prompt);
+    // 2026-10-15: an explicit tool named in the user's own utterance
+    // (draft.rawText, e.g. 「パープレで…」) still pins a single-clause agent
+    // even when the re-derived prompt dropped the mention.
+    const suggestion = suggestToolForDraft(extraction.prompt, {
+      mentionText: draft.rawText,
+      orchestrated:
+        (merged.orchestrationSteps?.length ?? 0) >= 2 ||
+        (Array.isArray(extraction.steps) && extraction.steps.length >= 2),
+    });
     m.prompt = extraction.prompt;
     m.tool = suggestion.tool;
     m.toolLabel = suggestion.label ?? toolChoiceToLabel(suggestion.tool);
+    m.toolExplicit = suggestion.explicit || undefined;
     touched = true;
   }
 

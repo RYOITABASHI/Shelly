@@ -26,9 +26,12 @@ describe('resolveAutonomousFinalTool — single source of truth for the autonomo
     expect(resolveAutonomousFinalTool(true, perplexity, false, true)).toEqual(codex);
   });
 
-  it('autonomous web with consent but NOT needsWeb → Codex (defensive gate)', () => {
+  it('autonomous GEMINI with consent but NOT needsWeb → Codex (defensive gate)', () => {
     expect(resolveAutonomousFinalTool(true, gemini, true, false)).toEqual(codex);
-    expect(resolveAutonomousFinalTool(true, perplexity, true, false)).toEqual(codex);
+  });
+
+  it('2026-10-15: autonomous PERPLEXITY with consent is kept even without needsWeb (search-backed by nature; runtime gates agree — autonomousWebConsentCovers)', () => {
+    expect(resolveAutonomousFinalTool(true, perplexity, true, false)).toEqual(perplexity);
   });
 
   it('autonomous LOCAL is preserved (on-device transform is a valid autonomous path)', () => {

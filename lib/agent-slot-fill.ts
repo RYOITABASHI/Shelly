@@ -11,7 +11,7 @@
 import type { ParsedAgentDraft, ScheduleResult } from './agent-nl-parser';
 import { parseSchedule, fmtTime, JP_DOW_LABEL, extractBrowserTargetUrl } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
-import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import en from './i18n/locales/en';
 import ja from './i18n/locales/ja';
 
@@ -286,13 +286,17 @@ export function applySlotAnswer(
       return { draft, resolved: false };
     }
     const mergedPrompt = `${draft.prompt} ${clarification}`.trim();
-    const suggestion = suggestTool(mergedPrompt);
+    const suggestion = suggestToolForDraft(mergedPrompt, {
+      mentionText: draft.rawText,
+      orchestrated: (draft.orchestrationSteps?.length ?? 0) >= 2,
+    });
     return {
       draft: {
         ...draft,
         prompt: mergedPrompt,
         tool: suggestion.tool,
         toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
+        toolExplicit: suggestion.explicit || undefined,
         needsTaskClarification: undefined,
       },
       resolved: true,

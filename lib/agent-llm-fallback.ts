@@ -55,7 +55,7 @@
 import type { ParsedAgentDraft } from './agent-nl-parser';
 import { parseSchedule } from './agent-nl-parser';
 import type { SocialConnectorMeta, SocialPlatform } from '@/store/types';
-import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import { isCapabilityQuestion } from './ask-context';
 import { ollamaChat, type LocalLlmConfig, type OllamaMessage } from './local-llm';
 import { logInfo } from './debug-logger';
@@ -696,10 +696,17 @@ export function mergeLlmExtractionIntoDraft(
 
   if (extraction.prompt) {
     const m = next();
-    const suggestion = suggestTool(extraction.prompt);
+    // 2026-10-15: an explicit tool named in the user's own utterance
+    // (draft.rawText, e.g. 「パープレで…」) still pins a single-clause agent
+    // even when the re-derived prompt dropped the mention.
+    const suggestion = suggestToolForDraft(extraction.prompt, {
+      mentionText: draft.rawText,
+      orchestrated: (merged.orchestrationSteps?.length ?? 0) >= 2,
+    });
     m.prompt = extraction.prompt;
     m.tool = suggestion.tool;
     m.toolLabel = suggestion.label ?? toolChoiceToLabel(suggestion.tool);
+    m.toolExplicit = suggestion.explicit || undefined;
     touched = true;
   }
 

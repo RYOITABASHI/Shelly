@@ -141,7 +141,16 @@ export function resolveEscalationLadder(
   // backends only: Gemini(grounded) for general / Perplexity for academic, then
   // Codex (danger-full-access shell) as the net fallback.
   const web = detectRouteSignals(routeText);
-  if (web.needsWeb) {
+  // 2026-10-15: an EXPLICIT Perplexity pin (guard 'configured-tool' — the
+  // user named it, e.g. a single-clause 「パープレで最新のLLM論文をリサーチして
+  // 要約して」 now persists {type:'perplexity'} as the agent tool, see
+  // suggestToolForDraft) is a web-search request by nature. It takes the
+  // web-mandatory branch even when the topic heuristic didn't flag needsWeb —
+  // otherwise an unattended (autonomous) run silently dropped the named tool
+  // for local→Codex, and an attended one fell back to non-web backends that
+  // can only hallucinate a "research" answer. Same consent/key gates apply.
+  const explicitPerplexityPin = decision.guard === 'configured-tool' && primary.type === 'perplexity';
+  if (web.needsWeb || explicitPerplexityPin) {
     // 2026-08-03 on-device bug (「なんでパープレじゃなくてこれ(Gemini)なんだっけ？」):
     // when the agent/step is EXPLICITLY pinned to a web backend (guard
     // 'configured-tool' + perplexity/gemini-api — e.g. an orchestration step 0
@@ -166,6 +175,8 @@ export function resolveEscalationLadder(
     const chosenWebName = chosenWeb.type === 'perplexity' ? 'Perplexity' : 'Gemini';
     const chosenWebLabel = chosenWeb.type === 'perplexity' ? 'Perplexity' : 'Gemini (grounded)';
     const pinNote = explicitWebToolPin ? ' (explicitly configured)' : '';
+    const taskLabel = web.needsWeb ? `Web-mandatory ${web.webDomain} task` : 'Explicitly Perplexity-pinned task';
+    const shortTaskLabel = web.needsWeb ? 'Web-mandatory task' : 'Explicitly Perplexity-pinned task';
     if (agent.autonomous) {
       // N1: with the user's informed consent, an autonomous web task may use the
       // keyed web backend (Gemini grounded / Perplexity) unattended — the key
@@ -185,7 +196,7 @@ export function resolveEscalationLadder(
             tools,
             noEscalation: false,
             guard: decision.guard,
-            why: `Web-mandatory ${web.webDomain} task; autonomous cloud opt-in → ${chosenWebLabel}${pinNote}${env.autonomousCloudStop ? ' (stop at free tier on 429)' : ' → Codex on 429'}.`,
+            why: `${taskLabel}; autonomous cloud opt-in → ${chosenWebLabel}${pinNote}${env.autonomousCloudStop ? ' (stop at free tier on 429)' : ' → Codex on 429'}.`,
           };
         }
       }
@@ -193,27 +204,41 @@ export function resolveEscalationLadder(
       // web-capable option is Codex (OAuth shell). Distinguish the keyless
       // consented case in the why — "enable cloud opt-in" would misdiagnose it.
       const why = env.autonomousCloudConsent
-        ? `Web-mandatory task; cloud opt-in is on but the ${chosenWebName} key is not configured → Codex only.`
-        : 'Web-mandatory task; autonomous policy → Codex only (enable cloud opt-in for Gemini/Perplexity).';
+        ? `${shortTaskLabel}; cloud opt-in is on but the ${chosenWebName} key is not configured → Codex only.`
+        : `${shortTaskLabel}; autonomous policy → Codex only (enable cloud opt-in for Gemini/Perplexity)${explicitWebToolPin ? `; configured ${chosenWebName} not used` : ''}.`;
       return { tools: [CODEX], noEscalation: false, guard: decision.guard, why };
     }
     const webPrimary = chosenWeb;
     // Key preflight: a keyless web primary can't authenticate — go straight to
     // Codex (web-capable via its shell) instead of burning an attempt. Local /
     // Cerebras / Groq stay excluded (they would hallucinate a template).
+    //
+    // Exception (2026-10-15): a task that is here ONLY because of an explicit
+    // Perplexity pin (no web signal of its own) keeps the keyless pin first,
+    // exactly like the non-web attended rule below ("an EXPLICITLY configured
+    // tool is kept even keyless — its missing-key error is the legible
+    // signal"), then climbs to Codex. The why records the missing key.
+    if (keyKnownMissing(webPrimary, env) && !web.needsWeb && explicitWebToolPin) {
+      return {
+        tools: dedupe([webPrimary, CODEX]),
+        noEscalation: false,
+        guard: decision.guard,
+        why: `${taskLabel} → ${chosenWebLabel}${pinNote} (key not configured — its error is surfaced) → Codex; non-web backends excluded.`,
+      };
+    }
     if (keyKnownMissing(webPrimary, env)) {
       return {
         tools: [CODEX],
         noEscalation: false,
         guard: decision.guard,
-        why: `Web-mandatory ${web.webDomain} task; ${chosenWebName} key not configured → Codex directly; non-web backends excluded.`,
+        why: `${taskLabel}; ${chosenWebName} key not configured → Codex directly; non-web backends excluded.`,
       };
     }
     return {
       tools: dedupe([webPrimary, CODEX]),
       noEscalation: false,
       guard: decision.guard,
-      why: `Web-mandatory ${web.webDomain} task → ${chosenWebLabel}${pinNote} → Codex; non-web backends excluded.`,
+      why: `${taskLabel} → ${chosenWebLabel}${pinNote} → Codex; non-web backends excluded.`,
     };
   }
 
@@ -226,11 +251,17 @@ export function resolveEscalationLadder(
         .map((t) => resolveForAutonomous(t))
         .filter((t): t is ToolChoice => t !== null),
     );
+    // 2026-10-15: never drop an explicitly configured api-key tool silently —
+    // say in the run's route log why it isn't used unattended.
+    const droppedPin =
+      decision.guard === 'configured-tool' && resolveForAutonomous(primary) === null
+        ? ` (configured ${primary.type} is an API-key backend; autonomous policy → local/Codex instead.)`
+        : '';
     return {
       tools: tools.length ? tools : [CODEX],
       noEscalation: false,
       guard: decision.guard,
-      why: decision.why,
+      why: `${decision.why}${droppedPin}`,
     };
   }
 

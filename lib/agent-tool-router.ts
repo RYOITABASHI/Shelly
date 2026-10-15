@@ -3,8 +3,9 @@
  * When tool.type === 'auto', analyzes the prompt keywords and suggests.
  */
 import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
-import { credentialClass } from './agent-credential-policy';
+import { autonomousWebConsentCovers, credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
+import { detectExplicitToolUsage } from './agent-tool-mentions';
 import {
   scoreRoutes,
   hasAny,
@@ -29,6 +30,11 @@ export interface ToolSuggestion {
   label: string;
   reason: string;
   keyword?: string;
+  /** True when the tool was EXPLICITLY named by the user (suggestToolForDraft's
+   *  single-clause pin), not inferred from keywords. Carried on the draft as
+   *  `toolExplicit` so the confirm/persist boundary keeps the concrete tool
+   *  instead of re-storing `auto` (resolveConfirmedToolAndRunOn). */
+  explicit?: boolean;
 }
 
 export interface AgentRouteResolution {
@@ -95,6 +101,47 @@ export function suggestTool(prompt: string): ToolSuggestion {
     label: 'Gemini API',
     reason: 'General-purpose — Gemini API uses Google AI Studio quota without relying on the removed CLI path',
   };
+}
+
+// The explicit A/B comparison cues of ARTICLE_EVAL_KEYWORDS (everything but
+// the bare model names). "Codexで記事を書いて" names Codex as the instrument and
+// must pin Codex; "QwenとCodexで書き比べて" is a genuine A/B request and keeps
+// the ab-article-eval route.
+const ARTICLE_EVAL_COMPARISON_KEYWORDS = ['a/b', 'ab test', 'article eval', '記事評価', '文章評価', '比較', '書き比べ'];
+
+/**
+ * Tool selection for an agent DRAFT (NL registration / slot-fill / LLM
+ * extraction merge): an explicit "use this tool" mention in a SINGLE-clause
+ * request (lib/agent-tool-mentions.ts detectExplicitToolUsage — the same
+ * TOOL_MENTIONS table multi-step chains use per clause) pins the agent-level
+ * tool, overriding suggestTool's keyword tiers. The pin is persisted as the
+ * agent's configured `tool`, so every executor (attended ladder, the
+ * scheduled `.sh`, the PlanSpec executor) sees guard 'configured-tool' for it.
+ *
+ * `mentionText` — usually the draft's rawText — is checked too because
+ * derivePrompt / an LLM-extracted prompt may have stripped the "パープレで"
+ * phrase out of `prompt`. `orchestrated` (≥2 steps) skips the agent-level pin:
+ * a chain already pins per step, and its agent-level tool (the default for
+ * unpinned steps and the executor-routing input) keeps today's behavior.
+ */
+export function suggestToolForDraft(
+  prompt: string,
+  opts: { mentionText?: string; orchestrated?: boolean } = {},
+): ToolSuggestion {
+  if (!opts.orchestrated) {
+    const pinned = detectExplicitToolUsage(prompt) ?? detectExplicitToolUsage(opts.mentionText);
+    const lower = `${prompt}\n${opts.mentionText ?? ''}`.toLowerCase();
+    const comparison = ARTICLE_EVAL_COMPARISON_KEYWORDS.some((kw) => lower.includes(kw));
+    if (pinned && !comparison) {
+      return {
+        tool: pinned,
+        label: toolChoiceToLabel(pinned),
+        reason: 'Explicitly named in the request — pinned over keyword routing',
+        explicit: true,
+      };
+    }
+  }
+  return suggestTool(prompt);
 }
 
 function textForSecretScan(agent: Agent): string {
@@ -352,8 +399,9 @@ export function resolveAutonomousFinalTool(
 ): ToolChoice {
   if (!autonomous) return scoredTool;
   if (scoredTool.type === 'local') return scoredTool;
-  const isWebTool = scoredTool.type === 'gemini-api' || scoredTool.type === 'perplexity';
-  return cloudConsent && needsWeb && isWebTool ? scoredTool : { type: 'cli', cli: 'codex' };
+  // Same consent predicate as generateRunScript / buildAgentPlanSpec / the
+  // escalation ladder (2026-10-15): Perplexity counts as web on its own.
+  return autonomousWebConsentCovers(scoredTool, needsWeb, cloudConsent) ? scoredTool : { type: 'cli', cli: 'codex' };
 }
 
 /**
@@ -396,10 +444,16 @@ export function resolveConfirmedToolAndRunOn(opts: {
   tool: ToolChoice;
   cloudConsent: boolean;
   needsWeb: boolean;
+  /** 2026-10-15: the draft's tool was EXPLICITLY named by the user
+   *  (ParsedAgentDraft.toolExplicit — e.g. 「パープレで…」). A non-autonomous
+   *  RUN ON = Auto agent then keeps that concrete tool instead of being stored
+   *  as `auto` (which re-scored by keywords on every run and silently ignored
+   *  the named tool, attended and scheduled alike). */
+  toolExplicit?: boolean;
 }): { tool: ToolChoice; runOn: 'auto' | 'on-device' | 'cloud' } {
   const tool: ToolChoice = opts.autonomous
     ? resolveAutonomousFinalTool(true, opts.tool, opts.cloudConsent, opts.needsWeb)
-    : opts.runOn === 'auto'
+    : opts.runOn === 'auto' && !(opts.toolExplicit && opts.tool.type !== 'auto')
     ? { type: 'auto' }
     : opts.tool;
   return { tool, runOn: opts.runOn };

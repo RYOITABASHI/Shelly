@@ -16,7 +16,7 @@
  * All functions are pure (no IO) for deterministic unit tests.
  */
 import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
-import { GEMINI_WEB, PERPLEXITY_WEB } from './agent-router-scoring';
+import { matchToolMention } from './agent-tool-mentions';
 import { AUTH_REFS } from './capability-envelope';
 import { GROQ_DEFAULT_MODEL } from './groq';
 import { MAX_EVIDENCE_CHARS, renderStepEvidence, type StepEvidence } from './agent-sources';
@@ -567,28 +567,9 @@ export function detectApiCallSteps(
 // stricter start-of-clause anchoring).
 const CLAUSE_BOUNDARY = /[、。]+|,\s+|;\s+|\s*\band then\b\s*|\s*\bthen\b\s*/gi;
 
-interface ToolMention {
-  re: RegExp;
-  tool: ToolChoice;
-}
-
-// Ordered; the FIRST pattern that matches a clause wins (a clause naming two
-// tools is not a supported phrasing — pick the earliest/most specific). JP
-// tokens match as a plain substring (no word boundary — CJK has none); Latin
-// tokens use \b so e.g. "codex" doesn't fire inside an unrelated longer word.
-const TOOL_MENTIONS: ToolMention[] = [
-  { re: /パープレ(?:キシティ)?|perplexity/i, tool: PERPLEXITY_WEB },
-  { re: /ローカル\s*llm|local\s*llm|ローカル/i, tool: { type: 'local' } },
-  { re: /\bcodex\b/i, tool: { type: 'cli', cli: 'codex' } },
-  { re: /\bgemini\b/i, tool: GEMINI_WEB },
-];
-
-function matchToolMention(clause: string): ToolChoice | undefined {
-  for (const { re, tool } of TOOL_MENTIONS) {
-    if (re.test(clause)) return tool;
-  }
-  return undefined;
-}
+// TOOL_MENTIONS / matchToolMention moved to lib/agent-tool-mentions.ts
+// (2026-10-15) so lib/agent-tool-router.ts can reuse the SAME table for the
+// single-clause agent-level pin (suggestToolForDraft) without an import cycle.
 
 // A leading clause that is ENTIRELY a schedule/frequency marker (weekday-run,
 // optionally with a time, or a bare 毎日/毎週 daily/weekly marker) rather than
@@ -706,7 +687,7 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
  * `.tool` entirely) whenever a clause explicitly says to call/use that
  * provider's API. That preserves AgentOrchestrationStep's tool/apiCall
  * mutual-exclusivity contract: apiCall (the more specific, already
- * end-to-end-executed mechanism, see the KNOWN GAP note below) always wins.
+ * end-to-end-executed mechanism) always wins.
  *
  * Returns the SAME plain strings unchanged when no clause names a tool
  * (today's exact behavior for the common case — regression-tested: a marker
@@ -736,12 +717,23 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
  * was already honored end-to-end on both paths before this fix, and remains
  * unchanged.
  *
- * The legacy bash/codex path (lib/agent-executor.ts's canRunOrchestrationChain
- * — used when the agent-level tool resolves to `cli`, i.e. Codex) still has
- * its own, coarser gap: ANY step.tool or step.apiCall present collapses the
- * WHOLE chain to a single step with a visible note, rather than running the
- * real chain. That remains a separate, larger follow-up (bash has no HTTP
- * broker abstraction to build per-step dispatch on, unlike this JS runtime).
+ * The legacy bash/codex chain (lib/agent-executor.ts's canRunOrchestrationChain
+ * — used when the agent-level tool resolves to `cli`, i.e. Codex) dispatches
+ * a step `.tool` pin through its own per-step arm (Phase 7 follow-up,
+ * 2026-08-04, STEP_TOOL_BASH_DISPATCHABLE_TYPES); only `.apiCall` steps still
+ * collapse that chain to a single step with a visible note.
+ *
+ * 2026-10-15 (named-tool pins on scheduled runs): the unattended consent gate
+ * used to vet a step pin against the AGENT-LEVEL tool + the agent prompt's
+ * needsWeb (`consentWebTool`), so a consented 「パープレで集めて」 step was still
+ * stripped whenever the agent-level tool was local/codex — the pin worked
+ * attended but not on a scheduled fire. Both unattended executors now also
+ * judge each step pin on its own (lib/agent-credential-policy.ts's
+ * autonomousWebConsentCovers over the step's own instruction), matching the
+ * attended ladder. A SINGLE-clause request's tool mention is handled by
+ * lib/agent-tool-router.ts's suggestToolForDraft instead (agent-level pin,
+ * persisted as the agent's configured tool) — same TOOL_MENTIONS table, see
+ * lib/agent-tool-mentions.ts.
  */
 export function tagStepsWithToolMentions(steps: string[]): Array<string | NormalizedStep> {
   return steps.map((instruction) => {

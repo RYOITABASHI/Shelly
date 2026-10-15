@@ -44,6 +44,9 @@ export interface ConfirmedAgentDraft {
    *  (the card executed immediately on Confirm — no separate @agent run). */
   schedule: string | null;
   tool: ToolChoice;
+  /** 2026-10-15: `tool` was explicitly named by the user (see
+   *  ParsedAgentDraft.toolExplicit) — persisted as-is instead of `auto`. */
+  toolExplicit?: boolean;
   action: AgentAction;
   /** Multi-destination fan-out (2026-07-28) — see store/types.ts's
    *  Agent.actions doc comment. Only ever set by
@@ -502,6 +505,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
       prompt: draft.prompt,
       schedule: isOnce ? null : cron,
       tool: finalTool,
+      toolExplicit: draft.toolExplicit,
       action,
       runOn: autonomous ? 'auto' : runOn,
       autonomous,

@@ -2,7 +2,7 @@ import type { Agent, AgentApiCallConfig, AgentRouteDecision, AgentSocialPostConf
 import { getHomePath } from '@/lib/home-path';
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { detectRouteSignals } from './agent-router-scoring';
-import { resolveForAutonomous } from './agent-credential-policy';
+import { autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import {
   agentUsesStudioContext,
@@ -232,10 +232,10 @@ export function buildAgentPlanSpec(
   // resolution near `orchestrationSteps` (Phase 7, 2026-08-03) can reuse the
   // EXACT same web-consent exception the agent-level tool already gets —
   // two independently-computed copies of this condition would drift.
-  const consentWebTool =
-    opts.autonomousCloudConsent === true &&
-    promptSignals.needsWeb &&
-    (tool.type === 'gemini-api' || tool.type === 'perplexity');
+  // 2026-10-15: shared predicate (a Perplexity tool counts as web on its own —
+  // see autonomousWebConsentCovers) so this matches generateRunScript and the
+  // escalation ladder exactly.
+  const consentWebTool = autonomousWebConsentCovers(tool, promptSignals.needsWeb, opts.autonomousCloudConsent);
 
   if (agent.autonomous) {
     if (!consentWebTool) {
@@ -321,6 +321,13 @@ export function buildAgentPlanSpec(
   const resolveStepToolForPlan = (step: NormalizedStep): NormalizedStep => {
     if (!step.tool || !agent.autonomous) return step;
     if (consentWebTool && (step.tool.type === 'gemini-api' || step.tool.type === 'perplexity')) return step;
+    // 2026-10-15: a step's own pin is judged by its own instruction — the
+    // agent-level consentWebTool is false whenever the agent-level tool isn't a
+    // web backend (e.g. local for "パープレで集めて、ローカルLLMで要約して"),
+    // which used to strip a consented Perplexity step pin on every scheduled fire.
+    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction).needsWeb, opts.autonomousCloudConsent)) {
+      return step;
+    }
     const resolved = resolveForAutonomous(step.tool);
     if (resolved) return { ...step, tool: resolved };
     const { tool: _dropped, ...rest } = step;

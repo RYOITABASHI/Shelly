@@ -642,6 +642,8 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     // runs-and-discards nor ever fires.
     schedule: draft.schedule === 'once' ? null : draft.schedule,
     tool: draft.tool,
+    // 2026-10-15: explicit named-tool pin — see ParsedAgentDraft.toolExplicit.
+    toolExplicit: draft.toolExplicit,
     action: draft.action,
     // 2026-07-28: multi-destination fan-out passthrough — see
     // lib/agent-nl-parser.ts's ParsedAgentDraft.actions doc comment and

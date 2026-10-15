@@ -6,7 +6,7 @@ import { Agent, AgentAction, AgentActionType, AgentRouteDecision, ToolChoice } f
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
-import { requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
+import { autonomousWebConsentCovers, requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { buildAgentPolicy } from './agent-policy';
@@ -702,7 +702,14 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // trusted-variant refusal (accessibility off, Shizuku not running, busy, ...)
 // ends the run as an error with the actionable reason instead of a bare
 // "declined". Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 67;
+// v68 (2026-10-15, named-tool pins on scheduled runs): with Autonomous Cloud
+// consent an explicitly named Perplexity tool / step pin is kept for the
+// unattended script even when the topic heuristic doesn't flag the task as
+// web-mandatory (autonomousWebConsentCovers), and per-step pins on the codex
+// chain are judged by their own instruction. Bumped so on-disk scripts
+// generated under the old gate (refusal script / stripped step pin) are
+// regenerated. Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 68;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1210,10 +1217,10 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   let consentWebTool = false;
   if (agent.autonomous) {
     const sig = detectRouteSignals(agent.prompt);
-    consentWebTool =
-      opts.autonomousCloudConsent === true &&
-      sig.needsWeb &&
-      (tool.type === 'gemini-api' || tool.type === 'perplexity');
+    // 2026-10-15: shared with the ladder / PlanSpec builder — a Perplexity
+    // tool (in practice an explicit 「パープレで…」 pin) counts as web on its
+    // own, so a consented scheduled fire honors it like an attended run.
+    consentWebTool = autonomousWebConsentCovers(tool, sig.needsWeb, opts.autonomousCloudConsent);
     if (!consentWebTool) {
       const resolved = resolveForAutonomous(tool);
       if (!resolved) {
@@ -1311,6 +1318,13 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   const resolveStepToolForChainScript = (step: NormalizedStep): NormalizedStep => {
     if (!step.tool || !agent.autonomous) return step;
     if (consentWebTool && (step.tool.type === 'gemini-api' || step.tool.type === 'perplexity')) return step;
+    // 2026-10-15: judge a step's OWN pin by its OWN instruction — the
+    // agent-level consentWebTool above is false whenever the agent-level tool
+    // isn't itself a web backend (e.g. this codex-resolved chain), which used
+    // to strip a consented 「パープレで集めて」 step pin on every scheduled fire.
+    if (autonomousWebConsentCovers(step.tool, detectRouteSignals(step.instruction).needsWeb, opts.autonomousCloudConsent)) {
+      return step;
+    }
     const resolved = resolveForAutonomous(step.tool);
     if (resolved) return { ...step, tool: resolved };
     const { tool: _dropped, ...rest } = step;
@@ -6246,7 +6260,10 @@ function refusalScript(
   decision: AgentRouteDecision,
   toolType: string,
 ): string {
-  const msg = `autonomous mode does not allow the '${toolType}' backend — no API keys in the autonomous agent path (Spec A). Use OAuth-Codex/local, or route via the credential broker.`;
+  const webHint = toolType === 'perplexity' || toolType === 'gemini-api'
+    ? ' To let unattended runs use a named Perplexity/Gemini web backend, enable Autonomous Cloud consent.'
+    : '';
+  const msg = `autonomous mode does not allow the '${toolType}' backend — no API keys in the autonomous agent path (Spec A). Use OAuth-Codex/local, or route via the credential broker.${webHint}`;
   const toolLabel = toolChoiceToLabel({ type: toolType as ToolChoice['type'] } as ToolChoice);
   const routeDecisionJson = JSON.stringify({ ...decision, toolType, toolLabel });
   return `#!/bin/bash

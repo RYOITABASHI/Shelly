@@ -433,7 +433,12 @@ object AgentRuntime {
     // executors read $HOME/.shelly-closepaw-outcome.json (written by
     // ClosePawHandoff.launch) to report background / main-display / the
     // variant's refusal reason. Bumped so stale copies are refreshed.
-    private const val CURRENT_SCRIPT_VERSION = 67
+    // v68 (2026-10-15, named-tool pins on scheduled runs): JS-side consent
+    // gate change only (a consented, explicitly named Perplexity tool/step pin
+    // is no longer refused/stripped in the unattended script) — see
+    // lib/agent-executor.ts's AGENT_SCRIPT_VERSION v68 comment. No native
+    // logic change; bumped so stale scripts are regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 68
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request

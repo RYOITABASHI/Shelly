@@ -17,7 +17,7 @@
  * The result is a PREVIEW draft, not a live agent. The caller shows it in the confirm card.
  */
 import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
-import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
+import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
@@ -235,6 +235,11 @@ export interface ParsedAgentDraft {
    *  never auto-registered without one human confirm, and the summary says
    *  how it was read. */
   oneShotImplicit?: boolean;
+  /** 2026-10-15: `tool` was EXPLICITLY named by the user in a single-clause
+   *  request (「パープレで…」 / "with Perplexity") — see suggestToolForDraft.
+   *  Persisted as the agent's concrete configured tool at confirm
+   *  (resolveConfirmedToolAndRunOn) instead of `auto`. */
+  toolExplicit?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -2610,7 +2615,6 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   }
 
   const prompt = derivePrompt(rawText, sched);
-  const suggestion = suggestTool(prompt || rawText);
   const memory = detectMemory(rawText);
   // Phase 4: detect an explicit multi-step instruction (≥ 2 ordered parts) via
   // an explicit sequence marker (まず/次に/… , first/then/…, numbered list).
@@ -2627,11 +2631,11 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // (which DOES tag) only ever ran on the OTHER branch. tagStepsWithToolMentions
   // applies the identical TOOL_MENTIONS matching to the explicit-marker steps
   // too, so both step-splitting paths honor a per-clause tool name the same
-  // way. See tagStepsWithToolMentions's doc comment in agent-orchestration.ts
-  // for the residual KNOWN GAP this does NOT close (a `.tool` pin from either
-  // path only takes effect on the attended/"Run Now" path today, not on an
-  // unattended/scheduled fire — unlike `.apiCall`, which already works on
-  // both).
+  // way. A `.tool` pin from either path is honored on BOTH the attended
+  // ("Run Now") path and an unattended/scheduled fire (PlanSpec executor and
+  // the codex-chain .sh) — see tagStepsWithToolMentions's doc comment in
+  // agent-orchestration.ts for how the autonomous credential/consent gate
+  // vets each pin.
   let detectedSteps: Array<string | AgentOrchestrationStep> | undefined =
     explicitSteps.length >= 2
       ? tagStepsWithToolMentions(explicitSteps)
@@ -2670,6 +2674,17 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // detectApiCallSteps also leaves the final step untouched because the PlanSpec
   // executor intentionally consults step.apiCall on non-final steps only.
   const orchestrationSteps = detectedSteps ? detectApiCallSteps(detectedSteps) : undefined;
+  // 2026-10-15: a SINGLE-clause request that explicitly names the tool to use
+  // ("パープレで最新のLLM論文をリサーチして要約して", "research X with
+  // Perplexity") pins the agent-level tool to it — the same TOOL_MENTIONS
+  // table the chain detectors above apply per clause (see
+  // suggestToolForDraft). rawText is checked too: derivePrompt may have
+  // stripped the mention out of `prompt`. A ≥2-step chain keeps today's
+  // agent-level routing (its clauses carry their own `.tool` pins).
+  const suggestion = suggestToolForDraft(prompt || rawText, {
+    mentionText: rawText,
+    orchestrated: !!orchestrationSteps && orchestrationSteps.length >= 2,
+  });
 
   return {
     name: deriveName(sched.oneShotStrip ? removeSpans(rawText, sched.oneShotStrip) || rawText : rawText),
@@ -2689,6 +2704,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     actions,
     tool: suggestion.tool,
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
+    toolExplicit: suggestion.explicit || undefined,
     autonomous: detectAutonomousIntent(rawText),
     memory,
     actionCaveat,

@@ -335,20 +335,37 @@ describe('Agent PlanSpec v1', () => {
       expect(spec.steps!.list[0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
     });
 
-    it('does NOT bypass consent for a step tool the agent-level exception does not cover (agent-level tool is local, not web-needing)', () => {
+    it('does NOT bypass consent for a GEMINI step pin on a non-web step (agent-level tool is local, not web-needing)', () => {
+      const orchestration = {
+        steps: [
+          { instruction: 'tidy up the wording', tool: { type: 'gemini-api' as const } },
+          'summarize and save it',
+        ],
+      };
+      // Gemini is general-purpose: consent covers it only on a web-needing
+      // step, judged by the step's own instruction.
+      const spec = buildAgentPlanSpec(
+        agent({ autonomous: true, prompt: 'say hello', orchestration }),
+        { autonomousCloudConsent: true },
+      );
+      expect(spec.steps!.list[0].tool).toBeUndefined();
+    });
+
+    it('2026-10-15: keeps a consented PERPLEXITY step pin even when the agent-level tool is local (step judged on its own)', () => {
       const orchestration = {
         steps: [
           { instruction: 'search for sources', tool: { type: 'perplexity' as const, model: 'sonar-deep-research' } },
           'summarize and save it',
         ],
       };
-      // autonomousCloudConsent alone, with no needs-web prompt, does not
-      // exempt anything — consentWebTool requires promptSignals.needsWeb too.
       const spec = buildAgentPlanSpec(
         agent({ autonomous: true, prompt: 'say hello', orchestration }),
         { autonomousCloudConsent: true },
       );
-      expect(spec.steps!.list[0].tool).toBeUndefined();
+      expect(spec.steps!.list[0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
+      // ...but never without consent.
+      const noConsent = buildAgentPlanSpec(agent({ autonomous: true, prompt: 'say hello', orchestration }));
+      expect(noConsent.steps!.list[0].tool).toBeUndefined();
     });
 
     it('FAN-OUT (2026-08-13): a parallelGroup marker never weakens the vetting — an api-key step pin inside a group is still stripped on an autonomous agent, and the group id itself survives into steps.list', () => {

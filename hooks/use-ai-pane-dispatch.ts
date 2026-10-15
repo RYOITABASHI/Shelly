@@ -1822,6 +1822,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               tool: patchedDraft.tool,
               cloudConsent,
               needsWeb,
+              toolExplicit: patchedDraft.toolExplicit,
             });
             partial.autonomous = true;
             partial.tool = resolved.tool;
@@ -4126,6 +4127,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         tool: confirmed.tool,
         cloudConsent,
         needsWeb,
+        toolExplicit: confirmed.toolExplicit,
       });
       try {
         // Editing a draft does not expose runOn/tool as patchable fields. Keep

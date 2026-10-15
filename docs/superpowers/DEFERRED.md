@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-15: CC（fix/agent-named-tool-scheduled）が「パープレで…」等の**名指しツール**を単一節リクエストでも agent-level tool として固定・永続化し、スケジュール（無人）実行でも attended と同じく尊重するよう修正。下記「✅ 名指しツール（…）が単一節リクエスト・スケジュール実行で無視される」参照。
 - 2026-10-15: CC（feat/closepaw-result-wait + fork feat/shelly-result-callback）が `shelly closepaw` の実行結果を呼び出し元へ返す経路を実装（ClosePaw 変種 → Shelly の結果ブロードキャスト、`shelly closepaw wait <reqId>` / `--wait`）。実機未検証 — 下記「ClosePaw 引き継ぎ」Phase 2 (b) 参照。
 - 2026-10-14: CC（feat/closepaw-background-entry）が Shelly 用 ClosePaw 変種 v0.1.0-4 のバックグラウンド入口（順序付き明示ブロードキャスト `ai.closepaw.action.SHELLY_RUN_GOAL` → `ShellyGoalReceiver`）に対応。変種なら activity 起動の代わりにブロードキャストし、ClosePaw は Shizuku 仮想ディスプレイで作業（前面に出ない）。結果コードをシム/エージェント実行結果/チャットに反映、0・5 秒無応答は従来の activity 起動へフォールバック。実機未検証 — 下記 P1 エントリ参照。
 - 2026-10-14: CC（fix/release-signing）がリリース APK が公開 RN/Expo debug.keystore で署名されていることを受け、非公開リリース鍵（APK Signature Scheme v3 鍵ローテーション、API 28+ はその場更新）・CI 署名検証・暗号化バックアップ/復元・アップデーターの署名判定を実装。main の切り替えはオーナー承認待ち — 下記 P0 エントリ参照。
@@ -1346,6 +1347,23 @@
 → sync: なし（内部ロジックのみ）。
 
 ---
+
+### ✅ 名指しツール（「パープレで…」/ "with Perplexity"）が単一節リクエスト・スケジュール実行で無視される（2026-10-15、CC、ブランチ `fix/agent-named-tool-scheduled`）— 実機未検証
+
+**症状**: (1) 「パープレで最新のLLM論文をリサーチして要約して」のような**単一節**リクエストでは、`TOOL_MENTIONS` によるツールピンが ≥2 節チェーン（`detectToolPinnedSteps` / `tagStepsWithToolMentions`）にしか効かず、agent-level tool は `suggestTool` のキーワード判定のみで決まっていた。(2) さらに confirm 境界 `resolveConfirmedToolAndRunOn` が非自律・RUN ON=Auto のエージェントを常に `tool:'auto'` で保存していたため、名指しツールは永続化されず実行毎にキーワード再判定された（attended / スケジュール共通）。(3) 自律エージェントでは Autonomous Cloud 同意があっても、`consentWebTool` が「プロンプトの needsWeb 判定」と「agent-level tool が Web 系」を要求していたため、needsWeb が立たない Perplexity ピンは `.sh` で REFUSED、PlanSpec / codex チェーンではステップの Perplexity ピンが剥がされていた（agent-level tool が local/codex のチェーンでは同意があっても常に剥がれる）。ラダーの自律・非Web分岐も Perplexity ピンを黙って local→Codex に置き換えていた。
+
+**修正**:
+- `lib/agent-tool-mentions.ts`（新規）: `TOOL_MENTIONS` / `matchToolMention` を移設（循環 import 回避）し、単一節用に「道具としての使用」文脈（JA「<tool>で / を使って / 経由で / に聞いて」、EN "with/using/via/through/use/ask <tool>"）を要求する `detectExplicitToolUsage` を追加（「Geminiの最新ニュース」等の話題言及は除外）。
+- `lib/agent-tool-router.ts` `suggestToolForDraft`: 単一節（非オーケストレーション）で名指しがあればキーワード判定より優先し `explicit:true` を返す（A/B 比較語がある場合は ab-article-eval を維持）。parser / slot-fill / LLM fallback / Tier3 会話登録の全経路で使用、`rawText` も検査。`ParsedAgentDraft.toolExplicit` → `ConfirmedAgentDraft.toolExplicit` → `resolveConfirmedToolAndRunOn({toolExplicit})` で具体ツールのまま永続化。
+- `lib/agent-credential-policy.ts` `autonomousWebConsentCovers`: 同意スコープの単一述語。Perplexity は検索バックエンドなので needsWeb 無しでも同意でカバー、Gemini は従来通り needsWeb 必須、同意無しは従来通り fail-closed。`generateRunScript` / `buildAgentPlanSpec`（agent-level と**ステップ毎**、ステップは自身の instruction で判定）/ `resolveAutonomousFinalTool` で共有。
+- `lib/agent-escalation-ladder.ts`: 明示 Perplexity ピンは needsWeb が無くても Web 分岐へ（非Web系の幻覚フォールバックを除外）。キー未設定時はピンを先頭に残し why に記録（ピン経由のみ、従来の needsWeb タスクは Codex 直行のまま）。自律・非Web分岐で API キー系の設定ツールを落とす場合も why に明記。
+- `.sh` の REFUSED メッセージに「Autonomous Cloud consent を有効化」のヒントを追加。`AGENT_SCRIPT_VERSION` / `CURRENT_SCRIPT_VERSION` 67→68（executor JS は無変更のため `CURRENT_EXECUTOR_VERSION` は据え置き）。
+
+**残課題**:
+- **P2**: 既存登録済みエージェントは `tool:'auto'` 等のまま（再登録 or 編集で名指しし直すまで新挙動にならない）。マイグレーションは未実装。
+- **P2**: 自律＋同意無しで名指し Perplexity を登録すると confirm 時点で Codex に解決され保存される（従来ポリシー踏襲）。確認文にツール差し替えの明示は無い。
+- **P3**: 単一節の「使用」文脈判定は正規表現ヒューリスティック（例: "compare Gemini with Codex" は Codex ピン）。
+- 実機検証未実施: 「毎朝8時にパープレで最新のLLM論文をリサーチして要約して」を登録 → `~/.shelly/agents/<id>.json` の `tool.type` が `perplexity`、スケジュール発火のログ `toolUsed` が Perplexity API であることを確認する。
 
 ### ✅ Web必須タスクのエスカレーションラダーが、明示的なPerplexity/Geminiピンを無視してwebDomain分類で機械的にツールを再選択（2026-08-03、実機発見「なんでパープレじゃなくてこれ？」、Fable5実装）— 未コミット・実機未検証
 
