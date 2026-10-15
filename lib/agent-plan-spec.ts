@@ -2,6 +2,7 @@ import type { Agent, AgentApiCallConfig, AgentRouteDecision, AgentSocialPostConf
 import { getHomePath } from '@/lib/home-path';
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { detectRouteSignals } from './agent-router-scoring';
+import { outputLanguageDirective } from './agent-output-language';
 import { autonomousPinRefusalReason, autonomousWebConsentCovers, resolveForAutonomous } from './agent-credential-policy';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import {
@@ -475,9 +476,12 @@ function toPlanTool(tool: ToolChoice, unsupportedReason?: string): AgentPlanSpec
 }
 
 function buildExecutorPrompt(prompt: string): string {
+  // 2026-10-15: same output-language directive as generateRunScript (judged
+  // on the task segment, never on prepended memory/skill context).
+  const languageDirective = outputLanguageDirective(prompt);
   const signals = detectRouteSignals(prompt);
-  if (!signals.needsWeb) return prompt;
-  return [
+  if (!signals.needsWeb) return languageDirective + prompt;
+  return languageDirective + [
     'You are a research-collection agent. Execute this task now.',
     'Return only a Markdown bullet list with real primary-source URLs.',
     '',

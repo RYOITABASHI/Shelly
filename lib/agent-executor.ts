@@ -6,6 +6,7 @@ import { Agent, AgentAction, AgentActionType, AgentRouteDecision, ToolChoice } f
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
+import { outputLanguageDirective } from './agent-output-language';
 import { autonomousPinRefusalReason, autonomousWebConsentCovers, requiresApiKeyEnv, resolveForAutonomous } from './agent-credential-policy';
 import { getHomePath } from '@/lib/home-path';
 import { evaluateAgentActionCommand } from './agent-action-safety';
@@ -1534,19 +1535,17 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // agent.prompt's composite — see the option's doc comment above.
   const promptSignals = detectRouteSignals(opts.routeTextOverride?.trim() ? opts.routeTextOverride : agent.prompt);
   // (A) Output-language guard: deep-research models (Perplexity sonar-deep-research)
-  // ignore a soft "same language as the task" hint and answer in English even for a
-  // Japanese task. When the task is Japanese, lead with a forceful directive to write
-  // the whole answer in Japanese and TRANSLATE non-Japanese source material — language
-  // is orthogonal to the report format the model insists on, so it honours this even
-  // when it ignores the "bullet list only" shape. (Source URLs stay verbatim.)
-  const taskIsJapanese = /[ぁ-んァ-ヶ一-龥]/.test(agent.prompt);
-  const languageDirective = taskIsJapanese
-    ? 'OUTPUT LANGUAGE (REQUIRED): Write the ENTIRE response in Japanese (日本語). Any non-Japanese source material MUST be translated into natural Japanese and summarised in Japanese — never leave English paragraphs. Source URLs stay verbatim.\n\n'
-    : '';
+  // ignore a soft "same language as the task" hint. EVERY prompt now leads with a
+  // forceful directive in the language of the TASK text (Japanese → Japanese,
+  // English → English, other → the task's own language), judged on the task
+  // segment only — never on prepended memory/skill context — and stated to
+  // override the language of any context below (2026-10-15 on-device finding:
+  // an English task produced Japanese summaries; see lib/agent-output-language.ts).
+  const languageDirective = outputLanguageDirective(agent.prompt, opts.routeTextOverride);
   const collectionContract = promptSignals.needsWeb
-    ? languageDirective + 'You are a research-collection agent. EXECUTE this task NOW using live web search — do NOT describe, design, or plan a workflow, and do NOT explain how it could be done. Return ONLY a Markdown bullet list, one line per source, each formatted exactly as:\n- [title](primary_source_url) — concise summary (max 200 characters)\nRules: include at least one item; cite real, verifiable PRIMARY-source URLs (papers, official sites, journals), never search-engine or aggregator links; output no preamble, headings, or closing remarks — only the list.\n\nTask:\n'
+    ? 'You are a research-collection agent. EXECUTE this task NOW using live web search — do NOT describe, design, or plan a workflow, and do NOT explain how it could be done. Return ONLY a Markdown bullet list, one line per source, each formatted exactly as:\n- [title](primary_source_url) — concise summary (max 200 characters)\nRules: include at least one item; cite real, verifiable PRIMARY-source URLs (papers, official sites, journals), never search-engine or aggregator links; output no preamble, headings, or closing remarks — only the list.\n\nTask:\n'
     : '';
-  const escapedPrompt = (collectionContract + agent.prompt).replace(/'/g, "'\\''");
+  const escapedPrompt = (languageDirective + collectionContract + agent.prompt).replace(/'/g, "'\\''");
   const injectStudioContext = agentUsesStudioContext(agent);
   const injectDeviceStatusContext = agentNeedsDeviceStatusContext(agent);
 
@@ -1586,7 +1585,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     // single-step agent" regression test).
     orchestrationChain: canRunOrchestrationChain
       ? {
-          basePrompt: agent.prompt,
+          basePrompt: languageDirective + agent.prompt,
           steps: attemptableOrchestrationSteps,
           totalStepCount: fullOrchestrationSteps.length,
           maxSteps: orchestrationBudget.maxSteps,

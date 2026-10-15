@@ -441,13 +441,14 @@ describe('generateRunScript — collection contract + no-source guard (North Sta
     }
   });
 
-  it('(A) forces Japanese output for a Japanese web task, not for an English one', () => {
+  it('(A) forces the TASK language: Japanese for a Japanese task, English for an English one (2026-10-15)', () => {
     const ja = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: 'STEAM×AIの最新論文を集めて' });
     expect(ja).toContain('OUTPUT LANGUAGE (REQUIRED)');
     expect(ja).toContain('日本語');
 
     const en = generateRunScript({ ...agent({ type: 'perplexity' }), prompt: 'collect the latest STEAM×AI papers' });
-    expect(en).not.toContain('OUTPUT LANGUAGE (REQUIRED)');
+    expect(en).toContain('Write the ENTIRE response in English');
+    expect(en).not.toContain('日本語');
   });
 
   it('leaves a non-web task untouched (no contract → no behavioural change)', () => {
