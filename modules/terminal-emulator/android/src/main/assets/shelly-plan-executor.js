@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=10
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=11
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -37,7 +37,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // ClosePawHandoff.launch) so the run says background / main-display, or ends
 // as an error with the trusted variant's refusal reason. Bumped so a stale v8
 // copy is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 10;
+const EXECUTOR_SCRIPT_VERSION = 11;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
 // lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
@@ -975,10 +975,20 @@ function stripSourcesSection(text) {
   return out.join('\n').replace(/\s+$/, '');
 }
 const CITATION_GROUP_RE = /\[(\d{1,3}(?:\s*[,，、]\s*\d{1,3})*)\](?!\()/g;
+/** v8.1.1 (2026-10-16 on-device): notes ended lines with "[1] [1]" — the
+ *  model's own marker next to the one a known link/URL gets, or two markers
+ *  that remap to the same source ("[3] [1]" where 3 aliases 1). Adjacent
+ *  repeats of the SAME marker (space-separated or not) collapse to one;
+ *  different markers ("[1] [2]") and markdown links ("[1](url)") are untouched. */
+const ADJACENT_DUPLICATE_CITATION_RE = /(\[(\d{1,3})\])(?:[ \t]*\[\2\](?!\())+/g;
+function dedupeAdjacentCitations(text) {
+  return text.replace(ADJACENT_DUPLICATE_CITATION_RE, '$1');
+}
 /** Rewrite every [n] / [n, m] marker via `map` (0 = drop that number).
- *  NFKC first, so full-width ［１］ markers are recognized. */
+ *  NFKC first, so full-width ［１］ markers are recognized. Adjacent repeats
+ *  of the same resulting marker collapse to one (dedupeAdjacentCitations). */
 function remapCitations(text, map) {
-  return nfkc(text).replace(CITATION_GROUP_RE, (_all, group) => {
+  return dedupeAdjacentCitations(nfkc(text).replace(CITATION_GROUP_RE, (_all, group) => {
     const seen = [];
     for (const part of group.split(/[,，、]/)) {
       const mapped = map(parseInt(part.trim(), 10));
@@ -986,7 +996,7 @@ function remapCitations(text, map) {
         seen.push(mapped);
     }
     return seen.map((n) => `[${n}]`).join('');
-  });
+  }));
 }
 function citationIds(text) {
   const ids = [];

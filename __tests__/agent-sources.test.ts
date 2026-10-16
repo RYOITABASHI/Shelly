@@ -1,6 +1,8 @@
 import {
   absorbResearchStep,
   buildFallbackBriefing,
+  dedupeAdjacentCitations,
+  remapCitations,
   choosePerplexityModel,
   createChainEvidence,
   detectRecency,
@@ -318,5 +320,35 @@ describe('postProcessSourcedOutput', () => {
 
   it('exposes a clear no-sources message', () => {
     expect(NO_SOURCES_MESSAGE).toMatch(/No verifiable sources/);
+  });
+});
+
+describe('v8.1.1: adjacent duplicate citation markers collapse', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const exec = require('../scripts/shelly-plan-executor.js');
+
+  it('dedupeAdjacentCitations collapses only adjacent identical markers', () => {
+    expect(dedupeAdjacentCitations('Gemma runs on phones. [1] [1]')).toBe('Gemma runs on phones. [1]');
+    expect(dedupeAdjacentCitations('a [2][2] [2] b')).toBe('a [2] b');
+    expect(dedupeAdjacentCitations('a [1] [2] [1]')).toBe('a [1] [2] [1]');
+    expect(dedupeAdjacentCitations('see [1](https://x.example) [1]')).toBe('see [1](https://x.example) [1]');
+    expect(dedupeAdjacentCitations('[1] [1](https://x.example)')).toBe('[1] [1](https://x.example)');
+  });
+
+  it('remapCitations collapses markers that map to the same source', () => {
+    expect(remapCitations('claim [3] [1]', (n) => (n === 3 ? 1 : n))).toBe('claim [1]');
+    expect(remapCitations('claim [1] [1]', (n) => n)).toBe('claim [1]');
+  });
+
+  it('postProcessSourcedOutput (TS and executor port) never emits "[n] [n]"', () => {
+    const { evidence } = demoEvidence();
+    const src = evidence.sources[evidence.sources.length - 1];
+    // The model's own marker next to the one its known bare URL is given.
+    const llm = `- **Google releases Gemma 3n for on-device AI** — Runs on phones with 2GB of RAM. ${src.url} [${src.id}]\n- **Gemma 3n on phones** — again. [${src.id}] [${src.id}]`;
+    for (const impl of [postProcessSourcedOutput, exec.postProcessSourcedOutput]) {
+      const out = impl(llm, evidence, { finalize: true, trusted: true });
+      expect(out.text).toMatch(/\[\d+\]/);
+      expect(out.text).not.toMatch(/\[(\d+)\][ \t]*\[\1\](?!\()/);
+    }
   });
 });

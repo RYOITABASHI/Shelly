@@ -500,17 +500,29 @@ export function stripSourcesSection(text: string): string {
 
 const CITATION_GROUP_RE = /\[(\d{1,3}(?:\s*[,，、]\s*\d{1,3})*)\](?!\()/g;
 
+/** v8.1.1 (2026-10-16 on-device): notes ended lines with "[1] [1]" — the
+ *  model's own marker next to the one a known link/URL gets, or two markers
+ *  that remap to the same source ("[3] [1]" where 3 aliases 1). Adjacent
+ *  repeats of the SAME marker (space-separated or not) collapse to one;
+ *  different markers ("[1] [2]") and markdown links ("[1](url)") are untouched. */
+const ADJACENT_DUPLICATE_CITATION_RE = /(\[(\d{1,3})\])(?:[ \t]*\[\2\](?!\())+/g;
+
+export function dedupeAdjacentCitations(text: string): string {
+  return text.replace(ADJACENT_DUPLICATE_CITATION_RE, '$1');
+}
+
 /** Rewrite every [n] / [n, m] marker via `map` (0 = drop that number).
- *  NFKC first, so full-width ［１］ markers are recognized. */
+ *  NFKC first, so full-width ［１］ markers are recognized. Adjacent repeats
+ *  of the same resulting marker collapse to one (dedupeAdjacentCitations). */
 export function remapCitations(text: string, map: (n: number) => number): string {
-  return nfkc(text).replace(CITATION_GROUP_RE, (_all, group: string) => {
+  return dedupeAdjacentCitations(nfkc(text).replace(CITATION_GROUP_RE, (_all, group: string) => {
     const seen: number[] = [];
     for (const part of group.split(/[,，、]/)) {
       const mapped = map(parseInt(part.trim(), 10));
       if (mapped > 0 && seen.indexOf(mapped) === -1) seen.push(mapped);
     }
     return seen.map((n) => `[${n}]`).join('');
-  });
+  }));
 }
 
 function citationIds(text: string): number[] {
