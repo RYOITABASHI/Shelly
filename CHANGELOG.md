@@ -6,6 +6,37 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.1.1] - 2026-10-16
+
+### Added
+
+- **Keep ChatGPT connected.** Settings > Codex Login can keep the Codex
+  remote-control host running in Shelly's foreground service, so ChatGPT
+  reconnects by itself after app restarts, updates, reboots and network
+  changes. It can only be turned on in Settings (the shell can turn it
+  off: `shelly codex autostart off|status`), and it stops on Disconnect,
+  STOP-ALL, or when notifications are off.
+
+### Changed
+
+- `shelly closepaw --wait` / `wait <reqId>` return after 100 s by default
+  (exit 124 with the exact command to keep waiting), so a ChatGPT turn
+  never times out while the user is approving on the phone.
+- Perplexity notes renumber citation markers onto the Sources list, and
+  cited sources are always listed. Deep-research results drop inline
+  markers (their numbers do not match the sources Perplexity returns) and
+  keep the Sources list.
+
+### Fixed
+
+- Codex remote control could fail with "No such file or directory (os
+  error 2)" when started from a script or the autostart host.
+- "Every day at HH:MM, ..." no longer becomes an extra chain step.
+- A saved skill is no longer reused for a materially different request.
+- Repeated citation markers such as `[1] [1]` are collapsed.
+- Bundled binaries are refreshed once per app start instead of on every
+  command.
+
 ## [8.1.0] - 2026-10-15
 
 ### Added
