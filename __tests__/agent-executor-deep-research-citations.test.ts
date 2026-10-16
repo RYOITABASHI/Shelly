@@ -144,6 +144,59 @@ describe('extract_ai_content — every remaining [n] resolves (build 2603, v70)'
     expect(out).toBe('a[1] b [54]');
   });
 
+  // v71: the attribution audit sidecar. The raw response file is rm -f'd right
+  // after extraction, so when a note's [n] points at the wrong paper nothing
+  // was left to tell Perplexity's own marker/array misalignment from a
+  // mapping bug. extract_ai_content now writes ONE overwritten file per agent
+  // into the existing log dir with the pre-renumbering content and the raw
+  // arrays — never the key/headers (they are not in the response body).
+  const LONG_CONTENT = 'Alpha [54]. ' + 'x'.repeat(30000);
+  function runNode(dir: string, response: string, logDir: string): string {
+    fs.writeFileSync(path.join(dir, 'extract.js'), extractHeredoc(script, 'NODEEOF'));
+    fs.writeFileSync(path.join(dir, 'resp.json'), response);
+    return execFileSync(process.execPath, [path.join(dir, 'extract.js'), path.join(dir, 'resp.json'), logDir]).toString();
+  }
+
+  it('node extractor: writes $LOG_DIR/perplexity-last.json (model, truncated raw content, citations, search_results)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deep-research-diag-'));
+    const logDir = path.join(dir, 'logs', 'deep-research');
+    const response = JSON.stringify({
+      id: 'resp-1',
+      model: 'sonar-deep-research',
+      choices: [{ message: { content: LONG_CONTENT } }],
+      citations,
+      search_results: searchResults.map((r) => ({ ...r, snippet: 'long snippet '.repeat(50), last_updated: '2026-10-16' })),
+    });
+    const out = runNode(dir, response, logDir);
+    expect(body(out)).toContain('Alpha [1].');
+    const diagPath = path.join(logDir, 'perplexity-last.json');
+    const diag = JSON.parse(fs.readFileSync(diagPath, 'utf8'));
+    expect(Object.keys(diag)).toEqual(['model', 'content_chars', 'content', 'citations', 'search_results']);
+    expect(diag.model).toBe('sonar-deep-research');
+    expect(diag.content_chars).toBe(LONG_CONTENT.length);
+    expect(diag.content).toHaveLength(20000);
+    expect(diag.content.startsWith('Alpha [54].')).toBe(true); // raw markers, pre-renumbering
+    expect(diag.citations).toEqual(citations);
+    expect(diag.search_results).toHaveLength(searchResults.length);
+    expect(diag.search_results[0]).toEqual({ title: 'Paper 10001', url: 'https://arxiv.org/abs/2610.10001', date: '2026-10-15', last_updated: '2026-10-16' });
+    expect(fs.readFileSync(diagPath, 'utf8')).not.toContain('snippet');
+    if (process.platform !== 'win32') expect(fs.statSync(diagPath).mode & 0o777).toBe(0o600);
+    // overwritten in place on the next response (one fixed file per agent)
+    runNode(dir, JSON.stringify({ model: 'sonar', choices: [{ message: { content: 'B [1]' } }], citations: ['https://b.example/'] }), logDir);
+    expect(JSON.parse(fs.readFileSync(diagPath, 'utf8'))).toEqual({ model: 'sonar', content_chars: 5, content: 'B [1]', citations: ['https://b.example/'], search_results: [] });
+    expect(fs.readdirSync(logDir)).toEqual(['perplexity-last.json']);
+  });
+
+  it('node extractor: no sidecar file for responses without Perplexity sources', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'deep-research-nodiag-'));
+    const logDir = path.join(dir, 'logs', 'deep-research');
+    runNode(dir, JSON.stringify({ model: 'gpt-oss-120b', choices: [{ message: { content: 'plain [1]' } }] }), logDir);
+    expect(fs.existsSync(path.join(logDir, 'perplexity-last.json'))).toBe(false);
+    // and an empty LOG_DIR argument writes nothing anywhere
+    runNode(dir, RESPONSE, '');
+    expect(fs.existsSync(path.join(dir, 'perplexity-last.json'))).toBe(false);
+  });
+
   const hasPython = (() => {
     try {
       execFileSync('python3', ['--version']);
@@ -158,9 +211,16 @@ describe('extract_ai_content — every remaining [n] resolves (build 2603, v70)'
     fs.writeFileSync(path.join(dir, 'extract.js'), extractHeredoc(script, 'NODEEOF'));
     fs.writeFileSync(path.join(dir, 'resp.json'), RESPONSE);
     const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
-    const py = execFileSync('python3', [path.join(dir, 'extract.py'), path.join(dir, 'resp.json')], { env }).toString().replace(/\r\n/g, '\n'); // Windows text-mode stdout
-    const node = execFileSync(process.execPath, [path.join(dir, 'extract.js'), path.join(dir, 'resp.json')]).toString();
+    const pyLog = path.join(dir, 'py-logs');
+    const nodeLog = path.join(dir, 'node-logs');
+    const py = execFileSync('python3', [path.join(dir, 'extract.py'), path.join(dir, 'resp.json'), pyLog], { env }).toString().replace(/\r\n/g, '\n'); // Windows text-mode stdout
+    const node = execFileSync(process.execPath, [path.join(dir, 'extract.js'), path.join(dir, 'resp.json'), nodeLog]).toString();
     checkOutput(py);
     expect(py).toBe(node);
+    // v71 sidecar: byte-identical between the two branches
+    const pyDiag = fs.readFileSync(path.join(pyLog, 'perplexity-last.json'), 'utf8');
+    const nodeDiag = fs.readFileSync(path.join(nodeLog, 'perplexity-last.json'), 'utf8');
+    expect(pyDiag).toBe(nodeDiag);
+    expect(JSON.parse(nodeDiag).content).toBe(CONTENT);
   });
 });
