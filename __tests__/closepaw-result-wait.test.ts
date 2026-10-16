@@ -175,17 +175,95 @@ describe('generated shim: shelly closepaw wait', () => {
     writeRun(home, { status: 'running', message: 'Approved' });
     const r = await run(['closepaw', 'wait', REQ, '--timeout', '1']);
     expect(r.code).toBe(124);
-    expect(r.out).toContain(`ClosePaw is still running (request ${REQ}). Run again to keep waiting: shelly closepaw wait ${REQ}`);
+    expect(r.out).toContain(`ClosePaw is still running (request ${REQ}). Not finished yet - run this exact command next and keep waiting for it: shelly closepaw wait ${REQ}`);
     writeRun(home, { status: 'pending-approval', message: 'Waiting', expiresAtMs: Date.now() + 600_000 });
     const p = await run(['closepaw', 'wait', REQ, '--timeout', '1']);
     expect(p.code).toBe(124);
-    expect(p.out).toContain(`ClosePaw is still waiting for the user to approve on the phone (request ${REQ}). Run again to keep waiting: shelly closepaw wait ${REQ}`);
+    expect(p.out).toContain(`ClosePaw is still waiting for the user to approve on the phone (request ${REQ}). Not finished yet - run this exact command next and keep waiting for it: shelly closepaw wait ${REQ}`);
   });
 
   it('--wait --timeout hands off and ends with the re-invoke line when not finished', async () => {
     const r = await run(['closepaw', '--wait', '--timeout', '2', 'set an alarm for 7'], fakeNative([]));
     expect(r.code).toBe(124);
-    expect(r.out).toMatch(/ClosePaw is still waiting for the user to approve on the phone \(request ([0-9]+-[0-9a-f]{8})\)\. Run again to keep waiting: shelly closepaw wait \1$/m);
+    expect(r.out).toMatch(/ClosePaw is still waiting for the user to approve on the phone \(request ([0-9]+-[0-9a-f]{8})\)\. Not finished yet - run this exact command next and keep waiting for it: shelly closepaw wait \1$/m);
+  });
+
+  // v267 (shim v19): Codex's unified exec yields after ~10s with the output so
+  // far and the model decides whether to keep polling. The wait must therefore
+  // open with a model-directed "still running" line and must not print the
+  // native approval text (which reads like a final answer) until it gives up.
+  describe('keeps a remote-control model waiting (shim v19)', () => {
+    const DIRECTIVE = 'Do not end your turn and do not answer yet: this command is still running and prints the ClosePaw result when it exits.';
+
+    it('--wait opens with the waiting directive and holds the approval text back while it blocks', async () => {
+      const r = await run(
+        ['closepaw', '--wait', 'set an alarm for 7'],
+        fakeNative([
+          { status: 'running', message: 'Approved' },
+          { status: 'completed', message: 'ClosePaw finished the task', summary: 'Alarm set' },
+        ]),
+      );
+      expect(r.code).toBe(0);
+      const lines = r.out.split(/\r?\n/).filter(Boolean);
+      expect(lines[0]).toMatch(/^Handed off to Shelly \(request [0-9]+-[0-9a-f]{8}\); the phone owner has been asked to approve it\.$/);
+      expect(lines[1]).toMatch(/^Waiting for the phone owner to approve and for ClosePaw to finish \(up to 100s, request [0-9]+-[0-9a-f]{8}\)\.$/);
+      expect(lines[2]).toContain(DIRECTIVE);
+      expect(lines[2]).toContain('keep polling that session until the command exits');
+      expect(lines[2]).toContain('Only the phone owner can approve; nothing you send can.');
+      expect(r.out).not.toContain('Shelly approval required');
+      expect(r.out).not.toContain('Next step');
+      expect(r.out.indexOf(DIRECTIVE)).toBeLessThan(r.out.indexOf('ClosePaw result: completed'));
+    });
+
+    it('--wait prints the native approval text only with the exit-124 re-invoke line', async () => {
+      const r = await run(['closepaw', '--wait', '--timeout', '1', 'set an alarm for 7'], fakeNative([]));
+      expect(r.code).toBe(124);
+      const lines = r.out.split(/\r?\n/).filter(Boolean);
+      const reinvoke = lines.findIndex((l) => /^ClosePaw is still waiting for the user to approve on the phone \(request [0-9]+-[0-9a-f]{8}\)\. Not finished yet - run this exact command next and keep waiting for it: shelly closepaw wait [0-9]+-[0-9a-f]{8}$/.test(l));
+      expect(reinvoke).toBeGreaterThan(0);
+      expect(lines[reinvoke + 1]).toMatch(/^Shelly approval required: Request [0-9]+-[0-9a-f]{8}$/);
+      expect(lines.slice(0, reinvoke).join('\n')).not.toContain('Shelly approval required');
+    });
+
+    it('wait <id> opens with the same directive and never prints an approval hint it does not have', async () => {
+      writeRun(home, { status: 'pending-approval', message: 'Waiting', expiresAtMs: Date.now() + 600_000 });
+      const r = await run(['closepaw', 'wait', REQ, '--timeout', '1']);
+      expect(r.code).toBe(124);
+      const lines = r.out.split(/\r?\n/).filter(Boolean);
+      expect(lines[0]).toBe(`Waiting for the phone owner to approve and for ClosePaw to finish (up to 1s, request ${REQ}).`);
+      expect(lines[1]).toContain(DIRECTIVE);
+      expect(lines[lines.length - 1]).toBe(`ClosePaw is still waiting for the user to approve on the phone (request ${REQ}). Not finished yet - run this exact command next and keep waiting for it: shelly closepaw wait ${REQ}`);
+      expect(r.out).not.toContain('Shelly approval required');
+    });
+
+    it('prints a "keep waiting" progress line every 10s while blocked', async () => {
+      writeRun(home, { status: 'pending-approval', message: 'Waiting', expiresAtMs: Date.now() + 600_000 });
+      const r = await run(['closepaw', 'wait', REQ, '--timeout', '21']);
+      expect(r.code).toBe(124);
+      const progress = r.err.split(/\r?\n/).filter((l) => /^shelly closepaw: still waiting for approval on the phone \([0-9]+s of 21s\) - keep waiting, do not end your turn\.$/.test(l));
+      expect(progress.length).toBe(2);
+      expect(progress[0]).toMatch(/\(1[0-1]s of 21s\)/);
+      expect(progress[1]).toMatch(/\(2[0-1]s of 21s\)/);
+    }, 30_000);
+
+    it('the wait output is written unbuffered (fs.writeSync), the first lines before any poll', () => {
+      expect(homeKt).toContain("const cpOut = (s) => { try { fs.writeSync(1, s + '\\\\n'); }");
+      expect(homeKt).toContain("const cpErr = (s) => { try { fs.writeSync(2, s + '\\\\n'); }");
+      const body = extractShimJs();
+      const waitStart = body.indexOf('const cpWait = (reqId, timeoutSec, pendingHint) => {');
+      const directive = body.indexOf(DIRECTIVE);
+      const firstPoll = body.indexOf('Atomics.wait(flag, 0, 0, 500)');
+      expect(waitStart).toBeGreaterThan(0);
+      expect(directive).toBeGreaterThan(waitStart);
+      expect(directive).toBeLessThan(firstPoll);
+      // The directive is a single stdout line (no console.log buffering behind Atomics.wait).
+      expect(body).toMatch(/cpOut\('Do not end your turn and do not answer yet:/);
+    });
+
+    it('is shim v19 with BASHRC_VERSION >= 267', () => {
+      expect(homeKt).toContain('# SHELLY_HELPER_SHIM v19');
+      expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(267);
+    });
   });
 
   it('wait and --wait default to a 100s soft budget (below remote exec tool timeouts)', () => {
