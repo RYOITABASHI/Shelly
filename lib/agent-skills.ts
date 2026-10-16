@@ -23,6 +23,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { getHomePath } from '@/lib/home-path';
 import { tokenizeForMatch } from '@/lib/agent-text-match';
+import { detectExplicitToolUsage, matchToolMention } from '@/lib/agent-tool-mentions';
 import type { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 import { cosineSimilarity } from '@/lib/memory/ranking-semantic';
@@ -607,9 +608,51 @@ export async function matchSkillRecipesHybrid(
   }
 }
 
+/** Schedule wording ("every day at 09:45", 「毎日」) says WHEN, not WHAT —
+ *  it must neither count for nor against instruction coverage. */
+const COVERAGE_SCHEDULE_NOISE = new Set([
+  'day', 'days', 'daily', 'morning', 'mornings', 'evening', 'night', 'week', 'weekly', 'weekday', 'weekdays',
+  'am', 'pm', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  '毎日', '毎朝', '毎晩', '毎週', '時に', '分に',
+]);
+
 /** Tokens that carry no instruction content for coverage purposes. */
 function isCoverageNoise(token: string): boolean {
-  return isSkillStopword(token) || /^\d+$/.test(token);
+  return isSkillStopword(token) || /^\d+$/.test(token) || COVERAGE_SCHEDULE_NOISE.has(token);
+}
+
+/** Minimum share of a sentence's content tokens the recipe must contain for
+ *  the sentence to count as covered when CARRYING extra instructions along
+ *  (lenient: a false "uncovered" only appends a redundant instruction). */
+const CARRY_COVERAGE_MIN = 0.5;
+/** Stricter share used to decide that a request is the SAME task as the
+ *  skill (v8.1.1 on-device: "research the latest LLM papers with Perplexity
+ *  and summarize 3 of them in English." was 4/8 = 0.5 covered by an "AI
+ *  research papers from arXiv and Hugging Face" recipe — shared filler words
+ *  like latest/papers/english — and was offered that skill). */
+const SAME_TASK_COVERAGE_MIN = 0.75;
+
+function splitInstructionSentences(requestText: string): string[] {
+  return requestText
+    .split(/[.!?。！？]+\s*|\n+/)
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+}
+
+function uncoveredSentences(
+  recipe: Pick<SkillRecipe, 'prompt' | 'trigger'>,
+  requestText: string,
+  minCoverage: number,
+): string[] {
+  const covered = tokenizeForMatch(`${recipe.prompt}\n${recipe.trigger}`);
+  const out: string[] = [];
+  for (const sentence of splitInstructionSentences(requestText)) {
+    const tokens = [...tokenizeForMatch(sentence)].filter((t) => !isCoverageNoise(t));
+    if (tokens.length < 2) continue;
+    const hit = tokens.filter((t) => covered.has(t)).length;
+    if (hit / tokens.length < minCoverage) out.push(sentence);
+  }
+  return out;
 }
 
 /**
@@ -626,19 +669,7 @@ export function uncoveredRequestInstructions(
   recipe: Pick<SkillRecipe, 'prompt' | 'trigger'>,
   requestText: string,
 ): string[] {
-  const covered = tokenizeForMatch(`${recipe.prompt}\n${recipe.trigger}`);
-  const sentences = requestText
-    .split(/[.!?。！？]+\s*|\n+/)
-    .map((x) => x.trim())
-    .filter((x) => x.length > 0);
-  const out: string[] = [];
-  for (const sentence of sentences) {
-    const tokens = [...tokenizeForMatch(sentence)].filter((t) => !isCoverageNoise(t));
-    if (tokens.length < 2) continue;
-    const hit = tokens.filter((t) => covered.has(t)).length;
-    if (hit / tokens.length < 0.5) out.push(sentence);
-  }
-  return out;
+  return uncoveredSentences(recipe, requestText, CARRY_COVERAGE_MIN);
 }
 
 /**
@@ -648,12 +679,28 @@ export function uncoveredRequestInstructions(
  * match in that case; a request that merely ADDS an instruction or two reuses
  * the skill and carries those instructions along (applyExecutableSkillPlan /
  * buildSkillInjectionContext), never dropping them.
+ *
+ * v8.1.1 (2026-10-16 on-device): tightened. (1) "Same task" needs
+ * SAME_TASK_COVERAGE_MIN of a sentence's content tokens, not half — a short
+ * one-sentence request shares filler (latest/papers/english) with almost any
+ * digest recipe. (2) A request that explicitly names its instrument
+ * ("with Perplexity", 「パープレで」) differs from a recipe that neither names
+ * nor ran with that tool — reusing it would swap the source the user chose.
  */
-export function skillDiffersMaterially(recipe: Pick<SkillRecipe, 'prompt' | 'trigger'>, requestText: string): boolean {
-  const sentences = requestText.split(/[.!?。！？]+\s*|\n+/).map((x) => x.trim())
+export function skillDiffersMaterially(
+  recipe: Pick<SkillRecipe, 'prompt' | 'trigger'> & { toolLabel?: string; name?: string },
+  requestText: string,
+): boolean {
+  const requested = detectExplicitToolUsage(requestText);
+  if (requested) {
+    const recipeTool =
+      matchToolMention(recipe.toolLabel ?? '') ?? matchToolMention(`${recipe.name ?? ''}\n${recipe.trigger}\n${recipe.prompt}`);
+    if (!recipeTool || recipeTool.type !== requested.type) return true;
+  }
+  const sentences = splitInstructionSentences(requestText)
     .filter((x) => [...tokenizeForMatch(x)].filter((t) => !isCoverageNoise(t)).length >= 2);
   if (sentences.length === 0) return false;
-  return uncoveredRequestInstructions(recipe, requestText).length * 2 > sentences.length;
+  return uncoveredSentences(recipe, requestText, SAME_TASK_COVERAGE_MIN).length * 2 > sentences.length;
 }
 
 /** Stable fingerprint of a recipe's executable plan (steps + provider +
