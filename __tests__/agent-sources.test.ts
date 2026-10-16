@@ -333,6 +333,10 @@ describe('v8.1.1: adjacent duplicate citation markers collapse', () => {
     expect(dedupeAdjacentCitations('a [1] [2] [1]')).toBe('a [1] [2] [1]');
     expect(dedupeAdjacentCitations('see [1](https://x.example) [1]')).toBe('see [1](https://x.example) [1]');
     expect(dedupeAdjacentCitations('[1] [1](https://x.example)')).toBe('[1] [1](https://x.example)');
+    // Review Low-3: indexing after a word char or "]" is code, not citations.
+    expect(dedupeAdjacentCitations('m[1][1] and grid[2] [2]')).toBe('m[1][1] and grid[2] [2]');
+    expect(dedupeAdjacentCitations('a[0][1][1]')).toBe('a[0][1][1]');
+    expect(dedupeAdjacentCitations('text.[1][1]')).toBe('text.[1]');
   });
 
   it('remapCitations collapses markers that map to the same source', () => {

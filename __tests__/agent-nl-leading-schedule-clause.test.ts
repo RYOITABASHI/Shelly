@@ -82,4 +82,12 @@ describe('leading schedule clause is never a step', () => {
       expect(isScheduleOnlyClause(c)).toBe(false);
     }
   });
+
+  it('review Low-1/Low-2: only a real time after "at" is stripped', () => {
+    expect(parseAgentNL('Every day at 9 amazon price check').prompt).toContain('amazon price check');
+    expect(parseAgentNL('Every day at 10 items from HN, summarize them').prompt).toContain('10 items from HN');
+    expect(parseAgentNL('Every day at 9am, check the Amazon price of my headphones').prompt).toBe('check the Amazon price of my headphones');
+    expect(parseAgentNL('Every day at 9:15 check the Amazon price of my headphones').prompt).toBe('check the Amazon price of my headphones');
+    expect(parseAgentNL('Every day at 9, check the Amazon price of my headphones').prompt).toBe('check the Amazon price of my headphones');
+  });
 });

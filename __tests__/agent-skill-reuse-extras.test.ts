@@ -74,6 +74,14 @@ describe('uncovered instructions are carried, never dropped', () => {
   });
 });
 
+describe('review Low-4: schedule wording is noise for the same-task judgment only', () => {
+  it('a schedule-only extra sentence is still carried as an instruction', () => {
+    expect(uncoveredRequestInstructions(recipe, 'Collect the latest AI research papers and pick 3 notable ones. Send it every Monday morning.')).toEqual([
+      'Send it every Monday morning',
+    ]);
+  });
+});
+
 describe('v8.1.1: a materially different request does not reuse the skill', () => {
   // Shape of the on-device recipe (build 2593) that was wrongly offered.
   const onDevice = {

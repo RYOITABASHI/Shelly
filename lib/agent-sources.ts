@@ -504,8 +504,9 @@ const CITATION_GROUP_RE = /\[(\d{1,3}(?:\s*[,，、]\s*\d{1,3})*)\](?!\()/g;
  *  model's own marker next to the one a known link/URL gets, or two markers
  *  that remap to the same source ("[3] [1]" where 3 aliases 1). Adjacent
  *  repeats of the SAME marker (space-separated or not) collapse to one;
- *  different markers ("[1] [2]") and markdown links ("[1](url)") are untouched. */
-const ADJACENT_DUPLICATE_CITATION_RE = /(\[(\d{1,3})\])(?:[ \t]*\[\2\](?!\())+/g;
+ *  different markers ("[1] [2]"), markdown links ("[1](url)") and indexing
+ *  after a word or bracket ("m[1][1]") are untouched. */
+const ADJACENT_DUPLICATE_CITATION_RE = /(?<![\w\]])(\[(\d{1,3})\])(?:[ \t]*\[\2\](?!\())+/g;
 
 export function dedupeAdjacentCitations(text: string): string {
   return text.replace(ADJACENT_DUPLICATE_CITATION_RE, '$1');

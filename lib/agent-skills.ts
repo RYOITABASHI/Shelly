@@ -609,7 +609,9 @@ export async function matchSkillRecipesHybrid(
 }
 
 /** Schedule wording ("every day at 09:45", 「毎日」) says WHEN, not WHAT —
- *  it must neither count for nor against instruction coverage. */
+ *  it must neither count for nor against the SAME-task judgment. Not applied
+ *  when carrying extra instructions (uncoveredRequestInstructions): there a
+ *  sentence like "Run it every morning" is a real extra instruction. */
 const COVERAGE_SCHEDULE_NOISE = new Set([
   'day', 'days', 'daily', 'morning', 'mornings', 'evening', 'night', 'week', 'weekly', 'weekday', 'weekdays',
   'am', 'pm', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
@@ -618,7 +620,12 @@ const COVERAGE_SCHEDULE_NOISE = new Set([
 
 /** Tokens that carry no instruction content for coverage purposes. */
 function isCoverageNoise(token: string): boolean {
-  return isSkillStopword(token) || /^\d+$/.test(token) || COVERAGE_SCHEDULE_NOISE.has(token);
+  return isSkillStopword(token) || /^\d+$/.test(token);
+}
+
+/** Same-task judgment only: also ignore schedule wording. */
+function isSameTaskNoise(token: string): boolean {
+  return isCoverageNoise(token) || COVERAGE_SCHEDULE_NOISE.has(token);
 }
 
 /** Minimum share of a sentence's content tokens the recipe must contain for
@@ -643,11 +650,12 @@ function uncoveredSentences(
   recipe: Pick<SkillRecipe, 'prompt' | 'trigger'>,
   requestText: string,
   minCoverage: number,
+  isNoise: (token: string) => boolean,
 ): string[] {
   const covered = tokenizeForMatch(`${recipe.prompt}\n${recipe.trigger}`);
   const out: string[] = [];
   for (const sentence of splitInstructionSentences(requestText)) {
-    const tokens = [...tokenizeForMatch(sentence)].filter((t) => !isCoverageNoise(t));
+    const tokens = [...tokenizeForMatch(sentence)].filter((t) => !isNoise(t));
     if (tokens.length < 2) continue;
     const hit = tokens.filter((t) => covered.has(t)).length;
     if (hit / tokens.length < minCoverage) out.push(sentence);
@@ -669,7 +677,7 @@ export function uncoveredRequestInstructions(
   recipe: Pick<SkillRecipe, 'prompt' | 'trigger'>,
   requestText: string,
 ): string[] {
-  return uncoveredSentences(recipe, requestText, CARRY_COVERAGE_MIN);
+  return uncoveredSentences(recipe, requestText, CARRY_COVERAGE_MIN, isCoverageNoise);
 }
 
 /**
@@ -698,9 +706,9 @@ export function skillDiffersMaterially(
     if (!recipeTool || recipeTool.type !== requested.type) return true;
   }
   const sentences = splitInstructionSentences(requestText)
-    .filter((x) => [...tokenizeForMatch(x)].filter((t) => !isCoverageNoise(t)).length >= 2);
+    .filter((x) => [...tokenizeForMatch(x)].filter((t) => !isSameTaskNoise(t)).length >= 2);
   if (sentences.length === 0) return false;
-  return uncoveredSentences(recipe, requestText, SAME_TASK_COVERAGE_MIN).length * 2 > sentences.length;
+  return uncoveredSentences(recipe, requestText, SAME_TASK_COVERAGE_MIN, isSameTaskNoise).length * 2 > sentences.length;
 }
 
 /** Stable fingerprint of a recipe's executable plan (steps + provider +
