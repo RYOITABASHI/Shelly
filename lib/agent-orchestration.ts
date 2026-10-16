@@ -592,8 +592,26 @@ const SCHEDULE_ONLY_CLAUSE_RE =
  *  this file's Tier 1 splitter uses, instead of growing a drifting copy.
  *  Tier 1's own usage (detectToolPinnedSteps' leading-clause drop below) is
  *  unchanged. */
+// English counterpart (v8.1.1 on-device, 2026-10-16): "Every day at 09:45,
+// research … with Perplexity …" — derivePrompt stripped "Every day" but left
+// "at 09:45", and the comma split turned that fragment into a bogus step 1
+// (which also made the draft look like a per-step tool chain, i.e. high-risk).
+// Same fully-anchored rule as the JA pattern: an optional recurrence marker
+// (every day / daily / every Monday and Friday / on weekdays …) plus an
+// optional "at HH[:MM][am|pm]" and NOTHING else. Full weekday names or their
+// standard abbreviations only, so an ordinary word ("sunshine") never matches.
+const EN_DAY = '(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tues?|wed|thu(?:rs?)?|fri|sat|sun)s?';
+const EN_SCHEDULE_ONLY_CLAUSE_RE = new RegExp(
+  '^(?:(?:every|each)\\s+(?:day|morning|evening|night|weekday|week)|everyday|daily|weekly|on\\s+weekdays|' +
+    `(?:(?:every|each|on)\\s+)?${EN_DAY}(?:\\s*(?:,|and|&)\\s*${EN_DAY})*)?` +
+    '\\s*(?:at\\s+\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\.?|p\\.?m\\.?)?)?$',
+  'i',
+);
+
 export function isScheduleOnlyClause(clause: string): boolean {
-  return SCHEDULE_ONLY_CLAUSE_RE.test(clause);
+  if (SCHEDULE_ONLY_CLAUSE_RE.test(clause)) return true;
+  const t = clause.trim().replace(/[.,;:]+$/, '').trim();
+  return t.length > 0 && EN_SCHEDULE_ONLY_CLAUSE_RE.test(t);
 }
 
 /** A pure delivery directive and nothing else — the agent's own action.type

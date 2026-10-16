@@ -2199,7 +2199,11 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
         '',
       )
       .replace(/^\s*((on\s+)?(mon|tue|wed|thu|fri|sat|sun)\w*(\s*(,|and|&)\s*(mon|tue|wed|thu|fri|sat|sun)\w*)*)\b[^.,]*?\b(at\s+\d|\d\s*(am|pm|:))[^,.]*[\s,]*/i, '')
-      .replace(/^\s*(every\s*day|everyday|daily|each\s+day|every\s+\d+\s*\w+)\b[\s,]*/i, '')
+      // v8.1.1 (2026-10-16 on-device): also consume a trailing "at 09:45" /
+      // "at 9am" — "Every day at 09:45, research …" used to leave "at 09:45,"
+      // at the front of the prompt, which the comma splitter then turned into
+      // a bogus step 1.
+      .replace(/^\s*(every\s*day|everyday|daily|each\s+day|every\s+\d+\s*\w+)\b(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)?[\s,]*/i, '')
       .trim();
 
     // Bare time-of-day-WORD schedule ("毎朝十分に休憩を取るようにして" / "毎週
