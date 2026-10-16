@@ -136,6 +136,12 @@
 - **未対応（意図的）**: wrapper を持たない親（PTY の `node()` 関数で起動した node の child_process、`/system/bin/sh` をフルパスで直接叩く場合など）からの `shelly` は依然 exec 不可。`node()` への preload 追加は npm/llama-server 等への影響が大きいので見送り。
 - **未検証**: CI の NDK 初回コンパイル（-Werror）、実機で `bash -c 'shelly closepaw "Open Chrome and search for Tokyo weather"'` / `sh -c 'shelly --help'` / `shelly workflow list` / Codex 内 `shelly closepaw ...` / 旧 BASHRC 253 端末からの移行（`ls -l ~/bin/shelly` が symlink、`~/.shelly/shelly-helper.sh` が存在）。
 
+### 「ChatGPTとの接続を維持」（Codex リモートホストの自動起動・常駐）— 実装済み・実機未検証 (P1)
+
+- **何を入れたか（feat/codex-remote-autostart、BASHRC_VERSION 265 / SHELLY_HELPER_SHIM v17）**: `shelly codex autostart on|off|status`、`pair --background` 成功時に paired マーカー + autostart ON、ネイティブ `CodexRemoteHost.kt` が TerminalSessionService 配下で `shelly codex __host` を linker64 bash 経由で起動・バックオフ再起動。アプリ起動 / MY_PACKAGE_REPLACED / BOOT_COMPLETED（`CodexRemoteAutostartReceiver`、plugin 登録）で復帰。STOP-ALL・`shelly codex stop`（次回プロセス起動まで）・通知「Disconnect ChatGPT」（autostart OFF）で停止。ネットワーク: default network callback、オフライン中は起動しない、切替/復帰後 30 秒以内にホストログへ「available for remote control / reconnected」行が出なければ再起動（デバウンス）。Settings > Codex Login に「Keep ChatGPT connected」。
+- **未検証 / 既知の限界**: (1) codex remote-control が自力で再接続するか・再接続時に何をログに出すかは未確認（ソースが手元に無い）。出なければネットワーク変化のたびに 1 回再起動になる（ペアリング情報は保持されるので実害は数秒の断のみ）。(2) 「ペアリング成功」はコード発行時点で判定（ユーザーが ChatGPT 側で入力したかは検出不可）。既存ペア済み端末は `shelly codex autostart on` で paired マーカーを書く必要あり。(3) Kotlin は CI ビルド未確認、`CodexRemotePolicyTest.kt` は Gradle 単体テスト未配線。
+- **実機確認点**: ペア後にアプリをスワイプ終了 → 通知が残りホスト継続 / アプリ内アップデート後に自動復帰 / 再起動後に自動復帰 / Wi-Fi⇄モバイル切替・機内モード往復後に ChatGPT 側で緑に戻るか（logcat `CodexRemoteHost`）/ 通知 Disconnect / STOP-ALL / `shelly codex stop` 後に再起動されないこと。
+
 ### Codex リモートコントロール（ChatGPT アプリから Shelly 上の Codex を操作）— Experimental・実装済み・実機未検証 (P1)
 
 - **何を入れたか（feat/codex-remote-control、未マージ）**:

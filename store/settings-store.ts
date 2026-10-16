@@ -160,6 +160,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   a2aServerEnabled: false,
   mcpServerEnabled: false,
   mcpExecEnabled: false,
+  codexRemoteAutostart: false,
   terminalWallpaperTransparency: true,
   terminalMinimumContrast: 'auto' as const,
   uiFont: 'case-file',

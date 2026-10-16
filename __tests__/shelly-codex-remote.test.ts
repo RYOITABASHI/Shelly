@@ -171,7 +171,7 @@ maybe('shelly codex (bash)', () => {
   it('help prints usage and exits 0; unknown subcommands exit 2', () => {
     const help = run('shelly codex help');
     expect(help.code).toBe(0);
-    expect(help.out).toContain('Usage: shelly codex <pair|code|trust|status|stop|help>');
+    expect(help.out).toContain('Usage: shelly codex <pair|code|trust|status|stop|autostart|help>');
     const bad = run('shelly codex frobnicate');
     expect(bad.code).toBe(2);
   });
@@ -287,7 +287,7 @@ describe('shelly codex v257 generator invariants', () => {
 
   it('passes the host name only to the remote-control launches', () => {
     const launches = remoteFns.match(/SHELLY_CODEX_HOST_NAME="\$__name" codex remote-control --no-daemon/g) || [];
-    expect(launches.length).toBe(2); // foreground + --background
+    expect(launches.length).toBe(3); // foreground + --background + autostart __host
     expect(remoteFns).toContain('/system/bin/getprop "$__k"');
   });
 
@@ -562,5 +562,141 @@ describe('v258 generator invariants', () => {
 
   it('runs the background host with its own TMPDIR', () => {
     expect(remoteFns).toContain('TMPDIR="$__bgtmp" SHELLY_CODEX_HOST_NAME="$__name" codex remote-control --no-daemon');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v264: Keep ChatGPT connected (autostart) -- shim side of CodexRemoteHost.kt
+// ---------------------------------------------------------------------------
+describe('v265 generator invariants', () => {
+  it('bumps BASHRC_VERSION to >= 265', () => {
+    const m = ktSrc.match(/private const val BASHRC_VERSION = (\d+)\b/);
+    expect(Number(m![1])).toBeGreaterThanOrEqual(265);
+  });
+
+  it('uses the file names CodexRemoteHost.kt reads', () => {
+    const native = fs.readFileSync(
+      path.resolve(
+        __dirname,
+        '..',
+        'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/CodexRemoteHost.kt',
+      ),
+      'utf8',
+    );
+    for (const name of [
+      'codex-remote-autostart',
+      'codex-remote-paired',
+      'shelly-codex-remote.stopped',
+      'shelly-codex-remote.host',
+      'shelly-codex-remote.log',
+    ]) {
+      expect(remoteFns).toContain(name);
+      expect(native).toContain(name);
+    }
+    expect(native).toContain('__shelly_codex_remote __host');
+  });
+});
+
+maybe('shelly codex autostart (bash)', () => {
+  const autostartFile = () => path.join(home, '.shelly', 'codex-remote-autostart');
+  const pairedFile = () => path.join(home, '.shelly', 'codex-remote-paired');
+  const stoppedFile = () => path.join(home, 'tmp', 'shelly-codex-remote.stopped');
+  const itProc = process.platform === 'linux' || process.platform === 'win32' ? it : it.skip;
+
+  it('status reports off and not paired by default', () => {
+    const r = run('shelly codex autostart status');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('(autostart): off');
+    expect(r.out).toContain('Paired once: no');
+    expect(run('shelly codex status').out).toContain('(autostart): off');
+  });
+
+  it('on needs a ChatGPT sign-in', () => {
+    const r = run('shelly codex autostart on', { STUB_AUTH: 'missing' });
+    expect(r.code).toBe(1);
+    expect(fs.existsSync(autostartFile())).toBe(false);
+  });
+
+  it('on writes the flag + paired marker and clears a stop marker; off removes the flag', () => {
+    fs.mkdirSync(path.join(home, 'tmp'), { recursive: true });
+    fs.writeFileSync(stoppedFile(), '');
+    const on = run('shelly codex autostart on');
+    expect(on.code).toBe(0);
+    expect(on.out).toContain('ChatGPT can run commands on this phone');
+    expect(on.out).toContain('shelly codex autostart off');
+    expect(fs.readFileSync(autostartFile(), 'utf8')).toBe('on\n');
+    expect(fs.existsSync(pairedFile())).toBe(true);
+    expect(fs.existsSync(stoppedFile())).toBe(false);
+    expect(run('shelly codex autostart').out).toContain('(autostart): on');
+    const off = run('shelly codex autostart off');
+    expect(off.code).toBe(0);
+    expect(fs.existsSync(autostartFile())).toBe(false);
+    // The paired marker survives: re-enabling later needs no new pairing.
+    expect(fs.existsSync(pairedFile())).toBe(true);
+  });
+
+  it('rejects unknown autostart arguments', () => {
+    expect(run('shelly codex autostart maybe').code).toBe(2);
+    expect(run('shelly codex autostart on now').code).toBe(2);
+  });
+
+  itProc('pair --background marks the device paired and turns autostart on', () => {
+    const r = run('shelly codex pair --background; echo "rc=$?"; shelly codex stop >/dev/null', { STUB_HOST_STAY: '1' });
+    expect(r.out).toContain('rc=0');
+    expect(r.out).toContain('Keep ChatGPT connected is ON');
+    expect(r.out).toContain('shelly codex autostart off');
+    expect(fs.readFileSync(autostartFile(), 'utf8')).toBe('on\n');
+    expect(fs.existsSync(pairedFile())).toBe(true);
+  });
+
+  it('a failed pair never turns autostart on', () => {
+    const r = run('shelly codex pair --background', { STUB_AUTH: 'missing' });
+    expect(r.code).toBe(1);
+    expect(fs.existsSync(autostartFile())).toBe(false);
+    expect(fs.existsSync(pairedFile())).toBe(false);
+  });
+
+  it('stop leaves the stop marker and explains autostart', () => {
+    fs.mkdirSync(path.join(home, '.shelly'), { recursive: true });
+    fs.writeFileSync(autostartFile(), 'on\n');
+    const r = run('shelly codex stop');
+    expect(fs.existsSync(stoppedFile())).toBe(true);
+    expect(r.out).toContain('starts again the next time Shelly starts');
+  });
+
+  itProc('__host runs the host in the foreground with its own TMPDIR and a "native" state line', () => {
+    const r = run(
+      [
+        '( shelly codex __host; echo "host-rc=$?" > "$HOME/host-rc" ) &',
+        'for i in $(seq 1 100); do [ -s "$TMPDIR/shelly-codex-remote.host" ] && break; command sleep 0.05; done',
+        'cat "$TMPDIR/shelly-codex-remote.host"',
+        'shelly codex status',
+        ': > "$HOME/paired"',
+        'for i in $(seq 1 200); do [ -f "$HOME/host-rc" ] && break; command sleep 0.05; done',
+        'cat "$HOME/host-rc"',
+      ].join('\n'),
+    );
+    expect(r.out).toMatch(/^\d+ \d+ native$/m);
+    expect(r.out).toContain('Background host: running');
+    expect(r.out).toContain('host-rc=0');
+    expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toContain('codex remote-control --no-daemon');
+    // The host exited: its state is gone so the supervisor can start a new one.
+    expect(fs.existsSync(path.join(home, 'tmp', 'shelly-codex-remote.host'))).toBe(false);
+    expect(fs.readFileSync(path.join(home, 'tmp', 'shelly-codex-remote.log'), 'utf8')).toContain('autostart host starting');
+  });
+
+  it('__host refuses without sign-in (exit 3) and never starts codex', () => {
+    const r = run('shelly codex __host; echo "rc=$?"', { STUB_AUTH: 'missing' });
+    expect(r.out).toContain('rc=3');
+    const calls = fs.existsSync(path.join(home, 'calls.log')) ? fs.readFileSync(path.join(home, 'calls.log'), 'utf8') : '';
+    expect(calls).not.toContain('remote-control');
+  });
+
+  itProc('__host refuses a second instance while a tracked host is alive (exit 4)', () => {
+    fs.mkdirSync(path.join(home, 'tmp'), { recursive: true });
+    const r = run(
+      'printf \'%s %s\\n\' "$$" "$(__shelly_codex_remote_proc_start $$)" > "$TMPDIR/shelly-codex-remote.host"; shelly codex __host; echo "rc=$?"',
+    );
+    expect(r.out).toContain('rc=4');
   });
 });

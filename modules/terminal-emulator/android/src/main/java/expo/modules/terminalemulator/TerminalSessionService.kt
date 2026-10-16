@@ -42,6 +42,11 @@ class TerminalSessionService : Service() {
         const val ACTION_UPDATE_NOTIFICATION = "expo.modules.terminalemulator.UPDATE_NOTIFICATION"
         const val ACTION_STOP = "expo.modules.terminalemulator.STOP"
         const val ACTION_RUN_AGENT = "expo.modules.terminalemulator.RUN_AGENT"
+        // "Keep ChatGPT connected" (CodexRemoteHost.kt).
+        const val ACTION_CODEX_REMOTE_START = "expo.modules.terminalemulator.CODEX_REMOTE_START"
+        const val ACTION_CODEX_REMOTE_DISCONNECT = "expo.modules.terminalemulator.CODEX_REMOTE_DISCONNECT"
+        /** The live service, so CodexRemoteHost can refresh the notification / stop an idle service. */
+        @Volatile var instance: TerminalSessionService? = null
         const val EXTRA_AGENT_ID = "agent_id"
         // Carried on the alarm-fired RUN_AGENT intent so the service can re-arm the
         // next fire itself (the alarm now targets the service directly, not the
@@ -88,6 +93,12 @@ class TerminalSessionService : Service() {
         super.onCreate()
         Log.i(TAG, "Service created sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         createNotificationChannel()
+        instance = this
+        try {
+            CodexRemoteHost.ensureWatching(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "Codex remote-control supervisor failed to start", e)
+        }
         // fix/closepaw-background: drain `shelly closepaw` hand-offs natively
         // while a terminal session keeps this service (and the process) alive,
         // even when the RN JS thread is not running (app backgrounded).
@@ -110,9 +121,33 @@ class TerminalSessionService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.i(TAG, "Stop action received — stopping service")
+                // Exit also stops a ChatGPT remote-control host (until the next
+                // app start, like `shelly codex stop`).
+                Thread { runCatching { CodexRemoteHost.stopUntilNextStart(applicationContext) } }.start()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_CODEX_REMOTE_START -> {
+                startForegroundWithNotification(null)
+                CodexRemoteHost.ensureWatching(applicationContext)
+                CodexRemoteHost.wake()
+                if (!hasProtectedWork()) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
+            }
+            ACTION_CODEX_REMOTE_DISCONNECT -> {
+                Log.i(TAG, "Disconnect ChatGPT action received")
+                startForegroundWithNotification(null)
+                Thread {
+                    runCatching { CodexRemoteHost.disconnect(applicationContext) }
+                        .onFailure { Log.w(TAG, "Codex remote disconnect failed", it) }
+                    onCodexRemoteChanged()
+                }.start()
+                return START_STICKY
             }
             ACTION_UPDATE_NOTIFICATION -> {
                 val info = intent.getStringExtra("session_info") ?: ""
@@ -251,6 +286,7 @@ class TerminalSessionService : Service() {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         Log.i(TAG, "Service destroyed sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         super.onDestroy()
     }
@@ -297,8 +333,10 @@ class TerminalSessionService : Service() {
         )
 
         val sessionCount = sessionRegistry.size
+        val codexActive = CodexRemoteHost.isHostActive()
         val contentText = when {
             extraInfo?.isNotBlank() == true -> extraInfo
+            codexActive -> "ChatGPT connected: ChatGPT can run commands on this phone while this is on. Tap Disconnect to stop."
             sessionCount == 1 -> "Terminal session active"
             sessionCount > 1 -> "$sessionCount terminal sessions active"
             else -> "Terminal running"
@@ -311,8 +349,19 @@ class TerminalSessionService : Service() {
             Notification.Builder(this).setPriority(Notification.PRIORITY_LOW)
         }
 
+        if (codexActive) {
+            val disconnectIntent = Intent(this, TerminalSessionService::class.java).apply {
+                action = ACTION_CODEX_REMOTE_DISCONNECT
+            }
+            val pendingDisconnect = PendingIntent.getService(
+                this, 2, disconnectIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(Notification.Action.Builder(null, "Disconnect ChatGPT", pendingDisconnect).build())
+            builder.setStyle(Notification.BigTextStyle().bigText(contentText))
+        }
         return builder
-            .setContentTitle("Shelly")
+            .setContentTitle(if (codexActive) "Shelly - ChatGPT remote control on" else "Shelly")
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_manage) // system icon — replace with your own later
             .setOngoing(true)
@@ -452,7 +501,9 @@ class TerminalSessionService : Service() {
             // here — that was duplicate noise. We only manage the ongoing foreground
             // notification's lifecycle.
             val remainingAgents = activeAgentRuns.decrementAndGet()
-            if (sessionRegistry.isEmpty() && remainingAgents <= 0) {
+            if (sessionRegistry.isEmpty() && remainingAgents <= 0 &&
+                !runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
+            ) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             } else {
@@ -469,7 +520,22 @@ class TerminalSessionService : Service() {
     }
 
     private fun hasProtectedWork(): Boolean =
-        sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0
+        sessionRegistry.isNotEmpty() || activeAgentRuns.get() > 0 ||
+            runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
+
+    /** CodexRemoteHost: the host started/stopped or is no longer wanted. */
+    fun onCodexRemoteChanged() {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            if (instance !== this) return@post
+            if (!hasProtectedWork()) {
+                Log.i(TAG, "Codex remote host gone and nothing else to keep - stopping service")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } else {
+                updateNotification("")
+            }
+        }
+    }
 
     /**
      * Mirrors lib/agent-manager.ts's haltSentinelPath() ($HOME/.shelly/agents/.halted).

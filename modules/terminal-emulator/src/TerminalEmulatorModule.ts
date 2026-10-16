@@ -70,6 +70,13 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   setNotificationTriggerEnabled(enabled: boolean): Promise<void>;
   /** Independent, default-off native gate for sending notification replies. */
   getNotificationReplyEnabled(): Promise<boolean>;
+  /**
+   * "Keep ChatGPT connected" (CodexRemoteHost.kt): the native truth behind
+   * settings.codexRemoteAutostart. `shelly codex autostart on|off` writes the same file.
+   */
+  getCodexRemoteAutostart(): Promise<CodexRemoteAutostartStatus | null>;
+  /** Turns it on/off; off also stops a running host. Never marks the device paired. */
+  setCodexRemoteAutostart(enabled: boolean): Promise<CodexRemoteAutostartStatus | null>;
   setNotificationReplyEnabled(enabled: boolean): Promise<void>;
   sendNotificationReply(packageName: string, replyText: string): Promise<boolean>;
   findDmPairingCandidates(code: string): Promise<Array<{
@@ -434,3 +441,11 @@ declare class TerminalEmulatorModuleType extends NativeModule {
 }
 
 export default requireNativeModule<TerminalEmulatorModuleType>('TerminalEmulator');
+
+export type CodexRemoteAutostartStatus = {
+  enabled: boolean;
+  paired: boolean;
+  halted: boolean;
+  running: boolean;
+  online: boolean;
+};

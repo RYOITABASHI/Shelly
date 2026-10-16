@@ -2446,10 +2446,86 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
     );
   }, [addPane, onClose, t]);
 
+  // "Keep ChatGPT connected": settings.codexRemoteAutostart mirrors the native
+  // file CodexRemoteHost.kt reads ($HOME/.shelly/codex-remote-autostart), which
+  // `shelly codex autostart on|off` and `pair --background` also write, so the
+  // native value is re-read on mount and wins.
+  const keepConnected = useSettingsStore((s) => s.settings.codexRemoteAutostart ?? false);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const [keepConnectedBusy, setKeepConnectedBusy] = React.useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await TerminalEmulator.getCodexRemoteAutostart?.();
+        if (!cancelled && status && typeof status.enabled === 'boolean') {
+          if (status.enabled !== useSettingsStore.getState().settings.codexRemoteAutostart) {
+            updateSettings({ codexRemoteAutostart: status.enabled });
+          }
+        }
+      } catch (e: any) {
+        logError('SettingsDropdown', 'Failed to load codex remote autostart', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [updateSettings]);
+
+  const toggleKeepConnected = React.useCallback(async () => {
+    const next = !keepConnected;
+    setKeepConnectedBusy(true);
+    try {
+      const status = await TerminalEmulator.setCodexRemoteAutostart(next);
+      updateSettings({ codexRemoteAutostart: status?.enabled ?? next });
+      if (next && status && !status.paired) {
+        Alert.alert(t('codex_login.keep_connected'), t('codex_login.keep_connected_not_paired'));
+      } else {
+        ToastAndroid.show(
+          next ? t('codex_login.keep_connected_on') : t('codex_login.keep_connected_off'),
+          ToastAndroid.SHORT,
+        );
+      }
+      logInfo('SettingsDropdown', 'codexRemoteAutostart=' + next);
+    } catch (e: any) {
+      Alert.alert(t('codex_login.keep_connected_failed'), String(e?.message || e));
+      logError('SettingsDropdown', 'Failed to toggle codex remote autostart', e);
+    } finally {
+      setKeepConnectedBusy(false);
+    }
+  }, [keepConnected, t, updateSettings]);
+
   return (
     <Section title={t('codex_login.title')}>
       <Text style={[styles.credentialHint, { color: C.text2 }]}>
         {t('codex_login.description')}
+      </Text>
+      <Row label={t('codex_login.keep_connected')}>
+        <Pressable
+          style={[
+            styles.switchTrack,
+            { backgroundColor: keepConnected ? withAlpha(C.accent, 0.36) : C.border },
+            keepConnectedBusy && styles.integrationRowDisabled,
+          ]}
+          onPress={toggleKeepConnected}
+          disabled={keepConnectedBusy}
+          hitSlop={4}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: keepConnected, disabled: keepConnectedBusy }}
+          accessibilityLabel={t('codex_login.keep_connected')}
+        >
+          <View
+            style={[
+              styles.switchThumb,
+              { backgroundColor: keepConnected ? C.accent : C.text2 },
+              keepConnected && { alignSelf: 'flex-end' },
+            ]}
+          />
+        </Pressable>
+      </Row>
+      <Text style={[styles.apiKeyHint, { marginTop: 2, marginBottom: 6, color: C.text2 }]}>
+        {t('codex_login.keep_connected_hint')}
       </Text>
       <Pressable
         style={[styles.integrationRow, borderedChromeStyle()]}

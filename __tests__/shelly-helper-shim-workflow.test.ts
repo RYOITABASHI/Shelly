@@ -91,7 +91,7 @@ beforeEach(() => {
 describe('generated shelly helper shim', () => {
   it('is bumped to v11 alongside BASHRC_VERSION >= 256', () => {
     const src = fs.readFileSync(ktPath, 'utf8');
-    expect(src).toContain('# SHELLY_HELPER_SHIM v16');
+    expect(src).toContain('# SHELLY_HELPER_SHIM v17');
     const m = src.match(/private const val BASHRC_VERSION = (\d+)\b/);
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBeGreaterThanOrEqual(256);
@@ -111,7 +111,7 @@ describe('generated shelly helper shim', () => {
   });
 
   it('top-level usage lists codex, and the node body refuses `codex` (bash function only)', () => {
-    expect(shelly().out).toContain('shelly codex <pair|code|trust|status|stop>');
+    expect(shelly().out).toContain('shelly codex <pair|code|trust|status|stop|autostart>');
     const r = shelly('codex', 'pair');
     expect(r.code).toBe(2);
     expect(r.out).toContain('interactive Shelly terminal');

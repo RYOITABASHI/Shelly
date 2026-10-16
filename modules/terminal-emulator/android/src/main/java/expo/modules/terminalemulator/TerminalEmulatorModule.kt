@@ -543,6 +543,12 @@ class TerminalEmulatorModule : Module() {
                 // lib/agent-add-queue.ts).
                 runCatching { AgentAddHandoff.ensureWatching(context) }
                     .onFailure { Log.w("TerminalEmulator", "agent-add queue watcher failed to start", it) }
+                // "Keep ChatGPT connected": app start brings the Codex
+                // remote-control host back (CodexRemoteHost.kt).
+                Thread {
+                    runCatching { CodexRemoteHost.requestStartIfWanted(context, "app start") }
+                        .onFailure { Log.w("TerminalEmulator", "Codex remote autostart failed", it) }
+                }.start()
             }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
         }
@@ -768,7 +774,9 @@ class TerminalEmulatorModule : Module() {
                 releaseWakeLock()
                 // Stop foreground service when no sessions remain
                 val context = appContext.reactContext
-                if (context != null) {
+                // "Keep ChatGPT connected": the service also hosts the Codex
+                // remote-control host; keep it while that is wanted.
+                if (context != null && !CodexRemoteHost.keepsServiceAlive(context)) {
                     context.stopService(Intent(context, TerminalSessionService::class.java))
                 }
             }
@@ -1136,6 +1144,22 @@ class TerminalEmulatorModule : Module() {
                 .apply()
             Log.i("TerminalEmulator", "setNotificationTriggerEnabled: enabled=$enabled")
             null
+        }
+
+        // "Keep ChatGPT connected" (CodexRemoteHost.kt). The file under
+        // $HOME/.shelly is the source of truth (the terminal's
+        // `shelly codex autostart` writes the same file); settings-store only
+        // mirrors it.
+        AsyncFunction("getCodexRemoteAutostart") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            CodexRemoteHost.status(context)
+        }
+
+        AsyncFunction("setCodexRemoteAutostart") { enabled: Boolean ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            CodexRemoteHost.setAutostart(context, enabled)
+            Log.i("TerminalEmulator", "setCodexRemoteAutostart: enabled=$enabled")
+            CodexRemoteHost.status(context)
         }
 
         AsyncFunction("getNotificationReplyEnabled") {

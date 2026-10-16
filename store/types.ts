@@ -452,6 +452,14 @@ export type AppSettings = {
    *  you specifically want a PC-side MCP client (Claude Code, Codex) to
    *  be able to run commands / write files on this device. */
   mcpExecEnabled?: boolean;
+  /**
+   * "Keep ChatGPT connected" (default false): mirror of the native opt-in
+   * $HOME/.shelly/codex-remote-autostart, which CodexRemoteHost.kt reads to keep
+   * the Codex remote-control host for the ChatGPT app running. The native file
+   * wins (the terminal's `shelly codex autostart` writes it too); Settings
+   * re-reads it when shown.
+   */
+  codexRemoteAutostart?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────
   /** Informed consent: autonomous agents may use cloud API keys (Gemini /
    *  Perplexity) UNATTENDED for web-mandatory tasks. Default OFF — fail-closed:

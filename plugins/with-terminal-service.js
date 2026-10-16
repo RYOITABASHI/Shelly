@@ -127,6 +127,30 @@ function withTerminalService(config) {
       });
     }
 
+    // Register CodexRemoteAutostartReceiver ("Keep ChatGPT connected"):
+    // restarts the Codex remote-control host after a reboot and after an
+    // in-app update. Same exported=true / no android:permission reasoning as
+    // BootCompletedReceiver above; MY_PACKAGE_REPLACED needs no permission and
+    // is only delivered to this package.
+    const codexReceiverName =
+      "expo.modules.terminalemulator.CodexRemoteAutostartReceiver";
+    if (!application.receiver.find((r) => r.$?.["android:name"] === codexReceiverName)) {
+      application.receiver.push({
+        $: {
+          "android:name": codexReceiverName,
+          "android:exported": "true",
+        },
+        "intent-filter": [
+          {
+            action: [
+              { $: { "android:name": "android.intent.action.BOOT_COMPLETED" } },
+              { $: { "android:name": "android.intent.action.MY_PACKAGE_REPLACED" } },
+            ],
+          },
+        ],
+      });
+    }
+
     // Register ShellyNotificationListener (NOTIFY-001 Increment 0, dormant
     // plumbing-only — see ShellyNotificationListener.notificationListenerEnabled,
     // default false). exported=false, matching Android's own official
