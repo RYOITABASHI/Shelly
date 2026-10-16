@@ -56,10 +56,17 @@ object CodexRemoteHost {
     private const val POLL_MS = 5_000L
 
     // `shelly codex __host` runs in a non-interactive bash that sources the
-    // generated ~/.bashrc (as Codex's own `bash -lc` and AgentRuntime do) and
-    // then drops the global exec-wrapper preload, matching the interactive
-    // PTY shell the shim normally runs in. Output goes to a file, so the
-    // supervisor never waits on a pipe; host death is seen via waitFor()/pid.
+    // generated ~/.bashrc (as Codex's own `bash -lc` and AgentRuntime do),
+    // matching the interactive PTY shell the shim normally runs in: that
+    // shell is spawned WITHOUT LD_PRELOAD (bashrc v180), so spawnHost() must
+    // not set it either -- see the env below. `unset LD_PRELOAD` here only
+    // clears the variable; it cannot unmap a wrapper that was preloaded into
+    // this bash, and a wrapper-loaded bash exec'ing codex_tui lost the
+    // wrapper's LD_PRELOAD on the way (exec-wrapper v226), which is how
+    // build 2603's host died with "No such file or directory" at
+    // fs::canonicalize("/data/data/com.termux"). Output goes to a file, so
+    // the supervisor never waits on a pipe; host death is seen via
+    // waitFor()/pid.
     internal const val HOST_COMMAND =
         "exec >\"\$HOME/$SUPERVISOR_LOG_FILE\" 2>&1 </dev/null\n" +
             "{ [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\"; } >/dev/null 2>&1 </dev/null\n" +
@@ -333,7 +340,13 @@ object CodexRemoteHost {
                 val home = home(context)
                 File(home, "tmp").mkdirs()
                 val lib = libDir.absolutePath
-                // Same envp as shelly-exec.c's execSubprocess.
+                // Same envp as shelly-exec.c's execSubprocess, MINUS
+                // LD_PRELOAD: the host bash must not carry libexec_wrapper.so,
+                // exactly like the interactive PTY shell (see HOST_COMMAND).
+                // The codex() function adds the preload to the codex_tui
+                // launch itself; a bash that already has the wrapper mapped
+                // would see that exec go through the wrapper's codex-child
+                // scrub and start Codex without it (build 2603 regression).
                 val pb = ProcessBuilder("/system/bin/linker64", bashPath, "-c", HOST_COMMAND)
                 pb.directory(home)
                 pb.redirectErrorStream(true)
@@ -345,7 +358,6 @@ object CodexRemoteHost {
                     put("LANG", "en_US.UTF-8")
                     put("LD_LIBRARY_PATH", lib)
                     put("SHELL", bashPath)
-                    put("LD_PRELOAD", "$lib/libexec_wrapper.so")
                     put("TERMINFO", "$lib/terminfo")
                 }
                 // Re-check right before the spawn: the gates may have changed.

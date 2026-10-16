@@ -209,6 +209,13 @@ describe('M2/M3/L1/L5 native gating', () => {
 
   it('runs the shim host with the exec wrapper dropped and honors STOP-ALL', () => {
     expect(host).toContain('unset LD_PRELOAD');
+    // build 2603 regression: a bash spawned WITH LD_PRELOAD keeps the wrapper
+    // mapped even after `unset LD_PRELOAD`, and that wrapper then scrubbed the
+    // preload off the codex_tui launch (exec-wrapper v226). The host env must
+    // match the interactive PTY shell, which never carries the preload.
+    const env = fnBody(host, 'spawnHost');
+    expect(env).toContain('put("LD_LIBRARY_PATH", lib)');
+    expect(env).not.toMatch(/put\("LD_PRELOAD"/);
     expect(host).toContain('__shelly_codex_remote __host');
     expect(host).toContain('.shelly/agents/.halted');
     expect(host).toContain('HomeInitializer.initialize(context)');

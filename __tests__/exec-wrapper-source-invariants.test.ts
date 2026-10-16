@@ -549,3 +549,46 @@ describe('v225: gethostname() answers SHELLY_CODEX_HOST_NAME only when it is set
     expect(body).not.toMatch(/caller_environ|g_environ_ptr/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v226 — the launch of Codex itself keeps the launcher's env (build 2603:
+// `codex remote-control --no-daemon` from the autostart host / any
+// `bash script.sh` died with ENOENT because the wrapper loaded in the
+// launching bash scrubbed LD_PRELOAD off the codex_tui exec)
+// ---------------------------------------------------------------------------
+describe('v226: the Codex self-launch is exempt from the codex-child env scrub', () => {
+  it('keeps the v226 build marker CI checks for', () => {
+    expect(src).toContain('"shelly-exec-wrapper:v226:codex-self-launch-keeps-env"');
+  });
+
+  it('is_codex_self_launch() matches the trusted SHELLY_CODEX_EXEC_PATH binary directly or as linker64 argv[1]', () => {
+    const body = functionBody('is_codex_self_launch');
+    expect(body).toMatch(/if \(!pathname \|\| !trusted_codex_path\(codex_self\)\) return 0;/);
+    expect(body).toMatch(/if \(streq\(pathname, codex_self\)\) return 1;/);
+    expect(body).toMatch(/streq\(pathname, LINKER64\) &&\s*\n\s*argv && argv\[0\] && argv\[1\] &&\s*\n\s*streq\(argv\[1\], codex_self\);/);
+    // The exemption never ADDs anything to envp (v223 rule): no wrapper env here.
+    expect(body).not.toMatch(/default_ld_preload_env|add_app_loader_envp|scrub_/);
+  });
+
+  it('both entry points skip scrub_codex_child_envp() for the self-launch and still scrub real children', () => {
+    for (const fn of ['shelly_execve_internal', 'shelly_posix_spawn_common']) {
+      const body = functionBody(fn);
+      expect(body).toMatch(/codex_mode_enabled\(envp\) &&\s*\n?\s*!is_codex_self_launch\(rewritten, argv, codex_self\)/);
+      // the child scrub itself is unchanged and still keyed on shells/helpers
+      expect(body).toMatch(/keep_wrapper_for_shell \|\| keep_wrapper_for_helper\) == 0\)/);
+      // codex_self is resolved before the exemption is consulted
+      expect(body.indexOf('codex_exec_path_value(envp, codex_self_buf')).toBeLessThan(
+        body.indexOf('!is_codex_self_launch(rewritten, argv, codex_self)'),
+      );
+    }
+  });
+
+  it('the fs-helper branches still run before the exemption (they need the helper argv/env rewrite)', () => {
+    for (const fn of ['shelly_execve_internal', 'shelly_posix_spawn_common']) {
+      const body = functionBody(fn);
+      expect(body.indexOf('is_codex_fs_helper_linker_exec(rewritten, argv, codex_self)')).toBeLessThan(
+        body.indexOf('!is_codex_self_launch(rewritten, argv, codex_self)'),
+      );
+    }
+  });
+});

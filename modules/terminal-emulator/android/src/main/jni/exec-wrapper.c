@@ -1135,6 +1135,46 @@ static int is_codex_fs_helper_linker_exec(const char *pathname, char *const argv
            codex_fs_helper_marker_index(argv) >= 1;
 }
 
+/* v226 (2026-10-16): the launch of the Codex binary ITSELF is not a Codex
+ * child spawn.
+ *
+ * The bashrc codex() function launches Codex as
+ *   SHELLY_CODEX_EXEC_PATH=<codex_tui> ... LD_PRELOAD=libexec_wrapper.so
+ *   /system/bin/linker64 <codex_tui> ...
+ * When the launching bash itself has this wrapper loaded (any `bash
+ * script.sh` -- the bash() function preloads it for non-interactive runs --
+ * and the CodexRemoteHost.kt supervisor, whose ProcessBuilder env carried
+ * LD_PRELOAD), that execve() lands here, codex_mode_enabled() is true
+ * because SHELLY_CODEX_EXEC_PATH is in envp, and scrub_codex_child_envp()
+ * dropped LD_PRELOAD and the SHELLY_CODEX_* shims as if linker64 were a
+ * tool command Codex was spawning. Codex then started WITHOUT the wrapper:
+ * no /proc/self/exe shim, no v224 socket-root redirect, so
+ * `codex remote-control --no-daemon` died in
+ * fs::canonicalize("/data/data/com.termux") with ENOENT (strace on build
+ * 2603: openat("/data/data/com.termux", O_PATH) = -1 ENOENT from a
+ * codex_tui that had never mapped libexec_wrapper.so). From the interactive
+ * PTY shell -- which v180 deliberately runs without the wrapper -- the same
+ * command went straight to the kernel and worked, which is why
+ * `shelly codex pair` passed on-device while the autostart host failed.
+ *
+ * Fix: when the exec target is the trusted Codex binary named by
+ * SHELLY_CODEX_EXEC_PATH (directly, or as linker64's first argument), hand
+ * the caller's envp through unchanged. Nothing is ADDED (v223 rule): the
+ * wrapper only stops removing what the launcher put there. Codex's own
+ * children still go through the scrub, and a shell child that runs
+ * `codex` again is the same intended launch. */
+__attribute__((used, retain))
+static const char shelly_exec_wrapper_v226_marker[] =
+    "shelly-exec-wrapper:v226:codex-self-launch-keeps-env";
+
+static int is_codex_self_launch(const char *pathname, char *const argv[], const char *codex_self) {
+    if (!pathname || !trusted_codex_path(codex_self)) return 0;
+    if (streq(pathname, codex_self)) return 1;
+    return streq(pathname, LINKER64) &&
+           argv && argv[0] && argv[1] &&
+           streq(argv[1], codex_self);
+}
+
 static int build_codex_fs_helper_argv(char *const argv[], const char *codex_self, char **out) {
     int argc = 0;
     int first_arg = 1;
@@ -1264,7 +1304,9 @@ static int shelly_execve_internal(const char *pathname, char *const argv[], char
         }
     }
     keep_wrapper_for_helper = should_keep_wrapper_for_helper_path(rewritten);
+    /* v226: the Codex launch itself keeps the launcher's env (see above). */
     if (codex_mode_enabled(envp) &&
+        !is_codex_self_launch(rewritten, argv, codex_self) &&
         scrub_codex_child_envp(envp, codex_child_env,
                                keep_wrapper_for_shell || keep_wrapper_for_helper) == 0) {
         envp = codex_child_env;
@@ -1739,7 +1781,8 @@ static int shelly_posix_spawn_common(int search_path, pid_t *pid, const char *pa
     }
 
     keep_wrapper_for_helper = should_keep_wrapper_for_helper_path(rewritten);
-    if (codex_mode_enabled(envp)) {
+    /* v226: the Codex launch itself keeps the launcher's env (see above). */
+    if (codex_mode_enabled(envp) && !is_codex_self_launch(rewritten, argv, codex_self)) {
         char *codex_child_env[MAX_ENVP];
         if (scrub_codex_child_envp(envp, codex_child_env,
                                    keep_wrapper_for_shell || keep_wrapper_for_helper) == 0) {
