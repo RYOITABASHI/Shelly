@@ -171,6 +171,29 @@ describe('generated shim: shelly closepaw wait', () => {
     expect(r.err).toContain(`timed out after 1s (status: running); run shelly closepaw wait ${REQ} again`);
   });
 
+  it('the soft-budget exit prints one clear re-invoke line on stdout (running / pending)', async () => {
+    writeRun(home, { status: 'running', message: 'Approved' });
+    const r = await run(['closepaw', 'wait', REQ, '--timeout', '1']);
+    expect(r.code).toBe(124);
+    expect(r.out).toContain(`ClosePaw is still running (request ${REQ}). Run again to keep waiting: shelly closepaw wait ${REQ}`);
+    writeRun(home, { status: 'pending-approval', message: 'Waiting', expiresAtMs: Date.now() + 600_000 });
+    const p = await run(['closepaw', 'wait', REQ, '--timeout', '1']);
+    expect(p.code).toBe(124);
+    expect(p.out).toContain(`ClosePaw is still waiting for the user to approve on the phone (request ${REQ}). Run again to keep waiting: shelly closepaw wait ${REQ}`);
+  });
+
+  it('--wait --timeout hands off and ends with the re-invoke line when not finished', async () => {
+    const r = await run(['closepaw', '--wait', '--timeout', '2', 'set an alarm for 7'], fakeNative([]));
+    expect(r.code).toBe(124);
+    expect(r.out).toMatch(/ClosePaw is still waiting for the user to approve on the phone \(request ([0-9]+-[0-9a-f]{8})\)\. Run again to keep waiting: shelly closepaw wait \1$/m);
+  });
+
+  it('wait and --wait default to a 100s soft budget (below remote exec tool timeouts)', () => {
+    expect(homeKt).toContain('sb.appendLine("    let cpSec = 100;")');
+    expect(homeKt).toContain('sb.appendLine("  let cpWaitSec = 100;")');
+    expect(homeKt).not.toMatch(/let cpSec = 300|let cpWaitSec = 300/);
+  });
+
   it('ignores a run file for a different request id', async () => {
     fs.writeFileSync(runFile(home), JSON.stringify({ reqId: '1760500000000-ffffffff', status: 'completed' }));
     const r = await run(['closepaw', 'wait', REQ, '--timeout', '1']);
