@@ -546,7 +546,7 @@ class TerminalEmulatorModule : Module() {
                 // "Keep ChatGPT connected": app start brings the Codex
                 // remote-control host back (CodexRemoteHost.kt).
                 Thread {
-                    runCatching { CodexRemoteHost.requestStartIfWanted(context, "app start") }
+                    runCatching { CodexRemoteHost.onUserAppLaunch(context) }
                         .onFailure { Log.w("TerminalEmulator", "Codex remote autostart failed", it) }
                 }.start()
             }
@@ -1157,9 +1157,12 @@ class TerminalEmulatorModule : Module() {
 
         AsyncFunction("setCodexRemoteAutostart") { enabled: Boolean ->
             val context = appContext.reactContext ?: return@AsyncFunction null
-            CodexRemoteHost.setAutostart(context, enabled)
-            Log.i("TerminalEmulator", "setCodexRemoteAutostart: enabled=$enabled")
-            CodexRemoteHost.status(context)
+            // The ONLY path that can turn it on (Keystore-HMAC'd native
+            // state, see CodexRemoteAutostart.kt); RN asks for an in-app
+            // confirmation first.
+            val status = CodexRemoteHost.setAutostartFromApp(context, enabled)
+            Log.i("TerminalEmulator", "setCodexRemoteAutostart: enabled=$enabled -> $status")
+            status
         }
 
         AsyncFunction("getNotificationReplyEnabled") {

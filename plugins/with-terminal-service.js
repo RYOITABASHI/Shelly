@@ -129,16 +129,16 @@ function withTerminalService(config) {
 
     // Register CodexRemoteAutostartReceiver ("Keep ChatGPT connected"):
     // restarts the Codex remote-control host after a reboot and after an
-    // in-app update. Same exported=true / no android:permission reasoning as
-    // BootCompletedReceiver above; MY_PACKAGE_REPLACED needs no permission and
-    // is only delivered to this package.
+    // in-app update. exported=false: both are protected system broadcasts
+    // (the system can still deliver them), and no other app may poke the
+    // receiver that starts a remote-control host.
     const codexReceiverName =
       "expo.modules.terminalemulator.CodexRemoteAutostartReceiver";
     if (!application.receiver.find((r) => r.$?.["android:name"] === codexReceiverName)) {
       application.receiver.push({
         $: {
           "android:name": codexReceiverName,
-          "android:exported": "true",
+          "android:exported": "false",
         },
         "intent-filter": [
           {

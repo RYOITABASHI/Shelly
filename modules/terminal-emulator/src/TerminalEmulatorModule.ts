@@ -444,8 +444,10 @@ export default requireNativeModule<TerminalEmulatorModuleType>('TerminalEmulator
 
 export type CodexRemoteAutostartStatus = {
   enabled: boolean;
-  paired: boolean;
+  /** STOP-ALL is active (or was seen this process); ON is refused until resumed. */
   halted: boolean;
   running: boolean;
   online: boolean;
+  /** The host only runs while its warning notification can be shown. */
+  notificationsEnabled: boolean;
 };

@@ -1,5 +1,6 @@
 package expo.modules.terminalemulator
 
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -17,93 +18,117 @@ import java.io.RandomAccessFile
  * TerminalSessionService, restarts it with backoff, and stops it when the
  * user turns it off.
  *
- * All control state is files, so the shim, the RN Settings row, the boot
- * receiver and this supervisor agree without IPC:
- *   $HOME/.shelly/codex-remote-autostart   "on" = the user's choice
- *   $HOME/.shelly/codex-remote-paired      written after a successful
- *                                          `shelly codex pair --background`
- *   $HOME/.shelly/agents/.halted           STOP-ALL (lib/agent-manager.ts)
+ * Control state:
+ *   CodexRemoteAutostart (prefs + Keystore HMAC)  the ON switch; set ON only
+ *                                          by the in-app Settings toggle
+ *   $HOME/.shelly/codex-remote-autostart-off-request
+ *                                          `shelly codex autostart off`
+ *   $HOME/.shelly/codex-remote-autostart   mirror for `shelly codex status`
+ *                                          (written here, never read here)
+ *   $HOME/.shelly/agents/.halted           STOP-ALL (latched + turns ON off)
  *   $HOME/tmp/shelly-codex-remote.stopped  `shelly codex stop` / notification
- *                                          Exit; cleared once per app process
+ *                                          Exit; cleared only when the user
+ *                                          opens Shelly ([onUserAppLaunch])
  *   $HOME/tmp/shelly-codex-remote.host     "<pid> <starttime> [native]" -- the
  *                                          shim's single-instance state file
  *   $HOME/tmp/shelly-codex-remote.log      host output (health signal)
  *
+ * The host only runs while the foreground service is in the foreground and
+ * notifications are enabled, so the "ChatGPT can run commands on this phone"
+ * notification is always visible while it runs.
+ *
  * Network: a default-network callback keeps an online flag (no start
- * attempts while offline) and, after the default network changes or comes
- * back, gives the host [CodexRemotePolicy.NETWORK_GRACE_MS] to log that it
- * is available/connected again; otherwise the host is restarted. Changes
- * inside the grace window are debounced into one check.
+ * attempts while offline). After the default network changes or comes back,
+ * the host gets [CodexRemotePolicy.NETWORK_GRACE_MS]; it is restarted only if
+ * its log then shows an explicit disconnect and no later available/connected
+ * line. The lines seen are logged so the patterns can be tuned on device.
  */
 object CodexRemoteHost {
     private const val TAG = "CodexRemoteHost"
-    const val AUTOSTART_FILE = ".shelly/codex-remote-autostart"
-    const val PAIRED_FILE = ".shelly/codex-remote-paired"
+    const val AUTOSTART_MIRROR_FILE = ".shelly/codex-remote-autostart"
+    const val OFF_REQUEST_FILE = ".shelly/codex-remote-autostart-off-request"
     const val HALT_SENTINEL = ".shelly/agents/.halted"
     const val STATE_FILE = "tmp/shelly-codex-remote.host"
     const val STOPPED_FILE = "tmp/shelly-codex-remote.stopped"
     const val LOG_FILE = "tmp/shelly-codex-remote.log"
+    private const val SUPERVISOR_LOG_FILE = "tmp/shelly-codex-remote.supervisor.log"
     private const val BG_TMP = "tmp/shelly-codex-bg"
     private const val POLL_MS = 5_000L
 
     // `shelly codex __host` runs in a non-interactive bash that sources the
     // generated ~/.bashrc (as Codex's own `bash -lc` and AgentRuntime do) and
     // then drops the global exec-wrapper preload, matching the interactive
-    // PTY shell the shim normally runs in.
+    // PTY shell the shim normally runs in. Output goes to a file, so the
+    // supervisor never waits on a pipe; host death is seen via waitFor()/pid.
     internal const val HOST_COMMAND =
-        "{ [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\"; } >/dev/null 2>&1 </dev/null\n" +
+        "exec >\"\$HOME/$SUPERVISOR_LOG_FILE\" 2>&1 </dev/null\n" +
+            "{ [ -f \"\$HOME/.bashrc\" ] && . \"\$HOME/.bashrc\"; } >/dev/null 2>&1 </dev/null\n" +
             "unset LD_PRELOAD\n" +
             "type __shelly_codex_remote >/dev/null 2>&1 || exit 127\n" +
             "__shelly_codex_remote __host\n"
 
     private val lock = Object()
-    @Volatile private var appContext: Context? = null
     @Volatile private var started = false
     @Volatile private var hostThreadAlive = false
     @Volatile private var online = true
     @Volatile private var lastActive = false
+    @Volatile private var haltLatched = false
+    @Volatile private var hostProcess: java.lang.Process? = null
+    @Volatile private var hostPid = 0
+    @Volatile private var hostStart: String? = null
+    /** pid -> starttime of the host and every descendant seen while it ran. */
+    private val recordedTree = HashMap<Int, String>()
     private var currentNetwork: Network? = null
     private var consecutiveFailures = 0
     private var nextAttemptAt = 0L
     private var healthCheckAt = 0L
     private var healthLogMark = 0L
+    private var lastMirror: Boolean? = null
 
     // ── Inputs ──────────────────────────────────────────────────────────
 
     private fun home(context: Context): File = HomeInitializer.getHomeDir(context)
 
-    fun readInputs(context: Context, ignoreStopMarker: Boolean = false): CodexRemotePolicy.Inputs {
-        val home = home(context)
-        val autostart = runCatching { File(home, AUTOSTART_FILE).readText().trim() == "on" }.getOrDefault(false)
+    private fun haltSentinelPresent(context: Context): Boolean =
         // Fail closed: if the STOP-ALL sentinel cannot be checked, treat as halted.
-        val halted = runCatching { File(home, HALT_SENTINEL).exists() }.getOrDefault(true)
-        return CodexRemotePolicy.Inputs(
-            autostartOn = autostart,
-            paired = File(home, PAIRED_FILE).isFile,
-            halted = halted,
-            stopRequested = !ignoreStopMarker && File(home, STOPPED_FILE).exists(),
-        )
-    }
+        runCatching { File(home(context), HALT_SENTINEL).exists() }.getOrDefault(true)
 
-    /** Desired state for receivers / app start (a fresh process clears the stop marker). */
-    fun wantsAutostart(context: Context): Boolean =
-        CodexRemotePolicy.shouldRun(readInputs(context, ignoreStopMarker = true))
+    private fun notificationsEnabled(context: Context): Boolean = runCatching {
+        context.getSystemService(NotificationManager::class.java)?.areNotificationsEnabled() == true
+    }.getOrDefault(false)
+
+    fun readInputs(context: Context): CodexRemotePolicy.Inputs = CodexRemotePolicy.Inputs(
+        autostartOn = CodexRemoteAutostart.isOn(context),
+        halted = haltLatched || haltSentinelPresent(context),
+        stopRequested = File(home(context), STOPPED_FILE).exists(),
+        serviceForeground = TerminalSessionService.instance?.isForegroundNow == true,
+        notificationsEnabled = notificationsEnabled(context),
+    )
 
     /** TerminalSessionService keeps itself foreground while this is true. */
     fun keepsServiceAlive(context: Context): Boolean =
-        hostThreadAlive || runCatching { CodexRemotePolicy.shouldRun(readInputs(context)) }.getOrDefault(false)
+        hostThreadAlive || runCatching { CodexRemotePolicy.wanted(readInputs(context)) }.getOrDefault(false)
 
     /** A tracked host (native or `pair --background`) is alive. Drives the notification text. */
     fun isHostActive(): Boolean = lastActive
 
     fun trackedHost(context: Context): CodexRemotePolicy.HostState? {
+        // Prefer the pid of the process we spawned over the shell-written file.
+        val pid = hostPid
+        val start = hostStart
+        if (pid > 1 && start != null && startOf(pid) == start) {
+            return CodexRemotePolicy.HostState(pid, start, nativeOwned = true)
+        }
         val state = CodexRemotePolicy.parseState(runCatching { File(home(context), STATE_FILE).readText() }.getOrNull())
             ?: return null
-        val cur = CodexRemotePolicy.procStartTime(readProcStat(state.pid)) ?: return null
-        return if (cur == state.startTime) state else null
+        if (state.pid == Process.myPid()) return null
+        return if (startOf(state.pid) == state.startTime) state else null
     }
 
-    private fun readProcStat(pid: Int): String? = runCatching { File("/proc/$pid/stat").readText() }.getOrNull()
+    private fun readProcFile(pid: Int, name: String): String? =
+        runCatching { File("/proc/$pid/$name").readText() }.getOrNull()
+
+    private fun startOf(pid: Int): String? = CodexRemotePolicy.procStartTime(readProcFile(pid, "stat"))
 
     // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -113,10 +138,7 @@ object CodexRemoteHost {
         synchronized(lock) {
             if (started) { lock.notifyAll(); return }
             started = true
-            appContext = app
         }
-        // "until Shelly next starts": a new process forgets `shelly codex stop`.
-        runCatching { File(home(app), STOPPED_FILE).delete() }
         registerNetworkCallback(app)
         Thread({ loop(app) }, "ShellyCodexRemote").apply { isDaemon = true; start() }
         Log.i(TAG, "supervisor started")
@@ -124,11 +146,22 @@ object CodexRemoteHost {
 
     fun wake() = synchronized(lock) { lock.notifyAll() }
 
+    /**
+     * The user opened Shelly (Expo Module OnCreate): forget `shelly codex stop`
+     * and bring the service up if the host is wanted. A START_STICKY / LMK
+     * restart or a boot/update broadcast does NOT clear the stop marker.
+     */
+    fun onUserAppLaunch(context: Context) {
+        runCatching { File(home(context), STOPPED_FILE).delete() }
+        requestStartIfWanted(context, "app launch")
+    }
+
     /** App start / boot / package replaced: bring the foreground service up if wanted. */
     fun requestStartIfWanted(context: Context, reason: String) {
         val app = context.applicationContext
-        if (!wantsAutostart(app)) {
-            Log.i(TAG, "$reason: autostart not wanted (off, not paired, or STOP-ALL)")
+        val i = readInputs(app)
+        if (!CodexRemotePolicy.wanted(i)) {
+            Log.i(TAG, "$reason: not wanted (on=${i.autostartOn} halted=${i.halted} stopped=${i.stopRequested})")
             return
         }
         Log.i(TAG, "$reason: starting foreground service for the Codex remote host")
@@ -142,45 +175,58 @@ object CodexRemoteHost {
         }
     }
 
-    /** Settings toggle / `shelly codex autostart` equivalent. Never marks the device paired. */
-    fun setAutostart(context: Context, enabled: Boolean) {
-        val home = home(context)
-        val f = File(home, AUTOSTART_FILE)
+    /**
+     * The Settings toggle (RN only). ON is refused while STOP-ALL is active;
+     * an ON here is also the explicit in-app resume that clears the latch.
+     */
+    fun setAutostartFromApp(context: Context, enabled: Boolean): Map<String, Any> {
         if (enabled) {
-            f.parentFile?.mkdirs()
-            val tmp = File(f.parentFile, "${f.name}.tmp.${Process.myPid()}")
-            tmp.writeText("on\n")
-            if (!tmp.renameTo(f)) { f.writeText("on\n"); tmp.delete() }
-            File(home, STOPPED_FILE).delete()
-            requestStartIfWanted(context, "setAutostart")
+            if (haltSentinelPresent(context)) {
+                Log.i(TAG, "setAutostartFromApp(on) refused: STOP-ALL is active")
+                return status(context)
+            }
+            haltLatched = false
+            CodexRemoteAutostart.setOn(context)
+            File(home(context), OFF_REQUEST_FILE).delete()
+            File(home(context), STOPPED_FILE).delete()
+            writeMirror(context, true)
+            requestStartIfWanted(context, "settings on")
         } else {
-            f.delete()
-            stopTrackedHost(context, "autostart off")
+            turnOff(context, "settings off", sweepStragglers = false)
         }
+        wake()
+        return status(context)
+    }
+
+    /** Notification "Disconnect": OFF + stop every same-uid remote-control process. */
+    fun disconnect(context: Context) {
+        turnOff(context, "notification disconnect", sweepStragglers = true)
         wake()
     }
 
-    /** Notification "Disconnect": autostart off + stop whatever host is tracked. */
-    fun disconnect(context: Context) {
-        setAutostart(context, false)
-    }
-
-    /** Notification "Exit": like `shelly codex stop` (back on the next app start if autostart is on). */
+    /** Notification "Exit": like `shelly codex stop` (back when the user next opens Shelly). */
     fun stopUntilNextStart(context: Context) {
         val stopped = File(home(context), STOPPED_FILE)
         runCatching { stopped.parentFile?.mkdirs(); stopped.writeText("") }
-        stopTrackedHost(context, "exit")
+        stopHost(context, "exit", nativeOnly = false)
         wake()
+    }
+
+    private fun turnOff(context: Context, reason: String, sweepStragglers: Boolean) {
+        CodexRemoteAutostart.setOff(context, reason)
+        writeMirror(context, false)
+        stopHost(context, reason, nativeOnly = false)
+        if (sweepStragglers) killRemoteControlStragglers(reason)
     }
 
     fun status(context: Context): Map<String, Any> {
         val i = readInputs(context)
         return mapOf(
             "enabled" to i.autostartOn,
-            "paired" to i.paired,
             "halted" to i.halted,
             "running" to (trackedHost(context) != null),
             "online" to online,
+            "notificationsEnabled" to i.notificationsEnabled,
         )
     }
 
@@ -201,14 +247,33 @@ object CodexRemoteHost {
     /** Returns how long to wait before the next pass. */
     private fun reconcile(context: Context): Long {
         val now = System.currentTimeMillis()
-        val inputs = readInputs(context)
-        val tracked = trackedHost(context)
-        publishActive(context, tracked != null)
+        val home = home(context)
 
-        if (!CodexRemotePolicy.shouldRun(inputs)) {
+        // STOP-ALL: latch for this process and turn the persistent switch off,
+        // so only an in-app re-enable can bring it back.
+        if (haltSentinelPresent(context) && !haltLatched) {
+            haltLatched = CodexRemotePolicy.latchHalt(haltLatched, true)
+            Log.i(TAG, "STOP-ALL observed: latching and turning Keep ChatGPT connected off")
+            turnOff(context, "STOP-ALL", sweepStragglers = true)
+        }
+        // `shelly codex autostart off` (any same-uid process may ask for OFF).
+        val offRequest = File(home, OFF_REQUEST_FILE)
+        if (offRequest.exists()) {
+            offRequest.delete()
+            turnOff(context, "shell off request", sweepStragglers = false)
+        }
+
+        val inputs = readInputs(context)
+        writeMirror(context, inputs.autostartOn)
+        val tracked = trackedHost(context)
+        publishActive(tracked != null)
+        if (tracked != null && tracked.nativeOwned) recordTree(tracked.pid)
+
+        if (!CodexRemotePolicy.mayRun(inputs)) {
             healthCheckAt = 0L
             if (tracked != null && CodexRemotePolicy.shouldStopUnwanted(inputs, tracked.nativeOwned)) {
-                stopTrackedHost(context, if (inputs.halted) "STOP-ALL" else "no longer wanted")
+                Log.i(TAG, "host may not run (on=${inputs.autostartOn} halted=${inputs.halted} stopped=${inputs.stopRequested} fg=${inputs.serviceForeground} notif=${inputs.notificationsEnabled})")
+                stopHost(context, "may not run", nativeOnly = !inputs.halted)
             }
             if (!hostThreadAlive) notifyService()
             return POLL_MS
@@ -220,12 +285,11 @@ object CodexRemoteHost {
                 if (now < due) return due - now
                 healthCheckAt = 0L
                 val since = readLogSince(context, healthLogMark)
-                if (CodexRemotePolicy.logShowsReconnect(since)) {
-                    Log.i(TAG, "network change: host reported it is available again")
-                } else {
-                    Log.i(TAG, "network change: no reconnect within ${CodexRemotePolicy.NETWORK_GRACE_MS}ms; restarting the host")
+                val verdict = CodexRemotePolicy.networkVerdict(since)
+                Log.i(TAG, "network check verdict=$verdict lines=${CodexRemotePolicy.interestingLines(since)}")
+                if (verdict == CodexRemotePolicy.NetworkVerdict.DISCONNECTED) {
                     synchronized(lock) { consecutiveFailures = 0; nextAttemptAt = 0L }
-                    stopTrackedHost(context, "network change")
+                    stopHost(context, "network change", nativeOnly = false)
                 }
             }
             return POLL_MS
@@ -247,59 +311,154 @@ object CodexRemoteHost {
                 HomeInitializer.initialize(context) // regenerates a stale ~/.bashrc after an update
                 val libDir = LibExtractor.extractAll(context)
                 val bashPath = LibExtractor.getBashPath(context)
+                val home = home(context)
+                File(home, "tmp").mkdirs()
+                val lib = libDir.absolutePath
+                // Same envp as shelly-exec.c's execSubprocess.
+                val pb = ProcessBuilder("/system/bin/linker64", bashPath, "-c", HOST_COMMAND)
+                pb.directory(home)
+                pb.redirectErrorStream(true)
+                pb.environment().apply {
+                    clear()
+                    put("PATH", "$lib:$lib/node_modules/npm/bin:$lib/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin")
+                    put("HOME", home.absolutePath)
+                    put("TERM", "dumb")
+                    put("LANG", "en_US.UTF-8")
+                    put("LD_LIBRARY_PATH", lib)
+                    put("SHELL", bashPath)
+                    put("LD_PRELOAD", "$lib/libexec_wrapper.so")
+                    put("TERMINFO", "$lib/terminfo")
+                }
+                // Re-check right before the spawn: the gates may have changed.
+                if (!CodexRemotePolicy.mayRun(readInputs(context)) || !online) {
+                    Log.i(TAG, "spawn skipped: no longer allowed")
+                    exitCode = 0
+                    return@Thread
+                }
                 Log.i(TAG, "starting `shelly codex __host`")
-                val result = ShellyJNI.execSubprocess(
-                    "/system/bin/linker64",
-                    bashPath,
-                    libDir.absolutePath,
-                    home(context).absolutePath,
-                    HOST_COMMAND,
-                    Int.MAX_VALUE,
-                )
-                exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
-                val err = result.getOrNull(2).orEmpty().take(300)
-                Log.i(TAG, "host exited code=$exitCode after ${System.currentTimeMillis() - startedAt}ms ${if (err.isNotBlank()) "stderr=$err" else ""}")
+                val proc = pb.start()
+                runCatching { proc.outputStream.close() }
+                Thread({ runCatching { proc.inputStream.use { s -> val b = ByteArray(4096); while (s.read(b) >= 0) Unit } } },
+                    "ShellyCodexRemoteDrain").apply { isDaemon = true; start() }
+                val pid = pidOf(proc)
+                val start = pid?.let { startOf(it) }
+                synchronized(lock) {
+                    hostProcess = proc
+                    hostPid = pid ?: 0
+                    hostStart = start
+                    recordedTree.clear()
+                    if (pid != null && start != null) recordedTree[pid] = start
+                }
+                publishActive(pid != null && start != null)
+                exitCode = proc.waitFor()
+                Log.i(TAG, "host exited code=$exitCode after ${System.currentTimeMillis() - startedAt}ms")
             } catch (e: Exception) {
                 Log.e(TAG, "host launch failed", e)
             } finally {
+                // Anything the host left behind (recorded with its start time).
+                killRecorded("host exited")
                 val ran = System.currentTimeMillis() - startedAt
                 synchronized(lock) {
-                    if (ran >= CodexRemotePolicy.HEALTHY_RUN_MS) consecutiveFailures = 0
-                    else if (exitCode != CodexRemotePolicy.EXIT_ALREADY_RUNNING) consecutiveFailures++
+                    hostProcess = null
+                    hostPid = 0
+                    hostStart = null
+                    if (ran >= CodexRemotePolicy.HEALTHY_RUN_MS) consecutiveFailures = 0 else consecutiveFailures++
                     nextAttemptAt = System.currentTimeMillis() +
                         CodexRemotePolicy.restartDelayMs(exitCode, consecutiveFailures)
                     hostThreadAlive = false
                     lock.notifyAll()
                 }
                 cleanupState(context)
+                publishActive(trackedHost(context) != null)
                 notifyService()
             }
         }, "ShellyCodexRemoteHost").apply { isDaemon = true; start() }
     }
 
+    /** java.lang.Process has no public pid() before API 33; libcore's UNIXProcess keeps it in "pid". */
+    private fun pidOf(proc: java.lang.Process): Int? {
+        if (Build.VERSION.SDK_INT >= 33) runCatching { return proc.javaClass.getMethod("pid").invoke(proc).toString().toInt() }
+        return runCatching {
+            val f = proc.javaClass.getDeclaredField("pid")
+            f.isAccessible = true
+            f.getInt(proc)
+        }.getOrNull()?.takeIf { it > 1 && it != Process.myPid() }
+    }
+
     // ── Stop ────────────────────────────────────────────────────────────
 
-    /** SIGTERM the tracked host's process tree, then SIGKILL survivors. */
-    fun stopTrackedHost(context: Context, reason: String) {
+    private fun recordTree(root: Int) {
+        val parents = processParents()
+        val found = HashMap<Int, String>()
+        for (p in CodexRemotePolicy.descendants(root, parents)) startOf(p)?.let { found[p] = it }
+        synchronized(lock) { recordedTree.putAll(found) }
+    }
+
+    /**
+     * SIGTERM the tracked host and its recorded/current descendants, then
+     * SIGKILL survivors after re-verifying each (pid, starttime). Never
+     * signals this app process. [nativeOnly] leaves a hand-started host alone.
+     */
+    fun stopHost(context: Context, reason: String, nativeOnly: Boolean) {
         val host = trackedHost(context) ?: return
+        if (nativeOnly && !host.nativeOwned) return
         Log.i(TAG, "stopping host pid=${host.pid} native=${host.nativeOwned} ($reason)")
-        val pids = listOf(host.pid) + CodexRemotePolicy.descendants(host.pid, processParents())
-        for (p in pids) runCatching { Process.sendSignal(p, 15) }
+        val targets = HashMap<Int, String>()
+        targets[host.pid] = host.startTime
+        for (p in CodexRemotePolicy.descendants(host.pid, processParents())) startOf(p)?.let { targets[p] = it }
+        if (host.nativeOwned) synchronized(lock) { targets.putAll(recordedTree) }
+        signalVerified(targets, 15)
         var i = 0
-        while (i < 10 && CodexRemotePolicy.procStartTime(readProcStat(host.pid)) == host.startTime) {
-            Thread.sleep(300)
-            i++
-        }
-        for (p in pids) runCatching { Process.sendSignal(p, Process.SIGNAL_KILL) }
+        while (i < 10 && startOf(host.pid) == host.startTime) { Thread.sleep(300); i++ }
+        signalVerified(targets, Process.SIGNAL_KILL)
         cleanupState(context)
-        publishActive(context, false)
+        publishActive(false)
+        notifyService()
+    }
+
+    private fun killRecorded(reason: String) {
+        val targets = synchronized(lock) { HashMap(recordedTree).also { recordedTree.clear() } }
+        if (targets.isEmpty()) return
+        val alive = CodexRemotePolicy.signalable(targets, { p -> startOf(p) }, Process.myPid())
+        if (alive.isEmpty()) return
+        Log.i(TAG, "cleaning up ${alive.size} leftover host process(es) ($reason)")
+        signalVerified(targets, 15)
+        Thread.sleep(500)
+        signalVerified(targets, Process.SIGNAL_KILL)
+    }
+
+    private fun signalVerified(targets: Map<Int, String>, signal: Int) {
+        for (pid in CodexRemotePolicy.signalable(targets, { p -> startOf(p) }, Process.myPid())) {
+            runCatching { Process.sendSignal(pid, signal) }
+        }
+    }
+
+    /**
+     * Disconnect / STOP-ALL: any same-uid process whose argv has
+     * `remote-control` (a host started some other way, or orphaned).
+     */
+    fun killRemoteControlStragglers(reason: String) {
+        val myUid = Process.myUid()
+        val targets = HashMap<Int, String>()
+        File("/proc").listFiles()?.forEach { d ->
+            val pid = d.name.toIntOrNull() ?: return@forEach
+            if (pid == Process.myPid() || pid <= 1) return@forEach
+            if (CodexRemotePolicy.procUid(readProcFile(pid, "status")) != myUid) return@forEach
+            if (!CodexRemotePolicy.isRemoteControlCmdline(readProcFile(pid, "cmdline"))) return@forEach
+            startOf(pid)?.let { targets[pid] = it }
+        }
+        if (targets.isEmpty()) return
+        Log.i(TAG, "stopping ${targets.size} remote-control process(es) ($reason)")
+        signalVerified(targets, 15)
+        Thread.sleep(500)
+        signalVerified(targets, Process.SIGNAL_KILL)
     }
 
     private fun processParents(): Map<Int, Int> {
         val out = HashMap<Int, Int>()
         File("/proc").listFiles()?.forEach { d ->
             val pid = d.name.toIntOrNull() ?: return@forEach
-            CodexRemotePolicy.procParentPid(readProcStat(pid))?.let { out[pid] = it }
+            CodexRemotePolicy.procParentPid(readProcFile(pid, "stat"))?.let { out[pid] = it }
         }
         return out
     }
@@ -310,6 +469,16 @@ object CodexRemoteHost {
         File(home, STATE_FILE).delete()
         File(home, "$STATE_FILE.sock").delete()
         File(home, BG_TMP).listFiles()?.filter { it.name.startsWith("codex-rc-") }?.forEach { it.deleteRecursively() }
+    }
+
+    private fun writeMirror(context: Context, on: Boolean) {
+        if (lastMirror == on) return
+        lastMirror = on
+        runCatching {
+            val f = File(home(context), AUTOSTART_MIRROR_FILE)
+            f.parentFile?.mkdirs()
+            f.writeText(if (on) "on\n" else "off\n")
+        }
     }
 
     // ── Network ─────────────────────────────────────────────────────────
@@ -345,7 +514,7 @@ object CodexRemoteHost {
                 }
             })
         } catch (e: Exception) {
-            Log.w(TAG, "network callback registration failed; network-change restarts disabled", e)
+            Log.w(TAG, "network callback registration failed; network-change checks disabled", e)
         }
     }
 
@@ -378,7 +547,7 @@ object CodexRemoteHost {
 
     // ── Service notification ────────────────────────────────────────────
 
-    private fun publishActive(context: Context, active: Boolean) {
+    private fun publishActive(active: Boolean) {
         if (active == lastActive) return
         lastActive = active
         notifyService()

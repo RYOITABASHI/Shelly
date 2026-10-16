@@ -2473,19 +2473,21 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
     };
   }, [updateSettings]);
 
-  const toggleKeepConnected = React.useCallback(async () => {
-    const next = !keepConnected;
+  const applyKeepConnected = React.useCallback(async (next: boolean) => {
     setKeepConnectedBusy(true);
     try {
+      // The native call is the only way to turn this on (the shell can only
+      // turn it off), so the confirmation below is the user's consent.
       const status = await TerminalEmulator.setCodexRemoteAutostart(next);
-      updateSettings({ codexRemoteAutostart: status?.enabled ?? next });
-      if (next && status && !status.paired) {
-        Alert.alert(t('codex_login.keep_connected'), t('codex_login.keep_connected_not_paired'));
+      updateSettings({ codexRemoteAutostart: status?.enabled ?? false });
+      if (next && status && status.halted) {
+        Alert.alert(t('codex_login.keep_connected'), t('codex_login.keep_connected_halted'));
+      } else if (next && status && !status.notificationsEnabled) {
+        Alert.alert(t('codex_login.keep_connected'), t('codex_login.keep_connected_no_notifications'));
+      } else if (!next) {
+        Alert.alert(t('codex_login.keep_connected_off'), t('codex_login.keep_connected_off_note'));
       } else {
-        ToastAndroid.show(
-          next ? t('codex_login.keep_connected_on') : t('codex_login.keep_connected_off'),
-          ToastAndroid.SHORT,
-        );
+        ToastAndroid.show(t('codex_login.keep_connected_on'), ToastAndroid.SHORT);
       }
       logInfo('SettingsDropdown', 'codexRemoteAutostart=' + next);
     } catch (e: any) {
@@ -2494,7 +2496,22 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
     } finally {
       setKeepConnectedBusy(false);
     }
-  }, [keepConnected, t, updateSettings]);
+  }, [t, updateSettings]);
+
+  const toggleKeepConnected = React.useCallback(() => {
+    if (keepConnected) {
+      void applyKeepConnected(false);
+      return;
+    }
+    Alert.alert(
+      t('codex_login.keep_connected_confirm_title'),
+      t('codex_login.keep_connected_confirm_body'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        { text: t('codex_login.keep_connected_confirm_ok'), onPress: () => void applyKeepConnected(true) },
+      ],
+    );
+  }, [applyKeepConnected, keepConnected, t]);
 
   return (
     <Section title={t('codex_login.title')}>

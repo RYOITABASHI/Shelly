@@ -21,22 +21,34 @@ object CodexRemotePolicy {
     const val NETWORK_GRACE_MS = 30_000L
 
     data class Inputs(
+        /** Keystore-verified native ON switch (CodexRemoteAutostart). */
         val autostartOn: Boolean,
-        val paired: Boolean,
+        /** STOP-ALL sentinel seen now, or latched earlier in this process. */
         val halted: Boolean,
+        /** `shelly codex stop` / notification Exit until the user next opens Shelly. */
         val stopRequested: Boolean,
+        /** TerminalSessionService exists and is in the foreground state. */
+        val serviceForeground: Boolean,
+        /** The user can see the "ChatGPT can run commands" notification. */
+        val notificationsEnabled: Boolean,
     )
 
-    /** Whether a supervised host should exist right now (network aside). */
-    fun shouldRun(i: Inputs): Boolean = i.autostartOn && i.paired && !i.halted && !i.stopRequested
+    /** The user wants a host (keeps the foreground service alive while true). */
+    fun wanted(i: Inputs): Boolean = i.autostartOn && !i.halted && !i.stopRequested
+
+    /** A supervised host may run right now (network aside). */
+    fun mayRun(i: Inputs): Boolean = wanted(i) && i.serviceForeground && i.notificationsEnabled
 
     /**
-     * What to do with a host that is running but no longer wanted: a host the
+     * What to do with a host that is running but may not run: a host the
      * native supervisor started is always stopped; one started by hand
      * (`shelly codex pair --background`) is only stopped by STOP-ALL.
      */
     fun shouldStopUnwanted(i: Inputs, nativeOwned: Boolean): Boolean =
-        !shouldRun(i) && (nativeOwned || i.halted)
+        !mayRun(i) && (nativeOwned || i.halted)
+
+    /** Once STOP-ALL is seen, stay halted for the process until an in-app re-enable clears it. */
+    fun latchHalt(latched: Boolean, sentinelPresent: Boolean): Boolean = latched || sentinelPresent
 
     /** 5s, 10s, 20s ... capped at 5 min, for the n-th consecutive quick failure (n >= 1). */
     fun backoffMs(consecutiveFailures: Int): Long {
@@ -45,10 +57,13 @@ object CodexRemotePolicy {
         return (BASE_BACKOFF_MS shl shift).coerceAtMost(MAX_BACKOFF_MS)
     }
 
-    /** Delay before the next start attempt after the host exited with [exitCode]. */
+    /**
+     * Delay before the next start attempt after the host exited with [exitCode].
+     * "Already running" counts toward the same capped backoff (a second host
+     * that keeps winning the state file must not make us spin).
+     */
     fun restartDelayMs(exitCode: Int, consecutiveFailures: Int): Long = when (exitCode) {
         EXIT_NOT_SIGNED_IN -> NOT_SIGNED_IN_BACKOFF_MS
-        EXIT_ALREADY_RUNNING -> BASE_BACKOFF_MS
         else -> backoffMs(consecutiveFailures)
     }
 
@@ -80,6 +95,18 @@ object CodexRemotePolicy {
         return stat.substring(close + 2).trim().split(Regex("\\s+")).getOrNull(1)?.toIntOrNull()
     }
 
+    /** Real uid from /proc/<pid>/status ("Uid:\t<real>\t<eff>..."). */
+    fun procUid(status: String?): Int? =
+        status?.lineSequence()?.firstOrNull { it.startsWith("Uid:") }
+            ?.substringAfter("Uid:")?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.toIntOrNull()
+
+    /** A same-uid `codex remote-control` process (NUL-separated /proc/<pid>/cmdline). */
+    fun isRemoteControlCmdline(cmdline: String?): Boolean {
+        if (cmdline.isNullOrEmpty()) return false
+        val args = cmdline.split('\u0000')
+        return args.any { it == "remote-control" }
+    }
+
     /** All descendants of [root] given a pid -> ppid map (root excluded). */
     fun descendants(root: Int, parentOf: Map<Int, Int>): List<Int> {
         val children = HashMap<Int, MutableList<Int>>()
@@ -94,22 +121,40 @@ object CodexRemotePolicy {
         return out
     }
 
+    /**
+     * Pids that may be signalled: recorded with a start time that still
+     * matches, never [selfPid], never pid <= 1.
+     */
+    fun signalable(recorded: Map<Int, String>, currentStart: (Int) -> String?, selfPid: Int): List<Int> =
+        recorded.filter { (pid, start) -> pid > 1 && pid != selfPid && currentStart(pid) == start }.keys.toList()
+
     private val reconnectLine = Regex(
         "(?i)(available for remote control|\\breconnected\\b|\\bconnected to\\b|\\bconnection (re)?established\\b)"
     )
-    private val failureLine = Regex("(?i)(disconnect|error|fail|retry|retrying|unable|timed out)")
+    private val disconnectLine = Regex(
+        "(?i)(\\bdisconnected\\b|connection (lost|closed|reset|refused)|websocket[^\\n]*(closed|error)|failed to (re)?connect|network is unreachable)"
+    )
+
+    enum class NetworkVerdict { RECONNECTED, DISCONNECTED, UNKNOWN }
 
     /**
-     * Health signal after a network change: the host log written since the
-     * change contains a line saying it is (again) available / connected and
-     * no later line reports a failure.
+     * Health signal after a network change, from the host log written since
+     * the change. Only an explicit disconnect without a later "available /
+     * connected" line is DISCONNECTED (=> restart); silence is UNKNOWN (keep).
      */
-    fun logShowsReconnect(logSinceChange: String): Boolean {
-        var ok = false
+    fun networkVerdict(logSinceChange: String): NetworkVerdict {
+        var verdict = NetworkVerdict.UNKNOWN
         for (line in logSinceChange.lineSequence()) {
-            if (reconnectLine.containsMatchIn(line) && !failureLine.containsMatchIn(line)) ok = true
-            else if (failureLine.containsMatchIn(line)) ok = false
+            when {
+                reconnectLine.containsMatchIn(line) && !disconnectLine.containsMatchIn(line) -> verdict = NetworkVerdict.RECONNECTED
+                disconnectLine.containsMatchIn(line) -> verdict = NetworkVerdict.DISCONNECTED
+            }
         }
-        return ok
+        return verdict
     }
+
+    /** Lines worth logging so the regexes can be tuned from on-device logcat. */
+    fun interestingLines(logSinceChange: String, max: Int = 8): List<String> =
+        logSinceChange.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
+            .toList().takeLast(max).map { it.take(200) }
 }

@@ -89,6 +89,10 @@ class TerminalSessionService : Service() {
         private val activeAgentRuns = AtomicInteger(0)
     }
 
+    /** startForeground() succeeded and stopForeground() has not been called since. */
+    @Volatile var isForegroundNow = false
+        private set
+
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "Service created sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
@@ -124,7 +128,7 @@ class TerminalSessionService : Service() {
                 // Exit also stops a ChatGPT remote-control host (until the next
                 // app start, like `shelly codex stop`).
                 Thread { runCatching { CodexRemoteHost.stopUntilNextStart(applicationContext) } }.start()
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopForegroundAndMark()
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -133,7 +137,7 @@ class TerminalSessionService : Service() {
                 CodexRemoteHost.ensureWatching(applicationContext)
                 CodexRemoteHost.wake()
                 if (!hasProtectedWork()) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopForegroundAndMark()
                     stopSelf(startId)
                     return START_NOT_STICKY
                 }
@@ -172,7 +176,7 @@ class TerminalSessionService : Service() {
                     Log.i(TAG, "RUN_AGENT for $agentId suppressed: globally halted (STOP-ALL)")
                     if (!hasProtectedWork()) {
                         startForegroundWithNotification(null)
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopForegroundAndMark()
                         stopSelf(startId)
                         return START_NOT_STICKY
                     }
@@ -197,7 +201,7 @@ class TerminalSessionService : Service() {
                 ) {
                     if (!hasProtectedWork()) {
                         startForegroundWithNotification(null)
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopForegroundAndMark()
                         stopSelf(startId)
                         return START_NOT_STICKY
                     }
@@ -215,7 +219,7 @@ class TerminalSessionService : Service() {
                     Log.i(TAG, "Manual widget RUN_AGENT for $agentId refused: registered scheduled agent not found")
                     if (!hasProtectedWork()) {
                         startForegroundWithNotification(null)
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopForegroundAndMark()
                         stopSelf(startId)
                         return START_NOT_STICKY
                     }
@@ -265,7 +269,7 @@ class TerminalSessionService : Service() {
         if (!hasProtectedWork()) {
             Log.i(TAG, "Default start with no sessions — not keeping empty service sticky")
             startForegroundWithNotification(null)
-            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopForegroundAndMark()
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -286,7 +290,9 @@ class TerminalSessionService : Service() {
     }
 
     override fun onDestroy() {
+        isForegroundNow = false
         if (instance === this) instance = null
+        CodexRemoteHost.wake()
         Log.i(TAG, "Service destroyed sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         super.onDestroy()
     }
@@ -374,6 +380,12 @@ class TerminalSessionService : Service() {
             .build()
     }
 
+    private fun stopForegroundAndMark() {
+        isForegroundNow = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        CodexRemoteHost.wake()
+    }
+
     private fun startForegroundWithNotification(info: String?) {
         val notification = buildNotification(info)
         try {
@@ -387,9 +399,12 @@ class TerminalSessionService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            isForegroundNow = true
         } catch (e: Exception) {
+            isForegroundNow = false
             Log.e(TAG, "Failed to start foreground", e)
         }
+        CodexRemoteHost.wake()
     }
 
     private fun updateNotification(info: String) {
@@ -504,7 +519,7 @@ class TerminalSessionService : Service() {
             if (sessionRegistry.isEmpty() && remainingAgents <= 0 &&
                 !runCatching { CodexRemoteHost.keepsServiceAlive(applicationContext) }.getOrDefault(false)
             ) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopForegroundAndMark()
                 stopSelf()
             } else {
                 // Terminals are still alive (or another agent is running): revert the
@@ -529,7 +544,7 @@ class TerminalSessionService : Service() {
             if (instance !== this) return@post
             if (!hasProtectedWork()) {
                 Log.i(TAG, "Codex remote host gone and nothing else to keep - stopping service")
-                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopForegroundAndMark()
                 stopSelf()
             } else {
                 updateNotification("")
