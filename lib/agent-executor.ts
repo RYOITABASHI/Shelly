@@ -732,7 +732,17 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // audited against the raw arrays (the response file itself is rm -f'd right
 // after extraction). The marker mapping is unchanged. Kept in lockstep with
 // AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 71;
+// v72 (2026-10-16, deep-research audit): for a deep-research model
+// (sonar-deep-research — response "model" or the request model the
+// Perplexity call site now passes) extract_ai_content strips EVERY inline
+// [n] / [n, m] marker instead of renumbering it: Perplexity shares one id
+// space across several search batches and returns only a subset, so the
+// markers do not index the returned citations (on-device: [32][33][34] with
+// 29 citations, and in-range markers pointing at the next paper). "## Sources"
+// still lists the uncited sources (cap 20); other models keep the v70
+// renumbering; the v71 sidecar is unchanged (raw content). Kept in lockstep
+// with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 72;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -5457,14 +5467,19 @@ ensure_local_llm_server() {
 
 extract_ai_content() {
   file="$1"
+  # v72: optional request model (the Perplexity call site passes "$MODEL") so a
+  # deep-research request is recognised even if the response omits "model".
+  request_model="\${2:-}"
   if node_usable; then
-    if shelly_node - "$file" "\${LOG_DIR:-}" <<'NODEEOF'
+    if shelly_node - "$file" "\${LOG_DIR:-}" "$request_model" <<'NODEEOF'
 const fs = require('fs');
 
 const file = process.argv[2];
 // v71: the agent's log dir ($LOG_DIR, ~/.shelly/agents/logs/<agentId>) for the
 // perplexity-last.json audit sidecar; empty when the caller has none.
 const logDir = process.argv[3] || '';
+// v72: the request model the script used ('' when the caller passes none).
+const requestModel = process.argv[4] || '';
 const text = fs.readFileSync(file, 'utf8');
 let data;
 try {
@@ -5587,7 +5602,18 @@ try {
   const PART_SEP = /[,\\uff0c\\u3001]/;
   const hasSidecar = cites.length > 0 || sr.length > 0;
   const renum = {};
-  if (hasSidecar && typeof content === 'string') {
+  // v72 (2026-10-16, on-device audit): sonar-deep-research shares one [n] id
+  // space across several search batches and returns only a subset of it, so
+  // its inline markers cannot be trusted to index citations/search_results
+  // (seen: [32][33][34] with 29 citations; in-range markers pointing at the
+  // NEXT paper). For a deep-research model (response "model" or the request
+  // model, e.g. "perplexity/sonar-deep-research") no marker is resolved: renum
+  // stays empty, so the replace below strips EVERY [n] / [n, m] marker (with
+  // its leading whitespace; markdown links untouched) and "## Sources" lists
+  // only the uncited sources up to the cap. Other models keep v70 renumbering.
+  const isDeepModel = (s) => typeof s === 'string' && /deep-research/i.test(s);
+  const deepResearch = isDeepModel(data && data.model) || isDeepModel(requestModel);
+  if (hasSidecar && typeof content === 'string' && !deepResearch) {
     // 1) Cited sources first, in order of first use — kept regardless of the cap.
     let m;
     MARKER_RE.lastIndex = 0;
@@ -5677,7 +5703,7 @@ NODEEOF
     fi
   fi
   if python3_usable; then
-    if python3 - "$file" "\${LOG_DIR:-}" <<'PYEOF'
+    if python3 - "$file" "\${LOG_DIR:-}" "$request_model" <<'PYEOF'
 import json
 import os
 import sys
@@ -5685,6 +5711,8 @@ import sys
 path = sys.argv[1]
 # v71: $LOG_DIR for the perplexity-last.json audit sidecar (mirrors node).
 log_dir = sys.argv[2] if len(sys.argv) > 2 else ""
+# v72: the request model the script used (mirrors node).
+request_model = sys.argv[3] if len(sys.argv) > 3 else ""
 text = open(path, "r", encoding="utf-8", errors="replace").read()
 try:
     data = json.loads(text)
@@ -5796,7 +5824,10 @@ try:
     part_sep = re.compile(r"[,\\uff0c\\u3001]")
     has_sidecar = bool(cites) or bool(sr)
     renum = {}
-    if has_sidecar and isinstance(content, str):
+    # v72: deep-research markers are untrustworthy — resolve none, so every
+    # marker is stripped below (mirrors the node branch).
+    deep_research = any(isinstance(v, str) and "deep-research" in v.lower() for v in (data.get("model"), request_model))
+    if has_sidecar and isinstance(content, str) and not deep_research:
         for m in marker_re.finditer(content):
             for part in part_sep.split(m.group(2)):
                 n = int(part.strip())
@@ -6654,7 +6685,7 @@ ${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
 		  mark_http_failure "$API_EXIT"
 		  echo "Perplexity API call failed with exit $API_EXIT: $(head -c 240 "$RESULT_FILE.stderr" 2>/dev/null | tr '\\n' ' ')" > ${resultVar}
 		else
-		  extract_ai_content "$RESULT_FILE.response.json" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
+		  extract_ai_content "$RESULT_FILE.response.json" "$MODEL" > ${resultVar} 2>> "$RESULT_FILE.stderr" || { touch "$BACKEND_ERROR_FILE"; [ -s ${resultVar} ] || cat "$RESULT_FILE.stderr" > ${resultVar}; }
 		fi
 		rm -f "$RESULT_FILE.response.json" "$RESULT_FILE.stderr"
 		fi

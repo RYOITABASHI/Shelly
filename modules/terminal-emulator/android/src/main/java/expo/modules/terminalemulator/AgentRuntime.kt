@@ -450,7 +450,12 @@ object AgentRuntime {
     // citations, search_results; 0600) for Perplexity responses — see
     // lib/agent-executor.ts's AGENT_SCRIPT_VERSION v71 comment. No native
     // logic change; bumped so stale scripts are regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 71
+    // v72 (2026-10-16, deep-research audit): extract_ai_content strips every
+    // inline [n] marker from sonar-deep-research results (they do not index
+    // the returned citations) instead of renumbering — see
+    // lib/agent-executor.ts's AGENT_SCRIPT_VERSION v72 comment. No native
+    // logic change; bumped so stale scripts are regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 72
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request

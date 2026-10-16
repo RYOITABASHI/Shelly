@@ -168,7 +168,8 @@ describe('extract_ai_content — every remaining [n] resolves (build 2603, v70)'
       search_results: searchResults.map((r) => ({ ...r, snippet: 'long snippet '.repeat(50), last_updated: '2026-10-16' })),
     });
     const out = runNode(dir, response, logDir);
-    expect(body(out)).toContain('Alpha [1].');
+    // v72: a sonar-deep-research response has its markers stripped
+    expect(body(out)).toContain('Alpha. x');
     const diagPath = path.join(logDir, 'perplexity-last.json');
     const diag = JSON.parse(fs.readFileSync(diagPath, 'utf8'));
     expect(Object.keys(diag)).toEqual(['model', 'content_chars', 'content', 'citations', 'search_results']);
@@ -224,3 +225,123 @@ describe('extract_ai_content — every remaining [n] resolves (build 2603, v70)'
     expect(JSON.parse(nodeDiag).content).toBe(CONTENT);
   });
 });
+
+/**
+ * v72 (2026-10-16 on-device audit, sonar-deep-research): the raw content cited
+ * [32] [33] [34] while the response carried only 29 citations/search_results,
+ * and an earlier run's in-range markers each pointed at the NEXT paper —
+ * deep-research shares one [n] id space across several search batches and
+ * returns only a subset, so its inline markers cannot index the returned list.
+ * For a deep-research model every inline marker is stripped and "## Sources"
+ * lists the uncited sources (cap 20); other models keep the v70 renumbering.
+ */
+describe('extract_ai_content — deep-research markers are stripped (v72)', () => {
+  const script = generateRunScript(agent);
+  const cites29 = Array.from({ length: 29 }, (_, i) => `https://arxiv.org/abs/2610.${String(20001 + i)}`);
+  const sr29 = cites29.map((u) => ({ title: `Paper ${u.slice(-5)}`, url: u, date: '2026-10-15' }));
+  const OUT_OF_RANGE = [
+    '| Paper | Link |',
+    '|---|---|',
+    '| Alpha [32] | [arXiv](https://arxiv.org/abs/2610.20001) |',
+    '',
+    'Alpha [32] scales reasoning [33][34]. Beta adds memory [33, 34].',
+  ].join('\n');
+  const IN_RANGE = 'Alpha scales reasoning [1][2]. Beta adds memory [3, 4]. Gamma [5] [5].';
+
+  function run(kind: 'node' | 'py', response: object, requestModel?: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `deep-v72-${kind}-`));
+    fs.writeFileSync(path.join(dir, 'resp.json'), JSON.stringify(response));
+    const args = [path.join(dir, 'resp.json'), path.join(dir, 'logs')];
+    if (requestModel !== undefined) args.push(requestModel);
+    if (kind === 'node') {
+      fs.writeFileSync(path.join(dir, 'extract.js'), extractHeredoc(script, 'NODEEOF'));
+      return execFileSync(process.execPath, [path.join(dir, 'extract.js'), ...args]).toString();
+    }
+    fs.writeFileSync(path.join(dir, 'extract.py'), extractHeredoc(script, 'PYEOF'));
+    const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+    return execFileSync('python3', [path.join(dir, 'extract.py'), ...args], { env }).toString().replace(/\r\n/g, '\n');
+  }
+
+  function sourcesOf(out: string): string[] {
+    return out.split('\n\n## Sources\n')[1].split('\n');
+  }
+
+  function checkDeepOutOfRange(out: string): void {
+    const b = body(out);
+    expect(b).toBe([
+      '| Paper | Link |',
+      '|---|---|',
+      '| Alpha | [arXiv](https://arxiv.org/abs/2610.20001) |',
+      '',
+      'Alpha scales reasoning. Beta adds memory.',
+    ].join('\n'));
+    expect(b).not.toMatch(/\[\d{1,3}(?:,\s*\d{1,3})*\](?!\()/);
+    const lines = sourcesOf(out);
+    expect(lines).toHaveLength(20);
+    expect(lines[0]).toBe('[1] Paper 20001 — https://arxiv.org/abs/2610.20001 (2026-10-15)');
+    expect(lines[19]).toBe('[20] Paper 20020 — https://arxiv.org/abs/2610.20020 (2026-10-15)');
+  }
+
+  function checkDeepInRange(out: string): void {
+    expect(body(out)).toBe('Alpha scales reasoning. Beta adds memory. Gamma.');
+    expect(sourcesOf(out)).toHaveLength(20);
+  }
+
+  function checkNonDeep(out: string): void {
+    // v70 renumbering unchanged: [5]→[5] etc. (order of first use), repeats collapsed
+    expect(body(out)).toBe('Alpha scales reasoning [1][2]. Beta adds memory [3][4]. Gamma [5].');
+    const lines = sourcesOf(out);
+    expect(lines).toHaveLength(20);
+    expect(lines[4]).toBe('[5] Paper 20005 — https://arxiv.org/abs/2610.20005 (2026-10-15)');
+  }
+
+  const deepOut = { model: 'sonar-deep-research', choices: [{ message: { content: OUT_OF_RANGE } }], citations: cites29, search_results: sr29 };
+  const deepIn = { model: 'perplexity/sonar-deep-research', choices: [{ message: { content: IN_RANGE } }], citations: cites29, search_results: sr29 };
+  const proIn = { model: 'sonar-pro', choices: [{ message: { content: IN_RANGE } }], citations: cites29, search_results: sr29 };
+  const noModelIn = { choices: [{ message: { content: IN_RANGE } }], citations: cites29, search_results: sr29 };
+
+  it('node: out-of-range markers [32][33][34] with 29 citations are stripped, Sources lists 20', () => {
+    checkDeepOutOfRange(run('node', deepOut));
+  });
+
+  it('node: in-range deep-research markers are still stripped (prefixed model id)', () => {
+    checkDeepInRange(run('node', deepIn));
+  });
+
+  it('node: request model alone marks the response as deep-research', () => {
+    checkDeepInRange(run('node', noModelIn, 'sonar-deep-research'));
+  });
+
+  it('node: non-deep-research (sonar-pro) keeps the v70 renumbering', () => {
+    checkNonDeep(run('node', proIn, 'sonar-pro'));
+    checkNonDeep(run('node', noModelIn));
+  });
+
+  it('generated Perplexity script passes the request model to extract_ai_content', () => {
+    expect(script).toContain('extract_ai_content "$RESULT_FILE.response.json" "$MODEL" >');
+  });
+
+  const hasPython = (() => {
+    try {
+      execFileSync('python3', ['--version']);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  (hasPython ? it : it.skip)('python3 fallback matches the node branch byte-for-byte', () => {
+    const cases: Array<[object, string | undefined, (o: string) => void]> = [
+      [deepOut, undefined, checkDeepOutOfRange],
+      [deepIn, undefined, checkDeepInRange],
+      [noModelIn, 'sonar-deep-research', checkDeepInRange],
+      [proIn, 'sonar-pro', checkNonDeep],
+    ];
+    for (const [resp, model, check] of cases) {
+      const py = run('py', resp, model);
+      const node = run('node', resp, model);
+      check(py);
+      expect(py).toBe(node);
+    }
+  });
+});
+
