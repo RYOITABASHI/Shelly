@@ -9,6 +9,16 @@ object LibExtractor {
     private const val TAG = "LibExtractor"
     private const val EXTRACT_MARKER = ".extract_version"
 
+    // ALWAYS_REFRESH exists so a CI-only rebuild (same versionCode) still
+    // lands fresh binaries after an APK update -- and an APK update always
+    // restarts the app process. Doing it once per process is therefore
+    // equivalent, while extractAll() itself is called on EVERY PTY create,
+    // execCommand() and host spawn: before this guard each call rewrote
+    // codex_tui (~200 MB), node, codex-code-mode-host, git... (on-device:
+    // the codex_tui inode changed 4x in 10 s while `shelly` helper commands
+    // were running). Missing or empty files are still re-extracted on any call.
+    @Volatile private var alwaysRefreshDoneInProcess = false
+
     private val LIBS = mapOf(
         // bash + deps
         "lib/arm64-v8a/libbash.so" to "libbash.so",
@@ -262,7 +272,8 @@ object LibExtractor {
         try {
             for ((apkEntry, fileName) in LIBS) {
                 val outFile = File(libDir, fileName)
-                if (!forceRefresh && fileName !in ALWAYS_REFRESH && outFile.exists() && outFile.length() > 0) continue
+                val refreshThisFile = forceRefresh || (fileName in ALWAYS_REFRESH && !alwaysRefreshDoneInProcess)
+                if (!refreshThisFile && outFile.exists() && outFile.length() > 0) continue
                 val entry = zipFile.getEntry(apkEntry) ?: continue
                 // Atomic replace: write to a temp file, then rename over the target.
                 // A running process that has the live .so mmap'd (codex_tui under
@@ -279,6 +290,7 @@ object LibExtractor {
                 }
                 replaceExtractedFile(tmpFile, outFile, fileName)
             }
+            alwaysRefreshDoneInProcess = true
         } finally {
             zipFile.close()
         }
