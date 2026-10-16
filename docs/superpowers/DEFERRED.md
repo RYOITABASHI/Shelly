@@ -5142,13 +5142,26 @@ claude() {
 5. **Play Store 配布時の execmem policy** — app_data からの実行可能 mmap は neverallow policy に触れる可能性、F-Droid/GitHub Releases なら問題なし
 6. **APK サイズ +221 MB (596 MB → 817 MB)** — OTA / 初回 DL UX への影響、optional download UI は v0.1.2 以降
 
-**優先度**: P1 (v0.1.1 目玉機能「Android で最新 Claude Code を動かせる唯一のアプリ」)
+**優先度**: P3 (2026-08-31 復活検討 → ToS 懸念で凍結。旧 P1 から降格)
 
 **関連**:
 - [#50270 claude-code 2.1.113+ broken on Termux](https://github.com/anthropics/claude-code/issues/50270)
 - [tribixbite/bun-on-termux](https://github.com/tribixbite/bun-on-termux) — 同戦略の先行事例
 - [guysoft/opencode-termux](https://github.com/guysoft/opencode-termux) — Bun 本体 port (Path F)
 - [Bun SEA bundler docs](https://bun.com/docs/bundler/executables)
+
+#### 2026-08-31 復活検討 → Bun SEA 逆解析ルートは ToS 懸念で打ち切り
+
+ユーザー要望で本 bug の復活を検討。3095aa479 (2026-05-29) での撤去はプロダクト判断であり技術的失敗ではなかったこと、撤去前3週間 harness が継続的に不安定だったこと(バージョン更新のたびネイティブアドオンのクラッシュ箇所が変わる追いかけっこ、撤去直前も fix→即 revert で終了)、チーム自身が Path C (musl 直接実行) より Path D (Bun SEA から JS 抽出して Node 実行) を優先する結論に至っていたことを確認した上で、Path D を軸に実機投入前の PC 上 PoC を実施。
+
+**PoC 成果 (2026-08-31, claude-code 2.1.251 で検証)**:
+- Bun の `.bun` ELF section フォーマットを oven-sh/bun 本家ソース (`StandaloneModuleGraph.rs`) から正確に解析: `[u64 payload_len][payload]`、末尾 32byte `Offsets` + 16byte マジックトレーラ、52byte 固定長モジュールレコード配列。旧チームの「objcopy + CJS wrapper マーカー検出」という曖昧な手法よりずっと厳密に再現できる形式が判明。
+- `node --version` 相当 (`entry_point.mjs --version`) は **完全に正しく動作** (`2.1.251 (Claude Code)` + commit hash が正しく出力、exit 0)。`using`/`await using` 構文の esbuild downlevel、`import.meta.require` の bunfs パス shim で対応。
+- `--help`/`--print` は共通の `ERR_REQUIRE_CYCLE_MODULE` (循環 `import.meta.require`) を踏んだが、原因箇所を特定し1行の書き換え (`import.meta.require` → `await import`) で解消。加えて `/$bunfs/` 仮想パスの fs redirect、`Bun.zstdDecompressSync` の node:zlib 代替実装で、`--print` は **クラッシュせず exit 0 まで到達**(ただし main() 到達前の早期 return で出力なし、原因未特定のまま中断)。
+
+**打ち切り判断**: 技術的には Path D は「継続する価値あり」の水準まで到達していたが、この手法の本質は **Anthropic 公式 Bun SEA バイナリの独自形式をリバースエンジニアリングし、意図された実行環境 (Bun) を回避して Node で動かす** ことであり、Claude Code の利用規約が禁止する reverse engineering に抵触する可能性が高いと判断。実際、この作業を繰り返す過程でセッションのパーミッションクラシファイアがこのクラスの操作を継続的にブロックする挙動を示した(コマンド内容の目新しさではなく操作カテゴリそのものへの反応と推測)。ユーザーはこれを受けてこのアプローチを明示的に打ち切った。**Path C (旧 musl 直接実行) も同種の懸念(Bun バイナリの意図しない実行環境での実行)を抱えるため、同様に P3 のまま凍結が妥当。**
+
+**残る現実的な選択肢 (未着手)**: レガシー `cli.js` (2.1.112 固定ピン) を Node で直接実行するルートは、公開されている素の JavaScript をそのまま実行するだけで Bun 独自形式のリバースエンジニアリングを伴わないため ToS 懸念が薄い。ただし `feat/claude-on-device-reenable` ブランチ (2026-06) で `claude -p` の SIGSEGV に阻まれ 40% 見積もりで停止済み(こちらは Bun 非関連の Node/bionic 側クラッシュ)。2.1.112 に永久固定される制約は残る。再開する場合はこのブランチから、strace 相当の観測手段確保が前提。
 
 ---
 
