@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-16: CC（fix/v8.1.1-ondevice、未push）が v8.1.0（build 2593）実機検証の4件を修正: (1) `shelly closepaw wait` / `--wait` を既定100秒のソフト予算に（`--timeout` で上書き可）、未完了時は stdout に「ClosePaw is still running (request <id>). Run again to keep waiting: shelly closepaw wait <id>」を出して exit 124（SHELLY_HELPER_SHIM v16 / BASHRC_VERSION 264）— ChatGPT/Codex のリモート exec タイムアウトで打ち切られる問題; (2) 「Every day at 09:45, … with Perplexity …」の先頭スケジュール節（at 09:45）がステップ1化し per-step ツール指定＝高リスク扱いになっていた NL 分割バグ（derivePrompt が時刻も除去、isScheduleOnlyClause が英語スケジュール節を認識）; (3) 内容の違うリクエスト（LLM論文/Perplexity）に既存スキル（AI論文/arXiv+HF）を「再利用」と表示していた件（同一タスク判定のカバレッジ 0.5→0.75、スケジュール語を除外、名指しツールがスキルと異なれば不一致）; (4) 出力の `[1] [1]` 重複引用マーカーを remapCitations で畳み込み（PlanSpec executor ポートも同期、CURRENT_EXECUTOR_VERSION 11）。いずれも実機未検証。Windows の本 worktree では `plan-executor.test` ほか4スイート18件が変更前から失敗（環境依存、本変更と無関係を stash で確認）。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled）が最終レビュー H1/H2/L1/L2 を修正（研究意図の同意拡張による残りの外部送信経路を封鎖）。L3/L4 は記録のみ。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled）が P1 の決定（通知トリガー付きには同意拡張を適用しない／リサーチ意図の単発実行は通知文脈と記憶を送らない）を実装。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled、再レビュー対応）が H-A（自律 API キー系ステップのプロンプト隔離）・M-B（スキル実行プランの TOCTOU）・M-C（言語指示）・Low 2件を修正し、M-A により起動時の名指しツール自動移行を撤回（P2 として DEFERRED に残置）。
