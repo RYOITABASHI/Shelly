@@ -1146,10 +1146,9 @@ class TerminalEmulatorModule : Module() {
             null
         }
 
-        // "Keep ChatGPT connected" (CodexRemoteHost.kt). The file under
-        // $HOME/.shelly is the source of truth (the terminal's
-        // `shelly codex autostart` writes the same file); settings-store only
-        // mirrors it.
+        // "Keep ChatGPT connected" (CodexRemoteHost.kt). The source of truth
+        // is the Keystore-HMAC'd native switch (CodexRemoteAutostart.kt);
+        // settings-store only mirrors it. The shell can only turn it off.
         AsyncFunction("getCodexRemoteAutostart") {
             val context = appContext.reactContext ?: return@AsyncFunction null
             CodexRemoteHost.status(context)
@@ -1163,6 +1162,13 @@ class TerminalEmulatorModule : Module() {
             val status = CodexRemoteHost.setAutostartFromApp(context, enabled)
             Log.i("TerminalEmulator", "setCodexRemoteAutostart: enabled=$enabled -> $status")
             status
+        }
+
+        // STOP-ALL / resume from RN: re-run the supervisor now instead of on
+        // its next 5s poll.
+        AsyncFunction("wakeCodexRemoteHost") {
+            CodexRemoteHost.wake()
+            null
         }
 
         AsyncFunction("getNotificationReplyEnabled") {

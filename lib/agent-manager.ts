@@ -3101,8 +3101,20 @@ export async function haltAllAgents(
   } catch (error) {
     failures.push(`halt sentinel write failed: ${String(error)}`);
   }
+  // "Keep ChatGPT connected": let the native supervisor see the sentinel now
+  // (it latches, turns the switch off and stops the host) instead of on its
+  // next poll.
+  await wakeCodexRemoteHost();
   if (failures.length > 0) {
     throw new Error(`STOP-ALL could not be fully applied: ${failures.join('; ')}`);
+  }
+}
+
+async function wakeCodexRemoteHost(): Promise<void> {
+  try {
+    await TerminalEmulator.wakeCodexRemoteHost?.();
+  } catch {
+    // Native module unavailable (tests / web): the 5s poll still applies it.
   }
 }
 
@@ -3118,6 +3130,9 @@ export async function resumeAllAgents(
   } catch {
     // ignore
   }
+  // Resuming agents never turns Keep ChatGPT connected back on (STOP-ALL
+  // turned it off); this only refreshes the supervisor's view.
+  await wakeCodexRemoteHost();
   for (const storeAgent of store.agents) {
     if (storeAgent.enabled && storeAgent.schedule) {
       try {

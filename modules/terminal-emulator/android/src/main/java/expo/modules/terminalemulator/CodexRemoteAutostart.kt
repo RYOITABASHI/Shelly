@@ -25,6 +25,14 @@ import javax.crypto.SecretKey
  * Replay: turning it OFF deletes the Keystore key, so a copy of an old
  * "on" prefs file can never verify again; ON always mints a fresh key and
  * nonce. Any Keystore/prefs error reads as OFF (fail closed).
+ *
+ * Boundary: this stops file/prefs edits from a shell or script. Arbitrary
+ * code execution as the app uid that can drive AndroidKeyStore (e.g. an
+ * `app_process` launched with this APK on the classpath) is outside it --
+ * such code could call [setOn] itself. The mitigation is that the host only
+ * runs while the foreground "ChatGPT can run commands on this phone"
+ * notification is shown (CodexRemoteHost: foreground service + notifications
+ * and its channel enabled), with a Disconnect action.
  */
 object CodexRemoteAutostart {
     private const val TAG = "CodexRemoteAutostart"

@@ -453,11 +453,11 @@ export type AppSettings = {
    *  be able to run commands / write files on this device. */
   mcpExecEnabled?: boolean;
   /**
-   * "Keep ChatGPT connected" (default false): mirror of the native opt-in
-   * $HOME/.shelly/codex-remote-autostart, which CodexRemoteHost.kt reads to keep
-   * the Codex remote-control host for the ChatGPT app running. The native file
-   * wins (the terminal's `shelly codex autostart` writes it too); Settings
-   * re-reads it when shown.
+   * "Keep ChatGPT connected" (default false): mirror of the native,
+   * Keystore-HMAC'd opt-in (CodexRemoteAutostart.kt) that CodexRemoteHost.kt
+   * uses to keep the Codex remote-control host for the ChatGPT app running.
+   * Only the Settings toggle turns it on; the shell, Disconnect and STOP-ALL
+   * can turn it off, so the native value wins and Settings re-reads it.
    */
   codexRemoteAutostart?: boolean;
   // ─── Autonomous cloud opt-in (N1) ──────────────────────────────────────────

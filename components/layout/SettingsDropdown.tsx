@@ -2446,10 +2446,11 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
     );
   }, [addPane, onClose, t]);
 
-  // "Keep ChatGPT connected": settings.codexRemoteAutostart mirrors the native
-  // file CodexRemoteHost.kt reads ($HOME/.shelly/codex-remote-autostart), which
-  // `shelly codex autostart on|off` and `pair --background` also write, so the
-  // native value is re-read on mount and wins.
+  // "Keep ChatGPT connected": settings.codexRemoteAutostart mirrors the
+  // Keystore-HMAC'd native switch (CodexRemoteAutostart.kt). Only this toggle
+  // can turn it on; the shell (`shelly codex autostart off`), the notification's
+  // Disconnect and STOP-ALL can turn it off, so the native value is re-read on
+  // mount and wins.
   const keepConnected = useSettingsStore((s) => s.settings.codexRemoteAutostart ?? false);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const [keepConnectedBusy, setKeepConnectedBusy] = React.useState(false);

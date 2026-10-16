@@ -93,8 +93,20 @@ object CodexRemoteHost {
         // Fail closed: if the STOP-ALL sentinel cannot be checked, treat as halted.
         runCatching { File(home(context), HALT_SENTINEL).exists() }.getOrDefault(true)
 
+    /**
+     * The warning notification can actually be shown: app notifications on
+     * AND the foreground-service channel not blocked by the user.
+     */
     private fun notificationsEnabled(context: Context): Boolean = runCatching {
-        context.getSystemService(NotificationManager::class.java)?.areNotificationsEnabled() == true
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return@runCatching false
+        if (!nm.areNotificationsEnabled()) return@runCatching false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = nm.getNotificationChannel(TerminalSessionService.CHANNEL_ID)
+            // Not created yet = the service will create it at default importance.
+            channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+        } else {
+            true
+        }
     }.getOrDefault(false)
 
     fun readInputs(context: Context): CodexRemotePolicy.Inputs = CodexRemotePolicy.Inputs(
@@ -159,6 +171,13 @@ object CodexRemoteHost {
     /** App start / boot / package replaced: bring the foreground service up if wanted. */
     fun requestStartIfWanted(context: Context, reason: String) {
         val app = context.applicationContext
+        if (haltSentinelPresent(app)) {
+            // STOP-ALL survived a restart: make the switch OFF for good, so a
+            // later resume of agents does not silently bring the host back.
+            haltLatched = true
+            if (CodexRemoteAutostart.isOn(app)) CodexRemoteAutostart.setOff(app, "STOP-ALL at start")
+            writeMirror(app, false)
+        }
         val i = readInputs(app)
         if (!CodexRemotePolicy.wanted(i)) {
             Log.i(TAG, "$reason: not wanted (on=${i.autostartOn} halted=${i.halted} stopped=${i.stopRequested})")
@@ -377,12 +396,18 @@ object CodexRemoteHost {
 
     /** java.lang.Process has no public pid() before API 33; libcore's UNIXProcess keeps it in "pid". */
     private fun pidOf(proc: java.lang.Process): Int? {
-        if (Build.VERSION.SDK_INT >= 33) runCatching { return proc.javaClass.getMethod("pid").invoke(proc).toString().toInt() }
-        return runCatching {
+        val valid: (Int?) -> Int? = { p -> p?.takeIf { it > 1 && it != Process.myPid() } }
+        if (Build.VERSION.SDK_INT >= 33) {
+            val p = valid(runCatching { proc.javaClass.getMethod("pid").invoke(proc).toString().toInt() }.getOrNull())
+            if (p != null) return p
+        }
+        val p = valid(runCatching {
             val f = proc.javaClass.getDeclaredField("pid")
             f.isAccessible = true
             f.getInt(proc)
-        }.getOrNull()?.takeIf { it > 1 && it != Process.myPid() }
+        }.getOrNull())
+        if (p == null) Log.w(TAG, "could not read the host pid from ${proc.javaClass.name}; falling back to the state file")
+        return p
     }
 
     // ── Stop ────────────────────────────────────────────────────────────

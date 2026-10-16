@@ -142,6 +142,38 @@ describe('M2/M3/L1/L5 native gating', () => {
     expect(service).not.toMatch(/[^d]stopForeground\(STOP_FOREGROUND_REMOVE\)\n(?![\s\S]{0,40}CodexRemoteHost\.wake)/);
   });
 
+  it('M2: a blocked foreground-service notification channel also stops it', () => {
+    const body = fnBody(host, 'notificationsEnabled');
+    expect(body).toContain('getNotificationChannel(TerminalSessionService.CHANNEL_ID)');
+    expect(body).toContain('NotificationManager.IMPORTANCE_NONE');
+  });
+
+  it('STOP-ALL present at start turns the switch off and latches', () => {
+    const body = fnBody(host, 'requestStartIfWanted');
+    expect(body).toContain('CodexRemoteAutostart.setOff(app, "STOP-ALL at start")');
+    expect(body.indexOf('haltSentinelPresent(app)')).toBeLessThan(body.indexOf('readInputs(app)'));
+  });
+
+  it('STOP-ALL / resume wake the native supervisor immediately', () => {
+    expect(module_).toContain('AsyncFunction("wakeCodexRemoteHost")');
+    const mgr = fs.readFileSync(path.resolve(__dirname, '../lib/agent-manager.ts'), 'utf8');
+    const halt = mgr.slice(mgr.indexOf('export async function haltAllAgents'), mgr.indexOf('export async function resumeAllAgents'));
+    expect(halt).toContain('await wakeCodexRemoteHost();');
+    expect(halt.indexOf('writeFileCommand(haltSentinelPath()')).toBeLessThan(halt.indexOf('await wakeCodexRemoteHost();'));
+  });
+
+  it('M3: both pid paths reject <= 1 and self', () => {
+    const body = fnBody(host, 'pidOf');
+    expect(body).toContain('it > 1 && it != Process.myPid()');
+    expect(body.match(/valid\(/g)!.length).toBeGreaterThanOrEqual(2);
+    expect(body).toContain('Log.w(TAG, "could not read the host pid');
+  });
+
+  it('documents the same-uid code execution boundary', () => {
+    expect(store).toContain('app_process');
+    expect(store).toContain('outside it');
+  });
+
   it('M2: the notification is updated on spawn and stop, not only on poll', () => {
     expect(host).toMatch(/publishActive\(pid != null && start != null\)/);
     expect(fnBody(host, 'stopHost')).toContain('publishActive(false)');
