@@ -66,7 +66,7 @@ describe('extract_ai_content — Sources block in citations order (v65)', () => 
     return prog;
   }
 
-  it('numbers by citations, enriches from search_results, keeps skipped slots, appends uncited results', () => {
+  it('numbers by first use, enriches from search_results, drops unusable slots, appends uncited results (v70)', () => {
     const dir = tmpdir('extract-');
     const progFile = path.join(dir, 'extract.js');
     fs.writeFileSync(progFile, extractProgram());
@@ -86,10 +86,11 @@ describe('extract_ai_content — Sources block in citations order (v65)', () => 
     const out = execFileSync(process.execPath, [progFile, responseFile]).toString();
     expect(out).toContain('\n\n## Sources\n');
     const lines = out.split('## Sources\n')[1].split('\n');
+    expect(out.split('\n\n## Sources')[0]).toBe('A [1]. B [2].');
     expect(lines).toEqual([
       '[1] Bravo — https://b.example/two',
-      '[3] Alpha — https://a.example/one (2026-09-01)',
-      '[4] Charlie — https://c.example/three (2026-09-03)',
+      '[2] Alpha — https://a.example/one (2026-09-01)',
+      '[3] Charlie — https://c.example/three (2026-09-03)',
     ]);
   });
 });

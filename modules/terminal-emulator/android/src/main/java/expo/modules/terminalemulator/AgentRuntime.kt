@@ -441,7 +441,11 @@ object AgentRuntime {
     // v69 (2026-10-15, v8.1.0 post-merge review): mid-branch builds also
     // wrote v68 scripts without the final research-consent isolation; bumped
     // so they are regenerated. No native logic change.
-    private const val CURRENT_SCRIPT_VERSION = 69
+    // v70 (2026-10-16, build 2603): extract_ai_content keeps every cited
+    // Perplexity source and renumbers the [n] markers onto the Sources list
+    // (see lib/agent-executor.ts's AGENT_SCRIPT_VERSION v70 comment). No native
+    // logic change; bumped so stale scripts are regenerated.
+    private const val CURRENT_SCRIPT_VERSION = 70
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request

@@ -96,8 +96,10 @@ describe('3 — extract_ai_content URL matching + repeated-citation alias', () =
   const expected = [
     '[1] Story Title — https://www.Example.com/story/?utm_source=pplx#top (2026-09-01)',
     '[2] Own Title — https://own.example/item (2026-09-02)',
-    '[3] = [1]',
   ];
+  // v70: a repeated citation is renumbered onto its first slot in the body
+  // itself (no "[3] = [1]" alias line needed).
+  const expectedBody = 'A [1]. B [2]. A again [1].';
 
   function extract(marker: 'NODEEOF' | 'PYEOF'): string {
     const s = generateRunScript(agentOf({ type: 'perplexity', model: 'sonar' }, undefined, false));
@@ -118,6 +120,7 @@ describe('3 — extract_ai_content URL matching + repeated-citation alias', () =
     fs.writeFileSync(path.join(dir, 'x.js'), extract('NODEEOF'));
     fs.writeFileSync(path.join(dir, 'r.json'), JSON.stringify(RESPONSE));
     const out = execFileSync(process.execPath, [path.join(dir, 'x.js'), path.join(dir, 'r.json')]).toString();
+    expect(out.split('\n\n## Sources\n')[0]).toBe(expectedBody);
     expect(out.split('## Sources\n')[1].split('\n')).toEqual(expected);
   });
 
@@ -137,11 +140,13 @@ describe('3 — extract_ai_content URL matching + repeated-citation alias', () =
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     }).toString().replace(/\r\n/g, '\n');
     if (!out.includes('## Sources')) throw new Error(`python output: ${out}`);
+    expect(out.split('\n\n## Sources\n')[0]).toBe(expectedBody);
     expect(out.split('## Sources\n')[1].split('\n')).toEqual(expected);
   });
 
   it('readers map the alias onto the first slot (no dangling marker)', () => {
-    const text = `A [1]. B [2]. A again [3].\n\n## Sources\n${expected.join('\n')}`;
+    // Legacy (<= v69) alias lines in an older saved result still resolve.
+    const text = `A [1]. B [2]. A again [3].\n\n## Sources\n${[...expected, '[3] = [1]'].join('\n')}`;
     const parsed = extractSourcesFromText(text);
     expect(parsed.sources).toHaveLength(2);
     expect(parsed.indexMap[3]).toBe(parsed.indexMap[1]);
