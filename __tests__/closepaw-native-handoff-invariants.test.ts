@@ -148,7 +148,7 @@ describe('single owner, at most once', () => {
     expect(homeKt).toContain("fs.writeFileSync(reqFile + '.tmp', 'closepaw:'");
     expect(homeKt).toContain("fs.renameSync(reqFile + '.tmp', reqFile);");
     expect(homeKt).not.toMatch(/fs\.appendFileSync\(path\.join\(home, '\.shelly-(closepaw|command)-queue'\), 'closepaw:'/);
-    expect(homeKt).toMatch(/# SHELLY_HELPER_SHIM v(1[1-9]) /);
+    expect(homeKt).toMatch(/# SHELLY_HELPER_SHIM v(1[1-9]|[2-9][0-9]) /);
     expect(ktString('REQUEST_FILE_PREFIX')).toBe(CLOSEPAW_REQUEST_FILE_PREFIX);
   });
 

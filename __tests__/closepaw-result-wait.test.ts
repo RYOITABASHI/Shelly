@@ -260,9 +260,9 @@ describe('generated shim: shelly closepaw wait', () => {
       expect(body).toMatch(/cpOut\('Do not end your turn and do not answer yet:/);
     });
 
-    it('is shim v19 with BASHRC_VERSION >= 267', () => {
-      expect(homeKt).toContain('# SHELLY_HELPER_SHIM v19');
-      expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(267);
+    it('is shim v20 with BASHRC_VERSION >= 268', () => {
+      expect(homeKt).toContain('# SHELLY_HELPER_SHIM v20');
+      expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(268);
     });
   });
 
@@ -288,6 +288,72 @@ describe('generated shim: shelly closepaw wait', () => {
     const r = await run(args);
     expect(r.code).toBe(1);
     expect(fs.readdirSync(home).filter((n) => n.startsWith('.shelly-closepaw-req-'))).toEqual([]);
+  });
+
+  // v268 (shim v20): on 2026-10-17 ChatGPT ran `shelly closepaw --help` to learn
+  // the syntax and the helper handed off a ClosePaw task with goal "--help".
+  describe('help / malformed invocations never hand anything off (shim v20)', () => {
+    const FIRST = 'Usage: shelly closepaw --wait "<goal in plain words>"';
+    const handedOff = () => fs.readdirSync(home).filter((n) => n.startsWith('.shelly-closepaw-'));
+
+    it.each([
+      [['closepaw']],
+      [['closepaw', '--help']],
+      [['closepaw', '-h']],
+      [['closepaw', 'help']],
+      [['closepaw', '--wait', '--help']],
+      [['closepaw', '--help', '--wait']],
+      [['closepaw', '--wait', '--timeout', '30', '-h']],
+      [['closepaw', 'wait', '--help']],
+      [['closepaw', 'set an alarm', '--help']],
+    ])('%j prints usage on stdout and exits 0', async (args) => {
+      const r = await run(args);
+      expect(r.code).toBe(0);
+      expect(r.out.split(/\r?\n/)[0]).toBe(FIRST);
+      expect(r.out).toContain('shelly closepaw wait <requestId> [--timeout SEC]');
+      expect(r.out).toContain('never hands anything off');
+      expect(handedOff()).toEqual([]);
+      expect(fs.readdirSync(home)).toEqual([]);
+    });
+
+    it.each([
+      [['closepaw', '--bogus', 'x'], /unknown option "--bogus"/],
+      [['closepaw', '--wait', '--verbose', 'x'], /unknown option "--verbose"/],
+      [['closepaw', 'x', '-v'], /unknown option "-v"/],
+      [['closepaw', '--wait'], /missing goal/],
+      [['closepaw', '--wait', '--timeout', '5'], /missing goal/],
+      [['closepaw', '--wait', '   '], /missing goal/],
+      [['closepaw', 'reject', '--help-me'], /unknown option "--help-me"/],
+    ])('%j prints usage and exits 2 without a request file', async (args, errRe) => {
+      const r = await run(args as string[]);
+      expect(r.code).toBe(2);
+      expect(r.err).toMatch(errRe as RegExp);
+      expect(r.err).toContain('nothing was handed off');
+      expect(r.out.split(/\r?\n/)[0]).toBe(FIRST);
+      expect(fs.readdirSync(home)).toEqual([]);
+    });
+
+    it.each([
+      [['closepaw', 'confirm']],
+      [['closepaw', 'reject']],
+    ])('bare %j is a usage error, not a goal', async (args) => {
+      const r = await run(args);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('Usage: shelly closepaw confirm <requestId> <hash>');
+      expect(fs.readdirSync(home)).toEqual([]);
+    });
+
+    it('--wait after the goal still waits (options in any position)', async () => {
+      const r = await run(['closepaw', 'set an alarm for 7', '--wait', '--timeout', '1'], fakeNative([]));
+      expect(r.code).toBe(124);
+      expect(r.out).toMatch(/Not finished yet - run this exact command next/);
+    });
+
+    it('a goal that merely mentions --help inside one quoted argument is still handed off', async () => {
+      const r = await run(['closepaw', 'look up what git --help prints'], fakeNative([]));
+      expect(r.code).toBe(0);
+      expect(r.out).toMatch(/Next step: run "shelly closepaw wait/);
+    });
   });
 
   it('waiting never writes an approval (no agent ctl / request files)', async () => {
