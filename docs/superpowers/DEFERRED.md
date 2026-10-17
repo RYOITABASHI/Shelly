@@ -95,6 +95,12 @@
 - **既知の制約**: (a) 5 秒タイムアウト後に遅れて結果 1 が返った場合、フォールバックの activity 起動と二重になり得る（ClosePaw 側の単一タスク制御＝コード 15 頼み、遅延結果はログのみ）。(b) `shelly closepaw` は変種インストール時は承認待ちで即終了するため、承認後のバックグラウンド実行結果はシム出力ではなくチャット行に出る（シムに結果を返すには `shelly closepaw status <reqId>` 等が別途必要、P2）。(c) outcome ファイルは単一（同時に複数 hand-off は ClosePaw 側で 15 になる前提）。
 - **実機未検証**（Fold6 / API 36、変種 v0.1.0-4 + Shizuku）: (1) エージェント Review 承認 → ClosePaw が前面に出ず仮想ディスプレイで実行、チャットに「バックグラウンドで作業中」、実行結果も同文 (2) `shelly closepaw` → 通知［承認］/「承認 <hash8>」→ 同上 (3) Shizuku 停止で 16 → 「Shizuku を起動」表示・実行結果 error (4) 実行中に再依頼で 15 (5) 変種 v0.1.0-2/3（レシーバ無し）で 0 → 従来の activity 起動 (6) API 34+ で share-identity 付き送信が ClosePaw 側で受理される（rotation 署名の Shelly で確認すること）。
 
+### ClosePaw Shelly 変種 v0.1.0-9 の残課題（2026-10-17）— P2
+
+- shelly-v0.1.0-9（RYOITABASHI/closepaw `fix/vd-text-input` @ 8fc549e6、pre-release 公開済み）: VD 上の文字入力（Shizuku `input -d`）、メイン画面にカプセルを出さない、ミュート、前面アプリ復帰、完了契約 + 件数ゲート + プレイリスト画面検証を収録。実機確認済みは VD 入力・カプセル非表示・ミュート・単発タスク（Spotify の公式プレイリスト保存、承認1回）。**複数アイテム（例: 10 曲追加）を 1 回で完走させる経路は実機未達成**（モデルが1曲で完了宣言・誤った曲を追加・検索欄に誤入力）。画面検証パーサは実機 dump の fixture でユニット検証済みだが、実機での end-to-end は未確認。再開時は 3 曲テストから（OpenRouter クレジット消費に注意）。端末には shelly.21 が入っているので、まず v0.1.0-9 の APK に更新すること。
+- `shelly closepaw confirm <不正なID>` は既存テストの仕様で goal として hand-off される（`--help` 系は v20 で修正済み、749270fee）。必要なら confirm の書式不正も usage エラーにする。
+- ChatGPT から使うときは依頼文に `shelly closepaw --wait` と具体的な UI 手順（例: 「Your Library 右上の + (Create)」）を書くと成功率が上がる。Codex が自発的に ClosePaw を選ぶための指示（AGENTS.md 等）は未実装。
+
 ### ClosePaw 引き継ぎを ChatGPT 内の Codex 承認カードだけで承認する — 調査済み・**現状の Codex では不成立**、追加プロンプトのみ実装 (P2)
 
 2026-10-17、`feat/closepaw-codex-approval`。要望: `shelly closepaw` の承認を端末通知ではなく ChatGPT/Codex UI の「Approve / Always approve / Skip」カードで行いたい（通知承認と同時に生かし先着で確定）。openai/codex `rust-v0.162.0`（codex-termux `v0.162.1-termux.1` は該当箇所無改変、ただし Android では sandbox がビルド時に存在しない）を調査した結果:
