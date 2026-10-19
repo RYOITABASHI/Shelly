@@ -980,6 +980,10 @@ export const themePresets: Record<ThemePresetId, ThemePreset> = {
 // Session-only (not persisted) pairing snapshot for Case File's sound/cursor
 // auto-switch — see applyThemePreset step 0b.
 let caseFileUxSnapshot: { soundProfile: 'modern' | 'retro' | 'silent'; cursorShape: 'block' | 'underline' | 'bar' | undefined } | null = null;
+// Preset applied last in this app run (null before the boot-time apply).
+// Distinguishes a real switch INTO Case File from the boot apply and from
+// re-applies of the same preset (e.g. when fonts finish loading).
+let lastAppliedPresetId: ThemePresetId | null = null;
 
 export function applyThemePreset(id: ThemePresetId) {
   const preset = themePresets[id];
@@ -1002,8 +1006,15 @@ export function applyThemePreset(id: ThemePresetId) {
   //     the archival-record feel — session-only (not persisted) since,
   //     unlike wallpaper, restoring these across an app restart isn't
   //     something the user asked for; only restore within the same run.
+  //     Only on an actual switch from another preset: Case File is now the
+  //     default, and running this on the boot-time apply (or a same-preset
+  //     re-apply) reset a cursor/sound the user had changed while staying
+  //     on Case File, on every launch.
+  const enteringCaseFile =
+    id === 'case-file' && lastAppliedPresetId !== null && lastAppliedPresetId !== 'case-file';
+  lastAppliedPresetId = id;
   if (id === 'case-file') {
-    if (caseFileUxSnapshot === null) {
+    if (caseFileUxSnapshot === null && enteringCaseFile) {
       caseFileUxSnapshot = { soundProfile: cosmetic.soundProfile, cursorShape: undefined };
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { useSettingsStore } = require('@/store/settings-store');
@@ -1012,8 +1023,8 @@ export function applyThemePreset(id: ThemePresetId) {
       settingsState.updateSettings({ cursorShape: 'block' });
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('@/store/theme-version-store').useThemeVersionStore.getState().triggerCaseFileBootFlash();
+      cosmetic.setSoundProfile('retro');
     }
-    cosmetic.setSoundProfile('retro');
   } else if (caseFileUxSnapshot !== null) {
     cosmetic.setSoundProfile(caseFileUxSnapshot.soundProfile);
     // eslint-disable-next-line @typescript-eslint/no-require-imports
