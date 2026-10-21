@@ -7,13 +7,27 @@
 <h1 align="center">Shelly</h1>
 
 <h3 align="center">
-  Android スマホを――折りたたんでいても、開いていても――そのまま自律エージェントマシンにする。<br>
-  <sub>やってほしいことを普通の言葉で伝えるだけ。あとは自分のアラームで起きて、画面が消えたまま、あなた自身の AI アカウントとローカル LLM、そして本物のターミナルの上で仕事をします。クラウドランナー不要。PC 不要。Termux 不要。</sub>
+  ChatGPT に自分の Android スマホを使わせる。操作の承認は、いつも自分の手で。<br>
+  <sub>スマホの中で動く、オープンソースの AI ターミナル兼エージェント実行環境。PC 不要。Termux 不要。クラウドランナー不要。</sub>
 </h3>
 
 <p align="center">
-  <sub><em>まず正直に書いておきます。無人での一連のサイクルが最後まで動くのを確認できたのは、<b>Galaxy Z Fold6 上で一度きり（N=1）</b>です。ここから先に何が検証済みで何がそうでないかは、<a href="#ステータス">ステータス</a>の表で追跡しています。</em></sub><br>
-  <sub><b>エージェントを信用できる理由は、その下にあるもの:</b> ネイティブのターミナル IDE がまるごと入っています。アプリ自身が所有する JNI PTY 上で動く本物の Codex CLI、APK に同梱された bash / git / Python 3 / Node.js、そしてその隣に並ぶ API ベースの AI ペイン（Gemini・Cerebras・Groq・Perplexity・ローカルモデル）。エージェントがやることはすべて、あなた自身が開いて中身を見て、手で動かせるのと同じ端末上のシェルで走ります。Termux のインストールも、ディストロのブートストラップも、WebView ターミナルも、リモート IDE ブリッジもありません。</sub>
+  <img src="docs/images/demo-spotify.gif" alt="Galaxy Z Fold6 の ChatGPT に「Spotify に 90 年代グランジのプレイリストを保存して」と頼むと、スマホで 1 タップ承認するだけで Spotify が見えない画面で動き、ChatGPT が完了を報告し、ライブラリに Grunge Forever が入っている" width="300">
+</p>
+
+<p align="center">
+  <sub>「Spotify にグランジのプレイリストを保存して」&rarr; <b>スマホで 1 タップ承認</b> &rarr; Spotify は見えない画面で動く &rarr; ChatGPT が「完了」&rarr; 本当に入っている。（早送りあり）</sub>
+</p>
+
+<p align="center">
+  <b>3 ステップで試せます:</b>
+  &#9312; <a href="https://github.com/RYOITABASHI/Shelly/releases">Releases</a> から APK をインストール &nbsp;
+  &#9313; Shelly で <code>shelly codex pair</code> を実行し、ChatGPT アプリ（Codex）でペアリング &nbsp;
+  &#9314; ChatGPT にスマホでやってほしいことを頼む <sub>（動画のようなアプリ操作には <a href="https://github.com/RYOITABASHI/closepaw/releases">ClosePaw の Shelly 用ビルド</a>が必要）</sub>
+</p>
+
+<p align="center">
+  <sub>役に立ちそう・面白いと思ったら、&#11088; を付けてもらえると他の人にも届きやすくなります。</sub>
 </p>
 
 <p align="center">
@@ -27,11 +41,16 @@
 </p>
 
 <p align="center">
+  <sub>Shelly は自分のアラームで起きて、画面が消えたまま、あなた自身の AI アカウントとローカル LLM、本物のターミナルの上で予約したエージェントを動かすこともできます。下にあるのは、アプリ自身の JNI PTY で動く Codex CLI、APK 同梱の bash / git / Python 3 / Node.js、その隣の API ベースの AI ペインです。</sub><br>
+  <sub><em>まず正直に書いておきます。無人での一連のサイクルが最後まで動くのを確認できたのは、<b>Galaxy Z Fold6 上で一度きり（N=1）</b>です。何が検証済みかは<a href="#ステータス">ステータス</a>の表で追跡しています。</em></sub>
+</p>
+
+<p align="center">
   <img src="docs/images/hero-agent-briefing.png" alt="Case File テーマで Galaxy Z Fold6 を開いた状態の Shelly、2x2 のペイン: ターミナルにはエージェントのブリーフィングの Sources 節（日付付きリンク 3 件）、AI ペインにはエージェントの完了通知と保存済み markdown ファイルを開く Open リンク、Browser ペインには Shelly の GitHub ページ、Markdown ペインには [1][2][3] の出典番号付きでブリーフィングが表示されている" width="800">
 </p>
 
 <p align="center">
-  <sub>スケジュール済みエージェントが端末上で作ったブリーフィング: Perplexity で調査 → ローカル LLM で要約 → すべての項目に出典が付いた markdown ファイル。</sub>
+  <sub>スケジュール済みエージェントが端末上で作ったブリーフィング: Perplexity で調査 &rarr; ローカル LLM で要約 &rarr; すべての項目に出典が付いた markdown ファイル。</sub>
 </p>
 
 <p align="center">

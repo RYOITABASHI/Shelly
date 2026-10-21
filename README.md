@@ -7,13 +7,27 @@
 <h1 align="center">Shelly</h1>
 
 <h3 align="center">
-  Shelly turns an Android phone — folded or unfolded — into a self-contained agent machine.<br>
-  <sub>Describe a task in plain language, and it wakes on its own alarm — screen off — and does the work with your own AI accounts, local LLMs, and a real terminal underneath. No cloud runner. No PC. No Termux.</sub>
+  Let ChatGPT use your Android phone — and approve every move yourself.<br>
+  <sub>An open-source AI terminal and agent runtime that lives on the phone. No PC. No Termux. No cloud runner.</sub>
 </h3>
 
 <p align="center">
-  <sub><em>Honesty first: the full unattended cycle has been observed end-to-end <b>once, on a Galaxy Z Fold6 (N=1)</b> — the <a href="#status">Status</a> table tracks exactly what is and isn't verified from here on.</em></sub><br>
-  <sub><b>Underneath the agent is why you can trust it:</b> a full native terminal IDE — the real Codex CLI in an app-owned JNI PTY, bash / git / Python 3 / Node.js bundled in the APK, and API-backed AI panes (Gemini, Cerebras, Groq, Perplexity, local models) beside it. Everything the agent does runs in the same on-device shell you can open, inspect, and drive by hand. No Termux install, no distro bootstrap, no WebView terminal, no remote IDE bridge.</sub>
+  <img src="docs/images/demo-spotify.gif" alt="ChatGPT on a Galaxy Z Fold6 is asked to save a 90s grunge playlist in Spotify; one tap approves it on the phone, Spotify runs on a hidden screen, ChatGPT reports done, and the Grunge Forever playlist is in Your Library" width="300">
+</p>
+
+<p align="center">
+  <sub>"Save a grunge playlist in Spotify" &rarr; <b>one tap to approve on the phone</b> &rarr; Spotify runs on a hidden screen &rarr; ChatGPT says done &rarr; it's really there. (sped up)</sub>
+</p>
+
+<p align="center">
+  <b>Try it in 3 steps:</b>
+  &#9312; Install the APK from <a href="https://github.com/RYOITABASHI/Shelly/releases">Releases</a> &nbsp;
+  &#9313; In Shelly, run <code>shelly codex pair</code> and pair it in the ChatGPT app (Codex) &nbsp;
+  &#9314; Ask ChatGPT to do something on your phone <sub>(app tasks like the clip use the <a href="https://github.com/RYOITABASHI/closepaw/releases">ClosePaw Shelly build</a>)</sub>
+</p>
+
+<p align="center">
+  <sub>If Shelly is useful or interesting to you, a &#11088; helps other people find it.</sub>
 </p>
 
 <p align="center">
@@ -27,11 +41,16 @@
 </p>
 
 <p align="center">
+  <sub>Shelly also wakes on its own alarm — screen off — and runs scheduled agents with your own AI accounts, local LLMs and a real terminal underneath: the Codex CLI in an app-owned JNI PTY, bash / git / Python 3 / Node.js bundled in the APK, and API-backed AI panes beside it.</sub><br>
+  <sub><em>Honesty first: the full unattended cycle has been observed end-to-end <b>once, on a Galaxy Z Fold6 (N=1)</b> — the <a href="#status">Status</a> table tracks exactly what is and isn't verified.</em></sub>
+</p>
+
+<p align="center">
   <img src="docs/images/hero-agent-briefing.png" alt="Shelly unfolded on a Galaxy Z Fold6 in the Case File theme, 2x2 panes: the terminal shows an agent briefing's Sources section with three dated links, the AI pane shows the agent's completion notice with an Open link to the saved markdown file, the Browser pane shows the Shelly GitHub page, and the Markdown pane renders the briefing with [1][2][3] citations" width="800">
 </p>
 
 <p align="center">
-  <sub>A scheduled agent's on-device briefing: Perplexity research → local LLM summary → a markdown file whose every item cites its source.</sub>
+  <sub>A scheduled agent's on-device briefing: Perplexity research &rarr; local LLM summary &rarr; a markdown file whose every item cites its source.</sub>
 </p>
 
 <p align="center">
