@@ -716,6 +716,12 @@ You can also support the project by:
 - 🐛 [Reporting bugs](https://github.com/RYOITABASHI/Shelly/issues)
 - 🔧 Sending a PR — see [Contributing](#contributing)
 - 💬 Sharing what you built with Shelly
+- 👍 Liking or reviewing Shelly on [AlternativeTo](https://alternativeto.net/software/shelly-terminal/about/)
+
+<p align="center">
+  <a href="https://alternativeto.net/software/shelly-terminal/about/?utm_source=badge&utm_medium=referral"><img alt="Shelly Terminal | AlternativeTo" src="https://alternativeto.net/static/badges/badge-compact-color.svg" width="171" height="55"></a>
+</p>
+
 
 GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo.
 

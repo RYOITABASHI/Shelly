@@ -690,6 +690,12 @@ Shelly は個人による自己資金のプロジェクトです。Termux のセ
 - 🐛 [バグを報告する](https://github.com/RYOITABASHI/Shelly/issues)
 - 🔧 PR を送る — [コントリビューション](#コントリビューション)を参照
 - 💬 Shelly で作ったものをシェアする
+- 👍 [AlternativeTo](https://alternativeto.net/software/shelly-terminal/about/) で Like やレビューをする
+
+<p align="center">
+  <a href="https://alternativeto.net/software/shelly-terminal/about/?utm_source=badge&utm_medium=referral"><img alt="Shelly Terminal | AlternativeTo" src="https://alternativeto.net/static/badges/badge-compact-color.svg" width="171" height="55"></a>
+</p>
+
 
 このリポジトリ上部の「Sponsor」ボタンから GitHub Sponsors も利用できます。
 
