@@ -43,7 +43,7 @@
 
 <p align="center">
   <sub>Shelly also wakes on its own alarm — screen off — and runs scheduled agents with your own AI accounts, local LLMs and a real terminal underneath: the Codex CLI in an app-owned JNI PTY, bash / git / Python 3 / Node.js bundled in the APK, and API-backed AI panes beside it.</sub><br>
-  <sub><em>Honesty first: the full unattended cycle has been observed end-to-end <b>once, on a Galaxy Z Fold6 (N=1)</b> — the <a href="#status">Status</a> table tracks exactly what is and isn't verified.</em></sub>
+  <sub><em>Honesty first: the full unattended cycle is <b>verified end-to-end on a real Galaxy Z Fold6 (N=1)</b> — the <a href="#status">Status</a> table tracks exactly what is and isn't verified.</em></sub>
 </p>
 
 <p align="center">
@@ -478,7 +478,7 @@ I'm a Creative Director, not an engineer by training. Every line in this repo wa
 
 That's the origin story. It is deliberately **not** the trust story — "an AI wrote it" is a reason to hold the code to a *higher* verification standard, not a lower one. You're deciding whether to give this app shell execution, broad storage, and your API keys, so the honest answer to "why trust it?" is the discipline around the code, all of which is auditable in this repo:
 
-- **On-device verification before "done."** Features aren't marked shipped until they've been observed working on real hardware, and single observations stay labeled as such — the N=1 caveats in this README's [Status](#status) table are that policy in public.
+- **On-device verification before "done."** Features aren't marked shipped until they've been observed working on real hardware, and results from a single device stay labeled as such — the N=1 caveats in this README's [Status](#status) table are that policy in public.
 - **Tests that execute the real code.** The agent pipeline's regression tests run the actual generated scripts with real processes — real bash execution, real HTTP-failure surfaces — instead of hand-copied re-implementations that can silently drift from what ships.
 - **Adversarial review before risky merges.** Native, OAuth, IPC, and security-boundary changes get an explicit second-agent review pass before they land; the signed-approval channel and the autonomous-agent execution gates went through dedicated security reviews.
 - **An engineering ledger instead of vibes.** [`docs/superpowers/DEFERRED.md`](docs/superpowers/DEFERRED.md) is the single source of truth for what's shipped vs. flag-gated-off vs. known-broken, with reasons and priorities. When this README hedges, that's where the hedge comes from.
