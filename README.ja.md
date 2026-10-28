@@ -43,7 +43,7 @@
 
 <p align="center">
   <sub>Shelly は自分のアラームで起きて、画面が消えたまま、あなた自身の AI アカウントとローカル LLM、本物のターミナルの上で予約したエージェントを動かすこともできます。下にあるのは、アプリ自身の JNI PTY で動く Codex CLI、APK 同梱の bash / git / Python 3 / Node.js、その隣の API ベースの AI ペインです。</sub><br>
-  <sub><em>まず正直に書いておきます。無人での一連のサイクルは、<b>Galaxy Z Fold6 の実機で最後まで検証済み（N=1）</b>です。何が検証済みかは<a href="#ステータス">ステータス</a>の表で追跡しています。</em></sub>
+  <sub><em>無人での一連のサイクルは、<b>Galaxy Z Fold6 の実機で最後まで検証済み（N=1）</b>です。何が検証済みかは<a href="#ステータス">ステータス</a>の表で追跡しています。</em></sub>
 </p>
 
 <p align="center">
