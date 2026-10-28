@@ -37,6 +37,7 @@
   <img alt="Built with" src="https://img.shields.io/badge/built%20with-Codex-D4A574?style=flat-square">
   <img alt="Expo" src="https://img.shields.io/badge/Expo%2054-000020?style=flat-square&logo=expo&logoColor=white">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white">
+  <a href="https://glama.ai/mcp/servers/RYOITABASHI/Shelly"><img alt="Glama MCP server score" src="https://glama.ai/mcp/servers/RYOITABASHI/Shelly/badges/score.svg"></a>
   <a href="https://buymeacoffee.com/ryo1221"><img alt="Buy Me a Coffee" src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buymeacoffee&logoColor=black"></a>
 </p>
 
@@ -327,7 +328,7 @@ Termux のインストールなし。proot なし。ttyd なし。リモート�
 | **音声入力** | コマンドや AI プロンプトを話しかけられます。Groq キーがあれば Groq Whisper が文字起こしを担当し、無ければ Android の端末内音声認識（キー不要、API 31 以上）にフォールバックします（Settings → Voice Input で端末内に固定すれば、音声はネットワークに出ません）。そのテキストを VoiceChain がキーボードと同じ入力ルーターに流します。*端末内の経路は実装済みですが、実機では未検証です。* |
 | **リアルタイム音声（Gemini Live）** | オプトインの全二重音声モード。録音 → 文字起こし → 送信を繰り返すターン制ではなく、話しかけると音声で返答が返り、割り込みはサーバー側で処理されます。通常の音声入力とは別のトグルです（Settings → Realtime Voice、既定 OFF）。テキストと違い、Gemini Live API 経由の音声は無料枠のキーでもトークン課金される点に注意してください。 |
 | **A2A サーバー（Agent2Agent）** | オプトインのローカル HTTP サーバー（Settings → A2A Server、既定 OFF）。標準の [A2A プロトコル](https://a2a-protocol.org/) の Agent Card と `list_agents` スキルを公開し、同じネットワーク上の A2A 対応エージェント / ツールから Shelly に登録済みのものが見えるようにします。現時点では読み取り専用で、実行や書き込みのスキルは公開していません。 |
-| **MCP サーバー** | オプトインのローカル [Model Context Protocol](https://modelcontextprotocol.io/) サーバー（Settings → MCP Server、既定 OFF、bearer トークン認証）。`read_terminal_output`・`git_status`・`list_agents`・`list_repos` の 4 つの読み取り専用ツールを公開し、Claude Code や Claude Desktop のようなデスクトップの MCP クライアントからスマホ上で動いているものを覗けるようにします。旧来の仕様リビジョン（セッションのハンドシェイク）と、ステートレスな 2026-07-28 リビジョンの両方を話します。*2026-07-28 の経路は実装・テスト済みですが、実機では未検証です。* |
+| **MCP サーバー** | オプトインのローカル [Model Context Protocol](https://modelcontextprotocol.io/) サーバー（Settings → MCP Server、既定 OFF、bearer トークン認証）。`read_terminal_output`・`git_status`・`list_agents`・`list_repos` の 4 つの読み取り専用ツールを公開し、Claude Code や Claude Desktop のようなデスクトップの MCP クライアントからスマホ上で動いているものを覗けるようにします。ほかに `run_command` と `write_file` の 2 つがありますが、Settings → Agents →「MCP: Allow exec/write」をオンにしない限り無効で、オンにしても呼び出しのたびにスマホでの承認タップが必要です。旧来の仕様リビジョン（セッションのハンドシェイク）と、ステートレスな 2026-07-28 リビジョンの両方を話します。*2026-07-28 の経路は実装・テスト済みですが、実機では未検証です。* |
 | **エージェントの安全ルール（ベータ、既定 OFF）** | POLICY-001: 普通の言葉でルールを伝えられます（「お金が絡む操作は必ず聞いて」「Xへの投稿は下書きまで」）。復唱されたうえで、あなたが確認したときだけ保存され、一覧表示や取り消しも同じく言葉で行えます。あなたが起動したのではない実行（スケジュール・ウィジェット・通知・起動時）は読み取り / 下書き / 通知に限定され、同じ種類のアクションを何度も問題なく承認すると、以後は聞かずに実行するかを提案することがあります（支払い・投稿・ネットワーク送信・高リスクのコマンドには決して提案しません）。既定 OFF（Settings → Agent Safety Rules (beta)）。*実装済み、実機では未検証です。* |
 | **実行中の常駐通知** | スケジュールまたは手動で起動したエージェントは、実行結果の通知だけでなく、実行中ずっと「▶ 実行中」の常駐通知を出します。実行中の状態が、終わってから初めて分かるのではなく通知シェードから見えます。 |
 
