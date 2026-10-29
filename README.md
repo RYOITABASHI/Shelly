@@ -775,6 +775,8 @@ Shelly runs commands on your device. The safety system is a best-effort layer, n
 
 See [SECURITY.md](./SECURITY.md) for the threat model and private vulnerability reporting process.
 
+To turn off or revoke ChatGPT remote control, the ClosePaw hand-off, the MCP server, scheduled agents and stored keys, see [docs/revoke-access.md](./docs/revoke-access.md).
+
 ---
 
 ## Privacy
@@ -784,6 +786,10 @@ See [SECURITY.md](./SECURITY.md) for the threat model and private vulnerability 
 - **Persistent agent memory** — `MEMORY_ENABLED` is `true`: per-agent recall, writes, and lists use MEMORY-001 by default. Its JSON records are encrypted at rest with AES-256-GCM and a device SecureStore-backed key, then fall back to the older G2 markdown/Obsidian path if the new store fails; shared `_global` writes still go directly through G2. The project has not yet verified on a real device that no legacy plaintext files remain or that uninstall makes old records unrecoverable. The `touchesPii` classifier signal is produced but does not yet gate model eligibility, so do not assume non-secret sensitive prose is kept away from cloud routing.
 - **No telemetry** — Shelly does not phone home: no analytics, no crash reporting, no usage tracking. Network traffic comes only from things you initiate — your AI API calls, Codex auth, update checks/downloads, Browser Pane use, and any local/API endpoints you configure.
 - **Local LLM mode** — For fully private usage, configure a local GGUF model through llama.cpp. Qwen3.5-0.8B Q4_K_M ships as the default; Qwen3.5-2B Q4_K_M is the recommended step-up when you can spare the memory, Qwen3 1.7B sits in between, and 4B/9B models are available for short quality checks. All processing stays on-device.
+
+---
+
+Facts for reviewers and writers (author-written, with a test plan): [docs/press-kit.md](./docs/press-kit.md)
 
 ---
 
