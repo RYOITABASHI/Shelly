@@ -6,6 +6,62 @@ All notable changes to Shelly are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [8.1.2] - 2026-10-29
+
+### Added
+
+- **`shelly device`.** Phone features for scripts, agents and Codex, built
+  in (no add-on app): `battery` and `info` (JSON), `clipboard get|set`,
+  `notify`, `toast`, `vibrate`, `tts` and `share --file|--text`. Calls are
+  rate limited, every clipboard read shows a notice, agents need a human
+  to approve clipboard reads, and only non-hidden files in home or
+  `/sdcard` can be shared (a snapshot is shared, never the original path).
+- **Codex knows about Shelly.** Shelly keeps a managed section in
+  `~/.codex/AGENTS.md` telling Codex this is an Android phone, to use
+  `shelly closepaw --wait` for tasks in other apps, that only the owner can
+  approve, and how to report outcomes. Text outside the section is never
+  touched; a `<!-- shelly-codex-guide: off -->` line opts out.
+- `shelly closepaw status [<requestId>]` reads a hand-off's state or result
+  later, so a result is not lost when the ChatGPT turn ends first. Every
+  hand-off prints its request id.
+- `shelly codex untrust <dir>` removes the trusted entry for a folder.
+- **Settings > Regenerate MCP Token.** The old token stops working at once:
+  the server restarts, open connections are dropped, and pending requests
+  made with the old token are cancelled.
+- **Settings > Codex Login > Sign out of Codex.** Stops ChatGPT remote
+  control first, then runs `codex logout`.
+- `shelly install --list`, `shelly uninstall <pack>`, and a "available:
+  shelly install <pack>" hint when a pack tool is missing. Pack archives
+  are pinned by sha256 per build and checked before an atomic install.
+- `shelly doctor --report` prints a paste-ready device report for the new
+  device-report issue form.
+- [Obtainium](https://github.com/ImranR98/Obtainium) support: each tagged
+  release now carries the APK built from its tagged commit.
+- `docs/revoke-access.md` (and Japanese) explains how to turn off and
+  revoke every access surface; `docs/press-kit.md` lists facts and a test
+  plan for reviewers.
+
+### Changed
+
+- Every non-success ClosePaw outcome (waiting, rejected, expired, failed,
+  lost, untracked) is printed as "NOT done" or "UNKNOWN" with a non-zero
+  exit code, never as done.
+- A malformed `shelly closepaw status ...` is a usage error, never a
+  hand-off.
+- Releases fail before publishing if a recognizable secret, private key or
+  keystore is found in the source tree, the APK or the Codex runtime.
+
+### Fixed
+
+- `shelly closepaw --help` no longer becomes a hand-off with the goal
+  "--help".
+- `shelly closepaw --wait` keeps a ChatGPT remote-control turn waiting
+  until the result arrives.
+- `shelly doctor` reports Shelly's own version, notification permission
+  and battery-optimization state, and works from scripts and Codex shells.
+- The Case File theme's cursor and sound are paired only on a real switch
+  into that theme.
+
 ## [8.1.1] - 2026-10-16
 
 ### Added
