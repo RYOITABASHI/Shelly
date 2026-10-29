@@ -410,7 +410,7 @@ describe('native result callback invariants', () => {
   it('the shim polls the run-state file, not the hand-off ack', () => {
     expect(homeKt).toContain("const runPath = path.join(home, '.shelly-closepaw-run-' + reqId + '.json');");
     expect(resultsKt).toContain('const val RUN_FILE_PREFIX = ".shelly-closepaw-run-"');
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 26[2-9]/);
+    expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(262);
   });
 });
 
