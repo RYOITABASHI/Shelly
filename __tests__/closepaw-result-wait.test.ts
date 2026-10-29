@@ -205,7 +205,7 @@ describe('generated shim: shelly closepaw wait', () => {
       );
       expect(r.code).toBe(0);
       const lines = r.out.split(/\r?\n/).filter(Boolean);
-      // v269 (shim v21): the request id is printed first, before the ack wait.
+      // v270 (shim v21): the request id is printed first, before the ack wait.
       expect(lines[0]).toMatch(/^ClosePaw request [0-9]+-[0-9a-f]{8} queued for Shelly\.$/);
       expect(lines[1]).toMatch(/^Handed off to Shelly \(request [0-9]+-[0-9a-f]{8}\); the phone owner has been asked to approve it\.$/);
       expect(lines[2]).toMatch(/^Waiting for the phone owner to approve and for ClosePaw to finish \(up to 100s, request [0-9]+-[0-9a-f]{8}\)\.$/);
@@ -511,7 +511,7 @@ describe('review follow-ups (M1 / M2 / M3 / L2-L6)', () => {
   });
 });
 
-// v269 (shim v21): `shelly closepaw status [<requestId>]`, the early request id
+// v270 (shim v21): `shelly closepaw status [<requestId>]`, the early request id
 // and the explicit "Outcome:" verdict on every final report.
 describe('shelly closepaw status + truthful outcomes (shim v21)', () => {
   let tmp: string;
@@ -618,6 +618,27 @@ describe('shelly closepaw status + truthful outcomes (shim v21)', () => {
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('Usage: shelly closepaw status [<requestId>]');
     expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it.each([
+    [['closepaw', 'status', 'latest']],
+    [['closepaw', 'status', REQ, '--timeout', '30']],
+    [['closepaw', 'status', REQ, 'extra']],
+    [['closepaw', 'status', '--json']],
+    [['closepaw', 'status', 'of', 'my', 'order']],
+  ])('malformed %j is a usage error (exit 1) and never a hand-off', async (args) => {
+    const r = await run(args);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('Usage: shelly closepaw status [<requestId>]');
+    expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it('the result line never echoes control characters from the status field', async () => {
+    writeRun(home, { status: 'odd\u001b[31m‮state', message: 'm' });
+    const r = await run(['closepaw', 'status', REQ]);
+    expect(r.code).toBe(1);
+    expect(r.out).not.toMatch(/[\u001b‮]/);
+    expect(r.out).toContain('ClosePaw result: odd [31m state (request');
   });
 
   it('status never writes anything (no request, ctl or approval files)', async () => {

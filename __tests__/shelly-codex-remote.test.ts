@@ -555,7 +555,7 @@ maybe('shelly codex v258 (bash)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// v269: `shelly codex untrust <dir>` (inverse of trust)
+// v270: `shelly codex untrust <dir>`
 // ---------------------------------------------------------------------------
 maybe('shelly codex untrust (bash)', () => {
   function cfgPath() {
@@ -577,7 +577,7 @@ maybe('shelly codex untrust (bash)', () => {
       expect(run('shelly codex status').out).toMatch(/\n {2}- ~\/myapp\n/);
       const r = run('shelly codex untrust "$HOME/myapp/"');
       expect(r.code).toBe(0);
-      expect(r.out).toContain('No longer trusted for Codex');
+      expect(r.out).toContain('Removed the trusted entry for Codex');
       const after = fs.readFileSync(cfgPath(), 'utf8');
       expect(after).toBe(before.endsWith('\n') ? before : before + '\n');
       expect(run('shelly codex status').out).toContain('(none yet)');

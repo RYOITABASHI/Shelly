@@ -1421,8 +1421,10 @@ patchCodex(libDir);
     //      stdout. Approval is unchanged: still only on the phone. Also: the
     //      Shelly-managed section of ~/.codex/AGENTS.md (CodexAgentsGuide.kt,
     //      written natively on every initialize(), independent of this version).
-    //      ~/.bashrc: `shelly codex untrust <dir>`, the inverse of `trust`
-    //      (removes only the trusted entry it wrote; listed in both usages).
+    //      ~/.bashrc: `shelly codex untrust <dir>` removes the "trusted"
+    //      entry for that folder (whoever wrote it: `trust` or Codex's own
+    //      prompt); it does not restore an earlier "untrusted" value. Listed in
+    //      both usages.
     private const val BASHRC_VERSION = 270
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
@@ -1550,7 +1552,7 @@ patchCodex(libDir);
             android.util.Log.e("HomeInitializer", "shelly-codex-auth.js extract failed: ${e.message}")
         }
 
-        // v269: keep the Shelly-managed block of ~/.codex/AGENTS.md (Codex's
+        // v270: keep the Shelly-managed block of ~/.codex/AGENTS.md (Codex's
         // global instructions) current, so a Codex turn -- including one driven
         // from the ChatGPT app via `shelly codex pair` -- knows to use
         // `shelly closepaw --wait` for phone-app tasks without being told each
@@ -2254,7 +2256,7 @@ patchCodex(libDir);
             // really ran out.
             sb.appendLine("  const cpOut = (s) => { try { fs.writeSync(1, s + '\\n'); } catch (e) { console.log(s); } };")
             sb.appendLine("  const cpErr = (s) => { try { fs.writeSync(2, s + '\\n'); } catch (e) { console.error(s); } };")
-            // v269 (shim v21): the run-state read, the expiry normalisation and the
+            // v270 (shim v21): the run-state read, the expiry normalisation and the
             // final report are shared by `wait` and the new non-blocking `status`.
             // cpFinal adds one explicit "Outcome:" verdict line so no non-success
             // final state (untracked, lost, timeout, ...) can be read as "done";
@@ -2284,7 +2286,7 @@ patchCodex(libDir);
             sb.appendLine("    'untracked': 'UNKNOWN - handed off on a path that reports no result; ask the user to check ClosePaw on the phone. Do not report it as done.',")
             sb.appendLine("  };")
             sb.appendLine("  const cpFinal = (reqId, r) => {")
-            sb.appendLine("    cpOut('ClosePaw result: ' + r.status + ' (request ' + reqId + ')');")
+            sb.appendLine("    cpOut('ClosePaw result: ' + cpClean(r.status).slice(0, 40) + ' (request ' + reqId + ')');")
             sb.appendLine("    if (r.message) cpOut(r.message);")
             sb.appendLine("    cpOut('Outcome: ' + (Object.prototype.hasOwnProperty.call(cpVerdicts, r.status) ? cpVerdicts[r.status] : 'UNKNOWN - unrecognized state ' + JSON.stringify(cpClean(r.status).slice(0, 40)) + '; do not report it as done.'));")
             sb.appendLine("    if (r.summary) {")
@@ -2303,7 +2305,7 @@ patchCodex(libDir);
             sb.appendLine("    let nextProgressMs = startMs + 10 * 1000;")
             sb.appendLine("    cpOut('Waiting for the phone owner to approve and for ClosePaw to finish (up to ' + timeoutSec + 's, request ' + reqId + ').');")
             sb.appendLine("    cpOut('Do not end your turn and do not answer yet: this command is still running and prints the ClosePaw result when it exits. If your exec tool yields with a session id while it runs, keep polling that session until the command exits. Only the phone owner can approve; nothing you send can.');")
-            // v269 (shim v21): if the caller's turn / session ends anyway, the
+            // v270 (shim v21): if the caller's turn / session ends anyway, the
             // result is still recorded natively; say how to fetch it later.
             sb.appendLine("    cpOut('If this session ends before the command exits, check later with: shelly closepaw status ' + reqId);")
             sb.appendLine("    for (;;) {")
@@ -2351,14 +2353,18 @@ patchCodex(libDir);
             sb.appendLine("    }")
             sb.appendLine("    cpWait(args[2], cpSec, '');")
             sb.appendLine("  }")
-            // v269 (shim v21): `shelly closepaw status [<requestId>]` -- never blocks,
+            // v270 (shim v21): `shelly closepaw status [<requestId>]` -- never blocks,
             // never writes anything: reads the same native run-state file `wait`
             // polls (ClosePawRunResults.kt) and reports the state or, once final,
             // the result (same framing + exit codes as `wait`; 124 = not final).
             // Without an id it reports the most recent request (ids start with
             // the creation time in ms). The run file never holds an approval
             // secret (the notification nonce stays in Shelly's process memory).
-            sb.appendLine("  if (args[1] === 'status' && args.length === 3 && !cpReqRe.test(args[2]) && /^[0-9]/.test(args[2])) {")
+            // Review fix: ANY `status` first word is the status command; a malformed
+            // form (extra args, a non-id word, flags) is a usage error and never a
+            // hand-off (`status latest` / `status <id> --timeout 30` used to become
+            // the goal "status ...").
+            sb.appendLine("  if (args[1] === 'status' && !(args.length === 2 || (args.length === 3 && cpReqRe.test(args[2])))) {")
             sb.appendLine("    console.error('Usage: shelly closepaw status [<requestId>]   (request ids look like 1760500000000-0123abcd)');")
             sb.appendLine("    process.exit(1);")
             sb.appendLine("  }")
@@ -2430,7 +2436,7 @@ patchCodex(libDir);
             sb.appendLine("    console.error('shelly: failed to queue ClosePaw hand-off: ' + (e && e.message ? e.message : e));")
             sb.appendLine("    process.exit(1);")
             sb.appendLine("  }")
-            // v269 (shim v21): the request id is printed as soon as the request
+            // v270 (shim v21): the request id is printed as soon as the request
             // file exists, before the (up to 20s) ack wait, so a caller whose turn
             // ends early can still look the request up. The id is a correlation
             // handle only; it cannot approve anything.
@@ -2460,7 +2466,7 @@ patchCodex(libDir);
             sb.appendLine("        }")
             sb.appendLine("        process.exit(0);")
             sb.appendLine("      }")
-            // v269 (shim v21): a refused / failed hand-off also says so on stdout
+            // v270 (shim v21): a refused / failed hand-off also says so on stdout
             // (a caller that only relays stdout must not see silence or "done").
             sb.appendLine("      cpOut('ClosePaw result: failed (request ' + reqId + ') - not handed off.');")
             sb.appendLine("      console.error(String((result && result.message) || 'shelly closepaw: hand-off failed'));")
@@ -4063,7 +4069,8 @@ patchCodex(libDir);
             sb.appendLine("  echo '         open it (same config entry the Codex trust prompt writes).'")
             sb.appendLine("  echo '         Shared storage (/sdcard, /storage) needs --yes.'")
             sb.appendLine("  echo '  untrust <dir>'")
-            sb.appendLine("  echo '         Remove that trust entry again (the ChatGPT app can no longer open it).'")
+            sb.appendLine("  echo '         Remove the \"trusted\" entry for that folder, whoever wrote it (the ChatGPT'")
+            sb.appendLine("  echo '         app can no longer open it). It does not restore an earlier \"untrusted\" value.'")
             sb.appendLine("  echo '  status Show the background host and the trusted projects.'")
             sb.appendLine("  echo '  stop   Stop the background host (until you next open Shelly if autostart is on).'")
             sb.appendLine("  echo '  autostart <off|status>'")
@@ -4400,7 +4407,9 @@ patchCodex(libDir);
             sb.appendLine("    echo \"[shelly] Written to \$__cfg. Pick the project again in the ChatGPT app; restart the host if it still says it cannot verify trust.\"")
             sb.appendLine("  fi")
             sb.appendLine("}")
-            // v269: `shelly codex untrust <dir>` -- inverse of `trust`. Same realpath
+            // v270: `shelly codex untrust <dir>` -- removes the "trusted" entry for
+            // that folder, whoever wrote it (`trust` or Codex's own trust prompt);
+            // it never restores an earlier "untrusted" value. Same realpath
             // (+ /data/user/0 <-> /data/data alias) keys and the same TOML line parser.
             // A `[projects."<key>"]` table whose body is only its trusted trust_level
             // line (what `trust` appends) is removed with that line and the one blank
@@ -4510,7 +4519,7 @@ patchCodex(libDir);
             sb.appendLine("    echo \"[shelly] Not trusted, nothing to change: \$__canon\"")
             sb.appendLine("    return 0")
             sb.appendLine("  fi")
-            sb.appendLine("  echo \"[shelly] No longer trusted for Codex: \$__canon\"")
+            sb.appendLine("  echo \"[shelly] Removed the trusted entry for Codex: \$__canon\"")
             sb.appendLine("  echo \"[shelly] Removed from \$__cfg. The ChatGPT app can no longer open it (restart the host if it still can).\"")
             sb.appendLine("}")
             sb.appendLine("__shelly_codex_remote_link_is_ours() {")

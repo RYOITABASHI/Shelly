@@ -99,7 +99,8 @@
 
 - shelly-v0.1.0-9（RYOITABASHI/closepaw `fix/vd-text-input` @ 8fc549e6、pre-release 公開済み）: VD 上の文字入力（Shizuku `input -d`）、メイン画面にカプセルを出さない、ミュート、前面アプリ復帰、完了契約 + 件数ゲート + プレイリスト画面検証を収録。実機確認済みは VD 入力・カプセル非表示・ミュート・単発タスク（Spotify の公式プレイリスト保存、承認1回）。**複数アイテム（例: 10 曲追加）を 1 回で完走させる経路は実機未達成**（モデルが1曲で完了宣言・誤った曲を追加・検索欄に誤入力）。画面検証パーサは実機 dump の fixture でユニット検証済みだが、実機での end-to-end は未確認。再開時は 3 曲テストから（OpenRouter クレジット消費に注意）。端末には shelly.21 が入っているので、まず v0.1.0-9 の APK に更新すること。
 - `shelly closepaw confirm <不正なID>` は既存テストの仕様で goal として hand-off される（`--help` 系は v20 で修正済み、749270fee）。必要なら confirm の書式不正も usage エラーにする。
-- ChatGPT から使うときは依頼文に `shelly closepaw --wait` と具体的な UI 手順（例: 「Your Library 右上の + (Create)」）を書くと成功率が上がる。Codex が自発的に ClosePaw を選ぶための指示（AGENTS.md 等）は未実装。
+- ChatGPT から使うときは依頼文に `shelly closepaw --wait` と具体的な UI 手順（例: 「Your Library 右上の + (Create)」）を書くと成功率が上がる。Codex が自発的に ClosePaw を選ぶための指示は 2026-10-29 に `~/.codex/AGENTS.md` の Shelly 管理セクション（CodexAgentsGuide.kt、BASHRC_VERSION 270）として実装済み・実機未検証（`CODEX_HOME` を独自に設定した環境と `AGENTS.override.md` がある環境には未対応）。
+- `shelly closepaw status` / `wait` が読む `$HOME/.shelly-closepaw-run-<id>.json` は同じ uid のシェル（= Codex）からも書き換え可能。表示は data-not-instructions 枠 + 制御文字除去で無害化しているが、状態そのもの（例: `completed` の偽装）は改ざんし得る。承認ゲートには影響しない（承認は通知 nonce / アプリ内チャットのみ）。結果の真正性が必要になったら、ネイティブ側で HMAC 付与 or app-private 領域から RN 経由で返す設計を検討 (P3)。
 
 ### ClosePaw 引き継ぎを ChatGPT 内の Codex 承認カードだけで承認する — 調査済み・**現状の Codex では不成立**、追加プロンプトのみ実装 (P2)
 
