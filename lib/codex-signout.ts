@@ -6,11 +6,16 @@
  * execCommand() / TerminalEmulator functions.
  *
  * Order of operations:
- *  1. If the Codex remote-control host is running or "Keep ChatGPT connected"
- *     is on, turn it off first via setCodexRemoteAutostart(false) — the
- *     existing native path that also stops a running host (CodexRemoteHost
- *     .turnOff → stopHost). Otherwise the host would keep running on the
- *     credentials it already loaded, or the supervisor would restart it.
+ *  1. Always disconnect remote control first via
+ *     disconnectCodexRemoteForSignOut() — CodexRemoteHost.disconnectForSignOut:
+ *     switch OFF + stop the tracked host + sweep every same-uid
+ *     `remote-control` process (the notification "Disconnect" path), so an
+ *     untracked/orphaned host that status().running can't see doesn't keep
+ *     running on credentials it already loaded. It runs even when the status
+ *     looks idle, because orphans are exactly what the status misses; the
+ *     result's remainingRemoteControlProcesses must be 0 to count as stopped.
+ *     Already-running Codex agent / terminal processes keep their in-memory
+ *     credentials until they exit; the confirmation text says so.
  *  2. Run the official `codex logout` through the $HOME/bin/codex shim that
  *     HomeInitializer writes (same runtime selection / env as the terminal's
  *     `codex`). execCommand()'s shell does not source ~/.bashrc and does not
@@ -26,12 +31,17 @@ import type { ExecResult } from '@/hooks/use-native-exec';
 
 export type CodexAuthState = 'signed_in' | 'signed_out' | 'unknown';
 
-export type CodexRemoteStatus = { enabled: boolean; running: boolean } | null;
+export type CodexRemoteStatus = {
+  enabled: boolean;
+  running: boolean;
+  /** Same-uid `remote-control` processes found after a sweep (disconnect result only). */
+  remainingRemoteControlProcesses?: number;
+} | null;
 
 export interface CodexSignOutDeps {
   exec(command: string, timeoutMs?: number): Promise<ExecResult>;
   getRemoteStatus(): Promise<CodexRemoteStatus>;
-  /** Turns "Keep ChatGPT connected" off and stops a running host. */
+  /** Turns "Keep ChatGPT connected" off, stops the host and sweeps orphans. */
   disableRemote(): Promise<CodexRemoteStatus>;
 }
 
@@ -78,7 +88,7 @@ export type CodexSignOutResult =
       method: 'codex_logout' | 'file_delete' | 'already_signed_out';
       /** Remote control was active and has been turned off. */
       remoteStopped: boolean;
-      /** Remote control was active and is still on/running after the attempt. */
+      /** Remote control may still be on/running (or a remote-control process survived the sweep). */
       remoteStillActive: boolean;
       logoutError?: string;
     }
@@ -106,14 +116,17 @@ export async function signOutOfCodex(deps: CodexSignOutDeps): Promise<CodexSignO
   } catch {
     before = null;
   }
-  if (remoteControlActive(before)) {
-    try {
-      const after = await deps.disableRemote();
-      remoteStillActive = remoteControlActive(after);
-      remoteStopped = !remoteStillActive;
-    } catch {
-      remoteStillActive = true;
-    }
+  try {
+    const after = await deps.disableRemote();
+    // A missing result or a missing sweep count can't prove nothing is left.
+    remoteStillActive =
+      !after ||
+      remoteControlActive(after) ||
+      typeof after.remainingRemoteControlProcesses !== 'number' ||
+      after.remainingRemoteControlProcesses > 0;
+    remoteStopped = remoteControlActive(before) && !remoteStillActive;
+  } catch {
+    remoteStillActive = true;
   }
 
   // 2. Official logout.

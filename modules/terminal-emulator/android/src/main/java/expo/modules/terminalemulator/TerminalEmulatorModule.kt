@@ -1164,6 +1164,16 @@ class TerminalEmulatorModule : Module() {
             status
         }
 
+        // Settings "Sign out of Codex": OFF + stop the tracked host + sweep
+        // every same-uid `remote-control` process (the notification
+        // Disconnect path), returning status + remainingRemoteControlProcesses.
+        AsyncFunction("disconnectCodexRemoteForSignOut") {
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            val status = CodexRemoteHost.disconnectForSignOut(context)
+            Log.i("TerminalEmulator", "disconnectCodexRemoteForSignOut -> $status")
+            status
+        }
+
         // STOP-ALL / resume from RN: re-run the supervisor now instead of on
         // its next 5s poll.
         AsyncFunction("wakeCodexRemoteHost") {

@@ -1,6 +1,8 @@
 package expo.modules.terminalemulator
 
 import android.content.Context
+import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -29,7 +31,36 @@ object MCPBridge {
 
     private var process: Process? = null
 
-    fun isRunning(): Boolean = process?.isAlive == true
+    fun isRunning(): Boolean = process?.let { isAlive(it) } == true
+
+    // Process.isAlive / waitFor(long, TimeUnit) / destroyForcibly() are API 26;
+    // minSdk is 24, so API 24/25 use exitValue() polling and destroy() only.
+    private fun isAlive(proc: Process): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) return proc.isAlive
+        return try {
+            proc.exitValue()
+            false
+        } catch (_: IllegalThreadStateException) {
+            true
+        }
+    }
+
+    /** Waits up to [timeoutMs] for [proc] to exit; true if it did. */
+    private fun waitForExit(proc: Process, timeoutMs: Long): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return proc.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+        }
+        val deadline = SystemClock.uptimeMillis() + timeoutMs
+        while (isAlive(proc)) {
+            if (SystemClock.uptimeMillis() >= deadline) return false
+            Thread.sleep(50)
+        }
+        return true
+    }
+
+    private fun forceKill(proc: Process) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) proc.destroyForcibly() else proc.destroy()
+    }
 
     @Synchronized
     fun start(context: Context, token: String): Boolean {
@@ -85,18 +116,18 @@ object MCPBridge {
         process = null
         try {
             proc.destroy()
-            if (!proc.waitFor(STOP_GRACE_MS, TimeUnit.MILLISECONDS)) {
+            if (!waitForExit(proc, STOP_GRACE_MS)) {
                 Log.w(TAG, "MCP server did not exit on SIGTERM; killing")
-                proc.destroyForcibly()
-                if (!proc.waitFor(STOP_GRACE_MS, TimeUnit.MILLISECONDS)) {
-                    Log.e(TAG, "MCP server still alive after SIGKILL")
+                forceKill(proc)
+                if (!waitForExit(proc, STOP_GRACE_MS)) {
+                    Log.e(TAG, "MCP server still alive after forced kill")
                 }
             }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
-            runCatching { proc.destroyForcibly() }
+            runCatching { forceKill(proc) }
         } catch (_: Exception) {
-            runCatching { proc.destroyForcibly() }
+            runCatching { forceKill(proc) }
         }
     }
 }

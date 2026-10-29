@@ -918,6 +918,11 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
                     Alert.alert(t('settings.mcp_token_regenerate_failed_title'), t('settings.mcp_token_regenerate_old_still_accepted'));
                   } else if (result.check === 'restart_failed') {
                     Alert.alert(t('settings.mcp_token_regenerate_failed_title'), t('settings.mcp_token_regenerate_restart_failed'));
+                  } else if (result.check === 'failed_server_off') {
+                    Alert.alert(
+                      t('settings.mcp_token_regenerate_failed_title'),
+                      t('settings.mcp_token_regenerate_save_failed') + (result.error ? `\n\n${result.error}` : ''),
+                    );
                   } else {
                     ToastAndroid.show(
                       t(result.wasRunning ? 'settings.mcp_token_regenerated_restarted_toast' : 'settings.mcp_token_regenerated_toast'),

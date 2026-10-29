@@ -27,6 +27,10 @@ interface McpApprovalState {
   queue: McpApprovalRequest[];
   enqueue: (request: McpApprovalRequest) => void;
   respond: (id: string, approved: boolean) => void;
+  /** Denies the shown request and every queued one, closing the modal
+   *  (MCP token regeneration: nothing accepted under the old token may
+   *  still be approvable). */
+  denyAll: () => void;
 }
 
 export const useMcpApprovalStore = create<McpApprovalState>((set, get) => ({
@@ -49,6 +53,18 @@ export const useMcpApprovalStore = create<McpApprovalState>((set, get) => ({
     } else {
       // Already resolved (e.g. timed out) — just drop it from the queue if still there.
       set({ queue: queue.filter((r) => r.id !== id) });
+    }
+  },
+  denyAll: () => {
+    const { current, queue } = get();
+    // Clear first so the modal closes even if a resolver throws.
+    set({ current: null, queue: [] });
+    for (const request of current ? [current, ...queue] : queue) {
+      try {
+        request.resolve(false);
+      } catch {
+        // keep denying the rest
+      }
     }
   },
 }));

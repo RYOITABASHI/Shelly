@@ -2528,7 +2528,12 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
   const signOutDeps = React.useMemo<CodexSignOutDeps>(() => ({
     exec: execCommand,
     getRemoteStatus: async () => (await TerminalEmulator.getCodexRemoteAutostart?.()) ?? null,
-    disableRemote: async () => (await TerminalEmulator.setCodexRemoteAutostart(false)) ?? null,
+    disableRemote: async () => {
+      if (typeof TerminalEmulator.disconnectCodexRemoteForSignOut !== 'function') {
+        throw new Error('disconnectCodexRemoteForSignOut is not available in this build');
+      }
+      return (await TerminalEmulator.disconnectCodexRemoteForSignOut()) ?? null;
+    },
   }), []);
 
   const refreshAuthState = React.useCallback(async () => {
@@ -2545,14 +2550,12 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
     setSignOutBusy(true);
     try {
       const result = await signOutOfCodex(signOutDeps);
-      if (result.remoteStopped || result.remoteStillActive) {
-        // Mirror the native switch (setCodexRemoteAutostart already flipped it).
-        try {
-          const status = await TerminalEmulator.getCodexRemoteAutostart?.();
-          updateSettings({ codexRemoteAutostart: status?.enabled ?? false });
-        } catch {
-          updateSettings({ codexRemoteAutostart: false });
-        }
+      // Mirror the native switch (the sign-out disconnect always turns it off).
+      try {
+        const status = await TerminalEmulator.getCodexRemoteAutostart?.();
+        updateSettings({ codexRemoteAutostart: status?.enabled ?? false });
+      } catch {
+        updateSettings({ codexRemoteAutostart: false });
       }
       await refreshAuthState();
       logInfo('SettingsDropdown', 'codex sign-out: ' + JSON.stringify({ ...result, error: undefined }));

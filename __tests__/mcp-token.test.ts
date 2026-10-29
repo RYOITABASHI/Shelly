@@ -59,6 +59,9 @@ function makeServer(running: boolean, initialToken: string | null, opts: { orpha
       return token === liveToken ? 405 : 401;
     }),
     sleep: async () => {},
+    revokePending: jest.fn(async () => {
+      calls.push('revoke');
+    }),
   };
   return { server, calls, live: () => liveToken };
 }
@@ -84,7 +87,7 @@ describe('regenerateToken', () => {
     expect(result).toMatchObject({ wasRunning: false, restarted: false, check: 'not_running' });
     expect(server.start).not.toHaveBeenCalled();
     expect(server.stop).not.toHaveBeenCalled();
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(['revoke']);
     expect(deps.randomBytes).toHaveBeenCalledWith(MCP_TOKEN_BYTES);
   });
 
@@ -92,7 +95,9 @@ describe('regenerateToken', () => {
     const { deps, stored } = makeDeps('old-token');
     const { server, calls, live } = makeServer(true, 'old-token');
     const result = await regenerateToken(deps, server);
-    expect(calls).toEqual(['stop', `start:${result.token}`]);
+    // Pending requests from the old token are revoked after the old process
+    // is gone and before the new one starts.
+    expect(calls).toEqual(['stop', 'revoke', `start:${result.token}`]);
     expect(live()).toBe(result.token);
     expect(stored()).toBe(result.token);
     expect(result).toMatchObject({ wasRunning: true, restarted: true, check: 'verified' });
@@ -124,6 +129,57 @@ describe('regenerateToken', () => {
     expect(stored()).toBe('old-token');
   });
 
+  it('leaves the server off with an explicit result when saving fails after stop', async () => {
+    const { deps, save, stored } = makeDeps('old-token');
+    const { server, calls, live } = makeServer(true, 'old-token');
+    save.mockRejectedValueOnce(new Error('keystore unavailable'));
+    const result = await regenerateToken(deps, server);
+    expect(result).toMatchObject({ token: null, wasRunning: true, restarted: false, check: 'failed_server_off' });
+    expect(result.error).toContain('keystore unavailable');
+    // Not restarted on the old (possibly leaked) token.
+    expect(server.start).not.toHaveBeenCalled();
+    expect(live()).toBeNull();
+    expect(calls).toEqual(['stop', 'revoke']);
+    expect(stored()).toBe('old-token');
+  });
+
+  it('leaves the server off when the saved token does not read back', async () => {
+    const { deps } = makeDeps('old-token');
+    const { server } = makeServer(true, 'old-token');
+    const realGet = deps.store.get;
+    let n = 0;
+    deps.store.get = async (id, field) => (++n === 2 ? 'something-else' : realGet(id, field));
+    const result = await regenerateToken(deps, server);
+    expect(result.check).toBe('failed_server_off');
+    expect(server.start).not.toHaveBeenCalled();
+  });
+
+  it('leaves the server off when revoking pending requests fails', async () => {
+    const { deps, save } = makeDeps('old-token');
+    const { server } = makeServer(true, 'old-token');
+    (server.revokePending as jest.Mock).mockRejectedValueOnce(new Error('rm failed'));
+    const result = await regenerateToken(deps, server);
+    expect(result.check).toBe('failed_server_off');
+    expect(save).not.toHaveBeenCalled();
+    expect(server.start).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a save failure when the server was off (nothing to reconcile)', async () => {
+    const { deps, save, stored } = makeDeps('old-token');
+    const { server } = makeServer(false, 'old-token');
+    save.mockRejectedValueOnce(new Error('keystore unavailable'));
+    await expect(regenerateToken(deps, server)).rejects.toThrow('keystore unavailable');
+    expect(stored()).toBe('old-token');
+  });
+
+  it('treats a throwing native start as restart_failed', async () => {
+    const { deps } = makeDeps('old-token');
+    const { server } = makeServer(true, 'old-token');
+    (server.start as jest.Mock).mockRejectedValueOnce(new Error('spawn failed'));
+    const result = await regenerateToken(deps, server);
+    expect(result.check).toBe('restart_failed');
+  });
+
   it('never "regenerates" to the same value', async () => {
     const { deps } = makeDeps(`tok-1-${MCP_TOKEN_BYTES}`);
     const { server } = makeServer(false, null);
@@ -145,13 +201,26 @@ describe('native/script wiring', () => {
   const root = path.resolve(__dirname, '..');
   const read = (f: string) => fs.readFileSync(path.join(root, f), 'utf8').replace(/\r\n/g, '\n');
 
-  it('MCPBridge.stop waits for the process to exit and falls back to SIGKILL', () => {
+  it('MCPBridge.stop waits for the process to exit and falls back to a forced kill', () => {
     const src = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt');
     const stop = src.slice(src.indexOf('fun stop()'));
     expect(stop).toMatch(/proc\.destroy\(\)/);
-    expect(stop).toMatch(/waitFor\(STOP_GRACE_MS/);
-    expect(stop).toMatch(/destroyForcibly\(\)/);
+    expect(stop).toMatch(/waitForExit\(proc, STOP_GRACE_MS\)/);
+    expect(stop).toMatch(/forceKill\(proc\)/);
     expect(src).toContain(`PORT = ${MCP_SERVER_PORT}`);
+  });
+
+  it('MCPBridge guards the API 26 Process methods (minSdk 24)', () => {
+    const src = read('modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/MCPBridge.kt');
+    // Every API-26 call sits right behind an SDK_INT >= O check.
+    for (const call of ['proc.isAlive', 'proc.waitFor(', 'proc.destroyForcibly()']) {
+      const idx = src.indexOf(call);
+      expect(idx).toBeGreaterThan(-1);
+      expect(src.slice(Math.max(0, idx - 120), idx)).toMatch(/SDK_INT >= Build\.VERSION_CODES\.O/);
+      expect(src.split(call).length - 1).toBe(1);
+    }
+    expect(src).toMatch(/exitValue\(\)/);
+    expect(src).not.toMatch(/process\?\.isAlive/);
   });
 
   it('the server script drops open connections on SIGTERM and the APK asset mirrors it', () => {

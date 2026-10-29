@@ -81,6 +81,14 @@ declare class TerminalEmulatorModuleType extends NativeModule {
    * while STOP-ALL is active; off also stops a running host.
    */
   setCodexRemoteAutostart(enabled: boolean): Promise<CodexRemoteAutostartStatus | null>;
+  /**
+   * Sign-out: turns the switch off, stops the tracked host AND sweeps every
+   * same-uid `remote-control` process (like the notification's Disconnect).
+   * Optional so an older native build without it is detected, not crashed.
+   */
+  disconnectCodexRemoteForSignOut?(): Promise<
+    (CodexRemoteAutostartStatus & { remainingRemoteControlProcesses: number }) | null
+  >;
   /** Re-run the Codex remote-control supervisor now (STOP-ALL / resume). */
   wakeCodexRemoteHost(): Promise<void>;
   setNotificationReplyEnabled(enabled: boolean): Promise<void>;

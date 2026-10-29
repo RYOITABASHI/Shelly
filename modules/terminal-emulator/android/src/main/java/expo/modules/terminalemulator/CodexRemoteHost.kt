@@ -230,6 +230,33 @@ object CodexRemoteHost {
         wake()
     }
 
+    /**
+     * Settings "Sign out of Codex": the same OFF + straggler sweep as the
+     * notification's Disconnect (an untracked/orphaned `codex remote-control`
+     * would otherwise keep running on credentials it already loaded), then
+     * reports what is left so RN never claims success while one survives.
+     */
+    fun disconnectForSignOut(context: Context): Map<String, Any> {
+        turnOff(context, "codex sign-out", sweepStragglers = true)
+        wake()
+        val remaining = remoteControlProcessCount()
+        return status(context) + mapOf("remainingRemoteControlProcesses" to remaining)
+    }
+
+    /** Same-uid processes (other than this one) whose argv has `remote-control`. */
+    fun remoteControlProcessCount(): Int {
+        val myUid = Process.myUid()
+        var count = 0
+        File("/proc").listFiles()?.forEach { d ->
+            val pid = d.name.toIntOrNull() ?: return@forEach
+            if (pid == Process.myPid() || pid <= 1) return@forEach
+            if (CodexRemotePolicy.procUid(readProcFile(pid, "status")) != myUid) return@forEach
+            if (!CodexRemotePolicy.isRemoteControlCmdline(readProcFile(pid, "cmdline"))) return@forEach
+            count++
+        }
+        return count
+    }
+
     /** Notification "Exit": like `shelly codex stop` (back when the user next opens Shelly). */
     fun stopUntilNextStart(context: Context) {
         val stopped = File(home(context), STOPPED_FILE)

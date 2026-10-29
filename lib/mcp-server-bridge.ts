@@ -97,7 +97,29 @@ function requestApproval(request: {
   });
 }
 
-async function callTool(tool: string, args: Record<string, unknown>): Promise<ToolResult> {
+// Bumped by revokePendingMCPRequests() (MCP token regeneration). Every
+// request captures the epoch it was read under; anything from an older
+// epoch was accepted under a token that is no longer valid, so it must not
+// run an approved exec/write or have its result written back.
+let queueEpoch = 0;
+const REVOKED_ERROR = 'cancelled: the MCP token was regenerated';
+
+/**
+ * Called while the regeneration lock is held, after the old server process
+ * has exited and before the new one starts: deny/close every pending
+ * approval (the modal closes), invalidate in-flight requests, and delete
+ * the queue's request/result files so nothing accepted under the old token
+ * is picked up later. The new server recreates both dirs on startup.
+ */
+export async function revokePendingMCPRequests(): Promise<void> {
+  queueEpoch += 1;
+  useMcpApprovalStore.getState().denyAll();
+  await FileSystem.deleteAsync(REQUESTS_DIR, { idempotent: true });
+  await FileSystem.deleteAsync(RESULTS_DIR, { idempotent: true });
+  logInfo('MCPBridge', `revoked pending MCP requests (epoch=${queueEpoch})`);
+}
+
+async function callTool(tool: string, args: Record<string, unknown>, epoch: number = queueEpoch): Promise<ToolResult> {
   switch (tool) {
     case 'list_agents': {
       const agents = useAgentStore.getState().agents.map((a) => ({
@@ -170,6 +192,7 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<To
         detail: command,
         riskLevel: safety.level,
       });
+      if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       if (!approved) {
         return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
       }
@@ -202,6 +225,7 @@ async function callTool(tool: string, args: Record<string, unknown>): Promise<To
         summary: `Write ${content.length} bytes to a file via MCP?`,
         detail: `${targetPath}\n\n${preview}`,
       });
+      if (epoch !== queueEpoch) return { ok: false, error: REVOKED_ERROR };
       if (!approved) {
         return { ok: false, error: 'denied by user (or timed out waiting for a response)' };
       }
@@ -230,6 +254,7 @@ const inFlightRequestFiles = new Set<string>();
 
 async function processRequestFile(name: string): Promise<void> {
   const requestUri = `${REQUESTS_DIR}/${name}`;
+  const epoch = queueEpoch;
   try {
     const raw = await FileSystem.readAsStringAsync(requestUri);
     const parsed: unknown = JSON.parse(raw);
@@ -237,7 +262,12 @@ async function processRequestFile(name: string): Promise<void> {
       logError('MCPBridge', `rejected malformed request file ${name}`);
       return;
     }
-    const result = await callTool(parsed.tool, parsed.args ?? {});
+    if (epoch !== queueEpoch) return;
+    const result = await callTool(parsed.tool, parsed.args ?? {}, epoch);
+    if (epoch !== queueEpoch) {
+      logInfo('MCPBridge', `dropped call ${parsed.callId} (token regenerated while it was pending)`);
+      return;
+    }
     const resultUri = `${RESULTS_DIR}/${parsed.callId}.json`;
     await FileSystem.writeAsStringAsync(resultUri, JSON.stringify(result));
     logInfo('MCPBridge', `answered call ${parsed.callId} (tool=${parsed.tool}, ok=${result.ok})`);

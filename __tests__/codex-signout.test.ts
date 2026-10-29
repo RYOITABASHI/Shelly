@@ -3,6 +3,8 @@
  * The exec dependency is simulated by a tiny fake filesystem: one flag for
  * whether $CODEX_HOME/auth.json exists, and per-command behavior.
  */
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   CODEX_AUTH_DELETE_CMD,
   CODEX_AUTH_STATE_CMD,
@@ -20,6 +22,8 @@ type Opts = {
   rmWorks?: boolean;
   remote?: CodexRemoteStatus;
   remoteStopWorks?: boolean;
+  /** remote-control processes the sweep reports as still alive. */
+  orphansLeft?: number;
 };
 
 function makeDeps(opts: Opts = {}) {
@@ -61,7 +65,8 @@ function makeDeps(opts: Opts = {}) {
     disableRemote: jest.fn(async () => {
       events.push('disableRemote');
       if (opts.remoteStopWorks ?? true) remote = { enabled: false, running: false };
-      return remote;
+      const orphans = opts.orphansLeft ?? 0;
+      return remote && { ...remote, remainingRemoteControlProcesses: orphans };
     }),
   };
   return { deps, commands, events, auth: () => authExists };
@@ -102,9 +107,10 @@ describe('signOutOfCodex', () => {
     const { deps, events, auth } = makeDeps();
     const r = await signOutOfCodex(deps);
     expect(r).toMatchObject({ ok: true, method: 'codex_logout', remoteStopped: false, remoteStillActive: false });
-    expect(events).toEqual(['logout']);
+    expect(events).toEqual(['disableRemote', 'logout']);
     expect(auth()).toBe(false);
-    expect(deps.disableRemote).not.toHaveBeenCalled();
+    // The orphan sweep always runs: orphans are what the status can't see.
+    expect(deps.disableRemote).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to deleting auth.json when codex logout is unavailable', async () => {
@@ -112,7 +118,7 @@ describe('signOutOfCodex', () => {
     const r = await signOutOfCodex(deps);
     expect(r).toMatchObject({ ok: true, method: 'file_delete' });
     expect(r.ok && r.logoutError).toContain('exit 127');
-    expect(events).toEqual(['logout', 'rm']);
+    expect(events).toEqual(['disableRemote', 'logout', 'rm']);
     expect(auth()).toBe(false);
   });
 
@@ -121,7 +127,7 @@ describe('signOutOfCodex', () => {
       const { deps, events } = makeDeps({ logout });
       const r = await signOutOfCodex(deps);
       expect(r).toMatchObject({ ok: true, method: 'file_delete' });
-      expect(events).toEqual(['logout', 'rm']);
+      expect(events).toEqual(['disableRemote', 'logout', 'rm']);
     }
   });
 
@@ -148,10 +154,55 @@ describe('signOutOfCodex', () => {
     expect(auth()).toBe(false);
   });
 
+  it('sweeps an untracked host even when the status looks idle, and flags survivors', async () => {
+    // status() only sees the tracked host; an orphan survives the sweep.
+    const { deps } = makeDeps({ remote: { enabled: false, running: false }, orphansLeft: 1 });
+    const r = await signOutOfCodex(deps);
+    expect(deps.disableRemote).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ ok: true, remoteStillActive: true });
+  });
+
+  it('does not count remote control as stopped without a sweep count', async () => {
+    const { deps } = makeDeps({ remote: { enabled: true, running: false } });
+    (deps.disableRemote as jest.Mock).mockResolvedValueOnce({ enabled: false, running: false });
+    const r = await signOutOfCodex(deps);
+    expect(r).toMatchObject({ remoteStopped: false, remoteStillActive: true });
+  });
+
+  it('flags remote control when the native disconnect is unavailable', async () => {
+    const { deps, auth } = makeDeps({ remote: { enabled: true, running: true } });
+    (deps.disableRemote as jest.Mock).mockRejectedValueOnce(new Error('not available in this build'));
+    const r = await signOutOfCodex(deps);
+    expect(r).toMatchObject({ ok: true, remoteStopped: false, remoteStillActive: true });
+    expect(auth()).toBe(false);
+  });
+
   it('is a no-op success when already signed out', async () => {
     const { deps, events } = makeDeps({ authExists: false });
     const r = await signOutOfCodex(deps);
     expect(r).toMatchObject({ ok: true, method: 'already_signed_out' });
-    expect(events).toEqual([]);
+    expect(events).toEqual(['disableRemote']);
+  });
+});
+
+describe('native sign-out disconnect wiring', () => {
+  const dir = path.resolve(__dirname, '..', 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator');
+  const read = (f: string) => fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n');
+
+  it('sweeps stragglers and reports the remaining remote-control processes', () => {
+    const host = read('CodexRemoteHost.kt');
+    const body = host.slice(host.indexOf('fun disconnectForSignOut('), host.indexOf('fun remoteControlProcessCount('));
+    expect(body).toContain('sweepStragglers = true');
+    expect(body).toContain('"remainingRemoteControlProcesses" to remaining');
+    const count = host.slice(host.indexOf('fun remoteControlProcessCount('));
+    expect(count).toContain('pid == Process.myPid()');
+    expect(count).toContain('Process.myUid()');
+    expect(count).toContain('isRemoteControlCmdline');
+  });
+
+  it('is exposed to RN through TerminalEmulatorModule', () => {
+    const mod = read('TerminalEmulatorModule.kt');
+    expect(mod).toContain('AsyncFunction("disconnectCodexRemoteForSignOut")');
+    expect(mod).toContain('CodexRemoteHost.disconnectForSignOut(context)');
   });
 });

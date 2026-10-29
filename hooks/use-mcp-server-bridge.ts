@@ -18,7 +18,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { getConnectorSecret, saveConnectorSecret } from '@/lib/secure-store';
 import { base64UrlFromBytes } from '@/lib/x-oauth';
-import { startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
+import { revokePendingMCPRequests, startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
 import { logError, logInfo } from '@/lib/debug-logger';
 import {
   MCP_SERVER_PORT,
@@ -60,6 +60,7 @@ const serverControl: McpServerControl = {
   start: (token) => TerminalEmulator.startMCPServer(token),
   stop: () => TerminalEmulator.stopMCPServer(),
   probe: probeLocalServer,
+  revokePending: revokePendingMCPRequests,
 };
 
 /** Returns the persisted MCP bearer token, generating and saving a fresh
@@ -74,6 +75,12 @@ export async function getOrCreateMCPToken(): Promise<string> {
 export async function regenerateMCPToken(): Promise<RegenerateResult> {
   const result = await regenerateToken(tokenDeps, serverControl);
   logInfo('MCPBridge', `token regenerated (wasRunning=${result.wasRunning} check=${result.check})`);
+  if (result.check === 'restart_failed' || result.check === 'failed_server_off') {
+    // The server is off now; make the setting say so instead of leaving
+    // "MCP Server: on" with nothing listening. Turning it back on starts it
+    // with whatever token is stored.
+    useSettingsStore.getState().updateSettings({ mcpServerEnabled: false });
+  }
   return result;
 }
 
