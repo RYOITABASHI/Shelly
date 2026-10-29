@@ -543,6 +543,9 @@ class TerminalEmulatorModule : Module() {
                 // lib/agent-add-queue.ts).
                 runCatching { AgentAddHandoff.ensureWatching(context) }
                     .onFailure { Log.w("TerminalEmulator", "agent-add queue watcher failed to start", it) }
+                // `shelly device <command>` (DeviceApi.kt).
+                runCatching { DeviceApi.ensureWatching(context) }
+                    .onFailure { Log.w("TerminalEmulator", "device-api request watcher failed to start", it) }
                 // "Keep ChatGPT connected": app start brings the Codex
                 // remote-control host back (CodexRemoteHost.kt).
                 Thread {

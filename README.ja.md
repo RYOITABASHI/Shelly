@@ -259,8 +259,45 @@ Shelly のフォアグラウンド AI CLI は **Codex** です。それ以外は
 | `shelly teach start [name]` / `stop` / `cancel` / `status` | 実行したコマンドを再利用可能なワークフローとして記録します（[学習ループ](#学習ループ)参照）。 |
 | `shelly install <pack>` / `shelly install --list` / `shelly uninstall <pack>` | 追加ツールパック（`dev-tools`: python3, sqlite3, jq, make, gh / `editor-tools`: vim, tmux, nano, less, unzip, rg）。各リリースビルドがパックアーカイブの sha256 を固定しており、ダウンロード後に検証してから展開します。インストールしたツールはオフラインでも、開いたままのタブでもすぐ使えます。パックのツールが無いときは `<cmd> is available: shelly install <pack>` と表示され、コマンドを実行しない限り何もダウンロードしません。現状これらのツールは APK にも同梱されているため、パックが意味を持つのはコピーが欠けている場合だけです。 |
 | `shelly workflow list` / `show <name>` / `run <name>` / `delete <name>` | 保存済みワークフローの一覧・表示・現在のターミナルでの再生・削除。 |
+| `shelly device <battery\|info\|clipboard\|notify\|toast\|vibrate\|tts\|share>` | スクリプト・エージェント・Codex から使えるスマホ機能。バッテリーと端末情報（JSON）、クリップボード、通知、トースト、バイブ、読み上げ、共有シート（[シェルからスマホの機能を使う](#シェルからスマホの機能を使う)参照）。 |
 
 **まず試すなら:** プロバイダのキーを 1 つ設定したら、任意のペインで `@agent` に続けて普通の言葉の指示と時刻を書いてみてください。例: `@agent 月・火・水・木・金の朝8時に、最新の STEAM×AI 教育に関する論文とニュースを集めて、要約して Obsidian に保存して`（曜日は「平日」とまとめず区切って並べ、直後に時刻を続けるのがコツです）。Shelly はこれを端末上のスケジュール済みエージェントに変換します（[上のデモ](#動作デモ)がまさにこれです）。
+
+### シェルからスマホの機能を使う
+
+`shelly device` を使うと、スクリプト・エージェント・Codex が、別のアドオンアプリを入れなくてもスマホの機能をいくつか使えます。よく使われる Termux:API コマンドの一部を Shelly に組み込んだものです。*実装済み、実機では未検証。*
+
+| コマンド | 内容 |
+|---|---|
+| `shelly device battery` | バッテリー残量、充電状態、給電の種類、状態、温度、電圧を JSON で表示 |
+| `shelly device info` | メーカー、機種、Android のバージョン、画面サイズと密度、ロケール、タイムゾーン、ネットワークの種類（wifi / cellular / none）、Shelly のバージョンを JSON で表示。IMEI・シリアル番号・Android ID・IP/MAC アドレスなどの識別子は含めません |
+| `shelly device clipboard get [--json]` | クリップボードの文字列を表示。Android はフォーカス中のアプリにしかクリップボードを読ませないため、Shelly が画面に出ているときだけ動き、それ以外は exit 3 |
+| `shelly device clipboard set [--sensitive] <text>` | クリップボードに設定。`-` かパイプで標準入力から読みます（`date \| shelly device clipboard set`）。`--sensitive` はクリップボードのプレビューに内容を出しません |
+| `shelly device notify [--title T] [--id N] <text>` | Shelly 専用の **スクリプト** チャンネルに通知を出します（Android の設定でミュート可）。同じ id（0〜9999、既定 0）で出すと置き換わります。`notify --remove N` で消去 |
+| `shelly device toast <text>` | 短いトーストを表示 |
+| `shelly device vibrate [ms]` | バイブ（既定 300ms、上限 2000ms） |
+| `shelly device tts [--lang en-US] <text>` | Android の読み上げ（TTS）。`--lang` を指定しなければスマホの言語で読み上げます |
+| `shelly device share <ファイル \| テキスト>` | Android の共有シートを開きます。共有先のアプリは自分で選びます。Shelly がバックグラウンドのときは、Android がバックグラウンドからの画面表示を禁止しているため、代わりに「タップして共有」通知が出ます。ファイルは Shelly のホームか `/sdcard/Download` 内のものだけ。認証情報の置き場所（`~/.ssh`、`~/.codex`、`~/.shelly`、`.env`、鍵ファイル）は拒否します |
+
+```bash
+$ shelly device battery
+{
+  "level": 83,
+  "charging": true,
+  "plugged": "usb",
+  "status": "charging",
+  "health": "good",
+  "temperatureC": 31.5,
+  "voltageMv": 4123
+}
+$ make && shelly device notify --title Build "ビルド完了" || shelly device vibrate 800
+```
+
+- **終了コード:** 0 成功、1 失敗、2 使い方の誤り、3 権限が無い・今はできない（通知オフ、バックグラウンドでのクリップボード読み取り、TTS の音声が無い）、4 レート制限、124 Shelly から応答なし。エラーは標準エラー出力に出ます。`shelly device --help` と `shelly device <command> --help` は使い方を表示するだけで、何も実行しません。
+- **レート制限:** notify は 1 分に 30 回、toast・vibrate・tts は 10 回、share は 5 回まで。ループするスクリプトやエージェントがスマホを通知などで埋め尽くさないようにするためです。
+- **クリップボードのプライバシー:** `clipboard get` は、コピーしたもの（パスワードやワンタイムコード）を、実行したプログラムにそのまま渡します。ChatGPT アプリから操作している Codex も含みます。エージェントのコマンドゲートはこれを秘密ファイルの読み取りと同じに扱い、必ず先に確認を求め、最も自律度の高いレベルでは拒否します。Android 自身も「Shelly がクリップボードから貼り付けました」と表示します。
+- **仕組み:** コマンドは Shelly のホームにリクエストファイルを書き、アプリがネイティブで応答します（`shelly closepaw` と同じファイルの橋渡し）。アプリが動いていれば、Shelly がバックグラウンドでも動きます。
+- このバージョンに含まれないもの: 位置情報、カメラ、マイク、SMS、連絡先、通話履歴。どれも先に明示的な権限の確認フローが必要です。
 
 ---
 
@@ -440,6 +477,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | ClosePaw への引き継ぎ — ゴールを ClosePaw（スマホ操作アプリ）へ渡すエージェントアクション（明示 Intent、実行ごとの Review、「引き継ぎ済み」で終了） | 🟡 Experimental。実装済み・実機未検証。ClosePaw からの結果受け取りは未対応（Phase 2 は上流の変更が必要） |
 | llama.cpp を b11433 に固定し sha256 で検証 | 🟡 実装済み、実機では未検証 |
 | 追加ツールパック — `shelly install <pack>` / `--list` / `uninstall`、ビルドごとの sha256 固定、アトミックなインストール、未導入コマンドの案内 | 🟡 `dev-tools` のダウンロード→展開→実行は実機検証済み（2026-08-29、Galaxy Z Fold6、N=1）。2026-10-29 の sha256 固定・アトミック差し替え・オフライン時のエラー・`--list`・`uninstall` は実装・テスト済みだが実機未検証。パックのツールは今も APK に同梱されているため、APK はまだ小さくなっていない |
+| `shelly device` — シェルから battery / info / clipboard / notify / toast / vibrate / tts / share（Termux:API の一部を組み込み、レート制限あり、エージェントのクリップボード読み取りは要承認） | 🟡 実装済み、実機では未検証 |
 | 配布 | 🟡 GitHub Releases(`android-latest`)のみ。Playストア/F-Droidへの掲載はまだありません |
 
 ---

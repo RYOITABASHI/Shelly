@@ -1042,6 +1042,7 @@ function hasUnsafeCd(command, root) {
   }
   return false;
 }
+var CLIPBOARD_READ_RE = /\bshelly['"]?\s+['"]?device['"]?\s+(?:--?\S+\s+)*['"]?clipboard['"]?\s+(?:--?\S+\s+)*['"]?get\b/;
 var NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 var SHELL_NET_DEVICE_RE = /\/dev\/(?:tcp|udp)\//;
 var READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
@@ -1076,7 +1077,9 @@ function classifyProposedCommand(command, ctx) {
   }
   if (safety.level === "HIGH") signals.push("destructive");
   const paths = extractPaths(command);
-  if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push("secret-read");
+  if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s))) || CLIPBOARD_READ_RE.test(command)) {
+    signals.push("secret-read");
+  }
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p)) || hasUnsafeCd(command, ctx.workspaceRoot)) {
     signals.push("leaves-root");
   }

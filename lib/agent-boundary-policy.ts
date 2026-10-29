@@ -36,6 +36,7 @@ export type BoundarySignal =
                           // string we classified, so we can't reason about it
                           // (Fable5 review 2026-08-25, DEFERRED.md 2026-08-10 A-1..A-5 note)
   | 'secret-read'        // reads a protected secret path (auth.json, keystore)
+                          // or the phone clipboard (`shelly device clipboard get`)
   | 'policy-write'       // writes the policy file / autonomy config (hard-deny)
   | 'write-or-exec';     // mutating/executing op (vs a pure read) — heuristic
 
@@ -262,6 +263,20 @@ export function hasUnsafeCd(command: string, root: string): boolean {
   return false;
 }
 
+/**
+ * `shelly device clipboard get` (DeviceApi.kt) hands the phone clipboard —
+ * often a password or one-time code the user just copied — to the caller.
+ * It is a read of data outside the workspace that may be a secret, so it is
+ * classified like reading a protected secret path (`secret-read`: human
+ * approval at L1/L2, denied at L3), i.e. at least as strictly as reading a
+ * file outside the root. Tolerates quoting of the words and a path-qualified
+ * `shelly` (`~/bin/shelly`, `"$HOME/bin/shelly"`). Running it through a
+ * script / `eval` / substitution is already gated by opaque-script-exec /
+ * indirect-exec.
+ */
+const CLIPBOARD_READ_RE =
+  /\bshelly['"]?\s+['"]?device['"]?\s+(?:--?\S+\s+)*['"]?clipboard['"]?\s+(?:--?\S+\s+)*['"]?get\b/;
+
 const NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 /**
  * bash/ksh's BUILT-IN network primitive. `exec 3<>/dev/tcp/host/port` opens a
@@ -423,7 +438,12 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
 
   // 3. Boundary signals.
   const paths = extractPaths(command);
-  if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s)))) signals.push('secret-read');
+  if (
+    paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s))) ||
+    CLIPBOARD_READ_RE.test(command)
+  ) {
+    signals.push('secret-read');
+  }
   if (
     paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p)) ||
     hasUnsafeCd(command, ctx.workspaceRoot)

@@ -271,9 +271,46 @@ Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you 
 | `shelly install <pack>` / `shelly install --list` / `shelly uninstall <pack>` | Optional tool packs (`dev-tools`: python3, sqlite3, jq, make, gh; `editor-tools`: vim, tmux, nano, less, unzip, rg). Each release build pins the sha256 of its pack archives and verifies the download before installing it. Installed tools work offline and in already-open tabs. A missing pack tool prints `<cmd> is available: shelly install <pack>`; nothing downloads unless you run the command. Today these tools also ship inside the APK, so the packs only matter if a copy is missing. |
 | `shelly workflow list` / `show <name>` / `run <name>` / `delete <name>` | List, print, replay in the current terminal, or delete saved workflows. |
 | `shelly agent add "<request>"` / `show` / `confirm` / `reject` / `list` | **Experimental.** Ask Shelly to draft a new agent from plain language (the same flow as `@agent` in the AI pane); it prints the parsed summary. Nothing is registered until it is approved: in Shelly's chat, from its notification (device unlock required), or — if allowed in Settings — with `shelly agent confirm <requestId> <hash>` after you approved the summary. `list` shows registered agents (read-only). |
+| `shelly device <battery\|info\|clipboard\|notify\|toast\|vibrate\|tts\|share>` | Phone features for scripts, agents and Codex: battery and device info as JSON, clipboard, notifications, toast, vibration, text-to-speech and the share sheet (see [Phone features from the shell](#phone-features-from-the-shell)). |
 | `shelly codex pair` / `code` / `trust` / `status` / `stop` | **Experimental.** Host Codex remote control (`codex remote-control --no-daemon`) in this tab (or detached with `pair --background`) and print a pairing code with its expiry for the ChatGPT app's Codex; `code` prints a fresh code; `trust <dir>` marks a folder as a trusted Codex project so the app can open it; `status` / `stop` manage the background host. Needs a ChatGPT sign-in. |
 
 **First thing to try:** once a provider key is set, type `@agent` in any pane followed by a plain-language instruction and a time — e.g. `@agent every day at 8am, collect the latest STEAM×AI education papers and news, summarize them, and save to Obsidian`. Shelly turns that into a scheduled on-device agent (see [it run above](#see-it-run)).
+
+### Phone features from the shell
+
+`shelly device` gives scripts, agents and Codex a few phone features without installing a separate add-on app. It is a built-in subset of the most-used Termux:API commands. *Implemented, not yet verified on device.*
+
+| Command | What it does |
+|---|---|
+| `shelly device battery` | Battery level, charging state, plug type, health, temperature and voltage, as JSON |
+| `shelly device info` | Manufacturer, model, Android version, screen size and density, locale, time zone, network type (wifi / cellular / none) and the Shelly version, as JSON. It never includes identifiers such as IMEI, serial number, Android ID or IP/MAC addresses |
+| `shelly device clipboard get [--json]` | Print the clipboard text. Android lets only the focused app read the clipboard, so this works while Shelly is on screen and exits 3 otherwise |
+| `shelly device clipboard set [--sensitive] <text>` | Set the clipboard. Use `-` or a pipe to read stdin (`date \| shelly device clipboard set`). `--sensitive` hides the text from clipboard previews |
+| `shelly device notify [--title T] [--id N] <text>` | Post a notification on Shelly's own **Scripts** channel, which you can mute in Android settings. Posting again with the same id (0-9999, default 0) replaces it. `notify --remove N` removes it |
+| `shelly device toast <text>` | Show a short toast |
+| `shelly device vibrate [ms]` | Vibrate (default 300 ms, capped at 2000 ms) |
+| `shelly device tts [--lang en-US] <text>` | Speak with Android text-to-speech, in the phone's language unless `--lang` says otherwise |
+| `shelly device share <file \| text>` | Open the Android share sheet. You pick the target app. If Shelly is in the background, a "Tap to share" notification appears instead, because Android blocks background apps from opening screens. Files must be in Shelly's home or `/sdcard/Download`. Credential locations (`~/.ssh`, `~/.codex`, `~/.shelly`, `.env`, key files) are refused |
+
+```bash
+$ shelly device battery
+{
+  "level": 83,
+  "charging": true,
+  "plugged": "usb",
+  "status": "charging",
+  "health": "good",
+  "temperatureC": 31.5,
+  "voltageMv": 4123
+}
+$ make && shelly device notify --title Build "make finished" || shelly device vibrate 800
+```
+
+- **Exit codes:** 0 ok, 1 failed, 2 usage error, 3 permission missing or not possible right now (notifications off, clipboard read in the background, no TTS voice), 4 rate limited, 124 Shelly did not answer. Errors go to stderr. `shelly device --help` and `shelly device <command> --help` print usage and never do anything.
+- **Rate limits:** notify 30 per minute; toast, vibrate and tts 10 per minute; share 5 per minute. These stop a looping script or agent from flooding the phone.
+- **Clipboard privacy:** `clipboard get` gives whatever you copied (passwords, one-time codes) to the program that ran it, including Codex driven from the ChatGPT app. Agents' command gate treats it like reading a secret file: it always asks you first and is refused at the most autonomous level. Android also shows its own "Shelly pasted from your clipboard" notice.
+- **How it works:** the command writes a request file in Shelly's home and the app answers it natively, the same file bridge `shelly closepaw` uses. It works while Shelly is in the background, as long as the app is running.
+- Not included in this version: location, camera, microphone, SMS, contacts and call log. Each of these needs an explicit permission flow first.
 
 ---
 
@@ -463,6 +500,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | ClosePaw hand-off — agent action that passes a goal to the ClosePaw phone-use app (explicit intent, per-run Review, ends "handed off") | 🟡 experimental, implemented, not yet verified on device; ClosePaw returns no result yet (Phase 2 needs upstream changes) |
 | llama.cpp pinned to b11433 with sha256 verification | 🟡 implemented, not yet verified on device |
 | Optional tool packs — `shelly install <pack>` / `--list` / `uninstall`, sha256 pinned per build, atomic install, not-found hint | 🟡 download → extract → run verified on device for `dev-tools` (2026-08-29, Galaxy Z Fold6, N=1); the 2026-10-29 pinning, atomic swap, offline error, `--list` and `uninstall` are implemented and tested but not yet verified on device; the APK still bundles every pack tool, so the APK is not smaller yet |
+| `shelly device` — battery / info / clipboard / notify / toast / vibrate / tts / share from the shell (built-in Termux:API subset, rate limited, clipboard read gated for agents) | 🟡 implemented, not yet verified on device |
 | Distribution | 🟡 GitHub Releases only (`android-latest`); no Play Store / F-Droid listing yet |
 
 ---

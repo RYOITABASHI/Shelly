@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- `shelly device`（DeviceApi.kt）: スクリプト／エージェント／Codex からの通知。 -->
+  <string name="device_api_channel_name">スクリプト</string>
+  <string name="device_api_channel_description">ターミナルから shelly device notify で送られた通知（スクリプト、エージェント、Codex）</string>
+  <string name="device_api_default_title">Shelly</string>
+  <string name="device_api_public_title">Shelly: スクリプトからの通知</string>
+  <string name="device_api_subtext">スクリプトから</string>
+  <string name="device_api_share_title">Shelly から共有</string>
+  <string name="device_api_share_notification_title">タップして共有</string>
+  <string name="device_api_share_notification_body">Shelly のスクリプトが共有しようとしています。タップして共有先のアプリを選んでください。</string>
+</resources>

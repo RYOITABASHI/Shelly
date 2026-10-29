@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- `shelly device` (DeviceApi.kt): notifications posted by scripts / agents / Codex. -->
+  <string name="device_api_channel_name">Scripts</string>
+  <string name="device_api_channel_description">Notifications posted from the terminal with shelly device notify (your scripts, agents and Codex)</string>
+  <string name="device_api_default_title">Shelly</string>
+  <string name="device_api_public_title">Shelly: notification from a script</string>
+  <string name="device_api_subtext">From a script</string>
+  <string name="device_api_share_title">Share from Shelly</string>
+  <string name="device_api_share_notification_title">Tap to share</string>
+  <string name="device_api_share_notification_body">A script in Shelly wants to share something. Tap to choose an app.</string>
+</resources>

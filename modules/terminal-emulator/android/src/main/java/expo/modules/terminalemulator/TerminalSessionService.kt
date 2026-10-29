@@ -118,6 +118,13 @@ class TerminalSessionService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "agent-add queue watcher failed to start", e)
         }
+        // `shelly device <command>` (battery / clipboard / notify / tts …,
+        // DeviceApi.kt) answers while Shelly is backgrounded too.
+        try {
+            DeviceApi.ensureWatching(applicationContext)
+        } catch (e: Exception) {
+            Log.w(TAG, "device-api request watcher failed to start", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
