@@ -710,6 +710,8 @@ Shelly は個人による自己資金のプロジェクトです。Termux のセ
 
 Shelly はリリース前の Android ソフトウェアです。まだ完璧でないと分かっていることを書いておきます。
 
+- **実機検証は 1 台だけです** — 「検証済み」と書いてあるものは、すべて実機の Galaxy Z Fold6（N=1）で確認したものです。ほかの端末で Shelly を動かした方は、`shelly doctor --report` の出力を貼って[端末レポート](https://github.com/RYOITABASHI/Shelly/issues/new?template=device-report.yml)を送ってください。その端末で何が動き、何が壊れるかが分かります。詳しくは [docs/device-testing.md](docs/device-testing.md)。
+
 - **デフォルトではオフラインモードがありません** — クラウド AI 機能にはインターネット接続が必要です。`@local` によるローカル LLM は、同梱カタログと llama.cpp / llama-server のコントロールでオフラインでも動きます。実際のデフォルトは Qwen3.5-0.8B Q4_K_M、オンデマンド用途への推奨アップグレードが Qwen3.5-2B Q4_K_M、Qwen3 1.7B はその中間、4B / 9B は短時間の品質確認用です。
 - **同梱セット以外のツール** — Shelly には bash、Node.js、Python 3、git、curl、ssh、sqlite3、tmux、vim、less、jq、make、および GNU coreutils 一式が入っています。**入っていない**主なものは `busybox`、`watch`（procps-ng）、`htop`、そしてほとんどのネットワークデーモンです。`watch`が必要な場合は回避策`while true; do clear; <cmd>; sleep 1; done`を使う(bug #34として追跡中)か、Termuxを併用してください。それ以外が必要なら、`modules/terminal-emulator/android/src/main/jniLibs/` にバイナリを追加する PR を送ってください。
 - **`busybox` は同梱していません** — `busybox httpd`、`busybox nc` などの applet は `command not found` になります。使える範囲で単体版（`curl`、同梱の `nc`、`python3 -m http.server`）を使うか、自分で `busybox-static` を同梱してください。bug #35 として追跡中です。

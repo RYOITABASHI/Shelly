@@ -1,0 +1,169 @@
+name: Device smoke test (Firebase Test Lab)
+
+# Installs the built release APK on a few real arm64 phones in Firebase Test
+# Lab and runs an instrumentation-free Robo crawl. It only catches "does not
+# install / crashes on launch / crashes while navigating". See
+# docs/device-testing.md for what it does not cover and how to set it up.
+#
+# Needs two repo secrets: GCP_SA_KEY (service-account JSON) and
+# GCP_PROJECT_ID. Without them the job exits early with a notice and the
+# run still succeeds.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: >-
+          Run ID of a "Build Android APK" run to take the shelly-apk artifact
+          from. Empty = latest successful run on main.
+        required: false
+        default: ''
+      timeout:
+        description: Robo timeout per device (e.g. 90s, 3m)
+        required: false
+        default: 120s
+  workflow_run:
+    workflows: ["Build Android APK"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: device-smoke-test-lab
+  cancel-in-progress: false
+
+jobs:
+  test-lab:
+    # Automatic runs only after a successful build; manual runs always.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Never echo these. They are only read through the env block.
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      # PLACEHOLDER device IDs (Pixel / Samsung A-series / Xiaomi-Redmi /
+      # OnePlus). Test Lab model IDs change over time: confirm and edit with
+      #   gcloud firebase test android models list --filter="form=PHYSICAL"
+      # Format: model=<id>,version=<api level>,locale=en,orientation=portrait
+      TEST_LAB_DEVICES: |
+        model=husky,version=34,locale=en,orientation=portrait
+        model=a54x,version=34,locale=en,orientation=portrait
+        model=REDMI_PLACEHOLDER,version=33,locale=en,orientation=portrait
+        model=ONEPLUS_PLACEHOLDER,version=33,locale=en,orientation=portrait
+    steps:
+      - name: Check configuration
+        id: cfg
+        run: |
+          if [ -z "$GCP_SA_KEY" ] || [ -z "$GCP_PROJECT_ID" ]; then
+            echo "::notice::Firebase Test Lab secrets (GCP_SA_KEY / GCP_PROJECT_ID) are not configured; skipping. See docs/device-testing.md."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve source run
+        id: src
+        if: steps.cfg.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          RUN_ID="${INPUT_RUN_ID:-$EVENT_RUN_ID}"
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "Build Android APK" \
+              --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::notice::No successful Build Android APK run found; skipping."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download release APK artifact
+        id: dl
+        if: steps.src.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC_RUN_ID: ${{ steps.src.outputs.run_id }}
+        run: |
+          mkdir -p apk
+          gh run download "$SRC_RUN_ID" --repo "$GITHUB_REPOSITORY" --name shelly-apk --dir apk
+          APK=$(ls apk/*.apk | head -n 1)
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          ls -l apk
+
+      - name: Authenticate to Google Cloud
+        if: steps.dl.outputs.apk != ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        if: steps.dl.outputs.apk != ''
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Run Robo test on devices
+        id: ftl
+        if: steps.dl.outputs.apk != ''
+        continue-on-error: true
+        env:
+          APK: ${{ steps.dl.outputs.apk }}
+          ROBO_TIMEOUT: ${{ inputs.timeout || '120s' }}
+        run: |
+          mkdir -p results
+          DEV_ARGS=()
+          while IFS= read -r d; do
+            if [ -n "$d" ]; then DEV_ARGS+=(--device "$d"); fi
+          done <<< "$TEST_LAB_DEVICES"
+          # Robo only: no instrumentation / test APK needed.
+          set +e
+          gcloud firebase test android run \
+            --project "$GCP_PROJECT_ID" \
+            --type robo \
+            --app "$APK" \
+            --timeout "$ROBO_TIMEOUT" \
+            "${DEV_ARGS[@]}" \
+            --results-dir "shelly-${GITHUB_RUN_ID}" \
+            --format json > results/matrix.json 2> results/gcloud-stderr.txt
+          RC=$?
+          echo "$RC" > results/exit-code.txt
+          exit $RC
+
+      - name: Collect results (logcat, crash info, videos)
+        if: always() && steps.dl.outputs.apk != ''
+        run: |
+          mkdir -p results/files
+          BUCKET=$(grep -o 'gs://[A-Za-z0-9._/-]*' results/gcloud-stderr.txt | head -n 1 || true)
+          if [ -n "$BUCKET" ]; then
+            gsutil -m cp -r "${BUCKET%/}/*" results/files/ || true
+          fi
+          {
+            echo "## Firebase Test Lab smoke test"
+            echo ""
+            echo "| Device | Outcome |"
+            echo "|---|---|"
+            python3 -c 'import json; rows = json.load(open("results/matrix.json")); [print("| %s | %s %s |" % (r.get("axis_value","?"), r.get("outcome","?"), r.get("test_details",""))) for r in rows]' || echo "| (no matrix) | see artifact |"
+            echo ""
+            echo "Per-device logcat, crash stack traces and screen recordings are in the test-lab-results artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always() && steps.dl.outputs.apk != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-lab-results
+          path: results/
+          if-no-files-found: ignore
+
+      - name: Fail if any device failed
+        if: steps.ftl.outcome == 'failure'
+        run: |
+          echo "::error::One or more Test Lab devices failed. See the test-lab-results artifact and the job summary."
+          exit 1

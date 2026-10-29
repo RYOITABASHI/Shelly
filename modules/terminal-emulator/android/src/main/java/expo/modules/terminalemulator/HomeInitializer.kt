@@ -1408,7 +1408,9 @@ patchCodex(libDir);
     //      prints usage and exits 2; a bare `confirm`/`reject` exits 1. None of
     //      these ever writes a request file. --wait / --timeout are accepted in
     //      any argv position. Shim-only change.
-    private const val BASHRC_VERSION = 268
+    // v269: `shelly doctor [--report|--json]` routes to shelly-doctor (the
+    //      report mode prints a privacy-scrubbed Markdown device report).
+    private const val BASHRC_VERSION = 269
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -2710,6 +2712,11 @@ patchCodex(libDir);
             // long-running foreground process and needs codex()); see
             // __shelly_codex_remote below.
             sb.appendLine("shelly() {")
+            sb.appendLine("  if [ \"\${1:-}\" = doctor ]; then")
+            sb.appendLine("    shift")
+            sb.appendLine("    shelly-doctor \"\$@\"")
+            sb.appendLine("    return \$?")
+            sb.appendLine("  fi")
             sb.appendLine("  if [ \"\${1:-}\" = codex ]; then")
             sb.appendLine("    shift")
             sb.appendLine("    __shelly_codex_remote \"\$@\"")

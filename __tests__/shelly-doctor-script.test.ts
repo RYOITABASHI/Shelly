@@ -42,4 +42,13 @@ describe('shelly-doctor.js — real script execution (2026-07-27 crash regressio
     // The stale field this bug referenced must not silently reappear.
     expect(data.codex.exec).toBeUndefined();
   });
+
+  it('--report prints a Markdown device report with the issue-template hint and no home path', () => {
+    const output = execFileSync(process.execPath, [SCRIPT_PATH, '--report'], { encoding: 'utf8' });
+    expect(output).toContain('### Shelly device report');
+    expect(output).toContain('- All-files access:');
+    expect(output).toContain('- Codex signed in:');
+    expect(output).toContain('issues/new?template=device-report.yml');
+    expect(output).not.toContain(process.env.HOME || process.env.USERPROFILE || 'NO_HOME_SET_SENTINEL');
+  });
 });

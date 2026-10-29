@@ -1,0 +1,82 @@
+name: Device report
+description: Tell us what works and what breaks on your phone
+title: "[Device report] <manufacturer model>, Android <version>"
+labels: ["device-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Shelly is verified end to end on one device so far (Galaxy Z Fold6, N=1). A report from your phone, working or broken, helps a lot.
+        Run `shelly doctor --report` in a Shelly terminal pane and paste the output below. It contains no tokens, emails, serial numbers, IPs or file paths.
+  - type: input
+    id: device
+    attributes:
+      label: Device model
+      placeholder: e.g. Google Pixel 8, Samsung Galaxy A54, Xiaomi Redmi Note 13
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version
+      placeholder: e.g. Android 14 (One UI 6.1)
+    validations:
+      required: true
+  - type: input
+    id: shelly
+    attributes:
+      label: Shelly version
+      placeholder: e.g. 8.1.1
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `shelly doctor --report`
+      description: Paste the whole block.
+      render: markdown
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What did you try?
+      options:
+        - label: Install and first launch
+        - label: Terminal / bash
+        - label: git
+        - label: Node.js / Python
+        - label: Codex sign-in
+        - label: ChatGPT remote control pairing
+        - label: Scheduled agent (unattended run)
+        - label: ClosePaw
+  - type: dropdown
+    id: result_install
+    attributes:
+      label: Result - install and first launch
+      options: [Works, Partly works, Broken, Not tried]
+  - type: dropdown
+    id: result_terminal
+    attributes:
+      label: Result - terminal, git, Node.js / Python
+      options: [Works, Partly works, Broken, Not tried]
+  - type: dropdown
+    id: result_codex
+    attributes:
+      label: Result - Codex sign-in and ChatGPT remote control
+      options: [Works, Partly works, Broken, Not tried]
+  - type: dropdown
+    id: result_agent
+    attributes:
+      label: Result - scheduled agent (screen off)
+      options: [Works, Partly works, Broken, Not tried]
+  - type: dropdown
+    id: result_closepaw
+    attributes:
+      label: Result - ClosePaw
+      options: [Works, Partly works, Broken, Not tried]
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: What happened, error messages, anything odd about your OEM's battery or permission settings. Please remove anything private.

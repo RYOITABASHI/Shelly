@@ -736,6 +736,8 @@ GitHub Sponsors is also enabled via the "Sponsor" button at the top of this repo
 
 Shelly is pre-release Android software. Here's what we know isn't perfect yet.
 
+- **Verified on one device so far** — everything marked verified was checked on a real Galaxy Z Fold6 (N=1). If you run Shelly on another phone, a [device report](https://github.com/RYOITABASHI/Shelly/issues/new?template=device-report.yml) (run `shelly doctor --report` and paste it) tells us what works and what breaks there. See [docs/device-testing.md](docs/device-testing.md).
+
 - **No offline mode by default** — Cloud AI features require an internet connection. Local LLM via `@local` works offline with the bundled catalog and llama.cpp / llama-server controls; Qwen3.5-0.8B Q4_K_M ships as the actual default, Qwen3.5-2B Q4_K_M is the recommended step-up for on-demand use, Qwen3 1.7B is a middle option, and 4B/9B models are reserved for short quality checks.
 - **Additional tools beyond the bundle** — Shelly ships with bash, Node.js, Python 3, git, curl, ssh, sqlite3, tmux, vim, less, jq, make, and the GNU coreutils set. Notable tools **not** bundled include `busybox`, `watch` (procps-ng), `htop`, and most network daemons. If you need `watch`, use the workaround `while true; do clear; <cmd>; sleep 1; done` (tracked as bug #34) or install Termux alongside Shelly; for anything else, open a PR adding the binary to `modules/terminal-emulator/android/src/main/jniLibs/`.
 - **`busybox` is not bundled** — `busybox httpd`, `busybox nc`, and other applets return `command not found`. Use the standalone equivalents where available (`curl`, `nc` from the bundle, `python3 -m http.server`), or bundle `busybox-static` yourself. Tracked as bug #35.
