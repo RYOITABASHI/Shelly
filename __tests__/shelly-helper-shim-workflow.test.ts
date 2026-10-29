@@ -111,7 +111,7 @@ describe('generated shelly helper shim', () => {
   });
 
   it('top-level usage lists codex, and the node body refuses `codex` (bash function only)', () => {
-    expect(shelly().out).toContain('shelly codex <pair|code|trust|status|stop|autostart>');
+    expect(shelly().out).toContain('shelly codex <pair|code|trust|untrust|status|stop|autostart>');
     const r = shelly('codex', 'pair');
     expect(r.code).toBe(2);
     expect(r.out).toContain('interactive Shelly terminal');

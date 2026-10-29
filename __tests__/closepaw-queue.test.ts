@@ -217,7 +217,8 @@ describe('generated shim: shelly closepaw', () => {
   it('queues to the native-owned file (never the RN command queue) and prints the direct hand-off', async () => {
     const owner = makeNativeOwner(home, () => 'launched');
     const r = await run(['closepaw', 'Open Chrome and search for Tokyo weather'], owner);
-    expect(r.out.trim()).toBe(CLOSEPAW_MSG_HANDED_OFF);
+    expect(r.out.trim().split(/\r?\n/).pop()).toBe(CLOSEPAW_MSG_HANDED_OFF);
+    expect(r.out).toMatch(/^ClosePaw request [0-9]+-[0-9a-f]{8} queued for Shelly\. Check its state later with: shelly closepaw status [0-9]+-[0-9a-f]{8}$/m);
     expect(r.code).toBe(0);
     expect(owner.launches).toEqual(['Open Chrome and search for Tokyo weather']);
     expect(fs.existsSync(path.join(home, '.shelly-command-queue'))).toBe(false);
@@ -249,7 +250,8 @@ describe('generated shim: shelly closepaw', () => {
     const owner = makeNativeOwner(home, () => 'launched');
     const goal = '東'.repeat(5000);
     const r = await run(['closepaw', goal], owner);
-    expect(r.out.trim()).toBe(CLOSEPAW_MSG_HANDED_OFF);
+    expect(r.out.trim().split(/\r?\n/).pop()).toBe(CLOSEPAW_MSG_HANDED_OFF);
+    expect(r.out).toMatch(/^ClosePaw request [0-9]+-[0-9a-f]{8} queued for Shelly\. Check its state later with: shelly closepaw status [0-9]+-[0-9a-f]{8}$/m);
     expect(owner.launches).toHaveLength(1);
     expect(Array.from(owner.launches[0])).toHaveLength(2000);
   }, 20_000);
@@ -257,19 +259,22 @@ describe('generated shim: shelly closepaw', () => {
   it('prints the tap-the-notification message (exit 0) when Shelly is backgrounded', async () => {
     const owner = makeNativeOwner(home, () => 'notified');
     const r = await run(['closepaw', 'Open Chrome and search for Tokyo weather'], owner);
-    expect(r.out.trim()).toBe(CLOSEPAW_MSG_NOTIFIED);
+    expect(r.out.trim().split(/\r?\n/).pop()).toBe(CLOSEPAW_MSG_NOTIFIED);
+    expect(r.out).toMatch(/^ClosePaw request [0-9]+-[0-9a-f]{8} queued for Shelly\. Check its state later with: shelly closepaw status [0-9]+-[0-9a-f]{8}$/m);
     expect(r.code).toBe(0);
   }, 20_000);
 
   it('prints "ClosePaw is not installed" and exits 1 when the intent cannot resolve', async () => {
     const r = await run(['closepaw', 'x'], makeNativeOwner(home, () => 'not-installed'));
-    expect(r.out.trim()).toBe(CLOSEPAW_MSG_NOT_INSTALLED);
+    expect(r.out.trim().split(/\r?\n/).pop()).toBe(CLOSEPAW_MSG_NOT_INSTALLED);
+    expect(r.out).toMatch(/^ClosePaw request [0-9]+-[0-9a-f]{8} queued for Shelly\. Check its state later with: shelly closepaw status [0-9]+-[0-9a-f]{8}$/m);
     expect(r.code).toBe(1);
   }, 20_000);
 
   it('exits 1 with the notifications-off message when no route exists', async () => {
     const r = await run(['closepaw', 'x'], makeNativeOwner(home, () => 'background-blocked'));
-    expect(r.out.trim()).toBe(CLOSEPAW_MSG_BACKGROUND_BLOCKED);
+    expect(r.out.trim().split(/\r?\n/).pop()).toBe(CLOSEPAW_MSG_BACKGROUND_BLOCKED);
+    expect(r.out).toMatch(/^ClosePaw request [0-9]+-[0-9a-f]{8} queued for Shelly\. Check its state later with: shelly closepaw status [0-9]+-[0-9a-f]{8}$/m);
     expect(r.code).toBe(1);
   }, 20_000);
 

@@ -171,7 +171,7 @@ maybe('shelly codex (bash)', () => {
   it('help prints usage and exits 0; unknown subcommands exit 2', () => {
     const help = run('shelly codex help');
     expect(help.code).toBe(0);
-    expect(help.out).toContain('Usage: shelly codex <pair|code|trust|status|stop|autostart|help>');
+    expect(help.out).toContain('Usage: shelly codex <pair|code|trust|untrust|status|stop|autostart|help>');
     const bad = run('shelly codex frobnicate');
     expect(bad.code).toBe(2);
   });
@@ -551,6 +551,99 @@ maybe('shelly codex v258 (bash)', () => {
     expect(fs.lstatSync(cfgPath()).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(real, 'utf8')).toBe(`[projects."${c}"]\ntrust_level = "trusted"\n`);
     if (process.platform !== 'win32') expect(fs.statSync(real).mode & 0o777).toBe(0o640);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v269: `shelly codex untrust <dir>` (inverse of trust)
+// ---------------------------------------------------------------------------
+maybe('shelly codex untrust (bash)', () => {
+  function cfgPath() {
+    return path.join(home, '.codex', 'config.toml');
+  }
+  function canon(rel: string): string {
+    return run(`cd "$HOME/${rel}" && pwd -P`).out.trim();
+  }
+  function writeCfg(s: string) {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    fs.writeFileSync(cfgPath(), s);
+  }
+
+  it('exactly reverses trust (byte for byte, with or without a final newline) and status reflects it', () => {
+    fs.mkdirSync(path.join(home, 'myapp'));
+    for (const before of ['model = "gpt"\n# keep me\n', 'model = "gpt"']) {
+      writeCfg(before);
+      expect(run('shelly codex trust "$HOME/myapp"').code).toBe(0);
+      expect(run('shelly codex status').out).toMatch(/\n {2}- ~\/myapp\n/);
+      const r = run('shelly codex untrust "$HOME/myapp/"');
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('No longer trusted for Codex');
+      const after = fs.readFileSync(cfgPath(), 'utf8');
+      expect(after).toBe(before.endsWith('\n') ? before : before + '\n');
+      expect(run('shelly codex status').out).toContain('(none yet)');
+    }
+  });
+
+  it('removes only the target table and keeps other tables, comments and CRLF', () => {
+    fs.mkdirSync(path.join(home, 'a'));
+    const c = canon('a');
+    const head = `model = "x"\r\n# top comment\r\n\r\n[projects."/other"]\r\ntrust_level = "trusted"\r\n`;
+    const tail = `\r\n[tui]\r\nx = 1 # note\r\n`;
+    writeCfg(head + `\r\n  [ projects . "${c}" ]  # mine\r\n  trust_level = 'trusted'\r\n` + tail);
+    const r = run('shelly codex untrust "$HOME/a"');
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(head + tail);
+  });
+
+  it('keeps a table that has other settings, dropping only its trust_level line', () => {
+    fs.mkdirSync(path.join(home, 'b'));
+    const c = canon('b');
+    writeCfg(`[projects."${c}"]\ntrust_level = "trusted"\nother = 1\n\n[tui]\nx = 1\n`);
+    expect(run('shelly codex untrust "$HOME/b"').code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(`[projects."${c}"]\nother = 1\n\n[tui]\nx = 1\n`);
+  });
+
+  it('is a no-op with a clear message when not trusted, untrusted, or no config exists', () => {
+    fs.mkdirSync(path.join(home, 'c'));
+    const c = canon('c');
+    const none = run('shelly codex untrust "$HOME/c"');
+    expect(none.code).toBe(0);
+    expect(none.out).toContain('No Codex config');
+    expect(fs.existsSync(cfgPath())).toBe(false);
+    const before = `[projects."${c}"]\ntrust_level = "untrusted"\n\n[projects."/x"]\ntrust_level = "trusted"\n`;
+    writeCfg(before);
+    const r = run('shelly codex untrust "$HOME/c"');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Not trusted, nothing to change');
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe(before);
+  });
+
+  it('accepts the absolute path of a folder that no longer exists; refuses usage errors and inline tables', () => {
+    writeCfg(`a = 1\n\n[projects."/gone/proj"]\ntrust_level = "trusted"\n`);
+    expect(run('shelly codex untrust /gone/proj').code).toBe(0);
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe('a = 1\n');
+    expect(run('shelly codex untrust').code).toBe(2);
+    expect(run('shelly codex untrust a b').code).toBe(2);
+    expect(run('shelly codex untrust relative-missing').code).toBe(1);
+    writeCfg('projects = { "/x" = { trust_level = "trusted" } }\n');
+    const inline = run('shelly codex untrust /x');
+    expect(inline.code).toBe(1);
+    expect(inline.out).toContain('inline table');
+    expect(fs.readFileSync(cfgPath(), 'utf8')).toBe('projects = { "/x" = { trust_level = "trusted" } }\n');
+  });
+
+  itPosix('writes through a symlinked config.toml and keeps its mode', () => {
+    fs.mkdirSync(path.join(home, 'lnk'));
+    const c = canon('lnk');
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const real = path.join(home, 'real-config.toml');
+    fs.writeFileSync(real, `x = 1\n\n[projects."${c}"]\ntrust_level = "trusted"\n`);
+    fs.chmodSync(real, 0o600);
+    fs.symlinkSync(real, cfgPath());
+    expect(run('shelly codex untrust "$HOME/lnk"').code).toBe(0);
+    expect(fs.lstatSync(cfgPath()).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(real, 'utf8')).toBe('x = 1\n');
+    if (process.platform !== 'win32') expect(fs.statSync(real).mode & 0o777).toBe(0o600);
   });
 });
 
