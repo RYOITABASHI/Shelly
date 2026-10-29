@@ -36,6 +36,13 @@ import { ModalHeader } from '@/components/settings/ModalHeader';
 import { applyThemePreset, applyUiFont, themePresets } from '@/lib/theme-presets';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { execCommand } from '@/hooks/use-native-exec';
+import {
+  getCodexAuthState,
+  remoteControlActive,
+  signOutOfCodex,
+  type CodexAuthState,
+  type CodexSignOutDeps,
+} from '@/lib/codex-signout';
 import { useAddPane } from '@/hooks/use-add-pane';
 import { useTerminalStore } from '@/store/terminal-store';
 import { flushAutonomousCloudEnvSync, flushPendingAgentEnvSync } from '@/lib/agent-env-sync';
@@ -2514,6 +2521,74 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
     );
   }, [applyKeepConnected, keepConnected, t]);
 
+  // Sign out: shown only when ~/.codex/auth.json exists (re-checked on mount,
+  // i.e. every time Settings opens — the sign-in flow closes this Modal).
+  const [authState, setAuthState] = React.useState<CodexAuthState>('unknown');
+  const [signOutBusy, setSignOutBusy] = React.useState(false);
+  const signOutDeps = React.useMemo<CodexSignOutDeps>(() => ({
+    exec: execCommand,
+    getRemoteStatus: async () => (await TerminalEmulator.getCodexRemoteAutostart?.()) ?? null,
+    disableRemote: async () => (await TerminalEmulator.setCodexRemoteAutostart(false)) ?? null,
+  }), []);
+
+  const refreshAuthState = React.useCallback(async () => {
+    const state = await getCodexAuthState(execCommand);
+    setAuthState(state);
+    return state;
+  }, []);
+
+  useEffect(() => {
+    void refreshAuthState();
+  }, [refreshAuthState]);
+
+  const runSignOut = React.useCallback(async () => {
+    setSignOutBusy(true);
+    try {
+      const result = await signOutOfCodex(signOutDeps);
+      if (result.remoteStopped || result.remoteStillActive) {
+        // Mirror the native switch (setCodexRemoteAutostart already flipped it).
+        try {
+          const status = await TerminalEmulator.getCodexRemoteAutostart?.();
+          updateSettings({ codexRemoteAutostart: status?.enabled ?? false });
+        } catch {
+          updateSettings({ codexRemoteAutostart: false });
+        }
+      }
+      await refreshAuthState();
+      logInfo('SettingsDropdown', 'codex sign-out: ' + JSON.stringify({ ...result, error: undefined }));
+      if ('error' in result) {
+        Alert.alert(t('codex_login.sign_out_failed'), result.error);
+      } else if (result.remoteStillActive) {
+        Alert.alert(t('codex_login.signed_out_toast'), t('codex_login.sign_out_remote_still_active'));
+      } else {
+        ToastAndroid.show(t('codex_login.signed_out_toast'), ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      Alert.alert(t('codex_login.sign_out_failed'), String(e?.message || e));
+      logError('SettingsDropdown', 'codex sign-out failed', e);
+    } finally {
+      setSignOutBusy(false);
+    }
+  }, [refreshAuthState, signOutDeps, t, updateSettings]);
+
+  const confirmSignOut = React.useCallback(async () => {
+    let status = null;
+    try {
+      status = (await TerminalEmulator.getCodexRemoteAutostart?.()) ?? null;
+    } catch {
+      status = null;
+    }
+    // If the status can't be read, fall back to the mirrored setting.
+    const remoteActive = status ? remoteControlActive(status) : keepConnected;
+    const body = remoteActive
+      ? t('codex_login.sign_out_confirm_body') + '\n\n' + t('codex_login.sign_out_confirm_remote')
+      : t('codex_login.sign_out_confirm_body');
+    Alert.alert(t('codex_login.sign_out_confirm_title'), body, [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('codex_login.sign_out'), style: 'destructive', onPress: () => void runSignOut() },
+    ]);
+  }, [keepConnected, runSignOut, t]);
+
   return (
     <Section title={t('codex_login.title')}>
       <Text style={[styles.credentialHint, { color: C.text2 }]}>
@@ -2556,6 +2631,23 @@ const CodexLoginSection = React.memo(function CodexLoginSection({ onClose }: { o
         <View style={{ flex: 1 }} />
         <MaterialIcons name="chevron-right" size={14} color={C.text3} />
       </Pressable>
+      {authState === 'signed_in' && (
+        <Pressable
+          style={[styles.integrationRow, borderedChromeStyle(), { marginTop: 6 }, signOutBusy && styles.integrationRowDisabled]}
+          onPress={() => void confirmSignOut()}
+          disabled={signOutBusy}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: signOutBusy }}
+          accessibilityLabel={t('codex_login.sign_out_a11y')}
+        >
+          <MaterialIcons name="logout" size={13} color={C.text2} />
+          <Text style={[styles.integrationLabel, { color: C.text1 }]}>
+            {signOutBusy ? t('codex_login.signing_out') : t('codex_login.sign_out')}
+          </Text>
+          <View style={{ flex: 1 }} />
+          <MaterialIcons name="chevron-right" size={14} color={C.text3} />
+        </Pressable>
+      )}
     </Section>
   );
 });

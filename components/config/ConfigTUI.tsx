@@ -43,7 +43,7 @@ import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorMo
 import { resetSetup, runFirstLaunchSetup } from '@/lib/first-launch-setup';
 import { deleteProfileFact, loadUserProfile, resetUserProfile } from '@/lib/user-profile';
 import * as Clipboard from 'expo-clipboard';
-import { getOrCreateMCPToken } from '@/hooks/use-mcp-server-bridge';
+import { getOrCreateMCPToken, regenerateMCPToken } from '@/hooks/use-mcp-server-bridge';
 import { createThemedStyles } from '@/lib/themed-stylesheet';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -151,6 +151,7 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       { key: 'a2aServerEnabled', label: 'A2A Server', labelKey: 'settings.a2a_server_label', type: 'boolean', source: 'settings', description: 'Exposes a read-only "list_agents" skill to A2A (Agent2Agent) protocol clients on the same network (Wi-Fi/VPN) — lets a PC-side agent ask what Shelly agents exist. Opens a real HTTP listener while the app is running. No run-triggering skill yet. Default off.', descriptionKey: 'settings.a2a_server_desc' },
       { key: 'mcpServerEnabled', label: 'MCP Server', labelKey: 'settings.mcp_server_label', type: 'boolean', source: 'settings', description: 'Exposes read-only tools (terminal output, git status, agent list, repo list) to MCP clients (Claude Code, Claude Desktop) on the same network (Wi-Fi/VPN). Requires the bearer token below in the client\'s MCP config. Default off.', descriptionKey: 'settings.mcp_server_desc' },
       { key: 'copyMcpToken', label: 'Copy MCP Token', labelKey: 'settings.mcp_token_copy_label', type: 'action', source: 'custom', actionLabel: 'Copy', actionLabelKey: 'settings.mcp_token_copy_action', description: 'Copies the bearer token an MCP client needs to authenticate — generates one on first use.', descriptionKey: 'settings.mcp_token_copy_desc' },
+      { key: 'regenerateMcpToken', label: 'Regenerate MCP Token', labelKey: 'settings.mcp_token_regenerate_label', type: 'action', source: 'custom', actionLabel: 'Regenerate', actionLabelKey: 'settings.mcp_token_regenerate_action', description: 'Replaces the bearer token with a new one. Use this if the token may have leaked: the old token stops working immediately.', descriptionKey: 'settings.mcp_token_regenerate_desc' },
       { key: 'mcpExecEnabled', label: 'MCP: Allow exec/write (dangerous)', labelKey: 'settings.mcp_exec_label', type: 'boolean', source: 'settings', description: 'Adds two more MCP tools — run_command and write_file — so an MCP client (Claude Code, Codex) can execute commands and write files on this device, not just read from it. Every call still blocks on an in-app approval popup on the phone and is refused outright if classified CRITICAL risk, but this is real remote-code-execution surface protected only by the bearer token above and your own approval taps. Only turn this on if you specifically want that. No effect unless MCP Server is also on. Default off.', descriptionKey: 'settings.mcp_exec_desc' },
       // Tier 3 (2026-08-02, docs/superpowers/specs/2026-08-02-agent-conversational-registration-plan.md):
       // when the deterministic parser is unsure, the LLM drives a multi-turn
@@ -902,6 +903,32 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
           .then((token) => Clipboard.setStringAsync(token))
           .then(() => ToastAndroid.show(t('settings.mcp_token_copied_toast'), ToastAndroid.SHORT))
           .catch((e: unknown) => Alert.alert(t('settings.mcp_token_copy_failed_title'), String((e as any)?.message || e)));
+        break;
+      }
+      case 'regenerateMcpToken': {
+        Alert.alert(t('settings.mcp_token_regenerate_confirm_title'), t('settings.mcp_token_regenerate_confirm_body'), [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('settings.mcp_token_regenerate_confirm_ok'),
+            style: 'destructive',
+            onPress: () => {
+              regenerateMCPToken()
+                .then((result) => {
+                  if (result.check === 'old_token_accepted') {
+                    Alert.alert(t('settings.mcp_token_regenerate_failed_title'), t('settings.mcp_token_regenerate_old_still_accepted'));
+                  } else if (result.check === 'restart_failed') {
+                    Alert.alert(t('settings.mcp_token_regenerate_failed_title'), t('settings.mcp_token_regenerate_restart_failed'));
+                  } else {
+                    ToastAndroid.show(
+                      t(result.wasRunning ? 'settings.mcp_token_regenerated_restarted_toast' : 'settings.mcp_token_regenerated_toast'),
+                      ToastAndroid.SHORT,
+                    );
+                  }
+                })
+                .catch((e: unknown) => Alert.alert(t('settings.mcp_token_regenerate_failed_title'), String((e as any)?.message || e)));
+            },
+          },
+        ]);
         break;
       }
       case 'deleteHistory':

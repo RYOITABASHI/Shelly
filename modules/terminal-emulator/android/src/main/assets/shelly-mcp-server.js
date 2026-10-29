@@ -740,8 +740,15 @@ function main() {
     process.exit(1);
   });
 
+  // Exit promptly on SIGTERM. server.close() alone only stops accepting new
+  // connections; an open keep-alive connection would keep being served by
+  // this process (with its old token) until the client hangs up. Token
+  // regeneration relies on the old process being gone (MCPBridge.stop waits
+  // for exit), so drop every connection and exit without waiting.
   process.on('SIGTERM', () => {
-    server.close(() => process.exit(0));
+    server.close();
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    process.exit(0);
   });
 }
 

@@ -3,6 +3,7 @@ package expo.modules.terminalemulator
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * MCPBridge — spawns/stops scripts/shelly-mcp-server.js, a minimal MCP
@@ -23,7 +24,8 @@ import java.io.File
  */
 object MCPBridge {
     private const val TAG = "MCPBridge"
-    private const val PORT = 8767
+    private const val PORT = 8767 // keep in sync with lib/mcp-token.ts MCP_SERVER_PORT
+    private const val STOP_GRACE_MS = 2000L
 
     private var process: Process? = null
 
@@ -70,12 +72,31 @@ object MCPBridge {
         }
     }
 
+    /**
+     * Stops the server and waits for the process to actually exit, so a
+     * restart (token regeneration, see lib/mcp-token.ts) never overlaps an
+     * old process that still holds the port and still accepts the old token.
+     * SIGTERM first (the script closes every open connection and exits), then
+     * SIGKILL if it hasn't exited within the grace period.
+     */
     @Synchronized
     fun stop() {
         val proc = process ?: return
         process = null
         try {
             proc.destroy()
-        } catch (_: Exception) {}
+            if (!proc.waitFor(STOP_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "MCP server did not exit on SIGTERM; killing")
+                proc.destroyForcibly()
+                if (!proc.waitFor(STOP_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                    Log.e(TAG, "MCP server still alive after SIGKILL")
+                }
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            runCatching { proc.destroyForcibly() }
+        } catch (_: Exception) {
+            runCatching { proc.destroyForcibly() }
+        }
     }
 }

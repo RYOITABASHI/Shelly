@@ -9,7 +9,8 @@
  * every other API key uses) the native server checks on every request,
  * starting the native long-lived server together with the RN-side
  * request-queue poller (lib/mcp-server-bridge.ts), and tearing both down
- * together on toggle-off or unmount.
+ * together on toggle-off or unmount. Token lifecycle logic (create /
+ * regenerate + restart) lives in lib/mcp-token.ts.
  */
 import { useEffect } from 'react';
 import * as Crypto from 'expo-crypto';
@@ -19,21 +20,61 @@ import { getConnectorSecret, saveConnectorSecret } from '@/lib/secure-store';
 import { base64UrlFromBytes } from '@/lib/x-oauth';
 import { startMCPPoller, stopMCPPoller } from '@/lib/mcp-server-bridge';
 import { logError, logInfo } from '@/lib/debug-logger';
+import {
+  MCP_SERVER_PORT,
+  getOrCreateToken,
+  regenerateToken,
+  withMcpServerLock,
+  type McpServerControl,
+  type McpTokenDeps,
+  type RegenerateResult,
+} from '@/lib/mcp-token';
 
-const MCP_TOKEN_CONNECTOR_ID = 'mcp-server';
-const MCP_TOKEN_FIELD = 'token';
-const MCP_TOKEN_BYTES = 32;
+const tokenDeps: McpTokenDeps = {
+  store: { get: getConnectorSecret, save: saveConnectorSecret },
+  randomBytes: (n) => Crypto.getRandomBytesAsync(n),
+  encode: base64UrlFromBytes,
+};
+
+/** GET /mcp: the script answers 401 for a wrong token and 405 for a
+ *  correct one (auth is checked before the method). No side effects. */
+async function probeLocalServer(token: string): Promise<number | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const res = await fetch(`http://127.0.0.1:${MCP_SERVER_PORT}/mcp`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    return res.status;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const serverControl: McpServerControl = {
+  isRunning: () => TerminalEmulator.isMCPServerRunning(),
+  start: (token) => TerminalEmulator.startMCPServer(token),
+  stop: () => TerminalEmulator.stopMCPServer(),
+  probe: probeLocalServer,
+};
 
 /** Returns the persisted MCP bearer token, generating and saving a fresh
  *  one on first use. Exported so Settings UI can show/copy it without
  *  duplicating the generation logic. */
 export async function getOrCreateMCPToken(): Promise<string> {
-  const existing = await getConnectorSecret(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD);
-  if (existing) return existing;
-  const bytes = await Crypto.getRandomBytesAsync(MCP_TOKEN_BYTES);
-  const token = base64UrlFromBytes(bytes);
-  await saveConnectorSecret(MCP_TOKEN_CONNECTOR_ID, MCP_TOKEN_FIELD, token);
-  return token;
+  return getOrCreateToken(tokenDeps);
+}
+
+/** Replaces the MCP bearer token and, if the server is running, restarts it
+ *  so the old token stops working immediately. */
+export async function regenerateMCPToken(): Promise<RegenerateResult> {
+  const result = await regenerateToken(tokenDeps, serverControl);
+  logInfo('MCPBridge', `token regenerated (wasRunning=${result.wasRunning} check=${result.check})`);
+  return result;
 }
 
 export function useMCPServerBridge(): void {
@@ -42,7 +83,7 @@ export function useMCPServerBridge(): void {
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    (async () => {
+    void withMcpServerLock(async () => {
       try {
         const token = await getOrCreateMCPToken();
         if (cancelled) return;
@@ -57,11 +98,11 @@ export function useMCPServerBridge(): void {
       } catch (e) {
         if (!cancelled) logError('MCPBridge', 'startup failed', e);
       }
-    })();
+    });
     return () => {
       cancelled = true;
       stopMCPPoller();
-      TerminalEmulator.stopMCPServer().catch(() => {});
+      void withMcpServerLock(() => TerminalEmulator.stopMCPServer()).catch(() => {});
     };
   }, [enabled]);
 }
