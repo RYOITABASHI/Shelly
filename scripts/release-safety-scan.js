@@ -25,7 +25,10 @@ const zlib = require('zlib');
 const SKIP_DIRS = new Set(['node_modules', '.git', '.gradle', '.expo', '.cxx', 'Pods', '.claude']);
 const SKIP_PATH_FRAGMENTS = ['android/build/', 'android/app/build/', 'android/.gradle/'];
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
-const MAX_ENTRY_BYTES = 128 * 1024 * 1024;
+// Release APKs and the Codex runtime tarball are hundreds of MB; they are the
+// whole point of the scan, so archives get a much higher ceiling.
+const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024 - 1;
+const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
 const ARCHIVE_EXT = new Set(['.apk', '.aab', '.zip', '.jar']);
 const KEYSTORE_EXT = new Set(['.jks', '.keystore', '.p12', '.pfx']);
 
@@ -180,13 +183,14 @@ function* zipEntries(buf) {
 
 function scanFile(file, findings, stats) {
   const st = fs.statSync(file);
-  if (st.size > MAX_FILE_BYTES) {
+  const ext = path.extname(file).toLowerCase();
+  const isArchive = ARCHIVE_EXT.has(ext) || ext === '.gz' || ext === '.tgz';
+  if (st.size > (isArchive ? MAX_ARCHIVE_BYTES : MAX_FILE_BYTES)) {
     stats.skipped.push(`${file} (too large)`);
     return;
   }
   stats.files++;
   checkKeystoreName(file, file, '', findings);
-  const ext = path.extname(file).toLowerCase();
   const buf = fs.readFileSync(file);
   if (ARCHIVE_EXT.has(ext)) {
     try {
@@ -195,6 +199,7 @@ function scanFile(file, findings, stats) {
         checkKeystoreName(e.name, file, e.name, findings);
         const data = e.read();
         if (data) scanBuffer(data, file, e.name, findings);
+        else stats.skipped.push(`${file}!${e.name} (entry too large or unsupported compression)`);
       }
     } catch (err) {
       console.error(`WARN: could not read archive ${file}: ${err.message}; scanning raw bytes`);
@@ -213,9 +218,11 @@ function scanFile(file, findings, stats) {
 
 let skipFile = null;
 
-function walk(target, findings, stats) {
+function walk(target, findings, stats, explicit = false) {
   const norm = target.split(path.sep).join('/');
-  if (SKIP_PATH_FRAGMENTS.some((f) => (norm + '/').includes(f))) return;
+  // Build-output fragments are only skipped while walking the source tree; a
+  // path passed on the command line (e.g. the release APK dir) is always scanned.
+  if (!explicit && SKIP_PATH_FRAGMENTS.some((f) => (norm + '/').includes(f))) return;
   let st;
   try { st = fs.lstatSync(target); } catch (_) { return; }
   if (st.isSymbolicLink()) return;
@@ -269,7 +276,15 @@ function run(targets, allowlistFile) {
       console.error(`ERROR: path not found: ${t}`);
       return { code: 2, findings, stats, allowed: 0 };
     }
-    walk(t, findings, stats);
+    const before = { files: stats.files, skipped: stats.skipped.length };
+    walk(t, findings, stats, true);
+    // Fail closed: an explicit target that scanned nothing, or whose own files
+    // were skipped, would otherwise pass silently.
+    if (stats.files === before.files || stats.skipped.length > before.skipped) {
+      for (const s of stats.skipped.slice(before.skipped)) console.error(`ERROR: not scanned: ${s}`);
+      if (stats.files === before.files) console.error(`ERROR: nothing scanned under: ${t}`);
+      return { code: 2, findings, stats, allowed: 0 };
+    }
   }
   const rules = loadAllowlist(allowlistFile);
   const kept = findings.filter((f) => !isAllowed(f, rules));
