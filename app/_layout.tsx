@@ -1804,6 +1804,7 @@ export default function RootLayout() {
     // installOptionalPack() (lib/optional-pack-installer.ts) resolves.
     // Fire-and-forget from the queue loop below -- a real download can take
     // a while, and must not block draining any OTHER queued lines.
+    const installsInFlight = new Set<string>();
     const handleInstallRequest = async (reqId: string, packId: string) => {
       const resultDir = `${FileSystem.documentDirectory}home/.shelly-install-results`;
       const resultPath = `${resultDir}/${reqId}.json`;
@@ -1828,11 +1829,24 @@ export default function RootLayout() {
           });
           return;
         }
-        const result = await installOptionalPack(pack, TerminalEmulator);
+        // Two concurrent installs of one pack would share a download path
+        // (enqueuePackDownload replaces the file), so refuse the second.
+        if (installsInFlight.has(pack.id)) {
+          await writeResult({ ok: false, error: `install: pack '${pack.id}' is already being installed` });
+          return;
+        }
+        installsInFlight.add(pack.id);
+        let result: Awaited<ReturnType<typeof installOptionalPack>>;
+        try {
+          result = await installOptionalPack(pack, TerminalEmulator);
+        } finally {
+          installsInFlight.delete(pack.id);
+        }
         await writeResult({
           ok: true,
           lines: [
             `Installed pack '${pack.id}': ${pack.tools.join(', ')}`,
+            `Verified: sha256 ${String(pack.sha256).slice(0, 16)}… (${pack.approxSizeBytes} bytes)`,
             `Extracted to: ${result.libDir}`,
             'Installed tools are available immediately — just type the command (existing tabs included).',
           ],

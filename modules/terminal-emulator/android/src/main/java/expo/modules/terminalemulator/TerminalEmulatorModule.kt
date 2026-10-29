@@ -1630,10 +1630,9 @@ class TerminalEmulatorModule : Module() {
         }
 
         // ── On-demand optional-tool packs (Fable5 roadmap item #6) ──────────
-        // Dormant infra: no caller reaches these unless a user explicitly runs
-        // `shelly install <pack>`, and every pack manifest's `published` flag
-        // is false today (lib/optional-packs.ts) so the JS side refuses
-        // before ever calling enqueuePackDownload. Kept additive and separate
+        // Only reached when a user explicitly runs `shelly install <pack>`;
+        // the JS side refuses unless this build carries a pinned sha256 for
+        // the pack (lib/optional-packs.ts). Kept additive and separate
         // from the APK update path above rather than reusing it, since
         // enqueueApkDownload/verifyApkFile hardcode .apk-specific mimetype
         // and extension checks.

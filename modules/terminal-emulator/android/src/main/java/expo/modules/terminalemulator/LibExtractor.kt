@@ -408,11 +408,11 @@ object LibExtractor {
 
     /**
      * On-demand extraction for optional tool packs downloaded at runtime via
-     * `shelly install <pack>` (Fable5 roadmap item #6 — dormant infra, see
-     * lib/optional-packs.ts / lib/optional-pack-installer.ts; no caller wires
-     * this into $HOME/bin PATH yet, and the pack archives themselves are not
-     * published — every OptionalPackManifest.published is false, so this
-     * function is never reached from a real device today).
+     * `shelly install <pack>` (Fable5 roadmap item #6, see
+     * lib/optional-packs.ts / lib/optional-pack-installer.ts). The JS side
+     * verifies the archive's pinned sha256 before calling this; the bash
+     * wrappers in HomeInitializer.kt resolve $libDir/packs/<packId>/<tool>
+     * at call time.
      *
      * Deliberately separate from extractAll(): this NEVER runs on first
      * launch or as part of the unconditional startup extraction path, only
@@ -435,38 +435,52 @@ object LibExtractor {
         val libDir = getLibDir(context)
         val packsRoot = File(libDir, "packs")
         val packDir = File(packsRoot, packId)
-        // Extract fresh every time: a re-run of `shelly install <pack>` after a
-        // previous partial/corrupt extraction must not silently keep stale files.
-        if (packDir.exists()) packDir.deleteRecursively()
-        packDir.mkdirs()
-
-        val pb = ProcessBuilder("/system/bin/tar", "xzf", archive.absolutePath, "-C", packDir.absolutePath)
-        pb.redirectErrorStream(true)
-        val proc = pb.start()
-        val tarOutput = proc.inputStream.bufferedReader().readText()
-        val exitCode = proc.waitFor()
-        if (exitCode != 0) {
-            throw java.io.IOException("pack extraction failed (exit $exitCode): $tarOutput")
+        packsRoot.mkdirs()
+        // 2026-10-29: atomic install. Extract into a sibling staging dir,
+        // require every declared tool, and only then swap it in. A failed or
+        // interrupted re-install leaves the previously working pack intact
+        // (the old code deleted packDir first and extracted in place).
+        val stamp = System.currentTimeMillis()
+        val staging = File(packsRoot, ".staging-$packId-$stamp")
+        val previous = File(packsRoot, ".old-$packId-$stamp")
+        packsRoot.listFiles()?.forEach { f ->
+            if (f.name.startsWith(".staging-$packId-") || f.name.startsWith(".old-$packId-")) f.deleteRecursively()
         }
-
-        val extracted = mutableListOf<String>()
-        for (toolName in tools) {
-            // Tool names come from the JS-side pack manifest constant (not
-            // network- or archive-controlled data), but validate defensively
-            // anyway since this becomes a File path and an executable-bit flip.
-            if (!Regex("^[A-Za-z0-9._-]+$").matches(toolName)) {
-                Log.w(TAG, "extractPack: skipping unsafe tool name '$toolName' for pack '$packId'")
-                continue
+        try {
+            if (!staging.mkdirs()) throw java.io.IOException("could not create ${staging.absolutePath}")
+            val pb = ProcessBuilder("/system/bin/tar", "xzf", archive.absolutePath, "-C", staging.absolutePath)
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val tarOutput = proc.inputStream.bufferedReader().readText()
+            val exitCode = proc.waitFor()
+            if (exitCode != 0) {
+                throw java.io.IOException("pack extraction failed (exit $exitCode): ${tarOutput.take(400)}")
             }
-            val toolFile = File(packDir, toolName)
-            if (!toolFile.exists()) {
-                Log.w(TAG, "extractPack: '$toolName' not found in pack '$packId' archive")
-                continue
+            val missing = mutableListOf<String>()
+            for (toolName in tools) {
+                // Tool names come from the JS-side pack manifest constant;
+                // validate anyway since they become File paths.
+                require(Regex("^[A-Za-z0-9._-]+$").matches(toolName)) { "unsafe tool name '$toolName'" }
+                val toolFile = File(staging, toolName)
+                if (!toolFile.isFile) missing.add(toolName) else toolFile.setExecutable(true, false)
             }
-            toolFile.setExecutable(true, false)
-            extracted.add(toolFile.absolutePath)
+            if (missing.isNotEmpty()) {
+                throw java.io.IOException("pack '$packId' archive is missing: ${missing.joinToString(", ")}")
+            }
+            if (packDir.exists() && !packDir.renameTo(previous)) {
+                throw java.io.IOException("could not move the existing pack '$packId' aside")
+            }
+            if (!staging.renameTo(packDir)) {
+                if (previous.exists()) previous.renameTo(packDir)
+                throw java.io.IOException("could not activate pack '$packId'")
+            }
+        } catch (e: Exception) {
+            staging.deleteRecursively()
+            throw e
         }
+        previous.deleteRecursively()
 
+        val extracted = tools.map { File(packDir, it).absolutePath }
         Log.i(TAG, "extractPack: pack=$packId extracted=${extracted.size}/${tools.size} to ${packDir.absolutePath}")
         return PackExtractionResult(extracted, packDir.absolutePath)
     }

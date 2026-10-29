@@ -12,6 +12,22 @@
  * following the existing convention used by other pseudo-shell-adjacent
  * unit tests (see __tests__/agent-rollback-offer-eligibility.test.ts).
  */
+// Simulate a CI release build: lib/optional-packs-pins.json is written by
+// CI with the content-addressed asset + sha256 for each pack. The committed
+// copy is empty (local/PR builds refuse to install).
+const MOCK_DEV_SHA = 'ab'.repeat(32);
+jest.mock('@/lib/optional-packs-pins.json', () => ({
+  schema: 1,
+  source: 'ci',
+  packs: {
+    'dev-tools': {
+      assetName: `shelly-pack-dev-tools-arm64-${'ab'.repeat(8)}.tar.gz`,
+      sha256: 'ab'.repeat(32),
+      bytes: 1234,
+    },
+  },
+}));
+
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
@@ -118,13 +134,24 @@ describe('shelly install <pack-id> — validation', () => {
     expect(mockTerminalEmulator.enqueuePackDownload).toHaveBeenCalledWith(
       expect.stringContaining('/releases/download/optional-packs-latest/'),
       'dev-tools',
-      'shelly-pack-dev-tools-arm64.tar.gz'
+      `shelly-pack-dev-tools-arm64-${MOCK_DEV_SHA.slice(0, 16)}.tar.gz`
     );
+    expect(mockTerminalEmulator.verifyPackArchive).toHaveBeenCalledWith('/fake/archive.tar.gz', MOCK_DEV_SHA, 1234);
+    expect(mockTerminalEmulator.removeApkDownload).toHaveBeenCalledWith(1);
     expect(mockTerminalEmulator.extractPackArchive).toHaveBeenCalledWith(
       'dev-tools',
       '/fake/archive.tar.gz',
       ['python3', 'sqlite3', 'jq', 'make', 'gh']
     );
+  });
+
+  it('refuses a pack this build has no pin for, before any download', async () => {
+    mockTerminalEmulator.enqueuePackDownload.mockClear();
+    const { lines } = await executeCommand('shelly install editor-tools', state());
+    expect(lines).toHaveLength(1);
+    expect(lines[0].type).toBe('stderr');
+    expect(lines[0].text).toMatch(/no pinned, verified archive/);
+    expect(mockTerminalEmulator.enqueuePackDownload).not.toHaveBeenCalled();
   });
 
   it('reports a clear error when the installed build lacks native pack-download support', async () => {

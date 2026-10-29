@@ -908,6 +908,183 @@ jobs:
           echo "SHELLY_EXPECTED_CERT_SHA256=${expected}" >> "${GITHUB_ENV}"
           echo "Signing mode: ${mode} (expected current signer SHA-256 ${expected})"
 
+      - name: Build and publish optional tool pack archives
+        # Fable5 roadmap item #6: archives for `shelly install <pack>`
+        # (lib/optional-packs.ts, lib/optional-pack-installer.ts), built from
+        # the same jniLibs/arm64-v8a binaries this job packages into the APK.
+        # Does not change what ships in the APK.
+        #
+        # Runs BEFORE "Build APK" on purpose (2026-10-29): it writes
+        # lib/optional-packs-pins.json (asset name + sha256 + size per pack)
+        # before Metro bundles the JS, so each APK pins exactly the archives
+        # built next to it and refuses anything else. To keep those pins
+        # valid, archives are:
+        #   - byte-reproducible (sorted entries, fixed mtime/owner, gzip -n),
+        #     so the hash only changes when a binary actually changes;
+        #   - uploaded under a content-addressed name
+        #     shelly-pack-<id>-arm64-<sha16>.tar.gz that is never overwritten;
+        #   - verified against the release's server-side digest after upload.
+        # The legacy un-addressed shelly-pack-<id>-arm64.tar.gz names are
+        # still uploaded (--clobber) for builds that predate pinning. Older
+        # content-addressed assets beyond the newest 10 per pack are pruned;
+        # an APK that pinned a pruned asset gets a clear "update Shelly" error.
+        # Non-publishing builds (PRs, feature branches) skip this step and keep
+        # the committed, empty pins file, so `shelly install` refuses there.
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPTIONAL_PACKS_TAG: optional-packs-latest
+          PACKS_KEEP_PER_PACK: '10'
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "Skipping optional-pack publish: not building refs/heads/main (ref=${GITHUB_REF})."
+            exit 0
+          fi
+
+          jnilibs="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
+          staging_dir="${RUNNER_TEMP}/optional-pack-assets"
+          rm -rf "${staging_dir}"
+          mkdir -p "${staging_dir}"
+
+          # tool name -> jniLibs .so file, matching LibExtractor.kt's LIBS map
+          # (lib/optional-packs.ts's tools lists the left-hand side).
+          declare -A tool_so=(
+            [python3]=libpython3.so
+            [sqlite3]=libsqlite3_bin.so
+            [jq]=libjq_bin.so
+            [make]=libmake.so
+            [gh]=libgh.so
+            [vim]=libvim.so
+            [tmux]=libtmux.so
+            [nano]=libnano.so
+            [less]=libless.so
+            [unzip]=libunzip.so
+            [rg]=librg.so
+          )
+          declare -A pack_tools=(
+            [dev-tools]="python3 sqlite3 jq make gh"
+            [editor-tools]="vim tmux nano less unzip rg"
+          )
+
+          pins_entries=""
+          summary=""
+          for pack_id in $(printf '%s\n' "${!pack_tools[@]}" | sort); do
+            pack_dir="${staging_dir}/${pack_id}"
+            mkdir -p "${pack_dir}"
+            for tool in ${pack_tools[$pack_id]}; do
+              src="${jnilibs}/${tool_so[$tool]}"
+              test -f "${src}" || { echo "FATAL: ${src} not found for pack '${pack_id}' tool '${tool}'" >&2; exit 1; }
+              cp "${src}" "${pack_dir}/${tool}"
+              chmod 755 "${pack_dir}/${tool}"
+            done
+            # python3 needs its stdlib next to the binary: HomeInitializer.kt's
+            # python3() wrapper resolves PYTHONHOME from the resolved binary's
+            # dir (…/packs/dev-tools/python3.13 for a pack install).
+            if [ "${pack_id}" = "dev-tools" ]; then
+              python_stdlib_asset="modules/terminal-emulator/android/src/main/assets/python3.tar.gz"
+              test -f "${python_stdlib_asset}" || { echo "FATAL: ${python_stdlib_asset} not found" >&2; exit 1; }
+              tar -xzf "${python_stdlib_asset}" -C "${pack_dir}"
+              test -d "${pack_dir}/python3.13" || { echo "FATAL: ${python_stdlib_asset} did not extract python3.13/" >&2; exit 1; }
+            fi
+            unpinned="${staging_dir}/${pack_id}.tar.gz"
+            tar -C "${pack_dir}" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+              --format=gnu -cf - . | gzip -9 -n > "${unpinned}"
+            sha="$(sha256sum "${unpinned}" | awk '{print $1}')"
+            bytes="$(stat -c%s "${unpinned}")"
+            pinned_name="shelly-pack-${pack_id}-arm64-${sha:0:16}.tar.gz"
+            mkdir -p "${staging_dir}/pinned" "${staging_dir}/legacy"
+            cp "${unpinned}" "${staging_dir}/pinned/${pinned_name}"
+            cp "${unpinned}" "${staging_dir}/legacy/shelly-pack-${pack_id}-arm64.tar.gz"
+            echo "pack=${pack_id} asset=${pinned_name} sha256=${sha} bytes=${bytes} tools=[${pack_tools[$pack_id]}]"
+            summary="${summary}- ${pinned_name}: sha256=${sha} bytes=${bytes}\n"
+            pins_entries="${pins_entries}${pack_id}\t${pinned_name}\t${sha}\t${bytes}\n"
+          done
+
+          cat > /tmp/shelly-optional-packs-release.md <<EOF
+          Optional tool-pack archives for \`shelly install <pack>\`.
+
+          Each Shelly build pins the sha256 of the content-addressed archive
+          (\`shelly-pack-<id>-arm64-<sha16>.tar.gz\`) it was built with and
+          verifies it before extracting. Un-addressed
+          \`shelly-pack-<id>-arm64.tar.gz\` copies are kept for older builds.
+
+          - commit: ${GITHUB_SHA}
+          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          printf '%b' "${summary}" >> /tmp/shelly-optional-packs-release.md
+
+          if gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${OPTIONAL_PACKS_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly optional tool packs" \
+              --notes-file /tmp/shelly-optional-packs-release.md
+          else
+            gh release create "${OPTIONAL_PACKS_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Shelly optional tool packs" \
+              --notes-file /tmp/shelly-optional-packs-release.md \
+              --latest=false
+          fi
+
+          existing_json="$(gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets)"
+          for archive_path in "${staging_dir}"/pinned/*.tar.gz; do
+            name="$(basename "${archive_path}")"
+            if printf '%s' "${existing_json}" | jq -e --arg n "${name}" '.assets[] | select(.name == $n)' >/dev/null; then
+              echo "content-addressed asset ${name} already published; not re-uploading"
+            else
+              gh release upload "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" "${archive_path}"
+            fi
+          done
+          gh release upload "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            "${staging_dir}"/legacy/*.tar.gz --clobber
+
+          # Never-trust-an-upload: every pinned and legacy asset must match the
+          # release's own server-side digest before this build may pin it.
+          uploaded_json="$(gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets)"
+          for archive_path in "${staging_dir}"/pinned/*.tar.gz "${staging_dir}"/legacy/*.tar.gz; do
+            name="$(basename "${archive_path}")"
+            expected="$(sha256sum "${archive_path}" | awk '{print $1}')"
+            digest="$(printf '%s' "${uploaded_json}" | jq -r --arg n "${name}" '.assets[] | select(.name == $n) | .digest // ""')"
+            test -n "${digest}" || { echo "FATAL: pack asset '${name}' not visible in release" >&2; exit 1; }
+            if [ "${digest}" != "sha256:${expected}" ]; then
+              echo "FATAL: pack asset '${name}' digest mismatch: ${digest} (expected sha256:${expected})" >&2
+              exit 1
+            fi
+          done
+
+          # Prune old content-addressed assets (keep the newest N per pack and
+          # always the ones this build pins).
+          for pack_id in "${!pack_tools[@]}"; do
+            current="$(printf '%b' "${pins_entries}" | awk -F'\t' -v p="${pack_id}" '$1 == p {print $2}')"
+            printf '%s' "${uploaded_json}" \
+              | jq -r --arg p "${pack_id}" '.assets
+                  | map(select(.name | test("^shelly-pack-" + $p + "-arm64-[0-9a-f]{16}\\.tar\\.gz$")))
+                  | sort_by(.createdAt) | reverse | .[].name' \
+              | tail -n "+$((PACKS_KEEP_PER_PACK + 1))" \
+              | while read -r old; do
+                  [ -n "${old}" ] && [ "${old}" != "${current}" ] || continue
+                  echo "pruning old pack asset ${old}"
+                  gh release delete-asset "${OPTIONAL_PACKS_TAG}" "${old}" --repo "${GITHUB_REPOSITORY}" -y
+                done
+          done
+
+          # Pin the verified archives into this build's JS bundle.
+          PINS_TSV="$(printf '%b' "${pins_entries}")" node -e '
+            const fs = require("fs");
+            const packs = {};
+            for (const line of process.env.PINS_TSV.split("\n").filter(Boolean)) {
+              const [id, assetName, sha256, bytes] = line.split("\t");
+              packs[id] = { assetName, sha256, bytes: Number(bytes) };
+            }
+            const out = { schema: 1, source: "ci", commit: process.env.GITHUB_SHA, packs };
+            fs.writeFileSync("lib/optional-packs-pins.json", JSON.stringify(out, null, 2) + "\n");
+            console.log(JSON.stringify(out, null, 2));
+          '
+
       - name: Build APK
         run: |
           cd android
@@ -1504,154 +1681,6 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             "${manifest_src}" \
             --clobber
-
-      - name: Publish optional tool pack archives
-        # Fable5 roadmap item #6 (2026-08-25): packages a SUBSET of the same
-        # already-prepared jniLibs/arm64-v8a binaries this job just built the
-        # APK from (committed .so files plus the Termux-fetched ones from the
-        # "Bundle Termux extras" step above) into .tar.gz archives for
-        # on-demand `shelly install <pack>` (lib/optional-packs.ts,
-        # lib/optional-pack-installer.ts). Deliberately does NOT touch what
-        # ships in the APK itself — jniLibs/, app.config.ts, and every step
-        # above this one are untouched; this only reads the files those
-        # steps already produced. Mirrors "Publish skills catalog release"
-        # above: staging dir, sha256 recompute, gh release create/edit +
-        # upload --clobber, then a post-upload digest verification against
-        # the release's own server-side metadata before trusting it.
-        #
-        # IMPORTANT: this step publishes the archives but deliberately does
-        # NOT flip OPTIONAL_PACKS[*].published to true in
-        # lib/optional-packs.ts, and does not update its sha256/
-        # approxSizeBytes/downloadUrl fields — that is a separate, manual
-        # follow-up commit made only after confirming from a real run of
-        # this step that the release and assets actually exist and verify
-        # correctly. Until that follow-up lands, `shelly install <pack>`
-        # keeps refusing with PackNotPublishedError regardless of what this
-        # step publishes, so a bad run here cannot affect any user.
-        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OPTIONAL_PACKS_TAG: optional-packs-latest
-        run: |
-          set -euo pipefail
-
-          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "Skipping optional-pack publish: not building refs/heads/main (ref=${GITHUB_REF})."
-            exit 0
-          fi
-
-          jnilibs="modules/terminal-emulator/android/src/main/jniLibs/arm64-v8a"
-          staging_dir="${RUNNER_TEMP}/optional-pack-assets"
-          mkdir -p "${staging_dir}"
-
-          # tool name -> jniLibs .so file, matching LibExtractor.kt's LIBS map
-          # exactly (lib/optional-packs.ts's OPTIONAL_PACKS.*.tools lists the
-          # left-hand side of each pair below).
-          declare -A tool_so=(
-            [python3]=libpython3.so
-            [sqlite3]=libsqlite3_bin.so
-            [jq]=libjq_bin.so
-            [make]=libmake.so
-            [gh]=libgh.so
-            [vim]=libvim.so
-            [tmux]=libtmux.so
-            [nano]=libnano.so
-            [less]=libless.so
-            [unzip]=libunzip.so
-            [rg]=librg.so
-          )
-          declare -A pack_tools=(
-            [dev-tools]="python3 sqlite3 jq make gh"
-            [editor-tools]="vim tmux nano less unzip rg"
-          )
-
-          summary=""
-          for pack_id in "${!pack_tools[@]}"; do
-            pack_dir="${staging_dir}/${pack_id}"
-            mkdir -p "${pack_dir}"
-            for tool in ${pack_tools[$pack_id]}; do
-              so_name="${tool_so[$tool]}"
-              src="${jnilibs}/${so_name}"
-              test -f "${src}" || { echo "FATAL: ${src} not found for pack '${pack_id}' tool '${tool}'" >&2; exit 1; }
-              cp "${src}" "${pack_dir}/${tool}"
-              chmod 755 "${pack_dir}/${tool}"
-            done
-            # 2026-08-28: python3 needs its stdlib tree alongside the binary,
-            # not just the interpreter itself — LibExtractor.kt's extractAll()
-            # extracts the same checked-in modules/.../assets/python3.tar.gz
-            # asset to $libDir/python3.13/ for the bundled copy, and
-            # HomeInitializer.kt's python3() wrapper sets
-            # PYTHONHOME=PYTHONPATH=<resolved binary's dir>/python3.13 (see
-            # BASHRC_VERSION 241) — resolved to $SHELLY_LIB_DIR/python3.13 for
-            # the bundled copy, or $SHELLY_LIB_DIR/packs/dev-tools/python3.13
-            # for a pack install. Without this, `shelly install dev-tools`
-            # would extract a python3 binary that immediately fails with
-            # "ModuleNotFoundError: No module named 'encodings'" (bootstrap
-            # cannot find its own stdlib). Reuse that same source asset here
-            # rather than re-deriving it from jniLibs (it isn't one).
-            if [ "${pack_id}" = "dev-tools" ]; then
-              python_stdlib_asset="modules/terminal-emulator/android/src/main/assets/python3.tar.gz"
-              test -f "${python_stdlib_asset}" || { echo "FATAL: ${python_stdlib_asset} not found for dev-tools python3.13 stdlib bundling" >&2; exit 1; }
-              tar -xzf "${python_stdlib_asset}" -C "${pack_dir}"
-              test -d "${pack_dir}/python3.13" || { echo "FATAL: ${python_stdlib_asset} did not extract a python3.13/ directory into ${pack_dir}" >&2; exit 1; }
-            fi
-            archive_name="shelly-pack-${pack_id}-arm64.tar.gz"
-            tar -C "${pack_dir}" -czf "${staging_dir}/${archive_name}" .
-            archive_sha256="$(sha256sum "${staging_dir}/${archive_name}" | awk '{print $1}')"
-            archive_bytes="$(stat -c%s "${staging_dir}/${archive_name}")"
-            echo "pack=${pack_id} archive=${archive_name} sha256=${archive_sha256} bytes=${archive_bytes} tools=[${pack_tools[$pack_id]}]"
-            summary="${summary}- ${archive_name}: sha256=${archive_sha256} bytes=${archive_bytes}\n"
-          done
-
-          cat > /tmp/shelly-optional-packs-release.md <<EOF
-          Rolling optional-tool-pack archives for \`shelly install <pack>\`.
-
-          Not yet wired up as a supported install path (see
-          docs/superpowers/DEFERRED.md) — these assets exist so that step can
-          be completed later without a rebuild. Every pack in
-          lib/optional-packs.ts still declares \`published: false\` and
-          ignores these URLs until a follow-up commit confirms them.
-
-          - commit: ${GITHUB_SHA}
-          - run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          EOF
-          printf '%b' "${summary}" >> /tmp/shelly-optional-packs-release.md
-
-          if gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${OPTIONAL_PACKS_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "Shelly optional tool packs (dormant)" \
-              --notes-file /tmp/shelly-optional-packs-release.md
-          else
-            gh release create "${OPTIONAL_PACKS_TAG}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "Shelly optional tool packs (dormant)" \
-              --notes-file /tmp/shelly-optional-packs-release.md \
-              --latest=false
-          fi
-
-          gh release upload "${OPTIONAL_PACKS_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            "${staging_dir}"/*.tar.gz \
-            --clobber
-
-          # Never-trust-an-upload: verify the release's own server-side
-          # digest for each archive before considering this step successful.
-          uploaded_assets_json="$(gh release view "${OPTIONAL_PACKS_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --json assets)"
-          for archive_path in "${staging_dir}"/*.tar.gz; do
-            archive_name="$(basename "${archive_path}")"
-            expected_sha256="$(sha256sum "${archive_path}" | awk '{print $1}')"
-            uploaded_digest="$(printf '%s' "${uploaded_assets_json}" | jq -r --arg name "${archive_name}" '.assets[] | select(.name == $name) | .digest // ""')"
-            test -n "${uploaded_digest}" || { echo "FATAL: uploaded pack asset '${archive_name}' not visible in release" >&2; exit 1; }
-            if [ "${uploaded_digest}" != "sha256:${expected_sha256}" ]; then
-              echo "FATAL: pack asset '${archive_name}' digest mismatch: ${uploaded_digest}" >&2
-              exit 1
-            fi
-          done
 
       - name: Publish EAS Update (OTA)
         # Expo Updates are disabled in app.config.ts for the v5.1.x release

@@ -1,52 +1,28 @@
 /**
- * lib/optional-pack-installer.ts — download + extract for `shelly install <pack>`.
+ * lib/optional-pack-installer.ts — download + verify + extract for `shelly install <pack>`.
  *
- * Fable5 roadmap item #6 (on-demand optional-tool packs). This is the JS-side
- * orchestration that `lib/pseudo-shell.ts`'s `shelly install` subcommand
- * drives. It reuses the SAME Android DownloadManager mechanism the in-app
- * self-updater already uses for APK downloads
- * (`TerminalEmulator.enqueueApkDownload` → `setDestinationInExternalFilesDir`,
- * NOT `setDestinationInExternalPublicDir`, which throws SecurityException on
- * modern targetSdk — see components/layout/BuildsModal.tsx's
- * `downloadReleaseApk` for the precedent this fixed once already) via three
- * new native methods on the same bridge:
+ * Fable5 roadmap item #6 (on-demand optional-tool packs). Driven by the
+ * `$HOME/bin/shelly` shim through app/_layout.tsx's command-queue bridge
+ * (and by the legacy lib/pseudo-shell.ts handler). Reuses the Android
+ * DownloadManager path the in-app updater uses (`setDestinationInExternalFilesDir`)
+ * via these native bridge methods:
  *
- *   - `enqueuePackDownload` — generic sibling of `enqueueApkDownload` (no
- *     APK-specific mimetype/extension assumptions), targets
- *     Download/packs/<fileName> instead of Download/<fileName>.
- *   - `getApkDownloadStatus` / `removeApkDownload` — REUSED as-is. Both are
- *     already fully generic (keyed only by downloadId), so no pack-specific
- *     native duplicate was added.
- *   - `verifyPackArchive` — generic sibling of `verifyApkFile` (checks
- *     `.tar.gz` instead of `.apk`).
- *   - `extractPackArchive` — new native entry point wrapping
- *     `LibExtractor.extractPack()` (modules/terminal-emulator/android/.../
- *     LibExtractor.kt), which is an ADDITIVE method never called by the
- *     existing unconditional first-launch `extractAll()` path.
+ *   - `enqueuePackDownload` — targets Download/packs/<fileName>.
+ *   - `getApkDownloadStatus` / `removeApkDownload` — generic, keyed by
+ *     downloadId. `removeApkDownload` also deletes the downloaded file, so it
+ *     is called after every install attempt to leave no archive behind.
+ *   - `verifyPackArchive` — exact size + sha256 check.
+ *   - `extractPackArchive` — LibExtractor.extractPack(): extracts into a
+ *     staging dir, checks every declared tool is present, then swaps it in
+ *     atomically (a failed install never damages a working one).
  *
- * All four new native methods are typed `?` (optional) on
- * TerminalEmulatorModuleType, following the file's existing convention for
- * newer bridge surface — so this module and its tests can run against a
- * native module double that doesn't implement them, and `shelly install`
- * degrades to a clear error instead of a crash on an old build.
+ * Integrity is mandatory (2026-10-29): a pack installs only when this build
+ * carries a pinned sha256 for it (lib/optional-packs.ts) and the native
+ * verifier is present. There is no "skip verification" path any more.
  *
- * 2026-08-25: every pack archive is now actually built and published (see
- * lib/optional-packs.ts's own doc comment) — `OptionalPackManifest.published`
- * is `true`, so `installOptionalPack` genuinely downloads and extracts.
- *
- * 2026-08-28: PATH wiring is also done. Binaries land under app-private
- * storage (`termux-libs/packs/<packId>/`, i.e. $SHELLY_LIB_DIR/packs/<packId>/
- * on-device), and HomeInitializer.kt's 11 bundled-tool bash wrapper
- * functions (jq/sqlite3/make/gh/vim/tmux/nano/less/rg/unzip/python3) now
- * resolve bundled-vs-pack at CALL time (`__shelly_tool_path()`, BASHRC_VERSION
- * 241) instead of a path baked in at bashrc-generation time, so an installed
- * pack tool is usable immediately — no `$HOME/bin` symlinks needed, and no
- * new shell required, not even in an already-open terminal tab.
- *
- * Still explicitly NOT done here (deferred remainder, see CLAUDE.md item #6):
- *   - No tool has actually been removed from LibExtractor.kt's always-bundled
- *     LIBS map, so the default APK size is unchanged. That removal is a
- *     separate, deliberate follow-up task, not part of the PATH-wiring fix.
+ * Installed binaries land under $SHELLY_LIB_DIR/packs/<packId>/ and are
+ * resolved at call time by HomeInitializer.kt's wrappers
+ * (`__shelly_tool_path`), so they work immediately, even in open tabs.
  */
 
 export type PackDownloadStatus = {
@@ -82,8 +58,9 @@ export type PackNativeBridge = {
 export class PackNotPublishedError extends Error {
   constructor(packId: string) {
     super(
-      `Pack '${packId}' has no published release asset yet (this is deferred remainder work — ` +
-        'see CLAUDE.md item #6 / DEFERRED.md; the download URL is a placeholder, not a real asset).'
+      `Pack '${packId}' cannot be installed by this build: it has no pinned, verified archive ` +
+        '(local, development and pull-request builds carry no pack pins). ' +
+        'Install a Shelly release build to use `shelly install`.'
     );
     this.name = 'PackNotPublishedError';
   }
@@ -105,30 +82,65 @@ function sleep(ms: number): Promise<void> {
 
 const TERMINAL_STATUSES = new Set(['successful', 'failed', 'missing', 'unknown']);
 
+// android.app.DownloadManager PAUSED_* reasons.
+const PAUSED_WAITING_TO_RETRY = 1;
+const PAUSED_WAITING_FOR_NETWORK = 2;
+const PAUSED_QUEUED_FOR_WIFI = 3;
+// android.app.DownloadManager ERROR_* reasons (HTTP status codes pass through as-is).
+const ERROR_INSUFFICIENT_SPACE = 1006;
+const ERROR_DEVICE_NOT_FOUND = 1007;
+const ERROR_TOO_MANY_REDIRECTS = 1005;
+const ERROR_HTTP_DATA_ERROR = 1004;
+const ERROR_CANNOT_RESUME = 1008;
+
+/** Human-readable explanation for a DownloadManager failure. Exported for tests. */
+export function describeDownloadFailure(packId: string, status: PackDownloadStatus): string {
+  const r = status.reason;
+  if (r === 404 || r === 410) {
+    return (
+      `Pack '${packId}' archive is no longer on the server (HTTP ${r}). ` +
+      'This build pins an archive that has since been pruned; update Shelly and try again.'
+    );
+  }
+  if (r >= 400 && r < 600) {
+    return `Pack '${packId}' download failed: the server answered HTTP ${r}. Try again later.`;
+  }
+  if (r === ERROR_INSUFFICIENT_SPACE || r === ERROR_DEVICE_NOT_FOUND) {
+    return `Pack '${packId}' download failed: not enough free storage on the device.`;
+  }
+  if (r === ERROR_HTTP_DATA_ERROR || r === ERROR_CANNOT_RESUME || r === ERROR_TOO_MANY_REDIRECTS) {
+    return `Pack '${packId}' download failed: the connection was interrupted. Check your network and try again.`;
+  }
+  return `Pack '${packId}' download failed (status=${status.status}, reason=${r}).`;
+}
+
 export type InstallOptionalPackOptions = {
   /** Poll interval while waiting on the DownloadManager status, ms. Default 1000. */
   pollIntervalMs?: number;
-  /** Max polls before giving up as a timeout. Default 1800 (~30 min at 1s). */
+  /** Max polls before giving up as a timeout. Default 1080 (~18 min at 1s, inside the shim's 20 min wait). */
   maxPolls?: number;
+  /**
+   * Consecutive polls the download may sit in "waiting for network" before
+   * failing as offline. Default 20 (~20 s at 1s).
+   */
+  offlinePolls?: number;
 };
 
 /**
- * Downloads, verifies (when a sha256 is known), and extracts one optional
- * pack. Throws on any failure — callers (pseudo-shell.ts) turn that into a
- * single error OutputLine, matching the existing `shelly skill import` /
- * `shelly config` error-reporting convention.
+ * Downloads, verifies and extracts one optional pack. Throws an Error with a
+ * user-facing message on any failure; the caller prints it verbatim.
  */
 export async function installOptionalPack(
   pack: OptionalPackLike,
   bridge: PackNativeBridge,
   options: InstallOptionalPackOptions = {}
 ): Promise<{ extractedPaths: string[]; libDir: string }> {
-  if (!pack.published) {
+  if (!pack.published || !pack.sha256 || !pack.approxSizeBytes || pack.approxSizeBytes <= 0) {
     throw new PackNotPublishedError(pack.id);
   }
-  if (typeof bridge.extractPackArchive !== 'function') {
+  if (typeof bridge.extractPackArchive !== 'function' || typeof bridge.verifyPackArchive !== 'function') {
     throw new Error(
-      'Pack extraction is not supported by this build of Shelly (missing native extractPackArchive). Update Shelly and try again.'
+      'Pack installation is not supported by this build of Shelly (missing native verify/extract support). Update Shelly and try again.'
     );
   }
 
@@ -140,38 +152,53 @@ export async function installOptionalPack(
   if (!Number.isFinite(downloadId) || downloadId < 1) {
     throw new Error(`Could not start download for pack '${pack.id}'.`);
   }
+  const cleanup = () => bridge.removeApkDownload(downloadId).catch(() => undefined);
 
   const pollIntervalMs = options.pollIntervalMs ?? 1000;
-  const maxPolls = options.maxPolls ?? 1800;
+  const maxPolls = options.maxPolls ?? 1080;
+  const offlinePolls = options.offlinePolls ?? 20;
   let polls = 0;
-  while (true) {
-    if (polls >= maxPolls) {
-      await bridge.removeApkDownload(downloadId).catch(() => undefined);
-      throw new Error(`Pack '${pack.id}' download timed out.`);
+  let waitingForNetwork = 0;
+  try {
+    while (true) {
+      if (polls >= maxPolls) {
+        throw new Error(`Pack '${pack.id}' download timed out. Check your network and try again.`);
+      }
+      polls += 1;
+      await sleep(pollIntervalMs);
+      const status = await bridge.getApkDownloadStatus(downloadId);
+      if (status.status === 'successful') break;
+      if (TERMINAL_STATUSES.has(status.status)) {
+        throw new Error(describeDownloadFailure(pack.id, status));
+      }
+      if (
+        status.status === 'paused' &&
+        (status.reason === PAUSED_WAITING_FOR_NETWORK ||
+          status.reason === PAUSED_QUEUED_FOR_WIFI ||
+          status.reason === PAUSED_WAITING_TO_RETRY)
+      ) {
+        waitingForNetwork += 1;
+        if (waitingForNetwork >= offlinePolls) {
+          throw new Error(
+            `Pack '${pack.id}' needs a network connection to download and the device appears to be offline. ` +
+              'Tools that are already installed keep working offline; connect and run the command again.'
+          );
+        }
+      } else {
+        waitingForNetwork = 0;
+      }
     }
-    polls += 1;
-    await sleep(pollIntervalMs);
-    const status = await bridge.getApkDownloadStatus(downloadId);
-    if (status.status === 'successful') break;
-    if (TERMINAL_STATUSES.has(status.status)) {
-      await bridge.removeApkDownload(downloadId).catch(() => undefined);
+
+    const verify = await bridge.verifyPackArchive(archivePath, pack.sha256, pack.approxSizeBytes);
+    if (!verify.ok) {
       throw new Error(
-        `Pack '${pack.id}' download failed (status=${status.status}, reason=${status.reason}).`
+        `Pack '${pack.id}' archive failed its integrity check (${verify.error || 'sha256 mismatch'}); nothing was installed.`
       );
     }
-    // 'pending' | 'running' | 'paused' → keep polling.
-  }
 
-  if (pack.sha256 && bridge.verifyPackArchive) {
-    const verify = await bridge.verifyPackArchive(
-      archivePath,
-      pack.sha256,
-      pack.approxSizeBytes ?? -1
-    );
-    if (!verify.ok) {
-      throw new Error(verify.error || `Pack '${pack.id}' archive failed integrity check.`);
-    }
+    return await bridge.extractPackArchive(pack.id, archivePath, pack.tools);
+  } finally {
+    // Success or failure, drop the DownloadManager row and the archive file.
+    await cleanup();
   }
-
-  return bridge.extractPackArchive(pack.id, archivePath, pack.tools);
 }
