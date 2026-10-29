@@ -115,4 +115,26 @@ describe('optional-packs <-> HomeInitializer.kt bashrc wrapper sync', () => {
     expect(src).toContain('__shelly_pack_hint() {');
     expect(src).toContain('export -f __shelly_tool_path __shelly_pack_hint');
   });
+
+  it('the hint names the pack in the "<cmd> is available: shelly install <pack>" form', () => {
+    expect(src).toContain("bash: %s: command not found\\\\n%s is available: shelly install %s\\\\n");
+  });
+
+  it('command_not_found_handle exists, is exported, and its case lists match the manifest exactly', () => {
+    expect(src).toContain('sb.appendLine("command_not_found_handle() {")');
+    expect(src).toContain('sb.appendLine("export -f command_not_found_handle")');
+    for (const pack of Object.values(OPTIONAL_PACKS)) {
+      expect(src).toContain(`sb.appendLine("    ${pack.tools.join('|')}) __p=${pack.id} ;;")`);
+    }
+  });
+
+  it('the shelly helper shim pack list (install --list / uninstall) mirrors the manifest exactly', () => {
+    const m = src.match(/sb\.appendLine\("const OPTIONAL_PACKS = (\{.*\});"\)/);
+    expect(m).not.toBeNull();
+    // The literal is plain JS object syntax with single quotes.
+    // eslint-disable-next-line no-new-func
+    const shimPacks = new Function(`return ${m![1]};`)() as Record<string, string[]>;
+    const manifest = Object.fromEntries(Object.values(OPTIONAL_PACKS).map((p) => [p.id, p.tools]));
+    expect(shimPacks).toEqual(manifest);
+  });
 });

@@ -263,8 +263,8 @@ describe('generated shim: shelly closepaw wait', () => {
       expect(body).toMatch(/cpOut\('Do not end your turn and do not answer yet:/);
     });
 
-    it('is shim v21 with BASHRC_VERSION >= 270', () => {
-      expect(homeKt).toContain('# SHELLY_HELPER_SHIM v21');
+    it('is shim v21+ with BASHRC_VERSION >= 270', () => {
+      expect(Number(homeKt.match(/# SHELLY_HELPER_SHIM v(\d+)/)![1])).toBeGreaterThanOrEqual(21);
       expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(270);
     });
   });
