@@ -234,9 +234,18 @@ describe('generated helper: shelly device (end to end with a fake native side)',
       let err = '';
       child.stdout!.on('data', (b) => (out += b));
       child.stderr!.on('data', (b) => (err += b));
+      // A command that exits without reading its input (usage errors) makes
+      // the write side fail with EPIPE/ECONNRESET on Linux (extra stdio fds
+      // are sockets there). That is expected, not a test failure.
+      const ignoreClosedPipe = () => {};
+      child.stdin!.on('error', ignoreClosedPipe);
       if (opts.stdin !== undefined) child.stdin!.end(opts.stdin);
       else child.stdin!.end();
-      if (opts.fd3 !== undefined) (child.stdio[3] as NodeJS.WritableStream).end(opts.fd3);
+      if (opts.fd3 !== undefined) {
+        const fd3 = child.stdio[3] as NodeJS.WritableStream;
+        fd3.on('error', ignoreClosedPipe);
+        fd3.end(opts.fd3);
+      }
       const h = home; // bind to THIS test's home, never a later test's
       const timer = opts.app ? setInterval(() => opts.app!(h), 30) : null;
       child.on('close', (code) => {
