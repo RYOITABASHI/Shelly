@@ -50,19 +50,35 @@ function isPlaceholder(v) {
   return PLACEHOLDER_RE.test(v) || /^(.)\1+$/.test(v);
 }
 
+// Binaries pack their string tables without separators, so a prefix list like
+// "sk-svcacct-sk-admin-sk-ant-sk-or-OPENAI_API_KEY" or a charset literal
+// "sk-ABCDEFGHIJ...0123456789" reads as one long token. A real key is random:
+// it never contains another key prefix, an alphabet/digit run, or an
+// UPPER_SNAKE identifier.
+const OTHER_PREFIX_RE = /(?:sk-|gh[pousr]_|github_pat_|xox[abpr]-|AIza|gsk_|pplx-)/;
+const SEQUENCE_RE = /ABCDEFG|abcdefg|0123456|9876543/;
+const IDENT_RE = /[A-Z]{4,}_[A-Z]{3,}/;
+function tokenLooksReal(v) {
+  const body = v.replace(/^(?:sk-(?:ant-|proj-|svcacct-)?|gh[pousr]_|github_pat_|xox[abpr]-|gsk_|pplx-)/, '');
+  return !OTHER_PREFIX_RE.test(body) && !SEQUENCE_RE.test(body) && !IDENT_RE.test(body) && !isPlaceholder(body);
+}
+
 // Token-format rules: precise prefixes, safe to run on binary content.
 const TOKEN_RULES = [
   // Marker must be followed by a key body (base64 or PEM headers), so bare marker
   // strings embedded in SSH/TLS libraries do not trip the scan.
   { id: 'private-key-block', re: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----(?=(?:\\r|\\n|\s)*(?:[A-Za-z0-9+/]{32,}|Proc-Type|DEK-Info))/g },
-  { id: 'github-token', re: /\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{50,255})\b/g },
-  { id: 'anthropic-key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
-  { id: 'openai-key', re: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/g },
+  // Classic GitHub tokens are exactly prefix + 36 base62 chars; a longer alnum
+  // run is a packed string table in a binary (e.g. "gho_brewPATHNone..." in gh).
+  { id: 'github-token', re: /\b(?:gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9])|github_pat_[A-Za-z0-9_]{50,255}\b)/g, accept: tokenLooksReal },
+  { id: 'anthropic-key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}/g, accept: tokenLooksReal },
+  { id: 'openai-key', re: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/g, accept: tokenLooksReal },
   { id: 'google-api-key', re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
-  { id: 'slack-token', re: /\bxox[abpr]-[0-9A-Za-z-]{10,}/g },
+  // Real Slack tokens continue with a numeric team/user id: xoxb-<digits>-...
+  { id: 'slack-token', re: /\bxox[abpr]-\d{6,}-[0-9A-Za-z-]{8,}/g, accept: tokenLooksReal },
   { id: 'aws-access-key', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
-  { id: 'groq-key', re: /\bgsk_[A-Za-z0-9]{40,}/g },
-  { id: 'perplexity-key', re: /\bpplx-[A-Za-z0-9]{32,}/g },
+  { id: 'groq-key', re: /\bgsk_[A-Za-z0-9]{40,}/g, accept: tokenLooksReal },
+  { id: 'perplexity-key', re: /\bpplx-[A-Za-z0-9]{32,}/g, accept: tokenLooksReal },
 ];
 
 // Text-oriented rules (false-positive prone in binaries): text content only.

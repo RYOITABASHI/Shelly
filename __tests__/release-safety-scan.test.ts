@@ -144,4 +144,18 @@ describe('release-safety-scan', () => {
     expect(scanner.run([path.join(dir, 'nope')], '').code).toBe(2);
     err.mockRestore();
   });
+  it('ignores prefix lists and charset literals packed into binary string tables', () => {
+    // Shapes seen in libcodex_tui.so, libgh.so and the Hermes bundle of a real APK.
+    const packed = Buffer.from(
+      '\0@alias:' + 'sk' + '-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789GH_HOST' +
+        '\0OPENAI_BASE_URL' + 'sk' + '-svcacct-' + 'sk' + '-admin-' + 'sk' + '-ant-' + 'sk' + '-or-OPENAI_API_KEYevent' +
+        '\0..' + 'gh' + 'o_brewPATHNoneallgallprootitabsbrkidledeadracelogs is' +
+        '\0 5.' + 'xo' + 'xb--tw-ring-offset-shadow recall\0',
+      'latin1',
+    );
+    expect(scan(write('lib/libpacked.so', packed), '').code).toBe(0);
+    // A real-shaped key in the same binary is still caught.
+    const real = Buffer.concat([packed, Buffer.from('\0' + FAKES.openai + '\0', 'latin1')]);
+    expect(scan(write('lib/libreal.so', real), '').code).toBe(1);
+  });
 });
