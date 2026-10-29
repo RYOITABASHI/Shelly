@@ -203,6 +203,10 @@ No copy. No paste. No tab switching.
 
 Download the current Android APK from [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases). The rolling `android-latest` release is the source of truth for the newest Shelly build, and the latest tagged `vX.Y.Z` release APK is cut from that same build — the exact `versionCode`, commit, and SHA-256 are live in [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json).
 
+<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/RYOITABASHI/Shelly"><img alt="Get it on Obtainium" src="docs/images/badge_obtainium.png" height="48"></a>
+
+Prefer an app-store-style updater? [Obtainium](https://github.com/ImranR98/Obtainium) can install Shelly from GitHub and notify you of new versions: tap the badge on your phone, or add `https://github.com/RYOITABASHI/Shelly` in Obtainium. It follows the tagged `vX.Y.Z` releases (each carries the APK built from its tagged commit), so it updates less often than the in-app updater, which tracks every `android-latest` build.
+
 After the first install, Shelly can update itself from inside the app: open the cloud-download button in the top bar or **Settings → Updates**. Shelly reads the public `android-latest/latest.json` manifest, compares Android `versionCode`, enqueues the APK with Android DownloadManager under `/sdcard/Download/shelly-update-<versionCode>/`, verifies SHA-256, then opens Android's package installer. The system download keeps running if Shelly is backgrounded or restarted. Android still asks you to confirm the install because Shelly is distributed outside the Play Store.
 
 Expo OTA is disabled for release APKs. JS, native, and bundled-tool changes ship together through a new APK so the installed binary and app code stay in sync.

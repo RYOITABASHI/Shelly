@@ -201,6 +201,10 @@ CLI ベースの AI ツールを使っている開発者には見慣れたワー
 
 最新の Android APK は [**GitHub Releases**](https://github.com/RYOITABASHI/Shelly/releases) から入手できます。ローリング更新される `android-latest` リリースが最新ビルドの正となり、タグ付きの `vX.Y.Z` リリース APK も同じビルドから切り出されています。正確な `versionCode`・コミット・SHA-256 は [`android-latest/latest.json`](https://github.com/RYOITABASHI/Shelly/releases/download/android-latest/latest.json) で公開しています。
 
+<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/RYOITABASHI/Shelly"><img alt="Obtainium で入手" src="docs/images/badge_obtainium.png" height="48"></a>
+
+アプリストアのような更新管理を使いたい場合は、[Obtainium](https://github.com/ImranR98/Obtainium) で GitHub から Shelly を入れて、新しいバージョンの通知を受け取れます。スマホでバッジをタップするか、Obtainium に `https://github.com/RYOITABASHI/Shelly` を追加してください。追いかけるのはタグ付きの `vX.Y.Z` リリース（それぞれタグのコミットからビルドした APK を添付）なので、`android-latest` の全ビルドを追うアプリ内更新よりも更新の頻度は少なめです。
+
 一度インストールすれば、あとはアプリ内から自己更新できます。上部バーのクラウドダウンロードボタン、または **Settings → Updates** を開いてください。Shelly は公開されている `android-latest/latest.json` マニフェストを読み、Android の `versionCode` を比較し、Android DownloadManager で `/sdcard/Download/shelly-update-<versionCode>/` に APK をキューイングし、SHA-256 を検証してから Android のパッケージインストーラを開きます。システム側のダウンロードは、Shelly をバックグラウンドに回しても再起動しても継続します。Play ストア外配布なので、インストールの確認は Android が改めて求めてきます。
 
 リリース APK では Expo OTA を無効にしています。JS・ネイティブ・同梱ツールの変更は新しい APK としてまとめて配布され、インストール済みバイナリとアプリコードのズレが起きないようにしています。

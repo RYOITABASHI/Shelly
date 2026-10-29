@@ -1,0 +1,68 @@
+name: Attach APK to versioned release
+
+# Versioned releases (v8.1.1, ...) are written by hand and carry no APK; every
+# build's APK lives in the rolling `android-latest` release instead. Obtainium
+# and other GitHub-release trackers follow the "Latest" versioned release, so
+# copy the APK that was built from the release's tagged commit onto it.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Versioned release tag to attach the APK to (e.g. v8.1.1)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: attach-release-apk-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v') }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the APK built from the tagged commit
+        id: find
+        run: |
+          set -euo pipefail
+          case "${TAG}" in
+            v[0-9]*) ;;
+            *) echo "::error::${TAG} is not a versioned release tag"; exit 1 ;;
+          esac
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq .sha)"
+          short="${sha:0:12}"
+          # Asset names: Shelly-android-v<ver>-<versionCode>-<run>-<attempt>-<sha12>.apk.
+          # Several builds of one commit can exist; take the highest versionCode.
+          name="$(gh release view android-latest --repo "${GITHUB_REPOSITORY}" --json assets \
+            --jq ".assets[].name | select(endswith(\"-${short}.apk\"))" \
+            | sort -t- -k4,4n | tail -1)"
+          if [ -z "${name}" ]; then
+            echo "::error::No APK built from ${short} in android-latest; build that commit first"
+            exit 1
+          fi
+          echo "Using ${name}"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Download, scan and attach
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP}/release-apk"
+          mkdir -p "${dir}"
+          gh release download android-latest --repo "${GITHUB_REPOSITORY}" \
+            --pattern "${{ steps.find.outputs.name }}" --dir "${dir}"
+          out="${dir}/Shelly-${TAG}.apk"
+          mv "${dir}/${{ steps.find.outputs.name }}" "${out}"
+          node scripts/release-safety-scan.js "${out}"
+          (cd "${dir}" && sha256sum "Shelly-${TAG}.apk" > "Shelly-${TAG}.apk.sha256")
+          gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber \
+            "${out}" "${out}.sha256"
