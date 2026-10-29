@@ -141,7 +141,9 @@ describe('shelly install <pack-id> — validation', () => {
     expect(mockTerminalEmulator.extractPackArchive).toHaveBeenCalledWith(
       'dev-tools',
       '/fake/archive.tar.gz',
-      ['python3', 'sqlite3', 'jq', 'make', 'gh']
+      ['python3', 'sqlite3', 'jq', 'make', 'gh'],
+      MOCK_DEV_SHA,
+      1234
     );
   });
 

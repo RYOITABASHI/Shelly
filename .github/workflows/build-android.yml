@@ -935,6 +935,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OPTIONAL_PACKS_TAG: optional-packs-latest
           PACKS_KEEP_PER_PACK: '10'
+          PACKS_KEEP_DAYS: '90'
         run: |
           set -euo pipefail
 
@@ -1015,14 +1016,31 @@ jobs:
           EOF
           printf '%b' "${summary}" >> /tmp/shelly-optional-packs-release.md
 
+          # Essential gh calls retry with backoff (3 attempts: 0s, 10s, 30s).
+          gh_retry() {
+            local attempt=1 delay
+            for delay in 10 30 0; do
+              if "$@"; then return 0; fi
+              if [ "${attempt}" -ge 3 ]; then break; fi
+              echo "::warning::gh call failed (attempt ${attempt}/3), retrying in ${delay}s: $*" >&2
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+            echo "gh call failed after 3 attempts: $*" >&2
+            return 1
+          }
+          assets_json() {
+            gh_retry gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets
+          }
+
           if gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release edit "${OPTIONAL_PACKS_TAG}" \
+            gh_retry gh release edit "${OPTIONAL_PACKS_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${GITHUB_SHA}" \
               --title "Shelly optional tool packs" \
               --notes-file /tmp/shelly-optional-packs-release.md
           else
-            gh release create "${OPTIONAL_PACKS_TAG}" \
+            gh_retry gh release create "${OPTIONAL_PACKS_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${GITHUB_SHA}" \
               --title "Shelly optional tool packs" \
@@ -1030,46 +1048,64 @@ jobs:
               --latest=false
           fi
 
-          existing_json="$(gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets)"
+          # Content-addressed assets: reuse an existing one ONLY if it is fully
+          # uploaded and its server-side digest is exactly ours. Anything else
+          # under that name (a half-finished upload, a wrong digest) is deleted
+          # and re-uploaded — safe, because the name is derived from the hash.
+          existing_json="$(assets_json)"
           for archive_path in "${staging_dir}"/pinned/*.tar.gz; do
             name="$(basename "${archive_path}")"
-            if printf '%s' "${existing_json}" | jq -e --arg n "${name}" '.assets[] | select(.name == $n)' >/dev/null; then
-              echo "content-addressed asset ${name} already published; not re-uploading"
-            else
-              gh release upload "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" "${archive_path}"
+            expected="$(sha256sum "${archive_path}" | awk '{print $1}')"
+            existing="$(printf '%s' "${existing_json}" | jq -r --arg n "${name}" \
+              '[.assets[] | select(.name == $n)] | first | if . == null then "" else "\(.state // "")\t\(.digest // "")" end')"
+            if [ "${existing}" = "uploaded"$'\t'"sha256:${expected}" ]; then
+              echo "content-addressed asset ${name} already published and verified; not re-uploading"
+              continue
             fi
+            if [ -n "${existing}" ]; then
+              echo "::warning::asset ${name} exists but is not a verified upload (${existing}); replacing it"
+              gh_retry gh release delete-asset "${OPTIONAL_PACKS_TAG}" "${name}" --repo "${GITHUB_REPOSITORY}" -y
+            fi
+            gh_retry gh release upload "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" "${archive_path}"
           done
-          gh release upload "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" \
+          gh_retry gh release upload "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" \
             "${staging_dir}"/legacy/*.tar.gz --clobber
 
-          # Never-trust-an-upload: every pinned and legacy asset must match the
-          # release's own server-side digest before this build may pin it.
-          uploaded_json="$(gh release view "${OPTIONAL_PACKS_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets)"
+          # Never-trust-an-upload: every pinned and legacy asset must be fully
+          # uploaded and match the release's server-side digest before this
+          # build may pin it.
+          uploaded_json="$(assets_json)"
           for archive_path in "${staging_dir}"/pinned/*.tar.gz "${staging_dir}"/legacy/*.tar.gz; do
             name="$(basename "${archive_path}")"
             expected="$(sha256sum "${archive_path}" | awk '{print $1}')"
-            digest="$(printf '%s' "${uploaded_json}" | jq -r --arg n "${name}" '.assets[] | select(.name == $n) | .digest // ""')"
-            test -n "${digest}" || { echo "FATAL: pack asset '${name}' not visible in release" >&2; exit 1; }
-            if [ "${digest}" != "sha256:${expected}" ]; then
-              echo "FATAL: pack asset '${name}' digest mismatch: ${digest} (expected sha256:${expected})" >&2
+            got="$(printf '%s' "${uploaded_json}" | jq -r --arg n "${name}" \
+              '[.assets[] | select(.name == $n)] | first | if . == null then "" else "\(.state // "")\t\(.digest // "")" end')"
+            test -n "${got}" || { echo "FATAL: pack asset '${name}' not visible in release" >&2; exit 1; }
+            if [ "${got}" != "uploaded"$'\t'"sha256:${expected}" ]; then
+              echo "FATAL: pack asset '${name}' is not a verified upload: ${got} (expected uploaded / sha256:${expected})" >&2
               exit 1
             fi
           done
 
-          # Prune old content-addressed assets (keep the newest N per pack and
-          # always the ones this build pins).
+          # Prune old content-addressed assets. Best-effort: a failure here only
+          # warns and never fails the build. An asset is deleted only when it is
+          # BOTH outside the newest N for its pack AND older than
+          # PACKS_KEEP_DAYS, and never the one this build pins.
+          cutoff="$(date -u -d "-${PACKS_KEEP_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)"
           for pack_id in "${!pack_tools[@]}"; do
             current="$(printf '%b' "${pins_entries}" | awk -F'\t' -v p="${pack_id}" '$1 == p {print $2}')"
-            printf '%s' "${uploaded_json}" \
-              | jq -r --arg p "${pack_id}" '.assets
+            old_names="$(printf '%s' "${uploaded_json}" \
+              | jq -r --arg p "${pack_id}" --arg cutoff "${cutoff}" --argjson keep "${PACKS_KEEP_PER_PACK}" '.assets
                   | map(select(.name | test("^shelly-pack-" + $p + "-arm64-[0-9a-f]{16}\\.tar\\.gz$")))
-                  | sort_by(.createdAt) | reverse | .[].name' \
-              | tail -n "+$((PACKS_KEEP_PER_PACK + 1))" \
-              | while read -r old; do
-                  [ -n "${old}" ] && [ "${old}" != "${current}" ] || continue
-                  echo "pruning old pack asset ${old}"
-                  gh release delete-asset "${OPTIONAL_PACKS_TAG}" "${old}" --repo "${GITHUB_REPOSITORY}" -y
-                done
+                  | sort_by(.createdAt) | reverse | .[$keep:]
+                  | map(select(.createdAt < $cutoff)) | .[].name' 2>/dev/null)" \
+              || { echo "::warning::could not compute prune list for ${pack_id}; skipping prune"; continue; }
+            for old in ${old_names}; do
+              [ "${old}" != "${current}" ] || continue
+              echo "pruning old pack asset ${old}"
+              gh release delete-asset "${OPTIONAL_PACKS_TAG}" "${old}" --repo "${GITHUB_REPOSITORY}" -y \
+                || echo "::warning::could not prune ${old}; leaving it"
+            done
           done
 
           # Pin the verified archives into this build's JS bundle.

@@ -101,7 +101,9 @@ describe('optional-packs <-> HomeInitializer.kt bashrc wrapper sync', () => {
     const knownTools = new Set(allPackTools.map((t) => t.tool));
     // Same anchored shape as callSite() above, but capturing the two
     // arguments instead of checking a specific pair.
-    const calls = [...src.matchAll(/\\\$\(__shelly_tool_path (\S+) (\S+)\)/g)];
+    // Literal tool/pack names only (command_not_found_handle calls it with
+    // "$1" "$__p", which is checked separately below).
+    const calls = [...src.matchAll(/\\\$\(__shelly_tool_path ([A-Za-z0-9._-]+) ([a-z0-9-]+)\)/g)];
     expect(calls.length).toBeGreaterThan(0);
     for (const [, tool, packId] of calls) {
       expect(knownTools.has(tool)).toBe(true);
@@ -126,6 +128,19 @@ describe('optional-packs <-> HomeInitializer.kt bashrc wrapper sync', () => {
     for (const pack of Object.values(OPTIONAL_PACKS)) {
       expect(src).toContain(`sb.appendLine("    ${pack.tools.join('|')}) __p=${pack.id} ;;")`);
     }
+  });
+
+  it('command_not_found_handle runs an existing (pack-installed) tool via _run instead of reporting not-found', () => {
+    const start = src.indexOf('sb.appendLine("command_not_found_handle() {")');
+    const end = src.indexOf('sb.appendLine("export -f command_not_found_handle")');
+    const body = src.slice(start, end);
+    expect(body).toContain('__t=\\$(__shelly_tool_path \\"\\$1\\" \\"\\$__p\\")');
+    expect(body).toContain('*) _run \\"\\$__t\\" \\"\\$@\\" ;;');
+    expect(body).toContain('LD_PRELOAD=\\"\\$SHELLY_LIB_DIR/libexec_wrapper.so\\" _run');
+    expect(body).toContain('PYTHONHOME=\\"\\$__h\\"');
+    // bash's own not-found format, plus the hint only for pack tools.
+    expect(body).toContain("'%s: line %s: %s: command not found\\\\n' \\\"\\$0\\\" \\\"\\${BASH_LINENO[0]}\\\"");
+    expect(body).toContain("[ -n \\\"\\$__p\\\" ] && printf '%s is available: shelly install %s\\\\n'");
   });
 
   it('the shelly helper shim pack list (install --list / uninstall) mirrors the manifest exactly', () => {

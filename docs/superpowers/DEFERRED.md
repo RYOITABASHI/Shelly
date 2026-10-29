@@ -16,7 +16,7 @@
 
 ## History
 
-- 2026-10-29: CC（feat/optional-packs-publish、未push）が `shelly install <pack>` を正式なインストール経路に: sha256 のビルド時固定（CI がバイト再現可能な内容アドレス名アーカイブを Build APK 前に公開し `lib/optional-packs-pins.json` に固定）、検証必須化、アトミック導入、オフライン/404/容量不足の明確なエラー、`shelly install --list` と `shelly uninstall`、`command_not_found_handle` の案内（SHELLY_HELPER_SHIM v21 / BASHRC_VERSION 269）。追加ツール候補（tree/fd/zip ほか）と APK 縮小計画（APK 694 MB の内訳、最大候補は 11 ツールではなく cli-tools.tar.gz 143 MB）を P1 エントリに記録、何も削除していない。実機未検証。
+- 2026-10-29: CC（feat/optional-packs-publish、未push）が `shelly install <pack>` を正式なインストール経路に: sha256 のビルド時固定（CI がバイト再現可能な内容アドレス名アーカイブを Build APK 前に公開し `lib/optional-packs-pins.json` に固定）、検証必須化、アトミック導入、オフライン/404/容量不足の明確なエラー、`shelly install --list` と `shelly uninstall`、`command_not_found_handle` の案内（rebase 後 SHELLY_HELPER_SHIM v22 / BASHRC_VERSION 271）。追加ツール候補（tree/fd/zip ほか）と APK 縮小計画（APK 694 MB の内訳、最大候補は 11 ツールではなく cli-tools.tar.gz 143 MB）を P1 エントリに記録、何も削除していない。実機未検証。
 - 2026-10-17: CC（feat/closepaw-codex-approval、未push）が「ClosePaw 引き継ぎを ChatGPT 内の Codex 承認カードで承認する」要望を openai/codex rust-v0.162.0 ソースで調査し、**端末承認のスキップは実装しない**と判定（Codex の `prompt` ルールはシェル構文で回避可能・Shelly が人間のタップを観測する手段なし）。ChatGPT 内に**追加の**承認カードを出すだけの部分実装（Settings トグル + Shelly 管理の Codex ルール）も試作したが、承認が二重になりデモ・UX 上の利点がないためプロダクトオーナー判断で**マージせず破棄**。端末承認は不変。下記 P2 エントリ参照。
 - 2026-10-16: CC（fix/v8.1.1-ondevice、未push）が v8.1.0（build 2593）実機検証の4件を修正: (1) `shelly closepaw wait` / `--wait` を既定100秒のソフト予算に（`--timeout` で上書き可）、未完了時は stdout に「ClosePaw is still running (request <id>). Run again to keep waiting: shelly closepaw wait <id>」を出して exit 124（SHELLY_HELPER_SHIM v16 / BASHRC_VERSION 264）— ChatGPT/Codex のリモート exec タイムアウトで打ち切られる問題; (2) 「Every day at 09:45, … with Perplexity …」の先頭スケジュール節（at 09:45）がステップ1化し per-step ツール指定＝高リスク扱いになっていた NL 分割バグ（derivePrompt が時刻も除去、isScheduleOnlyClause が英語スケジュール節を認識）; (3) 内容の違うリクエスト（LLM論文/Perplexity）に既存スキル（AI論文/arXiv+HF）を「再利用」と表示していた件（同一タスク判定のカバレッジ 0.5→0.75、スケジュール語を除外、名指しツールがスキルと異なれば不一致）; (4) 出力の `[1] [1]` 重複引用マーカーを remapCitations で畳み込み（PlanSpec executor ポートも同期、CURRENT_EXECUTOR_VERSION 11）。いずれも実機未検証。Windows の本 worktree では `plan-executor.test` ほか4スイート18件が変更前から失敗（環境依存、本変更と無関係を stash で確認）。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled）が最終レビュー H1/H2/L1/L2 を修正（研究意図の同意拡張による残りの外部送信経路を封鎖）。L3/L4 は記録のみ。
@@ -4630,9 +4630,20 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 2. **検証必須化**（`lib/optional-pack-installer.ts`）: pin（sha256＋正確なサイズ）とネイティブ `verifyPackArchive` が無ければ拒否。「sha256 が null なら検証スキップ」の経路は削除。成功・失敗どちらでも DownloadManager 行とアーカイブを削除（`removeApkDownload`）。
 3. **アトミック導入**（`LibExtractor.extractPack`）: 旧実装は既存パックを先に消してその場で展開していた。`packs/.staging-<id>-<ts>` へ展開→宣言ツールが全部あるか確認（欠けたら失敗）→既存を `.old-` へ退避→rename で差し替え。失敗時は既存パックが無傷で残る。
 4. **明確なエラー／オフライン**: DownloadManager の reason を文言化（404/410＝固定アーカイブ削除済み→Shelly を更新、HTTP エラー、容量不足、通信断）。`paused` + 「ネットワーク待ち」が約 20 秒続いたら「オフラインのようです。導入済みツールはオフラインでも動きます」で即失敗（従来は最大 30 分待ち）。JS 側上限 18 分＜シム側 20 分。同一パックの同時インストールは 2 本目を拒否（同じダウンロード先ファイルを奪い合うため）。
-5. **`shelly install --list`（`list`/`-l`/引数なしも同じ）と `shelly uninstall <pack>`**（SHELLY_HELPER_SHIM v21、BASHRC_VERSION 268→269）: 一覧は各パックを `[installed]` / `[bundled with this APK]` / `[partially installed]` / `[not installed]` で表示。未知 ID はシムで即拒否。`uninstall` は `$SHELLY_LIB_DIR/packs/<id>` を Node `fs.rmSync` で削除（RN 往復なし、同梱版は残る）。
+5. **`shelly install --list`（`list`/`-l`/引数なしも同じ）と `shelly uninstall <pack>`**（SHELLY_HELPER_SHIM v22、BASHRC_VERSION 271 — origin/main 側の v269/v270・shim v21 の上に積み直し）: 一覧は各パックを `[installed]` / `[bundled with this APK]` / `[partially installed]` / `[not installed]` で表示。未知 ID はシムで即拒否。`uninstall` は `$SHELLY_LIB_DIR/packs/<id>` を Node `fs.rmSync` で削除（RN 往復なし、同梱版は残る）。
 6. **未導入コマンドの案内**: `__shelly_pack_hint` の文言を `bash: <cmd>: command not found` + `<cmd> is available: shelly install <pack>` に変更。さらに `command_not_found_handle`（以前は存在しなかった）を追加・`export -f`。対話シェルでは 11 ツールのラッパー関数が自前で同じ案内を出すので、フックが効くのはラッパー関数を継承しない `bash script.sh` 等の子シェル。ツールが同梱版かパック版で実在する場合は誤案内しない（素の not found のみ）。自動ダウンロードは一切しない。
 7. 同期テスト追加: シムの `OPTIONAL_PACKS` 一覧・`command_not_found_handle` の case 一覧が `lib/optional-packs.ts` と完全一致することを `__tests__/optional-packs-bashrc-sync.test.ts` で検証。
+
+**2026-10-29 レビュー対応（同ブランチの追加コミット）**:
+- M1: 内容アドレス名の既存アセットを再利用するのは `state=="uploaded"` かつ `digest=="sha256:<期待値>"` のときだけ。それ以外（途中で切れたアップロード、digest 不一致）は `delete-asset` して再アップロード（名前がハッシュ由来なので安全）。事後検証も state と digest の両方を見る。
+- M2: 必須の gh 呼び出し（release view/edit/create/upload、不正アセットの delete）は 3 回まで再試行（10 秒→30 秒）。prune は best-effort（失敗は `::warning::` のみでジョブを落とさない）。
+- L4: prune は「パック内で新しい順 11 個目以降」かつ「90 日より古い」ものだけを削除（`PACKS_KEEP_DAYS=90`）。このビルドが固定したものは常に残す。
+- L1: pin（sha256＋サイズ）をネイティブ `extractPackArchive` / `LibExtractor.extractPack` に渡し、ダウンロード（app 固有外部ストレージ）を app 専用領域へコピーしながらハッシュを取り、そのコピーだけを検証・一覧・展開する（JS 側の `verifyPackArchive` は早期失敗用に残す）。
+- L2: 展開前に gzip+tar ヘッダを Kotlin 内で読み、通常ファイルとディレクトリ以外（symlink/hardlink/デバイス/FIFO/pax ヘッダ）、絶対パス、`..` を含むパスを拒否（GNU long-name `L` は許可）。CI が作る python3 stdlib（1,248 ファイル＋131 ディレクトリ、長い名前あり）は通ることを JS 版の同一ロジックで確認、手作りの悪性 tar（`../`、long-name 経由の `..`、symlink、hardlink、char device、pax）は全て拒否。staging/.old-*/コピーの削除は `Files.walkFileTree`（リンクを辿らない）に置換、パック導入経路から `deleteRecursively` を排除。
+- L3: packDir が無く `.old-<pack>-*` が残っている（前回が差し替え途中で落ちた）場合は、削除せず最新の `.old` を packDir に戻す。`.old` の掃除は packDir が存在するときだけ。
+- M3: `command_not_found_handle` は、ツールが実在する（パック導入済み・ラッパー関数の無い子シェル）なら wrapper と同じ環境（python3 は PYTHONHOME/PYTHONPATH、vim/tmux/make/less/nano は `LD_PRELOAD=libexec_wrapper.so`）で `_run` 経由で実行する。
+- L6: パック外のコマンドでは bash 本来の書式（対話シェル `bash: cmd: command not found`、スクリプトでは `<$0>: line <行番号>: cmd: command not found`、行番号は `BASH_LINENO[0]` で呼び出し元）を維持し、パックのツールのときだけ `<cmd> is available: shelly install <pack>` を 1 行足す。Git Bash で bash 自身の出力と書式・行番号が一致することを確認。
+- Kotlin のコンパイルは手元で未確認（Gradle なし）。`__tests__/optional-pack-native-extract.test.ts` でネイティブ側の不変条件をソース検査。
 
 **検証**: jest（optional-packs / installer / bashrc-sync / pseudo-shell-install ＋ HomeInitializer.kt を読む全 26 スイート 722 件）PASS、`tsc --noEmit` PASS、生成される bash（`bash -n`＋空 PATH での関数テスト）と Node シム（`node --check`＋ `install --list` / 未知 ID / `uninstall` 2回の実行）をローカルで抽出実行して確認。CI ステップは YAML パース＋`bash -n`＋決定性のローカル再現まで。**CI 本番実行・実機は未確認**。
 
@@ -4698,7 +4709,7 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 - CI ステップは本番未実行。初回 main ビルドで `gh release upload`（`--clobber` なし）・`delete-asset`・`jq` の正規表現が想定通り動くか要確認。失敗すると APK ビルド前に止まる（＝リリースは出ない、壊れた APK も出ない）。
 - 決定性は GNU tar/gzip のバージョンに依存。ランナー更新でハッシュが変わっても新しい内容アドレス名が増えるだけで害は無いが、10 個の保持枠を早く消費する。
 - `command_not_found_handle` は `export -f` しているので Codex 等が起動する子 bash にも効く。メッセージ先頭は従来どおり `bash: <cmd>: command not found` なので stderr を grep するスクリプトへの影響は無いはず。
-- HomeInitializer.kt は別エージェントが並行編集中。BASHRC_VERSION 269 / SHELLY_HELPER_SHIM v21 が衝突する可能性あり（マージ時に大きい方へ寄せ、両方の changelog を残す）。
+- HomeInitializer.kt は別ブランチも頻繁に編集する。origin/main（BASHRC 270 / shim v21）に rebase 済みで本ブランチは 271 / v22。さらに先行マージがあれば同様に大きい方へ寄せ、両方の changelog を残す。バージョン固定テストは `>= N` 比較に変更済み。
 
 → sync: README.md / README.ja.md の「Bundled Shelly commands」表と Status 表に 1 行ずつ追加済み。CLAUDE.md への反映は不要（APK 構成が変わったら「バンドルツール」行を更新）。
 

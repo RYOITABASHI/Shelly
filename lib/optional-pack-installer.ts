@@ -11,10 +11,13 @@
  *   - `getApkDownloadStatus` / `removeApkDownload` — generic, keyed by
  *     downloadId. `removeApkDownload` also deletes the downloaded file, so it
  *     is called after every install attempt to leave no archive behind.
- *   - `verifyPackArchive` — exact size + sha256 check.
- *   - `extractPackArchive` — LibExtractor.extractPack(): extracts into a
- *     staging dir, checks every declared tool is present, then swaps it in
- *     atomically (a failed install never damages a working one).
+ *   - `verifyPackArchive` — exact size + sha256 check (fast fail).
+ *   - `extractPackArchive` — LibExtractor.extractPack(): copies the archive
+ *     into app-private storage, re-verifies that copy against the same pin,
+ *     rejects unsafe tar entries (absolute paths, `..`, links, devices),
+ *     extracts into a staging dir, checks every declared tool is present,
+ *     then swaps it in atomically (a failed install never damages a working
+ *     one).
  *
  * Integrity is mandatory (2026-10-29): a pack installs only when this build
  * carries a pinned sha256 for it (lib/optional-packs.ts) and the native
@@ -51,7 +54,9 @@ export type PackNativeBridge = {
   extractPackArchive?: (
     packId: string,
     archivePath: string,
-    tools: string[]
+    tools: string[],
+    expectedSha256: string,
+    expectedSizeBytes: number
   ) => Promise<{ extractedPaths: string[]; libDir: string }>;
 };
 
@@ -196,7 +201,9 @@ export async function installOptionalPack(
       );
     }
 
-    return await bridge.extractPackArchive(pack.id, archivePath, pack.tools);
+    // The native side re-verifies its own private copy (authoritative); the
+    // check above just fails fast before copying.
+    return await bridge.extractPackArchive(pack.id, archivePath, pack.tools, pack.sha256, pack.approxSizeBytes);
   } finally {
     // Success or failure, drop the DownloadManager row and the archive file.
     await cleanup();

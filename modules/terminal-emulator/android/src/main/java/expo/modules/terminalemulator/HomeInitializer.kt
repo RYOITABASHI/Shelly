@@ -1431,8 +1431,11 @@ patchCodex(libDir);
     //      rejected in the shim, and `shelly uninstall <pack>` removes
     //      $SHELLY_LIB_DIR/packs/<pack>. bashrc: __shelly_pack_hint prints
     //      "bash: <cmd>: command not found" + "<cmd> is available: shelly
-    //      install <pack>", and a new exported command_not_found_handle gives
-    //      the same hint in shells without the wrappers. Nothing auto-downloads.
+    //      install <pack>", and a new exported command_not_found_handle (for
+    //      shells without the wrapper functions) runs a bundled/pack tool via
+    //      _run with the wrapper's env, or prints bash's own not-found line
+    //      (script/line prefix) plus the pack hint only for pack tools.
+    //      Nothing auto-downloads.
     private const val BASHRC_VERSION = 271
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
@@ -3350,25 +3353,42 @@ patchCodex(libDir);
             sb.appendLine("  return 127")
             sb.appendLine("}")
             sb.appendLine("export -f __shelly_tool_path __shelly_pack_hint")
-            // v269: bash's command-not-found hook. In the interactive shell
-            // the 11 pack tools have wrapper functions (below) that print the
-            // same hint themselves; this hook covers shells where those
-            // non-exported wrappers are absent (e.g. `bash script.sh`). It
-            // names the pack only when the tool is genuinely missing (neither
-            // bundled nor pack-installed), and never downloads anything.
-            // Keep the case lists in sync with lib/optional-packs.ts
-            // (__tests__/optional-packs-bashrc-sync.test.ts).
+            // v271: bash's command-not-found hook. In the interactive shell
+            // the 11 pack tools have wrapper functions (below); this hook
+            // covers shells where those non-exported wrappers are absent
+            // (e.g. `bash script.sh`). (1) If the tool exists (bundled or
+            // pack-installed) it is run through the exported _run with the
+            // same env the wrapper would set (python stdlib / exec wrapper
+            // preload). (2) Otherwise it prints bash's usual not-found line
+            // (same script/line prefix bash itself uses) and, only for a pack
+            // tool, appends "<cmd> is available: shelly install <pack>".
+            // Never downloads anything. Keep the case lists in sync with
+            // lib/optional-packs.ts (__tests__/optional-packs-bashrc-sync.test.ts).
             sb.appendLine("command_not_found_handle() {")
-            sb.appendLine("  local __p=")
+            sb.appendLine("  local __p= __t= __h=")
             sb.appendLine("  case \"\$1\" in")
             sb.appendLine("    python3|sqlite3|jq|make|gh) __p=dev-tools ;;")
             sb.appendLine("    vim|tmux|nano|less|unzip|rg) __p=editor-tools ;;")
             sb.appendLine("  esac")
-            sb.appendLine("  if [ -n \"\$__p\" ] && ! __shelly_tool_path \"\$1\" \"\$__p\" >/dev/null; then")
-            sb.appendLine("    __shelly_pack_hint \"\$1\" \"\$__p\"")
-            sb.appendLine("    return 127")
+            sb.appendLine("  if [ -n \"\$__p\" ] && __t=\$(__shelly_tool_path \"\$1\" \"\$__p\"); then")
+            sb.appendLine("    shift")
+            sb.appendLine("    case \"\${__t##*/}\" in")
+            sb.appendLine("      python3)")
+            sb.appendLine("        __h=\$(__shelly_python_stdlib \"\$__t\") || __h=\"\${__t%/*}/python3.13\"")
+            sb.appendLine("        PYTHONHOME=\"\$__h\" PYTHONPATH=\"\$(__shelly_python_path \"\$__h\")\" _run \"\$__t\" \"\$@\" ;;")
+            sb.appendLine("      vim|tmux|make|less|nano) LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" _run \"\$__t\" \"\$@\" ;;")
+            sb.appendLine("      *) _run \"\$__t\" \"\$@\" ;;")
+            sb.appendLine("    esac")
+            sb.appendLine("    return \$?")
             sb.appendLine("  fi")
-            sb.appendLine("  printf 'bash: %s: command not found\\n' \"\$1\" >&2")
+            // bash's own format: interactive "bash: cmd: ...", otherwise
+            // "<\$0>: line <caller line>: cmd: ..." (BASH_LINENO[0] is the
+            // line of the failed command, not of this function).
+            sb.appendLine("  case \"\$-\" in")
+            sb.appendLine("    *i*) printf 'bash: %s: command not found\\n' \"\$1\" >&2 ;;")
+            sb.appendLine("    *) printf '%s: line %s: %s: command not found\\n' \"\$0\" \"\${BASH_LINENO[0]}\" \"\$1\" >&2 ;;")
+            sb.appendLine("  esac")
+            sb.appendLine("  [ -n \"\$__p\" ] && printf '%s is available: shelly install %s\\n' \"\$1\" \"\$__p\" >&2")
             sb.appendLine("  return 127")
             sb.appendLine("}")
             sb.appendLine("export -f command_not_found_handle")

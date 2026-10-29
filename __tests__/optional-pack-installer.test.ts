@@ -92,7 +92,7 @@ describe('installOptionalPack — happy path', () => {
     expect(bridge.enqueuePackDownload).toHaveBeenCalledWith(pack.downloadUrl, pack.id, pack.archiveAssetName);
     expect(getApkDownloadStatus).toHaveBeenCalledTimes(3);
     expect(bridge.verifyPackArchive).toHaveBeenCalledWith('/fake/archive.tar.gz', SHA, 1000);
-    expect(bridge.extractPackArchive).toHaveBeenCalledWith(pack.id, '/fake/archive.tar.gz', pack.tools);
+    expect(bridge.extractPackArchive).toHaveBeenCalledWith(pack.id, '/fake/archive.tar.gz', pack.tools, SHA, 1000);
     expect(result.libDir).toBe('/fake/libDir/packs/test-pack');
     expect(bridge.removeApkDownload).toHaveBeenCalledWith(42);
   });

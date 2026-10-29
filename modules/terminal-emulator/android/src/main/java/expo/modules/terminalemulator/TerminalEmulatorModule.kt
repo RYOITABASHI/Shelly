@@ -1707,9 +1707,12 @@ class TerminalEmulatorModule : Module() {
             )
         }
 
-        AsyncFunction("extractPackArchive") { packId: String, archivePath: String, tools: List<String> ->
+        // The pinned sha256 + size travel with the call: extractPack copies
+        // the archive into app-private storage and verifies THAT copy before
+        // listing and extracting it (no check-then-use gap on the download).
+        AsyncFunction("extractPackArchive") { packId: String, archivePath: String, tools: List<String>, expectedSha256: String, expectedSizeBytes: Long ->
             val context = requireReactContext()
-            val result = LibExtractor.extractPack(context, packId, archivePath, tools)
+            val result = LibExtractor.extractPack(context, packId, archivePath, tools, expectedSha256.lowercase(), expectedSizeBytes)
             mapOf(
                 "extractedPaths" to result.extractedPaths,
                 "libDir" to result.libDir,

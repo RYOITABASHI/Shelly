@@ -170,13 +170,18 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     error?: string | null;
   }>;
   /**
-   * Extracts a downloaded pack .tar.gz into app-private storage under
-   * termux-libs/packs/<packId>/ and chmods the listed tool binaries
-   * executable. Does NOT wire the binaries onto $PATH — that ($HOME/bin
-   * symlinking via HomeInitializer.kt's bashrc generation) is deferred, see
-   * CLAUDE.md item #6 / DEFERRED.md.
+   * Copies a downloaded pack .tar.gz into app-private storage, verifies the
+   * copy against the pinned sha256 + size, rejects unsafe tar entries, and
+   * atomically installs it under termux-libs/packs/<packId>/ (the bash
+   * wrappers resolve tools there at call time).
    */
-  extractPackArchive?(packId: string, archivePath: string, tools: string[]): Promise<{
+  extractPackArchive?(
+    packId: string,
+    archivePath: string,
+    tools: string[],
+    expectedSha256: string,
+    expectedSizeBytes: number
+  ): Promise<{
     extractedPaths: string[];
     libDir: string;
   }>;

@@ -409,46 +409,66 @@ object LibExtractor {
     /**
      * On-demand extraction for optional tool packs downloaded at runtime via
      * `shelly install <pack>` (Fable5 roadmap item #6, see
-     * lib/optional-packs.ts / lib/optional-pack-installer.ts). The JS side
-     * verifies the archive's pinned sha256 before calling this; the bash
+     * lib/optional-packs.ts / lib/optional-pack-installer.ts). The bash
      * wrappers in HomeInitializer.kt resolve $libDir/packs/<packId>/<tool>
      * at call time.
      *
-     * Deliberately separate from extractAll(): this NEVER runs on first
-     * launch or as part of the unconditional startup extraction path, only
-     * when a user explicitly runs `shelly install <pack>`. Mirrors the same
-     * ProcessBuilder("/system/bin/tar", "xzf", ...) pattern already proven
-     * by extractTarGzAsset() above, extracting into a pack-scoped
-     * subdirectory instead of directly under libDir so multiple packs never
-     * collide.
+     * Never part of extractAll(); only runs when a user explicitly runs
+     * `shelly install <pack>`.
      *
-     * packId is expected to already be validated by the native bridge
-     * caller (TerminalEmulatorModule's own regex check before invoking this),
-     * but is re-validated here defensively since it becomes part of a
-     * filesystem path under the shared termux-libs directory.
+     * Integrity and safety (2026-10-29):
+     *  1. The downloaded archive (in app-specific external storage) is copied
+     *     into app-private storage, and THAT copy is hashed here and checked
+     *     against the sha256 + size pinned into this build. Everything after
+     *     reads only the private copy, so the file cannot change between
+     *     verification and extraction.
+     *  2. The copy is listed (gzip + tar headers parsed in-process) before
+     *     /system/bin/tar sees it. Only regular files and directories with
+     *     relative paths and no `..` segment are accepted (GNU long-name
+     *     records allowed); symlinks, hardlinks, devices, FIFOs and pax
+     *     headers are rejected.
+     *  3. Extraction goes to a staging dir and is swapped in by rename; every
+     *     declared tool must be present. A failed install keeps the previous
+     *     pack. Deletion walks the tree without following symlinks.
+     *  4. If an earlier run died between "move old pack aside" and "activate
+     *     new pack", the `.old-<packId>-*` dir is restored instead of deleted.
      */
-    fun extractPack(context: Context, packId: String, archivePath: String, tools: List<String>): PackExtractionResult {
+    fun extractPack(
+        context: Context,
+        packId: String,
+        archivePath: String,
+        tools: List<String>,
+        expectedSha256: String,
+        expectedSizeBytes: Long,
+    ): PackExtractionResult {
         require(Regex("^[a-z0-9][a-z0-9-]{0,63}$").matches(packId)) { "Invalid pack id: $packId" }
+        require(Regex("^[0-9a-f]{64}$").matches(expectedSha256)) { "Invalid pinned sha256 for pack '$packId'" }
+        require(expectedSizeBytes > 0) { "Invalid pinned size for pack '$packId'" }
+        for (toolName in tools) {
+            require(Regex("^[A-Za-z0-9._-]+$").matches(toolName) && toolName != "." && toolName != "..") {
+                "unsafe tool name '$toolName'"
+            }
+        }
         val archive = File(archivePath)
-        require(archive.exists() && archive.isFile) { "Pack archive not found: $archivePath" }
+        require(archive.isFile) { "Pack archive not found: $archivePath" }
 
         val libDir = getLibDir(context)
         val packsRoot = File(libDir, "packs")
         val packDir = File(packsRoot, packId)
         packsRoot.mkdirs()
-        // 2026-10-29: atomic install. Extract into a sibling staging dir,
-        // require every declared tool, and only then swap it in. A failed or
-        // interrupted re-install leaves the previously working pack intact
-        // (the old code deleted packDir first and extracted in place).
+
+        recoverInterruptedPackSwap(packsRoot, packDir, packId)
+
         val stamp = System.currentTimeMillis()
+        val privateCopy = File(packsRoot, ".download-$packId-$stamp.tar.gz")
         val staging = File(packsRoot, ".staging-$packId-$stamp")
         val previous = File(packsRoot, ".old-$packId-$stamp")
-        packsRoot.listFiles()?.forEach { f ->
-            if (f.name.startsWith(".staging-$packId-") || f.name.startsWith(".old-$packId-")) f.deleteRecursively()
-        }
         try {
+            copyAndVerify(archive, privateCopy, expectedSha256, expectedSizeBytes, packId)
+            validatePackTarEntries(privateCopy, packId)
+
             if (!staging.mkdirs()) throw java.io.IOException("could not create ${staging.absolutePath}")
-            val pb = ProcessBuilder("/system/bin/tar", "xzf", archive.absolutePath, "-C", staging.absolutePath)
+            val pb = ProcessBuilder("/system/bin/tar", "xzf", privateCopy.absolutePath, "-C", staging.absolutePath)
             pb.redirectErrorStream(true)
             val proc = pb.start()
             val tarOutput = proc.inputStream.bufferedReader().readText()
@@ -458,11 +478,12 @@ object LibExtractor {
             }
             val missing = mutableListOf<String>()
             for (toolName in tools) {
-                // Tool names come from the JS-side pack manifest constant;
-                // validate anyway since they become File paths.
-                require(Regex("^[A-Za-z0-9._-]+$").matches(toolName)) { "unsafe tool name '$toolName'" }
                 val toolFile = File(staging, toolName)
-                if (!toolFile.isFile) missing.add(toolName) else toolFile.setExecutable(true, false)
+                if (!java.nio.file.Files.isRegularFile(toolFile.toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    missing.add(toolName)
+                } else {
+                    toolFile.setExecutable(true, false)
+                }
             }
             if (missing.isNotEmpty()) {
                 throw java.io.IOException("pack '$packId' archive is missing: ${missing.joinToString(", ")}")
@@ -475,14 +496,180 @@ object LibExtractor {
                 throw java.io.IOException("could not activate pack '$packId'")
             }
         } catch (e: Exception) {
-            staging.deleteRecursively()
+            deleteTreeNoFollow(staging)
             throw e
+        } finally {
+            deleteTreeNoFollow(privateCopy)
         }
-        previous.deleteRecursively()
+        deleteTreeNoFollow(previous)
 
         val extracted = tools.map { File(packDir, it).absolutePath }
         Log.i(TAG, "extractPack: pack=$packId extracted=${extracted.size}/${tools.size} to ${packDir.absolutePath}")
         return PackExtractionResult(extracted, packDir.absolutePath)
+    }
+
+    /**
+     * Housekeeping before an install: if packDir is missing but a
+     * `.old-<packId>-*` exists (a previous run died mid-swap), restore the
+     * newest one as packDir. Remaining staging/old/download leftovers for
+     * this pack are then removed (without following symlinks).
+     */
+    private fun recoverInterruptedPackSwap(packsRoot: File, packDir: File, packId: String) {
+        val leftovers = packsRoot.listFiles()?.toList().orEmpty()
+        val olds = leftovers.filter { it.name.startsWith(".old-$packId-") }.sortedByDescending { it.name }
+        if (!packDir.exists() && olds.isNotEmpty()) {
+            if (olds.first().renameTo(packDir)) {
+                Log.w(TAG, "extractPack: restored interrupted pack '$packId' from ${olds.first().name}")
+            }
+        }
+        for (f in leftovers) {
+            val n = f.name
+            if (n.startsWith(".staging-$packId-") || n.startsWith(".download-$packId-") ||
+                (n.startsWith(".old-$packId-") && packDir.exists())
+            ) {
+                deleteTreeNoFollow(f)
+            }
+        }
+    }
+
+    private fun copyAndVerify(src: File, dst: File, expectedSha256: String, expectedSize: Long, packId: String) {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        var total = 0L
+        java.io.FileInputStream(src).use { input ->
+            java.io.FileOutputStream(dst).use { output ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    total += n
+                    if (total > expectedSize) {
+                        throw java.io.IOException("pack '$packId' archive is larger than its pinned size ($expectedSize bytes)")
+                    }
+                    digest.update(buf, 0, n)
+                    output.write(buf, 0, n)
+                }
+                output.fd.sync()
+            }
+        }
+        if (total != expectedSize) {
+            throw java.io.IOException("pack '$packId' archive size mismatch: expected $expectedSize, got $total")
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        if (actual != expectedSha256) {
+            throw java.io.IOException("pack '$packId' archive sha256 mismatch; nothing was installed")
+        }
+    }
+
+    /**
+     * Lists the (already verified) tar.gz in-process and rejects anything
+     * that is not a plain file or directory with a safe relative path.
+     * Supports ustar and the GNU format CI writes (`L` long-name records).
+     */
+    internal fun validatePackTarEntries(archive: File, packId: String) {
+        java.util.zip.GZIPInputStream(java.io.BufferedInputStream(java.io.FileInputStream(archive))).use { gz ->
+            val header = ByteArray(512)
+            var pendingLongName: String? = null
+            var entries = 0
+            while (true) {
+                if (!readFully(gz, header)) throw java.io.IOException("pack '$packId' archive is truncated")
+                if (header.all { it == 0.toByte() }) break // end-of-archive marker
+                val type = header[156].toInt().toChar()
+                val size = parseTarOctal(header, 124, 12)
+                if (size < 0) throw java.io.IOException("pack '$packId' archive has a bad size field")
+                val padded = (size + 511) / 512 * 512
+                if (type == 'L') {
+                    if (size > 4096) throw java.io.IOException("pack '$packId' archive has an oversized long name")
+                    val data = ByteArray(padded.toInt())
+                    if (!readFully(gz, data)) throw java.io.IOException("pack '$packId' archive is truncated")
+                    pendingLongName = String(data, 0, size.toInt(), Charsets.UTF_8).trimEnd('\u0000')
+                    continue
+                }
+                val name = pendingLongName ?: run {
+                    val base = cString(header, 0, 100)
+                    val magic = cString(header, 257, 6)
+                    val prefix = if (magic.startsWith("ustar") && magic.length == 5) cString(header, 345, 155) else ""
+                    if (prefix.isNotEmpty()) "$prefix/$base" else base
+                }
+                pendingLongName = null
+                when (type) {
+                    '0', '\u0000', '5' -> Unit
+                    else -> throw java.io.IOException(
+                        "pack '$packId' archive contains a disallowed entry type '$type' ($name)"
+                    )
+                }
+                if (name.isEmpty() || name.startsWith("/") || name.contains('\u0000') ||
+                    name.split('/').any { it == ".." }
+                ) {
+                    throw java.io.IOException("pack '$packId' archive contains an unsafe path: $name")
+                }
+                if (padded > 0 && gz.skipNBytesCompat(padded) != padded) {
+                    throw java.io.IOException("pack '$packId' archive is truncated")
+                }
+                entries++
+            }
+            if (entries == 0) throw java.io.IOException("pack '$packId' archive is empty")
+        }
+    }
+
+    private fun readFully(input: java.io.InputStream, buf: ByteArray): Boolean {
+        var off = 0
+        while (off < buf.size) {
+            val n = input.read(buf, off, buf.size - off)
+            if (n < 0) return false
+            off += n
+        }
+        return true
+    }
+
+    private fun java.io.InputStream.skipNBytesCompat(n: Long): Long {
+        var left = n
+        val buf = ByteArray(8192)
+        while (left > 0) {
+            val r = read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+            if (r < 0) break
+            left -= r
+        }
+        return n - left
+    }
+
+    private fun cString(b: ByteArray, off: Int, len: Int): String {
+        var end = off
+        while (end < off + len && b[end] != 0.toByte()) end++
+        return String(b, off, end - off, Charsets.UTF_8)
+    }
+
+    private fun parseTarOctal(b: ByteArray, off: Int, len: Int): Long {
+        if ((b[off].toInt() and 0x80) != 0) return -1 // base-256 sizes are never produced by our CI
+        val s = cString(b, off, len).trim { it == ' ' || it == '\u0000' }
+        if (s.isEmpty()) return 0
+        return s.toLongOrNull(8) ?: -1
+    }
+
+    /** Deletes a file or tree without ever following a symlink (a link is removed, not its target). */
+    internal fun deleteTreeNoFollow(root: File) {
+        val path = root.toPath()
+        if (!java.nio.file.Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return
+        try {
+            java.nio.file.Files.walkFileTree(path, object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                override fun visitFile(
+                    file: java.nio.file.Path,
+                    attrs: java.nio.file.attribute.BasicFileAttributes,
+                ): java.nio.file.FileVisitResult {
+                    java.nio.file.Files.deleteIfExists(file)
+                    return java.nio.file.FileVisitResult.CONTINUE
+                }
+
+                override fun postVisitDirectory(
+                    dir: java.nio.file.Path,
+                    exc: java.io.IOException?,
+                ): java.nio.file.FileVisitResult {
+                    java.nio.file.Files.deleteIfExists(dir)
+                    return java.nio.file.FileVisitResult.CONTINUE
+                }
+            })
+        } catch (e: java.io.IOException) {
+            Log.w(TAG, "deleteTreeNoFollow: could not fully remove ${root.absolutePath}: ${e.message}")
+        }
     }
 
     private fun extractTarGzAsset(
