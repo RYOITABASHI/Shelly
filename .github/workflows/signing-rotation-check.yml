@@ -19,7 +19,7 @@ on:
   push:
     # Only branches allowed by the `release-signing` environment's deployment
     # branch policy can read the signing secrets.
-    branches: [main, fix/release-signing, fix/rotation-permission-capability]
+    branches: [main]
     paths:
       - 'signing/**'
       - 'scripts/signing/**'
