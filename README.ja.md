@@ -477,7 +477,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | ClosePaw への引き継ぎ — ゴールを ClosePaw（スマホ操作アプリ）へ渡すエージェントアクション（明示 Intent、実行ごとの Review、「引き継ぎ済み」で終了） | 🟡 Experimental。実装済み・実機未検証。ClosePaw からの結果受け取りは未対応（Phase 2 は上流の変更が必要） |
 | llama.cpp を b11433 に固定し sha256 で検証 | 🟡 実装済み、実機では未検証 |
 | 追加ツールパック — `shelly install <pack>` / `--list` / `uninstall`、ビルドごとの sha256 固定、アトミックなインストール、未導入コマンドの案内 | 🟡 `dev-tools` のダウンロード→展開→実行は実機検証済み（2026-08-29、Galaxy Z Fold6、N=1）。2026-10-29 の sha256 固定・アトミック差し替え・オフライン時のエラー・`--list`・`uninstall` は実装・テスト済みだが実機未検証。パックのツールは今も APK に同梱されているため、APK はまだ小さくなっていない |
-| `shelly device` — シェルから battery / info / clipboard / notify / toast / vibrate / tts / share（Termux:API の一部を組み込み、レート制限あり、エージェントのクリップボード読み取りは要承認） | 🟡 実装済み、実機では未検証 |
+| `shelly device` — シェルから battery / info / clipboard / notify / toast / vibrate / tts / share（Termux:API の一部を組み込み、レート制限あり、エージェントのクリップボード読み取りは要承認） | ✅ 実機検証済み（Galaxy Z Fold6、N=1、2026-10-29）: battery、info、clipboard set/get（読み取り通知とバックグラウンドでの拒否を含む）、notify と削除、toast、vibrate、tts、前面での共有シート、隠しファイルの共有拒否、回数制限。バックグラウンド時の「タップして共有」通知はまだ未確認 |
 | 配布 | 🟡 GitHub Releases(`android-latest`)のみ。Playストア/F-Droidへの掲載はまだありません |
 
 ---

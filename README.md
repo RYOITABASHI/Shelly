@@ -500,7 +500,7 @@ Full verification log with dates, devices, and evidence for every area: **[docs/
 | ClosePaw hand-off — agent action that passes a goal to the ClosePaw phone-use app (explicit intent, per-run Review, ends "handed off") | 🟡 experimental, implemented, not yet verified on device; ClosePaw returns no result yet (Phase 2 needs upstream changes) |
 | llama.cpp pinned to b11433 with sha256 verification | 🟡 implemented, not yet verified on device |
 | Optional tool packs — `shelly install <pack>` / `--list` / `uninstall`, sha256 pinned per build, atomic install, not-found hint | 🟡 download → extract → run verified on device for `dev-tools` (2026-08-29, Galaxy Z Fold6, N=1); the 2026-10-29 pinning, atomic swap, offline error, `--list` and `uninstall` are implemented and tested but not yet verified on device; the APK still bundles every pack tool, so the APK is not smaller yet |
-| `shelly device` — battery / info / clipboard / notify / toast / vibrate / tts / share from the shell (built-in Termux:API subset, rate limited, clipboard read gated for agents) | 🟡 implemented, not yet verified on device |
+| `shelly device` — battery / info / clipboard / notify / toast / vibrate / tts / share from the shell (built-in Termux:API subset, rate limited, clipboard read gated for agents) | ✅ verified on device (Galaxy Z Fold6, N=1, 2026-10-29): battery, info, clipboard set/get (incl. the read notice and the background refusal), notify/remove, toast, vibrate, tts, the foreground share sheet, hidden-file share refusals and the rate limit. Not yet observed: the background "Tap to share" notification |
 | Distribution | 🟡 GitHub Releases only (`android-latest`); no Play Store / F-Droid listing yet |
 
 ---
