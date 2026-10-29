@@ -240,7 +240,25 @@ function storageInfo() {
   return Number.isFinite(total) && Number.isFinite(avail) ? { total, avail } : null;
 }
 
+// Written by the app on every start (AppInfoSnapshot.kt): an app uid cannot run
+// `dumpsys package` / `dumpsys deviceidle`, so this is the reliable source.
+function appInfoSnapshot() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(HOME, '.shelly', 'app-info.json'), 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
 function appPackageInfo() {
+  const snap = appInfoSnapshot();
+  if (snap && snap.versionCode) {
+    return {
+      versionName: String(snap.versionName || ''),
+      versionCode: String(snap.versionCode),
+      notif: typeof snap.notificationsEnabled === 'boolean' ? String(snap.notificationsEnabled) : undefined,
+    };
+  }
   const r = sh('/system/bin/dumpsys', ['package', 'dev.shelly.terminal'], 10000);
   const out = r ? r.out : '';
   const pick = (re) => (out.match(re) || [])[1];
@@ -264,6 +282,10 @@ function allFilesAccess() {
 }
 
 function batteryExempt() {
+  const snap = appInfoSnapshot();
+  if (snap && typeof snap.ignoringBatteryOptimizations === 'boolean') {
+    return snap.ignoringBatteryOptimizations ? 'exempt (unrestricted)' : 'NOT exempt (may be killed in background)';
+  }
   const r = sh('/system/bin/dumpsys', ['deviceidle', 'whitelist'], 6000);
   if (!r || !r.out || /denied|Permission/i.test(r.out)) return 'unknown (cannot probe from shell)';
   return /dev\.shelly\.terminal/.test(r.out) ? 'exempt (unrestricted)' : 'NOT exempt (may be killed in background)';

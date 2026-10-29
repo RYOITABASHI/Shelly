@@ -19,6 +19,8 @@
  * throughout this test suite (see agent-quality-gate-shell-emit.test.ts).
  */
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 const SCRIPT_PATH = path.join(__dirname, '..', 'modules', 'terminal-emulator', 'android', 'src', 'main', 'assets', 'shelly-doctor.js');
@@ -50,5 +52,26 @@ describe('shelly-doctor.js — real script execution (2026-07-27 crash regressio
     expect(output).toContain('- Codex signed in:');
     expect(output).toContain('issues/new?template=device-report.yml');
     expect(output).not.toContain(process.env.HOME || process.env.USERPROFILE || 'NO_HOME_SET_SENTINEL');
+  });
+  it('--report takes version, notifications and battery state from the app-info snapshot', () => {
+    // An app uid cannot run dumpsys, so on the phone these come from
+    // $HOME/.shelly/app-info.json written by AppInfoSnapshot.kt.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-home-'));
+    try {
+      fs.mkdirSync(path.join(home, '.shelly'));
+      fs.writeFileSync(
+        path.join(home, '.shelly', 'app-info.json'),
+        JSON.stringify({ versionName: '8.1.1', versionCode: 2650, notificationsEnabled: true, ignoringBatteryOptimizations: false }),
+      );
+      const output = execFileSync(process.execPath, [SCRIPT_PATH, '--report'], {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home },
+      });
+      expect(output).toContain('- Shelly: 8.1.1 (versionCode 2650)');
+      expect(output).toContain('- Notification permission: granted');
+      expect(output).toContain('- Battery optimization: NOT exempt');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
