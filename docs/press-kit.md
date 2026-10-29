@@ -16,12 +16,13 @@ Verified on a real Galaxy Z Fold6 (N=1):
 - Unattended scheduled agent firing (AlarmManager), end to end.
 - Ask AI, Teach mode, one-shot schedules, sourced multi-step briefings, hand-off narration, IME-aware layout, live theme switching.
 - Codex remote control: pairing, and running commands from the ChatGPT app.
+- A phone-app task from ChatGPT: `shelly closepaw --wait` → approval on the phone → ClosePaw on a background virtual display → result back in ChatGPT. Long multi-step goals are still unreliable.
 
 Implemented but not yet verified on device (the README says so):
 
 - The additions to remote control: `shelly codex trust`, host name, `--background`.
 - Registering agents by asking ChatGPT (`shelly agent add`).
-- The ClosePaw hand-off, as listed in the README Status table.
+- The ClosePaw hand-off as a scheduled-agent action (as opposed to a task from ChatGPT).
 - The MCP server, agent safety rules (POLICY-001), on-device speech-to-text.
 
 Known limits:
@@ -30,8 +31,6 @@ Known limits:
 - Not on Google Play or F-Droid.
 - Remote control is marked Experimental and needs a ChatGPT sign-in (API keys are not supported).
 - The security model is a normal Android app sandbox. See [SECURITY.md](../SECURITY.md).
-
-Note on the ClosePaw row: the README demo clip shows a ChatGPT-to-ClosePaw run, while the Status table still lists the hand-off as not yet verified on device. Treat the table as the conservative statement, and the clip as one recorded run.
 
 ## How the ChatGPT-to-phone flow works
 

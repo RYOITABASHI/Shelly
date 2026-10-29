@@ -431,6 +431,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | MCP サーバーの仕様 2026-07-28（ステートレス）対応、旧リビジョンと併存 | 🟡 実装済み、実機では未検証 |
 | 端末内音声認識（キー不要、Android SpeechRecognizer） | 🟡 実装済み、実機では未検証 |
 | ローカルモデル MiniCPM5-2B | 🟡 Experimental。評価したうえで不採用: Fold6 でルーティングは Qwen3.5-2B の 100% に対し 83%、ネイティブのツール呼び出しは 88% に対し 50% |
+| ChatGPT からのスマホアプリ操作 — Codex が `shelly closepaw --wait "<ゴール>"` を実行 → 持ち主がスマホで承認 → Shelly 用 ClosePaw ビルドがバックグラウンドの仮想ディスプレイで操作 → 結果が ChatGPT に返る | ✅ 実機検証済み（Galaxy Z Fold6、N=1）。例: Spotify のプレイリスト保存、Google マップのリストへの保存。長い多段のゴールはまだ不安定 |
 | ClosePaw への引き継ぎ — ゴールを ClosePaw（スマホ操作アプリ）へ渡すエージェントアクション（明示 Intent、実行ごとの Review、「引き継ぎ済み」で終了） | 🟡 Experimental。実装済み・実機未検証。ClosePaw からの結果受け取りは未対応（Phase 2 は上流の変更が必要） |
 | llama.cpp を b11433 に固定し sha256 で検証 | 🟡 実装済み、実機では未検証 |
 | 配布 | 🟡 GitHub Releases(`android-latest`)のみ。Playストア/F-Droidへの掲載はまだありません |
