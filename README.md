@@ -43,7 +43,7 @@
 
 <p align="center">
   <sub>Shelly also wakes on its own alarm — screen off — and runs scheduled agents with your own AI accounts, local LLMs and a real terminal underneath: the Codex CLI in an app-owned JNI PTY, bash / git / Python 3 / Node.js bundled in the APK, and API-backed AI panes beside it.</sub><br>
-  <sub><em>The full unattended cycle is <b>verified end-to-end on a real Galaxy Z Fold6 (N=1)</b> — the <a href="#status">Status</a> table tracks exactly what is and isn't verified.</em></sub>
+  <sub><em>The full unattended cycle is <b>verified end-to-end on a real Galaxy Z Fold6 (N=1)</b> — the <a href="#status">Status</a> table tracks exactly what is and isn't verified. Running it on another phone? Paste <code>shelly doctor --report</code> into a <a href="https://github.com/RYOITABASHI/Shelly/issues/new?template=device-report.yml">device report</a>.</em></sub>
 </p>
 
 <p align="center">
