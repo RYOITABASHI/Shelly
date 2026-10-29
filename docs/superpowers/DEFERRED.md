@@ -16,6 +16,7 @@
 
 ## History
 
+- 2026-10-29: CC（feat/optional-packs-publish、未push）が `shelly install <pack>` を正式なインストール経路に: sha256 のビルド時固定（CI がバイト再現可能な内容アドレス名アーカイブを Build APK 前に公開し `lib/optional-packs-pins.json` に固定）、検証必須化、アトミック導入、オフライン/404/容量不足の明確なエラー、`shelly install --list` と `shelly uninstall`、`command_not_found_handle` の案内（SHELLY_HELPER_SHIM v21 / BASHRC_VERSION 269）。追加ツール候補（tree/fd/zip ほか）と APK 縮小計画（APK 694 MB の内訳、最大候補は 11 ツールではなく cli-tools.tar.gz 143 MB）を P1 エントリに記録、何も削除していない。実機未検証。
 - 2026-10-17: CC（feat/closepaw-codex-approval、未push）が「ClosePaw 引き継ぎを ChatGPT 内の Codex 承認カードで承認する」要望を openai/codex rust-v0.162.0 ソースで調査し、**端末承認のスキップは実装しない**と判定（Codex の `prompt` ルールはシェル構文で回避可能・Shelly が人間のタップを観測する手段なし）。ChatGPT 内に**追加の**承認カードを出すだけの部分実装（Settings トグル + Shelly 管理の Codex ルール）も試作したが、承認が二重になりデモ・UX 上の利点がないためプロダクトオーナー判断で**マージせず破棄**。端末承認は不変。下記 P2 エントリ参照。
 - 2026-10-16: CC（fix/v8.1.1-ondevice、未push）が v8.1.0（build 2593）実機検証の4件を修正: (1) `shelly closepaw wait` / `--wait` を既定100秒のソフト予算に（`--timeout` で上書き可）、未完了時は stdout に「ClosePaw is still running (request <id>). Run again to keep waiting: shelly closepaw wait <id>」を出して exit 124（SHELLY_HELPER_SHIM v16 / BASHRC_VERSION 264）— ChatGPT/Codex のリモート exec タイムアウトで打ち切られる問題; (2) 「Every day at 09:45, … with Perplexity …」の先頭スケジュール節（at 09:45）がステップ1化し per-step ツール指定＝高リスク扱いになっていた NL 分割バグ（derivePrompt が時刻も除去、isScheduleOnlyClause が英語スケジュール節を認識）; (3) 内容の違うリクエスト（LLM論文/Perplexity）に既存スキル（AI論文/arXiv+HF）を「再利用」と表示していた件（同一タスク判定のカバレッジ 0.5→0.75、スケジュール語を除外、名指しツールがスキルと異なれば不一致）; (4) 出力の `[1] [1]` 重複引用マーカーを remapCitations で畳み込み（PlanSpec executor ポートも同期、CURRENT_EXECUTOR_VERSION 11）。いずれも実機未検証。Windows の本 worktree では `plan-executor.test` ほか4スイート18件が変更前から失敗（環境依存、本変更と無関係を stash で確認）。
 - 2026-10-15: CC（fix/agent-named-tool-scheduled）が最終レビュー H1/H2/L1/L2 を修正（研究意図の同意拡張による残りの外部送信経路を封鎖）。L3/L4 は記録のみ。
@@ -4615,6 +4616,93 @@ Shelly の責務は **「危険な WebView の代わりに安全な Custom Tabs 
 **実機再検証は次回オンデバイスQA枠で必須**(本セッションはコード修正のみ、Windows環境での`tsc`確認は未実施)。
 
 → sync: README Status表の変更なし(いずれも既存機能のcorrectness fix/内部UI)。
+
+---
+
+### `shelly install <pack>` を正式なインストール経路に — sha256 ビルド固定・アトミック導入・`--list`/`uninstall`・未導入コマンド案内 実装済み・実機未検証／APK 縮小は計画のみ (P1)
+
+**2026-10-29、CC（ブランチ `feat/optional-packs-publish`、未push）**。下の 2026-08-29 エントリ（ダウンロード→展開→実行の実機 PASS）の続き。
+
+**着手時点の実態（依頼文の前提との差）**: 両パック（`dev-tools` / `editor-tools`）は 2026-08-25 から既に `published: true` で、`optional-packs-latest` に実アーカイブがある（2026-10-29 01:57 UTC、`df6bb820a` の main ビルドで再アップロード済み、dev-tools 23,911,173 B / editor-tools 4,452,875 B）。ただし `sha256: null` で**整合性検証なし**（CI が毎回 `--clobber` で上書きし、gzip/tar が非決定的で毎回ハッシュが変わるため固定できなかった）。また 11 ツールは今も全て APK に同梱されており（同梱版が優先）、パックは「同梱版が欠けた場合の補完」以上の意味をまだ持たない。
+
+**実装したこと**:
+1. **sha256 のビルド時固定**（`lib/optional-packs-pins.json` 新設、コミット版は空）: CI の新ステップ「Build and publish optional tool pack archives」を **Build APK の前**に移動。アーカイブをバイト再現可能に作成（`tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu | gzip -9 -n`、ローカルで同一入力→同一 sha256 を確認）、`shelly-pack-<id>-arm64-<sha16>.tar.gz` という内容アドレス名でアップロード（同名が既にあれば再アップロードしない＝上書きなし）、リリース側 digest と照合後に pins JSON を書き、Metro がそれをバンドルする。よって各 APK は**自分と同じ CI 実行で作られたアーカイブだけ**を受け入れる。旧名 `shelly-pack-<id>-arm64.tar.gz` は旧ビルド互換のため `--clobber` で継続アップロード。内容アドレス版はパックごとに新しい 10 個を残して古いものを削除（削除済みを指す古い APK は「update Shelly」の明確なエラー）。PR／feature ブランチ／ローカルビルドは pins が空なので `shelly install` は「このビルドには固定済みアーカイブが無い」と拒否する。
+2. **検証必須化**（`lib/optional-pack-installer.ts`）: pin（sha256＋正確なサイズ）とネイティブ `verifyPackArchive` が無ければ拒否。「sha256 が null なら検証スキップ」の経路は削除。成功・失敗どちらでも DownloadManager 行とアーカイブを削除（`removeApkDownload`）。
+3. **アトミック導入**（`LibExtractor.extractPack`）: 旧実装は既存パックを先に消してその場で展開していた。`packs/.staging-<id>-<ts>` へ展開→宣言ツールが全部あるか確認（欠けたら失敗）→既存を `.old-` へ退避→rename で差し替え。失敗時は既存パックが無傷で残る。
+4. **明確なエラー／オフライン**: DownloadManager の reason を文言化（404/410＝固定アーカイブ削除済み→Shelly を更新、HTTP エラー、容量不足、通信断）。`paused` + 「ネットワーク待ち」が約 20 秒続いたら「オフラインのようです。導入済みツールはオフラインでも動きます」で即失敗（従来は最大 30 分待ち）。JS 側上限 18 分＜シム側 20 分。同一パックの同時インストールは 2 本目を拒否（同じダウンロード先ファイルを奪い合うため）。
+5. **`shelly install --list`（`list`/`-l`/引数なしも同じ）と `shelly uninstall <pack>`**（SHELLY_HELPER_SHIM v21、BASHRC_VERSION 268→269）: 一覧は各パックを `[installed]` / `[bundled with this APK]` / `[partially installed]` / `[not installed]` で表示。未知 ID はシムで即拒否。`uninstall` は `$SHELLY_LIB_DIR/packs/<id>` を Node `fs.rmSync` で削除（RN 往復なし、同梱版は残る）。
+6. **未導入コマンドの案内**: `__shelly_pack_hint` の文言を `bash: <cmd>: command not found` + `<cmd> is available: shelly install <pack>` に変更。さらに `command_not_found_handle`（以前は存在しなかった）を追加・`export -f`。対話シェルでは 11 ツールのラッパー関数が自前で同じ案内を出すので、フックが効くのはラッパー関数を継承しない `bash script.sh` 等の子シェル。ツールが同梱版かパック版で実在する場合は誤案内しない（素の not found のみ）。自動ダウンロードは一切しない。
+7. 同期テスト追加: シムの `OPTIONAL_PACKS` 一覧・`command_not_found_handle` の case 一覧が `lib/optional-packs.ts` と完全一致することを `__tests__/optional-packs-bashrc-sync.test.ts` で検証。
+
+**検証**: jest（optional-packs / installer / bashrc-sync / pseudo-shell-install ＋ HomeInitializer.kt を読む全 26 スイート 722 件）PASS、`tsc --noEmit` PASS、生成される bash（`bash -n`＋空 PATH での関数テスト）と Node シム（`node --check`＋ `install --list` / 未知 ID / `uninstall` 2回の実行）をローカルで抽出実行して確認。CI ステップは YAML パース＋`bash -n`＋決定性のローカル再現まで。**CI 本番実行・実機は未確認**。
+
+**次回オンデバイス QA でやること（このブランチが main に入り、リリースビルドが出た後）**:
+1. CI ログの「Build and publish optional tool pack archives」で `pack=dev-tools asset=shelly-pack-dev-tools-arm64-<sha16>.tar.gz` と pins JSON が出ていること、`gh release view optional-packs-latest --json assets` に内容アドレス名が並ぶこと。2回目の main ビルドで `already published; not re-uploading` が出る（＝決定的）こと。
+2. 実機で次をそのまま入力:
+   - `shelly install --list` → 2 パックとも `[bundled with this APK]`
+   - `shelly install dev-tools` → `Verified: sha256 …` 行が出て成功、`shelly install --list` で `[installed]`
+   - `shelly uninstall dev-tools` → `Removed pack 'dev-tools'.`、もう一度で `is not installed.`
+   - 機内モードで `shelly install editor-tools` → 約 20 秒で offline エラー
+   - `shelly install bogus` → `unknown pack 'bogus'` と一覧、exit 1
+   - 案内の確認: `PATH=/nonexistent bash -c 'nosuchtool'` → `bash: nosuchtool: command not found` のみ（同梱 11 ツールは全部実在するので、パック名の案内は同梱版が無い環境でしか出ない — 実機で案内文を見るには APK 縮小後か、手で同梱コピーを退避する必要がある）
+3. **editor-tools をパック経由で実行したことは一度もない**（2026-08-29 に実機で走ったのは dev-tools の 5 ツールのみ）。`published` は CI が公開している事実に基づき dev-tools と同じ扱いのままにしたが、vim/tmux/nano/less のパック版（`LD_PRELOAD=libexec_wrapper.so` 経由）実行は未検証。
+
+**追加ツール候補（Step 3、今回は出荷しない）**: Termux aarch64 `Packages` インデックス（packages-cf.termux.dev、2026-10-29 取得）の `Depends` 閉包を機械的に計算して分類した。バイナリ自体はダウンロード・ELF 検査していない。新ツールはパック専用（APK 非同梱）になる初のケースで、実機確認なしに `published` にすべきでないため候補止まり。
+
+| ツール | Termux 版 | deb / 展開サイズ | 依存（閉包） | 判定 |
+|---|---|---|---|---|
+| tree | 2.3.2 | 36 KB / 140 KB | libandroid-support（同梱済） | ◎ 最も低リスク |
+| fd | 10.5.0 | 954 KB / 3.2 MB | なし（Rust） | ◎ |
+| zip | 3.0-7 | 142 KB / 548 KB | libandroid-support, libbz2（同梱済） | ◎（`unzip` と対） |
+| htop | 3.5.3 | 131 KB / 444 KB | ncurses（同梱済） | ○ 動くはずだが Android の `/proc` 制限で他プロセスがほぼ見えない、価値低め |
+| git-lfs | 3.8.1 | 3.8 MB / 14 MB | なし（Go） | △ git が `git-lfs` を execvp で起動する＝パックディレクトリ（exec ラベル無し）から直接 exec される経路になり Knox/SELinux で失敗する可能性が高い。`GIT_EXEC_PATH` 経由の linker64 ラッパー設計が別途必要 |
+| wget | 1.25.0 | 281 KB / 792 KB | 新規 libidn2, libunistring, libuuid（＋同梱済 openssl/pcre2/zlib） | △ CA 証明書パスが Termux prefix（`/data/data/com.termux/files/usr/etc/tls`）固定、`SSL_CERT_FILE` 依存。curl 同梱済みで優先度低 |
+| bat | 0.26.1 | 2.3 MB / 5.3 MB | 新規 libgit2（＋同梱済 libssh2/openssl/less） | △ 新規 lib 1 本をパックに同梱し LD_LIBRARY_PATH にパックを足す必要 |
+| rsync | 3.5.1 | 302 KB / 648 KB | 新規 libpopt, xxhash, liblz4, zstd, libidn2 ほか（閉包 26） | △ 依存多め、ssh 経由転送の実機確認要 |
+| ffmpeg | 9.0.2 | 11.6 MB / 37 MB | 閉包 102 パッケージ、約 450 MB | × パック化に不向き |
+| imagemagick | 7.1.2 | 1.8 MB / 6.9 MB | 閉包 83 パッケージ、約 280 MB、設定ファイル（delegates.xml/policy.xml）が prefix 固定 | × |
+
+推奨の第 1 弾: `extra-tools` パック = tree / fd / zip（全依存が同梱済み、prefix パス問題なし）。実装は既存の仕組みそのまま（CI の Termux 取得を「jniLibs ではなくパックのステージングへ」置く分岐、ラッパー関数 3 本、manifest/シム一覧/`command_not_found_handle` の case 追加）で、実機で `tree --version` / `fd --version` / `zip -v` が通ってから `published` にする。
+
+**APK 縮小（Step 4）— 計測と計画のみ、何も削除していない**
+
+計測元: main ビルド run 40801793361（`df6bb820a`、2026-10-29）。署名済み APK **694,000,356 B**（`.so` は非圧縮格納、Actions アーティファクトの zip は 394 MB）。
+
+| 区分 | 中身（主なもの） | サイズ |
+|---|---|---|
+| Codex ネイティブ（CI 取得） | `libcodex_tui.so` 198M、`libcodex_code_mode_host` 72M、codex 用 libc++ 1.2M | 約 271 MB |
+| `assets/cli-tools.tar.gz` | `npm install @openai/codex@0.163.0 --cpu=arm64 --os=linux` の node_modules。中身の大半は `@openai/codex-linux-arm64`（npm 上 unpacked 385 MB / 45 ファイル）。端末では `$libDir/node_modules` に展開される | 143 MB（展開後 約 385 MB） |
+| コミット済み jniLibs | node 44.5M、ICU（data 33.1M + i18n 3.4M + uc 2.0M）、libpython313 5.4M、libcrypto3 5.2M、rg 4.9M、vim 3.9M、git 3.4M、sqlite3 1.5M ほか | 118 MB |
+| Termux 取得（CI） | gh 42.2M、git-credential-store/cache 各 3.6M、git-remote-http(s) 各 2.1M、gpg 1.1M ほか | 約 57 MB |
+| その他 assets | python3.tar.gz 8.9M、npm.tar.gz 3.0M、pip.tar.gz 1.6M、ほか JS | 約 15 MB |
+| 残り | RN/Hermes バンドル、dex、リソース | 約 90 MB |
+
+パック 11 ツールが APK に占める分: gh 42.2M、python3 一式 約 15.9M（libpython313 5.4M + stdlib 8.9M + pip 1.6M）、rg 4.9M、vim 4.2M（+libsodium）、sqlite3 1.5M、tmux 1.2M（+libevent）、jq 0.9M（+libjq/libonig）、nano 0.4M、make 0.2M、less 0.2M、unzip 0.1M ＝ **約 72 MB（APK の約 10%）**。
+
+**今回削除しなかった理由（依頼の条件 (a)(b) を満たさない）**:
+- **gh（最大 42 MB）**: アプリ自身が呼んでいる — `components/layout/BuildsModal.tsx` が `gh run view <id> -R <repo> --log-failed` を実行（ビルド失敗ログ表示）。条件 (a) に抵触。
+- **rg**: Codex（中核フロー）が検索に常用。外すと Codex の挙動が劣化。
+- **python3**: `codex()` の環境が python3/stdlib を前提に組まれている（BASHRC v246/v248）。
+- **パックが自己完結していない（全ツール共通の阻害要因）**: `python3` の実体は 4 KB のスタブ（`libpython3.so`）で `libpython3.13.so` は APK 側にしか無い。同様に jq→libjq/libonig、vim→libsodium、tmux→libevent、less/nano/vim/tmux→ncurses。今のパックは「同梱ライブラリがある前提」でしか動かず、APK から外すとパック版も動かない。
+- **実機確認ゼロでは不可**: 既存インストールへの影響（下記）を実機で見ずに同梱物を減らすのは、過去の Knox/linker64 の「ローカルでは正しく見えた」実績から危険。
+
+**具体的な縮小計画（順番）**:
+1. **最大の候補は 11 ツールではなく `cli-tools.tar.gz`（143 MB／展開後 385 MB）**。`codex.js` は `shelly-patcher.js` で `spawn(linker64, [libDir/codex_tui, …])` に書き換えられており、npm の linux-arm64 musl バイナリは実行されていない可能性が高い。参照箇所は `LibExtractor.kt:341`（展開）、`HomeInitializer.kt` の `linkCodeModeHostIntoRuntime`（`package.json` の version を読むだけ）、codex.js の "Missing optional dependency" 回避用 vendor symlink（BASHRC v41 系）。`npm install --omit=optional` + vendor ディレクトリを空スタブ化して JS dispatcher（`codex exec` 等の非対話サブコマンド経路）が動くかを実機で確認できれば、11 ツール全部の 2 倍のサイズが一度に減る。**要実機調査、Codex 経路なので CC レビュー必須**。
+2. `git-credential-store` / `git-credential-cache`（各 3.6 MB）は git 本体と同一ビルドの別コピー。git の builtin なので `git` への symlink（argv[0] ディスパッチ）で足りるか確認 → 約 7 MB。
+3. 11 ツールを外す前提作業: (i) パックに DT_NEEDED ライブラリを同梱（python3 は `libpython3.13.so` も）し、`_run` 経由の実行時に `LD_LIBRARY_PATH=<packDir>:$SHELLY_LIB_DIR` を付ける、(ii) BuildsModal の gh 呼び出しを「gh が無ければ `shelly install dev-tools` を案内」にする、(iii) gh を独立パック（`github-cli`、Go 単体バイナリで依存なし）に分ける。
+4. 外す順: gh（42 MB、自己完結）→ vim/tmux/nano/less（TUI 群、約 6 MB）→ sqlite3/jq/make/unzip（約 3 MB）。rg と python3 は Codex が使うので最後、または外さない。
+5. **既存インストールの移行**: `LibExtractor.extractAll` は LIBS マップの各エントリを APK から `termux-libs/` へコピーするだけで、マップから消えたファイルを削除しない。`termux-libs` 全体を消す経路も LibExtractor.kt には無い（削除は npm ディレクトリと tar アセット単位のみ、`HomeInitializer.cleanupRemovedCliRuntime` も claude/gemini 関連の固定リストのみ — 2026-10-29 grep で確認）。よって既存ユーザーは APK 更新後も旧コピー（同梱版扱い）を持ち続け、壊れない。代わりに「古い同梱版が永久に残り、パックで更新されない」状態になるので、外すタイミングで `termux-libs/<tool>` を `packs/<id>/` へ移す（または削除して案内に任せる）一回限りの移行処理を HomeInitializer に入れる。新規ユーザーは `command_not_found` 案内で `shelly install` に誘導される。
+6. 各段で README Status と本エントリを同期（「APK は小さくなっていない」の一文を実測値に置き換える）。
+
+**Open risks**:
+- CI ステップは本番未実行。初回 main ビルドで `gh release upload`（`--clobber` なし）・`delete-asset`・`jq` の正規表現が想定通り動くか要確認。失敗すると APK ビルド前に止まる（＝リリースは出ない、壊れた APK も出ない）。
+- 決定性は GNU tar/gzip のバージョンに依存。ランナー更新でハッシュが変わっても新しい内容アドレス名が増えるだけで害は無いが、10 個の保持枠を早く消費する。
+- `command_not_found_handle` は `export -f` しているので Codex 等が起動する子 bash にも効く。メッセージ先頭は従来どおり `bash: <cmd>: command not found` なので stderr を grep するスクリプトへの影響は無いはず。
+- HomeInitializer.kt は別エージェントが並行編集中。BASHRC_VERSION 269 / SHELLY_HELPER_SHIM v21 が衝突する可能性あり（マージ時に大きい方へ寄せ、両方の changelog を残す）。
+
+→ sync: README.md / README.ja.md の「Bundled Shelly commands」表と Status 表に 1 行ずつ追加済み。CLAUDE.md への反映は不要（APK 構成が変わったら「バンドルツール」行を更新）。
+
+**優先度**: P1（整合性・導入の堅牢化はコード上完了、CI 本番実行と実機 QA 待ち）。APK 縮小は上記計画の 1（cli-tools）を P1 調査、3〜5 を P2。
 
 ---
 

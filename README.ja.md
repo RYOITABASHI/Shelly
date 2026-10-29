@@ -257,6 +257,7 @@ Shelly のフォアグラウンド AI CLI は **Codex** です。それ以外は
 | `shelly-update-clis codex --check-only` | 現在の Codex ランタイムをプローブ。ランタイムのインストールは通常 Updates UI から行います。 |
 | `shelly-cs` / `cs` | GitHub Codespaces のヘルパーコマンド。 |
 | `shelly teach start [name]` / `stop` / `cancel` / `status` | 実行したコマンドを再利用可能なワークフローとして記録します（[学習ループ](#学習ループ)参照）。 |
+| `shelly install <pack>` / `shelly install --list` / `shelly uninstall <pack>` | 追加ツールパック（`dev-tools`: python3, sqlite3, jq, make, gh / `editor-tools`: vim, tmux, nano, less, unzip, rg）。各リリースビルドがパックアーカイブの sha256 を固定しており、ダウンロード後に検証してから展開します。インストールしたツールはオフラインでも、開いたままのタブでもすぐ使えます。パックのツールが無いときは `<cmd> is available: shelly install <pack>` と表示され、コマンドを実行しない限り何もダウンロードしません。現状これらのツールは APK にも同梱されているため、パックが意味を持つのはコピーが欠けている場合だけです。 |
 | `shelly workflow list` / `show <name>` / `run <name>` / `delete <name>` | 保存済みワークフローの一覧・表示・現在のターミナルでの再生・削除。 |
 
 **まず試すなら:** プロバイダのキーを 1 つ設定したら、任意のペインで `@agent` に続けて普通の言葉の指示と時刻を書いてみてください。例: `@agent 月・火・水・木・金の朝8時に、最新の STEAM×AI 教育に関する論文とニュースを集めて、要約して Obsidian に保存して`（曜日は「平日」とまとめず区切って並べ、直後に時刻を続けるのがコツです）。Shelly はこれを端末上のスケジュール済みエージェントに変換します（[上のデモ](#動作デモ)がまさにこれです）。
@@ -438,6 +439,7 @@ Scouter は Shelly のホーム画面エージェント起動パッド兼ヘル�
 | ChatGPT からのスマホアプリ操作 — Codex が `shelly closepaw --wait "<ゴール>"` を実行 → 持ち主がスマホで承認 → Shelly 用 ClosePaw ビルドがバックグラウンドの仮想ディスプレイで操作 → 結果が ChatGPT に返る | ✅ 実機検証済み（Galaxy Z Fold6、N=1）。例: Spotify のプレイリスト保存、Google マップのリストへの保存。長い多段のゴールはまだ不安定 |
 | ClosePaw への引き継ぎ — ゴールを ClosePaw（スマホ操作アプリ）へ渡すエージェントアクション（明示 Intent、実行ごとの Review、「引き継ぎ済み」で終了） | 🟡 Experimental。実装済み・実機未検証。ClosePaw からの結果受け取りは未対応（Phase 2 は上流の変更が必要） |
 | llama.cpp を b11433 に固定し sha256 で検証 | 🟡 実装済み、実機では未検証 |
+| 追加ツールパック — `shelly install <pack>` / `--list` / `uninstall`、ビルドごとの sha256 固定、アトミックなインストール、未導入コマンドの案内 | 🟡 `dev-tools` のダウンロード→展開→実行は実機検証済み（2026-08-29、Galaxy Z Fold6、N=1）。2026-10-29 の sha256 固定・アトミック差し替え・オフライン時のエラー・`--list`・`uninstall` は実装・テスト済みだが実機未検証。パックのツールは今も APK に同梱されているため、APK はまだ小さくなっていない |
 | 配布 | 🟡 GitHub Releases(`android-latest`)のみ。Playストア/F-Droidへの掲載はまだありません |
 
 ---
