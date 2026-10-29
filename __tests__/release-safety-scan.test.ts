@@ -158,4 +158,12 @@ describe('release-safety-scan', () => {
     const real = Buffer.concat([packed, Buffer.from('\0' + FAKES.openai + '\0', 'latin1')]);
     expect(scan(write('lib/libreal.so', real), '').code).toBe(1);
   });
+  it('scans files inside an explicitly given build-output dir', () => {
+    const apkDir = path.join(dir, 'android/app/build/outputs/apk/release');
+    write('android/app/build/outputs/apk/release/notes.txt', FAKES.github + '\n');
+    expect(scanner.run([apkDir], '').code).toBe(1);
+    // Walking the tree from above still skips build output.
+    write('src/ok.txt', 'hello\n');
+    expect(scanner.run([dir], '').code).toBe(0);
+  });
 });

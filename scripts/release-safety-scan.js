@@ -234,17 +234,18 @@ function scanFile(file, findings, stats) {
 
 let skipFile = null;
 
-function walk(target, findings, stats, explicit = false) {
-  const norm = target.split(path.sep).join('/');
-  // Build-output fragments are only skipped while walking the source tree; a
-  // path passed on the command line (e.g. the release APK dir) is always scanned.
-  if (!explicit && SKIP_PATH_FRAGMENTS.some((f) => (norm + '/').includes(f))) return;
+function walk(target, findings, stats, root = target) {
+  // Build-output fragments are matched only below the path given on the command
+  // line, so the source-tree scan skips android/app/build/ while an explicit
+  // target such as the release APK dir (and everything in it) is scanned.
+  const rel = path.relative(root, target).split(path.sep).join('/');
+  if (rel && SKIP_PATH_FRAGMENTS.some((f) => (rel + '/').includes(f))) return;
   let st;
   try { st = fs.lstatSync(target); } catch (_) { return; }
   if (st.isSymbolicLink()) return;
   if (st.isDirectory()) {
     if (SKIP_DIRS.has(path.basename(target))) return;
-    for (const name of fs.readdirSync(target)) walk(path.join(target, name), findings, stats);
+    for (const name of fs.readdirSync(target)) walk(path.join(target, name), findings, stats, root);
   } else if (st.isFile()) {
     if (skipFile && path.resolve(target) === skipFile) return;
     scanFile(target, findings, stats);
@@ -293,7 +294,7 @@ function run(targets, allowlistFile) {
       return { code: 2, findings, stats, allowed: 0 };
     }
     const before = { files: stats.files, skipped: stats.skipped.length };
-    walk(t, findings, stats, true);
+    walk(t, findings, stats);
     // Fail closed: an explicit target that scanned nothing, or whose own files
     // were skipped, would otherwise pass silently.
     if (stats.files === before.files || stats.skipped.length > before.skipped) {
