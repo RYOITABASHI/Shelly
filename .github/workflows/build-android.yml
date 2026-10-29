@@ -100,6 +100,9 @@ jobs:
       - name: Unit tests
         run: pnpm test -- --runInBand
 
+      - name: Release-safety secret scan (source tree)
+        run: node scripts/release-safety-scan.js .
+
   build:
     needs: [quality, signing_mode]
     runs-on: ubuntu-latest
@@ -1090,6 +1093,16 @@ jobs:
           unzip -p "${apk}" lib/arm64-v8a/libshelly_cmd.so > /tmp/libshelly_cmd.so
           check_marker /tmp/libshelly_cmd.so 'shelly-cmd:v1:native-path-shim'
 
+      - name: Release-safety secret scan (APK + Codex runtime payload)
+        # Fail before anything is uploaded/published if a recognizable secret,
+        # private key, keystore, or signing password ended up in the artifacts.
+        # Node built-ins only; needs no secrets; findings are redacted in logs.
+        run: |
+          set -euo pipefail
+          node scripts/release-safety-scan.js \
+            android/app/build/outputs/apk/release \
+            "${RUNNER_TEMP}/codex-runtime.tar.gz"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -1313,6 +1326,13 @@ jobs:
               "${CODEX_RUNTIME_MANIFEST_NAME}" \
               --clobber
           fi
+
+          # Final gate: everything about to be published to the update channels.
+          scan_targets=("${release_apk}" "${UPDATE_MANIFEST_NAME}")
+          if [ -f "${CODEX_RUNTIME_MANIFEST_NAME}" ]; then
+            scan_targets+=("${CODEX_RUNTIME_MANIFEST_NAME}")
+          fi
+          node scripts/release-safety-scan.js "${scan_targets[@]}"
 
           if gh release view "${update_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release edit "${update_tag}" \

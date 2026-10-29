@@ -1,0 +1,32 @@
+# Release-safety scan allowlist (scripts/release-safety-scan.js).
+# Format, one rule per line:
+#   <path-glob> :: <substring-of-matched-value | *>
+#   <exact matched value>
+# Path is matched against "file!archive-entry" with forward slashes.
+# Every entry needs a reason. Never allowlist a value that could be real.
+
+# Public legacy debug keystore (pre-rotation "legacy-debug" signing mode, see
+# build-android.yml signing_mode). Intentionally committed; the release key is a
+# CI secret and is never in the repo.
+signing/legacy-debug.keystore :: *
+
+# --- Unit-test fixtures: obviously fake sequential/placeholder values used to
+# --- test the app's own secret redaction. Restricted to __tests__ and to the
+# --- specific fake substrings so a real token in a test still fails the scan.
+__tests__/** :: abcdefghijklmnopqrstuvwx
+__tests__/** :: ABCDEFGHIJKLMNOPQRSTUVWXYZ
+__tests__/** :: AAAABBBBCCCCDDDD
+__tests__/** :: AKIA1234567890ABCDEF
+__tests__/** :: AKIAABCDEFGHIJKLMNOP
+__tests__/** :: ASIAABCDEFGHIJKLMNOP
+__tests__/** :: AKIAIOSFODNN7EXAMPLE
+__tests__/** :: pplx-test-123
+__tests__/** :: sk-FAKE-
+__tests__/** :: sk-live-SUPER-SECRET-
+__tests__/** :: sk-API-SECRET-VALUE-
+__tests__/** :: sk-DOTENV-SECRET-
+__tests__/** :: gsk-HISTORY-SECRET-
+__tests__/** :: topsecretvalue123
+__tests__/** :: synthetic-key.
+__tests__/** :: cached-access-token-from-a-prior-action
+__tests__/** :: _RESULT_TOKEN_ff1

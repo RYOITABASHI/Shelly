@@ -33,6 +33,10 @@ jobs:
       - name: Unit tests
         run: pnpm test -- --runInBand
 
+      - name: Release-safety secret scan (OTA source)
+        # eas update bundles the JS from this checkout; fail before publishing.
+        run: node scripts/release-safety-scan.js .
+
       - name: Setup Expo
         uses: expo/expo-github-action@v8
         with:
