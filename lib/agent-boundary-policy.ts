@@ -62,7 +62,15 @@ export interface GateContext {
   strictPolicyPaths?: boolean;
 }
 
-const DEFAULT_SECRET_PATHS = ['.codex/auth.json', '.shelly/agents/.env'];
+/**
+ * `shelly device` bridge files (DeviceApi.kt): writing a request by hand,
+ * reading a result (it can hold clipboard text) or loading the client asset
+ * from an interpreter all bypass the `clipboard get` command check below.
+ * Also checked unconditionally on the dequoted command (see
+ * DEVICE_BRIDGE_FILE_RE) because bare relative names carry no `/`.
+ */
+const DEVICE_BRIDGE_SECRET_PATHS = ['.shelly-device-req-', '.shelly-device-result-', '.shelly-device.js'];
+const DEFAULT_SECRET_PATHS = ['.codex/auth.json', '.shelly/agents/.env', ...DEVICE_BRIDGE_SECRET_PATHS];
 
 /** Lexically normalise a path: collapse `.`/`..`, dedupe slashes. NOT symlink-resolved. */
 export function normalizePath(p: string): string {
@@ -269,13 +277,120 @@ export function hasUnsafeCd(command: string, root: string): boolean {
  * It is a read of data outside the workspace that may be a secret, so it is
  * classified like reading a protected secret path (`secret-read`: human
  * approval at L1/L2, denied at L3), i.e. at least as strictly as reading a
- * file outside the root. Tolerates quoting of the words and a path-qualified
- * `shelly` (`~/bin/shelly`, `"$HOME/bin/shelly"`). Running it through a
- * script / `eval` / substitution is already gated by opaque-script-exec /
- * indirect-exec.
+ * file outside the root.
+ *
+ * Matched on the command after shell dequoting (dequoteShellWords), so
+ * `clip\board`, `"clip"board`, `g''et`, `$'get'` and `bash -lc '…'` payloads
+ * are all seen as the plain words. The `shelly` word itself is not required
+ * (`$S device clipboard get`, `bash ~/.shelly/shelly-helper.sh device …`).
+ * A `device` subcommand word (or the word after `clipboard`) that is an
+ * unresolved expansion (`$c`, `${x}`, globs, backticks) cannot be proven not
+ * to be `clipboard get`, so it is treated the same (fail-closed); expansions
+ * in the TEXT arguments (`notify "$msg"`) are not. Running it
+ * through a script / `eval` / substitution is additionally gated by
+ * opaque-script-exec / indirect-exec.
  */
-const CLIPBOARD_READ_RE =
-  /\bshelly['"]?\s+['"]?device['"]?\s+(?:--?\S+\s+)*['"]?clipboard['"]?\s+(?:--?\S+\s+)*['"]?get\b/;
+const CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)])/;
+// `device <w1> [<w2>]`: the subcommand words, skipping options.
+const DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;
+const UNRESOLVED_WORD_RE = /[$`*?[{]/;
+
+/** `device $c get`, `device clipboard $op`: the subcommand is not knowable. */
+function hasUnresolvedDeviceSubcommand(command: string): boolean {
+  DEVICE_SUBCOMMAND_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DEVICE_SUBCOMMAND_RE.exec(command))) {
+    const [, w1, w2] = m;
+    if (UNRESOLVED_WORD_RE.test(w1)) return true;
+    if (w1 === 'clipboard' && w2 && UNRESOLVED_WORD_RE.test(w2)) return true;
+  }
+  return false;
+}
+const DEVICE_BRIDGE_FILE_RE = /\.shelly-device(?:-req-|-result-|\.js\b)/;
+
+/**
+ * Best-effort POSIX shell dequoting for classification only (not a parser):
+ * removes '…' / "…" / $'…' / $"…" quoting and backslash escapes so that the
+ * WORDS a shell would see are compared, and keeps whitespace and operators
+ * as they are. `$'…'` decodes \xHH, \NNN octal and the common letter escapes.
+ * Unbalanced quotes run to the end of the string (fail toward "it's a word").
+ */
+export function dequoteShellWords(command: string): string {
+  const s = String(command || '');
+  let out = '';
+  let i = 0;
+  const ansiEscapes: Record<string, string> = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', v: '\v' };
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '\\') {
+      if (s[i + 1] === '\n') {
+        i += 2; // line continuation
+        continue;
+      }
+      if (i + 1 < s.length) out += s[i + 1];
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const end = s.indexOf("'", i + 1);
+      out += end < 0 ? s.slice(i + 1) : s.slice(i + 1, end);
+      i = end < 0 ? s.length : end + 1;
+      continue;
+    }
+    if (ch === '$' && s[i + 1] === "'") {
+      i += 2;
+      while (i < s.length && s[i] !== "'") {
+        if (s[i] === '\\' && i + 1 < s.length) {
+          const n = s[i + 1];
+          const hex = n === 'x' ? /^[0-9a-fA-F]{1,2}/.exec(s.slice(i + 2)) : null;
+          const oct = /^[0-7]{1,3}/.exec(s.slice(i + 1));
+          if (hex) {
+            out += String.fromCharCode(parseInt(hex[0], 16));
+            i += 2 + hex[0].length;
+          } else if (oct) {
+            out += String.fromCharCode(parseInt(oct[0], 8));
+            i += 1 + oct[0].length;
+          } else {
+            out += ansiEscapes[n] ?? n;
+            i += 2;
+          }
+          continue;
+        }
+        out += s[i++];
+      }
+      i++; // closing quote
+      continue;
+    }
+    if (ch === '"' || (ch === '$' && s[i + 1] === '"')) {
+      i += ch === '$' ? 2 : 1;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === '\\' && i + 1 < s.length && '"\\$`\n'.includes(s[i + 1])) {
+          if (s[i + 1] !== '\n') out += s[i + 1];
+          i += 2;
+          continue;
+        }
+        out += s[i++];
+      }
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/** `shelly device clipboard get` (any quoting) or the device bridge files. */
+export function readsDeviceSecret(command: string): boolean {
+  const raw = String(command || '');
+  const words = dequoteShellWords(raw);
+  // Two passes: one level of nesting (`bash -lc "…'…'…"`) is undone by the
+  // second dequote; more levels still hit opaque-script-exec/indirect-exec.
+  const twice = dequoteShellWords(words);
+  return [raw, words, twice].some(
+    (c) => CLIPBOARD_READ_RE.test(c) || hasUnresolvedDeviceSubcommand(c) || DEVICE_BRIDGE_FILE_RE.test(c),
+  );
+}
 
 const NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 /**
@@ -440,7 +555,7 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   const paths = extractPaths(command);
   if (
     paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s))) ||
-    CLIPBOARD_READ_RE.test(command)
+    readsDeviceSecret(command)
   ) {
     signals.push('secret-read');
   }

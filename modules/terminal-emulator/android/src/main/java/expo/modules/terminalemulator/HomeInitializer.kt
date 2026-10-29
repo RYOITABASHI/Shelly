@@ -1987,8 +1987,9 @@ patchCodex(libDir);
             sb.appendLine("  exit 1")
             sb.appendLine("fi")
             // v272 (shim v23): node's stdin is the heredoc below, so keep the
-            // caller's stdin on fd 3 for `shelly device clipboard set -`.
-            sb.appendLine("if [ \"\${1:-}\" = device ] && { exec 3<&0; } 2>/dev/null; then export SHELLY_DEVICE_STDIN_FD=3; fi")
+            // caller's stdin on fd 3 for `shelly device clipboard set -`. If
+            // that fails the client refuses "-" (it never reads the heredoc).
+            sb.appendLine("if [ \"\${1:-}\" = device ] && { exec 3<&0; } 2>/dev/null; then export SHELLY_DEVICE_STDIN_FD=3; else unset SHELLY_DEVICE_STDIN_FD; fi")
             sb.appendLine("LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" exec /system/bin/linker64 \"\$SHELLY_LIB_DIR/node\" - \"\$@\" <<'SHELLY_HELPER_NODE'")
             sb.appendLine("const fs = require('fs');")
             sb.appendLine("const path = require('path');")
@@ -2833,7 +2834,7 @@ patchCodex(libDir);
             sb.appendLine("    console.error('shelly device: ' + deviceJs + ' is missing; restart Shelly to reinstall it');")
             sb.appendLine("    process.exit(1);")
             sb.appendLine("  }")
-            sb.appendLine("  require(deviceJs).main(args.slice(1));")
+            sb.appendLine("  require(deviceJs).main(args.slice(1), { viaHelper: true });")
             sb.appendLine("  process.exit(1);")
             sb.appendLine("}")
             // v252: `shelly codex` is handled by the shelly() bash function in

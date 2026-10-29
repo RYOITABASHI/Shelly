@@ -58,13 +58,13 @@ const MAIN_HELP = [
   '  battery                          Battery level, charging state, temperature (JSON)',
   '  info                             Model, Android version, screen, locale, network (JSON)',
   '  clipboard get [--json]           Print the clipboard text (Shelly must be the focused app)',
-  '  clipboard set [--sensitive] <text...>   Set the clipboard ("-" or a pipe: read stdin)',
+  '  clipboard set [--sensitive] <text...|->  Set the clipboard ("-": read stdin)',
   '  notify [--title T] [--id N] <text...>   Post a notification on Shelly\'s "Scripts" channel',
   '  notify --remove N                Remove notification N',
   '  toast <text...>                  Show a short toast',
   '  vibrate [ms]                     Vibrate (default 300 ms, capped at 2000 ms)',
   '  tts [--lang TAG] <text...>       Speak with Android text-to-speech (default: phone language)',
-  '  share [--text|--file] <file|text...>    Open the Android share sheet',
+  '  share --file <path> | --text <text...>  Open the Android share sheet',
   '',
   '  shelly device <command> --help   Details for one command',
   '',
@@ -93,13 +93,14 @@ const HELP = {
   clipboard: [
     'Usage: shelly device clipboard get [--json]',
     '       shelly device clipboard set [--sensitive] <text...>',
-    '       shelly device clipboard set [--sensitive] -      (or pipe text in)',
+    '       shelly device clipboard set [--sensitive] -      (read the text from stdin)',
     '',
     'get prints the clipboard text as-is (--json: {"text": "..."}). Android lets only the',
     'focused app read the clipboard, so get works while Shelly is on screen; otherwise it',
     'exits 3. Android may show "Shelly pasted from your clipboard".',
-    'set reads stdin when the text is "-" or missing and stdin is not a terminal; one',
-    'trailing newline is dropped. --sensitive hides the content from clipboard previews.',
+    'set needs the text or "-" (stdin; one trailing newline is dropped). It never sets',
+    'an empty clipboard by accident. --sensitive hides the content from clipboard previews.',
+    'Every get shows "A script read your clipboard" on the phone.',
     '',
     'Privacy: get hands the clipboard (passwords, one-time codes) to whatever ran it.',
   ],
@@ -126,13 +127,16 @@ const HELP = {
     'At most 10 per minute.',
   ],
   share: [
-    'Usage: shelly device share [--text|--file] <file|text...>',
+    'Usage: shelly device share --file <path>',
+    '       shelly device share --text <text...>',
     '',
-    'Opens the Android share sheet for a file (when the argument is an existing file) or',
-    'for text. Files must be inside Shelly\'s home or /sdcard/Download; credential',
-    'locations (~/.ssh, ~/.codex, ~/.shelly, .env, keys) are refused. You choose the',
-    'target app on the screen. If Shelly is in the background it posts a "tap to share"',
-    'notification instead. At most 5 per minute.',
+    'Opens the Android share sheet. Use --file or --text explicitly (scripts and agents',
+    'should always do so); without either, a single argument that is an existing file is',
+    'shared as a file and anything else as text. Files must be in Shelly\'s home or shared',
+    'storage (/sdcard) and must not be hidden or inside a hidden (dot) folder; Shelly',
+    'shares a copy taken at that moment. You choose the target app on the screen. If',
+    'Shelly is in the background it posts a "Tap to share" notification instead.',
+    'At most 5 per minute.',
   ],
 };
 
@@ -241,8 +245,9 @@ function parse(argv, io) {
     if (sub === 'set') {
       const { opts, words } = splitOptions(rest.slice(1), { sensitive: 'flag' }, cmd);
       if (opts.help) return { help: HELP.clipboard };
-      const fromStdin = (words.length === 1 && words[0] === '-') || (words.length === 0 && !io.stdinIsTty);
-      if (fromStdin) {
+      // Explicit only: text words, or "-" for stdin. No implicit stdin read,
+      // so an empty/closed stdin can never silently empty the clipboard.
+      if (words.length === 1 && words[0] === '-') {
         return {
           op: 'clipboard.set',
           args: { sensitive: Boolean(opts.sensitive) },
@@ -251,7 +256,7 @@ function parse(argv, io) {
           timeoutMs: 10000,
         };
       }
-      if (words.length === 0) throw new UsageError('missing text (pass it as arguments, "-" or a pipe)', cmd);
+      if (words.length === 0) throw new UsageError('missing text (pass it as arguments, or "-" to read stdin)', cmd);
       const text = words.join(' ');
       if (codePointLength(text) > MAX_TEXT_CHARS) throw new UsageError('text is longer than ' + MAX_TEXT_CHARS + ' characters', cmd);
       return { op: 'clipboard.set', args: { text, sensitive: Boolean(opts.sensitive) }, output: 'none', timeoutMs: 10000 };
@@ -363,6 +368,9 @@ function writeOut(fd, s) {
 }
 
 function readStdinText(fd) {
+  if (fd === null) {
+    throw new UsageError('stdin is not available here; pass the text as arguments instead of "-"', 'clipboard');
+  }
   if (isTty(fd)) throw new UsageError('stdin is a terminal: pipe text in, or pass it as arguments', 'clipboard');
   let text = fs.readFileSync(fd, 'utf8');
   text = text.replace(/\r?\n$/, '');
@@ -378,20 +386,24 @@ function sleepMs(ms) {
 
 /**
  * Entry point. Never returns: always calls process.exit.
- * opts (tests): { home, env, cwd, stdinFd, stdoutIsTty }
+ * opts: { viaHelper } -- set by the generated `shelly` helper, whose node
+ * stdin is its own script heredoc: the caller's stdin is then ONLY fd 3
+ * (SHELLY_DEVICE_STDIN_FD=3), never fd 0. Tests: { home, env, cwd, stdinFd,
+ * stdoutIsTty }.
  */
 function main(argv, opts) {
   const o = opts || {};
   const env = o.env || process.env;
   const home = o.home || env.HOME || '';
-  const stdinFd = o.stdinFd !== undefined ? o.stdinFd : env.SHELLY_DEVICE_STDIN_FD === '3' ? 3 : 0;
+  const stdinFd =
+    o.stdinFd !== undefined ? o.stdinFd : env.SHELLY_DEVICE_STDIN_FD === '3' ? 3 : o.viaHelper ? null : 0;
   const stdoutIsTty = o.stdoutIsTty !== undefined ? o.stdoutIsTty : isTty(1);
   const err = (s) => writeOut(2, s + '\n');
 
   let req;
   try {
     req = parse(argv, {
-      stdinIsTty: isTty(stdinFd),
+      stdinIsTty: stdinFd === null ? true : isTty(stdinFd),
       cwd: o.cwd || process.cwd(),
       fileExists: (p) => {
         try {
@@ -466,7 +478,10 @@ function main(argv, opts) {
     } catch (e) {
       /* already claimed */
     }
-    err('shelly device ' + argv[0] + ': Shelly did not answer within ' + Math.round(timeoutMs / 1000) + 's (is the app running? open it and retry)');
+    err(
+      'shelly device ' + argv[0] + ': Shelly did not answer within ' + Math.round(timeoutMs / 1000) +
+        's (is the app running?). The action may still happen on the phone; check before retrying.',
+    );
     process.exit(EXIT.timeout);
   }
 

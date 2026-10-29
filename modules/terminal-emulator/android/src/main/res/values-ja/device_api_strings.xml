@@ -6,7 +6,11 @@
   <string name="device_api_default_title">Shelly</string>
   <string name="device_api_public_title">Shelly: スクリプトからの通知</string>
   <string name="device_api_subtext">スクリプトから</string>
+  <string name="device_api_toast_format">スクリプト: %1$s</string>
+  <string name="device_api_clipboard_read_notice">スクリプトがクリップボードを読み取りました</string>
+  <string name="device_api_clipboard_read_body">Shelly で実行されたコマンド（shelly device clipboard get）が、コピーした内容を受け取りました。</string>
   <string name="device_api_share_title">Shelly から共有</string>
   <string name="device_api_share_notification_title">タップして共有</string>
-  <string name="device_api_share_notification_body">Shelly のスクリプトが共有しようとしています。タップして共有先のアプリを選んでください。</string>
+  <string name="device_api_share_notification_body">Shelly のスクリプトが %1$s を共有しようとしています。タップして共有先のアプリを選んでください。</string>
+  <string name="device_api_share_label_text">テキスト</string>
 </resources>

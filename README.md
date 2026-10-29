@@ -284,13 +284,13 @@ Shelly's foreground AI CLI is **Codex**. Everything else is an API provider you 
 |---|---|
 | `shelly device battery` | Battery level, charging state, plug type, health, temperature and voltage, as JSON |
 | `shelly device info` | Manufacturer, model, Android version, screen size and density, locale, time zone, network type (wifi / cellular / none) and the Shelly version, as JSON. It never includes identifiers such as IMEI, serial number, Android ID or IP/MAC addresses |
-| `shelly device clipboard get [--json]` | Print the clipboard text. Android lets only the focused app read the clipboard, so this works while Shelly is on screen and exits 3 otherwise |
-| `shelly device clipboard set [--sensitive] <text>` | Set the clipboard. Use `-` or a pipe to read stdin (`date \| shelly device clipboard set`). `--sensitive` hides the text from clipboard previews |
+| `shelly device clipboard get [--json]` | Print the clipboard text. Android lets only the focused app read the clipboard, so this works while Shelly is on screen and exits 3 otherwise. Every read shows "A script read your clipboard" on the phone |
+| `shelly device clipboard set [--sensitive] <text \| ->` | Set the clipboard. Pass the text, or `-` to read stdin (`date \| shelly device clipboard set -`). Without either it refuses, so it never empties the clipboard by accident. `--sensitive` hides the text from clipboard previews |
 | `shelly device notify [--title T] [--id N] <text>` | Post a notification on Shelly's own **Scripts** channel, which you can mute in Android settings. Posting again with the same id (0-9999, default 0) replaces it. `notify --remove N` removes it |
-| `shelly device toast <text>` | Show a short toast |
+| `shelly device toast <text>` | Show a short toast, prefixed "Script:" so it can't pass for a system message |
 | `shelly device vibrate [ms]` | Vibrate (default 300 ms, capped at 2000 ms) |
 | `shelly device tts [--lang en-US] <text>` | Speak with Android text-to-speech, in the phone's language unless `--lang` says otherwise |
-| `shelly device share <file \| text>` | Open the Android share sheet. You pick the target app. If Shelly is in the background, a "Tap to share" notification appears instead, because Android blocks background apps from opening screens. Files must be in Shelly's home or `/sdcard/Download`. Credential locations (`~/.ssh`, `~/.codex`, `~/.shelly`, `.env`, key files) are refused |
+| `shelly device share --file <path>` / `--text <text>` | Open the Android share sheet. You pick the target app. If Shelly is in the background, a "Tap to share" notification naming the file appears instead, because Android blocks background apps from opening screens. Files must be in Shelly's home or shared storage (`/sdcard`) and must not be hidden or inside a hidden folder, so `~/.ssh`, `~/.codex`, `~/.shelly` and `.env` are refused. Shelly shares a copy taken at that moment (deleted after 30 minutes), not the original. Scripts should always pass `--file` or `--text`; without them, an argument that names an existing file is shared as a file |
 
 ```bash
 $ shelly device battery
@@ -306,9 +306,9 @@ $ shelly device battery
 $ make && shelly device notify --title Build "make finished" || shelly device vibrate 800
 ```
 
-- **Exit codes:** 0 ok, 1 failed, 2 usage error, 3 permission missing or not possible right now (notifications off, clipboard read in the background, no TTS voice), 4 rate limited, 124 Shelly did not answer. Errors go to stderr. `shelly device --help` and `shelly device <command> --help` print usage and never do anything.
+- **Exit codes:** 0 ok, 1 failed, 2 usage error, 3 permission missing or not possible right now (notifications off, clipboard read in the background, no TTS voice), 4 rate limited, 124 Shelly did not answer (the action may still happen, so check before retrying). Errors go to stderr. `shelly device --help` and `shelly device <command> --help` print usage and never do anything.
 - **Rate limits:** notify 30 per minute; toast, vibrate and tts 10 per minute; share 5 per minute. These stop a looping script or agent from flooding the phone.
-- **Clipboard privacy:** `clipboard get` gives whatever you copied (passwords, one-time codes) to the program that ran it, including Codex driven from the ChatGPT app. Agents' command gate treats it like reading a secret file: it always asks you first and is refused at the most autonomous level. Android also shows its own "Shelly pasted from your clipboard" notice.
+- **Clipboard privacy:** `clipboard get` gives whatever you copied (passwords, one-time codes) to the program that ran it, including Codex driven from the ChatGPT app. Agents' command gate treats it like reading a secret file, however the command is quoted: it always asks you first and is refused at the most autonomous level. Reading the bridge files directly is gated the same way. Every read shows a "A script read your clipboard" toast and notification, and the answer file is deleted within 15 seconds. Android may also show its own "Shelly pasted from your clipboard" notice.
 - **How it works:** the command writes a request file in Shelly's home and the app answers it natively, the same file bridge `shelly closepaw` uses. It works while Shelly is in the background, as long as the app is running.
 - Not included in this version: location, camera, microphone, SMS, contacts and call log. Each of these needs an explicit permission flow first.
 

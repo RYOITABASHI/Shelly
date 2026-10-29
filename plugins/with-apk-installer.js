@@ -11,6 +11,9 @@ const FILE_PROVIDER_PATHS = `<?xml version="1.0" encoding="utf-8"?>
   <external-path name="downloads" path="Download/" />
   <external-files-path name="external_files" path="." />
   <files-path name="app_files" path="." />
+  <!-- \`shelly device share\` (DeviceApi.kt): only per-request snapshots in
+       cacheDir/share/<reqId>/ are shared, never the original path. -->
+  <cache-path name="device_share" path="share/" />
 </paths>
 `;
 

@@ -119,7 +119,8 @@ describe('shelly-device.js parse()', () => {
     });
     expect(device.parse(['clipboard', 'set', '--sensitive', 'pw'], io()).args.sensitive).toBe(true);
     expect(device.parse(['clipboard', 'set', '-'], io()).readStdin).toBe(true);
-    expect(device.parse(['clipboard', 'set'], io({ stdinIsTty: false })).readStdin).toBe(true);
+    // L6: stdin only with an explicit "-" -- a pipe alone is not enough.
+    expect(usage(['clipboard', 'set'], io({ stdinIsTty: false }))).toMatch(/missing text/);
     expect(usage(['clipboard', 'set'], io({ stdinIsTty: true }))).toMatch(/missing text/);
     expect(device.parse(['clipboard', 'set', '--', '-n'], io()).args.text).toBe('-n');
     expect(usage(['clipboard', 'set', 'x'.repeat(100001)])).toMatch(/longer than 100000/);
@@ -214,18 +215,28 @@ describe('generated helper: shelly device (end to end with a fake native side)',
     };
   }
 
-  function run(args: string[], opts: { app?: (home: string) => void; stdin?: string; env?: Record<string, string> } = {}) {
+  /** opts.fd3: the caller's stdin as the helper hands it over (fd 3 +
+   *  SHELLY_DEVICE_STDIN_FD=3); opts.stdin goes to node's own fd 0. */
+  function run(
+    args: string[],
+    opts: { app?: (home: string) => void; stdin?: string; fd3?: string; env?: Record<string, string> } = {},
+  ) {
     return new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+      const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, ...(opts.env || {}) };
+      delete env.SHELLY_DEVICE_STDIN_FD;
+      if (opts.fd3 !== undefined) env.SHELLY_DEVICE_STDIN_FD = '3';
       const child = spawn(process.execPath, [shimPath, 'device', ...args], {
-        env: { ...process.env, HOME: home, ...(opts.env || {}) },
+        env,
         cwd: home,
+        stdio: opts.fd3 !== undefined ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
       });
       let out = '';
       let err = '';
-      child.stdout.on('data', (b) => (out += b));
-      child.stderr.on('data', (b) => (err += b));
-      if (opts.stdin !== undefined) child.stdin.end(opts.stdin);
-      else child.stdin.end();
+      child.stdout!.on('data', (b) => (out += b));
+      child.stderr!.on('data', (b) => (err += b));
+      if (opts.stdin !== undefined) child.stdin!.end(opts.stdin);
+      else child.stdin!.end();
+      if (opts.fd3 !== undefined) (child.stdio[3] as NodeJS.WritableStream).end(opts.fd3);
       const h = home; // bind to THIS test's home, never a later test's
       const timer = opts.app ? setInterval(() => opts.app!(h), 30) : null;
       child.on('close', (code) => {
@@ -282,11 +293,28 @@ describe('generated helper: shelly device (end to end with a fake native side)',
     expect(JSON.parse(r.out)).toEqual({ text: 'x' });
   });
 
-  it('clipboard set - reads stdin and drops one trailing newline', async () => {
+  it('clipboard set - reads the caller stdin from fd 3 and drops one trailing newline', async () => {
     const seen: Req[] = [];
-    const r = await run(['clipboard', 'set', '-'], { stdin: 'piped text\n', app: fakeNative(() => ({ ok: true, code: 'ok' }), seen) });
+    const r = await run(['clipboard', 'set', '-'], {
+      fd3: 'piped text\n',
+      stdin: 'HEREDOC-MUST-NOT-BE-READ',
+      app: fakeNative(() => ({ ok: true, code: 'ok' }), seen),
+    });
     expect(r.code).toBe(0);
     expect(seen[0]).toMatchObject({ op: 'clipboard.set', args: { text: 'piped text', sensitive: false } });
+  });
+
+  it('through the helper without fd 3, "-" is refused instead of reading the heredoc stdin', async () => {
+    const r = await run(['clipboard', 'set', '-'], { stdin: 'HEREDOC-MUST-NOT-BE-READ' });
+    expect(r.code).toBe(2);
+    expect(r.err).toMatch(/stdin is not available here/);
+    expect(leftovers()).toEqual([]);
+  });
+
+  it('clipboard set with only a pipe (no "-") is a usage error, never an empty set', async () => {
+    const r = await run(['clipboard', 'set'], { fd3: 'x' });
+    expect(r.code).toBe(2);
+    expect(leftovers()).toEqual([]);
   });
 
   it('maps native failure codes to exit codes with a clean stderr line', async () => {
@@ -320,6 +348,7 @@ describe('generated helper: shelly device (end to end with a fake native side)',
     const r = await run(['battery'], { env: { SHELLY_DEVICE_TIMEOUT_MS: '300' } });
     expect(r.code).toBe(124);
     expect(r.err).toMatch(/Shelly did not answer/);
+    expect(r.err).toMatch(/The action may still happen on the phone/);
     expect(leftovers()).toEqual([]);
   });
 
@@ -354,7 +383,7 @@ describe('HomeInitializer wiring (BASHRC_VERSION 272 / shim v23)', () => {
 
   it('keeps the caller stdin on fd 3 for device only', () => {
     expect(homeKt).toContain(
-      'sb.appendLine("if [ \\"\\${1:-}\\" = device ] && { exec 3<&0; } 2>/dev/null; then export SHELLY_DEVICE_STDIN_FD=3; fi")',
+      'sb.appendLine("if [ \\"\\${1:-}\\" = device ] && { exec 3<&0; } 2>/dev/null; then export SHELLY_DEVICE_STDIN_FD=3; else unset SHELLY_DEVICE_STDIN_FD; fi")',
     );
   });
 });
@@ -365,7 +394,7 @@ describe('DeviceApi.kt invariants', () => {
     expect(deviceKt).toContain('const val RESULT_FILE_PREFIX = ".shelly-device-result-"');
     expect(deviceKt).toContain('Regex("^\\\\.shelly-device-req-([0-9]{10,16}-[0-9a-f]{8})$")');
     // claim before executing: a request runs at most once
-    expect(deviceKt).toMatch(/if \(!file\.delete\(\)\) return[\s\S]*dispatch\(context, op, args\)/);
+    expect(deviceKt).toMatch(/if \(!file\.delete\(\)\) return[\s\S]*dispatch\(context, reqId, ts, op, args\)/);
   });
 
   it('rate limits every side effect (pinned to the help text and README)', () => {
@@ -401,6 +430,36 @@ describe('DeviceApi.kt invariants', () => {
     for (const l of logLines) expect(l).not.toMatch(/\$text|\$shown|\$title|\$\{text/);
   });
 
+  it('announces every clipboard read and never leaves the text lying around', () => {
+    const get = deviceKt.slice(deviceKt.indexOf('private fun clipboardGet('), deviceKt.indexOf('private fun announceClipboardRead('));
+    expect(get).toContain('announceClipboardRead(context)');
+    expect(get).toContain('CLIPBOARD_ANSWER_WINDOW_MS');
+    expect(get).toContain('ephemeral = true');
+    // the announcement is not behind a rate limiter (clipboard.get is not a side effect op)
+    expect(deviceKt).toContain('val sideEffect = op in setOf("notify", "toast", "vibrate", "tts", "share")');
+    expect(deviceKt).toContain('private const val EPHEMERAL_RESULT_MS = 15_000L');
+    expect(deviceKt).toContain('executor?.schedule({ target.delete() }, EPHEMERAL_RESULT_MS, TimeUnit.MILLISECONDS)');
+  });
+
+  it('prefixes toasts ("Script: ") and keeps the poll alive on any Throwable', () => {
+    expect(deviceKt).toContain('context.getString(R.string.device_api_toast_format, text)');
+    expect(read(path.join(modDir, 'res/values/device_api_strings.xml'))).toContain('<string name="device_api_toast_format">Script: %1$s</string>');
+    expect(deviceKt).toMatch(/scan\(context\)\r?\n\s*\} catch \(e: Throwable\)/);
+  });
+
+  it('share: allow-list (no dot component) and a per-request snapshot, never the original path', () => {
+    const share = deviceKt.slice(deviceKt.indexOf('// ── share'), deviceKt.indexOf('// ── Watcher lifecycle'));
+    expect(share).toContain('path.split(\'/\').any { it.startsWith(".") }');
+    expect(share).toContain('android.system.Os.readlink("/proc/self/fd/${pfd.fd}")');
+    expect(share).toContain('File(shareDir(context), reqId)');
+    expect(share).toContain('FileProvider.getUriForFile(context, "${context.packageName}.shelly.fileprovider", snapshot)');
+    expect(share).not.toMatch(/getUriForFile\([^)]*\b(pre|file)\)/);
+    expect(share).toContain('REQUEST_CODE_SHARE_BASE + slot');
+    expect(share).toContain('SHARE_NOTIFICATION_BASE + slot');
+    const plugin = read(path.join(root, 'plugins/with-apk-installer.js'));
+    expect(plugin).toContain('<cache-path name="device_share" path="share/" />');
+  });
+
   it('is started next to the other file-bridge watchers', () => {
     expect(read(path.join(ktDir, 'TerminalSessionService.kt'))).toContain('DeviceApi.ensureWatching(applicationContext)');
     expect(read(path.join(ktDir, 'TerminalEmulatorModule.kt'))).toContain('DeviceApi.ensureWatching(context)');
@@ -426,6 +485,20 @@ describe('agent boundary policy: clipboard get is a secret read', () => {
     'shelly device clipboard get --json',
     '~/bin/shelly device clipboard get > out.txt',
     "shelly 'device' \"clipboard\" get",
+    'shelly device clip\\board get',
+    'shelly device "clip"board get',
+    "shelly device clipboard g''et",
+    "shelly device clipboard $'get'",
+    "shelly device clipboard $'\\x67et'",
+    'S=shelly; $S device clipboard get',
+    'bash ~/.shelly/shelly-helper.sh device clipboard get',
+    `bash -lc "shelly device 'clip'board get"`,
+    'c=clipboard; shelly device $c get',
+    'shelly device clipboard "$op"',
+    'cat ~/.shelly-device-result-1760500000000-0123abcd.json',
+    'cat .shelly-device-result-1760500000000-0123abcd.json',
+    `echo '{}' > "$HOME/.shelly-device-req-1760500000000-0123abcd"`,
+    `node -e "require(process.env.HOME + '/.shelly-device.js').main(['battery'])"`,
   ])('%s -> secret-read (human at L1/L2, denied at L3)', (cmd) => {
     expect(classifyProposedCommand(cmd, ctx('L2')).signals).toContain('secret-read');
     expect(classifyProposedCommand(cmd, ctx('L1')).decision).toBe('gray');
@@ -433,7 +506,13 @@ describe('agent boundary policy: clipboard get is a secret read', () => {
     expect(classifyProposedCommand(cmd, ctx('L3')).decision).toBe('deny');
   });
 
-  it.each(['shelly device clipboard set hello', 'shelly device battery', 'shelly device notify done'])(
+  it.each([
+    'shelly device clipboard set hello',
+    'shelly device battery',
+    'shelly device notify done',
+    'shelly device notify --title Build "$RESULT"',
+    'shelly device toast "$(date)"',
+  ])(
     '%s is not a secret read',
     (cmd) => {
       expect(classifyProposedCommand(cmd, ctx('L2')).signals).not.toContain('secret-read');

@@ -949,7 +949,8 @@ var PAYMENT_KEYWORDS = Object.freeze([
 ]);
 
 // lib/agent-boundary-policy.ts
-var DEFAULT_SECRET_PATHS = [".codex/auth.json", ".shelly/agents/.env"];
+var DEVICE_BRIDGE_SECRET_PATHS = [".shelly-device-req-", ".shelly-device-result-", ".shelly-device.js"];
+var DEFAULT_SECRET_PATHS = [".codex/auth.json", ".shelly/agents/.env", ...DEVICE_BRIDGE_SECRET_PATHS];
 function normalizePath(p) {
   const isAbs = p.startsWith("/");
   const out = [];
@@ -1042,7 +1043,92 @@ function hasUnsafeCd(command, root) {
   }
   return false;
 }
-var CLIPBOARD_READ_RE = /\bshelly['"]?\s+['"]?device['"]?\s+(?:--?\S+\s+)*['"]?clipboard['"]?\s+(?:--?\S+\s+)*['"]?get\b/;
+var CLIPBOARD_READ_RE = /(?:^|[\s;&|(])clipboard\s+(?:-\S*\s+)*get(?=$|[\s;&|)])/;
+var DEVICE_SUBCOMMAND_RE = /(?:^|[\s;&|(/])device\s+(?:-\S*\s+)*(\S+)(?:\s+(?:-\S*\s+)*(\S+))?/g;
+var UNRESOLVED_WORD_RE = /[$`*?[{]/;
+function hasUnresolvedDeviceSubcommand(command) {
+  DEVICE_SUBCOMMAND_RE.lastIndex = 0;
+  let m;
+  while (m = DEVICE_SUBCOMMAND_RE.exec(command)) {
+    const [, w1, w2] = m;
+    if (UNRESOLVED_WORD_RE.test(w1)) return true;
+    if (w1 === "clipboard" && w2 && UNRESOLVED_WORD_RE.test(w2)) return true;
+  }
+  return false;
+}
+var DEVICE_BRIDGE_FILE_RE = /\.shelly-device(?:-req-|-result-|\.js\b)/;
+function dequoteShellWords(command) {
+  const s = String(command || "");
+  let out = "";
+  let i = 0;
+  const ansiEscapes = { n: "\n", t: "	", r: "\r", a: "\x07", b: "\b", e: "\x1B", E: "\x1B", f: "\f", v: "\v" };
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "\\") {
+      if (s[i + 1] === "\n") {
+        i += 2;
+        continue;
+      }
+      if (i + 1 < s.length) out += s[i + 1];
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const end = s.indexOf("'", i + 1);
+      out += end < 0 ? s.slice(i + 1) : s.slice(i + 1, end);
+      i = end < 0 ? s.length : end + 1;
+      continue;
+    }
+    if (ch === "$" && s[i + 1] === "'") {
+      i += 2;
+      while (i < s.length && s[i] !== "'") {
+        if (s[i] === "\\" && i + 1 < s.length) {
+          const n = s[i + 1];
+          const hex = n === "x" ? /^[0-9a-fA-F]{1,2}/.exec(s.slice(i + 2)) : null;
+          const oct = /^[0-7]{1,3}/.exec(s.slice(i + 1));
+          if (hex) {
+            out += String.fromCharCode(parseInt(hex[0], 16));
+            i += 2 + hex[0].length;
+          } else if (oct) {
+            out += String.fromCharCode(parseInt(oct[0], 8));
+            i += 1 + oct[0].length;
+          } else {
+            out += ansiEscapes[n] ?? n;
+            i += 2;
+          }
+          continue;
+        }
+        out += s[i++];
+      }
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "$" && s[i + 1] === '"') {
+      i += ch === "$" ? 2 : 1;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === "\\" && i + 1 < s.length && '"\\$`\n'.includes(s[i + 1])) {
+          if (s[i + 1] !== "\n") out += s[i + 1];
+          i += 2;
+          continue;
+        }
+        out += s[i++];
+      }
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+function readsDeviceSecret(command) {
+  const raw2 = String(command || "");
+  const words = dequoteShellWords(raw2);
+  const twice = dequoteShellWords(words);
+  return [raw2, words, twice].some(
+    (c) => CLIPBOARD_READ_RE.test(c) || hasUnresolvedDeviceSubcommand(c) || DEVICE_BRIDGE_FILE_RE.test(c)
+  );
+}
 var NETWORK_RE = /\b(curl|wget|nc|ncat|netcat|scp|sftp|ssh|rsync|telnet)\b/;
 var SHELL_NET_DEVICE_RE = /\/dev\/(?:tcp|udp)\//;
 var READ_ONLY_RE = /^\s*(cat|less|more|head|tail|grep|rg|ls|find|stat|file|wc|diff|git\s+(status|log|diff|show))\b/;
@@ -1077,7 +1163,7 @@ function classifyProposedCommand(command, ctx) {
   }
   if (safety.level === "HIGH") signals.push("destructive");
   const paths = extractPaths(command);
-  if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s))) || CLIPBOARD_READ_RE.test(command)) {
+  if (paths.some((p) => secretPaths.some((s) => normalizePath(p).includes(s))) || readsDeviceSecret(command)) {
     signals.push("secret-read");
   }
   if (paths.some((p) => !isWithinRoot(ctx.workspaceRoot, p)) || hasUnsafeCd(command, ctx.workspaceRoot)) {

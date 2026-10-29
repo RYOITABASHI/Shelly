@@ -6,7 +6,11 @@
   <string name="device_api_default_title">Shelly</string>
   <string name="device_api_public_title">Shelly: notification from a script</string>
   <string name="device_api_subtext">From a script</string>
+  <string name="device_api_toast_format">Script: %1$s</string>
+  <string name="device_api_clipboard_read_notice">A script read your clipboard</string>
+  <string name="device_api_clipboard_read_body">A command run in Shelly (shelly device clipboard get) received what you copied.</string>
   <string name="device_api_share_title">Share from Shelly</string>
   <string name="device_api_share_notification_title">Tap to share</string>
-  <string name="device_api_share_notification_body">A script in Shelly wants to share something. Tap to choose an app.</string>
+  <string name="device_api_share_notification_body">A script in Shelly wants to share %1$s. Tap to choose an app.</string>
+  <string name="device_api_share_label_text">text</string>
 </resources>
