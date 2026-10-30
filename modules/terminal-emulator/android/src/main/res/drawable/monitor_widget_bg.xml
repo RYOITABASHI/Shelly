@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- MONITOR widget bezel (demo: --bezel / --bezel-hi). -->
+<!-- MONITOR widget bezel (demo CSS vars bezel / bezel-hi). -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
   <corners android:radius="22dp" />
   <solid android:color="#F2141A17" />
