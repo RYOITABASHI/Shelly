@@ -1504,11 +1504,23 @@ object AgentRuntime {
      * STOP-ALL (2026-10-30): haltAllAgents signals in-flight runs, so a run that
      * ends non-zero while the kill-switch sentinel exists was stopped by the
      * user, not broken. Record it as skipped and stay silent: no hard-failure
-     * backoff, no "failed" notification, no error receiver log. Returns true
-     * when it handled the result.
+     * backoff, no "failed" notification, no error receiver log. A run that
+     * exits 0 with a skipped latest run log while halted was also stopped
+     * (it recorded itself); only its queued notification is discarded.
+     * Returns true when it handled the result.
      */
     private fun stoppedByKillSwitch(homeDir: File, agentId: String, exitCode: Int): Boolean {
-        if (exitCode == 0 || !File(homeDir, ".shelly/agents/.halted").isFile) return false
+        if (!File(homeDir, ".shelly/agents/.halted").isFile) return false
+        if (exitCode == 0) {
+            // The executor's SIGTERM handler (and a halted chain) exit 0 after
+            // writing their own skipped run log. Don't take the success path:
+            // it would reset the failure count and post a notification an
+            // earlier step may have queued.
+            if (latestRunLogStatus(homeDir, agentId) != "skipped") return false
+            Log.i(TAG, "Agent $agentId stopped by the global kill-switch (exit=0, run log skipped)")
+            discardAgentResultNotificationRequest(homeDir, agentId)
+            return true
+        }
         Log.i(TAG, "Agent $agentId stopped by the global kill-switch (exit=$exitCode)")
         discardAgentResultNotificationRequest(homeDir, agentId)
         writeReceiverLog(homeDir, agentId, "skipped", "All agents are stopped (global kill-switch is on).")

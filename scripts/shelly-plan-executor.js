@@ -4592,6 +4592,8 @@ async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultTe
   let errorCount = 0;
   let skippedCount = 0;
   for (let i = 0; i < plan.actions.length; i += 1) {
+    // STOP-ALL: no further action once the kill-switch is on.
+    if (isHalted(paths)) throw new RunHalted();
     const subAction = plan.actions[i];
     // Object.assign (not JSON.parse(JSON.stringify(...))) — every OTHER field
     // (agent/tool/paths/policy/routeDecision/…) must be the SAME reference
@@ -4620,6 +4622,8 @@ async function dispatchActionsTrusted(paths, opts, plan, config, roots, resultTe
         // swallow the run (the caught error is redact()ed into this
         // action's own error message, not lost), but it also must not take
         // down every other action's independent delivery.
+        // STOP-ALL is the exception: it stops the WHOLE run, so it escapes.
+        if (e instanceof RunHalted) throw e;
         if (e instanceof ActionSkipped) {
           outcome = { status: 'skipped', preview: redact(e.message), errorMessage: redact(e.message) };
         } else if (e instanceof PlanFailure) {

@@ -46,7 +46,7 @@ function makeHome(): string {
 
 const sentinel = (home: string) => path.join(home, '.shelly/agents/.halted');
 
-function writePlan(home: string, port: number, steps: Step[] | null, opts: { requireApproval?: boolean } = {}): string {
+function writePlan(home: string, port: number, steps: Step[] | null, opts: { requireApproval?: boolean; actions?: unknown[] } = {}): string {
   const plan = {
     kind: PLAN_SPEC_KIND,
     schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
@@ -55,6 +55,7 @@ function writePlan(home: string, port: number, steps: Step[] | null, opts: { req
     prompt: 'Base task',
     tool: { type: 'local', label: 'Local LLM', model: 'fixture' },
     action: { type: 'notify' },
+    ...(opts.actions ? { actions: opts.actions } : {}),
     paths: { home },
     output: {
       outputDir: path.join(home, 'agent-output'),
@@ -246,6 +247,30 @@ describe('shelly-plan-executor.js — STOP-ALL halts an in-flight chain', () => 
     expect(rc).toBe(0);
     expect(Date.now() - started).toBeLessThan(15_000); // not the 60s approval timeout
     expect(fs.readdirSync(approvalDir).filter((n) => n.endsWith('.json'))).toEqual([]);
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toBe(KILL_SWITCH_MESSAGE);
+    expect(fs.existsSync(notificationFile(home))).toBe(false);
+    expect(readProgress(home).pop()).toMatchObject({ kind: 'run_end', status: 'halted' });
+  }, 30000);
+
+  it('multi-action: STOP-ALL during the first action\'s approval stops the run; the second action never dispatches', async () => {
+    const approvalDir = path.join(home, '.shelly/agents/action-approvals');
+    const planFile = writePlan(home, port, null, { requireApproval: true, actions: [{ type: 'notify' }, { type: 'notify' }] });
+    const { done } = startExecutor(planFile, home, { SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS: '60' });
+    const seen = new Set<string>();
+    const poll = setInterval(() => {
+      try {
+        for (const n of fs.readdirSync(approvalDir)) if (n.endsWith('.json')) seen.add(n);
+        if (seen.size > 0) fs.writeFileSync(sentinel(home), 'halted\n');
+      } catch (_) {}
+    }, 20);
+    const rc = await done;
+    clearInterval(poll);
+
+    expect(rc).toBe(0);
+    // Only the first action ever asked for approval.
+    expect(seen.size).toBe(1);
     const log = readRunLog(home);
     expect(log.status).toBe('skipped');
     expect(log.outputPreview).toBe(KILL_SWITCH_MESSAGE);

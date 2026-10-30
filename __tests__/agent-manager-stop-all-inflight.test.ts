@@ -227,6 +227,7 @@ describe('haltAllAgents — in-flight termination', () => {
     const locks = path.join(agents, 'locks');
     fs.mkdirSync(locks, { recursive: true });
     fs.mkdirSync(path.join(home, 'tmp'), { recursive: true });
+    fs.mkdirSync(path.join(home, 'models'), { recursive: true });
     // The run script takes the lock with the REAL generated acquire function,
     // starts a child, then blocks — like a step waiting on curl/node.
     const acquire = acquireLockFunction(generateRunScript(makeAgent('live')));
@@ -239,6 +240,10 @@ describe('haltAllAgents — in-flight termination', () => {
         'shelly_try_acquire_lock_file',
         'sleep 30 </dev/null >/dev/null 2>&1 &',
         'echo $! > "$HOME/child.pid"',
+        // local_llm_start_idle_watcher's shape: a background subshell meant to
+        // outlive the run (it unloads llama-server later).
+        '( while :; do sleep 1; done ) </dev/null >/dev/null 2>&1 &',
+        'echo $! > "$HOME/models/llama-server-watcher.pid"',
         'sleep 30',
       ].join('\n') + '\n',
     );
@@ -260,12 +265,15 @@ describe('haltAllAgents — in-flight termination', () => {
       'echo "$other" > .shelly/agents/locks/other.pid',
       'echo "$other" > .shelly/agents/locks/recycled.pid',
       'mkdir -p .shelly/agents/locks/recycled.pid.lockdir; echo 1 > .shelly/agents/locks/recycled.pid.lockdir/starttime',
-      'for i in $(seq 100); do [ -s .shelly/agents/locks/live.pid.lockdir/starttime ] && [ -s child.pid ] && break; sleep 0.1; done',
+      'for i in $(seq 100); do [ -s .shelly/agents/locks/live.pid.lockdir/starttime ] && [ -s models/llama-server-watcher.pid ] && break; sleep 0.1; done',
       'child=$(cat child.pid)',
       'bash "$HOME/halt-inflight.sh"; rc=$?',
       'sleep 0.3',
       'kill -0 "$agent" 2>/dev/null && echo AGENT_ALIVE || echo AGENT_DEAD',
       'kill -0 "$child" 2>/dev/null && echo CHILD_ALIVE || echo CHILD_DEAD',
+      'watcher=$(cat models/llama-server-watcher.pid)',
+      'kill -0 "$watcher" 2>/dev/null && echo WATCHER_ALIVE || echo WATCHER_DEAD',
+      'kill "$watcher" 2>/dev/null',
       'kill -0 "$other" 2>/dev/null && echo OTHER_ALIVE || echo OTHER_DEAD',
       'echo "RC=$rc"',
       'kill "$other" "$child" "$agent" 2>/dev/null',
@@ -274,6 +282,7 @@ describe('haltAllAgents — in-flight termination', () => {
     expect(r.stdout).toContain('RC=0');
     expect(r.stdout).toContain('AGENT_DEAD');
     expect(r.stdout).toContain('CHILD_DEAD');
+    expect(r.stdout).toContain('WATCHER_ALIVE');
     expect(r.stdout).toContain('OTHER_ALIVE');
     // Dead holders' pid files (and lockdirs) are cleaned; a live pid's never.
     expect(fs.existsSync(path.join(locks, 'live.pid'))).toBe(false);

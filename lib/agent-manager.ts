@@ -3123,10 +3123,17 @@ const haltSentinelPath = () => `${agentsDir()}/.halted`;
  * final-action dispatch still sees `.halted`).
  *
  * Killing: the run's descendants are collected by walking /proc/<pid>/stat
- * ppid links BEFORE signalling (the shared llama-server is excluded and kept),
- * then TERM goes to the run itself (the executor's handler kills its broker
- * children and records the run) and, after 1s, KILL to the run and every
- * collected descendant, so nothing it spawned is orphaned.
+ * ppid links BEFORE signalling, then TERM goes to the run itself (the
+ * executor's handler kills its broker children and records the run) and,
+ * after 1s, KILL to the run and every collected descendant, so nothing it
+ * spawned is orphaned. Each victim's start time is recorded at collection and
+ * re-checked before the KILL, so a pid recycled in that second is spared.
+ * Shared local-LLM processes a run may have started are meant to outlive it
+ * and are spared together with everything below them: llama-server
+ * ($HOME/models/llama-server.pid, or a cmdline naming it) and its idle
+ * watcher subshell ($HOME/models/llama-server-watcher.pid, see
+ * local_llm_start_idle_watcher in lib/agent-executor.ts), which is what
+ * eventually unloads the model.
  *
  * Never exits non-zero: a missing locks dir, empty/garbage/stale pid files and
  * already-dead processes are skipped. A pid file is removed (with its
@@ -3149,22 +3156,31 @@ export function haltInflightRunsCommand(): string {
     '  case "$(cmdline_of "$1")" in *shelly-plan-executor*) return 0;; esac',
     '  return 1',
     '}',
+    'spare=" "',
+    'for f in "$HOME/models/llama-server.pid" "$HOME/models/llama-server-watcher.pid"; do',
+    '  sp=""; { read -r sp < "$f"; } 2>/dev/null',
+    '  case "$sp" in ""|*[!0-9]*) ;; *) spare="$spare$sp ";; esac',
+    'done',
+    // Prints "pid:starttime" for the root and every descendant (spared ones and
+    // their subtrees excluded).
     'tree() {',
-    '  all="$1"; front=" $1 "',
+    '  root="$1"; all=" $1 "; out="$1:$(stat_field "$1" 20)"; front=" $1 "',
     '  while [ "$front" != " " ]; do',
     '    next=" "',
     '    for s in /proc/[0-9]*/stat; do',
     '      l=""; { read -r l < "$s"; } 2>/dev/null || continue',
-    '      l="${l##*) }"; l="${l#* }"; pp="${l%% *}"',
+    '      r="${l##*) }"; pp="${r#* }"; pp="${pp%% *}"',
     '      case "$front" in *" $pp "*) ;; *) continue;; esac',
     '      p="${s#/proc/}"; p="${p%/stat}"',
-    '      case " $all " in *" $p "*) continue;; esac',
+    '      case "$all" in *" $p "*) continue;; esac',
+    '      case "$spare" in *" $p "*) continue;; esac',
     '      case "$(cmdline_of "$p")" in *llama-server*) continue;; esac',
-    '      all="$all $p"; next="$next$p "',
+    '      set -- $r; shift 19 2>/dev/null || continue',
+    '      all="$all$p "; out="$out $p:$1"; next="$next$p "',
     '    done',
     '    front="$next"',
     '  done',
-    '  echo "$all"',
+    '  echo "$out"',
     '}',
     'victims=""',
     'for f in "$d"/*.pid; do',
@@ -3178,7 +3194,11 @@ export function haltInflightRunsCommand(): string {
     'done',
     'if [ -n "$victims" ]; then',
     '  sleep 1',
-    '  for v in $victims; do [ "$v" = "$$" ] || kill -KILL "$v" 2>/dev/null || true; done',
+    '  for v in $victims; do',
+    '    vp="${v%%:*}"; vs="${v#*:}"',
+    '    [ "$vp" = "$$" ] && continue',
+    '    [ -n "$vs" ] && [ "$vs" = "$(stat_field "$vp" 20)" ] && kill -KILL "$vp" 2>/dev/null',
+    '  done',
     'fi',
     'for f in "$d"/*.pid; do',
     '  [ -f "$f" ] || continue',
