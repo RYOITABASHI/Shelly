@@ -1460,19 +1460,12 @@ patchCodex(libDir);
     //      HTTPS_PROXY/HTTP_PROXY/NO_PROXY only to claude; BROWSER/DISPLAY
     //      unset so the sign-in URL comes out as an OSC 8 hyperlink
     //      (OAuthHyperlinkBridge.kt queues a tap-to-open sign-in prompt while armed).
-    // v278: shelly-claude-glibc() S3 -- Claude's Bash/Grep/Glob tools. The
-    //      glibc claude process cannot use libexec_wrapper.so, so its direct
-    //      execve of $SHELL ($HOME/bin/bash -> termux-libs/libbash.so, an
-    //      app_data_file) is denied (W^X). claude now gets SHELL /
-    //      CLAUDE_CODE_SHELL / PATH pointing at $__root/bin, whose bash/rg/git
-    //      are symlinks into the APK nativeLibraryDir (directly exec-able;
-    //      relinked every launch by linkClaudeGlibcExecShims because that dir
-    //      moves on reinstall). bash is the shelly_shell launcher, which jumps
-    //      through linker64 to libbash.so and re-adds the exec-wrapper preload.
-    //      SHELLY_GLIBC_LD_LIBRARY_PATH is now $SHELLY_LIB_DIR (ld.so's
-    //      --library-path still wins for claude itself) so bionic children
-    //      resolve their DSOs; USE_BUILTIN_RIPGREP=0 when the rg link exists;
-    //      CLAUDE_CODE_TMPDIR=$__root/tmp.
+    // v278: shelly-claude-glibc() S3 groundwork. SHELLY_GLIBC_LD_LIBRARY_PATH
+    //      is now $SHELLY_LIB_DIR (ld.so's --library-path still wins for claude
+    //      itself) so claude's bionic children no longer inherit the glibc lib
+    //      dir as LD_LIBRARY_PATH; TMPDIR / CLAUDE_CODE_TMPDIR=$__root/tmp are
+    //      set for claude only. Claude's Bash tool itself is still blocked
+    //      (direct execve of app_data_file; see DEFERRED.md S3).
     private const val BASHRC_VERSION = 278
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
@@ -1524,7 +1517,6 @@ patchCodex(libDir);
 
         cleanupRemovedCliRuntime(home, libDir)
         linkCodeModeHostIntoRuntime(home, libDir)
-        linkClaudeGlibcExecShims(home, nativeLibDir)
 
         // bug #93 v2: removed the shebang-based $HOME/bin/bash wrapper — SELinux
         // blocks #!/system/bin/sh from app_data_file context. bash is now a shell
@@ -4252,10 +4244,7 @@ patchCodex(libDir);
             // v276: Claude Code (Ink) enables bracketed paste; without the force-TUI
             // marker paste() sends bash's \C-x\C-b BEGIN, which corrupts a pasted
             // OAuth code. Mark the TUI for the whole run, like codex().
-            // v278 (S3): claude's own execs (Bash tool shell, rg, git) go
-            // through $__root/bin (nativeLibraryDir symlinks made by
-            // linkClaudeGlibcExecShims); SHELL/CLAUDE_CODE_SHELL/PATH/TMPDIR/
-            // CLAUDE_CODE_TMPDIR/USE_BUILTIN_RIPGREP are command prefixes only.
+            // v278 (S3): TMPDIR/CLAUDE_CODE_TMPDIR are command prefixes only.
             // SHELLY_GLIBC_LD_LIBRARY_PATH carries the BIONIC lib dir: the loader
             // turns it into claude's LD_LIBRARY_PATH, which glibc ld.so ignores
             // (--library-path wins) but claude's bionic children inherit.
@@ -4325,21 +4314,13 @@ patchCodex(libDir);
             sb.appendLine("    done")
             sb.appendLine("    [ \"\$__interactive\" = 1 ] && printf '%s\\n' \"\$__armtag\" > \"\$__arm\"")
             sb.appendLine("    __proxy=\"http://shelly:\$__token@127.0.0.1:\$__port\"")
-            sb.appendLine("    # S3: claude cannot execve app_data_file; \$__root/bin links into the APK lib dir.")
-            sb.appendLine("    __xbin=\"\$__root/bin\"")
-            sb.appendLine("    if [ ! -x \"\$__xbin/bash\" ]; then")
-            sb.appendLine("      echo \"shelly-claude-glibc: \$__xbin/bash missing (restart Shelly to relink); the Bash tool will fail\" >&2")
-            sb.appendLine("    fi")
-            sb.appendLine("    __rgb=1")
-            sb.appendLine("    [ -x \"\$__xbin/rg\" ] && __rgb=0")
             sb.appendLine("    __tmp=\"\${TMPDIR:-\$HOME/tmp}\"")
             sb.appendLine("    __ctmp=\"\$__root/tmp\"")
             sb.appendLine("    mkdir -p \"\$__tmp\" \"\$__ctmp\" 2>/dev/null")
             sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY")
             sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
             sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
-            sb.appendLine("      SHELL=\"\$__xbin/bash\" CLAUDE_CODE_SHELL=\"\$__xbin/bash\" PATH=\"\$__xbin:\$PATH\" \\")
-            sb.appendLine("      TMPDIR=\"\$__tmp\" CLAUDE_CODE_TMPDIR=\"\$__ctmp\" USE_BUILTIN_RIPGREP=\"\$__rgb\" \\")
+            sb.appendLine("      TMPDIR=\"\$__tmp\" CLAUDE_CODE_TMPDIR=\"\$__ctmp\" \\")
             sb.appendLine("      SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" \\")
             sb.appendLine("      LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
             sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
@@ -5751,54 +5732,6 @@ patchCodex(libDir);
             android.util.Log.i("HomeInitializer", "linked bundled codex-code-mode-host into Codex runtime $runtimeVersion")
         } catch (e: Exception) {
             android.util.Log.w("HomeInitializer", "codex-code-mode-host runtime link failed: ${e.message}")
-        }
-    }
-
-    /**
-     * Claude Code glibc S3 (BASHRC_VERSION 278): the glibc claude process has no
-     * bionic exec wrapper, so every execve it makes is a real kernel exec and
-     * Knox/SELinux only allows that for files in the APK nativeLibraryDir
-     * (apk_data_file), never for app_data_file under filesDir (termux-libs,
-     * $HOME/bin). Give shelly-claude-glibc() a private bin dir of symlinks into
-     * nativeLibraryDir (exec permission is checked on the symlink target):
-     *   bash -> libshelly_shell.so (launcher: linker64 + libbash.so + preload;
-     *           the name must contain "bash" for Claude Code's shell check)
-     *   rg   -> librg.so   (Grep/Glob with USE_BUILTIN_RIPGREP=0)
-     *   git  -> libgit.so  (claude's own git status/rev-parse calls)
-     * nativeLibraryDir changes on every APK reinstall, so the links are
-     * refreshed on every launch. Only touches an already staged runtime
-     * ($HOME/.shelly-runtime/claude-glibc); never creates it.
-     */
-    private fun linkClaudeGlibcExecShims(home: File, nativeLibDir: String?) {
-        try {
-            val root = File(home, ".shelly-runtime/claude-glibc")
-            if (!root.isDirectory || nativeLibDir.isNullOrEmpty()) return
-            val bin = File(root, "bin")
-            if (!bin.isDirectory && !bin.mkdirs()) return
-            for ((name, soName) in listOf(
-                "bash" to "libshelly_shell.so",
-                "rg" to "librg.so",
-                "git" to "libgit.so"
-            )) {
-                val target = File(nativeLibDir, soName)
-                val link = File(bin, name)
-                val linkPath = link.toPath()
-                val isLink = java.nio.file.Files.isSymbolicLink(linkPath)
-                val current = if (isLink) java.nio.file.Files.readSymbolicLink(linkPath).toString() else null
-                if (!target.isFile) {
-                    // Dangling or stale link from a previous install: drop it so the
-                    // bashrc function warns instead of exec-ing a missing file.
-                    if (isLink) link.delete()
-                    android.util.Log.w("HomeInitializer", "claude-glibc shim target missing: ${target.absolutePath}")
-                    continue
-                }
-                if (current == target.absolutePath) continue
-                if (isLink || link.exists()) link.delete()
-                android.system.Os.symlink(target.absolutePath, link.absolutePath)
-                android.util.Log.i("HomeInitializer", "claude-glibc shim $name -> ${target.absolutePath}")
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("HomeInitializer", "claude-glibc shim link failed: ${e.message}")
         }
     }
 
