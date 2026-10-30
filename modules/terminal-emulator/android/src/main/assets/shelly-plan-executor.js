@@ -5395,7 +5395,10 @@ async function run(args) {
   const hasChain = !!(plan.steps && Array.isArray(plan.steps.list) && plan.steps.list.length > 0);
   // Live progress (v12): opened only once this run holds the agent lock, so a
   // concurrent "previous run still active" refusal never rotates the stream.
-  const progress = progressStart(paths, plan, hasChain ? plan.steps.list : null);
+  // Guarded so a progress bug can never leave the agent lock held (the
+  // releaseLock finally below starts after this line).
+  let progress = null;
+  try { progress = progressStart(paths, plan, hasChain ? plan.steps.list : null); } catch { progress = null; }
   activeProgress = progress;
   let progressStatus = 'error';
   let progressRecords;
