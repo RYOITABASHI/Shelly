@@ -30,6 +30,7 @@ import {
   CONTINUOUS_MIN_COOLDOWN_MS,
   CONTINUOUS_MIN_MAX_WALL_MS,
   PAID_API_TOOL_TYPES,
+  mergeContinuousOnEdit,
   applyContinuousProviderPolicy,
   formatContinuousSummary,
   normalizeContinuousConfig,
@@ -288,11 +289,30 @@ describe('arming a loop', () => {
 describe('native stop is reconciled from disk (never revived by a stale snapshot)', () => {
   beforeEach(() => useAgentStore.getState().setAgents([agentWith()]));
 
-  it('adopts enabled:false from the agent json', async () => {
-    const runCommand = jest.fn(async () => JSON.stringify({ id: 'agent-loop', enabled: false }));
+  it('adopts enabled:false from the agent json for the same loop', async () => {
+    const runCommand = jest.fn(async () => JSON.stringify({ id: 'agent-loop', enabled: false, continuous: { loopStartedAt: 1_000 } }));
     const result = await withContinuousDiskState(agentWith(), runCommand);
     expect(result.enabled).toBe(false);
     expect(useAgentStore.getState().agents[0].enabled).toBe(false);
+  });
+
+  it('race: a user re-enable (new loop) during the disk read is never overwritten', async () => {
+    const runCommand = jest.fn(async () => {
+      // The user re-enables while the stale disk read is in flight.
+      useAgentStore.getState().updateAgent('agent-loop', {
+        enabled: true,
+        continuous: normalizeContinuousConfig({ cooldownMs: 5 * 60_000, loopStartedAt: 2_000 }),
+      });
+      return JSON.stringify({ id: 'agent-loop', enabled: false, continuous: { loopStartedAt: 1_000 } });
+    });
+    const result = await withContinuousDiskState(agentWith(), runCommand);
+    expect(result.enabled).toBe(true);
+    expect(useAgentStore.getState().agents[0].enabled).toBe(true);
+  });
+
+  it('a disk stop without a matching loop id is not adopted', async () => {
+    const runCommand = jest.fn(async () => JSON.stringify({ id: 'agent-loop', enabled: false }));
+    expect((await withContinuousDiskState(agentWith(), runCommand)).enabled).toBe(true);
   });
 
   it('keeps an enabled loop when disk agrees / has no file yet; ignores ordinary agents', async () => {
@@ -327,6 +347,37 @@ describe('native wiring (source checks; Kotlin has no CI unit-test task)', () =>
     expect(loop).toContain('ContinuousStopPolicy.isOwnExecutorCmdline(cmdline(pid), agentId)');
     expect(loop).not.toMatch(/cmdline\(pid\)\.contains\("shelly-plan-executor"\)/);
     expect(loop).toContain('recordedStop = ContinuousStopPolicy.recordedStop(');
+  });
+});
+
+describe('editing a loop keeps the SAME loop', () => {
+  const existing = normalizeContinuousConfig({
+    cooldownMs: 30 * 60_000,
+    maxIterations: 10,
+    maxWallMs: 3 * 3_600_000,
+    dailyBudgetJpy: 200,
+    loopStartedAt: 1_000,
+  });
+
+  it('a rename / task edit keeps limits, budget and loopStartedAt', () => {
+    expect(mergeContinuousOnEdit(existing, { cooldownMs: 30 * 60_000 }, 99_000)).toEqual(existing);
+  });
+
+  it('a cooldown change restarts the loop clock but keeps the custom limits', () => {
+    const merged = mergeContinuousOnEdit(existing, { cooldownMs: 3_600_000 }, 99_000);
+    expect(merged).toMatchObject({ cooldownMs: 3_600_000, maxIterations: 10, maxWallMs: 3 * 3_600_000, dailyBudgetJpy: 200, loopStartedAt: 99_000 });
+  });
+
+  it('a new loop starts now with defaults', () => {
+    expect(mergeContinuousOnEdit(undefined, { cooldownMs: 5 * 60_000 }, 7_000)).toMatchObject({ maxIterations: 50, loopStartedAt: 7_000 });
+  });
+
+  it('the confirm path merges onto the edited agent; the service keeps live loop notifications', () => {
+    const dispatch = fs.readFileSync(path.join(root, 'hooks/use-ai-pane-dispatch.ts'), 'utf8');
+    expect(dispatch).toContain('mergeContinuousOnEdit(editingAgent?.continuous, confirmed.continuous)');
+    const service = fs.readFileSync(path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/TerminalSessionService.kt'), 'utf8');
+    expect(service).toContain('ContinuousLoop.cancelStaleRunningNotifications(applicationContext)');
+    expect(service).not.toContain('cancelAllRunningNotifications');
   });
 });
 

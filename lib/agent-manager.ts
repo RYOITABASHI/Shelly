@@ -903,8 +903,20 @@ export async function withContinuousDiskState(
   runCommand: (cmd: string) => Promise<string>
 ): Promise<Agent> {
   if (!isContinuousAgent(agent) || !agent.enabled) return agent;
-  const disk = await readAgentDiskState(agent.id, runCommand);
+  const disk = (await readAgentDiskState(agent.id, runCommand)) as
+    | (OneShotDiskState & { continuous?: { loopStartedAt?: number } | null })
+    | null;
   if (!disk || disk.enabled !== false) return agent;
+  // Only a stop of the SAME loop is adopted: a user toggle that started a new
+  // loop while this read was in flight (new loopStartedAt in the store) wins,
+  // and so does a snapshot whose loop differs from the disk's.
+  const diskLoop = disk.continuous?.loopStartedAt;
+  const current = useAgentStore.getState().agents.find((a) => a.id === agent.id);
+  if (!current) return agent;
+  if (!current.enabled) return { ...agent, enabled: false };
+  if (diskLoop === undefined || diskLoop !== current.continuous?.loopStartedAt || diskLoop !== agent.continuous?.loopStartedAt) {
+    return agent;
+  }
   useAgentStore.getState().updateAgent(agent.id, { enabled: false });
   return { ...agent, enabled: false };
 }

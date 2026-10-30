@@ -109,6 +109,28 @@ export function normalizeContinuousConfig(raw: Partial<AgentContinuousConfig> | 
   };
 }
 
+/**
+ * Loop config for a confirmed registration / edit. A fresh loop (no existing
+ * config) starts now with default limits. Editing an existing loop keeps it
+ * the SAME loop: its limits / budget and loopStartedAt (native's iteration +
+ * wall-time counters and the checkpoint are keyed by it) stay unless the
+ * loop's own settings — cooldown or goalCheck — changed; even then only
+ * loopStartedAt restarts, the custom limits are kept. A rename or a task edit
+ * therefore never resets the limits.
+ */
+export function mergeContinuousOnEdit(
+  existing: Partial<AgentContinuousConfig> | null | undefined,
+  confirmed: { cooldownMs: number; goalCheck?: boolean },
+  now: number = Date.now(),
+): AgentContinuousConfig {
+  if (!existing) return normalizeContinuousConfig({ ...confirmed, loopStartedAt: now });
+  const before = normalizeContinuousConfig(existing);
+  const after = normalizeContinuousConfig({ ...before, cooldownMs: confirmed.cooldownMs, goalCheck: confirmed.goalCheck === true });
+  const loopChanged = after.cooldownMs !== before.cooldownMs || after.goalCheck !== before.goalCheck;
+  const loopStartedAt = loopChanged || !before.loopStartedAt ? now : before.loopStartedAt;
+  return { ...after, loopStartedAt };
+}
+
 export function isContinuousAgent(agent: Pick<Agent, 'continuous'> | null | undefined): boolean {
   return !!agent && !!agent.continuous && typeof agent.continuous === 'object';
 }

@@ -101,11 +101,10 @@ class TerminalSessionService : Service() {
         Log.i(TAG, "Service created sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         createNotificationChannel()
         instance = this
-        // A fresh process has no iteration running: drop any ongoing loop
-        // notification a dead process left behind.
-        if (activeAgentRuns.get() == 0) {
-            runCatching { ContinuousLoop.cancelAllRunningNotifications(applicationContext) }
-        }
+        // Drop only ongoing loop notifications whose agent is no longer a
+        // continuous, enabled agent on disk (a live loop between iterations
+        // keeps its notification and Stop button).
+        runCatching { ContinuousLoop.cancelStaleRunningNotifications(applicationContext) }
         try {
             CodexRemoteHost.ensureWatching(applicationContext)
         } catch (e: Exception) {

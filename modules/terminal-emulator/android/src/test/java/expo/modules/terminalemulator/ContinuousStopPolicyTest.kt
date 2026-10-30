@@ -141,6 +141,16 @@ class ContinuousStopPolicyTest {
     }
 
     @Test
+    fun serviceRecreationKeepsALiveLoopsNotification() {
+        // Between iterations the service stops and is recreated: a loop that is
+        // still continuous + enabled keeps its notification (and Stop button).
+        assertTrue(ContinuousStopPolicy.keepRunningNotification("agent-a", stillContinuous = true, enabledOnDisk = true))
+        assertFalse(ContinuousStopPolicy.keepRunningNotification("agent-a", stillContinuous = true, enabledOnDisk = false))
+        assertFalse(ContinuousStopPolicy.keepRunningNotification("agent-a", stillContinuous = false, enabledOnDisk = true))
+        assertFalse(ContinuousStopPolicy.keepRunningNotification(null, stillContinuous = true, enabledOnDisk = true))
+    }
+
+    @Test
     fun aLostCheckpointCannotLowerTheIterationCount() {
         assertEquals(7, ContinuousStopPolicy.iterationsDone(7, 0))
         assertEquals(9, ContinuousStopPolicy.iterationsDone(7, 9))

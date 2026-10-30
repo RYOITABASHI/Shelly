@@ -57,7 +57,7 @@ import { resolveConfirmedToolAndRunOn, suggestTool } from '@/lib/agent-tool-rout
 import { consentSignalsFor } from '@/lib/agent-credential-policy';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
 import { parseAgentNL, detectFreeTextAgentDeleteIntent, isContinuousDraft, isManualTriggerDraft } from '@/lib/agent-nl-parser';
-import { formatContinuousSummary, normalizeContinuousConfig } from '@/lib/agent-continuous';
+import { formatContinuousSummary, mergeContinuousOnEdit } from '@/lib/agent-continuous';
 import { resolveAgentOutputBase } from '@/lib/agent-executor';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import {
@@ -4137,7 +4137,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           startNotBefore: confirmed.startNotBefore,
           // Continuous mode: defaults (50 iterations / 24h / ¥0) are filled
           // by createAgent / normalizeContinuousConfig.
-          ...(confirmed.continuous ? { continuous: normalizeContinuousConfig({ ...confirmed.continuous, loopStartedAt: Date.now() }) } : {}),
+          // An edit keeps the SAME loop (limits, budget, loopStartedAt) unless its
+          // cooldown / goalCheck changed — see mergeContinuousOnEdit.
+          ...(confirmed.continuous ? { continuous: mergeContinuousOnEdit(editingAgent?.continuous, confirmed.continuous) } : {}),
         };
         const persisted = await persistAgentDraft({
           editingAgentId,

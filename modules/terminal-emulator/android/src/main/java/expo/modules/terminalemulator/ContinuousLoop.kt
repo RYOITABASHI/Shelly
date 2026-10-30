@@ -38,6 +38,8 @@ object ContinuousLoop {
     private const val NOTIFICATION_SPAN = 0x8000
     const val CHECKPOINT_FILE = "checkpoint.json"
     const val STOP_MARKER_FILE = "continuous.stop"
+    /** Notification extra naming the loop agent (cancelStaleRunningNotifications). */
+    const val EXTRA_LOOP_AGENT_ID = "shelly.continuous.agentId"
     const val CHECKPOINT_VERSION = 1
 
     /** What native reads back from checkpoint.json (fail closed = [EMPTY]). */
@@ -531,6 +533,7 @@ object ContinuousLoop {
                 .setOnlyAlertOnce(true)
                 .apply { if (launch != null) setContentIntent(launch) }
                 .addAction(Notification.Action.Builder(null, if (ja()) "停止" else "Stop", stopPi).build())
+                .addExtras(android.os.Bundle().apply { putString(EXTRA_LOOP_AGENT_ID, agentId) })
                 .build()
             nm.notify(notificationIdFor(RUNNING_NOTIFICATION_BASE, agentId), notification)
         } catch (e: Exception) {
@@ -538,14 +541,24 @@ object ContinuousLoop {
         }
     }
 
-    /** Process (re)start: no iteration can be running yet, so any ongoing
-     *  loop notification left by a dead process is stale. Removed here; the
-     *  next iteration posts a fresh one. */
-    fun cancelAllRunningNotifications(context: Context) {
+    /** Service (re)creation: drop only the ongoing loop notifications whose
+     *  agent is no longer a continuous, enabled agent on disk (deleted /
+     *  paused / stopped while no process was alive). A live loop between
+     *  iterations keeps its notification — and its Stop button. */
+    fun cancelStaleRunningNotifications(context: Context) {
         runCatching {
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            val homeDir = home(context)
             for (sbn in nm.activeNotifications) {
-                if (sbn.id >= RUNNING_NOTIFICATION_BASE && sbn.id < RUNNING_NOTIFICATION_BASE + NOTIFICATION_SPAN) nm.cancel(sbn.id)
+                if (sbn.id < RUNNING_NOTIFICATION_BASE || sbn.id >= RUNNING_NOTIFICATION_BASE + NOTIFICATION_SPAN) continue
+                val agentId = sbn.notification?.extras?.getString(EXTRA_LOOP_AGENT_ID)
+                val json = agentId?.let { readAgentJson(homeDir, it) }
+                val keep = ContinuousStopPolicy.keepRunningNotification(
+                    agentId,
+                    stillContinuous = json != null && readConfig(json) != null,
+                    enabledOnDisk = json?.optBoolean("enabled", false) == true,
+                )
+                if (!keep) nm.cancel(sbn.id)
             }
         }
     }

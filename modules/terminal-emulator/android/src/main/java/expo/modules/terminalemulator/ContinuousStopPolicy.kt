@@ -143,6 +143,11 @@ object ContinuousStopPolicy {
     fun isOwnExecutorCmdline(cmdline: String, agentId: String): Boolean =
         cmdline.contains("shelly-plan-executor") && cmdline.contains("plan-agent-$agentId.json")
 
+    /** Whether an ongoing loop notification for [agentId] is still valid on
+     *  service (re)creation: the agent is still continuous and enabled on disk. */
+    fun keepRunningNotification(agentId: String?, stillContinuous: Boolean, enabledOnDisk: Boolean): Boolean =
+        !agentId.isNullOrBlank() && stillContinuous && enabledOnDisk
+
     /** Iterations to count: the larger of native's own counter and the
      *  checkpoint's (a corrupt/missing checkpoint can never lower it). */
     fun iterationsDone(nativeCount: Int, checkpointIteration: Int): Int =
