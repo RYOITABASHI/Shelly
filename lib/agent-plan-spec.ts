@@ -497,7 +497,7 @@ function toPlanAction(
   }
 }
 
-function toPlanTool(tool: ToolChoice, unsupportedReason?: string): AgentPlanSpecV1['tool'] {
+export function toPlanTool(tool: ToolChoice, unsupportedReason?: string): AgentPlanSpecV1['tool'] {
   if (unsupportedReason) {
     return { type: 'unsupported', label: toolChoiceToLabel(tool), unsupportedReason };
   }

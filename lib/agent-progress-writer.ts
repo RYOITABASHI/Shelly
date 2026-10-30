@@ -89,6 +89,16 @@ export function noteAttendedApprovalWaiting(agentId: string | null | undefined):
   }
 }
 
+/** The approval the drain asked about is gone (answered / expired). Never throws. */
+export function noteAttendedApprovalResolved(agentId: string | null | undefined): void {
+  if (!agentId) return;
+  try {
+    activeWriters.get(agentId)?.approvalResolved();
+  } catch {
+    // best-effort
+  }
+}
+
 export interface AttendedProgressStart {
   agentId: string;
   stepCount: number;
@@ -187,6 +197,13 @@ export class AttendedProgressWriter {
     this.state(this.currentStep, 'WAITING_APPROVAL');
   }
 
+  /** The human answered: the waiting step is RUNNING again until it settles. */
+  approvalResolved(): void {
+    if (this.currentStep < 0) return;
+    if (this.states.get(this.currentStep) !== 'WAITING_APPROVAL') return;
+    this.state(this.currentStep, 'RUNNING');
+  }
+
   /**
    * Settles every unsettled step (mirror of the executor's progressFinish),
    * then run_end. `status` is the run status ('halted' = STOP-ALL). Returns a
@@ -209,10 +226,22 @@ export class AttendedProgressWriter {
       // best-effort
     }
     const drained = this.drain();
-    return Promise.race([
-      drained,
-      new Promise<void>((resolve) => setTimeout(resolve, PROGRESS_FINISH_TIMEOUT_MS)),
-    ]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const capped = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        // Past the cap: drop whatever is still queued so a late append can
+        // never land in the NEXT run's freshly rotated file.
+        this.disabled = true;
+        this.pending = [];
+        resolve();
+      }, PROGRESS_FINISH_TIMEOUT_MS);
+    });
+    return Promise.race([drained, capped]).finally(() => {
+      if (timer) clearTimeout(timer);
+      // The run is over either way: nothing may be appended after this.
+      this.disabled = true;
+      this.pending = [];
+    });
   }
 
   // ─── internals ────────────────────────────────────────────────────────────

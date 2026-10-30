@@ -13,24 +13,32 @@
  *  (a) planParallelGroups gives at least one EFFECTIVE group (>= 2 members) —
  *      otherwise there is nothing to parallelize and the serial chain (with
  *      its per-step escalation ladder and Codex reach) is strictly better;
- *  (b) every step runs on a tool the executor can dispatch
- *      (STEP_TOOL_DISPATCHABLE_TYPES) — both as baked on disk AND as the
- *      attended router would pick it. The executor silently re-routes a `cli`
- *      (Codex) step onto plan.tool, so a chain with any Codex/CLI step stays
- *      serial instead of quietly changing what runs. All steps are checked,
- *      not only the branches, for that reason;
- *  (c) the agent's ON-DISK PlanSpec already describes exactly this chain
- *      (same id, schema, step instructions and group markers, a dispatchable
- *      tool and action). The plan is NEVER rewritten for this route —
- *      alarms read that file, so widening it here would silently change what
- *      every later scheduled fire does.
+ *  (b) per step, the provider the attended router would pick first
+ *      (resolveEscalationLadder on the step's own instruction) is EXACTLY the
+ *      executor's effective tool for that step as baked on disk
+ *      (shelly-plan-executor.js effectiveStepTool: a dispatchable step.tool,
+ *      else plan.tool) — same type and model. This rejects Codex/CLI steps
+ *      (the executor silently re-routes them onto plan.tool), `tool: auto`
+ *      steps the attended router sends elsewhere than plan.tool, and step pins
+ *      buildAgentPlanSpec dropped for an autonomous agent;
+ *  (c) a step whose effective tool is local needs plan.tool to be local too:
+ *      native only autostarts llama-server when plan.tool.type == 'local'
+ *      (AgentRuntime.kt runPlanAgent → ensureLocalLlmServerBeforePlanExecutor);
+ *  (d) the ON-DISK PlanSpec is current: it equals a fresh
+ *      buildAgentPlanSpec(agent, <the opts materialize would use>) on every
+ *      field except generatedAt / prompt / routeDecision (and the isolation
+ *      prompt base), which carry the memory recall baked at materialize time.
+ *      The plan is NEVER rewritten for this route — alarms read that file, so
+ *      widening it here would silently change what every later scheduled fire
+ *      does.
  *
- * Pure: no I/O. The caller reads the plan file and the ladder env.
+ * Pure apart from buildAgentPlanSpec's getHomePath(). The caller reads the
+ * plan file and the ladder env.
  */
 import type { Agent, ToolChoice } from '@/store/types';
 import { normalizeSteps, planParallelGroups, type NormalizedStep } from './agent-orchestration';
 import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
-import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION } from './agent-plan-spec';
+import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION, buildAgentPlanSpec, toPlanTool, type BuildAgentPlanSpecOptions } from './agent-plan-spec';
 
 /** Mirror of scripts/shelly-plan-executor.js STEP_TOOL_DISPATCHABLE_TYPES. */
 export const EXECUTOR_DISPATCHABLE_TOOL_TYPES: ReadonlySet<string> = new Set(['local', 'gemini-api', 'perplexity', 'cerebras', 'groq']);
@@ -51,8 +59,12 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
-function toolType(v: unknown): string | undefined {
+function typeOf(v: unknown): string | undefined {
   return isRecord(v) && typeof v.type === 'string' ? v.type : undefined;
+}
+
+function modelOf(v: unknown): string | undefined {
+  return isRecord(v) && typeof v.model === 'string' && v.model ? v.model : undefined;
 }
 
 /** Number of effective (>= 2 member) groups in a planParallelGroups result. */
@@ -64,7 +76,52 @@ export function effectiveGroupCount(group: (string | undefined)[]): number {
   return seen.size;
 }
 
-/** The tool the ATTENDED serial chain would try first for step `step`. */
+/** The buildAgentPlanSpec opts materializeAgentBody uses for the STORED plan
+ *  (install / post-run restore, no runOpts): consent + key flags from disk for
+ *  an autonomous agent, nothing otherwise. */
+export function storedPlanSpecOpts(agent: Agent, env: LadderEnv): BuildAgentPlanSpecOptions {
+  if (!agent.autonomous) return {};
+  return {
+    autonomousCloudConsent: env.autonomousCloudConsent,
+    autonomousCloudStop: env.autonomousCloudStop,
+    hasCerebrasKey: env.hasCerebrasKey,
+    hasGroqKey: env.hasGroqKey,
+  };
+}
+
+/** JSON-normalized plan without the fields that legitimately vary between
+ *  two materializations of the same agent (time, baked recall text). */
+function normalizedPlan(plan: unknown): unknown {
+  const clone = JSON.parse(JSON.stringify(plan)) as Record<string, unknown>;
+  delete clone.generatedAt;
+  delete clone.prompt;
+  delete clone.routeDecision;
+  if (isRecord(clone.steps) && Array.isArray(clone.steps.isolation)) {
+    clone.steps.isolation = clone.steps.isolation.map((x) => {
+      if (!isRecord(x)) return x;
+      const { base: _base, ...rest } = x;
+      return rest;
+    });
+  }
+  return clone;
+}
+
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  if (isRecord(v)) {
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(v[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
+}
+
+/** First top-level key whose normalized value differs (for the log line). */
+function firstDiffKey(a: unknown, b: unknown): string {
+  if (!isRecord(a) || !isRecord(b)) return '(root)';
+  const keys = Array.from(new Set([...Object.keys(a), ...Object.keys(b)])).sort();
+  return keys.find((k) => stableStringify(a[k]) !== stableStringify(b[k])) ?? '(none)';
+}
+
+/** The tool the ATTENDED serial chain would try first for `step`. */
 function attendedPrimaryTool(agent: Agent, step: NormalizedStep, env: LadderEnv): ToolChoice | undefined {
   const stepAgent: Agent = { ...agent, orchestration: undefined, tool: step.tool ?? agent.tool };
   return resolveEscalationLadder(stepAgent, env, step.instruction).tools[0];
@@ -80,28 +137,11 @@ export function decideAttendedRoute(args: {
   const { agent, planText, env } = args;
   const steps = normalizeSteps(agent.orchestration);
   if (steps.length < 2) return serial('not a multi-step chain');
-  const groups = planParallelGroups(steps).group;
-  const groupCount = effectiveGroupCount(groups);
+  const groupCount = effectiveGroupCount(planParallelGroups(steps).group);
   if (groupCount === 0) return serial('no effective parallel group');
   if (steps.some((s) => s.apiCall)) return serial('api-call step (attended path refuses it)');
 
-  // (b) attended routing: a step the serial chain would hand to Codex/CLI.
-  for (let i = 0; i < steps.length; i++) {
-    if (steps[i].tool && !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(steps[i].tool!.type)) {
-      return serial(`step ${i + 1} is pinned to ${steps[i].tool!.type} (not executor-dispatchable)`);
-    }
-    let primary: ToolChoice | undefined;
-    try {
-      primary = attendedPrimaryTool(agent, steps[i], env);
-    } catch {
-      return serial(`step ${i + 1}: route could not be resolved`);
-    }
-    if (!primary || !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(primary.type)) {
-      return serial(`step ${i + 1} routes to ${primary?.type ?? 'nothing'} attended (not executor-dispatchable)`);
-    }
-  }
-
-  // (c) on-disk PlanSpec must already be this chain.
+  // ── the on-disk plan must parse, be this agent, and be current ───────────
   let plan: unknown;
   try {
     plan = JSON.parse(String(planText || '').trim());
@@ -113,36 +153,82 @@ export function decideAttendedRoute(args: {
     return serial('on-disk PlanSpec has a different kind/schema');
   }
   if (!isRecord(plan.agent) || plan.agent.id !== agent.id) return serial('on-disk PlanSpec agent id mismatch');
-  const planTool = toolType(plan.tool);
-  if (!planTool || !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(planTool)) {
-    return serial(`on-disk PlanSpec tool ${planTool ?? 'missing'} is not executor-dispatchable`);
+  let fresh: unknown;
+  try {
+    fresh = buildAgentPlanSpec(agent, storedPlanSpecOpts(agent, env));
+  } catch (error) {
+    return serial(`could not rebuild the PlanSpec to compare (${error instanceof Error ? error.message : String(error)})`);
   }
-  const action = toolType(plan.action);
+  const diskNorm = normalizedPlan(plan);
+  const freshNorm = normalizedPlan(fresh);
+  if (stableStringify(diskNorm) !== stableStringify(freshNorm)) {
+    return serial(`on-disk PlanSpec is stale (differs in "${firstDiffKey(diskNorm, freshNorm)}")`);
+  }
+
+  // ── executor-side dispatchability ────────────────────────────────────────
+  const planTool = plan.tool;
+  const planToolType = typeOf(planTool);
+  if (!planToolType || !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(planToolType)) {
+    return serial(`on-disk PlanSpec tool ${planToolType ?? 'missing'} is not executor-dispatchable`);
+  }
+  const action = typeOf(plan.action);
   if (!action || !EXECUTOR_ACTION_TYPES.has(action)) return serial(`on-disk PlanSpec action ${action ?? 'missing'} unsupported by the executor`);
   if (Array.isArray(plan.actions)) {
     for (const a of plan.actions) {
-      const t = toolType(a);
+      const t = typeOf(a);
       if (!t || !EXECUTOR_ACTION_TYPES.has(t)) return serial(`on-disk PlanSpec fan-out action ${t ?? 'missing'} unsupported by the executor`);
     }
   }
   const list = isRecord(plan.steps) && Array.isArray(plan.steps.list) ? (plan.steps.list as unknown[]) : null;
-  if (!list) return serial('on-disk PlanSpec has no steps (stale)');
-  if (list.length !== steps.length) return serial(`on-disk PlanSpec has ${list.length} steps, agent has ${steps.length} (stale)`);
-  for (let i = 0; i < steps.length; i++) {
-    const disk = list[i];
-    if (!isRecord(disk) || disk.instruction !== steps[i].instruction) return serial(`on-disk PlanSpec step ${i + 1} differs (stale)`);
-    if ((disk.parallelGroup ?? undefined) !== steps[i].parallelGroup) return serial(`on-disk PlanSpec step ${i + 1} group differs (stale)`);
-    if (disk.apiCall) return serial(`on-disk PlanSpec step ${i + 1} is an api-call step`);
-    const diskTool = toolType(disk.tool);
-    if (diskTool !== undefined && !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(diskTool)) {
-      return serial(`on-disk PlanSpec step ${i + 1} tool ${diskTool} would be silently re-routed by the executor`);
-    }
-  }
+  if (!list || list.length !== steps.length) return serial('on-disk PlanSpec steps do not match the agent (stale)');
   // Isolation-blocked steps fail closed in the executor; keep those serial
   // too so the attended run never fails where the serial chain would not.
   const isolation = isRecord(plan.steps) && Array.isArray(plan.steps.isolation) ? (plan.steps.isolation as unknown[]) : [];
   if (isolation.some((x) => isRecord(x) && typeof x.blocked === 'string')) {
     return serial('on-disk PlanSpec isolation blocks a step');
   }
-  return { route: 'executor', reason: `${groupCount} effective parallel group(s), all steps executor-dispatchable, on-disk PlanSpec current`, groupCount };
+
+  // ── per step: attended provider == executor effective provider ───────────
+  for (let i = 0; i < steps.length; i++) {
+    const n = i + 1;
+    const disk = list[i];
+    if (!isRecord(disk)) return serial(`on-disk PlanSpec step ${n} unreadable`);
+    if (disk.apiCall) return serial(`on-disk PlanSpec step ${n} is an api-call step`);
+    if (steps[i].tool && !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(steps[i].tool!.type)) {
+      return serial(`step ${n} is pinned to ${steps[i].tool!.type} (not executor-dispatchable)`);
+    }
+    const diskStepType = typeOf(disk.tool);
+    if (steps[i].tool && diskStepType === undefined) {
+      return serial(`step ${n}'s ${steps[i].tool!.type} pin was dropped from the PlanSpec (autonomous policy) — executor would run plan.tool`);
+    }
+    if (diskStepType !== undefined && !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(diskStepType)) {
+      return serial(`on-disk PlanSpec step ${n} tool ${diskStepType} would be silently re-routed by the executor`);
+    }
+    const effective = diskStepType !== undefined ? disk.tool : planTool;
+    const effectiveType = typeOf(effective)!;
+    if (effectiveType === 'local' && planToolType !== 'local') {
+      return serial(`step ${n} runs on local but plan.tool is ${planToolType} (native only autostarts llama-server for a local plan.tool)`);
+    }
+    let primary: ToolChoice | undefined;
+    try {
+      primary = attendedPrimaryTool(agent, steps[i], env);
+    } catch {
+      return serial(`step ${n}: route could not be resolved`);
+    }
+    if (!primary || !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(primary.type)) {
+      return serial(`step ${n} routes to ${primary?.type ?? 'nothing'} attended (not executor-dispatchable)`);
+    }
+    const attended = toPlanTool(primary);
+    const effectiveModel = modelOf(effective) ?? modelOf(toPlanTool({ type: effectiveType } as ToolChoice));
+    if (attended.type !== effectiveType || (attended.model ?? undefined) !== effectiveModel) {
+      return serial(
+        `step ${n} provider drift: attended ${attended.type}${attended.model ? `/${attended.model}` : ''} vs executor ${effectiveType}${effectiveModel ? `/${effectiveModel}` : ''}`,
+      );
+    }
+  }
+  return {
+    route: 'executor',
+    reason: `${groupCount} effective parallel group(s), every step's provider matches the executor, on-disk PlanSpec current`,
+    groupCount,
+  };
 }

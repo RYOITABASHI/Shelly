@@ -31,7 +31,13 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 
 import { runAgentNow } from '@/lib/agent-manager';
 import { parseProgressJsonl, parseProgressLine } from '@/lib/agent-progress';
-import { noteAttendedApprovalWaiting, progressTailText, __resetAttendedProgressWritersForTests } from '@/lib/agent-progress-writer';
+import {
+  AttendedProgressWriter,
+  noteAttendedApprovalResolved,
+  noteAttendedApprovalWaiting,
+  progressTailText,
+  __resetAttendedProgressWritersForTests,
+} from '@/lib/agent-progress-writer';
 import { useAgentStore } from '@/store/agent-store';
 import { Agent, AgentOrchestrationConfig } from '@/store/types';
 
@@ -208,6 +214,45 @@ describe('attended serial chain — progress.jsonl stream', () => {
     const events = h.progressLines().map((l) => parseProgressLine(l)!);
     const finalStates = events.filter((e) => e.kind === 'branch_state' && e.stepIndex === 2).map((e) => e.state);
     expect(finalStates).toEqual(['STANDBY', 'RUNNING', 'WAITING_APPROVAL', 'DONE']);
+  });
+
+  it('a resolved approval puts the step back to RUNNING before it settles', async () => {
+    useAgentStore.getState().setAgents([makeAgent(STEPS)]);
+    const h = makeHarness();
+    let calls = 0;
+    mockTerminalEmulator.runAgent.mockImplementation(async (agentId: string) => {
+      calls += 1;
+      if (calls === 3) {
+        noteAttendedApprovalWaiting(agentId);
+        noteAttendedApprovalResolved(agentId);
+      }
+    });
+
+    await runAgentNow(AGENT_ID, h.runCommand, { waitTimeoutMs: 2000, pollMs: 1 });
+
+    const events = h.progressLines().map((l) => parseProgressLine(l)!);
+    const finalStates = events.filter((e) => e.kind === 'branch_state' && e.stepIndex === 2).map((e) => e.state);
+    expect(finalStates).toEqual(['STANDBY', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING', 'DONE']);
+  });
+
+  it("nothing is appended once a run finished (no late writes into the next run's rotated file)", async () => {
+    const commands: string[] = [];
+    const runCommand = jest.fn(async (cmd: string) => {
+      commands.push(cmd);
+      return '';
+    });
+    const writer = AttendedProgressWriter.start(runCommand, { agentId: AGENT_ID, stepCount: 2 })!;
+    writer.stepStarted(0);
+    await writer.finish('success');
+    const before = commands.length;
+    writer.stepStarted(1);
+    writer.stepFinished(1, 'success', 'late');
+    noteAttendedApprovalWaiting(AGENT_ID);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(commands.length).toBe(before);
+    const run = parseProgressJsonl(commands.flatMap(appendedLines).join('\n'));
+    expect(run!.status).toBe('success');
+    expect(run!.branches.map((b) => b.state)).toEqual(['FAILED', 'SKIPPED']);
   });
 
   it('a chain halted mid-run (STOP-ALL) ends with run_end "halted" and the unrun steps SKIPPED', async () => {

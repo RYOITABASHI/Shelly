@@ -102,7 +102,7 @@ import {
   trustedRequestOrigin,
   type TrustOffer,
 } from '@/lib/agent-policy-approval';
-import { noteAttendedApprovalWaiting } from '@/lib/agent-progress-writer';
+import { noteAttendedApprovalResolved, noteAttendedApprovalWaiting } from '@/lib/agent-progress-writer';
 import { isProactiveOrigin } from '@/lib/agent-action-policy';
 import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
@@ -1165,7 +1165,7 @@ export default function RootLayout() {
     };
 
     const fallbackActionApprovalRequestDirUri = `${FileSystem.documentDirectory}home/.shelly/agents/action-approvals`;
-    const notifiedActionApprovals = new Map<string, { runId: string; seenAt: number }>();
+    const notifiedActionApprovals = new Map<string, { runId: string; agentId?: string; seenAt: number }>();
     let actionApprovalRequestDirUri: string | null = null;
     let isDrainingActionApprovals = false;
     const trimActionFileUri = (uri: string) => uri.replace(/\/+$/, '');
@@ -2219,7 +2219,7 @@ export default function RootLayout() {
 
     const rememberActionApproval = (key: string, request: AgentActionApprovalRequest) => {
       const now = Date.now();
-      notifiedActionApprovals.set(key, { runId: request.runId, seenAt: now });
+      notifiedActionApprovals.set(key, { runId: request.runId, agentId: request.agentId, seenAt: now });
       for (const [candidate, record] of notifiedActionApprovals) {
         if (now - record.seenAt > 10 * 60_000) notifiedActionApprovals.delete(candidate);
       }
@@ -2444,6 +2444,9 @@ export default function RootLayout() {
           }
           await TerminalEmulator.cancelAgentActionApproval?.(record.runId).catch(() => undefined);
           notifiedActionApprovals.delete(key);
+          // MONITOR: no request of this run is pending any more — an attended
+          // serial step that was WAITING_APPROVAL is RUNNING again.
+          noteAttendedApprovalResolved(record.agentId);
           logInfo('AgentActionApproval', `stale approval notification cancelled run=${record.runId}`);
         }
       } catch (e) {

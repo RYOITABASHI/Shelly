@@ -61,6 +61,7 @@ import {
 } from './agent-companion-notice';
 import { decideAttendedRoute, effectiveGroupCount } from './agent-attended-route';
 import { AttendedProgressWriter } from './agent-progress-writer';
+import { parseProgressLine } from './agent-progress';
 import { HandoffNarrator } from './agent-handoff';
 import {
   applyUnattendedSkillImprovement,
@@ -2187,9 +2188,41 @@ async function runLadderAttempts(
   return { ladder, finalLog };
 }
 
-/** Native kills an executor run at AgentRuntime.kt DEFAULT_TIMEOUT_MS (30 min);
- *  wait a little past that so the run log it then writes is still observed. */
-const ATTENDED_EXECUTOR_WAIT_TIMEOUT_MS = 32 * 60_000;
+/**
+ * Executor-route wait budgets. Native kills an executor run at AgentRuntime.kt
+ * DEFAULT_TIMEOUT_MS (30 min) — but that clock only starts once node is
+ * launched, AFTER LibExtractor and (plan.tool local) the local-LLM ensure
+ * preflight, which itself may take up to another DEFAULT_TIMEOUT_MS. So the
+ * wait is split: PRE-START (launch → this run's progress run_start) and RUN
+ * (run_start → run log), each a little past 30 min. A caller's waitTimeoutMs
+ * (e.g. the AI pane's 10-min PER-STEP limit for the serial chain) can only
+ * lengthen these, never shorten them — on this route it would otherwise be a
+ * whole-chain limit and end the "user" mark while the executor still runs.
+ */
+const attendedExecutorWait = {
+  preStartTimeoutMs: 32 * 60_000,
+  runTimeoutMs: 32 * 60_000,
+  /** Grace after a "previous run still active" refusal with no run_start of
+   *  our own: our launch was the refused one. */
+  refusalGraceMs: 10_000,
+  defaultPollMs: 3_000,
+};
+
+/** Test-only: shrink the executor-route wait budgets. */
+export function __setAttendedExecutorWaitForTests(over: Partial<typeof attendedExecutorWait>): () => void {
+  const saved = { ...attendedExecutorWait };
+  Object.assign(attendedExecutorWait, over);
+  return () => Object.assign(attendedExecutorWait, saved);
+}
+
+const PREVIOUS_RUN_ACTIVE_MESSAGE = 'previous run still active';
+
+/** A concurrent fire's refusal log (executor lock or native chain-lock skip). */
+function isPreviousRunActiveRefusal(log: AgentRunLog): boolean {
+  if (log.status !== 'skipped') return false;
+  const err = (log as AgentRunLog & { errorMessage?: unknown }).errorMessage;
+  return log.outputPreview === PREVIOUS_RUN_ACTIVE_MESSAGE || err === PREVIOUS_RUN_ACTIVE_MESSAGE;
+}
 
 /** Raw on-disk PlanSpec text ('' when absent), read through the LIVE shell
  *  $HOME — the same file AgentRuntime.kt runPlanAgent hands the executor. */
@@ -2204,6 +2237,144 @@ async function readOnDiskPlanSpecText(
   return typeof out === 'string' ? out : '';
 }
 
+interface ProgressRunMarker {
+  runId: string;
+  startedAtMs: number;
+  ended: boolean;
+}
+
+/** run_start / run_end markers of the CURRENT progress.jsonl (one run per file). */
+async function readProgressRunMarkers(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+): Promise<ProgressRunMarker | null> {
+  const out = await runCommand(
+    `# PROGRESS_MARKERS\ngrep -h '"kind":"run_' "$HOME/.shelly/agents/logs/${agentId}/progress.jsonl" 2>/dev/null | tail -n 8 || true`,
+  );
+  let marker: ProgressRunMarker | null = null;
+  for (const line of String(out || '').split('\n')) {
+    const e = parseProgressLine(line);
+    if (!e || e.agentId !== agentId) continue;
+    if (e.kind === 'run_start') {
+      marker = { runId: e.runId, startedAtMs: Date.parse(e.ts) || Date.now(), ended: false };
+    } else if (e.kind === 'run_end' && marker && marker.runId === e.runId) {
+      marker.ended = true;
+    }
+  }
+  return marker;
+}
+
+/** Fails like the serial path's acquireChainLock when a live attended SERIAL
+ *  chain holds `<id>.chain.lock` (native would skip our executor with a
+ *  "previous run still active" log); a stale (>2h) lock is cleared. */
+async function assertNoLiveChainLock(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+): Promise<void> {
+  const dir = getChainLockDir(agentId);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const staleSec = Math.floor(CHAIN_LOCK_STALE_MS / 1000);
+  const out = await runCommand(
+    `# CHAIN_LOCK_CHECK\n` +
+      `LOCK_DIR=${shellQuote(dir)}\n` +
+      `if [ -d "$LOCK_DIR" ]; then\n` +
+      `  ACQUIRED_AT=$(cat "$LOCK_DIR/acquired-at" 2>/dev/null || echo 0)\n` +
+      `  case "$ACQUIRED_AT" in ''|*[!0-9]*) ACQUIRED_AT=0 ;; esac\n` +
+      `  if [ $(( ${nowSec} - ACQUIRED_AT )) -ge ${staleSec} ]; then rm -rf "$LOCK_DIR"; else echo CHAIN_LOCK_BUSY; fi\n` +
+      `fi`,
+  );
+  if (String(out || '').includes('CHAIN_LOCK_BUSY')) {
+    throw new Error(`agent ${agentId}: another run of this agent is already holding the chain lock`);
+  }
+}
+
+/**
+ * Waits for THIS attended executor run. The run is identified by the first
+ * progress.jsonl run_start whose runId differs from the one present before
+ * launch (the executor opens the stream only after taking its per-agent
+ * lock, so a concurrent fire refused by that lock never writes one). Its run
+ * log is the newest non-refusal log at/after that run_start, read once the
+ * run_end is seen (or the stream rotated to a later run). Concurrent fires'
+ * "previous run still active" logs are ignored — unless no run of ours ever
+ * starts, which means OUR launch was the refused one.
+ *
+ * A native-side refusal before node starts (stale executor, missing plan,
+ * STOP-ALL) writes a receiver log and no run_start; any such new non-refusal
+ * log while no run has started ends the wait too.
+ *
+ * Polls the small run markers every `pollMs`; the run-log listing
+ * (find|tail|cat) only runs once a run ended, or every ~5th poll before one
+ * started.
+ */
+async function waitForAttendedExecutorRun(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId: string,
+  opts: {
+    priorRunId: string | undefined;
+    beforeIdentities: Set<string>;
+    launchedAtMs: number;
+    callerTimeoutMs: number;
+    pollMs: number;
+  },
+): Promise<AgentRunLog> {
+  let ours: ProgressRunMarker | null = null;
+  let refusalSeenAt: number | null = null;
+  let refusalLog: AgentRunLog | undefined;
+  let poll = 0;
+  for (;;) {
+    if (agentsHalted()) throw new AgentsHaltedError();
+    let marker: ProgressRunMarker | null = null;
+    try {
+      marker = await readProgressRunMarkers(agentId, runCommand);
+    } catch {
+      // treat as "no marker yet"
+    }
+    if (!ours && marker && marker.runId !== opts.priorRunId) ours = { ...marker };
+    if (ours && marker && marker.runId === ours.runId && marker.ended) ours.ended = true;
+    // The stream already rotated to a later run: ours ended (its run_end is
+    // in progress.prev.jsonl).
+    if (ours && marker && marker.runId !== ours.runId) ours.ended = true;
+
+    const readLogsNow = (ours && ours.ended) || (!ours && poll % 5 === 0);
+    if (readLogsNow) {
+      let fresh: AgentRunLog[] = [];
+      try {
+        const logs = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+        fresh = logs.filter(
+          (l) => !opts.beforeIdentities.has(agentRunLogIdentity(l)) && l.timestamp >= opts.launchedAtMs - 5_000,
+        );
+      } catch {
+        // retry next poll
+      }
+      const real = fresh.filter((l) => !isPreviousRunActiveRefusal(l));
+      if (ours && ours.ended) {
+        const mine = real.filter((l) => l.timestamp >= ours!.startedAtMs - 1_000).at(-1);
+        if (mine) return mine;
+      } else if (!ours) {
+        if (real.length) return real.at(-1)!;
+        const refusal = fresh.filter(isPreviousRunActiveRefusal).at(-1);
+        if (refusal && refusalSeenAt === null) {
+          refusalSeenAt = Date.now();
+          refusalLog = refusal;
+        }
+        if (refusalLog && refusalSeenAt !== null && Date.now() - refusalSeenAt >= attendedExecutorWait.refusalGraceMs) {
+          return refusalLog;
+        }
+      }
+    }
+
+    const now = Date.now();
+    const deadline = ours
+      ? ours.startedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.runTimeoutMs)
+      : opts.launchedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.preStartTimeoutMs);
+    if (now > deadline) {
+      throw new Error(`Timed out waiting for agent "${agentId}" to finish`);
+    }
+    poll += 1;
+    await delay(opts.pollMs);
+  }
+}
+
 /**
  * MONITOR stage (4): attended Run now through the PlanSpec executor (see
  * lib/agent-attended-route.ts for when). Reuses the EXACT native path an
@@ -2213,17 +2384,21 @@ async function readOnDiskPlanSpecText(
  * shelly-plan-executor.js — so no new launcher exists. The on-disk PlanSpec is
  * NOT rewritten (no materialize): the gate already proved it is this chain.
  *
- * Deliberately NO chain lock here: runPlanAgent skips the executor whenever
- * `<id>.chain.lock` exists (that lock means "an attended SERIAL chain owns this
- * agent"). The executor's own per-agent single-flight lock (`locks/<id>.pid`)
- * takes over, so an alarm firing mid-run is skipped by the executor itself;
+ * Deliberately NO chain lock taken here: runPlanAgent skips the executor
+ * whenever `<id>.chain.lock` exists (that lock means "an attended SERIAL chain
+ * owns this agent") — a live one is surfaced as the same busy error the
+ * serial path raises. The executor's own per-agent single-flight lock
+ * (`locks/<id>.pid`) takes over, so an alarm firing mid-run is refused by the
+ * executor itself (and that refusal log is ignored by the wait below);
  * inFlightAgentRuns still dedupes a second in-process Run now.
  *
  * markUserRunStarted/Finished bracket the run exactly like runLadderAttempts,
- * so the executor's action-approval requests keep the "user" origin.
- * progress.jsonl is written by the executor itself (no JS writer on this
- * route). The chat story is the existing hand-off digest of the run log the
- * executor writes (posted here, so the periodic sync does not repeat it).
+ * so the executor's action-approval requests keep the "user" origin. On a
+ * wait timeout the executor is STOPPED before the mark is cleared, so it can
+ * never outlive the mark (later approvals would turn "event") nor a caller's
+ * cleanup (a Once run deletes the agent after this returns/throws).
+ * progress.jsonl is written by the executor itself. The chat story is the
+ * existing hand-off digest of the run log the executor writes.
  */
 async function runAgentViaPlanExecutor(
   agent: Agent,
@@ -2231,51 +2406,80 @@ async function runAgentViaPlanExecutor(
   options: { waitTimeoutMs?: number; pollMs?: number } = {},
 ): Promise<void> {
   const agentId = agent.id;
-  let before: AgentRunLog[] = [];
+  await assertNoLiveChainLock(agentId, runCommand);
+  const beforeIdentities = new Set<string>();
   try {
-    before = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    for (const l of (await readAgentRunLogs(runCommand, agentId))[agentId] ?? []) beforeIdentities.add(agentRunLogIdentity(l));
   } catch {
-    // fall back to timestamp gating below
+    // timestamp gating below still applies
   }
-  const runStartedAtMs = Date.now() - 5_000;
+  let priorRunId: string | undefined;
+  try {
+    priorRunId = (await readProgressRunMarkers(agentId, runCommand))?.runId;
+  } catch {
+    // no prior stream
+  }
+  const launchedAtMs = Date.now();
   let halted = false;
+  let finalLog: AgentRunLog | undefined;
   markUserRunStarted(agentId);
   try {
     await TerminalEmulator.runAgent(agentId);
-    await waitForAgentRunCompletion(runCommand, agentId, {
-      runStartedAtMs,
-      previousRunCount: before.length,
-      previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
-      timeoutMs: options.waitTimeoutMs ?? ATTENDED_EXECUTOR_WAIT_TIMEOUT_MS,
-      pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
+    finalLog = await waitForAttendedExecutorRun(runCommand, agentId, {
+      priorRunId,
+      beforeIdentities,
+      launchedAtMs,
+      callerTimeoutMs: options.waitTimeoutMs ?? 0,
+      pollMs: options.pollMs ?? attendedExecutorWait.defaultPollMs,
     });
   } catch (error) {
     // STOP-ALL: haltInflightRunsCommand kills the executor, which records its
     // own skipped run; end like the serial chain does (no throw).
-    if (!(error instanceof AgentsHaltedError)) throw error;
-    halted = true;
-  } finally {
-    markUserRunFinished(agentId);
-  }
-  logInfo('AgentManager', `agent ${agentId}: plan-executor attended run ${halted ? 'halted (STOP-ALL)' : 'finished'}`);
-  try {
-    const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
-    const latest = after.at(-1);
-    if (latest && latest.timestamp >= runStartedAtMs) {
-      markAttendedAgentRunLog(latest);
-      const agentName = useAgentStore.getState().agents.find((a) => a.id === agentId)?.name ?? agent.name ?? agentId;
-      try {
-        postAgentHandoffDigest(latest, agentName, t);
-      } catch (error) {
-        logWarn('Handoff', 'executor-route digest failed', error);
+    if (error instanceof AgentsHaltedError) {
+      halted = true;
+    } else {
+      if (error instanceof Error && /Timed out waiting/.test(error.message)) {
+        // Never leave a live executor behind the cleared mark / caller cleanup.
+        try {
+          await stopAgent(agentId, runCommand);
+          logWarn('AgentManager', `agent ${agentId}: plan-executor attended run timed out — executor stopped`);
+        } catch (stopError) {
+          logWarn('AgentManager', `agent ${agentId}: failed to stop timed-out executor`, stopError);
+        }
       }
+      markUserRunFinished(agentId);
+      throw error;
     }
-  } catch (error) {
-    logWarn('AgentManager', `agent ${agentId}: could not read the executor run log`, error);
+  }
+  markUserRunFinished(agentId);
+  logInfo(
+    'AgentManager',
+    `agent ${agentId}: plan-executor attended run ${halted ? 'halted (STOP-ALL)' : `finished status=${finalLog?.status ?? '?'}`}`,
+  );
+  if (finalLog) {
+    markAttendedAgentRunLog(finalLog);
+    const agentName = useAgentStore.getState().agents.find((a) => a.id === agentId)?.name ?? agent.name ?? agentId;
+    try {
+      postAgentHandoffDigest(finalLog, agentName, t);
+    } catch (error) {
+      logWarn('Handoff', 'executor-route digest failed', error);
+    }
   }
   await syncAgentRunLogsFromDisk(runCommand, agentId);
-  await captureRunMemory(agentId, runCommand);
-  await updateReusedSkillFromRun(agentId, runCommand);
+  // Post-run hooks only for a run that really ran (not a refusal / halt),
+  // and only while it is the newest log — both hooks read history.at(-1), so
+  // a concurrent fire's later log would otherwise be taken for ours.
+  const newest = useAgentStore.getState().getRunHistory(agentId).at(-1);
+  if (
+    finalLog &&
+    !halted &&
+    !isPreviousRunActiveRefusal(finalLog) &&
+    newest &&
+    agentRunLogIdentity(newest) === agentRunLogIdentity(finalLog)
+  ) {
+    await captureRunMemory(agentId, runCommand);
+    await updateReusedSkillFromRun(agentId, runCommand);
+  }
 }
 
 /**
