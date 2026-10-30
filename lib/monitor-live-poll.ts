@@ -3,10 +3,10 @@
  * per-agent progress stream (`$HOME/.shelly/agents/logs/<id>/progress.jsonl`,
  * written by the PlanSpec executor and, soon, the attended chain).
  *
- * One exec per poll, whatever the agent count: a single shell loop prints,
+ * One exec per poll, whatever the agent count: a single shell script prints,
  * per agent, the stream's `mtime.size` signature and the file body only when
- * the signature changed since the last poll, so an idle poll is a few stat
- * calls. `$HOME` is expanded by the live shell (never the JS home cache —
+ * the signature changed since the last poll, so an idle poll is one `stat`
+ * over the streams that exist (none when no agent has one). `$HOME` is expanded by the live shell (never the JS home cache —
  * see the deleteAgent alias bug in agent-manager). On first sight of an agent
  * the rotated previous run (progress.prev.jsonl) is read once to seed the
  * short history; after a run ends, the newest run log (`<epoch>.json`) is
@@ -56,13 +56,24 @@ export interface PollAgentResult {
 /** The single shell command for one poll. Agent ids are validated (they are
  *  interpolated into the script); signatures are validated the same way. */
 export function buildPollCommand(targets: readonly PollTarget[]): string {
-  const parts: string[] = [];
-  for (const t of targets) {
-    if (!isSafeAgentId(t.agentId)) continue;
+  const safe = targets.filter((t) => isSafeAgentId(t.agentId));
+  if (!safe.length) return '';
+  // One `stat` for every stream that exists (builtin `[ -f ]` filters first),
+  // instead of one fork per agent. Output lines are "|<path> <mtime>.<size>";
+  // each agent's signature is then cut out of $S with parameter expansion
+  // only (POSIX, no fork).
+  const prelude =
+    `L="$HOME/.shelly/agents/logs"; set --; ` +
+    `for i in ${safe.map((t) => t.agentId).join(' ')}; do ` +
+    `[ -f "$L/$i/progress.jsonl" ] && set -- "$@" "$L/$i/progress.jsonl"; done; ` +
+    `S=""; [ $# -gt 0 ] && S="$(stat -c '|%n %Y.%s' "$@" 2>/dev/null)"; `;
+  const parts: string[] = [prelude];
+  for (const t of safe) {
     const known = t.knownSig && /^[0-9.a-z]+$/.test(t.knownSig) ? t.knownSig : '-';
     let s =
-      `d="$HOME/.shelly/agents/logs/${t.agentId}"; f="$d/progress.jsonl"; ` +
-      `s="$(stat -c '%Y.%s' "$f" 2>/dev/null || echo none)"; ` +
+      `d="$L/${t.agentId}"; f="$d/progress.jsonl"; ` +
+      `case "$S" in *"|$f "*) r="\${S#*"|$f "}"; s="\${r%%[!0-9.]*}";; *) s="";; esac; ` +
+      `[ -n "$s" ] || s=none; ` +
       `if [ "$s" = "${known}" ]; then printf '${MARK} P ${t.agentId} %s same\\n' "$s"; ` +
       `else printf '${MARK} P ${t.agentId} %s data\\n' "$s"; [ -f "$f" ] && cat "$f" 2>/dev/null; printf '\\n'; fi; `;
     if (t.readPrev) {
@@ -77,7 +88,7 @@ export function buildPollCommand(targets: readonly PollTarget[]): string {
     }
     parts.push(s);
   }
-  return parts.length ? `${parts.join('')}true` : '';
+  return `${parts.join('')}true`;
 }
 
 export function parsePollOutput(stdout: string): Record<string, PollAgentResult> {
@@ -130,15 +141,18 @@ function latest(list: LiveRunEntry[] | undefined): LiveRunEntry | undefined {
 }
 
 export function selectPollTargets(state: PollState, memo: PollMemo): PollTarget[] {
+  // Only agents that still exist (a deleted agent's leftover logs / liveRuns
+  // are never polled), at most POLL_MAX_AGENTS per poll: running ones first,
+  // then ones already on the wall, then by most recent lastRun.
+  const known = new Set(state.agents.map((a) => a.id));
   const ids: string[] = [];
   const add = (id: string) => {
-    if (isSafeAgentId(id) && !ids.includes(id)) ids.push(id);
+    if (ids.length < POLL_MAX_AGENTS && known.has(id) && isSafeAgentId(id) && !ids.includes(id)) ids.push(id);
   };
   state.runningAgentIds.forEach(add);
   Object.keys(state.liveRuns).forEach(add);
   [...state.agents]
     .sort((a, b) => (b.lastRun ?? 0) - (a.lastRun ?? 0))
-    .slice(0, POLL_MAX_AGENTS)
     .forEach((a) => add(a.id));
   return ids.map((agentId) => {
     const last = latest(state.liveRuns[agentId]);
@@ -204,9 +218,12 @@ export function applyPollResults(
   }
 }
 
-/** True while any known run is still going (drives the 1s cadence). */
+/** True only while some agent's latest known run has no run_end and is not
+ *  silently dead (isRunActive). A held lock alone does not count — attended
+ *  chains that write no progress.jsonl, or a stale runningAgentIds (only the
+ *  Sidebar poll refreshes it), must not pin the poll at 1 Hz; each exec is
+ *  expensive natively. */
 export function anyRunActive(state: Pick<PollState, 'runningAgentIds' | 'liveRuns'>, nowMs: number): boolean {
-  if (state.runningAgentIds.length) return true;
   for (const list of Object.values(state.liveRuns)) {
     const last = latest(list);
     if (last && isRunActive(last.run, state.runningAgentIds, nowMs)) return true;

@@ -7,9 +7,12 @@
  */
 import type { MonitorProvider, MonitorProviderKind, MonitorTeam } from './monitor-team';
 
-/** SKIPPED = never ran (an earlier step failed / the plan skipped it);
- *  STOPPED = was running when the user stopped it (STOP-ALL, or "no" to an
- *  approval) - distinct from FAILED, which is an error. */
+/** SKIPPED = did not run to the end without the user stopping it (an earlier
+ *  step failed, the plan skipped it, or an approval timed out);
+ *  STOPPED = the user stopped it: STOP-ALL while it was running, or "no" to
+ *  its approval (LIVE reads both from progress.jsonl, where the executor
+ *  records them as SKIPPED — see lib/monitor-live.ts liveState). Distinct
+ *  from FAILED, which is an error. */
 export type MonitorAgentState =
   | 'STANDBY'
   | 'RUNNING'

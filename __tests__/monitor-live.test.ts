@@ -221,6 +221,62 @@ describe('monitor-live: failed vs stopped by the user', () => {
   });
 });
 
+describe('monitor-live: approval answered "no" / timed out', () => {
+  const asked = (finalTail: string, status: string) =>
+    runFrom([
+      start('SERIAL', 2),
+      state(0, 'RUNNING', 1),
+      state(0, 'DONE', 2),
+      state(1, 'RUNNING', 2),
+      tail(1, 'write 3 files?', 3),
+      state(1, 'WAITING_APPROVAL', 3),
+      tail(1, finalTail, 9),
+      state(1, 'SKIPPED', 9),
+      end(status, 9),
+    ]);
+
+  it('a declined approval (executor: ActionSkipped → SKIPPED) is STOPPED, declined by you', () => {
+    const snap = createLiveSource(asked('draft action declined', 'skipped')).snapshot(T0 + 10_000, []);
+    expect(snap.agents.s1.state).toBe('STOPPED');
+    expect(snap.agents.s1.note).toEqual({ key: 'monitor.live.declined' });
+    expect(snap.run?.outcome).toBe('stopped');
+    expect(snap.approvalPending).toBe(false);
+  });
+
+  it('an approval timeout stays SKIPPED with its own note', () => {
+    const snap = createLiveSource(asked('draft action approval timed out', 'skipped')).snapshot(T0 + 10_000, []);
+    expect(snap.agents.s1.state).toBe('SKIPPED');
+    expect(snap.agents.s1.note).toEqual({ key: 'monitor.live.approval_timeout' });
+    expect(snap.run?.outcome).toBe('skipped');
+  });
+
+  it('a step skipped without ever asking is plain SKIPPED even if its text says declined', () => {
+    const run = runFrom([
+      start('SERIAL', 1),
+      state(0, 'RUNNING', 1),
+      tail(0, 'policy declined: kept as a draft', 2),
+      state(0, 'SKIPPED', 2),
+      end('skipped', 2),
+    ]);
+    const snap = createLiveSource(run).snapshot(T0 + 5000, []);
+    expect(snap.agents.s0.state).toBe('SKIPPED');
+    expect(snap.agents.s0.note).toBeNull();
+    expect(snap.run?.outcome).toBe('skipped');
+  });
+});
+
+describe('monitor-live: stepCount larger than the branches seen', () => {
+  it('uses stepCount as the mission denominator (truncated head / not yet announced steps)', () => {
+    const run = runFrom([start('SERIAL', 4), state(0, 'RUNNING', 1), state(0, 'DONE', 2)]);
+    const src = createLiveSource(run);
+    expect(src.agents).toHaveLength(1);
+    const snap = src.snapshot(T0 + 3000, []);
+    // 1 settled of 4 steps
+    expect(snap.missionPct).toBe(25);
+    expect(summarize(src.agents, snap).missionPct).toBe(25);
+  });
+});
+
 describe('monitor-live: usage without cost', () => {
   it('API tokens without usd stay tokens-only (usd null), never invented money', () => {
     const run = runFrom([

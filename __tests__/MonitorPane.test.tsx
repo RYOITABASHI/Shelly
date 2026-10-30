@@ -279,6 +279,22 @@ describe('MonitorPane LIVE source', () => {
     expect(utils.queryByLabelText('monitor.pinned_a11y')).toBeNull();
     fireEvent.press(utils.getByLabelText('monitor.live.open_chat_a11y'));
     expect(mockOpenChat).toHaveBeenCalledWith('digest');
+    expect(utils.queryByTestId('monitor-chat-unavailable')).toBeNull();
+    // 4 panes full: say so inline instead of doing nothing.
+    mockOpenChat.mockReturnValueOnce(false);
+    fireEvent.press(utils.getByLabelText('monitor.live.open_chat_a11y'));
+    expect(utils.getByTestId('monitor-chat-unavailable')).toBeTruthy();
+    utils.unmount();
+  });
+
+  it('ignores leftover runs of a deleted agent', () => {
+    seed(liveRun());
+    act(() => {
+      useAgentStore.setState({ agents: [] });
+    });
+    const utils = render(<MonitorPane />);
+    expect(utils.getByText('monitor.source.live_none')).toBeTruthy();
+    expect(utils.getByText('monitor.demo_badge')).toBeTruthy();
     utils.unmount();
   });
 

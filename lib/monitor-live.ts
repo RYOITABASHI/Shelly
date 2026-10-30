@@ -115,6 +115,17 @@ function defFor(run: MonitorRun, b: MonitorBranch, info: LiveAgentInfo): Monitor
   };
 }
 
+/** How an asked-for approval ended, for a branch that was asked and then
+ *  settled SKIPPED: the executor's reason is the step's last tail
+ *  ("<type> action declined" / "<type> action approval timed out"). */
+export function approvalEnding(b: MonitorBranch): 'declined' | 'timeout' | null {
+  if (!b.approvalAsked || b.state !== 'SKIPPED') return null;
+  const reason = (b.tail ?? '').toLowerCase();
+  if (/timed out|timeout/.test(reason)) return 'timeout';
+  if (/declin/.test(reason)) return 'declined';
+  return null;
+}
+
 export function liveState(run: MonitorRun, b: MonitorBranch): MonitorAgentState {
   switch (b.state) {
     case 'RUNNING':
@@ -128,7 +139,10 @@ export function liveState(run: MonitorRun, b: MonitorBranch): MonitorAgentState 
     case 'SKIPPED':
       // STOP-ALL settles every unfinished step as SKIPPED; the ones that had
       // already started were stopped by the user, not skipped by the plan.
-      return run.status === 'halted' && b.startedAt ? 'STOPPED' : 'SKIPPED';
+      if (run.status === 'halted' && b.startedAt) return 'STOPPED';
+      // A "no" to the approval also lands as SKIPPED (the executor throws
+      // ActionSkipped('… declined')); that is the user stopping it too.
+      return approvalEnding(b) === 'declined' ? 'STOPPED' : 'SKIPPED';
     default:
       return 'STANDBY';
   }
@@ -170,6 +184,7 @@ function snapshotFor(
   let approvalAgentId: string | null = null;
   let settled = 0;
   let running = 0;
+  let declined = false;
   const ended = !!run.endedAt;
   for (const b of run.branches) {
     const id = liveDefId(b.stepIndex);
@@ -183,10 +198,17 @@ function snapshotFor(
     const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
     const lines = b.tail ? [b.tail] : [];
     const isActive = state === 'RUNNING' || state === 'APPROVAL';
+    const ending = approvalEnding(b);
+    if (ending === 'declined') declined = true;
     agents[id] = {
       state,
       lines: lines.slice(-LIVE_MAX_LINES),
-      note: null,
+      note:
+        ending === 'declined'
+          ? { key: 'monitor.live.declined' }
+          : ending === 'timeout'
+            ? { key: 'monitor.live.approval_timeout' }
+            : null,
       // Step-based camera bar: a started step shows half, a settled one full.
       logs: SETTLED.has(state) ? 2 : isActive ? 1 : 0,
       totalLogs: 2,
@@ -201,7 +223,10 @@ function snapshotFor(
     else if (isActive) running++;
   }
   const total = Math.max(run.stepCount ?? 0, defs.length, 1);
-  const outcome = liveOutcome(run);
+  // A run that ended because the user said no was stopped by the user.
+  const baseOutcome = liveOutcome(run);
+  const outcome: MonitorRunOutcome =
+    declined && (baseOutcome === 'skipped' || baseOutcome === 'failed') ? 'stopped' : baseOutcome;
   const complete = outcome === 'success';
   const missionPct = complete ? 100 : Math.min(100, Math.round(((settled + running * 0.5) / total) * 100));
 
@@ -277,20 +302,24 @@ export function createLiveSource(run: MonitorRun, info: LiveAgentInfo = {}): Liv
   };
 }
 
-/** True while the run has not ended. A run whose agent no longer holds its
- *  lock and that has been silent for `deadAfterMs` (a crash without run_end)
- *  no longer counts as running for the default LIVE pick. */
+/** True while the run has not ended and is not silently dead. A run without
+ *  run_end (crash) stops counting once it has been silent for `deadAfterMs`.
+ *  The agent's lock (runningAgentIds — refreshed only by the Sidebar poll, so
+ *  it can be stale, and held by chains that write no progress at all) is
+ *  only a hint that stretches that window to `lockedDeadAfterMs`; it never
+ *  makes a run active on its own. */
 export function isRunActive(
   run: MonitorRun,
   runningAgentIds: readonly string[],
   nowMs: number,
   deadAfterMs = 120_000,
+  lockedDeadAfterMs = 600_000,
 ): boolean {
   if (run.endedAt) return false;
-  if (runningAgentIds.includes(run.agentId)) return true;
   let last = ms(run.startedAt) ?? 0;
   for (const b of run.branches) last = Math.max(last, ms(b.updatedAt) ?? 0);
-  return nowMs - last < deadAfterMs;
+  const limit = runningAgentIds.includes(run.agentId) ? lockedDeadAfterMs : deadAfterMs;
+  return nowMs - last < limit;
 }
 
 /** Default LIVE pick: the most recently started active run, else the most

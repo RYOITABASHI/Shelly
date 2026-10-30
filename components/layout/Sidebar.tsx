@@ -93,7 +93,7 @@ import { useTranslation } from '@/lib/i18n';
 import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 import { selectRunAgent } from '@/lib/agent-runs-selection';
-import { selectThreadAgent, findLeafIdForAgent } from '@/lib/agent-thread-selection';
+import { openAgentChatThread } from '@/lib/agent-thread-open';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { postAgentRunStartedNotice, postLatestAgentRunToCompanion } from '@/lib/agent-companion-notice';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
@@ -1013,21 +1013,9 @@ export function Sidebar() {
   // selection, since more than one agent thread can be open at once), set
   // BEFORE addPane so a pane that mounts immediately still reads the right
   // agent — same ordering reasoning as openAgentRunsPane below.
+  // Shared with the MONITOR pane's approval strip (lib/agent-thread-open.ts).
   const openAgentThread = React.useCallback((agent: Agent) => {
-    const existingLeafId = findLeafIdForAgent(agent.id);
-    const multiPane = useMultiPaneStore.getState();
-    if (existingLeafId) {
-      const slotIndex = multiPane.slots.findIndex((slot) => slot?.id === existingLeafId);
-      if (slotIndex >= 0) multiPane.focusSlot(slotIndex as SlotIndex);
-      usePaneStore.getState().setFocusedPane(existingLeafId);
-      return;
-    }
-    if (multiPane.addPane('ai') !== null) return;
-    const next = useMultiPaneStore.getState();
-    const newSlot = next.slots[next.focusedSlot];
-    if (!newSlot) return;
-    selectThreadAgent(newSlot.id, agent.id);
-    usePaneStore.getState().setFocusedPane(newSlot.id);
+    openAgentChatThread(agent.id);
   }, []);
 
   // Open the Agent Runs pane scoped to one agent. Mirrors the Edit button's

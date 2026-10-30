@@ -46,6 +46,8 @@ export interface MonitorBranch {
   startedAt?: string;
   endedAt?: string;
   updatedAt: string;
+  /** True once the branch reported WAITING_APPROVAL (the user was asked). */
+  approvalAsked?: boolean;
 }
 
 export interface MonitorRun {
@@ -184,6 +186,7 @@ function applyEvent(run: MonitorRun, index: Map<number, MonitorBranch>, e: Progr
       const state = e.state as MonitorBranchState;
       if (state === 'RUNNING' && !branch.startedAt) branch.startedAt = e.ts;
       if (TERMINAL_STATES.has(state)) branch.endedAt = e.ts;
+      if (state === 'WAITING_APPROVAL') branch.approvalAsked = true;
       branch.state = state;
       return;
     }

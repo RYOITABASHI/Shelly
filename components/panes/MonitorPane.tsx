@@ -145,15 +145,17 @@ export default function MonitorPane() {
   const [now, setNow] = useState(() => Date.now());
 
   // ── Source selection ──
-  // Agents with a known run, most recently started first.
+  // Existing agents with a known run, most recently started first (a deleted
+  // agent's leftover runs never show up).
   const liveAgentOrder = useMemo(() => {
-    const ids = Object.keys(liveRuns).filter((id) => latestRun(liveRuns[id]));
+    const known = new Set(agents.map((a) => a.id));
+    const ids = Object.keys(liveRuns).filter((id) => known.has(id) && latestRun(liveRuns[id]));
     const start = (id: string) => Date.parse(latestRun(liveRuns[id])!.startedAt) || 0;
     return ids.sort((a, b) => start(b) - start(a));
-  }, [liveRuns]);
+  }, [liveRuns, agents]);
   const liveRun: MonitorRun | null = useMemo(() => {
     if (sourceMode === 'demo') return null;
-    if (sourceMode === 'live' && liveAgentId) {
+    if (sourceMode === 'live' && liveAgentId && liveAgentOrder.includes(liveAgentId)) {
       const chosen = latestRun(liveRuns[liveAgentId]);
       if (chosen) return chosen;
     }
@@ -256,6 +258,11 @@ export default function MonitorPane() {
   const camW = wallWidth > 0 ? (wallWidth - GAP * (cols - 1)) / cols : 0;
 
   const [draft, setDraft] = useState('');
+  // OPEN CHAT found no room for a chat pane (4 panes full).
+  const [chatUnavailable, setChatUnavailable] = useState(false);
+  useEffect(() => {
+    if (!snap.approvalPending) setChatUnavailable(false);
+  }, [snap.approvalPending]);
   const send = () => {
     if (!draft.trim()) return;
     logInfo('Monitor', 'chat input', { approvalPending: snap.approvalPending });
@@ -465,10 +472,15 @@ export default function MonitorPane() {
               a11y={t('monitor.live.open_chat_a11y')}
               onPress={() => {
                 logInfo('Monitor', 'open agent chat for approval');
-                openAgentChatThread(liveRun.agentId);
+                setChatUnavailable(!openAgentChatThread(liveRun.agentId));
               }}
             />
           </View>
+          {chatUnavailable && (
+            <Text style={styles.hintLine} testID="monitor-chat-unavailable">
+              {t('monitor.live.chat_unavailable')}
+            </Text>
+          )}
         </View>
       )}
       {snap.approvalPending && !isLive && (
@@ -688,6 +700,7 @@ const styles = StyleSheet.create({
   costK: { fontFamily: MON_FONT_OSD, fontSize: 13 },
   savedTo: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.amber },
   link: { textDecorationLine: 'underline' },
+  hintLine: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.label },
   failure: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.fail },
   selector: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },

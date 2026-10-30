@@ -2,6 +2,10 @@
  * agent-store `liveRuns` slice + lib/monitor-live-poll.ts (the progress.jsonl
  * poller behind the MONITOR pane's LIVE source).
  */
+import { spawnSync } from 'child_process';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { MAX_LIVE_RUNS_PER_AGENT, useAgentStore } from '@/store/agent-store';
 import type { MonitorRun } from '@/lib/agent-progress';
 import {
@@ -88,16 +92,66 @@ describe('monitor-live-poll: shell command + output', () => {
       { agentId: '../x', knownSig: null, readPrev: false, readRunLog: false },
       { agentId: 'b', knownSig: "1'; evil", readPrev: false, readRunLog: false },
     ]);
-    expect(cmd).toContain('"$HOME/.shelly/agents/logs/good-1"');
+    expect(cmd).toContain('L="$HOME/.shelly/agents/logs"');
+    expect(cmd).toContain('d="$L/good-1"');
     expect(cmd).toContain('= "1730271600.512"');
     expect(cmd).toContain('progress.prev.jsonl');
     expect(cmd).toContain('[0-9]*.json');
     expect(cmd).not.toContain('rm -rf');
     expect(cmd).not.toContain('../x');
     expect(cmd).not.toContain('evil');
-    expect(cmd).toContain('/logs/b"');
+    expect(cmd).toContain('d="$L/b"');
     expect(cmd.endsWith('true')).toBe(true);
     expect(buildPollCommand([])).toBe('');
+  });
+
+  it('forks a single stat for all existing streams, none per agent', () => {
+    const cmd = buildPollCommand(
+      ['a', 'b', 'c'].map((agentId) => ({ agentId, knownSig: null, readPrev: false, readRunLog: false })),
+    );
+    expect(cmd.match(/\bstat\b/g)).toHaveLength(1);
+    expect(cmd).toContain('[ -f "$L/$i/progress.jsonl" ]');
+    expect(cmd).toContain('for i in a b c;');
+  });
+
+  const bash = spawnSync('bash', ['-c', 'stat -c %s /dev/null >/dev/null 2>&1 && echo ok'], { encoding: 'utf8' });
+  const itShell = bash.stdout?.trim() === 'ok' ? it : it.skip;
+  itShell('runs in a real shell: data / same / none, prev and newest run log', () => {
+    const home = mkdtempSync(join(tmpdir(), 'mon-poll-'));
+    const logs = join(home, '.shelly', 'agents', 'logs');
+    mkdirSync(join(logs, 'a'), { recursive: true });
+    mkdirSync(join(logs, 'ab'), { recursive: true });
+    writeFileSync(join(logs, 'a', 'progress.jsonl'), '{"line":1}\n');
+    writeFileSync(join(logs, 'a', 'progress.prev.jsonl'), '{"prev":1}\n');
+    writeFileSync(join(logs, 'a', '1730000000.json'), '{"timestamp":1}');
+    writeFileSync(join(logs, 'a', '1730000999.json'), '{"timestamp":2}');
+    writeFileSync(join(logs, 'ab', 'progress.jsonl'), '{"line":"ab"}\n');
+    const sh = (targets: Parameters<typeof buildPollCommand>[0]) =>
+      parsePollOutput(
+        spawnSync('bash', ['-c', buildPollCommand(targets)], {
+          encoding: 'utf8',
+          env: { ...process.env, HOME: home.replace(/\\/g, '/') },
+        }).stdout,
+      );
+    const first = sh([
+      { agentId: 'a', knownSig: null, readPrev: true, readRunLog: true },
+      { agentId: 'ab', knownSig: null, readPrev: false, readRunLog: false },
+      { agentId: 'missing', knownSig: null, readPrev: false, readRunLog: false },
+    ]);
+    expect(first.a.sig).toMatch(/^\d+\.11$/);
+    expect(first.a.progress).toContain('{"line":1}');
+    expect(first.a.prev).toContain('{"prev":1}');
+    expect(first.a.runLog).toContain('"timestamp":2');
+    expect(first.ab.sig).toMatch(/^\d+\.14$/);
+    expect(first.ab.progress).toContain('"ab"');
+    expect(first.missing.sig).toBe('none');
+    expect(first.missing.progress?.trim()).toBe('');
+    const again = sh([
+      { agentId: 'a', knownSig: first.a.sig, readPrev: false, readRunLog: false },
+      { agentId: 'missing', knownSig: 'none', readPrev: false, readRunLog: false },
+    ]);
+    expect(again.a).toEqual({ agentId: 'a', sig: first.a.sig });
+    expect(again.missing).toEqual({ agentId: 'missing', sig: 'none' });
   });
 
   it('parses changed / unchanged / missing streams, prev and run-log sections', () => {
@@ -195,6 +249,7 @@ describe('monitor-live-poll: targets + one poll', () => {
   });
 
   it('gives up the saved-path lookup after a few misses', () => {
+    useAgentStore.setState({ agents: [{ id: 'a', lastRun: 5 } as never] });
     useAgentStore.getState().upsertLiveRuns('a', [run('r1', 'a', 0, { endedAt: iso(5), status: 'success' })]);
     for (let i = 0; i < SAVED_PATH_MAX_TRIES; i++) useAgentStore.getState().setLiveRunSavedPath('a', 'r1', null);
     expect(selectPollTargets(getState(), createPollMemo())[0].readRunLog).toBe(false);
@@ -208,10 +263,30 @@ describe('monitor-live-poll: targets + one poll', () => {
     await expect(pollLiveRunsOnce(exec, createPollMemo(), getState, store, () => T0)).resolves.toBe(false);
   });
 
-  it('anyRunActive follows the lock list and unfinished recent runs', () => {
-    expect(anyRunActive({ runningAgentIds: ['a'], liveRuns: {} }, T0)).toBe(true);
+  it('a held lock without any progress stream is idle (no 1 Hz pin)', () => {
+    expect(anyRunActive({ runningAgentIds: ['a'], liveRuns: {} }, T0)).toBe(false);
+    const done = { a: [{ run: run('r1', 'a', 0, { endedAt: iso(5), status: 'success' }) }] };
+    expect(anyRunActive({ runningAgentIds: ['a'], liveRuns: done }, T0 + 6000)).toBe(false);
+  });
+
+  it('polls deleted agents never, and caps the target list', () => {
+    useAgentStore.setState({
+      agents: Array.from({ length: 30 }, (_, i) => ({ id: `ag${i}`, lastRun: i }) as never),
+      runningAgentIds: ['ghost', 'ag3'],
+      liveRuns: { ghost: [{ run: run('g', 'ghost', 0) }] },
+    });
+    const ids = selectPollTargets(getState(), createPollMemo()).map((t) => t.agentId);
+    expect(ids).not.toContain('ghost');
+    expect(ids[0]).toBe('ag3');
+    expect(ids).toHaveLength(24);
+  });
+
+  it('anyRunActive follows unfinished recent runs; the lock only stretches the silence window', () => {
     const live = { a: [{ run: run('r1', 'a', 0) }] };
     expect(anyRunActive({ runningAgentIds: [], liveRuns: live }, T0 + 10_000)).toBe(true);
     expect(anyRunActive({ runningAgentIds: [], liveRuns: live }, T0 + 3_600_000)).toBe(false);
+    expect(anyRunActive({ runningAgentIds: [], liveRuns: live }, T0 + 300_000)).toBe(false);
+    expect(anyRunActive({ runningAgentIds: ['a'], liveRuns: live }, T0 + 300_000)).toBe(true);
+    expect(anyRunActive({ runningAgentIds: ['a'], liveRuns: live }, T0 + 3_600_000)).toBe(false);
   });
 });
