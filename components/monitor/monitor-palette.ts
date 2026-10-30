@@ -13,6 +13,8 @@ import type { MonitorAgentState } from '@/lib/monitor-source';
 import type { MonitorProviderKind } from '@/lib/monitor-team';
 
 export const MON = {
+  /** Console glow on the operator's face (used with low stopOpacity). */
+  glow: '#ffffff',
   room: '#0b0f0d',
   bezel: '#1b221e',
   bezelHi: '#2d3832',

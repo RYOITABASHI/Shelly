@@ -31,6 +31,7 @@ const HEX_ALLOWLIST: Record<string, [number, string]> = {
   'app/_layout.tsx': [7, 'root ErrorBoundary crash screen (must render without theme) + Custom Tabs toolbarColor'],
   'components/CaseFileBootOverlay.tsx': [4, 'Case File boot flash: fixed Case File brand colors by design'],
   'components/scouter/ScouterDetailModal.tsx': [33, 'Scouter HUD: deliberate fixed green-phosphor device aesthetic'],
+  'components/monitor/monitor-palette.ts': [27, 'MONITOR pane: fixed CRT/CCTV phosphor palette, single source for all monitor colors'],
   'components/panes/TerminalPane.tsx': [2, 'terminal surface matches the native (separately themed) terminal palette; FAB glyph on fixed dark scrim'],
   'components/terminal/CommandKeyBar.tsx': [1, 'key bar matches the native terminal surface'],
   'components/layout/WorktreeAddModal.tsx': [2, 'agent identity colors (Codex green / None gray)'],

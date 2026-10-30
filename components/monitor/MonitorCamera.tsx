@@ -73,8 +73,8 @@ function ConsoleLight({ w, h }: { w: number; h: number }) {
     <Svg width={w} height={h} style={StyleSheet.absoluteFill} pointerEvents="none">
       <Defs>
         <RadialGradient id="cl" cx="92%" cy="94%" rx="62%" ry="94%">
-          <Stop offset="0" stopColor="#ffffff" stopOpacity={0.35} />
-          <Stop offset="1" stopColor="#ffffff" stopOpacity={0} />
+          <Stop offset="0" stopColor={MON.glow} stopOpacity={0.35} />
+          <Stop offset="1" stopColor={MON.glow} stopOpacity={0} />
         </RadialGradient>
       </Defs>
       <Rect x="0" y="0" width={w} height={h} fill="url(#cl)" />
