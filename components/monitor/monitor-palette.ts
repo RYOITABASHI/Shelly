@@ -62,6 +62,10 @@ export function stateColor(state: MonitorAgentState): string {
       return MON.done;
     case 'FAILED':
       return MON.fail;
+    case 'SKIPPED':
+      return MON.muted;
+    case 'STOPPED':
+      return MON.label;
     default:
       return MON.phosphor;
   }
@@ -115,7 +119,8 @@ const OPERATORS: Record<number, Record<Look, ImageSourcePropType>> = {
   },
 };
 
-/** live = RUNNING/WAITING, alert = APPROVAL, dim = STANDBY/DONE, fail = FAILED. */
+/** live = RUNNING/WAITING, alert = APPROVAL, fail = FAILED, dim = everything else
+ *  (STANDBY / DONE / SKIPPED / STOPPED). */
 export function operatorImage(operator: number, state: MonitorAgentState): ImageSourcePropType {
   const set = OPERATORS[operator] ?? OPERATORS[1];
   if (state === 'RUNNING' || state === 'WAITING') return set.live;

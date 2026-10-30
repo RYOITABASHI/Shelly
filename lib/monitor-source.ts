@@ -1,14 +1,24 @@
 /**
  * lib/monitor-source.ts — the data interface behind the MONITOR pane.
  *
- * The pane renders a MonitorSnapshot and nothing else. Phase A ships only the
- * built-in DEMO source (lib/monitor-demo.ts); a live source fed by real agent
- * runs implements the same MonitorSource contract later, so the UI does not
- * change when that lands.
+ * The pane renders a MonitorSnapshot and nothing else. Two sources implement
+ * the contract: the built-in DEMO playback (lib/monitor-demo.ts) and the LIVE
+ * source fed by a real agent run's progress.jsonl (lib/monitor-live.ts).
  */
 import type { MonitorProvider, MonitorProviderKind, MonitorTeam } from './monitor-team';
 
-export type MonitorAgentState = 'STANDBY' | 'RUNNING' | 'WAITING' | 'APPROVAL' | 'DONE' | 'FAILED';
+/** SKIPPED = never ran (an earlier step failed / the plan skipped it);
+ *  STOPPED = was running when the user stopped it (STOP-ALL, or "no" to an
+ *  approval) - distinct from FAILED, which is an error. */
+export type MonitorAgentState =
+  | 'STANDBY'
+  | 'RUNNING'
+  | 'WAITING'
+  | 'APPROVAL'
+  | 'DONE'
+  | 'FAILED'
+  | 'SKIPPED'
+  | 'STOPPED';
 
 export const ACTIVE_STATES: ReadonlySet<MonitorAgentState> = new Set(['RUNNING', 'WAITING', 'APPROVAL']);
 
@@ -23,7 +33,8 @@ export interface MonitorAgentDef {
   id: string;
   channel: string;
   name: string;
-  kind: Exclude<MonitorProviderKind, 'AUTO'>;
+  /** AUTO only on LIVE, until the run reports which provider it picked. */
+  kind: MonitorProviderKind;
   provider: MonitorProvider;
   providerName: string;
   model: string;
@@ -42,7 +53,15 @@ export interface MonitorAgentSnapshot {
   /** Total log lines this agent will produce on the success path. */
   totalLogs: number;
   tokens: number;
-  usd: number;
+  /** null = the provider reported no cost (LIVE): show tokens only, never
+   *  an invented amount. */
+  usd: number | null;
+  /** LIVE only: seconds since this step started (frozen once it ended). */
+  elapsedSec?: number;
+  /** LIVE only: seconds since this step's last event. */
+  updatedAgoSec?: number;
+  /** LIVE only: RUNNING with no event for a while (see STALE_AFTER_SEC). */
+  stale?: boolean;
 }
 
 export interface MonitorChatLine {
@@ -61,6 +80,22 @@ export interface MonitorSnapshot {
   approvalAgentId: string | null;
   complete: boolean;
   chat: MonitorChatLine[];
+  /** Overrides the per-agent average (LIVE: step-based, see monitor-live). */
+  missionPct?: number;
+  /** LIVE only: run-level facts. */
+  run?: MonitorRunInfo;
+}
+
+export type MonitorRunOutcome = 'running' | 'success' | 'failed' | 'stopped' | 'skipped';
+
+export interface MonitorRunInfo {
+  outcome: MonitorRunOutcome;
+  /** Seconds since run start (frozen at run end). */
+  elapsedSec: number;
+  /** Failed step's last line, when the run failed. */
+  failureReason?: string;
+  /** Channel of the failed step, when the run failed. */
+  failedChannel?: string;
 }
 
 /** A line the user typed into the chat strip, at playback time `at`. */
@@ -73,14 +108,15 @@ export interface MonitorSource {
   readonly isDemo: boolean;
   readonly agents: readonly MonitorAgentDef[];
   readonly team: MonitorTeam;
-  /** Pure: state of the run at playback time `t` given the user's inputs. */
+  /** Pure: state of the run at time `t` given the user's inputs. DEMO: `t` is
+   *  playback seconds. LIVE: `t` is the wall clock (epoch ms); inputs unused. */
   snapshot(t: number, inputs: readonly MonitorInput[]): MonitorSnapshot;
 }
 
 // ─── Derived numbers (shared by every source) ────────────────────────────────
 
 export function agentProgress(a: MonitorAgentSnapshot): number {
-  if (a.state === 'DONE') return 1;
+  if (a.state === 'DONE' || a.state === 'SKIPPED' || a.state === 'STOPPED') return 1;
   return Math.min(0.95, a.logs / (a.totalLogs || 1));
 }
 
@@ -91,6 +127,10 @@ export interface MonitorSummary {
   /** 0..100 */
   missionPct: number;
   apiUsd: number;
+  /** False when some API step reported tokens but no cost (LIVE): the pane
+   *  then shows API tokens instead of a money figure. */
+  apiUsdKnown: boolean;
+  apiTokens: number;
   cliTokens: number;
   localTokens: number;
 }
@@ -100,6 +140,8 @@ export function summarize(defs: readonly MonitorAgentDef[], snap: MonitorSnapsho
   let done = 0;
   let sum = 0;
   let apiUsd = 0;
+  let apiUsdKnown = true;
+  let apiTokens = 0;
   let cliTokens = 0;
   let localTokens = 0;
   for (const d of defs) {
@@ -108,12 +150,23 @@ export function summarize(defs: readonly MonitorAgentDef[], snap: MonitorSnapsho
     if (a.state === 'RUNNING') running++;
     if (a.state === 'DONE') done++;
     sum += agentProgress(a);
-    if (d.kind === 'API') apiUsd += a.usd;
-    else if (d.kind === 'CLI') cliTokens += a.tokens;
-    else localTokens += a.tokens;
+    if (d.kind === 'API') {
+      apiTokens += a.tokens;
+      if (a.usd === null) {
+        if (a.tokens > 0) apiUsdKnown = false;
+      } else apiUsd += a.usd;
+    } else if (d.kind === 'CLI') cliTokens += a.tokens;
+    else if (d.kind === 'LOCAL') localTokens += a.tokens;
+    // AUTO: no provider reported yet, so there is nothing to attribute.
   }
-  const missionPct = snap.complete ? 100 : defs.length ? Math.round((sum / defs.length) * 100) : 0;
-  return { running, done, total: defs.length, missionPct, apiUsd, cliTokens, localTokens };
+  const missionPct = snap.complete
+    ? 100
+    : snap.missionPct !== undefined
+      ? snap.missionPct
+      : defs.length
+        ? Math.round((sum / defs.length) * 100)
+        : 0;
+  return { running, done, total: defs.length, missionPct, apiUsd, apiUsdKnown, apiTokens, cliTokens, localTokens };
 }
 
 export function formatTokens(n: number): string {
@@ -129,6 +182,15 @@ export function formatMoney(usd: number, locale: string): string {
     return `¥${yen < 10 ? yen.toFixed(2) : Math.round(yen).toLocaleString('ja-JP')}`;
   }
   return `$${usd < 1 ? usd.toFixed(4) : usd.toFixed(2)}`;
+}
+
+/** Elapsed seconds as mm:ss (h:mm:ss past an hour). */
+export function formatDuration(totalSec: number): string {
+  const sec = Math.max(0, Math.floor(totalSec));
+  const p = (n: number) => (n < 10 ? `0${n}` : String(n));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}:${p(m)}:${p(sec % 60)}` : `${p(m)}:${p(sec % 60)}`;
 }
 
 // ─── Map edge state (ported from the prototype's edgeClass) ─────────────────

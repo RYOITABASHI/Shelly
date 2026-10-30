@@ -16,6 +16,7 @@ import { useTranslation } from '@/lib/i18n';
 import {
   agentProgress,
   ACTIVE_STATES,
+  formatDuration,
   formatMoney,
   formatTokens,
   type MonitorAgentDef,
@@ -50,7 +51,28 @@ type Props = {
 export function costText(def: MonitorAgentDef, a: MonitorAgentSnapshot, flatLabel: string, locale: string): string {
   if (def.kind === 'LOCAL') return `${formatTokens(a.tokens)} · ${formatMoney(0, locale)}`;
   if (def.kind === 'CLI') return `${formatTokens(a.tokens)} · ${flatLabel}`;
+  // AUTO (provider not reported yet) or an API step whose provider reported
+  // no cost: tokens only — never an invented amount.
+  if (def.kind === 'AUTO' || a.usd === null) return formatTokens(a.tokens);
   return `${formatMoney(a.usd, locale)} · ${formatTokens(a.tokens)}`;
+}
+
+/** LIVE: "⏱ mm:ss · updated Ns ago", or the stale warning. '' on DEMO. */
+export function timingText(
+  a: MonitorAgentSnapshot,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
+  if (a.elapsedSec === undefined && a.updatedAgoSec === undefined) return '';
+  const parts: string[] = [];
+  if (a.elapsedSec !== undefined) parts.push(t('monitor.live.step_elapsed', { time: formatDuration(a.elapsedSec) }));
+  if (a.updatedAgoSec !== undefined && (a.state === 'RUNNING' || a.state === 'APPROVAL')) {
+    parts.push(
+      a.stale
+        ? t('monitor.live.stale', { n: a.updatedAgoSec })
+        : t('monitor.live.updated_ago', { n: a.updatedAgoSec }),
+    );
+  }
+  return parts.join(' · ');
 }
 
 function ScanlineLayer({ w, h }: { w: number; h: number }) {
@@ -258,6 +280,7 @@ function MonitorCameraImpl(props: Props) {
   const lastLine = snap.lines.length ? snap.lines[snap.lines.length - 1] : snap.state === 'STANDBY' ? t('monitor.standby_line') : '';
   const logLines = useMemo(() => snap.lines.slice(-8), [snap.lines]);
   const note = translateMonitorText(t, snap.note);
+  const timing = timingText(snap, t);
 
   return (
     <Pressable
@@ -302,6 +325,15 @@ function MonitorCameraImpl(props: Props) {
             {costText(def, snap, t('monitor.cost_flat'), locale)}
           </Text>
         </View>
+        {timing.length > 0 && (
+          <Text
+            style={[styles.metaText, snap.stale && { color: MON.amber }]}
+            numberOfLines={1}
+            testID={snap.stale ? `monitor-stale-${def.id}` : undefined}
+          >
+            {timing}
+          </Text>
+        )}
         {note.length > 0 && <Text style={styles.note}>{note}</Text>}
         {single ? (
           <View style={styles.log}>

@@ -8,6 +8,10 @@
  * opens the inline editor (role / provider / ask-before-writing / move).
  * Every edit goes through the pure model, which refuses invalid shapes; the
  * refusal is shown as a short inline message. No modal, no confirm card.
+ *
+ * LIVE (readOnly): the map is the wiring of a real run — no editing, and the
+ * provider line shows what the run actually used (the camera def), not the
+ * team node's planned provider.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -48,6 +52,7 @@ import {
   edgeState,
   summarize,
   formatMoney,
+  formatTokens,
   type MonitorAgentDef,
   type MonitorEdgeState,
   type MonitorSnapshot,
@@ -133,9 +138,10 @@ type NodeProps = {
   selected: boolean;
   onTap: (id: string) => void;
   onDrop: (id: string, dropX: number) => void;
+  readOnly: boolean;
 };
 
-function MapNode({ placed, def, snap, selected, onTap, onDrop }: NodeProps) {
+function MapNode({ placed, def, snap, selected, onTap, onDrop, readOnly }: NodeProps) {
   const { t } = useTranslation();
   const { node, x, y, sub } = placed;
   const tx = useSharedValue(0);
@@ -144,10 +150,11 @@ function MapNode({ placed, def, snap, selected, onTap, onDrop }: NodeProps) {
   const a = snap.agents[node.id];
   const state = a?.state ?? 'STANDBY';
   const pr = a ? agentProgress(a) : 0;
-  const kind = MONITOR_PROVIDER_KIND[node.provider];
+  const kind = readOnly && def ? def.kind : MONITOR_PROVIDER_KIND[node.provider];
+  const providerLabel = readOnly && def ? def.providerName : MONITOR_PROVIDER_LABEL[node.provider];
 
   const pan = Gesture.Pan()
-    .enabled(!sub)
+    .enabled(!sub && !readOnly)
     .activateAfterLongPress(320)
     .onStart(() => {
       lifted.value = withTiming(1, { duration: 120 });
@@ -164,7 +171,7 @@ function MapNode({ placed, def, snap, selected, onTap, onDrop }: NodeProps) {
       ty.value = 0;
       lifted.value = withTiming(0, { duration: 120 });
     });
-  const tap = Gesture.Tap().onEnd(() => {
+  const tap = Gesture.Tap().enabled(!readOnly).onEnd(() => {
     runOnJS(onTap)(node.id);
   });
   const gesture = Gesture.Exclusive(pan, tap);
@@ -194,7 +201,7 @@ function MapNode({ placed, def, snap, selected, onTap, onDrop }: NodeProps) {
         </Text>
         <Text style={styles.n2} numberOfLines={1}>
           <Text style={{ color: kindColor(kind) }}>{kind}</Text>
-          {` · ${MONITOR_PROVIDER_LABEL[node.provider]}`}
+          {` · ${providerLabel}`}
           {node.askBeforeWrite ? ` · ${t('monitor.map.ask_short')}` : ''}
         </Text>
         <Text style={[styles.n3, { color: state === 'STANDBY' ? MON.muted : stateColor(state) }]} numberOfLines={1}>
@@ -223,6 +230,8 @@ type Props = {
   /** Run date (YYYY-MM-DD) filled into the destination path. */
   date: string;
   onChange: (team: MonitorTeam) => void;
+  /** LIVE: show the run's wiring without the editor. */
+  readOnly?: boolean;
 };
 
 export function MonitorMap({
@@ -236,6 +245,7 @@ export function MonitorMap({
   wide,
   date,
   onChange,
+  readOnly = false,
 }: Props) {
   const { t, locale } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -337,6 +347,7 @@ export function MonitorMap({
               selected={selectedId === p.node.id}
               onTap={(id) => setSelectedId((cur) => (cur === id ? null : id))}
               onDrop={onDrop}
+              readOnly={readOnly}
             />
           ))}
           <View
@@ -359,25 +370,27 @@ export function MonitorMap({
                 </Text>
               </>
             )}
-            {goalLit || finalState === 'FAILED' || wide ? (
+            {goalLit || finalState === 'FAILED' || finalState === 'STOPPED' || wide ? (
               <Text style={styles.n2} numberOfLines={1}>
                 {goalLit
-                  ? t('monitor.map.goal_done')
-                  : finalState === 'FAILED'
+                  ? t(team.destination ? 'monitor.map.goal_done' : 'monitor.map.goal_done_plain')
+                  : finalState === 'STOPPED'
                     ? t('monitor.map.goal_stopped')
-                    : t('monitor.map.goal_progress', { pct: summary.missionPct })}
+                    : finalState === 'FAILED'
+                      ? t('monitor.map.goal_failed')
+                      : t('monitor.map.goal_progress', { pct: summary.missionPct })}
               </Text>
             ) : null}
             {wide && (
               <Text style={styles.n2} numberOfLines={1}>
-                {`API ${formatMoney(summary.apiUsd, locale)}`}
+                {`API ${summary.apiUsdKnown ? formatMoney(summary.apiUsd, locale) : formatTokens(summary.apiTokens)}`}
               </Text>
             )}
           </View>
         </View>
       </ScrollView>
 
-      <Text style={styles.hint}>{t('monitor.map.hint')}</Text>
+      {!readOnly && <Text style={styles.hint}>{t('monitor.map.hint')}</Text>}
       {isDemo && (
         <Text style={styles.demoNote} testID="monitor-map-demo-note">
           {t('monitor.map.demo_note')}
@@ -389,7 +402,7 @@ export function MonitorMap({
         </Text>
       )}
 
-      {selected && (
+      {selected && !readOnly && (
         <NodeEditor
           key={selected.id}
           node={selected}
@@ -401,7 +414,7 @@ export function MonitorMap({
         />
       )}
 
-      <View style={styles.toolRow}>
+      {!readOnly && <View style={styles.toolRow}>
         {adding ? (
           <View style={styles.addRow}>
             <TextInput
@@ -447,8 +460,8 @@ export function MonitorMap({
             />
           </>
         )}
-      </View>
-      {showFile && (
+      </View>}
+      {showFile && !readOnly && (
         <View style={styles.file}>
           <Text style={styles.fileText} selectable>
             {serializeTeamFile(team, t('monitor.map.file_parallel'), locale)}

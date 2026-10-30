@@ -7,9 +7,24 @@ import { create } from 'zustand';
 import { Agent, AgentRunLog } from './types';
 import type { MonitorInput } from '@/lib/monitor-source';
 import type { MonitorTeam } from '@/lib/monitor-team';
+import type { MonitorRun } from '@/lib/agent-progress';
 
 export type MonitorView = 'grid' | 'single' | 'map';
 export type MonitorSpeed = 1 | 2 | 4;
+/** auto = LIVE for the most relevant run when one exists, else DEMO. */
+export type MonitorSourceMode = 'auto' | 'live' | 'demo';
+
+/** Runs kept per agent in `liveRuns` (current + recent history). */
+export const MAX_LIVE_RUNS_PER_AGENT = 5;
+
+/** One real run seen by the MONITOR poller (lib/monitor-live-poll.ts). */
+export interface LiveRunEntry {
+  run: MonitorRun;
+  /** Where the run saved its output, from the agent's run log. */
+  savedPath?: string;
+  /** Run-log lookups that found no savedPath yet (the poller stops after a few). */
+  savedPathTries?: number;
+}
 
 /** MONITOR pane state — transient like the rest of this store (no persist).
  *  Phase A drives it from the built-in DEMO playback only: `t` is playback
@@ -30,6 +45,10 @@ export interface MonitorPaneState {
   team: MonitorTeam | null;
   /** Cost-legend line dismissed by the user (kept across RESTART, not persisted). */
   legendDismissed: boolean;
+  /** LIVE / DEMO selector. */
+  sourceMode: MonitorSourceMode;
+  /** Agent shown in LIVE when sourceMode is 'live'. */
+  liveAgentId: string | null;
 }
 
 const initialMonitor = (): MonitorPaneState => ({
@@ -42,7 +61,14 @@ const initialMonitor = (): MonitorPaneState => ({
   runId: 0,
   team: null,
   legendDismissed: false,
+  sourceMode: 'auto',
+  liveAgentId: null,
 });
+
+function runStartMs(run: MonitorRun): number {
+  const v = Date.parse(run.startedAt);
+  return Number.isFinite(v) ? v : 0;
+}
 
 interface AgentState {
   agents: Agent[];
@@ -99,6 +125,17 @@ interface AgentState {
   sendMonitorInput: (text: string) => void;
   restartMonitor: () => void;
   setMonitorTeam: (team: MonitorTeam | null) => void;
+
+  /** Real runs per agent, oldest first, at most MAX_LIVE_RUNS_PER_AGENT.
+   *  Transient (no persist): rebuilt from progress.jsonl by the MONITOR
+   *  poller while the pane is mounted. */
+  liveRuns: Record<string, LiveRunEntry[]>;
+  /** Insert or replace runs (matched by runId) for one agent. Keeps the same
+   *  state object when nothing changed, so idle polls do not re-render. */
+  upsertLiveRuns: (agentId: string, runs: MonitorRun[]) => void;
+  /** Record a run-log lookup: the saved path, or null = looked, none yet. */
+  setLiveRunSavedPath: (agentId: string, runId: string, savedPath: string | null) => void;
+  clearLiveRuns: () => void;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -194,4 +231,41 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       monitor: { ...state.monitor, t: 0, inputs: [], runId: state.monitor.runId + 1 },
     })),
   setMonitorTeam: (team) => set((state) => ({ monitor: { ...state.monitor, team } })),
+
+  liveRuns: {},
+  upsertLiveRuns: (agentId, runs) =>
+    set((state) => {
+      const prev = state.liveRuns[agentId] ?? [];
+      let next = prev;
+      for (const run of runs) {
+        if (run.agentId !== agentId) continue;
+        const i = next.findIndex((e) => e.run.runId === run.runId);
+        if (i >= 0) {
+          const cur = next[i].run;
+          if (cur.lastSeq === run.lastSeq && cur.endedAt === run.endedAt) continue;
+          next = next.slice();
+          next[i] = { ...next[i], run };
+        } else {
+          next = [...next, { run }];
+        }
+      }
+      if (next === prev) return state;
+      next = next
+        .slice()
+        .sort((a, b) => runStartMs(a.run) - runStartMs(b.run))
+        .slice(-MAX_LIVE_RUNS_PER_AGENT);
+      return { liveRuns: { ...state.liveRuns, [agentId]: next } };
+    }),
+  setLiveRunSavedPath: (agentId, runId, savedPath) =>
+    set((state) => {
+      const list = state.liveRuns[agentId];
+      const i = list ? list.findIndex((e) => e.run.runId === runId) : -1;
+      if (!list || i < 0) return state;
+      const next = list.slice();
+      next[i] = savedPath
+        ? { ...next[i], savedPath }
+        : { ...next[i], savedPathTries: (next[i].savedPathTries ?? 0) + 1 };
+      return { liveRuns: { ...state.liveRuns, [agentId]: next } };
+    }),
+  clearLiveRuns: () => set({ liveRuns: {} }),
 }));

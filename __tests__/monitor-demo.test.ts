@@ -43,7 +43,7 @@ describe('monitor demo playback', () => {
 
   it('no → stops without writing', () => {
     const s = simulateDemo(40, [{ at: 26, text: 'だめ' }]);
-    expect(s.agents.ch4.state).toBe('FAILED');
+    expect(s.agents.ch4.state).toBe('STOPPED');
     expect(s.complete).toBe(false);
     expect(s.chat[s.chat.length - 1].message?.key).toBe('monitor.demo.chat.stopped');
   });

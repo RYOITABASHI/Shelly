@@ -88,7 +88,7 @@ const POST_OK: Row[] = [
 ];
 
 const POST_NO: Row[] = [
-  [0.3, 'ch4', 'log', 'stopped by you · nothing written', 0, 0], [0.4, 'ch4', 'state', 'FAILED'],
+  [0.3, 'ch4', 'log', 'stopped by you · nothing written', 0, 0], [0.4, 'ch4', 'state', 'STOPPED'],
   [0.5, null, 'chat', 'chat.stopped'],
 ];
 

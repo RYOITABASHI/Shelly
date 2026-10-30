@@ -3,13 +3,22 @@
  * camera per agent, a mission bar, a hardware-style switcher, the Shelly chat
  * strip, and the editable MAP (wiring) view.
  *
- * Phase A: plays the built-in DEMO run only (lib/monitor-demo.ts) and labels
- * it DEMO everywhere costs or states could be mistaken for a real run. The
- * pane only consumes the MonitorSource interface (lib/monitor-source.ts), so a
- * live source can replace the demo later without UI changes.
+ * Two sources behind one MonitorSource interface (lib/monitor-source.ts):
+ *  - LIVE (lib/monitor-live.ts): a real agent run, read from its
+ *    progress.jsonl by the poller (hooks/use-monitor-live-poller.ts) into
+ *    agent-store `liveRuns`. Default whenever any run is known: the most
+ *    recent running run, else the most recent finished one.
+ *  - DEMO (lib/monitor-demo.ts): the built-in playback, labelled DEMO
+ *    everywhere costs or states could be mistaken for a real run; shown when
+ *    there is no run at all, or when the user picks it.
+ * A small "LIVE ▸ <agent> / DEMO" selector switches between them. LIVE hides
+ * the playback controls (SPEED / RESTART), the DEMO chat strip and the MAP
+ * editor; the MAP shows the run's real wiring read-only.
  *
- * Approval is asked in plain chat text and answered by typing ok / no — no
- * confirm cards or modals (standing product rule).
+ * Approval: DEMO asks in its own chat strip (type ok / no). LIVE never
+ * approves anything here — the pinned strip points the user to the chat /
+ * review prompt where Shelly asked. No confirm cards or modals (standing
+ * product rule).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from 'react-native';
@@ -23,11 +32,20 @@ import { createDemoSource, demoDateLabel } from '@/lib/monitor-demo';
 import { destinationPath } from '@/lib/monitor-team';
 import {
   ACTIVE_STATES,
+  formatDuration,
   formatTokens,
   summarize,
   formatMoney,
   type MonitorAgentState,
+  type MonitorSnapshot,
+  type MonitorSource,
 } from '@/lib/monitor-source';
+import { createLiveSource, pickDefaultLiveRun, type LiveAgentInfo } from '@/lib/monitor-live';
+import type { MonitorRun } from '@/lib/agent-progress';
+import type { Agent } from '@/store/types';
+import { useMonitorLivePoller } from '@/hooks/use-monitor-live-poller';
+import { openFile } from '@/lib/open-file';
+import { openAgentChatThread } from '@/lib/agent-thread-open';
 import { MAX_PARALLEL_BRANCHES } from '@/lib/agent-orchestration';
 import { MonitorCamera, NoSignalCamera } from '@/components/monitor/MonitorCamera';
 import { MonitorMap } from '@/components/monitor/MonitorMap';
@@ -73,7 +91,9 @@ function Key({
           ? MON.done
           : led === 'FAILED'
             ? MON.fail
-            : MON.ledOff;
+            : led === 'STOPPED'
+              ? MON.label
+              : MON.ledOff;
   return (
     <Pressable
       onPress={onPress}
@@ -86,6 +106,17 @@ function Key({
       <Text style={[styles.keyText, pressed && { color: MON.phosphor }]}>{label}</Text>
     </Pressable>
   );
+}
+
+/** Step instructions of an agent's chain, in plan order. */
+function agentStepLabels(agent: Agent | undefined): string[] | undefined {
+  const steps = agent?.orchestration?.steps;
+  if (!steps || !steps.length) return undefined;
+  return steps.map((s) => (typeof s === 'string' ? s : s?.instruction ?? ''));
+}
+
+function latestRun(list: { run: MonitorRun }[] | undefined): MonitorRun | undefined {
+  return list && list.length ? list[list.length - 1].run : undefined;
 }
 
 export default function MonitorPane() {
@@ -102,32 +133,82 @@ export default function MonitorPane() {
       setMonitorTeam: s.setMonitorTeam,
     })),
   );
-  const { t: playT, speed, view, selectedId, auto, inputs, runId } = monitor;
+  const { t: playT, speed, view, selectedId, auto, inputs, runId, sourceMode, liveAgentId } = monitor;
+  const { liveRuns, agents, runningAgentIds } = useAgentStore(
+    useShallow((s) => ({ liveRuns: s.liveRuns, agents: s.agents, runningAgentIds: s.runningAgentIds })),
+  );
+
+  // Reads progress.jsonl into liveRuns while this pane is mounted.
+  useMonitorLivePoller();
+
+  // Wall clock for LIVE (elapsed / "updated Ns ago" / stale), 1 s resolution.
+  const [now, setNow] = useState(() => Date.now());
+
+  // ── Source selection ──
+  // Agents with a known run, most recently started first.
+  const liveAgentOrder = useMemo(() => {
+    const ids = Object.keys(liveRuns).filter((id) => latestRun(liveRuns[id]));
+    const start = (id: string) => Date.parse(latestRun(liveRuns[id])!.startedAt) || 0;
+    return ids.sort((a, b) => start(b) - start(a));
+  }, [liveRuns]);
+  const liveRun: MonitorRun | null = useMemo(() => {
+    if (sourceMode === 'demo') return null;
+    if (sourceMode === 'live' && liveAgentId) {
+      const chosen = latestRun(liveRuns[liveAgentId]);
+      if (chosen) return chosen;
+    }
+    return pickDefaultLiveRun(
+      liveAgentOrder.map((id) => latestRun(liveRuns[id])!),
+      runningAgentIds,
+      now,
+    );
+  }, [sourceMode, liveAgentId, liveRuns, liveAgentOrder, runningAgentIds, now]);
+  const isLive = liveRun !== null;
+  const liveAgent = isLive ? agents.find((a) => a.id === liveRun.agentId) : undefined;
+  const liveAgentName = liveAgent?.name ?? liveRun?.agentId ?? '';
+  const liveEntry = isLive ? liveRuns[liveRun.agentId]?.find((e) => e.run.runId === liveRun.runId) : undefined;
+  const stepLabels = useMemo(() => agentStepLabels(liveAgent), [liveAgent]);
+  const liveSource = useMemo(() => {
+    if (!liveRun) return null;
+    const info: LiveAgentInfo = { name: liveAgentName, steps: stepLabels };
+    return createLiveSource(liveRun, info);
+  }, [liveRun, liveAgentName, stepLabels]);
 
   // The demo is dated "today" and its wall clock starts at RESTART.
   const run = useMemo(() => {
     const date = demoDateLabel();
     return { id: runId, date, source: createDemoSource(date), startWall: Date.now() };
   }, [runId]);
-  const { source, startWall, date } = run;
-  const team = monitor.team ?? source.team;
-  const snap = useMemo(() => source.snapshot(playT, inputs), [source, playT, inputs]);
+  const { startWall, date } = run;
+  const source: MonitorSource = liveSource ?? run.source;
+  const team = isLive ? source.team : monitor.team ?? source.team;
+  const snap: MonitorSnapshot = useMemo(
+    () => (liveSource ? liveSource.snapshot(now, []) : run.source.snapshot(playT, inputs)),
+    [liveSource, run.source, now, playT, inputs],
+  );
   const summary = summarize(source.agents, snap);
 
-  // Playback clock (JS, coarse) — drives the timeline.
+  // Playback clock (JS, coarse) — drives the DEMO timeline only.
   useEffect(() => {
+    if (isLive) return;
     let last = Date.now();
     const id = setInterval(() => {
-      const now = Date.now();
-      tickMonitor((now - last) / 1000);
-      last = now;
+      const n = Date.now();
+      tickMonitor((n - last) / 1000);
+      last = n;
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [tickMonitor]);
+  }, [tickMonitor, isLive]);
+
+  // LIVE clock; also re-evaluates the default pick (a run may go silent).
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), isLive ? 1000 : 5000);
+    return () => clearInterval(id);
+  }, [isLive]);
 
   useEffect(() => {
-    logInfo('Monitor', `pane mounted (demo, run ${runId})`);
-  }, [runId]);
+    logInfo('Monitor', isLive ? `pane showing live run ${liveRun?.runId}` : `pane showing demo (run ${runId})`);
+  }, [isLive, liveRun?.runId, runId]);
 
   // Animation clock (UI thread) — drives the liveness overlays only; frozen
   // under reduced motion so every overlay renders as a still frame.
@@ -183,28 +264,61 @@ export default function MonitorPane() {
   };
 
   const select = (id: string) => setMonitor({ selectedId: id, view: 'single', auto: false });
-  const playClock = formatPlayClock(playT);
+  const playClock = snap.run ? `T+${formatDuration(snap.run.elapsedSec)}` : formatPlayClock(playT);
   // A DEMO feed must never look like a real recording: playback time, not
-  // the wall clock.
-  const timestamp = source.isDemo ? playClock : formatClock(startWall + playT * 1000);
+  // the wall clock. LIVE shows the real wall clock.
+  const timestamp = source.isDemo ? playClock : isLive ? formatClock(now) : formatClock(startWall + playT * 1000);
   const defById = useMemo(() => Object.fromEntries(source.agents.map((d) => [d.id, d])), [source]);
   const selectedDef = defById[selectedId] ?? source.agents[0];
 
   const doneCount = t('monitor.done_count', { n: summary.done, total: summary.total });
+  const outcome = snap.run?.outcome;
+  const ended = outcome !== undefined && outcome !== 'running' && outcome !== 'success';
   const statusLabel = snap.complete
     ? t('monitor.mission_complete')
     : snap.approvalPending
       ? t('monitor.waiting_for_you')
-      : doneCount;
+      : ended
+        ? t(`monitor.live.outcome.${outcome}`)
+        : doneCount;
   // Folded/compact: "DONE n/5" moves into the progress label to save a row.
-  const showStatusInStats = isWide || snap.complete || snap.approvalPending;
+  const showStatusInStats = isWide || snap.complete || snap.approvalPending || ended;
   const progressLabel =
     !isWide && !snap.complete ? `${doneCount} · ${summary.missionPct}%` : `${summary.missionPct}%`;
   const capText = team.capUsd !== undefined ? ` / ${formatMoney(team.capUsd, locale)}` : '';
-  const savedTo =
-    snap.complete && team.destination
+  const apiCostText = summary.apiUsdKnown
+    ? `${formatMoney(summary.apiUsd, locale)}${capText}`
+    : `${formatTokens(summary.apiTokens)}${
+        summary.apiUsd > 0 ? ` · ${t('monitor.cost_reported', { amount: formatMoney(summary.apiUsd, locale) })}` : ''
+      }`;
+  const savedTo = isLive
+    ? null
+    : snap.complete && team.destination
       ? t('monitor.saved_to', { label: team.destination.label, path: destinationPath(team.destination, date) })
       : null;
+  // LIVE: only a path the run itself recorded (its run log's savedPath).
+  const liveSavedPath = isLive && snap.complete ? liveEntry?.savedPath : undefined;
+  const failureText =
+    snap.run?.outcome === 'failed' && snap.run.failedChannel
+      ? t('monitor.live.failure', { channel: snap.run.failedChannel, reason: snap.run.failureReason ?? '—' })
+      : null;
+  const approvalChannel = snap.approvalAgentId
+    ? source.agents.find((d) => d.id === snap.approvalAgentId)?.channel ?? ''
+    : '';
+
+  const pickLive = () => {
+    if (!liveAgentOrder.length) return;
+    // Already on LIVE: step to the next agent that has a run.
+    const current = liveRun?.agentId;
+    const i = current ? liveAgentOrder.indexOf(current) : -1;
+    const nextId = isLive ? liveAgentOrder[(i + 1) % liveAgentOrder.length] : current ?? liveAgentOrder[0];
+    logInfo('Monitor', `source → live ${nextId}`);
+    setMonitor({ sourceMode: 'live', liveAgentId: nextId, auto: false });
+  };
+  const pickDemo = () => {
+    logInfo('Monitor', 'source → demo');
+    setMonitor({ sourceMode: 'demo', auto: false });
+  };
   // The question the source is waiting on (latest ask line in the chat).
   const pendingAsk = snap.approvalPending ? [...snap.chat].reverse().find((m) => m.ask) : undefined;
   // Folded screens show only the MAP while it is open; wide keeps the wall.
@@ -222,6 +336,19 @@ export default function MonitorPane() {
           </Text>
           {source.isDemo && <Text style={styles.demoBadge}>{t('monitor.demo_badge')}</Text>}
         </View>
+        <View style={styles.selector} testID="monitor-source-selector">
+          <Key
+            label={
+              liveAgentOrder.length
+                ? t('monitor.source.live', { name: isLive ? liveAgentName : agents.find((a) => a.id === liveAgentOrder[0])?.name ?? liveAgentOrder[0] })
+                : t('monitor.source.live_none')
+            }
+            pressed={isLive}
+            onPress={pickLive}
+            a11y={t('monitor.source.live_a11y')}
+          />
+          <Key label={t('monitor.source.demo')} pressed={!isLive} onPress={pickDemo} a11y={t('monitor.source.demo_a11y')} />
+        </View>
         <Text style={styles.goalLine} numberOfLines={2}>
           {t('monitor.mission')} <Text style={{ color: MON.osd }}>{team.title}</Text>
           {team.schedule ? <Text style={{ color: MON.muted }}>{`  ${team.schedule}`}</Text> : null}
@@ -231,7 +358,14 @@ export default function MonitorPane() {
             {t('monitor.run_count', { n: summary.running, max: MAX_PARALLEL_BRANCHES })}
           </Text>
           {showStatusInStats && (
-            <Text style={[styles.mstat, (snap.complete || snap.approvalPending) && { color: MON.amber }]}>
+            <Text
+              style={[
+                styles.mstat,
+                (snap.complete || snap.approvalPending) && { color: MON.amber },
+                outcome === 'failed' && { color: MON.fail },
+              ]}
+              testID="monitor-status"
+            >
               {statusLabel}
             </Text>
           )}
@@ -240,6 +374,26 @@ export default function MonitorPane() {
         {savedTo && (
           <Text style={styles.savedTo} numberOfLines={2} testID="monitor-saved-to">
             {savedTo}
+          </Text>
+        )}
+        {liveSavedPath && (
+          <Pressable
+            onPress={() => {
+              logInfo('Monitor', 'open saved output');
+              openFile(liveSavedPath).catch(() => {});
+            }}
+            accessibilityRole="link"
+            accessibilityLabel={t('monitor.live.saved_open_a11y')}
+            testID="monitor-saved-to"
+          >
+            <Text style={[styles.savedTo, styles.link]} numberOfLines={2} ellipsizeMode="head">
+              {t('monitor.live.saved_to', { path: liveSavedPath })}
+            </Text>
+          </Pressable>
+        )}
+        {failureText && (
+          <Text style={styles.failure} numberOfLines={3} testID="monitor-failure">
+            {failureText}
           </Text>
         )}
         <View style={styles.mprog}>
@@ -262,7 +416,7 @@ export default function MonitorPane() {
           <Text style={styles.cost}>
             <Text style={[styles.costK, { color: kindColor('API') }]}> API </Text>
             {` ${t('monitor.cost_api')} `}
-            <Text style={{ color: MON.osd }}>{`${formatMoney(summary.apiUsd, locale)}${capText}`}</Text>
+            <Text style={{ color: MON.osd }}>{apiCostText}</Text>
           </Text>
           <Text style={styles.cost}>
             <Text style={[styles.costK, { color: kindColor('CLI') }]}> CLI </Text>
@@ -298,7 +452,26 @@ export default function MonitorPane() {
 
       {/* ── Pinned approval: stays right under the mission bar so the ask is
           on screen on a folded phone. Same draft + send as the chat strip. ── */}
-      {snap.approvalPending && (
+      {snap.approvalPending && isLive && (
+        // LIVE never approves from here: the ask lives in Shelly's chat /
+        // review prompt, so point there instead of offering a reply box.
+        <View style={styles.pinned} testID="monitor-pinned-approval">
+          <Text style={styles.pinnedAsk} numberOfLines={3}>
+            {t('monitor.live.approval_where', { channel: approvalChannel })}
+          </Text>
+          <View style={styles.row}>
+            <Key
+              label={t('monitor.live.open_chat')}
+              a11y={t('monitor.live.open_chat_a11y')}
+              onPress={() => {
+                logInfo('Monitor', 'open agent chat for approval');
+                openAgentChatThread(liveRun.agentId);
+              }}
+            />
+          </View>
+        </View>
+      )}
+      {snap.approvalPending && !isLive && (
         <View style={styles.pinned} testID="monitor-pinned-approval">
           <Text style={styles.pinnedAsk} numberOfLines={2}>
             {pendingAsk
@@ -335,7 +508,10 @@ export default function MonitorPane() {
           isDemo={source.isDemo}
           wide={isWide}
           date={date}
-          onChange={(next) => setMonitorTeam(next === source.team ? null : next)}
+          onChange={(next) => {
+            if (!isLive) setMonitorTeam(next === source.team ? null : next);
+          }}
+          readOnly={isLive}
         />
       )}
 
@@ -421,7 +597,8 @@ export default function MonitorPane() {
             }}
           />
         </View>
-        <View style={styles.grp}>
+        {/* Playback controls exist only for the DEMO; a real run has no speed. */}
+        {!isLive && <View style={styles.grp}>
           <Key
             label={`SPEED ${speed}×`}
             pressed={speed > 1}
@@ -434,11 +611,11 @@ export default function MonitorPane() {
               restartMonitor();
             }}
           />
-        </View>
+        </View>}
       </View>
 
-      {/* ── Chat ── */}
-      <View style={styles.chat}>
+      {/* ── Chat (DEMO only: LIVE approvals are answered in Shelly's chat) ── */}
+      {!isLive && <View style={styles.chat}>
         <Text style={styles.chatHead}>{t('monitor.chat_head')}</Text>
         <View style={styles.lines} accessibilityLiveRegion="polite">
           {snap.chat.map((m, i) => (
@@ -466,7 +643,7 @@ export default function MonitorPane() {
           />
           <Key label={t('monitor.send')} onPress={send} />
         </View>
-      </View>
+      </View>}
     </ScrollView>
   );
 }
@@ -510,6 +687,9 @@ const styles = StyleSheet.create({
   cost: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.label },
   costK: { fontFamily: MON_FONT_OSD, fontSize: 13 },
   savedTo: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.amber },
+  link: { textDecorationLine: 'underline' },
+  failure: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.fail },
+  selector: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   legend: { flex: 1, fontFamily: MON_FONT_MONO, fontSize: 10.5, color: MON.muted },
   legendX: { fontFamily: MON_FONT_OSD, fontSize: 16, color: MON.muted, paddingHorizontal: 4 },
