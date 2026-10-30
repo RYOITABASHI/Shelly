@@ -2908,7 +2908,7 @@ const en: Record<string, string> = {
   'monitor.cost_api': 'metered',
   'monitor.cost_cli': 'in plan',
   'monitor.cost_local': 'on-device',
-  'monitor.cost_sample': 'Sample cost estimates, not real charges ($1 = ¥{{yen}})',
+  'monitor.cost_sample': 'Sample cost estimates, not real charges',
   'monitor.restart': 'RESTART',
   'monitor.chat_head': 'SHELLY CHAT',
   'monitor.who_you': 'You ›',

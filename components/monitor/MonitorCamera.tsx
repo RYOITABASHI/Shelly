@@ -16,6 +16,7 @@ import { useTranslation } from '@/lib/i18n';
 import {
   agentProgress,
   ACTIVE_STATES,
+  formatMoney,
   formatTokens,
   type MonitorAgentDef,
   type MonitorAgentSnapshot,
@@ -43,10 +44,10 @@ type Props = {
   onPress: () => void;
 };
 
-export function costText(def: MonitorAgentDef, a: MonitorAgentSnapshot, flatLabel: string): string {
-  if (def.kind === 'LOCAL') return `${formatTokens(a.tokens)} · ¥0`;
+export function costText(def: MonitorAgentDef, a: MonitorAgentSnapshot, flatLabel: string, locale: string): string {
+  if (def.kind === 'LOCAL') return `${formatTokens(a.tokens)} · ${formatMoney(0, locale)}`;
   if (def.kind === 'CLI') return `${formatTokens(a.tokens)} · ${flatLabel}`;
-  return `$${a.usd.toFixed(4)} · ${formatTokens(a.tokens)}`;
+  return `${formatMoney(a.usd, locale)} · ${formatTokens(a.tokens)}`;
 }
 
 function ScanlineLayer({ w, h }: { w: number; h: number }) {
@@ -243,7 +244,7 @@ export function KindChip({ kind, size = 13 }: { kind: string; size?: number }) {
 
 function MonitorCameraImpl(props: Props) {
   const { def, snap, single, sideBySide, compactText, parentChannel, onPress } = props;
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const pr = agentProgress(snap);
   const pct = Math.round(pr * 100);
   const isApproval = snap.state === 'APPROVAL';
@@ -292,7 +293,7 @@ function MonitorCameraImpl(props: Props) {
             {t('monitor.step', { n: Math.min(snap.logs, snap.totalLogs), total: snap.totalLogs, pct })}
           </Text>
           <Text style={[styles.metaText, { color: MON.osd }]} numberOfLines={1}>
-            {costText(def, snap, t('monitor.cost_flat'))}
+            {costText(def, snap, t('monitor.cost_flat'), locale)}
           </Text>
         </View>
         {note.length > 0 && <Text style={styles.note}>{note}</Text>}

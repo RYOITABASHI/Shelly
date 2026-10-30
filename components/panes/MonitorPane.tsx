@@ -24,7 +24,7 @@ import {
   ACTIVE_STATES,
   formatTokens,
   summarize,
-  USD_TO_YEN,
+  formatMoney,
   type MonitorAgentState,
 } from '@/lib/monitor-source';
 import { MAX_PARALLEL_BRANCHES } from '@/lib/agent-orchestration';
@@ -82,7 +82,7 @@ function Key({
 }
 
 export default function MonitorPane() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const reduceMotion = useReducedMotion();
   const { isWide, isCompact } = useDeviceLayout();
   const monitor = useAgentStore(useShallow((s) => s.monitor));
@@ -232,8 +232,7 @@ export default function MonitorPane() {
           <Text style={styles.cost}>
             <Text style={[styles.costK, { color: kindColor('API') }]}> API </Text>
             {` ${t('monitor.cost_api')} `}
-            <Text style={{ color: MON.osd }}>{`$${summary.apiUsd.toFixed(4)}`}</Text>
-            <Text style={{ color: MON.muted }}>{` ≈ ¥${(summary.apiUsd * USD_TO_YEN).toFixed(1)}`}</Text>
+            <Text style={{ color: MON.osd }}>{formatMoney(summary.apiUsd, locale)}</Text>
           </Text>
           <Text style={styles.cost}>
             <Text style={[styles.costK, { color: kindColor('CLI') }]}> CLI </Text>
@@ -244,10 +243,10 @@ export default function MonitorPane() {
             <Text style={[styles.costK, { color: kindColor('LOCAL') }]}> LOCAL </Text>
             {` ${t('monitor.cost_local')} `}
             <Text style={{ color: MON.osd }}>{formatTokens(summary.localTokens)}</Text>
-            {' · ¥0'}
+            {` · ${formatMoney(0, locale)}`}
           </Text>
           {source.isDemo && (
-            <Text style={[styles.cost, { color: MON.muted }]}>{t('monitor.cost_sample', { yen: USD_TO_YEN })}</Text>
+            <Text style={[styles.cost, { color: MON.muted }]}>{t('monitor.cost_sample')}</Text>
           )}
         </View>
       </View>

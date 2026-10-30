@@ -122,6 +122,15 @@ export function formatTokens(n: number): string {
 
 export const USD_TO_YEN = 150;
 
+/** Money in the viewer's currency: yen for Japanese, dollars otherwise. */
+export function formatMoney(usd: number, locale: string): string {
+  if (locale === 'ja') {
+    const yen = usd * USD_TO_YEN;
+    return `¥${yen < 10 ? yen.toFixed(2) : Math.round(yen).toLocaleString('ja-JP')}`;
+  }
+  return `$${usd < 1 ? usd.toFixed(4) : usd.toFixed(2)}`;
+}
+
 // ─── Map edge state (ported from the prototype's edgeClass) ─────────────────
 
 export type MonitorEdgeState = 'idle' | 'flow' | 'held' | 'done' | 'pending';

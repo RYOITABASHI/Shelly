@@ -46,7 +46,7 @@ import {
   agentProgress,
   edgeState,
   summarize,
-  USD_TO_YEN,
+  formatMoney,
   type MonitorAgentDef,
   type MonitorEdgeState,
   type MonitorSnapshot,
@@ -218,7 +218,7 @@ type Props = {
 };
 
 export function MonitorMap({ team, defaultTeam, defs, snap, clock, reduceMotion, onChange }: Props) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -338,7 +338,7 @@ export function MonitorMap({ team, defaultTeam, defs, snap, clock, reduceMotion,
                   : t('monitor.map.goal_progress', { pct: summary.missionPct })}
             </Text>
             <Text style={styles.n2} numberOfLines={1}>
-              {`API $${summary.apiUsd.toFixed(4)} ≈ ¥${(summary.apiUsd * USD_TO_YEN).toFixed(1)}`}
+              {`API ${formatMoney(summary.apiUsd, locale)}`}
             </Text>
           </View>
         </View>

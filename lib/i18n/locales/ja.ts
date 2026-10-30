@@ -2867,7 +2867,7 @@ const ja: Record<string, string> = {
   'monitor.cost_api': '従量',
   'monitor.cost_cli': '定額プラン内',
   'monitor.cost_local': '端末内',
-  'monitor.cost_sample': '料金はサンプルの概算です（実料金ではありません・$1 = ¥{{yen}}）',
+  'monitor.cost_sample': '料金はサンプルの概算です（実料金ではありません・$1 = ¥150 で換算）',
   'monitor.restart': 'RESTART',
   'monitor.chat_head': 'SHELLY CHAT',
   'monitor.who_you': 'You ›',
