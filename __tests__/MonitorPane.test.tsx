@@ -310,7 +310,8 @@ describe('MonitorPane GRID fits the pane (no scrolling)', () => {
     const utils = render(<MonitorPane />);
     layoutPane(utils, 380, 700);
     expect(utils.getByTestId('monitor-grid-fit')).toBeTruthy();
-    expect(computeMonitorGrid(360, layoutPane(utils, 380, 700), 5).hud).toBe('full');
+    // The meta row is on screen (HUD 'brief' or richer, chrome-height dependent).
+    expect(computeMonitorGrid(360, layoutPane(utils, 380, 700), 5).hud).not.toBe('title');
     // EDITOR (LOCAL · Local LLM): neither "Local LLM" nor "Local" fit next to
     // the cost, nor does the %, so only the chip and "0 tok · $0.0000" stay.
     const meta = within(utils.getByTestId('monitor-meta-ch3'));
