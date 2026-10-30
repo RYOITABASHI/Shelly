@@ -3451,3 +3451,67 @@ describe('local companion empty-reply guard', () => {
       .toEqual(['first message', 'second message']);
   });
 });
+
+// ─── MONITOR MAP "Register this team" (preset draft) ─────────────────────
+describe('MONITOR team preset draft — same summary + NL confirm as @agent', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { teamToAgentDraft } = require('@/lib/monitor-team-draft') as typeof import('@/lib/monitor-team-draft');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { DEMO_TEAM } = require('@/lib/monitor-demo') as typeof import('@/lib/monitor-demo');
+
+  function presetDraft() {
+    const built = teamToAgentDraft(DEMO_TEAM, 'en');
+    if (!built.ok) throw new Error('demo team must be valid');
+    return built.value.draft;
+  }
+
+  it('posts the chat-native draft and waits for OK even when registration confirm is OFF', async () => {
+    useSettingsStore.setState((s) => ({ settings: { ...s.settings, agentRegistrationRequireConfirm: false } }));
+    const { result } = setup();
+    const onPresented = jest.fn();
+    await act(async () => {
+      await result.current.dispatch('Register MONITOR team', {
+        source: 'monitor-team',
+        presetDraft: presetDraft(),
+        onPresetDraftPresented: onPresented,
+      });
+    });
+    const msg = lastMessage();
+    expect(msg.agentChatConfirm).toBe(true);
+    expect(msg.agentCardState).toBe('pending');
+    expect(onPresented).toHaveBeenCalledWith(msg.id);
+    expect(conv().pendingAgentSession?.phase).toBe('await-confirm');
+    expect(conv().pendingAgentSession?.messageId).toBe(msg.id);
+    // The summary groups the parallel pair the same way @agent summaries do:
+    // one "1. In parallel: A / B" line (tFor is mocked to return keys).
+    const lines = msg.content.split('\n');
+    const first = lines.find((l) => l.startsWith('1. agentplan.parallel_group_label '));
+    expect(first).toContain('collect new papers from arXiv');
+    expect(first).toContain('collect new papers from Hugging Face');
+    expect(lines.some((l) => l.startsWith('3. '))).toBe(true);
+    // No user bubble, no NL parse, nothing registered yet.
+    expect(conv().messages.filter((m) => m.role === 'user')).toHaveLength(0);
+    expect(mockParseAgentCommand).not.toHaveBeenCalled();
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+  });
+
+  it('a typed "OK" registers it with the column steps (parallelGroup kept) and a manual trigger', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('Register MONITOR team', { source: 'monitor-team', presetDraft: presetDraft() });
+    });
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    const params = mockCreateAgent.mock.calls[0][0];
+    expect(params.schedule).toBeNull();
+    expect(params.action).toEqual({ type: 'draft' });
+    const steps = params.orchestration.steps;
+    expect(steps).toHaveLength(4);
+    expect(steps[0].parallelGroup).toBe('p1');
+    expect(steps[1].parallelGroup).toBe('p1');
+    expect(steps[2].parallelGroup).toBeUndefined();
+    expect(steps[3].tool).toEqual({ type: 'cli', cli: 'codex' });
+  });
+});

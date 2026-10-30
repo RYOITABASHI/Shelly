@@ -12,8 +12,16 @@
  * LIVE (readOnly): the map is the wiring of a real run — no editing, and the
  * provider line shows what the run actually used (the camera def), not the
  * team node's planned provider.
+ *
+ * REGISTER (DEMO / DRAFT): hands the team to the AI chat as an agent draft
+ * (lib/monitor-team-registration.ts) — the user confirms there with a plain
+ * "OK", same as `@agent`. Enabled only for a team that passes validate().
+ * RUN NOW appears once a registered agent is shown (also in LIVE).
+ * TEAM FILE shows the text form (copy) and loads a pasted one; parse and
+ * shape errors are shown inline under the paste box.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import Animated, {
@@ -34,6 +42,8 @@ import {
   findNode,
   makeParallel,
   moveNode,
+  parseTeamFile,
+  validate,
   MONITOR_PROVIDER_KIND,
   MONITOR_PROVIDER_LABEL,
   MONITOR_PROVIDERS,
@@ -232,6 +242,17 @@ type Props = {
   onChange: (team: MonitorTeam) => void;
   /** LIVE: show the run's wiring without the editor. */
   readOnly?: boolean;
+  /** REGISTER key (editable map only). Omitted = no key. */
+  onRegister?: () => void;
+  /** A registration is waiting for the chat OK — the key is disabled. */
+  registerBusy?: boolean;
+  /** One status line under the register row (e.g. "confirm in chat"). */
+  registerNote?: string | null;
+  /** RUN NOW key for the registered agent. Omitted = no key. */
+  onRunNow?: () => void;
+  runNowBusy?: boolean;
+  /** A pasted team file was loaded (defaults to onChange). */
+  onLoadTeam?: (team: MonitorTeam) => void;
 };
 
 export function MonitorMap({
@@ -246,6 +267,12 @@ export function MonitorMap({
   date,
   onChange,
   readOnly = false,
+  onRegister,
+  registerBusy = false,
+  registerNote = null,
+  onRunNow,
+  runNowBusy = false,
+  onLoadTeam,
 }: Props) {
   const { t, locale } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -253,6 +280,10 @@ export function MonitorMap({
   const [adding, setAdding] = useState(false);
   const [newRole, setNewRole] = useState('');
   const [showFile, setShowFile] = useState(false);
+  const [paste, setPaste] = useState('');
+  const [pasteError, setPasteError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const shapeErrors = useMemo(() => validate(team), [team]);
   const geo = useMemo(() => layout(team), [team]);
   const edges = useMemo(() => deriveEdges(team), [team]);
   const defById = useMemo(() => Object.fromEntries(defs.map((d) => [d.id, d])), [defs]);
@@ -297,6 +328,31 @@ export function MonitorMap({
     const mx = (x1 + toX) / 2;
     return `M${x1} ${y1} C ${mx} ${y1}, ${mx} ${toY}, ${toX} ${toY}`;
   };
+
+  const fileText = serializeTeamFile(team, t('monitor.map.file_parallel'), locale);
+  const loadPasted = () => {
+    const res = parseTeamFile(paste);
+    if ('error' in res) {
+      const e = res.error;
+      logInfo('Monitor', `team file refused (${e.code})`);
+      setPasteError(
+        e.code === 'syntax'
+          ? t('monitor.map.file_err_syntax', { line: (e as { line: number }).line })
+          : errorText(e as MonitorTeamError),
+      );
+      return;
+    }
+    setPasteError(null);
+    setPaste('');
+    setSelectedId(null);
+    if (res.ok) (onLoadTeam ?? onChange)(res.team);
+  };
+  const copyFile = () => {
+    Clipboard.setStringAsync(fileText)
+      .then(() => setCopied(true))
+      .catch(() => {});
+  };
+  const canRegister = shapeErrors.length === 0 && !registerBusy;
 
   const goalLit = snap.complete;
   const finalId = team.columns[team.columns.length - 1]?.[0]?.id;
@@ -462,25 +518,91 @@ export function MonitorMap({
         )}
       </View>}
       {showFile && !readOnly && (
-        <View style={styles.file}>
+        <View style={styles.file} testID="monitor-map-file">
           <Text style={styles.fileText} selectable>
-            {serializeTeamFile(team, t('monitor.map.file_parallel'), locale)}
+            {fileText}
           </Text>
+          <View style={styles.chips}>
+            <MapKey label={copied ? t('monitor.map.file_copied') : t('monitor.map.file_copy')} onPress={copyFile} />
+          </View>
+          <Text style={styles.fieldLabel}>{t('monitor.map.file_paste_label')}</Text>
+          <TextInput
+            value={paste}
+            onChangeText={(v) => {
+              setPaste(v);
+              setPasteError(null);
+            }}
+            multiline
+            placeholder={t('monitor.map.file_paste_placeholder')}
+            placeholderTextColor={MON.muted}
+            style={[styles.input, styles.pasteInput]}
+            autoCapitalize="none"
+            autoCorrect={false}
+            testID="monitor-map-paste"
+          />
+          <View style={styles.chips}>
+            <MapKey label={t('monitor.map.file_load')} onPress={loadPasted} />
+          </View>
+          {pasteError && (
+            <Text style={styles.message} accessibilityLiveRegion="polite" testID="monitor-map-paste-error">
+              {pasteError}
+            </Text>
+          )}
         </View>
+      )}
+
+      {((onRegister && !readOnly) || onRunNow) && (
+        <View style={styles.toolRow} testID="monitor-map-register-row">
+          {onRegister && !readOnly && (
+            <MapKey
+              label={t('monitor.map.register')}
+              onPress={onRegister}
+              disabled={!canRegister}
+              testID="monitor-map-register"
+            />
+          )}
+          {onRunNow && (
+            <MapKey label={t('monitor.map.run_now')} onPress={onRunNow} disabled={runNowBusy} testID="monitor-map-run-now" />
+          )}
+        </View>
+      )}
+      {onRegister && !readOnly && shapeErrors.length > 0 && (
+        <Text style={styles.message} testID="monitor-map-register-blocked">
+          {t('monitor.map.register_blocked', { reason: errorText(shapeErrors[0]) })}
+        </Text>
+      )}
+      {registerNote && (
+        <Text style={styles.demoNote} accessibilityLiveRegion="polite" testID="monitor-map-register-note">
+          {registerNote}
+        </Text>
       )}
     </View>
   );
 }
 
-function MapKey({ label, onPress, pressed }: { label: string; onPress: () => void; pressed?: boolean }) {
+function MapKey({
+  label,
+  onPress,
+  pressed,
+  disabled,
+  testID,
+}: {
+  label: string;
+  onPress: () => void;
+  pressed?: boolean;
+  disabled?: boolean;
+  testID?: string;
+}) {
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
+      testID={testID}
       accessibilityRole="button"
-      accessibilityState={{ selected: !!pressed }}
-      style={({ pressed: p }) => [styles.key, (pressed || p) && styles.keyOn]}
+      accessibilityState={{ selected: !!pressed, disabled: !!disabled }}
+      style={({ pressed: p }) => [styles.key, (pressed || p) && !disabled && styles.keyOn, disabled && styles.keyOff]}
     >
-      <Text style={[styles.keyText, pressed && { color: MON.phosphor }]}>{label}</Text>
+      <Text style={[styles.keyText, pressed && { color: MON.phosphor }, disabled && { color: MON.muted }]}>{label}</Text>
     </Pressable>
   );
 }
@@ -649,6 +771,8 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   keyOn: { backgroundColor: MON.keyTopOn },
+  keyOff: { opacity: 0.5 },
+  pasteInput: { minHeight: 72, textAlignVertical: 'top' },
   keyText: { fontFamily: MON_FONT_OSD, fontSize: 14, color: MON.osd },
   editor: {
     borderWidth: 1,
@@ -666,6 +790,6 @@ const styles = StyleSheet.create({
   checkbox: { width: 16, height: 16, borderWidth: 1, borderColor: MON.phosphorDim, backgroundColor: MON.black },
   checkboxOn: { backgroundColor: MON.amber, borderColor: MON.amber },
   toggleText: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.osd },
-  file: { backgroundColor: MON.black, borderWidth: 1, borderColor: MON.bezelHi, borderRadius: 8, padding: 8 },
+  file: { backgroundColor: MON.black, borderWidth: 1, borderColor: MON.bezelHi, borderRadius: 8, padding: 8, gap: 6 },
   fileText: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.phosphor },
 });

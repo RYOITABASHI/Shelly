@@ -535,7 +535,14 @@ export function createThrottledUpdate(updateFn: UpdateFn) {
 export interface AIPaneDispatchOptions {
   /** 'terminal-request' (2026-10-14): a `shelly agent add` request from the
    *  terminal (lib/agent-add-queue.ts) — always confirm-gated. */
-  source?: 'widget-ask' | 'terminal-request';
+  source?: 'widget-ask' | 'terminal-request' | 'monitor-team';
+  /** 'monitor-team' (2026-10-30): a draft built directly from a MONITOR MAP
+   *  team (lib/monitor-team-draft.ts). Skips NL parsing entirely and goes
+   *  straight to presentDraftForConfirmation — the same summary + plain-chat
+   *  confirm as `@agent`, always confirm-gated (never auto-registered). */
+  presetDraft?: ParsedAgentDraft;
+  /** Called with the posted draft bubble's message id (presetDraft only). */
+  onPresetDraftPresented?: (messageId: string) => void;
   /** 'terminal-request' only: the `shelly agent add` request id. Stamped on
    *  the parsed draft (ParsedAgentDraft.terminalRequestId) so the binding and
    *  the shell-readable summary only ever cover THIS request's draft. */
@@ -619,7 +626,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       const presentDraftForConfirmation = async (
         agentLabel: ChatMessage['agent'] | undefined,
         presentedDraft: ParsedAgentDraft,
-      ): Promise<void> => {
+      ): Promise<string> => {
         // 2026-10-30: an absorbed save directive (「メモとして保存」) shows WHERE
         // the result goes — resolved from Settings here, since the summary
         // renderer is pure. Display-only (never persisted).
@@ -751,9 +758,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         const registrationSource =
           terminalRequestId || dispatchOpts?.source === 'terminal-request' || isTerminalAgentRequestActive(paneId)
             ? 'terminal-request'
-            : dispatchOpts?.source === 'widget-ask'
-              ? 'widget-ask'
-              : 'ai-pane';
+            : dispatchOpts?.source === 'monitor-team'
+              ? 'monitor-team'
+              : dispatchOpts?.source === 'widget-ask'
+                ? 'widget-ask'
+                : 'ai-pane';
         const requireRegistrationConfirm = resolveRegistrationConfirmRequirement(
           useSettingsStore.getState().settings,
           registrationSource,
@@ -823,7 +832,16 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             fireable: hasFireableSchedule(draft) && !isManualTriggerDraft(draft) && !isContinuousDraft(draft),
           });
         }
+        return draftMessageId;
       };
+
+      // MONITOR MAP "Register this team" (lib/monitor-team-registration.ts):
+      // the draft is already complete — no parse, no slot-fill.
+      if (dispatchOpts?.presetDraft) {
+        const presetMessageId = await presentDraftForConfirmation(undefined, dispatchOpts.presetDraft);
+        dispatchOpts.onPresetDraftPresented?.(presetMessageId);
+        return;
+      }
 
       // Capability-question interception (2026-07-23): answers "こんなこと
       // できる？"-style questions typed into `@agent <NL>` using the SAME

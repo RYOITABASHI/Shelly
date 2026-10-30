@@ -12,8 +12,9 @@ import type { ContinuousCheckpointView } from '@/lib/agent-continuous';
 
 export type MonitorView = 'grid' | 'single' | 'map';
 export type MonitorSpeed = 1 | 2 | 4;
-/** auto = LIVE for the most relevant run when one exists, else DEMO. */
-export type MonitorSourceMode = 'auto' | 'live' | 'demo';
+/** auto = LIVE for the most relevant run when one exists, else DEMO.
+ *  draft = your own team in the MAP editor, shown still (no playback). */
+export type MonitorSourceMode = 'auto' | 'live' | 'demo' | 'draft';
 
 /** Runs kept per agent in `liveRuns` (current + recent history). */
 export const MAX_LIVE_RUNS_PER_AGENT = 5;

@@ -80,6 +80,7 @@ import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
 import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
 import { markTerminalAgentRequest } from '@/lib/agent-add-queue';
 import { registerAgentAddPaneHandlers } from '@/lib/agent-add-flow';
+import { bindTeamDraftMessage, takePendingTeamDraft, useMonitorTeamRegistration } from '@/lib/monitor-team-registration';
 import { draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 
 const AUTO_FOLLOW_THRESHOLD_PX = 100;
@@ -577,6 +578,29 @@ export default function AIPane() {
       handleSubmit(taken.text, taken.source ? { source: taken.source } : undefined);
     }
   }, [pendingExternalPrompt, handleSubmit, paneId, t]);
+
+  // MONITOR MAP "Register this team" (lib/monitor-team-registration.ts): a
+  // draft built from the team is claimed here and posted through the SAME
+  // summary + plain-chat OK confirm as `@agent` (source 'monitor-team' is
+  // always confirm-gated). Claim-and-clear, so one mounted AI pane takes it.
+  const pendingTeamDraft = useMonitorTeamRegistration((s) => s.pending);
+  useEffect(() => {
+    if (!pendingTeamDraft) return;
+    const taken = takePendingTeamDraft();
+    if (!taken) return;
+    const conversationKey = resolveAiPaneStoreKey(paneId);
+    useAIPaneStore.getState().addMessage(conversationKey, {
+      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      role: 'assistant',
+      content: t('monitor.register.chat_origin'),
+      timestamp: Date.now(),
+    });
+    handleSubmit(taken.text, {
+      source: 'monitor-team',
+      presetDraft: taken.draft,
+      onPresetDraftPresented: bindTeamDraftMessage,
+    });
+  }, [pendingTeamDraft, handleSubmit, paneId, t]);
 
   const { startRecording, stopRecording, isRecording, isTranscribing, partialText: voicePartialText } =
     usePaneVoice(handleSubmit);

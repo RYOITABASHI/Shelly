@@ -12,6 +12,7 @@ import type { MonitorRun } from '@/lib/agent-progress';
 
 jest.mock('@/lib/i18n', () => ({
   useTranslation: () => ({ t: (key: string) => key, locale: 'en' }),
+  tFor: (_locale: string, key: string) => key,
 }));
 
 const layout = { isWide: true, isCompact: false };
@@ -25,6 +26,22 @@ const mockOpenFile = jest.fn(async (_path: string) => {});
 jest.mock('@/lib/open-file', () => ({ openFile: (p: string) => mockOpenFile(p) }));
 const mockOpenChat = jest.fn((_id: string) => true);
 jest.mock('@/lib/agent-thread-open', () => ({ openAgentChatThread: (id: string) => mockOpenChat(id) }));
+
+// Register / run hand-off: the AI pane focus, the agent runner and the shell
+// are the I/O boundaries; the registration store itself is real.
+const mockEnsurePane = jest.fn((_tab: string) => true);
+jest.mock('@/lib/pane-focus', () => ({ ensurePaneByTab: (tab: string) => mockEnsurePane(tab) }));
+const mockRunAgentNow = jest.fn(async (_id: string, _run: unknown) => {});
+const mockUpdateAgent = jest.fn(async () => null);
+jest.mock('@/lib/agent-manager', () => ({
+  runAgentNow: (id: string, run: unknown) => mockRunAgentNow(id, run),
+  updateAgent: () => mockUpdateAgent(),
+}));
+jest.mock('@/hooks/use-native-exec', () => ({
+  execCommand: jest.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+}));
+const mockSetClipboard = jest.fn(async (_s: string) => true);
+jest.mock('expo-clipboard', () => ({ setStringAsync: (s: string) => mockSetClipboard(s) }));
 
 const setT = (t: number) =>
   act(() => {
@@ -325,6 +342,123 @@ describe('MonitorPane LIVE source', () => {
     expect(utils.getByTestId('monitor-status').props.children).toBe('monitor.live.outcome.stopped');
     expect(utils.queryByTestId('monitor-failure')).toBeNull();
     expect(utils.getAllByText('monitor.state.STOPPED').length).toBeGreaterThan(0);
+    utils.unmount();
+  });
+
+  it('LIVE MAP of a finished run offers RUN NOW for that agent (no REGISTER)', () => {
+    const r = liveRun({ endedAt: iso(1), status: 'success' });
+    r.branches[1] = { ...r.branches[1], state: 'DONE', endedAt: iso(1) };
+    seed(r);
+    mockRunAgentNow.mockClear();
+    const utils = render(<MonitorPane />);
+    fireEvent.press(utils.getByText('MAP'));
+    expect(utils.queryByTestId('monitor-map-register')).toBeNull();
+    fireEvent.press(utils.getByTestId('monitor-map-run-now'));
+    expect(mockRunAgentNow).toHaveBeenCalledWith('digest', expect.any(Function));
+    utils.unmount();
+  });
+});
+
+describe('MonitorPane MAP register / run / team file', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const reg = require('@/lib/monitor-team-registration') as typeof import('@/lib/monitor-team-registration');
+
+  beforeEach(() => {
+    layout.isWide = true;
+    mockEnsurePane.mockReset().mockReturnValue(true);
+    mockRunAgentNow.mockClear();
+    reg.resetTeamRegistration();
+    useAgentStore.getState().setMonitorTeam(null);
+    useAgentStore.getState().setMonitor({ view: 'map', auto: false, sourceMode: 'auto', liveAgentId: null });
+    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [] });
+  });
+
+  const isDisabled = (el: { props: { accessibilityState?: { disabled?: boolean } } }) =>
+    !!el.props.accessibilityState?.disabled;
+
+  it('DEMO: REGISTER is enabled; pressing it queues the team draft for the AI chat', () => {
+    const utils = render(<MonitorPane />);
+    const button = utils.getByTestId('monitor-map-register');
+    expect(isDisabled(button)).toBe(false);
+    expect(utils.queryByTestId('monitor-map-run-now')).toBeNull();
+    fireEvent.press(button);
+    expect(mockEnsurePane).toHaveBeenCalledWith('ai');
+    const pending = reg.useMonitorTeamRegistration.getState().pending;
+    expect(pending?.draft.orchestrationSteps).toHaveLength(4);
+    // Waiting for the chat OK: the key is disabled and the note says where.
+    expect(isDisabled(utils.getByTestId('monitor-map-register'))).toBe(true);
+    expect(utils.getByTestId('monitor-map-register-note').props.children).toBe('monitor.register.awaiting');
+    utils.unmount();
+  });
+
+  it('no room for the chat pane: says so and nothing is queued', () => {
+    mockEnsurePane.mockReturnValue(false);
+    const utils = render(<MonitorPane />);
+    fireEvent.press(utils.getByTestId('monitor-map-register'));
+    expect(reg.useMonitorTeamRegistration.getState().pending).toBeNull();
+    expect(utils.getByTestId('monitor-map-register-note').props.children).toBe('monitor.register.no_pane');
+    utils.unmount();
+  });
+
+  it('confirmed in chat → LIVE standby for the new agent, then RUN NOW runs it', () => {
+    const utils = render(<MonitorPane />);
+    fireEvent.press(utils.getByTestId('monitor-map-register'));
+    // What the AI pane does: claim, post, bind; the user types OK.
+    act(() => {
+      reg.takePendingTeamDraft();
+      reg.bindTeamDraftMessage('draft-msg');
+      useAgentStore.setState({
+        agents: [{ id: 'team-1', name: 'Daily AI paper digest', orchestration: { steps: [] } } as never],
+      });
+      reg.onTeamDraftResolved('draft-msg', 'confirmed', 'team-1');
+    });
+    expect(useAgentStore.getState().monitor).toMatchObject({ sourceMode: 'live', liveAgentId: 'team-1' });
+    expect(utils.getByTestId('monitor-standby')).toBeTruthy();
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
+    // Standby shows the registered team read-only, with RUN NOW.
+    expect(utils.queryByTestId('monitor-map-register')).toBeNull();
+    expect(utils.queryByText('monitor.map.add')).toBeNull();
+    fireEvent.press(utils.getByTestId('monitor-map-run-now'));
+    expect(mockRunAgentNow).toHaveBeenCalledWith('team-1', expect.any(Function));
+    utils.unmount();
+  });
+
+  it('DRAFT mode: editable, no playback controls, REGISTER available', () => {
+    const utils = render(<MonitorPane />);
+    fireEvent.press(utils.getByLabelText('monitor.source.draft_a11y'));
+    expect(useAgentStore.getState().monitor.sourceMode).toBe('draft');
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
+    expect(utils.queryByText(/^SPEED/)).toBeNull();
+    expect(utils.queryByText('monitor.map.demo_note')).toBeNull();
+    expect(utils.getByText('monitor.map.add')).toBeTruthy();
+    expect(isDisabled(utils.getByTestId('monitor-map-register'))).toBe(false);
+    utils.unmount();
+  });
+
+  it('TEAM FILE: copy, load a pasted file into DRAFT, and show parse errors inline', () => {
+    const utils = render(<MonitorPane />);
+    fireEvent.press(utils.getByText('monitor.map.file'));
+    fireEvent.press(utils.getByText('monitor.map.file_copy'));
+    expect(mockSetClipboard).toHaveBeenCalledWith(expect.stringContaining('# Daily AI paper digest'));
+
+    // Syntax error: inline, with the line number.
+    fireEvent.changeText(utils.getByTestId('monitor-map-paste'), '# T\nnot a step');
+    fireEvent.press(utils.getByText('monitor.map.file_load'));
+    expect(utils.getByTestId('monitor-map-paste-error').props.children).toBe('monitor.map.file_err_syntax');
+
+    // Shape error (last step in parallel): the validate() message.
+    fireEvent.changeText(utils.getByTestId('monitor-map-paste'), '# T\n- a\n- in parallel:\n  - b\n  - c');
+    fireEvent.press(utils.getByText('monitor.map.file_load'));
+    expect(utils.getByTestId('monitor-map-paste-error').props.children).toBe('monitor.map.err.final_parallel');
+
+    // Valid file: loaded into the editor as your own team (DRAFT).
+    fireEvent.changeText(utils.getByTestId('monitor-map-paste'), '# Mine\n- in parallel:\n  - fetch A [Groq]\n  - fetch B\n- merge them');
+    fireEvent.press(utils.getByText('monitor.map.file_load'));
+    expect(utils.queryByTestId('monitor-map-paste-error')).toBeNull();
+    const state = useAgentStore.getState().monitor;
+    expect(state.sourceMode).toBe('draft');
+    expect(state.team?.title).toBe('Mine');
+    expect(state.team?.columns.map((c) => c.length)).toEqual([2, 1]);
     utils.unmount();
   });
 });
