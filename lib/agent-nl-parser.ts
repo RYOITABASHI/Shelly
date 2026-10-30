@@ -21,6 +21,8 @@ import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-too
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
+import enLocale from './i18n/locales/en';
+import jaLocale from './i18n/locales/ja';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
 
 export interface ParsedAgentDraft {
@@ -535,6 +537,13 @@ export interface ScheduleResult {
 const MANUAL_SCHEDULE_ANSWER_RE =
   /^\s*(?:手動(?:で(?:実行|起動)?|実行|のみ|だけ|でいい|で(?:いい|大丈夫))?|スケジュール(?:は)?(?:なし|無し|不要|いらない|要らない)|定期(?:実行)?(?:は)?(?:なし|無し|不要|いらない)|自分で(?:実行|起動|動かす|回す)(?:する|します)?|必要な(?:とき|時)に(?:実行|自分で実行)?|manual(?:ly)?(?:\s+only)?|run\s+(?:it\s+)?manually|no\s+schedule|i(?:'ll|\s+will)\s+run\s+it\s+(?:myself|manually)|on\s+demand)\s*[。.!！]?\s*$/i;
 
+/** Localized "manual (no schedule)" label, in the language of `text` (same
+ *  JA/EN heuristic as detectMessageLocale) — never a hardcoded JP string that
+ *  could leak into an English notification. */
+export function manualScheduleLabel(text: string): string {
+  return (/[぀-ヿ一-鿿]/.test(text) ? jaLocale : enLocale)['agentcard.sched_manual'];
+}
+
 export function isManualScheduleAnswer(text: string): boolean {
   return MANUAL_SCHEDULE_ANSWER_RE.test(text);
 }
@@ -857,7 +866,7 @@ export function parseSchedule(text: string): ScheduleResult {
   // that this agent has no firing schedule. Not a cron, never confident; the
   // caller turns `manual` into ParsedAgentDraft.trigger = 'manual'.
   if (isManualScheduleAnswer(text)) {
-    return { schedule: null, confident: false, label: '手動（スケジュールなし）', manual: true };
+    return { schedule: null, confident: false, label: manualScheduleLabel(text), manual: true };
   }
 
   // ── 0. Run once, right now — no recurrence, no time to parse. The single most
@@ -2167,7 +2176,7 @@ function deriveNameFromLabel(label: string): string {
  *  time-of-day word. Deliberately broad — a false positive only means the
  *  schedule question is asked as before. */
 const ANY_SCHEDULE_CUE_RE =
-  /毎|ごと|おき|間隔|定期|日次|週次|月次|隔週|[日月火水木金土]曜|平日|週末|\d+\s*(?:時|分|秒)|[0-9０-９]{1,2}\s*[:：]\s*[0-9０-９]{2}|今日|明日|明後日|今夜|今晩|今週|来週|来月|今すぐ|すぐに|後で|あとで|朝|昼|夕方|夜|晩|深夜|午前|午後|\b(?:every|each|daily|weekly|monthly|hourly|nightly|weekdays?|weekends?|tomorrow|today|tonight|morning|evening|noon|midnight|now|asap|immediately|later|in\s+\d+|at\s+\d|\d+\s*(?:am|pm)|(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?)\b/i;
+  /毎|ごと|おき|間隔|定期|日次|週次|月次|隔週|[日月火水木金土]曜|平日|週末|週\s*[0-9０-９一二三四五六七]|週に|月に|日に|[一二三四五六七八九十]+\s*時|[0-9０-９]+\s*(?:回|度)\s*(?:ずつ)?|\b(?:twice|thrice|once\s+(?:a|an|per|every)|\d+\s+times\s+(?:a|an|per)|times\s+a|per\s+(?:day|week|month|hour)|a\s+(?:day|week|month))\b|\d+\s*(?:時|分|秒)|[0-9０-９]{1,2}\s*[:：]\s*[0-9０-９]{2}|今日|明日|明後日|今夜|今晩|今週|来週|来月|今すぐ|すぐに|後で|あとで|朝|昼|夕方|夜|晩|深夜|午前|午後|\b(?:every|each|daily|weekly|monthly|hourly|nightly|weekdays?|weekends?|tomorrow|today|tonight|morning|evening|noon|midnight|now|asap|immediately|later|in\s+\d+|at\s+\d|\d+\s*(?:am|pm)|(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?)\b/i;
 const NOTIFICATION_TRIGGER_CUE_RE =
   /通知(?:が来たら|が届いたら|をトリガー|で起動)|(?:来たら|届いたら).*通知|when\s+i\s+(?:get|receive)\s+a\s+notification|notification\s+triggers?|triggered\s+by\s+a\s+notification/i;
 
@@ -2175,9 +2184,9 @@ const NOTIFICATION_TRIGGER_CUE_RE =
 function isNoScheduleUtterance(text: string, sched: ScheduleResult): boolean {
   if (sched.confident || sched.schedule !== null) return false;
   if (sched.suggestedTime || sched.suggestedFrequency || sched.suggestedDowList) return false;
-  // Name prefix excluded: a label like 「朝刊まとめ:」 is not a schedule.
-  const body = extractNamePrefix(text)?.rest ?? text;
-  return !ANY_SCHEDULE_CUE_RE.test(body) && !NOTIFICATION_TRIGGER_CUE_RE.test(body);
+  // Review fix: checked on the FULL utterance — a lead-in like 「朝: …」「週末: …」
+  // is a schedule cue, not something to strip first.
+  return !ANY_SCHEDULE_CUE_RE.test(text) && !NOTIFICATION_TRIGGER_CUE_RE.test(text);
 }
 
 /** Build the prompt fed to the agent — the task minus the leading schedule phrase. */
@@ -2818,7 +2827,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     orchestrationSteps,
     schedule: sched.schedule,
     scheduleConfident: sched.confident,
-    scheduleLabel: manualTrigger ? '手動（スケジュールなし）' : sched.label,
+    scheduleLabel: manualTrigger ? manualScheduleLabel(rawText) : sched.label,
     ...(manualTrigger ? { trigger: 'manual' as const, ...(sched.manual ? {} : { triggerAssumed: true }) } : {}),
     ...(saveActionLabel ? { saveActionLabel } : {}),
     suggestedTime: sched.suggestedTime

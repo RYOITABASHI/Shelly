@@ -20,7 +20,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 import { useTranslation } from '@/lib/i18n';
-import { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import { ParsedAgentDraft, isManualTriggerDraft } from '@/lib/agent-nl-parser';
 import { AgentAction, AgentActionType, AgentApiCallConfig, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, ToolChoice } from '@/store/types';
 import { useSettingsStore } from '@/store/settings-store';
 import { resolveAutonomousFinalTool, toolChoiceToLabel } from '@/lib/agent-tool-router';
@@ -156,6 +156,12 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
 
   const [name, setName] = useState(draft.name);
   const [frequency, setFrequency] = useState<Frequency>(initialFrequency);
+  // 2026-10-30: true once the user picks a frequency chip themselves. A
+  // manual-only draft (isManualTriggerDraft) seeds the selector at 'once';
+  // left untouched it must register as MANUAL (kept, schedule null) — never
+  // as the run-once-and-delete one-shot, which only an explicit pick (or a
+  // 「今すぐ」 utterance, which never yields a manual draft) means.
+  const [frequencyPicked, setFrequencyPicked] = useState(false);
   const [hour, setHour] = useState(draft.suggestedTime?.hour ?? decoded.hour);
   const [minute, setMinute] = useState(draft.suggestedTime?.minute ?? decoded.minute);
   // 'daily-multi' extra times (hours only — the minute is always the single shared
@@ -340,7 +346,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   // be registered and wait for a future event, not run immediately and be
   // discarded like a true one-shot — see the confirm handler's matching guard.
   const hasNotificationTrigger = parseNotificationTriggerPackages(notificationPackagesRaw).valid.length > 0;
-  const isEphemeralOnce = isOnce && !hasNotificationTrigger;
+  const manualOnce = isOnce && !frequencyPicked && !hasNotificationTrigger && isManualTriggerDraft(draft);
+  const isEphemeralOnce = isOnce && !hasNotificationTrigger && !manualOnce;
   // The full daily-multi time list (base `hour` + `extraHours`, deduped+sorted) —
   // used for the cron hourList arg, the summary text, and the add/remove/cap logic.
   const MAX_DAILY_TIMES = 4;
@@ -543,6 +550,7 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
         : null,
       // Deferred-start anchor: no bespoke editor UI on this card, straight passthrough.
       startNotBefore: draft.startNotBefore,
+      ...(manualOnce ? { manualTrigger: true } : {}),
     });
   };
 
@@ -550,6 +558,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
   const scheduleLabel = isOnce
     ? hasNotificationTrigger
       ? t('agentcard.sched_notification_trigger')
+      : manualOnce
+      ? t('agentcard.sched_manual')
       : t('agentcard.sched_once')
     : frequency === 'oneshot' && cron
       ? formatOneShotLabel(cron, locale, Date.now()) ?? cron
@@ -621,7 +631,10 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
             : []),
         ]}
         value={frequency}
-        onChange={(k) => setFrequency(k as Frequency)}
+        onChange={(k) => {
+          setFrequencyPicked(true);
+          setFrequency(k as Frequency);
+        }}
         colors={colors}
       />
       {frequency === 'oneshot' ? (
@@ -633,6 +646,8 @@ export default function AgentConfirmCard({ draft, onConfirm, onCancel }: Props) 
           {t(
             hasNotificationTrigger
               ? 'agentcard.once_notification_trigger_hint'
+              : manualOnce
+              ? 'agentplan.manual_trigger_note'
               : autonomous
               ? 'agentcard.once_autonomous_hint'
               : 'agentcard.once_hint',

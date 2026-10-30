@@ -2249,12 +2249,13 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
 
     const messages = tier3Calls()[0][1] as Array<{ role: string; content: string }>;
     expect(messages[1]).toEqual({ role: 'user', content: 'よくわからない' });
-    // 2026-10-30: the model's own question is dropped (empty proposal); the
-    // same-field guard then hands off to confirmation, as in (e) below.
+    // 2026-10-30: the model's own question is dropped (empty proposal), and
+    // the rescue re-asks ONCE with the deterministic template instead.
     expect(conv().messages.some((m) => m.content === PHASE23_QUESTION)).toBe(false);
     expect(conv().pendingAgentSession?.phase).not.toBe('llm-conversation');
-    expect(lastMessage().pendingSlotFill).toBeUndefined();
-    expect(lastMessage().agentDraft?.rawText).toBe(draft.rawText);
+    expect(lastMessage().content).toBe(`${ja['slot_fill.not_understood']}\n${ja['slot_fill.question_schedule']}`);
+    expect(lastMessage().pendingSlotFill).toMatchObject({ field: 'schedule', attemptCount: 2 });
+    expect(lastMessage().pendingSlotFill?.partialDraft.rawText).toBe(draft.rawText);
   });
 
   it.each([
@@ -2290,7 +2291,7 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
   // Post-fix, a same-field miss defers to the confirm decision instead of
   // bouncing back into Tier 3 forever — mirroring the identical guard the
   // plain fixed-question retry already applies.
-  it('(e) a Tier 3 rescue proposal that does NOT resolve the same field it was invoked for stops looping and proceeds to confirmation instead of re-asking that field again', async () => {
+  it('(e) a Tier 3 rescue proposal that does NOT resolve the same field re-asks once deterministically, then stops looping and proceeds to confirmation as a manual agent', async () => {
     const draft = seedScheduleSlot(1);
     const rescueProposal =
       '```shelly-agent-registration\n' +
@@ -2311,13 +2312,23 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
       await result.current.dispatch('よくわからない');
     });
 
-    // Never spins up ANOTHER 'schedule' pendingSlotFill question — that would
-    // be the loop.
+    // 2026-10-30: ONE deterministic re-ask (attemptCount 2) carrying the
+    // merge's partial progress (name) — not a fresh attemptCount-0 loop.
+    expect(lastMessage().pendingSlotFill).toMatchObject({ field: 'schedule', attemptCount: 2 });
+    expect(lastMessage().pendingSlotFill?.partialDraft.name).toBe('改名済みエージェント');
+    const tier3CallsAfterFirst = tier3Calls().length;
+
+    // A second unhelpful answer: applySlotAnswer gives up by itself, Tier 3
+    // is NOT invoked again, and the draft goes to confirmation — as a MANUAL
+    // agent (no recurrence known), never a run-now one-shot.
+    await act(async () => {
+      await result.current.dispatch('まだわからない');
+    });
+    expect(tier3Calls()).toHaveLength(tier3CallsAfterFirst);
     expect(lastMessage().pendingSlotFill).toBeUndefined();
-    // The merge's OTHER field (name) still applied — this is a genuine
-    // hand-off to confirmation with partial progress, not a discard.
     expect(lastMessage().agentDraft?.name).toBe('改名済みエージェント');
     expect(lastMessage().agentDraft?.scheduleConfident).toBe(false);
+    expect(lastMessage().agentDraft?.trigger).toBe('manual');
     expect(lastMessage().agentDraft?.rawText).toBe(draft.rawText);
   });
 

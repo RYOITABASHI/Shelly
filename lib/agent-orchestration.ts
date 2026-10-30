@@ -686,9 +686,22 @@ export function extractNamePrefix(text: string): { name: string; rest: string } 
   const rest = text.slice(label[0].length).trim();
   if (!name || !rest) return null;
   if (/^\d/.test(name) || /^\/\//.test(rest) || NOT_A_NAME_LABEL_RE.test(name)) return null;
+  // Review fix (2026-10-30): a clock time ("毎朝8:30に…") or a sentence that
+  // merely has a colon in it ("ニュースを要約して: 3行で") is not a name.
+  if (/^[0-9０-９]/.test(rest)) return null;
+  if (LABEL_SENTENCE_LIKE_RE.test(name) || LABEL_SCHEDULE_CUE_RE.test(name)) return null;
   if (matchToolMention(name)) return null;
   return { name, rest };
 }
+
+/** Hiragana particles / verb endings inside a bare label mean it is a clause
+ *  of the sentence, not a name (「ニュースを要約して」「朝の要約」). An explicit
+ *  「名前: …」 prefix is the way to give a name like that. */
+const LABEL_SENTENCE_LIKE_RE = /[てにをはがでへとのもやかよ]|(?:する|した|して|ます|ない|たい|れる|せる)$|[るうくすつぬむぶぐ]$/;
+/** A schedule word or any digit inside a bare label (「毎朝8」「朝」「週末」
+ *  「every day」) — the colon belongs to a time or a schedule lead-in. */
+const LABEL_SCHEDULE_CUE_RE =
+  /[0-9０-９]|毎|ごと|おき|曜|平日|週|月次|日次|朝|昼|夕|夜|晩|深夜|午前|午後|今日|明日|今夜|今晩|[一二三四五六七八九十]+時|\b(?:daily|weekly|monthly|hourly|every|each|morning|evening|night|noon|tonight|today|tomorrow|weekdays?|weekends?)\b/i;
 
 /** Particles / instrument markers that may surround a tool name in a clause
  *  that does nothing but name the tool (「ローカルLLMで」「Perplexityを使って」
@@ -759,6 +772,9 @@ export function trailingSaveClauseLabel(text: string): string | null {
  * nothing after it, so it pins the preceding clause if that one is unpinned.
  * Clauses naming their own tool keep the pre-existing per-clause semantics.
  */
+const ACTION_LIKE_CLAUSE_RE =
+  /投稿|ポスト|つぶや|呟|シェア|共有|送信|送っ|送る|送り|転送|通知|お知らせ|保存|書き出|アップロード|webhook|ウェブフック|https?:\/\/|\b(?:post|tweet|send|share|notify|save|upload|publish|email|mail)\b/i;
+
 function applyToolScopes(clauses: string[]): Array<{ instruction: string; tool?: ToolChoice }> {
   const out: Array<{ instruction: string; tool?: ToolChoice }> = [];
   let scope: ToolChoice | undefined;
@@ -772,7 +788,11 @@ function applyToolScopes(clauses: string[]): Array<{ instruction: string; tool?:
       continue;
     }
     const own = matchToolMention(clause);
-    out.push(own ? { instruction: clause, tool: own } : scope ? { instruction: clause, tool: scope } : { instruction: clause });
+    // Review fix: a delivery/side-effect clause (post / send / webhook /
+    // notify / save / a URL target) is never pulled into a model scope — the
+    // tool named for the WORK steps must not become the instrument of a send.
+    const scoped = scope && !ACTION_LIKE_CLAUSE_RE.test(clause) ? scope : undefined;
+    out.push(own ? { instruction: clause, tool: own } : scoped ? { instruction: clause, tool: scoped } : { instruction: clause });
   }
   return out;
 }

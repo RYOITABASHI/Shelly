@@ -69,7 +69,7 @@ import type { ParsedAgentDraft } from './agent-nl-parser';
 // allowlist URL. Applied AFTER requireVerbatimSubstringMatch passes (the
 // verbatim gate runs on the candidate exactly as the model proposed it;
 // normalization is deterministic code's job).
-import { normalizeBrowserPaneUrl, parseSchedule } from './agent-nl-parser';
+import { manualScheduleLabel, normalizeBrowserPaneUrl, parseSchedule } from './agent-nl-parser';
 import type { AgentAction, SocialConnectorMeta } from '@/store/types';
 import { suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 // Reused verbatim, NOT re-implemented: this is the one deterministic
@@ -1214,6 +1214,10 @@ export function requireVerbatimSubstringMatch(candidate: string, userTranscriptT
  * `llmExtracted` — when nothing was both present and valid. Callers rely on
  * that referential identity to detect "the model gave us nothing usable".
  */
+/** A manual-only expression somewhere in what the USER typed. */
+const USER_MANUAL_EXPRESSION_RE =
+  /手動|スケジュール(?:は)?(?:なし|無し|不要|いらない)|定期(?:実行)?(?:は)?(?:なし|無し|不要|いらない)|自分で(?:実行|起動|動かす|回す)|\bmanual(?:ly)?\b|\bno\s+schedule\b|\bon\s+demand\b/i;
+
 export function mergeConversationalExtractionIntoDraft(
   draft: ParsedAgentDraft,
   extraction: AgentConversationalExtraction,
@@ -1369,10 +1373,14 @@ export function mergeConversationalExtractionIntoDraft(
     // 2026-10-30: 「手動」/"manual" is a first-class trigger, not an unknown
     // schedule. Never overrides a schedule the deterministic parse already
     // confidently resolved (the model may not downgrade a stated schedule).
-    if (!draft.scheduleConfident) {
+    // Review fix: nor a partially stated schedule (a frequency / time /
+    // weekday the user DID say) — unless the user's own words say manual.
+    const hasPartialSchedule = !!(draft.suggestedFrequency || draft.suggestedTime || draft.suggestedDowList);
+    const userSaidManual = USER_MANUAL_EXPRESSION_RE.test(`${userTranscriptText}\n${draft.rawText}`);
+    if (!draft.scheduleConfident && (!hasPartialSchedule || userSaidManual)) {
       const m = next();
       m.schedule = null;
-      m.scheduleLabel = manualSched.label;
+      m.scheduleLabel = manualScheduleLabel(draft.rawText);
       m.suggestedTime = undefined;
       m.suggestedFrequency = undefined;
       m.suggestedDowList = undefined;

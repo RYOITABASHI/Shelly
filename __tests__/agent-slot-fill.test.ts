@@ -200,11 +200,13 @@ describe('nextMissingSlot', () => {
 });
 
 describe('applySlotAnswer — autonomous', () => {
+  // 2026-10-30: the question is now a two-choice (確認なしで自動実行 / 毎回確認
+  // してから実行); a bare yes/no answers neither choice and re-asks.
   it.each([
-    ['はい', true],
-    ['yes', true],
-    ['いいえ', false],
-    ['no', false],
+    ['確認なしで自動実行', true],
+    ['run automatically', true],
+    ['毎回確認してから実行', false],
+    ['ask each time', false],
   ] as const)('applies %s as autonomous=%s', (answer, expected) => {
     const { draft, resolved } = applySlotAnswer('autonomous', makeDraft({ autonomous: false }), answer, 0);
     expect(resolved).toBe(true);
@@ -212,9 +214,16 @@ describe('applySlotAnswer — autonomous', () => {
   });
 
   it('resolves mixed affirmative/negative wording to the safe false value', () => {
-    const { draft, resolved } = applySlotAnswer('autonomous', makeDraft({ autonomous: false }), 'yes... no', 0);
+    const { draft, resolved } = applySlotAnswer('autonomous', makeDraft({ autonomous: false }), '確認なしで…いや毎回確認して', 0);
     expect(resolved).toBe(true);
     expect(draft.autonomous).toBe(false);
+  });
+
+  it.each(['はい', 'いいえ', 'yes', 'no', 'OK', 'うん'])('a bare %s does not answer the two-choice question (re-asks; never grants unattended)', (answer) => {
+    expect(applySlotAnswer('autonomous', makeDraft({ autonomous: false }), answer, 0).resolved).toBe(false);
+    const giveUp = applySlotAnswer('autonomous', makeDraft({ autonomous: true }), answer, 2);
+    expect(giveUp.resolved).toBe(true);
+    expect(giveUp.draft.autonomous).toBe(false);
   });
 
   it('re-asks after the first unrecognized answer', () => {

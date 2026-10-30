@@ -151,11 +151,20 @@ describe('A. manual-only as a first-class trigger', () => {
   });
 
   it('Tier 3 scheduleText "手動" / "manual" maps to the manual trigger', () => {
-    const base = parseAgentNL('毎日ニュースをまとめて');
+    const base = { ...parseAgentNL('ニュースをまとめて'), trigger: undefined, triggerAssumed: undefined };
     for (const scheduleText of ['手動', 'manual']) {
       const { draft } = mergeConversationalExtractionIntoDraft(base, { scheduleText }, { connectors: [] });
       expect(isManualTriggerDraft(draft)).toBe(true);
     }
+    // Review fix 5: never downgrades a STATED frequency (毎日) unless the
+    // user's own words say manual.
+    const daily = parseAgentNL('毎日ニュースをまとめて');
+    const kept = mergeConversationalExtractionIntoDraft(daily, { scheduleText: '手動' }, { connectors: [], userTranscriptText: '毎日ニュースをまとめて' });
+    expect(isManualTriggerDraft(kept.draft)).toBe(false);
+    expect(kept.draft.suggestedFrequency).toBe('daily');
+    expect(kept.rejectedFields).toContain('scheduleText');
+    const said = mergeConversationalExtractionIntoDraft(daily, { scheduleText: '手動' }, { connectors: [], userTranscriptText: '毎日ニュースをまとめて\nやっぱり手動で' });
+    expect(isManualTriggerDraft(said.draft)).toBe(true);
     // Never downgrades a schedule the deterministic parse already resolved.
     const scheduled = parseAgentNL('毎朝8時にニュースをまとめて');
     const { draft, rejectedFields } = mergeConversationalExtractionIntoDraft(scheduled, { scheduleText: '手動' }, { connectors: [] });
@@ -189,12 +198,10 @@ describe('B. deterministic questions', () => {
     ['確認なしで', true],
     ['自動実行', true],
     ['勝手にやって', true],
-    ['はい', true],
     ['run automatically', true],
     ['毎回確認してから実行', false],
     ['毎回確認', false],
     ['確認して', false],
-    ['いいえ', false],
     ['ask each time', false],
   ] as const)('parses %s → %s', (answer, expected) => {
     expect(parseAutonomousChoice(answer)).toBe(expected);
@@ -203,6 +210,18 @@ describe('B. deterministic questions', () => {
     expect(resolved).toBe(true);
     expect(draft.autonomous).toBe(expected);
   });
+
+  it.each(['はい', 'うん', 'OK', 'いい', '良い', 'yes', 'yeah', 'sure', 'いいえ', 'no'])(
+    'review fix 2: bare %s answers neither choice → null (re-ask), fail-closed false after 2 attempts',
+    (answer) => {
+      expect(parseAutonomousChoice(answer)).toBeNull();
+      const d = { ...parseAgentNL('毎朝8時にAPIを叩いて'), action: { type: 'webhook' as const, webhookUrl: 'https://x' } };
+      expect(applySlotAnswer('autonomous', d, answer, 0).resolved).toBe(false);
+      const giveUp = applySlotAnswer('autonomous', { ...d, autonomous: true }, answer, 2);
+      expect(giveUp.resolved).toBe(true);
+      expect(giveUp.draft.autonomous).toBe(false);
+    },
+  );
 
   it('copy-pasting both choices is ambiguous and never grants unattended', () => {
     expect(parseAutonomousChoice('確認なしで自動実行 / 毎回確認してから実行')).toBeNull();
@@ -275,5 +294,68 @@ describe('D. clause-level step splitting', () => {
   it('a non-local step pin still counts as step-tool risk', () => {
     const d = parseAgentNL('パープレで、ニュースを集めて、要約して、結果をメモとして保存して');
     expect(assessAgentDraftRisk(d)).toContain('step-tool');
+  });
+});
+
+describe('review fixes (2026-10-30)', () => {
+  it.each([
+    ['毎朝8:30に天気を通知して', '天気を通知して'],
+    ['毎日21:00にバッテリー残量を通知して', 'バッテリー残量を通知して'],
+    ['ニュースを要約して: 3行で', 'ニュースを要約して: 3行で'],
+  ])('1. %s is not split into a name prefix (task kept)', (u, taskPart) => {
+    expect(extractNamePrefix(u)).toBeNull();
+    const d = parseAgentNL(u);
+    expect(d.prompt).toContain(taskPart);
+    expect(['毎朝8', '毎日21', 'ニュースを要約して']).not.toContain(d.name);
+  });
+
+  it.each([
+    ['週1でニュースをまとめて'],
+    ['三時にニュースをまとめて'],
+    ['twice a day summarize the news'],
+    ['朝: 天気を通知して'],
+    ['夜: 日記を書いて'],
+    ['週末: ニュースをまとめて'],
+  ])('4. %s carries a schedule cue → not defaulted to manual, no cue-word name', (u) => {
+    const d = parseAgentNL(u);
+    expect(d.trigger).toBeUndefined();
+    expect(['朝', '夜', '週末']).not.toContain(d.name);
+  });
+
+  it('7. a send/post/webhook clause is not pulled into a tool scope', () => {
+    const post = detectToolPinnedSteps('Perplexityで、ニュースを集めて、要約して、Xに投稿して')!;
+    expect(post.map((s) => [s.instruction, s.tool?.type])).toEqual([
+      ['ニュースを集めて', 'perplexity'],
+      ['要約して', 'perplexity'],
+      ['Xに投稿して', undefined],
+    ]);
+    const hook = detectToolPinnedSteps('ローカルLLMで、記事を書いて、https://example.com/hook にwebhookで送って')!;
+    expect(hook.map((s) => [s.instruction, s.tool?.type])).toEqual([
+      ['記事を書いて', 'local'],
+      ['https://example.com/hook にwebhookで送って', undefined],
+    ]);
+  });
+
+  it('3. a manual-default URL-feed draft is manual, never ephemeral, through the chat-confirm builder', () => {
+    const d = parseAgentNL('https://example.com/feed を読んで、要約して');
+    expect(isManualTriggerDraft(d)).toBe(true);
+    expect(draftToConfirmedAgentDraft(d).manualTrigger).toBe(true);
+  });
+
+  it('6. a schedule give-up with no known recurrence lands on manual, not run-now', () => {
+    const d = { ...parseAgentNL('毎日ニュースをまとめて'), suggestedFrequency: undefined, trigger: undefined };
+    const { draft, resolved } = applySlotAnswer('schedule', d, 'わからない', 2);
+    expect(resolved).toBe(true);
+    expect(isManualTriggerDraft(draft)).toBe(true);
+    expect(hasDraftAssumptions(draft)).toBe(true);
+    expect(draftToConfirmedAgentDraft(draft).manualTrigger).toBe(true);
+    // A known recurrence keeps the restate path (not manual).
+    const daily = applySlotAnswer('schedule', parseAgentNL('毎日ニュースをまとめて'), 'わからない', 2);
+    expect(isManualTriggerDraft(daily.draft)).toBe(false);
+  });
+
+  it('8. the manual schedule label follows the utterance language', () => {
+    expect(parseAgentNL('summarize the news').scheduleLabel).toBe('manual (no schedule)');
+    expect(parseAgentNL('ニュースをまとめて').scheduleLabel).toBe('手動（スケジュールなし）');
   });
 });

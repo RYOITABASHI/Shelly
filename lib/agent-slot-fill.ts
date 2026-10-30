@@ -9,7 +9,7 @@
  * precedent of lib/agent-card-cron.ts / lib/notification-trigger.ts).
  */
 import type { ParsedAgentDraft, ScheduleResult } from './agent-nl-parser';
-import { parseSchedule, fmtTime, JP_DOW_LABEL, extractBrowserTargetUrl, isManualTriggerDraft } from './agent-nl-parser';
+import { parseSchedule, fmtTime, JP_DOW_LABEL, extractBrowserTargetUrl, isManualTriggerDraft, manualScheduleLabel } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
 import { suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import en from './i18n/locales/en';
@@ -320,7 +320,7 @@ export function applySlotAnswer(
           ...draft,
           schedule: null,
           scheduleConfident: false,
-          scheduleLabel: result.label,
+          scheduleLabel: manualScheduleLabel(draft.rawText),
           suggestedTime: undefined,
           suggestedFrequency: undefined,
           suggestedDowList: undefined,
@@ -378,6 +378,23 @@ export function applySlotAnswer(
       // manual schedule picker forced when !scheduleConfident) is the
       // ultimate safety net, so it's safe to just stop asking and let the
       // card take over.
+      // 2026-10-30: with no recurrence known at all, giving up must not leave
+      // a bare null schedule (which the chat-confirm path reads as "run once
+      // now, then delete") — it becomes an assumed manual-only agent instead
+      // (one human confirm, summary says how to schedule it). A known
+      // recurrence keeps the restate-the-schedule path.
+      if (draft.suggestedFrequency === undefined && !draft.schedule) {
+        return {
+          draft: {
+            ...draft,
+            scheduleConfident: false,
+            trigger: 'manual',
+            triggerAssumed: true,
+            scheduleLabel: manualScheduleLabel(draft.rawText),
+          },
+          resolved: true,
+        };
+      }
       return { draft: { ...draft, scheduleConfident: false }, resolved: true };
     }
     return {
@@ -523,13 +540,15 @@ export function applySlotAnswer(
 // 2026-10-30: the confirm-mode question is now an explicit two-choice
 // ("確認なしで自動実行 / 毎回確認してから実行 のどちらにしますか？") instead of a
 // yes/no about "unattended" whose polarity users read backwards. Both the new
-// choice phrasings and the legacy はい/いいえ replies are accepted.
+// choice phrasings are accepted. A bare はい/いいえ/yes/no does NOT answer a
+// two-choice question (review fix: which one is "yes"?) — it re-asks, and
+// the attemptCount>=2 fail-closed below still lands on false.
 const AUTONOMOUS_YES_WHOLE_RE =
-  /^(?:はい|うん|ok|いい|良い|yes|yeah|sure|(?:確認なし|確認せず|確認不要|承認なし)(?:で|に)?(?:自動(?:で|実行)?|勝手に|実行)?(?:して|する|でいい|で(?:お願い|よろしく))?|自動(?:で|実行)(?:して|する|でいい)?|(?:全部)?勝手に(?:やって|実行して)?|無人(?:で|実行)?|(?:run\s+)?(?:it\s+)?automatically|run\s+without\s+(?:asking|confirm(?:ing|ation)?)|without\s+(?:asking|confirm(?:ing|ation)?)|no\s+confirmation|unattended)[!！。.]?$/i;
+  /^(?:(?:確認なし|確認せず|確認不要|承認なし)(?:で|に)?(?:自動(?:で|実行)?|勝手に|実行)?(?:して|する|でいい|で(?:お願い|よろしく))?|自動(?:で|実行)(?:して|する|でいい)?|(?:全部)?勝手に(?:やって|実行して)?|無人(?:で|実行)?|(?:run\s+)?(?:it\s+)?automatically|run\s+without\s+(?:asking|confirm(?:ing|ation)?)|without\s+(?:asking|confirm(?:ing|ation)?)|no\s+confirmation|unattended)[!！。.]?$/i;
 const AUTONOMOUS_NO_WHOLE_RE =
-  /^(?:いいえ|だめ|ダメ|no|nope|(?:毎回)?確認(?:して(?:から)?(?:実行)?|してください|する|あり|が欲しい|がほしい)|毎回確認(?:で|して(?:から)?(?:実行)?)?|(?:毎回)?聞いて(?:から)?(?:実行)?|(?:ask|confirm)\s+(?:me\s+)?(?:each|every)\s+time|ask\s+(?:me\s+)?first|confirm\s+(?:each|every)\s+run)[!！。.]?$/i;
-const AUTONOMOUS_YES_ANY_RE = /(?:はい|うん|\bok\b|いい|良い|\byes\b|\byeah\b|\bsure\b|確認なし|確認せず|自動実行|勝手に|\bautomatically\b|without\s+(?:asking|confirm))/i;
-const AUTONOMOUS_NO_ANY_RE = /(?:いいえ|だめ|ダメ|\bno\b|\bnope\b|毎回確認|確認して|確認する|聞いて|\b(?:ask|confirm)\s+(?:me\s+)?(?:each|every)\s+time|ask\s+(?:me\s+)?first)/i;
+  /^(?:(?:毎回)?確認(?:して(?:から)?(?:実行)?|してください|する|あり|が欲しい|がほしい)|毎回確認(?:で|して(?:から)?(?:実行)?)?|(?:毎回)?聞いて(?:から)?(?:実行)?|(?:ask|confirm)\s+(?:me\s+)?(?:each|every)\s+time|ask\s+(?:me\s+)?first|confirm\s+(?:each|every)\s+run)[!！。.]?$/i;
+const AUTONOMOUS_YES_ANY_RE = /(?:確認なし|確認せず|確認不要|自動実行|勝手に|\bautomatically\b|without\s+(?:asking|confirm))/i;
+const AUTONOMOUS_NO_ANY_RE = /(?:毎回確認|確認して|確認する|聞いて|\b(?:ask|confirm)\s+(?:me\s+)?(?:each|every)\s+time|ask\s+(?:me\s+)?first)/i;
 
 /** Answer to the confirm-mode question: true = run without confirming, false
  *  = confirm each run, null = unclear. Japanese answers are compared with

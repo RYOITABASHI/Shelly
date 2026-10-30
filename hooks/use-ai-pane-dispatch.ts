@@ -793,7 +793,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                   scheduleLabel:
                     draft.schedule && draft.schedule !== 'once'
                       ? humanizeCronSchedule(draft.schedule, noticeLocale)
-                      : draft.scheduleLabel,
+                      : isManualTriggerDraft(draft)
+                        ? (noticeLocale === 'ja' ? ja : en)['agentcard.sched_manual']
+                        : draft.scheduleLabel,
                 },
                 noticeLocale,
               ).catch((notifyErr) => {
@@ -2155,6 +2157,25 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 // downstream safety net (the confirm card's own forced manual picker /
                 // chat-confirm decision) instead of bouncing back into Tier 3 forever.
                 const missingSlot = rawMissingSlot && rawMissingSlot.field !== field ? rawMissingSlot : null;
+                if (rawMissingSlot && rawMissingSlot.field === field) {
+                  // 2026-10-30 review fix: now that the model's own prose is
+                  // never shown, the rescue must not give up the instant it
+                  // fails to move `field` — re-ask ONCE more with the fixed
+                  // slot_fill template (attemptCount+1). This stays bounded:
+                  // applySlotAnswer force-resolves the next miss itself (the
+                  // schedule give-up lands on a manual trigger, never run-now)
+                  // before this rescue can be reached again.
+                  const retryStrings = detectMessageLocale(partialDraft.rawText) === 'ja' ? ja : en;
+                  store.addMessage(paneId, {
+                    id: generateId(),
+                    role: 'assistant',
+                    content: `${retryStrings['slot_fill.not_understood']}\n${question}`,
+                    timestamp: Date.now(),
+                    agent: agentLabel,
+                    pendingSlotFill: { field, question, partialDraft: mergedDraft, attemptCount: attemptCount + 1 },
+                  });
+                  return;
+                }
                 if (missingSlot) {
                   store.addMessage(paneId, {
                     id: generateId(),
