@@ -62,7 +62,7 @@ import { multiPaneSlotOps } from '@/lib/pane-focus';
 import { canReturnFromMonitor, restoreFromMonitor } from '@/lib/monitor-widget-link';
 import { openFile } from '@/lib/open-file';
 import { openAgentChatThread } from '@/lib/agent-thread-open';
-import { MAX_PARALLEL_BRANCHES } from '@/lib/agent-orchestration';
+import { MAX_PARALLEL_BRANCHES, normalizeSteps, planParallelGroups } from '@/lib/agent-orchestration';
 import { MonitorCamera, NoSignalCamera } from '@/components/monitor/MonitorCamera';
 import { MonitorMap } from '@/components/monitor/MonitorMap';
 import { MON, MON_FONT_MONO, MON_FONT_OSD, kindColor } from '@/components/monitor/monitor-palette';
@@ -125,6 +125,17 @@ function Key({
 }
 
 /** Step instructions of an agent's chain, in plan order. */
+/** Parallel group per step (same as the progress writers report), for the
+ *  STANDBY cameras of steps that have not reported an event yet. */
+function agentStepGroups(agent: Agent | undefined): (string | undefined)[] | undefined {
+  if (!agent?.orchestration?.steps?.length) return undefined;
+  try {
+    return planParallelGroups(normalizeSteps(agent.orchestration)).group;
+  } catch {
+    return undefined;
+  }
+}
+
 function agentStepLabels(agent: Agent | undefined): string[] | undefined {
   const steps = agent?.orchestration?.steps;
   if (!steps || !steps.length) return undefined;
@@ -162,7 +173,7 @@ export default function MonitorPane() {
 
   // A MONITOR widget tap that found no free slot borrowed this one: offer BACK.
   const slots = useMultiPaneStore((s) => s.slots);
-  const canGoBack = canReturnFromMonitor(monitor.returnTo, slots);
+  const canGoBack = canReturnFromMonitor(slots);
 
   // Reads progress.jsonl into liveRuns while this pane is mounted.
   useMonitorLivePoller();
@@ -202,11 +213,12 @@ export default function MonitorPane() {
   const liveAgentName = liveAgent?.name ?? liveRun?.agentId ?? '';
   const liveEntry = isLive ? liveRuns[liveRun.agentId]?.find((e) => e.run.runId === liveRun.runId) : undefined;
   const stepLabels = useMemo(() => agentStepLabels(liveAgent), [liveAgent]);
+  const stepGroups = useMemo(() => agentStepGroups(liveAgent), [liveAgent]);
   const liveSource = useMemo(() => {
     if (!liveRun) return null;
-    const info: LiveAgentInfo = { name: liveAgentName, steps: stepLabels };
+    const info: LiveAgentInfo = { name: liveAgentName, steps: stepLabels, groups: stepGroups };
     return createLiveSource(liveRun, info);
-  }, [liveRun, liveAgentName, stepLabels]);
+  }, [liveRun, liveAgentName, stepLabels, stepGroups]);
 
   // The demo is dated "today" and its wall clock starts at RESTART.
   const run = useMemo(() => {
@@ -718,9 +730,7 @@ export default function MonitorPane() {
             <Key
               label={t('monitor.widget_back')}
               pressed={false}
-              onPress={() =>
-                restoreFromMonitor(monitor.returnTo, multiPaneSlotOps(), (r) => setMonitor({ returnTo: r }))
-              }
+              onPress={() => restoreFromMonitor(multiPaneSlotOps())}
             />
           )}
           <Key label="GRID" pressed={view === 'grid'} onPress={() => setMonitor({ view: 'grid', auto: false })} />

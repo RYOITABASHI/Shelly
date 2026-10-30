@@ -57,6 +57,10 @@ export type Slot = {
   tab: PaneTab;
   /** Terminal session id bound to this pane (only for terminal panes). */
   sessionId?: string;
+  /** Set only while a MONITOR widget tap borrowed this slot (no free slot):
+   *  the tab to go back to (lib/monitor-widget-link.ts). Cleared by any
+   *  other tab change. Persisted with the slot. */
+  returnTab?: PaneTab;
 } | null;
 
 export type SlotIndex = 0 | 1 | 2 | 3;
@@ -286,7 +290,9 @@ type MultiPaneActions = {
   setRatio: (key: keyof Ratios, value: number) => void;
   resetRatio: (key: keyof Ratios) => void;
   maximizeSlot: (slot: SlotIndex | null) => void;
-  setSlotTab: (slot: SlotIndex, tab: PaneTab) => void;
+  /** Change a slot's tab (id and session kept). `returnTab` is the MONITOR
+   *  widget's "go back to" record; omitted / null clears it. */
+  setSlotTab: (slot: SlotIndex, tab: PaneTab, returnTab?: PaneTab | null) => void;
   /** Exchange the full contents of two filled slots (tab, terminal session
    *  binding, and the stable slot id that AI conversations / agent bindings
    *  / browser state are keyed by). Pure position change: never runs the
@@ -751,12 +757,13 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           set({ maximizedSlot: slot });
         },
 
-        setSlotTab: (slot, tab) => {
+        setSlotTab: (slot, tab, returnTab) => {
           const { slots } = get();
           const s = slots[slot];
           if (!s) return;
           const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
-          newSlots[slot] = { ...s, tab };
+          const { returnTab: _previousReturn, ...rest } = s;
+          newSlots[slot] = returnTab ? { ...rest, tab, returnTab } : { ...rest, tab };
           set({ slots: newSlots });
         },
 

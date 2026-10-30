@@ -51,9 +51,6 @@ export interface MonitorPaneState {
   sourceMode: MonitorSourceMode;
   /** Agent shown in LIVE when sourceMode is 'live'. */
   liveAgentId: string | null;
-  /** Set when a MONITOR widget tap had to turn an occupied slot into MONITOR
-   *  (no free slot): the slot and its previous tab, for the pane's BACK key. */
-  returnTo: { slotId: string; tab: string } | null;
 }
 
 const initialMonitor = (): MonitorPaneState => ({
@@ -68,7 +65,6 @@ const initialMonitor = (): MonitorPaneState => ({
   legendDismissed: false,
   sourceMode: 'auto',
   liveAgentId: null,
-  returnTo: null,
 });
 
 function runStartMs(run: MonitorRun): number {

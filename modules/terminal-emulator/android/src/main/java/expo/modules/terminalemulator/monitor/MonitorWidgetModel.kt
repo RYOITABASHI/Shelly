@@ -236,8 +236,11 @@ object MonitorWidgetModel {
     /**
      * Delay for the re-check alarm that turns a live widget off when its run
      * goes silent (the only thing that would otherwise never wake us), or null
-     * when none is needed: not live, or an in-process AgentRuntime run that
-     * will report its own end.
+     * when the widget is not live. Armed for EVERY live run, including an
+     * in-process AgentRuntime run: if the process dies mid-run, nothing
+     * reports the end, and the alarm's refresh in a new process (empty
+     * registry) times the run out by its event timestamps. While the run is
+     * still going the refresh simply re-arms.
      */
     fun recheckDelayMs(
         run: MonitorProgress.Run?,
@@ -246,8 +249,14 @@ object MonitorWidgetModel {
         nativeRunActive: Boolean,
         chainActive: Boolean
     ): Long? {
-        if (run == null || !live || nativeRunActive) return null
+        if (run == null || !live) return null
         val last = lastEventMs(run) ?: return MIN_RECHECK_MS
+        if (nativeRunActive) {
+            // A long quiet step of a live runtime run: look again every
+            // LOCKED_DEAD_AFTER_MS rather than at the floor.
+            val remaining = last + LOCKED_DEAD_AFTER_MS - nowMs + 1_000L
+            return if (remaining < MIN_RECHECK_MS) LOCKED_DEAD_AFTER_MS else remaining
+        }
         val limit = if (chainActive) LOCKED_DEAD_AFTER_MS else DEAD_AFTER_MS
         return maxOf(MIN_RECHECK_MS, last + limit - nowMs + 1_000L)
     }

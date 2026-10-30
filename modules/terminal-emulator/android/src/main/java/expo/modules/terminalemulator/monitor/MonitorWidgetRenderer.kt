@@ -63,7 +63,7 @@ object MonitorWidgetRenderer {
         R.layout.monitor_cam_rec_1, R.layout.monitor_cam_rec_2, R.layout.monitor_cam_rec_3, R.layout.monitor_cam_rec_4
     )
 
-    private val SLIM_CAMS =FULL_CAMS.map { it.copy(pill = null, bar = null, kind = null, name = null, cost = null) }
+    private val SLIM_CAMS = FULL_CAMS.map { it.copy(pill = null, bar = null, kind = null, name = null, cost = null) }
 
     /** [operator 1..5][Variant.ordinal: LIVE, DIM, ALERT, FAIL]. */
     private val OPERATORS = arrayOf(

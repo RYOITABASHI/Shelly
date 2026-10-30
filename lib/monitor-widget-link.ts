@@ -66,22 +66,23 @@ export function openMonitorFromWidgetLink(queryParams: QueryParams, deps: Monito
 }
 
 // ─── Fallback when no pane slot is free (e.g. one terminal on the cover screen) ──
+//
+// The previous tab is kept ON THE SLOT (`returnTab`, persisted with the
+// multi-pane layout), so BACK survives an app restart and goes away by
+// itself as soon as the slot's tab is changed any other way.
 
 export interface SlotLike {
   id: string;
   tab: string;
-}
-
-/** Where the widget tap took MONITOR from, so the user can go back. */
-export interface MonitorReturn {
-  slotId: string;
-  tab: string;
+  /** Tab to go back to; set only while a widget tap borrowed the slot for MONITOR. */
+  returnTab?: string;
 }
 
 export interface SlotOps {
   getSlots: () => readonly (SlotLike | null | undefined)[];
   getFocusedSlot: () => number;
-  setSlotTab: (index: number, tab: string) => void;
+  /** Change the tab; `returnTab` set = remember it for BACK, null/omitted = forget. */
+  setSlotTab: (index: number, tab: string, returnTab?: string | null) => void;
   focusSlot: (index: number) => void;
 }
 
@@ -95,41 +96,34 @@ export function pickSwapSlot(slots: readonly (SlotLike | null | undefined)[], fo
 /**
  * Temporarily show MONITOR in an occupied slot (the slot keeps its id and
  * terminal session; only its tab changes) and remember what it was, so the
- * MONITOR pane can offer "back". Returns false when there is no slot at all.
+ * MONITOR pane can offer BACK. Returns false when there is no slot at all.
  */
-export function swapSlotToMonitor(ops: SlotOps, setReturnTo: (r: MonitorReturn | null) => void): boolean {
+export function swapSlotToMonitor(ops: SlotOps): boolean {
   const slots = ops.getSlots();
   const index = pickSwapSlot(slots, ops.getFocusedSlot());
   if (index === null) return false;
   const slot = slots[index]!;
-  if (slot.tab !== 'monitor') {
-    setReturnTo({ slotId: slot.id, tab: slot.tab });
-    ops.setSlotTab(index, 'monitor');
-  }
+  if (slot.tab !== 'monitor') ops.setSlotTab(index, 'monitor', slot.tab);
   ops.focusSlot(index);
   return true;
 }
 
-/** Whether `ret` still points at a slot that is showing MONITOR. */
-export function canReturnFromMonitor(
-  ret: MonitorReturn | null | undefined,
-  slots: readonly (SlotLike | null | undefined)[],
-): boolean {
-  return !!ret && slots.some((s) => s?.id === ret.slotId && s.tab === 'monitor');
+/** Index of the slot a widget tap borrowed for MONITOR, or -1. */
+export function borrowedMonitorSlot(slots: readonly (SlotLike | null | undefined)[]): number {
+  return slots.findIndex((s) => !!s && s.tab === 'monitor' && !!s.returnTab);
 }
 
-/** Put the swapped slot back to its previous tab. */
-export function restoreFromMonitor(
-  ret: MonitorReturn | null | undefined,
-  ops: SlotOps,
-  setReturnTo: (r: MonitorReturn | null) => void,
-): boolean {
-  if (!ret) return false;
+/** Whether the MONITOR pane should offer BACK. */
+export function canReturnFromMonitor(slots: readonly (SlotLike | null | undefined)[]): boolean {
+  return borrowedMonitorSlot(slots) >= 0;
+}
+
+/** Put the borrowed slot back to its previous tab. */
+export function restoreFromMonitor(ops: SlotOps): boolean {
   const slots = ops.getSlots();
-  const index = slots.findIndex((s) => s?.id === ret.slotId);
-  setReturnTo(null);
-  if (index < 0 || slots[index]!.tab !== 'monitor') return false;
-  ops.setSlotTab(index, ret.tab);
+  const index = borrowedMonitorSlot(slots);
+  if (index < 0) return false;
+  ops.setSlotTab(index, slots[index]!.returnTab!, null);
   ops.focusSlot(index);
   return true;
 }

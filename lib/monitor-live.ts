@@ -42,6 +42,9 @@ export interface LiveAgentInfo {
   /** Step instructions in plan order (Agent.orchestration.steps). */
   steps?: string[];
   schedule?: string;
+  /** Parallel group per step in plan order (agent-orchestration
+   *  planParallelGroups(...).group), for steps that reported no event yet. */
+  groups?: (string | undefined)[];
 }
 
 const PROVIDER_ALIASES: Record<string, MonitorProvider> = {
@@ -295,19 +298,29 @@ export interface LiveSource extends MonitorSource {
 /** The run with a STANDBY placeholder for every planned step (stepCount)
  *  that has not reported an event yet, so each step has a camera (the MONITOR
  *  widget shows the same set and deep-links to those channels). */
-export function withPlannedSteps(run: MonitorRun): MonitorRun {
+export function withPlannedSteps(run: MonitorRun, groups?: readonly (string | undefined)[]): MonitorRun {
   const count = run.stepCount ?? 0;
   const seen = new Set(run.branches.map((b) => b.stepIndex));
   const missing: MonitorBranch[] = [];
   for (let i = 0; i < count; i++) {
-    if (!seen.has(i)) missing.push({ branchId: `${run.runId}#${i}`, stepIndex: i, state: 'STANDBY', updatedAt: run.startedAt });
+    if (seen.has(i)) continue;
+    // Same groupId the writer would report, so MAP shows the parallel
+    // groups before the first event of each step.
+    const groupId = groups?.[i];
+    missing.push({
+      branchId: `${run.runId}#${i}`,
+      stepIndex: i,
+      state: 'STANDBY',
+      updatedAt: run.startedAt,
+      ...(groupId ? { groupId } : {}),
+    });
   }
   if (!missing.length) return run;
   return { ...run, branches: [...run.branches, ...missing].sort((x, y) => x.stepIndex - y.stepIndex) };
 }
 
 export function createLiveSource(source: MonitorRun, info: LiveAgentInfo = {}): LiveSource {
-  const run = withPlannedSteps(source);
+  const run = withPlannedSteps(source, info.groups);
   const defs = run.branches.map((b) => defFor(run, b, info));
   const team = liveTeam(run, defs, info);
   return {

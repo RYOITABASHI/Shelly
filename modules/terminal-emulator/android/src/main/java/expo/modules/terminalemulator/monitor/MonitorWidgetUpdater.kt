@@ -33,9 +33,11 @@ import java.util.concurrent.TimeUnit
  *    tail-only progress writes cost a file read and nothing else. Liveness
  *    (REC blink, noise frame, clock) is ViewFlipper / Chronometer inside the
  *    launcher, not updates from here;
- *  - a run shown live that is not an in-process AgentRuntime run gets an
- *    inexact ELAPSED_REALTIME alarm at its silence deadline, so a dead run
- *    (crash, JS reload, reboot) cannot keep the widget "recording" forever.
+ *  - every run shown live gets one inexact, non-wakeup ELAPSED_REALTIME
+ *    alarm at its silence deadline (re-armed on fire while still live), so a
+ *    dead run (process killed mid-run, crash, JS reload) cannot keep the
+ *    widget "recording" forever; [onAppModuleStart] also refreshes once when
+ *    the app comes back.
  * Nothing at all happens when no MONITOR widget is placed.
  */
 object MonitorWidgetUpdater {
@@ -116,6 +118,24 @@ object MonitorWidgetUpdater {
         // Trailing writes (run_end flushed after the process exit was seen).
         if (released) {
             executor.schedule(Runnable { runCatching { refreshNow(app, force = false) } }, END_SETTLE_MS, TimeUnit.MILLISECONDS)
+        }
+    }
+
+    /**
+     * TerminalEmulatorModule OnCreate (app start or JS reload): chain marks
+     * from a previous JS runtime are orphaned, so drop them (and their
+     * watches), then refresh once — a widget left "recording" by a process
+     * that died mid-run is corrected as soon as the app is opened again.
+     */
+    fun onAppModuleStart(context: Context) {
+        val app = context.applicationContext
+        val released = holders.clearChains(System.currentTimeMillis())
+        executor.execute {
+            runCatching {
+                released.forEach { unwatch(it) }
+                if (!hasWidgets(app)) return@runCatching
+                refreshNow(app, force = false)
+            }.onFailure { Log.w(TAG, "module start refresh failed", it) }
         }
     }
 

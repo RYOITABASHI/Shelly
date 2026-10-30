@@ -73,8 +73,10 @@ export function multiPaneSlotOps() {
   return {
     getSlots: () => useMultiPaneStore.getState().slots,
     getFocusedSlot: () => useMultiPaneStore.getState().focusedSlot,
-    setSlotTab: (index: number, tab: string) =>
-      useMultiPaneStore.getState().setSlotTab(index as 0 | 1 | 2 | 3, tab as PaneTab),
+    setSlotTab: (index: number, tab: string, returnTab?: string | null) =>
+      useMultiPaneStore
+        .getState()
+        .setSlotTab(index as 0 | 1 | 2 | 3, tab as PaneTab, (returnTab ?? null) as PaneTab | null),
     focusSlot: (index: number) => focusExistingSlot(index),
   };
 }

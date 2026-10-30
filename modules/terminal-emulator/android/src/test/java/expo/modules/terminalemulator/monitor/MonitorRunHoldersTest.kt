@@ -48,6 +48,25 @@ class MonitorRunHoldersTest {
     }
 
     @Test
+    fun jsReloadDropsOrphanedChainMarksButNotNativeRuns() {
+        val h = MonitorRunHolders()
+        h.startChain("orphan")           // its JS runtime is about to die
+        h.startChain("both")
+        h.startNative("both")            // a step still running in this process
+        val released = h.clearChains(500)
+        assertEquals(listOf("orphan"), released)
+        assertFalse(h.isHeld("orphan"))
+        assertFalse(h.chainActive("orphan"))
+        assertEquals(500L, h.endedAt("orphan"))
+        // The native step keeps "both" held; its end then releases it.
+        assertTrue(h.isHeld("both"))
+        assertFalse(h.chainActive("both"))
+        assertNull(h.endedAt("both"))
+        assertTrue(h.endNative("both", 600))
+        assertTrue(h.clearChains(700).isEmpty())
+    }
+
+    @Test
     fun agentsAreIndependentAndStrayEndsAreHarmless() {
         val h = MonitorRunHolders()
         h.startNative("a")

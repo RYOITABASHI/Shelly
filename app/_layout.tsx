@@ -1438,7 +1438,7 @@ export default function RootLayout() {
             // pane's BACK key puts the previous tab back.
             showMonitorPane: () =>
               ensurePaneByTab('monitor') ||
-              swapSlotToMonitor(multiPaneSlotOps(), (r) => useAgentStore.getState().setMonitor({ returnTo: r })),
+              swapSlotToMonitor(multiPaneSlotOps()),
             setMonitor: (patch) => useAgentStore.getState().setMonitor(patch),
           });
           logInfo('DeepLink', `MONITOR widget link → pane ${opened ? 'shown' : 'unavailable'}`);

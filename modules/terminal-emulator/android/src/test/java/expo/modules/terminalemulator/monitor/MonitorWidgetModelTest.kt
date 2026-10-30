@@ -170,6 +170,19 @@ class MonitorWidgetModelTest {
     }
 
     @Test
+    fun processDeathMidRuntimeRunTimesOutInTheNextProcess() {
+        // Shown live while the runtime ran it (native active)...
+        val r = silentFor(30 * 60_000L)
+        assertTrue(build(r, native = true).live)
+        val delay = MonitorWidgetModel.recheckDelayMs(r, now, live = true, nativeRunActive = true, chainActive = false)
+        assertTrue(delay != null)
+        // ...the process dies; the alarm's refresh in a new process has an
+        // empty registry and no holders, so the event timestamps decide.
+        assertFalse(build(r).live)
+        assertNull(MonitorWidgetModel.recheckDelayMs(r, now + delay!!, live = false, nativeRunActive = false, chainActive = false))
+    }
+
+    @Test
     fun livenessUsesEventTimestampsNotTheFile() {
         val r = run(listOf(Branch(0, "RUNNING", updatedAtMs = now - 10_000)), startedAt = now - 500_000)
         assertEquals(now - 10_000, MonitorWidgetModel.lastEventMs(r))
@@ -186,8 +199,12 @@ class MonitorWidgetModelTest {
         // Never sooner than the floor.
         assertEquals(MonitorWidgetModel.MIN_RECHECK_MS,
             MonitorWidgetModel.recheckDelayMs(silentFor(115_000), now, live = true, nativeRunActive = false, chainActive = false))
-        // An in-process runtime run reports its own end; nothing live needs no alarm.
-        assertNull(MonitorWidgetModel.recheckDelayMs(r, now, live = true, nativeRunActive = true, chainActive = false))
+        // An in-process runtime run is armed too (the process can die mid-run):
+        // at the 600 s deadline, or every 600 s once a quiet step passed it.
+        assertEquals(571_000L, MonitorWidgetModel.recheckDelayMs(r, now, live = true, nativeRunActive = true, chainActive = false))
+        assertEquals(MonitorWidgetModel.LOCKED_DEAD_AFTER_MS,
+            MonitorWidgetModel.recheckDelayMs(silentFor(3_600_000), now, live = true, nativeRunActive = true, chainActive = false))
+        // Not live: no alarm (the updater cancels it).
         assertNull(MonitorWidgetModel.recheckDelayMs(r, now, live = false, nativeRunActive = false, chainActive = false))
         assertNull(MonitorWidgetModel.recheckDelayMs(null, now, live = true, nativeRunActive = false, chainActive = false))
     }

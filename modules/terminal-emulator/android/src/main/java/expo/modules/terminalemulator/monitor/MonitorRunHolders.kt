@@ -43,6 +43,18 @@ class MonitorRunHolders {
         return releaseIfFree(agentId, nowMs)
     }
 
+    /**
+     * Drop every chain mark (the JS runtime that set them is gone: reload or
+     * new Module instance). Native counts are untouched — those runs belong
+     * to this process. @return the agents this released (no holder left).
+     */
+    @Synchronized
+    fun clearChains(nowMs: Long): List<String> {
+        val ids = chain.toList()
+        chain.clear()
+        return ids.filter { releaseIfFree(it, nowMs) }
+    }
+
     @Synchronized
     fun isHeld(agentId: String): Boolean = (native[agentId] ?: 0) > 0 || agentId in chain
 

@@ -553,6 +553,14 @@ class TerminalEmulatorModule : Module() {
                         .onFailure { Log.w("TerminalEmulator", "Codex remote autostart failed", it) }
                 }.start()
             }
+            // MONITOR widget: a new Module instance means a new JS runtime, so
+            // any attended-chain mark from the previous one is orphaned (its
+            // chain died with it). Drop those marks and refresh once, which
+            // also corrects a widget left "recording" by a dead process.
+            appContext.reactContext?.let { context ->
+                runCatching { expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.onAppModuleStart(context) }
+                    .onFailure { Log.w("TerminalEmulator", "MONITOR widget start refresh failed", it) }
+            }
             Log.i("TerminalEmulator", "OnCreate: rewired ${sessions.size} surviving session(s)")
         }
 
