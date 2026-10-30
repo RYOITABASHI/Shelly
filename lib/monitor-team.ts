@@ -16,6 +16,7 @@
  *     planParallelGroups() in lib/agent-orchestration.ts)
  *   - at most HARD_MAX_STEPS chain nodes in total
  *   - every node has a non-empty one-sentence role
+ *   - at most MAX_SUBS_PER_NODE sub-agents per node, MAX_SUBS_TOTAL in all
  *   - cycles are impossible by construction (columns are a strict order)
  *
  * All functions are pure and never mutate their input.
@@ -114,7 +115,8 @@ export type MonitorTeamErrorCode =
   | 'duplicate_id'
   | 'orphan_sub'
   | 'unknown_node'
-  | 'last_node';
+  | 'last_node'
+  | 'too_many_subs';
 
 export interface MonitorTeamError {
   code: MonitorTeamErrorCode;
@@ -133,6 +135,11 @@ export type MonitorDropTarget =
   | { kind: 'newColumn'; index: number };
 
 export const MAX_ROLE_CHARS = 140;
+/** Sub-agent caps (a pasted team file can carry any number of them). */
+export const MAX_SUBS_PER_NODE = 2;
+export const MAX_SUBS_TOTAL = 4;
+/** A pasted team file longer than this is refused before parsing. */
+export const MAX_TEAM_FILE_CHARS = 8000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -197,8 +204,14 @@ export function validate(team: MonitorTeam): MonitorTeamError[] {
     seen.add(n.id);
   }
   const chainIds = new Set(nodes.map((n) => n.id));
+  const subsPer = new Map<string, number>();
   for (const s of team.subAgents) {
     if (!chainIds.has(s.parentId)) errors.push({ code: 'orphan_sub', nodeId: s.id });
+    subsPer.set(s.parentId, (subsPer.get(s.parentId) ?? 0) + 1);
+  }
+  const overParent = [...subsPer.entries()].find(([, n]) => n > MAX_SUBS_PER_NODE);
+  if (overParent || team.subAgents.length > MAX_SUBS_TOTAL) {
+    errors.push({ code: 'too_many_subs', ...(overParent ? { nodeId: overParent[0] } : {}) });
   }
   return errors;
 }
@@ -536,9 +549,15 @@ function parseItem(text: string): Omit<MonitorTeamNode, 'id'> {
 
 export type ParseTeamResult =
   | { ok: true; team: MonitorTeam }
-  | { ok: false; error: MonitorTeamError | { code: 'syntax'; line: number } };
+  | { ok: false; error: MonitorTeamError | { code: 'syntax'; line: number } | { code: 'too_long' } };
 
-export function parseTeamFile(source: string): ParseTeamResult {
+/** C0 controls except tab / LF / CR, and DEL. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
+export function parseTeamFile(rawSource: string): ParseTeamResult {
+  if (rawSource.length > MAX_TEAM_FILE_CHARS) return { ok: false, error: { code: 'too_long' } };
+  const source = rawSource.replace(CONTROL_CHARS_RE, '');
   let title = '';
   let meta: { schedule?: string; capUsd?: number } = {};
   let destination: MonitorDestination | undefined;

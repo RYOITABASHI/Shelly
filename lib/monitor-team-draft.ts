@@ -16,12 +16,16 @@
  *     is folded into its parent step's instruction ("…; then: <role>").
  *   - schedule: always manual (Run now). The team's free-form schedule text
  *     is not parsed; the summary says how to make the agent recurring.
- *   - final action: 'draft' (save the result). The team destination is the
- *     displayed save target (advisory — same as the `@agent` outputPath hint).
+ *   - final action: 'draft' (save the result to the agent's default output).
+ *     The team destination is NOT honored yet: the summary shows it labelled
+ *     "(not used yet)" so nobody expects a write there, and it is left out of
+ *     the prompt so the model never claims it saved there.
  *   - "ask before writing": the agent action layer has no per-step approval,
  *     so ANY node asking collapses to the agent-level setting
- *     (Agent.requireActionApproval = true). The summary says so in one line
- *     (actionCaveat). No node asking → the global default is inherited.
+ *     (Agent.requireActionApproval = true, carried on the draft to
+ *     createAgent so the first materialize already has it). The summary says
+ *     so in one line (actionCaveat). No node asking → the global default is
+ *     inherited.
  */
 import type { ParsedAgentDraft } from './agent-nl-parser';
 import { tFor, type Locale } from './i18n';
@@ -83,11 +87,7 @@ export function teamToAgentDraft(team: MonitorTeam, locale: Locale): MonitorTeam
   const single = steps.length === 1;
   const singlePin: ToolChoice | undefined = single ? providerToTool(nodes[0].provider) : undefined;
   const tool: ToolChoice = singlePin ?? { type: 'auto' };
-  const prompt = single
-    ? steps[0].instruction
-    : destination
-      ? tFor(locale, 'monitor.register.prompt_with_dest', { title: name, dest: destination })
-      : name;
+  const prompt = single ? steps[0].instruction : name;
   const requireActionApproval = requiresWriteApproval(team);
 
   const draft: ParsedAgentDraft = {
@@ -102,7 +102,8 @@ export function teamToAgentDraft(team: MonitorTeam, locale: Locale): MonitorTeam
     // 'monitor-team' source always requiring the chat confirm.
     triggerAssumed: true,
     action: { type: 'draft' },
-    ...(destination ? { outputPath: destination } : {}),
+    ...(destination ? { outputPath: `${destination} ${tFor(locale, 'monitor.register.dest_not_used')}` } : {}),
+    ...(requireActionApproval ? { requireActionApproval: true } : {}),
     tool,
     toolLabel: singlePin ? MONITOR_PROVIDER_LABEL[nodes[0].provider] : MONITOR_PROVIDER_LABEL.auto,
     ...(singlePin ? { toolExplicit: true } : {}),

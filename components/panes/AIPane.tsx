@@ -80,7 +80,7 @@ import { AgentUndoButton } from '@/components/panes/AgentUndoButton';
 import { lastPromptAnchorMessage } from '@/lib/chat-pending-anchor';
 import { markTerminalAgentRequest } from '@/lib/agent-add-queue';
 import { registerAgentAddPaneHandlers } from '@/lib/agent-add-flow';
-import { bindTeamDraftMessage, takePendingTeamDraft, useMonitorTeamRegistration } from '@/lib/monitor-team-registration';
+import { markTeamDraftPosted, takePendingTeamDraft, useMonitorTeamRegistration } from '@/lib/monitor-team-registration';
 import { draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 
 const AUTO_FOLLOW_THRESHOLD_PX = 100;
@@ -586,7 +586,8 @@ export default function AIPane() {
   const pendingTeamDraft = useMonitorTeamRegistration((s) => s.pending);
   useEffect(() => {
     if (!pendingTeamDraft) return;
-    const taken = takePendingTeamDraft();
+    // Only the pane MONITOR focused for it claims it (see targetPaneId).
+    const taken = takePendingTeamDraft(paneId);
     if (!taken) return;
     const conversationKey = resolveAiPaneStoreKey(paneId);
     useAIPaneStore.getState().addMessage(conversationKey, {
@@ -598,7 +599,7 @@ export default function AIPane() {
     handleSubmit(taken.text, {
       source: 'monitor-team',
       presetDraft: taken.draft,
-      onPresetDraftPresented: bindTeamDraftMessage,
+      onPresetDraftPresented: markTeamDraftPosted,
     });
   }, [pendingTeamDraft, handleSubmit, paneId, t]);
 

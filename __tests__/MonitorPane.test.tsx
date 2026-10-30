@@ -31,6 +31,12 @@ jest.mock('@/lib/agent-thread-open', () => ({ openAgentChatThread: (id: string) 
 // are the I/O boundaries; the registration store itself is real.
 const mockEnsurePane = jest.fn((_tab: string) => true);
 jest.mock('@/lib/pane-focus', () => ({ ensurePaneByTab: (tab: string) => mockEnsurePane(tab) }));
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
+);
+jest.mock('@/hooks/use-multi-pane', () => ({
+  useMultiPaneStore: { getState: () => ({ slots: [{ id: 'leaf-ai', tab: 'ai' }], focusedSlot: 0 }) },
+}));
 const mockRunAgentNow = jest.fn(async (_id: string, _run: unknown) => {});
 const mockUpdateAgent = jest.fn(async () => null);
 jest.mock('@/lib/agent-manager', () => ({
@@ -405,12 +411,12 @@ describe('MonitorPane MAP register / run / team file', () => {
     fireEvent.press(utils.getByTestId('monitor-map-register'));
     // What the AI pane does: claim, post, bind; the user types OK.
     act(() => {
-      reg.takePendingTeamDraft();
-      reg.bindTeamDraftMessage('draft-msg');
+      reg.takePendingTeamDraft('leaf-ai');
+      reg.markTeamDraftPosted('draft-msg');
       useAgentStore.setState({
         agents: [{ id: 'team-1', name: 'Daily AI paper digest', orchestration: { steps: [] } } as never],
       });
-      reg.onTeamDraftResolved('draft-msg', 'confirmed', 'team-1');
+      reg.onTeamDraftConfirmed(reg.useMonitorTeamRegistration.getState().token!, 'team-1');
     });
     expect(useAgentStore.getState().monitor).toMatchObject({ sourceMode: 'live', liveAgentId: 'team-1' });
     expect(utils.getByTestId('monitor-standby')).toBeTruthy();
@@ -459,6 +465,20 @@ describe('MonitorPane MAP register / run / team file', () => {
     expect(state.sourceMode).toBe('draft');
     expect(state.team?.title).toBe('Mine');
     expect(state.team?.columns.map((c) => c.length)).toEqual([2, 1]);
+    utils.unmount();
+  });
+
+  it('TEAM FILE: an over-long paste is refused inline; control characters are dropped', () => {
+    const utils = render(<MonitorPane />);
+    fireEvent.press(utils.getByText('monitor.map.file'));
+    fireEvent.changeText(utils.getByTestId('monitor-map-paste'), `# T\n- a\n${'x'.repeat(9000)}`);
+    fireEvent.press(utils.getByText('monitor.map.file_load'));
+    expect(utils.getByTestId('monitor-map-paste-error').props.children).toBe('monitor.map.file_err_too_long');
+    fireEvent.changeText(utils.getByTestId('monitor-map-paste'), '# Bell\u0007\n- fetch\u0000 it\n- save it');
+    fireEvent.press(utils.getByText('monitor.map.file_load'));
+    expect(utils.queryByTestId('monitor-map-paste-error')).toBeNull();
+    expect(useAgentStore.getState().monitor.team?.title).toBe('Bell');
+    expect(useAgentStore.getState().monitor.team?.columns[0][0].role).toBe('fetch it');
     utils.unmount();
   });
 });

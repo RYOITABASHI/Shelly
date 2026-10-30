@@ -338,7 +338,9 @@ export function MonitorMap({
       setPasteError(
         e.code === 'syntax'
           ? t('monitor.map.file_err_syntax', { line: (e as { line: number }).line })
-          : errorText(e as MonitorTeamError),
+          : e.code === 'too_long'
+            ? t('monitor.map.file_err_too_long')
+            : errorText(e as MonitorTeamError),
       );
       return;
     }

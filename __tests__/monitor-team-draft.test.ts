@@ -14,11 +14,9 @@ jest.mock('expo-secure-store', () => ({
 jest.mock('expo-notifications', () => ({ scheduleNotificationAsync: jest.fn(async () => 'id') }));
 const mockEnsurePane =jest.fn((_tab: string) => true);
 jest.mock('@/lib/pane-focus', () => ({ ensurePaneByTab: (tab: string) => mockEnsurePane(tab) }));
-const mockUpdateAgent = jest.fn(async (..._args: unknown[]) => null);
-jest.mock('@/lib/agent-manager', () => ({ updateAgent: (...args: unknown[]) => mockUpdateAgent(...args) }));
-jest.mock('@/hooks/use-native-exec', () => ({
-  execCommand: jest.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
-}));
+// The focused slot after ensurePaneByTab('ai') is the hand-off's target pane.
+const mockMultiPane = { slots: [{ id: 'leaf-ai', tab: 'ai' }] as Array<{ id: string; tab: string } | null>, focusedSlot: 0 };
+jest.mock('@/hooks/use-multi-pane', () => ({ useMultiPaneStore: { getState: () => mockMultiPane } }));
 
 import { DEMO_TEAM } from '@/lib/monitor-demo';
 import { teamToAgentDraft, canRegisterTeam } from '@/lib/monitor-team-draft';
@@ -33,16 +31,20 @@ import {
 import { isManualTriggerDraft } from '@/lib/agent-nl-parser';
 import { detectMessageLocale } from '@/lib/agent-slot-fill';
 import { resolveRegistrationConfirmRequirement } from '@/lib/widget-agent-registration';
-import type { MonitorTeam } from '@/lib/monitor-team';
+import { MAX_TEAM_FILE_CHARS, parseTeamFile, validate, type MonitorTeam } from '@/lib/monitor-team';
 import {
-  bindTeamDraftMessage,
-  onTeamDraftResolved,
+  expireTeamDraft,
+  markTeamDraftPosted,
+  onTeamDraftCancelled,
+  onTeamDraftConfirmed,
+  reconcileTeamDraftSession,
   requestTeamRegistration,
   resetTeamRegistration,
   takePendingTeamDraft,
   TEAM_DRAFT_STALE_MS,
   useMonitorTeamRegistration,
 } from '@/lib/monitor-team-registration';
+import { useAIPaneStore } from '@/store/ai-pane-store';
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 
@@ -97,8 +99,13 @@ describe('teamToAgentDraft', () => {
   it('saves to the team destination and collapses ask-before-writing to the agent', () => {
     const { draft, requireActionApproval } = build(DEMO_TEAM);
     expect(draft.action).toEqual({ type: 'draft' });
-    expect(draft.outputPath).toBe('OBSIDIAN: 20_Literature/AI_Papers/{date}/');
+    // Shown, but labelled as not used yet (the draft action saves elsewhere),
+    // and kept out of the prompt.
+    expect(draft.outputPath).toBe(`OBSIDIAN: 20_Literature/AI_Papers/{date}/ ${en['monitor.register.dest_not_used']}`);
+    expect(draft.prompt).not.toContain('OBSIDIAN');
     expect(requireActionApproval).toBe(true);
+    // Carried on the draft → ConfirmedAgentDraft → createAgent.
+    expect(draft.requireActionApproval).toBe(true);
     expect(draft.actionCaveat).toBe(en['monitor.register.ask_collapsed']);
 
     const noAsk: MonitorTeam = {
@@ -110,6 +117,7 @@ describe('teamToAgentDraft', () => {
     expect(quiet.requireActionApproval).toBe(false);
     expect(quiet.draft.actionCaveat).toBeUndefined();
     expect(quiet.draft.outputPath).toBeUndefined();
+    expect(quiet.draft.requireActionApproval).toBeUndefined();
   });
 
   it('summary shows the parallel pair and the manual note in the viewer language', () => {
@@ -161,25 +169,76 @@ describe('teamToAgentDraft', () => {
   });
 });
 
+describe('pasted team file limits', () => {
+  it('refuses an over-long paste before parsing', () => {
+    const res = parseTeamFile('# T\n- a\n' + 'x'.repeat(MAX_TEAM_FILE_CHARS));
+    expect(res.ok).toBe(false);
+    if ('error' in res) expect(res.error.code).toBe('too_long');
+  });
+
+  it('strips control characters', () => {
+    const res = parseTeamFile('# T\u0007eam\n- fetch\u0000 news\u001b[31m\n- sum\u007fmarize');
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.team.title).toBe('Team');
+      expect(res.team.columns.map((c) => c[0].role)).toEqual(['fetch news[31m', 'summarize']);
+    }
+  });
+
+  it('caps sub-agents per node and in total', () => {
+    const three = '# T\n- a\n  - sub: one\n  - sub: two\n  - sub: three\n- b';
+    const res = parseTeamFile(three);
+    expect('error' in res && res.error.code).toBe('too_many_subs');
+    const team: MonitorTeam = {
+      title: 'T',
+      columns: [
+        [{ id: 'a', role: 'a', provider: 'auto', askBeforeWrite: false }],
+        [{ id: 'b', role: 'b', provider: 'auto', askBeforeWrite: false }],
+        [{ id: 'c', role: 'c', provider: 'auto', askBeforeWrite: false }],
+      ],
+      subAgents: ['a', 'a', 'b', 'b', 'c'].map((parentId, i) => ({
+        id: `s${i}`, parentId, role: `check ${i}`, provider: 'auto' as const, askBeforeWrite: false,
+      })),
+    };
+    expect(validate(team).map((e) => e.code)).toContain('too_many_subs');
+    expect(validate({ ...team, subAgents: team.subAgents.slice(0, 4) })).toEqual([]);
+  });
+});
+
 describe('monitor team registration hand-off', () => {
   beforeEach(() => {
     resetTeamRegistration();
     mockEnsurePane.mockReset().mockReturnValue(true);
-    mockUpdateAgent.mockClear();
+    mockMultiPane.slots = [{ id: 'leaf-ai', tab: 'ai' }];
+    useAIPaneStore.setState({ conversations: {} });
   });
 
-  it('queues the draft, focuses the AI pane, and is claimed once', () => {
+  const token = () => useMonitorTeamRegistration.getState().token!;
+  /** Simulate the draft sitting in a chat as the pending session. */
+  const pendInChat = (tok: string | undefined) =>
+    useAIPaneStore.setState({
+      conversations: {
+        c1: { paneId: 'c1', messages: [], activeAgent: null, isStreaming: false, terminalContext: null,
+          pendingAgentSession: tok ? ({ draft: { monitorTeamToken: tok }, phase: 'await-confirm' } as never) : null },
+      } as never,
+    });
+
+  it('queues a token-stamped draft for the focused AI pane only', () => {
     expect(requestTeamRegistration(DEMO_TEAM, 'en', 1000)).toBe('posted');
     expect(mockEnsurePane).toHaveBeenCalledWith('ai');
-    expect(useMonitorTeamRegistration.getState().status).toBe('awaiting-confirm');
-    const taken = takePendingTeamDraft(1500);
-    expect(taken?.draft.name).toBe(DEMO_TEAM.title);
-    expect(takePendingTeamDraft(1500)).toBeNull();
+    const s = useMonitorTeamRegistration.getState();
+    expect(s.status).toBe('awaiting-confirm');
+    expect(s.pending?.targetPaneId).toBe('leaf-ai');
+    expect(s.pending?.draft.monitorTeamToken).toBe(s.token);
+    // Another AI pane cannot claim it; the target can, once.
+    expect(takePendingTeamDraft('leaf-other', 1500)).toBeNull();
+    expect(takePendingTeamDraft('leaf-ai', 1500)?.draft.name).toBe(DEMO_TEAM.title);
+    expect(takePendingTeamDraft('leaf-ai', 1500)).toBeNull();
   });
 
   it('drops a stale hand-off', () => {
     requestTeamRegistration(DEMO_TEAM, 'en', 0);
-    expect(takePendingTeamDraft(TEAM_DRAFT_STALE_MS + 1)).toBeNull();
+    expect(takePendingTeamDraft('leaf-ai', TEAM_DRAFT_STALE_MS + 1)).toBeNull();
     expect(useMonitorTeamRegistration.getState().status).toBe('idle');
   });
 
@@ -189,23 +248,52 @@ describe('monitor team registration hand-off', () => {
     expect(useMonitorTeamRegistration.getState().pending).toBeNull();
   });
 
-  it('confirm → registered + agent approval setting; other drafts are ignored', () => {
+  it('confirm is matched by token; a foreign token is ignored', () => {
     requestTeamRegistration(DEMO_TEAM, 'en');
-    takePendingTeamDraft();
-    bindTeamDraftMessage('m1');
-    onTeamDraftResolved('other', 'confirmed', 'agent-x');
+    takePendingTeamDraft('leaf-ai');
+    markTeamDraftPosted();
+    onTeamDraftConfirmed('mt-other', 'agent-x');
     expect(useMonitorTeamRegistration.getState().status).toBe('awaiting-confirm');
-    onTeamDraftResolved('m1', 'confirmed', 'agent-1');
+    onTeamDraftConfirmed(token(), 'agent-1');
     expect(useMonitorTeamRegistration.getState()).toMatchObject({ status: 'registered', agentId: 'agent-1' });
-    expect(mockUpdateAgent).toHaveBeenCalledWith('agent-1', { requireActionApproval: true }, expect.any(Function));
   });
 
-  it('cancel in chat → cancelled', () => {
+  it('a confirm with no created agent (one-shot ran and was discarded, or failed) is terminal', () => {
     requestTeamRegistration(DEMO_TEAM, 'en');
-    takePendingTeamDraft();
-    bindTeamDraftMessage('m2');
-    onTeamDraftResolved('m2', 'cancelled', null);
+    takePendingTeamDraft('leaf-ai');
+    markTeamDraftPosted();
+    onTeamDraftConfirmed(token(), null);
+    expect(useMonitorTeamRegistration.getState()).toMatchObject({ status: 'idle', agentId: null });
+  });
+
+  it('cancel by token → cancelled', () => {
+    requestTeamRegistration(DEMO_TEAM, 'en');
+    takePendingTeamDraft('leaf-ai');
+    markTeamDraftPosted();
+    onTeamDraftCancelled(token());
     expect(useMonitorTeamRegistration.getState().status).toBe('cancelled');
-    expect(mockUpdateAgent).not.toHaveBeenCalled();
+  });
+
+  it('a draft that leaves the chat (superseded / cleared) re-enables REGISTER; a late confirm still lands', () => {
+    requestTeamRegistration(DEMO_TEAM, 'en');
+    takePendingTeamDraft('leaf-ai');
+    const tok = token();
+    pendInChat(tok);
+    markTeamDraftPosted();
+    reconcileTeamDraftSession();
+    expect(useMonitorTeamRegistration.getState().status).toBe('awaiting-confirm');
+    pendInChat('mt-newer-draft'); // the store watcher reconciles on change
+    expect(useMonitorTeamRegistration.getState().status).toBe('idle');
+    // Tapping OK on the old bubble afterwards still reports by token.
+    onTeamDraftConfirmed(tok, 'agent-late');
+    expect(useMonitorTeamRegistration.getState()).toMatchObject({ status: 'registered', agentId: 'agent-late' });
+  });
+
+  it('an unanswered draft times out', () => {
+    requestTeamRegistration(DEMO_TEAM, 'en');
+    takePendingTeamDraft('leaf-ai');
+    markTeamDraftPosted();
+    expireTeamDraft();
+    expect(useMonitorTeamRegistration.getState().status).toBe('idle');
   });
 });

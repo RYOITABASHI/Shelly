@@ -770,5 +770,7 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     runOnceOnConfirm: draft.runOnceOnConfirm,
     ...(isManualTriggerDraft(draft) ? { manualTrigger: true } : {}),
     ...(isContinuousDraft(draft) && draft.continuous ? { continuous: draft.continuous } : {}),
+    ...(draft.monitorTeamToken ? { monitorTeamToken: draft.monitorTeamToken } : {}),
+    ...(draft.requireActionApproval !== undefined ? { requireActionApproval: draft.requireActionApproval } : {}),
   };
 }

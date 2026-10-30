@@ -3513,5 +3513,89 @@ describe('MONITOR team preset draft — same summary + NL confirm as @agent', ()
     expect(steps[1].parallelGroup).toBe('p1');
     expect(steps[2].parallelGroup).toBeUndefined();
     expect(steps[3].tool).toEqual({ type: 'cli', cli: 'codex' });
+    // "Ask before writing" on a node → set at creation (no post-hoc update).
+    expect(params.requireActionApproval).toBe(true);
+  });
+
+  // ── Hand-back to MONITOR survives chat edits (review High #1) ──
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const reg = require('@/lib/monitor-team-registration') as typeof import('@/lib/monitor-team-registration');
+  const TOKEN = 'mt-test-token';
+
+  async function presentTeamDraft(result: { current: ReturnType<typeof useAIPaneDispatch> }) {
+    reg.resetTeamRegistration();
+    reg.useMonitorTeamRegistration.setState({ status: 'awaiting-confirm', token: TOKEN, team: DEMO_TEAM });
+    await act(async () => {
+      await result.current.dispatch('Register MONITOR team', {
+        source: 'monitor-team',
+        presetDraft: { ...presetDraft(), monitorTeamToken: TOKEN },
+        onPresetDraftPresented: reg.markTeamDraftPosted,
+      });
+    });
+    expect(reg.useMonitorTeamRegistration.getState()).toMatchObject({ status: 'awaiting-confirm', posted: true });
+  }
+
+  it('patch then OK: the session is re-pointed, the OK still reaches MONITOR by token', async () => {
+    const { result } = setup();
+    await presentTeamDraft(result);
+    const firstId = conv().pendingAgentSession!.messageId;
+    await act(async () => {
+      await result.current.dispatch('毎日21時にして');
+    });
+    const session = conv().pendingAgentSession!;
+    expect(session.phase).toBe('await-confirm');
+    expect(session.messageId).not.toBe(firstId);
+    expect(session.draft.monitorTeamToken).toBe(TOKEN);
+    expect(reg.useMonitorTeamRegistration.getState().status).toBe('awaiting-confirm');
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    expect(mockCreateAgent.mock.calls[0][0].requireActionApproval).toBe(true);
+    const createdId = mockCreateAgent.mock.results[0].value.id;
+    expect(reg.useMonitorTeamRegistration.getState()).toMatchObject({ status: 'registered', agentId: createdId });
+  });
+
+  it('patch then cancel: MONITOR is released (REGISTER usable again)', async () => {
+    const { result } = setup();
+    await presentTeamDraft(result);
+    await act(async () => {
+      await result.current.dispatch('毎日21時にして');
+    });
+    await act(async () => {
+      await result.current.dispatch('キャンセル');
+    });
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    expect(conv().pendingAgentSession ?? null).toBeNull();
+    expect(['cancelled', 'idle']).toContain(reg.useMonitorTeamRegistration.getState().status);
+  });
+
+  it('「今すぐ」 correction then OK: a run-and-discard one-shot ends the hand-off instead of sticking', async () => {
+    mockDeleteAgent.mockImplementation(async (id: string) => {
+      useAgentStore.getState().removeAgent?.(id);
+    });
+    const { result } = setup();
+    await presentTeamDraft(result);
+    await act(async () => {
+      await result.current.dispatch('今すぐ実行して');
+    });
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    const status = reg.useMonitorTeamRegistration.getState().status;
+    expect(status).not.toBe('awaiting-confirm');
+    // Registered only if an agent actually survived the confirm.
+    const survivors = useAgentStore.getState().agents.length;
+    expect(status).toBe(survivors === 1 ? 'registered' : 'idle');
+  });
+
+  it('a newer @agent draft supersedes the team draft: MONITOR is released', async () => {
+    const { result } = setup();
+    await presentTeamDraft(result);
+    await act(async () => {
+      await result.current.dispatch('@agent 毎週月曜の朝にゴミ出しをリマインドして');
+    });
+    expect(conv().pendingAgentSession?.draft.monitorTeamToken).toBeUndefined();
+    expect(reg.useMonitorTeamRegistration.getState().status).toBe('idle');
   });
 });

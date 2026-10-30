@@ -98,6 +98,9 @@ export interface ConfirmedAgentDraft {
    *  one-shot. Set only by draftToConfirmedAgentDraft for an
    *  isContinuousDraft draft (lib/agent-continuous.ts fills the defaults). */
   continuous?: { cooldownMs: number; goalCheck?: boolean };
+  /** See ParsedAgentDraft.monitorTeamToken / requireActionApproval. */
+  monitorTeamToken?: string;
+  requireActionApproval?: boolean;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.

@@ -71,7 +71,6 @@ import {
   type AgentAddSummary,
 } from '@/lib/agent-add-approval';
 import { handleClosePawShellCtl } from '@/lib/closepaw-shell-approval';
-import { onTeamDraftResolved } from '@/lib/monitor-team-registration';
 import { agentMatchesApprovedDraft, revokeClosePawPreapproval, sealClosePawPreapproval } from '@/lib/agent-closepaw-preapproval';
 
 export type AgentAddPaneHandlers = {
@@ -578,9 +577,6 @@ export function onAgentDraftResolved(conversationKey: string, messageId: string,
   const state = msg?.agentCardState;
   const draft = (msg?.agentDraft as ParsedAgentDraft) ?? null;
   if (state === 'confirmed' && createdAgentId) createdAgentByMessage.set(messageId, createdAgentId);
-  // MONITOR MAP "Register this team" (lib/monitor-team-registration.ts):
-  // no-op unless this is the bound team draft.
-  onTeamDraftResolved(messageId, state, createdAgentId);
   if (state === 'confirmed' && draft && closePawStepText(draft as never) && createdAgentId) {
     const agent = useAgentStore.getState().agents.find((a) => a.id === createdAgentId) ?? null;
     // Seal only the EXACT agent this confirm created, and only when its

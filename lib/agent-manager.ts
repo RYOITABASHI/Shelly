@@ -479,6 +479,10 @@ export function createAgent(params: {
   /** Continuous mode (lib/agent-continuous.ts). Limits are filled with their
    *  defaults here and the loop starts now. */
   continuous?: Partial<NonNullable<Agent['continuous']>> | null;
+  /** Per-agent action-approval override (Agent.requireActionApproval), set
+   *  at creation so the first materialize already carries it (MONITOR team
+   *  "ask before writing"). Undefined = inherit the global default. */
+  requireActionApproval?: boolean;
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -509,6 +513,7 @@ export function createAgent(params: {
     ...(params.skillId && params.skillPlanFingerprint !== undefined ? { skillPlanFingerprint: params.skillPlanFingerprint } : {}),
     orchestration: params.orchestration,
     startNotBefore: params.startNotBefore ?? null,
+    ...(params.requireActionApproval !== undefined ? { requireActionApproval: params.requireActionApproval } : {}),
     ...(params.continuous
       ? { continuous: normalizeContinuousConfig({ ...params.continuous, loopStartedAt: Date.now() }) }
       : {}),

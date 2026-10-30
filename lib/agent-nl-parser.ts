@@ -277,6 +277,14 @@ export interface ParsedAgentDraft {
    *  outputPath will save (resolved from Settings by the dispatcher just
    *  before the summary is shown). Never persisted to the agent. */
   saveDestinationPreview?: string;
+  /** MONITOR MAP "Register this team" (lib/monitor-team-registration.ts):
+   *  hand-off token. Lives on the draft so it survives chat patches
+   *  (applyDraftPatch spreads the draft) and reaches confirm/cancel. */
+  monitorTeamToken?: string;
+  /** Per-agent action-approval override carried to createAgent (MONITOR
+   *  team "ask before writing", collapsed to the agent). Undefined =
+   *  inherit the global default. */
+  requireActionApproval?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }

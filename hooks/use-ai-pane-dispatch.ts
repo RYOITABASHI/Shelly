@@ -69,6 +69,7 @@ import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, 
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
+import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-registration';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
@@ -4158,6 +4159,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // An edit keeps the SAME loop (limits, budget, loopStartedAt) unless its
           // cooldown / goalCheck changed — see mergeContinuousOnEdit.
           ...(confirmed.continuous ? { continuous: mergeContinuousOnEdit(editingAgent?.continuous, confirmed.continuous) } : {}),
+          // MONITOR team "ask before writing" (lib/monitor-team-draft.ts): set at
+          // creation so the first materialize already carries it.
+          ...(confirmed.requireActionApproval !== undefined ? { requireActionApproval: confirmed.requireActionApproval } : {}),
         };
         const persisted = await persistAgentDraft({
           editingAgentId,
@@ -4530,10 +4534,12 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // instead of guessing "the newest agent".
       const agentIdsBefore = new Set(useAgentStore.getState().agents.map((a) => a.id));
       let createdAgentId: string | null = null;
+      let turnSettled = false;
       const turn = confirmAgentDraftInner(messageId, confirmed);
       inFlightConfirmDrafts.set(messageId, turn);
       try {
         await turn;
+        turnSettled = true;
         const created = useAgentStore.getState().agents.filter((a) => !agentIdsBefore.has(a.id));
         createdAgentId = created.length === 1 ? created[0].id : null;
         // Case File only: a rubber-stamp "thunk" on the registration
@@ -4550,6 +4556,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // `shelly agent add` binding (if any): consume + record the outcome;
         // seal a ClosePaw pre-approval only for the exact created agent.
         onAgentDraftResolved(resolveAiPaneStoreKey(paneIdRaw), messageId, createdAgentId);
+        // MONITOR MAP team draft: matched by the token on the draft, so a chat
+        // patch (which re-points the session's messageId) cannot lose it. No
+        // created agent (failed, or a "now" one-shot that ran and was
+        // discarded) or a throwing confirm is terminal too.
+        if (confirmed.monitorTeamToken) {
+          onTeamDraftConfirmed(confirmed.monitorTeamToken, turnSettled ? createdAgentId : null);
+        }
       }
     },
     [confirmAgentDraftInner, paneIdRaw],
@@ -4563,9 +4576,14 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // AgentChatConfirm's TAP-to-cancel path (dispatch()'s typed-cancel
       // branch already clears it before calling this).
       const currentPending = store.getOrCreate(paneId).pendingAgentSession;
+      const cancelledMsg = store.getOrCreate(paneId).messages.find((m) => m.id === messageId);
+      const teamToken =
+        (cancelledMsg?.agentDraft as ParsedAgentDraft | undefined)?.monitorTeamToken ??
+        (currentPending?.messageId === messageId ? currentPending.draft.monitorTeamToken : undefined);
       if (currentPending?.messageId === messageId) {
         store.setPendingAgentSession(paneId, null);
       }
+      if (teamToken) onTeamDraftCancelled(teamToken);
       const updated = store.updateMessage(paneId, messageId, {
         agentCardState: 'cancelled',
         content: 'Registration cancelled.',
