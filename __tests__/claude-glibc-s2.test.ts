@@ -1,7 +1,7 @@
 /**
  * __tests__/claude-glibc-s2.test.ts
  *
- * Claude Code glibc S2 (BASHRC_VERSION 275): private authenticated proxy, OSC 8
+ * Claude Code glibc S2 (BASHRC_VERSION 275-276): private authenticated proxy, OSC 8
  * sign-in URL bridge (tap-to-open only, armed sessions only), drain loop
  * safety. See DEFERRED.md "Claude Code 公式 glibc 版（2.1.314）を Shelly で動かす".
  *
@@ -424,7 +424,7 @@ describe('shelly-claude-proxy.js', () => {
   }, 20_000);
 });
 
-describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275)', () => {
+describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () => {
   const lines = homeKt.split(/\r?\n/);
   const start = lines.findIndex((l) => l.includes('sb.appendLine("shelly-claude-glibc() {")'));
   const fnLines: string[] = [];
@@ -437,13 +437,18 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275)', () => {
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 275\b/);
+    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 276\b/);
+  });
+
+  it('marks the force-TUI paste mode around claude so a pasted OAuth code is not corrupted', () => {
+    expect(fn).toMatch(/__shelly_paste_tui_begin\n {2}\(/);
+    expect(fn).toMatch(/__shelly_paste_tui_end\n {2}return \$__rc/);
   });
 
   it('runs in a subshell and never exports proxy/browser state to the interactive shell', () => {
     expect(start).toBeGreaterThan(0);
     expect(fn).toMatch(/^shelly-claude-glibc\(\) \{\n/);
-    expect(fn).toMatch(/\n  \(\n[^]*\n  \)\n\}$/);
+    expect(fn).toMatch(/\n  \(\n[^]*\n  \)\n  local __rc=\$\?\n  __shelly_paste_tui_end\n  return \$__rc\n\}$/);
     expect(fn).not.toMatch(/\bexport\b/);
     expect(fn).toMatch(/unset BROWSER DISPLAY WAYLAND_DISPLAY/);
     expect(fn).toMatch(/\n    umask 077\n/);

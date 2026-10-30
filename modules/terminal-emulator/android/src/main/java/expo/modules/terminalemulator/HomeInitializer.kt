@@ -1460,7 +1460,7 @@ patchCodex(libDir);
     //      HTTPS_PROXY/HTTP_PROXY/NO_PROXY only to claude; BROWSER/DISPLAY
     //      unset so the sign-in URL comes out as an OSC 8 hyperlink
     //      (OAuthHyperlinkBridge.kt queues a tap-to-open sign-in prompt while armed).
-    private const val BASHRC_VERSION = 275
+    private const val BASHRC_VERSION = 276
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4235,6 +4235,9 @@ patchCodex(libDir);
             // wrapper is S3), so Claude takes its headless path and renders the
             // sign-in URL as an OSC 8 hyperlink, which the terminal emulator
             // hands to OAuthHyperlinkBridge.kt (full URL; it only becomes a tap-to-open prompt).
+            // v276: Claude Code (Ink) enables bracketed paste; without the force-TUI
+            // marker paste() sends bash's \C-x\C-b BEGIN, which corrupts a pasted
+            // OAuth code. Mark the TUI for the whole run, like codex().
             sb.appendLine("shelly-claude-glibc() {")
             sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
             sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
@@ -4249,6 +4252,7 @@ patchCodex(libDir);
             sb.appendLine("  if [ ! -f \"\$__proxy_js\" ]; then")
             sb.appendLine("    echo \"shelly-claude-glibc: missing \$__proxy_js (restart Shelly to re-extract helpers)\" >&2; return 2")
             sb.appendLine("  fi")
+            sb.appendLine("  __shelly_paste_tui_begin")
             sb.appendLine("  (")
             sb.appendLine("    umask 077")
             sb.appendLine("    __pdir=\"\${TMPDIR:-\$HOME/tmp}\"")
@@ -4305,6 +4309,9 @@ patchCodex(libDir);
             sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
             sb.appendLine("      \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\$@\"")
             sb.appendLine("  )")
+            sb.appendLine("  local __rc=\$?")
+            sb.appendLine("  __shelly_paste_tui_end")
+            sb.appendLine("  return \$__rc")
             sb.appendLine("}")
             // v252: `shelly codex pair` — host Codex remote control for the
             // ChatGPT app (Experimental, on-device unverified). Runs the
