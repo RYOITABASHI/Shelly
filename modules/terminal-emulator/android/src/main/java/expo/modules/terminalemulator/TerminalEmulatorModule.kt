@@ -2247,8 +2247,11 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("No React context")
             val timeout = timeoutMs ?: 120_000
-            // Ensure bundled tools are extracted (may not have happened yet if no PTY session created)
-            val libDir = LibExtractor.extractAll(context)
+            // Ensure bundled tools are extracted (may not have happened yet if no
+            // PTY session created). Memoized per process + APK identity: after
+            // the first successful extraction this is a couple of stat() calls,
+            // not a full scan of the ~415 MB APK (execCommand is polled).
+            val (libDir, extractedNow) = LibExtractor.ensureExtracted(context)
             val homeDir = HomeInitializer.getHomeDir(context)
             val bashPath = LibExtractor.getBashPath(context)
             val libPath = libDir.absolutePath
@@ -2286,8 +2289,11 @@ class TerminalEmulatorModule : Module() {
                 "export OPENSSL_CONF='$opensslConf' && " +
                 "$command"
 
-            Log.i("TerminalEmulator", "execCommand: bash=$bashPath lib=$libPath home=$homePath")
-            Log.i("TerminalEmulator", "execCommand: bash exists=${java.io.File(bashPath).exists()} lib exists=${libDir.exists()} files=${libDir.list()?.size ?: 0}")
+            // Only log when something noteworthy happened; this path is polled.
+            val bashExists = java.io.File(bashPath).exists()
+            if (extractedNow || !bashExists) {
+                Log.i("TerminalEmulator", "execCommand: extractedNow=$extractedNow bash=$bashPath exists=$bashExists lib=$libPath home=$homePath")
+            }
 
             val result = ShellyJNI.execSubprocess(
                 "/system/bin/linker64",

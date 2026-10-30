@@ -257,7 +257,42 @@ object LibExtractor {
         outFile.setExecutable(true, false)
     }
 
+    // Per-process memo so hot callers (execCommand) skip the full APK scan
+    // once extractAll() has succeeded for the installed APK. See
+    // ExtractionMemo for the key / revalidation contract.
+    private val extractionMemo = ExtractionMemo()
+
+    private fun currentMemoKey(context: Context): ExtractionMemoKey {
+        val apk = File(context.applicationInfo.sourceDir)
+        return ExtractionMemoKey(apk.absolutePath, apk.lastModified(), apk.length())
+    }
+
+    private fun memoSentinelsUsable(context: Context): Boolean {
+        val libDir = File(context.filesDir, "termux-libs")
+        return File(libDir, EXTRACT_MARKER).exists() && targetIsUsable(File(libDir, "libbash.so"))
+    }
+
+    /**
+     * Cheap variant of extractAll() for hot paths (execCommand). Runs the full
+     * extractAll() only when it has not yet succeeded in this process for the
+     * currently installed APK (keyed on sourceDir path + mtime + size), or
+     * when the extraction marker or libbash.so has gone missing since. Other
+     * individually-deleted libs are repaired by the next full extractAll()
+     * (PTY create, agent run, Codex host spawn), exactly as before.
+     *
+     * @return the lib dir and whether a full extraction ran in this call.
+     */
+    fun ensureExtracted(context: Context): Pair<File, Boolean> {
+        val ran = extractionMemo.ensure(
+            currentKey = { currentMemoKey(context) },
+            sentinelsUsable = { memoSentinelsUsable(context) },
+            extract = { extractAll(context) },
+        )
+        return getLibDir(context) to ran
+    }
+
     fun extractAll(context: Context): File {
+        val memoKey = currentMemoKey(context)
         val libDir = getLibDir(context)
         val markerFile = File(libDir, EXTRACT_MARKER)
         val currentVersion = appVersionMarker(context)
@@ -360,6 +395,7 @@ object LibExtractor {
         // handles all child process execution transparently.
 
         markerFile.writeText(currentVersion)
+        extractionMemo.record(memoKey)
         return libDir
     }
 
