@@ -194,6 +194,20 @@ export function resolveSinglePaneSlot(
   return slots[focusedSlot] ? focusedSlot : firstFilledIndex(slots);
 }
 
+/** Filled slots actually laid out for `layoutPreset` (slots past the preset
+ *  capacity are hidden, not deleted). Pass null when only one pane is on
+ *  screen (maximized, or a compact width forcing p1) — nothing to swap. */
+export function getSwappableSlotIndices(
+  slots: readonly Slot[],
+  layoutPreset: PresetId | null,
+): SlotIndex[] {
+  if (!layoutPreset || layoutPreset === 'p1') return [];
+  const cap = PRESET_CAPACITY[layoutPreset];
+  const out: SlotIndex[] = [];
+  for (let i = 0; i < cap; i++) if (slots[i]) out.push(i as SlotIndex);
+  return out.length >= 2 ? out : [];
+}
+
 function firstEmptyIndex(slots: readonly Slot[], capacity: number): SlotIndex | null {
   for (let i = 0; i < capacity; i++) {
     if (!slots[i]) return i as SlotIndex;
@@ -273,6 +287,15 @@ type MultiPaneActions = {
   resetRatio: (key: keyof Ratios) => void;
   maximizeSlot: (slot: SlotIndex | null) => void;
   setSlotTab: (slot: SlotIndex, tab: PaneTab) => void;
+  /** Exchange the full contents of two filled slots (tab, terminal session
+   *  binding, and the stable slot id that AI conversations / agent bindings
+   *  / browser state are keyed by). Pure position change: never runs the
+   *  drop/cleanup path, so no PTY, conversation or pane state is destroyed.
+   *  Focus and maximize follow the content they pointed at; ratios stay
+   *  with positions. No-op when a === b or either slot is empty. */
+  swapSlots: (a: SlotIndex, b: SlotIndex) => void;
+  /** Leaf-id convenience over swapSlots (PaneSlot only knows its leafId). */
+  swapPanes: (leafIdA: string, leafIdB: string) => void;
 
   // Legacy compatibility surface (keyed by leaf id where applicable)
   /** Returns null on success, or a failure reason so callers can surface a toast/alert. */
@@ -637,6 +660,29 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
         } catch { /* pane-store unavailable (tests) */ }
       };
 
+      const doSwapSlots = (a: SlotIndex, b: SlotIndex): void => {
+        if (a === b) return;
+        if (a < 0 || a > 3 || b < 0 || b > 3) return;
+        const { slots, focusedSlot, maximizedSlot } = get();
+        const sa = slots[a];
+        const sb = slots[b];
+        if (!sa || !sb) return;
+        // Move the slot objects as-is: id, tab and sessionId travel together,
+        // so every store keyed by leaf id (AI conversations, pane agents,
+        // thread pins, pane focus) keeps pointing at the same content.
+        const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
+        newSlots[a] = sb;
+        newSlots[b] = sa;
+        const follow = (idx: SlotIndex | null): SlotIndex | null =>
+          idx === a ? b : idx === b ? a : idx;
+        set({
+          slots: newSlots,
+          focusedSlot: follow(focusedSlot) as SlotIndex,
+          maximizedSlot: follow(maximizedSlot),
+        });
+        logInfo('MultiPane', `swapSlots ${a}<->${b} (${sa.id}, ${sb.id})`);
+      };
+
       return {
         // Core state
         ...makeInitialCore(),
@@ -712,6 +758,15 @@ export const useMultiPaneStore = create<MultiPaneStore>()(
           const newSlots = slots.slice() as [Slot, Slot, Slot, Slot];
           newSlots[slot] = { ...s, tab };
           set({ slots: newSlots });
+        },
+
+        swapSlots: (a, b) => doSwapSlots(a, b),
+
+        swapPanes: (leafIdA, leafIdB) => {
+          const a = findSlotIndexById(leafIdA);
+          const b = findSlotIndexById(leafIdB);
+          if (a === null || b === null) return;
+          doSwapSlots(a, b);
         },
 
         setSlotSessionId: (leafId, sessionId) => {

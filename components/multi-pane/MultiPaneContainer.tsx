@@ -396,13 +396,24 @@ export function MultiPaneContainer() {
   const renderPreset = size.W > 0 && size.W < 380 ? 'p1' : preset;
   const { slotRects, dividers } = getLayout(renderPreset, ratios, size.W, gridHeight);
   const singlePaneSlot = renderPreset === 'p1' ? resolveSinglePaneSlot(slots, focusedSlot) : null;
+  const swapPreset = renderPreset === 'p1' ? null : renderPreset;
+  // Render children in an order that depends only on slot ids, never on slot
+  // positions. A swap then changes just each pane's absolute rect: React
+  // keeps the same child order, so no native view is detached/re-inserted
+  // (TerminalView / WebView / IME host stay attached through a swap).
+  const renderOrder = ([0, 1, 2, 3] as SlotIndex[]).sort((a, b) => {
+    const ka = slots[a]?.id ?? `~empty-${a}`;
+    const kb = slots[b]?.id ?? `~empty-${b}`;
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
   return (
     <View
       ref={rootRef}
       style={[styles.root, { paddingBottom: effectiveKeyboardHeight, backgroundColor: containerBg }]}
       onLayout={onContainerLayout}
     >
-      {slots.map((slot, i) => {
+      {renderOrder.map((i) => {
+        const slot = slots[i];
         if (singlePaneSlot !== null && i !== singlePaneSlot) return null;
         const rect = singlePaneSlot !== null
           ? { x: 0, y: 0, w: size.W, h: gridHeight }
@@ -440,6 +451,7 @@ export function MultiPaneContainer() {
               onSplitH={(tab) => splitPane(slot.id, 'horizontal', tab)}
               onSplitV={(tab) => splitPane(slot.id, 'vertical', tab)}
               canSplit={usedCount < PRESET_CAPACITY.p4}
+              swapPreset={swapPreset}
             />
           </View>
         );

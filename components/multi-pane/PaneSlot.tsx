@@ -5,7 +5,14 @@ import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { PANE_REGISTRY, resolvePaneTitle } from './pane-registry';
 import { PaneSelector } from './PaneSelector';
 import PaneCliTabs from './PaneCliTabs';
-import { useMultiPaneStore, type PaneTab, type SlotIndex } from '@/hooks/use-multi-pane';
+import {
+  useMultiPaneStore,
+  getSwappableSlotIndices,
+  type PaneTab,
+  type PresetId,
+  type SlotIndex,
+} from '@/hooks/use-multi-pane';
+import { PaneSwapPicker } from './PaneSwapPicker';
 import { usePaneStore, getAgentColor } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useTerminalStore } from '@/store/terminal-store';
@@ -37,6 +44,9 @@ type Props = {
   onSplitH: (tab: PaneTab) => void;
   onSplitV: (tab: PaneTab) => void;
   canSplit: boolean;
+  /** Preset actually laid out on screen, or null when this pane is the only
+   *  one visible (maximized / compact width). Drives "Swap with…". */
+  swapPreset?: PresetId | null;
 };
 
 // Case File only: a slow breathing pulse instead of the flat static dot —
@@ -62,8 +72,25 @@ function getPaneTitle(tab: PaneTab, translate: (key: string) => string): string 
   return resolvePaneTitle(tab, translate, 'header').toUpperCase();
 }
 
-const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV, canSplit }: Props) => {
+const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV, canSplit, swapPreset = null }: Props) => {
   const { t } = useTranslation();
+  const [swapPickerVisible, setSwapPickerVisible] = useState(false);
+  // Leaf ids of the other panes on screen, joined so the selector returns a
+  // primitive (stable across unrelated slot updates).
+  const swapPeerKey = useMultiPaneStore((s) =>
+    getSwappableSlotIndices(s.slots, swapPreset)
+      .map((i) => s.slots[i]!.id)
+      .filter((id) => id !== leafId)
+      .join('|'),
+  );
+  const swapPeers = swapPeerKey ? swapPeerKey.split('|') : [];
+  const handleSwapPress = useCallback(() => {
+    if (swapPeers.length === 1) {
+      useMultiPaneStore.getState().swapPanes(leafId, swapPeers[0]);
+      return;
+    }
+    setSwapPickerVisible(true);
+  }, [leafId, swapPeerKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const isCaseFile = useSettingsStore((s) => s.settings.uiFont === 'case-file');
   const [selectorVisible, setSelectorVisible] = useState(false);
   const [splitMenuVisible, setSplitMenuVisible] = useState(false);
@@ -333,6 +360,17 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         <View style={styles.headerSpacer} />
 
         <View style={styles.headerActions}>
+          {swapPeers.length > 0 && (
+            <Pressable
+              style={styles.actionBtn}
+              onPress={handleSwapPress}
+              hitSlop={6}
+              testID="pane-swap-button"
+              accessibilityLabel={t('pane.swap_a11y')}
+            >
+              <MaterialIcons name="swap-horiz" size={14} color={C.text2} />
+            </Pressable>
+          )}
           {canSplit && !isVeryNarrow && (
             <Pressable
               style={styles.actionBtn}
@@ -397,6 +435,13 @@ const PaneSlotInner = ({ leafId, tab, onChangeTab, onRemove, onSplitH, onSplitV,
         onSplitH={onSplitH}
         onSplitV={onSplitV}
         currentTab={tab}
+      />
+
+      <PaneSwapPicker
+        visible={swapPickerVisible && swapPeers.length > 1}
+        sourceLeafId={leafId}
+        layoutPreset={swapPreset}
+        onClose={() => setSwapPickerVisible(false)}
       />
 
       {tab === 'ai' && (
