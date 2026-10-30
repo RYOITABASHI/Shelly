@@ -30,3 +30,5 @@ __tests__/** :: topsecretvalue123
 __tests__/** :: synthetic-key.
 __tests__/** :: cached-access-token-from-a-prior-action
 __tests__/** :: _RESULT_TOKEN_ff1
+__tests__/** :: sk-ant-api03-AAAAAAAAAAAAAAAAAAAA
+__tests__/agent-manager-attended-route-memory.test.ts :: GROQ_API_KEY=0
