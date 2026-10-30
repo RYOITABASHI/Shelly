@@ -1549,7 +1549,11 @@ async function runAgentNowInner(
       } else {
         const planText = await readOnDiskPlanSpecText(agentId, runCommand);
         const env = await ladderEnvFromDisk(runCommand);
-        route = decideAttendedRoute({ agent: orchestrationAgent, planText, env });
+        // The stored plan is built by materializeAgentBody from
+        // applyMemoryAndSkills(<stored agent>) — rebuild it the same way so
+        // the comparison includes the baked recall / skill prompt.
+        const planAgent = await applyMemoryAndSkills(storedAgent ?? orchestrationAgent, { rehydrateSkillPlan: true });
+        route = decideAttendedRoute({ agent: orchestrationAgent, planText, env, planAgent });
       }
     } catch (error) {
       route = { route: 'serial', reason: `route check failed: ${error instanceof Error ? error.message : String(error)}` };
@@ -2206,6 +2210,11 @@ const attendedExecutorWait = {
    *  our own: our launch was the refused one. */
   refusalGraceMs: 10_000,
   defaultPollMs: 3_000,
+  /** While our run is live (run_start seen, no run_end yet), the run logs are
+   *  still listed this often: an executor that dies without run_end (crash,
+   *  OOM, native's 30-min kill, progress disabled mid-run) only leaves
+   *  native's receiver "error" log behind. */
+  runningLogPollMs: 15_000,
 };
 
 /** Test-only: shrink the executor-route wait budgets. */
@@ -2222,6 +2231,86 @@ function isPreviousRunActiveRefusal(log: AgentRunLog): boolean {
   if (log.status !== 'skipped') return false;
   const err = (log as AgentRunLog & { errorMessage?: unknown }).errorMessage;
   return log.outputPreview === PREVIOUS_RUN_ACTIVE_MESSAGE || err === PREVIOUS_RUN_ACTIVE_MESSAGE;
+}
+
+/** Written by the executor itself (writeRunLog tags `executor: 'planspec'`);
+ *  native receiver logs (AgentRuntime.kt writeReceiverLog) carry no tag. */
+function isExecutorRunLog(log: AgentRunLog): boolean {
+  return (log as AgentRunLog & { executor?: unknown }).executor === 'planspec';
+}
+
+/**
+ * Which new log is OUR run's result, once our run_start was seen. While our
+ * executor holds the per-agent lock the only logs that can appear are (a) its
+ * own (executor-tagged) log, (b) native's receiver "error" log when our
+ * executor process died without writing one, and (c) concurrent fires'
+ * refusals/skips (lock busy, a straggler alarm for a disabled agent, failure
+ * backoff …) — receiver/executor `skipped` logs, never ours mid-run. So:
+ *  - our executor's own non-refusal log wins;
+ *  - else, only a receiver ERROR counts (our process died) — never a skip.
+ */
+function pickOurExecutorLog(fresh: AgentRunLog[], startedAtMs: number): AgentRunLog | undefined {
+  const after = fresh.filter((l) => l.timestamp >= startedAtMs - 1_000 && !isPreviousRunActiveRefusal(l));
+  const own = after.filter(isExecutorRunLog).at(-1);
+  if (own) return own;
+  return after.filter((l) => !isExecutorRunLog(l) && l.status === 'error').at(-1);
+}
+
+/** Thrown by waitForAttendedExecutorRun; carries OUR run's id when one started. */
+class AttendedExecutorTimeoutError extends Error {
+  constructor(agentId: string, readonly runId: string | undefined) {
+    super(`Timed out waiting for agent "${agentId}" to finish`);
+    this.name = 'AttendedExecutorTimeoutError';
+  }
+}
+
+/** The executor pid encoded in its progress runId
+ *  (`${agentId}-${Date.now()}-${process.pid}-${hex}`, shelly-plan-executor.js
+ *  progressStart). null when the id has another shape. */
+export function executorPidFromRunId(runId: string | undefined, agentId: string): number | null {
+  if (!runId || !runId.startsWith(`${agentId}-`)) return null;
+  const parts = runId.slice(agentId.length + 1).split('-');
+  if (parts.length !== 3 || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1]) || !/^[0-9a-f]+$/.test(parts[2])) return null;
+  const pid = Number(parts[1]);
+  return Number.isSafeInteger(pid) && pid > 1 ? pid : null;
+}
+
+/**
+ * Stops OUR timed-out executor run, and only ours. Uses the live shell $HOME
+ * (generateStopCommand builds its pid path from the JS getHomePath() cache,
+ * which can be the unresolved /data/user/0 alias — then it kills nothing and
+ * still exits 0). Signals the pid only when (1) it is the pid our run_start
+ * recorded, (2) `locks/<id>.pid` still names it (a later alarm run that took
+ * the lock is never touched) and (3) /proc/<pid>/cmdline is this agent's
+ * shelly-plan-executor (pid reuse guard, same identity check STOP-ALL's
+ * haltInflightRunsCommand uses for executors). TERM (the executor kills its
+ * broker children, writes a skipped log, releases the lock), up to ~5 s, then
+ * KILL. Returns 'gone' only when the process is confirmed not running.
+ */
+async function stopOurExecutorRun(
+  agentId: string,
+  runId: string | undefined,
+  runCommand: (cmd: string) => Promise<string>,
+): Promise<'gone' | 'alive' | 'unknown'> {
+  assertSafeAgentId(agentId);
+  const pid = executorPidFromRunId(runId, agentId);
+  if (pid === null) return runId ? 'unknown' : 'gone';
+  const out = await runCommand(
+    `# EXECUTOR_STOP\n` +
+      `f="$HOME/.shelly/agents/locks/${agentId}.pid"; want=${pid}\n` +
+      `is_ours() { case "$(tr '\\000' ' ' < "/proc/$want/cmdline" 2>/dev/null)" in *shelly-plan-executor*"--agent-id ${agentId} "*|*shelly-plan-executor*"--agent-id ${agentId}") return 0;; esac; return 1; }\n` +
+      `held=""; { read -r held < "$f"; } 2>/dev/null\n` +
+      `if ! is_ours; then echo STOP_GONE; exit 0; fi\n` +
+      `if [ "$held" != "$want" ]; then echo STOP_UNSURE; exit 0; fi\n` +
+      `kill -TERM "$want" 2>/dev/null\n` +
+      `i=0; while is_ours && [ $i -lt 5 ]; do sleep 1; i=$((i+1)); done\n` +
+      `is_ours && kill -KILL "$want" 2>/dev/null && sleep 1\n` +
+      `if is_ours; then echo STOP_ALIVE; else echo STOP_DONE; fi`,
+  );
+  const text = String(out || '');
+  if (text.includes('STOP_DONE') || text.includes('STOP_GONE')) return 'gone';
+  if (text.includes('STOP_ALIVE')) return 'alive';
+  return 'unknown';
 }
 
 /** Raw on-disk PlanSpec text ('' when absent), read through the LIVE shell
@@ -2321,6 +2410,7 @@ async function waitForAttendedExecutorRun(
   let refusalSeenAt: number | null = null;
   let refusalLog: AgentRunLog | undefined;
   let poll = 0;
+  let lastRunningLogReadAt = 0;
   for (;;) {
     if (agentsHalted()) throw new AgentsHaltedError();
     let marker: ProgressRunMarker | null = null;
@@ -2335,8 +2425,11 @@ async function waitForAttendedExecutorRun(
     // in progress.prev.jsonl).
     if (ours && marker && marker.runId !== ours.runId) ours.ended = true;
 
-    const readLogsNow = (ours && ours.ended) || (!ours && poll % 5 === 0);
+    const runningLogCheckDue =
+      !!ours && !ours.ended && Date.now() - lastRunningLogReadAt >= attendedExecutorWait.runningLogPollMs;
+    const readLogsNow = (ours && ours.ended) || (!ours && poll % 5 === 0) || runningLogCheckDue;
     if (readLogsNow) {
+      if (runningLogCheckDue) lastRunningLogReadAt = Date.now();
       let fresh: AgentRunLog[] = [];
       try {
         const logs = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
@@ -2347,10 +2440,18 @@ async function waitForAttendedExecutorRun(
         // retry next poll
       }
       const real = fresh.filter((l) => !isPreviousRunActiveRefusal(l));
-      if (ours && ours.ended) {
-        const mine = real.filter((l) => l.timestamp >= ours!.startedAtMs - 1_000).at(-1);
+      if (ours) {
+        // Ended or not: our executor's own log, or native's error log for
+        // our dead executor (see pickOurExecutorLog).
+        const mine = pickOurExecutorLog(fresh, ours.startedAtMs);
         if (mine) return mine;
-      } else if (!ours) {
+        // Ended without an executor log of its own (e.g. a receiver log
+        // racing the run_end): take any real log at/after our start.
+        if (ours.ended) {
+          const any = real.filter((l) => l.timestamp >= ours!.startedAtMs - 1_000).at(-1);
+          if (any) return any;
+        }
+      } else {
         if (real.length) return real.at(-1)!;
         const refusal = fresh.filter(isPreviousRunActiveRefusal).at(-1);
         if (refusal && refusalSeenAt === null) {
@@ -2368,7 +2469,17 @@ async function waitForAttendedExecutorRun(
       ? ours.startedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.runTimeoutMs)
       : opts.launchedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.preStartTimeoutMs);
     if (now > deadline) {
-      throw new Error(`Timed out waiting for agent "${agentId}" to finish`);
+      if (!ours) {
+        // A run may have started in the very last poll window: learn its id
+        // so the caller can stop exactly that process.
+        try {
+          const late = await readProgressRunMarkers(agentId, runCommand);
+          if (late && late.runId !== opts.priorRunId) ours = { ...late };
+        } catch {
+          // keep ours = null
+        }
+      }
+      throw new AttendedExecutorTimeoutError(agentId, ours?.runId);
     }
     poll += 1;
     await delay(opts.pollMs);
@@ -2438,16 +2549,26 @@ async function runAgentViaPlanExecutor(
     if (error instanceof AgentsHaltedError) {
       halted = true;
     } else {
-      if (error instanceof Error && /Timed out waiting/.test(error.message)) {
-        // Never leave a live executor behind the cleared mark / caller cleanup.
+      // Never leave a live executor of ours behind the cleared "user" mark (its
+      // later approvals would turn "event") or a caller's cleanup (a Once run
+      // deletes the agent after this throws). The mark is cleared only once our
+      // executor is confirmed gone; if that cannot be confirmed it stays and
+      // expires by itself (agent-run-origin-registry MAX_USER_RUN_MS).
+      let gone = true;
+      if (error instanceof AttendedExecutorTimeoutError) {
+        let outcome: 'gone' | 'alive' | 'unknown' = 'unknown';
         try {
-          await stopAgent(agentId, runCommand);
-          logWarn('AgentManager', `agent ${agentId}: plan-executor attended run timed out — executor stopped`);
+          outcome = await stopOurExecutorRun(agentId, error.runId, runCommand);
         } catch (stopError) {
           logWarn('AgentManager', `agent ${agentId}: failed to stop timed-out executor`, stopError);
         }
+        gone = outcome === 'gone';
+        logWarn(
+          'AgentManager',
+          `agent ${agentId}: plan-executor attended run timed out (run=${error.runId ?? 'none'}) — executor ${gone ? 'stopped / not running' : `stop unconfirmed (${outcome}); user mark kept until it expires`}`,
+        );
       }
-      markUserRunFinished(agentId);
+      if (gone) markUserRunFinished(agentId);
       throw error;
     }
   }

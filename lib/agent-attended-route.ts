@@ -25,9 +25,13 @@
  *      native only autostarts llama-server when plan.tool.type == 'local'
  *      (AgentRuntime.kt runPlanAgent → ensureLocalLlmServerBeforePlanExecutor);
  *  (d) the ON-DISK PlanSpec is current: it equals a fresh
- *      buildAgentPlanSpec(agent, <the opts materialize would use>) on every
- *      field except generatedAt / prompt / routeDecision (and the isolation
- *      prompt base), which carry the memory recall baked at materialize time.
+ *      buildAgentPlanSpec(planAgent, <the opts materialize would use>) on every
+ *      field except generatedAt, where planAgent is the caller's
+ *      applyMemoryAndSkills(storedAgent) — exactly what materializeAgentBody
+ *      builds the stored plan from. agent.prompt (with its baked recall /
+ *      skill context) also drives plan.tool (auto scoring, secret scan),
+ *      toolLadder, toolLadderExhaustedNote and the autonomous local model, so
+ *      a prompt edit whose re-materialize failed must read as stale.
  *      The plan is NEVER rewritten for this route — alarms read that file, so
  *      widening it here would silently change what every later scheduled fire
  *      does.
@@ -89,20 +93,11 @@ export function storedPlanSpecOpts(agent: Agent, env: LadderEnv): BuildAgentPlan
   };
 }
 
-/** JSON-normalized plan without the fields that legitimately vary between
- *  two materializations of the same agent (time, baked recall text). */
+/** JSON-normalized plan without the one field that legitimately varies
+ *  between two materializations of the same agent (the build time). */
 function normalizedPlan(plan: unknown): unknown {
   const clone = JSON.parse(JSON.stringify(plan)) as Record<string, unknown>;
   delete clone.generatedAt;
-  delete clone.prompt;
-  delete clone.routeDecision;
-  if (isRecord(clone.steps) && Array.isArray(clone.steps.isolation)) {
-    clone.steps.isolation = clone.steps.isolation.map((x) => {
-      if (!isRecord(x)) return x;
-      const { base: _base, ...rest } = x;
-      return rest;
-    });
-  }
   return clone;
 }
 
@@ -133,8 +128,13 @@ export function decideAttendedRoute(args: {
   /** Raw text of `.shelly/agents/plans/plan-agent-<id>.json` ('' when absent). */
   planText: string;
   env: LadderEnv;
+  /** The agent materialize builds the STORED plan from: the caller's
+   *  applyMemoryAndSkills(storedAgent) (recall + skill context baked into
+   *  the prompt). Defaults to `agent` (no memory / no skill). */
+  planAgent?: Agent;
 }): AttendedRoute {
   const { agent, planText, env } = args;
+  const planAgent = args.planAgent ?? agent;
   const steps = normalizeSteps(agent.orchestration);
   if (steps.length < 2) return serial('not a multi-step chain');
   const groupCount = effectiveGroupCount(planParallelGroups(steps).group);
@@ -155,7 +155,7 @@ export function decideAttendedRoute(args: {
   if (!isRecord(plan.agent) || plan.agent.id !== agent.id) return serial('on-disk PlanSpec agent id mismatch');
   let fresh: unknown;
   try {
-    fresh = buildAgentPlanSpec(agent, storedPlanSpecOpts(agent, env));
+    fresh = buildAgentPlanSpec(planAgent, storedPlanSpecOpts(planAgent, env));
   } catch (error) {
     return serial(`could not rebuild the PlanSpec to compare (${error instanceof Error ? error.message : String(error)})`);
   }

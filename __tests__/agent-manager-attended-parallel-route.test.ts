@@ -32,7 +32,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
-import { runAgentNow, __setAttendedExecutorWaitForTests } from '@/lib/agent-manager';
+import { executorPidFromRunId, runAgentNow, __setAttendedExecutorWaitForTests } from '@/lib/agent-manager';
 import { decideAttendedRoute, storedPlanSpecOpts } from '@/lib/agent-attended-route';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { registeredRunOrigin, __resetRunOriginRegistryForTests } from '@/lib/agent-run-origin-registry';
@@ -42,6 +42,8 @@ import { Agent, AgentOrchestrationConfig } from '@/store/types';
 import type { LadderEnv } from '@/lib/agent-escalation-ladder';
 
 const AGENT_ID = 'attended-route-agent';
+/** Shape of a real executor runId: `${agentId}-${Date.now()}-${pid}-${hex}`. */
+const OUR_RUN_ID = `${AGENT_ID}-1700000000000-4242-a1b2c3`;
 
 const GROUPED_STEPS: AgentOrchestrationConfig['steps'] = [
   { instruction: 'summarize part A of the notes', parallelGroup: 'g' },
@@ -126,6 +128,7 @@ interface Harness {
 function makeHarness(opts: {
   planText: string;
   chainLockBusy?: boolean;
+  stopReply?: string;
   onLaunch?: (state: { progress: string[] ; logs: Array<Record<string, unknown>> }) => void;
   onMarkerRead?: (n: number, state: { progress: string[]; logs: Array<Record<string, unknown>> }) => void;
 }): Harness {
@@ -157,9 +160,9 @@ function makeHarness(opts: {
       }
       return state.progress.join('\n');
     }
-    if (cmd.includes('kill -TERM')) {
+    if (cmd.includes('# EXECUTOR_STOP')) {
       originAtStop.push(registeredRunOrigin(AGENT_ID));
-      return '';
+      return opts.stopReply ?? 'STOP_DONE';
     }
     if (cmd.includes(`# run-agent-${AGENT_ID}`)) {
       scriptsSinceLastRun += 1;
@@ -176,10 +179,10 @@ function makeHarness(opts: {
 }
 
 /** The fake executor: rotates progress.jsonl to a new run on launch. */
-const startRun = (state: { progress: string[] }, runId = 'NEW-RUN') => {
+const startRun = (state: { progress: string[] }, runId = OUR_RUN_ID) => {
   state.progress.splice(0, state.progress.length, progressLine({ runId, seq: 1, kind: 'run_start', mode: 'PARALLEL', stepCount: 3 }));
 };
-const endRun = (state: { progress: string[]; logs: Array<Record<string, unknown>> }, runId = 'NEW-RUN', log = executorLog()) => {
+const endRun = (state: { progress: string[]; logs: Array<Record<string, unknown>> }, runId = OUR_RUN_ID, log: Record<string, unknown> = executorLog()) => {
   state.progress.push(progressLine({ runId, seq: 20, kind: 'run_end', status: 'success', durationMs: 5 }));
   state.logs.push(log);
 };
@@ -242,7 +245,7 @@ describe('attended Run now — PlanSpec executor route', () => {
 
     expect(h.markerReads()).toBeGreaterThanOrEqual(6);
     expect(h.originAtMarkerRead.every((o) => o === 'user')).toBe(true);
-    expect(h.commands.some((c) => c.includes('kill -TERM'))).toBe(false);
+    expect(h.commands.some((c) => c.includes('# EXECUTOR_STOP'))).toBe(false);
     expect(handoffCount()).toBe(1);
   });
 
@@ -257,6 +260,55 @@ describe('attended Run now — PlanSpec executor route', () => {
 
     expect(h.originAtStop).toEqual(['user']);
     expect(registeredRunOrigin(AGENT_ID)).toBe('event');
+    // Targets OUR pid (from our run_start's runId) via the LIVE shell $HOME,
+    // re-checking the lock file and the executor cmdline before signalling —
+    // never the JS getHomePath() cache, never a blind kill of the lock holder.
+    const stop = h.commands.find((c) => c.includes('# EXECUTOR_STOP'))!;
+    expect(stop).toContain('want=4242');
+    expect(stop).toContain(`"$HOME/.shelly/agents/locks/${AGENT_ID}.pid"`);
+    expect(stop).not.toContain('/home/shelly-test');
+    expect(stop).toContain('shelly-plan-executor');
+    expect(stop).toContain(`--agent-id ${AGENT_ID}`);
+    expect(stop).toMatch(/\[ "\$held" != "\$want" \]/);
+  });
+
+  it('when the timed-out executor cannot be confirmed stopped, the user mark is kept (it expires by itself)', async () => {
+    restoreWait?.();
+    restoreWait = __setAttendedExecutorWaitForTests({ runTimeoutMs: 40, preStartTimeoutMs: 40 });
+    const agent = makeAgent(GROUPED_STEPS);
+    useAgentStore.getState().setAgents([agent]);
+    const h = makeHarness({ planText: planFor(agent), onLaunch: (s) => startRun(s), stopReply: 'STOP_ALIVE' });
+
+    await expect(runAgentNow(AGENT_ID, h.runCommand, { waitTimeoutMs: 10, pollMs: 5 })).rejects.toThrow(/Timed out waiting/);
+
+    expect(h.originAtStop).toEqual(['user']);
+    expect(registeredRunOrigin(AGENT_ID)).toBe('user');
+  });
+
+  it('an executor that dies without run_end ends the wait on native\'s receiver error log (no false 32-min timeout)', async () => {
+    restoreWait?.();
+    restoreWait = __setAttendedExecutorWaitForTests({ refusalGraceMs: 30, runningLogPollMs: 5 });
+    const agent = makeAgent(GROUPED_STEPS);
+    useAgentStore.getState().setAgents([agent]);
+    const h = makeHarness({
+      planText: planFor(agent),
+      onLaunch: (s) => startRun(s),
+      onMarkerRead: (n, s) => {
+        // A straggler alarm for this agent is refused natively (skipped) —
+        // must NOT be taken as our result.
+        if (n === 1) s.logs.push({ agentId: AGENT_ID, timestamp: Date.now() + 5, status: 'skipped', errorMessage: `agent disabled: ${AGENT_ID}` });
+        // Our executor is OOM-killed: no run_end, only native's error log.
+        if (n === 3) s.logs.push({ agentId: AGENT_ID, timestamp: Date.now() + 10, status: 'error', errorMessage: 'plan-executor exit=137 stderr= stdout=' });
+      },
+    });
+
+    await expect(runAgentNow(AGENT_ID, h.runCommand, { waitTimeoutMs: 10, pollMs: 2 })).resolves.toBeUndefined();
+
+    expect(h.markerReads()).toBeGreaterThanOrEqual(3);
+    expect(h.markerReads()).toBeLessThan(200);
+    expect(useAgentStore.getState().runHistory[AGENT_ID]?.at(-1)?.status).toBe('error');
+    expect(registeredRunOrigin(AGENT_ID)).toBe('event');
+    expect(h.commands.some((c) => c.includes('# EXECUTOR_STOP'))).toBe(false);
   });
 
   it("a concurrent fire's 'previous run still active' log is ignored — completion waits for THIS run's run_end and log", async () => {
@@ -274,7 +326,7 @@ describe('attended Run now — PlanSpec executor route', () => {
         if (n === 4) {
           const log = { ...executorLog('our merged memo'), timestamp: Date.now() - 20 };
           ourLogTs = log.timestamp;
-          endRun(s, 'NEW-RUN', log);
+          endRun(s, OUR_RUN_ID, log);
         }
       },
     });
@@ -391,13 +443,23 @@ describe('decideAttendedRoute (pure gate)', () => {
     }
   });
 
-  it('only the recall-carrying fields (prompt, generatedAt, routeDecision) may differ', () => {
+  it('only generatedAt may differ — a prompt difference reads as stale', () => {
     const agent = makeAgent(GROUPED_STEPS);
     const plan = JSON.parse(planFor(agent));
-    plan.prompt = `${plan.prompt}\n\n(recalled memory notes)`;
     plan.generatedAt = 1;
-    plan.routeDecision = { ...plan.routeDecision, why: 'scored with recall' };
     expect(decideAttendedRoute({ agent, planText: JSON.stringify(plan), env: ENV }).route).toBe('executor');
+    plan.prompt = `${plan.prompt}\n\n(something else)`;
+    const r = decideAttendedRoute({ agent, planText: JSON.stringify(plan), env: ENV });
+    expect(r.route).toBe('serial');
+    expect(r.reason).toMatch(/stale.*prompt/);
+  });
+
+  it('executorPidFromRunId reads the pid out of a real executor runId only', () => {
+    expect(executorPidFromRunId(OUR_RUN_ID, AGENT_ID)).toBe(4242);
+    expect(executorPidFromRunId('NEW-RUN', AGENT_ID)).toBeNull();
+    expect(executorPidFromRunId(`${AGENT_ID}-1700000000000-attended-abc`, AGENT_ID)).toBeNull();
+    expect(executorPidFromRunId(`other-1700000000000-4242-abc`, AGENT_ID)).toBeNull();
+    expect(executorPidFromRunId(undefined, AGENT_ID)).toBeNull();
   });
 
   it('tool:auto per-step drift: the attended router sends a web step to a different provider than plan.tool → serial', () => {
