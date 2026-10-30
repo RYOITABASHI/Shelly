@@ -89,10 +89,12 @@
 → sync: README「Install → Signing-key rotation」「Release Integrity」節に記載済み。
 （旧エントリ「🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)」を本エントリに統合。）
 
-### STOP-ALL が実行中のチェーンを止めない — 未着手 (P1)
+### STOP-ALL が実行中のチェーンを止めない — 実装済み・実機未検証 (P1)
 - **2026-10-30 設計調査で判明**: `haltAllAgents`（`lib/agent-manager.ts` 約 3082 行）はアラームの解除と `.halted` の書き込みだけで、実行中の run を kill しない。attended チェーンは入口（約 1440 行）でしか `halted` を見ず、PlanSpec executor も開始時（`shelly-plan-executor.js` 約 5098 行）だけ。押しても走っている run は最後まで動く。
 - **直し方**: 各ステップ／各グループの直前（両 executor の `nextStepGate` 呼び出し箇所）で `.halted` を確認する。executor は pid を書き、`haltAllAgents` がプロセスグループごと kill する（`generateStopCommand` と同じ方式）。broker の子プロセスは SIGTERM で道連れにする。
 - 下の MONITOR／attended 並列化の前提条件（並列にすると止まらない run が最大 3 本になる）。
+- **2026-10-30 実装（`fix/stop-all-inflight`、独立レビュー2回済み）**: 両 executor がステップ／グループ／枝／最終ディスパッチ直前で `.halted` を確認。`haltInflightRunsCommand` は `.sh`（v73 が `locks/<id>.pid.lockdir/starttime` に /proc 起動時刻を記録）と executor（cmdline）だけを起動時刻照合で特定し、子孫を /proc の ppid でたどって TERM→1 秒後に起動時刻を再照合して KILL。llama-server とその idle watcher は対象外。生きている pid の lock は消さない。executor の SIGTERM は skipped を書いて exit 0、native は `.halted` 中の終了を skipped 扱い（失敗カウント・通知なし）。承認待ち・registry lock 待ちも halt で抜ける。executor v13 / スクリプト v73。
+- **実機で確認すること**: attended と alarm の両方で STOP-ALL → 子プロセス（curl/node/broker）が残らない・最終アクションが出ない・`locks/<id>.pid` が消える・RESUME 後に普通に動く。`starttime` が実際に書かれるか（toybox）。local LLM の run 中に押しても llama-server と watcher が生き残り、idle で unload されるか。複数アクションの承認待ち中に押して後続アクションが出ないか。phantom process 数。
 
 ### マルチエージェント MONITOR ペイン（CCTV 風）+ attended チェーンの実並列化 — 設計済み・未実装 (P2)
 - **2026-10-30 プロダクトオーナー提案**: 各エージェント／サブエージェントを監視カメラ風に映し、スイッチャー（CH1–4 / GRID / AUTO）と配線図で「誰が何をして、どうつながり、何ができるか」を見せる。並列で動くことが前提（「並列で作業しないとダメ」）。UI デモ: https://claude.ai/artifact/MAZXttXTnD5kecgZmsDfpv
