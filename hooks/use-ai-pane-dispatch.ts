@@ -64,7 +64,7 @@ import {
   notifyWidgetAgentRegistered,
 } from '@/lib/widget-agent-registration';
 import { firstRunPassedNote, shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
-import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion } from '@/lib/agent-slot-fill';
+import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion, parseAutonomousChoice } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
@@ -2132,7 +2132,10 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                     ),
                   },
                 ).draft;
-                if (mergedDraft.llmAutonomousIntent === true) mergedDraft.autonomous = true;
+                // Re-review 2026-10-30: in this rescue the model only sees the bare
+                // answer, so it must not upgrade an ambiguous reply ("はい") to
+                // unattended — require the user's own words to choose it.
+                if (mergedDraft.llmAutonomousIntent === true && parseAutonomousChoice(userText) === true) mergedDraft.autonomous = true;
                 const slotFillCtx = {
                   agentVaultPath: useSettingsStore.getState().settings.agentVaultPath,
                   agentTopicFolder: useSettingsStore.getState().settings.agentTopicFolder,
