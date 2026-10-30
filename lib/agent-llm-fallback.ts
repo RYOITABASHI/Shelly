@@ -704,6 +704,7 @@ export function mergeLlmExtractionIntoDraft(
     const suggestion = suggestToolForDraft(extraction.prompt, {
       mentionText: draft.rawText,
       orchestrated: (merged.orchestrationSteps?.length ?? 0) >= 2,
+      steps: merged.orchestrationSteps,
     });
     m.prompt = extraction.prompt;
     m.tool = suggestion.tool;

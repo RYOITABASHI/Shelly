@@ -71,7 +71,7 @@ import type { ParsedAgentDraft } from './agent-nl-parser';
 // normalization is deterministic code's job).
 import { manualScheduleLabel, normalizeBrowserPaneUrl, parseSchedule } from './agent-nl-parser';
 import type { AgentAction, SocialConnectorMeta } from '@/store/types';
-import { suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
+import { allLocalStepSuggestion, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 // Reused verbatim, NOT re-implemented: this is the one deterministic
 // destination resolver in the codebase, and a mirrored copy here would
 // silently drift from detectSocialPost()'s own matching rules the first time
@@ -1691,6 +1691,20 @@ export function mergeConversationalExtractionIntoDraft(
     }
     // An explicitly empty `[]` — what the prompt asks for on a single-step
     // request — is neither applied nor rejected. Nothing was refused.
+  }
+
+  // 2026-10-30: a chain whose every step is pinned to the local LLM gets a
+  // local agent-level tool (plan.tool — see allLocalStepSuggestion). The
+  // prompt branch above picked the tool before the steps were merged, so the
+  // rule is applied here, on the final step list.
+  const allLocal = touched ? allLocalStepSuggestion(merged.orchestrationSteps) : undefined;
+  if (allLocal && (merged.tool?.type !== 'local' || !merged.toolExplicit)) {
+    const m = next();
+    if (m.tool?.type !== 'local') {
+      m.tool = allLocal.tool;
+      m.toolLabel = allLocal.label ?? toolChoiceToLabel(allLocal.tool);
+    }
+    m.toolExplicit = true;
   }
 
   if (!touched) {

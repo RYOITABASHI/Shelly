@@ -18,7 +18,7 @@
  */
 import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
-import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
+import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, pruneIneffectiveParallelGroups, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
 import enLocale from './i18n/locales/en';
@@ -2831,7 +2831,9 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // and keeps an ordinary provider mention on the existing model-routing path.
   // detectApiCallSteps also leaves the final step untouched because the PlanSpec
   // executor intentionally consults step.apiCall on non-final steps only.
-  const orchestrationSteps = detectedSteps ? detectApiCallSteps(detectedSteps) : undefined;
+  // 2026-10-30: dropping a trailing step above can leave a parallel group
+  // with one member or a marker on the new final step — prune again.
+  const orchestrationSteps = detectedSteps ? detectApiCallSteps(pruneIneffectiveParallelGroups(detectedSteps)) : undefined;
   // 2026-10-15: a SINGLE-clause request that explicitly names the tool to use
   // ("パープレで最新のLLM論文をリサーチして要約して", "research X with
   // Perplexity") pins the agent-level tool to it — the same TOOL_MENTIONS

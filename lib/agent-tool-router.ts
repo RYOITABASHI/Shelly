@@ -141,20 +141,8 @@ export function suggestToolForDraft(
   // (ensureLocalLlmServerBeforePlanExecutor) — a keyword-scored cloud
   // agent-level tool would leave the executor's local steps with no server
   // (and keeps decideAttendedRoute from choosing the parallel executor route).
-  if (opts.orchestrated && opts.steps && opts.steps.length >= 2) {
-    const tools = opts.steps.map((s) => (typeof s === 'string' || s.apiCall ? undefined : s.tool));
-    if (tools.every((t) => t?.type === 'local')) {
-      const first = tools[0] as Extract<ToolChoice, { type: 'local' }>;
-      const sameModel = tools.every((t) => (t as { model?: string }).model === first.model);
-      const tool: ToolChoice = sameModel ? { ...first } : { type: 'local' };
-      return {
-        tool,
-        label: toolChoiceToLabel(tool),
-        reason: 'Every step was pinned to the local LLM',
-        explicit: true,
-      };
-    }
-  }
+  const allLocal = opts.orchestrated ? allLocalStepSuggestion(opts.steps) : undefined;
+  if (allLocal) return allLocal;
   if (!opts.orchestrated) {
     const pinned = detectExplicitToolUsage(prompt) ?? detectExplicitToolUsage(opts.mentionText);
     const lower = `${prompt}\n${opts.mentionText ?? ''}`.toLowerCase();
@@ -169,6 +157,21 @@ export function suggestToolForDraft(
     }
   }
   return suggestTool(prompt);
+}
+
+/** The local agent-level tool for a chain of >= 2 steps that are ALL pinned
+ *  to the local LLM (see suggestToolForDraft), else undefined. Exported for
+ *  the draft paths that set the steps after the tool (conversational merge). */
+export function allLocalStepSuggestion(
+  steps: ReadonlyArray<string | { tool?: ToolChoice; apiCall?: unknown }> | null | undefined,
+): ToolSuggestion | undefined {
+  if (!steps || steps.length < 2) return undefined;
+  const tools = steps.map((s) => (typeof s === 'string' || s.apiCall ? undefined : s.tool));
+  if (!tools.every((t) => t?.type === 'local')) return undefined;
+  const first = tools[0] as Extract<ToolChoice, { type: 'local' }>;
+  const sameModel = tools.every((t) => (t as { model?: string }).model === first.model);
+  const tool: ToolChoice = sameModel ? { ...first } : { type: 'local' };
+  return { tool, label: toolChoiceToLabel(tool), reason: 'Every step was pinned to the local LLM', explicit: true };
 }
 
 function textForSecretScan(agent: Agent): string {

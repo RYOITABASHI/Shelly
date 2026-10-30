@@ -142,11 +142,11 @@ describe('English markers', () => {
 
   it('"at the same time:" leading work, trailing tool phrases stripped, "finally" ends the group', () => {
     const steps = detectToolPinnedSteps(
-      'At the same time: summarize the tech news with Perplexity, summarize the sports news with Perplexity, and finally combine both with the local LLM',
+      'At the same time: summarize news about tech with Perplexity, summarize news about sports with Perplexity, and finally combine both with the local LLM',
     );
     expect(steps).toEqual([
-      { instruction: 'summarize the tech news', tool: expect.objectContaining({ type: 'perplexity' }), parallelGroup: 'p1' },
-      { instruction: 'summarize the sports news', tool: expect.objectContaining({ type: 'perplexity' }), parallelGroup: 'p1' },
+      { instruction: 'summarize news about tech', tool: expect.objectContaining({ type: 'perplexity' }), parallelGroup: 'p1' },
+      { instruction: 'summarize news about sports', tool: expect.objectContaining({ type: 'perplexity' }), parallelGroup: 'p1' },
       { instruction: 'combine both', tool: { type: 'local' } },
     ]);
   });

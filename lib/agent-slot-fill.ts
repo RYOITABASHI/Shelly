@@ -297,6 +297,7 @@ export function applySlotAnswer(
     const suggestion = suggestToolForDraft(mergedPrompt, {
       mentionText: draft.rawText,
       orchestrated: (draft.orchestrationSteps?.length ?? 0) >= 2,
+      steps: draft.orchestrationSteps,
     });
     return {
       draft: {

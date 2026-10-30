@@ -825,19 +825,23 @@ function applyToolScopes(clauses: ReadonlyArray<string | Omit<ScopedClause, 'too
 // bogus step 「同時に」 and no parallelGroup at all — there was no natural-
 // language way to author a fan-out group. Rules (explicit marker ONLY; an
 // unmarked list is never guessed to be parallel):
-//   - a marker clause (「同時に」「並行して」「並列で」「一緒に」「それぞれ」, "in
-//     parallel", "at the same time", "simultaneously", "each of these") is
-//     never a step. 「同時に」「並行して」「並列で」 and the EN phrases may also
-//     lead a clause that carries work (「同時に春について書いて」, "In parallel:
-//     write about spring"); 「一緒に」「それぞれ」 count only as a clause of their
-//     own, since leading real work they are ordinary words (「それぞれ要約して」);
+//   - a marker clause (「同時に」「並行して」「並列で」「並列に」, "in parallel",
+//     "at the same time", "simultaneously", "each of these") is never a step,
+//     and may also lead a clause that carries work (「同時に春について書いて」,
+//     "In parallel: write about spring"). 「それぞれ」 (per object) and 「一緒に」
+//     (together) are NOT markers (review 2026-10-30);
 //   - the work clauses right after the marker join one group with a sanitized
 //     id (p1, p2, … — PARALLEL_GROUP_ID_RE);
 //   - the group ends at a sequencing word (「最後に」「その後」「それから」「次に」,
 //     then / finally / after that), at a clause that uses earlier output
 //     (stepReferencesPriorOutput, 「3つを」「全部を」, "the three"), at a
-//     delivery clause (post / save / notify …), at another marker, and never
-//     takes the chain's final step;
+//     transform verb (翻訳/要約/校正/… — it most likely works on the previous
+//     sibling's output) unless that clause names its own topic (「〜について」,
+//     a URL, "about …"), at a delivery clause (post / save / notify …), at
+//     another marker, and never takes the chain's final step. When in doubt
+//     the clause stays sequential, which is always safe;
+//   - a sequencing-only clause (「その後、」 "finally,") is not a step either;
+//     it marks the next clause as sequenced;
 //   - members beyond MAX_PARALLEL_BRANCHES keep the marker so the summary can
 //     say they run one after another; planParallelGroups severs them (it stays
 //     the single authority on what runs in parallel);
@@ -848,7 +852,7 @@ const PARALLEL_LEAD_RE =
   /^(?:(?:以下を|次の(?:こと|作業)を)\s*)?(?:同時に|並行して|並列で|並列に)\s*[:：、,]?\s*|^(?:(?:do|run)\s+)?(?:(?:all\s+)?(?:of\s+)?(?:these|the\s+following)\s+)?(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously)\s*[:,]?\s*|^(?:(?:do|run)\s+)?(?:for\s+)?each\s+of\s+(?:these|the\s+following)\s*[:：]\s*/i;
 /** Markers that count only as a clause of their own. */
 const PARALLEL_ONLY_RE =
-  /^(?:(?:以下を|次の(?:こと|作業)を|これらを)\s*)?(?:同時に|並行して|並列で|並列に|一緒に|それぞれ)\s*(?:(?:実行|処理)して|やって)?$|^(?:(?:do|run)\s+)?(?:(?:all\s+)?(?:of\s+)?(?:these|the\s+following|this)\s+)?(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously)$|^(?:(?:do|run)\s+)?(?:for\s+)?each\s+of\s+(?:these|the\s+following)(?:\s+(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously))?$/i;
+  /^(?:(?:以下を|次の(?:こと|作業)を|これらを)\s*)?(?:同時に|並行して|並列で|並列に)\s*(?:(?:実行|処理)して|やって)?$|^(?:(?:do|run)\s+)?(?:(?:all\s+)?(?:of\s+)?(?:these|the\s+following|this)\s+)?(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously)$|^(?:(?:do|run)\s+)?(?:for\s+)?each\s+of\s+(?:these|the\s+following)(?:\s+(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously))?$/i;
 
 /** The clause's work text after a leading parallel marker: '' for a marker-
  *  only clause, the remainder for a leading marker, null for no marker. */
@@ -874,14 +878,28 @@ const LEADING_AND_RE = /^and\s+/i;
 const SIBLING_REFERENCE_RE =
   /(?:[0-9０-９一二三四五六七八九十両]+\s*(?:つ|個|件|本|種類)|全部|すべて|全て|両方)\s*(?:を|とも|の(?:結果|文章|内容|回答|出力))|\b(?:the\s+(?:two|three|four|five)|all\s+(?:of\s+)?(?:them|these|those|three|two)|both)\b/i;
 
-function endsParallelGroup(step: ScopedClause): boolean {
+/** A clause that is nothing but a sequencing word (「その後、」 "finally,"). */
+const SEQUENCE_ONLY_CLAUSE_RE =
+  /^(?:まず(?:は)?|最初に|次に|その後|それから|続いて|最後に|そして|(?:and\s+)?(?:then|finally|lastly|after\s+that|afterwards|next))$/i;
+
+/** Verbs that transform existing text — a sibling with one of these most
+ *  likely works on the PREVIOUS sibling's output (「記事を書いて、翻訳して」). */
+const TRANSFORM_VERB_RE =
+  /要約|翻訳|英訳|和訳|校正|添削|推敲|比較|比べ|評価|整理|まとめ|直し|直す|リライト|書き直|タイトルを\s*(?:付|つ)け|返信案|レビュー|清書|\b(?:summari[sz]e[sd]?|summary|translat(?:e|es|ed|ion)|proofread|compare|evaluate|rewrite|re-write|edit|polish|title|review|shorten|refine)\b/i;
+/** The clause names its own independent source/topic, so a transform verb in
+ *  it does not imply it works on a sibling (「春のニュースについて要約して」). */
+const OWN_TOPIC_RE = /について|に関して|に関する|https?:\/\/|\babout\b|\bregarding\b/i;
+
+function endsParallelGroup(step: ScopedClause, opts: { first?: boolean } = {}): boolean {
   return (
     !!step.seqBefore ||
     !!step.startsGroup ||
     SEQUENCE_LEAD_RE.test(step.instruction) ||
     stepReferencesPriorOutput(step.instruction) ||
     SIBLING_REFERENCE_RE.test(step.instruction) ||
-    ACTION_LIKE_CLAUSE_RE.test(step.instruction)
+    ACTION_LIKE_CLAUSE_RE.test(step.instruction) ||
+    // The first member has no sibling before it to depend on.
+    (!opts.first && TRANSFORM_VERB_RE.test(step.instruction) && !OWN_TOPIC_RE.test(step.instruction))
   );
 }
 
@@ -892,7 +910,7 @@ function assignParallelGroups(steps: ScopedClause[]): Array<ScopedClause & { par
   for (let i = 0; i < out.length; i++) {
     if (!out[i].startsGroup) continue;
     const first = { ...out[i], startsGroup: false };
-    if (i === out.length - 1 || endsParallelGroup(first)) continue;
+    if (i === out.length - 1 || endsParallelGroup(first, { first: true })) continue;
     ordinal += 1;
     const id = `p${ordinal}`;
     out[i].parallelGroup = id;
@@ -911,7 +929,7 @@ function assignParallelGroups(steps: ScopedClause[]): Array<ScopedClause & { par
  *  the local LLM". Same token set as TOOL_MENTIONS (lib/agent-tool-mentions.ts). */
 const TOOL_TOKEN_SRC = String.raw`パープレ(?:キシティ)?|perplexity|ローカル\s*llm|local\s*llm|ローカル|\bcodex\b|\bgemini\b`;
 const JA_TOOL_LEAD_RE = new RegExp(
-  String.raw`^(?:(?:全部|すべて|全て)\s*)?(${TOOL_TOKEN_SRC})(?:\s*の?\s*(?:api|モデル))?\s*(?:で(?!の|は|も)|にて|を\s*(?:使って|使い|用いて|利用して)|経由で)\s*[、,]?\s*`,
+  String.raw`^((?:全部|すべて|全て)\s*)?(${TOOL_TOKEN_SRC})(?:\s*の?\s*(?:api|モデル))?\s*(?:で(?!の|は|も)|にて|を\s*(?:使って|使い|用いて|利用して)|経由で)\s*[、,]?\s*`,
   'i',
 );
 const EN_TOOL_LEAD_RE = new RegExp(
@@ -932,14 +950,36 @@ const EN_TOOL_TAIL_RE = new RegExp(
  */
 export function stripToolPhrase(instruction: string, tool: ToolChoice | undefined): string {
   if (!tool || EXPLICIT_API_CALL_RE.test(instruction)) return instruction;
-  for (const re of [JA_TOOL_LEAD_RE, EN_TOOL_LEAD_RE, EN_TOOL_TAIL_RE]) {
-    const m = re.exec(instruction);
-    if (!m || matchToolMention(m[1])?.type !== tool.type) continue;
-    const rest = (instruction.slice(0, m.index) + instruction.slice(m.index + m[0].length)).trim();
-    if (rest.length > 1) return rest;
+  const ja = JA_TOOL_LEAD_RE.exec(instruction);
+  if (ja && matchToolMention(ja[2])?.type === tool.type) {
+    const remainder = instruction.slice(ja[0].length).trim();
+    // Review fix: 「Geminiで作った画像を説明して」 — the phrase modifies a noun
+    // (past attributive 〜た/〜だ + noun), it is not the instrument. Keep it.
+    if (remainder.length > 1 && !JA_PAST_ATTRIBUTIVE_RE.test(remainder)) {
+      return `${ja[1] ?? ''}${remainder}`.trim();
+    }
+    return instruction;
+  }
+  const lead = EN_TOOL_LEAD_RE.exec(instruction);
+  if (lead && matchToolMention(lead[1])?.type === tool.type) {
+    const remainder = instruction.slice(lead[0].length).trim();
+    return remainder.length > 1 ? remainder : instruction;
+  }
+  const tail = EN_TOOL_TAIL_RE.exec(instruction);
+  if (tail && matchToolMention(tail[1])?.type === tool.type) {
+    const before = instruction.slice(0, tail.index).trim();
+    // "the article written with Gemini" — a past participle right before the
+    // phrase means it describes the object, not the instrument.
+    if (before.length > 1 && !EN_PAST_PARTICIPLE_END_RE.test(before)) return before;
   }
   return instruction;
 }
+
+/** 「作った画像」「書いたコード」「調べた結果」: a short verb ending in た/だ
+ *  immediately followed by a noun at the start of the remainder. */
+const JA_PAST_ATTRIBUTIVE_RE = /^[぀-ゟ一-鿿]{0,6}?[ただ](?=[一-鿿゠-ヿA-Za-z])/;
+const EN_PAST_PARTICIPLE_END_RE =
+  /\b(?:\w+ed|written|made|done|drawn|taken|given|built|shown|seen|known|chosen|spoken|driven|grown|begun|run|got|gotten|found|told|said)$/i;
 
 /** Split into clauses, recording which ones a sequencing boundary ("then")
  *  preceded — CLAUSE_BOUNDARY consumes the word itself. */
@@ -984,8 +1024,16 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
   // work clause as the start of a group.
   const marked: Array<Omit<ScopedClause, 'tool'>> = [];
   let markerPending = false;
+  let seqPending = false;
   for (const c of clauses) {
     const work = c.instruction.replace(LEADING_AND_RE, '');
+    // A sequencing-only clause (「その後、」) is not a step either; it sequences
+    // the next clause.
+    if (SEQUENCE_ONLY_CLAUSE_RE.test(work.replace(/[。．.、,！!:：]+$/, '').trim())) {
+      seqPending = true;
+      markerPending = false;
+      continue;
+    }
     const rest = parallelMarkerRemainder(work);
     if (rest === '') {
       markerPending = true;
@@ -994,10 +1042,11 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
     const instruction = rest ?? c.instruction;
     marked.push({
       instruction,
-      ...(c.seqBefore ? { seqBefore: true } : {}),
+      ...(c.seqBefore || seqPending ? { seqBefore: true } : {}),
       ...(rest !== null || markerPending ? { startsGroup: true } : {}),
     });
     markerPending = false;
+    seqPending = false;
   }
   // 2026-10-30: a tool-only clause is folded into the clauses it scopes (see
   // applyToolScopes), and a leading sequence marker (「最後に」) is dropped from
@@ -1017,20 +1066,34 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
       ...(s.parallelGroup ? { parallelGroup: s.parallelGroup } : {}),
     };
   });
-  // A marker whose run did not survive planParallelGroups (a single member
-  // after the final-step rule, e.g. 「同時に、Aして、Bして」 where B is final) is
-  // removed so nothing on disk claims a group that never runs. Members beyond
-  // the branch cap keep the shared id (see the rule list above).
-  const effective = new Set(planParallelGroups(steps).group.filter((g): g is string => g !== undefined));
-  for (const s of steps) {
-    if (s.parallelGroup && !effective.has(s.parallelGroup)) delete s.parallelGroup;
-  }
+  const pruned = pruneIneffectiveParallelGroups(steps);
 
-  const anyToolMatched = steps.some((s) => s.tool !== undefined);
-  const anyGroup = steps.some((s) => s.parallelGroup !== undefined);
+  const anyToolMatched = pruned.some((s) => s.tool !== undefined);
+  const anyGroup = pruned.some((s) => s.parallelGroup !== undefined);
   if (!anyToolMatched && !anyGroup) return null;
 
-  return steps;
+  return pruned;
+}
+
+/**
+ * Remove parallelGroup markers that never take effect: a group that does not
+ * survive planParallelGroups (a single member after the final-step rule, e.g.
+ * 「同時に、Aして、Bして」 where B is final) and any marker on the final step.
+ * Members severed only by the branch cap keep the shared id (see the rule list
+ * above). Callers that drop steps afterwards (lib/agent-nl-parser.ts drops a
+ * trailing 「通知して」 / save step) must run this again. Returns new objects;
+ * string steps pass through.
+ */
+export function pruneIneffectiveParallelGroups<T extends string | AgentOrchestrationStep>(steps: readonly T[]): T[] {
+  const effective = new Set(
+    planParallelGroups(steps.map((s) => normalizeStep(s))).group.filter((g): g is string => g !== undefined),
+  );
+  return steps.map((s, i) => {
+    if (typeof s === 'string' || s.parallelGroup === undefined) return s;
+    if (effective.has(s.parallelGroup) && i !== steps.length - 1) return s;
+    const { parallelGroup: _dropped, ...rest } = s as AgentOrchestrationStep;
+    return rest as T;
+  });
 }
 
 /**
