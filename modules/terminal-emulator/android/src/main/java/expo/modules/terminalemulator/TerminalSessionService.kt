@@ -42,6 +42,9 @@ class TerminalSessionService : Service() {
         const val ACTION_UPDATE_NOTIFICATION = "expo.modules.terminalemulator.UPDATE_NOTIFICATION"
         const val ACTION_STOP = "expo.modules.terminalemulator.STOP"
         const val ACTION_RUN_AGENT = "expo.modules.terminalemulator.RUN_AGENT"
+        // Continuous mode: the Stop action on a loop's ongoing notification
+        // (ContinuousLoop.postRunning). Carries EXTRA_AGENT_ID.
+        const val ACTION_STOP_CONTINUOUS = "expo.modules.terminalemulator.STOP_CONTINUOUS"
         // "Keep ChatGPT connected" (CodexRemoteHost.kt).
         const val ACTION_CODEX_REMOTE_START = "expo.modules.terminalemulator.CODEX_REMOTE_START"
         const val ACTION_CODEX_REMOTE_DISCONNECT = "expo.modules.terminalemulator.CODEX_REMOTE_DISCONNECT"
@@ -165,6 +168,23 @@ class TerminalSessionService : Service() {
                 updateNotification(info)
                 return START_STICKY
             }
+            ACTION_STOP_CONTINUOUS -> {
+                val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
+                Log.i(TAG, "Continuous-loop Stop action for ${agentId ?: "-"}")
+                // Started by a notification action PendingIntent (getService),
+                // so no startForeground is required. The kill waits ~1s: off
+                // the main thread, then drop the service if nothing else runs.
+                Thread {
+                    if (!agentId.isNullOrBlank()) {
+                        runCatching { ContinuousLoop.requestStop(applicationContext, agentId) }
+                            .onFailure { Log.e(TAG, "Continuous-loop stop failed for $agentId", it) }
+                    }
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (!hasProtectedWork()) stopSelf(startId)
+                    }
+                }.start()
+                return if (hasProtectedWork()) START_STICKY else START_NOT_STICKY
+            }
             ACTION_RUN_AGENT -> {
                 val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
                 if (agentId.isNullOrBlank()) {
@@ -181,6 +201,15 @@ class TerminalSessionService : Service() {
                     // native trigger — so it must fail closed here too rather than
                     // rely on each caller remembering to check upstream.
                     Log.i(TAG, "RUN_AGENT for $agentId suppressed: globally halted (STOP-ALL)")
+                    // Continuous mode: record why the loop did not continue (the
+                    // agent stays enabled so RESUME brings it back).
+                    Thread {
+                        runCatching {
+                            if (ContinuousLoop.configFor(applicationContext, agentId) != null) {
+                                ContinuousLoop.finalizeStop(applicationContext, agentId, ContinuousStopReason.HALTED)
+                            }
+                        }
+                    }.start()
                     if (!hasProtectedWork()) {
                         startForegroundWithNotification(null)
                         stopForegroundAndMark()
@@ -216,6 +245,34 @@ class TerminalSessionService : Service() {
                     return START_STICKY
                 }
                 val scheduled = intervalMs > 0 || !cron.isNullOrBlank()
+                // Continuous mode: an alarm-fired iteration (interval, no cron)
+                // of an agent whose json carries `continuous`. Stop conditions
+                // are evaluated natively BEFORE the run; a stop is recorded and
+                // never re-armed.
+                val continuousConfig = if (!manual && intervalMs > 0 && cron.isNullOrBlank()) {
+                    runCatching { ContinuousLoop.configFor(applicationContext, agentId) }.getOrNull()
+                } else null
+                if (continuousConfig != null) {
+                    val gate = runCatching {
+                        ContinuousLoop.gateBeforeRun(applicationContext, agentId, continuousConfig, circuitBreakerFailures(agentId))
+                    }.getOrElse {
+                        Log.e(TAG, "Continuous-loop gate failed for $agentId; stopping the loop (fail closed)", it)
+                        ContinuousLoop.Gate.Stop(ContinuousStopReason.USER_STOP)
+                    }
+                    if (gate is ContinuousLoop.Gate.Stop) {
+                        Log.i(TAG, "Continuous iteration for $agentId not started: ${gate.reason.code}")
+                        runCatching { ContinuousLoop.finalizeStop(applicationContext, agentId, gate.reason) }
+                            .onFailure { Log.e(TAG, "Failed to record continuous stop for $agentId", it) }
+                        if (!hasProtectedWork()) {
+                            startForegroundWithNotification(null)
+                            stopForegroundAndMark()
+                            stopSelf(startId)
+                            return START_NOT_STICKY
+                        }
+                        startForegroundWithNotification(null)
+                        return START_STICKY
+                    }
+                }
                 val notificationTriggered = intent.getBooleanExtra(EXTRA_NOTIFICATION_TRIGGER, false)
                 val widgetAgent = if (manual) WidgetAgentRepository.scheduledById(applicationContext, agentId) else null
                 if (manual && widgetAgent == null) {
@@ -490,6 +547,27 @@ class TerminalSessionService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to retire one-shot $agentId", e)
                 }
+            } else if (!widgetManual && intervalMs > 0 && cron.isNullOrBlank() &&
+                runCatching { ContinuousLoop.configFor(applicationContext, agentId) != null }.getOrDefault(false)
+            ) {
+                // Continuous mode: the same circuit breaker counts this
+                // iteration, then the loop either re-arms at now + cooldown
+                // (exact when permitted) or records why it stopped. The config
+                // is re-read so an edit made during the run applies.
+                try {
+                    val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))
+                    val config = ContinuousLoop.configFor(applicationContext, agentId)
+                    if (config == null) {
+                        // No longer continuous (edited / deleted mid-run): fall
+                        // back to the ordinary interval re-arm guard.
+                        if (shouldRearm) AgentAlarmScheduler.scheduleNextIfAgentEnabled(applicationContext, agentId, intervalMs, cron)
+                        ContinuousLoop.cancelRunningNotification(applicationContext, agentId)
+                    } else {
+                        ContinuousLoop.afterRun(applicationContext, agentId, config, circuitBreakerFailures(agentId), !shouldRearm)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to settle continuous iteration for $agentId", e)
+                }
             } else if (intervalMs > 0 || !cron.isNullOrBlank()) {
                 val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))
                 if (shouldRearm) {
@@ -641,6 +719,9 @@ class TerminalSessionService : Service() {
             true
         }
     }
+
+    private fun circuitBreakerFailures(agentId: String): Int =
+        getSharedPreferences(CIRCUIT_BREAKER_PREFS, Context.MODE_PRIVATE).getInt(agentId, 0)
 
     @Synchronized
     private fun recordScheduledRunOutcome(agentId: String, success: Boolean): Boolean {

@@ -33,6 +33,7 @@ const store: PollStore = {
   upsertLiveRuns: (id, runs) => useAgentStore.getState().upsertLiveRuns(id, runs),
   setLiveRunSavedPath: (id, runId, p) => useAgentStore.getState().setLiveRunSavedPath(id, runId, p),
   getLiveRuns: () => useAgentStore.getState().liveRuns,
+  setLiveLoop: (id, view) => useAgentStore.getState().setLiveLoop(id, view),
 };
 
 let mounted = 0;

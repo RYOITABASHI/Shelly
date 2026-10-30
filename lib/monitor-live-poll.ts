@@ -18,6 +18,7 @@
 import { parseProgressRuns, type MonitorRun } from './agent-progress';
 import { agentRunOpenPath } from './agent-run-output';
 import { isRunActive } from './monitor-live';
+import { parseContinuousCheckpoint, type ContinuousCheckpointView } from './agent-continuous';
 import type { Agent } from '@/store/types';
 import type { LiveRunEntry } from '@/store/agent-store';
 
@@ -41,6 +42,10 @@ export interface PollTarget {
   knownSig: string | null;
   readPrev: boolean;
   readRunLog: boolean;
+  /** Continuous loop agents only: also stat logs/<id>/checkpoint.json and
+   *  read it when its signature differs from this one. */
+  readCheckpoint?: boolean;
+  knownCheckpointSig?: string | null;
 }
 
 export interface PollAgentResult {
@@ -51,6 +56,10 @@ export interface PollAgentResult {
   progress?: string;
   prev?: string;
   runLog?: string;
+  /** checkpoint.json `mtime.size` / 'none' (loop agents only). */
+  checkpointSig?: string | null;
+  /** Present only when the checkpoint signature changed. */
+  checkpoint?: string;
 }
 
 /** The single shell command for one poll. Agent ids are validated (they are
@@ -66,6 +75,10 @@ export function buildPollCommand(targets: readonly PollTarget[]): string {
     `L="$HOME/.shelly/agents/logs"; set --; ` +
     `for i in ${safe.map((t) => t.agentId).join(' ')}; do ` +
     `[ -f "$L/$i/progress.jsonl" ] && set -- "$@" "$L/$i/progress.jsonl"; done; ` +
+    (safe.some((t) => t.readCheckpoint)
+      ? `for i in ${safe.filter((t) => t.readCheckpoint).map((t) => t.agentId).join(' ')}; do ` +
+        `[ -f "$L/$i/checkpoint.json" ] && set -- "$@" "$L/$i/checkpoint.json"; done; `
+      : '') +
     `S=""; [ $# -gt 0 ] && S="$(stat -c '|%n %Y.%s' "$@" 2>/dev/null)"; `;
   const parts: string[] = [prelude];
   for (const t of safe) {
@@ -78,6 +91,17 @@ export function buildPollCommand(targets: readonly PollTarget[]): string {
       `else printf '${MARK} P ${t.agentId} %s data\\n' "$s"; [ -f "$f" ] && cat "$f" 2>/dev/null; printf '\\n'; fi; `;
     if (t.readPrev) {
       s += `printf '${MARK} V ${t.agentId}\\n'; cat "$d/progress.prev.jsonl" 2>/dev/null; printf '\\n'; `;
+    }
+    if (t.readCheckpoint) {
+      // Continuous mode: same signature trick as progress.jsonl — the body is
+      // read only when checkpoint.json changed since the last poll.
+      const knownC = t.knownCheckpointSig && /^[0-9.a-z]+$/.test(t.knownCheckpointSig) ? t.knownCheckpointSig : '-';
+      s +=
+        `c="$d/checkpoint.json"; ` +
+        `case "$S" in *"|$c "*) r="\${S#*"|$c "}"; cs="\${r%%[!0-9.]*}";; *) cs="";; esac; ` +
+        `[ -n "$cs" ] || cs=none; ` +
+        `if [ "$cs" = "${knownC}" ]; then printf '${MARK} C ${t.agentId} %s same\\n' "$cs"; ` +
+        `else printf '${MARK} C ${t.agentId} %s data\\n' "$cs"; [ -f "$c" ] && cat "$c" 2>/dev/null; printf '\\n'; fi; `;
     }
     if (t.readRunLog) {
       // Run logs are named <epoch seconds>.json; the glob sorts them, so the
@@ -93,7 +117,7 @@ export function buildPollCommand(targets: readonly PollTarget[]): string {
 
 export function parsePollOutput(stdout: string): Record<string, PollAgentResult> {
   const out: Record<string, PollAgentResult> = {};
-  let cur: { r: PollAgentResult; field: 'progress' | 'prev' | 'runLog' } | null = null;
+  let cur: { r: PollAgentResult; field: 'progress' | 'prev' | 'runLog' | 'checkpoint' } | null = null;
   let buf: string[] = [];
   const flush = () => {
     if (cur) cur.r[cur.field] = buf.join('\n');
@@ -113,6 +137,9 @@ export function parsePollOutput(stdout: string): Record<string, PollAgentResult>
     if (type === 'P') {
       r.sig = a && a !== 'none' ? a : 'none';
       if (b === 'data') cur = { r, field: 'progress' };
+    } else if (type === 'C') {
+      r.checkpointSig = a && a !== 'none' ? a : 'none';
+      if (b === 'data') cur = { r, field: 'checkpoint' };
     } else if (type === 'V') cur = { r, field: 'prev' };
     else if (type === 'L') cur = { r, field: 'runLog' };
   }
@@ -124,14 +151,17 @@ export function parsePollOutput(stdout: string): Record<string, PollAgentResult>
 export interface PollMemo {
   sigs: Map<string, string>;
   prevRead: Set<string>;
+  /** checkpoint.json signatures (continuous loop agents). Optional so memos
+   *  built before continuous mode keep working. */
+  checkpointSigs?: Map<string, string>;
 }
 
 export function createPollMemo(): PollMemo {
-  return { sigs: new Map(), prevRead: new Set() };
+  return { sigs: new Map(), prevRead: new Set(), checkpointSigs: new Map() };
 }
 
 export interface PollState {
-  agents: readonly Pick<Agent, 'id' | 'lastRun'>[];
+  agents: readonly (Pick<Agent, 'id' | 'lastRun'> & Partial<Pick<Agent, 'continuous'>>)[];
   runningAgentIds: readonly string[];
   liveRuns: Record<string, LiveRunEntry[]>;
 }
@@ -154,6 +184,7 @@ export function selectPollTargets(state: PollState, memo: PollMemo): PollTarget[
   [...state.agents]
     .sort((a, b) => (b.lastRun ?? 0) - (a.lastRun ?? 0))
     .forEach((a) => add(a.id));
+  const loops = new Set(state.agents.filter((a) => !!a.continuous).map((a) => a.id));
   return ids.map((agentId) => {
     const last = latest(state.liveRuns[agentId]);
     return {
@@ -162,6 +193,9 @@ export function selectPollTargets(state: PollState, memo: PollMemo): PollTarget[
       readPrev: !memo.prevRead.has(agentId),
       readRunLog:
         !!last && !!last.run.endedAt && !last.savedPath && (last.savedPathTries ?? 0) < SAVED_PATH_MAX_TRIES,
+      ...(loops.has(agentId)
+        ? { readCheckpoint: true, knownCheckpointSig: memo.checkpointSigs?.get(agentId) ?? null }
+        : {}),
     };
   });
 }
@@ -188,6 +222,8 @@ export interface PollStore {
   upsertLiveRuns: (agentId: string, runs: MonitorRun[]) => void;
   setLiveRunSavedPath: (agentId: string, runId: string, savedPath: string | null) => void;
   getLiveRuns: () => Record<string, LiveRunEntry[]>;
+  /** Continuous mode (optional): checkpoint view per loop agent; null clears. */
+  setLiveLoop?: (agentId: string, view: ContinuousCheckpointView | null) => void;
 }
 
 export function applyPollResults(
@@ -205,6 +241,11 @@ export function applyPollResults(
       if (runs.length) store.upsertLiveRuns(t.agentId, runs);
     }
     if (r.sig) memo.sigs.set(t.agentId, r.sig);
+    if (t.readCheckpoint && r.checkpointSig) {
+      (memo.checkpointSigs ??= new Map()).set(t.agentId, r.checkpointSig);
+      if (r.checkpointSig === 'none') store.setLiveLoop?.(t.agentId, null);
+      else if (r.checkpoint !== undefined) store.setLiveLoop?.(t.agentId, parseContinuousCheckpoint(r.checkpoint));
+    }
     if (r.progress !== undefined) {
       const runs = parseProgressRuns(r.progress);
       if (runs.length) store.upsertLiveRuns(t.agentId, runs);

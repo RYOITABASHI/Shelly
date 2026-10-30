@@ -154,7 +154,7 @@ describe('shelly-plan-executor.js live progress stream (v12)', () => {
 
     const events = readEvents(home);
     assertCommonShape(events);
-    expect(events[0]).toMatchObject({ mode: 'SERIAL', stepCount: 3, executorVersion: 13 });
+    expect(events[0]).toMatchObject({ mode: 'SERIAL', stepCount: 3, executorVersion: 14 });
     expect(events.slice(1, 4).map((e) => [e.kind, e.stepIndex, e.state])).toEqual([
       ['branch_state', 0, 'STANDBY'], ['branch_state', 1, 'STANDBY'], ['branch_state', 2, 'STANDBY'],
     ]);

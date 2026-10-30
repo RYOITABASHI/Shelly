@@ -6,6 +6,7 @@ import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { autonomousWebConsentCovers, consentSignalsFor, credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
 import { detectExplicitToolUsage } from './agent-tool-mentions';
+import { continuousExcludesPaidApi, guardContinuousTool, isPaidApiTool } from './agent-continuous';
 import {
   scoreRoutes,
   detectRouteSignals,
@@ -196,6 +197,26 @@ function onDeviceFallbackTool(tool: ToolChoice): ToolChoice {
  * carried in from a prior step's result still forces the on-device route.
  */
 export function resolveAgentRoute(agent: Agent, routeTextOverride?: string): AgentRouteResolution {
+  const resolved = resolveAgentRouteBase(agent, routeTextOverride);
+  // Continuous mode at a ¥0 daily budget (lib/agent-continuous.ts): whatever
+  // the route picked, a loop never runs on an API-key backend — local LLM, or
+  // Codex for a web-mandatory task. Every other agent is untouched.
+  if (!continuousExcludesPaidApi(agent) || !isPaidApiTool(resolved.tool)) return resolved;
+  const routeText = routeTextOverride && routeTextOverride.trim() ? routeTextOverride : agent.prompt;
+  const tool = guardContinuousTool(agent, resolved.tool, detectRouteSignals(routeText).needsWeb);
+  return {
+    tool,
+    decision: {
+      ...resolved.decision,
+      route: routeForTool(tool),
+      toolType: tool.type,
+      toolLabel: toolChoiceToLabel(tool),
+      why: `${resolved.decision.why} (continuous mode: ${resolved.tool.type} is a paid API and the daily budget is ¥0 → ${tool.type === 'local' ? 'local LLM' : 'Codex'}.)`,
+    },
+  };
+}
+
+function resolveAgentRouteBase(agent: Agent, routeTextOverride?: string): AgentRouteResolution {
   const routeText = routeTextOverride && routeTextOverride.trim() ? routeTextOverride : agent.prompt;
   const secret = scanForSecrets(textForSecretScan(agent));
   if (secret.hasSecret) {

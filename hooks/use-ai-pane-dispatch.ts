@@ -56,7 +56,8 @@ import type { Agent } from '@/store/types';
 import { resolveConfirmedToolAndRunOn, suggestTool } from '@/lib/agent-tool-router';
 import { consentSignalsFor } from '@/lib/agent-credential-policy';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
-import { parseAgentNL, detectFreeTextAgentDeleteIntent, isManualTriggerDraft } from '@/lib/agent-nl-parser';
+import { parseAgentNL, detectFreeTextAgentDeleteIntent, isContinuousDraft, isManualTriggerDraft } from '@/lib/agent-nl-parser';
+import { formatContinuousSummary, normalizeContinuousConfig } from '@/lib/agent-continuous';
 import { resolveAgentOutputBase } from '@/lib/agent-executor';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import {
@@ -793,9 +794,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                   scheduleLabel:
                     draft.schedule && draft.schedule !== 'once'
                       ? humanizeCronSchedule(draft.schedule, noticeLocale)
-                      : isManualTriggerDraft(draft)
-                        ? (noticeLocale === 'ja' ? ja : en)['agentcard.sched_manual']
-                        : draft.scheduleLabel,
+                      : isContinuousDraft(draft)
+                        ? formatContinuousSummary(draft.continuous, noticeLocale)
+                        : isManualTriggerDraft(draft)
+                          ? (noticeLocale === 'ja' ? ja : en)['agentcard.sched_manual']
+                          : draft.scheduleLabel,
                 },
                 noticeLocale,
               ).catch((notifyErr) => {
@@ -815,7 +818,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             draft,
             // 2026-10-30: manual-only never fires on its own, so it is not
             // remotely approvable — device-only (Shelly chat), by design.
-            fireable: hasFireableSchedule(draft) && !isManualTriggerDraft(draft),
+            // A continuous loop is device-only too: it runs unattended for
+            // hours, so its registration is confirmed in Shelly chat only.
+            fireable: hasFireableSchedule(draft) && !isManualTriggerDraft(draft) && !isContinuousDraft(draft),
           });
         }
       };
@@ -4130,6 +4135,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               : undefined,
           notificationTrigger: confirmed.notificationTrigger,
           startNotBefore: confirmed.startNotBefore,
+          // Continuous mode: defaults (50 iterations / 24h / ¥0) are filled
+          // by createAgent / normalizeContinuousConfig.
+          ...(confirmed.continuous ? { continuous: normalizeContinuousConfig({ ...confirmed.continuous, loopStartedAt: Date.now() }) } : {}),
         };
         const persisted = await persistAgentDraft({
           editingAgentId,
@@ -4210,7 +4218,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             ? humanizeCronSchedule(confirmed.schedule, noticeLocale)
             : (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
-              : (confirmed.manualTrigger ? tFor(noticeLocale, 'agentplan.manual_schedule_description') : 'no schedule'));
+              : (confirmed.continuous
+                ? formatContinuousSummary(confirmed.continuous, noticeLocale)
+                : (confirmed.manualTrigger ? tFor(noticeLocale, 'agentplan.manual_schedule_description') : 'no schedule')));
           const updatedContent = tFor(
             noticeLocale,
             'agentplan.updated_notice',
@@ -4232,7 +4242,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
 
         // 2026-10-30: a manual-only agent is registered and kept (schedule
         // null), never run-and-discarded like an ephemeral one-shot.
-        if (!confirmed.manualTrigger && isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
+        if (!confirmed.manualTrigger && !confirmed.continuous && isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           const ephemeralRunningContent = `▶ Running "${created.name}"…`;
@@ -4346,7 +4356,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             ? humanizeCronSchedule(confirmed.schedule, noticeLocale)
             : (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
-              : (confirmed.manualTrigger ? tFor(noticeLocale, 'agentplan.manual_schedule_description') : 'no schedule'));
+              : (confirmed.continuous
+                ? formatContinuousSummary(confirmed.continuous, noticeLocale)
+                : (confirmed.manualTrigger ? tFor(noticeLocale, 'agentplan.manual_schedule_description') : 'no schedule')));
           // 2026-07-23: only a chat-native draft (not AgentConfirmCard) gets
           // the correction-window hint + reference — see the doc comment on
           // isChatNativeDraft/originalDraftSnapshot above and

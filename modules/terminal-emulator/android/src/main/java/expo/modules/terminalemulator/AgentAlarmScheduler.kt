@@ -464,6 +464,10 @@ object AgentAlarmScheduler {
         // retaining an old entry would resurrect the agent if the flag is later
         // enabled, and makes delete/pause cleanup dependent on unrelated state.
         forgetScheduleForBoot(context, agentId)
+        // Continuous mode: a loop with no armed alarm is not running — drop its
+        // ongoing "iteration N · next hh:mm" notification (pause / delete /
+        // STOP-ALL / circuit breaker all funnel through here).
+        ContinuousLoop.cancelRunningNotification(context, agentId)
         Log.i(TAG, "Cancelled agent $agentId (service + legacy)")
     }
 

@@ -1128,6 +1128,34 @@ export interface Agent {
    *  the run, so a kill/reboot mid-run can never re-fire it). Cleared on an
    *  explicit re-schedule. */
   oneShotFiredAt?: number | null;
+  /** Continuous mode ("止めるまで続けて" / "keep going until I stop it",
+   *  lib/agent-continuous.ts): present = this agent is a loop of short
+   *  unattended runs, re-armed natively `cooldownMs` after each run ends until
+   *  a stop condition holds (ContinuousStopPolicy.kt). Persisted with the
+   *  agent json, which is where native reads it; `schedule` stays null. Absent
+   *  = an ordinary agent (unchanged behaviour). */
+  continuous?: AgentContinuousConfig;
+}
+
+/** See Agent.continuous. Defaults (lib/agent-continuous.ts
+ *  normalizeContinuousConfig) are filled at registration, so a persisted
+ *  config always carries its limits. */
+export interface AgentContinuousConfig {
+  /** Delay between the end of one iteration and the next (min 1 min). */
+  cooldownMs: number;
+  /** Stop after this many iterations (default 50). */
+  maxIterations: number;
+  /** Stop once this much wall time passed since loopStartedAt (default 24h). */
+  maxWallMs: number;
+  /** "終わるまで" / "until it's done": stop when the model reports DONE twice
+   *  in a row. Absent/false = only the limits or the user stop it. */
+  goalCheck?: boolean;
+  /** Daily paid-API cap in yen. 0 / absent (the default) = paid API steps are
+   *  not allowed at all (local LLM and Codex only). */
+  dailyBudgetJpy?: number;
+  /** Epoch ms this loop was started (registration / re-enable). A new value
+   *  starts a fresh loop: iteration counters and the checkpoint reset. */
+  loopStartedAt?: number;
 }
 
 export interface AgentRunLog {

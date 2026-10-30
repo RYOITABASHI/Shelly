@@ -38,6 +38,7 @@ import {
 import { isSafeConnectorId, socialConnectorEnvPrefix } from './social-connectors';
 import { redactSecretsText } from './redact-secrets';
 import { isReversibleActionType } from './agent-reversible-action-types';
+import { applyContinuousProviderPolicy, PAID_API_TOOL_TYPES } from './agent-continuous';
 
 // MODEL-001 Phase A shadow instrumentation (read-only, observational only —
 // see lib/model-router/shadow.ts and lib/model-router/wiring.ts). This wires
@@ -747,7 +748,15 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // with it before signalling), and dispatch_agent_action refuses to dispatch
 // once $HOME/.shelly/agents/.halted exists. Kept in lockstep with
 // AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 73;
+// v74 (2026-10-30, continuous mode Increment 1): for a continuous agent
+// (Agent.continuous) an UNATTENDED run is one loop iteration — the previous
+// checkpoint's summary/next action + the SUMMARY/NEXT(/DONE) output contract
+// lead the prompt, the control block is stripped from the result before
+// dispatch, and the finish trap writes logs/<id>/checkpoint.json. All three go
+// through `node ~/.shelly-plan-executor.js --continuous-op …` (one
+// implementation for both executors); any failure there leaves the run
+// untouched. Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 74;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1214,6 +1223,8 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
    *  non-orchestrated single run or a chain's first step → bakes an empty
    *  string, making the duplicate check a no-op (byte-identical to today). */
   priorStepContent?: string } = {}): string {
+  // Continuous mode at a ¥0 budget: no API-key tool / step pin reaches the script.
+  agent = applyContinuousProviderPolicy(agent);
   const { home, tmpDir, locksDir, logsDir, envFile, dmPairingsFile } = paths();
   const agentId = agent.id;
   const resultFile = `${tmpDir}/agent-result-${agentId}.md`;
@@ -1926,6 +1937,17 @@ AGENT_AUTONOMOUS=${agent.autonomous === true ? '1' : '0'}
 # "@agent run <name>" of a notification-triggered agent, which NEVER sets
 # that env var — see AGENT_SCRIPT_VERSION's v57 history comment above.
 AGENT_HAS_NOTIFICATION_TRIGGER=${agent.notificationTrigger ? '1' : '0'}
+# v74 (continuous mode): only an unattended run of a continuous agent is a loop
+# iteration (an attended "Run now" never touches the checkpoint).
+AGENT_CONTINUOUS=${agent.continuous ? '1' : '0'}
+CONTINUOUS_RUN=0
+if [ "$AGENT_CONTINUOUS" = "1" ] && [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; then
+  CONTINUOUS_RUN=1
+fi
+CONTINUOUS_CONTROL_FILE='${tmpDir}/continuous-control-'"$AGENT_ID"'.json'
+CONTINUOUS_CODEX_TURNS=${tool.type === 'cli' ? '1' : '0'}
+CONTINUOUS_PAID_USD=${PAID_API_TOOL_TYPES.has(tool.type) ? '0.05' : '0'}
+rm -f "$CONTINUOUS_CONTROL_FILE" 2>/dev/null || true
 
 START_TIME=$(date +%s)
 
@@ -2086,10 +2108,22 @@ finish() {
   if [ "$code" -ne 0 ]; then
     write_failure_log "$code" "\${BASH_LINENO[0]:-unknown}" || true
   fi
+  if [ "\${CONTINUOUS_RUN:-0}" = "1" ]; then
+    continuous_record "$code" || true
+  fi
   mirror_driver_audit_to_app_private || true
   mirror_driver_audit_to_sdcard || true
   cleanup
   return 0
+}
+
+# v74 (continuous mode): write this iteration's checkpoint (status from this
+# run's own run log, else the exit code). Best-effort, never fails the run.
+continuous_record() {
+  shelly_node "$HOME/.shelly-plan-executor.js" --continuous-op record --home "$HOME" --agent-id "$AGENT_ID" \\
+    --run-started-ms "\${START_TIME}000" --exit-code "$1" --control-in "$CONTINUOUS_CONTROL_FILE" \\
+    --result-in "\${RESULT_CONTENT_FILE:-\${RESULT_FILE:-/dev/null}}" \\
+    --codex-turns "\${CONTINUOUS_CODEX_TURNS:-0}" --paid-usd "\${CONTINUOUS_PAID_USD:-0}" >/dev/null 2>&1 || true
 }
 
 mirror_driver_audit_to_app_private() {
@@ -6124,6 +6158,21 @@ fi
 if [ "\${ISOLATE_RESEARCH_PROMPT:-0}" = "1" ]; then
   NOTIFICATION_CONTEXT=""
 fi
+# v74 (continuous mode): the previous iteration's summary / next action and the
+# SUMMARY/NEXT(/DONE) output contract lead every prompt this run writes (they
+# all start with CURRENT_DATETIME_CONTEXT). A missing/corrupt checkpoint gives
+# the iteration-1 block; a node failure gives no block at all.
+if [ "\${CONTINUOUS_RUN:-0}" = "1" ] && [ "\${ISOLATE_RESEARCH_PROMPT:-0}" != "1" ]; then
+  CONTINUOUS_CONTEXT_FILE='${tmpDir}/continuous-context-'"$AGENT_ID"'.txt'
+  rm -f "$CONTINUOUS_CONTEXT_FILE" 2>/dev/null || true
+  shelly_node "$HOME/.shelly-plan-executor.js" --continuous-op context --home "$HOME" --agent-id "$AGENT_ID" --out "$CONTINUOUS_CONTEXT_FILE" >/dev/null 2>&1 || true
+  if [ -s "$CONTINUOUS_CONTEXT_FILE" ]; then
+    CONTINUOUS_CONTEXT=$(head -c 4096 "$CONTINUOUS_CONTEXT_FILE" 2>/dev/null || true)
+    CURRENT_DATETIME_CONTEXT="\${CURRENT_DATETIME_CONTEXT:-}
+\${CONTINUOUS_CONTEXT}"
+  fi
+  rm -f "$CONTINUOUS_CONTEXT_FILE" 2>/dev/null || true
+fi
 LOCAL_CONTEXT_FILE="$TMP_DIR/local-context-$AGENT_ID.txt"
 # Studio context (source-registry dedup + recent drafts + content-studio/Obsidian
 # git state) is only built for content-pipeline agents. For ad-hoc @agent tasks
@@ -6314,6 +6363,11 @@ if [ -f "$RESULT_CONTENT_FILE" ] && [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BA
     else
       rm -f "$charlimit_tmp"
     fi
+  fi
+  # v74 (continuous mode): strip the SUMMARY/NEXT/DONE block before anything
+  # is previewed or delivered; the parsed block feeds the checkpoint.
+  if [ "\${CONTINUOUS_RUN:-0}" = "1" ]; then
+    shelly_node "$HOME/.shelly-plan-executor.js" --continuous-op strip --in "$RESULT_CONTENT_FILE" --control-out "$CONTINUOUS_CONTROL_FILE" >/dev/null 2>&1 || true
   fi
   PREVIEW=$(result_preview "$RESULT_FILE")
   STATUS="success"

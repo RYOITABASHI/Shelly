@@ -24,6 +24,7 @@ import { redactSecretsText } from './redact-secrets';
 import enLocale from './i18n/locales/en';
 import jaLocale from './i18n/locales/ja';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
+import { continuousTextLocale, formatContinuousSummary, parseContinuousIntent, stripContinuousPhrases } from './agent-continuous';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -259,6 +260,14 @@ export interface ParsedAgentDraft {
    *  says so in one line instead of asking "いつ実行しますか？", and
    *  hasDraftAssumptions treats it like any other default (one human confirm). */
   triggerAssumed?: boolean;
+  /** Continuous mode (2026-10-30, lib/agent-continuous.ts): the utterance asked
+   *  the agent to keep going — 「止めるまで続けて」「1時間ごとに続けて」
+   *  「終わるまで」 / "keep going until I stop it" / "until it's done". The
+   *  agent registers with `schedule: null` and runs as a native loop; the
+   *  limits (50 iterations / 24h / no paid API) are filled with their defaults
+   *  at registration and shown in the summary line, never asked. Only
+   *  meaningful while `schedule` is still null (see isContinuousDraft). */
+  continuous?: { cooldownMs: number; goalCheck?: boolean };
   /** The user's own words for the final save action ("メモとして保存") when a
    *  trailing save clause was absorbed into the agent's 'draft' action instead
    *  of becoming a work step. The underlying action stays 'draft'; this only
@@ -279,6 +288,18 @@ export interface ParsedAgentDraft {
  * flag alone) means every existing code path that SETS a schedule (slot-fill,
  * draft patch, LLM merge) supersedes manual without having to know about it.
  */
+/** true when this draft registers a continuous loop (see
+ *  ParsedAgentDraft.continuous): no schedule / notification trigger since set. */
+export function isContinuousDraft(
+  draft: Pick<ParsedAgentDraft, 'continuous' | 'schedule' | 'notificationTrigger'>,
+): boolean {
+  return (
+    !!draft.continuous &&
+    draft.schedule === null &&
+    !(draft.notificationTrigger && draft.notificationTrigger.packageNames.length > 0)
+  );
+}
+
 export function isManualTriggerDraft(
   draft: Pick<ParsedAgentDraft, 'trigger' | 'schedule' | 'suggestedFrequency' | 'notificationTrigger'>,
 ): boolean {
@@ -2644,7 +2665,13 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     };
   }
 
-  const sched = parseSchedule(rawText);
+  // Continuous mode: 「止めるまで続けて」/「30分おきに続けて」/"keep going …".
+  // Its phrases (including an interval like 「1時間ごとに」) are removed before
+  // the schedule / prompt / step parsing below, so the interval becomes the
+  // loop's cooldown instead of a cron and never lands in the task text.
+  const continuousIntent = parseContinuousIntent(rawText);
+  const workText = continuousIntent ? stripContinuousPhrases(rawText, continuousIntent) || rawText : rawText;
+  const sched = parseSchedule(workText);
 
   // social-post (2026-07-22): checked before the generic detectAction() scan
   // so a confidently-resolved single-connector match always wins. Three
@@ -2724,16 +2751,16 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // 2026-10-30: a leading 「名前: X、」 / 「<label>: 」 prefix names the agent; it
   // is never part of the task (prompt) nor a step.
   const namePrefix = extractNamePrefix(rawText);
-  const derivedPrompt = derivePrompt(rawText, sched);
+  const derivedPrompt = derivePrompt(workText, sched);
   const promptPrefix = extractNamePrefix(derivedPrompt);
   const prompt = promptPrefix ? promptPrefix.rest : derivedPrompt;
   const memory = detectMemory(rawText);
   // Trailing 「結果をメモとして保存して」 on a 'draft' agent: the save IS the
   // action — remember the user's word for it and drop it from the steps below.
-  const saveActionLabel = action.type === 'draft' ? trailingSaveClauseLabel(prompt || rawText) ?? undefined : undefined;
+  const saveActionLabel = action.type === 'draft' ? trailingSaveClauseLabel(prompt || workText) ?? undefined : undefined;
   // Phase 4: detect an explicit multi-step instruction (≥ 2 ordered parts) via
   // an explicit sequence marker (まず/次に/… , first/then/…, numbered list).
-  const explicitSteps = parseStepsFromText(prompt || rawText);
+  const explicitSteps = parseStepsFromText(prompt || workText);
   // Phase 6: when there's no EXPLICIT marker, fall back to the narrower
   // tool-mention detector (plain て-form/comma chain naming a tool per clause,
   // e.g. "パープレで集めて、ローカルLLMで要約して、Xに投稿して"). Checked only when
@@ -2754,7 +2781,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   let detectedSteps: Array<string | AgentOrchestrationStep> | undefined =
     explicitSteps.length >= 2
       ? tagStepsWithToolMentions(explicitSteps)
-      : detectToolPinnedSteps(prompt || rawText) ?? undefined;
+      : detectToolPinnedSteps(prompt || workText) ?? undefined;
   // Drop a trailing pure-delivery step ("通知して") when the resolved action is
   // already 'notify' — the action performs that delivery AFTER the chain, so
   // keeping the step as its own model call just makes the last step regenerate
@@ -2817,26 +2844,33 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // schedule signal (a time, a frequency, a weekday, a recurrence/one-shot
   // cue, a notification-trigger phrase) keeps the old behavior — those still
   // need the schedule question.
-  const manualTrigger = sched.manual === true || isNoScheduleUtterance(rawText, sched);
+  const manualTrigger = !continuousIntent && (sched.manual === true || isNoScheduleUtterance(rawText, sched));
+  // A loop never also carries a cron / suggested time: the intent wins.
+  const continuousLabel = continuousIntent
+    ? formatContinuousSummary({ cooldownMs: continuousIntent.cooldownMs, goalCheck: continuousIntent.goalCheck }, continuousTextLocale(rawText))
+    : null;
 
   return {
     name: namePrefix
       ? deriveNameFromLabel(namePrefix.name)
-      : deriveName(sched.oneShotStrip ? removeSpans(rawText, sched.oneShotStrip) || rawText : rawText),
+      : deriveName(sched.oneShotStrip ? removeSpans(workText, sched.oneShotStrip) || workText : workText),
     prompt,
     orchestrationSteps,
-    schedule: sched.schedule,
-    scheduleConfident: sched.confident,
-    scheduleLabel: manualTrigger ? manualScheduleLabel(rawText) : sched.label,
+    schedule: continuousIntent ? null : sched.schedule,
+    scheduleConfident: continuousIntent ? true : sched.confident,
+    scheduleLabel: continuousLabel ?? (manualTrigger ? manualScheduleLabel(rawText) : sched.label),
     ...(manualTrigger ? { trigger: 'manual' as const, ...(sched.manual ? {} : { triggerAssumed: true }) } : {}),
+    ...(continuousIntent
+      ? { continuous: { cooldownMs: continuousIntent.cooldownMs, ...(continuousIntent.goalCheck ? { goalCheck: true } : {}) } }
+      : {}),
     ...(saveActionLabel ? { saveActionLabel } : {}),
-    suggestedTime: sched.suggestedTime
+    suggestedTime: !continuousIntent && sched.suggestedTime
       ? { hour: sched.suggestedTime.hour, minute: sched.suggestedTime.minute }
       : undefined,
-    suggestedFrequency: sched.suggestedFrequency,
-    suggestedDowList: sched.suggestedDowList,
-    scheduleAssumed: sched.assumedTimeOfDay || undefined,
-    oneShotImplicit: sched.oneShotImplicit || undefined,
+    suggestedFrequency: continuousIntent ? undefined : sched.suggestedFrequency,
+    suggestedDowList: continuousIntent ? undefined : sched.suggestedDowList,
+    scheduleAssumed: (!continuousIntent && sched.assumedTimeOfDay) || undefined,
+    oneShotImplicit: (!continuousIntent && sched.oneShotImplicit) || undefined,
     action,
     actions,
     tool: suggestion.tool,
@@ -2851,7 +2885,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     // concept, and leaving startNotBefore populated risks a nonsensical
     // next-fire-line in lib/agent-plan-summary.ts (decodeCron('once') isn't a
     // real cron shape). Narrowing-only: every other schedule shape unaffected.
-    startNotBefore: sched.schedule === 'once' || isOneShotSchedule(sched.schedule) ? undefined : startNotBefore || undefined,
+    startNotBefore: continuousIntent || sched.schedule === 'once' || isOneShotSchedule(sched.schedule) ? undefined : startNotBefore || undefined,
     rawText,
   };
 }

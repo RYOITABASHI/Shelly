@@ -7,6 +7,7 @@ import { Agent } from '@/store/types';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { logInfo, logWarn } from './debug-logger';
 import { ONE_SHOT_GRACE_MS, oneShotAtMs, planOneShotArm, resolveOneShotAt } from './agent-oneshot';
+import { CONTINUOUS_FIRST_FIRE_DELAY_MS, isContinuousAgent, normalizeContinuousConfig } from './agent-continuous';
 
 // A day-of-week field of a single day OR a comma list (e.g. "1,5" = Mon & Fri).
 const DOW_LIST_RE = /^\d+(,\d+)*$/;
@@ -347,7 +348,32 @@ export function isScheduleMissed(
   return { missed, expectedAt };
 }
 
+/**
+ * Continuous mode (lib/agent-continuous.ts): when the next iteration of an
+ * enabled loop should fire — a few seconds out for a fresh loop, otherwise one
+ * cooldown after the last recorded run (startup repair / RESUME never shortcut
+ * the cooldown). After that native owns the loop: each run re-arms the next at
+ * end-of-run + cooldown.
+ */
+export function continuousFirstTriggerMs(agent: Pick<Agent, 'continuous' | 'lastRun'>, now: number = Date.now()): number {
+  const cfg = normalizeContinuousConfig(agent.continuous);
+  const soonest = now + CONTINUOUS_FIRST_FIRE_DELAY_MS;
+  const lastRun = typeof agent.lastRun === 'number' && agent.lastRun > (cfg.loopStartedAt ?? 0) ? agent.lastRun : null;
+  return lastRun === null ? soonest : Math.max(soonest, lastRun + cfg.cooldownMs);
+}
+
 export async function installSchedule(agent: Agent, now: number = Date.now()): Promise<void> {
+  // Continuous loop: an interval alarm with no cron. intervalMs = cooldown is
+  // what TerminalSessionService recognises (together with the agent json's
+  // `continuous`) as a loop iteration.
+  if (!agent.schedule && isContinuousAgent(agent)) {
+    if (!agent.enabled) return;
+    const cfg = normalizeContinuousConfig(agent.continuous);
+    const triggerAt = continuousFirstTriggerMs(agent, now);
+    logInfo('AgentScheduler', `installSchedule: arming continuous loop ${agent.id} at ${triggerAt} (cooldown ${cfg.cooldownMs}ms)`);
+    await TerminalEmulator.scheduleAgent(agent.id, cfg.cooldownMs, triggerAt);
+    return;
+  }
   if (!agent.schedule) return;
 
   // One-shot ('@once <epochMs>', lib/agent-oneshot.ts): a single exact alarm,

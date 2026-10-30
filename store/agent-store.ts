@@ -8,6 +8,7 @@ import { Agent, AgentRunLog } from './types';
 import type { MonitorInput } from '@/lib/monitor-source';
 import type { MonitorTeam } from '@/lib/monitor-team';
 import type { MonitorRun } from '@/lib/agent-progress';
+import type { ContinuousCheckpointView } from '@/lib/agent-continuous';
 
 export type MonitorView = 'grid' | 'single' | 'map';
 export type MonitorSpeed = 1 | 2 | 4;
@@ -136,6 +137,13 @@ interface AgentState {
   /** Record a run-log lookup: the saved path, or null = looked, none yet. */
   setLiveRunSavedPath: (agentId: string, runId: string, savedPath: string | null) => void;
   clearLiveRuns: () => void;
+  /** Continuous mode: the latest checkpoint.json view per loop agent (iteration
+   *  + stop reason), read by the MONITOR poller only when the file changed.
+   *  Transient (no persist). */
+  liveLoops: Record<string, ContinuousCheckpointView>;
+  /** null removes the entry (checkpoint gone / unreadable). Same object when
+   *  nothing changed, so idle polls do not re-render. */
+  setLiveLoop: (agentId: string, view: ContinuousCheckpointView | null) => void;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -268,4 +276,25 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return { liveRuns: { ...state.liveRuns, [agentId]: next } };
     }),
   clearLiveRuns: () => set({ liveRuns: {} }),
+  liveLoops: {},
+  setLiveLoop: (agentId, view) =>
+    set((state) => {
+      const prev = state.liveLoops[agentId];
+      if (!view) {
+        if (!prev) return state;
+        const { [agentId]: _removed, ...rest } = state.liveLoops;
+        return { liveLoops: rest };
+      }
+      if (
+        prev &&
+        prev.iteration === view.iteration &&
+        prev.stoppedReason === view.stoppedReason &&
+        prev.stoppedAt === view.stoppedAt &&
+        prev.nextAction === view.nextAction &&
+        prev.startedAt === view.startedAt
+      ) {
+        return state;
+      }
+      return { liveLoops: { ...state.liveLoops, [agentId]: view } };
+    }),
 }));

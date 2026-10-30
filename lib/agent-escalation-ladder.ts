@@ -25,6 +25,7 @@ import { resolveAgentRoute } from './agent-tool-router';
 import { autonomousPinRefusalReason, autonomousWebConsentCovers, consentSignalsFor, resolveForAutonomous } from './agent-credential-policy';
 import { detectRouteSignals } from './agent-router-scoring';
 import { taskTextForLanguage } from './agent-output-language';
+import { continuousExcludesPaidApi, filterContinuousLadder } from './agent-continuous';
 
 export interface LadderEnv {
   /** Cerebras free-tier key present (Settings → API Keys). */
@@ -120,6 +121,20 @@ function dedupe(tools: ToolChoice[]): ToolChoice[] {
  * behavior for every non-orchestrated caller.
  */
 export function resolveEscalationLadder(
+  agent: Agent,
+  env: LadderEnv,
+  routeTextOverride?: string,
+): EscalationLadder {
+  const ladder = resolveEscalationLadderBase(agent, env, routeTextOverride);
+  // Continuous mode at a ¥0 daily budget: local → Codex only (no API-key
+  // backend at any rung). See lib/agent-continuous.ts.
+  if (!continuousExcludesPaidApi(agent)) return ladder;
+  const tools = dedupe(filterContinuousLadder(agent, ladder.tools));
+  if (tools.length === ladder.tools.length && tools.every((t, i) => t === ladder.tools[i])) return ladder;
+  return { ...ladder, tools, why: `${ladder.why} (continuous mode: paid API backends excluded at a ¥0 daily budget.)` };
+}
+
+function resolveEscalationLadderBase(
   agent: Agent,
   env: LadderEnv,
   routeTextOverride?: string,

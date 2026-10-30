@@ -459,7 +459,12 @@ object AgentRuntime {
     // start time for haltInflightRunsCommand, and dispatch refuses once
     // .halted exists. Native: a run that exits non-zero while .halted exists is
     // recorded as skipped, not as a hard failure (see stoppedByKillSwitch).
-    private const val CURRENT_SCRIPT_VERSION = 73
+    // v74 (2026-10-30, continuous mode Increment 1): a continuous agent's
+    // unattended iteration injects the previous checkpoint summary, strips the
+    // SUMMARY/NEXT/DONE block and writes logs/<id>/checkpoint.json at the end
+    // (both via the executor's --continuous-op CLI). Native: a run killed by a
+    // loop's notification Stop is recorded as skipped (stoppedByKillSwitch).
+    private const val CURRENT_SCRIPT_VERSION = 74
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
@@ -479,7 +484,11 @@ object AgentRuntime {
     // re-checks the .halted sentinel before every step/group/branch and the
     // final action, and SIGTERM kills the broker children and exits 0 after
     // recording the run as skipped. Native: see stoppedByKillSwitch.
-    private const val CURRENT_EXECUTOR_VERSION = 13
+    // CURRENT_EXECUTOR_VERSION 14 (2026-10-30, continuous mode Increment 1): a
+    // continuous plan's unattended run reads/writes logs/<id>/checkpoint.json,
+    // and the --continuous-op CLI serves the same logic to the .sh path.
+    // Native: ContinuousLoop / ContinuousStopPolicy own the stop decision.
+    private const val CURRENT_EXECUTOR_VERSION = 14
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
@@ -1510,7 +1519,14 @@ object AgentRuntime {
      * Returns true when it handled the result.
      */
     private fun stoppedByKillSwitch(homeDir: File, agentId: String, exitCode: Int): Boolean {
-        if (!File(homeDir, ".shelly/agents/.halted").isFile) return false
+        // Continuous mode: the per-agent Stop (ContinuousLoop.requestStop)
+        // signals this agent's run the same way STOP-ALL signals every run.
+        val halted = File(homeDir, ".shelly/agents/.halted").isFile
+        val loopStopped = !halted && runCatching {
+            File(homeDir, ".shelly/agents/logs/$agentId/${ContinuousLoop.STOP_MARKER_FILE}").isFile
+        }.getOrDefault(false)
+        if (!halted && !loopStopped) return false
+        val stopMessage = if (halted) "All agents are stopped (global kill-switch is on)." else "Continuous run stopped by the user."
         if (exitCode == 0) {
             // The executor's SIGTERM handler (and a halted chain) exit 0 after
             // writing their own skipped run log. Don't take the success path:
@@ -1521,9 +1537,9 @@ object AgentRuntime {
             discardAgentResultNotificationRequest(homeDir, agentId)
             return true
         }
-        Log.i(TAG, "Agent $agentId stopped by the global kill-switch (exit=$exitCode)")
+        Log.i(TAG, "Agent $agentId stopped by ${if (halted) "the global kill-switch" else "its continuous-loop Stop"} (exit=$exitCode)")
         discardAgentResultNotificationRequest(homeDir, agentId)
-        writeReceiverLog(homeDir, agentId, "skipped", "All agents are stopped (global kill-switch is on).")
+        writeReceiverLog(homeDir, agentId, "skipped", stopMessage)
         return true
     }
 

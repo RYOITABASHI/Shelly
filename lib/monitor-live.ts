@@ -28,6 +28,7 @@ import type {
 } from './monitor-source';
 import type { MonitorProvider, MonitorProviderKind, MonitorTeam, MonitorTeamNode } from './monitor-team';
 import { MONITOR_PROVIDER_LABEL } from './monitor-team';
+import { continuousStopReasonKey, type ContinuousCheckpointView } from './agent-continuous';
 
 /** A RUNNING step with no event for this long gets the stale indicator. */
 export const STALE_AFTER_SEC = 30;
@@ -320,6 +321,18 @@ export function isRunActive(
   for (const b of run.branches) last = Math.max(last, ms(b.updatedAt) ?? 0);
   const limit = runningAgentIds.includes(run.agentId) ? lockedDeadAfterMs : deadAfterMs;
   return nowMs - last < limit;
+}
+
+/** Continuous mode: the MONITOR line for a loop agent — "iteration N", plus
+ *  the stop reason once the loop has ended. null when there is no loop. */
+export function liveLoopText(
+  view: ContinuousCheckpointView | null | undefined,
+  translate: (key: string, params?: Record<string, string | number>) => string,
+): string | null {
+  if (!view || (view.iteration <= 0 && !view.stoppedReason)) return null;
+  const iteration = translate('monitor.live.loop_iteration', { n: view.iteration });
+  if (!view.stoppedReason) return iteration;
+  return `${iteration} · ${translate('monitor.live.loop_stopped', { reason: translate(continuousStopReasonKey(view.stoppedReason)) })}`;
 }
 
 /** Default LIVE pick: the most recently started active run, else the most

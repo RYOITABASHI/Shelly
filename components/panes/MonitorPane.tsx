@@ -40,7 +40,7 @@ import {
   type MonitorSnapshot,
   type MonitorSource,
 } from '@/lib/monitor-source';
-import { createLiveSource, pickDefaultLiveRun, type LiveAgentInfo } from '@/lib/monitor-live';
+import { createLiveSource, liveLoopText, pickDefaultLiveRun, type LiveAgentInfo } from '@/lib/monitor-live';
 import type { MonitorRun } from '@/lib/agent-progress';
 import type { Agent } from '@/store/types';
 import { useMonitorLivePoller } from '@/hooks/use-monitor-live-poller';
@@ -134,8 +134,8 @@ export default function MonitorPane() {
     })),
   );
   const { t: playT, speed, view, selectedId, auto, inputs, runId, sourceMode, liveAgentId } = monitor;
-  const { liveRuns, agents, runningAgentIds } = useAgentStore(
-    useShallow((s) => ({ liveRuns: s.liveRuns, agents: s.agents, runningAgentIds: s.runningAgentIds })),
+  const { liveRuns, agents, runningAgentIds, liveLoops } = useAgentStore(
+    useShallow((s) => ({ liveRuns: s.liveRuns, agents: s.agents, runningAgentIds: s.runningAgentIds, liveLoops: s.liveLoops })),
   );
 
   // Reads progress.jsonl into liveRuns while this pane is mounted.
@@ -305,6 +305,8 @@ export default function MonitorPane() {
       : null;
   // LIVE: only a path the run itself recorded (its run log's savedPath).
   const liveSavedPath = isLive && snap.complete ? liveEntry?.savedPath : undefined;
+  // Continuous mode: "LOOP · iteration N" (+ the stop reason) for a loop agent.
+  const loopText = isLive ? liveLoopText(liveLoops?.[liveRun.agentId], t) : null;
   const failureText =
     snap.run?.outcome === 'failed' && snap.run.failedChannel
       ? t('monitor.live.failure', { channel: snap.run.failedChannel, reason: snap.run.failureReason ?? '—' })
@@ -360,6 +362,11 @@ export default function MonitorPane() {
           {t('monitor.mission')} <Text style={{ color: MON.osd }}>{team.title}</Text>
           {team.schedule ? <Text style={{ color: MON.muted }}>{`  ${team.schedule}`}</Text> : null}
         </Text>
+        {loopText && (
+          <Text style={styles.savedTo} numberOfLines={2} testID="monitor-loop">
+            {loopText}
+          </Text>
+        )}
         <View style={styles.mstats}>
           <Text style={[styles.mstat, { color: MON.phosphor }]}>
             {t('monitor.run_count', { n: summary.running, max: MAX_PARALLEL_BRANCHES })}

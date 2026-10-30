@@ -93,6 +93,11 @@ export interface ConfirmedAgentDraft {
    *  Set only by draftToConfirmedAgentDraft for an isManualTriggerDraft draft;
    *  the card's own picker never sets it. */
   manualTrigger?: boolean;
+  /** 2026-10-30 continuous mode: register a loop (schedule null) that native
+   *  re-runs after each cooldown until a limit / Stop — never the ephemeral
+   *  one-shot. Set only by draftToConfirmedAgentDraft for an
+   *  isContinuousDraft draft (lib/agent-continuous.ts fills the defaults). */
+  continuous?: { cooldownMs: number; goalCheck?: boolean };
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.

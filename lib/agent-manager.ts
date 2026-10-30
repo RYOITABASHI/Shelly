@@ -16,6 +16,7 @@ import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-regi
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
 import { buildAgentPlanSpec, getPlanSpecPath } from './agent-plan-spec';
 import { installSchedule, uninstallSchedule, nextTriggerMs, isScheduleMissed, MISSED_RUN_GRACE_MS } from './agent-scheduler';
+import { CONTINUOUS_CHECKPOINT_FILE, CONTINUOUS_STOP_MARKER_FILE, isContinuousAgent, normalizeContinuousConfig } from './agent-continuous';
 import { t } from '@/lib/i18n';
 import {
   isOneShotSchedule,
@@ -475,6 +476,9 @@ export function createAgent(params: {
   skillPlanFingerprint?: Agent['skillPlanFingerprint'];
   orchestration?: Agent['orchestration'];
   startNotBefore?: Agent['startNotBefore'];
+  /** Continuous mode (lib/agent-continuous.ts). Limits are filled with their
+   *  defaults here and the loop starts now. */
+  continuous?: Partial<NonNullable<Agent['continuous']>> | null;
 }): Agent {
   // SECURITY: name sanitized at this single write-boundary so EVERY caller (NL
   // confirm-card free-text, autonomous, terminal @agent) is safe — see
@@ -505,6 +509,9 @@ export function createAgent(params: {
     ...(params.skillId && params.skillPlanFingerprint !== undefined ? { skillPlanFingerprint: params.skillPlanFingerprint } : {}),
     orchestration: params.orchestration,
     startNotBefore: params.startNotBefore ?? null,
+    ...(params.continuous
+      ? { continuous: normalizeContinuousConfig({ ...params.continuous, loopStartedAt: Date.now() }) }
+      : {}),
     enabled: true,
     lastRun: null,
     lastResult: null,
@@ -3175,7 +3182,9 @@ async function listAgentLogFiles(
 ): Promise<string[]> {
   try {
     const out = await runCommand(
-      `ls -1 ${shellQuote(`${agentsDir()}/logs/${agentId}`)}/*.json 2>/dev/null || true`
+      // Run logs only (<epoch>.json): never sidecars like checkpoint.json
+      // (continuous mode) or perplexity-last.json, which callers may rm.
+      `ls -1 ${shellQuote(`${agentsDir()}/logs/${agentId}`)}/[0-9]*.json 2>/dev/null || true`
     );
     return out.split('\n').map((s) => s.trim()).filter(Boolean);
   } catch {
@@ -3712,8 +3721,16 @@ export async function setAgentEnabled(
   const store = useAgentStore.getState();
   const agent = store.agents.find((a) => a.id === agentId);
   if (!agent) return;
+  // Continuous mode: (re-)enabling starts a FRESH loop — a new loopStartedAt
+  // resets native's iteration/wall-time counters, and the previous loop's
+  // checkpoint + stop marker are removed below.
+  const isLoop = isContinuousAgent(agent);
   const changes: Partial<Agent> = enabled
-    ? { enabled, circuitBreakerResetAt: Date.now() }
+    ? {
+        enabled,
+        circuitBreakerResetAt: Date.now(),
+        ...(isLoop ? { continuous: normalizeContinuousConfig({ ...agent.continuous, loopStartedAt: Date.now() }) } : {}),
+      }
     : { enabled };
   store.updateAgent(agentId, changes);
   // One-shot: never write enabled:true over a fired/retired one-shot.
@@ -3722,9 +3739,16 @@ export async function setAgentEnabled(
   await runCommand(
     `set -e\n${writeFileCommand(`${agentsDir()}/${agentId}.json`, JSON.stringify(updated, null, 2))}`
   );
-  if (!agent.schedule) return; // manual-only: nothing to (un)install
+  if (isLoop && updated.enabled) {
+    // Live shell $HOME, never the JS home cache (see deleteAgent).
+    const logDir = `"$HOME/.shelly/agents/logs/"${shellQuote(agentId)}`;
+    await runCommand(`rm -f ${logDir}/${CONTINUOUS_CHECKPOINT_FILE} ${logDir}/${CONTINUOUS_STOP_MARKER_FILE}`);
+  }
+  if (!agent.schedule && !isLoop) return; // manual-only: nothing to (un)install
   if (updated.enabled && !store.halted) {
-    await installSchedule(updated);
+    // A loop's PlanSpec carries loopStartedAt: rewrite it with the new loop.
+    if (isLoop) await materializeAgent(updated, runCommand, true, false);
+    else await installSchedule(updated);
   } else {
     await uninstallSchedule(agentId);
   }
@@ -3744,7 +3768,7 @@ export async function haltAllAgents(
   // next step / poll check while the alarms below are still being torn down.
   store.setHalted(true);
   for (const a of store.agents) {
-    if (a.schedule) {
+    if (a.schedule || isContinuousAgent(a)) {
       try {
         await uninstallSchedule(a.id);
       } catch (error) {
@@ -3800,7 +3824,7 @@ export async function resumeAllAgents(
   // turned it off); this only refreshes the supervisor's view.
   await wakeCodexRemoteHost();
   for (const storeAgent of store.agents) {
-    if (storeAgent.enabled && storeAgent.schedule) {
+    if (storeAgent.enabled && (storeAgent.schedule || isContinuousAgent(storeAgent))) {
       try {
         const a = await withOneShotDiskState(storeAgent, runCommand);
         if (!a.enabled) continue;
@@ -3982,7 +4006,9 @@ function scheduleAgentStartupRepair(
   delayMs = 60_000,
   shouldRun: (() => boolean) | undefined
 ): void {
-  const scheduledAgents = agents.filter((agent) => agent.enabled && agent.schedule);
+  // Continuous loops are repaired too (an app update / process death can drop
+  // their armed alarm); installSchedule re-arms them at lastRun + cooldown.
+  const scheduledAgents = agents.filter((agent) => agent.enabled && (agent.schedule || isContinuousAgent(agent)));
   if (scheduledAgents.length === 0) return;
 
   setTimeout(() => {
@@ -4007,6 +4033,16 @@ function scheduleAgentStartupRepair(
             console.warn('Failed to remove disabled agent schedule during startup repair', agent.id, error);
           }
           continue;
+        }
+        // Continuous mode: native disables a loop when it stops (Stop button,
+        // limits, budget, failures, goal). Re-read disk so this repair never
+        // writes a stale enabled:true over a loop that has just ended.
+        if (isContinuousAgent(agent)) {
+          const disk = await readAgentDiskState(agent.id, runCommand);
+          if (!disk || disk.enabled !== true) {
+            useAgentStore.getState().updateAgent(agent.id, { enabled: false });
+            continue;
+          }
         }
         // P0-1: a single lost alarm (Doze / OEM battery kill / FGS start
         // failure) otherwise leaves this schedule permanently and silently
@@ -4281,7 +4317,7 @@ export async function syncAgentRunLogsFromDisk(
   }
 
   for (const a of tripped) {
-    if (a.schedule) {
+    if (a.schedule || isContinuousAgent(a)) {
       try {
         await uninstallSchedule(a.id);
       } catch {

@@ -29,7 +29,8 @@
  * field-editing, so instead of silently defaulting it must refuse and ask the user
  * to restate the schedule with an explicit time.
  */
-import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime, isManualTriggerDraft } from './agent-nl-parser';
+import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime, isContinuousDraft, isManualTriggerDraft } from './agent-nl-parser';
+import { formatContinuousSummary } from './agent-continuous';
 import { AgentAction } from '@/store/types';
 import { describeDraftTool, toolChoiceToLabel } from './agent-tool-router';
 import { closePawTaskText } from './agent-intent-review';
@@ -105,7 +106,11 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
     draft.oneShotImplicit === true ||
     // 2026-10-30: manual-only DEFAULTED (no schedule named) is an
     // interpretation too — one human confirm before it registers.
-    (draft.triggerAssumed === true && isManualTriggerDraft(draft))
+    (draft.triggerAssumed === true && isManualTriggerDraft(draft)) ||
+    // 2026-10-30: a continuous loop runs unattended until a limit / Stop — its
+    // defaulted limits are shown in the summary and always get one human
+    // confirm before the loop is registered.
+    isContinuousDraft(draft)
   );
 }
 
@@ -256,6 +261,8 @@ function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
     return humanizeCronSchedule(draft.schedule, locale);
   }
   const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
+  // Continuous: 「止めるまで続けます（最大50回・24時間・有料APIなし・5分おき）」
+  if (isContinuousDraft(draft)) return formatContinuousSummary(draft.continuous, locale);
   if (isManualTriggerDraft(draft)) return tl('agentcard.sched_manual');
   if (draft.suggestedFrequency !== undefined) {
     // Ambiguous — see hasFireableSchedule. Do not fabricate a time here; the
@@ -757,5 +764,6 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     // parse, AgentConfirmCard's own card flow) carries it as undefined.
     runOnceOnConfirm: draft.runOnceOnConfirm,
     ...(isManualTriggerDraft(draft) ? { manualTrigger: true } : {}),
+    ...(isContinuousDraft(draft) && draft.continuous ? { continuous: draft.continuous } : {}),
   };
 }

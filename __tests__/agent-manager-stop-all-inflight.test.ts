@@ -208,7 +208,7 @@ describe('haltAllAgents — in-flight termination', () => {
 
   it('the generated .sh records the lock holder start time and refuses to dispatch once halted', () => {
     const s = generateRunScript(makeAgent('gen-agent'));
-    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=73');
+    expect(s).toContain('SHELLY_AGENT_SCRIPT_VERSION=74');
     expect(acquireLockFunction(s)).toContain('> "$LOCK_DIR/starttime"');
     const dispatch = s.slice(s.indexOf('dispatch_agent_action() {'));
     expect(dispatch.slice(0, 600)).toContain('[ -f "${HOME:-}/.shelly/agents/.halted" ]');

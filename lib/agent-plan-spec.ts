@@ -17,6 +17,7 @@ import { buildAgentPolicy } from './agent-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
 import { isApiKeyStep, isOrchestrated, isolatedApiStepPolicy, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
 import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
+import { applyContinuousProviderPolicy, normalizeContinuousConfig } from './agent-continuous';
 
 // NOT bumped for the `steps` field added below (orchestration schema-plumbing
 // increment 1, 2026-07-15). A bump here is load-bearing across THREE
@@ -188,6 +189,16 @@ export interface AgentPlanSpecV1 {
      *  before it can run such a plan. */
     isolation?: Array<{ base: string; carry: boolean } | { blocked: string } | null>;
   };
+  /** Continuous mode (Agent.continuous, lib/agent-continuous.ts): present only
+   *  for a continuous agent. The executor (v14+) treats an UNATTENDED run of
+   *  such a plan as one loop iteration: prior-iteration context in, checkpoint
+   *  out, and no paid-API candidate at a ¥0 budget. Additive (no schema bump):
+   *  an older executor is refreshed natively before it can run the plan. */
+  continuous?: {
+    goalCheck: boolean;
+    dailyBudgetJpy: number;
+    loopStartedAt?: number;
+  };
 }
 
 export type BuildAgentPlanSpecOptions = {
@@ -234,9 +245,12 @@ export function getPlanSpecPath(agentId: string): string {
 }
 
 export function buildAgentPlanSpec(
-  agent: Agent,
+  inputAgent: Agent,
   opts: BuildAgentPlanSpecOptions = {},
 ): AgentPlanSpecV1 {
+  // Continuous mode at a ¥0 budget: no API-key tool / step pin reaches the plan.
+  const agent = applyContinuousProviderPolicy(inputAgent);
+  const continuousConfig = agent.continuous ? normalizeContinuousConfig(agent.continuous) : null;
   const home = getHomePath();
   const paths = planPaths(home, agent.id);
   const routeResolution = resolveAgentRoute(agent);
@@ -443,6 +457,15 @@ export function buildAgentPlanSpec(
       ? { ...routeDecision, why: `${routeDecision.why} ${droppedStepPinNotes.join(' ')}`.trim() }
       : routeDecision,
     ...(orchestrationSteps ? { steps: orchestrationSteps } : {}),
+    ...(continuousConfig
+      ? {
+          continuous: {
+            goalCheck: continuousConfig.goalCheck === true,
+            dailyBudgetJpy: continuousConfig.dailyBudgetJpy ?? 0,
+            ...(continuousConfig.loopStartedAt ? { loopStartedAt: continuousConfig.loopStartedAt } : {}),
+          },
+        }
+      : {}),
   };
 }
 
