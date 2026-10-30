@@ -166,7 +166,14 @@ object LibExtractor {
         // HomeInitializer symlinks $HOME/bin/shelly -> $libDir/shelly_cmd,
         // replacing the generated #!/system/bin/sh script Knox refused to
         // exec outside the interactive shelly() bash function.
-        "lib/arm64-v8a/libshelly_cmd.so" to "shelly_cmd"
+        "lib/arm64-v8a/libshelly_cmd.so" to "shelly_cmd",
+        // Claude Code glibc (S1): ulexec-style userland loader that starts the
+        // official, UNMODIFIED linux-arm64 glibc binary via its glibc ld.so.
+        // Launched as `linker64 $libDir/shelly_glibc_exec <ld.so> ...`; it
+        // mmaps ld.so in-process and jumps with a kernel-style stack (bionic
+        // cannot start the glibc ld.so directly). Built from
+        // jni/shelly-glibc-exec.c. See DEFERRED.md "Claude Code 公式 glibc 版".
+        "lib/arm64-v8a/libshelly_glibc_exec.so" to "shelly_glibc_exec"
     )
 
     // Files that must be re-extracted on every launch even when the version
@@ -196,6 +203,9 @@ object LibExtractor {
         "shelly_xdg_open",
         // BASHRC_VERSION 255: same reasoning for the native `shelly` shim.
         "shelly_cmd",
+        // Claude Code glibc loader: ALWAYS_REFRESH so loader fixes ship
+        // without a versionCode bump (same reasoning as the other helpers).
+        "shelly_glibc_exec",
         // git + its transport/credential helpers: force-refresh so the HTTPS
         // helper exec fix (git() now preloads libexec_wrapper.so) is validated
         // against fresh binaries — a stale helper from a prior broken state must

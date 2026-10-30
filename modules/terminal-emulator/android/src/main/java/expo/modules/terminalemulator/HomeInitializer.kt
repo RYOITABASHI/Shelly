@@ -1450,7 +1450,11 @@ patchCodex(libDir);
     //      --report reads $HOME/.shelly/app-info.json (AppInfoSnapshot.kt)
     //      for the app version, notification and battery state, which an
     //      app uid cannot get from dumpsys.
-    private const val BASHRC_VERSION = 273
+    // v274: shelly-claude-glibc() testing helper (Claude Code glibc S1). Runs a
+    //      manually staged $HOME/.shelly-runtime/claude-glibc/{lib,claude}
+    //      through the native ulexec loader $SHELLY_LIB_DIR/shelly_glibc_exec
+    //      (jni/shelly-glibc-exec.c) via linker64. No downloading yet (S2+).
+    private const val BASHRC_VERSION = 274
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4176,6 +4180,34 @@ patchCodex(libDir);
             // verification URL via the shelly://browser deep link instead
             // of requiring the user to switch apps manually.
             sb.appendLine("codex-login() { _run $libDir/node \"\$HOME/.shelly-codex-auth.js\" \"\$@\"; }")
+            // BASHRC_VERSION 274: Claude Code glibc (S1 testing helper). Given a
+            // manually staged $HOME/.shelly-runtime/claude-glibc/{lib,claude}
+            // (lib/ holds glibc's ld-linux-aarch64.so.1 + the glibc .so set,
+            // claude is the official UNMODIFIED linux-arm64 glibc binary),
+            // launches it through the native ulexec loader:
+            //   linker64 $libDir/shelly_glibc_exec \
+            //     <root>/lib/ld-linux-aarch64.so.1 \
+            //     --library-path <root>/lib <root>/claude "$@"
+            // The loader (jni/shelly-glibc-exec.c) is itself started via
+            // linker64 like every other native helper. SHELLY_GLIBC_LD_LIBRARY_PATH
+            // is forwarded by the loader as LD_LIBRARY_PATH into the glibc world
+            // (the loader strips the bionic-world LD_PRELOAD/LD_LIBRARY_PATH).
+            // No downloading yet — staging is manual (see DEFERRED.md).
+            sb.appendLine("shelly-claude-glibc() {")
+            sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
+            sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
+            sb.appendLine("  local __bin=\"\$__root/claude\"")
+            sb.appendLine("  if [ ! -e \"\$__ld\" ]; then")
+            sb.appendLine("    echo \"shelly-claude-glibc: missing \$__ld (stage glibc ld.so first)\" >&2; return 2")
+            sb.appendLine("  fi")
+            sb.appendLine("  if [ ! -e \"\$__bin\" ]; then")
+            sb.appendLine("    echo \"shelly-claude-glibc: missing \$__bin (stage the Claude Code glibc binary first)\" >&2; return 2")
+            sb.appendLine("  fi")
+            sb.appendLine("  SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$__root/lib\" \\")
+            sb.appendLine("    LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
+            sb.appendLine("    \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
+            sb.appendLine("    \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\$@\"")
+            sb.appendLine("}")
             // v252: `shelly codex pair` — host Codex remote control for the
             // ChatGPT app (Experimental, on-device unverified). Runs the
             // official `codex remote-control --no-daemon` foreground host
