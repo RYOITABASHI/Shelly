@@ -102,6 +102,7 @@ import {
   trustedRequestOrigin,
   type TrustOffer,
 } from '@/lib/agent-policy-approval';
+import { noteAttendedApprovalWaiting } from '@/lib/agent-progress-writer';
 import { isProactiveOrigin } from '@/lib/agent-action-policy';
 import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
@@ -2428,6 +2429,9 @@ export default function RootLayout() {
             logInfo('AgentActionApproval', `ClosePaw hand-off resolved by registration pre-approval run=${parsed.runId}`);
             continue;
           }
+          // MONITOR: an attended SERIAL chain of this agent now waits on the
+          // human (no-op for executor runs, which write their own state).
+          noteAttendedApprovalWaiting(parsed.agentId);
           await TerminalEmulator.notifyAgentActionApprovalNeeded(parsed);
           rememberActionApproval(key, parsed);
           logInfo('AgentActionApproval', `approval notification posted run=${parsed.runId} action=${parsed.actionType}`);

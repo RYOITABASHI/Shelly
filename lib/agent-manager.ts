@@ -56,8 +56,11 @@ import { saveUnattendedSkillWithNotification } from './unattended-skill-save';
 import {
   agentRunLogIdentity,
   markAgentHandoffRunNarrated,
+  postAgentHandoffDigest,
   postAgentHandoffLine,
 } from './agent-companion-notice';
+import { decideAttendedRoute, effectiveGroupCount } from './agent-attended-route';
+import { AttendedProgressWriter } from './agent-progress-writer';
 import { HandoffNarrator } from './agent-handoff';
 import {
   applyUnattendedSkillImprovement,
@@ -1529,6 +1532,32 @@ async function runAgentNowInner(
     // the stored shape keeps the restored on-disk state byte-identical to what
     // install-time materialize produces, instead of silently baking a reused
     // skill's steps into the agent's persistent record.
+    //
+    // MONITOR stage (4) (DEFERRED.md「マルチエージェント MONITOR ペイン…」,
+    // option B): a chain with an effective parallel group whose every step is
+    // executor-dispatchable, and whose ON-DISK PlanSpec already is this chain,
+    // runs through the PlanSpec executor — real wall-clock branch parallelism
+    // — instead of the serial chain. See lib/agent-attended-route.ts for the
+    // full gate. Any doubt (unreadable plan, route resolution error) keeps
+    // today's serial chain.
+    let route: ReturnType<typeof decideAttendedRoute>;
+    try {
+      if (effectiveGroupCount(planParallelGroups(normalizeSteps(orchestrationAgent.orchestration)).group) === 0) {
+        // Cheap pre-check: no disk reads for the common no-group chain.
+        route = { route: 'serial', reason: 'no effective parallel group' };
+      } else {
+        const planText = await readOnDiskPlanSpecText(agentId, runCommand);
+        const env = await ladderEnvFromDisk(runCommand);
+        route = decideAttendedRoute({ agent: orchestrationAgent, planText, env });
+      }
+    } catch (error) {
+      route = { route: 'serial', reason: `route check failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    logInfo('AgentManager', `agent ${agentId}: attended route=${route.route === 'executor' ? 'plan-executor (parallel)' : 'serial chain'} — ${route.reason}`);
+    if (route.route === 'executor') {
+      await runAgentViaPlanExecutor(orchestrationAgent, runCommand, options);
+      return;
+    }
     await runAgentOrchestrated(orchestrationAgent, runCommand, options, storedAgent);
     return;
   }
@@ -1987,6 +2016,10 @@ async function runLadderAttempts(
     sourcedFallbackText?: string;
     /** See MaterializeRunOpts.priorStepContent's doc comment. */
     priorStepContent?: string;
+    /** Observational only (MONITOR progress): called with each attempt's
+     *  candidate tool right before it is launched. Must never throw into the
+     *  ladder — the call is guarded. */
+    onAttemptTool?: (tool: ToolChoice | undefined) => void;
   } = {},
 ): Promise<{ ladder: EscalationLadder; finalLog: AgentRunLog | undefined }> {
   const env = await ladderEnvFromDisk(runCommand);
@@ -2085,6 +2118,13 @@ async function runLadderAttempts(
     // running on a human's behalf — the RN approval choke point trusts this,
     // never the executor-written request file's origin.
     markUserRunStarted(agentId);
+    if (materializeOpts.onAttemptTool) {
+      try {
+        materializeOpts.onAttemptTool(attemptAgent.tool);
+      } catch {
+        // observational only
+      }
+    }
     let runError: unknown;
     let runFailed = false;
     try {
@@ -2147,6 +2187,97 @@ async function runLadderAttempts(
   return { ladder, finalLog };
 }
 
+/** Native kills an executor run at AgentRuntime.kt DEFAULT_TIMEOUT_MS (30 min);
+ *  wait a little past that so the run log it then writes is still observed. */
+const ATTENDED_EXECUTOR_WAIT_TIMEOUT_MS = 32 * 60_000;
+
+/** Raw on-disk PlanSpec text ('' when absent), read through the LIVE shell
+ *  $HOME — the same file AgentRuntime.kt runPlanAgent hands the executor. */
+async function readOnDiskPlanSpecText(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+): Promise<string> {
+  assertSafeAgentId(agentId);
+  const out = await runCommand(
+    `# PLAN_SPEC_READ\ncat "$HOME/.shelly/agents/plans/plan-agent-${agentId}.json" 2>/dev/null || true`,
+  );
+  return typeof out === 'string' ? out : '';
+}
+
+/**
+ * MONITOR stage (4): attended Run now through the PlanSpec executor (see
+ * lib/agent-attended-route.ts for when). Reuses the EXACT native path an
+ * alarm fire takes — TerminalEmulator.runAgent → TerminalSessionService
+ * ACTION_RUN_AGENT (origin "user", unattended=false) → AgentRuntime.runAgent →
+ * shouldRunPlanExecutor (the on-disk plan has steps) → runPlanAgent → node
+ * shelly-plan-executor.js — so no new launcher exists. The on-disk PlanSpec is
+ * NOT rewritten (no materialize): the gate already proved it is this chain.
+ *
+ * Deliberately NO chain lock here: runPlanAgent skips the executor whenever
+ * `<id>.chain.lock` exists (that lock means "an attended SERIAL chain owns this
+ * agent"). The executor's own per-agent single-flight lock (`locks/<id>.pid`)
+ * takes over, so an alarm firing mid-run is skipped by the executor itself;
+ * inFlightAgentRuns still dedupes a second in-process Run now.
+ *
+ * markUserRunStarted/Finished bracket the run exactly like runLadderAttempts,
+ * so the executor's action-approval requests keep the "user" origin.
+ * progress.jsonl is written by the executor itself (no JS writer on this
+ * route). The chat story is the existing hand-off digest of the run log the
+ * executor writes (posted here, so the periodic sync does not repeat it).
+ */
+async function runAgentViaPlanExecutor(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>,
+  options: { waitTimeoutMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const agentId = agent.id;
+  let before: AgentRunLog[] = [];
+  try {
+    before = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+  } catch {
+    // fall back to timestamp gating below
+  }
+  const runStartedAtMs = Date.now() - 5_000;
+  let halted = false;
+  markUserRunStarted(agentId);
+  try {
+    await TerminalEmulator.runAgent(agentId);
+    await waitForAgentRunCompletion(runCommand, agentId, {
+      runStartedAtMs,
+      previousRunCount: before.length,
+      previousLatestTimestamp: before.at(-1)?.timestamp ?? Number.NEGATIVE_INFINITY,
+      timeoutMs: options.waitTimeoutMs ?? ATTENDED_EXECUTOR_WAIT_TIMEOUT_MS,
+      pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
+    });
+  } catch (error) {
+    // STOP-ALL: haltInflightRunsCommand kills the executor, which records its
+    // own skipped run; end like the serial chain does (no throw).
+    if (!(error instanceof AgentsHaltedError)) throw error;
+    halted = true;
+  } finally {
+    markUserRunFinished(agentId);
+  }
+  logInfo('AgentManager', `agent ${agentId}: plan-executor attended run ${halted ? 'halted (STOP-ALL)' : 'finished'}`);
+  try {
+    const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
+    const latest = after.at(-1);
+    if (latest && latest.timestamp >= runStartedAtMs) {
+      markAttendedAgentRunLog(latest);
+      const agentName = useAgentStore.getState().agents.find((a) => a.id === agentId)?.name ?? agent.name ?? agentId;
+      try {
+        postAgentHandoffDigest(latest, agentName, t);
+      } catch (error) {
+        logWarn('Handoff', 'executor-route digest failed', error);
+      }
+    }
+  } catch (error) {
+    logWarn('AgentManager', `agent ${agentId}: could not read the executor run log`, error);
+  }
+  await syncAgentRunLogsFromDisk(runCommand, agentId);
+  await captureRunMemory(agentId, runCommand);
+  await updateReusedSkillFromRun(agentId, runCommand);
+}
+
 /**
  * Phase 4: run an agent as an ordered LINEAR chain. Each step is executed through
  * the EXISTING single-run path (materialize → B2 driver), so every command still
@@ -2173,9 +2304,22 @@ async function runAgentOrchestrated(
   // `finally` so an early `break`/thrown error still releases it. See the
   // module doc comment above acquireChainLock for the full design.
   const chainLockSeed = await acquireChainLock(agentId, runCommand);
+  // MONITOR live progress (same progress.jsonl schema the PlanSpec executor
+  // writes — lib/agent-progress-writer.ts). Observational only: start() never
+  // throws and every later call is a guarded no-op once writing fails.
+  const progressSteps = normalizeSteps(agent.orchestration);
+  const progress = AttendedProgressWriter.start(runCommand, {
+    agentId,
+    stepCount: progressSteps.length,
+    groups: planParallelGroups(progressSteps).group,
+    route: 'attended-serial',
+  });
   try {
-    await runAgentOrchestratedBody(agent, runCommand, options, chainLockSeed, restoreAgent);
+    await runAgentOrchestratedBody(agent, runCommand, options, chainLockSeed, restoreAgent, progress);
   } finally {
+    // Body threw before settling the stream: still close the run so MONITOR
+    // never shows a phantom RUNNING branch (no-op when the body finished it).
+    if (progress) await progress.finish(agentsHalted() ? 'halted' : 'error', 'chain aborted');
     await releaseChainLock(agentId, chainLockSeed, runCommand);
   }
 }
@@ -2186,6 +2330,9 @@ async function runAgentOrchestratedBody(
   options: { waitTimeoutMs?: number; pollMs?: number },
   chainLockSeed: string,
   restoreAgent: Agent = agent,
+  /** MONITOR progress stream for this run (null = not writing). Every call
+   *  on it is observational and guarded — never consulted for control flow. */
+  progress: AttendedProgressWriter | null = null,
 ): Promise<void> {
   const agentId = agent.id;
   const steps = normalizeSteps(agent.orchestration);
@@ -2307,10 +2454,12 @@ async function runAgentOrchestratedBody(
       const noSourcesRecord: AgentRunStep = { index: i, instruction: steps[i].instruction, status: 'error', durationMs: 0, outputPreview: NO_SOURCES_MESSAGE };
       records.push(noSourcesRecord);
       narrate((n) => n.stepFinished(noSourcesRecord));
+      progress?.stepFinished(i, noSourcesRecord.status, noSourcesRecord.outputPreview);
       priorFailed = true;
       continue;
     }
     narrate((n) => n.stepStarting(i));
+    progress?.stepStarted(i);
 
     // Each step is a normal single run with a step-specific prompt; orchestration
     // is cleared so the step itself doesn't recurse. Phase 5: a step may pin a
@@ -2409,6 +2558,7 @@ async function runAgentOrchestratedBody(
           // the final step's real action writes anything (2026-10-09).
           skipSuppressedDraftSave: true,
           ...(sourcingActive ? { stepResultToken } : {}),
+          ...(progress ? { onAttemptTool: (tool: ToolChoice | undefined) => progress.stepTool(i, tool) } : {}),
           ...(synthesis
             ? {
                 textOnly: true,
@@ -2431,6 +2581,7 @@ async function runAgentOrchestratedBody(
         ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}),
       });
       narrate((n) => n.stepFinished(records[records.length - 1]));
+      progress?.stepFinished(i, 'error', records[records.length - 1].outputPreview);
       priorFailed = true;
       continue;
     }
@@ -2526,6 +2677,13 @@ async function runAgentOrchestratedBody(
       }
     }
     narrate((n) => n.stepFinished(records[records.length - 1]), finalOutput.savedPath);
+    if (progress) {
+      // The tool that actually answered (routeDecision of the step's final
+      // attempt) supersedes the attempt-time candidate in the reader.
+      const rd = record.routeDecision;
+      if (rd?.toolType) progress.stepTool(i, { type: rd.toolType } as ToolChoice, rd.toolLabel);
+      progress.stepFinished(i, record.status, record.outputPreview);
+    }
     // A transient step carries no usable result downstream, so it stops the chain
     // just like an error — only success feeds the next step's context.
     if (record.status === 'success') priorResults.push(carry);
@@ -2559,6 +2717,11 @@ async function runAgentOrchestratedBody(
     ...finalOutput,
     steps: records,
   };
+  // MONITOR: settle the stream. STOP-ALL ends as run_end "halted" (the
+  // executor's vocabulary), never as the aggregate's 'skipped'. Bounded wait.
+  if (progress) {
+    await progress.finish(haltedChain ? 'halted' : aggregate.status, haltedChain ? KILL_SWITCH_MESSAGE : undefined);
+  }
   markAttendedAgentRunLog(aggregate);
   // Lines were already posted live above — keep the periodic disk sync from
   // replaying this same run as an unattended digest.
