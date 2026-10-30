@@ -95,6 +95,17 @@ export const PANE_REGISTRY: Record<PaneTab, PaneEntry> = {
     icon: 'psychology',
     getComponent: () => require('@/components/panes/MemoryWorkbenchPane').default,
   },
+  // MONITOR pane — CCTV-style multi-agent monitor wall with an editable
+  // column "wiring" map. Phase A plays a built-in DEMO run only (labelled
+  // DEMO in the UI); see lib/monitor-source.ts for the live-source seam.
+  monitor: {
+    title: 'Monitor',
+    titleKey: 'pane.monitor.title',
+    headerTitle: 'Monitor',
+    headerTitleKey: 'pane.monitor.header',
+    icon: 'videocam',
+    getComponent: () => require('@/components/panes/MonitorPane').default,
+  },
 };
 
 export function resolvePaneTitle(

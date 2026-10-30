@@ -10,6 +10,7 @@ describe('PANE_REGISTRY', () => {
       'browser',
       'markdown',
       'memory-workbench',
+      'monitor',
       'preview',
       'terminal',
     ]);

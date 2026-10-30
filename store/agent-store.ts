@@ -5,6 +5,41 @@
  */
 import { create } from 'zustand';
 import { Agent, AgentRunLog } from './types';
+import type { MonitorInput } from '@/lib/monitor-source';
+import type { MonitorTeam } from '@/lib/monitor-team';
+
+export type MonitorView = 'grid' | 'single' | 'map';
+export type MonitorSpeed = 1 | 2 | 4;
+
+/** MONITOR pane state — transient like the rest of this store (no persist).
+ *  Phase A drives it from the built-in DEMO playback only: `t` is playback
+ *  seconds, and the rendered snapshot is derived from (t, inputs) by the pure
+ *  engine in lib/monitor-demo.ts, so nothing here duplicates run state. */
+export interface MonitorPaneState {
+  t: number;
+  speed: MonitorSpeed;
+  view: MonitorView;
+  selectedId: string;
+  auto: boolean;
+  inputs: MonitorInput[];
+  /** Bumped on RESTART so the pane can reset its wall clock. */
+  runId: number;
+  /** Wiring map being edited; null = the source's own team (the demo team).
+   *  Kept as type-only here so this widely imported store does not pull the
+   *  monitor/orchestration modules in at load time. */
+  team: MonitorTeam | null;
+}
+
+const initialMonitor = (): MonitorPaneState => ({
+  t: 0,
+  speed: 1,
+  view: 'grid',
+  selectedId: 'ch1',
+  auto: false,
+  inputs: [],
+  runId: 0,
+  team: null,
+});
 
 interface AgentState {
   agents: Agent[];
@@ -52,6 +87,15 @@ interface AgentState {
   consumePendingEnvSync: () => string | null;
 
   setMemoryWorkbenchAgentId: (agentId: string | null) => void;
+
+  monitor: MonitorPaneState;
+  /** Advance playback by `dtSeconds` of wall time (clamped, scaled by speed). */
+  tickMonitor: (dtSeconds: number) => void;
+  setMonitor: (partial: Partial<Omit<MonitorPaneState, 't' | 'inputs' | 'runId'>>) => void;
+  /** Record a chat line typed by the user at the current playback time. */
+  sendMonitorInput: (text: string) => void;
+  restartMonitor: () => void;
+  setMonitorTeam: (team: MonitorTeam | null) => void;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -121,4 +165,30 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   setMemoryWorkbenchAgentId: (agentId) => set({ memoryWorkbenchAgentId: agentId }),
+
+  monitor: initialMonitor(),
+  tickMonitor: (dtSeconds) =>
+    set((state) => ({
+      monitor: {
+        ...state.monitor,
+        t: state.monitor.t + Math.min(0.25, Math.max(0, dtSeconds)) * state.monitor.speed,
+      },
+    })),
+  setMonitor: (partial) => set((state) => ({ monitor: { ...state.monitor, ...partial } })),
+  sendMonitorInput: (text) =>
+    set((state) => {
+      const trimmed = text.trim();
+      if (!trimmed) return state;
+      return {
+        monitor: {
+          ...state.monitor,
+          inputs: [...state.monitor.inputs, { at: state.monitor.t, text: trimmed }],
+        },
+      };
+    }),
+  restartMonitor: () =>
+    set((state) => ({
+      monitor: { ...state.monitor, t: 0, inputs: [], runId: state.monitor.runId + 1 },
+    })),
+  setMonitorTeam: (team) => set((state) => ({ monitor: { ...state.monitor, team } })),
 }));

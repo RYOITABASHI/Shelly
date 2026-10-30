@@ -40,6 +40,7 @@ const COMPACT_PANE_LABELS: Record<PaneTab, string> = {
   ask: 'ASK',
   'agent-runs': 'RUNS',
   'memory-workbench': 'MEM',
+  monitor: 'MON',
 };
 
 function OpenPaneTabs() {

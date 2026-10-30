@@ -37,6 +37,8 @@ const OPTIONS: SheetOption[] = [
   { kind: 'pane', id: 'ask' },
   // Memory Workbench — browse/search/edit/delete agent + shared memory notes.
   { kind: 'pane', id: 'memory-workbench' },
+  // MONITOR — CCTV-style multi-agent monitor wall + wiring map (DEMO playback in Phase A).
+  { kind: 'pane', id: 'monitor' },
   { kind: 'sidebar', id: 'fileTree', icon: 'folder-open' },
 ];
 

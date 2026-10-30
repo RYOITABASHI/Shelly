@@ -38,7 +38,8 @@ export type PaneTab =
   | 'preview'
   | 'ask'
   | 'agent-runs'
-  | 'memory-workbench';
+  | 'memory-workbench'
+  | 'monitor';
 
 export type PresetId =
   | 'p1'
