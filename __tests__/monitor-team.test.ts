@@ -1,9 +1,12 @@
 import {
   addNode,
   deriveEdges,
+  destinationPath,
+  formatTeamMeta,
   makeParallel,
   moveNode,
   parseTeamFile,
+  parseTeamMeta,
   removeNode,
   resolveDropTarget,
   serializeTeamFile,
@@ -21,6 +24,7 @@ import {
   planParallelGroups,
 } from '@/lib/agent-orchestration';
 import { DEMO_TEAM } from '@/lib/monitor-demo';
+import { USD_TO_YEN } from '@/lib/monitor-source';
 
 const n = (id: string, extra: Partial<MonitorTeamNode> = {}): MonitorTeamNode => ({
   id,
@@ -205,7 +209,8 @@ describe('team file parse / serialize', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.team.title).toBe('Morning AI paper digest');
-    expect(r.team.meta).toBe('daily 7:00 / cap ¥20');
+    expect(r.team.schedule).toBe('daily 7:00');
+    expect(r.team.capUsd).toBeCloseTo(20 / USD_TO_YEN, 10);
     expect(r.team.columns.map((c) => c.map((x) => x.role))).toEqual([
       ['collect new papers from arXiv', 'collect new papers from Hugging Face'],
       ['pick 3 and summarize'],
@@ -236,12 +241,14 @@ describe('team file parse / serialize', () => {
   it('round-trips', () => {
     const first = parseTeamFile(SAMPLE);
     if (!first.ok) throw new Error('parse failed');
-    const text = serializeTeamFile(first.team);
+    // The sample's cap is in yen; a yen viewer writes it back unchanged.
+    const text = serializeTeamFile(first.team, undefined, 'ja');
     const second = parseTeamFile(text);
     expect(second.ok && second.team).toEqual(first.team);
     expect(serializeTeamFile(DEMO_TEAM)).toBe(
       [
-        '# Daily AI paper digest → Obsidian   daily 7:00 / cap ¥20',
+        '# Daily AI paper digest → Obsidian   daily 7:00 / cap $0.1333',
+        '-> OBSIDIAN: 20_Literature/AI_Papers/{date}/',
         '- in parallel:',
         '  - collect new papers from arXiv [Perplexity]',
         '  - collect new papers from Hugging Face [Gemini API]',
@@ -253,5 +260,41 @@ describe('team file parse / serialize', () => {
     );
     const demo = parseTeamFile(serializeTeamFile(DEMO_TEAM));
     expect(demo.ok && serializeTeamFile(demo.team)).toBe(serializeTeamFile(DEMO_TEAM));
+  });
+});
+
+describe('team meta: schedule + budget cap', () => {
+  it('parses a yen cap (converted at USD_TO_YEN) and a dollar cap', () => {
+    expect(parseTeamMeta('daily 7:00 / cap ¥20')).toEqual({ schedule: 'daily 7:00', capUsd: 20 / USD_TO_YEN });
+    expect(parseTeamMeta('daily 7:00 / cap $0.15')).toEqual({ schedule: 'daily 7:00', capUsd: 0.15 });
+    expect(parseTeamMeta('cap ¥1,500')).toEqual({ capUsd: 10 });
+    expect(parseTeamMeta('weekdays / 8:00')).toEqual({ schedule: 'weekdays / 8:00' });
+  });
+
+  it('serializes the cap in the viewer currency', () => {
+    const t = { schedule: 'daily 7:00', capUsd: 20 / USD_TO_YEN };
+    expect(formatTeamMeta(t, 'ja')).toBe('daily 7:00 / cap ¥20');
+    expect(formatTeamMeta({ capUsd: 0.15 }, 'en')).toBe('cap $0.1500');
+    expect(formatTeamMeta({ schedule: 'daily 7:00' }, 'ja')).toBe('daily 7:00');
+  });
+
+  it('round-trips schedule, cap and destination through the team file', () => {
+    const ja = serializeTeamFile(DEMO_TEAM, '同時に:', 'ja');
+    expect(ja.split('\n')[0]).toBe('# Daily AI paper digest → Obsidian   daily 7:00 / cap ¥20');
+    const back = parseTeamFile(ja);
+    expect(back.ok).toBe(true);
+    if (!back.ok) return;
+    expect(back.team.schedule).toBe('daily 7:00');
+    expect(back.team.capUsd).toBeCloseTo(DEMO_TEAM.capUsd!, 10);
+    expect(back.team.destination).toEqual(DEMO_TEAM.destination);
+    expect(serializeTeamFile(back.team, '同時に:', 'ja')).toBe(ja);
+
+    const usd = parseTeamFile('# T   cap $0.15\n- a\n');
+    expect(usd.ok && usd.team.capUsd).toBe(0.15);
+    expect(usd.ok && serializeTeamFile(usd.team, undefined, 'en')).toBe('# T   cap $0.1500\n- a\n');
+  });
+
+  it('fills the date into the destination path', () => {
+    expect(destinationPath(DEMO_TEAM.destination!, '2026-10-30')).toBe('20_Literature/AI_Papers/2026-10-30/');
   });
 });

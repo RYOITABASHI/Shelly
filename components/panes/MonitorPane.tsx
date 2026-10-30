@@ -20,6 +20,7 @@ import { logInfo } from '@/lib/debug-logger';
 import { useDeviceLayout } from '@/hooks/use-device-layout';
 import { useAgentStore, type MonitorSpeed } from '@/store/agent-store';
 import { createDemoSource, demoDateLabel } from '@/lib/monitor-demo';
+import { destinationPath } from '@/lib/monitor-team';
 import {
   ACTIVE_STATES,
   formatTokens,
@@ -42,6 +43,12 @@ const pad2 = (n: number) => (n < 10 ? `0${n}` : String(n));
 function formatClock(ms: number): string {
   const d = new Date(ms);
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+/** Playback time since RESTART as T+mm:ss. */
+function formatPlayClock(seconds: number): string {
+  const sec = Math.floor(seconds);
+  return `T+${pad2(Math.floor(sec / 60))}:${pad2(sec % 60)}`;
 }
 
 function Key({
@@ -98,11 +105,11 @@ export default function MonitorPane() {
   const { t: playT, speed, view, selectedId, auto, inputs, runId } = monitor;
 
   // The demo is dated "today" and its wall clock starts at RESTART.
-  const run = useMemo(
-    () => ({ id: runId, source: createDemoSource(demoDateLabel()), startWall: Date.now() }),
-    [runId],
-  );
-  const { source, startWall } = run;
+  const run = useMemo(() => {
+    const date = demoDateLabel();
+    return { id: runId, date, source: createDemoSource(date), startWall: Date.now() };
+  }, [runId]);
+  const { source, startWall, date } = run;
   const team = monitor.team ?? source.team;
   const snap = useMemo(() => source.snapshot(playT, inputs), [source, playT, inputs]);
   const summary = summarize(source.agents, snap);
@@ -176,16 +183,32 @@ export default function MonitorPane() {
   };
 
   const select = (id: string) => setMonitor({ selectedId: id, view: 'single', auto: false });
-  const sec = Math.floor(playT);
-  const timestamp = formatClock(startWall + playT * 1000);
+  const playClock = formatPlayClock(playT);
+  // A DEMO feed must never look like a real recording: playback time, not
+  // the wall clock.
+  const timestamp = source.isDemo ? playClock : formatClock(startWall + playT * 1000);
   const defById = useMemo(() => Object.fromEntries(source.agents.map((d) => [d.id, d])), [source]);
   const selectedDef = defById[selectedId] ?? source.agents[0];
 
+  const doneCount = t('monitor.done_count', { n: summary.done, total: summary.total });
   const statusLabel = snap.complete
     ? t('monitor.mission_complete')
     : snap.approvalPending
       ? t('monitor.waiting_for_you')
-      : t('monitor.done_count', { n: summary.done, total: summary.total });
+      : doneCount;
+  // Folded/compact: "DONE n/5" moves into the progress label to save a row.
+  const showStatusInStats = isWide || snap.complete || snap.approvalPending;
+  const progressLabel =
+    !isWide && !snap.complete ? `${doneCount} · ${summary.missionPct}%` : `${summary.missionPct}%`;
+  const capText = team.capUsd !== undefined ? ` / ${formatMoney(team.capUsd, locale)}` : '';
+  const savedTo =
+    snap.complete && team.destination
+      ? t('monitor.saved_to', { label: team.destination.label, path: destinationPath(team.destination, date) })
+      : null;
+  // The question the source is waiting on (latest ask line in the chat).
+  const pendingAsk = snap.approvalPending ? [...snap.chat].reverse().find((m) => m.ask) : undefined;
+  // Folded screens show only the MAP while it is open; wide keeps the wall.
+  const showWall = view !== 'map' || isWide;
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -201,17 +224,24 @@ export default function MonitorPane() {
         </View>
         <Text style={styles.goalLine} numberOfLines={2}>
           {t('monitor.mission')} <Text style={{ color: MON.osd }}>{team.title}</Text>
-          {team.meta ? <Text style={{ color: MON.muted }}>{`  ${team.meta}`}</Text> : null}
+          {team.schedule ? <Text style={{ color: MON.muted }}>{`  ${team.schedule}`}</Text> : null}
         </Text>
         <View style={styles.mstats}>
           <Text style={[styles.mstat, { color: MON.phosphor }]}>
             {t('monitor.run_count', { n: summary.running, max: MAX_PARALLEL_BRANCHES })}
           </Text>
-          <Text style={[styles.mstat, (snap.complete || snap.approvalPending) && { color: MON.amber }]}>
-            {statusLabel}
-          </Text>
-          <Text style={styles.mstat}>{`T+${pad2(Math.floor(sec / 60))}:${pad2(sec % 60)}`}</Text>
+          {showStatusInStats && (
+            <Text style={[styles.mstat, (snap.complete || snap.approvalPending) && { color: MON.amber }]}>
+              {statusLabel}
+            </Text>
+          )}
+          <Text style={styles.mstat}>{playClock}</Text>
         </View>
+        {savedTo && (
+          <Text style={styles.savedTo} numberOfLines={2} testID="monitor-saved-to">
+            {savedTo}
+          </Text>
+        )}
         <View style={styles.mprog}>
           <View
             style={styles.mbar}
@@ -226,13 +256,13 @@ export default function MonitorPane() {
               ]}
             />
           </View>
-          <Text style={styles.mpct}>{`${summary.missionPct}%`}</Text>
+          <Text style={styles.mpct}>{progressLabel}</Text>
         </View>
         <View style={styles.costs}>
           <Text style={styles.cost}>
             <Text style={[styles.costK, { color: kindColor('API') }]}> API </Text>
             {` ${t('monitor.cost_api')} `}
-            <Text style={{ color: MON.osd }}>{formatMoney(summary.apiUsd, locale)}</Text>
+            <Text style={{ color: MON.osd }}>{`${formatMoney(summary.apiUsd, locale)}${capText}`}</Text>
           </Text>
           <Text style={styles.cost}>
             <Text style={[styles.costK, { color: kindColor('CLI') }]}> CLI </Text>
@@ -249,7 +279,49 @@ export default function MonitorPane() {
             <Text style={[styles.cost, { color: MON.muted }]}>{t('monitor.cost_sample')}</Text>
           )}
         </View>
+        {!monitor.legendDismissed && (
+          <View style={styles.legendRow}>
+            <Text style={styles.legend} testID="monitor-cost-legend">
+              {t('monitor.legend', { zero: formatMoney(0, locale) })}
+            </Text>
+            <Pressable
+              onPress={() => setMonitor({ legendDismissed: true })}
+              accessibilityRole="button"
+              accessibilityLabel={t('monitor.legend_dismiss')}
+              hitSlop={8}
+            >
+              <Text style={styles.legendX}>×</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
+
+      {/* ── Pinned approval: stays right under the mission bar so the ask is
+          on screen on a folded phone. Same draft + send as the chat strip. ── */}
+      {snap.approvalPending && (
+        <View style={styles.pinned} testID="monitor-pinned-approval">
+          <Text style={styles.pinnedAsk} numberOfLines={2}>
+            {pendingAsk
+              ? (pendingAsk.text ?? translateMonitorText(t, pendingAsk.message))
+              : t('monitor.waiting_for_you')}
+          </Text>
+          <View style={styles.row}>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              onSubmitEditing={send}
+              placeholder={t('monitor.pinned_placeholder')}
+              placeholderTextColor={MON.muted}
+              accessibilityLabel={t('monitor.pinned_a11y')}
+              style={styles.input}
+              returnKeyType="send"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <Key label={t('monitor.send')} onPress={send} a11y={t('monitor.pinned_send_a11y')} />
+          </View>
+        </View>
+      )}
 
       {/* ── Map ── */}
       {view === 'map' && (
@@ -260,53 +332,63 @@ export default function MonitorPane() {
           snap={snap}
           clock={clock}
           reduceMotion={reduceMotion}
+          isDemo={source.isDemo}
+          wide={isWide}
+          date={date}
           onChange={(next) => setMonitorTeam(next === source.team ? null : next)}
         />
       )}
 
       {/* ── Wall ── */}
-      <View style={styles.wall} onLayout={onWallLayout} testID="monitor-wall">
-        {view === 'single' ? (
-          <MonitorCamera
-            def={selectedDef}
-            snap={snap.agents[selectedDef.id]}
-            parentChannel={selectedDef.parentId ? defById[selectedDef.parentId]?.channel : undefined}
-            clock={clock}
-            reduceMotion={reduceMotion}
-            timestamp={timestamp}
-            showTimestamp
-            single
-            sideBySide={isWide}
-            compactText={false}
-            onPress={() => setMonitor({ view: 'grid', auto: false })}
-          />
-        ) : (
-          camW > 0 && (
-            <View style={styles.grid}>
-              {source.agents.map((d) => (
-                <View key={d.id} style={{ width: camW }}>
-                  <MonitorCamera
-                    def={d}
-                    snap={snap.agents[d.id]}
-                    parentChannel={d.parentId ? defById[d.parentId]?.channel : undefined}
-                    clock={clock}
-                    reduceMotion={reduceMotion}
-                    timestamp={timestamp}
-                    showTimestamp={isWide}
-                    single={false}
-                    sideBySide={false}
-                    compactText={!isWide || isCompact}
-                    onPress={() => select(d.id)}
-                  />
-                </View>
-              ))}
-              <View style={{ width: camW }}>
-                <NoSignalCamera channel={`CH-0${source.agents.length + 1}`} reduceMotion={reduceMotion} />
+      {showWall && (
+        <View style={styles.wall} onLayout={onWallLayout} testID="monitor-wall">
+          {view === 'single' ? (
+            <MonitorCamera
+              def={selectedDef}
+              snap={snap.agents[selectedDef.id]}
+              parentChannel={selectedDef.parentId ? defById[selectedDef.parentId]?.channel : undefined}
+              clock={clock}
+              reduceMotion={reduceMotion}
+              timestamp={timestamp}
+              showTimestamp
+              demo={source.isDemo}
+              single
+              sideBySide={isWide}
+              compactText={false}
+              onPress={() => setMonitor({ view: 'grid', auto: false })}
+            />
+          ) : (
+            camW > 0 && (
+              <View style={styles.grid}>
+                {source.agents.map((d) => (
+                  <View key={d.id} style={{ width: camW }}>
+                    <MonitorCamera
+                      def={d}
+                      snap={snap.agents[d.id]}
+                      parentChannel={d.parentId ? defById[d.parentId]?.channel : undefined}
+                      clock={clock}
+                      reduceMotion={reduceMotion}
+                      timestamp={timestamp}
+                      showTimestamp={isWide}
+                      demo={source.isDemo}
+                      single={false}
+                      sideBySide={false}
+                      compactText={!isWide || isCompact}
+                      onPress={() => select(d.id)}
+                    />
+                  </View>
+                ))}
+                {/* The empty CH-06 tile only earns its space on a wide wall. */}
+                {isWide && (
+                  <View style={{ width: camW }}>
+                    <NoSignalCamera channel={`CH-0${source.agents.length + 1}`} reduceMotion={reduceMotion} />
+                  </View>
+                )}
               </View>
-            </View>
-          )
-        )}
-      </View>
+            )
+          )}
+        </View>
+      )}
 
       {/* ── Switcher ── */}
       <View style={styles.switcher}>
@@ -357,10 +439,7 @@ export default function MonitorPane() {
 
       {/* ── Chat ── */}
       <View style={styles.chat}>
-        <Text style={styles.chatHead}>
-          {t('monitor.chat_head')}
-          {source.isDemo ? <Text style={{ color: MON.amber }}>{`  ${t('monitor.demo_badge')}`}</Text> : null}
-        </Text>
+        <Text style={styles.chatHead}>{t('monitor.chat_head')}</Text>
         <View style={styles.lines} accessibilityLiveRegion="polite">
           {snap.chat.map((m, i) => (
             <Text key={i} style={[styles.line, m.ask && { color: MON.amber }]}>
@@ -430,6 +509,19 @@ const styles = StyleSheet.create({
   costs: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 14, rowGap: 4 },
   cost: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.label },
   costK: { fontFamily: MON_FONT_OSD, fontSize: 13 },
+  savedTo: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.amber },
+  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  legend: { flex: 1, fontFamily: MON_FONT_MONO, fontSize: 10.5, color: MON.muted },
+  legendX: { fontFamily: MON_FONT_OSD, fontSize: 16, color: MON.muted, paddingHorizontal: 4 },
+  pinned: {
+    backgroundColor: MON.panel,
+    borderWidth: 1,
+    borderColor: MON.amber,
+    borderRadius: 12,
+    padding: 10,
+    gap: 8,
+  },
+  pinnedAsk: { fontSize: 13, color: MON.amber, lineHeight: 18 },
   wall: { width: '100%' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GAP },
   switcher: {

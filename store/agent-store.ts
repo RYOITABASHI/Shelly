@@ -28,6 +28,8 @@ export interface MonitorPaneState {
    *  Kept as type-only here so this widely imported store does not pull the
    *  monitor/orchestration modules in at load time. */
   team: MonitorTeam | null;
+  /** Cost-legend line dismissed by the user (kept across RESTART, not persisted). */
+  legendDismissed: boolean;
 }
 
 const initialMonitor = (): MonitorPaneState => ({
@@ -39,6 +41,7 @@ const initialMonitor = (): MonitorPaneState => ({
   inputs: [],
   runId: 0,
   team: null,
+  legendDismissed: false,
 });
 
 interface AgentState {

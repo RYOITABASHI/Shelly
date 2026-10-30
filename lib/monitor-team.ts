@@ -22,6 +22,7 @@
  */
 import type { AgentOrchestrationStep, ToolChoice } from '@/store/types';
 import { HARD_MAX_STEPS, MAX_PARALLEL_BRANCHES } from './agent-orchestration';
+import { formatMoney, USD_TO_YEN } from './monitor-source';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -83,10 +84,22 @@ export interface MonitorSubAgent extends MonitorTeamNode {
   parentId: string;
 }
 
+/** Where the team's final step saves its result (e.g. Obsidian + folder). */
+export interface MonitorDestination {
+  /** Short display label, e.g. "OBSIDIAN". */
+  label: string;
+  /** Target path; may contain the "{date}" placeholder (YYYY-MM-DD). */
+  path: string;
+}
+
 export interface MonitorTeam {
   title: string;
-  /** Free-form header meta, e.g. "daily 7:00 / cap ¥20". */
-  meta?: string;
+  /** Free-form schedule, e.g. "daily 7:00". */
+  schedule?: string;
+  /** Optional budget cap per run, in USD (shown in the viewer's currency). */
+  capUsd?: number;
+  /** Output destination of the final step. */
+  destination?: MonitorDestination;
   columns: MonitorTeamNode[][];
   subAgents: MonitorSubAgent[];
 }
@@ -146,6 +159,7 @@ export function findNode(
 function cloneTeam(team: MonitorTeam): MonitorTeam {
   return {
     ...team,
+    ...(team.destination ? { destination: { ...team.destination } } : {}),
     columns: team.columns.map((col) => col.map((n) => ({ ...n }))),
     subAgents: team.subAgents.map((s) => ({ ...s })),
   };
@@ -440,6 +454,7 @@ export function requiresWriteApproval(team: MonitorTeam): boolean {
 // ─── Team file format ────────────────────────────────────────────────────────
 //
 //   # Morning AI paper digest   daily 7:00 / cap ¥20
+//   -> OBSIDIAN: 20_Literature/AI_Papers/{date}/
 //   - 同時に:                       (or "in parallel:")
 //     - collect new papers from arXiv
 //     - collect new papers from Hugging Face
@@ -448,12 +463,49 @@ export function requiresWriteApproval(team: MonitorTeam): boolean {
 //   - save to Obsidian AI_Papers/ (ask before writing)
 //
 // A provider pin is a trailing "[Perplexity]" (label or id); "(ask before
-// writing)" / "(書き込み前に確認)" sets askBeforeWrite.
+// writing)" / "(書き込み前に確認)" sets askBeforeWrite. The header meta after
+// the title (two+ spaces) is "schedule / cap <money>"; the cap accepts "¥20"
+// (converted at USD_TO_YEN) or "$0.15" and is written back in the viewer's
+// currency. A top-level "-> LABEL: path" line sets the output destination.
 
 const PARALLEL_HEADER_RE = /^(同時に|並列で|in parallel|parallel)\s*[:：]\s*$/i;
 const SUB_PREFIX_RE = /^(sub|サブ)\s*[:：]\s*/i;
 const ASK_RE = /\s*[(（]\s*(ask before writing|書き込み前に確認)\s*[)）]\s*/i;
 const PROVIDER_RE = /\s*\[([^\]]+)\]\s*$/;
+const CAP_RE = /^cap\s*([¥￥$])\s*(\d[\d,]*(?:\.\d+)?)$/i;
+const DEST_RE = /^(?:->|→)\s*(.+?)\s*[:：]\s*(\S.*)$/;
+
+/** Split header meta "daily 7:00 / cap ¥20" into schedule + capUsd. */
+export function parseTeamMeta(meta: string): { schedule?: string; capUsd?: number } {
+  const rest: string[] = [];
+  let capUsd: number | undefined;
+  for (const seg of meta.split('/').map((x) => x.trim()).filter(Boolean)) {
+    const m = CAP_RE.exec(seg);
+    if (m && capUsd === undefined) {
+      const n = Number(m[2].replace(/,/g, ''));
+      if (Number.isFinite(n)) {
+        capUsd = m[1] === '$' ? n : n / USD_TO_YEN;
+        continue;
+      }
+    }
+    rest.push(seg);
+  }
+  const schedule = rest.join(' / ');
+  return { ...(schedule ? { schedule } : {}), ...(capUsd !== undefined ? { capUsd } : {}) };
+}
+
+/** Header meta in the viewer's currency, e.g. "daily 7:00 / cap ¥20". */
+export function formatTeamMeta(team: Pick<MonitorTeam, 'schedule' | 'capUsd'>, locale = 'en'): string {
+  const parts: string[] = [];
+  if (team.schedule) parts.push(team.schedule);
+  if (team.capUsd !== undefined) parts.push(`cap ${formatMoney(team.capUsd, locale)}`);
+  return parts.join(' / ');
+}
+
+/** Destination path with the "{date}" placeholder filled in. */
+export function destinationPath(dest: MonitorDestination, date: string): string {
+  return dest.path.split('{date}').join(date);
+}
 
 function parseProvider(raw: string): MonitorProvider | null {
   const v = raw.trim().toLowerCase();
@@ -488,7 +540,8 @@ export type ParseTeamResult =
 
 export function parseTeamFile(source: string): ParseTeamResult {
   let title = '';
-  let meta: string | undefined;
+  let meta: { schedule?: string; capUsd?: number } = {};
+  let destination: MonitorDestination | undefined;
   const columns: MonitorTeamNode[][] = [];
   const subAgents: MonitorSubAgent[] = [];
   let openParallel: MonitorTeamNode[] | null = null;
@@ -504,7 +557,12 @@ export function parseTeamFile(source: string): ParseTeamResult {
       const parts = /^(.*?)(?:\s{2,}(.*))?$/.exec(header[1].trimEnd());
       title = (parts?.[1] ?? header[1]).trim();
       const m = parts?.[2]?.trim();
-      meta = m ? m : undefined;
+      meta = m ? parseTeamMeta(m) : {};
+      continue;
+    }
+    const dest = DEST_RE.exec(raw.trim());
+    if (dest && !/^\s/.test(raw)) {
+      destination = { label: dest[1].trim(), path: dest[2].trim() };
       continue;
     }
     const item = /^(\s*)[-*]\s+(.*)$/.exec(raw);
@@ -533,7 +591,13 @@ export function parseTeamFile(source: string): ParseTeamResult {
     if (!openParallel) return { ok: false, error: { code: 'syntax', line: i + 1 } };
     openParallel.push({ id: mint(), ...parseItem(body) });
   }
-  const team: MonitorTeam = { title, ...(meta ? { meta } : {}), columns, subAgents };
+  const team: MonitorTeam = {
+    title,
+    ...meta,
+    ...(destination ? { destination } : {}),
+    columns,
+    subAgents,
+  };
   const errors = validate(team);
   return errors.length === 0 ? { ok: true, team } : { ok: false, error: errors[0] };
 }
@@ -545,9 +609,11 @@ function serializeItem(n: MonitorTeamNode): string {
   return s;
 }
 
-export function serializeTeamFile(team: MonitorTeam, parallelLabel = 'in parallel:'): string {
+export function serializeTeamFile(team: MonitorTeam, parallelLabel = 'in parallel:', locale = 'en'): string {
   const out: string[] = [];
-  out.push(`# ${team.title}${team.meta ? `   ${team.meta}` : ''}`);
+  const meta = formatTeamMeta(team, locale);
+  out.push(`# ${team.title}${meta ? `   ${meta}` : ''}`);
+  if (team.destination) out.push(`-> ${team.destination.label}: ${team.destination.path}`);
   const subsOf = (id: string) => team.subAgents.filter((s) => s.parentId === id);
   for (const col of team.columns) {
     if (col.length > 1) {

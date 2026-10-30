@@ -26,6 +26,7 @@ import { logInfo } from '@/lib/debug-logger';
 import {
   addNode,
   deriveEdges,
+  destinationPath,
   findNode,
   makeParallel,
   moveNode,
@@ -60,7 +61,7 @@ const NODE_H = 76;
 const ROW_GAP = 12;
 const PAD = 14;
 const LANE_H = 24;
-const GOAL_H = 92;
+const GOAL_H = 104;
 
 const colX = (c: number) => PAD + c * (COL_W + GAP);
 const rowY = (r: number) => PAD + LANE_H + r * (NODE_H + ROW_GAP);
@@ -214,10 +215,28 @@ type Props = {
   snap: MonitorSnapshot;
   clock: SharedValue<number>;
   reduceMotion: boolean;
+  /** DEMO source: edits are a local preview only (not saved, not run). */
+  isDemo: boolean;
+  /** Wide layout: the goal node also repeats MISSION % and API cost. On
+   *  folded/compact widths the mission bar already shows them. */
+  wide: boolean;
+  /** Run date (YYYY-MM-DD) filled into the destination path. */
+  date: string;
   onChange: (team: MonitorTeam) => void;
 };
 
-export function MonitorMap({ team, defaultTeam, defs, snap, clock, reduceMotion, onChange }: Props) {
+export function MonitorMap({
+  team,
+  defaultTeam,
+  defs,
+  snap,
+  clock,
+  reduceMotion,
+  isDemo,
+  wide,
+  date,
+  onChange,
+}: Props) {
   const { t, locale } = useTranslation();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -330,21 +349,40 @@ export function MonitorMap({ team, defaultTeam, defs, snap, clock, reduceMotion,
             <Text style={styles.goalTitle} numberOfLines={1}>
               {t('monitor.map.goal_title')}
             </Text>
-            <Text style={styles.n2} numberOfLines={1}>
-              {goalLit
-                ? t('monitor.map.goal_done')
-                : finalState === 'FAILED'
-                  ? t('monitor.map.goal_stopped')
-                  : t('monitor.map.goal_progress', { pct: summary.missionPct })}
-            </Text>
-            <Text style={styles.n2} numberOfLines={1}>
-              {`API ${formatMoney(summary.apiUsd, locale)}`}
-            </Text>
+            {team.destination && (
+              <>
+                <Text style={styles.destLabel} numberOfLines={1}>
+                  {team.destination.label}
+                </Text>
+                <Text style={styles.n2} numberOfLines={1} ellipsizeMode="head">
+                  {destinationPath(team.destination, date)}
+                </Text>
+              </>
+            )}
+            {goalLit || finalState === 'FAILED' || wide ? (
+              <Text style={styles.n2} numberOfLines={1}>
+                {goalLit
+                  ? t('monitor.map.goal_done')
+                  : finalState === 'FAILED'
+                    ? t('monitor.map.goal_stopped')
+                    : t('monitor.map.goal_progress', { pct: summary.missionPct })}
+              </Text>
+            ) : null}
+            {wide && (
+              <Text style={styles.n2} numberOfLines={1}>
+                {`API ${formatMoney(summary.apiUsd, locale)}`}
+              </Text>
+            )}
           </View>
         </View>
       </ScrollView>
 
       <Text style={styles.hint}>{t('monitor.map.hint')}</Text>
+      {isDemo && (
+        <Text style={styles.demoNote} testID="monitor-map-demo-note">
+          {t('monitor.map.demo_note')}
+        </Text>
+      )}
       {message && (
         <Text style={styles.message} accessibilityLiveRegion="polite">
           {message}
@@ -413,7 +451,7 @@ export function MonitorMap({ team, defaultTeam, defs, snap, clock, reduceMotion,
       {showFile && (
         <View style={styles.file}>
           <Text style={styles.fileText} selectable>
-            {serializeTeamFile(team, t('monitor.map.file_parallel'))}
+            {serializeTeamFile(team, t('monitor.map.file_parallel'), locale)}
           </Text>
         </View>
       )}
@@ -571,6 +609,8 @@ const styles = StyleSheet.create({
   goalLit: { borderStyle: 'solid', borderColor: MON.amber, backgroundColor: MON.amberDeep },
   goalTitle: { fontFamily: MON_FONT_OSD, fontSize: 15, color: MON.amber },
   hint: { fontFamily: MON_FONT_MONO, fontSize: 11, color: MON.muted },
+  demoNote: { fontFamily: MON_FONT_MONO, fontSize: 11, color: MON.amber },
+  destLabel: { fontFamily: MON_FONT_OSD, fontSize: 12, color: MON.osd },
   message: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.amber },
   toolRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   addRow: { flexDirection: 'row', flex: 1, gap: 8, alignItems: 'center' },

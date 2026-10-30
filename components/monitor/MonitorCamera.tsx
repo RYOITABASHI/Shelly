@@ -34,8 +34,11 @@ type Props = {
   parentChannel?: string;
   clock: SharedValue<number>;
   reduceMotion: boolean;
+  /** Wall clock for a real run; playback time (T+mm:ss) for the DEMO. */
   timestamp: string;
   showTimestamp: boolean;
+  /** DEMO playback: the OSD shows "▶ DEMO" instead of "● REC". */
+  demo: boolean;
   /** Single (enlarged) view: shows the log list instead of the last line. */
   single: boolean;
   /** Single view on a wide screen: screen and HUD side by side. */
@@ -125,8 +128,9 @@ function CameraScreen({
   reduceMotion,
   timestamp,
   showTimestamp,
+  demo,
   compactText,
-}: Pick<Props, 'def' | 'snap' | 'clock' | 'reduceMotion' | 'timestamp' | 'showTimestamp' | 'compactText'>) {
+}: Pick<Props, 'def' | 'snap' | 'clock' | 'reduceMotion' | 'timestamp' | 'showTimestamp' | 'demo' | 'compactText'>) {
   const { t } = useTranslation();
   const [size, setSize] = useState({ w: 0, h: 0 });
   const onLayout = (e: LayoutChangeEvent) => {
@@ -210,8 +214,10 @@ function CameraScreen({
       <View style={[styles.osd, styles.osdTop]} pointerEvents="none">
         <Text style={[styles.osdText, { fontSize: osdSize }]}>{def.channel}</Text>
         {active && (
-          <Animated.Text style={[styles.osdText, { fontSize: osdSize, color: MON.rec }, recStyle]}>
-            {t('monitor.rec')}
+          <Animated.Text
+            style={[styles.osdText, { fontSize: osdSize, color: demo ? MON.amber : MON.rec }, recStyle]}
+          >
+            {demo ? t('monitor.osd_demo') : t('monitor.rec')}
           </Animated.Text>
         )}
       </View>
@@ -290,7 +296,7 @@ function MonitorCameraImpl(props: Props) {
         </View>
         <View style={styles.meta}>
           <Text style={styles.metaText} numberOfLines={1}>
-            {t('monitor.step', { n: Math.min(snap.logs, snap.totalLogs), total: snap.totalLogs, pct })}
+            {`${pct}%`}
           </Text>
           <Text style={[styles.metaText, { color: MON.osd }]} numberOfLines={1}>
             {costText(def, snap, t('monitor.cost_flat'), locale)}

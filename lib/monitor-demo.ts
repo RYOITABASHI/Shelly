@@ -19,6 +19,7 @@ import type {
   MonitorSource,
   MonitorText,
 } from './monitor-source';
+import { USD_TO_YEN } from './monitor-source';
 import type { MonitorTeam } from './monitor-team';
 
 export const DEMO_AGENTS: readonly MonitorAgentDef[] = [
@@ -31,7 +32,10 @@ export const DEMO_AGENTS: readonly MonitorAgentDef[] = [
 
 export const DEMO_TEAM: MonitorTeam = {
   title: 'Daily AI paper digest → Obsidian',
-  meta: 'daily 7:00 / cap ¥20',
+  schedule: 'daily 7:00',
+  // Sample budget cap: ¥20 per run (shown in the viewer's currency).
+  capUsd: 20 / USD_TO_YEN,
+  destination: { label: 'OBSIDIAN', path: '20_Literature/AI_Papers/{date}/' },
   columns: [
     [
       { id: 'ch1', name: 'ARXIV SCOUT', role: 'collect new papers from arXiv', provider: 'perplexity', askBeforeWrite: false },
