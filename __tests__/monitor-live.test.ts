@@ -10,7 +10,7 @@ import {
   liveOperator,
   pickDefaultLiveRun,
 } from '@/lib/monitor-live';
-import { summarize } from '@/lib/monitor-source';
+import { agentProgress, summarize } from '@/lib/monitor-source';
 
 const T0 = Date.parse('2026-10-30T07:00:00.000Z');
 const at = (sec: number) => new Date(T0 + sec * 1000).toISOString();
@@ -198,8 +198,9 @@ describe('monitor-live: failed vs stopped by the user', () => {
       failureReason: '429 rate limited after 2 retries',
     });
     expect(snap.complete).toBe(false);
-    // every step settled
-    expect(snap.missionPct).toBe(100);
+    // s0 done + s1 failed (finished); s2 never ran, so it adds nothing.
+    expect(snap.missionPct).toBe(67);
+    expect(agentProgress(snap.agents.s2)).toBe(0);
   });
 
   it('STOP-ALL (halted) shows the started step as STOPPED, the rest SKIPPED', () => {
@@ -218,6 +219,29 @@ describe('monitor-live: failed vs stopped by the user', () => {
     expect(snap.agents.s2.state).toBe('SKIPPED');
     expect(snap.run?.outcome).toBe('stopped');
     expect(snap.run?.failureReason).toBeUndefined();
+    // done 1 + stopped mid-way 0.5 + never-run 0, over 3 steps.
+    expect(snap.missionPct).toBe(50);
+    expect(agentProgress(snap.agents.s1)).toBe(0.5);
+    expect(agentProgress(snap.agents.s2)).toBe(0);
+  });
+
+  it('a run stopped before any step ran reads 0%, not 100% (RUN 0/3 STOPPED BY YOU)', () => {
+    const run = runFrom([
+      start('SERIAL', 3),
+      state(0, 'SKIPPED', 1),
+      state(1, 'SKIPPED', 1),
+      state(2, 'SKIPPED', 1),
+      end('halted', 1),
+    ]);
+    const src = createLiveSource(run);
+    const snap = src.snapshot(T0 + 9000, []);
+    expect(snap.run?.outcome).toBe('stopped');
+    expect(snap.complete).toBe(false);
+    expect(snap.missionPct).toBe(0);
+    const summary = summarize(src.agents, snap);
+    expect(summary.missionPct).toBe(0);
+    expect(summary.done).toBe(0);
+    for (const id of ['s0', 's1', 's2']) expect(agentProgress(snap.agents[id])).toBe(0);
   });
 });
 

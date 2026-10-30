@@ -119,7 +119,10 @@ export interface MonitorSource {
 // ─── Derived numbers (shared by every source) ────────────────────────────────
 
 export function agentProgress(a: MonitorAgentSnapshot): number {
-  if (a.state === 'DONE' || a.state === 'SKIPPED' || a.state === 'STOPPED') return 1;
+  if (a.state === 'DONE') return 1;
+  // SKIPPED / STOPPED keep the progress they really made: a step stopped
+  // before it did any work is 0%, not "complete" (a run stopped at 0/3 must
+  // not read 100%).
   return Math.min(0.95, a.logs / (a.totalLogs || 1));
 }
 

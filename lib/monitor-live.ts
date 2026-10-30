@@ -10,8 +10,10 @@
  *  - the provider chip is AUTO until the run's `tool` event says what ran;
  *  - money only when the provider reported it (usage.usd) — an API step with
  *    tokens but no usd shows tokens only, never an estimate;
- *  - mission progress is step-based: DONE / SKIPPED / FAILED / STOPPED count
- *    as settled, a running step counts half, over the run's stepCount;
+ *  - mission progress is step-based: DONE / FAILED count as finished, a
+ *    running step counts half, a SKIPPED / STOPPED step counts half only if
+ *    it had started (one stopped before doing any work counts 0), over the
+ *    run's stepCount;
  *  - a user stop (run status `halted`) is STOPPED, not FAILED.
  *
  * Pure: no I/O, no store access, the clock is injected via snapshot(nowMs).
@@ -155,6 +157,9 @@ export function liveState(run: MonitorRun, b: MonitorBranch): MonitorAgentState 
 }
 
 const SETTLED: ReadonlySet<MonitorAgentState> = new Set(['DONE', 'SKIPPED', 'FAILED', 'STOPPED']);
+/** Settled states whose work is over (full bar). SKIPPED / STOPPED are
+ *  settled too but did not finish: they show what they really did. */
+const FINISHED: ReadonlySet<MonitorAgentState> = new Set(['DONE', 'FAILED']);
 
 function ms(iso: string | undefined): number | null {
   if (!iso) return null;
@@ -188,8 +193,8 @@ function snapshotFor(
 ): MonitorSnapshot {
   const agents: Record<string, MonitorAgentSnapshot> = {};
   let approvalAgentId: string | null = null;
-  let settled = 0;
-  let running = 0;
+  let finished = 0;
+  let partial = 0;
   let declined = false;
   const ended = !!run.endedAt;
   for (const b of run.branches) {
@@ -204,6 +209,9 @@ function snapshotFor(
     const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
     const lines = b.tail ? [b.tail] : [];
     const isActive = state === 'RUNNING' || state === 'APPROVAL';
+    // A step that ended without finishing (SKIPPED / STOPPED) counts what it
+    // did: half if it had started, nothing if it never ran.
+    const halfway = isActive || (SETTLED.has(state) && !FINISHED.has(state) && start !== null);
     const ending = approvalEnding(b);
     if (ending === 'declined') declined = true;
     agents[id] = {
@@ -215,8 +223,8 @@ function snapshotFor(
           : ending === 'timeout'
             ? { key: 'monitor.live.approval_timeout' }
             : null,
-      // Step-based camera bar: a started step shows half, a settled one full.
-      logs: SETTLED.has(state) ? 2 : isActive ? 1 : 0,
+      // Step-based camera bar: a started step shows half, a finished one full.
+      logs: FINISHED.has(state) ? 2 : halfway ? 1 : 0,
       totalLogs: 2,
       tokens,
       usd: usage?.usd !== undefined ? usage.usd : null,
@@ -225,8 +233,8 @@ function snapshotFor(
       stale: state === 'RUNNING' && !ended && updatedAgoSec !== undefined && updatedAgoSec >= STALE_AFTER_SEC,
     };
     if (state === 'APPROVAL' && approvalAgentId === null) approvalAgentId = id;
-    if (SETTLED.has(state)) settled++;
-    else if (isActive) running++;
+    if (FINISHED.has(state)) finished++;
+    else if (halfway) partial++;
   }
   const total = Math.max(run.stepCount ?? 0, defs.length, 1);
   // A run that ended because the user said no was stopped by the user.
@@ -234,7 +242,7 @@ function snapshotFor(
   const outcome: MonitorRunOutcome =
     declined && (baseOutcome === 'skipped' || baseOutcome === 'failed') ? 'stopped' : baseOutcome;
   const complete = outcome === 'success';
-  const missionPct = complete ? 100 : Math.min(100, Math.round(((settled + running * 0.5) / total) * 100));
+  const missionPct = complete ? 100 : Math.min(100, Math.round(((finished + partial * 0.5) / total) * 100));
 
   const runStart = ms(run.startedAt);
   const runEnd = ms(run.endedAt);
