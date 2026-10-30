@@ -1812,6 +1812,27 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           justRegistered.createdAt,
           JUST_REGISTERED_STALE_MS,
         );
+        // A step-provider edit that patches nothing but needs a reply (an
+        // ordinal naming a parallel line, or Claude) — same plain-chat notice
+        // as the pending-draft path; nothing is persisted.
+        const correctionNotice = !correction && Date.now() - justRegistered.createdAt <= JUST_REGISTERED_STALE_MS
+          ? detectStepProviderNotice(justRegistered.draftSnapshot, userText)
+          : null;
+        if (correctionNotice) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          const noticeStrings = detectMessageLocale(justRegistered.draftSnapshot.rawText) === 'ja' ? ja : en;
+          store.addMessage(paneId, {
+            id: generateId(),
+            role: 'assistant',
+            content: correctionNotice.kind === 'unsupported'
+              ? noticeStrings['agentplan.provider_unsupported'].replace('{{provider}}', correctionNotice.provider)
+              : noticeStrings['agentplan.provider_ambiguous_line'].split('{{n}}').join(String(correctionNotice.line)),
+            timestamp: Date.now(),
+            agent: justRegistered.agentLabel,
+          });
+          store.setJustRegisteredAgent(paneId, { ...justRegistered, createdAt: Date.now() });
+          return;
+        }
         if (correction?.confirmEditRequired) {
           // Step-provider edit of the just-registered agent (「2番目をCodexで」):
           // never applied directly — re-open it as an edit draft with ★ on

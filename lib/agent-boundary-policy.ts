@@ -640,6 +640,13 @@ const NARROW_INTERPRETER_RE = /\b(?:python\d*|node|nodejs|deno|bun|perl|ruby|php
 const REDIRECT_TO_PROTECTED_RE = />{1,2}\s*['"]?[^\s'"]*(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json|\.shelly\/+agents\/+logs\/+[A-Za-z0-9_.-]+\/+\.?overrides\.json|shelly_agent_policy)/;
 // Provider overrides (logs/<id>/overrides.json): a step's provider is read from
 // it mid-run, so only the app may write it (agent shells / Codex tool calls never).
+// LIMIT: this is a command-string match, defense in depth only — a write through
+// a path that never names the file's location (e.g. a symlinked directory made
+// in an earlier, separate command: `echo … > /tmp/l/overrides.json`) is not
+// caught. The real controls are on the reading side: the executor only accepts
+// local / provider types already in the plan (never a paid pin, never a model
+// from the file), and the app folds only content it wrote itself
+// (lib/agent-provider-overrides.ts isAppWrittenOverrides).
 const OVERRIDES_FILE_RE = /(?:^|[\s/'"=])\.?overrides\.json\b/;
 const REDIRECT_TO_POLICY_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?policy\.json\b/;
 

@@ -187,6 +187,17 @@ describe('shelly-plan-executor.js provider overrides (v16)', () => {
     }
   }, 60000);
 
+  it('a toolLadder-only provider type is not a vetted override target', async () => {
+    const home = makeHome();
+    writeOverrides(home, { steps: { '0': { tool: { type: 'cerebras' } } } });
+    const planFile = writePlan(home, port, [{ instruction: 'Step A' }, { instruction: 'Final step' }], {
+      toolLadder: [{ type: 'cerebras', label: 'Cerebras', model: 'expensive', authRef: 'cerebras' }],
+    });
+    expect(await runExecutor(planFile, home)).toBe(0);
+    expect(requests[0]).toEqual({ instruction: 'Step A', model: 'orig' });
+    expect(readAudit(home).some((e) => e.event === 'provider_override_refused' && e.toolType === 'cerebras')).toBe(true);
+  }, 60000);
+
   it('restartRunning aborts only that branch and reruns it on the new provider', async () => {
     const home = makeHome();
     delayByModel = { slow: 20000 };

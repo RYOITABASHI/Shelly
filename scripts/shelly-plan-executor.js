@@ -4738,7 +4738,7 @@ const STEP_TOOL_DISPATCHABLE_TYPES = ['local', 'gemini-api', 'perplexity', 'cere
 // shells / Codex tool calls writing it, but the executor never relies on that),
 // so an override can never widen what the plan builder vetted: for EVERY plan
 // an API-key provider is accepted only when that provider type already appears
-// in the plan (plan.tool / a step pin / toolLadder) and the tool object (model
+// in the plan as plan.tool or a step pin (never a toolLadder-only rung) and the tool object (model
 // included) is the plan's own — an override carries a type only, never a model;
 // an autonomous plan additionally requires the step to have been an isolated
 // API-key step. The local LLM is always accepted; Codex (cli) is not
@@ -5081,18 +5081,16 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
 
   // Provider overrides (v16) — see readProviderOverrides' comment above.
   const overrideRunId = activeProgress ? activeProgress.runId : undefined;
-  const vettedToolTypes = new Set(
-    [plan.tool]
-      .concat(plan.steps.list.map((s) => s.tool))
-      .concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : [])
-      .filter((t) => t && typeof t.type === 'string')
-      .map((t) => t.type),
-  );
+  // plan.tool + step pins only — NOT toolLadder: a ladder rung is a fallback
+  // the plan may try after a failure, not a provider the user chose for a
+  // step (and its object can be an expensive model, e.g. sonar-deep-research).
+  // Matches the attended chain's vetOverrideToolForAgent.
+  const vettedPool = [plan.tool].concat(plan.steps.list.map((s) => s.tool)).filter((t) => t && typeof t.type === 'string');
+  const vettedToolTypes = new Set(vettedPool.map((t) => t.type));
   // The plan's own (vetted) tool object of that type; only the local LLM may
   // be synthesized when the plan has none.
   function vettedToolObject(type) {
-    const pool = [plan.tool].concat(plan.steps.list.map((s) => s.tool)).concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : []);
-    const found = pool.find((t) => t && t.type === type);
+    const found = vettedPool.find((t) => t.type === type);
     if (found) return found;
     return type === 'local' ? { type: 'local', label: OVERRIDE_TOOL_LABELS.local } : null;
   }

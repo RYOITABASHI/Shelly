@@ -295,6 +295,15 @@ describe('overrides.json model + vetting', () => {
     expect(touchesProtectedPolicyFiles('mv /tmp/x /h/.shelly/agents/logs/a1/.overrides.json.tmp')).toBe(true);
     expect(touchesProtectedPolicyFiles('cat ~/.shelly/agents/logs/a1/progress.jsonl')).toBe(false);
   });
+
+  it('documents the gate limit: a write through a symlinked dir made earlier is NOT caught (reader-side vetting is the control)', () => {
+    // String match only: the second command never names the real location.
+    expect(touchesProtectedPolicyFiles('ln -s ~/.shelly/agents/logs/a1 /tmp/l')).toBe(false);
+    expect(touchesProtectedPolicyFiles('echo x > /tmp/l/overrides.json')).toBe(false);
+    // ...which is why a foreign file can never become a definition change
+    // (isAppWrittenOverrides) and the executor only accepts vetted types.
+    expect(isAppWrittenOverrides('a1', parseProviderOverrides('{"v":1,"steps":{"0":{"tool":{"type":"perplexity"}}}}'))).toBe(false);
+  });
 });
 
 describe('fold after the run (decision + authenticity + listing)', () => {
@@ -330,8 +339,8 @@ describe('fold after the run (decision + authenticity + listing)', () => {
 describe('MONITOR provider picker (lib/monitor-provider-pick)', () => {
   beforeEach(() => __resetAppWrittenOverridesForTests());
 
-  function fakeFs() {
-    let file: string | null = null;
+  function fakeFs(initial: string | null = null) {
+    let file: string | null = initial;
     const cmds: string[] = [];
     const exec = jest.fn(async (cmd: string) => {
       cmds.push(cmd);
@@ -353,6 +362,29 @@ describe('MONITOR provider picker (lib/monitor-provider-pick)', () => {
     expect(written).toMatchObject({ v: 1, runId: 'run-1', steps: { '1': { tool: { type: 'local' } } }, restartRunning: [1] });
     expect(isAppWrittenOverrides(agent.id, parseProviderOverrides(fs.read()!))).toBe(true);
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it('a foreign (planted) file is replaced, never merged: only the user\'s own pick can be folded', async () => {
+    const planted = JSON.stringify({ v: 1, runId: 'run-1', steps: { '0': { tool: { type: 'perplexity' } } }, updatedAt: 1 });
+    const fs = fakeFs(planted);
+    const agent = agentWith({ continuous: undefined });
+    await applyProviderPick(fs.exec, jest.fn(), { agent, stepIndex: 1, pick: 'local', restart: false, runId: 'run-1', runActive: true });
+    const written = parseProviderOverrides(fs.read())!;
+    expect(written.steps).toEqual({ '1': { tool: { type: 'local' } } });
+    expect(isAppWrittenOverrides(agent.id, written)).toBe(true);
+    // What the post-run fold would apply: the user's step only.
+    const partial = foldOverridesIntoAgent(agent, written)!;
+    expect(partial.orchestration!.steps).toEqual([agent.orchestration!.steps[0], { instruction: '要約して', tool: { type: 'local' } }]);
+    // And the planted content itself is never trusted.
+    expect(isAppWrittenOverrides(agent.id, parseProviderOverrides(planted))).toBe(false);
+  });
+
+  it('an app-written file is merged (two picks in one run both survive)', async () => {
+    const fs = fakeFs();
+    const agent = agentWith({ continuous: undefined });
+    await applyProviderPick(fs.exec, jest.fn(), { agent, stepIndex: 0, pick: 'local', restart: false, runId: 'run-1', runActive: true });
+    await applyProviderPick(fs.exec, jest.fn(), { agent, stepIndex: 1, pick: 'perplexity', restart: false, runId: 'run-1', runActive: true });
+    expect(parseProviderOverrides(fs.read())!.steps).toEqual({ '0': { tool: { type: 'local' } }, '1': { tool: { type: 'perplexity' } } });
   });
 
   it('a provider the definition does not use yet: next run only, never a restart', async () => {

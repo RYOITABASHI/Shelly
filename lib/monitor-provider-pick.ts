@@ -26,6 +26,7 @@ import {
   buildReadOverridesCommand,
   buildWriteOverridesCommand,
   foldOverridesIntoAgent,
+  isAppWrittenOverrides,
   mergeProviderOverride,
   noteAppWrittenOverrides,
   parseProviderOverrides,
@@ -79,7 +80,13 @@ export async function applyProviderPick(exec: PickExec, update: PickUpdate, req:
   const readCmd = buildReadOverridesCommand(agent.id);
   if (!readCmd) throw new Error('unsafe agent id');
   const current = await exec(readCmd, EXEC_TIMEOUT_MS);
-  const merged = mergeProviderOverride(parseProviderOverrides(current.stdout), {
+  // Build on the existing file ONLY when this app process wrote it: anything
+  // else (a planted step pin) must never be carried into the content we then
+  // record as app-written — that record is what makes the post-run fold trust
+  // a file. A foreign file is replaced, not merged.
+  const existing = parseProviderOverrides(current.stdout);
+  const base = isAppWrittenOverrides(agent.id, existing) ? existing : null;
+  const merged = mergeProviderOverride(base, {
     // A continuous loop's next iteration has a new runId — leave it unscoped.
     runId: agent.continuous ? undefined : req.runId,
     stepIndex: req.stepIndex,

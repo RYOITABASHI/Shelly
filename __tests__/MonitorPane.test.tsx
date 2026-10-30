@@ -31,11 +31,6 @@ const mockApplyPick = jest.fn(async (..._args: unknown[]) => ({ result: 'overrid
 jest.mock('@/lib/monitor-provider-pick', () => ({
   applyProviderPick: (...args: unknown[]) => mockApplyPick(...args),
 }));
-const mockAddMessage = jest.fn();
-jest.mock('@/store/ai-pane-store', () => ({
-  useAIPaneStore: { getState: () => ({ addMessage: mockAddMessage }) },
-  agentThreadKey: (id: string) => `agent:${id}`,
-}));
 
 // Register / run hand-off: the AI pane focus, the agent runner and the shell
 // are the I/O boundaries; the registration store itself is real.
@@ -345,7 +340,10 @@ describe('MonitorPane LIVE source', () => {
     });
     expect(mockApplyPick).toHaveBeenCalledTimes(1);
     expect(mockApplyPick.mock.calls[0][2]).toMatchObject({ stepIndex: 1, pick: 'groq', restart: true, runId: 'run-1', runActive: true });
-    expect(mockAddMessage).toHaveBeenCalledWith('agent:digest', expect.objectContaining({ role: 'system', content: 'monitor.provider.note_restart' }));
+    // One-line note in the agent's own chat thread (the real chat store).
+    const { useAIPaneStore, agentThreadKey } = require('@/store/ai-pane-store');
+    const thread = useAIPaneStore.getState().getOrCreate(agentThreadKey('digest')).messages;
+    expect(thread.some((m: { role: string; content: string }) => m.role === 'system' && m.content === 'monitor.provider.note_restart')).toBe(true);
     expect(utils.queryByTestId('monitor-provider-picker')).toBeNull();
     // Still the single view (on LIVE the tap no longer jumps to GRID).
     expect(useAgentStore.getState().monitor.view).toBe('single');
