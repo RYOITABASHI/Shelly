@@ -54,8 +54,12 @@ export const EXTERNAL_BROWSER_HOSTS: ReadonlySet<string> = new Set([
  * Claude Code glibc S2: `claude setup-token` / `/login` sign-in URLs, queued by
  * OAuthHyperlinkBridge.kt from the OSC 8 hyperlink Claude renders. Unlike the
  * Google hosts these are gated on host AND path (only the authorize endpoint,
- * never arbitrary claude.ai pages), https only, default port, no userinfo.
- * Must mirror OAuthHyperlinkBridge.isAnthropicOAuthAuthorizeUrl().
+ * never arbitrary claude.ai pages), https only, default port, no userinfo, AND
+ * on the OAuth parameters: client_id must be Claude Code's public client and
+ * redirect_uri must be Claude Code's manual-code callback or its localhost
+ * listener. Even then the drain never opens one unprompted: the user has to
+ * tap "Open" (`requiresConfirm`), and only while a shelly-claude-glibc session
+ * is armed (app/_layout.tsx). Must mirror OAuthHyperlinkBridge.kt.
  */
 export const ANTHROPIC_OAUTH_AUTHORIZE: ReadonlyMap<string, string> = new Map([
   ['claude.ai', '/oauth/authorize'],
@@ -64,18 +68,40 @@ export const ANTHROPIC_OAUTH_AUTHORIZE: ReadonlyMap<string, string> = new Map([
   ['console.anthropic.com', '/oauth/authorize'],
 ]);
 
-export function isAnthropicOAuthAuthorizeUrl(raw: string): boolean {
-  let u: URL;
+/** Claude Code's public OAuth client (CLIENT_ID in the 2.1.314 binary). */
+export const CLAUDE_CODE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+/** Claude Code's MANUAL_REDIRECT_URL (setup-token / paste-the-code flow). */
+export const CLAUDE_CODE_MANUAL_REDIRECT = 'https://platform.claude.com/oauth/code/callback';
+const LOCALHOST_CALLBACK = /^http:\/\/localhost:\d{1,5}\/callback$/;
+
+function parseUrl(raw: string): URL | null {
   try {
-    u = new URL(raw);
+    return new URL(raw);
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Host + path is an Anthropic authorize endpoint (parameters not checked). */
+export function isAnthropicAuthorizeEndpoint(raw: string): boolean {
+  const u = parseUrl(raw);
+  if (!u) return false;
+  const want = ANTHROPIC_OAUTH_AUTHORIZE.get(u.hostname.toLowerCase());
+  return want !== undefined && u.pathname === want;
+}
+
+export function isAnthropicOAuthAuthorizeUrl(raw: string): boolean {
+  const u = parseUrl(raw);
+  if (!u) return false;
   if (u.protocol !== 'https:') return false;
   if (u.username || u.password) return false;
   if (u.port && u.port !== '443') return false;
-  const want = ANTHROPIC_OAUTH_AUTHORIZE.get(u.hostname.toLowerCase());
-  return want !== undefined && u.pathname === want;
+  if (!isAnthropicAuthorizeEndpoint(raw)) return false;
+  const clientIds = u.searchParams.getAll('client_id');
+  const redirects = u.searchParams.getAll('redirect_uri');
+  if (clientIds.length !== 1 || clientIds[0] !== CLAUDE_CODE_CLIENT_ID) return false;
+  if (redirects.length !== 1) return false;
+  return redirects[0] === CLAUDE_CODE_MANUAL_REDIRECT || LOCALHOST_CALLBACK.test(redirects[0]);
 }
 
 export type DeepLinkAuthMode = 'in-app' | 'external-browser';
@@ -86,6 +112,12 @@ export interface DeepLinkQueueEntry {
   authMode: DeepLinkAuthMode;
   /** the parsed, lower-cased host — for logging / callers that want it */
   host: string;
+  /**
+   * true for Claude Code sign-in URLs: never opened automatically; the drain
+   * asks the user (tap "Open"), and only while a shelly-claude-glibc session is
+   * armed.
+   */
+  requiresConfirm: boolean;
 }
 
 export interface DeepLinkQueueResolution {
@@ -155,6 +187,13 @@ export function resolveQueueLine(rawLine: string): DeepLinkQueueResolution {
   if (!host) return reject('url without host');
 
   const anthropicAuth = isAnthropicOAuthAuthorizeUrl(url);
+  if (!anthropicAuth && isAnthropicAuthorizeEndpoint(url)) {
+    // An Anthropic consent page that is not Claude Code's own client/redirect
+    // (or not https / has userinfo / odd port): the shape of a code-phishing
+    // attempt. Never dispatch it anywhere, not even in-app.
+    return reject('anthropic authorize url failed client_id/redirect_uri check');
+  }
+  const requiresConfirm = anthropicAuth;
   const allowed = EXTERNAL_BROWSER_HOSTS.has(host) || anthropicAuth;
 
   if (declaredExternal && !allowed) {
@@ -163,7 +202,7 @@ export function resolveQueueLine(rawLine: string): DeepLinkQueueResolution {
     // reject: the URL itself may be perfectly legitimate, it just doesn't get
     // the privilege it asked for.
     return {
-      entry: { url, provider, authMode: 'in-app', host },
+      entry: { url, provider, authMode: 'in-app', host, requiresConfirm: false },
       note: 'downgraded-to-in-app',
     };
   }
@@ -175,12 +214,13 @@ export function resolveQueueLine(rawLine: string): DeepLinkQueueResolution {
         provider: provider ?? (anthropicAuth ? 'anthropic' : 'google'),
         authMode: 'external-browser',
         host,
+        requiresConfirm,
       },
       note: 'upgraded-to-external',
     };
   }
 
   return {
-    entry: { url, provider, authMode: declaredExternal ? 'external-browser' : 'in-app', host },
+    entry: { url, provider, authMode: declaredExternal ? 'external-browser' : 'in-app', host, requiresConfirm },
   };
 }

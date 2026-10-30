@@ -9,7 +9,7 @@ import { logInfo, logError, logLifecycle } from '@/lib/debug-logger';
 import { Stack, SplashScreen, type ErrorBoundaryProps } from "expo-router";
 import { applyThemeFromSettings, startBootThemeGate } from '@/lib/boot-theme-gate';
 import { StatusBar } from "expo-status-bar";
-import { Alert, AppState, View, Text, Pressable, ScrollView, StyleSheet } from "react-native";
+import { Alert, AppState, View, Text, Pressable, ScrollView, StyleSheet, ToastAndroid } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "react-native-reanimated";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -35,7 +35,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
-import { createOpenGuard } from '@/lib/deep-link-open-guard';
+import { createOpenGuard, openGuardKey } from '@/lib/deep-link-open-guard';
 import { useBackupModalStore } from '@/store/backup-modal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { ensurePaneByTab, focusPaneByTab, multiPaneSlotOps } from '@/lib/pane-focus';
@@ -1722,6 +1722,58 @@ export default function RootLayout() {
     // minute is dropped (logged). The spool below is deleted before any line
     // is dispatched, so a crash can never replay a line.
     const openGuard = createOpenGuard();
+    // Claude Code glibc S2: sign-in prompt. The arm file is written by the
+    // bashrc shelly-claude-glibc() function (pid + nonce) for the lifetime of
+    // an interactive session and removed by its EXIT trap; tapping "Open"
+    // consumes it (one sign-in per arming).
+    const claudeLoginArmPath = `${FileSystem.documentDirectory}home/tmp/.shelly-claude-login.arm`;
+    let signInPromptOpen = false;
+    const promptClaudeSignIn = async (url: string, provider: string | null, host: string, guardKey: string) => {
+      const arm = await FileSystem.getInfoAsync(claudeLoginArmPath).catch(() => ({ exists: false }));
+      if (!arm.exists) {
+        logError('DeepLinkQueue', `dropped Claude sign-in URL: no armed shelly-claude-glibc session (${host})`);
+        openGuard.forget(guardKey);
+        return;
+      }
+      if (signInPromptOpen) {
+        logInfo('DeepLinkQueue', 'Claude sign-in prompt already showing; dropped duplicate request');
+        return;
+      }
+      signInPromptOpen = true;
+      Alert.alert(
+        t('deeplink.claude_signin_title'),
+        t('deeplink.claude_signin_body', { host }),
+        [
+          {
+            text: t('deeplink.claude_signin_cancel'),
+            style: 'cancel',
+            onPress: () => {
+              signInPromptOpen = false;
+              // A deliberate retry (same URL re-rendered later) may prompt again.
+              openGuard.forget(guardKey);
+              logInfo('DeepLinkQueue', 'Claude sign-in prompt cancelled');
+            },
+          },
+          {
+            text: t('deeplink.claude_signin_open'),
+            onPress: () => {
+              signInPromptOpen = false;
+              void FileSystem.deleteAsync(claudeLoginArmPath, { idempotent: true }).catch(() => {});
+              void dispatchExternalBrowser(url, provider).then(() =>
+                logInfo('DeepLinkQueue', `Claude sign-in opened on user tap (${host})`),
+              );
+            },
+          },
+        ],
+        {
+          cancelable: true,
+          onDismiss: () => {
+            signInPromptOpen = false;
+            openGuard.forget(guardKey);
+          },
+        },
+      );
+    };
     const drainQueue = async () => {
       // Codex review: re-entry guard. drainQueue is async; if a
       // dispatchExternalBrowser await takes longer than the 250 ms
@@ -1778,11 +1830,31 @@ export default function RootLayout() {
             logError('DeepLinkQueue', `rejected line (${resolved.reason}): ${line.slice(0, 96)}`);
             continue;
           }
-          const { url, provider, authMode, host } = resolved.entry;
-          // Claude Code glibc S2: loop/burst safety (lib/deep-link-open-guard.ts).
-          const verdict = openGuard.check(url);
-          if (!verdict.ok) {
-            logError('DeepLinkQueue', `dropped ${verdict.reason} open (${host}): ${url.slice(0, 96)}`);
+          const { url, provider, authMode, host, requiresConfirm } = resolved.entry;
+          // Claude Code glibc S2: loop/burst safety for external opens only
+          // (lib/deep-link-open-guard.ts). Keyed on provider + URL.
+          const guardKey = openGuardKey(provider, url);
+          if (authMode === 'external-browser') {
+            const verdict = openGuard.check(guardKey);
+            if (!verdict.ok) {
+              logError('DeepLinkQueue', `dropped ${verdict.reason} external open (${host}): ${url.slice(0, 96)}`);
+              if (verdict.reason === 'rate-limited') {
+                try {
+                  ToastAndroid.show(t('deeplink.open_rate_limited'), ToastAndroid.SHORT);
+                } catch {
+                  /* non-Android */
+                }
+              }
+              continue;
+            }
+          }
+          if (requiresConfirm) {
+            // Claude Code sign-in URL. NEVER opened from output alone: any
+            // program printing an OSC 8 link could otherwise put a genuine
+            // Anthropic consent page with an attacker's PKCE challenge in
+            // front of the user. Only while a shelly-claude-glibc session is
+            // armed, and only on the user's tap; the tap disarms the session.
+            await promptClaudeSignIn(url, provider, host, guardKey);
             continue;
           }
           if (resolved.note === 'downgraded-to-in-app') {

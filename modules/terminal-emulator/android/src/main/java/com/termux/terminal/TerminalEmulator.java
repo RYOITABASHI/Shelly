@@ -296,7 +296,7 @@ public final class TerminalEmulator {
     /**
      * Shelly: observer for OSC 8 hyperlinks (ESC ] 8 ; params ; URI ST). The emulator does
      * not render hyperlinks; it only hands the URI to this observer. Used by
-     * expo.modules.terminalemulator.OAuthHyperlinkBridge to open Claude Code's sign-in URL
+     * expo.modules.terminalemulator.OAuthHyperlinkBridge to offer (tap-to-open, never automatic) Claude Code's sign-in URL
      * (rendered as an OSC 8 link, so the URI is complete even when the visible text wraps).
      * The observer must be cheap and must not throw; it runs on the emulator thread.
      */

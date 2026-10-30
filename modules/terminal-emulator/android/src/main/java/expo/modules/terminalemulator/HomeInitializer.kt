@@ -1459,7 +1459,7 @@ patchCodex(libDir);
     //      node, random port, lifetime tied to the claude process) and passes
     //      HTTPS_PROXY/HTTP_PROXY/NO_PROXY only to claude; BROWSER/DISPLAY
     //      unset so the sign-in URL comes out as an OSC 8 hyperlink
-    //      (OAuthHyperlinkBridge.kt opens it once via the deep-link queue).
+    //      (OAuthHyperlinkBridge.kt queues a tap-to-open sign-in prompt while armed).
     private const val BASHRC_VERSION = 275
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
@@ -1473,13 +1473,9 @@ patchCodex(libDir);
     fun initialize(context: Context): File {
         val home = getHomeDir(context)
         val libDir = LibExtractor.getLibDir(context).absolutePath
-        // Claude Code glibc S2: open Anthropic OAuth authorize URLs that a TUI
-        // emits as OSC 8 hyperlinks (full URL, unaffected by line wrapping)
-        // once via the deep-link queue. Idempotent.
-        OAuthHyperlinkBridge.install(home)
-        // Claude Code glibc S2: open Anthropic OAuth authorize URLs that a TUI
-        // emits as OSC 8 hyperlinks (full URL, unaffected by line wrapping)
-        // once via the deep-link queue. Idempotent.
+        // Claude Code glibc S2: observe OSC 8 hyperlinks (full URL, unaffected by
+        // line wrapping) and turn an armed Claude Code sign-in URL into a
+        // tap-to-open prompt (never an automatic open). Idempotent.
         OAuthHyperlinkBridge.install(home)
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
 
@@ -1769,19 +1765,6 @@ patchCodex(libDir);
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-device.js extract failed: ${e.message}")
-        }
-
-        // Claude Code glibc S2: private CONNECT proxy run on bionic node by
-        // shelly-claude-glibc() (glibc has no /etc/resolv.conf on Android, so
-        // the glibc claude process cannot resolve DNS itself). Extracted every
-        // launch like the device/doctor helpers.
-        val claudeProxyScript = File(home, ".shelly-claude-proxy.js")
-        try {
-            context.assets.open("shelly-claude-proxy.js").use { input ->
-                claudeProxyScript.outputStream().use { output -> input.copyTo(output) }
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("HomeInitializer", "shelly-claude-proxy.js extract failed: ${e.message}")
         }
 
         // Claude Code glibc S2: private CONNECT proxy run on bionic node by
@@ -4241,11 +4224,17 @@ patchCodex(libDir);
             // HTTPS_PROXY/HTTP_PROXY/NO_PROXY (+ lowercase) are set ONLY on the
             // claude command line. The proxy dies with the subshell (EXIT trap)
             // and also polls --parent-pid, so a SIGKILLed shell cannot leave it
-            // running. BROWSER/DISPLAY are unset for claude: the glibc process
+            // running. The proxy requires Proxy-Authorization with a 128-bit
+            // token it generates and hands back only via the 0600 port file
+            // (never argv); claude gets it inside HTTPS_PROXY's userinfo. For
+            // interactive sessions a pid+nonce arm file
+            // ($TMPDIR/.shelly-claude-login.arm) arms the sign-in prompt; the
+            // EXIT trap removes it if it is still ours.
+            // BROWSER/DISPLAY are unset for claude: the glibc process
             // cannot execve app_data_file openers (W^X; a glibc-side exec
             // wrapper is S3), so Claude takes its headless path and renders the
             // sign-in URL as an OSC 8 hyperlink, which the terminal emulator
-            // hands to OAuthHyperlinkBridge.kt (full URL, opened once).
+            // hands to OAuthHyperlinkBridge.kt (full URL; it only becomes a tap-to-open prompt).
             sb.appendLine("shelly-claude-glibc() {")
             sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
             sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
@@ -4261,30 +4250,51 @@ patchCodex(libDir);
             sb.appendLine("    echo \"shelly-claude-glibc: missing \$__proxy_js (restart Shelly to re-extract helpers)\" >&2; return 2")
             sb.appendLine("  fi")
             sb.appendLine("  (")
+            sb.appendLine("    umask 077")
             sb.appendLine("    __pdir=\"\${TMPDIR:-\$HOME/tmp}\"")
             sb.appendLine("    mkdir -p \"\$__pdir\" 2>/dev/null")
             sb.appendLine("    __pfile=\"\$__pdir/shelly-claude-proxy.\$BASHPID.port\"")
+            sb.appendLine("    __arm=\"\$__pdir/.shelly-claude-login.arm\"")
+            sb.appendLine("    __armtag=\"\$BASHPID \$RANDOM\$RANDOM\$RANDOM\"")
             sb.appendLine("    rm -f \"\$__pfile\" \"\$__pfile.tmp\"")
             sb.appendLine("    # linker64 directly (not the _run function) so \$! is the proxy itself")
             sb.appendLine("    LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 $libDir/node \"\$__proxy_js\" --port-file \"\$__pfile\" --parent-pid \"\$BASHPID\" </dev/null >/dev/null 2>\"\$__pfile.log\" &")
             sb.appendLine("    __proxy_pid=\$!")
-            sb.appendLine("    trap 'kill \"\$__proxy_pid\" 2>/dev/null; rm -f \"\$__pfile\" \"\$__pfile.tmp\" \"\$__pfile.log\"' EXIT")
+            sb.appendLine("    __cleanup() {")
+            sb.appendLine("      kill \"\$__proxy_pid\" 2>/dev/null")
+            sb.appendLine("      if grep -q 'Proxy-Authorization' \"\$__pfile.log\" 2>/dev/null; then")
+            sb.appendLine("        echo \"shelly-claude-glibc: claude's HTTP client did not send the private proxy credentials (407); see DEFERRED.md\" >&2")
+            sb.appendLine("      fi")
+            sb.appendLine("      [ \"\$(cat \"\$__arm\" 2>/dev/null)\" = \"\$__armtag\" ] && rm -f \"\$__arm\"")
+            sb.appendLine("      rm -f \"\$__pfile\" \"\$__pfile.tmp\" \"\$__pfile.log\"")
+            sb.appendLine("    }")
+            sb.appendLine("    trap __cleanup EXIT")
             sb.appendLine("    __port=\"\"")
+            sb.appendLine("    __token=\"\"")
             sb.appendLine("    __i=0")
             sb.appendLine("    while [ \"\$__i\" -lt 200 ]; do")
-            sb.appendLine("      if [ -s \"\$__pfile\" ]; then read -r __port < \"\$__pfile\"; break; fi")
+            sb.appendLine("      if [ -s \"\$__pfile\" ]; then read -r __port __token < \"\$__pfile\"; break; fi")
             sb.appendLine("      kill -0 \"\$__proxy_pid\" 2>/dev/null || break")
             sb.appendLine("      sleep 0.05")
             sb.appendLine("      __i=\$((__i + 1))")
             sb.appendLine("    done")
-            sb.appendLine("    case \"\$__port\" in")
-            sb.appendLine("      ''|*[!0-9]*)")
+            sb.appendLine("    case \"\$__port:\$__token\" in")
+            sb.appendLine("      [0-9]*:[0-9a-f]*) ;;")
+            sb.appendLine("      *)")
             sb.appendLine("        echo \"shelly-claude-glibc: private proxy failed to start\" >&2")
             sb.appendLine("        cat \"\$__pfile.log\" >&2 2>/dev/null")
             sb.appendLine("        exit 1")
             sb.appendLine("        ;;")
             sb.appendLine("    esac")
-            sb.appendLine("    __proxy=\"http://127.0.0.1:\$__port\"")
+            sb.appendLine("    # Arm the sign-in bridge (OAuthHyperlinkBridge.kt) only for interactive")
+            sb.appendLine("    # sessions that can log in; never for -p/--print or non-TTY runs.")
+            sb.appendLine("    __interactive=1")
+            sb.appendLine("    [ -t 0 ] && [ -t 1 ] || __interactive=0")
+            sb.appendLine("    for __a in \"\$@\"; do")
+            sb.appendLine("      case \"\$__a\" in -p|--print|--version|-v|--help|-h) __interactive=0 ;; esac")
+            sb.appendLine("    done")
+            sb.appendLine("    [ \"\$__interactive\" = 1 ] && printf '%s\\n' \"\$__armtag\" > \"\$__arm\"")
+            sb.appendLine("    __proxy=\"http://shelly:\$__token@127.0.0.1:\$__port\"")
             sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY")
             sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
             sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
