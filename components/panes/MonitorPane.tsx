@@ -389,8 +389,14 @@ export default function MonitorPane() {
         : doneCount;
   // Folded/compact: "DONE n/5" moves into the progress label to save a row.
   const showStatusInStats = isWide || snap.complete || snap.approvalPending || ended;
+  // "RUN n/3" is live concurrency; once the run is over it reads as a stuck
+  // 0/3, so the slot shows "DONE n/total" instead.
+  const runOver = snap.complete || ended;
+  const runSlotLabel = runOver
+    ? doneCount
+    : t('monitor.run_count', { n: summary.running, max: MAX_PARALLEL_BRANCHES });
   const progressLabel =
-    !isWide && !snap.complete ? `${doneCount} · ${summary.missionPct}%` : `${summary.missionPct}%`;
+    !isWide && !runOver ? `${doneCount} · ${summary.missionPct}%` : `${summary.missionPct}%`;
   const capText = team.capUsd !== undefined ? ` / ${formatMoney(team.capUsd, locale)}` : '';
   const apiCostText = summary.apiUsdKnown
     ? `${formatMoney(summary.apiUsd, locale)}${capText}`
@@ -529,8 +535,8 @@ export default function MonitorPane() {
           </Text>
         )}
         <View style={styles.mstats}>
-          <Text style={[styles.mstat, { color: MON.phosphor }]} numberOfLines={1}>
-            {t('monitor.run_count', { n: summary.running, max: MAX_PARALLEL_BRANCHES })}
+          <Text style={[styles.mstat, { color: MON.phosphor }]} numberOfLines={1} testID="monitor-run-slot">
+            {runSlotLabel}
           </Text>
           {showStatusInStats && (
             <Text
@@ -732,6 +738,16 @@ export default function MonitorPane() {
       {showWall && (
         <View style={[styles.wall, fitted && { height: wallH }]} onLayout={onWallLayout} testID="monitor-wall">
           {view === 'single' ? (
+            <View style={styles.singleWrap}>
+            {/* The single camera can push the switcher's GRID key off-screen;
+                keep a way back right above it. */}
+            <View style={styles.singleBack}>
+              <Key
+                label={t('monitor.back_to_grid')}
+                small
+                onPress={() => setMonitor({ view: 'grid', auto: false })}
+              />
+            </View>
             <MonitorCamera
               def={selectedDef}
               snap={snap.agents[selectedDef.id]}
@@ -746,6 +762,7 @@ export default function MonitorPane() {
               compactText={false}
               onPress={() => (providerPick.available ? providerPick.toggle() : setMonitor({ view: 'grid', auto: false }))}
             />
+            </View>
           ) : (
             camW > 0 && (
               <View style={[styles.grid, { gap: gridGap }]} testID={fitted ? 'monitor-grid-fit' : 'monitor-grid'}>
@@ -946,6 +963,8 @@ const styles = StyleSheet.create({
   pinnedAskWrap: { flexGrow: 1, flexShrink: 1, flexBasis: 200 },
   pinnedReply: { flexGrow: 1, flexBasis: 220 },
   wall: { width: '100%' },
+  singleWrap: { gap: 6 },
+  singleBack: { flexDirection: 'row' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GAP },
   switcher: {
     flexDirection: 'row',

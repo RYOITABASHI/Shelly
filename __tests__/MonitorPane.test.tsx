@@ -171,6 +171,16 @@ describe('MonitorPane', () => {
     utils.unmount();
   });
 
+  it('single camera view has its own way back to the grid', () => {
+    const utils = render(<MonitorPane />);
+    fireEvent.press(utils.getAllByLabelText(/^CH-01 /)[0]);
+    expect(utils.queryByTestId('monitor-grid')).toBeNull();
+    expect(utils.queryByTestId('monitor-grid-fit')).toBeNull();
+    fireEvent.press(utils.getByText('monitor.back_to_grid'));
+    expect(utils.queryByText('monitor.back_to_grid')).toBeNull();
+    utils.unmount();
+  });
+
   it('folded layout: no NO SIGNAL tile, DONE folded into the progress label, no wall under MAP', () => {
     layout.isWide = false;
     const utils = render(<MonitorPane />);
@@ -482,6 +492,8 @@ describe('MonitorPane LIVE source', () => {
     layoutWall(utils);
     expect(utils.getByTestId('monitor-failure')).toBeTruthy();
     expect(utils.getByTestId('monitor-status').props.children).toBe('monitor.live.outcome.failed');
+    // RUN n/3 is live concurrency; a finished run shows DONE n/total there.
+    expect(utils.getByTestId('monitor-run-slot').props.children).toBe('monitor.done_count');
     expect(utils.queryByTestId('monitor-saved-to')).toBeNull();
 
     const halted = liveRun({ endedAt: iso(1), status: 'halted' });

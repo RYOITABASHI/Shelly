@@ -2945,6 +2945,7 @@ const en: Record<string, string> = {
   'monitor.waiting_for_you': 'WAITING FOR YOU',
   'monitor.done_count': 'DONE {{n}}/{{total}}',
   'monitor.widget_back': '◀ BACK',
+  'monitor.back_to_grid': '◀ GRID',
   'monitor.run_count': 'RUN {{n}}/{{max}}',
   'monitor.mission_progress': 'Mission progress',
   'monitor.cost_api': 'metered',
