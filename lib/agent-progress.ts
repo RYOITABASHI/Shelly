@@ -54,7 +54,7 @@ export interface MonitorRun {
   mode: MonitorRunMode;
   startedAt: string;
   endedAt?: string;
-  /** run_end status (success / error / unavailable / skipped). */
+  /** run_end status (success / error / unavailable / skipped / halted = STOP-ALL). */
   status?: string;
   stepCount?: number;
   lastSeq: number;

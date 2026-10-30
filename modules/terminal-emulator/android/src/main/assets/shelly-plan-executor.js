@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=12
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=13
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -40,7 +40,14 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // v12 (2026-10-30, MONITOR stage 3): live per-run progress stream at
 // logs/<agentId>/progress.jsonl (see progressStart). Bumped so a stale v11
 // copy, which writes no progress, is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 12;
+// v13 (2026-10-30, STOP-ALL in-flight): the chain re-checks the `.halted`
+// sentinel before every serial step, every parallel group, every branch
+// permit and the final action, ending the run as 'skipped' (never firing the
+// final action); SIGTERM (haltAllAgents) kills the broker children before
+// exiting so nothing is orphaned. Bumped so a stale v12 copy, which runs a
+// halted chain to completion, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 13;
+const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
 // lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
@@ -249,7 +256,8 @@ function progressTail(text) {
 
 function progressStatusState(status) {
   if (status === 'success') return 'DONE';
-  if (status === 'skipped') return 'SKIPPED';
+  // 'halted' = STOP-ALL ended the run (v13): unfinished steps were cancelled.
+  if (status === 'skipped' || status === 'halted') return 'SKIPPED';
   return 'FAILED';
 }
 
@@ -2245,6 +2253,28 @@ function nodeInvocation(script, args, paths, opts) {
   return { file: process.execPath, args: [script].concat(args) };
 }
 
+// Broker children still running. haltAllAgents (lib/agent-manager.ts) sends
+// SIGTERM to this executor; the handler in run() SIGKILLs every entry so no
+// broker outlives the run (Android phantom-process ceiling).
+const liveBrokerChildren = new Set();
+
+function killLiveBrokerChildren() {
+  for (const child of liveBrokerChildren) {
+    try {
+      child.kill('SIGKILL');
+    } catch (_) {}
+  }
+  liveBrokerChildren.clear();
+}
+
+function isHalted(paths) {
+  try {
+    return fs.existsSync(paths.haltSentinel);
+  } catch (_) {
+    return true; // fail closed
+  }
+}
+
 async function runBroker(paths, opts, brokerArgs) {
   const broker = opts.broker || path.join(paths.home, '.shelly-capability-broker.js');
   if (!fs.existsSync(broker)) throw new PlanFailure('capability broker is missing', { exitCode: EXIT.TOOL_DENY });
@@ -2254,10 +2284,12 @@ async function runBroker(paths, opts, brokerArgs) {
       env: childEnv(paths, opts),
       stdio: 'ignore',
     });
+    liveBrokerChildren.add(child);
     let settled = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
+      liveBrokerChildren.delete(child);
       clearTimeout(timer);
       resolve(value);
     };
@@ -4850,6 +4882,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // not the original (failed) primary. undefined when the final step never
   // retried (or the chain never reached/dispatched a final step at all).
   let finalUsedTool;
+  // STOP-ALL (2026-10-30): set once the `.halted` sentinel is seen mid-chain.
+  // Nothing further is scheduled and the final action never fires.
+  let haltedChain = false;
 
   // Defensive runtime cap: planParallelGroups currently limits each group to
   // MAX_PARALLEL_BRANCHES too, but dispatch must remain bounded even if that
@@ -5151,6 +5186,12 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // overridden per-step), so a >= 2-entry Agent.actions fan-out dispatches
     // on the chain's FINAL step exactly like the non-chain single-shot path
     // below — see that function's own doc comment.
+    if (isFinal && isHalted(paths)) {
+      haltedChain = true;
+      return {
+        record: { index: i, instruction: step.instruction, status: 'skipped', durationMs: Date.now() - stepStart, outputPreview: KILL_SWITCH_MESSAGE },
+      };
+    }
     const action = isFinal
       ? await dispatchActionsTrusted(paths, stepOpts, stepPlan, config, roots, resultText, args)
       : { status: 'success', preview };
@@ -5194,6 +5235,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   }
 
   for (let i = 0; i < plan.steps.list.length;) {
+    if (haltedChain || isHalted(paths)) {
+      haltedChain = true;
+      break;
+    }
     const gate = nextStepGate({ stepIndex: i, budget, startedAtMs: startedAt, now: Date.now(), priorFailed });
     if (!gate.proceed) break;
 
@@ -5226,6 +5271,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const contextSnapshot = priorResults.slice(0, parallelPlan.contextBase[i]);
       const settled = await Promise.allSettled(Array.from({ length: runLength }, (_, offset) =>
         withBranchPermit(async () => {
+          if (haltedChain || isHalted(paths)) {
+            haltedChain = true;
+            return undefined;
+          }
           const outcome = await executeStepWithProgress(i + offset, contextSnapshot);
           runResults[offset] = outcome;
           return outcome;
@@ -5258,6 +5307,17 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     i += 1;
   }
 
+  if (haltedChain) {
+    appendJsonl(paths.planAuditFile, {
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event: 'plan_halted',
+      agentId: plan.agent.id,
+      stepsRun: records.length,
+    });
+    // User-initiated: no notification (mirrors the native kill-switch gate).
+    return { status: 'skipped', halted: true, preview: KILL_SWITCH_MESSAGE, errorMessage: KILL_SWITCH_MESSAGE, steps: records };
+  }
   const status = reduceStatus(records);
   const preview = combineFinalPreview(records, plan.steps.list.length);
   if (!dispatchedFinal) {
@@ -5347,7 +5407,7 @@ async function run(args) {
   // still-in-flight alarm or a direct `am` fire is refused before any model IO,
   // not just JS-initiated runs. Fail-closed: refuse (skip), never run.
   if (fs.existsSync(paths.haltSentinel)) {
-    return finishSkipped(paths, plan, startedAt, 'All agents are stopped (global kill-switch is on).');
+    return finishSkipped(paths, plan, startedAt, KILL_SWITCH_MESSAGE);
   }
 
   // Multi-action fan-out (2026-07-23): this top-level gate only ever inspects
@@ -5377,6 +5437,34 @@ async function run(args) {
     });
     return EXIT.OK;
   }
+
+  // STOP-ALL (2026-10-30): haltAllAgents SIGTERMs the pid this run just wrote
+  // to paths.lockFile. Kill the broker children first (synchronously: the
+  // stop command escalates to SIGKILL after 1s), record the run as skipped,
+  // release the lock, then exit.
+  const onSigterm = () => {
+    killLiveBrokerChildren();
+    const message = isHalted(paths) ? KILL_SWITCH_MESSAGE : 'Run stopped (SIGTERM).';
+    // End the live progress stream cleanly (run_end 'halted') before exiting.
+    try {
+      progressFinish(activeProgress, 'halted', undefined, message);
+    } catch (_) {}
+    activeProgress = null;
+    try {
+      writeRunLog(paths, plan, 'skipped', message, Date.now() - startedAt, message);
+      appendJsonl(paths.planAuditFile, {
+        ts: new Date().toISOString(),
+        kind: 'plan.executor',
+        event: 'plan_finish',
+        status: 'skipped',
+        reason: message,
+        durationMs: Date.now() - startedAt,
+      });
+    } catch (_) {}
+    releaseLock(paths);
+    process.exit(143);
+  };
+  process.once('SIGTERM', onSigterm);
 
   // Each run opens a fresh CAP-001 egress budget envelope. The broker's budget file
   // (cap-budget-<agentId>.json) is keyed per-agent and persists across runs; without
@@ -5443,8 +5531,11 @@ async function run(args) {
       action = await dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args);
       progressState(progress, 0, progressStatusState(action.status), action.preview);
     }
-    progressStatus = action.status;
+    // run_end says 'halted' (not just 'skipped') so MONITOR can tell STOP-ALL
+    // apart from a refused run; the run log keeps the 'skipped' vocabulary.
+    progressStatus = action.halted ? 'halted' : action.status;
     progressRecords = action.steps;
+    if (action.halted) progressReason = KILL_SWITCH_MESSAGE;
     const durationMs = Date.now() - startedAt;
     writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps, action.actionResults, usedTool);
     appendJsonl(paths.planAuditFile, {
@@ -5491,6 +5582,7 @@ async function run(args) {
     if (e instanceof PlanFailure && e.handled) return EXIT.OK;
     return e instanceof PlanFailure ? e.exitCode : EXIT.INTERNAL;
   } finally {
+    process.removeListener('SIGTERM', onSigterm);
     progressFinish(progress, progressStatus, progressRecords, progressReason);
     activeProgress = null;
     mirrorBrokerAudit(paths, plan);

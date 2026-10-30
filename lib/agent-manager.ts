@@ -147,6 +147,19 @@ const AGENT_RUN_WAIT_POLL_MS = 1_500;
  * headroom). */
 export const ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS = 10 * 60_000;
 
+const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
+
+/** STOP-ALL was pressed while this run was in flight (2026-10-30). Thrown by
+ *  the run waiter / ladder so an attended chain stops scheduling at once. */
+export class AgentsHaltedError extends Error {
+  constructor() {
+    super(KILL_SWITCH_MESSAGE);
+    this.name = 'AgentsHaltedError';
+  }
+}
+
+const agentsHalted = (): boolean => useAgentStore.getState().halted;
+
 export function isSafeAgentId(agentId: unknown): agentId is string {
   // typeof guard first: RegExp.test coerces its argument, so a missing id
   // (undefined) would stringify to "undefined" — which MATCHES the id regex —
@@ -1970,6 +1983,8 @@ async function runLadderAttempts(
   let finalLog: AgentRunLog | undefined;
 
   for (let i = 0; i < ladder.tools.length; i++) {
+    // STOP-ALL: never launch (or escalate to) another attempt once halted.
+    if (agentsHalted()) throw new AgentsHaltedError();
     const isLast = i === ladder.tools.length - 1;
     // For an escalating ladder, force the configured-tool branch to pick exactly
     // this candidate (pins/secret already shaped the ladder; resolveAgentRoute
@@ -2171,6 +2186,9 @@ async function runAgentOrchestratedBody(
   const priorResults: string[] = [];
   const records: AgentRunStep[] = [];
   let priorFailed = false;
+  // STOP-ALL (2026-10-30): set once the kill-switch is seen mid-chain; no
+  // further step is scheduled and the final action never fires.
+  let haltedChain = false;
   // Final step's saved-output fields (draft action) — carried into the
   // aggregate log below so the Sidebar "Open" button (keyed off
   // lastLog.savedPath) and the completion notices can offer the file. The
@@ -2245,6 +2263,10 @@ async function runAgentOrchestratedBody(
   };
 
   for (let i = 0; i < steps.length; i++) {
+    if (agentsHalted()) {
+      haltedChain = true;
+      break;
+    }
     const gate = nextStepGate({ stepIndex: i, budget, startedAtMs, now: Date.now(), priorFailed });
     if (!gate.proceed) {
       // Budget refusal after a SUCCESS (a failure already narrated its own
@@ -2369,6 +2391,10 @@ async function runAgentOrchestratedBody(
         },
       ));
     } catch (error) {
+      if (error instanceof AgentsHaltedError) {
+        haltedChain = true;
+        break;
+      }
       records.push({
         index: i,
         instruction: step.instruction,
@@ -2459,6 +2485,10 @@ async function runAgentOrchestratedBody(
           }
         }
       } catch (error) {
+        if (error instanceof AgentsHaltedError) {
+          haltedChain = true;
+          break;
+        }
         // Fail closed (review H3): never leave an unverified briefing on disk
         // or report success for it.
         logWarn('Sourcing', 'sourced-briefing processing failed', error);
@@ -2488,11 +2518,14 @@ async function runAgentOrchestratedBody(
   // Aggregate the chain into a SINGLE on-disk run log (carrying per-step detail),
   // replacing the per-step logs this chain wrote. Disk and store then agree, the
   // circuit breaker counts one run, and the steps survive a reload.
+  if (haltedChain && !priorFailed) narrate((n) => n.chainHalted());
   const aggregate: AgentRunLog = {
     agentId,
     timestamp: Date.now(),
-    status: reduceStatus(records),
-    outputPreview: combineFinalPreview(records, steps.length),
+    // Halted: 'skipped' (the kill-switch vocabulary), never a failure the
+    // circuit breaker would count.
+    status: haltedChain ? 'skipped' : reduceStatus(records),
+    outputPreview: haltedChain ? KILL_SWITCH_MESSAGE : combineFinalPreview(records, steps.length),
     durationMs: Date.now() - startedAtMs,
     toolUsed: records.at(-1)?.routeDecision?.toolLabel ?? 'orchestration',
     routeDecision: records.at(-1)?.routeDecision,
@@ -2929,6 +2962,8 @@ async function waitForAgentRunCompletion(
     } catch (error) {
       lastError = error;
     }
+    // STOP-ALL: haltAllAgents kills the run; don't wait out the deadline.
+    if (agentsHalted()) throw new AgentsHaltedError();
     await delay(options.pollMs);
   }
   const detail = lastError instanceof Error ? `: ${lastError.message}` : '';
@@ -3044,6 +3079,62 @@ export async function cleanupOrphanAgentFiles(
 const haltSentinelPath = () => `${agentsDir()}/.halted`;
 
 /**
+ * STOP-ALL (2026-10-30, DEFERRED.md「STOP-ALL が実行中のチェーンを止めない」):
+ * terminate every in-flight agent run — attended per-step `run-agent-<id>.sh`
+ * scripts and PlanSpec executor processes alike. Both write their pid to
+ * `locks/<id>.pid` (the .sh's LOCK_FILE, the executor's acquireLock), the same
+ * file generateStopCommand reads.
+ *
+ * Robust by construction, and never exits non-zero: a missing locks dir, an
+ * empty/garbage pid file, a stale pid, or an already-dead process are all
+ * skipped. A pid is only signalled when /proc/<pid>/cmdline names an agent
+ * run (`run-agent-` / `shelly-plan-executor`), so a recycled pid now owned by
+ * the interactive shell or the app itself is never hit. The process group is
+ * killed (taking broker / curl / node children with it) only when its leader
+ * is an agent run too and it is not this shell's own group; otherwise just the
+ * pid (the executor's SIGTERM handler then kills its own broker children).
+ * TERM first, KILL after 1s for survivors; stale pid files and their
+ * `.lockdir` are then removed. Uses the live shell `$HOME`, never the JS
+ * getHomePath() cache (see deleteAgent for the /data/user/0 alias bug).
+ */
+export function haltInflightRunsCommand(): string {
+  return [
+    'd="$HOME/.shelly/agents/locks"',
+    "proc_pgid() { sed 's/^.*) //' \"/proc/$1/stat\" 2>/dev/null | cut -d' ' -f3; }",
+    'mypg="$(proc_pgid $$)"',
+    "is_agent_proc() { case \"$(tr '\\000' ' ' < \"/proc/$1/cmdline\" 2>/dev/null)\" in *run-agent-*|*shelly-plan-executor*) return 0;; esac; return 1; }",
+    'halt_kill() {',
+    '  is_agent_proc "$2" || return 0',
+    '  pg="$(proc_pgid "$2")"',
+    '  case "$pg" in ""|*[!0-9]*) pg="";; esac',
+    '  if [ -n "$pg" ] && [ "$pg" -gt 1 ] && [ "$pg" != "$mypg" ] && is_agent_proc "$pg"; then',
+    '    kill "-$1" -- "-$pg" 2>/dev/null && return 0',
+    '  fi',
+    '  kill "-$1" "$2" 2>/dev/null || true',
+    '}',
+    'pids=""',
+    'for f in "$d"/*.pid; do',
+    '  [ -f "$f" ] || continue',
+    "  pid=\"$(tr -cd '0-9' < \"$f\" 2>/dev/null)\"",
+    '  case "$pid" in ""|0|1) continue;; esac',
+    '  [ "$pid" = "$$" ] && continue',
+    '  halt_kill TERM "$pid"',
+    '  pids="$pids $pid"',
+    'done',
+    'if [ -n "$pids" ]; then',
+    '  sleep 1',
+    '  for pid in $pids; do [ -d "/proc/$pid" ] && halt_kill KILL "$pid"; done',
+    'fi',
+    'for f in "$d"/*.pid; do',
+    '  [ -f "$f" ] || continue',
+    "  pid=\"$(tr -cd '0-9' < \"$f\" 2>/dev/null)\"",
+    '  if [ -z "$pid" ] || ! is_agent_proc "$pid"; then rm -f "$f"; rm -rf "$f.lockdir"; fi',
+    'done',
+    'exit 0',
+  ].join('\n');
+}
+
+/**
  * Pause / resume a single agent (Phase 0 §2.5). Persists `enabled` to the agent's
  * JSON metadata (survives restart) and installs/uninstalls its AlarmManager
  * schedule accordingly. Manual-only agents (schedule === null) just flip the flag.
@@ -3084,6 +3175,9 @@ export async function haltAllAgents(
 ): Promise<void> {
   const store = useAgentStore.getState();
   const failures: string[] = [];
+  // Flip the in-memory flag FIRST so an attended chain in flight stops at its
+  // next step / poll check while the alarms below are still being torn down.
+  store.setHalted(true);
   for (const a of store.agents) {
     if (a.schedule) {
       try {
@@ -3095,11 +3189,18 @@ export async function haltAllAgents(
       }
     }
   }
-  store.setHalted(true);
   try {
     await runCommand(`set -e\n${writeFileCommand(haltSentinelPath(), 'halted\n')}`);
   } catch (error) {
     failures.push(`halt sentinel write failed: ${String(error)}`);
+  }
+  // After the sentinel: a run killed here cannot be relaunched (native and the
+  // executor both refuse on `.halted`), and an executor that survives the
+  // signal sees the sentinel at its next step/group check.
+  try {
+    await runCommand(haltInflightRunsCommand());
+  } catch (error) {
+    failures.push(`in-flight run termination failed: ${String(error)}`);
   }
   // "Keep ChatGPT connected": let the native supervisor see the sentinel now
   // (it latches, turns the switch off and stops the host) instead of on its
