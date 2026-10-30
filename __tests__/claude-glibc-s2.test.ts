@@ -1,7 +1,7 @@
 /**
  * __tests__/claude-glibc-s2.test.ts
  *
- * Claude Code glibc S2 (BASHRC_VERSION 275-276): private authenticated proxy, OSC 8
+ * Claude Code glibc S2-S3 (BASHRC_VERSION 275-278): private authenticated proxy, OSC 8
  * sign-in URL bridge (tap-to-open only, armed sessions only), drain loop
  * safety. See DEFERRED.md "Claude Code 公式 glibc 版（2.1.314）を Shelly で動かす".
  *
@@ -424,7 +424,7 @@ describe('shelly-claude-proxy.js', () => {
   }, 20_000);
 });
 
-describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () => {
+describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-278)', () => {
   const lines = homeKt.split(/\r?\n/);
   const start = lines.findIndex((l) => l.includes('sb.appendLine("shelly-claude-glibc() {")'));
   const fnLines: string[] = [];
@@ -437,7 +437,38 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () =>
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 277\b/);
+    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 278\b/);
+  });
+
+  it('S3: gives claude an exec-able SHELL/rg/git only via command prefixes', () => {
+    expect(fn).toMatch(/\n    __xbin="\$__root\/bin"\n/);
+    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$@"\n/.exec(fn)![0];
+    expect(cmd).toContain('SHELL="$__xbin/bash" CLAUDE_CODE_SHELL="$__xbin/bash" PATH="$__xbin:$PATH"');
+    expect(cmd).toContain('TMPDIR="$__tmp" CLAUDE_CODE_TMPDIR="$__ctmp" USE_BUILTIN_RIPGREP="$__rgb"');
+    // bionic lib dir for claude's children; glibc ld.so keeps --library-path
+    expect(cmd).toContain('SHELLY_GLIBC_LD_LIBRARY_PATH="$SHELLY_LIB_DIR"');
+    expect(cmd).not.toContain('SHELLY_GLIBC_LD_LIBRARY_PATH="$__root/lib"');
+    expect(cmd).toContain('"$__ld" --library-path "$__root/lib" "$__bin" "$@"');
+    // never assigned outside the prefix (interactive SHELL/PATH untouched)
+    const assigns = fn.split('\n').filter((l) => /^\s*(?:SHELL|PATH|CLAUDE_CODE_SHELL|TMPDIR)=/.test(l));
+    expect(assigns.length).toBe(2);
+    for (const l of assigns) expect(l.endsWith('\\')).toBe(true);
+    expect(fn).toMatch(/\[ -x "\$__xbin\/rg" \] && __rgb=0/);
+    expect(fn).toMatch(/mkdir -p "\$__tmp" "\$__ctmp" 2>\/dev\/null/);
+  });
+
+  it('S3: HomeInitializer relinks the nativeLibraryDir shims every launch for a staged runtime only', () => {
+    expect(homeKt).toMatch(/linkCodeModeHostIntoRuntime\(home, libDir\)\r?\n\s+linkClaudeGlibcExecShims\(home, nativeLibDir\)/);
+    const body = /private fun linkClaudeGlibcExecShims\([^]*?\n {4}\}\r?\n/.exec(homeKt)![0];
+    expect(body).toContain('File(home, ".shelly-runtime/claude-glibc")');
+    expect(body).toMatch(/if \(!root\.isDirectory \|\| nativeLibDir\.isNullOrEmpty\(\)\) return/);
+    expect(body).toContain('"bash" to "libshelly_shell.so"');
+    expect(body).toContain('"rg" to "librg.so"');
+    expect(body).toContain('"git" to "libgit.so"');
+    expect(body).toContain('File(nativeLibDir, soName)');
+    expect(body).toContain('android.system.Os.symlink(target.absolutePath, link.absolutePath)');
+    // the .claude-tmp cleanup target must not be what claude uses as its tmp dir
+    expect(fn).not.toContain('.claude-tmp');
   });
 
   it('loads ~/.claude-token.env only inside the subshell when no token is set', () => {
@@ -497,6 +528,10 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () =>
     fs.mkdirSync(path.join(home, 'tmp'), { recursive: true });
     fs.writeFileSync(path.join(rt, 'lib/ld-linux-aarch64.so.1'), '');
     fs.writeFileSync(path.join(rt, 'claude'), '');
+    fs.mkdirSync(path.join(rt, 'bin'), { recursive: true });
+    // shebang so Git Bash on Windows also reports them executable for [ -x ]
+    fs.writeFileSync(path.join(rt, 'bin/bash'), '#!/bin/sh\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(rt, 'bin/rg'), '#!/bin/sh\n', { mode: 0o755 });
     fs.writeFileSync(path.join(home, 'tmp/.shelly-claude-login.arm'), 'foreign 1\n');
     fs.copyFileSync(proxyPath, path.join(home, '.shelly-claude-proxy.js'));
     const fake = path.join(home, 'fake-linker64');
@@ -514,13 +549,20 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () =>
         'echo "HTTPS_PROXY=$HTTPS_PROXY"',
         'echo "NO_PROXY=$NO_PROXY"',
         'echo "BROWSER=${BROWSER-unset}"',
+        'echo "SHELL=$SHELL"',
+        'echo "CCSHELL=$CLAUDE_CODE_SHELL"',
+        'echo "PATH0=${PATH%%:*}"',
+        'echo "CCTMP=$CLAUDE_CODE_TMPDIR"',
+        'echo "RG=$USE_BUILTIN_RIPGREP"',
+        'echo "GLIBCLP=$SHELLY_GLIBC_LD_LIBRARY_PATH"',
         'echo "ARGS=$*"',
         `"${posix(process.execPath)}" "${posix(path.join(home, 'probe.js'))}"`,
       ].join('\n'),
     );
     let body = fn
       .replace('LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 $libDir/node', `"${posix(process.execPath)}"`)
-      .replace('/system/bin/linker64', `bash "${posix(fake)}"`);
+      // "$BASH", not a PATH lookup: claude's PATH now starts with $__root/bin
+      .replace('/system/bin/linker64', `"$BASH" "${posix(fake)}"`);
     // MSYS/Git Bash pids are not Windows pids, so node cannot poll them there.
     if (process.platform === 'win32') body = body.replace(' --parent-pid "$BASHPID"', '');
     const script = [
@@ -530,12 +572,19 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () =>
       'echo "RC=$?"',
       'echo "PARENT_HTTPS_PROXY=${HTTPS_PROXY-unset}"',
       'echo "PARENT_BROWSER=$BROWSER"',
+      'echo "PARENT_SHELL=$SHELL"',
       'echo "LEFTOVER=$(ls "$TMPDIR" | grep -c shelly-claude-proxy)"',
       'echo "ARM=$(cat "$TMPDIR/.shelly-claude-login.arm")"',
     ].join('\n');
     const out = await new Promise<string>((res, rej) => {
       const p = spawn('bash', ['-c', script], {
-        env: { ...process.env, HOME: posix(home), TMPDIR: posix(path.join(home, 'tmp')), SHELLY_LIB_DIR: '/fake/lib' },
+        env: {
+          ...process.env,
+          HOME: posix(home),
+          TMPDIR: posix(path.join(home, 'tmp')),
+          SHELLY_LIB_DIR: '/fake/lib',
+          SHELL: '/x/interactive-bash',
+        },
       });
       let o = '';
       p.stdout.on('data', (d) => (o += d));
@@ -547,6 +596,16 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () =>
       expect(out).toMatch(/HTTPS_PROXY=http:\/\/shelly:[0-9a-f]{32}@127\.0\.0\.1:\d+\r?\n/);
       expect(out).toContain('NO_PROXY=localhost,127.0.0.1,::1');
       expect(out).toContain('BROWSER=unset');
+      // Git Bash rewrites C:/... HOME to /tmp/...; match the runtime-relative tail
+      expect(out).toMatch(/\nSHELL=\S*\/\.shelly-runtime\/claude-glibc\/bin\/bash\r?\n/);
+      expect(out).toMatch(/\nCCSHELL=\S*\/\.shelly-runtime\/claude-glibc\/bin\/bash\r?\n/);
+      expect(out).toMatch(/\nPATH0=\S*\/\.shelly-runtime\/claude-glibc\/bin\r?\n/);
+      expect(out).toMatch(/\nCCTMP=\S*\/\.shelly-runtime\/claude-glibc\/tmp\r?\n/);
+      expect(fs.existsSync(path.join(rt, 'tmp'))).toBe(true);
+      expect(out).toContain('RG=0');
+      expect(out).toContain('GLIBCLP=/fake/lib');
+      expect(out).toContain('PARENT_SHELL=/x/interactive-bash');
+      expect(out).not.toContain('bash missing');
       expect(out).toContain('ARGS=/fake/lib/shelly_glibc_exec');
       expect(out).toContain('setup-token a&b#c=d');
       expect(out).toContain('NOAUTH=HTTP/1.1 407 Proxy Authentication Required');
