@@ -31,7 +31,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from 'react-native';
-import { useFrameCallback, useReducedMotion, useSharedValue } from 'react-native-reanimated';
+import { useFrameCallback, useReducedMotion, useSharedValue, type FrameInfo } from 'react-native-reanimated';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from '@/lib/i18n';
 import { logInfo } from '@/lib/debug-logger';
@@ -77,6 +77,8 @@ const GAP = 10;
 /** Pane padding and the gap between its blocks (styles.content). */
 const PAD = 10;
 const ROOT_GAP = 10;
+/** Largest single step of the animation clock (ms): ~6 frames at 60 Hz. */
+const MAX_CLOCK_STEP_MS = 100;
 
 const pad2 = (n: number) => (n < 10 ? `0${n}` : String(n));
 
@@ -283,11 +285,27 @@ export default function MonitorPane() {
 
   // Animation clock (UI thread) — drives the liveness overlays only; frozen
   // under reduced motion so every overlay renders as a still frame.
+  //
+  // The frame callback must keep one identity across renders: useFrameCallback
+  // re-registers whenever the callback changes, and a re-registered callback
+  // starts a new `timeSinceFirstFrame` from 0. This pane re-renders every
+  // second (LIVE wall clock) / every tick (DEMO), so an inline callback made
+  // the clock rewind to 0 each time and the slow drifts (0.17–0.23 rad/s)
+  // never got anywhere; only an operator whose seed put the "signal tear"
+  // phase inside the first second visibly moved. Accumulating the per-frame
+  // delta also keeps the clock monotonic across a reduced-motion toggle.
   const clock = useSharedValue(0);
-  useFrameCallback((frame) => {
-    'worklet';
-    clock.value = frame.timeSinceFirstFrame / 1000;
-  }, !reduceMotion);
+  const advanceClock = useCallback(
+    (frame: FrameInfo) => {
+      'worklet';
+      const dt = frame.timeSincePreviousFrame;
+      // First frame after (re)registration has no delta; a long pause
+      // (backgrounded app) advances by at most one short step, never a jolt.
+      if (dt !== null) clock.value += Math.min(dt, MAX_CLOCK_STEP_MS) / 1000;
+    },
+    [clock],
+  );
+  useFrameCallback(advanceClock, !reduceMotion);
 
   // AUTO: cycle through active channels; jump to the approval channel.
   const snapRef = useRef(snap);

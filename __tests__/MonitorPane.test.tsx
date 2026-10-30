@@ -5,7 +5,7 @@
  * and the plain-chat approval round-trip (type "ok") reaches mission complete.
  */
 import React from 'react';
-import { act, fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, within } from '@testing-library/react-native';
 import MonitorPane from '@/components/panes/MonitorPane';
 import { useAgentStore, type LiveRunEntry } from '@/store/agent-store';
 import type { MonitorRun } from '@/lib/agent-progress';
@@ -60,6 +60,30 @@ jest.mock('@/hooks/use-native-exec', () => ({
 }));
 const mockSetClipboard = jest.fn(async (_s: string) => true);
 jest.mock('expo-clipboard', () => ({ setStringAsync: (s: string) => mockSetClipboard(s) }));
+// Pass-through spies on the animation clock: every callback handed to
+// useFrameCallback and every shared value the pane creates (the first one
+// is the clock; MonitorCamera's useAnimatedStyle creates its own internally
+// through the real module, not this export).
+type FrameInfoLike = { timestamp: number; timeSinceFirstFrame: number; timeSincePreviousFrame: number | null };
+const mockFrameCallbacks: Array<(f: FrameInfoLike) => void> = [];
+const mockSharedValues: Array<{ value: number }> = [];
+jest.mock('react-native-reanimated', () => {
+  const actual = jest.requireActual('react-native-reanimated');
+  return {
+    __esModule: true,
+    ...actual,
+    default: actual.default,
+    useFrameCallback: (cb: (f: FrameInfoLike) => void, autostart?: boolean) => {
+      mockFrameCallbacks.push(cb);
+      return actual.useFrameCallback(cb, autostart);
+    },
+    useSharedValue: (init: number) => {
+      const sv = actual.useSharedValue(init);
+      mockSharedValues.push(sv);
+      return sv;
+    },
+  };
+});
 
 const setT = (t: number) =>
   act(() => {
@@ -88,6 +112,41 @@ describe('MonitorPane', () => {
     expect(utils.getAllByText('monitor.demo_badge')).toHaveLength(1);
     expect(utils.getByText('ARXIV SCOUT')).toBeTruthy();
     expect(utils.getByText('monitor.no_signal')).toBeTruthy();
+    utils.unmount();
+  });
+
+  it('animation clock: one frame callback across re-renders, advancing by frame deltas', () => {
+    // A callback that changed identity every render made useFrameCallback
+    // re-register it, which restarts timeSinceFirstFrame at 0 — the pane
+    // re-renders every second, so the slow drifts never got anywhere and
+    // only one camera (whose seed put the "signal tear" inside the first
+    // second) visibly moved.
+    mockFrameCallbacks.length = 0;
+    mockSharedValues.length = 0;
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    const clock = mockSharedValues[0];
+    expect(clock).toBeTruthy();
+    const first = mockFrameCallbacks[0];
+    expect(first).toBeTruthy();
+    // DEMO playback ticks re-render the whole pane.
+    setT(1);
+    setT(2);
+    setT(3);
+    expect(mockFrameCallbacks.length).toBeGreaterThan(1);
+    expect(new Set(mockFrameCallbacks).size).toBe(1);
+    // The clock accumulates deltas (never rewinds), ignores the first frame
+    // after a (re)registration and caps a long pause to one short step.
+    act(() => {
+      first({ timestamp: 0, timeSinceFirstFrame: 0, timeSincePreviousFrame: null });
+      first({ timestamp: 16, timeSinceFirstFrame: 16, timeSincePreviousFrame: 16 });
+      first({ timestamp: 32, timeSinceFirstFrame: 32, timeSincePreviousFrame: 16 });
+    });
+    expect(clock.value).toBeCloseTo(0.032, 5);
+    act(() => {
+      first({ timestamp: 5032, timeSinceFirstFrame: 5032, timeSincePreviousFrame: 5000 });
+    });
+    expect(clock.value).toBeCloseTo(0.132, 5);
     utils.unmount();
   });
 
@@ -244,6 +303,30 @@ describe('MonitorPane GRID fits the pane (no scrolling)', () => {
     // The one-time legend gives its row back to the cameras.
     expect(utils.queryByTestId('monitor-cost-legend')).toBeNull();
     utils.unmount();
+  });
+
+  it('narrow cells keep the tokens / cost in the meta row and drop the provider and % first', () => {
+    // Cover-screen pane: 2 columns of ~176dp cells (162dp inside the card).
+    const utils = render(<MonitorPane />);
+    layoutPane(utils, 380, 700);
+    expect(utils.getByTestId('monitor-grid-fit')).toBeTruthy();
+    expect(computeMonitorGrid(360, layoutPane(utils, 380, 700), 5).hud).toBe('full');
+    // EDITOR (LOCAL · Local LLM): neither "Local LLM" nor "Local" fit next to
+    // the cost, nor does the %, so only the chip and "0 tok · $0.0000" stay.
+    const meta = within(utils.getByTestId('monitor-meta-ch3'));
+    expect(meta.queryByText('Local LLM')).toBeNull();
+    expect(meta.queryByText('Local')).toBeNull();
+    expect(meta.queryByText('0%')).toBeNull();
+    expect(meta.getByText('0 tok · $0.0000')).toBeTruthy();
+    utils.unmount();
+    // A wide pane shows the full row.
+    const wide = render(<MonitorPane />);
+    layoutPane(wide, 1720, 1700);
+    const wideMeta = within(wide.getByTestId('monitor-meta-ch3'));
+    expect(wideMeta.getByText('Local LLM')).toBeTruthy();
+    expect(wideMeta.getByText('0%')).toBeTruthy();
+    expect(wideMeta.getByText('0 tok · $0.0000')).toBeTruthy();
+    wide.unmount();
   });
 
   it('falls back to a scrolling wall when even the smallest cells cannot fit', () => {

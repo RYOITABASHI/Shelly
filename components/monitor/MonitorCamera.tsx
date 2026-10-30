@@ -26,16 +26,22 @@ import { MON, MON_FONT_MONO, MON_FONT_OSD, kindColor, operatorImage, stateColor 
 import { translateMonitorText } from './monitor-i18n';
 import {
   CARD_BORDER,
+  CARD_INSET,
   CARD_PAD,
   HUD_BAR_H,
   HUD_GAP,
   HUD_META_H,
   HUD_TICK_H,
   HUD_TITLE_H,
+  META_GAP,
+  planMetaRow,
   type MonitorHudLevel,
 } from './monitor-grid';
 
-/** Prototype canvas space; overlay geometry is authored in it. */
+/** Prototype canvas space; overlay geometry is authored in it. The canvas is
+ *  scaled per axis (sx = w / CW, sy = h / CH), so the overlays keep their
+ *  place in a frame of any aspect between a square and 2:1 (monitor-grid.ts
+ *  SCREEN_ASPECT_TALL / _WIDE). */
 const CW = 240;
 const CH = 160;
 
@@ -132,7 +138,8 @@ function ConsoleLight({ w, h }: { w: number; h: number }) {
 
 function MeterBar({
   index,
-  scale,
+  sx,
+  sy,
   clock,
   seed,
   color,
@@ -140,7 +147,9 @@ function MeterBar({
   reduceMotion,
 }: {
   index: number;
-  scale: number;
+  /** Canvas → frame scale, horizontal / vertical. */
+  sx: number;
+  sy: number;
   clock: SharedValue<number>;
   seed: number;
   color: string;
@@ -153,12 +162,12 @@ function MeterBar({
     const talking = talkingMode === 'always' || Math.floor(t / 2.4 + seed) % 2 === 0;
     const still = reduceMotion ? 0 : 1;
     const hgt = talking ? 2 + Math.abs(Math.sin(t * 13 + index * 1.3)) * 18 * still : 1;
-    return { height: hgt * scale, top: (112 - hgt) * scale };
+    return { height: hgt * sy, top: (112 - hgt) * sy };
   });
   return (
     <Animated.View
       style={[
-        { position: 'absolute', left: (10 + index * 5) * scale, width: 3 * scale, backgroundColor: color },
+        { position: 'absolute', left: (10 + index * 5) * sx, width: 3 * sx, backgroundColor: color },
         style,
       ]}
     />
@@ -184,7 +193,10 @@ function CameraScreen({
   };
   const seed = def.operator * 1.13;
   const st = snap.state;
-  const scale = size.w / CW;
+  // Canvas → frame scale per axis; the frame may be squarer or wider than
+  // the 3:2 canvas, so vertical geometry uses sy and horizontal uses sx.
+  const sx = size.w / CW;
+  const sy = size.h / CH;
   const active = ACTIVE_STATES.has(st);
 
   const imageStyle = useAnimatedStyle(() => {
@@ -195,13 +207,13 @@ function CameraScreen({
     const dy = still * Math.cos(t * 0.21 + seed) * 3 + (st === 'STANDBY' ? 4 : 0);
     // Occasional signal tear: a brief horizontal jolt.
     if (still && Math.sin(t * 1.3 + seed * 2) > 0.985) dx += Math.sin(t * 40) * 9;
-    return { transform: [{ translateX: dx * scale }, { translateY: dy * scale }, { scale: z }] as const };
+    return { transform: [{ translateX: dx * sx }, { translateY: dy * sy }, { scale: z }] as const };
   });
   const lightStyle = useAnimatedStyle(() => ({
     opacity: reduceMotion ? 0.6 : 0.6 + 0.3 * Math.sin(clock.value * 7.3 + seed),
   }));
   const barStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: (((clock.value * 40) % (CH + 16)) - 12) * scale }],
+    transform: [{ translateY: (((clock.value * 40) % (CH + 16)) - 12) * sy }],
   }));
   const recStyle = useAnimatedStyle(() => ({
     opacity: reduceMotion ? 1 : Math.floor(clock.value * 2) % 2 === 0 ? 1 : 0,
@@ -237,7 +249,8 @@ function CameraScreen({
               <MeterBar
                 key={b}
                 index={b}
-                scale={scale}
+                sx={sx}
+                sy={sy}
                 clock={clock}
                 seed={seed}
                 color={st === 'APPROVAL' ? MON.amber : MON.phosphor}
@@ -247,14 +260,14 @@ function CameraScreen({
             ))}
           {st === 'APPROVAL' && (
             <Animated.View style={[StyleSheet.absoluteFill, bangStyle]} pointerEvents="none">
-              <View style={[styles.bang, { left: 212 * scale, top: 40 * scale, width: 9 * scale, height: 28 * scale }]} />
-              <View style={[styles.bang, { left: 212 * scale, top: 74 * scale, width: 9 * scale, height: 9 * scale }]} />
+              <View style={[styles.bang, { left: 212 * sx, top: 40 * sy, width: 9 * sx, height: 28 * sy }]} />
+              <View style={[styles.bang, { left: 212 * sx, top: 74 * sy, width: 9 * sx, height: 9 * sy }]} />
             </Animated.View>
           )}
           {!reduceMotion && (
             <Animated.View
               pointerEvents="none"
-              style={[styles.interference, { height: 7 * scale }, barStyle]}
+              style={[styles.interference, { height: 7 * sy }, barStyle]}
             />
           )}
           <ScanlineLayer w={size.w} h={size.h} />
@@ -314,6 +327,10 @@ function MonitorCameraImpl(props: Props) {
     // One line each: title · provider + % + cost · bar · timer + last output.
     // Rows drop from the bottom as the cell shrinks (monitor-grid.ts).
     const tick = note.length > 0 ? note : lastLine;
+    const pctText = `${pct}%`;
+    const cost = costText(def, snap, t('monitor.cost_flat'), locale);
+    // Narrow cell: keep the cost, shorten / drop the provider, then the %.
+    const meta = planMetaRow(fit.width - CARD_INSET, def.kind, def.providerName, pctText, cost);
     return (
       <Pressable
         onPress={onPress}
@@ -335,16 +352,20 @@ function MonitorCameraImpl(props: Props) {
           )}
         </View>
         {fit.hud !== 'title' && (
-          <View style={[styles.fitRow, styles.fitRowMeta]}>
+          <View style={[styles.fitRow, styles.fitRowMeta]} testID={`monitor-meta-${def.id}`}>
             <KindChip kind={def.kind} size={9} />
-            <Text style={[styles.provName, styles.fitText, styles.fitShrink]} numberOfLines={1}>
-              {def.providerName}
-            </Text>
-            <Text style={[styles.metaText, styles.fitText]} numberOfLines={1}>
-              {`${pct}%`}
-            </Text>
-            <Text style={[styles.metaText, styles.fitText, styles.fitShrink, { color: MON.osd }]} numberOfLines={1}>
-              {costText(def, snap, t('monitor.cost_flat'), locale)}
+            {meta.provider !== null && (
+              <Text style={[styles.provName, styles.fitText, styles.fitShrink]} numberOfLines={1}>
+                {meta.provider}
+              </Text>
+            )}
+            {meta.showPct && (
+              <Text style={[styles.metaText, styles.fitText]} numberOfLines={1}>
+                {pctText}
+              </Text>
+            )}
+            <Text style={[styles.metaText, styles.fitText, styles.fitKeep, { color: MON.osd }]} numberOfLines={1}>
+              {cost}
             </Text>
           </View>
         )}
@@ -570,14 +591,28 @@ const styles = StyleSheet.create({
   },
   logLine: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.phosphor },
   // ── Fitted GRID cell: row heights match monitor-grid.ts exactly ──
+  // The card is exactly its content (cellHeightFor). The HUD rows never
+  // shrink, so if anything is ever short of room it is the picture box that
+  // gives way (clipped at its bottom edge), never the caption rows. The
+  // picture sits at the card's top edge: no band above it.
   camFit: { padding: CARD_PAD, borderWidth: CARD_BORDER, gap: HUD_GAP, overflow: 'hidden' },
-  fitScreen: { flex: 1, minHeight: 0, alignItems: 'center', justifyContent: 'center' },
-  fitRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, height: HUD_TITLE_H, overflow: 'hidden' },
+  fitScreen: { flex: 1, minHeight: 0, alignItems: 'center', justifyContent: 'flex-start', overflow: 'hidden' },
+  fitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: META_GAP,
+    minWidth: 0,
+    height: HUD_TITLE_H,
+    flexShrink: 0,
+    overflow: 'hidden',
+  },
   fitRowMeta: { height: HUD_META_H },
   fitName: { fontSize: 15, lineHeight: HUD_TITLE_H },
   fitSub: { fontSize: 12, lineHeight: HUD_TITLE_H },
   fitText: { lineHeight: HUD_META_H },
-  fitTick: { height: HUD_TICK_H, lineHeight: HUD_TICK_H },
+  fitTick: { height: HUD_TICK_H, lineHeight: HUD_TICK_H, flexShrink: 0 },
   fitShrink: { flexShrink: 1, minWidth: 0 },
-  fitBar: { height: HUD_BAR_H },
+  /** Never squeezed by its row-mates (the plan already made room for it). */
+  fitKeep: { flexShrink: 0 },
+  fitBar: { height: HUD_BAR_H, flexShrink: 0 },
 });
