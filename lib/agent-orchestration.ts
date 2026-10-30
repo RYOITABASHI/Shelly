@@ -646,6 +646,137 @@ export function isNotifyOnlyClause(clause: string): boolean {
   return JA_NOTIFY_ONLY_CLAUSE_RE.test(t) || EN_NOTIFY_ONLY_CLAUSE_RE.test(t);
 }
 
+// ── Verb-less clause handling (2026-10-30, "zero questions" agent setup) ─────
+//
+// On-device repro: 「STOPALLテスト: ローカルLLMで、日本の四季について800字の文章
+// を書き、それを英語に翻訳し、最後に3行で要約して、結果をメモとして保存して」 split
+// on every 、 into five steps: step 1 was the bare fragment 「STOPALLテスト:
+// ローカルLLMで」 (name prefix + tool phrase, no verb) carrying the only tool pin,
+// the three real work steps were unpinned, and the trailing save directive ran
+// as its own model call. The helpers below fix each piece deterministically.
+
+/** Explicit name prefix: 「名前: X、…」 / "Name: X, …". The name runs up to the
+ *  first clause boundary. */
+const EXPLICIT_NAME_PREFIX_RE = /^\s*(?:名前|エージェント名|name|agent\s+name)\s*[:：]\s*([^\n、,。]+?)\s*(?:[\n、,。]\s*|$)/i;
+/** Bare label prefix: 「STOPALLテスト: …」. One short token (no whitespace,
+ *  no quotes/brackets) followed by a colon and real content. */
+const LABEL_NAME_PREFIX_RE = /^\s*([^\s:：、。,「」『』"'`（）()[\]{}<>]{1,24})\s*[:：]\s*(?=\S)/;
+/** A label that is really a URL scheme, a clock time or a key/value style
+ *  word must never be read as a name ("https://…", "9:30に…", "API key: …"). */
+const NOT_A_NAME_LABEL_RE = /^(?:https?|ftp|file|mailto|tel|data|ssh|git|note|memo|todo|api|key|token|password|pw)$/i;
+
+/**
+ * Split a leading agent-name prefix off an utterance. Returns null when there
+ * is none (or nothing would be left of the task). Rules, in order:
+ *  - 「名前: X、…」/「Name: X, …」 → name X (may contain spaces).
+ *  - 「<label>: …」 where <label> is one short token that is not a URL scheme,
+ *    not a time ("9:30"), not a tool name (「Perplexity: …」 names the tool,
+ *    not the agent) and not a key/value word.
+ */
+export function extractNamePrefix(text: string): { name: string; rest: string } | null {
+  const explicit = EXPLICIT_NAME_PREFIX_RE.exec(text);
+  if (explicit) {
+    const name = explicit[1].trim();
+    const rest = text.slice(explicit[0].length).trim();
+    return name && rest ? { name, rest } : null;
+  }
+  const label = LABEL_NAME_PREFIX_RE.exec(text);
+  if (!label) return null;
+  const name = label[1].trim();
+  const rest = text.slice(label[0].length).trim();
+  if (!name || !rest) return null;
+  if (/^\d/.test(name) || /^\/\//.test(rest) || NOT_A_NAME_LABEL_RE.test(name)) return null;
+  if (matchToolMention(name)) return null;
+  return { name, rest };
+}
+
+/** Particles / instrument markers that may surround a tool name in a clause
+ *  that does nothing but name the tool (「ローカルLLMで」「Perplexityを使って」
+ *  "with the local LLM"). */
+const TOOL_ONLY_FILLER_RE =
+  /^(?:(?:全部|すべて|全て|ぜんぶ)\s*)?(?:で|にて|を\s*使(?:って|い)|を\s*用いて|を\s*利用して|経由で|に\s*(?:任せて|頼んで))?$|^(?:with|using|via|through|use|on|in)?\s*(?:the\s+)?$/i;
+const TOOL_ONLY_PREFIX_RE = /^(?:(?:with|using|via|through|use|on|in)\s+(?:the\s+)?)?/i;
+
+/** true when `clause` names a tool and contains no work of its own — a pure
+ *  instrument phrase like 「ローカルLLMで」. */
+export function isToolOnlyClause(clause: string): boolean {
+  const t = clause.trim().replace(/[。．.、,！!]+$/, '').trim();
+  if (!t || !matchToolMention(t)) return false;
+  // Remove the FIRST tool mention (same table as matchToolMention), then see
+  // whether anything but filler particles remains.
+  const withoutPrefix = t.replace(TOOL_ONLY_PREFIX_RE, '');
+  const mention = /パープレ(?:キシティ)?|perplexity|ローカル\s*llm|local\s*llm|ローカル|\bcodex\b|\bgemini\b/i.exec(withoutPrefix);
+  if (!mention || mention.index !== 0) return false;
+  const remainder = withoutPrefix.slice(mention[0].length).trim();
+  return TOOL_ONLY_FILLER_RE.test(remainder);
+}
+
+/** Leading sequence markers on a clause-split step (「最後に3行で要約して」) — the
+ *  order is already encoded by the step list itself. */
+const LEADING_SEQUENCE_MARKER_RE = /^(?:まず(?:は)?|最初に|次に|その後|それから|続いて|最後に|そして)\s*[、,]?\s*/;
+
+/** Trailing "save the result as <noun>" directive — absorbed into the agent's
+ *  'draft' action rather than run as a step. Requires an explicit destination
+ *  NOUN ("メモとして保存", "save it as a note") so a bare 「保存して」 / "save the
+ *  digest" (which may carry intent this cannot judge) stays a step. */
+const JA_SAVE_ONLY_CLAUSE_RE =
+  /^(?:(?:結果|それ|これ|内容|全部|すべて|まとめ|出力)\s*[をは]\s*)?((?:メモ|ノート|ファイル|テキスト(?:ファイル)?|マークダウン|markdown|下書き|ドラフト|記録)\s*(?:として|に)\s*(?:保存|記録|残)(?:し|す)?)(?:て(?:おいて|おいてください|ください|ね)?|る|ておく|といて|しといて)?$/i;
+const EN_SAVE_ONLY_CLAUSE_RE =
+  /^(?:and\s+)?(?:then\s+)?(?:please\s+)?(save|store|keep)\s+(?:it|this|that|the\s+results?|the\s+output|everything)\s+(as|in|to)\s+(?:a\s+|an\s+)?(note|memo|file|markdown\s+file|draft)\.?$/i;
+
+/**
+ * The user's own label for a trailing save directive, or null when `clause`
+ * is not one: 「結果をメモとして保存して」 → 「メモとして保存」, "save it as a
+ * note" → "save as a note".
+ */
+export function saveOnlyClauseLabel(clause: string): string | null {
+  const t = clause.trim().replace(/[。．.、,！!]+$/, '').trim();
+  if (!t) return null;
+  const ja = JA_SAVE_ONLY_CLAUSE_RE.exec(t);
+  if (ja) {
+    const core = ja[1].replace(/\s+/g, '');
+    // Normalize the verb stem: 保存し → 保存, 残 → 残す.
+    return core.replace(/(保存|記録)(?:し|す)$/, '$1').replace(/残$/, '残す');
+  }
+  const en = EN_SAVE_ONLY_CLAUSE_RE.exec(t);
+  if (en) return `${en[1].toLowerCase()} ${en[2].toLowerCase()} a ${en[3].toLowerCase()}`;
+  return null;
+}
+
+/** The label of `text`'s LAST clause when it is a save-only directive. */
+export function trailingSaveClauseLabel(text: string): string | null {
+  const clauses = text.split(CLAUSE_BOUNDARY).map((s) => s.trim()).filter((s) => s.length > 1);
+  return clauses.length > 0 ? saveOnlyClauseLabel(clauses[clauses.length - 1]) : null;
+}
+
+/**
+ * Tool-scope rule (documented, 2026-10-30): a clause that ONLY names a tool
+ * (isToolOnlyClause — 「ローカルLLMで、」) is not a step. It scopes the clauses
+ * after it: every following clause that does not name its own tool is pinned
+ * to it, until a later clause names a different tool (that clause's own pin
+ * applies to itself only, exactly as before — a mention inside a working
+ * clause never carries forward). A tool-only clause at the very end has
+ * nothing after it, so it pins the preceding clause if that one is unpinned.
+ * Clauses naming their own tool keep the pre-existing per-clause semantics.
+ */
+function applyToolScopes(clauses: string[]): Array<{ instruction: string; tool?: ToolChoice }> {
+  const out: Array<{ instruction: string; tool?: ToolChoice }> = [];
+  let scope: ToolChoice | undefined;
+  for (const clause of clauses) {
+    if (isToolOnlyClause(clause)) {
+      const tool = matchToolMention(clause);
+      if (out.length > 0 && clause === clauses[clauses.length - 1] && !out[out.length - 1].tool) {
+        out[out.length - 1].tool = tool;
+      }
+      scope = tool;
+      continue;
+    }
+    const own = matchToolMention(clause);
+    out.push(own ? { instruction: clause, tool: own } : scope ? { instruction: clause, tool: scope } : { instruction: clause });
+  }
+  return out;
+}
+
 /**
  * Detect a tool-pinned multi-step chain in plain conjunctive text — e.g.
  * "パープレで論文を集めて、ローカルLLMで要約して、Xに投稿して". Returns null when
@@ -666,10 +797,16 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
   if (clauses.length > 0 && isScheduleOnlyClause(clauses[0])) {
     clauses = clauses.slice(1);
   }
-  if (clauses.length < 2) return null;
+  // 2026-10-30: a tool-only clause is folded into the clauses it scopes (see
+  // applyToolScopes), and a leading sequence marker (「最後に」) is dropped from
+  // a step's text when real content remains.
+  const scoped = applyToolScopes(clauses).map((s) => {
+    const stripped = s.instruction.replace(LEADING_SEQUENCE_MARKER_RE, '').trim();
+    return stripped.length > 1 ? { ...s, instruction: stripped } : s;
+  });
+  if (scoped.length < 2) return null;
 
-  const steps: NormalizedStep[] = clauses.slice(0, HARD_MAX_STEPS).map((instruction) => {
-    const tool = matchToolMention(instruction);
+  const steps: NormalizedStep[] = scoped.slice(0, HARD_MAX_STEPS).map(({ instruction, tool }) => {
     const trimmedInstruction = instruction.slice(0, MAX_STEP_INSTRUCTION_CHARS);
     return tool ? { instruction: trimmedInstruction, tool } : { instruction: trimmedInstruction };
   });

@@ -373,6 +373,7 @@ const en: Record<string, string> = {
   'agentplan.closepaw_auto_routed_line': 'This part will be done by ClosePaw operating the phone: {{step}} (what ClosePaw is given is built from this agent\'s own results, which can include untrusted text from the web; approving this agent also approves this step for its future runs until you edit it)',
   'agents.terminal_request_review_only': 'This agent includes high-risk steps ({{reasons}}), so it can only be approved here in Shelly — not from the notification or ChatGPT.',
   'agents.terminal_request_review_only_schedule': 'This draft has no confirmed schedule yet, so it can only be finished and approved here in Shelly.',
+  'agents.terminal_request_review_only_manual': 'This agent runs manually (it has no schedule), so it can\'t be approved from a notification or ChatGPT. Since it never starts on its own at a set time, please review and register it here in Shelly.',
   'agents.terminal_request_risk.action': 'action: {{type}}',
   'agents.terminal_request_risk.autonomous': 'autonomous / unattended mode',
   'agents.terminal_request_risk.notification-trigger': 'runs on incoming notifications',
@@ -541,6 +542,7 @@ const en: Record<string, string> = {
   'agentcard.sched_interval': 'every {{n}} min',
   'agentcard.sched_hourly': 'every {{n}} hours',
   'agentcard.sched_once': 'now',
+  'agentcard.sched_manual': 'manual (no schedule)',
   'agentcard.sched_notification_trigger': 'on notification',
   // One-shot (run once at a future time) schedules — lib/agent-oneshot.ts.
   'agentcard.sched_oneshot': 'Once · {{when}}{{countdown}}',
@@ -650,6 +652,9 @@ const en: Record<string, string> = {
   // lib/agent-nl-parser.ts's detectMultiSocialActions produced 2+ draft.actions.
   'agentplan.summary_multi_targets': 'Destinations: {{targets}}',
   'agentplan.draft_line_with_path': 'draft (saved to {{path}})',
+  'agentplan.save_line_with_path': '{{label}} (saved to {{path}})',
+  'agentplan.manual_trigger_note': 'Runs manually, when you start it (to run it on a schedule, say something like "every morning at 8").',
+  'agentplan.manual_schedule_description': 'whenever you run it manually',
   // browser-pane (2026-08-05) — the confirm bubble MUST spell out the exact
   // selector + URL the human is approving; see lib/agent-plan-summary.ts.
   'agentplan.browserpane_line_extract': 'Browser Pane: extract text from "{{selector}}" on {{url}} (attended only — you approve every run on screen)',
@@ -910,7 +915,7 @@ const en: Record<string, string> = {
   'slot_fill.question_notification_trigger': 'Which app\'s notifications should trigger this? (e.g. com.whatsapp or an app name like Slack)',
   'slot_fill.question_output_path': 'Where should the result be saved? (Leave blank or say "skip" to use Shelly\'s default folder.)',
   'slot_fill.question_social_connector': 'Which connector should this post to? Reply with the number or its label.',
-  'slot_fill.question_autonomous': 'Should this agent run unattended (autonomously)? Answer yes or no.',
+  'slot_fill.question_autonomous': 'Should this run automatically without asking, or ask you before each run? Reply "run automatically" or "ask each time".',
   'slot_fill.social_connector_giveup_caveat': "Couldn't tell which connector you meant, so this is registered as a draft (file save) instead. Say the connector's exact label next time to post directly.",
   // browser-pane slot-fill (2026-08-05) — asked when a page-operation intent
   // was detected but the target URL / CSS selector wasn't in the utterance.

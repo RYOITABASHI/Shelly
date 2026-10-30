@@ -204,6 +204,7 @@ import { useSettingsStore } from '@/store/settings-store';
 import { usePaneStore } from '@/store/pane-store';
 import type { Agent } from '@/store/types';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import { parseAgentNL } from '@/lib/agent-nl-parser';
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { hasDraftAssumptions, summarizeAgentDraftAsText, draftToConfirmedAgentDraft } from '@/lib/agent-plan-summary';
 import ja from '@/lib/i18n/locales/ja';
@@ -738,7 +739,7 @@ describe('Scenario 1 — exact on-device regression repro (commit b1145a016)', (
     // it asks its OWN schedule question (message-attached pendingSlotFill),
     // since 'ニュースを通知して' alone has no confident schedule.
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     expect(conv().pendingAgentSession).toEqual(sessionAfterA); // untouched, per design
     const questionMsg = lastMessage();
@@ -820,7 +821,7 @@ describe('Scenario 2 — inverse ordering (answer the fresh command first, then 
     expect(original?.phase).toBe('await-confirm');
 
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     expect(conv().pendingAgentSession).toEqual(original);
 
@@ -874,7 +875,7 @@ describe('Scenario 3 — cancel phrase with pendingAgentSession active AND a fre
     expect(original).toBeTruthy();
 
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     // A fresher, unanswered pendingSlotFill now sits on the latest message.
     expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
@@ -922,7 +923,7 @@ describe('Scenario 4 — two agents both reach pendingSlotFill sequentially, no 
     const { result } = setup();
 
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     expect(conv().pendingAgentSession).toBeUndefined();
     expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
@@ -947,7 +948,7 @@ describe('Scenario 4 — two agents both reach pendingSlotFill sequentially, no 
 
     // Second, unrelated agent — sequential, not interleaved.
     await act(async () => {
-      await result.current.dispatch('@agent 天気を通知して');
+      await result.current.dispatch('@agent 毎日天気を通知して');
     });
     expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
 
@@ -969,7 +970,7 @@ describe('Bonus finding — justRegisteredAgent correction window vs. a fresh ag
 
     // Agent 1: ask → answer → CONFIRM (full round trip, ordinary use).
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     await act(async () => {
       await result.current.dispatch('毎日8時');
@@ -989,7 +990,7 @@ describe('Bonus finding — justRegisteredAgent correction window vs. a fresh ag
     // window for agent 1 (applyCorrectionToJustRegisteredAgent explicitly
     // bypasses any "@..." command).
     await act(async () => {
-      await result.current.dispatch('@agent 天気を通知して');
+      await result.current.dispatch('@agent 毎日天気を通知して');
     });
     expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
     expect(conv().justRegisteredAgent?.agentId).toBe(mockCreateAgent.mock.results[0].value.id); // untouched
@@ -1093,7 +1094,7 @@ describe('Bug fix — "今すぐ実行して" in the correction window runs the 
     // applyCorrectionToJustRegisteredAgent is never even reached here; only
     // applyPatchToPendingSession-adjacent slot-fill code runs.
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
 
@@ -1217,7 +1218,7 @@ describe('Scenario 5 — stale pendingAgentSession under a fresh pendingSlotFill
     });
 
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     expect(lastMessage().pendingSlotFill?.field).toBe('schedule');
 
@@ -1273,7 +1274,7 @@ describe('Scenario 6 — Sidebar edit session interleaved with a fresh @agent co
 
     // An unrelated fresh command interleaves and asks its OWN question.
     await act(async () => {
-      await result.current.dispatch('@agent 天気を通知して');
+      await result.current.dispatch('@agent 毎日天気を通知して');
     });
     // Per design, the edit session must survive this untouched.
     expect(conv().pendingAgentSession).toEqual(editSession);
@@ -1520,9 +1521,12 @@ describe('Scenario 7 — task-clarity LLM fallback calls ensureLocalLlmServerRun
 
     expect(mockEnsureLocalLlmServerRunning).not.toHaveBeenCalled();
     expect(mockOllamaChat).not.toHaveBeenCalled();
-    // Falls through to the ordinary schedule question, exactly as before.
+    // Falls through to the ordinary deterministic slot-fill. 2026-10-30: an
+    // utterance naming no schedule defaults to manual-only, so the schedule
+    // slot is resolved and the next deterministic question (output path, no
+    // vault configured in this test) is asked instead.
     const question = lastMessage();
-    expect(question.pendingSlotFill?.field).toBe('schedule');
+    expect(question.pendingSlotFill?.field).toBe('outputPath');
   });
 });
 
@@ -1608,7 +1612,7 @@ describe('Scenario 8 — confirmAgentDraft re-entrancy dedupe (bug #164 follow-u
 
     // Reach a pending chat-native confirmation the same way Scenario 4 does.
     await act(async () => {
-      await result.current.dispatch('@agent 天気を通知して');
+      await result.current.dispatch('@agent 毎日天気を通知して');
     });
     await act(async () => {
       await result.current.dispatch('毎日7時');
@@ -1982,7 +1986,14 @@ const EXTRACTION_JSON = JSON.stringify({
   taskClear: true,
 });
 
-describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02 on-device)', () => {
+describe('Scenario 9 — Tier 3 conversational registration (2026-10-30: deterministic questions only)', () => {
+  // 2026-10-30 ("zero questions" agent setup): the model no longer authors
+  // user-facing questions. A prose turn is read as an empty proposal and the
+  // deterministic nextMissingSlot asks with the fixed slot_fill.* templates.
+  // The 2026-08-02 repeated-question loop (finding 1) is therefore retired
+  // structurally; finding 2 (a Tier 2 handoff re-extracts from the WHOLE
+  // conversation) still applies to an llm-conversation session that was
+  // already pending — seeded directly here, since no new one is created.
   beforeEach(() => {
     useSettingsStore.setState((s) => ({
       settings: {
@@ -1997,11 +2008,28 @@ describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02
     mockEnsureLocalLlmServerRunning.mockClear();
   });
 
-  it('finding (1): the model re-asking the IDENTICAL question falls back to Tier 2 at once, without waiting for the 5-turn cap', async () => {
-    const REPEATED = '実行するたびに確認しますか、それとも確認せずに勝手に実行しますか？';
+  function seedLlmConversation(llmTurns = 0) {
+    const draft = parseAgentNL('手伝って');
+    act(() => {
+      useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
+        draft,
+        phase: 'llm-conversation',
+        attemptCounts: { llmTurns },
+        hasAssumptions: true,
+        createdAt: Date.now(),
+        messageId: 'seeded-llm-question',
+        agentLabel: 'local',
+        lastLlmQuestion: '何を手伝いましょうか？',
+      });
+    });
+    return draft;
+  }
+
+  it('a free-text question from the model is never shown — the next question comes from the slot_fill templates', async () => {
+    const PROSE = '実行するたびに確認しますか？「はい」か「いいえ」で答えてください。';
     mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
       isTier3RegistrationCall(messages)
-        ? { success: true, content: REPEATED }
+        ? { success: true, content: PROSE }
         : { success: true, content: EXTRACTION_JSON },
     );
 
@@ -2009,171 +2037,72 @@ describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02
     await act(async () => {
       await result.current.dispatch('@agent 手伝って');
     });
-    const session = conv().pendingAgentSession;
-    expect(session?.phase).toBe('llm-conversation');
-    // The question text is remembered so the NEXT turn can recognize a repeat.
-    expect(session?.lastLlmQuestion).toBe(REPEATED);
-    expect(lastMessage().content).toBe(REPEATED);
 
-    // The user answers it. The model asks the exact same thing again.
-    await act(async () => {
-      await result.current.dispatch('確認なしで勝手に実行して');
-    });
-
-    // The repeat was NOT shown to the user a second time.
-    expect(conv().messages.filter((m) => m.content === REPEATED)).toHaveLength(1);
-    // Tier 3 is over — the session was released, and the user was told why.
+    expect(tier3Calls()).toHaveLength(1);
+    expect(conv().messages.some((m) => m.content === PROSE)).toBe(false);
     expect(conv().pendingAgentSession?.phase).not.toBe('llm-conversation');
-    expect(
-      conv().messages.some((m) => m.content === ja['agentplan.llm_conversation_fallback_notice']),
-    ).toBe(true);
-    // It gave up after TWO conversational turns, not five.
-    expect(tier3Calls()).toHaveLength(2);
-    // ...and handed off to the deterministic Tier 2 slot-fill / confirm flow.
-    expect(
-      lastMessage().pendingSlotFill !== undefined || conv().pendingAgentSession !== null,
-    ).toBe(true);
+    // The deterministic slot-fill asks instead (manual default resolved the
+    // schedule; no vault configured → output path).
+    const question = lastMessage();
+    expect(question.pendingSlotFill?.field).toBe('outputPath');
+    expect(question.content).toBe(ja['slot_fill.question_output_path']);
   });
 
-  it('finding (1) guard: a REWORDED follow-up is not treated as a repeat — the Tier 3 conversation continues', async () => {
-    const Q1 = '何を手伝いましょうか？';
-    const Q2 = 'いつ実行すればよいですか？';
-    let turn = 0;
-    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) => {
-      if (!isTier3RegistrationCall(messages)) return { success: true, content: EXTRACTION_JSON };
-      turn += 1;
-      return { success: true, content: turn === 1 ? Q1 : Q2 };
-    });
-
+  it('the on-device example reaches the summary with ZERO questions and no LLM call', async () => {
+    mockOllamaChat.mockImplementation(async () => ({ success: true, content: '名前は何にしますか？' }));
     const { result } = setup();
     await act(async () => {
-      await result.current.dispatch('@agent 手伝って');
+      await result.current.dispatch(
+        '@agent STOPALLテスト: ローカルLLMで、日本の四季について800字の文章を書き、それを英語に翻訳し、最後に3行で要約して、結果をメモとして保存して',
+      );
     });
-    expect(conv().pendingAgentSession?.lastLlmQuestion).toBe(Q1);
 
+    expect(mockOllamaChat).not.toHaveBeenCalled();
+    expect(conv().messages.some((m) => !!m.pendingSlotFill)).toBe(false);
+    const summary = lastMessage();
+    expect(summary.agentDraft?.name).toBe('STOPALLテスト');
+    expect(summary.agentDraft?.trigger).toBe('manual');
+    // tFor is key-echoing in this file's i18n mock.
+    expect(summary.content).toContain('agentplan.manual_trigger_note');
+    expect(summary.content).toContain('agentplan.save_line_with_path');
+    expect(summary.content).toContain('メモとして保存');
+    // The destination preview is resolved from Settings (default local target).
+    expect(summary.content).toContain('agent-output');
+    expect(summary.content).toContain('[Local LLM] 3行で要約して');
+    expect(conv().pendingAgentSession?.phase).toBe('await-confirm');
+  });
+
+  it('a prose turn inside an already-pending llm-conversation is also never shown', async () => {
+    seedLlmConversation();
+    const PROSE = 'いつ実行すればよいですか？';
+    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
+      isTier3RegistrationCall(messages)
+        ? { success: true, content: PROSE }
+        : { success: true, content: EXTRACTION_JSON },
+    );
+    const { result } = setup();
     await act(async () => {
       await result.current.dispatch('天気を教えて');
     });
 
-    // Still in Tier 3, one turn consumed, the NEW question shown and remembered.
-    const session = conv().pendingAgentSession;
-    expect(session?.phase).toBe('llm-conversation');
-    expect(session?.attemptCounts.llmTurns).toBe(1);
-    expect(session?.lastLlmQuestion).toBe(Q2);
-    expect(lastMessage().content).toBe(Q2);
-    // No premature handoff: no fallback notice, no narrow extraction call.
-    expect(
-      conv().messages.some((m) => m.content === ja['agentplan.llm_conversation_fallback_notice']),
-    ).toBe(false);
+    expect(conv().messages.some((m) => m.content === PROSE)).toBe(false);
+    expect(conv().pendingAgentSession?.phase).not.toBe('llm-conversation');
     expect(extractionCalls()).toHaveLength(0);
   });
 
-  it('finding (1) guard: a near-identical but NOT identical re-ask also keeps the conversation alive', async () => {
-    const Q1 = '実行するたびに確認しますか？';
-    const Q2 = '実行するたびに確認しますか、それとも確認は不要ですか？';
-    let turn = 0;
-    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) => {
-      if (!isTier3RegistrationCall(messages)) return { success: true, content: EXTRACTION_JSON };
-      turn += 1;
-      return { success: true, content: turn === 1 ? Q1 : Q2 };
-    });
-
-    const { result } = setup();
-    await act(async () => {
-      await result.current.dispatch('@agent 手伝って');
-    });
-    await act(async () => {
-      await result.current.dispatch('確認なしで');
-    });
-
-    expect(conv().pendingAgentSession?.phase).toBe('llm-conversation');
-    expect(lastMessage().content).toBe(Q2);
-  });
-
-  it('finding (1) variant: the repeat is recognized even when it differs only in whitespace/punctuation', async () => {
-    const Q1 = '実行するたびに確認しますか？';
-    const Q2 = '  実行するたびに 確認しますか?  ';
-    let turn = 0;
-    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) => {
-      if (!isTier3RegistrationCall(messages)) return { success: true, content: EXTRACTION_JSON };
-      turn += 1;
-      return { success: true, content: turn === 1 ? Q1 : Q2 };
-    });
-
-    const { result } = setup();
-    await act(async () => {
-      await result.current.dispatch('@agent 手伝って');
-    });
-    await act(async () => {
-      await result.current.dispatch('確認なしで');
-    });
-
-    expect(conv().pendingAgentSession?.phase).not.toBe('llm-conversation');
-    expect(conv().messages.some((m) => m.content === Q2)).toBe(false);
-    expect(
-      conv().messages.some((m) => m.content === ja['agentplan.llm_conversation_fallback_notice']),
-    ).toBe(true);
-  });
-
-  it('finding (2): the immediate repeat fallback re-extracts from the WHOLE conversation, not just the latest message', async () => {
-    const REPEATED = '実行するたびに確認しますか？';
+  it('finding (2): hitting the 5-turn cap re-extracts from the whole conversation instead of dropping it', async () => {
+    seedLlmConversation(5);
     mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
       isTier3RegistrationCall(messages)
-        ? { success: true, content: REPEATED }
+        ? { success: true, content: '何を手伝いましょうか？' }
         : { success: true, content: EXTRACTION_JSON },
     );
-
     const { result } = setup();
-    await act(async () => {
-      await result.current.dispatch('@agent 手伝って');
-    });
     await act(async () => {
       await result.current.dispatch('名前は天気チェッカーにして');
     });
 
-    const extraction = extractionCalls();
-    expect(extraction).toHaveLength(1);
-    const utterance = extraction[0][1][1].content as string;
-    // The opening utterance AND the mid-conversation answer both reach the
-    // narrow extractor — the pre-fix code passed only the latest message.
-    expect(utterance).toContain('手伝って');
-    expect(utterance).toContain('名前は天気チェッカーにして');
-    // Only the USER side — the model's own question is never fed back in.
-    expect(utterance).not.toContain(REPEATED);
-    // ...and whatever it extracted actually survives into the Tier 2 draft.
-    expect(visibleDraft()?.name).toBe('天気チェッカー');
-  });
-
-  it('finding (2): hitting the 5-turn cap also re-extracts from the whole conversation instead of dropping it', async () => {
-    const Q1 = '何を手伝いましょうか？';
-    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
-      isTier3RegistrationCall(messages)
-        ? { success: true, content: Q1 }
-        : { success: true, content: EXTRACTION_JSON },
-    );
-
-    const { result } = setup();
-    await act(async () => {
-      await result.current.dispatch('@agent 手伝って');
-    });
-    // Jump the session straight to the cap — five real round-trips would only
-    // re-test the per-turn wiring the tests above already cover.
-    const session = conv().pendingAgentSession!;
-    act(() => {
-      useAIPaneStore.getState().setPendingAgentSession(conversationKey(), {
-        ...session,
-        attemptCounts: { ...session.attemptCounts, llmTurns: 5 },
-      });
-    });
-    mockOllamaChat.mockClear();
-
-    await act(async () => {
-      await result.current.dispatch('名前は天気チェッカーにして');
-    });
-
-    // The cap is respected: no further Tier 3 turn was attempted...
     expect(tier3Calls()).toHaveLength(0);
-    // ...but the conversation is no longer thrown away on the way to Tier 2.
     const extraction = extractionCalls();
     expect(extraction).toHaveLength(1);
     const utterance = extraction[0][1][1].content as string;
@@ -2184,19 +2113,13 @@ describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02
   });
 
   it('an unreachable local LLM mid-conversation still fails closed into Tier 2, with the notice and a whole-conversation re-extraction', async () => {
-    let tier3Turn = 0;
-    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) => {
-      if (!isTier3RegistrationCall(messages)) return { success: true, content: EXTRACTION_JSON };
-      tier3Turn += 1;
-      return tier3Turn === 1
-        ? { success: true, content: '何を手伝いましょうか？' }
-        : { success: false, content: '', error: 'Network request failed' };
-    });
-
+    seedLlmConversation();
+    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
+      isTier3RegistrationCall(messages)
+        ? { success: false, content: '', error: 'Network request failed' }
+        : { success: true, content: EXTRACTION_JSON },
+    );
     const { result } = setup();
-    await act(async () => {
-      await result.current.dispatch('@agent 手伝って');
-    });
     await act(async () => {
       await result.current.dispatch('名前は天気チェッカーにして');
     });
@@ -2211,6 +2134,7 @@ describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02
   });
 
   it('a final proposal still short-circuits straight to confirmation — the fallback path is never taken', async () => {
+    seedLlmConversation();
     const PROPOSAL =
       '```shelly-agent-registration\n' +
       JSON.stringify({
@@ -2223,30 +2147,20 @@ describe('Scenario 9 — Tier 3 conversational registration UX fixes (2026-08-02
         autonomousIntent: true,
       }) +
       '\n```';
-    let tier3Turn = 0;
-    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) => {
-      if (!isTier3RegistrationCall(messages)) return { success: true, content: EXTRACTION_JSON };
-      tier3Turn += 1;
-      return tier3Turn === 1
-        ? { success: true, content: '何を手伝いましょうか？' }
-        : { success: true, content: PROPOSAL };
-    });
-
+    mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
+      isTier3RegistrationCall(messages)
+        ? { success: true, content: PROPOSAL }
+        : { success: true, content: EXTRACTION_JSON },
+    );
     const { result } = setup();
-    await act(async () => {
-      await result.current.dispatch('@agent 手伝って');
-    });
     await act(async () => {
       await result.current.dispatch('毎朝8時に天気を通知して、確認は要らない');
     });
 
-    // No Tier 2 handoff at all.
     expect(
       conv().messages.some((m) => m.content === ja['agentplan.llm_conversation_fallback_notice']),
     ).toBe(false);
     expect(extractionCalls()).toHaveLength(0);
-    // The proposal reached a real confirmation, with the autonomous intent
-    // promoted exactly as before this change.
     const draft = visibleDraft();
     expect(draft?.name).toBe('天気チェッカー');
     expect(draft?.autonomous).toBe(true);
@@ -2320,7 +2234,7 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
     expect(tier3Calls()).toHaveLength(0);
   });
 
-  it('(b) escalates the second unresolved Tier 2 answer into Tier 3 with the partial draft and latest answer', async () => {
+  it('(b) escalates the second unresolved Tier 2 answer into Tier 3 with the partial draft and latest answer — a prose reply is never shown', async () => {
     const draft = seedScheduleSlot(1);
     mockOllamaChat.mockImplementation(async (_cfg: unknown, messages: any) =>
       isTier3RegistrationCall(messages)
@@ -2333,12 +2247,14 @@ describe('Scenarios (a)-(d) — Tier 2 escalation and autonomous proposal safety
       await result.current.dispatch('よくわからない');
     });
 
-    const session = conv().pendingAgentSession;
-    expect(session?.phase).toBe('llm-conversation');
-    expect(session?.draft).toEqual(draft);
-    expect(session?.lastLlmQuestion).toBe(PHASE23_QUESTION);
     const messages = tier3Calls()[0][1] as Array<{ role: string; content: string }>;
     expect(messages[1]).toEqual({ role: 'user', content: 'よくわからない' });
+    // 2026-10-30: the model's own question is dropped (empty proposal); the
+    // same-field guard then hands off to confirmation, as in (e) below.
+    expect(conv().messages.some((m) => m.content === PHASE23_QUESTION)).toBe(false);
+    expect(conv().pendingAgentSession?.phase).not.toBe('llm-conversation');
+    expect(lastMessage().pendingSlotFill).toBeUndefined();
+    expect(lastMessage().agentDraft?.rawText).toBe(draft.rawText);
   });
 
   it.each([
@@ -2603,7 +2519,7 @@ describe('Progress ticker — ephemeral one-shot @agent run (2026-08-10 on-devic
     // schedule — same shape the earlier "sanity check" test in this file
     // already verifies stops short of registering.
     await act(async () => {
-      await result.current.dispatch('@agent ニュースを通知して');
+      await result.current.dispatch('@agent 毎日ニュースを通知して');
     });
     await act(async () => {
       await result.current.dispatch('今');

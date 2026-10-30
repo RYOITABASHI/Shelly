@@ -396,21 +396,19 @@ export function buildRegistrationSystemPrompt(ctx: ConversationalRegistrationCon
   const browserPaneRules = ctx.locale === 'ja'
     ? `
 - ページ操作の依頼（Browser Paneに開いたページの要素をクリックする / テキストを取得する）のときだけ、"actionType" に "browser-pane" も選べます。その場合は "browserActionKind"（"click" か "extractText"）、"browserUrl"（対象ページのURL）、"browserSelector"（CSSセレクタ）を必ず全部入れてください。
-- "browserUrl" / "browserSelector": **ユーザーがこの会話の中で実際にタイプした文字列を、一字一句そのままコピーした場合にしか採用されません。** 一文字でも違えばシステムが必ず却下します。URLやセレクタを自分で考えて書いてはいけません。ユーザーがまだ書いていないなら、先に質問して聞き出してください。この動作は登録後も毎回ユーザーがその場で承認しないと実行されません。`
+- "browserUrl" / "browserSelector": **ユーザーがこの会話の中で実際にタイプした文字列を、一字一句そのままコピーした場合にしか採用されません。** 一文字でも違えばシステムが必ず却下します。URLやセレクタを自分で考えて書いてはいけません。ユーザーがまだ書いていないなら空文字のままにしてください（Shelly が聞きます）。この動作は登録後も毎回ユーザーがその場で承認しないと実行されません。`
     : `
 - Only for a page-operation request (clicking an element / extracting text on a page open in the Browser Pane), "actionType" may ALSO be "browser-pane". Then you MUST include all of "browserActionKind" ("click" or "extractText"), "browserUrl" (the target page URL) and "browserSelector" (the CSS selector).
-- "browserUrl" / "browserSelector": **only accepted when copied character for character from what the USER actually typed in this conversation.** The system rejects them if even one character differs. Never invent a URL or a selector yourself. If the user has not written one yet, ask for it first. Even after registration, this action only ever runs when the user approves it on screen each time.`;
+- "browserUrl" / "browserSelector": **only accepted when copied character for character from what the USER actually typed in this conversation.** The system rejects them if even one character differs. Never invent a URL or a selector yourself. If the user has not written one yet, leave it empty (Shelly asks for it). Even after registration, this action only ever runs when the user approves it on screen each time.`;
 
   if (ctx.locale === 'ja') {
     return `あなたは Shelly の「自動化エージェント登録アシスタント」です。ユーザーと日本語で会話しながら、定期実行エージェントの登録内容を組み立てます。
 
-【会話の進め方】
-- 情報が足りないときは、あなた自身の言葉で自然な日本語の質問を1つだけ返してください。そのときは JSON を一切出力しないでください。
-- 一度に複数のことをまとめて聞かないでください。短く、具体的に、1問ずつ聞いてください。
-- **直前にあなたが聞いた質問と同じ質問を、二度と繰り返さないでください。** ユーザーの最新の回答を必ず読み、会話を必ず一歩前に進めてください。回答が短くても（「確認なしで」「はい」など）、それは有効な回答です。同じ文面を送り直すのではなく、次に足りない項目を聞くか、情報がそろったなら最終提案を出してください。
-- 回答がどうしても曖昧で聞き直すしかないときも、同じ文面のコピーではなく、別の言い方で、何が分からなかったのかを添えて聞いてください。
-- ユーザーが言っていないことを勝手に決めつけないでください。分からないことは聞いてください。
-- 登録に必要な情報がそろったと判断したときだけ、次の形式のブロックだけを出力してください（前後に説明文を付けないこと）。
+【進め方】
+- **ユーザーへの質問は書かないでください。** 情報が足りなくても、質問文や説明文は一切書かず、毎回かならず下の形式の最終提案ブロックだけを出力してください。分からない項目は空文字（autonomousIntent は null）のままにします。まだ足りない項目は、Shelly 側が決まった文面でユーザーに聞きます。
+- ユーザーの最新の回答を必ず読み、そこで分かった内容を提案に反映してください。回答が短くても（「確認なしで」「はい」など）、それは有効な回答です。
+- ユーザーが言っていないことを勝手に決めつけないでください。分からない項目は空のままにしてください。
+- 出力は次の形式のブロックだけにしてください（前後に説明文を付けないこと）。
 
 【最終提案の出力形式】
 ${FENCE_TAG}
@@ -420,17 +418,16 @@ ${FENCE_END}
 **このフェンスタグ（${FENCE_TAG}）を一字一句そのまま使ってください。 \`\`\`json や、フェンスなしの生JSONでは絶対に返さないでください** — システム側はこの正確なタグだけを「最終提案」として認識します。また、"autonomousIntent" は文字列 "true"/"false" ではなく **真偽値（true/false/null をそのまま）** で書いてください。まだ登録が完了していないのに「登録しました」「完了しました」のような完了を示す文章だけを返すのも禁止です — 完了したと判断したら、必ずこの形式のブロックを出力してください。
 
 【各項目のルール】
-- "name": エージェントの短い表示名（20文字以内）。
-- "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。決まっていなければ空文字。
-  - **「〇〇の通知が来たら」「〇〇からの通知をトリガーに」のような依頼は、時刻や頻度ではなく“通知の到着”そのものが実行のきっかけです。** この場合 "scheduleText" は空文字のままにして、代わりに下の "notificationTriggerApp" にアプリ名／パッケージ名を書いてください。このタイプの依頼にはそもそも時刻・頻度が存在しないので、「いつ実行しますか」と聞き直してはいけません。
+- "name": エージェントの短い表示名（20文字以内）。ユーザーが「名前: X」や「X: …」の形で名前を書いていればそれをそのまま使い、なければ依頼内容を表す短い名詞句にしてください。名前を聞き返してはいけません。
+- "scheduleText": 「毎朝8時」「毎週月曜の9時」のような自然な日本語の表現のみ。**cron 式は絶対に書かないでください**（システム側が変換します）。ユーザーが「手動」「スケジュールなし」「自分で実行」と言ったら "手動" と書いてください。いつ実行するか何も言われていなければ空文字（Shelly が手動実行として扱います）。
+  - **「〇〇の通知が来たら」「〇〇からの通知をトリガーに」のような依頼は、時刻や頻度ではなく“通知の到着”そのものが実行のきっかけです。** この場合 "scheduleText" は空文字のままにして、代わりに下の "notificationTriggerApp" にアプリ名／パッケージ名を書いてください。このタイプの依頼にはそもそも時刻・頻度が存在しません。
 - "notificationTriggerApp": 通知トリガーの対象アプリを、ユーザーが名指しした名前またはパッケージ名のまま書いてください（例: "com.android.systemui", "Slack"）。ID・パッケージ名を自分で考えて書いてはいけません。通知トリガーの話が出ていなければ空文字。
 - "actionType": "draft"（結果をファイルに保存）か "notify"（通知する）のどちらか**だけ**。それ以外の値（webhook, cli, social-post など）は書かないでください。書いても無視されます。${highRiskRules}${browserPaneRules}
 - "prompt": 毎回の実行でエージェントが実際にやること。スケジュールの言い回しは含めないでください。
 - "steps": **複数の手順に分かれる依頼（例: 調べる → 要約する → 投稿する）のときだけ**、手順を順番どおりに、自然な指示文の配列として書いてください（最大${MAX_MODEL_AUTHORED_STEPS}個）。手順が1つしかない依頼なら空配列 [] のままにして、やることは "prompt" に書いてください。各要素はただの指示文です — ID・URL・接続設定を自分で考えて書いてはいけません。ただし、**ユーザーがその手順で使うツール（Perplexity、ローカルLLM、Codex、Gemini）を実際に名指ししていた場合は、その名前をそのまま指示文の中に含めてください**（例:「Perplexityで最新ニュースを調べる」）。システム側がその名前を認識してツールを割り当てます。ユーザーが名指ししていないのに自分でツール名を考えて書いてはいけません。
 - "outputPath": 保存先が明示されたときだけ。それ以外は空文字。
 - "platformHint": 投稿先の**名前だけ**をそのまま書いてください（例: "ブルースカイ", "会社Bot"）。ID・URL・ホスト名・接続設定を自分で作ってはいけません。システム側が実在の登録済み投稿先と突き合わせます。投稿先の話が出ていなければ空文字。
-- "autonomousIntent": 「確認なしで勝手にやっておいて」なら true、「毎回確認して」なら false、どちらとも言っていなければ null。推測しないでください。
-  - ただし、**外部への投稿・送信や端末側での実行を伴う動作**（投稿先が決まっている、通知だけでは終わらない、など）で、かつ**実行スケジュールも決まっている**のに、確認の要否をユーザーがまだ一度も言っていないときは、autonomousIntent を null のまま最終提案を出さないでください。その場合は先に「確認なしで実行するか、毎回確認してから実行するか」を1回だけ聞いて、その答えを autonomousIntent に入れてから最終提案を出してください。すでにどちらかを聞き取れているなら、重ねて聞かないでください。
+- "autonomousIntent": 「確認なしで勝手にやっておいて」なら true、「毎回確認して」なら false、どちらとも言っていなければ null。推測しないでください。確認の要否をユーザーに聞く必要があるかどうかは Shelly 側が決めます（保存・通知だけの依頼では聞きません）。
 
 【登録済みの投稿先】
 ${connectors}
@@ -441,13 +438,11 @@ ${hint}`;
 
   return `You are Shelly's automation-agent registration assistant. You talk with the user in English and assemble the definition of a scheduled agent together with them.
 
-【How to run the conversation】
-- When something is missing, reply with ONE short follow-up question in your own words, in ordinary prose. Do NOT emit any JSON on such a turn.
-- Ask one thing at a time. Keep it short and concrete.
-- **Never repeat a question you have already asked.** Always read the user's most recent answer and move the conversation forward by one step. A short answer ("no confirmation", "yes") is still a valid answer — do not re-send the same text; ask for the next missing item instead, or emit the final proposal if you now have everything.
-- If an answer really is too ambiguous to use, re-ask in DIFFERENT words and say what was unclear — never resend an identical question.
-- Never assume anything the user did not say. If you don't know, ask.
-- ONLY once you believe you have everything, output the block below and nothing else (no text before or after it).
+【How to respond】
+- **Never write a question to the user.** Even when something is missing, write no question and no explanation: ALWAYS output only the final proposal block below. Leave anything you don't know as an empty string (autonomousIntent: null). Shelly itself asks the user for whatever is still missing, with fixed wording.
+- Always read the user's most recent answer and reflect it in the proposal. A short answer ("no confirmation", "yes") is still a valid answer.
+- Never assume anything the user did not say. Leave unknown fields empty.
+- Output the block below and nothing else (no text before or after it).
 
 【Final proposal format】
 ${FENCE_TAG}
@@ -457,17 +452,16 @@ ${FENCE_END}
 **Use this exact fence tag (${FENCE_TAG}), character for character. Never use \`\`\`json or unfenced raw JSON instead** — the system only recognizes this exact tag as your final proposal. Also write "autonomousIntent" as a real boolean (true/false/null), never the strings "true"/"false". Do not announce that registration is "done" or "complete" in plain text either — if you believe you are done, output the block above instead.
 
 【Field rules】
-- "name": a short display label for the agent (<= 20 chars).
-- "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. Empty string if no schedule was stated.
-  - **A request phrased as "when I get a notification from X" (or "triggered by a notification from X") is fired by the notification's ARRIVAL, not a time or frequency.** For this kind of request, leave "scheduleText" empty and use "notificationTriggerApp" below instead. Do not keep asking "when should this run" — this shape of agent has no time/frequency at all.
+- "name": a short display label for the agent (<= 20 chars). If the user wrote one as "Name: X" or "X: …", use it as written; otherwise use a short noun phrase for the task. Never ask for a name.
+- "scheduleText": a plain natural-language phrase only, e.g. "every day at 8am", "every Monday at 9". **Never write a cron expression** — the system converts it. If the user said "manual" / "no schedule" / "I'll run it myself", write "manual". Empty string if no schedule was stated (Shelly treats that as a manual agent).
+  - **A request phrased as "when I get a notification from X" (or "triggered by a notification from X") is fired by the notification's ARRIVAL, not a time or frequency.** For this kind of request, leave "scheduleText" empty and use "notificationTriggerApp" below instead — this shape of agent has no time/frequency at all.
 - "notificationTriggerApp": the app name or package name the user named for the notification trigger, copied as written (e.g. "com.android.systemui", "Slack"). Never invent one. Empty string if no notification trigger was mentioned.
 - "actionType": either "draft" (save the result to a file) or "notify" (alert the user) and NOTHING else. Do not write webhook, cli, social-post or any other value; they are ignored.${highRiskRules}${browserPaneRules}
 - "prompt": what the agent should actually DO on each run, with the scheduling phrasing removed.
 - "steps": **only when the request genuinely breaks into several ordered steps** (e.g. research → summarize → post), list them IN ORDER as an array of plain instruction sentences (${MAX_MODEL_AUTHORED_STEPS} max). If the request is a single step, leave "steps" as an empty array [] and put the task in "prompt" instead. Each entry is just an instruction sentence — never invent an id, a URL, or connection settings. If the user actually named which tool a step should use (Perplexity, the local model, Codex, Gemini), include that name naturally in the step's own sentence (e.g. "look up the latest news with Perplexity") — the system recognizes that name and routes to it. Never invent a tool name the user didn't say.
 - "outputPath": only when a destination file/folder was explicitly stated. Empty string otherwise.
 - "platformHint": the destination NAME only, copied as written (e.g. "Bluesky", "Team Bot"). Never invent an id, a URL, a host, or connection settings — the system matches this against the destinations the user really registered. Empty string if no destination came up.
-- "autonomousIntent": true if the user asked for it to run unattended without confirming each time, false if they asked to be asked every time, null if they said nothing either way. Do not guess.
-  - However, when the agent **acts outside this device** (posting or sending to a destination, running something) rather than just saving or notifying, **and the schedule is already settled**, do not send the final proposal with autonomousIntent still null. Ask once first whether it should run without confirmation or ask for confirmation every time, then put that answer in autonomousIntent and send the proposal. If the user already told you either way, do not ask again.
+- "autonomousIntent": true if the user asked for it to run unattended without confirming each time, false if they asked to be asked every time, null if they said nothing either way. Do not guess. Whether the user needs to be asked about this is Shelly's decision (it is never asked for a save-or-notify-only agent).
 
 【Registered destinations】
 ${connectors}
@@ -880,6 +874,32 @@ export function parseConversationalTurnResponse(raw: string): ConversationalTurn
   }
 
   return { kind: 'question', text: cleaned.trim() };
+}
+
+/**
+ * 2026-10-30 ("zero questions" agent setup): Tier 3 no longer writes the
+ * user-facing questions. On-device the model free-wrote them — it asked for
+ * the agent NAME first, then a combined schedule + "confirm each run? はい/
+ * いいえ" question with inverted polarity, for a request that needed none of
+ * it. Now the model's only job is to fill the proposal; whatever is still
+ * missing is computed deterministically by lib/agent-slot-fill.ts's
+ * nextMissingSlot and asked with its fixed slot_fill.* i18n templates.
+ *
+ * So a turn the model spent on prose (a 'question') is NEVER shown: it is
+ * read as an empty proposal (nothing extracted — the deterministic draft
+ * stands and nextMissingSlot decides what, if anything, to ask). Only a
+ * genuinely unusable turn stays 'unparseable' (the caller's visible Tier 2
+ * fallback).
+ */
+export function parseConversationalTurnForSlotFill(
+  raw: string,
+): { kind: 'proposal'; extraction: AgentConversationalExtraction } | { kind: 'unparseable' } {
+  const turn = parseConversationalTurnResponse(raw);
+  if (turn.kind === 'question') {
+    logInfo(LOG, `model asked a free-text question (${turn.text.length} chars) — dropped; slot-fill asks deterministically`);
+    return { kind: 'proposal', extraction: {} };
+  }
+  return turn;
 }
 
 // 2026-08-13 on-device finding: QA reproduced an "empty assistant bubble"
@@ -1344,7 +1364,25 @@ export function mergeConversationalExtractionIntoDraft(
     logInfo(LOG, `browser-pane ${kind} accepted — URL and selector matched the user's own words verbatim`);
   };
 
-  if (extraction.scheduleText) {
+  const manualSched = extraction.scheduleText ? parseSchedule(extraction.scheduleText) : null;
+  if (manualSched?.manual) {
+    // 2026-10-30: 「手動」/"manual" is a first-class trigger, not an unknown
+    // schedule. Never overrides a schedule the deterministic parse already
+    // confidently resolved (the model may not downgrade a stated schedule).
+    if (!draft.scheduleConfident) {
+      const m = next();
+      m.schedule = null;
+      m.scheduleLabel = manualSched.label;
+      m.suggestedTime = undefined;
+      m.suggestedFrequency = undefined;
+      m.suggestedDowList = undefined;
+      m.trigger = 'manual';
+      m.triggerAssumed = undefined;
+      touched = true;
+    } else {
+      rejectedFields.push('scheduleText');
+    }
+  } else if (extraction.scheduleText) {
     const sched = parseSchedule(extraction.scheduleText);
     // Bare time + a recurrence the draft already knows → complete the
     // recurrence instead of registering an implicit one-shot (same rule as

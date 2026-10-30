@@ -215,7 +215,9 @@ export function isLowConfidenceAgentDraft(draft: ParsedAgentDraft): boolean {
   const unresolvedPostIntent = looksLikeUnresolvedPostIntent(draft);
 
   const explicitActionType = draft.action.type !== 'draft';
-  const hasExplicitDraftKeyword = EXPLICIT_DRAFT_KEYWORD_RE.test(draft.rawText);
+  // 2026-10-30: an absorbed save directive (「結果をメモとして保存して」 →
+  // draft.saveActionLabel) is just as explicit a 'draft' request as 下書き.
+  const hasExplicitDraftKeyword = EXPLICIT_DRAFT_KEYWORD_RE.test(draft.rawText) || !!draft.saveActionLabel;
   const actionExplicit = explicitActionType || hasActionCaveat || hasExplicitDraftKeyword;
   const legacyLowConfidence = !draft.scheduleConfident && !actionExplicit;
 

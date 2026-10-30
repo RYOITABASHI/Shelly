@@ -56,7 +56,8 @@ import type { Agent } from '@/store/types';
 import { resolveConfirmedToolAndRunOn, suggestTool } from '@/lib/agent-tool-router';
 import { consentSignalsFor } from '@/lib/agent-credential-policy';
 import { detectRouteSignals } from '@/lib/agent-router-scoring';
-import { parseAgentNL, detectFreeTextAgentDeleteIntent } from '@/lib/agent-nl-parser';
+import { parseAgentNL, detectFreeTextAgentDeleteIntent, isManualTriggerDraft } from '@/lib/agent-nl-parser';
+import { resolveAgentOutputBase } from '@/lib/agent-executor';
 import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import {
   resolveRegistrationConfirmRequirement,
@@ -77,10 +78,8 @@ import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAge
 import {
   buildConversationTranscript,
   buildRegistrationSystemPrompt,
-  ensureNonEmptyConversationalQuestionText,
-  isRepeatedRegistrationQuestion,
   mergeConversationalExtractionIntoDraft,
-  parseConversationalTurnResponse,
+  parseConversationalTurnForSlotFill,
   runConversationalRegistrationTurn,
 } from '@/lib/agent-conversational-registration';
 import { answerCapabilityQuestion } from '@/lib/agent-capability-answer';
@@ -618,8 +617,19 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // draft that's actually fireable, never a partially-specified one.
       const presentDraftForConfirmation = async (
         agentLabel: ChatMessage['agent'] | undefined,
-        draft: ParsedAgentDraft,
+        presentedDraft: ParsedAgentDraft,
       ): Promise<void> => {
+        // 2026-10-30: an absorbed save directive (「メモとして保存」) shows WHERE
+        // the result goes — resolved from Settings here, since the summary
+        // renderer is pure. Display-only (never persisted).
+        let draft = presentedDraft;
+        if (draft.action.type === 'draft' && draft.saveActionLabel && !draft.outputPath?.trim()) {
+          try {
+            draft = { ...draft, saveDestinationPreview: resolveAgentOutputBase(useSettingsStore.getState().settings) };
+          } catch {
+            // best-effort preview; the summary falls back to the default path
+          }
+        }
         // Phase 7: social-post (e.g. X-posting) and tool-pinned orchestration
         // drafts (Phase 6's detectToolPinnedSteps) skip AgentConfirmCard
         // entirely — the project owner explicitly rejected a card/modal for
@@ -801,7 +811,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             conversationKey: paneId,
             messageId: draftMessageId,
             draft,
-            fireable: hasFireableSchedule(draft),
+            // 2026-10-30: manual-only never fires on its own, so it is not
+            // remotely approvable — device-only (Shelly chat), by design.
+            fireable: hasFireableSchedule(draft) && !isManualTriggerDraft(draft),
           });
         }
       };
@@ -1537,52 +1549,12 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               },
             );
             if (result.success) {
-              const turn = parseConversationalTurnResponse(result.raw ?? '');
-              if (turn.kind === 'question') {
-                // 2026-08-02 on-device finding (Qwen3.5-2B): a small local
-                // model can re-emit the PREVIOUS question verbatim after the
-                // user has already answered it — three turns running, in the
-                // repro. Re-showing it a second time teaches the user nothing
-                // and the model nothing; the conversation has stopped
-                // progressing, which is a different signal from a malformed
-                // turn and is not fixed by spending the remaining turns. Drop
-                // to Tier 2's deterministic slot-fill immediately instead of
-                // waiting for the 5-turn cap. Conservative by construction —
-                // see isRepeatedRegistrationQuestion: EXACT match after
-                // normalization only, so a reworded re-ask keeps the Tier 3
-                // conversation alive.
-                if (isRepeatedRegistrationQuestion(pendingAgentSession.lastLlmQuestion, turn.text)) {
-                  logInfo(
-                    'AIPaneDispatch',
-                    'Tier 3 conversation repeated the same question verbatim — falling back to Tier 2 slot-fill',
-                  );
-                  announceTier2Fallback = true;
-                } else {
-                  const messageId = generateId();
-                  store.addMessage(paneId, {
-                    id: messageId,
-                    role: 'assistant',
-                    // Defensive floor (2026-08-13) — see
-                    // ensureNonEmptyConversationalQuestionText's doc comment:
-                    // turn.text is guaranteed non-empty today, but this keeps
-                    // a genuinely blank bubble structurally impossible even
-                    // if that guarantee ever regresses.
-                    content: ensureNonEmptyConversationalQuestionText(
-                      turn.text,
-                      (conversationLocale === 'ja' ? ja : en)['agentplan.llm_conversation_fallback_notice'],
-                    ),
-                    timestamp: Date.now(),
-                    agent: pendingAgentSession.agentLabel,
-                  });
-                  store.setPendingAgentSession(paneId, {
-                    ...pendingAgentSession,
-                    attemptCounts: { ...pendingAgentSession.attemptCounts, llmTurns: llmTurns + 1 },
-                    messageId,
-                    lastLlmQuestion: turn.text,
-                  });
-                  return;
-                }
-              }
+              // 2026-10-30: the model never authors a user-facing question any
+              // more — a prose turn is read as an empty proposal and the
+              // deterministic nextMissingSlot below decides what to ask (see
+              // parseConversationalTurnForSlotFill). This also retires the
+              // 2026-08-02 repeated-question loop structurally.
+              const turn = parseConversationalTurnForSlotFill(result.raw ?? '');
               // 2026-08-13 on-device finding: a raw LLM response can be
               // non-empty (so runConversationalRegistrationTurn* reports
               // result.success = true) yet collapse to nothing once
@@ -2141,37 +2113,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               },
             );
             if (result.success) {
-              const turn = parseConversationalTurnResponse(result.raw ?? '');
-              if (turn.kind === 'question') {
-                const messageId = generateId();
-                const createdAt = Date.now();
-                store.addMessage(paneId, {
-                  id: messageId,
-                  role: 'assistant',
-                  // Defensive floor (2026-08-13) — see
-                  // ensureNonEmptyConversationalQuestionText's doc comment:
-                  // turn.text is guaranteed non-empty today, but this keeps
-                  // a genuinely blank bubble structurally impossible even if
-                  // that guarantee ever regresses.
-                  content: ensureNonEmptyConversationalQuestionText(
-                    turn.text,
-                    (conversationLocale === 'ja' ? ja : en)['agentplan.llm_conversation_fallback_notice'],
-                  ),
-                  timestamp: createdAt,
-                  agent: agentLabel,
-                });
-                store.setPendingAgentSession(paneId, {
-                  draft: updatedDraft,
-                  phase: 'llm-conversation',
-                  attemptCounts: {},
-                  hasAssumptions: true,
-                  createdAt,
-                  messageId,
-                  agentLabel,
-                  lastLlmQuestion: turn.text,
-                });
-                return;
-              }
+              // 2026-10-30: prose turns are never shown — see
+              // parseConversationalTurnForSlotFill.
+              const turn = parseConversationalTurnForSlotFill(result.raw ?? '');
               if (turn.kind === 'proposal') {
                 const mergedDraft = mergeConversationalExtractionIntoDraft(
                   updatedDraft,
@@ -2788,41 +2732,14 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 // on-device as an empty response / ~2 minutes of apparent
                 // silence, even though this original `if/else` already
                 // handled `!result.success` correctly.
-                const turn = result.success ? parseConversationalTurnResponse(result.raw ?? '') : null;
-                if (turn?.kind === 'question') {
-                    const messageId = generateId();
-                    const createdAt = Date.now();
-                    store.addMessage(paneId, {
-                      id: messageId,
-                      role: 'assistant',
-                      // Defensive floor (2026-08-13) — see
-                      // ensureNonEmptyConversationalQuestionText's doc
-                      // comment: turn.text is guaranteed non-empty today,
-                      // but this keeps a genuinely blank bubble structurally
-                      // impossible even if that guarantee ever regresses.
-                      content: ensureNonEmptyConversationalQuestionText(
-                        turn.text,
-                        (conversationLocale === 'ja' ? ja : en)['agentplan.llm_conversation_fallback_notice'],
-                      ),
-                      timestamp: createdAt,
-                      agent: agent as ChatMessage['agent'],
-                    });
-                    store.setPendingAgentSession(paneId, {
-                      draft,
-                      phase: 'llm-conversation',
-                      attemptCounts: {},
-                      hasAssumptions: true,
-                      createdAt,
-                      messageId,
-                      agentLabel: agent as ChatMessage['agent'],
-                      // Seed for the repeated-question check on the NEXT turn
-                      // (see the resume branch above) — a small local model
-                      // re-asking this exact text after the user answers is
-                      // the 2026-08-02 on-device repro.
-                      lastLlmQuestion: turn.text,
-                    });
-                    return;
-                } else if (turn?.kind === 'proposal') {
+                // 2026-10-30: the model no longer asks questions in its own
+                // words (on-device it asked for a name, then a combined
+                // schedule + inverted-polarity "confirm each run? はい/いいえ"
+                // question). A prose turn is read as an empty proposal; the
+                // deterministic nextMissingSlot below asks with the fixed
+                // slot_fill.* templates — see parseConversationalTurnForSlotFill.
+                const turn = result.success ? parseConversationalTurnForSlotFill(result.raw ?? '') : null;
+                if (turn?.kind === 'proposal') {
                     const merged = mergeConversationalExtractionIntoDraft(
                       draft,
                       turn.extraction,
@@ -4269,7 +4186,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             ? humanizeCronSchedule(confirmed.schedule, noticeLocale)
             : (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
-              : 'no schedule');
+              : (confirmed.manualTrigger ? tFor(noticeLocale, 'agentplan.manual_schedule_description') : 'no schedule'));
           const updatedContent = tFor(
             noticeLocale,
             'agentplan.updated_notice',
@@ -4289,7 +4206,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           return;
         }
 
-        if (isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
+        // 2026-10-30: a manual-only agent is registered and kept (schedule
+        // null), never run-and-discarded like an ephemeral one-shot.
+        if (!confirmed.manualTrigger && isEphemeralOneShot(confirmed.schedule, confirmed.notificationTrigger)) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           const ephemeralRunningContent = `▶ Running "${created.name}"…`;
@@ -4403,7 +4322,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             ? humanizeCronSchedule(confirmed.schedule, noticeLocale)
             : (confirmed.notificationTrigger
               ? `on notification from ${confirmed.notificationTrigger.packageNames.join(', ')}`
-              : 'no schedule');
+              : (confirmed.manualTrigger ? tFor(noticeLocale, 'agentplan.manual_schedule_description') : 'no schedule'));
           // 2026-07-23: only a chat-native draft (not AgentConfirmCard) gets
           // the correction-window hint + reference — see the doc comment on
           // isChatNativeDraft/originalDraftSnapshot above and

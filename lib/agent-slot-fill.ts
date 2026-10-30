@@ -9,7 +9,7 @@
  * precedent of lib/agent-card-cron.ts / lib/notification-trigger.ts).
  */
 import type { ParsedAgentDraft, ScheduleResult } from './agent-nl-parser';
-import { parseSchedule, fmtTime, JP_DOW_LABEL, extractBrowserTargetUrl } from './agent-nl-parser';
+import { parseSchedule, fmtTime, JP_DOW_LABEL, extractBrowserTargetUrl, isManualTriggerDraft } from './agent-nl-parser';
 import { parseNotificationTriggerPackages } from './notification-trigger';
 import { suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 import en from './i18n/locales/en';
@@ -154,7 +154,12 @@ export function nextMissingSlot(
   }
   const hasNotificationTrigger =
     !!draft.notificationTrigger && draft.notificationTrigger.packageNames.length > 0;
-  if (!draft.scheduleConfident && !hasNotificationTrigger) {
+  // 2026-10-30: a manual-only agent (ParsedAgentDraft.trigger — explicit
+  // 手動/manual, or defaulted because the utterance named no schedule at all)
+  // has its schedule slot RESOLVED: it registers with schedule null and runs
+  // when the user runs it. The summary carries a one-line hint on how to make
+  // it recurring instead of asking.
+  if (!draft.scheduleConfident && !hasNotificationTrigger && !isManualTriggerDraft(draft)) {
     return {
       field: 'schedule',
       question: strings['slot_fill.question_schedule'],
@@ -176,7 +181,10 @@ export function nextMissingSlot(
       question: `${strings['slot_fill.question_social_connector']}\n${options}`,
     };
   }
-  if (draft.action.type === 'draft' && !ctx.agentVaultPath && !ctx.agentTopicFolder) {
+  // 2026-10-30: an explicit save directive (「メモとして保存して」 →
+  // draft.saveActionLabel) already says what to do with the result; the
+  // summary shows the default destination, so no question is needed.
+  if (draft.action.type === 'draft' && !draft.saveActionLabel && !ctx.agentVaultPath && !ctx.agentTopicFolder) {
     return {
       field: 'outputPath',
       question: strings['slot_fill.question_output_path'],
@@ -304,6 +312,24 @@ export function applySlotAnswer(
   }
   if (field === 'schedule') {
     const result = parseSchedule(answerText);
+    if (result.manual) {
+      // 「手動」 / 「スケジュールなし」 / "manual": a first-class answer, never a
+      // failed parse that re-asks.
+      return {
+        draft: {
+          ...draft,
+          schedule: null,
+          scheduleConfident: false,
+          scheduleLabel: result.label,
+          suggestedTime: undefined,
+          suggestedFrequency: undefined,
+          suggestedDowList: undefined,
+          trigger: 'manual',
+          triggerAssumed: undefined,
+        },
+        resolved: true,
+      };
+    }
     // A bare time answer ("9時") is an IMPLICIT one-shot on its own, but when
     // the original utterance already established a recurrence ("毎日…" with
     // no time) the answer completes THAT recurrence — combine first.
@@ -474,14 +500,13 @@ export function applySlotAnswer(
   }
   if (field === 'autonomous') {
     const trimmed = answerText.trim();
-    const affirmative = /^(?:はい|うん|ok|いい|良い|yes|yeah|sure)[!！。.]?$/i.test(trimmed);
-    const negative = /^(?:いいえ|だめ|ダメ|no|nope)[!！。.]?$/i.test(trimmed);
-    if (affirmative !== negative) {
-      return { draft: { ...draft, autonomous: affirmative }, resolved: true };
+    const choice = parseAutonomousChoice(trimmed);
+    if (choice !== null) {
+      return { draft: { ...draft, autonomous: choice }, resolved: true };
     }
     // Mixed yes/no signals are ambiguous, so never grant unattended execution.
-    const hasAffirmative = /(?:はい|うん|\bok\b|いい|良い|\byes\b|\byeah\b|\bsure\b)/i.test(trimmed);
-    const hasNegative = /(?:いいえ|だめ|ダメ|\bno\b|\bnope\b)/i.test(trimmed);
+    const hasAffirmative = AUTONOMOUS_YES_ANY_RE.test(trimmed);
+    const hasNegative = AUTONOMOUS_NO_ANY_RE.test(trimmed);
     if ((hasAffirmative && hasNegative) || attemptCount >= 2) {
       return { draft: { ...draft, autonomous: false }, resolved: true };
     }
@@ -493,6 +518,28 @@ export function applySlotAnswer(
   const trimmed = answerText.trim();
   const skipPhrase = /^(skip|default|そのままでいい|いいえ|なし|不要)$/i.test(trimmed);
   return { draft: { ...draft, outputPath: trimmed && !skipPhrase ? trimmed : undefined }, resolved: true };
+}
+
+// 2026-10-30: the confirm-mode question is now an explicit two-choice
+// ("確認なしで自動実行 / 毎回確認してから実行 のどちらにしますか？") instead of a
+// yes/no about "unattended" whose polarity users read backwards. Both the new
+// choice phrasings and the legacy はい/いいえ replies are accepted.
+const AUTONOMOUS_YES_WHOLE_RE =
+  /^(?:はい|うん|ok|いい|良い|yes|yeah|sure|(?:確認なし|確認せず|確認不要|承認なし)(?:で|に)?(?:自動(?:で|実行)?|勝手に|実行)?(?:して|する|でいい|で(?:お願い|よろしく))?|自動(?:で|実行)(?:して|する|でいい)?|(?:全部)?勝手に(?:やって|実行して)?|無人(?:で|実行)?|(?:run\s+)?(?:it\s+)?automatically|run\s+without\s+(?:asking|confirm(?:ing|ation)?)|without\s+(?:asking|confirm(?:ing|ation)?)|no\s+confirmation|unattended)[!！。.]?$/i;
+const AUTONOMOUS_NO_WHOLE_RE =
+  /^(?:いいえ|だめ|ダメ|no|nope|(?:毎回)?確認(?:して(?:から)?(?:実行)?|してください|する|あり|が欲しい|がほしい)|毎回確認(?:で|して(?:から)?(?:実行)?)?|(?:毎回)?聞いて(?:から)?(?:実行)?|(?:ask|confirm)\s+(?:me\s+)?(?:each|every)\s+time|ask\s+(?:me\s+)?first|confirm\s+(?:each|every)\s+run)[!！。.]?$/i;
+const AUTONOMOUS_YES_ANY_RE = /(?:はい|うん|\bok\b|いい|良い|\byes\b|\byeah\b|\bsure\b|確認なし|確認せず|自動実行|勝手に|\bautomatically\b|without\s+(?:asking|confirm))/i;
+const AUTONOMOUS_NO_ANY_RE = /(?:いいえ|だめ|ダメ|\bno\b|\bnope\b|毎回確認|確認して|確認する|聞いて|\b(?:ask|confirm)\s+(?:me\s+)?(?:each|every)\s+time|ask\s+(?:me\s+)?first)/i;
+
+/** Answer to the confirm-mode question: true = run without confirming, false
+ *  = confirm each run, null = unclear. Japanese answers are compared with
+ *  whitespace removed. */
+export function parseAutonomousChoice(answerText: string): boolean | null {
+  const trimmed = answerText.trim();
+  const compact = /[぀-ヿ一-鿿]/.test(trimmed) ? trimmed.replace(/[\s　]+/g, '') : trimmed;
+  const yes = AUTONOMOUS_YES_WHOLE_RE.test(compact);
+  const no = AUTONOMOUS_NO_WHOLE_RE.test(compact);
+  return yes !== no ? yes : null;
 }
 
 /** Explicit cancel phrases — matched case-insensitively against the WHOLE

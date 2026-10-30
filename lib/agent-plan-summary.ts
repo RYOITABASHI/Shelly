@@ -29,7 +29,7 @@
  * field-editing, so instead of silently defaulting it must refuse and ask the user
  * to restate the schedule with an explicit time.
  */
-import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime } from './agent-nl-parser';
+import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime, isManualTriggerDraft } from './agent-nl-parser';
 import { AgentAction } from '@/store/types';
 import { describeDraftTool, toolChoiceToLabel } from './agent-tool-router';
 import { closePawTaskText } from './agent-intent-review';
@@ -102,7 +102,10 @@ export function hasDraftAssumptions(draft: ParsedAgentDraft): boolean {
     draft.scheduleAssumed === true ||
     draft.llmExtracted === true ||
     !!draft.actionCaveat ||
-    draft.oneShotImplicit === true
+    draft.oneShotImplicit === true ||
+    // 2026-10-30: manual-only DEFAULTED (no schedule named) is an
+    // interpretation too — one human confirm before it registers.
+    (draft.triggerAssumed === true && isManualTriggerDraft(draft))
   );
 }
 
@@ -253,6 +256,7 @@ function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
     return humanizeCronSchedule(draft.schedule, locale);
   }
   const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
+  if (isManualTriggerDraft(draft)) return tl('agentcard.sched_manual');
   if (draft.suggestedFrequency !== undefined) {
     // Ambiguous — see hasFireableSchedule. Do not fabricate a time here; the
     // dedicated hint line (schedule_restate_hint) covers this case.
@@ -345,6 +349,11 @@ function firstResolvedContentPreview(params: Record<string, string> | undefined)
  *   `notify` carries no additional param on AgentAction today, so it needs
  *   no equivalent branch.
  */
+/** Display fallback for a draft save with no Settings-resolved preview —
+ *  the executor's default local target (lib/agent-executor.ts's
+ *  resolveAgentOutputBase 'local' case). */
+const DEFAULT_SAVE_DESTINATION_DISPLAY = '~/agent-output';
+
 function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, locale: Locale): string {
   const tl = (key: string, params?: Record<string, string | number>) => tFor(locale, key, params);
   if (action.type === 'social-post' && action.socialPost) {
@@ -372,6 +381,15 @@ function actionText(action: AgentAction, draft: ParsedAgentDraft | undefined, lo
   switch (action.type) {
     case 'draft': {
       const outputHint = draft?.outputPath?.trim();
+      // 2026-10-30: the user's own word for the save (「メモとして保存」) plus
+      // WHERE it goes, instead of the fixed 「下書きを作成」. The underlying
+      // action is still 'draft'.
+      if (draft?.saveActionLabel) {
+        return tl('agentplan.save_line_with_path', {
+          label: draft.saveActionLabel,
+          path: outputHint || draft.saveDestinationPreview?.trim() || DEFAULT_SAVE_DESTINATION_DISPLAY,
+        });
+      }
       return outputHint ? tl('agentplan.draft_line_with_path', { path: outputHint }) : label;
     }
     case 'webhook':
@@ -496,6 +514,9 @@ export function summarizeAgentDraftAsText(
   const lines: string[] = [];
   lines.push(markLine(tl('agentplan.summary_name', { name: draft.name }), 'name', changedFields));
   lines.push(markLine(tl('agentplan.summary_schedule', { schedule: scheduleText(draft, locale) }), 'schedule', changedFields));
+  // 2026-10-30: manual-only replaces the old "いつ実行しますか？" question —
+  // say how it runs and how to make it recurring, in one line.
+  if (isManualTriggerDraft(draft)) lines.push(tl('agentplan.manual_trigger_note'));
 
   // One-shot ('@in' / '@at', lib/agent-oneshot.ts): the schedule line above
   // already shows the absolute time + countdown; add only what the user could
@@ -735,5 +756,6 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     // applyPatchToPendingSession patched this way; every other draft (fresh
     // parse, AgentConfirmCard's own card flow) carries it as undefined.
     runOnceOnConfirm: draft.runOnceOnConfirm,
+    ...(isManualTriggerDraft(draft) ? { manualTrigger: true } : {}),
   };
 }

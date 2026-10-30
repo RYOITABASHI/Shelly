@@ -85,15 +85,16 @@ describe('buildRegistrationSystemPrompt', () => {
     const p = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
     expect(p).toContain('自動化エージェント登録アシスタント');
     expect(p).toContain('日本語');
-    // The conditional-JSON instruction (small models drop language instructions
-    // when JSON is demanded unconditionally — see the module doc comment).
-    expect(p).toContain('JSON を一切出力しないでください');
+    // 2026-10-30: the model never writes questions — Shelly asks the missing
+    // slots itself with fixed slot_fill.* wording.
+    expect(p).toContain('ユーザーへの質問は書かないでください');
+    expect(p).toContain('Shelly 側が決まった文面でユーザーに聞きます');
   });
 
   it('produces an English prompt for locale "en"', () => {
     const p = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
     expect(p).toContain("Shelly's automation-agent registration assistant");
-    expect(p).toContain('Do NOT emit any JSON on such a turn');
+    expect(p).toContain('Never write a question to the user');
     expect(p).not.toContain('自動化エージェント登録アシスタント');
   });
 
@@ -926,14 +927,28 @@ describe('runConversationalRegistrationTurn cloud fallback', () => {
 // the flow, so nothing was mis-registered — the fix is purely about not making
 // the user answer the same question over and over.
 
-describe('buildRegistrationSystemPrompt anti-repeat instruction', () => {
-  it('tells the model not to repeat a question it already asked, in BOTH locales', () => {
+// 2026-10-30: structurally retired — the model no longer asks questions at
+// all, so there is nothing to repeat. The prompt still tells it to read the
+// latest answer and leave unknown fields empty.
+describe('buildRegistrationSystemPrompt no-question instruction', () => {
+  it('tells the model to always emit the proposal and never a question, in BOTH locales', () => {
     const jaPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
-    expect(jaPrompt).toContain('同じ質問を、二度と繰り返さないでください');
-    expect(jaPrompt).toContain('会話を必ず一歩前に進めて');
+    expect(jaPrompt).toContain('毎回かならず下の形式の最終提案ブロックだけを出力してください');
+    expect(jaPrompt).toContain('ユーザーの最新の回答を必ず読み');
+    expect(jaPrompt).not.toContain('質問を1つだけ返してください');
     const enPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
-    expect(enPrompt).toContain('Never repeat a question you have already asked');
-    expect(enPrompt).toContain('move the conversation forward');
+    expect(enPrompt).toContain('ALWAYS output only the final proposal block');
+    expect(enPrompt).toContain("Always read the user's most recent answer");
+    expect(enPrompt).not.toContain('reply with ONE short follow-up question');
+  });
+
+  it('documents manual-only and name-prefix defaults instead of asking', () => {
+    const jaPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
+    expect(jaPrompt).toContain('"手動" と書いてください');
+    expect(jaPrompt).toContain('名前を聞き返してはいけません');
+    const enPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
+    expect(enPrompt).toContain('write "manual"');
+    expect(enPrompt).toContain('Never ask for a name');
   });
 });
 
@@ -960,21 +975,17 @@ describe('buildRegistrationSystemPrompt fence-tag / boolean-type instruction', (
 // enforcing re-check lives on the dispatcher side, which reuses nextMissingSlot
 // directly, because a small local model cannot be relied on to obey this.
 describe('buildRegistrationSystemPrompt autonomous-question hint', () => {
-  it('asks the model to settle autonomousIntent before proposing an outward-acting scheduled agent, in BOTH locales', () => {
+  // 2026-10-30: whether to ask about confirm-mode is decided deterministically
+  // by nextMissingSlot (outward-acting types only); the model only relays what
+  // the user already said and never asks itself.
+  it('leaves the confirm-mode question to Shelly, in BOTH locales', () => {
     const jaPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'ja' }));
-    expect(jaPrompt).toContain('外部への投稿・送信や端末側での実行を伴う動作');
-    expect(jaPrompt).toContain('実行スケジュールも決まっている');
-    expect(jaPrompt).toContain('autonomousIntent を null のまま最終提案を出さないでください');
-    expect(jaPrompt).toContain('確認なしで実行するか、毎回確認してから実行するか');
-    // Must not undo the anti-repeat instruction: don't re-ask what's known.
-    expect(jaPrompt).toContain('すでにどちらかを聞き取れているなら、重ねて聞かないでください');
+    expect(jaPrompt).toContain('確認の要否をユーザーに聞く必要があるかどうかは Shelly 側が決めます');
+    expect(jaPrompt).not.toContain('autonomousIntent を null のまま最終提案を出さないでください');
 
     const enPrompt = buildRegistrationSystemPrompt(ctx({ locale: 'en' }));
-    expect(enPrompt).toContain('acts outside this device');
-    expect(enPrompt).toContain('the schedule is already settled');
-    expect(enPrompt).toContain('do not send the final proposal with autonomousIntent still null');
-    expect(enPrompt).toContain('run without confirmation or ask for confirmation every time');
-    expect(enPrompt).toContain('If the user already told you either way, do not ask again');
+    expect(enPrompt).toContain("Whether the user needs to be asked about this is Shelly's decision");
+    expect(enPrompt).not.toContain('do not send the final proposal with autonomousIntent still null');
   });
 });
 

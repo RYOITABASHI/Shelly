@@ -370,7 +370,10 @@ describe('risk tier', () => {
     expect(assessAgentDraftRisk({ ...lowRisk, tool: { type: 'cli', cli: 'codex' } })).toEqual(['tool:cli']);
     expect(assessAgentDraftRisk({ ...lowRisk, tool: { type: 'ab-article-eval' } })).toEqual(['tool:cli']);
     expect(assessAgentDraftRisk({ ...lowRisk, tool: { type: 'perplexity' } })).toEqual([]);
-    expect(assessAgentDraftRisk({ ...lowRisk, orchestrationSteps: ['a', { instruction: 'b', tool: { type: 'local' } }] })).toEqual(['step-tool']);
+    // 2026-10-30: an on-device local-LLM step pin widens nothing — not a reason.
+    expect(assessAgentDraftRisk({ ...lowRisk, orchestrationSteps: ['a', { instruction: 'b', tool: { type: 'local' } }] })).toEqual([]);
+    expect(assessAgentDraftRisk({ ...lowRisk, orchestrationSteps: ['a', { instruction: 'b', tool: { type: 'perplexity' } }] })).toEqual(['step-tool']);
+    expect(assessAgentDraftRisk({ ...lowRisk, orchestrationSteps: [{ instruction: 'a', tool: { type: 'local' } }, { instruction: 'b', tool: { type: 'cli', cli: 'codex' } }] })).toEqual(['step-tool']);
     expect(assessAgentDraftRisk({ ...lowRisk, outputPath: '/sdcard/x' })).toEqual(['output-path']);
     expect(assessAgentDraftRisk({ ...lowRisk, matchedSkill: { id: 's' } })).toEqual(['skill']);
   });

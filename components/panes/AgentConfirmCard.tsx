@@ -87,6 +87,12 @@ export interface ConfirmedAgentDraft {
    *  AgentConfirmCard's own classic card flow never sets this (it has no
    *  patch-a-pending-draft mechanism of its own) — always undefined here. */
   runOnceOnConfirm?: boolean;
+  /** 2026-10-30: register a MANUAL-only agent (schedule null, no trigger)
+   *  that waits to be run by hand, instead of the "run once now, then
+   *  discard" one-shot a null schedule otherwise means (isEphemeralOneShot).
+   *  Set only by draftToConfirmedAgentDraft for an isManualTriggerDraft draft;
+   *  the card's own picker never sets it. */
+  manualTrigger?: boolean;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.

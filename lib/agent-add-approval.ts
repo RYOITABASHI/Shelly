@@ -145,7 +145,19 @@ export function assessAgentDraftRisk(draft: AgentAddDraftLike): string[] {
   // command), per-step tool pins, a custom output path, a reused skill recipe.
   const toolType = draft.tool && typeof draft.tool === 'object' ? draft.tool.type : undefined;
   if (toolType === 'cli' || toolType === 'ab-article-eval') reasons.push('tool:cli');
-  if (Array.isArray(draft.orchestrationSteps) && draft.orchestrationSteps.some((s) => !!s && typeof s === 'object' && 'tool' in s && !!s.tool)) {
+  // 2026-10-30: a step pinned to the on-device local LLM is NOT a scope
+  // widening (no network egress, no shell, no credential) — 「ローカルLLMで、
+  // …書き、…翻訳し、…要約して」 must not become review-in-Shelly only just
+  // because the user named the local model. Every other pin (Perplexity /
+  // Gemini / Codex / unknown shapes) still counts, fail-closed.
+  if (
+    Array.isArray(draft.orchestrationSteps) &&
+    draft.orchestrationSteps.some((s) => {
+      if (!s || typeof s !== 'object' || !('tool' in s) || !s.tool) return false;
+      const pinned = s.tool as { type?: unknown };
+      return !(typeof pinned === 'object' && pinned.type === 'local');
+    })
+  ) {
     reasons.push('step-tool');
   }
   if (typeof draft.outputPath === 'string' && draft.outputPath.trim()) reasons.push('output-path');

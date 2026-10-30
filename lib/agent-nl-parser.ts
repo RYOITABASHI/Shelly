@@ -18,7 +18,7 @@
  */
 import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
-import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions } from './agent-orchestration';
+import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
@@ -243,8 +243,49 @@ export interface ParsedAgentDraft {
    *  Persisted as the agent's concrete configured tool at confirm
    *  (resolveConfirmedToolAndRunOn) instead of `auto`. */
   toolExplicit?: boolean;
+  /** 2026-10-30 ("zero questions" agent setup): 'manual' = the agent has NO
+   *  firing schedule on purpose — it is registered and waits to be run by
+   *  hand (Sidebar ▶ / `@agent run`), persisted with `schedule: null`. This
+   *  is distinct from a null schedule WITHOUT this flag, which the confirm
+   *  flow reads as "run once now, then discard" (isEphemeralOneShot). Only
+   *  meaningful while `schedule` is still null — any later schedule answer /
+   *  patch that sets a real schedule supersedes it automatically (see
+   *  isManualTriggerDraft, the single reader of this flag). */
+  trigger?: 'manual';
+  /** true when `trigger: 'manual'` was DEFAULTED because the utterance named
+   *  no schedule at all (rather than the user saying 手動/manual). The summary
+   *  says so in one line instead of asking "いつ実行しますか？", and
+   *  hasDraftAssumptions treats it like any other default (one human confirm). */
+  triggerAssumed?: boolean;
+  /** The user's own words for the final save action ("メモとして保存") when a
+   *  trailing save clause was absorbed into the agent's 'draft' action instead
+   *  of becoming a work step. The underlying action stays 'draft'; this only
+   *  changes how the summary names it. */
+  saveActionLabel?: string;
+  /** Display-only preview of where a 'draft' action without an explicit
+   *  outputPath will save (resolved from Settings by the dispatcher just
+   *  before the summary is shown). Never persisted to the agent. */
+  saveDestinationPreview?: string;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
+}
+
+/**
+ * true when this draft is a manual-only agent: flagged `trigger: 'manual'`
+ * AND nothing since has given it a real schedule, a still-ambiguous partial
+ * schedule, or a notification trigger. Deriving it (instead of trusting the
+ * flag alone) means every existing code path that SETS a schedule (slot-fill,
+ * draft patch, LLM merge) supersedes manual without having to know about it.
+ */
+export function isManualTriggerDraft(
+  draft: Pick<ParsedAgentDraft, 'trigger' | 'schedule' | 'suggestedFrequency' | 'notificationTrigger'>,
+): boolean {
+  return (
+    draft.trigger === 'manual' &&
+    draft.schedule === null &&
+    draft.suggestedFrequency === undefined &&
+    !(draft.notificationTrigger && draft.notificationTrigger.packageNames.length > 0)
+  );
 }
 
 // cron dow is Sunday=0..Saturday=6 (Linux). JP weekday char → dow.
@@ -483,6 +524,19 @@ export interface ScheduleResult {
   /** [start, end) spans of `text` that stated the one-shot timing (time,
    *  day word, "in 5 minutes", "一回だけ" …), removed from the derived prompt. */
   oneShotStrip?: Array<[number, number]>;
+  /** The WHOLE text says "no schedule, I'll run it myself" (手動 / スケジュール
+   *  なし / 自分で実行 / manual / no schedule). schedule stays null and
+   *  confident stays false — callers map this to ParsedAgentDraft.trigger. */
+  manual?: boolean;
+}
+
+/** Whole-answer "manual only" phrasings. Anchored so a task that merely
+ *  mentions 手動 ("手動バックアップの手順をまとめて") is never read as one. */
+const MANUAL_SCHEDULE_ANSWER_RE =
+  /^\s*(?:手動(?:で(?:実行|起動)?|実行|のみ|だけ|でいい|で(?:いい|大丈夫))?|スケジュール(?:は)?(?:なし|無し|不要|いらない|要らない)|定期(?:実行)?(?:は)?(?:なし|無し|不要|いらない)|自分で(?:実行|起動|動かす|回す)(?:する|します)?|必要な(?:とき|時)に(?:実行|自分で実行)?|manual(?:ly)?(?:\s+only)?|run\s+(?:it\s+)?manually|no\s+schedule|i(?:'ll|\s+will)\s+run\s+it\s+(?:myself|manually)|on\s+demand)\s*[。.!！]?\s*$/i;
+
+export function isManualScheduleAnswer(text: string): boolean {
+  return MANUAL_SCHEDULE_ANSWER_RE.test(text);
 }
 
 // ── One-shot ("in 5 minutes" / "5分後" / "at 14:55" / "明日8時に") ──────────
@@ -798,6 +852,13 @@ function oneShotLocale(text: string): 'en' | 'ja' {
 /** Parse the schedule, constrained to the whitelisted cron shapes. */
 export function parseSchedule(text: string): ScheduleResult {
   const lower = text.toLowerCase();
+
+  // ── Manual only ("手動" / "スケジュールなし" / "manual") — an explicit answer
+  // that this agent has no firing schedule. Not a cron, never confident; the
+  // caller turns `manual` into ParsedAgentDraft.trigger = 'manual'.
+  if (isManualScheduleAnswer(text)) {
+    return { schedule: null, confident: false, label: '手動（スケジュールなし）', manual: true };
+  }
 
   // ── 0. Run once, right now — no recurrence, no time to parse. The single most
   // common answer to "when should this run?" was previously unrecognized (fell
@@ -2094,6 +2155,31 @@ function deriveName(text: string): string {
   return s || 'Agent';
 }
 
+/** Name from an explicit 「名前: X」 / 「X: …」 prefix — same secret redaction
+ *  and safety cap as deriveName, but no particle stripping (it is the user's
+ *  own label). */
+function deriveNameFromLabel(label: string): string {
+  const s = redactSecretsText(label).replace(/\s+/g, ' ').trim().slice(0, DERIVED_NAME_SAFETY_CAP).trim();
+  return s || 'Agent';
+}
+
+/** Any hint at WHEN to run: time / frequency / weekday / interval / day word /
+ *  time-of-day word. Deliberately broad — a false positive only means the
+ *  schedule question is asked as before. */
+const ANY_SCHEDULE_CUE_RE =
+  /毎|ごと|おき|間隔|定期|日次|週次|月次|隔週|[日月火水木金土]曜|平日|週末|\d+\s*(?:時|分|秒)|[0-9０-９]{1,2}\s*[:：]\s*[0-9０-９]{2}|今日|明日|明後日|今夜|今晩|今週|来週|来月|今すぐ|すぐに|後で|あとで|朝|昼|夕方|夜|晩|深夜|午前|午後|\b(?:every|each|daily|weekly|monthly|hourly|nightly|weekdays?|weekends?|tomorrow|today|tonight|morning|evening|noon|midnight|now|asap|immediately|later|in\s+\d+|at\s+\d|\d+\s*(?:am|pm)|(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day)?s?)\b/i;
+const NOTIFICATION_TRIGGER_CUE_RE =
+  /通知(?:が来たら|が届いたら|をトリガー|で起動)|(?:来たら|届いたら).*通知|when\s+i\s+(?:get|receive)\s+a\s+notification|notification\s+triggers?|triggered\s+by\s+a\s+notification/i;
+
+/** true when the utterance says nothing at all about when to run. */
+function isNoScheduleUtterance(text: string, sched: ScheduleResult): boolean {
+  if (sched.confident || sched.schedule !== null) return false;
+  if (sched.suggestedTime || sched.suggestedFrequency || sched.suggestedDowList) return false;
+  // Name prefix excluded: a label like 「朝刊まとめ:」 is not a schedule.
+  const body = extractNamePrefix(text)?.rest ?? text;
+  return !ANY_SCHEDULE_CUE_RE.test(body) && !NOTIFICATION_TRIGGER_CUE_RE.test(body);
+}
+
 /** Build the prompt fed to the agent — the task minus the leading schedule phrase. */
 function derivePrompt(text: string, schedule: ScheduleResult): string {
   // Keep it simple and faithful: strip a leading schedule clause when we recognised
@@ -2626,8 +2712,16 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     }
   }
 
-  const prompt = derivePrompt(rawText, sched);
+  // 2026-10-30: a leading 「名前: X、」 / 「<label>: 」 prefix names the agent; it
+  // is never part of the task (prompt) nor a step.
+  const namePrefix = extractNamePrefix(rawText);
+  const derivedPrompt = derivePrompt(rawText, sched);
+  const promptPrefix = extractNamePrefix(derivedPrompt);
+  const prompt = promptPrefix ? promptPrefix.rest : derivedPrompt;
   const memory = detectMemory(rawText);
+  // Trailing 「結果をメモとして保存して」 on a 'draft' agent: the save IS the
+  // action — remember the user's word for it and drop it from the steps below.
+  const saveActionLabel = action.type === 'draft' ? trailingSaveClauseLabel(prompt || rawText) ?? undefined : undefined;
   // Phase 4: detect an explicit multi-step instruction (≥ 2 ordered parts) via
   // an explicit sequence marker (まず/次に/… , first/then/…, numbered list).
   const explicitSteps = parseStepsFromText(prompt || rawText);
@@ -2679,6 +2773,17 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
       detectedSteps = trimmed.length >= 2 ? trimmed : undefined;
     }
   }
+  // Same absorption for a trailing save directive (2026-10-30): the agent's
+  // own 'draft' action saves the final result, so 「結果をメモとして保存して」
+  // must not run as a separate model call.
+  if (saveActionLabel && detectedSteps && detectedSteps.length >= 2) {
+    const last = detectedSteps[detectedSteps.length - 1];
+    const lastInstruction = typeof last === 'string' ? last : last.instruction;
+    if (saveOnlyClauseLabel(lastInstruction)) {
+      const trimmed = detectedSteps.slice(0, -1);
+      detectedSteps = trimmed.length >= 2 ? trimmed : undefined;
+    }
+  }
   // v1.1 api-call authoring: upgrade only explicit provider+API-call clauses,
   // after the established splitters have decided that this is genuinely a
   // multi-step utterance. This preserves bug #152's preamble-dropping behavior
@@ -2698,13 +2803,24 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     orchestrated: !!orchestrationSteps && orchestrationSteps.length >= 2,
   });
 
+  // 2026-10-30: an utterance that names NO schedule at all defaults to a
+  // manual-only agent instead of asking "いつ実行しますか？". Any partial
+  // schedule signal (a time, a frequency, a weekday, a recurrence/one-shot
+  // cue, a notification-trigger phrase) keeps the old behavior — those still
+  // need the schedule question.
+  const manualTrigger = sched.manual === true || isNoScheduleUtterance(rawText, sched);
+
   return {
-    name: deriveName(sched.oneShotStrip ? removeSpans(rawText, sched.oneShotStrip) || rawText : rawText),
+    name: namePrefix
+      ? deriveNameFromLabel(namePrefix.name)
+      : deriveName(sched.oneShotStrip ? removeSpans(rawText, sched.oneShotStrip) || rawText : rawText),
     prompt,
     orchestrationSteps,
     schedule: sched.schedule,
     scheduleConfident: sched.confident,
-    scheduleLabel: sched.label,
+    scheduleLabel: manualTrigger ? '手動（スケジュールなし）' : sched.label,
+    ...(manualTrigger ? { trigger: 'manual' as const, ...(sched.manual ? {} : { triggerAssumed: true }) } : {}),
+    ...(saveActionLabel ? { saveActionLabel } : {}),
     suggestedTime: sched.suggestedTime
       ? { hour: sched.suggestedTime.hour, minute: sched.suggestedTime.minute }
       : undefined,

@@ -41,7 +41,7 @@ import { useAIPaneStore } from '@/store/ai-pane-store';
 import { useAgentStore } from '@/store/agent-store';
 import { useSettingsStore } from '@/store/settings-store';
 import type { Agent, ChatMessage } from '@/store/types';
-import type { ParsedAgentDraft } from '@/lib/agent-nl-parser';
+import { isManualTriggerDraft, type ParsedAgentDraft } from '@/lib/agent-nl-parser';
 import { tFor, type Locale } from '@/lib/i18n';
 import { detectMessageLocale } from '@/lib/agent-slot-fill';
 import { firstRunPassedNote, humanizeCronSchedule, toolSubstitutionKey } from '@/lib/agent-plan-summary';
@@ -150,6 +150,7 @@ function scheduleText(draft: ParsedAgentDraft, locale: Locale): string {
       return draft.scheduleLabel || draft.schedule;
     }
   }
+  if (isManualTriggerDraft(draft)) return tFor(locale, 'agentcard.sched_manual');
   return draft.scheduleLabel || (locale === 'ja' ? '未設定' : 'not set');
 }
 
@@ -246,7 +247,11 @@ export async function onTerminalDraftPresented(params: {
         ? tFor(locale, textConfirmAllowed ? 'agents.terminal_request_approvable_note' : 'agents.terminal_request_approvable_note_device', { hash: hash8 })
         : risks.length > 0
           ? tFor(locale, 'agents.terminal_request_review_only', { reasons: risks.join(', ') })
-          : tFor(locale, 'agents.terminal_request_review_only_schedule'),
+          : isManualTriggerDraft(params.draft)
+            // 2026-10-30: manual-only stays device-only on purpose (it never
+            // fires on its own, so there is no schedule to approve remotely).
+            ? tFor(locale, 'agents.terminal_request_review_only_manual')
+            : tFor(locale, 'agents.terminal_request_review_only_schedule'),
     );
     postNote(params.conversationKey, lines.join('\n\n'));
 

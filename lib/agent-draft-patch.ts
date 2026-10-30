@@ -81,6 +81,9 @@ export function agentToParsedAgentDraft(agent: Agent): ParsedAgentDraft {
     orchestrationSteps: agent.orchestration?.steps,
     charLimit: agent.orchestration?.charLimit,
     notificationTrigger: agent.notificationTrigger ?? undefined,
+    // 2026-10-30: a registered agent with no schedule and no trigger is a
+    // manual-only agent — keep it one when edited (not a run-now one-shot).
+    ...(agent.schedule === null && !agent.notificationTrigger ? { trigger: 'manual' as const } : {}),
     rawText: agent.prompt,
   };
 }

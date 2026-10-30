@@ -368,6 +368,7 @@ const ja: Record<string, string> = {
   'agentplan.closepaw_auto_routed_line': 'この部分は ClosePaw がスマホを操作して実行します: {{step}}（ClosePaw に渡す内容はこのエージェントの実行結果から作られ、Web 由来の信頼できない文章を含むことがあります。このエージェントを承認すると、編集するまで以後の実行でもこのステップは承認済みになります）',
   'agents.terminal_request_review_only': 'このエージェントには高リスクな処理（{{reasons}}）が含まれるため、通知や ChatGPT からは承認できません。Shelly のこの画面で確認してください。',
   'agents.terminal_request_review_only_schedule': 'この案はまだ実行スケジュールが確定していないため、Shelly のこの画面でのみ仕上げて承認できます。',
+  'agents.terminal_request_review_only_manual': 'このエージェントは手動実行（スケジュールなし）なので、通知や ChatGPT からは承認できません。決まった時刻に自動で動くものではないため、Shelly のこの画面で内容を確認して登録してください。',
   'agents.terminal_request_risk.action': '実行内容: {{type}}',
   'agents.terminal_request_risk.autonomous': '自律（無人）実行',
   'agents.terminal_request_risk.notification-trigger': '通知の受信で実行',
@@ -534,6 +535,7 @@ const ja: Record<string, string> = {
   'agentcard.sched_interval': '{{n}}分ごと',
   'agentcard.sched_hourly': '{{n}}時間ごと',
   'agentcard.sched_once': '今すぐ',
+  'agentcard.sched_manual': '手動（スケジュールなし）',
   'agentcard.sched_notification_trigger': '通知時',
   // One-shot（指定時刻に1回だけ実行）— lib/agent-oneshot.ts
   'agentcard.sched_oneshot': '1回 · {{when}}{{countdown}}',
@@ -638,6 +640,9 @@ const ja: Record<string, string> = {
   // を2件以上生成したときだけ、通常の「実行内容:」行に加えてこの1行を追加表示する。
   'agentplan.summary_multi_targets': '配信先: {{targets}}',
   'agentplan.draft_line_with_path': '下書き（保存先: {{path}}）',
+  'agentplan.save_line_with_path': '{{label}}（保存先: {{path}}）',
+  'agentplan.manual_trigger_note': '手動で実行します（定期にするなら「毎朝8時に」のように言ってください）。',
+  'agentplan.manual_schedule_description': '手動で実行する',
   // browser-pane (2026-08-05) — 確認バブルには承認対象のセレクタ+URLを
   // 一字一句そのまま表示する。lib/agent-plan-summary.ts 参照。
   'agentplan.browserpane_line_extract': 'Browser Pane操作: {{url}} の「{{selector}}」からテキスト取得（毎回その場での承認が必要・無人実行は不可）',
@@ -885,7 +890,7 @@ const ja: Record<string, string> = {
   'slot_fill.question_notification_trigger': 'どのアプリの通知が来たら実行しますか？（例: com.whatsapp や Slack のように、アプリ名かパッケージ名で教えてください）',
   'slot_fill.question_output_path': '結果はどこに保存しますか？（未設定の場合はShelly内の既定フォルダを使います。特に希望が無ければ「そのままでいい」と答えてください）',
   'slot_fill.question_social_connector': 'どのコネクタに投稿しますか？番号かラベル名で答えてください。',
-  'slot_fill.question_autonomous': 'このエージェントは無人(自律)で自動実行してよいですか？「はい」または「いいえ」で答えてください。',
+  'slot_fill.question_autonomous': '「確認なしで自動実行」と「毎回確認してから実行」のどちらにしますか？',
   'slot_fill.social_connector_giveup_caveat': 'どのコネクタか特定できなかったため、下書き（ファイル保存）として登録します。次回はコネクタのラベル名を明確に指定すると直接投稿できます。',
   // browser-pane slot-fill (2026-08-05) — ページ操作の意図は検出できたが
   // 対象URL/CSSセレクタが発話から取れなかったときに質問する。
