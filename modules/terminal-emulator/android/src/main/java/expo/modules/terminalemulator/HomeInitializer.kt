@@ -1466,7 +1466,13 @@ patchCodex(libDir);
     //      dir as LD_LIBRARY_PATH; TMPDIR / CLAUDE_CODE_TMPDIR=$__root/tmp are
     //      set for claude only. Claude's Bash tool itself is still blocked
     //      (direct execve of app_data_file; see DEFERRED.md S3).
-    private const val BASHRC_VERSION = 278
+    // v279: shelly-claude-glibc() S3 Bash tool. claude execve()s
+    //      CLAUDE_CODE_SHELL directly and only system_file is exec-able, so
+    //      the shell is $__root/bin/bash -> /system/bin/sh (mksh). Claude
+    //      inlines CLAUDE_ENV_FILE into every -c string; under mksh that
+    //      snippet re-runs the whole -c string (read back from
+    //      /proc/$PPID/cmdline) in Shelly bash via linker64 + shelly_shell.
+    private const val BASHRC_VERSION = 279
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4248,6 +4254,10 @@ patchCodex(libDir);
             // SHELLY_GLIBC_LD_LIBRARY_PATH carries the BIONIC lib dir: the loader
             // turns it into claude's LD_LIBRARY_PATH, which glibc ld.so ignores
             // (--library-path wins) but claude's bionic children inherit.
+            // v279 (S3): Claude's Bash tool runs through a bash-named link to
+            // /system/bin/sh plus an env file that hands the -c string to Shelly
+            // bash (see the BASHRC_VERSION 279 note). The user's own
+            // CLAUDE_CODE_SHELL / CLAUDE_ENV_FILE win when set.
             sb.appendLine("shelly-claude-glibc() {")
             sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
             sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
@@ -4317,10 +4327,23 @@ patchCodex(libDir);
             sb.appendLine("    __tmp=\"\${TMPDIR:-\$HOME/tmp}\"")
             sb.appendLine("    __ctmp=\"\$__root/tmp\"")
             sb.appendLine("    mkdir -p \"\$__tmp\" \"\$__ctmp\" 2>/dev/null")
+            sb.appendLine("    # Bash tool: only system_file is exec-able from claude, so the shell is mksh")
+            sb.appendLine("    # under a bash name; the env file re-runs each -c string in Shelly bash.")
+            sb.appendLine("    __sh=\"\$__root/bin/bash\"")
+            sb.appendLine("    __envf=\"\$__root/shell-env.sh\"")
+            sb.appendLine("    mkdir -p \"\$__root/bin\" 2>/dev/null")
+            sb.appendLine("    [ \"\$(readlink \"\$__sh\" 2>/dev/null)\" = /system/bin/sh ] || ln -sfn /system/bin/sh \"\$__sh\"")
+            sb.appendLine("    cat > \"\$__envf\" <<'__SHELLY_CLAUDE_ENV'")
+            sb.appendLine("if [ -z \"\${BASH_VERSION:-}\" ]; then")
+            sb.appendLine("  /system/bin/linker64 $libDir/shelly_shell -c 'mapfile -d \"\" -t __a < /proc/\$PPID/cmdline; eval \"\${__a[-1]}\"'")
+            sb.appendLine("  exit \$?")
+            sb.appendLine("fi")
+            sb.appendLine("__SHELLY_CLAUDE_ENV")
             sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY")
             sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
             sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
             sb.appendLine("      TMPDIR=\"\$__tmp\" CLAUDE_CODE_TMPDIR=\"\$__ctmp\" \\")
+            sb.appendLine("      CLAUDE_CODE_SHELL=\"\${CLAUDE_CODE_SHELL:-\$__sh}\" CLAUDE_ENV_FILE=\"\${CLAUDE_ENV_FILE:-\$__envf}\" \\")
             sb.appendLine("      SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" \\")
             sb.appendLine("      LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
             sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")

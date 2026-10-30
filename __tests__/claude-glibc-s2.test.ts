@@ -1,7 +1,7 @@
 /**
  * __tests__/claude-glibc-s2.test.ts
  *
- * Claude Code glibc S2-S3 (BASHRC_VERSION 275-278): private authenticated proxy, OSC 8
+ * Claude Code glibc S2-S3 (BASHRC_VERSION 275-279): private authenticated proxy, OSC 8
  * sign-in URL bridge (tap-to-open only, armed sessions only), drain loop
  * safety. See DEFERRED.md "Claude Code 公式 glibc 版（2.1.314）を Shelly で動かす".
  *
@@ -424,7 +424,7 @@ describe('shelly-claude-proxy.js', () => {
   }, 20_000);
 });
 
-describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-278)', () => {
+describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-279)', () => {
   const lines = homeKt.split(/\r?\n/);
   const start = lines.findIndex((l) => l.includes('sb.appendLine("shelly-claude-glibc() {")'));
   const fnLines: string[] = [];
@@ -437,7 +437,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-278)', () =>
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 278\b/);
+    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 279\b/);
   });
 
   it('S3: tmp dirs and the bionic lib dir reach claude only via command prefixes', () => {
@@ -447,16 +447,28 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-278)', () =>
     expect(cmd).toContain('SHELLY_GLIBC_LD_LIBRARY_PATH="$SHELLY_LIB_DIR"');
     expect(cmd).not.toContain('SHELLY_GLIBC_LD_LIBRARY_PATH="$__root/lib"');
     expect(cmd).toContain('"$__ld" --library-path "$__root/lib" "$__bin" "$@"');
-    const assigns = fn.split('\n').filter((l) => /^\s*(?:SHELL|PATH|CLAUDE_CODE_SHELL|TMPDIR)=/.test(l));
-    expect(assigns.length).toBe(1);
+    const assigns = fn.split('\n').filter((l) => /^\s*(?:SHELL|PATH|CLAUDE_CODE_SHELL|CLAUDE_ENV_FILE|TMPDIR)=/.test(l));
+    expect(assigns.length).toBe(2);
     for (const l of assigns) expect(l.endsWith('\\')).toBe(true);
-    expect(fn).not.toMatch(/__xbin|USE_BUILTIN_RIPGREP|CLAUDE_CODE_SHELL/);
+    expect(fn).not.toMatch(/__xbin|USE_BUILTIN_RIPGREP|CLAUDE_CODE_SHELL_PREFIX/);
     expect(homeKt).not.toContain('linkClaudeGlibcExecShims');
     expect(fn).toMatch(/mkdir -p "\$__tmp" "\$__ctmp" 2>\/dev\/null/);
     // the .claude-tmp cleanup target must not be what claude uses as its tmp dir
     expect(fn).not.toContain('.claude-tmp');
   });
 
+
+  it('S3: Bash tool shell is a bash-named /system/bin/sh link whose env file re-runs -c in Shelly bash', () => {
+    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$@"\n/.exec(fn)![0];
+    // user overrides win; ours are claude-only command prefixes
+    expect(cmd).toContain('CLAUDE_CODE_SHELL="${CLAUDE_CODE_SHELL:-$__sh}" CLAUDE_ENV_FILE="${CLAUDE_ENV_FILE:-$__envf}" \\');
+    expect(fn).toContain('__sh="$__root/bin/bash"');
+    expect(fn).toContain('[ "$(readlink "$__sh" 2>/dev/null)" = /system/bin/sh ] || ln -sfn /system/bin/sh "$__sh"');
+    const env = /cat > "\$__envf" <<'__SHELLY_CLAUDE_ENV'\n([^]*?)\n__SHELLY_CLAUDE_ENV\n/.exec(fn)![1];
+    expect(env).toMatch(/^if \[ -z "\$\{BASH_VERSION:-\}" \]; then\n/);
+    expect(env).toMatch(/\/system\/bin\/linker64 \S+\/shelly_shell -c 'mapfile -d "" -t __a < \/proc\/\$PPID\/cmdline; eval "\$\{__a\[-1\]\}"'/);
+    expect(env).toMatch(/\n  exit \$\?\nfi$/);
+  });
 
   it('loads ~/.claude-token.env only inside the subshell when no token is set', () => {
     expect(fn).toMatch(/\n    umask 077\n(?:    #[^\n]*\n)*    if \[ -z "\$\{CLAUDE_CODE_OAUTH_TOKEN:-\}" \] && \[ -f "\$HOME\/\.claude-token\.env" \]; then \. "\$HOME\/\.claude-token\.env"; fi\n/);
@@ -541,7 +553,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-278)', () =>
     );
     let body = fn
       .replace('LD_LIBRARY_PATH="$SHELLY_LD_LIBRARY_PATH" /system/bin/linker64 $libDir/node', `"${posix(process.execPath)}"`)
-      .replace('/system/bin/linker64', `"$BASH" "${posix(fake)}"`);
+      .replace('LD_LIBRARY_PATH="$SHELLY_LIB_DIR" /system/bin/linker64', `LD_LIBRARY_PATH="$SHELLY_LIB_DIR" "$BASH" "${posix(fake)}"`);
     // MSYS/Git Bash pids are not Windows pids, so node cannot poll them there.
     if (process.platform === 'win32') body = body.replace(' --parent-pid "$BASHPID"', '');
     const script = [
