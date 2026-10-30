@@ -756,7 +756,12 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // through `node ~/.shelly-plan-executor.js --continuous-op …` (one
 // implementation for both executors); any failure there leaves the run
 // untouched. Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 74;
+// v75 (2026-10-30, continuous-mode review): the control block needs the
+// `---ITERATION---` sentinel and is stripped before the char-limit clamp;
+// CONTINUOUS_CONTEXT is its own variable placed after the task (never in
+// isolated API-key step prompts); dispatch_agent_action refuses once the
+// loop's per-agent stop marker exists. Kept in lockstep with AgentRuntime.kt.
+const AGENT_SCRIPT_VERSION = 75;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -1945,6 +1950,15 @@ if [ "$AGENT_CONTINUOUS" = "1" ] && [ "\${SHELLY_RUN_UNATTENDED:-0}" = "1" ]; th
   CONTINUOUS_RUN=1
 fi
 CONTINUOUS_CONTROL_FILE='${tmpDir}/continuous-control-'"$AGENT_ID"'.json'
+CONTINUOUS_STOP_MARKER='${logDir}/continuous.stop'
+CONTINUOUS_LOOP_STARTED_SEC=${agent.continuous?.loopStartedAt ? Math.floor(agent.continuous.loopStartedAt / 1000) : 0}
+# A stop marker written during THIS loop (older ones belong to a previous loop).
+continuous_stop_requested() {
+  [ "\${CONTINUOUS_RUN:-0}" = "1" ] || return 1
+  [ -e "$CONTINUOUS_STOP_MARKER" ] || return 1
+  marker_sec=$(stat -c %Y "$CONTINUOUS_STOP_MARKER" 2>/dev/null || echo 9999999999)
+  [ "$marker_sec" -ge $((CONTINUOUS_LOOP_STARTED_SEC - 1)) ]
+}
 CONTINUOUS_CODEX_TURNS=${tool.type === 'cli' ? '1' : '0'}
 CONTINUOUS_PAID_USD=${PAID_API_TOOL_TYPES.has(tool.type) ? '0.05' : '0'}
 rm -f "$CONTINUOUS_CONTROL_FILE" 2>/dev/null || true
@@ -3851,6 +3865,13 @@ dispatch_agent_action() {
   if [ -f "\${HOME:-}/.shelly/agents/.halted" ]; then
     ACTION_DISPATCH_STATUS="skipped"
     ACTION_DISPATCH_MESSAGE="All agents are stopped (global kill-switch is on)."
+    return 1
+  fi
+  # v75 (continuous mode): the loop's per-agent Stop (notification) blocks the
+  # final action of an unattended iteration the same way.
+  if continuous_stop_requested; then
+    ACTION_DISPATCH_STATUS="skipped"
+    ACTION_DISPATCH_MESSAGE="Continuous run stopped by the user."
     return 1
   fi
 
@@ -6158,18 +6179,19 @@ fi
 if [ "\${ISOLATE_RESEARCH_PROMPT:-0}" = "1" ]; then
   NOTIFICATION_CONTEXT=""
 fi
-# v74 (continuous mode): the previous iteration's summary / next action and the
-# SUMMARY/NEXT(/DONE) output contract lead every prompt this run writes (they
-# all start with CURRENT_DATETIME_CONTEXT). A missing/corrupt checkpoint gives
-# the iteration-1 block; a node failure gives no block at all.
+# v75 (continuous mode): CONTINUOUS_CONTEXT = the ---ITERATION--- output
+# contract, then the previous iteration's summary / next action. It is its
+# own variable written AFTER the task in every (non-isolated) prompt, so a
+# local prompt clamp cuts it before the task, and isolated API-key step
+# prompts never carry it. Character-capped by the executor (no byte cut). A
+# missing/corrupt checkpoint gives the iteration-1 block; a node failure none.
+CONTINUOUS_CONTEXT=""
 if [ "\${CONTINUOUS_RUN:-0}" = "1" ] && [ "\${ISOLATE_RESEARCH_PROMPT:-0}" != "1" ]; then
   CONTINUOUS_CONTEXT_FILE='${tmpDir}/continuous-context-'"$AGENT_ID"'.txt'
   rm -f "$CONTINUOUS_CONTEXT_FILE" 2>/dev/null || true
   shelly_node "$HOME/.shelly-plan-executor.js" --continuous-op context --home "$HOME" --agent-id "$AGENT_ID" --out "$CONTINUOUS_CONTEXT_FILE" >/dev/null 2>&1 || true
   if [ -s "$CONTINUOUS_CONTEXT_FILE" ]; then
-    CONTINUOUS_CONTEXT=$(head -c 4096 "$CONTINUOUS_CONTEXT_FILE" 2>/dev/null || true)
-    CURRENT_DATETIME_CONTEXT="\${CURRENT_DATETIME_CONTEXT:-}
-\${CONTINUOUS_CONTEXT}"
+    CONTINUOUS_CONTEXT=$(cat "$CONTINUOUS_CONTEXT_FILE" 2>/dev/null || true)
   fi
   rm -f "$CONTINUOUS_CONTEXT_FILE" 2>/dev/null || true
 fi
@@ -6356,6 +6378,12 @@ if [ -f "$RESULT_CONTENT_FILE" ] && [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BA
   # the raw RESULT_FILE) so a Codex-driver step's real answer text
   # ($RESULT_FILE.answer) is what gets clamped for a codex-routed step — the
   # raw RESULT_FILE stays the untouched telemetry stream either way.
+  # v75 (continuous mode): split off the ---ITERATION--- control block BEFORE
+  # the char-limit clamp and anything previewed or delivered; the parsed block
+  # feeds the checkpoint. Text without the sentinel is left untouched.
+  if [ "\${CONTINUOUS_RUN:-0}" = "1" ]; then
+    shelly_node "$HOME/.shelly-plan-executor.js" --continuous-op strip --in "$RESULT_CONTENT_FILE" --control-out "$CONTINUOUS_CONTROL_FILE" >/dev/null 2>&1 || true
+  fi
   if [ -n "$RESULT_CHAR_LIMIT" ] && [ "$RESULT_CHAR_LIMIT" -gt 0 ] 2>/dev/null; then
     charlimit_tmp="$RESULT_CONTENT_FILE.charlimit"
     if enforce_char_limit_text "$RESULT_CONTENT_FILE" "$RESULT_CHAR_LIMIT" > "$charlimit_tmp" 2>/dev/null; then
@@ -6363,11 +6391,6 @@ if [ -f "$RESULT_CONTENT_FILE" ] && [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BA
     else
       rm -f "$charlimit_tmp"
     fi
-  fi
-  # v74 (continuous mode): strip the SUMMARY/NEXT/DONE block before anything
-  # is previewed or delivered; the parsed block feeds the checkpoint.
-  if [ "\${CONTINUOUS_RUN:-0}" = "1" ]; then
-    shelly_node "$HOME/.shelly-plan-executor.js" --continuous-op strip --in "$RESULT_CONTENT_FILE" --control-out "$CONTINUOUS_CONTROL_FILE" >/dev/null 2>&1 || true
   fi
   PREVIEW=$(result_preview "$RESULT_FILE")
   STATUS="success"
@@ -6663,7 +6686,7 @@ function generateToolCommand(
         : '\\"max_tokens\\":2048,';
       const localPromptCompose = options.stepSkipPromptCompose
         ? ''
-        : `\t{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; } > "$PROMPT_FILE.full"\n\thead -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"\n\trm -f "$PROMPT_FILE.full"\n`;
+        : `\t{ printf '%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}"; printf '%s\\n' "\${DEVICE_STATUS_CONTEXT:-}"; printf '%s\\n' "\${NOTIFICATION_CONTEXT:-}"; printf '%s\\n' '${escapedPrompt}'; printf '%s\\n' "$SOURCE_CONTEXT"; printf '%s\\n' "\${CONTINUOUS_CONTEXT:-}"; } > "$PROMPT_FILE.full"\n\thead -c "$LOCAL_PROMPT_MAX_CHARS" "$PROMPT_FILE.full" > "$PROMPT_FILE"\n\trm -f "$PROMPT_FILE.full"\n`;
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 	${localModelAssignment}
@@ -6731,7 +6754,7 @@ ${localPromptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
       // skipPromptCompose (Phase 7): see openAiCompatApiCommand's doc comment.
       const perplexityPromptCompose = options.stepSkipPromptCompose
         ? ''
-        : `\t\tprintf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"\n`;
+        : `\t\tprintf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" "\${CONTINUOUS_CONTEXT:-}" > "$PROMPT_FILE"\n`;
       return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 		REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 ${perplexityPromptCompose}		PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
@@ -6841,7 +6864,7 @@ fi`;
  */
 function codexDriverCommand(escapedPrompt: string, resultVar: string, policyJson: string): string {
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"
+printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" "\${CONTINUOUS_CONTEXT:-}" > "$PROMPT_FILE"
 # workspaceRoot (DEFERRED.md #2 残り): when the agent has a configured
 # workspace, run the driver there instead of the content-studio default —
 # the B2 driver re-anchors AutonomyPolicy.workspaceRoot to whatever --cwd it
@@ -7303,6 +7326,8 @@ ${chain.sourcing ? `  # Sourced briefings: reserve the evidence block (research 
   head -c "$CODEX_ORCH_HEAD_BUDGET" "$PROMPT_FILE.orch-head" > "$PROMPT_FILE"
 ${chain.sourcing ? `  [ -s "$CODEX_ORCH_EVIDENCE_FILE" ] && cat "$CODEX_ORCH_EVIDENCE_FILE" >> "$PROMPT_FILE"
 ` : ''}  cat "$PROMPT_FILE.orch-tail" >> "$PROMPT_FILE"
+  # v75 (continuous mode): the iteration contract + prior context follow the step.
+  if [ -n "\${CONTINUOUS_CONTEXT:-}" ]; then printf '\\n\\n%s\\n' "$CONTINUOUS_CONTEXT" >> "$PROMPT_FILE"; fi
   rm -f "$PROMPT_FILE.orch-head" "$PROMPT_FILE.orch-tail"
 }
 
@@ -7624,7 +7649,7 @@ function openAiCompatApiCommand(
   // never pass this flag and the generated script is byte-for-byte unchanged.
   const promptCompose = skipPromptCompose
     ? ''
-    : `\tprintf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"\n`;
+    : `\tprintf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" "\${CONTINUOUS_CONTEXT:-}" > "$PROMPT_FILE"\n`;
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 	REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 ${promptCompose}	PROMPT_JSON=$(json_string_file "$PROMPT_FILE")
@@ -7666,7 +7691,7 @@ function geminiApiCommand(escapedPrompt: string, resultVar: string, systemPrompt
   // guarantee (nothing passes this flag except codexOrchestrationChainCommand).
   const promptCompose = skipPromptCompose
     ? ''
-    : `printf '%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" > "$PROMPT_FILE"\n`;
+    : `printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" "\${CONTINUOUS_CONTEXT:-}" > "$PROMPT_FILE"\n`;
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
 REQUEST_FILE="$HOME/.shelly/tmp/agent-request-$AGENT_ID.json"
 HTTP_STATUS_FILE="$RESULT_FILE.response.json.http-status"

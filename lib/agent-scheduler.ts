@@ -371,7 +371,7 @@ export async function installSchedule(agent: Agent, now: number = Date.now()): P
     const cfg = normalizeContinuousConfig(agent.continuous);
     const triggerAt = continuousFirstTriggerMs(agent, now);
     logInfo('AgentScheduler', `installSchedule: arming continuous loop ${agent.id} at ${triggerAt} (cooldown ${cfg.cooldownMs}ms)`);
-    await TerminalEmulator.scheduleAgent(agent.id, cfg.cooldownMs, triggerAt);
+    await TerminalEmulator.scheduleAgent(agent.id, cfg.cooldownMs, triggerAt, null);
     return;
   }
   if (!agent.schedule) return;

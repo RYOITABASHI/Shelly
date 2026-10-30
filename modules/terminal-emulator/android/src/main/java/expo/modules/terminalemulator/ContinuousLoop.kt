@@ -75,7 +75,7 @@ object ContinuousLoop {
         val marker = stopMarker(homeDir, agentId)
         when {
             !marker.exists() -> false
-            marker.lastModified() + 1000 >= loopStart -> true
+            ContinuousStopPolicy.markerApplies(marker.lastModified(), loopStart) -> true
             else -> {
                 marker.delete()
                 false
@@ -224,6 +224,8 @@ object ContinuousLoop {
             spentUsdToday = if (checkpoint.usageDay == today(nowMs)) checkpoint.usageUsd else 0.0,
             consecutiveFailures = maxOf(breakerFailures, checkpoint.consecutiveFailures),
             doneStreak = checkpoint.doneStreak,
+            // A stop native recorded for this loop is sticky (see recordedStop).
+            recordedStop = ContinuousStopPolicy.recordedStop(checkpoint.stoppedReason, checkpoint.stoppedAt, loopStart),
         )
         return ContinuousStopPolicy.evaluate(config, inputs)
     }
@@ -325,7 +327,11 @@ object ContinuousLoop {
                 put("toolUsed", "continuous")
                 put("errorMessage", message)
             }
-            writeAtomic(File(logDir(homeDir, agentId), "$now.json"), log.toString())
+            // <epoch seconds>.json like every other run log (never clobber
+            // the run's own log written in the same second).
+            var sec = now / 1000
+            while (File(logDir(homeDir, agentId), "$sec.json").exists()) sec++
+            writeAtomic(File(logDir(homeDir, agentId), "$sec.json"), log.toString())
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write stop run log for $agentId", e)
         }
@@ -427,7 +433,7 @@ object ContinuousLoop {
         if (pid <= 1 || pid == android.os.Process.myPid() || !File("/proc/$pid").isDirectory) return false
         val recorded = try { File(pidFile.path + ".lockdir/starttime").readText().trim() } catch (_: Exception) { "" }
         val isRun = (recorded.isNotEmpty() && recorded.all { it.isDigit() } && recorded == statField(pid, 20)) ||
-            cmdline(pid).contains("shelly-plan-executor")
+            ContinuousStopPolicy.isOwnExecutorCmdline(cmdline(pid), agentId)
         if (!isRun) return false
         val spare = HashSet<Int>()
         for (name in listOf("models/llama-server.pid", "models/llama-server-watcher.pid")) {
@@ -529,6 +535,18 @@ object ContinuousLoop {
             nm.notify(notificationIdFor(RUNNING_NOTIFICATION_BASE, agentId), notification)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to post continuous-loop notification for $agentId", e)
+        }
+    }
+
+    /** Process (re)start: no iteration can be running yet, so any ongoing
+     *  loop notification left by a dead process is stale. Removed here; the
+     *  next iteration posts a fresh one. */
+    fun cancelAllRunningNotifications(context: Context) {
+        runCatching {
+            val nm = context.getSystemService(NotificationManager::class.java) ?: return
+            for (sbn in nm.activeNotifications) {
+                if (sbn.id >= RUNNING_NOTIFICATION_BASE && sbn.id < RUNNING_NOTIFICATION_BASE + NOTIFICATION_SPAN) nm.cancel(sbn.id)
+            }
         }
     }
 

@@ -83,7 +83,17 @@ export function agentToParsedAgentDraft(agent: Agent): ParsedAgentDraft {
     notificationTrigger: agent.notificationTrigger ?? undefined,
     // 2026-10-30: a registered agent with no schedule and no trigger is a
     // manual-only agent — keep it one when edited (not a run-now one-shot).
-    ...(agent.schedule === null && !agent.notificationTrigger ? { trigger: 'manual' as const } : {}),
+    // Continuous mode: an edited loop stays a loop (cooldown / goalCheck kept;
+    // the limits are re-filled from defaults only where absent).
+    ...(agent.schedule === null && !agent.notificationTrigger && !agent.continuous ? { trigger: 'manual' as const } : {}),
+    ...(agent.continuous
+      ? {
+          continuous: {
+            cooldownMs: agent.continuous.cooldownMs,
+            ...(agent.continuous.goalCheck ? { goalCheck: true } : {}),
+          },
+        }
+      : {}),
     rawText: agent.prompt,
   };
 }

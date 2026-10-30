@@ -464,7 +464,10 @@ object AgentRuntime {
     // SUMMARY/NEXT/DONE block and writes logs/<id>/checkpoint.json at the end
     // (both via the executor's --continuous-op CLI). Native: a run killed by a
     // loop's notification Stop is recorded as skipped (stoppedByKillSwitch).
-    private const val CURRENT_SCRIPT_VERSION = 74
+    // v75 (2026-10-30, continuous-mode review): ---ITERATION--- sentinel for the
+    // control block, prior-iteration context after the task, and the .sh
+    // refuses the final action once the loop's stop marker exists. JS-only.
+    private const val CURRENT_SCRIPT_VERSION = 75
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
@@ -488,7 +491,10 @@ object AgentRuntime {
     // continuous plan's unattended run reads/writes logs/<id>/checkpoint.json,
     // and the --continuous-op CLI serves the same logic to the .sh path.
     // Native: ContinuousLoop / ContinuousStopPolicy own the stop decision.
-    private const val CURRENT_EXECUTOR_VERSION = 14
+    // CURRENT_EXECUTOR_VERSION 15 (2026-10-30, continuous-mode review): same
+    // sentinel / ordering fixes, and the loop's stop marker halts an unattended
+    // iteration like `.halted`. JS-only change.
+    private const val CURRENT_EXECUTOR_VERSION = 15
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
@@ -729,6 +735,7 @@ object AgentRuntime {
             writeReceiverLog(homeDir, agentId, "skipped", message)
             return AgentRunResult(agentId, 129, "", message)
         }
+        val runStartedAtMs = System.currentTimeMillis()
         val result = try {
             ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
@@ -746,7 +753,7 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
-        if (stoppedByKillSwitch(homeDir, agentId, exitCode)) {
+        if (stoppedByKillSwitch(homeDir, agentId, exitCode, runStartedAtMs)) {
             return AgentRunResult(agentId, exitCode, stdout, stderr)
         }
         val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"
@@ -1029,6 +1036,7 @@ object AgentRuntime {
             writeReceiverLog(homeDir, agentId, "skipped", message)
             return AgentRunResult(agentId, 129, "", message)
         }
+        val runStartedAtMs = System.currentTimeMillis()
         val result = try {
             ShellyJNI.execSubprocess(
                 "/system/bin/linker64",
@@ -1046,7 +1054,7 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
-        if (stoppedByKillSwitch(homeDir, agentId, exitCode)) {
+        if (stoppedByKillSwitch(homeDir, agentId, exitCode, runStartedAtMs)) {
             return AgentRunResult(agentId, exitCode, stdout, stderr)
         }
         val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"
@@ -1518,12 +1526,15 @@ object AgentRuntime {
      * (it recorded itself); only its queued notification is discarded.
      * Returns true when it handled the result.
      */
-    private fun stoppedByKillSwitch(homeDir: File, agentId: String, exitCode: Int): Boolean {
+    private fun stoppedByKillSwitch(homeDir: File, agentId: String, exitCode: Int, runStartedAtMs: Long): Boolean {
         // Continuous mode: the per-agent Stop (ContinuousLoop.requestStop)
         // signals this agent's run the same way STOP-ALL signals every run.
         val halted = File(homeDir, ".shelly/agents/.halted").isFile
+        // Only a marker written during THIS run counts (a leftover from an
+        // earlier stop must not turn a genuine failure into a silent skip).
         val loopStopped = !halted && runCatching {
-            File(homeDir, ".shelly/agents/logs/$agentId/${ContinuousLoop.STOP_MARKER_FILE}").isFile
+            val marker = File(homeDir, ".shelly/agents/logs/$agentId/${ContinuousLoop.STOP_MARKER_FILE}")
+            marker.isFile && ContinuousStopPolicy.markerApplies(marker.lastModified(), runStartedAtMs)
         }.getOrDefault(false)
         if (!halted && !loopStopped) return false
         val stopMessage = if (halted) "All agents are stopped (global kill-switch is on)." else "Continuous run stopped by the user."

@@ -86,24 +86,41 @@ function latestRunLog(home: string): any {
   return JSON.parse(fs.readFileSync(path.join(logDir(home), files[files.length - 1]), 'utf8'));
 }
 
-describe('parseIterationControl', () => {
-  it('parses and strips a trailing SUMMARY/NEXT/DONE block', () => {
-    const r = exec.parseIterationControl('Body line 1\nBody line 2\n\nSUMMARY: did A\nNEXT: do B\nDONE: all sections written');
+const S = '---ITERATION---';
+
+describe('parseIterationControl (---ITERATION--- sentinel)', () => {
+  it('parses and strips the block after the sentinel', () => {
+    const r = exec.parseIterationControl(`Body line 1\nBody line 2\n\n${S}\nSUMMARY: did A\nNEXT: do B\nDONE: all sections written`);
     expect(r).toMatchObject({ found: true, body: 'Body line 1\nBody line 2', summary: 'did A', next: 'do B', done: 'all sections written' });
   });
-  it('accepts markdown-decorated keys, multi-line values and NEXT before SUMMARY', () => {
-    const r = exec.parseIterationControl('Result\n**NEXT:** check links\n**SUMMARY:** fixed typos\nacross two files');
-    expect(r).toMatchObject({ found: true, body: 'Result', summary: 'fixed typos across two files', next: 'check links', done: '' });
+  it('multi-line values; only the LAST sentinel counts', () => {
+    const r = exec.parseIterationControl(`Result\n${S}\nnot a key\n\nmore\n${S}\nNEXT: check links\nSUMMARY: fixed typos\nacross two files`);
+    expect(r).toMatchObject({ found: true, summary: 'fixed typos across two files', next: 'check links', done: '' });
+    expect(r.body).toBe(`Result\n${S}\nnot a key\n\nmore`);
   });
   it('treats a negative DONE as not done', () => {
-    expect(exec.parseIterationControl('x\nSUMMARY: s\nDONE: no').done).toBe('');
-    expect(exec.parseIterationControl('x\nSUMMARY: s\nDONE: いいえ').done).toBe('');
+    expect(exec.parseIterationControl(`x\n${S}\nSUMMARY: s\nDONE: no`).done).toBe('');
+    expect(exec.parseIterationControl(`x\n${S}\nSUMMARY: s\nDONE: いいえ`).done).toBe('');
   });
-  it('no block → text untouched', () => {
-    expect(exec.parseIterationControl('just an answer')).toMatchObject({ found: false, body: 'just an answer', summary: '' });
+  it('no sentinel → nothing parsed, body untouched', () => {
+    expect(exec.parseIterationControl('just an answer\nSUMMARY: x\nNEXT: y')).toMatchObject({ found: false, body: 'just an answer\nSUMMARY: x\nNEXT: y', summary: '' });
+  });
+  it('false positive: a "## Summary:" heading never truncates real content', () => {
+    const text = '# 今日のニュース\n\n## Summary:\n- A社が新製品を発表\n## 詳細\n本文です';
+    const r = exec.parseIterationControl(text);
+    expect(r.found).toBe(false);
+    expect(r.body).toBe(text);
+  });
+  it('false positive: a TODO list with "Next:" / "Done:" items is never a DONE signal', () => {
+    const text = 'TODO:\n- Write intro\n- Next: write body\n- Done: outline';
+    expect(exec.parseIterationControl(text)).toMatchObject({ found: false, body: text, done: '' });
+  });
+  it('after the sentinel only exact uppercase keys at line start count', () => {
+    const r = exec.parseIterationControl(`Body\n${S}\n- DONE: bullet\n**SUMMARY:** bold\nsummary: lower\nSUMMARY: real`);
+    expect(r).toMatchObject({ found: true, body: 'Body', summary: 'real', done: '' });
   });
   it('caps the summary at 2KB', () => {
-    const r = exec.parseIterationControl(`x\nSUMMARY: ${'あ'.repeat(5000)}`);
+    const r = exec.parseIterationControl(`x\n${S}\nSUMMARY: ${'あ'.repeat(5000)}`);
     expect(Buffer.byteLength(r.summary)).toBeLessThanOrEqual(exec.CONTINUOUS_SUMMARY_MAX_BYTES);
   });
 });
@@ -145,7 +162,16 @@ describe('checkpoint model (pure)', () => {
     expect(block).toContain('Next: Write chapter 2');
     expect(block).not.toMatch(/Ignore previous instructions/i);
     expect(block).toContain('DONE:');
+    // Contract (sentinel) first, prior context after it.
+    expect(block.indexOf(S)).toBeGreaterThan(-1);
+    expect(block.indexOf(S)).toBeLessThan(block.indexOf('<<<PRIOR_ITERATION'));
     expect(exec.continuousContextBlock(exec.emptyContinuousCheckpoint(), false, false)).not.toContain('PRIOR_ITERATION');
+  });
+  it('the block is character-capped (no split code point) with Japanese text', () => {
+    const block = exec.continuousContextBlock({ ...exec.emptyContinuousCheckpoint(), iteration: 1, summary: 'あ'.repeat(3000), nextAction: 'い'.repeat(500) }, true, true);
+    expect(Array.from(block).length).toBeLessThanOrEqual(4096);
+    expect(block).not.toMatch(/�/);
+    expect(block).toContain('DONE:');
   });
 });
 
@@ -157,7 +183,7 @@ describe('executor run (unattended continuous plan)', () => {
 
   beforeEach((done) => {
     prompts = [];
-    reply = 'README section rewritten.\n\nSUMMARY: rewrote the intro\nNEXT: rewrite the install section';
+    reply = `README section rewritten.\n\n${S}\nSUMMARY: rewrote the intro\nNEXT: rewrite the install section`;
     server = http.createServer((req, res) => {
       let body = '';
       req.setEncoding('utf8');
@@ -184,6 +210,8 @@ describe('executor run (unattended continuous plan)', () => {
     expect(await runExecutor(planFile, home)).toBe(0);
     expect(prompts[0]).toContain('[Continuous run — iteration 1');
     expect(prompts[0]).not.toContain('PRIOR_ITERATION');
+    // The task leads; the iteration block follows it.
+    expect(prompts[0].indexOf('Improve the README step by step')).toBeLessThan(prompts[0].indexOf('[Continuous run'));
     const c1 = readCheckpoint(home);
     expect(c1).toMatchObject({ v: 1, iteration: 1, startedAt: 1000, summary: 'rewrote the intro', nextAction: 'rewrite the install section', consecutiveFailures: 0 });
     expect(c1.agentId).toBeUndefined();
@@ -192,7 +220,7 @@ describe('executor run (unattended continuous plan)', () => {
     expect(log.status).toBe('success');
     expect(log.outputPreview).not.toContain('SUMMARY:');
 
-    reply = 'Install section done.\nSUMMARY: rewrote install\nNEXT: polish';
+    reply = `Install section done.\n${S}\nSUMMARY: rewrote install\nNEXT: polish`;
     expect(await runExecutor(planFile, home)).toBe(0);
     expect(prompts[1]).toContain('iteration 2');
     expect(prompts[1]).toContain('Summary: rewrote the intro');
@@ -240,6 +268,73 @@ describe('executor run (unattended continuous plan)', () => {
   }, 30000);
 });
 
+describe('executor: loop Stop marker and char limit', () => {
+  let server: http.Server;
+  let port = 0;
+  let onRequest: (() => void) | null;
+  let reply: string;
+
+  beforeEach((done) => {
+    onRequest = null;
+    reply = `Done body.\n${S}\nSUMMARY: s\nNEXT: n`;
+    server = http.createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        if (onRequest) onRequest();
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      port = (server.address() as any).port;
+      done();
+    });
+  });
+  afterEach((done) => {
+    server.close(done);
+  });
+
+  it('a Stop pressed during generation blocks the final action (like STOP-ALL)', async () => {
+    const home = makeHome();
+    writeAgentJson(home, 1000);
+    const planFile = writePlan(home, port);
+    onRequest = () => {
+      fs.mkdirSync(logDir(home), { recursive: true });
+      fs.writeFileSync(path.join(logDir(home), 'continuous.stop'), 'stop\n');
+    };
+    expect(await runExecutor(planFile, home)).toBe(0);
+    const log = latestRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toBe('Continuous run stopped by the user.');
+    expect(fs.existsSync(path.join(logDir(home), 'native-result-notification.json'))).toBe(false);
+  }, 30000);
+
+  it('a marker from an EARLIER loop is ignored; an attended run ignores it too', async () => {
+    const home = makeHome();
+    fs.mkdirSync(logDir(home), { recursive: true });
+    const marker = path.join(logDir(home), 'continuous.stop');
+    fs.writeFileSync(marker, 'old\n');
+    const old = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(marker, old, old);
+    writeAgentJson(home, Date.now() - 60_000);
+    expect(await runExecutor(writePlan(home, port), home)).toBe(0);
+    expect(latestRunLog(home).status).toBe('success');
+  }, 30000);
+
+  it('the control block is split off BEFORE the char-limit clamp', async () => {
+    const home = makeHome();
+    writeAgentJson(home, 1000);
+    reply = `Short answer.\n${S}\nSUMMARY: a long summary that would not fit in the limit\nNEXT: keep going`;
+    const planFile = writePlan(home, port);
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    plan.limits.charLimit = 20;
+    fs.writeFileSync(planFile, JSON.stringify(plan));
+    expect(await runExecutor(planFile, home)).toBe(0);
+    expect(latestRunLog(home).outputPreview).toBe('Short answer.');
+    expect(readCheckpoint(home)).toMatchObject({ summary: 'a long summary that would not fit in the limit', nextAction: 'keep going' });
+  }, 30000);
+});
+
 describe('--continuous-op CLI (legacy .sh path)', () => {
   const cli = (args: string[]) => spawnSync(process.execPath, [scriptCopy, '--continuous-op', ...args], { encoding: 'utf8' });
 
@@ -254,7 +349,7 @@ describe('--continuous-op CLI (legacy .sh path)', () => {
 
     const result = path.join(home, '.shelly/tmp/result.md');
     const control = path.join(home, '.shelly/tmp/control.json');
-    fs.writeFileSync(result, 'Answer body\nSUMMARY: wrote part 1\nNEXT: write part 2\nDONE: no\n');
+    fs.writeFileSync(result, `Answer body\n${S}\nSUMMARY: wrote part 1\nNEXT: write part 2\nDONE: no\n`);
     expect(cli(['strip', '--in', result, '--control-out', control]).status).toBe(0);
     expect(fs.readFileSync(result, 'utf8')).toBe('Answer body\n');
 
@@ -287,7 +382,7 @@ describe('--continuous-op CLI (legacy .sh path)', () => {
   });
 });
 
-describe('generated .sh (AGENT_SCRIPT_VERSION 74)', () => {
+describe('generated .sh (AGENT_SCRIPT_VERSION 75)', () => {
   const base: Agent = {
     id: 'agent-sh-loop',
     name: 'Loop',
@@ -311,6 +406,28 @@ describe('generated .sh (AGENT_SCRIPT_VERSION 74)', () => {
     expect(script).toContain('--continuous-op strip');
     expect(script).toContain('--continuous-op record');
     expect(script).toMatch(/if \[ "\$AGENT_CONTINUOUS" = "1" \] && \[ "\$\{SHELLY_RUN_UNATTENDED:-0\}" = "1" \]/);
+    // Own variable, written AFTER the task / source context — never into the
+    // date line that leads every prompt.
+    expect(script).not.toMatch(/CURRENT_DATETIME_CONTEXT="\$\{CURRENT_DATETIME_CONTEXT:-\}\s*\n\$\{CONTINUOUS_CONTEXT\}/);
+    expect(script).toContain(`"$SOURCE_CONTEXT"; printf '%s\\n' "\${CONTINUOUS_CONTEXT:-}"; } > "$PROMPT_FILE.full"`);
+    expect(script).toContain('CONTINUOUS_CONTEXT=$(cat "$CONTINUOUS_CONTEXT_FILE"');
+    // Strip runs before the char-limit clamp; the final action honours the Stop.
+    expect(script.indexOf('--continuous-op strip')).toBeLessThan(script.indexOf('enforce_char_limit_text "$RESULT_CONTENT_FILE"'));
+    expect(script).toContain('if continuous_stop_requested; then');
+    expect(script).toContain("CONTINUOUS_STOP_MARKER='/home/shelly-test/.shelly/agents/logs/agent-sh-loop/continuous.stop'");
+  });
+
+  it('isolated API-key step prompts never carry the iteration block', () => {
+    const script = generateRunScript({
+      ...base,
+      autonomous: true,
+      tool: { type: 'cli', cli: 'codex' },
+      orchestration: { steps: [{ instruction: '最新のAI論文をパープレで調べて', tool: { type: 'perplexity' } }, '要約して'] },
+      continuous: normalizeContinuousConfig({ dailyBudgetJpy: 300 }),
+    }, { autonomousCloudConsent: true });
+    const isolated = script.split('\n').filter((l) => l.includes(`printf '%s\\n\\n' "\${CURRENT_DATETIME_CONTEXT:-}"`));
+    expect(isolated.length).toBeGreaterThan(0);
+    for (const line of isolated) expect(line).not.toContain('CONTINUOUS_CONTEXT');
   });
 
   it('an ordinary agent bakes AGENT_CONTINUOUS=0', () => {

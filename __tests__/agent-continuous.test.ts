@@ -11,6 +11,8 @@ jest.mock('@/modules/terminal-emulator/src/TerminalEmulatorModule', () => ({
 jest.mock('@/lib/home-path', () => ({
   getHomePath: () => '/home/shelly-test',
 }));
+jest.mock('expo-notifications', () => ({}));
+jest.mock('expo-file-system/legacy', () => ({}));
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -46,6 +48,9 @@ import { applyPollResults, buildPollCommand, createPollMemo, parsePollOutput, se
 import en from '@/lib/i18n/locales/en';
 import ja from '@/lib/i18n/locales/ja';
 import type { Agent } from '@/store/types';
+import { withContinuousDiskState } from '@/lib/agent-manager';
+import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
+import { useAgentStore } from '@/store/agent-store';
 
 const root = path.resolve(__dirname, '..');
 const KOTLIN = path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator/ContinuousStopPolicy.kt');
@@ -265,7 +270,7 @@ describe('arming a loop', () => {
   it('fresh loop fires in 5s with intervalMs = cooldown and no cron', async () => {
     const now = 10_000_000;
     await installSchedule(agentWith(), now);
-    expect(TerminalEmulator.scheduleAgent).toHaveBeenCalledWith('agent-loop', 5 * 60_000, now + 5_000);
+    expect(TerminalEmulator.scheduleAgent).toHaveBeenCalledWith('agent-loop', 5 * 60_000, now + 5_000, null);
   });
 
   it('a repair / resume never shortcuts the cooldown after the last run', () => {
@@ -277,6 +282,61 @@ describe('arming a loop', () => {
   it('a disabled loop is not armed', async () => {
     await installSchedule(agentWith({ enabled: false }));
     expect(TerminalEmulator.scheduleAgent).not.toHaveBeenCalled();
+  });
+});
+
+describe('native stop is reconciled from disk (never revived by a stale snapshot)', () => {
+  beforeEach(() => useAgentStore.getState().setAgents([agentWith()]));
+
+  it('adopts enabled:false from the agent json', async () => {
+    const runCommand = jest.fn(async () => JSON.stringify({ id: 'agent-loop', enabled: false }));
+    const result = await withContinuousDiskState(agentWith(), runCommand);
+    expect(result.enabled).toBe(false);
+    expect(useAgentStore.getState().agents[0].enabled).toBe(false);
+  });
+
+  it('keeps an enabled loop when disk agrees / has no file yet; ignores ordinary agents', async () => {
+    expect((await withContinuousDiskState(agentWith(), jest.fn(async () => JSON.stringify({ id: 'agent-loop', enabled: true })))).enabled).toBe(true);
+    expect((await withContinuousDiskState(agentWith(), jest.fn(async () => ''))).enabled).toBe(true);
+    const runCommand = jest.fn(async () => '');
+    await withContinuousDiskState(agentWith({ continuous: undefined }), runCommand);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('native wiring (source checks; Kotlin has no CI unit-test task)', () => {
+  const dir = path.join(root, 'modules/terminal-emulator/android/src/main/java/expo/modules/terminalemulator');
+  const service = fs.readFileSync(path.join(dir, 'TerminalSessionService.kt'), 'utf8');
+  const runtime = fs.readFileSync(path.join(dir, 'AgentRuntime.kt'), 'utf8');
+  const loop = fs.readFileSync(path.join(dir, 'ContinuousLoop.kt'), 'utf8');
+
+  it('a loop that stopped being continuous mid-run is never re-armed as an interval agent', () => {
+    const start = service.indexOf('Continuous mode: the same circuit breaker');
+    const branch = service.slice(start, service.indexOf('} else if (intervalMs > 0 || !cron.isNullOrBlank())', start));
+    const nullCase = branch.slice(branch.indexOf('if (config == null)'), branch.indexOf('} else {', branch.indexOf('if (config == null)')));
+    expect(nullCase).not.toContain('scheduleNext');
+    expect(nullCase).toContain('cancelRunningNotification');
+  });
+
+  it('the Stop marker only silences a run it was written during', () => {
+    expect(runtime).toContain('ContinuousStopPolicy.markerApplies(marker.lastModified(), runStartedAtMs)');
+    expect(runtime).toContain('stoppedByKillSwitch(homeDir, agentId, exitCode, runStartedAtMs)');
+  });
+
+  it('the kill fallback only matches this agent\'s executor; stops are sticky', () => {
+    expect(loop).toContain('ContinuousStopPolicy.isOwnExecutorCmdline(cmdline(pid), agentId)');
+    expect(loop).not.toMatch(/cmdline\(pid\)\.contains\("shelly-plan-executor"\)/);
+    expect(loop).toContain('recordedStop = ContinuousStopPolicy.recordedStop(');
+  });
+});
+
+describe('editing a loop keeps it a loop', () => {
+  it('agentToParsedAgentDraft preserves continuous (not manual)', () => {
+    const draft = agentToParsedAgentDraft(agentWith({ continuous: normalizeContinuousConfig({ cooldownMs: 3_600_000, goalCheck: true }) }));
+    expect(draft.continuous).toEqual({ cooldownMs: 3_600_000, goalCheck: true });
+    expect(draft.trigger).toBeUndefined();
+    expect(isContinuousDraft(draft)).toBe(true);
+    expect(agentToParsedAgentDraft(agentWith({ continuous: undefined })).trigger).toBe('manual');
   });
 });
 

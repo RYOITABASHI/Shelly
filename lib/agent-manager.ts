@@ -889,6 +889,26 @@ async function withOneShotDiskState(
   return merged;
 }
 
+/**
+ * Continuous-mode stale-write guard: native ends a loop (Stop, limits,
+ * budget, failures, goal) by writing enabled:false to the agent JSON while
+ * the RN store may still say enabled. Every JS write path of a continuous
+ * agent (materialize, RESUME, log sync) adopts that disk state first, so a
+ * stopped loop can never be revived by a stale snapshot — only an explicit
+ * setAgentEnabled(true) (which writes enabled:true to disk first and starts a
+ * new loop) re-enables it. Other agents are returned untouched, no disk read.
+ */
+export async function withContinuousDiskState(
+  agent: Agent,
+  runCommand: (cmd: string) => Promise<string>
+): Promise<Agent> {
+  if (!isContinuousAgent(agent) || !agent.enabled) return agent;
+  const disk = await readAgentDiskState(agent.id, runCommand);
+  if (!disk || disk.enabled !== false) return agent;
+  useAgentStore.getState().updateAgent(agent.id, { enabled: false });
+  return { ...agent, enabled: false };
+}
+
 async function materializeAgentBody(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
@@ -902,6 +922,7 @@ async function materializeAgentBody(
   // One-shot: adopt the native start marker / terminal status from disk
   // before this write + arm (see withOneShotDiskState).
   agent = await withOneShotDiskState(agent, runCommand);
+  agent = await withContinuousDiskState(agent, runCommand);
   // Phase 1 memory: persist the "remember that …" fact (idempotent) BEFORE recall
   // so it is immediately recallable, then bake recalled notes + a reused skill
   // recipe (Phase 2a) into the run prompt.
@@ -3826,7 +3847,7 @@ export async function resumeAllAgents(
   for (const storeAgent of store.agents) {
     if (storeAgent.enabled && (storeAgent.schedule || isContinuousAgent(storeAgent))) {
       try {
-        const a = await withOneShotDiskState(storeAgent, runCommand);
+        const a = await withContinuousDiskState(await withOneShotDiskState(storeAgent, runCommand), runCommand);
         if (!a.enabled) continue;
         await installSchedule(a);
       } catch {
@@ -4216,6 +4237,23 @@ async function readAgentMetadataViaShell(
 }
 
 export async function syncAgentRunLogsFromDisk(
+  runCommand: (cmd: string) => Promise<string>,
+  agentId?: string
+): Promise<void> {
+  await syncAgentRunLogsFromDiskBody(runCommand, agentId);
+  // Continuous mode: adopt a native loop stop (enabled:false on disk).
+  for (const agent of useAgentStore.getState().agents) {
+    if (agentId && agent.id !== agentId) continue;
+    if (!isContinuousAgent(agent) || !agent.enabled) continue;
+    try {
+      await withContinuousDiskState(agent, runCommand);
+    } catch {
+      // best-effort; the next sync retries
+    }
+  }
+}
+
+async function syncAgentRunLogsFromDiskBody(
   runCommand: (cmd: string) => Promise<string>,
   agentId?: string
 ): Promise<void> {

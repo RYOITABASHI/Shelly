@@ -40,6 +40,10 @@ data class ContinuousStopInputs(
     val consecutiveFailures: Int,
     /** How many runs in a row ended with a DONE signal. */
     val doneStreak: Int,
+    /** A stop already recorded for THIS loop (checkpoint stoppedReason, see
+     *  [recordedStop]) — sticky until the user starts a new loop, so a stale
+     *  enabled:true written back by the app can never revive it. */
+    val recordedStop: ContinuousStopReason? = null,
 )
 
 enum class ContinuousStopReason(val code: String) {
@@ -50,6 +54,10 @@ enum class ContinuousStopReason(val code: String) {
     BUDGET("budget"),
     CONSECUTIVE_FAILURES("consecutive_failures"),
     GOAL_REACHED("goal_reached");
+
+    companion object {
+        fun fromCode(code: String?): ContinuousStopReason? = values().firstOrNull { it.code == code }
+    }
 
     /** STOP-ALL keeps the agent enabled so RESUME brings the loop back; every
      *  other reason ends this loop (the user re-enables to start a new one). */
@@ -97,6 +105,7 @@ object ContinuousStopPolicy {
      */
     fun evaluate(config: ContinuousConfig, inputs: ContinuousStopInputs): ContinuousStopReason? {
         if (inputs.globallyHalted) return ContinuousStopReason.HALTED
+        inputs.recordedStop?.let { return it }
         if (inputs.userStopRequested || !inputs.agentEnabled) return ContinuousStopReason.USER_STOP
         if (inputs.iterationsDone >= config.maxIterations) return ContinuousStopReason.MAX_ITERATIONS
         // A clock that went backwards (start in the future) counts as elapsed
@@ -115,6 +124,24 @@ object ContinuousStopPolicy {
         if (dailyBudgetJpy <= 0L) return true
         return spentUsdToday * JPY_PER_USD >= dailyBudgetJpy.toDouble()
     }
+
+    /** The stop recorded in the checkpoint, if it belongs to this loop. A
+     *  'halted' record is not sticky (RESUME continues the loop). */
+    fun recordedStop(stoppedReason: String?, stoppedAt: Long?, loopStartedAt: Long): ContinuousStopReason? {
+        val reason = ContinuousStopReason.fromCode(stoppedReason) ?: return null
+        if (reason == ContinuousStopReason.HALTED) return null
+        if (stoppedAt == null || stoppedAt < loopStartedAt) return null
+        return reason
+    }
+
+    /** A stop marker counts only when written at / after [sinceMs] (1s slack
+     *  for coarse file-system mtimes). */
+    fun markerApplies(markerMtimeMs: Long, sinceMs: Long): Boolean = markerMtimeMs + 1000 >= sinceMs
+
+    /** The PlanSpec executor process of THIS agent (its argv names this
+     *  agent's plan file) — never another agent's executor. */
+    fun isOwnExecutorCmdline(cmdline: String, agentId: String): Boolean =
+        cmdline.contains("shelly-plan-executor") && cmdline.contains("plan-agent-$agentId.json")
 
     /** Iterations to count: the larger of native's own counter and the
      *  checkpoint's (a corrupt/missing checkpoint can never lower it). */

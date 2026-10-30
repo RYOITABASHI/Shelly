@@ -106,7 +106,7 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   getDmReplyTestResult(): Promise<{ receivedText: string | null; receivedAtMs: number | null }>;
   clearDmReplyTestResult(): Promise<void>;
   testExecve(): Promise<{ success: boolean; result?: string; error?: string }>;
-  scheduleAgent(agentId: string, intervalMs: number, triggerAtMs: number, cron?: string): Promise<void>;
+  scheduleAgent(agentId: string, intervalMs: number, triggerAtMs: number, cron?: string | null): Promise<void>;
   cancelAgent(agentId: string): Promise<void>;
   execCommand(command: string, timeoutMs?: number): Promise<{ exitCode: number; stdout: string; stderr: string }>;
   readDir(path: string): Promise<string>;

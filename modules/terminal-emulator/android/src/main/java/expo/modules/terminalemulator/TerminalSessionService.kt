@@ -101,6 +101,11 @@ class TerminalSessionService : Service() {
         Log.i(TAG, "Service created sessions=${sessionRegistry.size} ids=${sessionRegistry.keys.joinToString(",")}")
         createNotificationChannel()
         instance = this
+        // A fresh process has no iteration running: drop any ongoing loop
+        // notification a dead process left behind.
+        if (activeAgentRuns.get() == 0) {
+            runCatching { ContinuousLoop.cancelAllRunningNotifications(applicationContext) }
+        }
         try {
             CodexRemoteHost.ensureWatching(applicationContext)
         } catch (e: Exception) {
@@ -558,15 +563,20 @@ class TerminalSessionService : Service() {
                     val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))
                     val config = ContinuousLoop.configFor(applicationContext, agentId)
                     if (config == null) {
-                        // No longer continuous (edited / deleted mid-run): fall
-                        // back to the ordinary interval re-arm guard.
-                        if (shouldRearm) AgentAlarmScheduler.scheduleNextIfAgentEnabled(applicationContext, agentId, intervalMs, cron)
+                        // No longer continuous (edited / deleted mid-run): do NOT
+                        // re-arm here — an interval re-arm would turn the old
+                        // loop into an unlimited interval agent past every stop
+                        // gate (and could replace a cron alarm JS just armed).
+                        // Scheduling an edited agent is installSchedule's job.
                         ContinuousLoop.cancelRunningNotification(applicationContext, agentId)
                     } else {
                         ContinuousLoop.afterRun(applicationContext, agentId, config, circuitBreakerFailures(agentId), !shouldRearm)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to settle continuous iteration for $agentId", e)
+                    // Never leave a "running" notification behind a loop that
+                    // could not be settled.
+                    runCatching { ContinuousLoop.cancelRunningNotification(applicationContext, agentId) }
                 }
             } else if (intervalMs > 0 || !cron.isNullOrBlank()) {
                 val shouldRearm = recordScheduledRunOutcome(agentId, !scheduledRunFailed(agentId, runResult, runStartMs))

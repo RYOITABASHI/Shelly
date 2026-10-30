@@ -111,6 +111,36 @@ class ContinuousStopPolicyTest {
     }
 
     @Test
+    fun aRecordedStopIsStickyForItsLoopOnly() {
+        // Budget stop recorded during this loop: even with enabled:true written
+        // back by a stale app snapshot, the loop stays stopped.
+        val sticky = ContinuousStopPolicy.recordedStop("budget", start + 10, start)
+        assertEquals(ContinuousStopReason.BUDGET, sticky)
+        assertEquals(ContinuousStopReason.BUDGET, ContinuousStopPolicy.evaluate(config(), inputs(enabled = true).copy(recordedStop = sticky)))
+        // A new loop (re-enable → later loopStartedAt) is not affected.
+        assertNull(ContinuousStopPolicy.recordedStop("budget", start + 10, start + 20))
+        // STOP-ALL is not sticky (RESUME continues), unknown codes are ignored.
+        assertNull(ContinuousStopPolicy.recordedStop("halted", start + 10, start))
+        assertNull(ContinuousStopPolicy.recordedStop("nope", start + 10, start))
+        assertNull(ContinuousStopPolicy.recordedStop(null, null, start))
+    }
+
+    @Test
+    fun aStopMarkerCountsOnlyFromItsRunOrLoop() {
+        assertTrue(ContinuousStopPolicy.markerApplies(5_000L, 5_500L)) // 1s mtime slack
+        assertTrue(ContinuousStopPolicy.markerApplies(9_000L, 5_000L))
+        assertFalse(ContinuousStopPolicy.markerApplies(1_000L, 5_000L))
+    }
+
+    @Test
+    fun onlyThisAgentsExecutorIsKillable() {
+        val cmd = "/data/app/lib/node /home/.shelly-plan-executor.js --plan-file /home/.shelly/agents/plans/plan-agent-agent-a.json --agent-id agent-a"
+        assertTrue(ContinuousStopPolicy.isOwnExecutorCmdline(cmd, "agent-a"))
+        assertFalse(ContinuousStopPolicy.isOwnExecutorCmdline(cmd, "agent-b"))
+        assertFalse(ContinuousStopPolicy.isOwnExecutorCmdline("bash plan-agent-agent-a.json", "agent-a"))
+    }
+
+    @Test
     fun aLostCheckpointCannotLowerTheIterationCount() {
         assertEquals(7, ContinuousStopPolicy.iterationsDone(7, 0))
         assertEquals(9, ContinuousStopPolicy.iterationsDone(7, 9))
