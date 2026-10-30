@@ -196,7 +196,7 @@ Shelly/
 | shellyコマンド → pseudo-shell | `shelly config/workflow/voice`等はアプリ内処理 | pseudo-shell.ts |
 | 設定タブ廃止 → ConfigTUI | 歯車ボタン or `shelly config`。全設定をボトムシートに集約 | ConfigTUI.tsx |
 | APIキーはSecureStore | settings-store.updateSettingsが自動ルーティング | secure-store.ts, settings-store.ts |
-| AI Paneルーティングは明示的 API provider のみ | Gemini API / Cerebras / Groq / Perplexity / OpenAI-compatible local を use-ai-pane-dispatch.ts で分岐。Claude Code subscription/CLI は hidden background worker として使わない | use-ai-pane-dispatch.ts, agent-executor.ts |
+| AI Paneルーティングは明示的 API provider のみ | Gemini API / Cerebras / Groq / Perplexity / OpenAI-compatible local を use-ai-pane-dispatch.ts で分岐。（2026-10-30 訂正: 以前ここにあった「Claude Code subscription/CLI は hidden background worker として使わない」はプロダクトオーナーの方針ではなかったため撤回。CLI をエージェントのワーカーとして裏で使うこと自体は禁止しない。Claude Code CLI の端末上での実行可否は DEFERRED.md bug #117 を参照） | use-ai-pane-dispatch.ts, agent-executor.ts |
 | APIキーは Settings → API Keys の inline editor | Wizard 廃止、SettingsDropdown に 1 行ずつ masked editor を展開 | components/settings/* |
 | Claude/Codex CLI は staging + probe 後に自動更新 | `shelly-runtime-update.js` が Claude/Codex runtime を current/ symlink で昇格。failed-version cooldown で broken latest を再試行しすぎない。Gemini CLI は Experimental のため正式ランチャーから外す | HomeInitializer.kt, shelly-runtime-update.js, Sidebar.tsx |
 | Chat UIはv0.1.0で削除 | 旧 chelly/ は git history に保存。別 repo 切り出し予定 | — |
