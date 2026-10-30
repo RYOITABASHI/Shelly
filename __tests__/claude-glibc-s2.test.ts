@@ -473,7 +473,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275)', () => {
   });
 
   it('arms the sign-in bridge only for interactive sessions and disarms only its own arm file', () => {
-    expect(fn).toMatch(/__arm="\$__pdir\/\.shelly-claude-login\.arm"/);
+    expect(fn).toMatch(/__arm="\$HOME\/tmp\/\.shelly-claude-login\.arm"/);
     expect(fn).toMatch(/\[ -t 0 \] && \[ -t 1 \] \|\| __interactive=0/);
     expect(fn).toMatch(/-p\|--print\|--version\|-v\|--help\|-h\) __interactive=0/);
     expect(fn).toMatch(/\[ "\$__interactive" = 1 \] && printf '%s\\n' "\$__armtag" > "\$__arm"/);
