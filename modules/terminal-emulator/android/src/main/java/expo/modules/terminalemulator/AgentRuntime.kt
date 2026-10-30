@@ -455,7 +455,11 @@ object AgentRuntime {
     // the returned citations) instead of renumbering — see
     // lib/agent-executor.ts's AGENT_SCRIPT_VERSION v72 comment. No native
     // logic change; bumped so stale scripts are regenerated.
-    private const val CURRENT_SCRIPT_VERSION = 72
+    // v73 (2026-10-30, STOP-ALL in-flight): the lock holder records its /proc
+    // start time for haltInflightRunsCommand, and dispatch refuses once
+    // .halted exists. Native: a run that exits non-zero while .halted exists is
+    // recorded as skipped, not as a hard failure (see stoppedByKillSwitch).
+    private const val CURRENT_SCRIPT_VERSION = 73
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
@@ -473,7 +477,8 @@ object AgentRuntime {
     // change; bumped so stale executor copies are refreshed.
     // CURRENT_EXECUTOR_VERSION 13 (2026-10-30, STOP-ALL in-flight): the chain
     // re-checks the .halted sentinel before every step/group/branch and the
-    // final action, and SIGTERM kills the broker children. No native logic change.
+    // final action, and SIGTERM kills the broker children and exits 0 after
+    // recording the run as skipped. Native: see stoppedByKillSwitch.
     private const val CURRENT_EXECUTOR_VERSION = 13
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
@@ -732,6 +737,9 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
+        if (stoppedByKillSwitch(homeDir, agentId, exitCode)) {
+            return AgentRunResult(agentId, exitCode, stdout, stderr)
+        }
         val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"
         if (exitCode == 0 && !softFailure) {
             resetNativeFailureCount(homeDir, agentId)
@@ -1029,6 +1037,9 @@ object AgentRuntime {
         val exitCode = result.getOrNull(0)?.toIntOrNull() ?: 1
         val stdout = result.getOrNull(1).orEmpty()
         val stderr = result.getOrNull(2).orEmpty()
+        if (stoppedByKillSwitch(homeDir, agentId, exitCode)) {
+            return AgentRunResult(agentId, exitCode, stdout, stderr)
+        }
         val softFailure = unattended && exitCode == 0 && latestRunLogStatus(homeDir, agentId) == "error"
         if (exitCode == 0 && !softFailure) {
             resetNativeFailureCount(homeDir, agentId)
@@ -1487,6 +1498,21 @@ object AgentRuntime {
             Log.w(TAG, "Could not read latest run-log status for $agentId; treating as unknown", e)
             null
         }
+    }
+
+    /**
+     * STOP-ALL (2026-10-30): haltAllAgents signals in-flight runs, so a run that
+     * ends non-zero while the kill-switch sentinel exists was stopped by the
+     * user, not broken. Record it as skipped and stay silent: no hard-failure
+     * backoff, no "failed" notification, no error receiver log. Returns true
+     * when it handled the result.
+     */
+    private fun stoppedByKillSwitch(homeDir: File, agentId: String, exitCode: Int): Boolean {
+        if (exitCode == 0 || !File(homeDir, ".shelly/agents/.halted").isFile) return false
+        Log.i(TAG, "Agent $agentId stopped by the global kill-switch (exit=$exitCode)")
+        discardAgentResultNotificationRequest(homeDir, agentId)
+        writeReceiverLog(homeDir, agentId, "skipped", "All agents are stopped (global kill-switch is on).")
+        return true
     }
 
     private fun discardAgentResultNotificationRequest(homeDir: File, agentId: String) {

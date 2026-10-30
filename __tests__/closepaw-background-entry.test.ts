@@ -216,7 +216,7 @@ describe('outcome plumbing', () => {
     const script = read('lib/agent-executor.ts');
     expect(script).toContain('closepaw_read_outcome() {');
     expect(script).toContain('ACTION_DISPATCH_MESSAGE="ClosePaw did not start the task: $CLOSEPAW_OUTCOME_MESSAGE"');
-    expect(script).toContain('const AGENT_SCRIPT_VERSION = 72;');
+    expect(script).toContain('const AGENT_SCRIPT_VERSION = 73;');
     const plan = read('scripts/shelly-plan-executor.js');
     expect(plan).toContain('function readClosePawOutcome(home)');
     expect(plan).toContain('ClosePaw did not start the task: ${outcome.message}');

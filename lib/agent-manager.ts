@@ -1871,10 +1871,25 @@ async function runEscalatingAttempts(
   // throw from runLadderAttempts still releases it).
   const chainLockSeed = await acquireChainLock(agent.id, runCommand);
   try {
-    const { ladder, finalLog } = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs, {
-      chainLockSeed,
-      optimisticWorkspaceWrites: options.optimisticWorkspaceWrites,
-    });
+    let attempts: Awaited<ReturnType<typeof runLadderAttempts>>;
+    try {
+      attempts = await runLadderAttempts(agent, agent.id, runCommand, options, runStartedAtMs, {
+        chainLockSeed,
+        optimisticWorkspaceWrites: options.optimisticWorkspaceWrites,
+      });
+    } catch (error) {
+      // STOP-ALL (AgentsHaltedError) or any other mid-ladder throw: the last
+      // attempt's script — possibly with a pinned tool and an optimistic
+      // ACTION_APPROVAL_MODE_OVERRIDE='auto' — is still the STORED script a
+      // later alarm fire reads, so restore the configured one before rethrowing.
+      try {
+        await materializeAgent(agent, runCommand, false);
+      } catch (restoreError) {
+        logWarn('AgentEscalation', `failed to restore configured script for ${agent.id}`, restoreError);
+      }
+      throw error;
+    }
+    const { ladder, finalLog } = attempts;
 
     // Restore the agent's own (un-overridden) script so a later scheduled fire uses
     // the configured tool / fresh route, not the last escalation override. Any
@@ -2070,6 +2085,8 @@ async function runLadderAttempts(
     // running on a human's behalf — the RN approval choke point trusts this,
     // never the executor-written request file's origin.
     markUserRunStarted(agentId);
+    let runError: unknown;
+    let runFailed = false;
     try {
       await TerminalEmulator.runAgent(agentId);
       await waitForAgentRunCompletion(runCommand, agentId, {
@@ -2079,6 +2096,9 @@ async function runLadderAttempts(
         timeoutMs: options.waitTimeoutMs ?? AGENT_RUN_WAIT_TIMEOUT_MS,
         pollMs: options.pollMs ?? AGENT_RUN_WAIT_POLL_MS,
       });
+    } catch (error) {
+      runError = error;
+      runFailed = true;
     } finally {
       markUserRunFinished(agentId);
     }
@@ -2087,9 +2107,16 @@ async function runLadderAttempts(
     // so its now-stale on-disk script must stop matching the live chain lock
     // the instant it's safe to (see the module doc comment above
     // acquireChainLock). Re-armed by the NEXT attempt's own materialize call.
+    // Also on a failed/halted wait (STOP-ALL throws AgentsHaltedError here):
+    // the armed script must not outlive this attempt either.
     if (materializeOpts.chainLockSeed) {
-      await disarmChainLockToken(agentId, materializeOpts.chainLockSeed, runCommand);
+      try {
+        await disarmChainLockToken(agentId, materializeOpts.chainLockSeed, runCommand);
+      } catch (disarmError) {
+        if (!runFailed) throw disarmError;
+      }
     }
+    if (runFailed) throw runError;
 
     const after = (await readAgentRunLogs(runCommand, agentId))[agentId] ?? [];
     finalLog = after.at(-1);
@@ -3080,55 +3107,85 @@ const haltSentinelPath = () => `${agentsDir()}/.halted`;
 
 /**
  * STOP-ALL (2026-10-30, DEFERRED.md「STOP-ALL が実行中のチェーンを止めない」):
- * terminate every in-flight agent run — attended per-step `run-agent-<id>.sh`
- * scripts and PlanSpec executor processes alike. Both write their pid to
+ * terminate every in-flight agent run — legacy/attended `run-agent-<id>.sh`
+ * runs and PlanSpec executor processes alike. Both write their pid to
  * `locks/<id>.pid` (the .sh's LOCK_FILE, the executor's acquireLock), the same
  * file generateStopCommand reads.
  *
- * Robust by construction, and never exits non-zero: a missing locks dir, an
- * empty/garbage pid file, a stale pid, or an already-dead process are all
- * skipped. A pid is only signalled when /proc/<pid>/cmdline names an agent
- * run (`run-agent-` / `shelly-plan-executor`), so a recycled pid now owned by
- * the interactive shell or the app itself is never hit. The process group is
- * killed (taking broker / curl / node children with it) only when its leader
- * is an agent run too and it is not this shell's own group; otherwise just the
- * pid (the executor's SIGTERM handler then kills its own broker children).
- * TERM first, KILL after 1s for survivors; stale pid files and their
- * `.lockdir` are then removed. Uses the live shell `$HOME`, never the JS
- * getHomePath() cache (see deleteAgent for the /data/user/0 alias bug).
+ * Identifying the owner: on device the .sh is SOURCED by the cmd-file bash
+ * shelly-exec.c execs (`linker64 libbash.so <tmp cmd file>`), so its pid's
+ * cmdline never names the script. A pid is therefore only signalled when
+ *  - its /proc start time equals the one the .sh (v73+) recorded in
+ *    `<pidfile>.lockdir/starttime` when it took the lock (a recycled pid has a
+ *    different start time), or
+ *  - its cmdline names `shelly-plan-executor` (node's argv carries the path).
+ * A .sh from before v73 has no starttime record and is left alone (its
+ * final-action dispatch still sees `.halted`).
+ *
+ * Killing: the run's descendants are collected by walking /proc/<pid>/stat
+ * ppid links BEFORE signalling (the shared llama-server is excluded and kept),
+ * then TERM goes to the run itself (the executor's handler kills its broker
+ * children and records the run) and, after 1s, KILL to the run and every
+ * collected descendant, so nothing it spawned is orphaned.
+ *
+ * Never exits non-zero: a missing locks dir, empty/garbage/stale pid files and
+ * already-dead processes are skipped. A pid file is removed (with its
+ * `.lockdir`) only when its pid is no longer alive — never for a live
+ * process, whether or not it was recognised, so per-agent single-flight and
+ * the MAX_CONCURRENT accounting stay intact. Uses the live shell `$HOME`,
+ * never the JS getHomePath() cache (see deleteAgent for the /data/user/0
+ * alias bug).
  */
 export function haltInflightRunsCommand(): string {
   return [
     'd="$HOME/.shelly/agents/locks"',
-    "proc_pgid() { sed 's/^.*) //' \"/proc/$1/stat\" 2>/dev/null | cut -d' ' -f3; }",
-    'mypg="$(proc_pgid $$)"',
-    "is_agent_proc() { case \"$(tr '\\000' ' ' < \"/proc/$1/cmdline\" 2>/dev/null)\" in *run-agent-*|*shelly-plan-executor*) return 0;; esac; return 1; }",
-    'halt_kill() {',
-    '  is_agent_proc "$2" || return 0',
-    '  pg="$(proc_pgid "$2")"',
-    '  case "$pg" in ""|*[!0-9]*) pg="";; esac',
-    '  if [ -n "$pg" ] && [ "$pg" -gt 1 ] && [ "$pg" != "$mypg" ] && is_agent_proc "$pg"; then',
-    '    kill "-$1" -- "-$pg" 2>/dev/null && return 0',
-    '  fi',
-    '  kill "-$1" "$2" 2>/dev/null || true',
+    // Field n of /proc/<pid>/stat after "pid (comm) ": 1=state 2=ppid 20=starttime.
+    'stat_field() { n=$2; l=""; { read -r l < "/proc/$1/stat"; } 2>/dev/null || return 0; set -- ${l##*) }; shift $((n - 1)) 2>/dev/null || return 0; echo "$1"; }',
+    "cmdline_of() { tr '\\000' ' ' < \"/proc/$1/cmdline\" 2>/dev/null; }",
+    'is_run() {',
+    '  [ -d "/proc/$1" ] || return 1',
+    '  st=""; { read -r st < "$2.lockdir/starttime"; } 2>/dev/null',
+    '  case "$st" in ""|*[!0-9]*) ;; *) [ "$st" = "$(stat_field "$1" 20)" ] && return 0;; esac',
+    '  case "$(cmdline_of "$1")" in *shelly-plan-executor*) return 0;; esac',
+    '  return 1',
     '}',
-    'pids=""',
+    'tree() {',
+    '  all="$1"; front=" $1 "',
+    '  while [ "$front" != " " ]; do',
+    '    next=" "',
+    '    for s in /proc/[0-9]*/stat; do',
+    '      l=""; { read -r l < "$s"; } 2>/dev/null || continue',
+    '      l="${l##*) }"; l="${l#* }"; pp="${l%% *}"',
+    '      case "$front" in *" $pp "*) ;; *) continue;; esac',
+    '      p="${s#/proc/}"; p="${p%/stat}"',
+    '      case " $all " in *" $p "*) continue;; esac',
+    '      case "$(cmdline_of "$p")" in *llama-server*) continue;; esac',
+    '      all="$all $p"; next="$next$p "',
+    '    done',
+    '    front="$next"',
+    '  done',
+    '  echo "$all"',
+    '}',
+    'victims=""',
     'for f in "$d"/*.pid; do',
     '  [ -f "$f" ] || continue',
-    "  pid=\"$(tr -cd '0-9' < \"$f\" 2>/dev/null)\"",
-    '  case "$pid" in ""|0|1) continue;; esac',
+    '  pid=""; { read -r pid < "$f"; } 2>/dev/null',
+    '  case "$pid" in ""|*[!0-9]*|0|1) continue;; esac',
     '  [ "$pid" = "$$" ] && continue',
-    '  halt_kill TERM "$pid"',
-    '  pids="$pids $pid"',
+    '  is_run "$pid" "$f" || continue',
+    '  victims="$victims $(tree "$pid")"',
+    '  kill -TERM "$pid" 2>/dev/null || true',
     'done',
-    'if [ -n "$pids" ]; then',
+    'if [ -n "$victims" ]; then',
     '  sleep 1',
-    '  for pid in $pids; do [ -d "/proc/$pid" ] && halt_kill KILL "$pid"; done',
+    '  for v in $victims; do [ "$v" = "$$" ] || kill -KILL "$v" 2>/dev/null || true; done',
     'fi',
     'for f in "$d"/*.pid; do',
     '  [ -f "$f" ] || continue',
-    "  pid=\"$(tr -cd '0-9' < \"$f\" 2>/dev/null)\"",
-    '  if [ -z "$pid" ] || ! is_agent_proc "$pid"; then rm -f "$f"; rm -rf "$f.lockdir"; fi',
+    '  pid=""; { read -r pid < "$f"; } 2>/dev/null',
+    '  case "$pid" in ""|*[!0-9]*) continue;; esac',
+    '  [ -d "/proc/$pid" ] && continue',
+    '  rm -f "$f"; rm -rf "$f.lockdir"',
     'done',
     'exit 0',
   ].join('\n');

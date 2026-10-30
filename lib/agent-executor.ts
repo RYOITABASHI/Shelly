@@ -742,7 +742,12 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // still lists the uncited sources (cap 20); other models keep the v70
 // renumbering; the v71 sidecar is unchanged (raw content). Kept in lockstep
 // with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
-const AGENT_SCRIPT_VERSION = 72;
+// v73 (2026-10-30, STOP-ALL in-flight): the lock holder records its /proc
+// start time in $LOCK_DIR/starttime (haltInflightRunsCommand verifies the pid
+// with it before signalling), and dispatch_agent_action refuses to dispatch
+// once $HOME/.shelly/agents/.halted exists. Kept in lockstep with
+// AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 73;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3807,6 +3812,14 @@ dispatch_agent_action() {
   ACTION_DISPATCH_STATUS=""
   ACTION_DISPATCH_MESSAGE=""
 
+  # STOP-ALL (v73): never dispatch once the global kill-switch is on (pressed
+  # while this run was generating). Skipped, not an error; no notification.
+  if [ -f "\${HOME:-}/.shelly/agents/.halted" ]; then
+    ACTION_DISPATCH_STATUS="skipped"
+    ACTION_DISPATCH_MESSAGE="All agents are stopped (global kill-switch is on)."
+    return 1
+  fi
+
   case "$ACTION_TYPE" in
     __suppressed__)
       # Orchestration non-final step: still save the draft result for the next
@@ -6218,6 +6231,11 @@ fi
 shelly_try_acquire_lock_file() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     echo $$ > "$LOCK_FILE"
+    # STOP-ALL (v73): record this process's /proc start time so
+    # haltInflightRunsCommand (lib/agent-manager.ts) can confirm the pid is
+    # still this run. On device this script is SOURCED by shelly-exec's
+    # cmd-file bash, so the pid's cmdline never names the script.
+    sed 's/^.*) //' "/proc/$$/stat" 2>/dev/null | cut -d' ' -f20 > "$LOCK_DIR/starttime" 2>/dev/null || true
     return 0
   fi
   return 1

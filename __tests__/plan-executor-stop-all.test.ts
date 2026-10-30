@@ -46,7 +46,7 @@ function makeHome(): string {
 
 const sentinel = (home: string) => path.join(home, '.shelly/agents/.halted');
 
-function writePlan(home: string, port: number, steps: Step[]): string {
+function writePlan(home: string, port: number, steps: Step[] | null, opts: { requireApproval?: boolean } = {}): string {
   const plan = {
     kind: PLAN_SPEC_KIND,
     schemaVersion: PLAN_SPEC_SCHEMA_VERSION,
@@ -66,20 +66,20 @@ function writePlan(home: string, port: number, steps: Step[]): string {
     limits: { timeoutSeconds: 30, maxConcurrent: 2 },
     policy: { level: 'L2', workspaceRoot: home, secretPaths: [], policyPath: '.shelly/agents/policy.json', denyPatterns: [], allowPatterns: [] },
     routeDecision: { route: 'on-device', toolType: 'local', toolLabel: 'Local LLM', guard: 'configured-tool', why: 'test' },
-    steps: { list: steps, budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 } },
+    ...(steps ? { steps: { list: steps, budget: { maxSteps: 6, totalTimeoutMs: 30 * 60_000 } } } : {}),
   };
   const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${AGENT_ID}.json`);
   fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
   fs.writeFileSync(
     path.join(home, '.shelly/agents/.env'),
-    `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`,
+    `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='${opts.requireApproval ? '1' : '0'}'\n`,
   );
   return planFile;
 }
 
-function startExecutor(planFile: string, home: string): { child: ChildProcess; done: Promise<number | null> } {
+function startExecutor(planFile: string, home: string, env: Record<string, string> = {}): { child: ChildProcess; done: Promise<number | null> } {
   const child = spawn(process.execPath, [scriptCopy, '--plan-file', planFile, '--home', home, '--agent-id', AGENT_ID, '--broker', broker], {
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const done = new Promise<number | null>((resolve) => child.on('close', (status) => resolve(status)));
@@ -212,9 +212,67 @@ describe('shelly-plan-executor.js — STOP-ALL halts an in-flight chain', () => 
     expect(readRunLog(home).status).toBe('skipped');
   }, 20000);
 
+  it('single-shot run: halt during generation skips the dispatch (no action, no notification)', async () => {
+    haltOn = 'Base task';
+    const planFile = writePlan(home, port, null);
+    const rc = await startExecutor(planFile, home).done;
+
+    expect(rc).toBe(0);
+    expect(requested).toHaveLength(1);
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toBe(KILL_SWITCH_MESSAGE);
+    expect(fs.existsSync(notificationFile(home))).toBe(false);
+    expect(readProgress(home).pop()).toMatchObject({ kind: 'run_end', status: 'halted' });
+  }, 20000);
+
+  it('halt during the (event-loop-blocking) approval wait ends the run at once and removes the request file', async () => {
+    const approvalDir = path.join(home, '.shelly/agents/action-approvals');
+    const planFile = writePlan(home, port, [{ instruction: 'serial step one' }, { instruction: 'final notify step' }], { requireApproval: true });
+    const started = Date.now();
+    const { done } = startExecutor(planFile, home, { SHELLY_AGENT_ACTION_APPROVAL_TIMEOUT_SECONDS: '60' });
+    // STOP-ALL pressed while the final action waits for approval.
+    const poll = setInterval(() => {
+      try {
+        if (fs.readdirSync(approvalDir).some((n) => n.endsWith('.json'))) {
+          fs.writeFileSync(sentinel(home), 'halted\n');
+          clearInterval(poll);
+        }
+      } catch (_) {}
+    }, 50);
+    const rc = await done;
+    clearInterval(poll);
+
+    expect(rc).toBe(0);
+    expect(Date.now() - started).toBeLessThan(15_000); // not the 60s approval timeout
+    expect(fs.readdirSync(approvalDir).filter((n) => n.endsWith('.json'))).toEqual([]);
+    const log = readRunLog(home);
+    expect(log.status).toBe('skipped');
+    expect(log.outputPreview).toBe(KILL_SWITCH_MESSAGE);
+    expect(fs.existsSync(notificationFile(home))).toBe(false);
+    expect(readProgress(home).pop()).toMatchObject({ kind: 'run_end', status: 'halted' });
+  }, 30000);
+
+  it('registry-lock wait gives up at once when halted instead of blocking ~30s', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const executor = require(scriptCopy);
+    const paths = executor.runtimePaths(home, AGENT_ID);
+    const registryFile = path.join(home, 'sources', 'source-registry.tsv');
+    fs.mkdirSync(path.dirname(registryFile), { recursive: true });
+    fs.mkdirSync(`${registryFile}.lock`); // held by someone else
+    fs.writeFileSync(paths.resultFile, 'see https://example.com/a\n');
+    fs.writeFileSync(sentinel(home), 'halted\n');
+    const started = Date.now();
+    executor.registerSourceUrls(paths, { SOURCE_REGISTRY_FILE: registryFile }, { agent: { id: AGENT_ID }, tool: { label: 'x' } });
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(fs.existsSync(registryFile)).toBe(false);
+    // The foreign lock is not ours to remove.
+    expect(fs.existsSync(`${registryFile}.lock`)).toBe(true);
+  });
+
   // Windows has no catchable SIGTERM (child.kill terminates outright), so the
   // handler can only be exercised on POSIX hosts / CI.
-  (process.platform === 'win32' ? it.skip : it)('SIGTERM mid-step: records skipped, releases the pid lock, exits 143', async () => {
+  (process.platform === 'win32' ? it.skip : it)('SIGTERM mid-step: records skipped, releases the pid lock, exits 0 (native must not see a hard failure)', async () => {
     delayByInstruction = { 'slow step': 10_000 };
     const planFile = writePlan(home, port, [{ instruction: 'slow step' }, { instruction: 'final notify step' }]);
     const { child, done } = startExecutor(planFile, home);
@@ -224,7 +282,7 @@ describe('shelly-plan-executor.js — STOP-ALL halts an in-flight chain', () => 
     };
     const rc = await done;
 
-    expect(rc).toBe(143);
+    expect(rc).toBe(0);
     expect(fs.existsSync(path.join(home, `.shelly/agents/locks/${AGENT_ID}.pid`))).toBe(false);
     const log = readRunLog(home);
     expect(log.status).toBe('skipped');

@@ -181,6 +181,15 @@ class ActionSkipped extends Error {
   }
 }
 
+// STOP-ALL (v13): the `.halted` sentinel appeared while this run was blocked
+// in a wait. A skip, never a failure; run() records it without a notification.
+class RunHalted extends ActionSkipped {
+  constructor() {
+    super(KILL_SWITCH_MESSAGE);
+    this.name = 'RunHalted';
+  }
+}
+
 function redact(text) {
   let out = String(text == null ? '' : text);
   for (const pattern of REDACT_PATTERNS) out = out.replace(pattern, '<redacted>');
@@ -3332,6 +3341,14 @@ function requestActionApprovalBlocking(paths, plan, actionType, preview, resultF
       if (reply.decision === 'accept') return;
       throw new ActionSkipped(`${actionType} action declined`);
     }
+    // STOP-ALL: this sync wait blocks the event loop, so the SIGTERM handler
+    // cannot run until it returns; poll the sentinel here instead.
+    if (isHalted(paths)) {
+      try {
+        fs.unlinkSync(requestFile);
+      } catch (_) {}
+      throw new RunHalted();
+    }
     sleepMs(500);
   }
   try {
@@ -3518,6 +3535,7 @@ function registerSourceUrls(paths, config, plan) {
         locked = true;
         break;
       } catch (_) {
+        if (isHalted(paths)) return; // STOP-ALL: don't block the SIGTERM handler
         sleepMs(1000);
       }
     }
@@ -5442,8 +5460,15 @@ async function run(args) {
   // to paths.lockFile. Kill the broker children first (synchronously: the
   // stop command escalates to SIGKILL after 1s), record the run as skipped,
   // release the lock, then exit.
+  // Set once this run has written its own final run log: a late SIGTERM must
+  // not add a second (skipped) log or a halted run_end for a finished run.
+  let runLogWritten = false;
   const onSigterm = () => {
     killLiveBrokerChildren();
+    if (runLogWritten) {
+      releaseLock(paths);
+      process.exit(EXIT.OK);
+    }
     const message = isHalted(paths) ? KILL_SWITCH_MESSAGE : 'Run stopped (SIGTERM).';
     // End the live progress stream cleanly (run_end 'halted') before exiting.
     try {
@@ -5462,7 +5487,9 @@ async function run(args) {
       });
     } catch (_) {}
     releaseLock(paths);
-    process.exit(143);
+    // EXIT.OK: the skipped run log above IS the outcome; a non-zero exit would
+    // make AgentRuntime.kt record a hard failure and post an error.
+    process.exit(EXIT.OK);
   };
   process.once('SIGTERM', onSigterm);
 
@@ -5528,6 +5555,7 @@ async function run(args) {
       const resultText = attempt.resultText;
       usedTool = attempt.usedTool;
       writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
+      if (isHalted(paths)) throw new RunHalted(); // STOP-ALL during generation
       action = await dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args);
       progressState(progress, 0, progressStatusState(action.status), action.preview);
     }
@@ -5538,6 +5566,7 @@ async function run(args) {
     if (action.halted) progressReason = KILL_SWITCH_MESSAGE;
     const durationMs = Date.now() - startedAt;
     writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps, action.actionResults, usedTool);
+    runLogWritten = true;
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -5549,11 +5578,14 @@ async function run(args) {
   } catch (e) {
     const durationMs = Date.now() - startedAt;
     if (e instanceof ActionSkipped) {
-      progressStatus = 'skipped';
+      const halted = e instanceof RunHalted;
+      progressStatus = halted ? 'halted' : 'skipped';
       const message = redact(e.message);
       progressReason = message;
-      writeNotification(paths, plan, 'skipped', message);
+      // A user-initiated halt does not notify (mirrors the native gate).
+      if (!halted) writeNotification(paths, plan, 'skipped', message);
       writeRunLog(paths, plan, 'skipped', message, durationMs, message);
+      runLogWritten = true;
       appendJsonl(paths.planAuditFile, {
         ts: new Date().toISOString(),
         kind: 'plan.executor',
@@ -5571,6 +5603,7 @@ async function run(args) {
     writeAtomic(paths.resultFile, message + '\n');
     writeNotification(paths, plan, status, message);
     writeRunLog(paths, plan, status, message, durationMs, message);
+    runLogWritten = true;
     appendJsonl(paths.planAuditFile, {
       ts: new Date().toISOString(),
       kind: 'plan.executor',
@@ -5693,6 +5726,7 @@ module.exports = {
   PLAN_SPEC_KIND,
   validatePlan,
   runtimePaths,
+  registerSourceUrls,
   // Draft destination + run-log write — exported for host unit tests only
   // (__tests__/plan-executor-saved-path.test.ts).
   resolveDraftDestination,
