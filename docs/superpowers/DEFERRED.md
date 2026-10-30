@@ -5117,6 +5117,13 @@ Installed tools are available immediately — just type the command (existing ta
 
 ---
 
+### Claude Code 公式 glibc 版（2.1.314）を Shelly で動かす — 実機スパイク済み・userland loader が必要 (P1)
+- **2026-10-30 オーナー要望**: Codex と同様に Claude Code CLI をエージェントのワーカー（MONITOR のキャラ）に使いたい。鬼門は「Bash ツールが通るか」（オーナー指摘）。
+- **背景**: コミュニティ（ferrumclaudepilgrim/claude-code-android、wallentx/claude-code-termux）は公式 linux-arm64 glibc バイナリを Termux の glibc（termux-glibc の glibc 2.44 / gcc-libs-glibc）の ld.so から起動し Galaxy S26 Ultra 等で安定運用。いずれも Termux（targetSdk 28＝アプリデータの直接 exec 可）が前提。中身を解読しないので規約上の問題はない（8 月に凍結した Bun SEA 解読ルートとは別物）。
+- **実機スパイク結果（Fold6, build 2679）**: (1) `linker64 ld-linux-aarch64.so.1` → bionic が「Could not find a PHDR」で拒否。(2) ld.so に PT_PHDR を足すと linker64 は通るが SIGSEGV（glibc の ld.so は kernel から直接起動される前提＝auxv の AT_PHDR/AT_BASE が自分を指すことを期待し、linker64 経由だと linker64 の auxv を見て壊れる）。(3) linker64 を通さない素の execve は targetSdk 36 の W^X で app_data_file に対して Permission denied（$HOME も termux-libs も同じ）。nativeLibraryDir からの exec は extractNativeLibs=false のため不可（true にすると同梱の巨大バイナリが全部ディスクに二重展開されるので不採用）。mmap(PROT_EXEC) 自体は許可されている（linker64 が termux-libs の libbash.so を読めているのと同じ）。
+- **方針**: (1) **userland loader**: linker64 で起動する小さな bionic 製ローダーが、同じプロセス内で glibc ld.so を mmap し、kernel が ld.so を直接起動したときと同じスタック（argv/envp/auxv: AT_PHDR/AT_PHNUM/AT_ENTRY=ld.so 自身、AT_BASE=0 ほか AT_RANDOM/AT_HWCAP/AT_PAGESZ 等を引き継ぎ）を組んでエントリへジャンプ（先行例 tribixbite/bun-on-termux、termux-exec の system_linker_exec）。claude 本体は $HOME に置いたまま ld.so が mmap する。(2) **Bash ツール**: glibc 側プロセスには Shelly の bionic 製 libexec_wrapper が効かないので、glibc 向け LD_PRELOAD の exec ラッパー（termux-exec-glibc 相当）で bash/git/node など bionic バイナリの execve を linker64 経由に書き換える。(3) **DNS**: glibc は /etc/resolv.conf 固定で Android に無い → wallentx と同様にローカルの CONNECT プロキシ（同梱 node）＋ HTTPS_PROXY、または resolv.conf を読ませる手当て。(4) ログイン（OAuth）はブラウザを開く経路（既存の deep-link キュー）を流用。
+- **段階**: S1 userland loader で `claude --version` / `--help`、S2 HTTPS 通信＋ログイン、S3 `claude -p` で Bash ツールが `ls` を実行できる、S4 エージェントのワーカー化（MONITOR のキャラ割当、継続モード）。glibc（約 27MB）と claude（約 300MB）は APK 同梱ではなく初回ダウンロード（Codex と同じ staging + `--version` probe 昇格）。
+
 ### 🟢 bug #117 — claude-code 2.1.113+ (Bun SEA) を Android bionic で動かす (Path C-bis で end-to-end 成立 2026-04-21)
 
 **背景**: Anthropic が 2.1.113 で `cli.js` 純 JS → Bun SEA (Single Executable Application) バイナリに切り替え。Top-level `bin/claude.exe` は 500-byte の shell stub、実本体は `optionalDependencies` 経由で `@anthropic-ai/claude-code-linux-arm64-musl` (220 MB, ET_EXEC aarch64 musl) or glibc 版が配布される。2.1.112 pin が現状の回避策だが、以下の問題:
