@@ -428,7 +428,7 @@ describe('detectToolPinnedSteps — Phase 6 tool-mention chain detection', () =>
     expect(steps).not.toBeNull();
     expect(steps!.length).toBe(3);
     expect(steps![0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
-    expect(steps![0].instruction).toContain('パープレ');
+    expect(steps![0].instruction).not.toContain('パープレ'); // instrument phrase stripped (pin kept)
     expect(steps![1].tool).toEqual({ type: 'local' });
     expect(steps![2].tool).toBeUndefined();
     expect(steps![2].instruction).toContain('X');
@@ -479,7 +479,7 @@ describe('detectToolPinnedSteps — Phase 6 tool-mention chain detection', () =>
     expect(steps!.length).toBe(3);
     expect(steps!.some((s) => s.instruction.includes('毎週月曜と金曜に'))).toBe(false);
     expect(steps![0].tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
-    expect(steps![0].instruction).toContain('パープレ');
+    expect(steps![0].instruction).not.toContain('パープレ'); // instrument phrase stripped (pin kept)
     expect(steps![1].tool).toEqual({ type: 'local' });
     expect(steps![2].instruction).toContain('X');
   });

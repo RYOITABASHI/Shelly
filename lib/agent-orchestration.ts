@@ -775,24 +775,189 @@ export function trailingSaveClauseLabel(text: string): string | null {
 const ACTION_LIKE_CLAUSE_RE =
   /投稿|ポスト|つぶや|呟|シェア|共有|送信|送っ|送る|送り|転送|通知|お知らせ|保存|書き出|アップロード|webhook|ウェブフック|https?:\/\/|\b(?:post|tweet|send|share|notify|save|upload|publish|email|mail)\b/i;
 
-function applyToolScopes(clauses: string[]): Array<{ instruction: string; tool?: ToolChoice }> {
-  const out: Array<{ instruction: string; tool?: ToolChoice }> = [];
+interface ScopedClause {
+  instruction: string;
+  tool?: ToolChoice;
+  /** A sequencing boundary ("then", 「最後に」…) stood right before this clause. */
+  seqBefore?: boolean;
+  /** A parallel marker (「同時に」, "in parallel"…) opened a group at this clause. */
+  startsGroup?: boolean;
+}
+
+function applyToolScopes(clauses: ReadonlyArray<string | Omit<ScopedClause, 'tool'>>): ScopedClause[] {
+  const out: ScopedClause[] = [];
   let scope: ToolChoice | undefined;
-  for (const clause of clauses) {
+  // A marker / sequencing flag on a tool-only clause carries to the next real
+  // step (「同時に、ローカルLLMで、春について…」).
+  let pending: Pick<ScopedClause, 'seqBefore' | 'startsGroup'> = {};
+  clauses.forEach((entry, idx) => {
+    const c = typeof entry === 'string' ? { instruction: entry } : entry;
+    const clause = c.instruction;
+    const flags = {
+      ...(c.seqBefore || pending.seqBefore ? { seqBefore: true } : {}),
+      ...(c.startsGroup || pending.startsGroup ? { startsGroup: true } : {}),
+    };
     if (isToolOnlyClause(clause)) {
       const tool = matchToolMention(clause);
-      if (out.length > 0 && clause === clauses[clauses.length - 1] && !out[out.length - 1].tool) {
+      if (out.length > 0 && idx === clauses.length - 1 && !out[out.length - 1].tool) {
         out[out.length - 1].tool = tool;
       }
       scope = tool;
-      continue;
+      pending = flags;
+      return;
     }
+    pending = {};
     const own = matchToolMention(clause);
     // Review fix: a delivery/side-effect clause (post / send / webhook /
     // notify / save / a URL target) is never pulled into a model scope — the
     // tool named for the WORK steps must not become the instrument of a send.
     const scoped = scope && !ACTION_LIKE_CLAUSE_RE.test(clause) ? scope : undefined;
-    out.push(own ? { instruction: clause, tool: own } : scoped ? { instruction: clause, tool: scoped } : { instruction: clause });
+    const tool = own ?? scoped;
+    out.push({ instruction: clause, ...(tool ? { tool } : {}), ...flags });
+  });
+  return out;
+}
+
+// ── Parallel markers → parallelGroup (2026-10-30) ───────────────────────────
+//
+// On-device repro (build 2679): 「同時に、ローカルLLMで日本の春について200字で
+// 書いて、…夏…、…秋…、最後にローカルLLMで3つを1つの文章にまとめて」 produced a
+// bogus step 「同時に」 and no parallelGroup at all — there was no natural-
+// language way to author a fan-out group. Rules (explicit marker ONLY; an
+// unmarked list is never guessed to be parallel):
+//   - a marker clause (「同時に」「並行して」「並列で」「一緒に」「それぞれ」, "in
+//     parallel", "at the same time", "simultaneously", "each of these") is
+//     never a step. 「同時に」「並行して」「並列で」 and the EN phrases may also
+//     lead a clause that carries work (「同時に春について書いて」, "In parallel:
+//     write about spring"); 「一緒に」「それぞれ」 count only as a clause of their
+//     own, since leading real work they are ordinary words (「それぞれ要約して」);
+//   - the work clauses right after the marker join one group with a sanitized
+//     id (p1, p2, … — PARALLEL_GROUP_ID_RE);
+//   - the group ends at a sequencing word (「最後に」「その後」「それから」「次に」,
+//     then / finally / after that), at a clause that uses earlier output
+//     (stepReferencesPriorOutput, 「3つを」「全部を」, "the three"), at a
+//     delivery clause (post / save / notify …), at another marker, and never
+//     takes the chain's final step;
+//   - members beyond MAX_PARALLEL_BRANCHES keep the marker so the summary can
+//     say they run one after another; planParallelGroups severs them (it stays
+//     the single authority on what runs in parallel);
+//   - a marker left with fewer than 2 effective members is removed.
+
+/** Markers that can lead a clause carrying work. */
+const PARALLEL_LEAD_RE =
+  /^(?:(?:以下を|次の(?:こと|作業)を)\s*)?(?:同時に|並行して|並列で|並列に)\s*[:：、,]?\s*|^(?:(?:do|run)\s+)?(?:(?:all\s+)?(?:of\s+)?(?:these|the\s+following)\s+)?(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously)\s*[:,]?\s*|^(?:(?:do|run)\s+)?(?:for\s+)?each\s+of\s+(?:these|the\s+following)\s*[:：]\s*/i;
+/** Markers that count only as a clause of their own. */
+const PARALLEL_ONLY_RE =
+  /^(?:(?:以下を|次の(?:こと|作業)を|これらを)\s*)?(?:同時に|並行して|並列で|並列に|一緒に|それぞれ)\s*(?:(?:実行|処理)して|やって)?$|^(?:(?:do|run)\s+)?(?:(?:all\s+)?(?:of\s+)?(?:these|the\s+following|this)\s+)?(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously)$|^(?:(?:do|run)\s+)?(?:for\s+)?each\s+of\s+(?:these|the\s+following)(?:\s+(?:in\s+parallel|at\s+the\s+same\s+time|simultaneously))?$/i;
+
+/** The clause's work text after a leading parallel marker: '' for a marker-
+ *  only clause, the remainder for a leading marker, null for no marker. */
+export function parallelMarkerRemainder(clause: string): string | null {
+  const t = clause.trim().replace(/[。．.、,！!:：]+$/, '').trim();
+  if (!t) return null;
+  if (PARALLEL_ONLY_RE.test(t)) return '';
+  const lead = PARALLEL_LEAD_RE.exec(clause.trim());
+  if (!lead) return null;
+  const rest = clause.trim().slice(lead[0].length).trim();
+  return rest.length > 1 ? rest : '';
+}
+
+/** A clause opened by a sequencing word (the order marker itself). EN
+ *  "then" is a clause boundary, so it is seen through `seqBefore` instead. */
+const SEQUENCE_LEAD_RE =
+  /^(?:まず(?:は)?|最初に|次に|その後|それから|続いて|最後に|そして)|^(?:and\s+)?(?:then|finally|lastly|after\s+that|afterwards|next)\b/i;
+const EN_SEQUENCE_STRIP_RE = /^(?:and\s+)?(?:then|finally|lastly|after\s+that|afterwards|next)\b\s*[,:]?\s*/i;
+const LEADING_AND_RE = /^and\s+/i;
+
+/** A clause that consumes the SIBLINGS' output — 「3つを」「全部を」「両方の結果」
+ *  / "the three", "all of them", "both". */
+const SIBLING_REFERENCE_RE =
+  /(?:[0-9０-９一二三四五六七八九十両]+\s*(?:つ|個|件|本|種類)|全部|すべて|全て|両方)\s*(?:を|とも|の(?:結果|文章|内容|回答|出力))|\b(?:the\s+(?:two|three|four|five)|all\s+(?:of\s+)?(?:them|these|those|three|two)|both)\b/i;
+
+function endsParallelGroup(step: ScopedClause): boolean {
+  return (
+    !!step.seqBefore ||
+    !!step.startsGroup ||
+    SEQUENCE_LEAD_RE.test(step.instruction) ||
+    stepReferencesPriorOutput(step.instruction) ||
+    SIBLING_REFERENCE_RE.test(step.instruction) ||
+    ACTION_LIKE_CLAUSE_RE.test(step.instruction)
+  );
+}
+
+/** Assign `parallelGroup` ids to the marked runs of `steps` (rules above). */
+function assignParallelGroups(steps: ScopedClause[]): Array<ScopedClause & { parallelGroup?: string }> {
+  const out: Array<ScopedClause & { parallelGroup?: string }> = steps.map((s) => ({ ...s }));
+  let ordinal = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (!out[i].startsGroup) continue;
+    const first = { ...out[i], startsGroup: false };
+    if (i === out.length - 1 || endsParallelGroup(first)) continue;
+    ordinal += 1;
+    const id = `p${ordinal}`;
+    out[i].parallelGroup = id;
+    let j = i + 1;
+    while (j < out.length - 1 && !endsParallelGroup(out[j])) {
+      out[j].parallelGroup = id;
+      j++;
+    }
+    i = j - 1;
+  }
+  return out;
+}
+
+/** Leading (JA / EN) or trailing (EN) instrument phrase for a tool mention —
+ *  「ローカルLLMで…」「Perplexityを使って…」 / "with the local LLM, …" / "… with
+ *  the local LLM". Same token set as TOOL_MENTIONS (lib/agent-tool-mentions.ts). */
+const TOOL_TOKEN_SRC = String.raw`パープレ(?:キシティ)?|perplexity|ローカル\s*llm|local\s*llm|ローカル|\bcodex\b|\bgemini\b`;
+const JA_TOOL_LEAD_RE = new RegExp(
+  String.raw`^(?:(?:全部|すべて|全て)\s*)?(${TOOL_TOKEN_SRC})(?:\s*の?\s*(?:api|モデル))?\s*(?:で(?!の|は|も)|にて|を\s*(?:使って|使い|用いて|利用して)|経由で)\s*[、,]?\s*`,
+  'i',
+);
+const EN_TOOL_LEAD_RE = new RegExp(
+  String.raw`^(?:with|using|via|through|on)\s+(?:(?:the|a)\s+)?(${TOOL_TOKEN_SRC})(?:\s+(?:api|model))?\s*[,:]?\s*`,
+  'i',
+);
+const EN_TOOL_TAIL_RE = new RegExp(
+  String.raw`\s*,?\s+(?:with|using|via|through|on)\s+(?:(?:the|a)\s+)?(${TOOL_TOKEN_SRC})(?:\s+(?:api|model))?\s*[.!]?$`,
+  'i',
+);
+
+/**
+ * Drop the instrument phrase the step's own tool pin came from — the pin
+ * already says which tool runs it, so 「ローカルLLMで日本の春について書いて」
+ * becomes 「日本の春について書いて」 pinned [Local LLM]. Only when the phrase names
+ * the SAME tool as the pin, never on an explicit API-call clause (the api-call
+ * detector needs the provider name), and never when nothing would be left.
+ */
+export function stripToolPhrase(instruction: string, tool: ToolChoice | undefined): string {
+  if (!tool || EXPLICIT_API_CALL_RE.test(instruction)) return instruction;
+  for (const re of [JA_TOOL_LEAD_RE, EN_TOOL_LEAD_RE, EN_TOOL_TAIL_RE]) {
+    const m = re.exec(instruction);
+    if (!m || matchToolMention(m[1])?.type !== tool.type) continue;
+    const rest = (instruction.slice(0, m.index) + instruction.slice(m.index + m[0].length)).trim();
+    if (rest.length > 1) return rest;
+  }
+  return instruction;
+}
+
+/** Split into clauses, recording which ones a sequencing boundary ("then")
+ *  preceded — CLAUSE_BOUNDARY consumes the word itself. */
+function splitClausesWithSequence(text: string): Array<{ instruction: string; seqBefore?: boolean }> {
+  const boundary = new RegExp(`(${CLAUSE_BOUNDARY.source})`, CLAUSE_BOUNDARY.flags);
+  const parts = text.split(boundary);
+  const out: Array<{ instruction: string; seqBefore?: boolean }> = [];
+  let seq = false;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] ?? '';
+    if (i % 2 === 1) {
+      if (/\bthen\b/i.test(part)) seq = true;
+      continue;
+    }
+    const s = part.trim();
+    if (s.length <= 1) continue;
+    out.push(seq ? { instruction: s, seqBefore: true } : { instruction: s });
+    seq = false;
   }
   return out;
 }
@@ -800,41 +965,113 @@ function applyToolScopes(clauses: string[]): Array<{ instruction: string; tool?:
 /**
  * Detect a tool-pinned multi-step chain in plain conjunctive text — e.g.
  * "パープレで論文を集めて、ローカルLLMで要約して、Xに投稿して". Returns null when
- * fewer than 2 usable clauses result, OR when none of them names a tool (the
- * narrow trigger condition — see the file comment above). `tool` is set on a
- * NormalizedStep ONLY when that specific clause matched a mention; the other
+ * fewer than 2 usable clauses result, OR when none of them names a tool and no
+ * explicit parallel marker formed a group (the narrow trigger condition — see
+ * the file comment above). `tool` is set on a NormalizedStep ONLY when that
+ * clause matched a mention (or a tool-only clause scopes it); the other
  * clauses stay auto-routed (Phase 1's additive contract: absent tool = today's
  * exact auto-routing behavior for that step).
  */
 export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
-  let clauses = text
-    .split(CLAUSE_BOUNDARY)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 1);
+  let clauses = splitClausesWithSequence(text);
   // Drop a leading schedule-only clause (see isScheduleOnlyClause's doc
   // comment) -- only the FIRST clause, since this phrasing pattern only ever
   // states the schedule as the lead-in, never mid-chain.
-  if (clauses.length > 0 && isScheduleOnlyClause(clauses[0])) {
+  if (clauses.length > 0 && isScheduleOnlyClause(clauses[0].instruction)) {
     clauses = clauses.slice(1);
+  }
+  // 2026-10-30: a parallel marker clause is never a step; it flags the next
+  // work clause as the start of a group.
+  const marked: Array<Omit<ScopedClause, 'tool'>> = [];
+  let markerPending = false;
+  for (const c of clauses) {
+    const work = c.instruction.replace(LEADING_AND_RE, '');
+    const rest = parallelMarkerRemainder(work);
+    if (rest === '') {
+      markerPending = true;
+      continue;
+    }
+    const instruction = rest ?? c.instruction;
+    marked.push({
+      instruction,
+      ...(c.seqBefore ? { seqBefore: true } : {}),
+      ...(rest !== null || markerPending ? { startsGroup: true } : {}),
+    });
+    markerPending = false;
   }
   // 2026-10-30: a tool-only clause is folded into the clauses it scopes (see
   // applyToolScopes), and a leading sequence marker (「最後に」) is dropped from
-  // a step's text when real content remains.
-  const scoped = applyToolScopes(clauses).map((s) => {
-    const stripped = s.instruction.replace(LEADING_SEQUENCE_MARKER_RE, '').trim();
-    return stripped.length > 1 ? { ...s, instruction: stripped } : s;
-  });
-  if (scoped.length < 2) return null;
+  // a step's text when real content remains. The group boundaries are decided
+  // BEFORE that strip, while the sequencing words are still visible.
+  const grouped = assignParallelGroups(applyToolScopes(marked));
+  if (grouped.length < 2) return null;
 
-  const steps: NormalizedStep[] = scoped.slice(0, HARD_MAX_STEPS).map(({ instruction, tool }) => {
-    const trimmedInstruction = instruction.slice(0, MAX_STEP_INSTRUCTION_CHARS);
-    return tool ? { instruction: trimmedInstruction, tool } : { instruction: trimmedInstruction };
+  const steps: NormalizedStep[] = grouped.slice(0, HARD_MAX_STEPS).map((s) => {
+    let instruction = s.instruction.replace(LEADING_AND_RE, '');
+    const noSeq = instruction.replace(LEADING_SEQUENCE_MARKER_RE, '').replace(EN_SEQUENCE_STRIP_RE, '').trim();
+    if (noSeq.length > 1) instruction = noSeq;
+    instruction = stripToolPhrase(instruction, s.tool).slice(0, MAX_STEP_INSTRUCTION_CHARS);
+    return {
+      instruction,
+      ...(s.tool ? { tool: s.tool } : {}),
+      ...(s.parallelGroup ? { parallelGroup: s.parallelGroup } : {}),
+    };
   });
+  // A marker whose run did not survive planParallelGroups (a single member
+  // after the final-step rule, e.g. 「同時に、Aして、Bして」 where B is final) is
+  // removed so nothing on disk claims a group that never runs. Members beyond
+  // the branch cap keep the shared id (see the rule list above).
+  const effective = new Set(planParallelGroups(steps).group.filter((g): g is string => g !== undefined));
+  for (const s of steps) {
+    if (s.parallelGroup && !effective.has(s.parallelGroup)) delete s.parallelGroup;
+  }
 
   const anyToolMatched = steps.some((s) => s.tool !== undefined);
-  if (!anyToolMatched) return null;
+  const anyGroup = steps.some((s) => s.parallelGroup !== undefined);
+  if (!anyToolMatched && !anyGroup) return null;
 
   return steps;
+}
+
+/**
+ * The clause-split steps when the text forms at least one effective parallel
+ * group from an explicit marker, else null. lib/agent-nl-parser.ts prefers
+ * this over the explicit-sequence splitter: parseStepsFromText drops
+ * everything before the first 「最後に」/「その後」, which would silently lose
+ * the marked group (「同時に、A、B、C、その後D、最後にE」 → [D, E]).
+ */
+export function detectParallelSteps(text: string): NormalizedStep[] | null {
+  const steps = detectToolPinnedSteps(text);
+  return steps && steps.some((s) => s.parallelGroup !== undefined) ? steps : null;
+}
+
+/**
+ * Display grouping for a step list: consecutive members of one EFFECTIVE
+ * group (planParallelGroups) collapse into one entry. `cappedCount` counts
+ * the steps the author marked into a group that run one after another
+ * because of MAX_PARALLEL_BRANCHES.
+ */
+export function groupStepsForDisplay<T extends string | AgentOrchestrationStep>(
+  steps: readonly T[],
+): { entries: Array<{ parallel: boolean; items: T[] }>; cappedCount: number } {
+  const normalized = steps.map((s) => normalizeStep(s));
+  const plan = planParallelGroups(normalized);
+  const entries: Array<{ parallel: boolean; items: T[] }> = [];
+  let cappedCount = 0;
+  steps.forEach((s, i) => {
+    const g = plan.group[i];
+    const prev = entries[entries.length - 1];
+    if (g !== undefined && i > 0 && plan.group[i - 1] === g && prev?.parallel) {
+      prev.items.push(s);
+    } else {
+      entries.push({ parallel: g !== undefined, items: [s] });
+    }
+    const raw = normalized[i].parallelGroup;
+    if (g === undefined && raw !== undefined && i > 0 && plan.group.slice(0, i).includes(raw) && i < steps.length - 1) {
+      cappedCount++;
+    }
+  });
+  return { entries, cappedCount };
 }
 
 /**
@@ -913,7 +1150,7 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
 export function tagStepsWithToolMentions(steps: string[]): Array<string | NormalizedStep> {
   return steps.map((instruction) => {
     const tool = matchToolMention(instruction);
-    return tool ? { instruction, tool } : instruction;
+    return tool ? { instruction: stripToolPhrase(instruction, tool), tool } : instruction;
   });
 }
 

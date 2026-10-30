@@ -128,8 +128,33 @@ const ARTICLE_EVAL_COMPARISON_KEYWORDS = ['a/b', 'ab test', 'article eval', '記
  */
 export function suggestToolForDraft(
   prompt: string,
-  opts: { mentionText?: string; orchestrated?: boolean } = {},
+  opts: {
+    mentionText?: string;
+    orchestrated?: boolean;
+    /** The chain's steps (orchestrated drafts only) — see the all-local rule below. */
+    steps?: ReadonlyArray<string | { tool?: ToolChoice; apiCall?: unknown }>;
+  } = {},
 ): ToolSuggestion {
+  // 2026-10-30: a chain whose EVERY step is pinned to the local LLM gets a
+  // local agent-level tool too. The agent-level tool becomes plan.tool, and
+  // native only autostarts llama-server for a local plan.tool
+  // (ensureLocalLlmServerBeforePlanExecutor) — a keyword-scored cloud
+  // agent-level tool would leave the executor's local steps with no server
+  // (and keeps decideAttendedRoute from choosing the parallel executor route).
+  if (opts.orchestrated && opts.steps && opts.steps.length >= 2) {
+    const tools = opts.steps.map((s) => (typeof s === 'string' || s.apiCall ? undefined : s.tool));
+    if (tools.every((t) => t?.type === 'local')) {
+      const first = tools[0] as Extract<ToolChoice, { type: 'local' }>;
+      const sameModel = tools.every((t) => (t as { model?: string }).model === first.model);
+      const tool: ToolChoice = sameModel ? { ...first } : { type: 'local' };
+      return {
+        tool,
+        label: toolChoiceToLabel(tool),
+        reason: 'Every step was pinned to the local LLM',
+        explicit: true,
+      };
+    }
+  }
   if (!opts.orchestrated) {
     const pinned = detectExplicitToolUsage(prompt) ?? detectExplicitToolUsage(opts.mentionText);
     const lower = `${prompt}\n${opts.mentionText ?? ''}`.toLowerCase();

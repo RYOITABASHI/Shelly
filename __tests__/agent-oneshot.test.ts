@@ -164,7 +164,7 @@ describe('parseAgentNL — prompt/name strip + demo utterance', () => {
     expect(d.orchestrationSteps).toHaveLength(3);
     const steps = d.orchestrationSteps!.map((s) => (typeof s === 'string' ? s : s.instruction));
     expect(steps[0]).toMatch(/^search the web with Perplexity/);
-    expect(steps[1]).toMatch(/summarize them with the local LLM/);
+    expect(steps[1]).toBe('summarize them'); // trailing instrument phrase stripped (pin kept)
     expect(steps[2]).toMatch(/write a markdown briefing/);
     expect(d.prompt.startsWith('first search')).toBe(true);
     expect(d.name).not.toMatch(/5 minutes/i);

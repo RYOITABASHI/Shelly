@@ -34,7 +34,7 @@ import { formatContinuousSummary } from './agent-continuous';
 import { AgentAction } from '@/store/types';
 import { describeDraftTool, toolChoiceToLabel } from './agent-tool-router';
 import { closePawTaskText } from './agent-intent-review';
-import { normalizeStep, planParallelGroups } from './agent-orchestration';
+import { MAX_PARALLEL_BRANCHES, groupStepsForDisplay } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
 import { t, tFor, type Locale } from './i18n';
 import {
@@ -626,22 +626,27 @@ export function summarizeAgentDraftAsText(
 
   if (draft.orchestrationSteps && draft.orchestrationSteps.length >= 2) {
     lines.push(tl('agentcard.orchestration', { count: draft.orchestrationSteps.length }));
-    // Fan-out subtasks (2026-08-13): mark only the EFFECTIVE branches (via
-    // the same planParallelGroups the executors consume — a marker severed by
-    // the final-step/cap/singleton rules shows nothing here, matching what
-    // will actually run). Language-neutral "∥<group>" suffix, same convention
-    // as Sidebar.tsx's step detail.
-    const summaryGroups = planParallelGroups(draft.orchestrationSteps.map(normalizeStep));
-    draft.orchestrationSteps.forEach((s, i) => {
+    // Fan-out subtasks: only the EFFECTIVE branches (the same
+    // planParallelGroups the executors consume, via groupStepsForDisplay) are
+    // shown as one 「同時に: A ／ B ／ C」 line — a marker severed by the
+    // final-step/singleton rules shows nothing, matching what will actually
+    // run; members severed by the branch cap get a note (2026-10-30).
+    const stepLabel = (s: (typeof draft.orchestrationSteps)[number]) => {
       const instruction = typeof s === 'string' ? s : s.instruction;
       const pinnedTool = typeof s === 'string' ? undefined : s.tool;
-      const groupSuffix = summaryGroups.group[i] ? ` ∥${summaryGroups.group[i]}` : '';
+      return pinnedTool ? `[${toolChoiceToLabel(pinnedTool)}] ${instruction}` : instruction;
+    };
+    const display = groupStepsForDisplay(draft.orchestrationSteps);
+    display.entries.forEach((entry, n) => {
       lines.push(
-        pinnedTool
-          ? `${i + 1}. [${toolChoiceToLabel(pinnedTool)}] ${instruction}${groupSuffix}`
-          : `${i + 1}. ${instruction}${groupSuffix}`,
+        entry.parallel
+          ? `${n + 1}. ${tl('agentplan.parallel_group_label')} ${entry.items.map(stepLabel).join(tl('agentplan.parallel_group_separator'))}`
+          : `${n + 1}. ${stepLabel(entry.items[0])}`,
       );
     });
+    if (display.cappedCount > 0) {
+      lines.push(tl('agentplan.parallel_cap_note', { max: MAX_PARALLEL_BRANCHES, count: display.cappedCount }));
+    }
   }
 
   // 2026-07-23: one or more fields above came from the hybrid LLM-extraction

@@ -1277,11 +1277,11 @@ describe('parseAgentNL — Phase 6 target scenario: tool-pinned て-form chain e
     expect(typeof second).not.toBe('string');
     if (typeof first !== 'string') {
       expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
-      expect(first.instruction).toContain('パープレ');
+      expect(first.instruction).not.toContain('パープレ'); // instrument phrase stripped (pin kept)
     }
     if (typeof second !== 'string') {
       expect(second.tool).toEqual({ type: 'local' });
-      expect(second.instruction).toContain('ローカルLLM');
+      expect(second.instruction).not.toContain('ローカルLLM');
     }
   });
 
@@ -1362,11 +1362,11 @@ describe('parseAgentNL — trailing "通知して" step is dropped when action r
     const [first, second] = d.orchestrationSteps!;
     if (typeof first !== 'string') {
       expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
-      expect(first.instruction).toContain('パープレ');
+      expect(first.instruction).not.toContain('パープレ'); // instrument phrase stripped (pin kept)
     }
     if (typeof second !== 'string') {
       expect(second.tool).toEqual({ type: 'local' });
-      expect(second.instruction).toContain('ローカルLLM');
+      expect(second.instruction).not.toContain('ローカルLLM');
     }
     for (const step of d.orchestrationSteps!) {
       const instruction = typeof step === 'string' ? step : step.instruction;

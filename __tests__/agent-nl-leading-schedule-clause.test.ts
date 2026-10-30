@@ -71,7 +71,7 @@ describe('leading schedule clause is never a step', () => {
     expect(detectToolPinnedSteps('at 09:45, research the latest LLM papers with Perplexity and summarize 3 of them')).toBeNull();
     expect(detectToolPinnedSteps('Every day at 09:45, research LLM papers with Perplexity')).toBeNull();
     const chain = detectToolPinnedSteps('Every Monday and Friday at 8am, collect papers with Perplexity, then summarize them with a local LLM');
-    expect(chain?.map((s) => s.instruction)).toEqual(['collect papers with Perplexity', 'summarize them with a local LLM']);
+    expect(chain?.map((s) => s.instruction)).toEqual(['collect papers', 'summarize them']);
   });
 
   it('isScheduleOnlyClause recognises EN schedule-only clauses and nothing else', () => {

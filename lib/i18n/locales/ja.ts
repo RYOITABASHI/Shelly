@@ -699,6 +699,9 @@ const ja: Record<string, string> = {
   // （lib/agent-llm-fallback.ts）によるものである場合に表示する注記
   // — lib/agent-plan-summary.ts の hasDraftAssumptions のコメント参照。
   // 推定スケジュールと同様、必ず1往復の確認を挟む理由をここでも示す。
+  'agentplan.parallel_group_label': '同時に:',
+  'agentplan.parallel_group_separator': ' ／ ',
+  'agentplan.parallel_cap_note': '同時に実行できるのは{{max}}つまでです。残りの{{count}}つは順番に実行します。',
   'agentplan.llm_extracted_note': '🤖 一部の項目はAIが発話から推測しました。確定前に内容をご確認ください。',
   // セキュリティ監査 (2026-08-10): チャットネイティブの確認フロー
   // (agent-plan-summary.ts の summarizeAgentDraftAsText) 上での通知トリガー

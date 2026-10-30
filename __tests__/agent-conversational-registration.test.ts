@@ -1785,7 +1785,7 @@ describe('mergeConversationalExtractionIntoDraft — Phase 6 steps', () => {
     if (typeof first === 'string' || !first) throw new Error('unreachable');
     expect(first.apiCall).toBeUndefined();
     expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
-    expect(first.instruction).toBe('Perplexityで最新のAIニュースを調べる');
+    expect(first.instruction).toBe('最新のAIニュースを調べる'); // instrument phrase stripped (pin kept)
     // The remaining step names no tool, so it stays a plain string.
     expect(out.orchestrationSteps?.[1]).toBe('要約する');
   });
@@ -2098,9 +2098,9 @@ describe('mergeConversationalExtractionIntoDraft — sanitized steps end-to-end 
     if (typeof first === 'string' || !first) throw new Error('step 1 should be tool-pinned');
     if (typeof second === 'string' || !second) throw new Error('step 2 should be tool-pinned');
     expect(first.tool).toEqual({ type: 'perplexity', model: 'sonar-deep-research' });
-    expect(first.instruction).toBe('パープレキシティで最新のAIニュースを集める');
+    expect(first.instruction).toBe('最新のAIニュースを集める');
     expect(second.tool).toEqual({ type: 'local' });
-    expect(second.instruction).toBe('ローカルLLMで要約する');
+    expect(second.instruction).toBe('要約する');
   });
 
   it('falls back to the ordinary single-prompt agent when sanitize leaves fewer than 2 steps', () => {

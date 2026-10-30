@@ -18,7 +18,7 @@
  */
 import { Agent, AgentAction, AgentMemoryConfig, AgentOrchestrationStep, SocialConnectorMeta, SocialPlatform, ToolChoice } from '@/store/types';
 import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
-import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
+import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
 import enLocale from './i18n/locales/en';
@@ -2778,10 +2778,15 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // the codex-chain .sh) — see tagStepsWithToolMentions's doc comment in
   // agent-orchestration.ts for how the autonomous credential/consent gate
   // vets each pin.
+  // 2026-10-30: an explicit parallel marker (「同時に」「並行して」, "in parallel")
+  // that forms a group wins over the sequence splitter, which would drop the
+  // marked clauses before the first 「最後に」/「その後」 (detectParallelSteps).
+  const parallelSteps = detectParallelSteps(prompt || workText);
   let detectedSteps: Array<string | AgentOrchestrationStep> | undefined =
-    explicitSteps.length >= 2
+    parallelSteps ??
+    (explicitSteps.length >= 2
       ? tagStepsWithToolMentions(explicitSteps)
-      : detectToolPinnedSteps(prompt || workText) ?? undefined;
+      : detectToolPinnedSteps(prompt || workText) ?? undefined);
   // Drop a trailing pure-delivery step ("通知して") when the resolved action is
   // already 'notify' — the action performs that delivery AFTER the chain, so
   // keeping the step as its own model call just makes the last step regenerate
@@ -2837,6 +2842,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   const suggestion = suggestToolForDraft(prompt || rawText, {
     mentionText: rawText,
     orchestrated: !!orchestrationSteps && orchestrationSteps.length >= 2,
+    steps: orchestrationSteps,
   });
 
   // 2026-10-30: an utterance that names NO schedule at all defaults to a

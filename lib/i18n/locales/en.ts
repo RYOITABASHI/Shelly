@@ -717,6 +717,9 @@ const en: Record<string, string> = {
   // the deterministic parser — see lib/agent-plan-summary.ts's
   // hasDraftAssumptions doc comment for why this always forces one confirm
   // round-trip, same as an assumed schedule.
+  'agentplan.parallel_group_label': 'In parallel:',
+  'agentplan.parallel_group_separator': ' / ',
+  'agentplan.parallel_cap_note': 'At most {{max}} steps run at the same time — the other {{count}} run one after another.',
   'agentplan.llm_extracted_note': '🤖 Some fields above were inferred by AI from your message — please double-check them before confirming.',
   // Security-audit finding (2026-08-10): disclosure line for a
   // notification-triggered draft/notify agent on the chat-native confirm

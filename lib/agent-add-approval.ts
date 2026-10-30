@@ -39,6 +39,9 @@
  * notification-triggered runs — is review-in-Shelly only. Per-run action
  * approval for those types is unchanged.
  */
+import type { AgentOrchestrationStep, ToolChoice } from '@/store/types';
+import { MAX_PARALLEL_BRANCHES, groupStepsForDisplay } from './agent-orchestration';
+import { toolChoiceToLabel } from './agent-tool-router';
 
 export const AGENT_ADD_APPROVAL_TTL_MS = 10 * 60 * 1000;
 export const AGENT_ADD_HASH_PREFIX_LENGTH = 8;
@@ -377,7 +380,13 @@ export type AgentAddSummary = {
   definitionHash: string;
   name: string;
   schedule: string;
+  /** One line per step; steps that run at the same time share one
+   *  "In parallel: A / B / C" line, and a pinned engine is shown as
+   *  "[Local LLM] …" (2026-10-30). */
   steps: string[];
+  /** Set when some steps the user marked as parallel run one after another
+   *  because of the branch cap, else null. */
+  stepsNote: string | null;
   actions: string[];
   /** The part ClosePaw will do by operating the phone, if any. */
   closePaw: string | null;
@@ -414,10 +423,23 @@ export function buildAgentAddSummary(
 ): AgentAddSummary {
   const textConfirmAllowed = opts.textConfirmAllowed !== false;
   const steps: string[] = [];
+  let stepsNote: string | null = null;
   if (Array.isArray(draft.orchestrationSteps) && draft.orchestrationSteps.length > 0) {
-    for (const s of draft.orchestrationSteps.slice(0, 12)) {
-      const text = typeof s === 'string' ? s : s && typeof s.instruction === 'string' ? s.instruction : '';
-      if (text) steps.push(clip(text, 200));
+    const list = draft.orchestrationSteps
+      .slice(0, 12)
+      .filter((s) => typeof s === 'string' ? !!s : !!s && typeof s.instruction === 'string' && !!s.instruction);
+    const label = (s: (typeof list)[number]): string => {
+      if (typeof s === 'string') return clip(s, 200);
+      const text = clip(String(s.instruction), 200);
+      const tool = !s.apiCall && s.tool && typeof s.tool === 'object' ? (s.tool as ToolChoice) : null;
+      return tool ? `[${toolChoiceToLabel(tool)}] ${text}` : text;
+    };
+    const display = groupStepsForDisplay(list as Array<string | AgentOrchestrationStep>);
+    for (const entry of display.entries) {
+      steps.push(entry.parallel ? `In parallel: ${entry.items.map(label).join(' / ')}` : label(entry.items[0]));
+    }
+    if (display.cappedCount > 0) {
+      stepsNote = `At most ${MAX_PARALLEL_BRANCHES} steps run at the same time; the other ${display.cappedCount} run one after another.`;
     }
   } else if (typeof draft.prompt === 'string' && draft.prompt) {
     steps.push(clip(draft.prompt, 300));
@@ -458,6 +480,7 @@ export function buildAgentAddSummary(
     name: clip(String(draft.name ?? ''), 120),
     schedule: clip(scheduleText, 120),
     steps,
+    stepsNote,
     actions,
     closePaw: closePawText ? clip(closePawText, 300) : null,
     closePawNote: closePawText
