@@ -69,10 +69,14 @@ import { MonitorProviderPicker } from '@/components/monitor/MonitorProviderPicke
 import { useMonitorProviderPick } from '@/hooks/use-monitor-provider-pick';
 import { MON, MON_FONT_MONO, MON_FONT_OSD, kindColor } from '@/components/monitor/monitor-palette';
 import { translateMonitorText } from '@/components/monitor/monitor-i18n';
+import { computeMonitorGrid, GRID_GAP } from '@/components/monitor/monitor-grid';
 
 const TICK_MS = 200;
 const AUTO_CYCLE_MS = 3200;
 const GAP = 10;
+/** Pane padding and the gap between its blocks (styles.content). */
+const PAD = 10;
+const ROOT_GAP = 10;
 
 const pad2 = (n: number) => (n < 10 ? `0${n}` : String(n));
 
@@ -93,12 +97,15 @@ function Key({
   onPress,
   led,
   a11y,
+  small,
 }: {
   label: string;
   pressed?: boolean;
   onPress: () => void;
   led?: MonitorAgentState;
   a11y?: string;
+  /** Header-size key (source selector, inline OPEN CHAT). */
+  small?: boolean;
 }) {
   const ledColor =
     led === 'RUNNING' || led === 'WAITING'
@@ -118,10 +125,12 @@ function Key({
       accessibilityRole="button"
       accessibilityLabel={a11y ?? label}
       accessibilityState={{ selected: !!pressed }}
-      style={({ pressed: p }) => [styles.key, (pressed || p) && styles.keyOn]}
+      style={({ pressed: p }) => [styles.key, small && styles.keySmall, (pressed || p) && styles.keyOn]}
     >
       {led !== undefined && <View style={[styles.led, { backgroundColor: ledColor }]} />}
-      <Text style={[styles.keyText, pressed && { color: MON.phosphor }]}>{label}</Text>
+      <Text style={[styles.keyText, small && styles.keyTextSmall, pressed && { color: MON.phosphor }]} numberOfLines={1}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -314,8 +323,36 @@ export default function MonitorPane() {
     const w = e.nativeEvent.layout.width;
     if (Math.abs(w - wallWidth) > 0.5) setWallWidth(w);
   };
-  const cols = isWide ? 3 : 2;
-  const camW = wallWidth > 0 ? (wallWidth - GAP * (cols - 1)) / cols : 0;
+  // ── No-scroll GRID fit ──
+  // The wall's height is what the pane has left after the chrome above
+  // (mission bar + approval strip) and below (switcher + DEMO chat). Both are
+  // measured on their own, never from the wall, so sizing the wall cannot
+  // feed back into its own measurement.
+  const [paneH, setPaneH] = useState(0);
+  const [topH, setTopH] = useState(0);
+  const [bottomH, setBottomH] = useState(0);
+  const measureH = (cur: number, set: (h: number) => void) => (e: LayoutChangeEvent) => {
+    const h = e.nativeEvent.layout.height;
+    if (Math.abs(h - cur) > 0.5) set(h);
+  };
+  const fitMode = view === 'grid' && paneH > 0 && topH > 0 && bottomH > 0 && wallWidth > 0;
+  const wallH = Math.floor(paneH - PAD * 2 - ROOT_GAP * 2 - topH - bottomH) - 1;
+  const grid = useMemo(
+    () => (fitMode ? computeMonitorGrid(wallWidth, wallH, source.agents.length) : null),
+    [fitMode, wallWidth, wallH, source.agents.length],
+  );
+  // Fits: every camera inside the pane. Otherwise (tiny pane, many cameras)
+  // the wall keeps natural-height cells and the pane scrolls.
+  const fitted = grid?.fits ? grid : null;
+  const cols = grid ? grid.cols : isWide ? 3 : 2;
+  const camW = grid ? grid.cellW : wallWidth > 0 ? (wallWidth - GAP * (cols - 1)) / cols : 0;
+  const gridGap = grid ? GRID_GAP : GAP;
+  const cameraFit = fitted
+    ? { width: fitted.cellW, height: fitted.cellH, screenW: fitted.screenW, screenH: fitted.screenH, hud: fitted.hud }
+    : undefined;
+  // The empty "free channel" tile only takes a cell the chosen grid leaves
+  // free (and only on a wide wall, where it reads as part of the bank).
+  const showEmptyTile = isWide && (grid ? grid.freeCells > 0 : true);
 
   const [draft, setDraft] = useState('');
   // OPEN CHAT found no room for a chat pane (4 panes full).
@@ -446,17 +483,28 @@ export default function MonitorPane() {
   const showWall = view !== 'map' || isWide;
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      {/* ── Mission bar ── */}
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={[styles.content, fitted && styles.contentFit]}
+      keyboardShouldPersistTaps="handled"
+      onLayout={measureH(paneH, setPaneH)}
+      testID="monitor-root"
+    >
+      <View style={styles.chrome} onLayout={measureH(topH, setTopH)} testID="monitor-chrome-top">
+      {/* ── Mission bar: title + source tabs on one row, RUN / status / clock
+          + progress on the next, then the cost line. ── */}
       <View style={styles.mission}>
         <View style={styles.brandRow}>
-          <Text style={styles.brand}>
+          <Text style={styles.brand} numberOfLines={1}>
             {'SHELLY '}
             <Text style={{ color: MON.muted }}>▸</Text>
             {' MONITOR'}
           </Text>
           {source.isDemo && <Text style={styles.demoBadge}>{t('monitor.demo_badge')}</Text>}
-        </View>
+          <Text style={styles.goalLine} numberOfLines={1}>
+            {t('monitor.mission')} <Text style={{ color: MON.osd }}>{team.title}</Text>
+            {team.schedule ? <Text style={{ color: MON.muted }}>{`  ${team.schedule}`}</Text> : null}
+          </Text>
         <View style={styles.selector} testID="monitor-source-selector">
           <Key
             label={
@@ -469,21 +517,19 @@ export default function MonitorPane() {
             pressed={isLive || !!standbyAgent}
             onPress={pickLive}
             a11y={t('monitor.source.live_a11y')}
+            small
           />
-          <Key label={t('monitor.source.demo')} pressed={source.isDemo} onPress={pickDemo} a11y={t('monitor.source.demo_a11y')} />
-          <Key label={t('monitor.source.draft')} pressed={isDraft} onPress={pickDraft} a11y={t('monitor.source.draft_a11y')} />
+          <Key label={t('monitor.source.demo')} pressed={source.isDemo} onPress={pickDemo} a11y={t('monitor.source.demo_a11y')} small />
+          <Key label={t('monitor.source.draft')} pressed={isDraft} onPress={pickDraft} a11y={t('monitor.source.draft_a11y')} small />
         </View>
-        <Text style={styles.goalLine} numberOfLines={2}>
-          {t('monitor.mission')} <Text style={{ color: MON.osd }}>{team.title}</Text>
-          {team.schedule ? <Text style={{ color: MON.muted }}>{`  ${team.schedule}`}</Text> : null}
-        </Text>
+        </View>
         {loopText && (
-          <Text style={styles.savedTo} numberOfLines={2} testID="monitor-loop">
+          <Text style={styles.savedTo} numberOfLines={1} testID="monitor-loop">
             {loopText}
           </Text>
         )}
         <View style={styles.mstats}>
-          <Text style={[styles.mstat, { color: MON.phosphor }]}>
+          <Text style={[styles.mstat, { color: MON.phosphor }]} numberOfLines={1}>
             {t('monitor.run_count', { n: summary.running, max: MAX_PARALLEL_BRANCHES })}
           </Text>
           {showStatusInStats && (
@@ -493,44 +539,15 @@ export default function MonitorPane() {
                 (snap.complete || snap.approvalPending) && { color: MON.amber },
                 outcome === 'failed' && { color: MON.fail },
               ]}
+              numberOfLines={1}
               testID="monitor-status"
             >
               {statusLabel}
             </Text>
           )}
-          <Text style={styles.mstat}>{playClock}</Text>
-        </View>
-        {standbyAgent && (
-          <Text style={styles.savedTo} numberOfLines={2} testID="monitor-standby">
-            {t('monitor.register.standby')}
+          <Text style={styles.mstat} numberOfLines={1}>
+            {playClock}
           </Text>
-        )}
-        {savedTo && (
-          <Text style={styles.savedTo} numberOfLines={2} testID="monitor-saved-to">
-            {savedTo}
-          </Text>
-        )}
-        {liveSavedPath && (
-          <Pressable
-            onPress={() => {
-              logInfo('Monitor', 'open saved output');
-              openFile(liveSavedPath).catch(() => {});
-            }}
-            accessibilityRole="link"
-            accessibilityLabel={t('monitor.live.saved_open_a11y')}
-            testID="monitor-saved-to"
-          >
-            <Text style={[styles.savedTo, styles.link]} numberOfLines={2} ellipsizeMode="head">
-              {t('monitor.live.saved_to', { path: liveSavedPath })}
-            </Text>
-          </Pressable>
-        )}
-        {failureText && (
-          <Text style={styles.failure} numberOfLines={3} testID="monitor-failure">
-            {failureText}
-          </Text>
-        )}
-        <View style={styles.mprog}>
           <View
             style={styles.mbar}
             accessibilityRole="progressbar"
@@ -544,20 +561,52 @@ export default function MonitorPane() {
               ]}
             />
           </View>
-          <Text style={styles.mpct}>{progressLabel}</Text>
+          <Text style={styles.mpct} numberOfLines={1}>
+            {progressLabel}
+          </Text>
         </View>
+        {standbyAgent && (
+          <Text style={styles.savedTo} numberOfLines={1} testID="monitor-standby">
+            {t('monitor.register.standby')}
+          </Text>
+        )}
+        {savedTo && (
+          <Text style={styles.savedTo} numberOfLines={1} testID="monitor-saved-to">
+            {savedTo}
+          </Text>
+        )}
+        {liveSavedPath && (
+          <Pressable
+            onPress={() => {
+              logInfo('Monitor', 'open saved output');
+              openFile(liveSavedPath).catch(() => {});
+            }}
+            accessibilityRole="link"
+            accessibilityLabel={t('monitor.live.saved_open_a11y')}
+            testID="monitor-saved-to"
+          >
+            <Text style={[styles.savedTo, styles.link]} numberOfLines={1} ellipsizeMode="head">
+              {t('monitor.live.saved_to', { path: liveSavedPath })}
+            </Text>
+          </Pressable>
+        )}
+        {failureText && (
+          <Text style={styles.failure} numberOfLines={2} testID="monitor-failure">
+            {failureText}
+          </Text>
+        )}
         <View style={styles.costs}>
-          <Text style={styles.cost}>
+          <Text style={styles.cost} numberOfLines={1}>
             <Text style={[styles.costK, { color: kindColor('API') }]}> API </Text>
             {` ${t('monitor.cost_api')} `}
             <Text style={{ color: MON.osd }}>{apiCostText}</Text>
           </Text>
-          <Text style={styles.cost}>
+          <Text style={styles.cost} numberOfLines={1}>
             <Text style={[styles.costK, { color: kindColor('CLI') }]}> CLI </Text>
             {` ${t('monitor.cost_cli')} `}
             <Text style={{ color: MON.osd }}>{formatTokens(summary.cliTokens)}</Text>
           </Text>
-          <Text style={styles.cost}>
+          <Text style={styles.cost} numberOfLines={1}>
             <Text style={[styles.costK, { color: kindColor('LOCAL') }]}> LOCAL </Text>
             {` ${t('monitor.cost_local')} `}
             <Text style={{ color: MON.osd }}>{formatTokens(summary.localTokens)}</Text>
@@ -567,7 +616,9 @@ export default function MonitorPane() {
             <Text style={[styles.cost, { color: MON.muted }]}>{t('monitor.cost_sample')}</Text>
           )}
         </View>
-        {!monitor.legendDismissed && (
+        {/* The legend is a one-time tip: the fitted GRID leaves its row to
+            the cameras (it still shows on the single / MAP views). */}
+        {!monitor.legendDismissed && !fitMode && (
           <View style={styles.legendRow}>
             <Text style={styles.legend} testID="monitor-cost-legend">
               {t('monitor.legend', { zero: formatMoney(0, locale) })}
@@ -590,13 +641,15 @@ export default function MonitorPane() {
         // LIVE never approves from here: the ask lives in Shelly's chat /
         // review prompt, so point there instead of offering a reply box.
         <View style={styles.pinned} testID="monitor-pinned-approval">
-          <Text style={styles.pinnedAsk} numberOfLines={3}>
-            {t('monitor.live.approval_where', { channel: approvalChannel })}
-          </Text>
+          {/* One line: where to answer + OPEN CHAT inline. */}
           <View style={styles.row}>
+            <Text style={[styles.pinnedAsk, styles.pinnedAskInline]} numberOfLines={2}>
+              {t('monitor.live.approval_where', { channel: approvalChannel })}
+            </Text>
             <Key
               label={t('monitor.live.open_chat')}
               a11y={t('monitor.live.open_chat_a11y')}
+              small
               onPress={() => {
                 logInfo('Monitor', 'open agent chat for approval');
                 setChatUnavailable(!openAgentChatThread(liveRun.agentId));
@@ -611,13 +664,13 @@ export default function MonitorPane() {
         </View>
       )}
       {snap.approvalPending && !isLive && (
-        <View style={styles.pinned} testID="monitor-pinned-approval">
-          <Text style={styles.pinnedAsk} numberOfLines={2}>
+        <View style={[styles.pinned, styles.pinnedWrap]} testID="monitor-pinned-approval">
+          <Text style={[styles.pinnedAsk, styles.pinnedAskWrap]} numberOfLines={2}>
             {pendingAsk
               ? (pendingAsk.text ?? translateMonitorText(t, pendingAsk.message))
               : t('monitor.waiting_for_you')}
           </Text>
-          <View style={styles.row}>
+          <View style={[styles.row, styles.pinnedReply]}>
             <TextInput
               value={draft}
               onChangeText={setDraft}
@@ -634,6 +687,7 @@ export default function MonitorPane() {
           </View>
         </View>
       )}
+      </View>
 
       {/* ── Map ── */}
       {view === 'map' && (
@@ -676,7 +730,7 @@ export default function MonitorPane() {
         />
       )}
       {showWall && (
-        <View style={styles.wall} onLayout={onWallLayout} testID="monitor-wall">
+        <View style={[styles.wall, fitted && { height: wallH }]} onLayout={onWallLayout} testID="monitor-wall">
           {view === 'single' ? (
             <MonitorCamera
               def={selectedDef}
@@ -694,7 +748,7 @@ export default function MonitorPane() {
             />
           ) : (
             camW > 0 && (
-              <View style={styles.grid}>
+              <View style={[styles.grid, { gap: gridGap }]} testID={fitted ? 'monitor-grid-fit' : 'monitor-grid'}>
                 {source.agents.map((d) => (
                   <View key={d.id} style={{ width: camW }}>
                     <MonitorCamera
@@ -704,19 +758,25 @@ export default function MonitorPane() {
                       clock={clock}
                       reduceMotion={reduceMotion}
                       timestamp={timestamp}
-                      showTimestamp={isWide}
+                      showTimestamp={isWide && (!fitted || fitted.screenH >= 90)}
                       demo={source.isDemo}
                       single={false}
                       sideBySide={false}
-                      compactText={!isWide || isCompact}
+                      compactText={fitted ? fitted.compactText : !isWide || isCompact}
+                      fit={cameraFit}
                       onPress={() => select(d.id)}
                     />
                   </View>
                 ))}
-                {/* The empty CH-06 tile only earns its space on a wide wall. */}
-                {isWide && (
+                {/* The empty "free channel" tile only takes a cell the grid
+                    leaves free; it never forces a worse layout. */}
+                {showEmptyTile && (
                   <View style={{ width: camW }}>
-                    <NoSignalCamera channel={`CH-0${source.agents.length + 1}`} reduceMotion={reduceMotion} />
+                    <NoSignalCamera
+                      channel={`CH-0${source.agents.length + 1}`}
+                      reduceMotion={reduceMotion}
+                      fit={cameraFit}
+                    />
                   </View>
                 )}
               </View>
@@ -725,6 +785,7 @@ export default function MonitorPane() {
         </View>
       )}
 
+      <View style={styles.chrome} onLayout={measureH(bottomH, setBottomH)} testID="monitor-chrome-bottom">
       {/* ── Switcher ── */}
       <View style={styles.switcher}>
         <View style={styles.grp}>
@@ -781,11 +842,13 @@ export default function MonitorPane() {
       </View>
 
       {/* ── Chat (DEMO only: LIVE approvals are answered in Shelly's chat) ── */}
-      {source.isDemo && <View style={styles.chat}>
-        <Text style={styles.chatHead}>{t('monitor.chat_head')}</Text>
-        <View style={styles.lines} accessibilityLiveRegion="polite">
-          {snap.chat.map((m, i) => (
-            <Text key={i} style={[styles.line, m.ask && { color: MON.amber }]}>
+      {source.isDemo && <View style={[styles.chat, fitMode && styles.chatFit]}>
+        {!fitMode && <Text style={styles.chatHead}>{t('monitor.chat_head')}</Text>}
+        {/* Fitted GRID: the latest two lines only, one row each, so the strip
+            keeps a fixed height and the wall keeps its size. */}
+        <View style={[styles.lines, fitMode && styles.linesFit]} accessibilityLiveRegion="polite">
+          {(fitMode ? snap.chat.slice(-2) : snap.chat).map((m, i) => (
+            <Text key={i} style={[styles.line, m.ask && { color: MON.amber }]} numberOfLines={fitMode ? 1 : undefined}>
               <Text style={[styles.who, m.who === 'you' && { color: MON.label }]}>
                 {m.who === 'you' ? t('monitor.who_you') : t('monitor.who_shelly')}
               </Text>
@@ -810,23 +873,28 @@ export default function MonitorPane() {
           <Key label={t('monitor.send')} onPress={send} />
         </View>
       </View>}
+      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: MON.room },
-  content: { padding: 10, gap: 10, paddingBottom: 24 },
+  content: { padding: PAD, gap: ROOT_GAP, paddingBottom: 24 },
+  // Fitted GRID: the wall height assumes PAD at the bottom too.
+  contentFit: { paddingBottom: PAD },
+  chrome: { gap: 8 },
   mission: {
     backgroundColor: MON.panel,
     borderWidth: 1,
     borderColor: MON.bezelHi,
     borderRadius: 12,
-    padding: 10,
-    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    gap: 5,
   },
-  brandRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  brand: { fontFamily: MON_FONT_OSD, fontSize: 22, color: MON.phosphor, letterSpacing: 1 },
+  brandRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 10, rowGap: 4 },
+  brand: { fontFamily: MON_FONT_OSD, fontSize: 18, color: MON.phosphor, letterSpacing: 1 },
   demoBadge: {
     fontFamily: MON_FONT_OSD,
     fontSize: 13,
@@ -835,21 +903,23 @@ const styles = StyleSheet.create({
     borderColor: MON.amber,
     paddingHorizontal: 6,
   },
-  goalLine: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.label },
-  mstats: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  mstat: { fontFamily: MON_FONT_OSD, fontSize: 16, color: MON.osd },
-  mprog: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  // Grows into the space between the title and the source tabs; wraps to
+  // its own line on a narrow pane.
+  goalLine: { flexGrow: 1, flexShrink: 1, flexBasis: 160, fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.label },
+  mstats: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 10, rowGap: 4 },
+  mstat: { fontFamily: MON_FONT_OSD, fontSize: 15, color: MON.osd },
   mbar: {
-    flex: 1,
-    height: 12,
+    flexGrow: 1,
+    flexBasis: 80,
+    height: 8,
     backgroundColor: MON.barBg,
     borderWidth: 1,
     borderColor: MON.phosphorDim,
     overflow: 'hidden',
   },
   mbarFill: { position: 'absolute', left: 0, top: 0, bottom: 0 },
-  mpct: { fontFamily: MON_FONT_OSD, fontSize: 20, color: MON.phosphor, minWidth: 48, textAlign: 'right' },
-  costs: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 14, rowGap: 4 },
+  mpct: { fontFamily: MON_FONT_OSD, fontSize: 16, color: MON.phosphor, minWidth: 40, textAlign: 'right' },
+  costs: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 14, rowGap: 2 },
   cost: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.label },
   costK: { fontFamily: MON_FONT_OSD, fontSize: 13 },
   savedTo: { fontFamily: MON_FONT_MONO, fontSize: 12, color: MON.amber },
@@ -865,10 +935,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: MON.amber,
     borderRadius: 12,
-    padding: 10,
-    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 6,
   },
   pinnedAsk: { fontSize: 13, color: MON.amber, lineHeight: 18 },
+  pinnedAskInline: { flex: 1, minWidth: 0 },
+  // DEMO strip: the question and the reply box share one row when wide.
+  pinnedWrap: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 10 },
+  pinnedAskWrap: { flexGrow: 1, flexShrink: 1, flexBasis: 200 },
+  pinnedReply: { flexGrow: 1, flexBasis: 220 },
   wall: { width: '100%' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GAP },
   switcher: {
@@ -893,8 +969,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
+  keySmall: { paddingHorizontal: 8, paddingVertical: 3 },
   keyOn: { backgroundColor: MON.keyTopOn },
   keyText: { fontFamily: MON_FONT_OSD, fontSize: 15, color: MON.osd },
+  keyTextSmall: { fontSize: 13 },
   led: { width: 8, height: 8, borderRadius: 4 },
   chat: {
     backgroundColor: MON.panel,
@@ -905,7 +983,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chatHead: { fontFamily: MON_FONT_OSD, fontSize: 15, color: MON.muted },
+  chatFit: { paddingVertical: 6, gap: 6 },
   lines: { gap: 4, minHeight: 64 },
+  // Two one-row lines (line height 19 + gap 4).
+  linesFit: { minHeight: 42 },
   line: { fontSize: 13, color: MON.osd, lineHeight: 19 },
   who: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.phosphor },
   row: { flexDirection: 'row', gap: 8, alignItems: 'center' },

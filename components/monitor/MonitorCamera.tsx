@@ -24,10 +24,30 @@ import {
 } from '@/lib/monitor-source';
 import { MON, MON_FONT_MONO, MON_FONT_OSD, kindColor, operatorImage, stateColor } from './monitor-palette';
 import { translateMonitorText } from './monitor-i18n';
+import {
+  CARD_BORDER,
+  CARD_PAD,
+  HUD_BAR_H,
+  HUD_GAP,
+  HUD_META_H,
+  HUD_TICK_H,
+  HUD_TITLE_H,
+  type MonitorHudLevel,
+} from './monitor-grid';
 
 /** Prototype canvas space; overlay geometry is authored in it. */
 const CW = 240;
 const CH = 160;
+
+/** GRID wall fitted to the pane (monitor-grid.ts): the card is exactly the
+ *  cell, the picture box is fixed, and the HUD shows `hud` rows only. */
+export interface MonitorCameraFit {
+  width: number;
+  height: number;
+  screenW: number;
+  screenH: number;
+  hud: MonitorHudLevel;
+}
 
 type Props = {
   def: MonitorAgentDef;
@@ -45,6 +65,8 @@ type Props = {
   /** Single view on a wide screen: screen and HUD side by side. */
   sideBySide: boolean;
   compactText: boolean;
+  /** Fitted GRID cell; absent = natural size (single view, scroll fallback). */
+  fit?: MonitorCameraFit;
   onPress: () => void;
 };
 
@@ -152,7 +174,8 @@ function CameraScreen({
   showTimestamp,
   demo,
   compactText,
-}: Pick<Props, 'def' | 'snap' | 'clock' | 'reduceMotion' | 'timestamp' | 'showTimestamp' | 'demo' | 'compactText'>) {
+  fit,
+}: Pick<Props, 'def' | 'snap' | 'clock' | 'reduceMotion' | 'timestamp' | 'showTimestamp' | 'demo' | 'compactText' | 'fit'>) {
   const { t } = useTranslation();
   const [size, setSize] = useState({ w: 0, h: 0 });
   const onLayout = (e: LayoutChangeEvent) => {
@@ -188,10 +211,14 @@ function CameraScreen({
   }));
 
   const pillColor = stateColor(st);
-  const osdSize = compactText ? 13 : 16;
+  // A small fitted picture gets a smaller OSD so it does not cover the face.
+  const osdSize = fit && fit.screenH < 90 ? 11 : compactText ? 13 : 16;
 
   return (
-    <View style={styles.screen} onLayout={onLayout}>
+    <View
+      style={[styles.screen, fit && { aspectRatio: undefined, width: fit.screenW, height: fit.screenH }]}
+      onLayout={onLayout}
+    >
       {size.w > 0 && (
         <>
           <Animated.Image
@@ -282,6 +309,65 @@ function MonitorCameraImpl(props: Props) {
   const note = translateMonitorText(t, snap.note);
   const timing = timingText(snap, t);
 
+  if (props.fit && !single) {
+    const { fit } = props;
+    // One line each: title · provider + % + cost · bar · timer + last output.
+    // Rows drop from the bottom as the cell shrinks (monitor-grid.ts).
+    const tick = note.length > 0 ? note : lastLine;
+    return (
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${def.channel} ${def.name} · ${def.providerName}`}
+        style={[styles.cam, styles.camFit, { width: fit.width, height: fit.height }, isApproval && styles.camApproval]}
+      >
+        <View style={styles.fitScreen}>
+          <CameraScreen {...props} />
+        </View>
+        <View style={styles.fitRow}>
+          <Text style={[styles.name, styles.fitName, compactText && { fontSize: 13 }]} numberOfLines={1}>
+            {def.name}
+          </Text>
+          {parentChannel && (
+            <Text style={[styles.sub, styles.fitSub]} numberOfLines={1}>
+              {t('monitor.sub_of', { channel: parentChannel })}
+            </Text>
+          )}
+        </View>
+        {fit.hud !== 'title' && (
+          <View style={[styles.fitRow, styles.fitRowMeta]}>
+            <KindChip kind={def.kind} size={9} />
+            <Text style={[styles.provName, styles.fitText, styles.fitShrink]} numberOfLines={1}>
+              {def.providerName}
+            </Text>
+            <Text style={[styles.metaText, styles.fitText]} numberOfLines={1}>
+              {`${pct}%`}
+            </Text>
+            <Text style={[styles.metaText, styles.fitText, styles.fitShrink, { color: MON.osd }]} numberOfLines={1}>
+              {costText(def, snap, t('monitor.cost_flat'), locale)}
+            </Text>
+          </View>
+        )}
+        <View style={[styles.bar, styles.fitBar]}>
+          <View style={[styles.barFill, { width: `${pct}%`, backgroundColor: fill }]} />
+        </View>
+        {fit.hud === 'full' && (
+          <Text
+            style={[styles.tick, styles.fitTick, note.length > 0 && { color: MON.amber }]}
+            numberOfLines={1}
+            testID={snap.stale ? `monitor-stale-${def.id}` : undefined}
+          >
+            {timing.length > 0 && (
+              <Text style={[styles.metaText, snap.stale && { color: MON.amber }]}>{`${timing}  `}</Text>
+            )}
+            <Text style={{ color: MON.phosphorDim }}>{'› '}</Text>
+            {tick}
+          </Text>
+        )}
+      </Pressable>
+    );
+  }
+
   return (
     <Pressable
       onPress={onPress}
@@ -358,7 +444,16 @@ function MonitorCameraImpl(props: Props) {
 export const MonitorCamera = React.memo(MonitorCameraImpl);
 
 /** Empty slot: animated static noise + NO SIGNAL. */
-export function NoSignalCamera({ channel, reduceMotion }: { channel: string; reduceMotion: boolean }) {
+export function NoSignalCamera({
+  channel,
+  reduceMotion,
+  fit,
+}: {
+  channel: string;
+  reduceMotion: boolean;
+  /** Fitted GRID cell (see MonitorCameraFit); absent = natural size. */
+  fit?: MonitorCameraFit;
+}) {
   const { t } = useTranslation();
   const [seed, setSeed] = useState(1);
   React.useEffect(() => {
@@ -377,23 +472,38 @@ export function NoSignalCamera({ channel, reduceMotion }: { channel: string; red
     }
     return out;
   }, [seed]);
-  return (
-    <View style={styles.cam}>
-      <View style={styles.screen}>
-        <Svg width="100%" height="100%" viewBox="0 0 12 8" preserveAspectRatio="none" style={StyleSheet.absoluteFill}>
-          {cells.map((c) => (
-            <Rect key={`${c.x}-${c.y}`} x={c.x} y={c.y} width={1} height={1} fill={MON.phosphorDim} fillOpacity={c.v * 0.8} />
-          ))}
-        </Svg>
-        <View style={[styles.osd, styles.osdTop]}>
-          <Text style={[styles.osdText, { fontSize: 15 }]}>{channel}</Text>
-        </View>
-        <View style={[styles.osd, styles.osdBottom]}>
-          <Text style={[styles.osdText, styles.pill, { fontSize: 13, color: MON.muted, borderColor: MON.muted }]}>
-            {t('monitor.no_signal')}
+  const screen = (
+    <View style={[styles.screen, fit && { aspectRatio: undefined, width: fit.screenW, height: fit.screenH }]}>
+      <Svg width="100%" height="100%" viewBox="0 0 12 8" preserveAspectRatio="none" style={StyleSheet.absoluteFill}>
+        {cells.map((c) => (
+          <Rect key={`${c.x}-${c.y}`} x={c.x} y={c.y} width={1} height={1} fill={MON.phosphorDim} fillOpacity={c.v * 0.8} />
+        ))}
+      </Svg>
+      <View style={[styles.osd, styles.osdTop]}>
+        <Text style={[styles.osdText, { fontSize: 15 }]}>{channel}</Text>
+      </View>
+      <View style={[styles.osd, styles.osdBottom]}>
+        <Text style={[styles.osdText, styles.pill, { fontSize: 13, color: MON.muted, borderColor: MON.muted }]}>
+          {t('monitor.no_signal')}
+        </Text>
+      </View>
+    </View>
+  );
+  if (fit) {
+    return (
+      <View style={[styles.cam, styles.camFit, { width: fit.width, height: fit.height }]}>
+        <View style={styles.fitScreen}>{screen}</View>
+        <View style={styles.fitRow}>
+          <Text style={[styles.name, styles.fitName]} numberOfLines={1}>
+            {t('monitor.empty')}
           </Text>
         </View>
       </View>
+    );
+  }
+  return (
+    <View style={styles.cam}>
+      {screen}
       <View style={styles.hud}>
         <Text style={styles.name}>{t('monitor.empty')}</Text>
         <Text style={styles.model}>{t('monitor.empty_hint')}</Text>
@@ -459,4 +569,15 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   logLine: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.phosphor },
+  // ── Fitted GRID cell: row heights match monitor-grid.ts exactly ──
+  camFit: { padding: CARD_PAD, borderWidth: CARD_BORDER, gap: HUD_GAP, overflow: 'hidden' },
+  fitScreen: { flex: 1, minHeight: 0, alignItems: 'center', justifyContent: 'center' },
+  fitRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0, height: HUD_TITLE_H, overflow: 'hidden' },
+  fitRowMeta: { height: HUD_META_H },
+  fitName: { fontSize: 15, lineHeight: HUD_TITLE_H },
+  fitSub: { fontSize: 12, lineHeight: HUD_TITLE_H },
+  fitText: { lineHeight: HUD_META_H },
+  fitTick: { height: HUD_TICK_H, lineHeight: HUD_TICK_H },
+  fitShrink: { flexShrink: 1, minWidth: 0 },
+  fitBar: { height: HUD_BAR_H },
 });

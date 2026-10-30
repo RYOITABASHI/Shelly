@@ -9,6 +9,7 @@ import { act, fireEvent, render } from '@testing-library/react-native';
 import MonitorPane from '@/components/panes/MonitorPane';
 import { useAgentStore, type LiveRunEntry } from '@/store/agent-store';
 import type { MonitorRun } from '@/lib/agent-progress';
+import { computeMonitorGrid } from '@/components/monitor/monitor-grid';
 
 jest.mock('@/lib/i18n', () => ({
   useTranslation: () => ({ t: (key: string) => key, locale: 'en' }),
@@ -183,6 +184,74 @@ describe('MonitorPane', () => {
     expect(utils.queryByTestId('monitor-wall')).toBeNull();
     expect(utils.queryByText('monitor.map.goal_progress')).toBeNull();
     expect(utils.getByText('monitor.map.demo_note')).toBeTruthy();
+    utils.unmount();
+  });
+});
+
+describe('MonitorPane GRID fits the pane (no scrolling)', () => {
+  const layoutOf = (utils: ReturnType<typeof render>, id: string, width: number, height: number) =>
+    fireEvent(utils.getByTestId(id), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width, height } } });
+  /** Pane `w`x`h` with fixed-height chrome; returns the wall height the pane
+   *  should give the grid (pane - 2 paddings - 2 gaps - chrome - 1). */
+  const layoutPane = (utils: ReturnType<typeof render>, w: number, h: number, top = 110, bottom = 150) => {
+    layoutOf(utils, 'monitor-root', w, h);
+    layoutOf(utils, 'monitor-chrome-top', w - 20, top);
+    layoutOf(utils, 'monitor-chrome-bottom', w - 20, bottom);
+    layoutOf(utils, 'monitor-wall', w - 20, 0);
+    return Math.floor(h - 20 - 20 - top - bottom) - 1;
+  };
+
+  beforeEach(() => {
+    layout.isWide = true;
+    layout.isCompact = false;
+    useAgentStore.getState().restartMonitor();
+    useAgentStore.getState().setMonitor({
+      view: 'grid',
+      auto: false,
+      speed: 1,
+      legendDismissed: false,
+      sourceMode: 'demo',
+    });
+    useAgentStore.getState().setMonitorTeam(null);
+  });
+
+  it.each([
+    ['full pane', 1720, 1700],
+    ['half-height pane', 1720, 800],
+    ['portrait', 800, 1700],
+    ['wide dp pane', 760, 640],
+  ])('%s: every camera sits inside a fixed-height wall', (_name, w, h) => {
+    const utils = render(<MonitorPane />);
+    const wallH = layoutPane(utils, w, h);
+    expect(utils.getByTestId('monitor-grid-fit')).toBeTruthy();
+    const wall = utils.getByTestId('monitor-wall');
+    const wallStyle = Object.assign({}, ...[wall.props.style].flat(3).filter(Boolean));
+    expect(wallStyle.height).toBe(wallH);
+    const g = computeMonitorGrid(w - 20, wallH, 5);
+    expect(g.fits).toBe(true);
+    // The NO SIGNAL tile only when the chosen grid leaves a cell free.
+    expect(utils.queryAllByText('monitor.no_signal').length).toBe(g.freeCells > 0 ? 1 : 0);
+    // The one-time legend gives its row back to the cameras.
+    expect(utils.queryByTestId('monitor-cost-legend')).toBeNull();
+    utils.unmount();
+  });
+
+  it('falls back to a scrolling wall when even the smallest cells cannot fit', () => {
+    const utils = render(<MonitorPane />);
+    layoutPane(utils, 380, 340);
+    expect(utils.queryByTestId('monitor-grid-fit')).toBeNull();
+    expect(utils.getByTestId('monitor-grid')).toBeTruthy();
+    // Every camera is still rendered (reachable by scrolling).
+    expect(utils.getByText('ARXIV SCOUT')).toBeTruthy();
+    utils.unmount();
+  });
+
+  it('keeps the legend on the single view', () => {
+    const utils = render(<MonitorPane />);
+    layoutPane(utils, 1720, 1700);
+    expect(utils.queryByTestId('monitor-cost-legend')).toBeNull();
+    act(() => useAgentStore.getState().setMonitor({ view: 'single', selectedId: 'ch1' }));
+    expect(utils.getByTestId('monitor-cost-legend')).toBeTruthy();
     utils.unmount();
   });
 });
@@ -421,6 +490,23 @@ describe('MonitorPane LIVE source', () => {
     expect(utils.getByTestId('monitor-status').props.children).toBe('monitor.live.outcome.stopped');
     expect(utils.queryByTestId('monitor-failure')).toBeNull();
     expect(utils.getAllByText('monitor.state.STOPPED').length).toBeGreaterThan(0);
+    utils.unmount();
+  });
+
+  it('a run stopped before any step ran reads 0%, not 100%', () => {
+    const halted = liveRun({ endedAt: iso(1), status: 'halted' });
+    halted.branches = halted.branches.map((b) => {
+      const { startedAt: _s, provider: _p, usage: _u, tail: _t, ...rest } = b;
+      return { ...rest, state: 'SKIPPED' as const, endedAt: iso(1) };
+    });
+    seed(halted);
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    expect(utils.getByTestId('monitor-status').props.children).toBe('monitor.live.outcome.stopped');
+    expect(utils.getByLabelText('monitor.mission_progress').props.accessibilityValue.now).toBe(0);
+    // Header + both cameras read 0%; nothing claims 100%.
+    expect(utils.getAllByText('0%').length).toBe(3);
+    expect(utils.queryByText('100%')).toBeNull();
     utils.unmount();
   });
 
