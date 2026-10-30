@@ -109,6 +109,11 @@
 - **P1 実装中（`feat/zero-question-agent-setup`）**: 手動のみを第一級トリガーかつ既定に／質問文は決定論テンプレート、確認要否は二択の言い回し／名前は「名前:」接頭辞から自動、draft/notify は聞かずに安全側／節単位の分割（動詞のない句を次に結合しツール指定を引き継ぐ、末尾の保存句は最終アクションへ、ユーザーの語と保存先パスを表示）、端末内 LLM のツール指定は高リスク理由から外す。手動のみはリモート承認不可（端末内チャットのみ）で理由を平易に表示。
 - **P2 次以降（エージェント案）**: 要約を MONITOR の列と同じ左→右テキスト列で見せる（`monitor-team.ts` を中間表現に）／話して編集（「2番目を1番目と並列に」「3番目をGeminiで」— `agent-draft-patch.ts` に steps 用検出器）／何がどこにできるかの事前表示／ステップごとのプロバイダと概算コスト表示／登録前の「試しに1回」（Once 一時実行を流用し結果と実コストを見てから登録）／レシピ（チームファイル）をカタログから選ぶ／「通知/ChatGPTから承認できない」に理由と回避策を添える。
 
+### 並列数を 3 → 5（プロバイダ混在）に上げる — 方針のみ・未実装 (P1)
+- **2026-10-30 オーナー**: 「Codex、ClaudeCode、ローカル、パープレ、無料API or Gemini で 5 体並列くらいまでは全然あり得る」。現状の上限は `MAX_PARALLEL_BRANCHES=3`（lib/agent-orchestration.ts:60 と scripts/shelly-plan-executor.js:2086、実機未計測の安全側の値）と、直列 .sh 経路の `MAX_CONCURRENT=2`。
+- **方針**: 一律の数ではなく**プロバイダごとの同時実行枠＋全体上限 5**にする。重いプロセスを起動する CLI 系（Codex ≈200MB、Claude Code ≈300MB）はそれぞれ 1〜2 枠、HTTP 系（Perplexity・Gemini・無料 API）は broker 子プロセスのみで軽いので多め、端末内 LLM は llama-server の同時処理スロット数に合わせる（現状の起動引数での並列スロット数は未確認、`--parallel` の明示と ctx 配分を要検討）。プロバイダが混在するほど待ちが減るので 5 並列は現実的。
+- **前提**: まず実機で 3 並列を計測（phantom process 数、メモリ、llama-server の待ち）→ 上限を設定化 → 5 へ。Codex の「1 プロセス N スレッド」（継続モード Inc 3）と Claude Code の起動（userland loader S1〜S4）が揃うと 5 種混在が可能になる。
+
 ### マルチエージェント MONITOR ペイン（CCTV 風）+ attended チェーンの実並列化 — 設計済み・未実装 (P2)
 - **2026-10-30 プロダクトオーナー提案**: 各エージェント／サブエージェントを監視カメラ風に映し、スイッチャー（CH1–4 / GRID / AUTO）と配線図で「誰が何をして、どうつながり、何ができるか」を見せる。並列で動くことが前提（「並列で作業しないとダメ」）。UI デモ: https://claude.ai/artifact/MAZXttXTnD5kecgZmsDfpv
 - **方針（Plan エージェント調査）**: attended の Run now で `planParallelGroups` に有効なグループがあり、全ブランチのツールが executor で実行できるときだけ、既に実機で 3 並列が動いている PlanSpec executor に流す。条件を満たさなければ今の直列チェーンで動かし、MONITOR には SERIAL と表示する。自前で並列化する案（A）は、ブランチごとに bash・サブシェル・curl・node が立ち、phantom process 上限 32 に近づくので見送り。
