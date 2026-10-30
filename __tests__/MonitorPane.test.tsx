@@ -34,9 +34,15 @@ jest.mock('@/lib/pane-focus', () => ({ ensurePaneByTab: (tab: string) => mockEns
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
-jest.mock('@/hooks/use-multi-pane', () => ({
-  useMultiPaneStore: { getState: () => ({ slots: [{ id: 'leaf-ai', tab: 'ai' }], focusedSlot: 0 }) },
-}));
+jest.mock('@/hooks/use-multi-pane', () => {
+  const state = { slots: [{ id: 'leaf-ai', tab: 'ai' }], focusedSlot: 0 };
+  // Callable as a selector hook (MonitorPane's BACK slot) and via getState.
+  const useMultiPaneStore = Object.assign(
+    (selector?: (s: typeof state) => unknown) => (selector ? selector(state) : state),
+    { getState: () => state },
+  );
+  return { useMultiPaneStore };
+});
 const mockRunAgentNow = jest.fn(async (_id: string, _run: unknown) => {});
 const mockUpdateAgent = jest.fn(async () => null);
 jest.mock('@/lib/agent-manager', () => ({
