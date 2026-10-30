@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=11
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=12
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -37,7 +37,10 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // ClosePawHandoff.launch) so the run says background / main-display, or ends
 // as an error with the trusted variant's refusal reason. Bumped so a stale v8
 // copy is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 11;
+// v12 (2026-10-30, MONITOR stage 3): live per-run progress stream at
+// logs/<agentId>/progress.jsonl (see progressStart). Bumped so a stale v11
+// copy, which writes no progress, is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 12;
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
 // lib/agent-intent-review.ts sanitizeClosePawGoal (control chars -> space,
@@ -215,6 +218,214 @@ function appendJsonl(file, entry) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Live progress stream (v12, DEFERRED.md「マルチエージェント MONITOR ペイン」
+// stage (3)). logs/<agentId>/progress.jsonl holds the CURRENT run only — the
+// previous run is rotated to progress.prev.jsonl at run start, so the stream
+// never grows past two runs. One JSON event per line, each written by a single
+// fs.writeSync on an fd opened once per run (no userspace buffering): a tailing
+// reader sees each event the moment it is emitted. Read by lib/agent-progress.ts.
+// Strictly best-effort: the first failure is recorded once in the plan audit
+// log, then every later emit is a no-op — progress must never break or slow a
+// run. Usage events carry only what the provider's response reports (see
+// progressUsage); nothing is estimated.
+const PROGRESS_SCHEMA_VERSION = 1;
+const PROGRESS_TAIL_MAX_CHARS = 240;
+// Per-run byte cap. Past it only branch_state/run_end are kept (what a monitor
+// cannot reconstruct); past twice it only run_end. A 10-step plan writes a few
+// KB, so this is purely a runaway guard.
+const PROGRESS_MAX_BYTES = 256 * 1024;
+const PROGRESS_TERMINAL_STATES = new Set(['DONE', 'FAILED', 'SKIPPED']);
+// The one run of this executor process (run() owns it); null outside run(),
+// so the exported helpers (requestModelContentWithLadder, …) stay no-ops when
+// called directly from host tests.
+let activeProgress = null;
+
+function progressTail(text) {
+  const cleaned = previewText(text); // redact() + whitespace collapse
+  const cps = Array.from(cleaned);
+  return cps.length <= PROGRESS_TAIL_MAX_CHARS ? cleaned : cps.slice(0, PROGRESS_TAIL_MAX_CHARS).join('');
+}
+
+function progressStatusState(status) {
+  if (status === 'success') return 'DONE';
+  if (status === 'skipped') return 'SKIPPED';
+  return 'FAILED';
+}
+
+function progressProvider(tool, request) {
+  const type = tool && tool.type ? String(tool.type) : 'unknown';
+  const kind = type === 'local' ? 'LOCAL' : type === 'cli' ? 'CLI' : 'API';
+  let model = request && request.body && typeof request.body.model === 'string' ? request.body.model : '';
+  if (!model && request && typeof request.url === 'string') {
+    const match = /\/models\/([^/:?]+)/.exec(request.url); // gemini-api carries the model in the URL
+    if (match) model = match[1];
+  }
+  if (!model && tool && typeof tool.model === 'string') model = tool.model;
+  return Object.assign({ kind, name: type }, model ? { model: String(model).slice(0, 80) } : {});
+}
+
+// Token/cost usage as reported by the provider's own response JSON — never
+// estimated. OpenAI-compatible bodies (perplexity, cerebras, groq, local
+// llama.cpp server) carry usage.prompt_tokens/completion_tokens; Perplexity
+// additionally carries usage.cost.total_cost (USD). Gemini carries
+// usageMetadata.promptTokenCount/candidatesTokenCount. Anything else -> null.
+function progressUsage(toolType, raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+  let inputTokens;
+  let outputTokens;
+  let usd;
+  if (toolType === 'gemini-api') {
+    const u = parsed.usageMetadata;
+    if (u && typeof u === 'object') {
+      inputTokens = num(u.promptTokenCount);
+      outputTokens = num(u.candidatesTokenCount);
+    }
+  } else {
+    const u = parsed.usage;
+    if (u && typeof u === 'object') {
+      inputTokens = num(u.prompt_tokens);
+      outputTokens = num(u.completion_tokens);
+      if (u.cost && typeof u.cost === 'object') usd = num(u.cost.total_cost);
+    }
+  }
+  if (inputTokens === undefined && outputTokens === undefined && usd === undefined) return null;
+  const usage = {};
+  if (inputTokens !== undefined) usage.inputTokens = inputTokens;
+  if (outputTokens !== undefined) usage.outputTokens = outputTokens;
+  if (usd !== undefined) usage.usd = usd;
+  return usage;
+}
+
+function progressFail(progress, error) {
+  if (progress.disabled) return;
+  progress.disabled = true;
+  try {
+    if (progress.fd !== null) fs.closeSync(progress.fd);
+  } catch (_) {}
+  progress.fd = null;
+  appendJsonl(progress.auditFile, {
+    ts: new Date().toISOString(),
+    kind: 'plan.executor',
+    event: 'progress_write_failed',
+    agentId: progress.agentId,
+    reason: redact(error && error.message ? error.message : String(error)).slice(0, 200),
+  });
+}
+
+function progressEmit(progress, kind, fields) {
+  if (!progress || progress.disabled || progress.fd === null) return;
+  try {
+    const seq = progress.seq + 1;
+    const line = JSON.stringify(Object.assign({
+      v: PROGRESS_SCHEMA_VERSION,
+      runId: progress.runId,
+      agentId: progress.agentId,
+      seq,
+      ts: new Date().toISOString(),
+    }, fields, { kind })) + '\n';
+    const len = Buffer.byteLength(line);
+    const over = progress.bytes + len;
+    if (kind !== 'run_end' && (over > PROGRESS_MAX_BYTES * 2 || (over > PROGRESS_MAX_BYTES && kind !== 'branch_state'))) return;
+    fs.writeSync(progress.fd, line);
+    progress.seq = seq;
+    progress.bytes = over;
+  } catch (error) {
+    progressFail(progress, error);
+  }
+}
+
+function progressStepEvent(progress, stepIndex, kind, fields) {
+  if (!progress) return;
+  const index = Number.isInteger(stepIndex) && stepIndex >= 0 ? stepIndex : 0;
+  const groupId = progress.groups[index];
+  progressEmit(progress, kind, Object.assign(
+    { stepIndex: index, branchId: `${progress.runId}#${index}` },
+    groupId !== undefined ? { groupId } : {},
+    fields,
+  ));
+}
+
+function progressState(progress, stepIndex, state, tail) {
+  if (!progress || progress.states.get(stepIndex) === state) return;
+  if (PROGRESS_TERMINAL_STATES.has(progress.states.get(stepIndex))) return; // settled is final
+  progress.states.set(stepIndex, state);
+  if (tail) {
+    const text = progressTail(tail);
+    if (text) progressStepEvent(progress, stepIndex, 'tail', { tail: text });
+  }
+  progressStepEvent(progress, stepIndex, 'branch_state', { state });
+}
+
+// Opens (and rotates) the stream, emits run_start + one STANDBY per step.
+// `stepList` is plan.steps.list for a chain, null for a single-shot run.
+function progressStart(paths, plan, stepList) {
+  const stepCount = Array.isArray(stepList) ? stepList.length : 1;
+  let groups = [];
+  try {
+    if (Array.isArray(stepList)) groups = planParallelGroups(stepList).group;
+  } catch (_) {}
+  const progress = {
+    runId: `${plan.agent.id}-${Date.now()}-${process.pid}-${crypto.randomBytes(3).toString('hex')}`,
+    agentId: plan.agent.id,
+    auditFile: paths.planAuditFile,
+    seq: 0,
+    bytes: 0,
+    fd: null,
+    disabled: false,
+    finished: false,
+    startedAt: Date.now(),
+    stepCount,
+    groups,
+    states: new Map(),
+    currentStep: 0,
+  };
+  try {
+    ensureDir(path.dirname(paths.progressFile));
+    try {
+      fs.renameSync(paths.progressFile, paths.progressPrevFile);
+    } catch (_) {} // first run: nothing to rotate ('w' below truncates anyway)
+    progress.fd = fs.openSync(paths.progressFile, 'w');
+  } catch (error) {
+    progressFail(progress, error);
+  }
+  // PARALLEL only when some group really has >= 2 branches (dispatch runs a
+  // one-member group serially).
+  const parallel = progress.groups.some((g, i) => g !== undefined && progress.groups.indexOf(g) !== i);
+  const mode = stepCount <= 1 && !parallel ? 'SINGLE' : parallel ? 'PARALLEL' : 'SERIAL';
+  progressEmit(progress, 'run_start', { mode, stepCount, executorVersion: EXECUTOR_SCRIPT_VERSION });
+  for (let i = 0; i < stepCount; i += 1) progressState(progress, i, 'STANDBY');
+  return progress;
+}
+
+// Settles every step that never reported a terminal state, then run_end.
+function progressFinish(progress, status, records, reason) {
+  if (!progress || progress.finished) return;
+  progress.finished = true;
+  for (let i = 0; i < progress.stepCount; i += 1) {
+    const current = progress.states.get(i);
+    if (PROGRESS_TERMINAL_STATES.has(current)) continue;
+    const record = Array.isArray(records) ? records.find((r) => r && r.index === i) : null;
+    let state;
+    if (record) state = progressStatusState(record.status);
+    else if (current === 'RUNNING' || current === 'WAITING_APPROVAL') state = progressStatusState(status === 'success' ? 'error' : status);
+    else state = 'SKIPPED';
+    progressState(progress, i, state, record ? record.outputPreview : (current === 'RUNNING' || current === 'WAITING_APPROVAL') ? reason : '');
+  }
+  progressEmit(progress, 'run_end', { status: String(status || 'error'), durationMs: Date.now() - progress.startedAt });
+  try {
+    if (progress.fd !== null) fs.closeSync(progress.fd);
+  } catch (_) {}
+  progress.fd = null;
+}
+
 function runtimePaths(home, agentId) {
   const shellyDir = path.join(home, '.shelly');
   const agentsDir = path.join(shellyDir, 'agents');
@@ -238,6 +449,8 @@ function runtimePaths(home, agentId) {
     notifyFile: path.join(logDir, 'native-result-notification.json'),
     brokerAuditFile: path.join(logDir, 'agent-driver-audit.jsonl'),
     planAuditFile: path.join(logDir, 'plan-executor-audit.jsonl'),
+    progressFile: path.join(logDir, 'progress.jsonl'),
+    progressPrevFile: path.join(logDir, 'progress.prev.jsonl'),
     actionApprovalDir: path.join(agentsDir, 'action-approvals'),
     actionApprovalReplyDir: path.join(agentsDir, 'action-approval-replies'),
   };
@@ -2921,7 +3134,19 @@ function verifySignedApprovalReply(request, reply, deps) {
   return { ok: true, reason: 'ok' };
 }
 
+// Live progress (v12): the step that dispatches an action is a serial step
+// (planParallelGroups never puts the final step in a group), so the run's
+// currentStep is the one waiting. A decline/timeout throws and is settled by
+// the caller; only an accepted reply resumes RUNNING.
 function requestActionApproval(paths, plan, actionType, preview, resultFile, config, details) {
+  const progress = activeProgress;
+  const stepIndex = progress ? progress.currentStep : 0;
+  progressState(progress, stepIndex, 'WAITING_APPROVAL', preview);
+  requestActionApprovalBlocking(paths, plan, actionType, preview, resultFile, config, details);
+  progressState(progress, stepIndex, 'RUNNING');
+}
+
+function requestActionApprovalBlocking(paths, plan, actionType, preview, resultFile, config, details) {
   ensureDir(paths.actionApprovalDir);
   ensureDir(paths.actionApprovalReplyDir);
   // Multi-action fan-out (2026-07-23, dispatchActionsTrusted below): two
@@ -4461,7 +4686,13 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
     const attemptPlan = i === 0 ? plan : Object.assign({}, plan, { tool: candidates[i] });
     try {
       const request = modelRequest(attemptPlan, config);
+      progressStepEvent(activeProgress, opts && opts.stepIndex, 'tool', {
+        tool: String(attemptPlan.tool.label || attemptPlan.tool.type || '').slice(0, 80),
+        provider: progressProvider(attemptPlan.tool, request),
+      });
       const response = await brokerHttp(paths, opts, attemptPlan, request);
+      const usage = activeProgress ? progressUsage(attemptPlan.tool.type, response) : null;
+      if (usage) progressStepEvent(activeProgress, opts && opts.stepIndex, 'usage', { usage });
       let resultText = extractModelContent(attemptPlan.tool.type, response);
       resultText = enforcePlanCharLimit(attemptPlan, resultText);
       if (checkQuality) {
@@ -4942,6 +5173,26 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     };
   }
 
+  // Live progress (v12): RUNNING on launch, terminal state on settle. Steps
+  // the chain never launches are settled SKIPPED/FAILED by progressFinish.
+  async function executeStepWithProgress(i, contextResults) {
+    const progress = activeProgress;
+    const step = plan.steps.list[i];
+    if (progress && parallelPlan.group[i] === undefined) progress.currentStep = i;
+    progressState(progress, i, 'RUNNING');
+    if (step.apiCall && i !== plan.steps.list.length - 1) {
+      progressStepEvent(progress, i, 'tool', { tool: 'api-call', provider: { kind: 'API', name: String(step.apiCall.host || '').slice(0, 80) } });
+    }
+    try {
+      const outcome = await executeStep(i, contextResults);
+      progressState(progress, i, progressStatusState(outcome.record.status), outcome.record.outputPreview);
+      return outcome;
+    } catch (error) {
+      progressState(progress, i, error instanceof ActionSkipped ? 'SKIPPED' : 'FAILED', error && error.message ? error.message : String(error));
+      throw error;
+    }
+  }
+
   for (let i = 0; i < plan.steps.list.length;) {
     const gate = nextStepGate({ stepIndex: i, budget, startedAtMs: startedAt, now: Date.now(), priorFailed });
     if (!gate.proceed) break;
@@ -4975,7 +5226,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const contextSnapshot = priorResults.slice(0, parallelPlan.contextBase[i]);
       const settled = await Promise.allSettled(Array.from({ length: runLength }, (_, offset) =>
         withBranchPermit(async () => {
-          const outcome = await executeStep(i + offset, contextSnapshot);
+          const outcome = await executeStepWithProgress(i + offset, contextSnapshot);
           runResults[offset] = outcome;
           return outcome;
         })));
@@ -4999,7 +5250,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     }
 
     const contextResults = priorResults.slice(0, parallelPlan.contextBase[i]);
-    const outcome = await executeStep(i, contextResults);
+    const outcome = await executeStepWithProgress(i, contextResults);
     absorbOutcome(outcome);
     records.push(outcome.record);
     if (outcome.result !== undefined) priorResults.push(outcome.result);
@@ -5142,6 +5393,13 @@ async function run(args) {
   // forward) takes the untouched single-shot branch below — byte-identical
   // to this executor's behavior before this increment.
   const hasChain = !!(plan.steps && Array.isArray(plan.steps.list) && plan.steps.list.length > 0);
+  // Live progress (v12): opened only once this run holds the agent lock, so a
+  // concurrent "previous run still active" refusal never rotates the stream.
+  const progress = progressStart(paths, plan, hasChain ? plan.steps.list : null);
+  activeProgress = progress;
+  let progressStatus = 'error';
+  let progressRecords;
+  let progressReason = '';
 
   // DEFERRED.md「PlanSpec executor 経由の無人発火は...エスカレーションラダーへ
   // 進まない」(3rd-pass Codex review finding): the tool that ACTUALLY produced
@@ -5174,12 +5432,16 @@ async function run(args) {
       // checking of the same isLowQualityCompletion predicate once this
       // helper has already found acceptable content. enforcePlanCharLimit
       // (G6 hard-clamp) already applied inside the helper.
+      progressState(progress, 0, 'RUNNING');
       const attempt = await requestModelContentWithLadder(paths, opts, plan, config, true);
       const resultText = attempt.resultText;
       usedTool = attempt.usedTool;
       writeAtomic(paths.resultFile, resultText + (resultText.endsWith('\n') || resolveCharLimit(plan) ? '' : '\n'));
       action = await dispatchActionsTrusted(paths, opts, plan, config, roots, resultText, args);
+      progressState(progress, 0, progressStatusState(action.status), action.preview);
     }
+    progressStatus = action.status;
+    progressRecords = action.steps;
     const durationMs = Date.now() - startedAt;
     writeRunLog(paths, plan, action.status, action.preview, durationMs, action.errorMessage || '', action.steps, action.actionResults, usedTool);
     appendJsonl(paths.planAuditFile, {
@@ -5193,7 +5455,9 @@ async function run(args) {
   } catch (e) {
     const durationMs = Date.now() - startedAt;
     if (e instanceof ActionSkipped) {
+      progressStatus = 'skipped';
       const message = redact(e.message);
+      progressReason = message;
       writeNotification(paths, plan, 'skipped', message);
       writeRunLog(paths, plan, 'skipped', message, durationMs, message);
       appendJsonl(paths.planAuditFile, {
@@ -5207,7 +5471,9 @@ async function run(args) {
       return EXIT.OK;
     }
     const status = e instanceof PlanFailure && e.status ? e.status : 'error';
+    progressStatus = status;
     const message = redact(e && e.message ? e.message : String(e));
+    progressReason = message;
     writeAtomic(paths.resultFile, message + '\n');
     writeNotification(paths, plan, status, message);
     writeRunLog(paths, plan, status, message, durationMs, message);
@@ -5222,6 +5488,8 @@ async function run(args) {
     if (e instanceof PlanFailure && e.handled) return EXIT.OK;
     return e instanceof PlanFailure ? e.exitCode : EXIT.INTERNAL;
   } finally {
+    progressFinish(progress, progressStatus, progressRecords, progressReason);
+    activeProgress = null;
     mirrorBrokerAudit(paths, plan);
     releaseLock(paths);
   }
@@ -5442,4 +5710,15 @@ module.exports = {
   // exported for host unit tests only, same convention as the exports above.
   xAccessTokenCache,
   updateEnvFileSecret,
+  // Live progress stream (v12) — exported for host unit tests only.
+  PROGRESS_SCHEMA_VERSION,
+  PROGRESS_TAIL_MAX_CHARS,
+  PROGRESS_MAX_BYTES,
+  progressTail,
+  progressUsage,
+  progressProvider,
+  progressStart,
+  progressState,
+  progressStepEvent,
+  progressFinish,
 };
