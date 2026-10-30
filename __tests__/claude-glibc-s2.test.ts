@@ -437,7 +437,11 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-276)', () =>
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 276\b/);
+    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 277\b/);
+  });
+
+  it('loads ~/.claude-token.env only inside the subshell when no token is set', () => {
+    expect(fn).toMatch(/\n    umask 077\n(?:    #[^\n]*\n)*    if \[ -z "\$\{CLAUDE_CODE_OAUTH_TOKEN:-\}" \] && \[ -f "\$HOME\/\.claude-token\.env" \]; then \. "\$HOME\/\.claude-token\.env"; fi\n/);
   });
 
   it('marks the force-TUI paste mode around claude so a pasted OAuth code is not corrupted', () => {

@@ -1460,7 +1460,7 @@ patchCodex(libDir);
     //      HTTPS_PROXY/HTTP_PROXY/NO_PROXY only to claude; BROWSER/DISPLAY
     //      unset so the sign-in URL comes out as an OSC 8 hyperlink
     //      (OAuthHyperlinkBridge.kt queues a tap-to-open sign-in prompt while armed).
-    private const val BASHRC_VERSION = 276
+    private const val BASHRC_VERSION = 277
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4255,6 +4255,9 @@ patchCodex(libDir);
             sb.appendLine("  __shelly_paste_tui_begin")
             sb.appendLine("  (")
             sb.appendLine("    umask 077")
+            sb.appendLine("    # setup-token prints a long-lived token; keep it in ~/.claude-token.env")
+            sb.appendLine("    # (CLAUDE_CODE_OAUTH_TOKEN=...). Loaded only inside this subshell.")
+            sb.appendLine("    if [ -z \"\${CLAUDE_CODE_OAUTH_TOKEN:-}\" ] && [ -f \"\$HOME/.claude-token.env\" ]; then . \"\$HOME/.claude-token.env\"; fi")
             sb.appendLine("    __pdir=\"\${TMPDIR:-\$HOME/tmp}\"")
             sb.appendLine("    mkdir -p \"\$__pdir\" 2>/dev/null")
             sb.appendLine("    __pfile=\"\$__pdir/shelly-claude-proxy.\$BASHPID.port\"")
