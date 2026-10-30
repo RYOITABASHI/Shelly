@@ -50,7 +50,7 @@ function writePlan(home: string, port: number, steps: object[], extra: Record<st
   };
   const planFile = path.join(home, `.shelly/agents/plans/plan-agent-${AGENT_ID}.json`);
   fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
-  fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`);
+  fs.writeFileSync(path.join(home, '.shelly/agents/.env'), `LOCAL_LLM_URL='http://127.0.0.1:${port}'\nSHELLY_DEFAULT_REQUIRE_ACTION_APPROVAL='0'\n`, { mode: 0o600 });
   return planFile;
 }
 
