@@ -1775,15 +1775,16 @@ class TerminalEmulatorModule : Module() {
             ScouterLifecycleService.get(context).refreshJson().toString(2)
         }
 
-        // MONITOR home-screen widget: the attended serial chain (JS-only, no
-        // AgentRuntime run) reports its start/end here so the widget watches
-        // that agent's progress.jsonl only while the chain runs.
+        // MONITOR home-screen widget: the attended serial chain is driven from
+        // JS (each step is its own AgentRuntime run); it reports the chain's
+        // start/end here so the run stays held between steps and the widget
+        // watches that agent's progress.jsonl only while the chain runs.
         AsyncFunction("notifyMonitorWidget") { agentId: String, active: Boolean ->
             val context = appContext.reactContext ?: return@AsyncFunction null
             if (active) {
-                expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runStarted(context, agentId)
+                expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.chainStarted(context, agentId)
             } else {
-                expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runEnded(context, agentId)
+                expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.chainEnded(context, agentId)
             }
             null
         }

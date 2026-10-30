@@ -2696,8 +2696,9 @@ async function runAgentOrchestrated(
   }
 }
 
-/** MONITOR home-screen widget: this JS chain has no AgentRuntime run for the
- *  native side to see, so tell it when to watch progress.jsonl. Fire and
+/** MONITOR home-screen widget: each step of this JS chain is its own
+ *  AgentRuntime run, so native only sees the steps; tell it when the chain as
+ *  a whole starts and ends so the run stays held between steps. Fire and
  *  forget; never throws into the chain. */
 function notifyMonitorWidget(agentId: string, active: boolean): void {
   try {

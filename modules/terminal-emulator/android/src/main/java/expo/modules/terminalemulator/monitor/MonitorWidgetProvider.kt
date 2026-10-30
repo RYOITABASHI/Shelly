@@ -11,7 +11,8 @@ import android.content.Intent
  *
  * The provider only answers the launcher (placement, resize, reboot); all
  * run-driven updates are pushed by [MonitorWidgetUpdater]. No periodic
- * updates (updatePeriodMillis=0) and no alarms.
+ * updates (updatePeriodMillis=0); the only alarm is the inexact silence
+ * re-check while a run is shown live ([MonitorWidgetUpdater.ACTION_RECHECK]).
  */
 open class MonitorWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -19,7 +20,12 @@ open class MonitorWidgetProvider : AppWidgetProvider() {
             AppWidgetManager.ACTION_APPWIDGET_UPDATE,
             AppWidgetManager.ACTION_APPWIDGET_OPTIONS_CHANGED -> {
                 val pending = goAsync()
-                MonitorWidgetUpdater.requestUpdate(context, force = true) { pending.finish() }
+                MonitorWidgetUpdater.requestUpdate(context, force = true, onDone = { pending.finish() })
+            }
+            // The silence re-check alarm (explicit component, not exported).
+            MonitorWidgetUpdater.ACTION_RECHECK -> {
+                val pending = goAsync()
+                MonitorWidgetUpdater.requestUpdate(context, force = false, fromAlarm = true, onDone = { pending.finish() })
             }
             else -> super.onReceive(context, intent)
         }

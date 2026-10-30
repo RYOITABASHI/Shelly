@@ -269,7 +269,8 @@ describe('monitor-live: stepCount larger than the branches seen', () => {
   it('uses stepCount as the mission denominator (truncated head / not yet announced steps)', () => {
     const run = runFrom([start('SERIAL', 4), state(0, 'RUNNING', 1), state(0, 'DONE', 2)]);
     const src = createLiveSource(run);
-    expect(src.agents).toHaveLength(1);
+    // Steps not announced yet get STANDBY cameras (same set as the widget).
+    expect(src.agents.map((d) => d.channel)).toEqual(['CH-01', 'CH-02', 'CH-03', 'CH-04']);
     const snap = src.snapshot(T0 + 3000, []);
     // 1 settled of 4 steps
     expect(snap.missionPct).toBe(25);

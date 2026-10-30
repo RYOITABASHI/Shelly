@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Blinking "!" on a camera waiting for the user's OK, added by
+     MonitorWidgetRenderer only in that state. -->
+<ViewFlipper xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="wrap_content"
+  android:layout_height="wrap_content"
+  android:autoStart="true"
+  android:flipInterval="800">
+  <TextView
+    android:layout_width="wrap_content" android:layout_height="wrap_content"
+    android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+    android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+  <TextView
+    android:layout_width="wrap_content" android:layout_height="wrap_content"
+    android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+    android:textColor="#00FFB21E" android:textSize="20sp" />
+</ViewFlipper>

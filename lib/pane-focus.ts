@@ -16,7 +16,7 @@
  * flow entirely — see that file's onBlockCompleted) is the second caller.
  */
 import { logInfo } from '@/lib/debug-logger';
-import { PRESET_CAPACITY, useMultiPaneStore, type PresetId } from '@/hooks/use-multi-pane';
+import { PRESET_CAPACITY, useMultiPaneStore, type PaneTab, type PresetId } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
 
 function visiblePresetForSlot(currentPreset: PresetId, slotIndex: number): PresetId {
@@ -64,6 +64,19 @@ export function focusPaneByTab(tab: FocusableTab): boolean {
     return false;
   }
   return true;
+}
+
+/** Slot operations on the live multi-pane store, for the MONITOR widget's
+ *  "no free slot" fallback (lib/monitor-widget-link.ts swapSlotToMonitor /
+ *  restoreFromMonitor). setSlotTab keeps the slot id and terminal session. */
+export function multiPaneSlotOps() {
+  return {
+    getSlots: () => useMultiPaneStore.getState().slots,
+    getFocusedSlot: () => useMultiPaneStore.getState().focusedSlot,
+    setSlotTab: (index: number, tab: string) =>
+      useMultiPaneStore.getState().setSlotTab(index as 0 | 1 | 2 | 3, tab as PaneTab),
+    focusSlot: (index: number) => focusExistingSlot(index),
+  };
 }
 
 /** Tabs we'd rather not evict when the 4-slot grid is full. */

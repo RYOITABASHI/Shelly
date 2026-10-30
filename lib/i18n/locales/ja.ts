@@ -2898,6 +2898,7 @@ const ja: Record<string, string> = {
   'monitor.mission_complete': 'MISSION COMPLETE',
   'monitor.waiting_for_you': 'WAITING FOR YOU',
   'monitor.done_count': 'DONE {{n}}/{{total}}',
+  'monitor.widget_back': '◀ 戻る',
   'monitor.run_count': 'RUN {{n}}/{{max}}',
   'monitor.mission_progress': 'ミッションの進捗',
   'monitor.cost_api': '従量',

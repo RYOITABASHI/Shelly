@@ -22,10 +22,18 @@ object MonitorWidgetRepository {
     private val SAFE_AGENT_ID = Regex("^[A-Za-z0-9_-]+$")
     /** Writers cap the file at 256 KiB; read at most a little more (tail). */
     private const val MAX_READ_BYTES = 320 * 1024L
-    /** Files parsed per refresh at most (newest first). */
-    private const val MAX_CANDIDATES = 4
+    /** Files parsed per refresh at most (most recently written first). */
+    private const val MAX_CANDIDATES = 6
 
-    data class Snapshot(val model: MonitorWidgetModel.Model?, val agentName: String?)
+    /**
+     * @param recheckDelayMs when to look again although nothing was written
+     *   (the shown live run may go silent); null = no re-check needed.
+     */
+    data class Snapshot(
+        val model: MonitorWidgetModel.Model?,
+        val agentName: String?,
+        val recheckDelayMs: Long? = null
+    )
 
     fun agentsDir(context: Context): File =
         File(HomeInitializer.getHomeDir(context.applicationContext), ".shelly/agents")
@@ -34,11 +42,11 @@ object MonitorWidgetRepository {
 
     fun isSafeAgentId(id: String?): Boolean = id != null && SAFE_AGENT_ID.matches(id)
 
-    /** @param nativeEndedAt wall time native saw an agent's last run end, if it did. */
+    /** @param holders who holds which agent's run open (MonitorWidgetUpdater). */
     fun load(
         context: Context,
-        nowMs: Long = System.currentTimeMillis(),
-        nativeEndedAt: (String) -> Long? = { null }
+        holders: MonitorRunHolders,
+        nowMs: Long = System.currentTimeMillis()
     ): Snapshot {
         val agents = agentsDir(context)
         val logs = File(agents, "logs")
@@ -52,25 +60,32 @@ object MonitorWidgetRepository {
             .toList()
         if (candidates.isEmpty()) return Snapshot(null, null)
 
-        var fallback: MonitorWidgetModel.Model? = null
+        val built = ArrayList<MonitorWidgetModel.Candidate>()
         for (file in candidates) {
             val agentId = file.parentFile?.name ?: continue
             val run = runCatching { MonitorProgress.parse(readTail(file)) }
                 .onFailure { Log.w(TAG, "progress parse failed for $agentId", it) }
                 .getOrNull() ?: continue
             if (run.agentId != agentId) continue
+            val nativeActive = holders.nativeActive(agentId) ||
+                NativeAgentRunRegistry.activeRunStartedAt(agentId) != null
+            val chainActive = holders.chainActive(agentId)
             val model = MonitorWidgetModel.build(
                 run = run,
                 nowMs = nowMs,
-                fileMtimeMs = file.lastModified(),
-                nativeRunActive = NativeAgentRunRegistry.activeRunStartedAt(agentId) != null,
-                nativeEndedAtMs = nativeEndedAt(agentId),
+                nativeRunActive = nativeActive,
+                chainActive = chainActive,
+                heldEndedAtMs = holders.endedAt(agentId),
                 iteration = readIteration(File(file.parentFile, "checkpoint.json"))
             )
-            if (model.live) return Snapshot(model, readAgentName(agents, agentId))
-            if (fallback == null) fallback = model
+            built += MonitorWidgetModel.Candidate(run, model, nativeActive, chainActive)
         }
-        return Snapshot(fallback, fallback?.let { readAgentName(agents, it.agentId) })
+        val pick = MonitorWidgetModel.pick(built) ?: return Snapshot(null, null)
+        return Snapshot(
+            pick.model,
+            readAgentName(agents, pick.model.agentId),
+            MonitorWidgetModel.recheckDelayMs(pick.run, nowMs, pick.model.live, pick.nativeActive, pick.chainActive)
+        )
     }
 
     private fun readTail(file: File): String {

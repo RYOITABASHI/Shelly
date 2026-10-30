@@ -58,7 +58,12 @@ object MonitorWidgetRenderer {
             R.id.monitor_cam_4_bar, R.id.monitor_cam_4_kind, R.id.monitor_cam_4_name, R.id.monitor_cam_4_cost)
     )
 
-    private val SLIM_CAMS = FULL_CAMS.map { it.copy(pill = null, bar = null, kind = null, name = null, cost = null) }
+    /** Per-camera REC flipper (different intervals so feeds do not blink in lock-step). */
+    private val REC_LAYOUTS = intArrayOf(
+        R.layout.monitor_cam_rec_1, R.layout.monitor_cam_rec_2, R.layout.monitor_cam_rec_3, R.layout.monitor_cam_rec_4
+    )
+
+    private val SLIM_CAMS =FULL_CAMS.map { it.copy(pill = null, bar = null, kind = null, name = null, cost = null) }
 
     /** [operator 1..5][Variant.ordinal: LIVE, DIM, ALERT, FAIL]. */
     private val OPERATORS = arrayOf(
@@ -212,12 +217,21 @@ object MonitorWidgetRenderer {
         }
         val running = live && state == CamState.RUNNING
         val asking = live && state == CamState.APPROVAL
-        // The flipper (REC blink + noise frame) is visible only while this
-        // camera is recording; GONE everywhere else, so an idle widget has
-        // nothing to flip. With animations off, a steady REC instead.
-        views.setViewVisibility(ids.rec, if (running && motion) View.VISIBLE else View.GONE)
+        // The flippers (REC blink + noise frame, the approval "!") exist in
+        // the view tree only while this camera needs them: a ViewFlipper keeps
+        // flipping whenever its window is visible, even when the view itself
+        // is GONE, so a hidden one would still cost the launcher redraws.
+        // With animations off, a steady REC instead.
+        views.removeAllViews(ids.rec)
+        if (running && motion) views.addView(ids.rec, RemoteViews(context.packageName, REC_LAYOUTS[slot % REC_LAYOUTS.size]))
         views.setViewVisibility(ids.recStatic, if (asking || (running && !motion)) View.VISIBLE else View.GONE)
-        views.setViewVisibility(ids.bang, if (asking) View.VISIBLE else View.GONE)
+        views.removeAllViews(ids.bang)
+        if (asking) {
+            views.addView(
+                ids.bang,
+                RemoteViews(context.packageName, if (ids.pill == null) R.layout.monitor_cam_bang_slim else R.layout.monitor_cam_bang)
+            )
+        }
         views.setInt(ids.root, "setBackgroundResource", if (asking) R.drawable.monitor_cam_bg_alert else R.drawable.monitor_cam_bg)
 
         val label = stateLabel(res, state)

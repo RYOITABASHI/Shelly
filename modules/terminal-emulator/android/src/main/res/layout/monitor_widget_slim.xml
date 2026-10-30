@@ -3,7 +3,7 @@
      freely, but keep view ids in sync with monitor/MonitorWidgetRenderer.kt.
      4x2 MONITOR widget: four cameras in one row, nothing else.
      RemoteViews-safe views only: FrameLayout, LinearLayout, TextView,
-     ImageView, ProgressBar, Chronometer, ViewFlipper. -->
+     ImageView, ProgressBar, Chronometer (+ ViewFlipper children added at runtime). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
   android:id="@+id/monitor_root"
   android:layout_width="match_parent"
@@ -77,36 +77,16 @@
             android:textSize="11sp"
             android:visibility="gone" />
 
-          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
-               Flipped by the launcher (no updates from the app). -->
-          <ViewFlipper
+          <!-- REC blink + noise frames: MonitorWidgetRenderer addView()s a
+               ViewFlipper (layout/monitor_cam_rec_N) here ONLY while this
+               camera is RUNNING, and removeAllViews() otherwise, so an idle
+               widget has no flipper that could keep ticking. -->
+          <FrameLayout
             android:id="@+id/monitor_cam_1_rec"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:autoStart="true"
-            android:flipInterval="650"
-            android:visibility="gone">
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout
-              android:layout_width="match_parent" android:layout_height="match_parent"
-              android:background="@drawable/monitor_noise" />
-          </ViewFlipper>
+            android:layout_height="match_parent" />
 
-          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <!-- Waiting for approval: steady REC + blinking "!" (added the same way). -->
           <TextView
             android:id="@+id/monitor_cam_1_rec_static"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -114,24 +94,12 @@
             android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
             android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
             android:visibility="gone" />
-          <ViewFlipper
+          <FrameLayout
             android:id="@+id/monitor_cam_1_bang"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="end|center_vertical"
-            android:layout_marginEnd="6dp"
-            android:autoStart="true"
-            android:flipInterval="800"
-            android:visibility="gone">
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#00FFB21E" android:textSize="20sp" />
-          </ViewFlipper>
+            android:layout_marginEnd="6dp" />
 
           <TextView
             android:id="@+id/monitor_cam_1_ch"
@@ -187,36 +155,16 @@
             android:textSize="11sp"
             android:visibility="gone" />
 
-          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
-               Flipped by the launcher (no updates from the app). -->
-          <ViewFlipper
+          <!-- REC blink + noise frames: MonitorWidgetRenderer addView()s a
+               ViewFlipper (layout/monitor_cam_rec_N) here ONLY while this
+               camera is RUNNING, and removeAllViews() otherwise, so an idle
+               widget has no flipper that could keep ticking. -->
+          <FrameLayout
             android:id="@+id/monitor_cam_2_rec"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:autoStart="true"
-            android:flipInterval="700"
-            android:visibility="gone">
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout
-              android:layout_width="match_parent" android:layout_height="match_parent"
-              android:background="@drawable/monitor_noise" />
-          </ViewFlipper>
+            android:layout_height="match_parent" />
 
-          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <!-- Waiting for approval: steady REC + blinking "!" (added the same way). -->
           <TextView
             android:id="@+id/monitor_cam_2_rec_static"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -224,24 +172,12 @@
             android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
             android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
             android:visibility="gone" />
-          <ViewFlipper
+          <FrameLayout
             android:id="@+id/monitor_cam_2_bang"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="end|center_vertical"
-            android:layout_marginEnd="6dp"
-            android:autoStart="true"
-            android:flipInterval="800"
-            android:visibility="gone">
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#00FFB21E" android:textSize="20sp" />
-          </ViewFlipper>
+            android:layout_marginEnd="6dp" />
 
           <TextView
             android:id="@+id/monitor_cam_2_ch"
@@ -297,36 +233,16 @@
             android:textSize="11sp"
             android:visibility="gone" />
 
-          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
-               Flipped by the launcher (no updates from the app). -->
-          <ViewFlipper
+          <!-- REC blink + noise frames: MonitorWidgetRenderer addView()s a
+               ViewFlipper (layout/monitor_cam_rec_N) here ONLY while this
+               camera is RUNNING, and removeAllViews() otherwise, so an idle
+               widget has no flipper that could keep ticking. -->
+          <FrameLayout
             android:id="@+id/monitor_cam_3_rec"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:autoStart="true"
-            android:flipInterval="750"
-            android:visibility="gone">
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout
-              android:layout_width="match_parent" android:layout_height="match_parent"
-              android:background="@drawable/monitor_noise" />
-          </ViewFlipper>
+            android:layout_height="match_parent" />
 
-          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <!-- Waiting for approval: steady REC + blinking "!" (added the same way). -->
           <TextView
             android:id="@+id/monitor_cam_3_rec_static"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -334,24 +250,12 @@
             android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
             android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
             android:visibility="gone" />
-          <ViewFlipper
+          <FrameLayout
             android:id="@+id/monitor_cam_3_bang"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="end|center_vertical"
-            android:layout_marginEnd="6dp"
-            android:autoStart="true"
-            android:flipInterval="800"
-            android:visibility="gone">
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#00FFB21E" android:textSize="20sp" />
-          </ViewFlipper>
+            android:layout_marginEnd="6dp" />
 
           <TextView
             android:id="@+id/monitor_cam_3_ch"
@@ -407,36 +311,16 @@
             android:textSize="11sp"
             android:visibility="gone" />
 
-          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
-               Flipped by the launcher (no updates from the app). -->
-          <ViewFlipper
+          <!-- REC blink + noise frames: MonitorWidgetRenderer addView()s a
+               ViewFlipper (layout/monitor_cam_rec_N) here ONLY while this
+               camera is RUNNING, and removeAllViews() otherwise, so an idle
+               widget has no flipper that could keep ticking. -->
+          <FrameLayout
             android:id="@+id/monitor_cam_4_rec"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:autoStart="true"
-            android:flipInterval="800"
-            android:visibility="gone">
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
-            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
-              <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_gravity="top|end" android:layout_margin="3dp"
-                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
-                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            </FrameLayout>
-            <FrameLayout
-              android:layout_width="match_parent" android:layout_height="match_parent"
-              android:background="@drawable/monitor_noise" />
-          </ViewFlipper>
+            android:layout_height="match_parent" />
 
-          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <!-- Waiting for approval: steady REC + blinking "!" (added the same way). -->
           <TextView
             android:id="@+id/monitor_cam_4_rec_static"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -444,24 +328,12 @@
             android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
             android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
             android:visibility="gone" />
-          <ViewFlipper
+          <FrameLayout
             android:id="@+id/monitor_cam_4_bang"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="end|center_vertical"
-            android:layout_marginEnd="6dp"
-            android:autoStart="true"
-            android:flipInterval="800"
-            android:visibility="gone">
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
-            <TextView
-              android:layout_width="wrap_content" android:layout_height="wrap_content"
-              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
-              android:textColor="#00FFB21E" android:textSize="20sp" />
-          </ViewFlipper>
+            android:layout_marginEnd="6dp" />
 
           <TextView
             android:id="@+id/monitor_cam_4_ch"

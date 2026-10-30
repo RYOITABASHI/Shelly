@@ -53,6 +53,8 @@ const PROVIDER_ALIASES: Record<string, MonitorProvider> = {
   cli: 'codex-cli',
   codex: 'codex-cli',
   'codex-cli': 'codex-cli',
+  // The executor and the attended writer report a CLI step as `cli:<name>`.
+  'cli:codex': 'codex-cli',
 };
 
 const EXTRA_PROVIDER_LABEL: Record<string, string> = {
@@ -290,7 +292,22 @@ export interface LiveSource extends MonitorSource {
   readonly runId: string;
 }
 
-export function createLiveSource(run: MonitorRun, info: LiveAgentInfo = {}): LiveSource {
+/** The run with a STANDBY placeholder for every planned step (stepCount)
+ *  that has not reported an event yet, so each step has a camera (the MONITOR
+ *  widget shows the same set and deep-links to those channels). */
+export function withPlannedSteps(run: MonitorRun): MonitorRun {
+  const count = run.stepCount ?? 0;
+  const seen = new Set(run.branches.map((b) => b.stepIndex));
+  const missing: MonitorBranch[] = [];
+  for (let i = 0; i < count; i++) {
+    if (!seen.has(i)) missing.push({ branchId: `${run.runId}#${i}`, stepIndex: i, state: 'STANDBY', updatedAt: run.startedAt });
+  }
+  if (!missing.length) return run;
+  return { ...run, branches: [...run.branches, ...missing].sort((x, y) => x.stepIndex - y.stepIndex) };
+}
+
+export function createLiveSource(source: MonitorRun, info: LiveAgentInfo = {}): LiveSource {
+  const run = withPlannedSteps(source);
   const defs = run.branches.map((b) => defFor(run, b, info));
   const team = liveTeam(run, defs, info);
   return {

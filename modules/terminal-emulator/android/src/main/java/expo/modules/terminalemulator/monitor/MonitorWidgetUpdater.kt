@@ -1,9 +1,13 @@
 package expo.modules.terminalemulator.monitor
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.os.FileObserver
+import android.os.SystemClock
 import android.util.Log
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -13,17 +17,25 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Push-only update engine for the MONITOR widgets (battery first):
- *  - nothing runs while no run is active: no alarm, no polling, no observer;
- *  - a run start/end that native already sees (AgentRuntime.runAgent, and the
- *    attended serial JS chain via TerminalEmulatorModule.notifyMonitorWidget)
- *    calls [runStarted] / [runEnded];
- *  - while a run is active a FileObserver (inotify — no CPU while nothing is
- *    written) watches that agent's log dir for progress.jsonl writes, and a
- *    throttled refresh re-reads the file at most once per [THROTTLE_MS];
+ *  - nothing runs while no run is active: no polling, no observer, at most
+ *    one inexact non-wakeup re-check alarm while a run is shown live;
+ *  - a run start/end that native already sees calls the hooks:
+ *    AgentRuntime.runAgent -> [runStarted]/[runEnded] (counted: the attended
+ *    chain calls it once per step), the attended serial JS chain ->
+ *    [chainStarted]/[chainEnded] (TerminalEmulatorModule.notifyMonitorWidget).
+ *    The run counts as over only when the last holder is gone
+ *    ([MonitorRunHolders]);
+ *  - while a run is held (or shown live) a FileObserver (inotify — no CPU
+ *    while nothing is written) watches that agent's log dir for
+ *    progress.jsonl writes, and a throttled refresh re-reads the file at most
+ *    once per [THROTTLE_MS];
  *  - a refresh pushes RemoteViews ONLY when the view model changed, so
  *    tail-only progress writes cost a file read and nothing else. Liveness
  *    (REC blink, noise frame, clock) is ViewFlipper / Chronometer inside the
- *    launcher, not updates from here.
+ *    launcher, not updates from here;
+ *  - a run shown live that is not an in-process AgentRuntime run gets an
+ *    inexact ELAPSED_REALTIME alarm at its silence deadline, so a dead run
+ *    (crash, JS reload, reboot) cannot keep the widget "recording" forever.
  * Nothing at all happens when no MONITOR widget is placed.
  */
 object MonitorWidgetUpdater {
@@ -32,23 +44,25 @@ object MonitorWidgetUpdater {
     private const val END_SETTLE_MS = 1_500L
     private const val PREFS = "shelly_monitor_widget"
     private const val KEY_LOCALE = "locale"
+    private const val RECHECK_REQUEST_CODE = 9390
+    const val ACTION_RECHECK = "expo.modules.terminalemulator.monitor.RECHECK"
 
     private val executor = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "MonitorWidgetUpdate").apply { isDaemon = true }
     }
 
-    /** agentId -> observer. `explicit` = opened by runStarted (closed by runEnded);
+    /** agentId -> observer. `explicit` = held (closed when the last holder ends);
      *  otherwise opened because a refresh found the agent's run live. */
     private class Watch(val observer: FileObserver, val explicit: Boolean)
 
     private val watches = ConcurrentHashMap<String, Watch>()
-    /** agentId -> wall time native last saw that agent's run end. */
-    private val endedAt = ConcurrentHashMap<String, Long>()
+    private val holders = MonitorRunHolders()
     /** Last pushed render key per provider class (process memory only). */
     private val lastPushed = ConcurrentHashMap<String, Any>()
 
     @Volatile private var throttled: ScheduledFuture<*>? = null
-    @Volatile private var silenceCheck: ScheduledFuture<*>? = null
+    /** A re-check alarm is set (process memory; a stale "false" only re-sets it). */
+    @Volatile private var recheckArmed = false
 
     fun providers(): List<Class<out MonitorWidgetProvider>> =
         listOf(MonitorWidgetProvider::class.java, MonitorWidgetSlimProvider::class.java)
@@ -60,36 +74,55 @@ object MonitorWidgetUpdater {
 
     // ── hooks ────────────────────────────────────────────────────────────
 
-    fun runStarted(context: Context, agentId: String) {
+    /** AgentRuntime.runAgent began for [agentId] (one call per step on the attended chain). */
+    fun runStarted(context: Context, agentId: String) = started(context, agentId, chain = false)
+
+    /** AgentRuntime.runAgent returned for [agentId]. */
+    fun runEnded(context: Context, agentId: String) = ended(context, agentId, chain = false)
+
+    /** The attended serial JS chain of [agentId] started (it writes progress.jsonl itself). */
+    fun chainStarted(context: Context, agentId: String) = started(context, agentId, chain = true)
+
+    /** The attended serial JS chain of [agentId] finished. */
+    fun chainEnded(context: Context, agentId: String) = ended(context, agentId, chain = true)
+
+    private fun started(context: Context, agentId: String, chain: Boolean) {
+        if (!MonitorWidgetRepository.isSafeAgentId(agentId)) return
         val app = context.applicationContext
+        // Holder bookkeeping is synchronous so a start can never be ordered
+        // after its own end; the I/O goes to the executor.
+        if (chain) holders.startChain(agentId) else holders.startNative(agentId)
         executor.execute {
             runCatching {
-                if (!MonitorWidgetRepository.isSafeAgentId(agentId) || !hasWidgets(app)) return@runCatching
-                endedAt.remove(agentId)
+                if (!hasWidgets(app)) return@runCatching
                 watch(app, agentId, explicit = true)
                 refreshNow(app, force = false)
-            }.onFailure { Log.w(TAG, "runStarted failed", it) }
+            }.onFailure { Log.w(TAG, "run start hook failed", it) }
         }
     }
 
-    fun runEnded(context: Context, agentId: String) {
+    private fun ended(context: Context, agentId: String, chain: Boolean) {
+        if (!MonitorWidgetRepository.isSafeAgentId(agentId)) return
         val app = context.applicationContext
+        val now = System.currentTimeMillis()
+        val released = if (chain) holders.endChain(agentId, now) else holders.endNative(agentId, now)
         executor.execute {
             runCatching {
-                if (!MonitorWidgetRepository.isSafeAgentId(agentId)) return@runCatching
-                endedAt[agentId] = System.currentTimeMillis()
-                unwatch(agentId)
+                if (released) unwatch(agentId)
                 if (!hasWidgets(app)) return@runCatching
                 refreshNow(app, force = false)
-            }.onFailure { Log.w(TAG, "runEnded failed", it) }
+            }.onFailure { Log.w(TAG, "run end hook failed", it) }
         }
         // Trailing writes (run_end flushed after the process exit was seen).
-        executor.schedule(Runnable { runCatching { refreshNow(app, force = false) } }, END_SETTLE_MS, TimeUnit.MILLISECONDS)
+        if (released) {
+            executor.schedule(Runnable { runCatching { refreshNow(app, force = false) } }, END_SETTLE_MS, TimeUnit.MILLISECONDS)
+        }
     }
 
-    /** Launcher asked (placement, resize, reboot): always push. */
-    fun requestUpdate(context: Context, force: Boolean, onDone: (() -> Unit)? = null) {
+    /** Launcher asked (placement, resize, reboot) or the re-check alarm fired. */
+    fun requestUpdate(context: Context, force: Boolean, fromAlarm: Boolean = false, onDone: (() -> Unit)? = null) {
         val app = context.applicationContext
+        if (fromAlarm) recheckArmed = false
         executor.execute {
             try {
                 refreshNow(app, force)
@@ -129,13 +162,13 @@ object MonitorWidgetUpdater {
             .filter { it.second.isNotEmpty() }
         if (targets.isEmpty()) {
             dropAllWatches()
+            setRecheck(context, null)
             return
         }
-        val now = System.currentTimeMillis()
-        val snapshot = MonitorWidgetRepository.load(context, now) { agentId -> endedAt[agentId] }
+        val snapshot = MonitorWidgetRepository.load(context, holders, System.currentTimeMillis())
         val model = snapshot.model
         reconcileWatches(context, model)
-        scheduleSilenceCheck(context, model, now)
+        setRecheck(context, snapshot.recheckDelayMs)
 
         val locale = appLocale(context)
         for ((cls, ids) in targets) {
@@ -151,24 +184,46 @@ object MonitorWidgetUpdater {
         }
     }
 
-    /** Keep an observer on the shown live run's agent; drop stale auto ones. */
+    /** Arm (delay != null) or cancel the inexact, non-wakeup re-check alarm. */
+    private fun setRecheck(context: Context, delayMs: Long?) {
+        val alarms = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        if (delayMs == null) {
+            if (!recheckArmed) return
+            runCatching { alarms.cancel(recheckIntent(context)) }
+            recheckArmed = false
+            return
+        }
+        // Re-arming replaces the pending one (same PendingIntent); doing it
+        // once per armed period keeps this off the per-event path.
+        if (recheckArmed) return
+        runCatching {
+            alarms.set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + delayMs, recheckIntent(context))
+            recheckArmed = true
+        }.onFailure { Log.w(TAG, "re-check alarm failed", it) }
+    }
+
+    private fun recheckIntent(context: Context): PendingIntent {
+        val intent = Intent(context, MonitorWidgetProvider::class.java).setAction(ACTION_RECHECK)
+        return PendingIntent.getBroadcast(
+            context,
+            RECHECK_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    /** Keep an observer on held runs and on the shown live run; drop stale auto ones. */
     private fun reconcileWatches(context: Context, model: MonitorWidgetModel.Model?) {
         val liveAgent = model?.takeIf { it.live }?.agentId
         for ((agentId, w) in watches) {
-            if (!w.explicit && agentId != liveAgent) unwatch(agentId)
+            val held = holders.isHeld(agentId)
+            if (w.explicit && !held) {
+                unwatch(agentId)
+            } else if (!w.explicit && agentId != liveAgent) {
+                unwatch(agentId)
+            }
         }
         if (liveAgent != null && !watches.containsKey(liveAgent)) watch(context, liveAgent, explicit = false)
-    }
-
-    /** A live run nothing native vouches for (no runtime, no JS chain mark)
-     *  must stop "recording" once it goes silent; nothing else would wake us. */
-    private fun scheduleSilenceCheck(context: Context, model: MonitorWidgetModel.Model?, now: Long) {
-        silenceCheck?.cancel(false)
-        silenceCheck = null
-        if (model == null || !model.live || watches[model.agentId]?.explicit == true) return
-        silenceCheck = executor.schedule(Runnable {
-            runCatching { refreshNow(context, force = false) }
-        }, MonitorWidgetModel.SILENT_RUN_AFTER_MS + 1_000L, TimeUnit.MILLISECONDS)
     }
 
     private fun watch(context: Context, agentId: String, explicit: Boolean) {
@@ -196,8 +251,6 @@ object MonitorWidgetUpdater {
 
     private fun dropAllWatches() {
         for (id in watches.keys.toList()) unwatch(id)
-        silenceCheck?.cancel(false)
-        silenceCheck = null
     }
 
     @Suppress("DEPRECATION")

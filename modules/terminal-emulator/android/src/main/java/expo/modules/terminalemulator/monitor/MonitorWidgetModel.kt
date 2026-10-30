@@ -20,11 +20,16 @@ import kotlin.math.roundToInt
  */
 object MonitorWidgetModel {
     const val CAMERA_SLOTS = 4
-    /** A run with no run_end and no write for this long is treated as gone
-     *  (crashed executor / killed process): no flipping, no live clock. */
-    const val SILENT_RUN_AFTER_MS = 10 * 60 * 1000L
-    /** Writes this close after native saw the run end still belong to it. */
+    /** lib/monitor-live.ts isRunActive: a run with no run_end whose last event
+     *  is older than this is treated as gone (crash / killed process)... */
+    const val DEAD_AFTER_MS = 120_000L
+    /** ...stretched to this while something holds the run (the pane's agent
+     *  lock; here: the attended JS chain mark). */
+    const val LOCKED_DEAD_AFTER_MS = 600_000L
+    /** Events this close after native saw the last holder end still belong to it. */
     const val END_GRACE_MS = 5_000L
+    /** Floor for the re-check alarm (inexact, non-wakeup). */
+    const val MIN_RECHECK_MS = 60_000L
 
     enum class CamState { STANDBY, RUNNING, APPROVAL, DONE, FAILED, STOPPED, SKIPPED, NO_SIGNAL }
 
@@ -151,24 +156,21 @@ object MonitorWidgetModel {
     }
 
     /** Short label for a provider name as the executor reports it. */
+    /** Same table as lib/monitor-live.ts liveProviderLabel (keep in sync). */
     fun providerLabel(p: MonitorProgress.Provider?): String {
         if (p == null) return ""
-        val name = p.name
-        return when {
-            name == "perplexity" -> "Perplexity"
-            name == "gemini-api" -> "Gemini API"
-            name == "cerebras" -> "Cerebras"
-            name == "groq" -> "Groq"
-            name == "openrouter" -> "OpenRouter"
-            name == "local" -> p.model?.takeIf { it.isNotBlank() }?.let { shortModel(it) } ?: "Local LLM"
-            name == "codex" || name == "cli" || name == "codex-cli" || name == "cli:codex" -> "Codex CLI"
-            name.startsWith("cli:") -> name.removePrefix("cli:").replaceFirstChar { it.uppercase() } + " CLI"
-            else -> name
+        return when (p.name) {
+            "perplexity" -> "Perplexity"
+            "gemini-api" -> "Gemini API"
+            "cerebras" -> "Cerebras"
+            "groq" -> "Groq"
+            "local" -> "Local LLM"
+            "cli", "codex", "codex-cli", "cli:codex" -> "Codex CLI"
+            "openrouter" -> "OpenRouter"
+            "ab-article-eval" -> "A/B eval"
+            else -> p.name
         }
     }
-
-    private fun shortModel(model: String): String =
-        model.substringAfterLast('/').removeSuffix(".gguf").replace(Regex("-Q\\d.*$"), "")
 
     private fun cost(state: CamState, kind: String?, usage: MonitorProgress.Usage?): Cost {
         if (state == CamState.STANDBY || state == CamState.NO_SIGNAL) return Cost.None
@@ -197,6 +199,83 @@ object MonitorWidgetModel {
 
     private val SETTLED = setOf(CamState.DONE, CamState.SKIPPED, CamState.FAILED, CamState.STOPPED)
 
+    /** Newest event time of the run (run start or any branch update), else null. */
+    fun lastEventMs(run: MonitorProgress.Run): Long? {
+        var last = run.startedAtMs
+        for (b in run.branches) {
+            val u = b.updatedAtMs ?: continue
+            if (last == null || u > last) last = u
+        }
+        return last
+    }
+
+    /**
+     * Is the run still live? Mirrors lib/monitor-live.ts isRunActive, by event
+     * timestamps (never file mtime):
+     *  - a run_end ends it;
+     *  - an AgentRuntime run of this agent in this process keeps it live;
+     *  - the attended JS chain mark (which a JS reload can orphan) only
+     *    stretches the silence window from [DEAD_AFTER_MS] to [LOCKED_DEAD_AFTER_MS];
+     *  - once the last holder ended with no later event, it is over.
+     */
+    fun isLive(
+        run: MonitorProgress.Run,
+        nowMs: Long,
+        nativeRunActive: Boolean,
+        chainActive: Boolean,
+        heldEndedAtMs: Long?
+    ): Boolean {
+        if (run.ended) return false
+        if (nativeRunActive) return true
+        val last = lastEventMs(run) ?: return false
+        if (!chainActive && heldEndedAtMs != null && last <= heldEndedAtMs + END_GRACE_MS) return false
+        val limit = if (chainActive) LOCKED_DEAD_AFTER_MS else DEAD_AFTER_MS
+        return nowMs - last < limit
+    }
+
+    /**
+     * Delay for the re-check alarm that turns a live widget off when its run
+     * goes silent (the only thing that would otherwise never wake us), or null
+     * when none is needed: not live, or an in-process AgentRuntime run that
+     * will report its own end.
+     */
+    fun recheckDelayMs(
+        run: MonitorProgress.Run?,
+        nowMs: Long,
+        live: Boolean,
+        nativeRunActive: Boolean,
+        chainActive: Boolean
+    ): Long? {
+        if (run == null || !live || nativeRunActive) return null
+        val last = lastEventMs(run) ?: return MIN_RECHECK_MS
+        val limit = if (chainActive) LOCKED_DEAD_AFTER_MS else DEAD_AFTER_MS
+        return maxOf(MIN_RECHECK_MS, last + limit - nowMs + 1_000L)
+    }
+
+    /** Step indices that get a camera: every reported branch plus every step
+     *  of the plan (stepCount), so a step with no event yet is STANDBY. Same
+     *  set the MONITOR pane shows (lib/monitor-live.ts createLiveSource). */
+    fun stepIndices(run: MonitorProgress.Run): List<Int> {
+        val set = java.util.TreeSet<Int>()
+        run.branches.forEach { set.add(it.stepIndex) }
+        for (i in 0 until (run.stepCount ?: 0)) set.add(i)
+        return set.toList()
+    }
+
+    data class Candidate(
+        val run: MonitorProgress.Run,
+        val model: Model,
+        val nativeActive: Boolean,
+        val chainActive: Boolean
+    )
+
+    /** lib/monitor-live.ts pickDefaultLiveRun: the most recently started live
+     *  run, else the most recently started run; null when there is none. */
+    fun pick(candidates: List<Candidate>): Candidate? {
+        val start = { c: Candidate -> c.run.startedAtMs ?: Long.MIN_VALUE }
+        return candidates.filter { it.model.live }.maxByOrNull(start) ?: candidates.maxByOrNull(start)
+    }
+
     /** First step shown: the window of 4 slides to the first unsettled step. */
     fun windowStart(stepTotal: Int, firstUnsettled: Int?): Int {
         if (stepTotal <= CAMERA_SLOTS) return 0
@@ -205,46 +284,43 @@ object MonitorWidgetModel {
     }
 
     /**
-     * @param fileMtimeMs last write of progress.jsonl (for the silent-run rule)
-     * @param nativeRunActive AgentRuntime is executing this agent right now
-     * @param nativeEndedAtMs when native last saw this agent's run end (null = not seen)
+     * @param nativeRunActive AgentRuntime is executing this agent in this process
+     * @param chainActive the attended JS chain of this agent reported its start
+     * @param heldEndedAtMs when the last holder of this agent's run ended (null = not seen)
      */
     fun build(
         run: MonitorProgress.Run,
         nowMs: Long,
-        fileMtimeMs: Long,
-        nativeRunActive: Boolean,
+        nativeRunActive: Boolean = false,
+        chainActive: Boolean = false,
         iteration: Int? = null,
-        nativeEndedAtMs: Long? = null
+        heldEndedAtMs: Long? = null
     ): Model {
         val byStep = run.branches.associateBy { it.stepIndex }
-        val maxIndex = run.branches.maxOfOrNull { it.stepIndex } ?: -1
-        val stepTotal = maxOf(run.stepCount ?: 0, maxIndex + 1)
-        val states = (0 until stepTotal).map { i -> byStep[i]?.let { camState(run, it) } ?: CamState.STANDBY }
+        val steps = stepIndices(run)
+        val states = steps.map { i -> byStep[i]?.let { camState(run, it) } ?: CamState.STANDBY }
 
         var result = outcome(run)
-        // No run_end, and nothing native vouches for the run: it died (process
-        // exit seen with no later write) or went quiet past the silence limit.
-        val endedUnfinished = nativeEndedAtMs != null && fileMtimeMs <= nativeEndedAtMs + END_GRACE_MS
-        val silent = result == Outcome.RUNNING && !nativeRunActive &&
-            (endedUnfinished || nowMs - fileMtimeMs > SILENT_RUN_AFTER_MS)
-        val live = result == Outcome.RUNNING && !silent
-        if (silent) result = Outcome.FAILED
+        val live = result == Outcome.RUNNING && isLive(run, nowMs, nativeRunActive, chainActive, heldEndedAtMs)
+        // No run_end and nothing vouches for it any more: it died.
+        if (result == Outcome.RUNNING && !live) result = Outcome.FAILED
 
         val firstUnsettled = states.indexOfFirst { it !in SETTLED }.takeIf { it >= 0 }
-        val start = windowStart(stepTotal, firstUnsettled)
+        val start = windowStart(steps.size, firstUnsettled)
 
         val cameras = (0 until CAMERA_SLOTS).map { slot ->
-            val step = start + slot
-            if (step >= stepTotal) {
+            val pos = start + slot
+            if (pos >= steps.size) {
+                val step = (steps.lastOrNull() ?: -1) + 1 + (pos - steps.size)
                 Camera(
                     slot = slot, stepIndex = null, channel = channel(step), state = CamState.NO_SIGNAL,
                     variant = Variant.DIM, operator = operator(run.agentId, step), kind = null,
                     providerLabel = "", progress = 0, tone = Tone.DONE, cost = Cost.None
                 )
             } else {
+                val step = steps[pos]
                 val b = byStep[step]
-                var state = states[step]
+                var state = states[pos]
                 // A dead run leaves no camera "recording".
                 if (!live && (state == CamState.RUNNING || state == CamState.APPROVAL)) state = CamState.STOPPED
                 val kind = b?.provider?.kind
@@ -271,7 +347,8 @@ object MonitorWidgetModel {
         // Mission progress over every step (not just the 4 shown).
         val settled = states.count { it in SETTLED }
         val active = states.count { it == CamState.RUNNING || it == CamState.APPROVAL }
-        val total = maxOf(stepTotal, 1)
+        // lib/monitor-live.ts: max(stepCount, cameras, 1).
+        val total = maxOf(run.stepCount ?: 0, steps.size, 1)
         val pct = if (result == Outcome.SUCCESS) {
             100
         } else {
@@ -310,7 +387,7 @@ object MonitorWidgetModel {
             missionPct = pct,
             tone = tone,
             runStartMs = run.startedAtMs,
-            runEndMs = if (live) null else (run.endedAtMs ?: fileMtimeMs),
+            runEndMs = if (live) null else (run.endedAtMs ?: lastEventMs(run)),
             iteration = iteration?.takeIf { it > 0 },
             approvalChannel = approvalStep?.let { channel(it) },
             approvalStep = approvalStep,

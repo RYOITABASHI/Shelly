@@ -526,12 +526,13 @@ object AgentRuntime {
          *  every consumer treats as PROACTIVE (fail-closed). */
         origin: String = "event"
     ): AgentRunResult {
+        // MONITOR widget hook (push-only updates; never throws). Counted per
+        // call, paired with runEnded in the finally below.
+        expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runStarted(context, agentId)
         // `shelly agent add` review fix: remember (in process memory only)
         // that THIS process is running the agent, so RN can tell a real
         // run's ClosePaw approval request from a forged request file.
         val runToken = NativeAgentRunRegistry.begin(agentId)
-        // MONITOR widget hook (push-only updates; async, never throws).
-        expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runStarted(context, agentId)
         try {
             return runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin)
         } finally {

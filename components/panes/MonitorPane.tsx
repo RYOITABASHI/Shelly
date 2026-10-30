@@ -57,6 +57,9 @@ import { createLiveSource, liveLoopText, pickDefaultLiveRun, type LiveAgentInfo 
 import type { MonitorRun } from '@/lib/agent-progress';
 import type { Agent } from '@/store/types';
 import { useMonitorLivePoller } from '@/hooks/use-monitor-live-poller';
+import { useMultiPaneStore } from '@/hooks/use-multi-pane';
+import { multiPaneSlotOps } from '@/lib/pane-focus';
+import { canReturnFromMonitor, restoreFromMonitor } from '@/lib/monitor-widget-link';
 import { openFile } from '@/lib/open-file';
 import { openAgentChatThread } from '@/lib/agent-thread-open';
 import { MAX_PARALLEL_BRANCHES } from '@/lib/agent-orchestration';
@@ -156,6 +159,10 @@ export default function MonitorPane() {
   const { liveRuns, agents, runningAgentIds, liveLoops } = useAgentStore(
     useShallow((s) => ({ liveRuns: s.liveRuns, agents: s.agents, runningAgentIds: s.runningAgentIds, liveLoops: s.liveLoops })),
   );
+
+  // A MONITOR widget tap that found no free slot borrowed this one: offer BACK.
+  const slots = useMultiPaneStore((s) => s.slots);
+  const canGoBack = canReturnFromMonitor(monitor.returnTo, slots);
 
   // Reads progress.jsonl into liveRuns while this pane is mounted.
   useMonitorLivePoller();
@@ -707,6 +714,15 @@ export default function MonitorPane() {
           ))}
         </View>
         <View style={styles.grp}>
+          {canGoBack && (
+            <Key
+              label={t('monitor.widget_back')}
+              pressed={false}
+              onPress={() =>
+                restoreFromMonitor(monitor.returnTo, multiPaneSlotOps(), (r) => setMonitor({ returnTo: r }))
+              }
+            />
+          )}
           <Key label="GRID" pressed={view === 'grid'} onPress={() => setMonitor({ view: 'grid', auto: false })} />
           <Key
             label="MAP"

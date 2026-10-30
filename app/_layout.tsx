@@ -37,8 +37,8 @@ import { useBrowserStore } from '@/store/browser-store';
 import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
 import { useBackupModalStore } from '@/store/backup-modal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
-import { ensurePaneByTab, focusPaneByTab } from '@/lib/pane-focus';
-import { openMonitorFromWidgetLink } from '@/lib/monitor-widget-link';
+import { ensurePaneByTab, focusPaneByTab, multiPaneSlotOps } from '@/lib/pane-focus';
+import { openMonitorFromWidgetLink, swapSlotToMonitor } from '@/lib/monitor-widget-link';
 import { usePaneStore } from '@/store/pane-store';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { COMPANION_CONVERSATION_KEY } from '@/store/ai-pane-store';
@@ -1433,7 +1433,12 @@ export default function RootLayout() {
           // MONITOR home-screen widget tap (lib/monitor-widget-link.ts).
           await waitForMultiPaneHydration();
           const opened = openMonitorFromWidgetLink(parsed.queryParams, {
-            showMonitorPane: () => ensurePaneByTab('monitor'),
+            // No free slot (one terminal on the cover screen, or a full grid
+            // of terminals): show MONITOR in the focused slot for now; the
+            // pane's BACK key puts the previous tab back.
+            showMonitorPane: () =>
+              ensurePaneByTab('monitor') ||
+              swapSlotToMonitor(multiPaneSlotOps(), (r) => useAgentStore.getState().setMonitor({ returnTo: r })),
             setMonitor: (patch) => useAgentStore.getState().setMonitor(patch),
           });
           logInfo('DeepLink', `MONITOR widget link → pane ${opened ? 'shown' : 'unavailable'}`);

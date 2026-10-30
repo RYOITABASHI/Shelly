@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Camera 2 REC blink (on / off / on / noise), added by MonitorWidgetRenderer
+     only while the camera is RUNNING. Interval differs per camera so the four
+     feeds do not blink in lock-step. -->
+<ViewFlipper xmlns:android="http://schemas.android.com/apk/res/android"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:autoStart="true"
+  android:flipInterval="700">
+  <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+    <TextView
+      android:layout_width="wrap_content" android:layout_height="wrap_content"
+      android:layout_gravity="top|end" android:layout_margin="3dp"
+      android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+      android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+  </FrameLayout>
+  <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
+  <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+    <TextView
+      android:layout_width="wrap_content" android:layout_height="wrap_content"
+      android:layout_gravity="top|end" android:layout_margin="3dp"
+      android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+      android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+  </FrameLayout>
+  <FrameLayout
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/monitor_noise" />
+</ViewFlipper>

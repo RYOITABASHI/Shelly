@@ -64,3 +64,72 @@ export function openMonitorFromWidgetLink(queryParams: QueryParams, deps: Monito
   deps.setMonitor(monitorLinkPatch(link));
   return deps.showMonitorPane();
 }
+
+// ─── Fallback when no pane slot is free (e.g. one terminal on the cover screen) ──
+
+export interface SlotLike {
+  id: string;
+  tab: string;
+}
+
+/** Where the widget tap took MONITOR from, so the user can go back. */
+export interface MonitorReturn {
+  slotId: string;
+  tab: string;
+}
+
+export interface SlotOps {
+  getSlots: () => readonly (SlotLike | null | undefined)[];
+  getFocusedSlot: () => number;
+  setSlotTab: (index: number, tab: string) => void;
+  focusSlot: (index: number) => void;
+}
+
+/** Slot to turn into MONITOR: the focused one, else the first occupied one. */
+export function pickSwapSlot(slots: readonly (SlotLike | null | undefined)[], focused: number): number | null {
+  if (slots[focused]) return focused;
+  const i = slots.findIndex((s) => !!s);
+  return i >= 0 ? i : null;
+}
+
+/**
+ * Temporarily show MONITOR in an occupied slot (the slot keeps its id and
+ * terminal session; only its tab changes) and remember what it was, so the
+ * MONITOR pane can offer "back". Returns false when there is no slot at all.
+ */
+export function swapSlotToMonitor(ops: SlotOps, setReturnTo: (r: MonitorReturn | null) => void): boolean {
+  const slots = ops.getSlots();
+  const index = pickSwapSlot(slots, ops.getFocusedSlot());
+  if (index === null) return false;
+  const slot = slots[index]!;
+  if (slot.tab !== 'monitor') {
+    setReturnTo({ slotId: slot.id, tab: slot.tab });
+    ops.setSlotTab(index, 'monitor');
+  }
+  ops.focusSlot(index);
+  return true;
+}
+
+/** Whether `ret` still points at a slot that is showing MONITOR. */
+export function canReturnFromMonitor(
+  ret: MonitorReturn | null | undefined,
+  slots: readonly (SlotLike | null | undefined)[],
+): boolean {
+  return !!ret && slots.some((s) => s?.id === ret.slotId && s.tab === 'monitor');
+}
+
+/** Put the swapped slot back to its previous tab. */
+export function restoreFromMonitor(
+  ret: MonitorReturn | null | undefined,
+  ops: SlotOps,
+  setReturnTo: (r: MonitorReturn | null) => void,
+): boolean {
+  if (!ret) return false;
+  const slots = ops.getSlots();
+  const index = slots.findIndex((s) => s?.id === ret.slotId);
+  setReturnTo(null);
+  if (index < 0 || slots[index]!.tab !== 'monitor') return false;
+  ops.setSlotTab(index, ret.tab);
+  ops.focusSlot(index);
+  return true;
+}
