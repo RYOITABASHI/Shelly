@@ -52,7 +52,9 @@ import {
 import { decodeCron } from './agent-card-cron';
 import { encodeAtOneShot, isOneShotSchedule, parseOneShotSchedule } from './agent-oneshot';
 import { toolChoiceToLabel } from './agent-tool-router';
-import type { Agent } from '@/store/types';
+import { normalizeStep, planParallelGroups } from './agent-orchestration';
+import { withStepTool } from './agent-provider-overrides';
+import type { Agent, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 // Type-only: erased at compile time — same "no RN in this pure module"
 // convention lib/agent-plan-summary.ts already follows for ConfirmedAgentDraft.
 import type { PendingAgentSession } from '@/store/ai-pane-store';
@@ -91,6 +93,9 @@ export function agentToParsedAgentDraft(agent: Agent): ParsedAgentDraft {
           continuous: {
             cooldownMs: agent.continuous.cooldownMs,
             ...(agent.continuous.goalCheck ? { goalCheck: true } : {}),
+            // Display only (the ¥0 paid-pin note); an edit keeps the budget
+            // through mergeContinuousOnEdit, never from this field.
+            ...(typeof agent.continuous.dailyBudgetJpy === 'number' && agent.continuous.dailyBudgetJpy > 0 ? { dailyBudgetJpy: agent.continuous.dailyBudgetJpy } : {}),
           },
         }
       : {}),
@@ -393,6 +398,228 @@ function tryPatchAutonomous(draft: ParsedAgentDraft, text: string): boolean | nu
   return detectAutonomousIntent(text) === true ? true : null;
 }
 
+// ── Step provider patch (「2番目をCodexで」/「全部ローカルで」) ─────────────────
+
+// DEFERRED.md「タスクごとのプロバイダを自由に指定・途中で変更する」: change which
+// provider runs a step by talking. The grammar is anchored to the WHOLE
+// utterance (step reference + provider + a short "do it with" ending and
+// nothing else), the same containment the bare-time gate above relies on, so
+// a sentence that merely mentions a provider ("Geminiのニュースをまとめて")
+// never patches anything. A reference that does not resolve to exactly the
+// step(s) it names (out-of-range ordinal, a keyword matching 0 or 2+ steps)
+// patches nothing.
+
+type ProviderToken = ToolChoice | 'claude';
+
+const PROVIDER_JA_SRC =
+  'ローカル\\s*(?:LLM|エルエルエム)?|local\\s*llm|local|パープレ(?:キシティ)?|perplexity|codex|コーデックス|gemini|ジェミニ|cerebras|セレブラス|groq|グロック|claude(?:\\s*code)?|クロード(?:\\s*コード)?|自動|おまかせ|お任せ|オート|auto';
+const STEP_PROVIDER_JA_RE = new RegExp(
+  `^(?:やっぱり|やっぱ)?\\s*(.*?)\\s*(は|を|も)?\\s*(${PROVIDER_JA_SRC})\\s*(?:で|に|を使って)\\s*(?:して|変えて|変更して|やって|実行して|動かして|お願い(?:します)?|頼む|頼みます)?\\s*(?:ください|下さい)?\\s*[。．.!！]?$`,
+  'i',
+);
+const PROVIDER_EN_SRC = 'local(?:\\s+llm|\\s+model)?|locally|perplexity|codex|gemini|cerebras|groq|claude(?:\\s+code)?|auto(?:matic)?';
+const STEP_PROVIDER_EN_RE = new RegExp(
+  `^(?:please\\s+)?(?:(?:make|set|switch|change|move|put|run|do)\\s+)?(.+?)\\s+(?:(?:to|with|on|via|using|in)\\s+)?(?:the\\s+)?(${PROVIDER_EN_SRC})(?:\\s+instead)?(?:\\s+please)?[.!]?$`,
+  'i',
+);
+const STEP_PROVIDER_EN_USE_FOR_RE = new RegExp(
+  `^(?:please\\s+)?use\\s+(?:the\\s+)?(${PROVIDER_EN_SRC})\\s+for\\s+(.+?)(?:\\s+instead)?[.!]?$`,
+  'i',
+);
+
+function providerToken(raw: string): ProviderToken | null {
+  const s = raw.trim().toLowerCase();
+  if (/^(?:ローカル|local)/i.test(s)) return { type: 'local' };
+  if (/^(?:パープレ|perplexity)/.test(s)) return { type: 'perplexity' };
+  if (/^(?:codex|コーデックス)$/.test(s)) return { type: 'cli', cli: 'codex' };
+  if (/^(?:gemini|ジェミニ)$/.test(s)) return { type: 'gemini-api' };
+  if (/^(?:cerebras|セレブラス)$/.test(s)) return { type: 'cerebras' };
+  if (/^(?:groq|グロック)$/.test(s)) return { type: 'groq' };
+  if (/^(?:claude|クロード)/.test(s)) return 'claude';
+  if (/^(?:自動|おまかせ|お任せ|オート|auto)/.test(s)) return { type: 'auto' };
+  return null;
+}
+
+type StepRef =
+  | { kind: 'all' }
+  | { kind: 'ordinal'; n: number }
+  | { kind: 'last' }
+  | { kind: 'parallel'; n: number }
+  | { kind: 'keyword'; keyword: string };
+
+const KANJI_DIGITS: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+const EN_ORDINALS: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
+
+function parseCount(raw: string): number {
+  const ascii = raw.replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0));
+  if (/^\d{1,2}$/.test(ascii)) return parseInt(ascii, 10);
+  if (/^\d{1,2}(?:st|nd|rd|th)$/i.test(ascii)) return parseInt(ascii, 10);
+  if (EN_ORDINALS[ascii.toLowerCase()]) return EN_ORDINALS[ascii.toLowerCase()];
+  if (raw === '十') return 10;
+  if (/^十[一-九]$/.test(raw)) return 10 + KANJI_DIGITS[raw[1]];
+  return KANJI_DIGITS[raw] ?? 0;
+}
+
+const JA_NUM = '[0-9０-９]{1,2}|[一二三四五六七八九十]{1,2}';
+const JA_STEP_NOUN = '(?:の\\s*(?:ステップ|手順|タスク|処理|作業))?';
+const JA_REF_ALL = /^(?:全部|全て|すべて|ぜんぶ|全ステップ)(?:の\s*(?:ステップ|手順|タスク|処理|作業))?$/;
+const JA_REF_PARALLEL = new RegExp(`^(?:並列|パラレル|並行)(?:の|で)?\\s*(${JA_NUM})\\s*(?:番目|つ目|個目)${JA_STEP_NOUN}$`);
+const JA_REF_ORDINAL = new RegExp(`^(${JA_NUM})\\s*(?:番目|つ目|個目)${JA_STEP_NOUN}$`);
+const JA_REF_STEP_N = new RegExp(`^(?:ステップ|手順)\\s*(${JA_NUM})$`);
+const JA_REF_FIRST_LAST = new RegExp(`^(最初|最後)${JA_STEP_NOUN}$`);
+const JA_REF_KEYWORD = /^(.{1,20}?)\s*(?:の|する)\s*(?:ステップ|手順|ところ|部分|処理|タスク|作業)$/;
+const JA_REF_BARE_KEYWORD = /^([^\s、。,]{1,15})$/;
+const EN_ORD = '(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\\d{1,2}(?:st|nd|rd|th))';
+const EN_REF_ALL = /^(?:all|everything|every\s+step|all\s+(?:the\s+)?steps|all\s+of\s+(?:them|it)|it\s+all)$/i;
+const EN_REF_PARALLEL = new RegExp(`^(?:the\\s+)?(${EN_ORD})\\s+parallel\\s+(?:step|branch|one|task)$`, 'i');
+const EN_REF_ORDINAL = new RegExp(`^(?:the\\s+)?(${EN_ORD})\\s+(?:step|one|task)$`, 'i');
+const EN_REF_STEP_N = /^step\s+(\d{1,2})$/i;
+const EN_REF_LAST = /^(?:the\s+)?last\s+(?:step|one|task)$/i;
+const EN_REF_KEYWORD = /^(?:the\s+)?(.{1,30}?)\s+step$/i;
+
+function parseStepRefJa(ref: string, particle: string | undefined): StepRef | null {
+  const r = ref.trim();
+  if (!r) return null;
+  if (JA_REF_ALL.test(r)) return { kind: 'all' };
+  let m = r.match(JA_REF_PARALLEL);
+  if (m) return { kind: 'parallel', n: parseCount(m[1]) };
+  m = r.match(JA_REF_ORDINAL) ?? r.match(JA_REF_STEP_N);
+  if (m) return { kind: 'ordinal', n: parseCount(m[1]) };
+  m = r.match(JA_REF_FIRST_LAST);
+  if (m) return m[1] === '最後' ? { kind: 'last' } : { kind: 'ordinal', n: 1 };
+  m = r.match(JA_REF_KEYWORD);
+  if (m) return { kind: 'keyword', keyword: m[1].trim() };
+  // 「要約はClaudeで」: a bare keyword only with the topic particle は.
+  if (particle === 'は') {
+    m = r.match(JA_REF_BARE_KEYWORD);
+    if (m) return { kind: 'keyword', keyword: m[1] };
+  }
+  return null;
+}
+
+function parseStepRefEn(ref: string): StepRef | null {
+  const r = ref.trim();
+  if (!r) return null;
+  if (EN_REF_ALL.test(r)) return { kind: 'all' };
+  let m = r.match(EN_REF_PARALLEL);
+  if (m) return { kind: 'parallel', n: parseCount(m[1]) };
+  if (EN_REF_LAST.test(r)) return { kind: 'last' };
+  m = r.match(EN_REF_ORDINAL) ?? r.match(EN_REF_STEP_N);
+  if (m) return { kind: 'ordinal', n: parseCount(m[1]) };
+  m = r.match(EN_REF_KEYWORD);
+  if (m && !/^(?:this|that|next|current)$/i.test(m[1].trim())) return { kind: 'keyword', keyword: m[1].trim() };
+  return null;
+}
+
+function parseStepProviderRequest(text: string): { ref: StepRef; provider: ProviderToken } | null {
+  const t = text.trim();
+  if (!t || t.length > 80) return null;
+  const ja = t.match(STEP_PROVIDER_JA_RE);
+  if (ja) {
+    const provider = providerToken(ja[3]);
+    const ref = provider ? parseStepRefJa(ja[1], ja[2]) : null;
+    if (provider && ref) return { ref, provider };
+  }
+  const useFor = t.match(STEP_PROVIDER_EN_USE_FOR_RE);
+  if (useFor) {
+    const provider = providerToken(useFor[1]);
+    const ref = provider ? parseStepRefEn(useFor[2]) : null;
+    if (provider && ref) return { ref, provider };
+  }
+  const en = t.match(STEP_PROVIDER_EN_RE);
+  if (en) {
+    const provider = providerToken(en[2]);
+    const ref = provider ? parseStepRefEn(en[1]) : null;
+    if (provider && ref) return { ref, provider };
+  }
+  return null;
+}
+
+function stepInstruction(step: string | AgentOrchestrationStep): string {
+  return typeof step === 'string' ? step : step.instruction ?? '';
+}
+
+/** Step indices `ref` names, in display order (the summary lists every step,
+ *  parallel members included, 1-based). null = does not resolve cleanly. */
+function resolveStepRef(steps: ReadonlyArray<string | AgentOrchestrationStep>, ref: StepRef): number[] | null {
+  switch (ref.kind) {
+    case 'all':
+      return steps.map((_, i) => i);
+    case 'last':
+      return steps.length ? [steps.length - 1] : null;
+    case 'ordinal':
+      return ref.n >= 1 && ref.n <= steps.length ? [ref.n - 1] : null;
+    case 'parallel': {
+      const groups = planParallelGroups(steps.map(normalizeStep)).group;
+      const members = steps.map((_, i) => i).filter((i) => groups[i] !== undefined);
+      return ref.n >= 1 && ref.n <= members.length ? [members[ref.n - 1]] : null;
+    }
+    case 'keyword': {
+      const kw = ref.keyword.toLowerCase();
+      if (!kw) return null;
+      const hits = steps.map((s, i) => (stepInstruction(s).toLowerCase().includes(kw) ? i : -1)).filter((i) => i >= 0);
+      return hits.length === 1 ? hits : null;
+    }
+  }
+}
+
+function toolKey(tool: ToolChoice | undefined): string {
+  return tool && tool.type !== 'auto' ? JSON.stringify(tool) : '';
+}
+
+interface StepToolPatch {
+  orchestrationSteps?: Array<string | AgentOrchestrationStep>;
+  tool?: ToolChoice;
+  changedFields: string[];
+}
+
+/**
+ * The step provider change `text` asks for, against `draft`. Orchestrated
+ * drafts patch step pins (`step:<index>` changed fields; 'auto' clears a pin;
+ * an api-call step is never given a model provider). A single-step draft takes
+ * 「全部」/「1番目」/「最後」 as its agent-level tool ('tool' changed field).
+ * 'unsupported' = the provider is not available on this device (Claude Code).
+ */
+export function tryPatchStepTools(
+  draft: ParsedAgentDraft,
+  text: string,
+): StepToolPatch | { unsupported: 'Claude Code' } | null {
+  const req = parseStepProviderRequest(text);
+  if (!req) return null;
+  const steps = draft.orchestrationSteps ?? [];
+  if (steps.length >= 2) {
+    const indices = resolveStepRef(steps, req.ref);
+    if (!indices) return { changedFields: [] };
+    if (req.provider === 'claude') return { unsupported: 'Claude Code' };
+    const tool = req.provider;
+    const changedFields: string[] = [];
+    const next = steps.map((step, i) => {
+      if (!indices.includes(i)) return step;
+      if (typeof step !== 'string' && step.apiCall) return step;
+      const current = typeof step === 'string' ? undefined : step.tool;
+      if (toolKey(current) === toolKey(tool)) return step;
+      changedFields.push(`step:${i}`);
+      return withStepTool(step, tool);
+    });
+    return changedFields.length ? { orchestrationSteps: next, changedFields } : { changedFields: [] };
+  }
+  const single =
+    req.ref.kind === 'all' || req.ref.kind === 'last' || (req.ref.kind === 'ordinal' && req.ref.n === 1);
+  if (!single) return { changedFields: [] };
+  if (req.provider === 'claude') return { unsupported: 'Claude Code' };
+  if (toolKey(draft.tool) === toolKey(req.provider)) return { changedFields: [] };
+  return { tool: req.provider, changedFields: ['tool'] };
+}
+
+/** 'Claude Code' when the utterance is a step-provider edit naming a provider
+ *  this device cannot run yet — the caller says so instead of guessing. */
+export function detectUnsupportedStepProvider(draft: ParsedAgentDraft, utterance: string): string | null {
+  const text = utterance.trim();
+  if (!text || text.startsWith('@')) return null;
+  const r = tryPatchStepTools(draft, text);
+  return r && 'unsupported' in r ? r.unsupported : null;
+}
+
 // ── Public API ───────────────────────────────────────────────────────────
 
 /**
@@ -428,6 +655,25 @@ export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): Dra
   // can only turn an existing match into `null`, never the reverse), closes
   // that gap for both of this module's public entry points at once.
   if (text.startsWith('@')) return null;
+
+  // Step provider edit: the grammar is whole-utterance, so when it matches it
+  // is the ONLY thing this reply says — no other detector runs (「2番目を
+  // Codexで」 must never also read as an action / schedule change).
+  const stepToolsRaw = tryPatchStepTools(draft, text);
+  if (stepToolsRaw && 'unsupported' in stepToolsRaw) return null;
+  const stepTools = stepToolsRaw as StepToolPatch | null;
+  if (stepTools && stepTools.changedFields.length === 0) return null;
+  if (stepTools) {
+    const patchedDraft: ParsedAgentDraft = { ...draft };
+    if (stepTools.orchestrationSteps) patchedDraft.orchestrationSteps = stepTools.orchestrationSteps;
+    if (stepTools.tool) {
+      patchedDraft.tool = stepTools.tool;
+      patchedDraft.toolLabel = toolChoiceToLabel(stepTools.tool);
+      patchedDraft.toolExplicit = stepTools.tool.type !== 'auto' || undefined;
+      patchedDraft.toolPatched = true;
+    }
+    return { patchedDraft, changedFields: stepTools.changedFields };
+  }
 
   const changedFields: string[] = [];
   const patched: ParsedAgentDraft = { ...draft };
@@ -619,6 +865,10 @@ export interface RegisteredAgentCorrectionResult {
    *  fire a one-off runAgentNow for the agent instead, as an ADDITIONAL
    *  action rather than a schedule replacement. */
   runNowRequested: boolean;
+  /** true for a step-provider edit (changedFields `step:<i>` / 'tool'):
+   *  nothing is persisted (agentPartial is empty); the caller opens an edit
+   *  session on the agent with `patchedDraft` and waits for a confirm reply. */
+  confirmEditRequired?: boolean;
 }
 
 /**
@@ -693,6 +943,20 @@ export function applyCorrectionToJustRegisteredAgent(
 
   const result = applyDraftPatch(draftSnapshot, utterance);
   if (!result) return null;
+
+  // A provider edit (「2番目をCodexで」) is an edit of the registered agent's
+  // plan: never applied straight away — the caller re-opens it as an edit
+  // draft awaiting the user's plain-chat confirm.
+  if (result.changedFields.some((f) => f === 'tool' || f.startsWith('step:'))) {
+    return {
+      patchedDraft: result.patchedDraft,
+      changedFields: result.changedFields,
+      agentPartial: {},
+      autonomousTurnedOn: false,
+      runNowRequested: false,
+      confirmEditRequired: true,
+    };
+  }
 
   // See the "bug fix" doc comment above — this is the guard that keeps a
   // "今すぐ実行して" reply from silently wiping an existing recurring

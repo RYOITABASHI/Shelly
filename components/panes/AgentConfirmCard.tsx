@@ -48,6 +48,8 @@ export interface ConfirmedAgentDraft {
   /** 2026-10-15: `tool` was explicitly named by the user (see
    *  ParsedAgentDraft.toolExplicit) — persisted as-is instead of `auto`. */
   toolExplicit?: boolean;
+  /** The agent-level tool was changed by a chat edit (ParsedAgentDraft.toolPatched). */
+  toolPatched?: boolean;
   action: AgentAction;
   /** Multi-destination fan-out (2026-07-28) — see store/types.ts's
    *  Agent.actions doc comment. Only ever set by

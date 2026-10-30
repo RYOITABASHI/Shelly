@@ -65,6 +65,8 @@ import { openAgentChatThread } from '@/lib/agent-thread-open';
 import { MAX_PARALLEL_BRANCHES, normalizeSteps, planParallelGroups } from '@/lib/agent-orchestration';
 import { MonitorCamera, NoSignalCamera } from '@/components/monitor/MonitorCamera';
 import { MonitorMap } from '@/components/monitor/MonitorMap';
+import { MonitorProviderPicker } from '@/components/monitor/MonitorProviderPicker';
+import { useMonitorProviderPick } from '@/hooks/use-monitor-provider-pick';
 import { MON, MON_FONT_MONO, MON_FONT_OSD, kindColor } from '@/components/monitor/monitor-palette';
 import { translateMonitorText } from '@/components/monitor/monitor-i18n';
 
@@ -335,6 +337,8 @@ export default function MonitorPane() {
   const timestamp = source.isDemo ? playClock : isLive ? formatClock(now) : formatClock(startWall + playT * 1000);
   const defById = useMemo(() => Object.fromEntries(source.agents.map((d) => [d.id, d])), [source]);
   const selectedDef = defById[selectedId] ?? source.agents[0];
+  // Provider picker (live single view): tap the camera to open it.
+  const providerPick = useMonitorProviderPick(isLive ? liveRun : null, liveAgent, selectedDef?.id, t);
 
   const doneCount = t('monitor.done_count', { n: summary.done, total: summary.total });
   const outcome = snap.run?.outcome;
@@ -661,6 +665,16 @@ export default function MonitorPane() {
       )}
 
       {/* ── Wall ── */}
+      {showWall && view === 'single' && providerPick.open && providerPick.available && (
+        <MonitorProviderPicker
+          channel={selectedDef.channel}
+          current={providerPick.current}
+          canRestart={providerPick.canRestart}
+          busy={providerPick.busy}
+          onApply={providerPick.apply}
+          onClose={providerPick.toggle}
+        />
+      )}
       {showWall && (
         <View style={styles.wall} onLayout={onWallLayout} testID="monitor-wall">
           {view === 'single' ? (
@@ -676,7 +690,7 @@ export default function MonitorPane() {
               single
               sideBySide={isWide}
               compactText={false}
-              onPress={() => setMonitor({ view: 'grid', auto: false })}
+              onPress={() => (providerPick.available ? providerPick.toggle() : setMonitor({ view: 'grid', auto: false }))}
             />
           ) : (
             camW > 0 && (

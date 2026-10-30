@@ -75,7 +75,7 @@ import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
-import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, persistAgentDraft } from '@/lib/agent-draft-patch';
+import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, detectUnsupportedStepProvider, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import {
   buildConversationTranscript,
@@ -1485,6 +1485,20 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
           const unclearStrings = detectMessageLocale(pendingAgentSession.draft.rawText) === 'ja' ? ja : en;
           const unclearIsEditing = !!pendingAgentSession.editingAgentId;
+          // A step-provider edit naming a provider this device cannot run yet
+          // (「3番目をClaudeで」): say so plainly, the draft stays as it was.
+          const unsupportedProvider = detectUnsupportedStepProvider(pendingAgentSession.draft, userText);
+          if (unsupportedProvider) {
+            store.addMessage(paneId, {
+              id: generateId(),
+              role: 'assistant',
+              content: unclearStrings['agentplan.provider_unsupported'].replace('{{provider}}', unsupportedProvider),
+              timestamp: Date.now(),
+              agent: pendingAgentSession.agentLabel,
+            });
+            store.setPendingAgentSession(paneId, { ...pendingAgentSession, createdAt: Date.now() });
+            return;
+          }
           store.addMessage(paneId, {
             id: generateId(),
             role: 'assistant',
@@ -1795,6 +1809,42 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           justRegistered.createdAt,
           JUST_REGISTERED_STALE_MS,
         );
+        if (correction?.confirmEditRequired) {
+          // Step-provider edit of the just-registered agent (「2番目をCodexで」):
+          // never applied directly — re-open it as an edit draft with ★ on
+          // the changed steps and wait for the user's plain-chat confirm,
+          // exactly like a Sidebar "Edit" session.
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          const editStrings = detectMessageLocale(correction.patchedDraft.rawText) === 'ja' ? ja : en;
+          const editMessageId = generateId();
+          const editNow = Date.now();
+          store.addMessage(paneId, {
+            id: editMessageId,
+            role: 'assistant',
+            content: `${editStrings['agentplan.patch_pending_header']}\n${summarizeAgentDraftAsText(
+              correction.patchedDraft,
+              new Set(correction.changedFields),
+              true,
+              { cloudConsent: useSettingsStore.getState().settings.autonomousCloudConsent ?? false },
+            )}`,
+            timestamp: editNow,
+            agent: justRegistered.agentLabel,
+            agentDraft: correction.patchedDraft,
+            agentChatConfirm: true,
+            editingAgentId: justRegistered.agentId,
+          });
+          store.setPendingAgentSession(paneId, {
+            draft: correction.patchedDraft,
+            editingAgentId: justRegistered.agentId,
+            phase: 'await-confirm',
+            attemptCounts: {},
+            hasAssumptions: hasDraftAssumptions(correction.patchedDraft),
+            createdAt: editNow,
+            messageId: editMessageId,
+            agentLabel: justRegistered.agentLabel,
+          });
+          return;
+        }
         if (correction) {
           store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
           const patchedDraft = correction.patchedDraft;
@@ -4123,7 +4173,10 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           : undefined;
         const autonomousChanged = !!editingAgent
           && (editingAgent.autonomous ?? false) !== confirmed.autonomous;
-        const persistedTool = editingAgent && !autonomousChanged ? editingAgent.tool : tool;
+        // A chat provider edit of a single-step agent (「全部ローカルで」,
+        // ParsedAgentDraft.toolPatched) is the one other case that changes
+        // the stored tool — through the same resolver.
+        const persistedTool = editingAgent && !autonomousChanged && !confirmed.toolPatched ? editingAgent.tool : tool;
         const persistedRunOn = editingAgent && !autonomousChanged ? editingAgent.runOn : runOn;
         const agentFields = {
           name: confirmed.name,

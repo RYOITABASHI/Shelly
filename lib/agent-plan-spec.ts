@@ -17,7 +17,7 @@ import { buildAgentPolicy } from './agent-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
 import { isApiKeyStep, isOrchestrated, isolatedApiStepPolicy, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
 import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
-import { applyContinuousProviderPolicy, normalizeContinuousConfig } from './agent-continuous';
+import { applyContinuousProviderPolicy, continuousExcludesPaidApi, isPaidApiTool, normalizeContinuousConfig } from './agent-continuous';
 
 // NOT bumped for the `steps` field added below (orchestration schema-plumbing
 // increment 1, 2026-07-15). A bump here is load-bearing across THREE
@@ -378,8 +378,15 @@ export function buildAgentPlanSpec(
     const { tool: _dropped, ...rest } = step;
     return rest;
   };
+  // Continuous mode at a ¥0 budget: a step the user pinned to a paid API keeps
+  // it (applyContinuousProviderPolicy) and is marked `paidPin` so the executor
+  // dispatches exactly that pinned tool for that step (never a paid ladder
+  // rung) and books its spend apart from the ¥0 budget.
+  const excludesPaid = continuousExcludesPaidApi(agent);
+  const markPaidPin = (step: NormalizedStep): NormalizedStep =>
+    excludesPaid && isPaidApiTool(step.tool) ? ({ ...step, paidPin: true } as NormalizedStep) : step;
   const resolvedStepList = isOrchestrated(agent.orchestration)
-    ? normalizeSteps(agent.orchestration).map(resolveStepToolForPlan)
+    ? normalizeSteps(agent.orchestration).map(resolveStepToolForPlan).map(markPaidPin)
     : [];
   // Review H-A: an autonomous plan's API-key steps get an isolated prompt
   // (or fail closed) — see AgentPlanSpecV1.steps.isolation.

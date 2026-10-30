@@ -11,6 +11,7 @@ import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logInfo, logWarn } from './debug-logger';
+import { overrideToolForStep, overrideToolKey, readProviderOverrides } from './agent-provider-overrides';
 import { INJECTED_CONTEXT_SEPARATOR } from './agent-output-language';
 import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-registry';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
@@ -2893,6 +2894,17 @@ async function runAgentOrchestratedBody(
       orchestration: isFinalStep && agent.orchestration?.charLimit ? { steps: [], charLimit: agent.orchestration.charLimit } : undefined,
       tool: step.tool ?? agent.tool,
     };
+    // Provider override written while this run is going (MONITOR picker,
+    // lib/agent-provider-overrides.ts): applies to a step that has not
+    // started yet. 'auto' clears the step's pin (agent-level tool).
+    {
+      const overrides = await readProviderOverrides(runCommand, agentId);
+      const overrideTool = overrideToolForStep(overrides, progress?.runId, i);
+      if (overrideTool && !step.apiCall) {
+        stepAgent.tool = overrideTool.type === 'auto' ? agent.tool : overrideTool;
+        logInfo('AgentManager', `provider override: step ${i} of ${agentId} → ${stepAgent.tool?.type}`);
+      }
+    }
     const stepStart = Date.now();
     let log: AgentRunLog | undefined;
     try {
@@ -2905,13 +2917,7 @@ async function runAgentOrchestratedBody(
       // web-mandatory and escalated it to Perplexity, which "succeeded" with an
       // off-task essay and fired a fake completion notification. The composite
       // prompt still goes to the chosen tool unchanged.
-      ({ finalLog: log } = await runLadderAttempts(
-        stepAgent,
-        agentId,
-        runCommand,
-        { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
-        stepStart - 5_000,
-        {
+      const ladderOpts = {
           suppressAction: !isFinalStep || deferFinalAction,
           chainLockSeed,
           routeTextOverride: step.instruction,
@@ -2949,8 +2955,36 @@ async function runAgentOrchestratedBody(
                 sourcedFallbackText: buildFallbackBriefing(evidence, { maxItems: sourcingCount, title: `# Briefing — ${sourcingToday}` }),
               }
             : {}),
-        },
+        };
+      ({ finalLog: log } = await runLadderAttempts(
+        stepAgent,
+        agentId,
+        runCommand,
+        { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
+        stepStart - 5_000,
+        ladderOpts,
       ));
+      // MONITOR「今のステップをやり直す」(overrides.json restartRunning): this
+      // serial path cannot abort a step's .sh mid-flight, so a non-final step
+      // the user asked to redo is rerun once, right after it finished, on the
+      // new provider. The final step is never rerun (its action already fired).
+      if (!isFinalStep) {
+        const redo = await readProviderOverrides(runCommand, agentId);
+        const redoTool = overrideToolForStep(redo, progress?.runId, i);
+        if (redo?.restartRunning?.includes(i) && redoTool && overrideToolKey(redoTool) !== overrideToolKey(stepAgent.tool)) {
+          logInfo('AgentManager', `provider override: rerunning step ${i} of ${agentId} on ${redoTool.type}`);
+          stepAgent.tool = redoTool.type === 'auto' ? (agent.tool ?? { type: 'auto' }) : redoTool;
+          progress?.stepTool(i, stepAgent.tool);
+          ({ finalLog: log } = await runLadderAttempts(
+            stepAgent,
+            agentId,
+            runCommand,
+            { waitTimeoutMs: options.waitTimeoutMs, pollMs: options.pollMs },
+            Date.now() - 5_000,
+            ladderOpts,
+          ));
+        }
+      }
     } catch (error) {
       if (error instanceof AgentsHaltedError) {
         haltedChain = true;

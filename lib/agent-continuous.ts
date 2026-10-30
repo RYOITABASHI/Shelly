@@ -150,31 +150,42 @@ const CODEX_TOOL: ToolChoice = { type: 'cli', cli: 'codex' };
 
 /**
  * Provider policy for a continuous agent at a ¥0 budget: local LLM → Codex,
- * never an API-key backend. Applied to the agent before its script / PlanSpec
- * is written (lib/agent-manager.ts materializeAgentBody): a configured paid
- * tool becomes the local LLM, a paid per-step pin is dropped (the step runs on
- * the agent-level tool). The router / ladder apply the same rule to whatever
- * an `auto` route picks (guardContinuousTool / filterContinuousLadder).
+ * never an API-key backend the USER DID NOT NAME. Applied to the agent before
+ * its script / PlanSpec is written (lib/agent-manager.ts materializeAgentBody):
+ * a configured paid agent-level tool becomes the local LLM (it may have been
+ * picked by the router, not the user). The router / ladder apply the same rule
+ * to whatever an `auto` route picks (guardContinuousTool /
+ * filterContinuousLadder).
+ *
+ * 2026-10-30 (DEFERRED.md「タスクごとのプロバイダを自由に指定・途中で変更する」):
+ * a per-step tool pin only ever comes from the user (a tool named in that
+ * clause — lib/agent-tool-mentions.ts — a chat edit「2番目をPerplexityで」, or
+ * the MONITOR provider picker), so a paid step pin is the user's explicit
+ * permission for THAT step and is kept. The PlanSpec marks it `paidPin`
+ * (lib/agent-plan-spec.ts) so the executor lets only that step's own pinned
+ * tool through (its ladder stays free) and books the spend apart from the ¥0
+ * budget; the confirm summary says so (explicitPaidStepPins). Consent gates
+ * (autonomous cloud consent) still apply to the pin unchanged.
  */
 export function applyContinuousProviderPolicy(agent: Agent): Agent {
   if (!continuousExcludesPaidApi(agent)) return agent;
-  let changed = false;
-  let tool = agent.tool;
-  if (isPaidApiTool(tool)) {
-    tool = LOCAL_TOOL;
-    changed = true;
-  }
-  let orchestration = agent.orchestration;
-  if (orchestration?.steps?.length) {
-    const steps = orchestration.steps.map((step): string | AgentOrchestrationStep => {
-      if (typeof step === 'string' || !step.tool || !isPaidApiTool(step.tool)) return step;
-      changed = true;
-      const { tool: _paid, ...rest } = step;
-      return rest;
-    });
-    if (changed) orchestration = { ...orchestration, steps };
-  }
-  return changed ? { ...agent, tool, ...(orchestration ? { orchestration } : {}) } : agent;
+  if (!isPaidApiTool(agent.tool)) return agent;
+  return { ...agent, tool: LOCAL_TOOL };
+}
+
+/** Indices of steps the user explicitly pinned to a paid API (see
+ *  applyContinuousProviderPolicy) — what a ¥0 loop still uses, and what the
+ *  summary discloses. Empty unless the agent is a ¥0 continuous loop. */
+export function explicitPaidStepPins(
+  agent: Pick<Agent, 'continuous'>,
+  steps: ReadonlyArray<string | AgentOrchestrationStep> | null | undefined,
+): number[] {
+  if (!continuousExcludesPaidApi(agent) || !steps) return [];
+  const out: number[] = [];
+  steps.forEach((step, i) => {
+    if (typeof step !== 'string' && isPaidApiTool(step.tool)) out.push(i);
+  });
+  return out;
 }
 
 /** A routed tool for a ¥0 continuous agent: a paid pick becomes Codex for a

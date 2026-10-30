@@ -246,7 +246,7 @@ describe('provider policy: ¥0 budget → local → Codex, never a paid API', ()
     expect(resolveAgentRoute(paid).tool.type).toBe('groq');
   });
 
-  it('PlanSpec: continuous block present, no paid tool / ladder rung / step pin', () => {
+  it('PlanSpec: continuous block present, no paid tool / ladder rung; an explicit paid step pin is kept as paidPin', () => {
     const agent = agentWith({
       tool: { type: 'perplexity' },
       orchestration: { steps: [{ instruction: '集めて', tool: { type: 'perplexity' } }, { instruction: '要約して', tool: { type: 'local' } }] },
@@ -255,7 +255,10 @@ describe('provider policy: ¥0 budget → local → Codex, never a paid API', ()
     expect(plan.continuous).toEqual({ goalCheck: false, dailyBudgetJpy: 0, loopStartedAt: 1_000 });
     expect(PAID_API_TOOL_TYPES.has(plan.tool.type)).toBe(false);
     expect((plan.toolLadder ?? []).some((t) => PAID_API_TOOL_TYPES.has(t.type))).toBe(false);
-    expect(plan.steps?.list.some((s) => s.tool && PAID_API_TOOL_TYPES.has(s.tool.type))).toBe(false);
+    // A step the user pinned to a paid API is their permission for that step only.
+    expect(plan.steps?.list[0]).toMatchObject({ tool: { type: 'perplexity' }, paidPin: true });
+    expect(plan.steps?.list[1]).toMatchObject({ tool: { type: 'local' } });
+    expect((plan.steps?.list[1] as { paidPin?: boolean }).paidPin).toBeUndefined();
     expect(buildAgentPlanSpec(agentWith({ continuous: undefined })).continuous).toBeUndefined();
   });
 

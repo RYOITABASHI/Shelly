@@ -30,7 +30,7 @@
  * to restate the schedule with an explicit time.
  */
 import { ParsedAgentDraft, TIME_OF_DAY_ASSUMPTION_LABEL, fmtTime, isContinuousDraft, isManualTriggerDraft } from './agent-nl-parser';
-import { formatContinuousSummary } from './agent-continuous';
+import { explicitPaidStepPins, formatContinuousSummary, normalizeContinuousConfig } from './agent-continuous';
 import { AgentAction } from '@/store/types';
 import { describeDraftTool, toolChoiceToLabel } from './agent-tool-router';
 import { closePawTaskText } from './agent-intent-review';
@@ -637,16 +637,39 @@ export function summarizeAgentDraftAsText(
       return pinnedTool ? `[${toolChoiceToLabel(pinnedTool)}] ${instruction}` : instruction;
     };
     const display = groupStepsForDisplay(draft.orchestrationSteps);
+    // Original step indices per display entry (a parallel entry holds several).
+    let nextIndex = 0;
+    const entryIndices = display.entries.map((entry) => entry.items.map(() => nextIndex++));
     display.entries.forEach((entry, n) => {
+      // A step-provider edit (changedFields `step:<index>`) stars the line
+      // that shows that step (a parallel line holds several steps).
+      const changedIdx = entryIndices[n].find((i) => changedFields.has(`step:${i}`));
       lines.push(
-        entry.parallel
-          ? `${n + 1}. ${tl('agentplan.parallel_group_label')} ${entry.items.map(stepLabel).join(tl('agentplan.parallel_group_separator'))}`
-          : `${n + 1}. ${stepLabel(entry.items[0])}`,
+        markLine(
+          entry.parallel
+            ? `${n + 1}. ${tl('agentplan.parallel_group_label')} ${entry.items.map(stepLabel).join(tl('agentplan.parallel_group_separator'))}`
+            : `${n + 1}. ${stepLabel(entry.items[0])}`,
+          `step:${changedIdx ?? entryIndices[n][0]}`,
+          changedFields,
+        ),
       );
     });
     if (display.cappedCount > 0) {
       lines.push(tl('agentplan.parallel_cap_note', { max: MAX_PARALLEL_BRANCHES, count: display.cappedCount }));
     }
+    // Continuous mode at ¥0: a step the user pinned to a paid API still uses
+    // it (explicit pin = permission for that step only) — never silent.
+    if (isContinuousDraft(draft)) {
+      const budgetJpy = draft.continuous?.dailyBudgetJpy ?? 0;
+      const paidPins = explicitPaidStepPins({ continuous: normalizeContinuousConfig({ dailyBudgetJpy: budgetJpy }) }, draft.orchestrationSteps);
+      for (const idx of paidPins) {
+        const s = draft.orchestrationSteps[idx];
+        const pinned = typeof s === 'string' ? undefined : s.tool;
+        if (pinned) lines.push(tl('agentplan.step_paid_pin_note', { n: idx + 1, tool: toolChoiceToLabel(pinned) }));
+      }
+    }
+  } else if (changedFields.has('tool')) {
+    lines.push(markLine(tl('agentplan.summary_tool_changed', { tool: toolChoiceToLabel(draft.tool) }), 'tool', changedFields));
   }
 
   // 2026-07-23: one or more fields above came from the hybrid LLM-extraction
@@ -747,6 +770,7 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     tool: draft.tool,
     // 2026-10-15: explicit named-tool pin — see ParsedAgentDraft.toolExplicit.
     toolExplicit: draft.toolExplicit,
+    ...(draft.toolPatched ? { toolPatched: true } : {}),
     action: draft.action,
     // 2026-07-28: multi-destination fan-out passthrough — see
     // lib/agent-nl-parser.ts's ParsedAgentDraft.actions doc comment and

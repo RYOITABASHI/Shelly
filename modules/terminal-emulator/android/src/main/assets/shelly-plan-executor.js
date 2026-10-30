@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=15
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=16
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -57,7 +57,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // stripped or read as DONE), is split off before the char-limit clamp, the
 // prior-iteration block follows the task, and the per-agent loop Stop marker
 // halts an unattended iteration like `.halted` (final action included).
-const EXECUTOR_SCRIPT_VERSION = 15;
+const EXECUTOR_SCRIPT_VERSION = 16;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -2329,11 +2329,16 @@ async function runBroker(paths, opts, brokerArgs) {
       stdio: 'ignore',
     });
     liveBrokerChildren.add(child);
+    // Provider overrides (v16): a branch's own children, so a MONITOR
+    // 「今のステップをやり直す」 aborts just that branch's in-flight request.
+    const branchChildren = opts && opts.branchCtl && opts.branchCtl.children instanceof Set ? opts.branchCtl.children : null;
+    if (branchChildren) branchChildren.add(child);
     let settled = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
       liveBrokerChildren.delete(child);
+      if (branchChildren) branchChildren.delete(child);
       clearTimeout(timer);
       resolve(value);
     };
@@ -4724,6 +4729,85 @@ function mirrorBrokerAudit(paths, plan) {
 // path at all (that's the legacy bash executor's job, lib/agent-executor.ts).
 const STEP_TOOL_DISPATCHABLE_TYPES = ['local', 'gemini-api', 'perplexity', 'cerebras', 'groq'];
 
+// Provider overrides (v16, DEFERRED.md「タスクごとのプロバイダを自由に指定・途中で
+// 変更する」): the app writes logs/<id>/overrides.json (lib/agent-provider-
+// overrides.ts is the writer and documents the shape). Read fresh before each
+// step / group launches; a file scoped to another runId, a malformed file, or a
+// malformed entry is ignored (fail closed to the plan as built). The file is
+// writable by anything running as the app uid, so an override can never widen
+// what the plan builder vetted: for an autonomous plan an API-key provider is
+// accepted only for a step that was ALREADY an isolated API-key step and only
+// when that provider type already appears in the plan (plan.tool / a step pin /
+// toolLadder); the local LLM is always accepted; Codex (cli) is not
+// dispatchable here (the app folds it into the definition for the next run).
+const PROVIDER_OVERRIDES_FILE = 'overrides.json';
+const PROVIDER_OVERRIDES_MAX_BYTES = 16 * 1024;
+const PROVIDER_OVERRIDE_MAX_RESTARTS = 2;
+const OVERRIDE_TOOL_LABELS = {
+  local: 'Local LLM',
+  'gemini-api': 'Gemini API',
+  perplexity: 'Perplexity API',
+  cerebras: 'Cerebras',
+  groq: 'Groq',
+};
+const OVERRIDE_MODEL_RE = /^[A-Za-z0-9._:/-]{1,80}$/;
+
+class BranchRestart extends Error {
+  constructor(override) {
+    super('branch restart requested');
+    this.override = override;
+  }
+}
+
+function sanitizeOverrideToolRaw(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const type = typeof raw.type === 'string' ? raw.type : '';
+  if (type === 'auto') return { type: 'auto' };
+  if (type === 'cli') return raw.cli === 'codex' ? { type: 'cli', cli: 'codex' } : null;
+  if (!Object.prototype.hasOwnProperty.call(OVERRIDE_TOOL_LABELS, type)) return null;
+  const model = typeof raw.model === 'string' && OVERRIDE_MODEL_RE.test(raw.model) ? raw.model : undefined;
+  return model ? { type, model } : { type };
+}
+
+/** {steps: Map<index, rawTool>, restart: Set<index>} or null. */
+function readProviderOverrides(paths, runId) {
+  if (!paths || !paths.logDir) return null;
+  let text;
+  try {
+    const file = path.join(paths.logDir, PROVIDER_OVERRIDES_FILE);
+    if (fs.statSync(file).size > PROVIDER_OVERRIDES_MAX_BYTES) return null;
+    text = fs.readFileSync(file, 'utf8');
+  } catch (_) {
+    return null;
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (_) {
+    return null;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.v !== 1) return null;
+  if (typeof raw.runId === 'string' && raw.runId && raw.runId !== runId) return null;
+  const steps = new Map();
+  if (raw.steps && typeof raw.steps === 'object' && !Array.isArray(raw.steps)) {
+    for (const key of Object.keys(raw.steps)) {
+      if (!/^\d{1,2}$/.test(key)) continue;
+      const entry = raw.steps[key];
+      const tool = sanitizeOverrideToolRaw(entry && typeof entry === 'object' ? entry.tool : null);
+      if (tool) steps.set(Number(key), tool);
+    }
+  }
+  const restart = new Set(
+    (Array.isArray(raw.restartRunning) ? raw.restartRunning : []).filter((i) => Number.isInteger(i) && steps.has(i)),
+  );
+  return { steps, restart };
+}
+
+function overrideToolKey(tool) {
+  if (!tool || tool.type === 'auto') return '';
+  return `${tool.type}|${tool.model || ''}`;
+}
+
 // DEFERRED.md「PlanSpec executor 経由の無人発火は、品質ゲートでlocalが弾かれても
 // エスカレーションラダーへ進まない」: requests model content for `plan`, retrying
 // across `plan.toolLadder` (baked once by lib/agent-plan-spec.ts's
@@ -4776,7 +4860,14 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
     // Continuous mode: with a ¥0 daily budget a loop never calls an API-key
     // backend, whatever the plan's ladder says (defense in depth — the plan
     // builder already drops them).
-    if (activeContinuous && activeContinuous.excludePaid && CONTINUOUS_PAID_TOOL_TYPES.has(String(attemptPlan.tool && attemptPlan.tool.type))) {
+    // Provider overrides (v16): a restart requested for this branch stops the
+    // ladder walk here (never falls through to another candidate).
+    if (opts && opts.branchCtl && opts.branchCtl.restartTool) throw new BranchRestart(opts.branchCtl.restartTool);
+    // An explicit user pin to a paid API (plan step `paidPin`, or a MONITOR
+    // override) is permission for THAT step's own pinned tool only — its
+    // ladder rungs stay excluded.
+    const paidPinAllowed = i === 0 && !!(opts && opts.paidPin);
+    if (activeContinuous && activeContinuous.excludePaid && !paidPinAllowed && CONTINUOUS_PAID_TOOL_TYPES.has(String(attemptPlan.tool && attemptPlan.tool.type))) {
       lastError = new PlanFailure(`continuous mode: ${attemptPlan.tool.type} is a paid API and this loop's daily budget is ¥0`, { handled: true });
       continue;
     }
@@ -4789,7 +4880,22 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
       const response = await brokerHttp(paths, opts, attemptPlan, request);
       const usage = activeProgress ? progressUsage(attemptPlan.tool.type, response) : null;
       if (usage) progressStepEvent(activeProgress, opts && opts.stepIndex, 'usage', { usage });
-      continuousAddUsage(attemptPlan.tool.type, response);
+      if (paidPinAllowed && activeContinuous && activeContinuous.excludePaid) {
+        // Booked apart from the ¥0 budget (it was explicitly allowed), so
+        // native's budget stop does not end the loop for it.
+        const pinnedUsage = progressUsage(attemptPlan.tool.type, response);
+        appendJsonl(paths.planAuditFile, {
+          ts: new Date().toISOString(),
+          kind: 'plan.executor',
+          event: 'continuous_paid_pin_usage',
+          agentId: plan.agent && plan.agent.id,
+          stepIndex: opts && opts.stepIndex,
+          toolType: attemptPlan.tool.type,
+          usd: pinnedUsage && typeof pinnedUsage.usd === 'number' ? pinnedUsage.usd : CONTINUOUS_PAID_CALL_ESTIMATE_USD,
+        });
+      } else {
+        continuousAddUsage(attemptPlan.tool.type, response);
+      }
       let resultText = extractModelContent(attemptPlan.tool.type, response);
       // Continuous mode: split off the ---ITERATION--- control block BEFORE
       // the char-limit clamp (which would otherwise count / cut into it).
@@ -4831,6 +4937,7 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
       // the assistant text, which never contains the source URLs.
       return { resultText: resultText, usedTool: attemptPlan.tool, response: response, control: control };
     } catch (error) {
+      if (opts && opts.branchCtl && opts.branchCtl.restartTool) throw new BranchRestart(opts.branchCtl.restartTool);
       if (!(error instanceof PlanFailure)) throw error;
       // Codex review finding: a PlanFailure with exitCode TOOL_DENY is a
       // structural/policy refusal (e.g. modelRequest()'s "local PlanSpec
@@ -4955,6 +5062,93 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // Nothing further is scheduled and the final action never fires.
   let haltedChain = false;
 
+  // Provider overrides (v16) — see readProviderOverrides' comment above.
+  const overrideRunId = activeProgress ? activeProgress.runId : undefined;
+  const vettedToolTypes = new Set(
+    [plan.tool]
+      .concat(plan.steps.list.map((s) => s.tool))
+      .concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : [])
+      .filter((t) => t && typeof t.type === 'string')
+      .map((t) => t.type),
+  );
+  function vettedToolObject(type, model) {
+    const pool = [plan.tool].concat(plan.steps.list.map((s) => s.tool)).concat(Array.isArray(plan.toolLadder) ? plan.toolLadder : []);
+    const found = pool.find((t) => t && t.type === type && (!model || t.model === model));
+    if (found) return found;
+    return Object.assign({ type, label: OVERRIDE_TOOL_LABELS[type] || type }, model ? { model } : {});
+  }
+  const overrideNotes = new Set();
+  function auditOverride(i, event, extra) {
+    const key = `${event}:${i}:${JSON.stringify(extra || {})}`;
+    if (overrideNotes.has(key)) return;
+    overrideNotes.add(key);
+    appendJsonl(paths.planAuditFile, Object.assign({
+      ts: new Date().toISOString(),
+      kind: 'plan.executor',
+      event,
+      agentId: plan.agent.id,
+      stepIndex: i,
+    }, extra || {}));
+  }
+  /** The override for step i as {tool, paidPin}, or null (none / refused). */
+  function resolveStepOverride(i, rawTool) {
+    const step = plan.steps.list[i];
+    if (!rawTool || !step || step.apiCall) return null;
+    if (rawTool.type === 'auto') return { tool: plan.tool, paidPin: false };
+    if (STEP_TOOL_DISPATCHABLE_TYPES.indexOf(rawTool.type) === -1) {
+      auditOverride(i, 'provider_override_deferred', { toolType: rawTool.type, reason: 'not dispatchable by the PlanSpec executor; applies from the next run' });
+      return null;
+    }
+    if (rawTool.type !== 'local' && plan.agent && plan.agent.autonomous === true) {
+      const iso = Array.isArray(plan.steps.isolation) ? plan.steps.isolation[i] : null;
+      if (!iso || typeof iso.base !== 'string' || !vettedToolTypes.has(rawTool.type)) {
+        auditOverride(i, 'provider_override_refused', { toolType: rawTool.type, reason: 'autonomous plan: provider not cleared for this step at plan build' });
+        return null;
+      }
+    }
+    const tool = vettedToolObject(rawTool.type, rawTool.model);
+    const paidPin = !!(activeContinuous && activeContinuous.excludePaid && CONTINUOUS_PAID_TOOL_TYPES.has(tool.type));
+    return { tool, paidPin };
+  }
+  function overrideForStep(i) {
+    const overrides = readProviderOverrides(paths, overrideRunId);
+    if (!overrides || !overrides.steps.has(i)) return null;
+    return resolveStepOverride(i, overrides.steps.get(i));
+  }
+  // Running branches that may be restarted (index -> control block).
+  const liveBranches = new Map();
+  let overridesSig = '';
+  function pollOverridesForRestart() {
+    if (!liveBranches.size) return;
+    let sig = '';
+    try {
+      const st = fs.statSync(path.join(paths.logDir, PROVIDER_OVERRIDES_FILE));
+      sig = `${st.mtimeMs}:${st.size}`;
+    } catch (_) {
+      sig = '';
+    }
+    if (sig === overridesSig) return;
+    overridesSig = sig;
+    const overrides = readProviderOverrides(paths, overrideRunId);
+    if (!overrides) return;
+    for (const [i, ctl] of liveBranches) {
+      if (!ctl.inModel || ctl.restartTool || !overrides.restart.has(i)) continue;
+      const next = resolveStepOverride(i, overrides.steps.get(i));
+      if (!next || overrideToolKey(next.tool) === ctl.currentKey) continue;
+      if (ctl.restarts >= PROVIDER_OVERRIDE_MAX_RESTARTS) continue;
+      ctl.restartTool = next;
+      auditOverride(i, 'provider_override_restart', { toolType: next.tool.type, from: ctl.currentKey });
+      for (const child of ctl.children) {
+        try {
+          child.kill('SIGKILL');
+        } catch (_) {}
+      }
+    }
+  }
+  const overridesTimer = setInterval(pollOverridesForRestart, 1000);
+  if (overridesTimer && typeof overridesTimer.unref === 'function') overridesTimer.unref();
+  try {
+
   // Defensive runtime cap: planParallelGroups currently limits each group to
   // MAX_PARALLEL_BRANCHES too, but dispatch must remain bounded even if that
   // grouping implementation changes later.
@@ -4975,7 +5169,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     }
   }
 
-  async function executeStep(i, contextResults) {
+  async function executeStep(i, contextResults, override, branchCtl) {
     const step = plan.steps.list[i];
     const isFinal = i === plan.steps.list.length - 1;
     // Phase 7 (2026-08-03): a step's own tool pin (step.tool) is now honored
@@ -5028,11 +5222,13 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined)
       : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
-    const stepTool = effectiveStepTool(step);
+    const stepTool = override ? override.tool : effectiveStepTool(step);
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction, tool: stepTool });
     if (research) stepPlan.sourcing = { mode: 'research', recency: sourcingRecency, requestText: chainRequestText };
     else if (synthesis) stepPlan.sourcing = { mode: 'synthesis' };
-    const stepOpts = Object.assign({}, opts, { stepIndex: i });
+    const paidPin = override ? override.paidPin : (step.paidPin === true && !!step.tool && stepTool === step.tool);
+    const stepOpts = Object.assign({}, opts, { stepIndex: i, paidPin }, branchCtl ? { branchCtl } : {});
+    if (branchCtl) branchCtl.currentKey = overrideToolKey(stepTool);
     const stepStart = Date.now();
 
     // api-call step (v1, non-final only — see AgentOrchestrationStep.apiCall's
@@ -5115,7 +5311,14 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const priorStepContent = synthesis
         ? undefined
         : (contextResults.length ? contextResults[contextResults.length - 1] : undefined);
-      const attempt = await requestModelContentWithLadder(paths, stepOpts, stepPlan, config, true, priorStepContent);
+      if (branchCtl) branchCtl.inModel = true;
+      let attempt;
+      try {
+        attempt = await requestModelContentWithLadder(paths, stepOpts, stepPlan, config, true, priorStepContent);
+      } finally {
+        if (branchCtl) branchCtl.inModel = false;
+      }
+      if (branchCtl && branchCtl.restartTool) throw new BranchRestart(branchCtl.restartTool);
       // Continuous mode: drop the SUMMARY/NEXT/DONE block before the text is
       // carried / post-processed / delivered (the final step's block is kept
       // as this iteration's checkpoint input).
@@ -5297,13 +5500,43 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (step.apiCall && i !== plan.steps.list.length - 1) {
       progressStepEvent(progress, i, 'tool', { tool: 'api-call', provider: { kind: 'API', name: String(step.apiCall.host || '').slice(0, 80) } });
     }
+    // Provider overrides (v16): a step that has not started yet takes the
+    // override's provider; while it runs, a restart request aborts just this
+    // branch's broker child and reruns it on the new provider.
+    let override = overrideForStep(i);
+    if (override) {
+      auditOverride(i, 'provider_override_applied', { toolType: override.tool.type, paidPin: override.paidPin });
+      progressStepEvent(progress, i, 'tool', {
+        tool: String(override.tool.label || override.tool.type || '').slice(0, 80),
+        provider: progressProvider(override.tool, null),
+      });
+    }
+    const ctl = { children: new Set(), restartTool: null, restarts: 0, currentKey: '', inModel: false };
+    liveBranches.set(i, ctl);
     try {
-      const outcome = await executeStep(i, contextResults);
-      progressState(progress, i, progressStatusState(outcome.record.status), outcome.record.outputPreview);
-      return outcome;
+      for (;;) {
+        try {
+          const outcome = await executeStep(i, contextResults, override, ctl);
+          progressState(progress, i, progressStatusState(outcome.record.status), outcome.record.outputPreview);
+          return outcome;
+        } catch (error) {
+          if (error instanceof BranchRestart && ctl.restarts < PROVIDER_OVERRIDE_MAX_RESTARTS) {
+            ctl.restarts += 1;
+            override = error.override;
+            ctl.restartTool = null;
+            const label = String(override.tool.label || override.tool.type || '').slice(0, 80);
+            progressStepEvent(progress, i, 'tail', { tail: progressTail(`Provider switched to ${label}; restarting this step.`) });
+            progressStepEvent(progress, i, 'tool', { tool: label, provider: progressProvider(override.tool, null) });
+            continue;
+          }
+          throw error;
+        }
+      }
     } catch (error) {
       progressState(progress, i, error instanceof ActionSkipped ? 'SKIPPED' : 'FAILED', error && error.message ? error.message : String(error));
       throw error;
+    } finally {
+      liveBranches.delete(i);
     }
   }
 
@@ -5378,6 +5611,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     if (outcome.result !== undefined) priorResults.push(outcome.result);
     if (outcome.failed) priorFailed = true;
     i += 1;
+  }
+
+  } finally {
+    clearInterval(overridesTimer);
   }
 
   if (haltedChain) {
@@ -6332,6 +6569,9 @@ module.exports = {
   CONTINUOUS_SUMMARY_MAX_BYTES,
   CONTINUOUS_PAID_TOOL_TYPES,
   CONTINUOUS_CLI_EXIT,
+  // Provider overrides (v16) — exported for host unit tests only.
+  PROVIDER_OVERRIDES_FILE,
+  readProviderOverrides,
   emptyContinuousCheckpoint,
   sanitizeContinuousCheckpoint,
   readContinuousCheckpoint,

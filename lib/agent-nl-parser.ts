@@ -246,6 +246,11 @@ export interface ParsedAgentDraft {
    *  Persisted as the agent's concrete configured tool at confirm
    *  (resolveConfirmedToolAndRunOn) instead of `auto`. */
   toolExplicit?: boolean;
+  /** 2026-10-30: the agent-level `tool` was changed by a chat edit of an
+   *  already-registered single-step agent (「全部ローカルで」, see
+   *  lib/agent-draft-patch.ts tryPatchStepTools) — the edit confirm persists
+   *  the new tool instead of keeping the registered one byte-for-byte. */
+  toolPatched?: boolean;
   /** 2026-10-30 ("zero questions" agent setup): 'manual' = the agent has NO
    *  firing schedule on purpose — it is registered and waits to be run by
    *  hand (Sidebar ▶ / `@agent run`), persisted with `schedule: null`. This
@@ -267,7 +272,7 @@ export interface ParsedAgentDraft {
    *  limits (50 iterations / 24h / no paid API) are filled with their defaults
    *  at registration and shown in the summary line, never asked. Only
    *  meaningful while `schedule` is still null (see isContinuousDraft). */
-  continuous?: { cooldownMs: number; goalCheck?: boolean };
+  continuous?: { cooldownMs: number; goalCheck?: boolean; dailyBudgetJpy?: number };
   /** The user's own words for the final save action ("メモとして保存") when a
    *  trailing save clause was absorbed into the agent's 'draft' action instead
    *  of becoming a work step. The underlying action stays 'draft'; this only
