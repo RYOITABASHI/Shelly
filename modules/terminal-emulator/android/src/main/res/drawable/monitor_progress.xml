@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MONITOR mission bar. Progress colour is re-tinted per state on API 31+. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+  <item android:id="@android:id/background">
+    <shape android:shape="rectangle">
+      <solid android:color="#FF02140C" />
+      <stroke android:width="1dp" android:color="#FF2A6A4C" />
+    </shape>
+  </item>
+  <item android:id="@android:id/progress">
+    <clip>
+      <shape android:shape="rectangle">
+        <solid android:color="#FFA8F0CF" />
+      </shape>
+    </clip>
+  </item>
+</layer-list>

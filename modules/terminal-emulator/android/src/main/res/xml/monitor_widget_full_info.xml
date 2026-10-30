@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MONITOR 4x3: header + cost/approval line + 2x2 cameras. No periodic
+     updates (updatePeriodMillis=0): the app pushes on run state changes only
+     (monitor/MonitorWidgetUpdater.kt). -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+  android:minWidth="250dp"
+  android:minHeight="180dp"
+  android:minResizeWidth="220dp"
+  android:minResizeHeight="150dp"
+  android:targetCellWidth="4"
+  android:targetCellHeight="3"
+  android:updatePeriodMillis="0"
+  android:initialLayout="@layout/monitor_widget_full"
+  android:previewLayout="@layout/monitor_widget_full"
+  android:description="@string/monitor_widget_description_full"
+  android:resizeMode="horizontal|vertical"
+  android:widgetCategory="home_screen" />

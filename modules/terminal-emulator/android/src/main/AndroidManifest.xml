@@ -83,5 +83,31 @@
         android:name="android.appwidget.provider"
         android:resource="@xml/scouter_widget_info" />
     </receiver>
+
+    <!-- MONITOR home-screen widgets (4x3 and 4x2). Push-only: the app updates
+         them on run state changes (monitor/MonitorWidgetUpdater.kt). Module
+         manifest, so expo prebuild cannot drop them. -->
+    <receiver
+      android:name=".monitor.MonitorWidgetProvider"
+      android:exported="false"
+      android:label="@string/monitor_widget_label_full">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/monitor_widget_full_info" />
+    </receiver>
+    <receiver
+      android:name=".monitor.MonitorWidgetSlimProvider"
+      android:exported="false"
+      android:label="@string/monitor_widget_label_slim">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/monitor_widget_slim_info" />
+    </receiver>
   </application>
 </manifest>

@@ -1775,6 +1775,26 @@ class TerminalEmulatorModule : Module() {
             ScouterLifecycleService.get(context).refreshJson().toString(2)
         }
 
+        // MONITOR home-screen widget: the attended serial chain (JS-only, no
+        // AgentRuntime run) reports its start/end here so the widget watches
+        // that agent's progress.jsonl only while the chain runs.
+        AsyncFunction("notifyMonitorWidget") { agentId: String, active: Boolean ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            if (active) {
+                expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runStarted(context, agentId)
+            } else {
+                expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runEnded(context, agentId)
+            }
+            null
+        }
+
+        // Mirrors the app language (lib/i18n) so widget text and currency follow it.
+        AsyncFunction("setMonitorWidgetLocale") { locale: String ->
+            val context = appContext.reactContext ?: return@AsyncFunction null
+            expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.setLocale(context, locale)
+            null
+        }
+
         AsyncFunction("installScouterCodexPetZip") { uriString: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")

@@ -37,7 +37,8 @@ import { useBrowserStore } from '@/store/browser-store';
 import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
 import { useBackupModalStore } from '@/store/backup-modal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
-import { focusPaneByTab } from '@/lib/pane-focus';
+import { ensurePaneByTab, focusPaneByTab } from '@/lib/pane-focus';
+import { openMonitorFromWidgetLink } from '@/lib/monitor-widget-link';
 import { usePaneStore } from '@/store/pane-store';
 import { useAIPaneStore } from '@/store/ai-pane-store';
 import { COMPANION_CONVERSATION_KEY } from '@/store/ai-pane-store';
@@ -1428,6 +1429,14 @@ export default function RootLayout() {
         } else if (target === 'scouter') {
           useSettingsStore.getState().setShowScouterDetail(true);
           logInfo('DeepLink', 'Scouter detail opened');
+        } else if (target === 'monitor') {
+          // MONITOR home-screen widget tap (lib/monitor-widget-link.ts).
+          await waitForMultiPaneHydration();
+          const opened = openMonitorFromWidgetLink(parsed.queryParams, {
+            showMonitorPane: () => ensurePaneByTab('monitor'),
+            setMonitor: (patch) => useAgentStore.getState().setMonitor(patch),
+          });
+          logInfo('DeepLink', `MONITOR widget link → pane ${opened ? 'shown' : 'unavailable'}`);
         } else if (target === 'backup' || target === 'restore') {
           // shelly://backup | shelly://restore — open the in-app encrypted
           // backup / restore flow. No query parameter is honoured (no
@@ -2495,6 +2504,17 @@ export default function RootLayout() {
   // refactor; reinstate it so switching EN/JA in Settings actually takes
   // effect without relaunching the app.
   const locale = useI18n((s) => s.locale);
+
+  // MONITOR home-screen widget: mirror the app language natively so the
+  // widget's words and currency (yen / dollars) follow the app, not the
+  // system language. Optional native method: absent on web / older builds.
+  useEffect(() => {
+    try {
+      TerminalEmulator.setMonitorWidgetLocale?.(locale)?.catch(() => {});
+    } catch {
+      // best-effort only
+    }
+  }, [locale]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

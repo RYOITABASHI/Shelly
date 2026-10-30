@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="monitor_widget_label_full">MONITOR</string>
+  <string name="monitor_widget_label_slim">MONITOR カメラ</string>
+  <string name="monitor_widget_description_full">エージェントのカメラと全体の進み具合・経過時間・料金</string>
+  <string name="monitor_widget_description_slim">エージェントのカメラ 4 台</string>
+  <string name="monitor_widget_brand">MONITOR</string>
+  <string name="monitor_widget_rec">● REC</string>
+  <string name="monitor_widget_no_signal">信号なし</string>
+  <string name="monitor_widget_empty">まだ実行がありません · タップで MONITOR を開く</string>
+  <string name="monitor_widget_alert">▲ %1$s があなたの OK を待っています（タップで開く）</string>
+  <string name="monitor_widget_iteration">第%1$d回</string>
+  <string name="monitor_widget_timer_format" formatted="false">T+%s</string>
+  <string name="monitor_widget_cam_description">%1$s %2$s</string>
+
+  <string name="monitor_widget_state_standby">待機</string>
+  <string name="monitor_widget_state_running">● 作業中</string>
+  <string name="monitor_widget_state_approval">! OK待ち</string>
+  <string name="monitor_widget_state_done">■ 完了</string>
+  <string name="monitor_widget_state_failed">✕ 失敗</string>
+  <string name="monitor_widget_state_stopped">■ 停止</string>
+  <string name="monitor_widget_state_skipped">– スキップ</string>
+  <string name="monitor_widget_state_no_signal">信号なし</string>
+
+  <string name="monitor_widget_cost_plan">定額</string>
+  <string name="monitor_widget_cost_api">API %1$s</string>
+  <string name="monitor_widget_cost_cli">CLI %1$s</string>
+  <string name="monitor_widget_cost_local">LOCAL %1$s</string>
+  <string name="monitor_widget_cost_separator">" · "</string>
+</resources>

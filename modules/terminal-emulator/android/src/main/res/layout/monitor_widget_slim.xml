@@ -1,0 +1,481 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Written from a one-off generator (four near-identical cameras); edit by hand
+     freely, but keep view ids in sync with monitor/MonitorWidgetRenderer.kt.
+     4x2 MONITOR widget: four cameras in one row, nothing else.
+     RemoteViews-safe views only: FrameLayout, LinearLayout, TextView,
+     ImageView, ProgressBar, Chronometer, ViewFlipper. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/monitor_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="@drawable/monitor_widget_bg"
+  android:padding="5dp">
+
+  <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <TextView
+      android:id="@+id/monitor_empty"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_marginTop="2dp"
+      android:ellipsize="end"
+      android:fontFamily="monospace"
+      android:paddingStart="4dp"
+      android:paddingEnd="4dp"
+      android:singleLine="true"
+      android:text="@string/monitor_widget_empty"
+      android:textColor="#FF6C7A71"
+      android:textSize="11sp"
+      android:visibility="gone" />
+
+    <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="0dp"
+      android:layout_weight="1"
+      android:orientation="horizontal">
+      <LinearLayout
+        android:id="@+id/monitor_cam_1"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:layout_margin="2dp"
+        android:background="@drawable/monitor_cam_bg"
+        android:orientation="vertical"
+        android:padding="1dp">
+
+        <FrameLayout
+          android:layout_width="match_parent"
+          android:layout_height="0dp"
+          android:layout_weight="1"
+          android:background="#FF03100A">
+
+          <ImageView
+            android:id="@+id/monitor_cam_1_img"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:src="@drawable/monitor_operator_1_dim"
+            android:contentDescription="@null" />
+
+          <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/monitor_scanlines" />
+
+          <TextView
+            android:id="@+id/monitor_cam_1_nosignal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#FF060B09"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:text="@string/monitor_widget_no_signal"
+            android:textColor="#FF6C7A71"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
+               Flipped by the launcher (no updates from the app). -->
+          <ViewFlipper
+            android:id="@+id/monitor_cam_1_rec"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:autoStart="true"
+            android:flipInterval="650"
+            android:visibility="gone">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout
+              android:layout_width="match_parent" android:layout_height="match_parent"
+              android:background="@drawable/monitor_noise" />
+          </ViewFlipper>
+
+          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <TextView
+            android:id="@+id/monitor_cam_1_rec_static"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="top|end" android:layout_margin="3dp"
+            android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+            android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
+            android:visibility="gone" />
+          <ViewFlipper
+            android:id="@+id/monitor_cam_1_bang"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="6dp"
+            android:autoStart="true"
+            android:flipInterval="800"
+            android:visibility="gone">
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#00FFB21E" android:textSize="20sp" />
+          </ViewFlipper>
+
+          <TextView
+            android:id="@+id/monitor_cam_1_ch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="3dp"
+            android:fontFamily="monospace"
+            android:text="CH-01"
+            android:textColor="#FFEAF5EE"
+            android:textSize="11sp"
+            android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+        </FrameLayout>
+      </LinearLayout>
+      <LinearLayout
+        android:id="@+id/monitor_cam_2"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:layout_margin="2dp"
+        android:background="@drawable/monitor_cam_bg"
+        android:orientation="vertical"
+        android:padding="1dp">
+
+        <FrameLayout
+          android:layout_width="match_parent"
+          android:layout_height="0dp"
+          android:layout_weight="1"
+          android:background="#FF03100A">
+
+          <ImageView
+            android:id="@+id/monitor_cam_2_img"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:src="@drawable/monitor_operator_2_dim"
+            android:contentDescription="@null" />
+
+          <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/monitor_scanlines" />
+
+          <TextView
+            android:id="@+id/monitor_cam_2_nosignal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#FF060B09"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:text="@string/monitor_widget_no_signal"
+            android:textColor="#FF6C7A71"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
+               Flipped by the launcher (no updates from the app). -->
+          <ViewFlipper
+            android:id="@+id/monitor_cam_2_rec"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:autoStart="true"
+            android:flipInterval="700"
+            android:visibility="gone">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout
+              android:layout_width="match_parent" android:layout_height="match_parent"
+              android:background="@drawable/monitor_noise" />
+          </ViewFlipper>
+
+          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <TextView
+            android:id="@+id/monitor_cam_2_rec_static"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="top|end" android:layout_margin="3dp"
+            android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+            android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
+            android:visibility="gone" />
+          <ViewFlipper
+            android:id="@+id/monitor_cam_2_bang"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="6dp"
+            android:autoStart="true"
+            android:flipInterval="800"
+            android:visibility="gone">
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#00FFB21E" android:textSize="20sp" />
+          </ViewFlipper>
+
+          <TextView
+            android:id="@+id/monitor_cam_2_ch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="3dp"
+            android:fontFamily="monospace"
+            android:text="CH-02"
+            android:textColor="#FFEAF5EE"
+            android:textSize="11sp"
+            android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+        </FrameLayout>
+      </LinearLayout>
+      <LinearLayout
+        android:id="@+id/monitor_cam_3"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:layout_margin="2dp"
+        android:background="@drawable/monitor_cam_bg"
+        android:orientation="vertical"
+        android:padding="1dp">
+
+        <FrameLayout
+          android:layout_width="match_parent"
+          android:layout_height="0dp"
+          android:layout_weight="1"
+          android:background="#FF03100A">
+
+          <ImageView
+            android:id="@+id/monitor_cam_3_img"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:src="@drawable/monitor_operator_3_dim"
+            android:contentDescription="@null" />
+
+          <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/monitor_scanlines" />
+
+          <TextView
+            android:id="@+id/monitor_cam_3_nosignal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#FF060B09"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:text="@string/monitor_widget_no_signal"
+            android:textColor="#FF6C7A71"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
+               Flipped by the launcher (no updates from the app). -->
+          <ViewFlipper
+            android:id="@+id/monitor_cam_3_rec"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:autoStart="true"
+            android:flipInterval="750"
+            android:visibility="gone">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout
+              android:layout_width="match_parent" android:layout_height="match_parent"
+              android:background="@drawable/monitor_noise" />
+          </ViewFlipper>
+
+          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <TextView
+            android:id="@+id/monitor_cam_3_rec_static"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="top|end" android:layout_margin="3dp"
+            android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+            android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
+            android:visibility="gone" />
+          <ViewFlipper
+            android:id="@+id/monitor_cam_3_bang"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="6dp"
+            android:autoStart="true"
+            android:flipInterval="800"
+            android:visibility="gone">
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#00FFB21E" android:textSize="20sp" />
+          </ViewFlipper>
+
+          <TextView
+            android:id="@+id/monitor_cam_3_ch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="3dp"
+            android:fontFamily="monospace"
+            android:text="CH-03"
+            android:textColor="#FFEAF5EE"
+            android:textSize="11sp"
+            android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+        </FrameLayout>
+      </LinearLayout>
+      <LinearLayout
+        android:id="@+id/monitor_cam_4"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:layout_margin="2dp"
+        android:background="@drawable/monitor_cam_bg"
+        android:orientation="vertical"
+        android:padding="1dp">
+
+        <FrameLayout
+          android:layout_width="match_parent"
+          android:layout_height="0dp"
+          android:layout_weight="1"
+          android:background="#FF03100A">
+
+          <ImageView
+            android:id="@+id/monitor_cam_4_img"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:src="@drawable/monitor_operator_4_dim"
+            android:contentDescription="@null" />
+
+          <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/monitor_scanlines" />
+
+          <TextView
+            android:id="@+id/monitor_cam_4_nosignal"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#FF060B09"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:text="@string/monitor_widget_no_signal"
+            android:textColor="#FF6C7A71"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+          <!-- REC blink + an occasional noise frame, RUNNING cameras only.
+               Flipped by the launcher (no updates from the app). -->
+          <ViewFlipper
+            android:id="@+id/monitor_cam_4_rec"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:autoStart="true"
+            android:flipInterval="800"
+            android:visibility="gone">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" />
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="top|end" android:layout_margin="3dp"
+                android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+                android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            </FrameLayout>
+            <FrameLayout
+              android:layout_width="match_parent" android:layout_height="match_parent"
+              android:background="@drawable/monitor_noise" />
+          </ViewFlipper>
+
+          <!-- Waiting for approval: steady REC + blinking "!". -->
+          <TextView
+            android:id="@+id/monitor_cam_4_rec_static"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="top|end" android:layout_margin="3dp"
+            android:fontFamily="monospace" android:text="@string/monitor_widget_rec"
+            android:textColor="#FFFF4436" android:textSize="11sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0"
+            android:visibility="gone" />
+          <ViewFlipper
+            android:id="@+id/monitor_cam_4_bang"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end|center_vertical"
+            android:layout_marginEnd="6dp"
+            android:autoStart="true"
+            android:flipInterval="800"
+            android:visibility="gone">
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#FFFFB21E" android:textSize="20sp" android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+            <TextView
+              android:layout_width="wrap_content" android:layout_height="wrap_content"
+              android:fontFamily="monospace" android:text="!" android:textStyle="bold"
+              android:textColor="#00FFB21E" android:textSize="20sp" />
+          </ViewFlipper>
+
+          <TextView
+            android:id="@+id/monitor_cam_4_ch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="3dp"
+            android:fontFamily="monospace"
+            android:text="CH-04"
+            android:textColor="#FFEAF5EE"
+            android:textSize="11sp"
+            android:shadowColor="#FF000000" android:shadowRadius="3" android:shadowDx="0" android:shadowDy="0" />
+        </FrameLayout>
+      </LinearLayout>
+    </LinearLayout>
+  </LinearLayout>
+</FrameLayout>

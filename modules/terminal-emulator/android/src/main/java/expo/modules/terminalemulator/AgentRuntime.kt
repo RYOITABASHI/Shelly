@@ -530,10 +530,13 @@ object AgentRuntime {
         // that THIS process is running the agent, so RN can tell a real
         // run's ClosePaw approval request from a forged request file.
         val runToken = NativeAgentRunRegistry.begin(agentId)
+        // MONITOR widget hook (push-only updates; async, never throws).
+        expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runStarted(context, agentId)
         try {
             return runAgentInner(context, agentId, tainted, unattended, notificationText, notificationPackage, origin)
         } finally {
             NativeAgentRunRegistry.end(agentId, runToken)
+            expo.modules.terminalemulator.monitor.MonitorWidgetUpdater.runEnded(context, agentId)
         }
     }
 

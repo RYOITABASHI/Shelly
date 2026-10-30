@@ -27,7 +27,7 @@ function visiblePresetForSlot(currentPreset: PresetId, slotIndex: number): Prese
   return 'p4';
 }
 
-type FocusableTab = 'agent-chat' | 'ai' | 'markdown' | 'preview';
+type FocusableTab = 'agent-chat' | 'ai' | 'markdown' | 'preview' | 'monitor';
 
 function focusExistingSlot(index: number): void {
   const multiPane = useMultiPaneStore.getState();

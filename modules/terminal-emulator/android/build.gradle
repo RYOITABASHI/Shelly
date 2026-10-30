@@ -45,4 +45,7 @@ dependencies {
   // in the idiomatic src/test/java location so `./gradlew :terminal-emulator:testDebugUnitTest`
   // works correctly once that wiring exists.
   testImplementation 'junit:junit:4.13.2'
+  // Real org.json for JVM unit tests (android.jar's is a throwing stub):
+  // monitor/MonitorProgressTest.kt parses progress.jsonl lines.
+  testImplementation 'org.json:json:20231013'
 }

@@ -2684,13 +2684,26 @@ async function runAgentOrchestrated(
     groups: planParallelGroups(progressSteps).group,
     route: 'attended-serial',
   });
+  if (progress) notifyMonitorWidget(agentId, true);
   try {
     await runAgentOrchestratedBody(agent, runCommand, options, chainLockSeed, restoreAgent, progress);
   } finally {
     // Body threw before settling the stream: still close the run so MONITOR
     // never shows a phantom RUNNING branch (no-op when the body finished it).
     if (progress) await progress.finish(agentsHalted() ? 'halted' : 'error', 'chain aborted');
+    if (progress) notifyMonitorWidget(agentId, false);
     await releaseChainLock(agentId, chainLockSeed, runCommand);
+  }
+}
+
+/** MONITOR home-screen widget: this JS chain has no AgentRuntime run for the
+ *  native side to see, so tell it when to watch progress.jsonl. Fire and
+ *  forget; never throws into the chain. */
+function notifyMonitorWidget(agentId: string, active: boolean): void {
+  try {
+    TerminalEmulator.notifyMonitorWidget?.(agentId, active)?.catch(() => {});
+  } catch {
+    // best-effort only
   }
 }
 

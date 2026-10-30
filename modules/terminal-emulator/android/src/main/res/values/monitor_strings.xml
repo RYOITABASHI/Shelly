@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MONITOR home-screen widgets (monitor/MonitorWidgetRenderer.kt). Japanese
+     in values-ja; the widget follows the app language mirrored from lib/i18n
+     (falls back to the system language). -->
+<resources>
+  <string name="monitor_widget_label_full">MONITOR</string>
+  <string name="monitor_widget_label_slim">MONITOR cameras</string>
+  <string name="monitor_widget_description_full">Live agent cameras with mission progress, clock and cost</string>
+  <string name="monitor_widget_description_slim">Four live agent cameras</string>
+  <string name="monitor_widget_brand">MONITOR</string>
+  <string name="monitor_widget_rec">● REC</string>
+  <string name="monitor_widget_no_signal">NO SIGNAL</string>
+  <string name="monitor_widget_empty">No agent runs yet · tap to open MONITOR</string>
+  <string name="monitor_widget_alert">▲ %1$s is waiting for your OK — tap to open</string>
+  <string name="monitor_widget_iteration">#%1$d</string>
+  <string name="monitor_widget_timer_format" formatted="false">T+%s</string>
+  <string name="monitor_widget_cam_description">%1$s %2$s</string>
+
+  <string name="monitor_widget_state_standby">STANDBY</string>
+  <string name="monitor_widget_state_running">● RUN</string>
+  <string name="monitor_widget_state_approval">! YOUR OK</string>
+  <string name="monitor_widget_state_done">■ DONE</string>
+  <string name="monitor_widget_state_failed">✕ FAILED</string>
+  <string name="monitor_widget_state_stopped">■ STOPPED</string>
+  <string name="monitor_widget_state_skipped">– SKIPPED</string>
+  <string name="monitor_widget_state_no_signal">NO SIGNAL</string>
+
+  <string name="monitor_widget_cost_plan">plan</string>
+  <string name="monitor_widget_cost_api">API %1$s</string>
+  <string name="monitor_widget_cost_cli">CLI %1$s</string>
+  <string name="monitor_widget_cost_local">LOCAL %1$s</string>
+  <string name="monitor_widget_cost_separator">" · "</string>
+</resources>

@@ -190,6 +190,10 @@ declare class TerminalEmulatorModuleType extends NativeModule {
   setScouterEnabled(enabled: boolean): Promise<void>;
   getScouterDebugInfo(): Promise<string>;
   refreshScouter?(): Promise<string>;
+  /** MONITOR home-screen widget: an attended (JS) chain of `agentId` started / ended. */
+  notifyMonitorWidget?(agentId: string, active: boolean): Promise<void>;
+  /** MONITOR home-screen widget: mirror the app language ('en' | 'ja'). */
+  setMonitorWidgetLocale?(locale: string): Promise<void>;
   installScouterCodexPetZip?(uri: string): Promise<{
     installedCount: number;
     installedIds: string[];

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CRT scanlines over a camera feed: 1 dark line every 3 px, tiled. -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+  android:src="@drawable/monitor_scanline"
+  android:tileMode="repeat" />
