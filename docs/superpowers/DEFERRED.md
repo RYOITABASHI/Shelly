@@ -89,6 +89,17 @@
 → sync: README「Install → Signing-key rotation」「Release Integrity」節に記載済み。
 （旧エントリ「🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)」を本エントリに統合。）
 
+### STOP-ALL が実行中のチェーンを止めない — 未着手 (P1)
+- **2026-10-30 設計調査で判明**: `haltAllAgents`（`lib/agent-manager.ts` 約 3082 行）はアラームの解除と `.halted` の書き込みだけで、実行中の run を kill しない。attended チェーンは入口（約 1440 行）でしか `halted` を見ず、PlanSpec executor も開始時（`shelly-plan-executor.js` 約 5098 行）だけ。押しても走っている run は最後まで動く。
+- **直し方**: 各ステップ／各グループの直前（両 executor の `nextStepGate` 呼び出し箇所）で `.halted` を確認する。executor は pid を書き、`haltAllAgents` がプロセスグループごと kill する（`generateStopCommand` と同じ方式）。broker の子プロセスは SIGTERM で道連れにする。
+- 下の MONITOR／attended 並列化の前提条件（並列にすると止まらない run が最大 3 本になる）。
+
+### マルチエージェント MONITOR ペイン（CCTV 風）+ attended チェーンの実並列化 — 設計済み・未実装 (P2)
+- **2026-10-30 プロダクトオーナー提案**: 各エージェント／サブエージェントを監視カメラ風に映し、スイッチャー（CH1–4 / GRID / AUTO）と配線図で「誰が何をして、どうつながり、何ができるか」を見せる。並列で動くことが前提（「並列で作業しないとダメ」）。UI デモ: https://claude.ai/artifact/MAZXttXTnD5kecgZmsDfpv
+- **方針（Plan エージェント調査）**: attended の Run now で `planParallelGroups` に有効なグループがあり、全ブランチのツールが executor で実行できるときだけ、既に実機で 3 並列が動いている PlanSpec executor に流す。条件を満たさなければ今の直列チェーンで動かし、MONITOR には SERIAL と表示する。自前で並列化する案（A）は、ブランチごとに bash・サブシェル・curl・node が立ち、phantom process 上限 32 に近づくので見送り。
+- **段階**: (1) `agent-store` に `liveRuns` を追加し、直列の narrate 箇所からブランチ状態を流す（動作は変えない）→ (2) 上の STOP-ALL 修正 → (3) executor に `logs/<id>/progress.jsonl`（executor v12、ネイティブ同期、APK ミラー）→ (4) attended の executor 経路（chain lock は持たない、`markUserRunStarted` は保つ、ディスク上の plan は変えない）→ (5) MONITOR ペイン UI。
+- **最大リスク（実機確認が要る）**: 3 ブランチ＋最終アクションの承認待ちの最中に、同じエージェントのアラームが発火し、STOP-ALL も押された場合。確認すること: phantom process 数が上限内か、アラームが single-flight でスキップされるか、broker の子が残らないか、承認の origin が user のままか。
+
 ### Shelly 用 ClosePaw 変種 v0.1.0-4 のバックグラウンド入口（Shizuku 仮想ディスプレイ）— 実装済み・実機未検証 (P1)
 
 2026-10-14、ブランチ `feat/closepaw-background-entry`（未マージ）。変種リリース `shelly-v0.1.0-4`（fork `RYOITABASHI/closepaw`）が非 UI の入口を追加: 明示コンポーネント `ai.closepaw/.app.ShellyGoalReceiver` への順序付きブロードキャスト（action `ai.closepaw.action.SHELLY_RUN_GOAL`、extras `goal` / `shelly_caller_token` / 任意 `allow_main_display`）で、ClosePaw の activity を前面に出さず Shizuku 仮想ディスプレイ上で実行する。
