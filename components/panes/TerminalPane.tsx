@@ -1637,17 +1637,20 @@ export default function TerminalScreen() {
                 }
               }).catch(() => {});
             }}
-            onUrlDetected={(e) => {
-              const { url, type } = e.nativeEvent;
-              // 2026-08-07 on-device QA finding (docs/superpowers/DEFERRED.md):
-              // native sends Kotlin's LinkDetector.LinkType.URL.name, which is
-              // the literal enum name "URL" (ShellyTerminalView.kt's
-              // `link.type.name`) — this checked the lowercase 'url' and so
-              // never matched, meaning tapping a detected URL never opened
-              // it, even for a URL the native detector DID find correctly.
-              if (type.toUpperCase() === 'URL') {
-                import('expo-web-browser').then(m => m.openBrowserAsync(url)).catch(() => {});
-              }
+            onUrlDetected={() => {
+              // Intentionally inert (Claude Code glibc S2, on-device build 2687).
+              // This is NOT a tap event: ShellyTerminalView.processTerminalOutput
+              // fires it for every URL in every transcript delta, and when the
+              // transcript shrinks (any TUI redraw, focus regain, IME resize)
+              // ShellyTerminalSession re-emits the WHOLE transcript. Opening
+              // Custom Tabs here therefore (a) opened whatever URL had ever been
+              // printed (e.g. `http://127.0.0.1:18080` from an echoed proxy
+              // export), (b) re-opened it on every return to Shelly — an endless
+              // loop — and (c) opened TUI-wrapped URLs truncated at the first
+              // row (the transcript joins rows with '\n'; Claude's sign-in URL
+              // lost `&client_id=…`). Sign-in URLs now arrive whole via OSC 8
+              // (OAuthHyperlinkBridge.kt → deep-link queue). Real tap-to-open
+              // needs a tap-position source and is tracked in DEFERRED.md.
             }}
             onResize={(e) => {
               const { cols, rows } = e.nativeEvent;

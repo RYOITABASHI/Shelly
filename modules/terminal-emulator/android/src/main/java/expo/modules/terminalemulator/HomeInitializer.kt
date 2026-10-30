@@ -1454,7 +1454,13 @@ patchCodex(libDir);
     //      manually staged $HOME/.shelly-runtime/claude-glibc/{lib,claude}
     //      through the native ulexec loader $SHELLY_LIB_DIR/shelly_glibc_exec
     //      (jni/shelly-glibc-exec.c) via linker64. No downloading yet (S2+).
-    private const val BASHRC_VERSION = 274
+    // v275: shelly-claude-glibc() S2 -- runs in a subshell with a private
+    //      127.0.0.1 CONNECT proxy ($HOME/.shelly-claude-proxy.js on bionic
+    //      node, random port, lifetime tied to the claude process) and passes
+    //      HTTPS_PROXY/HTTP_PROXY/NO_PROXY only to claude; BROWSER/DISPLAY
+    //      unset so the sign-in URL comes out as an OSC 8 hyperlink
+    //      (OAuthHyperlinkBridge.kt opens it once via the deep-link queue).
+    private const val BASHRC_VERSION = 275
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -1467,6 +1473,14 @@ patchCodex(libDir);
     fun initialize(context: Context): File {
         val home = getHomeDir(context)
         val libDir = LibExtractor.getLibDir(context).absolutePath
+        // Claude Code glibc S2: open Anthropic OAuth authorize URLs that a TUI
+        // emits as OSC 8 hyperlinks (full URL, unaffected by line wrapping)
+        // once via the deep-link queue. Idempotent.
+        OAuthHyperlinkBridge.install(home)
+        // Claude Code glibc S2: open Anthropic OAuth authorize URLs that a TUI
+        // emits as OSC 8 hyperlinks (full URL, unaffected by line wrapping)
+        // once via the deep-link queue. Idempotent.
+        OAuthHyperlinkBridge.install(home)
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
 
         File(home, "projects").mkdirs()
@@ -1755,6 +1769,32 @@ patchCodex(libDir);
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-device.js extract failed: ${e.message}")
+        }
+
+        // Claude Code glibc S2: private CONNECT proxy run on bionic node by
+        // shelly-claude-glibc() (glibc has no /etc/resolv.conf on Android, so
+        // the glibc claude process cannot resolve DNS itself). Extracted every
+        // launch like the device/doctor helpers.
+        val claudeProxyScript = File(home, ".shelly-claude-proxy.js")
+        try {
+            context.assets.open("shelly-claude-proxy.js").use { input ->
+                claudeProxyScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-claude-proxy.js extract failed: ${e.message}")
+        }
+
+        // Claude Code glibc S2: private CONNECT proxy run on bionic node by
+        // shelly-claude-glibc() (glibc has no /etc/resolv.conf on Android, so
+        // the glibc claude process cannot resolve DNS itself). Extracted every
+        // launch like the device/doctor helpers.
+        val claudeProxyScript = File(home, ".shelly-claude-proxy.js")
+        try {
+            context.assets.open("shelly-claude-proxy.js").use { input ->
+                claudeProxyScript.outputStream().use { output -> input.copyTo(output) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-claude-proxy.js extract failed: ${e.message}")
         }
 
         // v39: Mozilla CA bundle for TLS clients that don't consult the
@@ -4193,20 +4233,66 @@ patchCodex(libDir);
             // is forwarded by the loader as LD_LIBRARY_PATH into the glibc world
             // (the loader strips the bionic-world LD_PRELOAD/LD_LIBRARY_PATH).
             // No downloading yet — staging is manual (see DEFERRED.md).
+            // BASHRC_VERSION 275 (S2): everything runs in a subshell so nothing
+            // leaks into the interactive shell. A private CONNECT proxy
+            // ($HOME/.shelly-claude-proxy.js on bionic node: glibc has no
+            // /etc/resolv.conf on Android, bionic DNS works) is started on a
+            // random free 127.0.0.1 port, its port read from a port file, and
+            // HTTPS_PROXY/HTTP_PROXY/NO_PROXY (+ lowercase) are set ONLY on the
+            // claude command line. The proxy dies with the subshell (EXIT trap)
+            // and also polls --parent-pid, so a SIGKILLed shell cannot leave it
+            // running. BROWSER/DISPLAY are unset for claude: the glibc process
+            // cannot execve app_data_file openers (W^X; a glibc-side exec
+            // wrapper is S3), so Claude takes its headless path and renders the
+            // sign-in URL as an OSC 8 hyperlink, which the terminal emulator
+            // hands to OAuthHyperlinkBridge.kt (full URL, opened once).
             sb.appendLine("shelly-claude-glibc() {")
             sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
             sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
             sb.appendLine("  local __bin=\"\$__root/claude\"")
+            sb.appendLine("  local __proxy_js=\"\$HOME/.shelly-claude-proxy.js\"")
             sb.appendLine("  if [ ! -e \"\$__ld\" ]; then")
             sb.appendLine("    echo \"shelly-claude-glibc: missing \$__ld (stage glibc ld.so first)\" >&2; return 2")
             sb.appendLine("  fi")
             sb.appendLine("  if [ ! -e \"\$__bin\" ]; then")
             sb.appendLine("    echo \"shelly-claude-glibc: missing \$__bin (stage the Claude Code glibc binary first)\" >&2; return 2")
             sb.appendLine("  fi")
-            sb.appendLine("  SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$__root/lib\" \\")
-            sb.appendLine("    LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
-            sb.appendLine("    \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
-            sb.appendLine("    \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\$@\"")
+            sb.appendLine("  if [ ! -f \"\$__proxy_js\" ]; then")
+            sb.appendLine("    echo \"shelly-claude-glibc: missing \$__proxy_js (restart Shelly to re-extract helpers)\" >&2; return 2")
+            sb.appendLine("  fi")
+            sb.appendLine("  (")
+            sb.appendLine("    __pdir=\"\${TMPDIR:-\$HOME/tmp}\"")
+            sb.appendLine("    mkdir -p \"\$__pdir\" 2>/dev/null")
+            sb.appendLine("    __pfile=\"\$__pdir/shelly-claude-proxy.\$BASHPID.port\"")
+            sb.appendLine("    rm -f \"\$__pfile\" \"\$__pfile.tmp\"")
+            sb.appendLine("    # linker64 directly (not the _run function) so \$! is the proxy itself")
+            sb.appendLine("    LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 $libDir/node \"\$__proxy_js\" --port-file \"\$__pfile\" --parent-pid \"\$BASHPID\" </dev/null >/dev/null 2>\"\$__pfile.log\" &")
+            sb.appendLine("    __proxy_pid=\$!")
+            sb.appendLine("    trap 'kill \"\$__proxy_pid\" 2>/dev/null; rm -f \"\$__pfile\" \"\$__pfile.tmp\" \"\$__pfile.log\"' EXIT")
+            sb.appendLine("    __port=\"\"")
+            sb.appendLine("    __i=0")
+            sb.appendLine("    while [ \"\$__i\" -lt 200 ]; do")
+            sb.appendLine("      if [ -s \"\$__pfile\" ]; then read -r __port < \"\$__pfile\"; break; fi")
+            sb.appendLine("      kill -0 \"\$__proxy_pid\" 2>/dev/null || break")
+            sb.appendLine("      sleep 0.05")
+            sb.appendLine("      __i=\$((__i + 1))")
+            sb.appendLine("    done")
+            sb.appendLine("    case \"\$__port\" in")
+            sb.appendLine("      ''|*[!0-9]*)")
+            sb.appendLine("        echo \"shelly-claude-glibc: private proxy failed to start\" >&2")
+            sb.appendLine("        cat \"\$__pfile.log\" >&2 2>/dev/null")
+            sb.appendLine("        exit 1")
+            sb.appendLine("        ;;")
+            sb.appendLine("    esac")
+            sb.appendLine("    __proxy=\"http://127.0.0.1:\$__port\"")
+            sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY")
+            sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
+            sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
+            sb.appendLine("      SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$__root/lib\" \\")
+            sb.appendLine("      LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
+            sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
+            sb.appendLine("      \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\$@\"")
+            sb.appendLine("  )")
             sb.appendLine("}")
             // v252: `shelly codex pair` — host Codex remote control for the
             // ChatGPT app (Experimental, on-device unverified). Runs the

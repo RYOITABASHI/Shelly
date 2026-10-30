@@ -35,6 +35,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { useBrowserStore } from '@/store/browser-store';
 import { resolveQueueLine } from '@/lib/deep-link-queue-policy';
+import { createOpenGuard } from '@/lib/deep-link-open-guard';
 import { useBackupModalStore } from '@/store/backup-modal-store';
 import { useMultiPaneStore } from '@/hooks/use-multi-pane';
 import { ensurePaneByTab, focusPaneByTab, multiPaneSlotOps } from '@/lib/pane-focus';
@@ -1717,6 +1718,10 @@ export default function RootLayout() {
     // consume the spool — anything written after the move lands in a
     // freshly-created queue and survives to the next poll.
     let isDraining = false;
+    // Same URL at most once per 30 s, and a burst of more than 5 opens per
+    // minute is dropped (logged). The spool below is deleted before any line
+    // is dispatched, so a crash can never replay a line.
+    const openGuard = createOpenGuard();
     const drainQueue = async () => {
       // Codex review: re-entry guard. drainQueue is async; if a
       // dispatchExternalBrowser await takes longer than the 250 ms
@@ -1774,6 +1779,12 @@ export default function RootLayout() {
             continue;
           }
           const { url, provider, authMode, host } = resolved.entry;
+          // Claude Code glibc S2: loop/burst safety (lib/deep-link-open-guard.ts).
+          const verdict = openGuard.check(url);
+          if (!verdict.ok) {
+            logError('DeepLinkQueue', `dropped ${verdict.reason} open (${host}): ${url.slice(0, 96)}`);
+            continue;
+          }
           if (resolved.note === 'downgraded-to-in-app') {
             logError(
               'DeepLinkQueue',

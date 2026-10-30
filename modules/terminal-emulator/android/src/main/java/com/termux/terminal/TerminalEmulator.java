@@ -293,6 +293,19 @@ public final class TerminalEmulator {
 
     private static final String LOG_TAG = "TerminalEmulator";
 
+    /**
+     * Shelly: observer for OSC 8 hyperlinks (ESC ] 8 ; params ; URI ST). The emulator does
+     * not render hyperlinks; it only hands the URI to this observer. Used by
+     * expo.modules.terminalemulator.OAuthHyperlinkBridge to open Claude Code's sign-in URL
+     * (rendered as an OSC 8 link, so the URI is complete even when the visible text wraps).
+     * The observer must be cheap and must not throw; it runs on the emulator thread.
+     */
+    public interface HyperlinkObserver {
+        void onHyperlink(String uri);
+    }
+
+    public static volatile HyperlinkObserver sHyperlinkObserver;
+
     private boolean isDecsetInternalBitSet(int bit) {
         return (mCurrentDecSetFlags & bit) != 0;
     }
@@ -2132,6 +2145,19 @@ public final class TerminalEmulator {
                     }
                 }
                 break;
+            case 8: { // Shelly: OSC 8 hyperlink "8;params;URI". Observe only, never render.
+                int uriStart = textParameter.indexOf(';') + 1;
+                String uri = uriStart > 0 ? textParameter.substring(uriStart) : "";
+                HyperlinkObserver observer = sHyperlinkObserver;
+                if (!uri.isEmpty() && observer != null) {
+                    try {
+                        observer.onHyperlink(uri);
+                    } catch (RuntimeException e) {
+                        Logger.logError(mClient, LOG_TAG, "OSC 8 observer failed: " + e);
+                    }
+                }
+                break;
+            }
             case 52: // Manipulate Selection Data. Skip the optional first selection parameter(s).
                 int startIndex = textParameter.indexOf(";") + 1;
                 try {

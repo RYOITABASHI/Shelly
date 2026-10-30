@@ -49,6 +49,35 @@ export const EXTERNAL_BROWSER_HOSTS: ReadonlySet<string> = new Set([
   'codeassist.google.com',
 ]);
 
+/**
+ * Anthropic (Claude Code) OAuth authorize endpoints, host → exact path.
+ * Claude Code glibc S2: `claude setup-token` / `/login` sign-in URLs, queued by
+ * OAuthHyperlinkBridge.kt from the OSC 8 hyperlink Claude renders. Unlike the
+ * Google hosts these are gated on host AND path (only the authorize endpoint,
+ * never arbitrary claude.ai pages), https only, default port, no userinfo.
+ * Must mirror OAuthHyperlinkBridge.isAnthropicOAuthAuthorizeUrl().
+ */
+export const ANTHROPIC_OAUTH_AUTHORIZE: ReadonlyMap<string, string> = new Map([
+  ['claude.ai', '/oauth/authorize'],
+  ['claude.com', '/cai/oauth/authorize'],
+  ['platform.claude.com', '/oauth/authorize'],
+  ['console.anthropic.com', '/oauth/authorize'],
+]);
+
+export function isAnthropicOAuthAuthorizeUrl(raw: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'https:') return false;
+  if (u.username || u.password) return false;
+  if (u.port && u.port !== '443') return false;
+  const want = ANTHROPIC_OAUTH_AUTHORIZE.get(u.hostname.toLowerCase());
+  return want !== undefined && u.pathname === want;
+}
+
 export type DeepLinkAuthMode = 'in-app' | 'external-browser';
 
 export interface DeepLinkQueueEntry {
@@ -125,7 +154,8 @@ export function resolveQueueLine(rawLine: string): DeepLinkQueueResolution {
   }
   if (!host) return reject('url without host');
 
-  const allowed = EXTERNAL_BROWSER_HOSTS.has(host);
+  const anthropicAuth = isAnthropicOAuthAuthorizeUrl(url);
+  const allowed = EXTERNAL_BROWSER_HOSTS.has(host) || anthropicAuth;
 
   if (declaredExternal && !allowed) {
     // The emitter asked for the real browser for a host that is not an OAuth
@@ -140,7 +170,12 @@ export function resolveQueueLine(rawLine: string): DeepLinkQueueResolution {
 
   if (!declaredExternal && allowed) {
     return {
-      entry: { url, provider: provider ?? 'google', authMode: 'external-browser', host },
+      entry: {
+        url,
+        provider: provider ?? (anthropicAuth ? 'anthropic' : 'google'),
+        authMode: 'external-browser',
+        host,
+      },
       note: 'upgraded-to-external',
     };
   }
