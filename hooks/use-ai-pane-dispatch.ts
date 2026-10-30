@@ -75,7 +75,7 @@ import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
-import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, detectUnsupportedStepProvider, persistAgentDraft } from '@/lib/agent-draft-patch';
+import { applyPatchToPendingSession, applyCorrectionToJustRegisteredAgent, detectStepProviderNotice, persistAgentDraft } from '@/lib/agent-draft-patch';
 import { isLowConfidenceAgentDraft, isCapabilityQuestionForAgentFlow, extractAgentFieldsWithLlm } from '@/lib/agent-llm-fallback';
 import {
   buildConversationTranscript,
@@ -1486,13 +1486,16 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           const unclearStrings = detectMessageLocale(pendingAgentSession.draft.rawText) === 'ja' ? ja : en;
           const unclearIsEditing = !!pendingAgentSession.editingAgentId;
           // A step-provider edit naming a provider this device cannot run yet
-          // (「3番目をClaudeで」): say so plainly, the draft stays as it was.
-          const unsupportedProvider = detectUnsupportedStepProvider(pendingAgentSession.draft, userText);
-          if (unsupportedProvider) {
+          // (「3番目をClaudeで」), or 「2番目を…」 naming a summary line that is a
+          // parallel group: say so plainly (ask which member), the draft stays.
+          const providerNotice = detectStepProviderNotice(pendingAgentSession.draft, userText);
+          if (providerNotice) {
             store.addMessage(paneId, {
               id: generateId(),
               role: 'assistant',
-              content: unclearStrings['agentplan.provider_unsupported'].replace('{{provider}}', unsupportedProvider),
+              content: providerNotice.kind === 'unsupported'
+                ? unclearStrings['agentplan.provider_unsupported'].replace('{{provider}}', providerNotice.provider)
+                : unclearStrings['agentplan.provider_ambiguous_line'].split('{{n}}').join(String(providerNotice.line)),
               timestamp: Date.now(),
               agent: pendingAgentSession.agentLabel,
             });
@@ -4177,7 +4180,16 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // ParsedAgentDraft.toolPatched) is the one other case that changes
         // the stored tool — through the same resolver.
         const persistedTool = editingAgent && !autonomousChanged && !confirmed.toolPatched ? editingAgent.tool : tool;
-        const persistedRunOn = editingAgent && !autonomousChanged ? editingAgent.runOn : runOn;
+        // A chat tool patch must not leave a contradicting manual RUN ON pin
+        // behind (an on-device pin outranks the tool and would silently keep
+        // the old engine; a cloud pin with a local tool likewise) — the pin is
+        // released to 'auto' so the resolved tool above is what runs.
+        const registeredRunOn = editingAgent?.runOn;
+        const runOnConflicts = !!confirmed.toolPatched && !!registeredRunOn && (
+          (registeredRunOn === 'on-device' && persistedTool.type !== 'local' && persistedTool.type !== 'auto')
+          || (registeredRunOn === 'cloud' && persistedTool.type === 'local')
+        );
+        const persistedRunOn = editingAgent && !autonomousChanged ? (runOnConflicts ? 'auto' : editingAgent.runOn) : runOn;
         const agentFields = {
           name: confirmed.name,
           description: confirmed.prompt.slice(0, 120),

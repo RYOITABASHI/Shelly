@@ -125,44 +125,66 @@ describe('shelly-plan-executor.js provider overrides (v16)', () => {
 
   it('applies an override to a step that has not started yet (and emits a tool event)', async () => {
     const home = makeHome();
-    writeOverrides(home, { steps: { '1': { tool: { type: 'local', model: 'new' } } } });
-    const planFile = writePlan(home, port, [{ instruction: 'Step A' }, { instruction: 'Step B' }, { instruction: 'Final step' }]);
+    // Step B is pinned; 'auto' sends it back to the plan's own tool.
+    writeOverrides(home, { steps: { '1': { tool: { type: 'auto' } } } });
+    const planFile = writePlan(home, port, [
+      { instruction: 'Step A' },
+      { instruction: 'Step B', tool: { type: 'local', label: 'Local LLM', model: 'pinned' } },
+      { instruction: 'Final step' },
+    ]);
     expect(await runExecutor(planFile, home)).toBe(0);
     expect(requests).toEqual([
       { instruction: 'Step A', model: 'orig' },
-      { instruction: 'Step B', model: 'new' },
+      { instruction: 'Step B', model: 'orig' },
       { instruction: 'Final step', model: 'orig' },
     ]);
     const toolEvents = readEvents(home).filter((e) => e.kind === 'tool' && e.stepIndex === 1);
-    expect(toolEvents.some((e) => e.provider && e.provider.model === 'new')).toBe(true);
+    expect(toolEvents.some((e) => e.provider && e.provider.model === 'orig')).toBe(true);
     expect(readAudit(home).some((e) => e.event === 'provider_override_applied' && e.stepIndex === 1)).toBe(true);
     expect(readRunLog(home).status).toBe('success');
   }, 60000);
 
+  it('never uses a model from the file (the plan\'s own tool object is used)', async () => {
+    const home = makeHome();
+    writeOverrides(home, { steps: { '1': { tool: { type: 'local', model: '../../evil:generateContent' } } } });
+    const planFile = writePlan(home, port, [
+      { instruction: 'Step A' },
+      { instruction: 'Step B', tool: { type: 'local', label: 'Local LLM', model: 'pinned' } },
+      { instruction: 'Final step' },
+    ]);
+    expect(await runExecutor(planFile, home)).toBe(0);
+    expect(requests.find((r) => r.instruction === 'Step B')!.model).toBe('orig');
+    expect(requests.some((r) => /evil/.test(r.model))).toBe(false);
+  }, 60000);
+
   it('ignores an override scoped to another run, and defers a Codex override', async () => {
     const home = makeHome();
-    writeOverrides(home, { runId: 'some-older-run', steps: { '0': { tool: { type: 'local', model: 'new' } } } });
-    let planFile = writePlan(home, port, [{ instruction: 'Step A' }, { instruction: 'Final step' }]);
+    writeOverrides(home, { runId: 'some-older-run', steps: { '1': { tool: { type: 'auto' } } } });
+    const steps = [{ instruction: 'Step A' }, { instruction: 'Step B', tool: { type: 'local', label: 'Local LLM', model: 'pinned' } }, { instruction: 'Final step' }];
+    let planFile = writePlan(home, port, steps);
     expect(await runExecutor(planFile, home)).toBe(0);
-    expect(requests.map((r) => r.model)).toEqual(['orig', 'orig']);
+    expect(requests.map((r) => r.model)).toEqual(['orig', 'pinned', 'orig']);
 
     requests = [];
     writeOverrides(home, { steps: { '0': { tool: { type: 'cli', cli: 'codex' } } } });
-    planFile = writePlan(home, port, [{ instruction: 'Step A' }, { instruction: 'Final step' }]);
+    planFile = writePlan(home, port, steps);
     expect(await runExecutor(planFile, home)).toBe(0);
-    expect(requests.map((r) => r.model)).toEqual(['orig', 'orig']);
+    expect(requests.map((r) => r.model)).toEqual(['orig', 'pinned', 'orig']);
     expect(readAudit(home).some((e) => e.event === 'provider_override_deferred' && e.toolType === 'cli')).toBe(true);
   }, 60000);
 
-  it('an autonomous plan refuses an API-key override the plan builder never cleared', async () => {
-    const home = makeHome();
-    writeOverrides(home, { steps: { '0': { tool: { type: 'perplexity' } } } });
-    const planFile = writePlan(home, port, [{ instruction: 'Step A' }, { instruction: 'Final step' }], {
-      agent: { id: AGENT_ID, name: 'Overrides', autonomous: true, autonomyLevel: 'L2' },
-    });
-    await runExecutor(planFile, home);
-    expect(requests[0]).toEqual({ instruction: 'Step A', model: 'orig' });
-    expect(readAudit(home).some((e) => e.event === 'provider_override_refused' && e.toolType === 'perplexity')).toBe(true);
+  it('ANY plan (not only autonomous) refuses an API-key provider the plan does not contain', async () => {
+    for (const autonomous of [false, true]) {
+      const home = makeHome();
+      requests = [];
+      writeOverrides(home, { steps: { '0': { tool: { type: 'perplexity' } } } });
+      const planFile = writePlan(home, port, [{ instruction: 'Step A' }, { instruction: 'Final step' }], {
+        agent: { id: AGENT_ID, name: 'Overrides', autonomous, autonomyLevel: 'L2' },
+      });
+      await runExecutor(planFile, home);
+      expect(requests[0]).toEqual({ instruction: 'Step A', model: 'orig' });
+      expect(readAudit(home).some((e) => e.event === 'provider_override_refused' && e.toolType === 'perplexity')).toBe(true);
+    }
   }, 60000);
 
   it('restartRunning aborts only that branch and reruns it on the new provider', async () => {
@@ -171,7 +193,7 @@ describe('shelly-plan-executor.js provider overrides (v16)', () => {
     delayByInstruction = { 'Branch Y': 4000 };
     onRequest = (r) => {
       if (r.instruction === 'Branch X' && r.model === 'slow') {
-        writeOverrides(home, { steps: { '0': { tool: { type: 'local', model: 'fast' } } }, restartRunning: [0] });
+        writeOverrides(home, { steps: { '0': { tool: { type: 'auto' } } }, restartRunning: [0] });
       }
     };
     const planFile = writePlan(home, port, [
@@ -183,17 +205,33 @@ describe('shelly-plan-executor.js provider overrides (v16)', () => {
     expect(await runExecutor(planFile, home)).toBe(0);
     expect(Date.now() - started).toBeLessThan(18000); // never waited for the slow request
     const byInstruction = (i: string) => requests.filter((r) => r.instruction === i).map((r) => r.model);
-    expect(byInstruction('Branch X')).toEqual(['slow', 'fast']);
+    expect(byInstruction('Branch X')).toEqual(['slow', 'orig']);
     expect(byInstruction('Branch Y')).toEqual(['orig']); // the sibling ran exactly once
     const log = readRunLog(home);
     expect(log.status).toBe('success');
-    expect(log.steps[0].outputPreview).toContain('answered by fast');
+    expect(log.steps[0].outputPreview).toContain('Branch X answered by orig');
     expect(log.steps[1].outputPreview).toContain('Branch Y answered by orig');
     const events = readEvents(home);
     expect(events.some((e) => e.kind === 'tail' && e.stepIndex === 0 && /restarting this step/.test(e.tail))).toBe(true);
     expect(events.filter((e) => e.kind === 'tail' && e.stepIndex === 1 && /restarting/.test(e.tail))).toHaveLength(0);
     expect(readAudit(home).some((e) => e.event === 'provider_override_restart' && e.stepIndex === 0)).toBe(true);
   }, 60000);
+});
+
+describe('selectDueRestartBranches (restart not dropped while a branch is between attempts)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const executor = require(scriptCopy);
+  it('a branch outside its model request is not marked seen; it is due once it enters one', () => {
+    const ctl = { inModel: false, restartTool: null, seenSig: '' };
+    const live = new Map([[0, ctl]]);
+    expect(executor.selectDueRestartBranches(live, 'v1')).toHaveLength(0);
+    expect(ctl.seenSig).toBe('');
+    ctl.inModel = true;
+    expect(executor.selectDueRestartBranches(live, 'v1')).toHaveLength(1);
+    expect(ctl.seenSig).toBe('v1');
+    expect(executor.selectDueRestartBranches(live, 'v1')).toHaveLength(0); // once per file version
+    expect(executor.selectDueRestartBranches(live, 'v2')).toHaveLength(1);
+  });
 });
 
 describe('explicit paid pin under a ¥0 continuous loop (executor)', () => {
@@ -222,5 +260,14 @@ describe('explicit paid pin under a ¥0 continuous loop (executor)', () => {
     writeAgentJson(home2);
     await runExecutor(writePlan(home2, 9, paidSteps(false), continuous), home2, true);
     expect(readRunLog(home2).steps[0].outputPreview).toMatch(/continuous mode: perplexity is a paid API/);
+  }, 60000);
+
+  it('an override to a paid API (even one in the plan) is refused in a ¥0 loop — no paid pin from the file', async () => {
+    const home = makeHome();
+    writeAgentJson(home);
+    writeOverrides(home, { steps: { '0': { tool: { type: 'perplexity' } } } });
+    await runExecutor(writePlan(home, 9, paidSteps(true), continuous), home, true);
+    const audit = readAudit(home);
+    expect(audit.some((e) => e.event === 'provider_override_refused' && e.stepIndex === 0 && /¥0 loop/.test(e.reason))).toBe(true);
   }, 60000);
 });

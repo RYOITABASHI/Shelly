@@ -33,7 +33,6 @@ export const PROVIDER_OVERRIDES_VERSION = 1;
 /** Same id charset lib/monitor-live-poll.ts interpolates into shell. */
 const SAFE_AGENT_ID = /^[A-Za-z0-9._-]{1,80}$/;
 const MAX_STEP_INDEX = 31;
-const SAFE_MODEL = /^[A-Za-z0-9._:/-]{1,80}$/;
 
 export type ProviderPick = 'auto' | 'local' | 'codex' | 'perplexity' | 'gemini' | 'cerebras' | 'groq';
 
@@ -108,7 +107,8 @@ export interface ProviderOverrides {
   updatedAt?: number;
 }
 
-/** A tool as it may appear in the file: known type, optional safe model. */
+/** A tool as it may appear in the file: a known type ONLY — a model is never
+ *  read (no path tricks in a request URL, no cheap → expensive upgrade). */
 export function sanitizeOverrideTool(raw: unknown): ToolChoice | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
@@ -116,8 +116,7 @@ export function sanitizeOverrideTool(raw: unknown): ToolChoice | null {
   if (!OVERRIDE_TOOL_TYPES.has(type)) return null;
   if (type === 'cli') return r.cli === 'codex' ? { type: 'cli', cli: 'codex' } : null;
   if (type === 'auto') return { type: 'auto' };
-  const model = typeof r.model === 'string' && SAFE_MODEL.test(r.model) ? r.model : undefined;
-  return (model ? { type, model } : { type }) as ToolChoice;
+  return { type } as ToolChoice;
 }
 
 function validIndex(n: unknown): n is number {
@@ -223,6 +222,29 @@ export function buildClearOverridesCommand(agentId: string): string {
   return `rm -f ${overridesShellPath(agentId)}`;
 }
 
+/**
+ * The tool a reader may actually use for an override read from the file
+ * (writable by anything running as the app uid): 'auto' (back to the plan's
+ * own routing), the local LLM, or a provider type the agent definition
+ * ALREADY uses (agent tool or a step pin) — returned as the definition's own
+ * tool object, so its model is the vetted one. Anything else → undefined
+ * (the override is ignored; the app folds a new provider into the definition
+ * through updateAgent instead, which re-runs every plan-build gate).
+ */
+export function vetOverrideToolForAgent(
+  agent: Pick<Agent, 'tool' | 'orchestration'>,
+  tool: ToolChoice | undefined,
+): ToolChoice | undefined {
+  if (!tool) return undefined;
+  if (tool.type === 'auto') return { type: 'auto' };
+  const pool: ToolChoice[] = [agent.tool, ...(agent.orchestration?.steps ?? []).map((s) => (typeof s === 'string' ? undefined : s.tool))].filter(
+    (t): t is ToolChoice => !!t && t.type !== 'auto',
+  );
+  const own = pool.find((t) => t.type === tool.type);
+  if (own) return own;
+  return tool.type === 'local' ? { type: 'local' } : undefined;
+}
+
 /** Stable identity of a tool for "did the provider change" checks ('auto' and
  *  absent are the same: no pin). */
 export function overrideToolKey(tool: ToolChoice | null | undefined): string {
@@ -294,4 +316,79 @@ export function foldOverridesIntoAgent(
   const o = overrides.steps['0'];
   if (!o || sameTool(agent.tool, o.tool)) return null;
   return { tool: o.tool };
+}
+
+// ── Folding after the run (agent-manager syncAgentRunLogsFromDisk) ──────────
+
+/** How long an override may wait for a run to finish before it is folded
+ *  anyway (an abandoned file must never linger and override later edits). */
+export const OVERRIDE_FOLD_MAX_AGE_MS = 60 * 60 * 1000;
+const LISTING_MARK = '@@SHELLY_OVERRIDES@@';
+
+/** One exec listing every agent's overrides.json (the periodic run-log sync
+ *  doubles as the startup sweep). */
+export function buildListOverridesCommand(): string {
+  return (
+    `for f in "$HOME/.shelly/agents/logs"/*/${PROVIDER_OVERRIDES_FILE}; do ` +
+    `[ -f "$f" ] || continue; d="\${f%/*}"; printf '${LISTING_MARK} %s\\n' "\${d##*/}"; ` +
+    `head -c 16384 "$f" 2>/dev/null; printf '\\n'; done; true`
+  );
+}
+
+export function parseOverridesListing(stdout: string): Array<{ agentId: string; overrides: ProviderOverrides | null }> {
+  const out: Array<{ agentId: string; overrides: ProviderOverrides | null }> = [];
+  const parts = String(stdout ?? '').split(`${LISTING_MARK} `).slice(1);
+  for (const part of parts) {
+    const nl = part.indexOf('\n');
+    const agentId = (nl >= 0 ? part.slice(0, nl) : part).trim();
+    if (!isSafeOverrideAgentId(agentId)) continue;
+    out.push({ agentId, overrides: parseProviderOverrides(nl >= 0 ? part.slice(nl + 1) : '') });
+  }
+  return out;
+}
+
+/**
+ * 'fold' once the run the override was written for has ended — a run log at
+ * or after the override exists and the agent is not running — or once the
+ * file is older than OVERRIDE_FOLD_MAX_AGE_MS; 'clear' for an unreadable file
+ * or a deleted agent; otherwise 'wait'.
+ */
+export function decideOverrideFold(
+  overrides: ProviderOverrides | null,
+  ctx: { agentExists: boolean; running: boolean; latestRunAtMs: number | null; nowMs: number },
+): 'fold' | 'clear' | 'wait' {
+  if (!ctx.agentExists || !overrides) return 'clear';
+  const writtenAt = overrides.updatedAt ?? 0;
+  if (ctx.nowMs - writtenAt > OVERRIDE_FOLD_MAX_AGE_MS) return 'fold';
+  if (ctx.running) return 'wait';
+  return ctx.latestRunAtMs !== null && ctx.latestRunAtMs >= writtenAt ? 'fold' : 'wait';
+}
+
+// ── App-written files (fold authenticity) ──────────────────────────────────
+
+/** overrides.json is writable by anything running as the app uid, so the
+ *  fold into the agent definition only trusts content this app process
+ *  wrote itself (in-memory: after an app restart a leftover file is cleared,
+ *  never folded). */
+const appWritten = new Map<string, string>();
+
+function canonical(overrides: ProviderOverrides | null): string {
+  return overrides ? JSON.stringify(parseProviderOverrides(JSON.stringify(overrides))) : '';
+}
+
+export function noteAppWrittenOverrides(agentId: string, overrides: ProviderOverrides): void {
+  appWritten.set(agentId, canonical(overrides));
+}
+
+export function isAppWrittenOverrides(agentId: string, overrides: ProviderOverrides | null): boolean {
+  const known = appWritten.get(agentId);
+  return !!known && !!overrides && known === canonical(overrides);
+}
+
+export function forgetAppWrittenOverrides(agentId: string): void {
+  appWritten.delete(agentId);
+}
+
+export function __resetAppWrittenOverridesForTests(): void {
+  appWritten.clear();
 }

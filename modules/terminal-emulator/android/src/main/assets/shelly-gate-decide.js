@@ -1214,10 +1214,11 @@ function touchesAgentsConfigDir(command) {
   if (/\bshared_prefs\b/.test(c)) return true;
   return false;
 }
-var PROTECTED_POLICY_FILE_RE = /(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json\b|shared_prefs\/+(?:shelly_agent_policy|SecureStore)\b|\bshelly_agent_policy\.xml\b)/;
+var PROTECTED_POLICY_FILE_RE = /(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json\b|\.shelly\/+agents\/+logs\/+[A-Za-z0-9_.-]+\/+\.?overrides\.json|shared_prefs\/+(?:shelly_agent_policy|SecureStore)\b|\bshelly_agent_policy\.xml\b)/;
 var NARROW_MUTATOR_RE = /\b(?:rm|rmdir|unlink|mv|cp|tee|truncate|dd|ln|chmod|chown|install|shred|touch|rsync|patch)\b|\bsed\b[^|;&]*\s-(?:[a-zA-Z]*i|-in-place)|\bfind\b[^|;&]*\s-delete\b/;
 var NARROW_INTERPRETER_RE = /\b(?:python\d*|node|nodejs|deno|bun|perl|ruby|php)\b/;
-var REDIRECT_TO_PROTECTED_RE = />{1,2}\s*['"]?[^\s'"]*(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json|shelly_agent_policy)/;
+var REDIRECT_TO_PROTECTED_RE = />{1,2}\s*['"]?[^\s'"]*(?:\.shelly\/+agents\/+[A-Za-z0-9_.-]+\.json|\.shelly\/+agents\/+logs\/+[A-Za-z0-9_.-]+\/+\.?overrides\.json|shelly_agent_policy)/;
+var OVERRIDES_FILE_RE = /(?:^|[\s/'"=])\.?overrides\.json\b/;
 var REDIRECT_TO_POLICY_BASENAME_RE = />{1,2}\s*['"]?(?:\.\/)?policy\.json\b/;
 function touchesProtectedPolicyFiles(command) {
   const c = String(command || "");
@@ -1225,6 +1226,8 @@ function touchesProtectedPolicyFiles(command) {
   const policyBasename = /(?:^|[\s/'"=])policy\.json\b/.test(c) && /\.shelly\b|\bagents\b/.test(c);
   const prefsSeal = /\bshelly_agent_policy\b/.test(c);
   if (policyBasename && REDIRECT_TO_POLICY_BASENAME_RE.test(c)) return true;
+  const overridesFile = OVERRIDES_FILE_RE.test(c) && /\.shelly\b|\bagents\b|\blogs\b/.test(c);
+  if (overridesFile && (/>{1,2}/.test(c) || NARROW_MUTATOR_RE.test(c) || NARROW_INTERPRETER_RE.test(c))) return true;
   if (NARROW_MUTATOR_RE.test(c) && (PROTECTED_POLICY_FILE_RE.test(c) || policyBasename)) return true;
   if (NARROW_INTERPRETER_RE.test(c) && (policyBasename || prefsSeal)) return true;
   return false;

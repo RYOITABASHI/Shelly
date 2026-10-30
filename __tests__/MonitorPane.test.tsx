@@ -27,11 +27,9 @@ jest.mock('@/lib/open-file', () => ({ openFile: (p: string) => mockOpenFile(p) }
 const mockOpenChat = jest.fn((_id: string) => true);
 jest.mock('@/lib/agent-thread-open', () => ({ openAgentChatThread: (id: string) => mockOpenChat(id) }));
 // Provider picker: the exec / updateAgent side lives in lib/monitor-provider-pick.
-const mockApplyPick = jest.fn(async (..._args: unknown[]) => 'override');
+const mockApplyPick = jest.fn(async (..._args: unknown[]) => ({ result: 'override', appliesNow: true, paidNextRun: false }));
 jest.mock('@/lib/monitor-provider-pick', () => ({
   applyProviderPick: (...args: unknown[]) => mockApplyPick(...args),
-  foldPendingProviderOverride: jest.fn(async () => false),
-  hasPendingProviderFold: () => false,
 }));
 const mockAddMessage = jest.fn();
 jest.mock('@/store/ai-pane-store', () => ({
@@ -363,6 +361,25 @@ describe('MonitorPane LIVE source', () => {
     layoutWall(utils);
     fireEvent.press(utils.getAllByLabelText(/collect papers/)[0]);
     fireEvent.press(utils.getByTestId('monitor-provider-local'));
+    expect(utils.getByTestId('monitor-provider-keep')).toBeTruthy();
+    expect(utils.queryByTestId('monitor-provider-restart')).toBeNull();
+    utils.unmount();
+  });
+
+  it('a single-step agent never offers 「今のステップをやり直す」', () => {
+    const r = liveRun({ mode: 'SINGLE', stepCount: 1, branches: [{ ...liveRun().branches[1], branchId: 'run-1#0', stepIndex: 0, state: 'RUNNING' }] });
+    act(() => {
+      useAgentStore.setState({
+        agents: [{ id: 'digest', name: 'Paper digest', tool: { type: 'local' } } as never],
+        runningAgentIds: ['digest'],
+        liveRuns: { digest: [{ run: r }] },
+      });
+      useAgentStore.getState().setMonitor({ view: 'single', selectedId: 's0', auto: false });
+    });
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    fireEvent.press(utils.getAllByLabelText(/Paper digest|STEP 1/)[0]);
+    fireEvent.press(utils.getByTestId('monitor-provider-groq'));
     expect(utils.getByTestId('monitor-provider-keep')).toBeTruthy();
     expect(utils.queryByTestId('monitor-provider-restart')).toBeNull();
     utils.unmount();

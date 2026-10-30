@@ -52,7 +52,7 @@ import {
 import { decodeCron } from './agent-card-cron';
 import { encodeAtOneShot, isOneShotSchedule, parseOneShotSchedule } from './agent-oneshot';
 import { toolChoiceToLabel } from './agent-tool-router';
-import { normalizeStep, planParallelGroups } from './agent-orchestration';
+import { groupStepsForDisplay, normalizeStep, planParallelGroups } from './agent-orchestration';
 import { withStepTool } from './agent-provider-overrides';
 import type { Agent, AgentOrchestrationStep, ToolChoice } from '@/store/types';
 // Type-only: erased at compile time — same "no RN in this pure module"
@@ -468,7 +468,6 @@ const JA_REF_ORDINAL = new RegExp(`^(${JA_NUM})\\s*(?:番目|つ目|個目)${JA_
 const JA_REF_STEP_N = new RegExp(`^(?:ステップ|手順)\\s*(${JA_NUM})$`);
 const JA_REF_FIRST_LAST = new RegExp(`^(最初|最後)${JA_STEP_NOUN}$`);
 const JA_REF_KEYWORD = /^(.{1,20}?)\s*(?:の|する)\s*(?:ステップ|手順|ところ|部分|処理|タスク|作業)$/;
-const JA_REF_BARE_KEYWORD = /^([^\s、。,]{1,15})$/;
 const EN_ORD = '(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\\d{1,2}(?:st|nd|rd|th))';
 const EN_REF_ALL = /^(?:all|everything|every\s+step|all\s+(?:the\s+)?steps|all\s+of\s+(?:them|it)|it\s+all)$/i;
 const EN_REF_PARALLEL = new RegExp(`^(?:the\\s+)?(${EN_ORD})\\s+parallel\\s+(?:step|branch|one|task)$`, 'i');
@@ -477,7 +476,7 @@ const EN_REF_STEP_N = /^step\s+(\d{1,2})$/i;
 const EN_REF_LAST = /^(?:the\s+)?last\s+(?:step|one|task)$/i;
 const EN_REF_KEYWORD = /^(?:the\s+)?(.{1,30}?)\s+step$/i;
 
-function parseStepRefJa(ref: string, particle: string | undefined): StepRef | null {
+function parseStepRefJa(ref: string): StepRef | null {
   const r = ref.trim();
   if (!r) return null;
   if (JA_REF_ALL.test(r)) return { kind: 'all' };
@@ -487,13 +486,10 @@ function parseStepRefJa(ref: string, particle: string | undefined): StepRef | nu
   if (m) return { kind: 'ordinal', n: parseCount(m[1]) };
   m = r.match(JA_REF_FIRST_LAST);
   if (m) return m[1] === '最後' ? { kind: 'last' } : { kind: 'ordinal', n: 1 };
+  // A keyword needs a step noun (「要約のステップ」) — a bare 「<word>は」 is far
+  // too often ordinary speech (「今日はローカルでお願い」).
   m = r.match(JA_REF_KEYWORD);
   if (m) return { kind: 'keyword', keyword: m[1].trim() };
-  // 「要約はClaudeで」: a bare keyword only with the topic particle は.
-  if (particle === 'は') {
-    m = r.match(JA_REF_BARE_KEYWORD);
-    if (m) return { kind: 'keyword', keyword: m[1] };
-  }
   return null;
 }
 
@@ -517,7 +513,7 @@ function parseStepProviderRequest(text: string): { ref: StepRef; provider: Provi
   const ja = t.match(STEP_PROVIDER_JA_RE);
   if (ja) {
     const provider = providerToken(ja[3]);
-    const ref = provider ? parseStepRefJa(ja[1], ja[2]) : null;
+    const ref = provider ? parseStepRefJa(ja[1]) : null;
     if (provider && ref) return { ref, provider };
   }
   const useFor = t.match(STEP_PROVIDER_EN_USE_FOR_RE);
@@ -539,16 +535,35 @@ function stepInstruction(step: string | AgentOrchestrationStep): string {
   return typeof step === 'string' ? step : step.instruction ?? '';
 }
 
-/** Step indices `ref` names, in display order (the summary lists every step,
- *  parallel members included, 1-based). null = does not resolve cleanly. */
-function resolveStepRef(steps: ReadonlyArray<string | AgentOrchestrationStep>, ref: StepRef): number[] | null {
+// Mirrors lib/agent-orchestration.ts ACTION_LIKE_CLAUSE_RE (not exported): a
+// step that sends / posts / saves / notifies is never given a model provider
+// by a blanket 「全部…で」.
+const ACTION_LIKE_STEP_RE =
+  /投稿|ポスト|つぶや|呟|シェア|共有|送信|送っ|送る|送り|転送|通知|お知らせ|保存|書き出|アップロード|webhook|ウェブフック|https?:\/\/|\b(?:post|tweet|send|share|notify|save|upload|publish|email|mail)\b/i;
+
+/**
+ * Step indices `ref` names. Ordinals (「N番目」, "step N", 「最初」「最後」) are
+ * SUMMARY LINES — the summary shows one effective parallel group as ONE line
+ * (groupStepsForDisplay), so 「2番目」 is whatever the user sees as line 2; a
+ * line that is a parallel group is 'ambiguous' (ask 「並列のN番目」). 「並列の
+ * N番目」 is the N-th step among the effective parallel members, in order.
+ * null = does not resolve.
+ */
+function resolveStepRef(
+  steps: ReadonlyArray<string | AgentOrchestrationStep>,
+  ref: StepRef,
+): number[] | { ambiguousLine: number } | null {
   switch (ref.kind) {
     case 'all':
       return steps.map((_, i) => i);
     case 'last':
       return steps.length ? [steps.length - 1] : null;
-    case 'ordinal':
-      return ref.n >= 1 && ref.n <= steps.length ? [ref.n - 1] : null;
+    case 'ordinal': {
+      const lines = summaryLineSteps(steps);
+      if (ref.n < 1 || ref.n > lines.length) return null;
+      const line = lines[ref.n - 1];
+      return line.length === 1 ? line : { ambiguousLine: ref.n };
+    }
     case 'parallel': {
       const groups = planParallelGroups(steps.map(normalizeStep)).group;
       const members = steps.map((_, i) => i).filter((i) => groups[i] !== undefined);
@@ -567,11 +582,25 @@ function toolKey(tool: ToolChoice | undefined): string {
   return tool && tool.type !== 'auto' ? JSON.stringify(tool) : '';
 }
 
+/** Original step indices per summary line (a parallel line holds several). */
+export function summaryLineSteps(steps: ReadonlyArray<string | AgentOrchestrationStep>): number[][] {
+  let next = 0;
+  return groupStepsForDisplay(steps).entries.map((entry) => entry.items.map(() => next++));
+}
+
+/** The summary line (1-based) that shows step `index`. */
+export function summaryLineOfStep(steps: ReadonlyArray<string | AgentOrchestrationStep>, index: number): number {
+  const line = summaryLineSteps(steps).findIndex((members) => members.includes(index));
+  return line >= 0 ? line + 1 : index + 1;
+}
+
 interface StepToolPatch {
   orchestrationSteps?: Array<string | AgentOrchestrationStep>;
   tool?: ToolChoice;
   changedFields: string[];
 }
+
+export type StepProviderNotice = { kind: 'unsupported'; provider: string } | { kind: 'ambiguous'; line: number };
 
 /**
  * The step provider change `text` asks for, against `draft`. Orchestrated
@@ -583,19 +612,23 @@ interface StepToolPatch {
 export function tryPatchStepTools(
   draft: ParsedAgentDraft,
   text: string,
-): StepToolPatch | { unsupported: 'Claude Code' } | null {
+): StepToolPatch | { notice: StepProviderNotice } | null {
   const req = parseStepProviderRequest(text);
   if (!req) return null;
   const steps = draft.orchestrationSteps ?? [];
   if (steps.length >= 2) {
-    const indices = resolveStepRef(steps, req.ref);
-    if (!indices) return { changedFields: [] };
-    if (req.provider === 'claude') return { unsupported: 'Claude Code' };
+    const resolved = resolveStepRef(steps, req.ref);
+    if (!resolved) return { changedFields: [] };
+    if (!Array.isArray(resolved)) return { notice: { kind: 'ambiguous', line: resolved.ambiguousLine } };
+    if (req.provider === 'claude') return { notice: { kind: 'unsupported', provider: 'Claude Code' } };
+    const indices = resolved;
     const tool = req.provider;
     const changedFields: string[] = [];
     const next = steps.map((step, i) => {
       if (!indices.includes(i)) return step;
       if (typeof step !== 'string' && step.apiCall) return step;
+      // 「全部Codexで」 never pins a send / post / save / notify step.
+      if (req.ref.kind === 'all' && tool.type !== 'auto' && ACTION_LIKE_STEP_RE.test(stepInstruction(step))) return step;
       const current = typeof step === 'string' ? undefined : step.tool;
       if (toolKey(current) === toolKey(tool)) return step;
       changedFields.push(`step:${i}`);
@@ -606,18 +639,19 @@ export function tryPatchStepTools(
   const single =
     req.ref.kind === 'all' || req.ref.kind === 'last' || (req.ref.kind === 'ordinal' && req.ref.n === 1);
   if (!single) return { changedFields: [] };
-  if (req.provider === 'claude') return { unsupported: 'Claude Code' };
+  if (req.provider === 'claude') return { notice: { kind: 'unsupported', provider: 'Claude Code' } };
   if (toolKey(draft.tool) === toolKey(req.provider)) return { changedFields: [] };
   return { tool: req.provider, changedFields: ['tool'] };
 }
 
-/** 'Claude Code' when the utterance is a step-provider edit naming a provider
- *  this device cannot run yet — the caller says so instead of guessing. */
-export function detectUnsupportedStepProvider(draft: ParsedAgentDraft, utterance: string): string | null {
+/** A step-provider edit that patches nothing but deserves a reply: a provider
+ *  this device cannot run yet (Claude Code), or 「N番目」 naming a summary line
+ *  that is a parallel group (ask which member). The caller says so. */
+export function detectStepProviderNotice(draft: ParsedAgentDraft, utterance: string): StepProviderNotice | null {
   const text = utterance.trim();
   if (!text || text.startsWith('@')) return null;
   const r = tryPatchStepTools(draft, text);
-  return r && 'unsupported' in r ? r.unsupported : null;
+  return r && 'notice' in r ? r.notice : null;
 }
 
 // ── Public API ───────────────────────────────────────────────────────────
@@ -660,7 +694,7 @@ export function applyDraftPatch(draft: ParsedAgentDraft, utterance: string): Dra
   // is the ONLY thing this reply says — no other detector runs (「2番目を
   // Codexで」 must never also read as an action / schedule change).
   const stepToolsRaw = tryPatchStepTools(draft, text);
-  if (stepToolsRaw && 'unsupported' in stepToolsRaw) return null;
+  if (stepToolsRaw && 'notice' in stepToolsRaw) return null;
   const stepTools = stepToolsRaw as StepToolPatch | null;
   if (stepTools && stepTools.changedFields.length === 0) return null;
   if (stepTools) {

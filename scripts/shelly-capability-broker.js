@@ -880,6 +880,8 @@ function saveBudgetState(budgetFile, state) {
   }
 }
 
+const BUDGET_LOCK_STALE_MS = 30 * 1000;
+
 function withBudgetLock(budgetFile, operation) {
   const lockDir = budgetFile + '.lock';
   let lockAcquired = false;
@@ -891,6 +893,17 @@ function withBudgetLock(budgetFile, operation) {
         break;
       } catch (error) {
         if (!error || error.code !== 'EEXIST') throw error;
+        // Stale-lock recovery: the lock is held only for one tiny read/write,
+        // so a lock older than BUDGET_LOCK_STALE_MS belongs to a broker that
+        // was killed mid-operation (STOP-ALL, a provider-override restart).
+        try {
+          if (Date.now() - fs.statSync(lockDir).mtimeMs > BUDGET_LOCK_STALE_MS) {
+            fs.rmdirSync(lockDir);
+            continue;
+          }
+        } catch (_) {
+          /* raced with the holder's release — retry normally */
+        }
         if (attempt < 19) sleepMs(50);
       }
     }

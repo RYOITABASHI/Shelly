@@ -2,20 +2,17 @@
  * hooks/use-monitor-provider-pick.ts — state + side effects of the MONITOR
  * provider picker (components/monitor/MonitorProviderPicker.tsx). The pure
  * decision lives in lib/monitor-provider-pick.ts; this hook only wires exec,
- * updateAgent and the one-line chat note in the agent's own thread.
+ * updateAgent and the one-line chat note in the agent's own thread. Folding a
+ * mid-run override into the definition is NOT done here — it happens on the
+ * run-completion path (lib/agent-manager.ts foldProviderOverridesFromDisk).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import type { MonitorRun } from '@/lib/agent-progress';
 import type { Agent } from '@/store/types';
+import { groupStepsForDisplay } from '@/lib/agent-orchestration';
 import { providerPickLabel, toolToProviderPick, type ProviderPick } from '@/lib/agent-provider-overrides';
-import {
-  applyProviderPick,
-  foldPendingProviderOverride,
-  hasPendingProviderFold,
-  type PickExec,
-  type PickUpdate,
-} from '@/lib/monitor-provider-pick';
+import { applyProviderPick, type PickExec, type PickUpdate } from '@/lib/monitor-provider-pick';
 
 // Lazy: the native module is only touched when the user actually picks.
 function terminal(): { execCommand: (command: string, timeoutMs: number) => Promise<{ exitCode: number; stdout: string }> } {
@@ -42,13 +39,26 @@ function stepIndexOf(defId: string | undefined): number | null {
   return m ? Number(m[1]) : null;
 }
 
+function isMultiStep(agent: Agent | undefined): boolean {
+  return (agent?.orchestration?.steps?.length ?? 0) >= 2;
+}
+
 function currentPickFor(agent: Agent | undefined, index: number): ProviderPick {
-  const steps = agent?.orchestration?.steps;
-  if (steps && steps.length >= 2) {
-    const step = steps[index];
+  if (isMultiStep(agent)) {
+    const step = agent!.orchestration!.steps[index];
     return toolToProviderPick(step && typeof step !== 'string' ? step.tool : undefined);
   }
   return toolToProviderPick(agent?.tool);
+}
+
+/** The step's number as the chat summary shows it (a parallel group is one line). */
+function summaryLineNumber(agent: Agent | undefined, index: number): number {
+  const steps = agent?.orchestration?.steps;
+  if (!steps || steps.length < 2) return index + 1;
+  let next = 0;
+  const lines = groupStepsForDisplay(steps).entries.map((entry) => entry.items.map(() => next++));
+  const line = lines.findIndex((members) => members.includes(index));
+  return line >= 0 ? line + 1 : index + 1;
 }
 
 function postNote(agentId: string, text: string): void {
@@ -73,20 +83,13 @@ export function useMonitorProviderPick(run: MonitorRun | null, agent: Agent | un
   const available = !!run && !!agent && index !== null && agent.id === run.agentId;
   const runActive = !!run && !run.endedAt;
   const branchState = run && index !== null ? run.branches.find((b) => b.stepIndex === index)?.state : undefined;
-  const canRestart = runActive && branchState === 'RUNNING';
+  // Redo only exists for a step of a multi-step chain (a single-step run is
+  // not restarted mid-way; its change applies from the next run).
+  const canRestart = runActive && branchState === 'RUNNING' && isMultiStep(agent);
   const current = useMemo(() => (available ? currentPickFor(agent, index!) : 'auto'), [available, agent, index]);
 
   // A different camera / run closes the picker.
   useEffect(() => setOpen(false), [defId, run?.runId]);
-
-  // Fold this agent's override into its definition once its run has ended.
-  const endedAt = run?.endedAt;
-  useEffect(() => {
-    if (!agent || !run || !endedAt || !hasPendingProviderFold(agent.id)) return;
-    foldPendingProviderOverride(exec, update, agent)
-      .then((changed) => logInfo('Monitor', `provider override folded for ${agent.id} (changed=${changed})`))
-      .catch((error) => logWarn('Monitor', 'provider override fold failed', error));
-  }, [agent, run, endedAt]);
 
   const toggle = useCallback(() => setOpen((v) => !v), []);
 
@@ -94,13 +97,22 @@ export function useMonitorProviderPick(run: MonitorRun | null, agent: Agent | un
     (pick: ProviderPick, restart: boolean) => {
       if (!available || !agent || index === null || busy) return;
       setBusy(true);
-      const n = index + 1;
+      const n = summaryLineNumber(agent, index);
       const tool = providerPickLabel(pick);
-      applyProviderPick(exec, update, { agent, stepIndex: index, pick, restart, runId: run?.runId, runActive })
-        .then((result) => {
-          logInfo('Monitor', `provider pick ${agent.id} step ${index} → ${pick} (${result}, restart=${restart})`);
+      applyProviderPick(exec, update, { agent, stepIndex: index, pick, restart: restart && canRestart, runId: run?.runId, runActive })
+        .then(({ result, appliesNow, paidNextRun }) => {
+          logInfo('Monitor', `provider pick ${agent.id} step ${index} → ${pick} (${result}, now=${appliesNow}, restart=${restart})`);
           if (result === 'unchanged') return;
-          const key = result === 'saved' ? 'monitor.provider.note_saved' : restart ? 'monitor.provider.note_restart' : 'monitor.provider.note_keep';
+          const key =
+            result === 'saved'
+              ? 'monitor.provider.note_saved'
+              : paidNextRun
+                ? 'monitor.provider.note_paid_next'
+                : !appliesNow
+                  ? 'monitor.provider.note_next_run'
+                  : restart && canRestart
+                    ? 'monitor.provider.note_restart'
+                    : 'monitor.provider.note_keep';
           postNote(agent.id, t(key, { agent: agent.name, n, tool }));
         })
         .catch((error) => {
@@ -112,7 +124,7 @@ export function useMonitorProviderPick(run: MonitorRun | null, agent: Agent | un
           setOpen(false);
         });
     },
-    [available, agent, index, busy, run?.runId, runActive, t],
+    [available, agent, index, busy, run?.runId, runActive, canRestart, t],
   );
 
   return { open, busy, available, canRestart, current, toggle, apply };

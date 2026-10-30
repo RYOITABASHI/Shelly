@@ -22,12 +22,13 @@ type Props = {
   onClose: () => void;
 };
 
-function PickKey({ label, on, onPress, testID }: { label: string; on?: boolean; onPress: () => void; testID?: string }) {
+function PickKey({ label, on, onPress, testID, hint }: { label: string; on?: boolean; onPress: () => void; testID?: string; hint?: string }) {
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityHint={hint}
       accessibilityState={{ selected: !!on }}
       testID={testID}
       style={({ pressed }) => [styles.key, (on || pressed) && styles.keyOn]}
@@ -51,6 +52,7 @@ export function MonitorProviderPicker({ channel, current, canRestart, busy, onAp
             label={providerPickLabel(pick)}
             on={choice === pick}
             onPress={() => setChoice(pick)}
+            hint={t('monitor.provider.a11y')}
             testID={`monitor-provider-${pick}`}
           />
         ))}

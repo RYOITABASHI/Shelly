@@ -166,5 +166,32 @@
       "workspaceRoot": "/root/app"
     },
     "expectedAnswer": "y"
+  },
+  {
+    "name": "provider overrides.json redirect write -> deny",
+    "command": "echo x > ~/.shelly/agents/logs/a1/overrides.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "provider overrides.json basename write after cd -> deny",
+    "command": "cd ~/.shelly/agents/logs/a1 && printf '{}' > overrides.json",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
+  },
+  {
+    "name": "provider overrides.json interpreter write -> deny",
+    "command": "node -e \"require('fs').writeFileSync(process.env.HOME+'/.shelly/agents/logs/a1/overrides.json','{}')\"",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "n"
   }
 ]

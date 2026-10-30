@@ -665,11 +665,16 @@ export function summarizeAgentDraftAsText(
       for (const idx of paidPins) {
         const s = draft.orchestrationSteps[idx];
         const pinned = typeof s === 'string' ? undefined : s.tool;
-        if (pinned) lines.push(tl('agentplan.step_paid_pin_note', { n: idx + 1, tool: toolChoiceToLabel(pinned) }));
+        // Numbered by summary line, like every other step reference.
+        const line = entryIndices.findIndex((members) => members.includes(idx)) + 1;
+        if (pinned) lines.push(tl('agentplan.step_paid_pin_note', { n: line || idx + 1, tool: toolChoiceToLabel(pinned) }));
       }
     }
   } else if (changedFields.has('tool')) {
-    lines.push(markLine(tl('agentplan.summary_tool_changed', { tool: toolChoiceToLabel(draft.tool) }), 'tool', changedFields));
+    // The engine the agent will actually be stored with (an autonomous agent
+    // without cloud consent gets Codex for an API-key pick — same resolver as
+    // the confirm boundary), not the raw pick.
+    lines.push(markLine(tl('agentplan.summary_tool_changed', { tool: describeDraftTool(draft, opts.cloudConsent === true).label }), 'tool', changedFields));
   }
 
   // 2026-07-23: one or more fields above came from the hybrid LLM-extraction

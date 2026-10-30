@@ -11,7 +11,19 @@ import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
 import { logInfo, logWarn } from './debug-logger';
-import { overrideToolForStep, overrideToolKey, readProviderOverrides } from './agent-provider-overrides';
+import {
+  buildClearOverridesCommand,
+  buildListOverridesCommand,
+  decideOverrideFold,
+  foldOverridesIntoAgent,
+  forgetAppWrittenOverrides,
+  isAppWrittenOverrides,
+  overrideToolForStep,
+  overrideToolKey,
+  parseOverridesListing,
+  readProviderOverrides,
+  vetOverrideToolForAgent,
+} from './agent-provider-overrides';
 import { INJECTED_CONTEXT_SEPARATOR } from './agent-output-language';
 import { markUserRunFinished, markUserRunStarted } from './agent-run-origin-registry';
 import { generateRunScript, generateStopCommand, generateInstallCommands, getScriptPath, getChainLockDir } from './agent-executor';
@@ -621,7 +633,66 @@ export async function updateAgent(
     }
   }
   await installAgent(updated, runCommand);
+  // Provider overrides: a definition change supersedes any pending
+  // logs/<id>/overrides.json (otherwise a stale file could silently override
+  // this edit on a later run). Best-effort.
+  const clearOverrides = buildClearOverridesCommand(agentId);
+  if (clearOverrides) {
+    try {
+      await runCommand(clearOverrides);
+    } catch {
+      // the periodic sync's fold sweep retries
+    }
+  }
   return useAgentStore.getState().agents.find((a) => a.id === agentId) ?? updated;
+}
+
+/**
+ * Provider overrides (lib/agent-provider-overrides.ts): fold every
+ * logs/<id>/overrides.json whose run has ended into its agent definition
+ * (updateAgent re-materializes the PlanSpec / script and removes the file),
+ * and remove files of deleted agents. Runs from the full periodic run-log
+ * sync, so it also sweeps leftovers at startup — independent of MONITOR.
+ */
+export async function foldProviderOverridesFromDisk(
+  runCommand: (cmd: string) => Promise<string>,
+  now: number = Date.now(),
+): Promise<void> {
+  let listing = '';
+  try {
+    listing = await runCommand(buildListOverridesCommand());
+  } catch {
+    return;
+  }
+  for (const { agentId, overrides } of parseOverridesListing(listing)) {
+    const state = useAgentStore.getState();
+    const agent = state.agents.find((a) => a.id === agentId);
+    const latest = state.runHistory[agentId]?.at(-1);
+    const decision = decideOverrideFold(overrides, {
+      agentExists: !!agent,
+      running: state.runningAgentIds.includes(agentId),
+      latestRunAtMs: latest ? latest.timestamp : null,
+      nowMs: now,
+    });
+    if (decision === 'wait') continue;
+    try {
+      // Only content this app process wrote is folded (anything else running
+      // as the app uid could have written the file) — a foreign or leftover
+      // file is just removed.
+      const trusted = decision === 'fold' && isAppWrittenOverrides(agentId, overrides);
+      if (decision === 'fold' && !trusted) logWarn('AgentManager', `provider override for ${agentId} not written by the app; removed, not folded`);
+      forgetAppWrittenOverrides(agentId);
+      const partial = agent && trusted ? foldOverridesIntoAgent(agent, overrides) : null;
+      if (partial) {
+        logInfo('AgentManager', `provider override folded into ${agentId}`);
+        await updateAgent(agentId, partial, runCommand); // also removes the file
+      } else {
+        await runCommand(buildClearOverridesCommand(agentId));
+      }
+    } catch (error) {
+      logWarn('AgentManager', `provider override fold failed for ${agentId}`, error);
+    }
+  }
 }
 
 function isAutonomousCreateCommand(word: string): boolean {
@@ -2899,7 +2970,7 @@ async function runAgentOrchestratedBody(
     // started yet. 'auto' clears the step's pin (agent-level tool).
     {
       const overrides = await readProviderOverrides(runCommand, agentId);
-      const overrideTool = overrideToolForStep(overrides, progress?.runId, i);
+      const overrideTool = vetOverrideToolForAgent(agent, overrideToolForStep(overrides, progress?.runId, i));
       if (overrideTool && !step.apiCall) {
         stepAgent.tool = overrideTool.type === 'auto' ? agent.tool : overrideTool;
         logInfo('AgentManager', `provider override: step ${i} of ${agentId} → ${stepAgent.tool?.type}`);
@@ -2970,7 +3041,7 @@ async function runAgentOrchestratedBody(
       // new provider. The final step is never rerun (its action already fired).
       if (!isFinalStep) {
         const redo = await readProviderOverrides(runCommand, agentId);
-        const redoTool = overrideToolForStep(redo, progress?.runId, i);
+        const redoTool = vetOverrideToolForAgent(agent, overrideToolForStep(redo, progress?.runId, i));
         if (redo?.restartRunning?.includes(i) && redoTool && overrideToolKey(redoTool) !== overrideToolKey(stepAgent.tool)) {
           logInfo('AgentManager', `provider override: rerunning step ${i} of ${agentId} on ${redoTool.type}`);
           stepAgent.tool = redoTool.type === 'auto' ? (agent.tool ?? { type: 'auto' }) : redoTool;
@@ -4306,6 +4377,15 @@ export async function syncAgentRunLogsFromDisk(
   agentId?: string
 ): Promise<void> {
   await syncAgentRunLogsFromDiskBody(runCommand, agentId);
+  // Provider overrides: fold finished runs' overrides into their definitions
+  // (full sync only — the periodic / startup one).
+  if (!agentId) {
+    try {
+      await foldProviderOverridesFromDisk(runCommand);
+    } catch {
+      // best-effort; the next sync retries
+    }
+  }
   // Continuous mode: adopt a native loop stop (enabled:false on disk).
   for (const agent of useAgentStore.getState().agents) {
     if (agentId && agent.id !== agentId) continue;
