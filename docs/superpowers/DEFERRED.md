@@ -96,6 +96,11 @@
 - **2026-10-30 実装（`fix/stop-all-inflight`、独立レビュー2回済み）**: 両 executor がステップ／グループ／枝／最終ディスパッチ直前で `.halted` を確認。`haltInflightRunsCommand` は `.sh`（v73 が `locks/<id>.pid.lockdir/starttime` に /proc 起動時刻を記録）と executor（cmdline）だけを起動時刻照合で特定し、子孫を /proc の ppid でたどって TERM→1 秒後に起動時刻を再照合して KILL。llama-server とその idle watcher は対象外。生きている pid の lock は消さない。executor の SIGTERM は skipped を書いて exit 0、native は `.halted` 中の終了を skipped 扱い（失敗カウント・通知なし）。承認待ち・registry lock 待ちも halt で抜ける。executor v13 / スクリプト v73。
 - **実機で確認すること**: attended と alarm の両方で STOP-ALL → 子プロセス（curl/node/broker）が残らない・最終アクションが出ない・`locks/<id>.pid` が消える・RESUME 後に普通に動く。`starttime` が実際に書かれるか（toybox）。local LLM の run 中に押しても llama-server と watcher が生き残り、idle で unload されるか。複数アクションの承認待ち中に押して後続アクションが出ないか。phantom process 数。
 
+### エージェントのタスク設定を簡単にする — 「質問ゼロ化」実装中、残りは未着手 (P1/P2)
+- **2026-10-30 実機（build 2662）で判明**: 「STOPALLテスト: ローカルLLMで、…翻訳し、…要約して、結果をメモとして保存して」で質問が3回、手動のみが通じず架空の毎日23:59を答える羽目に、1ステップ目が「ローカルLLMで」の切れ端、「メモとして保存」が「下書きを作成」表示、断片ステップのツール指定で余計な高リスク理由。原因は Tier-3 LLM が質問文を自由作文、手動が登録側で第一級でない、読点で全部区切る分割、draft/notify 二択のラベル固定。
+- **P1 実装中（`feat/zero-question-agent-setup`）**: 手動のみを第一級トリガーかつ既定に／質問文は決定論テンプレート、確認要否は二択の言い回し／名前は「名前:」接頭辞から自動、draft/notify は聞かずに安全側／節単位の分割（動詞のない句を次に結合しツール指定を引き継ぐ、末尾の保存句は最終アクションへ、ユーザーの語と保存先パスを表示）、端末内 LLM のツール指定は高リスク理由から外す。手動のみはリモート承認不可（端末内チャットのみ）で理由を平易に表示。
+- **P2 次以降（エージェント案）**: 要約を MONITOR の列と同じ左→右テキスト列で見せる（`monitor-team.ts` を中間表現に）／話して編集（「2番目を1番目と並列に」「3番目をGeminiで」— `agent-draft-patch.ts` に steps 用検出器）／何がどこにできるかの事前表示／ステップごとのプロバイダと概算コスト表示／登録前の「試しに1回」（Once 一時実行を流用し結果と実コストを見てから登録）／レシピ（チームファイル）をカタログから選ぶ／「通知/ChatGPTから承認できない」に理由と回避策を添える。
+
 ### マルチエージェント MONITOR ペイン（CCTV 風）+ attended チェーンの実並列化 — 設計済み・未実装 (P2)
 - **2026-10-30 プロダクトオーナー提案**: 各エージェント／サブエージェントを監視カメラ風に映し、スイッチャー（CH1–4 / GRID / AUTO）と配線図で「誰が何をして、どうつながり、何ができるか」を見せる。並列で動くことが前提（「並列で作業しないとダメ」）。UI デモ: https://claude.ai/artifact/MAZXttXTnD5kecgZmsDfpv
 - **方針（Plan エージェント調査）**: attended の Run now で `planParallelGroups` に有効なグループがあり、全ブランチのツールが executor で実行できるときだけ、既に実機で 3 並列が動いている PlanSpec executor に流す。条件を満たさなければ今の直列チェーンで動かし、MONITOR には SERIAL と表示する。自前で並列化する案（A）は、ブランチごとに bash・サブシェル・curl・node が立ち、phantom process 上限 32 に近づくので見送り。
