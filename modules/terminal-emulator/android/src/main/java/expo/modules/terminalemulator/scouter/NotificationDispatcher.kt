@@ -283,7 +283,10 @@ class NotificationDispatcher(private val context: Context) {
                 // the app to whatever screen it was already on. Give the body tap
                 // the SAME deep link as the explicit Review action for these
                 // types, so either tap target reaches the approval screen.
-                contentIntent = if (requiresReview) agentActionReviewPendingIntent(request, requestSha256) else null
+                contentIntent = if (requiresReview) agentActionReviewPendingIntent(request, requestSha256) else null,
+                // Bug #6 (2026-10-31): refreshing a still-showing ask of the
+                // same run must not alert again.
+                onlyAlertOnce = true
             )
         }.onFailure { Log.w(TAG, "agent action approval notify failed", it) }
     }
@@ -452,6 +455,16 @@ class NotificationDispatcher(private val context: Context) {
 
     fun notifyAgentEscalationNeeded(request: AgentEscalationRequest) {
         runCatching {
+            val notificationId = AgentEscalationBridge.notificationId(request.runId, request.reqId)
+            // 2026-10-31 on-device bug #6: when the live wait times out the
+            // driver keeps the request as state "queued" (a late tap issues a
+            // next-run grant) and rewrites it, so its content hash changes and
+            // this is called again. That used to re-post the same ask as a
+            // fresh heads-up ~2 min later, even after the user had dismissed
+            // it. A queued request now only REFRESHES a notification that is
+            // still showing (silently, onlyAlertOnce below) and never re-posts
+            // one that is gone.
+            if (request.state == "queued" && !isNotificationActive(notificationId)) return
             val needsFreshAction = !AgentEscalationBridge.hasActionNonce(request.runId, request.reqId)
             val shouldNotify = shouldFire(KEY_LAST_AGENT_ESCALATION, request.key)
             if (!needsFreshAction && !shouldNotify) return
@@ -492,7 +505,7 @@ class NotificationDispatcher(private val context: Context) {
             ).joinToString("\n")
 
             notify(
-                id = AgentEscalationBridge.notificationId(request.runId, request.reqId),
+                id = notificationId,
                 title = context.getString(
                     R.string.scouter_notification_agent_escalation_title,
                     shorten(request.agentId, 32)
@@ -503,7 +516,10 @@ class NotificationDispatcher(private val context: Context) {
                     action(context.getString(R.string.scouter_notification_action_allow), allow),
                     action(context.getString(R.string.scouter_notification_action_deny), deny)
                 ),
-                autoCancel = false
+                autoCancel = false,
+                // A refresh of the same request (new nonce / queued rewrite)
+                // replaces it in place without alerting again.
+                onlyAlertOnce = true
             )
         }.onFailure { Log.w(TAG, "agent escalation notify failed", it) }
     }
@@ -848,7 +864,9 @@ class NotificationDispatcher(private val context: Context) {
         // notifyAgentActionApprovalNeeded's requiresReview branch. Defaults to
         // null so every existing call site keeps its prior plain-launch body tap
         // unchanged.
-        contentIntent: PendingIntent? = null
+        contentIntent: PendingIntent? = null,
+        // Re-posting the same id while it is still showing stays silent.
+        onlyAlertOnce: Boolean = false
     ) {
         runCatching {
             val pendingLaunch = contentIntent ?: run {
@@ -875,6 +893,7 @@ class NotificationDispatcher(private val context: Context) {
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .setContentIntent(pendingLaunch)
                 .setAutoCancel(autoCancel)
+                .setOnlyAlertOnce(onlyAlertOnce)
             subText?.let { builder.setSubText(it) }
             bigText?.let { builder.setStyle(Notification.BigTextStyle().bigText(it)) }
             actions.forEach { builder.addAction(it) }
@@ -884,6 +903,9 @@ class NotificationDispatcher(private val context: Context) {
     }
 
     // --- Small utilities ------------------------------------------------------
+
+    private fun isNotificationActive(id: Int): Boolean =
+        runCatching { notificationManager.activeNotifications.any { it.id == id } }.getOrDefault(true)
 
     private fun isAutoApprovePolicy(policy: String?): Boolean =
         policy?.trim()?.lowercase(Locale.US) == "never"

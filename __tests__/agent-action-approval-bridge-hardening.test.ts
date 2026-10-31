@@ -106,6 +106,27 @@ describe('AgentActionApprovalBridge — Finding 9 hardening (nonce + non-null ha
     );
   });
 
+  it('in-app escalation answer (MONITOR / chat, 2026-10-31) uses the notification\'s writeHumanReply path', () => {
+    // read mints a fresh nonce in the same per-(run, req) ledger the
+    // notification uses; resolve consumes it through writeHumanReply.
+    expect(terminalEmulatorModule).toContain(
+      'AsyncFunction("readAgentEscalationRequest") { runId: String, reqId: String ->',
+    );
+    expect(terminalEmulatorModule).toContain('val actionNonce = AgentEscalationBridge.registerActionNonce(runId, reqId)');
+    expect(terminalEmulatorModule).toContain(
+      'AgentEscalationBridge.writeHumanReply(context, runId, reqId, decision, actionNonce, expectedRequestSha256)',
+    );
+    expect(widgetPromptActivity).toContain(
+      'AgentEscalationBridge.writeHumanReply(this, runId, reqId, decision, actionNonce, expectedRequestSha256)',
+    );
+    // The escalation bridge itself is unchanged: hash binding + single-use nonce.
+    expect(escalationBridge).toContain('require(pendingActionNonces.remove(nonceKey, expectedNonce))');
+    // Bug #6: a queued (timed-out) request never re-posts a dismissed notification.
+    expect(notificationDispatcher).toContain(
+      'if (request.state == "queued" && !isNotificationActive(notificationId)) return',
+    );
+  });
+
   it('app/_layout.tsx fails closed instead of passing a missing hash/nonce through as null', () => {
     const rootLayout = fs.readFileSync(path.join(root, 'app/_layout.tsx'), 'utf8');
     expect(rootLayout).not.toContain('request.requestSha256 ?? null');

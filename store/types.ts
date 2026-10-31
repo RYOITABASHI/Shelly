@@ -1415,6 +1415,10 @@ export type ChatMessage = {
     reviewRequired: boolean;
     createdAt: number;
     expiresAt?: number | null;
+    /** 'escalation': a CLI worker's boundary-op escalation (2026-10-31). */
+    kind?: 'action' | 'escalation';
+    /** Escalation only: its request id. */
+    reqId?: string;
   };
   /** Stable identity for a proactive background-agent completion notice. */
   agentRunLogId?: string;

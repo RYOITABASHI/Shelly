@@ -287,7 +287,27 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
     state?: string | null;
     queuedAt?: string | null;
-  }): Promise<void>;
+  }): Promise<{ requestSha256?: string | null } | null>;
+  /** Re-read a pending escalation and mint its single-use nonce now (this
+   *  replaces the notification's nonce). Rejects when nothing is pending. */
+  readAgentEscalationRequest?(runId: string, reqId: string): Promise<{
+    runId: string;
+    reqId: string;
+    agentId: string;
+    command: string;
+    state?: string | null;
+    requestSha256?: string | null;
+    actionNonce?: string | null;
+  }>;
+  /** AgentEscalationBridge.writeHumanReply (the notification's Allow / Deny
+   *  path) + clear the request + cancel its notification. */
+  resolveAgentEscalationApproval?(
+    runId: string,
+    reqId: string,
+    decision: 'accept' | 'decline',
+    expectedRequestSha256: string,
+    actionNonce: string,
+  ): Promise<{ preapproved?: boolean } | null>;
   processAgentGrantSpendRequest?(request: {
     type: 'grant_spend_request';
     grantId: string;

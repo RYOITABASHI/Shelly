@@ -58,6 +58,11 @@ jest.mock('@/lib/agent-manager', () => ({
 jest.mock('@/hooks/use-native-exec', () => ({
   execCommand: jest.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
 }));
+// LIVE typed approval: the native read-then-resolve lives behind this call.
+const mockResolveFromMonitor = jest.fn(async (..._args: unknown[]) => 'agent_action_chat.accepted');
+jest.mock('@/lib/agent-action-chat-approval', () => ({
+  resolvePendingApprovalFromMonitor: (...args: unknown[]) => mockResolveFromMonitor(...args),
+}));
 const mockSetClipboard = jest.fn(async (_s: string) => true);
 jest.mock('expo-clipboard', () => ({ setStringAsync: (s: string) => mockSetClipboard(s) }));
 // Pass-through spies on the animation clock: every callback handed to
@@ -482,6 +487,78 @@ describe('MonitorPane LIVE source', () => {
     fireEvent.press(utils.getByLabelText('monitor.live.open_chat_a11y'));
     expect(utils.getByTestId('monitor-chat-unavailable')).toBeTruthy();
     utils.unmount();
+  });
+
+  describe('typed approval (pending asks listed in lib/agent-pending-approvals)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const pending = require('@/lib/agent-pending-approvals') as typeof import('@/lib/agent-pending-approvals');
+    const ask = (hex: string, createdAt: number) => ({
+      key: pending.pendingApprovalKey('escalation', 'run-1', `req-${hex}`),
+      kind: 'escalation' as const,
+      agentId: 'digest',
+      messageId: `m-${hex}`,
+      marker: {
+        runId: 'run-1',
+        requestSha256: hex + 'f'.repeat(56),
+        hash8: hex,
+        reviewRequired: false,
+        createdAt,
+        kind: 'escalation' as const,
+        reqId: `req-${hex}`,
+      },
+      what: 'outside the boundary',
+      detail: `cd ~/demo && git log ${hex}`,
+    });
+    afterEach(() => {
+      act(() => pending.__resetPendingApprovalsForTest());
+      mockResolveFromMonitor.mockClear();
+      jest.restoreAllMocks();
+    });
+
+    it('shows the oldest of several asks with its command + hash, a text field and OPEN CHAT', () => {
+      const r = liveRun();
+      r.branches[1] = { ...r.branches[1], updatedAt: iso(101) };
+      seed(r);
+      act(() => {
+        pending.upsertPendingApproval(ask('cccccccc', NOW - 3_000));
+        pending.upsertPendingApproval(ask('aaaaaaaa', NOW - 9_000));
+        pending.upsertPendingApproval(ask('bbbbbbbb', NOW - 6_000));
+      });
+      const utils = render(<MonitorPane />);
+      expect(utils.getByTestId('monitor-pinned-approval')).toBeTruthy();
+      expect(utils.getByTestId('monitor-approval-detail').props.children).toBe('cd ~/demo && git log aaaaaaaa');
+      expect(utils.getByTestId('monitor-approval-input')).toBeTruthy();
+      expect(utils.getByTestId('monitor-approval-more')).toBeTruthy();
+      expect(utils.getByLabelText('monitor.live.open_chat_a11y')).toBeTruthy();
+      // Waiting on the human, not stuck.
+      expect(utils.queryByTestId('monitor-stale-s1')).toBeNull();
+      expect(utils.getAllByText(/monitor\.live\.awaiting_approval/).length).toBeGreaterThan(0);
+      utils.unmount();
+    });
+
+    it('typed OK answers the shown ask through resolvePendingApprovalFromMonitor; other text does not', async () => {
+      seed(liveRun());
+      act(() => pending.upsertPendingApproval(ask('aaaaaaaa', NOW - 9_000)));
+      const utils = render(<MonitorPane />);
+      const input = utils.getByTestId('monitor-approval-input');
+      // Let the shown ask settle past the "just replaced" guard.
+      const later = Date.now() + 5_000;
+      jest.spyOn(Date, 'now').mockReturnValue(later);
+      fireEvent.changeText(input, 'make it faster');
+      fireEvent(input, 'submitEditing');
+      expect(mockResolveFromMonitor).not.toHaveBeenCalled();
+      expect(utils.getByTestId('monitor-approval-note')).toBeTruthy();
+      fireEvent.changeText(input, 'OK');
+      await act(async () => {
+        fireEvent(input, 'submitEditing');
+      });
+      expect(mockResolveFromMonitor).toHaveBeenCalledTimes(1);
+      const [target, decision, text] = mockResolveFromMonitor.mock.calls[0] as [{ marker: { hash8: string } }, string, string];
+      expect(target.marker.hash8).toBe('aaaaaaaa');
+      expect(decision).toBe('accept');
+      expect(text).toBe('OK');
+      utils.unmount();
+    });
   });
 
   it('single view: tapping the camera opens the inline provider picker; Redo writes a restart override', async () => {

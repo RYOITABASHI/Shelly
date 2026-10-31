@@ -24,14 +24,27 @@
  * the same path as the Sidebar's RUN NOW (eligible parallel teams take the
  * attended PlanSpec executor route).
  *
- * Approval: DEMO asks in its own chat strip (type ok / no). LIVE never
- * approves anything here — the pinned strip points the user to the agent's
- * chat (OPEN CHAT: the same ask is posted there as plain text, answered by
- * typing OK / NO through the native approval path —
- * lib/agent-action-chat-approval.ts) or to its notification. No confirm
- * cards or modals (standing product rule).
+ * Approval: DEMO asks in its own chat strip (type ok / no). LIVE (2026-10-31)
+ * shows the live agent's pending human approvals pinned under the mission
+ * bar — per-run ACTION approvals and the CLI worker's boundary-op
+ * ESCALATIONS alike (lib/agent-pending-approvals.ts, filled by the RN drain
+ * in app/_layout.tsx next to each notification). Oldest first, one at a
+ * time: the strip shows what the agent wants, the detail (command …) and the
+ * request's short hash, plus a text field. Typing OK / NO (the chat's
+ * matcher, Japanese included) answers the shown ask; "ok <hash8>" names
+ * another. Only that field's submit handler resolves anything — the user's
+ * own keystrokes, the MONITOR counterpart of the chat's `typedByUser` — and
+ * it goes through resolvePendingApprovalFromMonitor
+ * (lib/agent-action-chat-approval.ts): the same native read-then-resolve as
+ * the agent chat and the notification (single-use nonce minted natively at
+ * that moment, content-hash bound). Review-required action types still open
+ * the review screen on OK, never accept. OPEN CHAT stays (the same asks are
+ * posted there as plain text). While an approval is pending, a running
+ * step's camera reads "waiting for your OK" instead of the stuck warning.
+ * No buttons for the answer, no confirm cards or modals (standing product
+ * rule).
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from 'react-native';
 import { useFrameCallback, useReducedMotion, useSharedValue, type FrameInfo } from 'react-native-reanimated';
 import { useShallow } from 'zustand/react/shallow';
@@ -64,6 +77,16 @@ import { multiPaneSlotOps } from '@/lib/pane-focus';
 import { canReturnFromMonitor, restoreFromMonitor } from '@/lib/monitor-widget-link';
 import { openFile } from '@/lib/open-file';
 import { openAgentChatThread } from '@/lib/agent-thread-open';
+import {
+  getPendingApprovals,
+  pendingApprovalsForAgent,
+  pickMonitorApprovalTarget,
+  subscribePendingApprovals,
+  withPendingApprovals,
+  type MonitorApprovalPick,
+} from '@/lib/agent-pending-approvals';
+import { parseActionApprovalChatReply } from '@/lib/agent-action-chat-reply';
+import { resolvePendingApprovalFromMonitor } from '@/lib/agent-action-chat-approval';
 import { MAX_PARALLEL_BRANCHES, normalizeSteps, planParallelGroups } from '@/lib/agent-orchestration';
 import { MonitorCamera, NoSignalCamera } from '@/components/monitor/MonitorCamera';
 import { MonitorMap } from '@/components/monitor/MonitorMap';
@@ -266,10 +289,18 @@ export default function MonitorPane() {
   // Editable map: DEMO (preview edits) and DRAFT. LIVE / standby are read-only.
   const editable = !isLive && !standbyAgent;
   const team = editable ? monitor.team ?? source.team : source.team;
-  const snap: MonitorSnapshot = useMemo(
-    () => (liveSource ? liveSource.snapshot(now, []) : run.source.snapshot(playT, inputs)),
-    [liveSource, run.source, now, playT, inputs],
+  // The live agent's pending human approvals (actions + boundary-op
+  // escalations), oldest first — lib/agent-pending-approvals.ts.
+  const allPendingApprovals = useSyncExternalStore(subscribePendingApprovals, getPendingApprovals, getPendingApprovals);
+  const liveAsks = useMemo(
+    () => (isLive ? pendingApprovalsForAgent(allPendingApprovals, liveRun.agentId) : []),
+    [isLive, allPendingApprovals, liveRun?.agentId],
   );
+  const snap: MonitorSnapshot = useMemo(() => {
+    if (!liveSource) return run.source.snapshot(playT, inputs);
+    // A step blocked on a pending approval is waiting for you, not stuck.
+    return withPendingApprovals(liveSource.snapshot(now, []), liveAsks.length);
+  }, [liveSource, run.source, now, playT, inputs, liveAsks.length]);
   const summary = summarize(source.agents, snap);
 
   // Playback clock (JS, coarse) — drives the DEMO timeline only.
@@ -397,6 +428,58 @@ export default function MonitorPane() {
     logInfo('Monitor', 'chat input', { approvalPending: snap.approvalPending });
     sendMonitorInput(draft);
     setDraft('');
+  };
+
+  // ── LIVE typed approval ──
+  // The ask on screen is the oldest pending one; remember since when, so an
+  // OK typed for the previous ask never lands on the one that replaced it.
+  const shownAsk = liveAsks[0];
+  const [shownSince, setShownSince] = useState<{ key: string | null; at: number }>({ key: null, at: 0 });
+  useEffect(() => {
+    setShownSince({ key: shownAsk?.key ?? null, at: Date.now() });
+  }, [shownAsk?.key]);
+  const [approvalDraft, setApprovalDraft] = useState('');
+  const [approvalNote, setApprovalNote] = useState<string | null>(null);
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const pickNote = (pick: Exclude<MonitorApprovalPick, { ok: true }>, text: string): string => {
+    switch (pick.reason) {
+      case 'unknown-hash':
+        return t('monitor.live.approval_unknown_hash', { hash: parseActionApprovalChatReply(text)?.hash8 ?? '' });
+      case 'too-soon':
+        return t('monitor.live.approval_too_soon');
+      case 'expired':
+        return t('monitor.live.approval_expired');
+      case 'nothing-pending':
+        return t('agent_action_chat.gone');
+      default:
+        return t('monitor.live.approval_not_reply');
+    }
+  };
+  // SECURITY: the ONLY caller of resolvePendingApprovalFromMonitor. Wired to
+  // the approval TextInput's onSubmitEditing alone (the user's own
+  // keystrokes) — no button, no voice, no programmatic path.
+  const submitApproval = () => {
+    const text = approvalDraft;
+    if (!text.trim() || approvalBusy) return;
+    const pick = pickMonitorApprovalTarget({
+      text,
+      asks: liveAsks,
+      displayedKey: shownSince.key,
+      displayedSince: shownSince.at,
+      now: Date.now(),
+    });
+    if ('reason' in pick) {
+      logInfo('Monitor', `typed approval not applied: ${pick.reason}`);
+      setApprovalNote(pickNote(pick, text));
+      return;
+    }
+    logInfo('Monitor', `typed approval ${pick.decision} ${pick.ask.kind} [${pick.ask.marker.hash8}]`);
+    setApprovalDraft('');
+    setApprovalBusy(true);
+    resolvePendingApprovalFromMonitor(pick.ask, pick.decision, text)
+      .then((reply) => setApprovalNote(reply))
+      .catch(() => setApprovalNote(t('agent_action_chat.failed')))
+      .finally(() => setApprovalBusy(false));
   };
 
   const select = (id: string) => setMonitor({ selectedId: id, view: 'single', auto: false });
@@ -705,24 +788,84 @@ export default function MonitorPane() {
       {/* ── Pinned approval: stays right under the mission bar so the ask is
           on screen on a folded phone. Same draft + send as the chat strip. ── */}
       {snap.approvalPending && isLive && (
-        // LIVE never approves from here: the ask lives in Shelly's chat /
-        // review prompt, so point there instead of offering a reply box.
-        <View style={styles.pinned} testID="monitor-pinned-approval">
-          {/* One line: where to answer + OPEN CHAT inline. */}
-          <View style={styles.row}>
-            <Text style={[styles.pinnedAsk, styles.pinnedAskInline]} numberOfLines={2}>
-              {t('monitor.live.approval_where', { channel: approvalChannel })}
-            </Text>
-            <Key
-              label={t('monitor.live.open_chat')}
-              a11y={t('monitor.live.open_chat_a11y')}
-              small
-              onPress={() => {
-                logInfo('Monitor', 'open agent chat for approval');
-                setChatUnavailable(!openAgentChatThread(liveRun.agentId));
-              }}
-            />
-          </View>
+        <View style={[styles.pinned, !!shownAsk && styles.pinnedWrap]} testID="monitor-pinned-approval">
+          {shownAsk ? (
+            <>
+              {/* The ask this pane answers: oldest first, one at a time. */}
+              <Text style={[styles.pinnedAsk, styles.pinnedAskWrap]} numberOfLines={2} testID="monitor-approval-ask">
+                {liveAsks.length > 1 ? (
+                  <Text style={{ color: MON.muted }}>
+                    {`${t('monitor.live.approval_count', { n: 1, total: liveAsks.length })}  `}
+                  </Text>
+                ) : null}
+                {t('monitor.live.approval_ask', { what: shownAsk.what, hash: shownAsk.marker.hash8 })}
+              </Text>
+              {shownAsk.detail ? (
+                <Text style={styles.hintLine} numberOfLines={3} testID="monitor-approval-detail">
+                  {shownAsk.detail}
+                </Text>
+              ) : null}
+              <View style={[styles.row, styles.pinnedReply]}>
+                <TextInput
+                  value={approvalDraft}
+                  onChangeText={(v) => {
+                    setApprovalDraft(v);
+                    if (approvalNote) setApprovalNote(null);
+                  }}
+                  onSubmitEditing={submitApproval}
+                  editable={!approvalBusy}
+                  placeholder={t(
+                    shownAsk.marker.reviewRequired
+                      ? 'monitor.live.approval_placeholder_review'
+                      : 'monitor.live.approval_placeholder',
+                  )}
+                  placeholderTextColor={MON.muted}
+                  accessibilityLabel={t('monitor.live.approval_input_a11y')}
+                  style={styles.input}
+                  returnKeyType="send"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  testID="monitor-approval-input"
+                />
+                <Key
+                  label={t('monitor.live.open_chat')}
+                  a11y={t('monitor.live.open_chat_a11y')}
+                  small
+                  onPress={() => {
+                    logInfo('Monitor', 'open agent chat for approval');
+                    setChatUnavailable(!openAgentChatThread(liveRun.agentId));
+                  }}
+                />
+              </View>
+              {liveAsks.length > 1 && (
+                <Text style={styles.hintLine} testID="monitor-approval-more">
+                  {t('monitor.live.approval_more', { n: liveAsks.length - 1 })}
+                </Text>
+              )}
+              {approvalNote && (
+                <Text style={styles.hintLine} testID="monitor-approval-note">
+                  {approvalNote}
+                </Text>
+              )}
+            </>
+          ) : (
+            // The progress log says a step waits on you, but no ask is listed
+            // here (e.g. posted before an app reload): point to where it is.
+            <View style={styles.row}>
+              <Text style={[styles.pinnedAsk, styles.pinnedAskInline]} numberOfLines={2}>
+                {t('monitor.live.approval_where', { channel: approvalChannel })}
+              </Text>
+              <Key
+                label={t('monitor.live.open_chat')}
+                a11y={t('monitor.live.open_chat_a11y')}
+                small
+                onPress={() => {
+                  logInfo('Monitor', 'open agent chat for approval');
+                  setChatUnavailable(!openAgentChatThread(liveRun.agentId));
+                }}
+              />
+            </View>
+          )}
           {chatUnavailable && (
             <Text style={styles.hintLine} testID="monitor-chat-unavailable">
               {t('monitor.live.chat_unavailable')}

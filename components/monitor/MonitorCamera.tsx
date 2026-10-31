@@ -95,9 +95,11 @@ export function timingText(
   if (a.elapsedSec !== undefined) parts.push(t('monitor.live.step_elapsed', { time: formatDuration(a.elapsedSec) }));
   if (a.updatedAgoSec !== undefined && (a.state === 'RUNNING' || a.state === 'APPROVAL')) {
     parts.push(
-      a.stale
-        ? t('monitor.live.stale', { n: a.updatedAgoSec })
-        : t('monitor.live.updated_ago', { n: a.updatedAgoSec }),
+      a.awaitingApproval
+        ? t('monitor.live.awaiting_approval', { n: a.updatedAgoSec })
+        : a.stale
+          ? t('monitor.live.stale', { n: a.updatedAgoSec })
+          : t('monitor.live.updated_ago', { n: a.updatedAgoSec }),
     );
   }
   return parts.join(' · ');
@@ -384,7 +386,7 @@ function MonitorCameraImpl(props: Props) {
             testID={snap.stale ? `monitor-stale-${def.id}` : undefined}
           >
             {timing.length > 0 && (
-              <Text style={[styles.metaText, snap.stale && { color: MON.amber }]}>{`${timing}  `}</Text>
+              <Text style={[styles.metaText, (snap.stale || snap.awaitingApproval) && { color: MON.amber }]}>{`${timing}  `}</Text>
             )}
             <Text style={{ color: MON.phosphorDim }}>{'› '}</Text>
             {tick}
@@ -439,7 +441,7 @@ function MonitorCameraImpl(props: Props) {
         </View>
         {timing.length > 0 && (
           <Text
-            style={[styles.metaText, snap.stale && { color: MON.amber }]}
+            style={[styles.metaText, (snap.stale || snap.awaitingApproval) && { color: MON.amber }]}
             numberOfLines={1}
             testID={snap.stale ? `monitor-stale-${def.id}` : undefined}
           >

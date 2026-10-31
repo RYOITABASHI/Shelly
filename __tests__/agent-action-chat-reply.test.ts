@@ -11,9 +11,11 @@
 import {
   ACTION_CHAT_REPLY_MIN_AGE_MS,
   decideActionApprovalFromChat,
+  decideEscalationApprovalFromChat,
   findActionApprovalReplyTarget,
   parseActionApprovalChatReply,
   type ChatApprovalDeps,
+  type EscalationApprovalDeps,
   type PendingActionApprovalMarker,
 } from '../lib/agent-action-chat-reply';
 
@@ -174,5 +176,80 @@ describe('chat approval input source (Codex review 2026-10-31)', () => {
   it('voice input does not mark itself as typed', () => {
     expect(pane).toContain('usePaneVoice(handleSubmit)');
     expect(hook.match(/typedByUser: true/g) ?? []).toHaveLength(0);
+  });
+
+  it('MONITOR resolves only from its approval TextInput submit handler', () => {
+    const monitor = fs.readFileSync(path.join(__dirname, '..', 'components', 'panes', 'MonitorPane.tsx'), 'utf8');
+    // Exactly one call site, inside submitApproval …
+    expect(monitor.match(/resolvePendingApprovalFromMonitor\(/g) ?? []).toHaveLength(1);
+    const body = monitor.slice(monitor.indexOf('const submitApproval = () => {'));
+    expect(body.slice(0, body.indexOf('\n  };'))).toContain('resolvePendingApprovalFromMonitor(pick.ask, pick.decision, text)');
+    // … and submitApproval is wired to onSubmitEditing only (no button).
+    expect(monitor.match(/submitApproval/g) ?? []).toHaveLength(2);
+    expect(monitor).toContain('onSubmitEditing={submitApproval}');
+  });
+});
+
+describe('decideEscalationApprovalFromChat (boundary-op escalations)', () => {
+  const esc = (over: Partial<PendingActionApprovalMarker> = {}) => marker({ kind: 'escalation', reqId: 'req-1', ...over });
+  function edeps(over: Partial<EscalationApprovalDeps> = {}) {
+    const calls: string[] = [];
+    const d: EscalationApprovalDeps = {
+      read: async (runId, reqId) => {
+        calls.push(`read:${runId}:${reqId}`);
+        return { runId, reqId, state: null, requestSha256: SHA, actionNonce: 'nonce-1' };
+      },
+      resolve: async (runId, reqId, decision, sha, nonce) => {
+        calls.push(`resolve:${runId}:${reqId}:${decision}:${sha === SHA}:${nonce}`);
+        return { preapproved: decision === 'accept' };
+      },
+      ...over,
+    };
+    return { d, calls };
+  }
+
+  it('OK: re-read (mints the nonce now), then resolve with that nonce — the notification\'s writeHumanReply path', async () => {
+    const { d, calls } = edeps();
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', d)).toBe('accepted');
+    expect(calls).toEqual(['read:run-1:req-1', 'resolve:run-1:req-1:accept:true:nonce-1']);
+  });
+
+  it('NO declines', async () => {
+    const { d, calls } = edeps();
+    expect(await decideEscalationApprovalFromChat(esc(), 'decline', d)).toBe('declined');
+    expect(calls[1]).toBe('resolve:run-1:req-1:decline:true:nonce-1');
+  });
+
+  it('gone / changed / queued / missing nonce never resolve', async () => {
+    const gone = edeps({
+      read: async () => {
+        throw new Error('escalation request is no longer pending');
+      },
+    });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', gone.d)).toBe('gone');
+    const other = edeps({ read: async (runId) => ({ runId, reqId: 'req-2', requestSha256: SHA, actionNonce: 'n' }) });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', other.d)).toBe('gone');
+    const changed = edeps({ read: async (runId, reqId) => ({ runId, reqId, requestSha256: 'b'.repeat(64), actionNonce: 'n' }) });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', changed.d)).toBe('changed');
+    const queued = edeps({ read: async (runId, reqId) => ({ runId, reqId, state: 'queued', requestSha256: 'c'.repeat(64), actionNonce: 'n' }) });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', queued.d)).toBe('expired');
+    const noNonce = edeps({ read: async (runId, reqId) => ({ runId, reqId, requestSha256: SHA, actionNonce: null }) });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', noNonce.d)).toBe('failed');
+    for (const x of [gone, other, changed, queued, noNonce]) expect(x.calls.some((c) => c.startsWith('resolve'))).toBe(false);
+  });
+
+  it('a marker without reqId is refused before any native call', async () => {
+    const { d, calls } = edeps();
+    expect(await decideEscalationApprovalFromChat(esc({ reqId: undefined }), 'accept', d)).toBe('failed');
+    expect(calls).toEqual([]);
+  });
+
+  it('a native refusal (stale nonce: answered from the notification first) is a failure, not a success', async () => {
+    const { d } = edeps({
+      resolve: async () => {
+        throw new Error('escalation approval action is stale or unauthenticated');
+      },
+    });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', d)).toBe('failed');
   });
 });

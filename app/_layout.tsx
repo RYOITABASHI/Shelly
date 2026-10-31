@@ -105,7 +105,13 @@ import {
   type TrustOffer,
 } from '@/lib/agent-policy-approval';
 import { noteAttendedApprovalResolved, noteAttendedApprovalWaiting } from '@/lib/agent-progress-writer';
-import { noteActionApprovalGone, postActionApprovalAsk, subscribeActionReviewRequests } from '@/lib/agent-action-chat-approval';
+import {
+  noteActionApprovalGone,
+  noteEscalationGone,
+  postActionApprovalAsk,
+  postEscalationAsk,
+  subscribeActionReviewRequests,
+} from '@/lib/agent-action-chat-approval';
 import { isProactiveOrigin } from '@/lib/agent-action-policy';
 import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
@@ -2232,12 +2238,12 @@ export default function RootLayout() {
       return escalationRequestDirUri;
     };
 
+    // Bug #6 (2026-10-31): no time-based pruning of an entry whose request is
+    // still on disk — dropping it made the next poll call native notify again
+    // and re-post the same ask. The stale sweep in the drain below already
+    // removes every entry whose request is gone.
     const rememberEscalation = (key: string, request: AgentEscalationRequest) => {
-      const now = Date.now();
-      notifiedEscalations.set(key, { runId: request.runId, reqId: request.reqId, seenAt: now });
-      for (const [candidate, record] of notifiedEscalations) {
-        if (now - record.seenAt > 10 * 60_000) notifiedEscalations.delete(candidate);
-      }
+      notifiedEscalations.set(key, { runId: request.runId, reqId: request.reqId, seenAt: Date.now() });
     };
 
     const drainAgentEscalationRequests = async () => {
@@ -2290,8 +2296,29 @@ export default function RootLayout() {
           activeKeys.add(key);
           activeAnchors.add(`${parsed.runId}|${parsed.reqId}`);
           if (notifiedEscalations.has(key)) continue;
-          await TerminalEmulator.notifyAgentEscalationApprovalNeeded(parsed);
+          // Native refreshes a "queued" request (the live wait timed out)
+          // only while its notification is still showing, silently (bug #6).
+          const notified = await TerminalEmulator.notifyAgentEscalationApprovalNeeded(parsed);
           rememberEscalation(key, parsed);
+          if (parsed.state === 'queued') {
+            // The live run stopped waiting: no longer answerable from the
+            // chat / MONITOR (only the notification, as a next-run grant).
+            noteEscalationGone(parsed.runId, parsed.reqId, 'expired');
+          } else {
+            // Bug #3: the same ask, as plain text in the agent's own thread
+            // (OPEN CHAT) and in MONITOR. Posting mints NO nonce; a typed OK /
+            // NO later goes through the same native writeHumanReply as the
+            // notification's Allow / Deny (lib/agent-action-chat-approval.ts).
+            postEscalationAsk({
+              runId: parsed.runId,
+              reqId: parsed.reqId,
+              agentId: parsed.agentId,
+              command: parsed.command,
+              cwd: parsed.cwd,
+              reason: parsed.reason,
+              requestSha256: notified && typeof notified === 'object' ? notified.requestSha256 : null,
+            });
+          }
           logInfo('AgentEscalation', `approval notification posted run=${parsed.runId} req=${parsed.reqId}`);
         }
         for (const [key, record] of processedGrantSpends) {
@@ -2306,6 +2333,9 @@ export default function RootLayout() {
           }
           await TerminalEmulator.cancelAgentEscalationApproval?.(record.runId, record.reqId).catch(() => undefined);
           notifiedEscalations.delete(key);
+          // Answered anywhere / cleaned up by the driver: the chat line and
+          // MONITOR stop offering OK / NO.
+          noteEscalationGone(record.runId, record.reqId);
           logInfo('AgentEscalation', `stale approval notification cancelled run=${record.runId} req=${record.reqId}`);
         }
       } catch (e) {
@@ -2317,12 +2347,10 @@ export default function RootLayout() {
     const escalationInterval = setInterval(drainAgentEscalationRequests, 500);
     void drainAgentEscalationRequests();
 
+    // Bug #6 (2026-10-31): no time-based pruning (see rememberEscalation) —
+    // the stale sweep in the drain removes entries whose request is gone.
     const rememberActionApproval = (key: string, request: AgentActionApprovalRequest) => {
-      const now = Date.now();
-      notifiedActionApprovals.set(key, { runId: request.runId, agentId: request.agentId, seenAt: now });
-      for (const [candidate, record] of notifiedActionApprovals) {
-        if (now - record.seenAt > 10 * 60_000) notifiedActionApprovals.delete(candidate);
-      }
+      notifiedActionApprovals.set(key, { runId: request.runId, agentId: request.agentId, seenAt: Date.now() });
     };
 
     // Project owner directive 2026-07-14: intent/dm-reply can ONLY ever fire

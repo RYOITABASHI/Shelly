@@ -44,6 +44,21 @@ export interface PendingActionApprovalMarker {
   reviewRequired: boolean;
   createdAt: number;
   expiresAt?: number | null;
+  /** 'escalation' (2026-10-31): a CLI worker's boundary-op escalation
+   *  (AgentEscalationBridge, notification "境界操作を許可しますか？") instead
+   *  of a per-run action approval. Absent = 'action' (older persisted lines). */
+  kind?: 'action' | 'escalation';
+  /** Escalation only: the request id (several can be pending per run). */
+  reqId?: string;
+}
+
+/** Whether a pending ask line may be answered right now: at least
+ *  ACTION_CHAT_REPLY_MIN_AGE_MS old and not past its deadline. */
+export function isPendingMarkerAnswerable(p: PendingActionApprovalMarker, now: number): boolean {
+  const age = now - p.createdAt;
+  if (age < ACTION_CHAT_REPLY_MIN_AGE_MS) return false;
+  const deadline = typeof p.expiresAt === 'number' && p.expiresAt > 0 ? p.expiresAt : p.createdAt + ACTION_CHAT_REPLY_MAX_AGE_MS;
+  return now <= deadline;
 }
 
 /** Minimum age of the chat line before a typed reply may resolve it, so a
@@ -105,12 +120,7 @@ export function findActionApprovalReplyTarget(params: {
   const reply = parseActionApprovalChatReply(params.text);
   if (!reply) return null;
   const { messages, now } = params;
-  const inWindow = (p: PendingActionApprovalMarker) => {
-    const age = now - p.createdAt;
-    if (age < ACTION_CHAT_REPLY_MIN_AGE_MS) return false;
-    const deadline = typeof p.expiresAt === 'number' && p.expiresAt > 0 ? p.expiresAt : p.createdAt + ACTION_CHAT_REPLY_MAX_AGE_MS;
-    return now <= deadline;
-  };
+  const inWindow = (p: PendingActionApprovalMarker) => isPendingMarkerAnswerable(p, now);
   if (reply.hash8) {
     for (let i = messages.length - 1, seen = 0; i >= 0 && seen < 30; i--, seen++) {
       const m = messages[i];
@@ -203,6 +213,63 @@ export async function decideActionApprovalFromChat(
   }
   try {
     await deps.resolve(marker.runId, decision, sha, nonce);
+  } catch {
+    return 'failed';
+  }
+  return decision === 'accept' ? 'accepted' : 'declined';
+}
+
+// ── Boundary-op escalations (CLI worker gate) ───────────────────────────────
+
+/** What a pending escalation looks like when re-read natively at decision
+ *  time (TerminalEmulator.readAgentEscalationRequest). */
+export interface MintedEscalationRequest {
+  runId: string;
+  reqId: string;
+  state?: string | null;
+  requestSha256?: string | null;
+  actionNonce?: string | null;
+}
+
+export interface EscalationApprovalDeps {
+  /** readAgentEscalationRequest: re-reads the request file and mints the
+   *  single-use nonce in AgentEscalationBridge's ledger. Rejects when gone. */
+  read: (runId: string, reqId: string) => Promise<MintedEscalationRequest | null>;
+  /** resolveAgentEscalationApproval: AgentEscalationBridge.writeHumanReply —
+   *  the exact native call the notification's Allow / Deny make. */
+  resolve: (runId: string, reqId: string, decision: ChatApprovalDecision, requestSha256: string, actionNonce: string) => Promise<unknown>;
+}
+
+/**
+ * Apply a typed OK / NO to a boundary-op escalation. Same shape as
+ * decideActionApprovalFromChat: re-read (mints the nonce now), require the
+ * content hash the line showed, then resolve with that fresh nonce. There is
+ * no review screen for escalations (the notification itself offers a one-tap
+ * Allow), so OK accepts. A request the driver already gave up on (state
+ * "queued": the live wait timed out) is 'expired' here; only the
+ * notification answers those (it then issues a next-run grant).
+ */
+export async function decideEscalationApprovalFromChat(
+  marker: PendingActionApprovalMarker,
+  decision: ChatApprovalDecision,
+  deps: EscalationApprovalDeps,
+): Promise<ChatApprovalOutcome> {
+  const reqId = marker.reqId ?? '';
+  if (!reqId) return 'failed';
+  let minted: MintedEscalationRequest | null;
+  try {
+    minted = await deps.read(marker.runId, reqId);
+  } catch {
+    return 'gone';
+  }
+  if (!minted || minted.runId !== marker.runId || minted.reqId !== reqId) return 'gone';
+  const sha = minted.requestSha256 ?? '';
+  const nonce = minted.actionNonce ?? '';
+  if (!sha || !nonce) return 'failed';
+  if (minted.state === 'queued') return 'expired';
+  if (sha !== marker.requestSha256) return 'changed';
+  try {
+    await deps.resolve(marker.runId, reqId, decision, sha, nonce);
   } catch {
     return 'failed';
   }

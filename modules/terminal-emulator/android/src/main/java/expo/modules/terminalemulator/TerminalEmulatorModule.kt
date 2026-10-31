@@ -2004,7 +2004,48 @@ class TerminalEmulatorModule : Module() {
             val parsed = AgentEscalationBridge.fromRequestFile(context, anchor.first, anchor.second)
                 ?: throw IllegalArgumentException("invalid agent escalation request")
             NotificationDispatcher(context).notifyAgentEscalationNeeded(parsed)
-            null
+            // The content hash of the file the notification describes, so the
+            // RN chat / MONITOR ask line can bind to it WITHOUT minting a nonce
+            // (the notification's own Allow / Deny stay valid until the user
+            // answers somewhere).
+            mapOf("requestSha256" to parsed.requestSha256)
+        }
+
+        // 2026-10-31: answer a boundary-op escalation from the app (MONITOR's
+        // typed OK / NO, or the agent chat thread), through the SAME native
+        // path as the notification's Allow / Deny
+        // (ScouterWidgetPromptActivity.handleAgentEscalationAction):
+        // read mints a fresh single-use nonce in AgentEscalationBridge's
+        // ledger (replacing the notification's), resolve consumes it in
+        // writeHumanReply (Keystore-signed reply, request-hash binding,
+        // one-shot pre-approval grant on accept), clears the request and
+        // cancels the notification. Mirrors readAgentActionApprovalRequest /
+        // resolveAgentActionApproval.
+        AsyncFunction("readAgentEscalationRequest") { runId: String, reqId: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val parsed = AgentEscalationBridge.fromRequestFile(context, runId, reqId)
+                ?: throw IllegalArgumentException("escalation request is no longer pending")
+            val actionNonce = AgentEscalationBridge.registerActionNonce(runId, reqId)
+            mapOf(
+                "runId" to parsed.runId,
+                "reqId" to parsed.reqId,
+                "agentId" to parsed.agentId,
+                "command" to parsed.command,
+                "state" to parsed.state,
+                "requestSha256" to parsed.requestSha256,
+                "actionNonce" to actionNonce,
+            )
+        }
+
+        AsyncFunction("resolveAgentEscalationApproval") { runId: String, reqId: String, decision: String, expectedRequestSha256: String, actionNonce: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val result = AgentEscalationBridge.writeHumanReply(context, runId, reqId, decision, actionNonce, expectedRequestSha256)
+            AgentEscalationBridge.clearRequest(context, runId, reqId)
+            context.getSystemService(NotificationManager::class.java)
+                ?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
+            mapOf("preapproved" to (result.preapprovalGrant != null))
         }
 
         AsyncFunction("processAgentGrantSpendRequest") { request: Map<String, Any?> ->

@@ -65,6 +65,10 @@ export interface MonitorAgentSnapshot {
   updatedAgoSec?: number;
   /** LIVE only: RUNNING with no event for a while (see STALE_AFTER_SEC). */
   stale?: boolean;
+  /** LIVE only: RUNNING while a human approval of this agent is pending
+   *  (lib/agent-pending-approvals.ts) — shown as "waiting for your OK"
+   *  instead of the stale warning. */
+  awaitingApproval?: boolean;
 }
 
 export interface MonitorChatLine {

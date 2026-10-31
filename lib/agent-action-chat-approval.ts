@@ -28,6 +28,18 @@
  * run in AgentActionApprovalBridge, consumed by the first writeHumanReply,
  * which also deletes the request file. The chat path only ever presents a
  * nonce it minted milliseconds earlier in the same call.
+ *
+ * 2026-10-31 additions (MONITOR typed approval, on-device bug #3):
+ *   - Boundary-op ESCALATIONS of a CLI worker (AgentEscalationBridge,
+ *     notification "境界操作を許可しますか？") are mirrored too:
+ *     postEscalationAsk() / noteEscalationGone(). A typed OK / NO resolves
+ *     them through readAgentEscalationRequest (mints the nonce in
+ *     AgentEscalationBridge's per-(run, req) ledger) +
+ *     resolveAgentEscalationApproval (AgentEscalationBridge.writeHumanReply,
+ *     the exact call the notification's Allow / Deny make).
+ *   - Every posted ask is also listed in lib/agent-pending-approvals.ts so
+ *     the MONITOR pane can show it and take a typed OK / NO
+ *     (resolvePendingApprovalFromMonitor). That list carries no nonce.
  */
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { agentThreadKey, useAIPaneStore } from '@/store/ai-pane-store';
@@ -37,11 +49,18 @@ import { logInfo, logWarn } from '@/lib/debug-logger';
 import { REVIEW_REQUIRED_ACTION_TYPES } from '@/lib/agent-action-types';
 import {
   decideActionApprovalFromChat,
+  decideEscalationApprovalFromChat,
   type ActionApprovalReplyTarget,
   type ChatApprovalDecision,
   type ChatApprovalOutcome,
   type PendingActionApprovalMarker,
 } from '@/lib/agent-action-chat-reply';
+import {
+  pendingApprovalKey,
+  removePendingApproval,
+  upsertPendingApproval,
+  type PendingApprovalAsk,
+} from '@/lib/agent-pending-approvals';
 
 export * from '@/lib/agent-action-chat-reply';
 
@@ -121,13 +140,15 @@ function describe(req: ActionApprovalAskRequest, l: Locale): { what: string; det
   return { what: what === `agent_action_chat.what.${req.actionType}` ? req.actionType : what, detail };
 }
 
-/** Where each pending run's ask line lives (for retiring it later). */
+/** Where each pending ask line lives (for retiring it later), keyed by
+ *  pendingApprovalKey(): `action:<runId>` / `escalation:<runId>|<reqId>`. */
 const asks = new Map<string, { agentId: string; messageId: string; requestSha256: string; hash8: string }>();
 
-function retireAsk(runId: string, closingKey: string | null, l: Locale): void {
-  const ask = asks.get(runId);
+function retireAsk(askKey: string, closingKey: string | null, l: Locale): void {
+  removePendingApproval(askKey);
+  const ask = asks.get(askKey);
   if (!ask) return;
-  asks.delete(runId);
+  asks.delete(askKey);
   const key = agentThreadKey(ask.agentId);
   const store = useAIPaneStore.getState();
   const msg = store.conversations[key]?.messages.find((m) => m.id === ask.messageId);
@@ -150,51 +171,142 @@ function retireAsk(runId: string, closingKey: string | null, l: Locale): void {
  */
 export function postActionApprovalAsk(req: ActionApprovalAskRequest): void {
   try {
-    const sha = req.requestSha256 ?? '';
-    if (!HEX_SHA256_RE.test(sha) || !req.runId || !req.agentId) return;
-    const prev = asks.get(req.runId);
-    if (prev && prev.requestSha256 === sha) return;
+    if (!req.runId || !req.agentId) return;
     const l = locale();
-    if (prev) retireAsk(req.runId, 'agent_action_chat.superseded', l);
-    const name =
-      req.agentName?.trim() || useAgentStore.getState().agents.find((a) => a.id === req.agentId)?.name || req.agentId;
     const reviewRequired = isReviewRequiredActionType(req.actionType);
-    const hash8 = sha.slice(0, 8);
     const { what, detail } = describe(req, l);
-    const content = tFor(l, reviewRequired ? 'agent_action_chat.ask_review' : 'agent_action_chat.ask', {
-      name,
-      what,
-      detail: detail ? `${detail}\n` : '',
-      hash: hash8,
-    });
-    const marker: PendingActionApprovalMarker = {
+    postAsk({
+      kind: 'action',
+      agentId: req.agentId,
+      agentName: req.agentName,
       runId: req.runId,
-      requestSha256: sha,
-      hash8,
+      requestSha256: req.requestSha256,
       reviewRequired,
-      createdAt: Date.now(),
       expiresAt: typeof req.expiresAt === 'number' ? req.expiresAt : null,
-    };
-    const id = newId();
-    useAIPaneStore.getState().addMessage(agentThreadKey(req.agentId), {
-      id,
-      role: 'assistant',
-      content,
-      timestamp: Date.now(),
-      pendingActionApproval: marker,
+      what,
+      detail,
+      locale: l,
     });
-    asks.set(req.runId, { agentId: req.agentId, messageId: id, requestSha256: sha, hash8 });
     logInfo('AgentActionChat', `ask posted run=${req.runId} type=${req.actionType} review=${reviewRequired}`);
   } catch (e) {
     logWarn('AgentActionChat', `ask post failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
+/** The fields of a boundary-op escalation request the ask line describes (a
+ *  structural subset of app/_layout.tsx's AgentEscalationRequest). */
+export interface EscalationAskRequest {
+  runId: string;
+  reqId: string;
+  agentId: string;
+  command: string;
+  cwd?: string | null;
+  reason?: string | null;
+  /** sha256 of the request file, as native computed it when it posted the
+   *  notification (notifyAgentEscalationApprovalNeeded's result). */
+  requestSha256?: string | null;
+}
+
+/**
+ * Mirror a pending boundary-op escalation into the agent's thread (bug #3:
+ * OPEN CHAT showed no question for these). Once per request content. Never
+ * throws, never mints a nonce — the notification's Allow / Deny stay valid.
+ */
+export function postEscalationAsk(req: EscalationAskRequest): void {
+  try {
+    if (!req.runId || !req.reqId || !req.agentId || !req.command) return;
+    const l = locale();
+    const parts = [clip(req.command)];
+    if (req.reason) parts.push(tFor(l, 'agent_action_chat.escalation_reason', { reason: clip(req.reason) }));
+    if (req.cwd) parts.push(tFor(l, 'agent_action_chat.escalation_cwd', { cwd: clip(req.cwd) }));
+    postAsk({
+      kind: 'escalation',
+      agentId: req.agentId,
+      runId: req.runId,
+      reqId: req.reqId,
+      requestSha256: req.requestSha256,
+      reviewRequired: false,
+      expiresAt: null,
+      what: tFor(l, 'agent_action_chat.what.escalation'),
+      detail: parts.join('\n'),
+      locale: l,
+    });
+    logInfo('AgentActionChat', `escalation ask posted run=${req.runId} req=${req.reqId}`);
+  } catch (e) {
+    logWarn('AgentActionChat', `escalation ask post failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+function postAsk(p: {
+  kind: 'action' | 'escalation';
+  agentId: string;
+  agentName?: string | null;
+  runId: string;
+  reqId?: string;
+  requestSha256?: string | null;
+  reviewRequired: boolean;
+  expiresAt: number | null;
+  what: string;
+  detail: string;
+  locale: Locale;
+}): void {
+  const sha = p.requestSha256 ?? '';
+  if (!HEX_SHA256_RE.test(sha)) return;
+  const askKey = pendingApprovalKey(p.kind, p.runId, p.reqId);
+  const prev = asks.get(askKey);
+  if (prev && prev.requestSha256 === sha) return;
+  const l = p.locale;
+  if (prev) retireAsk(askKey, 'agent_action_chat.superseded', l);
+  const name =
+    p.agentName?.trim() || useAgentStore.getState().agents.find((a) => a.id === p.agentId)?.name || p.agentId;
+  const hash8 = sha.slice(0, 8);
+  const content = tFor(l, p.reviewRequired ? 'agent_action_chat.ask_review' : 'agent_action_chat.ask', {
+    name,
+    what: p.what,
+    detail: p.detail ? `${p.detail}\n` : '',
+    hash: hash8,
+  });
+  const marker: PendingActionApprovalMarker = {
+    runId: p.runId,
+    requestSha256: sha,
+    hash8,
+    reviewRequired: p.reviewRequired,
+    createdAt: Date.now(),
+    expiresAt: p.expiresAt,
+    ...(p.kind === 'escalation' ? { kind: 'escalation' as const, reqId: p.reqId } : {}),
+  };
+  const id = newId();
+  useAIPaneStore.getState().addMessage(agentThreadKey(p.agentId), {
+    id,
+    role: 'assistant',
+    content,
+    timestamp: Date.now(),
+    pendingActionApproval: marker,
+  });
+  asks.set(askKey, { agentId: p.agentId, messageId: id, requestSha256: sha, hash8 });
+  upsertPendingApproval({ key: askKey, kind: p.kind, agentId: p.agentId, messageId: id, marker, what: p.what, detail: p.detail });
+}
+
 /** The request is no longer pending (answered from the notification / review
  *  screen, consumed by a chat answer, or expired): retire the chat line. */
 export function noteActionApprovalGone(runId: string): void {
   try {
-    retireAsk(runId, 'agent_action_chat.answered_elsewhere', locale());
+    retireAsk(pendingApprovalKey('action', runId), 'agent_action_chat.answered_elsewhere', locale());
+  } catch {
+    // best-effort
+  }
+}
+
+/** The escalation is no longer pending for the live run (answered from the
+ *  notification, consumed, cleaned up by the driver, or queued after the
+ *  live wait timed out): retire the chat line and the MONITOR entry. */
+export function noteEscalationGone(runId: string, reqId: string, reason: 'answered' | 'expired' = 'answered'): void {
+  try {
+    retireAsk(
+      pendingApprovalKey('escalation', runId, reqId),
+      reason === 'expired' ? 'agent_action_chat.escalation_expired' : 'agent_action_chat.answered_elsewhere',
+      locale(),
+    );
   } catch {
     // best-effort
   }
@@ -235,26 +347,75 @@ export async function resolveActionApprovalFromChat(
   replyLocale: Locale = locale(),
 ): Promise<string> {
   const { marker, decision } = target;
-  if (!TerminalEmulator.readAgentActionApprovalRequest || !TerminalEmulator.resolveAgentActionApproval) {
-    return tFor(replyLocale, 'agent_action_chat.unavailable');
+  const isEscalation = marker.kind === 'escalation';
+  let outcome: ChatApprovalOutcome;
+  if (isEscalation) {
+    if (!TerminalEmulator.readAgentEscalationRequest || !TerminalEmulator.resolveAgentEscalationApproval) {
+      return tFor(replyLocale, 'agent_action_chat.unavailable');
+    }
+    outcome = await decideEscalationApprovalFromChat(marker, decision as ChatApprovalDecision, {
+      read: async (runId, reqId) => {
+        const r = await TerminalEmulator.readAgentEscalationRequest!(runId, reqId);
+        return r && typeof r === 'object'
+          ? { runId: r.runId, reqId: r.reqId, state: r.state, requestSha256: r.requestSha256, actionNonce: r.actionNonce }
+          : null;
+      },
+      resolve: (runId, reqId, d, sha, nonce) => TerminalEmulator.resolveAgentEscalationApproval!(runId, reqId, d, sha, nonce),
+    });
+  } else {
+    if (!TerminalEmulator.readAgentActionApprovalRequest || !TerminalEmulator.resolveAgentActionApproval) {
+      return tFor(replyLocale, 'agent_action_chat.unavailable');
+    }
+    outcome = await decideActionApprovalFromChat(marker, decision as ChatApprovalDecision, {
+      read: async (runId) => {
+        const r = await TerminalEmulator.readAgentActionApprovalRequest!(runId);
+        return r && typeof r === 'object' ? { runId: r.runId, actionType: r.actionType, requestSha256: r.requestSha256, actionNonce: r.actionNonce, expiresAt: r.expiresAt } : null;
+      },
+      resolve: (runId, d, sha, nonce) => TerminalEmulator.resolveAgentActionApproval!(runId, d, sha, nonce),
+      requestReview: requestActionReview,
+      now: Date.now,
+      reviewRequired: isReviewRequiredActionType,
+    });
   }
-  const outcome = await decideActionApprovalFromChat(marker, decision as ChatApprovalDecision, {
-    read: async (runId) => {
-      const r = await TerminalEmulator.readAgentActionApprovalRequest!(runId);
-      return r && typeof r === 'object' ? { runId: r.runId, actionType: r.actionType, requestSha256: r.requestSha256, actionNonce: r.actionNonce, expiresAt: r.expiresAt } : null;
-    },
-    resolve: (runId, d, sha, nonce) => TerminalEmulator.resolveAgentActionApproval!(runId, d, sha, nonce),
-    requestReview: requestActionReview,
-    now: Date.now,
-    reviewRequired: isReviewRequiredActionType,
-  });
-  logInfo('AgentActionChat', `chat ${decision} run=${marker.runId}: ${outcome}`);
+  logInfo(
+    'AgentActionChat',
+    `chat ${decision} ${isEscalation ? `escalation run=${marker.runId} req=${marker.reqId}` : `run=${marker.runId}`}: ${outcome}`,
+  );
   if (outcome !== 'failed') {
-    const ask = asks.get(marker.runId);
-    if (ask && ask.messageId === target.messageId) asks.delete(marker.runId);
+    const askKey = isEscalation
+      ? pendingApprovalKey('escalation', marker.runId, marker.reqId)
+      : pendingApprovalKey('action', marker.runId);
+    const ask = asks.get(askKey);
+    if (ask && ask.messageId === target.messageId) {
+      asks.delete(askKey);
+      // 'review': still pending (the review screen answers it) — MONITOR
+      // keeps listing it until the drain sees the request gone.
+      if (outcome !== 'review') removePendingApproval(askKey);
+    }
     useAIPaneStore.getState().updateMessage(conversationKey, target.messageId, { pendingActionApproval: undefined });
   }
   return tFor(replyLocale, outcomeKey(outcome));
+}
+
+/**
+ * MONITOR's typed OK / NO (components/panes/MonitorPane.tsx — called ONLY
+ * from its approval TextInput's submit handler, i.e. the user's own
+ * keystrokes, the MONITOR equivalent of the chat's `typedByUser`). Records
+ * the exchange in the agent's thread (so OPEN CHAT shows what was answered)
+ * and resolves through resolveActionApprovalFromChat — the very same native
+ * read-then-resolve as a chat reply. Returns the reply line.
+ */
+export async function resolvePendingApprovalFromMonitor(
+  ask: PendingApprovalAsk,
+  decision: ChatApprovalDecision,
+  typedText: string,
+): Promise<string> {
+  const key = agentThreadKey(ask.agentId);
+  const store = useAIPaneStore.getState();
+  store.addMessage(key, { id: newId(), role: 'user', content: typedText.trim(), timestamp: Date.now() });
+  const reply = await resolveActionApprovalFromChat({ messageId: ask.messageId, marker: ask.marker, decision }, key);
+  useAIPaneStore.getState().addMessage(key, { id: newId(), role: 'assistant', content: reply, timestamp: Date.now() });
+  return reply;
 }
 
 function outcomeKey(outcome: ChatApprovalOutcome): string {
