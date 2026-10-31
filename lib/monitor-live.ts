@@ -30,6 +30,7 @@ import type {
 } from './monitor-source';
 import type { MonitorProvider, MonitorProviderKind, MonitorTeam, MonitorTeamNode } from './monitor-team';
 import { MONITOR_PROVIDER_LABEL } from './monitor-team';
+import { AGENT_CLI_WORKERS, isAgentCliId } from './agent-cli-workers';
 import { continuousStopReasonKey, type ContinuousCheckpointView } from './agent-continuous';
 
 /** A RUNNING step with no event for this long gets the stale indicator. */
@@ -71,6 +72,10 @@ const EXTRA_PROVIDER_LABEL: Record<string, string> = {
 };
 
 export function liveProviderLabel(name: string): string {
+  // `cli:<id>` reads the CLI worker table (lib/agent-cli-workers.ts) — the
+  // same display-name source the running state uses.
+  const cliMatch = /^cli:(.+)$/.exec(name);
+  if (cliMatch && isAgentCliId(cliMatch[1])) return AGENT_CLI_WORKERS[cliMatch[1]].label;
   const alias = PROVIDER_ALIASES[name];
   if (alias) return MONITOR_PROVIDER_LABEL[alias];
   return EXTRA_PROVIDER_LABEL[name] ?? name;
