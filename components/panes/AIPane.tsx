@@ -680,10 +680,13 @@ export default function AIPane() {
       handleSubmit(text.trim() || t('ai_pane_image_default_prompt'), {
         images: [{ base64: image.base64, mimeType: image.mimeType }],
         imageThumbnailUri: image.uri,
+        typedByUser: true,
       });
       return;
     }
-    handleSubmit(text);
+    // Typed + sent by the user: the only input allowed to answer an approval
+    // in chat (voice goes through usePaneVoice without it).
+    handleSubmit(text, { typedByUser: true });
   }, [stagedImage, handleSubmit, t]);
 
   const conversation = useAIPaneStore((s) => {

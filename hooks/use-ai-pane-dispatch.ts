@@ -535,6 +535,12 @@ export function createThrottledUpdate(updateFn: UpdateFn) {
  * specified command can never ride the widget bypass).
  */
 export interface AIPaneDispatchOptions {
+  /** True only for text the user typed and sent from the AI pane composer.
+   *  Chat answers to pending approvals (agent action OK / NO, ClosePaw
+   *  承認 <hash>) are honoured only then: voice transcripts, terminal
+   *  requests and every other caller leave it unset, so ambient speech or
+   *  another process cannot approve. */
+  typedByUser?: boolean;
   /** 'terminal-request' (2026-10-14): a `shelly agent add` request from the
    *  terminal (lib/agent-add-queue.ts) — always confirm-gated. */
   source?: 'widget-ask' | 'terminal-request' | 'monitor-team';
@@ -971,7 +977,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset'].some(
             (k) => !!freshest[k],
           );
-        const target = userText.trim().startsWith('@')
+        const target = !dispatchOpts?.typedByUser || userText.trim().startsWith('@')
           ? null
           : findClosePawChatReplyTarget({
               text: userText,
@@ -1011,7 +1017,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset', 'pendingClosePawShell'].some(
             (k) => !!freshest[k],
           );
-        const target = userText.trim().startsWith('@')
+        const target = !dispatchOpts?.typedByUser || userText.trim().startsWith('@')
           ? null
           : findActionApprovalReplyTarget({
               text: userText,

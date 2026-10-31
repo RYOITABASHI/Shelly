@@ -156,3 +156,23 @@ describe('decideActionApprovalFromChat', () => {
     expect(await decideActionApprovalFromChat(marker(), 'decline', f.d)).toBe('failed');
   });
 });
+
+
+describe('chat approval input source (Codex review 2026-10-31)', () => {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const hook = fs.readFileSync(path.join(__dirname, '..', 'hooks', 'use-ai-pane-dispatch.ts'), 'utf8');
+  const pane = fs.readFileSync(path.join(__dirname, '..', 'components', 'panes', 'AIPane.tsx'), 'utf8');
+
+  it('only typed composer sends can answer an action or ClosePaw approval', () => {
+    const gated = hook.match(/const target = !dispatchOpts\?\.typedByUser \|\| userText\.trim\(\)\.startsWith\('@'\)/g) ?? [];
+    expect(gated).toHaveLength(2);
+    expect(hook).not.toMatch(/const target = userText\.trim\(\)\.startsWith\('@'\)/);
+    expect(pane).toContain('handleSubmit(text, { typedByUser: true });');
+  });
+
+  it('voice input does not mark itself as typed', () => {
+    expect(pane).toContain('usePaneVoice(handleSubmit)');
+    expect(hook.match(/typedByUser: true/g) ?? []).toHaveLength(0);
+  });
+});
