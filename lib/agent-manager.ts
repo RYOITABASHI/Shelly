@@ -7,6 +7,7 @@ import { Agent, AgentRunLog, ToolChoice } from '@/store/types';
 import { pickFinalStepOutput, type AgentRunOutputFields } from '@/lib/agent-run-output';
 import { suggestTool, toolChoiceToLabel } from './agent-tool-router';
 import { sanitizeAgentName } from './sanitize-agent-name';
+import { toolForRouteDecision } from './agent-cli-workers';
 import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { resolveForAutonomous } from './agent-credential-policy';
 import { resolveEscalationLadder, attemptFailed, isDeterministicDispatchFailure, isLocalFallbackDigest, LadderEnv, EscalationLadder } from './agent-escalation-ladder';
@@ -2977,6 +2978,9 @@ async function runAgentOrchestratedBody(
       }
     }
     const stepStart = Date.now();
+    // The tool the step's latest ladder attempt was launched on (exact,
+    // incl. the CLI id) — see toolForRouteDecision below.
+    let lastAttemptTool: ToolChoice | undefined;
     let log: AgentRunLog | undefined;
     try {
       // Each step escalates through the ladder by its OWN instruction — so a
@@ -3019,7 +3023,14 @@ async function runAgentOrchestratedBody(
           // the final step's real action writes anything (2026-10-09).
           skipSuppressedDraftSave: true,
           ...(sourcingActive ? { stepResultToken } : {}),
-          ...(progress ? { onAttemptTool: (tool: ToolChoice | undefined) => progress.stepTool(i, tool) } : {}),
+          ...(progress
+            ? {
+                onAttemptTool: (tool: ToolChoice | undefined) => {
+                  lastAttemptTool = tool;
+                  progress.stepTool(i, tool);
+                },
+              }
+            : {}),
           ...(synthesis
             ? {
                 textOnly: true,
@@ -3170,7 +3181,11 @@ async function runAgentOrchestratedBody(
       // The tool that actually answered (routeDecision of the step's final
       // attempt) supersedes the attempt-time candidate in the reader.
       const rd = record.routeDecision;
-      if (rd?.toolType) progress.stepTool(i, { type: rd.toolType } as ToolChoice, rd.toolLabel);
+      // 2026-10-31: `{ type: rd.toolType }` dropped the CLI id, so a finished
+      // Claude Code step read "cli:cli" in MONITOR — rebuild the full tool
+      // (lib/agent-cli-workers.ts toolForRouteDecision).
+      const finishedTool = toolForRouteDecision(rd, lastAttemptTool);
+      if (finishedTool) progress.stepTool(i, finishedTool, rd?.toolLabel);
       // Claude glibc S4: a CLI worker's reported tokens (run-log `usage`,
       // validated again inside stepUsage).
       const usage = log?.usage;
@@ -3513,6 +3528,8 @@ async function captureRunMemoryFromSyncedLogs(
           routeDecision: latest.routeDecision,
           timestamp: latest.timestamp,
           status: latest.status,
+          steps: latest.steps,
+          plannedStepCount: agent.orchestration?.steps?.length,
           alreadySkillId: agent.skillId,
           unattended: true,
         }, {

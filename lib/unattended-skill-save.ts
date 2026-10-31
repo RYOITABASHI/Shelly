@@ -7,7 +7,8 @@ import {
 } from '@/lib/agent-skills';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 import { scanForSecrets } from '@/lib/secret-guard';
-import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
+import type { AgentRouteDecision, AgentRunLog, AgentRunStep } from '@/store/types';
+import { runSucceededInFull } from '@/lib/agent-run-success';
 
 export const SKILL_SAVED_NOTIFICATION_CATEGORY = 'skill-saved';
 export const DELETE_SAVED_SKILL_ACTION = 'delete-saved-skill';
@@ -21,6 +22,10 @@ export interface UnattendedSkillSaveParams {
   alreadySkillId?: string;
   unattended: true;
   planSpec?: AgentPlanSpecV1;
+  /** Per-step records + planned step count: a skipped / missing step is not
+   *  a full success (lib/agent-run-success.ts). */
+  steps?: ReadonlyArray<Pick<AgentRunStep, 'status'>> | null;
+  plannedStepCount?: number;
 }
 
 /** Save a successful unattended run and post a one-tap, post-hoc delete action. */
@@ -29,7 +34,7 @@ export async function saveUnattendedSkillWithNotification(
   params: UnattendedSkillSaveParams,
   notificationText: { title: string; body: string; deleteButton: string },
 ): Promise<string | null> {
-  if (params.status !== 'success' || params.alreadySkillId) return null;
+  if (!runSucceededInFull(params) || params.alreadySkillId) return null;
   const recipe = distillSkillFromRun({
     name: params.name,
     taskText: params.prompt,

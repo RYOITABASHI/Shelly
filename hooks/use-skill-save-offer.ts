@@ -29,7 +29,8 @@ import {
   persistSkillImprovement,
   revertSkillImprovement,
 } from '@/lib/skill-self-improve';
-import type { AgentRouteDecision, AgentRunLog } from '@/store/types';
+import type { AgentRouteDecision, AgentRunLog, AgentRunStep } from '@/store/types';
+import { runSucceededInFull } from '@/lib/agent-run-success';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 
 type TranslationFn = (key: string, params?: Record<string, string | number>) => string;
@@ -99,6 +100,12 @@ export interface SkillSaveOfferParams {
   unattended?: boolean;
   /** Present for a successful multi-step orchestration run. */
   planSpec?: AgentPlanSpecV1;
+  /** The run's per-step records (orchestrated runs). A skipped / failed /
+   *  missing step means the run did not succeed in full — no offer
+   *  (2026-10-31: offered after a run whose step 2 was SKIPPED). */
+  steps?: ReadonlyArray<Pick<AgentRunStep, 'status'>> | null;
+  /** Agent.orchestration.steps.length, so an early-stopped chain is caught. */
+  plannedStepCount?: number;
 }
 
 export async function saveSkillWithoutConfirmation(
@@ -123,14 +130,14 @@ export async function saveSkillWithoutConfirmation(
  * reusing a skill gets offered.
  */
 export function shouldOfferSkillSave(
-  params: Pick<SkillSaveOfferParams, 'status' | 'alreadySkillId'>
+  params: Pick<SkillSaveOfferParams, 'status' | 'alreadySkillId' | 'steps' | 'plannedStepCount'>
 ): boolean {
   if (params.alreadySkillId) return false;
-  return params.status === 'success';
+  return runSucceededInFull(params);
 }
 
 export function skillSaveMode(
-  params: Pick<SkillSaveOfferParams, 'status' | 'alreadySkillId' | 'unattended'>
+  params: Pick<SkillSaveOfferParams, 'status' | 'alreadySkillId' | 'unattended' | 'steps' | 'plannedStepCount'>
 ): 'none' | 'confirm' | 'auto' {
   if (!shouldOfferSkillSave(params)) return 'none';
   return params.unattended === true ? 'auto' : 'confirm';

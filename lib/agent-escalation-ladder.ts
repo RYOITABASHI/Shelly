@@ -151,6 +151,25 @@ function resolveEscalationLadderBase(
     return { tools: [primary], noEscalation: true, guard: decision.guard, why: decision.why };
   }
 
+  // 2026-10-31 on-device bug (agent-mvvx3o28): an attended step pinned to
+  // Codex CLI showed "Codex CLI" for ~2 s, then ran as "Local LLM" — the
+  // attended ladder below was [codex, local, …], so a failed Codex attempt
+  // silently re-ran the step on another engine. An explicitly configured CLI
+  // (Codex / Claude Code) is the engine the user chose: run it alone; if it
+  // fails, the step fails and says so. Checked before the web branch too, so
+  // a web-flavoured instruction does not swap the pinned CLI for Gemini /
+  // Perplexity (a CLI worker can fetch through its own shell). Attended only:
+  // an autonomous agent's stored tool is cli:codex even when nobody pinned it
+  // (the OAuth driver default), so its ladder stays as it was.
+  if (!agent.autonomous && decision.guard === 'configured-tool' && primary.type === 'cli') {
+    return {
+      tools: [primary],
+      noEscalation: false,
+      guard: decision.guard,
+      why: `${decision.why} Explicitly pinned CLI (${primary.cli}) → that CLI only; a failure is reported, never re-run on another engine.`,
+    };
+  }
+
   // Web-mandatory task (collect CURRENT info): only a live web fetch satisfies
   // it. EXCLUDE non-web backends (local / Cerebras / Groq) — they would only
   // hallucinate a plausible template and report a fake success. Web-capable

@@ -26,6 +26,7 @@ import { PROGRESS_SCHEMA_VERSION, type MonitorBranchState, type MonitorProvider,
 import { redactSecretsText } from './redact-secrets';
 import { logWarn } from './debug-logger';
 import type { ToolChoice } from '@/store/types';
+import { providerIdentity } from './agent-cli-workers';
 
 export const PROGRESS_TAIL_MAX_CHARS = 240;
 /** Same runaway guard as the executor's PROGRESS_MAX_BYTES. */
@@ -57,7 +58,9 @@ export function progressStateForStatus(status: string | undefined): MonitorBranc
 /** Provider descriptor for a ToolChoice (mirror of the executor's progressProvider). */
 export function progressProviderForTool(tool: ToolChoice | undefined | null, modelHint?: string): MonitorProvider | undefined {
   if (!tool || typeof tool.type !== 'string') return undefined;
-  const type = tool.type === 'cli' ? `cli:${(tool as { cli?: string }).cli ?? 'cli'}` : tool.type;
+  // Same provider id as lib/agent-cli-workers.ts (never the old "cli:cli" for
+  // a cli tool missing its id).
+  const type = providerIdentity(tool);
   const kind = tool.type === 'local' ? 'LOCAL' : tool.type === 'cli' ? 'CLI' : 'API';
   const rawModel = (tool as { model?: unknown }).model;
   const model = typeof rawModel === 'string' && rawModel ? rawModel : modelHint;

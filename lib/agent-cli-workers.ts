@@ -79,6 +79,32 @@ export function providerIdentity(tool: { type?: string; cli?: unknown } | null |
   return tool.type === 'cli' ? `cli:${cliIdOf(tool)}` : tool.type;
 }
 
+/**
+ * The tool a finished step actually ran on, rebuilt from its route decision
+ * (which only carries `toolType` + `toolLabel`, never the CLI id).
+ *
+ * 2026-10-31 on-device bug: MONITOR's completed state showed "cli:cli" for a
+ * Claude Code step — agent-manager re-reported `{ type: rd.toolType }`, a cli
+ * tool without its `cli`, which the progress writer rendered as `cli:cli`.
+ * Prefer the last attempt's own tool (exact), then the worker whose label the
+ * route decision names, then the legacy cliIdOf() fallback. Never returns a
+ * cli tool without `cli`.
+ */
+export function toolForRouteDecision(
+  routeDecision: { toolType?: string; toolLabel?: string } | null | undefined,
+  lastAttemptTool?: ToolChoice | null,
+): ToolChoice | undefined {
+  const toolType = routeDecision?.toolType;
+  if (!toolType) return undefined;
+  if (toolType !== 'cli') return { type: toolType } as ToolChoice;
+  if (lastAttemptTool && lastAttemptTool.type === 'cli' && isAgentCliId((lastAttemptTool as { cli?: unknown }).cli)) {
+    return cliTool((lastAttemptTool as { cli: AgentCliId }).cli);
+  }
+  const label = routeDecision?.toolLabel?.trim();
+  const byLabel = label ? AGENT_CLI_IDS.find((id) => AGENT_CLI_WORKERS[id].label === label) : undefined;
+  return cliTool(byLabel ?? (cliIdOf({ type: 'cli' }) as AgentCliId));
+}
+
 export function sameProvider(
   a: { type?: string; cli?: unknown } | null | undefined,
   b: { type?: string; cli?: unknown } | null | undefined,

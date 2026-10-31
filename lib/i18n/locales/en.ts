@@ -694,6 +694,7 @@ const en: Record<string, string> = {
   'agentplan.confirm_prompt_edit': 'Got it — I\'ll update it to what\'s described above. Say the word, or tell me what else to change; "cancel" drops the edit.',
   'agentplan.registered_notice': 'Got it — "{{name}}" is set. I\'ll do this {{scheduleDescription}}{{autonomousSuffix}}. You can check on it anytime with @agent list.{{correctionHint}}',
   'agentplan.registered_notice_oneshot': 'Got it — "{{name}}" will run once, {{when}}{{countdown}}{{autonomousSuffix}}. Afterwards it stays in @agent list as Done with its result.{{correctionHint}}',
+  'agentplan.registering_placeholder': 'OK — registering the agent…',
   'agentplan.updated_notice': 'Got it — "{{name}}" is updated. I\'ll do this {{scheduleDescription}}{{autonomousSuffix}} from now on.',
   // Phase A/B (2026-07-22) — type-to-confirm and the assumed-schedule
   // annotation for the chat-native flow (hooks/use-ai-pane-dispatch.ts /

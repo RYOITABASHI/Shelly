@@ -42,6 +42,42 @@ describe('shouldOfferSkillSave', () => {
   it('does not re-offer when the agent already reuses a skill, even on success', () => {
     expect(shouldOfferSkillSave({ status: 'success', alreadySkillId: 'skill-abc123' })).toBe(false);
   });
+
+  // 2026-10-31 on-device bug (agent-mvvx3o28): offered "… succeeded" after a
+  // 2-step run whose step 2 was SKIPPED (approval timed out) — reduceStatus
+  // reads success + skipped as 'success'.
+  it('does not offer when a step was skipped, even though the aggregate status is success', () => {
+    expect(shouldOfferSkillSave({
+      status: 'success',
+      steps: [{ status: 'success' }, { status: 'skipped' }],
+      plannedStepCount: 2,
+    })).toBe(false);
+  });
+
+  it('does not offer for a chain that stopped before its last planned step', () => {
+    expect(shouldOfferSkillSave({ status: 'success', steps: [{ status: 'success' }], plannedStepCount: 2 })).toBe(false);
+  });
+
+  it('does not offer when any step failed or is still pending', () => {
+    expect(shouldOfferSkillSave({ status: 'success', steps: [{ status: 'success' }, { status: 'error' }] })).toBe(false);
+    expect(shouldOfferSkillSave({ status: 'success', steps: [{ status: 'success' }, { status: 'pending' }] })).toBe(false);
+  });
+
+  it('offers for a multi-step run where every planned step succeeded', () => {
+    expect(shouldOfferSkillSave({
+      status: 'success',
+      steps: [{ status: 'success' }, { status: 'success' }],
+      plannedStepCount: 2,
+    })).toBe(true);
+  });
+
+  it('a skipped step also blocks the unattended auto-save mode', () => {
+    expect(skillSaveMode({
+      status: 'success',
+      unattended: true,
+      steps: [{ status: 'success' }, { status: 'skipped' }],
+    })).toBe('none');
+  });
 });
 
 describe('skill save mode', () => {

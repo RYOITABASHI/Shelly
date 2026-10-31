@@ -544,6 +544,8 @@ export function Sidebar() {
       routeDecision: latest?.routeDecision,
       timestamp: latest?.timestamp,
       status: latest?.status,
+      steps: latest?.steps,
+      plannedStepCount: agent.orchestration?.steps?.length,
       alreadySkillId: agent.skillId,
       planSpec: latest?.steps && latest.steps.length >= 2
         ? buildAgentPlanSpec(agent)
