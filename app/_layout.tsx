@@ -752,7 +752,7 @@ export default function RootLayout() {
     // via JNI execCommand in the active session's currentDir.
     import('@/store/savepoint-store').then(({ useSavepointStore }) => {
       import('@/hooks/use-native-exec').then(({ execCommand }) => {
-        import('@/lib/auto-savepoint').then(({ checkAndSave, initGitIfNeeded }) => {
+        import('@/lib/auto-savepoint').then(({ checkAndSave, initGitIfNeeded, isHomeDir }) => {
           import('@/store/terminal-store').then(({ useTerminalStore }) => {
             const runCmd = async (cmd: string) => {
               const r = await execCommand(cmd, 30_000);
@@ -777,6 +777,8 @@ export default function RootLayout() {
               useSavepointStore.getState().setSaving(true);
               (async () => {
                 try {
+                  // Never make $HOME a savepoint repo (credentials live there).
+                  if (await isHomeDir(dir, runCmd)) return;
                   await initGitIfNeeded(dir, runCmd);
                   const result = await checkAndSave(dir, runCmd, (issues) => {
                     useSavepointStore.getState().setSecurityWarnings(

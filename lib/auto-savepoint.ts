@@ -13,7 +13,14 @@ const SECURITY_PATTERNS: { pattern: RegExp; label: string }[] = [
   { pattern: /\b(api[_-]?key|secret|token|password)\s*[:=]\s*['"][^'"]{8,}/i, label: 'hardcoded secret' },
   { pattern: /-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----/, label: 'private key' },
   { pattern: /\bAIza[0-9A-Za-z_-]{35}\b/, label: 'Google API key' },
-  { pattern: /\bsk-[a-zA-Z0-9]{20,}\b/, label: 'OpenAI/Anthropic key' },
+  // Hyphens/underscores too: Anthropic (sk-ant-oat01-…, sk-ant-api03-…) and
+  // OpenAI project keys (sk-proj-…) are segmented.
+  { pattern: /\bsk-[A-Za-z0-9_-]{20,}/, label: 'OpenAI/Anthropic key' },
+  // Unquoted env-file assignments (CLAUDE_CODE_OAUTH_TOKEN=…, FOO_API_KEY=…).
+  {
+    pattern: /\b[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*\s*=\s*[^\s'"]{16,}/,
+    label: 'hardcoded secret',
+  },
   { pattern: /\bghp_[a-zA-Z0-9]{36}\b/, label: 'GitHub PAT' },
 ];
 
@@ -93,6 +100,16 @@ export async function scanForSecrets(
   runCommand: RunCommandFn,
 ): Promise<SecurityIssue[]> {
   return scanFilesForSecrets(projectDir, runCommand, 'staged');
+}
+
+/** True when `dir` resolves to $HOME. Auto-savepoints never turn the home
+ *  directory into a repo: it holds credentials (~/.claude-token.env,
+ *  ~/.git-credentials, ~/.ssh) and every tool's config. */
+export async function isHomeDir(dir: string, runCommand: RunCommandFn): Promise<boolean> {
+  const { exitCode } = await runCommand(
+    `[ "$(cd ${shellEscape(dir)} 2>/dev/null && pwd -P)" = "$(cd ~ && pwd -P)" ]`,
+  );
+  return exitCode === 0;
 }
 
 /** Shell-escape a string for safe use in single-quoted arguments */
