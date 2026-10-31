@@ -182,6 +182,10 @@ export function scheduleHuman(
   };
   const joinDays = (names: string[]): string =>
     names.join(names.every((n) => /^[A-Za-z0-9 .]*$/.test(n)) ? ', ' : '・');
+  // 'once' (the run-now sentinel) has no time: decodeCron('once') carries the
+  // FALLBACK 08:00, so falling through to sched_daily rendered "daily at 08:00"
+  // in the chat-confirm summary for "right now" / "今すぐ" drafts.
+  if (f === 'once') return t('agentcard.sched_once');
   if (f === 'interval') return t('agentcard.sched_interval', { n: interval });
   if (f === 'hourly') return t('agentcard.sched_hourly', { n: interval });
   if (f === 'daily-multi') {

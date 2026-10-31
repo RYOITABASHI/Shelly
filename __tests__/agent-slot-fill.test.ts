@@ -277,6 +277,15 @@ describe('applySlotAnswer — schedule', () => {
     expect(draft.scheduleConfident).toBe(true);
   });
 
+  // 2026-11-01 on-device (build 2741): reply to "When should this run?".
+  it('"Just once, right now" resolves to the once (run-now) sentinel', () => {
+    const d = makeDraft({ scheduleConfident: false, schedule: null, scheduleLabel: '未設定（要選択）' });
+    const { draft, resolved } = applySlotAnswer('schedule', d, 'Just once, right now', 0);
+    expect(resolved).toBe(true);
+    expect(draft.schedule).toBe('once');
+    expect(draft.scheduleConfident).toBe(true);
+  });
+
   it('an unparseable answer with attemptCount=0 does NOT resolve (asks again)', () => {
     const d = makeDraft({ scheduleConfident: false, schedule: null });
     const { resolved } = applySlotAnswer('schedule', d, 'いい感じの時間で', 0);

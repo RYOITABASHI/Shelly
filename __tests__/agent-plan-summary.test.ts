@@ -72,6 +72,25 @@ describe('humanizeCronSchedule', () => {
       params ? `${key}|${JSON.stringify(params)}` : key,
     );
   });
+
+  // 2026-11-01 on-device (build 2741): the 'once' run-now sentinel decodes to
+  // decodeCron's FALLBACK (daily 08:00), and scheduleHuman had no 'once' case,
+  // so the chat-confirm summary read "Schedule: daily at 08:00" for "right now".
+  it('renders the once sentinel as run-now, never the daily 08:00 fallback', () => {
+    expect(humanizeCronSchedule('once', 'en')).toBe('agentcard.sched_once');
+    expect(humanizeCronSchedule('once', 'ja')).toBe('agentcard.sched_once');
+  });
+
+  it.each([
+    'Right now, using Codex, check the git log and file list in ~/demo, then using Claude Code, summarize this project in 3 lines',
+    'Using Codex, check the git log and file list in ~/demo, then using Claude Code, summarize this project in 3 lines right now',
+  ])('end-to-end: a run-now CLI chain summary says once, not daily (%s)', (utterance) => {
+    const draft = parseAgentNL(utterance);
+    expect(draft.schedule).toBe('once');
+    const text = summarizeAgentDraftAsText(draft);
+    expect(text).toContain('agentcard.sched_once');
+    expect(text).not.toContain('agentcard.sched_daily');
+  });
 });
 
 describe('Phase 1 companion copy parity', () => {
