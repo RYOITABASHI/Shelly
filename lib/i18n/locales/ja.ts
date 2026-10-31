@@ -678,6 +678,7 @@ const ja: Record<string, string> = {
   'agentplan.confirm_prompt_edit': 'この内容に更新します。OKなら教えてください。他に変更したい項目があれば言い直してください。取消は「やめて」。',
   'agentplan.registered_notice': '了解しました。「{{name}}」を登録しました。{{scheduleDescription}}{{autonomousSuffix}}ようにします。いつでも @agent list で確認できます。{{correctionHint}}',
   'agentplan.registered_notice_oneshot': '了解しました。「{{name}}」を{{when}}{{countdown}}に1回だけ実行します{{autonomousSuffix}}。実行後は結果とともに「完了」として @agent list に残ります。{{correctionHint}}',
+  'agentplan.registering_placeholder': '了解しました。エージェントを登録しています…',
   'agentplan.updated_notice': '了解しました。「{{name}}」を更新しました。これからは{{scheduleDescription}}{{autonomousSuffix}}ようにします。',
   // Phase A/B (2026-07-22) — チャット返信そのものでの確定と、あいまいな時刻帯
   // 表現をデフォルト解釈した際の注記（hooks/use-ai-pane-dispatch.ts /

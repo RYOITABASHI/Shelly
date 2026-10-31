@@ -3599,3 +3599,87 @@ describe('MONITOR team preset draft — same summary + NL confirm as @agent', ()
     expect(reg.useMonitorTeamRegistration.getState().status).toBe('idle');
   });
 });
+
+// 2026-10-31 on-device finding (agent "プロジェクト概要作成", agent-mvvx3o28):
+// a terminal-requested 2-step agent (step 1 pinned to Codex CLI, step 2 to
+// Claude Code) showed 「登録しました」 ABOVE the user's "OK". Root cause: the
+// typed OK is appended first, then confirmAgentDraft rewrote the ORIGINAL
+// draft bubble (which sits above the OK) in place. Nothing was persisted
+// before the OK; the transcript just read that way. Also covers the latent
+// gate gap: a tool-pinned/CLI draft (action 'draft') was auto-register
+// eligible under a no-confirm setting.
+describe('Registration confirm gate — CLI-pinned step chain (2026-10-31)', () => {
+  const cliChainDraft = (): ParsedAgentDraft => ({
+    name: 'プロジェクト概要作成',
+    prompt: '~/demo のgit logとファイル一覧を確認して、このプロジェクトの概要を3行にまとめて',
+    schedule: '0 9 * * *',
+    scheduleConfident: true,
+    scheduleLabel: '毎日 09:00',
+    action: { type: 'draft' },
+    tool: { type: 'auto' } as ParsedAgentDraft['tool'],
+    toolLabel: 'Auto',
+    rawText: '毎日9時に ~/demo のgit logとファイル一覧をCodexで確認して、Claude Codeでこのプロジェクトの概要を3行にまとめて',
+    orchestrationSteps: [
+      { instruction: '~/demo のgit logとファイル一覧を確認して', tool: { type: 'cli', cli: 'codex' } } as any,
+      { instruction: 'このプロジェクトの概要を3行にまとめて', tool: { type: 'cli', cli: 'claude' } } as any,
+    ],
+  });
+
+  it('never auto-registers, even with every confirm setting turned off (widget no-confirm opt-in)', async () => {
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, agentRegistrationRequireConfirm: false, widgetAgentRegistrationNoConfirm: true },
+    }));
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('register', { presetDraft: cliChainDraft(), source: 'widget-ask' });
+    });
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    expect(mockInstallAgent).not.toHaveBeenCalled();
+    expect(conv().pendingAgentSession?.phase).toBe('await-confirm');
+    const bubble = conv().messages.find((m) => m.id === conv().pendingAgentSession?.messageId);
+    expect(bubble?.agentCardState).toBe('pending');
+    expect(conv().messages.some((m) => m.content.includes('agentplan.registered_notice'))).toBe(false);
+  });
+
+  it('a typed OK registers once, and the registered notice is posted AFTER the OK, never above it', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('register', { presetDraft: cliChainDraft() });
+    });
+    expect(mockCreateAgent).not.toHaveBeenCalled();
+    const draftId = conv().pendingAgentSession!.messageId;
+
+    await act(async () => {
+      await result.current.dispatch('OK');
+    });
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    const msgs = conv().messages;
+    const okIdx = msgs.findIndex((m) => m.role === 'user' && m.content === 'OK');
+    const draftIdx = msgs.findIndex((m) => m.id === draftId);
+    const noticeIdx = msgs.findIndex((m) => m.content.includes('agentplan.registered_notice'));
+    expect(draftIdx).toBeGreaterThanOrEqual(0);
+    expect(okIdx).toBeGreaterThan(draftIdx);
+    expect(noticeIdx).toBeGreaterThan(okIdx);
+    // The draft bubble keeps its summary and only flips its card state.
+    expect(msgs[draftIdx].agentCardState).toBe('confirmed');
+    expect(msgs[draftIdx].content).not.toContain('agentplan.registered_notice');
+    // No placeholder is left behind.
+    expect(msgs.some((m) => m.content.includes('agentplan.registering_placeholder'))).toBe(false);
+  });
+
+  it('a tap on the still-latest draft bubble keeps the in-place update (nothing to be out of order with)', async () => {
+    const { result } = setup();
+    await act(async () => {
+      await result.current.dispatch('register', { presetDraft: cliChainDraft() });
+    });
+    const draftId = conv().pendingAgentSession!.messageId;
+    await act(async () => {
+      await result.current.confirmAgentDraft(draftId, draftToConfirmedAgentDraft(cliChainDraft()));
+    });
+    expect(mockCreateAgent).toHaveBeenCalledTimes(1);
+    const bubble = conv().messages.find((m) => m.id === draftId);
+    expect(bubble?.content).toContain('agentplan.registered_notice');
+    expect(bubble?.agentCardState).toBe('confirmed');
+    expect(conv().messages.filter((m) => m.content.includes('agentplan.registered_notice'))).toHaveLength(1);
+  });
+});

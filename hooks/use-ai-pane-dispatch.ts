@@ -64,7 +64,7 @@ import {
   resolveRegistrationConfirmRequirement,
   notifyWidgetAgentRegistered,
 } from '@/lib/widget-agent-registration';
-import { firstRunPassedNote, shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleOnChatConfirm, humanizeCronSchedule } from '@/lib/agent-plan-summary';
+import { firstRunPassedNote, shouldUseChatConfirm, summarizeAgentDraftAsText, shouldAutoRegisterDraft, draftToConfirmedAgentDraft, hasFireableSchedule, hasDraftAssumptions, isAutoRegisterEligibleDraft, humanizeCronSchedule } from '@/lib/agent-plan-summary';
 import { nextMissingSlot, applySlotAnswer, isCancelPhrase, detectMessageLocale, hasFresherPendingSlotFillQuestion, parseAutonomousChoice } from '@/lib/agent-slot-fill';
 import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
@@ -113,6 +113,7 @@ import type { OpenRouterMessage } from '@/lib/openrouter';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { tFor, useTranslation } from '@/lib/i18n';
+import { resolveConfirmOutcomeTarget, splitConfirmOutcomeUpdate } from '@/lib/agent-confirm-outcome';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
 import { formatOneShotCountdown, formatOneShotWhen, oneShotAtMs, resolveOneShotSchedule } from '@/lib/agent-oneshot';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
@@ -782,7 +783,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // chat-confirm surface; every other chat-confirm type (social-post/
         // tool-pinned) keeps requiring `!useChatConfirm` exactly
         // as before this fix.
-        const autoRegisterEligible = !useChatConfirm || isAutoRegisterEligibleOnChatConfirm(draft.action.type);
+        // 2026-10-31: isAutoRegisterEligibleDraft also excludes tool-pinned
+        // steps / a CLI engine / ClosePaw, whose action type is often 'draft'.
+        const autoRegisterEligible = isAutoRegisterEligibleDraft(draft);
         if (autoRegisterEligible && shouldAutoRegisterDraft(draft, requireRegistrationConfirm)) {
           await confirmAgentDraft(draftMessageId, draftToConfirmedAgentDraft(draft));
           // Widget no-confirm follow-up ("act immediately, notify after" —
@@ -4130,8 +4133,33 @@ export function useAIPaneDispatch(paneIdRaw: string) {
       // kept using the original id after a fallback just proved that id no
       // longer resolves to anything, they would recreate the identical
       // dangling-reference bug this whole helper exists to close.
+      // 2026-10-31 (lib/agent-confirm-outcome.ts): a typed "OK" sits BELOW
+      // the draft bubble, so rewriting that bubble in place put "registered"
+      // above the OK that triggered it. Anything posted after the bubble ->
+      // the outcome goes into a new message at the bottom; the bubble only
+      // gets its card state flipped.
+      let outcomeMessageId = messageId;
+      if (resolveConfirmOutcomeTarget(store.getOrCreate(paneId).messages, messageId) === 'new-message') {
+        outcomeMessageId = generateId();
+        store.addMessage(paneId, {
+          id: outcomeMessageId,
+          role: 'assistant',
+          content: tFor(
+            detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
+            'agentplan.registering_placeholder',
+          ),
+          timestamp: Date.now(),
+          agent: originatingAgentLabel,
+        });
+      }
+      const updateConfirmTarget = (updates: Partial<ChatMessage>): boolean => {
+        if (outcomeMessageId === messageId) return store.updateMessage(paneId, messageId, updates);
+        const { draftBubble, outcome } = splitConfirmOutcomeUpdate(updates);
+        if (draftBubble) store.updateMessage(paneId, messageId, draftBubble);
+        return Object.keys(outcome).length > 0 ? store.updateMessage(paneId, outcomeMessageId, outcome) : true;
+      };
       const updateOrFallback = (updates: Partial<ChatMessage>): string => {
-        const ok = store.updateMessage(paneId, messageId, updates);
+        const ok = updateConfirmTarget(updates);
         if (!ok && updates.content !== undefined) {
           const fallbackId = generateId();
           store.addMessage(paneId, {
@@ -4144,7 +4172,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           });
           return fallbackId;
         }
-        return messageId;
+        return outcomeMessageId;
       };
       // Phase A (2026-07-22): also clear the session-scoped pending state
       // when this confirm came from AgentChatConfirm's TAP button rather
@@ -4326,11 +4354,11 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           const runStrings = locale === 'ja' ? ja : en;
           const runningNote = runStrings['agentplan.run_now_started'].replace('{{name}}', created.name);
           const runningBaseContent = `${baseContent}\n\n▶ ${runningNote}`;
-          store.updateMessage(paneId, messageId, { content: runningBaseContent });
+          updateConfirmTarget({ content: runningBaseContent });
           // See startAgentRunProgressTicker's doc comment above: local-LLM
           // one-shot runs can take minutes with zero intermediate feedback
           // otherwise (2026-08-10 on-device QA finding).
-          const stopProgressTicker = startAgentRunProgressTicker(paneId, messageId, runningBaseContent, locale);
+          const stopProgressTicker = startAgentRunProgressTicker(paneId, outcomeMessageId, runningBaseContent, locale);
           try {
             await runAgentNow(created.id, runAgentShellCommand, {
               waitTimeoutMs: ATTENDED_AGENT_RUN_WAIT_TIMEOUT_MS,
@@ -4400,13 +4428,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // One-shot (§A5): run immediately, surface the result, then discard the
           // agent so the list isn't cluttered with throwaway tasks (ephemeral).
           const ephemeralRunningContent = `▶ Running "${created.name}"…`;
-          store.updateMessage(paneId, messageId, { agentCardState: 'confirmed', content: ephemeralRunningContent });
+          updateConfirmTarget({ agentCardState: 'confirmed', content: ephemeralRunningContent });
           // See startAgentRunProgressTicker's doc comment above: this is the
           // exact call site the 2026-08-10 on-device QA finding (~3m10s local-
           // LLM one-shot run, frozen bubble) was filed against.
           const stopProgressTicker = startAgentRunProgressTicker(
             paneId,
-            messageId,
+            outcomeMessageId,
             ephemeralRunningContent,
             detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
           );

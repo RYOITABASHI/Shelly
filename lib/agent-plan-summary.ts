@@ -175,6 +175,28 @@ export function isAutoRegisterEligibleOnChatConfirm(actionType: AgentAction['typ
 }
 
 /**
+ * The whole auto-register eligibility gate presentDraftForConfirmation uses
+ * (hooks/use-ai-pane-dispatch.ts), before the setting / assumption checks of
+ * shouldAutoRegisterDraft.
+ *
+ * 2026-10-31: the action-type check above alone let a tool-pinned
+ * orchestration (its action is usually 'draft') and a CLI-engine draft through,
+ * although the docs here and in lib/widget-agent-registration.ts say those
+ * always take the human confirm. With every confirm setting at its default
+ * that path is unreachable (agentRegistrationRequireConfirm is forced true),
+ * but the widget no-confirm opt-in would have auto-registered e.g. a
+ * Codex/Claude Code step chain. A per-step tool pin, a CLI engine and a
+ * ClosePaw hand-off now always need the typed OK, whatever the settings.
+ */
+export function isAutoRegisterEligibleDraft(draft: ParsedAgentDraft): boolean {
+  if ((draft.orchestrationSteps ?? []).some((s) => typeof s !== 'string' && !!s.tool)) return false;
+  const toolType = (draft.tool as { type?: string } | undefined)?.type;
+  if (toolType === 'cli' || toolType === 'ab-article-eval') return false;
+  if (draft.closePawRouting?.routed) return false;
+  return !shouldUseChatConfirm(draft) || isAutoRegisterEligibleOnChatConfirm(draft.action.type);
+}
+
+/**
  * true when this draft should use the chat-native confirm affordance instead of
  * AgentConfirmCard: a social-post action (2026-07-22 — the explicit "external
  * post, chat-native confirm" example the project owner named; AgentConfirmCard's
