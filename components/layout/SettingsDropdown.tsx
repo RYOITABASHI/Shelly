@@ -59,6 +59,7 @@ import {
   sttLanguageForLocale,
   type SttProviderSetting,
 } from '@/lib/stt-provider';
+import { normalizeFrontAgent, type FrontAgentSetting } from '@/lib/front-agent';
 import {
   getOnDeviceSttStatus,
   triggerOnDeviceSttModelDownload,
@@ -188,6 +189,7 @@ export function SettingsDropdown({ visible, onClose, onOpenBuilds }: Props) {
             <WallpaperSection />
             <LanguageSection />
             <VoiceInputSection />
+            <FrontAgentSection />
             <AgentsSection visible={visible} />
             <CompanionMemorySection onClose={onClose} />
             <ApiKeysSection />
@@ -1316,6 +1318,52 @@ const VoiceInputSection = React.memo(function VoiceInputSection() {
           </Pressable>
         )}
       </View>
+    </Section>
+  );
+});
+
+// ─── Front agent (窓口) ──────────────────────────────────────────────────────
+//
+// settings.frontAgent: which agent CLI's interactive TUI is started in the
+// first terminal tab at app start (lib/front-agent.ts). Takes effect on the
+// next app start. Never used to call `agy -p` / `--print` (ToS).
+
+const FRONT_AGENT_UI_OPTIONS: { value: FrontAgentSetting; labelKey: string }[] = [
+  { value: 'none', labelKey: 'settings.front_agent_none' },
+  { value: 'antigravity', labelKey: 'settings.front_agent_antigravity' },
+  { value: 'claude', labelKey: 'settings.front_agent_claude' },
+];
+
+const FrontAgentSection = React.memo(function FrontAgentSection() {
+  const { t } = useTranslation();
+  const frontAgent = useSettingsStore((s) => normalizeFrontAgent(s.settings.frontAgent));
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  return (
+    <Section title={t('settings.front_agent_section')}>
+      <Row label={t('settings.front_agent_label')}>
+        <View style={[styles.segGroup, { borderColor: C.border }]}>
+          {FRONT_AGENT_UI_OPTIONS.map((opt) => {
+            const active = frontAgent === opt.value;
+            return (
+              <Pressable
+                key={opt.value}
+                style={[styles.segBtn, active && { backgroundColor: withAlpha(C.accent, 0.16) }]}
+                onPress={() => updateSettings({ frontAgent: opt.value })}
+                hitSlop={4}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+              >
+                <Text style={[styles.segLabel, { color: active ? C.accent : C.text2 }]}>
+                  {t(opt.labelKey)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </Row>
+      <Text style={[styles.credentialHint, { color: C.text3 }]}>
+        {t('settings.front_agent_hint')}
+      </Text>
     </Section>
   );
 });

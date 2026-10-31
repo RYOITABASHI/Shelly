@@ -128,6 +128,7 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
         jstring bashPathJ,
         jstring ldLibPathJ,
         jstring homePathJ,
+        jstring frontAgentJ,   /* nullable: "agy" | "claude" (primary session only) */
         jint    rows,
         jint    cols,
         jintArray resultArrayJ)
@@ -137,6 +138,11 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
     const char *bashPath   = (*env)->GetStringUTFChars(env, bashPathJ,   NULL);
     const char *ldLibPath  = (*env)->GetStringUTFChars(env, ldLibPathJ,  NULL);
     const char *homePath   = (*env)->GetStringUTFChars(env, homePathJ,   NULL);
+    /* Front agent: Kotlin passes it only for the primary session's fresh
+     * fork at app start, already allowlisted to "agy"/"claude". .bashrc
+     * (v284) moves it into a shell variable and unsets the env var before
+     * anything else runs, then starts the interactive TUI. */
+    const char *frontAgent = frontAgentJ ? (*env)->GetStringUTFChars(env, frontAgentJ, NULL) : NULL;
 
     if (!linkerPath || !bashPath || !ldLibPath || !homePath) {
         LOGE("GetStringUTFChars failed");
@@ -291,6 +297,9 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
         setenv("SHELLY_LD_LIBRARY_PATH", ldLibPath,                  1);
         setenv("LD_LIBRARY_PATH", ldLibPath,                         1);
         setenv("SHELL",           bashPath,                          1);
+        if (frontAgent && (strcmp(frontAgent, "agy") == 0 || strcmp(frontAgent, "claude") == 0)) {
+            setenv("SHELLY_FRONT_AGENT", frontAgent, 1);
+        }
         /* libbash.so is app-private and needs LD_LIBRARY_PATH during the
          * linker64 exec below. The generated .bashrc immediately unsets
          * LD_LIBRARY_PATH after preserving SHELLY_LD_LIBRARY_PATH, so ordinary
@@ -377,6 +386,7 @@ Java_expo_modules_terminalemulator_ShellyJNI_createSubprocess(
     (*env)->ReleaseStringUTFChars(env, bashPathJ,   bashPath);
     (*env)->ReleaseStringUTFChars(env, ldLibPathJ,   ldLibPath);
     (*env)->ReleaseStringUTFChars(env, homePathJ,    homePath);
+    if (frontAgent) (*env)->ReleaseStringUTFChars(env, frontAgentJ, frontAgent);
 
     return ptm;
 
@@ -385,6 +395,7 @@ release_strings:
     if (bashPath)   (*env)->ReleaseStringUTFChars(env, bashPathJ,   bashPath);
     if (ldLibPath)  (*env)->ReleaseStringUTFChars(env, ldLibPathJ,  ldLibPath);
     if (homePath)   (*env)->ReleaseStringUTFChars(env, homePathJ,   homePath);
+    if (frontAgent) (*env)->ReleaseStringUTFChars(env, frontAgentJ, frontAgent);
     return -1;
 }
 

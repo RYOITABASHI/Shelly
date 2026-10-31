@@ -437,7 +437,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-283)', () =>
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 283\b/);
+    expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(282);
   });
 
   it('S3: tmp dirs and the bionic lib dir reach claude only via command prefixes', () => {

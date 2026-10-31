@@ -89,6 +89,11 @@
 → sync: README「Install → Signing-key rotation」「Release Integrity」節に記載済み。
 （旧エントリ「🚨 Shelly のリリース APK が公開されている Expo/RN の debug keystore で署名されている (P0)」を本エントリに統合。）
 
+### 起動時の窓口（Front agent: 最初のタブで agy / claude の対話 TUI を自動起動）— 実装済み・実機未検証 (P2)
+- **2026-10-31 実装**（ブランチ `worktree-agent-ab298d76f566651cd`、BASHRC_VERSION 284。283 は S4 ブランチ用に予約）: 設定 `settings.frontAgent`（`none` 既定 / `antigravity` / `claude`、Settings → 起動時の窓口）。JS（`lib/front-agent.ts`）がアプリ起動ごとに 1 回、先頭タブの createSession にだけ `frontAgent` を渡し、native（`TerminalEmulatorModule.kt` → `shelly-pty.c`）がその fork の bash にだけ `SHELLY_FRONT_AGENT=agy|claude` を export。.bashrc は冒頭で非 export のシェル変数へ移して env を unset、末尾で引数なしの `agy` / `claude` を起動（未インストールなら 1 行ヒントを出して bash のまま）。resume されたセッションでは fork しないので起動しない。
+- **ToS 制約**: Google は第三者エージェントによる `agy` のプログラム的呼び出しを禁止。Shelly は対話 TUI を起動するだけで、`agy -p` / `--print`、AI ペイン→agy、スケジュール/エージェントからの agy 呼び出しは禁止。`__tests__/front-agent.test.ts` がソース全体を走査してガード。
+- **実機で確認すること**: (1) 窓口=Antigravity・未インストールでアプリをコールド起動 → 先頭タブに `agy-install` ヒント、bash プロンプトが出る。(2) インストール後に再起動 → 先頭タブで agy TUI が起動、終了で同じタブの bash プロンプト。(3) 新しいタブ・JS リロード（プロセス生存）・アプリをバックグラウンド→復帰で再起動しない。(4) `echo $SHELLY_FRONT_AGENT` が空、`env | grep FRONT` なし。(5) 窓口=Claude Code でも同様（`~/.shelly-runtime/claude-glibc/claude` 有無）。(6) agy TUI 中の貼り付け・IME・Ctrl-C。
+
 ### STOP-ALL が実行中のチェーンを止めない — 実装済み・実機未検証 (P1)
 - **2026-10-30 設計調査で判明**: `haltAllAgents`（`lib/agent-manager.ts` 約 3082 行）はアラームの解除と `.halted` の書き込みだけで、実行中の run を kill しない。attended チェーンは入口（約 1440 行）でしか `halted` を見ず、PlanSpec executor も開始時（`shelly-plan-executor.js` 約 5098 行）だけ。押しても走っている run は最後まで動く。
 - **直し方**: 各ステップ／各グループの直前（両 executor の `nextStepGate` 呼び出し箇所）で `.halted` を確認する。executor は pid を書き、`haltAllAgents` がプロセスグループごと kill する（`generateStopCommand` と同じ方式）。broker の子プロセスは SIGTERM で道連れにする。

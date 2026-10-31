@@ -30,6 +30,7 @@ import { useAgentStore } from '@/store/agent-store';
 import { logInfo, logError } from '@/lib/debug-logger';
 import { normalizeWebhookHostAllowlist } from '@/lib/webhook-host-allowlist';
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
+import { DEFAULT_FRONT_AGENT, normalizeFrontAgent } from '@/lib/front-agent';
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
@@ -165,6 +166,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   mcpExecEnabled: false,
   codexRemoteAutostart: false,
   terminalWallpaperTransparency: true,
+  // Front agent (窓口): default 'none' = current behaviour (plain bash in the
+  // first tab). See lib/front-agent.ts.
+  frontAgent: DEFAULT_FRONT_AGENT,
   terminalMinimumContrast: 'auto' as const,
   uiFont: 'case-file',
   appFontFamily: 'default',
@@ -456,6 +460,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       // so upgrading it is strictly an improvement regardless of intent.
       if (settings.groqModel === 'llama-3.3-70b-versatile') {
         settings.groqModel = GROQ_DEFAULT_MODEL;
+        shouldPersist = true;
+      }
+      // Front agent: a value outside the known options (hand-edited / future
+      // build) falls back to 'none' so an unknown CLI is never launched.
+      if (settings.frontAgent !== normalizeFrontAgent(settings.frontAgent)) {
+        settings.frontAgent = normalizeFrontAgent(settings.frontAgent);
         shouldPersist = true;
       }
       const sanitized = sanitizeRemovedAgents(settings);

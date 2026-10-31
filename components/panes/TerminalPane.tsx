@@ -55,6 +55,7 @@ import { execCommand } from '@/hooks/use-native-exec';
 import { parseInput } from '@/lib/input-router';
 import { parseAgentCommand, runAgentNow, stopAgent } from '@/lib/agent-manager';
 import { runFirstLaunchSetup } from '@/lib/first-launch-setup';
+import { claimFrontAgentLaunch, settleFrontAgentLaunch } from '@/lib/front-agent';
 import { focusPaneByTab } from '@/lib/pane-focus';
 import { quoteTerminalSelectionToAI } from '@/lib/quote-to-ai-dispatch';
 import { useAIPaneStore } from '@/store/ai-pane-store';
@@ -90,6 +91,34 @@ const NATIVE_SESSION_CREATE_MAX_AUTO_RETRIES = 1;
 const NATIVE_SESSION_EARLY_EXIT_RETRY_WINDOW_MS = 2_500;
 const NATIVE_SESSION_EARLY_EXIT_ALIVE_GRACE_MS = 500;
 const TERMINAL_SURFACE_BACKGROUND = '#000000';
+const FRONT_AGENT_SETTINGS_WAIT_MS = 2_000;
+
+/**
+ * Front agent (窓口) for a createSession call: non-null only for the primary
+ * (first) tab, once per app start. Waits briefly for the persisted settings
+ * blob so a cold start doesn't read the 'none' default by mistake; if it is
+ * still not loaded, the default ('none') applies. Interactive TUI only —
+ * see lib/front-agent.ts for the ToS constraint.
+ */
+async function resolveFrontAgentForCreate(sessionId: string): Promise<'agy' | 'claude' | null> {
+  const primarySessionId = useTerminalStore.getState().sessions[0]?.id;
+  if (primarySessionId !== sessionId) return null;
+  if (!useSettingsStore.getState().isBaseSettingsLoaded) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { unsub(); resolve(); }, FRONT_AGENT_SETTINGS_WAIT_MS);
+      const unsub = useSettingsStore.subscribe((state) => {
+        if (state.isBaseSettingsLoaded) { clearTimeout(timer); unsub(); resolve(); }
+      });
+    });
+  }
+  const value = claimFrontAgentLaunch({
+    sessionId,
+    primarySessionId: useTerminalStore.getState().sessions[0]?.id,
+    setting: useSettingsStore.getState().settings.frontAgent,
+  });
+  if (value) logInfo('Terminal', `front agent launch armed for ${sessionId}: ${value}`);
+  return value;
+}
 
 const nativeCreateAutoRetryCounts = new Map<string, number>();
 const nativeSessionCreateStartedAtMs = new Map<string, number>();
@@ -775,11 +804,22 @@ export default function TerminalScreen() {
         // service kept the forked PTY child alive across app background / RN
         // reload), the native side returns resumed=true and we skip the Case C
         // transcript replay below.
-        const createResult = await TerminalEmulator.createSession({
-          sessionId: session.nativeSessionId,
-          rows: 24,
-          cols: 80,
-        }) as { resumed?: boolean } | undefined;
+        // Front agent (窓口): only the primary (first) tab, once per app
+        // start; see lib/front-agent.ts. Native ignores it on a resume.
+        const frontAgent = await resolveFrontAgentForCreate(session.id);
+        let createResult: { resumed?: boolean } | undefined;
+        try {
+          createResult = await TerminalEmulator.createSession({
+            sessionId: session.nativeSessionId,
+            rows: 24,
+            cols: 80,
+            ...(frontAgent ? { frontAgent } : {}),
+          }) as { resumed?: boolean } | undefined;
+        } catch (createErr) {
+          settleFrontAgentLaunch(session.id, false);
+          throw createErr;
+        }
+        settleFrontAgentLaunch(session.id, true);
         if (await destroyIfStale('create')) return;
         const resumedLive = createResult?.resumed === true;
         if (resumedLive) {

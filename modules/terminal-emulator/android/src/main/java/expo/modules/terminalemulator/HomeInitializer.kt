@@ -1493,7 +1493,15 @@ patchCodex(libDir);
     //      longer truncate it under a reading claude), and a caller may replace
     //      the default --settings JSON with SHELLY_CLAUDE_SETTINGS_JSON (the
     //      agent driver's stricter deny/ask rules); it is unset for claude itself.
-    private const val BASHRC_VERSION = 283
+    // v284: front agent (窓口). When settings.frontAgent is antigravity/claude,
+    //      the primary terminal session's fresh fork at app start gets
+    //      SHELLY_FRONT_AGENT=agy|claude from shelly-pty.c; .bashrc moves it
+    //      into a non-exported shell variable and unsets the env var at the
+    //      top (no child/new tab inherits it), then at the very end runs the
+    //      interactive `agy` / `claude` TUI with no arguments, or prints a
+    //      one-line install hint and stays in bash. Interactive TUI only —
+    //      never `agy -p` / `--print` (Google ToS).
+    private const val BASHRC_VERSION = 284
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -2007,6 +2015,17 @@ patchCodex(libDir);
             // `unset LD_PRELOAD`, lib/llamacpp-setup.ts, shelly-plan-executor.js
             // / shelly-agent-driver.js / shelly-doctor.js `delete env.LD_PRELOAD`).
             sb.appendLine("case \"\$-\" in *i*) unset LD_PRELOAD ;; esac")
+            // v284: front agent (窓口). SHELLY_FRONT_AGENT is set by shelly-pty.c
+            // ONLY for the primary terminal session's fresh fork at app start
+            // (see TerminalEmulatorModule createSession / lib/front-agent.ts).
+            // Move it into a plain (non-exported) shell variable and drop the
+            // env var right here, before .bashrc spawns anything, so no child
+            // process, `bash` subshell or later tab ever inherits it. Only an
+            // interactive shell keeps the value; the launch itself is at the
+            // very end of .bashrc.
+            sb.appendLine("__shelly_front_agent=")
+            sb.appendLine("case \"\$-\" in *i*) __shelly_front_agent=\"\${SHELLY_FRONT_AGENT:-}\" ;; esac")
+            sb.appendLine("unset SHELLY_FRONT_AGENT")
             sb.appendLine("__shelly_toybox() { /system/bin/toybox \"\$@\"; }")
             sb.appendLine("__shelly_cat() { __shelly_toybox cat \"\$@\"; }")
             sb.appendLine("__shelly_chmod() { __shelly_toybox chmod \"\$@\"; }")
@@ -5661,6 +5680,34 @@ patchCodex(libDir);
             sb.appendLine("  printf '\\n'")
             sb.appendLine("  touch \"\$HOME/.shelly_motd_shown\"")
             sb.appendLine("fi")
+
+            // v284: front agent (窓口) launch — last thing .bashrc does, so the
+            // whole rc (functions, PROMPT_COMMAND, bindings) is in place and
+            // the user lands in a normal bash prompt in this tab when the CLI
+            // exits. The value was captured + unset near the top (interactive
+            // shells only); clear the shell variable before launching so a
+            // later `source ~/.bashrc` can never re-launch it.
+            //
+            // ToS (hard constraint): this starts the INTERACTIVE TUI only, with
+            // no arguments, in a terminal the user sees and types into. Shelly
+            // must never pipe prompts into `agy -p` / `agy --print`, route
+            // AI-pane chat to agy, or call agy from schedules / agents —
+            // Google's terms say third-party agents must not invoke agy
+            // programmatically. __tests__/front-agent.test.ts guards this.
+            sb.appendLine("if [ -n \"\${__shelly_front_agent:-}\" ]; then")
+            sb.appendLine("  case \"\$__shelly_front_agent\" in")
+            sb.appendLine("    agy)")
+            sb.appendLine("      unset __shelly_front_agent")
+            sb.appendLine("      if [ -f \"\$HOME/.shelly-runtime/agy/antigravity\" ] && declare -F agy >/dev/null; then agy")
+            sb.appendLine("      else printf '\\033[33m[shelly] Front agent: Antigravity is not installed. Run: agy-install\\033[0m\\n' >&2; fi ;;")
+            sb.appendLine("    claude)")
+            sb.appendLine("      unset __shelly_front_agent")
+            sb.appendLine("      if [ -e \"\$HOME/.shelly-runtime/claude-glibc/claude\" ] && declare -F claude >/dev/null; then claude")
+            sb.appendLine("      else printf '\\033[33m[shelly] Front agent: Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)\\033[0m\\n' >&2; fi ;;")
+            sb.appendLine("    *) unset __shelly_front_agent ;;")
+            sb.appendLine("  esac")
+            sb.appendLine("fi")
+            sb.appendLine("unset __shelly_front_agent")
 
             bashrc.writeText(sb.toString())
             versionFile.writeText(BASHRC_VERSION.toString())

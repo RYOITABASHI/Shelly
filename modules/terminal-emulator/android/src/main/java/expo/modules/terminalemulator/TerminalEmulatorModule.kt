@@ -741,6 +741,18 @@ class TerminalEmulatorModule : Module() {
             // homeDir handed to the PTY child below as its $HOME.
             com.termux.terminal.TerminalEmulator.setShellyHome(homeDir)
 
+            // Front agent: JS (lib/front-agent.ts) sends it only for the
+            // primary session once per app start. It only reaches a FRESH
+            // fork; a resumed live session returned above and never
+            // re-launches it. Allowlisted here, anything else is dropped. The
+            // child just gets an env var that makes .bashrc start the
+            // interactive TUI the user types into. ToS: Shelly never runs
+            // `agy -p` / `agy --print`.
+            val frontAgent = (config["frontAgent"] as? String)?.takeIf { it == "agy" || it == "claude" }
+            if (frontAgent != null) {
+                Log.i("TerminalEmulator", "createSession $sessionId: front agent=$frontAgent")
+            }
+
             // Create PTY via JNI forkpty + linker64
             val resultArray = IntArray(2)
             ShellyJNI.createSubprocess(
@@ -748,6 +760,7 @@ class TerminalEmulatorModule : Module() {
                 LibExtractor.getBashPath(context),
                 libDir.absolutePath,
                 homeDir.absolutePath,
+                frontAgent,
                 rows, cols,
                 resultArray
             )

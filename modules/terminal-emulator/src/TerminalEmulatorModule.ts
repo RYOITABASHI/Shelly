@@ -5,6 +5,13 @@ export interface SessionConfig {
   sessionId: string;
   rows?: number;
   cols?: number;
+  /**
+   * Front agent: 'agy' | 'claude' for the primary session's fresh fork at
+   * app start only (lib/front-agent.ts). Native allowlists it and exports
+   * SHELLY_FRONT_AGENT to that one bash, whose .bashrc starts the
+   * interactive TUI. Ignored when the session is resumed.
+   */
+  frontAgent?: 'agy' | 'claude';
 }
 
 export interface OnDeviceSttNativeStatus {

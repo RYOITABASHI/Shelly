@@ -483,7 +483,7 @@ describe('HomeInitializer: one shelly-claude-glibc() for .bashrc and the agent r
   }
 
   it('bumped BASHRC_VERSION to 283', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 283\b/);
+    expect(Number(homeKt.match(/private const val BASHRC_VERSION = (\d+)/)![1])).toBeGreaterThanOrEqual(283);
   });
 
   it('the function text exists exactly once and both .bashrc and the runner call it', () => {

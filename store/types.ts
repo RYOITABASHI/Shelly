@@ -559,6 +559,12 @@ export type AppSettings = {
    */
   terminalWallpaperTransparency?: boolean;
   /**
+   * Front agent (窓口): agent CLI auto-launched (interactive TUI only) in the
+   * FIRST terminal tab at app start. 'none' (default) = plain bash. See
+   * lib/front-agent.ts; never used for `agy -p` / AI-pane / agents (ToS).
+   */
+  frontAgent?: 'none' | 'antigravity' | 'claude';
+  /**
    * Minimum text contrast floor for the terminal (lib/terminal-contrast.ts).
    * 'auto' (default): 3:1 on light terminal surfaces (e.g. Case File beige),
    * off on dark ones so user dark schemes render exactly as authored. A

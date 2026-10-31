@@ -14,6 +14,10 @@ object ShellyJNI {
         bashPath: String,
         ldLibPath: String,
         homePath: String,
+        // Front agent: "agy" | "claude" for the primary session's fresh
+        // fork at app start, null otherwise. Exported to the child as
+        // SHELLY_FRONT_AGENT; .bashrc (v284) unsets it immediately.
+        frontAgent: String?,
         rows: Int,
         cols: Int,
         resultArray: IntArray
