@@ -1480,7 +1480,12 @@ patchCodex(libDir);
     // v281: `claude` runs shelly-claude-glibc() when the glibc runtime is
     //      staged (the legacy claude CLI is gone and ~/bin/claude is removed
     //      on every start, so a bare `claude` was "command not found").
-    private const val BASHRC_VERSION = 281
+    // v282: Google Antigravity CLI. `agy-install` fetches Google's official
+    //      Android (bionic) build from the release manifest, verifies its
+    //      published SHA-512 and stages it under ~/.shelly-runtime/agy (it
+    //      does NOT run the vendor `install` step, which edits shell config).
+    //      `agy` runs it via linker64 with the bionic exec wrapper, like codex.
+    private const val BASHRC_VERSION = 282
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4369,6 +4374,33 @@ patchCodex(libDir);
             sb.appendLine("claude() {")
             sb.appendLine("  if [ -e \"\$HOME/.shelly-runtime/claude-glibc/claude\" ]; then shelly-claude-glibc \"\$@\"; return; fi")
             sb.appendLine("  echo \"claude: Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)\" >&2; return 127")
+            sb.appendLine("}")
+            // v282: Antigravity CLI (official Android build, verified by SHA-512).
+            sb.appendLine("agy-install() {")
+            sb.appendLine("  local __dir=\"\$HOME/.shelly-runtime/agy\" __stage __man __url __sha __ver")
+            sb.appendLine("  local __base=\"https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/android_arm64.json\"")
+            sb.appendLine("  __man=\"\$(curl -fsSL \"\$__base\")\" || { echo \"agy-install: could not reach the release manifest\" >&2; return 1; }")
+            sb.appendLine("  __url=\"\$(printf '%s' \"\$__man\" | sed -n 's/.*\"url\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\"")
+            sb.appendLine("  __sha=\"\$(printf '%s' \"\$__man\" | sed -n 's/.*\"sha512\"[[:space:]]*:[[:space:]]*\"\\([0-9a-f]*\\)\".*/\\1/p')\"")
+            sb.appendLine("  __ver=\"\$(printf '%s' \"\$__man\" | sed -n 's/.*\"version\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\"")
+            sb.appendLine("  case \"\$__url\" in https://storage.googleapis.com/antigravity-public/*) ;; *) echo \"agy-install: unexpected download URL: \$__url\" >&2; return 1 ;; esac")
+            sb.appendLine("  [ \${#__sha} -eq 128 ] || { echo \"agy-install: manifest has no valid sha512\" >&2; return 1; }")
+            sb.appendLine("  __stage=\"\$__dir/.stage.\$\$\"; rm -rf \"\$__stage\"; mkdir -p \"\$__stage\" || return 1")
+            sb.appendLine("  echo \"agy-install: downloading Antigravity CLI \$__ver ...\"")
+            sb.appendLine("  curl -fL --progress-bar -o \"\$__stage/cli.tar.gz\" \"\$__url\" || { rm -rf \"\$__stage\"; echo \"agy-install: download failed\" >&2; return 1; }")
+            sb.appendLine("  ( cd \"\$__stage\" && printf '%s  cli.tar.gz\\n' \"\$__sha\" | sha512sum -c - >/dev/null ) || { rm -rf \"\$__stage\"; echo \"agy-install: SHA-512 mismatch, nothing installed\" >&2; return 1; }")
+            sb.appendLine("  tar -xzf \"\$__stage/cli.tar.gz\" -C \"\$__stage\" antigravity && chmod 700 \"\$__stage/antigravity\" || { rm -rf \"\$__stage\"; echo \"agy-install: extract failed\" >&2; return 1; }")
+            sb.appendLine("  mv -f \"\$__stage/antigravity\" \"\$__dir/antigravity\" && printf '%s\\n' \"\$__ver\" > \"\$__dir/VERSION\"; rm -rf \"\$__stage\"")
+            sb.appendLine("  echo \"agy-install: installed \$__ver. Run: agy\"")
+            sb.appendLine("}")
+            sb.appendLine("agy() {")
+            sb.appendLine("  local __bin=\"\$HOME/.shelly-runtime/agy/antigravity\"")
+            sb.appendLine("  if [ ! -f \"\$__bin\" ]; then echo \"agy: Antigravity CLI is not installed. Run: agy-install\" >&2; return 127; fi")
+            sb.appendLine("  __shelly_paste_tui_begin")
+            sb.appendLine("  LD_PRELOAD=\"\$SHELLY_LIB_DIR/libexec_wrapper.so\" _run \"\$__bin\" \"\$@\"")
+            sb.appendLine("  local __rc=\$?")
+            sb.appendLine("  __shelly_paste_tui_end")
+            sb.appendLine("  return \$__rc")
             sb.appendLine("}")
             // v252: `shelly codex pair` — host Codex remote control for the
             // ChatGPT app (Experimental, on-device unverified). Runs the
