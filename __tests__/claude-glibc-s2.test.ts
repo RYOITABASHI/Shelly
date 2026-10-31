@@ -1,7 +1,7 @@
 /**
  * __tests__/claude-glibc-s2.test.ts
  *
- * Claude Code glibc S2-S3 (BASHRC_VERSION 275-279): private authenticated proxy, OSC 8
+ * Claude Code glibc S2-S3 (BASHRC_VERSION 275-280): private authenticated proxy, OSC 8
  * sign-in URL bridge (tap-to-open only, armed sessions only), drain loop
  * safety. See DEFERRED.md "Claude Code 公式 glibc 版（2.1.314）を Shelly で動かす".
  *
@@ -424,7 +424,7 @@ describe('shelly-claude-proxy.js', () => {
   }, 20_000);
 });
 
-describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-279)', () => {
+describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-280)', () => {
   const lines = homeKt.split(/\r?\n/);
   const start = lines.findIndex((l) => l.includes('sb.appendLine("shelly-claude-glibc() {")'));
   const fnLines: string[] = [];
@@ -437,16 +437,16 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-279)', () =>
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 279\b/);
+    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 280\b/);
   });
 
   it('S3: tmp dirs and the bionic lib dir reach claude only via command prefixes', () => {
-    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$@"\n/.exec(fn)![0];
+    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$\{__xargs\[@\]\}" "\$@"\n/.exec(fn)![0];
     expect(cmd).toContain('TMPDIR="$__tmp" CLAUDE_CODE_TMPDIR="$__ctmp" \\');
     // bionic lib dir for claude's children; glibc ld.so keeps --library-path
     expect(cmd).toContain('SHELLY_GLIBC_LD_LIBRARY_PATH="$SHELLY_LIB_DIR"');
     expect(cmd).not.toContain('SHELLY_GLIBC_LD_LIBRARY_PATH="$__root/lib"');
-    expect(cmd).toContain('"$__ld" --library-path "$__root/lib" "$__bin" "$@"');
+    expect(cmd).toContain('"$__ld" --library-path "$__root/lib" "$__bin" "${__xargs[@]}" "$@"');
     const assigns = fn.split('\n').filter((l) => /^\s*(?:SHELL|PATH|CLAUDE_CODE_SHELL|CLAUDE_ENV_FILE|TMPDIR)=/.test(l));
     expect(assigns.length).toBe(2);
     for (const l of assigns) expect(l.endsWith('\\')).toBe(true);
@@ -459,7 +459,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-279)', () =>
 
 
   it('S3: Bash tool shell is a bash-named /system/bin/sh link whose env file re-runs -c in Shelly bash', () => {
-    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$@"\n/.exec(fn)![0];
+    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$\{__xargs\[@\]\}" "\$@"\n/.exec(fn)![0];
     // user overrides win; ours are claude-only command prefixes
     expect(cmd).toContain('CLAUDE_CODE_SHELL="${CLAUDE_CODE_SHELL:-$__sh}" CLAUDE_ENV_FILE="${CLAUDE_ENV_FILE:-$__envf}" \\');
     expect(fn).toContain('__sh="$__root/bin/bash"');
@@ -468,6 +468,11 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-279)', () =>
     expect(env).toMatch(/^if \[ -z "\$\{BASH_VERSION:-\}" \]; then\n/);
     expect(env).toMatch(/\/system\/bin\/linker64 \S+\/shelly_shell -c 'mapfile -d "" -t __a < \/proc\/\$PPID\/cmdline; eval "\$\{__a\[-1\]\}"'/);
     expect(env).toMatch(/\n  exit \$\?\nfi$/);
+  });
+
+  it('denies Grep/Glob (bundled rg is not exec-able) for runs only, not subcommands', () => {
+    expect(fn).toContain('    __xargs=()');
+    expect(fn).toContain(`    case "\${1:-}" in ""|-*) __xargs=(--settings '{"permissions":{"deny":["Grep","Glob"]}}') ;; esac`);
   });
 
   it('loads ~/.claude-token.env only inside the subshell when no token is set', () => {
@@ -502,7 +507,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-279)', () =>
 
   it('passes the authenticated proxy env only as a prefix of the claude command', () => {
     expect(fn).toMatch(/__proxy="http:\/\/shelly:\$__token@127\.0\.0\.1:\$__port"/);
-    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$@"\n/.exec(fn);
+    const cmd = /\n    HTTPS_PROXY="\$__proxy" [^]*?"\$__bin" "\$\{__xargs\[@\]\}" "\$@"\n/.exec(fn);
     expect(cmd).not.toBeNull();
     const c = cmd![0];
     for (const v of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) expect(c).toContain(`${v}="$__proxy"`);

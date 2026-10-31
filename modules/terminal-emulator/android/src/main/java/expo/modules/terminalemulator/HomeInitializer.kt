@@ -1472,7 +1472,12 @@ patchCodex(libDir);
     //      inlines CLAUDE_ENV_FILE into every -c string; under mksh that
     //      snippet re-runs the whole -c string (read back from
     //      /proc/$PPID/cmdline) in Shelly bash via linker64 + shelly_shell.
-    private const val BASHRC_VERSION = 279
+    // v280: shelly-claude-glibc() denies the Grep / Glob tools for normal
+    //      runs (--settings permissions.deny). Both spawn claude's bundled
+    //      ripgrep by plain execve of an app_data_file, which fails silently
+    //      ("No matches"); Claude then searches through the Bash tool (rg /
+    //      grep / ls), which works since v279. Subcommands get no extra args.
+    private const val BASHRC_VERSION = 280
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4339,6 +4344,10 @@ patchCodex(libDir);
             sb.appendLine("  exit \$?")
             sb.appendLine("fi")
             sb.appendLine("__SHELLY_CLAUDE_ENV")
+            sb.appendLine("    # Grep/Glob spawn the bundled rg by plain execve (denied, silent \"no matches\");")
+            sb.appendLine("    # deny them so Claude searches via Bash. Only for runs, not subcommands.")
+            sb.appendLine("    __xargs=()")
+            sb.appendLine("    case \"\${1:-}\" in \"\"|-*) __xargs=(--settings '{\"permissions\":{\"deny\":[\"Grep\",\"Glob\"]}}') ;; esac")
             sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY")
             sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
             sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
@@ -4347,7 +4356,7 @@ patchCodex(libDir);
             sb.appendLine("      SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" \\")
             sb.appendLine("      LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
             sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
-            sb.appendLine("      \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\$@\"")
+            sb.appendLine("      \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\${__xargs[@]}\" \"\$@\"")
             sb.appendLine("  )")
             sb.appendLine("  local __rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
