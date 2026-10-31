@@ -79,6 +79,7 @@ import { openFile } from '@/lib/open-file';
 import { openAgentChatThread } from '@/lib/agent-thread-open';
 import {
   getPendingApprovals,
+  monitorAskIdentity,
   pendingApprovalsForAgent,
   pickMonitorApprovalTarget,
   subscribePendingApprovals,
@@ -434,10 +435,13 @@ export default function MonitorPane() {
   // The ask on screen is the oldest pending one; remember since when, so an
   // OK typed for the previous ask never lands on the one that replaced it.
   const shownAsk = liveAsks[0];
+  // Review L2: identity = key + request hash, so a superseding request under
+  // the same key restarts the timer too.
+  const shownIdentity = shownAsk ? monitorAskIdentity(shownAsk) : null;
   const [shownSince, setShownSince] = useState<{ key: string | null; at: number }>({ key: null, at: 0 });
   useEffect(() => {
-    setShownSince({ key: shownAsk?.key ?? null, at: Date.now() });
-  }, [shownAsk?.key]);
+    setShownSince({ key: shownIdentity, at: Date.now() });
+  }, [shownIdentity]);
   const [approvalDraft, setApprovalDraft] = useState('');
   const [approvalNote, setApprovalNote] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);

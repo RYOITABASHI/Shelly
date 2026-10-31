@@ -11,10 +11,8 @@ import java.io.File
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
-import java.security.SecureRandom
 import java.security.Signature
 import java.time.Instant
-import java.util.concurrent.ConcurrentHashMap
 
 data class AgentActionApprovalRequest(
     val runId: String,
@@ -73,16 +71,20 @@ data class AgentActionApprovalRequest(
 object AgentActionApprovalBridge {
     private val unsafeFilePart = Regex("[^A-Za-z0-9_.=-]")
 
-    // Single-use, in-memory replay guard (mirrors AgentEscalationBridge's
-    // pendingActionNonces exactly). Minted whenever the request is disclosed
+    // Single-use, in-memory replay guard (the same ActionNonceLedger as
+    // AgentEscalationBridge). Minted whenever the request is disclosed
     // to the human for a decision -- either via the Allow/Deny notification
     // PendingIntents (NotificationDispatcher.notifyAgentActionApprovalNeeded)
     // or via the in-app review card (TerminalEmulatorModule.readAgentActionApprovalRequest)
     // -- and consumed atomically by the first writeHumanReply call that
     // presents it, so a captured/replayed Intent or reply call can't be
     // reprocessed a second time.
-    private val pendingActionNonces = ConcurrentHashMap<String, String>()
-    private val secureRandom = SecureRandom()
+    //
+    // Review L1 (2026-10-31): ActionNonceLedger keeps one nonce per channel
+    // (notification / in-app), each bound to the request hash it was minted
+    // for, so an in-app read no longer invalidates the notification's
+    // buttons; consume() still drops every nonce of the run on first use.
+    private val actionNonces = ActionNonceLedger()
 
     fun requestDir(context: Context): File =
         File(HomeInitializer.getHomeDir(context), ".shelly/agents/action-approvals").also { it.mkdirs() }
@@ -136,15 +138,16 @@ object AgentActionApprovalBridge {
     fun notificationId(runId: String): Int =
         NOTIFICATION_ID_PREFIX or (stableHash("agent-action:$runId") and NOTIFICATION_ID_MASK)
 
-    fun registerActionNonce(runId: String): String {
-        val nonce = ByteArray(24)
-        secureRandom.nextBytes(nonce)
-        val encoded = Base64.encodeToString(nonce, Base64.NO_WRAP)
-        pendingActionNonces[runId] = encoded
-        return encoded
-    }
+    /** Notification Allow / Deny (one per run, replaced on refresh). */
+    fun registerNotificationNonce(runId: String, requestSha256: String): String =
+        actionNonces.register(runId, requestSha256, ActionNonceLedger.CHANNEL_NOTIFICATION)
 
-    fun hasActionNonce(runId: String): Boolean = pendingActionNonces.containsKey(runId)
+    /** In-app review / chat / MONITOR read. Does not touch the notification's nonce. */
+    fun registerAppNonce(runId: String, requestSha256: String): String =
+        actionNonces.register(runId, requestSha256, ActionNonceLedger.CHANNEL_APP)
+
+    fun hasNotificationNonce(runId: String): Boolean =
+        actionNonces.has(runId, ActionNonceLedger.CHANNEL_NOTIFICATION)
 
     fun anchorFromMap(raw: Map<String, Any?>): String? =
         raw["runId"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
@@ -259,7 +262,6 @@ object AgentActionApprovalBridge {
         actionNonce: String
     ): File {
         require(decision == "accept" || decision == "decline") { "invalid action decision" }
-        val expectedNonce = pendingActionNonces[runId]
         val request = requireCanonicalChild(requestFile(context, runId), requestDir(context))
         require(request.isFile) { "action approval request is no longer pending" }
         val bytes = request.readBytes()
@@ -271,10 +273,8 @@ object AgentActionApprovalBridge {
         }
         val expiresAt = requestJson.optLong("expiresAt")
         require(expiresAt <= 0L || System.currentTimeMillis() <= expiresAt) { "action approval expired" }
-        require(!expectedNonce.isNullOrBlank() && expectedNonce == actionNonce) {
-            "action approval action is stale or unauthenticated"
-        }
-        require(pendingActionNonces.remove(runId, expectedNonce)) {
+        // Single use across every channel (see actionNonces).
+        require(actionNonces.consume(runId, actionNonce, requestSha256)) {
             "action approval action is stale or unauthenticated"
         }
         val requestTs = requestJson.optString("ts")
@@ -301,6 +301,7 @@ object AgentActionApprovalBridge {
     }
 
     fun clearRequest(context: Context, runId: String) {
+        actionNonces.clear(runId)
         runCatching { requireCanonicalChild(requestFile(context, runId), requestDir(context)).delete() }
     }
 

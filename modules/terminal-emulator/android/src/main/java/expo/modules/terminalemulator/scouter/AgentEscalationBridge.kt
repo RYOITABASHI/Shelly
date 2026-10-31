@@ -15,11 +15,9 @@ import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.MessageDigest
-import java.security.SecureRandom
 import java.security.Signature
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 data class AgentEscalationRequest(
     val runId: String,
@@ -54,8 +52,9 @@ data class AgentEscalationReplyResult(
 
 object AgentEscalationBridge {
     private val unsafeFilePart = Regex("[^A-Za-z0-9_.=-]")
-    private val pendingActionNonces = ConcurrentHashMap<String, String>()
-    private val secureRandom = SecureRandom()
+    // Review L1 (2026-10-31): per-channel nonces bound to the request hash —
+    // an in-app read no longer invalidates the notification's Allow / Deny.
+    private val actionNonces = ActionNonceLedger()
 
     fun requestDir(context: Context): File =
         File(HomeInitializer.getHomeDir(context), ".shelly/agents/escalations").also { it.mkdirs() }
@@ -92,16 +91,17 @@ object AgentEscalationBridge {
     fun notificationId(runId: String, reqId: String): Int =
         NOTIFICATION_ID_BASE + (("$runId:$reqId".hashCode() and 0x7fffffff) % NOTIFICATION_ID_SPAN)
 
-    fun registerActionNonce(runId: String, reqId: String): String {
-        val nonce = ByteArray(24)
-        secureRandom.nextBytes(nonce)
-        val encoded = Base64.encodeToString(nonce, Base64.NO_WRAP)
-        pendingActionNonces[actionNonceKey(runId, reqId)] = encoded
-        return encoded
-    }
+    /** Notification Allow / Deny (one per request, replaced on refresh). */
+    fun registerNotificationNonce(runId: String, reqId: String, requestSha256: String): String =
+        actionNonces.register(actionNonceKey(runId, reqId), requestSha256, ActionNonceLedger.CHANNEL_NOTIFICATION)
 
-    fun hasActionNonce(runId: String, reqId: String): Boolean =
-        pendingActionNonces.containsKey(actionNonceKey(runId, reqId))
+    /** In-app disclosure (chat / MONITOR / run-without-approval check). Does
+     *  not touch the notification's nonce. */
+    fun registerAppNonce(runId: String, reqId: String, requestSha256: String): String =
+        actionNonces.register(actionNonceKey(runId, reqId), requestSha256, ActionNonceLedger.CHANNEL_APP)
+
+    fun hasNotificationNonce(runId: String, reqId: String): Boolean =
+        actionNonces.has(actionNonceKey(runId, reqId), ActionNonceLedger.CHANNEL_NOTIFICATION)
 
     fun anchorFromMap(raw: Map<String, Any?>): Pair<String, String>? {
         val runId = raw["runId"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: return null
@@ -187,7 +187,6 @@ object AgentEscalationBridge {
     ): AgentEscalationReplyResult {
         require(decision == "accept" || decision == "decline") { "invalid escalation decision" }
         val nonceKey = actionNonceKey(runId, reqId)
-        val expectedNonce = pendingActionNonces[nonceKey]
         val request = requireCanonicalChild(requestFile(context, runId, reqId), requestDir(context))
         require(request.isFile) { "escalation request is no longer pending" }
         val requestBytes = request.readBytes()
@@ -199,10 +198,9 @@ object AgentEscalationBridge {
         require(expectedRequestSha256?.matches(HEX_SHA256_RE) == true && requestSha256 == expectedRequestSha256) {
             "escalation approval action no longer matches the displayed request"
         }
-        require(!expectedNonce.isNullOrBlank() && expectedNonce == actionNonce) {
-            "escalation approval action is stale or unauthenticated"
-        }
-        require(pendingActionNonces.remove(nonceKey, expectedNonce)) {
+        // Single use across every channel: consume() drops all nonces of this
+        // request once one of them (bound to these exact bytes) answers it.
+        require(actionNonces.consume(nonceKey, actionNonce, requestSha256)) {
             "escalation approval action is stale or unauthenticated"
         }
         val requestTs = requestJson.optString("ts")
@@ -372,6 +370,7 @@ object AgentEscalationBridge {
     }
 
     fun clearRequest(context: Context, runId: String, reqId: String) {
+        actionNonces.clear(actionNonceKey(runId, reqId))
         runCatching {
             requireCanonicalChild(requestFile(context, runId, reqId), requestDir(context)).delete()
         }

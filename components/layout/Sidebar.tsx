@@ -1045,7 +1045,7 @@ export function Sidebar() {
   // Tap an agent row → full detail popup (the row only has room for the name).
   const showAgentDetail = React.useCallback(async (agent: Agent) => {
     const runHistory = useAgentStore.getState().getRunHistory(agent.id);
-    const runWithoutApproval = await isRunWithoutApprovalEnabled(agent.id).catch(() => false);
+    const runWithoutApproval = await isRunWithoutApprovalEnabled(agent).catch(() => false);
     const lastLog = runHistory.at(-1);
     // Foreground escalation writes one log per attempt. If Gemini fails and
     // Codex succeeds seconds later, looking only at `lastLog` hides the exact
@@ -1272,7 +1272,7 @@ export function Sidebar() {
         labelKey: runWithoutApproval ? 'sidebar.agent_run_without_approval_disable' : 'sidebar.agent_run_without_approval_enable',
         onPress: () => {
           const next = !runWithoutApproval;
-          void setRunWithoutApproval(agent.id, next, 'detail')
+          void setRunWithoutApproval(agent, next, 'detail')
             .then(() => postRunWithoutApprovalAuditLine(
               agent.id,
               t(next ? 'agent_run_without_approval.enabled_line' : 'agent_run_without_approval.disabled_line'),

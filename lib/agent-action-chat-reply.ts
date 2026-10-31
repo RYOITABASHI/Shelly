@@ -18,8 +18,10 @@
  *   WITHOUT minting one, so the notification's own buttons stay valid until
  *   the user actually answers somewhere.
  *
- *   One answer wins, everywhere: the native nonce ledger holds one nonce per
- *   run, and writeHumanReply removes the request file. Whichever side answers
+ *   One answer wins, everywhere: the native nonce ledger (ActionNonceLedger)
+ *   holds one nonce per disclosure channel, each bound to the request hash,
+ *   and the first writeHumanReply drops all of them and removes the request
+ *   file. Whichever side answers
  *   first consumes the request; the other side's next attempt fails natively
  *   ("no longer pending" / "stale"), the RN drain cancels the notification,
  *   and noteActionApprovalGone() retires the chat line.
@@ -32,7 +34,36 @@
  *   A chat "NO" declines them directly, as the notification's Deny does.
  */
 
+import { sha256Hex } from './sha256';
+
 export type ChatApprovalDecision = 'accept' | 'decline';
+
+/**
+ * Review H1 (2026-10-31): the fields an ask line SHOWS. The line is built
+ * from the native read whose requestSha256 the marker binds (never a
+ * separate JS read of the agent-writable file), and at decision time the
+ * freshly minted request must produce the same digest of these fields —
+ * otherwise the outcome is 'changed' and nothing is resolved.
+ */
+export const ACTION_DISPLAY_FIELDS = [
+  'actionType', 'preview', 'destinationHost', 'command', 'safetyLevel', 'intentMode', 'intentTarget',
+  'intentShareText', 'dmPairingLabel', 'dmReplyText', 'browserPaneActionKind', 'browserPaneSelector',
+] as const;
+export const ESCALATION_DISPLAY_FIELDS = ['command', 'cwd', 'reason'] as const;
+
+export type ApprovalDisplaySource = { [field: string]: unknown };
+
+/** sha256 over the displayed fields (absent / blank → null, strings trimmed). */
+export function approvalDisplayDigest(kind: 'action' | 'escalation', req: ApprovalDisplaySource): string {
+  const fields = kind === 'escalation' ? ESCALATION_DISPLAY_FIELDS : ACTION_DISPLAY_FIELDS;
+  const norm = fields.map((f) => {
+    const v = req[f];
+    if (v === undefined || v === null) return null;
+    const s = String(v).trim();
+    return s ? s : null;
+  });
+  return sha256Hex(`shelly-approval-display-v1\n${kind}\n${JSON.stringify(norm)}`);
+}
 
 /** Marker carried by the plain-text ask line in the agent's chat thread. */
 export interface PendingActionApprovalMarker {
@@ -50,6 +81,9 @@ export interface PendingActionApprovalMarker {
   kind?: 'action' | 'escalation';
   /** Escalation only: the request id (several can be pending per run). */
   reqId?: string;
+  /** approvalDisplayDigest() of what the line showed (review H1). A marker
+   *  without one (persisted before the fix) never resolves: 'changed'. */
+  displayDigest?: string;
 }
 
 /** Whether a pending ask line may be answered right now: at least
@@ -142,7 +176,7 @@ export function findActionApprovalReplyTarget(params: {
 }
 
 /** What the request looks like when re-read natively at decision time. */
-export interface MintedActionRequest {
+export interface MintedActionRequest extends ApprovalDisplaySource {
   runId: string;
   actionType: string;
   requestSha256?: string | null;
@@ -180,9 +214,10 @@ export type ChatApprovalOutcome =
  *  1. review-required + accept → hand to the review screen WITHOUT touching
  *     the nonce ledger here (the review screen mints its own when it reads).
  *  2. otherwise re-read (mints the nonce now), require the content hash to
- *     equal the one the chat line showed, require not expired, then resolve
- *     with that fresh nonce. A failure after minting leaves a dangling nonce
- *     that the next notification / review read simply replaces.
+ *     equal the one the chat line showed, require not expired, require the
+ *     displayed fields to match (displayDigest, review H1), then resolve
+ *     with that fresh nonce. A failure after minting leaves an extra in-app
+ *     nonce (capped natively); the notification's own nonce stays valid.
  */
 export async function decideActionApprovalFromChat(
   marker: PendingActionApprovalMarker,
@@ -211,6 +246,8 @@ export async function decideActionApprovalFromChat(
     deps.requestReview(marker.runId);
     return 'review';
   }
+  // What is being answered must be what the line showed (review H1).
+  if (!marker.displayDigest || approvalDisplayDigest('action', minted) !== marker.displayDigest) return 'changed';
   try {
     await deps.resolve(marker.runId, decision, sha, nonce);
   } catch {
@@ -223,7 +260,7 @@ export async function decideActionApprovalFromChat(
 
 /** What a pending escalation looks like when re-read natively at decision
  *  time (TerminalEmulator.readAgentEscalationRequest). */
-export interface MintedEscalationRequest {
+export interface MintedEscalationRequest extends ApprovalDisplaySource {
   runId: string;
   reqId: string;
   state?: string | null;
@@ -232,8 +269,9 @@ export interface MintedEscalationRequest {
 }
 
 export interface EscalationApprovalDeps {
-  /** readAgentEscalationRequest: re-reads the request file and mints the
-   *  single-use nonce in AgentEscalationBridge's ledger. Rejects when gone. */
+  /** readAgentEscalationRequest: re-reads the request file and mints an
+   *  in-app single-use nonce in AgentEscalationBridge's ledger (the
+   *  notification's own nonce stays valid). Rejects when gone. */
   read: (runId: string, reqId: string) => Promise<MintedEscalationRequest | null>;
   /** resolveAgentEscalationApproval: AgentEscalationBridge.writeHumanReply —
    *  the exact native call the notification's Allow / Deny make. */
@@ -268,6 +306,8 @@ export async function decideEscalationApprovalFromChat(
   if (!sha || !nonce) return 'failed';
   if (minted.state === 'queued') return 'expired';
   if (sha !== marker.requestSha256) return 'changed';
+  // What is being answered must be what the line showed (review H1).
+  if (!marker.displayDigest || approvalDisplayDigest('escalation', minted) !== marker.displayDigest) return 'changed';
   try {
     await deps.resolve(marker.runId, reqId, decision, sha, nonce);
   } catch {

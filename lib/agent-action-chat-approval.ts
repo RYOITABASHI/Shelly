@@ -10,8 +10,14 @@
  *     it right where it posts the notification. It writes ONE plain-text
  *     line into the agent's thread ("<agent> is waiting for your OK: …
  *     Reply OK / NO [hash8]"). No card, no buttons (standing product rule).
- *     It does NOT read the request through the native bridge, so no nonce is
- *     minted and the notification's own Allow / Deny stay valid.
+ *     Review H1 (2026-10-31): the caller passes the request AS NATIVE READ
+ *     IT for the notification (notifyAgent*ApprovalNeeded's result: every
+ *     field + requestSha256 of the same bytes) — never the drain's own JS
+ *     read of the agent-writable file, which an agent could swap between
+ *     the two reads. That native read mints no nonce, so the notification's
+ *     own Allow / Deny stay valid. The marker also carries
+ *     approvalDisplayDigest() of the shown fields; the decision re-checks it
+ *     against the freshly minted request ('changed' otherwise).
  *   - resolveActionApprovalFromChat(): a typed OK / NO (matched by
  *     hooks/use-ai-pane-dispatch.ts through lib/agent-action-chat-reply.ts)
  *     goes through decideActionApprovalFromChat: re-read natively (mints the
@@ -24,9 +30,9 @@
  *     gone (answered anywhere, consumed, expired). The chat line loses its
  *     marker, so a later "OK" is just text, and one closing line says so.
  *
- * Single-use / consistency comes from native, not from here: one nonce per
- * run in AgentActionApprovalBridge, consumed by the first writeHumanReply,
- * which also deletes the request file. The chat path only ever presents a
+ * Single-use / consistency comes from native, not from here: per-channel
+ * nonces bound to the request hash (ActionNonceLedger), all dropped by the
+ * first writeHumanReply, which also deletes the request file. The chat path only ever presents a
  * nonce it minted milliseconds earlier in the same call.
  *
  * 2026-10-31 additions (MONITOR typed approval, on-device bug #3):
@@ -48,6 +54,7 @@ import { tFor, useI18n, type Locale } from '@/lib/i18n';
 import { logInfo, logWarn } from '@/lib/debug-logger';
 import { REVIEW_REQUIRED_ACTION_TYPES } from '@/lib/agent-action-types';
 import {
+  approvalDisplayDigest,
   decideActionApprovalFromChat,
   decideEscalationApprovalFromChat,
   type ActionApprovalReplyTarget,
@@ -185,6 +192,7 @@ export function postActionApprovalAsk(req: ActionApprovalAskRequest): void {
       expiresAt: typeof req.expiresAt === 'number' ? req.expiresAt : null,
       what,
       detail,
+      displayDigest: approvalDisplayDigest('action', req as unknown as Record<string, unknown>),
       locale: l,
     });
     logInfo('AgentActionChat', `ask posted run=${req.runId} type=${req.actionType} review=${reviewRequired}`);
@@ -203,7 +211,8 @@ export interface EscalationAskRequest {
   cwd?: string | null;
   reason?: string | null;
   /** sha256 of the request file, as native computed it when it posted the
-   *  notification (notifyAgentEscalationApprovalNeeded's result). */
+   *  notification (notifyAgentEscalationApprovalNeeded's result) — from the
+   *  SAME read as command / cwd / reason above (review H1). */
   requestSha256?: string | null;
 }
 
@@ -229,6 +238,7 @@ export function postEscalationAsk(req: EscalationAskRequest): void {
       expiresAt: null,
       what: tFor(l, 'agent_action_chat.what.escalation'),
       detail: parts.join('\n'),
+      displayDigest: approvalDisplayDigest('escalation', { command: req.command, cwd: req.cwd, reason: req.reason }),
       locale: l,
     });
     logInfo('AgentActionChat', `escalation ask posted run=${req.runId} req=${req.reqId}`);
@@ -248,6 +258,7 @@ function postAsk(p: {
   expiresAt: number | null;
   what: string;
   detail: string;
+  displayDigest: string;
   locale: Locale;
 }): void {
   const sha = p.requestSha256 ?? '';
@@ -273,6 +284,7 @@ function postAsk(p: {
     reviewRequired: p.reviewRequired,
     createdAt: Date.now(),
     expiresAt: p.expiresAt,
+    displayDigest: p.displayDigest,
     ...(p.kind === 'escalation' ? { kind: 'escalation' as const, reqId: p.reqId } : {}),
   };
   const id = newId();
@@ -356,9 +368,7 @@ export async function resolveActionApprovalFromChat(
     outcome = await decideEscalationApprovalFromChat(marker, decision as ChatApprovalDecision, {
       read: async (runId, reqId) => {
         const r = await TerminalEmulator.readAgentEscalationRequest!(runId, reqId);
-        return r && typeof r === 'object'
-          ? { runId: r.runId, reqId: r.reqId, state: r.state, requestSha256: r.requestSha256, actionNonce: r.actionNonce }
-          : null;
+        return r && typeof r === 'object' ? { ...r } : null;
       },
       resolve: (runId, reqId, d, sha, nonce) => TerminalEmulator.resolveAgentEscalationApproval!(runId, reqId, d, sha, nonce),
     });
@@ -369,7 +379,7 @@ export async function resolveActionApprovalFromChat(
     outcome = await decideActionApprovalFromChat(marker, decision as ChatApprovalDecision, {
       read: async (runId) => {
         const r = await TerminalEmulator.readAgentActionApprovalRequest!(runId);
-        return r && typeof r === 'object' ? { runId: r.runId, actionType: r.actionType, requestSha256: r.requestSha256, actionNonce: r.actionNonce, expiresAt: r.expiresAt } : null;
+        return r && typeof r === 'object' ? { ...r } : null;
       },
       resolve: (runId, d, sha, nonce) => TerminalEmulator.resolveAgentActionApproval!(runId, d, sha, nonce),
       requestReview: requestActionReview,

@@ -10,6 +10,7 @@
  */
 import {
   ACTION_CHAT_REPLY_MIN_AGE_MS,
+  approvalDisplayDigest,
   decideActionApprovalFromChat,
   decideEscalationApprovalFromChat,
   findActionApprovalReplyTarget,
@@ -27,6 +28,8 @@ const marker = (over: Partial<PendingActionApprovalMarker> = {}): PendingActionA
   reviewRequired: false,
   createdAt: 1_000_000,
   expiresAt: null,
+  // What the line showed (review H1): a draft with no other fields.
+  displayDigest: approvalDisplayDigest('action', { actionType: 'draft' }),
   ...over,
 });
 
@@ -109,7 +112,8 @@ describe('decideActionApprovalFromChat', () => {
     const { d, calls } = deps({
       read: async (runId) => ({ runId, actionType: 'cli', requestSha256: SHA, actionNonce: 'n', expiresAt: null }),
     });
-    expect(await decideActionApprovalFromChat(marker({ reviewRequired: true }), 'decline', d)).toBe('declined');
+    const shownCli = approvalDisplayDigest('action', { actionType: 'cli' });
+    expect(await decideActionApprovalFromChat(marker({ reviewRequired: true, displayDigest: shownCli }), 'decline', d)).toBe('declined');
     expect(calls).toEqual(['resolve:run-1:decline:aaaaaaaa:n']);
   });
 
@@ -157,6 +161,34 @@ describe('decideActionApprovalFromChat', () => {
     });
     expect(await decideActionApprovalFromChat(marker(), 'decline', f.d)).toBe('failed');
   });
+
+  it('review H1: the minted request must show what the line showed, else changed (accept and decline)', async () => {
+    const shown = approvalDisplayDigest('action', { actionType: 'notify', preview: 'Morning digest ready' });
+    const swapped = deps({
+      read: async (runId) => ({ runId, actionType: 'notify', preview: 'Wire 1M to X', requestSha256: SHA, actionNonce: 'n', expiresAt: null }),
+    });
+    expect(await decideActionApprovalFromChat(marker({ displayDigest: shown }), 'accept', swapped.d)).toBe('changed');
+    expect(await decideActionApprovalFromChat(marker({ displayDigest: shown }), 'decline', swapped.d)).toBe('changed');
+    expect(swapped.calls.some((c) => c.startsWith('resolve'))).toBe(false);
+    const same = deps({
+      read: async (runId) => ({ runId, actionType: 'notify', preview: '  Morning digest ready ', requestSha256: SHA, actionNonce: 'n', expiresAt: null }),
+    });
+    expect(await decideActionApprovalFromChat(marker({ displayDigest: shown }), 'accept', same.d)).toBe('accepted');
+    // A marker persisted before the fix (no digest) never resolves.
+    const legacy = deps();
+    expect(await decideActionApprovalFromChat(marker({ displayDigest: undefined }), 'accept', legacy.d)).toBe('changed');
+    expect(legacy.calls.some((c) => c.startsWith('resolve'))).toBe(false);
+  });
+
+  it('approvalDisplayDigest covers each displayed field', () => {
+    const base = { actionType: 'webhook', destinationHost: 'a.example', preview: 'p', command: 'c' };
+    const d0 = approvalDisplayDigest('action', base);
+    for (const [k, v] of [['destinationHost', 'b.example'], ['preview', 'q'], ['command', 'rm'], ['actionType', 'api-call'], ['dmReplyText', 'x']] as const) {
+      expect(approvalDisplayDigest('action', { ...base, [k]: v })).not.toBe(d0);
+    }
+    expect(approvalDisplayDigest('action', { ...base, unrelated: 'x' })).toBe(d0);
+    expect(approvalDisplayDigest('escalation', { command: 'cat a' })).not.toBe(approvalDisplayDigest('escalation', { command: 'cat b' }));
+  });
 });
 
 
@@ -191,13 +223,15 @@ describe('chat approval input source (Codex review 2026-10-31)', () => {
 });
 
 describe('decideEscalationApprovalFromChat (boundary-op escalations)', () => {
-  const esc = (over: Partial<PendingActionApprovalMarker> = {}) => marker({ kind: 'escalation', reqId: 'req-1', ...over });
+  const CMD = 'cat ~/demo/README.md';
+  const esc = (over: Partial<PendingActionApprovalMarker> = {}) =>
+    marker({ kind: 'escalation', reqId: 'req-1', displayDigest: approvalDisplayDigest('escalation', { command: CMD }), ...over });
   function edeps(over: Partial<EscalationApprovalDeps> = {}) {
     const calls: string[] = [];
     const d: EscalationApprovalDeps = {
       read: async (runId, reqId) => {
         calls.push(`read:${runId}:${reqId}`);
-        return { runId, reqId, state: null, requestSha256: SHA, actionNonce: 'nonce-1' };
+        return { runId, reqId, state: null, command: CMD, requestSha256: SHA, actionNonce: 'nonce-1' };
       },
       resolve: async (runId, reqId, decision, sha, nonce) => {
         calls.push(`resolve:${runId}:${reqId}:${decision}:${sha === SHA}:${nonce}`);
@@ -236,6 +270,19 @@ describe('decideEscalationApprovalFromChat (boundary-op escalations)', () => {
     const noNonce = edeps({ read: async (runId, reqId) => ({ runId, reqId, requestSha256: SHA, actionNonce: null }) });
     expect(await decideEscalationApprovalFromChat(esc(), 'accept', noNonce.d)).toBe('failed');
     for (const x of [gone, other, changed, queued, noNonce]) expect(x.calls.some((c) => c.startsWith('resolve'))).toBe(false);
+  });
+
+  it('review H1: a minted command other than the displayed one is changed, never resolved', async () => {
+    const swapped = edeps({
+      read: async (runId, reqId) => ({ runId, reqId, command: 'cp evil ~/.bashrc', requestSha256: SHA, actionNonce: 'n' }),
+    });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', swapped.d)).toBe('changed');
+    const cwd = edeps({
+      read: async (runId, reqId) => ({ runId, reqId, command: CMD, cwd: '/sdcard', requestSha256: SHA, actionNonce: 'n' }),
+    });
+    expect(await decideEscalationApprovalFromChat(esc(), 'accept', cwd.d)).toBe('changed');
+    expect(await decideEscalationApprovalFromChat(esc({ displayDigest: undefined }), 'accept', edeps().d)).toBe('changed');
+    for (const x of [swapped, cwd]) expect(x.calls.some((c) => c.startsWith('resolve'))).toBe(false);
   });
 
   it('a marker without reqId is refused before any native call', async () => {

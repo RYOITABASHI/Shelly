@@ -287,7 +287,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
     state?: string | null;
     queuedAt?: string | null;
-  }): Promise<{ requestSha256?: string | null } | null>;
+    /** Review H1: resolves to the request exactly as native read it (every
+     *  field + requestSha256 of the same bytes). Display only this. */
+  }): Promise<Record<string, unknown> | null>;
   /** AgentEscalationBridge.writeHumanReply (the notification's Allow / Deny
    *  path) + clear the request + cancel its notification. */
   resolveAgentEscalationApproval?(
@@ -305,8 +307,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
   }): Promise<void>;
   cancelAgentEscalationApproval?(runId: string, reqId: string): Promise<void>;
-  /** Re-read a live gate escalation request and mint its single-use nonce
-   *  now (replaces the notification's nonce). Used by MONITOR / chat typed
+  /** Re-read a live gate escalation request and mint an in-app single-use
+   *  nonce bound to these bytes (the notification's own nonce stays valid). Used by MONITOR / chat typed
    *  OK / NO and by "承認なしで実行". Rejects when nothing is pending. */
   readAgentEscalationRequest?(runId: string, reqId: string): Promise<{
     runId: string;
@@ -363,6 +365,8 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     dmPairingId?: string | null;
     dmPairingLabel?: string | null;
     dmReplyText?: string | null;
+    browserPaneActionKind?: string | null;
+    browserPaneSelector?: string | null;
     actionNonce?: string | null;
   }>;
   notifyAgentActionApprovalNeeded?(request: {
@@ -385,7 +389,9 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     dmPairingId?: string | null;
     dmPairingLabel?: string | null;
     dmReplyText?: string | null;
-  }): Promise<void>;
+    /** Review H1: resolves to the request exactly as native read it (fields
+     *  + requestSha256 of the same bytes) for the RN ask line. */
+  }): Promise<Record<string, unknown> | null>;
   resolveAgentActionApproval?(
     runId: string,
     decision: 'accept' | 'decline',

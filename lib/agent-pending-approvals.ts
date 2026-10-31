@@ -46,6 +46,17 @@ export function pendingApprovalKey(kind: PendingApprovalKind, runId: string, req
   return kind === 'escalation' ? `escalation:${runId}|${reqId ?? ''}` : `action:${runId}`;
 }
 
+/**
+ * What MONITOR has ON SCREEN: the ask key plus the request hash it shows.
+ * Review L2 (2026-10-31): a superseding request under the same key (same
+ * run / request id, new content) is a different thing on screen, so the
+ * visibility timer restarts — an OK typed for the old content must not land
+ * on the new one.
+ */
+export function monitorAskIdentity(ask: Pick<PendingApprovalAsk, 'key' | 'marker'>): string {
+  return `${ask.key}|${ask.marker.requestSha256}`;
+}
+
 // ── Registry ────────────────────────────────────────────────────────────────
 
 let entries: readonly PendingApprovalAsk[] = [];
@@ -116,6 +127,7 @@ export type MonitorApprovalPick =
 
 /**
  * Which pending ask a line typed into MONITOR's approval field answers.
+ * `displayedKey` is monitorAskIdentity() of the ask on screen (key + hash).
  *  - Only a whole-message OK / NO (the chat's matcher,
  *    parseActionApprovalChatReply) — anything else is 'not-a-reply'.
  *  - A bare reply answers the DISPLAYED ask, which must be the oldest
@@ -139,7 +151,7 @@ export function pickMonitorApprovalTarget(params: {
     if (!ask) return { ok: false, reason: 'unknown-hash' };
   } else {
     ask = params.asks[0];
-    if (params.displayedKey !== ask.key || params.now - params.displayedSince < MONITOR_ASK_MIN_SHOWN_MS) {
+    if (params.displayedKey !== monitorAskIdentity(ask) || params.now - params.displayedSince < MONITOR_ASK_MIN_SHOWN_MS) {
       return { ok: false, reason: 'too-soon' };
     }
   }

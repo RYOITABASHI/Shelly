@@ -13,6 +13,7 @@ import {
   MONITOR_ASK_MIN_SHOWN_MS,
   __resetPendingApprovalsForTest,
   getPendingApprovals,
+  monitorAskIdentity,
   pendingApprovalKey,
   pendingApprovalsForAgent,
   pickMonitorApprovalTarget,
@@ -73,7 +74,7 @@ describe('pendingApprovalsForAgent', () => {
 
 describe('pickMonitorApprovalTarget', () => {
   const asks = [ask({ hex: 'aaaaaaaa', createdAt: T0 }), ask({ hex: 'bbbbbbbb', createdAt: T0 + 10 })];
-  const shown = { displayedKey: asks[0].key, displayedSince: T0 };
+  const shown = { displayedKey: monitorAskIdentity(asks[0]), displayedSince: T0 };
   const now = T0 + Math.max(ACTION_CHAT_REPLY_MIN_AGE_MS, MONITOR_ASK_MIN_SHOWN_MS) + 100;
 
   it('a bare OK / NO (English or Japanese) answers the displayed, oldest ask', () => {
@@ -112,21 +113,43 @@ describe('pickMonitorApprovalTarget', () => {
   });
 
   it('a bare reply does not land on an ask that just replaced the answered one', () => {
-    const replaced = { displayedKey: asks[0].key, displayedSince: now - MONITOR_ASK_MIN_SHOWN_MS + 1 };
+    const replaced = { displayedKey: monitorAskIdentity(asks[0]), displayedSince: now - MONITOR_ASK_MIN_SHOWN_MS + 1 };
     expect(pickMonitorApprovalTarget({ text: 'ok', asks, ...replaced, now })).toEqual({ ok: false, reason: 'too-soon' });
     // The screen still shows a different ask than the list's oldest.
-    const stale = { displayedKey: asks[1].key, displayedSince: T0 };
+    const stale = { displayedKey: monitorAskIdentity(asks[1]), displayedSince: T0 };
     expect(pickMonitorApprovalTarget({ text: 'ok', asks, ...stale, now })).toEqual({ ok: false, reason: 'too-soon' });
+  });
+
+  it('review L2: a superseding request under the same key restarts the visibility timer', () => {
+    // Same run + request id (same key), new content (new hash): the screen
+    // was showing the OLD content since T0.
+    const before = ask({ hex: 'aaaaaaaa', reqId: 'req-1', createdAt: T0 });
+    const after = { ...before, marker: { ...before.marker, requestSha256: 'b'.repeat(64), hash8: 'bbbbbbbb' } };
+    expect(after.key).toBe(before.key);
+    expect(monitorAskIdentity(after)).not.toBe(monitorAskIdentity(before));
+    const oldScreen = { displayedKey: monitorAskIdentity(before), displayedSince: T0 };
+    expect(pickMonitorApprovalTarget({ text: 'ok', asks: [after], ...oldScreen, now })).toEqual({ ok: false, reason: 'too-soon' });
+    // Once MONITOR has shown the new content long enough, it is answerable.
+    const newScreen = { displayedKey: monitorAskIdentity(after), displayedSince: T0 };
+    expect(pickMonitorApprovalTarget({ text: 'ok', asks: [after], ...newScreen, now })).toMatchObject({ ok: true });
+  });
+
+  it('MonitorPane keys its visibility timer on key + hash', () => {
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'components', 'panes', 'MonitorPane.tsx'), 'utf8');
+    expect(src).toContain('const shownIdentity = shownAsk ? monitorAskIdentity(shownAsk) : null;');
+    expect(src).toContain('}, [shownIdentity]);');
   });
 
   it('same age window as the chat: too fresh, or past its deadline', () => {
     const fresh = [ask({ createdAt: now - 10 })];
     expect(
-      pickMonitorApprovalTarget({ text: 'ok', asks: fresh, displayedKey: fresh[0].key, displayedSince: T0, now }),
+      pickMonitorApprovalTarget({ text: 'ok', asks: fresh, displayedKey: monitorAskIdentity(fresh[0]), displayedSince: T0, now }),
     ).toEqual({ ok: false, reason: 'too-soon' });
     const expired = [ask({ createdAt: T0, expiresAt: now - 1 })];
     expect(
-      pickMonitorApprovalTarget({ text: 'ok', asks: expired, displayedKey: expired[0].key, displayedSince: T0, now }),
+      pickMonitorApprovalTarget({ text: 'ok', asks: expired, displayedKey: monitorAskIdentity(expired[0]), displayedSince: T0, now }),
     ).toEqual({ ok: false, reason: 'expired' });
   });
 });

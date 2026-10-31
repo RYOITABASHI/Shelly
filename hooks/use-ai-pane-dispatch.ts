@@ -4312,7 +4312,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // in the agent JSON (lib/agent-run-without-approval.ts). Chat only
         // ever raises it; turning it off is the agent detail toggle.
         if (confirmed.runWithoutApproval === true) {
-          await setRunWithoutApproval(created.id, true, 'chat').catch((e) =>
+          await setRunWithoutApproval(created, true, 'chat').catch((e) =>
             logError('AgentDraft', 'run-without-approval flag write failed', e));
         }
 

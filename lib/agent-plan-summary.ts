@@ -684,7 +684,9 @@ export function summarizeAgentDraftAsText(
   if (draft.llmExtracted) lines.push(tl('agentplan.llm_extracted_note'));
 
   if (draft.autonomous) lines.push(markLine(tl('agentplan.autonomous_note'), 'autonomous', changedFields));
-  if (draft.runWithoutApproval) lines.push(tl('agentplan.run_without_approval_note'));
+  // Review M4: marked like the other risky lines (the string itself leads
+  // with '⚠'), and ★-marked when a patch just touched it.
+  if (draft.runWithoutApproval) lines.push(markLine(tl('agentplan.run_without_approval_note'), 'runWithoutApproval', changedFields));
   if (draft.memory?.remember) {
     lines.push(tl('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
   }

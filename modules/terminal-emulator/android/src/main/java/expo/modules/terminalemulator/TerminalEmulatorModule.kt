@@ -2004,11 +2004,13 @@ class TerminalEmulatorModule : Module() {
             val parsed = AgentEscalationBridge.fromRequestFile(context, anchor.first, anchor.second)
                 ?: throw IllegalArgumentException("invalid agent escalation request")
             NotificationDispatcher(context).notifyAgentEscalationNeeded(parsed)
-            // The content hash of the file the notification describes, so the
-            // RN chat / MONITOR ask line can bind to it WITHOUT minting a nonce
-            // (the notification's own Allow / Deny stay valid until the user
-            // answers somewhere).
-            mapOf("requestSha256" to parsed.requestSha256)
+            // Review H1 (2026-10-31): the request AS THIS READ SAW IT — the
+            // same bytes requestSha256 hashes and the notification shows — so
+            // the RN chat / MONITOR ask line displays exactly what an OK there
+            // is bound to (never a separate JS read the agent could swap
+            // between). Mints no nonce: the notification's Allow / Deny stay
+            // valid until the user answers somewhere.
+            AgentEscalationBridge.toMap(parsed)
         }
 
         // 2026-10-31: answer a boundary-op escalation from the app (MONITOR's
@@ -2016,7 +2018,7 @@ class TerminalEmulatorModule : Module() {
         // path as the notification's Allow / Deny
         // (ScouterWidgetPromptActivity.handleAgentEscalationAction):
         // read mints a fresh single-use nonce in AgentEscalationBridge's
-        // ledger (replacing the notification's), resolve consumes it in
+        // ledger (its own channel; the notification's stays valid), resolve consumes it in
         // writeHumanReply (Keystore-signed reply, request-hash binding,
         // one-shot pre-approval grant on accept), clears the request and
         // cancels the notification. Mirrors readAgentActionApprovalRequest /
@@ -2051,7 +2053,11 @@ class TerminalEmulatorModule : Module() {
                 ?: throw IllegalStateException("React context unavailable")
             val parsed = AgentEscalationBridge.fromRequestFile(context, runId, reqId)
                 ?: throw IllegalArgumentException("escalation request is no longer pending")
-            val actionNonce = AgentEscalationBridge.registerActionNonce(runId, reqId)
+            val requestSha256 = parsed.requestSha256
+                ?: throw IllegalStateException("escalation request hash unavailable")
+            // In-app channel nonce bound to these bytes; the notification's own
+            // nonce stays valid (review L1).
+            val actionNonce = AgentEscalationBridge.registerAppNonce(runId, reqId, requestSha256)
             AgentEscalationBridge.toMap(parsed) + mapOf("actionNonce" to actionNonce)
         }
 
@@ -2116,9 +2122,13 @@ class TerminalEmulatorModule : Module() {
             // Mint a fresh single-use nonce the moment the request is disclosed
             // for in-app review, mirroring the notification path's registration
             // in NotificationDispatcher.notifyAgentActionApprovalNeeded. Both
-            // channels feed the same pendingActionNonces ledger, so whichever
+            // channels feed the same ActionNonceLedger (one nonce each), so whichever
             // decision the human actually makes consumes it exactly once.
-            val actionNonce = AgentActionApprovalBridge.registerActionNonce(runId)
+            val requestSha256 = parsed.requestSha256
+                ?: throw IllegalStateException("action approval request hash unavailable")
+            // In-app channel nonce bound to these bytes; the notification's own
+            // nonce stays valid (review L1).
+            val actionNonce = AgentActionApprovalBridge.registerAppNonce(runId, requestSha256)
             AgentActionApprovalBridge.toMap(parsed) + mapOf("actionNonce" to actionNonce)
         }
 
@@ -2130,7 +2140,9 @@ class TerminalEmulatorModule : Module() {
             val parsed = AgentActionApprovalBridge.fromRequestFile(context, runId)
                 ?: throw IllegalArgumentException("invalid agent action approval request")
             NotificationDispatcher(context).notifyAgentActionApprovalNeeded(parsed)
-            null
+            // Review H1: the request as this read saw it (fields + the hash of
+            // the same bytes), for the RN chat / MONITOR ask line. No nonce.
+            AgentActionApprovalBridge.toMap(parsed)
         }
 
         AsyncFunction("resolveAgentActionApproval") { runId: String, decision: String, expectedRequestSha256: String, actionNonce: String ->

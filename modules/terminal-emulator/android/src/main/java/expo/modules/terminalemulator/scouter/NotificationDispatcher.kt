@@ -130,7 +130,7 @@ class NotificationDispatcher(private val context: Context) {
 
     fun notifyAgentActionApprovalNeeded(request: AgentActionApprovalRequest) {
         runCatching {
-            val needsFreshAction = !AgentActionApprovalBridge.hasActionNonce(request.runId)
+            val needsFreshAction = !AgentActionApprovalBridge.hasNotificationNonce(request.runId)
             val shouldNotify = shouldFire(KEY_LAST_AGENT_ACTION, request.key)
             if (!needsFreshAction && !shouldNotify) return
             val requestSha256 = request.requestSha256
@@ -236,7 +236,7 @@ class NotificationDispatcher(private val context: Context) {
                     previewText?.let { context.getString(R.string.scouter_notification_agent_action_preview, it) },
                 ).joinToString("\n")
             }
-            val actionNonce = AgentActionApprovalBridge.registerActionNonce(request.runId)
+            val actionNonce = AgentActionApprovalBridge.registerNotificationNonce(request.runId, requestSha256)
             // cli/intent/dm-reply/browser-pane/social-post MUST stay in this
             // "Review" bucket (never one-tap Allow): the ALLOW pending intent
             // below calls AgentActionApprovalBridge.writeHumanReply directly
@@ -465,14 +465,14 @@ class NotificationDispatcher(private val context: Context) {
             // still showing (silently, onlyAlertOnce below) and never re-posts
             // one that is gone.
             if (request.state == "queued" && !isNotificationActive(notificationId)) return
-            val needsFreshAction = !AgentEscalationBridge.hasActionNonce(request.runId, request.reqId)
+            val needsFreshAction = !AgentEscalationBridge.hasNotificationNonce(request.runId, request.reqId)
             val shouldNotify = shouldFire(KEY_LAST_AGENT_ESCALATION, request.key)
             if (!needsFreshAction && !shouldNotify) return
             val requestSha256 = request.requestSha256
                 ?.takeIf { HEX_SHA256_RE.matches(it) }
                 ?: return
 
-            val actionNonce = AgentEscalationBridge.registerActionNonce(request.runId, request.reqId)
+            val actionNonce = AgentEscalationBridge.registerNotificationNonce(request.runId, request.reqId, requestSha256)
             val allow = agentEscalationActionPendingIntent(allow = true, request, actionNonce, requestSha256)
             val deny = agentEscalationActionPendingIntent(allow = false, request, actionNonce, requestSha256)
             val reason = request.reason?.takeIf { it.isNotBlank() }
