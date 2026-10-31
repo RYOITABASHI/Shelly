@@ -129,10 +129,11 @@ describe('provider overrides / MONITOR', () => {
 
 describe('escalation ladder', () => {
   const env = { hasCerebrasKey: false, hasGroqKey: false };
-  it('attended: a Claude pin runs first, Codex stays the last rung', () => {
+  // 2026-10-31: an attended explicit CLI pin runs on that CLI only — a failed
+  // attempt is reported, never silently re-run on local / Codex.
+  it('attended: a Claude pin runs alone (no silent fallback to another engine)', () => {
     const tools = resolveEscalationLadder(agent({ tool: CLAUDE, prompt: 'READMEを要約して' }), env).tools;
-    expect(tools[0]).toEqual(CLAUDE);
-    expect(tools[tools.length - 1]).toEqual(CODEX);
+    expect(tools).toEqual([CLAUDE]);
   });
   it('autonomous: an explicit Claude pin is honored (then local → Codex)', () => {
     const tools = resolveEscalationLadder(agent({ tool: CLAUDE, autonomous: true, prompt: 'READMEを要約して' }), env).tools;

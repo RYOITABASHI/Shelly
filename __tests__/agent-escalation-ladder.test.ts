@@ -55,6 +55,45 @@ describe('resolveEscalationLadder — hard stops never climb', () => {
   });
 });
 
+// 2026-10-31 on-device bug (agent-mvvx3o28): an attended step pinned to Codex
+// CLI showed "Codex CLI" for ~2 s, then ran as "Local LLM" — the ladder was
+// [codex, local, …]. A pinned CLI runs alone, so a failure stays visible.
+describe('resolveEscalationLadder — attended explicit CLI pin never switches engines', () => {
+  const CODEX_PIN: ToolChoice = { type: 'cli', cli: 'codex' } as ToolChoice;
+  const CLAUDE_PIN: ToolChoice = { type: 'cli', cli: 'claude' } as ToolChoice;
+
+  it('Codex pin (the reported step 1) → Codex only, never local / cerebras / groq', () => {
+    const l = resolveEscalationLadder(mk({ tool: CODEX_PIN, prompt: '~/demo のgit logとファイル一覧を確認して' }), KEYED);
+    expect(types(l)).toEqual(['cli:codex']);
+  });
+
+  it('Claude Code pin → Claude Code only', () => {
+    const l = resolveEscalationLadder(mk({ tool: CLAUDE_PIN, prompt: 'このプロジェクトの概要を3行にまとめて' }), NO_KEYS);
+    expect(types(l)).toEqual(['cli:claude']);
+  });
+
+  it('a web-flavoured instruction keeps the pinned CLI (no Gemini / Perplexity swap)', () => {
+    const l = resolveEscalationLadder(mk({ tool: CLAUDE_PIN, prompt: '今日の最新ニュースを集めて' }), KEYED);
+    expect(types(l)).toEqual(['cli:claude']);
+  });
+
+  it('the step route text override does not loosen the pin', () => {
+    const l = resolveEscalationLadder(mk({ tool: CODEX_PIN, prompt: 'composite' }), KEYED, '最新のAIニュースを集めて');
+    expect(types(l)).toEqual(['cli:codex']);
+  });
+
+  it('autonomous cli:codex (the OAuth driver default, not necessarily a pin) keeps its local-first ladder', () => {
+    const l = resolveEscalationLadder(mk({ tool: CODEX_PIN, autonomous: true }), KEYED);
+    expect(types(l)).toEqual(['local', 'cli:codex']);
+  });
+
+  it('secret-guard still wins over a CLI pin', () => {
+    const l = resolveEscalationLadder(mk({ tool: CODEX_PIN, prompt: 'use key sk-ant-api03-AAAABBBBCCCCDDDD now' }), KEYED);
+    expect(l.guard).toBe('secret');
+    expect(types(l)).toEqual(['local']);
+  });
+});
+
 describe('resolveEscalationLadder — autonomous is local → Codex ONLY', () => {
   it('autonomous auto → [local, codex], no key backends', () => {
     const l = resolveEscalationLadder(mk({ autonomous: true }), KEYED);
