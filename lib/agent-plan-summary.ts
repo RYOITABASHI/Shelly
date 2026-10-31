@@ -684,6 +684,7 @@ export function summarizeAgentDraftAsText(
   if (draft.llmExtracted) lines.push(tl('agentplan.llm_extracted_note'));
 
   if (draft.autonomous) lines.push(markLine(tl('agentplan.autonomous_note'), 'autonomous', changedFields));
+  if (draft.runWithoutApproval) lines.push(tl('agentplan.run_without_approval_note'));
   if (draft.memory?.remember) {
     lines.push(tl('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
   }
@@ -801,5 +802,8 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     ...(isContinuousDraft(draft) && draft.continuous ? { continuous: draft.continuous } : {}),
     ...(draft.monitorTeamToken ? { monitorTeamToken: draft.monitorTeamToken } : {}),
     ...(draft.requireActionApproval !== undefined ? { requireActionApproval: draft.requireActionApproval } : {}),
+    // Only the chat-native confirm (this function) carries it — the summary
+    // line the user OK'd named the option.
+    ...(draft.runWithoutApproval === true ? { runWithoutApproval: true } : {}),
   };
 }

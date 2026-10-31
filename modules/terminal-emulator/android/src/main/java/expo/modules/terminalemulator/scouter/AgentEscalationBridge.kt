@@ -120,6 +120,23 @@ object AgentEscalationBridge {
         }
     }
 
+    fun toMap(request: AgentEscalationRequest): Map<String, Any?> = mapOf(
+        "runId" to request.runId,
+        "agentId" to request.agentId,
+        "reqId" to request.reqId,
+        "command" to request.command,
+        "commandSha256" to request.commandSha256,
+        "workspaceRoot" to request.workspaceRoot,
+        "cwd" to request.cwd,
+        "reason" to request.reason,
+        "signals" to request.signals,
+        "level" to request.level,
+        "ts" to request.ts,
+        "state" to request.state,
+        "queuedAt" to request.queuedAt,
+        "requestSha256" to request.requestSha256
+    )
+
     fun fromMap(raw: Map<String, Any?>): AgentEscalationRequest? {
         val json = JSONObject()
         for ((key, value) in raw) {
@@ -162,7 +179,11 @@ object AgentEscalationBridge {
         reqId: String,
         decision: String,
         actionNonce: String?,
-        expectedRequestSha256: String?
+        expectedRequestSha256: String?,
+        // false = "run without approval" auto-answer from RN (TerminalEmulatorModule
+        // resolveAgentEscalationAutoApproval): the same signed reply, but no
+        // preapproval grant, so nothing it approves outlives the option.
+        mintPreapprovalGrant: Boolean = true
     ): AgentEscalationReplyResult {
         require(decision == "accept" || decision == "decline") { "invalid escalation decision" }
         val nonceKey = actionNonceKey(runId, reqId)
@@ -206,7 +227,7 @@ object AgentEscalationBridge {
             tmp.delete()
             error("failed to publish escalation reply")
         }
-        val preapprovalGrant = if (decision == "accept") {
+        val preapprovalGrant = if (decision == "accept" && mintPreapprovalGrant) {
             writePreapprovalGrantFromRequest(
                 context = context,
                 requestJson = requestJson,

@@ -21,6 +21,7 @@ import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-too
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, pruneIneffectiveParallelGroups, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
+import { detectRunWithoutApprovalIntent } from './agent-run-without-approval';
 import enLocale from './i18n/locales/en';
 import jaLocale from './i18n/locales/ja';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
@@ -290,6 +291,11 @@ export interface ParsedAgentDraft {
    *  team "ask before writing", collapsed to the agent). Undefined =
    *  inherit the global default. */
   requireActionApproval?: boolean;
+  /** "承認なしで実行" asked for in the user's own words ("承認なしで",
+   *  "without approval"). Shown in the summary the user OKs; on confirm it
+   *  is written to the Keystore-backed store (lib/agent-run-without-approval.ts),
+   *  never to the agent definition. */
+  runWithoutApproval?: boolean;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -2898,6 +2904,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
     toolExplicit: suggestion.explicit || undefined,
     autonomous: detectAutonomousIntent(rawText),
+    ...(detectRunWithoutApprovalIntent(rawText) ? { runWithoutApproval: true } : {}),
     memory,
     actionCaveat,
     socialPostCandidates,

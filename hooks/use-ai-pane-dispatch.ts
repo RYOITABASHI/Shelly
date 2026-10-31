@@ -70,6 +70,7 @@ import { isConfirmPhrase } from '@/lib/agent-confirm-phrase';
 import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-add-queue';
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
 import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-registration';
+import { setRunWithoutApproval } from '@/lib/agent-run-without-approval';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
 import { findActionApprovalReplyTarget, resolveActionApprovalFromChat } from '@/lib/agent-action-chat-approval';
@@ -4306,6 +4307,14 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         });
         const created = persisted.agent;
         if (!created) throw new Error(`Agent not found: ${editingAgentId}`);
+        // "承認なしで実行": the summary the user just OK'd showed the line, so
+        // the option is turned ON — in the Keystore-backed store only, never
+        // in the agent JSON (lib/agent-run-without-approval.ts). Chat only
+        // ever raises it; turning it off is the agent detail toggle.
+        if (confirmed.runWithoutApproval === true) {
+          await setRunWithoutApproval(created.id, true, 'chat').catch((e) =>
+            logError('AgentDraft', 'run-without-approval flag write failed', e));
+        }
 
         // 2026-07-28 bug fix (ParsedAgentDraft.runOnceOnConfirm's doc
         // comment, lib/agent-nl-parser.ts): a still-pending draft's own

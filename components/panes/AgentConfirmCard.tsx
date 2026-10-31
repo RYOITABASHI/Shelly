@@ -103,6 +103,9 @@ export interface ConfirmedAgentDraft {
   /** See ParsedAgentDraft.monitorTeamToken / requireActionApproval. */
   monitorTeamToken?: string;
   requireActionApproval?: boolean;
+  /** "承認なしで実行" — see ParsedAgentDraft.runWithoutApproval. Set only by
+   *  draftToConfirmedAgentDraft (chat confirm); this card never sets it. */
+  runWithoutApproval?: boolean;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.

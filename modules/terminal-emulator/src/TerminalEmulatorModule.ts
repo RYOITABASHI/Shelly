@@ -296,6 +296,32 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
   }): Promise<void>;
   cancelAgentEscalationApproval?(runId: string, reqId: string): Promise<void>;
+  /** "承認なしで実行" (lib/agent-run-without-approval.ts): re-read a live
+   *  gate escalation request and mint its single-use nonce. */
+  readAgentEscalationRequest?(runId: string, reqId: string): Promise<{
+    runId: string;
+    agentId: string;
+    reqId: string;
+    command: string;
+    commandSha256?: string | null;
+    workspaceRoot?: string | null;
+    cwd?: string | null;
+    reason?: string | null;
+    signals?: string[];
+    level?: string | null;
+    ts?: string | null;
+    state?: string | null;
+    queuedAt?: string | null;
+    requestSha256?: string | null;
+    actionNonce?: string | null;
+  }>;
+  /** Accept-only signed reply for a request read above (no preapproval grant). */
+  resolveAgentEscalationAutoApproval?(
+    runId: string,
+    reqId: string,
+    expectedRequestSha256: string,
+    actionNonce: string
+  ): Promise<void>;
   getAgentActionApprovalBridgePaths?(): Promise<{
     requestDirPath: string;
     requestDirUri: string;
