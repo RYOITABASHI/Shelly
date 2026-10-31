@@ -28,6 +28,9 @@
  *    to the normal per-run review. The original policy seal value is never
  *    written back verbatim: when opted in it is recomputed from the restored
  *    file bytes.
+ *  - `shelly_run_without_approval_v2` (agent-run-without-approval.ts) is also
+ *    in APPROVAL_SECURE_KEYS but has no opt-in restore at all: after a restore
+ *    every agent's "run without approval" is OFF until the user turns it on.
  */
 import { API_KEY_NAMES } from '@/lib/secure-store';
 import { SOCIAL_ALL_FIELDS, SOCIAL_PLATFORM_FIELDS, isSafeConnectorField, isSafeConnectorId } from '@/lib/social-connectors';
@@ -46,6 +49,7 @@ export const FIXED_SECURE_KEYS: Readonly<Record<string, string>> = Object.freeze
   shelly_closepaw_preapprovals_v1: 'lib/agent-closepaw-preapproval.ts',
   shelly_policy_file_seal: 'lib/agent-policy-device.ts',
   shelly_policy_trust_allow_keys: 'lib/agent-trust-allow-seal.ts',
+  shelly_run_without_approval_v2: 'lib/agent-run-without-approval.ts',
   shelly_dotfiles_pat: 'lib/dotfiles-sync.ts',
   shelly_github_pat: 'lib/github-auth.ts',
   shelly_memory_v2_dek: 'lib/memory/encryption-key.ts',
@@ -54,11 +58,15 @@ export const FIXED_SECURE_KEYS: Readonly<Record<string, string>> = Object.freeze
 export const POLICY_SEAL_KEY = 'shelly_policy_file_seal';
 export const CLOSEPAW_PREAPPROVAL_KEY = 'shelly_closepaw_preapprovals_v1';
 export const TRUST_ALLOW_SEAL_KEY = 'shelly_policy_trust_allow_keys';
+/** Per-agent "run without approval" flags (lib/agent-run-without-approval.ts).
+ *  Never restored: a restore must not be able to turn the option back on. */
+export const RUN_WITHOUT_APPROVAL_KEY = 'shelly_run_without_approval_v2';
 /** Never restored by the generic SecureStore loop (see module doc). */
 export const APPROVAL_SECURE_KEYS: readonly string[] = Object.freeze([
   CLOSEPAW_PREAPPROVAL_KEY,
   TRUST_ALLOW_SEAL_KEY,
   POLICY_SEAL_KEY,
+  RUN_WITHOUT_APPROVAL_KEY,
 ]);
 
 /** Fixed connector ids that are not user-registered social connectors. */

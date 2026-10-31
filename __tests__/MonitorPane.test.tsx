@@ -525,6 +525,7 @@ describe('MonitorPane LIVE source', () => {
         pending.upsertPendingApproval(ask('bbbbbbbb', NOW - 6_000));
       });
       const utils = render(<MonitorPane />);
+      layoutWall(utils);
       expect(utils.getByTestId('monitor-pinned-approval')).toBeTruthy();
       expect(utils.getByTestId('monitor-approval-detail').props.children).toBe('cd ~/demo && git log aaaaaaaa');
       expect(utils.getByTestId('monitor-approval-input')).toBeTruthy();
