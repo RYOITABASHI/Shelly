@@ -272,7 +272,7 @@ describe('driver: Claude engine', () => {
         FAKE_CLAUDE_RECORD: rec,
         FAKE_CLAUDE_TOOLS: JSON.stringify((opts.tools ?? []).map((t) => (typeof t === 'function' ? (t as (w: string) => object)(ws) : t))),
         ...(opts.env ?? {}),
-      } as NodeJS.ProcessEnv,
+      } as unknown as NodeJS.ProcessEnv,
     });
     const read = (p: string) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null);
     const result = {
