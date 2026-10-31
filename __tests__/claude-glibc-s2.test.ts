@@ -1,7 +1,7 @@
 /**
  * __tests__/claude-glibc-s2.test.ts
  *
- * Claude Code glibc S2-S3 (BASHRC_VERSION 275-280): private authenticated proxy, OSC 8
+ * Claude Code glibc S2-S3 (BASHRC_VERSION 275-281): private authenticated proxy, OSC 8
  * sign-in URL bridge (tap-to-open only, armed sessions only), drain loop
  * safety. See DEFERRED.md "Claude Code 公式 glibc 版（2.1.314）を Shelly で動かす".
  *
@@ -424,7 +424,7 @@ describe('shelly-claude-proxy.js', () => {
   }, 20_000);
 });
 
-describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-280)', () => {
+describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-281)', () => {
   const lines = homeKt.split(/\r?\n/);
   const start = lines.findIndex((l) => l.includes('sb.appendLine("shelly-claude-glibc() {")'));
   const fnLines: string[] = [];
@@ -437,7 +437,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-280)', () =>
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 280\b/);
+    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 281\b/);
   });
 
   it('S3: tmp dirs and the bionic lib dir reach claude only via command prefixes', () => {
@@ -473,6 +473,13 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-280)', () =>
   it('denies Grep/Glob (bundled rg is not exec-able) for runs only, not subcommands', () => {
     expect(fn).toContain('    __xargs=()');
     expect(fn).toContain(`    case "\${1:-}" in ""|-*) __xargs=(--settings '{"permissions":{"deny":["Grep","Glob"]}}') ;; esac`);
+  });
+
+  it('plain `claude` runs shelly-claude-glibc once the glibc runtime is staged', () => {
+    expect(homeKt).toContain('sb.appendLine("claude() {")');
+    expect(homeKt).toContain(
+      'sb.appendLine("  if [ -e \\"\\$HOME/.shelly-runtime/claude-glibc/claude\\" ]; then shelly-claude-glibc \\"\\$@\\"; return; fi")',
+    );
   });
 
   it('loads ~/.claude-token.env only inside the subshell when no token is set', () => {

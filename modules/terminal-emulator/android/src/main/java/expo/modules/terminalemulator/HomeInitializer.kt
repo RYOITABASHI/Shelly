@@ -1477,7 +1477,10 @@ patchCodex(libDir);
     //      ripgrep by plain execve of an app_data_file, which fails silently
     //      ("No matches"); Claude then searches through the Bash tool (rg /
     //      grep / ls), which works since v279. Subcommands get no extra args.
-    private const val BASHRC_VERSION = 280
+    // v281: `claude` runs shelly-claude-glibc() when the glibc runtime is
+    //      staged (the legacy claude CLI is gone and ~/bin/claude is removed
+    //      on every start, so a bare `claude` was "command not found").
+    private const val BASHRC_VERSION = 281
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -4361,6 +4364,11 @@ patchCodex(libDir);
             sb.appendLine("  local __rc=\$?")
             sb.appendLine("  __shelly_paste_tui_end")
             sb.appendLine("  return \$__rc")
+            sb.appendLine("}")
+            // v281: plain `claude` -> the glibc Claude Code (only once its runtime is staged).
+            sb.appendLine("claude() {")
+            sb.appendLine("  if [ -e \"\$HOME/.shelly-runtime/claude-glibc/claude\" ]; then shelly-claude-glibc \"\$@\"; return; fi")
+            sb.appendLine("  echo \"claude: Claude Code is not installed (expected ~/.shelly-runtime/claude-glibc/claude)\" >&2; return 127")
             sb.appendLine("}")
             // v252: `shelly codex pair` — host Codex remote control for the
             // ChatGPT app (Experimental, on-device unverified). Runs the
