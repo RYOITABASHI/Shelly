@@ -3528,6 +3528,8 @@ async function captureRunMemoryFromSyncedLogs(
           routeDecision: latest.routeDecision,
           timestamp: latest.timestamp,
           status: latest.status,
+          steps: latest.steps,
+          plannedStepCount: agent.orchestration?.steps?.length,
           alreadySkillId: agent.skillId,
           unattended: true,
         }, {

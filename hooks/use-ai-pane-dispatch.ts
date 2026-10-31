@@ -4488,6 +4488,8 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               routeDecision: log?.routeDecision,
               timestamp: log?.timestamp,
               status: log?.status,
+              steps: log?.steps,
+              plannedStepCount: created.orchestration?.steps?.length,
               alreadySkillId: created.skillId,
               planSpec: log?.steps && log.steps.length >= 2
                 ? buildAgentPlanSpec(created)

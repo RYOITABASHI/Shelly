@@ -167,6 +167,8 @@ export default function AgentRunsPane() {
         routeDecision: run.routeDecision,
         timestamp: run.timestamp,
         status: run.status,
+        steps: run.steps,
+        plannedStepCount: agent.orchestration?.steps?.length,
         alreadySkillId: agent.skillId,
         planSpec: run.steps && run.steps.length >= 2 ? buildAgentPlanSpec(agent) : undefined,
       });
@@ -323,7 +325,12 @@ export default function AgentRunsPane() {
                   const canSaveSkill =
                     Boolean(agent) &&
                     !handedOff &&
-                    shouldOfferSkillSave({ status: run.status, alreadySkillId: agent?.skillId });
+                    shouldOfferSkillSave({
+                      status: run.status,
+                      steps: run.steps,
+                      plannedStepCount: agent?.orchestration?.steps?.length,
+                      alreadySkillId: agent?.skillId,
+                    });
                   const gateEntries = gateLogByAgent[group.agentId];
                   const gateLoading = gateLogLoading[group.agentId] ?? false;
                   const runGateEntries = gateEntries ? entriesForRun(gateEntries, run) : [];
