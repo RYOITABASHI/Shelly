@@ -671,6 +671,74 @@ describe('MonitorPane LIVE source', () => {
     }
     utils.unmount();
   });
+
+  it('approval pending with nothing running: the RUN slot reads DONE n/total, not RUN 0/3', () => {
+    // On-device 2026-10-31: "RUN 0/3 WAITING FOR YOU" while CH-04 waited.
+    const r = liveRun({ stepCount: 2 });
+    r.branches[1] = { ...r.branches[1], state: 'WAITING_APPROVAL' };
+    seed(r);
+    const utils = render(<MonitorPane />);
+    expect(utils.getByTestId('monitor-run-slot').props.children).toBe('monitor.done_count');
+    expect(utils.getByTestId('monitor-status').props.children).toBe('monitor.waiting_for_you');
+    utils.unmount();
+  });
+
+  it('approval pending while another branch still runs: RUN n/3 stays', () => {
+    const r = liveRun({
+      stepCount: 3,
+      branches: [
+        ...liveRun().branches.map((b, i) => (i === 1 ? { ...b, state: 'WAITING_APPROVAL' as const } : b)),
+        { branchId: 'run-1#2', stepIndex: 2, state: 'RUNNING' as const, tail: 'x', startedAt: iso(5), updatedAt: iso(1) },
+      ],
+    });
+    seed(r);
+    const utils = render(<MonitorPane />);
+    expect(utils.getByTestId('monitor-run-slot').props.children).toBe('monitor.run_count');
+    utils.unmount();
+  });
+
+  it('short pane (3-way split): compact chrome drops the brand, the clock, the legend and folds the costs into one row', () => {
+    seed(liveRun());
+    const utils = render(<MonitorPane />);
+    const layoutOf = (id: string, width: number, height: number) =>
+      fireEvent(utils.getByTestId(id), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width, height } } });
+    // Tall pane first: full chrome.
+    layoutOf('monitor-root', 700, 900);
+    expect(utils.getByTestId('monitor-brand')).toBeTruthy();
+    expect(utils.getByTestId('monitor-play-clock')).toBeTruthy();
+    expect(utils.queryByTestId('monitor-costs-compact')).toBeNull();
+    expect(utils.getByText(/monitor\.cost_api/)).toBeTruthy();
+    // On-device 3-way split: pane ≈ 430×500 dp.
+    layoutOf('monitor-root', 430, 500);
+    expect(utils.queryByTestId('monitor-brand')).toBeNull();
+    expect(utils.queryByTestId('monitor-play-clock')).toBeNull();
+    expect(utils.queryByTestId('monitor-cost-legend')).toBeNull();
+    expect(utils.getByTestId('monitor-costs-compact')).toBeTruthy();
+    expect(utils.queryByText(/monitor\.cost_api/)).toBeNull();
+    // The wall still fits whole camera rows: with ~120 dp of compact chrome
+    // above and ~60 below, 2 LIVE cameras fit in one row on a 410 dp wall.
+    layoutOf('monitor-chrome-top', 410, 120);
+    layoutOf('monitor-chrome-bottom', 410, 60);
+    layoutOf('monitor-wall', 410, 0);
+    const wallH = 500 - 2 * 10 - 2 * 10 - 120 - 60 - 1;
+    const g = computeMonitorGrid(410, wallH, 2);
+    expect(g.fits).toBe(true);
+    expect(g.rows * g.cellH).toBeLessThanOrEqual(wallH);
+    expect(utils.getByTestId('monitor-grid-fit')).toBeTruthy();
+    utils.unmount();
+  });
+
+  it('compact chrome keeps the approval strip and OPEN CHAT', () => {
+    const r = liveRun();
+    r.branches[1] = { ...r.branches[1], state: 'WAITING_APPROVAL' };
+    seed(r);
+    const utils = render(<MonitorPane />);
+    fireEvent(utils.getByTestId('monitor-root'), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 430, height: 500 } } });
+    expect(utils.getByTestId('monitor-pinned-approval')).toBeTruthy();
+    fireEvent.press(utils.getByLabelText('monitor.live.open_chat_a11y'));
+    expect(mockOpenChat).toHaveBeenCalledWith('digest');
+    utils.unmount();
+  });
 });
 
 describe('MonitorPane MAP register / run / team file', () => {

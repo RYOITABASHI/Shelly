@@ -9,10 +9,17 @@
  */
 import { useMultiPaneStore, type SlotIndex } from '@/hooks/use-multi-pane';
 import { usePaneStore } from '@/store/pane-store';
-import { findLeafIdForAgent, selectThreadAgent } from '@/lib/agent-thread-selection';
+import { findLeafIdForAgent, getThreadAgentId, selectThreadAgent } from '@/lib/agent-thread-selection';
 import { logInfo } from '@/lib/debug-logger';
 
-/** Returns false when no pane could be shown (layout full). */
+/**
+ * Returns false when no pane could be shown (layout full).
+ *
+ * Order: a pane already pinned to this agent → an 'ai' pane not pinned to
+ * any agent (re-pinned to this one, so OPEN CHAT does not add a fourth pane
+ * next to an idle AI pane — 2026-10-31 on-device finding) → a new 'ai' pane.
+ * A pane pinned to ANOTHER agent is never taken over.
+ */
 export function openAgentChatThread(agentId: string): boolean {
   const existingLeafId = findLeafIdForAgent(agentId);
   const multiPane = useMultiPaneStore.getState();
@@ -20,6 +27,15 @@ export function openAgentChatThread(agentId: string): boolean {
     const slotIndex = multiPane.slots.findIndex((slot) => slot?.id === existingLeafId);
     if (slotIndex >= 0) multiPane.focusSlot(slotIndex as SlotIndex);
     usePaneStore.getState().setFocusedPane(existingLeafId);
+    return true;
+  }
+  const freeIndex = multiPane.slots.findIndex((slot) => slot?.tab === 'ai' && !getThreadAgentId(slot.id));
+  if (freeIndex >= 0) {
+    const slot = multiPane.slots[freeIndex]!;
+    logInfo('AgentThread', `reusing AI pane ${slot.id} for ${agentId}`);
+    selectThreadAgent(slot.id, agentId);
+    multiPane.focusSlot(freeIndex as SlotIndex);
+    usePaneStore.getState().setFocusedPane(slot.id);
     return true;
   }
   const err = multiPane.addPane('ai');

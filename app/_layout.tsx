@@ -105,6 +105,7 @@ import {
   type TrustOffer,
 } from '@/lib/agent-policy-approval';
 import { noteAttendedApprovalResolved, noteAttendedApprovalWaiting } from '@/lib/agent-progress-writer';
+import { noteActionApprovalGone, postActionApprovalAsk, subscribeActionReviewRequests } from '@/lib/agent-action-chat-approval';
 import { isProactiveOrigin } from '@/lib/agent-action-policy';
 import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
@@ -2532,6 +2533,12 @@ export default function RootLayout() {
           // human (no-op for executor runs, which write their own state).
           noteAttendedApprovalWaiting(parsed.agentId);
           await TerminalEmulator.notifyAgentActionApprovalNeeded(parsed);
+          // Same ask, as plain text in the agent's own chat thread (the
+          // MONITOR pane's OPEN CHAT lands there). Posting mints NO nonce;
+          // a typed OK / NO later goes through the same native
+          // read-then-resolve the review screen uses
+          // (lib/agent-action-chat-approval.ts).
+          postActionApprovalAsk(parsed);
           rememberActionApproval(key, parsed);
           logInfo('AgentActionApproval', `approval notification posted run=${parsed.runId} action=${parsed.actionType}`);
         }
@@ -2546,6 +2553,9 @@ export default function RootLayout() {
           // MONITOR: no request of this run is pending any more — an attended
           // serial step that was WAITING_APPROVAL is RUNNING again.
           noteAttendedApprovalResolved(record.agentId);
+          // Whichever side answered (notification / review / chat), the
+          // chat ask line stops offering OK / NO.
+          noteActionApprovalGone(record.runId);
           logInfo('AgentActionApproval', `stale approval notification cancelled run=${record.runId}`);
         }
       } catch (e) {
@@ -2556,6 +2566,12 @@ export default function RootLayout() {
     };
     const actionApprovalInterval = setInterval(drainAgentActionApprovalRequests, 500);
     void drainAgentActionApprovalRequests();
+    // A chat "OK" on a review-required action type opens the SAME review
+    // screen the notification's Review deep link opens — never a direct
+    // accept (lib/agent-action-chat-approval.ts).
+    const unsubscribeActionReview = subscribeActionReviewRequests((runId) => {
+      void handleAgentActionConfirm(runId);
+    });
 
     // Snapshot terminal state before the bridge can be paused or killed.
     const sub = AppState.addEventListener('change', (state) => {
@@ -2580,6 +2596,7 @@ export default function RootLayout() {
       clearInterval(connectorSecretUpdateInterval);
       clearInterval(escalationInterval);
       clearInterval(actionApprovalInterval);
+      unsubscribeActionReview();
       if (agentLogInterval) clearInterval(agentLogInterval);
     };
   }, [loadSettings]);

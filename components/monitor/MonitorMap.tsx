@@ -70,39 +70,9 @@ import {
 import { MON, MON_FONT_MONO, MON_FONT_OSD, kindColor, stateColor } from './monitor-palette';
 import { translateMonitorText } from './monitor-i18n';
 
-const COL_W = 156;
-const GAP = 40;
-const NODE_H = 76;
-const ROW_GAP = 12;
-const PAD = 14;
-const LANE_H = 24;
-const GOAL_H = 104;
-
-const colX = (c: number) => PAD + c * (COL_W + GAP);
-const rowY = (r: number) => PAD + LANE_H + r * (NODE_H + ROW_GAP);
-
-type Placed = { node: MonitorTeamNode; x: number; y: number; column: number; sub: boolean };
-
-function layout(team: MonitorTeam) {
-  const placed: Record<string, Placed> = {};
-  let maxRows = 1;
-  team.columns.forEach((col, c) => {
-    col.forEach((node, r) => {
-      placed[node.id] = { node, x: colX(c), y: rowY(r), column: c, sub: false };
-    });
-    const subs = team.subAgents.filter((s) => col.some((n) => n.id === s.parentId));
-    subs.forEach((s, j) => {
-      placed[s.id] = { node: s, x: colX(c), y: rowY(col.length + j), column: c, sub: true };
-    });
-    maxRows = Math.max(maxRows, col.length + subs.length);
-  });
-  const last = team.columns[team.columns.length - 1]?.[0];
-  const goalX = colX(team.columns.length);
-  const goalY = last ? placed[last.id].y + NODE_H / 2 - GOAL_H / 2 : rowY(0);
-  const height = Math.max(rowY(maxRows) + PAD, goalY + GOAL_H + PAD);
-  const width = goalX + COL_W + PAD;
-  return { placed, goalX, goalY, width, height };
-}
+// Geometry (columns, rows, RESULT box, canvas size) lives in
+// monitor-map-layout.ts so it is testable without React Native.
+import { COL_W, GAP, GOAL_H, NODE_H, PAD, colX, layoutMonitorMap, type Placed } from './monitor-map-layout';
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 
@@ -284,7 +254,7 @@ export function MonitorMap({
   const [pasteError, setPasteError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const shapeErrors = useMemo(() => validate(team), [team]);
-  const geo = useMemo(() => layout(team), [team]);
+  const geo = useMemo(() => layoutMonitorMap(team), [team]);
   const edges = useMemo(() => deriveEdges(team), [team]);
   const defById = useMemo(() => Object.fromEntries(defs.map((d) => [d.id, d])), [defs]);
   const summary = summarize(defs, snap);

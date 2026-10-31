@@ -1375,6 +1375,18 @@ export type ChatMessage = {
    *  variant installed — lib/closepaw-shell-approval.ts). A typed confirm /
    *  cancel reply to this plain-text line resolves it. */
   pendingClosePawShell?: { reqId: string; hash8: string; createdAt: number };
+  /** A background agent's per-run ACTION approval, mirrored as a plain-text
+   *  ask into the agent's own `agent:<id>` thread (lib/agent-action-chat-
+   *  approval.ts). A typed OK / NO reply resolves it through the SAME native
+   *  path as the notification; the marker never carries a nonce. */
+  pendingActionApproval?: {
+    runId: string;
+    requestSha256: string;
+    hash8: string;
+    reviewRequired: boolean;
+    createdAt: number;
+    expiresAt?: number | null;
+  };
   /** Stable identity for a proactive background-agent completion notice. */
   agentRunLogId?: string;
   /** Agent hand-off narration (2026-10-06, lib/agent-handoff.ts): set on a

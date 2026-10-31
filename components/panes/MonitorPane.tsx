@@ -25,9 +25,11 @@
  * attended PlanSpec executor route).
  *
  * Approval: DEMO asks in its own chat strip (type ok / no). LIVE never
- * approves anything here — the pinned strip points the user to the chat /
- * review prompt where Shelly asked. No confirm cards or modals (standing
- * product rule).
+ * approves anything here — the pinned strip points the user to the agent's
+ * chat (OPEN CHAT: the same ask is posted there as plain text, answered by
+ * typing OK / NO through the native approval path —
+ * lib/agent-action-chat-approval.ts) or to its notification. No confirm
+ * cards or modals (standing product rule).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from 'react-native';
@@ -77,6 +79,15 @@ const GAP = 10;
 /** Pane padding and the gap between its blocks (styles.content). */
 const PAD = 10;
 const ROOT_GAP = 10;
+/**
+ * Below this pane height the chrome above the wall goes compact (no brand,
+ * no playback clock, one cost line, no legend) so at least one camera row
+ * is left for the wall. On-device (2026-10-31, Z Fold6 3-way split, pane
+ * ≈ 430×500 dp) the full chrome took nearly the whole pane and the GRID fell
+ * back to scrolling. Keyed on the pane height only — never on the wall or
+ * the chrome's own measurement — so it cannot feed back into itself.
+ */
+export const COMPACT_CHROME_PANE_H = 600;
 /** Largest single step of the animation clock (ms): ~6 frames at 60 Hz. */
 const MAX_CLOCK_STEP_MS = 100;
 
@@ -354,6 +365,9 @@ export default function MonitorPane() {
     if (Math.abs(h - cur) > 0.5) set(h);
   };
   const fitMode = view === 'grid' && paneH > 0 && topH > 0 && bottomH > 0 && wallWidth > 0;
+  // Short pane: compact chrome (see COMPACT_CHROME_PANE_H). Depends on the
+  // pane height alone, so shrinking the chrome never changes the decision.
+  const compactChrome = paneH > 0 && paneH < COMPACT_CHROME_PANE_H;
   const wallH = Math.floor(paneH - PAD * 2 - ROOT_GAP * 2 - topH - bottomH) - 1;
   const grid = useMemo(
     () => (fitMode ? computeMonitorGrid(wallWidth, wallH, source.agents.length) : null),
@@ -408,13 +422,17 @@ export default function MonitorPane() {
   // Folded/compact: "DONE n/5" moves into the progress label to save a row.
   const showStatusInStats = isWide || snap.complete || snap.approvalPending || ended;
   // "RUN n/3" is live concurrency; once the run is over it reads as a stuck
-  // 0/3, so the slot shows "DONE n/total" instead.
+  // 0/3, so the slot shows "DONE n/total" instead — and likewise while
+  // nothing runs because the run is waiting on the human (an approval
+  // pending with 0 running read "RUN 0/3 WAITING FOR YOU" on device,
+  // 2026-10-31). While something still runs, RUN n/3 stays.
   const runOver = snap.complete || ended;
-  const runSlotLabel = runOver
+  const showDoneInRunSlot = runOver || (summary.running === 0 && snap.approvalPending);
+  const runSlotLabel = showDoneInRunSlot
     ? doneCount
     : t('monitor.run_count', { n: summary.running, max: MAX_PARALLEL_BRANCHES });
   const progressLabel =
-    !isWide && !runOver ? `${doneCount} · ${summary.missionPct}%` : `${summary.missionPct}%`;
+    !isWide && !showDoneInRunSlot ? `${doneCount} · ${summary.missionPct}%` : `${summary.missionPct}%`;
   const capText = team.capUsd !== undefined ? ` / ${formatMoney(team.capUsd, locale)}` : '';
   const apiCostText = summary.apiUsdKnown
     ? `${formatMoney(summary.apiUsd, locale)}${capText}`
@@ -519,11 +537,14 @@ export default function MonitorPane() {
           + progress on the next, then the cost line. ── */}
       <View style={styles.mission}>
         <View style={styles.brandRow}>
-          <Text style={styles.brand} numberOfLines={1}>
-            {'SHELLY '}
-            <Text style={{ color: MON.muted }}>▸</Text>
-            {' MONITOR'}
-          </Text>
+          {/* Compact chrome: the pane's own header already names the pane. */}
+          {!compactChrome && (
+            <Text style={styles.brand} numberOfLines={1} testID="monitor-brand">
+              {'SHELLY '}
+              <Text style={{ color: MON.muted }}>▸</Text>
+              {' MONITOR'}
+            </Text>
+          )}
           {source.isDemo && <Text style={styles.demoBadge}>{t('monitor.demo_badge')}</Text>}
           <Text style={styles.goalLine} numberOfLines={1}>
             {t('monitor.mission')} <Text style={{ color: MON.osd }}>{team.title}</Text>
@@ -569,11 +590,16 @@ export default function MonitorPane() {
               {statusLabel}
             </Text>
           )}
-          <Text style={styles.mstat} numberOfLines={1}>
-            {playClock}
-          </Text>
+          {/* Compact chrome: the playback clock goes (the camera OSD still
+              shows it) and the bar's minimum shrinks so RUN / status / bar /
+              % share one row instead of wrapping into three. */}
+          {!compactChrome && (
+            <Text style={styles.mstat} numberOfLines={1} testID="monitor-play-clock">
+              {playClock}
+            </Text>
+          )}
           <View
-            style={styles.mbar}
+            style={[styles.mbar, compactChrome && styles.mbarCompact]}
             accessibilityRole="progressbar"
             accessibilityLabel={t('monitor.mission_progress')}
             accessibilityValue={{ min: 0, max: 100, now: summary.missionPct }}
@@ -619,6 +645,21 @@ export default function MonitorPane() {
             {failureText}
           </Text>
         )}
+        {compactChrome ? (
+          // One row: the three kinds and their figures only (the cost words
+          // and the free-LOCAL note are the legend's job on a taller pane).
+          <Text style={styles.cost} numberOfLines={1} testID="monitor-costs-compact">
+            <Text style={[styles.costK, { color: kindColor('API') }]}> API </Text>
+            <Text style={{ color: MON.osd }}>{apiCostText}</Text>
+            {'   '}
+            <Text style={[styles.costK, { color: kindColor('CLI') }]}> CLI </Text>
+            <Text style={{ color: MON.osd }}>{formatTokens(summary.cliTokens)}</Text>
+            {'   '}
+            <Text style={[styles.costK, { color: kindColor('LOCAL') }]}> LOCAL </Text>
+            <Text style={{ color: MON.osd }}>{formatTokens(summary.localTokens)}</Text>
+            {source.isDemo ? <Text style={{ color: MON.muted }}>{`   ${t('monitor.cost_sample')}`}</Text> : null}
+          </Text>
+        ) : (
         <View style={styles.costs}>
           <Text style={styles.cost} numberOfLines={1}>
             <Text style={[styles.costK, { color: kindColor('API') }]}> API </Text>
@@ -640,9 +681,11 @@ export default function MonitorPane() {
             <Text style={[styles.cost, { color: MON.muted }]}>{t('monitor.cost_sample')}</Text>
           )}
         </View>
+        )}
         {/* The legend is a one-time tip: the fitted GRID leaves its row to
-            the cameras (it still shows on the single / MAP views). */}
-        {!monitor.legendDismissed && !fitMode && (
+            the cameras (it still shows on the single / MAP views), and a
+            short pane never spends a row on it. */}
+        {!monitor.legendDismissed && !fitMode && !compactChrome && (
           <View style={styles.legendRow}>
             <Text style={styles.legend} testID="monitor-cost-legend">
               {t('monitor.legend', { zero: formatMoney(0, locale) })}
@@ -952,6 +995,8 @@ const styles = StyleSheet.create({
     borderColor: MON.phosphorDim,
     overflow: 'hidden',
   },
+  // Compact chrome: a short bar still grows, but no longer forces a wrap.
+  mbarCompact: { flexBasis: 40 },
   mbarFill: { position: 'absolute', left: 0, top: 0, bottom: 0 },
   mpct: { fontFamily: MON_FONT_OSD, fontSize: 16, color: MON.phosphor, minWidth: 40, textAlign: 'right' },
   costs: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 14, rowGap: 2 },

@@ -72,6 +72,7 @@ import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-
 import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-registration';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
+import { findActionApprovalReplyTarget, resolveActionApprovalFromChat } from '@/lib/agent-action-chat-approval';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
@@ -986,6 +987,43 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             target.decision,
             detectMessageLocale(userText),
           );
+          store.addMessage(paneId, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() });
+          return;
+        }
+      }
+
+      // A background agent's per-run ACTION approval, asked as plain text in
+      // the agent's own thread (lib/agent-action-chat-approval.ts, posted by
+      // the RN approval drain next to the notification). A bare "OK" / "NO"
+      // answers it only when that ask is the latest assistant line and no
+      // other question is open; "ok <hash8>" names an older one. The answer
+      // goes through the SAME native read-then-resolve as the review screen
+      // (single-use nonce minted at this moment, content hash re-checked);
+      // review-required types open the review screen instead of accepting.
+      {
+        const conv = store.getOrCreate(paneId);
+        const sessionOpen =
+          !!conv.pendingAgentSession && Date.now() - conv.pendingAgentSession.createdAt <= SLOT_FILL_STALE_MS;
+        const freshest = freshestMsgForPendingCheck as (ChatMessage & Record<string, unknown>) | undefined;
+        const otherQuestionOpen =
+          !!freshest &&
+          freshest.role === 'assistant' &&
+          ['pendingSlotFill', 'pendingGlobalMemory', 'pendingAgentDelete', 'pendingPolicyRule', 'pendingTrustRule', 'pendingPolicyRevoke', 'pendingPolicyReset', 'pendingClosePawShell'].some(
+            (k) => !!freshest[k],
+          );
+        const target = userText.trim().startsWith('@')
+          ? null
+          : findActionApprovalReplyTarget({
+              text: userText,
+              messages: conv.messages,
+              now: Date.now(),
+              otherPromptOpen: sessionOpen || hasFresherOwnSlotFillQuestion || otherQuestionOpen,
+            });
+        if (target) {
+          store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          // Reply in the app language: the ask line was posted in it, and a
+          // bare "ok" carries no language of its own.
+          const reply = await resolveActionApprovalFromChat(target, paneId);
           store.addMessage(paneId, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() });
           return;
         }
