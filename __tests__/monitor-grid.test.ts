@@ -148,6 +148,34 @@ describe('computeMonitorGrid', () => {
     expect(g.cellH).toBe(CARD_INSET + g.screenH + HUD_GAP + hudHeight(g.hud));
   });
 
+  it('Fold6 unfolded, IME open: 4 cameras on a ~583x95dp wall are one whole 95dp row (title HUD, 104x52 picture)', () => {
+    // On-device measurements (2026-10-31, Galaxy Z Fold6, 2.9 px/dp): wall
+    // 583 x 95dp (cards measured 136-139dp wide, picture 107 x 53dp). The
+    // cell must be exactly the wall's height, never taller, and its HUD the
+    // title + bar rows only, so the row is whole: nothing to cut.
+    for (const w of [583, 571]) {
+      const g = computeMonitorGrid(w, 95, 4);
+      expectInside(g, w, 95, 4);
+      expect(g).toMatchObject({ cols: 4, rows: 1, hud: 'title', screenW: 104, screenH: 52, cellH: 95 });
+      expect(g.cellW).toBe(Math.floor((w - GRID_GAP * 3) / 4));
+      expect(g.cellH).toBe(CARD_INSET + 52 + HUD_GAP + hudHeight('title'));
+    }
+  });
+
+  it('never gives a row more height than the wall, at any pane size (rows are whole or dropped)', () => {
+    for (let w = 320; w <= 1720; w += 37) {
+      for (let h = 60; h <= 700; h += 7) {
+        for (const n of [1, 2, 3, 4, 5, 8]) {
+          const g = computeMonitorGrid(w, h, n);
+          if (!g.fits) continue;
+          expect(g.rows * g.cellH + GRID_GAP * (g.rows - 1)).toBeLessThanOrEqual(h);
+          expect(g.cellH).toBe(cellHeightFor(g.screenH, g.hud));
+          expect(g.screenW).toBeLessThanOrEqual(g.cellW - inset);
+        }
+      }
+    }
+  });
+
   it('falls back to a scrolling wall when no layout fits', () => {
     const tiny = computeMonitorGrid(300, 80, 8);
     expect(tiny.fits).toBe(false);

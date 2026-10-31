@@ -618,6 +618,59 @@ describe('MonitorPane LIVE source', () => {
     expect(mockRunAgentNow).toHaveBeenCalledWith('digest', expect.any(Function));
     utils.unmount();
   });
+
+  it('keyboard up (Fold6, 4 LIVE cameras on a 95dp wall): every card and its picture have exact heights inside the wall', () => {
+    // On-device numbers (Galaxy Z Fold6 unfolded, in-app keyboard open): the
+    // wall measured ~583 x 95dp, 4 cameras in one row; the caption row was
+    // pushed ~30dp below the picture and cut at the wall's bottom edge.
+    const run = liveRun({
+      stepCount: 4,
+      branches: [0, 1, 2, 3].map((i) => ({
+        branchId: `run-1#${i}`,
+        stepIndex: i,
+        state: i < 2 ? ('DONE' as const) : i === 2 ? ('RUNNING' as const) : ('STANDBY' as const),
+        tail: `step ${i}`,
+        startedAt: i <= 2 ? iso(20 - i) : undefined,
+        updatedAt: iso(2),
+      })),
+    });
+    seed(run);
+    const utils = render(<MonitorPane />);
+    const flat = (node: { props: { style: unknown } }) =>
+      Object.assign({}, ...[node.props.style].flat(3).filter(Boolean)) as Record<string, unknown>;
+    const layoutOf = (id: string, width: number, height: number) =>
+      fireEvent(utils.getByTestId(id), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width, height } } });
+    // Pane 603 x 396 with 110dp of chrome above and 150dp below:
+    // wallH = 396 - 2*PAD - 2*ROOT_GAP - 110 - 150 - 1 = 95.
+    layoutOf('monitor-root', 603, 396);
+    layoutOf('monitor-chrome-top', 583, 110);
+    layoutOf('monitor-chrome-bottom', 583, 150);
+    layoutOf('monitor-wall', 583, 0);
+    const wallH = 95;
+    expect(flat(utils.getByTestId('monitor-wall')).height).toBe(wallH);
+    expect(utils.getByTestId('monitor-grid-fit')).toBeTruthy();
+
+    const g = computeMonitorGrid(583, wallH, 4);
+    expect(g).toMatchObject({ fits: true, cols: 4, rows: 1, hud: 'title', screenW: 104, screenH: 52, cellH: 95 });
+    expect(g.rows * g.cellH).toBeLessThanOrEqual(wallH);
+    for (let i = 0; i < 4; i++) {
+      const card = flat(utils.getByTestId(`monitor-cam-s${i}`));
+      const picture = flat(utils.getByTestId(`monitor-cam-picture-s${i}`));
+      // The card is exactly the computed cell, inside the wall.
+      expect(card.height).toBe(g.cellH);
+      expect(card.width).toBe(g.cellW);
+      expect(card.height as number).toBeLessThanOrEqual(wallH);
+      // The picture box is exactly the picture: not a flex share of the card,
+      // so the caption rows below it cannot be pushed past the card's edge.
+      expect(picture.height).toBe(g.screenH);
+      expect(picture.flex).toBeUndefined();
+      expect(picture.flexGrow).toBe(0);
+      expect(picture.flexShrink).toBe(0);
+      // Title-level HUD on this strip: the meta row is dropped whole, not cut.
+      expect(utils.queryByTestId(`monitor-meta-s${i}`)).toBeNull();
+    }
+    utils.unmount();
+  });
 });
 
 describe('MonitorPane MAP register / run / team file', () => {

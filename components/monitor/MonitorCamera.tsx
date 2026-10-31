@@ -337,8 +337,13 @@ function MonitorCameraImpl(props: Props) {
         accessibilityRole="button"
         accessibilityLabel={`${def.channel} ${def.name} · ${def.providerName}`}
         style={[styles.cam, styles.camFit, { width: fit.width, height: fit.height }, isApproval && styles.camApproval]}
+        testID={`monitor-cam-${def.id}`}
       >
-        <View style={styles.fitScreen}>
+        {/* The picture box is exactly the picture (never a flex share of the
+            card): the HUD rows below it sit at fixed offsets, so no leftover
+            height can open a band above them or push them past the card's
+            bottom edge. */}
+        <View style={[styles.fitScreen, { height: fit.screenH }]} testID={`monitor-cam-picture-${def.id}`}>
           <CameraScreen {...props} />
         </View>
         <View style={styles.fitRow}>
@@ -513,7 +518,7 @@ export function NoSignalCamera({
   if (fit) {
     return (
       <View style={[styles.cam, styles.camFit, { width: fit.width, height: fit.height }]}>
-        <View style={styles.fitScreen}>{screen}</View>
+        <View style={[styles.fitScreen, { height: fit.screenH }]}>{screen}</View>
         <View style={styles.fitRow}>
           <Text style={[styles.name, styles.fitName]} numberOfLines={1}>
             {t('monitor.empty')}
@@ -591,12 +596,23 @@ const styles = StyleSheet.create({
   },
   logLine: { fontFamily: MON_FONT_MONO, fontSize: 11.5, color: MON.phosphor },
   // ── Fitted GRID cell: row heights match monitor-grid.ts exactly ──
-  // The card is exactly its content (cellHeightFor). The HUD rows never
-  // shrink, so if anything is ever short of room it is the picture box that
-  // gives way (clipped at its bottom edge), never the caption rows. The
-  // picture sits at the card's top edge: no band above it.
+  // The card is exactly its content (cellHeightFor) and every child has an
+  // explicit height: the picture box gets `fit.screenH` inline (never a flex
+  // share of the card), the HUD rows their line heights, and none of them
+  // grows or shrinks. Nothing in the card is left to flex distribution, so
+  // the rows sit at inset + picture + gaps regardless of how the native
+  // layout resolves the card's own height — the on-device clipping bug was a
+  // flex:1 picture box that took the card's whole inner height and pushed
+  // the caption rows past its clipped bottom edge.
   camFit: { padding: CARD_PAD, borderWidth: CARD_BORDER, gap: HUD_GAP, overflow: 'hidden' },
-  fitScreen: { flex: 1, minHeight: 0, alignItems: 'center', justifyContent: 'flex-start', overflow: 'hidden' },
+  fitScreen: {
+    flexGrow: 0,
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    overflow: 'hidden',
+  },
   fitRow: {
     flexDirection: 'row',
     alignItems: 'center',
