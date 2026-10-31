@@ -3,7 +3,9 @@
  *
  * One table per CLI so every surface (labels, NL tool mentions, MONITOR
  * provider ids / picker, provider overrides, the run-script generator, the
- * driver engine) reads the same facts. Adding a CLI (e.g. Antigravity `agy`)
+ * driver engine) reads the same facts. (Antigravity `agy` is deliberately NOT a
+ * worker: Google does not support launching it from third-party agents on
+ * consumer plans, so Shelly never starts it automatically.) Adding a CLI
  * means: a new AgentCliId in store/types.ts, a row here, an `--engine` in
  * scripts/shelly-agent-driver.js that maps its permission requests onto the
  * shared gateCommandActions() core, and the MONITOR / override enums.

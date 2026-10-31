@@ -157,6 +157,8 @@ const en: Record<string, string> = {
   'settings.groq_api_key_label': 'Groq API Key',
   'settings.groq_model_label': 'Groq Model',
   'settings.perplexity_api_key_label': 'Perplexity API Key',
+  'settings.anthropic_api_key_label': 'Anthropic API Key',
+  'settings.claude_subscription_unattended_label': 'Claude subscription for unattended runs',
   'settings.gemini_api_key_label': 'Gemini API Key',
   'settings.gemini_model_label': 'Gemini Model',
   'settings.autonomous_cloud_label': 'Autonomous Cloud',

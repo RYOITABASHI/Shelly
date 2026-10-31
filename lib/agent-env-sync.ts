@@ -54,7 +54,9 @@ export async function reconcileApiKeysToEnv(): Promise<void> {
       cerebrasApiKey: s.cerebrasApiKey ?? '',
       groqApiKey: s.groqApiKey ?? '',
       perplexityApiKey: s.perplexityApiKey ?? '',
+      anthropicApiKey: s.anthropicApiKey ?? '',
       autonomousCloudConsent: s.autonomousCloudConsent ?? false,
+      claudeSubscriptionUnattended: s.claudeSubscriptionUnattended ?? true,
     });
     const cmd = useAgentStore.getState().consumePendingEnvSync();
     if (!cmd) return;

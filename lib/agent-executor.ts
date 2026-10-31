@@ -6890,6 +6890,15 @@ fi`;
  */
 /** Claude glibc S4: `--engine claude` (+ its usage sidecar) for the driver;
  *  '' for Codex so every Codex script stays byte-identical. */
+/** Claude glibc S4 (ToS gate): the driver alone decides the Claude credential
+ *  (shelly-agent-driver.js claudeAuthPlan). It gets ANTHROPIC_API_KEY and the
+ *  unattended-subscription opt-in from the sourced .env as a one-command env
+ *  prefix — never argv, never exported to the rest of the script. '' for Codex. */
+export function driverEnvPrefix(engine: AgentCliId | undefined): string {
+  if (engine !== 'claude') return '';
+  return 'ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED="${SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED:-1}" ';
+}
+
 export function driverEngineArgs(engine: AgentCliId | undefined, indent: string): string {
   if (!engine || engine === 'codex') return '';
   return `${indent}--engine ${engine} \\\n${indent}--usage-file "$RESULT_FILE.usage.json" \\\n`;
@@ -6912,7 +6921,7 @@ DRIVER_CWD="\${AGENT_WORKSPACE_ROOT:-$PROJECT_DIR}"
 if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   rm -f "$RESULT_FILE.answer"
   set +e
-  shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+  ${driverEnvPrefix(engine)}shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
 ${driverEngineArgs(engine, '    ')}    --cwd "$DRIVER_CWD" \\
     --approval-policy untrusted \\
     --policy-json ${shellQuote(policyJson)} \\
@@ -7146,7 +7155,7 @@ function codexOrchestrationDriverBlock(resultVarIn: string, policyJson: string, 
       "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_STEP_TOTAL" ${toolJsonArg} "$(date +%s)" > "$CURRENT_STEP_TMP"
     mv "$CURRENT_STEP_TMP" "$LOG_DIR/current.json"
     set +e
-    shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
+    ${driverEnvPrefix(engine)}shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
 ${driverEngineArgs(engine, '      ')}      --cwd "$DRIVER_CWD" \\
       --approval-policy untrusted \\
       --policy-json ${shellQuote(policyJson)} \\

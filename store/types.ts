@@ -367,6 +367,11 @@ export type AppSettings = {
   /** The SINGLE pre-authorized chat id; messages from any other chat are dropped. */
   telegramAuthorizedChatId?: string;
 
+  // ─── Anthropic API (Claude Code agent worker) ─────────────────────────────
+  /** Anthropic API key (console.anthropic.com). Used ONLY by Claude Code agent
+   *  runs (synced to .env as ANTHROPIC_API_KEY, passed to claude in its child
+   *  env); preferred over the claude.ai subscription whenever set. */
+  anthropicApiKey?: string;
   // ─── Perplexity Sonar API ────────────────────────────────────────────────────────
   /** Perplexity Sonar API キー (https://www.perplexity.ai/settings/api) */
   perplexityApiKey?: string;
@@ -467,6 +472,16 @@ export type AppSettings = {
    *  request to the provider and is never sent to the model; what this gates is
    *  unattended quota/cost usage. secret-guard still always forces local. */
   autonomousCloudConsent?: boolean;
+  /** Claude glibc S4 (ToS gate): may an UNATTENDED (scheduled / alarm) Claude
+   *  Code agent run use the logged-in claude.ai subscription when no Anthropic
+   *  API key is configured? Default ON (owner decision 2026-10-31: schedules are
+   *  owner-configured and run on the owner's own login / setup-token, which
+   *  Anthropic provides for non-interactive use). OFF = such runs are refused.
+   *  Attended Run now may always use the subscription; an API key, when set, is
+   *  always preferred. Synced to .env as
+   *  SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED and enforced in
+   *  scripts/shelly-agent-driver.js claudeAuthPlan(). */
+  claudeSubscriptionUnattended?: boolean;
   /** On cloud quota exhaustion (HTTP 429) during an autonomous web task:
    *  'escalate' (default) climbs to Codex; 'stop' halts at the free tier and
    *  reports exhaustion instead of consuming Codex / paid quota. */

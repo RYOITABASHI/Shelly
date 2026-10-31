@@ -465,7 +465,8 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-283)', () =>
     expect(fn).toContain('__sh="$__root/bin/bash"');
     expect(fn).toContain('[ "$(readlink "$__sh" 2>/dev/null)" = /system/bin/sh ] || ln -sfn /system/bin/sh "$__sh"');
     const env = /cat > "\$__envf\.\$BASHPID\.tmp" <<'__SHELLY_CLAUDE_ENV'\n([^]*?)\n__SHELLY_CLAUDE_ENV\n    mv -f "\$__envf\.\$BASHPID\.tmp" "\$__envf"\n/.exec(fn)![1];
-    expect(env).toMatch(/^if \[ -z "\$\{BASH_VERSION:-\}" \]; then\n/);
+    // S4 (v283): the env file first drops claude's own credentials for tool commands.
+    expect(env).toMatch(/^unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN\nif \[ -z "\$\{BASH_VERSION:-\}" \]; then\n/);
     expect(env).toMatch(/\/system\/bin\/linker64 \S+\/shelly_shell -c 'mapfile -d "" -t __a < \/proc\/\$PPID\/cmdline; eval "\$\{__a\[-1\]\}"'/);
     expect(env).toMatch(/\n  exit \$\?\nfi$/);
   });
@@ -487,7 +488,8 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-283)', () =>
   });
 
   it('loads ~/.claude-token.env only inside the subshell when no token is set', () => {
-    expect(fn).toMatch(/\n    umask 077\n(?:    #[^\n]*\n)*    if \[ -z "\$\{CLAUDE_CODE_OAUTH_TOKEN:-\}" \] && \[ -f "\$HOME\/\.claude-token\.env" \]; then \. "\$HOME\/\.claude-token\.env"; fi\n/);
+    // S4 (v283): an agent worker on the API key (SHELLY_CLAUDE_AUTH=api-key) never loads it.
+    expect(fn).toMatch(/\n    umask 077\n(?:    #[^\n]*\n)*    case "\$\{SHELLY_CLAUDE_AUTH:-\}" in\n      api-key\) unset CLAUDE_CODE_OAUTH_TOKEN ;;\n      subscription\) unset ANTHROPIC_API_KEY ;;\n    esac\n    if \[ "\$\{SHELLY_CLAUDE_AUTH:-\}" != api-key \] && \[ -z "\$\{CLAUDE_CODE_OAUTH_TOKEN:-\}" \] && \[ -f "\$HOME\/\.claude-token\.env" \]; then \. "\$HOME\/\.claude-token\.env"; fi\n/);
   });
 
   it('marks the force-TUI paste mode around claude so a pasted OAuth code is not corrupted', () => {

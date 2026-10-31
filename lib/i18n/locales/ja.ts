@@ -157,6 +157,8 @@ const ja: Record<string, string> = {
   'settings.groq_api_key_label': 'Groq APIキー',
   'settings.groq_model_label': 'Groqモデル',
   'settings.perplexity_api_key_label': 'Perplexity APIキー',
+  'settings.anthropic_api_key_label': 'Anthropic APIキー',
+  'settings.claude_subscription_unattended_label': '無人実行でClaudeのサブスクを使う',
   'settings.gemini_api_key_label': 'Gemini APIキー',
   'settings.gemini_model_label': 'Geminiモデル',
   'settings.autonomous_cloud_label': '自律クラウド',

@@ -113,6 +113,7 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
       { key: 'groqModel',       label: 'Groq Model', labelKey: 'settings.groq_model_label',      type: 'string',  source: 'settings', description: 'e.g. openai/gpt-oss-120b' },
       { key: 'cerebrasApiKey',  label: 'Cerebras API Key', labelKey: 'settings.cerebras_key', type: 'secret', source: 'settings' },
       { key: 'openrouterApiKey', label: 'OpenRouter API Key', labelKey: 'settings.openrouter_key', type: 'secret', source: 'settings' },
+      { key: 'anthropicApiKey', label: 'Anthropic API Key', labelKey: 'settings.anthropic_api_key_label', type: 'secret', source: 'settings', description: 'Claude Code agent runs only. Preferred over your claude.ai subscription when set.' },
       { key: 'perplexityApiKey',label: 'Perplexity API Key', labelKey: 'settings.perplexity_api_key_label', type: 'secret', source: 'settings' },
       { key: 'geminiApiKey',    label: 'Gemini API Key', labelKey: 'settings.gemini_api_key_label',   type: 'secret',  source: 'settings' },
       { key: 'geminiModel',     label: 'Gemini Model', labelKey: 'settings.gemini_model_label',     type: 'string',  source: 'settings', description: 'default gemini-2.5-flash (free tier + grounding)' },
@@ -130,6 +131,7 @@ const SECTIONS: { title: string; titleKey?: string; icon: string; items: Setting
     icon: 'smart-toy',
     items: [
       { key: 'autonomousCloudConsent', label: 'Autonomous Cloud', labelKey: 'settings.autonomous_cloud_label', type: 'boolean', source: 'settings', description: 'Let autonomous agents use your Gemini/Perplexity key UNATTENDED for web tasks (news/research). The key never reaches the model; it consumes your quota without asking. Default off.' },
+      { key: 'claudeSubscriptionUnattended', label: 'Claude subscription for unattended runs', labelKey: 'settings.claude_subscription_unattended_label', type: 'boolean', source: 'settings', description: 'Without an Anthropic API key, scheduled (unattended) Claude Code agent runs use your logged-in claude.ai subscription / setup-token. Turn off to refuse them instead. Run now always may. Default on.' },
       { key: 'autonomousCloudOnExhaustion', label: 'On Quota Exhausted', labelKey: 'settings.autonomous_cloud_exhaustion_label', type: 'enum', options: ['escalate', 'stop'], source: 'settings', description: 'When the cloud free tier hits 429: escalate to Codex, or stop and retry next schedule.' },
       // Scoped EXACTLY to what lib/agent-action-reversibility.ts allows: a
       // `draft` write into the local $HOME/agent-output workspace. 2026-08-04:
@@ -738,6 +740,22 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
         });
         if (!ok) return; // leave the toggle OFF
       }
+      // Claude glibc S4: unattended use of a consumer subscription is a terms
+      // question the user must decide knowingly; default OFF.
+      if (def.key === 'claudeSubscriptionUnattended' && rawValue === true) {
+        const ok = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            'Claude subscription for unattended runs',
+            'Scheduled Claude Code agent runs will use your logged-in claude.ai subscription when no Anthropic API key is set.\n\n• Anthropic’s Consumer Terms limit automated access to a subscription; an API key is the supported way to run unattended.\n• Run now (you are present) can use the subscription without this setting.\n\nEnable?',
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Enable', style: 'destructive', onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          );
+        });
+        if (!ok) return; // leave the toggle OFF
+      }
       // Same informed-consent shape as Autonomous Cloud above: this opt-in
       // removes a per-run human tap, so it states its own (narrow) blast
       // radius before it can be turned on.
@@ -848,7 +866,7 @@ export function ConfigTUI({ visible, onClose }: ConfigTUIProps) {
             // Consent flush also re-bakes autonomous agents' on-disk scripts so
             // a scheduled fire picks up the toggle immediately (N1 follow-up).
             await flushAutonomousCloudEnvSync(def.label);
-          } else if (def.type === 'secret' || def.key === 'geminiModel') {
+          } else if (def.type === 'secret' || def.key === 'geminiModel' || def.key === 'claudeSubscriptionUnattended') {
             await flushPendingAgentEnvSync(def.label);
           }
         }

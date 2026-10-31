@@ -151,6 +151,9 @@ describe('run script generation', () => {
     expect(script).toContain('USAGE_FIELDS=",\\"usage\\":$USAGE_RAW"');
     // never a raw claude invocation or the prompt in argv
     expect(script).not.toMatch(/shelly-claude-run\.sh|shelly-claude-glibc|claude -p/);
+    // ToS gate: the key and the unattended opt-in reach ONLY the driver call, as an env prefix
+    expect(script).toContain('  ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED="${SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED:-1}" shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js"');
+    expect(script).not.toMatch(/export ANTHROPIC_API_KEY|--api-key/);
   });
 
   it('Codex and local scripts carry nothing Claude-specific', () => {
@@ -159,6 +162,7 @@ describe('run script generation', () => {
       expect(script).not.toContain('--engine');
       expect(script).not.toContain('USAGE_FIELDS');
       expect(script).not.toContain('usage.json');
+      expect(script).not.toContain('ANTHROPIC_API_KEY');
     }
   });
 
@@ -228,57 +232,144 @@ describe('driver: Claude engine', () => {
     expect(env.SHELLY_CLAUDE_SETTINGS_JSON).toBe(driver.claudeAgentSettingsJson());
   });
 
-  it('host E2E: every can_use_tool goes through the real gate; unattended gray is declined', () => {
+  /** Run the real driver against the fake claude; returns stdout, exit status and the fake's record. */
+  function runFake(opts: { policy: object; env?: Record<string, string>; tools?: object[] }) {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's4-drv-'));
     const ws = fs.mkdtempSync(path.join(os.tmpdir(), 's4-ws-'));
-    try {
-      fs.writeFileSync(path.join(tmp, 'prompt.txt'), 'S4-PROMPT-SENTINEL');
-      const rec = path.join(tmp, 'rec.json');
-      const out = childProcess.execFileSync(process.execPath, [
-        path.join(root, 'scripts/shelly-agent-driver.js'),
-        '--engine', 'claude',
-        '--cwd', ws,
-        '--prompt-file', path.join(tmp, 'prompt.txt'),
-        '--policy-json', JSON.stringify({ unattended: true }),
-        '--gate-script', path.join(root, 'modules/terminal-emulator/android/src/main/assets/shelly-gate-decide.js'),
-        '--claude-runner', path.join(root, '__tests__/fixtures/fake-claude-stream.js'),
-        '--claude-runner-interpreter', process.execPath,
-        '--answer-file', path.join(tmp, 'answer.md'),
-        '--usage-file', path.join(tmp, 'usage.json'),
-        '--audit-log', path.join(tmp, 'audit.jsonl'),
-        '--timeout-ms', '30000',
-      ], {
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          HOME: tmp,
-          CLAUDE_CODE_SHELL: '/evil',
-          FAKE_CLAUDE_RECORD: rec,
-          FAKE_CLAUDE_TOOLS: JSON.stringify([
-            { tool_name: 'Bash', input: { command: 'ls' } },
-            { tool_name: 'Bash', input: { command: 'curl https://example.com' } },
-            { tool_name: 'Read', input: { file_path: path.join(ws, 'a.txt') } },
-            { tool_name: 'Read', input: { file_path: '/etc/passwd' } },
-            { tool_name: 'Write', input: { file_path: path.join(ws, 'b.txt'), content: 'x' } },
-            { tool_name: 'WebFetch', input: { url: 'https://x' } },
-          ]),
-        },
-      });
-      expect(fs.readFileSync(path.join(tmp, 'answer.md'), 'utf8')).toBe('decisions: allow,deny,allow,deny,allow,deny');
-      expect(JSON.parse(fs.readFileSync(path.join(tmp, 'usage.json'), 'utf8'))).toEqual({ inputTokens: 115, outputTokens: 42 });
-      const r = JSON.parse(fs.readFileSync(rec, 'utf8'));
-      expect(r.prompt).toBe('S4-PROMPT-SENTINEL');
-      expect(r.claudeCodeShell).toBeNull();
-      expect(r.argv).toEqual(driver.claudeAgentArgs());
-      expect(out).not.toContain('S4-PROMPT-SENTINEL');
-      const gates = out.split('\n').filter((l) => l.startsWith('GATE '));
-      expect(gates).toHaveLength(6);
-      expect(out).toContain('escalation_denied_unattended');
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
-      fs.rmSync(ws, { recursive: true, force: true });
-    }
+    fs.writeFileSync(path.join(tmp, 'prompt.txt'), 'S4-PROMPT-SENTINEL');
+    const rec = path.join(tmp, 'rec.json');
+    const baseEnv: Record<string, string | undefined> = { ...process.env };
+    for (const k of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED']) delete baseEnv[k];
+    const r = childProcess.spawnSync(process.execPath, [
+      path.join(root, 'scripts/shelly-agent-driver.js'),
+      '--engine', 'claude',
+      '--cwd', ws,
+      '--prompt-file', path.join(tmp, 'prompt.txt'),
+      '--policy-json', JSON.stringify(opts.policy),
+      '--gate-script', path.join(root, 'modules/terminal-emulator/android/src/main/assets/shelly-gate-decide.js'),
+      '--claude-runner', path.join(root, '__tests__/fixtures/fake-claude-stream.js'),
+      '--claude-runner-interpreter', process.execPath,
+      '--answer-file', path.join(tmp, 'answer.md'),
+      '--usage-file', path.join(tmp, 'usage.json'),
+      '--audit-log', path.join(tmp, 'audit.jsonl'),
+      '--timeout-ms', '30000',
+    ], {
+      encoding: 'utf8',
+      env: {
+        ...baseEnv,
+        HOME: tmp,
+        CLAUDE_CODE_SHELL: '/evil',
+        CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test-token',
+        FAKE_CLAUDE_RECORD: rec,
+        FAKE_CLAUDE_TOOLS: JSON.stringify((opts.tools ?? []).map((t) => (typeof t === 'function' ? (t as (w: string) => object)(ws) : t))),
+        ...(opts.env ?? {}),
+      } as NodeJS.ProcessEnv,
+    });
+    const read = (p: string) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null);
+    const result = {
+      out: `${r.stdout}${r.stderr}`,
+      status: r.status,
+      answer: read(path.join(tmp, 'answer.md')),
+      usage: read(path.join(tmp, 'usage.json')),
+      rec: read(rec) ? JSON.parse(read(rec)!) : null,
+      ws,
+    };
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(ws, { recursive: true, force: true });
+    return result;
+  }
+
+  it('host E2E: every can_use_tool goes through the real gate; unattended gray is declined', () => {
+    const tools = [
+      { tool_name: 'Bash', input: { command: 'ls' } },
+      { tool_name: 'Bash', input: { command: 'curl https://example.com' } },
+      (ws: string) => ({ tool_name: 'Read', input: { file_path: path.join(ws, 'a.txt') } }),
+      { tool_name: 'Read', input: { file_path: '/etc/passwd' } },
+      (ws: string) => ({ tool_name: 'Write', input: { file_path: path.join(ws, 'b.txt'), content: 'x' } }),
+      { tool_name: 'WebFetch', input: { url: 'https://x' } },
+    ];
+    const r = runFake({ policy: { unattended: true }, env: { ANTHROPIC_API_KEY: 'sk-ant-test-key' }, tools });
+    expect(r.status).toBe(0);
+    expect(r.answer).toBe('decisions: allow,deny,allow,deny,allow,deny');
+    // API-key billed → USD is recorded too.
+    expect(JSON.parse(r.usage!)).toEqual({ inputTokens: 115, outputTokens: 42, usd: 0.0123 });
+    expect(r.rec.prompt).toBe('S4-PROMPT-SENTINEL');
+    expect(r.rec.claudeCodeShell).toBeNull();
+    expect(r.rec.argv).toEqual(driver.claudeAgentArgs());
+    expect(r.out).not.toContain('S4-PROMPT-SENTINEL');
+    expect(r.out).not.toContain('sk-ant-test-key');
+    expect(r.out.split('\n').filter((l) => l.startsWith('GATE '))).toHaveLength(6);
+    expect(r.out).toContain('escalation_denied_unattended');
   }, 60_000);
+
+  describe('credential source (ToS gate)', () => {
+    it('plan: API key first; subscription attended, and unattended unless turned off (default on)', () => {
+      expect(driver.claudeAuthPlan({ unattended: true }, { ANTHROPIC_API_KEY: 'k' }).source).toBe('api-key');
+      expect(driver.claudeAuthPlan({}, { ANTHROPIC_API_KEY: 'k' }).source).toBe('api-key');
+      expect(driver.claudeAuthPlan({}, {}).source).toBe('subscription');
+      expect(driver.claudeAuthPlan({ unattended: true }, { ANTHROPIC_API_KEY: ' ' }).source).toBe('subscription');
+      expect(driver.claudeAuthPlan({ unattended: true }, {}).source).toBe('subscription');
+      expect(driver.claudeAuthPlan({ unattended: true }, { SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '1' }).source).toBe('subscription');
+      expect(driver.claudeAuthPlan({ unattended: true }, { SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '0' }).source).toBeNull();
+      expect(driver.claudeAuthPlan({ unattended: true }, { SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '0' }).refusal).toMatch(/claudeSubscriptionUnattended/);
+      // turned off still allows an API key and attended runs
+      expect(driver.claudeAuthPlan({ unattended: true }, { SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '0', ANTHROPIC_API_KEY: 'k' }).source).toBe('api-key');
+      expect(driver.claudeAuthPlan({}, { SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '0' }).source).toBe('subscription');
+    });
+
+    it('child env carries exactly one credential kind', () => {
+      const input = { ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_OAUTH_TOKEN: 't', ANTHROPIC_AUTH_TOKEN: 'x', SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '1' };
+      const keyEnv = driver.claudeChildEnv(input, { source: 'api-key' });
+      expect(keyEnv.ANTHROPIC_API_KEY).toBe('k');
+      expect(keyEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(keyEnv.SHELLY_CLAUDE_AUTH).toBe('api-key');
+      const subEnv = driver.claudeChildEnv(input, { source: 'subscription' });
+      expect(subEnv.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(subEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe('t');
+      expect(subEnv.SHELLY_CLAUDE_AUTH).toBe('subscription');
+      for (const e of [keyEnv, subEnv]) {
+        expect(e.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+        expect(e.SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED).toBeUndefined();
+      }
+    });
+
+    it('unattended, no key, setting turned off: refused before claude starts', () => {
+      const r = runFake({ policy: { unattended: true }, env: { SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '0' } });
+      expect(r.status).toBe(1);
+      expect(r.rec).toBeNull();
+      expect(r.answer).toBeNull();
+      expect(r.out).toContain('CLAUDE_ERROR Claude Code unattended run refused');
+    }, 30_000);
+
+    it('unattended by default, or attended: the subscription is used, never a key', () => {
+      const optIn = runFake({ policy: { unattended: true } });
+      expect(optIn.status).toBe(0);
+      expect(optIn.rec.auth).toBe('subscription');
+      expect(optIn.rec.apiKey).toBeNull();
+      expect(optIn.rec.oauthToken).toBe('oauth-test-token');
+      expect(optIn.rec.optIn).toBeNull();
+      // subscription: tokens only, no USD
+      expect(JSON.parse(optIn.usage!)).toEqual({ inputTokens: 115, outputTokens: 42 });
+      const attended = runFake({ policy: {} });
+      expect(attended.status).toBe(0);
+      expect(attended.rec.auth).toBe('subscription');
+    }, 60_000);
+
+    it('API key configured: the key is used and the subscription token withheld', () => {
+      const r = runFake({ policy: {}, env: { ANTHROPIC_API_KEY: 'sk-ant-test-key' } });
+      expect(r.status).toBe(0);
+      expect(r.rec.auth).toBe('api-key');
+      expect(r.rec.apiKey).toBe('sk-ant-test-key');
+      expect(r.rec.oauthToken).toBeNull();
+    }, 30_000);
+
+    it('fails closed when claude reports a different credential than planned (unattended, setting off)', () => {
+      const r = runFake({ policy: { unattended: true }, env: { ANTHROPIC_API_KEY: 'sk-ant-test-key', FAKE_CLAUDE_API_KEY_SOURCE: 'none', SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '0' } });
+      expect(r.status).toBe(1);
+      expect(r.answer).toBeNull();
+      expect(r.out).toContain('claude_auth_mismatch');
+    }, 30_000);
+  });
 
   it('a failed claude result writes no answer and exits non-zero', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 's4-fail-'));
@@ -359,6 +450,25 @@ describe('HomeInitializer: one shelly-claude-glibc() for .bashrc and the agent r
     expect(homeKt).toContain('val claudeRunner = File(home, ".shelly-claude-run.sh")');
     expect(homeKt).toContain('tmp.writeText(claudeRunnerScript(libDir))');
     expect(homeKt).toContain('tmp.setExecutable(false, false); tmp.setExecutable(true, true)');
+  });
+
+  it('ToS gate: the function honors the driver-chosen credential and tool shells never see one', () => {
+    expect(homeKt).toContain('sb.appendLine("      api-key) unset CLAUDE_CODE_OAUTH_TOKEN ;;")');
+    expect(homeKt).toContain('sb.appendLine("      subscription) unset ANTHROPIC_API_KEY ;;")');
+    expect(homeKt).toContain('sb.appendLine("    if [ \\"\\${SHELLY_CLAUDE_AUTH:-}\\" != api-key ] && [ -z \\"\\${CLAUDE_CODE_OAUTH_TOKEN:-}\\" ] && [ -f \\"\\$HOME/.claude-token.env\\" ]; then . \\"\\$HOME/.claude-token.env\\"; fi")');
+    // first line of the Bash-tool env file (inlined into every -c)
+    expect(homeKt).toMatch(/__SHELLY_CLAUDE_ENV'"\)\r?\n\s*sb\.appendLine\("unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN"\)/);
+    expect(homeKt).toContain('unset BROWSER DISPLAY WAYLAND_DISPLAY SHELLY_CLAUDE_SETTINGS_JSON SHELLY_CLAUDE_AUTH');
+  });
+
+  it('settings: API key in SecureStore + .env, unattended subscription defaults ON and can be turned off', () => {
+    const secure = fs.readFileSync(path.join(root, 'lib/secure-store.ts'), 'utf8');
+    expect(secure).toContain("'anthropicApiKey',");
+    const store = fs.readFileSync(path.join(root, 'store/settings-store.ts'), 'utf8');
+    expect(store).toContain("envUpdates.push(['ANTHROPIC_API_KEY', newSettings.anthropicApiKey]);");
+    expect(store).toContain("envUpdates.push(['SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED', newSettings.claudeSubscriptionUnattended === false ? '0' : '1']);");
+    expect(store).toMatch(/\n  claudeSubscriptionUnattended: true,\r?\n/);
+    expect(fs.readFileSync(path.join(root, 'lib/agent-env-sync.ts'), 'utf8')).toContain('claudeSubscriptionUnattended: s.claudeSubscriptionUnattended ?? true,');
   });
 
   it('the generated function + runner are valid bash', () => {

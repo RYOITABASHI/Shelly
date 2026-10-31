@@ -2318,14 +2318,68 @@ function writeUsageFile(usageFile, usageValue) {
   return true;
 }
 
-function claudeChildEnv(input) {
+// ─── Claude credential source (ToS gate) ────────────────────────────────────
+//
+// Which credential a Claude Code agent run may use is decided HERE, before
+// claude starts, and re-checked against claude's own report (system/init
+// apiKeySource):
+//
+//  - ANTHROPIC_API_KEY configured (Shelly Settings → .shelly/agents/.env,
+//    handed to this process by the run script for this one call) → the run
+//    uses the API key, attended or not. The subscription token is withheld.
+//  - No API key, ATTENDED run (a person pressed Run now; policy.unattended is
+//    not true) → the logged-in claude.ai subscription (/login credentials or
+//    ~/.claude-token.env) may be used: the user is present.
+//  - No API key, UNATTENDED run (scheduled / alarm / native one-tap of the
+//    stored script) → the subscription (the owner's own /login or
+//    setup-token, which Anthropic provides for non-interactive use) unless the
+//    owner turned the setting `claudeSubscriptionUnattended` OFF (synced as
+//    SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED=0). Default ON (owner decision
+//    2026-10-31); only an explicit "0" refuses.
+//
+// The key reaches claude only through the child environment (never argv, never
+// a log line) and the bashrc function's env file unsets it for every Bash-tool
+// command claude runs.
+const CLAUDE_SUBSCRIPTION_UNATTENDED_ENV = 'SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED';
+const CLAUDE_UNATTENDED_REFUSAL =
+  'Claude Code unattended run refused: no Anthropic API key is configured, and using the claude.ai subscription for unattended (scheduled) runs is turned off. Add an Anthropic API key in Settings, turn "Claude subscription for unattended runs" (claudeSubscriptionUnattended) back on, or run this agent with Run now.';
+
+function claudeAuthPlan(policy, env) {
+  const apiKey = typeof env.ANTHROPIC_API_KEY === 'string' && env.ANTHROPIC_API_KEY.trim() !== '';
+  const unattended = isUnattendedPolicy(policy);
+  // Default ON: absent / empty / anything but an explicit "0" allows it.
+  const subscriptionUnattendedAllowed = String(env[CLAUDE_SUBSCRIPTION_UNATTENDED_ENV] ?? '').trim() !== '0';
+  if (apiKey) return { source: 'api-key', unattended };
+  if (!unattended) return { source: 'subscription', unattended, reason: 'attended run' };
+  if (subscriptionUnattendedAllowed) return { source: 'subscription', unattended, reason: 'unattended subscription allowed (claudeSubscriptionUnattended)' };
+  return { source: null, unattended, refusal: CLAUDE_UNATTENDED_REFUSAL };
+}
+
+/** Does claude's own report (system/init apiKeySource) match the plan? */
+function claudeAuthMatchesPlan(plan, apiKeySource) {
+  if (!plan || !plan.source) return false;
+  const billedToKey = typeof apiKeySource === 'string' && apiKeySource !== '' && apiKeySource !== 'none';
+  return plan.source === 'api-key' ? billedToKey : !billedToKey;
+}
+
+function claudeChildEnv(input, plan = { source: 'subscription' }) {
   const env = codexChildEnv(input);
   for (const key of CLAUDE_CHILD_ENV_DROP) delete env[key];
+  delete env[CLAUDE_SUBSCRIPTION_UNATTENDED_ENV];
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  if (plan.source === 'api-key') {
+    env.ANTHROPIC_API_KEY = String(input.ANTHROPIC_API_KEY || '').trim();
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    env.SHELLY_CLAUDE_AUTH = 'api-key';
+  } else {
+    delete env.ANTHROPIC_API_KEY;
+    env.SHELLY_CLAUDE_AUTH = 'subscription';
+  }
   env.SHELLY_CLAUDE_SETTINGS_JSON = claudeAgentSettingsJson();
   return env;
 }
 
-function claudeRunnerSpawnSpec(config) {
+function claudeRunnerSpawnSpec(config, plan) {
   const claudeArgs = claudeAgentArgs();
   const android = androidLauncherContext();
   if (android) {
@@ -2336,7 +2390,7 @@ function claudeRunnerSpawnSpec(config) {
       ...androidBaseEnv(android.libDir),
       ...androidToolEnv(android.libDir),
       LD_LIBRARY_PATH: android.libDir,
-    });
+    }, plan);
     delete env.LD_PRELOAD;
     const args = [path.join(android.libDir, 'shelly_shell'), config.claudeRunner, ...claudeArgs];
     return { mode: 'android-linker64-shelly_shell', command: ANDROID_LINKER64, args, env, display: [ANDROID_LINKER64, ...args] };
@@ -2346,7 +2400,7 @@ function claudeRunnerSpawnSpec(config) {
     mode: 'host-path',
     command: config.claudeRunnerInterpreter,
     args,
-    env: claudeChildEnv(process.env),
+    env: claudeChildEnv(process.env, plan),
     display: [config.claudeRunnerInterpreter, ...args],
   };
 }
@@ -2411,7 +2465,19 @@ async function runClaudeDriver(config) {
   ensureEscalationVerifierKey(config, audit);
   if (config.answerFile) unlinkIfExists(config.answerFile);
   if (config.usageFile) unlinkIfExists(config.usageFile);
-  const claudeSpawn = claudeRunnerSpawnSpec(config);
+  const authPlan = claudeAuthPlan(config.policy, process.env);
+  audit('claude_auth_plan', {
+    source: authPlan.source,
+    unattended: authPlan.unattended,
+    reason: authPlan.reason || authPlan.refusal || null,
+  });
+  if (!authPlan.source) {
+    process.stdout.write(`CLAUDE_ERROR ${authPlan.refusal}\n`);
+    audit('driver_finish', { reason: 'claude_auth_refused', exitCode: 1, engine: 'claude' });
+    process.exit(1);
+    return;
+  }
+  const claudeSpawn = claudeRunnerSpawnSpec(config, authPlan);
   const gateSpawn = gateSpawnSpec(config);
   const child = spawn(claudeSpawn.command, claudeSpawn.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -2559,6 +2625,9 @@ async function runClaudeDriver(config) {
 
   const handleMessage = async (message) => {
     if (!message || typeof message !== 'object') return;
+    // After finish() (auth mismatch, timeout, …) nothing claude says counts:
+    // no answer file, no usage, no further tool approvals.
+    if (completed) return;
     if (message.type === 'control_request') {
       const requestId = message.request_id;
       const request = message.request || {};
@@ -2583,6 +2652,19 @@ async function runClaudeDriver(config) {
     }
     if (message.type === 'system' && message.subtype === 'init') {
       apiKeySource = typeof message.apiKeySource === 'string' ? message.apiKeySource : null;
+      // Fail closed when claude authenticated differently from the plan (e.g. an
+      // unattended run that should be on the API key fell back to /login).
+      if (!claudeAuthMatchesPlan(authPlan, apiKeySource)) {
+        const subscriptionOk = !authPlan.unattended || String(process.env[CLAUDE_SUBSCRIPTION_UNATTENDED_ENV] ?? '').trim() !== '0';
+        if (authPlan.source === 'subscription' || !subscriptionOk) {
+          sawFailure = true;
+          audit('claude_auth_mismatch', { planned: authPlan.source, apiKeySource });
+          process.stdout.write(`CLAUDE_ERROR Claude Code authenticated with ${apiKeySource || 'an unknown credential'} instead of the planned ${authPlan.source}; stopped.\n`);
+          finish('claude_auth_mismatch', 1);
+          return;
+        }
+        audit('claude_auth_fallback', { planned: authPlan.source, apiKeySource, reason: 'attended or opted-in subscription' });
+      }
       audit('thread_started', {
         engine: 'claude',
         cwd: message.cwd || config.cwd,
@@ -2678,6 +2760,7 @@ async function runClaudeDriver(config) {
     claudeLaunchMode: claudeSpawn.mode,
     claudeSpawn: claudeSpawn.display,
     claudeSettings: claudeAgentSettingsJson(),
+    claudeAuthSource: authPlan.source,
     gateLaunchMode: gateSpawn.mode,
     gateSpawn: gateSpawn.display,
     gateNode: gateSpawn.nodePath,
@@ -2747,6 +2830,8 @@ module.exports = {
   claudeAgentArgs,
   claudeAgentSettingsJson,
   claudeChildEnv,
+  claudeAuthPlan,
+  claudeAuthMatchesPlan,
   CLAUDE_DENIED_TOOLS,
   CLAUDE_GATED_TOOLS,
 };

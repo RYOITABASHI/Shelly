@@ -17,6 +17,8 @@ export const API_KEY_NAMES = [
   'groqApiKey',
   'cerebrasApiKey',
   'openrouterApiKey',
+  // Claude glibc S4: API-key auth for Claude Code agent workers.
+  'anthropicApiKey',
   'codexAuthToken',
   // Phase 3 inbound gateway: the Telegram bot token is a secret → SecureStore.
   'telegramBotToken',

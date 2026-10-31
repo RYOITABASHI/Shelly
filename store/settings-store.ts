@@ -142,6 +142,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // N1: autonomous cloud opt-in — default OFF (fail-closed); on free-tier 429,
   // escalate to Codex by default.
   autonomousCloudConsent: false,
+  // Claude glibc S4: owner decision 2026-10-31 — owner-configured schedules may
+  // use the owner's own claude.ai login / setup-token. Default ON; can be turned off.
+  claudeSubscriptionUnattended: true,
   autonomousCloudOnExhaustion: 'escalate' as const,
   webhookHostAllowlist: [],
   socialHostAllowlist: [],
@@ -541,6 +544,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
       if ('openrouterModel' in newSettings && typeof newSettings.openrouterModel === 'string') {
         envUpdates.push(['OPENROUTER_MODEL', newSettings.openrouterModel]);
+      }
+      // Claude glibc S4: Claude Code agent workers (scripts/shelly-agent-driver.js
+      // claudeAuthPlan reads both through the run script, never argv).
+      if ('anthropicApiKey' in newSettings && typeof newSettings.anthropicApiKey === 'string') {
+        envUpdates.push(['ANTHROPIC_API_KEY', newSettings.anthropicApiKey]);
+      }
+      if ('claudeSubscriptionUnattended' in newSettings) {
+        envUpdates.push(['SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED', newSettings.claudeSubscriptionUnattended === false ? '0' : '1']);
       }
       if ('autonomousCloudConsent' in newSettings) {
         envUpdates.push(['SHELLY_AUTONOMOUS_CLOUD', newSettings.autonomousCloudConsent ? '1' : '0']);

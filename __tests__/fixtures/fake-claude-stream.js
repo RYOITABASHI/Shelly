@@ -26,6 +26,10 @@ function askNext() {
         argv: process.argv.slice(2),
         settings: process.env.SHELLY_CLAUDE_SETTINGS_JSON || null,
         claudeCodeShell: process.env.CLAUDE_CODE_SHELL || null,
+        apiKey: process.env.ANTHROPIC_API_KEY || null,
+        oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN || null,
+        auth: process.env.SHELLY_CLAUDE_AUTH || null,
+        optIn: process.env.SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED || null,
         prompt,
         decisions,
       }));
@@ -57,7 +61,7 @@ process.stdin.on('data', (chunk) => {
       out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
     } else if (msg.type === 'user') {
       prompt = msg.message.content[0].text;
-      out({ type: 'system', subtype: 'init', cwd: process.cwd(), model: 'fake', permissionMode: 'default', apiKeySource: process.env.FAKE_CLAUDE_API_KEY_SOURCE || 'none', tools: ['Bash', 'Read'] });
+      out({ type: 'system', subtype: 'init', cwd: process.cwd(), model: 'fake', permissionMode: 'default', apiKeySource: process.env.FAKE_CLAUDE_API_KEY_SOURCE || (process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none'), tools: ['Bash', 'Read'] });
       askNext();
     } else if (msg.type === 'control_response' && msg.response.request_id === pending) {
       decisions.push(msg.response.response);
