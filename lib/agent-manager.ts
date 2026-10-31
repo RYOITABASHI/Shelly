@@ -4553,9 +4553,18 @@ async function readAgentRunLogs(
   agentId?: string
 ): Promise<Record<string, AgentRunLog[]>> {
   const logsRoot = `${agentsDir()}/logs`;
+  // Run logs only: `<epoch-s>.json` (script) / `<epoch-ms>-receiver.json`
+  // (native). The same dir also holds native-result-notification.json — which
+  // has agentId/status/timestamp (in SECONDS) and sorts LAST — plus
+  // current.json / perplexity-last.json / webhook-payload-*.json. Read as a
+  // run log, the notification file could become `before.at(-1)` with a
+  // seconds timestamp, so its deletion by native right after the previous
+  // step's exit made the PREVIOUS step's log look new and ended
+  // waitForAgentRunCompletion early (clearing the "user" run mark while the
+  // step was still running).
   const command = agentId
-    ? `find ${shellQuote(`${logsRoot}/${agentId}`)} -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort | tail -n 30 | while IFS= read -r f; do cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done`
-    : `for d in ${shellQuote(logsRoot)}/*; do [ -d "$d" ] || continue; find "$d" -maxdepth 1 -type f -name '*.json' 2>/dev/null | sort | tail -n 30 | while IFS= read -r f; do cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done; done 2>/dev/null`;
+    ? `find ${shellQuote(`${logsRoot}/${agentId}`)} -maxdepth 1 -type f -name '[0-9]*.json' 2>/dev/null | sort | tail -n 30 | while IFS= read -r f; do cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done`
+    : `for d in ${shellQuote(logsRoot)}/*; do [ -d "$d" ] || continue; find "$d" -maxdepth 1 -type f -name '[0-9]*.json' 2>/dev/null | sort | tail -n 30 | while IFS= read -r f; do cat "$f"; printf '\\n---SHELLY_AGENT_LOG---\\n'; done; done 2>/dev/null`;
   const output = await runCommand(command);
   const logs: AgentRunLog[] = [];
   for (const chunk of output.split('---SHELLY_AGENT_LOG---')) {

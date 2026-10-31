@@ -116,7 +116,7 @@ import { isProactiveOrigin } from '@/lib/agent-action-policy';
 import '@/lib/agent-policy-device';
 import { getTrustAllowSeal, loadTrustAllowSeal } from '@/lib/agent-trust-allow-seal';
 import {
-  actionAutoApprovable,
+  decideActionAutoApproval,
   auditCommandText,
   DEFAULT_AGENT_PROJECT_DIR,
   escalationAutoApprovable,
@@ -2279,12 +2279,18 @@ export default function RootLayout() {
         // app (RN's own run registry) — never a notification-triggered /
         // tainted one — is answered without asking.
         const userStarted = registeredRunOrigin(parsed.agentId) === 'user';
-        if (!escalationAutoApprovable(parsed, { enabled, policyBlocksAutoAccept: !userStarted, ...gateOpts }).ok) return false;
+        const notApplied = (reason: string) => {
+          logInfo('AgentEscalation', `run-without-approval not applied run=${parsed.runId} req=${parsed.reqId} reason=${reason}`);
+          return false;
+        };
+        if (enabled && !userStarted) return notApplied('proactive');
+        const first = escalationAutoApprovable(parsed, { enabled, policyBlocksAutoAccept: !userStarted, ...gateOpts });
+        if (first.ok === false) return notApplied(first.reason);
         const minted = await TerminalEmulator.readAgentEscalationRequest(parsed.runId, parsed.reqId);
         const requestSha256 = minted?.requestSha256;
         const actionNonce = minted?.actionNonce;
-        if (!minted || !requestSha256 || !actionNonce) return false;
-        if (minted.agentId !== parsed.agentId) return false;
+        if (!minted || !requestSha256 || !actionNonce) return notApplied('minted-unreadable');
+        if (minted.agentId !== parsed.agentId) return notApplied('minted-mismatch');
         // POLICY-001 user rules (deny / draft_only / ask) on the exact
         // command still win over the option.
         let policyBlocksAutoAccept = registeredRunOrigin(minted.agentId) !== 'user';
@@ -2303,7 +2309,7 @@ export default function RootLayout() {
           ...gateOpts,
         });
         if (verdict.ok === false) {
-          logInfo('AgentEscalation', `run-without-approval not applied run=${minted.runId} req=${minted.reqId}: ${verdict.reason}`);
+          logInfo('AgentEscalation', `run-without-approval not applied run=${minted.runId} req=${minted.reqId} reason=${verdict.reason}`);
           return false;
         }
         await TerminalEmulator.resolveAgentEscalationAutoApproval(minted.runId, minted.reqId, requestSha256, actionNonce);
@@ -2578,14 +2584,20 @@ export default function RootLayout() {
         // Review M3: bound to the hash of the current agent definition.
         const agent = useAgentStore.getState().agents.find((a) => a.id === parsed.agentId) ?? null;
         const enabled = await isRunWithoutApprovalEnabled(agent);
-        if (!actionAutoApprovable(parsed, { enabled, policyBlocksAutoAccept }).ok) return false;
-        const minted = parseActionApprovalRequest(await TerminalEmulator.readAgentActionApprovalRequest(parsed.runId));
-        if (!minted || !minted.requestSha256 || !minted.actionNonce) return false;
-        if (minted.expiresAt && minted.expiresAt < Date.now()) return false;
-        if (minted.agentId !== parsed.agentId || minted.actionType !== parsed.actionType) return false;
-        // Origin re-checked on the minted copy too (review M1).
-        const mintedBlocked = policyBlocksAutoAccept || isProactiveOrigin(trustedRequestOrigin(minted));
-        if (!actionAutoApprovable(minted, { enabled, policyBlocksAutoAccept: mintedBlocked }).ok) return false;
+        // Origin re-checked on the minted copy too (review M1) — see
+        // decideActionAutoApproval for the minted-origin source.
+        const decision = await decideActionAutoApproval(parsed, {
+          enabled,
+          policyBlocksAutoAccept,
+          originOf: trustedRequestOrigin,
+          readMinted: async () => parseActionApprovalRequest(await TerminalEmulator.readAgentActionApprovalRequest!(parsed.runId)),
+        });
+        if (decision.ok === false) {
+          logInfo('AgentActionApproval', `run-without-approval not applied run=${parsed.runId} action=${parsed.actionType} reason=${decision.reason}`);
+          return false;
+        }
+        const minted = decision.minted;
+        if (!minted.requestSha256 || !minted.actionNonce) return false;
         await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'accept', minted.requestSha256, minted.actionNonce);
         const what = minted.preview ? `${minted.actionType}: ${auditCommandText(minted.preview, 120)}` : minted.actionType;
         postRunWithoutApprovalAuditLine(minted.agentId, t('agent_run_without_approval.auto_approved', { command: what }));

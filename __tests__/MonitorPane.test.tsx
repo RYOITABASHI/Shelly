@@ -560,6 +560,30 @@ describe('MonitorPane LIVE source', () => {
       expect(text).toBe('OK');
       utils.unmount();
     });
+
+    it('the "Allowed" note of an answered ask is not shown next to the NEXT ask', async () => {
+      seed(liveRun());
+      act(() => {
+        pending.upsertPendingApproval(ask('aaaaaaaa', NOW - 9_000));
+        pending.upsertPendingApproval(ask('bbbbbbbb', NOW - 6_000));
+      });
+      const utils = render(<MonitorPane />);
+      const input = utils.getByTestId('monitor-approval-input');
+      const later = Date.now() + 5_000;
+      jest.spyOn(Date, 'now').mockReturnValue(later);
+      fireEvent.changeText(input, 'OK');
+      await act(async () => {
+        fireEvent(input, 'submitEditing');
+      });
+      expect(mockResolveFromMonitor).toHaveBeenCalledTimes(1);
+      // The first ask is still displayed: its note is shown.
+      expect(utils.getByTestId('monitor-approval-note').props.children).toBe('agent_action_chat.accepted');
+      // The answered ask goes away; the next one is displayed without the note.
+      act(() => pending.removePendingApproval(ask('aaaaaaaa', NOW - 9_000).key));
+      expect(utils.getByTestId('monitor-approval-detail').props.children).toBe('cd ~/demo && git log bbbbbbbb');
+      expect(utils.queryByTestId('monitor-approval-note')).toBeNull();
+      utils.unmount();
+    });
   });
 
   it('single view: tapping the camera opens the inline provider picker; Redo writes a restart override', async () => {

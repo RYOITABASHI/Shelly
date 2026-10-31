@@ -443,7 +443,14 @@ export default function MonitorPane() {
     setShownSince({ key: shownIdentity, at: Date.now() });
   }, [shownIdentity]);
   const [approvalDraft, setApprovalDraft] = useState('');
-  const [approvalNote, setApprovalNote] = useState<string | null>(null);
+  // The note ("Allowed — the agent continues.", "too soon"…) belongs to the
+  // ask it answered: it is shown only while that same ask is displayed, so it
+  // never sits next to the NEXT ask's input (also when the reply resolves
+  // after the next ask already replaced it).
+  const [approvalNoteState, setApprovalNoteState] = useState<{ text: string; key: string | null } | null>(null);
+  const approvalNote = approvalNoteState && approvalNoteState.key === shownIdentity ? approvalNoteState.text : null;
+  const setApprovalNote = (text: string | null, key: string | null = shownIdentity) =>
+    setApprovalNoteState(text === null ? null : { text, key });
   const [approvalBusy, setApprovalBusy] = useState(false);
   const pickNote = (pick: Exclude<MonitorApprovalPick, { ok: true }>, text: string): string => {
     switch (pick.reason) {
@@ -480,9 +487,10 @@ export default function MonitorPane() {
     logInfo('Monitor', `typed approval ${pick.decision} ${pick.ask.kind} [${pick.ask.marker.hash8}]`);
     setApprovalDraft('');
     setApprovalBusy(true);
+    const noteKey = monitorAskIdentity(pick.ask);
     resolvePendingApprovalFromMonitor(pick.ask, pick.decision, text)
-      .then((reply) => setApprovalNote(reply))
-      .catch(() => setApprovalNote(t('agent_action_chat.failed')))
+      .then((reply) => setApprovalNote(reply, noteKey))
+      .catch(() => setApprovalNote(t('agent_action_chat.failed'), noteKey))
       .finally(() => setApprovalBusy(false));
   };
 

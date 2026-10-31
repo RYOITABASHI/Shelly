@@ -306,6 +306,67 @@ export function actionAutoApprovable(
   return { ok: true };
 }
 
+/** The fields of a per-run action approval request this decision reads. */
+export type ActionAutoApproveRequestLike = {
+  runId: string;
+  agentId: string;
+  actionType?: string | null;
+  requestSha256?: string | null;
+  actionNonce?: string | null;
+  expiresAt?: number | null;
+  /** Executor-written, informational — only ever combined with RN's own run
+   *  registry by `originOf` (lib/agent-policy-approval.ts trustedRequestOrigin). */
+  origin?: string | null;
+};
+
+export type ActionAutoApproveDecision<T> = { ok: true; minted: T } | { ok: false; reason: string };
+
+/**
+ * The whole "承認なしで実行" decision for one per-run action approval
+ * (app/_layout.tsx autoApproveActionForFlaggedAgent): the drained request,
+ * then the natively MINTED copy (the exact bytes the signed reply is bound
+ * to). Every refusal names its reason so the caller can log it:
+ * flag-off | proactive | policy-ask | review-required | not-local-only |
+ * minted-unreadable | minted-expired | minted-mismatch | minted-proactive.
+ *
+ * Origin of the minted copy (2026-10-31 on-device finding, build 2739): the
+ * native read (AgentActionApprovalBridge.toMap) did not carry the request's
+ * `origin` field, so every minted copy read as proactive and a flagged
+ * agent's draft save was always handed to the human. The minted copy's
+ * origin is used when native supplies it; with an older native build that
+ * omits it, the drained copy's `origin` is used instead — the same
+ * executor-written field of the same file, so no weaker than before — and
+ * RN's run registry is still consulted for `minted.agentId` either way.
+ */
+export async function decideActionAutoApproval<T extends ActionAutoApproveRequestLike>(
+  parsed: T,
+  opts: {
+    enabled: boolean;
+    /** POLICY-001 deny / draft_only / ask, or a proactive origin. */
+    policyBlocksAutoAccept: boolean;
+    /** lib/agent-policy-approval.ts trustedRequestOrigin (registry AND file). */
+    originOf: (req: { agentId?: string | null; origin?: string | null }) => 'user' | 'event';
+    /** Native readAgentActionApprovalRequest, parsed. */
+    readMinted: () => Promise<T | null>;
+    now?: number;
+  },
+): Promise<ActionAutoApproveDecision<T>> {
+  if (!opts.enabled) return { ok: false, reason: 'flag-off' };
+  if (opts.originOf(parsed) !== 'user') return { ok: false, reason: 'proactive' };
+  const first = actionAutoApprovable(parsed, { enabled: true, policyBlocksAutoAccept: opts.policyBlocksAutoAccept });
+  if (first.ok === false) return first;
+  const minted = await opts.readMinted();
+  if (!minted || !minted.requestSha256 || !minted.actionNonce) return { ok: false, reason: 'minted-unreadable' };
+  const now = opts.now ?? Date.now();
+  if (minted.expiresAt && minted.expiresAt < now) return { ok: false, reason: 'minted-expired' };
+  if (minted.agentId !== parsed.agentId || minted.actionType !== parsed.actionType) return { ok: false, reason: 'minted-mismatch' };
+  const mintedOrigin = opts.originOf({ agentId: minted.agentId, origin: minted.origin ?? parsed.origin ?? null });
+  if (mintedOrigin !== 'user') return { ok: false, reason: 'minted-proactive' };
+  const second = actionAutoApprovable(minted, { enabled: true, policyBlocksAutoAccept: opts.policyBlocksAutoAccept });
+  if (second.ok === false) return second;
+  return { ok: true, minted };
+}
+
 // ── Command shape analysis (lexical, conservative) ───────────────────────
 
 /** Read-only tools. A command name with a path (`/tmp/cat`, `./ls`) is not one. */

@@ -57,7 +57,15 @@ data class AgentActionApprovalRequest(
      *  bridge regardless of mode (they can only ever fire via RN) — to
      *  resolve the approval itself with no human tap, instead of surfacing
      *  the Review UI. Native does not act on this field. */
-    val autoAccept: Boolean = false
+    val autoAccept: Boolean = false,
+    /** POLICY-001 run origin the executor wrote (SHELLY_RUN_ORIGIN).
+     *  Informational only: RN combines it with its OWN run registry
+     *  (lib/agent-policy-approval.ts trustedRequestOrigin) and never trusts it
+     *  alone. Carried through toMap so RN's minted copy
+     *  (readAgentActionApprovalRequest) has it — without it every minted copy
+     *  read as proactive (2026-10-31, build 2739: run-without-approval never
+     *  applied to a draft save). Native does not act on this field. */
+    val origin: String? = null
 ) {
     val key: String get() = listOf(
         runId,
@@ -203,6 +211,7 @@ object AgentActionApprovalBridge {
         "browserPaneValue" to request.browserPaneValue,
         "browserPaneUrlAllowlist" to request.browserPaneUrlAllowlist,
         "autoAccept" to request.autoAccept,
+        "origin" to request.origin,
     )
 
     private fun fromJson(raw: JSONObject, requestSha256: String?): AgentActionApprovalRequest? {
@@ -250,7 +259,8 @@ object AgentActionApprovalBridge {
             browserPaneSelector = raw.optString("browserPaneSelector").takeIf { it.isNotBlank() },
             browserPaneValue = raw.optString("browserPaneValue").takeIf { it.isNotBlank() },
             browserPaneUrlAllowlist = raw.optString("browserPaneUrlAllowlist").takeIf { it.isNotBlank() },
-            autoAccept = raw.optBoolean("autoAccept", false)
+            autoAccept = raw.optBoolean("autoAccept", false),
+            origin = raw.optString("origin").trim().takeIf { it.isNotBlank() }
         )
     }
 
