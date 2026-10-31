@@ -1110,6 +1110,9 @@ export function Sidebar() {
       agent.autonomous ? t('sidebar.agent_autonomous') : null,
       agent.enabled || oneShot === 'done' || oneShot === 'missed' ? null : t('sidebar.agent_paused'),
       agentApprovalLabel(agent),
+      // The per-agent "承認なしで実行" option changes what "approval
+      // required" means for this agent — say which state it is in.
+      t(runWithoutApproval ? 'sidebar.agent_run_without_approval_state_on' : 'sidebar.agent_run_without_approval_state_off'),
     ].filter(Boolean).join(' · ');
     // Phase 4: when the agent is multi-step, show the planned chain; and if the
     // last run was orchestrated, show each step's status. Phase 5: a step may

@@ -89,18 +89,30 @@ export const AgentDetailModal = memo(function AgentDetailModal({ data, onClose }
           </ScrollView>
 
           {data?.buttons.length ? (
-            <View style={[styles.actions, { borderTopColor: colors.border }]}>
+            // 2026-10-31 on-device (Z Fold6 unfolded): the rows used a
+            // function `style` on Pressable, which rendered unstyled (no
+            // padding, flush to the card edge) under the NativeWind JSX
+            // runtime. Static style arrays only, like the app's other modal
+            // buttons (Sidebar modalCancelBtn / modalAddBtn); press feedback
+            // via android_ripple.
+            <View style={[styles.actions, { borderTopColor: colors.border }]} testID="agent-detail-actions">
               {data.buttons.map((btn) => (
                 <Pressable
                   key={btn.key}
+                  testID={`agent-detail-action-${btn.key}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={t(btn.labelKey)}
                   onPress={() => {
                     onClose();
                     btn.onPress();
                   }}
-                  style={({ pressed }) => [
+                  android_ripple={{ color: withAlpha(colors.accent, 0.18) }}
+                  style={[
                     styles.actionBtn,
-                    { borderColor: colors.border },
-                    pressed && { backgroundColor: withAlpha(colors.accent, 0.12) },
+                    {
+                      backgroundColor: colors.surface2,
+                      borderColor: btn.destructive ? colors.error : colors.border,
+                    },
                   ]}
                 >
                   <Text
@@ -175,15 +187,27 @@ const styles = StyleSheet.create({
   },
   actions: {
     borderTopWidth: 1,
-  },
-  actionBtn: {
     paddingHorizontal: 14,
     paddingVertical: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  actionBtn: {
+    flexGrow: 1,
+    flexBasis: '45%',
+    minHeight: 40,
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    overflow: 'hidden',
   },
   actionText: {
     fontFamily: F.family,
     fontSize: 13,
     fontWeight: '600',
+    textAlign: 'center',
   },
 });

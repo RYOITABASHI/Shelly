@@ -2066,6 +2066,8 @@ const en: Record<string, string> = {
   'sidebar.agent_chat': 'Chat',
   'sidebar.agent_run_without_approval_enable': 'Turn on run without approval',
   'sidebar.agent_run_without_approval_disable': 'Turn off run without approval',
+  'sidebar.agent_run_without_approval_state_on': 'run without approval: ON (routine reads, in-workspace edits, draft save / notify are approved for you)',
+  'sidebar.agent_run_without_approval_state_off': 'run without approval: OFF',
   'sidebar.agent_view_runs': 'View Run History',
   'sidebar.agent_view_runs_a11y': 'View run history for {{name}}',
   'sidebar.agent_memory_view_a11y': 'View memory for {{name}}',

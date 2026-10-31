@@ -2027,6 +2027,8 @@ const ja: Record<string, string> = {
   'sidebar.agent_chat': 'チャット',
   'sidebar.agent_run_without_approval_enable': '承認なしで実行をONにする',
   'sidebar.agent_run_without_approval_disable': '承認なしで実行をOFFにする',
+  'sidebar.agent_run_without_approval_state_on': '承認なしで実行: ON（定型の読み取り・ワークスペース内の編集・下書き保存/通知は自動で許可）',
+  'sidebar.agent_run_without_approval_state_off': '承認なしで実行: OFF',
   'sidebar.agent_view_runs': '実行履歴を見る',
   'sidebar.agent_view_runs_a11y': '{{name}} の実行履歴を表示',
   'sidebar.agent_memory_view_a11y': '{{name}} のメモリを表示',
