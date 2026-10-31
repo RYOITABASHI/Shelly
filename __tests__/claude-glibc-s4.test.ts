@@ -218,12 +218,21 @@ describe('driver: Claude engine', () => {
   it('argv never carries the prompt; settings force a permission request for gated tools', () => {
     const args: string[] = driver.claudeAgentArgs();
     expect(args).toEqual(expect.arrayContaining(['-p', '--permission-prompt-tool', 'stdio', '--permission-mode', 'default', '--strict-mcp-config']));
+    // allowlist: only the gated tools exist for the model at all
+    expect(args[args.indexOf('--tools') + 1]).toBe('Bash,Read,Write,Edit');
+    const disallowed = args[args.indexOf('--disallowedTools') + 1].split(',');
+    for (const t of ['TodoWrite', 'Skill', 'ToolSearch', 'AskUserQuestion', 'SlashCommand', 'ExitPlanMode', 'BashOutput', 'KillShell', 'Task', 'Agent', 'WebFetch', 'WebSearch', 'Grep', 'Glob']) {
+      expect(disallowed).toContain(t);
+    }
+    for (const t of driver.CLAUDE_GATED_TOOLS) expect(disallowed).not.toContain(t);
     expect(args[args.indexOf('--setting-sources') + 1]).toBe('');
     expect(args).not.toContain('--dangerously-skip-permissions');
     expect(args).not.toContain('bypassPermissions');
     const settings = JSON.parse(driver.claudeAgentSettingsJson());
     expect(settings.permissions.ask).toEqual(['Bash', 'Read', 'Write', 'Edit', 'MultiEdit']);
-    expect(settings.permissions.deny).toEqual(expect.arrayContaining(['Grep', 'Glob', 'WebFetch', 'WebSearch', 'Task']));
+    // settings deny = the --disallowedTools list (kept in sync, defense in depth)
+    expect(settings.permissions.deny).toEqual(driver.CLAUDE_DENIED_TOOLS);
+    expect(args[args.indexOf('--disallowedTools') + 1]).toBe(driver.CLAUDE_DENIED_TOOLS.join(','));
     expect(settings.disableAllHooks).toBe(true);
     const env = driver.claudeChildEnv({ CLAUDE_CODE_SHELL: '/evil', CLAUDE_ENV_FILE: '/evil', SHELLY_AGENT_ESCALATION_DIR: '/x', HOME: '/h' });
     expect(env.CLAUDE_CODE_SHELL).toBeUndefined();
@@ -362,6 +371,47 @@ describe('driver: Claude engine', () => {
       expect(r.rec.apiKey).toBe('sk-ant-test-key');
       expect(r.rec.oauthToken).toBeNull();
     }, 30_000);
+
+    it('auth match: strict, both directions, absent report is a mismatch', () => {
+      expect(driver.claudeAuthMatchesPlan({ source: 'api-key' }, 'ANTHROPIC_API_KEY')).toBe(true);
+      expect(driver.claudeAuthMatchesPlan({ source: 'subscription' }, 'none')).toBe(true);
+      expect(driver.claudeAuthMatchesPlan({ source: 'api-key' }, 'none')).toBe(false);
+      expect(driver.claudeAuthMatchesPlan({ source: 'subscription' }, 'ANTHROPIC_API_KEY')).toBe(false);
+      expect(driver.claudeAuthMatchesPlan({ source: 'subscription' }, null)).toBe(false);
+      expect(driver.claudeAuthMatchesPlan({ source: 'api-key' }, undefined)).toBe(false);
+    });
+
+    it('any mismatch stops the run, attended or unattended, whatever the setting', () => {
+      const cases: Array<{ policy: object; env: Record<string, string> }> = [
+        // planned api-key, claude used the subscription — attended, setting on (default)
+        { policy: {}, env: { ANTHROPIC_API_KEY: 'sk-ant-test-key', FAKE_CLAUDE_API_KEY_SOURCE: 'none' } },
+        // same, unattended with the setting explicitly on
+        { policy: { unattended: true }, env: { ANTHROPIC_API_KEY: 'sk-ant-test-key', FAKE_CLAUDE_API_KEY_SOURCE: 'none', SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '1' } },
+        // planned subscription, claude reported an API key
+        { policy: {}, env: { FAKE_CLAUDE_API_KEY_SOURCE: 'ANTHROPIC_API_KEY' } },
+        // claude did not report a credential at all
+        { policy: {}, env: { FAKE_CLAUDE_OMIT_API_KEY_SOURCE: '1' } },
+      ];
+      for (const c of cases) {
+        const r = runFake({ policy: c.policy, env: c.env, tools: [{ tool_name: 'Bash', input: { command: 'ls' } }] });
+        expect(r.status).toBe(1);
+        expect(r.answer).toBeNull();
+        expect(r.usage).toBeNull();
+        expect(r.out).toContain('claude_auth_mismatch');
+        expect(r.out).not.toContain('"approvalKind":"claude:Bash"');
+      }
+    }, 120_000);
+
+    it('a tool use outside the allowlist (permission-free tools skip the gate) stops the run', () => {
+      for (const tool of ['TodoWrite', 'Skill', 'mcp__evil__x']) {
+        const r = runFake({ policy: {}, env: { FAKE_CLAUDE_ASSISTANT_TOOL: tool } });
+        expect(r.status).toBe(1);
+        expect(r.answer).toBeNull();
+        expect(r.out).toContain('claude_tool_outside_allowlist');
+      }
+      const ok = runFake({ policy: {}, env: { FAKE_CLAUDE_ASSISTANT_TOOL: 'Bash' } });
+      expect(ok.status).toBe(0);
+    }, 120_000);
 
     it('fails closed when claude reports a different credential than planned (unattended, setting off)', () => {
       const r = runFake({ policy: { unattended: true }, env: { ANTHROPIC_API_KEY: 'sk-ant-test-key', FAKE_CLAUDE_API_KEY_SOURCE: 'none', SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '0' } });

@@ -21,6 +21,10 @@ function out(message) {
 
 function askNext() {
   if (decisions.length >= tools.length) {
+    if (process.env.FAKE_CLAUDE_ASSISTANT_TOOL && !askNext.sentTool) {
+      askNext.sentTool = true;
+      out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-x', name: process.env.FAKE_CLAUDE_ASSISTANT_TOOL, input: {} }] } });
+    }
     if (record) {
       fs.writeFileSync(record, JSON.stringify({
         argv: process.argv.slice(2),
@@ -61,7 +65,7 @@ process.stdin.on('data', (chunk) => {
       out({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response: {} } });
     } else if (msg.type === 'user') {
       prompt = msg.message.content[0].text;
-      out({ type: 'system', subtype: 'init', cwd: process.cwd(), model: 'fake', permissionMode: 'default', apiKeySource: process.env.FAKE_CLAUDE_API_KEY_SOURCE || (process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none'), tools: ['Bash', 'Read'] });
+      out({ type: 'system', subtype: 'init', cwd: process.cwd(), model: 'fake', permissionMode: 'default', ...(process.env.FAKE_CLAUDE_OMIT_API_KEY_SOURCE === '1' ? {} : { apiKeySource: process.env.FAKE_CLAUDE_API_KEY_SOURCE || (process.env.ANTHROPIC_API_KEY ? 'ANTHROPIC_API_KEY' : 'none') }), tools: ['Bash', 'Read'] });
       askNext();
     } else if (msg.type === 'control_response' && msg.response.request_id === pending) {
       decisions.push(msg.response.response);

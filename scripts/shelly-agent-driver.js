@@ -2217,8 +2217,31 @@ async function runDriver(config) {
 // out entirely, `disableAllHooks` drops hooks, `--strict-mcp-config` with no
 // config loads no MCP servers, and `--permission-mode default` overrides any
 // defaultMode. The prompt goes in over stdin (never argv).
-const CLAUDE_DENIED_TOOLS = ['Grep', 'Glob', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'];
+//
+// Tool surface = an ALLOWLIST (Codex review M, 2026-10-31). Tools Claude treats
+// as permission-free (TodoWrite, Skill, ToolSearch, AskUserQuestion,
+// SlashCommand, ExitPlanMode, BashOutput/KillShell, any future built-in) never
+// produce a can_use_tool request, so an ask/deny list alone cannot gate them.
+// Four layers, so one unsupported flag or renamed tool cannot open it:
+//  1. `--tools Bash,Read,Write,Edit` — the built-in tool set claude exposes to
+//     the model at all (the Agent SDK's `tools` option). An unknown flag makes
+//     claude exit with a usage error = fail closed.
+//  2. `--disallowedTools` with every other built-in name we know of.
+//  3. the same names as settings `permissions.deny` (defense in depth).
+//  4. at runtime: an assistant tool_use for anything outside the allowlist
+//     (built-in we did not know, MCP, …) stops the run immediately.
+// MultiEdit is not in --tools (absent from recent builds; Edit covers it) but
+// stays gated (ask + tee mapping) in case a build exposes it anyway.
+const CLAUDE_ALLOWED_TOOLS = ['Bash', 'Read', 'Write', 'Edit'];
 const CLAUDE_GATED_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'MultiEdit'];
+const CLAUDE_DENIED_TOOLS = [
+  'Agent', 'Task', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch',
+  'NotebookEdit', 'NotebookRead', 'TodoWrite', 'TodoRead', 'Skill',
+  'SlashCommand', 'ToolSearch', 'AskUserQuestion', 'ExitPlanMode',
+  'EnterPlanMode', 'BashOutput', 'KillShell', 'KillBash', 'Monitor',
+  'ListMcpResourcesTool', 'ReadMcpResourceTool', 'SendMessage', 'TaskStop',
+  'TaskOutput', 'EnterWorktree', 'ExitWorktree', 'Workflow', 'CronCreate',
+];
 const CLAUDE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 const CLAUDE_CHILD_ENV_DROP = [
   'CLAUDE_CODE_SHELL',
@@ -2251,6 +2274,7 @@ function claudeAgentArgs() {
     '--permission-prompt-tool', 'stdio',
     '--setting-sources', '',
     '--strict-mcp-config',
+    '--tools', CLAUDE_ALLOWED_TOOLS.join(','),
     '--disallowedTools', CLAUDE_DENIED_TOOLS.join(','),
   ];
 }
@@ -2358,6 +2382,8 @@ function claudeAuthPlan(policy, env) {
 /** Does claude's own report (system/init apiKeySource) match the plan? */
 function claudeAuthMatchesPlan(plan, apiKeySource) {
   if (!plan || !plan.source) return false;
+  // An absent report is not a match either: claude must say what it used.
+  if (typeof apiKeySource !== 'string' || apiKeySource === '') return false;
   const billedToKey = typeof apiKeySource === 'string' && apiKeySource !== '' && apiKeySource !== 'none';
   return plan.source === 'api-key' ? billedToKey : !billedToKey;
 }
@@ -2652,18 +2678,16 @@ async function runClaudeDriver(config) {
     }
     if (message.type === 'system' && message.subtype === 'init') {
       apiKeySource = typeof message.apiKeySource === 'string' ? message.apiKeySource : null;
-      // Fail closed when claude authenticated differently from the plan (e.g. an
-      // unattended run that should be on the API key fell back to /login).
+      // Fail closed on ANY difference between the planned credential and the one
+      // claude reports, in both directions, attended or not (Codex review H,
+      // 2026-10-31). The settings only choose the plan before launch; nothing
+      // excuses a mismatch after launch.
       if (!claudeAuthMatchesPlan(authPlan, apiKeySource)) {
-        const subscriptionOk = !authPlan.unattended || String(process.env[CLAUDE_SUBSCRIPTION_UNATTENDED_ENV] ?? '').trim() !== '0';
-        if (authPlan.source === 'subscription' || !subscriptionOk) {
-          sawFailure = true;
-          audit('claude_auth_mismatch', { planned: authPlan.source, apiKeySource });
-          process.stdout.write(`CLAUDE_ERROR Claude Code authenticated with ${apiKeySource || 'an unknown credential'} instead of the planned ${authPlan.source}; stopped.\n`);
-          finish('claude_auth_mismatch', 1);
-          return;
-        }
-        audit('claude_auth_fallback', { planned: authPlan.source, apiKeySource, reason: 'attended or opted-in subscription' });
+        sawFailure = true;
+        audit('claude_auth_mismatch', { planned: authPlan.source, apiKeySource });
+        process.stdout.write(`CLAUDE_ERROR Claude Code authenticated with ${apiKeySource || 'an unknown credential'} instead of the planned ${authPlan.source}; stopped.\n`);
+        finish('claude_auth_mismatch', 1);
+        return;
       }
       audit('thread_started', {
         engine: 'claude',
@@ -2681,6 +2705,15 @@ async function runClaudeDriver(config) {
       for (const block of content) {
         if (block && block.type === 'tool_use') {
           audit('item_started', { itemType: 'tool_use', tool: block.name, itemId: block.id });
+          if (!CLAUDE_GATED_TOOLS.includes(block.name)) {
+            // Layer 4: a tool outside the allowlist never reaches the gate
+            // (permission-free tools skip can_use_tool) — stop the run.
+            sawFailure = true;
+            audit('claude_tool_outside_allowlist', { tool: String(block.name || '').slice(0, 80), itemId: block.id });
+            process.stdout.write(`CLAUDE_ERROR Claude Code used a tool outside the Shelly agent allowlist (${String(block.name || '').slice(0, 80)}); stopped.\n`);
+            finish('claude_tool_outside_allowlist', 1);
+            return;
+          }
         }
       }
       return;
@@ -2834,4 +2867,5 @@ module.exports = {
   claudeAuthMatchesPlan,
   CLAUDE_DENIED_TOOLS,
   CLAUDE_GATED_TOOLS,
+  CLAUDE_ALLOWED_TOOLS,
 };
