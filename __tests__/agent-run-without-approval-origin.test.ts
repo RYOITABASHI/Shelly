@@ -55,6 +55,15 @@ const decide = (
     now: NOW,
   });
 
+// The run-origin registry ages marks against Date.now() (2 h cap); pin it to
+// NOW so the fixed timestamps above don't go stale as wall-clock time passes.
+beforeEach(() => {
+  jest.spyOn(Date, 'now').mockReturnValue(NOW);
+});
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 describe('run-without-approval: draft save of a user run', () => {
   beforeEach(() => __resetRunOriginRegistryForTests());
 
