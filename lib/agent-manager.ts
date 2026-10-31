@@ -3171,6 +3171,10 @@ async function runAgentOrchestratedBody(
       // attempt) supersedes the attempt-time candidate in the reader.
       const rd = record.routeDecision;
       if (rd?.toolType) progress.stepTool(i, { type: rd.toolType } as ToolChoice, rd.toolLabel);
+      // Claude glibc S4: a CLI worker's reported tokens (run-log `usage`,
+      // validated again inside stepUsage).
+      const usage = log?.usage;
+      if (usage && typeof usage === 'object') progress.stepUsage(i, usage);
       progress.stepFinished(i, record.status, record.outputPreview);
     }
     // A transient step carries no usable result downstream, so it stops the chain

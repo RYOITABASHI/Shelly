@@ -409,7 +409,7 @@ function tryPatchAutonomous(draft: ParsedAgentDraft, text: string): boolean | nu
 // step(s) it names (out-of-range ordinal, a keyword matching 0 or 2+ steps)
 // patches nothing.
 
-type ProviderToken = ToolChoice | 'claude';
+type ProviderToken = ToolChoice;
 
 const PROVIDER_JA_SRC =
   'ローカル\\s*(?:LLM|エルエルエム)?|local\\s*llm|local|パープレ(?:キシティ)?|perplexity|codex|コーデックス|gemini|ジェミニ|cerebras|セレブラス|groq|グロック|claude(?:\\s*code)?|クロード(?:\\s*コード)?|自動|おまかせ|お任せ|オート|auto';
@@ -435,7 +435,8 @@ function providerToken(raw: string): ProviderToken | null {
   if (/^(?:gemini|ジェミニ)$/.test(s)) return { type: 'gemini-api' };
   if (/^(?:cerebras|セレブラス)$/.test(s)) return { type: 'cerebras' };
   if (/^(?:groq|グロック)$/.test(s)) return { type: 'groq' };
-  if (/^(?:claude|クロード)/.test(s)) return 'claude';
+  // Claude glibc S4: Claude Code is a CLI worker like Codex.
+  if (/^(?:claude|クロード)/.test(s)) return { type: 'cli', cli: 'claude' };
   if (/^(?:自動|おまかせ|お任せ|オート|auto)/.test(s)) return { type: 'auto' };
   return null;
 }
@@ -607,7 +608,8 @@ export type StepProviderNotice = { kind: 'unsupported'; provider: string } | { k
  * drafts patch step pins (`step:<index>` changed fields; 'auto' clears a pin;
  * an api-call step is never given a model provider). A single-step draft takes
  * 「全部」/「1番目」/「最後」 as its agent-level tool ('tool' changed field).
- * 'unsupported' = the provider is not available on this device (Claude Code).
+ * 'unsupported' = a provider this device cannot run (none today; Claude Code
+ * became a CLI worker in Claude glibc S4).
  */
 export function tryPatchStepTools(
   draft: ParsedAgentDraft,
@@ -620,7 +622,6 @@ export function tryPatchStepTools(
     const resolved = resolveStepRef(steps, req.ref);
     if (!resolved) return { changedFields: [] };
     if (!Array.isArray(resolved)) return { notice: { kind: 'ambiguous', line: resolved.ambiguousLine } };
-    if (req.provider === 'claude') return { notice: { kind: 'unsupported', provider: 'Claude Code' } };
     const indices = resolved;
     const tool = req.provider;
     const changedFields: string[] = [];
@@ -639,7 +640,6 @@ export function tryPatchStepTools(
   const single =
     req.ref.kind === 'all' || req.ref.kind === 'last' || (req.ref.kind === 'ordinal' && req.ref.n === 1);
   if (!single) return { changedFields: [] };
-  if (req.provider === 'claude') return { notice: { kind: 'unsupported', provider: 'Claude Code' } };
   if (toolKey(draft.tool) === toolKey(req.provider)) return { changedFields: [] };
   return { tool: req.provider, changedFields: ['tool'] };
 }

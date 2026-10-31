@@ -273,8 +273,13 @@ function resolveEscalationLadderBase(
     // Unattended: on-device first, then Codex(OAuth). resolveForAutonomous maps
     // 'auto'→codex and drops every api-key backend, so the ladder can only ever
     // contain local + codex here.
+    // Claude glibc S4: an explicitly configured Claude Code (agent tool or a
+    // step pin) is honored unattended like an OAuth CLI should be — it runs
+    // first, then the usual local → Codex fallback. (Codex itself keeps its
+    // historical local-first order.)
+    const claudePin = decision.guard === 'configured-tool' && primary.type === 'cli' && primary.cli === 'claude' ? [primary] : [];
     const tools = dedupe(
-      [LOCAL, CODEX]
+      [...claudePin, LOCAL, CODEX]
         .map((t) => resolveForAutonomous(t))
         .filter((t): t is ToolChoice => t !== null),
     );

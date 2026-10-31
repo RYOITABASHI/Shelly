@@ -27,6 +27,7 @@
  * Pure, offline — no store / RN imports.
  */
 import type { Agent, AgentOrchestrationStep, ToolChoice } from '@/store/types';
+import { isAgentCliId, sameProvider } from './agent-cli-workers';
 
 export const PROVIDER_OVERRIDES_FILE = 'overrides.json';
 export const PROVIDER_OVERRIDES_VERSION = 1;
@@ -34,10 +35,10 @@ export const PROVIDER_OVERRIDES_VERSION = 1;
 const SAFE_AGENT_ID = /^[A-Za-z0-9._-]{1,80}$/;
 const MAX_STEP_INDEX = 31;
 
-export type ProviderPick = 'auto' | 'local' | 'codex' | 'perplexity' | 'gemini' | 'cerebras' | 'groq';
+export type ProviderPick = 'auto' | 'local' | 'codex' | 'claude' | 'perplexity' | 'gemini' | 'cerebras' | 'groq';
 
 /** MONITOR picker order. */
-export const PROVIDER_PICKS: readonly ProviderPick[] = ['auto', 'local', 'codex', 'perplexity', 'gemini', 'cerebras', 'groq'];
+export const PROVIDER_PICKS: readonly ProviderPick[] = ['auto', 'local', 'codex', 'claude', 'perplexity', 'gemini', 'cerebras', 'groq'];
 
 const OVERRIDE_TOOL_TYPES: ReadonlySet<string> = new Set(['auto', 'local', 'cli', 'perplexity', 'gemini-api', 'cerebras', 'groq']);
 
@@ -47,6 +48,8 @@ export function providerPickToTool(pick: ProviderPick): ToolChoice {
       return { type: 'local' };
     case 'codex':
       return { type: 'cli', cli: 'codex' };
+    case 'claude':
+      return { type: 'cli', cli: 'claude' };
     case 'perplexity':
       return { type: 'perplexity' };
     case 'gemini':
@@ -65,7 +68,7 @@ export function toolToProviderPick(tool: ToolChoice | null | undefined): Provide
     case 'local':
       return 'local';
     case 'cli':
-      return 'codex';
+      return tool.cli === 'claude' ? 'claude' : 'codex';
     case 'perplexity':
       return 'perplexity';
     case 'gemini-api':
@@ -86,6 +89,8 @@ export function providerPickLabel(pick: ProviderPick): string {
       return 'Local LLM';
     case 'codex':
       return 'Codex';
+    case 'claude':
+      return 'Claude Code';
     case 'perplexity':
       return 'Perplexity';
     case 'gemini':
@@ -114,7 +119,7 @@ export function sanitizeOverrideTool(raw: unknown): ToolChoice | null {
   const r = raw as Record<string, unknown>;
   const type = typeof r.type === 'string' ? r.type : '';
   if (!OVERRIDE_TOOL_TYPES.has(type)) return null;
-  if (type === 'cli') return r.cli === 'codex' ? { type: 'cli', cli: 'codex' } : null;
+  if (type === 'cli') return isAgentCliId(r.cli) ? { type: 'cli', cli: r.cli } : null;
   if (type === 'auto') return { type: 'auto' };
   return { type } as ToolChoice;
 }
@@ -240,7 +245,9 @@ export function vetOverrideToolForAgent(
   const pool: ToolChoice[] = [agent.tool, ...(agent.orchestration?.steps ?? []).map((s) => (typeof s === 'string' ? undefined : s.tool))].filter(
     (t): t is ToolChoice => !!t && t.type !== 'auto',
   );
-  const own = pool.find((t) => t.type === tool.type);
+  // Same provider = same type AND, for a CLI, the same CLI (a Claude pick
+  // must never resolve to the agent's Codex tool or vice versa).
+  const own = pool.find((t) => sameProvider(t, tool));
   if (own) return own;
   return tool.type === 'local' ? { type: 'local' } : undefined;
 }

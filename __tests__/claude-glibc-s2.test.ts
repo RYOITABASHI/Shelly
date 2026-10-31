@@ -1,7 +1,7 @@
 /**
  * __tests__/claude-glibc-s2.test.ts
  *
- * Claude Code glibc S2-S3 (BASHRC_VERSION 275-282): private authenticated proxy, OSC 8
+ * Claude Code glibc S2-S3 (BASHRC_VERSION 275-283): private authenticated proxy, OSC 8
  * sign-in URL bridge (tap-to-open only, armed sessions only), drain loop
  * safety. See DEFERRED.md "Claude Code 公式 glibc 版（2.1.314）を Shelly で動かす".
  *
@@ -424,7 +424,7 @@ describe('shelly-claude-proxy.js', () => {
   }, 20_000);
 });
 
-describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-282)', () => {
+describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-283)', () => {
   const lines = homeKt.split(/\r?\n/);
   const start = lines.findIndex((l) => l.includes('sb.appendLine("shelly-claude-glibc() {")'));
   const fnLines: string[] = [];
@@ -437,7 +437,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-282)', () =>
   const fn = fnLines.join('\n');
 
   it('bumped BASHRC_VERSION', () => {
-    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 282\b/);
+    expect(homeKt).toMatch(/private const val BASHRC_VERSION = 283\b/);
   });
 
   it('S3: tmp dirs and the bionic lib dir reach claude only via command prefixes', () => {
@@ -464,7 +464,7 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-282)', () =>
     expect(cmd).toContain('CLAUDE_CODE_SHELL="${CLAUDE_CODE_SHELL:-$__sh}" CLAUDE_ENV_FILE="${CLAUDE_ENV_FILE:-$__envf}" \\');
     expect(fn).toContain('__sh="$__root/bin/bash"');
     expect(fn).toContain('[ "$(readlink "$__sh" 2>/dev/null)" = /system/bin/sh ] || ln -sfn /system/bin/sh "$__sh"');
-    const env = /cat > "\$__envf" <<'__SHELLY_CLAUDE_ENV'\n([^]*?)\n__SHELLY_CLAUDE_ENV\n/.exec(fn)![1];
+    const env = /cat > "\$__envf\.\$BASHPID\.tmp" <<'__SHELLY_CLAUDE_ENV'\n([^]*?)\n__SHELLY_CLAUDE_ENV\n    mv -f "\$__envf\.\$BASHPID\.tmp" "\$__envf"\n/.exec(fn)![1];
     expect(env).toMatch(/^if \[ -z "\$\{BASH_VERSION:-\}" \]; then\n/);
     expect(env).toMatch(/\/system\/bin\/linker64 \S+\/shelly_shell -c 'mapfile -d "" -t __a < \/proc\/\$PPID\/cmdline; eval "\$\{__a\[-1\]\}"'/);
     expect(env).toMatch(/\n  exit \$\?\nfi$/);
@@ -472,7 +472,11 @@ describe('shelly-claude-glibc() bashrc function (BASHRC_VERSION 275-282)', () =>
 
   it('denies Grep/Glob (bundled rg is not exec-able) for runs only, not subcommands', () => {
     expect(fn).toContain('    __xargs=()');
-    expect(fn).toContain(`    case "\${1:-}" in ""|-*) __xargs=(--settings '{"permissions":{"deny":["Grep","Glob"]}}') ;; esac`);
+    expect(fn).toContain(`    __settings='{"permissions":{"deny":["Grep","Glob"]}}'`);
+    // S4 (v283): an agent worker may pass stricter settings; never exported to claude.
+    expect(fn).toContain('    [ -n "${SHELLY_CLAUDE_SETTINGS_JSON:-}" ] && __settings="$SHELLY_CLAUDE_SETTINGS_JSON"');
+    expect(fn).toContain(`    case "\${1:-}" in ""|-*) __xargs=(--settings "$__settings") ;; esac`);
+    expect(fn).toContain('unset BROWSER DISPLAY WAYLAND_DISPLAY SHELLY_CLAUDE_SETTINGS_JSON');
   });
 
   it('plain `claude` runs shelly-claude-glibc once the glibc runtime is staged', () => {

@@ -719,8 +719,11 @@ export type AppSettings = {
 
 // ─── Background Agents ──────────────────────────────────────────────────────
 
+/** CLI agent workers (lib/agent-cli-workers.ts holds their labels/routing). */
+export type AgentCliId = 'codex' | 'claude';
+
 export type ToolChoice =
-  | { type: 'cli'; cli: 'codex' }
+  | { type: 'cli'; cli: AgentCliId }
   | { type: 'gemini-api'; model?: string }
   | { type: 'cerebras'; model?: string }
   | { type: 'groq'; model?: string }
@@ -1189,6 +1192,11 @@ export interface AgentRunLog {
   toolUsed: string;
   errorMessage?: string;
   routeDecision?: AgentRouteDecision;
+  /** Claude glibc S4: token usage a CLI worker reported for this run (Claude
+   *  Code's result message). `usd` only for an API-key-billed run, never for a
+   *  subscription. Absent everywhere else (additive). Untrusted on read —
+   *  validate before use. */
+  usage?: { inputTokens?: number; outputTokens?: number; usd?: number };
   /** Phase 4: present when this was a multi-step orchestrated run. */
   steps?: AgentRunStep[];
   /** Multi-action fan-out: present only when this run dispatched Agent.actions

@@ -6,6 +6,7 @@ import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
 import { autonomousWebConsentCovers, consentSignalsFor, credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
 import { detectExplicitToolUsage } from './agent-tool-mentions';
+import { AGENT_CLI_WORKERS, cliIdOf } from './agent-cli-workers';
 import { continuousExcludesPaidApi, guardContinuousTool, isPaidApiTool } from './agent-continuous';
 import {
   scoreRoutes,
@@ -405,7 +406,7 @@ export async function checkToolAvailability(
 export function toolChoiceToLabel(tool: ToolChoice): string {
   switch (tool.type) {
     case 'cli':
-      return `${tool.cli.charAt(0).toUpperCase()}${tool.cli.slice(1)} CLI`;
+      return AGENT_CLI_WORKERS[cliIdOf(tool) ?? 'codex'].label;
     case 'gemini-api':
       return tool.model ? `Gemini API (${tool.model})` : 'Gemini API';
     case 'cerebras':

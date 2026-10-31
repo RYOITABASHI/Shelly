@@ -34,7 +34,8 @@ export type MonitorProvider =
   | 'cerebras'
   | 'groq'
   | 'local'
-  | 'codex-cli';
+  | 'codex-cli'
+  | 'claude-cli';
 
 export type MonitorProviderKind = 'API' | 'CLI' | 'LOCAL' | 'AUTO';
 
@@ -46,6 +47,7 @@ export const MONITOR_PROVIDERS: readonly MonitorProvider[] = [
   'groq',
   'local',
   'codex-cli',
+  'claude-cli',
 ];
 
 /** Display label of each provider (proper nouns, not translated). */
@@ -57,6 +59,7 @@ export const MONITOR_PROVIDER_LABEL: Record<MonitorProvider, string> = {
   groq: 'Groq',
   local: 'Local LLM',
   'codex-cli': 'Codex CLI',
+  'claude-cli': 'Claude Code',
 };
 
 export const MONITOR_PROVIDER_KIND: Record<MonitorProvider, MonitorProviderKind> = {
@@ -67,6 +70,8 @@ export const MONITOR_PROVIDER_KIND: Record<MonitorProvider, MonitorProviderKind>
   groq: 'API',
   local: 'LOCAL',
   'codex-cli': 'CLI',
+  // Subscription CLI (claude.ai plan / setup-token), like Codex's ChatGPT plan.
+  'claude-cli': 'CLI',
 };
 
 export interface MonitorTeamNode {
@@ -427,6 +432,8 @@ export function providerToTool(provider: MonitorProvider): ToolChoice | undefine
       return undefined;
     case 'codex-cli':
       return { type: 'cli', cli: 'codex' };
+    case 'claude-cli':
+      return { type: 'cli', cli: 'claude' };
     case 'perplexity':
     case 'gemini-api':
     case 'cerebras':

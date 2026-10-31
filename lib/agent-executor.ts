@@ -2,7 +2,8 @@
  * lib/agent-executor.ts — Runs agent tasks in isolated tmux sessions.
  * Generates per-agent shell scripts and manages execution lifecycle.
  */
-import { Agent, AgentAction, AgentActionType, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { Agent, AgentAction, AgentActionType, AgentCliId, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { cliIdOf, cliTool } from './agent-cli-workers';
 import { GROQ_DEFAULT_MODEL } from '@/lib/groq';
 import { resolveAgentRoute, toolChoiceToLabel } from './agent-tool-router';
 import { detectRouteSignals } from './agent-router-scoring';
@@ -776,6 +777,10 @@ const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
  *  detect whether a run that budget-capped before its true final step should
  *  suppress the action dispatch (mirrors runAgentOrchestrated's `isFinalStep`). */
 export interface OrchestrationChainOptions {
+  /** Claude glibc S4: the CLI that runs every unpinned step (the agent-level
+   *  `cli` tool). Absent = Codex, byte-identical to the pre-S4 chain. A step
+   *  pinned to a DIFFERENT CLI gets its own driver arm. */
+  defaultCli?: AgentCliId;
   basePrompt: string;
   steps: NormalizedStep[];
   totalStepCount: number;
@@ -1450,6 +1455,11 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
   // Only fires for the RESIDUAL collapse cases now (see canRunOrchestrationChain
   // above) — a chain this function can actually run gets no note at all.
   const orchestrationStepCount = fullOrchestrationSteps.length;
+  // Claude glibc S4: a script that can run Claude Code records its token
+  // usage (the driver's usage sidecar) in the run log. Every other script is
+  // byte-identical to before.
+  const usesClaudeCli =
+    cliIdOf(tool) === 'claude' || (canRunOrchestrationChain && attemptableOrchestrationSteps.some((s) => cliIdOf(s.tool) === 'claude'));
   const orchestrationCollapsedNote = isOrchestrated(agent.orchestration) && !canRunOrchestrationChain
     ? `[Shelly] Note: this agent is configured as a ${orchestrationStepCount}-step chain, but this run executed only the base task as a single step — tool "${toolLabel}" cannot run the full chain unattended. Run this agent manually from the app for the complete chain, or switch its tool to Local LLM / Gemini / Perplexity / Cerebras / Groq to enable scheduled multi-step chains.`
     : '';
@@ -1666,6 +1676,7 @@ export function generateRunScript(agent: Agent, opts: { suppressAction?: boolean
     // single-step agent" regression test).
     orchestrationChain: canRunOrchestrationChain
       ? {
+          ...(cliIdOf(tool) === 'claude' ? { defaultCli: 'claude' as const } : {}),
           basePrompt: languageDirective + agent.prompt,
           apiStepBasePrompt: languageDirective + taskTextForLanguage(agent.prompt),
           steps: attemptableOrchestrationSteps,
@@ -6595,8 +6606,8 @@ HANDOFF_FIELDS=""
 if [ "$STATUS" = "success" ] && [ "\${ACTION_DISPATCH_HANDOFF:-}" = "closepaw" ]; then
   HANDOFF_FIELDS=",\\"handoff\\":\\"closepaw\\""
 fi
-${useMultiActions ? 'ACTION_RESULTS_FIELDS=",\\"actionResults\\":$ACTION_RESULTS_JSON"\n' : ''}cat > "$LOG_DIR/$TS.json" << LOGEOF
-{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS$HANDOFF_FIELDS${useMultiActions ? '$ACTION_RESULTS_FIELDS' : ''}}
+${useMultiActions ? 'ACTION_RESULTS_FIELDS=",\\"actionResults\\":$ACTION_RESULTS_JSON"\n' : ''}${usesClaudeCli ? CLAUDE_USAGE_FIELDS_SNIPPET : ''}cat > "$LOG_DIR/$TS.json" << LOGEOF
+{"agentId":"$AGENT_ID","timestamp":\${TS}000,"status":"$STATUS","outputPreview":"$PREVIEW_JSON","durationMs":$DURATION,"toolUsed":"$TOOL_LABEL_JSON","errorMessage":"$ERROR_MESSAGE_JSON","routeDecision":$ROUTE_DECISION_JSON$SAVED_PATH_FIELDS$HANDOFF_FIELDS${useMultiActions ? '$ACTION_RESULTS_FIELDS' : ''}${usesClaudeCli ? '$USAGE_FIELDS' : ''}}
 LOGEOF
 
 # Prune old logs (keep last 30)
@@ -6610,10 +6621,25 @@ ${opts.isOrchestratedStep ? `# Sourced briefings (2026-10-09): keep this chain s
 # orchestrated step's ephemeral per-step script, never a stored script.
 clean_result_full "$RESULT_FILE" "$TMP_DIR/agent-step-result-$AGENT_ID${opts.stepResultToken && /^[a-z0-9]{1,32}$/.test(opts.stepResultToken) ? `-${opts.stepResultToken}` : ''}.md" 2>/dev/null || true
 ` : ''}# Cleanup temp
-rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE" "$RESULT_FILE.response.json.diag"
+rm -f "$RESULT_FILE" "$RESULT_FILE.answer" "$BACKEND_ERROR_FILE" "$RESULT_FILE.response.json.diag"${usesClaudeCli ? ' "$RESULT_FILE.usage.json"' : ''}
 finish 0
 `;
 }
+
+/**
+ * Claude glibc S4: `"usage":{…}` for the run log from the driver's usage
+ * sidecar. The file sits in an app-uid-writable tmp dir, so only a flat JSON
+ * object of the three known numeric keys is accepted (anything else → no
+ * field); the TS reader (AttendedProgressWriter.stepUsage) re-validates.
+ */
+export const CLAUDE_USAGE_FIELDS_SNIPPET = `USAGE_FIELDS=""
+if [ -s "$RESULT_FILE.usage.json" ]; then
+  USAGE_RAW=$(head -c 256 "$RESULT_FILE.usage.json" 2>/dev/null | tr -d '\\n')
+  if printf '%s' "$USAGE_RAW" | grep -Eq '^\\{"(inputTokens|outputTokens|usd)":[0-9][0-9.eE+-]{0,24}(,"(inputTokens|outputTokens|usd)":[0-9][0-9.eE+-]{0,24}){0,2}\\}$'; then
+    USAGE_FIELDS=",\\"usage\\":$USAGE_RAW"
+  fi
+fi
+`;
 
 /**
  * Fail-closed script for an autonomous agent whose tool has no autonomous form
@@ -6660,7 +6686,7 @@ function generateToolCommand(
     case 'cli':
       return options.orchestrationChain
         ? codexOrchestrationChainCommand(options.orchestrationChain, resultVar, options.policyJson ?? '')
-        : codexDriverCommand(escapedPrompt, resultVar, options.policyJson ?? '');
+        : codexDriverCommand(escapedPrompt, resultVar, options.policyJson ?? '', cliIdOf(tool), options.stepSkipPromptCompose ?? false);
     case 'gemini-api': {
       // Web-mandatory general tasks (collect current news) need Google Search
       // grounding — otherwise plain Gemini hallucinates like a non-web LLM.
@@ -6862,10 +6888,19 @@ fi`;
  * make the exit code unrecoverable under `set -e`); `set +e`/`set -e` brackets
  * it instead so the script never aborts but DRIVER_EXIT is still captured.
  */
-function codexDriverCommand(escapedPrompt: string, resultVar: string, policyJson: string): string {
+/** Claude glibc S4: `--engine claude` (+ its usage sidecar) for the driver;
+ *  '' for Codex so every Codex script stays byte-identical. */
+export function driverEngineArgs(engine: AgentCliId | undefined, indent: string): string {
+  if (!engine || engine === 'codex') return '';
+  return `${indent}--engine ${engine} \\\n${indent}--usage-file "$RESULT_FILE.usage.json" \\\n`;
+}
+
+function codexDriverCommand(escapedPrompt: string, resultVar: string, policyJson: string, engine: AgentCliId = 'codex', skipPromptCompose = false): string {
+  const compose = skipPromptCompose
+    ? ''
+    : `printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" "\${CONTINUOUS_CONTEXT:-}" > "$PROMPT_FILE"\n`;
   return `PROMPT_FILE="$HOME/.shelly/tmp/agent-prompt-$AGENT_ID.txt"
-printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' "\${CURRENT_DATETIME_CONTEXT:-}" "\${DEVICE_STATUS_CONTEXT:-}" "\${NOTIFICATION_CONTEXT:-}" '${escapedPrompt}' "$SOURCE_CONTEXT" "\${CONTINUOUS_CONTEXT:-}" > "$PROMPT_FILE"
-# workspaceRoot (DEFERRED.md #2 残り): when the agent has a configured
+${compose}# workspaceRoot (DEFERRED.md #2 残り): when the agent has a configured
 # workspace, run the driver there instead of the content-studio default —
 # the B2 driver re-anchors AutonomyPolicy.workspaceRoot to whatever --cwd it
 # receives (scripts/shelly-agent-driver.js), so this --cwd IS the workspace
@@ -6878,7 +6913,7 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   rm -f "$RESULT_FILE.answer"
   set +e
   shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
-    --cwd "$DRIVER_CWD" \\
+${driverEngineArgs(engine, '    ')}    --cwd "$DRIVER_CWD" \\
     --approval-policy untrusted \\
     --policy-json ${shellQuote(policyJson)} \\
     --agent-id "$AGENT_ID" \\
@@ -6891,7 +6926,7 @@ if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
   set -e
   mirror_driver_audit_to_app_private || true
   mirror_driver_audit_to_sdcard || true
-  CODEX_RESULT_ACTIVE=1
+  CODEX_RESULT_ACTIVE=${engine === 'codex' ? 1 : 0}
   if [ -s "$RESULT_FILE.answer" ]; then
     RESULT_CONTENT_FILE="$RESULT_FILE.answer"
     RESULT_CONTENT_IS_DRIVER_ANSWER=1
@@ -7002,11 +7037,22 @@ export function stepScopedKeyPostlude(keyVar: string): string {
   return `    if [ "$STEP_SCOPED_KEY_LOADED" = "1" ]; then unset ${keyVar}; fi`;
 }
 
-function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions): string {
+function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions, policyJson = ''): string {
   const arms: string[] = [];
+  const defaultCli = chain.defaultCli ?? 'codex';
   chain.steps.forEach((step, index) => {
     const pinned = !!step.tool && STEP_TOOL_BASH_DISPATCHABLE_TYPES.has(step.tool.type);
     const sourcedResearch = !!chain.sourcing && chain.sourcing.research[index] === true;
+    // Claude glibc S4: a step pinned to another CLI worker (Claude Code in a
+    // Codex chain, or Codex in a Claude chain) runs that CLI through the SAME
+    // gated driver block, only with its own --engine. Never for a sourced
+    // chain's summarize/write step: that one quotes untrusted web text and goes
+    // to the local LLM below, exactly like an unpinned (exec-capable) step.
+    const stepCli = cliIdOf(step.tool);
+    if (stepCli && stepCli !== defaultCli && (!chain.sourcing || sourcedResearch)) {
+      arms.push(`  ${index})\n${codexOrchestrationDriverBlock('', policyJson, stepCli)}\n    ;;`);
+      return;
+    }
     // Sourced briefings (review M3): a summarize/write step of a sourced
     // chain quotes untrusted web text, so it never runs on the exec-capable
     // Codex driver — an unpinned (or cli-pinned) one is dispatched to the
@@ -7072,8 +7118,24 @@ function codexOrchestrationStepDispatchArms(chain: OrchestrationChainOptions): s
  * pinned index gets its own tool-dispatch arm, everything else (`*)`) falls
  * through to that SAME unchanged codex-driver block.
  */
-function codexOrchestrationStepBody(stepDispatchArms: string, resultVar: string, policyJson: string): string {
-  const codexDriverBlock = `  if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
+function codexOrchestrationStepBody(stepDispatchArms: string, resultVar: string, policyJson: string, defaultCli: AgentCliId = 'codex'): string {
+  const codexDriverBlock = codexOrchestrationDriverBlock(resultVar, policyJson, defaultCli);
+  if (!stepDispatchArms) return codexDriverBlock;
+  return `  case "$CODEX_ORCH_STEP_INDEX" in
+${stepDispatchArms}
+  *)
+${codexDriverBlock}
+    ;;
+  esac`;
+}
+
+/** One chain step on a CLI worker through the gated driver. For the chain's
+ *  default Codex this is byte-identical to the pre-S4 block. `resultVar` ''
+ *  means "$RESULT_FILE" (the arms' form). */
+function codexOrchestrationDriverBlock(resultVarIn: string, policyJson: string, engine: AgentCliId): string {
+  const resultVar = resultVarIn || '"$RESULT_FILE"';
+  const toolJsonArg = engine === 'codex' ? '"$CODEX_ORCH_TOOL_JSON"' : shellQuote(JSON.stringify(toolChoiceToLabel(cliTool(engine))));
+  return `  if node_usable && [ -f "$HOME/.shelly-agent-driver.js" ]; then
     CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
     CURRENT_STEP_TMP="$LOG_DIR/current.json.tmp"
     # CODEX_ORCH_TOOL_JSON is already a JSON string literal (JSON.stringify'd
@@ -7081,11 +7143,11 @@ function codexOrchestrationStepBody(stepDispatchArms: string, resultVar: string,
     # second pair of quotes around it, or "tool" comes out double-quoted
     # (invalid JSON, found during Sidebar RUNNING-row current.json plumbing).
     printf '{"step":%s,"total":%s,"tool":%s,"startedAt":%s,"phase":"dispatch"}\n' \
-      "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_STEP_TOTAL" "$CODEX_ORCH_TOOL_JSON" "$(date +%s)" > "$CURRENT_STEP_TMP"
+      "$CODEX_ORCH_STEP_NUM" "$CODEX_ORCH_STEP_TOTAL" ${toolJsonArg} "$(date +%s)" > "$CURRENT_STEP_TMP"
     mv "$CURRENT_STEP_TMP" "$LOG_DIR/current.json"
     set +e
     shelly_timeout_app_binary "$TIMEOUT" node "$HOME/.shelly-agent-driver.js" \\
-      --cwd "$DRIVER_CWD" \\
+${driverEngineArgs(engine, '      ')}      --cwd "$DRIVER_CWD" \\
       --approval-policy untrusted \\
       --policy-json ${shellQuote(policyJson)} \\
       --agent-id "$AGENT_ID" \\
@@ -7098,7 +7160,7 @@ function codexOrchestrationStepBody(stepDispatchArms: string, resultVar: string,
     set -e
     mirror_driver_audit_to_app_private || true
     mirror_driver_audit_to_sdcard || true
-    CODEX_RESULT_ACTIVE=1
+    CODEX_RESULT_ACTIVE=${engine === 'codex' ? 1 : 0}
     if [ -s "$RESULT_FILE.answer" ]; then
       RESULT_CONTENT_FILE="$RESULT_FILE.answer"
       RESULT_CONTENT_IS_DRIVER_ANSWER=1
@@ -7114,13 +7176,6 @@ function codexOrchestrationStepBody(stepDispatchArms: string, resultVar: string,
     DRIVER_EXIT=1
     touch "$BACKEND_ERROR_FILE"
   fi`;
-  if (!stepDispatchArms) return codexDriverBlock;
-  return `  case "$CODEX_ORCH_STEP_INDEX" in
-${stepDispatchArms}
-  *)
-${codexDriverBlock}
-    ;;
-  esac`;
 }
 
 /**
@@ -7236,7 +7291,7 @@ function codexOrchestrationChainCommand(
 ): string {
   const instructionsArray = chain.steps.map((s) => `  ${shellQuote(s.instruction)}`).join('\n');
   const totalTimeoutSec = Math.max(1, Math.floor(chain.totalTimeoutMs / 1000));
-  const stepDispatchArms = codexOrchestrationStepDispatchArms(chain);
+  const stepDispatchArms = codexOrchestrationStepDispatchArms(chain, policyJson);
   return `CODEX_ORCH_BASE_PROMPT=${shellQuote(chain.basePrompt.trim())}
 CODEX_ORCH_INSTRUCTIONS=(
 ${instructionsArray}
@@ -7246,7 +7301,7 @@ CODEX_ORCH_MAX_STEPS=${chain.maxSteps}
 CODEX_ORCH_TOTAL_TIMEOUT_SEC=${totalTimeoutSec}
 CODEX_ORCH_MAX_RESULT_CARRY_CHARS=${MAX_RESULT_CARRY_CHARS}
 CODEX_ORCH_MAX_PROMPT_CHARS=${MAX_PROMPT_CHARS}
-CODEX_ORCH_TOOL_JSON=${shellQuote(JSON.stringify(toolChoiceToLabel({ type: 'cli', cli: 'codex' })))}
+CODEX_ORCH_TOOL_JSON=${shellQuote(JSON.stringify(toolChoiceToLabel(cliTool(chain.defaultCli ?? 'codex'))))}
 CODEX_ORCH_CARRY_FILE="$TMP_DIR/agent-orch-carry-$AGENT_ID.txt"
 : > "$CODEX_ORCH_CARRY_FILE"
 CODEX_ORCH_FAILED=0
@@ -7352,7 +7407,7 @@ while [ "$CODEX_ORCH_STEP_INDEX" -lt "\${#CODEX_ORCH_INSTRUCTIONS[@]}" ]; do
 
 ${chain.sourcing ? codexOrchestrationSourcingPreStep() : ''}  codex_orch_build_prompt "\${CODEX_ORCH_INSTRUCTIONS[$CODEX_ORCH_STEP_INDEX]}"
   rm -f "$BACKEND_ERROR_FILE" "$TRANSIENT_ERROR_FILE" "$RESULT_FILE.answer"
-${codexOrchestrationStepBody(stepDispatchArms, resultVar, policyJson)}
+${codexOrchestrationStepBody(stepDispatchArms, resultVar, policyJson, chain.defaultCli ?? 'codex')}
 
   CODEX_ORCH_STEP_NUM=$((CODEX_ORCH_STEP_INDEX + 1))
 ${chain.sourcing ? codexOrchestrationSourcingPostStep() : ''}  if [ -s "$RESULT_CONTENT_FILE" ] && [ ! -f "$BACKEND_ERROR_FILE" ]; then

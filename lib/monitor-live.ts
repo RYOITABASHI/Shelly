@@ -60,6 +60,9 @@ const PROVIDER_ALIASES: Record<string, MonitorProvider> = {
   'codex-cli': 'codex-cli',
   // The executor and the attended writer report a CLI step as `cli:<name>`.
   'cli:codex': 'codex-cli',
+  claude: 'claude-cli',
+  'claude-cli': 'claude-cli',
+  'cli:claude': 'claude-cli',
 };
 
 const EXTRA_PROVIDER_LABEL: Record<string, string> = {

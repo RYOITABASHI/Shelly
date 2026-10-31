@@ -1485,7 +1485,15 @@ patchCodex(libDir);
     //      published SHA-512 and stages it under ~/.shelly-runtime/agy (it
     //      does NOT run the vendor `install` step, which edits shell config).
     //      `agy` runs it via linker64 with the bionic exec wrapper, like codex.
-    private const val BASHRC_VERSION = 282
+    // v283: Claude glibc S4. shelly-claude-glibc() is emitted by
+    //      appendClaudeGlibcFunction(), shared with the non-interactive runner
+    //      $HOME/.shelly-claude-run.sh (agent workers: `bash <file> <args>` from
+    //      shelly-agent-driver.js --engine claude). Two function changes: the
+    //      Bash-tool env file is written tmp + rename (parallel agent runs no
+    //      longer truncate it under a reading claude), and a caller may replace
+    //      the default --settings JSON with SHELLY_CLAUDE_SETTINGS_JSON (the
+    //      agent driver's stricter deny/ask rules); it is unset for claude itself.
+    private const val BASHRC_VERSION = 283
 
     // v250: see BASHRC_VERSION 250 — bash-only sourcing of ~/.bashrc.
     internal const val SHELLY_PROFILE =
@@ -1803,6 +1811,25 @@ patchCodex(libDir);
             }
         } catch (e: Exception) {
             android.util.Log.e("HomeInitializer", "shelly-claude-proxy.js extract failed: ${e.message}")
+        }
+
+        // Claude glibc S4: non-interactive runner for Claude Code agent workers
+        // (scripts/shelly-agent-driver.js --engine claude). Rewritten every
+        // launch from the same generator as the .bashrc function, 0700, and
+        // only ever run as `bash <file>` (Knox blocks shebang exec here).
+        val claudeRunner = File(home, ".shelly-claude-run.sh")
+        try {
+            val tmp = File(home, ".shelly-claude-run.sh.tmp")
+            tmp.writeText(claudeRunnerScript(libDir))
+            tmp.setReadable(false, false); tmp.setReadable(true, true)
+            tmp.setWritable(false, false); tmp.setWritable(true, true)
+            tmp.setExecutable(false, false); tmp.setExecutable(true, true)
+            if (!tmp.renameTo(claudeRunner)) {
+                claudeRunner.writeText(tmp.readText())
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HomeInitializer", "shelly-claude-run.sh write failed: ${e.message}")
         }
 
         // v39: Mozilla CA bundle for TLS clients that don't consult the
@@ -4271,105 +4298,9 @@ patchCodex(libDir);
             // /system/bin/sh plus an env file that hands the -c string to Shelly
             // bash (see the BASHRC_VERSION 279 note). The user's own
             // CLAUDE_CODE_SHELL / CLAUDE_ENV_FILE win when set.
-            sb.appendLine("shelly-claude-glibc() {")
-            sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
-            sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
-            sb.appendLine("  local __bin=\"\$__root/claude\"")
-            sb.appendLine("  local __proxy_js=\"\$HOME/.shelly-claude-proxy.js\"")
-            sb.appendLine("  if [ ! -e \"\$__ld\" ]; then")
-            sb.appendLine("    echo \"shelly-claude-glibc: missing \$__ld (stage glibc ld.so first)\" >&2; return 2")
-            sb.appendLine("  fi")
-            sb.appendLine("  if [ ! -e \"\$__bin\" ]; then")
-            sb.appendLine("    echo \"shelly-claude-glibc: missing \$__bin (stage the Claude Code glibc binary first)\" >&2; return 2")
-            sb.appendLine("  fi")
-            sb.appendLine("  if [ ! -f \"\$__proxy_js\" ]; then")
-            sb.appendLine("    echo \"shelly-claude-glibc: missing \$__proxy_js (restart Shelly to re-extract helpers)\" >&2; return 2")
-            sb.appendLine("  fi")
-            sb.appendLine("  __shelly_paste_tui_begin")
-            sb.appendLine("  (")
-            sb.appendLine("    umask 077")
-            sb.appendLine("    # setup-token prints a long-lived token; keep it in ~/.claude-token.env")
-            sb.appendLine("    # (CLAUDE_CODE_OAUTH_TOKEN=...). Loaded only inside this subshell.")
-            sb.appendLine("    if [ -z \"\${CLAUDE_CODE_OAUTH_TOKEN:-}\" ] && [ -f \"\$HOME/.claude-token.env\" ]; then . \"\$HOME/.claude-token.env\"; fi")
-            sb.appendLine("    __pdir=\"\${TMPDIR:-\$HOME/tmp}\"")
-            sb.appendLine("    mkdir -p \"\$__pdir\" 2>/dev/null")
-            sb.appendLine("    __pfile=\"\$__pdir/shelly-claude-proxy.\$BASHPID.port\"")
-            sb.appendLine("    # fixed path: the native bridge and RN read \$HOME/tmp regardless of TMPDIR")
-            sb.appendLine("    mkdir -p \"\$HOME/tmp\" 2>/dev/null")
-            sb.appendLine("    __arm=\"\$HOME/tmp/.shelly-claude-login.arm\"")
-            sb.appendLine("    __armtag=\"\$BASHPID \$RANDOM\$RANDOM\$RANDOM\"")
-            sb.appendLine("    rm -f \"\$__pfile\" \"\$__pfile.tmp\"")
-            sb.appendLine("    # linker64 directly (not the _run function) so \$! is the proxy itself")
-            sb.appendLine("    LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 $libDir/node \"\$__proxy_js\" --port-file \"\$__pfile\" --parent-pid \"\$BASHPID\" </dev/null >/dev/null 2>\"\$__pfile.log\" &")
-            sb.appendLine("    __proxy_pid=\$!")
-            sb.appendLine("    __cleanup() {")
-            sb.appendLine("      kill \"\$__proxy_pid\" 2>/dev/null")
-            sb.appendLine("      if grep -q 'Proxy-Authorization' \"\$__pfile.log\" 2>/dev/null; then")
-            sb.appendLine("        echo \"shelly-claude-glibc: claude's HTTP client did not send the private proxy credentials (407); see DEFERRED.md\" >&2")
-            sb.appendLine("      fi")
-            sb.appendLine("      [ \"\$(cat \"\$__arm\" 2>/dev/null)\" = \"\$__armtag\" ] && rm -f \"\$__arm\"")
-            sb.appendLine("      rm -f \"\$__pfile\" \"\$__pfile.tmp\" \"\$__pfile.log\"")
-            sb.appendLine("    }")
-            sb.appendLine("    trap __cleanup EXIT")
-            sb.appendLine("    __port=\"\"")
-            sb.appendLine("    __token=\"\"")
-            sb.appendLine("    __i=0")
-            sb.appendLine("    while [ \"\$__i\" -lt 200 ]; do")
-            sb.appendLine("      if [ -s \"\$__pfile\" ]; then read -r __port __token < \"\$__pfile\"; break; fi")
-            sb.appendLine("      kill -0 \"\$__proxy_pid\" 2>/dev/null || break")
-            sb.appendLine("      sleep 0.05")
-            sb.appendLine("      __i=\$((__i + 1))")
-            sb.appendLine("    done")
-            sb.appendLine("    case \"\$__port:\$__token\" in")
-            sb.appendLine("      [0-9]*:[0-9a-f]*) ;;")
-            sb.appendLine("      *)")
-            sb.appendLine("        echo \"shelly-claude-glibc: private proxy failed to start\" >&2")
-            sb.appendLine("        cat \"\$__pfile.log\" >&2 2>/dev/null")
-            sb.appendLine("        exit 1")
-            sb.appendLine("        ;;")
-            sb.appendLine("    esac")
-            sb.appendLine("    # Arm the sign-in bridge (OAuthHyperlinkBridge.kt) only for interactive")
-            sb.appendLine("    # sessions that can log in; never for -p/--print or non-TTY runs.")
-            sb.appendLine("    __interactive=1")
-            sb.appendLine("    [ -t 0 ] && [ -t 1 ] || __interactive=0")
-            sb.appendLine("    for __a in \"\$@\"; do")
-            sb.appendLine("      case \"\$__a\" in -p|--print|--version|-v|--help|-h) __interactive=0 ;; esac")
-            sb.appendLine("    done")
-            sb.appendLine("    [ \"\$__interactive\" = 1 ] && printf '%s\\n' \"\$__armtag\" > \"\$__arm\"")
-            sb.appendLine("    __proxy=\"http://shelly:\$__token@127.0.0.1:\$__port\"")
-            sb.appendLine("    __tmp=\"\${TMPDIR:-\$HOME/tmp}\"")
-            sb.appendLine("    __ctmp=\"\$__root/tmp\"")
-            sb.appendLine("    mkdir -p \"\$__tmp\" \"\$__ctmp\" 2>/dev/null")
-            sb.appendLine("    # Bash tool: only system_file is exec-able from claude, so the shell is mksh")
-            sb.appendLine("    # under a bash name; the env file re-runs each -c string in Shelly bash.")
-            sb.appendLine("    __sh=\"\$__root/bin/bash\"")
-            sb.appendLine("    __envf=\"\$__root/shell-env.sh\"")
-            sb.appendLine("    mkdir -p \"\$__root/bin\" 2>/dev/null")
-            sb.appendLine("    [ \"\$(readlink \"\$__sh\" 2>/dev/null)\" = /system/bin/sh ] || ln -sfn /system/bin/sh \"\$__sh\"")
-            sb.appendLine("    cat > \"\$__envf\" <<'__SHELLY_CLAUDE_ENV'")
-            sb.appendLine("if [ -z \"\${BASH_VERSION:-}\" ]; then")
-            sb.appendLine("  /system/bin/linker64 $libDir/shelly_shell -c 'mapfile -d \"\" -t __a < /proc/\$PPID/cmdline; eval \"\${__a[-1]}\"'")
-            sb.appendLine("  exit \$?")
-            sb.appendLine("fi")
-            sb.appendLine("__SHELLY_CLAUDE_ENV")
-            sb.appendLine("    # Grep/Glob spawn the bundled rg by plain execve (denied, silent \"no matches\");")
-            sb.appendLine("    # deny them so Claude searches via Bash. Only for runs, not subcommands.")
-            sb.appendLine("    __xargs=()")
-            sb.appendLine("    case \"\${1:-}\" in \"\"|-*) __xargs=(--settings '{\"permissions\":{\"deny\":[\"Grep\",\"Glob\"]}}') ;; esac")
-            sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY")
-            sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
-            sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
-            sb.appendLine("      TMPDIR=\"\$__tmp\" CLAUDE_CODE_TMPDIR=\"\$__ctmp\" \\")
-            sb.appendLine("      CLAUDE_CODE_SHELL=\"\${CLAUDE_CODE_SHELL:-\$__sh}\" CLAUDE_ENV_FILE=\"\${CLAUDE_ENV_FILE:-\$__envf}\" \\")
-            sb.appendLine("      SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" \\")
-            sb.appendLine("      LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
-            sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
-            sb.appendLine("      \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\${__xargs[@]}\" \"\$@\"")
-            sb.appendLine("  )")
-            sb.appendLine("  local __rc=\$?")
-            sb.appendLine("  __shelly_paste_tui_end")
-            sb.appendLine("  return \$__rc")
-            sb.appendLine("}")
+            // v283 (S4): emitted by appendClaudeGlibcFunction(), shared with the
+            // non-interactive runner $HOME/.shelly-claude-run.sh so the two cannot drift.
+            appendClaudeGlibcFunction(sb, libDir)
             // v281: plain `claude` -> the glibc Claude Code (only once its runtime is staged).
             sb.appendLine("claude() {")
             sb.appendLine("  if [ -e \"\$HOME/.shelly-runtime/claude-glibc/claude\" ]; then shelly-claude-glibc \"\$@\"; return; fi")
@@ -5805,6 +5736,143 @@ patchCodex(libDir);
         } catch (e: Exception) {
             android.util.Log.w("HomeInitializer", "codex-code-mode-host runtime link failed: ${e.message}")
         }
+    }
+
+    /**
+     * Claude glibc S4: the ONE definition of shelly-claude-glibc(). Emitted into
+     * .bashrc (interactive `claude` / `shelly-claude-glibc`) and into the
+     * non-interactive runner $HOME/.shelly-claude-run.sh (agent workers, run as
+     * `bash <file>` by scripts/shelly-agent-driver.js --engine claude), so the
+     * proxy / token / CLAUDE_CODE_SHELL / CLAUDE_ENV_FILE recipe is identical in
+     * both. Calls __shelly_paste_tui_begin/_end, which the runner stubs out.
+     */
+    private fun appendClaudeGlibcFunction(sb: StringBuilder, libDir: String) {
+        sb.appendLine("shelly-claude-glibc() {")
+        sb.appendLine("  local __root=\"\$HOME/.shelly-runtime/claude-glibc\"")
+        sb.appendLine("  local __ld=\"\$__root/lib/ld-linux-aarch64.so.1\"")
+        sb.appendLine("  local __bin=\"\$__root/claude\"")
+        sb.appendLine("  local __proxy_js=\"\$HOME/.shelly-claude-proxy.js\"")
+        sb.appendLine("  if [ ! -e \"\$__ld\" ]; then")
+        sb.appendLine("    echo \"shelly-claude-glibc: missing \$__ld (stage glibc ld.so first)\" >&2; return 2")
+        sb.appendLine("  fi")
+        sb.appendLine("  if [ ! -e \"\$__bin\" ]; then")
+        sb.appendLine("    echo \"shelly-claude-glibc: missing \$__bin (stage the Claude Code glibc binary first)\" >&2; return 2")
+        sb.appendLine("  fi")
+        sb.appendLine("  if [ ! -f \"\$__proxy_js\" ]; then")
+        sb.appendLine("    echo \"shelly-claude-glibc: missing \$__proxy_js (restart Shelly to re-extract helpers)\" >&2; return 2")
+        sb.appendLine("  fi")
+        sb.appendLine("  __shelly_paste_tui_begin")
+        sb.appendLine("  (")
+        sb.appendLine("    umask 077")
+        sb.appendLine("    # setup-token prints a long-lived token; keep it in ~/.claude-token.env")
+        sb.appendLine("    # (CLAUDE_CODE_OAUTH_TOKEN=...). Loaded only inside this subshell.")
+        sb.appendLine("    if [ -z \"\${CLAUDE_CODE_OAUTH_TOKEN:-}\" ] && [ -f \"\$HOME/.claude-token.env\" ]; then . \"\$HOME/.claude-token.env\"; fi")
+        sb.appendLine("    __pdir=\"\${TMPDIR:-\$HOME/tmp}\"")
+        sb.appendLine("    mkdir -p \"\$__pdir\" 2>/dev/null")
+        sb.appendLine("    __pfile=\"\$__pdir/shelly-claude-proxy.\$BASHPID.port\"")
+        sb.appendLine("    # fixed path: the native bridge and RN read \$HOME/tmp regardless of TMPDIR")
+        sb.appendLine("    mkdir -p \"\$HOME/tmp\" 2>/dev/null")
+        sb.appendLine("    __arm=\"\$HOME/tmp/.shelly-claude-login.arm\"")
+        sb.appendLine("    __armtag=\"\$BASHPID \$RANDOM\$RANDOM\$RANDOM\"")
+        sb.appendLine("    rm -f \"\$__pfile\" \"\$__pfile.tmp\"")
+        sb.appendLine("    # linker64 directly (not the _run function) so \$! is the proxy itself")
+        sb.appendLine("    LD_LIBRARY_PATH=\"\$SHELLY_LD_LIBRARY_PATH\" /system/bin/linker64 $libDir/node \"\$__proxy_js\" --port-file \"\$__pfile\" --parent-pid \"\$BASHPID\" </dev/null >/dev/null 2>\"\$__pfile.log\" &")
+        sb.appendLine("    __proxy_pid=\$!")
+        sb.appendLine("    __cleanup() {")
+        sb.appendLine("      kill \"\$__proxy_pid\" 2>/dev/null")
+        sb.appendLine("      if grep -q 'Proxy-Authorization' \"\$__pfile.log\" 2>/dev/null; then")
+        sb.appendLine("        echo \"shelly-claude-glibc: claude's HTTP client did not send the private proxy credentials (407); see DEFERRED.md\" >&2")
+        sb.appendLine("      fi")
+        sb.appendLine("      [ \"\$(cat \"\$__arm\" 2>/dev/null)\" = \"\$__armtag\" ] && rm -f \"\$__arm\"")
+        sb.appendLine("      rm -f \"\$__pfile\" \"\$__pfile.tmp\" \"\$__pfile.log\"")
+        sb.appendLine("    }")
+        sb.appendLine("    trap __cleanup EXIT")
+        sb.appendLine("    __port=\"\"")
+        sb.appendLine("    __token=\"\"")
+        sb.appendLine("    __i=0")
+        sb.appendLine("    while [ \"\$__i\" -lt 200 ]; do")
+        sb.appendLine("      if [ -s \"\$__pfile\" ]; then read -r __port __token < \"\$__pfile\"; break; fi")
+        sb.appendLine("      kill -0 \"\$__proxy_pid\" 2>/dev/null || break")
+        sb.appendLine("      sleep 0.05")
+        sb.appendLine("      __i=\$((__i + 1))")
+        sb.appendLine("    done")
+        sb.appendLine("    case \"\$__port:\$__token\" in")
+        sb.appendLine("      [0-9]*:[0-9a-f]*) ;;")
+        sb.appendLine("      *)")
+        sb.appendLine("        echo \"shelly-claude-glibc: private proxy failed to start\" >&2")
+        sb.appendLine("        cat \"\$__pfile.log\" >&2 2>/dev/null")
+        sb.appendLine("        exit 1")
+        sb.appendLine("        ;;")
+        sb.appendLine("    esac")
+        sb.appendLine("    # Arm the sign-in bridge (OAuthHyperlinkBridge.kt) only for interactive")
+        sb.appendLine("    # sessions that can log in; never for -p/--print or non-TTY runs.")
+        sb.appendLine("    __interactive=1")
+        sb.appendLine("    [ -t 0 ] && [ -t 1 ] || __interactive=0")
+        sb.appendLine("    for __a in \"\$@\"; do")
+        sb.appendLine("      case \"\$__a\" in -p|--print|--version|-v|--help|-h) __interactive=0 ;; esac")
+        sb.appendLine("    done")
+        sb.appendLine("    [ \"\$__interactive\" = 1 ] && printf '%s\\n' \"\$__armtag\" > \"\$__arm\"")
+        sb.appendLine("    __proxy=\"http://shelly:\$__token@127.0.0.1:\$__port\"")
+        sb.appendLine("    __tmp=\"\${TMPDIR:-\$HOME/tmp}\"")
+        sb.appendLine("    __ctmp=\"\$__root/tmp\"")
+        sb.appendLine("    mkdir -p \"\$__tmp\" \"\$__ctmp\" 2>/dev/null")
+        sb.appendLine("    # Bash tool: only system_file is exec-able from claude, so the shell is mksh")
+        sb.appendLine("    # under a bash name; the env file re-runs each -c string in Shelly bash.")
+        sb.appendLine("    __sh=\"\$__root/bin/bash\"")
+        sb.appendLine("    __envf=\"\$__root/shell-env.sh\"")
+        sb.appendLine("    mkdir -p \"\$__root/bin\" 2>/dev/null")
+        sb.appendLine("    [ \"\$(readlink \"\$__sh\" 2>/dev/null)\" = /system/bin/sh ] || ln -sfn /system/bin/sh \"\$__sh\"")
+        sb.appendLine("    # v283: tmp + rename, so a concurrent run never reads a half-written file.")
+        sb.appendLine("    cat > \"\$__envf.\$BASHPID.tmp\" <<'__SHELLY_CLAUDE_ENV'")
+        sb.appendLine("if [ -z \"\${BASH_VERSION:-}\" ]; then")
+        sb.appendLine("  /system/bin/linker64 $libDir/shelly_shell -c 'mapfile -d \"\" -t __a < /proc/\$PPID/cmdline; eval \"\${__a[-1]}\"'")
+        sb.appendLine("  exit \$?")
+        sb.appendLine("fi")
+        sb.appendLine("__SHELLY_CLAUDE_ENV")
+        sb.appendLine("    mv -f \"\$__envf.\$BASHPID.tmp\" \"\$__envf\"")
+        sb.appendLine("    # Grep/Glob spawn the bundled rg by plain execve (denied, silent \"no matches\");")
+        sb.appendLine("    # deny them so Claude searches via Bash. Only for runs, not subcommands.")
+        sb.appendLine("    # v283: an agent worker (shelly-agent-driver.js --engine claude) passes its")
+        sb.appendLine("    # stricter settings (deny + ask rules, no hooks) in SHELLY_CLAUDE_SETTINGS_JSON.")
+        sb.appendLine("    __settings='{\"permissions\":{\"deny\":[\"Grep\",\"Glob\"]}}'")
+        sb.appendLine("    [ -n \"\${SHELLY_CLAUDE_SETTINGS_JSON:-}\" ] && __settings=\"\$SHELLY_CLAUDE_SETTINGS_JSON\"")
+        sb.appendLine("    __xargs=()")
+        sb.appendLine("    case \"\${1:-}\" in \"\"|-*) __xargs=(--settings \"\$__settings\") ;; esac")
+        sb.appendLine("    unset BROWSER DISPLAY WAYLAND_DISPLAY SHELLY_CLAUDE_SETTINGS_JSON")
+        sb.appendLine("    HTTPS_PROXY=\"\$__proxy\" HTTP_PROXY=\"\$__proxy\" https_proxy=\"\$__proxy\" http_proxy=\"\$__proxy\" \\")
+        sb.appendLine("      NO_PROXY=\"localhost,127.0.0.1,::1\" no_proxy=\"localhost,127.0.0.1,::1\" \\")
+        sb.appendLine("      TMPDIR=\"\$__tmp\" CLAUDE_CODE_TMPDIR=\"\$__ctmp\" \\")
+        sb.appendLine("      CLAUDE_CODE_SHELL=\"\${CLAUDE_CODE_SHELL:-\$__sh}\" CLAUDE_ENV_FILE=\"\${CLAUDE_ENV_FILE:-\$__envf}\" \\")
+        sb.appendLine("      SHELLY_GLIBC_LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" \\")
+        sb.appendLine("      LD_LIBRARY_PATH=\"\$SHELLY_LIB_DIR\" /system/bin/linker64 \\")
+        sb.appendLine("      \"\$SHELLY_LIB_DIR/shelly_glibc_exec\" \\")
+        sb.appendLine("      \"\$__ld\" --library-path \"\$__root/lib\" \"\$__bin\" \"\${__xargs[@]}\" \"\$@\"")
+        sb.appendLine("  )")
+        sb.appendLine("  local __rc=\$?")
+        sb.appendLine("  __shelly_paste_tui_end")
+        sb.appendLine("  return \$__rc")
+        sb.appendLine("}")
+    }
+
+    /**
+     * Claude glibc S4: $HOME/.shelly-claude-run.sh, regenerated on every start
+     * (like the proxy asset) so it always matches this build. Never exec'd by
+     * shebang (Knox denies app_data_file scripts) — always `bash <file> <args>`.
+     */
+    internal fun claudeRunnerScript(libDir: String): String {
+        val sb = StringBuilder()
+        sb.appendLine("# Generated by Shelly (HomeInitializer.claudeRunnerScript). Do not edit.")
+        sb.appendLine("# Non-interactive Claude Code (glibc) launcher for agent workers:")
+        sb.appendLine("#   bash ~/.shelly-claude-run.sh <claude args>")
+        sb.appendLine("# Same shelly-claude-glibc() as ~/.bashrc; the TUI paste markers are no-ops here.")
+        sb.appendLine("export SHELLY_LIB_DIR=\"$libDir\"")
+        sb.appendLine("export SHELLY_LD_LIBRARY_PATH=\"$libDir\"")
+        sb.appendLine("case \":\$PATH:\" in *:/system/bin:*) ;; *) export PATH=\"\${PATH:+\$PATH:}/system/bin\" ;; esac")
+        sb.appendLine("__shelly_paste_tui_begin() { :; }")
+        sb.appendLine("__shelly_paste_tui_end() { :; }")
+        appendClaudeGlibcFunction(sb, libDir)
+        sb.appendLine("shelly-claude-glibc \"\$@\"")
+        return sb.toString()
     }
 
     private fun cleanupRemovedCliRuntime(home: File, libDir: String) {

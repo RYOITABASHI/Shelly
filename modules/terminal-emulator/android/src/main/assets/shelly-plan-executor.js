@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=16
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=17
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -57,7 +57,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // stripped or read as DONE), is split off before the char-limit clamp, the
 // prior-iteration block follows the task, and the per-agent loop Stop marker
 // halts an unattended iteration like `.halted` (final action included).
-const EXECUTOR_SCRIPT_VERSION = 16;
+const EXECUTOR_SCRIPT_VERSION = 17;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -4766,7 +4766,11 @@ function sanitizeOverrideToolRaw(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const type = typeof raw.type === 'string' ? raw.type : '';
   if (type === 'auto') return { type: 'auto' };
-  if (type === 'cli') return raw.cli === 'codex' ? { type: 'cli', cli: 'codex' } : null;
+  // Claude glibc S4: Claude Code is a CLI worker like Codex — recognized in
+  // the file (so it parses the same as lib/agent-provider-overrides.ts) but,
+  // like Codex, never dispatchable here: a step resolving to a CLI keeps its
+  // fallback to plan.tool (see STEP_TOOL_DISPATCHABLE_TYPES).
+  if (type === 'cli') return raw.cli === 'codex' || raw.cli === 'claude' ? { type: 'cli', cli: raw.cli } : null;
   if (!Object.prototype.hasOwnProperty.call(OVERRIDE_TOOL_LABELS, type)) return null;
   // Type only: a model from the file is never used (no path tricks in the
   // request URL, no cheap → expensive model upgrade).

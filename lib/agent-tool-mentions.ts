@@ -1,6 +1,6 @@
 /**
  * lib/agent-tool-mentions.ts — the single table of "the user NAMED a tool"
- * patterns (Perplexity / local LLM / Codex / Gemini), shared by:
+ * patterns (Perplexity / local LLM / Codex / Claude Code / Gemini), shared by:
  *
  *   - lib/agent-orchestration.ts's per-clause step pinning
  *     (detectToolPinnedSteps / tagStepsWithToolMentions) — a clause of a
@@ -18,6 +18,7 @@
  */
 import type { ToolChoice } from '@/store/types';
 import { GEMINI_WEB, PERPLEXITY_WEB } from './agent-router-scoring';
+import { AGENT_CLI_WORKERS } from './agent-cli-workers';
 
 export interface ToolMention {
   re: RegExp;
@@ -31,7 +32,9 @@ export interface ToolMention {
 export const TOOL_MENTIONS: readonly ToolMention[] = [
   { re: /パープレ(?:キシティ)?|perplexity/i, tool: PERPLEXITY_WEB },
   { re: /ローカル\s*llm|local\s*llm|ローカル/i, tool: { type: 'local' } },
-  { re: /\bcodex\b/i, tool: { type: 'cli', cli: 'codex' } },
+  { re: new RegExp(AGENT_CLI_WORKERS.codex.mentionSrc, 'i'), tool: { type: 'cli', cli: 'codex' } },
+  // Claude glibc S4: 「Claude/クロード(コード)で…」 / "with Claude Code".
+  { re: new RegExp(AGENT_CLI_WORKERS.claude.mentionSrc, 'i'), tool: { type: 'cli', cli: 'claude' } },
   { re: /\bgemini\b/i, tool: GEMINI_WEB },
 ];
 

@@ -66,7 +66,7 @@ export function createTeamSource(team: MonitorTeam): MonitorSource {
 
 function providerOf(tool: { type: string; cli?: string } | undefined): MonitorProvider {
   if (!tool) return 'auto';
-  if (tool.type === 'cli') return tool.cli === 'codex' ? 'codex-cli' : 'auto';
+  if (tool.type === 'cli') return tool.cli === 'codex' ? 'codex-cli' : tool.cli === 'claude' ? 'claude-cli' : 'auto';
   return (['perplexity', 'gemini-api', 'cerebras', 'groq', 'local'] as const).find((p) => p === tool.type) ?? 'auto';
 }
 

@@ -159,10 +159,13 @@ describe('chat step-provider edit (tryPatchStepTools / applyDraftPatch)', () => 
     expect(r!.patchedDraft.schedule).toBe('0 8 * * *');
   });
 
-  it('Claude is recognized but not applied (not available on this device yet)', () => {
-    expect(applyDraftPatch(draft(), '並列の2つ目をClaudeで')).toBeNull();
-    expect(detectStepProviderNotice(draft(), '並列の2つ目をClaudeで')).toEqual({ kind: 'unsupported', provider: 'Claude Code' });
-    expect(detectStepProviderNotice(draft(), 'use Claude for step 2')).toEqual({ kind: 'unsupported', provider: 'Claude Code' });
+  it('Claude Code is a CLI worker (Claude glibc S4): the edit applies like Codex', () => {
+    const r = applyDraftPatch(draft(), '2番目をClaudeで')!;
+    expect(r.changedFields).toEqual(['step:2']);
+    const step = r.patchedDraft.orchestrationSteps![2];
+    expect(typeof step === 'string' ? undefined : step.tool).toEqual({ type: 'cli', cli: 'claude' });
+    expect(detectStepProviderNotice(draft(), '並列の2つ目をClaudeで')).toBeNull();
+    expect(detectStepProviderNotice(draft(), 'use Claude Code for step 2')).toBeNull();
     expect(detectStepProviderNotice(draft(), '2番目をCodexで')).toBeNull();
   });
 

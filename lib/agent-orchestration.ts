@@ -17,6 +17,7 @@
  */
 import type { AgentApiCallConfig, AgentOrchestrationConfig, AgentOrchestrationStep, AgentRunStep, ToolChoice } from '@/store/types';
 import { matchToolMention } from './agent-tool-mentions';
+import { sameProvider } from './agent-cli-workers';
 import { AUTH_REFS } from './capability-envelope';
 import { GROQ_DEFAULT_MODEL } from './groq';
 import { MAX_EVIDENCE_CHARS, renderStepEvidence, type StepEvidence } from './agent-sources';
@@ -718,7 +719,7 @@ export function isToolOnlyClause(clause: string): boolean {
   // Remove the FIRST tool mention (same table as matchToolMention), then see
   // whether anything but filler particles remains.
   const withoutPrefix = t.replace(TOOL_ONLY_PREFIX_RE, '');
-  const mention = /パープレ(?:キシティ)?|perplexity|ローカル\s*llm|local\s*llm|ローカル|\bcodex\b|\bgemini\b/i.exec(withoutPrefix);
+  const mention = new RegExp(TOOL_TOKEN_SRC, 'i').exec(withoutPrefix);
   if (!mention || mention.index !== 0) return false;
   const remainder = withoutPrefix.slice(mention[0].length).trim();
   return TOOL_ONLY_FILLER_RE.test(remainder);
@@ -927,7 +928,7 @@ function assignParallelGroups(steps: ScopedClause[]): Array<ScopedClause & { par
 /** Leading (JA / EN) or trailing (EN) instrument phrase for a tool mention —
  *  「ローカルLLMで…」「Perplexityを使って…」 / "with the local LLM, …" / "… with
  *  the local LLM". Same token set as TOOL_MENTIONS (lib/agent-tool-mentions.ts). */
-const TOOL_TOKEN_SRC = String.raw`パープレ(?:キシティ)?|perplexity|ローカル\s*llm|local\s*llm|ローカル|\bcodex\b|\bgemini\b`;
+const TOOL_TOKEN_SRC = String.raw`パープレ(?:キシティ)?|perplexity|ローカル\s*llm|local\s*llm|ローカル|\bcodex\b|\bclaude(?:\s*code)?\b|クロード(?:\s*コード)?|\bgemini\b`;
 const JA_TOOL_LEAD_RE = new RegExp(
   String.raw`^((?:全部|すべて|全て)\s*)?(${TOOL_TOKEN_SRC})(?:\s*の?\s*(?:api|モデル))?\s*(?:で(?!の|は|も)|にて|を\s*(?:使って|使い|用いて|利用して)|経由で)\s*[、,]?\s*`,
   'i',
@@ -951,7 +952,7 @@ const EN_TOOL_TAIL_RE = new RegExp(
 export function stripToolPhrase(instruction: string, tool: ToolChoice | undefined): string {
   if (!tool || EXPLICIT_API_CALL_RE.test(instruction)) return instruction;
   const ja = JA_TOOL_LEAD_RE.exec(instruction);
-  if (ja && matchToolMention(ja[2])?.type === tool.type) {
+  if (ja && sameProvider(matchToolMention(ja[2]), tool)) {
     const remainder = instruction.slice(ja[0].length).trim();
     // Review fix: 「Geminiで作った画像を説明して」 — the phrase modifies a noun
     // (past attributive 〜た/〜だ + noun), it is not the instrument. Keep it.
@@ -961,12 +962,12 @@ export function stripToolPhrase(instruction: string, tool: ToolChoice | undefine
     return instruction;
   }
   const lead = EN_TOOL_LEAD_RE.exec(instruction);
-  if (lead && matchToolMention(lead[1])?.type === tool.type) {
+  if (lead && sameProvider(matchToolMention(lead[1]), tool)) {
     const remainder = instruction.slice(lead[0].length).trim();
     return remainder.length > 1 ? remainder : instruction;
   }
   const tail = EN_TOOL_TAIL_RE.exec(instruction);
-  if (tail && matchToolMention(tail[1])?.type === tool.type) {
+  if (tail && sameProvider(matchToolMention(tail[1]), tool)) {
     const before = instruction.slice(0, tail.index).trim();
     // "the article written with Gemini" — a past participle right before the
     // phrase means it describes the object, not the instrument.

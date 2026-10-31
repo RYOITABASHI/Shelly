@@ -96,6 +96,15 @@ Options:
                              Signed human preapproval grant JSONL. Defaults to native no_backup storage on Android.
   --run-id <id>              Override generated run id.
   --agent-id <id>            Agent id for escalation requests.
+  --engine <codex|claude>    Which CLI runs the turn. Defaults to "codex". "claude" runs the
+                             on-device Claude Code (glibc) headless through
+                             $HOME/.shelly-claude-run.sh, answering its can_use_tool requests with
+                             the SAME gate / grant / escalation path Codex approvals use.
+  --usage-file <path>        (claude) Write {"inputTokens","outputTokens"[,"usd"]} from the result.
+  --claude-runner <path>     (claude) Runner script. Defaults to $HOME/.shelly-claude-run.sh.
+  --claude-runner-interpreter <path>
+                             (claude, host only) Interpreter for the runner. Defaults to "bash";
+                             on Android the runner always goes through linker64 + shelly_shell.
   --help                     Show this help.
 `);
 }
@@ -133,6 +142,10 @@ function parseArgs(argv) {
     escalationTimeoutAction: process.env.SHELLY_AGENT_ESCALATION_TIMEOUT_ACTION || 'decline',
     runId: process.env.SHELLY_AGENT_RUN_ID || crypto.randomUUID(),
     agentId: process.env.SHELLY_AGENT_ID || 'host',
+    engine: 'codex',
+    usageFile: null,
+    claudeRunner: path.join(process.env.HOME || process.cwd(), '.shelly-claude-run.sh'),
+    claudeRunnerInterpreter: 'bash',
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -190,6 +203,14 @@ function parseArgs(argv) {
       args.runId = next();
     } else if (arg === '--agent-id') {
       args.agentId = next();
+    } else if (arg === '--engine') {
+      args.engine = next();
+    } else if (arg === '--usage-file') {
+      args.usageFile = next();
+    } else if (arg === '--claude-runner') {
+      args.claudeRunner = next();
+    } else if (arg === '--claude-runner-interpreter') {
+      args.claudeRunnerInterpreter = next();
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -283,6 +304,9 @@ function ensureConfig(args) {
   if (args.approvalPolicy !== 'untrusted') {
     throw new Error('invalid --approval-policy: autonomous driver only allows "untrusted"');
   }
+  if (!['codex', 'claude'].includes(args.engine)) {
+    throw new Error('invalid --engine: expected "codex" or "claude"');
+  }
 
   const requestedCwd = path.resolve(args.cwd);
   if (!fs.existsSync(requestedCwd)) fs.mkdirSync(requestedCwd, { recursive: true });
@@ -315,6 +339,8 @@ function ensureConfig(args) {
     escalationPublicKeySha256: normalizeSha256Hex(args.escalationPublicKeySha256),
     preapprovalGrantsFile: path.resolve(args.preapprovalGrantsFile),
     answerFile: args.answerFile ? path.resolve(args.answerFile) : null,
+    usageFile: args.usageFile ? path.resolve(args.usageFile) : null,
+    claudeRunner: path.resolve(args.claudeRunner),
   };
 }
 
@@ -1569,6 +1595,172 @@ async function waitForEscalation(config, request, audit) {
   }
 }
 
+// Shared gate core for every engine (Codex app-server approvals and Claude
+// Code can_use_tool requests): each shell-equivalent command runs through the
+// same gate helper, then gray verdicts go through signed preapproval grants,
+// the unattended fail-closed decline, or the signed human escalation wait.
+// Emits one GATE line per action. ctx = { requestId, approvalKind,
+// lineContext, protocolDecisionOf(finalDecision) }.
+async function gateCommandActions(config, audit, actions, ctx) {
+  const gateResults = [];
+  for (const action of actions) {
+    if (!action.command) {
+      gateResults.push({
+        action,
+        answer: 'escalate',
+        error: 'missing command in approval params',
+        elapsedMs: 0,
+        outcome: null,
+        rawStdout: '',
+        rawStderr: '',
+      });
+      continue;
+    }
+    const gate = await runGate(config, action.command);
+    gateResults.push({ action, ...gate });
+  }
+
+  const composite = combineGateAnswers(gateResults);
+  const escalationOutcomes = new Map();
+  let finalDecision = 'accept';
+
+  if (gateResults.some((result) => result.answer === 'n')) {
+    finalDecision = 'decline';
+  } else {
+    for (const result of gateResults.filter((item) => item.answer === 'escalate')) {
+      const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
+      const redactedCommand = redact(result.action.command);
+      const reqId = gateResults.length === 1
+        ? String(ctx.requestId)
+        : `${ctx.requestId}-${result.action.index}`;
+
+      if (!isHumanEscalation(result)) {
+        finalDecision = 'decline';
+        escalationOutcomes.set(result.action.index, {
+          reqId,
+          decision: 'decline',
+          reason: result.error || auditPayload.reason || 'non-gray escalation fail-closed',
+        });
+        continue;
+      }
+
+      const preapproval = await consumePreapprovalGrant(config, {
+        reqId,
+        command: result.action.command,
+        commandSha256: commandSha256(result.action.command),
+        signals: auditPayload.signals || [],
+      }, audit);
+      if (preapproval) {
+        audit('escalation_preapproved', {
+          reqId,
+          grantId: preapproval.id,
+          command: auditPayload.command || redactedCommand,
+          commandSha256: preapproval.commandSha256,
+          cwd: result.action.cwd,
+          signals: preapproval.signals,
+          level: auditPayload.level || config.policy.level,
+          expiresAt: preapproval.expiresAt,
+        });
+        escalationOutcomes.set(result.action.index, {
+          reqId,
+          decision: 'accept',
+          reason: `preapproval grant ${preapproval.id}`,
+        });
+        continue;
+      }
+
+      // DEFERRED #2 boundary invariant: an UNATTENDED run (scheduled/alarm
+      // fire or native one-tap of the stored script — no approver present)
+      // never waits on a human for a gray verdict. Decline IMMEDIATELY
+      // instead of leaning on the escalation timeout expiring unanswered —
+      // the old safety was the mere confluence of "nobody answers" + "the
+      // wait times out", which a future convenience change (gray default-
+      // approve / longer timeout) could silently break. Signed pre-approval
+      // grants were consumed ABOVE, so the attended escalate→approve→grant→
+      // scheduled-run loop still works. No pending escalation request is
+      // filed: a request whose run has already declined and moved on would
+      // be a stale-approval hazard.
+      if (isUnattendedPolicy(config.policy)) {
+        const declined = {
+          decision: 'decline',
+          reason: 'unattended fail-closed: no approver present (approve once in an attended run to grant)',
+        };
+        audit('escalation_denied_unattended', {
+          reqId,
+          command: auditPayload.command || redactedCommand,
+          commandSha256: commandSha256(result.action.command),
+          workspaceRoot: config.policy.workspaceRoot,
+          cwd: result.action.cwd,
+          signals: auditPayload.signals || [],
+          level: auditPayload.level || config.policy.level,
+          reason: declined.reason,
+        });
+        escalationOutcomes.set(result.action.index, { reqId, ...declined });
+        finalDecision = 'decline';
+        continue;
+      }
+
+      const escalation = await waitForEscalation(config, {
+        reqId,
+        command: auditPayload.command || redactedCommand,
+        commandSha256: commandSha256(result.action.command),
+        workspaceRoot: config.policy.workspaceRoot,
+        cwd: result.action.cwd,
+        reason: auditPayload.reason || null,
+        signals: auditPayload.signals || [],
+        level: auditPayload.level || config.policy.level,
+      }, audit);
+      escalationOutcomes.set(result.action.index, {
+        reqId,
+        ...escalation,
+      });
+      if (escalation.decision === 'decline') {
+        finalDecision = 'decline';
+      }
+    }
+  }
+
+  const protocolDecision = ctx.protocolDecisionOf(finalDecision);
+
+  for (const result of gateResults) {
+    const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
+    const verdict = result.outcome && result.outcome.verdict ? result.outcome.verdict : null;
+    const escalation = escalationOutcomes.get(result.action.index) || null;
+    const actionDecision = result.answer === 'escalate'
+      ? escalation && escalation.decision === 'accept' ? 'accept' : 'decline'
+      : mapGateToDecision(result.answer);
+    const redactedCommand = redact(result.action.command);
+
+    gateLine(config.auditLog, {
+      ...ctx.lineContext,
+      requestId: ctx.requestId,
+      approvalKind: ctx.approvalKind,
+      actionIndex: result.action.index,
+      actionCount: gateResults.length,
+      actionSource: result.action.source,
+      action: result.action.action,
+      command: auditPayload.command || redactedCommand,
+      cwd: result.action.cwd,
+      answer: result.answer,
+      actionDecision,
+      compositeAnswer: composite.answer,
+      decision: protocolDecision,
+      escalationReqId: escalation && escalation.reqId,
+      escalationDecision: escalation && escalation.decision,
+      escalationReason: escalation && escalation.reason,
+      verdictDecision: verdict && verdict.decision,
+      reason: auditPayload.reason || result.error || null,
+      signals: auditPayload.signals || [],
+      level: auditPayload.level || config.policy.level,
+      gateElapsedMs: result.elapsedMs,
+      gateError: result.error || null,
+      rawGateStdout: result.rawStdout ? redact(result.rawStdout.trim()) : '',
+      rawGateStderr: result.rawStderr ? redact(result.rawStderr.trim()) : '',
+    });
+  }
+  return { finalDecision, protocolDecision, gateResults, escalationOutcomes };
+}
+
 async function runDriver(config) {
   const audit = createAuditWriter(config.auditLog);
   // Load + pin-verify the escalation verifier key BEFORE spawning codex, so a same-uid agent can
@@ -1750,167 +1942,16 @@ async function runDriver(config) {
         ? extractLegacyCommandActions(params, fallbackCwd)
         : extractCommandActions(params, fallbackCwd);
 
-      const gateResults = [];
-      for (const action of actions) {
-        if (!action.command) {
-          gateResults.push({
-            action,
-            answer: 'escalate',
-            error: 'missing command in approval params',
-            elapsedMs: 0,
-            outcome: null,
-            rawStdout: '',
-            rawStderr: '',
-          });
-          continue;
-        }
-        const gate = await runGate(config, action.command);
-        gateResults.push({ action, ...gate });
-      }
-
-      const composite = combineGateAnswers(gateResults);
-      const escalationOutcomes = new Map();
-      let finalDecision = 'accept';
-
-      if (gateResults.some((result) => result.answer === 'n')) {
-        finalDecision = 'decline';
-      } else {
-        for (const result of gateResults.filter((item) => item.answer === 'escalate')) {
-          const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
-          const redactedCommand = redact(result.action.command);
-          const reqId = gateResults.length === 1
-            ? String(message.id)
-            : `${message.id}-${result.action.index}`;
-
-          if (!isHumanEscalation(result)) {
-            finalDecision = 'decline';
-            escalationOutcomes.set(result.action.index, {
-              reqId,
-              decision: 'decline',
-              reason: result.error || auditPayload.reason || 'non-gray escalation fail-closed',
-            });
-            continue;
-          }
-
-          const preapproval = await consumePreapprovalGrant(config, {
-            reqId,
-            command: result.action.command,
-            commandSha256: commandSha256(result.action.command),
-            signals: auditPayload.signals || [],
-          }, audit);
-          if (preapproval) {
-            audit('escalation_preapproved', {
-              reqId,
-              grantId: preapproval.id,
-              command: auditPayload.command || redactedCommand,
-              commandSha256: preapproval.commandSha256,
-              cwd: result.action.cwd,
-              signals: preapproval.signals,
-              level: auditPayload.level || config.policy.level,
-              expiresAt: preapproval.expiresAt,
-            });
-            escalationOutcomes.set(result.action.index, {
-              reqId,
-              decision: 'accept',
-              reason: `preapproval grant ${preapproval.id}`,
-            });
-            continue;
-          }
-
-          // DEFERRED #2 boundary invariant: an UNATTENDED run (scheduled/alarm
-          // fire or native one-tap of the stored script — no approver present)
-          // never waits on a human for a gray verdict. Decline IMMEDIATELY
-          // instead of leaning on the escalation timeout expiring unanswered —
-          // the old safety was the mere confluence of "nobody answers" + "the
-          // wait times out", which a future convenience change (gray default-
-          // approve / longer timeout) could silently break. Signed pre-approval
-          // grants were consumed ABOVE, so the attended escalate→approve→grant→
-          // scheduled-run loop still works. No pending escalation request is
-          // filed: a request whose run has already declined and moved on would
-          // be a stale-approval hazard.
-          if (isUnattendedPolicy(config.policy)) {
-            const declined = {
-              decision: 'decline',
-              reason: 'unattended fail-closed: no approver present (approve once in an attended run to grant)',
-            };
-            audit('escalation_denied_unattended', {
-              reqId,
-              command: auditPayload.command || redactedCommand,
-              commandSha256: commandSha256(result.action.command),
-              workspaceRoot: config.policy.workspaceRoot,
-              cwd: result.action.cwd,
-              signals: auditPayload.signals || [],
-              level: auditPayload.level || config.policy.level,
-              reason: declined.reason,
-            });
-            escalationOutcomes.set(result.action.index, { reqId, ...declined });
-            finalDecision = 'decline';
-            continue;
-          }
-
-          const escalation = await waitForEscalation(config, {
-            reqId,
-            command: auditPayload.command || redactedCommand,
-            commandSha256: commandSha256(result.action.command),
-            workspaceRoot: config.policy.workspaceRoot,
-            cwd: result.action.cwd,
-            reason: auditPayload.reason || null,
-            signals: auditPayload.signals || [],
-            level: auditPayload.level || config.policy.level,
-          }, audit);
-          escalationOutcomes.set(result.action.index, {
-            reqId,
-            ...escalation,
-          });
-          if (escalation.decision === 'decline') {
-            finalDecision = 'decline';
-          }
-        }
-      }
-
-      const protocolDecision = legacy
-        ? finalDecision === 'accept' ? 'approved' : 'denied'
-        : finalDecision;
-      response = { decision: protocolDecision };
-
-      for (const result of gateResults) {
-        const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
-        const verdict = result.outcome && result.outcome.verdict ? result.outcome.verdict : null;
-        const escalation = escalationOutcomes.get(result.action.index) || null;
-        const actionDecision = result.answer === 'escalate'
-          ? escalation && escalation.decision === 'accept' ? 'accept' : 'decline'
-          : mapGateToDecision(result.answer);
-        const redactedCommand = redact(result.action.command);
-
-        gateLine(config.auditLog, {
-          threadId: params.threadId,
-          turnId: params.turnId,
-          itemId: params.itemId,
-          requestId: message.id,
-          approvalKind,
-          actionIndex: result.action.index,
-          actionCount: gateResults.length,
-          actionSource: result.action.source,
-          action: result.action.action,
-          command: auditPayload.command || redactedCommand,
-          cwd: result.action.cwd,
-          answer: result.answer,
-          actionDecision,
-          compositeAnswer: composite.answer,
-          decision: protocolDecision,
-          escalationReqId: escalation && escalation.reqId,
-          escalationDecision: escalation && escalation.decision,
-          escalationReason: escalation && escalation.reason,
-          verdictDecision: verdict && verdict.decision,
-          reason: auditPayload.reason || result.error || null,
-          signals: auditPayload.signals || [],
-          level: auditPayload.level || config.policy.level,
-          gateElapsedMs: result.elapsedMs,
-          gateError: result.error || null,
-          rawGateStdout: result.rawStdout ? redact(result.rawStdout.trim()) : '',
-          rawGateStderr: result.rawStderr ? redact(result.rawStderr.trim()) : '',
-        });
-      }
+      const lineContext = { threadId: params.threadId, turnId: params.turnId, itemId: params.itemId };
+      const gated = await gateCommandActions(config, audit, actions, {
+        requestId: message.id,
+        approvalKind,
+        lineContext,
+        protocolDecisionOf: (finalDecision) => (legacy
+          ? finalDecision === 'accept' ? 'approved' : 'denied'
+          : finalDecision),
+      });
+      response = { decision: gated.protocolDecision };
     } catch (error) {
       sawFailure = true;
       gateLine(config.auditLog, {
@@ -2149,11 +2190,525 @@ async function runDriver(config) {
   });
 }
 
+// ─── Claude Code engine (Claude glibc S4) ─────────────────────────────────
+//
+// Claude Code has no app-server, but its headless stream-json mode with
+// `--permission-prompt-tool stdio` (the Agent SDK's control protocol) asks the
+// parent over stdout before every tool use that needs permission
+// (`control_request` / `can_use_tool`) and waits for our `control_response`.
+// That is the same shape as Codex's app-server approval requests, so every
+// tool use is turned into a shell-equivalent command and decided by the SAME
+// gateCommandActions() core: gate helper (command-safety + boundary +
+// POLICY-001 action policy), signed preapproval grants, unattended
+// fail-closed decline, signed human escalation. Nothing is auto-approved here.
+//
+//  - Bash             → the command itself (background runs are refused).
+//  - Read             → `cat -- '<file_path>'` (leaves-root / secret reads gate like Codex's cat).
+//  - Write/Edit/MultiEdit → `tee -- '<file_path>'` (write-or-exec, in-workspace only unattended).
+//  - anything else    → denied. WebFetch / WebSearch / Task / Grep / Glob /
+//    NotebookEdit are also disallowed up front, so they never reach the model's
+//    tool list. (Grep/Glob: claude's bundled rg cannot be exec'd on Android
+//    anyway; web access stays with the explicit web backends.)
+//
+// The settings below force a permission request even for tools Claude would
+// auto-allow (read-only Bash commands, in-cwd Reads): `ask` rules are checked
+// before any `allow` rule a user's own settings might carry, `--setting-sources ""`
+// keeps user/project/local settings (and a cloned repo's .claude/settings.json)
+// out entirely, `disableAllHooks` drops hooks, `--strict-mcp-config` with no
+// config loads no MCP servers, and `--permission-mode default` overrides any
+// defaultMode. The prompt goes in over stdin (never argv).
+const CLAUDE_DENIED_TOOLS = ['Grep', 'Glob', 'WebFetch', 'WebSearch', 'Task', 'NotebookEdit'];
+const CLAUDE_GATED_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'MultiEdit'];
+const CLAUDE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+const CLAUDE_CHILD_ENV_DROP = [
+  'CLAUDE_CODE_SHELL',
+  'CLAUDE_ENV_FILE',
+  'CLAUDE_CODE_SHELL_PREFIX',
+  'CLAUDE_CONFIG_DIR',
+  'SHELLY_CLAUDE_SETTINGS_JSON',
+  'ANTHROPIC_BASE_URL',
+];
+const CLAUDE_INIT_REQUEST_ID = 'shelly-init';
+
+function claudeAgentSettingsJson() {
+  return JSON.stringify({
+    permissions: {
+      deny: CLAUDE_DENIED_TOOLS,
+      ask: CLAUDE_GATED_TOOLS,
+      defaultMode: 'default',
+    },
+    disableAllHooks: true,
+  });
+}
+
+function claudeAgentArgs() {
+  return [
+    '-p',
+    '--input-format', 'stream-json',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--permission-mode', 'default',
+    '--permission-prompt-tool', 'stdio',
+    '--setting-sources', '',
+    '--strict-mcp-config',
+    '--disallowedTools', CLAUDE_DENIED_TOOLS.join(','),
+  ];
+}
+
+function shellSingleQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The shell-equivalent command(s) the gate decides for one can_use_tool
+ * request, or { deny } when the tool is never allowed for an agent.
+ */
+function claudeToolToActions(toolName, input, cwd) {
+  const params = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  if (toolName === 'Bash') {
+    if (params.run_in_background === true) {
+      return { deny: 'background shell commands are not allowed for Shelly agents' };
+    }
+    const command = typeof params.command === 'string' ? params.command.trim() : '';
+    return { actions: [{ index: 0, source: 'claude:Bash', command, cwd, action: null }] };
+  }
+  if (toolName === 'Read' || CLAUDE_WRITE_TOOLS.has(toolName)) {
+    const raw = typeof params.file_path === 'string' ? params.file_path : '';
+    if (!raw || /[\u0000-\u001f]/.test(raw)) return { deny: `${toolName} needs a plain file_path` };
+    const filePath = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+    const verb = toolName === 'Read' ? 'cat' : 'tee';
+    return {
+      actions: [{ index: 0, source: `claude:${toolName}`, command: `${verb} -- ${shellSingleQuote(filePath)}`, cwd, action: null }],
+    };
+  }
+  return { deny: `tool ${String(toolName || '(none)').slice(0, 60)} is not allowed for Shelly agents` };
+}
+
+function nonNegativeFinite(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Usage from Claude's `result` message: tokens always (prompt = input +
+ * cache-creation + cache-read, completion = output); USD only when Claude
+ * says the run was billed to an API key (`apiKeySource` other than "none") —
+ * a subscription (claude.ai Max / setup-token) run reports an API-equivalent
+ * estimate in total_cost_usd that nobody pays, so it is not recorded as spend.
+ */
+function claudeUsageFromResult(result, apiKeySource) {
+  if (!result || typeof result !== 'object') return null;
+  const u = result.usage && typeof result.usage === 'object' ? result.usage : {};
+  const parts = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens].map(nonNegativeFinite);
+  const out = {};
+  if (parts.some((n) => n !== null)) out.inputTokens = parts.reduce((sum, n) => sum + (n || 0), 0);
+  const output = nonNegativeFinite(u.output_tokens);
+  if (output !== null) out.outputTokens = output;
+  const usd = nonNegativeFinite(result.total_cost_usd);
+  const billed = typeof apiKeySource === 'string' && apiKeySource && apiKeySource !== 'none';
+  if (usd !== null && billed) out.usd = usd;
+  return Object.keys(out).length ? out : null;
+}
+
+function writeUsageFile(usageFile, usageValue) {
+  if (!usageFile || !usageValue) return false;
+  fs.mkdirSync(path.dirname(usageFile), { recursive: true, mode: 0o700 });
+  const tmpPath = `${usageFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(usageValue), { mode: 0o600 });
+  fs.renameSync(tmpPath, usageFile);
+  return true;
+}
+
+function claudeChildEnv(input) {
+  const env = codexChildEnv(input);
+  for (const key of CLAUDE_CHILD_ENV_DROP) delete env[key];
+  env.SHELLY_CLAUDE_SETTINGS_JSON = claudeAgentSettingsJson();
+  return env;
+}
+
+function claudeRunnerSpawnSpec(config) {
+  const claudeArgs = claudeAgentArgs();
+  const android = androidLauncherContext();
+  if (android) {
+    // bash through linker64 + shelly_shell (the same launcher the Bash tool's
+    // env file uses): the runner is an app_data_file script, which Knox will
+    // not exec by shebang. shelly_shell re-adds the bionic exec wrapper.
+    const env = claudeChildEnv({
+      ...androidBaseEnv(android.libDir),
+      ...androidToolEnv(android.libDir),
+      LD_LIBRARY_PATH: android.libDir,
+    });
+    delete env.LD_PRELOAD;
+    const args = [path.join(android.libDir, 'shelly_shell'), config.claudeRunner, ...claudeArgs];
+    return { mode: 'android-linker64-shelly_shell', command: ANDROID_LINKER64, args, env, display: [ANDROID_LINKER64, ...args] };
+  }
+  const args = [config.claudeRunner, ...claudeArgs];
+  return {
+    mode: 'host-path',
+    command: config.claudeRunnerInterpreter,
+    args,
+    env: claudeChildEnv(process.env),
+    display: [config.claudeRunnerInterpreter, ...args],
+  };
+}
+
+/** Every live descendant of `rootPid` (Linux /proc walk); [] elsewhere. */
+function listDescendantPids(rootPid) {
+  let entries;
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return [];
+  }
+  const children = new Map();
+  for (const name of entries) {
+    if (!/^\d+$/.test(name)) continue;
+    let stat;
+    try {
+      stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
+    } catch {
+      continue;
+    }
+    // pid (comm) state ppid … — comm may contain spaces/parens; split after the last ')'.
+    const close = stat.lastIndexOf(')');
+    const fields = stat.slice(close + 2).split(' ');
+    const ppid = Number(fields[1]);
+    if (!children.has(ppid)) children.set(ppid, []);
+    children.get(ppid).push(Number(name));
+  }
+  const out = [];
+  const queue = [rootPid];
+  while (queue.length) {
+    const pid = queue.shift();
+    for (const child of children.get(pid) || []) {
+      if (out.includes(child)) continue;
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
+}
+
+/**
+ * Signal the runner AND everything under it (subshell, private proxy, claude,
+ * its tool shells). Killing only the direct child would leave claude running:
+ * bash does not forward SIGTERM to a foreground child. STOP-ALL still works
+ * without this (it kills the whole process group, which nothing here leaves).
+ */
+function signalProcessTree(child, signal) {
+  if (!child || !child.pid) return;
+  const pids = listDescendantPids(child.pid);
+  for (const pid of [child.pid, ...pids]) {
+    try {
+      process.kill(pid, signal);
+    } catch {}
+  }
+}
+
+async function runClaudeDriver(config) {
+  const audit = createAuditWriter(config.auditLog);
+  // Same ordering as runDriver: pin-verify the escalation key before the
+  // child (which can run agent-chosen commands) exists.
+  ensureEscalationVerifierKey(config, audit);
+  if (config.answerFile) unlinkIfExists(config.answerFile);
+  if (config.usageFile) unlinkIfExists(config.usageFile);
+  const claudeSpawn = claudeRunnerSpawnSpec(config);
+  const gateSpawn = gateSpawnSpec(config);
+  const child = spawn(claudeSpawn.command, claudeSpawn.args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: config.cwd,
+    env: claudeSpawn.env,
+  });
+
+  let buffer = '';
+  let queue = Promise.resolve();
+  let completed = false;
+  let sawFailure = false;
+  let sawResult = false;
+  let apiKeySource = null;
+  let timeout = null;
+  const respondedIds = new Set();
+
+  const send = (message) => {
+    const line = JSON.stringify(message);
+    // The user message carries the prompt; never echo it into the run output.
+    rawLine('C->S', message && message.type === 'user' ? '{"type":"user","message":"[prompt]"}' : line);
+    try {
+      child.stdin.write(`${line}\n`);
+    } catch (error) {
+      sawFailure = true;
+      audit('send_error', { error: error.message, type: message && message.type });
+    }
+  };
+
+  const respondControl = (requestId, response) => {
+    const key = String(requestId);
+    if (respondedIds.has(key)) {
+      audit('duplicate_response_blocked', { requestId });
+      return;
+    }
+    respondedIds.add(key);
+    send({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } });
+  };
+
+  const respondControlError = (requestId, error) => {
+    const key = String(requestId);
+    if (respondedIds.has(key)) return;
+    respondedIds.add(key);
+    send({ type: 'control_response', response: { subtype: 'error', request_id: requestId, error } });
+  };
+
+  const finish = (reason, exitCode) => {
+    if (completed) return;
+    completed = true;
+    clearTimeout(timeout);
+    audit('driver_finish', { reason, exitCode, engine: 'claude' });
+    try {
+      child.stdin.end();
+    } catch {}
+    if (child.exitCode === null && child.signalCode === null) {
+      // Give claude a moment to exit on stdin EOF, then take the tree down.
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) signalProcessTree(child, 'SIGTERM');
+      }, 300).unref();
+      setTimeout(() => {
+        audit('claude_sigkill_fallback', { reason });
+        signalProcessTree(child, 'SIGKILL');
+      }, 1500).unref();
+      setTimeout(() => process.exit(exitCode), 1800);
+    } else {
+      signalProcessTree(child, 'SIGKILL');
+      setTimeout(() => process.exit(exitCode), 50);
+    }
+  };
+
+  const handleCanUseTool = async (requestId, request) => {
+    const toolName = request && typeof request.tool_name === 'string' ? request.tool_name : '';
+    const input = request && request.input && typeof request.input === 'object' ? request.input : {};
+    let response = { behavior: 'deny', message: 'Shelly agent gate: denied' };
+    try {
+      const mapped = claudeToolToActions(toolName, input, config.cwd);
+      if (mapped.deny) {
+        response = { behavior: 'deny', message: `Shelly agent gate: ${mapped.deny}` };
+        gateLine(config.auditLog, {
+          requestId,
+          approvalKind: 'claude:can_use_tool',
+          tool: toolName,
+          command: '',
+          cwd: config.cwd,
+          answer: 'n',
+          decision: 'deny',
+          reason: mapped.deny,
+        });
+        return;
+      }
+      const gated = await gateCommandActions(config, audit, mapped.actions, {
+        requestId,
+        approvalKind: `claude:${toolName}`,
+        lineContext: { toolUseId: request && request.tool_use_id },
+        protocolDecisionOf: (finalDecision) => (finalDecision === 'accept' ? 'allow' : 'deny'),
+      });
+      response = gated.protocolDecision === 'allow'
+        ? { behavior: 'allow', updatedInput: input }
+        : { behavior: 'deny', message: 'Shelly agent gate declined this action (see the agent audit log).' };
+    } catch (error) {
+      sawFailure = true;
+      gateLine(config.auditLog, {
+        requestId,
+        approvalKind: `claude:${toolName}`,
+        command: '',
+        cwd: config.cwd,
+        answer: 'escalate',
+        decision: 'deny',
+        reason: `approval handler failed: ${error.message}`,
+        stack: error.stack,
+      });
+    } finally {
+      respondControl(requestId, response);
+    }
+  };
+
+  const handleResult = (message) => {
+    sawResult = true;
+    const ok = message.subtype === 'success' && message.is_error !== true;
+    const text = typeof message.result === 'string' ? message.result : '';
+    try {
+      const wroteAnswer = ok ? writeAnswerFile(config.answerFile, text) : false;
+      audit('answer_file_written', { answerFile: config.answerFile, wroteAnswer, textLength: text.length });
+    } catch (error) {
+      sawFailure = true;
+      audit('answer_file_write_error', { answerFile: config.answerFile, error: error.message });
+    }
+    const usageValue = claudeUsageFromResult(message, apiKeySource);
+    try {
+      const wroteUsage = writeUsageFile(config.usageFile, usageValue);
+      audit('usage_recorded', { usageFile: config.usageFile, wroteUsage, usage: usageValue });
+    } catch (error) {
+      audit('usage_write_error', { usageFile: config.usageFile, error: error.message });
+    }
+    audit('turn_completed', {
+      engine: 'claude',
+      subtype: message.subtype,
+      isError: message.is_error === true,
+      numTurns: message.num_turns,
+      durationMs: message.duration_ms,
+      permissionDenials: Array.isArray(message.permission_denials) ? message.permission_denials.length : 0,
+    });
+    if (!ok && text) process.stdout.write(`CLAUDE_ERROR ${redact(text.slice(0, 2000))}\n`);
+    finish('turn_completed', ok && !sawFailure ? 0 : 1);
+  };
+
+  const handleMessage = async (message) => {
+    if (!message || typeof message !== 'object') return;
+    if (message.type === 'control_request') {
+      const requestId = message.request_id;
+      const request = message.request || {};
+      if (request.subtype === 'can_use_tool') {
+        await handleCanUseTool(requestId, request);
+        return;
+      }
+      audit('unknown_control_request', { requestId, subtype: request.subtype || null });
+      respondControlError(requestId, `unsupported control request: ${request.subtype || '(none)'}`);
+      return;
+    }
+    if (message.type === 'control_response') {
+      const resp = message.response || {};
+      if (resp.request_id === CLAUDE_INIT_REQUEST_ID) {
+        audit('claude_initialized', { subtype: resp.subtype || null, error: resp.error || null });
+      }
+      return;
+    }
+    if (message.type === 'control_cancel_request') {
+      audit('control_cancel_request', { requestId: message.request_id || null });
+      return;
+    }
+    if (message.type === 'system' && message.subtype === 'init') {
+      apiKeySource = typeof message.apiKeySource === 'string' ? message.apiKeySource : null;
+      audit('thread_started', {
+        engine: 'claude',
+        cwd: message.cwd || config.cwd,
+        model: message.model || null,
+        permissionMode: message.permissionMode || null,
+        apiKeySource,
+        tools: Array.isArray(message.tools) ? message.tools.slice(0, 60) : null,
+        mcpServers: Array.isArray(message.mcp_servers) ? message.mcp_servers.length : null,
+      });
+      return;
+    }
+    if (message.type === 'assistant') {
+      const content = message.message && Array.isArray(message.message.content) ? message.message.content : [];
+      for (const block of content) {
+        if (block && block.type === 'tool_use') {
+          audit('item_started', { itemType: 'tool_use', tool: block.name, itemId: block.id });
+        }
+      }
+      return;
+    }
+    if (message.type === 'result') {
+      handleResult(message);
+    }
+  };
+
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\n/);
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        // The runner's own diagnostics (missing runtime, proxy failure) are plain text.
+        rawLine('STDOUT', redact(line));
+        continue;
+      }
+      if (message && message.type !== 'assistant' && message.type !== 'user' && message.type !== 'stream_event') {
+        rawLine('S->C', redact(line.slice(0, 4000)));
+      }
+      queue = queue.then(() => handleMessage(message)).catch((error) => {
+        sawFailure = true;
+        audit('handler_error', { error: error.message, stack: error.stack });
+      });
+    }
+  });
+
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString().replace(/\n$/, '');
+    process.stdout.write(`STDERR ${redact(text)}\n`);
+  });
+
+  child.stdin.on('error', (error) => {
+    audit('stdin_error', { error: error.message });
+  });
+
+  child.on('error', (error) => {
+    sawFailure = true;
+    audit('claude_spawn_error', { error: error.message });
+    finish('claude_spawn_error', 1);
+  });
+
+  child.on('exit', (code, signal) => {
+    if (completed) return;
+    // Let queued stdout handlers (the result message) settle first.
+    queue.then(() => {
+      if (completed) return;
+      audit('claude_exit', { code, signal, sawResult });
+      finish('claude_exit', 1);
+    });
+  });
+
+  const onSignal = (signal) => {
+    audit('driver_signal', { signal });
+    signalProcessTree(child, 'SIGKILL');
+    process.exit(143);
+  };
+  process.once('SIGTERM', onSignal);
+  process.once('SIGINT', onSignal);
+
+  timeout = setTimeout(() => {
+    sawFailure = true;
+    finish(`timeout_${config.timeoutMs}ms`, 124);
+  }, config.timeoutMs);
+
+  audit('driver_start', {
+    engine: 'claude',
+    cwd: config.cwd,
+    gateScript: config.gateScript,
+    claudeRunner: config.claudeRunner,
+    claudeLaunchMode: claudeSpawn.mode,
+    claudeSpawn: claudeSpawn.display,
+    claudeSettings: claudeAgentSettingsJson(),
+    gateLaunchMode: gateSpawn.mode,
+    gateSpawn: gateSpawn.display,
+    gateNode: gateSpawn.nodePath,
+    approvalPolicy: config.approvalPolicy,
+    runId: config.runId,
+    agentId: config.agentId,
+    escalationDir: config.escalationDir,
+    escalationKeyPinned: Boolean(config.escalationPublicKeySha256),
+    escalationKeyTrusted: Boolean(config.escalationVerifierPublicKey),
+    escalationTimeoutMs: config.escalationTimeoutMs,
+    escalationTimeoutAction: config.escalationTimeoutAction,
+    policy: { ...config.policy, workspaceRoot: config.policy.workspaceRoot },
+  });
+  send({ type: 'control_request', request_id: CLAUDE_INIT_REQUEST_ID, request: { subtype: 'initialize', hooks: null } });
+  send({
+    type: 'user',
+    session_id: '',
+    message: { role: 'user', content: [{ type: 'text', text: config.prompt }] },
+    parent_tool_use_id: null,
+  });
+}
+
 async function main() {
   try {
     const config = ensureConfig(parseArgs(process.argv));
     if (config.help) {
       usage();
+      return;
+    }
+    if (config.engine === 'claude') {
+      await runClaudeDriver(config);
       return;
     }
     await runDriver(config);
@@ -2187,4 +2742,11 @@ module.exports = {
   policySealAccepts,
   androidToolEnv,
   codexPolicyEnvArgs,
+  claudeToolToActions,
+  claudeUsageFromResult,
+  claudeAgentArgs,
+  claudeAgentSettingsJson,
+  claudeChildEnv,
+  CLAUDE_DENIED_TOOLS,
+  CLAUDE_GATED_TOOLS,
 };

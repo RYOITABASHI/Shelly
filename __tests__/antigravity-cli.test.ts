@@ -1,5 +1,5 @@
 /**
- * Google Antigravity CLI (BASHRC_VERSION 282): agy-install stages Google's
+ * Google Antigravity CLI (BASHRC_VERSION 282; current 283): agy-install stages Google's
  * official Android build after a SHA-512 check, and agy runs it through
  * linker64 with the bionic exec wrapper (like codex).
  */
