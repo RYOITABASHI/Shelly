@@ -2021,23 +2021,6 @@ class TerminalEmulatorModule : Module() {
         // one-shot pre-approval grant on accept), clears the request and
         // cancels the notification. Mirrors readAgentActionApprovalRequest /
         // resolveAgentActionApproval.
-        AsyncFunction("readAgentEscalationRequest") { runId: String, reqId: String ->
-            val context = appContext.reactContext
-                ?: throw IllegalStateException("React context unavailable")
-            val parsed = AgentEscalationBridge.fromRequestFile(context, runId, reqId)
-                ?: throw IllegalArgumentException("escalation request is no longer pending")
-            val actionNonce = AgentEscalationBridge.registerActionNonce(runId, reqId)
-            mapOf(
-                "runId" to parsed.runId,
-                "reqId" to parsed.reqId,
-                "agentId" to parsed.agentId,
-                "command" to parsed.command,
-                "state" to parsed.state,
-                "requestSha256" to parsed.requestSha256,
-                "actionNonce" to actionNonce,
-            )
-        }
-
         AsyncFunction("resolveAgentEscalationApproval") { runId: String, reqId: String, decision: String, expectedRequestSha256: String, actionNonce: String ->
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
@@ -2052,6 +2035,36 @@ class TerminalEmulatorModule : Module() {
             val context = appContext.reactContext
                 ?: throw IllegalStateException("React context unavailable")
             AgentEscalationBridge.writeGrantSpendReply(context, request)
+            null
+        }
+
+        // "Run without approval" (lib/agent-run-without-approval.ts): RN reads the
+        // live request, minting the same single-use nonce the notification
+        // path registers, evaluates it against the Keystore-backed per-agent
+        // flag + signal/safety rules, then resolves with the SAME signed
+        // reply a human tap writes, bound to these exact request bytes
+        // (expectedRequestSha256). Accept-only and never mints a preapproval
+        // grant. Agent processes cannot call into RN, and the signing key
+        // never leaves the Keystore.
+        AsyncFunction("readAgentEscalationRequest") { runId: String, reqId: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            val parsed = AgentEscalationBridge.fromRequestFile(context, runId, reqId)
+                ?: throw IllegalArgumentException("escalation request is no longer pending")
+            val actionNonce = AgentEscalationBridge.registerActionNonce(runId, reqId)
+            AgentEscalationBridge.toMap(parsed) + mapOf("actionNonce" to actionNonce)
+        }
+
+        AsyncFunction("resolveAgentEscalationAutoApproval") { runId: String, reqId: String, expectedRequestSha256: String, actionNonce: String ->
+            val context = appContext.reactContext
+                ?: throw IllegalStateException("React context unavailable")
+            AgentEscalationBridge.writeHumanReply(
+                context, runId, reqId, "accept", actionNonce, expectedRequestSha256,
+                mintPreapprovalGrant = false
+            )
+            AgentEscalationBridge.clearRequest(context, runId, reqId)
+            context.getSystemService(NotificationManager::class.java)
+                ?.cancel(AgentEscalationBridge.notificationId(runId, reqId))
             null
         }
 

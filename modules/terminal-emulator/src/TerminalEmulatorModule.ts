@@ -288,17 +288,6 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     state?: string | null;
     queuedAt?: string | null;
   }): Promise<{ requestSha256?: string | null } | null>;
-  /** Re-read a pending escalation and mint its single-use nonce now (this
-   *  replaces the notification's nonce). Rejects when nothing is pending. */
-  readAgentEscalationRequest?(runId: string, reqId: string): Promise<{
-    runId: string;
-    reqId: string;
-    agentId: string;
-    command: string;
-    state?: string | null;
-    requestSha256?: string | null;
-    actionNonce?: string | null;
-  }>;
   /** AgentEscalationBridge.writeHumanReply (the notification's Allow / Deny
    *  path) + clear the request + cancel its notification. */
   resolveAgentEscalationApproval?(
@@ -316,6 +305,33 @@ declare class TerminalEmulatorModuleType extends NativeModule {
     ts?: string | null;
   }): Promise<void>;
   cancelAgentEscalationApproval?(runId: string, reqId: string): Promise<void>;
+  /** Re-read a live gate escalation request and mint its single-use nonce
+   *  now (replaces the notification's nonce). Used by MONITOR / chat typed
+   *  OK / NO and by "承認なしで実行". Rejects when nothing is pending. */
+  readAgentEscalationRequest?(runId: string, reqId: string): Promise<{
+    runId: string;
+    agentId: string;
+    reqId: string;
+    command: string;
+    commandSha256?: string | null;
+    workspaceRoot?: string | null;
+    cwd?: string | null;
+    reason?: string | null;
+    signals?: string[];
+    level?: string | null;
+    ts?: string | null;
+    state?: string | null;
+    queuedAt?: string | null;
+    requestSha256?: string | null;
+    actionNonce?: string | null;
+  }>;
+  /** Accept-only signed reply for a request read above (no preapproval grant). */
+  resolveAgentEscalationAutoApproval?(
+    runId: string,
+    reqId: string,
+    expectedRequestSha256: string,
+    actionNonce: string
+  ): Promise<void>;
   getAgentActionApprovalBridgePaths?(): Promise<{
     requestDirPath: string;
     requestDirUri: string;

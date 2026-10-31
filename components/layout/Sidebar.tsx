@@ -99,6 +99,7 @@ import { postAgentRunStartedNotice, postLatestAgentRunToCompanion } from '@/lib/
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeAgentSchedule } from '@/lib/agent-plan-summary';
 import { oneShotState } from '@/lib/agent-oneshot';
+import { forgetRunWithoutApproval, isRunWithoutApprovalEnabled, postRunWithoutApprovalAuditLine, setRunWithoutApproval } from '@/lib/agent-run-without-approval';
 
 // Collapsed icon-rail width. 2026-10-06 Fold6 feedback: 48dp read as too
 // wide next to the pane grid; 38dp still fits a 20dp icon with ~9dp side
@@ -1044,6 +1045,7 @@ export function Sidebar() {
   // Tap an agent row → full detail popup (the row only has room for the name).
   const showAgentDetail = React.useCallback(async (agent: Agent) => {
     const runHistory = useAgentStore.getState().getRunHistory(agent.id);
+    const runWithoutApproval = await isRunWithoutApprovalEnabled(agent.id).catch(() => false);
     const lastLog = runHistory.at(-1);
     // Foreground escalation writes one log per attempt. If Gemini fails and
     // Codex succeeds seconds later, looking only at `lastLog` hides the exact
@@ -1211,6 +1213,13 @@ export function Sidebar() {
       { key: 'memory', titleKey: 'agent_detail.memory', text: t('sidebar.agent_memory_title', { count: memoryNotes.length }) },
       { key: 'steps', titleKey: 'agent_detail.steps', text: stepDetail },
       { key: 'routing', titleKey: 'agent_detail.routing', text: routeDetail },
+      // "承認なしで実行" — Keystore-backed SecureStore only (never the agent
+      // JSON a run could rewrite); see lib/agent-run-without-approval.ts.
+      {
+        key: 'run-without-approval',
+        titleKey: 'agent_detail.run_without_approval',
+        text: t(runWithoutApproval ? 'agent_detail.run_without_approval_on' : 'agent_detail.run_without_approval_off'),
+      },
     ];
     const buttons: AgentDetailData['buttons'] = [
       { key: 'run', labelKey: 'sidebar.agent_run_now', onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
@@ -1258,6 +1267,19 @@ export function Sidebar() {
         });
       } },
       { key: 'chat', labelKey: 'sidebar.agent_chat', onPress: () => openAgentThread(agent) },
+      {
+        key: 'run-without-approval',
+        labelKey: runWithoutApproval ? 'sidebar.agent_run_without_approval_disable' : 'sidebar.agent_run_without_approval_enable',
+        onPress: () => {
+          const next = !runWithoutApproval;
+          void setRunWithoutApproval(agent.id, next, 'detail')
+            .then(() => postRunWithoutApprovalAuditLine(
+              agent.id,
+              t(next ? 'agent_run_without_approval.enabled_line' : 'agent_run_without_approval.disabled_line'),
+            ))
+            .catch((error) => Alert.alert(t('sidebar.agent_update_failed_title'), error instanceof Error ? error.message : String(error)));
+        },
+      },
       ...(runHistory.length
         ? [{ key: 'runs', labelKey: 'sidebar.agent_view_runs', onPress: () => openAgentRunsPane(agent.id) }]
         : []),
@@ -1763,6 +1785,7 @@ export function Sidebar() {
                               // would reappear on restart).
                               try {
                                 await deleteAgent(agent.id);
+                                void forgetRunWithoutApproval(agent.id).catch(() => undefined);
                               } catch (e) {
                                 Alert.alert(t('sidebar.delete_agent_failed'), String(e));
                               }
