@@ -69,6 +69,19 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### S4 エージェント実行の実機バグ 4 件（agent-mvvx3o28「プロジェクト概要作成」、Codex→Claude Code の 2 ステップ）— 修正済み・実機未検証 (P1)
+- **2026-10-31 修正**（ブランチ `fix/s4-agent-run-bugs`、jest/tsc のみで検証）:
+  1. **「登録しました」が OK より上に出る**: コードを追った限り、既定設定で OK 前に `createAgent` が走る経路は無い（`agentRegistrationRequireConfirm` は読み込み時に true に強制、terminal-request / monitor-team は常に確認）。原因は表示順: 入力した「OK」を先に追加し、その後 `confirmAgentDraft` が **OK より上にある案のバブルを書き換えていた**。案のバブルの後に何かあれば、結果は一番下の新しいメッセージに出す（`lib/agent-confirm-outcome.ts`）。あわせて、ツール指定ステップ／CLI エンジン／ClosePaw の案（action は多くが 'draft'）がウィジェットの確認なし設定 ON で**自動登録されてしまう**実在の抜け穴を塞いだ（`isAutoRegisterEligibleDraft`）。
+  2. **Codex 指定のステップが Local LLM で動く**: attended のラダーが `[codex, local, …]` だったため、Codex の試行が失敗すると黙って local で再実行していた。attended で CLI を明示指定したステップは、その CLI の 1 段だけにした（失敗はそのまま失敗として出る）。
+  3. **完了後の MONITOR 表示が「cli:cli」**: 完了時に `{ type: rd.toolType }`（CLI の id 無し）で報告していた。最後の試行のツールから組み立て直す（`toolForRouteDecision`）。
+  4. **ステップ 2 が SKIPPED なのに「スキルとして保存？…成功」**: `reduceStatus` は success＋skipped を 'success' とみなす。スキル保存の提案／無人自動保存は全ステップ success かつ計画したステップが欠けていないときだけ（`lib/agent-run-success.ts`）。
+- **残り・未検証**:
+  - 実機で: (1) チャットで 2 ステップの CLI エージェントを作り「OK」→ 結果が OK の下に出る、OK 前に `~/.shelly/agents/` に json が増えない。(2) Codex ステップが失敗したら Local LLM に切り替わらず、そのステップが失敗として表示される。(3) 完了後も MONITOR が「Claude Code」。(4) 承認タイムアウトで SKIPPED が出た run の後にスキル保存ダイアログが出ない。
+  - **Codex の試行がそもそも約 2 秒で失敗した理由は未調査**（端末のログ・run log の routeDecision / driver audit が要る）。今回の修正で黙って切り替わらなくなっただけで、Codex ステップ自体は失敗として出るはず。次回実機で `~/.shelly/agents/logs/agent-mvvx3o28/` と driver audit を確認すること。(P1)
+  - autonomous（無人）エージェントで Codex を指定したステップは今も local→Codex の順（保存されている `cli:codex` が OAuth ドライバの既定値なのか、ユーザーの明示指定なのかを区別できないため変更していない）。ステップ単位の明示指定フラグを持たせれば区別できる。(P2)
+  - 出典付きブリーフィングの要約ステップ（`textOnly`）は、Web 由来の文を実行可能なツールに渡さないため CLI 指定を外して local に回す。これも「エンジンの切り替え」だが安全のための仕様なので残した。ただし MONITOR／チャットに理由を出していない。(P2)
+  - `reduceStatus` が success＋skipped の run を 'success'（チャットの ✅、MONITOR の結果）として扱う点は変更していない（circuit breaker・通知への影響が大きい）。表示側で「一部スキップ」と出すかは別途。(P2)
+
 ### リリース署名鍵の移行（公開 debug.keystore → 非公開リリース鍵、APK Signature Scheme v3 鍵ローテーション）— ✅ 完了（2026-10-29、v8.1.2 前に P0 解消）
 
 2026-10-14、ブランチ `fix/release-signing`。v8.0.2（versionCode ~2540）までのリリース APK は React Native / Expo テンプレート同梱の**公開** debug.keystore（cert SHA-256 `FA:C6:17:45:…:3B:9C`）で署名されており、誰でも「Shelly の更新」に見える APK を作れた（上書き更新でアプリデータ・SecureStore・ClosePaw の trusted-caller ピンをそのまま奪える）。新しい非公開鍵 `CN=Shelly, O=RYOITABASHI`（RSA 4096、PKCS12、30年）の cert SHA-256 は `14:76:D9:52:0A:49:BF:8D:A7:A7:67:CB:41:39:18:CC:D5:C5:FC:D7:F6:26:03:76:6A:F6:52:1F:30:DE:21:2D`。
