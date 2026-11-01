@@ -94,6 +94,12 @@
 - **実機で確認すること**: 上の依頼文を「Right now, run fully without approval.」に変えて実行し、確認文に「Workspace: ~/demo」と「(all)」の行が出ること、承認が 0 回（または hard に当たったものだけ）で両ファイルができること、チャットに「(all)」付きの自動許可行が並ぶこと、logcat の `run-without-approval not applied … level=all reason=` の理由が hard のものだけであること。標準レベルでも作業フォルダが `~/demo` になることで `leaves-root` の承認が減ること。
 - **残り（受け入れた制約）**: hard の判定は字句的。スクリプト実行と展開は「すべて」でも人に聞くようになったが、ファイル操作の結果を後で別の（承認された）実行が使う経路はパスだけで判断する。heredoc の本文にバッククォート（JS のテンプレートリテラル等）があると gate の `indirect-exec` で人に聞く。gate 自体の deny はそのまま。標準レベルの `~/…` 書き込み（ワークスペース内でも `home-path` で拒否）は未変更。既存の課題として、executor はワークスペース（既定の content project を含む）が存在しないと `$HOME` を cwd ＝ gate root にする（ホーム全体が in-root になる）— 今回は確定時の `mkdir -p` で派生ワークスペースについてのみ回避。
 
+### 「承認なしで実行（すべて）」の残るリスク（2026-11-01 独立レビューで判明、マージ時に許容）— 未対応 (P2)
+- **(1) ワークスペース内に既にあるシンボリックリンク**: RN 側の "all" 判定は字面だけで symlink を解決しない。ワークスペース内に外を指すリンクが既にあると（git checkout / apply や、先に承認されたステップで作られたもの）、そのリンク経由の書き込みをワークスペース内として自動許可しうる。新規の `ln -s` の行き先は字面で検査済み。対応: 書き込み先ごとに realpath を取ってから答える、またはワークスペース配下に既存の symlink 部品があれば書き込みを人に回す。次に固めるならここ。
+- **(2) git がリポジトリの状態に従う**: checkout / commit / apply はリポジトリ自身の hook・filter を実行する。`.git/hooks` / `.git/config` への書き込みは止めているが、最初から設定済みのリポジトリは止まらない。
+- **(3) ワークスペースのファイル経由の指示混入**: ワーカーが読むワークスペース内のファイル（取得したリポジトリ等）に指示が混ざりうる。ツールの許可リストがあるので、最悪でもホーム内のファイル操作にとどまりコード実行には至らない。
+- ALL_LEVEL_TOOLS（cp / mv / ln / tee / chmod / patch の行き先とリダイレクト解析）の道具ごとの攻撃側パスは、レビューが途中で打ち切られたため未完。実機での "all" 動作も未検証。
+
 ### gate の NETWORK_RE が生のコマンド文字列で判定される（引用で分割したコマンド名が素通り）— 未対応 (P1)
 - 2026-11-01 セキュリティレビュー（`feat/cli-workspace-full-auto` のレビュー M2、既存の問題）: `lib/agent-boundary-policy.ts` の `classifyProposedCommand`（〜569 行、`NETWORK_RE.test(command)`）と同じロジックの APK asset `shelly-gate-decide.js` は、ネットワークツール名を dequote 前の生文字列で照合する。`cu''rl`・`"c"url`・`$'\x63'url` のように引用で分割したコマンド名は `network-send` にならず、URL（`https://…`）は `/` を含むトークンとして workspace 内と判定されうる。対応案: `readsDeviceSecret` と同様に `dequoteShellWords` を 1〜2 回かけた文字列でも NETWORK_RE / SHELL_NET_DEVICE_RE を判定し、URL 形のトークンを extractPaths から除外する。asset 版と gate-cases fixture も同時に更新すること。「承認なしで実行（すべて）」は `network-send` を hard にしているが、シグナル自体が立たないとこの穴を塞げない（「すべて」の許可リストはファイル操作ツールのみなので `curl` 自体は `tool:curl` で止まる）。
 
