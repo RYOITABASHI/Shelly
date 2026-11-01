@@ -1630,6 +1630,9 @@ async function gateCommandActions(config, audit, actions, ctx) {
     finalDecision = 'decline';
   } else {
     for (const result of gateResults.filter((item) => item.answer === 'escalate')) {
+      // File changes: one declined path declines the whole patch, so the
+      // remaining paths are not put in front of the human.
+      if (ctx.stopAtFirstDecline && finalDecision === 'decline') break;
       const auditPayload = result.outcome && result.outcome.audit ? result.outcome.audit : {};
       const redactedCommand = redact(result.action.command);
       const reqId = gateResults.length === 1
@@ -1708,7 +1711,11 @@ async function gateCommandActions(config, audit, actions, ctx) {
         commandSha256: commandSha256(result.action.command),
         workspaceRoot: config.policy.workspaceRoot,
         cwd: result.action.cwd,
-        reason: auditPayload.reason || null,
+        // Multi-file patches say which file this is ("(file k/N)"); the
+        // `boundary: ` prefix the RN auto-approval checks is kept.
+        reason: auditPayload.reason
+          ? `${auditPayload.reason}${ctx.escalationLabelOf ? ctx.escalationLabelOf(result.action.index, gateResults.length) : ''}`
+          : null,
         signals: auditPayload.signals || [],
         level: auditPayload.level || config.policy.level,
       }, audit);
@@ -1982,6 +1989,36 @@ async function runDriver(config) {
   // the changed paths are taken from item/started and the latest
   // item/fileChange/patchUpdated (messages are handled in protocol order).
   const fileChangeItems = new Map();
+  // itemId → resolved paths the gate accepted for it (v2), checked against
+  // the item's final changes on item/completed.
+  const approvedFileChangePaths = new Map();
+
+  // applied ≠ approved: a completed fileChange item that touched a path the
+  // gate never accepted fails the step. A declined item applied nothing.
+  const checkCompletedFileChange = (params) => {
+    const item = params && params.item ? params.item : null;
+    if (!item || item.type !== 'fileChange') return;
+    if (item.status === 'declined') return;
+    const approved = approvedFileChangePaths.get(item.id) || new Set();
+    const unapproved = [];
+    for (const change of normalizeFileChanges(item.changes)) {
+      for (const raw of [change.path, change.movePath]) {
+        if (raw === null || raw === undefined) continue;
+        const resolved = resolveFileChangePath(raw, config.cwd);
+        if (!resolved || !approved.has(resolved)) unapproved.push(String(raw).slice(0, 300));
+      }
+    }
+    if (unapproved.length === 0) return;
+    sawFailure = true;
+    audit('file_change_unapproved_path', {
+      threadId: params.threadId,
+      turnId: params.turnId,
+      itemId: item.id,
+      status: item.status || null,
+      unapproved,
+      approvedCount: approved.size,
+    });
+  };
 
   const trackFileChangeItem = (itemId, changes) => {
     if (typeof itemId !== 'string' || !itemId || !Array.isArray(changes)) return;
@@ -2000,8 +2037,29 @@ async function runDriver(config) {
     try {
       const params = message.params || {};
       const itemId = legacy ? params.callId : params.itemId;
+      const itemKnown = legacy ? true : fileChangeItems.has(params.itemId);
       const changes = legacy ? params.fileChanges : fileChangeItems.get(params.itemId);
-      const mapped = fileChangeToActions(changes, config.cwd, approvalKind);
+      let mapped = fileChangeToActions(changes, config.cwd, approvalKind);
+      if (!itemKnown) {
+        mapped = { deny: 'file change approval for an item never announced', protocolMismatch: true };
+      }
+      if (mapped.protocolMismatch) {
+        // Protocol drift: still a decline, but visible — the step fails.
+        sawFailure = true;
+        audit('file_change_protocol_mismatch', {
+          requestId: message.id,
+          method: approvalKind,
+          itemId: itemId === undefined ? null : itemId,
+          itemKnown,
+          paramKeys: Object.keys(params).sort(),
+          changeKeys: legacy && changes && typeof changes === 'object'
+            ? Object.values(changes).map((c) => (c && typeof c === 'object' ? Object.keys(c).sort() : typeof c))
+            : Array.isArray(changes)
+              ? changes.map((c) => (c && typeof c === 'object' ? Object.keys(c).sort() : typeof c))
+              : null,
+          reason: mapped.deny,
+        });
+      }
       const lineContext = legacy
         ? { threadId: params.conversationId, callId: params.callId }
         : { threadId: params.threadId, turnId: params.turnId, itemId: params.itemId };
@@ -2033,8 +2091,18 @@ async function runDriver(config) {
         approvalKind,
         lineContext,
         protocolDecisionOf,
+        stopAtFirstDecline: true,
+        escalationLabelOf: (index, total) => (total > 1 ? ` (file ${index + 1}/${total})` : ''),
       });
       response = { decision: gated.protocolDecision };
+      if (gated.finalDecision === 'accept' && !legacy && typeof itemId === 'string') {
+        const approved = approvedFileChangePaths.get(itemId) || new Set();
+        for (const action of mapped.actions) {
+          approved.add(action.action.path);
+          if (action.action.movePath) approved.add(resolveFileChangePath(action.action.movePath, config.cwd));
+        }
+        approvedFileChangePaths.set(itemId, approved);
+      }
       audit(gated.finalDecision === 'accept' ? 'file_change_accepted' : 'file_change_declined', {
         requestId: message.id,
         approvalKind,
@@ -2182,6 +2250,7 @@ async function runDriver(config) {
     }
 
     if (message.method === 'item/completed') {
+      checkCompletedFileChange(message.params);
       captureItemCompleted(message.params);
       return;
     }
@@ -2474,20 +2543,30 @@ function normalizeFileChanges(raw) {
   return [];
 }
 
+// Control characters (C0, DEL, C1) and every non-ASCII whitespace / line or
+// paragraph separator: a path carrying one is not shown to anyone as-is.
+const FILE_CHANGE_UNSAFE_PATH_RE = /[\u0000-\u001f\u007f-\u009f\u00a0\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u2064\u3000\ufeff]/;
+
+function resolveFileChangePath(raw, cwd) {
+  if (!raw || FILE_CHANGE_UNSAFE_PATH_RE.test(raw)) return null;
+  return path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+}
+
 /**
  * The gate commands for one file-change approval, or { deny } when the
- * change cannot be placed (no paths, a path with control characters, an
- * unknown change kind). Relative paths resolve against the turn cwd.
+ * change cannot be placed. `protocolMismatch: true` marks a request whose
+ * shape we do not understand (no changes / no path / unknown kind) — still a
+ * decline, but the caller also fails the step so protocol drift is visible.
+ * A path with unsafe characters is a plain decline. Relative paths resolve
+ * against the turn cwd.
  */
 function fileChangeToActions(changes, cwd, source) {
   const list = normalizeFileChanges(changes);
-  if (list.length === 0) return { deny: 'file change approval without any known changed path' };
-  const resolvePath = (raw) => {
-    if (!raw || /[\u0000-\u001f]/.test(raw)) return null;
-    return path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
-  };
+  if (list.length === 0) return { deny: 'file change approval without any known changed path', protocolMismatch: true };
+  const resolvePath = (raw) => resolveFileChangePath(raw, cwd);
   const actions = [];
   for (const change of list) {
+    if (!change.path) return { deny: 'file change without a path', protocolMismatch: true };
     const filePath = resolvePath(change.path);
     if (!filePath) return { deny: 'file change needs plain paths' };
     let command;
@@ -2500,7 +2579,7 @@ function fileChangeToActions(changes, cwd, source) {
       if (!dest) return { deny: 'file change needs plain paths' };
       command = `mv -- ${shellSingleQuote(filePath)} ${shellSingleQuote(dest)}`;
     } else {
-      return { deny: `unknown file change kind ${String(change.type || '(none)').slice(0, 40)}` };
+      return { deny: `unknown file change kind ${String(change.type || '(none)').slice(0, 40)}`, protocolMismatch: true };
     }
     actions.push({
       index: actions.length,

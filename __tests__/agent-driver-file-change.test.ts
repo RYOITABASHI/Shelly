@@ -197,10 +197,100 @@ describe('driver E2E: Codex file-change approvals through the real gate', () => 
     expect(r.out).not.toContain('escalation_denied_unattended');
   }, 60_000);
 
-  it('v2: an approval for an item never seen is declined (fail closed), not a failure', () => {
+  it('protocol drift: an approval for an item never announced is declined AND fails the step', () => {
     const r = run({ unattended: true }, () => [v2Req('req-1', 'missing')]);
     expect(r.responses).toEqual({ 'req-1': { decision: 'decline' } });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('file_change_protocol_mismatch');
+    expect(r.out).toContain('"itemKnown":false');
+  }, 60_000);
+
+  it('protocol drift: an unknown change kind or a change without a path is declined AND fails the step', () => {
+    for (const changes of [
+      [{ path: 'a.txt', kind: { type: 'chmod' }, diff: 'SECRET-DIFF' }],
+      [{ kind: { type: 'add' }, diff: 'SECRET-DIFF' }],
+      [],
+    ]) {
+      const r = run({ unattended: true }, () => [fcItem('fc-1', changes), v2Req('req-1', 'fc-1')]);
+      expect(r.responses).toEqual({ 'req-1': { decision: 'decline' } });
+      expect(r.status).toBe(1);
+      const mismatch = r.out.split('\n').find((l) => l.includes('"kind":"file_change_protocol_mismatch"'));
+      expect(mismatch).toBeDefined();
+      expect(mismatch).toContain('"method":"item/fileChange/requestApproval"');
+      expect(mismatch).not.toContain('SECRET-DIFF');
+    }
+    const legacy = run({ unattended: true }, () => [legacyReq('l-1', { 'a.txt': { type: 'rename' } })]);
+    expect(legacy.responses).toEqual({ 'l-1': { decision: 'denied' } });
+    expect(legacy.status).toBe(1);
+    expect(legacy.out).toContain('file_change_protocol_mismatch');
+  }, 120_000);
+
+  it('a path with DEL or non-ASCII whitespace is a plain decline (not drift)', () => {
+    for (const bad of ['a\u007f.txt', 'a\u00a0.txt', 'a\u2028.txt', 'a\u2029.txt', 'a\u200b.txt']) {
+      expect(driver.fileChangeToActions([{ path: bad, kind: { type: 'add' } }], '/w', 's')).toEqual({ deny: 'file change needs plain paths' });
+    }
+    const r = run({ unattended: true }, () => [
+      fcItem('fc-1', [{ path: 'a\u2028b.txt', kind: { type: 'add' }, diff: '' }]),
+      v2Req('req-1', 'fc-1'),
+    ]);
+    expect(r.responses).toEqual({ 'req-1': { decision: 'decline' } });
     expect(r.status).toBe(0);
+    expect(r.out).not.toContain('file_change_protocol_mismatch');
+  }, 60_000);
+
+  const fcDone = (id: string, changes: Msg[], status = 'completed'): Msg => ({
+    method: 'item/completed',
+    params: { threadId: 'th1', turnId: 't1', item: { type: 'fileChange', id, changes, status } },
+  });
+
+  it('applied = approved: a completed item with only approved paths keeps the step green', () => {
+    const changes = [{ path: 'a.txt', kind: { type: 'add' }, diff: '' }, { path: 'b.txt', kind: { type: 'update', move_path: 'c.txt' }, diff: '' }];
+    const r = run({ unattended: true }, () => [fcItem('fc-1', changes), v2Req('req-1', 'fc-1'), fcDone('fc-1', changes)]);
+    expect(r.responses).toEqual({ 'req-1': { decision: 'accept' } });
+    expect(r.status).toBe(0);
+    expect(r.out).not.toContain('file_change_unapproved_path');
+  }, 60_000);
+
+  it('applied ≠ approved: a completed item touching a path never approved fails the step', () => {
+    const r = run({ unattended: true }, () => [
+      fcItem('fc-1', [{ path: 'a.txt', kind: { type: 'add' }, diff: '' }]),
+      v2Req('req-1', 'fc-1'),
+      fcDone('fc-1', [{ path: 'a.txt', kind: { type: 'add' }, diff: '' }, { path: 'extra.txt', kind: { type: 'add' }, diff: '' }]),
+    ]);
+    expect(r.responses).toEqual({ 'req-1': { decision: 'accept' } });
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('file_change_unapproved_path');
+    expect(r.out).toContain('extra.txt');
+  }, 60_000);
+
+  it('applied ≠ approved: a fileChange completed without any approval request fails the step; a declined one does not', () => {
+    const changes = [{ path: 'a.txt', kind: { type: 'add' }, diff: '' }];
+    const silent = run({ unattended: true }, () => [fcItem('fc-1', changes), fcDone('fc-1', changes)]);
+    expect(silent.status).toBe(1);
+    expect(silent.out).toContain('file_change_unapproved_path');
+    const declined = run({ unattended: true }, () => [
+      fcItem('fc-1', [{ path: OUTSIDE, kind: { type: 'add' }, diff: '' }]),
+      v2Req('req-1', 'fc-1'),
+      fcDone('fc-1', [{ path: OUTSIDE, kind: { type: 'add' }, diff: '' }], 'declined'),
+    ]);
+    expect(declined.responses).toEqual({ 'req-1': { decision: 'decline' } });
+    expect(declined.status).toBe(0);
+    expect(declined.out).not.toContain('file_change_unapproved_path');
+  }, 120_000);
+
+  it('multi-file escalation: stops at the first decline and labels the file k/N', () => {
+    const r = run({}, () => [
+      fcItem('fc-1', [
+        { path: '/etc/shelly-fc-1.txt', kind: { type: 'add' }, diff: '' },
+        { path: '/etc/shelly-fc-2.txt', kind: { type: 'add' }, diff: '' },
+      ]),
+      v2Req('req-1', 'fc-1'),
+    ]);
+    expect(r.responses).toEqual({ 'req-1': { decision: 'decline' } });
+    expect(r.status).toBe(0);
+    const failClosed = r.out.split('\n').filter((l) => l.includes('"kind":"escalation_fail_closed"'));
+    expect(failClosed).toHaveLength(1); // the second file never reached a human
+    expect(r.out.split('\n').filter((l) => l.startsWith('GATE ') && l.includes('item/fileChange/requestApproval'))).toHaveLength(2);
   }, 60_000);
 
   it('legacy applyPatchApproval: approved in the workspace, denied outside', () => {
