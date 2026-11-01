@@ -65,10 +65,13 @@ import { generateRunScript, getChainLockDir } from '@/lib/agent-executor';
 import { acquireChainLock, releaseChainLock, runAgentNow } from '@/lib/agent-manager';
 import { useAgentStore } from '@/store/agent-store';
 import { Agent, ToolChoice } from '@/store/types';
+import { trackTmpDir } from './helpers/tmp';
 
 const execFileAsync = promisify(execFile);
 
 const HOME = os.tmpdir().replace(/\\/g, '/') + '/shelly-chain-lock-test-home';
+// Fixed (non-mkdtemp) name: register it so the shared helper removes it after the file.
+trackTmpDir(HOME);
 
 /** A real runCommand — actually shells out to bash, no mocking. Used to prove
  * the on-disk mkdir/token mechanics work against a genuine filesystem. */

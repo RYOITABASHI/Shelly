@@ -9,6 +9,8 @@ module.exports = {
       moduleNameMapper: {
         '^@/(.*)$': '<rootDir>/$1',
       },
+      // Tracks every temp dir a test file creates via fs.mkdtemp* and removes it in afterAll.
+      setupFilesAfterEnv: ['<rootDir>/__tests__/helpers/tmp.ts'],
     },
     {
       displayName: 'component',

@@ -67,7 +67,7 @@ function runChain(
   const failAtStep = opts.failAtStep ?? 0;
   const initialActionType = opts.initialActionType ?? 'draft';
   const harness = `set -euo pipefail
-WORKDIR=$(mktemp -d)
+WORKDIR=$(mktemp -d "$(dirname "$0")/work.XXXXXX")
 HOME="$WORKDIR/home"
 TMP_DIR="$WORKDIR/tmp"
 PROJECT_DIR="$WORKDIR/project"
@@ -508,7 +508,7 @@ describe('generateRunScript — non-orchestrated agent: no capability/behavior r
     });
     const snippet = extractChainSnippet(generateRunScript(threeStepAgent));
     const harness = `set -euo pipefail
-WORKDIR=$(mktemp -d)
+WORKDIR=$(mktemp -d "$(dirname "$0")/work.XXXXXX")
 HOME="$WORKDIR/home"
 TMP_DIR="$WORKDIR/tmp"
 PROJECT_DIR="$WORKDIR/project"
