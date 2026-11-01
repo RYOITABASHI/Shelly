@@ -470,7 +470,9 @@ object AgentRuntime {
     // v76 (2026-11-01, build 2746): the action approval request is hashed before
     // it is published, so a fast RN answer (run-without-approval / autoAccept)
     // that deletes the request no longer empties the hash. JS-only.
-    private const val CURRENT_SCRIPT_VERSION = 76
+    // v77 (2026-11-01, MONITOR CLI tokens): Codex driver calls also pass
+    // --usage-file and the run log records it. JS-only.
+    private const val CURRENT_SCRIPT_VERSION = 77
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request
@@ -519,7 +521,8 @@ object AgentRuntime {
     // v21 (parallel CLI steps Inc3): run log `usage` sums the CLI workers'
     // reported usage; attended wording for an isolation-blocked step.
     // JS-only change.
-    private const val CURRENT_EXECUTOR_VERSION = 21
+    // v22 (MONITOR CLI tokens): Codex CLI steps report usage too. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 22
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

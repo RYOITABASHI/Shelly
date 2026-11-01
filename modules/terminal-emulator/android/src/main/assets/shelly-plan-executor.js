@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=21
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=22
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -76,7 +76,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // CLI workers' reported usage (Claude Code tokens / API-key usd), and an
 // isolation-blocked API-key step on an attended run no longer says
 // "unattended". Bumped so a stale v20 copy is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 21;
+// v22 (2026-11-01, MONITOR CLI tokens): Codex CLI steps also get the driver's
+// --usage-file (the driver now folds the app-server token usage
+// notifications into it), so their tokens reach the progress `usage` event
+// and the run log instead of MONITOR's "0 tok". Bumped so a stale v21 copy is
+// refreshed.
+const EXECUTOR_SCRIPT_VERSION = 22;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -5736,7 +5741,10 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     '--audit-log', auditLog,
     '--answer-file', answerFile,
     '--prompt-file', promptFile,
-  ].concat(engine === 'claude' ? ['--usage-file', usageFile] : []);
+    // v22: every engine reports usage (Claude: stream-json result; Codex:
+    // app-server token usage notifications, tokens only).
+    '--usage-file', usageFile,
+  ];
 
   unlinkQuiet(answerFile);
   unlinkQuiet(usageFile);
@@ -5844,7 +5852,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
       answer = '';
     }
     let usage = null;
-    if (engine === 'claude') {
+    {
       try {
         const parsed = JSON.parse(fs.readFileSync(usageFile, 'utf8'));
         if (parsed && typeof parsed === 'object') {

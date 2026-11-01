@@ -56,6 +56,10 @@ export interface MonitorAgentSnapshot {
   /** Total log lines this agent will produce on the success path. */
   totalLogs: number;
   tokens: number;
+  /** LIVE only: false when the step reported no token usage at all, so the
+   *  camera shows "—" instead of an invented "0 tok". Absent = reported
+   *  (DEMO always counts its own tokens). */
+  tokensReported?: boolean;
   /** null = the provider reported no cost (LIVE): show tokens only, never
    *  an invented amount. */
   usd: number | null;
@@ -186,6 +190,14 @@ export function summarize(defs: readonly MonitorAgentDef[], snap: MonitorSnapsho
 
 export function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`;
+}
+
+/** Shown in place of a token count when the step reported no usage. */
+export const TOKENS_UNREPORTED = '—';
+
+/** One agent's token figure: "—" when its step reported no usage. */
+export function formatAgentTokens(a: Pick<MonitorAgentSnapshot, 'tokens' | 'tokensReported'>): string {
+  return a.tokensReported === false ? TOKENS_UNREPORTED : formatTokens(a.tokens);
 }
 
 export const USD_TO_YEN = 150;

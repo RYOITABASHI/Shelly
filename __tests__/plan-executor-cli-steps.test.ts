@@ -250,7 +250,7 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
     const home = makeHome();
     const { driver, recordDir } = makeDriver();
     writeDriverConfig(recordDir, {
-      codex: { answer: 'CODEX_REVIEW: the loop in parse() is off by one.', delayMs: 700, escalate: true },
+      codex: { answer: 'CODEX_REVIEW: the loop in parse() is off by one.', delayMs: 700, escalate: true, usage: { inputTokens: 100, outputTokens: 6 } },
       claude: { answer: 'CLAUDE_REVIEW: rename the helper for clarity.', delayMs: 700, usage: { inputTokens: 12, outputTokens: 34 } },
     });
     const result = await runExecutor(writePlan(home, port, parallelSteps), home, driver, recordDir);
@@ -268,7 +268,8 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       expect(flags).toEqual([
         '--engine', '--cwd', '--approval-policy', '--policy-json', '--agent-id',
         '--escalation-public-key-sha256', '--escalation-timeout-action', '--timeout-ms', '--audit-log',
-        '--answer-file', '--prompt-file', ...(engine === 'claude' ? ['--usage-file'] : []),
+        // v22: every engine gets the usage sidecar (Codex included).
+        '--answer-file', '--prompt-file', '--usage-file',
       ]);
       expect(value('--engine')).toBe(engine);
       expect(value('--approval-policy')).toBe('untrusted');
@@ -325,8 +326,9 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
     const log = readRunLog(home);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success']);
-    // v21 (Inc3): the CLI workers' reported usage reaches the run's totals.
-    expect(log.usage).toEqual({ inputTokens: 12, outputTokens: 34 });
+    // v21 (Inc3): the CLI workers' reported usage reaches the run's totals;
+    // v22: Codex's tokens are counted too.
+    expect(log.usage).toEqual({ inputTokens: 112, outputTokens: 40 });
     // Inc3 finish log: the RN side computes overlapMs from this very stream.
     const progressText = fs.readFileSync(path.join(logDir(home), 'progress.jsonl'), 'utf8');
     const runId = JSON.parse(progressText.split('\n')[0]).runId;
@@ -344,6 +346,7 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
     const s0 = events.filter((e) => e.kind === 'branch_state' && e.stepIndex === 0).map((e) => e.state);
     expect(s0).toEqual(['STANDBY', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING', 'DONE']);
     expect(events.some((e) => e.kind === 'usage' && e.stepIndex === 1 && e.usage.outputTokens === 34)).toBe(true);
+    expect(events.some((e) => e.kind === 'usage' && e.stepIndex === 0 && e.usage.inputTokens === 100 && e.usage.outputTokens === 6)).toBe(true);
     expect(JSON.stringify(events)).not.toContain('sk-ant-test-key-123');
 
     const audit = readAudit(home);

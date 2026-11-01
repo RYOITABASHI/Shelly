@@ -18,7 +18,7 @@ import {
   ACTIVE_STATES,
   formatDuration,
   formatMoney,
-  formatTokens,
+  formatAgentTokens,
   type MonitorAgentDef,
   type MonitorAgentSnapshot,
 } from '@/lib/monitor-source';
@@ -77,12 +77,13 @@ type Props = {
 };
 
 export function costText(def: MonitorAgentDef, a: MonitorAgentSnapshot, flatLabel: string, locale: string): string {
-  if (def.kind === 'LOCAL') return `${formatTokens(a.tokens)} · ${formatMoney(0, locale)}`;
-  if (def.kind === 'CLI') return `${formatTokens(a.tokens)} · ${flatLabel}`;
+  const tok = formatAgentTokens(a);
+  if (def.kind === 'LOCAL') return `${tok} · ${formatMoney(0, locale)}`;
+  if (def.kind === 'CLI') return `${tok} · ${flatLabel}`;
   // AUTO (provider not reported yet) or an API step whose provider reported
   // no cost: tokens only — never an invented amount.
-  if (def.kind === 'AUTO' || a.usd === null) return formatTokens(a.tokens);
-  return `${formatMoney(a.usd, locale)} · ${formatTokens(a.tokens)}`;
+  if (def.kind === 'AUTO' || a.usd === null) return tok;
+  return `${formatMoney(a.usd, locale)} · ${tok}`;
 }
 
 /** LIVE: "⏱ mm:ss · updated Ns ago", or the stale warning. '' on DEMO. */
