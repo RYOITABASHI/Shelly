@@ -541,7 +541,7 @@ export function Sidebar() {
     const agent = useAgentStore.getState().agents.find((a) => a.id === agentId);
     if (!agent) return;
     const latest = useAgentStore.getState().getRunHistory(agentId).at(-1);
-    offerSkillSaveForRun({
+    void offerSkillSaveForRun({
       name: agent.name,
       prompt: agent.prompt,
       routeDecision: latest?.routeDecision,
@@ -549,6 +549,10 @@ export function Sidebar() {
       status: latest?.status,
       steps: latest?.steps,
       plannedStepCount: agent.orchestration?.steps?.length,
+      outputPreview: latest?.outputPreview,
+      actionResults: latest?.actionResults,
+      agentId: agent.id,
+      durationMs: latest?.durationMs,
       alreadySkillId: agent.skillId,
       planSpec: latest?.steps && latest.steps.length >= 2
         ? buildAgentPlanSpec(agent)

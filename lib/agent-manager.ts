@@ -3612,6 +3612,10 @@ async function captureRunMemoryFromSyncedLogs(
           status: latest.status,
           steps: latest.steps,
           plannedStepCount: agent.orchestration?.steps?.length,
+          outputPreview: latest.outputPreview,
+          actionResults: latest.actionResults,
+          agentId: agent.id,
+          durationMs: latest.durationMs,
           alreadySkillId: agent.skillId,
           unattended: true,
         }, {

@@ -31,6 +31,7 @@ import {
 } from '@/lib/skill-self-improve';
 import type { AgentRouteDecision, AgentRunLog, AgentRunStep } from '@/store/types';
 import { runSucceededInFull } from '@/lib/agent-run-success';
+import { runHadBlockedAction } from '@/lib/agent-run-blocks';
 import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 
 type TranslationFn = (key: string, params?: Record<string, string | number>) => string;
@@ -103,9 +104,37 @@ export interface SkillSaveOfferParams {
   /** The run's per-step records (orchestrated runs). A skipped / failed /
    *  missing step means the run did not succeed in full — no offer
    *  (2026-10-31: offered after a run whose step 2 was SKIPPED). */
-  steps?: ReadonlyArray<Pick<AgentRunStep, 'status'>> | null;
+  steps?: ReadonlyArray<Pick<AgentRunStep, 'status'> & Partial<Pick<AgentRunStep, 'outputPreview'>>> | null;
   /** Agent.orchestration.steps.length, so an early-stopped chain is caught. */
   plannedStepCount?: number;
+  /** The run's output preview / action results (lib/agent-run-success.ts). */
+  outputPreview?: string;
+  actionResults?: AgentRunLog['actionResults'] | null;
+  /** 2026-11-01: the run's agent id + duration. When given, offerSkillSave
+   *  reads the agent's driver / executor audit trail for this run's window
+   *  and skips the offer if any action was declined / denied / refused
+   *  (lib/agent-run-blocks.ts). */
+  agentId?: string;
+  durationMs?: number;
+  /** Already-known audit result (skips the read). */
+  blocked?: boolean;
+  /** An explicit user tap ("Save as skill" button): when the audit trail shows
+   *  a block, explain why nothing is offered instead of doing nothing. */
+  explainWhenBlocked?: boolean;
+}
+
+/** Audit-trail check for one run (false when there is nothing to read). */
+export async function resolveRunBlocked(
+  runCommand: (cmd: string) => Promise<string>,
+  params: Pick<SkillSaveOfferParams, 'agentId' | 'timestamp' | 'durationMs' | 'blocked'>,
+): Promise<boolean> {
+  if (typeof params.blocked === 'boolean') return params.blocked;
+  if (!params.agentId) return false;
+  return runHadBlockedAction(runCommand, {
+    agentId: params.agentId,
+    timestamp: params.timestamp,
+    durationMs: params.durationMs,
+  });
 }
 
 export async function saveSkillWithoutConfirmation(
@@ -129,15 +158,18 @@ export async function saveSkillWithoutConfirmation(
  * React/react-native: only a successful run of an agent that isn't already
  * reusing a skill gets offered.
  */
-export function shouldOfferSkillSave(
-  params: Pick<SkillSaveOfferParams, 'status' | 'alreadySkillId' | 'steps' | 'plannedStepCount'>
-): boolean {
+type SkillOfferGateParams = Pick<
+  SkillSaveOfferParams,
+  'status' | 'alreadySkillId' | 'steps' | 'plannedStepCount' | 'outputPreview' | 'actionResults' | 'blocked'
+>;
+
+export function shouldOfferSkillSave(params: SkillOfferGateParams): boolean {
   if (params.alreadySkillId) return false;
   return runSucceededInFull(params);
 }
 
 export function skillSaveMode(
-  params: Pick<SkillSaveOfferParams, 'status' | 'alreadySkillId' | 'unattended' | 'steps' | 'plannedStepCount'>
+  params: SkillOfferGateParams & Pick<SkillSaveOfferParams, 'unattended'>
 ): 'none' | 'confirm' | 'auto' {
   if (!shouldOfferSkillSave(params)) return 'none';
   return params.unattended === true ? 'auto' : 'confirm';
@@ -214,14 +246,32 @@ export function useSkillSaveOffer(opts: {
     );
   }, [t, runCommand, onSaved]);
 
-  const offerSkillSave = React.useCallback((params: SkillSaveOfferParams) => {
-    const mode = skillSaveMode(params);
+  // Async only for the audit-trail read: resolves once the decision is made
+  // (the Alert itself is non-blocking). A caller about to delete the agent
+  // (ephemeral one-shot) awaits it so the read sees the agent's live logs.
+  const offerSkillSave = React.useCallback(async (params: SkillSaveOfferParams): Promise<void> => {
+    // Cheap checks first: a run that fails them never needs the audit read.
+    if (skillSaveMode(params) === 'none') return;
+    const blocked = await resolveRunBlocked(runCommand, params);
+    if (blocked) {
+      if (params.explainWhenBlocked) {
+        Alert.alert(
+          t('sidebar.skill_save_blocked_title'),
+          t('sidebar.skill_save_blocked_body', { name: params.name }),
+          undefined,
+          { cancelable: true },
+        );
+      }
+      return;
+    }
+    const mode = skillSaveMode({ ...params, blocked });
     if (mode === 'none') return;
     if (mode === 'auto') {
       void (async () => {
         try {
           await saveUnattendedSkillWithNotification(runCommand, {
             ...params,
+            blocked,
             unattended: true,
           }, {
             title: t('sidebar.skill_saved_title'),

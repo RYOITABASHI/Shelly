@@ -2091,6 +2091,8 @@ const en: Record<string, string> = {
   'sidebar.skill_saved_title': 'Skill saved automatically',
   'sidebar.skill_saved_body': '“{{name}}” was saved after an unattended run.',
   'sidebar.skill_save_failed_title': 'Could not save skill',
+  'sidebar.skill_save_blocked_title': 'Not saved as a skill',
+  'sidebar.skill_save_blocked_body': 'Part of this run of "{{name}}" was declined or blocked, so it did not finish the task. Only a run that completed in full can be saved as a skill.',
   'sidebar.skill_improve_title': 'Improve this skill?',
   'sidebar.skill_improve_body': '"{{name}}" succeeded after an earlier failure. Add this lesson to the skill?\n\n{{note}}',
   'sidebar.skill_improve_yes': 'Improve skill',

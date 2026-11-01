@@ -161,7 +161,7 @@ export default function AgentRunsPane() {
     (agentId: string, run: AgentRunLog) => {
       const agent = agentById(agentId);
       if (!agent) return;
-      offerSkillSave({
+      void offerSkillSave({
         name: agent.name,
         prompt: agent.prompt,
         routeDecision: run.routeDecision,
@@ -169,6 +169,11 @@ export default function AgentRunsPane() {
         status: run.status,
         steps: run.steps,
         plannedStepCount: agent.orchestration?.steps?.length,
+        outputPreview: run.outputPreview,
+        actionResults: run.actionResults,
+        agentId,
+        durationMs: run.durationMs,
+        explainWhenBlocked: true,
         alreadySkillId: agent.skillId,
         planSpec: run.steps && run.steps.length >= 2 ? buildAgentPlanSpec(agent) : undefined,
       });
@@ -329,6 +334,8 @@ export default function AgentRunsPane() {
                       status: run.status,
                       steps: run.steps,
                       plannedStepCount: agent?.orchestration?.steps?.length,
+                      outputPreview: run.outputPreview,
+                      actionResults: run.actionResults,
                       alreadySkillId: agent?.skillId,
                     });
                   const gateEntries = gateLogByAgent[group.agentId];

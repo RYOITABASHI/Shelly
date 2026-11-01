@@ -9,6 +9,7 @@ import type { AgentPlanSpecV1 } from '@/lib/agent-plan-spec';
 import { scanForSecrets } from '@/lib/secret-guard';
 import type { AgentRouteDecision, AgentRunLog, AgentRunStep } from '@/store/types';
 import { runSucceededInFull } from '@/lib/agent-run-success';
+import { runHadBlockedAction } from '@/lib/agent-run-blocks';
 
 export const SKILL_SAVED_NOTIFICATION_CATEGORY = 'skill-saved';
 export const DELETE_SAVED_SKILL_ACTION = 'delete-saved-skill';
@@ -24,8 +25,16 @@ export interface UnattendedSkillSaveParams {
   planSpec?: AgentPlanSpecV1;
   /** Per-step records + planned step count: a skipped / missing step is not
    *  a full success (lib/agent-run-success.ts). */
-  steps?: ReadonlyArray<Pick<AgentRunStep, 'status'>> | null;
+  steps?: ReadonlyArray<Pick<AgentRunStep, 'status'> & Partial<Pick<AgentRunStep, 'outputPreview'>>> | null;
   plannedStepCount?: number;
+  outputPreview?: string;
+  actionResults?: AgentRunLog['actionResults'] | null;
+  /** 2026-11-01: with agentId + durationMs the agent's audit trail is read for
+   *  this run's window; a declined / denied / refused action means no save
+   *  (lib/agent-run-blocks.ts). `blocked` skips that read when already known. */
+  agentId?: string;
+  durationMs?: number;
+  blocked?: boolean;
 }
 
 /** Save a successful unattended run and post a one-tap, post-hoc delete action. */
@@ -35,6 +44,14 @@ export async function saveUnattendedSkillWithNotification(
   notificationText: { title: string; body: string; deleteButton: string },
 ): Promise<string | null> {
   if (!runSucceededInFull(params) || params.alreadySkillId) return null;
+  if (params.blocked === undefined && params.agentId) {
+    const blocked = await runHadBlockedAction(runCommand, {
+      agentId: params.agentId,
+      timestamp: params.timestamp,
+      durationMs: params.durationMs,
+    });
+    if (blocked) return null;
+  }
   const recipe = distillSkillFromRun({
     name: params.name,
     taskText: params.prompt,
