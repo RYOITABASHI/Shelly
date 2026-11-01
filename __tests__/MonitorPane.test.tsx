@@ -108,7 +108,7 @@ describe('MonitorPane', () => {
     useAgentStore.getState().setMonitor({ view: 'grid', auto: false, speed: 1, legendDismissed: false });
     useAgentStore.getState().setMonitorTeam(null);
     useAgentStore.getState().setMonitor({ sourceMode: 'auto', liveAgentId: null, selectedId: 'ch1' });
-    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [] });
+    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
   });
 
   it('renders the demo wall and the DEMO label once (mission bar only)', () => {
@@ -202,6 +202,8 @@ describe('MonitorPane', () => {
   });
 
   it('asks for approval in chat and completes after "ok"', () => {
+    // Replies are taken only once the user picked DEMO (not as the stand-in).
+    useAgentStore.getState().setMonitor({ sourceMode: 'demo' });
     const utils = render(<MonitorPane />);
     setT(26);
     expect(utils.getByText('monitor.waiting_for_you')).toBeTruthy();
@@ -215,6 +217,7 @@ describe('MonitorPane', () => {
   });
 
   it('pins the approval question + reply under the mission bar, same handling as chat', () => {
+    useAgentStore.getState().setMonitor({ sourceMode: 'demo' });
     const utils = render(<MonitorPane />);
     expect(utils.queryByTestId('monitor-pinned-approval')).toBeNull();
     setT(26);
@@ -232,6 +235,26 @@ describe('MonitorPane', () => {
     expect(utils.queryByTestId('monitor-pinned-approval')).toBeNull();
     setT(40);
     expect(utils.getByText('monitor.mission_complete')).toBeTruthy();
+    utils.unmount();
+  });
+
+  it('the automatic DEMO stand-in tags its scripted ask as a sample and takes no reply', () => {
+    // sourceMode 'auto' (beforeEach): no real run seen, the DEMO stands in.
+    const utils = render(<MonitorPane />);
+    setT(26);
+    expect(utils.getByTestId('monitor-pinned-approval')).toBeTruthy();
+    expect(utils.getByTestId('monitor-demo-ask-tag')).toBeTruthy();
+    expect(utils.getAllByText(/monitor.demo.ask_tag/).length).toBeGreaterThanOrEqual(2);
+    expect(utils.getByTestId('monitor-demo-input-locked')).toBeTruthy();
+    expect(utils.getByTestId('monitor-demo-chat-locked')).toBeTruthy();
+    expect(utils.queryByLabelText('monitor.pinned_a11y')).toBeNull();
+    expect(utils.queryByLabelText('monitor.chat_a11y')).toBeNull();
+    expect(utils.queryByLabelText('monitor.pinned_send_a11y')).toBeNull();
+    // Picking DEMO makes it a try-it playback: the reply box comes back, the tag stays.
+    fireEvent.press(utils.getByLabelText('monitor.source.demo_a11y'));
+    expect(utils.getByLabelText('monitor.pinned_a11y')).toBeTruthy();
+    expect(utils.getByTestId('monitor-demo-ask-tag')).toBeTruthy();
+    expect(utils.queryByTestId('monitor-demo-input-locked')).toBeNull();
     utils.unmount();
   });
 
@@ -413,7 +436,7 @@ describe('MonitorPane LIVE source', () => {
     mockOpenFile.mockClear();
     mockOpenChat.mockClear();
     useAgentStore.getState().setMonitor({ view: 'grid', auto: false, sourceMode: 'auto', liveAgentId: null });
-    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [] });
+    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
   });
 
   it('defaults to DEMO when no run is known', () => {
@@ -692,6 +715,105 @@ describe('MonitorPane LIVE source', () => {
     utils.unmount();
   });
 
+  it('keeps the last real run on the wall after it ends and its ephemeral agent is deleted', () => {
+    seed(liveRun());
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
+    // The run finishes, then the "run once now" agent is deleted at once.
+    const done = liveRun({ endedAt: iso(1), status: 'success', lastSeq: 12 });
+    done.branches[1] = { ...done.branches[1], state: 'DONE', tail: 'saved 3 notes', endedAt: iso(1) };
+    act(() => {
+      useAgentStore.setState({ liveRuns: { digest: [{ run: done, savedPath: '/sdcard/Obsidian/digest.md' }] }, runningAgentIds: [] });
+    });
+    act(() => {
+      useAgentStore.setState({ agents: [] });
+    });
+    // Still that run, not the DEMO wall: final state, step names, result tail.
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
+    expect(utils.queryByText('ARXIV SCOUT')).toBeNull();
+    expect(utils.getByText('monitor.mission_complete')).toBeTruthy();
+    expect(utils.getByText('collect papers')).toBeTruthy();
+    expect(utils.getByText('save to Obsidian')).toBeTruthy();
+    expect(utils.getAllByText(/saved 3 notes/).length).toBeGreaterThan(0);
+    expect(utils.getByTestId('monitor-saved-to')).toBeTruthy();
+    // Even after the poller drops the deleted agent's runs.
+    act(() => {
+      useAgentStore.setState({ liveRuns: {} });
+    });
+    expect(utils.queryByText('monitor.demo_badge')).toBeNull();
+    expect(utils.getByText('monitor.mission_complete')).toBeTruthy();
+    utils.unmount();
+    // A remount (pane closed and reopened) keeps it too.
+    const again = render(<MonitorPane />);
+    expect(again.queryByText('monitor.demo_badge')).toBeNull();
+    expect(again.getByText('monitor.mission_complete')).toBeTruthy();
+    // DEMO stays one tap away.
+    fireEvent.press(again.getByLabelText('monitor.source.demo_a11y'));
+    expect(again.getByText('monitor.demo_badge')).toBeTruthy();
+    again.unmount();
+  });
+
+  it('a new run replaces the retained one', () => {
+    seed(liveRun({ endedAt: iso(1), status: 'success' }));
+    const first = render(<MonitorPane />);
+    first.unmount();
+    act(() => {
+      useAgentStore.setState({ agents: [], liveRuns: {} });
+    });
+    const next: MonitorRun = {
+      ...liveRun(),
+      runId: 'run-2',
+      agentId: 'other',
+      startedAt: iso(0),
+      branches: [{ branchId: 'run-2#0', stepIndex: 0, state: 'RUNNING', tail: 'fresh', startedAt: iso(0), updatedAt: iso(0) }],
+      stepCount: 1,
+    };
+    act(() => {
+      useAgentStore.setState({
+        agents: [{ id: 'other', name: 'Other agent', orchestration: { steps: ['fresh step'] } } as never],
+        runningAgentIds: ['other'],
+        liveRuns: { other: [{ run: next }] },
+      });
+    });
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    expect(utils.getByText('fresh step')).toBeTruthy();
+    expect(utils.queryByText('collect papers')).toBeNull();
+    expect(useAgentStore.getState().monitorLastRun?.run.runId).toBe('run-2');
+    utils.unmount();
+  });
+
+  it('a step pinned to a CLI shows that CLI before it starts', () => {
+    const r = liveRun();
+    // CH-01 (Codex) runs, CH-02 (Claude Code) has not reported anything yet.
+    r.branches = [{ ...r.branches[1], stepIndex: 0, branchId: 'run-1#0', provider: { kind: 'CLI', name: 'cli:codex' } }];
+    act(() => {
+      useAgentStore.setState({
+        agents: [
+          {
+            id: 'digest',
+            name: 'Paper digest',
+            orchestration: {
+              steps: [
+                { instruction: 'using Codex, list files', tool: { type: 'cli', cli: 'codex' }, toolPinned: true },
+                { instruction: 'using Claude Code, review', tool: { type: 'cli', cli: 'claude' }, toolPinned: true },
+              ],
+            },
+          } as never,
+        ],
+        runningAgentIds: ['digest'],
+        liveRuns: { digest: [{ run: r }] },
+      });
+    });
+    const utils = render(<MonitorPane />);
+    layoutWall(utils);
+    expect(utils.getAllByLabelText(/^CH-02 .* · Claude Code$/).length).toBeGreaterThan(0);
+    expect(utils.getAllByLabelText(/^CH-01 .* · Codex CLI$/).length).toBeGreaterThan(0);
+    expect(utils.queryAllByLabelText(/^CH-02 .* · Auto$/)).toHaveLength(0);
+    utils.unmount();
+  });
+
   it('completed run with a recorded output: "Saved to" opens the file', () => {
     const r = liveRun({ endedAt: iso(1), status: 'success' });
     r.branches[1] = { ...r.branches[1], state: 'DONE', endedAt: iso(1) };
@@ -887,7 +1009,7 @@ describe('MonitorPane MAP register / run / team file', () => {
     reg.resetTeamRegistration();
     useAgentStore.getState().setMonitorTeam(null);
     useAgentStore.getState().setMonitor({ view: 'map', auto: false, sourceMode: 'auto', liveAgentId: null });
-    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [] });
+    useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
   });
 
   const isDisabled = (el: { props: { accessibilityState?: { disabled?: boolean } } }) =>

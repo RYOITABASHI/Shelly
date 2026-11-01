@@ -42,7 +42,7 @@ function jsonl(runId: string, agentId: string, startSec: number, ended: boolean)
 }
 
 beforeEach(() => {
-  useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [] });
+  useAgentStore.setState({ liveRuns: {}, agents: [], runningAgentIds: [], monitorLastRun: null });
 });
 
 describe('agent-store liveRuns', () => {

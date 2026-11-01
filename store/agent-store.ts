@@ -9,6 +9,7 @@ import type { MonitorInput } from '@/lib/monitor-source';
 import type { MonitorTeam } from '@/lib/monitor-team';
 import type { MonitorRun } from '@/lib/agent-progress';
 import type { ContinuousCheckpointView } from '@/lib/agent-continuous';
+import type { RetainedLiveRun } from '@/lib/monitor-live';
 
 export type MonitorView = 'grid' | 'single' | 'map';
 export type MonitorSpeed = 1 | 2 | 4;
@@ -138,6 +139,13 @@ interface AgentState {
   /** Record a run-log lookup: the saved path, or null = looked, none yet. */
   setLiveRunSavedPath: (agentId: string, runId: string, savedPath: string | null) => void;
   clearLiveRuns: () => void;
+  /** The last real run the MONITOR showed (with its agent's name / steps at
+   *  the time), so the wall keeps that run's final state after the run ends
+   *  and even after its agent is deleted, instead of falling back to the
+   *  DEMO. Replaced by the next real run shown; transient (no persist). */
+  monitorLastRun: RetainedLiveRun | null;
+  /** Same object / same run+info = no state change. */
+  setMonitorLastRun: (retained: RetainedLiveRun | null) => void;
   /** Continuous mode: the latest checkpoint.json view per loop agent (iteration
    *  + stop reason), read by the MONITOR poller only when the file changed.
    *  Transient (no persist). */
@@ -277,6 +285,22 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return { liveRuns: { ...state.liveRuns, [agentId]: next } };
     }),
   clearLiveRuns: () => set({ liveRuns: {} }),
+  monitorLastRun: null,
+  setMonitorLastRun: (retained) =>
+    set((state) => {
+      const prev = state.monitorLastRun;
+      if (prev === retained) return state;
+      if (
+        prev &&
+        retained &&
+        prev.run === retained.run &&
+        prev.info === retained.info &&
+        prev.savedPath === retained.savedPath
+      ) {
+        return state;
+      }
+      return { monitorLastRun: retained };
+    }),
   liveLoops: {},
   setLiveLoop: (agentId, view) =>
     set((state) => {
