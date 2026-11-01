@@ -467,7 +467,10 @@ object AgentRuntime {
     // v75 (2026-10-30, continuous-mode review): ---ITERATION--- sentinel for the
     // control block, prior-iteration context after the task, and the .sh
     // refuses the final action once the loop's stop marker exists. JS-only.
-    private const val CURRENT_SCRIPT_VERSION = 75
+    // v76 (2026-11-01, build 2746): the action approval request is hashed before
+    // it is published, so a fast RN answer (run-without-approval / autoAccept)
+    // that deletes the request no longer empties the hash. JS-only.
+    private const val CURRENT_SCRIPT_VERSION = 76
     private const val CURRENT_PLAN_SPEC_VERSION = 1
     // CURRENT_EXECUTOR_VERSION 8 (2026-10-14, `shelly agent add`): an unattended
     // PlanSpec run may reach a ClosePaw hand-off's action-approval request

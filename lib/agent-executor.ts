@@ -762,7 +762,11 @@ const DEFAULT_TIMEOUT_SEC = 600; // 10 minutes
 // CONTINUOUS_CONTEXT is its own variable placed after the task (never in
 // isolated API-key step prompts); dispatch_agent_action refuses once the
 // loop's per-agent stop marker exists. Kept in lockstep with AgentRuntime.kt.
-const AGENT_SCRIPT_VERSION = 75;
+// v76 (2026-11-01, build 2746): write_action_approval_request hashes the
+// request bytes before publishing them, so an answer that lands (and deletes
+// the request file) before the hash runs no longer reads as a mismatched
+// reply. Kept in lockstep with AgentRuntime.kt's CURRENT_SCRIPT_VERSION.
+const AGENT_SCRIPT_VERSION = 76;
 const LOCAL_MODEL_LIGHT = 'Qwen3.5-0.8B-Q4_K_M';
 const LOCAL_MODEL_BALANCED = 'Qwen3.5-2B-Q4_K_M';
 const LOCAL_MODEL_QUALITY = 'Qwen3.5-4B-Q4_K_M';
@@ -3365,8 +3369,21 @@ write_action_approval_request() {
   cat > "$tmp" << APPROVALEOF
 {"runId":"$ACTION_RUN_ID","agentId":"$agent_json","agentName":"$agent_name_json","toolLabel":"$tool_label_json","actionType":"$approval_type_json","preview":"$preview_json","destinationHost":"$destination_json","destinationHostAllowlisted":$destination_host_allowlisted,"command":"$command_json","safetyLevel":"$safety_level_json","safetyReason":"$safety_reason_json","payloadPath":"$payload_path_json","resultPath":"$result_path_json","intentMode":"$intent_mode_json","intentTarget":"$intent_target_json","intentShareText":"$intent_share_text_json","dmPairingId":"$dm_pairing_id_json","dmPairingLabel":"$dm_pairing_label_json","dmReplyText":"$dm_reply_text_json","browserPaneActionKind":"$browser_pane_kind_json","browserPaneSelector":"$browser_pane_selector_json","browserPaneValue":"$browser_pane_value_json","browserPaneUrlAllowlist":"$browser_pane_url_allowlist_json","autoAccept":$auto_accept_flag,"origin":"$origin_json","ts":"$(date -Iseconds)","expiresAt":$expires_at}
 APPROVALEOF
+  # v76 (2026-11-01, build 2746): hash the bytes BEFORE publishing them. RN
+  # may answer the request the moment the rename lands (run-without-approval,
+  # autoAccept and POLICY-001 answer within one 500ms drain tick), and native
+  # resolveAgentActionApproval then deletes the request file (clearRequest).
+  # Hashing the published file afterwards (a linker64 node start, hundreds of
+  # ms on device) lost that race: the read failed, the hash came back empty
+  # and wait_action_approval rejected the correctly signed reply as "did not
+  # match the pending request". rename() keeps the bytes, so the hash of the
+  # tmp file is the hash of exactly what native reads and signs over.
+  ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$tmp" || true)"
+  case "$ACTION_APPROVAL_REQUEST_SHA256" in
+    ????????????????????????????????????????????????????????????????) ;;
+    *) ACTION_APPROVAL_REQUEST_SHA256="" ;;
+  esac
   mv "$tmp" "$ACTION_APPROVAL_REQUEST_FILE"
-  ACTION_APPROVAL_REQUEST_SHA256="$(sha256_file "$ACTION_APPROVAL_REQUEST_FILE" || true)"
 }
 
 # Project owner directive 2026-07-14: wraps write_action_approval_request +
