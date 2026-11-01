@@ -21,7 +21,7 @@ import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-too
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, pruneIneffectiveParallelGroups, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
-import { detectRunWithoutApprovalIntent } from './agent-run-without-approval';
+import { detectRunWithoutApprovalIntent, stripRunWithoutApprovalPhrases } from './agent-run-without-approval';
 import enLocale from './i18n/locales/en';
 import jaLocale from './i18n/locales/ja';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
@@ -2689,7 +2689,14 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // the schedule / prompt / step parsing below, so the interval becomes the
   // loop's cooldown instead of a cron and never lands in the task text.
   const continuousIntent = parseContinuousIntent(rawText);
-  const workText = continuousIntent ? stripContinuousPhrases(rawText, continuousIntent) || rawText : rawText;
+  const continuousText = continuousIntent ? stripContinuousPhrases(rawText, continuousIntent) || rawText : rawText;
+  // 2026-11-01: 「承認なしで実行して」 / "Run it without approval" is a setting
+  // of the agent (runWithoutApproval below), never part of its task: it must
+  // not reach the derived name, the prompt or a step (on-device, build 2743).
+  const runWithoutApproval = detectRunWithoutApprovalIntent(rawText);
+  const workText = runWithoutApproval
+    ? stripRunWithoutApprovalPhrases(continuousText) || continuousText
+    : continuousText;
   const sched = parseSchedule(workText);
 
   // social-post (2026-07-22): checked before the generic detectAction() scan
@@ -2904,7 +2911,7 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     toolLabel: suggestion.label ?? toolChoiceToLabel(suggestion.tool),
     toolExplicit: suggestion.explicit || undefined,
     autonomous: detectAutonomousIntent(rawText),
-    ...(detectRunWithoutApprovalIntent(rawText) ? { runWithoutApproval: true } : {}),
+    ...(runWithoutApproval ? { runWithoutApproval: true } : {}),
     memory,
     actionCaveat,
     socialPostCandidates,

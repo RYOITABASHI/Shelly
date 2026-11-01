@@ -386,6 +386,8 @@ const READ_BANNED_OPTIONS: Record<string, RegExp> = {
 const WRITE_TOOLS = new Set(['tee', 'cp', 'mv', 'mkdir', 'touch', 'rm', 'rmdir', 'sed', 'echo', 'printf', 'cat', 'ln', 'git', 'patch']);
 const WRITE_GIT_SUBCOMMANDS = new Set(['add', 'commit', 'mv', 'rm', 'restore', 'checkout', 'switch', 'stash', 'apply']);
 const DIR_CHANGE_TOOLS = new Set(['cd', 'pushd', 'popd']);
+/** `find` options whose operand is a match pattern, not a path it opens. */
+const FIND_PATTERN_OPTIONS = new Set(['-path', '-ipath', '-wholename', '-iwholename', '-name', '-iname', '-lname', '-ilname']);
 
 /** `bash -lc '<script>'` → `<script>` (the driver flattens argv into this). */
 function shellPayload(command: string): string {
@@ -420,17 +422,42 @@ export type CommandShape =
 export function analyzeEscalationCommand(command: string): CommandShape {
   const raw = String(command ?? '');
   const script = dequoteShellWords(shellPayload(raw))
-    // stderr plumbing that never names a file
-    .replace(/\s\d?>&\d\b/g, ' ')
-    .replace(/\s\d?>\s*\/dev\/null\b/g, ' ');
+    // stderr plumbing that never names a file: fd dups (`2>&1`, `>&2`) and
+    // redirects to /dev/null (`2>/dev/null`, `> /dev/null`, `&>/dev/null`).
+    // The target must END at /dev/null — `>/dev/null.x` / `>/dev/null/../x`
+    // are left in place and handled as the redirect they are.
+    .replace(/(^|\s)\d?>&\d(?=$|[\s;&|)}])/g, '$1')
+    .replace(/(^|\s)(?:\d|&)?>>?\s*\/dev\/null(?=$|[\s;&|)}])/g, '$1');
   if (!script.trim()) return { kind: 'refuse', reason: 'no-command' };
   if (TRUST_STATE_RE.test(raw) || TRUST_STATE_RE.test(script)) return { kind: 'refuse', reason: 'trust-state-path' };
   if (/[$`]/.test(script)) return { kind: 'refuse', reason: 'expansion' };
   if (/<\(|>\(|<</.test(script)) return { kind: 'refuse', reason: 'indirect' };
-  const segments = splitSegments(script).map((s) => s.split(/\s+/).filter(Boolean));
+  // `{ …; }` brace grouping runs its list in the current shell: the bare
+  // `{` / `}` words are syntax, not commands, and are dropped. Subshells
+  // `( … )` are not unwrapped (they refuse as an unknown tool).
+  const segments = splitSegments(script)
+    .map((s) => s.split(/\s+/).filter(Boolean))
+    .map((tokens) => {
+      let t = tokens;
+      while (t[0] === '{') t = t.slice(1);
+      while (t.length > 0 && t[t.length - 1] === '}') t = t.slice(0, -1);
+      return t;
+    })
+    .filter((tokens) => tokens.length > 0);
   if (segments.length === 0) return { kind: 'refuse', reason: 'no-command' };
+  // A dot component (~/.bashrc, ~/.ssh, .git/hooks …) refuses — except a
+  // `find` match PATTERN (`-path ./.git -prune`, `-name .env`), which names
+  // nothing to open; that exemption holds for a pure read only.
+  let findPatternDotPath = false;
   for (const tokens of segments) {
-    if (tokens.some((t) => hasDotComponent(t.replace(/^[<>]+/, '')))) return { kind: 'refuse', reason: 'protected-path' };
+    for (let i = 0; i < tokens.length; i++) {
+      if (!hasDotComponent(tokens[i].replace(/^\d?[<>]+/, ''))) continue;
+      if (tokens[0] === 'find' && i > 1 && FIND_PATTERN_OPTIONS.has(tokens[i - 1])) {
+        findPatternDotPath = true;
+        continue;
+      }
+      return { kind: 'refuse', reason: 'protected-path' };
+    }
   }
 
   // (a) pure read?
@@ -450,6 +477,7 @@ export function analyzeEscalationCommand(command: string): CommandShape {
     }
   }
   if (isRead) return { kind: 'read' };
+  if (findPatternDotPath) return { kind: 'refuse', reason: 'protected-path' };
 
   // (b) candidate in-root write: shape only — the root check is the caller's.
   for (const tokens of segments) {
@@ -604,6 +632,54 @@ export function detectRunWithoutApprovalIntent(text: string | null | undefined):
   if (!s.trim()) return false;
   if (NEGATED_EN_RE.test(s) || NEGATED_JP_RE.test(s)) return false;
   return RUN_WITHOUT_APPROVAL_JA_RE.test(s) || RUN_WITHOUT_APPROVAL_EN_RE.test(s);
+}
+
+/** The option phrase as it is removed from the task text (name / prompt /
+ *  steps): the detection phrase plus its own conjugation tail (して / してください
+ *  / please) and the clause punctuation around it. */
+const RUN_WITHOUT_APPROVAL_STRIP_JA_RE =
+  /[、,]?\s*(?:承認|確認)(?:は)?(?:なし|無し)で(?:実行|動かし|動かす|走らせ)(?:して|させて|する|します|て|る)?(?:ください|下さい|ほしい|欲しい|ね)?\s*[。．.！!]?/g;
+const RUN_WITHOUT_APPROVAL_STRIP_EN_RE =
+  /[,;]?\s*(?:\band\s+)?(?:\bplease\s+)?\brun(?:\s+(?:it|this|the\s+agent|them))?\s+without\s+(?:any\s+)?approvals?\b(?:\s*,?\s*please\b)?\s*[.!]?/gi;
+/** Quoted / fenced spans the strip leaves untouched (same set stripQuotedText drops). */
+const QUOTED_SPAN_RE = /```[\s\S]*?(?:```|$)|`[^`\n]*`|「[^」]*」|『[^』]*』|“[^”]*”|‘[^’]*’|"[^"\n]*"/g;
+
+function stripPhraseOutsideQuotes(line: string, re: RegExp): string {
+  let out = '';
+  let cursor = 0;
+  QUOTED_SPAN_RE.lastIndex = 0;
+  for (let m = QUOTED_SPAN_RE.exec(line); m; m = QUOTED_SPAN_RE.exec(line)) {
+    out += line.slice(cursor, m.index).replace(re, ' ') + m[0];
+    cursor = m.index + m[0].length;
+    if (m[0].length === 0) QUOTED_SPAN_RE.lastIndex++;
+  }
+  return out + line.slice(cursor).replace(re, ' ');
+}
+
+/**
+ * The task text without the "承認なしで実行" / "run it without approval"
+ * directive: the option is a setting of the agent, not part of its task, so
+ * it must not leak into the derived name, the prompt or a step. Only the
+ * user's own words are touched (quoted / fenced / blockquoted passages stay
+ * as written). Returns the input unchanged when no phrase is present.
+ */
+export function stripRunWithoutApprovalPhrases(text: string): string {
+  const src = String(text ?? '');
+  if (!RUN_WITHOUT_APPROVAL_JA_RE.test(src) && !RUN_WITHOUT_APPROVAL_EN_RE.test(src)) return src;
+  const stripped = src
+    .split('\n')
+    .map((line) => (/^\s*>/.test(line)
+      ? line
+      : stripPhraseOutsideQuotes(stripPhraseOutsideQuotes(line, RUN_WITHOUT_APPROVAL_STRIP_JA_RE), RUN_WITHOUT_APPROVAL_STRIP_EN_RE)))
+    .join('\n');
+  return stripped
+    .replace(/[ \t]{2,}/g, ' ')
+    // A removed span between two Japanese characters leaves no gap.
+    .replace(/([぀-ヿ㐀-鿿]) (?=[぀-ヿ㐀-鿿])/g, '$1')
+    .replace(/[ \t]+([、。,.!?！？])/g, '$1')
+    .replace(/[、,;]+(?=\s*$)/g, '')
+    .replace(/^[\s、,。.]+|\s+$/g, '')
+    .trim();
 }
 
 /** Display form of an auto-approved command for the audit line. */
