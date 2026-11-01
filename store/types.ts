@@ -1046,6 +1046,15 @@ export interface Agent {
    *  reachability channel and must not grow into one. */
   notificationTrigger?: { packageNames: string[]; authorizedSenders?: string[] } | null;
   tool: ToolChoice;
+  /** 2026-11-01: true when `tool` is an engine the user NAMED for this unit of
+   *  work ("using Codex, ..."). Set only on the transient per-step agent the
+   *  orchestration runners build from a step carrying
+   *  AgentOrchestrationStep.toolPinned (lib/agent-manager.ts stepAgent,
+   *  lib/agent-attended-route.ts) - never persisted on an agent definition.
+   *  The escalation ladder runs an explicitly pinned CLI alone even for an
+   *  autonomous agent (whose stored cli:codex default is otherwise
+   *  indistinguishable from a pin). Absent = previous behavior. */
+  toolPinned?: boolean;
   /** true = runs in autonomous mode (no per-step human approval): OAuth/local only,
    *  gated by the policy engine. Optional; absent/false = today's manual behaviour. */
   autonomous?: boolean;
@@ -1286,6 +1295,14 @@ export interface AgentOrchestrationStep {
    *  credential decision itself), and a top-level `Agent.runOn` on-device/
    *  cloud pin still outranks it. */
   tool?: ToolChoice;
+  /** 2026-11-01: true when `tool` came from the user's own words for this
+   *  step ("using Codex, ..." - detectToolPinnedSteps / tagStepsWithToolMentions
+   *  in lib/agent-orchestration.ts). An autonomous run then runs a pinned CLI
+   *  step on that CLI only (no local-first substitution, no silent fallback);
+   *  see lib/agent-escalation-ladder.ts. Absent on agents saved before this
+   *  field existed - those keep the previous ladder exactly. Meaningless
+   *  without `tool`. */
+  toolPinned?: boolean;
   /** api-call (v1): a structured HTTP call, consulted ONLY on NON-FINAL
    *  steps — the final step's real action is always Agent.action (or, when
    *  present with >= 2 entries, every entry of Agent.actions — see its own

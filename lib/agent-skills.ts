@@ -844,7 +844,7 @@ export function applyExecutableSkillPlan(agent: Agent, recipe: SkillRecipe | nul
         instruction: i === lastIndex && extras.length > 0
           ? `${step.instruction}\n\nAlso follow these instructions from the request: ${extras.join(' / ')}`
           : step.instruction,
-        ...(step.tool ? { tool: step.tool } : {}),
+        ...(step.tool ? { tool: step.tool, ...(step.toolPinned === true ? { toolPinned: true } : {}) } : {}),
         ...(step.apiCall ? { apiCall: step.apiCall } : {}),
       })),
       maxSteps: spec.steps.budget.maxSteps,

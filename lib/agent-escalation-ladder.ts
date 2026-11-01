@@ -161,13 +161,30 @@ function resolveEscalationLadderBase(
   // Perplexity (a CLI worker can fetch through its own shell). Attended only:
   // an autonomous agent's stored tool is cli:codex even when nobody pinned it
   // (the OAuth driver default), so its ladder stays as it was.
-  if (!agent.autonomous && decision.guard === 'configured-tool' && primary.type === 'cli') {
-    return {
-      tools: [primary],
-      noEscalation: false,
-      guard: decision.guard,
-      why: `${decision.why} Explicitly pinned CLI (${primary.cli}) → that CLI only; a failure is reported, never re-run on another engine.`,
-    };
+  //
+  // 2026-11-01 (product owner): a step whose engine the user NAMED ("using
+  // Codex, …") carries `toolPinned` (lib/agent-orchestration.ts tags it, the
+  // runners copy it onto the per-step agent). For such a step an autonomous
+  // run obeys the same rule: that CLI only, no local-first substitution, no
+  // silent fallback. The CLI must still pass the autonomous credential policy
+  // (resolveForAutonomous — Codex / Claude Code are OAuth/subscription CLIs,
+  // so they do); unattended escalations are still declined by the driver.
+  // Agents saved before the flag existed have no `toolPinned` and keep the
+  // local-first ladder below exactly.
+  if (decision.guard === 'configured-tool' && primary.type === 'cli') {
+    const pinnedCli = !agent.autonomous
+      ? primary
+      : agent.toolPinned === true
+        ? resolveForAutonomous(primary)
+        : null;
+    if (pinnedCli && pinnedCli.type === 'cli') {
+      return {
+        tools: [pinnedCli],
+        noEscalation: false,
+        guard: decision.guard,
+        why: `${decision.why} Explicitly pinned CLI (${pinnedCli.cli})${agent.autonomous ? ', autonomous run' : ''} → that CLI only; a failure is reported, never re-run on another engine.`,
+      };
+    }
   }
 
   // Web-mandatory task (collect CURRENT info): only a live web fetch satisfies

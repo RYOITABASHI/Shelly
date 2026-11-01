@@ -2965,6 +2965,9 @@ async function runAgentOrchestratedBody(
       // agent.orchestration.charLimit into the actual dispatch at all).
       orchestration: isFinalStep && agent.orchestration?.charLimit ? { steps: [], charLimit: agent.orchestration.charLimit } : undefined,
       tool: step.tool ?? agent.tool,
+      // 2026-11-01: the step's engine came from the user's words - the ladder
+      // then runs a pinned CLI alone even for an autonomous agent.
+      toolPinned: step.tool && step.toolPinned === true ? true : undefined,
     };
     // Provider override written while this run is going (MONITOR picker,
     // lib/agent-provider-overrides.ts): applies to a step that has not
@@ -2974,6 +2977,8 @@ async function runAgentOrchestratedBody(
       const overrideTool = vetOverrideToolForAgent(agent, overrideToolForStep(overrides, progress?.runId, i));
       if (overrideTool && !step.apiCall) {
         stepAgent.tool = overrideTool.type === 'auto' ? agent.tool : overrideTool;
+        // An override replaces the words-derived pin; it routes as before.
+        stepAgent.toolPinned = undefined;
         logInfo('AgentManager', `provider override: step ${i} of ${agentId} → ${stepAgent.tool?.type}`);
       }
     }

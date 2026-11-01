@@ -94,6 +94,9 @@ export interface NormalizedStep {
    *  today's exact auto-routing behavior. Mutually exclusive with `apiCall`
    *  (see AgentOrchestrationStep's doc comment, store/types.ts). */
   tool?: ToolChoice;
+  /** true only alongside `tool` when that tool came from the user's words
+   *  (see AgentOrchestrationStep.toolPinned). */
+  toolPinned?: boolean;
   /** Present only when this step is a structured API-call step (api-call v1).
    *  See AgentOrchestrationStep.apiCall's doc comment for the non-final-only,
    *  display-only-instruction contract. */
@@ -132,7 +135,8 @@ export function normalizeStep(step: string | AgentOrchestrationStep): Normalized
   const rawGroup = typeof step.parallelGroup === 'string' ? step.parallelGroup.trim() : '';
   const groupField = PARALLEL_GROUP_ID_RE.test(rawGroup) ? { parallelGroup: rawGroup } : {};
   if (step.apiCall) return { instruction, apiCall: step.apiCall, ...groupField };
-  return step.tool ? { instruction, tool: step.tool, ...groupField } : { instruction, ...groupField };
+  if (!step.tool) return { instruction, ...groupField };
+  return { instruction, tool: step.tool, ...(step.toolPinned === true ? { toolPinned: true } : {}), ...groupField };
 }
 
 /** A human-readable, display-only label for an api-call step (e.g. shown in
@@ -1063,7 +1067,7 @@ export function detectToolPinnedSteps(text: string): NormalizedStep[] | null {
     instruction = stripToolPhrase(instruction, s.tool).slice(0, MAX_STEP_INSTRUCTION_CHARS);
     return {
       instruction,
-      ...(s.tool ? { tool: s.tool } : {}),
+      ...(s.tool ? { tool: s.tool, toolPinned: true } : {}),
       ...(s.parallelGroup ? { parallelGroup: s.parallelGroup } : {}),
     };
   });
@@ -1214,7 +1218,7 @@ export function groupStepsForDisplay<T extends string | AgentOrchestrationStep>(
 export function tagStepsWithToolMentions(steps: string[]): Array<string | NormalizedStep> {
   return steps.map((instruction) => {
     const tool = matchToolMention(instruction);
-    return tool ? { instruction: stripToolPhrase(instruction, tool), tool } : instruction;
+    return tool ? { instruction: stripToolPhrase(instruction, tool), tool, toolPinned: true } : instruction;
   });
 }
 

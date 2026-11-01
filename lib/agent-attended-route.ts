@@ -118,7 +118,12 @@ function firstDiffKey(a: unknown, b: unknown): string {
 
 /** The tool the ATTENDED serial chain would try first for `step`. */
 function attendedPrimaryTool(agent: Agent, step: NormalizedStep, env: LadderEnv): ToolChoice | undefined {
-  const stepAgent: Agent = { ...agent, orchestration: undefined, tool: step.tool ?? agent.tool };
+  const stepAgent: Agent = {
+    ...agent,
+    orchestration: undefined,
+    tool: step.tool ?? agent.tool,
+    toolPinned: step.tool && step.toolPinned === true ? true : undefined,
+  };
   return resolveEscalationLadder(stepAgent, env, step.instruction).tools[0];
 }
 

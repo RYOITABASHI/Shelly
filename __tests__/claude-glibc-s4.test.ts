@@ -92,8 +92,8 @@ describe('NL: naming Claude pins Claude Code', () => {
   it('a Codex + Claude chain pins each step and strips the instrument phrase', () => {
     const steps = detectToolPinnedSteps('毎朝9時に、Codexでリポジトリのgit logを確認して、Claudeで変更点を3行にまとめて')!;
     expect(steps).toHaveLength(2);
-    expect(steps[0]).toEqual({ instruction: 'リポジトリのgit logを確認して', tool: CODEX });
-    expect(steps[1]).toEqual({ instruction: '変更点を3行にまとめて', tool: CLAUDE });
+    expect(steps[0]).toEqual({ instruction: 'リポジトリのgit logを確認して', tool: CODEX, toolPinned: true });
+    expect(steps[1]).toEqual({ instruction: '変更点を3行にまとめて', tool: CLAUDE, toolPinned: true });
     const en = detectToolPinnedSteps('check the git log with Codex, then summarize the changes with Claude Code')!;
     expect(en.map((s) => s.tool)).toEqual([CODEX, CLAUDE]);
     // A Codex phrase is never stripped from a Claude-pinned step (provider identity, not type).
