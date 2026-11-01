@@ -3318,15 +3318,19 @@ function requestActionApprovalBlocking(paths, plan, actionType, preview, resultF
   // accept-path self-DoS on every reply, valid or not. Found and corrected
   // before the flag was ever enabled -- see docs/superpowers/DEFERRED.md.
   request.requestSha256 = sha256Hex(canonicalApprovalRequest(request));
-  writeAtomic(requestFile, JSON.stringify(request) + '\n');
+  const requestText = JSON.stringify(request) + '\n';
+  // Hash the bytes BEFORE publishing them (2026-11-01, build 2746): an RN
+  // auto-answer may resolve the request -- and native then deletes the file --
+  // before a read-back after writeAtomic would run.
+  const requestSha256 = sha256Hex(Buffer.from(requestText, 'utf8'));
+  writeAtomic(requestFile, requestText);
   // Unrelated to the above: sha256 of the ACTUAL on-disk file bytes, used ONLY
   // by today's naive equality check a few lines down (`reply.requestSha256 !==
   // requestSha256`) -- untouched, byte-identical to pre-signed-approval
   // behavior. Native's reply-writer independently hashes whatever bytes it
   // reads back from this same file, so adding a field to the request object
   // before writing does not break that comparison (both sides hash the real
-  // file, not a fixed shape).
-  const requestSha256 = sha256File(requestFile);
+  // file, not a fixed shape). Computed above from the exact text written.
   const nonceStore = SIGNED_APPROVAL_ENABLED ? makeSignedApprovalNonceStore() : null;
   const deadline = Date.now() + Math.max(1, timeoutSeconds) * 1000;
   while (Date.now() < deadline) {
