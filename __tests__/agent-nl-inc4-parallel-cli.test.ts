@@ -173,20 +173,46 @@ describe('isToolOnlyClause: leading "and"', () => {
 });
 
 describe('agent-level local rule (cliFanOutLocalSuggestion)', () => {
-  const codex = { instruction: 'a', tool: { type: 'cli' as const, cli: 'codex' as const }, toolPinned: true };
-  const claude = { instruction: 'b', tool: { type: 'cli' as const, cli: 'claude' as const }, toolPinned: true };
+  const codex = { instruction: 'a', tool: { type: 'cli' as const, cli: 'codex' as const }, toolPinned: true, parallelGroup: 'p1' };
+  const claude = { instruction: 'b', tool: { type: 'cli' as const, cli: 'claude' as const }, toolPinned: true, parallelGroup: 'p1' };
+  const localM = { instruction: 'm', tool: { type: 'local', model: 'Qwen3.5-2B-Q4_K_M' } } as AgentOrchestrationStep;
 
-  it('CLI pins + unpinned or local final step → local', () => {
+  it('CLI pins in an effective parallel group + unpinned or local final step → local', () => {
     expect(cliFanOutLocalSuggestion([codex, claude, 'merge'])?.tool).toEqual({ type: 'local' });
-    expect(cliFanOutLocalSuggestion([codex, { instruction: 'm', tool: { type: 'local', model: 'Qwen3.5-2B-Q4_K_M' } } as AgentOrchestrationStep])?.tool)
-      .toEqual({ type: 'local', model: 'Qwen3.5-2B-Q4_K_M' });
+    expect(cliFanOutLocalSuggestion([codex, claude, localM])?.tool).toEqual({ type: 'local', model: 'Qwen3.5-2B-Q4_K_M' });
   });
 
   it('a CLI final step, a non-local pin, an unpinned CLI guess or no CLI pin → no change', () => {
     expect(cliFanOutLocalSuggestion([codex, claude])).toBeUndefined();
-    expect(cliFanOutLocalSuggestion([codex, { instruction: 'r', tool: { type: 'perplexity' } } as AgentOrchestrationStep, 'merge'])).toBeUndefined();
-    expect(cliFanOutLocalSuggestion([{ ...codex, toolPinned: undefined }, 'merge'])).toBeUndefined();
+    expect(cliFanOutLocalSuggestion([codex, { instruction: 'r', tool: { type: 'perplexity' }, parallelGroup: 'p1' } as AgentOrchestrationStep, 'merge'])).toBeUndefined();
+    expect(cliFanOutLocalSuggestion([{ ...codex, toolPinned: undefined }, claude, 'merge'])).toBeUndefined();
     expect(cliFanOutLocalSuggestion(['a', 'b'])).toBeUndefined();
+  });
+
+  it('a serial chain (no effective parallel group) → no change', () => {
+    const { parallelGroup: _a, ...codexSerial } = codex;
+    const { parallelGroup: _b, ...claudeSerial } = claude;
+    expect(cliFanOutLocalSuggestion([codexSerial, claudeSerial, 'merge'])).toBeUndefined();
+    expect(cliFanOutLocalSuggestion([codexSerial, 'summarize'])).toBeUndefined();
+    expect(cliFanOutLocalSuggestion([codexSerial, localM])).toBeUndefined();
+    // A group that never takes effect (one member, or only the final step) is serial too.
+    expect(cliFanOutLocalSuggestion([codex, 'merge'])).toBeUndefined();
+    // A parallel group without a CLI member does not count.
+    expect(cliFanOutLocalSuggestion([codexSerial, { instruction: 'x', parallelGroup: 'p1' } as AgentOrchestrationStep, { instruction: 'y', parallelGroup: 'p1' } as AgentOrchestrationStep, 'merge'])).toBeUndefined();
+  });
+
+  it('serial NL 「Codexで…、要約して」 / "using Codex …, then summarize" keeps keyword scoring (not pinned local)', () => {
+    for (const u of [
+      'Codexで~/demoのgit logを確認して、要約して',
+      'Right now, using Codex, check the git log in ~/demo, then summarize it in 3 lines',
+    ]) {
+      const d = parseAgentNL(u);
+      const steps = objSteps(d.orchestrationSteps);
+      expect(steps[0]).toMatchObject({ tool: { type: 'cli', cli: 'codex' } });
+      expect(steps.some((s) => s.parallelGroup !== undefined)).toBe(false);
+      expect(d.toolExplicit).toBeUndefined();
+      expect(cliFanOutLocalSuggestion(d.orchestrationSteps)).toBeUndefined();
+    }
   });
 
   it('the serial on-device demo (Codex, then Claude Code) keeps its scoring', () => {

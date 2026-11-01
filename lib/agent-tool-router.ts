@@ -2,7 +2,8 @@
  * lib/agent-tool-router.ts — Selects the appropriate CLI/LLM for agent tasks.
  * When tool.type === 'auto', analyzes the prompt keywords and suggests.
  */
-import { Agent, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { Agent, AgentOrchestrationStep, AgentRouteDecision, ToolChoice } from '@/store/types';
+import { normalizeStep, planParallelGroups } from './agent-orchestration';
 import { autonomousWebConsentCovers, consentSignalsFor, credentialClass } from './agent-credential-policy';
 import { scanForSecrets } from './secret-guard';
 import { detectExplicitToolUsage } from './agent-tool-mentions';
@@ -179,8 +180,9 @@ export function allLocalStepSuggestion(
  * Parallel CLI steps Inc4 (docs/superpowers/specs/2026-11-01-parallel-cli-steps-plan.md):
  * a chain that pins some steps to a CLI worker (Codex / Claude Code) and
  * leaves the rest — always including the final step — unpinned or on the
- * local LLM ("using Codex A, using Claude Code B, then combine the two")
- * gets a local agent-level tool. The agent-level tool is plan.tool and the
+ * local LLM ("in parallel, using Codex A, using Claude Code B, then combine
+ * the two") gets a local agent-level tool — only when a CLI-pinned step is
+ * in an effective parallel group (a serial chain keeps today's scoring). The agent-level tool is plan.tool and the
  * engine of the unpinned final step; a keyword-scored cloud / A-B tool there
  * would keep decideAttendedRoute off the parallel executor route (plan.tool
  * must be HTTP-dispatchable) and could silently send the aggregation to an
@@ -210,6 +212,13 @@ export function cliFanOutLocalSuggestion(
   const last = steps[steps.length - 1];
   if (typeof last !== 'string' && last.tool?.type === 'cli') return undefined;
   if (cliPins === 0) return undefined;
+  // Only a fan-out: an EFFECTIVE parallel group (planParallelGroups — the
+  // single authority on what runs in parallel) with a CLI-pinned member. A
+  // serial "Codexで…、要約して" chain keeps today's scoring.
+  const normalized = steps.map((s) => normalizeStep(s as string | AgentOrchestrationStep));
+  const group = planParallelGroups(normalized).group;
+  const cliInGroup = normalized.some((s, i) => group[i] !== undefined && s.tool?.type === 'cli');
+  if (!cliInGroup) return undefined;
   const model = localModels.size === 1 ? [...localModels][0] : undefined;
   const tool: ToolChoice = model ? { type: 'local', model } : { type: 'local' };
   return {
