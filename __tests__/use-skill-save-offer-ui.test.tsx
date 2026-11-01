@@ -24,6 +24,7 @@ jest.mock('@/lib/i18n', () => ({
     },
   }),
 }));
+jest.mock('@/lib/home-path', () => ({ getHomePath: () => '/home/shelly-test' }));
 jest.mock('@/lib/agent-skills', () => ({
   deleteSkillRecipe: jest.fn(async () => undefined),
   distillSkillFromRun: jest.fn(),
@@ -84,5 +85,73 @@ describe('useSkillSaveOffer UI and notification wiring', () => {
     expect(mockRevertSkillImprovement).toHaveBeenCalledWith(expect.any(Function), 'skill-1', 'learn-at');
     first.unmount();
     second.unmount();
+  });
+
+  describe('save offer after a declined gate escalation (2026-11-01)', () => {
+    const runEnd = Date.parse('2026-11-01T10:00:00.000Z');
+    const declinedAudit = JSON.stringify({
+      ts: new Date(runEnd - 10_000).toISOString(),
+      kind: 'escalation_resolved',
+      decision: 'decline',
+    });
+    const baseParams = {
+      name: 'Two step',
+      prompt: 'Use Codex then Claude Code',
+      status: 'success' as const,
+      steps: [
+        { status: 'success' as const, outputPreview: 'step 1 ok' },
+        { status: 'success' as const, outputPreview: 'Here is the summary.' },
+      ],
+      plannedStepCount: 2,
+      agentId: 'agent-1',
+      timestamp: runEnd,
+      durationMs: 60_000,
+    };
+
+    it('does not offer when the audit trail shows a declined escalation in this run', async () => {
+      const runCommand = jest.fn(async () => declinedAudit);
+      const { result, unmount } = renderHook(() => useSkillSaveOffer({ runCommand }));
+      await result.current.offerSkillSave(baseParams);
+      expect(runCommand).toHaveBeenCalledTimes(1);
+      expect(Alert.alert).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('explains instead of offering when the user tapped Save as skill', async () => {
+      const runCommand = jest.fn(async () => declinedAudit);
+      const { result, unmount } = renderHook(() => useSkillSaveOffer({ runCommand }));
+      await result.current.offerSkillSave({ ...baseParams, explainWhenBlocked: true });
+      expect(Alert.alert).toHaveBeenCalledTimes(1);
+      expect((Alert.alert as jest.Mock).mock.calls[0][0]).toBe('sidebar.skill_save_blocked_title');
+      unmount();
+    });
+
+    it('does not offer when a step answer reports the gate block (no audit read needed)', async () => {
+      const runCommand = jest.fn(async () => '');
+      const { result, unmount } = renderHook(() => useSkillSaveOffer({ runCommand }));
+      await result.current.offerSkillSave({
+        ...baseParams,
+        steps: [
+          baseParams.steps[0],
+          { status: 'success', outputPreview: "The command was blocked by Shelly's agent gate, so I didn't base a summary on it." },
+        ],
+      });
+      expect(runCommand).not.toHaveBeenCalled();
+      expect(Alert.alert).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('still offers after a clean run', async () => {
+      const runCommand = jest.fn(async () => JSON.stringify({
+        ts: new Date(runEnd - 10_000).toISOString(),
+        kind: 'gate_decision',
+        decision: 'accept',
+      }));
+      const { result, unmount } = renderHook(() => useSkillSaveOffer({ runCommand }));
+      await result.current.offerSkillSave(baseParams);
+      expect(Alert.alert).toHaveBeenCalledTimes(1);
+      expect((Alert.alert as jest.Mock).mock.calls[0][0]).toBe('sidebar.skill_save_title');
+      unmount();
+    });
   });
 });

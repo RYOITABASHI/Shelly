@@ -35,6 +35,25 @@ export function resolveConfirmOutcomeTarget(
   return idx < messages.length - 1 ? 'new-message' : 'in-place';
 }
 
+/**
+ * Where a run's FINAL result goes relative to its "▶ Running … still working
+ * (Ns)" bubble (2026-11-01 on-device finding). While an attended run is going,
+ * other lines can land below that bubble in the same thread: the agent's
+ * hand-off narration (step started / step 1 result), a gate / action approval
+ * asked in chat and the user's typed answer. Rewriting the running bubble in
+ * place then put the final result ABOVE all of them, so the thread read out
+ * of order. Same rule as resolveConfirmOutcomeTarget: anything after the
+ * running bubble -> the result is a new message at the bottom (the caller
+ * settles the running bubble to its base text, without the elapsed-time
+ * suffix); otherwise the in-place update is kept.
+ */
+export function resolveRunResultTarget(
+  messages: ReadonlyArray<Pick<ChatMessage, 'id'>>,
+  runningMessageId: string,
+): ConfirmOutcomeTarget {
+  return resolveConfirmOutcomeTarget(messages, runningMessageId);
+}
+
 /** Split one outcome update into the part that belongs on the draft bubble
  *  (its card state only) and the part that belongs on the outcome message. */
 export function splitConfirmOutcomeUpdate(updates: Partial<ChatMessage>): {

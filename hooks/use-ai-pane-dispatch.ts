@@ -114,7 +114,7 @@ import type { OpenRouterMessage } from '@/lib/openrouter';
 import { isAiPaneAgent, pickDefaultAiPaneAgent } from '@/lib/ai-pane-agents';
 import { postLocalLlmScouterEvent } from '@/lib/scouter-telemetry';
 import { tFor, useTranslation } from '@/lib/i18n';
-import { resolveConfirmOutcomeTarget, splitConfirmOutcomeUpdate } from '@/lib/agent-confirm-outcome';
+import { resolveConfirmOutcomeTarget, resolveRunResultTarget, splitConfirmOutcomeUpdate } from '@/lib/agent-confirm-outcome';
 import { isEphemeralOneShot } from '@/lib/notification-trigger';
 import { formatOneShotCountdown, formatOneShotWhen, oneShotAtMs, resolveOneShotSchedule } from '@/lib/agent-oneshot';
 import { shouldShowScheduleReadinessNudge } from '@/lib/agent-schedule-readiness';
@@ -126,6 +126,39 @@ import { isEmptyPlainAssistantMessage } from '@/lib/ai-pane-empty-reply';
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/**
+ * Write an attended run's final result (lib/agent-confirm-outcome.ts
+ * resolveRunResultTarget). When nothing was posted below the running bubble,
+ * returns null and leaves the in-place rewrite to the caller (today's
+ * behavior; some call sites route it through their own update-or-fallback).
+ * Otherwise the bubble is settled to `runningBaseContent` (dropping the
+ * elapsed-time suffix), the result is appended at the bottom, and the new
+ * message's id is returned. Stop the progress ticker BEFORE calling this, or
+ * its next tick re-adds the suffix to the settled bubble.
+ */
+function appendRunResultIfOutOfOrder(
+  paneId: string,
+  runningMessageId: string,
+  runningBaseContent: string,
+  result: Pick<ChatMessage, 'content'> & Partial<Pick<ChatMessage, 'agentRollbackOffer'>>,
+  agentLabel?: ChatMessage['agent'],
+): string | null {
+  const store = useAIPaneStore.getState();
+  const messages = store.conversations[paneId]?.messages ?? [];
+  if (resolveRunResultTarget(messages, runningMessageId) !== 'new-message') return null;
+  store.updateMessage(paneId, runningMessageId, { content: runningBaseContent });
+  const id = generateId();
+  store.addMessage(paneId, {
+    id,
+    role: 'assistant',
+    content: result.content,
+    timestamp: Date.now(),
+    ...(agentLabel ? { agent: agentLabel } : {}),
+    ...(result.agentRollbackOffer !== undefined ? { agentRollbackOffer: result.agentRollbackOffer } : {}),
+  });
+  return id;
 }
 
 /** User-only, deliberately untruncated evidence for high-risk proposals. */
@@ -2032,19 +2065,25 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 const preview = (log?.outputPreview || '').trim();
                 const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
                 const resultLine = preview ? `${icon} ${preview}` : `${icon} ${correctionStrings['agentplan.run_now_done']}`;
-                store.updateMessage(paneId, runningMsgId, {
+                const runResult = {
                   content: summaryText ? `${summaryText}\n\n${resultLine}` : resultLine,
                   agentRollbackOffer: buildRollbackOffer(updatedAgent.id, updatedAgent),
-                });
+                };
+                stopProgressTicker();
+                if (!appendRunResultIfOutOfOrder(paneId, runningMsgId, runningBaseContent, runResult, justRegistered.agentLabel)) {
+                  store.updateMessage(paneId, runningMsgId, runResult);
+                }
                 // Skill self-improvement confirm (no-op unless this run of a
                 // skill-reusing agent staged a body-learning proposal).
                 offerSkillImprovement?.(updatedAgent.id);
               } catch (runErr) {
                 const detail = runErr instanceof Error ? runErr.message : String(runErr);
                 const failureLine = `❌ ${correctionStrings['agentplan.run_now_failed']}: ${detail}`;
-                store.updateMessage(paneId, runningMsgId, {
-                  content: summaryText ? `${summaryText}\n\n${failureLine}` : failureLine,
-                });
+                const failureResult = { content: summaryText ? `${summaryText}\n\n${failureLine}` : failureLine };
+                stopProgressTicker();
+                if (!appendRunResultIfOutOfOrder(paneId, runningMsgId, runningBaseContent, failureResult, justRegistered.agentLabel)) {
+                  store.updateMessage(paneId, runningMsgId, failureResult);
+                }
               } finally {
                 stopProgressTicker();
               }
@@ -3126,19 +3165,27 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               const log = useAgentStore.getState().getRunHistory(agentResult.data.agentId).at(-1);
               const preview = (log?.outputPreview || '').trim();
               const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
-              store.updateMessage(paneId, runningMsgId, {
+              const runResult = {
                 content: preview ? `${icon} ${preview}` : `${icon} Done.`,
                 agentRollbackOffer: buildRollbackOffer(
                   agentResult.data.agentId,
                   useAgentStore.getState().agents.find((a) => a.id === agentResult.data.agentId) ?? null,
                 ),
-              });
+              };
+              stopProgressTicker();
+              const runAgentLabel = agent as ChatMessage['agent'];
+              if (!appendRunResultIfOutOfOrder(paneId, runningMsgId, agentResult.message, runResult, runAgentLabel)) {
+                store.updateMessage(paneId, runningMsgId, runResult);
+              }
               // Skill self-improvement confirm (no-op unless this run of a
               // skill-reusing agent staged a body-learning proposal).
               offerSkillImprovement?.(agentResult.data.agentId);
             } catch (runErr) {
               const detail = runErr instanceof Error ? runErr.message : String(runErr);
-              store.updateMessage(paneId, runningMsgId, { content: `❌ ${detail}` });
+              stopProgressTicker();
+              if (!appendRunResultIfOutOfOrder(paneId, runningMsgId, agentResult.message, { content: `❌ ${detail}` }, agent as ChatMessage['agent'])) {
+                store.updateMessage(paneId, runningMsgId, { content: `❌ ${detail}` });
+              }
             } finally {
               stopProgressTicker();
             }
@@ -4394,18 +4441,24 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             const preview = (log?.outputPreview || '').trim();
             const icon = log?.status === 'error' ? '❌' : log?.status === 'skipped' ? '⏭️' : '✅';
             const resultLine = preview ? `${icon} ${preview}` : `${icon} ${runStrings['agentplan.run_now_done']}`;
-            updateOrFallback({
+            const runResult = {
               content: `${baseContent}\n\n${resultLine}`,
               agentRollbackOffer: buildRollbackOffer(created.id, created),
-            });
+            };
+            stopProgressTicker();
+            if (!appendRunResultIfOutOfOrder(paneId, outcomeMessageId, runningBaseContent, runResult, originatingAgentLabel)) {
+              updateOrFallback(runResult);
+            }
             // Skill self-improvement confirm (no-op unless this run of a
             // skill-reusing agent staged a body-learning proposal).
             offerSkillImprovement?.(created.id);
           } catch (runErr) {
             const detail = runErr instanceof Error ? runErr.message : String(runErr);
-            updateOrFallback({
-              content: `${baseContent}\n\n❌ ${runStrings['agentplan.run_now_failed']}: ${detail}`,
-            });
+            const failureResult = { content: `${baseContent}\n\n❌ ${runStrings['agentplan.run_now_failed']}: ${detail}` };
+            stopProgressTicker();
+            if (!appendRunResultIfOutOfOrder(paneId, outcomeMessageId, runningBaseContent, failureResult, originatingAgentLabel)) {
+              updateOrFallback(failureResult);
+            }
           } finally {
             stopProgressTicker();
           }
@@ -4465,6 +4518,9 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             detectMessageLocale(originalDraftSnapshot?.rawText ?? confirmed.prompt),
           );
           let finalContent: string | null = null;
+          // Set when the result went into a new message below later lines
+          // (appendRunResultIfOutOfOrder) — the cleanup warning goes there too.
+          let appendedResultId: string | null = null;
           try {
             // bug #164: same reasoning as the explicit "@agent run" call site
             // above — this fires immediately after registration while the
@@ -4502,13 +4558,28 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             // re-check needs the agent snapshot that was actually just run,
             // and `created` is about to be gone.
             const rollbackOffer = buildRollbackOffer(created.id, created);
-            updateOrFallback({
-              content: finalContent,
-              agentRollbackOffer: rollbackOffer,
-            });
+            // Stop the heartbeat before the result lands (and before the
+            // awaited skill offer below), or a tick would overwrite it.
+            stopProgressTicker();
+            appendedResultId = appendRunResultIfOutOfOrder(
+              paneId,
+              outcomeMessageId,
+              ephemeralRunningContent,
+              { content: finalContent, agentRollbackOffer: rollbackOffer },
+              originatingAgentLabel,
+            );
+            if (!appendedResultId) {
+              updateOrFallback({
+                content: finalContent,
+                agentRollbackOffer: rollbackOffer,
+              });
+            }
             // Pull every value from local run-result variables, not the store —
             // `created` is about to be deleted (ephemeral one-shot agent).
-            offerSkillSave({
+            // Awaited (the Alert itself does not block): the audit-trail
+            // check reads this agent's live logs, which the `finally` below
+            // deletes along with the ephemeral agent.
+            await offerSkillSave({
               name: created.name,
               prompt: created.prompt,
               routeDecision: log?.routeDecision,
@@ -4516,6 +4587,10 @@ export function useAIPaneDispatch(paneIdRaw: string) {
               status: log?.status,
               steps: log?.steps,
               plannedStepCount: created.orchestration?.steps?.length,
+              outputPreview: log?.outputPreview,
+              actionResults: log?.actionResults,
+              agentId: created.id,
+              durationMs: log?.durationMs,
               alreadySkillId: created.skillId,
               planSpec: log?.steps && log.steps.length >= 2
                 ? buildAgentPlanSpec(created)
@@ -4551,9 +4626,12 @@ export function useAIPaneDispatch(paneIdRaw: string) {
                 logInfo('AgentDraftConfirm', `confirmAgentDraft: ephemeral one-shot cleanup deleteAgent returned for ${created.id}`);
               } catch (cleanupError) {
                 const detail = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-                updateOrFallback({
-                  content: `${finalContent ?? `✅ ${created.name} — done.`}\n\nCleanup warning: temporary agent was not removed. ${detail}`,
-                });
+                const warning = `${finalContent ?? `✅ ${created.name} — done.`}\n\nCleanup warning: temporary agent was not removed. ${detail}`;
+                if (appendedResultId) {
+                  store.updateMessage(paneId, appendedResultId, { content: warning });
+                } else {
+                  updateOrFallback({ content: warning });
+                }
               }
             }
           }

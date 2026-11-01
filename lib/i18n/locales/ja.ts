@@ -2052,6 +2052,8 @@ const ja: Record<string, string> = {
   'sidebar.skill_saved_title': 'スキルを自動保存しました',
   'sidebar.skill_saved_body': '無人実行後に「{{name}}」を保存しました。',
   'sidebar.skill_save_failed_title': 'スキルを保存できませんでした',
+  'sidebar.skill_save_blocked_title': 'スキルとして保存しません',
+  'sidebar.skill_save_blocked_body': '「{{name}}」の今回の実行は一部が拒否またはブロックされ、タスクを完了していません。最後まで完了した実行だけをスキルとして保存できます。',
   'sidebar.skill_improve_title': 'スキルを改善しますか？',
   'sidebar.skill_improve_body': '「{{name}}」は以前の失敗のあとで成功しました。この教訓をスキルに追加しますか？\n\n{{note}}',
   'sidebar.skill_improve_yes': 'スキルを改善',
