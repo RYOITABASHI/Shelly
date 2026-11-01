@@ -524,7 +524,11 @@ object AgentRuntime {
     // v22 (MONITOR CLI tokens): Codex CLI steps report usage too. JS-only.
     // v23: a CLI branch's approval ask waits up to 10 min (driver default was
     // 120 s; two parallel asks are answered one after the other). JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 23
+    // v24: a running CLI branch emits a `heartbeat` progress event every 10 s
+    // while its driver is alive (quietMs = time since the driver's last
+    // output), so MONITOR does not flag a busy CLI turn as stuck. The widget
+    // reader (monitor/MonitorProgress.kt) accepts the new event kind.
+    private const val CURRENT_EXECUTOR_VERSION = 24
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

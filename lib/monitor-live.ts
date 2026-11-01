@@ -38,6 +38,15 @@ import { continuousStopReasonKey, type ContinuousCheckpointView } from './agent-
 
 /** A RUNNING step with no event for this long gets the stale indicator. */
 export const STALE_AFTER_SEC = 30;
+/**
+ * A RUNNING CLI step (one that sends executor v24 heartbeats) whose worker
+ * has written nothing for this long gets the stale indicator even though the
+ * heartbeats say its driver is alive. Longer than STALE_AFTER_SEC: a CLI turn
+ * can think quietly for a while (a long Claude Code reply arrives as one
+ * message). A CLI step whose heartbeats stop (driver or executor gone) is
+ * stale after STALE_AFTER_SEC like any step.
+ */
+export const CLI_QUIET_STALE_AFTER_SEC = 120;
 /** Lines kept per camera (the progress stream carries only the latest tail). */
 export const LIVE_MAX_LINES = 8;
 const NAME_MAX_CHARS = 28;
@@ -229,7 +238,16 @@ function snapshotFor(
     const end = ms(b.endedAt) ?? (ended ? ms(run.endedAt) : null);
     const updated = ms(b.updatedAt);
     const elapsedSec = start === null ? undefined : secondsBetween(start, end ?? nowMs);
-    const updatedAgoSec = updated === null ? undefined : secondsBetween(updated, nowMs);
+    // Seconds since the last event of any kind (a heartbeat included): past
+    // STALE_AFTER_SEC nothing is reporting for this step at all.
+    const eventAgoSec = updated === null ? undefined : secondsBetween(updated, nowMs);
+    // What the camera shows as "updated Ns ago": the worker's real activity
+    // (a CLI step's heartbeat says when its driver last wrote something).
+    const activity = b.heartbeat ? ms(b.lastActivityAt) : null;
+    const updatedAgoSec = activity !== null ? Math.max(eventAgoSec ?? 0, secondsBetween(activity, nowMs) ?? 0) : eventAgoSec;
+    const silent =
+      (eventAgoSec !== undefined && eventAgoSec >= STALE_AFTER_SEC) ||
+      (activity !== null && updatedAgoSec !== undefined && updatedAgoSec >= CLI_QUIET_STALE_AFTER_SEC);
     const usage = b.usage;
     const tokens = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
     // No usage event at all (e.g. a CLI that never reports tokens) is "—",
@@ -259,7 +277,7 @@ function snapshotFor(
       usd: usage?.usd !== undefined ? usage.usd : null,
       ...(elapsedSec !== undefined ? { elapsedSec } : {}),
       ...(updatedAgoSec !== undefined ? { updatedAgoSec } : {}),
-      stale: state === 'RUNNING' && !ended && updatedAgoSec !== undefined && updatedAgoSec >= STALE_AFTER_SEC,
+      stale: state === 'RUNNING' && !ended && silent,
     };
     if (state === 'APPROVAL') approvalAgentIds.push(id);
     if (FINISHED.has(state)) finished++;

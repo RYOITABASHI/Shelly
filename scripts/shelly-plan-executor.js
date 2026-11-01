@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=23
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=24
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -87,7 +87,13 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // ask at once and the human answers one after the other: Codex's ask timed
 // out (declined) while the Claude Code ask was being answered. Bumped so a
 // stale v22 copy is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 23;
+// v24 (2026-11-02, battle-demo rehearsal item (l)): a running CLI branch
+// emits a `heartbeat` progress event every CLI_HEARTBEAT_MS while its driver
+// is alive (with quietMs = time since the driver's last output, and the last
+// started tool / item as `activity`), so MONITOR stops showing "no update for
+// 30s — stuck?" on a healthy CLI turn. Bumped so a stale v23 copy is
+// refreshed.
+const EXECUTOR_SCRIPT_VERSION = 24;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -5541,6 +5547,49 @@ function cliBranchTimeouts(limits) {
   return { branchMs, driverMs: Math.max(1, branchMs - margin) };
 }
 const CLI_STEP_STDOUT_TAIL_MAX = 8192;
+// v24: while a CLI branch's driver is alive the executor emits a `heartbeat`
+// progress event every CLI_HEARTBEAT_MS, so the MONITOR does not read a
+// healthy, busy CLI turn as "no update — stuck?". The event carries the time
+// since the driver last wrote anything (quietMs — every app-server /
+// stream-json message is echoed on the driver's stdout), so the monitor can
+// still flag a driver that is alive but silent; the timer stops when the
+// driver exits. Heartbeats are liveness only, never a visible log line.
+const CLI_HEARTBEAT_MS = 10 * 1000;
+const CLI_ACTIVITY_MAX_CHARS = 40;
+const CODEX_ITEM_ACTIVITY = {
+  commandExecution: 'command',
+  fileChange: 'file change',
+  reasoning: 'reasoning',
+  agentMessage: 'writing',
+  mcpToolCall: 'tool call',
+  webSearch: 'web search',
+};
+
+// Test-only override (ignored on Android): SHELLY_PLAN_EXECUTOR_CLI_HEARTBEAT_MS.
+function cliHeartbeatMs() {
+  if (fs.existsSync('/system/bin/linker64')) return CLI_HEARTBEAT_MS;
+  const v = Number(process.env.SHELLY_PLAN_EXECUTOR_CLI_HEARTBEAT_MS);
+  return Number.isFinite(v) && v > 0 ? v : CLI_HEARTBEAT_MS;
+}
+
+// A short label for what the driver just started, from its `AUDIT
+// {"kind":"item_started",…}` stdout line: the Claude Code tool name, or the
+// Codex item type. Never the command text. null for any other line.
+function cliActivityFromDriverLine(line) {
+  if (typeof line !== 'string' || !line.startsWith('AUDIT ') || line.indexOf('"item_started"') === -1) return null;
+  let entry;
+  try {
+    entry = JSON.parse(line.slice(6));
+  } catch (_) {
+    return null;
+  }
+  if (!entry || entry.kind !== 'item_started') return null;
+  let label = '';
+  if (entry.itemType === 'tool_use' && typeof entry.tool === 'string') label = entry.tool;
+  else if (typeof entry.itemType === 'string') label = CODEX_ITEM_ACTIVITY[entry.itemType] || entry.itemType;
+  label = label.replace(/[^A-Za-z0-9 _.:-]/g, '').trim().slice(0, CLI_ACTIVITY_MAX_CHARS);
+  return label || null;
+}
 const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'Skipped: this agent has a Codex/Claude Code step, and a CLI step (Codex/Claude Code) runs only with Run now. Open Shelly and tap Run now to run it.';
 
 // Whole-run preflight (before any step / model call): the first CLI step of a
@@ -5821,7 +5870,11 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
           if (typeof killTimer.unref === 'function') killTimer.unref();
         }
       };
+      let lastOutputMs = Date.now();
+      let activity = null;
       const onLine = (line) => {
+        const started = cliActivityFromDriverLine(line);
+        if (started) activity = started;
         if (/^ESCALATE human_required\b/.test(line)) {
           progressState(progress, stepIndex, 'WAITING_APPROVAL', `${CLI_STEP_LABELS[engine]} is waiting for your approval.`);
         } else if (/^ESCALATE_RESOLVED\b/.test(line)) {
@@ -5830,6 +5883,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
       };
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk) => {
+        lastOutputMs = Date.now();
         stdoutTail = (stdoutTail + chunk).slice(-CLI_STEP_STDOUT_TAIL_MAX);
         lineBuf += chunk;
         let nl;
@@ -5839,7 +5893,21 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
         }
         if (lineBuf.length > CLI_STEP_STDOUT_TAIL_MAX) lineBuf = lineBuf.slice(-CLI_STEP_STDOUT_TAIL_MAX);
       });
-      child.stderr.on('data', () => {}); // drained; the driver audits its own stderr
+      child.stderr.on('data', () => {
+        lastOutputMs = Date.now();
+      }); // drained; the driver audits its own stderr
+      // v24: liveness for the MONITOR while the driver is alive (cleared in
+      // finish, i.e. as soon as the driver exits).
+      const heartbeat = setInterval(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        if (PROGRESS_TERMINAL_STATES.has(progress && progress.states.get(stepIndex))) return;
+        const now = Date.now();
+        progressStepEvent(progress, stepIndex, 'heartbeat', Object.assign(
+          { elapsedMs: now - startedMs, quietMs: Math.max(0, now - lastOutputMs) },
+          activity ? { activity } : {},
+        ));
+      }, cliHeartbeatMs());
+      if (typeof heartbeat.unref === 'function') heartbeat.unref();
       const timeout = setTimeout(() => terminate('timeout'), branchTimeoutMs);
       if (typeof timeout.unref === 'function') timeout.unref();
       // STOP-ALL: the event loop is free while the driver runs, so poll the
@@ -5854,6 +5922,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
         liveCliChildren.delete(child);
         clearTimeout(timeout);
         clearInterval(haltPoll);
+        clearInterval(heartbeat);
         if (killTimer) clearTimeout(killTimer);
         if (terminateReason) killProcSnapshot(tree);
         if (lineBuf) onLine(lineBuf);
@@ -7490,6 +7559,9 @@ module.exports = {
   cliStepAttended,
   CLI_STEP_ATTENDED_ONLY_MESSAGE,
   cliStepNeedingAttended,
+  // v24 CLI heartbeat — host unit tests only.
+  CLI_HEARTBEAT_MS,
+  cliActivityFromDriverLine,
   liveCliChildren,
   stopLiveCliChildrenSync,
   listDescendantProcs,
