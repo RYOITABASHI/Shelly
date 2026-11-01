@@ -57,7 +57,14 @@ import type { LadderEnv } from '@/lib/agent-escalation-ladder';
 
 const AGENT_ID = 'attended-cli-agent';
 const ENV: LadderEnv = { hasCerebrasKey: false, hasGroqKey: false, autonomousCloudConsent: false, autonomousCloudStop: false };
-const ENV_TEXT = 'CEREBRAS_API_KEY=0\nGROQ_API_KEY=0\nPERPLEXITY_API_KEY=1\nGEMINI_API_KEY=1\nSHELLY_AUTONOMOUS_CLOUD=0\nSHELLY_AUTONOMOUS_CLOUD_STOP=0';
+const ENV_TEXT = [
+  'CEREBRAS_API_KEY=0',
+  'GROQ_API_KEY=0',
+  'PERPLEXITY_API_KEY=1',
+  'GEMINI_API_KEY=1',
+  'SHELLY_AUTONOMOUS_CLOUD=0',
+  'SHELLY_AUTONOMOUS_CLOUD_STOP=0',
+].join('\n');
 
 const CLI_STEPS: AgentOrchestrationConfig['steps'] = [
   { instruction: 'review the open pull request in the repo', parallelGroup: 'g', tool: { type: 'cli', cli: 'codex' }, toolPinned: true },
