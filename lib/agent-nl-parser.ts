@@ -21,7 +21,8 @@ import { suggestTool, suggestToolForDraft, toolChoiceToLabel } from './agent-too
 import { detectApiCallSteps, parseStepsFromText, normalizeSteps, detectToolPinnedSteps, detectParallelSteps, pruneIneffectiveParallelGroups, isNotifyOnlyClause, tagStepsWithToolMentions, extractNamePrefix, saveOnlyClauseLabel, trailingSaveClauseLabel } from './agent-orchestration';
 import { buildSteamPipeline, type PipelinePreset } from './agent-pipeline-presets';
 import { redactSecretsText } from './redact-secrets';
-import { detectRunWithoutApprovalIntent, stripRunWithoutApprovalPhrases } from './agent-run-without-approval';
+import { detectRunWithoutApprovalLevel, stripRunWithoutApprovalPhrases } from './agent-run-without-approval';
+import { deriveWorkspaceRootFromText } from './agent-workspace-from-request';
 import enLocale from './i18n/locales/en';
 import jaLocale from './i18n/locales/ja';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
@@ -304,6 +305,15 @@ export interface ParsedAgentDraft {
    *  is written to the Keystore-backed store (lib/agent-run-without-approval.ts),
    *  never to the agent definition. */
   runWithoutApproval?: boolean;
+  /** 2026-11-01: 'all' when the user's words asked for the "no approvals at
+   *  all" level (すべて承認なしで実行 / "run fully without approval"). Only
+   *  meaningful with runWithoutApproval; absent = the standard level. */
+  runWithoutApprovalLevel?: 'all';
+  /** 2026-11-01: the CLI workspace derived from the paths the request names
+   *  (lib/agent-workspace-from-request.ts), home-relative (`~/demo`). Shown
+   *  in the summary; the dispatcher resolves it to an absolute path and
+   *  passes it to createAgent as workspaceRoot. */
+  workspaceRoot?: string;
   /** The original utterance, preserved for the card / fallback editing. */
   rawText: string;
 }
@@ -2737,7 +2747,9 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // 2026-11-01: 「承認なしで実行して」 / "Run it without approval" is a setting
   // of the agent (runWithoutApproval below), never part of its task: it must
   // not reach the derived name, the prompt or a step (on-device, build 2743).
-  const runWithoutApproval = detectRunWithoutApprovalIntent(rawText);
+  const runWithoutApprovalLevel = detectRunWithoutApprovalLevel(rawText);
+  const runWithoutApproval = runWithoutApprovalLevel !== 'off';
+  const workspaceRoot = deriveWorkspaceRootFromText(rawText);
   const workText = runWithoutApproval
     ? stripRunWithoutApprovalPhrases(continuousText) || continuousText
     : continuousText;
@@ -2987,6 +2999,8 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     toolExplicit: suggestion.explicit || undefined,
     autonomous: detectAutonomousIntent(rawText),
     ...(runWithoutApproval ? { runWithoutApproval: true } : {}),
+    ...(runWithoutApprovalLevel === 'all' ? { runWithoutApprovalLevel: 'all' as const } : {}),
+    ...(workspaceRoot ? { workspaceRoot } : {}),
     memory,
     actionCaveat,
     socialPostCandidates,

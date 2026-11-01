@@ -99,7 +99,14 @@ import { postAgentRunStartedNotice, postLatestAgentRunToCompanion } from '@/lib/
 import { agentToParsedAgentDraft } from '@/lib/agent-draft-patch';
 import { summarizeAgentDraftAsText, hasDraftAssumptions, humanizeAgentSchedule } from '@/lib/agent-plan-summary';
 import { oneShotState } from '@/lib/agent-oneshot';
-import { forgetRunWithoutApproval, isRunWithoutApprovalEnabled, postRunWithoutApprovalAuditLine, setRunWithoutApproval } from '@/lib/agent-run-without-approval';
+import {
+  forgetRunWithoutApproval,
+  getRunWithoutApprovalSetting,
+  postRunWithoutApprovalAuditLine,
+  runWithoutApprovalAllAllowedFor,
+  setRunWithoutApproval,
+  type RunWithoutApprovalSetting,
+} from '@/lib/agent-run-without-approval';
 
 // Collapsed icon-rail width. 2026-10-06 Fold6 feedback: 48dp read as too
 // wide next to the pane grid; 38dp still fits a 20dp icon with ~9dp side
@@ -1054,7 +1061,8 @@ export function Sidebar() {
   // Tap an agent row → full detail popup (the row only has room for the name).
   const showAgentDetail = React.useCallback(async (agent: Agent) => {
     const runHistory = useAgentStore.getState().getRunHistory(agent.id);
-    const runWithoutApproval = await isRunWithoutApprovalEnabled(agent).catch(() => false);
+    // 'off' | 'standard' | 'all' — read from the Keystore entry only.
+    const runWithoutApproval: RunWithoutApprovalSetting = await getRunWithoutApprovalSetting(agent).catch(() => 'off' as const);
     const lastLog = runHistory.at(-1);
     // Foreground escalation writes one log per attempt. If Gemini fails and
     // Codex succeeds seconds later, looking only at `lastLog` hides the exact
@@ -1119,7 +1127,11 @@ export function Sidebar() {
       agentApprovalLabel(agent),
       // The per-agent "承認なしで実行" option changes what "approval
       // required" means for this agent — say which state it is in.
-      t(runWithoutApproval ? 'sidebar.agent_run_without_approval_state_on' : 'sidebar.agent_run_without_approval_state_off'),
+      t(runWithoutApproval === 'all'
+        ? 'sidebar.agent_run_without_approval_state_all'
+        : runWithoutApproval === 'standard'
+          ? 'sidebar.agent_run_without_approval_state_on'
+          : 'sidebar.agent_run_without_approval_state_off'),
     ].filter(Boolean).join(' · ');
     // Phase 4: when the agent is multi-step, show the planned chain; and if the
     // last run was orchestrated, show each step's status. Phase 5: a step may
@@ -1230,9 +1242,37 @@ export function Sidebar() {
       {
         key: 'run-without-approval',
         titleKey: 'agent_detail.run_without_approval',
-        text: t(runWithoutApproval ? 'agent_detail.run_without_approval_on' : 'agent_detail.run_without_approval_off'),
+        text: [
+          t(runWithoutApproval === 'all'
+            ? 'agent_detail.run_without_approval_all'
+            : runWithoutApproval === 'standard'
+              ? 'agent_detail.run_without_approval_on'
+              : 'agent_detail.run_without_approval_off'),
+          runWithoutApprovalAllAllowedFor(agent) ? null : t('agent_detail.run_without_approval_all_unavailable'),
+        ].filter(Boolean).join('\n'),
       },
     ];
+    // One button per level the agent is NOT at (OFF / 標準 / すべて): the popup
+    // closes on a press, so a single cycling toggle would hide the choice.
+    const runWithoutApprovalLevels: Array<{ level: RunWithoutApprovalSetting; labelKey: string; lineKey: string }> = [
+      { level: 'off', labelKey: 'sidebar.agent_run_without_approval_disable', lineKey: 'agent_run_without_approval.disabled_line' },
+      { level: 'standard', labelKey: 'sidebar.agent_run_without_approval_enable', lineKey: 'agent_run_without_approval.enabled_line' },
+      { level: 'all', labelKey: 'sidebar.agent_run_without_approval_enable_all', lineKey: 'agent_run_without_approval.enabled_all_line' },
+    ];
+    // Security review H2: an agent that reads web / untrusted input never
+    // gets the "all" level (the writer and the runtime refuse it too).
+    const allLevelAllowed = runWithoutApprovalAllAllowedFor(agent);
+    const runWithoutApprovalButtons: AgentDetailData['buttons'] = runWithoutApprovalLevels
+      .filter((option) => option.level !== runWithoutApproval && (option.level !== 'all' || allLevelAllowed))
+      .map((option) => ({
+        key: `run-without-approval-${option.level}`,
+        labelKey: option.labelKey,
+        onPress: () => {
+          void setRunWithoutApproval(agent, option.level, 'detail')
+            .then(() => postRunWithoutApprovalAuditLine(agent.id, t(option.lineKey)))
+            .catch((error) => Alert.alert(t('sidebar.agent_update_failed_title'), error instanceof Error ? error.message : String(error)));
+        },
+      }));
     const buttons: AgentDetailData['buttons'] = [
       { key: 'run', labelKey: 'sidebar.agent_run_now', onPress: () => void handleRunScheduledAgent(agent.id, agent.name) },
       { key: 'pause', labelKey: agent.enabled ? 'sidebar.agent_pause' : 'sidebar.agent_resume', onPress: () => void handleTogglePause(agent) },
@@ -1279,19 +1319,7 @@ export function Sidebar() {
         });
       } },
       { key: 'chat', labelKey: 'sidebar.agent_chat', onPress: () => openAgentThread(agent) },
-      {
-        key: 'run-without-approval',
-        labelKey: runWithoutApproval ? 'sidebar.agent_run_without_approval_disable' : 'sidebar.agent_run_without_approval_enable',
-        onPress: () => {
-          const next = !runWithoutApproval;
-          void setRunWithoutApproval(agent, next, 'detail')
-            .then(() => postRunWithoutApprovalAuditLine(
-              agent.id,
-              t(next ? 'agent_run_without_approval.enabled_line' : 'agent_run_without_approval.disabled_line'),
-            ))
-            .catch((error) => Alert.alert(t('sidebar.agent_update_failed_title'), error instanceof Error ? error.message : String(error)));
-        },
-      },
+      ...runWithoutApprovalButtons,
       ...(runHistory.length
         ? [{ key: 'runs', labelKey: 'sidebar.agent_view_runs', onPress: () => openAgentRunsPane(agent.id) }]
         : []),

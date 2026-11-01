@@ -107,6 +107,11 @@ export interface ConfirmedAgentDraft {
   /** "承認なしで実行" — see ParsedAgentDraft.runWithoutApproval. Set only by
    *  draftToConfirmedAgentDraft (chat confirm); this card never sets it. */
   runWithoutApproval?: boolean;
+  /** See ParsedAgentDraft.runWithoutApprovalLevel (chat confirm only). */
+  runWithoutApprovalLevel?: 'all';
+  /** See ParsedAgentDraft.workspaceRoot — home-relative (`~/demo`); the
+   *  dispatcher resolves it before createAgent. */
+  workspaceRoot?: string;
 }
 
 // 'once' = run immediately on Confirm (no schedule). The others register a schedule.
