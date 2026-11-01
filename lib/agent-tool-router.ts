@@ -142,7 +142,7 @@ export function suggestToolForDraft(
   // (ensureLocalLlmServerBeforePlanExecutor) — a keyword-scored cloud
   // agent-level tool would leave the executor's local steps with no server
   // (and keeps decideAttendedRoute from choosing the parallel executor route).
-  const allLocal = opts.orchestrated ? allLocalStepSuggestion(opts.steps) : undefined;
+  const allLocal = opts.orchestrated ? localAgentToolForSteps(opts.steps) : undefined;
   if (allLocal) return allLocal;
   if (!opts.orchestrated) {
     const pinned = detectExplicitToolUsage(prompt) ?? detectExplicitToolUsage(opts.mentionText);
@@ -173,6 +173,59 @@ export function allLocalStepSuggestion(
   const sameModel = tools.every((t) => (t as { model?: string }).model === first.model);
   const tool: ToolChoice = sameModel ? { ...first } : { type: 'local' };
   return { tool, label: toolChoiceToLabel(tool), reason: 'Every step was pinned to the local LLM', explicit: true };
+}
+
+/**
+ * Parallel CLI steps Inc4 (docs/superpowers/specs/2026-11-01-parallel-cli-steps-plan.md):
+ * a chain that pins some steps to a CLI worker (Codex / Claude Code) and
+ * leaves the rest — always including the final step — unpinned or on the
+ * local LLM ("using Codex A, using Claude Code B, then combine the two")
+ * gets a local agent-level tool. The agent-level tool is plan.tool and the
+ * engine of the unpinned final step; a keyword-scored cloud / A-B tool there
+ * would keep decideAttendedRoute off the parallel executor route (plan.tool
+ * must be HTTP-dispatchable) and could silently send the aggregation to an
+ * API the user never named. Any other pin (Perplexity, Gemini, an api-call
+ * step) keeps today's scoring.
+ */
+export function cliFanOutLocalSuggestion(
+  steps: ReadonlyArray<string | { tool?: ToolChoice; toolPinned?: boolean; apiCall?: unknown }> | null | undefined,
+): ToolSuggestion | undefined {
+  if (!steps || steps.length < 2) return undefined;
+  let cliPins = 0;
+  const localModels = new Set<string | undefined>();
+  for (const s of steps) {
+    if (typeof s === 'string') continue;
+    if (s.apiCall) return undefined;
+    if (!s.tool) continue;
+    if (s.tool.type === 'local') {
+      localModels.add((s.tool as { model?: string }).model);
+      continue;
+    }
+    if (s.tool.type === 'cli' && cliIdOf(s.tool) && s.toolPinned === true) {
+      cliPins++;
+      continue;
+    }
+    return undefined;
+  }
+  const last = steps[steps.length - 1];
+  if (typeof last !== 'string' && last.tool?.type === 'cli') return undefined;
+  if (cliPins === 0) return undefined;
+  const model = localModels.size === 1 ? [...localModels][0] : undefined;
+  const tool: ToolChoice = model ? { type: 'local', model } : { type: 'local' };
+  return {
+    tool,
+    label: toolChoiceToLabel(tool),
+    reason: 'CLI-pinned steps with an unpinned final step: the rest runs on the local LLM',
+    explicit: true,
+  };
+}
+
+/** The local agent-level tool a chain's step pins call for (all-local, or
+ *  CLI pins mixed with unpinned / local steps), else undefined. */
+export function localAgentToolForSteps(
+  steps: ReadonlyArray<string | { tool?: ToolChoice; toolPinned?: boolean; apiCall?: unknown }> | null | undefined,
+): ToolSuggestion | undefined {
+  return allLocalStepSuggestion(steps) ?? cliFanOutLocalSuggestion(steps);
 }
 
 function textForSecretScan(agent: Agent): string {

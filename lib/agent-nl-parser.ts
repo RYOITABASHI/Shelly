@@ -945,7 +945,9 @@ export function parseSchedule(text: string): ScheduleResult {
   // the derived name/prompt (mirrors every other leading schedule clause).
   if (
     /^\s*(?:今すぐ|すぐに|すぐ|直ちに|即時|即座に)[、,]?\s*\S/.test(text) ||
-    /^\s*(?:right\s+now|right\s+away|immediately|asap)[,]?\s+\S/i.test(text)
+    // 2026-11-01 (Inc4): "Right now. At the same time: …" — a sentence-ending
+    // period (or a colon) after the leading phrase is the same lead-in.
+    /^\s*(?:right\s+now|right\s+away|immediately|asap)[,.:!]?\s+\S/i.test(text)
   ) {
     return { schedule: 'once', confident: true, label: '今すぐ（1回のみ）' };
   }
@@ -2270,8 +2272,8 @@ function derivePrompt(text: string, schedule: ScheduleResult): string {
       // to the front of the derived prompt. Anchored to the string START
       // (unlike the start-date strip above) since this is specifically the
       // LEADING-clause case; a mid-sentence "すぐ" mention is left alone.
-      .replace(/^\s*(?:今すぐ|すぐに|すぐ|直ちに|即時|即座に)[、,]?\s*/, '')
-      .replace(/^\s*(?:right\s+now|right\s+away|immediately|asap)[,]?\s*/i, '')
+      .replace(/^\s*(?:今すぐ|すぐに|すぐ|直ちに|即時|即座に)[、,。]?\s*/, '')
+      .replace(/^\s*(?:right\s+now|right\s+away|immediately|asap)[,.:!]?\s*/i, '')
       // Pure interval schedule ("15分ごとに…" / "2時間ごとに…", NO 毎日/毎朝/…
       // recurrence marker) — 2026-07-24 fuzz-sweep gap 2. The marker-anchored
       // strip below only fires when one of the daily/weekly recurrence markers
@@ -2900,6 +2902,18 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     const lastInstruction = typeof last === 'string' ? last : last.instruction;
     if (saveOnlyClauseLabel(lastInstruction)) {
       const trimmed = detectedSteps.slice(0, -1);
+      detectedSteps = trimmed.length >= 2 ? trimmed : undefined;
+    }
+  }
+  // Parallel CLI steps Inc4 (2026-11-01): an explicit ClosePaw clause IS the
+  // agent's action (closePawAction above — its goal runs from "ClosePaw" to
+  // the end of the utterance), so neither that clause nor anything after it
+  // runs as a model step (it would answer "ClosePawで…送って" as text). Same
+  // "fewer than 2 steps → plain single-prompt agent" rule as above.
+  if (closePawAction && detectedSteps && detectedSteps.length >= 2) {
+    const at = detectedSteps.findIndex((s) => CLOSEPAW_NAME_RE.test(typeof s === 'string' ? s : s.instruction));
+    if (at >= 0) {
+      const trimmed = detectedSteps.slice(0, at);
       detectedSteps = trimmed.length >= 2 ? trimmed : undefined;
     }
   }

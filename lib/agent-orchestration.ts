@@ -718,7 +718,9 @@ const TOOL_ONLY_PREFIX_RE = /^(?:(?:with|using|via|through|use|on|in)\s+(?:the\s
 /** true when `clause` names a tool and contains no work of its own — a pure
  *  instrument phrase like 「ローカルLLMで」. */
 export function isToolOnlyClause(clause: string): boolean {
-  const t = clause.trim().replace(/[。．.、,！!]+$/, '').trim();
+  // 2026-11-01 (Inc4): ", and using Claude Code, …" — the clause splitter
+  // leaves the conjunction on the clause; it is not work of its own.
+  const t = clause.trim().replace(/^and\s+/i, '').replace(/[。．.、,！!]+$/, '').trim();
   if (!t || !matchToolMention(t)) return false;
   // Remove the FIRST tool mention (same table as matchToolMention), then see
   // whether anything but filler particles remains.
@@ -792,6 +794,7 @@ interface ScopedClause {
 function applyToolScopes(clauses: ReadonlyArray<string | Omit<ScopedClause, 'tool'>>): ScopedClause[] {
   const out: ScopedClause[] = [];
   let scope: ToolChoice | undefined;
+  const scopesSeen = new Set<string>();
   // A marker / sequencing flag on a tool-only clause carries to the next real
   // step (「同時に、ローカルLLMで、春について…」).
   let pending: Pick<ScopedClause, 'seqBefore' | 'startsGroup'> = {};
@@ -808,11 +811,20 @@ function applyToolScopes(clauses: ReadonlyArray<string | Omit<ScopedClause, 'too
         out[out.length - 1].tool = tool;
       }
       scope = tool;
+      if (tool) scopesSeen.add(JSON.stringify(tool));
       pending = flags;
       return;
     }
     pending = {};
     const own = matchToolMention(clause);
+    // 2026-11-01 (Inc4): "using Codex, A, and using Claude Code, B, then
+    // combine the two results" — once two different scopes have been opened,
+    // a clause that consumes the siblings' output belongs to neither of them:
+    // it ends the scope and stays unpinned (agent-level engine). With a single
+    // scope (「ローカルLLMで、春…、夏…、最後に3つを…」) the scope still carries.
+    if (!own && scope && scopesSeen.size >= 2 && consumesSiblingOutput(clause)) {
+      scope = undefined;
+    }
     // Review fix: a delivery/side-effect clause (post / send / webhook /
     // notify / save / a URL target) is never pulled into a model scope — the
     // tool named for the WORK steps must not become the instrument of a send.
@@ -890,10 +902,18 @@ const SEQUENCE_ONLY_CLAUSE_RE =
 /** Verbs that transform existing text — a sibling with one of these most
  *  likely works on the PREVIOUS sibling's output (「記事を書いて、翻訳して」). */
 const TRANSFORM_VERB_RE =
-  /要約|翻訳|英訳|和訳|校正|添削|推敲|比較|比べ|評価|整理|まとめ|直し|直す|リライト|書き直|タイトルを\s*(?:付|つ)け|返信案|レビュー|清書|\b(?:summari[sz]e[sd]?|summary|translat(?:e|es|ed|ion)|proofread|compare|evaluate|rewrite|re-write|edit|polish|title|review|shorten|refine)\b/i;
+  /要約|翻訳|英訳|和訳|校正|添削|推敲|比較|比べ|評価|整理|まとめ|直し(?!方)|直す|リライト|書き直|タイトルを\s*(?:付|つ)け|返信案|レビュー|清書|\b(?:summari[sz]e[sd]?|summary|translat(?:e|es|ed|ion)|proofread|compare|evaluate|rewrite|re-write|edit|polish|title|review|shorten|refine)\b/i;
 /** The clause names its own independent source/topic, so a transform verb in
  *  it does not imply it works on a sibling (「春のニュースについて要約して」). */
-const OWN_TOPIC_RE = /について|に関して|に関する|https?:\/\/|\babout\b|\bregarding\b/i;
+//  2026-11-01 (Inc4): a file path of its own (「~/demo/user.tsの型エラーを直して」,
+//  "fix the errors in ./src/a.ts") is such a source too.
+const OWN_TOPIC_RE = /について|に関して|に関する|https?:\/\/|\babout\b|\bregarding\b|~\/[\w.\-]|(?:^|[\s(「『"'])\.{0,2}\/[\w.\-]+\/[\w.\-]/i;
+
+/** The clause works on its siblings' output (「2つの結果を…」, "combine the
+ *  two results"). */
+function consumesSiblingOutput(clause: string): boolean {
+  return SIBLING_REFERENCE_RE.test(clause) || stepReferencesPriorOutput(clause);
+}
 
 function endsParallelGroup(step: ScopedClause, opts: { first?: boolean } = {}): boolean {
   return (

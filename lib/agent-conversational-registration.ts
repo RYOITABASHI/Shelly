@@ -71,7 +71,7 @@ import type { ParsedAgentDraft } from './agent-nl-parser';
 // normalization is deterministic code's job).
 import { manualScheduleLabel, normalizeBrowserPaneUrl, parseSchedule } from './agent-nl-parser';
 import type { AgentAction, SocialConnectorMeta } from '@/store/types';
-import { allLocalStepSuggestion, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
+import { localAgentToolForSteps, suggestToolForDraft, toolChoiceToLabel } from './agent-tool-router';
 // Reused verbatim, NOT re-implemented: this is the one deterministic
 // destination resolver in the codebase, and a mirrored copy here would
 // silently drift from detectSocialPost()'s own matching rules the first time
@@ -1697,7 +1697,8 @@ export function mergeConversationalExtractionIntoDraft(
   // local agent-level tool (plan.tool — see allLocalStepSuggestion). The
   // prompt branch above picked the tool before the steps were merged, so the
   // rule is applied here, on the final step list.
-  const allLocal = touched ? allLocalStepSuggestion(merged.orchestrationSteps) : undefined;
+  // Inc4: CLI pins mixed with an unpinned final step count too.
+  const allLocal = touched ? localAgentToolForSteps(merged.orchestrationSteps) : undefined;
   if (allLocal && (merged.tool?.type !== 'local' || !merged.toolExplicit)) {
     const m = next();
     if (m.tool?.type !== 'local') {

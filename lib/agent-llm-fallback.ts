@@ -274,7 +274,34 @@ export function isLowConfidenceAgentDraft(draft: ParsedAgentDraft): boolean {
  *     immediate answer.
  */
 export function isCapabilityQuestionForAgentFlow(text: string | null | undefined): boolean {
-  return isCapabilityQuestion(text);
+  if (!text) return false;
+  return isCapabilityQuestion(withoutEmbeddedHowToTasks(text));
+}
+
+/**
+ * 2026-11-01 on-device finding (build 2761, parallel CLI steps Inc4):
+ * "@agent Right now, in parallel, using Codex list 3 improvement ideas …,
+ * using Claude Code explain how to fix the type errors in ~/demo/user.ts,
+ * then …" never became a draft — "how to" inside the TASK ("explain how to
+ * fix …") matched isCapabilityQuestion's "how to" pattern, so the whole
+ * request was answered as a question about Shelly instead. A how-to that is
+ * the OBJECT of a work verb somewhere after the start of the request
+ * ("…, explain how to fix X", 「…のやり方を説明して」) is part of the task, not
+ * a question to Shelly; it is masked before the check. A request that STARTS
+ * with it ("explain how to make an agent") is left as is, and so are the
+ * question-shaped verbs ("tell me how to", "show me how to"), so a real
+ * capability question still gets its answer.
+ */
+const EMBEDDED_HOW_TO_EN_RE =
+  /\b(?:explain|describe|document|write(?:\s+up)?|summari[sz]e|outline|list|note|research|investigate|find\s+out|figure\s+out|suggest|propose|draft|look\s+up|detail)\s+(?:(?:me|us)\s+)?how\s+(?:to|do\s+i|can\s+i)\b/gi;
+const EMBEDDED_HOW_TO_JA_RE =
+  /(?:やり方|の仕方|使い方|設定方法|方法)\s*を\s*(?:説明|まとめ|整理|調べ|書い|書き出|列挙|リストアップ|提案)/g;
+
+function withoutEmbeddedHowToTasks(text: string): string {
+  const trimmed = text.trim();
+  const mask = (re: RegExp, src: string): string =>
+    src.replace(re, (m: string, offset: number) => (offset > 0 ? ' task ' : m));
+  return mask(EMBEDDED_HOW_TO_JA_RE, mask(EMBEDDED_HOW_TO_EN_RE, trimmed));
 }
 
 // ── §3: LLM structured-field extraction ─────────────────────────────────
