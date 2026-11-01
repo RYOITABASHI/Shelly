@@ -126,8 +126,10 @@ import {
   auditCommandText,
   DEFAULT_AGENT_PROJECT_DIR,
   escalationAutoApprovable,
+  getRunWithoutApprovalSetting,
   isRunWithoutApprovalEnabled,
   postRunWithoutApprovalAuditLine,
+  runWithoutApprovalAuditKey,
 } from '@/lib/agent-run-without-approval';
 import { registeredRunOrigin } from '@/lib/agent-run-origin-registry';
 import { getHomePath } from '@/lib/home-path';
@@ -2291,17 +2293,22 @@ export default function RootLayout() {
         const agentFor = (agentId: string) => useAgentStore.getState().agents.find((a) => a.id === agentId) ?? null;
         const agent = agentFor(parsed.agentId);
         const enabled = await isRunWithoutApprovalEnabled(agent);
-        // Review H2: in-root writes are judged against the hash-verified
-        // definition's workspace root (the driver's default when unset),
-        // never the root named in the agent-writable request file alone.
-        const gateOpts = {
-          trustedWorkspaceRoot: agent?.workspaceRoot?.trim() || DEFAULT_AGENT_PROJECT_DIR,
-          homePaths: [getHomePath(), '/data/user/0/dev.shelly.terminal/files/home', '/data/data/dev.shelly.terminal/files/home'],
-        };
         // Review M1 (escalation side): only a run the user started from the
         // app (RN's own run registry) — never a notification-triggered /
         // tainted one — is answered without asking.
         const userStarted = registeredRunOrigin(parsed.agentId) === 'user';
+        // Review H2: in-root writes are judged against the hash-verified
+        // definition's workspace root (the driver's default when unset),
+        // never the root named in the agent-writable request file alone.
+        // 2026-11-01: the level ('standard' | 'all') comes from the same
+        // Keystore entry; 'all' applies only to an attended run.
+        const setting = await getRunWithoutApprovalSetting(agent);
+        const gateOpts = {
+          trustedWorkspaceRoot: agent?.workspaceRoot?.trim() || DEFAULT_AGENT_PROJECT_DIR,
+          homePaths: [getHomePath(), '/data/user/0/dev.shelly.terminal/files/home', '/data/data/dev.shelly.terminal/files/home'],
+          level: setting === 'all' ? ('all' as const) : ('standard' as const),
+          attended: userStarted,
+        };
         const notApplied = (reason: string) => {
           logInfo('AgentEscalation', `run-without-approval not applied run=${parsed.runId} req=${parsed.reqId} reason=${reason}`);
           return false;
@@ -2326,21 +2333,28 @@ export default function RootLayout() {
           );
           if (policy.decision === 'deny' || policy.decision === 'draft_only' || policy.decision === 'ask') policyBlocksAutoAccept = true;
         }
+        // The level is re-read for the minted copy's agent (never raised by
+        // anything in the request) and the attended check is re-made from
+        // RN's own registry for that agent.
+        const mintedSetting = await getRunWithoutApprovalSetting(agentFor(minted.agentId));
+        const mintedAttended = registeredRunOrigin(minted.agentId) === 'user';
         const verdict = escalationAutoApprovable(minted, {
-          enabled: await isRunWithoutApprovalEnabled(agentFor(minted.agentId)),
+          enabled: mintedSetting !== 'off',
           policyBlocksAutoAccept,
           ...gateOpts,
+          level: mintedSetting === 'all' && setting === 'all' ? 'all' : 'standard',
+          attended: mintedAttended && userStarted,
         });
         if (verdict.ok === false) {
-          logInfo('AgentEscalation', `run-without-approval not applied run=${minted.runId} req=${minted.reqId} reason=${verdict.reason}`);
+          logInfo('AgentEscalation', `run-without-approval not applied run=${minted.runId} req=${minted.reqId} level=${mintedSetting} reason=${verdict.reason}`);
           return false;
         }
         await TerminalEmulator.resolveAgentEscalationAutoApproval(minted.runId, minted.reqId, requestSha256, actionNonce);
         postRunWithoutApprovalAuditLine(
           minted.agentId,
-          t('agent_run_without_approval.auto_approved', { command: auditCommandText(minted.command) }),
+          t(runWithoutApprovalAuditKey(mintedSetting), { command: auditCommandText(minted.command) }),
         );
-        logInfo('AgentEscalation', `run-without-approval auto-approved run=${minted.runId} req=${minted.reqId} signals=${(minted.signals ?? []).join(',')}`);
+        logInfo('AgentEscalation', `run-without-approval auto-approved run=${minted.runId} req=${minted.reqId} level=${mintedSetting} kind=${verdict.kind ?? 'standard'} signals=${(minted.signals ?? []).join(',')}`);
         return true;
       } catch (e) {
         logError('AgentEscalation', `run-without-approval auto-approve failed run=${parsed.runId}`, e);
@@ -2628,7 +2642,10 @@ export default function RootLayout() {
       try {
         // Review M3: bound to the hash of the current agent definition.
         const agent = useAgentStore.getState().agents.find((a) => a.id === parsed.agentId) ?? null;
-        const enabled = await isRunWithoutApprovalEnabled(agent);
+        // Action approvals: identical at both levels (draft / notify only);
+        // the level only changes the audit line's wording.
+        const setting = await getRunWithoutApprovalSetting(agent);
+        const enabled = setting !== 'off';
         // Origin re-checked on the minted copy too (review M1) — see
         // decideActionAutoApproval for the minted-origin source.
         const decision = await decideActionAutoApproval(parsed, {
@@ -2645,7 +2662,7 @@ export default function RootLayout() {
         if (!minted.requestSha256 || !minted.actionNonce) return false;
         await TerminalEmulator.resolveAgentActionApproval(minted.runId, 'accept', minted.requestSha256, minted.actionNonce);
         const what = minted.preview ? `${minted.actionType}: ${auditCommandText(minted.preview, 120)}` : minted.actionType;
-        postRunWithoutApprovalAuditLine(minted.agentId, t('agent_run_without_approval.auto_approved', { command: what }));
+        postRunWithoutApprovalAuditLine(minted.agentId, t(runWithoutApprovalAuditKey(setting), { command: what }));
         logInfo('AgentActionApproval', `run-without-approval auto-accepted run=${minted.runId} action=${minted.actionType}`);
         return true;
       } catch (e) {

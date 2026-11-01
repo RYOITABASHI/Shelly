@@ -751,10 +751,18 @@ export function summarizeAgentDraftAsText(
   // scheduleAssumed note right above this block.
   if (draft.llmExtracted) lines.push(tl('agentplan.llm_extracted_note'));
 
+  // 2026-11-01: where the CLI workers will run (derived from the paths the
+  // request names — lib/agent-workspace-from-request.ts).
+  if (draft.workspaceRoot) lines.push(markLine(tl('agentplan.workspace_line', { path: draft.workspaceRoot }), 'workspaceRoot', changedFields));
   if (draft.autonomous) lines.push(markLine(tl('agentplan.autonomous_note'), 'autonomous', changedFields));
   // Review M4: marked like the other risky lines (the string itself leads
-  // with '⚠'), and ★-marked when a patch just touched it.
-  if (draft.runWithoutApproval) lines.push(markLine(tl('agentplan.run_without_approval_note'), 'runWithoutApproval', changedFields));
+  // with '⚠'), and ★-marked when a patch just touched it. The "all" level
+  // has its own line naming what it allows and what still asks.
+  if (draft.runWithoutApproval) {
+    lines.push(draft.runWithoutApprovalLevel === 'all'
+      ? markLine(tl('agentplan.run_without_approval_all_note'), 'runWithoutApproval', changedFields)
+      : markLine(tl('agentplan.run_without_approval_note'), 'runWithoutApproval', changedFields));
+  }
   if (draft.memory?.remember) {
     lines.push(tl('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
   }
@@ -875,5 +883,8 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     // Only the chat-native confirm (this function) carries it — the summary
     // line the user OK'd named the option.
     ...(draft.runWithoutApproval === true ? { runWithoutApproval: true } : {}),
+    ...(draft.runWithoutApproval === true && draft.runWithoutApprovalLevel === 'all' ? { runWithoutApprovalLevel: 'all' as const } : {}),
+    // The summary line the user OK'd named it ("Workspace: ~/demo").
+    ...(draft.workspaceRoot ? { workspaceRoot: draft.workspaceRoot } : {}),
   };
 }

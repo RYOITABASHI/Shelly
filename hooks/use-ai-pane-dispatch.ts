@@ -71,6 +71,7 @@ import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-a
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
 import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-registration';
 import { setRunWithoutApproval } from '@/lib/agent-run-without-approval';
+import { resolveWorkspaceRootForHome } from '@/lib/agent-workspace-from-request';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
 import { findActionApprovalReplyTarget, findAmbiguousBareApprovalReply, parseActionApprovalChatReply, resolveActionApprovalFromChat, resolvePendingApprovalFromMonitor } from '@/lib/agent-action-chat-approval';
@@ -4393,6 +4394,18 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           || (registeredRunOn === 'cloud' && persistedTool.type === 'local')
         );
         const persistedRunOn = editingAgent && !autonomousChanged ? (runOnConflicts ? 'auto' : editingAgent.runOn) : runOn;
+        // 2026-11-01: the CLI workspace the summary showed ("Workspace:
+        // ~/demo", lib/agent-workspace-from-request.ts). Stored absolute —
+        // the run script single-quotes AGENT_WORKSPACE_ROOT (no `~`
+        // expansion) — and created now, because both executors fall back to
+        // $HOME for a workspace directory that does not exist yet.
+        const resolvedWorkspaceRoot = confirmed.workspaceRoot
+          ? resolveWorkspaceRootForHome(confirmed.workspaceRoot, getHomePath())
+          : null;
+        if (resolvedWorkspaceRoot) {
+          await runAgentShellCommand(`mkdir -p -- '${resolvedWorkspaceRoot.replace(/'/g, `'\\''`)}'`).catch((e) =>
+            logError('AgentDraft', `workspace mkdir failed ${resolvedWorkspaceRoot}`, e));
+        }
         const agentFields = {
           name: confirmed.name,
           description: confirmed.prompt.slice(0, 120),
@@ -4430,6 +4443,7 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // MONITOR team "ask before writing" (lib/monitor-team-draft.ts): set at
           // creation so the first materialize already carries it.
           ...(confirmed.requireActionApproval !== undefined ? { requireActionApproval: confirmed.requireActionApproval } : {}),
+          ...(resolvedWorkspaceRoot ? { workspaceRoot: resolvedWorkspaceRoot } : {}),
         };
         const persisted = await persistAgentDraft({
           editingAgentId,
@@ -4448,8 +4462,10 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // the option is turned ON — in the Keystore-backed store only, never
         // in the agent JSON (lib/agent-run-without-approval.ts). Chat only
         // ever raises it; turning it off is the agent detail toggle.
+        // The "all" level only when the user's own words asked for it (the
+        // summary showed its own line); otherwise the standard level.
         if (confirmed.runWithoutApproval === true) {
-          await setRunWithoutApproval(created, true, 'chat').catch((e) =>
+          await setRunWithoutApproval(created, confirmed.runWithoutApprovalLevel === 'all' ? 'all' : 'standard', 'chat').catch((e) =>
             logError('AgentDraft', 'run-without-approval flag write failed', e));
         }
 

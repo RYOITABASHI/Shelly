@@ -65,6 +65,9 @@
  * (the user re-toggles it). The only writers are the agent detail toggle
  * (Sidebar) and the typed-OK chat registration
  * (hooks/use-ai-pane-dispatch.ts confirmAgentDraftInner).
+ * 2026-11-01: a second, opt-in level 'all' (すべて承認なしで実行) — see
+ * RunWithoutApprovalLevel and the soft / hard table above
+ * escalationAutoApprovable. Everything above describes the 'standard' level.
  * Residual (DEFERRED.md): a same-uid process could restore an OLDER
  * SecureStore blob (rollback to a time the flag was ON); git subcommands
  * allowed as reads honour the repository's own config (core.fsmonitor …).
@@ -80,13 +83,32 @@ const HEX_SHA256_RE = /^[0-9a-f]{64}$/;
 
 export type RunWithoutApprovalVia = 'detail' | 'chat';
 
+/**
+ * 2026-11-01: two levels. 'standard' = the original option (module doc
+ * above). 'all' = "すべて承認なしで実行" — on ATTENDED runs only, every
+ * escalation the gate hands to a human is answered too, except the hard
+ * refusals listed in the table above escalationAutoApprovable. Default OFF,
+ * opt-in only, stored next to the entry in the same Keystore-backed blob.
+ */
+export type RunWithoutApprovalLevel = 'standard' | 'all';
+export type RunWithoutApprovalSetting = 'off' | RunWithoutApprovalLevel;
+
 export type RunWithoutApprovalEntry = {
   agentId: string;
   enabledAt: number;
   via: RunWithoutApprovalVia;
   /** runWithoutApprovalDefinitionHash() of the definition it was enabled for. */
   definitionHash: string;
+  /** Absent on entries written before 2026-11-01 — they read as 'standard'
+   *  (an entry existing = ON, exactly as before). Any value other than
+   *  'all' also reads as 'standard': a malformed level never RAISES it. */
+  level?: RunWithoutApprovalLevel;
 };
+
+/** The level an entry grants: only an explicit 'all' is 'all'. */
+export function entryLevel(entry: Pick<RunWithoutApprovalEntry, 'level'> | null | undefined): RunWithoutApprovalLevel {
+  return entry && entry.level === 'all' ? 'all' : 'standard';
+}
 
 export type RunWithoutApprovalStorage = {
   get: () => Promise<string | null>;
@@ -225,20 +247,31 @@ export async function loadRunWithoutApproval(): Promise<RunWithoutApprovalEntry[
  * rewritten / edited agent reads as OFF until the user turns it on again).
  */
 export async function isRunWithoutApprovalEnabled(agent: RunWithoutApprovalAgentLike | null | undefined): Promise<boolean> {
-  if (!agent || !agent.id) return false;
+  return (await getRunWithoutApprovalSetting(agent)) !== 'off';
+}
+
+/**
+ * 'off' | 'standard' | 'all' — same verification as isRunWithoutApprovalEnabled
+ * (Keystore entry + definition hash of the CURRENT definition); the level
+ * comes only from that entry, never from the agent definition.
+ */
+export async function getRunWithoutApprovalSetting(
+  agent: RunWithoutApprovalAgentLike | null | undefined,
+): Promise<RunWithoutApprovalSetting> {
+  if (!agent || !agent.id) return 'off';
   const entry = (await loadRunWithoutApproval()).find((e) => e.agentId === agent.id);
-  if (!entry) return false;
+  if (!entry) return 'off';
   let current: string;
   try {
     current = runWithoutApprovalDefinitionHash(agent);
   } catch {
-    return false;
+    return 'off';
   }
   if (current !== entry.definitionHash) {
     warn(`agent ${agent.id} definition changed since run-without-approval was enabled; treating it as OFF`);
-    return false;
+    return 'off';
   }
-  return true;
+  return entryLevel(entry);
 }
 
 export function subscribeRunWithoutApproval(fn: () => void): () => void {
@@ -247,18 +280,30 @@ export function subscribeRunWithoutApproval(fn: () => void): () => void {
 }
 
 /** User-only writer: the agent detail toggle or the typed-OK chat
- *  registration. Never called from anything an agent run can drive. */
+ *  registration. Never called from anything an agent run can drive.
+ *  `setting`: true / 'standard' = the standard level, 'all' = the "all"
+ *  level, false / 'off' = OFF. */
 export async function setRunWithoutApproval(
   agent: RunWithoutApprovalAgentLike,
-  enabled: boolean,
+  setting: boolean | RunWithoutApprovalSetting,
   via: RunWithoutApprovalVia,
   now: number = Date.now(),
 ): Promise<void> {
   if (!agent || !agent.id) return;
+  const level: RunWithoutApprovalSetting = setting === true ? 'standard' : setting === false ? 'off' : setting;
   const list = (await loadRunWithoutApproval()).filter((e) => e.agentId !== agent.id);
-  const next = enabled
-    ? [...list, { agentId: agent.id, enabledAt: now, via, definitionHash: runWithoutApprovalDefinitionHash(agent) }].slice(-MAX_ENTRIES)
-    : list;
+  const entry: RunWithoutApprovalEntry | null = level === 'off'
+    ? null
+    : {
+        agentId: agent.id,
+        enabledAt: now,
+        via,
+        definitionHash: runWithoutApprovalDefinitionHash(agent),
+        // 'standard' is written without the field, byte-compatible with the
+        // pre-level format (an older build reading it sees the same entry).
+        ...(level === 'all' ? { level: 'all' as const } : {}),
+      };
+  const next = entry ? [...list, entry].slice(-MAX_ENTRIES) : list;
   await getStorage().set(JSON.stringify(next));
   cache = next;
   for (const fn of listeners) {
@@ -292,7 +337,7 @@ export const DEFAULT_AGENT_PROJECT_DIR = '~/projects/shelly-content-studio';
 /** App trust / approval state, never auto-approved (read or write). */
 const TRUST_STATE_RE = /shared_prefs|no_backup|(?:^|[\s/'"=:<>])\.shelly|shelly-agent-(?:escalation|preapproval|action)/i;
 
-export type AutoApproveVerdict = { ok: true; kind?: 'read' | 'in-root-write' } | { ok: false; reason: string };
+export type AutoApproveVerdict = { ok: true; kind?: 'read' | 'in-root-write' | 'all' } | { ok: false; reason: string };
 
 export function actionAutoApprovable(
   request: { actionType?: string | null },
@@ -532,24 +577,339 @@ function tokenWithinAnyRoot(roots: readonly string[], token: string, cwd: string
   return isWithinRoot(cwd, token) && roots.some((r) => isWithinRoot(r, normalizePath(`${cwd}/${token}`)));
 }
 
+export type EscalationRequestLike = {
+  command?: string | null;
+  signals?: readonly string[] | null;
+  state?: string | null;
+  reason?: string | null;
+  cwd?: string | null;
+  workspaceRoot?: string | null;
+};
+
+export type EscalationAutoApproveOpts = {
+  enabled: boolean;
+  policyBlocksAutoAccept?: boolean;
+  /** The workspace root of the hash-verified agent definition (or
+   *  DEFAULT_AGENT_PROJECT_DIR). Absent ⇒ no in-root write is auto-approved. */
+  trustedWorkspaceRoot?: string | null;
+  /** Home directory spellings, to expand `~` in trustedWorkspaceRoot. */
+  homePaths?: readonly string[];
+  /** The level read from the Keystore entry (getRunWithoutApprovalSetting).
+   *  Absent ⇒ 'standard'. */
+  level?: RunWithoutApprovalLevel;
+  /** true only for a run RN's own registry says the user started from the
+   *  app. The "all" level applies only when this is true; otherwise the
+   *  standard rules decide. */
+  attended?: boolean;
+};
+
+/**
+ * ── "all" level (すべて承認なしで実行) — soft / hard refusal table ─────────
+ *
+ * escalationAutoApprovable first runs the standard rules. When they refuse
+ * and the level is 'all' on an ATTENDED run, the refusal reason decides:
+ * a HARD reason is final (a human answers); a SOFT reason is lifted and the
+ * command is re-judged by allLevelEscalationVerdict, which has its own hard
+ * checks (bottom of the table).
+ *
+ *   reason (standard path)          | under 'all'
+ *   --------------------------------+----------------------------------------
+ *   flag-off                        | HARD
+ *   policy-ask (POLICY-001 deny /   | HARD
+ *     draft_only / ask, proactive)  |
+ *   not-live (queued request)       | HARD
+ *   not-boundary-gray (POLICY-001   | HARD
+ *     ask rule / proactive floor)   |
+ *   no-command / no-signals         | HARD
+ *   signal:leaves-root              | soft
+ *   signal:write-or-exec            | soft
+ *   signal:destructive (HIGH only;  | soft
+ *     CRITICAL is a gate deny)      |
+ *   signal:opaque-script-exec       | soft
+ *   signal:indirect-exec            | soft
+ *   signal:secret-read              | HARD
+ *   signal:network-send             | HARD (data leaves the device — same
+ *                                   |   line as external-send actions)
+ *   signal:policy-write / unknown   | HARD
+ *   safety:CRITICAL                 | HARD
+ *   safety:HIGH                     | soft
+ *   trust-state-path (.shelly,      | HARD
+ *     shared_prefs, approval files) |
+ *   protected-path (dot component)  | HARD outside the trusted workspace;
+ *                                   |   inside it only .git/hooks, .git/config,
+ *                                   |   .ssh/.gnupg/… and .env* stay HARD
+ *   expansion ($ / backticks)       | soft (the lexical hard checks below
+ *                                   |   still run on the raw text)
+ *   indirect (<( >( <<)             | soft (heredoc bodies are data)
+ *   dir-change-write                | soft (cd is followed lexically)
+ *   tool:<x> / option:<x>           | soft, except the system tools below
+ *   git-subcommand                  | soft, except network git (push …)
+ *   glob / home-path / parent-path  | soft (paths resolved, then checked)
+ *   option-path                     | soft
+ *   write-outside-root              | soft inside the app home, HARD outside
+ *   no-trusted-root / unsafe-root / | soft (the trusted root only widens
+ *     root-mismatch                 |   what may be named outside home)
+ *   cwd-outside-root                | soft when the cwd is inside the app
+ *                                   |   home or the trusted root, else HARD
+ *
+ *   hard checks of allLevelEscalationVerdict (new reasons):
+ *     safety:CRITICAL (raw AND dequoted payload) · signal:<hard> ·
+ *     trust-state-path · secret-file (.env*, id_rsa, *.pem/*.key/*.p12/
+ *     *.jks/*.keystore, auth.json, credentials) · protected-path ·
+ *     shelly-control-path (~/<dot-dir>, ~/bin) · unresolved-path (`~/$x/…`)
+ *     · home-root (the home
+ *     directory itself, or a glob directly in it) · outside-home (a path
+ *     outside the app home that is not inside the trusted workspace root) ·
+ *     cwd-outside-home · system-tool:<x> (am / pm / cmd / settings / svc /
+ *     content / setprop / su / sudo / reboot / input / kill / pkill /
+ *     killall / crontab / shelly) · network-tool (git push / fetch / pull /
+ *     clone / remote / send-email / ls-remote / submodule, npm|pnpm|yarn
+ *     publish).
+ *
+ * Residual (accepted with the opt-in, DEFERRED.md): the hard checks are
+ * lexical. A script run (`python x.py`, `node -e …`) or a path assembled at
+ * run time (`$(echo … | base64 -d)`, a variable set outside the command)
+ * can reach places no word of the command names. "all" trusts the CLI
+ * worker on attended runs; the gate's own denies stay in force.
+ *
+ * Never reached by this function at all: gate denies (CRITICAL, POLICY-001
+ * deny, policy-write) — the driver declines them before filing a request —
+ * and unattended runs (the driver declines every gray verdict itself).
+ */
+export const ALL_LEVEL_SOFT_REASONS: ReadonlySet<string> = new Set([
+  'signal:leaves-root',
+  'signal:write-or-exec',
+  'signal:destructive',
+  'signal:opaque-script-exec',
+  'signal:indirect-exec',
+  'safety:HIGH',
+  'protected-path',
+  'expansion',
+  'indirect',
+  'dir-change-write',
+  'git-subcommand',
+  'glob',
+  'home-path',
+  'parent-path',
+  'option-path',
+  'write-outside-root',
+  'no-trusted-root',
+  'unsafe-root',
+  'root-mismatch',
+  'cwd-outside-root',
+]);
+
+/** Gate signals the "all" level may carry. */
+export const ALL_LEVEL_SIGNALS: ReadonlySet<string> = new Set([
+  'leaves-root', 'write-or-exec', 'destructive', 'opaque-script-exec', 'indirect-exec',
+]);
+
+function isSoftReasonForAll(reason: string): boolean {
+  return ALL_LEVEL_SOFT_REASONS.has(reason) || /^(?:tool|option):/.test(reason);
+}
+
 export function escalationAutoApprovable(
-  request: {
-    command?: string | null;
-    signals?: readonly string[] | null;
-    state?: string | null;
-    reason?: string | null;
-    cwd?: string | null;
-    workspaceRoot?: string | null;
-  },
-  opts: {
-    enabled: boolean;
-    policyBlocksAutoAccept?: boolean;
-    /** The workspace root of the hash-verified agent definition (or
-     *  DEFAULT_AGENT_PROJECT_DIR). Absent ⇒ no in-root write is auto-approved. */
-    trustedWorkspaceRoot?: string | null;
-    /** Home directory spellings, to expand `~` in trustedWorkspaceRoot. */
-    homePaths?: readonly string[];
-  },
+  request: EscalationRequestLike,
+  opts: EscalationAutoApproveOpts,
+): AutoApproveVerdict {
+  const standard = standardEscalationVerdict(request, opts);
+  if (standard.ok === true || opts.level !== 'all' || opts.attended !== true) return standard;
+  if (!isSoftReasonForAll(standard.reason)) return standard;
+  return allLevelEscalationVerdict(request, opts);
+}
+
+/** Android / Shelly commands that change system or app state, never
+ *  auto-answered at any level. */
+const ALL_LEVEL_SYSTEM_TOOLS = new Set([
+  'am', 'pm', 'cmd', 'settings', 'svc', 'content', 'setprop', 'su', 'sudo', 'reboot', 'input',
+  'kill', 'pkill', 'killall', 'crontab', 'shelly',
+]);
+const NETWORK_GIT_SUBCOMMANDS = new Set(['push', 'fetch', 'pull', 'clone', 'remote', 'send-email', 'ls-remote', 'submodule', 'request-pull']);
+const PUBLISH_RE = /(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:\S+\s+)*publish\b/;
+/** Credential / key / env files, by the last component of a word. Checked per
+ *  argument word (not on free text: `event.key` in a heredoc'd script is code). */
+const SECRET_BASENAME_RE = /^(?:\.env(?:\..+)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|auth\.json|credentials(?:\.json)?|\.netrc|\.npmrc|\.pypirc|\.git-credentials|.+\.(?:pem|key|p12|pfx|jks|keystore))$/i;
+/** The unmistakable secret paths, on the whole text (heredoc bodies included). */
+const SECRET_PATH_TEXT_RE = /(?:^|[\s/'"=:(])(?:id_(?:rsa|dsa|ecdsa|ed25519)|auth\.json|\.netrc|\.git-credentials)(?=$|[\s'"),;:&|<>])|\/\.env(?=$|[\s.'"),;:&|<>])/i;
+/** Read-only listing tools that may name the home directory itself. */
+const HOME_ROOT_OK_TOOLS = new Set(['ls', 'pwd', 'stat', 'du', 'tree', 'realpath', 'readlink', 'basename', 'dirname', 'echo', 'test', '[']);
+/** Dot components that stay protected even inside the trusted workspace. */
+const PROTECTED_DOT_COMPONENT_RE = /^\.(?:ssh|gnupg|codex|claude|config|aws|kube|docker|shelly.*|android|gradle|m2)$/i;
+/** Non-dot top-level home directories that hold Shelly's own runtime. */
+const SHELLY_CONTROL_HOME_DIRS = new Set(['bin']);
+/** Redirect / argument targets that never name a real file. */
+const DEVICE_PSEUDO_FILE_RE = /^\/dev\/(?:null|stdin|stdout|stderr|fd\/\d+)$/;
+
+/** `cat > f <<EOF … EOF` / `tee f <<EOF … EOF` bodies are data written to a
+ *  file, not paths the command opens: removed before the path checks (the
+ *  raw text still gets the trust-state / secret-name / CRITICAL checks).
+ *  Only for `cat` / `tee` with nothing piped or chained on the heredoc line —
+ *  a body fed to a shell or interpreter (`bash <<EOF`, `cat <<EOF | sh`) is
+ *  code and keeps every word checked. */
+function stripHeredocBodies(script: string): string {
+  return script.replace(
+    /(^|[\n;&|(]\s*)((?:cat|tee)\b[^\n;&|<]*)<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?([^\n;&|]*)\n[\s\S]*?(?:\n[ \t]*\3[ \t]*(?=\n|$)|$)/g,
+    '$1$2<< $4',
+  );
+}
+
+function homeRelative(path: string, homes: readonly string[]): string | null {
+  for (const h of homes) {
+    if (path === h) return '';
+    if (path.startsWith(`${h}/`)) return path.slice(h.length + 1);
+  }
+  return null;
+}
+
+/**
+ * The "all" level's own verdict for an attended escalation the standard
+ * rules refused for a SOFT reason (see the table above). Lexical and
+ * conservative like the rest of this module: anything it cannot place
+ * refuses toward a human only for the hard categories; everything else in
+ * the app home is answered.
+ */
+export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: EscalationAutoApproveOpts): AutoApproveVerdict {
+  if (!opts.enabled) return { ok: false, reason: 'flag-off' };
+  if (opts.level !== 'all' || opts.attended !== true) return { ok: false, reason: 'not-all-level' };
+  if (opts.policyBlocksAutoAccept) return { ok: false, reason: 'policy-ask' };
+  if (request.state) return { ok: false, reason: 'not-live' };
+  if (!/^boundary: /.test(String(request.reason ?? ''))) return { ok: false, reason: 'not-boundary-gray' };
+  const raw = String(request.command ?? '').trim();
+  if (!raw) return { ok: false, reason: 'no-command' };
+  const signals = Array.isArray(request.signals) ? request.signals.map((s) => String(s).trim()).filter(Boolean) : [];
+  if (signals.length === 0) return { ok: false, reason: 'no-signals' };
+  const hardSignal = signals.find((s) => !ALL_LEVEL_SIGNALS.has(s));
+  if (hardSignal) return { ok: false, reason: `signal:${hardSignal}` };
+
+  const payload = shellPayload(raw);
+  const once = dequoteShellWords(payload);
+  const twice = dequoteShellWords(once);
+  for (const text of [raw, payload, once, twice]) {
+    if (checkCommandSafety(text).level === 'CRITICAL') return { ok: false, reason: 'safety:CRITICAL' };
+  }
+  for (const text of [raw, once, twice]) {
+    if (TRUST_STATE_RE.test(text)) return { ok: false, reason: 'trust-state-path' };
+    if (SECRET_PATH_TEXT_RE.test(text)) return { ok: false, reason: 'secret-file' };
+    if (PUBLISH_RE.test(text)) return { ok: false, reason: 'network-tool' };
+  }
+
+  const homePaths = (opts.homePaths ?? []).filter(Boolean);
+  const homes = rootAliases('~', homePaths);
+  if (homes.length === 0) return { ok: false, reason: 'no-home' };
+  const trustedRaw = String(opts.trustedWorkspaceRoot ?? '').trim();
+  const trusted = trustedRaw && validateWorkspaceRoot(trustedRaw, [...homePaths]).ok
+    ? rootAliases(trustedRaw, homePaths).filter((r) => validateWorkspaceRoot(r, [...homePaths]).ok)
+    : [];
+  const inHome = (p: string) => homeRelative(p, homes) !== null;
+  const inTrusted = (p: string) => trusted.some((r) => p === r || p.startsWith(`${r}/`));
+
+  const cwdRaw = String(request.cwd ?? '').trim();
+  let cwd: string | null = cwdRaw.startsWith('/') ? normalizePath(cwdRaw) : (trusted[0] ?? null);
+  if (!cwd || (!inHome(cwd) && !inTrusted(cwd))) return { ok: false, reason: 'cwd-outside-home' };
+
+  /** Resolve a path-ish word against the tracked cwd: absolute, `~`, `$HOME`
+   *  / `${HOME}`; null when it starts with another variable (unknowable). */
+  const resolve = (word: string, base: string | null): string | null => {
+    const homeRel = /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)(.*)$/.exec(word);
+    if (homeRel) return normalizePath(`${homes[0]}${homeRel[1]}`);
+    if (word.startsWith('~') || word.startsWith('$')) return null;
+    if (word.startsWith('/')) return normalizePath(word);
+    return base ? normalizePath(`${base}/${word}`) : null;
+  };
+
+  /** Hard checks on one resolved path. */
+  const checkPath = (p: string, word: string): string | null => {
+    if (DEVICE_PSEUDO_FILE_RE.test(p)) return null;
+    const rel = homeRelative(p, homes);
+    if (rel === null) {
+      if (!inTrusted(p)) return 'outside-home';
+      if (p.split('/').some((c) => PROTECTED_DOT_COMPONENT_RE.test(c))) return 'protected-path';
+      return null;
+    }
+    if (rel === '') return 'home-root';
+    const top = rel.split('/')[0];
+    // `~/$d/…`: the top-level home entry is not knowable (it could be a
+    // dot-dir) — a human answers.
+    if (/[$`]/.test(top)) return 'unresolved-path';
+    if (top.startsWith('.') || SHELLY_CONTROL_HOME_DIRS.has(top)) return 'shelly-control-path';
+    const comps = rel.split('/');
+    if (comps.some((c) => PROTECTED_DOT_COMPONENT_RE.test(c))) return 'protected-path';
+    const gitIdx = comps.indexOf('.git');
+    if (gitIdx >= 0 && (comps[gitIdx + 1] === 'hooks' || comps[gitIdx + 1] === 'config')) return 'protected-path';
+    // A glob directly in the home directory (`~/*`, `~/.*`) reaches every
+    // control dir at once.
+    if (comps.length === 1 && /[*?[]/.test(word)) return 'home-root';
+    return null;
+  };
+
+  const script = stripHeredocBodies(twice);
+  const segments = splitSegments(script)
+    .map((s) => s.split(/\s+/).filter(Boolean))
+    .map((tokens) => {
+      let t = tokens;
+      while (t[0] === '{' || t[0] === '(' || t[0] === '!') t = t.slice(1);
+      while (t.length > 0 && (t[t.length - 1] === '}' || t[t.length - 1] === ')')) t = t.slice(0, -1);
+      // `VAR=value cmd …`: the assignment prefix is not the command name.
+      while (t.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0])) t = t.slice(1);
+      return t;
+    })
+    .filter((tokens) => tokens.length > 0);
+  if (segments.length === 0) return { ok: false, reason: 'no-command' };
+
+  for (const tokens of segments) {
+    const cmdWord = tokens[0].replace(/^.*\//, '');
+    if (ALL_LEVEL_SYSTEM_TOOLS.has(cmdWord)) return { ok: false, reason: `system-tool:${cmdWord}` };
+    if (cmdWord === 'git') {
+      const args = tokens.slice(1);
+      const sub = args.find((a, i) => !a.startsWith('-') && !(i > 0 && (args[i - 1] === '-C' || args[i - 1] === '-c')));
+      if (sub && NETWORK_GIT_SUBCOMMANDS.has(sub)) return { ok: false, reason: 'network-tool' };
+    }
+    const isCd = DIR_CHANGE_TOOLS.has(cmdWord);
+    for (let i = 0; i < tokens.length; i++) {
+      // Leading redirect operators (`>file`, `2>>file`, `<file`), then
+      // `--opt=value` → value. A word that still holds `<` / `>` is markup
+      // or data (`</div>`), not a path.
+      let word = tokens[i].replace(/^(?:\d|&)?(?:>>?|<)&?/, '');
+      const optVal = /^--?[A-Za-z][\w-]*=(.*)$/.exec(word);
+      if (optVal) word = optVal[1];
+      word = word.replace(/^['"`(]+|['"`),;]+$/g, '');
+      if (!word || /[<>]/.test(word) || word.startsWith('-')) continue;
+      if (i === 0 && !word.includes('/')) continue; // a plain command name
+      if (SECRET_BASENAME_RE.test(word.replace(/\/+$/, '').replace(/^.*\//, ''))) return { ok: false, reason: 'secret-file' };
+      const pathish = word.includes('/') || word.startsWith('~') || /^\$\{?HOME\}?$/.test(word) || word.startsWith('.');
+      // Bare words: only checked when the cwd is the home itself (`cd ~ &&
+      // rm -rf bin`) — elsewhere a bare word names something in the cwd.
+      if (!pathish) {
+        if (cwd && homeRelative(cwd, homes) === '' && i > 0) {
+          const v = checkPath(normalizePath(`${cwd}/${word}`), word);
+          if (v && v !== 'home-root') return { ok: false, reason: v };
+        }
+        continue;
+      }
+      if (word.startsWith('//') || /^[a-z][a-z0-9+.-]*:\/\//i.test(word)) continue; // URL remnant
+      const resolved = resolve(word, cwd);
+      if (resolved === null) {
+        // `$VAR/…`: unknowable target — only a protected name in it refuses.
+        if (word.split('/').some((c) => c.length > 1 && c.startsWith('.') && c !== '..')) return { ok: false, reason: 'protected-path' };
+        if (isCd) cwd = null;
+        continue;
+      }
+      const verdict = checkPath(resolved, word);
+      // `cd ~` / `ls ~` names the home without writing it; a write there is
+      // caught by the bare-word / path checks of what follows. A glob in the
+      // home (`ls ~/*`) still refuses.
+      const namesHomeOnly = verdict === 'home-root' && homeRelative(resolved, homes) === '';
+      if (verdict && !(namesHomeOnly && (isCd || HOME_ROOT_OK_TOOLS.has(cmdWord)))) return { ok: false, reason: verdict };
+      if (isCd && i > 0) cwd = resolved;
+    }
+    if (isCd && tokens.length === 1) cwd = homes[0]; // bare `cd` → $HOME
+  }
+  return { ok: true, kind: 'all' };
+}
+
+function standardEscalationVerdict(
+  request: EscalationRequestLike,
+  opts: EscalationAutoApproveOpts,
 ): AutoApproveVerdict {
   if (!opts.enabled) return { ok: false, reason: 'flag-off' };
   // POLICY-001 deny / draft_only / ask, proactive origin (caller in RN).
@@ -627,20 +987,39 @@ export function stripQuotedText(text: string): string {
     .join('\n');
 }
 
+/**
+ * The "all" level phrases (2026-11-01): JA すべて / 全て / 全部 / 完全に / 一切
+ * before the same 承認なしで実行 shape; EN "run (it) fully / completely /
+ * entirely without approval" or "run (it) without any approvals at all".
+ * They are checked on the same quote-stripped, negation-guarded text.
+ */
+const RUN_WITHOUT_APPROVAL_ALL_JA_RE =
+  /(?:すべて|全て|全部|完全に|一切)(?:の)?(?:承認|確認)(?:は)?(?:なし|無し)で(?:実行|動かし|動かす|走らせ)/;
+const RUN_WITHOUT_APPROVAL_ALL_EN_RE =
+  /\brun(?:\s+(?:it|this|the\s+agent|them))?\s+(?:(?:fully|completely|entirely)\s+without\s+(?:any\s+)?approvals?\b|without\s+any\s+approvals?\s+at\s+all\b)/i;
+
 export function detectRunWithoutApprovalIntent(text: string | null | undefined): boolean {
+  return detectRunWithoutApprovalLevel(text) !== 'off';
+}
+
+/** 'off' | 'standard' | 'all' from the user's own words (see the two
+ *  phrase sets above). A negated sentence is 'off' at either level. */
+export function detectRunWithoutApprovalLevel(text: string | null | undefined): RunWithoutApprovalSetting {
   const s = stripQuotedText(String(text ?? ''));
-  if (!s.trim()) return false;
-  if (NEGATED_EN_RE.test(s) || NEGATED_JP_RE.test(s)) return false;
-  return RUN_WITHOUT_APPROVAL_JA_RE.test(s) || RUN_WITHOUT_APPROVAL_EN_RE.test(s);
+  if (!s.trim()) return 'off';
+  if (NEGATED_EN_RE.test(s) || NEGATED_JP_RE.test(s)) return 'off';
+  if (RUN_WITHOUT_APPROVAL_ALL_JA_RE.test(s) || RUN_WITHOUT_APPROVAL_ALL_EN_RE.test(s)) return 'all';
+  return RUN_WITHOUT_APPROVAL_JA_RE.test(s) || RUN_WITHOUT_APPROVAL_EN_RE.test(s) ? 'standard' : 'off';
 }
 
 /** The option phrase as it is removed from the task text (name / prompt /
  *  steps): the detection phrase plus its own conjugation tail (して / してください
- *  / please) and the clause punctuation around it. */
+ *  / please) and the clause punctuation around it. The "all" prefix
+ *  (すべて… / fully … / … at all) goes with it. */
 const RUN_WITHOUT_APPROVAL_STRIP_JA_RE =
-  /[、,]?\s*(?:承認|確認)(?:は)?(?:なし|無し)で(?:実行|動かし|動かす|走らせ)(?:して|させて|する|します|て|る)?(?:ください|下さい|ほしい|欲しい|ね)?\s*[。．.！!]?/g;
+  /[、,]?\s*(?:(?:すべて|全て|全部|完全に|一切)(?:の)?)?(?:承認|確認)(?:は)?(?:なし|無し)で(?:実行|動かし|動かす|走らせ)(?:して|させて|する|します|て|る)?(?:ください|下さい|ほしい|欲しい|ね)?\s*[。．.！!]?/g;
 const RUN_WITHOUT_APPROVAL_STRIP_EN_RE =
-  /[,;]?\s*(?:\band\s+)?(?:\bplease\s+)?\brun(?:\s+(?:it|this|the\s+agent|them))?\s+without\s+(?:any\s+)?approvals?\b(?:\s*,?\s*please\b)?\s*[.!]?/gi;
+  /[,;]?\s*(?:\band\s+)?(?:\bplease\s+)?\brun(?:\s+(?:it|this|the\s+agent|them))?\s+(?:(?:fully|completely|entirely)\s+)?without\s+(?:any\s+)?approvals?\b(?:\s+at\s+all\b)?(?:\s*,?\s*please\b)?\s*[.!]?/gi;
 /** Quoted / fenced spans the strip leaves untouched (same set stripQuotedText drops). */
 const QUOTED_SPAN_RE = /```[\s\S]*?(?:```|$)|`[^`\n]*`|「[^」]*」|『[^』]*』|“[^”]*”|‘[^’]*’|"[^"\n]*"/g;
 
@@ -669,7 +1048,10 @@ function stripPhraseOutsideQuotes(line: string, re: RegExp): string {
  */
 export function stripRunWithoutApprovalPhrases(text: string): string {
   const src = String(text ?? '');
-  if (!RUN_WITHOUT_APPROVAL_JA_RE.test(src) && !RUN_WITHOUT_APPROVAL_EN_RE.test(src)) return src;
+  if (
+    !RUN_WITHOUT_APPROVAL_JA_RE.test(src) && !RUN_WITHOUT_APPROVAL_EN_RE.test(src)
+    && !RUN_WITHOUT_APPROVAL_ALL_EN_RE.test(src)
+  ) return src;
   const stripped = src
     .split('\n')
     .map((line) => (/^\s*>/.test(line)
@@ -694,6 +1076,11 @@ export function auditCommandText(command: string, maxChars = 200): string {
     .trim();
   const chars = Array.from(redacted);
   return chars.length > maxChars ? `${chars.slice(0, maxChars).join('')}…` : redacted;
+}
+
+/** i18n key of the audit line: the agent's level is always visible in it. */
+export function runWithoutApprovalAuditKey(level: RunWithoutApprovalSetting): string {
+  return level === 'all' ? 'agent_run_without_approval.auto_approved_all' : 'agent_run_without_approval.auto_approved';
 }
 
 /** Visible audit trail: one line in the agent's own chat thread. */
