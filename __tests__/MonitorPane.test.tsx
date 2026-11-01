@@ -561,6 +561,39 @@ describe('MonitorPane LIVE source', () => {
       utils.unmount();
     });
 
+    it('parallel CLI steps (Inc3): two pending asks are shown at once; "ok <hash8>" answers the 2nd, a bare OK the 1st', async () => {
+      seed(liveRun());
+      act(() => {
+        pending.upsertPendingApproval(ask('aaaaaaaa', NOW - 9_000));
+        pending.upsertPendingApproval(ask('bbbbbbbb', NOW - 6_000));
+      });
+      const utils = render(<MonitorPane />);
+      expect(utils.getByTestId('monitor-approval-ask')).toBeTruthy();
+      expect(utils.getByTestId('monitor-approval-ask-other-1')).toBeTruthy();
+      expect(utils.getAllByText(/monitor\.live\.approval_ask_other/).length).toBe(1);
+      expect(utils.getByText('cd ~/demo && git log bbbbbbbb')).toBeTruthy();
+      // Exactly two shown: no "n more" line.
+      expect(utils.queryByTestId('monitor-approval-more')).toBeNull();
+      // One input only; it is the only thing that resolves.
+      expect(utils.getAllByTestId('monitor-approval-input')).toHaveLength(1);
+      const input = utils.getByTestId('monitor-approval-input');
+      const later = Date.now() + 5_000;
+      jest.spyOn(Date, 'now').mockReturnValue(later);
+      fireEvent.changeText(input, 'ok bbbbbbbb');
+      await act(async () => {
+        fireEvent(input, 'submitEditing');
+      });
+      expect(mockResolveFromMonitor).toHaveBeenCalledTimes(1);
+      expect((mockResolveFromMonitor.mock.calls[0] as [{ marker: { hash8: string } }])[0].marker.hash8).toBe('bbbbbbbb');
+      fireEvent.changeText(input, 'OK');
+      await act(async () => {
+        fireEvent(input, 'submitEditing');
+      });
+      expect(mockResolveFromMonitor).toHaveBeenCalledTimes(2);
+      expect((mockResolveFromMonitor.mock.calls[1] as [{ marker: { hash8: string } }])[0].marker.hash8).toBe('aaaaaaaa');
+      utils.unmount();
+    });
+
     it('the "Allowed" note of an answered ask is not shown next to the NEXT ask', async () => {
       seed(liveRun());
       act(() => {

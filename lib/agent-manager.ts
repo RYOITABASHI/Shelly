@@ -76,7 +76,7 @@ import {
 } from './agent-companion-notice';
 import { decideAttendedRoute, effectiveGroupCount } from './agent-attended-route';
 import { AttendedProgressWriter } from './agent-progress-writer';
-import { parseProgressLine } from './agent-progress';
+import { cliBranchOverlap, parseProgressLine } from './agent-progress';
 import { HandoffNarrator } from './agent-handoff';
 import {
   applyUnattendedSkillImprovement,
@@ -1678,7 +1678,7 @@ async function runAgentNowInner(
     }
     logInfo('AgentManager', `agent ${agentId}: attended route=${route.route === 'executor' ? 'plan-executor (parallel)' : 'serial chain'} — ${route.reason}`);
     if (route.route === 'executor') {
-      await runAgentViaPlanExecutor(orchestrationAgent, runCommand, options);
+      await runAgentViaPlanExecutor(orchestrationAgent, runCommand, { ...options, cliSteps: route.cliSteps });
       return;
     }
     await runAgentOrchestrated(orchestrationAgent, runCommand, options, storedAgent);
@@ -2311,19 +2311,37 @@ async function runLadderAttempts(
 }
 
 /**
- * Executor-route wait budgets. Native kills an executor run at AgentRuntime.kt
- * DEFAULT_TIMEOUT_MS (30 min) — but that clock only starts once node is
- * launched, AFTER LibExtractor and (plan.tool local) the local-LLM ensure
+ * Native's hard ceiling for one executor process: AgentRuntime.kt
+ * DEFAULT_TIMEOUT_MS (execSubprocess timeout). The executor counts the same
+ * ceiling from its own start (shelly-plan-executor.js NATIVE_RUN_CEILING_MS)
+ * and clamps every CLI branch timer / driver --timeout-ms to the time left
+ * minus 60 s, so a CLI chain ends on its own (step error) before native kills
+ * it. Pinned against the script constant by a test.
+ */
+export const ATTENDED_EXECUTOR_NATIVE_CEILING_MS = 30 * 60_000;
+/** How far past native's ceiling the RN wait keeps waiting for the run log
+ *  native's receiver writes after a kill (and the executor's own SIGTERM
+ *  path: CLI drivers TERM → 3 s grace → KILL, skipped log). */
+export const ATTENDED_EXECUTOR_WAIT_MARGIN_MS = 2 * 60_000;
+
+/**
+ * Executor-route wait budgets. Native kills an executor run at
+ * ATTENDED_EXECUTOR_NATIVE_CEILING_MS — but that clock only starts once node
+ * is launched, AFTER LibExtractor and (plan.tool local) the local-LLM ensure
  * preflight, which itself may take up to another DEFAULT_TIMEOUT_MS. So the
  * wait is split: PRE-START (launch → this run's progress run_start) and RUN
- * (run_start → run log), each a little past 30 min. A caller's waitTimeoutMs
- * (e.g. the AI pane's 10-min PER-STEP limit for the serial chain) can only
- * lengthen these, never shorten them — on this route it would otherwise be a
- * whole-chain limit and end the "user" mark while the executor still runs.
+ * (run_start → run log), each the ceiling plus a margin. A caller's
+ * waitTimeoutMs (e.g. the AI pane's 10-min PER-STEP limit for the serial
+ * chain) can only lengthen these, never shorten them — on this route it would
+ * otherwise be a whole-chain limit and end the "user" mark while the executor
+ * still runs. This matters most for CLI branches (Codex / Claude Code turns
+ * of up to ~19.5 min each, human escalations included): the RN side must
+ * never give up — and stop the executor — before the executor's own clamp or
+ * native's ceiling ends the run.
  */
 const attendedExecutorWait = {
-  preStartTimeoutMs: 32 * 60_000,
-  runTimeoutMs: 32 * 60_000,
+  preStartTimeoutMs: ATTENDED_EXECUTOR_NATIVE_CEILING_MS + ATTENDED_EXECUTOR_WAIT_MARGIN_MS,
+  runTimeoutMs: ATTENDED_EXECUTOR_NATIVE_CEILING_MS + ATTENDED_EXECUTOR_WAIT_MARGIN_MS,
   /** Grace after a "previous run still active" refusal with no run_start of
    *  our own: our launch was the refused one. */
   refusalGraceMs: 10_000,
@@ -2334,6 +2352,18 @@ const attendedExecutorWait = {
    *  native's receiver "error" log behind. */
   runningLogPollMs: 15_000,
 };
+
+/** The wait deadline of an attended executor run (see attendedExecutorWait):
+ *  `startedAtMs` = our run_start, or null before it is seen. */
+export function attendedExecutorDeadlineMs(opts: {
+  startedAtMs: number | null;
+  launchedAtMs: number;
+  callerTimeoutMs: number;
+}): number {
+  return opts.startedAtMs !== null
+    ? opts.startedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.runTimeoutMs)
+    : opts.launchedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.preStartTimeoutMs);
+}
 
 /** Test-only: shrink the executor-route wait budgets. */
 export function __setAttendedExecutorWaitForTests(over: Partial<typeof attendedExecutorWait>): () => void {
@@ -2402,8 +2432,18 @@ export function executorPidFromRunId(runId: string | undefined, agentId: string)
  * the lock is never touched) and (3) /proc/<pid>/cmdline is this agent's
  * shelly-plan-executor (pid reuse guard, same identity check STOP-ALL's
  * haltInflightRunsCommand uses for executors). TERM (the executor kills its
- * broker children, writes a skipped log, releases the lock), up to ~5 s, then
- * KILL. Returns 'gone' only when the process is confirmed not running.
+ * broker children and CLI drivers — TERM, 3 s grace, KILL of each driver's
+ * whole tree — writes a skipped log, releases the lock), up to ~8 s, then
+ * KILL.
+ *
+ * Parallel CLI steps Inc3: the executor's process tree (CLI drivers and
+ * their codex / claude / tool-command descendants) is snapshotted from /proc
+ * BEFORE the TERM, the same way STOP-ALL does (PROC_TREE_SHELL_HELPERS:
+ * ppid walk + start time, llama-server and its watcher spared). Afterwards
+ * every snapshotted process still alive with the same start time gets KILL —
+ * so a KILLed executor (or a driver that ignored its TERM) leaves no
+ * orphaned CLI worker behind. Returns 'gone' only when the executor is
+ * confirmed not running.
  */
 async function stopOurExecutorRun(
   agentId: string,
@@ -2415,14 +2455,17 @@ async function stopOurExecutorRun(
   if (pid === null) return runId ? 'unknown' : 'gone';
   const out = await runCommand(
     `# EXECUTOR_STOP\n` +
+      `${PROC_TREE_SHELL_HELPERS.join('\n')}\n` +
       `f="$HOME/.shelly/agents/locks/${agentId}.pid"; want=${pid}\n` +
       `is_ours() { case "$(tr '\\000' ' ' < "/proc/$want/cmdline" 2>/dev/null)" in *shelly-plan-executor*"--agent-id ${agentId} "*|*shelly-plan-executor*"--agent-id ${agentId}") return 0;; esac; return 1; }\n` +
       `held=""; { read -r held < "$f"; } 2>/dev/null\n` +
       `if ! is_ours; then echo STOP_GONE; exit 0; fi\n` +
       `if [ "$held" != "$want" ]; then echo STOP_UNSURE; exit 0; fi\n` +
+      `victims="$(tree "$want")"\n` +
       `kill -TERM "$want" 2>/dev/null\n` +
-      `i=0; while is_ours && [ $i -lt 5 ]; do sleep 1; i=$((i+1)); done\n` +
+      `i=0; while is_ours && [ $i -lt 8 ]; do sleep 1; i=$((i+1)); done\n` +
       `is_ours && kill -KILL "$want" 2>/dev/null && sleep 1\n` +
+      `for v in $victims; do vp="\${v%%:*}"; vs="\${v#*:}"; [ "$vp" = "$want" ] && continue; [ "$vp" = "$$" ] && continue; [ -n "$vs" ] && [ "$vs" = "$(stat_field "$vp" 20)" ] && kill -KILL "$vp" 2>/dev/null; done\n` +
       `if is_ours; then echo STOP_ALIVE; else echo STOP_DONE; fi`,
   );
   const text = String(out || '');
@@ -2469,6 +2512,19 @@ async function readProgressRunMarkers(
     }
   }
   return marker;
+}
+
+/** Both progress files (the previous run first): a run that ended may
+ *  already have been rotated into progress.prev.jsonl by a later fire. */
+async function readProgressStreamText(
+  agentId: string,
+  runCommand: (cmd: string) => Promise<string>,
+): Promise<string> {
+  assertSafeAgentId(agentId);
+  const out = await runCommand(
+    `# PROGRESS_STREAM_READ\nd="$HOME/.shelly/agents/logs/${agentId}"; cat "$d/progress.prev.jsonl" 2>/dev/null; echo; cat "$d/progress.jsonl" 2>/dev/null; true`,
+  );
+  return typeof out === 'string' ? out : '';
 }
 
 /** Fails like the serial path's acquireChainLock when a live attended SERIAL
@@ -2523,8 +2579,9 @@ async function waitForAttendedExecutorRun(
     callerTimeoutMs: number;
     pollMs: number;
   },
-): Promise<AgentRunLog> {
+): Promise<{ log: AgentRunLog; runId: string | undefined }> {
   let ours: ProgressRunMarker | null = null;
+  const done = (log: AgentRunLog) => ({ log, runId: ours?.runId });
   let refusalSeenAt: number | null = null;
   let refusalLog: AgentRunLog | undefined;
   let poll = 0;
@@ -2562,30 +2619,32 @@ async function waitForAttendedExecutorRun(
         // Ended or not: our executor's own log, or native's error log for
         // our dead executor (see pickOurExecutorLog).
         const mine = pickOurExecutorLog(fresh, ours.startedAtMs);
-        if (mine) return mine;
+        if (mine) return done(mine);
         // Ended without an executor log of its own (e.g. a receiver log
         // racing the run_end): take any real log at/after our start.
         if (ours.ended) {
           const any = real.filter((l) => l.timestamp >= ours!.startedAtMs - 1_000).at(-1);
-          if (any) return any;
+          if (any) return done(any);
         }
       } else {
-        if (real.length) return real.at(-1)!;
+        if (real.length) return done(real.at(-1)!);
         const refusal = fresh.filter(isPreviousRunActiveRefusal).at(-1);
         if (refusal && refusalSeenAt === null) {
           refusalSeenAt = Date.now();
           refusalLog = refusal;
         }
         if (refusalLog && refusalSeenAt !== null && Date.now() - refusalSeenAt >= attendedExecutorWait.refusalGraceMs) {
-          return refusalLog;
+          return done(refusalLog);
         }
       }
     }
 
     const now = Date.now();
-    const deadline = ours
-      ? ours.startedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.runTimeoutMs)
-      : opts.launchedAtMs + Math.max(opts.callerTimeoutMs, attendedExecutorWait.preStartTimeoutMs);
+    const deadline = attendedExecutorDeadlineMs({
+      startedAtMs: ours ? ours.startedAtMs : null,
+      launchedAtMs: opts.launchedAtMs,
+      callerTimeoutMs: opts.callerTimeoutMs,
+    });
     if (now > deadline) {
       if (!ours) {
         // A run may have started in the very last poll window: learn its id
@@ -2632,7 +2691,7 @@ async function waitForAttendedExecutorRun(
 async function runAgentViaPlanExecutor(
   agent: Agent,
   runCommand: (cmd: string) => Promise<string>,
-  options: { waitTimeoutMs?: number; pollMs?: number } = {},
+  options: { waitTimeoutMs?: number; pollMs?: number; cliSteps?: number } = {},
 ): Promise<void> {
   const agentId = agent.id;
   await assertNoLiveChainLock(agentId, runCommand);
@@ -2651,16 +2710,19 @@ async function runAgentViaPlanExecutor(
   const launchedAtMs = Date.now();
   let halted = false;
   let finalLog: AgentRunLog | undefined;
+  let ourRunId: string | undefined;
   markUserRunStarted(agentId);
   try {
     await TerminalEmulator.runAgent(agentId);
-    finalLog = await waitForAttendedExecutorRun(runCommand, agentId, {
+    const waited = await waitForAttendedExecutorRun(runCommand, agentId, {
       priorRunId,
       beforeIdentities,
       launchedAtMs,
       callerTimeoutMs: options.waitTimeoutMs ?? 0,
       pollMs: options.pollMs ?? attendedExecutorWait.defaultPollMs,
     });
+    finalLog = waited.log;
+    ourRunId = waited.runId;
   } catch (error) {
     // STOP-ALL: haltInflightRunsCommand kills the executor, which records its
     // own skipped run; end like the serial chain does (no throw).
@@ -2691,9 +2753,24 @@ async function runAgentViaPlanExecutor(
     }
   }
   markUserRunFinished(agentId);
+  // Parallel CLI steps Inc3 (on-device acceptance): how many CLI branches the
+  // run had and how long two of them ran at once, from OUR run's
+  // progress.jsonl RUNNING intervals. Observational only.
+  let cliStats = '';
+  if (!halted && (options.cliSteps ?? 0) > 0) {
+    let stats = { cliBranches: 0, overlapMs: 0 };
+    if (ourRunId) {
+      try {
+        stats = cliBranchOverlap(await readProgressStreamText(agentId, runCommand), ourRunId);
+      } catch {
+        // keep zeros
+      }
+    }
+    cliStats = ` cliBranches=${stats.cliBranches} overlapMs=${stats.overlapMs}`;
+  }
   logInfo(
     'AgentManager',
-    `agent ${agentId}: plan-executor attended run ${halted ? 'halted (STOP-ALL)' : `finished status=${finalLog?.status ?? '?'}`}`,
+    `agent ${agentId}: plan-executor attended run ${halted ? 'halted (STOP-ALL)' : `finished status=${finalLog?.status ?? '?'}${cliStats}`}`,
   );
   if (finalLog) {
     markAttendedAgentRunLog(finalLog);
@@ -3842,44 +3919,53 @@ const haltSentinelPath = () => `${agentsDir()}/.halted`;
  * never the JS getHomePath() cache (see deleteAgent for the /data/user/0
  * alias bug).
  */
+/**
+ * Shell helpers shared by STOP-ALL (haltInflightRunsCommand) and the attended
+ * executor stop (stopOurExecutorRun): `stat_field <pid> <n>`, `cmdline_of
+ * <pid>`, the llama-server `spare` list and `tree <pid>` (prints
+ * "pid:starttime" for the root and every descendant, spared ones and their
+ * subtrees excluded).
+ */
+const PROC_TREE_SHELL_HELPERS: readonly string[] = [
+  // Field n of /proc/<pid>/stat after "pid (comm) ": 1=state 2=ppid 20=starttime.
+  'stat_field() { n=$2; l=""; { read -r l < "/proc/$1/stat"; } 2>/dev/null || return 0; set -- ${l##*) }; shift $((n - 1)) 2>/dev/null || return 0; echo "$1"; }',
+  "cmdline_of() { tr '\\000' ' ' < \"/proc/$1/cmdline\" 2>/dev/null; }",
+  'spare=" "',
+  'for f in "$HOME/models/llama-server.pid" "$HOME/models/llama-server-watcher.pid"; do',
+  '  sp=""; { read -r sp < "$f"; } 2>/dev/null',
+  '  case "$sp" in ""|*[!0-9]*) ;; *) spare="$spare$sp ";; esac',
+  'done',
+  'tree() {',
+  '  root="$1"; all=" $1 "; out="$1:$(stat_field "$1" 20)"; front=" $1 "',
+  '  while [ "$front" != " " ]; do',
+  '    next=" "',
+  '    for s in /proc/[0-9]*/stat; do',
+  '      l=""; { read -r l < "$s"; } 2>/dev/null || continue',
+  '      r="${l##*) }"; pp="${r#* }"; pp="${pp%% *}"',
+  '      case "$front" in *" $pp "*) ;; *) continue;; esac',
+  '      p="${s#/proc/}"; p="${p%/stat}"',
+  '      case "$all" in *" $p "*) continue;; esac',
+  '      case "$spare" in *" $p "*) continue;; esac',
+  '      case "$(cmdline_of "$p")" in *llama-server*) continue;; esac',
+  '      set -- $r; shift 19 2>/dev/null || continue',
+  '      all="$all$p "; out="$out $p:$1"; next="$next$p "',
+  '    done',
+  '    front="$next"',
+  '  done',
+  '  echo "$out"',
+  '}',
+];
+
 export function haltInflightRunsCommand(): string {
   return [
     'd="$HOME/.shelly/agents/locks"',
-    // Field n of /proc/<pid>/stat after "pid (comm) ": 1=state 2=ppid 20=starttime.
-    'stat_field() { n=$2; l=""; { read -r l < "/proc/$1/stat"; } 2>/dev/null || return 0; set -- ${l##*) }; shift $((n - 1)) 2>/dev/null || return 0; echo "$1"; }',
-    "cmdline_of() { tr '\\000' ' ' < \"/proc/$1/cmdline\" 2>/dev/null; }",
+    ...PROC_TREE_SHELL_HELPERS,
     'is_run() {',
     '  [ -d "/proc/$1" ] || return 1',
     '  st=""; { read -r st < "$2.lockdir/starttime"; } 2>/dev/null',
     '  case "$st" in ""|*[!0-9]*) ;; *) [ "$st" = "$(stat_field "$1" 20)" ] && return 0;; esac',
     '  case "$(cmdline_of "$1")" in *shelly-plan-executor*) return 0;; esac',
     '  return 1',
-    '}',
-    'spare=" "',
-    'for f in "$HOME/models/llama-server.pid" "$HOME/models/llama-server-watcher.pid"; do',
-    '  sp=""; { read -r sp < "$f"; } 2>/dev/null',
-    '  case "$sp" in ""|*[!0-9]*) ;; *) spare="$spare$sp ";; esac',
-    'done',
-    // Prints "pid:starttime" for the root and every descendant (spared ones and
-    // their subtrees excluded).
-    'tree() {',
-    '  root="$1"; all=" $1 "; out="$1:$(stat_field "$1" 20)"; front=" $1 "',
-    '  while [ "$front" != " " ]; do',
-    '    next=" "',
-    '    for s in /proc/[0-9]*/stat; do',
-    '      l=""; { read -r l < "$s"; } 2>/dev/null || continue',
-    '      r="${l##*) }"; pp="${r#* }"; pp="${pp%% *}"',
-    '      case "$front" in *" $pp "*) ;; *) continue;; esac',
-    '      p="${s#/proc/}"; p="${p%/stat}"',
-    '      case "$all" in *" $p "*) continue;; esac',
-    '      case "$spare" in *" $p "*) continue;; esac',
-    '      case "$(cmdline_of "$p")" in *llama-server*) continue;; esac',
-    '      set -- $r; shift 19 2>/dev/null || continue',
-    '      all="$all$p "; out="$out $p:$1"; next="$next$p "',
-    '    done',
-    '    front="$next"',
-    '  done',
-    '  echo "$out"',
     '}',
     'victims=""',
     'for f in "$d"/*.pid; do',

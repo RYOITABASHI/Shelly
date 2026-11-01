@@ -9,6 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION, buildAgentPlanSpec } from '@/lib/agent-plan-spec';
+import { cliBranchOverlap } from '@/lib/agent-progress';
 
 // Parallel CLI steps Inc0/Inc1 (docs/superpowers/specs/2026-11-01-parallel-cli-steps-plan.md,
 // executor v19). Runs the REAL executor + broker against a loopback fake model
@@ -322,6 +323,14 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
     const log = readRunLog(home);
     expect(log.status).toBe('success');
     expect(log.steps.map((s: any) => s.status)).toEqual(['success', 'success', 'success']);
+    // v21 (Inc3): the CLI workers' reported usage reaches the run's totals.
+    expect(log.usage).toEqual({ inputTokens: 12, outputTokens: 34 });
+    // Inc3 finish log: the RN side computes overlapMs from this very stream.
+    const progressText = fs.readFileSync(path.join(logDir(home), 'progress.jsonl'), 'utf8');
+    const runId = JSON.parse(progressText.split('\n')[0]).runId;
+    const overlap = cliBranchOverlap(progressText, runId);
+    expect(overlap.cliBranches).toBe(2);
+    expect(overlap.overlapMs).toBeGreaterThan(0);
 
     // Progress: CLI provider, ESCALATE -> WAITING_APPROVAL -> RUNNING, usage.
     const events = readProgress(home);
@@ -776,6 +785,35 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
       expect(log.status).toBe('error');
       expect(log.steps[0].status).toBe('error');
       expect(log.steps[1].status).toBe('success');
+    }
+  }, 60000);
+
+  it('v21 (Inc3): an isolation-blocked step reads the attended wording on Run now, the unattended one otherwise', async () => {
+    for (const attended of [true, false]) {
+      const home = makeHome();
+      const { driver, recordDir } = makeDriver();
+      writeDriverConfig(recordDir, {});
+      const steps: Step[] = [
+        { instruction: 'summarize my notes' },
+        { instruction: 'search the web about the summary above', tool: { type: 'perplexity', label: 'Perplexity', model: 'sonar', authRef: 'perplexity' } },
+        { instruction: 'finalize' },
+      ];
+      const planFile = writePlan(home, port, steps, { cliWorker: null });
+      const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+      const blocked = "Step 2 would send earlier steps' results to Perplexity unattended, but those results may contain local data. Run this agent with Run now.";
+      plan.agent.autonomous = true;
+      plan.steps.isolation = [null, { blocked }, null];
+      fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+      await runExecutor(planFile, home, driver, recordDir, attended ? {} : { origin: 'event', unattended: true });
+      const step = readRunLog(home).steps[1];
+      expect(step.status).toBe('error');
+      if (attended) {
+        expect(step.outputPreview).not.toMatch(/unattended/i);
+        expect(step.outputPreview).toContain('Step 2');
+        expect(step.outputPreview).toContain('Autonomous');
+      } else {
+        expect(step.outputPreview).toContain('unattended');
+      }
     }
   }, 60000);
 

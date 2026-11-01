@@ -32,7 +32,14 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
-import { executorPidFromRunId, runAgentNow, __setAttendedExecutorWaitForTests } from '@/lib/agent-manager';
+import {
+  ATTENDED_EXECUTOR_NATIVE_CEILING_MS,
+  ATTENDED_EXECUTOR_WAIT_MARGIN_MS,
+  attendedExecutorDeadlineMs,
+  executorPidFromRunId,
+  runAgentNow,
+  __setAttendedExecutorWaitForTests,
+} from '@/lib/agent-manager';
 import { decideAttendedRoute, storedPlanSpecOpts } from '@/lib/agent-attended-route';
 import { buildAgentPlanSpec } from '@/lib/agent-plan-spec';
 import { registeredRunOrigin, __resetRunOriginRegistryForTests } from '@/lib/agent-run-origin-registry';
@@ -152,6 +159,7 @@ function makeHarness(opts: {
     commands.push(cmd);
     if (cmd.includes('# PLAN_SPEC_READ')) return opts.planText;
     if (cmd.includes('# CHAIN_LOCK_CHECK')) return opts.chainLockBusy ? 'CHAIN_LOCK_BUSY' : '';
+    if (cmd.includes('# PROGRESS_STREAM_READ')) return state.progress.join('\n');
     if (cmd.includes('# PROGRESS_MARKERS')) {
       if (launched) {
         reads += 1;
@@ -367,19 +375,115 @@ describe('attended Run now — PlanSpec executor route', () => {
     expect(mockTerminalEmulator.runAgent).not.toHaveBeenCalled();
   });
 
-  it('a Codex/CLI-pinned branch → serial chain (chain lock taken, one native launch per step)', async () => {
+  it('Inc3: two CLI-pinned branches (Codex + Claude Code) → executor route, no chain lock, finish log counts CLI branches and their overlap', async () => {
     const agent = makeAgent([
       { instruction: 'summarize part A of the notes', parallelGroup: 'g', tool: { type: 'cli', cli: 'codex' } },
-      { instruction: 'summarize part B of the notes', parallelGroup: 'g' },
+      { instruction: 'summarize part B of the notes', parallelGroup: 'g', tool: { type: 'cli', cli: 'claude' } },
       'merge both summaries into one memo',
     ]);
     useAgentStore.getState().setAgents([agent]);
-    const h = makeHarness({ planText: planFor(agent) });
+    // In the past: our run log (timestamp = now) must be at/after run_start.
+    const t0 = Date.now() - 60_000;
+    const at = (s: number) => new Date(t0 + s * 1000).toISOString();
+    const ev = (seq: number, sec: number, fields: Record<string, unknown>) =>
+      JSON.stringify({ v: 1, agentId: AGENT_ID, runId: OUR_RUN_ID, seq, ts: at(sec), ...fields });
+    const h = makeHarness({
+      planText: planFor(agent),
+      onLaunch: (s) => {
+        s.progress.splice(0, s.progress.length,
+          ev(1, 0, { kind: 'run_start', mode: 'PARALLEL', stepCount: 3 }),
+          ev(2, 1, { kind: 'branch_state', stepIndex: 0, state: 'RUNNING' }),
+          ev(3, 1, { kind: 'tool', stepIndex: 0, tool: 'Codex CLI', provider: { kind: 'CLI', name: 'cli:codex' } }),
+          ev(4, 2, { kind: 'branch_state', stepIndex: 1, state: 'RUNNING' }),
+          ev(5, 2, { kind: 'tool', stepIndex: 1, tool: 'Claude Code', provider: { kind: 'CLI', name: 'cli:claude' } }),
+          ev(6, 12, { kind: 'branch_state', stepIndex: 0, state: 'DONE' }),
+          ev(7, 15, { kind: 'branch_state', stepIndex: 1, state: 'DONE' }),
+          ev(8, 16, { kind: 'branch_state', stepIndex: 2, state: 'RUNNING' }),
+          ev(9, 18, { kind: 'branch_state', stepIndex: 2, state: 'DONE' }),
+        );
+      },
+      onMarkerRead: (n, s) => {
+        if (n === 2) {
+          s.progress.push(ev(10, 19, { kind: 'run_end', status: 'success' }));
+          s.logs.push(executorLog());
+        }
+      },
+    });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await runAgentNow(AGENT_ID, h.runCommand, { waitTimeoutMs: 2000, pollMs: 1 });
+      const lines = logSpy.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => /attended route=plan-executor \(parallel\) — .*cli=2/.test(l))).toBe(true);
+      // s0 RUNNING 1→12 s, s1 RUNNING 2→15 s: both ran from 2 s to 12 s.
+      expect(lines.some((l) => l.includes('plan-executor attended run finished status=success cliBranches=2 overlapMs=10000'))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+    expect(mockTerminalEmulator.runAgent).toHaveBeenCalledTimes(1);
+    expect(h.commands.some((c) => c.includes('# CHAIN_LOCK_ACQUIRE'))).toBe(false);
+    expect(h.commands.some((c) => c.includes(`# run-agent-${AGENT_ID}`))).toBe(false);
+    expect(h.originAtMarkerRead.every((o) => o === 'user')).toBe(true);
+  });
 
-    await runAgentNow(AGENT_ID, h.runCommand, { waitTimeoutMs: 2000, pollMs: 1 });
+  it('Inc3: a CLI chain still refuses while a live chain lock exists (single-flight kept)', async () => {
+    const agent = makeAgent([
+      { instruction: 'summarize part A of the notes', parallelGroup: 'g', tool: { type: 'cli', cli: 'codex' } },
+      { instruction: 'summarize part B of the notes', parallelGroup: 'g', tool: { type: 'cli', cli: 'claude' } },
+      'merge both summaries into one memo',
+    ]);
+    useAgentStore.getState().setAgents([agent]);
+    const h = makeHarness({ planText: planFor(agent), chainLockBusy: true });
 
-    expect(h.commands.some((c) => c.includes('# CHAIN_LOCK_ACQUIRE'))).toBe(true);
-    expect(mockTerminalEmulator.runAgent.mock.calls.length).toBeGreaterThanOrEqual(3);
+    await expect(runAgentNow(AGENT_ID, h.runCommand, { waitTimeoutMs: 2000, pollMs: 1 })).rejects.toThrow(/already holding the chain lock/);
+    expect(mockTerminalEmulator.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("Inc3: a CLI chain's caller timeout (the AI pane's 10-min limit) never cuts the wait below native's 30-min ceiling + margin", () => {
+    const launchedAtMs = 1_000_000;
+    const tenMin = 10 * 60_000;
+    const before = attendedExecutorDeadlineMs({ startedAtMs: null, launchedAtMs, callerTimeoutMs: tenMin });
+    const running = attendedExecutorDeadlineMs({ startedAtMs: launchedAtMs + 5_000, launchedAtMs, callerTimeoutMs: tenMin });
+    expect(before - launchedAtMs).toBe(ATTENDED_EXECUTOR_NATIVE_CEILING_MS + ATTENDED_EXECUTOR_WAIT_MARGIN_MS);
+    expect(running - (launchedAtMs + 5_000)).toBe(ATTENDED_EXECUTOR_NATIVE_CEILING_MS + ATTENDED_EXECUTOR_WAIT_MARGIN_MS);
+    expect(ATTENDED_EXECUTOR_WAIT_MARGIN_MS).toBeGreaterThan(0);
+    // A longer caller budget still wins.
+    expect(attendedExecutorDeadlineMs({ startedAtMs: 0, launchedAtMs: 0, callerTimeoutMs: 90 * 60_000 })).toBe(90 * 60_000);
+    // Same ceiling as the executor's own clamp (shelly-plan-executor.js
+    // NATIVE_RUN_CEILING_MS = AgentRuntime.kt DEFAULT_TIMEOUT_MS).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const src: string = require('fs').readFileSync(require('path').join(__dirname, '..', 'scripts', 'shelly-plan-executor.js'), 'utf8');
+    const m = /const NATIVE_RUN_CEILING_MS = (\d+) \* (\d+) \* (\d+);/.exec(src);
+    expect(m).not.toBeNull();
+    expect(Number(m![1]) * Number(m![2]) * Number(m![3])).toBe(ATTENDED_EXECUTOR_NATIVE_CEILING_MS);
+  });
+
+  it('Inc3: the timed-out executor stop snapshots its process tree first and KILLs every leftover after (no orphaned CLI worker)', async () => {
+    restoreWait?.();
+    restoreWait = __setAttendedExecutorWaitForTests({ runTimeoutMs: 40, preStartTimeoutMs: 40 });
+    const agent = makeAgent(GROUPED_STEPS);
+    useAgentStore.getState().setAgents([agent]);
+    const h = makeHarness({ planText: planFor(agent), onLaunch: (s) => startRun(s) });
+
+    await expect(runAgentNow(AGENT_ID, h.runCommand, { waitTimeoutMs: 10, pollMs: 5 })).rejects.toThrow(/Timed out waiting/);
+
+    const stop = h.commands.find((c) => c.includes('# EXECUTOR_STOP'))!;
+    const treeAt = stop.indexOf('victims="$(tree "$want")"');
+    const termAt = stop.indexOf('kill -TERM "$want"');
+    const leftoverAt = stop.indexOf('for v in $victims');
+    expect(treeAt).toBeGreaterThan(0);
+    expect(termAt).toBeGreaterThan(treeAt);
+    expect(leftoverAt).toBeGreaterThan(termAt);
+    // pid-reuse guard on every leftover + llama-server spared like STOP-ALL.
+    expect(stop.slice(leftoverAt)).toContain('[ "$vs" = "$(stat_field "$vp" 20)" ] && kill -KILL "$vp"');
+    expect(stop).toContain('llama-server');
+    expect(stop).toContain('tree() {');
+    expect(stop).not.toContain('\\${v');
+    expect(stop).toContain('vp="${v%%:*}"');
+    // The whole stop script parses as POSIX sh (what native's shell runs).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { spawnSync } = require('child_process') as typeof import('child_process');
+    const parsed = spawnSync('sh', ['-n', '-c', stop], { encoding: 'utf8' });
+    if (!parsed.error) expect(parsed.status).toBe(0);
   });
 
   it('no effective parallel group → serial chain, without even reading the plan', async () => {

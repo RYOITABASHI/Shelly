@@ -63,6 +63,7 @@ import {
   type PendingActionApprovalMarker,
 } from '@/lib/agent-action-chat-reply';
 import {
+  chatAskTextKey,
   pendingApprovalKey,
   removePendingApproval,
   upsertPendingApproval,
@@ -271,7 +272,11 @@ function postAsk(p: {
   const name =
     p.agentName?.trim() || useAgentStore.getState().agents.find((a) => a.id === p.agentId)?.name || p.agentId;
   const hash8 = sha.slice(0, 8);
-  const content = tFor(l, p.reviewRequired ? 'agent_action_chat.ask_review' : 'agent_action_chat.ask', {
+  // Parallel CLI steps Inc3: two branches of one run can ask at once. When
+  // another ask of this agent is still pending, this line asks for its code
+  // ("OK <hash8>"), so neither answer depends on which line is the latest.
+  const othersPending = [...asks.entries()].filter(([k, a]) => k !== askKey && a.agentId === p.agentId).length;
+  const content = tFor(l, chatAskTextKey(p.reviewRequired, othersPending), {
     name,
     what: p.what,
     detail: p.detail ? `${p.detail}\n` : '',

@@ -169,7 +169,13 @@ export function pickMonitorApprovalTarget(params: {
  *  - a RUNNING step reads "waiting for your OK" (awaitingApproval) instead of
  *    "no update for Ns — stuck?" — it is blocked on the human, not stuck;
  *  - the run counts as waiting on the human (approvalPending), pointing at
- *    the step the progress log already marks, else the first running one.
+ *    the steps the progress log already marks, else the first running one.
+ * Parallel CLI steps Inc3: when the progress log already marks at least as
+ * many waiting steps (approvalAgentIds) as there are pending asks, every ask
+ * is accounted for, so a RUNNING sibling branch is really running and keeps
+ * its own state (stale warning included). Otherwise (an action approval, or
+ * an ask the log has not caught up with) every RUNNING step reads as waiting,
+ * as before.
  * No pending ask, or a run that is over → the snapshot is returned unchanged
  * (same object).
  */
@@ -177,20 +183,52 @@ export function withPendingApprovals(snap: MonitorSnapshot, pendingCount: number
   if (pendingCount <= 0) return snap;
   // A finished run waits on nobody (a leftover ask is retired by the drain).
   if (snap.run && snap.run.outcome !== 'running') return snap;
+  const marked = snapshotApprovalAgentIds(snap);
+  const allAccounted = marked.length >= pendingCount;
   const agents: MonitorSnapshot['agents'] = {};
   let firstRunning: string | null = null;
   for (const [id, a] of Object.entries(snap.agents)) {
-    if (a.state === 'RUNNING') {
+    if (a.state === 'RUNNING' && !allAccounted) {
       if (firstRunning === null) firstRunning = id;
       agents[id] = { ...a, stale: false, awaitingApproval: true };
     } else {
       agents[id] = a;
     }
   }
+  const approvalAgentIds = marked.length ? marked : firstRunning !== null ? [firstRunning] : [];
   return {
     ...snap,
     agents,
     approvalPending: true,
-    approvalAgentId: snap.approvalAgentId ?? firstRunning,
+    approvalAgentId: snap.approvalAgentId ?? approvalAgentIds[0] ?? null,
+    approvalAgentIds,
   };
+}
+
+/** The steps a snapshot marks as waiting on the human (approvalAgentIds, or
+ *  the single approvalAgentId of a source that predates the list). */
+export function snapshotApprovalAgentIds(snap: Pick<MonitorSnapshot, 'approvalAgentId' | 'approvalAgentIds'>): string[] {
+  if (Array.isArray(snap.approvalAgentIds) && snap.approvalAgentIds.length) return [...snap.approvalAgentIds];
+  return snap.approvalAgentId ? [snap.approvalAgentId] : [];
+}
+
+/** i18n key of the chat ask line (lib/agent-action-chat-approval.ts
+ *  postAsk). With another ask of the same agent still pending (two CLI
+ *  branches asking at once), the line tells the user to answer it by its code
+ *  ("OK <hash8>" — parseActionApprovalChatReply / pickMonitorApprovalTarget
+ *  target it in any position) instead of a bare OK, which only ever answers
+ *  the latest line in chat and the oldest ask in MONITOR. */
+export function chatAskTextKey(reviewRequired: boolean, otherPendingForAgent: number): string {
+  const base = reviewRequired ? 'agent_action_chat.ask_review' : 'agent_action_chat.ask';
+  return otherPendingForAgent > 0 ? `${base}_concurrent` : base;
+}
+
+/** How many pending asks MONITOR shows at once (parallel CLI steps Inc3: two
+ *  CLI branches can each ask; a 3rd+ is counted as "n more"). */
+export const MONITOR_MAX_SHOWN_ASKS = 2;
+
+/** The asks MONITOR shows, oldest first: [0] answers a bare OK / NO (after
+ *  MONITOR_ASK_MIN_SHOWN_MS on screen), every other one only "ok <hash8>". */
+export function monitorShownAsks(asks: readonly PendingApprovalAsk[]): PendingApprovalAsk[] {
+  return asks.slice(0, MONITOR_MAX_SHOWN_ASKS);
 }

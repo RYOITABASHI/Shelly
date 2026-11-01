@@ -17,10 +17,14 @@
  *      (resolveEscalationLadder on the step's own instruction) is EXACTLY the
  *      executor's effective tool for that step as baked on disk
  *      (shelly-plan-executor.js effectiveStepTool: a dispatchable step.tool,
- *      else plan.tool) — same type and model. This rejects Codex/CLI steps
- *      (the executor silently re-routes them onto plan.tool), `tool: auto`
+ *      else plan.tool) — same type and model. This rejects `tool: auto`
  *      steps the attended router sends elsewhere than plan.tool, and step pins
- *      buildAgentPlanSpec dropped for an autonomous agent;
+ *      buildAgentPlanSpec dropped for an autonomous agent. A CLI step
+ *      (Codex / Claude Code pin, executor v19+ dispatchCliStep through the
+ *      agent driver) is allowed when its disk pin is the same CLI, the
+ *      attended first choice is that same CLI and the plan carries
+ *      `cliWorker` (parallel CLI steps Inc3) — plan.tool itself must still
+ *      be HTTP-dispatchable (it is the aggregation / fallback tool);
  *  (c) a step whose effective tool is local needs plan.tool to be local too:
  *      native only autostarts llama-server when plan.tool.type == 'local'
  *      (AgentRuntime.kt runPlanAgent → ensureLocalLlmServerBeforePlanExecutor);
@@ -46,13 +50,22 @@ import { PLAN_SPEC_KIND, PLAN_SPEC_SCHEMA_VERSION, buildAgentPlanSpec, toPlanToo
 
 /** Mirror of scripts/shelly-plan-executor.js STEP_TOOL_DISPATCHABLE_TYPES. */
 export const EXECUTOR_DISPATCHABLE_TOOL_TYPES: ReadonlySet<string> = new Set(['local', 'gemini-api', 'perplexity', 'cerebras', 'groq']);
+/** Step tool types the executor runs through the agent driver (v19+,
+ *  shelly-plan-executor.js isCliStep / dispatchCliStep — attended user runs
+ *  only). Never valid as plan.tool: the final / aggregation fallback stays an
+ *  HTTP-dispatchable provider. */
+export const EXECUTOR_CLI_TOOL_TYPES: ReadonlySet<string> = new Set(['cli']);
+/** CLI workers the executor's driver dispatch knows (shelly-plan-executor.js
+ *  CLI_STEP_LABELS / driver --engine). */
+export const EXECUTOR_CLI_ENGINES: ReadonlySet<string> = new Set(['codex', 'claude']);
 /** Mirror of AgentRuntime.kt PLAN_EXECUTOR_ACTIONS (native refuses anything else). */
 export const EXECUTOR_ACTION_TYPES: ReadonlySet<string> = new Set([
   'draft', 'notify', 'webhook', 'cli', 'intent', 'dm-reply', 'api-call', 'social-post', 'browser-pane', '__suppressed__',
 ]);
 
 export type AttendedRoute =
-  | { route: 'executor'; reason: string; groupCount: number }
+  /** `cliSteps`: steps the executor runs through the agent driver. */
+  | { route: 'executor'; reason: string; groupCount: number; cliSteps: number }
   | { route: 'serial'; reason: string };
 
 function serial(reason: string): AttendedRoute {
@@ -69,6 +82,17 @@ function typeOf(v: unknown): string | undefined {
 
 function modelOf(v: unknown): string | undefined {
   return isRecord(v) && typeof v.model === 'string' && v.model ? v.model : undefined;
+}
+
+function cliOf(v: unknown): string | undefined {
+  return isRecord(v) && typeof v.cli === 'string' && v.cli ? v.cli : undefined;
+}
+
+/** A `{type:'cli', cli:'codex'|'claude'}` tool the executor can drive. */
+function isExecutorCliTool(v: unknown): boolean {
+  const type = typeOf(v);
+  const cli = cliOf(v);
+  return !!type && EXECUTOR_CLI_TOOL_TYPES.has(type) && !!cli && EXECUTOR_CLI_ENGINES.has(cli);
 }
 
 /** Number of effective (>= 2 member) groups in a planParallelGroups result. */
@@ -194,11 +218,42 @@ export function decideAttendedRoute(args: {
   }
 
   // ── per step: attended provider == executor effective provider ───────────
+  let cliSteps = 0;
   for (let i = 0; i < steps.length; i++) {
     const n = i + 1;
     const disk = list[i];
     if (!isRecord(disk)) return serial(`on-disk PlanSpec step ${n} unreadable`);
     if (disk.apiCall) return serial(`on-disk PlanSpec step ${n} is an api-call step`);
+    // Parallel CLI steps Inc3: a step pinned to a CLI worker the executor
+    // drives (Codex / Claude Code) runs there through shelly-agent-driver.js
+    // — the same gate the serial chain's CLI step goes through — when the
+    // attended router would also pick exactly that CLI first (a pinned CLI
+    // runs alone attended, lib/agent-escalation-ladder.ts) and the plan
+    // carries the cliWorker block the executor builds the driver argv from.
+    if (steps[i].tool && EXECUTOR_CLI_TOOL_TYPES.has(steps[i].tool!.type)) {
+      const stepCli = (steps[i].tool as { cli?: string }).cli;
+      if (!stepCli || !EXECUTOR_CLI_ENGINES.has(stepCli)) {
+        return serial(`step ${n} is pinned to cli:${stepCli ?? '?'} (the executor drives codex / claude only)`);
+      }
+      if (!isExecutorCliTool(disk.tool) || cliOf(disk.tool) !== stepCli) {
+        return serial(`on-disk PlanSpec step ${n} lost its cli:${stepCli} pin (executor would not run that CLI)`);
+      }
+      if (!isRecord(plan.cliWorker) || !isRecord(plan.cliWorker.policy) || typeof plan.cliWorker.cwd !== 'string') {
+        return serial(`on-disk PlanSpec has no cliWorker block for step ${n}'s cli:${stepCli}`);
+      }
+      let primary: ToolChoice | undefined;
+      try {
+        primary = attendedPrimaryTool(agent, steps[i], env);
+      } catch {
+        return serial(`step ${n}: route could not be resolved`);
+      }
+      if (!primary || primary.type !== 'cli' || primary.cli !== stepCli) {
+        const got = primary ? (primary.type === 'cli' ? `cli:${primary.cli}` : primary.type) : 'nothing';
+        return serial(`step ${n} provider drift: attended ${got} vs executor cli:${stepCli}`);
+      }
+      cliSteps += 1;
+      continue;
+    }
     if (steps[i].tool && !EXECUTOR_DISPATCHABLE_TOOL_TYPES.has(steps[i].tool!.type)) {
       return serial(`step ${n} is pinned to ${steps[i].tool!.type} (not executor-dispatchable)`);
     }
@@ -233,7 +288,8 @@ export function decideAttendedRoute(args: {
   }
   return {
     route: 'executor',
-    reason: `${groupCount} effective parallel group(s), every step's provider matches the executor, on-disk PlanSpec current`,
+    reason: `${groupCount} effective parallel group(s), every step's provider matches the executor, on-disk PlanSpec current, cli=${cliSteps}`,
     groupCount,
+    cliSteps,
   };
 }

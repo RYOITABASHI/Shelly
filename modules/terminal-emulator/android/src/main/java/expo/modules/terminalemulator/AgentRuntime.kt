@@ -516,7 +516,10 @@ object AgentRuntime {
     // starttime, so .sh MAX_CONCURRENT and STOP-ALL see them), a stopped CLI
     // driver's process tree is killed, and the driver gets --timeout-ms.
     // JS-only change.
-    private const val CURRENT_EXECUTOR_VERSION = 20
+    // v21 (parallel CLI steps Inc3): run log `usage` sums the CLI workers'
+    // reported usage; attended wording for an isolation-blocked step.
+    // JS-only change.
+    private const val CURRENT_EXECUTOR_VERSION = 21
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

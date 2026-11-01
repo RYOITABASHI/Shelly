@@ -236,6 +236,75 @@ export function parseProgressRuns(text: string): MonitorRun[] {
   }));
 }
 
+export interface CliBranchOverlap {
+  /** Steps of the run whose provider was a CLI worker (tool event kind CLI). */
+  cliBranches: number;
+  /** Wall-clock time during which >= 2 of those steps were RUNNING at once. */
+  overlapMs: number;
+}
+
+/**
+ * Parallel CLI steps Inc3 (on-device acceptance: "overlapMs > 0"): how long
+ * two or more CLI branches of run `runId` were RUNNING at the same time,
+ * from the branch_state events of the progress stream. A RUNNING interval
+ * runs from a RUNNING event to the next state event of that step (any other
+ * state, WAITING_APPROVAL included), else to the run_end, else to the last
+ * event of the run. Same forgiving reader as parseProgressRuns (bad lines,
+ * other runs / agents, stale seq are ignored). Pure.
+ */
+export function cliBranchOverlap(text: string, runId: string): CliBranchOverlap {
+  const cli = new Set<number>();
+  const open = new Map<number, number>();
+  const intervals: Array<{ step: number; from: number; to: number }> = [];
+  let agentId: string | null = null;
+  let lastSeq = 0;
+  let lastTs: number | null = null;
+  let endTs: number | null = null;
+  for (const line of String(text || '').split('\n')) {
+    const e = parseProgressLine(line);
+    if (!e || e.runId !== runId) continue;
+    if (agentId === null) agentId = e.agentId;
+    if (e.agentId !== agentId || e.seq <= lastSeq) continue;
+    lastSeq = e.seq;
+    const ts = Date.parse(e.ts);
+    if (!Number.isFinite(ts)) continue;
+    lastTs = ts;
+    if (e.kind === 'run_end') {
+      endTs = ts;
+    } else if (e.kind === 'tool') {
+      if (parseProvider(e.provider)?.kind === 'CLI') cli.add(e.stepIndex as number);
+    } else if (e.kind === 'branch_state') {
+      const step = e.stepIndex as number;
+      const from = open.get(step);
+      if (from !== undefined) {
+        intervals.push({ step, from, to: ts });
+        open.delete(step);
+      }
+      if (e.state === 'RUNNING') open.set(step, ts);
+    }
+  }
+  const closeAt = endTs ?? lastTs;
+  if (closeAt !== null) for (const [step, from] of open) intervals.push({ step, from, to: closeAt });
+  // A step is known to be CLI from its tool event (which may follow its first
+  // RUNNING), so filter once everything is read.
+  const points: Array<[number, number]> = [];
+  for (const iv of intervals) {
+    if (cli.has(iv.step) && iv.to > iv.from) points.push([iv.from, 1], [iv.to, -1]);
+  }
+  // Sweep; an end sorts before a start at the same instant (touching is not
+  // overlap).
+  points.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let live = 0;
+  let overlapMs = 0;
+  let prev = 0;
+  for (const [t, d] of points) {
+    if (live >= 2) overlapMs += t - prev;
+    live += d;
+    prev = t;
+  }
+  return { cliBranches: cli.size, overlapMs };
+}
+
 /** The latest run in the text (the last one to start), or null when none parse. */
 export function parseProgressJsonl(text: string): MonitorRun | null {
   const runs = parseProgressRuns(text);

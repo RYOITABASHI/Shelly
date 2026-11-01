@@ -200,7 +200,7 @@ function snapshotFor(
   nowMs: number,
 ): MonitorSnapshot {
   const agents: Record<string, MonitorAgentSnapshot> = {};
-  let approvalAgentId: string | null = null;
+  const approvalAgentIds: string[] = [];
   let finished = 0;
   let partial = 0;
   let declined = false;
@@ -240,7 +240,7 @@ function snapshotFor(
       ...(updatedAgoSec !== undefined ? { updatedAgoSec } : {}),
       stale: state === 'RUNNING' && !ended && updatedAgoSec !== undefined && updatedAgoSec >= STALE_AFTER_SEC,
     };
-    if (state === 'APPROVAL' && approvalAgentId === null) approvalAgentId = id;
+    if (state === 'APPROVAL') approvalAgentIds.push(id);
     if (FINISHED.has(state)) finished++;
     else if (halfway) partial++;
   }
@@ -269,8 +269,9 @@ function snapshotFor(
   return {
     t: nowMs,
     agents,
-    approvalPending: approvalAgentId !== null,
-    approvalAgentId,
+    approvalPending: approvalAgentIds.length > 0,
+    approvalAgentId: approvalAgentIds[0] ?? null,
+    approvalAgentIds,
     complete,
     chat: [],
     missionPct,

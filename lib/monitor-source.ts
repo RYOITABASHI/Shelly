@@ -83,8 +83,13 @@ export interface MonitorSnapshot {
   t: number;
   agents: Record<string, MonitorAgentSnapshot>;
   approvalPending: boolean;
-  /** Agent waiting for the user's ok, when approvalPending. */
+  /** Agent waiting for the user's ok, when approvalPending (the first of
+   *  approvalAgentIds). */
   approvalAgentId: string | null;
+  /** LIVE (parallel CLI steps Inc3): EVERY step waiting for the user's ok,
+   *  in step order — two CLI branches of one run can ask at once. Absent =
+   *  [approvalAgentId] when set (DEMO / team sources). */
+  approvalAgentIds?: string[];
   complete: boolean;
   chat: MonitorChatLine[];
   /** Overrides the per-agent average (LIVE: step-based, see monitor-live). */

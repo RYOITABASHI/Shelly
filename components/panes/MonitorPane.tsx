@@ -79,6 +79,7 @@ import { openFile } from '@/lib/open-file';
 import { openAgentChatThread } from '@/lib/agent-thread-open';
 import {
   getPendingApprovals,
+  MONITOR_MAX_SHOWN_ASKS,
   monitorAskIdentity,
   pendingApprovalsForAgent,
   pickMonitorApprovalTarget,
@@ -849,9 +850,29 @@ export default function MonitorPane() {
                   }}
                 />
               </View>
-              {liveAsks.length > 1 && (
+              {/* Parallel CLI steps Inc3: two branches can ask at once. The
+                  2nd pending ask is shown too, but only answers to its code
+                  ("ok <hash8>") — a bare OK / NO always goes to the one
+                  above (oldest, after MONITOR_ASK_MIN_SHOWN_MS on screen).
+                  Still resolved only by the TextInput's onSubmitEditing. */}
+              {liveAsks.slice(1, MONITOR_MAX_SHOWN_ASKS).map((other, i) => (
+                <View key={other.key} testID={`monitor-approval-ask-other-${i + 1}`}>
+                  <Text style={[styles.pinnedAsk, styles.pinnedAskWrap]} numberOfLines={3}>
+                    <Text style={{ color: MON.muted }}>
+                      {`${t('monitor.live.approval_count', { n: i + 2, total: liveAsks.length })}  `}
+                    </Text>
+                    {t('monitor.live.approval_ask_other', { what: other.what, hash: other.marker.hash8 })}
+                  </Text>
+                  {other.detail ? (
+                    <Text style={styles.hintLine} numberOfLines={2}>
+                      {other.detail}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+              {liveAsks.length > MONITOR_MAX_SHOWN_ASKS && (
                 <Text style={styles.hintLine} testID="monitor-approval-more">
-                  {t('monitor.live.approval_more', { n: liveAsks.length - 1 })}
+                  {t('monitor.live.approval_more', { n: liveAsks.length - MONITOR_MAX_SHOWN_ASKS })}
                 </Text>
               )}
               {approvalNote && (

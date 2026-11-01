@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=20
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=21
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -71,7 +71,12 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // stopped CLI driver's whole process tree is killed; the driver gets
 // --timeout-ms under the branch timeout. Bumped so a stale v19 copy (no CLI
 // concurrency limit, orphaned codex/claude grandchildren) is refreshed.
-const EXECUTOR_SCRIPT_VERSION = 20;
+// v21 (2026-11-01, parallel CLI steps Inc3): attended Run now now routes
+// chains with CLI branches here. The run log carries `usage` summed over the
+// CLI workers' reported usage (Claude Code tokens / API-key usd), and an
+// isolation-blocked API-key step on an attended run no longer says
+// "unattended". Bumped so a stale v20 copy is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 21;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -3388,6 +3393,8 @@ function writeRunLog(paths, plan, status, preview, durationMs, errorMessage, ste
     ...(steps ? { steps } : {}),
     ...(actionResults ? { actionResults } : {}),
     ...(paths.handoff ? { handoff: paths.handoff } : {}),
+    // v21: what the CLI workers of this run reported (AgentRunLog.usage).
+    ...(runCliUsage ? { usage: Object.assign({}, runCliUsage) } : {}),
   };
   writeAtomic(path.join(paths.logDir, `${Math.floor(ts / 1000)}.json`), JSON.stringify(log) + '\n');
 }
@@ -5523,6 +5530,39 @@ function cliStepNeedingAttended(plan, args) {
   return list.findIndex((step) => isCliStep(step));
 }
 
+// v21: usage the CLI workers of THIS run reported (Claude Code's result
+// message: tokens, and usd only for an API-key-billed run; Codex reports
+// none). Summed per run and written into the run log's `usage` (one executor
+// process = one run; runOrchestrationChain resets it for in-process tests).
+let runCliUsage = null;
+
+function addRunCliUsage(usage) {
+  if (!usage || typeof usage !== 'object') return;
+  const next = Object.assign({}, runCliUsage || {});
+  let any = false;
+  for (const key of ['inputTokens', 'outputTokens', 'usd']) {
+    const n = usage[key];
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) continue;
+    next[key] = (next[key] || 0) + n;
+    any = true;
+  }
+  if (any) runCliUsage = next;
+}
+
+// v21: lib/agent-plan-spec.ts bakes the isolation `blocked` text for the
+// unattended case ("... unattended ..., Run this agent with Run now ..."). On
+// an attended Run now that reads wrong (the user did press Run now), so the
+// step says why it cannot run in this run instead.
+const ISOLATION_BLOCKED_ATTENDED_MESSAGE =
+  "Step {n} would send earlier steps' results to a cloud API, but those results may contain local data " +
+  '(files, notifications, device status, memory), and this agent is autonomous, so Shelly keeps them on the device. ' +
+  'Make every earlier step a web-only step, or turn off Autonomous for this agent.';
+
+function isolationBlockedMessage(blocked, stepIndex, args) {
+  if (!cliStepAttended(args)) return blocked;
+  return ISOLATION_BLOCKED_ATTENDED_MESSAGE.replace('{n}', String(stepIndex + 1));
+}
+
 function cliStepAttended(args) {
   return !argTruthy(args && args.unattended) && process.env.SHELLY_RUN_ORIGIN === 'user';
 }
@@ -5811,7 +5851,10 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
         }
       } catch (_) {}
     }
-    if (usage) progressStepEvent(progress, stepIndex, 'usage', { usage });
+    if (usage) {
+      progressStepEvent(progress, stepIndex, 'usage', { usage });
+      addRunCliUsage(usage);
+    }
     cliStepAudit(paths, plan, 'cli_branch_end', {
       stepIndex,
       engine,
@@ -5853,6 +5896,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   // with the same non-undefined group id dispatch concurrently below; every
   // branch still sees only the pre-group snapshot (contextResults below).
   const parallelPlan = planParallelGroups(plan.steps.list);
+  runCliUsage = null;
   // v19: a CLI step on a run that cannot start it skips the WHOLE run before
   // any step runs (no paid call is made for a chain that cannot finish), as
   // 'skipped' rather than 'error' — see CliStepNeedsAttended.
@@ -6119,7 +6163,7 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     const isolation = Array.isArray(plan.steps.isolation) ? plan.steps.isolation[i] : null;
     if (isolation && typeof isolation.blocked === 'string') {
       return {
-        record: { index: i, instruction: step.instruction, status: 'error', durationMs: 0, outputPreview: previewText(isolation.blocked), ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
+        record: { index: i, instruction: step.instruction, status: 'error', durationMs: 0, outputPreview: previewText(isolationBlockedMessage(isolation.blocked, i, args)), ...(parallelPlan.group[i] ? { parallelGroup: parallelPlan.group[i] } : {}) },
         failed: true,
       };
     }
