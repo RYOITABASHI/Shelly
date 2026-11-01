@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=22
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=23
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -81,7 +81,13 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // notifications into it), so their tokens reach the progress `usage` event
 // and the run log instead of MONITOR's "0 tok". Bumped so a stale v21 copy is
 // refreshed.
-const EXECUTOR_SCRIPT_VERSION = 22;
+// v23 (2026-11-01, on-device parallel CLI run): an attended CLI branch's
+// approval ask waits up to CLI_ESCALATION_TIMEOUT_MS (10 min, under the
+// driver's turn timeout) instead of the driver's 120 s default. Two branches
+// ask at once and the human answers one after the other: Codex's ask timed
+// out (declined) while the Claude Code ask was being answered. Bumped so a
+// stale v22 copy is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 23;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -5489,6 +5495,9 @@ const CLI_STEP_TIMEOUT_MS = 20 * 60 * 1000;
 const CLI_STEP_KILL_GRACE_MS = CLI_STEP_SIGTERM_GRACE_MS;
 const CLI_DRIVER_TIMEOUT_MARGIN_MS = 30 * 1000;
 const CLI_DRIVER_TIMEOUT_MS = CLI_STEP_TIMEOUT_MS - CLI_DRIVER_TIMEOUT_MARGIN_MS;
+// v23: how long a CLI branch's approval ask waits for the human (the driver's
+// own default is 120 s). Kept under the driver's turn timeout.
+const CLI_ESCALATION_TIMEOUT_MS = 10 * 60 * 1000;
 // v20 (review): native kills the whole executor at AgentRuntime.kt
 // DEFAULT_TIMEOUT_MS (30 min, execSubprocess timeout) counted from the launch
 // of the cmd-file bash, i.e. a moment before this node process started. A CLI
@@ -5516,6 +5525,13 @@ function cliRunLimits() {
     deadlineMs: PROCESS_STARTED_AT_MS + ceiling - Math.min(NATIVE_RUN_CEILING_MARGIN_MS, Math.floor(ceiling / 10)),
     minRunMs: num('SHELLY_PLAN_EXECUTOR_CLI_MIN_RUN_MS', CLI_BRANCH_MIN_RUN_MS),
   };
+}
+
+// v23: the driver's --escalation-timeout-ms: CLI_ESCALATION_TIMEOUT_MS, but
+// ending before the driver's turn timeout (a turn shorter than the margin
+// keeps at least 1 ms, the driver's own floor).
+function cliEscalationTimeoutMs(driverTimeoutMs) {
+  return Math.max(1, Math.min(CLI_ESCALATION_TIMEOUT_MS, driverTimeoutMs - CLI_DRIVER_TIMEOUT_MARGIN_MS));
 }
 
 // The branch timer and the driver's --timeout-ms for a CLI turn starting now.
@@ -5735,6 +5751,7 @@ async function runCliStepDriver(paths, opts, plan, config, args, stepIndex, step
     '--agent-id', plan.agent.id,
     '--escalation-public-key-sha256', escalationPin,
     '--escalation-timeout-action', 'queue',
+    '--escalation-timeout-ms', String(cliEscalationTimeoutMs(driverTimeoutMs)),
     // v20: the driver's own turn timeout (default 300 s) would cut a long
     // turn; it ends just before the branch timeout so it reports first.
     '--timeout-ms', String(driverTimeoutMs),
@@ -7482,6 +7499,8 @@ module.exports = {
   PHANTOM_PROCESS_CEILING,
   CLI_BRANCH_PROCESS_COST,
   CLI_DRIVER_TIMEOUT_MS,
+  CLI_ESCALATION_TIMEOUT_MS,
+  cliEscalationTimeoutMs,
   cliBranchTimeouts,
   acquireLock,
   makeSignedApprovalNonceStore,

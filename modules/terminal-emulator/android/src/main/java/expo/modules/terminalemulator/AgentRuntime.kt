@@ -522,7 +522,9 @@ object AgentRuntime {
     // reported usage; attended wording for an isolation-blocked step.
     // JS-only change.
     // v22 (MONITOR CLI tokens): Codex CLI steps report usage too. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 22
+    // v23: a CLI branch's approval ask waits up to 10 min (driver default was
+    // 120 s; two parallel asks are answered one after the other). JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 23
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's

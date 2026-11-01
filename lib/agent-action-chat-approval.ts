@@ -448,7 +448,9 @@ export async function resolveActionApprovalFromChat(
 /**
  * MONITOR's typed OK / NO (components/panes/MonitorPane.tsx — called ONLY
  * from its approval TextInput's submit handler, i.e. the user's own
- * keystrokes, the MONITOR equivalent of the chat's `typedByUser`). Records
+ * keystrokes, the MONITOR equivalent of the chat's `typedByUser`), and a
+ * typed "ok <hash8>" in any chat composer (hooks/use-ai-pane-dispatch.ts,
+ * `typedByUser` only, picked by the same pickMonitorApprovalTarget). Records
  * the exchange in the agent's thread (so OPEN CHAT shows what was answered)
  * and resolves through resolveActionApprovalFromChat — the very same native
  * read-then-resolve as a chat reply. Returns the reply line.

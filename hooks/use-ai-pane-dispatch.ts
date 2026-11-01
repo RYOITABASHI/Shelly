@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useRef, useMemo, useEffect } from 'react';
-import { COMPANION_CONVERSATION_KEY, AGENT_THREAD_KEY_PREFIX, carryForwardOnThreadSwitch, isPromptHistoryEligible, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
+import { COMPANION_CONVERSATION_KEY, AGENT_THREAD_KEY_PREFIX, agentThreadKey, carryForwardOnThreadSwitch, isPromptHistoryEligible, resolveAiPaneStoreKey, useAIPaneStore } from '@/store/ai-pane-store';
 import type { JustRegisteredAgentRef } from '@/store/ai-pane-store';
 import { usePaneStore } from '@/store/pane-store';
 import { useSettingsStore } from '@/store/settings-store';
@@ -73,7 +73,8 @@ import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-r
 import { setRunWithoutApproval } from '@/lib/agent-run-without-approval';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
-import { findActionApprovalReplyTarget, findAmbiguousBareApprovalReply, resolveActionApprovalFromChat } from '@/lib/agent-action-chat-approval';
+import { findActionApprovalReplyTarget, findAmbiguousBareApprovalReply, parseActionApprovalChatReply, resolveActionApprovalFromChat, resolvePendingApprovalFromMonitor } from '@/lib/agent-action-chat-approval';
+import { getPendingApprovals, pickMonitorApprovalTarget } from '@/lib/agent-pending-approvals';
 import TerminalEmulator from '@/modules/terminal-emulator/src/TerminalEmulatorModule';
 import { detectCompanionMemoryWrite, detectGlobalMemoryWrite } from '@/lib/agent-global-memory-intent';
 import { buildCompanionRecallContext, buildGlobalRecallContext, buildRecallContext, readCompanionMemoryNotes, readGlobalMemoryNotes, readMemoryNotes, recallMemoryNotes } from '@/lib/agent-memory';
@@ -1085,6 +1086,50 @@ export function useAIPaneDispatch(paneIdRaw: string) {
           // bare "ok" carries no language of its own.
           const reply = await resolveActionApprovalFromChat(target, paneId);
           store.addMessage(paneId, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() });
+          return;
+        }
+        // On-device 2026-11-01 (parallel CLI run): the asks are posted in the
+        // agent's own thread and MONITOR, so an "ok <hash8>" typed in another
+        // chat pane matched nothing here and went to the model, which
+        // answered with an invented result. A reply that names a hash is
+        // unambiguous: answer the pending ask with that hash (any agent)
+        // exactly like MONITOR's field — same typed-composer-only gate, same
+        // pick rules, same native read-then-resolve. Bare OK / NO stays
+        // thread-scoped (above). Only a hash that names a CURRENTLY pending
+        // ask is taken; anything else ("OK 20261105" to a slot-fill …) falls
+        // through to the handlers below untouched.
+        const hashed = !dispatchOpts?.typedByUser || userText.trim().startsWith('@')
+          ? null
+          : parseActionApprovalChatReply(userText);
+        const hashedAsk = hashed?.hash8
+          ? getPendingApprovals().find((a) => a.marker.hash8 === hashed.hash8)
+          : undefined;
+        if (hashed && hashedAsk) {
+          // resolvePendingApprovalFromMonitor records the exchange in the
+          // agent's own thread; do not post it twice when this IS that thread.
+          const ownThread = paneId === agentThreadKey(hashedAsk.agentId);
+          if (!ownThread) store.addMessage(paneId, { id: generateId(), role: 'user', content: userText, timestamp: Date.now() });
+          const pick = pickMonitorApprovalTarget({
+            text: userText,
+            asks: [hashedAsk],
+            displayedKey: null,
+            displayedSince: 0,
+            now: Date.now(),
+          });
+          let reply: string;
+          if ('reason' in pick) {
+            logInfo('AIPaneDispatch', `hash approval reply not applied: ${pick.reason}`);
+            reply = pick.reason === 'too-soon'
+              ? t('monitor.live.approval_too_soon')
+              : pick.reason === 'expired'
+                ? t('monitor.live.approval_expired')
+                : t('agent_action_chat.gone');
+            store.addMessage(paneId, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() });
+            return;
+          }
+          logInfo('AIPaneDispatch', `hash approval reply ${pick.decision} ${pick.ask.kind} [${pick.ask.marker.hash8}]`);
+          reply = await resolvePendingApprovalFromMonitor(pick.ask, pick.decision, userText).catch(() => t('agent_action_chat.failed'));
+          if (!ownThread) store.addMessage(paneId, { id: generateId(), role: 'assistant', content: reply, timestamp: Date.now() });
           return;
         }
       }

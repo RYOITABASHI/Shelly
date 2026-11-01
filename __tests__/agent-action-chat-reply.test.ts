@@ -220,6 +220,18 @@ describe('chat approval input source (Codex review 2026-10-31)', () => {
     expect(monitor.match(/submitApproval/g) ?? []).toHaveLength(2);
     expect(monitor).toContain('onSubmitEditing={submitApproval}');
   });
+
+  it('the chat "ok <hash8>" path is typed-composer-only and takes only a pending hash', () => {
+    // On-device 2026-11-01: the one chat call site of the MONITOR resolver.
+    expect(hook.match(/resolvePendingApprovalFromMonitor\(/g) ?? []).toHaveLength(1);
+    expect(hook).toMatch(/const hashed = !dispatchOpts\?\.typedByUser \|\| userText\.trim\(\)\.startsWith\('@'\)/);
+    const body = hook.slice(hook.indexOf('const hashed = '));
+    const block = body.slice(0, body.indexOf('resolvePendingApprovalFromMonitor('));
+    // Falls through unless the hash names a currently pending ask.
+    expect(block).toContain('getPendingApprovals().find((a) => a.marker.hash8 === hashed.hash8)');
+    expect(block).toContain('if (hashed && hashedAsk) {');
+    expect(block).toContain('asks: [hashedAsk]');
+  });
 });
 
 describe('decideEscalationApprovalFromChat (boundary-op escalations)', () => {

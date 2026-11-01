@@ -521,9 +521,11 @@ export default function MonitorPane() {
         return t('monitor.live.approval_not_reply');
     }
   };
-  // SECURITY: the ONLY caller of resolvePendingApprovalFromMonitor. Wired to
-  // the approval TextInput's onSubmitEditing alone (the user's own
-  // keystrokes) — no button, no voice, no programmatic path.
+  // SECURITY: one of the two callers of resolvePendingApprovalFromMonitor
+  // (the other is a typed "ok <hash8>" in a chat composer,
+  // hooks/use-ai-pane-dispatch.ts). Wired to the approval TextInput's
+  // onSubmitEditing alone (the user's own keystrokes) — no button, no voice,
+  // no programmatic path.
   const submitApproval = () => {
     const text = approvalDraft;
     if (!text.trim() || approvalBusy) return;
