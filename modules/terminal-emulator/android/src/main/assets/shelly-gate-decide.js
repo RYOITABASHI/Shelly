@@ -1159,14 +1159,12 @@ var HEREDOC_PLAIN_COMMANDS = /* @__PURE__ */ new Set([
   "mv",
   "rm",
   "grep",
-  "rg",
   "diff",
   "stat",
   "file",
   "date",
   "sleep",
   "chmod",
-  "sort",
   "uniq",
   "cut",
   "tr",
@@ -1174,6 +1172,7 @@ var HEREDOC_PLAIN_COMMANDS = /* @__PURE__ */ new Set([
   "dirname",
   "realpath",
   "readlink"
+  // No `rg` (--pre) or `sort` (--compress-program): both can launch a program.
 ]);
 var HEREDOC_DELIM_CHARS_RE = /^[A-Za-z0-9_.-]*$/;
 var SHELL_META_CHARS = " 	\n;&|<>()";
@@ -1287,6 +1286,7 @@ function stripQuotedHeredocBodies(script) {
     }
     if (ch === "(") {
       if (s[i + 1] === "(") return null;
+      if (inWord || !expectCmd) return null;
       out += ch;
       i++;
       newCommand();

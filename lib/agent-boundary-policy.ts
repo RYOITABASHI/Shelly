@@ -518,8 +518,9 @@ const INDIRECT_EXEC_RE =
 const HEREDOC_OWNER_COMMANDS: ReadonlySet<string> = new Set(['cat', 'tee']);
 const HEREDOC_PLAIN_COMMANDS: ReadonlySet<string> = new Set([
   'cat', 'tee', 'mkdir', 'ls', 'echo', 'printf', 'pwd', 'cd', 'true', 'false', 'test', '[',
-  'wc', 'head', 'tail', 'touch', 'cp', 'mv', 'rm', 'grep', 'rg', 'diff', 'stat', 'file',
-  'date', 'sleep', 'chmod', 'sort', 'uniq', 'cut', 'tr', 'basename', 'dirname', 'realpath', 'readlink',
+  'wc', 'head', 'tail', 'touch', 'cp', 'mv', 'rm', 'grep', 'diff', 'stat', 'file',
+  'date', 'sleep', 'chmod', 'uniq', 'cut', 'tr', 'basename', 'dirname', 'realpath', 'readlink',
+  // No `rg` (--pre) or `sort` (--compress-program): both can launch a program.
 ]);
 const HEREDOC_DELIM_CHARS_RE = /^[A-Za-z0-9_.-]*$/;
 const SHELL_META_CHARS = ' \t\n;&|<>()';
@@ -631,6 +632,9 @@ export function stripQuotedHeredocBodies(script: string): string | null {
     }
     if (ch === '(') {
       if (s[i + 1] === '(') return null; // arithmetic command
+      // `name()` / `name ()` is a function definition that could shadow an
+      // allowlisted command word; only a subshell `(` in command position is ok.
+      if (inWord || !expectCmd) return null;
       out += ch;
       i++;
       newCommand();
