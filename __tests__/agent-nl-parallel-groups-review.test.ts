@@ -66,8 +66,8 @@ describe('3. the tool phrase is kept when it modifies a noun', () => {
 
   it('non-parallel chains (tagStepsWithToolMentions / clause split) keep the attributive phrase', () => {
     expect(tagStepsWithToolMentions(['Geminiで作った画像を説明して', 'Codexで書いたコードをレビューして'])).toEqual([
-      { instruction: 'Geminiで作った画像を説明して', tool: expect.objectContaining({ type: 'gemini-api' }) },
-      { instruction: 'Codexで書いたコードをレビューして', tool: { type: 'cli', cli: 'codex' } },
+      { instruction: 'Geminiで作った画像を説明して', tool: expect.objectContaining({ type: 'gemini-api' }), toolPinned: true },
+      { instruction: 'Codexで書いたコードをレビューして', tool: { type: 'cli', cli: 'codex' }, toolPinned: true },
     ]);
     const steps = detectToolPinnedSteps('パープレで調べた結果を要約して、全部ローカルLLMで翻訳して');
     expect(steps?.map((s) => s.instruction)).toEqual(['パープレで調べた結果を要約して', '全部翻訳して']);

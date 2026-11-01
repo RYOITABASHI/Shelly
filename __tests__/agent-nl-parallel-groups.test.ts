@@ -145,9 +145,9 @@ describe('English markers', () => {
       'At the same time: summarize news about tech with Perplexity, summarize news about sports with Perplexity, and finally combine both with the local LLM',
     );
     expect(steps).toEqual([
-      { instruction: 'summarize news about tech', tool: expect.objectContaining({ type: 'perplexity' }), parallelGroup: 'p1' },
-      { instruction: 'summarize news about sports', tool: expect.objectContaining({ type: 'perplexity' }), parallelGroup: 'p1' },
-      { instruction: 'combine both', tool: { type: 'local' } },
+      { instruction: 'summarize news about tech', tool: expect.objectContaining({ type: 'perplexity' }), toolPinned: true, parallelGroup: 'p1' },
+      { instruction: 'summarize news about sports', tool: expect.objectContaining({ type: 'perplexity' }), toolPinned: true, parallelGroup: 'p1' },
+      { instruction: 'combine both', tool: { type: 'local' }, toolPinned: true },
     ]);
   });
 
@@ -180,8 +180,8 @@ describe('grouping rules', () => {
   it('a marker with only one sibling forms no group (and is still not a step)', () => {
     const steps = detectToolPinnedSteps('同時に、ローカルLLMで春について書いて、最後にローカルLLMでそれを英訳して');
     expect(steps).toEqual([
-      { instruction: '春について書いて', tool: { type: 'local' } },
-      { instruction: 'それを英訳して', tool: { type: 'local' } },
+      { instruction: '春について書いて', tool: { type: 'local' }, toolPinned: true },
+      { instruction: 'それを英訳して', tool: { type: 'local' }, toolPinned: true },
     ]);
   });
 
@@ -258,8 +258,8 @@ describe('tool phrase stripping', () => {
 
   it('explicit-marker steps are stripped too, pin kept', () => {
     expect(tagStepsWithToolMentions(['パープレで論文を集めて', 'ローカルLLMで要約して', 'まとめて'])).toEqual([
-      { instruction: '論文を集めて', tool: expect.objectContaining({ type: 'perplexity' }) },
-      { instruction: '要約して', tool: { type: 'local' } },
+      { instruction: '論文を集めて', tool: expect.objectContaining({ type: 'perplexity' }), toolPinned: true },
+      { instruction: '要約して', tool: { type: 'local' }, toolPinned: true },
       'まとめて',
     ]);
   });
