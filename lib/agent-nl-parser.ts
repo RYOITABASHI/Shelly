@@ -26,6 +26,7 @@ import enLocale from './i18n/locales/en';
 import jaLocale from './i18n/locales/ja';
 import { encodeAtOneShot, encodeRelativeOneShot, formatOneShotLabel, isOneShotSchedule } from './agent-oneshot';
 import { continuousTextLocale, formatContinuousSummary, parseContinuousIntent, stripContinuousPhrases } from './agent-continuous';
+import { markAntigravitySteps, stripAntigravityInstrument } from './agent-antigravity';
 
 export interface ParsedAgentDraft {
   /** Short, editable label derived from the task (user can override in the card). */
@@ -247,6 +248,13 @@ export interface ParsedAgentDraft {
    *  Persisted as the agent's concrete configured tool at confirm
    *  (resolveConfirmedToolAndRunOn) instead of `auto`. */
   toolExplicit?: boolean;
+  /** 2026-11-01: the user named Antigravity (`agy`) as the engine — 「Antigravity
+   *  で…」 / "using Antigravity". It is never an agent worker and never pinned
+   *  (lib/agent-antigravity.ts); the phrase is stripped from the name / prompt /
+   *  steps and the confirm summary says which engine runs instead. `steps` =
+   *  0-based orchestrationSteps indexes that named it; empty = the whole
+   *  (single-step) task. Display only — never persisted into the agent. */
+  antigravityRequested?: { steps: number[] };
   /** 2026-10-30: the agent-level `tool` was changed by a chat edit of an
    *  already-registered single-step agent (「全部ローカルで」, see
    *  lib/agent-draft-patch.ts tryPatchStepTools) — the edit confirm persists
@@ -2619,6 +2627,37 @@ export function detectFreeTextAgentDeleteIntent(
  *   when the caller has no connectors to offer (the utterance then falls back to
  *   `draft` + a "register a connector first" caveat — see detectSocialPost).
  */
+/** `text` minus any Antigravity instrument phrase (unchanged when it has none
+ *  or nothing would be left). */
+function withoutAntigravity(text: string): string {
+  return stripAntigravityInstrument(text) || text;
+}
+
+/**
+ * ParsedAgentDraft.antigravityRequested from the per-step marks: a multi-step
+ * draft lists the steps that named Antigravity; when only the task text named
+ * it (a lead-in 「Antigravityを使って、まず…」 that the step splitter dropped),
+ * every step without its own tool is the one it would have run. A single-step
+ * draft gets the whole-task form (`steps: []`).
+ */
+function resolveAntigravityRequested(
+  steps: ReadonlyArray<string | AgentOrchestrationStep> | undefined,
+  markedSteps: readonly number[],
+  promptNamedIt: boolean,
+): { steps: number[] } | undefined {
+  if (steps && steps.length >= 2) {
+    let flagged = markedSteps.filter((i) => i < steps.length);
+    if (flagged.length === 0 && promptNamedIt) {
+      flagged = steps
+        .map((s, i) => (typeof s === 'string' || (s.tool === undefined && s.apiCall === undefined) ? i : -1))
+        .filter((i) => i >= 0);
+      if (flagged.length === 0) flagged = steps.map((_, i) => i);
+    }
+    return flagged.length > 0 ? { steps: flagged } : undefined;
+  }
+  return promptNamedIt || markedSteps.length > 0 ? { steps: [] } : undefined;
+}
+
 export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[] = []): ParsedAgentDraft {
   const rawText = utterance.trim();
   const startNotBefore = parseStartNotBefore(rawText);
@@ -2816,6 +2855,16 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
     (explicitSteps.length >= 2
       ? tagStepsWithToolMentions(explicitSteps)
       : detectToolPinnedSteps(prompt || workText) ?? undefined);
+  // 2026-11-01: Antigravity (`agy`) is never an agent worker — strip its
+  // instrument phrase from each step and remember which steps named it, so the
+  // confirm summary can say which engine runs them (lib/agent-antigravity.ts).
+  // No pin is added: those steps keep the normal engine resolution.
+  let antigravitySteps: number[] = [];
+  if (detectedSteps) {
+    const agy = markAntigravitySteps(detectedSteps);
+    detectedSteps = agy.steps.length >= 2 ? agy.steps : undefined;
+    antigravitySteps = agy.flagged;
+  }
   // Drop a trailing pure-delivery step ("通知して") when the resolved action is
   // already 'notify' — the action performs that delivery AFTER the chain, so
   // keeping the step as its own model call just makes the last step regenerate
@@ -2870,7 +2919,15 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   // suggestToolForDraft). rawText is checked too: derivePrompt may have
   // stripped the mention out of `prompt`. A ≥2-step chain keeps today's
   // agent-level routing (its clauses carry their own `.tool` pins).
-  const suggestion = suggestToolForDraft(prompt || rawText, {
+  // Antigravity: the task text the agent runs never carries the phrase.
+  const promptWithoutAgy = stripAntigravityInstrument(prompt);
+  const taskPrompt = promptWithoutAgy || prompt;
+  const antigravityRequested = resolveAntigravityRequested(
+    orchestrationSteps,
+    antigravitySteps,
+    promptWithoutAgy !== null,
+  );
+  const suggestion = suggestToolForDraft(taskPrompt || rawText, {
     mentionText: rawText,
     orchestrated: !!orchestrationSteps && orchestrationSteps.length >= 2,
     steps: orchestrationSteps,
@@ -2890,9 +2947,10 @@ export function parseAgentNL(utterance: string, connectors: SocialConnectorMeta[
   return {
     name: namePrefix
       ? deriveNameFromLabel(namePrefix.name)
-      : deriveName(sched.oneShotStrip ? removeSpans(workText, sched.oneShotStrip) || workText : workText),
-    prompt,
+      : deriveName(withoutAntigravity(sched.oneShotStrip ? removeSpans(workText, sched.oneShotStrip) || workText : workText)),
+    prompt: taskPrompt,
     orchestrationSteps,
+    ...(antigravityRequested ? { antigravityRequested } : {}),
     schedule: continuousIntent ? null : sched.schedule,
     scheduleConfident: continuousIntent ? true : sched.confident,
     scheduleLabel: continuousLabel ?? (manualTrigger ? manualScheduleLabel(rawText) : sched.label),

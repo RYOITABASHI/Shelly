@@ -644,6 +644,8 @@ const en: Record<string, string> = {
   'agentplan.tool_substituted_scope': 'Note: you named {{from}}, but this autonomous agent will run on {{to}} instead — Autonomous Cloud consent covers {{from}} only for web/research tasks (news, papers, "research …").',
   'agentplan.autonomous_note': 'Runs autonomously (no per-run human approval).',
   'agentplan.run_without_approval_note': '⚠ Run without approval: ON — reads outside the project (e.g. `cd ~/demo && git log`), edits inside its own workspace, and draft-save / notification approvals are allowed automatically. Writes or deletes outside the workspace, dangerous commands, outward sends and review-required actions still ask you. Editing the agent turns it OFF.',
+  'agentplan.antigravity_step_note': "⚠ Antigravity can't run agent steps, so step {{n}} will run on {{engine}}.",
+  'agentplan.antigravity_task_note': "⚠ Antigravity can't run agent steps, so this task will run on {{engine}}.",
   'agentplan.memory_note': 'Will remember after running: {{fact}}',
   'agentplan.skill_note': 'Reuses the existing skill "{{name}}" ({{count}} prior successes).',
   'agentplan.schedule_restate_hint': '⚠ I could not pin down a firm schedule. Please restate it with an explicit time (e.g. "daily at 8am"). This cannot be registered until then.',
