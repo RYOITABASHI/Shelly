@@ -48,6 +48,16 @@ export interface MonitorBranch {
   updatedAt: string;
   /** True once the branch reported WAITING_APPROVAL (the user was asked). */
   approvalAsked?: boolean;
+  /** Executor v24 CLI heartbeat: when the step's worker last did something —
+   *  a heartbeat's ts minus its quietMs (time since the driver's last
+   *  output); any later non-heartbeat event of the branch is activity at its
+   *  own ts. Unset for a branch that never sent a heartbeat (then updatedAt
+   *  is the activity time). */
+  lastActivityAt?: string;
+  /** True once the branch sent a heartbeat (a CLI worker is running). */
+  heartbeat?: boolean;
+  /** The last tool / item the CLI worker started (heartbeat `activity`). */
+  activity?: string;
 }
 
 export interface MonitorRun {
@@ -68,7 +78,10 @@ const BRANCH_STATES: ReadonlySet<string> = new Set(['STANDBY', 'RUNNING', 'WAITI
 const TERMINAL_STATES: ReadonlySet<string> = new Set(['DONE', 'FAILED', 'SKIPPED']);
 const RUN_MODES: ReadonlySet<string> = new Set(['SINGLE', 'SERIAL', 'PARALLEL']);
 const PROVIDER_KINDS: ReadonlySet<string> = new Set(['API', 'CLI', 'LOCAL']);
-const EVENT_KINDS: ReadonlySet<string> = new Set(['run_start', 'branch_state', 'tool', 'tail', 'usage', 'run_end']);
+// `heartbeat` (executor v24) is liveness for a running CLI step; readers
+// older than v24 drop it like any unknown kind.
+const EVENT_KINDS: ReadonlySet<string> = new Set(['run_start', 'branch_state', 'tool', 'tail', 'usage', 'run_end', 'heartbeat']);
+const ACTIVITY_MAX_CHARS = 40;
 
 interface ProgressEvent {
   runId: string;
@@ -87,6 +100,8 @@ interface ProgressEvent {
   mode?: string;
   status?: string;
   stepCount?: number;
+  quietMs?: unknown;
+  activity?: unknown;
 }
 
 function isNonEmptyString(v: unknown): v is string {
@@ -165,6 +180,9 @@ function branchFor(run: MonitorRun, index: Map<number, MonitorBranch>, e: Progre
   }
   if (isNonEmptyString(e.groupId)) branch.groupId = e.groupId;
   branch.updatedAt = e.ts;
+  // A heartbeat sets its own (earlier) activity time; any other event is
+  // activity at its ts.
+  if (e.kind !== 'heartbeat' && branch.lastActivityAt !== undefined) branch.lastActivityAt = e.ts;
   return branch;
 }
 
@@ -205,6 +223,22 @@ function applyEvent(run: MonitorRun, index: Map<number, MonitorBranch>, e: Progr
     case 'usage': {
       const branch = branchFor(run, index, e);
       branch.usage = addUsage(branch.usage, e.usage);
+      return;
+    }
+    case 'heartbeat': {
+      // Liveness only, never a visible line: updatedAt moves to the
+      // heartbeat, the worker's activity time to ts - quietMs (never back
+      // past the branch's previous event).
+      const before = index.get(e.stepIndex as number);
+      const prevActivity = before ? Date.parse(before.lastActivityAt ?? before.updatedAt) : NaN;
+      const branch = branchFor(run, index, e);
+      branch.heartbeat = true;
+      const ts = Date.parse(e.ts);
+      if (Number.isFinite(ts)) {
+        const at = ts - (finiteNonNegative(e.quietMs) ?? 0);
+        branch.lastActivityAt = new Date(Number.isFinite(prevActivity) ? Math.max(at, prevActivity) : at).toISOString();
+      }
+      if (isNonEmptyString(e.activity)) branch.activity = Array.from(e.activity).slice(0, ACTIVITY_MAX_CHARS).join('');
       return;
     }
     default:

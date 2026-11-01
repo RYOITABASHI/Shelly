@@ -58,6 +58,8 @@ const fanoutAt = (when) => {
   return { when, pid, starttime: fs.existsSync(fanoutFile + '.lockdir/starttime') };
 };
 const fanoutStart = fanoutAt('start');
+// v24 heartbeat: driver stdout lines printed at start (e.g. an AUDIT item_started).
+for (const line of behavior.lines || []) process.stdout.write(line + '\\n');
 const finish = () => {
   const record = {
     ppid: process.ppid,
@@ -783,6 +785,63 @@ describe('shelly-plan-executor.js CLI steps (v19)', () => {
         try { process.kill(pid, 'SIGKILL'); } catch (_) {}
       }
     }, 20000);
+  });
+
+  it('v24: a running CLI branch heartbeats while its driver is alive (quietMs, activity), and stops once it exits', async () => {
+    const home = makeHome();
+    const { driver, recordDir } = makeDriver();
+    writeDriverConfig(recordDir, {
+      codex: {
+        answer: 'CODEX_REVIEW: fine.',
+        delayMs: 900,
+        lines: ['AUDIT ' + JSON.stringify({ ts: 'x', kind: 'item_started', itemType: 'commandExecution', command: 'cat secret.txt' })],
+      },
+      claude: {
+        answer: 'CLAUDE_REVIEW: fine.',
+        delayMs: 900,
+        lines: ['AUDIT ' + JSON.stringify({ ts: 'x', kind: 'item_started', itemType: 'tool_use', tool: 'Bash', itemId: 't1' })],
+      },
+    });
+    const result = await runExecutor(writePlan(home, port, parallelSteps), home, driver, recordDir, {
+      extraEnv: { SHELLY_PLAN_EXECUTOR_CLI_HEARTBEAT_MS: '150' },
+    });
+    expect(result.status).toBe(0);
+    await delay(400); // a leaked timer would have nothing to write to, but give it the chance
+    const events = readProgress(home);
+    for (const [stepIndex, activity] of [[0, 'command'], [1, 'Bash']] as const) {
+      const beats = events.filter((e) => e.kind === 'heartbeat' && e.stepIndex === stepIndex);
+      expect(beats.length).toBeGreaterThanOrEqual(2);
+      for (const b of beats) {
+        expect(b.branchId).toBe(`${b.runId}#${stepIndex}`);
+        expect(b.groupId).toBe(events.find((e) => e.kind === 'branch_state' && e.stepIndex === stepIndex && e.groupId)?.groupId);
+        expect(typeof b.elapsedMs).toBe('number');
+        expect(typeof b.quietMs).toBe('number');
+        expect(b.activity).toBe(activity);
+        expect(b.tail).toBeUndefined();
+        expect(JSON.stringify(b)).not.toContain('secret.txt');
+      }
+      // The driver printed only at start: its quiet time grows.
+      expect(beats[beats.length - 1].quietMs).toBeGreaterThan(beats[0].quietMs);
+      // Nothing after the step settled (the timer stops with the driver).
+      const settled = events.find((e) => e.kind === 'branch_state' && e.stepIndex === stepIndex && e.state === 'DONE');
+      expect(settled).toBeDefined();
+      expect(Math.max(...beats.map((b) => b.seq))).toBeLessThan(settled.seq);
+    }
+    // The final (non-CLI) step never heartbeats.
+    expect(events.some((e) => e.kind === 'heartbeat' && e.stepIndex === 2)).toBe(false);
+  });
+
+  it('v24: cliActivityFromDriverLine reads only item_started AUDIT lines, never the command', () => {
+    const line = (o: unknown) => 'AUDIT ' + JSON.stringify(o);
+    expect(executor.CLI_HEARTBEAT_MS).toBe(10_000);
+    expect(executor.cliActivityFromDriverLine(line({ kind: 'item_started', itemType: 'tool_use', tool: 'Edit' }))).toBe('Edit');
+    expect(executor.cliActivityFromDriverLine(line({ kind: 'item_started', itemType: 'commandExecution', command: 'rm -rf /' }))).toBe('command');
+    expect(executor.cliActivityFromDriverLine(line({ kind: 'item_started', itemType: 'fileChange' }))).toBe('file change');
+    expect(executor.cliActivityFromDriverLine(line({ kind: 'item_started', itemType: 'tool_use', tool: '<b>' + 'x'.repeat(80) }))).toBe('b' + 'x'.repeat(39));
+    expect(executor.cliActivityFromDriverLine(line({ kind: 'turn_started', note: 'item_started' }))).toBeNull();
+    expect(executor.cliActivityFromDriverLine('S->C {"kind":"item_started"}')).toBeNull();
+    expect(executor.cliActivityFromDriverLine('AUDIT {"item_started"')).toBeNull();
+    expect(executor.cliActivityFromDriverLine(undefined)).toBeNull();
   });
 
   it('a driver failure (non-zero exit / empty answer) fails the branch, the group fails fast', async () => {

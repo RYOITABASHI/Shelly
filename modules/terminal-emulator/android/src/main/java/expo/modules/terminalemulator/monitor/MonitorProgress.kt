@@ -25,7 +25,10 @@ object MonitorProgress {
     val TERMINAL_STATES = setOf("DONE", "FAILED", "SKIPPED")
     private val RUN_MODES = setOf("SINGLE", "SERIAL", "PARALLEL")
     private val PROVIDER_KINDS = setOf("API", "CLI", "LOCAL")
-    private val EVENT_KINDS = setOf("run_start", "branch_state", "tool", "tail", "usage", "run_end")
+    // `heartbeat` (executor v24): a running CLI step's liveness — it only
+    // moves the branch's updatedAtMs (the `else -> prev` arm of apply), so a
+    // long CLI turn keeps the run live without changing what a camera shows.
+    private val EVENT_KINDS = setOf("run_start", "branch_state", "tool", "tail", "usage", "run_end", "heartbeat")
 
     data class Provider(val kind: String, val name: String, val model: String? = null)
 

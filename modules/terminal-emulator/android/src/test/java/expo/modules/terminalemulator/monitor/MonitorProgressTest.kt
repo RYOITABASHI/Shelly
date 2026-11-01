@@ -63,6 +63,20 @@ class MonitorProgressTest {
     }
 
     @Test
+    fun heartbeatOnlyMovesUpdatedAt() {
+        val text = listOf(
+            ev(1, "run_start"),
+            ev(2, "branch_state", ""","stepIndex":0,"state":"RUNNING""""),
+            ev(3, "tail", ""","stepIndex":0,"tail":"working""""),
+            ev(9, "heartbeat", ""","stepIndex":0,"elapsedMs":7000,"quietMs":1000,"activity":"Bash"""")
+        ).joinToString("\n")
+        val b0 = MonitorProgress.parse(text)!!.branches[0]
+        assertEquals("RUNNING", b0.state)
+        assertEquals("working", b0.tail)
+        assertEquals(MonitorProgress.parseIsoMs("2026-10-30T12:00:09.000Z"), b0.updatedAtMs)
+    }
+
+    @Test
     fun settledStateIsFinal() {
         val text = listOf(
             ev(1, "branch_state", ""","stepIndex":0,"state":"FAILED""""),
