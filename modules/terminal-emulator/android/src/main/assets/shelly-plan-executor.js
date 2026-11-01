@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=17
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=18
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -57,7 +57,7 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // stripped or read as DONE), is split off before the char-limit clamp, the
 // prior-iteration block follows the task, and the per-agent loop Stop marker
 // halts an unattended iteration like `.halted` (final action included).
-const EXECUTOR_SCRIPT_VERSION = 17;
+const EXECUTOR_SCRIPT_VERSION = 18;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of

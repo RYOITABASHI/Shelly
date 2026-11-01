@@ -72,6 +72,10 @@
 
 - 2026-08-15: Agent Chat / Ask panes had the same scrollback auto-follow bug class as AI Pane. Fixed with a 60 px near-bottom guard and local-send reset; Android device QA remains P2.
 
+### 自律エージェントで名指ししたエンジンを無人スケジュール起動でも守る — 一部のみ (P2)
+- 2026-11-01（`2abd0ccf3`）: ステップに `toolPinned`（ユーザーの言葉で付けたツール）を持たせ、自律エージェントでも名指しの CLI だけでそのステップを実行するようにした（`lib/agent-escalation-ladder.ts`、ローカル優先へ差し替えない・使えなければ失敗表示）。言葉で付けた Claude Code ステップも Claude 単独になる（以前は `[claude, local, codex]`）。
+- **残り**: エージェント本体のツールが local / Gemini などの自律チェーンに Codex を名指ししたステップがあると、無人のスケジュール起動では PlanSpec executor（`scripts/shelly-plan-executor.js`、CLI ステップを実行できない設計）がそのステップを `plan.tool` で実行し、実質的に差し替わる。対応案: `toolPinned` な CLI ステップを含むチェーンは無人でも `.sh` チェーンに回す、または executor から CLI を呼べるようにする。単一ステップのエージェント単位のピン（`suggestToolForDraft`）も未対応。
+
 ### 「承認なしで実行」ON でも下書き保存の承認が人に回る（build 2739、agent-mvvx3o28）— 修正済み・実機未検証 (P1)
 - **症状**（2026-10-31 21:00 実機）: attended Run now（Codex → Claude Code、action draft）で境界エスカレーションは `run-without-approval auto-approved … signals=leaves-root` と自動許可されたのに、最後の下書き保存のアクション承認は `approval notification posted … action=draft` で通常の通知/MONITOR に回り、理由のログが無かった。
 - **原因**: 「スクリプトの run log がアクション承認より先に書かれ、user 起点の印が先に消える」という仮説は**誤り**。直列チェーンの生成スクリプトは dispatch_agent_action（承認待ちを含む）が戻ってから run log を書く（`lib/agent-executor.ts` の success 分岐 → `# Log run result`）ので、印はアクションの間も残っていた。実際の原因は、RN が署名対象として読み直す**ネイティブの minted コピー**（`readAgentActionApprovalRequest` → `AgentActionApprovalBridge.toMap`）に `origin` が含まれていなかったこと。`trustedRequestOrigin(minted)` が常に 'event' になり、`autoApproveActionForFlaggedAgent` の minted 再確認が黙って拒否していた。エスカレーション側は登録表（`registeredRunOrigin`）だけを見るので通っていた。

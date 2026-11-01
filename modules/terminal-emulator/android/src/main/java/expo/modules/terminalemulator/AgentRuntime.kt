@@ -500,7 +500,10 @@ object AgentRuntime {
     // CURRENT_EXECUTOR_VERSION 17 (2026-10-31, Claude glibc S4): overrides.json
     // may name the Claude Code CLI worker (`{type:'cli',cli:'claude'}`); like
     // Codex it is parsed but never dispatched by the executor. JS-only change.
-    private const val CURRENT_EXECUTOR_VERSION = 17
+    // CURRENT_EXECUTOR_VERSION 18 (2026-11-01, build 2746): the action-approval
+    // request is hashed from the exact text before it is published, so a fast
+    // RN auto-answer (native deletes the file) cannot empty the hash. JS-only.
+    private const val CURRENT_EXECUTOR_VERSION = 18
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
