@@ -35,7 +35,7 @@ function runSourced(home: string, snippet: string): { stdout: string; status: nu
   const script = `set -eu
 HOME=${JSON.stringify(toPosix(home))}
 AGENT_ID="test-agent"
-TMP_DIR=$(mktemp -d)
+TMP_DIR=$(mktemp -d "$(dirname "$0")/tmp.XXXXXX")
 LOCKS_DIR="$TMP_DIR/locks"
 mkdir -p "$LOCKS_DIR"
 source ${JSON.stringify(toPosix(scriptPath))}
