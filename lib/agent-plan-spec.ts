@@ -14,6 +14,7 @@ import {
 import { evaluateAgentActionCommand } from './agent-action-safety';
 import { isAgentIntentMode, sanitizeClosePawGoal } from './agent-intent-review';
 import { buildAgentPolicy } from './agent-policy';
+import { validateWorkspaceRoot } from './agent-boundary-policy';
 import { clampCharLimit } from './agent-pipeline-presets';
 import { isApiKeyStep, isOrchestrated, isolatedApiStepPolicy, normalizeSteps, resolveBudget, type NormalizedStep, type ResolvedBudget } from './agent-orchestration';
 import { resolveEscalationLadder, type LadderEnv } from './agent-escalation-ladder';
@@ -198,6 +199,17 @@ export interface AgentPlanSpecV1 {
     goalCheck: boolean;
     dailyBudgetJpy: number;
     loopStartedAt?: number;
+  };
+  /** Parallel CLI steps Inc1 (2026-11-01, executor v19): present only when a
+   *  step names a CLI worker (`{type:'cli', cli:'codex'|'claude'}`). What
+   *  scripts/shelly-plan-executor.js's dispatchCliStep hands
+   *  shelly-agent-driver.js: `cwd` = the validated workspaceRoot ('' = the
+   *  executor's content-project default, like the .sh DRIVER_CWD), `policy` =
+   *  buildAgentPolicy baked unattended:true; the executor always overrides
+   *  `unattended` explicitly per run. Additive (no schema bump). */
+  cliWorker?: {
+    cwd: string;
+    policy: ReturnType<typeof buildAgentPolicy>;
   };
 }
 
@@ -395,9 +407,22 @@ export function buildAgentPlanSpec(
   // executor runs an unpinned (or non-dispatchable-pinned) step on the
   // agent-level tool (shelly-plan-executor.js effectiveStepTool), so a chain
   // whose agent-level tool is Perplexity sends EVERY such step to it.
+  // Executor v19: a CLI-pinned step runs on its own CLI worker (never on the
+  // agent-level tool), so it is judged as itself — not as an isolated API
+  // step whose output a later API-key step could carry.
   const effectiveSteps: NormalizedStep[] = resolvedStepList.map((step) =>
-    step.tool && PLAN_EXECUTOR_STEP_TOOL_TYPES.has(step.tool.type) ? step : { ...step, tool },
+    step.tool && (PLAN_EXECUTOR_STEP_TOOL_TYPES.has(step.tool.type) || step.tool.type === 'cli') ? step : { ...step, tool },
   );
+  const hasCliStep = resolvedStepList.some((step) => step.tool?.type === 'cli');
+  const safeWorkspaceRoot =
+    agent.workspaceRoot &&
+    validateWorkspaceRoot(agent.workspaceRoot, [
+      home,
+      '/data/user/0/dev.shelly.terminal/files/home',
+      '/data/data/dev.shelly.terminal/files/home',
+    ]).ok
+      ? agent.workspaceRoot
+      : '';
   const isolation = agent.autonomous
     ? effectiveSteps.map((step, index) => {
         if (!isApiKeyStep(step)) return null;
@@ -464,6 +489,9 @@ export function buildAgentPlanSpec(
       ? { ...routeDecision, why: `${routeDecision.why} ${droppedStepPinNotes.join(' ')}`.trim() }
       : routeDecision,
     ...(orchestrationSteps ? { steps: orchestrationSteps } : {}),
+    ...(orchestrationSteps && hasCliStep
+      ? { cliWorker: { cwd: safeWorkspaceRoot, policy: buildAgentPolicy(agent, home, { unattended: true }) } }
+      : {}),
     ...(continuousConfig
       ? {
           continuous: {

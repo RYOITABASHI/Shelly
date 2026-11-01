@@ -575,7 +575,7 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
     expect(requestModels[1]).toBe('plan-level-model');
   }, 20000);
 
-  it('(i) a step.tool pinned to `cli` (a type this executor cannot dispatch) falls back to plan.tool instead of failing the run', async () => {
+  it('(i) v19: a step.tool pinned to `cli` on a non-user run fails visibly instead of silently running on plan.tool', async () => {
     const home = makeHome();
     responses = ['step-1 result', 'final result'];
     const steps: StepsField = {
@@ -587,12 +587,12 @@ describe('shelly-plan-executor.js run() — chain mode (Increment 2)', () => {
     };
     const rc = await runExecutor(writePlan(home, port, { steps, toolModel: 'plan-level-model' }), home);
     expect(rc).toBe(0);
-    // Both requests went to the local HTTP server (proving `cli` never got
-    // dispatched to some other, nonexistent path) and both used plan.tool's
-    // model — the step's `cli` pin was inert, not fatal.
-    expect(requestModels).toEqual(['plan-level-model', 'plan-level-model']);
+    // The Codex step never reached plan.tool's model, and the chain stopped.
+    expect(requestModels).toEqual([]);
     const log = readRunLog(home);
-    expect(log.status).toBe('success');
+    expect(log.status).toBe('error');
+    expect(log.steps[0].status).toBe('error');
+    expect(log.steps[0].outputPreview).toContain('runs only with Run now');
   }, 20000);
 
   it('(k) FAN-OUT (2026-08-13): branches of a parallel group are context-isolated from each other and aggregated for the post-group step', async () => {

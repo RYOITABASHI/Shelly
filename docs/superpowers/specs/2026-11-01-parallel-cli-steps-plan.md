@@ -1,0 +1,41 @@
+# Attended Run now: wall-clock parallel CLI steps (Codex / Claude Code) — plan
+
+Owner decision 2026-11-01: an attended "Run now" whose parallel group contains CLI steps runs them truly in parallel. Approach A (chosen): the PlanSpec executor (`scripts/shelly-plan-executor.js` + byte-identical APK asset mirror) dispatches a CLI branch by spawning `shelly-agent-driver.js` per branch. The attended TS chain stays serial.
+
+## Facts this builds on
+- `lib/agent-attended-route.ts` `decideAttendedRoute` sends a chain to the executor only when every step's tool is in `EXECUTOR_DISPATCHABLE_TOOL_TYPES` (local / gemini-api / perplexity / cerebras / groq) and `plan.tool` is dispatchable; otherwise serial .sh chain.
+- Native `shouldRunPlanExecutor` sends a plan with steps to the executor unless `plan.tool` is unsupported (`toPlanTool` maps cli/auto → unsupported); also for alarm fires. Unattended executor today silently runs a cli-pinned step with `plan.tool` (`effectiveStepTool`) — fix: fail it.
+- Executor already has `runOrchestrationChain`, `withBranchPermit`, `Promise.allSettled`, declaration-order slots, group fail-fast, progress.jsonl, STOP-ALL via `.halted` and SIGTERM. It spawns only broker children today.
+- `runPlanAgent` (AgentRuntime.kt) does NOT export `SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256` / action-approval key pins (the .sh path `runAgentInner` does). Executor action approval has `SIGNED_APPROVAL_ENABLED = false` (hash match only).
+- Driver: per-process `crypto.randomUUID()` runId; escalation files `req-<runId>-<reqId>`; native notification id / nonce ledger per (runId, reqId); RN drain keyed `runId|reqId` → two concurrent branches are already distinguishable. `parseAutonomyPolicy`: `unattended: r.unattended === true` (missing = attended → always pass it explicitly).
+- Run-origin registry is per agentId; the executor route marks the whole run once — fine.
+- `AttendedProgressWriter` has a single `currentStep` (executor writes its own progress, fine).
+- Global `MAX_CONCURRENT=2` counts live `locks/*.pid` in .sh.
+- `MAX_PARALLEL_BRANCHES = 3`.
+
+## Status
+- **Inc0 + Inc1 done** (2026-11-01, branch `feat/parallel-cli-inc01`, executor v19; not on-device verified). Inc0 finding: native's action-approval reply is NOT the `verifySignedApprovalReply` (lib/signed-approval v2) format — `AgentActionApprovalBridge.writeHumanReply` signs `[runId, decision, requestTs, requestSha256(file bytes)].join('\n')` and carries no nonce/keySha256/actionType. The executor got a separate `verifyNativeActionApprovalReply` (port of the .sh `verify_action_approval_reply`); the dormant v2 path is untouched. Also: `lib/agent-plan-spec.ts` judges a CLI step as itself (not as the agent-level tool) for API-step isolation, so a later API-key step can no longer carry a CLI step's output unattended. Tests: `__tests__/plan-executor-cli-steps.test.ts`. Next: Inc2.
+
+## Increments
+- **Inc0 (~70 / ~150 test):** native `runPlanAgent` exports the escalation pin (readonly env) and passes `--signed-approval-public-key(-sha256)`; executor requires signed action-approval replies for plans with CLI steps (or all); verify the native signature format matches executor `verifySignedApprovalReply` first. Bump executor version (JS `EXECUTOR_SCRIPT_VERSION`, header comment, Kotlin `CURRENT_EXECUTOR_VERSION`, parity/progress tests).
+- **Inc1 (~380 / ~450):** executor cli branch `dispatchCliStep`: attended = `!args.unattended && SHELLY_RUN_ORIGIN === 'user'`; non-attended → fail the step ("CLI step (Codex/Claude Code) runs only with Run now"). Prompt from `buildStepPrompt` (group-start snapshot) to `tmp/plan-cli-<agent>-<runId>-s<i>.prompt` (0600). Spawn fixed argv (no shell): `--engine codex|claude --cwd <plan.cliWorker.cwd|HOME> --approval-policy untrusted --policy-json {...plan.cliWorker.policy, unattended:!attended} --agent-id --escalation-public-key-sha256 $PIN --escalation-timeout-action queue --audit-log logs/<id>/agent-driver-audit-s<i>.jsonl --answer-file … --prompt-file …` (+ `--usage-file` for claude). Env: childEnv + `SHELLY_AGENT_RUN_ID`; claude only: `ANTHROPIC_API_KEY` / `SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED` from `.env` into the child env only (never argv/audit/progress). Result = answer file; missing/empty/non-zero = branch failure; quality gate + redact. Per-branch timeout (~20 min) TERM→5s→KILL. Stdout: `ESCALATE human_required … reqId=` → WAITING_APPROVAL, `ESCALATE_RESOLVED` → RUNNING; provider `{kind:'CLI', name:'cli:codex'|'cli:claude'}`; usage events. `lib/agent-plan-spec.ts`: `plan.cliWorker = {cwd, policy}` from `buildAgentPolicy(agent, root, {unattended:true})`. Audit `cli_branch_start/end`.
+- **Inc2 (~180 / ~250):** CLI semaphore inside `withBranchPermit`: total CLI 2, per engine 1; before the 2nd CLI branch count other live agents' `locks/*.pid` (≥1 → run CLI branches serially, tail "waiting for CLI slot"); while 2 run, write `locks/<id>.fanout.pid` (own pid + starttime) so .sh `ACTIVE_COUNT` sees 2; phantom headroom check (own-uid /proc count + 8 > 28 → serialize). `liveCliChildren` killed on SIGTERM and `.halted` poll.
+- **Inc3 (~170 / ~250):** `decideAttendedRoute` allows a step whose disk `step.tool` is `{type:'cli',cli}` and whose attended first choice is the same cli; keep `plan.tool` dispatchable; reason text `cli=<n>`. agent-manager: wait budget for CLI, finish log `cliBranches=<n> overlapMs=<n>`, ensure `stopOurExecutorRun` tree-kills. MONITOR: `approvalAgentIds[]`, two pending asks shown; ask text tells the user to answer the other one with `ok <hash8>`.
+- **Inc4 (~60 / ~150):** NL/demo: EN ", and using X," leading-and fix in `isToolOnlyClause`; explicit ClosePaw clause becomes the action, not a trailing step (JA/EN tests); agent-level tool local when CLI pins are mixed with an unpinned/local final step.
+- **Inc5 (separate decision):** unattended executor CLI support.
+
+## Invariants (pin with tests)
+1. Every tool use goes through the driver gate; executor never spawns codex/claude directly; fixed argv, no shell.
+2. `policy.unattended` always explicit; CLI steps start only on attended (no `--unattended` and origin=user).
+3. Signed replies: escalation pin exported by native, driver fails closed when empty; signed action approvals for CLI plans.
+4. Single-use nonces, independent per branch (distinct runIds).
+5. Run-without-approval scope unchanged (leaves-root / write-or-exec; draft / notify only; intent/ClosePaw always human).
+6. Claude auth: subscription allowed attended; key only in child env; driver keeps tool allow-list and `--setting-sources ""`.
+7. Branch isolation: no sibling output in prompts / dedupe; per-branch files 0600.
+8. Per-agent single-flight lock kept (live chain lock → no executor route).
+
+## On-device acceptance
+- `attended route=plan-executor (parallel) … cli=2`; `starting via PlanSpec executor … unattended=false`; escalation notifications with two distinct `run=`; `plan-executor attended run finished status=success cliBranches=2 overlapMs=>0`.
+- No `PhantomProcessRecord` / `Trimming phantom`, no `global concurrency limit reached`.
+- progress.jsonl: s0 and s1 RUNNING before either DONE; after STOP-ALL `ps -A | grep -cE "shelly-agent-driver|codex_tui|claude"` = 0.
+- Windows: plan-executor child-process jest suites have ~17 known failures (`C:\C:\`); judge by diff. CI (Linux) is authoritative.

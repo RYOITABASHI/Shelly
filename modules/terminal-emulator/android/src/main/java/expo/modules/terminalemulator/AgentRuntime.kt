@@ -503,7 +503,13 @@ object AgentRuntime {
     // CURRENT_EXECUTOR_VERSION 18 (2026-11-01, build 2746): the action-approval
     // request is hashed from the exact text before it is published, so a fast
     // RN auto-answer (native deletes the file) cannot empty the hash. JS-only.
-    private const val CURRENT_EXECUTOR_VERSION = 18
+    // CURRENT_EXECUTOR_VERSION 19 (2026-11-01, parallel CLI steps Inc0/Inc1):
+    // runPlanAgent now exports the escalation pin (readonly) and passes the
+    // action-approval verifier key (--signed-approval-public-key(-sha256)); the
+    // executor dispatches a CLI-pinned step through shelly-agent-driver.js on an
+    // attended user run (fails it visibly otherwise) and requires a signed
+    // action-approval reply for plans with CLI steps.
+    private const val CURRENT_EXECUTOR_VERSION = 19
     private val PLAN_EXECUTOR_ACTIONS = setOf("draft", "notify", "webhook", "cli", "intent", "dm-reply", "api-call", "social-post", "browser-pane", "__suppressed__")
     // docs/superpowers/DEFERRED.md "PlanSpec executor 経由の無人スケジュール実行に
     // local LLM autostart が無い": matches both lib/agent-executor.ts's
@@ -964,6 +970,11 @@ object AgentRuntime {
             ensureLocalLlmServerBeforePlanExecutor(homeDir, libPath, bashPath, agentId, readPlanSpecToolModel(plan))
         }
 
+        // Executor v19 (parallel CLI steps Inc0): same pins runAgentInner injects.
+        val escalationPublicKeySha256 = AgentEscalationBridge.verifierPublicKeySha256(context)
+        val actionApprovalPublicKeySha256 = AgentActionApprovalBridge.verifierPublicKeySha256(context)
+        val actionApprovalPublicKeyPath = AgentActionApprovalBridge.verifierPublicKeyFile(context).absolutePath
+
         val command = buildString {
             append("export PATH=")
             append(shellQuote("$libPath:$libPath/node_modules/npm/bin:$libPath/node_modules/.bin:/usr/bin:/usr/sbin:/bin:/sbin"))
@@ -982,6 +993,12 @@ object AgentRuntime {
             append(" && export SHELLY_RUN_ORIGIN=")
             append(shellQuote(normalizeRunOrigin(runOrigin)))
             append(" && readonly SHELLY_RUN_ORIGIN")
+            // Executor v19 (parallel CLI steps Inc0): the escalation verifier
+            // pin, readonly like runAgentInner's, so the agent driver a CLI step
+            // spawns verifies native's signed replies (empty = fail closed).
+            append(" && export SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256=")
+            append(shellQuote(escalationPublicKeySha256))
+            append(" && readonly SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256")
             append(policySealExports(context))
             if (!notificationText.isNullOrBlank()) {
                 // NOTIFY-001 Increment 3: exported for parity with the legacy .sh
@@ -1025,6 +1042,12 @@ object AgentRuntime {
             append(shellQuote(libPath))
             append(" --broker ")
             append(shellQuote(brokerPath))
+            // Executor v19: AgentActionApprovalBridge's pinned verifier key, so
+            // a plan with CLI steps accepts only Keystore-signed replies.
+            append(" --signed-approval-public-key ")
+            append(shellQuote(actionApprovalPublicKeyPath))
+            append(" --signed-approval-public-key-sha256 ")
+            append(shellQuote(actionApprovalPublicKeySha256))
             if (unattended) {
                 append(" --unattended 1")
             }
@@ -1038,7 +1061,7 @@ object AgentRuntime {
             }
         }
 
-        Log.i(TAG, "Agent $agentId starting via PlanSpec executor plan=$planPath version=$planVersion unattended=$unattended trustedAction=${trustedLaunch?.actionType ?: "-"} trustedTool=${trustedLaunch?.toolType ?: "-"}")
+        Log.i(TAG, "Agent $agentId starting via PlanSpec executor plan=$planPath version=$planVersion unattended=$unattended trustedAction=${trustedLaunch?.actionType ?: "-"} trustedTool=${trustedLaunch?.toolType ?: "-"} pinInjected=${escalationPublicKeySha256.isNotBlank()} actionApprovalPinInjected=${actionApprovalPublicKeySha256.isNotBlank()}")
         val actionApprovalNotifierStop = AtomicBoolean(false)
         val actionApprovalNotifier = startActionApprovalNotifier(context, actionApprovalNotifierStop)
         if (unattended && !isAgentEnabled(homeDir, agentId)) {

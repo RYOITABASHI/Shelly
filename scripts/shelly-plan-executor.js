@@ -15,7 +15,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const PLAN_SPEC_SCHEMA_VERSION = 1;
-// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=18
+// SHELLY_PLAN_EXECUTOR_SCRIPT_VERSION=19
 // v5 (2026-10-09, owner decision option A): unattended local-only actions
 // (draft/notify) no longer need the manual approval tap — see
 // isUnattendedLocalOnlyAction. Bumped so a stale v4 on-device copy (which
@@ -57,7 +57,13 @@ const PLAN_SPEC_SCHEMA_VERSION = 1;
 // stripped or read as DONE), is split off before the char-limit clamp, the
 // prior-iteration block follows the task, and the per-agent loop Stop marker
 // halts an unattended iteration like `.halted` (final action included).
-const EXECUTOR_SCRIPT_VERSION = 18;
+// v19 (2026-11-01, parallel CLI steps Inc0/Inc1): a step pinned to a CLI
+// worker (Codex / Claude Code) is dispatched through shelly-agent-driver.js
+// (dispatchCliStep) on an attended user run, and fails visibly on any other
+// run instead of silently running on plan.tool; a plan with CLI steps only
+// accepts a Keystore-signed action-approval reply (native format). Bumped so a
+// stale v18 copy (silent plan.tool substitution, unsigned replies) is refreshed.
+const EXECUTOR_SCRIPT_VERSION = 19;
 const KILL_SWITCH_MESSAGE = 'All agents are stopped (global kill-switch is on).';
 const PLAN_SPEC_KIND = 'shelly.agent.plan';
 // ClosePaw hand-off (intent mode 'closepaw'): byte-identical port of
@@ -3215,6 +3221,51 @@ function verifySignedApprovalReply(request, reply, deps) {
   return { ok: true, reason: 'ok' };
 }
 
+// v19 (parallel CLI steps Inc0): the reply format native ACTUALLY writes today.
+// AgentActionApprovalBridge.writeHumanReply signs
+//   [runId, decision, requestTs, requestSha256].join('\n')
+// (requestSha256 = sha256 of the request FILE bytes, requestTs = the request's
+// own `ts`) with SHA256withRSA, and the reply carries
+// {runId, decision, by:'human', requestSha256, requestTs, sigAlg, signature, ts}
+// — no nonce / keySha256 / actionType, so verifySignedApprovalReply above (the
+// dormant lib/signed-approval v2 format) can never accept a real reply. This is
+// a port of the .sh path's verify_action_approval_reply (lib/agent-executor.ts),
+// which already requires this signature on every reply. The verifier key comes
+// from ensureSignedApprovalVerifierKey (pinned DER from native's
+// --signed-approval-public-key(-sha256); no pin = key refused = fail closed).
+function verifyNativeActionApprovalReply(reply, expected, deps) {
+  const fail = (reason) => ({ ok: false, reason });
+  if (!reply || (reply.decision !== 'accept' && reply.decision !== 'decline')) return fail('bad-decision');
+  if (reply.by !== 'human') return fail('bad-author');
+  if (reply.sigAlg !== 'SHA256withRSA') return fail('bad-sig-alg');
+  if (reply.runId !== expected.runId) return fail('runid-mismatch');
+  if (!expected.requestSha256 || reply.requestSha256 !== expected.requestSha256) return fail('request-sha-mismatch');
+  if (String(reply.requestTs || '') !== String(expected.requestTs || '')) return fail('request-ts-mismatch');
+  const publicKey = deps.publicKey;
+  if (!deps.expectedKeySha256 || !publicKey) return fail('key-pin-mismatch');
+  const signature = Buffer.from(typeof reply.signature === 'string' ? reply.signature : '', 'base64');
+  if (signature.length < 16) return fail('bad-signature');
+  try {
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update([reply.runId, reply.decision, String(reply.requestTs || ''), reply.requestSha256].join('\n'), 'utf8');
+    verifier.end();
+    if (!verifier.verify(publicKey, signature)) return fail('bad-signature');
+  } catch (_) {
+    return fail('bad-signature');
+  }
+  return { ok: true, reason: 'ok' };
+}
+
+// A plan whose chain names a CLI worker (Codex / Claude Code) for a step.
+function planHasCliSteps(plan) {
+  return !!(plan && plan.steps && Array.isArray(plan.steps.list) &&
+    plan.steps.list.some((step) => isCliStep(step)));
+}
+
+function isCliStep(step) {
+  return !!(step && step.tool && typeof step.tool === 'object' && step.tool.type === 'cli');
+}
+
 // Live progress (v12): the step that dispatches an action is a serial step
 // (planParallelGroups never puts the final step in a group), so the run's
 // currentStep is the one waiting. A decline/timeout throws and is settled by
@@ -3381,6 +3432,34 @@ function requestActionApprovalBlocking(paths, plan, actionType, preview, resultF
       // through). Byte-identical to pre-signed-approval behavior.
       if (!reply || reply.runId !== runId || reply.requestSha256 !== requestSha256) {
         continue;
+      }
+      // v19 (parallel CLI steps Inc0): a plan with CLI steps only trusts a
+      // Keystore-signed reply (the request/reply files are same-uid writable,
+      // so equality alone is forgeable by the run itself). Decline on any
+      // verification failure, like the .sh path's wait_action_approval.
+      if (config.requireSignedActionApproval === true) {
+        ensureSignedApprovalVerifierKey(config, (event, fields) => appendJsonl(paths.planAuditFile, {
+          ts: new Date().toISOString(),
+          kind: 'plan.executor',
+          event,
+          agentId: plan.agent.id,
+          ...fields,
+        }));
+        const verdict = verifyNativeActionApprovalReply(reply, { runId, requestSha256, requestTs: request.ts }, {
+          publicKey: config.signedApprovalVerifierPublicKey,
+          expectedKeySha256: config.signedApprovalPublicKeySha256 || '',
+        });
+        if (!verdict.ok) {
+          appendJsonl(paths.planAuditFile, {
+            ts: new Date().toISOString(),
+            kind: 'plan.executor',
+            event: 'action_approval_signature_rejected',
+            agentId: plan.agent.id,
+            actionType,
+            reason: verdict.reason,
+          });
+          throw new ActionSkipped(`${actionType} action approval reply signature could not be verified`);
+        }
       }
       if (reply.decision === 'accept') return;
       throw new ActionSkipped(`${actionType} action declined`);
@@ -5001,6 +5080,296 @@ async function requestModelContentWithLadder(paths, opts, plan, config, checkQua
 // whole chain — see the `dispatchedFinal` tracking below — matching the
 // attended path's own "collapse all per-step logs into one aggregate" contract
 // (lib/agent-manager.ts's runAgentOrchestrated doc comment).
+// ─── CLI worker steps (v19, docs/superpowers/specs/2026-11-01-parallel-cli-steps-plan.md Inc1) ───
+//
+// A step pinned to `{type:'cli', cli:'codex'|'claude'}` runs through
+// shelly-agent-driver.js — the SAME gate every CLI tool use of the .sh chain
+// goes through (gateCommandActions: command-safety, workspace boundary,
+// POLICY-001, signed escalation). This executor never spawns codex/claude
+// itself, never uses a shell, and passes a fixed argv. Only an attended user
+// run starts one (no --unattended AND native SHELLY_RUN_ORIGIN=user); every
+// other run fails the step visibly instead of running it on plan.tool.
+const CLI_STEP_ENGINES = new Set(['codex', 'claude']);
+const CLI_STEP_LABELS = { codex: 'Codex', claude: 'Claude Code' };
+const CLI_STEP_TIMEOUT_MS = 20 * 60 * 1000;
+const CLI_STEP_KILL_GRACE_MS = 5000;
+const CLI_STEP_STDOUT_TAIL_MAX = 8192;
+const CLI_STEP_ATTENDED_ONLY_MESSAGE = 'CLI step (Codex/Claude Code) runs only with Run now';
+
+function cliStepAttended(args) {
+  return !argTruthy(args && args.unattended) && process.env.SHELLY_RUN_ORIGIN === 'user';
+}
+
+function cliStepTool(step) {
+  const cli = step && step.tool ? String(step.tool.cli || '') : '';
+  return Object.assign({ label: CLI_STEP_LABELS[cli] || 'CLI' }, step.tool);
+}
+
+// Test-only override (--agent-driver): a host harness injects a fake driver.
+// Ignored on Android (linker64 present), where the driver is always the
+// bundled $HOME/.shelly-agent-driver.js native refreshed.
+function resolveAgentDriverPath(args, paths) {
+  const override = args && typeof args['agent-driver'] === 'string' ? args['agent-driver'] : '';
+  if (override && !fs.existsSync('/system/bin/linker64')) return override;
+  return path.join(paths.home, '.shelly-agent-driver.js');
+}
+
+// ANTHROPIC_API_KEY / SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED from the agents
+// .env, for the Claude child env ONLY (never argv / audit / progress), the
+// same values the .sh path's driverEnvPrefix forwards.
+function readClaudeChildEnv(paths) {
+  const out = { ANTHROPIC_API_KEY: '', SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED: '1' };
+  let text = '';
+  try {
+    text = fs.readFileSync(paths.envFile, 'utf8');
+  } catch (_) {
+    return out;
+  }
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    const eq = line.indexOf('=');
+    if (!line || line[0] === '#' || eq <= 0) continue;
+    const key = line.slice(0, eq).trim().replace(/^export\s+/, '');
+    if (key !== 'ANTHROPIC_API_KEY' && key !== 'SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED') continue;
+    let val = line.slice(eq + 1).trim();
+    if (val.length >= 2 && val[0] === "'" && val[val.length - 1] === "'") {
+      val = val.slice(1, -1).replace(/'\\''/g, "'");
+    } else if (val.length >= 2 && val[0] === '"' && val[val.length - 1] === '"') {
+      val = val.slice(1, -1).replace(/\\(["\\])/g, '$1');
+    }
+    if (key === 'SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED' && !val) continue; // ${…:-1}
+    out[key] = val;
+  }
+  return out;
+}
+
+// Owner-only file (0600) published by rename, never following an existing path.
+function writePrivateFile(file, text) {
+  ensureDir(path.dirname(file));
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
+  fs.writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' });
+  try {
+    fs.chmodSync(tmp, 0o600);
+  } catch (_) {}
+  fs.renameSync(tmp, file);
+}
+
+function unlinkQuiet(file) {
+  try {
+    fs.unlinkSync(file);
+  } catch (_) {}
+}
+
+function cliStepAudit(paths, plan, event, fields) {
+  appendJsonl(paths.planAuditFile, Object.assign({
+    ts: new Date().toISOString(),
+    kind: 'plan.executor',
+    event,
+    agentId: plan.agent.id,
+  }, fields));
+}
+
+// Runs one CLI step. Resolves to {resultText, usedTool, response:''} or throws
+// PlanFailure (refusal = TOOL_DENY so a sourced chain never papers over it).
+async function dispatchCliStep(paths, opts, plan, config, args, stepIndex, step, prompt) {
+  const engine = step && step.tool ? String(step.tool.cli || '') : '';
+  const attended = cliStepAttended(args);
+  if (!attended) {
+    cliStepAudit(paths, plan, 'cli_branch_refused', {
+      stepIndex,
+      engine,
+      reason: 'not an attended user run',
+      unattended: argTruthy(args && args.unattended),
+      origin: String(process.env.SHELLY_RUN_ORIGIN || '').slice(0, 32),
+    });
+    throw new PlanFailure(CLI_STEP_ATTENDED_ONLY_MESSAGE, { exitCode: EXIT.TOOL_DENY });
+  }
+  if (!CLI_STEP_ENGINES.has(engine)) {
+    cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine: engine.slice(0, 40), reason: 'unsupported CLI worker' });
+    throw new PlanFailure(`CLI step names an unsupported worker (${engine.slice(0, 40) || 'none'})`, { exitCode: EXIT.TOOL_DENY });
+  }
+  const worker = plan.cliWorker && typeof plan.cliWorker === 'object' ? plan.cliWorker : null;
+  if (!worker || !worker.policy || typeof worker.policy !== 'object') {
+    cliStepAudit(paths, plan, 'cli_branch_refused', { stepIndex, engine, reason: 'plan has no cliWorker policy' });
+    throw new PlanFailure('CLI step cannot run: this agent plan predates CLI steps. Open Shelly to regenerate it.', { exitCode: EXIT.TOOL_DENY });
+  }
+  const driver = opts.agentDriver || path.join(paths.home, '.shelly-agent-driver.js');
+  if (!fs.existsSync(driver)) {
+    throw new PlanFailure('Shelly agent driver is unavailable. Update Shelly runtime, then retry.', { exitCode: EXIT.TOOL_DENY });
+  }
+  const escalationPin = String(process.env.SHELLY_AGENT_ESCALATION_PUBLIC_KEY_SHA256 || '');
+  let cwd = typeof worker.cwd === 'string' && worker.cwd ? worker.cwd : (config.SHELLY_CONTENT_PROJECT || path.join(paths.home, 'projects/shelly-content-studio'));
+  try {
+    if (!path.isAbsolute(cwd) || !fs.statSync(cwd).isDirectory()) cwd = paths.home;
+  } catch (_) {
+    cwd = paths.home;
+  }
+  // Distinct per branch: the driver keys escalation files, the native
+  // notification and the nonce ledger by (runId, reqId) — invariant 4.
+  const branchRunId = crypto.randomUUID();
+  const fileBase = `plan-cli-${plan.agent.id}-${safeFilePart(activeProgress ? activeProgress.runId : branchRunId)}-s${stepIndex}`;
+  const promptFile = path.join(paths.tmpDir, `${fileBase}.prompt`);
+  const answerFile = path.join(paths.tmpDir, `${fileBase}.answer`);
+  const usageFile = path.join(paths.tmpDir, `${fileBase}.usage.json`);
+  const auditLog = path.join(paths.logDir, `agent-driver-audit-s${stepIndex}.jsonl`);
+  const policy = Object.assign({}, worker.policy, { unattended: !attended });
+  const driverArgs = [
+    '--engine', engine,
+    '--cwd', cwd,
+    '--approval-policy', 'untrusted',
+    '--policy-json', JSON.stringify(policy),
+    '--agent-id', plan.agent.id,
+    '--escalation-public-key-sha256', escalationPin,
+    '--escalation-timeout-action', 'queue',
+    '--audit-log', auditLog,
+    '--answer-file', answerFile,
+    '--prompt-file', promptFile,
+  ].concat(engine === 'claude' ? ['--usage-file', usageFile] : []);
+
+  unlinkQuiet(answerFile);
+  unlinkQuiet(usageFile);
+  unlinkQuiet(promptFile);
+  writePrivateFile(promptFile, prompt);
+
+  const env = Object.assign(childEnv(paths, opts), { SHELLY_AGENT_RUN_ID: branchRunId, SHELLY_AGENT_ID: plan.agent.id });
+  delete env.ANTHROPIC_API_KEY;
+  delete env.SHELLY_CLAUDE_SUBSCRIPTION_UNATTENDED;
+  if (engine === 'claude') Object.assign(env, readClaudeChildEnv(paths));
+
+  const progress = activeProgress;
+  progressStepEvent(progress, stepIndex, 'tool', {
+    tool: CLI_STEP_LABELS[engine],
+    provider: { kind: 'CLI', name: `cli:${engine}` },
+  });
+  const startedMs = Date.now();
+  cliStepAudit(paths, plan, 'cli_branch_start', { stepIndex, engine, runId: branchRunId, attended, cwd });
+  const invocation = nodeInvocation(driver, driverArgs, paths, opts);
+  let outcome;
+  try {
+    outcome = await new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn(invocation.file, invocation.args, { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (error) {
+        resolve({ status: null, error, stdoutTail: '' });
+        return;
+      }
+      liveBrokerChildren.add(child);
+      let stdoutTail = '';
+      let lineBuf = '';
+      let settled = false;
+      let killTimer = null;
+      let terminateReason = '';
+      const terminate = (why) => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        terminateReason = terminateReason || why;
+        try {
+          child.kill('SIGTERM');
+        } catch (_) {}
+        if (!killTimer) {
+          killTimer = setTimeout(() => {
+            try {
+              child.kill('SIGKILL');
+            } catch (_) {}
+          }, CLI_STEP_KILL_GRACE_MS);
+          if (typeof killTimer.unref === 'function') killTimer.unref();
+        }
+      };
+      const onLine = (line) => {
+        if (/^ESCALATE human_required\b/.test(line)) {
+          progressState(progress, stepIndex, 'WAITING_APPROVAL', `${CLI_STEP_LABELS[engine]} is waiting for your approval.`);
+        } else if (/^ESCALATE_RESOLVED\b/.test(line)) {
+          progressState(progress, stepIndex, 'RUNNING');
+        }
+      };
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => {
+        stdoutTail = (stdoutTail + chunk).slice(-CLI_STEP_STDOUT_TAIL_MAX);
+        lineBuf += chunk;
+        let nl;
+        while ((nl = lineBuf.indexOf('\n')) !== -1) {
+          onLine(lineBuf.slice(0, nl));
+          lineBuf = lineBuf.slice(nl + 1);
+        }
+        if (lineBuf.length > CLI_STEP_STDOUT_TAIL_MAX) lineBuf = lineBuf.slice(-CLI_STEP_STDOUT_TAIL_MAX);
+      });
+      child.stderr.on('data', () => {}); // drained; the driver audits its own stderr
+      const timeout = setTimeout(() => terminate('timeout'), CLI_STEP_TIMEOUT_MS);
+      if (typeof timeout.unref === 'function') timeout.unref();
+      // STOP-ALL: the event loop is free while the driver runs, so poll the
+      // sentinel and stop the driver (TERM, then KILL after the grace period).
+      const haltPoll = setInterval(() => {
+        if (isHalted(paths)) terminate('halted');
+      }, 1000);
+      if (typeof haltPoll.unref === 'function') haltPoll.unref();
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        liveBrokerChildren.delete(child);
+        clearTimeout(timeout);
+        clearInterval(haltPoll);
+        if (killTimer) clearTimeout(killTimer);
+        if (lineBuf) onLine(lineBuf);
+        resolve(Object.assign({ stdoutTail, terminateReason }, value));
+      };
+      child.once('error', (error) => finish({ status: null, error }));
+      child.once('close', (status, signal) => finish({ status, signal, error: null }));
+    });
+    let answer = '';
+    try {
+      answer = fs.readFileSync(answerFile, 'utf8');
+    } catch (_) {
+      answer = '';
+    }
+    let usage = null;
+    if (engine === 'claude') {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(usageFile, 'utf8'));
+        if (parsed && typeof parsed === 'object') {
+          const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+          const u = {};
+          if (num(parsed.inputTokens) !== undefined) u.inputTokens = parsed.inputTokens;
+          if (num(parsed.outputTokens) !== undefined) u.outputTokens = parsed.outputTokens;
+          if (num(parsed.usd) !== undefined) u.usd = parsed.usd;
+          if (Object.keys(u).length) usage = u;
+        }
+      } catch (_) {}
+    }
+    if (usage) progressStepEvent(progress, stepIndex, 'usage', { usage });
+    cliStepAudit(paths, plan, 'cli_branch_end', {
+      stepIndex,
+      engine,
+      runId: branchRunId,
+      exitCode: outcome.status,
+      signal: outcome.signal || null,
+      terminated: outcome.terminateReason || null,
+      answerBytes: Buffer.byteLength(answer),
+      durationMs: Date.now() - startedMs,
+    });
+    if (outcome.terminateReason === 'halted') throw new RunHalted(haltMessage(paths));
+    if (outcome.error) {
+      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step could not start: ${redact(outcome.error.message || String(outcome.error))}`);
+    }
+    if (outcome.terminateReason === 'timeout') {
+      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step timed out after ${Math.round(CLI_STEP_TIMEOUT_MS / 60000)} minutes`);
+    }
+    if (outcome.status !== 0) {
+      const lastLine = String(outcome.stdoutTail || '').trim().split('\n').filter(Boolean).slice(-1)[0] || '';
+      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step failed (exit ${outcome.status == null ? outcome.signal || 'unknown' : outcome.status})${lastLine ? `: ${redact(lastLine).slice(0, 300)}` : ''}`);
+    }
+    const resultText = redact(answer).trim();
+    if (!resultText) throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step returned no answer`);
+    if (isLowQualityCompletion(resultText)) {
+      throw new PlanFailure(`${CLI_STEP_LABELS[engine]} step returned a low-quality answer`);
+    }
+    return { resultText, usedTool: cliStepTool(step), response: '' };
+  } finally {
+    unlinkQuiet(promptFile);
+    unlinkQuiet(answerFile);
+    unlinkQuiet(usageFile);
+  }
+}
+
 async function runOrchestrationChain(paths, opts, plan, config, roots, args, startedAt) {
   const budget = resolveStepBudget(plan.steps.budget);
   // Fan-out subtasks (2026-08-13): which steps run as context-isolated
@@ -5027,14 +5396,19 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
   //  - research that produced ZERO sources stops the chain with
   //    NO_SOURCES_MESSAGE instead of saving an unsourced briefing.
   const chainRequestText = [plan.prompt].concat(plan.steps.list.map((s) => s.instruction)).join('\n');
+  // v19: a CLI-pinned step (Codex / Claude Code) is its own tool — it runs
+  // through dispatchCliStep, never on plan.tool.
   function effectiveStepTool(step) {
+    if (isCliStep(step)) return cliStepTool(step);
     return (step.tool && STEP_TOOL_DISPATCHABLE_TYPES.indexOf(step.tool.type) !== -1) ? step.tool : plan.tool;
   }
   // Scope (review H2): the chain is "sourced" only when at least one
   // non-final step is WEB research — a Perplexity step, or an explicit,
   // un-vetoed web cue (isResearchStep). Recency words alone never qualify.
+  // A CLI step's answer carries no structured citations, so it is never a
+  // research step.
   const researchFlags = plan.steps.list.map((step, i) =>
-    i !== plan.steps.list.length - 1 && !step.apiCall && isResearchStep(step.instruction, effectiveStepTool(step).type));
+    i !== plan.steps.list.length - 1 && !step.apiCall && !isCliStep(step) && isResearchStep(step.instruction, effectiveStepTool(step).type));
   const sourcingActive = researchFlags.some(Boolean);
   const sourcingToday = localIsoDate(new Date());
   const sourcingRecency = detectRecency(chainRequestText);
@@ -5223,8 +5597,9 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
     // code for at all (`cli`, e.g. "Codex" — codex-resolved AGENTS never reach
     // this executor per AgentRuntime.kt's routing, but a step WITHIN a
     // perplexity/gemini/local/etc-resolved agent can still legally name codex
-    // in its own text); such a step silently falls back to plan.tool exactly
-    // as every step did before this change, rather than throwing.
+    // in its own text). v19: such a step no longer falls back to plan.tool —
+    // it runs through the agent driver (dispatchCliStep) on an attended user
+    // run and fails visibly on every other run.
     // Only the FINAL step carries the plan's real action; every earlier step's
     // stepPlan.action is `__suppressed__` (mirroring toPlanAction's shape,
     // lib/agent-plan-spec.ts) purely for the model request/prompt shape — it
@@ -5260,6 +5635,10 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       ? buildStepPrompt(isolation.base, step.instruction, isolation.carry === true ? contextResults : [], (research || isolation.carry === true) ? stepEvidence : undefined)
       : buildStepPrompt(plan.prompt, step.instruction, contextResults, stepEvidence);
     const stepAction = isFinal ? plan.action : { type: '__suppressed__' };
+    // v19: a CLI-pinned step dispatches through the agent driver (attended
+    // user runs only — dispatchCliStep fails it visibly otherwise). A run-time
+    // provider override chosen in MONITOR still wins, as for any other step.
+    const cliStep = !override && isCliStep(step) && !(!isFinal && step.apiCall);
     const stepTool = override ? override.tool : effectiveStepTool(step);
     const stepPlan = Object.assign({}, plan, { prompt: stepPrompt, action: stepAction, tool: stepTool });
     if (research) stepPlan.sourcing = { mode: 'research', recency: sourcingRecency, requestText: chainRequestText };
@@ -5349,12 +5728,18 @@ async function runOrchestrationChain(paths, opts, plan, config, roots, args, sta
       const priorStepContent = synthesis
         ? undefined
         : (contextResults.length ? contextResults[contextResults.length - 1] : undefined);
-      if (branchCtl) branchCtl.inModel = true;
       let attempt;
-      try {
-        attempt = await requestModelContentWithLadder(paths, stepOpts, stepPlan, config, true, priorStepContent);
-      } finally {
-        if (branchCtl) branchCtl.inModel = false;
+      if (cliStep) {
+        // v19: never marked inModel, so a provider-override restart never
+        // SIGKILLs a driver mid-turn (overrides cannot target a CLI step).
+        attempt = await dispatchCliStep(paths, stepOpts, stepPlan, config, args, i, step, stepPrompt);
+      } else {
+        if (branchCtl) branchCtl.inModel = true;
+        try {
+          attempt = await requestModelContentWithLadder(paths, stepOpts, stepPlan, config, true, priorStepContent);
+        } finally {
+          if (branchCtl) branchCtl.inModel = false;
+        }
       }
       if (branchCtl && branchCtl.restartTool) throw new BranchRestart(branchCtl.restartTool);
       // Continuous mode: drop the SUMMARY/NEXT/DONE block before the text is
@@ -5739,6 +6124,8 @@ async function run(args) {
     // AgentRuntime.kt's runPlanAgent) so classifyEgress's tainted-secret-spend
     // gate applies on the PlanSpec path too, not just the legacy .sh path.
     tainted: process.env.SHELLY_CAP_TAINTED === '1',
+    // v19: shelly-agent-driver.js for CLI steps (see resolveAgentDriverPath).
+    agentDriver: resolveAgentDriverPath(args, paths),
   };
   ensureDir(paths.tmpDir);
   ensureDir(paths.locksDir);
@@ -5753,6 +6140,11 @@ async function run(args) {
   config.signedApprovalPublicKeyPath = args['signed-approval-public-key'] || '';
   config.signedApprovalPublicKeySha256 = args['signed-approval-public-key-sha256'] || '';
   config.allowUnpinnedSignedApprovalVerifierKey = argTruthy(args['allow-unpinned-signed-approval-verifier-key']);
+  // v19 (parallel CLI steps Inc0): native runPlanAgent now passes the two
+  // --signed-approval-public-key(-sha256) args (AgentActionApprovalBridge's
+  // pinned verifier key). A plan with CLI steps requires every action-approval
+  // reply to carry native's Keystore signature (verifyNativeActionApprovalReply).
+  config.requireSignedActionApproval = planHasCliSteps(plan);
   const roots = scopedRoots(paths, config);
   const startedAt = Date.now();
   appendJsonl(paths.planAuditFile, {
@@ -6504,6 +6896,11 @@ module.exports = {
   canonicalApprovalRequest,
   approvalReplySignatureMessage,
   verifySignedApprovalReply,
+  // v19 (parallel CLI steps Inc0/Inc1) — host unit tests only.
+  verifyNativeActionApprovalReply,
+  planHasCliSteps,
+  cliStepAttended,
+  CLI_STEP_ATTENDED_ONLY_MESSAGE,
   makeSignedApprovalNonceStore,
   ensureSignedApprovalVerifierKey,
   // Project owner directive 2026-07-14 (runtime approval default-off) —
