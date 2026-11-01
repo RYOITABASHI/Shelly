@@ -1919,6 +1919,11 @@ async function runDriver(config) {
           }))
         : [];
     }
+    if (item.type === 'fileChange') {
+      trackFileChangeItem(item.id, item.changes);
+      entry.status = item.status || null;
+      entry.changes = normalizeFileChanges(item.changes);
+    }
     audit('item_started', entry);
   };
 
@@ -1966,6 +1971,87 @@ async function runDriver(config) {
         answer: 'escalate',
         decision: response.decision,
         reason: `approval handler failed: ${error.message}`,
+        stack: error.stack,
+      });
+    } finally {
+      respond(message.id, response);
+    }
+  };
+
+  // v2 fileChange items by id: the approval request names only the item, so
+  // the changed paths are taken from item/started and the latest
+  // item/fileChange/patchUpdated (messages are handled in protocol order).
+  const fileChangeItems = new Map();
+
+  const trackFileChangeItem = (itemId, changes) => {
+    if (typeof itemId !== 'string' || !itemId || !Array.isArray(changes)) return;
+    fileChangeItems.set(itemId, changes);
+  };
+
+  // A declined file change is a normal decision (like a declined command):
+  // it never sets sawFailure. Only a handler crash does.
+  const handleFileChangeApproval = async (message, approvalKind) => {
+    const legacy = approvalKind === 'applyPatchApproval';
+    const protocolDecisionOf = (finalDecision) => (legacy
+      ? finalDecision === 'accept' ? 'approved' : 'denied'
+      : finalDecision === 'accept' ? 'accept' : 'decline');
+    let response = { decision: protocolDecisionOf('decline') };
+
+    try {
+      const params = message.params || {};
+      const itemId = legacy ? params.callId : params.itemId;
+      const changes = legacy ? params.fileChanges : fileChangeItems.get(params.itemId);
+      const mapped = fileChangeToActions(changes, config.cwd, approvalKind);
+      const lineContext = legacy
+        ? { threadId: params.conversationId, callId: params.callId }
+        : { threadId: params.threadId, turnId: params.turnId, itemId: params.itemId };
+      audit('file_change_approval_requested', {
+        requestId: message.id,
+        approvalKind,
+        ...lineContext,
+        itemKnown: legacy ? true : fileChangeItems.has(params.itemId),
+        reason: typeof params.reason === 'string' ? params.reason : null,
+        grantRoot: typeof params.grantRoot === 'string' ? params.grantRoot : null,
+        paths: mapped.actions ? mapped.actions.map((a) => a.action) : [],
+      });
+      if (mapped.deny) {
+        gateLine(config.auditLog, {
+          ...lineContext,
+          requestId: message.id,
+          approvalKind,
+          command: '',
+          cwd: config.cwd,
+          answer: 'n',
+          decision: response.decision,
+          reason: mapped.deny,
+        });
+        audit('file_change_declined', { requestId: message.id, approvalKind, itemId, reason: mapped.deny });
+        return;
+      }
+      const gated = await gateCommandActions(config, audit, mapped.actions, {
+        requestId: message.id,
+        approvalKind,
+        lineContext,
+        protocolDecisionOf,
+      });
+      response = { decision: gated.protocolDecision };
+      audit(gated.finalDecision === 'accept' ? 'file_change_accepted' : 'file_change_declined', {
+        requestId: message.id,
+        approvalKind,
+        itemId,
+        decision: gated.protocolDecision,
+        pathCount: mapped.actions.length,
+      });
+    } catch (error) {
+      sawFailure = true;
+      gateLine(config.auditLog, {
+        requestId: message.id,
+        approvalKind,
+        command: '',
+        cwd: config.cwd,
+        answer: 'escalate',
+        decision: response.decision,
+        reason: `file change approval handler failed: ${error.message}`,
         stack: error.stack,
       });
     } finally {
@@ -2045,6 +2131,14 @@ async function runDriver(config) {
       await handleApproval(message, 'execCommandApproval');
       return;
     }
+    if (message.method === 'item/fileChange/requestApproval') {
+      await handleFileChangeApproval(message, 'item/fileChange/requestApproval');
+      return;
+    }
+    if (message.method === 'applyPatchApproval') {
+      await handleFileChangeApproval(message, 'applyPatchApproval');
+      return;
+    }
     sawFailure = true;
     audit('unknown_server_request', {
       requestId: message.id,
@@ -2072,6 +2166,18 @@ async function runDriver(config) {
 
     if (message.method === 'item/started') {
       auditItemStarted(message.params);
+      return;
+    }
+
+    if (message.method === 'item/fileChange/patchUpdated') {
+      const params = message.params || {};
+      trackFileChangeItem(params.itemId, params.changes);
+      audit('file_change_patch_updated', {
+        threadId: params.threadId,
+        turnId: params.turnId,
+        itemId: params.itemId,
+        changes: normalizeFileChanges(params.changes),
+      });
       return;
     }
 
@@ -2319,6 +2425,92 @@ function claudeToolToActions(toolName, input, cwd) {
     };
   }
   return { deny: `tool ${String(toolName || '(none)').slice(0, 60)} is not allowed for Shelly agents` };
+}
+
+// ─── Codex file-change approvals ──────────────────────────────────────────
+//
+// Codex edits files natively (apply_patch) and asks before each patch, the
+// same way it asks before a shell command. Protocol (codex app-server
+// generate-ts, codex-cli 0.144.4):
+//   v2:     item/fileChange/requestApproval {threadId, turnId, itemId,
+//           startedAtMs, reason?, grantRoot?} → {decision: 'accept' |
+//           'acceptForSession' | 'decline' | 'cancel'}. The paths are NOT in
+//           the request: they come from the `fileChange` ThreadItem
+//           (item/started, item/fileChange/patchUpdated) with
+//           changes: [{path, kind: {type: 'add'|'delete'|'update',
+//           move_path?}, diff}].
+//   legacy: applyPatchApproval {conversationId, callId, fileChanges:
+//           {[path]: {type: 'add'|'delete'|'update', move_path?, …}},
+//           reason, grantRoot} → {decision: 'approved' | 'denied' | …}.
+// Every changed path becomes the shell-equivalent command the gate already
+// knows (same mapping as Claude's Write/Edit): add/update → `tee -- <path>`,
+// delete → `rm -- <path>`, update with move_path → `mv -- <path> <dest>`.
+// All of them are decided as ONE composite by gateCommandActions (any deny
+// declines the patch; gray ones go through grants / unattended decline /
+// signed human escalation). acceptForSession is never sent.
+
+/** [{path, type, movePath}] from a v2 changes array or a legacy fileChanges map. */
+function normalizeFileChanges(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((change) => {
+      const kind = change && change.kind && typeof change.kind === 'object' ? change.kind : {};
+      return {
+        path: change && typeof change.path === 'string' ? change.path : '',
+        type: typeof kind.type === 'string' ? kind.type : '',
+        movePath: typeof kind.move_path === 'string' && kind.move_path ? kind.move_path : null,
+      };
+    });
+  }
+  if (raw && typeof raw === 'object') {
+    return Object.entries(raw).map(([filePath, change]) => {
+      const c = change && typeof change === 'object' ? change : {};
+      return {
+        path: filePath,
+        type: typeof c.type === 'string' ? c.type : '',
+        movePath: typeof c.move_path === 'string' && c.move_path ? c.move_path : null,
+      };
+    });
+  }
+  return [];
+}
+
+/**
+ * The gate commands for one file-change approval, or { deny } when the
+ * change cannot be placed (no paths, a path with control characters, an
+ * unknown change kind). Relative paths resolve against the turn cwd.
+ */
+function fileChangeToActions(changes, cwd, source) {
+  const list = normalizeFileChanges(changes);
+  if (list.length === 0) return { deny: 'file change approval without any known changed path' };
+  const resolvePath = (raw) => {
+    if (!raw || /[\u0000-\u001f]/.test(raw)) return null;
+    return path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+  };
+  const actions = [];
+  for (const change of list) {
+    const filePath = resolvePath(change.path);
+    if (!filePath) return { deny: 'file change needs plain paths' };
+    let command;
+    if (change.type === 'add' || (change.type === 'update' && !change.movePath)) {
+      command = `tee -- ${shellSingleQuote(filePath)}`;
+    } else if (change.type === 'delete') {
+      command = `rm -- ${shellSingleQuote(filePath)}`;
+    } else if (change.type === 'update' && change.movePath) {
+      const dest = resolvePath(change.movePath);
+      if (!dest) return { deny: 'file change needs plain paths' };
+      command = `mv -- ${shellSingleQuote(filePath)} ${shellSingleQuote(dest)}`;
+    } else {
+      return { deny: `unknown file change kind ${String(change.type || '(none)').slice(0, 40)}` };
+    }
+    actions.push({
+      index: actions.length,
+      source,
+      command,
+      cwd,
+      action: { path: filePath, kind: change.type, movePath: change.movePath },
+    });
+  }
+  return { actions };
 }
 
 function nonNegativeFinite(value) {
@@ -2954,6 +3146,8 @@ module.exports = {
   androidToolEnv,
   codexPolicyEnvArgs,
   claudeToolToActions,
+  normalizeFileChanges,
+  fileChangeToActions,
   claudeUsageFromResult,
   codexTokenUsageFromNotification,
   createCodexUsageAccumulator,

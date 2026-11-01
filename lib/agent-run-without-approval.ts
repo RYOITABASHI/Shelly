@@ -698,7 +698,10 @@ export type EscalationAutoApproveOpts = {
  *                                   |   `python3 -m py_compile F…`,
  *                                   |   `bash|sh -n F` with every F inside
  *                                   |   the trusted workspace (exact shape,
- *                                   |   no other options / pipes)
+ *                                   |   no other options / pipes), and the
+ *                                   |   bare version probes
+ *                                   |   `node|python3|python|git|bash
+ *                                   |   --version` (no other word)
  *   signal:indirect-exec            | HARD ($(…), backticks, eval, xargs, env)
  *   signal:secret-read              | HARD
  *   signal:network-send             | HARD (data leaves the device — same
@@ -820,6 +823,8 @@ export const ALL_LEVEL_TOOLS: ReadonlySet<string> = new Set([
 ]);
 /** Interpreters / shells: only the read-only syntax checks are answered. */
 const INTERPRETER_RE = /^(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)$/;
+/** Tools whose bare `--version` (no other word) the "all" level answers. */
+const VERSION_PROBE_TOOLS: ReadonlySet<string> = new Set(['node', 'python3', 'python', 'git', 'bash']);
 /** Android / Shelly commands that change system or app state, never
  *  auto-answered at any level. */
 const ALL_LEVEL_SYSTEM_TOOLS = new Set([
@@ -992,9 +997,16 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
     });
   };
 
+  /** `node|python3|python|git|bash --version`, exactly two words: prints a
+   *  version string and runs nothing it is handed. */
+  const isVersionProbe = (tokens: string[]): boolean => (
+    tokens.length === 2 && tokens[1] === '--version' && VERSION_PROBE_TOOLS.has(tokens[0])
+  );
+
   // A pipe feeds or reads an interpreter: syntax checks only stand alone.
   const hasPipe = /(?:^|[^|])\|(?!\|)/.test(script);
   for (const tokens of segments) {
+    if (!hasPipe && isVersionProbe(tokens)) continue;
     if ((hasPipe || tokens.some((t) => /^\d?[<>]/.test(t))) && INTERPRETER_RE.test(tokens[0].replace(/^.*\//, ''))) {
       return { ok: false, reason: 'signal:opaque-script-exec' };
     }

@@ -165,6 +165,37 @@ describe('the rehearsal asks (build 2772)', () => {
     }
   });
 
+  it('bare version probes are allowed: node|python3|python|git|bash --version, nothing else', () => {
+    let reachedGray = 0;
+    for (const command of [
+      "bash -lc 'node --version'",
+      "bash -lc 'python3 --version'",
+      "bash -lc 'python --version'",
+      "bash -lc 'git --version'",
+      "bash -lc 'bash --version'",
+    ]) {
+      const { verdict, request } = gateRequest(command, WS);
+      if (verdict.decision !== 'gray') continue; // the gate allows it outright
+      reachedGray += 1;
+      expect([command, escalationAutoApprovable(request, allOpts)]).toEqual([command, { ok: true, kind: 'all' }]);
+    }
+    expect(reachedGray).toBeGreaterThan(0);
+    const refused: Array<[string, string]> = [
+      ["bash -lc 'node --version --inspect'", 'signal:opaque-script-exec'],
+      ["bash -lc 'node --version x.js'", 'signal:opaque-script-exec'],
+      ["bash -lc 'python3 --version -c 1'", 'signal:opaque-script-exec'],
+      ["bash -lc 'node --version | tee out'", 'signal:opaque-script-exec'],
+      ["bash -lc 'node --version > out'", 'signal:opaque-script-exec'],
+      ["bash -lc 'perl --version'", 'signal:opaque-script-exec'],
+      ["bash -lc 'node --version && node build.js'", 'signal:opaque-script-exec'],
+    ];
+    for (const [command, reason] of refused) {
+      const { verdict, request } = gateRequest(command, WS);
+      if (verdict.decision !== 'gray') continue; // never reaches a human
+      expect([command, escalationAutoApprovable(request, allOpts)]).toEqual([command, { ok: false, reason }]);
+    }
+  });
+
   it('H1: running code still asks — node -e, python -c, a script the agent wrote, $(…)', () => {
     const cases: Array<[string, string]> = [
       ["bash -lc \"python3 -c 'import html.parser; html.parser.HTMLParser().feed(open(\\\"codex.html\\\").read())'\"", 'signal:opaque-script-exec'],
