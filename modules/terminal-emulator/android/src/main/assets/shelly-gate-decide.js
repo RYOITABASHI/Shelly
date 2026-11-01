@@ -1137,6 +1137,357 @@ var OPAQUE_SCRIPT_RE = /\b(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|p
 var SHELL_SCRIPT_FILE_RE = /(?:^|[\s;&|(])(?:ba|z|k|da)?sh\s+(?:-[A-Za-z]+\s+)*(?!-)[^\s;&|]*\.(?:sh|bash|zsh|ksh)\b/;
 var PIPED_INTERPRETER_RE = /\|\s*(?:sudo\s+)?(?:[^\s|;&]*\/)?(?:python\d?(?:\.\d+)*|pypy\d*|node(?:js)?|ruby|perl|php|deno|bun|lua(?:jit)?|Rscript|julia|tclsh|sh|bash|zsh|ksh|dash)\b/;
 var INDIRECT_EXEC_RE = /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
+var HEREDOC_OWNER_COMMANDS = /* @__PURE__ */ new Set(["cat", "tee"]);
+var HEREDOC_PLAIN_COMMANDS = /* @__PURE__ */ new Set([
+  "cat",
+  "tee",
+  "mkdir",
+  "ls",
+  "echo",
+  "printf",
+  "pwd",
+  "cd",
+  "true",
+  "false",
+  "test",
+  "[",
+  "wc",
+  "head",
+  "tail",
+  "touch",
+  "cp",
+  "mv",
+  "rm",
+  "grep",
+  "diff",
+  "stat",
+  "file",
+  "date",
+  "sleep",
+  "chmod",
+  "uniq",
+  "cut",
+  "tr",
+  "basename",
+  "dirname",
+  "realpath",
+  "readlink"
+  // No `rg` (--pre) or `sort` (--compress-program): both can launch a program.
+]);
+var HEREDOC_DELIM_CHARS_RE = /^[A-Za-z0-9_.-]*$/;
+var SHELL_META_CHARS = " 	\n;&|<>()";
+var SHELL_C_PREFIX_RE = /^(\s*(?:[A-Za-z0-9_./-]*\/)?(?:ba|da|z|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+)([\s\S]+)$/;
+function stripQuotedHeredocBodies(script) {
+  const s = String(script ?? "");
+  if (!s.includes("<<")) return s;
+  if (s.includes("\r")) return null;
+  const pending = [];
+  const commandWords = [];
+  let out = "";
+  let i = 0;
+  let expectCmd = true;
+  let cmdWord = null;
+  let inWord = false;
+  let capturing = false;
+  let word = "";
+  let sawPipe = false;
+  let sawQuoted = false;
+  let quotedOwnersOk = true;
+  const startWord = () => {
+    if (inWord) return;
+    inWord = true;
+    capturing = expectCmd;
+    word = "";
+  };
+  const endWord = () => {
+    if (inWord && capturing) {
+      if (word !== "{" && word !== "}" && word !== "!") {
+        cmdWord = word;
+        commandWords.push(word);
+        expectCmd = false;
+      }
+    }
+    inWord = false;
+    capturing = false;
+    word = "";
+  };
+  const newCommand = () => {
+    endWord();
+    expectCmd = true;
+    cmdWord = null;
+  };
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "\n") {
+      newCommand();
+      out += "\n";
+      i++;
+      for (const p of pending) {
+        const bodyStart = i;
+        let terminated = false;
+        while (i < s.length) {
+          const nl = s.indexOf("\n", i);
+          const line = nl < 0 ? s.slice(i) : s.slice(i, nl);
+          const cmp = p.dash ? line.replace(/^\t+/, "") : line;
+          if (cmp === p.delim) {
+            const body = s.slice(bodyStart, i);
+            out += p.quoted ? "" : `${body}${line}`;
+            if (nl >= 0) out += "\n";
+            i = nl < 0 ? s.length : nl + 1;
+            terminated = true;
+            break;
+          }
+          if (!p.quoted && line.endsWith("\\")) return null;
+          if (nl < 0) {
+            i = s.length;
+            break;
+          }
+          i = nl + 1;
+        }
+        if (!terminated) return null;
+      }
+      pending.length = 0;
+      continue;
+    }
+    if (ch === " " || ch === "	") {
+      endWord();
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "#" && !inWord) {
+      if (i > 0 && (s[i - 1] === "<" || s[i - 1] === ">" || s[i - 1] === "&")) return null;
+      const nl = s.indexOf("\n", i);
+      const end = nl < 0 ? s.length : nl;
+      out += s.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === "`") return null;
+    if (ch === "|" || ch === ";" || ch === "&" && s[i + 1] !== ">") {
+      if (ch === "|" && s[i + 1] === "|") {
+        out += "||";
+        i += 2;
+        newCommand();
+        continue;
+      }
+      if (ch === "&" && s[i + 1] === "&") {
+        out += "&&";
+        i += 2;
+        newCommand();
+        continue;
+      }
+      if (ch === ";" && s[i + 1] === ";") return null;
+      if (ch === "|") sawPipe = true;
+      out += ch;
+      i++;
+      newCommand();
+      continue;
+    }
+    if (ch === "(") {
+      if (s[i + 1] === "(") return null;
+      if (inWord || !expectCmd) return null;
+      out += ch;
+      i++;
+      newCommand();
+      continue;
+    }
+    if (ch === ")") {
+      endWord();
+      expectCmd = false;
+      cmdWord = null;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "<" || ch === ">" || ch === "&") {
+      endWord();
+      if (s.startsWith("<<<", i)) {
+        if (expectCmd) return null;
+        out += "<<<";
+        i += 3;
+        continue;
+      }
+      if (s.startsWith("<<", i)) {
+        if (expectCmd) return null;
+        let j2 = i + 2;
+        let dash = false;
+        if (s[j2] === "-") {
+          dash = true;
+          j2++;
+        }
+        while (s[j2] === " " || s[j2] === "	") j2++;
+        let delim = "";
+        let quoted = false;
+        while (j2 < s.length && !SHELL_META_CHARS.includes(s[j2])) {
+          const c = s[j2];
+          if (c === "'" || c === '"') {
+            const e = s.indexOf(c, j2 + 1);
+            if (e < 0) return null;
+            const inner = s.slice(j2 + 1, e);
+            if (!HEREDOC_DELIM_CHARS_RE.test(inner)) return null;
+            delim += inner;
+            quoted = true;
+            j2 = e + 1;
+            continue;
+          }
+          if (c === "\\") {
+            const n = s[j2 + 1];
+            if (!n || !/[A-Za-z0-9_.-]/.test(n)) return null;
+            delim += n;
+            quoted = true;
+            j2 += 2;
+            continue;
+          }
+          if (!/[A-Za-z0-9_.-]/.test(c)) return null;
+          delim += c;
+          j2++;
+        }
+        if (!delim) return null;
+        if (quoted) {
+          sawQuoted = true;
+          if (!cmdWord || !HEREDOC_OWNER_COMMANDS.has(cmdWord)) quotedOwnersOk = false;
+        }
+        pending.push({ delim, quoted, dash, owner: cmdWord });
+        out += s.slice(i, j2);
+        i = j2;
+        continue;
+      }
+      if (s[i + 1] === "(") return null;
+      if (expectCmd) return null;
+      let j = i + 1;
+      if (ch === "&") j++;
+      while (j < s.length && (s[j] === ">" || s[j] === "&" || s[j] === "|" && s[j - 1] === ">")) j++;
+      if (s[j] === "(") return null;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === "'") {
+      const e = s.indexOf("'", i + 1);
+      if (e < 0) return null;
+      const seg = s.slice(i, e + 1);
+      if (pending.length > 0 && seg.includes("\n")) return null;
+      startWord();
+      word += seg;
+      out += seg;
+      i = e + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < s.length && s[j] !== '"') {
+        if (s[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (s[j] === "`") return null;
+        if (s[j] === "$") {
+          if (s[j + 1] === "(") return null;
+          if (s[j + 1] === "{") {
+            const m = /^\{[A-Za-z_][A-Za-z0-9_]*\}/.exec(s.slice(j + 1));
+            if (!m) return null;
+            j += 1 + m[0].length;
+            continue;
+          }
+        }
+        j++;
+      }
+      if (j >= s.length) return null;
+      const seg = s.slice(i, j + 1);
+      if (pending.length > 0 && seg.includes("\n")) return null;
+      startWord();
+      word += seg;
+      out += seg;
+      i = j + 1;
+      continue;
+    }
+    if (ch === "$") {
+      const n = s[i + 1];
+      if (n === "(" || n === "'" || n === '"') return null;
+      if (n === "{") {
+        const m = /^\{[A-Za-z_][A-Za-z0-9_]*\}/.exec(s.slice(i + 1));
+        if (!m) return null;
+        startWord();
+        word += `$${m[0]}`;
+        out += `$${m[0]}`;
+        i += 1 + m[0].length;
+        continue;
+      }
+    }
+    if (ch === "\\") {
+      const seg = s.slice(i, i + 2);
+      if (seg === "\\\n") {
+        if (pending.length > 0) return null;
+        out += seg;
+        i += 2;
+        continue;
+      }
+      startWord();
+      word += seg;
+      out += seg;
+      i += 2;
+      continue;
+    }
+    startWord();
+    word += ch;
+    out += ch;
+    i++;
+  }
+  endWord();
+  if (pending.length > 0) return null;
+  if (!sawQuoted) return s;
+  if (!quotedOwnersOk || sawPipe) return null;
+  if (!commandWords.every((w) => HEREDOC_PLAIN_COMMANDS.has(w))) return null;
+  return out;
+}
+function singleWordShellPayload(rest) {
+  let i = 0;
+  while (i < rest.length) {
+    const ch = rest[i];
+    if (ch === "'") {
+      const e = rest.indexOf("'", i + 1);
+      if (e < 0) return null;
+      i = e + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < rest.length && rest[j] !== '"') {
+        if (rest[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (rest[j] === "$" || rest[j] === "`") return null;
+        j++;
+      }
+      if (j >= rest.length) return null;
+      i = j + 1;
+      continue;
+    }
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === "$" || ch === "`") return null;
+    if (SHELL_META_CHARS.includes(ch) || ch === "\r") return void 0;
+    i++;
+  }
+  return dequoteShellWords(rest);
+}
+function indirectExecView(command) {
+  const c = String(command ?? "");
+  if (!c.includes("<<")) return c;
+  const m = SHELL_C_PREFIX_RE.exec(c);
+  if (m) {
+    const payload = singleWordShellPayload(m[2]);
+    if (payload === null) return c;
+    const stripped2 = stripQuotedHeredocBodies(payload === void 0 ? m[2] : payload);
+    return stripped2 === null ? c : `${m[1]}${stripped2}`;
+  }
+  const stripped = stripQuotedHeredocBodies(c);
+  return stripped === null ? c : stripped;
+}
 function isPureReadCommand(command) {
   if (command.includes(">")) return false;
   const segments = command.split(/\|\||&&|[|;&]/).map((s) => s.trim()).filter(Boolean);
@@ -1175,7 +1526,9 @@ function classifyProposedCommand(command, ctx) {
   if (OPAQUE_SCRIPT_RE.test(command) || SHELL_SCRIPT_FILE_RE.test(command) || PIPED_INTERPRETER_RE.test(command)) {
     signals.push("opaque-script-exec");
   }
-  if (INDIRECT_EXEC_RE.test(command)) signals.push("indirect-exec");
+  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) {
+    signals.push("indirect-exec");
+  }
   const isPureRead = isPureReadCommand(command) && !signals.includes("network-send") && !signals.includes("opaque-script-exec");
   if (!isPureRead) signals.push("write-or-exec");
   const boundarySignals = signals.filter((s) => s !== "write-or-exec");

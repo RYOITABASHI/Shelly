@@ -941,7 +941,10 @@ export function allLevelEscalationVerdict(request: EscalationRequestLike, opts: 
   // body must still hold no expansion). Any other heredoc stays in the text
   // and every line of its body is judged as a command.
   const hasDirChange = /(?:^|[\n;&|(]\s*)(?:cd|pushd|popd)(?=$|\s)/.test(once);
-  const heredocRe = /(^|[\n;&|(][ \t]*)([^\n;&|<]*)<<(-?)[ \t]*['"\\]*([A-Za-z_][A-Za-z0-9_]*)['"]*([^\n]*)\n([\s\S]*?)(?:\n[ \t]*\4[ \t]*(?=\n|$)|$)/g;
+  // The delimiter word must end where the shell word ends: `<<'EO'F` is the
+  // delimiter EOF to bash, so reading it as EO would run the body to the
+  // end of the script and skip the commands after the real terminator.
+  const heredocRe = /(^|[\n;&|(][ \t]*)([^\n;&|<]*)<<(-?)[ \t]*['"\\]*([A-Za-z_][A-Za-z0-9_]*)['"]*(?=[ \t;&|<>()\n]|$)([^\n]*)\n([\s\S]*?)(?:\n[ \t]*\4[ \t]*(?=\n|$)|$)/g;
   let heredocRefusal: string | null = null;
   const stripped = once.replace(heredocRe, (whole, lead: string, before: string, _dash: string, delim: string, after: string, body: string) => {
     const writer = `${before} ${after}`.trim().split(/\s+/).filter(Boolean);

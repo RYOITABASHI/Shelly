@@ -193,5 +193,41 @@
       "workspaceRoot": "/root/app"
     },
     "expectedAnswer": "n"
+  },
+  {
+    "name": "quoted heredoc body with backticks / $( is literal data L2 -> allow",
+    "command": "bash -lc 'cat > game.js <<'\"'\"'EOF'\"'\"'\nconst m = `score`;\nconst q=$(1);\nEOF'",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "y"
+  },
+  {
+    "name": "adversarial: unquoted heredoc body with backticks L2 -> escalate",
+    "command": "bash -lc 'cat > game.js <<EOF\nconst m = `id`;\nEOF'",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "adversarial: substitution after a quoted heredoc L2 -> escalate",
+    "command": "bash -lc 'cat > a <<'\"'\"'EOF'\"'\"'\nhi\nEOF\necho $(id)'",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
+  },
+  {
+    "name": "adversarial: quoted heredoc fed to bash L2 -> escalate",
+    "command": "bash -lc 'bash <<'\"'\"'EOF'\"'\"'\n$(id)\nEOF'",
+    "policy": {
+      "level": "L2",
+      "workspaceRoot": "/root/app"
+    },
+    "expectedAnswer": "escalate"
   }
 ]
