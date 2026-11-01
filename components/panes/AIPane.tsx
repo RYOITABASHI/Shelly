@@ -809,7 +809,13 @@ export default function AIPane() {
     if (pendingInboundCount === 0) return;
     const item = useInboundStore.getState().consume();
     if (!item) return;
-    const draft = parseAgentNL(item.text, useSettingsStore.getState().socialConnectors ?? []);
+    // Inbound text is not the user's own words in this chat: it never turns
+    // on "承認なしで実行" (security review H2).
+    const draft = {
+      ...parseAgentNL(item.text, useSettingsStore.getState().socialConnectors ?? []),
+      runWithoutApproval: undefined,
+      runWithoutApprovalLevel: undefined,
+    };
     useAIPaneStore.getState().addMessage(resolveAiPaneStoreKey(paneId), {
       id: `inb-card-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       role: 'assistant',

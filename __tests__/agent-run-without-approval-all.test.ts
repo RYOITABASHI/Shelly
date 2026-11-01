@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   __setRunWithoutApprovalStorageForTests,
+  ALL_LEVEL_CONDITIONAL_REASONS,
   ALL_LEVEL_SOFT_REASONS,
   decideActionAutoApproval,
   detectRunWithoutApprovalIntent,
@@ -15,6 +16,7 @@ import {
   getRunWithoutApprovalSetting,
   isRunWithoutApprovalEnabled,
   loadRunWithoutApproval,
+  runWithoutApprovalAllAllowedFor,
   runWithoutApprovalAuditKey,
   runWithoutApprovalDefinitionHash,
   setRunWithoutApproval,
@@ -120,27 +122,79 @@ describe('storage: levels and backward compatibility', () => {
 });
 
 describe('the rehearsal asks (build 2772)', () => {
-  const cases: Array<[string, string]> = [
-    ['write into ~/demo from the content project', "bash -lc 'cat > ~/demo/codex.html <<EOF\n<html><body><canvas id=c></canvas><script>document.addEventListener(\"keydown\", (e) => { if (e.key === \"ArrowLeft\") x--; });</script></body></html>\nEOF'"],
-    ['node --check self-test', "bash -lc 'node --check ~/demo/game.js'"],
-    ['python -c self-test', "bash -lc \"python3 -c 'import html.parser; html.parser.HTMLParser().feed(open(\\\"codex.html\\\").read())'\""],
-    ['mktemp + rm -rf of the temp dir', "bash -lc 'tmp=$(mktemp -d); cp codex.html \"$tmp\"/; ls \"$tmp\"; rm -rf \"$tmp\"'"],
-    ['mkdir + tee in ~/demo with a ~ path', "bash -lc 'mkdir -p ~/demo && tee ~/demo/claude.html < /dev/null'"],
-  ];
-  for (const [label, command] of cases) {
-    it(`${label}: standard refuses, all allows`, () => {
-      const { verdict, request } = gateRequest(command, `${HOME}/projects/shelly-content-studio`);
-      expect(verdict.decision).toBe('gray');
-      const std = escalationAutoApprovable(request, { ...standardOpts, trustedWorkspaceRoot: `${HOME}/projects/shelly-content-studio` });
-      const all = escalationAutoApprovable(request, { ...allOpts, trustedWorkspaceRoot: `${HOME}/projects/shelly-content-studio` });
-      if (std.ok === false) expect(isSoftLike(std.reason)).toBe(true);
-      expect(all).toEqual({ ok: true, kind: std.ok ? std.kind : 'all' });
-    });
-  }
+  const CS = `${HOME}/projects/shelly-content-studio`;
+  const run = (command: string, root: string, trusted: string) => {
+    const { verdict, request } = gateRequest(command, root);
+    expect(verdict.decision).toBe('gray');
+    return {
+      std: escalationAutoApprovable(request, { ...standardOpts, trustedWorkspaceRoot: trusted }),
+      all: escalationAutoApprovable(request, { ...allOpts, trustedWorkspaceRoot: trusted }),
+    };
+  };
+
+  it('file writes into ~/demo (workspace still the content project): standard refuses, all allows', () => {
+    for (const command of [
+      "bash -lc 'mkdir -p ~/demo && tee ~/demo/claude.html < /dev/null'",
+      "bash -lc 'rm -rf ~/demo/old-build'",
+    ]) {
+      const { std, all } = run(command, CS, CS);
+      expect([command, std.ok]).toEqual([command, false]);
+      expect([command, all]).toEqual([command, { ok: true, kind: 'all' }]);
+    }
+  });
+
+  const HEREDOC_GAME = "bash -lc \"cat > ~/demo/codex.html <<'EOF'\n<html><body><canvas id=c></canvas><script>document.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') x -= dx; label.textContent = 'score ${score}'; });</script></body></html>\nEOF\"";
+
+  it('a heredoc into ~/demo: allowed when ~/demo is the workspace, asks when it is not', () => {
+    // (A body with backticks carries the gate's indirect-exec signal: it asks.)
+    expect(run(HEREDOC_GAME, CS, WS).all).toEqual({ ok: true, kind: 'all' });
+    expect(run(HEREDOC_GAME, CS, CS).all.ok).toBe(false);
+  });
+
+  it('read-only syntax checks of workspace files are allowed (workspace ~/demo)', () => {
+    for (const command of [
+      "bash -lc 'node --check game.js'",
+      "bash -lc 'node -c ~/demo/game.js'",
+      "bash -lc 'python3 -m py_compile a.py b.py'",
+      "bash -lc 'bash -n build.sh'",
+      "bash -lc 'node --check game.js 2>&1'",
+    ]) {
+      const { verdict, request } = gateRequest(command, WS);
+      if (verdict.decision !== 'gray') continue; // the gate allows it outright
+      expect([command, escalationAutoApprovable(request, allOpts)]).toEqual([command, { ok: true, kind: 'all' }]);
+    }
+  });
+
+  it('H1: running code still asks — node -e, python -c, a script the agent wrote, $(…)', () => {
+    const cases: Array<[string, string]> = [
+      ["bash -lc \"python3 -c 'import html.parser; html.parser.HTMLParser().feed(open(\\\"codex.html\\\").read())'\"", 'signal:opaque-script-exec'],
+      ["bash -lc 'node -e \"require(1)\"'", 'signal:opaque-script-exec'],
+      ["bash -lc 'node build.js'", 'signal:opaque-script-exec'],
+      ["bash -lc 'python3 tool.py'", 'signal:opaque-script-exec'],
+      ["bash -lc 'bash run.sh'", 'signal:opaque-script-exec'],
+      ["bash -lc 'chmod +x run.sh && ./run.sh'", 'script-exec'],
+      ["bash -lc 'node --check game.js | tee out'", 'signal:opaque-script-exec'],
+      ["bash -lc 'node --check --inspect game.js'", 'signal:opaque-script-exec'],
+      ["bash -lc 'node --check ~/notes/game.js'", 'signal:opaque-script-exec'], // outside the workspace
+      ["bash -lc 'python3 -m pip install x'", 'signal:opaque-script-exec'],
+      ["bash -lc 'tmp=$(mktemp -d); cp codex.html \"$tmp\"/; rm -rf \"$tmp\"'", 'signal:indirect-exec'],
+    ];
+    for (const [command, reason] of cases) {
+      const { verdict, request } = gateRequest(command);
+      if (verdict.decision !== 'gray') continue; // never reaches a human
+      expect([command, escalationAutoApprovable(request, allOpts)]).toEqual([command, { ok: false, reason }]);
+    }
+  });
+
+  it('H1: a script written then run in one command still asks', () => {
+    const command = "bash -lc 'cat > x.sh <<EOF\ncat ~/.bashrc\nEOF\nbash x.sh'";
+    const { request } = gateRequest(command);
+    expect(escalationAutoApprovable(request, allOpts).ok).toBe(false);
+  });
 });
 
 function isSoftLike(reason: string): boolean {
-  return ALL_LEVEL_SOFT_REASONS.has(reason) || /^(?:tool|option):/.test(reason);
+  return ALL_LEVEL_SOFT_REASONS.has(reason) || ALL_LEVEL_CONDITIONAL_REASONS.has(reason) || /^(?:tool|option):/.test(reason);
 }
 
 describe('standard vs all — per reason', () => {
@@ -151,23 +205,46 @@ describe('standard vs all — per reason', () => {
     return escalationAutoApprovable(request, { ...allOpts, ...opts });
   };
 
-  it('soft reasons are lifted under all (destructive HIGH, opaque, indirect, home-path, glob, parent, dir-change)', () => {
+  it('soft reasons are lifted under all (destructive HIGH, home-path, glob, parent, dir-change, heredoc)', () => {
     for (const command of [
       "bash -lc 'rm -rf build'",                       // signal:destructive (HIGH)
-      "bash -lc 'node build.js'",                      // signal:opaque-script-exec
-      "bash -lc 'echo $(date) > stamp.txt'",           // signal:indirect-exec / expansion
       "bash -lc 'cp a.html ~/notes/a.html'",           // home-path / write-outside-root (inside home)
       "bash -lc 'rm -f ~/notes/*.tmp'",                // glob
       "bash -lc 'cp a.html ../backup/a.html'",         // parent-path (stays in home)
       "bash -lc 'cd ~/notes && touch x'",              // dir-change-write
-      "bash -lc 'npm run build && cat ~/notes/a.md'",  // tool:npm
-      "bash -lc 'cat > notes.md <<EOF\nhello </b> http://x.test/a\nEOF'", // indirect (heredoc)
+      "bash -lc 'chmod 644 ~/notes/a.md'",             // tool:chmod (a file tool)
+      "bash -lc 'cat > notes.md <<EOF\nhello </b> http://x.test/a\nEOF'", // indirect (heredoc into the workspace)
+      "bash -lc \"cat > a.js <<'EOF'\nconst s = '${x}';\nEOF\"", // quoted heredoc: ${…} is literal
     ]) {
       const { request } = gateRequest(command);
       const std = escalationAutoApprovable(request, standardOpts);
       expect([command, std.ok]).toEqual([command, false]);
+      if (std.ok === false) expect([command, isSoftLike(std.reason)]).toEqual([command, true]);
       expect([command, allow(command)]).toEqual([command, { ok: true, kind: 'all' }]);
     }
+  });
+
+  it('heredoc: unquoted body with $ / a target outside the workspace / not cat-tee is checked', () => {
+    expect(allow("bash -lc 'cat > a.js <<EOF\nconst s = $(id);\nEOF'")).toMatchObject({ ok: false });
+    expect(allow("bash -lc 'cat > ~/notes/x.html <<EOF\n</b>\nEOF'")).toMatchObject({ ok: false });
+  });
+
+  it('M1: unresolvable targets and unknown cwd ask', () => {
+    expect(allow("bash -lc 'd=x; rm -f ~/$d/a'")).toMatchObject({ ok: false });
+    expect(allow("bash -lc 'rm -rf $TARGET'")).toMatchObject({ ok: false });
+    expect(allow("bash -lc 'cd $X && rm -rf build'")).toMatchObject({ ok: false });
+    expect(allow("bash -lc 'cp a ~other/x'")).toEqual({ ok: false, reason: 'unresolved-path' });
+    expect(allow("bash -lc 'cd - && rm -rf build'")).toEqual({ ok: false, reason: 'dir-change-unknown' });
+    expect(allow("bash -lc 'pushd ~/notes && rm -rf build'")).toEqual({ ok: false, reason: 'dir-change-unknown' });
+    expect(allow("bash -lc 'rm -f ~/b*/git'")).toEqual({ ok: false, reason: 'unresolved-path' });
+  });
+
+  it('hard: tools that run programs (npm / make / awk / env-prefixed commands)', () => {
+    expect(allow("bash -lc 'npm run build && cat ~/notes/a.md'")).toEqual({ ok: false, reason: 'tool:npm' });
+    expect(allow("bash -lc 'make && cat ~/notes/a.md'")).toEqual({ ok: false, reason: 'tool:make' });
+    expect(allow("bash -lc 'PATH=x ls ~/notes'")).toMatchObject({ ok: false });
+    expect(allow("bash -lc 'sed -i s/a/b/e ~/notes/a.md'")).toEqual({ ok: false, reason: 'option:sed' });
+    expect(allow("bash -lc 'find ~/notes -exec rm {} +'")).toMatchObject({ ok: false });
   });
 
   it('hard: secret-read / network-send signals', () => {
@@ -181,13 +258,13 @@ describe('standard vs all — per reason', () => {
     expect(allow("bash -lc 'cp key ~/.ssh/authorized_keys'")).toMatchObject({ ok: false });
     expect(allow("bash -lc 'rm -rf ~/.config/x'")).toMatchObject({ ok: false });
     expect(allow("bash -lc 'cp evil ~/bin/git'")).toEqual({ ok: false, reason: 'shelly-control-path' });
+    expect(allow("bash -lc 'rm -f ~/models/qwen.gguf'")).toEqual({ ok: false, reason: 'shelly-control-path' });
     expect(allow("bash -lc 'cd ~ && rm -rf bin'")).toEqual({ ok: false, reason: 'shelly-control-path' });
     expect(allow("bash -lc 'cp ~/notes/hook .git/hooks/pre-commit'")).toEqual({ ok: false, reason: 'protected-path' });
     expect(allow("bash -lc 'tmp=x; cat $tmp/.ssh/id'")).toMatchObject({ ok: false });
-    expect(allow("bash -lc 'd=x; rm -f ~/$d/a'")).toEqual({ ok: false, reason: 'unresolved-path' });
     // A heredoc fed to a shell is code: its body is checked like any command.
-    expect(allow("bash -lc 'bash <<EOF\nrm -f ~/bin/git\nEOF'")).toEqual({ ok: false, reason: 'shelly-control-path' });
-    expect(allow("bash -lc 'cat <<EOF | sh\nrm -f ~/bin/git\nEOF'")).toEqual({ ok: false, reason: 'shelly-control-path' });
+    expect(allow("bash -lc 'bash <<EOF\nrm -f ~/bin/git\nEOF'")).toMatchObject({ ok: false });
+    expect(allow("bash -lc 'cat <<EOF | sh\nrm -f ~/bin/git\nEOF'")).toMatchObject({ ok: false });
     expect(allow("bash -lc 'cat ~/.ss\"\"h/id'")).toMatchObject({ ok: false });
   });
 
@@ -203,10 +280,10 @@ describe('standard vs all — per reason', () => {
     expect(allow("bash -lc 'rm -f /sdcard/DCIM/a.jpg'")).toEqual({ ok: false, reason: 'outside-home' });
     expect(allow("bash -lc 'cp a.html /sdcard/Download/a.html'")).toEqual({ ok: false, reason: 'outside-home' });
     expect(allow("bash -lc 'chmod -R 755 ~'")).toEqual({ ok: false, reason: 'home-root' });
-    expect(allow("bash -lc 'rm -f ~/*.log'")).toEqual({ ok: false, reason: 'home-root' });
+    expect(allow("bash -lc 'rm -f ~/*.log'")).toMatchObject({ ok: false });
     // A workspace outside the home (validated by validateWorkspaceRoot) is allowed by name.
     const sd = '/sdcard/Documents/site';
-    const { request } = gateRequest("bash -lc 'node build.js && cp out.html /sdcard/Documents/site/index.html'", sd);
+    const { request } = gateRequest("bash -lc 'cp ~/notes/out.html /sdcard/Documents/site/index.html'", sd);
     expect(escalationAutoApprovable(request, { ...allOpts, trustedWorkspaceRoot: sd })).toEqual({ ok: true, kind: 'all' });
   });
 
@@ -219,7 +296,7 @@ describe('standard vs all — per reason', () => {
   });
 
   it('hard: the existing hard reasons stay hard (policy-ask, not-live, not-boundary-gray, no-signals)', () => {
-    const { request } = gateRequest("bash -lc 'node build.js'");
+    const { request } = gateRequest("bash -lc 'rm -rf build'");
     expect(escalationAutoApprovable(request, { ...allOpts, policyBlocksAutoAccept: true })).toEqual({ ok: false, reason: 'policy-ask' });
     expect(escalationAutoApprovable({ ...request, state: 'queued' }, allOpts)).toEqual({ ok: false, reason: 'not-live' });
     expect(escalationAutoApprovable({ ...request, reason: 'policy: ask rule' }, allOpts)).toEqual({ ok: false, reason: 'not-boundary-gray' });
@@ -235,6 +312,12 @@ describe('standard vs all — per reason', () => {
     expect(v.ok).toBe(false);
   });
 
+  it('opaque-script-exec / indirect-exec / expansion are not soft', () => {
+    expect(ALL_LEVEL_SOFT_REASONS.has('signal:opaque-script-exec')).toBe(false);
+    expect(ALL_LEVEL_SOFT_REASONS.has('signal:indirect-exec')).toBe(false);
+    expect(ALL_LEVEL_SOFT_REASONS.has('expansion')).toBe(false);
+  });
+
   it('every soft reason in the table is a reason the standard path can actually produce or a gate signal', () => {
     const lib = read('lib/agent-run-without-approval.ts');
     for (const reason of ALL_LEVEL_SOFT_REASONS) {
@@ -244,11 +327,62 @@ describe('standard vs all — per reason', () => {
   });
 });
 
+describe('H2: untrusted input → no "all" level', () => {
+  it('runWithoutApprovalAllAllowedFor', () => {
+    expect(runWithoutApprovalAllAllowedFor(agent)).toBe(true);
+    expect(runWithoutApprovalAllAllowedFor({ ...agent, tool: { type: 'perplexity' } })).toBe(false);
+    expect(runWithoutApprovalAllAllowedFor({ ...agent, prompt: 'summarize https://example.com/a' })).toBe(false);
+    expect(runWithoutApprovalAllAllowedFor({ ...agent, orchestration: { steps: [{ instruction: 'search the web for brick breaker ideas' }, 'build it'] } })).toBe(false);
+    expect(runWithoutApprovalAllAllowedFor({ ...agent, orchestration: { steps: [{ instruction: 'collect ideas', tool: { type: 'perplexity' } }, 'build it'] } })).toBe(false);
+    expect(runWithoutApprovalAllAllowedFor({ ...agent, orchestrationSteps: ['research news online', 'write it'] })).toBe(false);
+    expect(runWithoutApprovalAllAllowedFor({ ...agent, notificationTrigger: { packageNames: ['x'] } })).toBe(false);
+    expect(runWithoutApprovalAllAllowedFor({ ...agent, action: { type: 'browser-pane' } })).toBe(false);
+    expect(runWithoutApprovalAllAllowedFor(null)).toBe(false);
+  });
+
+  it('a stored "all" reads as standard for a web agent, and the writer stores standard', async () => {
+    const web = { ...agent, id: 'agent-web', orchestration: { steps: [{ instruction: 'x', tool: { type: 'perplexity' } }, 'y'] } };
+    __setRunWithoutApprovalStorageForTests(memoryStorage(JSON.stringify([
+      { agentId: web.id, enabledAt: 1, via: 'chat', definitionHash: runWithoutApprovalDefinitionHash(web), level: 'all' },
+    ])));
+    expect(await getRunWithoutApprovalSetting(web)).toBe('standard');
+    const store = memoryStorage();
+    __setRunWithoutApprovalStorageForTests(store);
+    await setRunWithoutApproval(web, 'all', 'detail');
+    expect(JSON.parse(store.peek() as string)[0]).not.toHaveProperty('level');
+    expect(await getRunWithoutApprovalSetting(web)).toBe('standard');
+  });
+
+  it('NL: "all" + a web research step → confirm text says it falls back; confirmed draft is standard', () => {
+    const draft = parseAgentNL('@agent run fully without approval. First search the web for brick breaker tips with Perplexity, then build ~/demo/a.html with Codex');
+    expect(draft.runWithoutApprovalLevel).toBe('all');
+    const summary = summarizeAgentDraftAsText(draft);
+    expect(summary).toMatch(/not available for this agent|「すべて」は使えません/);
+    expect(summary).not.toMatch(/Run without approval \(all\): ON|承認なしで実行（すべて）: ON/);
+    const confirmed = draftToConfirmedAgentDraft(draft);
+    expect(confirmed.runWithoutApproval).toBe(true);
+    expect(confirmed.runWithoutApprovalLevel).toBeUndefined();
+  });
+
+  it('only the typed utterance counts: team registration / terminal request / inbound drafts never carry it', () => {
+    const draft = parseAgentNL('@agent run fully without approval. build ~/demo/a.html with Codex');
+    expect(draftToConfirmedAgentDraft({ ...draft, monitorTeamToken: 'tok' }).runWithoutApproval).toBeUndefined();
+    expect(draftToConfirmedAgentDraft({ ...draft, terminalRequestId: 'req-1' } as typeof draft).runWithoutApproval).toBeUndefined();
+    expect(read('hooks/use-ai-pane-dispatch.ts')).toMatch(/source === 'terminal-request'\) \{\s*draft = \{ \.\.\.draft, runWithoutApproval: undefined, runWithoutApprovalLevel: undefined \};/);
+    expect(read('components/panes/AIPane.tsx')).toMatch(/runWithoutApproval: undefined,\s*runWithoutApprovalLevel: undefined,/);
+    // The LLM fallback / slot-fill / patch never write the flag.
+    for (const rel of ['lib/agent-llm-fallback.ts', 'lib/agent-conversational-registration.ts', 'lib/agent-draft-patch.ts', 'lib/agent-slot-fill.ts', 'lib/monitor-team-registration.ts']) {
+      expect([rel, /runWithoutApproval/.test(read(rel))]).toEqual([rel, false]);
+    }
+  });
+});
+
 describe('unattended / proactive runs never get the all level', () => {
   it('attended=false falls back to the standard rules', () => {
-    const { request } = gateRequest("bash -lc 'node build.js'");
-    expect(escalationAutoApprovable(request, { ...allOpts, attended: false })).toEqual({ ok: false, reason: 'signal:opaque-script-exec' });
-    expect(escalationAutoApprovable(request, { ...allOpts, attended: undefined })).toEqual({ ok: false, reason: 'signal:opaque-script-exec' });
+    const { request } = gateRequest("bash -lc 'rm -rf build'");
+    expect(escalationAutoApprovable(request, allOpts)).toEqual({ ok: true, kind: 'all' });
+    expect(escalationAutoApprovable(request, { ...allOpts, attended: false })).toEqual({ ok: false, reason: 'signal:destructive' });
+    expect(escalationAutoApprovable(request, { ...allOpts, attended: undefined })).toEqual({ ok: false, reason: 'signal:destructive' });
   });
 
   it('a proactive run (policyBlocksAutoAccept) is refused at either level', () => {

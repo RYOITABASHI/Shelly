@@ -36,6 +36,14 @@ import { describeDraftTool, toolChoiceToLabel } from './agent-tool-router';
 import { closePawTaskText } from './agent-intent-review';
 import { MAX_PARALLEL_BRANCHES, groupStepsForDisplay } from './agent-orchestration';
 import { decodeCron, scheduleHuman, nextFireDate } from './agent-card-cron';
+import { runWithoutApprovalAllAllowedFor } from './agent-run-without-approval';
+
+/** Security review H2: "承認なしで実行" counts only from the user's own typed
+ *  words — never on a MONITOR team registration draft or a terminal request
+ *  (`shelly agent add`), whose text is not the user's chat utterance. */
+function runWithoutApprovalHonored(draft: ParsedAgentDraft): boolean {
+  return draft.runWithoutApproval === true && !draft.monitorTeamToken && !draft.terminalRequestId;
+}
 import { t, tFor, type Locale } from './i18n';
 import {
   formatOneShotLabel,
@@ -758,10 +766,15 @@ export function summarizeAgentDraftAsText(
   // Review M4: marked like the other risky lines (the string itself leads
   // with '⚠'), and ★-marked when a patch just touched it. The "all" level
   // has its own line naming what it allows and what still asks.
-  if (draft.runWithoutApproval) {
-    lines.push(draft.runWithoutApprovalLevel === 'all'
+  if (runWithoutApprovalHonored(draft)) {
+    const allAsked = draft.runWithoutApprovalLevel === 'all';
+    const allAllowed = allAsked && runWithoutApprovalAllAllowedFor(draft);
+    lines.push(allAllowed
       ? markLine(tl('agentplan.run_without_approval_all_note'), 'runWithoutApproval', changedFields)
       : markLine(tl('agentplan.run_without_approval_note'), 'runWithoutApproval', changedFields));
+    // Security review H2: "all" was asked for, but this agent reads web /
+    // untrusted input — it falls back to the standard level, said plainly.
+    if (allAsked && !allAllowed) lines.push(tl('agentplan.run_without_approval_all_fallback_note'));
   }
   if (draft.memory?.remember) {
     lines.push(tl('agentplan.memory_note', { fact: draft.memory.rememberFact ?? '' }));
@@ -882,8 +895,10 @@ export function draftToConfirmedAgentDraft(draft: ParsedAgentDraft): ConfirmedAg
     ...(draft.requireActionApproval !== undefined ? { requireActionApproval: draft.requireActionApproval } : {}),
     // Only the chat-native confirm (this function) carries it — the summary
     // line the user OK'd named the option.
-    ...(draft.runWithoutApproval === true ? { runWithoutApproval: true } : {}),
-    ...(draft.runWithoutApproval === true && draft.runWithoutApprovalLevel === 'all' ? { runWithoutApprovalLevel: 'all' as const } : {}),
+    ...(runWithoutApprovalHonored(draft) ? { runWithoutApproval: true } : {}),
+    ...(runWithoutApprovalHonored(draft) && draft.runWithoutApprovalLevel === 'all' && runWithoutApprovalAllAllowedFor(draft)
+      ? { runWithoutApprovalLevel: 'all' as const }
+      : {}),
     // The summary line the user OK'd named it ("Workspace: ~/demo").
     ...(draft.workspaceRoot ? { workspaceRoot: draft.workspaceRoot } : {}),
   };

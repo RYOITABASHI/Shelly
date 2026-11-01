@@ -71,7 +71,11 @@ import { isAgentAddRequestId, isTerminalAgentRequestActive } from '@/lib/agent-a
 import { onTerminalDraftPresented, onAgentDraftResolved } from '@/lib/agent-add-flow';
 import { onTeamDraftCancelled, onTeamDraftConfirmed } from '@/lib/monitor-team-registration';
 import { setRunWithoutApproval } from '@/lib/agent-run-without-approval';
-import { resolveWorkspaceRootForHome } from '@/lib/agent-workspace-from-request';
+import {
+  buildWorkspacePrepareCommand,
+  parseWorkspacePrepareOutput,
+  resolveWorkspaceRootForHome,
+} from '@/lib/agent-workspace-from-request';
 import { applyClosePawAutoRouting, detectUiOperationClause } from '@/lib/agent-closepaw-routing';
 import { findClosePawChatReplyTarget, resolveClosePawShellFromChat } from '@/lib/closepaw-shell-approval';
 import { findActionApprovalReplyTarget, findAmbiguousBareApprovalReply, parseActionApprovalChatReply, resolveActionApprovalFromChat, resolvePendingApprovalFromMonitor } from '@/lib/agent-action-chat-approval';
@@ -676,6 +680,19 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // the result goes — resolved from Settings here, since the summary
         // renderer is pure. Display-only (never persisted).
         let draft = presentedDraft;
+        // Security review M3: the derived workspace is shown only when it
+        // resolves under the home with no symlinked component (read-only
+        // check; created on confirm). Refused → no Workspace line, unset.
+        if (draft.workspaceRoot) {
+          const abs = resolveWorkspaceRootForHome(draft.workspaceRoot, getHomePath());
+          const check = abs
+            ? parseWorkspacePrepareOutput(await runAgentShellCommand(buildWorkspacePrepareCommand(abs, getHomePath(), false)).catch(() => 'REFUSE exec-failed'))
+            : { ok: false as const, reason: 'invalid' };
+          if (check.ok === false) {
+            logInfo('AgentDraft', `derived workspace ${draft.workspaceRoot} not used: ${check.reason}`);
+            draft = { ...draft, workspaceRoot: undefined };
+          }
+        }
         if (draft.action.type === 'draft' && draft.saveActionLabel && !draft.outputPath?.trim()) {
           try {
             draft = { ...draft, saveDestinationPreview: resolveAgentOutputBase(useSettingsStore.getState().settings) };
@@ -2894,6 +2911,13 @@ export function useAIPaneDispatch(paneIdRaw: string) {
             if (dispatchOpts?.source === 'terminal-request' && isAgentAddRequestId(dispatchOpts.requestId)) {
               draft.terminalRequestId = dispatchOpts.requestId;
             }
+            // Security review H2: "承認なしで実行" only from words the user
+            // typed in this chat — a terminal request (`shelly agent add`,
+            // which any process in the terminal, including an agent run, can
+            // write) never carries it.
+            if (dispatchOpts?.source === 'terminal-request') {
+              draft = { ...draft, runWithoutApproval: undefined, runWithoutApprovalLevel: undefined };
+            }
             // Automatic ClosePaw routing (lib/agent-closepaw-routing.ts): only
             // a detected UI-operation step becomes the ClosePaw hand-off, only
             // when ClosePaw is installed, and the summary always says so.
@@ -4399,12 +4423,20 @@ export function useAIPaneDispatch(paneIdRaw: string) {
         // the run script single-quotes AGENT_WORKSPACE_ROOT (no `~`
         // expansion) — and created now, because both executors fall back to
         // $HOME for a workspace directory that does not exist yet.
-        const resolvedWorkspaceRoot = confirmed.workspaceRoot
+        // Security review M3: refused when an existing component is a
+        // symlink; after mkdir -p the physical path must still be under the
+        // physical home and not a dot / runtime dir — then that physical
+        // path is what is stored. Refused → workspaceRoot stays unset.
+        const workspaceCandidate = confirmed.workspaceRoot
           ? resolveWorkspaceRootForHome(confirmed.workspaceRoot, getHomePath())
           : null;
-        if (resolvedWorkspaceRoot) {
-          await runAgentShellCommand(`mkdir -p -- '${resolvedWorkspaceRoot.replace(/'/g, `'\\''`)}'`).catch((e) =>
-            logError('AgentDraft', `workspace mkdir failed ${resolvedWorkspaceRoot}`, e));
+        let resolvedWorkspaceRoot: string | null = null;
+        if (workspaceCandidate) {
+          const prepared = parseWorkspacePrepareOutput(
+            await runAgentShellCommand(buildWorkspacePrepareCommand(workspaceCandidate, getHomePath(), true)).catch(() => 'REFUSE exec-failed'),
+          );
+          if (prepared.ok === true && prepared.realPath) resolvedWorkspaceRoot = prepared.realPath;
+          else logWarn('AgentDraft', `workspace ${workspaceCandidate} not used: ${prepared.ok === false ? prepared.reason : 'missing'}`);
         }
         const agentFields = {
           name: confirmed.name,

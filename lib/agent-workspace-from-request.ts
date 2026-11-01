@@ -41,8 +41,25 @@ export const KNOWN_APP_HOME_PATHS = [
   '/data/data/dev.shelly.terminal/files/home',
 ] as const;
 
-/** Non-dot top-level home directories that hold Shelly's own runtime. */
-const CONTROL_TOP_DIRS = new Set(['bin']);
+/**
+ * Non-dot top-level home entries that hold Shelly's own runtime / state
+ * (HomeInitializer.kt, lib/agent-executor.ts, scripts/shelly-plan-executor.js):
+ * `bin` (PATH wrappers), `lib` / `usr` / `etc` (unpacked trees), `models`
+ * (local LLM weights), `storage` (shared-storage links), `shelly-*` (runtime
+ * canaries), `app-server-control*` (Codex app-server control). Writes there
+ * are hard under the "all" level. As a derived WORKSPACE also refused:
+ * `tmp` (scratch of every run) and `agent-output` (all agents' results).
+ */
+const RUNTIME_TOP_DIRS = new Set(['bin', 'lib', 'usr', 'etc', 'models', 'storage', 'node_modules']);
+const DERIVE_ONLY_TOP_DIRS = new Set(['tmp', 'agent-output']);
+const RUNTIME_TOP_PREFIX_RE = /^(?:shelly-|app-server-control)/;
+
+export function isShellyRuntimeHomeEntry(top: string, mode: 'all' | 'derive'): boolean {
+  if (RUNTIME_TOP_DIRS.has(top) || RUNTIME_TOP_PREFIX_RE.test(top)) return true;
+  return mode === 'derive' && DERIVE_ONLY_TOP_DIRS.has(top);
+}
+
+const CONTROL_TOP_DIRS = { has: (top: string) => isShellyRuntimeHomeEntry(top, 'derive') };
 
 const PATH_CHARS = '[A-Za-z0-9._@+\\-/]';
 const FILE_EXT_RE = /^[^.].*\.[A-Za-z0-9]{1,10}$/;
@@ -152,4 +169,57 @@ export function resolveWorkspaceRootForHome(
   const abs = `${h}/${comps.join('/')}`;
   if (!validateWorkspaceRoot(abs, [h, ...homePaths]).ok) return null;
   return abs;
+}
+
+function shQuote(s: string): string {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Security review M3: a shell script (POSIX sh) that refuses the workspace
+ * when any EXISTING component from the home down to it is a symlink
+ * (`[ -L ]`, i.e. lstat), optionally creates it, and prints the physical
+ * paths of the home and the workspace:
+ *   `OK <home-realpath> <workspace-realpath>` / `MISSING <home-realpath>` /
+ *   `REFUSE <reason>`.
+ * `create: false` is the read-only pre-check run before the confirm text is
+ * shown; `create: true` runs on confirm (mkdir -p, then the realpath is
+ * re-validated by parseWorkspacePrepareOutput).
+ */
+export function buildWorkspacePrepareCommand(abs: string, home: string, create: boolean): string {
+  const h = home.replace(/\/+$/, '');
+  const rel = abs.startsWith(`${h}/`) ? abs.slice(h.length + 1) : '';
+  return [
+    `h=${shQuote(h)}; t=${shQuote(abs)}; rel=${shQuote(rel)}`,
+    '[ -n "$rel" ] || { echo "REFUSE not-under-home"; exit 0; }',
+    'hr=$(cd "$h" 2>/dev/null && pwd -P) || { echo "REFUSE no-home"; exit 0; }',
+    'p="$h"; oldifs=$IFS; IFS=/',
+    'for c in $rel; do p="$p/$c"; if [ -L "$p" ]; then IFS=$oldifs; echo "REFUSE symlink"; exit 0; fi; done',
+    'IFS=$oldifs',
+    create ? 'mkdir -p -- "$t" || { echo "REFUSE mkdir-failed"; exit 0; }' : '[ -d "$t" ] || { echo "MISSING $hr"; exit 0; }',
+    'r=$(cd "$t" 2>/dev/null && pwd -P) || { echo "REFUSE unreadable"; exit 0; }',
+    'echo "OK $hr $r"',
+  ].join('\n');
+}
+
+export type WorkspacePrepareResult = { ok: true; realPath: string | null } | { ok: false; reason: string };
+
+/** Parse buildWorkspacePrepareCommand's output: OK only when the physical
+ *  workspace is still under the physical home and its home-relative part
+ *  passes the same rules as the derivation. */
+export function parseWorkspacePrepareOutput(output: string): WorkspacePrepareResult {
+  const line = String(output ?? '').trim().split('\n').pop() ?? '';
+  const missing = /^MISSING (\/\S*)$/.exec(line);
+  if (missing) return { ok: true, realPath: null };
+  const m = /^OK (\/\S*) (\/\S*)$/.exec(line);
+  if (!m) {
+    const refuse = /^REFUSE (\S+)/.exec(line);
+    return { ok: false, reason: refuse ? refuse[1] : 'unexpected-output' };
+  }
+  const [, hr, r] = m;
+  if (!r.startsWith(`${hr}/`)) return { ok: false, reason: 'outside-home' };
+  const comps = r.slice(hr.length + 1).split('/').filter(Boolean);
+  if (comps.length === 0) return { ok: false, reason: 'home-root' };
+  if (comps.some((c) => c.startsWith('.')) || CONTROL_TOP_DIRS.has(comps[0])) return { ok: false, reason: 'control-dir' };
+  return { ok: true, realPath: r };
 }

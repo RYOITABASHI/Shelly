@@ -4,9 +4,14 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { execFileSync } from 'child_process';
 import {
+  buildWorkspacePrepareCommand,
   deriveWorkspaceRootFromText,
+  isShellyRuntimeHomeEntry,
   KNOWN_APP_HOME_PATHS,
+  parseWorkspacePrepareOutput,
   resolveWorkspaceRootForHome,
 } from '@/lib/agent-workspace-from-request';
 import { parseAgentNL } from '@/lib/agent-nl-parser';
@@ -128,7 +133,6 @@ describe('NL draft → confirm text → createAgent', () => {
   it('the dispatcher resolves it, creates the directory and passes it to createAgent', () => {
     const src = read('hooks/use-ai-pane-dispatch.ts');
     expect(src).toMatch(/resolveWorkspaceRootForHome\(confirmed\.workspaceRoot, getHomePath\(\)\)/);
-    expect(src).toMatch(/mkdir -p -- /);
     expect(src).toMatch(/\.\.\.\(resolvedWorkspaceRoot \? \{ workspaceRoot: resolvedWorkspaceRoot \} : \{\}\)/);
     // The serial chain's DRIVER_CWD and the plan spec's cliWorker.cwd both
     // read the (validated) agent.workspaceRoot.
@@ -139,5 +143,74 @@ describe('NL draft → confirm text → createAgent', () => {
   it('i18n: the workspace line exists in both locales', () => {
     expect(read('lib/i18n/locales/en.ts')).toMatch(/'agentplan\.workspace_line': 'Workspace: \{\{path\}\}/);
     expect(read('lib/i18n/locales/ja.ts')).toMatch(/'agentplan\.workspace_line': 'ワークスペース: \{\{path\}\}/);
+  });
+});
+
+describe('M3: runtime dirs and symlinks', () => {
+  it('Shelly runtime / state dirs are never a derived workspace', () => {
+    for (const p of ['~/models/a.gguf', '~/tmp/x/a.html', '~/agent-output/a/x.md', '~/lib/x.so', '~/usr/bin/a', '~/storage/shared/a.txt', '~/shelly-codex-edit-canary-1/a.txt', '~/bin/x']) {
+      expect([p, deriveWorkspaceRootFromText(`write ${p}`)]).toEqual([p, null]);
+    }
+    expect(isShellyRuntimeHomeEntry('tmp', 'derive')).toBe(true);
+    expect(isShellyRuntimeHomeEntry('tmp', 'all')).toBe(false);
+    expect(isShellyRuntimeHomeEntry('bin', 'all')).toBe(true);
+    expect(isShellyRuntimeHomeEntry('demo', 'derive')).toBe(false);
+  });
+
+  it('parseWorkspacePrepareOutput', () => {
+    expect(parseWorkspacePrepareOutput('REFUSE symlink')).toEqual({ ok: false, reason: 'symlink' });
+    expect(parseWorkspacePrepareOutput(`OK ${HOME} ${HOME}/demo`)).toEqual({ ok: true, realPath: `${HOME}/demo` });
+    expect(parseWorkspacePrepareOutput(`MISSING ${HOME}`)).toEqual({ ok: true, realPath: null });
+    expect(parseWorkspacePrepareOutput(`OK ${HOME} /sdcard/demo`)).toEqual({ ok: false, reason: 'outside-home' });
+    expect(parseWorkspacePrepareOutput(`OK ${HOME} ${HOME}/.shelly/x`)).toEqual({ ok: false, reason: 'control-dir' });
+    expect(parseWorkspacePrepareOutput(`OK ${HOME} ${HOME}/bin`)).toEqual({ ok: false, reason: 'control-dir' });
+    expect(parseWorkspacePrepareOutput(`OK ${HOME} ${HOME}`)).toEqual({ ok: false, reason: 'outside-home' });
+    expect(parseWorkspacePrepareOutput('garbage')).toEqual({ ok: false, reason: 'unexpected-output' });
+  });
+
+  it('the prepare script checks every existing component with -L and re-reads the physical path', () => {
+    const cmd = buildWorkspacePrepareCommand(`${HOME}/demo/sub`, HOME, true);
+    expect(cmd).toMatch(/if \[ -L "\$p" \]; then/);
+    expect(cmd).toMatch(/mkdir -p -- "\$t"/);
+    expect(cmd).toMatch(/pwd -P/);
+    expect(buildWorkspacePrepareCommand(`${HOME}/demo`, HOME, false)).not.toMatch(/mkdir/);
+  });
+
+  /** Runs the script with the host's sh (CI: Linux). */
+  function runPrepare(abs: string, home: string, create: boolean): string {
+    return execFileSync('sh', ['-c', buildWorkspacePrepareCommand(abs, home, create)], { encoding: 'utf8' });
+  }
+
+  it('end to end: creates the directory and reports its physical path; refuses a symlinked component', () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ws-prep-'))).replace(/\\/g, '/');
+    let home = tmp;
+    try {
+      home = execFileSync('sh', ['-c', `cd ${JSON.stringify(tmp)} && pwd -P`], { encoding: 'utf8' }).trim();
+    } catch {
+      return; // no POSIX sh on this host
+    }
+    const pre = parseWorkspacePrepareOutput(runPrepare(`${home}/demo`, home, false));
+    expect(pre).toEqual({ ok: true, realPath: null });
+    const made = parseWorkspacePrepareOutput(runPrepare(`${home}/demo`, home, true));
+    expect(made).toEqual({ ok: true, realPath: `${home}/demo` });
+    // A symlinked component (where the host allows creating one).
+    try {
+      fs.mkdirSync(path.join(tmp, 'elsewhere'));
+      fs.symlinkSync(path.join(tmp, 'elsewhere'), path.join(tmp, 'link'), 'dir');
+    } catch {
+      return;
+    }
+    const linked = execFileSync('sh', ['-c', `[ -L ${JSON.stringify(`${home}/link`)} ] && echo yes || echo no`], { encoding: 'utf8' }).trim();
+    if (linked !== 'yes') return; // the host's sh does not see it as a symlink
+    expect(parseWorkspacePrepareOutput(runPrepare(`${home}/link/sub`, home, true))).toEqual({ ok: false, reason: 'symlink' });
+    expect(fs.existsSync(path.join(tmp, 'elsewhere', 'sub'))).toBe(false);
+  });
+
+  it('the dispatcher pre-checks before the confirm text and stores the physical path on confirm', () => {
+    const src = read('hooks/use-ai-pane-dispatch.ts');
+    expect(src).toMatch(/buildWorkspacePrepareCommand\(abs, getHomePath\(\), false\)/);
+    expect(src).toMatch(/draft = \{ \.\.\.draft, workspaceRoot: undefined \};/);
+    expect(src).toMatch(/buildWorkspacePrepareCommand\(workspaceCandidate, getHomePath\(\), true\)/);
+    expect(src).toMatch(/resolvedWorkspaceRoot = prepared\.realPath/);
   });
 });

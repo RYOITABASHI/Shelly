@@ -103,6 +103,7 @@ import {
   forgetRunWithoutApproval,
   getRunWithoutApprovalSetting,
   postRunWithoutApprovalAuditLine,
+  runWithoutApprovalAllAllowedFor,
   setRunWithoutApproval,
   type RunWithoutApprovalSetting,
 } from '@/lib/agent-run-without-approval';
@@ -1241,11 +1242,14 @@ export function Sidebar() {
       {
         key: 'run-without-approval',
         titleKey: 'agent_detail.run_without_approval',
-        text: t(runWithoutApproval === 'all'
-          ? 'agent_detail.run_without_approval_all'
-          : runWithoutApproval === 'standard'
-            ? 'agent_detail.run_without_approval_on'
-            : 'agent_detail.run_without_approval_off'),
+        text: [
+          t(runWithoutApproval === 'all'
+            ? 'agent_detail.run_without_approval_all'
+            : runWithoutApproval === 'standard'
+              ? 'agent_detail.run_without_approval_on'
+              : 'agent_detail.run_without_approval_off'),
+          runWithoutApprovalAllAllowedFor(agent) ? null : t('agent_detail.run_without_approval_all_unavailable'),
+        ].filter(Boolean).join('\n'),
       },
     ];
     // One button per level the agent is NOT at (OFF / 標準 / すべて): the popup
@@ -1255,8 +1259,11 @@ export function Sidebar() {
       { level: 'standard', labelKey: 'sidebar.agent_run_without_approval_enable', lineKey: 'agent_run_without_approval.enabled_line' },
       { level: 'all', labelKey: 'sidebar.agent_run_without_approval_enable_all', lineKey: 'agent_run_without_approval.enabled_all_line' },
     ];
+    // Security review H2: an agent that reads web / untrusted input never
+    // gets the "all" level (the writer and the runtime refuse it too).
+    const allLevelAllowed = runWithoutApprovalAllAllowedFor(agent);
     const runWithoutApprovalButtons: AgentDetailData['buttons'] = runWithoutApprovalLevels
-      .filter((option) => option.level !== runWithoutApproval)
+      .filter((option) => option.level !== runWithoutApproval && (option.level !== 'all' || allLevelAllowed))
       .map((option) => ({
         key: `run-without-approval-${option.level}`,
         labelKey: option.labelKey,

@@ -380,7 +380,7 @@ describe('RN choke points use the signed path and log visibly', () => {
     expect(proactiveAt).toBeGreaterThan(engineAt);
     // computed outside the engine block: after its closing, before the auto path
     const engineBlock = drain.slice(engineAt, proactiveAt);
-    expect(engineBlock).toMatch(/\n {10}\}\n/);
+    expect(engineBlock).toMatch(/\r?\n {10}\}\r?\n/);
   });
 
   it('review M2: a deny / draft_only blocks auto-accept even when the decline write fails', () => {
