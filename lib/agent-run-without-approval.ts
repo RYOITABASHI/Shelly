@@ -616,6 +616,22 @@ const RUN_WITHOUT_APPROVAL_EN_RE = /\brun(?:\s+(?:it|this|the\s+agent|them))?\s+
 const NEGATED_EN_RE = /\b(?:don'?t|do not|never|shouldn'?t|please don'?t)\b[^.!?]{0,40}\bwithout\b/i;
 const NEGATED_JP_RE = /(?:承認|確認|許可)(?:は)?(?:なし|無し|不要)(?:で|に)?(?:は)?[^。！？]{0,15}(?:しないで|しては(?:い)?けない|ダメ|だめ|禁止)/;
 
+/**
+ * The text with every "run without approval" phrase (the patterns above)
+ * removed. lib/agent-nl-parser.ts's detectAutonomousIntent judges autonomy on
+ * this: its own phrase list includes "without approval" / 承認なしで, so the
+ * run-without-approval phrase used to also turn the draft autonomous
+ * (unattended policy -> the step ladder went local-first and a Codex-pinned
+ * step ran on the local LLM, 2026-11-01 build 2743). Run-without-approval is a
+ * separate per-agent opt-in that auto-answers the attended gate; it must not
+ * change the agent's attended/unattended semantics.
+ */
+export function stripRunWithoutApprovalPhrases(text: string | null | undefined): string {
+  return String(text ?? '')
+    .replace(new RegExp(RUN_WITHOUT_APPROVAL_JA_RE.source, 'g'), ' ')
+    .replace(new RegExp(RUN_WITHOUT_APPROVAL_EN_RE.source, 'gi'), ' ');
+}
+
 /** The user's own words: quoted / fenced / blockquoted passages removed. */
 export function stripQuotedText(text: string): string {
   return String(text ?? '')

@@ -2456,7 +2456,10 @@ const NEGATED_AUTONOMOUS_INTENT_JP_RE =
  *  flip an already-true autonomous flag back off). */
 export function detectAutonomousIntent(text: string): boolean {
   if (NEGATED_AUTONOMOUS_INTENT_EN_RE.test(text) || NEGATED_AUTONOMOUS_INTENT_JP_RE.test(text)) return false;
-  return AUTONOMOUS_INTENT_RE.test(text);
+  // 2026-11-01 (build 2743): "run it without approval" / 承認なしで実行 is the
+  // separate run-without-approval opt-in (detectRunWithoutApprovalIntent), not
+  // a request for unattended execution - judge autonomy without it.
+  return AUTONOMOUS_INTENT_RE.test(stripRunWithoutApprovalPhrases(text));
 }
 
 // ── Free-text agent-deletion intent (2026-08-29, DEFERRED.md follow-up:
