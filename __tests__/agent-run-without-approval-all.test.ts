@@ -146,9 +146,50 @@ describe('the rehearsal asks (build 2772)', () => {
   const HEREDOC_GAME = "bash -lc \"cat > ~/demo/codex.html <<'EOF'\n<html><body><canvas id=c></canvas><script>document.addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') x -= dx; label.textContent = 'score ${score}'; });</script></body></html>\nEOF\"";
 
   it('a heredoc into ~/demo: allowed when ~/demo is the workspace, asks when it is not', () => {
-    // (A body with backticks carries the gate's indirect-exec signal: it asks.)
+    // (Backticks in a QUOTED heredoc body no longer carry indirect-exec —
+    // see the BACKTICK_GAME tests below; an unquoted body still does.)
     expect(run(HEREDOC_GAME, CS, WS).all).toEqual({ ok: true, kind: 'all' });
     expect(run(HEREDOC_GAME, CS, CS).all.ok).toBe(false);
+  });
+
+  // 2026-11-02 rehearsal (m): codex's shlex-joined argv, body with JS
+  // template literals and `$(` — literal data in a QUOTED heredoc.
+  const sq = (s: string) => `'${s.replace(/'/g, `'"'"'`)}'`;
+  const BACKTICK_GAME = `bash -lc ${sq("cat > ~/demo/codex.html <<'EOF'\n<html><body><script>const label = `score ${score}`; const el = $('#c');</script></body></html>\nEOF")}`;
+
+  it('a quoted heredoc body with backticks / $( no longer carries indirect-exec: all allows it into the workspace', () => {
+    const { verdict } = gateRequest(BACKTICK_GAME, CS);
+    expect(verdict.signals).not.toContain('indirect-exec');
+    expect(run(BACKTICK_GAME, CS, WS).all).toEqual({ ok: true, kind: 'all' });
+    // Outside the trusted workspace the body is not skipped: it asks.
+    expect(run(BACKTICK_GAME, CS, CS).all.ok).toBe(false);
+  });
+
+  it('an UNQUOTED heredoc body with backticks still carries indirect-exec and asks', () => {
+    const cmd = `bash -lc ${sq('cat > ~/demo/codex.html <<EOF\n<script>const label = `score`;</script>\nEOF')}`;
+    const { verdict } = gateRequest(cmd, CS);
+    expect(verdict.signals).toContain('indirect-exec');
+    expect(run(cmd, CS, WS).all).toMatchObject({ ok: false, reason: 'signal:indirect-exec' });
+  });
+
+  it("a split delimiter word (<<'EO'F = EOF to bash) is not read as EO: the command after the real terminator is judged", () => {
+    for (const script of [
+      "cat > ~/demo/a.txt <<'EO'F\nhello\nEOF\nrm -rf ~/bin",
+      "cat > ~/demo/a.txt <<'E'O\"F\"\nhello\nEOF\nrm -rf ~/bin",
+      "cat > ~/demo/a.txt <<E'OF'\nhello\nEOF\nrm -rf ~/bin",
+    ]) {
+      const cmd = `bash -lc ${sq(script)}`;
+      expect([script, run(cmd, CS, WS).all.ok]).toEqual([script, false]);
+    }
+    // The plain shape still writes.
+    expect(run(`bash -lc ${sq("cat > ~/demo/a.txt <<'EOF'\nhello\nEOF")}`, CS, WS).all).toEqual({ ok: true, kind: 'all' });
+  });
+
+  it('a substitution after the quoted heredoc still carries indirect-exec and asks', () => {
+    const cmd = `bash -lc ${sq("cat > ~/demo/a.html <<'EOF'\n`x`\nEOF\nrm -rf $(echo ~/bin)")}`;
+    const { verdict } = gateRequest(cmd, CS);
+    expect(verdict.signals).toContain('indirect-exec');
+    expect(run(cmd, CS, WS).all.ok).toBe(false);
   });
 
   it('read-only syntax checks of workspace files are allowed (workspace ~/demo)', () => {

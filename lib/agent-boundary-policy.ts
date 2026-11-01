@@ -480,6 +480,358 @@ const INDIRECT_EXEC_RE =
   /\$\(|`|\beval\b|\bxargs\b\s+\S|\benv\b\s+(?:-\S+\s+)*(?:\w+=\S*\s+)*\S/;
 
 /**
+ * Quoted heredocs (DEFERRED.md 2026-11-02 rehearsal, item (m)).
+ *
+ * Codex writes files as `cat > f.html <<'EOF' … EOF`. With a QUOTED delimiter
+ * (`<<'EOF'`, `<<"EOF"`, `<<\EOF`, `<<-'EOF'`) bash performs no expansion in
+ * the body, so backticks (JS template literals) and `$(` there are literal
+ * data. INDIRECT_EXEC_RE alone cannot tell, and asked a human for every such
+ * write. indirectExecView() returns the command with those bodies removed so
+ * the indirect-exec check looks only at text bash can execute.
+ *
+ * It is used ONLY for the indirect-exec signal; every other check (network,
+ * opaque script, paths, secrets, command-safety) still sees the full command,
+ * body included. It is deliberately narrow and fails closed: whenever the
+ * script is not a plain shape this lexer fully understands, it returns the
+ * command unchanged (so the signal is computed exactly as before). Bodies are
+ * removed only when ALL of the following hold:
+ *   - no CR anywhere (bash would make `\r` part of words / delimiters);
+ *   - quotes balance; no `$(`, backtick, `$'…'`, `$"…"`, `${…}` other than a
+ *     plain name, `((`, `<(` / `>(` anywhere outside a quoted body (each of
+ *     these would also flag on its own);
+ *   - every heredoc operator outside quotes / comments parses (delimiter of
+ *     [A-Za-z0-9_.-] characters, optionally quoted); `<<<` is a here-string;
+ *   - every heredoc is terminated by a line that is exactly the delimiter
+ *     (`<<-`: after leading TABs only); unterminated ⇒ unchanged;
+ *   - an UNQUOTED heredoc body (which bash expands) is kept, and has no line
+ *     ending in `\` (line continuation could move the terminator);
+ *   - the quoted heredoc is fed to plain `cat` / `tee`, no `|` anywhere, and
+ *     every simple command's first word is in HEREDOC_PLAIN_COMMANDS (so no
+ *     shell / interpreter / alias / source / eval / exec can consume the body
+ *     or change how the script is parsed); no redirection before the command
+ *     word.
+ * A `bash|sh -c '<one word>'` wrapper (the driver's flattened codex argv) is
+ * unwrapped only when that word cannot expand anything even if read verbatim
+ * (every `$` / backtick inside double quotes is backslash-escaped), so the
+ * legacy space-joined argv form cannot be mistaken for the quoted form.
+ */
+const HEREDOC_OWNER_COMMANDS: ReadonlySet<string> = new Set(['cat', 'tee']);
+const HEREDOC_PLAIN_COMMANDS: ReadonlySet<string> = new Set([
+  'cat', 'tee', 'mkdir', 'ls', 'echo', 'printf', 'pwd', 'cd', 'true', 'false', 'test', '[',
+  'wc', 'head', 'tail', 'touch', 'cp', 'mv', 'rm', 'grep', 'rg', 'diff', 'stat', 'file',
+  'date', 'sleep', 'chmod', 'sort', 'uniq', 'cut', 'tr', 'basename', 'dirname', 'realpath', 'readlink',
+]);
+const HEREDOC_DELIM_CHARS_RE = /^[A-Za-z0-9_.-]*$/;
+const SHELL_META_CHARS = ' \t\n;&|<>()';
+const SHELL_C_PREFIX_RE = /^(\s*(?:[A-Za-z0-9_./-]*\/)?(?:ba|da|z|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c[A-Za-z]*\s+)([\s\S]+)$/;
+
+/**
+ * The script with quoted-heredoc bodies removed, or null when the script is
+ * not a shape this lexer is sure about (see the comment above). Exported for
+ * tests.
+ */
+export function stripQuotedHeredocBodies(script: string): string | null {
+  const s = String(script ?? '');
+  if (!s.includes('<<')) return s;
+  if (s.includes('\r')) return null;
+  type Pending = { delim: string; quoted: boolean; dash: boolean; owner: string | null };
+  const pending: Pending[] = [];
+  const commandWords: string[] = [];
+  let out = '';
+  let i = 0;
+  let expectCmd = true;
+  let cmdWord: string | null = null;
+  let inWord = false;
+  let capturing = false;
+  let word = '';
+  let sawPipe = false;
+  let sawQuoted = false;
+  let quotedOwnersOk = true;
+
+  const startWord = () => {
+    if (inWord) return;
+    inWord = true;
+    capturing = expectCmd;
+    word = '';
+  };
+  const endWord = () => {
+    if (inWord && capturing) {
+      if (word !== '{' && word !== '}' && word !== '!') {
+        cmdWord = word;
+        commandWords.push(word);
+        expectCmd = false;
+      }
+    }
+    inWord = false;
+    capturing = false;
+    word = '';
+  };
+  const newCommand = () => {
+    endWord();
+    expectCmd = true;
+    cmdWord = null;
+  };
+
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === '\n') {
+      newCommand();
+      out += '\n';
+      i++;
+      for (const p of pending) {
+        const bodyStart = i;
+        let terminated = false;
+        while (i < s.length) {
+          const nl = s.indexOf('\n', i);
+          const line = nl < 0 ? s.slice(i) : s.slice(i, nl);
+          const cmp = p.dash ? line.replace(/^\t+/, '') : line;
+          if (cmp === p.delim) {
+            const body = s.slice(bodyStart, i);
+            out += p.quoted ? '' : `${body}${line}`;
+            if (nl >= 0) out += '\n';
+            i = nl < 0 ? s.length : nl + 1;
+            terminated = true;
+            break;
+          }
+          if (!p.quoted && line.endsWith('\\')) return null;
+          if (nl < 0) { i = s.length; break; }
+          i = nl + 1;
+        }
+        if (!terminated) return null;
+      }
+      pending.length = 0;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t') {
+      endWord();
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '#' && !inWord) {
+      // `>#x`: bash reads a comment there too (a syntax error), but keep
+      // it simple and refuse the shape.
+      if (i > 0 && (s[i - 1] === '<' || s[i - 1] === '>' || s[i - 1] === '&')) return null;
+      const nl = s.indexOf('\n', i);
+      const end = nl < 0 ? s.length : nl;
+      out += s.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === '`') return null;
+    if (ch === '|' || ch === ';' || (ch === '&' && s[i + 1] !== '>')) {
+      if (ch === '|' && s[i + 1] === '|') { out += '||'; i += 2; newCommand(); continue; }
+      if (ch === '&' && s[i + 1] === '&') { out += '&&'; i += 2; newCommand(); continue; }
+      if (ch === ';' && s[i + 1] === ';') return null; // case arm
+      if (ch === '|') sawPipe = true;
+      out += ch;
+      i++;
+      newCommand();
+      continue;
+    }
+    if (ch === '(') {
+      if (s[i + 1] === '(') return null; // arithmetic command
+      out += ch;
+      i++;
+      newCommand();
+      continue;
+    }
+    if (ch === ')') {
+      endWord();
+      expectCmd = false;
+      cmdWord = null;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '<' || ch === '>' || ch === '&') {
+      endWord();
+      if (s.startsWith('<<<', i)) {
+        if (expectCmd) return null;
+        out += '<<<';
+        i += 3;
+        continue;
+      }
+      if (s.startsWith('<<', i)) {
+        if (expectCmd) return null;
+        let j = i + 2;
+        let dash = false;
+        if (s[j] === '-') { dash = true; j++; }
+        while (s[j] === ' ' || s[j] === '\t') j++;
+        let delim = '';
+        let quoted = false;
+        while (j < s.length && !SHELL_META_CHARS.includes(s[j])) {
+          const c = s[j];
+          if (c === "'" || c === '"') {
+            const e = s.indexOf(c, j + 1);
+            if (e < 0) return null;
+            const inner = s.slice(j + 1, e);
+            if (!HEREDOC_DELIM_CHARS_RE.test(inner)) return null;
+            delim += inner;
+            quoted = true;
+            j = e + 1;
+            continue;
+          }
+          if (c === '\\') {
+            const n = s[j + 1];
+            if (!n || !/[A-Za-z0-9_.-]/.test(n)) return null;
+            delim += n;
+            quoted = true;
+            j += 2;
+            continue;
+          }
+          if (!/[A-Za-z0-9_.-]/.test(c)) return null;
+          delim += c;
+          j++;
+        }
+        if (!delim) return null;
+        if (quoted) {
+          sawQuoted = true;
+          if (!cmdWord || !HEREDOC_OWNER_COMMANDS.has(cmdWord)) quotedOwnersOk = false;
+        }
+        pending.push({ delim, quoted, dash, owner: cmdWord });
+        out += s.slice(i, j);
+        i = j;
+        continue;
+      }
+      if (s[i + 1] === '(') return null; // process substitution
+      if (expectCmd) return null; // redirection before the command word
+      // `>`, `>>`, `>|`, `>&`, `<`, `<>`, `<&`, `&>`, `&>>`
+      let j = i + 1;
+      if (ch === '&') j++; // `&>`
+      while (j < s.length && (s[j] === '>' || s[j] === '&' || (s[j] === '|' && s[j - 1] === '>'))) j++;
+      if (s[j] === '(') return null;
+      out += s.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === "'") {
+      const e = s.indexOf("'", i + 1);
+      if (e < 0) return null;
+      const seg = s.slice(i, e + 1);
+      if (pending.length > 0 && seg.includes('\n')) return null;
+      startWord();
+      word += seg;
+      out += seg;
+      i = e + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < s.length && s[j] !== '"') {
+        if (s[j] === '\\') { j += 2; continue; }
+        if (s[j] === '`') return null;
+        if (s[j] === '$') {
+          if (s[j + 1] === '(') return null;
+          if (s[j + 1] === '{') {
+            const m = /^\{[A-Za-z_][A-Za-z0-9_]*\}/.exec(s.slice(j + 1));
+            if (!m) return null;
+            j += 1 + m[0].length;
+            continue;
+          }
+        }
+        j++;
+      }
+      if (j >= s.length) return null;
+      const seg = s.slice(i, j + 1);
+      if (pending.length > 0 && seg.includes('\n')) return null;
+      startWord();
+      word += seg;
+      out += seg;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '$') {
+      const n = s[i + 1];
+      if (n === '(' || n === "'" || n === '"') return null;
+      if (n === '{') {
+        const m = /^\{[A-Za-z_][A-Za-z0-9_]*\}/.exec(s.slice(i + 1));
+        if (!m) return null;
+        startWord();
+        word += `$${m[0]}`;
+        out += `$${m[0]}`;
+        i += 1 + m[0].length;
+        continue;
+      }
+    }
+    if (ch === '\\') {
+      const seg = s.slice(i, i + 2);
+      if (seg === '\\\n') {
+        // Line continuation: bash removes it before splitting words.
+        if (pending.length > 0) return null;
+        out += seg;
+        i += 2;
+        continue;
+      }
+      startWord();
+      word += seg;
+      out += seg;
+      i += 2;
+      continue;
+    }
+    startWord();
+    word += ch;
+    out += ch;
+    i++;
+  }
+  endWord();
+  if (pending.length > 0) return null; // heredoc operator with no body line
+  if (!sawQuoted) return s;
+  if (!quotedOwnersOk || sawPipe) return null;
+  if (!commandWords.every((w) => HEREDOC_PLAIN_COMMANDS.has(w))) return null;
+  return out;
+}
+
+/**
+ * `bash -lc <word>`: the script inside, when `<word>` is one shell word that
+ * expands nothing even if taken verbatim. undefined = not a single word (the
+ * rest is the script as is); null = ambiguous (leave the command unchanged).
+ */
+function singleWordShellPayload(rest: string): string | null | undefined {
+  let i = 0;
+  while (i < rest.length) {
+    const ch = rest[i];
+    if (ch === "'") {
+      const e = rest.indexOf("'", i + 1);
+      if (e < 0) return null;
+      i = e + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < rest.length && rest[j] !== '"') {
+        if (rest[j] === '\\') { j += 2; continue; }
+        if (rest[j] === '$' || rest[j] === '`') return null;
+        j++;
+      }
+      if (j >= rest.length) return null;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '\\') { i += 2; continue; }
+    if (ch === '$' || ch === '`') return null;
+    if (SHELL_META_CHARS.includes(ch) || ch === '\r') return undefined;
+    i++;
+  }
+  return dequoteShellWords(rest);
+}
+
+/** The command as the indirect-exec check should see it (see above). */
+export function indirectExecView(command: string): string {
+  const c = String(command ?? '');
+  if (!c.includes('<<')) return c;
+  const m = SHELL_C_PREFIX_RE.exec(c);
+  if (m) {
+    const payload = singleWordShellPayload(m[2]);
+    if (payload === null) return c;
+    const stripped = stripQuotedHeredocBodies(payload === undefined ? m[2] : payload);
+    return stripped === null ? c : `${m[1]}${stripped}`;
+  }
+  const stripped = stripQuotedHeredocBodies(c);
+  return stripped === null ? c : stripped;
+}
+
+/**
  * A command is a PURE READ only when every pipeline/list segment is a
  * read-only tool AND nothing redirects into a file.
  *
@@ -578,7 +930,11 @@ export function classifyProposedCommand(command: string, ctx: GateContext): Gate
   ) {
     signals.push('opaque-script-exec');
   }
-  if (INDIRECT_EXEC_RE.test(command)) signals.push('indirect-exec');
+  // Quoted heredoc bodies are literal data: judged without them, but only
+  // ever narrowing — the full command must match too (indirectExecView).
+  if (INDIRECT_EXEC_RE.test(command) && INDIRECT_EXEC_RE.test(indirectExecView(command))) {
+    signals.push('indirect-exec');
+  }
   const isPureRead =
     isPureReadCommand(command) &&
     !signals.includes('network-send') &&
